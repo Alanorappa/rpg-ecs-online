@@ -5,7 +5,7 @@ from components import Position, Renderable, PlayerControlled, Camera, Collider,
                        TileMovement, CombatStats, CombatState, PlayerAutoMove, \
                        CharacterStats, PermanentStats, XPReward, EnemyTier, \
                        Corpse, Inventory, Equipment, PlayerSkills, Wallet, TalentTree, Merchant, \
-                       SpawnZone, EntityIdentity, StatusEffects, ConsumableBar, MobSounds
+                       SpawnZone, EntityIdentity, StatusEffects, ConsumableBar, MobSounds, FogOfWar
 from tileset import TILE_MAPPING, TILE_SIZE, FLOOR_TILE
 from mob_definitions import MOB_TABLE
 
@@ -103,6 +103,7 @@ def create_player(world: World, tile_x: int, tile_y: int,
     world.add_component(player_entity, Wallet())
     world.add_component(player_entity, TalentTree())
     world.add_component(player_entity, ConsumableBar())
+    world.add_component(player_entity, FogOfWar())
     world.add_component(player_entity, EntityIdentity(
         name="Aventureiro", race="Humano", entity_class="Guerreiro",
         level=1, tier="Normal",

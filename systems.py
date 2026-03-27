@@ -1840,6 +1840,14 @@ class RenderSystem(System):
             target_id = cs.target_entity_id
             break
 
+        # ── Fog of War: conjunto de tiles visíveis neste frame ────────────────
+        from components import FogOfWar
+        from tileset import TILE_SIZE as _FOG_TS
+        _fog_visible: set | None = None
+        for _, _fog in self.world.get_entities_with(FogOfWar):
+            _fog_visible = _fog.visible
+            break
+
         # ── Coleta drawables: (sort_y_world, tipo, dados) ─────────────────────
         drawables = []
 
@@ -1848,12 +1856,24 @@ class RenderSystem(System):
             combat_stats = self.world.get_component(entity_id, CombatStats)
             if combat_stats and combat_stats.current_hp <= 0:
                 continue
+            # Oculta entidades fora do campo de visão (jogador nunca é oculto)
+            if _fog_visible is not None:
+                is_player = self.world.get_component(entity_id, PlayerControlled) is not None
+                if not is_player:
+                    etx = int(position.x / _FOG_TS)
+                    ety = int(position.y / _FOG_TS)
+                    if (etx, ety) not in _fog_visible:
+                        continue
             foot_y = position.y + renderable.height / 2
             drawables.append((foot_y, "entity", entity_id, position, renderable, combat_stats))
 
         # Tile-objetos (árvores, arbustos, pedras grandes, etc.)
         if world_objects:
             for obj in world_objects:
+                # Oculta objetos de tile fora do campo de visão
+                if _fog_visible is not None:
+                    if (obj.get("tile_x", -1), obj.get("tile_y", -1)) not in _fog_visible:
+                        continue
                 drawables.append((obj["sort_y"], "object", obj))
 
         # ── Ordena por Y do pé (sul = frente) ─────────────────────────────────
@@ -1948,6 +1968,9 @@ class TileRenderSystem(System):
         self._cache_tile_y:    int = -99999
         self._cache_tiles_w:   int = _tw
         self._cache_tiles_h:   int = _th
+        # Fog of War: surface semi-transparente para tiles explorados mas não visíveis
+        self._fog_explored_surf: pygame.Surface = pygame.Surface((_TS, _TS), pygame.SRCALPHA)
+        self._fog_explored_surf.fill((0, 0, 0, 160))
 
     def invalidate_cache(self) -> None:
         """Força reconstrução do cache no próximo frame (chamar após troca de mapa)."""
@@ -2019,6 +2042,30 @@ class TileRenderSystem(System):
             # 1 blit por frame — ~0.1ms ao invés de ~880 draw.rect
             self.screen.blit(self._cache_surf, (-sub_x, -sub_y))
 
+            # ── Fog of War overlay ────────────────────────────────────────────
+            from components import FogOfWar
+            fog_comp = None
+            for _, fog in self.world.get_entities_with(FogOfWar):
+                fog_comp = fog
+                break
+
+            if fog_comp is not None:
+                explored = fog_comp.explored
+                visible  = fog_comp.visible
+                exp_surf = self._fog_explored_surf
+                for ty in range(tiles_h):
+                    for tx in range(tiles_w):
+                        rx, ry = tile_ox + tx, tile_oy + ty
+                        if (rx, ry) in visible:
+                            continue
+                        sx = tx * tile_size - sub_x
+                        sy = ty * tile_size - sub_y
+                        if (rx, ry) in explored:
+                            self.screen.blit(exp_surf, (sx, sy))
+                        else:
+                            pygame.draw.rect(self.screen, (0, 0, 0),
+                                             (sx, sy, tile_size, tile_size))
+
     def get_world_objects(self, camera_offset_x: float, camera_offset_y: float) -> list:
         """
         Retorna lista de tile-objetos visíveis (overlay_height > 0) para o pass 2 (Y-sort).
@@ -2059,15 +2106,58 @@ class TileRenderSystem(System):
 
                     sprite = TILE_SPRITES.get(tile_type, rx, ry)
                     objects.append({
-                        "sort_y": sort_y_world,
+                        "sort_y":   sort_y_world,
                         "screen_x": scr_x,
                         "screen_y": scr_y,
                         "sprite":   sprite,
                         "color":    tile_type.color,
                         "width":    tile_size,
                         "height":   total_h,
+                        "tile_x":   rx,
+                        "tile_y":   ry,
                     })
         return objects
+
+
+class FogSystem(System):
+    """
+    Atualiza o campo de visão do jogador por shadowcasting recursivo (8 octantes).
+
+    Executa apenas quando o jogador muda de tile — custo O(radius²) por frame
+    de movimento, zero nos frames sem deslocamento.
+    """
+
+    def __init__(self, world: World) -> None:
+        self.world = world
+
+    def update(self, events: list = None, dt: float = 0) -> None:
+        from components import FogOfWar, TileMovement, Tilemap
+        from fov import compute_fov
+
+        tilemap = None
+        for _, tm in self.world.get_entities_with(Tilemap):
+            tilemap = tm
+            break
+        if tilemap is None:
+            return
+
+        rows  = tilemap.tile_matrix
+        map_h = tilemap.map_height_tiles
+        map_w = tilemap.map_width_tiles
+
+        def is_blocking(x: int, y: int) -> bool:
+            if not (0 <= x < map_w and 0 <= y < map_h):
+                return True
+            return rows[y][x].is_solid
+
+        for _, fog, tile_move in self.world.get_entities_with(FogOfWar, TileMovement):
+            px, py = tile_move.current_tile_x, tile_move.current_tile_y
+            if (px, py) == fog._last_tile:
+                return
+            fog._last_tile = (px, py)
+            fog.visible = compute_fov(px, py, fog.radius, is_blocking)
+            fog.explored.update(fog.visible)
+            return   # apenas um FogOfWar no jogo (jogador)
 
 
 class CorpseSystem(System):

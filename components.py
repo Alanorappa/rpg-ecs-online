@@ -360,6 +360,23 @@ class Tilemap:
     map_width_tiles: int
     map_height_tiles: int
 
+
+class FogOfWar:
+    """
+    Campo de visão do jogador calculado por shadowcasting.
+
+    visible  — tiles visíveis neste frame (recalculado ao mover de tile)
+    explored — tiles já descobertos (persiste entre movimentos; salvo futuramente)
+    radius   — raio em tiles; padrão 8 (~256px a 32px/tile)
+    """
+
+    def __init__(self, radius: int = 8) -> None:
+        self.radius:     int   = radius
+        self.visible:    set   = set()
+        self.explored:   set   = set()
+        self._last_tile: tuple = (-1, -1)   # posição anterior; evita recompute desnecessário
+
+
 class CombatState:
     """
     Estado de combate de uma entidade.

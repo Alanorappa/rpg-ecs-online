@@ -11,7 +11,7 @@ from systems import (
     EnemyAISystem, TileRenderSystem, TileValidationSystem,
     PathfindingSystem, CombatSystem, CombatStateSystem, MouseTargetingSystem,
     ProjectileSystem, CorpseSystem, MobRespawnSystem, LootSystem, ShopSystem, SkillSystem,
-    SpawnZoneSystem, ConsumableSystem, DeathHandlerSystem,
+    SpawnZoneSystem, ConsumableSystem, DeathHandlerSystem, FogSystem,
 )
 from stats_system import XPSystem, DeathRespawnSystem
 from entity_factory import create_player, create_camera, create_enemy, create_tilemap, create_merchant, create_spawn_zone
@@ -322,9 +322,10 @@ class GameEngine:
             ConsumableSystem(self.world),                                             # 14
             CombatStateSystem(self.world),                                            # 15
             TileMovementSystem(self.world),                                           # 16
-            CameraSystem(self.world),                                                 # 17
-            tile_render_system,                                                       # 18
-            render_system,                                                            # 19
+            FogSystem(self.world),                                                    # 17
+            CameraSystem(self.world),                                                 # 18
+            tile_render_system,                                                       # 19
+            render_system,                                                            # 20
         ]
         self._validate_system_order()
 
@@ -353,7 +354,8 @@ class GameEngine:
         (DeathHandlerSystem,    XPSystem,             "XPSystem lê pending_xp de DeathHandler"),
         (XPSystem,              DeathRespawnSystem,   "Player respawn ocorre após XP distribuído"),
         (CombatStateSystem,     TileMovementSystem,   "Movimento interpolado após estados atualizados"),
-        (TileMovementSystem,    CameraSystem,         "Câmera segue posições após movimento"),
+        (TileMovementSystem,    FogSystem,            "Fog lê posição de tile após movimento"),
+        (FogSystem,             CameraSystem,         "Câmera segue posições após movimento"),
         (CameraSystem,          TileRenderSystem,     "Tiles renderizados com câmera já calculada"),
         (TileRenderSystem,      RenderSystem,         "Entidades renderizadas sobre os tiles"),
     ]
