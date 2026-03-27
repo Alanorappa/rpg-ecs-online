@@ -186,7 +186,8 @@ class MapOverlay:
 
     # ── Renderização ─────────────────────────────────────────────────────────
 
-    def render(self, player_tile_x: int = -1, player_tile_y: int = -1) -> None:
+    def render(self, player_tile_x: int = -1, player_tile_y: int = -1,
+               explored: "set | None" = None) -> None:
         if not self.is_open or self._base_surf is None:
             return
 
@@ -255,6 +256,17 @@ class MapOverlay:
             map_surf.blit(scaled, (blit_x, blit_y))
 
         self.screen.blit(map_surf, modal.topleft)
+
+        # ── Fog: cobre tiles não explorados com preto ────
+        if explored is not None:
+            for r in range(iy0, iy1):
+                for c in range(ix0, ix1):
+                    if (c, r) not in explored:
+                        fx = int(c * scale - off_x) + modal.x
+                        fy = int(r * scale - off_y) + modal.y
+                        fw = max(1, int(scale))
+                        fh = max(1, int(scale))
+                        pygame.draw.rect(self.screen, (0, 0, 0), (fx, fy, fw, fh))
 
         # ── Marcador de destino ──────────────────────────
         if self._dest_marker:

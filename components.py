@@ -370,11 +370,12 @@ class FogOfWar:
     radius   — raio em tiles; padrão 8 (~256px a 32px/tile)
     """
 
-    def __init__(self, radius: int = 8) -> None:
-        self.radius:     int   = radius
-        self.visible:    set   = set()
-        self.explored:   set   = set()
-        self._last_tile: tuple = (-1, -1)   # posição anterior; evita recompute desnecessário
+    def __init__(self, radius: int = 8, explore_radius: int = 20) -> None:
+        self.radius:          int   = radius          # raio LOS (shadowcasting) — para ocultar entidades
+        self.explore_radius:  int   = explore_radius  # raio de exploração — para tile preto no mapa/tela
+        self.visible:         set   = set()           # LOS atual (entidades ocultas fora daqui)
+        self.explored:        set   = set()           # tiles já descobertos (persiste)
+        self._last_tile:      tuple = (-1, -1)        # posição anterior; evita recompute desnecessário
 
 
 class CombatState:

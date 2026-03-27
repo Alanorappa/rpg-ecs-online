@@ -2051,20 +2051,15 @@ class TileRenderSystem(System):
 
             if fog_comp is not None:
                 explored = fog_comp.explored
-                visible  = fog_comp.visible
-                exp_surf = self._fog_explored_surf
                 for ty in range(tiles_h):
                     for tx in range(tiles_w):
                         rx, ry = tile_ox + tx, tile_oy + ty
-                        if (rx, ry) in visible:
+                        if (rx, ry) in explored:
                             continue
                         sx = tx * tile_size - sub_x
                         sy = ty * tile_size - sub_y
-                        if (rx, ry) in explored:
-                            self.screen.blit(exp_surf, (sx, sy))
-                        else:
-                            pygame.draw.rect(self.screen, (0, 0, 0),
-                                             (sx, sy, tile_size, tile_size))
+                        pygame.draw.rect(self.screen, (0, 0, 0),
+                                         (sx, sy, tile_size, tile_size))
 
     def get_world_objects(self, camera_offset_x: float, camera_offset_y: float) -> list:
         """
@@ -2155,8 +2150,20 @@ class FogSystem(System):
             if (px, py) == fog._last_tile:
                 return
             fog._last_tile = (px, py)
+
+            # LOS (shadowcasting, raio pequeno) — controla quais entidades são visíveis
             fog.visible = compute_fov(px, py, fog.radius, is_blocking)
-            fog.explored.update(fog.visible)
+
+            # Exploração (círculo largo) — descobre tiles para o mapa/tela sem LOS
+            er = fog.explore_radius
+            er_sq = er * er
+            for dy in range(-er, er + 1):
+                for dx in range(-er, er + 1):
+                    if dx * dx + dy * dy <= er_sq:
+                        ex, ey = px + dx, py + dy
+                        if 0 <= ex < map_w and 0 <= ey < map_h:
+                            fog.explored.add((ex, ey))
+
             return   # apenas um FogOfWar no jogo (jogador)
 
 

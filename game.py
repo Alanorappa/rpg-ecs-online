@@ -802,7 +802,10 @@ class GameEngine:
                 player_tm = self.world.get_component(self.player_entity, TileMovement)
                 tx = player_tm.current_tile_x if player_tm else -1
                 ty = player_tm.current_tile_y if player_tm else -1
-                self._map_overlay.render(tx, ty)
+                from components import FogOfWar as _FogOfWar
+                _fog_comp = self.world.get_component(self.player_entity, _FogOfWar)
+                self._map_overlay.render(tx, ty,
+                                         explored=_fog_comp.explored if _fog_comp else None)
 
             # Menu de pausa (por cima de tudo)
             if self._show_pause:
