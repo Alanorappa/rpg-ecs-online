@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+
+# Build / dist
+dist/
+build/
+*.spec
+
+# Save files
+saves/
+
+# Config local
+config.json
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
