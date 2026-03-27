@@ -1,0 +1,536 @@
+{
+  "version": 1,
+  "saved_at": "2026-03-26T22:06:35",
+  "character": {
+    "level": 18,
+    "current_xp": 7334,
+    "xp_to_next_level": 7636,
+    "strength": 18,
+    "intelligence": 18,
+    "agility": 18,
+    "vitality": 20,
+    "defense": 36,
+    "spawn_tile_x": 130,
+    "spawn_tile_y": 386,
+    "spawn_map": "maps/map_1.csv",
+    "current_hp": 1050,
+    "max_hp": 1050,
+    "permanent_stats": {
+      "strength": 0,
+      "intelligence": 0,
+      "agility": 0,
+      "vitality": 0,
+      "defense": 0
+    }
+  },
+  "talents": {
+    "build": "cavaleiro",
+    "allocated": {
+      "cav_vontade": 1,
+      "cav_sede_batalha": 3,
+      "cav_veterano": 1,
+      "cav_embalo": 1,
+      "cav_alvo_confirmado": 3,
+      "cav_horrorizante": 1,
+      "cav_provocacao": 1,
+      "cav_punho_queixo": 3,
+      "cav_reflexos": 2,
+      "cav_maquina_matar": 1
+    },
+    "available_points": 0
+  },
+  "inventory": [
+    {
+      "name": "Ensopado Revigorante",
+      "item_type": "consumable",
+      "slot": "",
+      "rarity": "common",
+      "value": 20,
+      "two_handed": false,
+      "damage_min": 0,
+      "damage_max": 0,
+      "attack_speed": 0.0,
+      "subtype": "",
+      "stack": 2,
+      "max_stack": 20,
+      "modifiers": [],
+      "proc": null,
+      "consumable": {
+        "heal_per_tick": 35,
+        "interval": 3.0,
+        "ticks": 10,
+        "ooc_only": true
+      }
+    },
+    {
+      "name": "Poção de Vida",
+      "item_type": "consumable",
+      "slot": "",
+      "rarity": "common",
+      "value": 25,
+      "two_handed": false,
+      "damage_min": 0,
+      "damage_max": 0,
+      "attack_speed": 0.0,
+      "subtype": "",
+      "stack": 3,
+      "max_stack": 20,
+      "modifiers": [],
+      "proc": null,
+      "consumable": {
+        "heal_instant": 120,
+        "ooc_only": false
+      }
+    },
+    {
+      "name": "Espada de Osso",
+      "item_type": "weapon",
+      "slot": "mainhand",
+      "rarity": "common",
+      "value": 10,
+      "two_handed": false,
+      "damage_min": 3,
+      "damage_max": 8,
+      "attack_speed": 1.6,
+      "subtype": "Sword",
+      "stack": 1,
+      "max_stack": 1,
+      "modifiers": [],
+      "proc": null,
+      "consumable": null
+    },
+    {
+      "name": "Colete de Couro",
+      "item_type": "armor",
+      "slot": "chest",
+      "rarity": "common",
+      "value": 8,
+      "two_handed": false,
+      "damage_min": 0,
+      "damage_max": 0,
+      "attack_speed": 0.0,
+      "subtype": "",
+      "stack": 1,
+      "max_stack": 1,
+      "modifiers": [
+        {
+          "attribute": "armor",
+          "value": 4,
+          "type": "flat"
+        },
+        {
+          "attribute": "stamina",
+          "value": 2,
+          "type": "flat"
+        }
+      ],
+      "proc": null,
+      "consumable": null
+    },
+    {
+      "name": "Colete de Couro",
+      "item_type": "armor",
+      "slot": "chest",
+      "rarity": "common",
+      "value": 8,
+      "two_handed": false,
+      "damage_min": 0,
+      "damage_max": 0,
+      "attack_speed": 0.0,
+      "subtype": "",
+      "stack": 1,
+      "max_stack": 1,
+      "modifiers": [
+        {
+          "attribute": "armor",
+          "value": 4,
+          "type": "flat"
+        },
+        {
+          "attribute": "stamina",
+          "value": 2,
+          "type": "flat"
+        }
+      ],
+      "proc": null,
+      "consumable": null
+    },
+    {
+      "name": "Colete de Couro",
+      "item_type": "armor",
+      "slot": "chest",
+      "rarity": "common",
+      "value": 8,
+      "two_handed": false,
+      "damage_min": 0,
+      "damage_max": 0,
+      "attack_speed": 0.0,
+      "subtype": "",
+      "stack": 1,
+      "max_stack": 1,
+      "modifiers": [
+        {
+          "attribute": "armor",
+          "value": 4,
+          "type": "flat"
+        },
+        {
+          "attribute": "stamina",
+          "value": 2,
+          "type": "flat"
+        }
+      ],
+      "proc": null,
+      "consumable": null
+    },
+    {
+      "name": "Clava Rachada",
+      "item_type": "weapon",
+      "slot": "mainhand",
+      "rarity": "common",
+      "value": 7,
+      "two_handed": false,
+      "damage_min": 2,
+      "damage_max": 7,
+      "attack_speed": 1.8,
+      "subtype": "Club",
+      "stack": 1,
+      "max_stack": 1,
+      "modifiers": [
+        {
+          "attribute": "stamina",
+          "value": 1,
+          "type": "flat"
+        }
+      ],
+      "proc": null,
+      "consumable": null
+    },
+    {
+      "name": "Colete de Couro",
+      "item_type": "armor",
+      "slot": "chest",
+      "rarity": "common",
+      "value": 8,
+      "two_handed": false,
+      "damage_min": 0,
+      "damage_max": 0,
+      "attack_speed": 0.0,
+      "subtype": "",
+      "stack": 1,
+      "max_stack": 1,
+      "modifiers": [
+        {
+          "attribute": "armor",
+          "value": 4,
+          "type": "flat"
+        },
+        {
+          "attribute": "stamina",
+          "value": 2,
+          "type": "flat"
+        }
+      ],
+      "proc": null,
+      "consumable": null
+    },
+    {
+      "name": "Escudo de Osso",
+      "item_type": "shield",
+      "slot": "offhand",
+      "rarity": "common",
+      "value": 8,
+      "two_handed": false,
+      "damage_min": 0,
+      "damage_max": 0,
+      "attack_speed": 0.0,
+      "subtype": "",
+      "stack": 1,
+      "max_stack": 1,
+      "modifiers": [
+        {
+          "attribute": "armor",
+          "value": 5,
+          "type": "flat"
+        },
+        {
+          "attribute": "stamina",
+          "value": 1,
+          "type": "flat"
+        }
+      ],
+      "proc": null,
+      "consumable": null
+    },
+    {
+      "name": "Espada de Osso",
+      "item_type": "weapon",
+      "slot": "mainhand",
+      "rarity": "common",
+      "value": 10,
+      "two_handed": false,
+      "damage_min": 3,
+      "damage_max": 8,
+      "attack_speed": 1.6,
+      "subtype": "Sword",
+      "stack": 1,
+      "max_stack": 1,
+      "modifiers": [],
+      "proc": null,
+      "consumable": null
+    }
+  ],
+  "equipment": {
+    "head": {
+      "name": "Capuz Puído",
+      "item_type": "armor",
+      "slot": "head",
+      "rarity": "common",
+      "value": 5,
+      "two_handed": false,
+      "damage_min": 0,
+      "damage_max": 0,
+      "attack_speed": 0.0,
+      "subtype": "",
+      "stack": 1,
+      "max_stack": 1,
+      "modifiers": [
+        {
+          "attribute": "armor",
+          "value": 3,
+          "type": "flat"
+        },
+        {
+          "attribute": "stamina",
+          "value": 1,
+          "type": "flat"
+        }
+      ],
+      "proc": null,
+      "consumable": null
+    },
+    "shoulders": {
+      "name": "Manto de Viajante",
+      "item_type": "armor",
+      "slot": "shoulders",
+      "rarity": "common",
+      "value": 30,
+      "two_handed": false,
+      "damage_min": 0,
+      "damage_max": 0,
+      "attack_speed": 0.0,
+      "subtype": "",
+      "stack": 1,
+      "max_stack": 1,
+      "modifiers": [
+        {
+          "attribute": "armor",
+          "value": 4,
+          "type": "flat"
+        },
+        {
+          "attribute": "stamina",
+          "value": 1,
+          "type": "flat"
+        }
+      ],
+      "proc": null,
+      "consumable": null
+    },
+    "chest": {
+      "name": "Cota de Couro",
+      "item_type": "armor",
+      "slot": "chest",
+      "rarity": "common",
+      "value": 55,
+      "two_handed": false,
+      "damage_min": 0,
+      "damage_max": 0,
+      "attack_speed": 0.0,
+      "subtype": "",
+      "stack": 1,
+      "max_stack": 1,
+      "modifiers": [
+        {
+          "attribute": "armor",
+          "value": 6,
+          "type": "flat"
+        },
+        {
+          "attribute": "stamina",
+          "value": 2,
+          "type": "flat"
+        }
+      ],
+      "proc": null,
+      "consumable": null
+    },
+    "wrists": {
+      "name": "Punhos de Ferro",
+      "item_type": "armor",
+      "slot": "wrists",
+      "rarity": "common",
+      "value": 30,
+      "two_handed": false,
+      "damage_min": 0,
+      "damage_max": 0,
+      "attack_speed": 0.0,
+      "subtype": "",
+      "stack": 1,
+      "max_stack": 1,
+      "modifiers": [
+        {
+          "attribute": "armor",
+          "value": 4,
+          "type": "flat"
+        },
+        {
+          "attribute": "stamina",
+          "value": 1,
+          "type": "flat"
+        }
+      ],
+      "proc": null,
+      "consumable": null
+    },
+    "boots": {
+      "name": "Grevas de Ferro",
+      "item_type": "armor",
+      "slot": "boots",
+      "rarity": "common",
+      "value": 42,
+      "two_handed": false,
+      "damage_min": 0,
+      "damage_max": 0,
+      "attack_speed": 0.0,
+      "subtype": "",
+      "stack": 1,
+      "max_stack": 1,
+      "modifiers": [
+        {
+          "attribute": "armor",
+          "value": 5,
+          "type": "flat"
+        },
+        {
+          "attribute": "haste_rating",
+          "value": 3,
+          "type": "flat"
+        }
+      ],
+      "proc": null,
+      "consumable": null
+    },
+    "gloves": {
+      "name": "Luvas de Couro",
+      "item_type": "armor",
+      "slot": "gloves",
+      "rarity": "common",
+      "value": 28,
+      "two_handed": false,
+      "damage_min": 0,
+      "damage_max": 0,
+      "attack_speed": 0.0,
+      "subtype": "",
+      "stack": 1,
+      "max_stack": 1,
+      "modifiers": [
+        {
+          "attribute": "armor",
+          "value": 3,
+          "type": "flat"
+        },
+        {
+          "attribute": "crit_rating",
+          "value": 0.02,
+          "type": "flat"
+        }
+      ],
+      "proc": null,
+      "consumable": null
+    },
+    "mainhand": {
+      "name": "Espada de Ferro",
+      "item_type": "weapon",
+      "slot": "mainhand",
+      "rarity": "common",
+      "value": 55,
+      "two_handed": false,
+      "damage_min": 7,
+      "damage_max": 14,
+      "attack_speed": 1.5,
+      "subtype": "Sword",
+      "stack": 1,
+      "max_stack": 1,
+      "modifiers": [
+        {
+          "attribute": "attack_power",
+          "value": 3,
+          "type": "flat"
+        }
+      ],
+      "proc": null,
+      "consumable": null
+    },
+    "offhand": {
+      "name": "Escudo de Osso",
+      "item_type": "shield",
+      "slot": "offhand",
+      "rarity": "common",
+      "value": 8,
+      "two_handed": false,
+      "damage_min": 0,
+      "damage_max": 0,
+      "attack_speed": 0.0,
+      "subtype": "",
+      "stack": 1,
+      "max_stack": 1,
+      "modifiers": [
+        {
+          "attribute": "armor",
+          "value": 5,
+          "type": "flat"
+        },
+        {
+          "attribute": "stamina",
+          "value": 1,
+          "type": "flat"
+        }
+      ],
+      "proc": null,
+      "consumable": null
+    },
+    "ring": null,
+    "neck": {
+      "name": "Amuleto Simples",
+      "item_type": "jewelry",
+      "slot": "neck",
+      "rarity": "common",
+      "value": 48,
+      "two_handed": false,
+      "damage_min": 0,
+      "damage_max": 0,
+      "attack_speed": 0.0,
+      "subtype": "",
+      "stack": 1,
+      "max_stack": 1,
+      "modifiers": [
+        {
+          "attribute": "stamina",
+          "value": 4,
+          "type": "flat"
+        }
+      ],
+      "proc": null,
+      "consumable": null
+    }
+  },
+  "wallet": {
+    "gold": 7382
+  },
+  "position": {
+    "map": "maps\\map_1.csv",
+    "tile_x": 246,
+    "tile_y": 352
+  }
+}

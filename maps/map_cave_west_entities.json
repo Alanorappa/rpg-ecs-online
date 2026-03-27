@@ -1,0 +1,149 @@
+{
+  "player": {
+    "x": 78,
+    "y": 19
+  },
+  "transitions": [
+    {
+      "x": 79,
+      "y": 19,
+      "target_map": "maps/map_1.csv",
+      "target_x": 13,
+      "target_y": 316
+    }
+  ],
+  "spawn_zones": [
+    {
+      "x": 24,
+      "y": 11,
+      "radius": 4,
+      "respawn_cooldown": 120,
+      "level_min": 5,
+      "level_max": 10,
+      "race": "Zumbi",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "normal",
+          "count": 3
+        },
+        {
+          "type": "ranged",
+          "tier": "normal",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "x": 61,
+      "y": 19,
+      "radius": 4,
+      "respawn_cooldown": 120,
+      "level_min": 5,
+      "level_max": 10,
+      "race": "Zumbi",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "normal",
+          "count": 3
+        },
+        {
+          "type": "ranged",
+          "tier": "normal",
+          "count": 2
+        }
+      ]
+    },    
+    {
+      "x": 5,
+      "y": 26,
+      "radius": 5,
+      "respawn_cooldown": 120,
+      "level_min": 5,
+      "level_max": 10,
+      "race": "Zumbi",
+      "class": "Arqueiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "normal",
+          "count": 3
+        },
+        {
+          "type": "ranged",
+          "tier": "normal",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "x": 20,
+      "y": 25,
+      "radius": 7,
+      "respawn_cooldown": 120,
+      "level_min": 5,
+      "level_max": 10,
+      "race": "Zumbi",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "normal",
+          "count": 3
+        },
+        {
+          "type": "ranged",
+          "tier": "normal",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "x": 11,
+      "y": 36,
+      "radius": 8,
+      "respawn_cooldown": 120,
+      "level_min": 5,
+      "level_max": 10,
+      "race": "Zumbi",
+      "class": "Arqueiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "normal",
+          "count": 3
+        },
+        {
+          "type": "ranged",
+          "tier": "normal",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "x": 25,
+      "y": 53,
+      "radius": 5,
+      "respawn_cooldown": 1200,
+      "level_min": 8,
+      "level_max": 12,
+      "race": "Zumbi",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 2
+        },
+        {
+          "type": "melee",
+          "tier": "rare",
+          "count": 1
+        }
+      ]
+    }
+  ]
+}

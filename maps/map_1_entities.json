@@ -1,0 +1,189 @@
+{
+  "player": {
+    "x": 151,
+    "y": 310
+  },
+  "merchants": [
+    {
+      "x": 151,
+      "y": 307,
+      "shop_id": "general"
+    }
+  ],
+  "transitions": [
+    {
+      "x": 12,
+      "y": 316,
+      "target_map": "maps/map_cave_west.csv",
+      "target_x": 78,
+      "target_y": 19
+    },
+    {
+      "x": 283,
+      "y": 310,
+      "target_map": "maps/map_cave_east.csv",
+      "target_x": 1,
+      "target_y": 34
+    }
+  ],
+  "ambient_zones": [
+  {
+    "name": "Cemetery of Moonlight",
+    "ambient": ["demon_ambient_song.ogg", "ghoul_ambient_song.ogg"],
+    "rect": [112, 361, 145, 392],
+    "music": ["cemetery_of_moonlight_theme.ogg", "cemetery_of_moonlight_theme_2.ogg"]
+  },
+  {
+    "name": "Birdsong Forest",
+    "ambient": "ambient_forest",
+    "rect": [47, 396, 273, 579],
+    "music": ["birdsong_forest_theme_1.ogg"]
+  }
+  ],
+  "spawn_zones": [
+    {
+      "x": 80,
+      "y": 40,
+      "radius": 30,
+      "respawn_cooldown": 90,
+      "level_min": 8,
+      "level_max": 14,
+      "race": "Elemental",
+      "class": "Elemental",
+      "spawns": [
+        { "type": "melee",   "tier": "normal", "count": 6 },
+        { "type": "ranged",  "tier": "normal", "count": 4 },
+        { "type": "melee",   "tier": "elite",  "count": 2 }
+      ]
+    },
+    {
+      "x": 190,
+      "y": 55,
+      "radius": 28,
+      "respawn_cooldown": 90,
+      "level_min": 8,
+      "level_max": 14,
+      "race": "Elemental",
+      "class": "Elemental",
+      "spawns": [
+        { "type": "melee",   "tier": "normal", "count": 5 },
+        { "type": "ranged",  "tier": "normal", "count": 4 },
+        { "type": "melee",   "tier": "elite",  "count": 2 }
+      ]
+    },
+    {
+      "x": 90,
+      "y": 175,
+      "radius": 30,
+      "respawn_cooldown": 60,
+      "level_min": 3,
+      "level_max": 7,
+      "race": "Lobo",
+      "class": "Warrior",
+      "spawns": [
+        { "type": "melee", "tier": "normal", "count": 7 },
+        { "type": "melee", "tier": "elite",  "count": 5 }
+      ]
+    },
+    {
+      "x": 148,
+      "y": 160,
+      "radius": 25,
+      "respawn_cooldown": 60,
+      "level_min": 3,
+      "level_max": 7,
+      "race": "Lobo",
+      "class": "Warrior",
+      "spawns": [
+        { "type": "melee", "tier": "normal", "count": 5 },
+        { "type": "melee", "tier": "elite",  "count": 5 }
+      ]
+    },
+    {
+      "x": 235,
+      "y": 340,
+      "radius": 38,
+      "respawn_cooldown": 60,
+      "level_min": 4,
+      "level_max": 9,
+      "race": "Goblin",
+      "class": "Hunter",
+      "spawns": [
+        { "type": "melee",   "tier": "normal", "count": 6 },
+        { "type": "ranged",  "tier": "normal", "count": 4 },
+        { "type": "melee",   "tier": "elite",  "count": 3 },
+        { "type": "melee",   "tier": "rare",   "count": 3 }
+      ]
+    },
+    {
+      "x": 130,
+      "y": 374,
+      "radius": 12,
+      "respawn_cooldown": 60,
+      "level_min": 1,
+      "level_max": 3,
+      "race": "Zumbi",
+      "class": "Warrior",
+      "spawns": [
+        { "type": "melee", "tier": "normal", "count": 10 }
+      ]
+    },
+    {
+      "x": 214,
+      "y": 452,
+      "radius": 38,
+      "respawn_cooldown": 120,
+      "level_min": 5,
+      "level_max": 15,
+      "race": "Lobo",
+      "class": "Warrior",
+      "spawns": [
+        { "type": "melee", "tier": "normal", "count": 7 },
+        { "type": "melee", "tier": "elite",  "count": 3 }
+      ]
+    },
+    {
+      "x": 211,
+      "y": 416,
+      "radius": 10,
+      "respawn_cooldown": 120,
+      "level_min": 20,
+      "level_max": 25,
+      "race": "Urso",
+      "class": "Warrior",
+      "spawns": [
+        { "type": "melee", "tier": "normal", "count": 7 },
+        { "type": "melee", "tier": "elite",  "count": 3 }
+      ]
+    },
+    {
+      "x": 110,
+      "y": 470,
+      "radius": 38,
+      "respawn_cooldown": 60,
+      "level_min": 5,
+      "level_max": 10,
+      "race": "Lobo",
+      "class": "Warrior",
+      "spawns": [
+        { "type": "melee", "tier": "normal", "count": 7 },
+        { "type": "melee", "tier": "elite",  "count": 3 }
+      ]
+    },
+    {
+      "x": 195,
+      "y": 490,
+      "radius": 35,
+      "respawn_cooldown": 60,
+      "level_min": 6,
+      "level_max": 12,
+      "race": "Lobo",
+      "class": "Warrior",
+      "spawns": [
+        { "type": "melee",  "tier": "normal", "count": 6 },
+        { "type": "melee",  "tier": "elite",  "count": 3 },
+        { "type": "ranged", "tier": "elite",  "count": 3 }
+      ]
+    }
+  ]
+}
