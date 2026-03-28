@@ -361,6 +361,12 @@ class Tilemap:
     map_height_tiles: int
 
 
+class Visible:
+    """Tag: entidade está no campo de visão do jogador neste frame.
+    Adicionada/removida pelo FogSystem a cada frame com base em FogOfWar.visible."""
+    __slots__ = ()
+
+
 class FogOfWar:
     """
     Campo de visão do jogador calculado por shadowcasting.
@@ -589,6 +595,31 @@ class Equipment:
         return total
 
 
+class EnemyAbilitySlot:
+    """Estado de runtime de uma habilidade especial de inimigo.
+
+    Armazena apenas o cooldown atual — os dados estáticos (dano, duração, etc.)
+    ficam em ABILITY_DEFS (enemy_abilities_data.py).
+    """
+    __slots__ = ("ability_id", "cooldown", "current_cooldown")
+
+    def __init__(self, ability_id: str, cooldown: float,
+                 current_cooldown: float = 0.0) -> None:
+        self.ability_id:       str   = ability_id
+        self.cooldown:         float = cooldown
+        self.current_cooldown: float = current_cooldown
+
+
+class EnemyAbilities:
+    """Contêiner de habilidades especiais de um inimigo.
+
+    Criado pela entity_factory com base em MOB_ABILITIES.
+    Gerenciado pelo EnemyAbilitySystem.
+    """
+    def __init__(self, slots: list) -> None:
+        self.slots: list = slots   # list[EnemyAbilitySlot]
+
+
 class Corpse:
     """Cadáver de inimigo: contém loot e expira após um tempo."""
     DECAY_TIME = 120.0         # fallback se não vier cooldown do mob
@@ -712,8 +743,7 @@ class TileMovement:
     move_duration: float = 0.2
     is_moving: bool = False
     speed: float = 0.0
-    slow_timer: float = 0.0          # duração restante do debuff de velocidade
-    slow_mult: float = 1.0           # multiplicador de velocidade (< 1.0 = mais lento)
+    slow_mult: float = 1.0           # multiplicador de velocidade — gerenciado por StatusEffectSystem
     debilitate_elapsed: float = 0.0  # tempo acumulado debilitado contínuo (Foco Mortal)
     is_dash: bool = False             # True durante o dash do Interceptar
 
@@ -782,17 +812,53 @@ class SpawnZoneOwner:
         self.zone_entity_id = zone_entity_id
 
 
+class ActiveEffect:
+    """
+    Uma instância de efeito ativo sobre uma entidade.
+    Criada por apply_effect() em status_effects_data.py — não instanciar diretamente.
+    """
+    __slots__ = (
+        "effect_type", "duration", "magnitude",
+        "tick_interval", "tick_timer", "stacks", "source_id",
+    )
+
+    def __init__(
+        self,
+        effect_type: str,
+        duration: float,
+        magnitude: float = 0.0,
+        tick_interval: float = 0.0,
+        stacks: int = 1,
+        source_id: int = -1,
+    ) -> None:
+        self.effect_type:   str   = effect_type
+        self.duration:      float = duration
+        self.magnitude:     float = magnitude
+        self.tick_interval: float = tick_interval
+        self.tick_timer:    float = tick_interval  # tempo até próximo tick
+        self.stacks:        int   = stacks
+        self.source_id:     int   = source_id
+
+
 class StatusEffects:
     """
-    Efeitos de estado temporários sobre uma entidade.
-      stun_timer    : entidade fica imóvel e não pode atacar enquanto > 0
-      fear_timer    : entidade foge do player e não pode atacar enquanto > 0
-      enraged_timer : entidade enlouquecida pelo Brado Provocativo (+5% dano, -10% resist)
+    Contêiner de efeitos ativos (buffs e debuffs) de uma entidade.
+    Gerenciado pelo StatusEffectSystem — use apply_effect() para adicionar efeitos.
     """
-    def __init__(self):
-        self.stun_timer:   float = 0.0
-        self.fear_timer:   float = 0.0
-        self.enraged_timer: float = 0.0
+
+    def __init__(self) -> None:
+        self.effects: list = []   # list[ActiveEffect]
+
+    def has(self, effect_type: str) -> bool:
+        """Retorna True se o efeito está ativo."""
+        return any(e.effect_type == effect_type for e in self.effects)
+
+    def get(self, effect_type: str):
+        """Retorna o ActiveEffect ativo do tipo dado, ou None."""
+        for e in self.effects:
+            if e.effect_type == effect_type:
+                return e
+        return None
 
 
 @dataclass

@@ -5,9 +5,11 @@ from components import Position, Renderable, PlayerControlled, Camera, Collider,
                        TileMovement, CombatStats, CombatState, PlayerAutoMove, \
                        CharacterStats, PermanentStats, XPReward, EnemyTier, \
                        Corpse, Inventory, Equipment, PlayerSkills, Wallet, TalentTree, Merchant, \
-                       SpawnZone, EntityIdentity, StatusEffects, ConsumableBar, MobSounds, FogOfWar
+                       SpawnZone, EntityIdentity, StatusEffects, ConsumableBar, MobSounds, FogOfWar, \
+                       EnemyAbilities, EnemyAbilitySlot
 from tileset import TILE_MAPPING, TILE_SIZE, FLOOR_TILE
 from mob_definitions import MOB_TABLE
+from enemy_abilities_data import MOB_ABILITIES
 
 # --- Configurações para as entidades ---
 PLAYER_COLOR = (255, 0, 0)
@@ -103,7 +105,7 @@ def create_player(world: World, tile_x: int, tile_y: int,
     world.add_component(player_entity, Wallet())
     world.add_component(player_entity, TalentTree())
     world.add_component(player_entity, ConsumableBar())
-    world.add_component(player_entity, FogOfWar())
+    world.add_component(player_entity, FogOfWar(radius=12))
     world.add_component(player_entity, EntityIdentity(
         name="Aventureiro", race="Humano", entity_class="Guerreiro",
         level=1, tier="Normal",
@@ -245,6 +247,16 @@ def create_enemy(world: World, tile_x: int, tile_y: int,
         name=mob_display_name, race=mob_actual_race, entity_class=entity_class,
         level=level, tier=tier_label,
     ))
+
+    # Habilidades especiais — verifica por entity_class e por raça
+    _ability_entries = (
+        MOB_ABILITIES.get(entity_class, []) +
+        MOB_ABILITIES.get(race, [])
+    )
+    if _ability_entries:
+        slots = [EnemyAbilitySlot(aid, cd) for aid, cd in _ability_entries]
+        world.add_component(enemy_entity, EnemyAbilities(slots))
+
     return enemy_entity
 
 

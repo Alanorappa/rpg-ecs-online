@@ -16,7 +16,7 @@ import datetime
 from components import (
     CharacterStats, PermanentStats, TalentTree,
     Inventory, Equipment, Wallet, TileMovement, CombatStats,
-    Item, Modifier,
+    Item, Modifier, FogOfWar,
 )
 
 SAVE_DIR     = "saves"
@@ -90,6 +90,7 @@ def save_game(world, player_entity: int, current_map_file: str) -> None:
     wlt   = world.get_component(player_entity, Wallet)
     tm    = world.get_component(player_entity, TileMovement)
     cs    = world.get_component(player_entity, CombatStats)
+    fog   = world.get_component(player_entity, FogOfWar)
 
     if not char:
         return
@@ -146,6 +147,11 @@ def save_game(world, player_entity: int, current_map_file: str) -> None:
             "map":    current_map_file,
             "tile_x": tm.current_tile_x if tm else 1,
             "tile_y": tm.current_tile_y if tm else 1,
+        },
+
+        # ── Fog of War — tiles explorados ────────────────────────────────
+        "fog": {
+            "explored": [[x, y] for x, y in fog.explored] if fog else [],
         },
     }
 
@@ -242,6 +248,11 @@ def load_game(world, player_entity: int) -> dict | None:
         if saved_hp is not None and saved_max is not None:
             cs._saved_hp  = saved_hp   # armazena para restaurar após recálculo
             cs._saved_max = saved_max
+
+    # ── Fog of War ─────────────────────────────────────────────────────────
+    fog = world.get_component(player_entity, FogOfWar)
+    if fog:
+        fog.explored = {(x, y) for x, y in data.get("fog", {}).get("explored", [])}
 
     pos = data.get("position", {})
     return {

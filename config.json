@@ -1,7 +1,7 @@
 {
-  "scale": 1.0,
-  "music_volume": 0.32105263157894737,
-  "sfx_volume": 0.5157894736842106,
+  "scale": 1.5,
+  "music_volume": 0.06315789473684211,
+  "sfx_volume": 0.06315789473684211,
   "music_enabled": true,
   "sfx_enabled": true,
   "hotbar": {
@@ -12,7 +12,10 @@
       "executar",
       "interceptar",
       "punho_no_queixo",
-      "brado_provocativo"
+      "brado_provocativo",
+      "golpe_debilitante",
+      null,
+      null
     ],
     "keybinds": [
       49,
@@ -21,7 +24,10 @@
       52,
       114,
       53,
-      54
+      102,
+      103,
+      57,
+      48
     ]
   },
   "debug_mode": true,

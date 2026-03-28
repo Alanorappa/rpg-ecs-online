@@ -177,8 +177,8 @@ class TalentSystem:
             if s and getattr(s, "talent_id", None):
                 old_positions[s.skill_id] = i
 
-        # Remove habilidades de talento antigas
-        skills.skills = [s for s in skills.skills if not getattr(s, "talent_id", None)]
+        # Remove habilidades de talento antigas (substitui por None para preservar comprimento da lista)
+        skills.skills = [None if getattr(s, "talent_id", None) else s for s in skills.skills]
         tt._unlocked_skill_ids.clear()
 
         # Aplica efeitos dos talentos alocados

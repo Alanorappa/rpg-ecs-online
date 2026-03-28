@@ -9,7 +9,8 @@ from components import Position, Renderable, PlayerControlled, Camera, Collider,
                        Enemy, AIControlled, InitialPosition, DetectionRadius, Tilemap, \
                        TileMovement, CombatStats, Modifier, CombatState, PlayerAutoMove, \
                        Projectile, Corpse, Inventory, EnemyTier, Equipment, Wallet, Merchant, \
-                       CharacterStats
+                       CharacterStats, FogOfWar, Visible, ActiveEffect, StatusEffects, \
+                       EnemyAbilities, EnemyAbilitySlot, EntityIdentity
 from world import World
 from tileset import TILE_SIZE
 from utils import chebyshev, start_tile_movement
@@ -310,8 +311,8 @@ class CombatSystem(System):
         _cs_ef = self._get_combat_stats(attacker_id)
         if not _cs_ef or _cs_ef.explorador_crit_per_point <= 0:
             return 0.0
-        _tm_ef = self.world.get_component(target_id, TileMovement)
-        if _tm_ef and _tm_ef.slow_timer > 0:
+        _sfx_ef = self.world.get_component(target_id, StatusEffects)
+        if _sfx_ef and _sfx_ef.has("slow"):
             return _cs_ef.explorador_crit_per_point * 0.15
         return 0.0
 
@@ -339,12 +340,11 @@ class CombatSystem(System):
                         dmg *= (1.0 + foco_bonus)
 
         # Brado Provocativo: enraivecido recebe +10% / causa +5%
-        from components import StatusEffects as _SE_BP
-        _sfx_target = self.world.get_component(target_id, _SE_BP)
-        if _sfx_target and _sfx_target.enraged_timer > 0 and not target_is_player:
+        _sfx_target = self.world.get_component(target_id, StatusEffects)
+        if _sfx_target and _sfx_target.has("enraged") and not target_is_player:
             dmg *= 1.10
-        _sfx_att = self.world.get_component(attacker_id, _SE_BP)
-        if _sfx_att and _sfx_att.enraged_timer > 0 and not attacker_is_player:
+        _sfx_att = self.world.get_component(attacker_id, StatusEffects)
+        if _sfx_att and _sfx_att.has("enraged") and not attacker_is_player:
             dmg *= 1.05
 
         return max(0, int(dmg))
@@ -723,9 +723,9 @@ class MouseTargetingSystem(System):
         return 0.0, 0.0
 
     def _enemy_at_world_pos(self, world_x: float, world_y: float) -> int:
-        """Retorna o entity_id do inimigo vivo na posição mundo, ou -1."""
-        for entity_id, pos, renderable, _ in self.world.get_entities_with(
-                Position, Renderable, Enemy):
+        """Retorna o entity_id do inimigo vivo e visível na posição mundo, ou -1."""
+        for entity_id, pos, renderable, _, _ in self.world.get_entities_with(
+                Position, Renderable, Enemy, Visible):
             hw = renderable.width / 2
             hh = renderable.height / 2
             if (pos.x - hw <= world_x <= pos.x + hw and
@@ -743,13 +743,13 @@ class MouseTargetingSystem(System):
         return False
 
     def _visible_enemies_sorted(self, cam_x: float, cam_y: float) -> list[int]:
-        """Retorna IDs de inimigos vivos visíveis na tela, ordenados por distância ao jogador."""
+        """Retorna IDs de inimigos vivos e visíveis na tela, ordenados por distância ao jogador."""
         sw = self.screen.get_width()
         sh = self.screen.get_height()
         player_pos = self.world.get_component(self.player_entity_id,
                                               __import__("components").Position)
         result = []
-        for eid, pos, _ in self.world.get_entities_with(Position, Enemy):
+        for eid, pos, _, _ in self.world.get_entities_with(Position, Enemy, Visible):
             cs = self.world.get_component(eid, CombatStats)
             if cs and cs.current_hp <= 0:
                 continue
@@ -997,6 +997,15 @@ class PlayerInputSystem(System):
                 auto_move.path.clear()
             return
 
+        # Alvo fora da visão (fog): cancela perseguição e seleção
+        if self.world.get_component(target_id, Visible) is None:
+            combat_state.target_entity_id = -1
+            combat_state.is_pursuing = False
+            if auto_move:
+                auto_move.active = False
+                auto_move.path.clear()
+            return
+
         if target_tm:
             tgt_tile_x, tgt_tile_y = target_tm.current_tile_x, target_tm.current_tile_y
         else:
@@ -1156,8 +1165,8 @@ class PlayerInputSystem(System):
 
         best_eid  = -1
         best_dist = float("inf")
-        for eid, epos, _, _, etm, ecs in self.world.get_entities_with(
-                Position, Enemy, AIControlled, TileMovement, CombatStats):
+        for eid, epos, _, _, etm, ecs, _ in self.world.get_entities_with(
+                Position, Enemy, AIControlled, TileMovement, CombatStats, Visible):
             if ecs.current_hp <= 0:
                 continue
             if not self._is_on_screen(epos):
@@ -1300,24 +1309,18 @@ class EnemyAISystem(System):
             enemy_current_tile_y = tile_movement.current_tile_y
 
             # --- Efeitos de estado (stun / fear) ---
-            from components import StatusEffects as _SE
-            _sfx = self.world.get_component(enemy_id, _SE)
+            _sfx = self.world.get_component(enemy_id, StatusEffects)
             if _sfx:
-                if _sfx.enraged_timer > 0:
-                    _sfx.enraged_timer = max(0.0, _sfx.enraged_timer - dt)
-                if _sfx.stun_timer > 0:
-                    _sfx.stun_timer = max(0.0, _sfx.stun_timer - dt)
+                if _sfx.has("stun"):
                     enemy_combat_stats.attack_cooldown_timer = max(
                         enemy_combat_stats.attack_cooldown_timer, 0.1)
                     continue  # imóvel e sem ataque
-                if _sfx.fear_timer > 0:
-                    _sfx.fear_timer = max(0.0, _sfx.fear_timer - dt)
+                if _sfx.has("fear"):
                     # Foge do player: move para o tile oposto
                     if not tile_movement.is_moving:
                         ex, ey = tile_movement.current_tile_x, tile_movement.current_tile_y
                         dx_raw = ex - player_current_tile_x
                         dy_raw = ey - player_current_tile_y
-                        # Normaliza para -1/0/+1
                         step_x = (1 if dx_raw > 0 else -1) if dx_raw != 0 else 0
                         step_y = (1 if dy_raw > 0 else -1) if dy_raw != 0 else 0
                         for fx, fy in [(ex + step_x, ey + step_y),
@@ -1499,23 +1502,29 @@ class EnemyAISystem(System):
             )
 
             # --- Perseguição do Jogador ---
-            _tilemap_for_los = self.pathfinding_system._get_tilemap_component()
-            _has_los = (
-                _tilemap_for_los is None or
-                self._has_line_of_sight(
-                    _tilemap_for_los,
-                    enemy_current_tile_x, enemy_current_tile_y,
-                    player_current_tile_x, player_current_tile_y
+            in_detect_range = dist_to_player_pixels <= detect_radius.radius
+
+            # Detecção inicial: LOS requerido apenas para sair do estado IDLE/RETURNING
+            if in_detect_range and ai_control.state in ("IDLE", "RETURNING"):
+                _tilemap_for_los = self.pathfinding_system._get_tilemap_component()
+                _has_los = (
+                    _tilemap_for_los is None or
+                    self._has_line_of_sight(
+                        _tilemap_for_los,
+                        enemy_current_tile_x, enemy_current_tile_y,
+                        player_current_tile_x, player_current_tile_y
+                    )
                 )
-            )
-            if dist_to_player_pixels <= detect_radius.radius and _has_los:
-                if ai_control.state == "IDLE":
+                if _has_los:
                     from components import MobSounds as _MS_aggro
                     _ms_aggro = self.world.get_component(enemy_id, _MS_aggro)
                     SOUNDS.play_mob_sounds(_ms_aggro, "aggro", dedup_key=str(enemy_id))
                     ai_control.state       = "AGGRO_DELAY"
                     ai_control.aggro_delay = 1.0
-                elif ai_control.state == "AGGRO_DELAY":
+
+            # Perseguição ativa — sem LOS requerido, apenas raio de detecção
+            if in_detect_range and ai_control.state not in ("IDLE", "RETURNING"):
+                if ai_control.state == "AGGRO_DELAY":
                     ai_control.aggro_delay -= dt
                     if ai_control.aggro_delay <= 0:
                         ai_control.state = "CHASING"
@@ -1809,13 +1818,10 @@ class TileMovementSystem(System):
                             and self.world.get_component(entity_id, PlayerControlled) is not None):
                         SOUNDS.play_footstep()
                         self._footstep_timer = self.FOOTSTEP_INTERVAL
-            # Tick do slow_timer (debuff de velocidade)
-            if tile_movement.slow_timer > 0:
-                tile_movement.slow_timer = max(0.0, tile_movement.slow_timer - dt)
+            # debilitate_elapsed: acumula tempo enquanto sob slow (Foco Mortal)
+            _sfx_tm = self.world.get_component(entity_id, StatusEffects)
+            if _sfx_tm and _sfx_tm.has("slow"):
                 tile_movement.debilitate_elapsed += dt
-                if tile_movement.slow_timer <= 0:
-                    tile_movement.slow_mult = 1.0
-                    tile_movement.debilitate_elapsed = 0.0
             else:
                 tile_movement.debilitate_elapsed = 0.0
 
@@ -1919,16 +1925,20 @@ class RenderSystem(System):
                 pygame.draw.rect(self.screen, (0, 200, 60), (bar_x, bar_y, int(bar_w * ratio), bar_h))
 
                 # Ícones de status (quadradinhos coloridos acima da HP bar)
-                from components import StatusEffects as _SFX_R, CombatState as _CS_R
-                _sfx = self.world.get_component(entity_id, _SFX_R)
+                from components import CombatState as _CS_R
+                from status_effects_data import EFFECT_DEFS as _EFDEFS
+                _sfx = self.world.get_component(entity_id, StatusEffects)
                 _cst = self.world.get_component(entity_id, _CS_R)
                 _icons = []
-                if (_sfx and _sfx.stun_timer > 0) or (_cst and _cst.is_stunned and _cst.stun_timer > 0):
-                    _icons.append((255, 220, 0))    # amarelo  = atordoado
-                if _sfx and _sfx.fear_timer > 0:
-                    _icons.append((180, 60, 220))   # roxo     = medo
-                if _sfx and _sfx.enraged_timer > 0:
-                    _icons.append((255, 120, 0))    # laranja  = enraivecido
+                if _sfx:
+                    for _eff in _sfx.effects:
+                        _defn = _EFDEFS.get(_eff.effect_type)
+                        if _defn:
+                            _icons.append(_defn.color)
+                # Stun do CombatState (player) — fallback se não vier de StatusEffects
+                if _cst and _cst.is_stunned and _cst.stun_timer > 0:
+                    if not (_sfx and _sfx.has("stun")):
+                        _icons.append((255, 220, 0))
                 if _icons:
                     _isz, _gap = 6, 2
                     _tw = len(_icons) * (_isz + _gap) - _gap
@@ -1968,9 +1978,23 @@ class TileRenderSystem(System):
         self._cache_tile_y:    int = -99999
         self._cache_tiles_w:   int = _tw
         self._cache_tiles_h:   int = _th
-        # Fog of War: surface semi-transparente para tiles explorados mas não visíveis
+        # Fog of War: névoa leve para tiles explorados mas fora do campo de visão
         self._fog_explored_surf: pygame.Surface = pygame.Surface((_TS, _TS), pygame.SRCALPHA)
-        self._fog_explored_surf.fill((0, 0, 0, 160))
+        self._fog_explored_surf.fill((0, 0, 0, 25))
+        # Fog of War: gradiente de fade na borda do campo de visão.
+        # FOG_FADE_LEVELS superfícies com alpha crescente de ~0 até FOG_FADE_MAX_ALPHA.
+        # FOG_FADE_START: fração do raio a partir da qual o fade começa (0.0–1.0).
+        FOG_FADE_LEVELS    = 10
+        FOG_FADE_START     = 0.60   # fade começa a 60% do raio
+        FOG_FADE_MAX_ALPHA = 25     # alpha máximo na borda — igual ao explorado (transição contínua)
+        self._fog_fade_start:     float = FOG_FADE_START
+        self._fog_fade_surfs: list = []
+        for i in range(FOG_FADE_LEVELS):
+            t     = (i + 1) / FOG_FADE_LEVELS          # 0.1 → 1.0
+            alpha = max(1, int(t * FOG_FADE_MAX_ALPHA))
+            s = pygame.Surface((_TS, _TS), pygame.SRCALPHA)
+            s.fill((0, 0, 0, alpha))
+            self._fog_fade_surfs.append(s)
 
     def invalidate_cache(self) -> None:
         """Força reconstrução do cache no próximo frame (chamar após troca de mapa)."""
@@ -2050,16 +2074,35 @@ class TileRenderSystem(System):
                 break
 
             if fog_comp is not None:
-                explored = fog_comp.explored
+                explored    = fog_comp.explored
+                visible     = fog_comp.visible
+                exp_surf    = self._fog_explored_surf
+                fade_surfs  = self._fog_fade_surfs
+                n_levels    = len(fade_surfs)
+                fade_start  = self._fog_fade_start
+                px, py      = fog_comp._last_tile
+                radius      = fog_comp.radius
+                fade_begin  = fade_start * radius          # distância onde o fade começa
+                fade_range  = radius - fade_begin          # intervalo do fade
+
                 for ty in range(tiles_h):
                     for tx in range(tiles_w):
                         rx, ry = tile_ox + tx, tile_oy + ty
-                        if (rx, ry) in explored:
-                            continue
                         sx = tx * tile_size - sub_x
                         sy = ty * tile_size - sub_y
-                        pygame.draw.rect(self.screen, (0, 0, 0),
-                                         (sx, sy, tile_size, tile_size))
+                        if (rx, ry) in visible:
+                            # Fade suave na borda da área visível
+                            if fade_range > 0:
+                                d = max(abs(rx - px), abs(ry - py))  # Chebyshev
+                                if d > fade_begin:
+                                    t = (d - fade_begin) / fade_range
+                                    level = min(n_levels - 1, int(t * n_levels))
+                                    self.screen.blit(fade_surfs[level], (sx, sy))
+                        elif (rx, ry) in explored:
+                            self.screen.blit(exp_surf, (sx, sy))
+                        else:
+                            pygame.draw.rect(self.screen, (0, 0, 0),
+                                             (sx, sy, tile_size, tile_size))
 
     def get_world_objects(self, camera_offset_x: float, camera_offset_y: float) -> list:
         """
@@ -2126,7 +2169,7 @@ class FogSystem(System):
         self.world = world
 
     def update(self, events: list = None, dt: float = 0) -> None:
-        from components import FogOfWar, TileMovement, Tilemap
+        from components import FogOfWar, TileMovement, Tilemap, Enemy, Visible
         from fov import compute_fov
 
         tilemap = None
@@ -2145,26 +2188,204 @@ class FogSystem(System):
                 return True
             return rows[y][x].is_solid
 
-        for _, fog, tile_move in self.world.get_entities_with(FogOfWar, TileMovement):
+        fog = None
+        for _, f, tile_move in self.world.get_entities_with(FogOfWar, TileMovement):
+            fog = f
             px, py = tile_move.current_tile_x, tile_move.current_tile_y
-            if (px, py) == fog._last_tile:
-                return
-            fog._last_tile = (px, py)
 
-            # LOS (shadowcasting, raio pequeno) — controla quais entidades são visíveis
-            fog.visible = compute_fov(px, py, fog.radius, is_blocking)
+            # Recomputa LOS apenas quando o jogador muda de tile
+            if (px, py) != fog._last_tile:
+                fog._last_tile = (px, py)
 
-            # Exploração (círculo largo) — descobre tiles para o mapa/tela sem LOS
-            er = fog.explore_radius
-            er_sq = er * er
-            for dy in range(-er, er + 1):
-                for dx in range(-er, er + 1):
-                    if dx * dx + dy * dy <= er_sq:
-                        ex, ey = px + dx, py + dy
-                        if 0 <= ex < map_w and 0 <= ey < map_h:
-                            fog.explored.add((ex, ey))
+                # LOS (shadowcasting, raio pequeno) — controla quais entidades são visíveis
+                fog.visible = compute_fov(px, py, fog.radius, is_blocking)
 
-            return   # apenas um FogOfWar no jogo (jogador)
+                # Exploração (círculo largo) — descobre tiles para o mapa/tela sem LOS
+                er = fog.explore_radius
+                er_sq = er * er
+                for dy in range(-er, er + 1):
+                    for dx in range(-er, er + 1):
+                        if dx * dx + dy * dy <= er_sq:
+                            ex, ey = px + dx, py + dy
+                            if 0 <= ex < map_w and 0 <= ey < map_h:
+                                fog.explored.add((ex, ey))
+            break  # apenas um FogOfWar no jogo (jogador)
+
+        if fog is None:
+            return
+
+        # Atualiza tag Visible em todos os inimigos e NPCs a cada frame.
+        # Necessário mesmo sem movimento do jogador (entidades podem mudar de tile).
+        for eid, _, etm in self.world.get_entities_with(Enemy, TileMovement):
+            in_sight = (etm.current_tile_x, etm.current_tile_y) in fog.visible
+            has_tag  = self.world.get_component(eid, Visible) is not None
+            if in_sight and not has_tag:
+                self.world.add_component(eid, Visible())
+            elif not in_sight and has_tag:
+                self.world.remove_component(eid, Visible)
+
+        # Merchants são estáticos — usa posição diretamente
+        for eid, _, mpos in self.world.get_entities_with(Merchant, Position):
+            mtx = int(mpos.x / TILE_SIZE)
+            mty = int(mpos.y / TILE_SIZE)
+            in_sight = (mtx, mty) in fog.visible
+            has_tag  = self.world.get_component(eid, Visible) is not None
+            if in_sight and not has_tag:
+                self.world.add_component(eid, Visible())
+            elif not in_sight and has_tag:
+                self.world.remove_component(eid, Visible)
+
+
+class StatusEffectSystem(System):
+    """
+    Gerencia o ciclo de vida de todos os efeitos de estado (buffs/debuffs).
+
+    Responsabilidades:
+      - Decrementar a duração de cada ActiveEffect por dt.
+      - Aplicar dano/cura periódica (poison, bleed, burn, regen).
+      - Remover efeitos expirados e limpar modificadores associados.
+      - Sincronizar TileMovement.slow_mult ao expirar slow.
+
+    Nenhum outro sistema deve decrementar timers de efeito manualmente.
+    """
+
+    def __init__(self, world: World, combat_system: "CombatSystem") -> None:
+        self.world         = world
+        self.combat_system = combat_system
+
+    def update(self, events: list = None, dt: float = 0) -> None:
+        from status_effects_data import EFFECT_DEFS
+
+        for eid, sfx in self.world.get_entities_with(StatusEffects):
+            if not sfx.effects:
+                continue
+
+            to_remove = []
+            for effect in sfx.effects:
+                effect.duration -= dt
+
+                if effect.tick_interval > 0:
+                    effect.tick_timer -= dt
+                    if effect.tick_timer <= 0:
+                        effect.tick_timer += effect.tick_interval
+                        self._apply_tick(eid, effect)
+
+                if effect.duration <= 0:
+                    to_remove.append(effect)
+
+            for effect in to_remove:
+                sfx.effects.remove(effect)
+                self._on_expired(eid, effect)
+
+    def _apply_tick(self, eid: int, effect: "ActiveEffect") -> None:
+        """Aplica dano ou cura periódica de um efeito de tick."""
+        from status_effects_data import EFFECT_DEFS
+        from floating_text import FLT
+
+        cs  = self.world.get_component(eid, CombatStats)
+        pos = self.world.get_component(eid, Position)
+        if not cs or cs.current_hp <= 0:
+            return
+
+        defn  = EFFECT_DEFS.get(effect.effect_type)
+        color = defn.color if defn else (255, 255, 255)
+        dmg   = max(1, int(effect.magnitude))
+
+        if effect.effect_type == "regen":
+            cs.current_hp = min(cs.max_hp, cs.current_hp + dmg)
+            if pos:
+                FLT.add(f"+{dmg}", pos.x, pos.y, color, size="normal", target_id=eid)
+        else:
+            cs.current_hp = max(0, cs.current_hp - dmg)
+            if pos:
+                FLT.add(f"-{dmg}", pos.x, pos.y, color, size="normal", target_id=eid)
+
+    def _on_expired(self, eid: int, effect: "ActiveEffect") -> None:
+        """Limpa modificadores persistentes ao expirar um efeito."""
+        if effect.effect_type == "slow":
+            tm = self.world.get_component(eid, TileMovement)
+            if tm:
+                tm.slow_mult         = 1.0
+                tm.debilitate_elapsed = 0.0
+
+
+class EnemyAbilitySystem(System):
+    """
+    Gerencia o uso de habilidades especiais de inimigos.
+
+    Responsabilidades:
+      - Decrementar cooldowns de EnemyAbilitySlot por dt.
+      - Disparar habilidades quando o inimigo está em combate e no alcance.
+      - Aplicar efeitos no jogador via apply_effect().
+
+    Não contém dados de habilidade — lê de ABILITY_DEFS (enemy_abilities_data.py).
+    Não lida com IA de movimento — isso é EnemyAISystem.
+    """
+
+    def __init__(self, world: World, player_entity_id: int) -> None:
+        self.world             = world
+        self.player_entity_id  = player_entity_id
+
+    def update(self, events: list = None, dt: float = 0) -> None:
+        from enemy_abilities_data import ABILITY_DEFS
+        from status_effects_data import apply_effect
+        from floating_text import FLT
+        from combat_log import LOG
+
+        player_tm = self.world.get_component(self.player_entity_id, TileMovement)
+        player_cs = self.world.get_component(self.player_entity_id, CombatStats)
+        if not player_tm or not player_cs or player_cs.current_hp <= 0:
+            return
+
+        px, py = player_tm.current_tile_x, player_tm.current_tile_y
+
+        for eid, abilities, etm, ecs in self.world.get_entities_with(
+                EnemyAbilities, TileMovement, CombatStats):
+            if ecs.current_hp <= 0:
+                continue
+
+            # Só age se o inimigo está em combate ativo
+            ai = self.world.get_component(eid, AIControlled)
+            if not ai or ai.state not in ("ATTACKING", "CHASING"):
+                continue
+
+            # Inimigo atordoado não usa habilidades
+            sfx = self.world.get_component(eid, StatusEffects)
+            if sfx and sfx.has("stun"):
+                continue
+
+            ex, ey   = etm.current_tile_x, etm.current_tile_y
+            dist     = max(abs(ex - px), abs(ey - py))  # Chebyshev
+
+            for slot in abilities.slots:
+                # Tick de cooldown
+                if slot.current_cooldown > 0:
+                    slot.current_cooldown -= dt
+                    continue
+
+                defn = ABILITY_DEFS.get(slot.ability_id)
+                if not defn or dist > defn.range_tiles:
+                    continue
+
+                # Aplica o efeito no jogador
+                apply_effect(
+                    self.world, self.player_entity_id,
+                    defn.effect_type, defn.duration, defn.magnitude,
+                    tick_interval=defn.tick_interval,
+                    source_id=eid,
+                )
+                slot.current_cooldown = slot.cooldown
+
+                # Feedback visual e no log
+                p_pos = self.world.get_component(self.player_entity_id, Position)
+                if p_pos:
+                    FLT.add(defn.name, p_pos.x, p_pos.y,
+                            (220, 80, 180), size="normal",
+                            target_id=self.player_entity_id)
+
+                ident = self.world.get_component(eid, EntityIdentity)
+                mob_name = ident.name if ident else "Inimigo"
+                LOG.add(f"{mob_name} usou {defn.name}!", (220, 80, 180))
 
 
 class CorpseSystem(System):
@@ -2678,17 +2899,7 @@ class ShopSystem(System):
     # ------------------------------------------------------------------
 
     def render_world(self, cam_x: float = 0, cam_y: float = 0) -> None:
-        """Desenha indicador flutuante 'LOJA' acima de cada NPC comerciante."""
-
-        for eid, pos, rend, _ in self.world.get_entities_with(
-                Position, Renderable, Merchant):
-            sx = int(pos.x - cam_x)
-            sy = int(pos.y - cam_y)
-            # Indicador acima do NPC
-            lbl = self._font_sm.render("LOJA", True, (255, 240, 120))
-            lx  = sx - lbl.get_width() // 2
-            ly  = sy - rend.height // 2 - lbl.get_height() - 2
-            self.screen.blit(lbl, (lx, ly))
+        pass  # indicador "LOJA" removido — NPC segue o padrão de tooltip
 
     # ------------------------------------------------------------------
     # Render — painel de loja
@@ -3718,12 +3929,12 @@ class SkillSystem(System, SkillHandlers):
             cs = self.world.get_component(current, CombatStats)
             if cs and cs.current_hp > 0:
                 return current
-        # Auto-seleciona o inimigo mais próximo visível na tela
+        # Auto-seleciona o inimigo mais próximo visível na tela e no campo de visão
         px, py    = tile_move.current_tile_x, tile_move.current_tile_y
         best_id   = -1
         best_dist = float("inf")
-        for eid, epos, _, _, etm, ecs in self.world.get_entities_with(
-                Position, Enemy, AIControlled, TileMovement, CombatStats):
+        for eid, epos, _, _, etm, ecs, _ in self.world.get_entities_with(
+                Position, Enemy, AIControlled, TileMovement, CombatStats, Visible):
             if ecs.current_hp <= 0:
                 continue
             if not self._is_on_screen(epos):

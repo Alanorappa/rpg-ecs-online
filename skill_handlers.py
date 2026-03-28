@@ -26,6 +26,7 @@ from utils import chebyshev
 from combat_log import LOG
 from sound_manager import SOUNDS
 from floating_text import FLT, WARN
+from status_effects_data import apply_effect
 
 
 class SkillHandlers:
@@ -52,14 +53,14 @@ class SkillHandlers:
 
     def _skill_golpe_poderoso(self, skill, _combat_stats, combat_state, tile_move):
         """3x dano em alvo adjacente — custa 15 de Raiva (talento Veterano reduz até 10)."""
+        target_id = self._resolve_target(combat_state, tile_move, 1)
+        if target_id == -1:
+            self._warn("Nenhum alvo")
+            return
         char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
         rage_cost = _combat_stats.golpe_poderoso_rage_cost if _combat_stats else 15
         if not char_stats or char_stats.rage < rage_cost:
             self._warn(f"Raiva insuficiente ({rage_cost})")
-            return
-        target_id = self._resolve_target(combat_state, tile_move, 1)
-        if target_id == -1:
-            self._warn("Nenhum alvo")
             return
         target_tm = self.world.get_component(target_id, TileMovement)
         target_cs = self.world.get_component(target_id, CombatStats)
@@ -181,14 +182,14 @@ class SkillHandlers:
         char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
         free_charge = char_stats and char_stats.free_executar_charges > 0
 
-        if not free_charge:
-            if not char_stats or char_stats.rage < 10:
-                self._warn("Raiva insuficiente (10)")
-                return
         target_id = self._resolve_target(combat_state, tile_move, 1)
         if target_id == -1:
             self._warn("Nenhum alvo")
             return
+        if not free_charge:
+            if not char_stats or char_stats.rage < 10:
+                self._warn("Raiva insuficiente (10)")
+                return
         target_cs = self.world.get_component(target_id, CombatStats)
         if not target_cs or target_cs.current_hp <= 0:
             self._warn("Alvo inválido")
@@ -214,18 +215,16 @@ class SkillHandlers:
             self.player_entity_id, target_id, "physical", multiplier=5.0, is_ability=True)
 
         # Talento "Horrorizante": se alvo sobreviveu, aplica medo por 1s
-        from components import StatusEffects as _SE2
         _cs_exec = self.world.get_component(self.player_entity_id, CombatStats)
         if _cs_exec and _cs_exec.executar_horrorizante:
             _tgt_cs = self.world.get_component(target_id, CombatStats)
             if _tgt_cs and _tgt_cs.current_hp > 0:
-                _sfx = self.world.get_component(target_id, _SE2)
-                if _sfx:
-                    _sfx.fear_timer = max(_sfx.fear_timer, 1.0)
-                    _tpos = self.world.get_component(target_id, Position)
-                    if _tpos:
-                        FLT.add("Medo!", _tpos.x, _tpos.y,
-                                (255, 140, 0), size="normal", target_id=target_id)
+                apply_effect(self.world, target_id, "fear", 1.0,
+                             source_id=self.player_entity_id)
+                _tpos = self.world.get_component(target_id, Position)
+                if _tpos:
+                    FLT.add("Medo!", _tpos.x, _tpos.y,
+                            (255, 140, 0), size="normal", target_id=target_id)
 
         if combat_state:
             combat_state.enter_combat()
@@ -329,14 +328,12 @@ class SkillHandlers:
             char_stats.rage = min(char_stats.max_rage, char_stats.rage + _cs_int.interceptar_rage_bonus)
         skill.current_cooldown = max(0.0, skill.cooldown - (_cs_int.interceptar_cooldown_reduction if _cs_int else 0.0))
         if _cs_int and _cs_int.interceptar_stun_duration > 0:
-            from components import StatusEffects as _SE
-            _sfx = self.world.get_component(target_id, _SE)
-            if _sfx:
-                _sfx.stun_timer = max(_sfx.stun_timer, _cs_int.interceptar_stun_duration)
-                _tpos = self.world.get_component(target_id, Position)
-                if _tpos:
-                    FLT.add("Atordoado!", _tpos.x, _tpos.y,
-                            (180, 180, 255), size="normal", target_id=target_id)
+            apply_effect(self.world, target_id, "stun", _cs_int.interceptar_stun_duration,
+                         source_id=self.player_entity_id)
+            _tpos = self.world.get_component(target_id, Position)
+            if _tpos:
+                FLT.add("Atordoado!", _tpos.x, _tpos.y,
+                        (180, 180, 255), size="normal", target_id=target_id)
 
         if combat_state:
             combat_state.enter_combat()
@@ -349,13 +346,13 @@ class SkillHandlers:
 
     def _talent_golpe_debilitante(self, skill, _combat_stats, combat_state, tile_move):
         """Cavaleiro — Golpe Debilitante: 50% dano + -50% velocidade por 5s. Custa 5 Raiva."""
-        char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
-        if not char_stats or char_stats.rage < 5:
-            self._warn("Raiva insuficiente (5)")
-            return False
         target_id = self._resolve_target(combat_state, tile_move, 1)
         if target_id == -1:
             self._warn("Nenhum alvo")
+            return False
+        char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
+        if not char_stats or char_stats.rage < 5:
+            self._warn("Raiva insuficiente (5)")
             return False
         target_tm = self.world.get_component(target_id, TileMovement)
         target_cs = self.world.get_component(target_id, CombatStats)
@@ -370,8 +367,8 @@ class SkillHandlers:
         char_stats.rage -= 5
         self.combat_system.deal_damage(self.player_entity_id, target_id, "physical",
                                        multiplier=0.5, is_ability=True)
-        target_tm.slow_timer = 5.0
-        target_tm.slow_mult  = 0.5
+        apply_effect(self.world, target_id, "slow", 5.0, magnitude=0.5,
+                     source_id=self.player_entity_id)
         _tpos = self.world.get_component(target_id, Position)
         if _tpos:
             FLT.add("Lento!", _tpos.x, _tpos.y,
@@ -384,12 +381,12 @@ class SkillHandlers:
 
     def _talent_punho_no_queixo(self, skill, _combat_stats, combat_state, tile_move):
         """Cavaleiro — Punho no Queixo: 45% AP + stun escalonável (1/2/3s por ponto). Consome 1 carga."""
-        if skill.charges <= 0:
-            self._warn("Sem cargas")
-            return False
         target_id = self._resolve_target(combat_state, tile_move, 1)
         if target_id == -1:
             self._warn("Nenhum alvo")
+            return False
+        if skill.charges <= 0:
+            self._warn("Sem cargas")
             return False
         target_tm = self.world.get_component(target_id, TileMovement)
         target_cs = self.world.get_component(target_id, CombatStats)
@@ -412,9 +409,8 @@ class SkillHandlers:
                                                 multiplier=0.45, is_ability=True)
         hit = killed or target_cs.current_hp < hp_before
         if hit:
-            sfx = self.world.get_component(target_id, StatusEffects)
-            if sfx:
-                sfx.stun_timer = max(sfx.stun_timer, stun_duration)
+            apply_effect(self.world, target_id, "stun", stun_duration,
+                         source_id=self.player_entity_id)
             LOG.add(f"Punho no Queixo: alvo atordoado por {stun_duration:.0f}s!", (255, 180, 80))
         skill.current_cooldown = skill.cooldown
         if combat_state:
@@ -460,11 +456,8 @@ class SkillHandlers:
                 continue
             if chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y) > 3:
                 continue
-            sfx = self.world.get_component(eid, _SE_BP2)
-            if sfx is None:
-                sfx = _SE_BP2()
-                self.world.add_component(eid, sfx)
-            sfx.enraged_timer = 10.0
+            apply_effect(self.world, eid, "enraged", 10.0,
+                         source_id=self.player_entity_id)
             taunted += 1
         ppos = self.world.get_component(self.player_entity_id, Position)
         if ppos:

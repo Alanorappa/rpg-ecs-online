@@ -12,6 +12,7 @@ from systems import (
     PathfindingSystem, CombatSystem, CombatStateSystem, MouseTargetingSystem,
     ProjectileSystem, CorpseSystem, MobRespawnSystem, LootSystem, ShopSystem, SkillSystem,
     SpawnZoneSystem, ConsumableSystem, DeathHandlerSystem, FogSystem,
+    StatusEffectSystem, EnemyAbilitySystem,
 )
 from stats_system import XPSystem, DeathRespawnSystem
 from entity_factory import create_player, create_camera, create_enemy, create_tilemap, create_merchant, create_spawn_zone
@@ -312,7 +313,8 @@ class GameEngine:
             PlayerInputSystem(self.world, tile_validation, combat, pathfinding, self.screen),  # 4
             skill_system,                                                             # 5
             EnemyAISystem(self.world, self.player_entity, tile_validation, pathfinding, combat),  # 6
-            projectile_system,                                                        # 7
+            EnemyAbilitySystem(self.world, self.player_entity),                       # 7
+            projectile_system,                                                        # 8
             death_handler,                                                            # 8
             CorpseSystem(self.world),                                                 # 9
             SpawnZoneSystem(self.world),                                              # 10
@@ -321,7 +323,8 @@ class GameEngine:
             death_respawn_system,                                                     # 13
             ConsumableSystem(self.world),                                             # 14
             CombatStateSystem(self.world),                                            # 15
-            TileMovementSystem(self.world),                                           # 16
+            StatusEffectSystem(self.world, combat),                                   # 16
+            TileMovementSystem(self.world),                                           # 17
             FogSystem(self.world),                                                    # 17
             CameraSystem(self.world),                                                 # 18
             tile_render_system,                                                       # 19
@@ -2695,14 +2698,14 @@ class GameEngine:
 
     def _draw_world_tooltip(self):
         """Mostra tooltip ao passar o mouse sobre inimigos/NPCs no mundo."""
-        from components import Enemy, EnemyTier, Renderable, Merchant
+        from components import Enemy, EnemyTier, Renderable, Merchant, Visible
         mx, my = pygame.mouse.get_pos()
         wx = mx + self._cam_x
         wy = my + self._cam_y
 
-        # Comerciantes
-        for eid, pos, rend, merch in self.world.get_entities_with(
-                Position, Renderable, Merchant):
+        # Comerciantes — apenas se visível (não coberto pela fog)
+        for eid, pos, rend, merch, _ in self.world.get_entities_with(
+                Position, Renderable, Merchant, Visible):
             hw, hh = rend.width / 2, rend.height / 2
             if not (pos.x - hw <= wx <= pos.x + hw and pos.y - hh <= wy <= pos.y + hh):
                 continue
@@ -2710,10 +2713,10 @@ class GameEngine:
                                      [("Clique direito para abrir a loja", (150, 220, 150))])
             return
 
-        # Inimigos
+        # Inimigos — apenas se visível (não coberto pela fog)
         from components import EntityIdentity
-        for eid, pos, rend, _ in self.world.get_entities_with(
-                Position, Renderable, Enemy):
+        for eid, pos, rend, _, _ in self.world.get_entities_with(
+                Position, Renderable, Enemy, Visible):
             cs = self.world.get_component(eid, CombatStats)
             if cs and cs.current_hp <= 0:
                 continue

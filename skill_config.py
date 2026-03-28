@@ -1,4 +1,5 @@
 # skill_config.py
+from __future__ import annotations
 """
 Configuração dos slots de habilidades do jogador.
 
@@ -15,12 +16,13 @@ IDs de habilidades disponíveis:
 """
 import pygame
 
-NUM_SLOTS = 7
+NUM_SLOTS = 10
 
-# Teclas padrão por índice de slot (K_1 … K_7)
+# Teclas padrão por índice de slot (K_1 … K_0)
 DEFAULT_KEYBINDS: list[int] = [
     pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4,
-    pygame.K_5, pygame.K_6, pygame.K_7,
+    pygame.K_5, pygame.K_6, pygame.K_7, pygame.K_8,
+    pygame.K_9, pygame.K_0,
 ]
 
 # Catálogo completo de skills base (não-talentos)
@@ -84,6 +86,9 @@ SKILL_SLOTS: list[str | None] = [
     "impacto",           # Slot 3
     "executar",          # Slot 4
     "interceptar",       # Slot 5
-    None,                # Slot 6  — vazio (preenchido por talentos)
-    None,                # Slot 7  — vazio (preenchido por talentos)
+    None,                # Slot 6  — preenchido por talentos
+    None,                # Slot 7  — preenchido por talentos
+    None,                # Slot 8  — preenchido por talentos
+    None,                # Slot 9  — preenchido por talentos
+    None,                # Slot 10 — preenchido por talentos
 ]

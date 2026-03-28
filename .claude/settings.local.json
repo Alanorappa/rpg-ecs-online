@@ -55,7 +55,19 @@
       "Bash(ls -la *.py)",
       "Bash(grep -l \"generate_caves\\\\|generate_map_1\\\\|map_inspector\\\\|map_overlay\\\\|png_to_map\\\\|talent_system\" /c/Users/l4nce/OneDrive/Documentos/Python/rpg_ecs/*.py)",
       "Bash(xargs -I {} grep -l \"^import\\\\|^from\" {})",
-      "Bash(grep -rn \"punho\\\\|brado\\\\|grants_skill\\\\|unlock_skill\\\\|handler\" c:/Users/l4nce/OneDrive/Documentos/Python/rpg_ecs/ --include=*.py -i)"
+      "Bash(grep -rn \"punho\\\\|brado\\\\|grants_skill\\\\|unlock_skill\\\\|handler\" c:/Users/l4nce/OneDrive/Documentos/Python/rpg_ecs/ --include=*.py -i)",
+      "Bash(python -c \"from fov import compute_fov; print\\(''fov OK''\\)\")",
+      "Bash(python -c \"from components import FogOfWar; print\\(''FogOfWar OK''\\)\")",
+      "Bash(python -c \"from systems import FogSystem; print\\(''FogSystem OK''\\)\")",
+      "Bash(python -c \"from entity_factory import create_player; print\\(''entity_factory OK''\\)\")",
+      "Bash(py -c \"from fov import compute_fov; print\\(''fov OK''\\)\")",
+      "Bash(py -c \"from components import FogOfWar; print\\(''FogOfWar OK''\\)\")",
+      "Bash(py -c \"from systems import FogSystem; print\\(''FogSystem OK''\\)\")",
+      "Bash(py -c \"from entity_factory import create_player; print\\(''entity_factory OK''\\)\")",
+      "Bash(py -c \"from systems import FogSystem, TileRenderSystem, RenderSystem; print\\(''OK''\\)\")",
+      "Bash(py -c \"from map_overlay import MapOverlay; print\\(''map_overlay OK''\\)\")",
+      "Bash(py -c \"from skill_config import NUM_SLOTS, DEFAULT_KEYBINDS, SKILL_SLOTS; print\\(f''NUM_SLOTS={NUM_SLOTS}, keybinds={len\\(DEFAULT_KEYBINDS\\)}, slots={len\\(SKILL_SLOTS\\)}''\\)\")",
+      "Bash(grep -rn \"EntityIdentity\" c:/Users/l4nce/OneDrive/Documentos/Python/rpg_ecs/*.py)"
     ]
   }
 }

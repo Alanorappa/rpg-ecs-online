@@ -10,7 +10,7 @@ import pygame
 from world import World
 from components import (
     CharacterStats, PermanentStats, CombatStats, CombatState,
-    PlayerControlled, PlayerAutoMove, TileMovement, Position,
+    PlayerControlled, PlayerAutoMove, TileMovement, Position, StatusEffects,
 )
 from systems import System
 from tileset import TILE_SIZE
@@ -158,7 +158,16 @@ class DeathRespawnSystem(System):
             "target_y":   char_stats.spawn_tile_y,
         }
 
-        # 5. Limpa estado de combate
+        # 5. Limpa efeitos de estado ativos
+        sfx = self.world.get_component(entity_id, StatusEffects)
+        if sfx:
+            sfx.effects.clear()
+        tm_player = self.world.get_component(entity_id, TileMovement)
+        if tm_player:
+            tm_player.slow_mult = 1.0
+            tm_player.debilitate_elapsed = 0.0
+
+        # 6. Limpa estado de combate
         cs = self.world.get_component(entity_id, CombatState)
         if cs:
             cs.target_entity_id = -1
