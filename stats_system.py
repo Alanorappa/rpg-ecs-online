@@ -106,6 +106,8 @@ class XPSystem(System):
                     tt.available_points += 1
                 SOUNDS.play_ui("levelup")
                 LOG.add(f"Level up! Nivel {char_stats.level} — 1 ponto de talento disponivel (T).", (255, 200, 0))
+                from quest_events import fire as _qfire
+                _qfire("reach_level", level=char_stats.level)
 
             apply_char_stats_to_combat(char_stats, combat_stats, perm)
 

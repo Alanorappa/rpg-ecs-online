@@ -5,7 +5,7 @@ import time as _time
 
 from world import World
 from components import Position, Tilemap, CombatStats, CharacterStats, PermanentStats, \
-                       TileMovement, PlayerAutoMove, CombatState
+                       TileMovement, PlayerAutoMove, CombatState, FogOfWar, Enemy, Visible
 from systems import (
     PlayerInputSystem, TileMovementSystem, RenderSystem, CameraSystem,
     EnemyAISystem, TileRenderSystem, TileValidationSystem,
@@ -15,18 +15,21 @@ from systems import (
     StatusEffectSystem, EnemyAbilitySystem,
 )
 from stats_system import XPSystem, DeathRespawnSystem
-from entity_factory import create_player, create_camera, create_enemy, create_tilemap, create_merchant, create_spawn_zone
+from quest_system import QuestSystem, QuestDialogSystem, QuestJournalSystem
+from quest_events import set_quest_system
+from entity_factory import create_player, create_camera, create_enemy, create_tilemap, create_merchant, create_spawn_zone, create_quest_giver
 from components import Inventory, Equipment, PlayerSkills, Wallet
 from map_loader import load_map_csv, validate_map
 from tileset import TILE_SIZE
 from combat_log import LOG
-from floating_text import FLT, DASH_TRAIL, WARN
+from floating_text import FLT, DASH_TRAIL, WARN, PROC
 from icon_manager import ICONS
 from sound_manager import SOUNDS
 from ui_compare import draw_compare_panel
 from talent_system import TalentSystem
 from ui_helpers import item_tooltip_lines, RARITY_COLORS as _ITEM_RARITY_COLORS
 from map_overlay import MapOverlay
+from minimap import Minimap
 from save_system import save_game, load_game, has_save
 
 # --- Configurações do Jogo ---
@@ -131,6 +134,7 @@ class GameEngine:
 
         self._show_pause        = False
         self._pause_submenu     = ""
+        self._pending_quit      = False
         self._sound_drag        = ""
         self._show_hotbar_editor = False
         self._hbe_drag_from: tuple | None = None  # ("panel", skill_id) | ("slot", idx)
@@ -144,14 +148,26 @@ class GameEngine:
         self._current_zone:     str  = ""   # nome da zona onde o jogador está
 
         self._map_overlay   = MapOverlay(self.screen)
+        self._minimap       = Minimap(self.screen, self._map_overlay)
         self._loading_save  = False
 
         self._load_map_and_entities()
         self._init_systems()
         self._talent_system = TalentSystem(self.world, self.player_entity, self.screen)
         self._shop_system   = ShopSystem(self.world, self.player_entity, self.screen)
+        self._quest_system  = QuestSystem(self.world, self.player_entity)
+        set_quest_system(self._quest_system)
+        self._quest_dialog  = QuestDialogSystem(
+            self.world, self.player_entity, self.screen, self._quest_system)
+        self._quest_journal = QuestJournalSystem(
+            self.world, self.player_entity, self.screen, self._quest_system)
+        # Insere QuestSystem após xp_system (posição 13, depois do índice de xp_system)
+        _xp_idx = next((i for i, s in enumerate(self.systems)
+                        if isinstance(s, XPSystem)), len(self.systems))
+        self.systems.insert(_xp_idx + 1, self._quest_system)
 
         self._apply_save()
+        self._quest_system.auto_start_quests()
         self._apply_hotbar_config()
 
         # Registra autosave global — sistemas usam request_autosave() de save_system.py
@@ -177,6 +193,7 @@ class GameEngine:
             SOUNDS.play_ambient("ambient_surface")
         tile_matrix, spawn_points = load_map_csv(map_file)
         self._map_overlay.load_map(tile_matrix, map_file)
+        self._minimap.on_map_load()
         for w in validate_map(tile_matrix):
             print(f"[MAPA] Aviso: {w}")
 
@@ -218,6 +235,10 @@ class GameEngine:
 
         for col, row, shop_id in spawn_points.get("merchants", []):
             create_merchant(self.world, col, row, shop_id=shop_id)
+
+        for col, row, name, quest_ids, turn_in_ids in spawn_points.get("quest_givers", []):
+            create_quest_giver(self.world, col, row, name=name,
+                               quest_ids=quest_ids, turn_in_ids=turn_in_ids)
 
     def _build_transition_tiles(self, spawn_points: dict):
         self.transition_tiles = {}
@@ -323,7 +344,7 @@ class GameEngine:
             death_respawn_system,                                                     # 13
             ConsumableSystem(self.world),                                             # 14
             CombatStateSystem(self.world),                                            # 15
-            StatusEffectSystem(self.world, combat),                                   # 16
+            StatusEffectSystem(self.world),                                           # 16
             TileMovementSystem(self.world),                                           # 17
             FogSystem(self.world),                                                    # 17
             CameraSystem(self.world),                                                 # 18
@@ -441,6 +462,11 @@ class GameEngine:
             self._loot_system._close_modal()
         if self._shop_system.is_open:
             self._shop_system._close()
+        self._quest_dialog._pending_npc_id = -1
+        if self._quest_dialog.is_open:
+            self._quest_dialog._close()
+        if self._quest_journal.is_open:
+            self._quest_journal.close()
         self._map_overlay.is_open = False
         self._show_pause         = False
         self._pause_submenu      = ""
@@ -528,6 +554,10 @@ class GameEngine:
                             self._map_overlay.is_open = False
                         elif self._loot_system.open_corpse_id != -1:
                             self._loot_system._close_modal()
+                        elif self._quest_dialog.is_open:
+                            self._quest_dialog._close()
+                        elif self._quest_journal.is_open:
+                            self._quest_journal.close()
                         elif self._shop_system.is_open:
                             self._shop_system._close()
                         elif self._show_debug:
@@ -574,6 +604,11 @@ class GameEngine:
                         if not already_open:
                             self._show_talents = True
                             SOUNDS.play_ui("talent_open")
+                    elif event.key == pygame.K_j:
+                        already_open = self._quest_journal.is_open
+                        self._close_all_modals()
+                        if not already_open:
+                            self._quest_journal.open()
                     elif event.key == pygame.K_F12 and DEBUG_MODE:
                         already_open = self._show_debug
                         self._close_all_modals()
@@ -611,6 +646,15 @@ class GameEngine:
             if self._shop_system.is_open:
                 self._shop_system.handle_events(events)
 
+            # Quest dialog recebe eventos brutos (clique em QuestGiver no mundo)
+            self._quest_dialog.update(events, dt)
+            if self._quest_dialog.is_open:
+                self._quest_dialog.handle_events(events)
+
+            # Diário de quests recebe eventos quando aberto
+            if self._quest_journal.is_open:
+                self._quest_journal.handle_events(events)
+
             # Bloqueia sistemas enquanto um painel estiver aberto ou clique do mapa pendente
             systems_events = events
             if self._show_hotbar_editor:
@@ -621,6 +665,9 @@ class GameEngine:
                     or (self._show_debug and DEBUG_MODE)
                     or self._shop_system.is_open
                     or self._shop_system._right_click_consumed
+                    or self._quest_dialog.is_open
+                    or self._quest_dialog._right_click_consumed
+                    or self._quest_journal.is_open
                     or self._loot_system.open_corpse_id != -1):
                 systems_events = [e for e in events
                                   if not (e.type == pygame.MOUSEBUTTONDOWN
@@ -696,6 +743,7 @@ class GameEngine:
                 _ts = _time.perf_counter()
             LOG.update(dt)
             FLT.update(dt)
+            PROC.update(dt)
             WARN.update(dt)
             DASH_TRAIL.update(dt)
             SOUNDS.update(dt)
@@ -731,12 +779,15 @@ class GameEngine:
             # Entidades + tile-objetos (árvores, pedras, etc.) em Y-sort
             _world_objs = self._tile_render_system.get_world_objects(cam_x, cam_y)
             self._render_system.render(cam_x, cam_y, world_objects=_world_objs)
-            # Indicadores de loja: sobre entidades
+            # Indicadores de loja e quest: sobre entidades
             self._shop_system.render_world(cam_x, cam_y)
+            self._quest_dialog.render_world(cam_x, cam_y)
             # Projéteis: sobre tudo no mundo
             self._projectile_system.render(cam_x, cam_y)
             # Textos flutuantes de dano: sobre projéteis, sob HUD
             FLT.render(self.screen, cam_x, cam_y)
+            # Notificações de proc: screen-space, abaixo do player, acima dos avisos
+            PROC.render(self.screen)
             # Avisos de ação bloqueada: posição fixa, abaixo do centro
             WARN.render(self.screen)
             # Vinheta vermelha pulsante quando HP < 30%
@@ -761,6 +812,25 @@ class GameEngine:
                 self._prof_record("hud:tooltip", _time.perf_counter() - _ts)
                 _ts = _time.perf_counter()
             LOG.draw(self.screen, self.font_sm, x=10, bottom_y=SCREEN_HEIGHT - 78)
+
+            # Minimapa (canto superior direito) — oculto enquanto mapa grande estiver aberto
+            if not self._map_overlay.is_open:
+                _fog_mm      = self.world.get_component(self.player_entity, FogOfWar)
+                _player_tm_m = self.world.get_component(self.player_entity, TileMovement)
+                if _fog_mm and _player_tm_m:
+                    _enemy_tiles = [
+                        (etm.current_tile_x, etm.current_tile_y)
+                        for _, _, _, etm in self.world.get_entities_with(Enemy, Visible, TileMovement)
+                    ]
+                    self._minimap.render(
+                        _player_tm_m.current_tile_x,
+                        _player_tm_m.current_tile_y,
+                        _fog_mm.explored,
+                        _fog_mm.visible,
+                        _enemy_tiles,
+                    )
+                # HUD de quests — abaixo do minimap
+                self._quest_system.render_hud(self.screen)
             if PROFILE_FRAMES:
                 self._prof_record("hud:combat_log", _time.perf_counter() - _ts)
                 _ts = _time.perf_counter()
@@ -791,6 +861,10 @@ class GameEngine:
             if self._shop_system.pending_tooltip:
                 self._pending_tooltip = self._shop_system.pending_tooltip
 
+            # Quest dialog e diário: por cima de tudo
+            self._quest_dialog.render()
+            self._quest_journal.render()
+
             if self._pending_tooltip:
                 self._flush_tooltip()
             if self._pending_skill_tooltip:
@@ -805,16 +879,19 @@ class GameEngine:
                 player_tm = self.world.get_component(self.player_entity, TileMovement)
                 tx = player_tm.current_tile_x if player_tm else -1
                 ty = player_tm.current_tile_y if player_tm else -1
-                from components import FogOfWar as _FogOfWar
-                _fog_comp = self.world.get_component(self.player_entity, _FogOfWar)
+                _fog_comp = self.world.get_component(self.player_entity, FogOfWar)
                 self._map_overlay.render(tx, ty,
                                          explored=_fog_comp.explored if _fog_comp else None)
 
             # Menu de pausa (por cima de tudo)
-            if self._show_pause:
+            if self._pending_quit:
+                running = False
+            elif self._show_pause:
                 action = self._draw_pause_menu(events)
                 if action == "quit":
-                    running = False
+                    self._show_pause    = False
+                    self._pause_submenu = ""
+                    self._pending_quit  = True
                 elif action == "resume":
                     self._show_pause    = False
                     self._pause_submenu = ""
@@ -883,6 +960,11 @@ class GameEngine:
         self._loot_system.pending_loot_corpse_id = -1
         self._death_handler.clear_pending()
         self._shop_system._close()
+        self._quest_dialog._pending_npc_id = -1
+        if self._quest_dialog.is_open:
+            self._quest_dialog._close()
+        if self._quest_journal.is_open:
+            self._quest_journal.close()
         self._show_inventory = False
 
         # Carrega novo mapa
@@ -897,6 +979,7 @@ class GameEngine:
             SOUNDS.play_ambient("ambient_surface")
         self._map_overlay.load_map(tile_matrix, target_file)
         self._map_overlay.set_active_map(target_file)
+        self._minimap.on_map_load()
         self.tilemap_entity = create_tilemap(self.world, tile_matrix)
         tilemap_comp = self.world.get_component(self.tilemap_entity, Tilemap)
         self.map_width_px  = tilemap_comp.map_width_tiles  * TILE_SIZE
@@ -1059,6 +1142,7 @@ class GameEngine:
         pty = player_tm.current_tile_y if player_tm else 0
         self._map_overlay.load_map(tile_matrix, map_file)
         self._map_overlay.set_active_map(map_file)
+        self._minimap.on_map_load()
         self._map_overlay.toggle(ptx, pty)
         self._debug_teleport_map = map_file
         self._show_debug = False

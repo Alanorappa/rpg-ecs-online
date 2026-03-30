@@ -755,6 +755,14 @@ class Merchant:
     shop_id: str = "general"
 
 
+@dataclass
+class QuestGiver:
+    """Componente de NPC que oferece e/ou recebe quests do jogador."""
+    name:        str   = "Missiveiro"
+    quest_ids:   tuple = ()   # quests que este NPC pode oferecer
+    turn_in_ids: tuple = ()   # quests que este NPC aceita para entrega (vazio = igual a quest_ids)
+
+
 class TalentTree:
     """
     Árvore de talentos do jogador.
@@ -813,13 +821,10 @@ class SpawnZoneOwner:
 
 
 class ActiveEffect:
-    """
-    Uma instância de efeito ativo sobre uma entidade.
-    Criada por apply_effect() em status_effects_data.py — não instanciar diretamente.
-    """
+    """Uma instância de efeito ativo sobre uma entidade."""
     __slots__ = (
         "effect_type", "duration", "magnitude",
-        "tick_interval", "tick_timer", "stacks", "source_id",
+        "tick_interval", "tick_timer",
     )
 
     def __init__(
@@ -828,16 +833,12 @@ class ActiveEffect:
         duration: float,
         magnitude: float = 0.0,
         tick_interval: float = 0.0,
-        stacks: int = 1,
-        source_id: int = -1,
     ) -> None:
         self.effect_type:   str   = effect_type
         self.duration:      float = duration
         self.magnitude:     float = magnitude
         self.tick_interval: float = tick_interval
         self.tick_timer:    float = tick_interval  # tempo até próximo tick
-        self.stacks:        int   = stacks
-        self.source_id:     int   = source_id
 
 
 class StatusEffects:
@@ -903,3 +904,20 @@ class ConsumableBar:
         self.slots: list = [None] * self.NUM_SLOTS
         self.keybinds: list = list(self.DEFAULT_KEYBINDS)
         self.global_cooldown: float = 0.0
+
+
+# ---------------------------------------------------------------------------
+# QuestLog — rastreia quests ativas e completadas do jogador
+# ---------------------------------------------------------------------------
+
+class QuestLog:
+    """Componente de quests do jogador.
+
+    active:    dict[quest_id → list[int]] — progresso por objetivo (índice = objetivo)
+    completed: set[quest_id]              — quests já entregues (permanente)
+    """
+    __slots__ = ("active", "completed")
+
+    def __init__(self) -> None:
+        self.active:    dict = {}   # quest_id → [prog_obj0, prog_obj1, ...]
+        self.completed: set  = set()

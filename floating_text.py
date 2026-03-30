@@ -231,3 +231,72 @@ class WarnTextManager:
 
 
 WARN = WarnTextManager()
+
+
+# ---------------------------------------------------------------------------
+# Proc text — notificações de proc/habilidade em posição fixa abaixo do player
+# ---------------------------------------------------------------------------
+
+class _ProcEntry:
+    __slots__ = ("text", "color", "timer", "duration", "offset_y")
+
+    def __init__(self, text: str, color: tuple, duration: float):
+        self.text     = text
+        self.color    = color
+        self.timer    = duration
+        self.duration = duration
+        self.offset_y = 0.0  # deslocamento acumulado para baixo ao empilhar
+
+
+class ProcTextManager:
+    """Exibe notificações de proc/habilidade em screen-space abaixo do jogador.
+
+    Posicionado entre o sprite do jogador (~50% da tela) e os avisos de WARN
+    (72% da tela). Empilha textos para baixo quando múltiplos chegam juntos.
+    """
+
+    DURATION   = 1.5
+    FONT_SIZE  = 16
+    Y_RATIO    = 0.58   # base: 58% da altura — abaixo do player, acima do WARN
+    SLOT_HEIGHT = 22    # px entre textos empilhados
+
+    def __init__(self):
+        self._entries: list[_ProcEntry] = []
+        self._font: "pygame.font.Font | None" = None
+
+    def _get_font(self) -> "pygame.font.Font":
+        if self._font is None:
+            self._font = pygame.font.SysFont("Arial", self.FONT_SIZE, bold=True)
+        return self._font
+
+    def add(self, text: str, color: tuple = (255, 255, 255)) -> None:
+        """Exibe uma notificação de proc. Empilha para baixo se já houver ativas."""
+        for e in self._entries:
+            e.offset_y += self.SLOT_HEIGHT
+        self._entries.append(_ProcEntry(text, color, self.DURATION))
+
+    def update(self, dt: float) -> None:
+        alive = []
+        for e in self._entries:
+            e.timer -= dt
+            if e.timer > 0:
+                alive.append(e)
+        self._entries = alive
+
+    def render(self, screen: "pygame.Surface") -> None:
+        if not self._entries:
+            return
+        font   = self._get_font()
+        sw, sh = screen.get_size()
+        y_base = int(sh * self.Y_RATIO)
+        for e in self._entries:
+            fade_start = e.duration * 0.35
+            alpha = 255 if e.timer >= fade_start else max(0, int(255 * e.timer / fade_start))
+            surf  = font.render(e.text, True, e.color)
+            surf.set_alpha(alpha)
+            x = sw // 2 - surf.get_width() // 2
+            y = y_base + int(e.offset_y)
+            screen.blit(surf, (x, y))
+
+
+PROC = ProcTextManager()

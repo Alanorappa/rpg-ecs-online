@@ -109,6 +109,7 @@ def load_map_csv(filepath: str) -> tuple[list[str], dict]:
         "enemies":         enemy_spawns,
         "portals":         portal_spawns,
         "merchants":       merchant_spawns,
+        "quest_givers":    [],
         "spawn_zones":     [],
         "transitions":     [],
         "ambient_zones":   [],   # lista de {name, ambient, rect:[x1,y1,x2,y2]}
@@ -144,6 +145,15 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
         spawn_points["merchants"] = [
             (m["x"], m["y"], m.get("shop_id", "general"))
             for m in data["merchants"]
+        ]
+
+    if "quest_givers" in data:
+        spawn_points["quest_givers"] = [
+            (q["x"], q["y"],
+             q.get("name", "Missiveiro"),
+             tuple(q.get("quest_ids", [])),
+             tuple(q.get("turn_in_ids", [])))
+            for q in data["quest_givers"]
         ]
 
     if "transitions" in data:

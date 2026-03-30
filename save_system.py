@@ -153,6 +153,9 @@ def save_game(world, player_entity: int, current_map_file: str) -> None:
         "fog": {
             "explored": [[x, y] for x, y in fog.explored] if fog else [],
         },
+
+        # ── Quests ────────────────────────────────────────────────────────
+        "quests": _quests_to_dict(world, player_entity),
     }
 
     os.makedirs(SAVE_DIR, exist_ok=True)
@@ -254,12 +257,39 @@ def load_game(world, player_entity: int) -> dict | None:
     if fog:
         fog.explored = {(x, y) for x, y in data.get("fog", {}).get("explored", [])}
 
+    # ── Quests ─────────────────────────────────────────────────────────────
+    _quests_from_dict(world, player_entity, data.get("quests", {}))
+
     pos = data.get("position", {})
     return {
         "map":    pos.get("map", ""),
         "tile_x": pos.get("tile_x", 1),
         "tile_y": pos.get("tile_y", 1),
     }
+
+
+# ---------------------------------------------------------------------------
+# Quests — serialização / desserialização
+# ---------------------------------------------------------------------------
+
+def _quests_to_dict(world, player_entity: int) -> dict:
+    from components import QuestLog
+    ql = world.get_component(player_entity, QuestLog)
+    if ql is None:
+        return {}
+    return {
+        "active":    {qid: prog for qid, prog in ql.active.items()},
+        "completed": list(ql.completed),
+    }
+
+
+def _quests_from_dict(world, player_entity: int, data: dict) -> None:
+    from components import QuestLog
+    ql = world.get_component(player_entity, QuestLog)
+    if ql is None:
+        return
+    ql.active    = {qid: prog for qid, prog in data.get("active", {}).items()}
+    ql.completed = set(data.get("completed", []))
 
 
 # ---------------------------------------------------------------------------

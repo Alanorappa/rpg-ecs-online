@@ -25,8 +25,8 @@ from tileset import TILE_SIZE
 from utils import chebyshev
 from combat_log import LOG
 from sound_manager import SOUNDS
-from floating_text import FLT, WARN
-from status_effects_data import apply_effect
+from floating_text import FLT, WARN, PROC
+from systems import apply_effect
 
 
 class SkillHandlers:
@@ -166,10 +166,7 @@ class SkillHandlers:
                     char_stats.free_executar_charges = 1
                     LOG.add("Assassino: Executar disponivel! (sem custo, sem restricao de HP)",
                             (255, 80, 80))
-                    _ppos = self.world.get_component(self.player_entity_id, Position)
-                    if _ppos:
-                        FLT.add("Assassino!", _ppos.x, _ppos.y,
-                                (255, 80, 80), size="large", target_id=self.player_entity_id)
+                    PROC.add("Assassino!", (255, 80, 80))
         if combat_state:
             combat_state.enter_combat()
         skill.current_cooldown = skill.cooldown
@@ -219,8 +216,7 @@ class SkillHandlers:
         if _cs_exec and _cs_exec.executar_horrorizante:
             _tgt_cs = self.world.get_component(target_id, CombatStats)
             if _tgt_cs and _tgt_cs.current_hp > 0:
-                apply_effect(self.world, target_id, "fear", 1.0,
-                             source_id=self.player_entity_id)
+                apply_effect(self.world, target_id, "fear", 1.0)
                 _tpos = self.world.get_component(target_id, Position)
                 if _tpos:
                     FLT.add("Medo!", _tpos.x, _tpos.y,
@@ -328,8 +324,7 @@ class SkillHandlers:
             char_stats.rage = min(char_stats.max_rage, char_stats.rage + _cs_int.interceptar_rage_bonus)
         skill.current_cooldown = max(0.0, skill.cooldown - (_cs_int.interceptar_cooldown_reduction if _cs_int else 0.0))
         if _cs_int and _cs_int.interceptar_stun_duration > 0:
-            apply_effect(self.world, target_id, "stun", _cs_int.interceptar_stun_duration,
-                         source_id=self.player_entity_id)
+            apply_effect(self.world, target_id, "stun", _cs_int.interceptar_stun_duration)
             _tpos = self.world.get_component(target_id, Position)
             if _tpos:
                 FLT.add("Atordoado!", _tpos.x, _tpos.y,
@@ -367,8 +362,7 @@ class SkillHandlers:
         char_stats.rage -= 5
         self.combat_system.deal_damage(self.player_entity_id, target_id, "physical",
                                        multiplier=0.5, is_ability=True)
-        apply_effect(self.world, target_id, "slow", 5.0, magnitude=0.5,
-                     source_id=self.player_entity_id)
+        apply_effect(self.world, target_id, "slow", 5.0, magnitude=0.5)
         _tpos = self.world.get_component(target_id, Position)
         if _tpos:
             FLT.add("Lento!", _tpos.x, _tpos.y,
@@ -409,8 +403,7 @@ class SkillHandlers:
                                                 multiplier=0.45, is_ability=True)
         hit = killed or target_cs.current_hp < hp_before
         if hit:
-            apply_effect(self.world, target_id, "stun", stun_duration,
-                         source_id=self.player_entity_id)
+            apply_effect(self.world, target_id, "stun", stun_duration)
             LOG.add(f"Punho no Queixo: alvo atordoado por {stun_duration:.0f}s!", (255, 180, 80))
         skill.current_cooldown = skill.cooldown
         if combat_state:
@@ -456,13 +449,9 @@ class SkillHandlers:
                 continue
             if chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y) > 3:
                 continue
-            apply_effect(self.world, eid, "enraged", 10.0,
-                         source_id=self.player_entity_id)
+            apply_effect(self.world, eid, "enraged", 10.0)
             taunted += 1
-        ppos = self.world.get_component(self.player_entity_id, Position)
-        if ppos:
-            FLT.add("Brado!", ppos.x, ppos.y, (255, 100, 50), size="large",
-                    target_id=self.player_entity_id)
+        PROC.add("Brado!", (255, 100, 50))
         skill.current_cooldown = skill.cooldown
         if combat_state:
             combat_state.enter_combat()

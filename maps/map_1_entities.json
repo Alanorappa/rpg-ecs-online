@@ -10,6 +10,18 @@
       "shop_id": "general"
     }
   ],
+  "quest_givers": [
+    {
+      "x": 153,
+      "y": 307,
+      "name": "Caçador",
+      "quest_ids": ["first_blood", "survivor",
+                    "bear_hunter", "bear_pelt",
+                    "wolf_fangs", "spider_venom",
+                    "beast_slayer", "warrior_trial", "executioner",
+                    "merchant_greeting", "first_equip"]
+    }
+  ],
   "transitions": [
     {
       "x": 12,

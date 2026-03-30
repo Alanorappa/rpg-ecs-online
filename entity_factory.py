@@ -6,7 +6,7 @@ from components import Position, Renderable, PlayerControlled, Camera, Collider,
                        CharacterStats, PermanentStats, XPReward, EnemyTier, \
                        Corpse, Inventory, Equipment, PlayerSkills, Wallet, TalentTree, Merchant, \
                        SpawnZone, EntityIdentity, StatusEffects, ConsumableBar, MobSounds, FogOfWar, \
-                       EnemyAbilities, EnemyAbilitySlot
+                       EnemyAbilities, EnemyAbilitySlot, QuestLog, QuestGiver
 from tileset import TILE_MAPPING, TILE_SIZE, FLOOR_TILE
 from mob_definitions import MOB_TABLE
 from enemy_abilities_data import MOB_ABILITIES
@@ -106,6 +106,7 @@ def create_player(world: World, tile_x: int, tile_y: int,
     world.add_component(player_entity, TalentTree())
     world.add_component(player_entity, ConsumableBar())
     world.add_component(player_entity, FogOfWar(radius=12))
+    world.add_component(player_entity, QuestLog())
     world.add_component(player_entity, EntityIdentity(
         name="Aventureiro", race="Humano", entity_class="Guerreiro",
         level=1, tier="Normal",
@@ -270,6 +271,19 @@ def create_merchant(world: World, tile_x: int, tile_y: int, shop_id: str = "gene
     world.add_component(eid, Position(x=x, y=y, prev_x=x, prev_y=y))
     world.add_component(eid, Renderable(color=color, width=PLAYER_SIZE, height=PLAYER_SIZE))
     world.add_component(eid, Merchant(name=shop["name"], shop_id=shop_id))
+    return eid
+
+
+def create_quest_giver(world: World, tile_x: int, tile_y: int,
+                       name: str = "Missiveiro", quest_ids: tuple = (),
+                       turn_in_ids: tuple = ()) -> int:
+    """Cria um NPC dador de quests no mapa."""
+    x = tile_x * TILE_SIZE + TILE_SIZE / 2
+    y = tile_y * TILE_SIZE + TILE_SIZE / 2
+    eid = world.create_entity()
+    world.add_component(eid, Position(x=x, y=y, prev_x=x, prev_y=y))
+    world.add_component(eid, Renderable(color=(200, 180, 60), width=PLAYER_SIZE, height=PLAYER_SIZE))
+    world.add_component(eid, QuestGiver(name=name, quest_ids=tuple(quest_ids), turn_in_ids=tuple(turn_in_ids)))
     return eid
 
 

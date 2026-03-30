@@ -17,9 +17,50 @@ from utils import chebyshev, start_tile_movement
 from damage_calculator import resolve_attack_outcome, calculate_base_damage
 from combat_log import LOG
 from sound_manager import SOUNDS
-from floating_text import FLT
+from floating_text import FLT, PROC
 from icon_manager import ICONS
 from ui_helpers import item_tooltip_lines
+from status_effects_data import EFFECT_DEFS
+from fov import compute_fov
+
+
+def apply_effect(
+    world,
+    entity_id: int,
+    effect_type: str,
+    duration: float,
+    magnitude: float = 0.0,
+    tick_interval: float | None = None,
+) -> None:
+    """
+    Aplica ou atualiza um efeito ativo em uma entidade.
+
+    - Se o efeito não existir: cria e adiciona.
+    - Se já existir: refresh de duração e magnitude pelo maior valor.
+    - Adiciona StatusEffects à entidade automaticamente se necessário.
+    """
+    defn = EFFECT_DEFS.get(effect_type)
+    if defn is None:
+        return
+
+    sfx = world.get_component(entity_id, StatusEffects)
+    if sfx is None:
+        sfx = StatusEffects()
+        world.add_component(entity_id, sfx)
+
+    existing = sfx.get(effect_type)
+    if existing is not None:
+        existing.duration  = max(existing.duration, duration)
+        existing.magnitude = max(existing.magnitude, magnitude)
+        return
+
+    resolved_tick = tick_interval if tick_interval is not None else defn.tick_interval
+    sfx.effects.append(ActiveEffect(
+        effect_type=effect_type,
+        duration=duration,
+        magnitude=magnitude,
+        tick_interval=resolved_tick,
+    ))
 
 
 class System:
@@ -435,10 +476,7 @@ class CombatSystem(System):
         _combat2 = self._get_combat_stats(attacker_id)
         if _cs2 and _combat2 and _combat2.embalo_on_crit:
             _cs2.embalo_charges += 1
-            _ppos = self.world.get_component(attacker_id, Position)
-            if _ppos:
-                FLT.add("Embalo!", _ppos.x, _ppos.y,
-                        (255, 200, 60), size="large", target_id=attacker_id)
+            PROC.add("Embalo!", (255, 200, 60))
 
     def _handle_death(self, dead_entity_id: int, killer_entity_id: int) -> bool:
         """Diferencia morte de jogador vs inimigo.
@@ -511,6 +549,11 @@ class DeathHandlerSystem(System):
             tier_comp = self.world.get_component(entity_id, EnemyTier)
             init_pos  = self.world.get_component(entity_id, InitialPosition)
 
+            # Evento de quest: kill
+            if ident:
+                from quest_events import fire as _qfire
+                _qfire("kill", name=ident.name, race=ident.race, tier=tier_comp.tier if tier_comp else "")
+
             if pos and ai and tier_comp:
                 if ident:
                     loot = roll_mob_loot(ident.name, tier_comp.tier)
@@ -518,6 +561,12 @@ class DeathHandlerSystem(System):
                     enemy_type = "ranged" if ai.is_ranged else "melee"
                     loot = roll_loot(enemy_type, tier_comp.tier)
                 coins = roll_coins(tier_comp.tier)
+
+                # Drops condicionais de quests (collect_item)
+                import quest_events as _qev
+                if _qev._quest_system_ref is not None and ident:
+                    loot.extend(_qev._quest_system_ref.get_conditional_loot(
+                        ident.name, ident.race))
 
                 sz_owner = self.world.get_component(entity_id, SpawnZoneOwner)
                 if sz_owner is not None:
@@ -1995,11 +2044,17 @@ class TileRenderSystem(System):
             s = pygame.Surface((_TS, _TS), pygame.SRCALPHA)
             s.fill((0, 0, 0, alpha))
             self._fog_fade_surfs.append(s)
+        # Cache do overlay de fog — reconstrói apenas quando o tile de origem muda
+        self._fog_overlay_surf: "pygame.Surface | None" = None
+        self._fog_cache_tile_ox: int = -99999
+        self._fog_cache_tile_oy: int = -99999
 
     def invalidate_cache(self) -> None:
         """Força reconstrução do cache no próximo frame (chamar após troca de mapa)."""
-        self._cache_tile_x = -99999
-        self._cache_tile_y = -99999
+        self._cache_tile_x      = -99999
+        self._cache_tile_y      = -99999
+        self._fog_cache_tile_ox = -99999
+        self._fog_cache_tile_oy = -99999
         from tile_sprite_manager import TILE_SPRITES
         TILE_SPRITES.invalidate()
 
@@ -2067,42 +2122,60 @@ class TileRenderSystem(System):
             self.screen.blit(self._cache_surf, (-sub_x, -sub_y))
 
             # ── Fog of War overlay ────────────────────────────────────────────
-            from components import FogOfWar
             fog_comp = None
             for _, fog in self.world.get_entities_with(FogOfWar):
                 fog_comp = fog
                 break
 
             if fog_comp is not None:
-                explored    = fog_comp.explored
-                visible     = fog_comp.visible
-                exp_surf    = self._fog_explored_surf
-                fade_surfs  = self._fog_fade_surfs
-                n_levels    = len(fade_surfs)
-                fade_start  = self._fog_fade_start
-                px, py      = fog_comp._last_tile
-                radius      = fog_comp.radius
-                fade_begin  = fade_start * radius          # distância onde o fade começa
-                fade_range  = radius - fade_begin          # intervalo do fade
+                # Reconstrói o overlay de fog apenas quando o tile de origem muda
+                if (tile_ox != self._fog_cache_tile_ox
+                        or tile_oy != self._fog_cache_tile_oy
+                        or self._fog_overlay_surf is None):
 
-                for ty in range(tiles_h):
-                    for tx in range(tiles_w):
-                        rx, ry = tile_ox + tx, tile_oy + ty
-                        sx = tx * tile_size - sub_x
-                        sy = ty * tile_size - sub_y
-                        if (rx, ry) in visible:
-                            # Fade suave na borda da área visível
-                            if fade_range > 0:
-                                d = max(abs(rx - px), abs(ry - py))  # Chebyshev
-                                if d > fade_begin:
-                                    t = (d - fade_begin) / fade_range
-                                    level = min(n_levels - 1, int(t * n_levels))
-                                    self.screen.blit(fade_surfs[level], (sx, sy))
-                        elif (rx, ry) in explored:
-                            self.screen.blit(exp_surf, (sx, sy))
-                        else:
-                            pygame.draw.rect(self.screen, (0, 0, 0),
-                                             (sx, sy, tile_size, tile_size))
+                    surf_w = tiles_w * tile_size
+                    surf_h = tiles_h * tile_size
+                    if (self._fog_overlay_surf is None
+                            or self._fog_overlay_surf.get_width()  != surf_w
+                            or self._fog_overlay_surf.get_height() != surf_h):
+                        self._fog_overlay_surf = pygame.Surface((surf_w, surf_h), pygame.SRCALPHA)
+
+                    self._fog_overlay_surf.fill((0, 0, 0, 0))  # limpa
+
+                    explored   = fog_comp.explored
+                    visible    = fog_comp.visible
+                    exp_surf   = self._fog_explored_surf
+                    fade_surfs = self._fog_fade_surfs
+                    n_levels   = len(fade_surfs)
+                    fade_start = self._fog_fade_start
+                    px, py     = fog_comp._last_tile
+                    radius     = fog_comp.radius
+                    fade_begin = fade_start * radius
+                    fade_range = radius - fade_begin
+
+                    for ty in range(tiles_h):
+                        for tx in range(tiles_w):
+                            rx, ry = tile_ox + tx, tile_oy + ty
+                            dx_s   = tx * tile_size
+                            dy_s   = ty * tile_size
+                            if (rx, ry) in visible:
+                                if fade_range > 0:
+                                    d = max(abs(rx - px), abs(ry - py))
+                                    if d > fade_begin:
+                                        t     = (d - fade_begin) / fade_range
+                                        level = min(n_levels - 1, int(t * n_levels))
+                                        self._fog_overlay_surf.blit(fade_surfs[level], (dx_s, dy_s))
+                            elif (rx, ry) in explored:
+                                self._fog_overlay_surf.blit(exp_surf, (dx_s, dy_s))
+                            else:
+                                pygame.draw.rect(self._fog_overlay_surf, (0, 0, 0, 255),
+                                                 (dx_s, dy_s, tile_size, tile_size))
+
+                    self._fog_cache_tile_ox = tile_ox
+                    self._fog_cache_tile_oy = tile_oy
+
+                # 1 blit por frame — overlay segue o mesmo offset sub-tile do mapa base
+                self.screen.blit(self._fog_overlay_surf, (-sub_x, -sub_y))
 
     def get_world_objects(self, camera_offset_x: float, camera_offset_y: float) -> list:
         """
@@ -2169,9 +2242,6 @@ class FogSystem(System):
         self.world = world
 
     def update(self, events: list = None, dt: float = 0) -> None:
-        from components import FogOfWar, TileMovement, Tilemap, Enemy, Visible
-        from fov import compute_fov
-
         tilemap = None
         for _, tm in self.world.get_entities_with(Tilemap):
             tilemap = tm
@@ -2243,19 +2313,16 @@ class StatusEffectSystem(System):
     Responsabilidades:
       - Decrementar a duração de cada ActiveEffect por dt.
       - Aplicar dano/cura periódica (poison, bleed, burn, regen).
-      - Remover efeitos expirados e limpar modificadores associados.
-      - Sincronizar TileMovement.slow_mult ao expirar slow.
+      - Remover efeitos expirados.
+      - Sincronizar TileMovement.slow_mult a cada frame.
 
     Nenhum outro sistema deve decrementar timers de efeito manualmente.
     """
 
-    def __init__(self, world: World, combat_system: "CombatSystem") -> None:
-        self.world         = world
-        self.combat_system = combat_system
+    def __init__(self, world: World) -> None:
+        self.world = world
 
     def update(self, events: list = None, dt: float = 0) -> None:
-        from status_effects_data import EFFECT_DEFS
-
         for eid, sfx in self.world.get_entities_with(StatusEffects):
             if not sfx.effects:
                 continue
@@ -2275,13 +2342,18 @@ class StatusEffectSystem(System):
 
             for effect in to_remove:
                 sfx.effects.remove(effect)
-                self._on_expired(eid, effect)
+
+            # Sincroniza slow_mult a cada frame com base no estado atual dos efeitos
+            tm = self.world.get_component(eid, TileMovement)
+            if tm:
+                slow = sfx.get("slow")
+                if slow:
+                    tm.slow_mult = slow.magnitude if 0.0 < slow.magnitude < 1.0 else 0.5
+                else:
+                    tm.slow_mult         = 1.0
+                    tm.debilitate_elapsed = 0.0
 
     def _apply_tick(self, eid: int, effect: "ActiveEffect") -> None:
-        """Aplica dano ou cura periódica de um efeito de tick."""
-        from status_effects_data import EFFECT_DEFS
-        from floating_text import FLT
-
         cs  = self.world.get_component(eid, CombatStats)
         pos = self.world.get_component(eid, Position)
         if not cs or cs.current_hp <= 0:
@@ -2299,14 +2371,6 @@ class StatusEffectSystem(System):
             cs.current_hp = max(0, cs.current_hp - dmg)
             if pos:
                 FLT.add(f"-{dmg}", pos.x, pos.y, color, size="normal", target_id=eid)
-
-    def _on_expired(self, eid: int, effect: "ActiveEffect") -> None:
-        """Limpa modificadores persistentes ao expirar um efeito."""
-        if effect.effect_type == "slow":
-            tm = self.world.get_component(eid, TileMovement)
-            if tm:
-                tm.slow_mult         = 1.0
-                tm.debilitate_elapsed = 0.0
 
 
 class EnemyAbilitySystem(System):
@@ -2328,9 +2392,6 @@ class EnemyAbilitySystem(System):
 
     def update(self, events: list = None, dt: float = 0) -> None:
         from enemy_abilities_data import ABILITY_DEFS
-        from status_effects_data import apply_effect
-        from floating_text import FLT
-        from combat_log import LOG
 
         player_tm = self.world.get_component(self.player_entity_id, TileMovement)
         player_cs = self.world.get_component(self.player_entity_id, CombatStats)
@@ -2372,16 +2433,11 @@ class EnemyAbilitySystem(System):
                     self.world, self.player_entity_id,
                     defn.effect_type, defn.duration, defn.magnitude,
                     tick_interval=defn.tick_interval,
-                    source_id=eid,
                 )
                 slot.current_cooldown = slot.cooldown
 
                 # Feedback visual e no log
-                p_pos = self.world.get_component(self.player_entity_id, Position)
-                if p_pos:
-                    FLT.add(defn.name, p_pos.x, p_pos.y,
-                            (220, 80, 180), size="normal",
-                            target_id=self.player_entity_id)
+                PROC.add(defn.name, (220, 80, 180))
 
                 ident = self.world.get_component(eid, EntityIdentity)
                 mob_name = ident.name if ident else "Inimigo"
@@ -2615,8 +2671,8 @@ class ShopSystem(System):
         self.world         = world
         self.player_entity = player_entity
         self.screen        = screen
-        self.open_merchant_id: int     = -1
-        self._pending_merchant_id: int = -1   # aguardando jogador chegar
+        self.open_merchant_id: int       = -1
+        self._pending_merchant_id: int   = -1   # aguardando jogador chegar
         self._right_click_consumed: bool = False
         self.transaction_history: list = []
         self._shop_scroll: int = 0
@@ -2672,6 +2728,10 @@ class ShopSystem(System):
                 self._shop_scroll = 0
                 self._bag_scroll  = 0
                 self._open_cooldown = 0.5
+                _m = self.world.get_component(self.open_merchant_id, Merchant)
+                if _m:
+                    from quest_events import fire as _qfire
+                    _qfire("talk_to_npc", npc_name=_m.name)
 
         if not events:
             return
@@ -2707,6 +2767,10 @@ class ShopSystem(System):
                             self._shop_scroll = 0
                             self._bag_scroll  = 0
                             self._open_cooldown = 0.5
+                            _m2 = self.world.get_component(eid, Merchant)
+                            if _m2:
+                                from quest_events import fire as _qfire
+                                _qfire("talk_to_npc", npc_name=_m2.name)
                         else:
                             # Inicia caminhada até tile adjacente
                             self._pending_merchant_id = eid
@@ -3238,6 +3302,9 @@ class ConsumableSystem(System):
         # Cooldown global
         cbar.global_cooldown = ConsumableBar.GCD_DURATION
 
+        from quest_events import fire as _qfire
+        _qfire("use_consumable", item_name=item.name)
+
 
 class LootSystem(System):
     """
@@ -3481,6 +3548,8 @@ class LootSystem(System):
                             col = self.RARITY_COLORS.get(item.rarity, (200, 200, 200))
                             LOG.add(f"Coletado: {item.name} ({item.rarity})", col)
                             SOUNDS.play_ui("loot_item")
+                            from quest_events import fire as _qfire
+                            _qfire("collect_item", item_name=item.name)
                             # Corrige scroll se necessário
                             total = (1 if corpse.coins > 0 else 0) + len(corpse.loot)
                             self._scroll_offset = min(self._scroll_offset, max(0, total - self.MAX_ROWS))
@@ -3580,6 +3649,8 @@ class LootSystem(System):
                     col = self.RARITY_COLORS.get(item.rarity, (200, 200, 200))
                     LOG.add(f"Equipado: {item.name} ({item.rarity})", col)
                     SOUNDS.play_ui("equip_item")
+                    from quest_events import fire as _qfire
+                    _qfire("equip_item", item_name=item.name, item_type=item.item_type)
                     total = (1 if corpse.coins > 0 else 0) + len(corpse.loot)
                     self._scroll_offset = min(self._scroll_offset, max(0, total - self.MAX_ROWS))
                     self._check_auto_close(corpse)
@@ -3892,6 +3963,8 @@ class SkillSystem(System, SkillHandlers):
                         SOUNDS.play_skill(skill.sound_name)
                     if player_skills:
                         player_skills.gcd_timer = _PS.GCD_DURATION
+                    from quest_events import fire as _qfire
+                    _qfire("use_skill", skill_id=skill.handler)
                 return bool(success)
             else:
                 LOG.add(f"{skill.name}: handler '{skill.handler}' não encontrado.", (180, 60, 60))
@@ -3907,6 +3980,8 @@ class SkillSystem(System, SkillHandlers):
                         SOUNDS.play_skill(skill.sound_name)
                     if player_skills:
                         player_skills.gcd_timer = _PS.GCD_DURATION
+                    from quest_events import fire as _qfire
+                    _qfire("use_skill", skill_id=skill.skill_id)
                 return bool(success)
             else:
                 LOG.add(f"{skill.name}: sem implementacao para '{skill.skill_id}'.", (180, 60, 60))
