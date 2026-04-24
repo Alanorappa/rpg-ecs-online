@@ -67,7 +67,13 @@
       "Bash(py -c \"from systems import FogSystem, TileRenderSystem, RenderSystem; print\\(''OK''\\)\")",
       "Bash(py -c \"from map_overlay import MapOverlay; print\\(''map_overlay OK''\\)\")",
       "Bash(py -c \"from skill_config import NUM_SLOTS, DEFAULT_KEYBINDS, SKILL_SLOTS; print\\(f''NUM_SLOTS={NUM_SLOTS}, keybinds={len\\(DEFAULT_KEYBINDS\\)}, slots={len\\(SKILL_SLOTS\\)}''\\)\")",
-      "Bash(grep -rn \"EntityIdentity\" c:/Users/l4nce/OneDrive/Documentos/Python/rpg_ecs/*.py)"
+      "Bash(grep -rn \"EntityIdentity\" c:/Users/l4nce/OneDrive/Documentos/Python/rpg_ecs/*.py)",
+      "Bash(grep -n \"class.*HUD\\\\|class.*UI\\\\|ui_manager\\\\|hud_manager\" /c/Users/l4nce/OneDrive/Documentos/Python/rpg_ecs/*.py)",
+      "Bash(grep -n \"class.*Log\\\\|LOG = \\\\|combat_log\" /c/Users/l4nce/OneDrive/Documentos/Python/rpg_ecs/*.py)",
+      "Bash(ls /c/Users/l4nce/OneDrive/Documentos/Python/rpg_ecs/*.py)",
+      "Bash(grep -n \"quest\\\\|task\\\\|objective\\\\|mission\" /c/Users/l4nce/OneDrive/Documentos/Python/rpg_ecs/*.py)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\(''quest_system.py''\\).read\\(\\)\\); print\\(''quest_system.py OK''\\)\")",
+      "Bash(py -c \"import ast; ast.parse\\(open\\(''quest_system.py''\\).read\\(\\)\\); print\\(''quest_system.py OK''\\); ast.parse\\(open\\(''systems.py''\\).read\\(\\)\\); print\\(''systems.py OK''\\); ast.parse\\(open\\(''game.py''\\).read\\(\\)\\); print\\(''game.py OK''\\)\")"
     ]
   }
 }

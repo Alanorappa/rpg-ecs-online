@@ -24,7 +24,6 @@ from god_mode import GodModeEditor
 from components import Inventory, Equipment, PlayerSkills, Wallet
 from map_loader import load_map_csv, validate_map
 from tileset import TILE_SIZE
-import camera_state as _cam_state
 from combat_log import LOG
 from floating_text import FLT, DASH_TRAIL, WARN, PROC
 from icon_manager import ICONS
@@ -455,6 +454,13 @@ class GameEngine:
         ]
         self._validate_system_order()
 
+        # Inicializa world_surf e hud_surf em todos os sistemas.
+        # world_surf começa como self.screen (zoom=1); será atualizado cada frame.
+        # zoom_surf criada com tamanho inicial (zoom=1). world_surf é atribuída
+        # a cada sistema todo frame pelo render loop — não precisa estar aqui.
+        self._zoom_surf    = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+        self._zoom_surf_sz = (SCREEN_WIDTH, SCREEN_HEIGHT)
+
     # ------------------------------------------------------------------
     # Save / Load
     # ------------------------------------------------------------------
@@ -585,21 +591,22 @@ class GameEngine:
             self._zoom = new_zoom
             self._tile_render_system.invalidate_cache()
 
-    def _set_world_render_target(self, surf: "pygame.Surface") -> None:
-        """Redireciona todos os sistemas de render de mundo para a superfície alvo."""
-        _targets = [
-            self._tile_render_system, self._render_system, self._loot_system,
-            self._projectile_system,  self._player_proj_system,
-            self._channeling_system,  self._aoe_targeting_system,
-            self._spell_cast_system,  self._shop_system,
-            self._quest_dialog,       self._crafting_system, self._trainer_system,
-        ]
-        for s in _targets:
-            if s is not None and hasattr(s, "screen"):
-                s.screen = surf
+    _WORLD_SYSTEM_ATTRS = (
+        "_tile_render_system", "_render_system", "_loot_system",
+        "_projectile_system",  "_player_proj_system",
+        "_channeling_system",  "_aoe_targeting_system",
+        "_spell_cast_system",  "_shop_system",
+        "_quest_dialog",       "_crafting_system", "_trainer_system",
+    )
+
+    def _assign_world_surf(self, surf: "pygame.Surface") -> None:
+        """Atribui world_surf a todos os sistemas de mundo. Chamado todo frame."""
+        for attr in self._WORLD_SYSTEM_ATTRS:
+            s = getattr(self, attr, None)
+            if s is not None:
+                s.world_surf = surf
         for s in self.systems:
-            if hasattr(s, "screen"):
-                s.screen = surf
+            s.world_surf = surf
 
     # ── Modais ────────────────────────────────────────────────────────────────
 
@@ -982,31 +989,31 @@ class GameEngine:
                 self._prof_record("sounds+ambient", _time.perf_counter() - _ts)
 
             camera_pos = self.world.get_component(self.camera_entity, Position)
-            z = self._zoom
-            _cam_state.zoom = z
-            _panel_w  = self._god_mode._panel_w if self._god_mode.active else 0
-            _game_area_w = SCREEN_WIDTH - _panel_w
-            cam_x = (camera_pos.x - _game_area_w / (2 * z)) if camera_pos else 0
-            cam_y = (camera_pos.y - SCREEN_HEIGHT  / (2 * z)) if camera_pos else 0
+
+            # ── Zoom surf: dimensiona a world_surf uma vez por frame ──────────
+            z        = self._zoom
+            _panel_w = self._god_mode._panel_w if self._god_mode.active else 0
+            dest_w   = SCREEN_WIDTH - _panel_w          # largura da área de jogo
+            lw       = max(1, int(dest_w   / z))        # largura lógica do mundo
+            lh       = max(1, int(SCREEN_HEIGHT / z))   # altura  lógica do mundo
+            if self._zoom_surf_sz != (lw, lh):
+                self._zoom_surf    = pygame.Surface((lw, lh))
+                self._zoom_surf_sz = (lw, lh)
+                self._tile_render_system.invalidate_cache()
+            # Atribui world_surf todo frame — garante que sistemas inicializados
+            # depois do _init_systems (quest, crafting, trainer) sempre recebam a surf correta
+            self._assign_world_surf(self._zoom_surf)
+
+            # cam_x/cam_y derivam das dimensões da world_surf — consistente com
+            # _get_camera_offset() de qualquer sistema
+            cam_x = (camera_pos.x - lw / 2) if camera_pos else 0
+            cam_y = (camera_pos.y - lh / 2) if camera_pos else 0
             self._cam_x, self._cam_y = cam_x, cam_y
 
+            # ── Passe de mundo — renderiza em world_surf ──────────────────────
+            self._zoom_surf.fill((0, 0, 0))
             self.screen.fill((0, 0, 0))
 
-            # Superfície de render do mundo (menor quando zoom > 1)
-            _god_active = self._god_mode.active
-            if z != 1.0 and not _god_active:
-                lw = max(1, int(SCREEN_WIDTH  / z))
-                lh = max(1, int(SCREEN_HEIGHT / z))
-                if self._zoom_surf_sz != (lw, lh):
-                    self._zoom_surf    = pygame.Surface((lw, lh))
-                    self._zoom_surf_sz = (lw, lh)
-                _ws = self._zoom_surf
-                _ws.fill((0, 0, 0))
-                self._set_world_render_target(_ws)
-            else:
-                _ws = self.screen
-
-            # Tiles e sistemas sem render relevante
             for system in self.systems:
                 if system is not self._projectile_system \
                         and system is not self._loot_system \
@@ -1018,7 +1025,7 @@ class GameEngine:
                     else:
                         system.render(cam_x, cam_y)
             self._loot_system.render_world(cam_x, cam_y)
-            DASH_TRAIL.render(_ws, cam_x, cam_y)
+            DASH_TRAIL.render(self._zoom_surf, cam_x, cam_y)
             _world_objs = self._tile_render_system.get_world_objects(cam_x, cam_y)
             self._render_system.render(cam_x, cam_y, world_objects=_world_objs)
             self._shop_system.render_world(cam_x, cam_y)
@@ -1030,12 +1037,10 @@ class GameEngine:
             self._player_proj_system.render(cam_x, cam_y)
             self._channeling_system.render(cam_x, cam_y)
             self._aoe_targeting_system.render(cam_x, cam_y)
-            FLT.render(_ws, cam_x, cam_y)
+            FLT.render(self._zoom_surf, cam_x, cam_y)
 
-            # Escala o mundo para a tela principal (pixel-perfect, sem suavização)
-            if _ws is not self.screen:
-                self._set_world_render_target(self.screen)
-                pygame.transform.scale(_ws, (SCREEN_WIDTH, SCREEN_HEIGHT), self.screen)
+            # ── Escala world_surf → tela nativa (pixel-perfect) ───────────────
+            pygame.transform.scale(self._zoom_surf, (dest_w, SCREEN_HEIGHT), self.screen)
             # Notificações de proc: screen-space, abaixo do player, acima dos avisos
             PROC.render(self.screen)
             # Avisos de ação bloqueada: posição fixa, abaixo do centro

@@ -16,7 +16,6 @@ from components import Position, Renderable, PlayerControlled, Camera, Collider,
                        PlayerSkills, NPC, ActiveRegen, ConsumableBar, \
                        AoeTargeting
 from world import World
-import camera_state as _cam_state
 from tileset import TILE_SIZE, OBJECT_MAPPING
 from utils import chebyshev, start_tile_movement
 from damage_calculator import resolve_attack_outcome, calculate_base_damage
@@ -77,10 +76,16 @@ def apply_effect(
 class System:
     """
     Classe base para todos os sistemas ECS.
-    Sistemas de lógica sobrescrevem update().
-    Sistemas de renderização sobrescrevem render().
-    Isso elimina isinstance checks no game loop.
+
+    Superfícies de render separadas por camada:
+      world_surf — render de mundo, escala com zoom (atribuído por game.py a cada frame)
+      hud_surf   — render de interface, sempre na resolução nativa da tela
+
+    Ambas são atribuídas pelo GameEngine; sistemas não precisam saber sobre zoom.
     """
+    world_surf: "pygame.Surface | None" = None  # escala com zoom
+    hud_surf:   "pygame.Surface | None" = None  # sempre nativo
+
     def update(self, events: list = None, dt: float = 0) -> None:
         pass
 
@@ -714,7 +719,8 @@ class ProjectileSystem(System):
     def __init__(self, world: World, combat_system: CombatSystem, screen: pygame.Surface):
         self.world = world
         self.combat_system = combat_system
-        self.screen = screen
+        self.world_surf = screen
+        self.hud_surf   = screen
 
     def update(self, events: list = None, dt: float = 0) -> None:
         to_remove = []
@@ -761,9 +767,9 @@ class ProjectileSystem(System):
                 y1 = int(draw_y - dy)
                 x2 = int(draw_x + dx)
                 y2 = int(draw_y + dy)
-                pygame.draw.line(self.screen, color, (x1, y1), (x2, y2), 4)
+                pygame.draw.line(self.world_surf, color, (x1, y1), (x2, y2), 4)
             else:
-                pygame.draw.circle(self.screen, color, (draw_x, draw_y), 4)
+                pygame.draw.circle(self.world_surf, color, (draw_x, draw_y), 4)
 
 
 class MouseTargetingSystem(System):
@@ -775,11 +781,12 @@ class MouseTargetingSystem(System):
     def __init__(self, world: World, player_entity_id: int, screen: pygame.Surface):
         self.world = world
         self.player_entity_id = player_entity_id
-        self.screen = screen
+        self.world_surf = screen
+        self.hud_surf   = screen
 
     def _get_camera_offset(self) -> tuple:
-        z = _cam_state.zoom
-        sw, sh = self.screen.get_width() / z, self.screen.get_height() / z
+        sw = self.world_surf.get_width()
+        sh = self.world_surf.get_height()
         for _, _, cam_pos in self.world.get_entities_with(Camera, Position):
             return cam_pos.x - sw / 2, cam_pos.y - sh / 2
         return 0.0, 0.0
@@ -806,8 +813,8 @@ class MouseTargetingSystem(System):
 
     def _visible_enemies_sorted(self, cam_x: float, cam_y: float) -> list[int]:
         """Retorna IDs de inimigos vivos e visíveis na tela, ordenados por distância ao jogador."""
-        sw = self.screen.get_width()
-        sh = self.screen.get_height()
+        sw = self.world_surf.get_width()
+        sh = self.world_surf.get_height()
         player_pos = self.world.get_component(self.player_entity_id,
                                               __import__("components").Position)
         result = []
@@ -864,8 +871,9 @@ class MouseTargetingSystem(System):
                 continue
 
             cam_x, cam_y = self._get_camera_offset()
-            world_x = event.pos[0] / _cam_state.zoom + cam_x
-            world_y = event.pos[1] / _cam_state.zoom + cam_y
+            scale = self.world_surf.get_width() / max(1, self.hud_surf.get_width())
+            world_x = event.pos[0] * scale + cam_x
+            world_y = event.pos[1] * scale + cam_y
             target_id = self._enemy_at_world_pos(world_x, world_y)
 
             player_cs   = self.world.get_component(self.player_entity_id, CombatState)
@@ -916,15 +924,15 @@ class PlayerInputSystem(System):
         self.tile_validation_system = tile_validation_system
         self.combat_system = combat_system
         self.pathfinding_system = pathfinding_system
-        self.screen = screen
+        self.world_surf = screen
+        self.hud_surf   = screen
 
     def _is_on_screen(self, pos: "Position") -> bool:
         """Retorna True se a entidade está dentro dos limites da câmera atual."""
-        if self.screen is None or pos is None:
+        if self.world_surf is None or pos is None:
             return True
-        z = _cam_state.zoom
-        sw = self.screen.get_width()  / z
-        sh = self.screen.get_height() / z
+        sw = self.world_surf.get_width()
+        sh = self.world_surf.get_height()
         for _, _, cam_pos in self.world.get_entities_with(Camera, Position):
             cam_x = cam_pos.x - sw / 2
             cam_y = cam_pos.y - sh / 2
@@ -1977,7 +1985,8 @@ class TileMovementSystem(System):
 class RenderSystem(System):
     def __init__(self, world: World, screen: pygame.Surface):
         self.world = world
-        self.screen = screen
+        self.world_surf = screen
+        self.hud_surf   = screen
 
     def render(self, camera_offset_x: float = 0, camera_offset_y: float = 0,
                world_objects: list = None) -> None:
@@ -2041,9 +2050,9 @@ class RenderSystem(System):
                 obj = item[2]
                 sx, sy, w, h = obj["screen_x"], obj["screen_y"], obj["width"], obj["height"]
                 if obj["sprite"] is not None:
-                    self.screen.blit(obj["sprite"], (sx, sy))
+                    self.world_surf.blit(obj["sprite"], (sx, sy))
                 else:
-                    pygame.draw.rect(self.screen, obj["color"], (sx, sy, w, h))
+                    pygame.draw.rect(self.world_surf, obj["color"], (sx, sy, w, h))
                 continue
 
             # ── Entidade ──────────────────────────────────────────────────────
@@ -2058,23 +2067,20 @@ class RenderSystem(System):
                 renderable.width,
                 renderable.height
             )
-            pygame.draw.rect(self.screen, renderable.color, rect)
+            pygame.draw.rect(self.world_surf, renderable.color, rect)
 
-            # Borda amarela no alvo selecionado
             if entity_id == target_id:
-                pygame.draw.rect(self.screen, (255, 220, 0), rect, 2)
+                pygame.draw.rect(self.world_surf, (255, 220, 0), rect, 2)
 
-            # Barra de HP acima de entidades com CombatStats
             if combat_stats and combat_stats.max_hp > 0:
                 ratio = max(0.0, combat_stats.current_hp / combat_stats.max_hp)
                 bar_w = renderable.width
                 bar_h = 4
                 bar_x = int(draw_x - renderable.width / 2)
                 bar_y = int(draw_y - renderable.height / 2) - 7
-                pygame.draw.rect(self.screen, (80, 0, 0), (bar_x, bar_y, bar_w, bar_h))
-                pygame.draw.rect(self.screen, (0, 200, 60), (bar_x, bar_y, int(bar_w * ratio), bar_h))
+                pygame.draw.rect(self.world_surf, (80, 0, 0), (bar_x, bar_y, bar_w, bar_h))
+                pygame.draw.rect(self.world_surf, (0, 200, 60), (bar_x, bar_y, int(bar_w * ratio), bar_h))
 
-                # Ícones de status (quadradinhos coloridos acima da HP bar)
                 _sfx = self.world.get_component(entity_id, StatusEffects)
                 _cst = self.world.get_component(entity_id, CombatState)
                 _icons = []
@@ -2083,7 +2089,6 @@ class RenderSystem(System):
                         _defn = EFFECT_DEFS.get(_eff.effect_type)
                         if _defn:
                             _icons.append(_defn.color)
-                # Stun do CombatState (player) — fallback se não vier de StatusEffects
                 if _cst and _cst.is_stunned and _cst.stun_timer > 0:
                     if not (_sfx and _sfx.has("stun")):
                         _icons.append((255, 220, 0))
@@ -2093,7 +2098,7 @@ class RenderSystem(System):
                     _ix = int(draw_x - _tw / 2)
                     _iy = bar_y - _isz - 2
                     for _col in _icons:
-                        pygame.draw.rect(self.screen, _col, (_ix, _iy, _isz, _isz))
+                        pygame.draw.rect(self.world_surf, _col, (_ix, _iy, _isz, _isz))
                         _ix += _isz + _gap
 
 class CameraSystem(System):
@@ -2115,8 +2120,9 @@ class CameraSystem(System):
 
 class TileRenderSystem(System):
     def __init__(self, world: World, screen: pygame.Surface):
-        self.world  = world
-        self.screen = screen
+        self.world = world
+        self.world_surf = screen
+        self.hud_surf   = screen
         _tw = screen.get_width()  // TILE_SIZE + 2
         _th = screen.get_height() // TILE_SIZE + 2
         # Cache de surface — pré-alocada; reconstruída apenas quando a câmera cruza fronteira de tile
@@ -2172,8 +2178,8 @@ class TileRenderSystem(System):
             sub_y   = cam_y - tile_oy * tile_size
 
             # Tiles necessários para cobrir a tela + 1 coluna/linha de borda
-            tiles_w = self.screen.get_width()  // tile_size + 2
-            tiles_h = self.screen.get_height() // tile_size + 2
+            tiles_w = self.world_surf.get_width()  // tile_size + 2
+            tiles_h = self.world_surf.get_height() // tile_size + 2
 
             # Reconstrói cache apenas quando o tile de origem muda
             if (tile_ox != self._cache_tile_x
@@ -2239,7 +2245,7 @@ class TileRenderSystem(System):
                 self._cache_tiles_h = tiles_h
 
             # 1 blit por frame — ~0.1ms ao invés de ~880 draw.rect
-            self.screen.blit(self._cache_surf, (-sub_x, -sub_y))
+            self.world_surf.blit(self._cache_surf, (-sub_x, -sub_y))
 
             # Fog é desenhado separadamente via render_fog() para permitir
             # que outros sistemas (quest, shop) desenhem seus indicadores
@@ -2307,7 +2313,7 @@ class TileRenderSystem(System):
             self._fog_cache_tile_ox = tile_ox
             self._fog_cache_tile_oy = tile_oy
 
-        self.screen.blit(self._fog_overlay_surf, (-sub_x, -sub_y))
+        self.world_surf.blit(self._fog_overlay_surf, (-sub_x, -sub_y))
 
     def get_world_objects(self, camera_offset_x: float, camera_offset_y: float) -> list:
         """
@@ -2327,8 +2333,8 @@ class TileRenderSystem(System):
 
             tile_ox = cam_x // tile_size
             tile_oy = cam_y // tile_size
-            tiles_w = self.screen.get_width()  // tile_size + 2
-            tiles_h = self.screen.get_height() // tile_size + 2
+            tiles_w = self.world_surf.get_width()  // tile_size + 2
+            tiles_h = self.world_surf.get_height() // tile_size + 2
 
             for ty in range(tiles_h):
                 for tx in range(tiles_w):
@@ -2820,7 +2826,8 @@ class ShopSystem(System):
     def __init__(self, world: World, player_entity: int, screen):
         self.world         = world
         self.player_entity = player_entity
-        self.screen        = screen
+        self.world_surf = screen
+        self.hud_surf   = screen
         self.open_merchant_id: int       = -1
         self._pending_merchant_id: int   = -1   # aguardando jogador chegar
         self._right_click_consumed: bool = False
@@ -2848,12 +2855,12 @@ class ShopSystem(System):
         self._open_cooldown     = 0.3
 
     def _panel_origin(self):
-        SW, SH = self.screen.get_size()
+        SW, SH = self.hud_surf.get_size()
         return (SW - self.PANEL_W) // 2, (SH - self.PANEL_H) // 2
 
     def _get_cam(self):
-        z = _cam_state.zoom
-        SW, SH = self.screen.get_width() / z, self.screen.get_height() / z
+        SW = self.world_surf.get_width()
+        SH = self.world_surf.get_height()
         for eid, pos, _ in self.world.get_entities_with(Position, Camera):
             return pos.x - SW / 2, pos.y - SH / 2
         return 0.0, 0.0
@@ -2910,7 +2917,8 @@ class ShopSystem(System):
                   and event.button == 3
                   and not self.is_open):
                 mx, my = event.pos
-                wx, wy = mx / _cam_state.zoom + cam_x, my / _cam_state.zoom + cam_y
+                _sc = self.world_surf.get_width() / max(1, self.hud_surf.get_width())
+                wx, wy = mx * _sc + cam_x, my * _sc + cam_y
                 for eid, pos, rend, _ in self.world.get_entities_with(
                         Position, Renderable, Merchant):
                     hw = rend.width  / 2
@@ -3140,7 +3148,7 @@ class ShopSystem(System):
         wallet = self.world.get_component(self.player_entity, Wallet)
         bag    = inv.items if inv else []
 
-        SW, SH  = self.screen.get_size()
+        SW, SH  = self.hud_surf.get_size()
         x0, y0  = self._panel_origin()
         W, H    = self.PANEL_W, self.PANEL_H
         mid_x   = x0 + self.GAP + self.LEFT_W
@@ -3149,26 +3157,26 @@ class ShopSystem(System):
         # Overlay escuro
         ov = pygame.Surface((SW, SH), pygame.SRCALPHA)
         ov.fill((0, 0, 0, 160))
-        self.screen.blit(ov, (0, 0))
+        self.hud_surf.blit(ov, (0, 0))
 
         # Fundo do painel
         bg = pygame.Surface((W, H), pygame.SRCALPHA)
         bg.fill((15, 10, 5, 235))
-        self.screen.blit(bg, (x0, y0))
-        pygame.draw.rect(self.screen, (140, 100, 60), (x0, y0, W, H), 2, border_radius=4)
+        self.hud_surf.blit(bg, (x0, y0))
+        pygame.draw.rect(self.hud_surf, (140, 100, 60), (x0, y0, W, H), 2, border_radius=4)
 
         # --- Header ---
         title = self._font_lg.render(f"  {shop.get('name', 'Comerciante')}", True, (255, 220, 120))
-        self.screen.blit(title, (x0 + 8, y0 + 8))
+        self.hud_surf.blit(title, (x0 + 8, y0 + 8))
 
         close_r   = pygame.Rect(x0 + W - 36, y0 + 4, 32, 32)
         close_hov = close_r.collidepoint(mx, my)
-        pygame.draw.rect(self.screen, (180, 60, 60) if close_hov else (100, 35, 35), close_r, border_radius=3)
+        pygame.draw.rect(self.hud_surf, (180, 60, 60) if close_hov else (100, 35, 35), close_r, border_radius=3)
         xs = self._font_md.render("X", True, (255, 255, 255))
-        self.screen.blit(xs, (close_r.centerx - xs.get_width() // 2,
+        self.hud_surf.blit(xs, (close_r.centerx - xs.get_width() // 2,
                               close_r.centery - xs.get_height() // 2))
 
-        pygame.draw.line(self.screen, (90, 70, 40), (x0 + 4, y0 + 40), (x0 + W - 4, y0 + 40))
+        pygame.draw.line(self.hud_surf, (90, 70, 40), (x0 + 4, y0 + 40), (x0 + W - 4, y0 + 40))
 
         # --- Barra de desfazer ---
         undo_y   = y0 + 42
@@ -3177,9 +3185,9 @@ class ShopSystem(System):
         undo_hov = undo_r.collidepoint(mx, my) and has_hist
         undo_bg  = (55, 80, 55) if undo_hov else ((38, 55, 38) if has_hist else (28, 28, 28))
         undo_col = (150, 220, 150) if has_hist else (70, 70, 70)
-        pygame.draw.rect(self.screen, undo_bg,  undo_r, border_radius=3)
-        pygame.draw.rect(self.screen, undo_col, undo_r, 1, border_radius=3)
-        self.screen.blit(self._font_sm.render("↩ Desfazer", True, undo_col),
+        pygame.draw.rect(self.hud_surf, undo_bg,  undo_r, border_radius=3)
+        pygame.draw.rect(self.hud_surf, undo_col, undo_r, 1, border_radius=3)
+        self.hud_surf.blit(self._font_sm.render("↩ Desfazer", True, undo_col),
                          (undo_r.x + 8, undo_r.y + 7))
 
         if self.transaction_history:
@@ -3188,29 +3196,29 @@ class ShopSystem(System):
                 desc = f"Ultima: comprou {tx['item'].name} por {tx['price']}g"
             else:
                 desc = f"Ultima: vendeu {tx['item'].name} por {tx['sell_value']}g"
-            self.screen.blit(self._font_sm.render(desc, True, (150, 150, 150)),
+            self.hud_surf.blit(self._font_sm.render(desc, True, (150, 150, 150)),
                              (x0 + self.GAP + 138, undo_y + 7))
 
-        pygame.draw.line(self.screen, (90, 70, 40), (x0 + 4, y0 + 78), (x0 + W - 4, y0 + 78))
+        pygame.draw.line(self.hud_surf, (90, 70, 40), (x0 + 4, y0 + 78), (x0 + W - 4, y0 + 78))
 
         # Divisor vertical
-        pygame.draw.line(self.screen, (90, 70, 40), (mid_x, y0 + 40), (mid_x, y0 + H - 36))
+        pygame.draw.line(self.hud_surf, (90, 70, 40), (mid_x, y0 + 40), (mid_x, y0 + H - 36))
 
         # --- Cabeçalhos das colunas ---
         col_y   = y0 + 82
         hdr_col = (160, 130, 80)
         hint    = (90, 80, 60)
-        self.screen.blit(self._font_md.render(f"LOJA  ({len(stock)} itens)", True, hdr_col),
+        self.hud_surf.blit(self._font_md.render(f"LOJA  ({len(stock)} itens)", True, hdr_col),
                          (x0 + self.GAP + 4, col_y))
-        self.screen.blit(self._font_sm.render("clique dir. p/ comprar", True, hint),
+        self.hud_surf.blit(self._font_sm.render("clique dir. p/ comprar", True, hint),
                          (x0 + self.GAP + 4, col_y + 20))
-        self.screen.blit(self._font_md.render(f"MOCHILA  ({len(bag)}/{inv.max_slots if inv else 0})", True, hdr_col),
+        self.hud_surf.blit(self._font_md.render(f"MOCHILA  ({len(bag)}/{inv.max_slots if inv else 0})", True, hdr_col),
                          (mid_x + self.GAP + 4, col_y))
-        self.screen.blit(self._font_sm.render("clique dir. p/ vender", True, hint),
+        self.hud_surf.blit(self._font_sm.render("clique dir. p/ vender", True, hint),
                          (mid_x + self.GAP + 4, col_y + 20))
 
         body_y = y0 + 110
-        pygame.draw.line(self.screen, (70, 55, 30), (x0 + 4, body_y - 2), (x0 + W - 4, body_y - 2))
+        pygame.draw.line(self.hud_surf, (70, 55, 30), (x0 + 4, body_y - 2), (x0 + W - 4, body_y - 2))
 
         # --- Painel esquerdo: itens da loja ---
         max_shop = max(0, len(stock) - self.MAX_ROWS)
@@ -3236,29 +3244,29 @@ class ShopSystem(System):
                 bg_c   = (50, 40, 20) if hov else (28, 20, 10)
                 bord_c = (180, 140, 60) if hov else (60, 45, 25)
 
-            pygame.draw.rect(self.screen, bg_c,   r, border_radius=3)
-            pygame.draw.rect(self.screen, bord_c, r, 1, border_radius=3)
+            pygame.draw.rect(self.hud_surf, bg_c,   r, border_radius=3)
+            pygame.draw.rect(self.hud_surf, bord_c, r, 1, border_radius=3)
 
             rar_col = self._RARITY_COLORS.get(preview.rarity, (100, 100, 100))
             ic_r    = pygame.Rect(r.x + 4, r.y + (self.ROW_H - 2 - self.ICON_S) // 2,
                                   self.ICON_S, self.ICON_S)
-            pygame.draw.rect(self.screen, (38, 30, 14), ic_r, border_radius=2)
+            pygame.draw.rect(self.hud_surf, (38, 30, 14), ic_r, border_radius=2)
             icon_surf = ICONS.get(ICONS.item_key(preview), self.ICON_S)
             if icon_surf:
-                self.screen.blit(icon_surf, ic_r)
+                self.hud_surf.blit(icon_surf, ic_r)
             else:
-                pygame.draw.rect(self.screen, rar_col, ic_r, 1, border_radius=2)
-                pygame.draw.circle(self.screen, rar_col, (ic_r.right - 4, ic_r.bottom - 4), 3)
+                pygame.draw.rect(self.hud_surf, rar_col, ic_r, 1, border_radius=2)
+                pygame.draw.circle(self.hud_surf, rar_col, (ic_r.right - 4, ic_r.bottom - 4), 3)
 
             name_col = rar_col if (can_afford and not inv_full) else (90, 70, 70)
-            self.screen.blit(self._font_sm.render(preview.name,      True, name_col),
+            self.hud_surf.blit(self._font_sm.render(preview.name,      True, name_col),
                              (ic_r.right + 6, r.y + 6))
-            self.screen.blit(self._font_sm.render(preview.item_type, True, (95, 85, 65)),
+            self.hud_surf.blit(self._font_sm.render(preview.item_type, True, (95, 85, 65)),
                              (ic_r.right + 6, r.y + 24))
 
             price_col = (255, 215, 0) if (can_afford and not inv_full) else (130, 70, 70)
             ps = self._font_sm.render(f"{entry['price']}g", True, price_col)
-            self.screen.blit(ps, (r.right - ps.get_width() - 8, r.y + 14))
+            self.hud_surf.blit(ps, (r.right - ps.get_width() - 8, r.y + 14))
 
             if hov:
                 lines = item_tooltip_lines(preview)
@@ -3279,8 +3287,8 @@ class ShopSystem(System):
             sb_x    = x0 + self.GAP + self.LEFT_W - 8
             th      = max(20, sb_h * self.MAX_ROWS // len(stock))
             ty      = body_y + (sb_h - th) * self._shop_scroll // max(1, max_shop)
-            pygame.draw.rect(self.screen, (45, 35, 20), (sb_x, body_y, 5, sb_h), border_radius=2)
-            pygame.draw.rect(self.screen, (140, 110, 60), (sb_x, ty, 5, th), border_radius=2)
+            pygame.draw.rect(self.hud_surf, (45, 35, 20), (sb_x, body_y, 5, sb_h), border_radius=2)
+            pygame.draw.rect(self.hud_surf, (140, 110, 60), (sb_x, ty, 5, th), border_radius=2)
 
         # --- Painel direito: mochila ---
         max_bag = max(0, len(bag) - self.MAX_ROWS)
@@ -3296,31 +3304,31 @@ class ShopSystem(System):
             hov    = r.collidepoint(mx, my)
             bg_c   = (50, 40, 20) if hov else (28, 20, 10)
             bord_c = (180, 140, 60) if hov else (60, 45, 25)
-            pygame.draw.rect(self.screen, bg_c,   r, border_radius=3)
-            pygame.draw.rect(self.screen, bord_c, r, 1, border_radius=3)
+            pygame.draw.rect(self.hud_surf, bg_c,   r, border_radius=3)
+            pygame.draw.rect(self.hud_surf, bord_c, r, 1, border_radius=3)
 
             rar_col = self._RARITY_COLORS.get(item.rarity, (100, 100, 100))
             ic_r    = pygame.Rect(r.x + 4, r.y + (self.ROW_H - 2 - self.ICON_S) // 2,
                                   self.ICON_S, self.ICON_S)
-            pygame.draw.rect(self.screen, (38, 30, 14), ic_r, border_radius=2)
+            pygame.draw.rect(self.hud_surf, (38, 30, 14), ic_r, border_radius=2)
             icon_surf = ICONS.get(ICONS.item_key(item), self.ICON_S)
             if icon_surf:
-                self.screen.blit(icon_surf, ic_r)
+                self.hud_surf.blit(icon_surf, ic_r)
             else:
-                pygame.draw.rect(self.screen, rar_col, ic_r, 1, border_radius=2)
-                pygame.draw.circle(self.screen, rar_col, (ic_r.right - 4, ic_r.bottom - 4), 3)
+                pygame.draw.rect(self.hud_surf, rar_col, ic_r, 1, border_radius=2)
+                pygame.draw.circle(self.hud_surf, rar_col, (ic_r.right - 4, ic_r.bottom - 4), 3)
 
             stack = getattr(item, "stack", 1)
             name_label = f"{item.name}" if stack <= 1 else f"{item.name} x{stack}"
-            self.screen.blit(self._font_sm.render(name_label, True, rar_col),
+            self.hud_surf.blit(self._font_sm.render(name_label, True, rar_col),
                              (ic_r.right + 6, r.y + 6))
             slot_label = item.slot if item.slot else item.item_type
-            self.screen.blit(self._font_sm.render(slot_label, True, (95, 85, 65)),
+            self.hud_surf.blit(self._font_sm.render(slot_label, True, (95, 85, 65)),
                              (ic_r.right + 6, r.y + 24))
 
             sp     = self._sell_price(item)
             sp_s   = self._font_sm.render(f"+{sp}g", True, (120, 200, 100))
-            self.screen.blit(sp_s, (r.right - sp_s.get_width() - 8, r.y + 14))
+            self.hud_surf.blit(sp_s, (r.right - sp_s.get_width() - 8, r.y + 14))
 
             if hov:
                 lines = item_tooltip_lines(item)
@@ -3337,15 +3345,15 @@ class ShopSystem(System):
             sb_x = mid_x + self.GAP + self.RIGHT_W - 8
             th   = max(20, sb_h * self.MAX_ROWS // len(bag))
             ty   = body_y + (sb_h - th) * self._bag_scroll // max(1, max_bag)
-            pygame.draw.rect(self.screen, (45, 35, 20), (sb_x, body_y, 5, sb_h), border_radius=2)
-            pygame.draw.rect(self.screen, (140, 110, 60), (sb_x, ty, 5, th), border_radius=2)
+            pygame.draw.rect(self.hud_surf, (45, 35, 20), (sb_x, body_y, 5, sb_h), border_radius=2)
+            pygame.draw.rect(self.hud_surf, (140, 110, 60), (sb_x, ty, 5, th), border_radius=2)
 
         # --- Footer: ouro do jogador ---
         foot_y = y0 + H - 34
-        pygame.draw.line(self.screen, (90, 70, 40), (x0 + 4, foot_y), (x0 + W - 4, foot_y))
+        pygame.draw.line(self.hud_surf, (90, 70, 40), (x0 + 4, foot_y), (x0 + W - 4, foot_y))
         if wallet:
             gold_s = self._font_md.render(f"Seu ouro: {wallet.gold}g", True, (255, 215, 0))
-            self.screen.blit(gold_s, (x0 + W // 2 - gold_s.get_width() // 2, foot_y + 6))
+            self.hud_surf.blit(gold_s, (x0 + W // 2 - gold_s.get_width() // 2, foot_y + 6))
 
 
 class ConsumableSystem(System):
@@ -3482,8 +3490,9 @@ class LootSystem(System):
     }
 
     def __init__(self, world: World, screen: pygame.Surface):
-        self.world  = world
-        self.screen = screen
+        self.world      = world
+        self.world_surf = screen
+        self.hud_surf   = screen
         self.open_corpse_id: int         = -1
         self.pending_loot_corpse_id: int = -1
         self.pending_tooltip             = None  # lido por GameEngine no fim do frame
@@ -3570,16 +3579,17 @@ class LootSystem(System):
                             self._scroll_offset = max(0, min(self._scroll_offset - event.y, max_scroll))
 
     def _get_camera_offset(self):
-        z = _cam_state.zoom
-        sw, sh = self.screen.get_width() / z, self.screen.get_height() / z
+        sw = self.world_surf.get_width()
+        sh = self.world_surf.get_height()
         for _, _, cam_pos in self.world.get_entities_with(Camera, Position):
             return cam_pos.x - sw / 2, cam_pos.y - sh / 2
         return 0.0, 0.0
 
     def _try_open_corpse(self, mx: int, my: int) -> None:
         cam_x, cam_y = self._get_camera_offset()
-        world_x = mx / _cam_state.zoom + cam_x
-        world_y = my / _cam_state.zoom + cam_y
+        scale = self.world_surf.get_width() / max(1, self.hud_surf.get_width())
+        world_x = mx * scale + cam_x
+        world_y = my * scale + cam_y
 
         # Coleta todos os cadáveres no alcance; prioriza os que ainda têm loot
         candidates = []
@@ -3635,7 +3645,7 @@ class LootSystem(System):
         """Abre o modal ancorado próximo ao ponto (ax, ay), clamped à tela."""
         self.open_corpse_id = entity_id
         self._scroll_offset = 0
-        sw, sh = self.screen.get_size()
+        sw, sh = self.hud_surf.get_size()
         x = max(4, min(ax + 16, sw - self.MODAL_W - 4))
         y = max(4, min(ay - self.TITLE_H, sh - self.MODAL_H - 4))
         self._modal_x, self._modal_y = x, y
@@ -3837,9 +3847,9 @@ class LootSystem(System):
             draw_x = pos.x - camera_offset_x
             draw_y = pos.y - camera_offset_y
             color = (180, 150, 30) if corpse.coins > 0 else ((120, 80, 40) if corpse.loot else (60, 40, 20))
-            pygame.draw.ellipse(self.screen, color,
+            pygame.draw.ellipse(self.world_surf, color,
                                 (int(draw_x - 10), int(draw_y - 6), 20, 12))
-            pygame.draw.ellipse(self.screen, (80, 55, 25),
+            pygame.draw.ellipse(self.world_surf, (80, 55, 25),
                                 (int(draw_x - 10), int(draw_y - 6), 20, 12), 1)
 
     def render(self, camera_offset_x: float = 0, camera_offset_y: float = 0) -> None:
@@ -3855,18 +3865,18 @@ class LootSystem(System):
         modal = self._modal_rect()
         bg = pygame.Surface((modal.w, modal.h), pygame.SRCALPHA)
         bg.fill(self.BG_COLOR)
-        self.screen.blit(bg, modal.topleft)
-        pygame.draw.rect(self.screen, self.BORDER_COLOR, modal, 2, border_radius=4)
+        self.world_surf.blit(bg, modal.topleft)
+        pygame.draw.rect(self.world_surf, self.BORDER_COLOR, modal, 2, border_radius=4)
 
         # --- Barra de título ---
         title = self.font_sm.render("Loot", True, self.BORDER_COLOR)
-        self.screen.blit(title, (modal.x + self.PAD, modal.y + (self.TITLE_H - title.get_height()) // 2))
+        self.world_surf.blit(title, (modal.x + self.PAD, modal.y + (self.TITLE_H - title.get_height()) // 2))
 
         # Botão X
         close_r = self._close_btn_rect(modal)
-        pygame.draw.rect(self.screen, (90, 30, 30), close_r, border_radius=2)
+        pygame.draw.rect(self.world_surf, (90, 30, 30), close_r, border_radius=2)
         x_surf = self.font_sm.render("X", True, (220, 100, 100))
-        self.screen.blit(x_surf, (close_r.centerx - x_surf.get_width() // 2,
+        self.world_surf.blit(x_surf, (close_r.centerx - x_surf.get_width() // 2,
                                   close_r.centery - x_surf.get_height() // 2))
 
         mx, my = pygame.mouse.get_pos()
@@ -3890,13 +3900,13 @@ class LootSystem(System):
             track_x = modal.right - self.SCROLL_W - 4
             track_y = modal.y + self.TITLE_H + self.PAD // 2
             track_h = self.MAX_ROWS * (self.ROW_H + self.PAD // 2) - self.PAD // 2
-            pygame.draw.rect(self.screen, (40, 30, 18),
+            pygame.draw.rect(self.world_surf, (40, 30, 18),
                              (track_x, track_y, self.SCROLL_W, track_h), border_radius=3)
             # Thumb
             thumb_h = max(20, track_h * self.MAX_ROWS // total)
             max_scroll = total - self.MAX_ROWS
             thumb_y = track_y + (track_h - thumb_h) * self._scroll_offset // max(1, max_scroll)
-            pygame.draw.rect(self.screen, (130, 100, 55),
+            pygame.draw.rect(self.world_surf, (130, 100, 55),
                              (track_x, thumb_y, self.SCROLL_W, thumb_h), border_radius=3)
 
         # --- Renderiza linhas visíveis ---
@@ -3911,20 +3921,20 @@ class LootSystem(System):
 
             if entry[0] == "coin":
                 # --- Linha de moedas ---
-                pygame.draw.rect(self.screen, (70, 55, 15) if hovered else (28, 20, 8), rr, border_radius=3)
-                pygame.draw.rect(self.screen, (200, 170, 50) if hovered else (100, 80, 20), rr, 1, border_radius=3)
+                pygame.draw.rect(self.world_surf, (70, 55, 15) if hovered else (28, 20, 8), rr, border_radius=3)
+                pygame.draw.rect(self.world_surf, (200, 170, 50) if hovered else (100, 80, 20), rr, 1, border_radius=3)
                 icon_r = pygame.Rect(rr.x + 4, rr.centery - self.ICON_S // 2, self.ICON_S, self.ICON_S)
                 r_out = self.ICON_S // 2
                 r_in  = max(1, r_out - 4)
-                pygame.draw.circle(self.screen, (180, 140, 0),  icon_r.center, r_out)
-                pygame.draw.circle(self.screen, (255, 215, 0),  icon_r.center, r_in)
-                pygame.draw.circle(self.screen, (120, 90, 0),   icon_r.center, r_out, 1)
+                pygame.draw.circle(self.world_surf, (180, 140, 0),  icon_r.center, r_out)
+                pygame.draw.circle(self.world_surf, (255, 215, 0),  icon_r.center, r_in)
+                pygame.draw.circle(self.world_surf, (120, 90, 0),   icon_r.center, r_out, 1)
                 g_surf = self.font_sm.render("G", True, (120, 90, 0))
-                self.screen.blit(g_surf, (icon_r.centerx - g_surf.get_width() // 2,
+                self.world_surf.blit(g_surf, (icon_r.centerx - g_surf.get_width() // 2,
                                           icon_r.centery - g_surf.get_height() // 2))
                 tx = icon_r.right + 8
                 ty = rr.centery - self.font_md.get_height() // 2
-                self.screen.blit(self.font_md.render(f"{corpse.coins} moedas", True, (255, 215, 0)), (tx, ty))
+                self.world_surf.blit(self.font_md.render(f"{corpse.coins} moedas", True, (255, 215, 0)), (tx, ty))
                 if hovered:
                     self.pending_tooltip = (mx, my, "Moedas",
                                             [(f"{corpse.coins} moedas disponíveis", (255, 215, 0)),
@@ -3934,15 +3944,15 @@ class LootSystem(System):
                 # --- Linha de item ---
                 item = entry[1]
                 bg_col = self.HOVER_COLOR if hovered else (28, 20, 8)
-                pygame.draw.rect(self.screen, bg_col, rr, border_radius=3)
+                pygame.draw.rect(self.world_surf, bg_col, rr, border_radius=3)
 
                 icon_r = pygame.Rect(rr.x + 4, rr.centery - self.ICON_S // 2, self.ICON_S, self.ICON_S)
                 icon_surf = ICONS.get(ICONS.item_key(item), self.ICON_S)
                 if icon_surf:
-                    self.screen.blit(icon_surf, icon_r)
+                    self.world_surf.blit(icon_surf, icon_r)
                 else:
                     fb = self.RARITY_COLORS.get(item.rarity, (100, 100, 100))
-                    pygame.draw.rect(self.screen, fb, icon_r, border_radius=2)
+                    pygame.draw.rect(self.world_surf, fb, icon_r, border_radius=2)
 
                 rc = self.RARITY_COLORS.get(item.rarity, (200, 200, 200))
                 tx = icon_r.right + 8
@@ -3950,11 +3960,11 @@ class LootSystem(System):
                 sub_surf  = self.font_sm.render(f"{item.item_type}  •  {item.slot}", True, (130, 115, 95))
                 total_h   = name_surf.get_height() + 2 + sub_surf.get_height()
                 ty = rr.centery - total_h // 2
-                self.screen.blit(name_surf, (tx, ty))
-                self.screen.blit(sub_surf,  (tx, ty + name_surf.get_height() + 2))
+                self.world_surf.blit(name_surf, (tx, ty))
+                self.world_surf.blit(sub_surf,  (tx, ty + name_surf.get_height() + 2))
 
                 border_col = (180, 140, 60) if hovered else (55, 40, 22)
-                pygame.draw.rect(self.screen, border_col, rr, 1, border_radius=3)
+                pygame.draw.rect(self.world_surf, border_col, rr, 1, border_radius=3)
 
                 if hovered:
                     hovered_item = item
@@ -3963,7 +3973,7 @@ class LootSystem(System):
         if not virtual:
             empty = self.font_sm.render("(vazio)", True, (120, 100, 80))
             rr = self._row_rect(modal, 0)
-            self.screen.blit(empty, (rr.x + 4, rr.centery - empty.get_height() // 2))
+            self.world_surf.blit(empty, (rr.x + 4, rr.centery - empty.get_height() // 2))
 
         # Tooltip + comparação no hover
         if hovered_item is not None:
@@ -4000,14 +4010,14 @@ class SkillSystem(System, SkillHandlers):
         self.player_entity_id = player_entity_id
         self.combat_system = combat_system
         self.tile_validation_system = tile_validation_system
-        self.screen = screen
+        self.world_surf = screen
+        self.hud_surf   = screen
 
     def _is_on_screen(self, pos: "Position") -> bool:
-        if self.screen is None or pos is None:
+        if self.world_surf is None or pos is None:
             return True
-        z = _cam_state.zoom
-        sw = self.screen.get_width()  / z
-        sh = self.screen.get_height() / z
+        sw = self.world_surf.get_width()
+        sh = self.world_surf.get_height()
         for _, _, cam_pos in self.world.get_entities_with(Camera, Position):
             cam_x = cam_pos.x - sw / 2
             cam_y = cam_pos.y - sh / 2

@@ -74,7 +74,7 @@ class BlacksmithSystem(System):
         super().__init__()
         self.world          = world
         self.player_entity  = player_entity
-        self.screen         = screen
+        self.hud_surf         = screen
         self._shop_system   = shop_system
         self._quest_dialog  = quest_dialog
         self._quest_system  = quest_system
@@ -171,7 +171,7 @@ class BlacksmithSystem(System):
     # Layout
     # ------------------------------------------------------------------
     def _panel_origin(self):
-        SW, SH = self.screen.get_size()
+        SW, SH = self.hud_surf.get_size()
         return (SW - _PANEL_W) // 2, (SH - _PANEL_H) // 2
 
     # ------------------------------------------------------------------
@@ -265,7 +265,7 @@ class BlacksmithSystem(System):
                         continue
                     # Offset de câmera (derivado do Position da entidade câmera)
                     from components import Camera
-                    SW, SH = self.screen.get_size()
+                    SW, SH = self.hud_surf.get_size()
                     cx, cy = 0.0, 0.0
                     for _, _, _cam_pos in self.world.get_entities_with(Camera, Position):
                         cx = _cam_pos.x - SW / 2
@@ -528,7 +528,7 @@ class BlacksmithSystem(System):
             sx = int(pos.x - cam_x)
             sy = int(pos.y - cam_y)
             label = self._font_sm.render("F", True, (255, 200, 80))
-            self.screen.blit(label, (sx - label.get_width() // 2,
+            self.world_surf.blit(label, (sx - label.get_width() // 2,
                                      sy - rend.height // 2 - 14))
 
     # ------------------------------------------------------------------
@@ -586,24 +586,24 @@ class BlacksmithSystem(System):
         options.append(("forjar",   "Forjar",   _COL_WHITE))
 
         total_h = PAD_V * 2 + 30 + (BTN_H + BTN_GAP) * len(options)
-        SW, SH  = self.screen.get_size()
+        SW, SH  = self.hud_surf.get_size()
         x0      = (SW - BTN_W - PAD_V * 2) // 2
         y0      = (SH - total_h) // 2
 
         # Fundo
         panel_r = pygame.Rect(x0, y0, BTN_W + PAD_V * 2, total_h)
-        pygame.draw.rect(self.screen, _COL_PANEL, panel_r, border_radius=6)
-        pygame.draw.rect(self.screen, _COL_BORDER, panel_r, 1, border_radius=6)
+        pygame.draw.rect(self.hud_surf, _COL_PANEL, panel_r, border_radius=6)
+        pygame.draw.rect(self.hud_surf, _COL_BORDER, panel_r, 1, border_radius=6)
 
         # Título
         title = self._font_md.render(self._bs_name, True, _COL_TITLE)
-        self.screen.blit(title, (panel_r.centerx - title.get_width() // 2, y0 + PAD_V))
+        self.hud_surf.blit(title, (panel_r.centerx - title.get_width() // 2, y0 + PAD_V))
 
         # Botão fechar
         close_r = pygame.Rect(panel_r.right - 28, y0 + 4, 24, 24)
-        pygame.draw.rect(self.screen, (80, 30, 30), close_r, border_radius=3)
+        pygame.draw.rect(self.hud_surf, (80, 30, 30), close_r, border_radius=3)
         lbl = self._font_sm.render("X", True, _COL_WHITE)
-        self.screen.blit(lbl, (close_r.centerx - lbl.get_width() // 2,
+        self.hud_surf.blit(lbl, (close_r.centerx - lbl.get_width() // 2,
                                 close_r.centery - lbl.get_height() // 2))
         self._close_r = close_r
 
@@ -613,11 +613,11 @@ class BlacksmithSystem(System):
         for key, label, col in options:
             r = pygame.Rect(x0 + PAD_V, by, BTN_W, BTN_H)
             hov = r.collidepoint(mx, my)
-            pygame.draw.rect(self.screen, (50, 40, 22) if hov else (32, 26, 14),
+            pygame.draw.rect(self.hud_surf, (50, 40, 22) if hov else (32, 26, 14),
                              r, border_radius=4)
-            pygame.draw.rect(self.screen, _COL_BORDER, r, 1, border_radius=4)
+            pygame.draw.rect(self.hud_surf, _COL_BORDER, r, 1, border_radius=4)
             txt = self._font_md.render(label, True, col)
-            self.screen.blit(txt, (r.x + 10, r.centery - txt.get_height() // 2))
+            self.hud_surf.blit(txt, (r.x + 10, r.centery - txt.get_height() // 2))
             self._menu_rects[key] = r
             by += BTN_H + BTN_GAP
 
@@ -629,19 +629,19 @@ class BlacksmithSystem(System):
 
         # Fundo principal
         panel_r = pygame.Rect(x0, y0, _PANEL_W, _PANEL_H)
-        pygame.draw.rect(self.screen, _COL_PANEL, panel_r)
-        pygame.draw.rect(self.screen, _COL_BORDER, panel_r, 1)
+        pygame.draw.rect(self.hud_surf, _COL_PANEL, panel_r)
+        pygame.draw.rect(self.hud_surf, _COL_BORDER, panel_r, 1)
 
         # Divisor vertical
         div_x = x0 + _LEFT_W
-        pygame.draw.line(self.screen, _COL_BORDER,
+        pygame.draw.line(self.hud_surf, _COL_BORDER,
                          (div_x, y0 + 4), (div_x, y0 + _PANEL_H - 4), 1)
 
         # Botão fechar
         close_r = pygame.Rect(x0 + _PANEL_W - 28, y0 + 4, 24, 24)
-        pygame.draw.rect(self.screen, (80, 30, 30), close_r, border_radius=3)
+        pygame.draw.rect(self.hud_surf, (80, 30, 30), close_r, border_radius=3)
         lbl = self._font_sm.render("X", True, _COL_WHITE)
-        self.screen.blit(lbl, (close_r.centerx - lbl.get_width() // 2,
+        self.hud_surf.blit(lbl, (close_r.centerx - lbl.get_width() // 2,
                                 close_r.centery - lbl.get_height() // 2))
         self._close_r = close_r
 
@@ -663,12 +663,12 @@ class BlacksmithSystem(System):
 
         # Título
         t = self._font_lg.render("Reciclagem", True, _COL_TITLE)
-        self.screen.blit(t, (cx - t.get_width() // 2, cur))
+        self.hud_surf.blit(t, (cx - t.get_width() // 2, cur))
         cur += 36
 
         # Label Item
         lbl = self._font_sm.render("Item", True, _COL_GREY)
-        self.screen.blit(lbl, (x0 + _PAD, cur))
+        self.hud_surf.blit(lbl, (x0 + _PAD, cur))
         cur += 18
 
         # Slot do item a reciclar
@@ -682,16 +682,16 @@ class BlacksmithSystem(System):
             cost = RARITY_RECYCLE_COST.get(self._rec_item.rarity, 0)
             if not mats:
                 info = self._font_sm.render("Nao reciclavel", True, _COL_RED)
-                self.screen.blit(info, (slot_r.right + 8, slot_r.y + 6))
+                self.hud_surf.blit(info, (slot_r.right + 8, slot_r.y + 6))
             else:
                 info = self._font_sm.render(self._rec_item.name, True,
                                             _RARITY_COL.get(self._rec_item.rarity, _COL_WHITE))
-                self.screen.blit(info, (slot_r.right + 8, slot_r.y + 4))
+                self.hud_surf.blit(info, (slot_r.right + 8, slot_r.y + 4))
         cur += _ITEM_SLOT + 12
 
         # Label Materiais
         lbl = self._font_sm.render("Materiais", True, _COL_GREY)
-        self.screen.blit(lbl, (x0 + _PAD, cur))
+        self.hud_surf.blit(lbl, (x0 + _PAD, cur))
         cur += 18
 
         # 5 slots — preview dos materiais que serão extraídos
@@ -719,7 +719,7 @@ class BlacksmithSystem(System):
             cost_t = self._font_md.render(f"Custo: {cost}g", True, col)
         else:
             cost_t = self._font_md.render("Custo: —", True, _COL_GREY)
-        self.screen.blit(cost_t, (x0 + _PAD, cur))
+        self.hud_surf.blit(cost_t, (x0 + _PAD, cur))
         cur += 28
 
         # Botão Reciclar
@@ -731,15 +731,15 @@ class BlacksmithSystem(System):
                             _LEFT_W - _PAD * 2, 34)
         if can_recycle:
             hov = btn_r.collidepoint(mx, my)
-            pygame.draw.rect(self.screen,
+            pygame.draw.rect(self.hud_surf,
                              (60, 130, 60) if hov else (38, 80, 38),
                              btn_r, border_radius=4)
         else:
-            pygame.draw.rect(self.screen, (40, 40, 40), btn_r, border_radius=4)
-        pygame.draw.rect(self.screen, _COL_BORDER, btn_r, 1, border_radius=4)
+            pygame.draw.rect(self.hud_surf, (40, 40, 40), btn_r, border_radius=4)
+        pygame.draw.rect(self.hud_surf, _COL_BORDER, btn_r, 1, border_radius=4)
         btxt = self._font_md.render("Reciclar", True,
                                     _COL_WHITE if can_recycle else _COL_GREY)
-        self.screen.blit(btxt, (btn_r.centerx - btxt.get_width() // 2,
+        self.hud_surf.blit(btxt, (btn_r.centerx - btxt.get_width() // 2,
                                 btn_r.centery - btxt.get_height() // 2))
         self._rec_btn_r = btn_r
 
@@ -752,7 +752,7 @@ class BlacksmithSystem(System):
 
         # Título
         t = self._font_lg.render("Forja", True, _COL_TITLE)
-        self.screen.blit(t, (cx - t.get_width() // 2, cur))
+        self.hud_surf.blit(t, (cx - t.get_width() // 2, cur))
         cur += 36
 
         # ── Lista de receitas aprendidas ──────────────────────────────────
@@ -770,13 +770,13 @@ class BlacksmithSystem(System):
         self._frg_list_scroll = min(self._frg_list_scroll, max_scroll)
 
         lbl = self._font_sm.render("Receitas conhecidas", True, _COL_GREY)
-        self.screen.blit(lbl, (x0 + _PAD, cur))
+        self.hud_surf.blit(lbl, (x0 + _PAD, cur))
         cur += 18
 
         self._frg_list_rs = []
         if not known:
             empty = self._font_sm.render("Nenhuma receita aprendida.", True, _COL_GREY)
-            self.screen.blit(empty, (x0 + _PAD, cur))
+            self.hud_surf.blit(empty, (x0 + _PAD, cur))
         else:
             for vis_i in range(max_vis):
                 real_i = vis_i + self._frg_list_scroll
@@ -790,14 +790,14 @@ class BlacksmithSystem(System):
                 selected = (recipe_id == self._frg_selected)
                 hov      = row_r.collidepoint(mx, my)
                 if selected:
-                    pygame.draw.rect(self.screen, (70, 55, 18), row_r, border_radius=3)
-                    pygame.draw.rect(self.screen, _COL_GOLD, row_r, 1, border_radius=3)
+                    pygame.draw.rect(self.hud_surf, (70, 55, 18), row_r, border_radius=3)
+                    pygame.draw.rect(self.hud_surf, _COL_GOLD, row_r, 1, border_radius=3)
                 elif hov:
-                    pygame.draw.rect(self.screen, (45, 36, 14), row_r, border_radius=3)
+                    pygame.draw.rect(self.hud_surf, (45, 36, 14), row_r, border_radius=3)
                 rarity    = recipe_def.get("result_rarity", "common")
                 name_col  = _RARITY_COL.get(rarity, _COL_WHITE)
                 name_t    = self._font_sm.render(recipe_def["name"], True, name_col)
-                self.screen.blit(name_t, (row_r.x + 6, row_r.centery - name_t.get_height() // 2))
+                self.hud_surf.blit(name_t, (row_r.x + 6, row_r.centery - name_t.get_height() // 2))
                 self._frg_list_rs.append((recipe_id, row_r))
 
             # Scrollbar da lista
@@ -806,14 +806,14 @@ class BlacksmithSystem(System):
                 th   = max(14, sb_h * max_vis // len(known))
                 ty   = cur + (sb_h - th) * self._frg_list_scroll // max(1, max_scroll)
                 sb_x = x0 + _LEFT_W - 8
-                pygame.draw.rect(self.screen, (40, 34, 18), (sb_x, cur, 4, sb_h), border_radius=2)
-                pygame.draw.rect(self.screen, _COL_BORDER,  (sb_x, ty,  4, th),  border_radius=2)
+                pygame.draw.rect(self.hud_surf, (40, 34, 18), (sb_x, cur, 4, sb_h), border_radius=2)
+                pygame.draw.rect(self.hud_surf, _COL_BORDER,  (sb_x, ty,  4, th),  border_radius=2)
 
         cur += max_vis * LIST_ROW_H + 8
 
         # ── Materiais necessários (da receita selecionada) ─────────────────
         lbl = self._font_sm.render("Materiais", True, _COL_GREY)
-        self.screen.blit(lbl, (x0 + _PAD, cur))
+        self.hud_surf.blit(lbl, (x0 + _PAD, cur))
         cur += 18
 
         self._frg_mat_rs = []
@@ -832,7 +832,7 @@ class BlacksmithSystem(System):
                 if mat_item:
                     qty_col = _COL_GREEN if sufficient else _COL_RED
                     qty_t   = self._font_sm.render(f"{have}/{req_qty}", True, qty_col)
-                    self.screen.blit(qty_t, (sr.x + sr.w // 2 - qty_t.get_width() // 2,
+                    self.hud_surf.blit(qty_t, (sr.x + sr.w // 2 - qty_t.get_width() // 2,
                                              sr.bottom + 2))
             else:
                 self._draw_slot(sr, None, overlay=False)
@@ -841,7 +841,7 @@ class BlacksmithSystem(System):
 
         # ── Resultado ─────────────────────────────────────────────────────
         lbl = self._font_sm.render("Resultado", True, _COL_GREY)
-        self.screen.blit(lbl, (x0 + _PAD, cur))
+        self.hud_surf.blit(lbl, (x0 + _PAD, cur))
         cur += 18
 
         res_r = pygame.Rect(x0 + _PAD, cur, _ITEM_SLOT, _ITEM_SLOT)
@@ -851,7 +851,7 @@ class BlacksmithSystem(System):
         elif self._frg_complete and self._frg_result:
             self._draw_slot(res_r, self._frg_result, overlay=False, mx=mx, my=my)
             hint = self._font_sm.render("Clicar para pegar", True, _COL_GREY)
-            self.screen.blit(hint, (res_r.right + 6, res_r.y + 6))
+            self.hud_surf.blit(hint, (res_r.right + 6, res_r.y + 6))
         else:
             self._draw_slot(res_r, None, overlay=False)
         self._frg_result_r = res_r
@@ -867,7 +867,7 @@ class BlacksmithSystem(System):
             cost_t = self._font_md.render(f"Custo: {cost}g", True, col)
         else:
             cost_t = self._font_md.render("Custo: —", True, _COL_GREY)
-        self.screen.blit(cost_t, (x0 + _PAD, cur))
+        self.hud_surf.blit(cost_t, (x0 + _PAD, cur))
 
         # ── Botão Forjar ──────────────────────────────────────────────────
         can_forge = (
@@ -887,15 +887,15 @@ class BlacksmithSystem(System):
                             _LEFT_W - _PAD * 2, 34)
         if can_forge:
             hov = btn_r.collidepoint(mx, my)
-            pygame.draw.rect(self.screen,
+            pygame.draw.rect(self.hud_surf,
                              (100, 80, 30) if hov else (70, 55, 18),
                              btn_r, border_radius=4)
         else:
-            pygame.draw.rect(self.screen, (40, 40, 40), btn_r, border_radius=4)
-        pygame.draw.rect(self.screen, _COL_BORDER, btn_r, 1, border_radius=4)
+            pygame.draw.rect(self.hud_surf, (40, 40, 40), btn_r, border_radius=4)
+        pygame.draw.rect(self.hud_surf, _COL_BORDER, btn_r, 1, border_radius=4)
         btxt = self._font_md.render("Forjar", True,
                                     _COL_GOLD if can_forge else _COL_GREY)
-        self.screen.blit(btxt, (btn_r.centerx - btxt.get_width() // 2,
+        self.hud_surf.blit(btxt, (btn_r.centerx - btxt.get_width() // 2,
                                 btn_r.centery - btxt.get_height() // 2))
         self._frg_btn_r = btn_r
 
@@ -912,7 +912,7 @@ class BlacksmithSystem(System):
 
         # Título
         t = self._font_lg.render("bag", True, _COL_TITLE)
-        self.screen.blit(t, (rx + (_RIGHT_W - t.get_width()) // 2, cur))
+        self.hud_surf.blit(t, (rx + (_RIGHT_W - t.get_width()) // 2, cur))
         cur += 36
 
         # Clamp scroll
@@ -948,32 +948,32 @@ class BlacksmithSystem(System):
             sb_h  = max_vis * _BAG_ROW_H
             th    = max(20, sb_h * max_vis // total_rows)
             ty    = cur + (sb_h - th) * scroll // max(1, max_scroll)
-            pygame.draw.rect(self.screen, (40, 34, 18), (sb_x, cur, 5, sb_h), border_radius=2)
-            pygame.draw.rect(self.screen, _COL_BORDER,  (sb_x, ty,  5, th),  border_radius=2)
+            pygame.draw.rect(self.hud_surf, (40, 34, 18), (sb_x, cur, 5, sb_h), border_radius=2)
+            pygame.draw.rect(self.hud_surf, _COL_BORDER,  (sb_x, ty,  5, th),  border_radius=2)
 
     # ------------------------------------------------------------------
     # Slot genérico
     # ------------------------------------------------------------------
     def _draw_slot(self, rect: pygame.Rect, item, overlay: bool = False,
                    show_stack: bool = False, mx: int = -1, my: int = -1):
-        pygame.draw.rect(self.screen, _COL_DARK, rect)
-        pygame.draw.rect(self.screen, _COL_BORDER, rect, 1)
+        pygame.draw.rect(self.hud_surf, _COL_DARK, rect)
+        pygame.draw.rect(self.hud_surf, _COL_BORDER, rect, 1)
         if item is None:
             return
         icon_r = rect.inflate(-8, -8)
         col    = _RARITY_COL.get(item.rarity, (180, 180, 180))
-        pygame.draw.rect(self.screen, col, icon_r, border_radius=2)
+        pygame.draw.rect(self.hud_surf, col, icon_r, border_radius=2)
         # Letra inicial do item (placeholder visual)
         letter = self._font_md.render(item.name[0].upper(), True, _COL_DARK)
-        self.screen.blit(letter, (icon_r.centerx - letter.get_width() // 2,
+        self.hud_surf.blit(letter, (icon_r.centerx - letter.get_width() // 2,
                                   icon_r.centery - letter.get_height() // 2))
         if overlay:
             s = pygame.Surface(icon_r.size, pygame.SRCALPHA)
             s.fill((0, 0, 0, 160))
-            self.screen.blit(s, icon_r)
+            self.hud_surf.blit(s, icon_r)
         if show_stack and getattr(item, "stack", 1) > 1:
             qty = self._font_sm.render(str(item.stack), True, (255, 255, 255))
-            self.screen.blit(qty, (rect.right - qty.get_width() - 3,
+            self.hud_surf.blit(qty, (rect.right - qty.get_width() - 3,
                                    rect.bottom - qty.get_height() - 1))
         # Tooltip ao hover
         if mx >= 0 and rect.collidepoint(mx, my):
@@ -1000,26 +1000,26 @@ class BlacksmithSystem(System):
         W, H = 140, 62
         cx, cy = self._ctx_pos
         # Mantém dentro da tela
-        SW, SH = self.screen.get_size()
+        SW, SH = self.hud_surf.get_size()
         if cx + W > SW:
             cx = SW - W - 4
         if cy + H > SH:
             cy = SH - H - 4
 
         bg_r = pygame.Rect(cx, cy, W, H)
-        pygame.draw.rect(self.screen, _COL_PANEL, bg_r, border_radius=4)
-        pygame.draw.rect(self.screen, _COL_BORDER, bg_r, 1, border_radius=4)
+        pygame.draw.rect(self.hud_surf, _COL_PANEL, bg_r, border_radius=4)
+        pygame.draw.rect(self.hud_surf, _COL_BORDER, bg_r, 1, border_radius=4)
 
         name_t = self._font_sm.render(item.name[:16], True,
                                       _RARITY_COL.get(item.rarity, _COL_WHITE))
-        self.screen.blit(name_t, (cx + 6, cy + 6))
+        self.hud_surf.blit(name_t, (cx + 6, cy + 6))
 
         del_r = pygame.Rect(cx + 6, cy + 28, W - 12, 26)
         hov   = del_r.collidepoint(mx, my)
-        pygame.draw.rect(self.screen, (100, 30, 30) if hov else (65, 20, 20),
+        pygame.draw.rect(self.hud_surf, (100, 30, 30) if hov else (65, 20, 20),
                          del_r, border_radius=3)
-        pygame.draw.rect(self.screen, _COL_BORDER, del_r, 1, border_radius=3)
+        pygame.draw.rect(self.hud_surf, _COL_BORDER, del_r, 1, border_radius=3)
         dt = self._font_sm.render("Deletar", True, _COL_WHITE)
-        self.screen.blit(dt, (del_r.centerx - dt.get_width() // 2,
+        self.hud_surf.blit(dt, (del_r.centerx - dt.get_width() // 2,
                                del_r.centery - dt.get_height() // 2))
         self._ctx_del_r = del_r

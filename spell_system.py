@@ -112,7 +112,8 @@ class SpellCastSystem(System):
 
     def __init__(self, world: World, screen: pygame.Surface):
         self.world  = world
-        self.screen = screen
+        self.world_surf = screen
+        self.hud_surf   = screen
 
     def update(self, events=None, dt: float = 0) -> None:
         for entity_id, spell_cast, combat_state, _ in self.world.get_entities_with(
@@ -172,7 +173,8 @@ class PlayerProjectileSystem(System):
 
     def __init__(self, world: World, screen: pygame.Surface):
         self.world  = world
-        self.screen = screen
+        self.world_surf = screen
+        self.hud_surf   = screen
 
     def update(self, events=None, dt: float = 0) -> None:
         to_remove = []
@@ -210,7 +212,7 @@ class PlayerProjectileSystem(System):
         for _, pos, proj in self.world.get_entities_with(Position, PlayerProjectile):
             dx = int(pos.x - cam_x)
             dy = int(pos.y - cam_y)
-            pygame.draw.circle(self.screen, proj.color, (dx, dy), 6)
+            pygame.draw.circle(self.world_surf, proj.color, (dx, dy), 6)
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +224,8 @@ class ChannelingSystem(System):
 
     def __init__(self, world: World, screen: pygame.Surface):
         self.world  = world
-        self.screen = screen
+        self.world_surf = screen
+        self.hud_surf   = screen
 
     def update(self, events=None, dt: float = 0) -> None:
         to_finish  = []
@@ -302,8 +305,8 @@ class ChannelingSystem(System):
             cx = int(ch.target_x - cam_x)
             cy = int(ch.target_y - cam_y)
             r  = int(ch.radius_tiles * TILE_SIZE)
-            pygame.draw.circle(self.screen, (255, 160, 60), (cx, cy), r, 2)
-            pygame.draw.circle(self.screen, (255, 200, 80), (cx, cy), 4)
+            pygame.draw.circle(self.world_surf, (255, 160, 60), (cx, cy), r, 2)
+            pygame.draw.circle(self.world_surf, (255, 200, 80), (cx, cy), 4)
 
 
 # ---------------------------------------------------------------------------
@@ -356,10 +359,10 @@ class AoeTargetingSystem(System):
     def __init__(self, world: World, player_entity: int, screen: pygame.Surface):
         self.world         = world
         self.player_entity = player_entity
-        self.screen        = screen
+        self.world_surf        = screen
 
     def _camera_offset(self) -> tuple[float, float]:
-        sw, sh = self.screen.get_width(), self.screen.get_height()
+        sw, sh = self.world_surf.get_width(), self.world_surf.get_height()
         for _, _, cam_pos in self.world.get_entities_with(Camera, Position):
             return cam_pos.x - sw / 2, cam_pos.y - sh / 2
         return 0.0, 0.0
@@ -496,8 +499,8 @@ class AoeTargetingSystem(System):
         ring_col   = (255, 200,  80) if in_range else (220,  60,  60)
         center_col = (255, 220, 100) if in_range else (255, 100, 100)
         r = int(aoe.radius_tiles * TILE_SIZE)
-        pygame.draw.circle(self.screen, ring_col,   (mx, my), r, 2)
-        pygame.draw.circle(self.screen, center_col, (mx, my), 4)
+        pygame.draw.circle(self.world_surf, ring_col,   (mx, my), r, 2)
+        pygame.draw.circle(self.world_surf, center_col, (mx, my), 4)
         # Círculo de alcance máximo ao redor do player (só quando targeting ativo)
         if aoe.cast_range_tiles > 0:
             pp = self._player_world_pos()
@@ -510,4 +513,4 @@ class AoeTargetingSystem(System):
                                    (range_r, range_r), range_r)
                 pygame.draw.circle(range_surf, (200, 200, 200, 80),
                                    (range_r, range_r), range_r, 1)
-                self.screen.blit(range_surf, (scr_px - range_r, scr_py - range_r))
+                self.world_surf.blit(range_surf, (scr_px - range_r, scr_py - range_r))

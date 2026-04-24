@@ -72,7 +72,7 @@ class TrainerSystem(System):
         super().__init__()
         self.world         = world
         self.player_entity = player_entity
-        self.screen        = screen
+        self.hud_surf        = screen
         self._quest_dialog = quest_dialog
 
         SW, SH = screen.get_size()
@@ -137,7 +137,7 @@ class TrainerSystem(System):
             auto.path_recalc_timer = 0.0
 
     def _panel_origin(self):
-        SW, SH = self.screen.get_size()
+        SW, SH = self.hud_surf.get_size()
         return (SW - _PANEL_W) // 2, (SH - _PANEL_H) // 2
 
     def _player_level(self) -> int:
@@ -181,7 +181,7 @@ class TrainerSystem(System):
 
         # Clique direito em Trainer (apenas quando fechado)
         if self._state == self.STATE_CLOSED and self._open_cooldown <= 0:
-            SW, SH = self.screen.get_size()
+            SW, SH = self.hud_surf.get_size()
             cx, cy = 0.0, 0.0
             for _, _, _cam_pos in self.world.get_entities_with(Camera, Position):
                 cx = _cam_pos.x - SW / 2
@@ -332,7 +332,7 @@ class TrainerSystem(System):
             sx = int(pos.x - cam_x) - rend.width  // 2
             sy = int(pos.y - cam_y) - rend.height // 2
             label = font.render("T", True, (120, 200, 255))
-            self.screen.blit(label, (sx + rend.width // 2 - label.get_width() // 2,
+            self.world_surf.blit(label, (sx + rend.width // 2 - label.get_width() // 2,
                                      sy - 14))
 
     # ------------------------------------------------------------------
@@ -350,7 +350,7 @@ class TrainerSystem(System):
     # Action menu (igual ao BlacksmithSystem)
     # ------------------------------------------------------------------
     def _draw_action_menu(self):
-        surf = self.screen
+        surf = self.hud_surf
         mx, my = pygame.mouse.get_pos()
         SW, SH = surf.get_size()
 
@@ -397,7 +397,7 @@ class TrainerSystem(System):
     # Training modal
     # ------------------------------------------------------------------
     def _draw_training_modal(self):
-        surf = self.screen
+        surf = self.hud_surf
         mx, my = pygame.mouse.get_pos()
         x0, y0 = self._panel_origin()
 
