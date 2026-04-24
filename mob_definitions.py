@@ -47,7 +47,7 @@ MOB_TABLE: dict[str, dict] = {
         "sounds": { 
             "aggro":            "mob_lobo_aggro",    
             "death":            "mob_lobo_death",
-            "attack_melee":     "mob_bite",
+            "attack_melee":     "mob_bite_melee",
             "attack_ranged":    None,
             "attack_magic":     None,
             "crit":             "mob_bite_crit",
@@ -61,7 +61,7 @@ MOB_TABLE: dict[str, dict] = {
         "sounds": { 
             "aggro":            "mob_urso_aggro",    
             "death":            "mob_urso_death",
-            "attack_melee":     "mob_bite",
+            "attack_melee":     "mob_bite_melee",
             "attack_ranged":    None,
             "attack_magic":     None,
             "crit":             "mob_bite_crit",

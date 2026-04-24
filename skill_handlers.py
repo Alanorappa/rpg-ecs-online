@@ -18,8 +18,9 @@ import random
 import pygame
 
 from components import (
-    Position, Enemy, TileMovement, CombatStats, CombatState,
+    Position, Enemy, AIControlled, TileMovement, CombatStats, CombatState,
     CharacterStats, Tilemap, PlayerAutoMove, StatusEffects,
+    SpellCast, AoeTargeting, IceBlockEffect,
 )
 from tileset import TILE_SIZE
 from utils import chebyshev
@@ -457,4 +458,153 @@ class SkillHandlers:
             combat_state.enter_combat()
         if not taunted:
             self._warn("Nenhum inimigo no raio")
+        return True
+
+    # ==================================================================
+    # Habilidades do Mago
+    # ==================================================================
+
+    def _check_mana(self, char_stats: CharacterStats, cost: int) -> bool:
+        if not char_stats or char_stats.mana < cost:
+            self._warn(f"Mana insuficiente ({cost})")
+            return False
+        return True
+
+    def _skill_bola_de_fogo(self, skill, combat_stats, combat_state, tile_move):
+        """1.5s cast — 50% dano + 100% SP — 25 mana."""
+        char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
+        if not self._check_mana(char_stats, skill.mana_cost):
+            return False
+
+        target_id = self._resolve_target(combat_state, tile_move, 30)
+        if target_id == -1:
+            self._warn("Nenhum alvo")
+            return False
+
+        target_cs = self.world.get_component(target_id, CombatStats)
+        if not target_cs or target_cs.current_hp <= 0:
+            self._warn("Alvo inválido")
+            return False
+
+        char_stats.mana -= skill.mana_cost
+
+        self.world.add_component(self.player_entity_id, SpellCast(
+            spell_id  = "bola_de_fogo",
+            cast_time = skill.cast_time,
+            elapsed   = 0.0,
+            target_id = target_id,
+        ))
+        if combat_state:
+            combat_state.is_casting = True
+            combat_state.enter_combat()
+            combat_state.is_pursuing = True
+
+        SOUNDS.play_spell("bola_de_fogo", "cast")
+        LOG.add("Lançando Bola de Fogo...", (255, 160, 60))
+        return True
+
+    def _cancel_pursuit_for_targeting(self) -> None:
+        """
+        Cancela perseguição de alvo e interrompe qualquer movimento em curso.
+        Chamado por skills de mira/área antes de entrar no modo de targeting.
+        Reutilizável para futuras skills com needs_aoe_target=True.
+        """
+        cs = self.world.get_component(self.player_entity_id, CombatState)
+        if cs:
+            cs.is_pursuing = False
+
+        am = self.world.get_component(self.player_entity_id, PlayerAutoMove)
+        if am:
+            am.active         = False
+            am.path.clear()
+            am.ground_target  = None
+
+        # Interrompe o tile movement em curso — snap para o tile atual
+        tm = self.world.get_component(self.player_entity_id, TileMovement)
+        if tm and tm.is_moving:
+            tm.is_moving = False
+            tm.progress  = 0.0
+            pos = self.world.get_component(self.player_entity_id, Position)
+            if pos:
+                pos.x = tm.current_tile_x * TILE_SIZE + TILE_SIZE / 2
+                pos.y = tm.current_tile_y * TILE_SIZE + TILE_SIZE / 2
+
+    def _skill_calamidade_flamejante(self, skill, combat_stats, combat_state, tile_move):
+        """Ativa o modo de mira AOE; clique esquerdo inicia a canalização."""
+        char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
+        if not self._check_mana(char_stats, skill.mana_cost):
+            return False
+
+        if self.world.get_component(self.player_entity_id, AoeTargeting):
+            return False  # já em modo de mira
+
+        self._cancel_pursuit_for_targeting()
+        self.world.add_component(self.player_entity_id, AoeTargeting(
+            spell_id         = "calamidade_flamejante",
+            radius_tiles     = 3.0,
+            cast_range_tiles = 8.0,
+        ))
+        LOG.add("Clique para posicionar Calamidade Flamejante.", (255, 200, 80))
+        return True
+
+    def _skill_nova_congelante(self, skill, combat_stats, combat_state, tile_move):
+        """Instantânea — raiz 5s em todos a 3 tiles + 50% SP. 10 mana."""
+        char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
+        if not self._check_mana(char_stats, skill.mana_cost):
+            return False
+
+        char_stats.mana -= skill.mana_cost
+        SOUNDS.play_spell("nova_congelante", "cast")
+
+        pl_x = tile_move.current_tile_x
+        pl_y = tile_move.current_tile_y
+        pl_pos = self.world.get_component(self.player_entity_id, Position)
+
+        hit = 0
+        for eid, epos, _, _, etm, ecs in self.world.get_entities_with(
+                Position, Enemy, AIControlled, TileMovement, CombatStats):
+            if ecs.current_hp <= 0:
+                continue
+            if chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y) > 3:
+                continue
+            # Dano
+            sp = combat_stats.spell_power if combat_stats else 0
+            dmg = max(1, int(sp * 0.5))
+            from spell_system import _apply_magic_damage
+            _apply_magic_damage(self.player_entity_id, eid, dmg, self.world)
+            # Raiz
+            sfx = self.world.get_component(eid, StatusEffects)
+            if sfx:
+                apply_effect(self.world, eid, "root", 5.0)
+                etm_c = self.world.get_component(eid, TileMovement)
+            hit += 1
+
+        if hit == 0:
+            self._warn("Nenhum inimigo no raio")
+        else:
+            SOUNDS.play_spell("nova_congelante", "impact")
+            LOG.add(f"Nova Congelante — {hit} inimigo(s) enraizados.", (100, 180, 255))
+
+        if combat_state:
+            combat_state.enter_combat()
+
+        skill.current_cooldown = skill.cooldown
+        return True
+
+    def _skill_bloco_de_gelo(self, skill, combat_stats, combat_state, tile_move):
+        """Imunidade + cura 10% HP/s durante 5s. Imóvel durante efeito."""
+        if self.world.get_component(self.player_entity_id, IceBlockEffect):
+            self._warn("Bloco de Gelo já ativo")
+            return False
+
+        self.world.add_component(self.player_entity_id, IceBlockEffect(
+            duration=5.0, elapsed=0.0, heal_interval=1.0, last_heal=0.0,
+        ))
+        SOUNDS.play_spell("bloco_de_gelo", "cast")
+        if combat_state:
+            combat_state.is_stunned = True
+            combat_state.is_immune  = True
+
+        skill.current_cooldown = skill.cooldown
+        LOG.add("Bloco de Gelo ativado! Imune por 5s.", (100, 180, 255))
         return True

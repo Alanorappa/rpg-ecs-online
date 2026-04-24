@@ -79,16 +79,82 @@ SKILL_CATALOG: dict[str, dict] = {
     },
 }
 
-# Layout padrão: skill_id por slot (None = slot vazio)
-SKILL_SLOTS: list[str | None] = [
-    "golpe_poderoso",    # Slot 1
-    "vitoria_iminente",  # Slot 2  — baseada em cargas
-    "impacto",           # Slot 3
-    "executar",          # Slot 4
-    "interceptar",       # Slot 5
-    None,                # Slot 6  — preenchido por talentos
-    None,                # Slot 7  — preenchido por talentos
-    None,                # Slot 8  — preenchido por talentos
-    None,                # Slot 9  — preenchido por talentos
-    None,                # Slot 10 — preenchido por talentos
-]
+# Layout padrão: todos os slots vazios — skills são aprendidas com treinador
+SKILL_SLOTS: list[str | None] = [None] * NUM_SLOTS
+
+# ---------- Skills do Mago ----------
+SKILL_CATALOG.update({
+    "bola_de_fogo": {
+        "name":           "Bola de Fogo",
+        "desc":           "Projétil – 1.5s cast. 50% dano + 100% SP. 25 mana.",
+        "cooldown":       0.0,
+        "mana_cost":      25,
+        "cast_time":      1.5,
+        "cast_range":     30,
+        "class_id":       "mago",
+    },
+    "calamidade_flamejante": {
+        "name":             "Calamidade Flamejante",
+        "desc":             "Canaliza meteoros em área (2 tiles) por 5s. 10 mana/s.",
+        "cooldown":         0.0,
+        "mana_cost":        10,
+        "cast_time":        0.0,
+        "cast_range":       8,
+        "is_channeled":     True,
+        "channel_duration": 5.0,
+        "needs_aoe_target": True,
+        "class_id":         "mago",
+    },
+    "nova_congelante": {
+        "name":       "Nova Congelante",
+        "desc":       "Enraíza inimigos a 3 tiles por 5s. 50% SP. 10 mana.",
+        "cooldown":   15.0,
+        "mana_cost":  10,
+        "cast_time":  0.0,
+        "cast_range": 3,
+        "class_id":   "mago",
+    },
+    "bloco_de_gelo": {
+        "name":       "Bloco de Gelo",
+        "desc":       "Imune e imóvel 5s. Cura 10% HP/s. 45s recarga.",
+        "cooldown":   45.0,
+        "mana_cost":  0,
+        "cast_time":  0.0,
+        "cast_range": 0,
+        "class_id":   "mago",
+    },
+})
+
+# Nível mínimo necessário para aprender cada skill com o treinador
+SKILL_LEVEL_REQUIREMENTS: dict[str, int] = {
+    "golpe_poderoso":       2,
+    "impacto":              3,
+    "vitoria_iminente":     5,
+    "interceptar":          6,
+    "executar":            10,
+    # Mago
+    "bola_de_fogo":         2,
+    "nova_congelante":      4,
+    "calamidade_flamejante": 6,
+    "bloco_de_gelo":        8,
+}
+
+# Custo em ouro para aprender cada skill (começa em 100, dobra a cada skill)
+SKILL_COSTS: dict[str, int] = {
+    "golpe_poderoso":       100,
+    "impacto":              200,
+    "vitoria_iminente":     400,
+    "interceptar":          800,
+    "executar":            1600,
+    # Mago
+    "bola_de_fogo":         100,
+    "nova_congelante":      200,
+    "calamidade_flamejante": 400,
+    "bloco_de_gelo":        800,
+}
+
+# Ordem de exibição no treinador — por classe
+SKILL_ORDER_BY_CLASS: dict[str, list] = {
+    "guerreiro": ["golpe_poderoso", "impacto", "vitoria_iminente", "interceptar", "executar"],
+    "mago":      ["bola_de_fogo", "nova_congelante", "calamidade_flamejante", "bloco_de_gelo"],
+}

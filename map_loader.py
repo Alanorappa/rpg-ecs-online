@@ -1,4 +1,5 @@
 # map_loader.py
+from __future__ import annotations
 """
 Carrega mapas a partir de arquivos CSV + JSON opcional de entidades.
 
@@ -24,6 +25,7 @@ import csv
 import json
 import os
 from paths import resource_path
+from tileset import OBJECT_CHARS, OBJECT_UNDERLYING
 
 
 # Tipos de comerciantes codificados no mapa: char → shop_id
@@ -43,66 +45,25 @@ ENEMY_TILE_CHARS = {
 }
 
 
-def load_map_csv(filepath: str) -> tuple[list[str], dict]:
+def load_map_csv(filepath: str) -> tuple[list[str], list[str], dict, list | None]:
     """
-    Lê um arquivo CSV e retorna a matriz de tiles + pontos de spawn.
+    Carrega um mapa e retorna (terrain_matrix, object_matrix, spawn_points, terrain_visual).
 
-    Args:
-        filepath: Caminho para o arquivo .csv do mapa.
-
-    Returns:
-        tile_matrix: Lista de strings, cada string = uma linha do mapa.
-                     Células de spawn são substituídas por '.' (chão) para renderização.
-        spawn_points: Dicionário com:
-            "player": (col, row) ou None se não houver P no mapa
-            "enemies": lista de (col, row, enemy_type_str, tier_str)
+    terrain_visual — list[list[str]] com sprite IDs de sheet por tile, ou None se não existir.
     """
-    filepath = resource_path(filepath)
-    if not os.path.exists(filepath):
+    filepath  = resource_path(filepath)
+    base      = os.path.splitext(filepath)[0]
+    t_path    = base + "_terrain.csv"
+    o_path    = base + "_objects.csv"
+
+    if os.path.exists(t_path) and os.path.exists(o_path):
+        terrain_matrix, object_matrix, player_spawn, enemy_spawns, \
+            portal_spawns, merchant_spawns = _load_two_layer(t_path, o_path)
+    elif os.path.exists(filepath):
+        terrain_matrix, object_matrix, player_spawn, enemy_spawns, \
+            portal_spawns, merchant_spawns = _load_single_layer(filepath)
+    else:
         raise FileNotFoundError(f"Mapa não encontrado: {filepath}")
-
-    tile_matrix = []
-    player_spawn = None
-    enemy_spawns = []
-    portal_spawns = []
-    merchant_spawns = []
-
-    with open(filepath, newline="", encoding="utf-8") as f:
-        reader = csv.reader(f)
-        for row_idx, row in enumerate(reader):
-            if not row or all(cell.strip() == "" for cell in row):
-                continue
-            row_chars = []
-            for col_idx, cell in enumerate(row):
-                char = cell.strip()
-                if not char:
-                    char = "."  # célula vazia vira chão
-
-                # Extrai spawn do jogador
-                if char == "P":
-                    player_spawn = (col_idx, row_idx)
-                    row_chars.append(".")  # renderiza como chão
-
-                # Extrai portais/saídas de zona
-                elif char == "O":
-                    portal_spawns.append((col_idx, row_idx))
-                    row_chars.append("O")  # mantém para renderização como PORTAL_TILE
-
-                # Extrai spawns de comerciantes
-                elif char in MERCHANT_TILE_CHARS:
-                    merchant_spawns.append((col_idx, row_idx, MERCHANT_TILE_CHARS[char]))
-                    row_chars.append(".")  # renderiza como chão
-
-                # Extrai spawns de inimigos
-                elif char in ENEMY_TILE_CHARS:
-                    enemy_type, enemy_tier = ENEMY_TILE_CHARS[char]
-                    enemy_spawns.append((col_idx, row_idx, enemy_type, enemy_tier))
-                    row_chars.append(".")  # renderiza como chão
-
-                else:
-                    row_chars.append(char)
-
-            tile_matrix.append("".join(row_chars))
 
     spawn_points = {
         "player":          player_spawn,
@@ -110,18 +71,134 @@ def load_map_csv(filepath: str) -> tuple[list[str], dict]:
         "portals":         portal_spawns,
         "merchants":       merchant_spawns,
         "quest_givers":    [],
+        "blacksmiths":     [],
+        "trainers":        [],
         "spawn_zones":     [],
         "transitions":     [],
-        "ambient_zones":   [],   # lista de {name, ambient, rect:[x1,y1,x2,y2]}
-        "default_ambient": "",   # ambient padrão do mapa (vazio = usa padrão do engine)
+        "ambient_zones":   [],
+        "default_ambient": "",
     }
 
-    # Tenta carregar JSON de entidades ao lado do CSV (sistema novo)
-    json_path = os.path.splitext(filepath)[0] + "_entities.json"
+    json_path = base + "_entities.json"
     if os.path.exists(json_path):
         _merge_entities_json(json_path, spawn_points)
 
-    return tile_matrix, spawn_points
+    # Carrega terrain_visual (sheet overrides) se existir
+    terrain_visual = None
+    v_path = base + "_terrain_sprites.csv"
+    if os.path.exists(v_path):
+        terrain_visual = _load_terrain_visual(v_path)
+
+    return terrain_matrix, object_matrix, spawn_points, terrain_visual
+
+
+def _load_terrain_visual(path: str) -> list[list[str]]:
+    """Lê o CSV de sprite IDs de terreno."""
+    matrix = []
+    with open(path, newline="", encoding="utf-8") as f:
+        for row in csv.reader(f):
+            matrix.append([c.strip() for c in row])
+    return matrix
+
+
+def _load_two_layer(terrain_path: str, objects_path: str):
+    """Carrega terrain e objects de dois CSVs separados."""
+    terrain_matrix = []
+    player_spawn   = None
+    enemy_spawns   = []
+    portal_spawns  = []
+    merchant_spawns = []
+
+    with open(terrain_path, newline="", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        for row_idx, row in enumerate(reader):
+            if not row or all(c.strip() == "" for c in row):
+                continue
+            terrain_row = []
+            for col_idx, cell in enumerate(row):
+                char = cell.strip() or "."
+                if char == "P":
+                    player_spawn = (col_idx, row_idx)
+                    terrain_row.append(".")
+                elif char == "O":
+                    portal_spawns.append((col_idx, row_idx))
+                    terrain_row.append("O")
+                elif char in MERCHANT_TILE_CHARS:
+                    merchant_spawns.append((col_idx, row_idx, MERCHANT_TILE_CHARS[char]))
+                    terrain_row.append(".")
+                elif char in ENEMY_TILE_CHARS:
+                    enemy_type, enemy_tier = ENEMY_TILE_CHARS[char]
+                    enemy_spawns.append((col_idx, row_idx, enemy_type, enemy_tier))
+                    terrain_row.append("G")
+                else:
+                    terrain_row.append(char)
+            terrain_matrix.append("".join(terrain_row))
+
+    object_matrix = []
+    with open(objects_path, newline="", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        for row in reader:
+            if not row or all(c.strip() == "" for c in row):
+                continue
+            object_matrix.append([
+                (c.strip() if c.strip() in OBJECT_CHARS else ".") for c in row
+            ])
+
+    # Garante que object_matrix tem o mesmo número de linhas que terrain_matrix
+    while len(object_matrix) < len(terrain_matrix):
+        w = len(terrain_matrix[len(object_matrix)]) if terrain_matrix else 0
+        object_matrix.append(["."] * w)
+
+    return terrain_matrix, object_matrix, player_spawn, enemy_spawns, \
+           portal_spawns, merchant_spawns
+
+
+def _load_single_layer(filepath: str):
+    """Carrega mapa legado de um único CSV e separa terrain/objects automaticamente."""
+    terrain_matrix = []
+    object_matrix  = []
+    player_spawn   = None
+    enemy_spawns   = []
+    portal_spawns  = []
+    merchant_spawns = []
+
+    with open(filepath, newline="", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        for row_idx, row in enumerate(reader):
+            if not row or all(cell.strip() == "" for cell in row):
+                continue
+            terrain_row = []
+            object_row  = []
+            for col_idx, cell in enumerate(row):
+                char = cell.strip() or "."
+                if char == "P":
+                    player_spawn = (col_idx, row_idx)
+                    terrain_row.append(".")
+                    object_row.append(".")
+                elif char == "O":
+                    portal_spawns.append((col_idx, row_idx))
+                    terrain_row.append("O")
+                    object_row.append(".")
+                elif char in MERCHANT_TILE_CHARS:
+                    merchant_spawns.append((col_idx, row_idx, MERCHANT_TILE_CHARS[char]))
+                    terrain_row.append(".")
+                    object_row.append(".")
+                elif char in ENEMY_TILE_CHARS:
+                    enemy_type, enemy_tier = ENEMY_TILE_CHARS[char]
+                    enemy_spawns.append((col_idx, row_idx, enemy_type, enemy_tier))
+                    terrain_row.append("G")
+                    object_row.append(".")
+                elif char in OBJECT_CHARS:
+                    terrain_row.append(OBJECT_UNDERLYING.get(char, "G"))
+                    object_row.append(char)
+                else:
+                    terrain_row.append(char)
+                    object_row.append(".")
+            terrain_matrix.append("".join(terrain_row))
+            object_matrix.append(object_row)
+
+    return terrain_matrix, object_matrix, player_spawn, enemy_spawns, \
+           portal_spawns, merchant_spawns
 
 
 def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
@@ -143,8 +220,15 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
 
     if "merchants" in data:
         spawn_points["merchants"] = [
-            (m["x"], m["y"], m.get("shop_id", "general"))
+            (m["x"], m["y"], m.get("shop_id", "general"),
+             m.get("level", 1), m.get("profession", "Comerciante"))
             for m in data["merchants"]
+        ]
+    else:
+        # Normaliza tuplas CSV (3 elementos) para o formato completo (5 elementos)
+        spawn_points["merchants"] = [
+            (col, row, sid, 1, "Comerciante")
+            for col, row, sid in spawn_points["merchants"]
         ]
 
     if "quest_givers" in data:
@@ -152,8 +236,32 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
             (q["x"], q["y"],
              q.get("name", "Missiveiro"),
              tuple(q.get("quest_ids", [])),
-             tuple(q.get("turn_in_ids", [])))
+             tuple(q.get("turn_in_ids", [])),
+             q.get("level", 1),
+             q.get("profession", "Missiveiro"))
             for q in data["quest_givers"]
+        ]
+
+    if "blacksmiths" in data:
+        spawn_points["blacksmiths"] = [
+            (b["x"], b["y"],
+             b.get("name", "Ferreiro"),
+             b.get("shop_id", "blacksmith"),
+             b.get("level", 1),
+             b.get("profession", "Ferreiro"))
+            for b in data["blacksmiths"]
+        ]
+
+    if "trainers" in data:
+        spawn_points["trainers"] = [
+            (t["x"], t["y"],
+             t.get("name", "Treinador"),
+             t.get("class_id", "guerreiro"),
+             tuple(t.get("quest_ids", [])),
+             tuple(t.get("turn_in_ids", [])),
+             t.get("level", 1),
+             t.get("profession", "Treinador"))
+            for t in data["trainers"]
         ]
 
     if "transitions" in data:

@@ -6,6 +6,7 @@ Gerencia UI e lógica de alocação da árvore de talentos do Cavaleiro.
 
 from __future__ import annotations
 import pygame
+from fonts import make as _font
 from talent_data import BUILDS, TALENTS, BUILD_TALENTS
 from combat_log import LOG
 from save_system import request_autosave
@@ -49,9 +50,9 @@ class TalentSystem:
         self.world       = world
         self.player_id   = player_entity_id
         self.screen      = screen
-        self.font_lg     = pygame.font.Font(None, 26)
-        self.font_md     = pygame.font.Font(None, 20)
-        self.font_sm     = pygame.font.Font(None, 17)
+        self.font_lg     = _font(26)
+        self.font_md     = _font(20)
+        self.font_sm     = _font(17)
         self._hovered_id: str | None = None
         self.wants_close: bool = False
 

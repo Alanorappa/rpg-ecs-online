@@ -13,6 +13,7 @@ Comp:   components.py   (QuestLog, QuestGiver)
 from __future__ import annotations
 import random
 import pygame
+from fonts import make as _font
 
 from quest_events import QUEST_EVENTS
 from quests_data import QUESTS, QUEST_ITEMS, ObjectiveDef
@@ -43,11 +44,18 @@ class QuestSystem:
         self._font_obj:    "pygame.font.Font | None" = None
         self._hud_cache_key:  "tuple | None"          = None
         self._hud_cache_surf: "pygame.Surface | None" = None
+        self._current_map: str = ""
+        self._last_reach_tile: tuple = (-1, -1, "")  # (tx, ty, map) — evita disparo por frame
 
     def render(self, camera_offset_x: float = 0, camera_offset_y: float = 0) -> None:
         pass  # renderização feita via render_hud() chamado pelo GameEngine
 
     # ── Update ──────────────────────────────────────────────────────────────
+
+    def set_current_map(self, map_file: str) -> None:
+        """Chamado pelo GameEngine sempre que o mapa muda."""
+        self._current_map = map_file
+        self._last_reach_tile = (-1, -1, "")
 
     def update(self, events=None, dt: float = 0) -> None:
         from components import QuestLog
@@ -55,6 +63,9 @@ class QuestSystem:
         if ql is None:
             QUEST_EVENTS.clear()
             return
+
+        # Dispara reach_tile com posição atual do player a cada frame
+        self._fire_reach_tile(ql)
 
         while QUEST_EVENTS:
             event_type, data = QUEST_EVENTS.popleft()
@@ -73,6 +84,29 @@ class QuestSystem:
                         else:
                             prog[i] += 1
                         self._hud_cache_key = None   # invalida cache HUD
+
+        # collect_item: sincroniza progresso com inventário real (cobre itens já na bag)
+        self._sync_collect_progress(ql)
+
+    def _process_talk_to_npc(self, npc_name: str) -> None:
+        """Processa imediatamente um evento talk_to_npc sem passar pela fila.
+        Chamado por QuestDialogSystem._open_dialog antes de calcular o estado do diálogo."""
+        from components import QuestLog
+        ql = self.world.get_component(self.player_entity, QuestLog)
+        if ql is None:
+            return
+        data = {"npc_name": npc_name}
+        for qid in list(ql.active.keys()):
+            qdef = QUESTS.get(qid)
+            if qdef is None:
+                continue
+            prog = ql.active[qid]
+            for i, obj in enumerate(qdef.objectives):
+                if prog[i] >= obj.count:
+                    continue
+                if self._matches("talk_to_npc", data, obj):
+                    prog[i] += 1
+                    self._hud_cache_key = None
 
     # ── API para QuestDialogSystem ───────────────────────────────────────────
 
@@ -132,8 +166,8 @@ class QuestSystem:
             return
 
         if self._font_title is None:
-            self._font_title = pygame.font.Font(None, 18)
-            self._font_obj   = pygame.font.Font(None, 16)
+            self._font_title = _font(18)
+            self._font_obj   = _font(16)
 
         cache_key = tuple(
             (qid, tuple(prog))
@@ -230,6 +264,49 @@ class QuestSystem:
     def _all_done(self, prog: list, qdef) -> bool:
         return all(prog[i] >= obj.count for i, obj in enumerate(qdef.objectives))
 
+    def _fire_reach_tile(self, ql) -> None:
+        """Dispara reach_tile apenas quando o player muda de tile (não todo frame)."""
+        from components import TileMovement
+        tm = self.world.get_component(self.player_entity, TileMovement)
+        if tm is None or tm.is_moving:
+            return
+        current = (tm.current_tile_x, tm.current_tile_y, self._current_map)
+        if current == self._last_reach_tile:
+            return  # mesmo tile do último disparo — não reenfileira
+        has_reach = any(
+            obj.type == "reach_tile"
+            for prog, qid in ((ql.active[q], q) for q in ql.active)
+            for i, obj in enumerate(QUESTS[qid].objectives)
+            if QUESTS.get(qid) and prog[i] < QUESTS[qid].objectives[i].count
+        )
+        if not has_reach:
+            return
+        self._last_reach_tile = current
+        QUEST_EVENTS.append(("reach_tile", {
+            "tx":  tm.current_tile_x,
+            "ty":  tm.current_tile_y,
+            "map": self._current_map,
+        }))
+
+    def _sync_collect_progress(self, ql) -> None:
+        """Sincroniza objetivos collect_item com o inventário real do player."""
+        from components import Inventory
+        inv = self.world.get_component(self.player_entity, Inventory)
+        if inv is None:
+            return
+        for qid, prog in ql.active.items():
+            qdef = QUESTS.get(qid)
+            if qdef is None:
+                continue
+            for i, obj in enumerate(qdef.objectives):
+                if obj.type != "collect_item" or not obj.loot_item:
+                    continue
+                owned = sum(item.stack for item in inv.items if item.name == obj.loot_item)
+                new_prog = min(owned, obj.count)
+                if prog[i] != new_prog:
+                    prog[i] = new_prog
+                    self._hud_cache_key = None
+
     def _complete_quest(self, ql, qid: str) -> None:
         from components import Wallet, CharacterStats, CombatStats, \
                                PermanentStats, PlayerControlled
@@ -247,28 +324,35 @@ class QuestSystem:
 
         reward = qdef.reward
 
+        # Remove itens de quest do inventário para objetivos collect_item
+        from components import Inventory, PlayerControlled as _PC
+        for _, inv, _ in self.world.get_entities_with(Inventory, _PC):
+            for obj in qdef.objectives:
+                if obj.type != "collect_item" or not obj.loot_item:
+                    continue
+                needed = obj.count
+                i = 0
+                while i < len(inv.items) and needed > 0:
+                    item = inv.items[i]
+                    if item.name == obj.loot_item:
+                        if item.stack <= needed:
+                            needed -= item.stack
+                            inv.items.pop(i)
+                        else:
+                            item.stack -= needed
+                            needed = 0
+                            i += 1
+                    else:
+                        i += 1
+            break
+
         if reward.xp > 0:
-            from components import TalentTree
-            from sound_manager import SOUNDS
+            from stats_system import process_levelups
             for eid, char, cs, _ in self.world.get_entities_with(
                     CharacterStats, CombatStats, PlayerControlled):
                 perm = self.world.get_component(eid, PermanentStats)
                 char.current_xp += reward.xp
-                while char.current_xp >= char.xp_to_next_level:
-                    char.current_xp -= char.xp_to_next_level
-                    char.level += 1
-                    char.xp_to_next_level = CharacterStats.xp_for_level(char.level)
-                    char.vitality     += 1
-                    char.strength     += 1
-                    char.agility      += 1
-                    char.intelligence += 1
-                    char.defense      += 2
-                    tt = self.world.get_component(eid, TalentTree)
-                    if tt is not None:
-                        tt.available_points += 1
-                    SOUNDS.play_ui("levelup")
-                    LOG.add(f"Level up! Nivel {char.level} — 1 ponto de talento disponivel (T).", (255, 200, 0))
-                apply_char_stats_to_combat(char, cs, perm)
+                process_levelups(self.world, eid, char, cs, perm)
                 break
 
         if reward.gold > 0:
@@ -282,10 +366,6 @@ class QuestSystem:
         reward_str = f" ({', '.join(parts)})" if parts else ""
         LOG.add(f'Quest completa: "{qdef.title}"{reward_str}!', self.COL_REWARD)
         PROC.add("Quest Completa!", self.COL_REWARD)
-
-        # Cadeia de quests: next_quest é iniciado automaticamente
-        if qdef.next_quest:
-            self._try_start(ql, qdef.next_quest)
 
         # Desbloqueia quests auto_start com pré-requisitos agora satisfeitos
         for qid2, qdef2 in QUESTS.items():
@@ -304,10 +384,14 @@ class QuestSystem:
         if obj.type == "kill":
             return t in ("*", data.get("name", ""), data.get("race", ""))
         if obj.type == "collect_item":
-            return t in ("*", data.get("item_name", ""))
+            # compara pelo nome do item (loot_item), não pelo mob alvo
+            return data.get("item_name", "") == obj.loot_item
         if obj.type == "reach_tile":
             loc = obj.location
             if not loc:
+                return False
+            # Se target especifica um mapa, verifica se o player está nele
+            if t and t != "*" and data.get("map", "") != t:
                 return False
             tx, ty = data.get("tx", -1), data.get("ty", -1)
             if len(loc) == 2:
@@ -522,10 +606,10 @@ class QuestDialogSystem:
     # ── Render — indicadores no mundo ────────────────────────────────────────
 
     def render_world(self, cam_x: float = 0, cam_y: float = 0) -> None:
-        from components import QuestGiver as _QG, Position, Renderable
+        from components import QuestGiver as _QG, Position, Renderable, Visible
         self._lazy_fonts()
 
-        for eid, pos, rend, _ in self.world.get_entities_with(Position, Renderable, _QG):
+        for eid, pos, rend, _, _ in self.world.get_entities_with(Position, Renderable, _QG, Visible):
             avail       = self._get_available_quests(eid)
             completable = self._get_completable_quests(eid)
             inprog      = self._get_inprogress_quests(eid)
@@ -558,13 +642,15 @@ class QuestDialogSystem:
     def render(self, cam_x: float = 0, cam_y: float = 0) -> None:
         if not self.is_open:
             return
-        from components import QuestGiver as _QG
+        from components import QuestGiver as _QG, NPC as _NPC
         self._lazy_fonts()
 
         giver = self.world.get_component(self._dialog_npc_id, _QG)
         if giver is None:
             self._close()
             return
+        _npc_comp = self.world.get_component(self._dialog_npc_id, _NPC)
+        npc_name  = _npc_comp.name if _npc_comp else "NPC"
 
         SW, SH = self.screen.get_size()
         ov = pygame.Surface((SW, SH), pygame.SRCALPHA)
@@ -579,7 +665,7 @@ class QuestDialogSystem:
         pygame.draw.rect(self.screen, self.COL_BORDER, (x0, y0, W, H), 2, border_radius=4)
 
         # Header: nome do NPC
-        npc_surf = self._font_lg.render(giver.name, True, self.COL_TITLE)
+        npc_surf = self._font_lg.render(npc_name, True, self.COL_TITLE)
         self.screen.blit(npc_surf, (x0 + self.PAD, y0 + self.PAD))
         pygame.draw.line(self.screen, self.COL_BORDER,
                          (x0 + 4, y0 + 42), (x0 + W - 4, y0 + 42))
@@ -673,13 +759,13 @@ class QuestDialogSystem:
                                        True, self.COL_GOLD)
             self.screen.blit(rew, (x0 + PAD, y))
 
-        # Botões na base do painel
+        # Botões na base do painel — alinhados à direita: [Recusar] [Aceitar]
         btn_y  = y0 + self.PANEL_H - 48
-        acc_r  = pygame.Rect(x0 + PAD,       btn_y, 150, 32)
-        dec_r  = pygame.Rect(x0 + PAD + 158, btn_y, 150, 32)
+        acc_r  = pygame.Rect(x0 + self.PANEL_W - PAD - 150,       btn_y, 150, 32)
+        dec_r  = pygame.Rect(x0 + self.PANEL_W - PAD - 150 - 158, btn_y, 150, 32)
         for rect, label, c_hov, c_nor in [
-            (acc_r, "Aceitar",  (60, 120, 60), (35, 70, 35)),
             (dec_r, "Recusar",  (120, 50, 50), (70, 30, 30)),
+            (acc_r, "Aceitar",  (60, 120, 60), (35, 70, 35)),
         ]:
             hov = rect.collidepoint(mx, my)
             pygame.draw.rect(self.screen, c_hov if hov else c_nor, rect, border_radius=4)
@@ -696,47 +782,53 @@ class QuestDialogSystem:
         if qdef is None:
             return
 
-        PAD    = self.PAD
-        mx, my = pygame.mouse.get_pos()
-        y = y0 + 52
+        PAD      = self.PAD
+        max_w    = self.PANEL_W - PAD * 2
+        mx, my   = pygame.mouse.get_pos()
+        btn_y    = y0 + self.PANEL_H - 48
+        y        = y0 + 52
 
+        # Cabeçalho
         hdr = self._font_lg.render("Missao Completa!", True, self.COL_GOLD)
         self.screen.blit(hdr, (x0 + PAD, y))
-        y += 30
+        y += 28
 
+        # Título da quest
         ts = self._font_body.render(qdef.title, True, self.COL_TITLE)
         self.screen.blit(ts, (x0 + PAD, y))
-        y += 26
+        y += 22
 
-        # Objetivos concluídos
-        from components import QuestLog
-        ql = self.world.get_component(self.player_entity, QuestLog)
-        prog = ql.active.get(self._dialog_selected_qid, []) if ql else []
-        for i, obj in enumerate(qdef.objectives):
-            cur = prog[i] if i < len(prog) else obj.count
-            s = self._font_sm.render(f"  v  {QuestSystem._obj_label(obj, cur)}",
-                                     True, self.COL_GREEN)
+        # Linha separadora
+        pygame.draw.line(self.screen, self.COL_BORDER,
+                         (x0 + PAD, y), (x0 + self.PANEL_W - PAD, y))
+        y += 10
+
+        # Texto de conclusão do NPC (ou fallback genérico)
+        completion_text = getattr(qdef, "completion", "") or "Bom trabalho. Aqui esta sua recompensa."
+        for line in self._wrap(completion_text, max_w, self._font_body):
+            s = self._font_body.render(line, True, self.COL_WHITE)
             self.screen.blit(s, (x0 + PAD, y))
-            y += 16
-        y += 8
+            y += s.get_height() + 2
+        y += 12
 
         # Recompensas
         parts = []
         if qdef.reward.xp:   parts.append(f"+{qdef.reward.xp} XP")
         if qdef.reward.gold: parts.append(f"+{qdef.reward.gold} ouro")
         if parts:
-            rew = self._font_body.render("Recompensa: " + ", ".join(parts),
-                                         True, self.COL_GOLD)
+            rew_hdr = self._font_sm.render("Recompensa:", True, (160, 140, 80))
+            self.screen.blit(rew_hdr, (x0 + PAD, y))
+            y += rew_hdr.get_height() + 4
+            rew = self._font_body.render("  " + "  |  ".join(parts), True, self.COL_GOLD)
             self.screen.blit(rew, (x0 + PAD, y))
 
-        # Botão
-        btn_y  = y0 + self.PANEL_H - 48
-        comp_r = pygame.Rect(x0 + PAD, btn_y, 200, 32)
+        # Botão Concluir
+        comp_r = pygame.Rect(x0 + self.PANEL_W - PAD - 180, btn_y, 180, 32)
         hov    = comp_r.collidepoint(mx, my)
         pygame.draw.rect(self.screen, (60, 110, 60) if hov else (35, 65, 35),
                          comp_r, border_radius=4)
         pygame.draw.rect(self.screen, self.COL_BORDER, comp_r, 1, border_radius=4)
-        txt = self._font_body.render("Completar Missao", True, self.COL_WHITE)
+        txt = self._font_body.render("Concluir", True, self.COL_WHITE)
         self.screen.blit(txt, (comp_r.centerx - txt.get_width() // 2,
                                comp_r.centery - txt.get_height() // 2))
         self._complete_rect = comp_r
@@ -744,15 +836,22 @@ class QuestDialogSystem:
     # ── Helpers de diálogo ───────────────────────────────────────────────────
 
     def _open_dialog(self, npc_id: int) -> None:
+        from components import NPC as _NPC
+        _npc_c = self.world.get_component(npc_id, _NPC)
+        _npc_name = _npc_c.name if _npc_c else "NPC"
+
+        # Processa talk_to_npc ANTES de calcular o estado do diálogo
+        # para que objetivos de "falar com NPC" fiquem completos antes da checagem.
+        self._qs._process_talk_to_npc(_npc_name)
+
         avail = self._get_available_quests(npc_id)
+        # Re-calcula completáveis APÓS processar talk_to_npc
         comp  = self._get_completable_quests(npc_id)
         total = comp + avail   # completáveis têm prioridade na lista
 
         if not total:
             inprog = self._get_inprogress_quests(npc_id)
-            from components import QuestGiver as _QG
-            giver = self.world.get_component(npc_id, _QG)
-            name  = giver.name if giver else "NPC"
+            name  = _npc_name
             if inprog:
                 LOG.add(f"{name}: Continue sua missao.", self._qs.COL_PROG)
             else:
@@ -894,9 +993,9 @@ class QuestDialogSystem:
 
     def _lazy_fonts(self) -> None:
         if self._font_lg is None:
-            self._font_lg   = pygame.font.Font(None, 26)
-            self._font_body = pygame.font.Font(None, 21)
-            self._font_sm   = pygame.font.Font(None, 18)
+            self._font_lg   = _font(26)
+            self._font_body = _font(21)
+            self._font_sm   = _font(18)
 
     @staticmethod
     def _wrap(text: str, max_px: int, font) -> list:
@@ -1271,9 +1370,9 @@ class QuestJournalSystem:
 
     def _lazy_fonts(self) -> None:
         if self._font_title is None:
-            self._font_title = pygame.font.Font(None, 24)
-            self._font_body  = pygame.font.Font(None, 21)
-            self._font_sm    = pygame.font.Font(None, 18)
+            self._font_title = _font(24)
+            self._font_body  = _font(21)
+            self._font_sm    = _font(18)
 
     @staticmethod
     def _wrap(text: str, max_px: int, font) -> list:

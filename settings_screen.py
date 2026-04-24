@@ -2,6 +2,7 @@
 """Tela de configurações exibida antes do jogo iniciar."""
 import pygame
 import config
+from fonts import make as _font
 
 SCALE_OPTIONS = [
     ("1x  —  1280 × 720",  1.0),
@@ -31,9 +32,9 @@ def run(screen: pygame.Surface) -> float:
     cfg   = config.load()
     scale = cfg.get("scale", 1.0)
 
-    font_lg = pygame.font.Font(None, 36)
-    font_md = pygame.font.Font(None, 26)
-    font_sm = pygame.font.Font(None, 22)
+    font_lg = _font(36)
+    font_md = _font(26)
+    font_sm = _font(22)
     clock   = pygame.time.Clock()
 
     sw, sh = screen.get_size()

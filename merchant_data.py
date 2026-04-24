@@ -116,4 +116,27 @@ SHOPS = {
              "price": 48},
         ],
     },
+
+    "blacksmith": {
+        "name": "Ferreiro",
+        "color": (180, 120, 40),
+        "stock": [
+            # --- Materiais (caros para incentivar reciclagem) ---
+            {"factory": lambda: __import__("crafting_data").MATERIALS["fragmento_ferro"](),  "price": 500},
+            {"factory": lambda: __import__("crafting_data").MATERIALS["fibra_madeira"](),    "price": 300},
+            {"factory": lambda: __import__("crafting_data").MATERIALS["tira_couro"](),       "price": 300},
+            {"factory": lambda: __import__("crafting_data").MATERIALS["fibra_resistente"](), "price": 700},
+            {"factory": lambda: __import__("crafting_data").MATERIALS["po_de_joia"](),       "price": 400},
+            {"factory": lambda: __import__("crafting_data").MATERIALS["fio_de_prata"](),     "price": 800},
+            {"factory": lambda: __import__("crafting_data").MATERIALS["essencia_comum"](),   "price": 1000},
+            {"factory": lambda: __import__("crafting_data").MATERIALS["essencia_arcana"](),  "price": 2000},
+            {"factory": lambda: __import__("crafting_data").MATERIALS["joia_bruta"](),       "price": 2500},
+            {"factory": lambda: __import__("crafting_data").MATERIALS["cristal_poder"](),    "price": 5000},
+            # --- Receitas ---
+            {"factory": lambda: __import__("crafting_data").RECIPE_ITEMS["espada_afiada"](),    "price": 200},
+            {"factory": lambda: __import__("crafting_data").RECIPE_ITEMS["cota_reforcada"](),   "price": 200},
+            {"factory": lambda: __import__("crafting_data").RECIPE_ITEMS["amuleto_protecao"](), "price": 350},
+            {"factory": lambda: __import__("crafting_data").RECIPE_ITEMS["espada_runica"](),    "price": 1200},
+        ],
+    },
 }

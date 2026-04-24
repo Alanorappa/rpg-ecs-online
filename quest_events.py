@@ -7,7 +7,7 @@ A fila é drenada frame a frame — eventos nunca acumulam entre frames.
 Tipos de evento:
     kill            {"name": str, "race": str, "tier": str}
     collect_item    {"item_name": str}
-    reach_tile      {"tx": int, "ty": int}
+    reach_tile      {"tx": int, "ty": int, "map": str}   # map = arquivo do mapa atual
     use_skill       {"skill_id": str}
     use_consumable  {"item_name": str}
     reach_level     {"level": int}

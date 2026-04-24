@@ -1,6 +1,7 @@
 # floating_text.py
 """Números de dano flutuantes exibidos acima das entidades."""
 import pygame
+from fonts import make as _font
 
 
 class FloatingTextEntry:
@@ -37,10 +38,10 @@ class FloatingTextManager:
 
     _PRESETS = {
         #         (font_size, duration, speed_y_idle)
-        "small":  (13, 1.0, 5),
-        "normal": (16, 1.2, 5),
-        "large":  (21, 1.5, 5),
-        "crit":   (22, 1.35, 0),   # crítico: grow 0.25s + hold 1s + fade 0.1s
+        "small":  (22, 1.0, 5),
+        "normal": (26, 1.2, 5),
+        "large":  (35, 1.5, 5),
+        "crit":   (38, 1.35, 0),   # crítico: grow 0.25s + hold 1s + fade 0.1s
     }
 
     def __init__(self):
@@ -49,7 +50,7 @@ class FloatingTextManager:
 
     def _get_font(self, size: int) -> pygame.font.Font:
         if size not in self._font_cache:
-            self._font_cache[size] = pygame.font.SysFont("Arial", size, bold=True)
+            self._font_cache[size] = _font(size)
         return self._font_cache[size]
 
     def add(self, text: str, wx: float, wy: float,
@@ -194,7 +195,7 @@ class WarnTextManager:
     """
 
     DURATION   = 1.6          # segundos visível
-    FONT_SIZE  = 17
+    FONT_SIZE  = 27
     COLOR      = (230, 170, 50)
     Y_RATIO    = 0.72         # 72% da altura da tela (abaixo do centro)
 
@@ -205,7 +206,7 @@ class WarnTextManager:
 
     def _get_font(self) -> "pygame.font.Font":
         if self._font is None:
-            self._font = pygame.font.SysFont("Arial", self.FONT_SIZE, bold=True)
+            self._font = _font(self.FONT_SIZE)
         return self._font
 
     def add(self, text: str) -> None:
@@ -256,7 +257,7 @@ class ProcTextManager:
     """
 
     DURATION   = 1.5
-    FONT_SIZE  = 16
+    FONT_SIZE  = 26
     Y_RATIO    = 0.58   # base: 58% da altura — abaixo do player, acima do WARN
     SLOT_HEIGHT = 22    # px entre textos empilhados
 
@@ -266,7 +267,7 @@ class ProcTextManager:
 
     def _get_font(self) -> "pygame.font.Font":
         if self._font is None:
-            self._font = pygame.font.SysFont("Arial", self.FONT_SIZE, bold=True)
+            self._font = _font(self.FONT_SIZE)
         return self._font
 
     def add(self, text: str, color: tuple = (255, 255, 255)) -> None:

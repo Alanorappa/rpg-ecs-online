@@ -114,6 +114,36 @@ class Minimap:
         pygame.draw.rect(self.screen, self.BORDER_COL,
                          (fx - 1, fy - 1, self.SIZE + 2, self.SIZE + 2), 1)
 
+    def get_rect(self) -> "pygame.Rect":
+        """Retorna o rect de tela do minimap (mesmo cálculo usado em render)."""
+        sw, _ = self.screen.get_size()
+        fx = sw - self.SIZE - self.MARGIN_RIGHT
+        fy = self.MARGIN_TOP
+        return pygame.Rect(fx, fy, self.SIZE, self.SIZE)
+
+    def screen_to_tile(self, mx: int, my: int,
+                       player_tx: int, player_ty: int) -> "tuple[int,int] | None":
+        """Converte coordenadas de tela (mx, my) em tile do mundo.
+
+        Retorna (tile_x, tile_y) se o clique estiver dentro do minimap, ou None.
+        """
+        rect = self.get_rect()
+        if not rect.collidepoint(mx, my):
+            return None
+        tp  = self._tile_px
+        ox  = rect.x + self._map_ox
+        oy  = rect.y + self._map_oy
+        # Posição relativa ao conteúdo do minimap
+        rx = mx - ox
+        ry = my - oy
+        content_size = self._content_size
+        if not (0 <= rx < content_size and 0 <= ry < content_size):
+            return None
+        # Tile relativo ao centro (player)
+        dtx = rx // tp - self.RADIUS
+        dty = ry // tp - self.RADIUS
+        return (player_tx + dtx, player_ty + dty)
+
     # ── Rebuild do cache ─────────────────────────────────────────────────────
 
     def _rebuild(

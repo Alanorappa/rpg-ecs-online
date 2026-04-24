@@ -155,6 +155,10 @@ class CombatStats:
         if not (0.0 <= base_crit_rating <= 1.0):
             raise ValueError(f"CombatStats: base_crit_rating deve estar em [0, 1] (recebido: {base_crit_rating})")
 
+        # HP salvo para restaurar após recálculo ao carregar save (populado por save_system)
+        self._saved_hp:  int = 0
+        self._saved_max: int = 0
+
         # Realiza o cálculo inicial de todos os atributos efetivos
         self._recalculate_effective_stats()
         self.current_hp = self.max_hp # Inicia com vida cheia
@@ -355,10 +359,15 @@ class DetectionRadius:
 
 @dataclass
 class Tilemap:
-    tile_matrix: list
+    tile_matrix: list       # list[list[TileType]] — colisão + fallback de cor
+    terrain_matrix: list    # list[str]            — chars de terreno (G, W, ~…), para autotile
+    object_matrix: list     # list[list[str]]       — IDs de objeto por tile (t, b, k, t1, "." = vazio)
     tile_size: int
     map_width_tiles: int
     map_height_tiles: int
+    # Visual override de terreno: sprite_id por tile, "" = sem override.
+    # Permite pintar sheet tiles sobre o terreno sem afetar a camada de objetos.
+    terrain_visual: list = None   # list[list[str]], inicializado em entity_factory
 
 
 class Visible:
@@ -377,11 +386,22 @@ class FogOfWar:
     """
 
     def __init__(self, radius: int = 8, explore_radius: int = 20) -> None:
-        self.radius:          int   = radius          # raio LOS (shadowcasting) — para ocultar entidades
-        self.explore_radius:  int   = explore_radius  # raio de exploração — para tile preto no mapa/tela
-        self.visible:         set   = set()           # LOS atual (entidades ocultas fora daqui)
-        self.explored:        set   = set()           # tiles já descobertos (persiste)
-        self._last_tile:      tuple = (-1, -1)        # posição anterior; evita recompute desnecessário
+        self.radius:          int   = radius
+        self.explore_radius:  int   = explore_radius
+        self.visible:         set   = set()           # LOS atual (recalculado a cada movimento)
+        self._explored_maps:  dict  = {}              # {map_file: set()} — explorado por mapa
+        self.explored:        set   = set()           # aponta para _explored_maps[mapa_atual]
+        self._last_tile:      tuple = (-1, -1)
+        self._current_map:    str   = ""
+
+    def switch_map(self, map_file: str) -> None:
+        """Troca o contexto de exploração para o mapa dado. Cria o set se não existir."""
+        if map_file not in self._explored_maps:
+            self._explored_maps[map_file] = set()
+        self._current_map = map_file
+        self.explored     = self._explored_maps[map_file]
+        self.visible      = set()
+        self._last_tile   = (-1, -1)
 
 
 class CombatState:
@@ -398,6 +418,7 @@ class CombatState:
         self.is_stunned: bool = False   # Não pode agir nem mover
         self.is_rooted: bool = False    # Pode agir mas não mover
         self.is_casting: bool = False   # Não pode se mover nem iniciar outra ação
+        self.is_immune: bool = False    # Imune a todos os danos (Bloco de Gelo)
         self.target_entity_id: int = -1 # Alvo atual selecionado
         self.is_pursuing: bool = False  # True = persegue o alvo (direito/skill/espaço). False = só selecionado
         self._just_entered_combat: bool = False  # sinaliza transição para CombatStateSystem disparar procs
@@ -445,7 +466,10 @@ class CharacterStats:
     def __init__(self, strength: int = 1, intelligence: int = 1,
                  agility: int = 1, vitality: int = 3, defense: int = 2,
                  spawn_tile_x: int = 0, spawn_tile_y: int = 0,
-                 spawn_map: str = "maps/map_1.csv"):
+                 spawn_map: str = "maps/map_1.csv",
+                 name: str = "Aventureiro", class_id: str = "guerreiro"):
+        self.name     = name            # nome do personagem (exibido no HUD)
+        self.class_id = class_id        # classe escolhida na criação
         self.strength = strength        # FOR → attack_power, dano físico
         self.intelligence = intelligence  # INT → spell_power, mana
         self.agility = agility            # AGI → crit, velocidade
@@ -478,6 +502,11 @@ class CharacterStats:
         # Fatiador de Corpos: spin AoE (duração e timer de tick)
         self.fatiador_timer: float = 0.0  # duração total restante (5s)
         self.fatiador_tick:  float = 0.0  # tempo até o próximo tick de dano
+
+        # Mana (classe Mago)
+        self.mana: int = 0
+        self.max_mana: int = 0
+        self.mana_regen_timer: float = 0.0
 
     @staticmethod
     def xp_for_level(level: int) -> int:
@@ -666,6 +695,13 @@ class Skill:
         self.rage_cost:          int  = 0     # custo base em Raiva (0 = sem custo)
         self.proc_attr:          str  = ""    # atributo de CharacterStats que sinaliza proc
         self.proc_ignores_cost:  bool = False # proc dispensa rage_cost quando ativo
+        # Campos de magia (Mago)
+        self.mana_cost:       int   = 0      # custo de mana para ativar
+        self.cast_time:       float = 0.0   # 0 = instantâneo; >0 = barra de cast
+        self.is_channeled:    bool  = False  # True = habilidade canalizada
+        self.channel_duration: float = 0.0  # duração total da canalização
+        self.needs_aoe_target: bool = False  # True = requer clique de mira AOE
+        self.cast_range:      int   = 0      # alcance máximo em tiles (0 = melee/sem alcance)
 
     def is_ready(self) -> bool:
         if self.current_cooldown > 0:
@@ -686,15 +722,14 @@ class PlayerSkills:
     GCD_DURATION: float = 0.5
 
     def __init__(self):
-        from skill_config import SKILL_SLOTS, DEFAULT_KEYBINDS, NUM_SLOTS, SKILL_CATALOG
+        from skill_config import DEFAULT_KEYBINDS, NUM_SLOTS
         self.gcd_timer: float = 0.0
         # keybinds[i] = pygame.K_* para o slot i
         self.keybinds: list[int] = list(DEFAULT_KEYBINDS)
         # skills[i] = Skill | None (None = slot vazio)
-        self.skills: list[Skill | None] = []
-        for i in range(NUM_SLOTS):
-            skill_id = SKILL_SLOTS[i] if i < len(SKILL_SLOTS) else None
-            self.skills.append(self._make_skill(skill_id, SKILL_CATALOG))
+        self.skills: list[Skill | None] = [None] * NUM_SLOTS
+        # IDs de skills aprendidas com treinador (controla o que pode ir para a barra)
+        self.learned_skill_ids: set = set()
 
     @classmethod
     def _make_skill(cls, skill_id: "str | None", catalog: dict) -> "Skill | None":
@@ -715,6 +750,12 @@ class PlayerSkills:
             s.rage_cost         = entry.get("rage_cost",         0)
             s.proc_attr         = entry.get("proc_attr",         "")
             s.proc_ignores_cost = entry.get("proc_ignores_cost", False)
+            s.mana_cost         = entry.get("mana_cost",         0)
+            s.cast_time         = entry.get("cast_time",         0.0)
+            s.is_channeled      = entry.get("is_channeled",      False)
+            s.channel_duration  = entry.get("channel_duration",  0.0)
+            s.needs_aoe_target  = entry.get("needs_aoe_target",  False)
+            s.cast_range        = entry.get("cast_range",        0)
             if entry.get("sound"):
                 s.sound_name = entry["sound"]
         if skill_id in cls._CHARGE_BASED:
@@ -749,18 +790,51 @@ class TileMovement:
 
 
 @dataclass
+class NPC:
+    """Identidade compartilhada de qualquer NPC (nome, nível, profissão).
+    Adicione junto com componentes de capacidade: Merchant, QuestGiver, Trainer...
+    """
+    name:       str = "NPC"
+    level:      int = 1
+    profession: str = "NPC"
+
+
+@dataclass
 class Merchant:
-    """Componente de comerciante NPC."""
-    name: str = "Comerciante"
+    """Capacidade de loja. Combine com NPC para criar um comerciante."""
     shop_id: str = "general"
 
 
 @dataclass
 class QuestGiver:
-    """Componente de NPC que oferece e/ou recebe quests do jogador."""
-    name:        str   = "Missiveiro"
+    """Capacidade de dador/receptor de quests. Combine com NPC."""
     quest_ids:   tuple = ()   # quests que este NPC pode oferecer
     turn_in_ids: tuple = ()   # quests que este NPC aceita para entrega (vazio = igual a quest_ids)
+
+
+@dataclass
+class Blacksmith:
+    """Capacidade de ferreiro (reciclagem + forja). Combine com NPC e Merchant."""
+    shop_id: str = "blacksmith"
+
+
+@dataclass
+class Trainer:
+    """Capacidade de treinador de classe — ensina skills a preço. Combine com NPC."""
+    class_id: str = "guerreiro"   # identificador da classe ensinada
+
+
+class LearnedRecipes:
+    """Receitas que o jogador aprendeu ao consumir itens de receita."""
+    def __init__(self):
+        self.known: list = []   # lista de recipe_id strings
+
+    def learn(self, recipe_id: str) -> bool:
+        """Aprende a receita. Retorna True se era nova."""
+        if recipe_id in self.known:
+            return False
+        self.known.append(recipe_id)
+        return True
 
 
 class TalentTree:
@@ -848,18 +922,15 @@ class StatusEffects:
     """
 
     def __init__(self) -> None:
-        self.effects: list = []   # list[ActiveEffect]
+        self.effects: dict = {}   # dict[str, ActiveEffect] — keyed by effect_type
 
     def has(self, effect_type: str) -> bool:
         """Retorna True se o efeito está ativo."""
-        return any(e.effect_type == effect_type for e in self.effects)
+        return effect_type in self.effects
 
     def get(self, effect_type: str):
         """Retorna o ActiveEffect ativo do tipo dado, ou None."""
-        for e in self.effects:
-            if e.effect_type == effect_type:
-                return e
-        return None
+        return self.effects.get(effect_type)
 
 
 @dataclass
@@ -921,3 +992,69 @@ class QuestLog:
     def __init__(self) -> None:
         self.active:    dict = {}   # quest_id → [prog_obj0, prog_obj1, ...]
         self.completed: set  = set()
+
+
+# ---------------------------------------------------------------------------
+# Componentes de magia (classe Mago)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SpellCast:
+    """Lançamento de magia em andamento — alimenta a barra de cast."""
+    spell_id:  str   = ""
+    cast_time: float = 0.0   # duração total do cast
+    elapsed:   float = 0.0   # tempo acumulado
+    target_id: int   = -1    # alvo (entidade) ao ser completado
+
+
+class Channeling:
+    """Canalização de magia em andamento (ex: Calamidade Flamejante)."""
+    def __init__(self, spell_id: str, duration: float, tick_interval: float,
+                 mana_per_tick: int, target_x: float, target_y: float,
+                 radius_tiles: float, slow_pct: float = 0.0,
+                 dmg_weapon_pct: float = 0.15, dmg_sp_coeff: float = 1.0):
+        self.spell_id       = spell_id
+        self.duration       = duration        # duração total
+        self.elapsed        = 0.0            # tempo acumulado
+        self.tick_interval  = tick_interval  # intervalo entre ticks de dano
+        self.last_tick      = 0.0            # acumulador de tick
+        self.mana_per_tick  = mana_per_tick  # mana consumida por tick
+        self.target_x       = target_x       # posição world do centro da área
+        self.target_y       = target_y
+        self.radius_tiles   = radius_tiles
+        self.slow_pct       = slow_pct       # % de lerdeza aplicada nos alvos
+        self.dmg_weapon_pct = dmg_weapon_pct
+        self.dmg_sp_coeff   = dmg_sp_coeff
+
+
+@dataclass
+class IceBlockEffect:
+    """Estado do Bloco de Gelo — imunidade + cura por segundo."""
+    duration:      float = 5.0
+    elapsed:       float = 0.0
+    heal_interval: float = 1.0
+    last_heal:     float = 0.0
+
+
+@dataclass
+class PlayerProjectile:
+    """Projétil de magia lançado pelo jogador."""
+    spell_id:       str   = ""
+    attacker_id:    int   = -1
+    target_id:      int   = -1
+    speed:          float = 350.0
+    dmg_weapon_pct: float = 0.10    # % do dano médio da arma
+    dmg_sp_coeff:   float = 1.0     # multiplicador de spell_power
+    color:          tuple = (160, 80, 255)  # roxo arcano
+
+
+@dataclass
+class AoeTargeting:
+    """Modo de mira AOE: próximo clique esquerdo posiciona a magia."""
+    spell_id:          str   = ""
+    radius_tiles:      float = 2.0
+    cast_range_tiles:  float = 0.0    # 0 = ilimitado
+    pending_world_x:   float = 0.0    # alvo armazenado enquanto fora do alcance
+    pending_world_y:   float = 0.0
+    waiting_for_range: bool  = False  # True = player caminhando até o alcance
+    cancel_pending:    bool  = False  # True = cancelado neste frame, removido no próximo

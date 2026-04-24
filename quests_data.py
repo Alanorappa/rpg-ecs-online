@@ -47,6 +47,7 @@ class QuestDef(NamedTuple):
     requires:    tuple = ()      # tuple[quest_id, ...] pré-requisitos
     next_quest:  str   = ""      # quest_id a iniciar automaticamente ao completar
     level_req:   int   = 0       # nível mínimo para aceitar a quest
+    completion:  str   = ""      # texto do NPC ao receber a entrega (vazio = usa título)
 
 
 # ---------------------------------------------------------------------------
@@ -72,38 +73,48 @@ QUESTS: dict[str, QuestDef] = {
     # ── Introdução ───────────────────────────────────────────────────────────
     "first_blood": QuestDef(
         title="Primeiro Sangue",
-        description="Mate seu primeiro inimigo.",
+        description="Este mundo não perdoa os fracos. Se quer sobreviver aqui, precisa provar que tem coragem. "
+                    "Vá lá fora e mate seu primeiro inimigo.",
         objectives=(
             ObjectiveDef(type="kill", target="*", count=1),
         ),
         reward=QuestReward(xp=50),
         next_quest="survivor",
+        completion="Sabia que você conseguiria. Todo guerreiro começa com o primeiro sangue — "
+                   "o resto é só questão de prática. Continue assim.",
     ),
 
     "survivor": QuestDef(
         title="Sobrevivente",
-        description="Alcance o Nível 3.",
+        description="Sobreviver não basta — você precisa crescer. "
+                    "Cada batalha deve te deixar mais forte. Alcance o Nível 3.",
         objectives=(
             ObjectiveDef(type="reach_level", count=3),
         ),
         reward=QuestReward(xp=120, gold=5),
         requires=("first_blood",),
+        completion="Nível 3 já! Você está evoluindo mais rápido do que eu esperava. "
+                   "Tome essa recompensa — vai precisar dela nas batalhas que estão por vir.",
     ),
 
     # ── Caça ─────────────────────────────────────────────────────────────────
     "bear_hunter": QuestDef(
         title="Caçador de Ursos",
-        description="Mate 5 Ursos.",
+        description="Os ursos dessa região estão cada vez mais agressivos e já atacaram alguns aldeões. "
+                    "Faça um favor a todos e abata 5 deles.",
         objectives=(
             ObjectiveDef(type="kill", target="Urso", count=5),
         ),
         reward=QuestReward(xp=200, gold=10),
         next_quest="bear_pelt",
+        completion="Cinco ursos! Impressionante. A região já está mais segura graças a você. "
+                   "Aliás, me lembrei de outra coisa que preciso...",
     ),
 
     "bear_pelt": QuestDef(
         title="Peles Valiosas",
-        description="Colete 3 Pelos de Urso.",
+        description="Já que você está caçando ursos de qualquer forma, traga-me 3 pelos. "
+                    "Valem bom dinheiro e não quero desperdiçar.",
         objectives=(
             ObjectiveDef(
                 type="collect_item",
@@ -115,11 +126,14 @@ QUESTS: dict[str, QuestDef] = {
         ),
         reward=QuestReward(xp=150, gold=15),
         requires=("bear_hunter",),
+        completion="Perfeitos. Esses pelos vão render bem no mercado. "
+                   "Aqui está sua parte — você merece.",
     ),
 
     "wolf_fangs": QuestDef(
         title="Presas Afiadas",
-        description="Colete 5 Presas de Lobo.",
+        description="Preciso de presas de lobo para um remédio especial. "
+                    "Traga 5 delas e pagarei bem.",
         objectives=(
             ObjectiveDef(
                 type="collect_item",
@@ -130,11 +144,14 @@ QUESTS: dict[str, QuestDef] = {
             ),
         ),
         reward=QuestReward(xp=180, gold=12),
+        completion="Exatamente o que eu precisava. Com essas presas vou conseguir preparar o remédio. "
+                   "Você acabou de salvar uma vida sem nem saber.",
     ),
 
     "spider_venom": QuestDef(
         title="Veneno Mortal",
-        description="Colete 3 frascos de Veneno de Aranha.",
+        description="As aranhas dessa região produzem um veneno que uso para tratar mordidas de serpente. "
+                    "Colete 3 frascos para mim.",
         objectives=(
             ObjectiveDef(
                 type="collect_item",
@@ -145,49 +162,120 @@ QUESTS: dict[str, QuestDef] = {
             ),
         ),
         reward=QuestReward(xp=130, gold=10),
+        completion="Ótimo trabalho. Poucos têm coragem de se aproximar dessas criaturas. "
+                   "Seu serviço foi inestimável.",
     ),
 
     "beast_slayer": QuestDef(
         title="Matador de Feras",
-        description="Mate 10 criaturas da raça Fera.",
+        description="As feras desta floresta estão se tornando um problema sério. "
+                    "Apenas guerreiros experientes deveriam tentar enfrentá-las. "
+                    "Se você se acha capaz, elimine 10 delas.",
         objectives=(
             ObjectiveDef(type="kill", target="Fera", count=10),
         ),
         reward=QuestReward(xp=300, gold=20),
         requires=("first_blood",),
         level_req=5,
+        completion="Dez feras! Você é uma força da natureza. A floresta está em paz graças a você — "
+                   "por enquanto, pelo menos.",
     ),
 
     # ── Habilidades ───────────────────────────────────────────────────────────
     "warrior_trial": QuestDef(
         title="Prova do Guerreiro",
-        description="Use Golpe Poderoso 3 vezes.",
+        description="Todo guerreiro precisa dominar suas habilidades em combate real. "
+                    "Use Golpe Poderoso 3 vezes em batalha.",
         objectives=(
             ObjectiveDef(type="use_skill", target="golpe_poderoso", count=3),
         ),
         reward=QuestReward(xp=80),
         next_quest="executioner",
+        completion="Sua técnica está melhorando. Um golpe poderoso na hora certa decide batalhas. "
+                   "Mas você ainda tem muito a aprender...",
     ),
 
     "executioner": QuestDef(
         title="O Executor",
-        description="Use Executar 5 vezes.",
+        description="Há uma arte em acabar com inimigos enfraquecidos de forma eficiente. "
+                    "Use Executar 5 vezes para provar seu domínio.",
         objectives=(
             ObjectiveDef(type="use_skill", target="executar", count=5),
         ),
         reward=QuestReward(xp=150, gold=8),
         requires=("warrior_trial",),
         level_req=3,
+        completion="Cinco execuções. Frio, calculista, eficiente. "
+                   "Você tem o que é preciso para ser um verdadeiro executor.",
     ),
 
     # ── Social ────────────────────────────────────────────────────────────────
     "merchant_greeting": QuestDef(
         title="Contatos Locais",
-        description="Fale com um Mercador.",
+        description="Conhecer os comerciantes da região é essencial para qualquer aventureiro. "
+                    "Vá falar com um mercador.",
         objectives=(
             ObjectiveDef(type="talk_to_npc", target="*", count=1),
         ),
         reward=QuestReward(xp=30, gold=5),
+        completion="Bons contatos valem ouro nesse mundo. Você está aprendendo rápido.",
+    ),
+
+    "atividade_suspeita": QuestDef(
+        title="Atividade Suspeita",
+        description="Há algum tempo vejo que alguns aventureiros entram nessa caverna "
+                    "aqui ao lado e não voltam. Estou desconfiado que aconteceu algo, mas não tenho coragem de entrar. "
+                    "Explore a caverna e veja o que está acontecendo.",
+        objectives=(
+            ObjectiveDef(
+                type="reach_tile",
+                target="maps/map_cave_west.csv",
+                location=(4, 4, 33, 33),
+                count=1,
+            ),
+        ),
+        reward=QuestReward(xp=150, gold=10),
+        completion="Então é isso que está acontecendo lá dentro... Obrigado por investigar. "
+                   "Precisamos fazer algo a respeito disso.",
+    ),
+    "report_coveiro": QuestDef(
+        title="Reporte o Coveiro",
+        description="Tenho um amigo coveiro que se chama Custodio Benevide, ele disse que no cemitério" \
+        "está acontecendo algo parecido. Vá até ele no cemitério Freesoul e reporte o que está" \
+        "acontecendo aqui na caverna, talvez o ajude em algo",
+        objectives=(
+            ObjectiveDef(
+                type="talk_to_npc",
+                target="Custodio Benevide",
+                count=1,
+            ),
+        ),
+        reward=QuestReward(xp=125, gold=25),
+        requires= ["atividade_suspeita"],
+        completion="Ferdinando te mandou aqui?" \
+        "Nossa, eu achei que era só aqui, esses malditos desmiolados são lentos e fracos" \
+        "mas baixe a guarda e vai ver quantos deles estarão em cima de você, eu já tentei de tudo para" \
+        "prendê-los de alguma forma, mas eles são pacientes e nunca desistem. Quer me ajudar com isso?",
+    ),
+    "de_volta_a_terra": QuestDef(
+        title="De volta a terra",
+        description="Precisamos descobrir como dar um jeito nesses desmiolados, eu os chamo assim, " \
+        "mas cada um que vem aqui chamam eles de um jeito, não existe um consenso, não que isso seja" \
+        " um problema, desde que estejam a sete palmos e não voltem mais." \
+        "Mate 10 desmiolados para que eu possa enterrá-los novamente.",
+        objectives=(
+            ObjectiveDef(
+                type="kill",
+                target="Zumbi",
+                count=12,
+            ),
+        ),
+        reward=QuestReward(xp=60, gold=15),
+        requires= ["report_coveiro"],
+        completion="Isso já me ajuda muito!" \
+        "Há dias estou tentando lidar com esse problema, mas você resolveu isso com apenas alguns golpes." \
+        "Você é realmente talentoso, continue usando essa força contra nossos inimigos!" \
+        "A propósito, tenho um novo desafio para você!",
     ),
 
     # ── Equipamento ───────────────────────────────────────────────────────────

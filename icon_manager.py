@@ -22,7 +22,10 @@ class IconManager:
         self._cache: dict[str, pygame.Surface | None] = {}
 
     def get(self, name: str, size: int) -> pygame.Surface | None:
-        """Retorna Surface escalada para `size`×`size`, ou None se não encontrado."""
+        """
+        Retorna Surface de `size`×`size` com o ícone escalado por nearest-neighbor
+        para preencher o slot completamente. Retorna None se não encontrado.
+        """
         key = f"{name}@{size}"
         if key in self._cache:
             return self._cache[key]
@@ -31,7 +34,7 @@ class IconManager:
         if os.path.isfile(path):
             try:
                 raw  = pygame.image.load(path).convert_alpha()
-                surf = pygame.transform.smoothscale(raw, (size, size))
+                surf = pygame.transform.scale(raw, (size, size))
             except Exception:
                 surf = None
         self._cache[key] = surf

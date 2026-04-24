@@ -59,6 +59,52 @@ def apply_char_stats_to_combat(char_stats: CharacterStats,
 
     combat_stats._recalculate_effective_stats()
 
+    # Mana (escala com INT — relevante para mago mas calculado para todos)
+    new_max_mana = 100 + total_int * 15
+    if char_stats.max_mana != new_max_mana:
+        if char_stats.max_mana == 0:
+            char_stats.mana = new_max_mana   # primeira inicialização: mana cheia
+        elif char_stats.mana > new_max_mana:
+            char_stats.mana = new_max_mana
+        char_stats.max_mana = new_max_mana
+
+
+# ---------------------------------------------------------------------------
+# Função utilitária de level-up
+# ---------------------------------------------------------------------------
+
+def process_levelups(world: World, entity_id: int,
+                     char: CharacterStats, cs: CombatStats,
+                     perm: "PermanentStats | None") -> None:
+    """Processa todos os level-ups pendentes em `char` e aplica os efeitos.
+
+    Centraliza a lógica que estava triplicada em XPSystem, QuestSystem e
+    GameEngine._debug_levelup. Deve ser chamada após adicionar XP a `char`.
+    """
+    from components import TalentTree
+    from quest_events import fire as _qfire
+
+    leveled = False
+    while char.current_xp >= char.xp_to_next_level:
+        char.current_xp     -= char.xp_to_next_level
+        char.level          += 1
+        char.xp_to_next_level = CharacterStats.xp_for_level(char.level)
+        char.vitality       += 1
+        char.strength       += 1
+        char.agility        += 1
+        char.intelligence   += 1
+        char.defense        += 2
+        tt = world.get_component(entity_id, TalentTree)
+        if tt is not None:
+            tt.available_points += 1
+        SOUNDS.play_ui("levelup")
+        LOG.add(f"Level up! Nivel {char.level} — 1 ponto de talento disponivel (T).", (255, 200, 0))
+        _qfire("reach_level", level=char.level)
+        leveled = True
+
+    if leveled:
+        apply_char_stats_to_combat(char, cs, perm)
+
 
 # ---------------------------------------------------------------------------
 # XPSystem
@@ -89,27 +135,7 @@ class XPSystem(System):
                     FLT.add(f"+{xp} xp", pos.x, pos.y,
                             (255, 160, 0), size="normal", target_id=entity_id)
 
-            while char_stats.current_xp >= char_stats.xp_to_next_level:
-                char_stats.current_xp -= char_stats.xp_to_next_level
-                char_stats.level += 1
-                char_stats.xp_to_next_level = CharacterStats.xp_for_level(char_stats.level)
-                # Atributos base por nível
-                char_stats.vitality      += 1   # Stamina
-                char_stats.strength      += 1
-                char_stats.agility       += 1
-                char_stats.intelligence  += 1
-                char_stats.defense       += 2   # Armor
-                # Concede 1 ponto de talento por nível
-                from components import TalentTree
-                tt = self.world.get_component(entity_id, TalentTree)
-                if tt is not None:
-                    tt.available_points += 1
-                SOUNDS.play_ui("levelup")
-                LOG.add(f"Level up! Nivel {char_stats.level} — 1 ponto de talento disponivel (T).", (255, 200, 0))
-                from quest_events import fire as _qfire
-                _qfire("reach_level", level=char_stats.level)
-
-            apply_char_stats_to_combat(char_stats, combat_stats, perm)
+            process_levelups(self.world, entity_id, char_stats, combat_stats, perm)
 
         self.death_handler.pending_xp.clear()
         request_autosave()

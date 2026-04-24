@@ -12,16 +12,22 @@ from __future__ import annotations
 import json
 import os
 import datetime
+import threading
 
 from components import (
     CharacterStats, PermanentStats, TalentTree,
     Inventory, Equipment, Wallet, TileMovement, CombatStats,
-    Item, Modifier, FogOfWar,
+    Item, Modifier, FogOfWar, LearnedRecipes,
 )
 
 SAVE_DIR     = "saves"
-SAVE_FILE    = os.path.join(SAVE_DIR, "save.json")
+SAVE_FILE    = os.path.join(SAVE_DIR, "save.json")   # legado — slot único
 SAVE_VERSION = 1
+MAX_SLOTS    = 8
+
+
+def _slot_file(slot: int) -> str:
+    return os.path.join(SAVE_DIR, f"slot_{slot}.json")
 
 
 # ---------------------------------------------------------------------------
@@ -80,8 +86,13 @@ def _dict_to_item(d: dict) -> Item:
 # Save
 # ---------------------------------------------------------------------------
 
-def save_game(world, player_entity: int, current_map_file: str) -> None:
-    """Serializa o estado completo do jogador em saves/save.json."""
+_save_thread: threading.Thread | None = None
+
+
+def save_game(world, player_entity: int, current_map_file: str, slot: int = 0) -> None:
+    """Serializa o estado do jogador. Build do dict na thread principal; I/O em background."""
+    global _save_thread
+
     char  = world.get_component(player_entity, CharacterStats)
     perm  = world.get_component(player_entity, PermanentStats)
     tt    = world.get_component(player_entity, TalentTree)
@@ -95,12 +106,15 @@ def save_game(world, player_entity: int, current_map_file: str) -> None:
     if not char:
         return
 
+    # Build the dict on the main thread — pure Python, no I/O, fast snapshot.
     data = {
         "version":  SAVE_VERSION,
         "saved_at": datetime.datetime.now().isoformat(timespec="seconds"),
 
         # ── Progressão do personagem ──────────────────────────────────────
         "character": {
+            "name":             char.name,
+            "class_id":         char.class_id,
             "level":            char.level,
             "current_xp":       char.current_xp,
             "xp_to_next_level": char.xp_to_next_level,
@@ -149,27 +163,49 @@ def save_game(world, player_entity: int, current_map_file: str) -> None:
             "tile_y": tm.current_tile_y if tm else 1,
         },
 
-        # ── Fog of War — tiles explorados ────────────────────────────────
+        # ── Fog of War — tiles explorados por mapa ───────────────────────
         "fog": {
-            "explored": [[x, y] for x, y in fog.explored] if fog else [],
+            map_key.replace("\\", "/"): [[x, y] for x, y in tiles]
+            for map_key, tiles in (fog._explored_maps.items() if fog else {}.items())
         },
 
         # ── Quests ────────────────────────────────────────────────────────
         "quests": _quests_to_dict(world, player_entity),
+
+        # ── Receitas aprendidas ───────────────────────────────────────────
+        "learned_recipes": world.get_component(player_entity, LearnedRecipes).known
+                           if world.get_component(player_entity, LearnedRecipes) else [],
+
+        # ── Skills aprendidas com treinador ───────────────────────────────
+        "learned_skills": _save_learned_skills(world, player_entity),
     }
 
-    os.makedirs(SAVE_DIR, exist_ok=True)
-    tmp = SAVE_FILE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, SAVE_FILE)  # escrita atômica — evita arquivo corrompido
+    # Skip if a save is already writing to disk — the next event will trigger a fresh one.
+    if _save_thread is not None and _save_thread.is_alive():
+        return
+
+    _save_thread = threading.Thread(target=_write_save, args=(data, slot), daemon=True)
+    _save_thread.start()
+
+
+def _write_save(data: dict, slot: int) -> None:
+    """Runs in a background thread: JSON encode + atomic disk write."""
+    try:
+        os.makedirs(SAVE_DIR, exist_ok=True)
+        target = _slot_file(slot)
+        tmp    = target + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, target)
+    except Exception as exc:
+        print(f"[save] erro ao salvar: {exc}")
 
 
 # ---------------------------------------------------------------------------
 # Load
 # ---------------------------------------------------------------------------
 
-def load_game(world, player_entity: int) -> dict | None:
+def load_game(world, player_entity: int, slot: int = 0) -> dict | None:
     """
     Lê saves/save.json e aplica os dados ao player_entity já existente no world.
 
@@ -181,11 +217,19 @@ def load_game(world, player_entity: int) -> dict | None:
     O chamador deve invocar talent_system.apply_talent_effects() e
     apply_char_stats_to_combat() depois para recalcular os atributos.
     """
-    if not os.path.exists(SAVE_FILE):
+    target = _slot_file(slot)
+    # Migração legada: se slot 0 pedido e não existe, tenta save.json antigo
+    if not os.path.exists(target) and slot == 0 and os.path.exists(SAVE_FILE):
+        target = SAVE_FILE
+
+    if not os.path.exists(target):
         return None
 
-    with open(SAVE_FILE, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    with open(target, "r", encoding="utf-8") as f:
+        content = f.read().strip()
+    if not content:
+        return None
+    data = json.loads(content)
 
     if data.get("version", 0) != SAVE_VERSION:
         print(f"[save] versão incompatível ({data.get('version')} ≠ {SAVE_VERSION}) — ignorado")
@@ -195,6 +239,8 @@ def load_game(world, player_entity: int) -> dict | None:
     c    = data.get("character", {})
     char = world.get_component(player_entity, CharacterStats)
     if char:
+        char.name             = c.get("name", "Aventureiro")
+        char.class_id         = c.get("class_id", "guerreiro")
         char.level            = c.get("level", 1)
         char.current_xp       = c.get("current_xp", 0)
         char.xp_to_next_level = c.get("xp_to_next_level", CharacterStats.BASE_XP)
@@ -255,10 +301,33 @@ def load_game(world, player_entity: int) -> dict | None:
     # ── Fog of War ─────────────────────────────────────────────────────────
     fog = world.get_component(player_entity, FogOfWar)
     if fog:
-        fog.explored = {(x, y) for x, y in data.get("fog", {}).get("explored", [])}
+        fog_data = data.get("fog", {})
+        # Formato novo: {"maps/map_1.csv": [[x,y],...], ...}
+        # Formato legado: {"explored": [[x,y],...]} — ignora silenciosamente
+        # Normaliza separadores (Windows pode ter gravado "maps\\map_1.csv")
+        for map_key, coords in fog_data.items():
+            if map_key == "explored":
+                continue  # entrada legada, descarta
+            normalized = map_key.replace("\\", "/")
+            tile_set = {(x, y) for x, y in coords}
+            if normalized in fog._explored_maps:
+                fog._explored_maps[normalized].update(tile_set)
+            else:
+                fog._explored_maps[normalized] = tile_set
+        # Atualiza o ponteiro para o mapa atual (já definido via switch_map na transição)
+        if fog._current_map in fog._explored_maps:
+            fog.explored = fog._explored_maps[fog._current_map]
 
     # ── Quests ─────────────────────────────────────────────────────────────
     _quests_from_dict(world, player_entity, data.get("quests", {}))
+
+    # ── Receitas aprendidas ────────────────────────────────────────────────
+    lr = world.get_component(player_entity, LearnedRecipes)
+    if lr:
+        lr.known = list(data.get("learned_recipes", []))
+
+    # ── Skills aprendidas com treinador ───────────────────────────────────
+    _load_learned_skills(world, player_entity, data.get("learned_skills", []))
 
     pos = data.get("position", {})
     return {
@@ -292,19 +361,116 @@ def _quests_from_dict(world, player_entity: int, data: dict) -> None:
     ql.completed = set(data.get("completed", []))
 
 
+def _save_learned_skills(world, player_entity: int) -> list:
+    from components import PlayerSkills
+    ps = world.get_component(player_entity, PlayerSkills)
+    if ps is None:
+        return []
+    # Salva em ordem de slot (None = slot vazio) para preservar posições na hotbar
+    return [s.skill_id if s is not None else None for s in ps.skills]
+
+
+def _load_learned_skills(world, player_entity: int, skill_ids: list) -> None:
+    from components import PlayerSkills
+    from skill_config import SKILL_CATALOG
+    ps = world.get_component(player_entity, PlayerSkills)
+    if ps is None:
+        return
+
+    # Formato novo: lista ordenada por slot (pode conter None)
+    # Formato legado: lista de strings sem None
+    is_slot_ordered = any(s is None for s in skill_ids)
+
+    if is_slot_ordered:
+        for slot_idx, sid in enumerate(skill_ids):
+            if sid is None:
+                continue
+            if sid not in ps.learned_skill_ids:
+                ps.learned_skill_ids.add(sid)
+            if ps.skill_by_id(sid) is None:
+                new_skill = ps._make_skill(sid, SKILL_CATALOG)
+                if new_skill:
+                    while len(ps.skills) <= slot_idx:
+                        ps.skills.append(None)
+                    if ps.skills[slot_idx] is None:
+                        ps.skills[slot_idx] = new_skill
+                    else:
+                        try:
+                            ps.skills[ps.skills.index(None)] = new_skill
+                        except ValueError:
+                            ps.skills.append(new_skill)
+    else:
+        # Compatibilidade com saves antigos: insere no primeiro slot vazio
+        for sid in skill_ids:
+            if sid in ps.learned_skill_ids:
+                continue
+            ps.learned_skill_ids.add(sid)
+            if ps.skill_by_id(sid) is None:
+                new_skill = ps._make_skill(sid, SKILL_CATALOG)
+                if new_skill:
+                    try:
+                        ps.skills[ps.skills.index(None)] = new_skill
+                    except ValueError:
+                        ps.skills.append(new_skill)
+
+
 # ---------------------------------------------------------------------------
 # Utilitários
 # ---------------------------------------------------------------------------
 
-def has_save() -> bool:
-    """Retorna True se existe um arquivo de save."""
-    return os.path.exists(SAVE_FILE)
+def has_save(slot: int = 0) -> bool:
+    """Retorna True se existe save no slot especificado (ou save.json legado no slot 0)."""
+    if os.path.exists(_slot_file(slot)):
+        return True
+    if slot == 0 and os.path.exists(SAVE_FILE):
+        return True
+    return False
 
 
-def delete_save() -> None:
-    """Remove o arquivo de save (usado em New Game)."""
-    if os.path.exists(SAVE_FILE):
-        os.remove(SAVE_FILE)
+def delete_save(slot: int = 0) -> None:
+    """Remove o arquivo de save do slot especificado."""
+    for path in (_slot_file(slot), SAVE_FILE if slot == 0 else None):
+        if path and os.path.exists(path):
+            os.remove(path)
+
+
+def list_saves() -> list:
+    """
+    Retorna lista de metadados de todos os slots preenchidos, ordenada por slot.
+    Cada item: {"slot": int, "name": str, "class_id": str, "level": int, "saved_at": str}
+    Inclui save.json legado como slot 0 se existir e slot_0.json não existir.
+    """
+    result = []
+    seen_zero = False
+    for slot in range(MAX_SLOTS):
+        path = _slot_file(slot)
+        # Migração legada para slot 0
+        if slot == 0 and not os.path.exists(path) and os.path.exists(SAVE_FILE):
+            path = SAVE_FILE
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            c = data.get("character", {})
+            result.append({
+                "slot":     slot,
+                "name":     c.get("name", "Aventureiro"),
+                "class_id": c.get("class_id", "guerreiro"),
+                "level":    c.get("level", 1),
+                "saved_at": data.get("saved_at", ""),
+            })
+        except Exception:
+            pass  # arquivo corrompido — ignora
+    return result
+
+
+def next_free_slot() -> int:
+    """Retorna o menor slot vazio disponível (0-7). Levanta ValueError se todos ocupados."""
+    for slot in range(MAX_SLOTS):
+        if not has_save(slot):
+            return slot
+    raise ValueError("Todos os slots de save estão ocupados.")
 
 
 # ---------------------------------------------------------------------------

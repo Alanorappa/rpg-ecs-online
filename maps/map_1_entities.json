@@ -1,25 +1,79 @@
 {
   "player": {
-    "x": 151,
-    "y": 310
+    "x": 115,
+    "y": 389
   },
   "merchants": [
     {
       "x": 151,
       "y": 307,
-      "shop_id": "general"
+      "shop_id": "general",
+      "level": 10,
+      "profession": "Comerciante"
+    }
+  ],
+  "blacksmiths": [
+    {
+      "x": 149,
+      "y": 307,
+      "name": "Mestre Artesao",
+      "shop_id": "blacksmith",
+      "level": 20,
+      "profession": "Ferreiro"
     }
   ],
   "quest_givers": [
     {
       "x": 153,
       "y": 307,
-      "name": "Caçador",
-      "quest_ids": ["first_blood", "survivor",
+      "name": "Levi Hawk",
+      "level": 30,
+      "profession": "Caçador",
+      "quest_ids": ["survivor",
                     "bear_hunter", "bear_pelt",
                     "wolf_fangs", "spider_venom",
                     "beast_slayer", "warrior_trial", "executioner",
-                    "merchant_greeting", "first_equip"]
+                    "first_equip"]
+    },
+    {
+      "x": 16,
+      "y": 319,
+      "name": "Ferdinando Grisold",
+      "level": 15,
+      "profession": "Camponês",
+      "quest_ids": ["atividade_suspeita", "report_coveiro"],
+      "turn_in_ids": ["atividade_suspeita"]
+    },
+    {
+      "x": 127,
+      "y": 361,
+      "name": "Custodio Benevide",
+      "level": 15,
+      "profession": "Coveiro",
+      "quest_ids": ["de_volta_a_terra"],
+      "turn_in_ids": ["report_coveiro", "de_volta_a_terra"]
+    }
+  ],
+  "trainers": [
+    {
+      "x": 119,
+      "y": 540,
+      "name": "Avido Faseo",
+      "class_id": "guerreiro",
+      "level": 60,
+      "profession": "Guerreiro Veterano",
+      "quest_ids": ["first_blood", "merchant_greeting"],
+      "turn_in_ids": ["first_blood", "merchant_greeting"]
+    },
+    {
+      "x": 123,
+      "y": 540,
+      "name": "Selene Vail",
+      "class_id": "mago",
+      "level": 60,
+      "profession": "Arquimaga",
+      "quest_ids": [],
+      "turn_in_ids": []
     }
   ],
   "transitions": [

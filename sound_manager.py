@@ -47,50 +47,50 @@ def _amb(name: str) -> str:
 
 _REGISTRY: dict[str, str] = {
     # ── Skills do player ────────────────────────────────────────────────
-    "skill_interceptar":       _sfx("skill_interceptar"),
-    "skill_executar":          _sfx("skill_executar"),
-    "skill_impacto":           _sfx("skill_impacto"),
-    "skill_golpe_poderoso":    _sfx("skill_golpe_poderoso"),
-    "skill_golpe_debilitante": _sfx("skill_golpe_debilitante"),
+    "skill_interceptar":        _sfx("skill_interceptar"),
+    "skill_executar":           _sfx("skill_executar"),
+    "skill_impacto":            _sfx("skill_impacto"),
+    "skill_golpe_poderoso":     _sfx("skill_golpe_poderoso"),
+    "skill_golpe_debilitante":  _sfx("skill_golpe_debilitante"),
     "skill_fatiador_de_corpos": _sfx("skill_fatiador"),
-    "skill_punho_queixo":      _sfx("skill_punho_queixo"),
-    "skill_vitoria_iminente":  _sfx("skill_vitoria_iminente"),
+    "skill_punho_queixo":       _sfx("skill_punho_queixo"),
+    "skill_vitoria_iminente":   _sfx("skill_vitoria_iminente"),
 
     # ── Emotes do player ─────────────────────────────────────────────────
-    "player_emote_attack_1":   _sfx("player_emote_attack_1"),
-    "player_emote_attack_2":   _sfx("player_emote_attack_2"),
-    "player_emote_attack_3":   _sfx("player_emote_attack_3"),
-    "player_emote_attack_4":   _sfx("player_emote_attack_4"),
-    "player_emote_get_crit_1": _sfx("player_emote_get_crit_1"),
-    "player_emote_get_crit_2": _sfx("player_emote_get_crit_2"),
-    "player_emote_get_crit_3": _sfx("player_emote_get_crit_3"),
-    "player_emote_get_crit_4": _sfx("player_emote_get_crit_4"),
+    "player_emote_attack_1":    _sfx("player_emote_attack_1"),
+    "player_emote_attack_2":    _sfx("player_emote_attack_2"),
+    "player_emote_attack_3":    _sfx("player_emote_attack_3"),
+    "player_emote_attack_4":    _sfx("player_emote_attack_4"),
+    "player_emote_get_crit_1":  _sfx("player_emote_get_crit_1"),
+    "player_emote_get_crit_2":  _sfx("player_emote_get_crit_2"),
+    "player_emote_get_crit_3":  _sfx("player_emote_get_crit_3"),
+    "player_emote_get_crit_4":  _sfx("player_emote_get_crit_4"),
 
     # ── Combate — auto-ataque (variações aleatórias) ─────────────────────
     # Crie hit_normal_1.ogg, hit_normal_2.ogg, hit_normal_3.ogg etc.
-    "hit_normal_1":            _sfx("hit_normal_1"),
-    "hit_normal_2":            _sfx("hit_normal_2"),
-    "hit_normal_3":            _sfx("hit_normal_3"),
-    "hit_crit_1":              _sfx("hit_crit_1"),
-    "hit_crit_2":              _sfx("hit_crit_2"),
+    "hit_normal_1":             _sfx("hit_normal_1"),
+    "hit_normal_2":             _sfx("hit_normal_2"),
+    "hit_normal_3":             _sfx("hit_normal_3"),
+    "hit_crit_1":               _sfx("hit_crit_1"),
+    "hit_crit_2":               _sfx("hit_crit_2"),
     # Fallbacks genéricos (usados se as variações não existirem)
-    "hit_normal":              _sfx("hit_normal"),
-    "hit_crit":                _sfx("hit_crit"),
+    "hit_normal":               _sfx("hit_normal"),
+    "hit_crit":                 _sfx("hit_crit"),
 
     # ── Mobs — sons genéricos de emote (fallback quando o mob não tem som definido) ──
-    "mob_emote_attack_1":          _sfx("mob_emote_attack_1"),
-    "mob_emote_get_crit_1":        _sfx("mob_emote_get_crit_1"),
+    "mob_emote_attack_1":       _sfx("mob_emote_attack_1"),
+    "mob_emote_get_crit_1":     _sfx("mob_emote_get_crit_1"),
 
     # ── Passos do player (4 variações) ───────────────────────────────────
-    "step_1":                  _sfx("step_1"),
-    "step_2":                  _sfx("step_2"),
-    "step_3":                  _sfx("step_3"),
-    "step_4":                  _sfx("step_4"),
-    "step_5":                  _sfx("step_5"),
-    "step_6":                  _sfx("step_6"),
-    "step_7":                  _sfx("step_7"),
-    "step_8":                  _sfx("step_8"),
-    "step_9":                  _sfx("step_9"),
+    "step_1":                   _sfx("step_1"),
+    "step_2":                   _sfx("step_2"),
+    "step_3":                   _sfx("step_3"),
+    "step_4":                   _sfx("step_4"),
+    "step_5":                   _sfx("step_5"),
+    "step_6":                   _sfx("step_6"),
+    "step_7":                   _sfx("step_7"),
+    "step_8":                   _sfx("step_8"),
+    "step_9":                   _sfx("step_9"),
 
     # ── Combate — eventos defensivos (aparo, esquiva, erro, bloqueio) ─────
     "combat_miss":             _sfx("combat_miss"),
@@ -236,6 +236,23 @@ class SoundManager:
                 self._cache_cave[name] = None
 
         pygame.mixer.set_num_channels(28)   # garante canais suficientes
+
+        # Pré-carrega todos os .ogg da pasta sfx que ainda não estão no cache
+        # (sons de mob e de spell são lazy por convenção de nome, não por entrada em _REGISTRY)
+        sfx_dir = resource_path("assets/sounds/sfx")
+        if os.path.isdir(sfx_dir):
+            for fname in os.listdir(sfx_dir):
+                if not fname.endswith(".ogg"):
+                    continue
+                key = fname[:-4]
+                if key not in self._cache:
+                    full = os.path.join(sfx_dir, fname)
+                    try:
+                        self._cache[key] = pygame.mixer.Sound(full)
+                    except Exception as exc:
+                        print(f"[SoundManager] Erro ao pré-carregar '{key}': {exc}")
+                        self._cache[key] = None
+
         self._ready = True
         loaded = sum(1 for v in self._cache.values() if v is not None)
         print(f"[SoundManager] Iniciado. {loaded}/{len(_REGISTRY)} sons | {cave_loaded} versões cave carregadas.")
@@ -384,6 +401,19 @@ class SoundManager:
                     self.play_mob(random.choice(available), volume)
                     return
             self.play_random([f"mob_emote_get_crit_{n}" for n in (1, 2, 3, 4)], volume, _CH_EMOTES)
+
+    def play_spell(self, spell_id: str, phase: str, volume: float = 1.0) -> None:
+        """Toca o som de uma spell em uma fase específica.
+
+        Args:
+            spell_id: identificador da skill (ex: "bola_de_fogo")
+            phase:    "cast" | "launch" | "impact"
+
+        Arquivo esperado: assets/sounds/sfx/skill_{spell_id}_{phase}.ogg
+        Suporta variações _1, _2, _3, _4 automaticamente.
+        Se o arquivo não existir, nada é tocado (sem erro).
+        """
+        self.play_skill(f"skill_{spell_id}_{phase}", volume)
 
     def play_skill(self, name: str, volume: float = 1.0) -> None:
         """Toca a skill — carrega variantes dinamicamente se necessário.

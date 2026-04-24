@@ -5,7 +5,8 @@ Escala ajustável de 2 a 100 px/tile. Scroll com roda do mouse, arrastar para mo
 from __future__ import annotations
 import math
 import pygame
-from tileset import TILE_MAPPING, FLOOR_TILE
+from fonts import make as _font
+from tileset import TILE_MAPPING, OBJECT_MAPPING, FLOOR_TILE
 
 
 class MapOverlay:
@@ -40,7 +41,7 @@ class MapOverlay:
 
     def _init_font(self) -> None:
         if self._font is None:
-            self._font = pygame.font.Font(None, 20)
+            self._font = _font(20)
 
     def load_map(self, tile_matrix: list[str], map_key: str = "") -> None:
         """
@@ -55,7 +56,7 @@ class MapOverlay:
         for r, row in enumerate(tile_matrix):
             for c in range(cols):
                 char = row[c] if c < len(row) else "_"
-                tile = TILE_MAPPING.get(char, FLOOR_TILE)
+                tile = TILE_MAPPING.get(char) or OBJECT_MAPPING.get(char, FLOOR_TILE)
                 surf.set_at((c, r), tile.color[:3])
         key = map_key or f"_map_{len(self._surfaces)}"
         self._surfaces[key] = surf

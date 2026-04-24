@@ -1,4 +1,5 @@
 # entity_factory.py
+from __future__ import annotations
 from world import World
 from components import Position, Renderable, PlayerControlled, Camera, Collider, \
                        Enemy, AIControlled, InitialPosition, DetectionRadius, Tilemap, \
@@ -6,8 +7,9 @@ from components import Position, Renderable, PlayerControlled, Camera, Collider,
                        CharacterStats, PermanentStats, XPReward, EnemyTier, \
                        Corpse, Inventory, Equipment, PlayerSkills, Wallet, TalentTree, Merchant, \
                        SpawnZone, EntityIdentity, StatusEffects, ConsumableBar, MobSounds, FogOfWar, \
-                       EnemyAbilities, EnemyAbilitySlot, QuestLog, QuestGiver
-from tileset import TILE_MAPPING, TILE_SIZE, FLOOR_TILE
+                       EnemyAbilities, EnemyAbilitySlot, QuestLog, QuestGiver, NPC, Blacksmith, \
+                       LearnedRecipes, Trainer
+from tileset import TILE_MAPPING, OBJECT_MAPPING, TILE_SIZE, FLOOR_TILE, get_collision_offsets
 from mob_definitions import MOB_TABLE
 from enemy_abilities_data import MOB_ABILITIES
 
@@ -35,27 +37,58 @@ ENEMY_TIER_CONFIGS = {
 }
 
 
-def create_tilemap(world: World, map_matrix: list) -> int:
-    map_height_tiles = len(map_matrix)
-    map_width_tiles = len(map_matrix[0]) if map_height_tiles > 0 else 0
+def create_tilemap(world: World, terrain_matrix: list, object_matrix: list,
+                   terrain_visual: list | None = None) -> int:
+    map_height_tiles = len(terrain_matrix)
+    map_width_tiles = len(terrain_matrix[0]) if map_height_tiles > 0 else 0
 
+    # Pass 1: terrain tile_data (colisão base)
     tile_data = []
-    for row_idx, row_str in enumerate(map_matrix):
+    for row_str in terrain_matrix:
         if not row_str:
             continue
         current_row = []
-        for col_idx, char in enumerate(row_str):
-            tile_type = TILE_MAPPING.get(char, FLOOR_TILE)
-            current_row.append(tile_type)
-        # Pad short rows to map_width_tiles to prevent IndexError
+        for char in row_str:
+            current_row.append(TILE_MAPPING.get(char, FLOOR_TILE))
         while len(current_row) < map_width_tiles:
             current_row.append(FLOOR_TILE)
         tile_data.append(current_row)
 
+    # Pass 2: sobrescreve colisão com tiles de objeto.
+    # collision_rect permite que objetos altos (ex: 32×64) bloqueiem tiles acima do base.
+    map_h = len(tile_data)
+    map_w = map_width_tiles
+    for r, obj_row in enumerate(object_matrix):
+        if r >= map_h:
+            break
+        for c, obj_char in enumerate(obj_row):
+            if not obj_char or obj_char == "." or c >= map_w:
+                continue
+            obj_tile = OBJECT_MAPPING.get(obj_char)
+            if obj_tile is None:
+                continue
+            for dx, dy in get_collision_offsets(obj_tile):
+                nr, nc = r + dy, c + dx
+                if 0 <= nr < map_h and 0 <= nc < len(tile_data[nr]):
+                    tile_data[nr][nc] = obj_tile
+
+    if terrain_visual is None:
+        terrain_visual = [[""] * map_width_tiles for _ in range(map_h)]
+    else:
+        # Garante dimensões corretas ao carregar do CSV
+        while len(terrain_visual) < map_h:
+            terrain_visual.append([""] * map_width_tiles)
+        for row in terrain_visual:
+            while len(row) < map_width_tiles:
+                row.append("")
+
     tilemap_entity = world.create_entity()
     world.add_component(tilemap_entity, Tilemap(
         tile_matrix=tile_data,
+        terrain_matrix=terrain_matrix,
+        object_matrix=object_matrix,
         tile_size=TILE_SIZE,
+        terrain_visual=terrain_visual,
         map_width_tiles=map_width_tiles,
         map_height_tiles=len(tile_data)
     ))
@@ -105,11 +138,14 @@ def create_player(world: World, tile_x: int, tile_y: int,
     world.add_component(player_entity, Wallet())
     world.add_component(player_entity, TalentTree())
     world.add_component(player_entity, ConsumableBar())
-    world.add_component(player_entity, FogOfWar(radius=12))
+    _fog = FogOfWar(radius=12)
+    _fog.switch_map(spawn_map)
+    world.add_component(player_entity, _fog)
     world.add_component(player_entity, QuestLog())
+    world.add_component(player_entity, LearnedRecipes())
     world.add_component(player_entity, EntityIdentity(
         name="Aventureiro", race="Humano", entity_class="Guerreiro",
-        level=1, tier="Normal",
+        level=1, tier="normal",
     ))
     return player_entity
 
@@ -261,29 +297,73 @@ def create_enemy(world: World, tile_x: int, tile_y: int,
     return enemy_entity
 
 
-def create_merchant(world: World, tile_x: int, tile_y: int, shop_id: str = "general") -> int:
+def create_merchant(world: World, tile_x: int, tile_y: int, shop_id: str = "general",
+                    name: str = "Comerciante", level: int = 1,
+                    profession: str = "Comerciante") -> int:
     from merchant_data import SHOPS
     shop = SHOPS.get(shop_id, SHOPS["general"])
+    npc_name = name if name != "Comerciante" else shop.get("name", name)
     x = tile_x * TILE_SIZE + TILE_SIZE / 2
     y = tile_y * TILE_SIZE + TILE_SIZE / 2
     color = shop.get("color", (80, 200, 80))
     eid = world.create_entity()
     world.add_component(eid, Position(x=x, y=y, prev_x=x, prev_y=y))
     world.add_component(eid, Renderable(color=color, width=PLAYER_SIZE, height=PLAYER_SIZE))
-    world.add_component(eid, Merchant(name=shop["name"], shop_id=shop_id))
+    world.add_component(eid, NPC(name=npc_name, level=level, profession=profession))
+    world.add_component(eid, Merchant(shop_id=shop_id))
     return eid
 
 
 def create_quest_giver(world: World, tile_x: int, tile_y: int,
                        name: str = "Missiveiro", quest_ids: tuple = (),
-                       turn_in_ids: tuple = ()) -> int:
+                       turn_in_ids: tuple = (),
+                       level: int = 1, profession: str = "Missiveiro") -> int:
     """Cria um NPC dador de quests no mapa."""
     x = tile_x * TILE_SIZE + TILE_SIZE / 2
     y = tile_y * TILE_SIZE + TILE_SIZE / 2
     eid = world.create_entity()
     world.add_component(eid, Position(x=x, y=y, prev_x=x, prev_y=y))
     world.add_component(eid, Renderable(color=(200, 180, 60), width=PLAYER_SIZE, height=PLAYER_SIZE))
-    world.add_component(eid, QuestGiver(name=name, quest_ids=tuple(quest_ids), turn_in_ids=tuple(turn_in_ids)))
+    world.add_component(eid, NPC(name=name, level=level, profession=profession))
+    world.add_component(eid, QuestGiver(quest_ids=tuple(quest_ids),
+                                        turn_in_ids=tuple(turn_in_ids)))
+    return eid
+
+
+def create_blacksmith(world: World, tile_x: int, tile_y: int,
+                      name: str = "Ferreiro", shop_id: str = "blacksmith",
+                      level: int = 1, profession: str = "Ferreiro") -> int:
+    """Cria um NPC ferreiro com capacidade de loja, reciclagem e forja."""
+    from merchant_data import SHOPS
+    shop = SHOPS.get(shop_id, SHOPS.get("blacksmith", {}))
+    npc_name = name if name != "Ferreiro" else shop.get("name", name)
+    x = tile_x * TILE_SIZE + TILE_SIZE / 2
+    y = tile_y * TILE_SIZE + TILE_SIZE / 2
+    color = shop.get("color", (180, 120, 40))
+    eid = world.create_entity()
+    world.add_component(eid, Position(x=x, y=y, prev_x=x, prev_y=y))
+    world.add_component(eid, Renderable(color=color, width=PLAYER_SIZE, height=PLAYER_SIZE))
+    world.add_component(eid, NPC(name=npc_name, level=level, profession=profession))
+    world.add_component(eid, Merchant(shop_id=shop_id))
+    world.add_component(eid, Blacksmith(shop_id=shop_id))
+    return eid
+
+
+def create_trainer(world: World, tile_x: int, tile_y: int,
+                   name: str = "Treinador", class_id: str = "guerreiro",
+                   quest_ids: tuple = (), turn_in_ids: tuple = (),
+                   level: int = 1, profession: str = "Treinador") -> int:
+    """Cria um NPC treinador de classe. Pode acumular QuestGiver opcionalmente."""
+    x = tile_x * TILE_SIZE + TILE_SIZE / 2
+    y = tile_y * TILE_SIZE + TILE_SIZE / 2
+    eid = world.create_entity()
+    world.add_component(eid, Position(x=x, y=y, prev_x=x, prev_y=y))
+    world.add_component(eid, Renderable(color=(80, 140, 220), width=PLAYER_SIZE, height=PLAYER_SIZE))
+    world.add_component(eid, NPC(name=name, level=level, profession=profession))
+    world.add_component(eid, Trainer(class_id=class_id))
+    if quest_ids:
+        world.add_component(eid, QuestGiver(quest_ids=tuple(quest_ids),
+                                            turn_in_ids=tuple(turn_in_ids) or tuple(quest_ids)))
     return eid
 
 

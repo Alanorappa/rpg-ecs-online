@@ -2,25 +2,29 @@
 import pygame
 import math
 import time as _time
+from fonts import make as _font
 
 from world import World
 from components import Position, Tilemap, CombatStats, CharacterStats, PermanentStats, \
-                       TileMovement, PlayerAutoMove, CombatState, FogOfWar, Enemy, Visible
+                       TileMovement, PlayerAutoMove, CombatState, FogOfWar, Enemy, Visible, \
+                       Camera, Renderable, SpellCast, Channeling, IceBlockEffect, AoeTargeting
 from systems import (
     PlayerInputSystem, TileMovementSystem, RenderSystem, CameraSystem,
     EnemyAISystem, TileRenderSystem, TileValidationSystem,
     PathfindingSystem, CombatSystem, CombatStateSystem, MouseTargetingSystem,
-    ProjectileSystem, CorpseSystem, MobRespawnSystem, LootSystem, ShopSystem, SkillSystem,
+    ProjectileSystem, CorpseSystem, LootSystem, ShopSystem, SkillSystem,
     SpawnZoneSystem, ConsumableSystem, DeathHandlerSystem, FogSystem,
     StatusEffectSystem, EnemyAbilitySystem,
 )
 from stats_system import XPSystem, DeathRespawnSystem
 from quest_system import QuestSystem, QuestDialogSystem, QuestJournalSystem
 from quest_events import set_quest_system
-from entity_factory import create_player, create_camera, create_enemy, create_tilemap, create_merchant, create_spawn_zone, create_quest_giver
+from entity_factory import create_player, create_camera, create_enemy, create_tilemap, create_merchant, create_spawn_zone, create_quest_giver, create_blacksmith, create_trainer
+from god_mode import GodModeEditor
 from components import Inventory, Equipment, PlayerSkills, Wallet
 from map_loader import load_map_csv, validate_map
 from tileset import TILE_SIZE
+import camera_state as _cam_state
 from combat_log import LOG
 from floating_text import FLT, DASH_TRAIL, WARN, PROC
 from icon_manager import ICONS
@@ -30,7 +34,7 @@ from talent_system import TalentSystem
 from ui_helpers import item_tooltip_lines, RARITY_COLORS as _ITEM_RARITY_COLORS
 from map_overlay import MapOverlay
 from minimap import Minimap
-from save_system import save_game, load_game, has_save
+from save_system import save_game, load_game, has_save, next_free_slot
 
 # --- Configurações do Jogo ---
 SCREEN_WIDTH = 1280
@@ -61,26 +65,44 @@ C_CYAN    = (  0, 220, 220)
 C_ORANGE  = (255, 160,   0)
 
 
+def _merge_display_matrix(terrain: list[str], objects: list) -> list[str]:
+    """
+    Combina terrain_matrix e object_matrix em uma matriz de exibição.
+    Posições com objeto sobrescrevem o char de terreno — usado pelo
+    map_overlay e minimap para mostrar a cor correta de árvores, pedras, etc.
+    IDs multi-char (ex: "t1", "b2") são reduzidos ao char base ("t", "b")
+    para que o lookup de cor no TileType funcione corretamente.
+    """
+    result = []
+    for r, t_row in enumerate(terrain):
+        if r >= len(objects):
+            result.append(t_row)
+            continue
+        o_row = objects[r]
+        row = list(t_row)
+        for c, obj_char in enumerate(o_row):
+            if obj_char and obj_char != "." and c < len(row):
+                display = obj_char[0] if len(obj_char) > 1 else obj_char
+                row[c] = display
+        result.append("".join(row))
+    return result
+
+
 class GameEngine:
-    def __init__(self, scale: float = 1.0):
+    def __init__(self, scale: float = 1.0, char_data: "dict | None" = None, save_slot: int = 0):
         pygame.init()
-        self._scale   = scale
-        win_w = int(SCREEN_WIDTH  * scale)
-        win_h = int(SCREEN_HEIGHT * scale)
+        self._scale     = scale
+        self._save_slot = save_slot
+        win_w = int(1280 * scale)
+        win_h = int(720  * scale)
+        # Renderiza na resolução nativa da janela — sem escala no frame final
+        global SCREEN_WIDTH, SCREEN_HEIGHT
+        SCREEN_WIDTH  = win_w
+        SCREEN_HEIGHT = win_h
         self._display = pygame.display.set_mode((win_w, win_h))
-        # Surface interna sempre em resolução base — todos os sistemas renderizam aqui
-        self.screen   = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+        self.screen   = pygame.Surface((win_w, win_h))
         pygame.display.set_caption("RPG ECS")
         self.clock = pygame.time.Clock()
-
-        # Monkey-patch: pygame.mouse.get_pos() devolve coordenadas no espaço interno (1280x720)
-        if scale != 1.0:
-            _orig_get_pos = pygame.mouse.get_pos
-            _s = scale
-            pygame.mouse.get_pos = lambda: (
-                int(_orig_get_pos()[0] / _s),
-                int(_orig_get_pos()[1] / _s),
-            )
         SOUNDS.init()
 
         # Aplica configurações de áudio salvas
@@ -103,10 +125,10 @@ class GameEngine:
             pygame.MOUSEWHEEL, pygame.MOUSEMOTION,
         ])
 
-        self.font_xs = pygame.font.Font(None, 18)
-        self.font_sm = pygame.font.Font(None, 22)
-        self.font_md = pygame.font.Font(None, 28)
-        self.font_lg = pygame.font.Font(None, 36)
+        self.font_xs = _font(18)
+        self.font_sm = _font(22)
+        self.font_md = _font(28)
+        self.font_lg = _font(36)
 
         self.world = World()
         self.systems = []
@@ -127,8 +149,14 @@ class GameEngine:
         self.transition_tiles: dict = {}   # (tile_x, tile_y) → trans_dict
         self._transition_cooldown = 0.0
         self._map_title_timer = 0.0
-        self._cam_x = 0.0             # câmera atual (para world tooltip)
+        self._cam_x = 0.0
         self._cam_y = 0.0
+        self._zoom:      float = 1.0
+        self._zoom_min:  float = 0.75
+        self._zoom_max:  float = 2.5
+        self._zoom_step: float = 0.25
+        self._zoom_surf: "pygame.Surface | None" = None
+        self._zoom_surf_sz: tuple = (0, 0)
         self._pending_tooltip       = None  # (mx, my, title, lines) – render no fim do frame
         self._pending_skill_tooltip = None  # igual, mas usa font_xs nas linhas de descrição
 
@@ -141,7 +169,7 @@ class GameEngine:
         self._hbe_rebind_slot: int | None = None
         self._hbe_cons_drag_from: tuple | None = None  # ("panel", item_name) | ("slot", idx)
         self._hbe_cons_rebind_slot: int | None = None
-        self._orig_mouse_pos  = pygame.mouse.get_pos
+        self._orig_mouse_pos  = pygame.mouse.get_pos  # kept for compatibility
         # Zonas de ambient
         self._ambient_zones:    list = []   # [{name, ambient, rect:(x1,y1,x2,y2)}]
         self._default_ambient:  str  = ""   # ambient padrão do mapa
@@ -161,22 +189,61 @@ class GameEngine:
             self.world, self.player_entity, self.screen, self._quest_system)
         self._quest_journal = QuestJournalSystem(
             self.world, self.player_entity, self.screen, self._quest_system)
+        from crafting_system import BlacksmithSystem
+        self._crafting_system = BlacksmithSystem(
+            self.world, self.player_entity, self.screen,
+            shop_system=self._shop_system,
+            quest_dialog=self._quest_dialog,
+            quest_system=self._quest_system,
+        )
+        from trainer_system import TrainerSystem
+        self._trainer_system = TrainerSystem(
+            self.world, self.player_entity, self.screen,
+            quest_dialog=self._quest_dialog,
+        )
         # Insere QuestSystem após xp_system (posição 13, depois do índice de xp_system)
         _xp_idx = next((i for i, s in enumerate(self.systems)
                         if isinstance(s, XPSystem)), len(self.systems))
         self.systems.insert(_xp_idx + 1, self._quest_system)
 
-        self._apply_save()
+        if char_data:
+            # Novo personagem — aplica nome/classe e ignora save existente
+            char = self.world.get_component(self.player_entity, CharacterStats)
+            if char:
+                char.name     = char_data.get("name", "Aventureiro")
+                char.class_id = char_data.get("class_id", "guerreiro")
+                # Atributos base por classe
+                if char.class_id == "mago":
+                    char.strength     = 1
+                    char.intelligence = 5
+                    char.agility      = 1
+                    char.vitality     = 2
+                    char.defense      = 1
+            # Recalcula combat stats com os atributos da classe
+            cs   = self.world.get_component(self.player_entity, CombatStats)
+            perm = self.world.get_component(self.player_entity, PermanentStats)
+            if char and cs:
+                from stats_system import apply_char_stats_to_combat
+                apply_char_stats_to_combat(char, cs, perm)
+                cs.current_hp = cs.max_hp
+            # Cor do personagem por classe
+            rend = self.world.get_component(self.player_entity, Renderable)
+            if rend and char:
+                rend.color = (80, 80, 220) if char.class_id == "mago" else (255, 0, 0)
+        else:
+            self._apply_save()
         self._quest_system.auto_start_quests()
-        self._apply_hotbar_config()
+        self._quest_system.set_current_map(self._current_map_file)
+        self._apply_hotbar_config(new_character=bool(char_data))
 
         # Registra autosave global — sistemas usam request_autosave() de save_system.py
         from save_system import register_autosave
         register_autosave(self._autosave)
 
         # --- Profiler de frames ---
-        self._prof_accum:  dict[str, float] = {}   # tempo acumulado por seção
-        self._prof_peak:   dict[str, float] = {}   # pico por seção
+        self._prof_accum:       dict[str, float] = {}   # tempo acumulado por seção
+        self._prof_peak:        dict[str, float] = {}   # pico por seção
+        self._prof_frame_accum: dict[str, float] = {}   # acumulado do frame atual (spike)
         self._prof_frames: int = 0
         _PROF_INTERVAL     = 300                   # frames entre relatórios (~5 s)
         self._prof_interval = _PROF_INTERVAL
@@ -191,13 +258,14 @@ class GameEngine:
         else:
             SOUNDS.set_context("surface")
             SOUNDS.play_ambient("ambient_surface")
-        tile_matrix, spawn_points = load_map_csv(map_file)
-        self._map_overlay.load_map(tile_matrix, map_file)
+        terrain_matrix, object_matrix, spawn_points, terrain_visual = load_map_csv(map_file)
+        self._map_overlay.load_map(
+            _merge_display_matrix(terrain_matrix, object_matrix), map_file)
         self._minimap.on_map_load()
-        for w in validate_map(tile_matrix):
+        for w in validate_map(terrain_matrix):
             print(f"[MAPA] Aviso: {w}")
 
-        self.tilemap_entity = create_tilemap(self.world, tile_matrix)
+        self.tilemap_entity = create_tilemap(self.world, terrain_matrix, object_matrix, terrain_visual)
         tilemap_comp = self.world.get_component(self.tilemap_entity, Tilemap)
         self.map_width_px  = tilemap_comp.map_width_tiles  * TILE_SIZE
         self.map_height_px = tilemap_comp.map_height_tiles * TILE_SIZE
@@ -233,12 +301,23 @@ class GameEngine:
                 entity_class=zd.get("entity_class", ""),
             )
 
-        for col, row, shop_id in spawn_points.get("merchants", []):
-            create_merchant(self.world, col, row, shop_id=shop_id)
+        for col, row, shop_id, lvl, prof in spawn_points.get("merchants", []):
+            create_merchant(self.world, col, row, shop_id=shop_id,
+                            level=lvl, profession=prof)
 
-        for col, row, name, quest_ids, turn_in_ids in spawn_points.get("quest_givers", []):
+        for col, row, name, quest_ids, turn_in_ids, lvl, prof in spawn_points.get("quest_givers", []):
             create_quest_giver(self.world, col, row, name=name,
-                               quest_ids=quest_ids, turn_in_ids=turn_in_ids)
+                               quest_ids=quest_ids, turn_in_ids=turn_in_ids,
+                               level=lvl, profession=prof)
+
+        for col, row, name, shop_id, lvl, prof in spawn_points.get("blacksmiths", []):
+            create_blacksmith(self.world, col, row, name=name,
+                              shop_id=shop_id, level=lvl, profession=prof)
+
+        for col, row, name, class_id, quest_ids, turn_in_ids, lvl, prof in spawn_points.get("trainers", []):
+            create_trainer(self.world, col, row, name=name,
+                           class_id=class_id, quest_ids=quest_ids, turn_in_ids=turn_in_ids,
+                           level=lvl, profession=prof)
 
     def _build_transition_tiles(self, spawn_points: dict):
         self.transition_tiles = {}
@@ -324,32 +403,55 @@ class GameEngine:
         self._tile_render_system     = tile_render_system
         self._death_respawn_system   = death_respawn_system
 
+        # Sistemas de magia (classe Mago)
+        from spell_system import (ManaSystem, SpellCastSystem, PlayerProjectileSystem,
+                                  ChannelingSystem, IceBlockSystem, AoeTargetingSystem)
+        self._mana_system           = ManaSystem(self.world)
+        self._spell_cast_system     = SpellCastSystem(self.world, self.screen)
+        self._player_proj_system    = PlayerProjectileSystem(self.world, self.screen)
+        self._channeling_system     = ChannelingSystem(self.world, self.screen)
+        self._ice_block_system      = IceBlockSystem(self.world)
+        self._aoe_targeting_system  = AoeTargetingSystem(self.world, self.player_entity, self.screen)
+
+        self._god_mode = GodModeEditor(
+            world             = self.world,
+            screen            = self.screen,
+            tile_render_system= tile_render_system,
+            get_map_file      = lambda: self._current_map_file,
+            on_map_changed    = self._on_god_mode_save,
+        )
+
         # Ordem dos sistemas por frame — ALTERE COM CUIDADO.
         # As restrições de dependência são verificadas em runtime por _validate_system_order().
         # Se a ordem for violada, o jogo levanta RuntimeError na inicialização.
         self.systems = [
             tile_validation,                                                          # 1
-            MouseTargetingSystem(self.world, self.player_entity, self.screen),        # 2
-            loot_system,                                                              # 3
-            PlayerInputSystem(self.world, tile_validation, combat, pathfinding, self.screen),  # 4
-            skill_system,                                                             # 5
-            EnemyAISystem(self.world, self.player_entity, tile_validation, pathfinding, combat),  # 6
-            EnemyAbilitySystem(self.world, self.player_entity),                       # 7
-            projectile_system,                                                        # 8
-            death_handler,                                                            # 8
-            CorpseSystem(self.world),                                                 # 9
-            SpawnZoneSystem(self.world),                                              # 10
-            MobRespawnSystem(self.world, death_handler),                              # 11
-            xp_system,                                                                # 12
-            death_respawn_system,                                                     # 13
-            ConsumableSystem(self.world),                                             # 14
-            CombatStateSystem(self.world),                                            # 15
-            StatusEffectSystem(self.world),                                           # 16
-            TileMovementSystem(self.world),                                           # 17
-            FogSystem(self.world),                                                    # 17
-            CameraSystem(self.world),                                                 # 18
-            tile_render_system,                                                       # 19
-            render_system,                                                            # 20
+            self._aoe_targeting_system,                                               # 2 (antes do targeting)
+            MouseTargetingSystem(self.world, self.player_entity, self.screen),        # 3
+            loot_system,                                                              # 4
+            PlayerInputSystem(self.world, tile_validation, combat, pathfinding, self.screen),  # 5
+            skill_system,                                                             # 6
+            EnemyAISystem(self.world, self.player_entity, tile_validation, pathfinding, combat),  # 7
+            EnemyAbilitySystem(self.world, self.player_entity),                       # 8
+            projectile_system,                                                        # 9
+            self._player_proj_system,                                                 # 10
+            self._spell_cast_system,                                                  # 11
+            self._channeling_system,                                                  # 12
+            self._ice_block_system,                                                   # 13
+            self._mana_system,                                                        # 14
+            death_handler,                                                            # 15
+            CorpseSystem(self.world),                                                 # 16
+            SpawnZoneSystem(self.world),                                              # 17
+            xp_system,                                                                # 18
+            death_respawn_system,                                                     # 19
+            ConsumableSystem(self.world),                                             # 20
+            CombatStateSystem(self.world),                                            # 21
+            StatusEffectSystem(self.world),                                           # 22
+            TileMovementSystem(self.world),                                           # 23
+            FogSystem(self.world),                                                    # 24
+            CameraSystem(self.world),                                                 # 25
+            tile_render_system,                                                       # 26
+            render_system,                                                            # 27
         ]
         self._validate_system_order()
 
@@ -357,10 +459,22 @@ class GameEngine:
     # Save / Load
     # ------------------------------------------------------------------
 
+    def _on_god_mode_save(self) -> None:
+        """Chamado pelo GodModeEditor após salvar — atualiza minimap/overlay."""
+        for _, tilemap_comp in self.world.get_entities_with(Tilemap):
+            from tileset import OBJECT_MAPPING
+            self._map_overlay.load_map(
+                _merge_display_matrix(tilemap_comp.terrain_matrix,
+                                      tilemap_comp.object_matrix),
+                self._current_map_file,
+            )
+            self._minimap.on_map_load()
+            break
+
     def _autosave(self) -> None:
         """Salva o estado atual se não estiver no meio de um carregamento."""
         if not self._loading_save:
-            save_game(self.world, self.player_entity, self._current_map_file)
+            save_game(self.world, self.player_entity, self._current_map_file, self._save_slot)
 
     # ------------------------------------------------------------------
     # Validação de ordem de sistemas
@@ -374,7 +488,6 @@ class GameEngine:
         (PlayerInputSystem,     SkillSystem,          "Skills processam após input do jogador"),
         (PlayerInputSystem,     CombatStateSystem,    "Timers de combate atualizados após input"),
         (EnemyAISystem,         CombatStateSystem,    "Timers de combate atualizados após AI"),
-        (DeathHandlerSystem,    MobRespawnSystem,     "MobRespawn lê pending_respawns de DeathHandler"),
         (DeathHandlerSystem,    XPSystem,             "XPSystem lê pending_xp de DeathHandler"),
         (XPSystem,              DeathRespawnSystem,   "Player respawn ocorre após XP distribuído"),
         (CombatStateSystem,     TileMovementSystem,   "Movimento interpolado após estados atualizados"),
@@ -407,12 +520,12 @@ class GameEngine:
             )
 
     def _apply_save(self):
-        """Carrega save.json e reposiciona o jogador no mapa salvo (se houver save)."""
-        if not has_save():
+        """Carrega o save do slot ativo e reposiciona o jogador no mapa salvo."""
+        if not has_save(self._save_slot):
             return
 
         self._loading_save = True
-        pos_data = load_game(self.world, self.player_entity)
+        pos_data = load_game(self.world, self.player_entity, self._save_slot)
         if pos_data is None:
             self._loading_save = False
             return
@@ -426,11 +539,15 @@ class GameEngine:
             from stats_system import apply_char_stats_to_combat
             apply_char_stats_to_combat(char, cs, perm)
             # Restaura HP salvo (proporcional ao max_hp recalculado)
-            if hasattr(cs, "_saved_hp") and cs._saved_hp is not None:
+            if cs._saved_hp > 0:
                 cs.current_hp = min(float(cs._saved_hp), cs.max_hp)
-                del cs._saved_hp
-            if hasattr(cs, "_saved_max"):
-                del cs._saved_max
+                cs._saved_hp  = 0
+                cs._saved_max = 0
+        # Cor do personagem por classe (atualiza ao carregar save)
+        if char:
+            rend = self.world.get_component(self.player_entity, Renderable)
+            if rend:
+                rend.color = (80, 80, 220) if char.class_id == "mago" else (255, 0, 0)
 
         # Carrega mapa correto se diferente do atual
         saved_map = pos_data.get("map", "")
@@ -445,6 +562,47 @@ class GameEngine:
         LOG.add("Partida carregada.", (100, 220, 100))
 
     # ------------------------------------------------------------------
+    # ── Zoom ──────────────────────────────────────────────────────────────────
+
+    def _handle_scroll_zoom(self, scroll_y: int) -> None:
+        """Aplica zoom com scroll do mouse — apenas quando o cursor está sobre a área do jogo."""
+        mx, my = pygame.mouse.get_pos()
+
+        # Ignora se qualquer modal de UI está aberto
+        if (self._show_inventory or self._show_talents or self._show_debug
+                or self._map_overlay.is_open or self._show_pause
+                or self._show_hotbar_editor or getattr(self._shop_system, "is_open", False)
+                or getattr(self._quest_journal, "is_open", False)):
+            return
+
+        # Ignora se o cursor estiver sobre o painel do God Mode
+        if self._god_mode.active and mx >= SCREEN_WIDTH - self._god_mode._panel_w:
+            return
+
+        step = self._zoom_step if scroll_y > 0 else -self._zoom_step
+        new_zoom = round(max(self._zoom_min, min(self._zoom_max, self._zoom + step)), 10)
+        if new_zoom != self._zoom:
+            self._zoom = new_zoom
+            self._tile_render_system.invalidate_cache()
+
+    def _set_world_render_target(self, surf: "pygame.Surface") -> None:
+        """Redireciona todos os sistemas de render de mundo para a superfície alvo."""
+        _targets = [
+            self._tile_render_system, self._render_system, self._loot_system,
+            self._projectile_system,  self._player_proj_system,
+            self._channeling_system,  self._aoe_targeting_system,
+            self._spell_cast_system,  self._shop_system,
+            self._quest_dialog,       self._crafting_system, self._trainer_system,
+        ]
+        for s in _targets:
+            if s is not None and hasattr(s, "screen"):
+                s.screen = surf
+        for s in self.systems:
+            if hasattr(s, "screen"):
+                s.screen = surf
+
+    # ── Modais ────────────────────────────────────────────────────────────────
+
     def _close_all_modals(self):
         """Fecha todos os modais abertos e emite som do modal que estava aberto."""
         if self._map_overlay.is_open:
@@ -462,6 +620,10 @@ class GameEngine:
             self._loot_system._close_modal()
         if self._shop_system.is_open:
             self._shop_system._close()
+        if self._crafting_system.is_open:
+            self._crafting_system._close()
+        if self._trainer_system.is_open:
+            self._trainer_system._close()
         self._quest_dialog._pending_npc_id = -1
         if self._quest_dialog.is_open:
             self._quest_dialog._close()
@@ -479,32 +641,15 @@ class GameEngine:
     # ------------------------------------------------------------------
 
     def _scale_events(self, events: list) -> list:
-        """Reescreve pos/rel dos eventos de mouse para o espaço interno (1280x720)."""
-        if self._scale == 1.0:
-            return events
-        # Colapsa todos os MOUSEMOTION em um único evento (o último) por frame
+        """Renderização nativa: event.pos já está no espaço da janela, sem conversão."""
+        # Colapsa MOUSEMOTION intermediários para reduzir custo no Windows
         last_motion = None
         for e in events:
             if e.type == pygame.MOUSEMOTION:
                 last_motion = e
-
-        scaled = []
-        s = self._scale
-        for e in events:
-            if e.type == pygame.MOUSEMOTION:
-                if e is not last_motion:
-                    continue  # descarta motion intermediários
-                d = dict(e.__dict__)
-                d["pos"] = (int(e.pos[0] / s), int(e.pos[1] / s))
-                d["rel"] = (int(e.rel[0] / s), int(e.rel[1] / s))
-                scaled.append(pygame.event.Event(e.type, d))
-            elif e.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP):
-                d = dict(e.__dict__)
-                d["pos"] = (int(e.pos[0] / s), int(e.pos[1] / s))
-                scaled.append(pygame.event.Event(e.type, d))
-            else:
-                scaled.append(e)
-        return scaled
+        if last_motion is None:
+            return events
+        return [e for e in events if e.type != pygame.MOUSEMOTION or e is last_motion]
 
     # ------------------------------------------------------------------
     # Helpers do profiler
@@ -515,6 +660,7 @@ class GameEngine:
         self._prof_accum[label] = self._prof_accum.get(label, 0.0) + elapsed
         if elapsed > self._prof_peak.get(label, 0.0):
             self._prof_peak[label] = elapsed
+        self._prof_frame_accum[label] = self._prof_frame_accum.get(label, 0.0) + elapsed
 
     def _prof_report(self) -> None:
         """Imprime relatório acumulado e reseta contadores."""
@@ -530,8 +676,9 @@ class GameEngine:
             bar = "!" if peak_ms > self._prof_spike_ms else " "
             print(f"  {bar}{label:<29} {avg_ms:>8.3f} {peak_ms:>9.3f}")
         self._prof_accum  = {}
-        self._prof_peak   = {}
-        self._prof_frames = 0
+        self._prof_peak        = {}
+        self._prof_frames      = 0
+        self._prof_frame_accum: dict[str, float] = {}   # acumulado do frame atual (spike)
 
     def run(self):
         running = True
@@ -544,9 +691,20 @@ class GameEngine:
             if PROFILE_FRAMES:
                 self._prof_record("events", _time.perf_counter() - _t0)
 
+            # God Mode consome eventos quando ativo (bloqueia input do jogo).
+            # Salva estado ANTES de handle_events: se o god mode fechar via F10/Esc
+            # dentro de handle_events, o estado pré-frame ainda bloqueia os eventos.
+            _god_was_active = self._god_mode.active
+            if _god_was_active:
+                self._god_mode.handle_events(events,
+                                             getattr(self, "_cam_x", 0),
+                                             getattr(self, "_cam_y", 0))
+
             for event in events:
                 if event.type == pygame.QUIT:
                     running = False
+                elif _god_was_active:
+                    pass   # god mode consumiu — ignora input do jogo
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
                         if self._map_overlay.is_open:
@@ -554,6 +712,10 @@ class GameEngine:
                             self._map_overlay.is_open = False
                         elif self._loot_system.open_corpse_id != -1:
                             self._loot_system._close_modal()
+                        elif self._crafting_system.is_open:
+                            self._crafting_system._close()
+                        elif self._trainer_system.is_open:
+                            self._trainer_system._close()
                         elif self._quest_dialog.is_open:
                             self._quest_dialog._close()
                         elif self._quest_journal.is_open:
@@ -577,6 +739,9 @@ class GameEngine:
                                 self._show_pause = False
                         else:
                             self._show_pause = True
+                    elif event.key == pygame.K_F10:
+                        self._close_all_modals()
+                        self._god_mode.toggle()
                     elif event.key == pygame.K_m:
                         already_open = self._map_overlay.is_open
                         self._close_all_modals()
@@ -609,6 +774,16 @@ class GameEngine:
                         self._close_all_modals()
                         if not already_open:
                             self._quest_journal.open()
+                    elif event.key in (pygame.K_EQUALS, pygame.K_KP_PLUS):
+                        new_zoom = min(self._zoom_max, round(self._zoom + self._zoom_step, 10))
+                        if new_zoom != self._zoom:
+                            self._zoom = new_zoom
+                            self._tile_render_system.invalidate_cache()
+                    elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
+                        new_zoom = max(self._zoom_min, round(self._zoom - self._zoom_step, 10))
+                        if new_zoom != self._zoom:
+                            self._zoom = new_zoom
+                            self._tile_render_system.invalidate_cache()
                     elif event.key == pygame.K_F12 and DEBUG_MODE:
                         already_open = self._show_debug
                         self._close_all_modals()
@@ -628,6 +803,8 @@ class GameEngine:
                         max_sc = max(0, len(self._debug_item_catalog) - 8)
                         self._debug_item_scroll = max(0, min(max_sc,
                                                              self._debug_item_scroll - event.y))
+                elif event.type == pygame.MOUSEWHEEL:
+                    self._handle_scroll_zoom(event.y)
 
             # Mapa consome eventos quando aberto
             if self._map_overlay.is_open:
@@ -641,13 +818,36 @@ class GameEngine:
                 if self._talent_system.wants_close:
                     self._show_talents = False
 
-            # Shop recebe eventos brutos (para detectar clique em NPC no mundo)
-            self._shop_system.update(events, dt)
+            # BlacksmithSystem roda ANTES de shop/quest para consumir cliques nos ferreiros
+            self._crafting_system.update(events, dt)
+            if self._crafting_system.is_open:
+                self._crafting_system.handle_events(events)
+
+            # TrainerSystem roda após crafting, antes de shop/quest
+            _after_craft_ev = (
+                [e for e in events
+                 if not (e.type == pygame.MOUSEBUTTONDOWN and e.button == 3)]
+                if self._crafting_system._right_click_consumed else events
+            )
+            self._trainer_system.update(_after_craft_ev, dt)
+            if self._trainer_system.is_open:
+                self._trainer_system.handle_events(events)
+
+            # Filtra right-click de shop/quest se crafting ou trainer já consumiu
+            _craft_ev = (
+                [e for e in events
+                 if not (e.type == pygame.MOUSEBUTTONDOWN and e.button == 3)]
+                if (self._crafting_system._right_click_consumed
+                    or self._trainer_system._right_click_consumed) else events
+            )
+
+            # Shop recebe eventos (possivelmente filtrados se crafting consumiu o clique)
+            self._shop_system.update(_craft_ev, dt)
             if self._shop_system.is_open:
                 self._shop_system.handle_events(events)
 
-            # Quest dialog recebe eventos brutos (clique em QuestGiver no mundo)
-            self._quest_dialog.update(events, dt)
+            # Quest dialog recebe eventos (possivelmente filtrados)
+            self._quest_dialog.update(_craft_ev, dt)
             if self._quest_dialog.is_open:
                 self._quest_dialog.handle_events(events)
 
@@ -655,14 +855,41 @@ class GameEngine:
             if self._quest_journal.is_open:
                 self._quest_journal.handle_events(events)
 
+            # Clique no minimap — detectado ANTES dos sistemas para consumir o evento
+            _minimap_click_consumed = False
+            if not self._map_overlay.is_open:
+                _player_tm_mm = self.world.get_component(self.player_entity, TileMovement)
+                if _player_tm_mm:
+                    for _ev in events:
+                        if _ev.type == pygame.MOUSEBUTTONDOWN and _ev.button == 3:
+                            _mm_tile = self._minimap.screen_to_tile(
+                                _ev.pos[0], _ev.pos[1],
+                                _player_tm_mm.current_tile_x,
+                                _player_tm_mm.current_tile_y,
+                            )
+                            if _mm_tile is not None:
+                                from components import PlayerAutoMove
+                                for _, _auto in self.world.get_entities_with(PlayerAutoMove):
+                                    _auto.ground_target = _mm_tile
+                                    _auto.path          = []
+                                    _auto.active        = True
+                                    break
+                                _minimap_click_consumed = True
+                                break
+
             # Bloqueia sistemas enquanto um painel estiver aberto ou clique do mapa pendente
             systems_events = events
             if self._show_hotbar_editor:
                 # Editor aberto: sistemas não recebem nenhum evento de input
                 systems_events = []
-            elif (self._map_overlay.is_open or self._map_overlay.pending_destination is not None
+            elif (_minimap_click_consumed
+                    or self._map_overlay.is_open or self._map_overlay.pending_destination is not None
                     or self._show_inventory or self._show_talents
                     or (self._show_debug and DEBUG_MODE)
+                    or self._crafting_system.is_open
+                    or self._crafting_system._right_click_consumed
+                    or self._trainer_system.is_open
+                    or self._trainer_system._right_click_consumed
                     or self._shop_system.is_open
                     or self._shop_system._right_click_consumed
                     or self._quest_dialog.is_open
@@ -755,11 +982,29 @@ class GameEngine:
                 self._prof_record("sounds+ambient", _time.perf_counter() - _ts)
 
             camera_pos = self.world.get_component(self.camera_entity, Position)
-            cam_x = camera_pos.x - SCREEN_WIDTH  / 2 if camera_pos else 0
-            cam_y = camera_pos.y - SCREEN_HEIGHT / 2 if camera_pos else 0
+            z = self._zoom
+            _cam_state.zoom = z
+            _panel_w  = self._god_mode._panel_w if self._god_mode.active else 0
+            _game_area_w = SCREEN_WIDTH - _panel_w
+            cam_x = (camera_pos.x - _game_area_w / (2 * z)) if camera_pos else 0
+            cam_y = (camera_pos.y - SCREEN_HEIGHT  / (2 * z)) if camera_pos else 0
             self._cam_x, self._cam_y = cam_x, cam_y
 
             self.screen.fill((0, 0, 0))
+
+            # Superfície de render do mundo (menor quando zoom > 1)
+            _god_active = self._god_mode.active
+            if z != 1.0 and not _god_active:
+                lw = max(1, int(SCREEN_WIDTH  / z))
+                lh = max(1, int(SCREEN_HEIGHT / z))
+                if self._zoom_surf_sz != (lw, lh):
+                    self._zoom_surf    = pygame.Surface((lw, lh))
+                    self._zoom_surf_sz = (lw, lh)
+                _ws = self._zoom_surf
+                _ws.fill((0, 0, 0))
+                self._set_world_render_target(_ws)
+            else:
+                _ws = self.screen
 
             # Tiles e sistemas sem render relevante
             for system in self.systems:
@@ -772,20 +1017,25 @@ class GameEngine:
                         self._prof_record(f"rnd:{type(system).__name__}", _time.perf_counter() - _ts)
                     else:
                         system.render(cam_x, cam_y)
-            # Cadáveres: sobre os tiles, sob as entidades vivas
             self._loot_system.render_world(cam_x, cam_y)
-            # Rastro do dash (Interceptar): sob as entidades
-            DASH_TRAIL.render(self.screen, cam_x, cam_y)
-            # Entidades + tile-objetos (árvores, pedras, etc.) em Y-sort
+            DASH_TRAIL.render(_ws, cam_x, cam_y)
             _world_objs = self._tile_render_system.get_world_objects(cam_x, cam_y)
             self._render_system.render(cam_x, cam_y, world_objects=_world_objs)
-            # Indicadores de loja e quest: sobre entidades
             self._shop_system.render_world(cam_x, cam_y)
             self._quest_dialog.render_world(cam_x, cam_y)
-            # Projéteis: sobre tudo no mundo
+            self._crafting_system.render_world(cam_x, cam_y)
+            self._trainer_system.render_world(cam_x, cam_y)
+            self._tile_render_system.render_fog()
             self._projectile_system.render(cam_x, cam_y)
-            # Textos flutuantes de dano: sobre projéteis, sob HUD
-            FLT.render(self.screen, cam_x, cam_y)
+            self._player_proj_system.render(cam_x, cam_y)
+            self._channeling_system.render(cam_x, cam_y)
+            self._aoe_targeting_system.render(cam_x, cam_y)
+            FLT.render(_ws, cam_x, cam_y)
+
+            # Escala o mundo para a tela principal (pixel-perfect, sem suavização)
+            if _ws is not self.screen:
+                self._set_world_render_target(self.screen)
+                pygame.transform.scale(_ws, (SCREEN_WIDTH, SCREEN_HEIGHT), self.screen)
             # Notificações de proc: screen-space, abaixo do player, acima dos avisos
             PROC.render(self.screen)
             # Avisos de ação bloqueada: posição fixa, abaixo do centro
@@ -865,6 +1115,14 @@ class GameEngine:
             self._quest_dialog.render()
             self._quest_journal.render()
 
+            # Crafting (ferreiro): por cima de tudo
+            self._crafting_system.render()
+            if self._crafting_system.pending_tooltip:
+                self._pending_tooltip = self._crafting_system.pending_tooltip
+
+            # Trainer (treinador): por cima de tudo
+            self._trainer_system.render()
+
             if self._pending_tooltip:
                 self._flush_tooltip()
             if self._pending_skill_tooltip:
@@ -902,16 +1160,27 @@ class GameEngine:
                 elif action and action.startswith("resolution:"):
                     self._apply_scale(float(action.split(":")[1]))
 
-            # Escala surface interna → janela de exibição
+            # God Mode: por cima de tudo (grade + seleção + painel)
+            self._god_mode.update(cam_x, cam_y, dt)
+            self._god_mode.render(cam_x, cam_y)
+
+            # Copia surface interna → janela (resolução nativa, sem escala)
             if PROFILE_FRAMES:
                 _ts = _time.perf_counter()
-            if self._scale == 1.0:
-                self._display.blit(self.screen, (0, 0))
-            else:
-                pygame.transform.scale(self.screen, self._display.get_size(), self._display)
+            self._display.blit(self.screen, (0, 0))
             pygame.display.flip()
             if PROFILE_FRAMES:
                 self._prof_record("display_flip", _time.perf_counter() - _ts)
+                # Detecção de spike: imprime breakdown imediato se o frame demorou >50ms
+                _frame_elapsed = _time.perf_counter() - _t0
+                if _frame_elapsed > 0.050:
+                    _fms = _frame_elapsed * 1000
+                    print(f"\n[SPIKE] {_fms:.0f}ms — breakdown do frame:")
+                    _spike_rows = sorted(self._prof_frame_accum.items(), key=lambda x: -x[1])
+                    for _lbl, _lt in _spike_rows:
+                        if _lt > 0.002:
+                            print(f"  {'>>':2} {_lbl:<38} {_lt*1000:>7.1f}ms")
+                self._prof_frame_accum = {}
                 self._prof_frames += 1
                 if self._prof_frames >= self._prof_interval:
                     self._prof_report()
@@ -924,7 +1193,7 @@ class GameEngine:
     # ------------------------------------------------------------------
 
     def _do_transition(self, trans: dict):
-        target_file = trans["target_map"]
+        target_file = trans["target_map"].replace("\\", "/")
         target_x    = trans["target_x"]
         target_y    = trans["target_y"]
 
@@ -968,8 +1237,12 @@ class GameEngine:
         self._show_inventory = False
 
         # Carrega novo mapa
-        tile_matrix, spawn_points = load_map_csv(target_file)
+        terrain_matrix, object_matrix, spawn_points, terrain_visual = load_map_csv(target_file)
         self._current_map_file = target_file
+        self._quest_system.set_current_map(target_file)
+        fog = self.world.get_component(self.player_entity, FogOfWar)
+        if fog:
+            fog.switch_map(target_file)
         # Contexto acústico e ambiente
         if "cave" in target_file:
             SOUNDS.set_context("cave")
@@ -977,10 +1250,11 @@ class GameEngine:
         else:
             SOUNDS.set_context("surface")
             SOUNDS.play_ambient("ambient_surface")
-        self._map_overlay.load_map(tile_matrix, target_file)
+        self._map_overlay.load_map(
+            _merge_display_matrix(terrain_matrix, object_matrix), target_file)
         self._map_overlay.set_active_map(target_file)
         self._minimap.on_map_load()
-        self.tilemap_entity = create_tilemap(self.world, tile_matrix)
+        self.tilemap_entity = create_tilemap(self.world, terrain_matrix, object_matrix, terrain_visual)
         tilemap_comp = self.world.get_component(self.tilemap_entity, Tilemap)
         self.map_width_px  = tilemap_comp.map_width_tiles  * TILE_SIZE
         self.map_height_px = tilemap_comp.map_height_tiles * TILE_SIZE
@@ -1045,25 +1319,18 @@ class GameEngine:
 
     def _debug_levelup(self, n: int) -> None:
         """Sobe n níveis instantaneamente, concedendo 1 ponto de talento por nível."""
+        from stats_system import process_levelups
         from components import TalentTree
-        from stats_system import apply_char_stats_to_combat
         cs   = self.world.get_component(self.player_entity, CharacterStats)
         comb = self.world.get_component(self.player_entity, CombatStats)
         perm = self.world.get_component(self.player_entity, PermanentStats)
         tt   = self.world.get_component(self.player_entity, TalentTree)
         if not cs or not comb:
             return
+        # Força XP suficiente para n level-ups e processa via função centralizada
         for _ in range(n):
-            cs.level += 1
-            cs.xp_to_next_level = CharacterStats.xp_for_level(cs.level)
-            cs.vitality     += 1
-            cs.strength     += 1
-            cs.agility      += 1
-            cs.intelligence += 1
-            cs.defense      += 2
-            if tt is not None:
-                tt.available_points += 1
-        apply_char_stats_to_combat(cs, comb, perm)
+            cs.current_xp = cs.xp_to_next_level
+            process_levelups(self.world, self.player_entity, cs, comb, perm)
         LOG.add(f"[DEBUG] Nivel {cs.level} — {tt.available_points if tt else 0} pontos de talento.", (120, 200, 255))
 
     def _handle_debug_click(self, event) -> None:
@@ -1136,11 +1403,11 @@ class GameEngine:
     def _debug_open_map(self, map_file: str) -> None:
         """Carrega map_file no overlay e abre para o jogador clicar o destino de teleporte."""
         from map_loader import load_map_csv
-        tile_matrix, _ = load_map_csv(map_file)
+        terrain_matrix, _, __, ___ = load_map_csv(map_file)
         player_tm = self.world.get_component(self.player_entity, TileMovement)
         ptx = player_tm.current_tile_x if player_tm else 0
         pty = player_tm.current_tile_y if player_tm else 0
-        self._map_overlay.load_map(tile_matrix, map_file)
+        self._map_overlay.load_map(terrain_matrix, map_file)
         self._map_overlay.set_active_map(map_file)
         self._minimap.on_map_load()
         self._map_overlay.toggle(ptx, pty)
@@ -1183,9 +1450,9 @@ class GameEngine:
         py = SCREEN_HEIGHT // 2 - PH // 2
         mx, my = pygame.mouse.get_pos()
 
-        font_md = pygame.font.Font(None, 22)
-        font_sm = pygame.font.Font(None, 18)
-        font_lg = pygame.font.Font(None, 28)
+        font_md = _font(22)
+        font_sm = _font(18)
+        font_lg = _font(28)
 
         # Fundo
         bg = pygame.Surface((PW, PH), pygame.SRCALPHA)
@@ -1303,7 +1570,10 @@ class GameEngine:
 
     def _draw_debug_tab_mapa(self, px, content_y, PW, font_md, font_sm, mx, my) -> None:
         import glob as _glob
-        csv_files = sorted(_glob.glob("maps/*.csv"))
+        csv_files = sorted(
+            f.replace("\\", "/") for f in _glob.glob("maps/*.csv")
+            if not f.replace("\\", "/").endswith(("_terrain.csv", "_objects.csv"))
+        )
         all_maps  = [
             (f, _DEBUG_MAP_NAMES.get(f, f.replace("maps/", "").replace(".csv", "")))
             for f in csv_files
@@ -1682,11 +1952,25 @@ class GameEngine:
                 self._close_hotbar_editor()
                 return
 
-        # ── Skills disponíveis ────────────────────────────────────────────
-        avail: list[str] = list(SKILL_CATALOG.keys())
+        # ── Skills disponíveis — apenas as que o personagem aprendeu ─────
+        avail: list[str] = [sid for sid in SKILL_CATALOG.keys()
+                            if sid in ps.learned_skill_ids]
+        # Inclui talent skills em ps.skills (não passam pelo SKILL_CATALOG normal)
         for s in ps.skills:
             if s and getattr(s, "talent_id", None) and s.skill_id not in avail:
                 avail.append(s.skill_id)
+        # Inclui talent skills desbloqueadas que possam ter sido removidas da barra
+        from talent_data import TALENTS as _TALENTS
+        from components import TalentTree as _TT
+        _tt = self.world.get_component(self.player_entity, _TT)
+        if _tt:
+            for tid, pts in _tt.allocated.items():
+                t = _TALENTS.get(tid)
+                if not t or not t.get("unlocks_skill"):
+                    continue
+                unlock_at = t.get("unlock_at", t["max_points"])
+                if pts >= unlock_at and t["unlocks_skill"] not in avail:
+                    avail.append(t["unlocks_skill"])
 
         # ── Consumíveis disponíveis (do inventário) ───────────────────────
         cons_avail: list = []  # lista de Item únicos por nome
@@ -1991,6 +2275,11 @@ class GameEngine:
                                 ps.skills[drop_idx], ps.skills[src_slot]
                     else:
                         new_s = PlayerSkills._make_skill(sid, SKILL_CATALOG)
+                        if new_s is None:
+                            # Talent skill não está no catálogo — busca em ps.skills
+                            # (pode estar numa posição diferente da barra)
+                            new_s = next((s for s in ps.skills
+                                          if s and s.skill_id == sid), None)
                         if new_s:
                             ps.skills[drop_idx] = new_s
                 else:
@@ -2103,7 +2392,7 @@ class GameEngine:
             "keybinds": list(cbar.keybinds),
         }
 
-    def _apply_hotbar_config(self) -> None:
+    def _apply_hotbar_config(self, new_character: bool = False) -> None:
         """Restaura layout e keybinds da hotbar e barra de consumíveis a partir de config.json."""
         import config as _cfg
         from skill_config import SKILL_CATALOG, NUM_SLOTS, DEFAULT_KEYBINDS
@@ -2126,8 +2415,35 @@ class GameEngine:
                     ts = next((t for t in talent_skills if t.skill_id == sid), None)
                     if ts:
                         new_skills[i] = ts
-                    elif sid in SKILL_CATALOG:
+                    elif sid in SKILL_CATALOG and sid in ps.learned_skill_ids:
                         new_skills[i] = PlayerSkills._make_skill(sid, SKILL_CATALOG)
+
+                # Talent skills que não estavam salvas no config (ex: desbloqueadas após
+                # último save) precisam ser reinseridas no primeiro slot livre.
+                placed_ids = {s.skill_id for s in new_skills if s}
+                for ts in talent_skills:
+                    if ts.skill_id not in placed_ids:
+                        try:
+                            idx = new_skills.index(None)
+                            new_skills[idx] = ts
+                        except ValueError:
+                            new_skills.append(ts)
+                        placed_ids.add(ts.skill_id)
+
+                # Skills aprendidas (trainer/etc.) ausentes do config — reinserir.
+                # Garante que skills aprendidas durante a sessão anterior (sem save
+                # da config naquele momento) não desapareçam da hotbar.
+                for sid in ps.learned_skill_ids:
+                    if sid not in placed_ids and sid in SKILL_CATALOG:
+                        sk = PlayerSkills._make_skill(sid, SKILL_CATALOG)
+                        if sk:
+                            try:
+                                idx = new_skills.index(None)
+                                new_skills[idx] = sk
+                            except ValueError:
+                                new_skills.append(sk)
+                            placed_ids.add(sid)
+
                 ps.skills = new_skills
 
                 for i in range(min(len(saved_keybinds), NUM_SLOTS)):
@@ -2139,29 +2455,63 @@ class GameEngine:
             from components import ConsumableBar as _CB
             cbar = self.world.get_component(self.player_entity, _CB)
             if cbar:
-                saved_slots    = cb_data.get("slots",    [])
                 saved_keybinds = cb_data.get("keybinds", [])
-                for i in range(min(len(saved_slots), _CB.NUM_SLOTS)):
-                    cbar.slots[i] = saved_slots[i]
                 for i in range(min(len(saved_keybinds), _CB.NUM_SLOTS)):
                     cbar.keybinds[i] = saved_keybinds[i]
+                # Slots de itens só são restaurados para personagens existentes;
+                # novos personagens começam com a barra vazia.
+                if not new_character:
+                    saved_slots = cb_data.get("slots", [])
+                    for i in range(min(len(saved_slots), _CB.NUM_SLOTS)):
+                        cbar.slots[i] = saved_slots[i]
 
     # ── Aplica nova escala de resolução ────────────────────────────────────
     def _apply_scale(self, scale: float) -> None:
-        self._scale = scale
-        win_w = int(SCREEN_WIDTH  * scale)
-        win_h = int(SCREEN_HEIGHT * scale)
+        global SCREEN_WIDTH, SCREEN_HEIGHT
+        self._scale   = scale
+        win_w         = int(1280 * scale)
+        win_h         = int(720  * scale)
+        SCREEN_WIDTH  = win_w
+        SCREEN_HEIGHT = win_h
+        self.screen   = pygame.Surface((win_w, win_h))
         self._display = pygame.display.set_mode((win_w, win_h))
+        self._rebuild_screen_refs(self.screen)
+        # Atualiza Camera component para que offset_x/offset_y reflitam a nova resolução
+        for _, cam, _ in self.world.get_entities_with(Camera, Position):
+            cam.offset_x = win_w / 2
+            cam.offset_y = win_h / 2
         self._save_config()
-        _orig = self._orig_mouse_pos
-        if scale != 1.0:
-            _s = scale
-            pygame.mouse.get_pos = lambda: (
-                int(_orig()[0] / _s),
-                int(_orig()[1] / _s),
-            )
-        else:
-            pygame.mouse.get_pos = _orig
+
+    def _rebuild_screen_refs(self, new_screen: "pygame.Surface") -> None:
+        """Atualiza referências à surface de render em todos os subsistemas."""
+        # Sistemas ECS na lista principal
+        for sys in self.systems:
+            if hasattr(sys, "screen"):
+                sys.screen = new_screen
+        # Sistemas com refs diretas fora da lista
+        for attr in ("_skill_system", "_loot_system", "_projectile_system",
+                     "_render_system", "_tile_render_system"):
+            obj = getattr(self, attr, None)
+            if obj and hasattr(obj, "screen"):
+                obj.screen = new_screen
+        # Overlays e UI
+        self._map_overlay.screen = new_screen
+        self._minimap.screen     = new_screen
+        if hasattr(self._talent_system, "screen"):
+            self._talent_system.screen = new_screen
+        if hasattr(self._shop_system, "screen"):
+            self._shop_system.screen = new_screen
+        if hasattr(self._quest_dialog, "screen"):
+            self._quest_dialog.screen = new_screen
+        if hasattr(self._quest_journal, "screen"):
+            self._quest_journal.screen = new_screen
+        for attr in ("_blacksmith_system", "_crafting_system", "_trainer_system"):
+            obj = getattr(self, attr, None)
+            if obj and hasattr(obj, "screen"):
+                obj.screen = new_screen
+        # God Mode
+        if hasattr(self, "_god_mode") and hasattr(self._god_mode, "_screen"):
+            self._god_mode._screen = new_screen
 
     # ------------------------------------------------------------------
     # HUD
@@ -2781,50 +3131,81 @@ class GameEngine:
         self._draw_tooltip(mx, my, title, lines, body_font=self.font_xs)
 
     def _draw_world_tooltip(self):
-        """Mostra tooltip ao passar o mouse sobre inimigos/NPCs no mundo."""
-        from components import Enemy, EnemyTier, Renderable, Merchant, Visible
+        """Mostra tooltip fixo no canto inferior direito ao passar o mouse sobre NPCs/mobs."""
+        from components import Enemy, EnemyTier, Renderable, Merchant, QuestGiver, NPC, Visible, EntityIdentity
         mx, my = pygame.mouse.get_pos()
-        wx = mx + self._cam_x
-        wy = my + self._cam_y
+        z  = self._zoom
+        wx = mx / z + self._cam_x
+        wy = my / z + self._cam_y
 
-        # Comerciantes — apenas se visível (não coberto pela fog)
-        for eid, pos, rend, merch, _ in self.world.get_entities_with(
-                Position, Renderable, Merchant, Visible):
+        title      = None
+        lines      = []
+        title_col  = (255, 220, 100)
+
+        # NPCs — qualquer entidade com componente NPC (Merchant, QuestGiver, futuro Trainer...)
+        for eid, pos, rend, npc, _ in self.world.get_entities_with(
+                Position, Renderable, NPC, Visible):
             hw, hh = rend.width / 2, rend.height / 2
             if not (pos.x - hw <= wx <= pos.x + hw and pos.y - hh <= wy <= pos.y + hh):
                 continue
-            self._pending_tooltip = (mx, my, merch.name,
-                                     [("Clique direito para abrir a loja", (150, 220, 150))])
+            title = npc.name
+            lines = [(f"Nivel {npc.level}  {npc.profession}", (160, 160, 160))]
+            # Dica de interação baseada nas capacidades do NPC
+            has_shop  = self.world.get_component(eid, Merchant)  is not None
+            has_quest = self.world.get_component(eid, QuestGiver) is not None
+            if has_shop and has_quest:
+                lines.append(("Clique direito para interagir", (220, 200, 100)))
+            elif has_shop:
+                lines.append(("Clique direito para abrir a loja", (150, 220, 150)))
+            elif has_quest:
+                lines.append(("Clique direito para interagir", (220, 200, 100)))
+            break
+
+        # Inimigos
+        if title is None:
+            tier_colors = {"normal": (200, 200, 200), "elite": (140, 140, 255),
+                           "rare": (255, 165, 0), "boss": (220, 80, 220)}
+            for eid, pos, rend, _, _ in self.world.get_entities_with(
+                    Position, Renderable, Enemy, Visible):
+                cs = self.world.get_component(eid, CombatStats)
+                if cs and cs.current_hp <= 0:
+                    continue
+                hw, hh = rend.width / 2, rend.height / 2
+                if not (pos.x - hw <= wx <= pos.x + hw and pos.y - hh <= wy <= pos.y + hh):
+                    continue
+                tier_c    = self.world.get_component(eid, EnemyTier)
+                ident     = self.world.get_component(eid, EntityIdentity)
+                tier      = tier_c.tier if tier_c else "normal"
+                title     = ident.name  if ident else "Inimigo"
+                mob_race  = ident.race  if ident else "?"
+                mob_level = ident.level if ident else 1
+                title_col = tier_colors.get(tier.lower(), (200, 200, 200))
+                lines = [(f"Level {mob_level}  {mob_race}", (160, 160, 160))]
+                if cs:
+                    hp_pct = int(cs.current_hp / max(1, cs.max_hp) * 100)
+                    lines.append((f"HP: {cs.current_hp}/{cs.max_hp} ({hp_pct}%)",
+                                  C_GREEN if hp_pct > 50 else C_YELLOW if hp_pct > 25 else C_RED))
+                break
+
+        if title is None:
             return
 
-        # Inimigos — apenas se visível (não coberto pela fog)
-        from components import EntityIdentity
-        for eid, pos, rend, _, _ in self.world.get_entities_with(
-                Position, Renderable, Enemy, Visible):
-            cs = self.world.get_component(eid, CombatStats)
-            if cs and cs.current_hp <= 0:
-                continue
-            hw, hh = rend.width / 2, rend.height / 2
-            if not (pos.x - hw <= wx <= pos.x + hw and pos.y - hh <= wy <= pos.y + hh):
-                continue
-            tier_c = self.world.get_component(eid, EnemyTier)
-            ident  = self.world.get_component(eid, EntityIdentity)
-            tier   = tier_c.tier if tier_c else "Normal"
-            mob_name  = ident.name  if ident else "Inimigo"
-            mob_race  = ident.race  if ident else "?"
-            mob_level = ident.level if ident else 1
-            tier_colors = {"normal": (200,200,200), "elite": (140,140,255),
-                           "rare": (255,165,0), "boss": (220,80,220)}
-            title_col = tier_colors.get(tier.lower(), (200,200,200))
-            lines = [
-                (f"Level {mob_level}  {mob_race}", (160, 160, 160)),
-            ]
-            if cs:
-                hp_pct = int(cs.current_hp / max(1, cs.max_hp) * 100)
-                lines.append((f"HP: {cs.current_hp}/{cs.max_hp} ({hp_pct}%)",
-                               C_GREEN if hp_pct > 50 else C_YELLOW if hp_pct > 25 else C_RED))
-            self._pending_tooltip = (mx, my, mob_name, lines, title_col)
-            return
+        # Renderizar tooltip fixo no canto inferior direito
+        PAD    = 10
+        LINE_H = self.font_sm.get_height() + 3
+        t_surf = self.font_md.render(title, True, title_col)
+        line_surfs = [self.font_sm.render(l[0], True, l[1]) for l in lines]
+        tw = max(t_surf.get_width(), *(s.get_width() for s in line_surfs)) + PAD * 2
+        th = self.font_md.get_height() + len(line_surfs) * LINE_H + PAD * 2 + 4
+        tx = SCREEN_WIDTH  - tw  - 12
+        ty = SCREEN_HEIGHT - th  - 12
+        bg = pygame.Surface((tw, th), pygame.SRCALPHA)
+        bg.fill((10, 8, 5, 210))
+        self.screen.blit(bg, (tx, ty))
+        pygame.draw.rect(self.screen, (120, 90, 50), (tx, ty, tw, th), 1, border_radius=3)
+        self.screen.blit(t_surf, (tx + PAD, ty + PAD))
+        for i, s in enumerate(line_surfs):
+            self.screen.blit(s, (tx + PAD, ty + PAD + self.font_md.get_height() + 4 + i * LINE_H))
 
     # ------------------------------------------------------------------
 
@@ -2834,6 +3215,12 @@ class GameEngine:
         perm_stats   = self.world.get_component(self.player_entity, PermanentStats)
         if not combat_stats:
             return
+
+        # --- Indicador de zoom (canto superior esquerdo, só quando ≠ 100%) ---
+        if self._zoom != 1.0:
+            z_pct  = int(round(self._zoom * 100))
+            z_surf = self.font_xs.render(f"zoom {z_pct}%", True, C_YELLOW)
+            self.screen.blit(z_surf, (10, 10))
 
         # --- Zona atual + coordenadas (canto superior direito) ---
         import os
@@ -2853,6 +3240,14 @@ class GameEngine:
 
         y = 10  # cursor vertical
 
+        # --- Nome do personagem ---
+        if char_stats:
+            name_surf = self.font_sm.render(
+                f"{char_stats.name}  [{char_stats.class_id.capitalize()}]",
+                True, (210, 185, 255))
+            self.screen.blit(name_surf, (10, y))
+            y += name_surf.get_height() + 2
+
         # --- HP ---
         hp_ratio = max(0, combat_stats.current_hp / max(1, combat_stats.max_hp))
         bar_w = 200
@@ -2863,14 +3258,22 @@ class GameEngine:
         self.screen.blit(hp_surf, (14, y))
         y += 18
 
-        # --- Rage ---
+        # --- Rage (Guerreiro) ou Mana (Mago) ---
         if char_stats:
-            rage_ratio = char_stats.rage / max(1, char_stats.max_rage)
-            pygame.draw.rect(self.screen, (60, 20, 0),   (10, y, bar_w, 14))
-            pygame.draw.rect(self.screen, C_ORANGE,       (10, y, int(bar_w * rage_ratio), 14))
-            rage_surf = self.font_sm.render(
-                f"Raiva {char_stats.rage}/{char_stats.max_rage}", True, C_WHITE)
-            self.screen.blit(rage_surf, (14, y))
+            if char_stats.class_id == "mago":
+                mana_ratio = char_stats.mana / max(1, char_stats.max_mana)
+                pygame.draw.rect(self.screen, (0, 20, 80),    (10, y, bar_w, 14))
+                pygame.draw.rect(self.screen, (50, 100, 255), (10, y, int(bar_w * mana_ratio), 14))
+                mana_surf = self.font_sm.render(
+                    f"Mana {char_stats.mana}/{char_stats.max_mana}", True, C_WHITE)
+                self.screen.blit(mana_surf, (14, y))
+            else:
+                rage_ratio = char_stats.rage / max(1, char_stats.max_rage)
+                pygame.draw.rect(self.screen, (60, 20, 0),   (10, y, bar_w, 14))
+                pygame.draw.rect(self.screen, C_ORANGE,       (10, y, int(bar_w * rage_ratio), 14))
+                rage_surf = self.font_sm.render(
+                    f"Raiva {char_stats.rage}/{char_stats.max_rage}", True, C_WHITE)
+                self.screen.blit(rage_surf, (14, y))
             y += 18
 
         # --- Ataque CD ---
@@ -2891,7 +3294,7 @@ class GameEngine:
         pygame.draw.rect(self.screen, C_CYAN,        (10, y, int(bar_w * xp_ratio), 10))
         lv_surf = self.font_sm.render(
             f"Nv {char_stats.level}  XP {char_stats.current_xp}/{char_stats.xp_to_next_level}",
-            True, C_CYAN)
+            True, (255, 255, 255))
         self.screen.blit(lv_surf, (14, y))
         y += 14
 
@@ -2952,6 +3355,49 @@ class GameEngine:
                 f"+{tt.available_points} TALENTO(S)! Pressione T para alocar",
                 True, color)
             self.screen.blit(tal_surf, (10, y))
+
+        # --- Barra de cast / canalização (centro inferior da tela) ---
+        self._draw_cast_bar(char_stats)
+
+    def _draw_cast_bar(self, char_stats: "CharacterStats | None") -> None:
+        """Barra de cast/canalização — exibida no centro inferior da tela."""
+        sw, sh = self.screen.get_size()
+        BAR_W, BAR_H = 280, 20
+        bx = sw // 2 - BAR_W // 2
+        by = sh - 140  # acima da hotbar
+
+        spell_cast = self.world.get_component(self.player_entity, SpellCast)
+        channeling = self.world.get_component(self.player_entity, Channeling)
+        ice_block  = self.world.get_component(self.player_entity, IceBlockEffect)
+
+        if spell_cast:
+            ratio  = min(1.0, spell_cast.elapsed / max(0.01, spell_cast.cast_time))
+            label  = f"Lançando... {spell_cast.elapsed:.1f}/{spell_cast.cast_time:.1f}s"
+            bar_col = (255, 160, 60)
+            bg_col  = (60, 30, 0)
+        elif channeling:
+            remaining = max(0.0, channeling.duration - channeling.elapsed)
+            ratio  = remaining / max(0.01, channeling.duration)
+            label  = f"Canalizando... {remaining:.1f}s"
+            bar_col = (255, 100, 20)
+            bg_col  = (50, 20, 0)
+        elif ice_block:
+            ratio  = min(1.0, ice_block.elapsed / max(0.01, ice_block.duration))
+            label  = f"Bloco de Gelo {ice_block.elapsed:.1f}/{ice_block.duration:.1f}s"
+            bar_col = (80, 180, 255)
+            bg_col  = (0, 20, 60)
+        else:
+            return
+
+        # Fundo
+        bg_r = pygame.Rect(bx - 2, by - 2, BAR_W + 4, BAR_H + 4)
+        pygame.draw.rect(self.screen, (0, 0, 0), bg_r, border_radius=4)
+        pygame.draw.rect(self.screen, bg_col, (bx, by, BAR_W, BAR_H), border_radius=3)
+        pygame.draw.rect(self.screen, bar_col, (bx, by, int(BAR_W * ratio), BAR_H), border_radius=3)
+        pygame.draw.rect(self.screen, (200, 200, 200), (bx, by, BAR_W, BAR_H), 1, border_radius=3)
+        txt = self.font_sm.render(label, True, (255, 255, 255))
+        self.screen.blit(txt, (bx + BAR_W // 2 - txt.get_width() // 2,
+                               by + BAR_H // 2 - txt.get_height() // 2))
 
     # ------------------------------------------------------------------
     # Painel de equipamentos + inventário (tecla I)
@@ -3118,6 +3564,25 @@ class GameEngine:
             return
 
         c = item.consumable
+
+        # Receita: aprende e remove da bag imediatamente
+        if "learn_recipe" in c:
+            from components import LearnedRecipes
+            lr = self.world.get_component(self.player_entity, LearnedRecipes)
+            if lr:
+                recipe_id = c["learn_recipe"]
+                if lr.learn(recipe_id):
+                    from crafting_data import RECIPES
+                    rname = RECIPES.get(recipe_id, {}).get("name", recipe_id)
+                    LOG.add(f"Receita aprendida: {rname}!", (220, 180, 50))
+                    SOUNDS.play_ui("levelup")
+                else:
+                    LOG.add("Voce ja conhece essa receita.", (160, 140, 80))
+            item.stack -= 1
+            if item.stack <= 0:
+                inv.items.pop(idx)
+            return
+
         ooc_only = c.get("ooc_only", False)
         if ooc_only and state and state.in_combat:
             LOG.add("Não pode usar comida em combate!", (220, 100, 60))

@@ -98,6 +98,35 @@ class TileSpriteManager:
         target_h = TILE_SIZE + tile_type.overlay_height
         return self._get_scaled(filename, target_w, target_h)
 
+    def get_raw_sprite(self, name: str) -> "pygame.Surface | None":
+        """
+        Retorna o sprite no tamanho real.
+        - Se 'name' for um tile de sheet (SHEET_TILE_MAP ou OBJECT_SHEET_TILE_MAP),
+          extrai a sub-região do PNG do sheet.
+        - Caso contrário, carrega o arquivo 'name'.png diretamente.
+        """
+        from tileset import SHEET_TILE_MAP, OBJECT_SHEET_TILE_MAP
+        info = SHEET_TILE_MAP.get(name) or OBJECT_SHEET_TILE_MAP.get(name)
+        if info is not None:
+            sheet_file, sx, sy, tw, th = info
+            return self._get_sheet_region(sheet_file, sx, sy, tw, th)
+        return self._load_raw(name)
+
+    def _get_sheet_region(self, sheet_file: str,
+                          sx: int, sy: int, tw: int, th: int) -> "pygame.Surface | None":
+        """Extrai e cacheiza uma sub-região de um sheet PNG."""
+        key = (sheet_file, sx, sy, tw, th)
+        if key in self._scaled:
+            return self._scaled[key]
+        sheet = self._load_raw(sheet_file)
+        if sheet is None:
+            self._scaled[key] = None
+            return None
+        region = pygame.Surface((tw, th), pygame.SRCALPHA)
+        region.blit(sheet, (0, 0), (sx, sy, tw, th))
+        self._scaled[key] = region
+        return region
+
     def invalidate(self) -> None:
         """Limpa o cache (use ao trocar de resolução ou recarregar assets)."""
         self._raw.clear()

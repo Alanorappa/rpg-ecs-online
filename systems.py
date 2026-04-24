@@ -4,24 +4,35 @@ import pygame
 import math
 import heapq
 import random
+from fonts import make as _font
 
 from components import Position, Renderable, PlayerControlled, Camera, Collider, \
                        Enemy, AIControlled, InitialPosition, DetectionRadius, Tilemap, \
                        TileMovement, CombatStats, Modifier, CombatState, PlayerAutoMove, \
                        Projectile, Corpse, Inventory, EnemyTier, Equipment, Wallet, Merchant, \
                        CharacterStats, FogOfWar, Visible, ActiveEffect, StatusEffects, \
-                       EnemyAbilities, EnemyAbilitySlot, EntityIdentity
+                       EnemyAbilities, EnemyAbilitySlot, EntityIdentity, \
+                       MobSounds, PendingDeath, XPReward, SpawnZoneOwner, SpawnZone, \
+                       PlayerSkills, NPC, ActiveRegen, ConsumableBar, \
+                       AoeTargeting
 from world import World
-from tileset import TILE_SIZE
+import camera_state as _cam_state
+from tileset import TILE_SIZE, OBJECT_MAPPING
 from utils import chebyshev, start_tile_movement
 from damage_calculator import resolve_attack_outcome, calculate_base_damage
 from combat_log import LOG
 from sound_manager import SOUNDS
-from floating_text import FLT, PROC
+from floating_text import FLT, PROC, WARN
 from icon_manager import ICONS
 from ui_helpers import item_tooltip_lines
 from status_effects_data import EFFECT_DEFS
 from fov import compute_fov
+from loot_tables import roll_loot, roll_mob_loot, roll_coins
+from entity_factory import create_corpse, create_enemy
+from enemy_abilities_data import ABILITY_DEFS
+from merchant_data import SHOPS
+import quest_events
+from quest_events import fire as quest_fire
 
 
 def apply_effect(
@@ -55,12 +66,12 @@ def apply_effect(
         return
 
     resolved_tick = tick_interval if tick_interval is not None else defn.tick_interval
-    sfx.effects.append(ActiveEffect(
+    sfx.effects[effect_type] = ActiveEffect(
         effect_type=effect_type,
         duration=duration,
         magnitude=magnitude,
         tick_interval=resolved_tick,
-    ))
+    )
 
 
 class System:
@@ -196,6 +207,9 @@ class TileValidationSystem(System):
     def __init__(self, world: World):
         self.world = world
         self.tilemap_comp = None
+        # Cache de tiles ocupados: {(tx, ty): entity_id}
+        # Atualizado em update() a cada frame; consultado em O(1) por is_tile_walkable.
+        self._occupied: dict = {}
 
     def _get_tilemap_component(self):
         if not self.tilemap_comp:
@@ -204,10 +218,18 @@ class TileValidationSystem(System):
                 break
         return self.tilemap_comp
 
+    def update(self, events: list = None, dt: float = 0) -> None:
+        """Reconstrói o cache de tiles ocupados a cada frame."""
+        occupied = {}
+        for entity_id, tm in self.world.get_entities_with(TileMovement):
+            occupied[(tm.current_tile_x, tm.current_tile_y)] = entity_id
+            if tm.is_moving:
+                occupied[(tm.target_tile_x, tm.target_tile_y)] = entity_id
+        self._occupied = occupied
+
     def is_tile_walkable(self, moving_entity_id: int, target_tile_x: int, target_tile_y: int) -> bool:
         tilemap_comp = self._get_tilemap_component()
         if not tilemap_comp:
-            print("Erro: Tilemap não encontrado para validação!")
             return False
 
         if not (0 <= target_tile_x < tilemap_comp.map_width_tiles and
@@ -218,27 +240,19 @@ class TileValidationSystem(System):
         if tile_type.is_solid:
             return False
 
-        for entity_id, tile_move_comp in self.world.get_entities_with(TileMovement):
-            if entity_id == moving_entity_id:
-                continue
-            
-            if (not tile_move_comp.is_moving and 
-                tile_move_comp.current_tile_x == target_tile_x and 
-                tile_move_comp.current_tile_y == target_tile_y) or \
-               (tile_move_comp.is_moving and 
-                tile_move_comp.target_tile_x == target_tile_x and 
-                tile_move_comp.target_tile_y == target_tile_y):
-                
-                if self.world.get_component(moving_entity_id, Enemy) and \
-                   self.world.get_component(entity_id, PlayerControlled):
-                    ai_control = self.world.get_component(moving_entity_id, AIControlled)
-                    if ai_control:
-                        ai_control.is_blocked = True
-                        ai_control.blocked_by_entity_id = entity_id
-                
-                return False
+        occupant_id = self._occupied.get((target_tile_x, target_tile_y))
+        if occupant_id is None or occupant_id == moving_entity_id:
+            return True
 
-        return True
+        # Tile ocupado — verifica se inimigo tenta andar no tile do player
+        if self.world.get_component(moving_entity_id, Enemy) and \
+           self.world.get_component(occupant_id, PlayerControlled):
+            ai_control = self.world.get_component(moving_entity_id, AIControlled)
+            if ai_control:
+                ai_control.is_blocked = True
+                ai_control.blocked_by_entity_id = occupant_id
+
+        return False
 
 
 # Novo Sistema: CombatSystem
@@ -259,7 +273,6 @@ class CombatSystem(System):
 
     def _get_mainhand_weapon(self, entity_id: int):
         """Retorna o item equipado na mão principal, ou None."""
-        from components import Equipment
         equip = self.world.get_component(entity_id, Equipment)
         if equip:
             return equip.slots.get("mainhand")
@@ -303,6 +316,11 @@ class CombatSystem(System):
         if target_stats.current_hp <= 0:
             return True
 
+        # Imunidade (ex: Bloco de Gelo)
+        target_state = self.world.get_component(target_id, CombatState)
+        if target_state and target_state.is_immune:
+            return False
+
         attacker_is_player = self.world.get_component(attacker_id, PlayerControlled) is not None
         target_is_player   = self.world.get_component(target_id,   PlayerControlled) is not None
 
@@ -328,6 +346,13 @@ class CombatSystem(System):
             attacker_is_player, target_is_player,
         )
         target_stats.current_hp -= final_damage
+
+        # Aggro imediato: ataque do player força inimigo a perseguir independente do raio
+        if attacker_is_player:
+            _ai = self.world.get_component(target_id, AIControlled)
+            if _ai and _ai.state in ("IDLE", "RETURNING"):
+                _ai.state             = "CHASING"
+                _ai.path_recalc_timer = 0.0
 
         is_crit  = outcome == 'crit'
         is_block = outcome == 'block'
@@ -448,8 +473,7 @@ class CombatSystem(System):
             if target_is_player:
                 SOUNDS.play_emote_get_crit(is_player=True)
             else:
-                from components import MobSounds as _MS_crit
-                _ms_crit = self.world.get_component(target_id, _MS_crit)
+                _ms_crit = self.world.get_component(target_id, MobSounds)
                 SOUNDS.play_mob_sounds(_ms_crit, "crit")
                 SOUNDS.play_emote_get_crit(is_player=False, mob_sounds_comp=_ms_crit)
         if attacker_is_player and not is_ability:
@@ -471,8 +495,7 @@ class CombatSystem(System):
         """Procs disparados ao acertar um golpe (ex: Embalo ao dar crit)."""
         if not (is_crit and attacker_is_player):
             return
-        from components import CharacterStats as _CS2
-        _cs2 = self.world.get_component(attacker_id, _CS2)
+        _cs2 = self.world.get_component(attacker_id, CharacterStats)
         _combat2 = self._get_combat_stats(attacker_id)
         if _cs2 and _combat2 and _combat2.embalo_on_crit:
             _cs2.embalo_charges += 1
@@ -489,8 +512,7 @@ class CombatSystem(System):
             LOG.add("Voce foi derrotado! Renascendo...", (220, 50, 50))
             return True
 
-        from components import PendingDeath as _PD
-        self.world.add_component(dead_entity_id, _PD(killer_entity_id=killer_entity_id))
+        self.world.add_component(dead_entity_id, PendingDeath(killer_entity_id=killer_entity_id))
         return True
 
 
@@ -527,17 +549,11 @@ class DeathHandlerSystem(System):
         self.pending_respawns.clear()
 
     def update(self, events: list = None, dt: float = 0) -> None:
-        from components import PendingDeath, XPReward, EntityIdentity, \
-                               SpawnZoneOwner, SpawnZone, PlayerSkills
-        from loot_tables import roll_loot, roll_mob_loot, roll_coins
-        from entity_factory import create_corpse
-
         to_remove = []
         for entity_id, pd in self.world.get_entities_with(PendingDeath):
             # Entidades que morrem são inimigos (jogador nunca recebe PendingDeath)
             ident     = self.world.get_component(entity_id, EntityIdentity)
-            from components import MobSounds as _MS_death
-            _ms_death = self.world.get_component(entity_id, _MS_death)
+            _ms_death = self.world.get_component(entity_id, MobSounds)
             SOUNDS.play_mob_sounds(_ms_death, "death", dedup_key=str(entity_id))
 
             xp_comp = self.world.get_component(entity_id, XPReward)
@@ -551,8 +567,7 @@ class DeathHandlerSystem(System):
 
             # Evento de quest: kill
             if ident:
-                from quest_events import fire as _qfire
-                _qfire("kill", name=ident.name, race=ident.race, tier=tier_comp.tier if tier_comp else "")
+                quest_fire("kill", name=ident.name, race=ident.race, tier=tier_comp.tier if tier_comp else "")
 
             if pos and ai and tier_comp:
                 if ident:
@@ -563,9 +578,8 @@ class DeathHandlerSystem(System):
                 coins = roll_coins(tier_comp.tier)
 
                 # Drops condicionais de quests (collect_item)
-                import quest_events as _qev
-                if _qev._quest_system_ref is not None and ident:
-                    loot.extend(_qev._quest_system_ref.get_conditional_loot(
+                if quest_events._quest_system_ref is not None and ident:
+                    loot.extend(quest_events._quest_system_ref.get_conditional_loot(
                         ident.name, ident.race))
 
                 sz_owner = self.world.get_component(entity_id, SpawnZoneOwner)
@@ -616,7 +630,6 @@ class CombatStateSystem(System):
     RAGE_DECAY_INTERVAL = 3.0  # segundos entre cada decaimento
 
     def update(self, events: list = None, dt: float = 0) -> None:
-        from components import Equipment
         for eid, cs in self.world.get_entities_with(CombatState):
             # Timer de saída de combate
             if cs.in_combat and cs.combat_timer > 0:
@@ -675,7 +688,6 @@ class CombatStateSystem(System):
 
     def _trigger_procs(self, entity_id: int, combat_stats: CombatStats) -> None:
         """Rola e aplica procs de itens equipados ao entrar em combate."""
-        from components import Equipment, Modifier
         equip = self.world.get_component(entity_id, Equipment)
         if not equip or not combat_stats:
             return
@@ -766,7 +778,8 @@ class MouseTargetingSystem(System):
         self.screen = screen
 
     def _get_camera_offset(self) -> tuple:
-        sw, sh = self.screen.get_width(), self.screen.get_height()
+        z = _cam_state.zoom
+        sw, sh = self.screen.get_width() / z, self.screen.get_height() / z
         for _, _, cam_pos in self.world.get_entities_with(Camera, Position):
             return cam_pos.x - sw / 2, cam_pos.y - sh / 2
         return 0.0, 0.0
@@ -846,9 +859,13 @@ class MouseTargetingSystem(System):
             if event.button not in (1, 3):
                 continue
 
+            # Clique direito não move/ataca enquanto mira AOE estiver ativa (mesmo se cancelando)
+            if event.button == 3 and self.world.get_component(self.player_entity_id, AoeTargeting):
+                continue
+
             cam_x, cam_y = self._get_camera_offset()
-            world_x = event.pos[0] + cam_x
-            world_y = event.pos[1] + cam_y
+            world_x = event.pos[0] / _cam_state.zoom + cam_x
+            world_y = event.pos[1] / _cam_state.zoom + cam_y
             target_id = self._enemy_at_world_pos(world_x, world_y)
 
             player_cs   = self.world.get_component(self.player_entity_id, CombatState)
@@ -904,9 +921,10 @@ class PlayerInputSystem(System):
     def _is_on_screen(self, pos: "Position") -> bool:
         """Retorna True se a entidade está dentro dos limites da câmera atual."""
         if self.screen is None or pos is None:
-            return True  # sem tela configurada: não filtra
-        sw = self.screen.get_width()
-        sh = self.screen.get_height()
+            return True
+        z = _cam_state.zoom
+        sw = self.screen.get_width()  / z
+        sh = self.screen.get_height() / z
         for _, _, cam_pos in self.world.get_entities_with(Camera, Position):
             cam_x = cam_pos.x - sw / 2
             cam_y = cam_pos.y - sh / 2
@@ -935,7 +953,6 @@ class PlayerInputSystem(System):
         _combat_pnq = self.world.get_component(entity_id, CombatStats)
         if not _combat_pnq or not _combat_pnq.pnq_enabled:
             return
-        from components import PlayerSkills
         # Não conta enquanto a skill está em cooldown
         ps = self.world.get_component(entity_id, PlayerSkills)
         if ps:
@@ -1010,7 +1027,8 @@ class PlayerInputSystem(System):
                         self._start_tile_movement(position, tile_movement, tgt_x, tgt_y)
 
             # --- Auto-move e auto-ataque em direção ao alvo selecionado ---
-            if combat_state and combat_state.target_entity_id != -1:
+            _aoe_targeting = self.world.get_component(entity_id, AoeTargeting)
+            if combat_state and combat_state.target_entity_id != -1 and not _aoe_targeting:
                 self._process_target(
                     entity_id, position, tile_movement,
                     combat_stats, combat_state, auto_move, can_act, dt
@@ -1065,59 +1083,120 @@ class PlayerInputSystem(System):
         pl_tile_y = tile_movement.current_tile_y
         dist = chebyshev(pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y)
 
-        if dist <= self.PLAYER_ATTACK_RANGE:
-            # No alcance: limpa o path
-            if auto_move:
-                auto_move.path.clear()
-            if can_act and combat_stats.attack_cooldown_timer <= 0:
-                SOUNDS.play_emote_attack(is_player=True)
-                _tgt_cs   = self.world.get_component(target_id, CombatStats)
-                _hp_before = _tgt_cs.current_hp if _tgt_cs else 0
-                dead = self.combat_system.deal_damage(entity_id, target_id, "physical")
-                _hit_landed = dead or (_tgt_cs and _tgt_cs.current_hp < _hp_before)
-                combat_stats.attack_cooldown_timer = combat_stats.get_attack_cooldown()
-                self._add_rage(entity_id, 5)
-                combat_state.enter_combat()
-                self._increment_pnq_counter(entity_id, _hit_landed)
-                if dead:
-                    combat_state.target_entity_id = -1
-                    combat_state.is_pursuing = False
-                    if auto_move:
-                        auto_move.active = False
-        elif combat_state.is_pursuing and auto_move and not tile_movement.is_moving:
-            # Em combate e fora do alcance: persegue o alvo
-            self._auto_move_step(
-                entity_id, position, tile_movement,
-                pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y, auto_move, dt
-            )
+        char_stats = self.world.get_component(entity_id, CharacterStats)
+        is_mage    = char_stats is not None and char_stats.class_id == "mago"
+
+        if is_mage:
+            pursuit_range = self._mage_attack_range(entity_id)
+            if dist <= self.PLAYER_ATTACK_RANGE:
+                # Adjacente: melee idêntico ao guerreiro (sem geração de Raiva)
+                if auto_move:
+                    auto_move.path.clear()
+                if can_act and combat_stats.attack_cooldown_timer <= 0:
+                    SOUNDS.play_emote_attack(is_player=True)
+                    _tgt_cs = self.world.get_component(target_id, CombatStats)
+                    dead = self.combat_system.deal_damage(entity_id, target_id, "physical")
+                    combat_stats.attack_cooldown_timer = combat_stats.get_attack_cooldown()
+                    combat_state.enter_combat()
+                    if dead:
+                        combat_state.target_entity_id = -1
+                        combat_state.is_pursuing = False
+                        if auto_move:
+                            auto_move.active = False
+            elif dist <= pursuit_range:
+                # Dentro do alcance de skill: para e aguarda cast manual
+                if auto_move:
+                    auto_move.path.clear()
+            elif combat_state.is_pursuing and auto_move and not tile_movement.is_moving:
+                # Fora do alcance de skill: persegue até o alcance de skill
+                self._auto_move_step(
+                    entity_id, position, tile_movement,
+                    pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y, auto_move, dt,
+                    attack_range=pursuit_range,
+                )
+        else:
+            if dist <= self.PLAYER_ATTACK_RANGE:
+                # Guerreiro no alcance: ataque físico
+                if auto_move:
+                    auto_move.path.clear()
+                if can_act and combat_stats.attack_cooldown_timer <= 0:
+                    SOUNDS.play_emote_attack(is_player=True)
+                    _tgt_cs    = self.world.get_component(target_id, CombatStats)
+                    _hp_before = _tgt_cs.current_hp if _tgt_cs else 0
+                    dead = self.combat_system.deal_damage(entity_id, target_id, "physical")
+                    _hit_landed = dead or (_tgt_cs and _tgt_cs.current_hp < _hp_before)
+                    combat_stats.attack_cooldown_timer = combat_stats.get_attack_cooldown()
+                    self._add_rage(entity_id, 5)
+                    combat_state.enter_combat()
+                    self._increment_pnq_counter(entity_id, _hit_landed)
+                    if dead:
+                        combat_state.target_entity_id = -1
+                        combat_state.is_pursuing = False
+                        if auto_move:
+                            auto_move.active = False
+            elif combat_state.is_pursuing and auto_move and not tile_movement.is_moving:
+                # Guerreiro fora do alcance: persegue até adjacente
+                self._auto_move_step(
+                    entity_id, position, tile_movement,
+                    pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y, auto_move, dt,
+                )
+
+    def _mage_attack_range(self, entity_id: int) -> int:
+        """Retorna o maior cast_range entre as skills equipadas pelo mago (mínimo 5)."""
+        skills = self.world.get_component(entity_id, PlayerSkills)
+        if not skills:
+            return 5
+        max_range = 5
+        for s in skills.skills:
+            if s is not None and s.cast_range > max_range:
+                max_range = s.cast_range
+        return max_range
+
+    def _ranged_stop_tile(self, pl_x: int, pl_y: int,
+                          tgt_x: int, tgt_y: int, attack_range: int) -> tuple:
+        """Tile de parada para ranged: (attack_range-1) tiles do alvo na direção do player."""
+        dx = pl_x - tgt_x
+        dy = pl_y - tgt_y
+        cheb = max(abs(dx), abs(dy))
+        if cheb == 0:
+            return (pl_x, pl_y)
+        ratio = (attack_range - 1) / cheb
+        return (tgt_x + int(round(dx * ratio)), tgt_y + int(round(dy * ratio)))
 
     def _auto_move_step(self, entity_id, position, tile_movement,
-                        pl_x, pl_y, tgt_x, tgt_y, auto_move, dt):
+                        pl_x, pl_y, tgt_x, tgt_y, auto_move, dt,
+                        attack_range: int = 1):
         """Calcula e executa um passo de movimento em direção ao alvo."""
         auto_move.path_recalc_timer -= dt
         current_tile = (pl_x, pl_y)
 
         if not auto_move.path or auto_move.path_recalc_timer <= 0:
-            # Tenta todos os tiles adjacentes ao alvo, do mais próximo ao mais distante
-            adj = [
-                (tgt_x + dx, tgt_y + dy)
-                for dy in [-1, 0, 1] for dx in [-1, 0, 1]
-                if not (dx == 0 and dy == 0)
-                and max(abs(dx), abs(dy)) == 1
-            ]
-            adj.sort(key=lambda t: abs(t[0] - pl_x) + abs(t[1] - pl_y))
-
-            # Exclui o tile do alvo dos obstáculos (o jogador quer chegar adjacente)
             enemy_tiles = self._get_enemy_tiles()
             enemy_tiles.discard((tgt_x, tgt_y))
 
-            auto_move.path = []
-            for tile in adj:
-                path = self.pathfinding_system.find_path(current_tile, tile,
+            if attack_range > 1:
+                # Ranged: caminha até tile a (attack_range-1) tiles do alvo
+                dest = self._ranged_stop_tile(pl_x, pl_y, tgt_x, tgt_y, attack_range)
+                path = self.pathfinding_system.find_path(current_tile, dest,
                                                          dynamic_obstacles=enemy_tiles)
-                if path:
-                    auto_move.path = path
-                    break
+                auto_move.path = path or []
+            else:
+                # Melee: tenta todos os tiles adjacentes ao alvo, do mais próximo ao mais distante
+                adj = [
+                    (tgt_x + dx, tgt_y + dy)
+                    for dy in [-1, 0, 1] for dx in [-1, 0, 1]
+                    if not (dx == 0 and dy == 0)
+                    and max(abs(dx), abs(dy)) == 1
+                ]
+                adj.sort(key=lambda t: abs(t[0] - pl_x) + abs(t[1] - pl_y))
+                auto_move.path = []
+                for tile in adj:
+                    path = self.pathfinding_system.find_path(current_tile, tile,
+                                                             dynamic_obstacles=enemy_tiles)
+                    if path:
+                        auto_move.path = path
+                        break
+
             auto_move.path_recalc_timer = self.AUTO_MOVE_RECALC_INTERVAL
 
         if auto_move.path:
@@ -1357,7 +1436,7 @@ class EnemyAISystem(System):
             enemy_current_tile_x = tile_movement.current_tile_x
             enemy_current_tile_y = tile_movement.current_tile_y
 
-            # --- Efeitos de estado (stun / fear) ---
+            # --- Efeitos de estado (stun / fear / root) ---
             _sfx = self.world.get_component(enemy_id, StatusEffects)
             if _sfx:
                 if _sfx.has("stun"):
@@ -1386,6 +1465,15 @@ class EnemyAISystem(System):
                                 tile_movement.is_moving      = True
                                 break
                     continue  # não ataca enquanto com medo
+                if _sfx.has("root"):
+                    # Enraizado: pode atacar mas não se move
+                    if tile_movement.is_moving:
+                        tile_movement.is_moving = False
+                        tile_movement.target_tile_x = tile_movement.current_tile_x
+                        tile_movement.target_tile_y = tile_movement.current_tile_y
+                    ai_control.path = None
+                    ai_control.path_recalc_timer = 0.0
+                    # Permite continuar para lógica de ataque (não dá continue aqui)
 
             # --- Sleep zone: inimigos longe do jogador são completamente ignorados ---
             # Usa Chebyshev (sem sqrt) para eficiência máxima.
@@ -1444,8 +1532,7 @@ class EnemyAISystem(System):
                 enemy_combat_stats.spell_power > 0 or enemy_combat_stats.base_magical_damage > 0
             ) else "physical"
 
-            from components import MobSounds as _MS_atk
-            _ms_atk = self.world.get_component(enemy_id, _MS_atk)
+            _ms_atk = self.world.get_component(enemy_id, MobSounds)
             _caster_classes = {"Mage", "Mago", "Warlock", "Bruxo"}
             if ai_control.entity_class in _caster_classes:
                 _atk_event = "attack_magic"
@@ -1498,6 +1585,10 @@ class EnemyAISystem(System):
                         damage_type=damage_type_to_use
                     )
                     enemy_combat_stats.attack_cooldown_timer = enemy_combat_stats.get_attack_cooldown()
+
+            _is_rooted = _sfx is not None and _sfx.has("root")
+            if _is_rooted:
+                continue  # pode atacar já foi processado acima; só bloqueia movimento
 
             # --- Hunter Disengage: dash 4 tiles ao se sentir encurralado ---
             if (ai_control.entity_class == "Hunter" and
@@ -1553,8 +1644,18 @@ class EnemyAISystem(System):
             # --- Perseguição do Jogador ---
             in_detect_range = dist_to_player_pixels <= detect_radius.radius
 
-            # Detecção inicial: LOS requerido apenas para sair do estado IDLE/RETURNING
-            if in_detect_range and ai_control.state in ("IDLE", "RETURNING"):
+            # Leash: player kiteou além de 5 tiles → mob volta ao spawn (RETURNING)
+            # RETURNING é imune a re-aggro, eliminando a oscilação
+            _aggro_range_px = 5 * TILE_SIZE
+            if ai_control.state == "CHASING" and \
+                    dist_to_player_pixels > _aggro_range_px:
+                ai_control.state = "RETURNING"
+                ai_control.path_recalc_timer = 0.0
+                tile_movement.path = []
+
+            # Detecção inicial: mesma distância do leash (5 tiles), apenas mobs IDLE
+            # Usar o mesmo threshold evita oscilação: aggro e leash têm a mesma fronteira
+            if dist_to_player_pixels <= _aggro_range_px and ai_control.state == "IDLE":
                 _tilemap_for_los = self.pathfinding_system._get_tilemap_component()
                 _has_los = (
                     _tilemap_for_los is None or
@@ -1565,14 +1666,13 @@ class EnemyAISystem(System):
                     )
                 )
                 if _has_los:
-                    from components import MobSounds as _MS_aggro
-                    _ms_aggro = self.world.get_component(enemy_id, _MS_aggro)
+                    _ms_aggro = self.world.get_component(enemy_id, MobSounds)
                     SOUNDS.play_mob_sounds(_ms_aggro, "aggro", dedup_key=str(enemy_id))
                     ai_control.state       = "AGGRO_DELAY"
                     ai_control.aggro_delay = 1.0
 
-            # Perseguição ativa — sem LOS requerido, apenas raio de detecção
-            if in_detect_range and ai_control.state not in ("IDLE", "RETURNING"):
+            # Perseguição ativa — CHASING persiste mesmo fora do detect_radius (ex: agro por dano)
+            if ai_control.state not in ("IDLE", "RETURNING"):
                 if ai_control.state == "AGGRO_DELAY":
                     ai_control.aggro_delay -= dt
                     if ai_control.aggro_delay <= 0:
@@ -1841,8 +1941,7 @@ class TileMovementSystem(System):
                 # Emite rastro antes de mover (posição atual do frame)
                 if tile_movement.is_dash:
                     from floating_text import DASH_TRAIL
-                    from components import Renderable as _Rend
-                    _rend = self.world.get_component(entity_id, _Rend)
+                    _rend = self.world.get_component(entity_id, Renderable)
                     _w = _rend.width  if _rend else 24
                     _h = _rend.height if _rend else 24
                     DASH_TRAIL.emit(position.x, position.y, _w, _h)
@@ -1896,11 +1995,11 @@ class RenderSystem(System):
             break
 
         # ── Fog of War: conjunto de tiles visíveis neste frame ────────────────
-        from components import FogOfWar
-        from tileset import TILE_SIZE as _FOG_TS
-        _fog_visible: set | None = None
+        _fog_visible:   set | None = None
+        _fog_explored:  set | None = None
         for _, _fog in self.world.get_entities_with(FogOfWar):
-            _fog_visible = _fog.visible
+            _fog_visible  = _fog.visible
+            _fog_explored = _fog.explored
             break
 
         # ── Coleta drawables: (sort_y_world, tipo, dados) ─────────────────────
@@ -1915,19 +2014,21 @@ class RenderSystem(System):
             if _fog_visible is not None:
                 is_player = self.world.get_component(entity_id, PlayerControlled) is not None
                 if not is_player:
-                    etx = int(position.x / _FOG_TS)
-                    ety = int(position.y / _FOG_TS)
+                    etx = int(position.x / TILE_SIZE)
+                    ety = int(position.y / TILE_SIZE)
                     if (etx, ety) not in _fog_visible:
                         continue
             foot_y = position.y + renderable.height / 2
             drawables.append((foot_y, "entity", entity_id, position, renderable, combat_stats))
 
-        # Tile-objetos (árvores, arbustos, pedras grandes, etc.)
+        # Tile-objetos (árvores, arbustos, pedras — objetos estáticos do mapa)
         if world_objects:
             for obj in world_objects:
-                # Oculta objetos de tile fora do campo de visão
-                if _fog_visible is not None:
-                    if (obj.get("tile_x", -1), obj.get("tile_y", -1)) not in _fog_visible:
+                # Objetos estáticos aparecem tanto em tiles visíveis quanto
+                # explorados (o fog overlay escurece os explorados automaticamente).
+                if _fog_visible is not None and _fog_explored is not None:
+                    tx, ty = obj.get("tile_x", -1), obj.get("tile_y", -1)
+                    if (tx, ty) not in _fog_visible and (tx, ty) not in _fog_explored:
                         continue
                 drawables.append((obj["sort_y"], "object", obj))
 
@@ -1974,14 +2075,12 @@ class RenderSystem(System):
                 pygame.draw.rect(self.screen, (0, 200, 60), (bar_x, bar_y, int(bar_w * ratio), bar_h))
 
                 # Ícones de status (quadradinhos coloridos acima da HP bar)
-                from components import CombatState as _CS_R
-                from status_effects_data import EFFECT_DEFS as _EFDEFS
                 _sfx = self.world.get_component(entity_id, StatusEffects)
-                _cst = self.world.get_component(entity_id, _CS_R)
+                _cst = self.world.get_component(entity_id, CombatState)
                 _icons = []
                 if _sfx:
-                    for _eff in _sfx.effects:
-                        _defn = _EFDEFS.get(_eff.effect_type)
+                    for _eff in _sfx.effects.values():
+                        _defn = EFFECT_DEFS.get(_eff.effect_type)
                         if _defn:
                             _icons.append(_defn.color)
                 # Stun do CombatState (player) — fallback se não vier de StatusEffects
@@ -2018,17 +2117,16 @@ class TileRenderSystem(System):
     def __init__(self, world: World, screen: pygame.Surface):
         self.world  = world
         self.screen = screen
-        from tileset import TILE_SIZE as _TS
-        _tw = screen.get_width()  // _TS + 2
-        _th = screen.get_height() // _TS + 2
+        _tw = screen.get_width()  // TILE_SIZE + 2
+        _th = screen.get_height() // TILE_SIZE + 2
         # Cache de surface — pré-alocada; reconstruída apenas quando a câmera cruza fronteira de tile
-        self._cache_surf    = pygame.Surface((_tw * _TS, _th * _TS))
+        self._cache_surf    = pygame.Surface((_tw * TILE_SIZE, _th * TILE_SIZE))
         self._cache_tile_x:    int = -99999
         self._cache_tile_y:    int = -99999
         self._cache_tiles_w:   int = _tw
         self._cache_tiles_h:   int = _th
         # Fog of War: névoa leve para tiles explorados mas fora do campo de visão
-        self._fog_explored_surf: pygame.Surface = pygame.Surface((_TS, _TS), pygame.SRCALPHA)
+        self._fog_explored_surf: pygame.Surface = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
         self._fog_explored_surf.fill((0, 0, 0, 25))
         # Fog of War: gradiente de fade na borda do campo de visão.
         # FOG_FADE_LEVELS superfícies com alpha crescente de ~0 até FOG_FADE_MAX_ALPHA.
@@ -2041,13 +2139,14 @@ class TileRenderSystem(System):
         for i in range(FOG_FADE_LEVELS):
             t     = (i + 1) / FOG_FADE_LEVELS          # 0.1 → 1.0
             alpha = max(1, int(t * FOG_FADE_MAX_ALPHA))
-            s = pygame.Surface((_TS, _TS), pygame.SRCALPHA)
+            s = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
             s.fill((0, 0, 0, alpha))
             self._fog_fade_surfs.append(s)
         # Cache do overlay de fog — reconstrói apenas quando o tile de origem muda
         self._fog_overlay_surf: "pygame.Surface | None" = None
         self._fog_cache_tile_ox: int = -99999
         self._fog_cache_tile_oy: int = -99999
+        self._pending_fog_blit = None
 
     def invalidate_cache(self) -> None:
         """Força reconstrução do cache no próximo frame (chamar após troca de mapa)."""
@@ -2091,7 +2190,11 @@ class TileRenderSystem(System):
                     self._cache_surf = pygame.Surface((surf_w, surf_h))
 
                 from tile_sprite_manager import TILE_SPRITES
-                rows   = tilemap_comp.tile_matrix
+                from tileset import TILE_MAPPING as _TM, FLOOR_TILE as _FT
+                rows          = tilemap_comp.tile_matrix
+                terrain_rows  = tilemap_comp.terrain_matrix
+                vis_rows      = tilemap_comp.terrain_visual  # sheet visual overrides
+                obj_rows      = tilemap_comp.object_matrix   # world objects layer
                 map_h  = tilemap_comp.map_height_tiles
                 map_w  = tilemap_comp.map_width_tiles
                 for ty in range(tiles_h):
@@ -2100,9 +2203,26 @@ class TileRenderSystem(System):
                         dest = (tx * tile_size, ty * tile_size, tile_size, tile_size)
                         if 0 <= ry < map_h and 0 <= rx < map_w:
                             tile_type = rows[ry][rx]
-                            if tile_type.overlay_height > 0:
-                                # Tile-objeto: mostra só a cor base no pass 1.
-                                # O sprite completo (com overlay) é desenhado no pass 2 (Y-sort).
+                            vis_id = (vis_rows[ry][rx]
+                                      if vis_rows and ry < len(vis_rows) and rx < len(vis_rows[ry])
+                                      else "")
+                            has_obj = (obj_rows and ry < len(obj_rows)
+                                       and rx < len(obj_rows[ry])
+                                       and obj_rows[ry][rx] not in ("", "."))
+                            if vis_id:
+                                # Sheet terrain override — always highest priority
+                                spr = TILE_SPRITES.get_raw_sprite(vis_id)
+                                if spr is not None:
+                                    self._cache_surf.blit(spr, dest[:2])
+                                else:
+                                    t_char = terrain_rows[ry][rx] if ry < len(terrain_rows) and rx < len(terrain_rows[ry]) else "G"
+                                    pygame.draw.rect(self._cache_surf, _TM.get(t_char, _FT).color, dest)
+                            elif has_obj or getattr(tile_type, "sprite_px_h", 0) > 0:
+                                # Tile with a world object or multi-tile sprite upper cell:
+                                # draw terrain background so the object renders cleanly on top
+                                t_char = terrain_rows[ry][rx] if ry < len(terrain_rows) and rx < len(terrain_rows[ry]) else "G"
+                                pygame.draw.rect(self._cache_surf, _TM.get(t_char, _FT).color, dest)
+                            elif tile_type.overlay_height > 0:
                                 pygame.draw.rect(self._cache_surf, tile_type.color, dest)
                             else:
                                 sprite = TILE_SPRITES.get(tile_type, rx, ry)
@@ -2121,65 +2241,77 @@ class TileRenderSystem(System):
             # 1 blit por frame — ~0.1ms ao invés de ~880 draw.rect
             self.screen.blit(self._cache_surf, (-sub_x, -sub_y))
 
-            # ── Fog of War overlay ────────────────────────────────────────────
-            fog_comp = None
-            for _, fog in self.world.get_entities_with(FogOfWar):
-                fog_comp = fog
-                break
+            # Fog é desenhado separadamente via render_fog() para permitir
+            # que outros sistemas (quest, shop) desenhem seus indicadores
+            # world-space ANTES do overlay de fog ser aplicado.
+            self._pending_fog_blit = (tile_ox, tile_oy, tiles_w, tiles_h, sub_x, sub_y, tile_size)
 
-            if fog_comp is not None:
-                # Reconstrói o overlay de fog apenas quando o tile de origem muda
-                if (tile_ox != self._fog_cache_tile_ox
-                        or tile_oy != self._fog_cache_tile_oy
-                        or self._fog_overlay_surf is None):
+    def render_fog(self) -> None:
+        """Aplica o overlay de fog of war sobre tudo que foi desenhado até agora.
+        Deve ser chamado APÓS render() e APÓS render_world() de todos os sistemas world-space."""
+        if not hasattr(self, "_pending_fog_blit") or self._pending_fog_blit is None:
+            return
+        tile_ox, tile_oy, tiles_w, tiles_h, sub_x, sub_y, tile_size = self._pending_fog_blit
+        self._pending_fog_blit = None
 
-                    surf_w = tiles_w * tile_size
-                    surf_h = tiles_h * tile_size
-                    if (self._fog_overlay_surf is None
-                            or self._fog_overlay_surf.get_width()  != surf_w
-                            or self._fog_overlay_surf.get_height() != surf_h):
-                        self._fog_overlay_surf = pygame.Surface((surf_w, surf_h), pygame.SRCALPHA)
+        fog_comp = None
+        for _, fog in self.world.get_entities_with(FogOfWar):
+            fog_comp = fog
+            break
 
-                    self._fog_overlay_surf.fill((0, 0, 0, 0))  # limpa
+        if fog_comp is None:
+            return
 
-                    explored   = fog_comp.explored
-                    visible    = fog_comp.visible
-                    exp_surf   = self._fog_explored_surf
-                    fade_surfs = self._fog_fade_surfs
-                    n_levels   = len(fade_surfs)
-                    fade_start = self._fog_fade_start
-                    px, py     = fog_comp._last_tile
-                    radius     = fog_comp.radius
-                    fade_begin = fade_start * radius
-                    fade_range = radius - fade_begin
+        if (tile_ox != self._fog_cache_tile_ox
+                or tile_oy != self._fog_cache_tile_oy
+                or self._fog_overlay_surf is None):
 
-                    for ty in range(tiles_h):
-                        for tx in range(tiles_w):
-                            rx, ry = tile_ox + tx, tile_oy + ty
-                            dx_s   = tx * tile_size
-                            dy_s   = ty * tile_size
-                            if (rx, ry) in visible:
-                                if fade_range > 0:
-                                    d = max(abs(rx - px), abs(ry - py))
-                                    if d > fade_begin:
-                                        t     = (d - fade_begin) / fade_range
-                                        level = min(n_levels - 1, int(t * n_levels))
-                                        self._fog_overlay_surf.blit(fade_surfs[level], (dx_s, dy_s))
-                            elif (rx, ry) in explored:
-                                self._fog_overlay_surf.blit(exp_surf, (dx_s, dy_s))
-                            else:
-                                pygame.draw.rect(self._fog_overlay_surf, (0, 0, 0, 255),
-                                                 (dx_s, dy_s, tile_size, tile_size))
+            surf_w = tiles_w * tile_size
+            surf_h = tiles_h * tile_size
+            if (self._fog_overlay_surf is None
+                    or self._fog_overlay_surf.get_width()  != surf_w
+                    or self._fog_overlay_surf.get_height() != surf_h):
+                self._fog_overlay_surf = pygame.Surface((surf_w, surf_h), pygame.SRCALPHA)
 
-                    self._fog_cache_tile_ox = tile_ox
-                    self._fog_cache_tile_oy = tile_oy
+            self._fog_overlay_surf.fill((0, 0, 0, 0))
 
-                # 1 blit por frame — overlay segue o mesmo offset sub-tile do mapa base
-                self.screen.blit(self._fog_overlay_surf, (-sub_x, -sub_y))
+            explored   = fog_comp.explored
+            visible    = fog_comp.visible
+            exp_surf   = self._fog_explored_surf
+            fade_surfs = self._fog_fade_surfs
+            n_levels   = len(fade_surfs)
+            fade_start = self._fog_fade_start
+            px, py     = fog_comp._last_tile
+            radius     = fog_comp.radius
+            fade_begin = fade_start * radius
+            fade_range = radius - fade_begin
+
+            for ty in range(tiles_h):
+                for tx in range(tiles_w):
+                    rx, ry = tile_ox + tx, tile_oy + ty
+                    dx_s   = tx * tile_size
+                    dy_s   = ty * tile_size
+                    if (rx, ry) in visible:
+                        if fade_range > 0:
+                            d = max(abs(rx - px), abs(ry - py))
+                            if d > fade_begin:
+                                t     = (d - fade_begin) / fade_range
+                                level = min(n_levels - 1, int(t * n_levels))
+                                self._fog_overlay_surf.blit(fade_surfs[level], (dx_s, dy_s))
+                    elif (rx, ry) in explored:
+                        self._fog_overlay_surf.blit(exp_surf, (dx_s, dy_s))
+                    else:
+                        pygame.draw.rect(self._fog_overlay_surf, (0, 0, 0, 255),
+                                         (dx_s, dy_s, tile_size, tile_size))
+
+            self._fog_cache_tile_ox = tile_ox
+            self._fog_cache_tile_oy = tile_oy
+
+        self.screen.blit(self._fog_overlay_surf, (-sub_x, -sub_y))
 
     def get_world_objects(self, camera_offset_x: float, camera_offset_y: float) -> list:
         """
-        Retorna lista de tile-objetos visíveis (overlay_height > 0) para o pass 2 (Y-sort).
+        Retorna lista de objetos visíveis (object_matrix) para o pass 2 (Y-sort).
         Cada item: dict com sort_y, screen_x, screen_y, sprite, color, width, height.
         """
         from tile_sprite_manager import TILE_SPRITES
@@ -2188,12 +2320,11 @@ class TileRenderSystem(System):
         cam_y = int(camera_offset_y)
 
         for _, tilemap_comp in self.world.get_entities_with(Tilemap):
-            tile_size  = tilemap_comp.tile_size
-            rows       = tilemap_comp.tile_matrix
-            map_h      = tilemap_comp.map_height_tiles
-            map_w      = tilemap_comp.map_width_tiles
+            tile_size = tilemap_comp.tile_size
+            obj_rows  = tilemap_comp.object_matrix
+            map_h     = tilemap_comp.map_height_tiles
+            map_w     = tilemap_comp.map_width_tiles
 
-            # Janela de tiles visíveis (margem extra para overlay que vaza acima)
             tile_ox = cam_x // tile_size
             tile_oy = cam_y // tile_size
             tiles_w = self.screen.get_width()  // tile_size + 2
@@ -2204,25 +2335,47 @@ class TileRenderSystem(System):
                     rx, ry = tile_ox + tx, tile_oy + ty
                     if not (0 <= ry < map_h and 0 <= rx < map_w):
                         continue
-                    tile_type = rows[ry][rx]
-                    if tile_type.overlay_height <= 0:
+                    if ry >= len(obj_rows):
+                        continue
+                    obj_row  = obj_rows[ry]
+                    obj_char = obj_row[rx] if rx < len(obj_row) else "."
+                    if not obj_char or obj_char == ".":
                         continue
 
-                    total_h = tile_size + tile_type.overlay_height
-                    # sort_y: Y do "pé" do objeto em espaço de mundo
-                    sort_y_world = (ry + 1) * tile_size
-                    # Posição de tela do canto superior esquerdo do sprite
-                    scr_x = rx * tile_size - cam_x
-                    scr_y = sort_y_world - cam_y - total_h
+                    tile_type = OBJECT_MAPPING.get(obj_char)
+                    if tile_type is None:
+                        continue
 
-                    sprite = TILE_SPRITES.get(tile_type, rx, ry)
+                    # Sprite tree PNG (tamanho real) ou objeto legacy (overlay_height)
+                    spr_px_w = getattr(tile_type, "sprite_px_w", 0)
+                    spr_px_h = getattr(tile_type, "sprite_px_h", 0)
+                    spr_name = getattr(tile_type, "sprite_name", "")
+                    if spr_px_w > 0 and spr_px_h > 0 and spr_name:
+                        sprite_w = spr_px_w
+                        total_h  = spr_px_h
+                        sprite   = TILE_SPRITES.get_raw_sprite(spr_name)
+                    else:
+                        tiles_wide = getattr(tile_type, "sprite_tiles_wide", 1)
+                        sprite_w   = tile_size * tiles_wide
+                        total_h    = tile_size + tile_type.overlay_height
+                        sprite     = TILE_SPRITES.get(tile_type, rx, ry)
+
+                    # sort_y: meio do tile base
+                    sort_y   = ry * tile_size + tile_size // 2
+                    # Âncora: borda inferior do tile, alinhada à esquerda do tile.
+                    # Sprites de 32px: idêntico ao comportamento anterior.
+                    # Sprites largos (64px+): canto esq do sprite = canto esq do tile.
+                    anchor_y = (ry + 1) * tile_size
+                    scr_x    = rx * tile_size - cam_x
+                    scr_y    = anchor_y - cam_y - total_h
+
                     objects.append({
-                        "sort_y":   sort_y_world,
+                        "sort_y":   sort_y,
                         "screen_x": scr_x,
                         "screen_y": scr_y,
                         "sprite":   sprite,
                         "color":    tile_type.color,
-                        "width":    tile_size,
+                        "width":    sprite_w,
                         "height":   total_h,
                         "tile_x":   rx,
                         "tile_y":   ry,
@@ -2294,11 +2447,11 @@ class FogSystem(System):
             elif not in_sight and has_tag:
                 self.world.remove_component(eid, Visible)
 
-        # Merchants são estáticos — usa posição diretamente
-        for eid, _, mpos in self.world.get_entities_with(Merchant, Position):
-            mtx = int(mpos.x / TILE_SIZE)
-            mty = int(mpos.y / TILE_SIZE)
-            in_sight = (mtx, mty) in fog.visible
+        # NPCs estáticos — rastreados via componente NPC (único ponto independente de capacidades)
+        for eid, _, npos in self.world.get_entities_with(NPC, Position):
+            ntx = int(npos.x / TILE_SIZE)
+            nty = int(npos.y / TILE_SIZE)
+            in_sight = (ntx, nty) in fog.visible
             has_tag  = self.world.get_component(eid, Visible) is not None
             if in_sight and not has_tag:
                 self.world.add_component(eid, Visible())
@@ -2328,7 +2481,7 @@ class StatusEffectSystem(System):
                 continue
 
             to_remove = []
-            for effect in sfx.effects:
+            for effect in sfx.effects.values():
                 effect.duration -= dt
 
                 if effect.tick_interval > 0:
@@ -2338,10 +2491,10 @@ class StatusEffectSystem(System):
                         self._apply_tick(eid, effect)
 
                 if effect.duration <= 0:
-                    to_remove.append(effect)
+                    to_remove.append(effect.effect_type)
 
-            for effect in to_remove:
-                sfx.effects.remove(effect)
+            for key in to_remove:
+                del sfx.effects[key]
 
             # Sincroniza slow_mult a cada frame com base no estado atual dos efeitos
             tm = self.world.get_component(eid, TileMovement)
@@ -2352,6 +2505,11 @@ class StatusEffectSystem(System):
                 else:
                     tm.slow_mult         = 1.0
                     tm.debilitate_elapsed = 0.0
+
+            # Sincroniza root → CombatState.is_rooted
+            cst = self.world.get_component(eid, CombatState)
+            if cst:
+                cst.is_rooted = sfx.has("root")
 
     def _apply_tick(self, eid: int, effect: "ActiveEffect") -> None:
         cs  = self.world.get_component(eid, CombatStats)
@@ -2391,8 +2549,6 @@ class EnemyAbilitySystem(System):
         self.player_entity_id  = player_entity_id
 
     def update(self, events: list = None, dt: float = 0) -> None:
-        from enemy_abilities_data import ABILITY_DEFS
-
         player_tm = self.world.get_component(self.player_entity_id, TileMovement)
         player_cs = self.world.get_component(self.player_entity_id, CombatStats)
         if not player_tm or not player_cs or player_cs.current_hp <= 0:
@@ -2481,8 +2637,6 @@ class SpawnZoneSystem(System):
         self._spawn_queue: list = []
 
     def update(self, events=None, dt: float = 0) -> None:
-        from components import SpawnZone, Enemy, Tilemap
-
         # Posição do player para culling de zonas distantes
         player_tx, player_ty = 0, 0
         for _, ptm, _ in self.world.get_entities_with(TileMovement, PlayerControlled):
@@ -2576,11 +2730,8 @@ class SpawnZoneSystem(System):
 
     def _spawn_one(self, zone_eid: int, zone, dx: int, dy: int) -> int:
         """Cria um inimigo para a zona e retorna o entity ID."""
-        from components import SpawnZoneOwner
-        from entity_factory import create_enemy
-        import random as _random
         is_ranged = zone.enemy_type == "ranged"
-        level = _random.randint(zone.level_min, zone.level_max)
+        level = random.randint(zone.level_min, zone.level_max)
         new_eid = create_enemy(
             self.world, dx, dy,
             attack_range=3 if is_ranged else 1,
@@ -2614,7 +2765,6 @@ class MobRespawnSystem(System):
         self._respawn_queue: list = []
 
     def update(self, events: list = None, dt: float = 0) -> None:
-        from entity_factory import create_enemy
         still_waiting = []
 
         for entry in self.death_handler.pending_respawns:
@@ -2681,21 +2831,29 @@ class ShopSystem(System):
         self._open_cooldown: float = 0.0  # impede compra/venda logo após abrir a loja
 
         SW, SH = screen.get_size()
-        self._font_sm = pygame.font.Font(None, 20)
-        self._font_md = pygame.font.Font(None, 26)
-        self._font_lg = pygame.font.Font(None, 32)
+        self._font_sm = _font(20)
+        self._font_md = _font(26)
+        self._font_lg = _font(32)
 
     @property
     def is_open(self) -> bool:
         return self.open_merchant_id != -1
+
+    def open_for(self, merchant_eid: int) -> None:
+        """Abre a loja para o merchant_eid especificado, resetando estado interno."""
+        self.open_merchant_id   = merchant_eid
+        self._pending_merchant_id = -1
+        self._shop_scroll       = 0
+        self._bag_scroll        = 0
+        self._open_cooldown     = 0.3
 
     def _panel_origin(self):
         SW, SH = self.screen.get_size()
         return (SW - self.PANEL_W) // 2, (SH - self.PANEL_H) // 2
 
     def _get_cam(self):
-        from components import Camera
-        SW, SH = self.screen.get_size()
+        z = _cam_state.zoom
+        SW, SH = self.screen.get_width() / z, self.screen.get_height() / z
         for eid, pos, _ in self.world.get_entities_with(Position, Camera):
             return pos.x - SW / 2, pos.y - SH / 2
         return 0.0, 0.0
@@ -2730,8 +2888,8 @@ class ShopSystem(System):
                 self._open_cooldown = 0.5
                 _m = self.world.get_component(self.open_merchant_id, Merchant)
                 if _m:
-                    from quest_events import fire as _qfire
-                    _qfire("talk_to_npc", npc_name=_m.name)
+                    _npc = self.world.get_component(self.open_merchant_id, NPC)
+                    quest_fire("talk_to_npc", npc_name=_npc.name if _npc else "Comerciante")
 
         if not events:
             return
@@ -2752,7 +2910,7 @@ class ShopSystem(System):
                   and event.button == 3
                   and not self.is_open):
                 mx, my = event.pos
-                wx, wy = mx + cam_x, my + cam_y
+                wx, wy = mx / _cam_state.zoom + cam_x, my / _cam_state.zoom + cam_y
                 for eid, pos, rend, _ in self.world.get_entities_with(
                         Position, Renderable, Merchant):
                     hw = rend.width  / 2
@@ -2769,8 +2927,8 @@ class ShopSystem(System):
                             self._open_cooldown = 0.5
                             _m2 = self.world.get_component(eid, Merchant)
                             if _m2:
-                                from quest_events import fire as _qfire
-                                _qfire("talk_to_npc", npc_name=_m2.name)
+                                _npc2 = self.world.get_component(eid, NPC)
+                                quest_fire("talk_to_npc", npc_name=_npc2.name if _npc2 else "Comerciante")
                         else:
                             # Inicia caminhada até tile adjacente
                             self._pending_merchant_id = eid
@@ -2870,9 +3028,8 @@ class ShopSystem(System):
         return (tm.current_tile_x, tm.current_tile_y) if tm else None
 
     def _merchant_tile(self, eid: int):
-        from tileset import TILE_SIZE as TS
         pos = self.world.get_component(eid, Position)
-        return (int(pos.x / TS), int(pos.y / TS)) if pos else None
+        return (int(pos.x / TILE_SIZE), int(pos.y / TILE_SIZE)) if pos else None
 
     @staticmethod
     def _cheby(t1, t2) -> int:
@@ -2898,8 +3055,6 @@ class ShopSystem(System):
     # ------------------------------------------------------------------
 
     def handle_events(self, events: list) -> None:
-        from merchant_data import SHOPS
-
         if not self.is_open:
             return
         merch = self.world.get_component(self.open_merchant_id, Merchant)
@@ -2973,8 +3128,6 @@ class ShopSystem(System):
         self.pending_tooltip = None
         if not self.is_open:
             return
-
-        from merchant_data import SHOPS
 
         merch = self.world.get_component(self.open_merchant_id, Merchant)
         if not merch:
@@ -3202,8 +3355,6 @@ class ConsumableSystem(System):
         self.world = world
 
     def update(self, events=None, dt: float = 0) -> None:
-        from components import ActiveRegen, ConsumableBar, Inventory, CombatState
-
         # ── Barra de consumíveis: cooldown + keybinds ─────────────────────
         for eid, cbar in self.world.get_entities_with(ConsumableBar):
             if cbar.global_cooldown > 0:
@@ -3245,12 +3396,9 @@ class ConsumableSystem(System):
             self.world.remove_component(eid, ActiveRegen)
 
     def _use_consumable(self, entity_id: int, item_name: str, cbar) -> None:
-        from components import Inventory, CombatState, CombatStats as _CS, \
-                               Position as _Pos, ActiveRegen, ConsumableBar
-
         inv   = self.world.get_component(entity_id, Inventory)
-        cs    = self.world.get_component(entity_id, _CS)
-        pos_c = self.world.get_component(entity_id, _Pos)
+        cs    = self.world.get_component(entity_id, CombatStats)
+        pos_c = self.world.get_component(entity_id, Position)
         if not inv or not cs:
             return
 
@@ -3264,14 +3412,12 @@ class ConsumableSystem(System):
 
         # Consumíveis ooc_only (comida, ensopados) não podem ser usados em combate
         if cons.get("ooc_only", False) and cstate and cstate.in_combat:
-            from floating_text import WARN as _W
-            _W.add("Não pode usar em combate")
+            WARN.add("Não pode usar em combate")
             return
 
         # Não pode ser usado com HP cheio
         if cs.current_hp >= cs.max_hp:
-            from floating_text import WARN as _W
-            _W.add("HP já está cheio")
+            WARN.add("HP já está cheio")
             return
 
         # Cura instantânea
@@ -3302,8 +3448,7 @@ class ConsumableSystem(System):
         # Cooldown global
         cbar.global_cooldown = ConsumableBar.GCD_DURATION
 
-        from quest_events import fire as _qfire
-        _qfire("use_consumable", item_name=item.name)
+        quest_fire("use_consumable", item_name=item.name)
 
 
 class LootSystem(System):
@@ -3342,8 +3487,8 @@ class LootSystem(System):
         self.open_corpse_id: int         = -1
         self.pending_loot_corpse_id: int = -1
         self.pending_tooltip             = None  # lido por GameEngine no fim do frame
-        self.font_sm = pygame.font.Font(None, 20)
-        self.font_md = pygame.font.Font(None, 24)
+        self.font_sm = _font(20)
+        self.font_md = _font(24)
         self._modal_x       = 0   # posição X do modal (definida ao abrir)
         self._modal_y       = 0   # posição Y do modal
         self._scroll_offset = 0   # índice da primeira linha visível
@@ -3425,14 +3570,16 @@ class LootSystem(System):
                             self._scroll_offset = max(0, min(self._scroll_offset - event.y, max_scroll))
 
     def _get_camera_offset(self):
-        for _, cam, cam_pos in self.world.get_entities_with(Camera, Position):
-            return cam_pos.x - cam.offset_x, cam_pos.y - cam.offset_y
+        z = _cam_state.zoom
+        sw, sh = self.screen.get_width() / z, self.screen.get_height() / z
+        for _, _, cam_pos in self.world.get_entities_with(Camera, Position):
+            return cam_pos.x - sw / 2, cam_pos.y - sh / 2
         return 0.0, 0.0
 
     def _try_open_corpse(self, mx: int, my: int) -> None:
         cam_x, cam_y = self._get_camera_offset()
-        world_x = mx + cam_x
-        world_y = my + cam_y
+        world_x = mx / _cam_state.zoom + cam_x
+        world_y = my / _cam_state.zoom + cam_y
 
         # Coleta todos os cadáveres no alcance; prioriza os que ainda têm loot
         candidates = []
@@ -3526,7 +3673,6 @@ class LootSystem(System):
         if has_coins:
             if virtual_row >= self._scroll_offset and screen_row < self.MAX_ROWS:
                 if self._row_rect(modal, screen_row).collidepoint(mx, my):
-                    from components import Wallet
                     for _, wallet, _ in self.world.get_entities_with(Wallet, PlayerControlled):
                         wallet.gold += corpse.coins
                         LOG.add(f"+{corpse.coins} moedas coletadas!", (255, 215, 0))
@@ -3542,19 +3688,29 @@ class LootSystem(System):
             if virtual_row >= self._scroll_offset and screen_row < self.MAX_ROWS:
                 if self._row_rect(modal, screen_row).collidepoint(mx, my):
                     for _, inv, _ in self.world.get_entities_with(Inventory, PlayerControlled):
-                        if len(inv.items) < inv.max_slots:
+                        # Tenta empilhar em stack existente
+                        stacked = False
+                        if item.max_stack > 1:
+                            for existing in inv.items:
+                                if existing.name == item.name and existing.stack < existing.max_stack:
+                                    existing.stack += item.stack
+                                    stacked = True
+                                    break
+                        if stacked:
+                            corpse.loot.pop(i)
+                        elif len(inv.items) < inv.max_slots:
                             inv.items.append(item)
                             corpse.loot.pop(i)
-                            col = self.RARITY_COLORS.get(item.rarity, (200, 200, 200))
-                            LOG.add(f"Coletado: {item.name} ({item.rarity})", col)
-                            SOUNDS.play_ui("loot_item")
-                            from quest_events import fire as _qfire
-                            _qfire("collect_item", item_name=item.name)
-                            # Corrige scroll se necessário
-                            total = (1 if corpse.coins > 0 else 0) + len(corpse.loot)
-                            self._scroll_offset = min(self._scroll_offset, max(0, total - self.MAX_ROWS))
                         else:
                             LOG.add("Inventario cheio!", (255, 160, 0))
+                            break
+                        col = self.RARITY_COLORS.get(item.rarity, (200, 200, 200))
+                        LOG.add(f"Coletado: {item.name} ({item.rarity})", col)
+                        SOUNDS.play_ui("loot_item")
+                        quest_fire("collect_item", item_name=item.name)
+                        # Corrige scroll se necessário
+                        total = (1 if corpse.coins > 0 else 0) + len(corpse.loot)
+                        self._scroll_offset = min(self._scroll_offset, max(0, total - self.MAX_ROWS))
                         break
                     self._check_auto_close(corpse)
                     return True
@@ -3583,7 +3739,6 @@ class LootSystem(System):
         for i, item in enumerate(corpse.loot):
             if virtual_row >= self._scroll_offset and screen_row < self.MAX_ROWS:
                 if self._row_rect(modal, screen_row).collidepoint(mx, my):
-                    from components import Equipment, Inventory, CombatStats as _CS_eq
                     equip        = None
                     inv          = None
                     combat_stats = None
@@ -3649,8 +3804,7 @@ class LootSystem(System):
                     col = self.RARITY_COLORS.get(item.rarity, (200, 200, 200))
                     LOG.add(f"Equipado: {item.name} ({item.rarity})", col)
                     SOUNDS.play_ui("equip_item")
-                    from quest_events import fire as _qfire
-                    _qfire("equip_item", item_name=item.name, item_type=item.item_type)
+                    quest_fire("equip_item", item_name=item.name, item_type=item.item_type)
                     total = (1 if corpse.coins > 0 else 0) + len(corpse.loot)
                     self._scroll_offset = min(self._scroll_offset, max(0, total - self.MAX_ROWS))
                     self._check_auto_close(corpse)
@@ -3851,8 +4005,9 @@ class SkillSystem(System, SkillHandlers):
     def _is_on_screen(self, pos: "Position") -> bool:
         if self.screen is None or pos is None:
             return True
-        sw = self.screen.get_width()
-        sh = self.screen.get_height()
+        z = _cam_state.zoom
+        sw = self.screen.get_width()  / z
+        sh = self.screen.get_height() / z
         for _, _, cam_pos in self.world.get_entities_with(Camera, Position):
             cam_x = cam_pos.x - sw / 2
             cam_y = cam_pos.y - sh / 2
@@ -3862,7 +4017,6 @@ class SkillSystem(System, SkillHandlers):
         return True
 
     def update(self, events: list = None, dt: float = 0) -> None:
-        from components import PlayerSkills
         player_skills = self.world.get_component(self.player_entity_id, PlayerSkills)
         if not player_skills:
             return
@@ -3898,6 +4052,26 @@ class SkillSystem(System, SkillHandlers):
             return
 
         combat_state = self.world.get_component(self.player_entity_id, CombatState)
+        # Canalização activa: tecla de skill cancela a canalização antes de processar
+        if combat_state and combat_state.is_casting:
+            from components import Channeling
+            channeling = self.world.get_component(self.player_entity_id, Channeling)
+            if channeling:
+                for event in events:
+                    if event.type == pygame.KEYDOWN:
+                        any_skill_key = any(
+                            skill is not None and event.key == player_skills.keybinds[i]
+                            for i, skill in enumerate(player_skills.skills)
+                        )
+                        if any_skill_key:
+                            self.world.remove_component(self.player_entity_id, Channeling)
+                            combat_state.is_casting = False
+                            from combat_log import LOG as _LOG
+                            from floating_text import WARN as _WARN
+                            _WARN.add("Canalização interrompida!")
+                            break
+                return  # aguarda próximo frame para usar a nova skill
+
         if combat_state and not combat_state.can_act():
             return
 
@@ -3915,12 +4089,11 @@ class SkillSystem(System, SkillHandlers):
     # ------------------------------------------------------------------
     def _use_skill(self, _idx: int, skill) -> bool:
         """Tenta usar a skill. Retorna True se executou, False se falhou."""
-        from components import PlayerSkills as _PS
         combat_state = self.world.get_component(self.player_entity_id, CombatState)
         if combat_state and not combat_state.can_act():
             return False
 
-        player_skills = self.world.get_component(self.player_entity_id, _PS)
+        player_skills = self.world.get_component(self.player_entity_id, PlayerSkills)
 
         # Bloqueia qualquer skill se o GCD ainda não zerou
         if player_skills and player_skills.gcd_timer > 0:
@@ -3945,11 +4118,10 @@ class SkillSystem(System, SkillHandlers):
             combat_state.is_pursuing = True
 
         if not skill.is_ready():
-            from floating_text import WARN as _WARN
             if skill.current_cooldown > 0:
-                _WARN.add(f"Em recarga ({skill.current_cooldown:.1f}s)")
+                WARN.add(f"Em recarga ({skill.current_cooldown:.1f}s)")
             elif skill.max_charges > 0:
-                _WARN.add("Sem cargas")
+                WARN.add("Sem cargas")
             return False
 
         # Habilidades de talento usam handler dinâmico
@@ -3962,9 +4134,8 @@ class SkillSystem(System, SkillHandlers):
                     if skill.sound_name:
                         SOUNDS.play_skill(skill.sound_name)
                     if player_skills:
-                        player_skills.gcd_timer = _PS.GCD_DURATION
-                    from quest_events import fire as _qfire
-                    _qfire("use_skill", skill_id=skill.handler)
+                        player_skills.gcd_timer = PlayerSkills.GCD_DURATION
+                    quest_fire("use_skill", skill_id=skill.handler)
                 return bool(success)
             else:
                 LOG.add(f"{skill.name}: handler '{skill.handler}' não encontrado.", (180, 60, 60))
@@ -3979,9 +4150,8 @@ class SkillSystem(System, SkillHandlers):
                     if skill.sound_name:
                         SOUNDS.play_skill(skill.sound_name)
                     if player_skills:
-                        player_skills.gcd_timer = _PS.GCD_DURATION
-                    from quest_events import fire as _qfire
-                    _qfire("use_skill", skill_id=skill.skill_id)
+                        player_skills.gcd_timer = PlayerSkills.GCD_DURATION
+                    quest_fire("use_skill", skill_id=skill.skill_id)
                 return bool(success)
             else:
                 LOG.add(f"{skill.name}: sem implementacao para '{skill.skill_id}'.", (180, 60, 60))
