@@ -29,6 +29,29 @@ class TileType:
     #   (0, 16, 32, 48) → sólido dos 16px abaixo do topo até o final
     collision_rect: tuple | str | None = None
 
+    # ── Altura visual (para Fog of War) ───────────────────────────────────────
+    # Determina se o elemento bloqueia a linha de visão do jogador no FOV.
+    #
+    #   0 → plano (terreno, água, pedras rasas) — não interfere na visão
+    #   1 → médio (arbustos, lápides, bancos)   — não interfere na visão
+    #   2 → alto (árvores, paredes, montanhas)  — bloqueia o campo de visão
+    #
+    # Apenas vision_height >= 2 é considerado bloqueante pelo FogSystem.
+    vision_height: int = 0
+
+    # ── Sistema de pisos (estruturas escalonáveis) ────────────────────────────
+    # elevation    — piso do tile: 0=chão (padrão), 1=primeiro andar, etc.
+    # is_transition— True em tiles de escada/"t": acessíveis de qualquer piso.
+    #                Ao sair daqui, a elevation da entidade assume o piso destino.
+    # passthrough  — True: jogador no piso abaixo pode passar por trás do tile
+    #                (como passar atrás de uma árvore). Não bloqueia movement do
+    #                piso inferior. O piso da entidade não muda ao passar por aqui.
+    elevation:      int  = 0
+    is_transition:  bool = False
+    passthrough:    bool = False
+    no_ysort:       bool = False  # True → renderiza como terreno (abaixo de entidades, sem Y-sort)
+
+
 # ── Terrenos não-sólidos (passáveis) ──────────────────────────────────────────
 FLOOR_TILE    = TileType("Floor",      ( 50,  50,  50), is_solid=False)  # Chão genérico
 GRASS_TILE    = TileType("Grass",      ( 58, 100,  48), is_solid=False,
@@ -42,17 +65,17 @@ CAVE_ENTRY    = TileType("CaveEntry",  ( 18,  12,   8), is_solid=False)  # Entra
 PORTAL_TILE   = TileType("Portal",     (200, 160,   0), is_solid=False)  # Portal / saída de zona
 
 # ── Terrenos sólidos (obstáculos) ─────────────────────────────────────────────
-WALL_TILE     = TileType("Wall",       (115, 108,  98), is_solid=True)   # Parede da cidade
-RUINS_WALL    = TileType("RuinsWall",  ( 88,  65,  42), is_solid=True)   # Parede das ruínas
-CAVE_WALL     = TileType("CaveWall",   ( 48,  38,  28), is_solid=True)   # Parede da caverna
-MOUNTAIN_TILE = TileType("Mountain",   ( 62,  55,  48), is_solid=True)   # Montanha / borda
-WATER_TILE    = TileType("Water",      ( 40,  88, 165), is_solid=True)   # Água
-TREE_TILE = TileType("Tree", (28, 72, 28), is_solid=True,
+WALL_TILE     = TileType("Wall",       (115, 108,  98), is_solid=True,  vision_height=2)  # Parede da cidade
+RUINS_WALL    = TileType("RuinsWall",  ( 88,  65,  42), is_solid=True,  vision_height=2)  # Parede das ruínas
+CAVE_WALL     = TileType("CaveWall",   ( 48,  38,  28), is_solid=True,  vision_height=2)  # Parede da caverna
+MOUNTAIN_TILE = TileType("Mountain",   ( 62,  55,  48), is_solid=True,  vision_height=2)  # Montanha / borda
+WATER_TILE    = TileType("Water",      ( 40,  88, 165), is_solid=True,  vision_height=0)  # Água (plana)
+TREE_TILE = TileType("Tree", (28, 72, 28), is_solid=True, vision_height=2,
                     # sprites=["tree_1"],
                     # overlay_height=32
-                     )   # sprite = 32×64px   # Árvore
-BUSH_TILE     = TileType("Bush",       ( 52, 108,  42), is_solid=True)   # Arbusto
-ROCK_TILE     = TileType("Rock",       (100,  90,  78), is_solid=True)   # Pedra / rocha / lápide
+                     )   # sprite = 32×64px   # Árvore (bloqueia visão)
+BUSH_TILE     = TileType("Bush",       ( 52, 108,  42), is_solid=True,  vision_height=1)  # Arbusto (médio)
+ROCK_TILE     = TileType("Rock",       (100,  90,  78), is_solid=True,  vision_height=0)  # Pedra / lápide (rasa)
 
 # ── Paleta de cores para edição de mapas no Paint (PNG → CSV + JSON) ──────────
 #
@@ -324,6 +347,7 @@ def _discover_sprite_objects(
     base_color: tuple,
     is_solid: bool = True,
     collision_rect: tuple | str | None = None,
+    vision_height: int = 0,
 ) -> None:
     """
     Escaneia assets/tiles/ por <prefix>1.png, <prefix>2.png, ... (sem limite).
@@ -349,6 +373,7 @@ def _discover_sprite_objects(
             sprite_px_w=w,
             sprite_px_h=h,
             collision_rect=collision_rect,
+            vision_height=vision_height,
         )
         OBJECT_CHARS.add(char)
         OBJECT_MAPPING[char] = tile
@@ -373,21 +398,21 @@ def _discover_sprite_objects(
 #                      (x,y,w,h) → rect explícito em pixels do sprite
 #
 SPRITE_FAMILIES: list[tuple] = [
-    # prefixo  nome-interno     cor RGB          sólido  label        collision_rect
-    ("t",  "SpriteTree",        ( 28,  72,  28),  True,  "Árvore",              None),     # base 32×32 apenas
-    ("b",  "SpriteBush",        ( 52, 108,  42),  True,  "Arbusto",             None),     # base 32×32 apenas
-    ("g",  "SpriteGrade",       ( 80, 120,  60),  True,  "Grade",               None),     # base 32×32 apenas
-    ("s",  "SpriteGrave",       (128, 128, 128),  True,  "Grave",               "full"),    # sprite inteiro sólido
-    ("y",  "SpriteGravesHori",  (128, 128, 128),  True,  "GraveHorizontal",     (0, 32, 64, 32)), # base 64px sólido
-    ("l",  "SpriteGravestone",  (128, 128, 128),  True,  "GraveStone",          None), # base 32×32 apenas
-    ("o",  "SpriteObj",         (128, 128, 128),  True,  "Bench",               "full"),
+    # prefixo  nome-interno       cor RGB          sólido  label              collision_rect   vision_height
+    ("t",  "SpriteTree",        ( 28,  72,  28),  True,  "Árvore",           None,             2),  # alta — bloqueia FOV
+    ("b",  "SpriteBush",        ( 52, 108,  42),  True,  "Arbusto",          None,             1),  # média — não bloqueia
+    ("g",  "SpriteGrade",       ( 80, 120,  60),  True,  "Grade",            None,             1),  # média — não bloqueia
+    ("s",  "SpriteGrave",       (128, 128, 128),  True,  "Grave",            "full",           1),  # média — não bloqueia
+    ("y",  "SpriteGravesHori",  (128, 128, 128),  True,  "GraveHorizontal",  (0, 32, 64, 32),  0),  # rasa  — não bloqueia
+    ("l",  "SpriteGravestone",  (128, 128, 128),  True,  "GraveStone",       None,             1),  # média — não bloqueia
+    ("o",  "SpriteObj",         (128, 128, 128),  True,  "Bench",            "full",           1),  # média — não bloqueia
 ]
 
 
 def discover_sprite_objects() -> None:
     """Registra todos os sprites de objetos encontrados em assets/tiles/."""
-    for prefix, base_name, color, is_solid, _label, collision_rect in SPRITE_FAMILIES:
-        _discover_sprite_objects(prefix, base_name, color, is_solid, collision_rect)
+    for prefix, base_name, color, is_solid, _label, collision_rect, vision_height in SPRITE_FAMILIES:
+        _discover_sprite_objects(prefix, base_name, color, is_solid, collision_rect, vision_height)
 
 
 # ── Tilesheet — múltiplos tiles em um único PNG ───────────────────────────────
@@ -416,6 +441,16 @@ SHEET_FAMILIES: list[dict] = [
         "label":               "Grama TX",
         "color":               (58, 100, 48),
         "underlying_terrain":  "G",
+    },
+        {
+        "file":                "TX Tileset Woodfloor",
+        "prefix":              "twf",
+        "tile_w":              32,
+        "tile_h":              32,
+        "is_solid":            False,
+        "label":               "Assoalho TX",
+        "color":               (120, 92, 62),
+        "underlying_terrain":  ".",
     },
 ]
 
@@ -483,18 +518,33 @@ def discover_sheet_tiles() -> None:
 #   IDs gerados: {prefix}_{id}  ex: pr_banco, pr_lampiao ...
 #
 #   "tiles": [
-#       # (id,        sx,  sy,   w,   h,   collision_rect)
-#       ("banco",      0,   0,  64,  32,   None),     # 64×32, só base
-#       ("lampiao",   64,   0,  32,  64,   "full"),   # 32×64, inteiro sólido
-#       ("caixao",    96,   0,  32,  64,   None),     # 32×64, só base
+#       # (id,        sx,  sy,   w,   h,   collision_rect,  vision_height)
+#       ("banco",      0,   0,  64,  32,   None,            0),  # raso, não bloqueia FOV
+#       ("lampiao",   64,   0,  32,  64,   "full",          2),  # alto, bloqueia FOV
+#       ("caixao",    96,   0,  32,  64,   None,            1),  # médio, não bloqueia
 #   ],
+#   O 7º campo (vision_height) é opcional — omita para usar default_vision_height.
 #
 # Campos comuns:
-#   file               — nome do PNG sem extensão, em assets/tiles/
-#   prefix             — prefixo curto para IDs internos
-#   label              — nome exibido no God Mode (aba Objetos)
-#   color              — cor RGB de fallback
-#   underlying_terrain — char de terreno subjacente (padrão "G")
+#   file                 — nome do PNG sem extensão, em assets/tiles/
+#   prefix               — prefixo curto para IDs internos
+#   label                — nome exibido no God Mode (aba Objetos)
+#   color                — cor RGB de fallback
+#   underlying_terrain   — char de terreno subjacente (padrão "G")
+#   default_vision_height — vision_height padrão para tiles sem override (padrão 0)
+#
+# Para collision_overrides (modo grade), cada entrada pode ser:
+#   (col, row): collision_rect                        — usa default_vision_height
+#   (col, row): (collision_rect, vision_height)       — vision_height explícito por tile
+#
+# Valores de collision_rect:
+#   None          → SEM colisão (tile passável)
+#   "base"        → colisão só no tile base 32×32 inferior  (antigo comportamento de None)
+#   "full"        → colisão no sprite inteiro
+#   (x, y, w, h) → retângulo explícito em pixels
+#
+#     ex: (0, 1): ("full", 2)   → grade alta, sólida, bloqueia FOV
+#         (0, 0): (None,   0)   → sem colisão, sem bloqueio de FOV
 #
 OBJECT_SHEET_FAMILIES: list[dict] = [
     {
@@ -504,16 +554,28 @@ OBJECT_SHEET_FAMILIES: list[dict] = [
         "tile_h":              64,
         "label":               "Grade Cemitério",
         "color":               (90, 80, 70),
-        "default_collision":   None,
+        "default_collision":   "full",
         "collision_overrides": {
-            (0, 0): None, (0, 1): "full", (0, 2): "full", (0, 3): "full",
-            (1, 0): None, (1, 3): None,
-            (2, 0): None, (2, 3): None,
-            (3, 0): None, (3, 3): None,
-            (4, 0): None, (4, 3): None,
-            (5, 0): None, (5, 3): None,
-            (6, 0): None, (6, 3): None,
-            (7, 0): None, (7, 1): "full", (7, 2): "full", (7, 3): "full",
+            (0, 0): "base", 
+            (0, 1): "full", 
+            (0, 2): "full", 
+            (0, 3): "full",
+            (1, 0): "base", 
+            (1, 3): "base",
+            (2, 0): "base", 
+            (2, 3): "base",
+            (3, 0): "base", 
+            (3, 3): "base",
+            (4, 0): "base", 
+            (4, 3): "base",
+            (5, 0): "base", 
+            (5, 3): "base",
+            (6, 0): "base", 
+            (6, 3): "base",
+            (7, 0): "base", 
+            (7, 1): "full", 
+            (7, 2): "full", 
+            (7, 3): "full",
         },
         "underlying_terrain":  "G",
     },
@@ -526,32 +588,200 @@ OBJECT_SHEET_FAMILIES: list[dict] = [
          "underlying_terrain": "G",
          "tiles": [
              # (id,              sx,  sy,   w,   h,   collision_rect)
-             ("chest",           97,   0,  32,  64,   None),
-             ("box1",           161,   0,  32,  64,   None),
-             ("box2",           161,  65,  32,  64,   None),
-             ("barrel",         161, 129,  32,  64,   None),
-             ("urn",            161, 193,  32,  64,   None),
-             ("pot",            161, 258,  32,  64,   None),
-             ("urn2",           161, 321,  32,  64,   None),
-             ("soulstone",      225,   0,  32,  64,   None),
-             ("soulstone2",     225,  65,  32,  96,   None),
-             ("soulstone3",     225, 161,  32,  64,   None),
-             ("gravestone",     225, 225,  32,  64,   None),
-             ("cross",          225, 289,  32,  64,   None),
-             ("bench1",         289,   0,  64,  64,   (0, 32, 64, 32)),
-             ("tomb1",          289,  65,  64,  64,   (0, 32, 64, 32)),
-             ("tomb2",          289, 129,  32,  96,   (0, 32, 32, 64)),
-             ("gravestone2",    289, 225,  32,  64,   None),
-             ("cube",           289, 289,  32,  64,   None),
-             ("opentomb",       289, 385,  64,  32,   "full"),
-             ("opentomb2",      289, 417,  64,  32,   (0, 0, 32, 32)),
-            # ("soulstone3",     225, 161,  32,  96,   None),
+             ("chest",           96,   0,  32,  64,           "base"),
+             ("box1",           160,   0,  32,  64,           "base"),
+             ("box2",           160,  64,  32,  64,           "base"),
+             ("barrel",         160, 128,  32,  64,           "base"),
+             ("urn",            160, 192,  32,  64,           "base"),
+             ("pot",            160, 258,  32,  64,           "base"),
+             ("urn2",           160, 320,  32,  64,           "base"),
+             ("soulstone",      224,   0,  32,  64,           "base"),
+             ("soulstone2",     224,  64,  32,  96,           "base"),
+             ("soulstone3",     224, 160,  32,  64,           "base"),
+             ("gravestone",     224, 224,  32,  64,           "base"),
+             ("cross",          224, 288,  32,  64,           "base"),
+             ("bench1",         288,   0,  64,  64, ( 0, 32, 64, 32)),
+             ("tomb1",          288,  64,  64,  64, ( 0, 32, 64, 32)),
+             ("tomb2",          288, 128,  32,  96, ( 0, 32, 32, 64)),
+             ("gravestone2",    288, 224,  32,  64,           "base"),
+             ("cube",           288, 288,  32,  64,           "base"),
+             ("opentomb",       288, 384,  64,  32,           "full"),
+             ("opentomb2",      288, 416,  64,  32, ( 0,  0, 32, 32)),
+             ("sheets1",         32, 256,  64,  64, ( 0, 32, 64, 32)),
+             ("bench2",         384,   0,  32,  64,           "full"),
+             ("bench3",         384,  96,  32,  64,           "full"),
+             ("pillar1",        352, 160,  32,  96,           "base"),
+             ("pillar2",        416, 192,  32,  64,           "base"),
+             ("statue",         416,   0,  96,  96, (32, 64, 32, 32)),
+             ("lighting",       448,  96,  32,  64,           "base"),
+             ("pit",            416, 352,  64,  64,           "full"),
+             ("bigrock",          0, 416,  64,  64,           "full"),
+             ("rock1",            0, 480,  32,  32,             None),
+             ("rock2",           32, 480,  32,  32,             None),
+             ("rock3",           64, 480,  32,  32,           "full"),
+             ("rock4",           96, 480,  32,  32,           "full"),
+             ("rock5",          128, 480,  32,  32,           "full"),
+             ("rock6",          160, 480,  32,  32,           "full"),
+             ("closedoor",        0,  96,  96,  64,           "full"),
+             ("opendoor",         0,  160, 96,  64,             None),
+
          ],
      },
+
+     {
+         "file":   "TX Plant",
+         "prefix": "pl",
+         "label":  "Vegetação",
+         "color":  (96, 99, 21),
+         "underlying_terrain": "G",
+         "tiles": [
+             # (id,              sx,  sy,   w,   h,   collision_rect)  
+             ("tree1",             0,   0, 160, 160,   ( 64, 128, 32,32)),
+             ("tree2",           160,   0,  96, 160,   ( 32, 128, 32,32)),
+             ("tree3",           256,   0,  96, 160,   ( 32, 128, 32,32)),
+             ("bush1",             0, 192,  32,  32,   (  0,   0, 32,32)),
+             ("bush2",            32, 192,   32, 32,   (  0,   0, 32,32)),
+             ("bush3",            64, 160,  64, 64,    ( 32,  32, 32,32)),
+             ("bush4",           128, 160,  64,  64,   ( 32,  32, 32,32)),
+             ("bush5",           192, 160,  64,  64,   ( 32,  32, 32,32)),
+             ("bush6",           256, 160,  64,  64,   (  0,  32, 32,32)),
+             ("grassblade1",       0, 224,  32,  32,                None),
+             ("grassblade2",      32, 224,  32,  32,                None),
+             ("grassblade3",      64, 224,  32,  32,                None),
+             ("grassblade4",      96, 224,  32,  32,                None),
+             ("grassblade5",       0, 256,  32,  32,                None),
+             ("grassblade6",      32, 256,  32,  32,                None),
+             ("grassblade7",      64, 256,  32,  32,                None),
+             ("grassblade8",      96, 256,  32,  32,                None),
+             ("grassblade9",       0, 288,  32,  32,                None),
+             ("grassblade10",     32, 288,  32,  32,                None),
+             ("grassblade11",     64, 288,  32,  32,                None),
+             ("grassblade12",     96, 288,  32,  32,                None),
+             ("grassblade13",      0, 322,  32,  32,                None),
+             ("grassblade14",     32, 322,  32,  32,                None),
+             ("grassblade15",     64, 322,  32,  32,                None),
+             ("grassblade16",     96, 322,  32,  32,                None),
+             
+         ]
+
+     },
+
+
+    # ── TX Tileset Wall — estrutura escalonável (512×512, tiles 32×32) ────────
+    #
+    # Configuração de exemplo: uma plataforma/muro que o jogador pode subir.
+    #
+    # Quando o player está NO CHÃO (elevation=0):
+    #   → Tiles com elevation=1 são transparentes para colisão (passa por baixo/atrás)
+    #   → Apenas o tile de escada (is_transition=True) permite entrar na estrutura
+    #
+    # Quando o player está EM CIMA (elevation=1):
+    #   → Tiles de borda com collision_dirs impedem sair para direções inválidas
+    #   → A escada (is_transition=True, elevation=0) permite descer
+    #
+    # Legenda de collision_dirs (bitmask):
+    # AJUSTE as posições sx,sy conforme o layout real do seu PNG.
+    {
+        "file":   "TX Tileset Wall",
+        "prefix": "wall",
+        "label":  "Muros",
+        "color":  (120, 100, 80),
+        "underlying_terrain": ".",
+        "tiles": [
+            # Formato: (id, sx, sy, w, h, col, piso, transpassavel)
+            #   col          — None=sem colisão, "base"=base 32x32, "full"=sprite inteiro
+            #   piso         — 0=chão, 1=primeiro andar, "t"=transição entre pisos
+            #   transpassavel— 1: jogador no piso abaixo passa por trás sem ser bloqueado
+            #                  0: bloqueia em todos os pisos
+
+            # ── Superfície do piso superior (piso=1, transpassavel=1) ────────
+            # Jogadores no chão passam por baixo; no piso 1 andam livremente.
+            # O sistema de pisos já impede sair da borda (floor 1 → floor 0 bloqueado).
+            # (id,       sx,  sy,  w,   h,     col,    piso, transp, sort)
+            ("surf_NW",  32,  32,  32,  32,    None,   1,    1,      0),
+            ("surf_N",   64,  32,  32,  32,    None,   1,    1,      0),
+            ("surf_NE",  96,  32,  32,  32,    None,   1,    1,      0),
+            ("surf_W",   32,  64,  32,  32,    None,   1,    0,      0),
+            ("surf_C",   64,  64,  32,  32,    None,   1,    0,      0),
+            ("surf_E",   96,  64,  32,  32,    None,   1,    0,      0),
+
+            # ── Face sólida (piso=0, transpassavel=0) ────────────────────────
+            # Bloqueia ao nível do chão E em cima — é a parede da estrutura.
+            ("face_W",    32,  96,  32,  64,  "full", 0,  0),
+            ("face_C",    64,  96,  32,  64,  "full", 0,  0),
+            ("face_C1",   32, 192,  32,  64,  "full", 0,  0),
+            ("face_C2",   64, 192,  32,  64,  "full", 0,  0),
+            ("face_C3",   96, 192,  32,  64,  "full", 0,  0),
+            ("face_C4",  128, 192,  32,  64,  "full", 0,  0),
+            ("face_C5",  160, 192,  32,  64,  "full", 0,  0),
+            ("face_C6",   32, 256,  32,  64,  "full", 0,  0),
+            ("face_C7",   64, 256,  32,  64,  "full", 0,  0),
+            ("face_C8",  128, 256,  32,  64,  "full", 0,  0),
+            ("face_C8",  160, 256,  32,  64,  "full", 0,  0),
+            ("face_C9",  384, 320,  32,  64,  "full", 0,  0),
+            ("open_C1",  416, 320,  32,  64,    None, 0,  0),
+            ("face_C10", 448, 320,  32,  64,  "full", 0,  0),
+            ("face_C11", 384, 192,  32,  64,  "full", 0,  0),
+            ("face_C12", 416, 192,  32,  64,  "full", 0,  0),
+            ("face_C13", 448, 192,  32,  64,  "full", 0,  0),
+            ("face_C14", 480, 192,  32,  64,  "full", 0,  0),
+            ("lat_W1",   288,  32,  32,  32,  "full", 0,  0),
+            ("lat_W2",   288,  64,  32,  32,  "full", 0,  0),
+            ("lat_W3",   288,  96,  32,  32,  "full", 0,  0),
+            ("lat_W4",   288, 128,  32,  32,  "full", 0,  0),
+            ("lat_E1",   320,  32,  32,  32,  "full", 0,  0),
+            ("lat_E2",   320,  64,  32,  32,  "full", 0,  0),
+            ("lat_E3",   320,  96,  32,  32,  "full", 0,  0),
+            ("lat_E4",   320, 128,  32,  32,  "full", 0,  0),
+            ("face_E",    96,  96,  32,  64,  "full", 0,  0),
+
+
+            # ── Escada / transição (piso="t") ─────────────────────────────────
+            # Acessível de qualquer piso. Ao SAIR daqui para um tile de piso N,
+            # a elevation da entidade assume N.
+            ("stair1",    192, 192,  64,  96,  None, "t", 0, 0, 0),
+            ("stair2",    256, 192,  64,  96,  None, "t", 0, 0, 0),
+            ("stair3",    320, 192,  64,  96,  None, "t", 0, 0, 0),
+            ("stair4",    192, 288,  64,  96,  None, "t", 0, 0, 0),
+            ("stair5",    256, 288,  64,  96,  None, "t", 0, 0, 0),
+            ("stair6",    320, 288,  64,  96,  None, "t", 0, 0, 0),
+        ],
+    },
 ]
 
 # Mapeamento id_tile → (sheet_file, sx, sy, tile_w, tile_h) — lido pelo TileSpriteManager
 OBJECT_SHEET_TILE_MAP: dict[str, tuple] = {}
+
+
+def _resolve_collision(col_rect) -> tuple[bool, object]:
+    """
+    Converte o valor de collision_rect do config para (is_solid, internal_rect).
+
+    Semântica:
+      None          → passável (is_solid=False, internal_rect=None)
+      "base"        → sólido só no tile base 32×32 (is_solid=True, internal_rect=None)
+      "full"        → sprite inteiro sólido (is_solid=True, internal_rect="full")
+      (x, y, w, h) → rect explícito (is_solid=True, internal_rect=(x,y,w,h))
+    """
+    if col_rect is None:
+        return False, None          # passável — sem colisão
+    if col_rect == "base":
+        return True, None           # base tile 32×32 (antigo None)
+    return True, col_rect           # "full" ou (x,y,w,h)
+
+
+def _unpack_override(value, default_vision_height: int) -> tuple:
+    """
+    Interpreta um valor de collision_overrides.
+    Retorna (collision_rect_config, vision_height).
+
+    Formatos suportados:
+      None / "base" / "full" / (x,y,w,h)  → usa default_vision_height
+      (collision_rect, vision_height)       → vision_height explícito por tile
+    """
+    if isinstance(value, tuple) and len(value) == 2 and isinstance(value[1], int):
+        return value[0], value[1]
+    return value, default_vision_height
 
 
 def discover_object_sheet_tiles() -> None:
@@ -561,7 +791,7 @@ def discover_object_sheet_tiles() -> None:
 
     Suporta dois modos:
       - Grade uniforme: usa tile_w/tile_h e auto-descobre cols/rows pelo PNG.
-      - Catálogo explícito: usa "tiles" = [(id, sx, sy, w, h, collision_rect), ...]
+      - Catálogo explícito: usa "tiles" = [(id, sx, sy, w, h, col_rect[, vision_h]), ...]
     """
     import os
     for fam in OBJECT_SHEET_FAMILIES:
@@ -570,23 +800,46 @@ def discover_object_sheet_tiles() -> None:
         if not os.path.exists(path):
             continue
 
-        prefix = fam["prefix"]
-        color  = fam["color"]
-        under  = fam.get("underlying_terrain", "G")
+        prefix   = fam["prefix"]
+        color    = fam["color"]
+        under    = fam.get("underlying_terrain", "G")
+        default_vh = fam.get("default_vision_height", 0)
 
         if "tiles" in fam:
-            # Modo catálogo: cada tile tem (id, sx, sy, w, h, collision_rect)
+            # Modo catálogo:
+            # (id, sx, sy, w, h, col, piso, transpassavel)
+            #   piso         — int (0/1/2...) ou "t" (transição)
+            #   transpassavel— 1 = jogador de piso inferior passa por trás
             for entry in fam["tiles"]:
-                id_suffix, sx, sy, tw, th, col_rect = entry
+                n = len(entry)
+                id_suffix, sx, sy, tw, th, col_rect_cfg = entry[:6]
+                piso_raw    = entry[6] if n > 6 else 0
+                transpass   = bool(entry[7]) if n > 7 else False
+                sort_val    = entry[8] if n > 8 else 1   # 1=Y-sort (padrão), 0=sem Y-sort
+
+                # Interpreta piso: int → elevation normal; "t" → tile de transição
+                if piso_raw == "t":
+                    elev     = 0
+                    is_trans = True
+                else:
+                    elev     = int(piso_raw)
+                    is_trans = False
+
                 tile_id = f"{prefix}_{id_suffix}"
+                is_solid, internal_rect = _resolve_collision(col_rect_cfg)
                 tile = TileType(
                     name=f"ObjSheet_{tile_id}",
                     color=color,
-                    is_solid=True,
+                    is_solid=is_solid,
                     sprite_name=tile_id,
                     sprite_px_w=tw,
                     sprite_px_h=th,
-                    collision_rect=col_rect,
+                    collision_rect=internal_rect,
+                    vision_height=default_vh,
+                    elevation=elev,
+                    is_transition=is_trans,
+                    passthrough=transpass,
+                    no_ysort=(sort_val == 0),
                 )
                 OBJECT_SHEET_TILE_MAP[tile_id] = (sheet_file, sx, sy, tw, th)
                 OBJECT_CHARS.add(tile_id)
@@ -602,16 +855,19 @@ def discover_object_sheet_tiles() -> None:
             overrides   = fam.get("collision_overrides", {})
             for row in range(rows):
                 for col in range(cols):
-                    tile_id  = f"{prefix}_{col}_{row}"
-                    col_rect = overrides.get((col, row), default_col)
+                    tile_id        = f"{prefix}_{col}_{row}"
+                    raw            = overrides.get((col, row), default_col)
+                    col_rect_cfg, vh = _unpack_override(raw, default_vh)
+                    is_solid, internal_rect = _resolve_collision(col_rect_cfg)
                     tile = TileType(
                         name=f"ObjSheet_{prefix}_{col}_{row}",
                         color=color,
-                        is_solid=True,
+                        is_solid=is_solid,
                         sprite_name=tile_id,
                         sprite_px_w=tw,
                         sprite_px_h=th,
-                        collision_rect=col_rect,
+                        collision_rect=internal_rect,
+                        vision_height=vh,
                     )
                     OBJECT_SHEET_TILE_MAP[tile_id] = (sheet_file, col * tw, row * th, tw, th)
                     OBJECT_CHARS.add(tile_id)

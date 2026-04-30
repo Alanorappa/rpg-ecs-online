@@ -20,7 +20,7 @@ from components import (
     Position, PlayerControlled, CombatState, CombatStats, CharacterStats,
     Equipment, Enemy, AIControlled, TileMovement, StatusEffects, Camera,
     SpellCast, Channeling, IceBlockEffect, PlayerProjectile, AoeTargeting,
-    PendingDeath, PlayerAutoMove,
+    PendingDeath, PlayerAutoMove, MobSounds,
 )
 from tileset import TILE_SIZE
 from utils import chebyshev
@@ -63,10 +63,14 @@ def _apply_magic_damage(attacker_id: int, target_id: int, dmg: int, world: World
     attacker_cs = world.get_component(attacker_id, CombatState)
     if attacker_cs:
         attacker_cs.enter_combat()
-    # Aggro imediato: qualquer dano mágico do player força inimigos ociosos a perseguir
+    # Aggro por dano mágico: define aggroed_by_damage=True para que o leash
+    # estendido seja aplicado (mob persegue mesmo além do raio normal de detecção)
     _ai = world.get_component(target_id, AIControlled)
     if _ai and _ai.state in ("IDLE", "RETURNING"):
+        _ms = world.get_component(target_id, MobSounds)
+        SOUNDS.play_mob_sounds(_ms, "aggro", dedup_key=f"dmg_{target_id}")
         _ai.state             = "CHASING"
+        _ai.aggroed_by_damage = True
         _ai.path_recalc_timer = 0.0
     if target_cs.current_hp <= 0:
         if not world.get_component(target_id, PendingDeath):
@@ -359,7 +363,8 @@ class AoeTargetingSystem(System):
     def __init__(self, world: World, player_entity: int, screen: pygame.Surface):
         self.world         = world
         self.player_entity = player_entity
-        self.world_surf        = screen
+        self.world_surf    = screen
+        self.hud_surf      = screen
 
     def _camera_offset(self) -> tuple[float, float]:
         sw, sh = self.world_surf.get_width(), self.world_surf.get_height()
@@ -448,8 +453,9 @@ class AoeTargetingSystem(System):
 
             if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
                 cam_x, cam_y = self._camera_offset()
-                world_x = ev.pos[0] + cam_x
-                world_y = ev.pos[1] + cam_y
+                scale   = self.world_surf.get_width() / max(1, self.hud_surf.get_width())
+                world_x = ev.pos[0] * scale + cam_x
+                world_y = ev.pos[1] * scale + cam_y
                 if self._in_cast_range(aoe, world_x, world_y):
                     self._start_channel(aoe, world_x, world_y)
                     self.world.remove_component(self.player_entity, AoeTargeting)
@@ -484,7 +490,7 @@ class AoeTargetingSystem(System):
             if combat_state:
                 combat_state.is_casting = True
                 combat_state.enter_combat()
-            SOUNDS.play_spell("calamidade_flamejante", "cast")
+            SOUNDS.play_skill("skill_calamidade_flamejante")
             LOG.add("Calamidade Flamejante — canalizando!", (255, 160, 60))
 
     def render(self, cam_x: float = 0, cam_y: float = 0) -> None:
@@ -492,7 +498,14 @@ class AoeTargetingSystem(System):
         aoe = self.world.get_component(self.player_entity, AoeTargeting)
         if not aoe:
             return
-        mx, my = pygame.mouse.get_pos()
+
+        # Converte posição do mouse de coordenadas de tela para coordenadas de world_surf.
+        # Com zoom > 1, world_surf é menor que a tela — o mouse precisa ser escalonado.
+        sx, sy = pygame.mouse.get_pos()
+        scale  = self.world_surf.get_width() / max(1, self.hud_surf.get_width())
+        mx = int(sx * scale)
+        my = int(sy * scale)
+
         world_x = mx + cam_x
         world_y = my + cam_y
         in_range = self._in_cast_range(aoe, world_x, world_y)

@@ -341,6 +341,7 @@ class AIControlled:
     disengage_boost: float = 0.0 # Hunter: tempo de velocidade extra após disengage (s)
     last_known_player_tile: tuple = (-1, -1)  # tile do jogador no último recalculo de path
     aggro_delay: float = 0.0  # tempo restante antes de começar a perseguir após detectar
+    aggroed_by_damage: bool = False  # True quando o aggro veio de acerto, não de proximidade
     # Ranged: kite limitado a 3 tiles por sessão
     kite_tiles_moved: int = 0    # tiles andados no kite atual
     kite_cooldown: float = 0.0   # pausa forçada antes de kitar novamente (s)
@@ -787,6 +788,7 @@ class TileMovement:
     slow_mult: float = 1.0           # multiplicador de velocidade — gerenciado por StatusEffectSystem
     debilitate_elapsed: float = 0.0  # tempo acumulado debilitado contínuo (Foco Mortal)
     is_dash: bool = False             # True durante o dash do Interceptar
+    elevation: int = 0               # nível de elevação atual (0=chão, 1=estrutura...)
 
 
 @dataclass

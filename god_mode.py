@@ -740,21 +740,25 @@ class GodModeEditor:
 
         map_h = len(tilemap.tile_matrix)
 
-        # 1. Limpa colisão do objeto ANTIGO nesta posição (pode ocupar tiles acima)
+        # 1. Limpa tile_matrix do objeto ANTIGO (se não era puramente decorativo)
         old_char = obj_row[tx]
         if old_char and old_char != "." and old_char in OBJECT_CHARS:
             old_tile = OBJECT_MAPPING.get(old_char)
-            if old_tile:
+            _old_not_deco = old_tile and (
+                old_tile.is_solid or old_tile.elevation > 0 or old_tile.is_transition
+            )
+            if _old_not_deco:
                 for dx, dy in get_collision_offsets(old_tile):
                     nr, nc = ty + dy, tx + dx
                     if not (0 <= nr < map_h and 0 <= nc < len(tilemap.tile_matrix[nr])):
                         continue
-                    # Restaura para o terreno subjacente (ou outro objeto, se houver)
+                    # Restaura para o terreno subjacente (ou outro objeto sólido, se houver)
                     other = (tilemap.object_matrix[nr][nc]
                              if nr < len(tilemap.object_matrix) and nc < len(tilemap.object_matrix[nr])
                              else ".")
-                    if other and other != "." and (nr != ty or nc != tx):
-                        tilemap.tile_matrix[nr][nc] = OBJECT_MAPPING.get(other, FLOOR_TILE)
+                    other_tile = OBJECT_MAPPING.get(other) if other and other != "." else None
+                    if other_tile and other_tile.is_solid and (nr != ty or nc != tx):
+                        tilemap.tile_matrix[nr][nc] = other_tile
                     else:
                         tc = (tilemap.terrain_matrix[nr][nc]
                               if nr < len(tilemap.terrain_matrix) and nc < len(tilemap.terrain_matrix[nr])
@@ -766,13 +770,23 @@ class GodModeEditor:
         row_copy[tx] = char
         tilemap.object_matrix[ty] = row_copy
 
-        # 3. Aplica colisão do objeto NOVO (pode ocupar tiles acima)
+        # 3. Aplica tile_matrix para o objeto NOVO.
+        # Objetos puramente decorativos (is_solid=False, elevation=0, não-transição)
+        # não tocam tile_matrix, preservando a colisão do terreno subjacente.
+        # Objetos com elevation>0 ou is_transition PRECISAM atualizar tile_matrix
+        # para que o sistema de pisos (TileValidationSystem) os enxergue.
         if char and char != "." and char in OBJECT_CHARS:
             new_tile = OBJECT_MAPPING.get(char, FLOOR_TILE)
-            for dx, dy in get_collision_offsets(new_tile):
-                nr, nc = ty + dy, tx + dx
-                if 0 <= nr < map_h and 0 <= nc < len(tilemap.tile_matrix[nr]):
-                    tilemap.tile_matrix[nr][nc] = new_tile
+            purely_decorative = (
+                not new_tile.is_solid
+                and new_tile.elevation == 0
+                and not new_tile.is_transition
+            )
+            if not purely_decorative:
+                for dx, dy in get_collision_offsets(new_tile):
+                    nr, nc = ty + dy, tx + dx
+                    if 0 <= nr < map_h and 0 <= nc < len(tilemap.tile_matrix[nr]):
+                        tilemap.tile_matrix[nr][nc] = new_tile
         else:
             # Removendo objeto: base tile volta ao terreno
             tc = tilemap.terrain_matrix[ty][tx] if tx < len(tilemap.terrain_matrix[ty]) else "G"
@@ -797,12 +811,27 @@ class GodModeEditor:
         base     = os.path.splitext(map_file)[0]
         t_path   = base + "_terrain.csv"
         o_path   = base + "_objects.csv"
-        v_path   = base + "_terrain_sprites.csv"
 
-        self._write_csv(t_path, tilemap.terrain_matrix)
+        # Formato unificado: célula é o sprite de sheet quando há override visual,
+        # senão é o char de terreno normal (G, #, W...).
+        vis  = tilemap.terrain_visual or []
+        merged = []
+        for r, terrain_row in enumerate(tilemap.terrain_matrix):
+            merged_row = []
+            vis_row = vis[r] if r < len(vis) else []
+            for c, tc in enumerate(terrain_row):
+                vis_id = vis_row[c] if c < len(vis_row) else ""
+                merged_row.append(vis_id if vis_id else tc)
+            merged.append(merged_row)
+
+        self._write_csv(t_path, merged)
         self._write_csv(o_path, tilemap.object_matrix)
-        if tilemap.terrain_visual:
-            self._write_csv(v_path, tilemap.terrain_visual)
+
+        # Remove arquivo legado de sprites separado, se ainda existir
+        import os as _os
+        v_path = base + "_terrain_sprites.csv"
+        if _os.path.exists(v_path):
+            _os.remove(v_path)
 
         self._unsaved    = False
         self._save_flash = 1.5

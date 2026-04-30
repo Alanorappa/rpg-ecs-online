@@ -232,7 +232,15 @@ class TileValidationSystem(System):
                 occupied[(tm.target_tile_x, tm.target_tile_y)] = entity_id
         self._occupied = occupied
 
-    def is_tile_walkable(self, moving_entity_id: int, target_tile_x: int, target_tile_y: int) -> bool:
+    def is_tile_walkable(self, moving_entity_id: int,
+                         target_tile_x: int, target_tile_y: int,
+                         from_tile_x: int | None = None,
+                         from_tile_y: int | None = None) -> bool:
+        """Verifica se o tile destino é acessível para a entidade.
+
+        from_tile_x/from_tile_y (opcional): tile de origem para checar colisão
+        direcional e regras de elevação. Sem eles, só a colisão base é checada.
+        """
         tilemap_comp = self._get_tilemap_component()
         if not tilemap_comp:
             return False
@@ -244,6 +252,123 @@ class TileValidationSystem(System):
         tile_type = tilemap_comp.tile_matrix[target_tile_y][target_tile_x]
         if tile_type.is_solid:
             return False
+
+        # ── Verificações de sistema de pisos ──────────────────────────────────
+        if from_tile_x is not None and from_tile_y is not None:
+            entity_tm   = self.world.get_component(moving_entity_id, TileMovement)
+            entity_elev = entity_tm.elevation if entity_tm else 0
+
+            dest_trans = getattr(tile_type, "is_transition", False)
+
+            def _tile_is_transition(tx: int, ty: int) -> bool:
+                """Verifica se (tx, ty) é um tile de transição.
+
+                Checa:
+                1. tile_matrix direto
+                2. object_matrix direto (base do sprite)
+                3. Sprite multi-tile: a posição pode ser coberta pela área superior de
+                   um sprite de transição cujo BASE está em tiles abaixo.
+                   Ex: escada 64×96 com base em y=475 cobre y=473, y=474, y=475 —
+                   todas são válidas como tiles de transição.
+                """
+                if not (0 <= tx < tilemap_comp.map_width_tiles and
+                        0 <= ty < tilemap_comp.map_height_tiles):
+                    return False
+
+                # 1. tile_matrix
+                if getattr(tilemap_comp.tile_matrix[ty][tx], "is_transition", False):
+                    return True
+
+                obj_rows = tilemap_comp.object_matrix
+
+                # 2. object_matrix: verifica na própria linha, incluindo colunas à esquerda
+                #    (para capturar o tile direito de sprites largos com base na coluna esquerda)
+                if ty < len(obj_rows):
+                    for _dxo2 in range(0, 4):
+                        _chk = tx - _dxo2
+                        if not (0 <= _chk < tilemap_comp.map_width_tiles):
+                            break
+                        if _chk >= len(obj_rows[ty]):
+                            break
+                        _oc2 = obj_rows[ty][_chk]
+                        if not _oc2 or _oc2 == ".":
+                            continue
+                        _ot2 = OBJECT_MAPPING.get(_oc2)
+                        if not _ot2 or not getattr(_ot2, "is_transition", False):
+                            continue
+                        _spr_w2 = getattr(_ot2, "sprite_px_w", 0)
+                        _tw2 = max(1, _spr_w2 // TILE_SIZE)
+                        if _dxo2 < _tw2:
+                            return True
+
+                # 3. Sprite multi-tile: verifica se (tx, ty) está dentro da área de
+                #    cobertura de um sprite de transição.
+                #    Itera colunas à esquerda (dx_off=0..max_w-1) e tiles abaixo (delta_y)
+                #    para sprites que podem ser mais largos que 1 tile.
+                max_sprite_h_tiles = 6   # altura máxima razoável em tiles (192px)
+                max_sprite_w_tiles = 4   # largura máxima razoável em tiles (128px)
+                for dx_off in range(0, max_sprite_w_tiles):
+                    check_tx = tx - dx_off
+                    if not (0 <= check_tx < tilemap_comp.map_width_tiles):
+                        break
+                    for delta_y in range(1, max_sprite_h_tiles + 1):
+                        base_y = ty + delta_y
+                        if base_y >= tilemap_comp.map_height_tiles:
+                            break
+                        if base_y >= len(obj_rows) or check_tx >= len(obj_rows[base_y]):
+                            break
+                        base_char = obj_rows[base_y][check_tx]
+                        if not base_char or base_char == ".":
+                            continue
+                        base_tile = OBJECT_MAPPING.get(base_char)
+                        if not base_tile or not getattr(base_tile, "is_transition", False):
+                            continue
+                        spr_h = getattr(base_tile, "sprite_px_h", 0)
+                        spr_w = getattr(base_tile, "sprite_px_w", 0)
+                        tiles_tall = max(1, spr_h // TILE_SIZE)
+                        tiles_wide = max(1, spr_w // TILE_SIZE)
+                        # (tx, ty) está dentro da área do sprite?
+                        if delta_y < tiles_tall and dx_off < tiles_wide:
+                            return True
+
+                return False
+
+            def _dest_elevation_and_flags():
+                """Retorna (elevation, passthrough) de dest, consultando tile_matrix e object_matrix."""
+                elev  = getattr(tile_type, "elevation", 0)
+                pthru = getattr(tile_type, "passthrough", False)
+                trans = dest_trans
+                # Confirma pelo object_matrix se o tile_matrix pode estar desatualizado
+                obj_rows = tilemap_comp.object_matrix
+                if target_tile_y < len(obj_rows) and target_tile_x < len(obj_rows[target_tile_y]):
+                    obj_char = obj_rows[target_tile_y][target_tile_x]
+                    if obj_char and obj_char != ".":
+                        obj_tile = OBJECT_MAPPING.get(obj_char)
+                        if obj_tile:
+                            elev  = getattr(obj_tile, "elevation", elev)
+                            pthru = getattr(obj_tile, "passthrough", pthru)
+                            trans = getattr(obj_tile, "is_transition", trans)
+                return elev, pthru, trans
+
+            dest_elev, dest_pass, dest_trans2 = _dest_elevation_and_flags()
+            # Usa _tile_is_transition para o destino também, capturando sprites multi-tile
+            dest_trans2 = dest_trans2 or _tile_is_transition(target_tile_x, target_tile_y)
+            from_trans  = _tile_is_transition(from_tile_x, from_tile_y)
+
+            # Destino é tile de transição → sempre acessível
+            if dest_trans2:
+                pass  # permite
+            # Vem de tile de transição → pode ir para qualquer piso
+            elif from_trans:
+                pass  # permite
+            # Mesmo piso → ok
+            elif dest_elev == entity_elev:
+                pass  # permite
+            # Piso diferente + passthrough → jogador passa por trás (elevation não muda)
+            elif dest_pass:
+                pass  # permite (elevation não é alterada ao chegar)
+            else:
+                return False  # piso diferente, sem passagem
 
         occupant_id = self._occupied.get((target_tile_x, target_tile_y))
         if occupant_id is None or occupant_id == moving_entity_id:
@@ -352,12 +477,16 @@ class CombatSystem(System):
         )
         target_stats.current_hp -= final_damage
 
-        # Aggro imediato: ataque do player força inimigo a perseguir independente do raio
+        # Aggro por dano: ataque do player força inimigo a perseguir independente do raio.
+        # aggroed_by_damage=True desativa o leash de 5 tiles até o mob chegar perto do player.
         if attacker_is_player:
             _ai = self.world.get_component(target_id, AIControlled)
             if _ai and _ai.state in ("IDLE", "RETURNING"):
-                _ai.state             = "CHASING"
-                _ai.path_recalc_timer = 0.0
+                _ms_hit = self.world.get_component(target_id, MobSounds)
+                SOUNDS.play_mob_sounds(_ms_hit, "aggro", dedup_key=f"dmg_{target_id}")
+                _ai.state              = "CHASING"
+                _ai.aggroed_by_damage  = True
+                _ai.path_recalc_timer  = 0.0
 
         is_crit  = outcome == 'crit'
         is_block = outcome == 'block'
@@ -1031,7 +1160,8 @@ class PlayerInputSystem(System):
                         auto_move.ground_target = None
                     if combat_state:
                         combat_state.is_pursuing = False
-                    if self.tile_validation_system.is_tile_walkable(entity_id, tgt_x, tgt_y):
+                    if self.tile_validation_system.is_tile_walkable(
+                            entity_id, tgt_x, tgt_y, cur_x, cur_y):
                         self._start_tile_movement(position, tile_movement, tgt_x, tgt_y)
 
             # --- Auto-move e auto-ataque em direção ao alvo selecionado ---
@@ -1252,7 +1382,9 @@ class PlayerInputSystem(System):
 
         if auto_move.path:
             nx, ny = auto_move.path[0]
-            if self.tile_validation_system.is_tile_walkable(entity_id, nx, ny):
+            cx = tile_movement.current_tile_x
+            cy = tile_movement.current_tile_y
+            if self.tile_validation_system.is_tile_walkable(entity_id, nx, ny, cx, cy):
                 self._start_tile_movement(position, tile_movement, nx, ny)
                 auto_move.path.pop(0)
             else:
@@ -1652,14 +1784,26 @@ class EnemyAISystem(System):
             # --- Perseguição do Jogador ---
             in_detect_range = dist_to_player_pixels <= detect_radius.radius
 
-            # Leash: player kiteou além de 5 tiles → mob volta ao spawn (RETURNING)
-            # RETURNING é imune a re-aggro, eliminando a oscilação
+            # Leash: player kiteou além do limite → mob volta ao spawn (RETURNING)
+            # aggroed_by_damage usa raio do detect_radius (mob persegue mais longe quando
+            # foi atacado de fora do range), evitando que o leash cancele aggro por dano.
+            # Aggro por proximidade usa 5 tiles fixos para evitar oscilação.
             _aggro_range_px = 5 * TILE_SIZE
+            _leash_range_px = (max(detect_radius.radius, 12 * TILE_SIZE)
+                               if ai_control.aggroed_by_damage
+                               else _aggro_range_px)
+
             if ai_control.state == "CHASING" and \
-                    dist_to_player_pixels > _aggro_range_px:
-                ai_control.state = "RETURNING"
-                ai_control.path_recalc_timer = 0.0
-                tile_movement.path = []
+                    dist_to_player_pixels > _leash_range_px:
+                ai_control.state              = "RETURNING"
+                ai_control.aggroed_by_damage  = False
+                ai_control.path_recalc_timer  = 0.0
+                tile_movement.path            = []
+
+            # Quando o mob aggroed_by_damage chega perto do player (range normal),
+            # transiciona para aggro de proximidade normal (leash de 5 tiles passa a valer)
+            if ai_control.aggroed_by_damage and dist_to_player_pixels <= _aggro_range_px:
+                ai_control.aggroed_by_damage = False
 
             # Detecção inicial: mesma distância do leash (5 tiles), apenas mobs IDLE
             # Usar o mesmo threshold evita oscilação: aggro e leash têm a mesma fronteira
@@ -1812,7 +1956,8 @@ class EnemyAISystem(System):
                     else:
                         ai_control.state = "IDLE"
                 else:
-                    ai_control.state = "IDLE"
+                    ai_control.state             = "IDLE"
+                    ai_control.aggroed_by_damage = False
                     enemy_pos.x = initial_pos.x
                     enemy_pos.y = initial_pos.y
             
@@ -1966,6 +2111,64 @@ class TileMovementSystem(System):
                     tile_movement.current_tile_x = tile_movement.target_tile_x
                     tile_movement.current_tile_y = tile_movement.target_tile_y
                     tile_movement.is_moving = False
+
+                    # Atualiza elevation ao chegar num tile:
+                    # • tile de transição ("t"): elevation NÃO muda aqui —
+                    #   muda ao SAIR do "t" para um tile de piso N.
+                    # • tile com passthrough: elevation NÃO muda (jogador passa por baixo).
+                    # • tile normal com elevation N: elevation ASSUME N.
+                    _tm_comp = None
+                    for _, _tc in self.world.get_entities_with(Tilemap):
+                        _tm_comp = _tc
+                        break
+                    if _tm_comp:
+                        _tx = tile_movement.current_tile_x
+                        _ty = tile_movement.current_tile_y
+                        if (0 <= _ty < _tm_comp.map_height_tiles and
+                                0 <= _tx < _tm_comp.map_width_tiles):
+                            _arrived = _tm_comp.tile_matrix[_ty][_tx]
+                            _is_trans = getattr(_arrived, "is_transition", False)
+                            _passthru = getattr(_arrived, "passthrough", False)
+                            _elev     = getattr(_arrived, "elevation", 0)
+                            # Fallback 1: object_matrix no próprio tile
+                            _obj_rows = _tm_comp.object_matrix
+                            if _ty < len(_obj_rows) and _tx < len(_obj_rows[_ty]):
+                                _oc = _obj_rows[_ty][_tx]
+                                if _oc and _oc != ".":
+                                    _ot = OBJECT_MAPPING.get(_oc)
+                                    if _ot:
+                                        _is_trans = getattr(_ot, "is_transition", _is_trans)
+                                        _passthru = getattr(_ot, "passthrough", _passthru)
+                                        _elev     = getattr(_ot, "elevation", _elev)
+                            # Fallback 2: sprite multi-tile com suporte a largura.
+                            if not _is_trans:
+                                for _dxo in range(0, 4):   # até 4 tiles de largura
+                                    if _is_trans:
+                                        break
+                                    _ctx = _tx - _dxo
+                                    if not (0 <= _ctx < _tm_comp.map_width_tiles):
+                                        break
+                                    for _dy in range(1, 7):
+                                        _by = _ty + _dy
+                                        if _by >= _tm_comp.map_height_tiles or _by >= len(_obj_rows):
+                                            break
+                                        if _ctx >= len(_obj_rows[_by]):
+                                            break
+                                        _bc = _obj_rows[_by][_ctx]
+                                        if not _bc or _bc == ".":
+                                            continue
+                                        _bt = OBJECT_MAPPING.get(_bc)
+                                        if not _bt or not getattr(_bt, "is_transition", False):
+                                            continue
+                                        _spr_h = getattr(_bt, "sprite_px_h", 0)
+                                        _spr_w = getattr(_bt, "sprite_px_w", 0)
+                                        _tt = max(1, _spr_h // TILE_SIZE)
+                                        _tw = max(1, _spr_w // TILE_SIZE)
+                                        if _dy < _tt and _dxo < _tw:
+                                            _is_trans = True
+                                            break
+                            if not _is_trans and not _passthru:
+                                tile_movement.elevation = _elev
                     tile_movement.is_dash   = False
                     tile_movement.progress  = 0.0
                     # Som de passo — apenas player, sem dash, respeitando intervalo mínimo
@@ -2268,6 +2471,12 @@ class TileRenderSystem(System):
         if fog_comp is None:
             return
 
+        # Pega tilemap para checar extensões superiores de objetos altos
+        tilemap_fog = None
+        for _, tm in self.world.get_entities_with(Tilemap):
+            tilemap_fog = tm
+            break
+
         if (tile_ox != self._fog_cache_tile_ox
                 or tile_oy != self._fog_cache_tile_oy
                 or self._fog_overlay_surf is None):
@@ -2292,6 +2501,42 @@ class TileRenderSystem(System):
             fade_begin = fade_start * radius
             fade_range = radius - fade_begin
 
+            # Pré-calcula tiles que são extensão superior de objetos visíveis altos.
+            # Para esses tiles o fog não é aplicado: o sprite do objeto cobre essa área
+            # e deve aparecer acima do fog quando a base está visível.
+            _skip_fog: set = set()
+            if tilemap_fog is not None:
+                _rows    = tilemap_fog.tile_matrix
+                _obj     = tilemap_fog.object_matrix
+                _map_h   = tilemap_fog.map_height_tiles
+                _map_w   = tilemap_fog.map_width_tiles
+                for _ry in range(tile_oy, min(tile_oy + tiles_h, _map_h)):
+                    for _rx in range(tile_ox, min(tile_ox + tiles_w, _map_w)):
+                        if (_rx, _ry) in visible:
+                            continue  # visível → fog já não cobre, irrelevante
+                        # Tile tem TileType de sprite alto sem objeto direto aqui?
+                        _tile = _rows[_ry][_rx] if _ry < len(_rows) and _rx < len(_rows[_ry]) else None
+                        if _tile is None:
+                            continue
+                        _sprite_h = getattr(_tile, "sprite_px_h", 0)
+                        if _sprite_h <= TILE_SIZE:
+                            continue  # sprite não é multi-tile
+                        _obj_here = (_obj[_ry][_rx]
+                                     if _ry < len(_obj) and _rx < len(_obj[_ry]) else ".")
+                        if _obj_here and _obj_here != ".":
+                            continue  # tem objeto direto aqui — não é extensão superior
+                        # Verifica tiles abaixo: algum tem objeto visível que sobe até aqui?
+                        _max_delta = _sprite_h // TILE_SIZE
+                        for _dy in range(1, _max_delta + 1):
+                            _base_y = _ry + _dy
+                            if not (0 <= _base_y < _map_h):
+                                break
+                            _obj_base = (_obj[_base_y][_rx]
+                                         if _base_y < len(_obj) and _rx < len(_obj[_base_y]) else ".")
+                            if _obj_base and _obj_base != "." and (_rx, _base_y) in visible:
+                                _skip_fog.add((_rx, _ry))
+                                break
+
             for ty in range(tiles_h):
                 for tx in range(tiles_w):
                     rx, ry = tile_ox + tx, tile_oy + ty
@@ -2304,6 +2549,8 @@ class TileRenderSystem(System):
                                 t     = (d - fade_begin) / fade_range
                                 level = min(n_levels - 1, int(t * n_levels))
                                 self._fog_overlay_surf.blit(fade_surfs[level], (dx_s, dy_s))
+                    elif (rx, ry) in _skip_fog:
+                        pass  # extensão superior de objeto visível — não aplica fog
                     elif (rx, ry) in explored:
                         self._fog_overlay_surf.blit(exp_surf, (dx_s, dy_s))
                     else:
@@ -2352,6 +2599,10 @@ class TileRenderSystem(System):
                     if tile_type is None:
                         continue
 
+                    # Objetos com no_ysort=True são renderizados por render_static_objects()
+                    if getattr(tile_type, "no_ysort", False):
+                        continue
+
                     # Sprite tree PNG (tamanho real) ou objeto legacy (overlay_height)
                     spr_px_w = getattr(tile_type, "sprite_px_w", 0)
                     spr_px_h = getattr(tile_type, "sprite_px_h", 0)
@@ -2366,11 +2617,7 @@ class TileRenderSystem(System):
                         total_h    = tile_size + tile_type.overlay_height
                         sprite     = TILE_SPRITES.get(tile_type, rx, ry)
 
-                    # sort_y: meio do tile base
                     sort_y   = ry * tile_size + tile_size // 2
-                    # Âncora: borda inferior do tile, alinhada à esquerda do tile.
-                    # Sprites de 32px: idêntico ao comportamento anterior.
-                    # Sprites largos (64px+): canto esq do sprite = canto esq do tile.
                     anchor_y = (ry + 1) * tile_size
                     scr_x    = rx * tile_size - cam_x
                     scr_y    = anchor_y - cam_y - total_h
@@ -2387,6 +2634,70 @@ class TileRenderSystem(System):
                         "tile_y":   ry,
                     })
         return objects
+
+    def render_static_objects(self, camera_offset_x: float, camera_offset_y: float) -> None:
+        """Renderiza objetos com no_ysort=True diretamente no world_surf, abaixo de entidades."""
+        from tile_sprite_manager import TILE_SPRITES
+        cam_x = int(camera_offset_x)
+        cam_y = int(camera_offset_y)
+
+        # Fog: só objetos em tiles visíveis ou explorados
+        _fog_visible  = None
+        _fog_explored = None
+        for _, fog in self.world.get_entities_with(FogOfWar):
+            _fog_visible  = fog.visible
+            _fog_explored = fog.explored
+            break
+
+        for _, tilemap_comp in self.world.get_entities_with(Tilemap):
+            tile_size = tilemap_comp.tile_size
+            obj_rows  = tilemap_comp.object_matrix
+            map_h     = tilemap_comp.map_height_tiles
+            map_w     = tilemap_comp.map_width_tiles
+            tile_ox   = cam_x // tile_size
+            tile_oy   = cam_y // tile_size
+            tiles_w   = self.world_surf.get_width()  // tile_size + 2
+            tiles_h   = self.world_surf.get_height() // tile_size + 2
+
+            for ty in range(tiles_h):
+                for tx in range(tiles_w):
+                    rx, ry = tile_ox + tx, tile_oy + ty
+                    if not (0 <= ry < map_h and 0 <= rx < map_w):
+                        continue
+                    if _fog_visible is not None and _fog_explored is not None:
+                        if (rx, ry) not in _fog_visible and (rx, ry) not in _fog_explored:
+                            continue
+                    if ry >= len(obj_rows):
+                        continue
+                    obj_row  = obj_rows[ry]
+                    obj_char = obj_row[rx] if rx < len(obj_row) else "."
+                    if not obj_char or obj_char == ".":
+                        continue
+                    tile_type = OBJECT_MAPPING.get(obj_char)
+                    if tile_type is None or not getattr(tile_type, "no_ysort", False):
+                        continue
+
+                    spr_px_w = getattr(tile_type, "sprite_px_w", 0)
+                    spr_px_h = getattr(tile_type, "sprite_px_h", 0)
+                    spr_name = getattr(tile_type, "sprite_name", "")
+                    if spr_px_w > 0 and spr_px_h > 0 and spr_name:
+                        sprite  = TILE_SPRITES.get_raw_sprite(spr_name)
+                        total_h = spr_px_h
+                        sprite_w = spr_px_w
+                    else:
+                        sprite   = TILE_SPRITES.get(tile_type, rx, ry)
+                        total_h  = tile_size + tile_type.overlay_height
+                        sprite_w = tile_size
+
+                    anchor_y = (ry + 1) * tile_size
+                    scr_x    = rx * tile_size - cam_x
+                    scr_y    = anchor_y - cam_y - total_h
+
+                    if sprite is not None:
+                        self.world_surf.blit(sprite, (scr_x, scr_y))
+                    else:
+                        pygame.draw.rect(self.world_surf, tile_type.color,
+                                         (scr_x, scr_y, sprite_w, total_h))
 
 
 class FogSystem(System):
@@ -2415,7 +2726,7 @@ class FogSystem(System):
         def is_blocking(x: int, y: int) -> bool:
             if not (0 <= x < map_w and 0 <= y < map_h):
                 return True
-            return rows[y][x].is_solid
+            return rows[y][x].vision_height >= 2
 
         fog = None
         for _, f, tile_move in self.world.get_entities_with(FogOfWar, TileMovement):
@@ -3865,18 +4176,18 @@ class LootSystem(System):
         modal = self._modal_rect()
         bg = pygame.Surface((modal.w, modal.h), pygame.SRCALPHA)
         bg.fill(self.BG_COLOR)
-        self.world_surf.blit(bg, modal.topleft)
-        pygame.draw.rect(self.world_surf, self.BORDER_COLOR, modal, 2, border_radius=4)
+        self.hud_surf.blit(bg, modal.topleft)
+        pygame.draw.rect(self.hud_surf, self.BORDER_COLOR, modal, 2, border_radius=4)
 
         # --- Barra de título ---
         title = self.font_sm.render("Loot", True, self.BORDER_COLOR)
-        self.world_surf.blit(title, (modal.x + self.PAD, modal.y + (self.TITLE_H - title.get_height()) // 2))
+        self.hud_surf.blit(title, (modal.x + self.PAD, modal.y + (self.TITLE_H - title.get_height()) // 2))
 
         # Botão X
         close_r = self._close_btn_rect(modal)
-        pygame.draw.rect(self.world_surf, (90, 30, 30), close_r, border_radius=2)
+        pygame.draw.rect(self.hud_surf, (90, 30, 30), close_r, border_radius=2)
         x_surf = self.font_sm.render("X", True, (220, 100, 100))
-        self.world_surf.blit(x_surf, (close_r.centerx - x_surf.get_width() // 2,
+        self.hud_surf.blit(x_surf, (close_r.centerx - x_surf.get_width() // 2,
                                   close_r.centery - x_surf.get_height() // 2))
 
         mx, my = pygame.mouse.get_pos()
@@ -3900,13 +4211,13 @@ class LootSystem(System):
             track_x = modal.right - self.SCROLL_W - 4
             track_y = modal.y + self.TITLE_H + self.PAD // 2
             track_h = self.MAX_ROWS * (self.ROW_H + self.PAD // 2) - self.PAD // 2
-            pygame.draw.rect(self.world_surf, (40, 30, 18),
+            pygame.draw.rect(self.hud_surf, (40, 30, 18),
                              (track_x, track_y, self.SCROLL_W, track_h), border_radius=3)
             # Thumb
             thumb_h = max(20, track_h * self.MAX_ROWS // total)
             max_scroll = total - self.MAX_ROWS
             thumb_y = track_y + (track_h - thumb_h) * self._scroll_offset // max(1, max_scroll)
-            pygame.draw.rect(self.world_surf, (130, 100, 55),
+            pygame.draw.rect(self.hud_surf, (130, 100, 55),
                              (track_x, thumb_y, self.SCROLL_W, thumb_h), border_radius=3)
 
         # --- Renderiza linhas visíveis ---
@@ -3921,20 +4232,20 @@ class LootSystem(System):
 
             if entry[0] == "coin":
                 # --- Linha de moedas ---
-                pygame.draw.rect(self.world_surf, (70, 55, 15) if hovered else (28, 20, 8), rr, border_radius=3)
-                pygame.draw.rect(self.world_surf, (200, 170, 50) if hovered else (100, 80, 20), rr, 1, border_radius=3)
+                pygame.draw.rect(self.hud_surf, (70, 55, 15) if hovered else (28, 20, 8), rr, border_radius=3)
+                pygame.draw.rect(self.hud_surf, (200, 170, 50) if hovered else (100, 80, 20), rr, 1, border_radius=3)
                 icon_r = pygame.Rect(rr.x + 4, rr.centery - self.ICON_S // 2, self.ICON_S, self.ICON_S)
                 r_out = self.ICON_S // 2
                 r_in  = max(1, r_out - 4)
-                pygame.draw.circle(self.world_surf, (180, 140, 0),  icon_r.center, r_out)
-                pygame.draw.circle(self.world_surf, (255, 215, 0),  icon_r.center, r_in)
-                pygame.draw.circle(self.world_surf, (120, 90, 0),   icon_r.center, r_out, 1)
+                pygame.draw.circle(self.hud_surf, (180, 140, 0),  icon_r.center, r_out)
+                pygame.draw.circle(self.hud_surf, (255, 215, 0),  icon_r.center, r_in)
+                pygame.draw.circle(self.hud_surf, (120, 90, 0),   icon_r.center, r_out, 1)
                 g_surf = self.font_sm.render("G", True, (120, 90, 0))
-                self.world_surf.blit(g_surf, (icon_r.centerx - g_surf.get_width() // 2,
+                self.hud_surf.blit(g_surf, (icon_r.centerx - g_surf.get_width() // 2,
                                           icon_r.centery - g_surf.get_height() // 2))
                 tx = icon_r.right + 8
                 ty = rr.centery - self.font_md.get_height() // 2
-                self.world_surf.blit(self.font_md.render(f"{corpse.coins} moedas", True, (255, 215, 0)), (tx, ty))
+                self.hud_surf.blit(self.font_md.render(f"{corpse.coins} moedas", True, (255, 215, 0)), (tx, ty))
                 if hovered:
                     self.pending_tooltip = (mx, my, "Moedas",
                                             [(f"{corpse.coins} moedas disponíveis", (255, 215, 0)),
@@ -3944,15 +4255,15 @@ class LootSystem(System):
                 # --- Linha de item ---
                 item = entry[1]
                 bg_col = self.HOVER_COLOR if hovered else (28, 20, 8)
-                pygame.draw.rect(self.world_surf, bg_col, rr, border_radius=3)
+                pygame.draw.rect(self.hud_surf, bg_col, rr, border_radius=3)
 
                 icon_r = pygame.Rect(rr.x + 4, rr.centery - self.ICON_S // 2, self.ICON_S, self.ICON_S)
                 icon_surf = ICONS.get(ICONS.item_key(item), self.ICON_S)
                 if icon_surf:
-                    self.world_surf.blit(icon_surf, icon_r)
+                    self.hud_surf.blit(icon_surf, icon_r)
                 else:
                     fb = self.RARITY_COLORS.get(item.rarity, (100, 100, 100))
-                    pygame.draw.rect(self.world_surf, fb, icon_r, border_radius=2)
+                    pygame.draw.rect(self.hud_surf, fb, icon_r, border_radius=2)
 
                 rc = self.RARITY_COLORS.get(item.rarity, (200, 200, 200))
                 tx = icon_r.right + 8
@@ -3960,11 +4271,11 @@ class LootSystem(System):
                 sub_surf  = self.font_sm.render(f"{item.item_type}  •  {item.slot}", True, (130, 115, 95))
                 total_h   = name_surf.get_height() + 2 + sub_surf.get_height()
                 ty = rr.centery - total_h // 2
-                self.world_surf.blit(name_surf, (tx, ty))
-                self.world_surf.blit(sub_surf,  (tx, ty + name_surf.get_height() + 2))
+                self.hud_surf.blit(name_surf, (tx, ty))
+                self.hud_surf.blit(sub_surf,  (tx, ty + name_surf.get_height() + 2))
 
                 border_col = (180, 140, 60) if hovered else (55, 40, 22)
-                pygame.draw.rect(self.world_surf, border_col, rr, 1, border_radius=3)
+                pygame.draw.rect(self.hud_surf, border_col, rr, 1, border_radius=3)
 
                 if hovered:
                     hovered_item = item
@@ -3973,7 +4284,7 @@ class LootSystem(System):
         if not virtual:
             empty = self.font_sm.render("(vazio)", True, (120, 100, 80))
             rr = self._row_rect(modal, 0)
-            self.world_surf.blit(empty, (rr.x + 4, rr.centery - empty.get_height() // 2))
+            self.hud_surf.blit(empty, (rr.x + 4, rr.centery - empty.get_height() // 2))
 
         # Tooltip + comparação no hover
         if hovered_item is not None:
@@ -4157,7 +4468,9 @@ class SkillSystem(System, SkillHandlers):
             if handler_fn:
                 success = handler_fn(skill, combat_stats, combat_state, tile_move)
                 if success:
-                    if skill.sound_name:
+                    # Skills AOE-targetadas não tocam o som ao pressionar —
+                    # o som é emitido em _start_channel quando o alvo é confirmado
+                    if skill.sound_name and not getattr(skill, "needs_aoe_target", False):
                         SOUNDS.play_skill(skill.sound_name)
                     if player_skills:
                         player_skills.gcd_timer = PlayerSkills.GCD_DURATION

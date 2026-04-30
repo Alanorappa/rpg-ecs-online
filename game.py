@@ -574,15 +574,12 @@ class GameEngine:
         """Aplica zoom com scroll do mouse — apenas quando o cursor está sobre a área do jogo."""
         mx, my = pygame.mouse.get_pos()
 
-        # Ignora se qualquer modal de UI está aberto
+        # Ignora se qualquer modal de UI está aberto, ou se o God Mode está ativo
         if (self._show_inventory or self._show_talents or self._show_debug
                 or self._map_overlay.is_open or self._show_pause
-                or self._show_hotbar_editor or getattr(self._shop_system, "is_open", False)
+                or self._show_hotbar_editor or self._god_mode.active
+                or getattr(self._shop_system, "is_open", False)
                 or getattr(self._quest_journal, "is_open", False)):
-            return
-
-        # Ignora se o cursor estiver sobre o painel do God Mode
-        if self._god_mode.active and mx >= SCREEN_WIDTH - self._god_mode._panel_w:
             return
 
         step = self._zoom_step if scroll_y > 0 else -self._zoom_step
@@ -749,6 +746,9 @@ class GameEngine:
                     elif event.key == pygame.K_F10:
                         self._close_all_modals()
                         self._god_mode.toggle()
+                        if self._god_mode.active and self._zoom != 1.0:
+                            self._zoom = 1.0
+                            self._tile_render_system.invalidate_cache()
                     elif event.key == pygame.K_m:
                         already_open = self._map_overlay.is_open
                         self._close_all_modals()
@@ -781,12 +781,12 @@ class GameEngine:
                         self._close_all_modals()
                         if not already_open:
                             self._quest_journal.open()
-                    elif event.key in (pygame.K_EQUALS, pygame.K_KP_PLUS):
+                    elif event.key in (pygame.K_EQUALS, pygame.K_KP_PLUS) and not self._god_mode.active:
                         new_zoom = min(self._zoom_max, round(self._zoom + self._zoom_step, 10))
                         if new_zoom != self._zoom:
                             self._zoom = new_zoom
                             self._tile_render_system.invalidate_cache()
-                    elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
+                    elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS) and not self._god_mode.active:
                         new_zoom = max(self._zoom_min, round(self._zoom - self._zoom_step, 10))
                         if new_zoom != self._zoom:
                             self._zoom = new_zoom
@@ -1025,6 +1025,8 @@ class GameEngine:
                     else:
                         system.render(cam_x, cam_y)
             self._loot_system.render_world(cam_x, cam_y)
+            # Objetos no_ysort (ex: escadas) renderizam aqui, abaixo das entidades
+            self._tile_render_system.render_static_objects(cam_x, cam_y)
             DASH_TRAIL.render(self._zoom_surf, cam_x, cam_y)
             _world_objs = self._tile_render_system.get_world_objects(cam_x, cam_y)
             self._render_system.render(cam_x, cam_y, world_objects=_world_objs)
@@ -1039,8 +1041,11 @@ class GameEngine:
             self._aoe_targeting_system.render(cam_x, cam_y)
             FLT.render(self._zoom_surf, cam_x, cam_y)
 
-            # ── Escala world_surf → tela nativa (pixel-perfect) ───────────────
-            pygame.transform.scale(self._zoom_surf, (dest_w, SCREEN_HEIGHT), self.screen)
+            # ── Escala world_surf → área de jogo na tela nativa (pixel-perfect) ─
+            # subsurface evita alocação extra e resolve o caso do painel do God Mode
+            # (dest_w < SCREEN_WIDTH quando o painel está aberto).
+            _dest = self.screen.subsurface((0, 0, dest_w, SCREEN_HEIGHT))
+            pygame.transform.scale(self._zoom_surf, (dest_w, SCREEN_HEIGHT), _dest)
             # Notificações de proc: screen-space, abaixo do player, acima dos avisos
             PROC.render(self.screen)
             # Avisos de ação bloqueada: posição fixa, abaixo do centro
@@ -1191,6 +1196,8 @@ class GameEngine:
                     self._prof_report()
 
         self._autosave()
+        from save_system import flush as _flush_save
+        _flush_save()   # garante que o I/O de disco termine antes do processo encerrar
         pygame.quit()
 
     # ------------------------------------------------------------------
@@ -3386,11 +3393,6 @@ class GameEngine:
             label  = f"Canalizando... {remaining:.1f}s"
             bar_col = (255, 100, 20)
             bg_col  = (50, 20, 0)
-        elif ice_block:
-            ratio  = min(1.0, ice_block.elapsed / max(0.01, ice_block.duration))
-            label  = f"Bloco de Gelo {ice_block.elapsed:.1f}/{ice_block.duration:.1f}s"
-            bar_col = (80, 180, 255)
-            bg_col  = (0, 20, 60)
         else:
             return
 

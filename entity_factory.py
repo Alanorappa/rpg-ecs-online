@@ -67,6 +67,17 @@ def create_tilemap(world: World, terrain_matrix: list, object_matrix: list,
             obj_tile = OBJECT_MAPPING.get(obj_char)
             if obj_tile is None:
                 continue
+            # Objetos puramente decorativos (sem colisão, sem elevação, sem transição)
+            # não alteram tile_matrix para preservar a colisão do terreno subjacente.
+            # Objetos com elevation ou is_transition PRECISAM ser escritos em
+            # tile_matrix para que TileValidationSystem os enxergue.
+            purely_decorative = (
+                not obj_tile.is_solid
+                and obj_tile.elevation == 0
+                and not obj_tile.is_transition
+            )
+            if purely_decorative:
+                continue
             for dx, dy in get_collision_offsets(obj_tile):
                 nr, nc = r + dy, c + dx
                 if 0 <= nr < map_h and 0 <= nc < len(tile_data[nr]):

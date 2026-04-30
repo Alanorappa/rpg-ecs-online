@@ -89,6 +89,12 @@ def _dict_to_item(d: dict) -> Item:
 _save_thread: threading.Thread | None = None
 
 
+def flush() -> None:
+    """Aguarda a thread de save terminar. Chamar antes de encerrar o processo."""
+    if _save_thread is not None and _save_thread.is_alive():
+        _save_thread.join()
+
+
 def save_game(world, player_entity: int, current_map_file: str, slot: int = 0) -> None:
     """Serializa o estado do jogador. Build do dict na thread principal; I/O em background."""
     global _save_thread

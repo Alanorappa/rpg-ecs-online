@@ -133,7 +133,7 @@
                      |_________|      
                           |                
      _________        ____|____       _________
-    |        ¹|      |        ⁵|     |        ⁵|
+    |        ⁵|      |        ⁵|     |        ⁵|
     |    2    |______|    3    |_____|    4    |
     |_________|      |_________|     |_________|
          |                |               |
@@ -160,6 +160,8 @@
 
 ── Descrições ──────────────────────────────────────────────────────────────
 
-1) Frieza - Reduz o custo de mana de sua bola de fogo em 3
+1) Frieza - Reduz o custo de mana de sua bola de fogo em 3.
 
-2) 
+2) Bola de fogo aperfeiçoada - Reduz o tempo de lançamento de bola de fogo em 0.1 segundos.
+
+3) 

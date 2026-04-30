@@ -3,22 +3,17 @@ from __future__ import annotations
 """
 Carrega mapas a partir de arquivos CSV + JSON opcional de entidades.
 
-Formato do CSV (terrain only):
-  # → parede   . → chão   G → grama   O → portal
+Formato do terrain CSV (unificado):
+  Cada célula é OU um char de terreno (G, #, W, ~...) OU um ID de sprite de sheet
+  (ex: txg_0_0). Se for um ID de sheet, o terreno subjacente é determinado pela
+  família em SHEET_FAMILIES e o sprite serve de visual.
 
 Formato do JSON de entidades (map_N_entities.json ao lado do CSV):
   {
     "player":      {"x": 20, "y": 7},
-    "spawn_zones": [
-      {"x":5, "y":4, "radius":3, "respawn_cooldown":30,
-       "level_min":1, "level_max":3,
-       "spawns": [{"type":"melee","tier":"normal","count":2},
-                  {"type":"ranged","tier":"normal","count":2}]}
-    ],
-    "merchants": [{"x":17, "y":7, "shop_id":"general"}]
+    "spawn_zones": [...],
+    "merchants":   [...]
   }
-
-Se nenhum JSON existir, o loader usa o sistema legado de caracteres E/R/P/N no CSV.
 """
 
 import csv
@@ -35,21 +30,55 @@ MERCHANT_TILE_CHARS = {
 
 # Tipos de inimigos codificados no mapa: (tipo, tier)
 ENEMY_TILE_CHARS = {
-    "E": ("melee",   "normal"),   # Normal melee
-    "R": ("ranged",  "normal"),   # Normal ranged
-    "A": ("melee",   "elite"),    # Elite melee
-    "T": ("ranged",  "elite"),    # Elite ranged
-    "M": ("melee",   "rare"),     # Rare melee
-    "X": ("ranged",  "rare"),     # Rare ranged
-    "B": ("melee",   "boss"),     # Boss
+    "E": ("melee",   "normal"),
+    "R": ("ranged",  "normal"),
+    "A": ("melee",   "elite"),
+    "T": ("ranged",  "elite"),
+    "M": ("melee",   "rare"),
+    "X": ("ranged",  "rare"),
+    "B": ("melee",   "boss"),
 }
+
+# Cache: prefixo de sheet → char de terreno subjacente (populado na primeira chamada)
+_SHEET_UNDERLYING: dict[str, str] | None = None
+
+
+def _get_sheet_underlying() -> dict[str, str]:
+    """Retorna mapeamento prefix → underlying_terrain das SHEET_FAMILIES."""
+    global _SHEET_UNDERLYING
+    if _SHEET_UNDERLYING is None:
+        from tileset import SHEET_TILE_MAP, SHEET_FAMILIES
+        _SHEET_UNDERLYING = {}
+        for fam in SHEET_FAMILIES:
+            prefix = fam["prefix"]
+            under  = fam.get("underlying_terrain", "G")
+            _SHEET_UNDERLYING[prefix] = under
+    return _SHEET_UNDERLYING
+
+
+def _parse_terrain_cell(cell: str) -> tuple[str, str]:
+    """
+    Interpreta uma célula do terrain CSV unificado.
+    Retorna (terrain_char, visual_id).
+    - terrain_char: char usado para colisão/gameplay (G, #, W...)
+    - visual_id: ID de sprite de sheet para override visual ("" se não houver)
+    """
+    from tileset import SHEET_TILE_MAP
+    if cell in SHEET_TILE_MAP:
+        # É um sprite de terreno: extrai o char de gameplay do prefixo
+        sheet_under = _get_sheet_underlying()
+        for prefix, under in sheet_under.items():
+            if cell.startswith(prefix + "_"):
+                return under, cell
+        return "G", cell   # fallback
+    return cell, ""
 
 
 def load_map_csv(filepath: str) -> tuple[list[str], list[str], dict, list | None]:
     """
     Carrega um mapa e retorna (terrain_matrix, object_matrix, spawn_points, terrain_visual).
 
-    terrain_visual — list[list[str]] com sprite IDs de sheet por tile, ou None se não existir.
+    terrain_visual — list[list[str]] com sprite IDs de sheet por tile.
     """
     filepath  = resource_path(filepath)
     base      = os.path.splitext(filepath)[0]
@@ -57,10 +86,10 @@ def load_map_csv(filepath: str) -> tuple[list[str], list[str], dict, list | None
     o_path    = base + "_objects.csv"
 
     if os.path.exists(t_path) and os.path.exists(o_path):
-        terrain_matrix, object_matrix, player_spawn, enemy_spawns, \
+        terrain_matrix, object_matrix, terrain_visual, player_spawn, enemy_spawns, \
             portal_spawns, merchant_spawns = _load_two_layer(t_path, o_path)
     elif os.path.exists(filepath):
-        terrain_matrix, object_matrix, player_spawn, enemy_spawns, \
+        terrain_matrix, object_matrix, terrain_visual, player_spawn, enemy_spawns, \
             portal_spawns, merchant_spawns = _load_single_layer(filepath)
     else:
         raise FileNotFoundError(f"Mapa não encontrado: {filepath}")
@@ -83,30 +112,16 @@ def load_map_csv(filepath: str) -> tuple[list[str], list[str], dict, list | None
     if os.path.exists(json_path):
         _merge_entities_json(json_path, spawn_points)
 
-    # Carrega terrain_visual (sheet overrides) se existir
-    terrain_visual = None
-    v_path = base + "_terrain_sprites.csv"
-    if os.path.exists(v_path):
-        terrain_visual = _load_terrain_visual(v_path)
-
     return terrain_matrix, object_matrix, spawn_points, terrain_visual
 
 
-def _load_terrain_visual(path: str) -> list[list[str]]:
-    """Lê o CSV de sprite IDs de terreno."""
-    matrix = []
-    with open(path, newline="", encoding="utf-8") as f:
-        for row in csv.reader(f):
-            matrix.append([c.strip() for c in row])
-    return matrix
-
-
 def _load_two_layer(terrain_path: str, objects_path: str):
-    """Carrega terrain e objects de dois CSVs separados."""
-    terrain_matrix = []
-    player_spawn   = None
-    enemy_spawns   = []
-    portal_spawns  = []
+    """Carrega terrain e objects de dois CSVs separados (formato unificado)."""
+    terrain_matrix  = []
+    terrain_visual  = []
+    player_spawn    = None
+    enemy_spawns    = []
+    portal_spawns   = []
     merchant_spawns = []
 
     with open(terrain_path, newline="", encoding="utf-8") as f:
@@ -115,24 +130,32 @@ def _load_two_layer(terrain_path: str, objects_path: str):
             if not row or all(c.strip() == "" for c in row):
                 continue
             terrain_row = []
+            visual_row  = []
             for col_idx, cell in enumerate(row):
-                char = cell.strip() or "."
-                if char == "P":
+                raw = cell.strip() or "."
+                if raw == "P":
                     player_spawn = (col_idx, row_idx)
                     terrain_row.append(".")
-                elif char == "O":
+                    visual_row.append("")
+                elif raw == "O":
                     portal_spawns.append((col_idx, row_idx))
                     terrain_row.append("O")
-                elif char in MERCHANT_TILE_CHARS:
-                    merchant_spawns.append((col_idx, row_idx, MERCHANT_TILE_CHARS[char]))
+                    visual_row.append("")
+                elif raw in MERCHANT_TILE_CHARS:
+                    merchant_spawns.append((col_idx, row_idx, MERCHANT_TILE_CHARS[raw]))
                     terrain_row.append(".")
-                elif char in ENEMY_TILE_CHARS:
-                    enemy_type, enemy_tier = ENEMY_TILE_CHARS[char]
+                    visual_row.append("")
+                elif raw in ENEMY_TILE_CHARS:
+                    enemy_type, enemy_tier = ENEMY_TILE_CHARS[raw]
                     enemy_spawns.append((col_idx, row_idx, enemy_type, enemy_tier))
                     terrain_row.append("G")
+                    visual_row.append("")
                 else:
-                    terrain_row.append(char)
+                    tc, vis = _parse_terrain_cell(raw)
+                    terrain_row.append(tc)
+                    visual_row.append(vis)
             terrain_matrix.append("".join(terrain_row))
+            terrain_visual.append(visual_row)
 
     object_matrix = []
     with open(objects_path, newline="", encoding="utf-8") as f:
@@ -144,22 +167,22 @@ def _load_two_layer(terrain_path: str, objects_path: str):
                 (c.strip() if c.strip() in OBJECT_CHARS else ".") for c in row
             ])
 
-    # Garante que object_matrix tem o mesmo número de linhas que terrain_matrix
     while len(object_matrix) < len(terrain_matrix):
         w = len(terrain_matrix[len(object_matrix)]) if terrain_matrix else 0
         object_matrix.append(["."] * w)
 
-    return terrain_matrix, object_matrix, player_spawn, enemy_spawns, \
-           portal_spawns, merchant_spawns
+    return terrain_matrix, object_matrix, terrain_visual, player_spawn, \
+           enemy_spawns, portal_spawns, merchant_spawns
 
 
 def _load_single_layer(filepath: str):
-    """Carrega mapa legado de um único CSV e separa terrain/objects automaticamente."""
-    terrain_matrix = []
-    object_matrix  = []
-    player_spawn   = None
-    enemy_spawns   = []
-    portal_spawns  = []
+    """Carrega mapa legado de um único CSV."""
+    terrain_matrix  = []
+    terrain_visual  = []
+    object_matrix   = []
+    player_spawn    = None
+    enemy_spawns    = []
+    portal_spawns   = []
     merchant_spawns = []
 
     with open(filepath, newline="", encoding="utf-8") as f:
@@ -168,55 +191,56 @@ def _load_single_layer(filepath: str):
             if not row or all(cell.strip() == "" for cell in row):
                 continue
             terrain_row = []
+            visual_row  = []
             object_row  = []
             for col_idx, cell in enumerate(row):
-                char = cell.strip() or "."
-                if char == "P":
+                raw = cell.strip() or "."
+                if raw == "P":
                     player_spawn = (col_idx, row_idx)
                     terrain_row.append(".")
+                    visual_row.append("")
                     object_row.append(".")
-                elif char == "O":
+                elif raw == "O":
                     portal_spawns.append((col_idx, row_idx))
                     terrain_row.append("O")
+                    visual_row.append("")
                     object_row.append(".")
-                elif char in MERCHANT_TILE_CHARS:
-                    merchant_spawns.append((col_idx, row_idx, MERCHANT_TILE_CHARS[char]))
+                elif raw in MERCHANT_TILE_CHARS:
+                    merchant_spawns.append((col_idx, row_idx, MERCHANT_TILE_CHARS[raw]))
                     terrain_row.append(".")
+                    visual_row.append("")
                     object_row.append(".")
-                elif char in ENEMY_TILE_CHARS:
-                    enemy_type, enemy_tier = ENEMY_TILE_CHARS[char]
+                elif raw in ENEMY_TILE_CHARS:
+                    enemy_type, enemy_tier = ENEMY_TILE_CHARS[raw]
                     enemy_spawns.append((col_idx, row_idx, enemy_type, enemy_tier))
                     terrain_row.append("G")
+                    visual_row.append("")
                     object_row.append(".")
-                elif char in OBJECT_CHARS:
-                    terrain_row.append(OBJECT_UNDERLYING.get(char, "G"))
-                    object_row.append(char)
+                elif raw in OBJECT_CHARS:
+                    terrain_row.append(OBJECT_UNDERLYING.get(raw, "G"))
+                    visual_row.append("")
+                    object_row.append(raw)
                 else:
-                    terrain_row.append(char)
+                    tc, vis = _parse_terrain_cell(raw)
+                    terrain_row.append(tc)
+                    visual_row.append(vis)
                     object_row.append(".")
             terrain_matrix.append("".join(terrain_row))
+            terrain_visual.append(visual_row)
             object_matrix.append(object_row)
 
-    return terrain_matrix, object_matrix, player_spawn, enemy_spawns, \
-           portal_spawns, merchant_spawns
+    return terrain_matrix, object_matrix, terrain_visual, player_spawn, \
+           enemy_spawns, portal_spawns, merchant_spawns
 
 
 def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
-    """
-    Lê o JSON de entidades e sobrescreve / complementa spawn_points.
-    O JSON pode definir: player, spawn_zones, merchants.
-    Portais continuam sendo extraídos do CSV (tile O).
-    """
     with open(json_path, encoding="utf-8") as f:
         data = json.load(f)
 
     if "player" in data:
         p = data["player"]
         spawn_points["player"] = (p["x"], p["y"])
-        # Remove qualquer P que o CSV tivesse extraído
-        spawn_points["enemies"] = [
-            e for e in spawn_points["enemies"]
-        ]
+        spawn_points["enemies"] = [e for e in spawn_points["enemies"]]
 
     if "merchants" in data:
         spawn_points["merchants"] = [
@@ -225,7 +249,6 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
             for m in data["merchants"]
         ]
     else:
-        # Normaliza tuplas CSV (3 elementos) para o formato completo (5 elementos)
         spawn_points["merchants"] = [
             (col, row, sid, 1, "Comerciante")
             for col, row, sid in spawn_points["merchants"]
@@ -283,7 +306,6 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
                     "race":             sp.get("race", zone.get("race", "Humanoide")),
                     "entity_class":     sp.get("class", zone.get("class", "")),
                 })
-        # Se o JSON define zonas, limpa os spawns legados do CSV
         if spawn_points["spawn_zones"]:
             spawn_points["enemies"] = []
 
@@ -294,7 +316,6 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
         for z in data["ambient_zones"]:
             r = z.get("rect", [0, 0, 0, 0])
             music_raw = z.get("music", [])
-            # aceita string única ou lista
             if isinstance(music_raw, str):
                 music_raw = [music_raw]
             ambient_raw = z.get("ambient", [])
@@ -302,27 +323,21 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
                 ambient_raw = [ambient_raw] if ambient_raw else []
             spawn_points["ambient_zones"].append({
                 "name":    z.get("name", ""),
-                "ambient": ambient_raw,   # lista de filenames em assets/sounds/sfx/
-                "music":   music_raw,     # lista de filenames em assets/sounds/music/
+                "ambient": ambient_raw,
+                "music":   music_raw,
                 "rect":    (int(r[0]), int(r[1]), int(r[2]), int(r[3])),
             })
 
 
 def validate_map(tile_matrix: list[str]) -> list[str]:
-    """
-    Valida consistência do mapa (todas as linhas com o mesmo comprimento).
-    Retorna lista de avisos. Lista vazia = mapa válido.
-    """
     warnings = []
     if not tile_matrix:
         warnings.append("Mapa vazio.")
         return warnings
-
     expected_width = len(tile_matrix[0])
     for idx, row in enumerate(tile_matrix):
         if len(row) != expected_width:
             warnings.append(
                 f"Linha {idx} tem {len(row)} tiles, esperado {expected_width}."
             )
-
     return warnings
