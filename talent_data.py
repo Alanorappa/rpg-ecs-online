@@ -22,6 +22,14 @@ Estrutura de cada talento:
 from __future__ import annotations
 
 # ---------------------------------------------------------------------------
+# Mapeamento classe → build padrão  (uma build por classe por enquanto)
+# ---------------------------------------------------------------------------
+CLASS_BUILD_MAP: dict[str, str] = {
+    "guerreiro": "cavaleiro",
+    "mago":      "piromania",
+}
+
+# ---------------------------------------------------------------------------
 # BUILDS
 # ---------------------------------------------------------------------------
 BUILDS: dict[str, dict] = {
@@ -36,6 +44,18 @@ BUILDS: dict[str, dict] = {
                         "-Cooldowns longos"],
         "color":       (80, 200, 100),
         "color_dark":  (30, 80, 40),
+    },
+    "piromania": {
+        "name":        "Piromania",
+        "description": "Mago especializado na escola de fogo. Maximiza o dano "
+                       "de Bola de Fogo e desbloqueia habilidades devastadoras.",
+        "pros":        ["+Alto dano mágico de fogo",
+                        "+4 habilidades desbloqueáveis",
+                        "+Sinergia fogo/gelo (Choque Térmico)"],
+        "cons":        ["-Depende de mana",
+                        "-Cast times longos sem talentos"],
+        "color":       (255, 100, 30),
+        "color_dark":  (120, 30, 0),
     },
 }
 
@@ -179,12 +199,7 @@ TALENTS: dict[str, dict] = {
         "requires":      {"cav_assassino": 1},
         "effects":       None,
         "unlocks_skill": "golpe_debilitante",
-        "skill_def":     {
-            "name":        "Golpe Debilitante",
-            "description": "Golpe certeiro nos tendões: 50% do dano de ataque + dano da arma. "
-                           "Reduz a velocidade de movimento do alvo em 50% por 5s.",
-            "cooldown":    0.0,
-        },
+        "skill_def":     None,
     },
     "cav_explorador": {
         "name":           "Explorador de Fraquezas",
@@ -208,12 +223,7 @@ TALENTS: dict[str, dict] = {
         "requires":      {"cav_horrorizante": 1},
         "effects":       None,
         "unlocks_skill": "brado_provocativo",
-        "skill_def":     {
-            "name":        "Brado Provocativo",
-            "description": "Enlouquece inimigos (raio 3): +5% dano, +10% dano recebido. 10s / 45s CD.",
-            "cooldown":    45.0,
-            "sound":       "skill_brado_provocativo",
-        },
+        "skill_def":     None,
     },
 
     # ── Row 4 ──────────────────────────────────────────────────────────────
@@ -240,15 +250,7 @@ TALENTS: dict[str, dict] = {
         "effects":        None,
         "unlocks_skill":  "punho_no_queixo",
         "preview_formula": lambda d: d,          # mostra duração do stun em segundos no {v}
-        "skill_def":     {
-            "name":           "Punho no Queixo",
-            "description":    "Após 3 golpes bem sucedidos, desfere um soco causando 45% "
-                              "do poder de ataque e atordoando o alvo (duração escala com pontos).",
-            "cooldown":       15.0,
-            "sound":          "skill_punho_no_queixo",
-            "max_charges":    1,     # skill baseada em cargas: 1 carga por ciclo de 3 hits
-            "charge_timeout": 0.0,   # cargas não expiram
-        },
+        "skill_def":     None,
     },
 
     # ── Row 5 ──────────────────────────────────────────────────────────────
@@ -261,12 +263,205 @@ TALENTS: dict[str, dict] = {
         "requires":      {"cav_foco_mortal": 1},
         "effects":       None,
         "unlocks_skill": "fatiador_de_corpos",
-        "skill_def":     {
-            "name":        "Fatiador de Corpos",
-            "description": "O cavaleiro gira desferindo golpes a todos ao redor, causando "
-                           "45% do dano de ataque + dano da arma a cada 1s durante 5s.",
-            "cooldown":    45.0,
-        },
+        "skill_def":     None,
+    },
+
+    # ===========================================================================
+    # TALENTOS — Piromania (Mago / build Fogo)
+    # Layout (col × row):
+    #
+    #        col1          ← row 0
+    #   col0  col1  col2  ← row 1
+    #   col0  col1  col2  ← row 2
+    #   col0  col1  col2  ← row 3
+    #   col0  col1  col2  ← row 4
+    #         col1        ← row 5
+    # ===========================================================================
+
+    # ── Row 0 ──────────────────────────────────────────────────────────────────
+    "pir_frieza": {
+        "name":        "Frieza",
+        "description": "Reduz em {v} o custo de mana de Bola de Fogo.",
+        "build":       "piromania",
+        "col": 1, "row": 0,
+        "max_points":  5,
+        "requires":    {},
+        "effects":     None,
+        "unlocks_skill": None,
+        "skill_def":     None,
+    },
+
+    # ── Row 1 ──────────────────────────────────────────────────────────────────
+    "pir_bdf_aperfeicoada": {
+        "name":        "Bola de Fogo Aperfeiçoada",
+        "description": "Reduz em {v}s o tempo de lançamento de Bola de Fogo.",
+        "build":       "piromania",
+        "col": 0, "row": 1,
+        "max_points":  5,
+        "requires":    {"pir_frieza": 1},
+        "effects":     None,
+        "unlocks_skill": None,
+        "skill_def":     None,
+    },
+
+    # ── Row 2 ──────────────────────────────────────────────────────────────────
+    "pir_escudo_fogo": {
+        "name":           "Escudo de Fogo",
+        "description":    "Desbloqueia Escudo de Fogo: envolve o corpo em chamas. "
+                          "Atacantes recebem 10 + 20% SP de dano. 15s / 20s CD / 25 mana.",
+        "build":          "piromania",
+        "col": 0, "row": 2,
+        "max_points":     1,
+        "requires":       {"pir_bdf_aperfeicoada": 1},
+        "effects":        None,
+        "unlocks_skill":  "escudo_fogo",
+        "skill_def": None,
+    },
+
+    "pir_precisao_elemental": {
+        "name":           "Precisão Elemental",
+        "description":    "Reduz em {v}s o tempo de lançamento de Nova Congelante.",
+        "build":          "piromania",
+        "col": 2, "row": 1,
+        "max_points":     5,
+        "requires":       {"pir_frieza": 1},
+        "effects":        None,
+        "preview_formula": lambda pts: round(pts * 0.2, 1),
+        "unlocks_skill":  None,
+        "skill_def":      None,
+    },
+
+    "pir_choque_termico": {
+        "name":          "Choque Térmico",
+        "description":   "Habilidades de fogo causam 100% mais dano em alvos enraizados "
+                         "pela Nova Congelante.",
+        "build":         "piromania",
+        "col": 2, "row": 2,
+        "max_points":    1,
+        "requires":      {"pir_precisao_elemental": 1},
+        "effects":       None,
+        "unlocks_skill": None,
+        "skill_def":     None,
+    },
+
+    # ── Row 3 ──────────────────────────────────────────────────────────────────
+    "pir_lapso_elemental": {
+        "name":           "Lapso Elemental",
+        "description":    "3 crits de fogo em 6s procam Lapso Elemental: +"
+                          "{v}% crit por 5s e queima 1% HP/s.",
+        "build":          "piromania",
+        "col": 1, "row": 3,
+        "max_points":     3,
+        "requires":       {"pir_chama_interna": 1},
+        "effects":        None,
+        "preview_formula": lambda pts: pts * 5,
+        "unlocks_skill":  None,
+        "skill_def":      None,
+    },
+
+    # ── Row 4 ──────────────────────────────────────────────────────────────────
+    "pir_calamidade": {
+        "name":        "Calamidade Flamejante",
+        "description": "Desbloqueia Calamidade Flamejante: bombardeia uma área com bolas "
+                       "de fogo causando 50 + 50% SP/s e slow 50% por 5s.",
+        "build":       "piromania",
+        "col": 0, "row": 4,
+        "max_points":  1,
+        "requires":    {"pir_piromaníaco": 1},
+        "effects":     None,
+        "unlocks_skill": "calamidade_flamejante",   # já existe em SKILL_CATALOG
+        "skill_def":   None,
+    },
+
+    "pir_combustao": {
+        "name":        "Combustão",
+        "description": "Desbloqueia Calcinar: 0.6s cast em movimento, 50 + 25% SP. Escola fogo.",
+        "build":       "piromania",
+        "col": 2, "row": 4,
+        "max_points":  1,
+        "requires":    {"pir_exaustao": 1},
+        "effects":     None,
+        "unlocks_skill": "calcinar",
+        "skill_def":   None,
+    },
+
+    # ── Row 5 ──────────────────────────────────────────────────────────────────
+    "pir_pirofagia": {
+        "name":        "Pirofagia",
+        "description": "Desbloqueia Pirofagia: cone de fogo rotacionado pelo mouse. "
+                       "150 + 150% SP + desorientado 3s. 1s ativo. 90s CD. 75 mana.",
+        "build":       "piromania",
+        "col": 1, "row": 5,
+        "max_points":  1,
+        "requires":    {"pir_crematoria": 1},
+        "effects":     None,
+        "unlocks_skill": "pirofagia",
+        "skill_def":   None,
+    },
+
+    "pir_crematoria": {
+        "name":        "Crematória",
+        "description": "Skills de fogo causam 25% mais dano em alvos com menos de 20% de vida.",
+        "build":       "piromania",
+        "col": 1, "row": 4,
+        "max_points":  1,
+        "requires":    {"pir_lapso_elemental": 1},
+        "effects":     None,
+        "unlocks_skill": None,
+        "skill_def":   None,
+    },
+
+    "pir_exaustao": {
+        "name":        "Exaustão",
+        "description": "Bolas de Fogo consecutivas reduzem 5% a velocidade do alvo "
+                       "por acerto, acumulando até 25% por 6s.",
+        "build":       "piromania",
+        "col": 2, "row": 3,
+        "max_points":  1,
+        "requires":    {"pir_lapso_elemental": 1},
+        "effects":     None,
+        "unlocks_skill": None,
+        "skill_def":   None,
+    },
+
+    "pir_piromaníaco": {
+        "name":           "Piromaníaco",
+        "description":    "Skills de fogo custam {v}% menos mana e causam {v}% mais dano.",
+        "build":          "piromania",
+        "col": 0, "row": 3,
+        "max_points":     3,
+        "requires":       {"pir_lapso_elemental": 1},
+        "effects":        None,
+        "preview_formula": lambda pts: pts * 5,
+        "unlocks_skill":  None,
+        "skill_def":      None,
+    },
+
+    "pir_chama_interna": {
+        "name":           "Chama Interna",
+        "description":    "Suas habilidades de fogo têm {v}% de chance de tornar a próxima "
+                          "Bola de Fogo instantânea e gratuita.",
+        "build":          "piromania",
+        "col": 1, "row": 2,
+        "max_points":     5,
+        "requires":       {"pir_queimaduras": 1},
+        "effects":        None,
+        "preview_formula": lambda pts: pts * 2,
+        "unlocks_skill":  None,
+        "skill_def":      None,
+    },
+
+    "pir_queimaduras": {
+        "name":           "Queimaduras Profundas",
+        "description":    "Críticos de Bola de Fogo fazem o alvo arder em chamas por {v} segundos.",
+        "build":          "piromania",
+        "col": 1, "row": 1,
+        "max_points":     5,
+        "requires":       {"pir_frieza": 1},
+        "effects":        None,
+        "preview_formula": lambda pts: pts * 3,
+        "unlocks_skill":  None,
+        "skill_def":      None,
     },
 }
 

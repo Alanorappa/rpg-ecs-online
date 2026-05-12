@@ -13,6 +13,7 @@ import json
 import os
 import datetime
 import threading
+import queue
 
 from components import (
     CharacterStats, PermanentStats, TalentTree,
@@ -83,21 +84,47 @@ def _dict_to_item(d: dict) -> Item:
 
 
 # ---------------------------------------------------------------------------
-# Save
+# Save — worker thread persistente (evita overhead de criação no Windows)
 # ---------------------------------------------------------------------------
 
-_save_thread: threading.Thread | None = None
+_save_queue: queue.Queue = queue.Queue(maxsize=1)  # descarta saves em fila se ocupada
+
+
+def _save_worker() -> None:
+    """Thread persistente — aguarda itens na fila e grava em disco."""
+    while True:
+        item = _save_queue.get()
+        if item is None:   # sentinel de shutdown
+            _save_queue.task_done()
+            break
+        data, slot = item
+        _write_save(data, slot)
+        _save_queue.task_done()
+
+
+_save_worker_thread = threading.Thread(target=_save_worker, daemon=True)
+_save_worker_thread.start()
 
 
 def flush() -> None:
-    """Aguarda a thread de save terminar. Chamar antes de encerrar o processo."""
-    if _save_thread is not None and _save_thread.is_alive():
-        _save_thread.join()
+    """Aguarda todos os saves pendentes terminarem. Chamar antes de encerrar o processo."""
+    _save_queue.join()
+
+
+_last_save_time: float = 0.0
+_MIN_SAVE_INTERVAL: float = 2.0  # segundos mínimos entre saves automáticos
 
 
 def save_game(world, player_entity: int, current_map_file: str, slot: int = 0) -> None:
     """Serializa o estado do jogador. Build do dict na thread principal; I/O em background."""
-    global _save_thread
+    global _last_save_time
+
+    # Sai cedo se a fila estiver cheia (worker ainda ocupado) ou intervalo mínimo não atingido.
+    import time as _t
+    now = _t.monotonic()
+    if _save_queue.full() or (now - _last_save_time < _MIN_SAVE_INTERVAL and _last_save_time > 0):
+        return
+    _last_save_time = now
 
     char  = world.get_component(player_entity, CharacterStats)
     perm  = world.get_component(player_entity, PermanentStats)
@@ -186,12 +213,7 @@ def save_game(world, player_entity: int, current_map_file: str, slot: int = 0) -
         "learned_skills": _save_learned_skills(world, player_entity),
     }
 
-    # Skip if a save is already writing to disk — the next event will trigger a fresh one.
-    if _save_thread is not None and _save_thread.is_alive():
-        return
-
-    _save_thread = threading.Thread(target=_write_save, args=(data, slot), daemon=True)
-    _save_thread.start()
+    _save_queue.put_nowait((data, slot))
 
 
 def _write_save(data: dict, slot: int) -> None:

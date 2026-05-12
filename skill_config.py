@@ -1,18 +1,32 @@
 # skill_config.py
 from __future__ import annotations
 """
-Configuração dos slots de habilidades do jogador.
+Catálogo único de todas as skills do jogo.
 
-NUM_SLOTS       — número total de slots da hotbar (fixo em 7).
-DEFAULT_KEYBINDS — tecla padrão de cada slot (pygame.K_*).
-SKILL_SLOTS     — layout padrão; substituído em runtime pelo hotbar salvo em config.json.
+Toda skill vive aqui — independente de como é adquirida (treinador, talento,
+quest, drop, etc.). A forma de aquisição é definida em outros arquivos:
+  - Treinador:  SKILL_ORDER_BY_CLASS, SKILL_LEVEL_REQUIREMENTS, SKILL_COSTS
+  - Talento:    talent_data.py → unlocks_skill = "skill_id"
+  - (Futuro)    quests_data.py, loot_tables.py, etc.
 
-IDs de habilidades disponíveis:
-  "golpe_poderoso"   — 3× dano físico em alvo adjacente
-  "vitoria_iminente" — Ganha 1 carga ao matar um inimigo; ao usar, cura 30% do HP máximo
-  "impacto"          — 50% dano em todos os inimigos no raio de 3 tiles
-  "executar"         — 5× dano em alvo com menos de 30% HP (adjacente)
-  "interceptar"      — Avança instantaneamente até o tile adjacente ao alvo selecionado
+Campos do catálogo:
+  name              str    — nome exibido na UI
+  desc              str    — descrição curta para tooltip
+  cooldown          float  — segundos de recarga (0 = sem CD, apenas GCD)
+  rage_cost         int    — custo em Raiva (0 = sem custo)
+  mana_cost         int    — custo fixo de mana (0 = sem custo)
+  mana_cost_pct     float  — custo como % da mana máxima (0 = usa mana_cost)
+  cast_time         float  — duração do cast em segundos (0 = instantâneo)
+  cast_range        int    — alcance máximo em tiles (0 = corpo-a-corpo)
+  is_channeled      bool   — True se skill canalizada
+  channel_duration  float  — duração da canalização
+  needs_aoe_target  bool   — True se requer clique de mira AOE
+  proc_attr         str    — atributo de CharacterStats que sinaliza proc (brilho)
+  proc_ignores_cost bool   — proc dispensa o custo
+  school            str    — escola de magia: "fogo" | "gelo" | "arcano" | ""
+  offensive         bool   — False = utilitária/buff, não inicia combate (padrão True)
+  class_id          str    — classe que pode usar a skill (informativo)
+  sound             str    — nome base do arquivo de som (opcional)
 """
 import pygame
 
@@ -25,73 +39,125 @@ DEFAULT_KEYBINDS: list[int] = [
     pygame.K_9, pygame.K_0,
 ]
 
-# Catálogo completo de skills base (não-talentos)
-# Formato: skill_id → dict com name/desc/cooldown/rage_cost/proc_attr/proc_ignores_cost/sound
-#
-#   rage_cost         — custo em Raiva para ativar (0 = sem custo)
-#   proc_attr         — atributo de CharacterStats que sinaliza um proc (> 0 = procced)
-#                       deixar "" se a skill não tem proc externo
-#   proc_ignores_cost — True se o proc dispensa o rage_cost (ex: carga livre de Executar)
-#   sound             — nome base do arquivo de som (sem extensão, sem _1/_2/etc)
-#                       ex: "skill_golpe_poderoso" → assets/sounds/sfx/skill_golpe_poderoso.ogg
-#                       omitir ou "" para usar o padrão automático "skill_<skill_id>"
-#
+# ---------------------------------------------------------------------------
+# Catálogo de skills — fonte única de dados para todas as skills do jogo
+# ---------------------------------------------------------------------------
 SKILL_CATALOG: dict[str, dict] = {
+
+    # ── Guerreiro — skills de treinador ─────────────────────────────────────
     "golpe_poderoso": {
-        "name": "Golpe Poderoso",
-        "desc": "3x dano — custa 15 Raiva",
-        "cooldown": 0.0,
-        "rage_cost": 15,
-        "proc_attr": "embalo_charges",
+        "name":             "Golpe Poderoso",
+        "desc":             "3x dano — custa 15 Raiva",
+        "cooldown":         0.0,
+        "rage_cost":        15,
+        "proc_attr":        "embalo_charges",
         "proc_ignores_cost": False,
+        "class_id":         "guerreiro",
+        "params": {"damage_multiplier": 3.0},
     },
     "vitoria_iminente": {
-        "name": "Vitória Iminente",
-        "desc": "Mata um inimigo para carregar; cura 30% HP",
-        "cooldown": 0.0,
-        "rage_cost": 0,
-        "proc_attr": "",
+        "name":             "Vitória Iminente",
+        "desc":             "Mata um inimigo para carregar; cura 30% HP",
+        "cooldown":         0.0,
+        "rage_cost":        0,
+        "proc_attr":        "",
         "proc_ignores_cost": False,
+        "class_id":         "guerreiro",
+        "params": {"damage_multiplier": 2.0, "heal_pct": 0.30},
     },
     "impacto": {
-        "name": "Impacto",
-        "desc": "50% dano em area (raio 3 tiles)",
-        "cooldown": 15.0,
-        "rage_cost": 0,
-        "proc_attr": "",
+        "name":             "Impacto",
+        "desc":             "50% dano em area (raio 3 tiles)",
+        "cooldown":         15.0,
+        "rage_cost":        0,
+        "proc_attr":        "",
         "proc_ignores_cost": False,
+        "class_id":         "guerreiro",
+        "params": {"damage_multiplier": 0.50, "radius_tiles": 3},
     },
     "executar": {
-        "name": "Executar",
-        "desc": "5x dano (<30% HP) — custa 10 Raiva",
-        "cooldown": 0.0,
-        "rage_cost": 10,
-        "proc_attr": "free_executar_charges",
+        "name":             "Executar",
+        "desc":             "5x dano (<30% HP) — custa 10 Raiva",
+        "cooldown":         0.0,
+        "rage_cost":        10,
+        "proc_attr":        "free_executar_charges",
         "proc_ignores_cost": True,
+        "class_id":         "guerreiro",
+        "params": {"damage_multiplier": 5.0, "hp_threshold": 0.30},
     },
     "interceptar": {
-        "name": "Interceptar",
-        "desc": "Avanca instantaneamente ao alvo",
-        "cooldown": 22.0,
-        "rage_cost": 0,
-        "proc_attr": "",
+        "name":             "Interceptar",
+        "desc":             "Avanca instantaneamente ao alvo",
+        "cooldown":         22.0,
+        "rage_cost":        0,
+        "proc_attr":        "",
         "proc_ignores_cost": False,
+        "class_id":         "guerreiro",
+        "params": {"min_range": 2, "max_range": 6, "duration": 0.18},
     },
-}
 
-# Layout padrão: todos os slots vazios — skills são aprendidas com treinador
-SKILL_SLOTS: list[str | None] = [None] * NUM_SLOTS
+    # ── Guerreiro — skills de talento (build Cavaleiro) ──────────────────────
+    "golpe_debilitante": {
+        "name":             "Golpe Debilitante",
+        "desc":             "50% dano + slow 50% por 5s. Custo: 5 Raiva.",
+        "cooldown":         0.0,
+        "rage_cost":        5,
+        "proc_attr":        "",
+        "proc_ignores_cost": False,
+        "class_id":         "guerreiro",
+        "params": {"damage_multiplier": 0.50, "slow_pct": 0.50, "slow_duration": 5.0},
+    },
+    "brado_provocativo": {
+        "name":             "Brado Provocativo",
+        "desc":             "Enlouquece inimigos (raio 3 tiles) por 10s. Cooldown 45s.",
+        "cooldown":         45.0,
+        "rage_cost":        0,
+        "proc_attr":        "",
+        "proc_ignores_cost": False,
+        "sound":            "skill_brado_provocativo",
+        "class_id":         "guerreiro",
+        "params": {"radius_tiles": 3, "duration": 10.0},
+    },
+    "punho_no_queixo": {
+        "name":             "Punho no Queixo",
+        "desc":             "3 golpes → 1 carga: 45% AP + atordoa (duração escala com pontos).",
+        "cooldown":         15.0,
+        "rage_cost":        0,
+        "proc_attr":        "",
+        "proc_ignores_cost": False,
+        "sound":            "skill_punho_no_queixo",
+        "class_id":         "guerreiro",
+        "params": {"damage_multiplier": 0.45, "hits_required": 3},
+    },
+    "fatiador_de_corpos": {
+        "name":             "Fatiador de Corpos",
+        "desc":             "Spin AoE: 65% dano + arma/s por 5s a todos ao redor (raio 2 tiles). Cooldown 45s.",
+        "cooldown":         45.0,
+        "rage_cost":        0,
+        "proc_attr":        "",
+        "proc_ignores_cost": False,
+        "class_id":         "guerreiro",
+        "params": {
+            "damage_multiplier": 0.65,   # % do AP por tick
+            "include_weapon_dmg": True,  # adiciona dano da arma
+            "duration":          5.0,
+            "tick_interval":     1.0,
+            "radius_tiles":      2,
+        },
+    },
 
-# ---------- Skills do Mago ----------
-SKILL_CATALOG.update({
+    # ── Mago — skills de treinador ───────────────────────────────────────────
     "bola_de_fogo": {
-        "name":           "Bola de Fogo",
-        "desc":           "Projétil – 1.5s cast. 50% dano + 100% SP. 25 mana.",
-        "cooldown":       0.0,
-        "mana_cost":      25,
-        "cast_time":      1.5,
-        "cast_range":     30,
-        "class_id":       "mago",
+        "name":              "Bola de Fogo",
+        "desc":              "Projétil – 1.5s cast. 50% dano + 100% SP. 25 mana.",
+        "cooldown":          0.0,
+        "mana_cost":         25,
+        "cast_time":         1.5,
+        "cast_range":        6,
+        "class_id":          "mago",
+        "school":            "fogo",
+        "proc_attr":         "fire_instant_ready",
+        "proc_ignores_cost": True,
     },
     "calamidade_flamejante": {
         "name":             "Calamidade Flamejante",
@@ -104,57 +170,111 @@ SKILL_CATALOG.update({
         "channel_duration": 5.0,
         "needs_aoe_target": True,
         "class_id":         "mago",
+        "school":           "fogo",
     },
     "nova_congelante": {
-        "name":       "Nova Congelante",
-        "desc":       "Enraíza inimigos a 3 tiles por 5s. 50% SP. 10 mana.",
-        "cooldown":   15.0,
-        "mana_cost":  10,
-        "cast_time":  0.0,
-        "cast_range": 3,
-        "class_id":   "mago",
+        "name":             "Nova Congelante",
+        "desc":             "1s cast. Enraíza inimigos a 3 tiles por 5s. 50% SP. 10 mana.",
+        "cooldown":         6.0,
+        "mana_cost":        10,
+        "cast_time":        1.0,
+        "cast_range":       3,
+        "class_id":         "mago",
+        "school":           "gelo",
     },
     "bloco_de_gelo": {
-        "name":       "Bloco de Gelo",
-        "desc":       "Imune e imóvel 5s. Cura 10% HP/s. 45s recarga.",
-        "cooldown":   45.0,
-        "mana_cost":  0,
-        "cast_time":  0.0,
-        "cast_range": 0,
-        "class_id":   "mago",
+        "name":             "Bloco de Gelo",
+        "desc":             "Imune e imóvel 5s. Cura 10% HP/s. 45s recarga.",
+        "cooldown":         45.0,
+        "mana_cost":        0,
+        "cast_time":        0.0,
+        "cast_range":       0,
+        "class_id":         "mago",
+        "school":           "gelo",
+        "offensive":        False,
     },
-})
+    "polimorfia": {
+        "name":             "Polimorfia",
+        "desc":             "1.5s cast. Transforma o alvo: perde controle e regenera 10% HP/s. Custo: 10% mana.",
+        "cooldown":         0.0,
+        "mana_cost":        0,
+        "mana_cost_pct":    0.10,
+        "cast_time":        1.5,
+        "cast_range":       7,
+        "class_id":         "mago",
+        "school":           "arcano",
+        "offensive":        False,
+    },
 
-# Nível mínimo necessário para aprender cada skill com o treinador
+    # ── Mago — skills de talento (build Piromania) ───────────────────────────
+    "escudo_fogo": {
+        "name":             "Escudo de Fogo",
+        "desc":             "Envolve o corpo em chamas. Atacantes recebem 10 + 20% SP de dano. 15s.",
+        "cooldown":         20.0,
+        "mana_cost":        25,
+        "cast_time":        0.0,
+        "cast_range":       0,
+        "class_id":         "mago",
+        "school":           "fogo",
+        "offensive":        False,
+    },
+    "calcinar": {
+        "name":             "Calcinar",
+        "desc":             "0.6s cast — pode ser lançada em movimento. 50 + 25% SP. Sem cooldown.",
+        "cooldown":         0.0,
+        "mana_cost":        25,
+        "cast_time":        0.6,
+        "cast_range":       8,
+        "class_id":         "mago",
+        "school":           "fogo",
+    },
+    "pirofagia": {
+        "name":             "Pirofagia",
+        "desc":             "Mira cone de fogo. Clique esq. para disparar. 150 + 150% SP + desorientado 3s. 90s CD.",
+        "cooldown":         90.0,
+        "mana_cost":        75,
+        "cast_time":        0.0,
+        "cast_range":       0,
+        "class_id":         "mago",
+        "school":           "fogo",
+        "offensive":        False,
+        "needs_aoe_target": True,    # impede som automático no SkillSystem — som toca ao disparar
+    },
+}
+
+# Layout padrão: todos os slots vazios — skills são aprendidas com treinador
+SKILL_SLOTS: list[str | None] = [None] * NUM_SLOTS
+
+# ---------------------------------------------------------------------------
+# Aquisição via treinador — skills disponíveis no NPC por classe
+# (Skills de talento NÃO aparecem aqui — são desbloqueadas via talent_data.py)
+# ---------------------------------------------------------------------------
+
 SKILL_LEVEL_REQUIREMENTS: dict[str, int] = {
-    "golpe_poderoso":       2,
-    "impacto":              3,
-    "vitoria_iminente":     5,
-    "interceptar":          6,
-    "executar":            10,
-    # Mago
-    "bola_de_fogo":         2,
-    "nova_congelante":      4,
-    "calamidade_flamejante": 6,
-    "bloco_de_gelo":        8,
+    "golpe_poderoso":   2,
+    "impacto":          3,
+    "vitoria_iminente": 5,
+    "interceptar":      6,
+    "executar":         10,
+    "bola_de_fogo":     2,
+    "nova_congelante":  4,
+    "polimorfia":       5,
+    "bloco_de_gelo":    8,
 }
 
-# Custo em ouro para aprender cada skill (começa em 100, dobra a cada skill)
 SKILL_COSTS: dict[str, int] = {
-    "golpe_poderoso":       100,
-    "impacto":              200,
-    "vitoria_iminente":     400,
-    "interceptar":          800,
-    "executar":            1600,
-    # Mago
-    "bola_de_fogo":         100,
-    "nova_congelante":      200,
-    "calamidade_flamejante": 400,
-    "bloco_de_gelo":        800,
+    "golpe_poderoso":   100,
+    "impacto":          200,
+    "vitoria_iminente": 400,
+    "interceptar":      800,
+    "executar":         1600,
+    "bola_de_fogo":     100,
+    "nova_congelante":  200,
+    "polimorfia":       300,
+    "bloco_de_gelo":    600,
 }
 
-# Ordem de exibição no treinador — por classe
 SKILL_ORDER_BY_CLASS: dict[str, list] = {
     "guerreiro": ["golpe_poderoso", "impacto", "vitoria_iminente", "interceptar", "executar"],
-    "mago":      ["bola_de_fogo", "nova_congelante", "calamidade_flamejante", "bloco_de_gelo"],
+    "mago":      ["bola_de_fogo", "nova_congelante", "polimorfia", "bloco_de_gelo"],
 }

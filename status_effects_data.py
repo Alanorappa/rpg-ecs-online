@@ -24,12 +24,16 @@ EFFECT_DEFS: dict[str, EffectDef] = {
     "fear":   EffectDef("Medo",         (180,  60, 220), False, 0.0),
     "root":   EffectDef("Imobilizado",  (140, 100,  40), False, 0.0),
     "slow":   EffectDef("Lento",        (100, 160, 220), False, 0.0),
+    "polymorph":   EffectDef("Polimorfizado",  (160,  80, 200), False, 1.0),  # tick: regen HP
+    "disoriented": EffectDef("Desorientado",   (200, 100, 255), False, 0.0),  # wander sem regen
     # ── Debuffs de dano periódico (DoT) ─────────────────────────────────────
     "poison": EffectDef("Veneno",       ( 80, 200,  40), False, 1.0),
     "bleed":  EffectDef("Sangramento",  (200,  30,  30), False, 1.0),
     "burn":   EffectDef("Queimadura",   (255, 120,   0), False, 1.0),
     # ── Buffs ────────────────────────────────────────────────────────────────
-    "enraged": EffectDef("Enfurecido",  (255,  80,   0), True,  0.0),
+    "enraged":         EffectDef("Enfurecido",      (255,  80,   0), True,  0.0),
+    "elemental_lapse": EffectDef("Lapso Elemental", (255, 100, 200), False, 1.0),  # tick: auto-burn
+    "exhaustion":      EffectDef("Exaustão",        (200, 140,  60), False, 0.0),  # rastreia stacks
     "haste":   EffectDef("Acelerado",   (100, 220, 255), True,  0.0),
     "regen":   EffectDef("Regeneração", ( 80, 255, 120), True,  1.0),
 }

@@ -89,7 +89,11 @@ def calculate_base_damage(attacker_stats, damage_type: str,
             weapon_dmg = random.randint(weapon.damage_min, weapon.damage_max)
             total += attacker_stats.attack_power + weapon_dmg
         else:
-            total += attacker_stats.attack_power + attacker_stats.base_physical_damage
+            # Sem arma: rolagem de dados entre min e max (min==max = flat)
+            total += attacker_stats.attack_power + random.randint(
+                attacker_stats.base_physical_damage,
+                attacker_stats.base_physical_damage_max,
+            )
     elif damage_type == "physical_fixed":
         # base_ability_damage já é o valor final calculado pelo handler da skill
         pass

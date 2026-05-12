@@ -32,6 +32,52 @@ from enemy_abilities_data import ABILITY_DEFS
 from merchant_data import SHOPS
 import quest_events
 from quest_events import fire as quest_fire
+from stat_fns import add_modifier, remove_modifier, add_timed_modifier, enter_combat
+
+
+# ── Registro de serviços ─────────────────────────────────────────────────────
+# Elimina acoplamento direto entre instâncias de System.
+# Populado por GameEngine.register_services() após criar os sistemas.
+_svc: dict = {}
+
+
+def register_services(combat=None, pathfinding=None, tile_validation=None) -> None:
+    """Registra serviços que qualquer sistema pode chamar sem referência direta."""
+    if combat:          _svc['combat']          = combat
+    if pathfinding:     _svc['pathfinding']     = pathfinding
+    if tile_validation: _svc['tile_validation'] = tile_validation
+
+
+def deal_damage(attacker_id: int, target_id: int, damage_type: str,
+                base_ability_damage: float = 0, apply_armor_reduction: bool = True,
+                multiplier: float = 1.0, is_ability: bool = False) -> bool:
+    return _svc['combat'].deal_damage(
+        attacker_id, target_id, damage_type,
+        base_ability_damage, apply_armor_reduction, multiplier, is_ability)
+
+
+def find_path(start: tuple, end: tuple, dynamic_obstacles=None,
+              max_nodes: int = 300, manhattan_limit=60):
+    return _svc['pathfinding'].find_path(
+        start, end, dynamic_obstacles, max_nodes, manhattan_limit)
+
+
+def get_tilemap():
+    return _svc['pathfinding']._get_tilemap_component()
+
+
+def is_tile_walkable(entity_id: int, tx: int, ty: int,
+                     from_tx=None, from_ty=None) -> bool:
+    return _svc['tile_validation'].is_tile_walkable(entity_id, tx, ty, from_tx, from_ty)
+
+
+def get_mainhand_weapon(world, entity_id: int):
+    from components import Equipment
+    eq = world.get_component(entity_id, Equipment)
+    return eq.slots.get("mainhand") if eq else None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 def apply_effect(
@@ -495,6 +541,34 @@ class CombatSystem(System):
                                 attacker_is_player, target_is_player, is_ability)
         self._apply_on_hit_procs(attacker_id, is_crit, attacker_is_player)
 
+        # Dano quebra Polimorfia
+        _t_sfx = self.world.get_component(target_id, StatusEffects)
+        if _t_sfx and _t_sfx.remove("polymorph"):
+            FLT.add("Polimorfia quebrada!", _tx, _ty, (160, 80, 200), "small",
+                    target_id=target_id)
+
+        # Player recebe dano → entra em combate (impede regen de HP)
+        if target_is_player and final_damage > 0:
+            _player_cs = self.world.get_component(target_id, CombatState)
+            if _player_cs:
+                enter_combat(_player_cs)
+
+        # Escudo de Fogo: retaliation em quem atacou o jogador
+        if target_is_player and final_damage > 0:
+            from components import FireShieldEffect
+            _shield = self.world.get_component(target_id, FireShieldEffect)
+            if _shield:
+                _retaliation = 10 + int(target_stats.spell_power * 0.20)
+                _att_cs = self._get_combat_stats(attacker_id)
+                _att_pos = self.world.get_component(attacker_id, Position)
+                if _att_cs and _att_cs.current_hp > 0:
+                    _att_cs.current_hp = max(0, _att_cs.current_hp - _retaliation)
+                    if _att_pos:
+                        FLT.add(f"-{_retaliation}", _att_pos.x, _att_pos.y,
+                                (255, 120, 0), "normal", target_id=attacker_id)
+                    if _att_cs.current_hp <= 0 and not self.world.get_component(attacker_id, PendingDeath):
+                        self.world.add_component(attacker_id, PendingDeath(killer_entity_id=target_id))
+
         if target_stats.current_hp <= 0:
             return self._handle_death(target_id, attacker_id)
         return False
@@ -813,7 +887,7 @@ class CombatStateSystem(System):
                 expired = [e for e in combat_stats.timed_modifiers if e["timer"] <= 0]
                 for entry in expired:
                     combat_stats.timed_modifiers.remove(entry)
-                    combat_stats.remove_modifier(entry["modifier"])
+                    remove_modifier(combat_stats, entry["modifier"])
                     LOG.add(f"Efeito '{entry['label']}' expirou.", (160, 160, 160))
 
             if cs._just_entered_combat:
@@ -830,7 +904,7 @@ class CombatStateSystem(System):
                 p = item.proc
                 if random.random() < p["chance"]:
                     mod = Modifier(p["attribute"], p["value"])
-                    combat_stats.add_timed_modifier(mod, p["duration"], p["label"])
+                    add_timed_modifier(combat_stats, mod, p["duration"], p["label"])
                     LOG.add(
                         f"PROC [{item.name}]: {p['label']}! "
                         f"+{p['value']} {p['attribute']} por {p['duration']:.0f}s.",
@@ -845,9 +919,8 @@ class ProjectileSystem(System):
     """
     HIT_THRESHOLD = 10.0  # pixels para considerar colisão
 
-    def __init__(self, world: World, combat_system: CombatSystem, screen: pygame.Surface):
+    def __init__(self, world: World, screen: pygame.Surface):
         self.world = world
-        self.combat_system = combat_system
         self.world_surf = screen
         self.hud_surf   = screen
 
@@ -868,7 +941,7 @@ class ProjectileSystem(System):
 
             if dist <= self.HIT_THRESHOLD:
                 # Acertou: aplica dano usando stats do atacante no momento do impacto
-                self.combat_system.deal_damage(
+                deal_damage(
                     proj.attacker_id, proj.target_id,
                     proj.damage_type
                 )
@@ -995,8 +1068,10 @@ class MouseTargetingSystem(System):
             if event.button not in (1, 3):
                 continue
 
-            # Clique direito não move/ataca enquanto mira AOE estiver ativa (mesmo se cancelando)
-            if event.button == 3 and self.world.get_component(self.player_entity_id, AoeTargeting):
+            # Ignora cliques enquanto qualquer modo de mira estiver ativo
+            from components import PirofagiaAiming as _PA
+            if (self.world.get_component(self.player_entity_id, AoeTargeting) or
+                    self.world.get_component(self.player_entity_id, _PA)):
                 continue
 
             cam_x, cam_y = self._get_camera_offset()
@@ -1009,12 +1084,16 @@ class MouseTargetingSystem(System):
             player_auto = self.world.get_component(self.player_entity_id, PlayerAutoMove)
 
             if event.button == 1:
-                # Clique esquerdo em inimigo → seleciona alvo e cancela perseguição do alvo anterior
                 if target_id != -1:
+                    # Clique esquerdo em inimigo → seleciona alvo, cancela perseguição
                     if player_cs:
                         player_cs.target_entity_id = target_id
                         player_cs.is_pursuing = False
-                # Clique esquerdo no chão → não faz nada aqui (hotbar/inventário cuidam)
+                else:
+                    # Clique esquerdo no chão → deseleciona alvo atual
+                    if player_cs:
+                        player_cs.target_entity_id = -1
+                        player_cs.is_pursuing = False
 
             elif event.button == 3:
                 if target_id != -1:
@@ -1022,7 +1101,7 @@ class MouseTargetingSystem(System):
                     if player_cs:
                         player_cs.target_entity_id = target_id
                         player_cs.is_pursuing = True
-                        player_cs.enter_combat()
+                        enter_combat(player_cs)
                     if player_auto:
                         player_auto.ground_target = None
                         player_auto.path.clear()
@@ -1034,7 +1113,7 @@ class MouseTargetingSystem(System):
                         tile_x = int(world_x / TILE_SIZE)
                         tile_y = int(world_y / TILE_SIZE)
                         if player_cs:
-                            player_cs.target_entity_id = -1
+                            player_cs.is_pursuing = False  # para de perseguir, mantém alvo selecionado
                         if player_auto:
                             player_auto.ground_target = (tile_x, tile_y)
                             player_auto.active = True
@@ -1046,13 +1125,8 @@ class PlayerInputSystem(System):
     PLAYER_ATTACK_RANGE = 1     # tiles de alcance (punhos / melee)
     AUTO_MOVE_RECALC_INTERVAL = 0.3  # segundos entre recálculos de path
 
-    def __init__(self, world: World, tile_validation_system: TileValidationSystem,
-                 combat_system: CombatSystem, pathfinding_system: PathfindingSystem,
-                 screen: "pygame.Surface | None" = None):
+    def __init__(self, world: World, screen: "pygame.Surface | None" = None):
         self.world = world
-        self.tile_validation_system = tile_validation_system
-        self.combat_system = combat_system
-        self.pathfinding_system = pathfinding_system
         self.world_surf = screen
         self.hud_surf   = screen
 
@@ -1160,19 +1234,24 @@ class PlayerInputSystem(System):
                         auto_move.ground_target = None
                     if combat_state:
                         combat_state.is_pursuing = False
-                    if self.tile_validation_system.is_tile_walkable(
+                    if is_tile_walkable(
                             entity_id, tgt_x, tgt_y, cur_x, cur_y):
                         self._start_tile_movement(position, tile_movement, tgt_x, tgt_y)
 
             # --- Auto-move e auto-ataque em direção ao alvo selecionado ---
             _aoe_targeting = self.world.get_component(entity_id, AoeTargeting)
+            _has_ground = auto_move and auto_move.active and auto_move.ground_target
             if combat_state and combat_state.target_entity_id != -1 and not _aoe_targeting:
+                # Sempre chama _process_target para validação (limpa alvo morto/fora de visão)
                 self._process_target(
                     entity_id, position, tile_movement,
                     combat_stats, combat_state, auto_move, can_act, dt
                 )
-            # --- Movimento de chão (clique esquerdo) ---
-            elif auto_move and auto_move.active and auto_move.ground_target:
+                # Se não está perseguindo e há destino de chão, move para lá
+                if not combat_state.is_pursuing and _has_ground:
+                    self._process_ground_move(entity_id, position, tile_movement, auto_move, dt)
+            # --- Movimento de chão (sem alvo selecionado) ---
+            elif _has_ground:
                 self._process_ground_move(entity_id, position, tile_movement, auto_move, dt)
 
             # --- ESPAÇO: seleciona inimigo mais próximo, entra em combate e ataca ---
@@ -1230,12 +1309,12 @@ class PlayerInputSystem(System):
                 # Adjacente: melee idêntico ao guerreiro (sem geração de Raiva)
                 if auto_move:
                     auto_move.path.clear()
-                if can_act and combat_stats.attack_cooldown_timer <= 0:
+                if combat_state.is_pursuing and can_act and combat_stats.attack_cooldown_timer <= 0:
                     SOUNDS.play_emote_attack(is_player=True)
                     _tgt_cs = self.world.get_component(target_id, CombatStats)
-                    dead = self.combat_system.deal_damage(entity_id, target_id, "physical")
+                    dead = deal_damage(entity_id, target_id, "physical")
                     combat_stats.attack_cooldown_timer = combat_stats.get_attack_cooldown()
-                    combat_state.enter_combat()
+                    enter_combat(combat_state)
                     if dead:
                         combat_state.target_entity_id = -1
                         combat_state.is_pursuing = False
@@ -1254,18 +1333,18 @@ class PlayerInputSystem(System):
                 )
         else:
             if dist <= self.PLAYER_ATTACK_RANGE:
-                # Guerreiro no alcance: ataque físico
+                # Guerreiro no alcance: ataque físico só se estiver perseguindo (botão direito)
                 if auto_move:
                     auto_move.path.clear()
-                if can_act and combat_stats.attack_cooldown_timer <= 0:
+                if combat_state.is_pursuing and can_act and combat_stats.attack_cooldown_timer <= 0:
                     SOUNDS.play_emote_attack(is_player=True)
                     _tgt_cs    = self.world.get_component(target_id, CombatStats)
                     _hp_before = _tgt_cs.current_hp if _tgt_cs else 0
-                    dead = self.combat_system.deal_damage(entity_id, target_id, "physical")
+                    dead = deal_damage(entity_id, target_id, "physical")
                     _hit_landed = dead or (_tgt_cs and _tgt_cs.current_hp < _hp_before)
                     combat_stats.attack_cooldown_timer = combat_stats.get_attack_cooldown()
                     self._add_rage(entity_id, 5)
-                    combat_state.enter_combat()
+                    enter_combat(combat_state)
                     self._increment_pnq_counter(entity_id, _hit_landed)
                     if dead:
                         combat_state.target_entity_id = -1
@@ -1315,7 +1394,7 @@ class PlayerInputSystem(System):
             if attack_range > 1:
                 # Ranged: caminha até tile a (attack_range-1) tiles do alvo
                 dest = self._ranged_stop_tile(pl_x, pl_y, tgt_x, tgt_y, attack_range)
-                path = self.pathfinding_system.find_path(current_tile, dest,
+                path = find_path(current_tile, dest,
                                                          dynamic_obstacles=enemy_tiles)
                 auto_move.path = path or []
             else:
@@ -1329,7 +1408,7 @@ class PlayerInputSystem(System):
                 adj.sort(key=lambda t: abs(t[0] - pl_x) + abs(t[1] - pl_y))
                 auto_move.path = []
                 for tile in adj:
-                    path = self.pathfinding_system.find_path(current_tile, tile,
+                    path = find_path(current_tile, tile,
                                                              dynamic_obstacles=enemy_tiles)
                     if path:
                         auto_move.path = path
@@ -1339,7 +1418,7 @@ class PlayerInputSystem(System):
 
         if auto_move.path:
             nx, ny = auto_move.path[0]
-            if self.tile_validation_system.is_tile_walkable(entity_id, nx, ny):
+            if is_tile_walkable(entity_id, nx, ny):
                 self._start_tile_movement(position, tile_movement, nx, ny)
                 auto_move.path.pop(0)
             else:
@@ -1368,7 +1447,7 @@ class PlayerInputSystem(System):
             enemy_tiles.discard((gt_x, gt_y))
             dist = abs(gt_x - pl_x) + abs(gt_y - pl_y)
             nodes_limit = min(30000, max(8000, dist * 80))
-            path = self.pathfinding_system.find_path((pl_x, pl_y), (gt_x, gt_y),
+            path = find_path((pl_x, pl_y), (gt_x, gt_y),
                                                      dynamic_obstacles=enemy_tiles,
                                                      max_nodes=nodes_limit,
                                                      manhattan_limit=None)
@@ -1384,7 +1463,7 @@ class PlayerInputSystem(System):
             nx, ny = auto_move.path[0]
             cx = tile_movement.current_tile_x
             cy = tile_movement.current_tile_y
-            if self.tile_validation_system.is_tile_walkable(entity_id, nx, ny, cx, cy):
+            if is_tile_walkable(entity_id, nx, ny, cx, cy):
                 self._start_tile_movement(position, tile_movement, nx, ny)
                 auto_move.path.pop(0)
             else:
@@ -1406,10 +1485,10 @@ class PlayerInputSystem(System):
             if tm:
                 dist = chebyshev(pl_x, pl_y, tm.current_tile_x, tm.current_tile_y)
                 if dist <= self.PLAYER_ATTACK_RANGE:
-                    dead = self.combat_system.deal_damage(entity_id, tid, "physical")
+                    dead = deal_damage(entity_id, tid, "physical")
                     combat_stats.attack_cooldown_timer = combat_stats.get_attack_cooldown()
                     self._add_rage(entity_id, 5)
-                    combat_state.enter_combat()
+                    enter_combat(combat_state)
                     self._increment_pnq_counter(entity_id)
                     if dead:
                         combat_state.target_entity_id = -1
@@ -1419,11 +1498,11 @@ class PlayerInputSystem(System):
         for eid, _, _, etm in self.world.get_entities_with(Enemy, AIControlled, TileMovement):
             dist = chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y)
             if dist <= self.PLAYER_ATTACK_RANGE:
-                self.combat_system.deal_damage(entity_id, eid, "physical")
+                deal_damage(entity_id, eid, "physical")
                 combat_stats.attack_cooldown_timer = combat_stats.get_attack_cooldown()
                 self._add_rage(entity_id, 5)
                 if combat_state:
-                    combat_state.enter_combat()
+                    enter_combat(combat_state)
                 break
 
     def _space_engage(self, entity_id, tile_movement, combat_stats, combat_state, auto_move):
@@ -1450,7 +1529,7 @@ class PlayerInputSystem(System):
         if combat_state:
             combat_state.target_entity_id = best_eid
             combat_state.is_pursuing = True
-            combat_state.enter_combat()
+            enter_combat(combat_state)
         if auto_move:
             auto_move.ground_target = None
             auto_move.path.clear()
@@ -1458,7 +1537,7 @@ class PlayerInputSystem(System):
 
         # Ataca imediatamente se já estiver no alcance
         if best_dist <= self.PLAYER_ATTACK_RANGE and combat_stats.attack_cooldown_timer <= 0:
-            dead = self.combat_system.deal_damage(entity_id, best_eid, "physical")
+            dead = deal_damage(entity_id, best_eid, "physical")
             combat_stats.attack_cooldown_timer = combat_stats.get_attack_cooldown()
             self._add_rage(entity_id, 5)
             if dead and combat_state:
@@ -1477,15 +1556,9 @@ class EnemyAISystem(System):
     RANGED_CAST_TIME     = 1.0  # segundos parado antes de disparar o projétil
     RANGED_ATTACK_CD_MULT = 1.3  # multiplicador no cooldown de ataque (velocidade menor)
 
-    def __init__(self, world: World, player_entity_id: int,
-                 tile_validation_system: TileValidationSystem,
-                 pathfinding_system: PathfindingSystem,
-                 combat_system: CombatSystem):
+    def __init__(self, world: World, player_entity_id: int):
         self.world = world
         self.player_entity_id = player_entity_id
-        self.tile_validation_system = tile_validation_system
-        self.pathfinding_system = pathfinding_system
-        self.combat_system = combat_system
         self.proximity_threshold_pixels = 5.0
         self.proximity_threshold_tiles = 1
         self.path_recalc_interval = 0.8
@@ -1534,7 +1607,7 @@ class EnemyAISystem(System):
         if self._pathfind_budget <= 0:
             return None
         self._pathfind_budget -= 1
-        return self.pathfinding_system.find_path(start, end, dynamic_obstacles=dynamic_obstacles)
+        return find_path(start, end, dynamic_obstacles=dynamic_obstacles)
 
     def update(self, events: list = None, dt: float = 0) -> None:
         self._pathfind_budget = self.MAX_PATHFINDS_PER_FRAME
@@ -1583,6 +1656,21 @@ class EnemyAISystem(System):
                     enemy_combat_stats.attack_cooldown_timer = max(
                         enemy_combat_stats.attack_cooldown_timer, 0.1)
                     continue  # imóvel e sem ataque
+                if _sfx.has("polymorph") or _sfx.has("disoriented"):
+                    # Desorientado: anda aleatoriamente a 40% da velocidade normal
+                    enemy_combat_stats.attack_cooldown_timer = max(
+                        enemy_combat_stats.attack_cooldown_timer, 0.1)
+                    if not tile_movement.is_moving:
+                        ex, ey = tile_movement.current_tile_x, tile_movement.current_tile_y
+                        dirs = [(0,1),(0,-1),(1,0),(-1,0),(1,1),(1,-1),(-1,1),(-1,-1)]
+                        random.shuffle(dirs)
+                        for ddx, ddy in dirs:
+                            fx, fy = ex + ddx, ey + ddy
+                            if is_tile_walkable(enemy_id, fx, fy):
+                                start_tile_movement(enemy_pos, tile_movement,
+                                                    fx, fy, extra_speed_mult=0.4)
+                                break
+                    continue  # não ataca enquanto polimorfizado
                 if _sfx.has("fear"):
                     # Foge do player: move para o tile oposto
                     if not tile_movement.is_moving:
@@ -1594,7 +1682,7 @@ class EnemyAISystem(System):
                         for fx, fy in [(ex + step_x, ey + step_y),
                                        (ex + step_x, ey),
                                        (ex, ey + step_y)]:
-                            if self.tile_validation_system.is_tile_walkable(enemy_id, fx, fy):
+                            if is_tile_walkable(enemy_id, fx, fy):
                                 tile_movement.target_tile_x  = fx
                                 tile_movement.target_tile_y  = fy
                                 tile_movement.target_pixel_x = fx * TILE_SIZE + TILE_SIZE / 2
@@ -1683,7 +1771,7 @@ class EnemyAISystem(System):
 
             # ── Ranged: cast timer (fica parado 1s antes de disparar) ──────
             if ai_control.is_ranged and ai_control.ranged_cast_timer > 0:
-                _cast_tm  = self.pathfinding_system._get_tilemap_component()
+                _cast_tm  = get_tilemap()
                 _cast_los = (_cast_tm is None or self._has_line_of_sight(
                     _cast_tm,
                     enemy_current_tile_x, enemy_current_tile_y,
@@ -1708,7 +1796,7 @@ class EnemyAISystem(System):
                 if ai_control.is_ranged:
                     # Só inicia cast se não estiver já carregando
                     if ai_control.ranged_cast_timer == 0.0:
-                        _atk_tm  = self.pathfinding_system._get_tilemap_component()
+                        _atk_tm  = get_tilemap()
                         _atk_los = (_atk_tm is None or self._has_line_of_sight(
                             _atk_tm,
                             enemy_current_tile_x, enemy_current_tile_y,
@@ -1719,7 +1807,7 @@ class EnemyAISystem(System):
                 else:
                     SOUNDS.play_emote_attack(is_player=False, mob_sounds_comp=_ms_atk)
                     SOUNDS.play_mob_sounds(_ms_atk, _atk_event, dedup_key=str(enemy_id))
-                    self.combat_system.deal_damage(
+                    deal_damage(
                         attacker_id=enemy_id,
                         target_id=self.player_entity_id,
                         damage_type=damage_type_to_use
@@ -1808,7 +1896,7 @@ class EnemyAISystem(System):
             # Detecção inicial: mesma distância do leash (5 tiles), apenas mobs IDLE
             # Usar o mesmo threshold evita oscilação: aggro e leash têm a mesma fronteira
             if dist_to_player_pixels <= _aggro_range_px and ai_control.state == "IDLE":
-                _tilemap_for_los = self.pathfinding_system._get_tilemap_component()
+                _tilemap_for_los = get_tilemap()
                 _has_los = (
                     _tilemap_for_los is None or
                     self._has_line_of_sight(
@@ -1822,6 +1910,13 @@ class EnemyAISystem(System):
                     SOUNDS.play_mob_sounds(_ms_aggro, "aggro", dedup_key=str(enemy_id))
                     ai_control.state       = "AGGRO_DELAY"
                     ai_control.aggro_delay = 1.0
+
+            # Inimigo perseguindo/atacando → player entra em combate (impede regen de HP)
+            # EnemyAISystem é o responsável por saber quando está perseguindo — correto ECS
+            if ai_control.state in ("CHASING", "ATTACKING", "AGGRO_DELAY"):
+                _player_cst = self.world.get_component(self.player_entity_id, CombatState)
+                if _player_cst and not _player_cst.in_combat:
+                    enter_combat(_player_cst)
 
             # Perseguição ativa — CHASING persiste mesmo fora do detect_radius (ex: agro por dano)
             if ai_control.state not in ("IDLE", "RETURNING"):
@@ -1871,7 +1966,7 @@ class EnemyAISystem(System):
 
 
                             if is_in_desired_range:
-                                tilemap_comp = self.pathfinding_system._get_tilemap_component()
+                                tilemap_comp = get_tilemap()
                                 if tilemap_comp and \
                                    (0 <= target_tile_around_player_x < tilemap_comp.map_width_tiles and
                                     0 <= target_tile_around_player_y < tilemap_comp.map_height_tiles) and \
@@ -1910,7 +2005,7 @@ class EnemyAISystem(System):
                 if ai_control.path and not ai_control.is_blocked:
                     next_tile_on_path_x, next_tile_on_path_y = ai_control.path[0]
 
-                    if self.tile_validation_system.is_tile_walkable(enemy_id, next_tile_on_path_x, next_tile_on_path_y):
+                    if is_tile_walkable(enemy_id, next_tile_on_path_x, next_tile_on_path_y):
                         start_tile_movement(enemy_pos, tile_movement, next_tile_on_path_x, next_tile_on_path_y)
                         ai_control.path.pop(0)
                     else:
@@ -1947,7 +2042,7 @@ class EnemyAISystem(System):
 
                     if ai_control.path and not ai_control.is_blocked:
                         next_tile_on_path_x, next_tile_on_path_y = ai_control.path[0]
-                        if self.tile_validation_system.is_tile_walkable(enemy_id, next_tile_on_path_x, next_tile_on_path_y):
+                        if is_tile_walkable(enemy_id, next_tile_on_path_x, next_tile_on_path_y):
                             start_tile_movement(enemy_pos, tile_movement, next_tile_on_path_x, next_tile_on_path_y)
                             ai_control.path.pop(0)
                         else:
@@ -1976,21 +2071,13 @@ class EnemyAISystem(System):
         if not attacker_pos:
             return
 
-        # Cor e tipo de projétil por classe do atacante
-        ai_ctrl = self.world.get_component(attacker_id, AIControlled)
+        # Cor e tipo de projétil por classe — data-driven via PROJECTILE_BY_CLASS
+        from mob_definitions import PROJECTILE_BY_CLASS as _PBC
+        ai_ctrl      = self.world.get_component(attacker_id, AIControlled)
         entity_class = ai_ctrl.entity_class if ai_ctrl else ""
-        if entity_class == "Warlock":
-            proj_color = (160, 0, 220)
-            is_arrow   = False
-        elif entity_class in ("Hunter", "Arqueiro"):
-            proj_color = (120, 80, 40)
-            is_arrow   = True
-        elif entity_class == "Mage":
-            proj_color = (255, 80, 0)
-            is_arrow   = False
-        else:
-            proj_color = (200, 200, 50)
-            is_arrow   = False
+        _proj_data   = _PBC.get(entity_class, _PBC["_default"])
+        proj_color   = _proj_data["color"]
+        is_arrow     = _proj_data["is_arrow"]
 
         # Direção inicial (para renderizar flecha orientada corretamente)
         dir_x, dir_y = 1.0, 0.0
@@ -2020,7 +2107,7 @@ class EnemyAISystem(System):
         attack_range = ai_control.attack_range_tiles
 
         if not ai_control.path or ai_control.path_recalc_timer <= 0:
-            tilemap_comp = self.pathfinding_system._get_tilemap_component()
+            tilemap_comp = get_tilemap()
             if not tilemap_comp:
                 return
 
@@ -2070,7 +2157,7 @@ class EnemyAISystem(System):
 
         if ai_control.path:
             nx, ny = ai_control.path[0]
-            if self.tile_validation_system.is_tile_walkable(enemy_id, nx, ny):
+            if is_tile_walkable(enemy_id, nx, ny):
                 boost = 2.0 if ai_control.disengage_boost > 0 else 1.0
                 start_tile_movement(enemy_pos, tile_movement, nx, ny, extra_speed_mult=boost)
                 ai_control.path.pop(0)
@@ -2264,13 +2351,23 @@ class RenderSystem(System):
             draw_x = position.x - camera_offset_x
             draw_y = position.y - camera_offset_y
 
-            rect = pygame.Rect(
-                int(draw_x - renderable.width / 2),
-                int(draw_y - renderable.height / 2),
-                renderable.width,
-                renderable.height
-            )
-            pygame.draw.rect(self.world_surf, renderable.color, rect)
+            _sfx_rnd = self.world.get_component(entity_id, StatusEffects)
+            _polymorphed = _sfx_rnd is not None and _sfx_rnd.has("polymorph")
+
+            if _polymorphed:
+                _cx = int(draw_x)
+                _cy = int(draw_y)
+                pygame.draw.circle(self.world_surf, (160, 80, 200), (_cx, _cy), 14)
+                pygame.draw.circle(self.world_surf, (220, 180, 255), (_cx, _cy), 14, 2)
+                rect = pygame.Rect(_cx - 14, _cy - 14, 28, 28)
+            else:
+                rect = pygame.Rect(
+                    int(draw_x - renderable.width / 2),
+                    int(draw_y - renderable.height / 2),
+                    renderable.width,
+                    renderable.height
+                )
+                pygame.draw.rect(self.world_surf, renderable.color, rect)
 
             if entity_id == target_id:
                 pygame.draw.rect(self.world_surf, (255, 220, 0), rect, 2)
@@ -2326,6 +2423,11 @@ class TileRenderSystem(System):
         self.world = world
         self.world_surf = screen
         self.hud_surf   = screen
+        from tile_sprite_manager import TILE_SPRITES as _TS
+        from tileset import TILE_MAPPING as _TM, FLOOR_TILE as _FT
+        self._tile_sprites = _TS
+        self._tile_mapping = _TM
+        self._floor_tile   = _FT
         _tw = screen.get_width()  // TILE_SIZE + 2
         _th = screen.get_height() // TILE_SIZE + 2
         # Cache de surface — pré-alocada; reconstruída apenas quando a câmera cruza fronteira de tile
@@ -2363,14 +2465,13 @@ class TileRenderSystem(System):
         self._cache_tile_y      = -99999
         self._fog_cache_tile_ox = -99999
         self._fog_cache_tile_oy = -99999
-        from tile_sprite_manager import TILE_SPRITES
-        TILE_SPRITES.invalidate()
+        self._tile_sprites.invalidate()
 
     def render(self, camera_offset_x: float = 0, camera_offset_y: float = 0) -> None:
         for _, tilemap_comp in self.world.get_entities_with(Tilemap):
             tile_size = tilemap_comp.tile_size
 
-            # Inteiros para evitar gaps de 1px entre tiles (câmera smooth)
+            # int() mantém offset monotônico (sem jitter ao desacelerar)
             cam_x = int(camera_offset_x)
             cam_y = int(camera_offset_y)
 
@@ -2398,8 +2499,9 @@ class TileRenderSystem(System):
                         or self._cache_surf.get_height() != surf_h):
                     self._cache_surf = pygame.Surface((surf_w, surf_h))
 
-                from tile_sprite_manager import TILE_SPRITES
-                from tileset import TILE_MAPPING as _TM, FLOOR_TILE as _FT
+                TILE_SPRITES = self._tile_sprites
+                _TM          = self._tile_mapping
+                _FT          = self._floor_tile
                 rows          = tilemap_comp.tile_matrix
                 terrain_rows  = tilemap_comp.terrain_matrix
                 vis_rows      = tilemap_comp.terrain_visual  # sheet visual overrides
@@ -2842,10 +2944,30 @@ class StatusEffectSystem(System):
             cs.current_hp = min(cs.max_hp, cs.current_hp + dmg)
             if pos:
                 FLT.add(f"+{dmg}", pos.x, pos.y, color, size="normal", target_id=eid)
+        elif effect.effect_type == "polymorph":
+            heal = max(1, int(effect.magnitude))
+            cs.current_hp = min(cs.max_hp, cs.current_hp + heal)
+            if pos:
+                FLT.add(f"+{heal}", pos.x, pos.y, color, size="normal", target_id=eid)
+        elif effect.effect_type == "elemental_lapse":
+            # Auto-burn: consome 1% do HP máximo por tick (auto-dano)
+            burn = max(1, int(cs.max_hp * 0.01))
+            cs.current_hp = max(1, cs.current_hp - burn)  # não mata o próprio jogador
+            if pos:
+                FLT.add(f"-{burn}", pos.x, pos.y, color, size="normal", target_id=eid)
         else:
             cs.current_hp = max(0, cs.current_hp - dmg)
             if pos:
                 FLT.add(f"-{dmg}", pos.x, pos.y, color, size="normal", target_id=eid)
+            # Morte por DoT: garante XP, loot e cadáver (mesmo fluxo que CombatSystem)
+            if cs.current_hp <= 0:
+                is_player = self.world.get_component(eid, PlayerControlled) is not None
+                if not is_player and not self.world.get_component(eid, PendingDeath):
+                    killer_id = -1
+                    for pid, _ in self.world.get_entities_with(PlayerControlled):
+                        killer_id = pid
+                        break
+                    self.world.add_component(eid, PendingDeath(killer_entity_id=killer_id))
 
 
 class EnemyAbilitySystem(System):
@@ -3139,7 +3261,7 @@ class ShopSystem(System):
         self.player_entity = player_entity
         self.world_surf = screen
         self.hud_surf   = screen
-        self.open_merchant_id: int       = -1
+        # open_merchant_id → ShopUIState component (via property abaixo)
         self._pending_merchant_id: int   = -1   # aguardando jogador chegar
         self._right_click_consumed: bool = False
         self.transaction_history: list = []
@@ -3152,6 +3274,19 @@ class ShopSystem(System):
         self._font_sm = _font(20)
         self._font_md = _font(26)
         self._font_lg = _font(32)
+
+    @property
+    def open_merchant_id(self) -> int:
+        from components import ShopUIState
+        ui = self.world.get_component(self.player_entity, ShopUIState)
+        return ui.open_merchant_id if ui else -1
+
+    @open_merchant_id.setter
+    def open_merchant_id(self, value: int) -> None:
+        from components import ShopUIState
+        ui = self.world.get_component(self.player_entity, ShopUIState)
+        if ui:
+            ui.open_merchant_id = value
 
     @property
     def is_open(self) -> bool:
@@ -3800,11 +3935,12 @@ class LootSystem(System):
         "epic":     (180,  50, 255),
     }
 
-    def __init__(self, world: World, screen: pygame.Surface):
-        self.world      = world
+    def __init__(self, world: World, screen: pygame.Surface, player_entity: int = -1):
+        self.world         = world
+        self.player_entity = player_entity
         self.world_surf = screen
         self.hud_surf   = screen
-        self.open_corpse_id: int         = -1
+        # open_corpse_id → LootUIState component (via property abaixo)
         self.pending_loot_corpse_id: int = -1
         self.pending_tooltip             = None  # lido por GameEngine no fim do frame
         self.font_sm = _font(20)
@@ -3813,6 +3949,19 @@ class LootSystem(System):
         self._modal_y       = 0   # posição Y do modal
         self._scroll_offset = 0   # índice da primeira linha visível
         self._pending_cursor = (0, 0)  # cursor quando o loot foi solicitado
+
+    @property
+    def open_corpse_id(self) -> int:
+        from components import LootUIState
+        ui = self.world.get_component(self.player_entity, LootUIState)
+        return ui.open_corpse_id if ui else -1
+
+    @open_corpse_id.setter
+    def open_corpse_id(self, value: int) -> None:
+        from components import LootUIState
+        ui = self.world.get_component(self.player_entity, LootUIState)
+        if ui:
+            ui.open_corpse_id = value
 
     # ------------------------------------------------------------------ #
     def update(self, events: list = None, dt: float = 0) -> None:
@@ -4069,7 +4218,7 @@ class LootSystem(System):
                     for _, iv, _pc in self.world.get_entities_with(Inventory, PlayerControlled):
                         inv = iv
                         break
-                    for _, cs, _pc in self.world.get_entities_with(_CS_eq, PlayerControlled):
+                    for _, cs, _pc in self.world.get_entities_with(CombatStats, PlayerControlled):
                         combat_stats = cs
                         break
 
@@ -4090,12 +4239,26 @@ class LootSystem(System):
                             LOG.add("Inventario cheio!", (255, 160, 0))
                         return True
 
+                    # Restrição de armor_class por classe
+                    if getattr(item, "armor_class", "") and item.item_type == "armor":
+                        from stats_system import CLASS_ARMOR_ALLOWED
+                        from components import CharacterStats as _CST
+                        _char = self.world.get_component(self.player_entity, _CST)
+                        _allowed = CLASS_ARMOR_ALLOWED.get(_char.class_id if _char else "", frozenset())
+                        if item.armor_class not in _allowed:
+                            _names = {"placa": "Placa", "couro": "Couro", "tecido": "Tecido"}
+                            LOG.add(f"Sua classe não pode usar armadura de {_names.get(item.armor_class, item.armor_class)}.", (255, 100, 80))
+                            if inv and len(inv.items) < inv.max_slots:
+                                inv.items.append(item)
+                                corpse.loot.pop(i)
+                            return True
+
                     # Arma de duas mãos → desequipa offhand
                     if getattr(item, 'two_handed', False) and target_slot == "mainhand":
                         old_oh = equip.slots.get("offhand")
                         if old_oh and inv and len(inv.items) < inv.max_slots:
                             for mod in old_oh.modifiers:
-                                combat_stats.remove_modifier(mod)
+                                remove_modifier(combat_stats, mod)
                             inv.items.append(old_oh)
                             equip.slots["offhand"] = None
 
@@ -4109,7 +4272,7 @@ class LootSystem(System):
                     if old_item:
                         if inv and len(inv.items) < inv.max_slots:
                             for mod in old_item.modifiers:
-                                combat_stats.remove_modifier(mod)
+                                remove_modifier(combat_stats, mod)
                             inv.items.append(old_item)
                         else:
                             LOG.add("Inventario cheio para trocar o item equipado!", (255, 160, 0))
@@ -4121,7 +4284,7 @@ class LootSystem(System):
                     if target_slot == "mainhand" and getattr(item, "attack_speed", 0.0) > 0:
                         combat_stats.base_attack_interval = item.attack_speed
                     for mod in item.modifiers:
-                        combat_stats.add_modifier(mod)
+                        add_modifier(combat_stats, mod)
                     col = self.RARITY_COLORS.get(item.rarity, (200, 200, 200))
                     LOG.add(f"Equipado: {item.name} ({item.rarity})", col)
                     SOUNDS.play_ui("equip_item")
@@ -4314,13 +4477,10 @@ class SkillSystem(System, SkillHandlers):
     SKILL_KEYS = [pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4,
                   pygame.K_5, pygame.K_6, pygame.K_7]
 
-    def __init__(self, world: World, player_entity_id: int, combat_system: CombatSystem,
-                 tile_validation_system: "TileValidationSystem" = None,
+    def __init__(self, world: World, player_entity_id: int,
                  screen: "pygame.Surface | None" = None):
         self.world = world
         self.player_entity_id = player_entity_id
-        self.combat_system = combat_system
-        self.tile_validation_system = tile_validation_system
         self.world_surf = screen
         self.hud_surf   = screen
 
@@ -4364,8 +4524,10 @@ class SkillSystem(System, SkillHandlers):
             if char_stats.fatiador_tick <= 0 and char_stats.fatiador_timer > 0:
                 char_stats.fatiador_tick = 1.0
                 tile_move = self.world.get_component(self.player_entity_id, TileMovement)
+                ps = self.world.get_component(self.player_entity_id, PlayerSkills)
+                skill_obj = ps.skill_by_id("fatiador_de_corpos") if ps else None
                 if tile_move:
-                    self._fatiador_aoe_tick(tile_move)
+                    self._fatiador_aoe_tick(skill_obj, tile_move)
             if char_stats.fatiador_timer <= 0:
                 LOG.add("Fatiador de Corpos terminou.", (200, 160, 100))
 
@@ -4430,13 +4592,13 @@ class SkillSystem(System, SkillHandlers):
         if not combat_stats or not tile_move:
             return False
 
-        # Sempre seleciona alvo ao pressionar skill, mesmo em cooldown
-        self._resolve_target(combat_state, tile_move)
-
-        # Qualquer tentativa de usar skill inicia combate e perseguição, independente de cooldown
-        if isinstance(combat_state, CombatState):
-            combat_state.enter_combat()
-            combat_state.is_pursuing = True
+        # Skills ofensivas: selecionam alvo, iniciam combate e perseguição
+        # Skills não-ofensivas (buffs, AoE de mira): nenhuma dessas ações
+        if getattr(skill, "offensive", True):
+            self._resolve_target(combat_state, tile_move)
+            if isinstance(combat_state, CombatState):
+                enter_combat(combat_state)
+                combat_state.is_pursuing = True
 
         if not skill.is_ready():
             if skill.current_cooldown > 0:
@@ -4445,32 +4607,17 @@ class SkillSystem(System, SkillHandlers):
                 WARN.add("Sem cargas")
             return False
 
-        # Habilidades de talento usam handler dinâmico
-        if skill.handler:
-            handler = getattr(self, f"_talent_{skill.handler}", None)
-            if handler:
-                SOUNDS.play_emote_attack(is_player=True)
-                success = handler(skill, combat_stats, combat_state, tile_move)
-                if success:
-                    if skill.sound_name:
-                        SOUNDS.play_skill(skill.sound_name)
-                    if player_skills:
-                        player_skills.gcd_timer = PlayerSkills.GCD_DURATION
-                    quest_fire("use_skill", skill_id=skill.handler)
-                return bool(success)
-            else:
-                LOG.add(f"{skill.name}: handler '{skill.handler}' não encontrado.", (180, 60, 60))
-            return False
-
-        # Habilidades de config (skill_config.py) — dispatch por skill_id
+        # Todas as skills são despachadas por skill_id — catálogo como fonte única
         if skill.skill_id:
             handler_fn = getattr(self, f"_skill_{skill.skill_id}", None)
             if handler_fn:
                 success = handler_fn(skill, combat_stats, combat_state, tile_move)
                 if success:
-                    # Skills AOE-targetadas não tocam o som ao pressionar —
-                    # o som é emitido em _start_channel quando o alvo é confirmado
-                    if skill.sound_name and not getattr(skill, "needs_aoe_target", False):
+                    # Skills com cast_time ou AOE-targetadas não tocam som ao pressionar —
+                    # o som é emitido ao completar o cast (SpellCastSystem) ou em _start_channel
+                    has_cast = getattr(skill, "cast_time", 0.0) > 0
+                    is_aoe   = getattr(skill, "needs_aoe_target", False)
+                    if skill.sound_name and not has_cast and not is_aoe:
                         SOUNDS.play_skill(skill.sound_name)
                     if player_skills:
                         player_skills.gcd_timer = PlayerSkills.GCD_DURATION
@@ -4514,7 +4661,7 @@ class SkillSystem(System, SkillHandlers):
         if best_id != -1:
             combat_state.target_entity_id = best_id
             combat_state.is_pursuing      = True
-            combat_state.enter_combat()
+            enter_combat(combat_state)
         return best_id
 
     # Todos os handlers (_skill_* e _talent_*) estão em skill_handlers.py via SkillHandlers.

@@ -3,7 +3,7 @@ skill_handlers.py — Mixin com todos os handlers de habilidades do jogador.
 
 Separado de systems.py para manter SkillSystem conciso. Esta classe NÃO deve
 ser instanciada diretamente — ela é herdada por SkillSystem, que fornece
-self.world, self.player_entity_id, self.combat_system e self.tile_validation_system.
+self.world e self.player_entity_id.
 
 Para adicionar uma nova skill base:
   def _skill_<skill_id>(self, skill, combat_stats, combat_state, tile_move): ...
@@ -27,7 +27,8 @@ from utils import chebyshev
 from combat_log import LOG
 from sound_manager import SOUNDS
 from floating_text import FLT, WARN, PROC
-from systems import apply_effect
+from systems import apply_effect, deal_damage, is_tile_walkable, get_mainhand_weapon
+from stat_fns import enter_combat
 
 
 class SkillHandlers:
@@ -81,11 +82,11 @@ class SkillHandlers:
             embalo_bonus = _combat_stats.embalo_bonus_per_charge
             char_stats.embalo_charges -= 1
 
-        self.combat_system.deal_damage(
+        deal_damage(
             self.player_entity_id, target_id, "physical", multiplier=3.0 + embalo_bonus,
             is_ability=True)
         if combat_state:
-            combat_state.enter_combat()
+            enter_combat(combat_state)
         return True
 
     # ------------------------------------------------------------------
@@ -107,13 +108,13 @@ class SkillHandlers:
             return
         skill.charges -= 1
         skill.charge_timer = 0.0
-        self.combat_system.deal_damage(self.player_entity_id, target_id, "physical",
+        deal_damage(self.player_entity_id, target_id, "physical",
                                        multiplier=2.0, is_ability=True)
         heal = int(combat_stats.max_hp * 0.30)
         combat_stats.current_hp = min(combat_stats.max_hp, combat_stats.current_hp + heal)
         LOG.add(f"Vitória Iminente: +{heal} HP recuperados!", (80, 220, 80))
         if combat_state:
-            combat_state.enter_combat()
+            enter_combat(combat_state)
         return True
 
     # ------------------------------------------------------------------
@@ -138,7 +139,7 @@ class SkillHandlers:
 
         player_cs = self.world.get_component(self.player_entity_id, CombatStats)
         ap = player_cs.attack_power if player_cs else 0.0
-        weapon = self.combat_system._get_mainhand_weapon(self.player_entity_id)
+        weapon = get_mainhand_weapon(self.world, self.player_entity_id)
         if weapon and weapon.damage_min > 0:
             weapon_dmg = random.randint(weapon.damage_min, weapon.damage_max)
         else:
@@ -149,7 +150,7 @@ class SkillHandlers:
         dano_final = dano_base * (1.0 + bonus)
 
         for enemy_id in targets:
-            self.combat_system.deal_damage(
+            deal_damage(
                 self.player_entity_id, enemy_id, "physical_fixed",
                 base_ability_damage=dano_final, is_ability=True)
 
@@ -169,7 +170,7 @@ class SkillHandlers:
                             (255, 80, 80))
                     PROC.add("Assassino!", (255, 80, 80))
         if combat_state:
-            combat_state.enter_combat()
+            enter_combat(combat_state)
         skill.current_cooldown = skill.cooldown
         return True
 
@@ -209,7 +210,7 @@ class SkillHandlers:
             LOG.add("Executar [Assassino]!", (255, 80, 80))
         else:
             char_stats.rage -= 10
-        self.combat_system.deal_damage(
+        deal_damage(
             self.player_entity_id, target_id, "physical", multiplier=5.0, is_ability=True)
 
         # Talento "Horrorizante": se alvo sobreviveu, aplica medo por 1s
@@ -224,7 +225,7 @@ class SkillHandlers:
                             (255, 140, 0), size="normal", target_id=target_id)
 
         if combat_state:
-            combat_state.enter_combat()
+            enter_combat(combat_state)
         return True
 
     # ------------------------------------------------------------------
@@ -287,7 +288,7 @@ class SkillHandlers:
 
         adj = [(tx + dx, ty + dy) for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1))]
         walkable = [t for t in adj
-                    if self.tile_validation_system.is_tile_walkable(self.player_entity_id, t[0], t[1])]
+                    if is_tile_walkable(self.player_entity_id, t[0], t[1])]
         if not walkable:
             self._warn("Sem espaço ao redor do alvo")
             return
@@ -332,7 +333,7 @@ class SkillHandlers:
                         (180, 180, 255), size="normal", target_id=target_id)
 
         if combat_state:
-            combat_state.enter_combat()
+            enter_combat(combat_state)
         LOG.add("Interceptar: dash!", (100, 200, 255))
         return True
 
@@ -340,7 +341,7 @@ class SkillHandlers:
     # Handlers de habilidades de TALENTO
     # ==================================================================
 
-    def _talent_golpe_debilitante(self, skill, _combat_stats, combat_state, tile_move):
+    def _skill_golpe_debilitante(self, skill, _combat_stats, combat_state, tile_move):
         """Cavaleiro — Golpe Debilitante: 50% dano + -50% velocidade por 5s. Custa 5 Raiva."""
         target_id = self._resolve_target(combat_state, tile_move, 1)
         if target_id == -1:
@@ -361,7 +362,7 @@ class SkillHandlers:
             self._warn("Fora de alcance")
             return False
         char_stats.rage -= 5
-        self.combat_system.deal_damage(self.player_entity_id, target_id, "physical",
+        deal_damage(self.player_entity_id, target_id, "physical",
                                        multiplier=0.5, is_ability=True)
         apply_effect(self.world, target_id, "slow", 5.0, magnitude=0.5)
         _tpos = self.world.get_component(target_id, Position)
@@ -370,11 +371,11 @@ class SkillHandlers:
                     (100, 220, 80), size="normal", target_id=target_id)
         skill.current_cooldown = skill.cooldown
         if combat_state:
-            combat_state.enter_combat()
+            enter_combat(combat_state)
         LOG.add("Golpe Debilitante: alvo com -50% velocidade por 5s!", (180, 220, 80))
         return True
 
-    def _talent_punho_no_queixo(self, skill, _combat_stats, combat_state, tile_move):
+    def _skill_punho_no_queixo(self, skill, _combat_stats, combat_state, tile_move):
         """Cavaleiro — Punho no Queixo: 45% AP + stun escalonável (1/2/3s por ponto). Consome 1 carga."""
         target_id = self._resolve_target(combat_state, tile_move, 1)
         if target_id == -1:
@@ -400,7 +401,7 @@ class SkillHandlers:
 
         skill.charges -= 1
         hp_before = target_cs.current_hp
-        killed = self.combat_system.deal_damage(self.player_entity_id, target_id, "physical",
+        killed = deal_damage(self.player_entity_id, target_id, "physical",
                                                 multiplier=0.45, is_ability=True)
         hit = killed or target_cs.current_hp < hp_before
         if hit:
@@ -408,38 +409,52 @@ class SkillHandlers:
             LOG.add(f"Punho no Queixo: alvo atordoado por {stun_duration:.0f}s!", (255, 180, 80))
         skill.current_cooldown = skill.cooldown
         if combat_state:
-            combat_state.enter_combat()
+            enter_combat(combat_state)
         return True
 
-    def _talent_fatiador_de_corpos(self, skill, _combat_stats, combat_state, tile_move):
-        """Cavaleiro — Fatiador de Corpos: spin AoE 45% dano/s por 5s."""
+    def _skill_fatiador_de_corpos(self, skill, _combat_stats, combat_state, tile_move):
+        """Cavaleiro — Fatiador de Corpos: spin AoE com parâmetros vindos de skill.params."""
         char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
         if not char_stats:
             return False
-        char_stats.fatiador_timer = 5.0
-        char_stats.fatiador_tick  = 1.0
-        self._fatiador_aoe_tick(tile_move)
+        p = skill.params
+        char_stats.fatiador_timer = p.get("duration",       5.0)
+        char_stats.fatiador_tick  = p.get("tick_interval",  1.0)
+        self._fatiador_aoe_tick(skill, tile_move)
         skill.current_cooldown = skill.cooldown
         if combat_state:
-            combat_state.enter_combat()
+            enter_combat(combat_state)
         LOG.add("Fatiador de Corpos: girando!", (255, 120, 60))
         return True
 
-    def _fatiador_aoe_tick(self, tile_move) -> None:
-        """Aplica 45% de dano a todos os inimigos em raio 2 tiles (tick do Fatiador)."""
+    def _fatiador_aoe_tick(self, skill, tile_move) -> None:
+        """Aplica dano AoE a inimigos no raio. Parâmetros vindos de skill.params."""
+        p      = skill.params if skill else {}
+        radius = p.get("radius_tiles",      2)
+        mult   = p.get("damage_multiplier", 0.45)
+        use_weapon = p.get("include_weapon_dmg", False)
+
         pl_x, pl_y = tile_move.current_tile_x, tile_move.current_tile_y
-        radius = 2
         hit = 0
-        for eid, _, etm, ecs in self.world.get_entities_with(Enemy, TileMovement, CombatStats):
-            dist = chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y)
-            if dist <= radius and ecs.current_hp > 0:
-                self.combat_system.deal_damage(self.player_entity_id, eid, "physical",
-                                               multiplier=0.45, is_ability=True)
-                hit += 1
+
+        if use_weapon:
+            # damage_multiplier aplicado sobre AP; dano de arma entra via "physical" normal
+            for eid, _, etm, ecs in self.world.get_entities_with(Enemy, TileMovement, CombatStats):
+                if chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y) <= radius and ecs.current_hp > 0:
+                    deal_damage(self.player_entity_id, eid, "physical",
+                                multiplier=mult, is_ability=True)
+                    hit += 1
+        else:
+            for eid, _, etm, ecs in self.world.get_entities_with(Enemy, TileMovement, CombatStats):
+                if chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y) <= radius and ecs.current_hp > 0:
+                    deal_damage(self.player_entity_id, eid, "physical",
+                                multiplier=mult, is_ability=True)
+                    hit += 1
+
         if hit:
             LOG.add(f"Fatiador de Corpos: {hit} atingidos!", (255, 120, 60))
 
-    def _talent_brado_provocativo(self, skill, _combat_stats, combat_state, tile_move):
+    def _skill_brado_provocativo(self, skill, _combat_stats, combat_state, tile_move):
         """Cavaleiro — Brado Provocativo: provoca inimigos em raio 3, enlouquecendo-os por 10s."""
         from components import StatusEffects as _SE_BP2
         pl_x = tile_move.current_tile_x
@@ -455,7 +470,7 @@ class SkillHandlers:
         PROC.add("Brado!", (255, 100, 50))
         skill.current_cooldown = skill.cooldown
         if combat_state:
-            combat_state.enter_combat()
+            enter_combat(combat_state)
         if not taunted:
             self._warn("Nenhum inimigo no raio")
         return True
@@ -471,9 +486,24 @@ class SkillHandlers:
         return True
 
     def _skill_bola_de_fogo(self, skill, combat_stats, combat_state, tile_move):
-        """1.5s cast — 50% dano + 100% SP — 25 mana."""
+        """1.5s cast (reduzido por Bola de Fogo Aperfeiçoada) — 50% dano + 100% SP."""
         char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
-        if not self._check_mana(char_stats, skill.mana_cost):
+
+        # Chama Interna: proc ativo → cast instantâneo e grátis
+        proc_active = getattr(char_stats, "fire_instant_ready", False) if char_stats else False
+        if proc_active:
+            effective_cost = 0
+            effective_cast = 0.0
+            if char_stats:
+                char_stats.fire_instant_ready = False   # consome o proc
+        else:
+            discount       = getattr(combat_stats, "fire_mana_discount", 0)
+            pyr_discount   = int(skill.mana_cost * getattr(combat_stats, "pyromania_bonus", 0.0))
+            effective_cost = max(0, skill.mana_cost - discount - pyr_discount)
+            effective_cast = max(0.0, skill.cast_time
+                                 - getattr(combat_stats, "fire_cast_time_reduction", 0.0))
+
+        if not self._check_mana(char_stats, effective_cost):
             return False
 
         target_id = self._resolve_target(combat_state, tile_move, 30)
@@ -486,17 +516,16 @@ class SkillHandlers:
             self._warn("Alvo inválido")
             return False
 
-        char_stats.mana -= skill.mana_cost
-
         self.world.add_component(self.player_entity_id, SpellCast(
             spell_id  = "bola_de_fogo",
-            cast_time = skill.cast_time,
+            cast_time = effective_cast,
             elapsed   = 0.0,
             target_id = target_id,
+            mana_cost = effective_cost,  # deduzido ao completar, não aqui
         ))
         if combat_state:
             combat_state.is_casting = True
-            combat_state.enter_combat()
+            enter_combat(combat_state)
             combat_state.is_pursuing = True
 
         SOUNDS.play_spell("bola_de_fogo", "cast")
@@ -548,47 +577,59 @@ class SkillHandlers:
         return True
 
     def _skill_nova_congelante(self, skill, combat_stats, combat_state, tile_move):
-        """Instantânea — raiz 5s em todos a 3 tiles + 50% SP. 10 mana."""
+        """1s cast (reduzido por Precisão Elemental) — raiz 5s a 3 tiles + 50% SP."""
         char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
         if not self._check_mana(char_stats, skill.mana_cost):
             return False
 
-        char_stats.mana -= skill.mana_cost
-        SOUNDS.play_spell("nova_congelante", "cast")
+        # Precisão Elemental reduz o cast time (pir_precisao_elemental)
+        effective_cast = max(0.0, skill.cast_time
+                             - getattr(combat_stats, "ice_cast_time_reduction", 0.0))
 
-        pl_x = tile_move.current_tile_x
-        pl_y = tile_move.current_tile_y
-        pl_pos = self.world.get_component(self.player_entity_id, Position)
-
-        hit = 0
-        for eid, epos, _, _, etm, ecs in self.world.get_entities_with(
-                Position, Enemy, AIControlled, TileMovement, CombatStats):
-            if ecs.current_hp <= 0:
-                continue
-            if chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y) > 3:
-                continue
-            # Dano
-            sp = combat_stats.spell_power if combat_stats else 0
-            dmg = max(1, int(sp * 0.5))
-            from spell_system import _apply_magic_damage
-            _apply_magic_damage(self.player_entity_id, eid, dmg, self.world)
-            # Raiz
-            sfx = self.world.get_component(eid, StatusEffects)
-            if sfx:
-                apply_effect(self.world, eid, "root", 5.0)
-                etm_c = self.world.get_component(eid, TileMovement)
-            hit += 1
-
-        if hit == 0:
-            self._warn("Nenhum inimigo no raio")
-        else:
-            SOUNDS.play_spell("nova_congelante", "impact")
-            LOG.add(f"Nova Congelante — {hit} inimigo(s) enraizados.", (100, 180, 255))
-
+        self.world.add_component(self.player_entity_id, SpellCast(
+            spell_id  = "nova_congelante",
+            cast_time = effective_cast,
+            elapsed   = 0.0,
+            target_id = -1,            # AOE — sem alvo único
+            mana_cost = skill.mana_cost,
+        ))
         if combat_state:
-            combat_state.enter_combat()
+            combat_state.is_casting = True
+            enter_combat(combat_state)
 
-        skill.current_cooldown = skill.cooldown
+        LOG.add("Lançando Nova Congelante...", (100, 180, 255))
+        return True
+
+    def _skill_polimorfia(self, skill, combat_stats, combat_state, tile_move):
+        """1.5s cast — Transforma o alvo: desorientado + regen 10% HP/s. Custo: 10% mana."""
+        char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
+        mana_cost  = max(1, int(char_stats.max_mana * skill.mana_cost_pct)) if char_stats else 1
+        if not self._check_mana(char_stats, mana_cost):
+            return False
+
+        target_id = self._resolve_target(combat_state, tile_move, skill.cast_range)
+        if target_id == -1:
+            self._warn("Nenhum alvo")
+            return False
+
+        target_cs = self.world.get_component(target_id, CombatStats)
+        if not target_cs or target_cs.current_hp <= 0:
+            self._warn("Alvo inválido")
+            return False
+
+        self.world.add_component(self.player_entity_id, SpellCast(
+            spell_id  = "polimorfia",
+            cast_time = skill.cast_time,
+            elapsed   = 0.0,
+            target_id = target_id,
+            mana_cost = mana_cost,  # deduzido ao completar, não aqui
+        ))
+        if combat_state:
+            combat_state.is_casting = True
+            # is_pursuing não é setado — skill marcada como offensive=False no catálogo
+
+        SOUNDS.play_spell("polimorfia", "cast")
+        LOG.add("Lançando Polimorfia...", (160, 80, 200))
         return True
 
     def _skill_bloco_de_gelo(self, skill, combat_stats, combat_state, tile_move):
@@ -607,4 +648,67 @@ class SkillHandlers:
 
         skill.current_cooldown = skill.cooldown
         LOG.add("Bloco de Gelo ativado! Imune por 5s.", (100, 180, 255))
+        return True
+
+    def _skill_escudo_fogo(self, skill, combat_stats, combat_state, tile_move):
+        """Escudo de Fogo — retaliation de fogo em atacantes por 15s. 25 mana / 20s CD."""
+        from components import FireShieldEffect
+        char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
+        if not self._check_mana(char_stats, 25):
+            return False
+        if self.world.get_component(self.player_entity_id, FireShieldEffect):
+            self._warn("Escudo de Fogo já ativo")
+            return False
+
+        char_stats.mana -= 25
+        self.world.add_component(self.player_entity_id, FireShieldEffect(duration=15.0))
+        skill.current_cooldown = skill.cooldown
+        LOG.add("Escudo de Fogo ativado! (15s)", (255, 120, 0))
+        SOUNDS.play_skill("skill_fire_shield")
+        return True
+
+    def _skill_pirofagia(self, skill, combat_stats, combat_state, tile_move):
+        """Pirofagia — segura a tecla para mirar o cone, solte para disparar. 75 mana / 90s CD."""
+        from components import PirofagiaAiming
+        char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
+        if not self._check_mana(char_stats, skill.mana_cost):
+            return False
+        if self.world.get_component(self.player_entity_id, PirofagiaAiming):
+            return False   # já está mirando
+
+        # Mana e cooldown só são aplicados ao disparar (ver PirofagiaSystem._fire_cone)
+        self.world.add_component(self.player_entity_id, PirofagiaAiming())
+        LOG.add("Pirofagia — aponte e clique para disparar. (Dir. cancela)", (255, 100, 30))
+        return True
+
+    def _skill_calcinar(self, skill, combat_stats, combat_state, tile_move):
+        """0.6s cast em movimento — 50 + 25% SP. Escola fogo. 15 mana. Sem cooldown."""
+        char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
+        pyr_discount = int(skill.mana_cost * getattr(combat_stats, "pyromania_bonus", 0.0))
+        effective_cost = max(0, skill.mana_cost - pyr_discount)
+        if not self._check_mana(char_stats, effective_cost):
+            return False
+
+        target_id = self._resolve_target(combat_state, tile_move, skill.cast_range)
+        if target_id == -1:
+            self._warn("Nenhum alvo")
+            return False
+        target_cs = self.world.get_component(target_id, CombatStats)
+        if not target_cs or target_cs.current_hp <= 0:
+            self._warn("Alvo inválido")
+            return False
+
+        # interruptible=False — cast não é cancelado por movimento
+        self.world.add_component(self.player_entity_id, SpellCast(
+            spell_id      = "calcinar",
+            cast_time     = skill.cast_time,
+            elapsed       = 0.0,
+            target_id     = target_id,
+            mana_cost     = effective_cost,
+            interruptible = False,
+        ))
+        if combat_state:
+            # Não seta is_casting — jogador pode continuar movendo normalmente
+            enter_combat(combat_state)
+        LOG.add("Calcinando...", (255, 140, 40))
         return True

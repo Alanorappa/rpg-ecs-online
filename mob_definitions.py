@@ -19,6 +19,19 @@ Regra: Feras são sempre Warrior/melee.
 
 _NO_SOUNDS: dict = {}   # atalho para mobs sem sons definidos ainda
 
+# Parâmetros de projétil por entity_class — extensível sem editar EnemyAISystem.
+# Adicionar nova classe de mob ranged: inserir entrada aqui.
+PROJECTILE_BY_CLASS: dict[str, dict] = {
+    "Warlock":  {"color": (160,   0, 220), "is_arrow": False},
+    "Bruxo":    {"color": (160,   0, 220), "is_arrow": False},
+    "Mage":     {"color": (255,  80,   0), "is_arrow": False},
+    "Mago":     {"color": (255,  80,   0), "is_arrow": False},
+    "Hunter":   {"color": (120,  80,  40), "is_arrow": True},
+    "Arqueiro": {"color": (120,  80,  40), "is_arrow": True},
+    # Padrão para classes não listadas:
+    "_default": {"color": (200, 200,  50), "is_arrow": False},
+}
+
 MOB_TABLE: dict[str, dict] = {
     # ── Feras ─────────────────────────────────────── race="Fera", sempre melee
     "Aranha": {

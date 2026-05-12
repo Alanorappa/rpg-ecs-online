@@ -15,6 +15,7 @@ import random
 import pygame
 from fonts import make as _font
 
+from systems import System
 from quest_events import QUEST_EVENTS
 from quests_data import QUESTS, QUEST_ITEMS, ObjectiveDef
 from combat_log import LOG
@@ -25,7 +26,7 @@ from floating_text import PROC
 # QuestSystem — progressão e recompensas
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class QuestSystem:
+class QuestSystem(System):
     # ── HUD layout ──────────────────────────────────────────────────────────
     MAX_HUD_QUESTS   = 3
     HUD_MARGIN_RIGHT = 10
@@ -440,7 +441,7 @@ class QuestSystem:
 # QuestDialogSystem — modal WoW-style
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class QuestDialogSystem:
+class QuestDialogSystem(System):
     """
     Gerencia a interação visual com NPCs que têm quests.
 
@@ -1018,7 +1019,7 @@ class QuestDialogSystem:
 # QuestJournalSystem — modal do diário de quests (tecla J)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class QuestJournalSystem:
+class QuestJournalSystem(System):
     """
     Diário de quests acessível pela tecla J.
 

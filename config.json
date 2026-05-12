@@ -1,18 +1,18 @@
 {
   "scale": 1.5,
   "music_volume": 0.05263157894736842,
-  "sfx_volume": 0.03684210526315789,
-  "music_enabled": true,
-  "sfx_enabled": true,
+  "sfx_volume": 0.04736842105263158,
+  "music_enabled": false,
+  "sfx_enabled": false,
   "hotbar": {
     "slots": [
-      "bloco_de_gelo",
-      "calamidade_flamejante",
-      "bola_de_fogo",
-      "nova_congelante",
-      null,
-      null,
-      null,
+      "golpe_debilitante",
+      "vitoria_iminente",
+      "golpe_poderoso",
+      "executar",
+      "interceptar",
+      "impacto",
+      "fatiador_de_corpos",
       null,
       null,
       null

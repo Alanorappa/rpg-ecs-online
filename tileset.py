@@ -452,6 +452,26 @@ SHEET_FAMILIES: list[dict] = [
         "color":               (120, 92, 62),
         "underlying_terrain":  ".",
     },
+        {
+        "file":                "TX Mud",
+        "prefix":              "txm",
+        "tile_w":              32,
+        "tile_h":              32,
+        "is_solid":            False,
+        "label":               "Terra Seca TX",
+        "color":               (158, 90, 36),
+        "underlying_terrain":  ".",
+    },
+        {
+        "file":                "TX Tileset Cave",
+        "prefix":              "txc",
+        "tile_w":              32,
+        "tile_h":              32,
+        "is_solid":            False,
+        "label":               "Caverna TX",
+        "color":               ( 47, 46, 57),
+        "underlying_terrain":  ".",
+    },          
 ]
 
 # Mapeamento id_tile → (sheet_file, sx, sy, tile_w, tile_h) — lido pelo TileSpriteManager
@@ -665,7 +685,47 @@ OBJECT_SHEET_FAMILIES: list[dict] = [
          ]
 
      },
+{
+         "file":   "TX Tileset Cave Objects",
+         "prefix": "cv",
+         "label":  "Caverna",
+         "color":  (41, 39, 55),
+         "underlying_terrain": ",",
+         "tiles": [
+             # (id,              sx,  sy,  w,   h,     collision_rect)  
+             ("cv1",             0,   0,   32,  64,    "full"),
+             ("cv2",            32,   0,   32,  64,    "full"),
+             ("cv3",            64,   0,   32,  64,    (0, 0, 32, 32)),
+             ("cv4",            96,   0,   32,  64,    "full"),                                       
+             ("cv5",           128,   0,   32,  64,    "full"),
+             ("cv6",           160,   0,   32,  32,    "full"),
+             ("cv7",           192,   0,   32,  32,    "full"),
+             ("cv8",           160,  32,   32,  32,    "full"),
+             ("cv9",           192,  32,   32,  32,    "full"),
+             ("cv28",          224,   0,   32,  32,    "full"),
+             ("cv29",          224,  64,   32,  64,    "full"),
+             ("cv10",          224,  32,   32,  32,    "full"),
+             ("cv11",            0,  64,   32,  32,    "full"),
+             ("cv12",           32,  64,   32,  32,    "full"),
+             ("cv13",           64,  64,   32,  32,      None),
+             ("cv14",           96,  64,   32,  32,    "full"),
+             ("cv15",          124,  64,   32,  32,    "full"),
+             ("cv16",          160,  64,   32,  64,    "full"),
+             ("cv17",          192,  64,   32,  64,    "full"),
+             ("cv18",            0,  96,   32,  32,      None),
+             ("cv19",           32,  96,   32,  64,    "base"),
+             ("cv20",           64,  96,   32,  64,    "base"),
+             ("cv21",           96,  96,   32,  64,    "base"),
+             ("cv22",          128,  96,   32,  32,      None),
+             ("cv23",            0, 128,   32,  32,    "full"),
+             ("cv24",          128, 128,   32,  32,    "full"),
+             ("cv25",          160, 128,   32,  32,    "full"),
+             ("cv26",          192, 128,   32,  32,    "full"),
+             ("cv27",          224, 128,   32,  32,    "full"),                                      
 
+         ]
+
+     },
 
     # ── TX Tileset Wall — estrutura escalonável (512×512, tiles 32×32) ────────
     #

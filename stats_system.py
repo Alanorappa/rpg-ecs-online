@@ -21,6 +21,56 @@ from save_system import request_autosave
 
 
 # ---------------------------------------------------------------------------
+# Ganhos de atributo por level up — específicos por classe.
+# Adicionar nova classe: inserir entrada aqui.
+# Campos ausentes recebem 0 (atributo não cresce).
+# ---------------------------------------------------------------------------
+CLASS_LEVEL_GAINS: dict[str, dict] = {
+    "guerreiro": {"strength": 2, "vitality": 2, "agility": 1, "intelligence": 0, "defense": 2},
+    "mago":      {"strength": 0, "vitality": 1, "agility": 0, "intelligence": 3, "defense": 0},
+    "arqueiro":  {"strength": 0, "vitality": 1, "agility": 3, "intelligence": 0, "defense": 0},
+}
+
+# Atributos base ao criar um personagem novo — específicos por classe.
+# Adicionar nova classe: inserir entrada aqui. game.py lê deste dict.
+CLASS_BASE_STATS: dict[str, dict] = {
+    "guerreiro": {"strength": 1, "intelligence": 1, "agility": 1, "vitality": 3, "defense": 2},
+    "mago":      {"strength": 1, "intelligence": 5, "agility": 1, "vitality": 2, "defense": 1},
+    "arqueiro":  {"strength": 1, "intelligence": 1, "agility": 5, "vitality": 2, "defense": 1},
+}
+
+
+# ---------------------------------------------------------------------------
+# Dados de melee por classe — independentes do crescimento de atributos.
+# Adicionar uma nova classe: inserir uma entrada aqui.
+# Campos omitidos mantêm o valor calculado por apply_char_stats_to_combat.
+# ---------------------------------------------------------------------------
+# Tipos de armadura permitidos por classe.
+# Adicionar nova classe: inserir entrada aqui.
+CLASS_ARMOR_ALLOWED: dict[str, frozenset] = {
+    "guerreiro": frozenset({"placa", "couro", "tecido"}),
+    "arqueiro":  frozenset({"couro", "tecido"}),
+    "mago":      frozenset({"tecido"}),
+}
+
+# base_attack_interval NÃO entra aqui — é gerenciado pelo equip/unequip de armas.
+# _default_attack_interval = velocidade sem arma (restaurada ao desequipar).
+CLASS_MELEE_OVERRIDES: dict[str, dict] = {
+    "guerreiro": {
+        "_default_attack_interval": 2.6,
+        "base_physical_damage":     3,
+        "base_physical_damage_max": 6,
+    },
+    "mago": {
+        "base_attack_power":        0,
+        "_default_attack_interval": 3.2,
+        "base_physical_damage":     2,
+        "base_physical_damage_max": 5   ,
+    },
+}
+
+
+# ---------------------------------------------------------------------------
 # Função utilitária compartilhada
 # ---------------------------------------------------------------------------
 
@@ -28,17 +78,11 @@ def apply_char_stats_to_combat(char_stats: CharacterStats,
                                 combat_stats: CombatStats,
                                 permanent: PermanentStats | None = None) -> None:
     """
-    Recalcula os valores base de CombatStats a partir de CharacterStats + PermanentStats.
+    Deriva CombatStats a partir dos atributos do personagem (STR/INT/AGI/VIT/DEF).
 
-    Fórmulas:
-      base_stamina      = 5 + VIT_total * 5       (VIT=3 → 20)
-      base_armor        = DEF_total * 2            (DEF=2 → 4)
-      base_attack_power = 5 + STR_total * 2        (STR=1 → 7)
-      base_spell_power  = INT_total * 2            (INT=1 → 2)
-      base_crit_rating  = 0.10 + AGI_total * 0.01  (AGI=1 → 11%)
-
-    base_physical_damage e base_attack_interval mantêm seus valores
-    (são controlados por arma equipada, definido em fases futuras).
+    Responsabilidade única: derivação de atributos → stats de combate.
+    NÃO toca base_attack_interval nem _default_attack_interval — esses são
+    gerenciados por sync_attack_interval (init/load) e pelo sistema de equip/unequip.
     """
     p = permanent
     total_str = char_stats.strength      + (p.strength      if p else 0)
@@ -52,21 +96,48 @@ def apply_char_stats_to_combat(char_stats: CharacterStats,
     combat_stats.base_attack_power = 5  + total_str * 2
     combat_stats.base_spell_power  =      total_int * 2
     combat_stats.base_crit_rating  = 0.10 + total_agi * 0.01
-    # AGI → dodge (2 pontos de rating por ponto de agi → 20 agi = 2% dodge)
     combat_stats.base_dodge_rating = total_agi * 2.0
-    # STR → parry (1 ponto de rating por ponto de str → 20 str = 1% parry)
     combat_stats.base_parry_rating = total_str * 1.0
+
+    # Overrides de classe: dano sem arma e AP base (sem tocar velocidade de ataque)
+    overrides = CLASS_MELEE_OVERRIDES.get(char_stats.class_id)
+    if overrides:
+        for _attr, _val in overrides.items():
+            setattr(combat_stats, _attr, _val)
 
     combat_stats._recalculate_effective_stats()
 
-    # Mana (escala com INT — relevante para mago mas calculado para todos)
+    # Mana — escala com INT (relevante para o mago, calculado para todos)
     new_max_mana = 100 + total_int * 15
     if char_stats.max_mana != new_max_mana:
         if char_stats.max_mana == 0:
-            char_stats.mana = new_max_mana   # primeira inicialização: mana cheia
+            char_stats.mana = new_max_mana
         elif char_stats.mana > new_max_mana:
             char_stats.mana = new_max_mana
         char_stats.max_mana = new_max_mana
+
+
+def sync_attack_interval(combat_stats: CombatStats, equipment=None) -> None:
+    """
+    Sincroniza base_attack_interval com o estado atual do equipamento.
+
+    Deve ser chamada APENAS em dois momentos:
+      1. Criação de novo personagem (classe definida, sem arma)
+      2. Load de save (reconstituição do estado completo)
+
+    Nunca chamar em level-up ou respawn — velocidade de ataque não muda com evolução.
+
+    Regras:
+      - Arma equipada na mainhand com attack_speed > 0 → usa velocidade da arma
+      - Sem arma → usa _default_attack_interval (padrão da classe)
+    """
+    weapon = equipment.slots.get("mainhand") if equipment else None
+    weapon_speed = getattr(weapon, "attack_speed", 0.0) if weapon else 0.0
+    if weapon_speed > 0:
+        combat_stats.base_attack_interval = weapon_speed
+    else:
+        combat_stats.base_attack_interval = combat_stats._default_attack_interval
+    combat_stats._recalculate_effective_stats()
 
 
 # ---------------------------------------------------------------------------
@@ -89,16 +160,18 @@ def process_levelups(world: World, entity_id: int,
         char.current_xp     -= char.xp_to_next_level
         char.level          += 1
         char.xp_to_next_level = CharacterStats.xp_for_level(char.level)
-        char.vitality       += 1
-        char.strength       += 1
-        char.agility        += 1
-        char.intelligence   += 1
-        char.defense        += 2
+        gains = CLASS_LEVEL_GAINS.get(char.class_id, {})
+        char.strength     += gains.get("strength",     0)
+        char.intelligence += gains.get("intelligence", 0)
+        char.agility      += gains.get("agility",      0)
+        char.vitality     += gains.get("vitality",     0)
+        char.defense      += gains.get("defense",      0)
         tt = world.get_component(entity_id, TalentTree)
         if tt is not None:
             tt.available_points += 1
         SOUNDS.play_ui("levelup")
-        LOG.add(f"Level up! Nivel {char.level} — 1 ponto de talento disponivel (T).", (255, 200, 0))
+        gains_str = ", ".join(f"+{v} {k[:3].upper()}" for k, v in gains.items() if v > 0)
+        LOG.add(f"Level up! Nivel {char.level} — {gains_str} | 1 ponto de talento (T).", (255, 200, 0))
         _qfire("reach_level", level=char.level)
         leveled = True
 
@@ -174,7 +247,11 @@ class DeathRespawnSystem(System):
 
         # Nenhum reset de level, atributos ou talentos — apenas restaura HP
         char_stats.free_executar_charges = 0
-        char_stats.embalo_charges = 0
+        char_stats.embalo_charges        = 0
+        char_stats.fire_instant_ready    = False
+        char_stats.thermal_shock_active  = False
+        char_stats.fatiador_timer        = 0.0
+        char_stats.fatiador_tick         = 0.0
         apply_char_stats_to_combat(char_stats, combat_stats, perm)
         combat_stats.current_hp = combat_stats.max_hp
         combat_stats.attack_cooldown_timer = 0.0

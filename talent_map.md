@@ -143,7 +143,7 @@
     |_________|      |_________|     |_________|
                           |                
      _________        ____|____       _________
-    |        ³|      |        ³|     |        ³|
+    |        ³|      |        ³|     |        ¹|
     |    8    |______|    9    |_____|   10    |
     |_________|      |_________|     |_________|
          |                |               |     
@@ -164,4 +164,27 @@
 
 2) Bola de fogo aperfeiçoada - Reduz o tempo de lançamento de bola de fogo em 0.1 segundos.
 
-3) 
+3) Queimaduras profundas - Acertos críticos de Bola de fogo fazem o alvo arder em chamas por 3 segundos.
+
+4) Precisão elemental - Reduz o tempo de lançamento de sua nova congelante em 0.2 segundos.
+
+5) Escudo de fogo - Desbloqueia a habilidade Escudo de Fogo, Um escudo que envolve seu corpo fazendo com que quando um oponente te atacar recebe 10 de dano mais 20% do spell power do mago.
+
+6) Chama interna - Suas habilidades da escola de magia de fogo tem 2% de chance de fazer com que sua Bola de fogo possa ser lançada instantâneamente e não tenha custo de mana.
+
+7) Choque térmico - Enquanto o alvo está sob efeito da nova congelante, habilidades da escola de magia de fogo causam 100% mais dano.
+
+8) Piromaníaco - Suas skills da escola de magia de fogo custam 5% menos mana e causam 5% mais dano.
+
+9) Lapso Elemental - Por um instante você esquece sua identidade e se torna totalmente instável, aumentando 5% a chance de crítico por 3 segundos, e seu corpo arde em chamas consumindo 1% de sua vida por segundo enquanto estiver sobre o efeito de instabilidade.
+
+10) Exaustão - Suas bolas de fogo consecutivas fazem o alvo ficar exausto, reduzindo a velocidade de movimento em 5% cada acerto subsequente, acumulando até 5.
+
+11) Calamidade Flamejante - Desbloqueia a skill Calamidade Flamejante, seleciona uma área que será alvejada por bolas de fogo caídas do ceu, causando 50 de dano mais 50% do spell power a cada 1 segundo e reduzindo a velocidade de movimento dos alvos em 50% por 5 segundos.
+
+12) Crematória - Aumenta 25% o dano a alvos com menos de 20% de vida.
+
+13) Combustão - Desbloqueia a habilidade Calcinar, Uma habilidade que pode ser lançada em movimento, causa 50 de dano mais 25% do spell power.
+
+14) Pirofagia - Desbloqueia a habilidade Pirofagia, o mago cospe fogo causando 150 de dano mais 150% do spell power e faz os alvos ficarem desorientados por 3 segundos.
+

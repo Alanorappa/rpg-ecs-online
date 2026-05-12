@@ -1,6 +1,7 @@
 # components.py
 from __future__ import annotations
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
 # ---------------------------------------------------------------------------
 # Identidade de entidade — raças, classes e tiers disponíveis
@@ -92,8 +93,9 @@ class CombatStats:
         self.base_spell_power = base_spell_power
         self.base_haste_rating = base_haste_rating
         self.base_crit_rating = base_crit_rating
-        self.base_physical_damage = base_physical_damage
-        self.base_magical_damage = base_magical_damage
+        self.base_physical_damage     = base_physical_damage
+        self.base_physical_damage_max = base_physical_damage  # default: min==max (flat); sete maior para range
+        self.base_magical_damage      = base_magical_damage
         self.base_attack_interval = base_attack_interval
         self.base_hit_rating   = base_hit_rating
         self.base_dodge_rating = base_dodge_rating
@@ -107,8 +109,8 @@ class CombatStats:
         # Lista de modificadores ativos (de itens, talentos, etc.)
         self.modifiers: list[Modifier] = []
 
-        # Modificadores temporários: [{"modifier": Modifier, "timer": float, "label": str}]
-        self.timed_modifiers: list = []
+        # Modificadores temporários tipados
+        self.timed_modifiers: list[dict] = []  # {modifier, timer, label}
 
         # Atributos efetivos (base + modificadores)
         self.stamina: float = 0.0
@@ -127,7 +129,7 @@ class CombatStats:
         self.max_hp: int = 0
         self.current_hp: int = 0
         self.attack_cooldown_timer: float = 0.0 # Tempo restante para o próximo ataque
-        self.hp5: float       = 0.05  # fração de max_hp regenerada a cada 5s (fora de combate)
+        self.hp5: float       = 0.01  # fração de max_hp regenerada a cada 5s (fora de combate)
         self.hp5_timer: float = 0.0   # acumulador de tempo para o tick de regen
 
         # Flags comportamentais de talento — populadas por apply_talent_effects().
@@ -146,6 +148,21 @@ class CombatStats:
         self.impacto_maquina_matar: bool = False         # Impacto bônus por qtd. de inimigos no raio
         self.impacto_assassino: bool = False             # Impacto pode procar Executar grátis
         self.executar_horrorizante: bool = False         # Executar aplica medo se alvo sobreviver
+        # ── Flags comportamentais — build Piromania (Mago) ──────────────────
+        self.fire_mana_discount:        int   = 0     # pir_frieza: desconto fixo no custo de Bola de Fogo
+        self.fire_cast_time_reduction:  float = 0.0  # pir_bdf_aperfeicoada: reduz cast time de BdF
+        self.fire_burns_on_crit:        bool  = False # pir_queimaduras: crítico de BdF aplica burn
+        self.fire_burn_duration:        float = 0.0  # pir_queimaduras: duração do burn (pts × 3s)
+        self.ice_cast_time_reduction:   float = 0.0  # pir_precisao_elemental: reduz cast time de NC
+        self.fire_shield_enabled:       bool  = False # pir_escudo_fogo: retaliação de fogo
+        self.fire_instant_proc_chance:  float = 0.0  # pir_chama_interna: % chance BdF ficará instante e grátis
+        self.thermal_shock_enabled:     bool  = False # pir_choque_termico: +100% dano fogo em alvo frozen
+        self.pyromania_bonus:           float = 0.0  # pir_piromaníaco: bônus de dano/desconto de mana fogo
+        self.elemental_lapse_crit_bonus: float = 0.0 # pir_lapso_elemental: crit% durante proc
+        self.fire_crit_counter:         int   = 0    # contagem de crits de fogo para Lapso Elemental
+        self.fire_crit_timer:           float = 0.0  # janela de 6s para acumular 3 crits
+        self.fire_exhaustion_enabled:   bool  = False # pir_exaustao: slow progressivo por BdF consecutiva
+        self.crematoria_enabled:        bool  = False # pir_crematoria: +25% dano em alvos <20% HP
 
         # Validação de invariantes críticos — falha rápido durante desenvolvimento
         if base_stamina <= 0:
@@ -169,17 +186,6 @@ class CombatStats:
         (Exemplo: 10 pontos de vida por ponto de estamina)
         """
         return int(self.stamina * 10)
-
-    def add_modifier(self, modifier: Modifier):
-        """Adiciona um modificador e recalcula os atributos efetivos."""
-        self.modifiers.append(modifier)
-        self._recalculate_effective_stats()
-
-    def remove_modifier(self, modifier: Modifier):
-        """Remove um modificador e recalcula os atributos efetivos."""
-        if modifier in self.modifiers:
-            self.modifiers.remove(modifier)
-            self._recalculate_effective_stats()
 
     def _recalculate_effective_stats(self):
         """
@@ -276,15 +282,6 @@ class CombatStats:
         
         # Preserva o HP absoluto; apenas limita ao novo máximo se necessário
         self.current_hp = max(0, min(old_current_hp, self.max_hp))
-
-    def add_timed_modifier(self, modifier: Modifier, duration: float, label: str = ""):
-        """Adiciona um modificador temporário. Se mesmo label já ativo, reseta o timer."""
-        for entry in self.timed_modifiers:
-            if entry["label"] == label and label:
-                entry["timer"] = duration
-                return
-        self.timed_modifiers.append({"modifier": modifier, "timer": duration, "label": label})
-        self.add_modifier(modifier)
 
     def get_attack_cooldown(self) -> float:
         """
@@ -434,14 +431,7 @@ class CombatState:
         """Retorna True se a entidade pode se mover."""
         return self.is_alive and not self.is_stunned and not self.is_rooted and not self.is_casting
 
-    def enter_combat(self):
-        """Coloca a entidade em modo combate e reinicia o timer."""
-        if not self.in_combat:
-            self._just_entered_combat = True
-        self.in_combat = True
-        self.combat_timer = self.OUT_OF_COMBAT_DURATION
-
-    # Timers são atualizados por CombatStateSystem — não há lógica neste componente.
+    # Timers atualizados por CombatStateSystem. Mutações via stat_fns.enter_combat().
 
 
 @dataclass
@@ -496,6 +486,10 @@ class CharacterStats:
 
         # Embalo: cada crítico do player gera 1 carga → Golpe Poderoso consome
         self.embalo_charges: int = 0
+        # Chama Interna: proc ativo — próxima Bola de Fogo é instantânea e grátis
+        self.fire_instant_ready: bool = False
+        # Choque Térmico: True quando alvo selecionado tem root (atualizado por ManaSystem)
+        self.thermal_shock_active: bool = False
 
         # Punho no Queixo: contador de golpes (reseta ao acumular 3 → 1 carga)
         self.pnq_counter: int = 0
@@ -564,7 +558,8 @@ class Item:
                  proc: dict = None,
                  subtype: str = "",
                  consumable: dict = None,
-                 max_stack: int = 1):
+                 max_stack: int = 1,
+                 armor_class: str = ""):
         self.name = name
         self.item_type = item_type  # "weapon", "armor", "shield", "jewelry", "consumable"
         self.slot = slot            # "mainhand", "offhand", "head", "chest", etc.
@@ -586,6 +581,8 @@ class Item:
         # Empilhamento
         self.max_stack = max_stack   # > 1 = empilhável
         self.stack     = 1           # quantidade atual na pilha
+        # Tipo de material (apenas item_type=="armor"): "tecido"|"couro"|"placa"|""
+        self.armor_class: str = armor_class
 
     def __repr__(self):
         return f"Item({self.name!r}, {self.rarity})"
@@ -703,6 +700,12 @@ class Skill:
         self.channel_duration: float = 0.0  # duração total da canalização
         self.needs_aoe_target: bool = False  # True = requer clique de mira AOE
         self.cast_range:      int   = 0      # alcance máximo em tiles (0 = melee/sem alcance)
+        self.school:          str   = ""     # escola de magia: "fogo"|"gelo"|"arcano"|""
+        self.mana_cost_pct:   float = 0.0   # custo em % da mana máxima (0 = usa mana_cost fixo)
+        self.offensive:       bool  = True  # False = skill utilitária/buff — não inicia combate
+        # Parâmetros de gameplay da skill (vindos do SKILL_CATALOG["params"])
+        # Ex: {"damage_multiplier": 0.45, "radius_tiles": 2, "duration": 5.0}
+        self.params:          dict  = {}
 
     def is_ready(self) -> bool:
         if self.current_cooldown > 0:
@@ -716,10 +719,13 @@ class PlayerSkills:
     """Conjunto de habilidades ativas do jogador. Configurado em skill_config.py."""
 
     # Habilidades baseadas em cargas: skill_id → (max_charges, charge_timeout)
-    _CHARGE_BASED: dict = {"vitoria_iminente": (1, 30.0)}
+    _CHARGE_BASED: dict = {
+        "vitoria_iminente": (1, 30.0),
+        "punho_no_queixo":  (1, 0.0),   # 1 carga, sem expiração
+    }
 
     # Skills que disparam GCD
-    _GCD_SKILLS: set = {"golpe_poderoso", "executar"}
+    _GCD_SKILLS: set = {"golpe_poderoso", "executar", "polimorfia"}
     GCD_DURATION: float = 0.5
 
     def __init__(self):
@@ -757,6 +763,10 @@ class PlayerSkills:
             s.channel_duration  = entry.get("channel_duration",  0.0)
             s.needs_aoe_target  = entry.get("needs_aoe_target",  False)
             s.cast_range        = entry.get("cast_range",        0)
+            s.school            = entry.get("school",            "")
+            s.mana_cost_pct     = entry.get("mana_cost_pct",    0.0)
+            s.offensive         = entry.get("offensive",         True)
+            s.params            = entry.get("params",            {})
             if entry.get("sound"):
                 s.sound_name = entry["sound"]
         if skill_id in cls._CHARGE_BASED:
@@ -831,12 +841,7 @@ class LearnedRecipes:
     def __init__(self):
         self.known: list = []   # lista de recipe_id strings
 
-    def learn(self, recipe_id: str) -> bool:
-        """Aprende a receita. Retorna True se era nova."""
-        if recipe_id in self.known:
-            return False
-        self.known.append(recipe_id)
-        return True
+    # Mutação via stat_fns.learn_recipe().
 
 
 class TalentTree:
@@ -934,6 +939,13 @@ class StatusEffects:
         """Retorna o ActiveEffect ativo do tipo dado, ou None."""
         return self.effects.get(effect_type)
 
+    def remove(self, effect_type: str) -> bool:
+        """Remove um efeito pelo tipo. Retorna True se existia."""
+        if effect_type in self.effects:
+            del self.effects[effect_type]
+            return True
+        return False
+
 
 @dataclass
 class PendingDeath:
@@ -1003,10 +1015,12 @@ class QuestLog:
 @dataclass
 class SpellCast:
     """Lançamento de magia em andamento — alimenta a barra de cast."""
-    spell_id:  str   = ""
-    cast_time: float = 0.0   # duração total do cast
-    elapsed:   float = 0.0   # tempo acumulado
-    target_id: int   = -1    # alvo (entidade) ao ser completado
+    spell_id:     str   = ""
+    cast_time:    float = 0.0   # duração total do cast
+    elapsed:      float = 0.0   # tempo acumulado
+    target_id:    int   = -1    # alvo (entidade) ao ser completado
+    mana_cost:    int   = 0     # custo deduzido SOMENTE ao completar — nunca no início
+    interruptible: bool = True  # False = movimento não cancela o cast
 
 
 class Channeling:
@@ -1029,6 +1043,20 @@ class Channeling:
         self.dmg_sp_coeff   = dmg_sp_coeff
 
 
+class PirofagiaAiming:
+    """Mira da Pirofagia ativa — cone segue o mouse enquanto a tecla está pressionada.
+    Ao soltar a tecla, PirofagiaSystem dispara o cone e remove este component."""
+    def __init__(self):
+        self.elapsed: float = 0.0   # tempo desde ativação (evita disparo no mesmo frame)
+
+
+@dataclass
+class FireShieldEffect:
+    """Escudo de Fogo ativo — retaliation de fogo em quem atacar o jogador."""
+    duration: float = 15.0
+    elapsed:  float = 0.0
+
+
 @dataclass
 class IceBlockEffect:
     """Estado do Bloco de Gelo — imunidade + cura por segundo."""
@@ -1049,6 +1077,33 @@ class PlayerProjectile:
     dmg_sp_coeff:   float = 1.0     # multiplicador de spell_power
     color:          tuple = (160, 80, 255)  # roxo arcano
 
+
+# ── Components de estado de UI ─────────────────────────────────────────────
+
+class UIState:
+    """Estado de painéis de UI do jogador (inventário, talentos)."""
+    def __init__(self):
+        self.show_inventory: bool = False
+        self.show_talents:   bool = False
+
+
+class ShopUIState:
+    """Estado do modal de loja — acessível por qualquer sistema sem referência direta."""
+    def __init__(self):
+        self.open_merchant_id: int = -1   # -1 = fechado
+
+    @property
+    def is_open(self) -> bool:
+        return self.open_merchant_id != -1
+
+
+class LootUIState:
+    """Estado do modal de loot — acessível por qualquer sistema sem referência direta."""
+    def __init__(self):
+        self.open_corpse_id: int = -1   # -1 = fechado
+
+
+# ───────────────────────────────────────────────────────────────────────────
 
 @dataclass
 class AoeTargeting:

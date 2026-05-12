@@ -10,6 +10,7 @@ from fonts import make as _font
 from talent_data import BUILDS, TALENTS, BUILD_TALENTS
 from combat_log import LOG
 from save_system import request_autosave
+from stat_fns import add_modifier, remove_modifier
 
 
 # ---------------------------------------------------------------------------
@@ -24,7 +25,7 @@ NODE_ROW_GAP  = 90    # distância centro-a-centro vertical
 GRID_ORIGIN_X = 60    # margem esquerda dentro do painel
 GRID_ORIGIN_Y = 70    # margem superior dentro do painel
 
-TOOLTIP_W     = 280   # largura do tooltip flutuante
+TOOLTIP_W     = 320   # largura do tooltip flutuante
 
 # Cores
 C_BG         = (14, 10, 6, 230)
@@ -50,9 +51,12 @@ class TalentSystem:
         self.world       = world
         self.player_id   = player_entity_id
         self.screen      = screen
-        self.font_lg     = _font(26)
-        self.font_md     = _font(20)
-        self.font_sm     = _font(17)
+        self.font_lg     = _font(26)   # cabeçalho do painel
+        self.font_md     = _font(20)   # subheader e textos de nó
+        self.font_sm     = _font(17)   # contador/estrela nos nós (espaço pequeno)
+        # Fontes de tooltip — mesma escala do tooltip de itens
+        self.font_tip_title = _font(28)
+        self.font_tip_body  = _font(22)
         self._hovered_id: str | None = None
         self.wants_close: bool = False
 
@@ -144,32 +148,56 @@ class TalentSystem:
     # Aplicação de efeitos
     # -----------------------------------------------------------------------
     def apply_talent_effects(self):
-        from components import TalentTree, CombatStats, PlayerSkills, Modifier
+        from components import TalentTree, CombatStats, PlayerSkills, Modifier, CharacterStats
+        from talent_data import CLASS_BUILD_MAP
         tt     = self._talent_tree()
         cs     = self.world.get_component(self.player_id, CombatStats)
         skills = self.world.get_component(self.player_id, PlayerSkills)
         if not tt or not cs or not skills:
             return
 
+        # Build é sempre derivada da classe — nunca livre nem persistida separadamente
+        char = self.world.get_component(self.player_id, CharacterStats)
+        if char:
+            correct_build = CLASS_BUILD_MAP.get(char.class_id, "cavaleiro")
+            if tt.chosen_build != correct_build:
+                tt.allocated.clear()       # talentos da build errada são inválidos
+                tt.chosen_build = correct_build
+
         # Remove modificadores antigos
         for mod in list(tt._applied_modifiers):
-            cs.remove_modifier(mod)
+            remove_modifier(cs, mod)
         tt._applied_modifiers.clear()
 
-        # Reseta flags comportamentais antes de re-aplicar
-        cs.explorador_crit_per_point = 0
-        cs.foco_mortal_enabled       = False
-        cs.embalo_on_crit            = False
-        cs.pnq_enabled               = False
-        cs.embalo_bonus_per_charge    = 0.0
-        cs.golpe_poderoso_rage_cost   = 15
+        # Reseta flags comportamentais antes de re-aplicar — Cavaleiro
+        cs.explorador_crit_per_point      = 0
+        cs.foco_mortal_enabled            = False
+        cs.embalo_on_crit                 = False
+        cs.pnq_enabled                    = False
+        cs.embalo_bonus_per_charge        = 0.0
+        cs.golpe_poderoso_rage_cost       = 15
         cs.interceptar_cooldown_reduction = 0.0
-        cs.interceptar_stun_duration  = 0.0
-        cs.interceptar_rage_bonus     = 0
-        cs.pnq_stun_duration          = 1.0
-        cs.impacto_maquina_matar      = False
-        cs.impacto_assassino          = False
-        cs.executar_horrorizante      = False
+        cs.interceptar_stun_duration      = 0.0
+        cs.interceptar_rage_bonus         = 0
+        cs.pnq_stun_duration              = 1.0
+        cs.impacto_maquina_matar          = False
+        cs.impacto_assassino              = False
+        cs.executar_horrorizante          = False
+        # Reseta flags comportamentais — Piromania (Mago)
+        cs.fire_mana_discount            = 0
+        cs.fire_cast_time_reduction      = 0.0
+        cs.fire_burns_on_crit            = False
+        cs.fire_burn_duration            = 0.0
+        cs.ice_cast_time_reduction       = 0.0
+        cs.fire_shield_enabled           = False
+        cs.fire_instant_proc_chance      = 0.0
+        cs.thermal_shock_enabled         = False
+        cs.pyromania_bonus               = 0.0
+        cs.elemental_lapse_crit_bonus    = 0.0
+        cs.fire_crit_counter             = 0
+        cs.fire_crit_timer               = 0.0
+        cs.fire_exhaustion_enabled       = False
+        cs.crematoria_enabled            = False
 
         # Memoriza a posição atual de cada skill de talento antes de removê-las,
         # para restaurar nas mesmas posições após re-aplicar (preserva layout do usuário).
@@ -190,26 +218,22 @@ class TalentSystem:
             for eff in (t["effects"] or []):
                 total_value = eff["value"] * points
                 mod = Modifier(eff["attribute"], total_value, eff["type"])
-                cs.add_modifier(mod)
+                add_modifier(cs, mod)
                 tt._applied_modifiers.append(mod)
             # Habilidade desbloqueada quando atinge unlock_at (padrão = max_points)
             _unlock_at = t.get("unlock_at", t["max_points"])
             if t["unlocks_skill"] and points >= _unlock_at:
-                if t["skill_def"] and t["unlocks_skill"] not in tt._unlocked_skill_ids:
-                    from components import Skill
-                    sd = t["skill_def"]
-                    new_skill = Skill(sd["name"], sd["description"], sd["cooldown"])
-                    new_skill.talent_id  = talent_id
-                    new_skill.handler    = t["unlocks_skill"]
-                    new_skill.skill_id   = t["unlocks_skill"]
-                    new_skill.icon_name  = f"skill_{t['unlocks_skill']}"
-                    new_skill.sound_name = sd.get("sound") or f"skill_{t['unlocks_skill']}"
-                    if sd.get("max_charges") is not None:
-                        new_skill.max_charges    = sd["max_charges"]
-                        new_skill.charges        = 0
-                        new_skill.charge_timeout = sd.get("charge_timeout", 0.0)
+                _sid = t["unlocks_skill"]
+                if _sid not in tt._unlocked_skill_ids:
+                    from skill_config import SKILL_CATALOG as _SC
+                    if _sid not in _SC:
+                        continue  # skill não definida no catálogo — ignorar
+                    # Toda skill vem do catálogo — fonte única de dados
+                    new_skill = PlayerSkills._make_skill(_sid, _SC)
+                    new_skill.talent_id = talent_id
+                    new_skill.handler   = ""  # dispatch via skill_id (não _talent_*)
                     # Restaura na posição anterior se existir; caso contrário, primeiro None
-                    prev_idx = old_positions.get(t["unlocks_skill"])
+                    prev_idx = old_positions.get(_sid)
                     if prev_idx is not None and prev_idx < len(skills.skills) and skills.skills[prev_idx] is None:
                         skills.skills[prev_idx] = new_skill
                     else:
@@ -218,7 +242,7 @@ class TalentSystem:
                             skills.skills[idx] = new_skill
                         except ValueError:
                             skills.skills.append(new_skill)
-                    tt._unlocked_skill_ids.add(t["unlocks_skill"])
+                    tt._unlocked_skill_ids.add(_sid)
 
         # Atualiza flags comportamentais de talento (lidas por CombatSystem e SkillHandlers)
         cs.explorador_crit_per_point      = tt.allocated.get("cav_explorador", 0)
@@ -234,6 +258,19 @@ class TalentSystem:
         cs.impacto_maquina_matar          = tt.allocated.get("cav_maquina_matar", 0) >= 1
         cs.impacto_assassino              = tt.allocated.get("cav_assassino", 0) >= 1
         cs.executar_horrorizante          = tt.allocated.get("cav_horrorizante", 0) >= 1
+        # Aplica flags comportamentais — Piromania (Mago)
+        cs.fire_mana_discount             = tt.allocated.get("pir_frieza", 0) * 1
+        cs.crematoria_enabled             = tt.allocated.get("pir_crematoria", 0) >= 1
+        cs.fire_exhaustion_enabled        = tt.allocated.get("pir_exaustao", 0) >= 1
+        cs.elemental_lapse_crit_bonus     = tt.allocated.get("pir_lapso_elemental", 0) * 0.05
+        cs.pyromania_bonus                = tt.allocated.get("pir_piromaníaco", 0) * 0.05
+        cs.fire_instant_proc_chance       = tt.allocated.get("pir_chama_interna", 0) * 0.02
+        cs.thermal_shock_enabled          = tt.allocated.get("pir_choque_termico", 0) >= 1
+        cs.fire_cast_time_reduction       = tt.allocated.get("pir_bdf_aperfeicoada", 0) * 0.1
+        cs.ice_cast_time_reduction        = tt.allocated.get("pir_precisao_elemental", 0) * 0.2
+        _queimaduras                      = tt.allocated.get("pir_queimaduras", 0)
+        cs.fire_burns_on_crit             = _queimaduras >= 1
+        cs.fire_burn_duration             = _queimaduras * 3.0
 
     # -----------------------------------------------------------------------
     # Eventos
@@ -431,7 +468,7 @@ class TalentSystem:
 
         # Descrição com valor vivo substituído
         desc = self._live_description(talent_id, current, tt)
-        for line in self._wrap_text(desc, TOOLTIP_W - 16, self.font_sm):
+        for line in self._wrap_text(desc, TOOLTIP_W - 16, self.font_tip_body):
             lines.append((line, C_WHITE))
 
         lines.append(("", C_GRAY))  # espaço
@@ -464,7 +501,7 @@ class TalentSystem:
             unlocked = current >= t["max_points"]
             hdr_col  = C_GOLD if unlocked else C_GRAY
             lines.append((f"★ {sd['name']}", hdr_col))
-            for line in self._wrap_text(sd["description"], TOOLTIP_W - 24, self.font_sm):
+            for line in self._wrap_text(sd["description"], TOOLTIP_W - 24, self.font_tip_body):
                 lines.append((f"  {line}", C_WHITE if unlocked else (90, 80, 60)))
             if sd["cooldown"] > 0:
                 lines.append((f"  Recarga: {sd['cooldown']:.0f}s", C_GRAY))
@@ -490,9 +527,9 @@ class TalentSystem:
         while lines and lines[-1][0] == "":
             lines.pop()
 
-        # Mede altura necessária
-        line_h = 15
-        title_h = 22
+        # Mede altura necessária — dinâmico com base nas fontes reais
+        line_h  = self.font_tip_body.get_height() + 3
+        title_h = self.font_tip_title.get_height() + 6
         pad = 8
         tooltip_h = title_h + pad + len(lines) * line_h + pad
 
@@ -514,9 +551,9 @@ class TalentSystem:
 
         # Título (nome + pts)
         pts_col   = C_MAXED if current >= t["max_points"] else C_TITLE
-        name_surf = self.font_md.render(t["name"], True, pts_col)
+        name_surf = self.font_tip_title.render(t["name"], True, pts_col)
         pts_str   = f"{current}/{t['max_points']}"
-        pts_surf  = self.font_sm.render(pts_str, True, pts_col)
+        pts_surf  = self.font_tip_body.render(pts_str, True, pts_col)
         self.screen.blit(name_surf, (tx + pad, ty + pad // 2 + 2))
         self.screen.blit(pts_surf,  (tx + TOOLTIP_W - pts_surf.get_width() - pad,
                                      ty + pad // 2 + 4))
@@ -530,7 +567,7 @@ class TalentSystem:
             if text == "":
                 ly += 4
                 continue
-            surf = self.font_sm.render(text, True, col)
+            surf = self.font_tip_body.render(text, True, col)
             self.screen.blit(surf, (tx + pad, ly))
             ly += line_h
 

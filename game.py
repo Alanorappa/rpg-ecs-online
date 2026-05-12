@@ -2,12 +2,14 @@
 import pygame
 import math
 import time as _time
+import gc as _gc
 from fonts import make as _font
 
 from world import World
 from components import Position, Tilemap, CombatStats, CharacterStats, PermanentStats, \
                        TileMovement, PlayerAutoMove, CombatState, FogOfWar, Enemy, Visible, \
-                       Camera, Renderable, SpellCast, Channeling, IceBlockEffect, AoeTargeting
+                       Camera, Renderable, SpellCast, Channeling, IceBlockEffect, AoeTargeting, \
+                       UIState, ShopUIState, LootUIState
 from systems import (
     PlayerInputSystem, TileMovementSystem, RenderSystem, CameraSystem,
     EnemyAISystem, TileRenderSystem, TileValidationSystem,
@@ -15,6 +17,7 @@ from systems import (
     ProjectileSystem, CorpseSystem, LootSystem, ShopSystem, SkillSystem,
     SpawnZoneSystem, ConsumableSystem, DeathHandlerSystem, FogSystem,
     StatusEffectSystem, EnemyAbilitySystem,
+    register_services,
 )
 from stats_system import XPSystem, DeathRespawnSystem
 from quest_system import QuestSystem, QuestDialogSystem, QuestJournalSystem
@@ -33,6 +36,7 @@ from talent_system import TalentSystem
 from ui_helpers import item_tooltip_lines, RARITY_COLORS as _ITEM_RARITY_COLORS
 from map_overlay import MapOverlay
 from minimap import Minimap
+from stat_fns import add_modifier, remove_modifier, learn_recipe
 from save_system import save_game, load_game, has_save, next_free_slot
 
 # --- Configurações do Jogo ---
@@ -98,7 +102,8 @@ class GameEngine:
         global SCREEN_WIDTH, SCREEN_HEIGHT
         SCREEN_WIDTH  = win_w
         SCREEN_HEIGHT = win_h
-        self._display = pygame.display.set_mode((win_w, win_h))
+        self._display = pygame.display.set_mode(
+            (win_w, win_h), pygame.DOUBLEBUF, vsync=1)
         self.screen   = pygame.Surface((win_w, win_h))
         pygame.display.set_caption("RPG ECS")
         self.clock = pygame.time.Clock()
@@ -131,8 +136,7 @@ class GameEngine:
 
         self.world = World()
         self.systems = []
-        self._show_inventory  = False
-        self._show_talents    = False
+        # _show_inventory e _show_talents → UIState component (via property)
         self._show_debug      = False
         self._debug_buttons: list = []      # [(rect, n_levels)] preenchido em _draw_debug_modal
         self._debug_tab: str = "nivel"      # "nivel" | "itens" | "ouro" | "mapa"
@@ -150,7 +154,7 @@ class GameEngine:
         self._map_title_timer = 0.0
         self._cam_x = 0.0
         self._cam_y = 0.0
-        self._zoom:      float = 1.0
+        # _zoom → Camera.zoom component (via property)
         self._zoom_min:  float = 0.75
         self._zoom_max:  float = 2.5
         self._zoom_step: float = 0.25
@@ -211,19 +215,22 @@ class GameEngine:
             if char:
                 char.name     = char_data.get("name", "Aventureiro")
                 char.class_id = char_data.get("class_id", "guerreiro")
-                # Atributos base por classe
-                if char.class_id == "mago":
-                    char.strength     = 1
-                    char.intelligence = 5
-                    char.agility      = 1
-                    char.vitality     = 2
-                    char.defense      = 1
+                # Atributos base por classe — data-driven, sem if/elif por classe
+                from stats_system import CLASS_BASE_STATS
+                _base = CLASS_BASE_STATS.get(char.class_id, CLASS_BASE_STATS["guerreiro"])
+                char.strength     = _base["strength"]
+                char.intelligence = _base["intelligence"]
+                char.agility      = _base["agility"]
+                char.vitality     = _base["vitality"]
+                char.defense      = _base["defense"]
             # Recalcula combat stats com os atributos da classe
             cs   = self.world.get_component(self.player_entity, CombatStats)
             perm = self.world.get_component(self.player_entity, PermanentStats)
             if char and cs:
-                from stats_system import apply_char_stats_to_combat
+                from stats_system import apply_char_stats_to_combat, sync_attack_interval
+                from components import Equipment as _EqNew
                 apply_char_stats_to_combat(char, cs, perm)
+                sync_attack_interval(cs, self.world.get_component(self.player_entity, _EqNew))
                 cs.current_hp = cs.max_hp
             # Cor do personagem por classe
             rend = self.world.get_component(self.player_entity, Renderable)
@@ -385,11 +392,15 @@ class GameEngine:
         self._pathfinding_system     = pathfinding
         self._combat_system          = combat
 
+        # Registra serviços acessíveis por qualquer sistema sem acoplamento direto
+        register_services(combat=combat, pathfinding=pathfinding,
+                          tile_validation=tile_validation)
+
         death_handler         = DeathHandlerSystem(self.world)
         xp_system             = XPSystem(self.world, death_handler)
-        skill_system          = SkillSystem(self.world, self.player_entity, combat, tile_validation, self.screen)
-        loot_system           = LootSystem(self.world, self.screen)
-        projectile_system     = ProjectileSystem(self.world, combat, self.screen)
+        skill_system          = SkillSystem(self.world, self.player_entity, self.screen)
+        loot_system           = LootSystem(self.world, self.screen, self.player_entity)
+        projectile_system     = ProjectileSystem(self.world, self.screen)
         render_system         = RenderSystem(self.world, self.screen)
         tile_render_system    = TileRenderSystem(self.world, self.screen)
         death_respawn_system  = DeathRespawnSystem(self.world)
@@ -404,12 +415,15 @@ class GameEngine:
 
         # Sistemas de magia (classe Mago)
         from spell_system import (ManaSystem, SpellCastSystem, PlayerProjectileSystem,
-                                  ChannelingSystem, IceBlockSystem, AoeTargetingSystem)
+                                  ChannelingSystem, IceBlockSystem, FireShieldSystem,
+                                  PirofagiaSystem, AoeTargetingSystem)
         self._mana_system           = ManaSystem(self.world)
         self._spell_cast_system     = SpellCastSystem(self.world, self.screen)
         self._player_proj_system    = PlayerProjectileSystem(self.world, self.screen)
         self._channeling_system     = ChannelingSystem(self.world, self.screen)
         self._ice_block_system      = IceBlockSystem(self.world)
+        self._fire_shield_system    = FireShieldSystem(self.world)
+        self._pirofagia_system      = PirofagiaSystem(self.world, self.screen)
         self._aoe_targeting_system  = AoeTargetingSystem(self.world, self.player_entity, self.screen)
 
         self._god_mode = GodModeEditor(
@@ -428,16 +442,18 @@ class GameEngine:
             self._aoe_targeting_system,                                               # 2 (antes do targeting)
             MouseTargetingSystem(self.world, self.player_entity, self.screen),        # 3
             loot_system,                                                              # 4
-            PlayerInputSystem(self.world, tile_validation, combat, pathfinding, self.screen),  # 5
+            PlayerInputSystem(self.world, self.screen),                                   # 5
             skill_system,                                                             # 6
-            EnemyAISystem(self.world, self.player_entity, tile_validation, pathfinding, combat),  # 7
+            EnemyAISystem(self.world, self.player_entity),                            # 7
             EnemyAbilitySystem(self.world, self.player_entity),                       # 8
             projectile_system,                                                        # 9
             self._player_proj_system,                                                 # 10
             self._spell_cast_system,                                                  # 11
             self._channeling_system,                                                  # 12
             self._ice_block_system,                                                   # 13
-            self._mana_system,                                                        # 14
+            self._fire_shield_system,                                                 # 14
+            self._pirofagia_system,                                                   # 15
+            self._mana_system,                                                        # 15
             death_handler,                                                            # 15
             CorpseSystem(self.world),                                                 # 16
             SpawnZoneSystem(self.world),                                              # 17
@@ -453,6 +469,7 @@ class GameEngine:
             render_system,                                                            # 27
         ]
         self._validate_system_order()
+        self._validate_skill_handlers()
 
         # Inicializa world_surf e hud_surf em todos os sistemas.
         # world_surf começa como self.screen (zoom=1); será atualizado cada frame.
@@ -525,6 +542,24 @@ class GameEngine:
                 "ORDEM DE SISTEMAS INVÁLIDA:\n" + "\n".join(errors)
             )
 
+    def _validate_skill_handlers(self) -> None:
+        """Verifica em startup que toda skill no catálogo tem handler e que
+        abilities referenciadas por mobs existem em ABILITY_DEFS."""
+        from skill_config import SKILL_CATALOG
+        missing_handlers = [sid for sid in SKILL_CATALOG
+                            if not hasattr(self._skill_system, f"_skill_{sid}")]
+        if missing_handlers:
+            print(f"[WARN] Skills sem handler em SkillSystem: {missing_handlers}")
+
+        try:
+            from enemy_abilities_data import ABILITY_DEFS, MOB_ABILITIES
+            for mob_id, abilities in MOB_ABILITIES.items():
+                for ability_id, _ in abilities:
+                    if ability_id not in ABILITY_DEFS:
+                        print(f"[WARN] Mob '{mob_id}' referencia ability inexistente: '{ability_id}'")
+        except Exception:
+            pass
+
     def _apply_save(self):
         """Carrega o save do slot ativo e reposiciona o jogador no mapa salvo."""
         if not has_save(self._save_slot):
@@ -542,8 +577,10 @@ class GameEngine:
         cs   = self.world.get_component(self.player_entity, CombatStats)
         perm = self.world.get_component(self.player_entity, PermanentStats)
         if char and cs:
-            from stats_system import apply_char_stats_to_combat
+            from stats_system import apply_char_stats_to_combat, sync_attack_interval
+            from components import Equipment as _EqLoad
             apply_char_stats_to_combat(char, cs, perm)
+            sync_attack_interval(cs, self.world.get_component(self.player_entity, _EqLoad))
             # Restaura HP salvo (proporcional ao max_hp recalculado)
             if cs._saved_hp > 0:
                 cs.current_hp = min(float(cs._saved_hp), cs.max_hp)
@@ -566,6 +603,66 @@ class GameEngine:
 
         self._loading_save = False
         LOG.add("Partida carregada.", (100, 220, 100))
+
+    # ------------------------------------------------------------------
+    # ── Properties que roteiam para components ECS ───────────────────────────
+
+    def _get_cam(self) -> "Camera | None":
+        return self.world.get_component(self.camera_entity, Camera)
+
+    def _get_ui(self) -> "UIState | None":
+        return self.world.get_component(self.player_entity, UIState)
+
+    def _get_shop_ui(self) -> "ShopUIState | None":
+        return self.world.get_component(self.player_entity, ShopUIState)
+
+    def _get_loot_ui(self) -> "LootUIState | None":
+        return self.world.get_component(self.player_entity, LootUIState)
+
+    @property
+    def _zoom(self) -> float:
+        if not hasattr(self, 'camera_entity'):
+            return 1.0
+        cam = self._get_cam()
+        return cam.zoom if cam else 1.0
+
+    @_zoom.setter
+    def _zoom(self, value: float) -> None:
+        if not hasattr(self, 'camera_entity'):
+            return
+        cam = self._get_cam()
+        if cam:
+            cam.zoom = value
+
+    @property
+    def _show_inventory(self) -> bool:
+        if not hasattr(self, 'player_entity'):
+            return False
+        ui = self._get_ui()
+        return ui.show_inventory if ui else False
+
+    @_show_inventory.setter
+    def _show_inventory(self, value: bool) -> None:
+        if not hasattr(self, 'player_entity'):
+            return
+        ui = self._get_ui()
+        if ui:
+            ui.show_inventory = value
+
+    @property
+    def _show_talents(self) -> bool:
+        if not hasattr(self, 'player_entity'):
+            return False
+        ui = self._get_ui()
+        return ui.show_talents if ui else False
+
+    @_show_talents.setter
+    def _show_talents(self, value: bool) -> None:
+        if not hasattr(self, 'player_entity'):
+            return
+        ui = self._get_ui()
+        if ui:
+            ui.show_talents = value
 
     # ------------------------------------------------------------------
     # ── Zoom ──────────────────────────────────────────────────────────────────
@@ -685,9 +782,15 @@ class GameEngine:
         self._prof_frame_accum: dict[str, float] = {}   # acumulado do frame atual (spike)
 
     def run(self):
+        _gc.disable()          # GC manual — evita pauses aleatórias no loop de jogo
+        _gc_counter = 0
         running = True
         while running:
-            dt = self.clock.tick(FPS) / 1000.0
+            dt = self.clock.tick_busy_loop(FPS) / 1000.0
+            _gc_counter += 1
+            if _gc_counter >= FPS * 10:   # coleta a cada ~10s, entre frames
+                _gc.collect()
+                _gc_counter = 0
             self._dt = dt
             SOUNDS.new_frame()  # limpa deduplicação de sons
             _t0 = _time.perf_counter()
@@ -1017,7 +1120,8 @@ class GameEngine:
             for system in self.systems:
                 if system is not self._projectile_system \
                         and system is not self._loot_system \
-                        and system is not self._render_system:
+                        and system is not self._render_system \
+                        and system is not self._pirofagia_system:
                     if PROFILE_FRAMES:
                         _ts = _time.perf_counter()
                         system.render(cam_x, cam_y)
@@ -1039,6 +1143,7 @@ class GameEngine:
             self._player_proj_system.render(cam_x, cam_y)
             self._channeling_system.render(cam_x, cam_y)
             self._aoe_targeting_system.render(cam_x, cam_y)
+            self._pirofagia_system.render(cam_x, cam_y)
             FLT.render(self._zoom_surf, cam_x, cam_y)
 
             # ── Escala world_surf → área de jogo na tela nativa (pixel-perfect) ─
@@ -2486,7 +2591,8 @@ class GameEngine:
         SCREEN_WIDTH  = win_w
         SCREEN_HEIGHT = win_h
         self.screen   = pygame.Surface((win_w, win_h))
-        self._display = pygame.display.set_mode((win_w, win_h))
+        self._display = pygame.display.set_mode(
+            (win_w, win_h), pygame.DOUBLEBUF, vsync=1)
         self._rebuild_screen_refs(self.screen)
         # Atualiza Camera component para que offset_x/offset_y reflitam a nova resolução
         for _, cam, _ in self.world.get_entities_with(Camera, Position):
@@ -2680,6 +2786,14 @@ class GameEngine:
             else:
                 is_procced   = False
                 visual_ready = skill.is_ready()
+
+            # Choque Térmico: brilho em skills ofensivas de escola fogo quando alvo tem root
+            if (not is_procced
+                    and getattr(skill, "school", "") == "fogo"
+                    and getattr(skill, "offensive", True)
+                    and _char is not None
+                    and getattr(_char, "thermal_shock_active", False)):
+                is_procced = True
 
             # --- Efeito de brilho (proc) — desenhado antes do slot ---
             if is_procced:
@@ -2919,6 +3033,21 @@ class GameEngine:
     # Helpers de tooltip de habilidades
     # ------------------------------------------------------------------
 
+    def _player_spell_dmg(self, dmg_weapon_pct: float = 0.0,
+                          sp_coeff: float = 1.0) -> int:
+        """Calcula dano de magia usando a fórmula de _spell_damage (média de arma)."""
+        cs = self.world.get_component(self.player_entity, CombatStats)
+        if not cs:
+            return 0
+        from components import Equipment as _EqSpell
+        equip  = self.world.get_component(self.player_entity, _EqSpell)
+        weapon = equip.slots.get("mainhand") if equip else None
+        if weapon and getattr(weapon, "damage_min", 0) > 0:
+            weapon_avg = (weapon.damage_min + weapon.damage_max) / 2.0
+        else:
+            weapon_avg = float(cs.base_physical_damage)
+        return max(1, int(weapon_avg * dmg_weapon_pct + cs.spell_power * sp_coeff))
+
     def _player_dmg_range(self, multiplier: float = 1.0) -> tuple[int, int]:
         """Retorna (min, max) de dano físico do jogador × multiplier."""
         cs = self.world.get_component(self.player_entity, CombatStats)
@@ -2990,12 +3119,70 @@ class GameEngine:
             lines.append(("Enlouquece inimigos em raio 3 tiles por 10s", C_WARN))
             lines.append(("+5% dano causado  /  +10% dano recebido", C_INFO))
 
+        # ── Skills do Mago ───────────────────────────────────────────────
+        elif sid == "bola_de_fogo":
+            dmg = self._player_spell_dmg(0.5, 1.0)
+            lines.append((f"Dano: ~{dmg}  (50% arma + 100% SP)", C_INFO))
+
+        elif sid == "nova_congelante":
+            dmg = self._player_spell_dmg(0.0, 0.5)
+            lines.append((f"Dano: ~{dmg}  (50% SP)", C_INFO))
+            lines.append(("Enraíza inimigos a 3 tiles por 5s", C_WARN))
+
+        elif sid == "bloco_de_gelo":
+            cs = self.world.get_component(self.player_entity, CombatStats)
+            cura_s = int((cs.max_hp if cs else 0) * 0.10)
+            lines.append(("Imunidade total por 5s  (imóvel)", C_WARN))
+            lines.append((f"Regenera +{cura_s} HP/s  (10% HP máx)", C_HEAL))
+
+        elif sid == "polimorfia":
+            lines.append(("Transforma o alvo: perde controle", C_WARN))
+            cs = self.world.get_component(self.player_entity, CombatStats)
+            char = self.world.get_component(self.player_entity, CharacterStats)
+            regen = int((cs.max_hp if cs else 0) * 0.10)
+            lines.append((f"Alvo regenera +{regen} HP/s por 6s", C_INFO))
+            lines.append(("Quebra ao receber dano", C_WARN))
+
+        elif sid == "calamidade_flamejante":
+            dmg = self._player_spell_dmg(0.15, 1.0)
+            lines.append((f"Dano: ~{dmg}/s por 5s  (área 2 tiles)", C_INFO))
+            lines.append(("-50% velocidade dos alvos por 5s", C_WARN))
+
         else:
             lines.append((skill.description, C_INFO))
 
         lines.append(("", C_INFO))  # separador
 
-        # ── Cooldown / Custo ─────────────────────────────────────────────
+        # ── Custo de Mana ────────────────────────────────────────────────
+        if skill.mana_cost > 0 or skill.mana_cost_pct > 0:
+            _cs_m  = self.world.get_component(self.player_entity, CombatStats)
+            _ch_m  = self.world.get_component(self.player_entity, CharacterStats)
+            if skill.mana_cost_pct > 0 and _ch_m:
+                eff_cost = max(1, int(_ch_m.max_mana * skill.mana_cost_pct))
+            else:
+                discount = getattr(_cs_m, "fire_mana_discount", 0) if _cs_m and sid == "bola_de_fogo" else 0
+                eff_cost = max(0, skill.mana_cost - discount)
+            cur_mana = int(_ch_m.mana) if _ch_m else 0
+            max_mana = int(_ch_m.max_mana) if _ch_m else 0
+            lines.append((f"Mana: {eff_cost}  (atual: {cur_mana}/{max_mana})",
+                           C_OK if cur_mana >= eff_cost else C_RAGE))
+
+        # ── Cast time ────────────────────────────────────────────────────
+        if skill.cast_time > 0:
+            _cs_ct = self.world.get_component(self.player_entity, CombatStats)
+            if sid in ("bola_de_fogo", "polimorfia", "calamidade_flamejante"):
+                red = getattr(_cs_ct, "fire_cast_time_reduction", 0.0) if _cs_ct else 0.0
+            elif sid == "nova_congelante":
+                red = getattr(_cs_ct, "ice_cast_time_reduction", 0.0) if _cs_ct else 0.0
+            else:
+                red = 0.0
+            eff_cast = max(0.0, skill.cast_time - red)
+            if eff_cast == 0.0:
+                lines.append(("Cast: instantâneo  (talento)", C_OK))
+            else:
+                lines.append((f"Cast: {eff_cast:.1f}s", C_INFO))
+
+        # ── Cooldown / Custo de Raiva ─────────────────────────────────────
         if skill.rage_cost > 0:
             cost = skill.rage_cost
             if sid == "golpe_poderoso":
@@ -3136,11 +3323,11 @@ class GameEngine:
                                new_item, eq_item, tip_rect)
 
     def _flush_skill_tooltip(self):
-        """Renderiza tooltip de habilidade usando font_xs (fonte menor para descrições)."""
+        """Renderiza tooltip de habilidade com a mesma escala do tooltip de itens."""
         if not self._pending_skill_tooltip:
             return
         mx, my, title, lines = self._pending_skill_tooltip[:4]
-        self._draw_tooltip(mx, my, title, lines, body_font=self.font_xs)
+        self._draw_tooltip(mx, my, title, lines, body_font=self.font_sm)
 
     def _draw_world_tooltip(self):
         """Mostra tooltip fixo no canto inferior direito ao passar o mouse sobre NPCs/mobs."""
@@ -3456,12 +3643,22 @@ class GameEngine:
         if target_slot not in equip.slots:
             return
 
+        # Restrição de armor_class por classe do personagem
+        if getattr(item, "armor_class", "") and item.item_type == "armor":
+            from stats_system import CLASS_ARMOR_ALLOWED
+            char = self.world.get_component(self.player_entity, CharacterStats)
+            allowed = CLASS_ARMOR_ALLOWED.get(char.class_id if char else "", frozenset())
+            if item.armor_class not in allowed:
+                _names = {"placa": "Placa", "couro": "Couro", "tecido": "Tecido"}
+                LOG.add(f"Sua classe não pode usar armadura de {_names.get(item.armor_class, item.armor_class)}.", (255, 100, 80))
+                return
+
         # Arma de duas mãos → desequipa offhand se houver
         if getattr(item, 'two_handed', False) and target_slot == "mainhand":
             old_oh = equip.slots.get("offhand")
             if old_oh:
                 for mod in old_oh.modifiers:
-                    combat_stats.remove_modifier(mod)
+                    remove_modifier(combat_stats, mod)
                 inv.items.append(old_oh)
                 equip.slots["offhand"] = None
 
@@ -3473,7 +3670,7 @@ class GameEngine:
         old_item = equip.slots[target_slot]
         if old_item:
             for mod in old_item.modifiers:
-                combat_stats.remove_modifier(mod)
+                remove_modifier(combat_stats, mod)
             inv.items.append(old_item)
 
         # Equipa o novo item
@@ -3482,7 +3679,7 @@ class GameEngine:
         if target_slot == "mainhand" and getattr(item, "attack_speed", 0.0) > 0:
             combat_stats.base_attack_interval = item.attack_speed
         for mod in item.modifiers:
-            combat_stats.add_modifier(mod)
+            add_modifier(combat_stats, mod)
 
     def _unequip_slot(self, slot_name: str):
         inv          = self.world.get_component(self.player_entity, Inventory)
@@ -3500,7 +3697,7 @@ class GameEngine:
         if slot_name == "mainhand":
             combat_stats.base_attack_interval = combat_stats._default_attack_interval
         for mod in item.modifiers:
-            combat_stats.remove_modifier(mod)
+            remove_modifier(combat_stats, mod)
         equip.slots[slot_name] = None
         inv.items.append(item)
 
@@ -3578,7 +3775,7 @@ class GameEngine:
             lr = self.world.get_component(self.player_entity, LearnedRecipes)
             if lr:
                 recipe_id = c["learn_recipe"]
-                if lr.learn(recipe_id):
+                if learn_recipe(lr, recipe_id):
                     from crafting_data import RECIPES
                     rname = RECIPES.get(recipe_id, {}).get("name", recipe_id)
                     LOG.add(f"Receita aprendida: {rname}!", (220, 180, 50))

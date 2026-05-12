@@ -446,6 +446,13 @@ class SoundManager:
         self._last_step = chosen
         self.play(chosen, volume, _CH_GENERAL)
 
+    def fadeout_skills(self, ms: int = 300) -> None:
+        """Fade out em todos os canais de skill (cast/canalização interrompidos)."""
+        if not self._ready:
+            return
+        for ch_id in _CH_SKILLS:
+            pygame.mixer.Channel(ch_id).fadeout(ms)
+
     def play_ui(self, name: str, volume: float = 0.8) -> None:
         self.play(name, volume, _CH_UI)
 
