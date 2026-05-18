@@ -117,7 +117,7 @@ class WorldServer:
         Cria entidade do jogador no ECS.
         Retorna entity_id. Chamado pelo SessionManager no login.
         """
-        from components import Position, TileMovement
+        from components import Position, TileMovement, PlayerControlled
 
         tx = int(char_data.get("tile_x", 10))
         ty = int(char_data.get("tile_y", 10))
@@ -130,6 +130,8 @@ class WorldServer:
             current_tile_x=tx, current_tile_y=ty,
             target_tile_x=tx,  target_tile_y=ty,
         ))
+        # PlayerControlled permite que SpawnZoneSystem e EnemyAISystem encontrem o player
+        self.world.add_component(eid, PlayerControlled())
 
         self._player_eids[session_id] = eid
 
