@@ -1,42 +1,90 @@
-# Instruções para Claude — RPG ECS
+# Instruções para Claude — RPG ECS Online
+
+> Branch: **online** — versão multiplayer em desenvolvimento paralelo.
+> Versão offline (single-player) está em `rpg_ecs/` (branch `master`). Não confundir.
+
+---
 
 ## Workflow obrigatório
 
 ### Início de qualquer sessão
-1. Ler `arquitetura/MAPA_PROJETO.md` — localização de tudo no projeto
-2. Ler `arquitetura/SISTEMAS_ECS.md` — ordem dos sistemas e responsabilidades
-3. Ler `arquitetura/COMPONENTES_ECS.md` — componentes disponíveis
-4. Ler `arquitetura/DADOS_JOGO.md` — skills, talentos, itens, mobs existentes
+1. Ler `arquitetura/ARQUITETURA_ONLINE.md` — decisões, protocolo, estado de implementação
+2. Ler `arquitetura/MAPA_PROJETO.md` — localização de tudo (online + herdado)
+3. Ler `arquitetura/SISTEMAS_ECS.md` — sistemas offline (referência) + sistemas do servidor
+4. Ler `arquitetura/COMPONENTES_ECS.md` — componentes disponíveis
 5. Usar esses arquivos como referência ANTES de ler código-fonte
 
-**Regra:** Se a resposta está nos arquivos de arquitetura, não varrer o codebase. Só ler arquivos .py quando precisar de detalhes de implementação específicos.
+**Regra:** Se a resposta está nos arquivos de arquitetura, não varrer o codebase.
 
 ### Após qualquer mudança
 Atualizar os arquivos de arquitetura relevantes:
-- Nova skill/talento → `DADOS_JOGO.md`
-- Novo componente → `COMPONENTES_ECS.md`
-- Novo sistema → `SISTEMAS_ECS.md`
-- Novo arquivo/responsabilidade → `MAPA_PROJETO.md`
-- Problema arquitetural encontrado → `PROBLEMAS_ARQUITETURA.md`
-
-### Identificação de problemas
-Se durante uma implementação encontrar código morto, violação de ECS, dado inconsistente ou gambiaras → registrar em `arquitetura/PROBLEMAS_ARQUITETURA.md` com severidade e esforço de fix.
+- Nova mensagem no protocolo → `ARQUITETURA_ONLINE.md` (tabela de mensagens) + `shared/messages.py`
+- Nova decisão arquitetural → `ARQUITETURA_ONLINE.md` (seção de decisões)
+- Mudança de status de implementação → `ARQUITETURA_ONLINE.md` (tabela de estado)
+- Novo sistema no servidor → `SISTEMAS_ECS.md` (seção "Sistemas do Servidor")
+- Novo arquivo online → `MAPA_PROJETO.md` (tabela "Onde encontrar o quê — Online")
+- Novo componente ECS → `COMPONENTES_ECS.md`
+- Problema arquitetural → `PROBLEMAS_ARQUITETURA.md`
 
 ---
 
-## Contexto rápido do projeto
+## Contexto do projeto
 
+### Versão offline (branch master — referência, não modificar)
 - RPG Tibia/WoW-style, Python 3.9 + Pygame 2.x
-- Arquitetura ECS: `world.py` (registry), `components.py` (dados), `systems.py` (lógica)
-- Personagens: Guerreiro (build Cavaleiro), Mago (build Piromania)
+- ECS puro: `world.py` (registry), `components.py` (dados), `systems.py` (lógica)
+- Personagens: Guerreiro (Cavaleiro), Mago (Piromania), Arqueiro (Bardo)
 - TILE_SIZE = 32px, tela 1280×720, 60 FPS
-- Sem sprites — retângulos coloridos por enquanto
 
-## Regras do projeto
-- ECS puro: components = dados, systems = lógica
+### Versão online (este branch)
+- Servidor: Python asyncio + WebSocket, **sem Pygame**, 20 ticks/s
+- Cliente: Pygame (evolução do `game.py` offline) + `client/network.py`
+- Banco: SQLite (dev) → PostgreSQL (prod)
+- Protocolo: JSON via WebSocket (→ MessagePack antes do lançamento)
+
+---
+
+## Regras do projeto online
+
+### Separação cliente/servidor (inviolável)
+- `server/` **nunca importa Pygame** — código de servidor deve rodar headless
+- `client/` **nunca calcula gameplay** — apenas renderiza estado recebido do servidor
+- `shared/` **sem estado** — só constantes e funções puras de serialização
+
+### Protocolo
+- Todo pacote tem `type` (MsgType), `p` (payload), `seq` (int), `ts` (ms epoch)
+- Novos tipos de mensagem: adicionar em `MsgType` + documentar payload em `shared/messages.py`
+- Servidor valida TUDO — nunca confiar em dados de gameplay do cliente
+
+### Lag compensation
+- Skills de cone (Pirofagia, Tiro Múltiplo): cliente envia `dir_x/dir_y` + `ts`
+- Servidor usa `WorldServer.get_snapshot_at(tick)` para validar no estado correto
+- Janela máxima: `LAG_COMP_WINDOW_MS = 200` em `shared/constants.py`
+
+### Segurança
+- Invisibilidade (Camuflagem): servidor **nunca** inclui jogador invisível no AOI de outros
+- Dano, drops, posição final de knockback: sempre calculados no servidor
+- SHA-256 do password no cliente antes de enviar — nunca texto puro na rede
+
+### Regras herdadas do offline (ainda válidas no cliente)
 - Skills → `SKILL_CATALOG` em `skill_config.py` (fonte única)
 - Talentos → `talent_data.py`, efeitos em `talent_system.apply_talent_effects()`
-- Fontes de dados nunca ficam em sistemas — ficam em arquivos `*_data.py`
-- `stat_fns.py` para mutações de stats (não métodos em componentes)
-- Render que aparece sobre tiles → chamar explicitamente após `render_fog()` em `game.py`
+- `stat_fns.py` para mutações de stats
 - Skills `offensive=False` não iniciam combate nem perseguem alvo
+
+---
+
+## Como rodar
+
+```bash
+# Instalar dependências do servidor
+pip install -r requirements_server.txt
+
+# Iniciar servidor (cria banco e conta de teste automaticamente)
+python server/main.py
+
+# Em outro terminal: iniciar cliente (ainda usa game.py offline)
+python main.py
+```
+
+Conta de teste criada automaticamente: `usuario=teste  senha=123456`

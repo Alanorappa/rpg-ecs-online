@@ -58,6 +58,55 @@
 
 ---
 
+## Sistemas do Servidor (branch online) — `server/`
+
+> Estes sistemas rodam **sem Pygame**, em asyncio, no processo do servidor.
+> Nunca importam `pygame`, `game.py` ou qualquer código de render.
+
+### Loop de ticks — `server/world_server.py`
+
+O servidor roda a **20 ticks/s** (50ms por tick). A cada tick:
+1. Executa `system.update(dt)` para cada sistema do servidor
+2. Chama `_collect_deltas()` — coleta o que mudou
+3. Chama `_store_snapshot()` — guarda posições para lag compensation
+4. Chama callbacks `_on_tick_callbacks` → `SessionManager._on_tick()`
+
+### Sistemas do servidor (a implementar progressivamente)
+
+| Ordem | Sistema | Responsabilidade | Status |
+|-------|---------|------------------|--------|
+| 1 | **MovementSystem** (servidor) | Valida e aplica tile-movement de jogadores; anti-teleporte | 🔲 pendente |
+| 2 | **EnemyAISystem** (servidor) | Pathfinding, aggro, leash — idêntico ao offline mas sem render | 🔲 pendente |
+| 3 | **CombatSystem** (servidor) | Auto-attack loop, resolução hit/miss/crit via `damage_calculator.py` | 🔲 pendente |
+| 4 | **SkillSystem** (servidor) | Valida CD, recursos; executa efeitos; lag compensation p/ cones | 🔲 pendente |
+| 5 | **StatusEffectSystem** (servidor) | Ticks de DoT, duração de buffs/debuffs | 🔲 pendente |
+| 6 | **ProjectileSystem** (servidor) | Física de projéteis; confirma hit ou miss; envia PROJECTILE_HIT | 🔲 pendente |
+| 7 | **SpawnSystem** (servidor) | Respawn de mobs por zona; contagem de ativos | 🔲 pendente |
+| 8 | **DeathSystem** (servidor) | Processa mortes: loot, XP, respawn | 🔲 pendente |
+| 9 | **AOISystem** (servidor) | Calcula quais entidades entraram/saíram do FOV de cada jogador | 🔲 pendente |
+
+### Regra de separação cliente/servidor
+
+| Responsabilidade | Onde roda | Justificativa |
+|-----------------|-----------|---------------|
+| Cálculo de dano | Servidor | Anti-cheat |
+| Posição de entidades | Servidor (canônico) | Anti-teleporte |
+| IA de mobs | Servidor | Consistência entre clientes |
+| Animações, partículas | Cliente | Cosmético, não afeta gameplay |
+| Previsão de movimento | Cliente | Client-side prediction para fluidez |
+| Aiming de cone (Pirofagia, Tiro Múltiplo) | Cliente envia direção, servidor valida | Lag compensation |
+| Invisibilidade (Camuflagem) | Servidor não envia posição a outros | Segurança — cliente nunca recebe dado de invisível |
+
+### Protocolo de adição de sistema no servidor
+
+1. Criar classe em `server/` herdando de `System` do `world.py` (ou classe simples com `update(dt)`)
+2. Instanciar em `WorldServer._init_systems()` e adicionar a `self._systems`
+3. Se gerar deltas para clientes → adicionar campo em `WorldServer._collect_deltas()`
+4. Se precisar de lag compensation → usar `WorldServer.get_snapshot_at(tick)`
+5. Documentar na tabela acima com status ✅
+
+---
+
 > ⚠️ **Problema de qualidade:** ShopSystem, LootSystem e CraftingSystem misturam UI e lógica de negócio. Ver `PROBLEMAS_ARQUITETURA.md` problema #9.
 
 ## Serviços de sistema (módulo-nível)
