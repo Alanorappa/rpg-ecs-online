@@ -92,10 +92,23 @@ def _merge_display_matrix(terrain: list[str], objects: list) -> list[str]:
 
 
 class GameEngine:
-    def __init__(self, scale: float = 1.0, char_data: "dict | None" = None, save_slot: int = 0):
+    def __init__(self, scale: float = 1.0, char_data: "dict | None" = None,
+                 save_slot: int = 0, online: bool = False,
+                 net_user: str = "", net_pass: str = ""):
         pygame.init()
-        self._scale     = scale
-        self._save_slot = save_slot
+        self._scale      = scale
+        self._save_slot  = save_slot
+        # ── Modo online ───────────────────────────────────────────
+        self._online_mode = online
+        self._net_user    = net_user
+        self._net_pass    = net_pass
+        self._net         = None     # NetworkClient (iniciado após world estar pronto)
+        self._my_eid      = -1       # entity_id atribuído pelo servidor
+        # Outros jogadores visíveis: eid → {tx, ty, name, class_id}
+        self._remote_players: dict[int, dict] = {}
+        # Última posição enviada ao servidor (evita envios duplicados)
+        self._net_last_tx: int = -1
+        self._net_last_ty: int = -1
         win_w = int(1280 * scale)
         win_h = int(720  * scale)
         # Renderiza na resolução nativa da janela — sem escala no frame final
@@ -269,6 +282,10 @@ class GameEngine:
         # Registra autosave global — sistemas usam request_autosave() de save_system.py
         from save_system import register_autosave
         register_autosave(self._autosave)
+
+        # Modo online: conecta ao servidor após o mundo estar pronto
+        if self._online_mode:
+            self._connect_online()
 
         # --- Profiler de frames ---
         self._prof_accum:       dict[str, float] = {}   # tempo acumulado por seção
@@ -918,6 +935,9 @@ class GameEngine:
                 _gc_counter = 0
             self._dt = dt
             SOUNDS.new_frame()  # limpa deduplicação de sons
+            # Processa mensagens da rede antes de qualquer sistema
+            if self._online_mode:
+                self._process_network()
             _t0 = _time.perf_counter()
             events = self._scale_events(pygame.event.get())
             if PROFILE_FRAMES:
@@ -1122,6 +1142,10 @@ class GameEngine:
                 else:
                     system.update(ev, dt)
 
+            # Detecta movimento do player e envia ao servidor (modo online)
+            if self._online_mode:
+                self._send_player_move()
+
             # Se shop ou loot acabaram de abrir, fechar os outros modais
             if (not _shop_was_open_before and self._shop_system.is_open) or \
                (not _loot_was_open_before and self._loot_system.open_corpse_id != -1):
@@ -1247,6 +1271,8 @@ class GameEngine:
             self._aoe_targeting_system.render(cam_x, cam_y)
             self._pirofagia_system.render(cam_x, cam_y)
             self._spell_cast_system.render(cam_x, cam_y)
+            if self._online_mode:
+                self._draw_remote_players(cam_x, cam_y)
             FLT.render(self._zoom_surf, cam_x, cam_y)
 
             # ── Escala world_surf → área de jogo na tela nativa (pixel-perfect) ─
@@ -2555,6 +2581,187 @@ class GameEngine:
                             ps.skills[i] = new_s
                     self._save_config()
                     break
+
+    # ── Modo Online ───────────────────────────────────────────────────────────
+
+    def _connect_online(self) -> None:
+        """Inicia conexão com o servidor e faz login."""
+        import config as _cfg
+        from client.network import NetworkClient
+        data = _cfg.load()
+        host = data.get("server_host", "localhost")
+        port = int(data.get("server_port", 8765))
+        self._net = NetworkClient(host=host, port=port)
+        self._net.connect()
+        # Login após breve delay para conexão estabelecer
+        import threading
+        threading.Timer(0.5, self._do_login).start()
+
+    def _do_login(self) -> None:
+        if self._net and self._net.connected:
+            self._net.login(self._net_user, self._net_pass)
+        else:
+            # Ainda não conectou — tenta de novo em 1s
+            import threading
+            threading.Timer(1.0, self._do_login).start()
+
+    def _process_network(self) -> None:
+        """
+        Processa todas as mensagens recebidas do servidor neste frame.
+        Chamado uma vez por frame no game loop, antes dos sistemas.
+        """
+        if not self._net:
+            return
+        for msg_type, payload, seq, ts in self._net.poll():
+            self._handle_net_message(msg_type, payload)
+
+    def _handle_net_message(self, msg_type, payload: dict) -> None:
+        from shared.messages import MsgType
+        from components import TileMovement
+
+        if msg_type == MsgType.LOGIN_OK:
+            self._my_eid = payload.get("eid", -1)
+            print(f"[Client] login ok  eid={self._my_eid}")
+
+        elif msg_type == MsgType.LOGIN_ERROR:
+            print(f"[Client] login erro: {payload.get('reason')}")
+
+        elif msg_type == MsgType.WORLD_STATE:
+            # Recebe jogadores já online no AOI
+            for ent in payload.get("entities", []):
+                eid = ent.get("eid", -1)
+                if eid != -1 and eid != self._my_eid:
+                    self._remote_players[eid] = {
+                        "tx": ent.get("tx", 0), "ty": ent.get("ty", 0),
+                        "name":     ent.get("name", "?"),
+                        "class_id": ent.get("class_id", "guerreiro"),
+                        "hp":       ent.get("hp", 100),
+                        "hp_max":   ent.get("hp_max", 100),
+                    }
+
+        elif msg_type == MsgType.ENTITY_SPAWN:
+            eid = payload.get("eid", -1)
+            if eid != -1 and eid != self._my_eid:
+                self._remote_players[eid] = {
+                    "tx": payload.get("tx", 0), "ty": payload.get("ty", 0),
+                    "name":     payload.get("name", "?"),
+                    "class_id": payload.get("class_id", "guerreiro"),
+                    "hp":       payload.get("hp", 100),
+                    "hp_max":   payload.get("hp_max", 100),
+                }
+
+        elif msg_type == MsgType.ENTITY_DESPAWN:
+            eid = payload.get("eid", -1)
+            self._remote_players.pop(eid, None)
+
+        elif msg_type == MsgType.ENTITY_MOVE:
+            eid = payload.get("eid", -1)
+            if eid == self._my_eid:
+                # Servidor corrigiu nossa posição — aplica
+                real_tx = payload.get("tx", 0)
+                real_ty = payload.get("ty", 0)
+                player_tm = self.world.get_component(self.player_entity, TileMovement)
+                if player_tm:
+                    # Só corrige se diferente (evita jitter)
+                    if (player_tm.current_tile_x != real_tx or
+                            player_tm.current_tile_y != real_ty):
+                        player_tm.current_tile_x = real_tx
+                        player_tm.current_tile_y = real_ty
+                        player_tm.target_tile_x  = real_tx
+                        player_tm.target_tile_y  = real_ty
+            elif eid in self._remote_players:
+                self._remote_players[eid]["tx"] = payload.get("tx", 0)
+                self._remote_players[eid]["ty"] = payload.get("ty", 0)
+
+        elif msg_type == MsgType.AOI_UPDATE:
+            for m in payload.get("moved", []):
+                eid = m.get("eid", -1)
+                if eid == self._my_eid:
+                    continue
+                if eid in self._remote_players:
+                    self._remote_players[eid]["tx"] = m["tx"]
+                    self._remote_players[eid]["ty"] = m["ty"]
+            for sp in payload.get("spawned", []):
+                eid = sp.get("eid", -1)
+                if eid != -1 and eid != self._my_eid:
+                    self._remote_players[eid] = {
+                        "tx": sp.get("tx", 0), "ty": sp.get("ty", 0),
+                        "name":     sp.get("name", "?"),
+                        "class_id": sp.get("class_id", "guerreiro"),
+                        "hp":       sp.get("hp", 100),
+                        "hp_max":   sp.get("hp_max", 100),
+                    }
+            for eid in payload.get("despawned", []):
+                self._remote_players.pop(eid, None)
+
+        elif msg_type == MsgType.STATS_UPDATE:
+            eid = payload.get("eid", -1)
+            if eid in self._remote_players:
+                if "hp" in payload:
+                    self._remote_players[eid]["hp"] = payload["hp"]
+
+        elif msg_type == MsgType.PONG:
+            if self._net:
+                rtt = int(__import__("time").time() * 1000) - payload.get("client_ts", 0)
+                self._net.latency_ms = rtt
+
+    def _send_player_move(self) -> None:
+        """
+        Envia MOVE ao servidor se o jogador se moveu desde o último envio.
+        Chamado após sistemas.update() no game loop.
+        """
+        if not self._net or not self._net.connected or self._my_eid == -1:
+            return
+        from components import TileMovement
+        tm = self.world.get_component(self.player_entity, TileMovement)
+        if not tm:
+            return
+        tx, ty = tm.current_tile_x, tm.current_tile_y
+        if tx != self._net_last_tx or ty != self._net_last_ty:
+            self._net.move(tx, ty)
+            self._net_last_tx = tx
+            self._net_last_ty = ty
+
+    def _draw_remote_players(self, cam_x: float, cam_y: float) -> None:
+        """
+        Renderiza outros jogadores como retângulos coloridos por classe.
+        Chamado no render loop, após render_fog.
+        """
+        if not self._remote_players:
+            return
+        from shared.constants import TILE_SIZE as _TS
+        _CLASS_COLORS = {
+            "guerreiro": (200, 80,  80),
+            "mago":      (80,  80,  220),
+            "arqueiro":  (80,  200, 80),
+        }
+        W = H = _TS - 4
+        zoom_surf = self._zoom_surf
+
+        for eid, data in self._remote_players.items():
+            tx = data.get("tx", 0)
+            ty = data.get("ty", 0)
+            px = tx * _TS + _TS // 2 - W // 2 - cam_x
+            py = ty * _TS + _TS // 2 - H // 2 - cam_y
+            col = _CLASS_COLORS.get(data.get("class_id", "guerreiro"), (180, 180, 180))
+            pygame.draw.rect(zoom_surf, col, (int(px), int(py), W, H))
+            pygame.draw.rect(zoom_surf, (255, 255, 255), (int(px), int(py), W, H), 1)
+
+            # Nome acima
+            ns = self.font_xs.render(data.get("name", "?"), True, (255, 255, 200))
+            zoom_surf.blit(ns, (int(px) + W // 2 - ns.get_width() // 2,
+                                int(py) - ns.get_height() - 2))
+
+            # Barra de HP
+            hp     = data.get("hp", 100)
+            hp_max = data.get("hp_max", 100)
+            if hp_max > 0:
+                bar_w  = W
+                fill_w = max(0, int(bar_w * hp / hp_max))
+                pygame.draw.rect(zoom_surf, (100, 0, 0),
+                                 (int(px), int(py) + H + 2, bar_w, 4))
+                pygame.draw.rect(zoom_surf, (0, 200, 0),
+                                 (int(px), int(py) + H + 2, fill_w, 4))
 
     # ------------------------------------------------------------------
     def _load_menu_keys(self) -> None:

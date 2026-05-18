@@ -7,6 +7,10 @@ CONFIG_FILE = "config.json"
 
 DEFAULTS = {
     "scale":         1.0,
+    "server_host":   "localhost",
+    "server_port":   8765,
+    "net_user":      "teste",
+    "net_pass":      "123456",
     "music_volume":  0.4,
     "sfx_volume":    1.0,
     "music_enabled": True,

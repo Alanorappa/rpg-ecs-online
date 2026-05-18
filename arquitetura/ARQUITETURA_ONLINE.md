@@ -284,8 +284,8 @@ Ver `shared/messages.py` para definição completa de cada payload.
 | Autenticação + banco | ✅ funcional | `server/auth.py` |
 | Servidor WebSocket | ✅ funcional | `server/main.py` |
 | Cliente de rede (Pygame) | ✅ estrutura | `client/network.py` |
-| Integração network → game.py | 🔲 pendente | `client/network.py` + `game.py` |
-| Sistemas de lógica no servidor | 🔲 pendente | `server/world_server.py` |
+| Integração network → game.py | ✅ Marco 1 | `client/network.py` + `game.py` |
+| Entidades de jogadores no servidor | ✅ Marco 1 | `server/world_server.py` |
 | Instâncias (dungeons/raids) | 🔲 pendente | `server/zone_manager.py` |
 | Lag compensation | 🔲 parcial | `server/world_server.py` |
 | Client-side prediction | 🔲 pendente | `client/` |
