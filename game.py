@@ -2872,10 +2872,10 @@ class GameEngine:
         data["move_t"] = _t.monotonic()
 
     # Duração da interpolação de movimento remoto.
-    # ~100ms ≈ duração da animação de tile do TileMovementSystem.
-    # Com target_tile como gatilho, o move chega no início da animação local
-    # → ambos animam em paralelo, visual sincronizado.
-    _REMOTE_MOVE_DURATION = 0.10
+    # Deve igualar TileMovement.move_duration (padrão = 0.2s).
+    # Com target_tile como gatilho o MOVE chega no início da animação local
+    # → ambos animam em paralelo; sem gap = sem pause entre tiles.
+    _REMOTE_MOVE_DURATION = 0.20
 
     def _draw_remote_players(self, cam_x: float, cam_y: float) -> None:
         """
