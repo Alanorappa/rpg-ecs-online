@@ -106,6 +106,8 @@ class GameEngine:
         self._my_eid      = -1       # entity_id atribuído pelo servidor
         # Outros jogadores visíveis: eid → {tx, ty, name, class_id}
         self._remote_players: dict[int, dict] = {}
+        # Mobs do servidor: server_eid → local_eid (entidade local no ECS)
+        self._remote_mobs: dict[int, int] = {}
         # Última posição enviada ao servidor (evita envios duplicados)
         self._net_last_tx: int = -1
         self._net_last_ty: int = -1
@@ -485,8 +487,10 @@ class GameEngine:
             loot_system,                                                              # 4
             PlayerInputSystem(self.world, self.screen),                                   # 5
             skill_system,                                                             # 6
-            EnemyAISystem(self.world, self.player_entity),                            # 7
-            EnemyAbilitySystem(self.world, self.player_entity),                       # 8
+            # IA e spawn de mobs: gerenciados pelo servidor no modo online
+            *([EnemyAISystem(self.world, self.player_entity),                         # 7
+               EnemyAbilitySystem(self.world, self.player_entity)]                    # 8
+              if not self._online_mode else []),
             projectile_system,                                                        # 9
             self._player_proj_system,                                                 # 10
             self._spell_cast_system,                                                  # 11
@@ -497,7 +501,7 @@ class GameEngine:
             self._mana_system,                                                        # 15
             death_handler,                                                            # 15
             CorpseSystem(self.world),                                                 # 16
-            SpawnZoneSystem(self.world),                                              # 17
+            *([SpawnZoneSystem(self.world)] if not self._online_mode else []),        # 17
             xp_system,                                                                # 18
             death_respawn_system,                                                     # 19
             ConsumableSystem(self.world),                                             # 20
@@ -2647,10 +2651,14 @@ class GameEngine:
             print(f"[Client] login erro: {payload.get('reason')}")
 
         elif msg_type == MsgType.WORLD_STATE:
-            # Recebe jogadores já online no AOI
             for ent in payload.get("entities", []):
-                eid = ent.get("eid", -1)
-                if eid != -1 and eid != self._my_eid:
+                eid  = ent.get("eid", -1)
+                kind = ent.get("kind", "player")
+                if eid == -1 or eid == self._my_eid:
+                    continue
+                if kind == "enemy":
+                    self._spawn_remote_mob(eid, ent)
+                else:
                     self._remote_players[eid] = {
                         "tx": ent.get("tx", 0), "ty": ent.get("ty", 0),
                         "name":     ent.get("name", "?"),
@@ -2660,8 +2668,13 @@ class GameEngine:
                     }
 
         elif msg_type == MsgType.ENTITY_SPAWN:
-            eid = payload.get("eid", -1)
-            if eid != -1 and eid != self._my_eid:
+            eid  = payload.get("eid", -1)
+            kind = payload.get("kind", "player")
+            if eid == -1 or eid == self._my_eid:
+                pass
+            elif kind == "enemy":
+                self._spawn_remote_mob(eid, payload)
+            else:
                 self._remote_players[eid] = {
                     "tx": payload.get("tx", 0), "ty": payload.get("ty", 0),
                     "name":     payload.get("name", "?"),
@@ -2673,6 +2686,13 @@ class GameEngine:
         elif msg_type == MsgType.ENTITY_DESPAWN:
             eid = payload.get("eid", -1)
             self._remote_players.pop(eid, None)
+            # Remove mob do ECS local se era um mob do servidor
+            local_eid = self._remote_mobs.pop(eid, None)
+            if local_eid is not None:
+                try:
+                    self.world.remove_entity(local_eid)
+                except Exception:
+                    pass
 
         elif msg_type == MsgType.ENTITY_MOVE:
             eid = payload.get("eid", -1)
@@ -2699,9 +2719,18 @@ class GameEngine:
                     continue
                 if eid in self._remote_players:
                     self._apply_remote_move(eid, m["tx"], m["ty"])
+                elif eid in self._remote_mobs:
+                    self._move_remote_mob(eid, m["tx"], m["ty"])
+            for sp in payload.get("spawned", []):
+                eid  = sp.get("eid", -1)
+                kind = sp.get("kind", "player")
+                if eid != -1 and eid != self._my_eid:
+                    if kind == "enemy" and eid not in self._remote_mobs:
+                        self._spawn_remote_mob(eid, sp)
+                        continue
             for sp in payload.get("spawned", []):
                 eid = sp.get("eid", -1)
-                if eid != -1 and eid != self._my_eid:
+                if eid != -1 and eid != self._my_eid and sp.get("kind","player") != "enemy":
                     self._remote_players[eid] = {
                         "tx": sp.get("tx", 0), "ty": sp.get("ty", 0),
                         "name":     sp.get("name", "?"),
@@ -2774,6 +2803,41 @@ class GameEngine:
             pos_txt = f"tile ({tm.current_tile_x}, {tm.current_tile_y})"
             ps = self.font_xs.render(pos_txt, True, (160, 160, 160))
             self.screen.blit(ps, (SCREEN_WIDTH - ps.get_width() - 8, y + surf.get_height() + 2))
+
+    def _spawn_remote_mob(self, server_eid: int, data: dict) -> None:
+        """Cria mob no ECS local a partir de dados do servidor."""
+        if server_eid in self._remote_mobs:
+            return
+        from entity_factory import create_enemy
+        local_eid = create_enemy(
+            self.world,
+            data.get("tx", 0),
+            data.get("ty", 0),
+            attack_range = 3 if data.get("is_ranged", False) else 1,
+            is_ranged    = data.get("is_ranged", False),
+            tier         = data.get("tier", "normal"),
+            race         = data.get("race", "Humanoide"),
+            entity_class = data.get("entity_class", ""),
+            level        = data.get("level", 1),
+        )
+        self._remote_mobs[server_eid] = local_eid
+
+    def _move_remote_mob(self, server_eid: int, new_tx: int, new_ty: int) -> None:
+        """Atualiza posição de mob remoto no ECS local."""
+        from components import TileMovement, Position
+        from shared.constants import TILE_SIZE as _TS
+        local_eid = self._remote_mobs.get(server_eid)
+        if local_eid is None:
+            return
+        tm = self.world.get_component(local_eid, TileMovement)
+        if tm:
+            tm.current_tile_x = new_tx;  tm.current_tile_y = new_ty
+            tm.target_tile_x  = new_tx;  tm.target_tile_y  = new_ty
+        pos = self.world.get_component(local_eid, Position)
+        if pos:
+            pos.prev_x = pos.x;  pos.prev_y = pos.y
+            pos.x = new_tx * _TS + _TS // 2
+            pos.y = new_ty * _TS + _TS // 2
 
     def _apply_remote_move(self, eid: int, new_tx: int, new_ty: int) -> None:
         """Atualiza tile de jogador remoto preservando posição atual como origem da interpolação."""

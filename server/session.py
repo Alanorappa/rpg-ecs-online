@@ -123,10 +123,13 @@ class SessionManager:
                 p["level"]    = s2.char_data.get("level", 1)
                 p["effects"]  = []
 
+        # Inclui mobs no AOI no snapshot inicial
+        near_mobs = self.world_server.get_mobs_in_aoi(tx, ty, AOI_RADIUS)
+
         await session.send(MsgType.WORLD_STATE, {
             "tick":     self.world_server.tick_count,
             "tx":       tx, "ty": ty,
-            "entities": near_players,
+            "entities": near_players + near_mobs,
         })
 
         # Avisa jogadores próximos que este entrou
