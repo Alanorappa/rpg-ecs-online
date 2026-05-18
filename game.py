@@ -2763,7 +2763,9 @@ class GameEngine:
         tm = self.world.get_component(self.player_entity, TileMovement)
         if not tm:
             return
-        tx, ty = tm.current_tile_x, tm.current_tile_y
+        # Usa target (início do movimento) em vez de current (fim da animação)
+        # → outro jogador vê o movimento começar junto com a animação local
+        tx, ty = tm.target_tile_x, tm.target_tile_y
         if tx != self._net_last_tx or ty != self._net_last_ty:
             self._net.move(tx, ty)
             self._net_last_tx = tx
@@ -2809,6 +2811,7 @@ class GameEngine:
         if server_eid in self._remote_mobs:
             return
         from entity_factory import create_enemy
+        from components import Renderable
         local_eid = create_enemy(
             self.world,
             data.get("tx", 0),
@@ -2820,6 +2823,12 @@ class GameEngine:
             entity_class = data.get("entity_class", ""),
             level        = data.get("level", 1),
         )
+        # Aplica cor exata do servidor (create_enemy usa cor do tier, pode diferir)
+        server_color = data.get("color")
+        if server_color:
+            ren = self.world.get_component(local_eid, Renderable)
+            if ren:
+                ren.color = tuple(server_color)
         self._remote_mobs[server_eid] = local_eid
 
     def _move_remote_mob(self, server_eid: int, new_tx: int, new_ty: int) -> None:
@@ -2862,9 +2871,11 @@ class GameEngine:
         data["ty"]     = new_ty
         data["move_t"] = _t.monotonic()
 
-    # Duração da interpolação de movimento remoto (segundos).
-    # Deve ser ≥ 1/TICK_RATE (50ms) para cobrir o intervalo entre ticks.
-    _REMOTE_MOVE_DURATION = 0.18
+    # Duração da interpolação de movimento remoto.
+    # ~100ms ≈ duração da animação de tile do TileMovementSystem.
+    # Com target_tile como gatilho, o move chega no início da animação local
+    # → ambos animam em paralelo, visual sincronizado.
+    _REMOTE_MOVE_DURATION = 0.10
 
     def _draw_remote_players(self, cam_x: float, cam_y: float) -> None:
         """
