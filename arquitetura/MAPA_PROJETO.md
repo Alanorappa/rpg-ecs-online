@@ -14,7 +14,7 @@
 | Implementar lógica de uma skill do mago | `skill_handlers.py` + `spell_system.py` | `_skill_*` + `_complete_cast` |
 | Adicionar talento | `talent_data.py` | `TALENTS` + `CLASS_BUILD_MAP` |
 | Aplicar efeito de talento no jogo | `talent_system.py` | `apply_talent_effects()` |
-| Criar item/arma | `loot_tables.py` | `_T` dict |
+| Criar item/arma/arco/aljava | `loot_tables.py` | `_T` dict |
 | Adicionar item em drop de mob | `loot_tables.py` | `MOB_LOOT_TABLES` ou `LOOT_TABLES` |
 | Criar um mob novo | `mob_definitions.py` | `MOB_TABLE` |
 | Definir habilidade de mob | `enemy_abilities_data.py` | `ABILITY_DEFS` + `MOB_ABILITIES` |

@@ -240,6 +240,138 @@ SKILL_CATALOG: dict[str, dict] = {
         "offensive":        False,
         "needs_aoe_target": True,    # impede som automático no SkillSystem — som toca ao disparar
     },
+
+    # ── Arqueiro ─────────────────────────────────────────────────────────────
+    "tiro_multiplo": {
+        "name":      "Tiro Múltiplo",
+        "desc":      "Dispara flechas em cone de 90° na direção do mouse. 1pt=2 alvos, 2pt=3 alvos, 3pt=ilimitado. 100% arma + 300% AP. 60 Conc. 90s CD.",
+        "cooldown":  90.0,
+        "cast_time": 1.5,
+        "cast_range": 0,
+        "class_id":  "arqueiro",
+        "offensive": False,
+        "params": {
+            "concentration_cost": 60,
+            "ap_multiplier":      3.0,   # 100% weapon + 300% AP (extra_ap = 2× AP)
+            "cone_half_angle":    45.0,  # graus — cone total de 90°
+            "range_tiles":        12,    # raio FOV padrão do arqueiro
+        },
+    },
+    "camuflagem": {
+        "name":      "Camuflagem",
+        "desc":      "O arqueiro se disfarça de um objeto do cenário por 5s. Velocidade 30%, inimigos perdem o alvo. 50 Concentração.",
+        "cooldown":  45.0,
+        "cast_time": 0.0,
+        "cast_range": 0,
+        "class_id":  "arqueiro",
+        "offensive": False,
+        "params": {
+            "concentration_cost": 50,
+            "duration":           5.0,
+            "speed_pct":          0.30,   # 30% da velocidade normal
+        },
+    },
+    "tiro_repulsivo": {
+        "name":      "Tiro Repulsivo",
+        "desc":      "Repele o alvo 5 tiles na direção oposta. Colisão com parede = stun 3s. 100% arma + 150% AP. 100 Concentração.",
+        "cooldown":  45.0,
+        "cast_time": 2.5,
+        "cast_range": 8,
+        "class_id":  "arqueiro",
+        "offensive": True,
+        "params": {
+            "concentration_cost": 100,
+            "knockback_tiles":    5,
+            "stun_duration":      3.0,
+            "ap_multiplier":      1.5,   # 1x já vem do deal_damage; +0.5 = 150% total
+        },
+    },
+    "cancao_inspiracao": {
+        "name":      "Canção da Inspiração",
+        "desc":      "Toca uma música épica que aumenta em 30% o poder de ataque por 20s. CD: 360s.",
+        "cooldown":  360.0,
+        "cast_time": 0.0,
+        "cast_range": 0,
+        "class_id":  "arqueiro",
+        "offensive": False,
+        "params": {
+            "ap_bonus_pct": 0.30,   # +30% de attack_power
+            "duration":     20.0,
+        },
+    },
+    "so_um_gole": {
+        "name":      "Só um Gole",
+        "desc":      "O arqueiro bebe e fica mais afiado: habilidades de Concentração ficam grátis e acerto vai a 100% por 10s.",
+        "cooldown":  120.0,
+        "cast_time": 0.0,
+        "cast_range": 0,
+        "class_id":  "arqueiro",
+        "offensive": False,
+        "params": {
+            "duration":    10.0,   # segundos de buff
+            "acerto_flat": 100.0,  # bônus flat de acerto (garante 100% com qualquer base)
+        },
+    },
+    "cancao_ninar": {
+        "name":      "Canção de Ninar",
+        "desc":      "Canal 2s: inimigos em raio 5 tiles dormem 8s. Slow 30% por 5s ao acordar. 25 Concentração.",
+        "cooldown":  45.0,
+        "cast_time": 2.0,
+        "cast_range": 0,
+        "class_id":  "arqueiro",
+        "offensive": False,   # não-ofensiva: arqueiro não ataca durante o canal
+        "params": {
+            "concentration_cost": 25,
+            "radius":             5,
+            "sleep_duration":     8.0,
+            "slow_duration":      5.0,
+            "slow_magnitude":     0.30,
+        },
+    },
+    "picada_escorpiao": {
+        "name":      "Picada de Escorpião",
+        "desc":      "Flecha precisa: dano da arma + 50% AP. Aplica slow 30% por 3s. 20 Concentração.",
+        "cooldown":  5.0,
+        "cast_time": 0.8,
+        "cast_range": 8,
+        "class_id":  "arqueiro",
+        "offensive": True,
+        "params": {
+            "concentration_cost": 20,
+            "ap_multiplier":      1.5,
+            "guaranteed_hit":     True,
+            "on_hit_effect":      "slow",
+            "on_hit_duration":    3.0,
+            "on_hit_magnitude":   0.30,
+        },
+    },
+    "flecha_reiterada": {
+        "name":      "Flecha Reiterada",
+        "desc":      "Dispara 2 flechas em sequência. Requer arco + aljava. 80 Concentração.",
+        "cooldown":  12.0,
+        "cast_time": 2.0,
+        "cast_range": 8,
+        "class_id":  "arqueiro",
+        "offensive": True,
+        "params": {
+            "concentration_cost": 80,
+            "arrow_count":        2,
+            "arrow_delay":        0.25,   # segundos entre a 1ª e 2ª flecha
+            "ap_multiplier":      2.0,    # dano = weapon + arrow + 200% AP
+        },
+    },
+    "recarregar": {
+        "name":      "Recarregar",
+        "desc":      "Reabastece a aljava com flechas da mochila. Requer flechas disponíveis.",
+        "cooldown":  0.0,
+        "cast_time": 1.8,
+        "cast_range": 0,
+        "class_id":  "arqueiro",
+        "offensive": False,
+        "params": {
+            "quiver_capacity": 100,
+        },
+    },
 }
 
 # Layout padrão: todos os slots vazios — skills são aprendidas com treinador
@@ -260,6 +392,15 @@ SKILL_LEVEL_REQUIREMENTS: dict[str, int] = {
     "nova_congelante":  4,
     "polimorfia":       5,
     "bloco_de_gelo":    8,
+    # Arqueiro
+    "tiro_multiplo":     1,
+    "camuflagem":        1,
+    "tiro_repulsivo":    1,
+    "cancao_inspiracao": 1,
+    "so_um_gole":        1,
+    "cancao_ninar":      1,
+    "picada_escorpiao": 1,
+    "flecha_reiterada":   1,
 }
 
 SKILL_COSTS: dict[str, int] = {
@@ -272,9 +413,27 @@ SKILL_COSTS: dict[str, int] = {
     "nova_congelante":  200,
     "polimorfia":       300,
     "bloco_de_gelo":    600,
+    # Arqueiro
+    "tiro_multiplo":     0,
+    "camuflagem":        0,
+    "tiro_repulsivo":    0,
+    "cancao_inspiracao": 0,
+    "so_um_gole":        0,
+    "cancao_ninar":     0,
+    "picada_escorpiao": 0,
+    "flecha_reiterada":   0,
 }
 
 SKILL_ORDER_BY_CLASS: dict[str, list] = {
     "guerreiro": ["golpe_poderoso", "impacto", "vitoria_iminente", "interceptar", "executar"],
     "mago":      ["bola_de_fogo", "nova_congelante", "polimorfia", "bloco_de_gelo"],
+    "arqueiro":  ["cancao_ninar", "picada_escorpiao", "flecha_reiterada"],
+}
+
+# Skills concedidas automaticamente ao criar um personagem novo (custo 0, nível 1).
+# Chave = class_id, valor = lista de skill_ids iniciais.
+INITIAL_SKILLS_BY_CLASS: dict[str, list] = {
+    "guerreiro": [],
+    "mago":      [],
+    "arqueiro":  ["recarregar", "cancao_ninar", "picada_escorpiao", "flecha_reiterada"],
 }

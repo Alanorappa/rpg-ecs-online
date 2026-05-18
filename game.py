@@ -1,4 +1,4 @@
-# game.py
+﻿# game.py
 import pygame
 import math
 import time as _time
@@ -33,7 +33,7 @@ from icon_manager import ICONS
 from sound_manager import SOUNDS
 from ui_compare import draw_compare_panel
 from talent_system import TalentSystem
-from ui_helpers import item_tooltip_lines, RARITY_COLORS as _ITEM_RARITY_COLORS
+from ui_helpers import item_tooltip_lines, draw_stack_count, RARITY_COLORS as _ITEM_RARITY_COLORS
 from map_overlay import MapOverlay
 from minimap import Minimap
 from stat_fns import add_modifier, remove_modifier, learn_recipe
@@ -129,10 +129,8 @@ class GameEngine:
             pygame.MOUSEWHEEL, pygame.MOUSEMOTION,
         ])
 
-        self.font_xs = _font(18)
-        self.font_sm = _font(22)
-        self.font_md = _font(28)
-        self.font_lg = _font(36)
+        self._ui_scale: float = _cfg_data.get("ui_scale", 1.0)
+        self._reload_ui_fonts()
 
         self.world = World()
         self.systems = []
@@ -172,6 +170,14 @@ class GameEngine:
         self._hbe_rebind_slot: int | None = None
         self._hbe_cons_drag_from: tuple | None = None  # ("panel", item_name) | ("slot", idx)
         self._hbe_cons_rebind_slot: int | None = None
+        self._hbe_tab: int = 0                    # 0=Habilidades, 1=Atalhos
+        self._mkb_rebind: "str | None" = None     # "menu:x" | "slot:0" | "cons:0"
+        self._menu_keys: dict = {}                # carregado do config — veja _load_menu_keys
+        self._hbe_skill_scroll: int = 0
+        self._hbe_expand_slots: bool = False
+        self._show_habilidades: bool = False     # painel Habilidades (tecla H)
+        self._hab_scroll: int = 0               # scroll do painel Habilidades
+        self._hab_drag_skill: "str | None" = None  # skill sendo arrastada do painel H
         self._orig_mouse_pos  = pygame.mouse.get_pos  # kept for compatibility
         # Zonas de ambient
         self._ambient_zones:    list = []   # [{name, ambient, rect:(x1,y1,x2,y2)}]
@@ -235,12 +241,30 @@ class GameEngine:
             # Cor do personagem por classe
             rend = self.world.get_component(self.player_entity, Renderable)
             if rend and char:
-                rend.color = (80, 80, 220) if char.class_id == "mago" else (255, 0, 0)
+                _CLASS_COLORS = {"mago": (80, 80, 220), "arqueiro": (80, 200, 80)}
+                rend.color = _CLASS_COLORS.get(char.class_id, (255, 0, 0))
+            # Skills iniciais concedidas automaticamente (ex: Recarregar do arqueiro)
+            if char:
+                from skill_config import INITIAL_SKILLS_BY_CLASS, SKILL_CATALOG
+                from components import PlayerSkills as _PS
+                ps = self.world.get_component(self.player_entity, _PS)
+                if ps:
+                    for _sid in INITIAL_SKILLS_BY_CLASS.get(char.class_id, []):
+                        ps.learned_skill_ids.add(_sid)
+                        if ps.skill_by_id(_sid) is None:
+                            _sk = _PS._make_skill(_sid, SKILL_CATALOG)
+                            if _sk:
+                                try:
+                                    _idx = ps.skills.index(None)
+                                    ps.skills[_idx] = _sk
+                                except ValueError:
+                                    ps.skills.append(_sk)
         else:
             self._apply_save()
         self._quest_system.auto_start_quests()
         self._quest_system.set_current_map(self._current_map_file)
         self._apply_hotbar_config(new_character=bool(char_data))
+        self._load_menu_keys()
 
         # Registra autosave global — sistemas usam request_autosave() de save_system.py
         from save_system import register_autosave
@@ -577,6 +601,18 @@ class GameEngine:
         cs   = self.world.get_component(self.player_entity, CombatStats)
         perm = self.world.get_component(self.player_entity, PermanentStats)
         if char and cs:
+            # Migração de save: recalcula atributos base a partir de classe+nível,
+            # garantindo consistência com CLASS_BASE_STATS e CLASS_LEVEL_GAINS atuais.
+            from stats_system import CLASS_BASE_STATS, CLASS_LEVEL_GAINS
+            _base   = CLASS_BASE_STATS.get(char.class_id, CLASS_BASE_STATS["guerreiro"])
+            _gains  = CLASS_LEVEL_GAINS.get(char.class_id, {})
+            _lvls   = max(0, char.level - 1)
+            char.strength     = _base["strength"]     + _gains.get("strength",     0) * _lvls
+            char.intelligence = _base["intelligence"] + _gains.get("intelligence", 0) * _lvls
+            char.agility      = _base["agility"]      + _gains.get("agility",      0) * _lvls
+            char.vitality     = _base["vitality"]     + _gains.get("vitality",     0) * _lvls
+            char.defense      = _base["defense"]      + _gains.get("defense",      0) * _lvls
+
             from stats_system import apply_char_stats_to_combat, sync_attack_interval
             from components import Equipment as _EqLoad
             apply_char_stats_to_combat(char, cs, perm)
@@ -590,7 +626,8 @@ class GameEngine:
         if char:
             rend = self.world.get_component(self.player_entity, Renderable)
             if rend:
-                rend.color = (80, 80, 220) if char.class_id == "mago" else (255, 0, 0)
+                _CLASS_COLORS = {"mago": (80, 80, 220), "arqueiro": (80, 200, 80)}
+                rend.color = _CLASS_COLORS.get(char.class_id, (255, 0, 0))
 
         # Carrega mapa correto se diferente do atual
         saved_map = pos_data.get("map", "")
@@ -665,6 +702,91 @@ class GameEngine:
             ui.show_talents = value
 
     # ------------------------------------------------------------------
+    # ── UI Scale — fontes e helper de pixel ───────────────────────────────────
+
+    _UI_FONT_BASES = {"xs": 18, "sm": 22, "md": 28, "lg": 36}
+
+    def _reload_ui_fonts(self) -> None:
+        """Recarrega font_xs/sm/md/lg no tamanho escalado. Chamado na init e ao mudar ui_scale."""
+        s = self._ui_scale
+        self.font_xs = _font(round(self._UI_FONT_BASES["xs"] * s))
+        self.font_sm = _font(round(self._UI_FONT_BASES["sm"] * s))
+        self.font_md = _font(round(self._UI_FONT_BASES["md"] * s))
+        self.font_lg = _font(round(self._UI_FONT_BASES["lg"] * s))
+
+    def _u(self, px: int) -> int:
+        """Converte pixels base para pixels escalados pela UI scale."""
+        return max(1, round(px * self._ui_scale))
+
+    def _set_ui_scale(self, value: float) -> None:
+        """Altera ui_scale, recarrega fontes e salva no config."""
+        self._ui_scale = round(max(0.5, min(3.0, value)), 2)
+        self._reload_ui_fonts()
+        import config as _cfg
+        _cfg.save({"ui_scale": self._ui_scale})
+
+    # ------------------------------------------------------------------
+    # ── Fechamento de modais — ESC unificado ─────────────────────────────────
+
+    def _close_top_modal(self) -> bool:
+        """Fecha o modal de maior prioridade atualmente aberto.
+        Retorna True se fechou algo, False se nada estava aberto."""
+        # Rebind ativo no editor de atalhos — cancela só o rebind, não fecha o painel
+        if self._mkb_rebind is not None:
+            self._mkb_rebind = None
+            return True
+        # Painel de Habilidades
+        if self._show_habilidades:
+            self._show_habilidades = False
+            self._hab_drag_skill   = None
+            return True
+        if self._map_overlay.is_open:
+            SOUNDS.play_ui("map_close")
+            self._map_overlay.is_open = False
+            return True
+        if self._loot_system.open_corpse_id != -1:
+            self._loot_system._close_modal()
+            return True
+        if self._crafting_system.is_open:
+            self._crafting_system._close()
+            return True
+        if self._trainer_system.is_open:
+            self._trainer_system._close()
+            return True
+        if self._quest_dialog.is_open:
+            self._quest_dialog._close()
+            return True
+        if self._quest_journal.is_open:
+            self._quest_journal.close()
+            return True
+        if self._shop_system.is_open:
+            self._shop_system._close()
+            return True
+        if self._show_hotbar_editor:
+            self._close_hotbar_editor()
+            return True
+        if self._show_debug:
+            self._show_debug = False
+            return True
+        if self._show_talents:
+            SOUNDS.play_ui("talent_close")
+            self._show_talents = False
+            return True
+        if self._show_inventory:
+            SOUNDS.play_ui("inventory_close")
+            self._show_inventory  = False
+            self._selected_inv_idx = -1
+            return True
+        if self._show_pause:
+            if self._pause_submenu:
+                self._pause_submenu = ""
+                self._sound_drag    = ""
+            else:
+                self._show_pause = False
+            return True
+        return False
+
+    # ------------------------------------------------------------------
     # ── Zoom ──────────────────────────────────────────────────────────────────
 
     def _handle_scroll_zoom(self, scroll_y: int) -> None:
@@ -675,6 +797,7 @@ class GameEngine:
         if (self._show_inventory or self._show_talents or self._show_debug
                 or self._map_overlay.is_open or self._show_pause
                 or self._show_hotbar_editor or self._god_mode.active
+                or self._show_habilidades
                 or getattr(self._shop_system, "is_open", False)
                 or getattr(self._quest_journal, "is_open", False)):
             return
@@ -737,6 +860,8 @@ class GameEngine:
         self._show_hotbar_editor = False
         self._hbe_drag_from      = None
         self._hbe_rebind_slot    = None
+        self._hbe_tab            = 0
+        self._mkb_rebind         = None
 
     # Game loop
     # ------------------------------------------------------------------
@@ -814,45 +939,17 @@ class GameEngine:
                     pass   # god mode consumiu — ignora input do jogo
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
-                        if self._map_overlay.is_open:
-                            SOUNDS.play_ui("map_close")
-                            self._map_overlay.is_open = False
-                        elif self._loot_system.open_corpse_id != -1:
-                            self._loot_system._close_modal()
-                        elif self._crafting_system.is_open:
-                            self._crafting_system._close()
-                        elif self._trainer_system.is_open:
-                            self._trainer_system._close()
-                        elif self._quest_dialog.is_open:
-                            self._quest_dialog._close()
-                        elif self._quest_journal.is_open:
-                            self._quest_journal.close()
-                        elif self._shop_system.is_open:
-                            self._shop_system._close()
-                        elif self._show_debug:
-                            self._show_debug = False
-                        elif self._show_talents:
-                            SOUNDS.play_ui("talent_close")
-                            self._show_talents = False
-                        elif self._show_inventory:
-                            SOUNDS.play_ui("inventory_close")
-                            self._show_inventory = False
-                            self._selected_inv_idx = -1
-                        elif self._show_pause:
-                            if self._pause_submenu:
-                                self._pause_submenu = ""
-                                self._sound_drag = ""
-                            else:
-                                self._show_pause = False
-                        else:
+                        if not self._close_top_modal():
                             self._show_pause = True
+                    elif self._show_hotbar_editor or self._show_habilidades:
+                        pass   # modais abertos: bloqueia atalhos de menu
                     elif event.key == pygame.K_F10:
                         self._close_all_modals()
                         self._god_mode.toggle()
                         if self._god_mode.active and self._zoom != 1.0:
                             self._zoom = 1.0
                             self._tile_render_system.invalidate_cache()
-                    elif event.key == pygame.K_m:
+                    elif event.key == self._menu_keys.get("mapa", pygame.K_m):
                         already_open = self._map_overlay.is_open
                         self._close_all_modals()
                         if not already_open:
@@ -862,7 +959,7 @@ class GameEngine:
                             ty = player_tm.current_tile_y if player_tm else -1
                             self._map_overlay.toggle(tx, ty)
                             SOUNDS.play_ui("map_open")
-                    elif event.key == pygame.K_i:
+                    elif event.key == self._menu_keys.get("inventario", pygame.K_i):
                         already_open = self._show_inventory
                         self._close_all_modals()
                         if not already_open:
@@ -873,17 +970,21 @@ class GameEngine:
                         if inv and 0 <= self._selected_inv_idx < len(inv.items):
                             inv.items.pop(self._selected_inv_idx)
                             self._selected_inv_idx = -1
-                    elif event.key == pygame.K_t:
+                    elif event.key == self._menu_keys.get("talentos", pygame.K_t):
                         already_open = self._show_talents
                         self._close_all_modals()
                         if not already_open:
                             self._show_talents = True
                             SOUNDS.play_ui("talent_open")
-                    elif event.key == pygame.K_j:
+                    elif event.key == self._menu_keys.get("diario", pygame.K_j):
                         already_open = self._quest_journal.is_open
                         self._close_all_modals()
                         if not already_open:
                             self._quest_journal.open()
+                    elif event.key == pygame.K_h:
+                        self._show_habilidades = not self._show_habilidades
+                        self._hab_scroll       = 0
+                        self._hab_drag_skill   = None
                     elif event.key in (pygame.K_EQUALS, pygame.K_KP_PLUS) and not self._god_mode.active:
                         new_zoom = min(self._zoom_max, round(self._zoom + self._zoom_step, 10))
                         if new_zoom != self._zoom:
@@ -1121,7 +1222,8 @@ class GameEngine:
                 if system is not self._projectile_system \
                         and system is not self._loot_system \
                         and system is not self._render_system \
-                        and system is not self._pirofagia_system:
+                        and system is not self._pirofagia_system \
+                        and system is not self._spell_cast_system:
                     if PROFILE_FRAMES:
                         _ts = _time.perf_counter()
                         system.render(cam_x, cam_y)
@@ -1144,6 +1246,7 @@ class GameEngine:
             self._channeling_system.render(cam_x, cam_y)
             self._aoe_targeting_system.render(cam_x, cam_y)
             self._pirofagia_system.render(cam_x, cam_y)
+            self._spell_cast_system.render(cam_x, cam_y)
             FLT.render(self._zoom_surf, cam_x, cam_y)
 
             # ── Escala world_surf → área de jogo na tela nativa (pixel-perfect) ─
@@ -1208,6 +1311,8 @@ class GameEngine:
                 self._talent_system.render()
             if self._show_hotbar_editor:
                 self._draw_hotbar_editor(events)
+            if self._show_habilidades or self._hab_drag_skill:
+                self._draw_habilidades_panel(events)
             if PROFILE_FRAMES:
                 self._prof_record("hud:talents", _time.perf_counter() - _ts)
                 _ts = _time.perf_counter()
@@ -1451,14 +1556,14 @@ class GameEngine:
         LOG.add(f"[DEBUG] Nivel {cs.level} — {tt.available_points if tt else 0} pontos de talento.", (120, 200, 255))
 
     def _handle_debug_click(self, event) -> None:
-        PW, PH = 600, 480
+        PW, PH = 820, 620
         px = SCREEN_WIDTH  // 2 - PW // 2
         py = SCREEN_HEIGHT // 2 - PH // 2
         mx, my = event.pos
 
         # Botão fechar (X) — botão esquerdo
         if event.button == 1:
-            close_r = pygame.Rect(px + PW - 34, py + 6, 28, 28)
+            close_r = pygame.Rect(px + PW - 44, py + 8, 36, 36)
             if close_r.collidepoint(mx, my):
                 self._show_debug = False
                 return
@@ -1562,14 +1667,14 @@ class GameEngine:
         if not cs:
             return
 
-        PW, PH = 600, 480
+        PW, PH = 820, 620
         px = SCREEN_WIDTH  // 2 - PW // 2
         py = SCREEN_HEIGHT // 2 - PH // 2
         mx, my = pygame.mouse.get_pos()
 
-        font_md = _font(22)
-        font_sm = _font(18)
-        font_lg = _font(28)
+        font_md = _font(28)
+        font_sm = _font(24)
+        font_lg = _font(36)
 
         # Fundo
         bg = pygame.Surface((PW, PH), pygame.SRCALPHA)
@@ -1579,10 +1684,10 @@ class GameEngine:
 
         # Título
         title = font_lg.render("DEBUG  [F12]", True, (120, 200, 255))
-        self.screen.blit(title, (px + PW // 2 - title.get_width() // 2, py + 9))
+        self.screen.blit(title, (px + PW // 2 - title.get_width() // 2, py + 10))
 
         # Botão fechar
-        close_r = pygame.Rect(px + PW - 34, py + 6, 28, 28)
+        close_r = pygame.Rect(px + PW - 44, py + 8, 36, 36)
         close_hov = close_r.collidepoint(mx, my)
         pygame.draw.rect(self.screen, (180, 60, 60) if close_hov else (80, 30, 30),
                          close_r, border_radius=3)
@@ -1590,14 +1695,14 @@ class GameEngine:
         self.screen.blit(xs, (close_r.centerx - xs.get_width() // 2,
                               close_r.centery - xs.get_height() // 2))
 
-        pygame.draw.line(self.screen, (80, 65, 40), (px + 4, py + 40), (px + PW - 4, py + 40))
+        pygame.draw.line(self.screen, (80, 65, 40), (px + 4, py + 52), (px + PW - 4, py + 52))
 
         # --- Abas ---
         TAB_DEFS = [("nivel", "Nivel"), ("itens", "Itens"), ("ouro", "Ouro"), ("mapa", "Mapa")]
-        tab_w, tab_h, tab_gap = 120, 30, 8
+        tab_w, tab_h, tab_gap = 160, 38, 10
         tabs_total_w = len(TAB_DEFS) * tab_w + (len(TAB_DEFS) - 1) * tab_gap
         tx0 = px + PW // 2 - tabs_total_w // 2
-        ty0 = py + 46
+        ty0 = py + 58
 
         self._debug_tab_buttons = []
         for i, (tab_id, label) in enumerate(TAB_DEFS):
@@ -1617,9 +1722,9 @@ class GameEngine:
             self.screen.blit(lbl, (tr.centerx - lbl.get_width() // 2,
                                    tr.centery - lbl.get_height() // 2))
 
-        pygame.draw.line(self.screen, (80, 65, 40), (px + 4, py + 82), (px + PW - 4, py + 82))
+        pygame.draw.line(self.screen, (80, 65, 40), (px + 4, py + 104), (px + PW - 4, py + 104))
 
-        content_y = py + 90
+        content_y = py + 114
 
         if self._debug_tab == "nivel":
             self._draw_debug_tab_nivel(px, content_y, PW, font_md, font_sm, cs, tt, mx, my)
@@ -1632,7 +1737,7 @@ class GameEngine:
 
         # Footer
         hint = font_sm.render("ESC para fechar", True, (80, 75, 60))
-        self.screen.blit(hint, (px + PW // 2 - hint.get_width() // 2, py + PH - 22))
+        self.screen.blit(hint, (px + PW // 2 - hint.get_width() // 2, py + PH - 28))
 
     def _draw_debug_tab_nivel(self, px, content_y, PW, font_md, font_sm, cs, tt, mx, my) -> None:
         points = tt.available_points if tt else 0
@@ -1645,10 +1750,10 @@ class GameEngine:
 
         self._debug_buttons = []
         btn_labels = [("+1 nivel", 1), ("+5 niveis", 5), ("+10 niveis", 10), ("+50 niveis", 50)]
-        btn_w, btn_h, gap = 130, 36, 10
+        btn_w, btn_h, gap = 170, 48, 14
         cols = 2
         bx0 = px + PW // 2 - (cols * btn_w + (cols - 1) * gap) // 2
-        by0 = content_y + 60
+        by0 = content_y + 70
         for i, (label, n) in enumerate(btn_labels):
             bx = bx0 + (i % cols) * (btn_w + gap)
             by = by0 + (i // cols) * (btn_h + gap)
@@ -1669,10 +1774,10 @@ class GameEngine:
 
         self._debug_gold_buttons = []
         btn_labels = [("+10g", 10), ("+100g", 100), ("+1000g", 1000)]
-        btn_w, btn_h, gap = 140, 44, 16
+        btn_w, btn_h, gap = 180, 54, 18
         total_w = len(btn_labels) * btn_w + (len(btn_labels) - 1) * gap
         bx0 = px + PW // 2 - total_w // 2
-        by0 = content_y + 50
+        by0 = content_y + 60
         for i, (label, amount) in enumerate(btn_labels):
             bx = bx0 + i * (btn_w + gap)
             rect = pygame.Rect(bx, by0, btn_w, btn_h)
@@ -1819,6 +1924,8 @@ class GameEngine:
             return self._draw_resolution_submenu(events)
         if self._pause_submenu == "sound":
             return self._draw_sound_submenu(events)
+        if self._pause_submenu == "interface":
+            return self._draw_interface_submenu(events)
         if self._pause_submenu == "quit_confirm":
             return self._draw_quit_confirm(events)
         return self._draw_main_menu(events)
@@ -1860,11 +1967,12 @@ class GameEngine:
 
     def _draw_main_menu(self, events: list) -> "str | None":
         _BTNS = [
-            ("Resume",     "resume"),
-            ("Resolution", "submenu:resolution"),
-            ("Sound",      "submenu:sound"),
-            ("Action Bar", "open_hotbar_editor"),
-            ("Quit",       "submenu:quit_confirm"),
+            ("Resume",              "resume"),
+            ("Resolution",          "submenu:resolution"),
+            ("Sound",               "submenu:sound"),
+            ("Interface",           "submenu:interface"),
+            ("Atalhos do teclado",  "open_hotbar_editor"),
+            ("Quit",                "submenu:quit_confirm"),
         ]
         PW, PH = 260, 60 + len(_BTNS) * 50 + 10
         self._mm_overlay()
@@ -1926,6 +2034,68 @@ class GameEngine:
         return None
 
     # ── Submenu Sound ──────────────────────────────────────────────────────
+    # ── Submenu Interface (UI Scale) ───────────────────────────────────────
+    def _draw_interface_submenu(self, events: list) -> "str | None":
+        _STEPS = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
+        PW, PH  = 340, 200
+        self._mm_overlay()
+        px, py  = self._mm_panel(PW, PH)
+
+        title = self.font_md.render("Interface", True, self._MM_TITLE_COL)
+        self.screen.blit(title, (px + PW // 2 - title.get_width() // 2, py + 14))
+
+        # Label
+        lbl = self.font_sm.render("Escala da UI", True, (190, 175, 130))
+        self.screen.blit(lbl, (px + 24, py + 62))
+
+        # Valor atual
+        cur_s = self.font_sm.render(f"{self._ui_scale:.2f}×", True, (230, 210, 120))
+        self.screen.blit(cur_s, (px + PW - cur_s.get_width() - 24, py + 62))
+
+        # Barra / botões −  +
+        mx, my = pygame.mouse.get_pos()
+        clicked = any(e.type == pygame.MOUSEBUTTONDOWN and e.button == 1 for e in events)
+
+        btn_y = py + 100
+        btn_w, btn_h = 44, 32
+        gap = 12
+
+        minus_r = pygame.Rect(px + 24, btn_y, btn_w, btn_h)
+        plus_r  = pygame.Rect(px + PW - 24 - btn_w, btn_y, btn_w, btn_h)
+
+        for r, sym in [(minus_r, "−"), (plus_r, "+")]:
+            hov = r.collidepoint(mx, my)
+            pygame.draw.rect(self.screen, (55, 45, 25) if hov else (38, 30, 14), r, border_radius=5)
+            pygame.draw.rect(self.screen, (140, 115, 60), r, 1, border_radius=5)
+            ss = self.font_md.render(sym, True, (230, 210, 120))
+            self.screen.blit(ss, ss.get_rect(center=r.center))
+
+        # Pontinhos de passo
+        total_pip_w = len(_STEPS) * 18
+        pip_x0 = px + PW // 2 - total_pip_w // 2
+        for i, step in enumerate(_STEPS):
+            active = abs(step - self._ui_scale) < 0.01
+            col = (220, 190, 80) if active else (80, 65, 35)
+            pygame.draw.circle(self.screen, col, (pip_x0 + i * 18, btn_y + btn_h // 2), 5)
+
+        if clicked:
+            cur_idx = min(range(len(_STEPS)), key=lambda i: abs(_STEPS[i] - self._ui_scale))
+            if minus_r.collidepoint(mx, my) and cur_idx > 0:
+                self._set_ui_scale(_STEPS[cur_idx - 1])
+            elif plus_r.collidepoint(mx, my) and cur_idx < len(_STEPS) - 1:
+                self._set_ui_scale(_STEPS[cur_idx + 1])
+
+        # Botão Voltar
+        back_r = pygame.Rect(px + PW // 2 - 70, py + PH - 48, 140, 34)
+        hov_b  = back_r.collidepoint(mx, my)
+        pygame.draw.rect(self.screen, (55, 44, 24) if hov_b else (38, 30, 14), back_r, border_radius=6)
+        pygame.draw.rect(self.screen, (110, 90, 50), back_r, 1, border_radius=6)
+        bs = self.font_sm.render("← Voltar", True, (210, 192, 135))
+        self.screen.blit(bs, bs.get_rect(center=back_r.center))
+        if clicked and hov_b:
+            self._pause_submenu = ""
+        return None
+
     def _draw_sound_submenu(self, events: list) -> "str | None":
         PW, PH  = 400, 230
         self._mm_overlay()
@@ -2021,8 +2191,8 @@ class GameEngine:
     # Editor da hotbar (K)
     # ------------------------------------------------------------------
 
-    _HBE_SZ  = 52   # tamanho de slot no editor
-    _HBE_GAP = 10   # espaço entre slots
+    _HBE_SZ  = 52
+    _HBE_GAP = 10
 
     def _close_hotbar_editor(self) -> None:
         self._show_hotbar_editor    = False
@@ -2030,449 +2200,371 @@ class GameEngine:
         self._hbe_rebind_slot       = None
         self._hbe_cons_drag_from    = None
         self._hbe_cons_rebind_slot  = None
+        self._hbe_tab               = 0
+        self._mkb_rebind            = None
+        self._hbe_skill_scroll      = 0
+        self._hbe_expand_slots      = False
         self._save_config()
 
     def _draw_hotbar_editor(self, events: list) -> None:
+        """Painel 'Atalhos do teclado' — tabela de rebind + Salvar / Fechar."""
         from skill_config import SKILL_CATALOG, NUM_SLOTS
-        from components import ConsumableBar as _CB, Inventory as _Inv
+        from components import ConsumableBar as _CB
+
         ps   = self.world.get_component(self.player_entity, PlayerSkills)
         cbar = self.world.get_component(self.player_entity, _CB)
-        inv  = self.world.get_component(self.player_entity, _Inv)
         if not ps:
             return
 
-        SZ  = self._HBE_SZ
-        GAP = self._HBE_GAP
         mx, my  = pygame.mouse.get_pos()
-        clicked  = any(e.type == pygame.MOUSEBUTTONDOWN and e.button == 1 for e in events)
-        released = any(e.type == pygame.MOUSEBUTTONUP   and e.button == 1 for e in events)
+        clicked = any(e.type == pygame.MOUSEBUTTONDOWN and e.button == 1 for e in events)
 
-        # ── Teclas ────────────────────────────────────────────────────────
+        # ── Captura de tecla para rebind ──────────────────────────────────
         for e in events:
             if e.type != pygame.KEYDOWN:
                 continue
-            if self._hbe_rebind_slot is not None:
+            if self._mkb_rebind is not None:
                 if e.key == pygame.K_ESCAPE:
-                    self._hbe_rebind_slot = None
+                    self._mkb_rebind = None
                 else:
-                    ps.keybinds[self._hbe_rebind_slot] = e.key
-                    self._hbe_rebind_slot = None
-                    self._save_config()
-            elif self._hbe_cons_rebind_slot is not None:
-                if e.key == pygame.K_ESCAPE:
-                    self._hbe_cons_rebind_slot = None
-                elif cbar:
-                    cbar.keybinds[self._hbe_cons_rebind_slot] = e.key
-                    self._hbe_cons_rebind_slot = None
-                    self._save_config()
+                    action, idx = self._mkb_rebind.split(":", 1)
+                    if action == "menu":
+                        self._menu_keys[idx] = e.key
+                    elif action == "slot":
+                        ps.keybinds[int(idx)] = e.key
+                    elif action == "cons" and cbar:
+                        cbar.keybinds[int(idx)] = e.key
+                    self._mkb_rebind = None
             elif e.key == pygame.K_ESCAPE:
                 self._close_hotbar_editor()
                 return
 
-        # ── Skills disponíveis — apenas as que o personagem aprendeu ─────
-        avail: list[str] = [sid for sid in SKILL_CATALOG.keys()
-                            if sid in ps.learned_skill_ids]
-        # Inclui talent skills em ps.skills (não passam pelo SKILL_CATALOG normal)
-        for s in ps.skills:
-            if s and getattr(s, "talent_id", None) and s.skill_id not in avail:
-                avail.append(s.skill_id)
-        # Inclui talent skills desbloqueadas que possam ter sido removidas da barra
-        from talent_data import TALENTS as _TALENTS
-        from components import TalentTree as _TT
-        _tt = self.world.get_component(self.player_entity, _TT)
-        if _tt:
-            for tid, pts in _tt.allocated.items():
-                t = _TALENTS.get(tid)
-                if not t or not t.get("unlocks_skill"):
-                    continue
-                unlock_at = t.get("unlock_at", t["max_points"])
-                if pts >= unlock_at and t["unlocks_skill"] not in avail:
-                    avail.append(t["unlocks_skill"])
+        # ── Geometria ─────────────────────────────────────────────────────
+        PW  = 560
+        ROW_H  = 38
+        KEY_W  = 90
+        KEY_H  = 28
+        BTN_W  = 110
+        BTN_H  = 34
 
-        # ── Consumíveis disponíveis (do inventário) ───────────────────────
-        cons_avail: list = []  # lista de Item únicos por nome
-        if inv:
-            seen_names: set = set()
-            for it in inv.items:
-                if it.consumable and it.name not in seen_names and it.stack > 0:
-                    cons_avail.append(it)
-                    seen_names.add(it.name)
+        # Conteúdo: 4 menu rows + divider + 10 slot rows + divider + 2 cons rows + buttons
+        n_rows  = 4 + NUM_SLOTS + _CB.NUM_SLOTS
+        PH      = 60 + 22 + n_rows * ROW_H + 20 + BTN_H + 20
+        PH      = max(PH, 400)
+        ppx     = SCREEN_WIDTH  // 2 - PW // 2
+        ppy     = SCREEN_HEIGHT // 2 - PH // 2
 
-        # ── Geometria do painel ───────────────────────────────────────────
-        avail_row_w  = len(avail)          * (SZ + GAP) - GAP
-        slots_row_w  = NUM_SLOTS           * (SZ + GAP) - GAP
-        cons_avail_w = max(1, len(cons_avail)) * (SZ + GAP) - GAP
-        cons_slots_w = _CB.NUM_SLOTS       * (SZ + GAP) - GAP
-        PW = max(avail_row_w, slots_row_w, cons_avail_w, cons_slots_w) + 80
-        PW = max(PW, 600)
-        PH = 500
-        px = SCREEN_WIDTH  // 2 - PW // 2
-        py = SCREEN_HEIGHT // 2 - PH // 2
+        COL_NAME = ppx + 20
+        COL_KEY  = ppx + PW - KEY_W - 20
 
-        # Overlay escurecido
+        # Overlay
         ov = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
         ov.fill((0, 0, 0, 170))
         self.screen.blit(ov, (0, 0))
 
-        # Fundo do painel
-        pygame.draw.rect(self.screen, (28, 22, 12), (px, py, PW, PH), border_radius=8)
-        pygame.draw.rect(self.screen, (90, 72, 44), (px, py, PW, PH), 2, border_radius=8)
+        # Painel
+        pygame.draw.rect(self.screen, (28, 22, 12), (ppx, ppy, PW, PH), border_radius=8)
+        pygame.draw.rect(self.screen, (90, 72, 44), (ppx, ppy, PW, PH), 2, border_radius=8)
 
         # Título
-        title_s = self.font_md.render("Action Bar", True, (220, 190, 110))
-        self.screen.blit(title_s, (px + PW // 2 - title_s.get_width() // 2, py + 12))
+        title_s = self.font_md.render("Atalhos do teclado", True, (220, 190, 110))
+        self.screen.blit(title_s, (ppx + PW // 2 - title_s.get_width() // 2, ppy + 12))
 
-        # Botão [X]
-        close_r = pygame.Rect(px + PW - 28, py + 8, 22, 22)
-        hov_x   = close_r.collidepoint(mx, my)
-        pygame.draw.rect(self.screen, (80, 40, 30) if hov_x else (50, 30, 20), close_r, border_radius=4)
-        pygame.draw.rect(self.screen, (180, 80, 60), close_r, 1, border_radius=4)
-        xs = self.font_md.render("X", True, (220, 120, 100))
-        self.screen.blit(xs, xs.get_rect(center=close_r.center))
-        if clicked and hov_x:
-            self._close_hotbar_editor()
+        # ── Cabeçalho de colunas ──────────────────────────────────────────
+        cy = ppy + 42
+        self.screen.blit(self.font_sm.render("Ação", True, (150, 135, 85)),
+                         (COL_NAME, cy))
+        self.screen.blit(self.font_sm.render("Tecla", True, (150, 135, 85)),
+                         (COL_KEY + KEY_W // 2 - 22, cy))
+        cy += 20
+        pygame.draw.line(self.screen, (72, 58, 32), (ppx + 12, cy), (ppx + PW - 12, cy))
+        cy += 6
+
+        def draw_section(label, color=(185, 158, 80)):
+            nonlocal cy
+            s = self.font_sm.render(label, True, color)
+            self.screen.blit(s, (COL_NAME, cy))
+            cy += 20
+            pygame.draw.line(self.screen, (60, 48, 28),
+                             (ppx + 12, cy), (ppx + PW - 12, cy))
+            cy += 4
+
+        def draw_row(row_label, key_code, key_id):
+            nonlocal cy
+            alt = ((cy - ppy) // ROW_H) % 2 == 1
+            if alt:
+                pygame.draw.rect(self.screen, (34, 28, 16),
+                                 (ppx + 10, cy, PW - 20, ROW_H - 2), border_radius=2)
+            name_s = self.font_sm.render(row_label, True, (205, 192, 150))
+            self.screen.blit(name_s, (COL_NAME, cy + (ROW_H - name_s.get_height()) // 2))
+
+            waiting  = (self._mkb_rebind == key_id)
+            key_name = pygame.key.name(key_code).upper() if key_code else "—"
+            kr       = pygame.Rect(COL_KEY, cy + (ROW_H - KEY_H) // 2, KEY_W, KEY_H)
+            hov      = kr.collidepoint(mx, my)
+
+            if waiting:
+                bg, bd, kt, kc = (72,56,18), (225,185,62), "...", (255,225,82)
+            elif hov:
+                bg, bd, kt, kc = (52,44,22), (165,135,62), key_name, (240,215,135)
+            else:
+                bg, bd, kt, kc = (38,30,14), (82,67,40), key_name, (175,155,92)
+
+            pygame.draw.rect(self.screen, bg, kr, border_radius=4)
+            pygame.draw.rect(self.screen, bd, kr, 1, border_radius=4)
+            ks = self.font_sm.render(kt, True, kc)
+            self.screen.blit(ks, ks.get_rect(center=kr.center))
+            if clicked and hov and not waiting:
+                self._mkb_rebind = key_id
+            cy += ROW_H
+
+        # ── Menus ─────────────────────────────────────────────────────────
+        draw_section("Menus")
+        for label, mid in [("Inventário", "inventario"), ("Talentos", "talentos"),
+                            ("Mapa", "mapa"), ("Diário de Quests", "diario")]:
+            draw_row(label, self._menu_keys.get(mid, 0), f"menu:{mid}")
+
+        # ── Barra de Habilidades ──────────────────────────────────────────
+        draw_section("Barra de Habilidades")
+        for i in range(NUM_SLOTS):
+            key_code = ps.keybinds[i] if i < len(ps.keybinds) else 0
+            draw_row(f"Slot {i + 1}", key_code, f"slot:{i}")
+
+        # ── Consumíveis ───────────────────────────────────────────────────
+        draw_section("Barra de Consumíveis")
+        for i in range(_CB.NUM_SLOTS):
+            key_code = cbar.keybinds[i] if cbar and i < len(cbar.keybinds) else 0
+            draw_row(f"Slot {NUM_SLOTS + i + 1}", key_code, f"cons:{i}")
+
+        # ── Botões Salvar / Fechar ────────────────────────────────────────
+        btn_y   = ppy + PH - BTN_H - 14
+        btn_gap = 16
+        total_btns_w = 2 * BTN_W + btn_gap
+        btn_x0  = ppx + PW // 2 - total_btns_w // 2
+
+        for bi, (blabel, bcolor, bhover) in enumerate([
+            ("Salvar",  (38, 72, 38),  (55, 100, 55)),
+            ("Fechar",  (60, 30, 20),  (90, 45, 30)),
+        ]):
+            br   = pygame.Rect(btn_x0 + bi * (BTN_W + btn_gap), btn_y, BTN_W, BTN_H)
+            hov  = br.collidepoint(mx, my)
+            pygame.draw.rect(self.screen, bhover if hov else bcolor, br, border_radius=6)
+            pygame.draw.rect(self.screen, (120, 100, 55), br, 1, border_radius=6)
+            bs   = self.font_sm.render(blabel, True, (220, 205, 150))
+            self.screen.blit(bs, bs.get_rect(center=br.center))
+            if clicked and hov:
+                self._save_config()
+                if blabel == "Fechar":
+                    self._close_hotbar_editor()
+                return
+
+        # Dica
+        if self._mkb_rebind:
+            hint = self.font_xs.render(
+                "Pressione a nova tecla  |  ESC para cancelar", True, (200, 180, 80))
+        else:
+            hint = self.font_xs.render(
+                "Clique na tecla para rebindear  |  ESC para fechar", True, (90, 82, 56))
+        self.screen.blit(hint, hint.get_rect(centerx=ppx + PW // 2, y=btn_y - 18))
+
+    # ── Painel de Habilidades (H) ─────────────────────────────────────────────
+
+    def _draw_habilidades_panel(self, events: list) -> None:
+        """Modal central de habilidades — lista scrollável com descrição completa + drag para hotbar."""
+        from skill_config import SKILL_CATALOG, NUM_SLOTS
+        from components import TalentTree as _TT
+
+        ps = self.world.get_component(self.player_entity, PlayerSkills)
+        if not ps:
             return
 
-        # ── Seção "Skills disponíveis" ────────────────────────────────────
-        self.screen.blit(
-            self.font_sm.render("Skills disponíveis:", True, (160, 150, 110)),
-            (px + 16, py + 50))
+        mx, my   = pygame.mouse.get_pos()
+        clicked  = any(e.type == pygame.MOUSEBUTTONDOWN and e.button == 1 for e in events)
+        released = any(e.type == pygame.MOUSEBUTTONUP   and e.button == 1 for e in events)
 
-        avail_y  = py + 70
-        avail_x0 = px + PW // 2 - avail_row_w // 2
-        avail_rects: list[pygame.Rect] = []
-        placed_ids = {s.skill_id for s in ps.skills if s}
+        for e in events:
+            if e.type == pygame.MOUSEWHEEL:
+                self._hab_scroll = max(0, self._hab_scroll - e.y)
 
-        for j, sid in enumerate(avail):
-            ax = avail_x0 + j * (SZ + GAP)
-            ar = pygame.Rect(ax, avail_y, SZ, SZ)
-            avail_rects.append(ar)
+        # Coleta skills aprendidas
+        avail: list[str] = [sid for sid in SKILL_CATALOG if sid in ps.learned_skill_ids]
+        for s in ps.skills:
+            if s and getattr(s, "talent_id", None) and s.skill_id not in avail:
+                avail.append(s.skill_id)
+        _tt = self.world.get_component(self.player_entity, _TT)
+        if _tt:
+            from talent_data import TALENTS as _TAL
+            for tid, pts in _tt.allocated.items():
+                t = _TAL.get(tid)
+                if not t or not t.get("unlocks_skill"):
+                    continue
+                if pts >= t.get("unlock_at", t["max_points"]) and t["unlocks_skill"] not in avail:
+                    avail.append(t["unlocks_skill"])
 
-            placed = sid in placed_ids
-            bg     = (22, 18, 10) if placed else (40, 32, 18)
-            pygame.draw.rect(self.screen, bg, ar, border_radius=4)
-            pygame.draw.rect(self.screen, (80, 65, 38), ar, 1, border_radius=4)
+        # ── Geometria — modal centralizado ────────────────────────────────
+        PW      = 720
+        PH      = 560
+        ppx     = SCREEN_WIDTH  // 2 - PW // 2
+        ppy     = SCREEN_HEIGHT // 2 - PH // 2
+        ICON_SZ = 48
+        ROW_H   = 80          # altura de cada linha (ícone + nome + descrição completa)
+        LIST_X  = ppx + 12
+        LIST_W  = PW - 24
+        CONTENT_Y = ppy + 44  # abaixo do header
+        FOOTER_H  = 28
 
-            ik = ICONS.skill_key_by_name(f"skill_{sid}") or ICONS.skill_key(j)
-            ic = ICONS.get(ik, SZ - 4)
+        max_vis    = max(1, (PH - (CONTENT_Y - ppy) - FOOTER_H - 10) // ROW_H)
+        max_scroll = max(0, len(avail) - max_vis)
+        self._hab_scroll = min(self._hab_scroll, max_scroll)
+
+        if self._show_habilidades:
+            # Overlay escurecido
+            ov = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+            ov.fill((0, 0, 0, 160))
+            self.screen.blit(ov, (0, 0))
+
+            # Fundo do modal
+            pygame.draw.rect(self.screen, (26, 20, 10), (ppx, ppy, PW, PH), border_radius=8)
+            pygame.draw.rect(self.screen, (90, 72, 44), (ppx, ppy, PW, PH), 2, border_radius=8)
+
+            # Título
+            ts = self.font_md.render("Habilidades", True, (225, 195, 110))
+            self.screen.blit(ts, (ppx + PW // 2 - ts.get_width() // 2, ppy + 10))
+
+            # Botão [X]
+            cr = pygame.Rect(ppx + PW - 30, ppy + 8, 24, 24)
+            pygame.draw.rect(self.screen, (80, 40, 30) if cr.collidepoint(mx, my) else (50, 30, 20),
+                             cr, border_radius=4)
+            pygame.draw.rect(self.screen, (180, 80, 60), cr, 1, border_radius=4)
+            xs = self.font_md.render("X", True, (220, 120, 100))
+            self.screen.blit(xs, xs.get_rect(center=cr.center))
+            if clicked and cr.collidepoint(mx, my):
+                self._show_habilidades = False
+                return
+
+            pygame.draw.line(self.screen, (70, 56, 32),
+                             (ppx + 12, ppy + 38), (ppx + PW - 12, ppy + 38))
+
+            # ── Lista de skills ──────────────────────────────────────────
+            vis = avail[self._hab_scroll: self._hab_scroll + max_vis]
+            for idx, sid in enumerate(vis):
+                ry    = CONTENT_Y + idx * ROW_H
+                r     = pygame.Rect(LIST_X, ry, LIST_W, ROW_H - 4)
+                is_src = (self._hab_drag_skill == sid)
+                hov    = r.collidepoint(mx, my) and not self._hab_drag_skill
+                alt    = idx % 2 == 1
+
+                bg = (16, 12, 6) if is_src else ((46, 38, 22) if hov else (32, 26, 14) if alt else (26, 20, 10))
+                pygame.draw.rect(self.screen, bg, r, border_radius=5)
+                pygame.draw.rect(self.screen, (120, 98, 52) if hov else (62, 50, 30),
+                                 r, 1, border_radius=5)
+
+                # Ícone
+                ic_key = ICONS.skill_key_by_name(f"skill_{sid}") or ICONS.skill_key(idx)
+                ic     = ICONS.get(ic_key, ICON_SZ)
+                if ic:
+                    self.screen.blit(ic, (LIST_X + 8, ry + (ROW_H - 4 - ICON_SZ) // 2))
+
+                entry    = SKILL_CATALOG.get(sid)
+                name_txt = entry["name"] if isinstance(entry, dict) else sid
+                desc_txt = entry.get("desc", "")   if isinstance(entry, dict) else ""
+                cd       = entry.get("cooldown", 0) if isinstance(entry, dict) else 0
+                cast_t   = entry.get("cast_time", 0) if isinstance(entry, dict) else 0
+
+                tx = LIST_X + ICON_SZ + 20
+
+                # Nome
+                self.screen.blit(self.font_sm.render(name_txt, True, (230, 210, 148)),
+                                 (tx, ry + 6))
+
+                # Descrição completa — quebrada em duas linhas se necessário
+                max_chars = (LIST_W - ICON_SZ - 28) // 7  # aprox chars por linha a font_xs
+                if len(desc_txt) > max_chars:
+                    cut = desc_txt.rfind(" ", 0, max_chars) or max_chars
+                    line1, line2 = desc_txt[:cut], desc_txt[cut:].strip()
+                else:
+                    line1, line2 = desc_txt, ""
+                self.screen.blit(self.font_xs.render(line1, True, (155, 140, 95)),
+                                 (tx, ry + 28))
+                if line2:
+                    self.screen.blit(self.font_xs.render(line2, True, (155, 140, 95)),
+                                     (tx, ry + 44))
+
+                # Metadados (CD / cast) — canto direito da linha
+                meta_parts = []
+                if cd:
+                    meta_parts.append(f"CD {cd:.0f}s")
+                if cast_t:
+                    meta_parts.append(f"Cast {cast_t:.1f}s")
+                if meta_parts:
+                    meta_s = self.font_xs.render("  ·  ".join(meta_parts), True, (110, 100, 65))
+                    self.screen.blit(meta_s, (LIST_X + LIST_W - meta_s.get_width() - 10,
+                                              ry + ROW_H - meta_s.get_height() - 8))
+
+                if clicked and r.collidepoint(mx, my):
+                    self._hab_drag_skill = sid
+
+            # Barra de scroll
+            if len(avail) > max_vis:
+                list_h = max_vis * ROW_H
+                pct    = self._hab_scroll / max(1, max_scroll)
+                bar_h  = max(20, list_h * max_vis // max(1, len(avail)))
+                bar_y  = CONTENT_Y + int((list_h - bar_h) * pct)
+                bar_x  = ppx + PW - 8
+                pygame.draw.rect(self.screen, (44, 35, 18), (bar_x, CONTENT_Y, 5, list_h), border_radius=2)
+                pygame.draw.rect(self.screen, (125, 100, 55), (bar_x, bar_y, 5, bar_h), border_radius=2)
+
+            # Dica de rodapé
+            hint = self.font_xs.render(
+                "Clique e arraste uma habilidade para um slot da hotbar  |  H ou [X] para fechar",
+                True, (90, 82, 55))
+            self.screen.blit(hint, hint.get_rect(centerx=ppx + PW // 2, y=ppy + PH - 20))
+
+        # ── Ghost de drag ─────────────────────────────────────────────────
+        if self._hab_drag_skill:
+            GSZ   = 48
+            ghost = pygame.Surface((GSZ, GSZ), pygame.SRCALPHA)
+            ghost.fill((30, 24, 12, 180))
+            ic_k = ICONS.skill_key_by_name(f"skill_{self._hab_drag_skill}") or ICONS.skill_key(0)
+            ic   = ICONS.get(ic_k, GSZ - 4)
             if ic:
-                self.screen.blit(ic, (ax + 2, avail_y + 2))
+                ghost.blit(ic, (2, 2))
+            self.screen.blit(ghost, ghost.get_rect(center=(mx, my)))
 
-            if placed:
-                dim = pygame.Surface((SZ, SZ), pygame.SRCALPHA)
-                dim.fill((0, 0, 0, 140))
-                self.screen.blit(dim, ar.topleft)
-
-            if clicked and ar.collidepoint(mx, my) and not self._hbe_drag_from:
-                self._hbe_drag_from = ("panel", sid)
-
-        # ── Linha divisória ───────────────────────────────────────────────
-        div_y = avail_y + SZ + 14
-        pygame.draw.line(self.screen, (60, 50, 30), (px + 16, div_y), (px + PW - 16, div_y))
-
-        # ── Seção "Barra de Habilidades" ──────────────────────────────────
-        self.screen.blit(
-            self.font_sm.render("Barra de Habilidades:", True, (160, 150, 110)),
-            (px + 16, div_y + 8))
-
-        slot_y  = div_y + 28
-        slot_x0 = px + PW // 2 - slots_row_w // 2
-        slot_rects: list[pygame.Rect] = []
-
-        for i in range(NUM_SLOTS):
-            sx = slot_x0 + i * (SZ + GAP)
-            sr = pygame.Rect(sx, slot_y, SZ, SZ)
-            slot_rects.append(sr)
-            skill = ps.skills[i]
-
-            is_drag_src   = self._hbe_drag_from == ("slot", i)
-            is_drop_hover = self._hbe_drag_from and sr.collidepoint(mx, my)
-
-            bg = (15, 12, 6) if is_drag_src else ((40, 32, 18) if skill else (22, 18, 10))
-            pygame.draw.rect(self.screen, bg, sr, border_radius=4)
-            bd = (160, 130, 60) if is_drop_hover else (80, 65, 38)
-            pygame.draw.rect(self.screen, bd, sr, 2 if is_drop_hover else 1, border_radius=4)
-
-            if skill and not is_drag_src:
-                ik = ICONS.skill_key_by_name(skill.icon_name) or ICONS.skill_key(i)
-                ic = ICONS.get(ik, SZ - 4)
-                if ic:
-                    self.screen.blit(ic, (sx + 2, slot_y + 2))
-
-            kb_name = pygame.key.name(ps.keybinds[i]).upper()
-            kb_r    = pygame.Rect(sx, slot_y + SZ + 4, SZ, 18)
-
-            if self._hbe_rebind_slot == i:
-                pygame.draw.rect(self.screen, (70, 55, 18), kb_r, border_radius=3)
-                pygame.draw.rect(self.screen, (220, 180, 60), kb_r, 1, border_radius=3)
-                kbs = self.font_xs.render("...", True, (255, 220, 80))
-            elif kb_r.collidepoint(mx, my) and not self._hbe_drag_from:
-                pygame.draw.rect(self.screen, (50, 42, 22), kb_r, border_radius=3)
-                pygame.draw.rect(self.screen, (120, 100, 50), kb_r, 1, border_radius=3)
-                kbs = self.font_xs.render(kb_name, True, (220, 200, 130))
-                if clicked:
-                    self._hbe_rebind_slot = i
-                    self._hbe_drag_from   = None
-            else:
-                kbs = self.font_xs.render(kb_name, True, (110, 100, 65))
-            self.screen.blit(kbs, kbs.get_rect(centerx=sx + SZ // 2, y=kb_r.y + 1))
-
-            if clicked and sr.collidepoint(mx, my) and skill and not self._hbe_drag_from \
-                    and self._hbe_rebind_slot is None:
-                self._hbe_drag_from = ("slot", i)
-
-        # ── Linha divisória ───────────────────────────────────────────────
-        div2_y = slot_y + SZ + 22 + 10
-        pygame.draw.line(self.screen, (60, 50, 30), (px + 16, div2_y), (px + PW - 16, div2_y))
-
-        # ── Seção "Consumíveis disponíveis" ───────────────────────────────
-        self.screen.blit(
-            self.font_sm.render("Consumíveis disponíveis:", True, (120, 180, 140)),
-            (px + 16, div2_y + 8))
-
-        cons_avail_y  = div2_y + 28
-        cons_avail_x0 = px + PW // 2 - cons_avail_w // 2
-        cons_avail_rects: list[pygame.Rect] = []
-
-        if cons_avail:
-            placed_cons = {name for name in (cbar.slots if cbar else []) if name}
-            for j, item in enumerate(cons_avail):
-                ax = cons_avail_x0 + j * (SZ + GAP)
-                ar = pygame.Rect(ax, cons_avail_y, SZ, SZ)
-                cons_avail_rects.append(ar)
-
-                placed = item.name in placed_cons
-                bg     = (12, 22, 14) if placed else (18, 36, 22)
-                pygame.draw.rect(self.screen, bg, ar, border_radius=4)
-                pygame.draw.rect(self.screen, (50, 90, 60), ar, 1, border_radius=4)
-
-                # Ícone do item (fallback: inicial do nome)
-                _ic = ICONS.get(ICONS.item_key(item), SZ - 4)
-                if _ic:
-                    self.screen.blit(_ic, (ax + 2, cons_avail_y + 2))
-                else:
-                    letter = self.font_sm.render(item.name[0].upper(), True, (100, 220, 140))
-                    self.screen.blit(letter, letter.get_rect(center=ar.center))
-
-                # Quantidade no canto
-                stack_s = self.font_xs.render(str(item.stack), True, (200, 200, 160))
-                self.screen.blit(stack_s, (ar.right - stack_s.get_width() - 2, ar.bottom - stack_s.get_height() - 1))
-
-                if placed:
-                    dim = pygame.Surface((SZ, SZ), pygame.SRCALPHA)
-                    dim.fill((0, 0, 0, 130))
-                    self.screen.blit(dim, ar.topleft)
-
-                if clicked and ar.collidepoint(mx, my) and not self._hbe_cons_drag_from \
-                        and not self._hbe_drag_from:
-                    self._hbe_cons_drag_from = ("panel", item.name)
-        else:
-            empty_s = self.font_xs.render("Nenhum consumível no inventário", True, (80, 90, 75))
-            self.screen.blit(empty_s, (px + PW // 2 - empty_s.get_width() // 2, cons_avail_y + SZ // 2 - 8))
-
-        # ── Linha divisória ───────────────────────────────────────────────
-        div3_y = cons_avail_y + SZ + 14
-        pygame.draw.line(self.screen, (60, 50, 30), (px + 16, div3_y), (px + PW - 16, div3_y))
-
-        # ── Seção "Barra de Consumíveis" ──────────────────────────────────
-        self.screen.blit(
-            self.font_sm.render("Barra de Consumíveis:", True, (120, 180, 140)),
-            (px + 16, div3_y + 8))
-
-        cons_slot_y  = div3_y + 28
-        cons_slot_x0 = px + PW // 2 - cons_slots_w // 2
-        cons_slot_rects: list[pygame.Rect] = []
-
-        for i in range(_CB.NUM_SLOTS):
-            sx = cons_slot_x0 + i * (SZ + GAP)
-            sr = pygame.Rect(sx, cons_slot_y, SZ, SZ)
-            cons_slot_rects.append(sr)
-            item_name = cbar.slots[i] if cbar else None
-
-            is_drag_src   = self._hbe_cons_drag_from == ("slot", i)
-            is_drop_hover = self._hbe_cons_drag_from and sr.collidepoint(mx, my)
-
-            bg = (8, 16, 10) if is_drag_src else ((18, 36, 22) if item_name else (12, 22, 14))
-            pygame.draw.rect(self.screen, bg, sr, border_radius=4)
-            bd = (100, 180, 120) if is_drop_hover else (50, 90, 60)
-            pygame.draw.rect(self.screen, bd, sr, 2 if is_drop_hover else 1, border_radius=4)
-
-            if item_name and not is_drag_src:
-                _ic_key = "item_" + item_name.lower().replace(" ", "_")
-                _ic = ICONS.get(_ic_key, SZ - 4)
-                if _ic:
-                    self.screen.blit(_ic, (sr.x + 2, sr.y + 2))
-                else:
-                    letter = self.font_sm.render(item_name[0].upper(), True, (100, 220, 140))
-                    self.screen.blit(letter, letter.get_rect(center=sr.center))
-                # Stack count from inventory
-                if inv:
-                    it = next((x for x in inv.items if x.name == item_name), None)
-                    if it:
-                        stk_s = self.font_xs.render(str(it.stack), True, (200, 200, 160))
-                        self.screen.blit(stk_s, (sr.right - stk_s.get_width() - 2, sr.bottom - stk_s.get_height() - 1))
-
-            kb_name = pygame.key.name(cbar.keybinds[i]).upper() if cbar else "?"
-            kb_r    = pygame.Rect(sx, cons_slot_y + SZ + 4, SZ, 18)
-
-            if self._hbe_cons_rebind_slot == i:
-                pygame.draw.rect(self.screen, (18, 55, 28), kb_r, border_radius=3)
-                pygame.draw.rect(self.screen, (80, 220, 120), kb_r, 1, border_radius=3)
-                kbs = self.font_xs.render("...", True, (100, 255, 140))
-            elif kb_r.collidepoint(mx, my) and not self._hbe_cons_drag_from \
-                    and not self._hbe_drag_from:
-                pygame.draw.rect(self.screen, (18, 42, 22), kb_r, border_radius=3)
-                pygame.draw.rect(self.screen, (60, 120, 70), kb_r, 1, border_radius=3)
-                kbs = self.font_xs.render(kb_name, True, (140, 220, 160))
-                if clicked:
-                    self._hbe_cons_rebind_slot = i
-                    self._hbe_cons_drag_from   = None
-            else:
-                kbs = self.font_xs.render(kb_name, True, (65, 110, 75))
-            self.screen.blit(kbs, kbs.get_rect(centerx=sx + SZ // 2, y=kb_r.y + 1))
-
-            if clicked and sr.collidepoint(mx, my) and item_name \
-                    and not self._hbe_cons_drag_from and not self._hbe_drag_from \
-                    and self._hbe_cons_rebind_slot is None:
-                self._hbe_cons_drag_from = ("slot", i)
-
-        # ── Dica de uso ───────────────────────────────────────────────────
-        hint = self.font_xs.render(
-            "Arraste entre slots  |  Clique na tecla para rebindear  |  ESC para fechar",
-            True, (90, 80, 55))
-        self.screen.blit(hint, hint.get_rect(centerx=px + PW // 2, y=py + PH - 20))
-
-        # ── Tooltip de nome no hover ───────────────────────────────────────
-        hover_name = None
-        for sid, ar in zip(avail, avail_rects):
-            if ar.collidepoint(mx, my) and not self._hbe_drag_from:
-                entry = SKILL_CATALOG.get(sid)
-                hover_name = entry["name"] if isinstance(entry, dict) else sid
-                break
-        if hover_name is None:
-            for i, sr in enumerate(slot_rects):
-                sk = ps.skills[i]
-                if sk and sr.collidepoint(mx, my) and not self._hbe_drag_from:
-                    hover_name = sk.name
-                    break
-        if hover_name is None:
-            for item, ar in zip(cons_avail, cons_avail_rects):
-                if ar.collidepoint(mx, my) and not self._hbe_cons_drag_from:
-                    hover_name = item.name
-                    break
-        if hover_name is None and cbar:
-            for i, sr in enumerate(cons_slot_rects):
-                if cbar.slots[i] and sr.collidepoint(mx, my) and not self._hbe_cons_drag_from:
-                    hover_name = cbar.slots[i]
-                    break
-        if hover_name:
-            ns = self.font_sm.render(hover_name, True, (230, 210, 150))
-            nb = pygame.Rect(mx + 10, my - 22, ns.get_width() + 10, ns.get_height() + 6)
-            if nb.right > SCREEN_WIDTH:
-                nb.right = mx - 4
-            pygame.draw.rect(self.screen, (30, 24, 12), nb, border_radius=3)
-            pygame.draw.rect(self.screen, (90, 72, 44), nb, 1, border_radius=3)
-            self.screen.blit(ns, (nb.x + 5, nb.y + 3))
-
-        # ── Processa drop — skills ─────────────────────────────────────────
-        if released and self._hbe_drag_from:
-            drop_idx = next((i for i, sr in enumerate(slot_rects)
-                             if sr.collidepoint(mx, my)), None)
-            src = self._hbe_drag_from
-
-            if drop_idx is not None:
-                if src[0] == "panel":
-                    sid = src[1]
-                    src_slot = next(
-                        (k for k in range(NUM_SLOTS)
-                         if ps.skills[k] and ps.skills[k].skill_id == sid), None)
-                    if src_slot is not None:
-                        if src_slot != drop_idx:
-                            ps.skills[src_slot], ps.skills[drop_idx] = \
-                                ps.skills[drop_idx], ps.skills[src_slot]
-                    else:
-                        new_s = PlayerSkills._make_skill(sid, SKILL_CATALOG)
+        # ── Drop sobre a hotbar ────────────────────────────────────────────
+        if released and self._hab_drag_skill:
+            sid     = self._hab_drag_skill
+            self._hab_drag_skill = None
+            # Calcula posições de TODOS os 10 slots (incluindo vazios) para detecção
+            total_w = NUM_SLOTS * self._HB_W + (NUM_SLOTS - 1) * self._HB_PAD
+            x0      = SCREEN_WIDTH // 2 - total_w // 2
+            y0      = SCREEN_HEIGHT - self._HB_H - 10
+            for i in range(NUM_SLOTS):
+                sx = x0 + i * (self._HB_W + self._HB_PAD)
+                if pygame.Rect(sx, y0, self._HB_W, self._HB_H).collidepoint(mx, my):
+                    # Verifica se a skill já está em outro slot (swap)
+                    ex = next((k for k in range(NUM_SLOTS)
+                               if ps.skills[k] and ps.skills[k].skill_id == sid), None)
+                    if ex is not None and ex != i:
+                        ps.skills[ex], ps.skills[i] = ps.skills[i], ps.skills[ex]
+                    elif ex is None:
+                        new_s = type(ps)._make_skill(sid, SKILL_CATALOG)
                         if new_s is None:
-                            # Talent skill não está no catálogo — busca em ps.skills
-                            # (pode estar numa posição diferente da barra)
-                            new_s = next((s for s in ps.skills
-                                          if s and s.skill_id == sid), None)
+                            new_s = next((s for s in ps.skills if s and s.skill_id == sid), None)
                         if new_s:
-                            ps.skills[drop_idx] = new_s
-                else:
-                    si = src[1]
-                    if si != drop_idx:
-                        ps.skills[si], ps.skills[drop_idx] = ps.skills[drop_idx], ps.skills[si]
-            elif src[0] == "slot":
-                panel_r = pygame.Rect(px, py, PW, PH)
-                if not panel_r.collidepoint(mx, my):
-                    ps.skills[src[1]] = None
-
-            self._hbe_drag_from = None
-            self._save_config()
-
-        # ── Processa drop — consumíveis ────────────────────────────────────
-        if released and self._hbe_cons_drag_from and cbar:
-            drop_idx = next((i for i, sr in enumerate(cons_slot_rects)
-                             if sr.collidepoint(mx, my)), None)
-            src = self._hbe_cons_drag_from
-
-            if drop_idx is not None:
-                if src[0] == "panel":
-                    # Coloca item no slot (sobrescreve)
-                    cbar.slots[drop_idx] = src[1]
-                else:
-                    # slot → slot: troca
-                    si = src[1]
-                    if si != drop_idx:
-                        cbar.slots[si], cbar.slots[drop_idx] = \
-                            cbar.slots[drop_idx], cbar.slots[si]
-            elif src[0] == "slot":
-                # Soltou fora: limpa o slot de origem
-                panel_r = pygame.Rect(px, py, PW, PH)
-                if not panel_r.collidepoint(mx, my):
-                    cbar.slots[src[1]] = None
-
-            self._hbe_cons_drag_from = None
-            self._save_config()
-
-        # ── Ícone arrastado no cursor — skills ────────────────────────────
-        if self._hbe_drag_from:
-            drag_sid = None
-            if self._hbe_drag_from[0] == "panel":
-                drag_sid = self._hbe_drag_from[1]
-            else:
-                s = ps.skills[self._hbe_drag_from[1]]
-                drag_sid = s.skill_id if s else None
-            if drag_sid:
-                ik = ICONS.skill_key_by_name(f"skill_{drag_sid}") or ICONS.skill_key(0)
-                ic = ICONS.get(ik, SZ - 4)
-                if ic:
-                    ic_copy = ic.copy()
-                    ic_copy.set_alpha(210)
-                    self.screen.blit(ic_copy, ic_copy.get_rect(center=(mx, my)))
-
-        # ── Ícone arrastado no cursor — consumíveis ───────────────────────
-        if self._hbe_cons_drag_from:
-            drag_name = None
-            if self._hbe_cons_drag_from[0] == "panel":
-                drag_name = self._hbe_cons_drag_from[1]
-            elif cbar:
-                drag_name = cbar.slots[self._hbe_cons_drag_from[1]]
-            if drag_name:
-                drag_s = pygame.Surface((SZ, SZ), pygame.SRCALPHA)
-                drag_s.fill((18, 36, 22, 180))
-                pygame.draw.rect(drag_s, (50, 90, 60), (0, 0, SZ, SZ), 1, border_radius=4)
-                _ic_key = "item_" + drag_name.lower().replace(" ", "_")
-                _ic = ICONS.get(_ic_key, SZ - 4)
-                if _ic:
-                    drag_s.blit(_ic, (2, 2))
-                else:
-                    letter = self.font_sm.render(drag_name[0].upper(), True, (100, 220, 140))
-                    drag_s.blit(letter, letter.get_rect(center=(SZ // 2, SZ // 2)))
-                self.screen.blit(drag_s, drag_s.get_rect(center=(mx, my)))
+                            ps.skills[i] = new_s
+                    self._save_config()
+                    break
 
     # ------------------------------------------------------------------
+    def _load_menu_keys(self) -> None:
+        """Carrega atalhos de menu do config.json para self._menu_keys."""
+        import config as _cfg
+        from config import DEFAULTS
+        defaults = DEFAULTS.get("menu_keybinds", {})
+        saved    = _cfg.load().get("menu_keybinds", {})
+        self._menu_keys = {**defaults, **saved}
+
     def _save_config(self) -> None:
         """Persiste todas as configurações (resolução + áudio + hotbar) em config.json."""
         import config as _cfg
@@ -2486,7 +2578,9 @@ class GameEngine:
             "profile_frames": PROFILE_FRAMES,
             "hotbar":         self._hotbar_to_dict(),
             "consumable_bar": self._consumable_bar_to_dict(),
+            "menu_keybinds":  self._menu_keys,
         })
+        self._load_menu_keys()   # sincroniza em memória após salvar
 
     def _hotbar_to_dict(self) -> dict:
         """Serializa a hotbar atual (slots + keybinds) para persistência."""
@@ -2637,10 +2731,10 @@ class GameEngine:
     # Hotbar de habilidades (1-4)
     # ------------------------------------------------------------------
 
-    _HB_W   = 34
-    _HB_H   = 34
-    _HB_ICO = 32
-    _HB_PAD = 4
+    _HB_W   = 68
+    _HB_H   = 68
+    _HB_ICO = 64
+    _HB_PAD = 6
 
     _SKILL_FALLBACK_COLORS = [
         (180,  60,  60),   # 1 Golpe Poderoso
@@ -2750,8 +2844,13 @@ class GameEngine:
         # Channeling de Fatiador de Corpos — bloqueia visualmente todas as skills
         channeling = _char is not None and _char.fatiador_timer > 0
 
-        # Apenas slots ocupados, compactados e centralizados
-        occupied = [(i, s) for i, s in enumerate(player_skills.skills) if s is not None]
+        # Durante drag do painel Habilidades: mostra TODOS os slots (incluindo vazios)
+        dragging_skill = getattr(self, "_hab_drag_skill", None)
+        if dragging_skill:
+            from skill_config import NUM_SLOTS as _NS
+            occupied = [(i, player_skills.skills[i]) for i in range(_NS)]
+        else:
+            occupied = [(i, s) for i, s in enumerate(player_skills.skills) if s is not None]
         n_occ   = len(occupied)
         if n_occ == 0:
             return
@@ -2763,6 +2862,14 @@ class GameEngine:
         for j, (i, skill) in enumerate(occupied):
             sx = x0 + j * (self._HB_W + self._HB_PAD)
             r  = pygame.Rect(sx, y0, self._HB_W, self._HB_H)
+
+            # Slot vazio exibido durante drag — apenas fundo destacado
+            if skill is None:
+                pygame.draw.rect(self.screen, (38, 32, 16), r, border_radius=5)
+                pygame.draw.rect(self.screen, (160, 130, 50), r, 2, border_radius=5)
+                num_s = self.font_xs.render(str(i + 1), True, (100, 85, 48))
+                self.screen.blit(num_s, (sx + 4, y0 + 4))
+                continue
 
             # --- Estado de proc por skill ---
             # Charge-based: proc = tem cargas disponíveis
@@ -2982,9 +3089,7 @@ class GameEngine:
                         letter = self.font_sm.render(item_name[0].upper(), True, (100, 220, 140))
                         self.screen.blit(letter, letter.get_rect(center=r.center))
                     # Stack count
-                    stk_s = self.font_xs.render(str(item.stack), True, (200, 200, 160))
-                    self.screen.blit(stk_s, (r.right - stk_s.get_width() - 2,
-                                             r.bottom - stk_s.get_height() - 2))
+                    draw_stack_count(self.screen, item, r, self.font_xs)
                 else:
                     # Item esgotado — slot visível mas sem ícone (stack chegou a 0)
                     pass
@@ -3457,7 +3562,7 @@ class GameEngine:
         self.screen.blit(hp_surf, (14, y))
         y += 18
 
-        # --- Rage (Guerreiro) ou Mana (Mago) ---
+        # --- Rage (Guerreiro) / Mana (Mago) / Aljava (Arqueiro) ---
         if char_stats:
             if char_stats.class_id == "mago":
                 mana_ratio = char_stats.mana / max(1, char_stats.max_mana)
@@ -3466,6 +3571,38 @@ class GameEngine:
                 mana_surf = self.font_sm.render(
                     f"Mana {char_stats.mana}/{char_stats.max_mana}", True, C_WHITE)
                 self.screen.blit(mana_surf, (14, y))
+            elif char_stats.class_id == "arqueiro":
+                # Barra de Concentração
+                _conc_ratio = char_stats.concentration / max(1, char_stats.max_concentration)
+                _conc_col   = (80, 160, 220) if _conc_ratio > 0.3 else (180, 100, 60)
+                pygame.draw.rect(self.screen, (10, 30, 55),  (10, y, bar_w, 14))
+                pygame.draw.rect(self.screen, _conc_col, (10, y, int(bar_w * _conc_ratio), 14))
+                _cs_conc  = self.world.get_component(self.player_entity, CombatStats)
+                _tm_conc  = self.world.get_component(self.player_entity, TileMovement)
+                _moving   = _tm_conc.is_moving if _tm_conc else False
+                _rate     = (getattr(_cs_conc, "concentration_regen_moving", 0.0)
+                             if _moving else
+                             getattr(_cs_conc, "concentration_regen_idle",   0.0))
+                _rate_str = f"  (+{_rate:.0f}/s)" if _rate > 0 else ""
+                conc_surf = self.font_sm.render(
+                    f"Conc. {int(char_stats.concentration)}/{char_stats.max_concentration}{_rate_str}",
+                    True, C_WHITE)
+                self.screen.blit(conc_surf, (14, y))
+                y += 18
+                # Barra de Aljava
+                from components import Equipment as _EqHUD
+                _eq_hud = self.world.get_component(self.player_entity, _EqHUD)
+                _quiver = _eq_hud.slots.get("offhand") if _eq_hud else None
+                if _quiver and getattr(_quiver, "item_type", "") == "quiver":
+                    _arrow_ratio = _quiver.arrow_count / max(1, _quiver.max_arrows)
+                    pygame.draw.rect(self.screen, (40, 30, 10),  (10, y, bar_w, 14))
+                    pygame.draw.rect(self.screen, (200, 160, 60), (10, y, int(bar_w * _arrow_ratio), 14))
+                    arrow_surf = self.font_sm.render(
+                        f"Aljava {_quiver.arrow_count}/{_quiver.max_arrows}", True, C_WHITE)
+                    self.screen.blit(arrow_surf, (14, y))
+                else:
+                    no_q_surf = self.font_sm.render("Sem aljava", True, (180, 130, 50))
+                    self.screen.blit(no_q_surf, (14, y))
             else:
                 rage_ratio = char_stats.rage / max(1, char_stats.max_rage)
                 pygame.draw.rect(self.screen, (60, 20, 0),   (10, y, bar_w, 14))
@@ -3605,8 +3742,8 @@ class GameEngine:
     }
 
     # Constantes do painel de inventário (usadas por draw E click)
-    _PANEL_W    = 680
-    _PANEL_H    = 540
+    _PANEL_W    = 720
+    _PANEL_H    = 660
     _PAD        = 10
     _HEADER_H   = 28
     _EQ_W       = 230   # largura da coluna de equipamento
@@ -3950,11 +4087,7 @@ class GameEngine:
                     pygame.draw.circle(self.screen, dot_col, (r.right - 5, r.bottom - 5), 4)
 
                 # Contador de stack (canto inferior direito)
-                stack = getattr(item, "stack", 1)
-                if stack > 1 or getattr(item, "max_stack", 1) > 1:
-                    stk_s = self.font_sm.render(str(stack), True, (255, 255, 255))
-                    self.screen.blit(stk_s, (r.right - stk_s.get_width() - 2,
-                                             r.bottom - stk_s.get_height() - 1))
+                draw_stack_count(self.screen, item, r, self.font_sm)
 
                 if hovered:
                     del_hint = "DEL p/ deletar | " if selected else ""
@@ -3968,50 +4101,73 @@ class GameEngine:
                         self._pending_tooltip = (mx, my, item.name, lines,
                                                  item, equip.slots.get(item.slot))
 
-        # ---- Seção de estatísticas ----
-        sy2 = divider_y + PAD
-        self.screen.blit(self.font_sm.render("Estatísticas", True, (180, 150, 90)), (x0 + PAD, sy2))
-        sy2 += 18
-        col_b = x0 + 180
-        col_e = x0 + 280
-        col_t = x0 + 380
-        for lbl in ("Atributo", "Base", "+Equip", "Total"):
-            cx = x0 + PAD if lbl == "Atributo" else (col_b if lbl == "Base" else col_e if lbl == "+Equip" else col_t)
-            self.screen.blit(self.font_sm.render(lbl, True, (160, 140, 100)), (cx, sy2))
-        sy2 += 18
+        # ---- Seção de estatísticas (2 colunas) ----
+        sy2   = divider_y + PAD
+        half  = W // 2
+        cL    = x0 + PAD          # coluna esquerda: rótulo
+        cLv   = x0 + 130          # coluna esquerda: valor
+        cR    = x0 + half + PAD   # coluna direita: rótulo
+        cRv   = x0 + half + 130   # coluna direita: valor
+        HDR   = (160, 140, 100)
+        VAL   = (255, 220, 120)
+        ROW   = 20                 # altura de linha
 
-        def stat_row(display, attribute, base_val, fmt="{:.0f}"):
-            eq_val  = equip.get_modifier_total(attribute)
-            tot_val = base_val + eq_val
-            self.screen.blit(self.font_sm.render(display,              True, C_GRAY),  (x0 + PAD, sy2))
-            self.screen.blit(self.font_sm.render(fmt.format(base_val), True, C_WHITE), (col_b, sy2))
-            self.screen.blit(self.font_sm.render(f"+{fmt.format(eq_val)}", True, C_GREEN if eq_val > 0 else C_GRAY), (col_e, sy2))
-            self.screen.blit(self.font_sm.render(fmt.format(tot_val), True, C_YELLOW), (col_t, sy2))
+        self.screen.blit(self.font_sm.render("── Estatísticas ──", True, (180, 150, 90)), (x0 + PAD, sy2))
+        sy2 += ROW
 
-        stat_row("Atq Fisico",  "attack_power", combat_stats.base_attack_power); sy2 += 18
-        stat_row("Atq Magico",  "spell_power",  combat_stats.base_spell_power);  sy2 += 18
-        stat_row("Armadura",    "armor",         combat_stats.base_armor);        sy2 += 18
-        stat_row("Estamina",    "stamina",       combat_stats.base_stamina);      sy2 += 18
-        base_crit = combat_stats.base_crit_rating * 100
-        eq_crit   = equip.get_modifier_total("crit_rating") * 100
-        self.screen.blit(self.font_sm.render("Critico",          True, C_GRAY),  (x0 + PAD, sy2))
-        self.screen.blit(self.font_sm.render(f"{base_crit:.1f}%", True, C_WHITE), (col_b, sy2))
-        self.screen.blit(self.font_sm.render(f"+{eq_crit:.1f}%",  True, C_GREEN if eq_crit > 0 else C_GRAY), (col_e, sy2))
-        self.screen.blit(self.font_sm.render(f"{base_crit+eq_crit:.1f}%", True, C_YELLOW), (col_t, sy2))
+        char_stats = self.world.get_component(self.player_entity, CharacterStats)
 
-        # ---- Rodapé: moedas ----
+        def sv(label, value, col_lbl, col_val, y, color=VAL):
+            self.screen.blit(self.font_sm.render(label + ":", True, HDR), (col_lbl, y))
+            self.screen.blit(self.font_sm.render(value,        True, color), (col_val, y))
+
+        # Linha 1
+        sv("HP",        f"{int(combat_stats.current_hp)}/{combat_stats.max_hp}", cL, cLv, sy2)
+        sv("Acerto",    f"{combat_stats.acerto:.1f}%", cR, cRv, sy2)
+        sy2 += ROW
+
+        # Linha 2
+        sv("Atq. Físico", f"{int(combat_stats.attack_power)}", cL, cLv, sy2)
+        sv("Esquiva",   f"{combat_stats.dodge_rating / 20:.1f}%", cR, cRv, sy2)
+        sy2 += ROW
+
+        # Linha 3
+        sv("Atq. Mágico", f"{int(combat_stats.spell_power)}", cL, cLv, sy2)
+        sv("Aparo",     f"{combat_stats.parry_rating / 20:.1f}%", cR, cRv, sy2)
+        sy2 += ROW
+
+        # Linha 4
+        sv("Armadura",  f"{int(combat_stats.armor)}", cL, cLv, sy2)
+        sv("Vel. Ataque", f"{combat_stats.attack_interval:.2f}s", cR, cRv, sy2)
+        sy2 += ROW
+
+        # Linha 5
+        sv("Estamina",  f"{int(combat_stats.stamina)}", cL, cLv, sy2)
+        sv("Crítico",   f"{combat_stats.crit_rating * 100:.1f}%", cR, cRv, sy2)
+        sy2 += ROW
+
+        # Linha 6 — recurso da classe
+        if char_stats:
+            if char_stats.max_mana > 0:
+                sv("Mana",  f"{int(char_stats.mana)}/{char_stats.max_mana}", cL, cLv, sy2)
+            elif char_stats.max_concentration > 0:
+                sv("Concentração", f"{int(char_stats.concentration)}/{char_stats.max_concentration}", cL, cLv, sy2)
+            else:
+                sv("Raiva", f"{char_stats.rage}/{char_stats.max_rage}", cL, cLv, sy2)
+        sy2 += ROW
+
+        # ---- Rodapé: moedas (sempre no rodapé do painel) ----
         wallet = self.world.get_component(self.player_entity, Wallet)
         if wallet:
-            footer_y = y0 + H - 28
+            footer_y = y0 + H - 34
             pygame.draw.line(self.screen, (90, 70, 40),
                              (x0 + PAD, footer_y - 4), (x0 + W - PAD, footer_y - 4))
-            # Ícone de moeda
-            coin_x, coin_y = x0 + PAD + 10, footer_y + 8
-            pygame.draw.circle(self.screen, (180, 140, 0),  (coin_x, coin_y), 9)
-            pygame.draw.circle(self.screen, (255, 215, 0),  (coin_x, coin_y), 7)
-            pygame.draw.circle(self.screen, (120, 90, 0),   (coin_x, coin_y), 9, 1)
+            coin_x, coin_y = x0 + PAD + 10, footer_y + 12
+            pygame.draw.circle(self.screen, (180, 140, 0), (coin_x, coin_y), 9)
+            pygame.draw.circle(self.screen, (255, 215, 0), (coin_x, coin_y), 7)
+            pygame.draw.circle(self.screen, (120, 90, 0),  (coin_x, coin_y), 9, 1)
             g_surf = self.font_sm.render("G", True, (120, 90, 0))
             self.screen.blit(g_surf, (coin_x - g_surf.get_width() // 2,
                                       coin_y - g_surf.get_height() // 2))
             gold_surf = self.font_md.render(f"{wallet.gold} moedas", True, (255, 215, 0))
-            self.screen.blit(gold_surf, (x0 + PAD + 24, footer_y + 4))
+            self.screen.blit(gold_surf, (x0 + PAD + 24, footer_y + 6))

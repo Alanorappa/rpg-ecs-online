@@ -971,10 +971,9 @@ class BlacksmithSystem(System):
             s = pygame.Surface(icon_r.size, pygame.SRCALPHA)
             s.fill((0, 0, 0, 160))
             self.hud_surf.blit(s, icon_r)
-        if show_stack and getattr(item, "stack", 1) > 1:
-            qty = self._font_sm.render(str(item.stack), True, (255, 255, 255))
-            self.hud_surf.blit(qty, (rect.right - qty.get_width() - 3,
-                                   rect.bottom - qty.get_height() - 1))
+        if show_stack:
+            from ui_helpers import draw_stack_count
+            draw_stack_count(self.hud_surf, item, rect, self._font_sm)
         # Tooltip ao hover
         if mx >= 0 and rect.collidepoint(mx, my):
             lines = item_tooltip_lines(item)

@@ -188,3 +188,75 @@
 
 14) Pirofagia - Desbloqueia a habilidade Pirofagia, o mago cospe fogo causando 150 de dano mais 150% do spell power e faz os alvos ficarem desorientados por 3 segundos.
 
+
+                Talentos — Bardo
+         (superscrito = pontos máximos do nó)
+
+              
+     _________        _________       _________
+    |        ⁵|      |        ⁵|     |        ⁵|
+    |    1    |______|    2    |_____|    3    |
+    |_________|      |_________|     |_________|
+         |                |               |
+     ____|____        ____|____       ____|____
+    |        ¹|      |        ¹|     |        ⁵|
+    |    4    |      |    5    |     |    6    |
+    |_________|      |_________|     |_________|
+                          |                
+     _________        ____|____       _________
+    |        ³|      |        ¹|     |        ¹|
+    |    7    |──────|    8    |_____|    9    |
+    |_________|      |_________|     |_________|
+         |                |               |     
+     ____|____        ____|____       ____|____ 
+    |        ¹|      |        ¹|     |        ¹|
+    |    10   |      |   11    |     |   12    |
+    |_________|      |_________|     |_________|
+                          |
+     __________       ____|____ 
+    |         ¹|     |        ¹|
+    |    13    |─────|   14    |
+    |__________|     |_________|
+                          |
+                      ____|____ 
+                     |        ³|
+                     |   15    |
+                     |_________|
+                                          
+                     
+                     
+                     
+
+                     
+
+─────────────────────────────────────── Descrições ───────────────────────────────────────
+
+1) Consistência - O Arqueiro é consistente em seu treinamento, aumentando sua taxa de acerto em 2%.
+
+2) Parado e concentrado - O Arqueiro consegue se concentrar melhor parado, portanto restaurará mais 1 de concentração quando estiver parado.
+
+3) Briguento - Brigas de bar aumentaram os reflexos do arqueiro, aumentando sua esquiva em 1%.
+
+4) Só um gole - Desbloqueia a habilidade Só um gole, contra todas as estatísticas, o arqueiro fica mais afiado quando bebe, suas habilidades que consomem concentração ficam grátis, e aumenta a taxa de acerto para 100%.
+
+5) Prático - A prática leva a perfeição, o arqueiro agora consegue recarregar a aljava em movimento.
+
+6) Calmo e certeiro - Enquanto estiver parado, cada segundo dará um bônus de 1% de taxa de acerto.
+
+7) Alvo fácil - Enquanto o alvo estiver sob efeitos que prejudiquem seu movimento, a taxa de acerto contra eles é aumentada em 2% e a chance de causar um dano crítico é aumentada em 5%.
+
+8) Sequência final - Quando o alvo está com menos de 50% de vida, a habilidade Flecha Reiterada dispara uma terceira flecha.
+
+9) Reciclagem - Após abater alvos, há uma chance de reaproveitar uma boa parte das flechas gastas no combate.
+
+10) Canção da Inspiração - Desbloqueia a habilidade Canção da Inspiração, o arqueiro usa sua flauta para tocar uma música épica, inspirando todos em um raio de 5 tiles em 30% o poder de ataque por 20 segundos, cooldown de 360 segundos.
+
+11) Flechas despadronizadas - Algumas flechas fora do padrão são consertadas pelo arqueiro, essas flechas são especiais, e causam 50% a mais de dano. Proc de 15%.
+
+12) Tiro repulsivo - Desbloqueia a habilidade Tiro repulsivo, o arqueiro usa toda sua concentração em um ponto fixo do alvo, o repelindo.
+
+13) Camuflagem - Desbloqueia a habilidade Camuflagem, o arqueiro usa sua capa para criar uma ilusão, enganando os adversários.
+
+14) Na mosca - Quando o arqueiro acerta um dano crítico no alvo, ele ganha confiança, que aumenta o dano da sua próxima flecha em 25%.
+
+15) Tiro múltiplo - Desbloqueia uma habilidade Tiro múltiplo, uma habilidade que faz com que o arqueiro dispare múltiplas flechas podendo acertar até 2 alvos além do alvo selecionado, causando 100% do dano da arma e 300% do poder de ataque.

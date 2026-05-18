@@ -712,3 +712,390 @@ class SkillHandlers:
             enter_combat(combat_state)
         LOG.add("Calcinando...", (255, 140, 40))
         return True
+
+    # ------------------------------------------------------------------
+    def _is_concentration_free(self) -> bool:
+        """Retorna True se o buff 'Só um Gole' está ativo (Concentração grátis)."""
+        cs = self.world.get_component(self.player_entity_id, __import__("components").CombatStats)
+        return bool(cs and cs.concentration_free)
+
+    def _check_concentration(self, char_stats, cost: int) -> bool:
+        """Verifica se o player tem Concentração suficiente (respeita buff grátis).
+        Retorna True se pode usar, False (e emite aviso) se não pode."""
+        if self._is_concentration_free():
+            return True
+        if not char_stats or char_stats.concentration < cost:
+            cur = int(char_stats.concentration) if char_stats else 0
+            self._warn(f"Concentração insuficiente ({cur}/{cost})")
+            return False
+        return True
+
+    # ------------------------------------------------------------------
+    def _skill_tiro_multiplo(self, skill, combat_stats, combat_state, tile_move):
+        """Arqueiro — cone de 90° na direção do mouse. 60 Conc. CD 90s."""
+        from components import CharacterStats, Equipment, CombatStats as _CS
+        char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
+        equip      = self.world.get_component(self.player_entity_id, Equipment)
+        cs         = self.world.get_component(self.player_entity_id, _CS)
+
+        cost = skill.params.get("concentration_cost", 60)
+        if not self._check_concentration(char_stats, cost):
+            return False
+
+        max_targets = getattr(cs, "tiro_multiplo_targets", 0)
+        if max_targets == 0:
+            self._warn("Talento insuficiente para Tiro Múltiplo.")
+            return False
+
+        bow    = equip.slots.get("mainhand") if equip else None
+        quiver = equip.slots.get("offhand")  if equip else None
+        if not bow or getattr(bow, "subtype", "") != "Bow":
+            self._warn("Precisa de um arco equipado.")
+            return False
+        if not quiver or getattr(quiver, "item_type", "") != "quiver" or quiver.arrow_count < 1:
+            self._warn("Aljava vazia! Use Recarregar.")
+            return False
+
+        self.world.add_component(self.player_entity_id, SpellCast(
+            spell_id           = "tiro_multiplo",
+            cast_time          = skill.cast_time,
+            elapsed            = 0.0,
+            target_id          = -1,
+            mana_cost          = 0,
+            concentration_cost = cost,
+            interruptible      = True,
+        ))
+        LOG.add("Tiro Múltiplo...", (150, 220, 255))
+        return True
+
+    # ------------------------------------------------------------------
+    def _skill_camuflagem(self, skill, combat_stats, combat_state, tile_move):
+        """Arqueiro — disfarça-se de objeto do tileset; velocidade 30%; inimigos perdem alvo."""
+        from components import CharacterStats, CombatStats as _CS, Renderable, TileMovement as _TM
+        from components import AIControlled, Enemy
+        from tileset import CAMOUFLAGE_OBJECT_IDS
+        char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
+        cs         = self.world.get_component(self.player_entity_id, _CS)
+
+        cost = skill.params.get("concentration_cost", 50)
+        if not self._check_concentration(char_stats, cost):
+            return False
+
+        if cs and cs.camouflage_timer > 0:
+            self._warn("Já está camuflado.")
+            return False
+
+        duration  = skill.params.get("duration",   5.0)
+        speed_pct = skill.params.get("speed_pct",  0.30)
+
+        # Escolhe objeto aleatório do catálogo do tileset
+        chosen_object = random.choice(CAMOUFLAGE_OBJECT_IDS)
+
+        # Oculta o visual normal (tamanho 0 × 0 esconde o retângulo)
+        rend = self.world.get_component(self.player_entity_id, Renderable)
+        if rend:
+            rend.width  = 0
+            rend.height = 0
+
+        # Reduz velocidade de movimento para 30%
+        tm = self.world.get_component(self.player_entity_id, _TM)
+        if tm:
+            tm.speed = 110.0 * speed_pct
+
+        # Ativa timer, armazena objeto e torna o player invisível
+        if cs:
+            cs.camouflage_timer  = duration
+            cs.camouflage_object = chosen_object
+        player_cst = self.world.get_component(self.player_entity_id, __import__("components").CombatState)
+        if player_cst:
+            player_cst.is_visible = False
+
+        # Inimigos perdem o alvo e retornam ao respawn
+        for _eid, _ai, _ in self.world.get_entities_with(AIControlled, Enemy):
+            if _ai.state in ("CHASING", "ATTACKING", "AGGRO_DELAY"):
+                _ai.state             = "RETURNING"
+                _ai.aggroed_by_damage = False
+                _ai.path_recalc_timer = 0.0
+
+        skill.current_cooldown = skill.cooldown
+        LOG.add(f"Camuflagem! ({chosen_object.replace('_',' ').title()})", (160, 220, 160))
+        SOUNDS.play_skill("skill_camuflagem")
+        return True
+
+    # ------------------------------------------------------------------
+    def _skill_tiro_repulsivo(self, skill, combat_stats, combat_state, tile_move):
+        """Arqueiro — repele o alvo 5 tiles; colisão = stun 3s. 100 Concentração."""
+        from components import CharacterStats, Equipment
+        char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
+        equip      = self.world.get_component(self.player_entity_id, Equipment)
+
+        cost = skill.params.get("concentration_cost", 100)
+        if not self._check_concentration(char_stats, cost):
+            return False
+
+        # Verifica arco e aljava com ao menos 1 flecha
+        bow    = equip.slots.get("mainhand") if equip else None
+        quiver = equip.slots.get("offhand")  if equip else None
+        if not bow or getattr(bow, "subtype", "") != "Bow":
+            self._warn("Precisa de um arco equipado.")
+            return False
+        if not quiver or getattr(quiver, "item_type", "") != "quiver":
+            self._warn("Precisa de uma aljava equipada.")
+            return False
+        if quiver.arrow_count < 1:
+            self._warn("Aljava vazia! Use Recarregar.")
+            return False
+
+        target_id = self._resolve_target(combat_state, tile_move, skill.cast_range)
+        if target_id == -1:
+            self._warn("Nenhum alvo")
+            return False
+
+        self.world.add_component(self.player_entity_id, SpellCast(
+            spell_id           = "tiro_repulsivo",
+            cast_time          = skill.cast_time,
+            elapsed            = 0.0,
+            target_id          = target_id,
+            mana_cost          = 0,
+            concentration_cost = cost,
+            interruptible      = True,
+        ))
+        LOG.add("Tiro Repulsivo...", (120, 200, 255))
+        return True
+
+    # ------------------------------------------------------------------
+    def _skill_cancao_inspiracao(self, skill, combat_stats, combat_state, tile_move):
+        """Arqueiro — Buff: +30% ataque por 20s. CD: 360s."""
+        from stat_fns import add_timed_modifier
+        from components import Modifier
+
+        ap_pct   = skill.params.get("ap_bonus_pct", 0.30)
+        duration = skill.params.get("duration",     20.0)
+
+        _mod = Modifier("attack_power", ap_pct, "percentage")
+        add_timed_modifier(combat_stats, _mod, duration, label="cancao_inspiracao")
+
+        skill.current_cooldown = skill.cooldown
+        LOG.add(f"Canção da Inspiração! +{int(ap_pct*100)}% ataque por {int(duration)}s.", (220, 200, 120))
+        SOUNDS.play_skill("skill_cancao_inspiracao")
+        return True
+
+    # ------------------------------------------------------------------
+    def _skill_so_um_gole(self, skill, combat_stats, combat_state, tile_move):
+        """Arqueiro — Buff: Concentração grátis + acerto 100% por 10s."""
+        from components import CharacterStats, CombatStats
+        from stat_fns import add_timed_modifier
+        from components import Modifier
+        char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
+        cs         = self.world.get_component(self.player_entity_id, CombatStats)
+        if not cs:
+            return False
+
+        duration   = skill.params.get("duration",    10.0)
+        acerto_bns = skill.params.get("acerto_flat", 100.0)
+
+        # Ativa o buff
+        cs.concentration_free       = True
+        cs.concentration_free_timer = duration
+
+        # Timed modifier que garante acerto = 100 (bônus flat grande)
+        _mod = Modifier("acerto", acerto_bns, "flat")
+        add_timed_modifier(cs, _mod, duration, label="so_um_gole")
+
+        skill.current_cooldown = skill.cooldown   # aplica CD de 120s
+        LOG.add(f"Só um Gole! Acerto 100% + Concentração grátis por {int(duration)}s.", (180, 220, 255))
+        SOUNDS.play_skill("skill_so_um_gole")
+        return True
+
+    # ------------------------------------------------------------------
+    def _skill_cancao_ninar(self, skill, combat_stats, combat_state, tile_move):
+        """Arqueiro — AoE sleep 8s em raio 5 tiles. Canal de 2s. 25 Concentração."""
+        from components import CharacterStats, StatusEffects, TileMovement as _TM
+        from utils import chebyshev
+        char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
+
+        cost = skill.params.get("concentration_cost", 25)
+        if not self._check_concentration(char_stats, cost):
+            return False
+
+        radius  = skill.params.get("radius", 5)
+        sleep_d = skill.params.get("sleep_duration",    8.0)
+        slow_d  = skill.params.get("slow_duration",     5.0)
+        slow_m  = skill.params.get("slow_magnitude",    0.30)
+
+        player_tm = self.world.get_component(self.player_entity_id, _TM)
+        if not player_tm:
+            return False
+        px, py = player_tm.current_tile_x, player_tm.current_tile_y
+
+        # Aplica sono imediatamente a todos os inimigos no raio
+        targets = []
+        for eid, _, ai, etm in self.world.get_entities_with(
+                __import__("components").Enemy,
+                __import__("components").AIControlled,
+                _TM):
+            if chebyshev(px, py, etm.current_tile_x, etm.current_tile_y) <= radius:
+                tgt_cs = self.world.get_component(eid, __import__("components").CombatStats)
+                if tgt_cs and tgt_cs.current_hp > 0:
+                    # Efeito de sono com on_expire_effect → slow
+                    apply_effect(self.world, eid, "sleep", sleep_d,
+                                 on_expire_effect=("slow" if slow_d > 0 else ""),
+                                 on_expire_duration=slow_d,
+                                 on_expire_magnitude=slow_m)
+                    targets.append(eid)
+
+        if not targets:
+            self._warn("Nenhum alvo no raio.")
+            return False
+
+        char_stats.lullaby_targets = list(targets)
+
+        # Para o arqueiro de atacar durante o canal (não-ofensiva)
+        if combat_state:
+            combat_state.is_pursuing = False
+
+        # Toca o som de início do canal manualmente (cast_time > 0 impede play automático)
+        SOUNDS.play_skill("skill_cancao_ninar")
+
+        # Canal de 2s — se cancelado, _cancel_cancao_ninar acorda os alvos
+        self.world.add_component(self.player_entity_id, SpellCast(
+            spell_id           = "cancao_ninar",
+            cast_time          = skill.cast_time,
+            elapsed            = 0.0,
+            target_id          = -1,
+            mana_cost          = 0,
+            concentration_cost = cost,
+            interruptible      = True,
+            on_cancel          = "_cancel_cancao_ninar",
+        ))
+        LOG.add("Canção de Ninar... (mantenha posição!)", (160, 200, 255))
+        return True
+
+    # ------------------------------------------------------------------
+    def _skill_picada_escorpiao(self, skill, combat_stats, combat_state, tile_move):
+        """Arqueiro — flecha precisa com slow. Custa 20 de Concentração."""
+        from components import Equipment, CharacterStats
+        equip      = self.world.get_component(self.player_entity_id, Equipment)
+        char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
+
+        cost = skill.params.get("concentration_cost", 20)
+        if not self._check_concentration(char_stats, cost):
+            return False
+
+        bow    = equip.slots.get("mainhand") if equip else None
+        quiver = equip.slots.get("offhand")  if equip else None
+        if not bow or getattr(bow, "subtype", "") != "Bow":
+            self._warn("Precisa de um arco equipado.")
+            return False
+        if not quiver or getattr(quiver, "item_type", "") != "quiver":
+            self._warn("Precisa de uma aljava equipada.")
+            return False
+        if quiver.arrow_count < 1:
+            self._warn("Aljava vazia! Use Recarregar.")
+            return False
+
+        target_id = self._resolve_target(combat_state, tile_move, skill.cast_range)
+        if target_id == -1:
+            self._warn("Nenhum alvo")
+            return False
+
+        self.world.add_component(self.player_entity_id, SpellCast(
+            spell_id           = "picada_escorpiao",
+            cast_time          = skill.cast_time,
+            elapsed            = 0.0,
+            target_id          = target_id,
+            mana_cost          = 0,
+            concentration_cost = cost,
+            interruptible      = True,
+        ))
+        LOG.add("Picada de Escorpião...", (160, 220, 100))
+        return True
+
+    # ------------------------------------------------------------------
+    def _skill_flecha_reiterada(self, skill, combat_stats, combat_state, tile_move):
+        """Arqueiro — 2 flechas em sequência. Custa 80 de Concentração."""
+        from components import Equipment, CharacterStats
+        equip      = self.world.get_component(self.player_entity_id, Equipment)
+        char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
+
+        cost = skill.params.get("concentration_cost", 80)
+        if not self._check_concentration(char_stats, cost):
+            return False
+
+        bow    = equip.slots.get("mainhand") if equip else None
+        quiver = equip.slots.get("offhand")  if equip else None
+
+        if not bow or getattr(bow, "subtype", "") != "Bow":
+            self._warn("Precisa de um arco equipado.")
+            return False
+        if not quiver or getattr(quiver, "item_type", "") != "quiver":
+            self._warn("Precisa de uma aljava equipada.")
+            return False
+
+        arrows_needed = skill.params.get("arrow_count", 2)
+        if quiver.arrow_count < arrows_needed:
+            self._warn(f"Flechas insuficientes na aljava ({quiver.arrow_count}/{arrows_needed})")
+            return False
+
+        target_id = self._resolve_target(combat_state, tile_move, skill.cast_range)
+        if target_id == -1:
+            self._warn("Nenhum alvo")
+            return False
+
+        self.world.add_component(self.player_entity_id, SpellCast(
+            spell_id            = "flecha_reiterada",
+            cast_time           = skill.cast_time,
+            elapsed             = 0.0,
+            target_id           = target_id,
+            mana_cost           = 0,
+            concentration_cost  = cost,   # descontado SOMENTE ao completar
+            interruptible       = True,
+        ))
+        LOG.add("Flecha Reiterada...", (180, 220, 255))
+        return True
+
+    # ------------------------------------------------------------------
+    def _skill_recarregar(self, skill, combat_stats, combat_state, tile_move):
+        """Arqueiro — 1.8s cast que reabastece a aljava com o primeiro ammo da bag."""
+        from components import Equipment, Inventory
+        equip = self.world.get_component(self.player_entity_id, Equipment)
+        inv   = self.world.get_component(self.player_entity_id, Inventory)
+
+        quiver = equip.slots.get("offhand") if equip else None
+        if not quiver or quiver.item_type != "quiver":
+            self._warn("Precisa de uma aljava equipada para recarregar.")
+            return False
+
+        if quiver.max_arrows == 0:
+            quiver.max_arrows = 100
+
+        # Primeiro ammo disponível na bag (ordem dos slots)
+        first_arrow = next(
+            (it for it in (inv.items if inv else [])
+             if it is not None and it.item_type == "ammo" and it.stack > 0),
+            None
+        )
+        if not first_arrow:
+            self._warn("Não há flechas disponíveis para recarregar.")
+            return False
+
+        # Se aljava está cheia do mesmo tipo, não há nada a fazer
+        same_type = (quiver.subtype == first_arrow.name and
+                     quiver.arrow_count >= quiver.max_arrows)
+        if same_type:
+            self._warn("Aljava já está cheia.")
+            return False
+
+        # Talento Prático: permite recarga em movimento
+        _in_motion = getattr(combat_stats, "recarregar_in_motion", False)
+
+        self.world.add_component(self.player_entity_id, SpellCast(
+            spell_id      = "recarregar",
+            cast_time     = skill.cast_time,
+            elapsed       = 0.0,
+            target_id     = -1,
+            mana_cost     = 0,
+            interruptible = not _in_motion,
+        ))
+        LOG.add(f"Recarregando: {first_arrow.name}...", (200, 160, 80))
+        return True

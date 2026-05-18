@@ -844,6 +844,59 @@ def _unpack_override(value, default_vision_height: int) -> tuple:
     return value, default_vision_height
 
 
+def get_camouflage_sprite(object_id: str, target_size: int = 32):
+    """Retorna um Surface pygame com o sprite do objeto do tileset (para Camuflagem).
+
+    Busca em OBJECT_SHEET_FAMILIES pelo ID, carrega o PNG e extrai o sub-sprite.
+    Usa cache interno. Retorna None se não encontrado.
+    """
+    import pygame
+    import os
+    from paths import resource_path
+
+    if not hasattr(get_camouflage_sprite, "_cache"):
+        get_camouflage_sprite._cache = {}
+
+    if object_id in get_camouflage_sprite._cache:
+        return get_camouflage_sprite._cache[object_id]
+
+    result = None
+    for fam in OBJECT_SHEET_FAMILIES:
+        if "tiles" not in fam:
+            continue
+        for entry in fam["tiles"]:
+            if entry[0] == object_id:
+                sheet_path = resource_path(os.path.join("assets", "tiles", fam["file"] + ".png"))
+                if not os.path.exists(sheet_path):
+                    break
+                try:
+                    sheet = pygame.image.load(sheet_path).convert_alpha()
+                    _, sx, sy, tw, th = entry[0], entry[1], entry[2], entry[3], entry[4]
+                    # Extrai sprite no tamanho original (sem escala)
+                    result = sheet.subsurface(pygame.Rect(sx, sy, tw, th)).copy()
+                except Exception:
+                    result = None
+                break
+        if result is not None:
+            break
+
+    get_camouflage_sprite._cache[object_id] = result
+    return result
+
+
+# Objetos disponíveis para disfarce — somente 32×32 e 32×64 (sem distorção)
+CAMOUFLAGE_OBJECT_IDS: list[str] = [
+    # 32×32
+    "rock1", "rock2", "rock3", "rock4", "rock5", "rock6",
+    "bush1", "bush2",
+    # 32×64
+    "barrel",
+    "gravestone", "gravestone2",
+    "bench2", "bench3",
+    "box1", "box2",
+]
+
+
 def discover_object_sheet_tiles() -> None:
     """
     Para cada entrada em OBJECT_SHEET_FAMILIES, registra TileTypes em

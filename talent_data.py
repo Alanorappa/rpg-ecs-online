@@ -27,6 +27,7 @@ from __future__ import annotations
 CLASS_BUILD_MAP: dict[str, str] = {
     "guerreiro": "cavaleiro",
     "mago":      "piromania",
+    "arqueiro":  "bardo",
 }
 
 # ---------------------------------------------------------------------------
@@ -56,6 +57,18 @@ BUILDS: dict[str, dict] = {
                         "-Cast times longos sem talentos"],
         "color":       (255, 100, 30),
         "color_dark":  (120, 30, 0),
+    },
+    "bardo": {
+        "name":        "Bardo",
+        "description": "Arqueiro versátil que equilibra precisão, concentração "
+                       "e habilidades de suporte através da música.",
+        "pros":        ["+Alta precisão de combate",
+                        "+Suporte e controle de grupo",
+                        "+Habilidades únicas de Concentração"],
+        "cons":        ["-Depende de Concentração",
+                        "-Alguns talentos requerem posicionamento parado"],
+        "color":       (80, 180, 220),
+        "color_dark":  (20, 60, 100),
     },
 }
 
@@ -102,7 +115,11 @@ TALENTS: dict[str, dict] = {
         "effects":        None,
         "unlocks_skill":  None,
         "skill_def":      None,
-        "preview_formula": lambda d: d,          # mostra pontos de redução no {v}
+        "preview_formula": lambda d: d,
+        "cs_flags": [
+            {"field": "golpe_poderoso_rage_cost", "reset": 15,
+             "formula": lambda pts: max(10, 15 - pts)},
+        ],
     },
     "cav_vontade": {
         "name":          "Vontade",
@@ -114,6 +131,10 @@ TALENTS: dict[str, dict] = {
         "effects":       None,
         "unlocks_skill": None,
         "skill_def":     None,
+        "cs_flags": [
+            {"field": "interceptar_rage_bonus", "reset": 0,
+             "formula": lambda pts: 10 if pts >= 1 else 0},
+        ],
     },
 
     # ── Row 1 ──────────────────────────────────────────────────────────────
@@ -127,6 +148,10 @@ TALENTS: dict[str, dict] = {
         "effects":       None,
         "unlocks_skill": None,
         "skill_def":     None,
+        "cs_flags": [
+            {"field": "impacto_maquina_matar", "reset": False,
+             "formula": lambda pts: pts >= 1},
+        ],
     },
     "cav_embalo": {
         "name":           "Embalo",
@@ -138,7 +163,11 @@ TALENTS: dict[str, dict] = {
         "effects":        None,
         "unlocks_skill":  None,
         "skill_def":      None,
-        "preview_formula": lambda d: d * 10,     # mostra bônus % no {v}
+        "preview_formula": lambda d: d * 10,
+        "cs_flags": [
+            {"field": "embalo_on_crit",         "reset": False, "formula": lambda pts: pts > 0},
+            {"field": "embalo_bonus_per_charge", "reset": 0.0,  "formula": lambda pts: pts * 0.10},
+        ],
     },
     "cav_sede_batalha": {
         "name":           "Sede de Batalha",
@@ -150,7 +179,11 @@ TALENTS: dict[str, dict] = {
         "effects":        None,
         "unlocks_skill":  None,
         "skill_def":      None,
-        "preview_formula": lambda d: d * 2,      # mostra redução em segundos no {v}
+        "preview_formula": lambda d: d * 2,
+        "cs_flags": [
+            {"field": "interceptar_cooldown_reduction", "reset": 0.0,
+             "formula": lambda pts: pts * 2.0},
+        ],
     },
 
     # ── Row 2 ──────────────────────────────────────────────────────────────
@@ -164,6 +197,9 @@ TALENTS: dict[str, dict] = {
         "effects":       None,
         "unlocks_skill": None,
         "skill_def":     None,
+        "cs_flags": [
+            {"field": "impacto_assassino", "reset": False, "formula": lambda pts: pts >= 1},
+        ],
     },
     "cav_alvo_confirmado": {
         "name":           "Alvo Confirmado",
@@ -175,7 +211,11 @@ TALENTS: dict[str, dict] = {
         "effects":        None,
         "unlocks_skill":  None,
         "skill_def":      None,
-        "preview_formula": lambda d: round(d * 0.3, 1),  # mostra duração do stun no {v}
+        "preview_formula": lambda d: round(d * 0.3, 1),
+        "cs_flags": [
+            {"field": "interceptar_stun_duration", "reset": 0.0,
+             "formula": lambda pts: pts * 0.3},
+        ],
     },
     "cav_horrorizante": {
         "name":          "Horrorizante",
@@ -187,6 +227,9 @@ TALENTS: dict[str, dict] = {
         "effects":       None,
         "unlocks_skill": None,
         "skill_def":     None,
+        "cs_flags": [
+            {"field": "executar_horrorizante", "reset": False, "formula": lambda pts: pts >= 1},
+        ],
     },
 
     # ── Row 3 ──────────────────────────────────────────────────────────────
@@ -211,7 +254,11 @@ TALENTS: dict[str, dict] = {
         "effects":        None,
         "unlocks_skill":  None,
         "skill_def":      None,
-        "preview_formula": lambda d: d * 15,     # mostra bônus de crit % no {v}
+        "preview_formula": lambda d: d * 15,
+        "cs_flags": [
+            {"field": "explorador_crit_per_point", "reset": 0,
+             "formula": lambda pts: pts},
+        ],
     },
     "cav_provocacao": {
         "name":          "Brado Provocativo",
@@ -237,6 +284,9 @@ TALENTS: dict[str, dict] = {
         "effects":       None,
         "unlocks_skill": None,
         "skill_def":     None,
+        "cs_flags": [
+            {"field": "foco_mortal_enabled", "reset": False, "formula": lambda pts: pts >= 1},
+        ],
     },
     "cav_punho_queixo": {
         "name":           "Punho no Queixo",
@@ -249,8 +299,12 @@ TALENTS: dict[str, dict] = {
         "requires":       {"cav_provocacao": 1},
         "effects":        None,
         "unlocks_skill":  "punho_no_queixo",
-        "preview_formula": lambda d: d,          # mostra duração do stun em segundos no {v}
+        "preview_formula": lambda d: d,
         "skill_def":     None,
+        "cs_flags": [
+            {"field": "pnq_enabled",       "reset": False, "formula": lambda pts: pts >= 1},
+            {"field": "pnq_stun_duration", "reset": 1.0,   "formula": lambda pts: float(max(1, pts))},
+        ],
     },
 
     # ── Row 5 ──────────────────────────────────────────────────────────────
@@ -289,6 +343,9 @@ TALENTS: dict[str, dict] = {
         "effects":     None,
         "unlocks_skill": None,
         "skill_def":     None,
+        "cs_flags": [
+            {"field": "fire_mana_discount", "reset": 0, "formula": lambda pts: pts},
+        ],
     },
 
     # ── Row 1 ──────────────────────────────────────────────────────────────────
@@ -302,6 +359,10 @@ TALENTS: dict[str, dict] = {
         "effects":     None,
         "unlocks_skill": None,
         "skill_def":     None,
+        "cs_flags": [
+            {"field": "fire_cast_time_reduction", "reset": 0.0,
+             "formula": lambda pts: pts * 0.1},
+        ],
     },
 
     # ── Row 2 ──────────────────────────────────────────────────────────────────
@@ -329,6 +390,10 @@ TALENTS: dict[str, dict] = {
         "preview_formula": lambda pts: round(pts * 0.2, 1),
         "unlocks_skill":  None,
         "skill_def":      None,
+        "cs_flags": [
+            {"field": "ice_cast_time_reduction", "reset": 0.0,
+             "formula": lambda pts: pts * 0.2},
+        ],
     },
 
     "pir_choque_termico": {
@@ -342,6 +407,9 @@ TALENTS: dict[str, dict] = {
         "effects":       None,
         "unlocks_skill": None,
         "skill_def":     None,
+        "cs_flags": [
+            {"field": "thermal_shock_enabled", "reset": False, "formula": lambda pts: pts >= 1},
+        ],
     },
 
     # ── Row 3 ──────────────────────────────────────────────────────────────────
@@ -357,6 +425,10 @@ TALENTS: dict[str, dict] = {
         "preview_formula": lambda pts: pts * 5,
         "unlocks_skill":  None,
         "skill_def":      None,
+        "cs_flags": [
+            {"field": "elemental_lapse_crit_bonus", "reset": 0.0,
+             "formula": lambda pts: pts * 0.05},
+        ],
     },
 
     # ── Row 4 ──────────────────────────────────────────────────────────────────
@@ -409,6 +481,9 @@ TALENTS: dict[str, dict] = {
         "effects":     None,
         "unlocks_skill": None,
         "skill_def":   None,
+        "cs_flags": [
+            {"field": "crematoria_enabled", "reset": False, "formula": lambda pts: pts >= 1},
+        ],
     },
 
     "pir_exaustao": {
@@ -422,6 +497,9 @@ TALENTS: dict[str, dict] = {
         "effects":     None,
         "unlocks_skill": None,
         "skill_def":   None,
+        "cs_flags": [
+            {"field": "fire_exhaustion_enabled", "reset": False, "formula": lambda pts: pts >= 1},
+        ],
     },
 
     "pir_piromaníaco": {
@@ -435,6 +513,9 @@ TALENTS: dict[str, dict] = {
         "preview_formula": lambda pts: pts * 5,
         "unlocks_skill":  None,
         "skill_def":      None,
+        "cs_flags": [
+            {"field": "pyromania_bonus", "reset": 0.0, "formula": lambda pts: pts * 0.05},
+        ],
     },
 
     "pir_chama_interna": {
@@ -449,6 +530,10 @@ TALENTS: dict[str, dict] = {
         "preview_formula": lambda pts: pts * 2,
         "unlocks_skill":  None,
         "skill_def":      None,
+        "cs_flags": [
+            {"field": "fire_instant_proc_chance", "reset": 0.0,
+             "formula": lambda pts: pts * 0.02},
+        ],
     },
 
     "pir_queimaduras": {
@@ -462,6 +547,289 @@ TALENTS: dict[str, dict] = {
         "preview_formula": lambda pts: pts * 3,
         "unlocks_skill":  None,
         "skill_def":      None,
+        "cs_flags": [
+            {"field": "fire_burns_on_crit", "reset": False, "formula": lambda pts: pts >= 1},
+            {"field": "fire_burn_duration", "reset": 0.0,   "formula": lambda pts: pts * 3.0},
+        ],
+    },
+
+    # ===========================================================================
+    # TALENTOS — Bardo (Arqueiro)
+    # Layout (col × row):
+    #
+    #   col0  col1  col2   ← row 0
+    #   col0  col1  col2   ← row 1
+    #   col0  col1  col2   ← row 2
+    #   col0  col1  col2   ← row 3
+    #         col1         ← row 4
+    # ===========================================================================
+
+    # ── Row 0 ──────────────────────────────────────────────────────────────────
+    "bardo_consistencia": {
+        "name":           "Consistência",
+        "description":    "O arqueiro é consistente em seu treinamento, "
+                          "aumentando sua taxa de acerto em {v}%.",
+        "build":          "bardo",
+        "col": 0, "row": 0,
+        "max_points":     5,
+        "requires":       {},
+        "effects":        [{"attribute": "acerto", "value": 2.0, "type": "flat"}],
+        "unlocks_skill":  None,
+        "skill_def":      None,
+        "preview_formula": lambda d: d * 2,
+    },
+
+    # ── Row 1 ──────────────────────────────────────────────────────────────────
+    "bardo_so_um_gole": {
+        "name":          "Só um Gole",
+        "description":   "Desbloqueia Só um Gole: o arqueiro bebe e fica mais "
+                         "afiado — habilidades de Concentração ficam grátis e "
+                         "acerto vai a 100% por 10s. CD: 120s.",
+        "build":         "bardo",
+        "col": 0, "row": 1,
+        "max_points":    1,
+        "requires":      {"bardo_consistencia": 1},
+        "effects":       None,
+        "unlocks_skill": "so_um_gole",
+        "skill_def":     None,
+    },
+
+    "bardo_pratico": {
+        "name":           "Prático",
+        "description":    "A prática leva à perfeição: o arqueiro consegue "
+                          "recarregar a aljava enquanto se move.",
+        "build":          "bardo",
+        "col": 1, "row": 1,
+        "max_points":     1,
+        "requires":       {"bardo_parado_concentrado": 1},
+        "effects":        None,
+        "unlocks_skill":  None,
+        "skill_def":      None,
+        "cs_flags": [
+            {"field": "recarregar_in_motion",
+             "reset": False,
+             "formula": lambda pts: pts >= 1},
+        ],
+    },
+
+    # ── Row 0 ──────────────────────────────────────────────────────────────────
+    # ── Row 5 ──────────────────────────────────────────────────────────────────
+    "bardo_tiro_multiplo": {
+        "name":          "Tiro Múltiplo",
+        "description":   "Desbloqueia Tiro Múltiplo: dispara flechas em cone de 90° "
+                         "na direção do mouse. 1pt=2 alvos, 2pt=3 alvos, 3pt=múltiplos "
+                         "alvos. 100% arma + 300% AP. 60 Conc. 90s CD.",
+        "build":         "bardo",
+        "col": 1, "row": 5,
+        "max_points":    3,
+        "unlock_at":     1,          # desbloqueia a skill com 1 ponto; pontos extras aumentam alvos
+        "requires":      {"bardo_na_mosca": 1},
+        "effects":       None,
+        "unlocks_skill": "tiro_multiplo",
+        "skill_def":     None,
+        "preview_formula": lambda d: {1: "2 alvos", 2: "3 alvos", 3: "múltiplos"}.get(d, ""),
+        "cs_flags": [
+            {"field": "tiro_multiplo_targets",
+             "reset": 0,
+             "formula": lambda pts: {1: 2, 2: 3, 3: 99}.get(pts, 0)},
+        ],
+    },
+
+    # ── Row 4 ──────────────────────────────────────────────────────────────────
+    "bardo_na_mosca": {
+        "name":          "Na Mosca",
+        "description":   "Ao acertar um dano crítico, o arqueiro ganha confiança: "
+                         "a próxima flecha causa 25% a mais de dano.",
+        "build":         "bardo",
+        "col": 1, "row": 4,
+        "max_points":    1,
+        "requires":      {"bardo_flechas_despadronizadas": 1},
+        "effects":       None,
+        "unlocks_skill": None,
+        "skill_def":     None,
+        "cs_flags": [
+            {"field": "na_mosca_enabled",
+             "reset": False,
+             "formula": lambda pts: pts >= 1},
+        ],
+    },
+
+    "bardo_camuflagem": {
+        "name":          "Camuflagem",
+        "description":   "Desbloqueia Camuflagem: o arqueiro se disfarça de "
+                         "objeto do cenário por 5s. Velocidade 30%, inimigos "
+                         "perdem o alvo. 50 Conc. 45s CD.",
+        "build":         "bardo",
+        "col": 2, "row": 4,
+        "max_points":    1,
+        "requires":      {"bardo_tiro_repulsivo": 1},
+        "effects":       None,
+        "unlocks_skill": "camuflagem",
+        "skill_def":     None,
+    },
+
+    "bardo_tiro_repulsivo": {
+        "name":          "Tiro Repulsivo",
+        "description":   "Desbloqueia Tiro Repulsivo: repele o alvo 5 tiles. "
+                         "Colisão com parede = stun 3s. Colisão com criatura = "
+                         "ambos stunam. 100% arma + 150% AP. 100 Conc. 45s CD.",
+        "build":         "bardo",
+        "col": 2, "row": 3,
+        "max_points":    1,
+        "requires":      {"bardo_reciclagem": 1},
+        "effects":       None,
+        "unlocks_skill": "tiro_repulsivo",
+        "skill_def":     None,
+    },
+
+    "bardo_flechas_despadronizadas": {
+        "name":          "Flechas Despadronizadas",
+        "description":   "Algumas flechas fora do padrão consertadas pelo arqueiro "
+                         "são especiais e causam 50% a mais de dano. Proc: 15%.",
+        "build":         "bardo",
+        "col": 1, "row": 3,
+        "max_points":    1,
+        "requires":      {"bardo_sequencia_final": 1},
+        "effects":       None,
+        "unlocks_skill": None,
+        "skill_def":     None,
+        "cs_flags": [
+            {"field": "flechas_despadronizadas_chance",
+             "reset": 0.0,
+             "formula": lambda pts: 0.15 if pts >= 1 else 0.0},
+        ],
+    },
+
+    # ── Row 3 ──────────────────────────────────────────────────────────────────
+    "bardo_cancao_inspiracao": {
+        "name":          "Canção da Inspiração",
+        "description":   "Desbloqueia Canção da Inspiração: música épica que "
+                         "aumenta 30% o poder de ataque por 20s. CD: 360s.",
+        "build":         "bardo",
+        "col": 0, "row": 3,
+        "max_points":    1,
+        "requires":      {"bardo_alvo_facil": 1},
+        "effects":       None,
+        "unlocks_skill": "cancao_inspiracao",
+        "skill_def":     None,
+    },
+
+    # ── Row 2 ──────────────────────────────────────────────────────────────────
+    "bardo_sequencia_final": {
+        "name":           "Sequência Final",
+        "description":    "Quando o alvo está com menos de 50% de vida, "
+                          "a Flecha Reiterada dispara uma terceira flecha.",
+        "build":          "bardo",
+        "col": 1, "row": 2,
+        "max_points":     1,
+        "requires":       {"bardo_pratico": 1},
+        "effects":        None,
+        "unlocks_skill":  None,
+        "skill_def":      None,
+        "cs_flags": [
+            {"field": "flecha_reiterada_hp_threshold",
+             "reset": 0.0,
+             "formula": lambda pts: 0.50 if pts >= 1 else 0.0},
+        ],
+    },
+
+    "bardo_reciclagem": {
+        "name":          "Reciclagem",
+        "description":   "Após abater um alvo, há 50–100% de chance de "
+                         "recuperar as flechas gastas no combate contra ele.",
+        "build":         "bardo",
+        "col": 2, "row": 2,
+        "max_points":    1,
+        "requires":      {"bardo_sequencia_final": 1},
+        "effects":       None,
+        "unlocks_skill": None,
+        "skill_def":     None,
+        "cs_flags": [
+            {"field": "arrow_recovery_enabled",
+             "reset": False,
+             "formula": lambda pts: pts >= 1},
+        ],
+    },
+
+    "bardo_alvo_facil": {
+        "name":           "Alvo Fácil",
+        "description":    "Alvos sob efeito de controle (stun, sleep, fear, "
+                          "polimorfia, slow ou desorientado) são mais fáceis de "
+                          "acertar (+{v}% acerto) e de criticar (+{v}% crit).",
+        "build":          "bardo",
+        "col": 0, "row": 2,
+        "max_points":     5,
+        "requires":       {"bardo_sequencia_final": 1},
+        "effects":        None,
+        "unlocks_skill":  None,
+        "skill_def":      None,
+        "preview_formula": lambda d: d * 2,   # mostra bônus total de acerto (1pt=2%, 5pt=10%)
+        "cs_flags": [
+            {"field": "alvo_facil_acerto",
+             "reset": 0,
+             "formula": lambda pts: pts * 2},        # +2% acerto por ponto
+            {"field": "alvo_facil_crit",
+             "reset": 0.0,
+             "formula": lambda pts: pts * 0.05},     # +5% crit por ponto (0.05 = 5%)
+        ],
+    },
+
+    "bardo_calmo_certeiro": {
+        "name":           "Calmo e Certeiro",
+        "description":    "Enquanto estiver parado, cada segundo concede "
+                          "+{v}% de taxa de acerto (acumula sem limite de tempo, "
+                          "até 100% total).",
+        "build":          "bardo",
+        "col": 2, "row": 1,
+        "max_points":     5,
+        "requires":       {"bardo_briguento": 1},
+        "effects":        None,
+        "unlocks_skill":  None,
+        "skill_def":      None,
+        "preview_formula": lambda d: d,   # mostra bônus %/s no {v}
+        "cs_flags": [
+            {"field": "acerto_per_standing_second",
+             "reset": 0.0,
+             "formula": lambda pts: float(pts)},  # +1%/s por ponto
+        ],
+    },
+
+    "bardo_briguento": {
+        "name":           "Briguento",
+        "description":    "Brigas de bar aumentaram os reflexos do arqueiro, "
+                          "aumentando sua esquiva em {v}%.",
+        "build":          "bardo",
+        "col": 2, "row": 0,
+        "max_points":     5,
+        "requires":       {},
+        "effects":        [{"attribute": "dodge_rating", "value": 20.0, "type": "flat"}],
+        "unlocks_skill":  None,
+        "skill_def":      None,
+        "preview_formula": lambda d: d,   # 20 rating/ponto = 1%/ponto
+    },
+
+    "bardo_parado_concentrado": {
+        "name":           "Parado e Concentrado",
+        "description":    "O arqueiro se concentra melhor quando parado, "
+                          "restaurando mais {v} de Concentração por segundo.",
+        "build":          "bardo",
+        "col": 1, "row": 0,
+        "max_points":     5,
+        "requires":       {},
+        "effects":        None,
+        "unlocks_skill":  None,
+        "skill_def":      None,
+        "preview_formula": lambda d: d,   # mostra +X regen/s no {v}
+        "cs_flags": [
+            {"field": "concentration_regen_idle",
+             "reset": 5.0,
+             "formula": lambda pts: 5.0 + pts * 1.0},
+            # regen em movimento: fixo em 5/s (sem escala por ponto)
+            # o reset aqui garante o valor base mesmo sem o talento alocado
+            {"field": "concentration_regen_moving",
+             "reset": 5.0,
+             "formula": lambda pts: 5.0},
+        ],
     },
 }
 

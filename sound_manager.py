@@ -56,6 +56,16 @@ _REGISTRY: dict[str, str] = {
     "skill_punho_queixo":       _sfx("skill_punho_queixo"),
     "skill_vitoria_iminente":   _sfx("skill_vitoria_iminente"),
 
+    # ── Arqueiro — ciclo completo de sons ────────────────────────────────
+    "arrow_nock_1":             _sfx("arrow_nock_1"),     # pré-tensionamento (~1s antes)
+    "arrow_nock_2":             _sfx("arrow_nock_2"),
+    "arrow_draw_1":             _sfx("arrow_draw_1"),     # encaixe/tensão no disparo
+    "arrow_draw_2":             _sfx("arrow_draw_2"),
+    "arrow_release_1":          _sfx("arrow_release_1"),  # soltura da corda
+    "arrow_release_2":          _sfx("arrow_release_2"),
+    "arrow_impact_1":           _sfx("arrow_impact_1"),   # impacto no alvo
+    "arrow_impact_2":           _sfx("arrow_impact_2"),
+
     # ── Emotes do player ─────────────────────────────────────────────────
     "player_emote_attack_1":    _sfx("player_emote_attack_1"),
     "player_emote_attack_2":    _sfx("player_emote_attack_2"),

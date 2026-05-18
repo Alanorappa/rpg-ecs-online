@@ -21,7 +21,7 @@ except ImportError:
 
 
 class Minimap:
-    SIZE         = 120   # frame quadrado em px
+    SIZE         = 220   # frame quadrado em px
     RADIUS       =  25   # raio em tiles ao redor do player
     MARGIN_RIGHT =  10
     MARGIN_TOP   =  68   # abaixo dos textos zona/coords (~y=10..60)

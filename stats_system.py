@@ -26,17 +26,17 @@ from save_system import request_autosave
 # Campos ausentes recebem 0 (atributo não cresce).
 # ---------------------------------------------------------------------------
 CLASS_LEVEL_GAINS: dict[str, dict] = {
-    "guerreiro": {"strength": 2, "vitality": 2, "agility": 1, "intelligence": 0, "defense": 2},
-    "mago":      {"strength": 0, "vitality": 1, "agility": 0, "intelligence": 3, "defense": 0},
-    "arqueiro":  {"strength": 0, "vitality": 1, "agility": 3, "intelligence": 0, "defense": 0},
+    "guerreiro": {"strength": 1, "vitality": 1, "agility": 0, "intelligence": 0, "defense": 2},
+    "mago":      {"strength": 0, "vitality": 1, "agility": 0, "intelligence": 1, "defense": 1},
+    "arqueiro":  {"strength": 0, "vitality": 1, "agility": 1, "intelligence": 0, "defense": 1},
 }
 
 # Atributos base ao criar um personagem novo — específicos por classe.
-# Adicionar nova classe: inserir entrada aqui. game.py lê deste dict.
+# Atributo principal inicia em 3; os demais em valores mínimos.
 CLASS_BASE_STATS: dict[str, dict] = {
-    "guerreiro": {"strength": 1, "intelligence": 1, "agility": 1, "vitality": 3, "defense": 2},
-    "mago":      {"strength": 1, "intelligence": 5, "agility": 1, "vitality": 2, "defense": 1},
-    "arqueiro":  {"strength": 1, "intelligence": 1, "agility": 5, "vitality": 2, "defense": 1},
+    "guerreiro": {"strength": 3, "intelligence": 1, "agility": 1, "vitality": 3, "defense": 2},
+    "mago":      {"strength": 1, "intelligence": 3, "agility": 1, "vitality": 2, "defense": 1},
+    "arqueiro":  {"strength": 1, "intelligence": 1, "agility": 3, "vitality": 2, "defense": 1},
 }
 
 
@@ -53,8 +53,26 @@ CLASS_ARMOR_ALLOWED: dict[str, frozenset] = {
     "mago":      frozenset({"tecido"}),
 }
 
-# base_attack_interval NÃO entra aqui — é gerenciado pelo equip/unequip de armas.
-# _default_attack_interval = velocidade sem arma (restaurada ao desequipar).
+# HP base fixo por classe (antes dos ganhos de VIT).
+CLASS_BASE_HP: dict[str, int] = {
+    "guerreiro": 180,
+    "mago":      100,
+    "arqueiro":  120,
+}
+
+# Acerto base por classe. Todos os atributos contribuem +0.1% por ponto (universal).
+CLASS_BASE_ACERTO: dict[str, float] = {
+    "guerreiro": 80.0,
+    "mago":      75.0,
+    "arqueiro":  50.0,
+}
+
+# Concentração máxima por classe (0 = recurso inexistente para a classe).
+# Inicia sempre cheia — é um recurso de sustain, não de acúmulo como a Raiva.
+CLASS_CONCENTRATION: dict[str, int] = {
+    "arqueiro": 100,
+}
+
 CLASS_MELEE_OVERRIDES: dict[str, dict] = {
     "guerreiro": {
         "_default_attack_interval": 2.6,
@@ -65,7 +83,16 @@ CLASS_MELEE_OVERRIDES: dict[str, dict] = {
         "base_attack_power":        0,
         "_default_attack_interval": 3.2,
         "base_physical_damage":     2,
-        "base_physical_damage_max": 5   ,
+        "base_physical_damage_max": 5,
+    },
+    "arqueiro": {
+        "_default_attack_interval":    2.2,
+        "base_physical_damage":        2,
+        "base_physical_damage_max":    4,
+        "can_kite":                    True,
+        # concentration_regen_idle/moving NÃO ficam aqui — são gerenciados por
+        # cs_flags em talent_data.py (reset=5.0 garante o valor base).
+        # Colocar aqui sobrescreveria o efeito do talento "Parado e Concentrado".
     },
 }
 
@@ -91,12 +118,26 @@ def apply_char_stats_to_combat(char_stats: CharacterStats,
     total_vit = char_stats.vitality      + (p.vitality      if p else 0)
     total_def = char_stats.defense       + (p.defense       if p else 0)
 
-    combat_stats.base_stamina      = 5  + total_vit * 5
-    combat_stats.base_armor        =      total_def * 2
-    combat_stats.base_attack_power = 5  + total_str * 2
-    combat_stats.base_spell_power  =      total_int * 2
-    combat_stats.base_crit_rating  = 0.10 + total_agi * 0.01
-    combat_stats.base_dodge_rating = total_agi * 2.0
+    # ── HP: base fixo por classe + VIT×10 (stamina = HP direto, ×1) ──────────
+    _base_hp = CLASS_BASE_HP.get(char_stats.class_id, 100)
+    combat_stats.base_stamina      = _base_hp + total_vit * 10
+
+    # ── Armor: DEF×2 + STR×1 ─────────────────────────────────────────────────
+    combat_stats.base_armor        = total_def * 2 + total_str * 1
+
+    # ── Poder de ataque: STR×2 + AGI×2 ───────────────────────────────────────
+    combat_stats.base_attack_power = total_str * 2 + total_agi * 2
+
+    # ── Poder mágico: INT×2 ───────────────────────────────────────────────────
+    combat_stats.base_spell_power  = total_int * 2
+
+    # ── Crit: AGI×0.003 (0.3% por AGI) ───────────────────────────────────────
+    combat_stats.base_crit_rating  = total_agi * 0.003
+
+    # ── Dodge: AGI×1 → 1 dodge_rating = 0.1% esquiva ─────────────────────────
+    combat_stats.base_dodge_rating = total_agi * 1.0
+
+    # ── Parry: STR×1 → 1 parry_rating = 0.1% aparo ───────────────────────────
     combat_stats.base_parry_rating = total_str * 1.0
 
     # Overrides de classe: dano sem arma e AP base (sem tocar velocidade de ataque)
@@ -105,16 +146,26 @@ def apply_char_stats_to_combat(char_stats: CharacterStats,
         for _attr, _val in overrides.items():
             setattr(combat_stats, _attr, _val)
 
+    # ── Acerto: base por classe + todos os atributos ×0.1% ────────────────────
+    _base_acerto = CLASS_BASE_ACERTO.get(char_stats.class_id, 50.0)
+    combat_stats.base_acerto = _base_acerto + (total_str + total_int + total_agi) * 0.1
+
     combat_stats._recalculate_effective_stats()
 
-    # Mana — escala com INT (relevante para o mago, calculado para todos)
-    new_max_mana = 100 + total_int * 15
+    # ── Mana: INT×10 ──────────────────────────────────────────────────────────
+    new_max_mana = 100 + total_int * 10
     if char_stats.max_mana != new_max_mana:
         if char_stats.max_mana == 0:
             char_stats.mana = new_max_mana
         elif char_stats.mana > new_max_mana:
             char_stats.mana = new_max_mana
         char_stats.max_mana = new_max_mana
+
+    # Concentração — valor fixo por classe, inicia sempre cheia
+    new_max_conc = CLASS_CONCENTRATION.get(char_stats.class_id, 0)
+    if char_stats.max_concentration != new_max_conc:
+        char_stats.max_concentration = new_max_conc
+        char_stats.concentration     = new_max_conc  # inicia cheia
 
 
 def sync_attack_interval(combat_stats: CombatStats, equipment=None) -> None:

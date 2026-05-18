@@ -97,11 +97,16 @@ class CombatStats:
         self.base_physical_damage_max = base_physical_damage  # default: min==max (flat); sete maior para range
         self.base_magical_damage      = base_magical_damage
         self.base_attack_interval = base_attack_interval
-        self.base_hit_rating   = base_hit_rating
+        self.base_hit_rating          = base_hit_rating
+        self.base_armor_penetration:  float = 0.0  # redução flat de armor do alvo
         self.base_dodge_rating = base_dodge_rating
         self.base_parry_rating = base_parry_rating
         self.base_block_rating = base_block_rating
         self.base_block_value  = base_block_value
+        # Acerto: chance base de acertar um auto-ataque físico (0–100 %).
+        # Default 95.0 → ~5% miss, igual ao comportamento legado de mobs.
+        # Classes jogáveis recebem valor específico via CLASS_ACERTO (stats_system).
+        self.base_acerto: float = 95.0
 
         # Intervalo original sem arma equipada (para restaurar ao desequipar)
         self._default_attack_interval: float = base_attack_interval
@@ -131,6 +136,41 @@ class CombatStats:
         self.attack_cooldown_timer: float = 0.0 # Tempo restante para o próximo ataque
         self.hp5: float       = 0.01  # fração de max_hp regenerada a cada 5s (fora de combate)
         self.hp5_timer: float = 0.0   # acumulador de tempo para o tick de regen
+
+        # Flags de comportamento de combate — setadas por CLASS_MELEE_OVERRIDES em stats_system.
+        # Sistemas lêem esses flags sem precisar conhecer class_id.
+        self.can_kite: bool = False  # True = pode mover+atacar (arqueiro). Movimento não cancela perseguição.
+        self.arrow_pre_draw_ready: bool = True  # True = pode tocar som de pré-tensionamento no próximo ciclo
+        # Taxa de regen de Concentração (pontos/segundo). Lida pelo CombatStateSystem.
+        self.concentration_regen_idle:   float = 0.0  # parado
+        self.concentration_regen_moving: float = 0.0  # andando
+        # Talento Prático (arqueiro) — recarga em movimento
+        self.recarregar_in_motion:       bool  = False
+        # Talento Calmo e Certeiro — bônus de acerto por segundo parado
+        self.standing_seconds:           float = 0.0
+        self.acerto_per_standing_second: float = 0.0
+        # Talento Tiro Múltiplo — máx alvos no cone (0=inativo, 99=ilimitado)
+        self.tiro_multiplo_targets: int   = 0
+        # Talento Na Mosca — crit → próxima flecha +25% dano
+        self.na_mosca_enabled:      bool  = False   # talento alocado
+        self.na_mosca_bonus_active: bool  = False   # True = próxima flecha recebe o bônus
+        # Talento Flechas Despadronizadas — proc +50% dano ao disparar
+        self.flechas_despadronizadas_chance: float = 0.0
+        # Habilidade Camuflagem
+        self.camouflage_timer:  float = 0.0   # > 0 = camuflagem ativa
+        self.camouflage_object: str   = ""    # ID do objeto do tileset em uso
+        # Talento Reciclagem — recupera flechas ao abater inimigos
+        self.arrows_received:                int   = 0     # flechas físicas que acertaram esta entidade
+        self.arrow_recovery_enabled:        bool  = False # True = reciclagem ativa no atacante
+        # Talento Sequência Final — 3ª flecha na Flecha Reiterada quando alvo está baixo
+        self.flecha_reiterada_hp_threshold: float = 0.0  # 0 = inativo; > 0 = % HP abaixo do qual ativa
+        # Talento Alvo Fácil — bônus contra alvos sob controle (atualizado por StatusEffectSystem)
+        self.is_crowd_controlled:           bool  = False  # True = tem stun/sleep/fear/poly/slow/disoriented
+        self.alvo_facil_acerto:          int   = 0      # +X% acerto contra alvos sob CC (por ponto)
+        self.alvo_facil_crit:            float = 0.0    # +X% crit contra alvos sob CC (por ponto)
+        # Buff "Só um Gole" — Concentração grátis + acerto 100%
+        self.concentration_free:         bool  = False  # True = skills sem custo de Concentração
+        self.concentration_free_timer:   float = 0.0    # segundos restantes do buff
 
         # Flags comportamentais de talento — populadas por apply_talent_effects().
         # CombatSystem e SkillHandlers lêem esses valores sem conhecer IDs de talentos.
@@ -181,11 +221,8 @@ class CombatStats:
         self.current_hp = self.max_hp # Inicia com vida cheia
 
     def _calculate_max_hp(self) -> int:
-        """
-        Calcula a vida máxima com base na estamina efetiva.
-        (Exemplo: 10 pontos de vida por ponto de estamina)
-        """
-        return int(self.stamina * 10)
+        """HP = stamina direto (base_stamina = CLASS_BASE_HP + VIT×10)."""
+        return int(self.stamina)
 
     def _recalculate_effective_stats(self):
         """
@@ -203,11 +240,13 @@ class CombatStats:
         self.haste_rating  = float(self.base_haste_rating)
         self.crit_rating   = float(self.base_crit_rating)
         self.attack_interval = float(self.base_attack_interval)
-        self.hit_rating    = float(self.base_hit_rating)
+        self.hit_rating         = float(self.base_hit_rating)
+        self.armor_penetration  = float(self.base_armor_penetration)
         self.dodge_rating  = float(self.base_dodge_rating)
         self.parry_rating  = float(self.base_parry_rating)
         self.block_rating  = float(self.base_block_rating)
         self.block_value   = float(self.base_block_value)
+        self.acerto        = float(self.base_acerto)
 
         # Aplica todos os modificadores
         for mod in self.modifiers:
@@ -261,6 +300,12 @@ class CombatStats:
             elif mod.attribute == "block_value":
                 if mod.type == "flat":   self.block_value += mod.value
                 else:                    self.block_value *= (1 + mod.value)
+            elif mod.attribute == "acerto":
+                if mod.type == "flat":   self.acerto += mod.value
+                else:                    self.acerto *= (1 + mod.value)
+            elif mod.attribute == "armor_penetration":
+                if mod.type == "flat":   self.armor_penetration += mod.value
+                else:                    self.armor_penetration *= (1 + mod.value)
 
         # APLICA A ACELERAÇÃO (HASTE) AO INTERVALO DE ATAQUE
         # "a cada 10 de haste, diminui 1 segundo o intervalo"
@@ -272,6 +317,8 @@ class CombatStats:
 
         self.crit_rating  = max(0.0, min(1.0, self.crit_rating))
         self.hit_rating   = max(0.0, self.hit_rating)
+        self.acerto            = max(0.0, min(100.0, self.acerto))
+        self.armor_penetration = max(0.0, self.armor_penetration)
         self.dodge_rating = max(0.0, self.dodge_rating)
         self.parry_rating = max(0.0, self.parry_rating)
         self.block_rating = max(0.0, self.block_rating)
@@ -416,7 +463,8 @@ class CombatState:
         self.is_stunned: bool = False   # Não pode agir nem mover
         self.is_rooted: bool = False    # Pode agir mas não mover
         self.is_casting: bool = False   # Não pode se mover nem iniciar outra ação
-        self.is_immune: bool = False    # Imune a todos os danos (Bloco de Gelo)
+        self.is_immune:   bool = False   # Imune a todos os danos (Bloco de Gelo)
+        self.is_visible:  bool = True    # False = invisível (ex: Camuflagem); mobs não agrem
         self.target_entity_id: int = -1 # Alvo atual selecionado
         self.is_pursuing: bool = False  # True = persegue o alvo (direito/skill/espaço). False = só selecionado
         self._just_entered_combat: bool = False  # sinaliza transição para CombatStateSystem disparar procs
@@ -428,8 +476,9 @@ class CombatState:
         return self.is_alive and not self.is_stunned and not self.is_casting
 
     def can_move(self) -> bool:
-        """Retorna True se a entidade pode se mover."""
-        return self.is_alive and not self.is_stunned and not self.is_rooted and not self.is_casting
+        """Retorna True se a entidade pode se mover.
+        Cast não bloqueia movimento — o SpellCastSystem cancela o cast se interruptível."""
+        return self.is_alive and not self.is_stunned and not self.is_rooted
 
     # Timers atualizados por CombatStateSystem. Mutações via stat_fns.enter_combat().
 
@@ -503,6 +552,13 @@ class CharacterStats:
         self.max_mana: int = 0
         self.mana_regen_timer: float = 0.0
 
+        # Concentração (classe Arqueiro) — inicia cheia, skills consomem, tempo regenera
+        self.concentration:     int   = 0    # valor atual (setado para max em apply_char_stats)
+        self.max_concentration: int   = 0    # 0 = recurso inexistente para esta classe
+        # Canção de Ninar — alvos adormecidos durante o canal (limpo ao concluir/cancelar)
+        self.lullaby_targets:   list  = []
+
+
     @staticmethod
     def xp_for_level(level: int) -> int:
         """XP necessário para avançar do nível `level` para `level+1`."""
@@ -559,9 +615,12 @@ class Item:
                  subtype: str = "",
                  consumable: dict = None,
                  max_stack: int = 1,
-                 armor_class: str = ""):
+                 armor_class: str = "",
+                 arrow_count: int = 0,
+                 max_arrows: int = 0,
+                 cast_range: int = 0):
         self.name = name
-        self.item_type = item_type  # "weapon", "armor", "shield", "jewelry", "consumable"
+        self.item_type = item_type  # "weapon", "armor", "shield", "jewelry", "consumable", "quiver", "ammo"
         self.slot = slot            # "mainhand", "offhand", "head", "chest", etc.
         self.modifiers = modifiers if modifiers is not None else []
         self.rarity = rarity        # "common", "uncommon", "rare", "epic"
@@ -573,7 +632,7 @@ class Item:
         self.attack_speed = attack_speed  # segundos por ataque (0.0 = não é arma física)
         # Efeito de proc (None ou dict com chaves: attribute, value, duration, chance, label)
         self.proc = proc
-        self.subtype = subtype  # categoria visual da arma (ex: "Sword", "Mace", "Wand")
+        self.subtype = subtype  # categoria visual da arma (ex: "Sword", "Mace", "Bow")
         # Consumível: None ou dict com chaves:
         #   heal_instant (int), heal_per_tick (int), interval (float),
         #   ticks (int), ooc_only (bool)
@@ -583,6 +642,11 @@ class Item:
         self.stack     = 1           # quantidade atual na pilha
         # Tipo de material (apenas item_type=="armor"): "tecido"|"couro"|"placa"|""
         self.armor_class: str = armor_class
+        # Aljava (item_type=="quiver"): contador de flechas equipadas
+        self.arrow_count: int = arrow_count  # flechas restantes na aljava
+        self.max_arrows:  int = max_arrows   # capacidade máxima (100 para aljava padrão)
+        # Alcance ranged (item_type=="weapon", subtype=="Bow"): tiles de alcance
+        self.cast_range: int = cast_range    # 0 = não ranged
 
     def __repr__(self):
         return f"Item({self.name!r}, {self.rarity})"
@@ -906,6 +970,7 @@ class ActiveEffect:
     __slots__ = (
         "effect_type", "duration", "magnitude",
         "tick_interval", "tick_timer",
+        "on_expire_effect", "on_expire_duration", "on_expire_magnitude",
     )
 
     def __init__(
@@ -914,12 +979,18 @@ class ActiveEffect:
         duration: float,
         magnitude: float = 0.0,
         tick_interval: float = 0.0,
+        on_expire_effect: str = "",      # efeito aplicado quando este expira naturalmente
+        on_expire_duration: float = 0.0,
+        on_expire_magnitude: float = 0.0,
     ) -> None:
-        self.effect_type:   str   = effect_type
-        self.duration:      float = duration
-        self.magnitude:     float = magnitude
-        self.tick_interval: float = tick_interval
-        self.tick_timer:    float = tick_interval  # tempo até próximo tick
+        self.effect_type:         str   = effect_type
+        self.duration:            float = duration
+        self.magnitude:           float = magnitude
+        self.tick_interval:       float = tick_interval
+        self.tick_timer:          float = tick_interval
+        self.on_expire_effect:    str   = on_expire_effect
+        self.on_expire_duration:  float = on_expire_duration
+        self.on_expire_magnitude: float = on_expire_magnitude
 
 
 class StatusEffects:
@@ -1015,12 +1086,14 @@ class QuestLog:
 @dataclass
 class SpellCast:
     """Lançamento de magia em andamento — alimenta a barra de cast."""
-    spell_id:     str   = ""
-    cast_time:    float = 0.0   # duração total do cast
-    elapsed:      float = 0.0   # tempo acumulado
-    target_id:    int   = -1    # alvo (entidade) ao ser completado
-    mana_cost:    int   = 0     # custo deduzido SOMENTE ao completar — nunca no início
-    interruptible: bool = True  # False = movimento não cancela o cast
+    spell_id:           str   = ""
+    cast_time:          float = 0.0   # duração total do cast
+    elapsed:            float = 0.0   # tempo acumulado
+    target_id:          int   = -1    # alvo (entidade) ao ser completado
+    mana_cost:          int   = 0     # custo deduzido SOMENTE ao completar — nunca no início
+    concentration_cost: int   = 0     # custo de concentração — também só deduzido ao completar
+    interruptible:      bool  = True  # False = movimento não cancela o cast
+    on_cancel:          str   = ""    # nome do handler chamado se o cast for interrompido
 
 
 class Channeling:
@@ -1068,7 +1141,7 @@ class IceBlockEffect:
 
 @dataclass
 class PlayerProjectile:
-    """Projétil de magia lançado pelo jogador."""
+    """Projétil lançado pelo jogador (magia ou flecha)."""
     spell_id:       str   = ""
     attacker_id:    int   = -1
     target_id:      int   = -1
@@ -1076,6 +1149,23 @@ class PlayerProjectile:
     dmg_weapon_pct: float = 0.10    # % do dano médio da arma
     dmg_sp_coeff:   float = 1.0     # multiplicador de spell_power
     color:          tuple = (160, 80, 255)  # roxo arcano
+    damage_type:    str   = "magical"  # "magical" | "physical"
+    arrow_dmg_min:  int   = 0  # bônus mínimo da flecha (0 = sem bônus)
+    arrow_dmg_max:  int   = 0  # bônus máximo da flecha
+    # Flecha errando: desvia do alvo e voa além
+    is_miss:        bool  = False   # True = erro confirmado, vai ao ponto desviado
+    miss_end_x:     float = 0.0     # coordenada X do ponto final desviado
+    miss_end_y:     float = 0.0     # coordenada Y do ponto final desviado
+    pre_outcome:    str   = ""      # outcome pré-rolado ("" = rolar normalmente)
+    # Configuração de skill shots
+    damage_multiplier: float = 1.0   # multiplicador de dano (1.0 = normal; 1.5 = +50%)
+    launch_delay:      float = 0.0    # segundos antes de começar a mover (0 = imediato)
+    ap_multiplier:    float = 1.0    # multiplicador extra de AP (1.0 = normal; 2.0 = +1x AP)
+    guaranteed_hit:   bool  = False  # True = ignora miss/dodge/parry, só rola crit
+    # Efeito aplicado ao acertar o alvo (dados opcionais — "" = nenhum efeito)
+    on_hit_effect:    str   = ""     # ID do efeito (ex: "slow", "burn", "stun")
+    on_hit_duration:  float = 0.0    # duração do efeito em segundos
+    on_hit_magnitude: float = 0.0    # magnitude (ex: 0.3 = 30% slow)
 
 
 # ── Components de estado de UI ─────────────────────────────────────────────

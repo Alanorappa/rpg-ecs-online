@@ -48,7 +48,7 @@ _CLASSES = [
     {"id": "guerreiro", "label": "Guerreiro", "locked": False,
      "description": "Mestre do combate corpo a corpo.\nAlta resistencia e dano fisico."},
     {"id": "mago",      "label": "Mago",      "locked": False, "description": "Mestre das artes arcanas.\nAlto poder mágico e controle de área."},
-    {"id": "arqueiro",  "label": "Arqueiro",  "locked": True,  "description": "Em breve."},
+    {"id": "arqueiro",  "label": "Arqueiro",  "locked": False, "description": "Mestre do arco e da flecha.\nAtaques ranged e controle de posicionamento."},
 ]
 
 # ── Layout base (referência 720p) ─────────────────────────────────────────────

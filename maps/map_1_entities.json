@@ -74,6 +74,16 @@
       "profession": "Arquimaga",
       "quest_ids": [],
       "turn_in_ids": []
+    },
+    {
+      "x": 125,
+      "y": 538,
+      "name": "Andre Von Han'Duch",
+      "class_id": "arqueiro",
+      "level": 60,
+      "profession": "Mestre Arqueiro",
+      "quest_ids": [],
+      "turn_in_ids": []
     }
   ],
   "transitions": [

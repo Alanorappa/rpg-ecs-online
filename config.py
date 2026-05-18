@@ -13,6 +13,13 @@ DEFAULTS = {
     "sfx_enabled":   True,
     # hotbar: {"slots": [skill_id|null, ...], "keybinds": [pygame.K_* int, ...]}
     "hotbar": None,
+    # atalhos de menus — chave: nome da ação, valor: pygame.K_* (int)
+    "menu_keybinds": {
+        "inventario": 105,   # K_i
+        "talentos":   116,   # K_t
+        "mapa":       109,   # K_m
+        "diario":     106,   # K_j
+    },
 }
 
 

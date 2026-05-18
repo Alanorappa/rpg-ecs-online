@@ -54,11 +54,51 @@ _T = {
         modifiers=[Modifier("attack_power", 5)], rarity="uncommon", value=45,
         damage_min=14, damage_max=26, attack_speed=2.6, two_handed=True, subtype="Axe"),
 
+    # ── Bows (arqueiro) ───────────────────────────────────────────────────────
+    "short_bow": lambda: Item(
+        "Arco Curto", "weapon", "mainhand",
+        modifiers=[Modifier("crit_rating", 0.02)],
+        rarity="common", value=20,
+        damage_min=5, damage_max=22, attack_speed=1.8, subtype="Bow", cast_range=7),
+
     "hunter_bow": lambda: Item(
         "Arco do Caçador", "weapon", "mainhand",
         modifiers=[Modifier("crit_rating", 0.04), Modifier("attack_power", 4)],
         rarity="uncommon", value=38,
-        damage_min=10, damage_max=20, attack_speed=2.0, two_handed=True, subtype="Sword"),
+        damage_min=8, damage_max=30, attack_speed=2.0, subtype="Bow", cast_range=8),
+
+    "elven_bow": lambda: Item(
+        "Arco Élfico", "weapon", "mainhand",
+        modifiers=[Modifier("crit_rating", 0.06), Modifier("attack_power", 6), Modifier("agility", 2)],
+        rarity="rare", value=95,
+        damage_min=12, damage_max=42, attack_speed=1.6, subtype="Bow", cast_range=9),
+
+    # ── Quivers (arqueiro off-hand) ────────────────────────────────────────────
+    "basic_quiver": lambda: Item(
+        "Aljava Básica", "quiver", "offhand",
+        modifiers=[], rarity="common", value=5,
+        arrow_count=100, max_arrows=100, subtype="Flecha"),
+
+    "sturdy_quiver": lambda: Item(
+        "Aljava Reforçada", "quiver", "offhand",
+        modifiers=[Modifier("crit_rating", 0.01)], rarity="uncommon", value=25,
+        arrow_count=100, max_arrows=100, subtype="Flecha"),
+
+    # ── Ammo ──────────────────────────────────────────────────────────────────
+    "arrow": lambda: Item(
+        "Flecha", "ammo", "",
+        modifiers=[], rarity="common", value=1,
+        damage_min=0, damage_max=0, max_stack=1000),
+
+    "arrow_broadhead": lambda: Item(
+        "Flecha Perfurante", "ammo", "",
+        modifiers=[], rarity="uncommon", value=3,
+        damage_min=4, damage_max=8, max_stack=1000),
+
+    "arrow_heavy": lambda: Item(
+        "Flecha Pesada", "ammo", "",
+        modifiers=[], rarity="rare", value=6,
+        damage_min=8, damage_max=14, max_stack=1000),
 
     "arcane_wand": lambda: Item(
         "Varinha Arcana", "weapon", "mainhand",

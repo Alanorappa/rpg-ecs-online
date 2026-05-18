@@ -14,7 +14,7 @@ from components import Item, Modifier
 def _make_item(name, item_type, slot, rarity, value,
                mods=None, two_handed=False,
                damage_min=0, damage_max=0, attack_speed=0.0, proc=None,
-               subtype=""):
+               subtype="", cast_range=0):
     """Retorna uma factory sem args que cria um Item novo a cada chamada."""
     mods = mods or []
     def factory():
@@ -24,6 +24,7 @@ def _make_item(name, item_type, slot, rarity, value,
             rarity=rarity, value=value, two_handed=two_handed,
             damage_min=damage_min, damage_max=damage_max,
             attack_speed=attack_speed, proc=proc, subtype=subtype,
+            cast_range=cast_range,
         )
     return factory
 
@@ -35,6 +36,34 @@ def _make_consumable(name, rarity, value, consumable: dict, max_stack: int = 20)
             name=name, item_type="consumable", slot="",
             rarity=rarity, value=value,
             consumable=consumable,
+            max_stack=max_stack,
+        )
+    return factory
+
+
+def _make_quiver(name, rarity, value, max_arrows: int = 100, mods=None,
+                 default_arrow: str = "Flecha"):
+    """Retorna factory de aljava (off-hand, carrega flechas)."""
+    mods = mods or []
+    def factory():
+        return Item(
+            name=name, item_type="quiver", slot="offhand",
+            modifiers=[Modifier(attr, val, typ) for attr, val, typ in mods],
+            rarity=rarity, value=value,
+            arrow_count=max_arrows, max_arrows=max_arrows,
+            subtype=default_arrow,   # tipo de flecha pré-carregada
+        )
+    return factory
+
+
+def _make_ammo(name, rarity, value, max_stack: int = 1000,
+               damage_min: int = 0, damage_max: int = 0):
+    """Retorna factory de munição (empilhável na bag)."""
+    def factory():
+        return Item(
+            name=name, item_type="ammo", slot="",
+            rarity=rarity, value=value,
+            damage_min=damage_min, damage_max=damage_max,
             max_stack=max_stack,
         )
     return factory
@@ -87,6 +116,22 @@ SHOPS = {
                                    [("spell_power", 8, "flat")],
                                    damage_min=5, damage_max=11, attack_speed=1.4, subtype="Wand"),
              "price": 45},
+            # --- Arqueiro: arco, aljava, flechas ---
+            {"factory": _make_item("Arco Curto", "weapon", "mainhand", "common", 20,
+                                   [("crit_rating", 0.02, "flat")],
+                                   damage_min=5, damage_max=22, attack_speed=1.8,
+                                   subtype="Bow", cast_range=7),
+             "price": 35},
+            {"factory": _make_quiver("Aljava Básica",    "common",   5,  max_arrows=100),
+             "price": 15},
+            {"factory": _make_ammo("Flecha", "common", 1, max_stack=1000),
+             "price": 1},
+            {"factory": _make_ammo("Flecha Perfurante", "uncommon", 3,
+                                   max_stack=1000, damage_min=4, damage_max=8),
+             "price": 5},
+            {"factory": _make_ammo("Flecha Pesada", "rare", 6,
+                                   max_stack=1000, damage_min=8, damage_max=14),
+             "price": 10},
             # --- Escudo ---
             {"factory": _make_item("Escudo de Madeira", "shield", "offhand", "common",   32,
                                    [("armor", 6, "flat"), ("stamina", 1, "flat")]),

@@ -49,6 +49,9 @@ def _item_to_dict(item: Item) -> dict:
         "subtype":      item.subtype,
         "stack":        item.stack,
         "max_stack":    item.max_stack,
+        "arrow_count":  item.arrow_count,
+        "max_arrows":   item.max_arrows,
+        "cast_range":   item.cast_range,
         "modifiers":    [
             {"attribute": m.attribute, "value": m.value, "type": m.type}
             for m in item.modifiers
@@ -78,6 +81,9 @@ def _dict_to_item(d: dict) -> Item:
         proc         = d.get("proc"),
         consumable   = d.get("consumable"),
         max_stack    = d.get("max_stack", 1),
+        arrow_count  = d.get("arrow_count", 0),
+        max_arrows   = d.get("max_arrows", 0),
+        cast_range   = d.get("cast_range", 0),
     )
     item.stack = d.get("stack", 1)
     return item

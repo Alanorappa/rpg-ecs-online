@@ -244,7 +244,7 @@ def create_enemy(world: World, tile_x: int, tile_y: int,
         )
     else:
         stats = CombatStats(
-            base_stamina=15,
+            base_stamina=100,
             base_armor=5,
             base_attack_power=7,
             base_crit_rating=0.05,
@@ -262,7 +262,7 @@ def create_enemy(world: World, tile_x: int, tile_y: int,
     # VIT+1 → stamina+5 | STR+1 → AP+2 | AGI+1 → crit+0.01 | DEF+2 → armor+4
     if level > 1:
         bonus = level - 1
-        stats.base_stamina       += bonus * 5
+        stats.base_stamina       += bonus * 75
         stats.base_attack_power  += bonus * 2
         stats.base_armor         += bonus * 4
         stats.base_crit_rating    = min(0.5, stats.base_crit_rating + bonus * 0.01)

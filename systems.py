@@ -50,10 +50,12 @@ def register_services(combat=None, pathfinding=None, tile_validation=None) -> No
 
 def deal_damage(attacker_id: int, target_id: int, damage_type: str,
                 base_ability_damage: float = 0, apply_armor_reduction: bool = True,
-                multiplier: float = 1.0, is_ability: bool = False) -> bool:
+                multiplier: float = 1.0, is_ability: bool = False,
+                pre_outcome: str = "") -> bool:
     return _svc['combat'].deal_damage(
         attacker_id, target_id, damage_type,
-        base_ability_damage, apply_armor_reduction, multiplier, is_ability)
+        base_ability_damage, apply_armor_reduction, multiplier, is_ability,
+        pre_outcome=pre_outcome)
 
 
 def find_path(start: tuple, end: tuple, dynamic_obstacles=None,
@@ -87,6 +89,9 @@ def apply_effect(
     duration: float,
     magnitude: float = 0.0,
     tick_interval: float | None = None,
+    on_expire_effect: str = "",
+    on_expire_duration: float = 0.0,
+    on_expire_magnitude: float = 0.0,
 ) -> None:
     """
     Aplica ou atualiza um efeito ativo em uma entidade.
@@ -94,6 +99,7 @@ def apply_effect(
     - Se o efeito não existir: cria e adiciona.
     - Se já existir: refresh de duração e magnitude pelo maior valor.
     - Adiciona StatusEffects à entidade automaticamente se necessário.
+    - on_expire_effect: efeito aplicado automaticamente quando este expira naturalmente.
     """
     defn = EFFECT_DEFS.get(effect_type)
     if defn is None:
@@ -116,6 +122,9 @@ def apply_effect(
         duration=duration,
         magnitude=magnitude,
         tick_interval=resolved_tick,
+        on_expire_effect=on_expire_effect,
+        on_expire_duration=on_expire_duration,
+        on_expire_magnitude=on_expire_magnitude,
     )
 
 
@@ -483,7 +492,8 @@ class CombatSystem(System):
                     damage_type: str, base_ability_damage: float = 0,
                     apply_armor_reduction: bool = True,
                     multiplier: float = 1.0,
-                    is_ability: bool = False) -> bool:
+                    is_ability: bool = False,
+                    pre_outcome: str = "") -> bool:
         """Aplica dano de um atacante a um alvo. Retorna True se o alvo foi derrotado."""
         attacker_stats = self._get_combat_stats(attacker_id)
         target_stats   = self._get_combat_stats(target_id)
@@ -505,14 +515,31 @@ class CombatSystem(System):
         _ty = target_pos.y if target_pos else 0.0
 
         extra_crit = self._extra_crit_bonus(attacker_id, target_id, attacker_is_player)
-        calculated_damage, outcome = self._calculate_damage(
-            attacker_id, attacker_stats, damage_type,
-            base_ability_damage, multiplier,
-            target_stats=target_stats, extra_crit=extra_crit,
-        )
+
+        if pre_outcome:
+            # Outcome pré-rolado (ex: por flechas que já verificaram miss visualmente)
+            outcome = pre_outcome
+            block_reduction = 0.0
+            calculated_damage = calculate_base_damage(
+                attacker_stats, damage_type,
+                self._get_mainhand_weapon(attacker_id),
+                base_ability_damage, multiplier, outcome, block_reduction,
+            )
+            calculated_damage = self._resolve_damage_modifiers(
+                attacker_id, target_id, calculated_damage, outcome,
+                apply_armor_reduction, damage_type,
+                attacker_is_player, target_is_player,
+            )
+        else:
+            calculated_damage, outcome = self._calculate_damage(
+                attacker_id, attacker_stats, damage_type,
+                base_ability_damage, multiplier,
+                target_stats=target_stats, extra_crit=extra_crit,
+            )
 
         if outcome in ('miss', 'dodge', 'parry'):
-            self._emit_avoidance_feedback(outcome, _tx, _ty, target_id,
+            self._emit_avoidance_feedback(outcome, _tx, _ty,
+                                          attacker_id, target_id,
                                           attacker_is_player, target_is_player)
             return False
 
@@ -541,11 +568,19 @@ class CombatSystem(System):
                                 attacker_is_player, target_is_player, is_ability)
         self._apply_on_hit_procs(attacker_id, is_crit, attacker_is_player)
 
-        # Dano quebra Polimorfia
+        # Dano quebra Polimorfia e Sono
         _t_sfx = self.world.get_component(target_id, StatusEffects)
-        if _t_sfx and _t_sfx.remove("polymorph"):
-            FLT.add("Polimorfia quebrada!", _tx, _ty, (160, 80, 200), "small",
-                    target_id=target_id)
+        if _t_sfx:
+            if _t_sfx.remove("polymorph"):
+                FLT.add("Polimorfia quebrada!", _tx, _ty, (160, 80, 200), "small",
+                        target_id=target_id)
+            # Sono quebra ao tomar dano — cancela also o slow encadeado
+            _sleep_eff = _t_sfx.get("sleep")
+            if _sleep_eff:
+                _sleep_eff.on_expire_effect = ""   # desfaz slow pós-sono
+                _t_sfx.remove("sleep")
+                FLT.add("Acordou!", _tx, _ty, (200, 200, 100), "small",
+                        target_id=target_id)
 
         # Player recebe dano → entra em combate (impede regen de HP)
         if target_is_player and final_damage > 0:
@@ -579,16 +614,24 @@ class CombatSystem(System):
 
     def _extra_crit_bonus(self, attacker_id: int, target_id: int,
                           attacker_is_player: bool) -> float:
-        """Explorador de Fraquezas: +15% crit/ponto contra alvos com slow ativo."""
+        """Explorador de Fraquezas + Alvo Fácil: bônus de crit contra alvos debuffados."""
         if not attacker_is_player:
             return 0.0
         _cs_ef = self._get_combat_stats(attacker_id)
-        if not _cs_ef or _cs_ef.explorador_crit_per_point <= 0:
+        if not _cs_ef:
             return 0.0
-        _sfx_ef = self.world.get_component(target_id, StatusEffects)
-        if _sfx_ef and _sfx_ef.has("slow"):
-            return _cs_ef.explorador_crit_per_point * 0.15
-        return 0.0
+        extra = 0.0
+        # Explorador de Fraquezas (cavaleiro): +15% crit contra alvos com slow
+        if _cs_ef.explorador_crit_per_point > 0:
+            _sfx_ef = self.world.get_component(target_id, StatusEffects)
+            if _sfx_ef and _sfx_ef.has("slow"):
+                extra += _cs_ef.explorador_crit_per_point * 0.15
+        # Alvo Fácil (arqueiro): +X% crit contra qualquer alvo sob CC
+        if _cs_ef.alvo_facil_crit > 0:
+            _tgt_cs = self._get_combat_stats(target_id)
+            if _tgt_cs and _tgt_cs.is_crowd_controlled:
+                extra += _cs_ef.alvo_facil_crit
+        return extra
 
     def _resolve_damage_modifiers(self, attacker_id: int, target_id: int,
                                   base: float, outcome: str,
@@ -598,10 +641,13 @@ class CombatSystem(System):
         """Aplica armadura, talentos de dano e status effects. Retorna dano final inteiro."""
         dmg = float(base)
 
-        # Armadura
+        # Armadura — 0.1% redução por ponto; críticos ignoram; teto 99%
         if apply_armor and damage_type in ("physical", "physical_fixed"):
-            target_stats = self._get_combat_stats(target_id)
-            dmg *= 100.0 / (100.0 + target_stats.armor)
+            from damage_calculator import apply_armor_reduction as _aar
+            _att_cs_arm = self._get_combat_stats(attacker_id)
+            _tgt_cs_arm = self._get_combat_stats(target_id)
+            if _att_cs_arm and _tgt_cs_arm:
+                dmg = _aar(dmg, _att_cs_arm, _tgt_cs_arm, outcome)
 
         # Foco Mortal: +8% dano/s debilitado contínuo, máx 40%
         if attacker_is_player:
@@ -624,7 +670,7 @@ class CombatSystem(System):
         return max(0, int(dmg))
 
     def _emit_avoidance_feedback(self, outcome: str, tx: float, ty: float,
-                                  target_id: int,
+                                  attacker_id: int, target_id: int,
                                   attacker_is_player: bool,
                                   target_is_player: bool) -> None:
         """Texto flutuante, log e som para ataques evitados (miss/dodge/parry)."""
@@ -650,6 +696,13 @@ class CombatSystem(System):
             LOG.add(player_msg, color)
         elif target_is_player:
             LOG.add(enemy_msg, color)
+
+        # Arco: miss/dodge são silenciosos (flecha apenas falha — sem clang de espada)
+        if attacker_is_player:
+            _eq_av = self.world.get_component(attacker_id, Equipment)
+            _mh_av = _eq_av.slots.get("mainhand") if _eq_av else None
+            if _mh_av and getattr(_mh_av, "subtype", "") == "Bow":
+                return
         SOUNDS.play_random(_SND[outcome], channel_group=(10, 11))
 
     def _emit_hit_feedback(self, attacker_id: int, target_id: int,
@@ -685,9 +738,15 @@ class CombatSystem(System):
                 SOUNDS.play_mob_sounds(_ms_crit, "crit")
                 SOUNDS.play_emote_get_crit(is_player=False, mob_sounds_comp=_ms_crit)
         if attacker_is_player and not is_ability:
-            keys = (["hit_crit_1", "hit_crit_2", "hit_crit"] if is_crit
-                    else ["hit_normal_1", "hit_normal_2", "hit_normal_3", "hit_normal"])
-            SOUNDS.play_random(keys, channel_group=(10, 11))
+            # Som de impacto melee — suprime se arco equipado na mainhand
+            # (flechas já têm sons próprios via PlayerProjectileSystem)
+            _equip_hit = self.world.get_component(attacker_id, Equipment)
+            _mh = _equip_hit.slots.get("mainhand") if _equip_hit else None
+            _is_bow = _mh is not None and getattr(_mh, "subtype", "") == "Bow"
+            if not _is_bow:
+                keys = (["hit_crit_1", "hit_crit_2", "hit_crit"] if is_crit
+                        else ["hit_normal_1", "hit_normal_2", "hit_normal_3", "hit_normal"])
+                SOUNDS.play_random(keys, channel_group=(10, 11))
 
         # Log
         suffix = " CRITICO!" if is_crit else (" (bloqueado)" if is_block else "")
@@ -790,6 +849,29 @@ class DeathHandlerSystem(System):
                     loot.extend(quest_events._quest_system_ref.get_conditional_loot(
                         ident.name, ident.race))
 
+                # Reciclagem: flechas recuperadas aparecem no loot do cadáver
+                _dead_cs = self.world.get_component(entity_id, CombatStats)
+                if _dead_cs and _dead_cs.arrows_received > 0:
+                    _killer_cs = self.world.get_component(pd.killer_entity_id, CombatStats)
+                    if _killer_cs and _killer_cs.arrow_recovery_enabled:
+                        _pct       = random.randint(50, 100) / 100.0
+                        _recovered = max(1, int(_dead_cs.arrows_received * _pct))
+                        _equip_r   = self.world.get_component(pd.killer_entity_id, Equipment)
+                        _quiver_r  = _equip_r.slots.get("offhand") if _equip_r else None
+                        _atype     = _quiver_r.subtype if _quiver_r and _quiver_r.subtype else "Flecha"
+                        if _atype and _recovered > 0:
+                            from components import Item as _Item
+                            _ret = _Item(
+                                name=_atype, item_type="ammo", slot="",
+                                rarity="common", value=1,
+                                damage_min=getattr(_quiver_r, "damage_min", 0),
+                                damage_max=getattr(_quiver_r, "damage_max", 0),
+                                max_stack=1000,
+                            )
+                            _ret.stack = _recovered
+                            loot.append(_ret)
+                            LOG.add(f"Reciclagem! {_recovered} flechas no loot.", (180, 220, 120))
+
                 sz_owner = self.world.get_component(entity_id, SpawnZoneOwner)
                 if sz_owner is not None:
                     zone_comp    = self.world.get_component(sz_owner.zone_entity_id, SpawnZone)
@@ -853,17 +935,75 @@ class CombatStateSystem(System):
                     cs.is_stunned = False
                     cs.stun_timer = 0.0
 
-            # Decay de Rage fora de combate (apenas jogador)
+            # Decay de Rage e regen de Concentração (apenas jogador)
             if self.world.get_component(eid, PlayerControlled) is not None:
                 char_stats = self.world.get_component(eid, CharacterStats)
-                if char_stats and char_stats.rage > 0:
-                    if not cs.in_combat:
-                        char_stats.rage_decay_timer += dt
-                        if char_stats.rage_decay_timer >= self.RAGE_DECAY_INTERVAL:
-                            char_stats.rage_decay_timer -= self.RAGE_DECAY_INTERVAL
-                            char_stats.rage = max(0, char_stats.rage - self.RAGE_DECAY_AMOUNT)
-                    else:
-                        char_stats.rage_decay_timer = 0.0
+                if char_stats:
+                    # Rage decay fora de combate
+                    if char_stats.rage > 0:
+                        if not cs.in_combat:
+                            char_stats.rage_decay_timer += dt
+                            if char_stats.rage_decay_timer >= self.RAGE_DECAY_INTERVAL:
+                                char_stats.rage_decay_timer -= self.RAGE_DECAY_INTERVAL
+                                char_stats.rage = max(0, char_stats.rage - self.RAGE_DECAY_AMOUNT)
+                        else:
+                            char_stats.rage_decay_timer = 0.0
+
+                    # Camuflagem — tick do timer e restauração ao expirar
+                    _cs_cam = self.world.get_component(eid, CombatStats)
+                    if _cs_cam and _cs_cam.camouflage_timer > 0:
+                        _cs_cam.camouflage_timer -= dt
+                        if _cs_cam.camouflage_timer <= 0:
+                            _cs_cam.camouflage_timer = 0.0
+                            # Restaura cor e velocidade originais
+                            _rend_cam = self.world.get_component(eid, Renderable)
+                            _char_cam = self.world.get_component(eid, CharacterStats)
+                            if _rend_cam and _char_cam:
+                                _CLASS_COLORS = {"mago": (80, 80, 220), "arqueiro": (80, 200, 80)}
+                                _rend_cam.color  = _CLASS_COLORS.get(_char_cam.class_id, (255, 0, 0))
+                                _rend_cam.width  = 24
+                                _rend_cam.height = 24
+                            if _cs_cam:
+                                _cs_cam.camouflage_object = ""
+                            # Restaura visibilidade do player
+                            _cst_cam = self.world.get_component(eid, CombatState)
+                            if _cst_cam:
+                                _cst_cam.is_visible = True
+                            _tm_cam = self.world.get_component(eid, TileMovement)
+                            if _tm_cam:
+                                _tm_cam.speed = 110.0   # PLAYER_SPEED original
+
+                    # Buff "Só um Gole" — Concentração grátis + acerto 100%
+                    _cs_buff = self.world.get_component(eid, CombatStats)
+                    if _cs_buff and _cs_buff.concentration_free_timer > 0:
+                        _cs_buff.concentration_free_timer -= dt
+                        if _cs_buff.concentration_free_timer <= 0:
+                            _cs_buff.concentration_free       = False
+                            _cs_buff.concentration_free_timer = 0.0
+
+                    # Calmo e Certeiro — acumula segundos parado, reseta ao mover
+                    _cs_stand = self.world.get_component(eid, CombatStats)
+                    if _cs_stand and _cs_stand.acerto_per_standing_second > 0:
+                        _tm_stand = self.world.get_component(eid, TileMovement)
+                        if _tm_stand and _tm_stand.is_moving:
+                            _cs_stand.standing_seconds = 0.0
+                        else:
+                            _cs_stand.standing_seconds += dt
+
+                    # Regen de Concentração — taxa definida em CLASS_MELEE_OVERRIDES
+                    if char_stats.max_concentration > 0 and char_stats.concentration < char_stats.max_concentration:
+                        _cs_conc = self.world.get_component(eid, CombatStats)
+                        if _cs_conc:
+                            _tm_conc = self.world.get_component(eid, TileMovement)
+                            _moving  = _tm_conc.is_moving if _tm_conc else False
+                            _rate    = (_cs_conc.concentration_regen_moving
+                                        if _moving else
+                                        _cs_conc.concentration_regen_idle)
+                            if _rate > 0:
+                                char_stats.concentration = min(
+                                    char_stats.max_concentration,
+                                    char_stats.concentration + _rate * dt,
+                                )
 
             combat_stats = self.world.get_component(eid, CombatStats)
 
@@ -1227,12 +1367,12 @@ class PlayerInputSystem(System):
                     tgt_y += 1
 
                 if tgt_x != cur_x or tgt_y != cur_y:
-                    # Teclado cancela auto-move e perseguição
+                    # Teclado cancela auto-move; classes com can_kite mantêm perseguição
                     if auto_move:
                         auto_move.active = False
                         auto_move.path.clear()
                         auto_move.ground_target = None
-                    if combat_state:
+                    if combat_state and not getattr(combat_stats, "can_kite", False):
                         combat_state.is_pursuing = False
                     if is_tile_walkable(
                             entity_id, tgt_x, tgt_y, cur_x, cur_y):
@@ -1300,10 +1440,15 @@ class PlayerInputSystem(System):
         pl_tile_y = tile_movement.current_tile_y
         dist = chebyshev(pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y)
 
-        char_stats = self.world.get_component(entity_id, CharacterStats)
-        is_mage    = char_stats is not None and char_stats.class_id == "mago"
+        char_stats  = self.world.get_component(entity_id, CharacterStats)
+        is_mage     = char_stats is not None and char_stats.class_id == "mago"
+        is_archer   = char_stats is not None and char_stats.class_id == "arqueiro"
 
-        if is_mage:
+        if is_archer:
+            self._process_archer_combat(
+                entity_id, position, tile_movement, combat_stats, combat_state,
+                auto_move, can_act, target_id, tgt_tile_x, tgt_tile_y, dt)
+        elif is_mage:
             pursuit_range = self._mage_attack_range(entity_id)
             if dist <= self.PLAYER_ATTACK_RANGE:
                 # Adjacente: melee idêntico ao guerreiro (sem geração de Raiva)
@@ -1368,6 +1513,111 @@ class PlayerInputSystem(System):
             if s is not None and s.cast_range > max_range:
                 max_range = s.cast_range
         return max_range
+
+    def _process_archer_combat(self, entity_id, position, tile_movement,
+                               combat_stats, combat_state, auto_move,
+                               can_act, target_id, tgt_tile_x, tgt_tile_y, dt):
+        """Auto-attack ranged do arqueiro: verifica arco+aljava e dispara flecha."""
+        pl_tile_x = tile_movement.current_tile_x
+        pl_tile_y = tile_movement.current_tile_y
+        dist = chebyshev(pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y)
+
+        equip = self.world.get_component(entity_id, Equipment)
+        bow    = equip.slots.get("mainhand") if equip else None
+        quiver = equip.slots.get("offhand")  if equip else None
+
+        bow_range = getattr(bow, "cast_range", 8) if bow and getattr(bow, "subtype", "") == "Bow" else 0
+
+        if not bow_range:
+            # Sem arco: fallback ao melee guerreiro (soco lento)
+            if dist <= self.PLAYER_ATTACK_RANGE:
+                if auto_move:
+                    auto_move.path.clear()
+                if combat_state.is_pursuing and can_act and combat_stats.attack_cooldown_timer <= 0:
+                    SOUNDS.play_emote_attack(is_player=True)
+                    deal_damage(entity_id, target_id, "physical")
+                    combat_stats.attack_cooldown_timer = combat_stats.get_attack_cooldown()
+                    enter_combat(combat_state)
+            elif combat_state.is_pursuing and auto_move and not tile_movement.is_moving:
+                self._auto_move_step(entity_id, position, tile_movement,
+                                     pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y, auto_move, dt)
+            return
+
+        # Arco equipado — verificar aljava
+        if not quiver or getattr(quiver, "item_type", "") != "quiver":
+            if combat_state.is_pursuing and can_act and combat_stats.attack_cooldown_timer <= 0:
+                from combat_log import LOG as _LOG
+                _LOG.add("Precisa de uma aljava equipada para atirar.", (220, 180, 80))
+                combat_stats.attack_cooldown_timer = 1.0  # cooldown de aviso
+            return
+
+        _PRE_DRAW_THRESHOLD = 1.0   # segundos antes do disparo para tocar o nock
+
+        if dist <= bow_range:
+            if auto_move:
+                auto_move.path.clear()
+                auto_move.active = False
+
+            # Pré-tensionamento: toca ~1s antes do próximo disparo (uma vez por ciclo)
+            if (combat_state.is_pursuing and can_act
+                    and 0 < combat_stats.attack_cooldown_timer <= _PRE_DRAW_THRESHOLD
+                    and combat_stats.arrow_pre_draw_ready):
+                combat_stats.arrow_pre_draw_ready = False
+                if random.random() < 0.30:
+                    SOUNDS.play_random(["arrow_nock_1", "arrow_nock_2"], channel_group=(6, 7))
+
+            if combat_state.is_pursuing and can_act and combat_stats.attack_cooldown_timer <= 0:
+                if quiver.arrow_count <= 0:
+                    from combat_log import LOG as _LOG
+                    _LOG.add("Aljava vazia! Use Recarregar.", (220, 80, 80))
+                    combat_stats.attack_cooldown_timer = 1.0
+                    return
+                tgt_pos = self.world.get_component(target_id, Position)
+                tgt_cs  = self.world.get_component(target_id, CombatStats)
+                if not tgt_pos or (tgt_cs and tgt_cs.current_hp <= 0):
+                    combat_state.target_entity_id = -1
+                    combat_state.is_pursuing = False
+                    return
+                from components import PlayerProjectile as _PP
+                proj_id = self.world.create_entity()
+                self.world.add_component(proj_id, Position(
+                    x=position.x, y=position.y,
+                    prev_x=position.x, prev_y=position.y))
+                # Flechas Despadronizadas: 15% de proc → +50% dano
+                _proc_chance = getattr(combat_stats, "flechas_despadronizadas_chance", 0.0)
+                _is_proc     = _proc_chance > 0 and random.random() < _proc_chance
+                _dmg_mult    = 1.5 if _is_proc else 1.0
+                _arrow_color = (220, 130, 20) if _is_proc else (101, 67, 33)
+
+                self.world.add_component(proj_id, _PP(
+                    spell_id="arrow",
+                    attacker_id=entity_id,
+                    target_id=target_id,
+                    speed=700.0,
+                    dmg_weapon_pct=1.0,
+                    dmg_sp_coeff=0.0,
+                    color=_arrow_color,
+                    damage_type="physical",
+                    arrow_dmg_min=getattr(quiver, "damage_min", 0),
+                    arrow_dmg_max=getattr(quiver, "damage_max", 0),
+                    damage_multiplier=_dmg_mult,
+                ))
+                if _is_proc:
+                    from floating_text import PROC as _PROC_FD
+                    _PROC_FD.add("Despadronizada!", (220, 130, 20))
+                quiver.arrow_count -= 1
+                combat_stats.attack_cooldown_timer = combat_stats.get_attack_cooldown()
+                combat_stats.arrow_pre_draw_ready  = True   # pronto para o próximo ciclo
+                enter_combat(combat_state)
+                # Disparo: draw (35%) + release (sempre)
+                if random.random() < 0.35:
+                    SOUNDS.play_random(["arrow_draw_1", "arrow_draw_2"], channel_group=(8, 9))
+                SOUNDS.play_random(["arrow_release_1", "arrow_release_2"], channel_group=(10, 11))
+        elif auto_move and not tile_movement.is_moving:
+            auto_move.active = True
+            self._auto_move_step(entity_id, position, tile_movement,
+                                 pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y,
+                                 auto_move, dt, attack_range=bow_range)
 
     def _ranged_stop_tile(self, pl_x: int, pl_y: int,
                           tgt_x: int, tgt_y: int, attack_range: int) -> tuple:
@@ -1646,13 +1896,27 @@ class EnemyAISystem(System):
             if enemy_combat_stats.current_hp <= 0:
                 continue
 
+            # Player invisível (Camuflagem, etc.) — mob para tudo e volta ao spawn
+            _player_cst_vis = self.world.get_component(self.player_entity_id, CombatState)
+            _player_invisible = _player_cst_vis is not None and not _player_cst_vis.is_visible
+            if _player_invisible:
+                if ai_control.state in ("CHASING", "ATTACKING", "AGGRO_DELAY"):
+                    ai_control.state              = "RETURNING"
+                    ai_control.aggroed_by_damage  = False
+                    ai_control.path_recalc_timer  = 0.0
+                    ai_control.ranged_cast_timer  = 0.0   # cancela cast em andamento
+                # RETURNING: deixa o movimento de volta ao spawn executar normalmente
+                # IDLE: pula — nada a processar
+                if ai_control.state != "RETURNING":
+                    continue
+
             enemy_current_tile_x = tile_movement.current_tile_x
             enemy_current_tile_y = tile_movement.current_tile_y
 
-            # --- Efeitos de estado (stun / fear / root) ---
+            # --- Efeitos de estado (stun / sleep / fear / root) ---
             _sfx = self.world.get_component(enemy_id, StatusEffects)
             if _sfx:
-                if _sfx.has("stun"):
+                if _sfx.has("stun") or _sfx.has("sleep"):
                     enemy_combat_stats.attack_cooldown_timer = max(
                         enemy_combat_stats.attack_cooldown_timer, 0.1)
                     continue  # imóvel e sem ataque
@@ -1770,7 +2034,7 @@ class EnemyAISystem(System):
                 _atk_event = "attack_melee"
 
             # ── Ranged: cast timer (fica parado 1s antes de disparar) ──────
-            if ai_control.is_ranged and ai_control.ranged_cast_timer > 0:
+            if not _player_invisible and ai_control.is_ranged and ai_control.ranged_cast_timer > 0:
                 _cast_tm  = get_tilemap()
                 _cast_los = (_cast_tm is None or self._has_line_of_sight(
                     _cast_tm,
@@ -1792,7 +2056,7 @@ class EnemyAISystem(System):
                     ai_control.ranged_cast_timer = 0.0  # LOS/alcance perdido: cancela
 
             # ── Inicia ataque (cooldown expirou) ──────────────────────────
-            if in_attack_range and enemy_combat_stats.attack_cooldown_timer <= 0:
+            if not _player_invisible and in_attack_range and enemy_combat_stats.attack_cooldown_timer <= 0:
                 if ai_control.is_ranged:
                     # Só inicia cast se não estiver já carregando
                     if ai_control.ranged_cast_timer == 0.0:
@@ -1843,7 +2107,7 @@ class EnemyAISystem(System):
                 ai_control.kite_cooldown <= 0  # respeita pausa entre sessões de kite
             )
 
-            if needs_to_kite:
+            if not _player_invisible and needs_to_kite:
                 # Ranged muito perto: recua para manter distância ideal
                 ai_control.state = "KITING"
                 ai_control.ranged_cast_timer = 0.0  # cancela cast em andamento
@@ -1855,7 +2119,7 @@ class EnemyAISystem(System):
                 )
                 continue
 
-            if in_attack_range and not needs_to_kite:
+            if not _player_invisible and in_attack_range and not needs_to_kite:
                 # Melee em alcance, ou ranged a boa distância: fica parado
                 ai_control.state = "ATTACKING"
                 continue
@@ -1893,9 +2157,8 @@ class EnemyAISystem(System):
             if ai_control.aggroed_by_damage and dist_to_player_pixels <= _aggro_range_px:
                 ai_control.aggroed_by_damage = False
 
-            # Detecção inicial: mesma distância do leash (5 tiles), apenas mobs IDLE
-            # Usar o mesmo threshold evita oscilação: aggro e leash têm a mesma fronteira
-            if dist_to_player_pixels <= _aggro_range_px and ai_control.state == "IDLE":
+            # Detecção inicial: apenas mobs IDLE, e somente se o player estiver visível
+            if not _player_invisible and dist_to_player_pixels <= _aggro_range_px and ai_control.state == "IDLE":
                 _tilemap_for_los = get_tilemap()
                 _has_los = (
                     _tilemap_for_los is None or
@@ -1911,9 +2174,8 @@ class EnemyAISystem(System):
                     ai_control.state       = "AGGRO_DELAY"
                     ai_control.aggro_delay = 1.0
 
-            # Inimigo perseguindo/atacando → player entra em combate (impede regen de HP)
-            # EnemyAISystem é o responsável por saber quando está perseguindo — correto ECS
-            if ai_control.state in ("CHASING", "ATTACKING", "AGGRO_DELAY"):
+            # Inimigo perseguindo/atacando → player entra em combate (só se visível)
+            if not _player_invisible and ai_control.state in ("CHASING", "ATTACKING", "AGGRO_DELAY"):
                 _player_cst = self.world.get_component(self.player_entity_id, CombatState)
                 if _player_cst and not _player_cst.in_combat:
                     enter_combat(_player_cst)
@@ -2354,7 +2616,20 @@ class RenderSystem(System):
             _sfx_rnd = self.world.get_component(entity_id, StatusEffects)
             _polymorphed = _sfx_rnd is not None and _sfx_rnd.has("polymorph")
 
-            if _polymorphed:
+            # ── Camuflagem: desenha sprite do objeto do tileset ───────────────
+            _cam_obj = getattr(combat_stats, "camouflage_object", "") if combat_stats else ""
+            if _cam_obj:
+                from tileset import get_camouflage_sprite
+                _cam_sprite = get_camouflage_sprite(_cam_obj)
+                if _cam_sprite:
+                    _sw = _cam_sprite.get_width()   # 32
+                    _sh = _cam_sprite.get_height()  # 32 ou 64
+                    # Alinha o fundo do sprite ao pé da entidade
+                    _blit_x = int(draw_x - _sw / 2)
+                    _blit_y = int(draw_y + 12 - _sh)  # +12 = offset do pé do jogador
+                    self.world_surf.blit(_cam_sprite, (_blit_x, _blit_y))
+                rect = pygame.Rect(int(draw_x - 16), int(draw_y - 16), 32, 32)
+            elif _polymorphed:
                 _cx = int(draw_x)
                 _cy = int(draw_y)
                 pygame.draw.circle(self.world_surf, (160, 80, 200), (_cx, _cy), 14)
@@ -2383,23 +2658,53 @@ class RenderSystem(System):
 
                 _sfx = self.world.get_component(entity_id, StatusEffects)
                 _cst = self.world.get_component(entity_id, CombatState)
-                _icons = []
-                if _sfx:
-                    for _eff in _sfx.effects.values():
-                        _defn = EFFECT_DEFS.get(_eff.effect_type)
-                        if _defn:
-                            _icons.append(_defn.color)
+
+                # Reúne efeitos ativos
+                _active_effects = list(_sfx.effects.values()) if _sfx else []
                 if _cst and _cst.is_stunned and _cst.stun_timer > 0:
                     if not (_sfx and _sfx.has("stun")):
-                        _icons.append((255, 220, 0))
-                if _icons:
-                    _isz, _gap = 6, 2
-                    _tw = len(_icons) * (_isz + _gap) - _gap
-                    _ix = int(draw_x - _tw / 2)
-                    _iy = bar_y - _isz - 2
-                    for _col in _icons:
-                        pygame.draw.rect(self.world_surf, _col, (_ix, _iy, _isz, _isz))
-                        _ix += _isz + _gap
+                        class _FakeEff:
+                            effect_type = "stun"
+                        _active_effects.append(_FakeEff())
+
+                if _active_effects:
+                    from effect_animator import get_frame as _get_effect_frame
+                    from status_effects_data import EFFECT_DEFS as _EDEFS
+
+                    _anim_frames = []   # (Surface, effect_type) — com animação
+                    _sq_colors   = []   # (R,G,B)               — sem animação
+
+                    for _eff in _active_effects:
+                        _frame = _get_effect_frame(_eff.effect_type)
+                        if _frame is not None:
+                            _anim_frames.append(_frame)
+                        else:
+                            _defn = _EDEFS.get(_eff.effect_type)
+                            if _defn:
+                                _sq_colors.append(_defn.color)
+
+                    # ── Frames animados: centralizados acima da barra de HP ──
+                    if _anim_frames:
+                        from effect_animator import FRAME_W, FRAME_H
+                        _gap_f = 4
+                        _total_w = len(_anim_frames) * FRAME_W + (_gap_f * (len(_anim_frames) - 1))
+                        _fx = int(draw_x - _total_w / 2)
+                        _fy = bar_y - FRAME_H - 4
+                        for _surf in _anim_frames:
+                            self.world_surf.blit(_surf, (_fx, _fy))
+                            _fx += FRAME_W + _gap_f
+
+                    # ── Quadrados coloridos para efeitos sem animação ─────────
+                    if _sq_colors:
+                        _isz, _gap = 6, 2
+                        _tw = len(_sq_colors) * (_isz + _gap) - _gap
+                        _ix = int(draw_x - _tw / 2)
+                        # Fica abaixo dos frames animados (ou na posição padrão)
+                        _sq_offset = (FRAME_H + 6) if _anim_frames else 0
+                        _iy = bar_y - _isz - 2 - _sq_offset
+                        for _col in _sq_colors:
+                            pygame.draw.rect(self.world_surf, _col, (_ix, _iy, _isz, _isz))
+                            _ix += _isz + _gap
 
 class CameraSystem(System):
     def __init__(self, world: World):
@@ -2910,10 +3215,17 @@ class StatusEffectSystem(System):
                         self._apply_tick(eid, effect)
 
                 if effect.duration <= 0:
-                    to_remove.append(effect.effect_type)
+                    to_remove.append((effect.effect_type,
+                                      effect.on_expire_effect,
+                                      effect.on_expire_duration,
+                                      effect.on_expire_magnitude))
 
-            for key in to_remove:
+            for key, expire_eff, expire_dur, expire_mag in to_remove:
                 del sfx.effects[key]
+                # Aplica efeito encadeado se definido (ex: sleep → slow)
+                if expire_eff:
+                    apply_effect(self.world, eid, expire_eff, expire_dur,
+                                 magnitude=expire_mag)
 
             # Sincroniza slow_mult a cada frame com base no estado atual dos efeitos
             tm = self.world.get_component(eid, TileMovement)
@@ -2929,6 +3241,12 @@ class StatusEffectSystem(System):
             cst = self.world.get_component(eid, CombatState)
             if cst:
                 cst.is_rooted = sfx.has("root")
+
+            # Sincroniza is_crowd_controlled → CombatStats (lido por damage_calculator)
+            _cs_cc = self.world.get_component(eid, CombatStats)
+            if _cs_cc:
+                _CC = ("stun", "sleep", "fear", "polymorph", "slow", "disoriented", "root")
+                _cs_cc.is_crowd_controlled = any(sfx.has(e) for e in _CC)
 
     def _apply_tick(self, eid: int, effect: "ActiveEffect") -> None:
         cs  = self.world.get_component(eid, CombatStats)
@@ -3238,16 +3556,18 @@ class ShopSystem(System):
     - Botão [↩ Desfazer] reverte a última transação.
     """
 
-    PANEL_W   = 900
-    PANEL_H   = 510
-    ROW_H     = 46
-    ICON_S    = 36
-    MAX_ROWS  = 8
-    LEFT_W    = 430
-    RIGHT_W   = 430
-    GAP       = 10
-    SELL_RATIO = 0.4   # 40% do valor do item
-    MAX_HISTORY = 20
+    PANEL_W       = 1120
+    PANEL_H       = 700
+    ROW_H         = 50
+    ICON_S        = 42
+    MAX_ROWS      = 10
+    LEFT_W        = 530
+    RIGHT_W       = 530
+    GAP           = 12
+    BODY_Y_OFFSET = 126   # distância do topo do painel até a primeira linha de item
+    FOOTER_H      = 62    # altura reservada para ouro + dica no rodapé
+    SELL_RATIO    = 0.4
+    MAX_HISTORY   = 20
 
     _RARITY_COLORS = {
         "common":   (200, 200, 200),
@@ -3269,11 +3589,13 @@ class ShopSystem(System):
         self._bag_scroll:  int = 0
         self.pending_tooltip = None
         self._open_cooldown: float = 0.0  # impede compra/venda logo após abrir a loja
+        # Modal de quantidade (Shift+clique direito em item stackável)
+        self._qty_modal: dict | None = None  # None = fechado
 
         SW, SH = screen.get_size()
-        self._font_sm = _font(20)
-        self._font_md = _font(26)
-        self._font_lg = _font(32)
+        self._font_sm = _font(22)
+        self._font_md = _font(30)
+        self._font_lg = _font(38)
 
     @property
     def open_merchant_id(self) -> int:
@@ -3410,6 +3732,8 @@ class ShopSystem(System):
         preview = entry["factory"]()
         if getattr(preview, "max_stack", 1) > 1:
             for existing in inv.items:
+                if existing is None:
+                    continue
                 if existing.name == preview.name and existing.stack < existing.max_stack:
                     wallet.gold -= price
                     existing.stack += 1
@@ -3427,6 +3751,85 @@ class ShopSystem(System):
         self.transaction_history.append({"type": "buy", "item": item, "price": price})
         if len(self.transaction_history) > self.MAX_HISTORY:
             self.transaction_history.pop(0)
+
+    def _buy_qty(self, entry: dict, qty: int) -> None:
+        """Compra qty unidades de um item stackável de uma vez."""
+        inv    = self.world.get_component(self.player_entity, Inventory)
+        wallet = self.world.get_component(self.player_entity, Wallet)
+        if not inv or not wallet or qty <= 0:
+            return
+        price     = entry["price"]
+        total_cost = price * qty
+        if wallet.gold < total_cost:
+            qty        = wallet.gold // price
+            total_cost = price * qty
+        if qty <= 0:
+            return
+
+        preview   = entry["factory"]()
+        remaining = qty
+
+        # Preenche stacks existentes primeiro
+        if getattr(preview, "max_stack", 1) > 1:
+            for existing in inv.items:
+                if existing is None or remaining <= 0:
+                    continue
+                if existing.name == preview.name and existing.stack < existing.max_stack:
+                    can_add = min(remaining, existing.max_stack - existing.stack)
+                    existing.stack += can_add
+                    remaining      -= can_add
+
+        # Cria novos slots para o restante
+        while remaining > 0:
+            if len(inv.items) >= inv.max_slots:
+                break
+            new_item       = entry["factory"]()
+            take           = min(remaining, new_item.max_stack)
+            new_item.stack = take
+            inv.items.append(new_item)
+            remaining -= take
+
+        actually_bought = qty - remaining
+        wallet.gold    -= price * actually_bought
+        if actually_bought > 0:
+            _item_ref = next((it for it in inv.items
+                              if it is not None and it.name == preview.name), preview)
+            self.transaction_history.append({
+                "type": "buy", "item": _item_ref,
+                "price": price * actually_bought,
+            })
+            if len(self.transaction_history) > self.MAX_HISTORY:
+                self.transaction_history.pop(0)
+
+    def _open_qty_modal(self, entry: dict) -> None:
+        """Abre o modal de seleção de quantidade para um item stackável."""
+        inv    = self.world.get_component(self.player_entity, Inventory)
+        wallet = self.world.get_component(self.player_entity, Wallet)
+        if not inv or not wallet:
+            return
+        price   = entry["price"]
+        preview = entry["factory"]()
+        # Máximo limitado por ouro e por espaço de stack disponível
+        max_by_gold  = wallet.gold // max(1, price)
+        existing_cap = sum(
+            (it.max_stack - it.stack)
+            for it in inv.items
+            if it is not None and it.name == preview.name and it.stack < it.max_stack
+        )
+        free_slots  = inv.max_slots - len(inv.items)
+        max_by_inv  = existing_cap + free_slots * preview.max_stack
+        max_qty     = max(1, min(max_by_gold, max_by_inv, preview.max_stack * 10))
+        self._qty_modal = {
+            "entry":    entry,
+            "preview":  preview,
+            "max_qty":  max_qty,
+            "qty":      1,
+            "text":     "1",
+            "dragging": False,
+        }
+
+    def _close_qty_modal(self) -> None:
+        self._qty_modal = None
 
     def _sell(self, item_idx: int) -> None:
         inv    = self.world.get_component(self.player_entity, Inventory)
@@ -3520,30 +3923,45 @@ class ShopSystem(System):
         inv    = self.world.get_component(self.player_entity, Inventory)
         x0, y0 = self._panel_origin()
         mid_x   = x0 + self.GAP + self.LEFT_W
-        body_y  = y0 + 40 + 36 + 30   # header + undo bar + col headers
+        body_y  = y0 + self.BODY_Y_OFFSET
 
         for event in events:
+            # ── Modal de quantidade aberto → processa antes de tudo ────────
+            if self._qty_modal is not None:
+                self._handle_qty_modal_event(event)
+                return   # bloqueia eventos da loja enquanto modal está aberto
+
             if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 self._close()
                 return
+
+            if event.type == pygame.MOUSEWHEEL:
+                if mx < mid_x:
+                    self._shop_scroll = max(0, self._shop_scroll - event.y)
+                else:
+                    self._bag_scroll  = max(0, self._bag_scroll  - event.y)
+                continue
 
             if event.type != pygame.MOUSEBUTTONDOWN:
                 continue
             mx, my = event.pos
 
             # Botão fechar
-            close_r = pygame.Rect(x0 + self.PANEL_W - 36, y0 + 4, 32, 32)
+            close_r = pygame.Rect(x0 + self.PANEL_W - 40, y0 + 6, 34, 34)
             if event.button == 1 and close_r.collidepoint(mx, my):
                 self._close()
                 return
 
             # Botão desfazer
-            undo_r = pygame.Rect(x0 + self.GAP, y0 + 42, 120, 28)
+            undo_r = pygame.Rect(x0 + self.GAP, y0 + 54, 145, 32)
             if event.button == 1 and undo_r.collidepoint(mx, my):
                 self._undo()
                 return
 
-            # Painel esquerdo: comprar (clique direito)
+            mods = pygame.key.get_mods()
+            shift = bool(mods & pygame.KMOD_SHIFT)
+
+            # Painel esquerdo: comprar
             if event.button == 3 and mx < mid_x and self._open_cooldown <= 0:
                 for i, entry in enumerate(stock):
                     vis_i = i - self._shop_scroll
@@ -3552,7 +3970,11 @@ class ShopSystem(System):
                                         body_y + vis_i * self.ROW_H,
                                         self.LEFT_W - 4, self.ROW_H - 2)
                         if r.collidepoint(mx, my):
-                            self._buy(entry)
+                            preview = entry["factory"]()
+                            if shift and getattr(preview, "max_stack", 1) > 1:
+                                self._open_qty_modal(entry)
+                            else:
+                                self._buy(entry)
                             return
 
             # Painel direito: vender (clique direito)
@@ -3566,6 +3988,80 @@ class ShopSystem(System):
                         if r.collidepoint(mx, my):
                             self._sell(i)
                             return
+
+    def _handle_qty_modal_event(self, event) -> None:
+        """Processa eventos enquanto o modal de quantidade está aberto."""
+        m = self._qty_modal
+
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                self._close_qty_modal()
+            elif event.key == pygame.K_RETURN or event.key == pygame.K_KP_ENTER:
+                self._buy_qty(m["entry"], m["qty"])
+                self._close_qty_modal()
+            elif event.key == pygame.K_BACKSPACE:
+                m["text"] = m["text"][:-1] or "0"
+                try:
+                    m["qty"] = max(1, min(int(m["text"]), m["max_qty"]))
+                except ValueError:
+                    m["qty"] = 1
+            elif event.unicode.isdigit():
+                new_text = (m["text"] if m["text"] != "0" else "") + event.unicode
+                if len(new_text) <= 6:
+                    m["text"] = new_text
+                    try:
+                        m["qty"] = max(1, min(int(new_text), m["max_qty"]))
+                    except ValueError:
+                        pass
+            return
+
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            mx, my = event.pos
+            SW, SH  = self.hud_surf.get_size()
+            mw, mh  = 460, 240
+            mx0     = (SW - mw) // 2
+            my0     = (SH - mh) // 2
+
+            # Slider
+            sl_x  = mx0 + 20
+            sl_y  = my0 + 130
+            sl_w  = mw - 40
+            sl_r  = pygame.Rect(sl_x, sl_y - 10, sl_w, 20)
+            if sl_r.collidepoint(mx, my):
+                ratio      = max(0.0, min(1.0, (mx - sl_x) / sl_w))
+                m["qty"]   = max(1, round(ratio * m["max_qty"]))
+                m["text"]  = str(m["qty"])
+                m["dragging"] = True
+                return
+
+            # Botão Cancelar
+            btn_cancel = pygame.Rect(mx0 + 20,      my0 + mh - 54, 190, 38)
+            btn_ok     = pygame.Rect(mx0 + mw - 210, my0 + mh - 54, 190, 38)
+            if btn_cancel.collidepoint(mx, my):
+                self._close_qty_modal()
+                return
+            if btn_ok.collidepoint(mx, my):
+                self._buy_qty(m["entry"], m["qty"])
+                self._close_qty_modal()
+                return
+
+            # Clique fora fecha
+            modal_r = pygame.Rect(mx0, my0, mw, mh)
+            if not modal_r.collidepoint(mx, my):
+                self._close_qty_modal()
+
+        elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            m["dragging"] = False
+
+        elif event.type == pygame.MOUSEMOTION and m.get("dragging"):
+            SW, SH  = self.hud_surf.get_size()
+            mw      = 460
+            mx0     = (SW - mw) // 2
+            sl_x, sl_w = mx0 + 20, mw - 40
+            mx_now  = event.pos[0]
+            ratio   = max(0.0, min(1.0, (mx_now - sl_x) / sl_w))
+            m["qty"]  = max(1, round(ratio * m["max_qty"]))
+            m["text"] = str(m["qty"])
 
     # ------------------------------------------------------------------
     # Render — NPC no mundo
@@ -3615,18 +4111,23 @@ class ShopSystem(System):
         title = self._font_lg.render(f"  {shop.get('name', 'Comerciante')}", True, (255, 220, 120))
         self.hud_surf.blit(title, (x0 + 8, y0 + 8))
 
-        close_r   = pygame.Rect(x0 + W - 36, y0 + 4, 32, 32)
+        close_r   = pygame.Rect(x0 + W - 40, y0 + 6, 34, 34)
         close_hov = close_r.collidepoint(mx, my)
         pygame.draw.rect(self.hud_surf, (180, 60, 60) if close_hov else (100, 35, 35), close_r, border_radius=3)
         xs = self._font_md.render("X", True, (255, 255, 255))
         self.hud_surf.blit(xs, (close_r.centerx - xs.get_width() // 2,
                               close_r.centery - xs.get_height() // 2))
 
-        pygame.draw.line(self.hud_surf, (90, 70, 40), (x0 + 4, y0 + 40), (x0 + W - 4, y0 + 40))
+        LINE1 = y0 + 50   # linha após o título
+        UNDO_Y = y0 + 54  # barra de desfazer
+        LINE2 = y0 + 92   # linha após desfazer
+        COL_Y = y0 + 96   # cabeçalhos das colunas
+        body_y = y0 + self.BODY_Y_OFFSET
+
+        pygame.draw.line(self.hud_surf, (90, 70, 40), (x0 + 4, LINE1), (x0 + W - 4, LINE1))
 
         # --- Barra de desfazer ---
-        undo_y   = y0 + 42
-        undo_r   = pygame.Rect(x0 + self.GAP, undo_y, 130, 28)
+        undo_r   = pygame.Rect(x0 + self.GAP, UNDO_Y, 145, 32)
         has_hist = bool(self.transaction_history)
         undo_hov = undo_r.collidepoint(mx, my) and has_hist
         undo_bg  = (55, 80, 55) if undo_hov else ((38, 55, 38) if has_hist else (28, 28, 28))
@@ -3643,27 +4144,25 @@ class ShopSystem(System):
             else:
                 desc = f"Ultima: vendeu {tx['item'].name} por {tx['sell_value']}g"
             self.hud_surf.blit(self._font_sm.render(desc, True, (150, 150, 150)),
-                             (x0 + self.GAP + 138, undo_y + 7))
+                             (x0 + self.GAP + 155, UNDO_Y + 7))
 
-        pygame.draw.line(self.hud_surf, (90, 70, 40), (x0 + 4, y0 + 78), (x0 + W - 4, y0 + 78))
+        pygame.draw.line(self.hud_surf, (90, 70, 40), (x0 + 4, LINE2), (x0 + W - 4, LINE2))
 
         # Divisor vertical
-        pygame.draw.line(self.hud_surf, (90, 70, 40), (mid_x, y0 + 40), (mid_x, y0 + H - 36))
+        pygame.draw.line(self.hud_surf, (90, 70, 40), (mid_x, LINE1), (mid_x, y0 + H - 36))
 
         # --- Cabeçalhos das colunas ---
-        col_y   = y0 + 82
         hdr_col = (160, 130, 80)
         hint    = (90, 80, 60)
         self.hud_surf.blit(self._font_md.render(f"LOJA  ({len(stock)} itens)", True, hdr_col),
-                         (x0 + self.GAP + 4, col_y))
-        self.hud_surf.blit(self._font_sm.render("clique dir. p/ comprar", True, hint),
-                         (x0 + self.GAP + 4, col_y + 20))
+                         (x0 + self.GAP + 4, COL_Y))
+        self.hud_surf.blit(self._font_sm.render("clique dir. p/ comprar  |  Shift+dir. = qtd.", True, hint),
+                         (x0 + self.GAP + 4, COL_Y + 26))
         self.hud_surf.blit(self._font_md.render(f"MOCHILA  ({len(bag)}/{inv.max_slots if inv else 0})", True, hdr_col),
-                         (mid_x + self.GAP + 4, col_y))
+                         (mid_x + self.GAP + 4, COL_Y))
         self.hud_surf.blit(self._font_sm.render("clique dir. p/ vender", True, hint),
-                         (mid_x + self.GAP + 4, col_y + 20))
+                         (mid_x + self.GAP + 4, COL_Y + 26))
 
-        body_y = y0 + 110
         pygame.draw.line(self.hud_surf, (70, 55, 30), (x0 + 4, body_y - 2), (x0 + W - 4, body_y - 2))
 
         # --- Painel esquerdo: itens da loja ---
@@ -3763,6 +4262,8 @@ class ShopSystem(System):
             else:
                 pygame.draw.rect(self.hud_surf, rar_col, ic_r, 1, border_radius=2)
                 pygame.draw.circle(self.hud_surf, rar_col, (ic_r.right - 4, ic_r.bottom - 4), 3)
+            from ui_helpers import draw_stack_count as _dsc
+            _dsc(self.hud_surf, item, ic_r, self._font_sm)
 
             stack = getattr(item, "stack", 1)
             name_label = f"{item.name}" if stack <= 1 else f"{item.name} x{stack}"
@@ -3795,11 +4296,102 @@ class ShopSystem(System):
             pygame.draw.rect(self.hud_surf, (140, 110, 60), (sb_x, ty, 5, th), border_radius=2)
 
         # --- Footer: ouro do jogador ---
-        foot_y = y0 + H - 34
+        foot_y = y0 + H - self.FOOTER_H
         pygame.draw.line(self.hud_surf, (90, 70, 40), (x0 + 4, foot_y), (x0 + W - 4, foot_y))
         if wallet:
             gold_s = self._font_md.render(f"Seu ouro: {wallet.gold}g", True, (255, 215, 0))
-            self.hud_surf.blit(gold_s, (x0 + W // 2 - gold_s.get_width() // 2, foot_y + 6))
+            self.hud_surf.blit(gold_s, (x0 + W // 2 - gold_s.get_width() // 2, foot_y + 10))
+
+        # --- Modal de quantidade ---
+        if self._qty_modal is not None:
+            self._render_qty_modal(wallet)
+
+    def _render_qty_modal(self, wallet) -> None:
+        """Renderiza o modal de seleção de quantidade."""
+        m       = self._qty_modal
+        SW, SH  = self.hud_surf.get_size()
+        mw, mh  = 460, 240
+        mx0     = (SW - mw) // 2
+        my0     = (SH - mh) // 2
+
+        # Overlay semitransparente
+        ov = pygame.Surface((SW, SH), pygame.SRCALPHA)
+        ov.fill((0, 0, 0, 130))
+        self.hud_surf.blit(ov, (0, 0))
+
+        # Fundo do modal
+        bg = pygame.Surface((mw, mh), pygame.SRCALPHA)
+        bg.fill((18, 14, 8, 245))
+        self.hud_surf.blit(bg, (mx0, my0))
+        pygame.draw.rect(self.hud_surf, (180, 140, 70), (mx0, my0, mw, mh), 2, border_radius=6)
+
+        # Título
+        title_s = self._font_md.render(m["preview"].name, True, (255, 220, 100))
+        self.hud_surf.blit(title_s, (mx0 + mw // 2 - title_s.get_width() // 2, my0 + 12))
+
+        # Preço
+        price    = m["entry"]["price"]
+        total    = price * m["qty"]
+        gold_avail = wallet.gold if wallet else 0
+        price_col  = (255, 215, 0) if total <= gold_avail else (220, 80, 80)
+        price_s  = self._font_sm.render(
+            f"{price}g por unidade  |  Total: {total}g  (ouro: {gold_avail}g)",
+            True, price_col)
+        self.hud_surf.blit(price_s, (mx0 + mw // 2 - price_s.get_width() // 2, my0 + 42))
+
+        # ── Slider ────────────────────────────────────────────────────────
+        sl_x  = mx0 + 20
+        sl_y  = my0 + 130
+        sl_w  = mw - 40
+        ratio = (m["qty"] - 1) / max(1, m["max_qty"] - 1) if m["max_qty"] > 1 else 0.0
+        handle_x = sl_x + int(ratio * sl_w)
+
+        pygame.draw.rect(self.hud_surf, (50, 40, 25), (sl_x, sl_y - 3, sl_w, 6), border_radius=3)
+        pygame.draw.rect(self.hud_surf, (160, 120, 50), (sl_x, sl_y - 3, int(ratio * sl_w), 6), border_radius=3)
+        pygame.draw.circle(self.hud_surf, (220, 180, 80), (handle_x, sl_y), 10)
+        pygame.draw.circle(self.hud_surf, (255, 220, 120), (handle_x, sl_y), 10, 2)
+
+        # Labels min/max do slider
+        self.hud_surf.blit(self._font_sm.render("1", True, (130, 110, 70)),
+                           (sl_x, sl_y + 14))
+        max_s = self._font_sm.render(str(m["max_qty"]), True, (130, 110, 70))
+        self.hud_surf.blit(max_s, (sl_x + sl_w - max_s.get_width(), sl_y + 14))
+
+        # ── Campo de texto ────────────────────────────────────────────────
+        qty_s = self._font_lg.render(str(m["qty"]), True, (255, 255, 255))
+        txt_x = mx0 + mw // 2 - qty_s.get_width() // 2
+        self.hud_surf.blit(qty_s, (txt_x, my0 + 76))
+        # Cursor piscante
+        if (pygame.time.get_ticks() // 500) % 2 == 0:
+            cx = txt_x + qty_s.get_width() + 2
+            pygame.draw.line(self.hud_surf, (200, 200, 200),
+                             (cx, my0 + 78), (cx, my0 + 78 + qty_s.get_height() - 4), 2)
+
+        # ── Botões ────────────────────────────────────────────────────────
+        btn_cancel = pygame.Rect(mx0 + 20,       my0 + mh - 54, 190, 38)
+        btn_ok     = pygame.Rect(mx0 + mw - 210, my0 + mh - 54, 190, 38)
+        mmx, mmy   = pygame.mouse.get_pos()
+
+        for btn, label, ok in ((btn_cancel, "Cancelar", False), (btn_ok, f"Comprar {m['qty']}", True)):
+            can_buy  = ok and total <= gold_avail
+            hov      = btn.collidepoint(mmx, mmy)
+            if ok:
+                col_bg   = (40, 100, 40) if (can_buy and hov) else ((30, 75, 30) if can_buy else (50, 25, 25))
+                col_brd  = (100, 220, 100) if can_buy else (120, 60, 60)
+                col_txt  = (150, 255, 150) if can_buy else (180, 100, 100)
+            else:
+                col_bg  = (70, 40, 30) if hov else (50, 28, 20)
+                col_brd = (180, 100, 60)
+                col_txt = (220, 160, 100)
+            pygame.draw.rect(self.hud_surf, col_bg,  btn, border_radius=4)
+            pygame.draw.rect(self.hud_surf, col_brd, btn, 1, border_radius=4)
+            lbl_s = self._font_sm.render(label, True, col_txt)
+            self.hud_surf.blit(lbl_s, (btn.centerx - lbl_s.get_width() // 2,
+                                        btn.centery - lbl_s.get_height() // 2))
+
+        # Dica ESC
+        esc_s = self._font_sm.render("ESC cancela  |  ENTER confirma", True, (80, 70, 50))
+        self.hud_surf.blit(esc_s, (mx0 + mw // 2 - esc_s.get_width() // 2, my0 + mh - 14))
 
 
 class ConsumableSystem(System):
@@ -4162,6 +4754,8 @@ class LootSystem(System):
                         stacked = False
                         if item.max_stack > 1:
                             for existing in inv.items:
+                                if existing is None:
+                                    continue
                                 if existing.name == item.name and existing.stack < existing.max_stack:
                                     existing.stack += item.stack
                                     stacked = True
@@ -4427,10 +5021,15 @@ class LootSystem(System):
                 else:
                     fb = self.RARITY_COLORS.get(item.rarity, (100, 100, 100))
                     pygame.draw.rect(self.hud_surf, fb, icon_r, border_radius=2)
+                from ui_helpers import draw_stack_count as _dsc2
+                _dsc2(self.hud_surf, item, icon_r, self.font_sm)
 
                 rc = self.RARITY_COLORS.get(item.rarity, (200, 200, 200))
                 tx = icon_r.right + 8
-                name_surf = self.font_md.render(item.name, True, rc)
+                _stack = getattr(item, "stack", 1)
+                _max_s = getattr(item, "max_stack", 1)
+                _name_lbl = f"{item.name} x{_stack}" if _max_s > 1 else item.name
+                name_surf = self.font_md.render(_name_lbl, True, rc)
                 sub_surf  = self.font_sm.render(f"{item.item_type}  •  {item.slot}", True, (130, 115, 95))
                 total_h   = name_surf.get_height() + 2 + sub_surf.get_height()
                 ty = rr.centery - total_h // 2
@@ -4592,13 +5191,16 @@ class SkillSystem(System, SkillHandlers):
         if not combat_stats or not tile_move:
             return False
 
-        # Skills ofensivas: selecionam alvo, iniciam combate e perseguição
-        # Skills não-ofensivas (buffs, AoE de mira): nenhuma dessas ações
+        # Skills ofensivas: selecionam alvo e iniciam combate.
+        # is_pursuing só é setado para skills INSTANTÂNEAS — skills com cast_time
+        # aguardam o cast completar para não aggrar o mob prematuramente.
         if getattr(skill, "offensive", True):
             self._resolve_target(combat_state, tile_move)
             if isinstance(combat_state, CombatState):
+                has_cast = getattr(skill, "cast_time", 0.0) > 0
                 enter_combat(combat_state)
-                combat_state.is_pursuing = True
+                if not has_cast:
+                    combat_state.is_pursuing = True
 
         if not skill.is_ready():
             if skill.current_cooldown > 0:
@@ -4613,10 +5215,15 @@ class SkillSystem(System, SkillHandlers):
             if handler_fn:
                 success = handler_fn(skill, combat_stats, combat_state, tile_move)
                 if success:
-                    # Skills com cast_time ou AOE-targetadas não tocam som ao pressionar —
-                    # o som é emitido ao completar o cast (SpellCastSystem) ou em _start_channel
                     has_cast = getattr(skill, "cast_time", 0.0) > 0
                     is_aoe   = getattr(skill, "needs_aoe_target", False)
+                    # Só bloqueia movimento se o SpellCast criado for interruptível.
+                    # Casts não-interruptíveis (Calcinar, Recarregar+Prático) permitem mover.
+                    if has_cast and isinstance(combat_state, CombatState):
+                        from components import SpellCast as _SpellCast
+                        _sc = self.world.get_component(self.player_entity_id, _SpellCast)
+                        if _sc is None or _sc.interruptible:
+                            combat_state.is_casting = True
                     if skill.sound_name and not has_cast and not is_aoe:
                         SOUNDS.play_skill(skill.sound_name)
                     if player_skills:
@@ -4665,3 +5272,4 @@ class SkillSystem(System, SkillHandlers):
         return best_id
 
     # Todos os handlers (_skill_* e _talent_*) estão em skill_handlers.py via SkillHandlers.
+

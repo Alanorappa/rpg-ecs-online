@@ -169,35 +169,13 @@ class TalentSystem:
             remove_modifier(cs, mod)
         tt._applied_modifiers.clear()
 
-        # Reseta flags comportamentais antes de re-aplicar — Cavaleiro
-        cs.explorador_crit_per_point      = 0
-        cs.foco_mortal_enabled            = False
-        cs.embalo_on_crit                 = False
-        cs.pnq_enabled                    = False
-        cs.embalo_bonus_per_charge        = 0.0
-        cs.golpe_poderoso_rage_cost       = 15
-        cs.interceptar_cooldown_reduction = 0.0
-        cs.interceptar_stun_duration      = 0.0
-        cs.interceptar_rage_bonus         = 0
-        cs.pnq_stun_duration              = 1.0
-        cs.impacto_maquina_matar          = False
-        cs.impacto_assassino              = False
-        cs.executar_horrorizante          = False
-        # Reseta flags comportamentais — Piromania (Mago)
-        cs.fire_mana_discount            = 0
-        cs.fire_cast_time_reduction      = 0.0
-        cs.fire_burns_on_crit            = False
-        cs.fire_burn_duration            = 0.0
-        cs.ice_cast_time_reduction       = 0.0
-        cs.fire_shield_enabled           = False
-        cs.fire_instant_proc_chance      = 0.0
-        cs.thermal_shock_enabled         = False
-        cs.pyromania_bonus               = 0.0
-        cs.elemental_lapse_crit_bonus    = 0.0
-        cs.fire_crit_counter             = 0
-        cs.fire_crit_timer               = 0.0
-        cs.fire_exhaustion_enabled       = False
-        cs.crematoria_enabled            = False
+        # Reseta todas as flags comportamentais de talento para seus valores padrão
+        for t in TALENTS.values():
+            for flag in t.get("cs_flags", []):
+                setattr(cs, flag["field"], flag["reset"])
+        # Reseta estado de runtime (não controlado por talentos)
+        cs.fire_crit_counter = 0
+        cs.fire_crit_timer   = 0.0
 
         # Memoriza a posição atual de cada skill de talento antes de removê-las,
         # para restaurar nas mesmas posições após re-aplicar (preserva layout do usuário).
@@ -244,33 +222,13 @@ class TalentSystem:
                             skills.skills.append(new_skill)
                     tt._unlocked_skill_ids.add(_sid)
 
-        # Atualiza flags comportamentais de talento (lidas por CombatSystem e SkillHandlers)
-        cs.explorador_crit_per_point      = tt.allocated.get("cav_explorador", 0)
-        cs.foco_mortal_enabled            = tt.allocated.get("cav_foco_mortal", 0) >= 1
-        cs.embalo_on_crit                 = tt.allocated.get("cav_embalo", 0) > 0
-        cs.pnq_enabled                    = tt.allocated.get("cav_punho_queixo", 0) >= 1
-        cs.embalo_bonus_per_charge        = tt.allocated.get("cav_embalo", 0) * 0.10
-        cs.golpe_poderoso_rage_cost       = max(10, 15 - tt.allocated.get("cav_veterano", 0))
-        cs.interceptar_cooldown_reduction = tt.allocated.get("cav_sede_batalha", 0) * 2.0
-        cs.interceptar_stun_duration      = tt.allocated.get("cav_alvo_confirmado", 0) * 0.3
-        cs.interceptar_rage_bonus         = 10 if tt.allocated.get("cav_vontade", 0) >= 1 else 0
-        cs.pnq_stun_duration              = float(max(1, tt.allocated.get("cav_punho_queixo", 1)))
-        cs.impacto_maquina_matar          = tt.allocated.get("cav_maquina_matar", 0) >= 1
-        cs.impacto_assassino              = tt.allocated.get("cav_assassino", 0) >= 1
-        cs.executar_horrorizante          = tt.allocated.get("cav_horrorizante", 0) >= 1
-        # Aplica flags comportamentais — Piromania (Mago)
-        cs.fire_mana_discount             = tt.allocated.get("pir_frieza", 0) * 1
-        cs.crematoria_enabled             = tt.allocated.get("pir_crematoria", 0) >= 1
-        cs.fire_exhaustion_enabled        = tt.allocated.get("pir_exaustao", 0) >= 1
-        cs.elemental_lapse_crit_bonus     = tt.allocated.get("pir_lapso_elemental", 0) * 0.05
-        cs.pyromania_bonus                = tt.allocated.get("pir_piromaníaco", 0) * 0.05
-        cs.fire_instant_proc_chance       = tt.allocated.get("pir_chama_interna", 0) * 0.02
-        cs.thermal_shock_enabled          = tt.allocated.get("pir_choque_termico", 0) >= 1
-        cs.fire_cast_time_reduction       = tt.allocated.get("pir_bdf_aperfeicoada", 0) * 0.1
-        cs.ice_cast_time_reduction        = tt.allocated.get("pir_precisao_elemental", 0) * 0.2
-        _queimaduras                      = tt.allocated.get("pir_queimaduras", 0)
-        cs.fire_burns_on_crit             = _queimaduras >= 1
-        cs.fire_burn_duration             = _queimaduras * 3.0
+        # Aplica flags comportamentais de talentos alocados (lidas por CombatSystem e SkillHandlers)
+        for talent_id, points in tt.allocated.items():
+            t = TALENTS.get(talent_id)
+            if not t:
+                continue
+            for flag in t.get("cs_flags", []):
+                setattr(cs, flag["field"], flag["formula"](points))
 
     # -----------------------------------------------------------------------
     # Eventos

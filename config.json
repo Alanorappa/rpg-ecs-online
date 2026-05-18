@@ -1,51 +1,58 @@
 {
   "scale": 1.5,
   "music_volume": 0.05263157894736842,
-  "sfx_volume": 0.04736842105263158,
-  "music_enabled": false,
-  "sfx_enabled": false,
+  "sfx_volume": 0.05789473684210526,
+  "music_enabled": true,
+  "sfx_enabled": true,
   "hotbar": {
     "slots": [
-      "golpe_debilitante",
-      "vitoria_iminente",
-      "golpe_poderoso",
-      "executar",
-      "interceptar",
-      "impacto",
-      "fatiador_de_corpos",
+      "picada_escorpiao",
+      "tiro_repulsivo",
+      "flecha_reiterada",
+      "tiro_multiplo",
+      "cancao_inspiracao",
+      "recarregar",
+      "cancao_ninar",
+      "camuflagem",
       null,
-      null,
-      null
+      "so_um_gole"
     ],
     "keybinds": [
       49,
       50,
       51,
       52,
-      114,
       53,
+      114,
+      116,
       102,
       103,
-      57,
-      48
+      113
     ]
   },
+  "menu_keybinds": {
+    "inventario": 105,
+    "talentos": 112,
+    "mapa": 109,
+    "diario": 106
+  },
   "debug_mode": true,
-  "profile_frames": true,
+  "profile_frames": false,
   "consumable_bar": {
     "slots": [
-      null,
-      null,
+      "Po\u00e7\u00e3o de Vida",
+      "Carne Assada",
       null,
       null,
       null
     ],
     "keybinds": [
+      101,
       122,
       120,
       99,
-      118,
-      98
+      118
     ]
-  }
+  },
+  "ui_scale": 1.25
 }

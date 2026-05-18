@@ -44,7 +44,12 @@
 
 ## Skills — `skill_config.py` (SKILL_CATALOG)
 
-**Total: 17 skills**
+**Total: 18 skills**
+
+### Arqueiro — Inicial (1)
+| ID | Nome | CD | Cast | Obs |
+|----|------|----|------|-----|
+| `recarregar` | Recarregar | — | 1.8s | Concedida grátis ao criar; reabastece aljava com flechas da bag |
 
 ### Guerreiro — Treinador (5)
 | ID | Nome | CD | Custo |

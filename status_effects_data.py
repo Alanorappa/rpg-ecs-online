@@ -21,6 +21,7 @@ class EffectDef(NamedTuple):
 EFFECT_DEFS: dict[str, EffectDef] = {
     # ── Debuffs de controle ──────────────────────────────────────────────────
     "stun":   EffectDef("Atordoado",    (255, 220,  40), False, 0.0),
+    "sleep":  EffectDef("Dormindo",     (160, 200, 255), False, 0.0),  # imóvel; quebra ao tomar dano
     "fear":   EffectDef("Medo",         (180,  60, 220), False, 0.0),
     "root":   EffectDef("Imobilizado",  (140, 100,  40), False, 0.0),
     "slow":   EffectDef("Lento",        (100, 160, 220), False, 0.0),
