@@ -226,13 +226,18 @@ class SessionManager:
 
     async def _dispatch_tick_deltas(self, deltas: dict) -> None:
         """Distribui deltas do tick para cada cliente, filtrado por AOI."""
-        for session in list(self._sessions.values()):
-            if not session.authenticated:
-                continue
-            tx, ty = self.world_server.get_tile_pos(session.session_id)
-            filtered = self._filter_deltas_for(deltas, tx, ty)
-            if filtered:
-                await session.send(MsgType.AOI_UPDATE, filtered)
+        try:
+            for session in list(self._sessions.values()):
+                if not session.authenticated:
+                    continue
+                tx, ty = self.world_server.get_tile_pos(session.session_id)
+                filtered = self._filter_deltas_for(deltas, tx, ty)
+                if filtered:
+                    await session.send(MsgType.AOI_UPDATE, filtered)
+        except Exception as e:
+            import traceback
+            print(f"[Session] ERRO em _dispatch_tick_deltas: {e}")
+            traceback.print_exc()
 
     def _filter_deltas_for(self, deltas: dict, cx: int, cy: int) -> dict:
         """Retorna apenas os deltas visíveis para um jogador em (cx, cy)."""

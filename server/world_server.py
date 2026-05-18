@@ -117,7 +117,7 @@ class WorldServer:
         Cria entidade do jogador no ECS.
         Retorna entity_id. Chamado pelo SessionManager no login.
         """
-        from components import Position, TileMovement, PlayerControlled, CombatState, CombatStats
+        from components import Position, TileMovement, PlayerControlled, CombatState
 
         tx = int(char_data.get("tile_x", 10))
         ty = int(char_data.get("tile_y", 10))
@@ -132,9 +132,8 @@ class WorldServer:
         ))
         # PlayerControlled: SpawnZoneSystem e EnemyAISystem encontram o player
         self.world.add_component(eid, PlayerControlled())
-        # CombatState e CombatStats mínimos: EnemyAISystem usa para aggro/attack range
+        # CombatState mínimo: EnemyAISystem lê in_combat/target para lógica de aggro
         self.world.add_component(eid, CombatState())
-        self.world.add_component(eid, CombatStats(base_stamina=20))
 
         self._player_eids[session_id] = eid
 
@@ -291,7 +290,16 @@ class WorldServer:
         while self.running:
             now = time.perf_counter()
             if now >= next_tick:
-                self._tick(TICK_INTERVAL)
+                try:
+                    self._tick(TICK_INTERVAL)
+                except Exception as e:
+                    import traceback
+                    print(f"[WorldServer] ERRO no tick {self.tick_count}: {e}")
+                    traceback.print_exc()
+                    # Limpa deltas pendentes para não propagar estado corrompido
+                    self._moved_this_tick.clear()
+                    self._spawned_this_tick.clear()
+                    self._despawned_this_tick.clear()
                 next_tick += TICK_INTERVAL
                 if time.perf_counter() - next_tick > TICK_INTERVAL:
                     next_tick = time.perf_counter()
@@ -302,7 +310,6 @@ class WorldServer:
         self.tick_count += 1
 
         # Atualiza player_entity_id da IA para o primeiro jogador online
-        # (IA simples: todos os mobs agro o mesmo player; multi-player será melhorado)
         first_player_eid = next(iter(self._player_eids.values()), -1)
         if hasattr(self, "_enemy_ai_system"):
             self._enemy_ai_system.player_entity_id = first_player_eid
