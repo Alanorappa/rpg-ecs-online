@@ -24,10 +24,11 @@ def _get_conn() -> sqlite3.Connection:
 
 
 # (username, password, class_id, tile_x, tile_y)
+# Tiles próximos ao spawn padrão do mapa (115, 389) — área sabidamente walkable
 _TEST_ACCOUNTS = [
-    ("teste",  "123456", "guerreiro", 10, 10),
-    ("teste2", "123456", "mago",      15, 10),
-    ("teste3", "123456", "arqueiro",  20, 10),
+    ("teste",  "123456", "guerreiro", 115, 389),
+    ("teste2", "123456", "mago",      117, 389),
+    ("teste3", "123456", "arqueiro",  119, 389),
 ]
 
 
