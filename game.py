@@ -2690,8 +2690,7 @@ class GameEngine:
                         player_tm.target_tile_x  = real_tx
                         player_tm.target_tile_y  = real_ty
             elif eid in self._remote_players:
-                self._remote_players[eid]["tx"] = payload.get("tx", 0)
-                self._remote_players[eid]["ty"] = payload.get("ty", 0)
+                self._apply_remote_move(eid, payload.get("tx", 0), payload.get("ty", 0))
 
         elif msg_type == MsgType.AOI_UPDATE:
             for m in payload.get("moved", []):
@@ -2699,8 +2698,7 @@ class GameEngine:
                 if eid == self._my_eid:
                     continue
                 if eid in self._remote_players:
-                    self._remote_players[eid]["tx"] = m["tx"]
-                    self._remote_players[eid]["ty"] = m["ty"]
+                    self._apply_remote_move(eid, m["tx"], m["ty"])
             for sp in payload.get("spawned", []):
                 eid = sp.get("eid", -1)
                 if eid != -1 and eid != self._my_eid:
@@ -2777,13 +2775,42 @@ class GameEngine:
             ps = self.font_xs.render(pos_txt, True, (160, 160, 160))
             self.screen.blit(ps, (SCREEN_WIDTH - ps.get_width() - 8, y + surf.get_height() + 2))
 
+    def _apply_remote_move(self, eid: int, new_tx: int, new_ty: int) -> None:
+        """Atualiza tile de jogador remoto preservando posição atual como origem da interpolação."""
+        import time as _t
+        from shared.constants import TILE_SIZE as _TS
+        data    = self._remote_players.get(eid)
+        if data is None:
+            return
+        # Captura posição interpolada atual como ponto de partida do próximo movimento
+        old_tx   = data.get("tx", new_tx)
+        old_ty   = data.get("ty", new_ty)
+        elapsed  = _t.monotonic() - data.get("move_t", 0.0)
+        t        = min(1.0, elapsed / self._REMOTE_MOVE_DURATION)
+        src_px   = data.get("px_src", old_tx * _TS + _TS // 2)
+        src_py   = data.get("py_src", old_ty * _TS + _TS // 2)
+        cur_px   = src_px + (old_tx * _TS + _TS // 2 - src_px) * t
+        cur_py   = src_py + (old_ty * _TS + _TS // 2 - src_py) * t
+
+        data["px_src"] = cur_px
+        data["py_src"] = cur_py
+        data["tx"]     = new_tx
+        data["ty"]     = new_ty
+        data["move_t"] = _t.monotonic()
+
+    # Duração da interpolação de movimento remoto (segundos).
+    # Deve ser ≥ 1/TICK_RATE (50ms) para cobrir o intervalo entre ticks.
+    _REMOTE_MOVE_DURATION = 0.18
+
     def _draw_remote_players(self, cam_x: float, cam_y: float) -> None:
         """
-        Renderiza outros jogadores como retângulos coloridos por classe.
-        Chamado no render loop, após render_fog.
+        Renderiza outros jogadores com interpolação suave entre tiles.
+        Cada jogador tem px_src/py_src (pixel origem) e px_dst/py_dst (pixel destino)
+        e move_t (timestamp do início do movimento). Interpola linearmente.
         """
         if not self._remote_players:
             return
+        import time as _t
         from shared.constants import TILE_SIZE as _TS
         _CLASS_COLORS = {
             "guerreiro": (200, 80,  80),
@@ -2792,12 +2819,22 @@ class GameEngine:
         }
         W = H = _TS - 4
         zoom_surf = self._zoom_surf
+        now = _t.monotonic()
 
         for eid, data in self._remote_players.items():
-            tx = data.get("tx", 0)
-            ty = data.get("ty", 0)
-            px = tx * _TS + _TS // 2 - W // 2 - cam_x
-            py = ty * _TS + _TS // 2 - H // 2 - cam_y
+            # Calcula posição interpolada em pixels
+            elapsed = now - data.get("move_t", 0.0)
+            t       = min(1.0, elapsed / self._REMOTE_MOVE_DURATION)
+            src_px  = data.get("px_src", data.get("tx", 0) * _TS + _TS // 2)
+            src_py  = data.get("py_src", data.get("ty", 0) * _TS + _TS // 2)
+            dst_px  = data.get("tx", 0) * _TS + _TS // 2
+            dst_py  = data.get("ty", 0) * _TS + _TS // 2
+            cur_px  = src_px + (dst_px - src_px) * t
+            cur_py  = src_py + (dst_py - src_py) * t
+
+            px = cur_px - W // 2 - cam_x
+            py = cur_py - H // 2 - cam_y
+
             col = _CLASS_COLORS.get(data.get("class_id", "guerreiro"), (180, 180, 180))
             pygame.draw.rect(zoom_surf, col, (int(px), int(py), W, H))
             pygame.draw.rect(zoom_surf, (255, 255, 255), (int(px), int(py), W, H), 1)
