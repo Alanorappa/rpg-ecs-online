@@ -71,7 +71,13 @@ class SessionManager:
             return
         handler = self._handlers.get(msg_type)
         if handler:
-            await handler(self, session, payload, ts)
+            try:
+                await handler(self, session, payload, ts)
+            except Exception as e:
+                import traceback
+                print(f"[Session] ERRO em handler {msg_type}: {e}")
+                traceback.print_exc()
+                await session.send(MsgType.ERROR, {"reason": f"server_error:{type(e).__name__}"})
 
     # ── Handlers C→S ─────────────────────────────────────────────────────────
 

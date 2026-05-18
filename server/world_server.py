@@ -259,7 +259,7 @@ class WorldServer:
                     "color":  list(ren.color) if ren else [150, 60, 60],
                     "hp":     cs.current_hp if cs else 50,
                     "hp_max": cs.max_hp if cs else 50,
-                    "level":  cs.level if cs else 1,
+                    "level":  1,
                     "effects": [],
                 })
         return result
