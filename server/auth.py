@@ -23,6 +23,13 @@ def _get_conn() -> sqlite3.Connection:
     return conn
 
 
+_TEST_ACCOUNTS = [
+    ("teste",  "123456", "guerreiro"),
+    ("teste2", "123456", "mago"),
+    ("teste3", "123456", "arqueiro"),
+]
+
+
 def init_db() -> None:
     """Cria tabelas se não existirem. Chamado na inicialização do servidor."""
     with _get_conn() as conn:
@@ -54,6 +61,15 @@ def init_db() -> None:
         );
         """)
     print(f"[Auth] banco inicializado: {DB_PATH}")
+    _seed_test_accounts()
+
+
+def _seed_test_accounts() -> None:
+    """Garante que as contas de teste existam. Idempotente — não recria se já existirem."""
+    for username, password, class_id in _TEST_ACCOUNTS:
+        created = _register_sync(username, password, class_id)
+        if created:
+            print(f"[Auth] conta de teste criada: usuario='{username}'  classe={class_id}")
 
 
 async def authenticate(username: str, password: str) -> dict | None:

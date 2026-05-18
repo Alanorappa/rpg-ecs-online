@@ -83,21 +83,166 @@ ORM: SQLAlchemy (a adicionar antes da migração para prod).
 
 ### 9. Skills com implicações online
 
-| Skill | Tratamento necessário |
-|-------|-----------------------|
-| **Interceptar** | Client prediction: cliente anima imediatamente, servidor confirma posição |
-| **Tiro Múltiplo** | Lag compensation: cliente envia `dir_x/dir_y` + `ts`, servidor valida no snapshot |
-| **Pirofagia** | Igual Tiro Múltiplo |
-| **Tiro Repulsivo** | Knockback calculado no servidor; cliente anima destino recebido |
-| **Camuflagem** | Servidor remove do AOI de outros; só o próprio player recebe `is_visible=False` |
-| **Bola de Fogo / flechas** | Servidor envia `PROJECTILE_SPAWN`; cliente simula localmente; `PROJECTILE_HIT` confirma |
-| **Canção de Ninar** | Canal com ticks; servidor envia `EFFECT_APPLIED` a cada tick de sleep |
+#### Preocupação levantada: tick rate baixo quebra a visualização?
+
+Com 20 ticks/s (50ms por tick) e **interpolação no cliente**, o visual é fluido a 60fps.
+O cliente não espera o servidor para animar — interpola entre posições confirmadas.
+A **confirmação do servidor** é o que vale para gameplay; a **animação local** é cosmética.
+
+#### Interceptar (Guerreiro — dash ao alvo)
+
+**Problema:** sem interpolação, o personagem "teleportaria" a cada 50ms.
+
+**Solução — Client-side prediction:**
+```
+1. Jogador usa Interceptar
+2. Cliente anima o dash imediatamente (não espera servidor)
+3. Servidor valida: alvo ainda existe? range ok? CD ok? em combat?
+4. Servidor envia ENTITY_MOVE com posição confirmada
+5. Cliente reconcilia se posição diferir (raro com latência < 100ms)
+```
+Resultado esperado: dash visualmente igual à versão offline.
+
+**Implementação:** `CAST_SKILL {sid:"interceptar", tid:X}` → servidor envia `ENTITY_MOVE` para o caster + `SKILL_RESULT` com efeitos.
+
+---
+
+#### Tiro Repulsivo (knockback + stun)
+
+**Problema:** o alvo pode estar em posição diferente entre cliente e servidor no momento do knockback. Se o cliente calculasse o destino, teria inconsistências entre jogadores.
+
+**Solução — Knockback autoritativo:**
+```
+1. Servidor calcula: tile de destino do knockback (direção + distância)
+2. Servidor envia ENTITY_MOVE {eid:alvo, tx, ty} + EFFECT_APPLIED {stun}
+3. Cliente recebe o destino e anima o knockback suavemente até esse tile
+```
+O cliente **nunca decide** onde o alvo vai parar — só anima o destino recebido.
+Visual: a animação de knockback roda no cliente a 60fps sobre o tile confirmado pelo servidor.
+
+---
+
+#### Tiro Múltiplo e Pirofagia (cone na direção do mouse)
+
+**Problema:** aiming é feito com o mouse no cliente. Com latência, o servidor pode ter posições de inimigos ligeiramente diferentes do que o cliente via no momento do cast.
+
+**Solução — Lag compensation com timestamp:**
+```
+1. Cliente envia: CAST_SKILL {sid:"tiro_multiplo", dir_x, dir_y, ts:T}
+2. Servidor rebobina o estado do mundo para o tick mais próximo de T
+   (usando WorldServer.get_snapshot_at — histórico de até 200ms)
+3. Servidor calcula quais entidades estavam no cone NAQUELE momento
+4. Aplica dano e envia SKILL_RESULT
+```
+Tolerância de direção: ±10° para compensar latência residual.
+Isso é idêntico ao que Counter-Strike usa para headshots — padrão da indústria.
+
+---
+
+#### Camuflagem — A mais crítica de todas
+
+**Problema:** uma falha aqui vaza posição de jogadores invisíveis para o cliente inimigo. Um cliente modificado poderia ler esses dados e ver jogadores invisíveis.
+
+**Protocolo rigoroso:**
+```
+Jogador ativa Camuflagem:
+  → Servidor: is_visible = False no componente CombatState
+  → Servidor: REMOVE o player do pacote AOI_UPDATE de todos os outros
+  → Outros clientes: deletam a entidade da cena (ENTITY_DESPAWN)
+  → Nenhum dado de posição, HP, animação é enviado enquanto invisível
+
+Camuflagem termina (tempo, ataque, dano recebido):
+  → Servidor: is_visible = True
+  → Servidor: RE-INCLUI o player no AOI de quem está no range
+  → Clientes próximos recebem ENTITY_SPAWN com posição atual
+```
+**Garantia:** o cliente inimigo literalmente não tem dados do jogador invisível.
+Não é uma questão de "não mostrar" — os dados não chegam ao cliente.
+
+Único caso especial: o **próprio jogador invisível** recebe seus próprios dados normalmente
+(para ele ver a si mesmo, UI de camuflagem ativa, etc.).
+
+---
+
+#### Bola de Fogo / Projéteis (Flecha Reiterada, Picada do Escorpião)
+
+**Problema:** projétil precisa parecer fluido (animação contínua) mas o hit é calculado no servidor.
+
+**Solução — Projétil fantasma no cliente:**
+```
+1. Servidor envia PROJECTILE_SPAWN {pid, sid, origin_x, origin_y, tid, speed}
+2. Cliente: simula o projétil localmente com a mesma física (animação)
+3. Servidor: calcula hit real no tick correto
+4. Servidor envia PROJECTILE_HIT {pid, hit:true/false, end_x, end_y}
+5. Cliente: toca animação de impacto (ou desvio se miss)
+```
+Diferença visual entre animação local e confirmação: 50–100ms — imperceptível.
+
+---
+
+#### Skills sem impacto significativo online
+
+| Skill | Por quê funciona igual |
+|-------|----------------------|
+| Golpe Poderoso, Executar, Impacto | Instantâneas — servidor calcula, cliente recebe `COMBAT_RESULT` |
+| Nova Congelante | AOE instantâneo — `SKILL_RESULT` com lista de afetados |
+| Polimorfia, Calcinar | Estado/dano instantâneo |
+| Bloco de Gelo | Flag booleano — `EFFECT_APPLIED {effect:"ice_block"}` |
+| Canção de Ninar | Channeling: servidor envia `EFFECT_APPLIED {sleep}` a cada tick |
+| Canção da Inspiração | Buff: `EFFECT_APPLIED` no caster |
+| Só um Gole | Buff local: `EFFECT_APPLIED` |
+| Vitória Iminente | Carga: `STATS_UPDATE` quando carga acumula |
+
+---
+
+#### Resumo: o que o cliente pode fazer vs. não pode
+
+| Pode (cosmético/conforto) | Não pode (gameplay) |
+|---------------------------|---------------------|
+| Animar dash do Interceptar antes do servidor confirmar | Decidir se o dash acertou |
+| Simular projétil voando localmente | Decidir se o projétil acertou |
+| Interpolar movimento entre ticks | Calcular dano |
+| Mostrar barra de cast | Aplicar efeito de status |
+| Animar knockback suavemente | Decidir destino do knockback |
+| Apontar cone (Pirofagia/Tiro Múltiplo) | Decidir quem está no cone |
 
 ### 10. Deploy (produção)
 - **Plataforma recomendada:** Fly.io ou Railway (Docker, escala automática, custo baixo)
 - **Infraestrutura dev:** `python server/main.py` local
 - Porta padrão: **8765** (configurável via `--port`)
 - `requirements_server.txt` — dependências mínimas do servidor
+
+---
+
+### 11. Como testar localmente (múltiplos clientes)
+
+Todos os processos rodam na mesma máquina. Abrir 3 terminais:
+
+```bash
+# Terminal 1 — Servidor
+cd rpg_ecs_online
+python server/main.py
+
+# Terminal 2 — Cliente A (conta "teste")
+cd rpg_ecs_online
+python main.py --user teste --password 123456
+
+# Terminal 3 — Cliente B (conta "teste2")
+cd rpg_ecs_online
+python main.py --user teste2 --password 123456
+```
+
+**Contas de teste** criadas automaticamente no primeiro `python server/main.py`:
+| Usuário | Senha | Classe |
+|---------|-------|--------|
+| `teste` | `123456` | Guerreiro |
+| `teste2` | `123456` | Mago |
+
+Para adicionar mais contas de teste: `server/auth.py` → função `_seed_test_accounts()`.
+
+**Deletar banco e recomeçar:** apagar `data/game.db` — será recriado na próxima inicialização.
+
+**Ver log do servidor em tempo real:** o servidor imprime conexões, logins, moves e combate no terminal.
 
 ---
 
