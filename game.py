@@ -2849,27 +2849,62 @@ class GameEngine:
             pos.y = new_ty * _TS + _TS // 2
 
     def _apply_remote_move(self, eid: int, new_tx: int, new_ty: int) -> None:
-        """Atualiza tile de jogador remoto preservando posição atual como origem da interpolação."""
+        """Atualiza tile de jogador remoto com dead reckoning e easing."""
         import time as _t
         from shared.constants import TILE_SIZE as _TS
-        data    = self._remote_players.get(eid)
+        data = self._remote_players.get(eid)
         if data is None:
             return
-        # Captura posição interpolada atual como ponto de partida do próximo movimento
-        old_tx   = data.get("tx", new_tx)
-        old_ty   = data.get("ty", new_ty)
-        elapsed  = _t.monotonic() - data.get("move_t", 0.0)
-        t        = min(1.0, elapsed / self._REMOTE_MOVE_DURATION)
-        src_px   = data.get("px_src", old_tx * _TS + _TS // 2)
-        src_py   = data.get("py_src", old_ty * _TS + _TS // 2)
-        cur_px   = src_px + (old_tx * _TS + _TS // 2 - src_px) * t
-        cur_py   = src_py + (old_ty * _TS + _TS // 2 - src_py) * t
 
-        data["px_src"] = cur_px
-        data["py_src"] = cur_py
-        data["tx"]     = new_tx
-        data["ty"]     = new_ty
-        data["move_t"] = _t.monotonic()
+        old_tx = data.get("tx", new_tx)
+        old_ty = data.get("ty", new_ty)
+
+        # Captura posição pixel atual (incluindo dead reckoning em andamento)
+        cur_px, cur_py = self._interp_pixel(data, _TS)
+
+        # Registra direção do movimento para dead reckoning
+        data["dir_tx"]  = new_tx - old_tx
+        data["dir_ty"]  = new_ty - old_ty
+        data["px_src"]  = cur_px
+        data["py_src"]  = cur_py
+        data["tx"]      = new_tx
+        data["ty"]      = new_ty
+        data["move_t"]  = _t.monotonic()
+
+    @staticmethod
+    def _smooth_step(t: float) -> float:
+        """Easing smooth-step: combina com a animação do TileMovementSystem."""
+        t = max(0.0, min(1.0, t))
+        return t * t * (3.0 - 2.0 * t)
+
+    def _interp_pixel(self, data: dict, ts: int) -> tuple[float, float]:
+        """Calcula posição pixel atual com interpolação + dead reckoning."""
+        import time as _t
+        dur     = self._REMOTE_MOVE_DURATION
+        elapsed = _t.monotonic() - data.get("move_t", 0.0)
+        dst_px  = data.get("tx", 0) * ts + ts // 2
+        dst_py  = data.get("ty", 0) * ts + ts // 2
+        src_px  = data.get("px_src", dst_px)
+        src_py  = data.get("py_src", dst_py)
+
+        if elapsed < dur:
+            # Interpolação normal com easing
+            t = self._smooth_step(elapsed / dur)
+            return (src_px + (dst_px - src_px) * t,
+                    src_py + (dst_py - src_py) * t)
+
+        # Interpolação concluída — dead reckoning na mesma direção
+        dir_tx = data.get("dir_tx", 0)
+        dir_ty = data.get("dir_ty", 0)
+        over   = elapsed - dur
+        if (dir_tx != 0 or dir_ty != 0) and over < dur:
+            t_pred = self._smooth_step(over / dur)
+            pred_px = dst_px + dir_tx * ts
+            pred_py = dst_py + dir_ty * ts
+            return (dst_px + (pred_px - dst_px) * t_pred,
+                    dst_py + (pred_py - dst_py) * t_pred)
+
+        return dst_px, dst_py
 
     # Duração da interpolação de movimento remoto.
     # Deve igualar TileMovement.move_duration (padrão = 0.2s).
@@ -2897,16 +2932,8 @@ class GameEngine:
         now = _t.monotonic()
 
         for eid, data in self._remote_players.items():
-            # Calcula posição interpolada em pixels
-            elapsed = now - data.get("move_t", 0.0)
-            t       = min(1.0, elapsed / self._REMOTE_MOVE_DURATION)
-            src_px  = data.get("px_src", data.get("tx", 0) * _TS + _TS // 2)
-            src_py  = data.get("py_src", data.get("ty", 0) * _TS + _TS // 2)
-            dst_px  = data.get("tx", 0) * _TS + _TS // 2
-            dst_py  = data.get("ty", 0) * _TS + _TS // 2
-            cur_px  = src_px + (dst_px - src_px) * t
-            cur_py  = src_py + (dst_py - src_py) * t
-
+            # Posição pixel com dead reckoning + easing
+            cur_px, cur_py = self._interp_pixel(data, _TS)
             px = cur_px - W // 2 - cam_x
             py = cur_py - H // 2 - cam_y
 
