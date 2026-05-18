@@ -23,10 +23,11 @@ def _get_conn() -> sqlite3.Connection:
     return conn
 
 
+# (username, password, class_id, tile_x, tile_y)
 _TEST_ACCOUNTS = [
-    ("teste",  "123456", "guerreiro"),
-    ("teste2", "123456", "mago"),
-    ("teste3", "123456", "arqueiro"),
+    ("teste",  "123456", "guerreiro", 10, 10),
+    ("teste2", "123456", "mago",      15, 10),
+    ("teste3", "123456", "arqueiro",  20, 10),
 ]
 
 
@@ -66,10 +67,11 @@ def init_db() -> None:
 
 def _seed_test_accounts() -> None:
     """Garante que as contas de teste existam. Idempotente — não recria se já existirem."""
-    for username, password, class_id in _TEST_ACCOUNTS:
-        created = _register_sync(username, password, class_id)
+    for username, password, class_id, tx, ty in _TEST_ACCOUNTS:
+        created = _register_sync(username, password, class_id, tx, ty)
         if created:
-            print(f"[Auth] conta de teste criada: usuario='{username}'  classe={class_id}")
+            print(f"[Auth] conta de teste criada: usuario='{username}'  "
+                  f"classe={class_id}  tile=({tx},{ty})")
 
 
 async def authenticate(username: str, password: str) -> dict | None:
@@ -82,11 +84,11 @@ async def authenticate(username: str, password: str) -> dict | None:
 
 
 def _authenticate_sync(username: str, password: str) -> dict | None:
-    ph = _hash(password)
+    # O cliente já envia SHA-256(password) — comparar direto, sem rehashear
     with _get_conn() as conn:
         row = conn.execute(
             "SELECT id FROM accounts WHERE username=? AND password_hash=?",
-            (username, ph)
+            (username, password)
         ).fetchone()
         if not row:
             return None
@@ -108,7 +110,9 @@ async def register(username: str, password: str,
         None, _register_sync, username, password, class_id)
 
 
-def _register_sync(username: str, password: str, class_id: str) -> bool:
+def _register_sync(username: str, password: str,
+                   class_id: str = "guerreiro",
+                   tile_x: int = 10, tile_y: int = 10) -> bool:
     ph = _hash(password)
     try:
         with _get_conn() as conn:
@@ -118,8 +122,9 @@ def _register_sync(username: str, password: str, class_id: str) -> bool:
             )
             account_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
             conn.execute(
-                "INSERT INTO characters (account_id, name, class_id) VALUES (?,?,?)",
-                (account_id, username, class_id)
+                "INSERT INTO characters (account_id, name, class_id, tile_x, tile_y)"
+                " VALUES (?,?,?,?,?)",
+                (account_id, username, class_id, tile_x, tile_y)
             )
         return True
     except sqlite3.IntegrityError:

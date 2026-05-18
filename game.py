@@ -1286,6 +1286,9 @@ class GameEngine:
             WARN.render(self.screen)
             # Vinheta vermelha pulsante quando HP < 30%
             self._draw_low_hp_vignette()
+            # HUD de conexão online (canto superior direito)
+            if self._online_mode:
+                self._draw_online_hud()
 
             self._pending_tooltip       = None
             self._pending_skill_tooltip = None
@@ -2621,7 +2624,24 @@ class GameEngine:
 
         if msg_type == MsgType.LOGIN_OK:
             self._my_eid = payload.get("eid", -1)
-            print(f"[Client] login ok  eid={self._my_eid}")
+            char = payload.get("char", {})
+            tx   = int(char.get("tile_x", 10))
+            ty   = int(char.get("tile_y", 10))
+            # Sincroniza posição local com o servidor — evita conflito com save offline
+            from components import Position
+            from shared.constants import TILE_SIZE as _TS
+            tm = self.world.get_component(self.player_entity, TileMovement)
+            if tm:
+                tm.current_tile_x = tx;  tm.current_tile_y = ty
+                tm.target_tile_x  = tx;  tm.target_tile_y  = ty
+            pos = self.world.get_component(self.player_entity, Position)
+            if pos:
+                pos.x = tx * _TS + _TS // 2;  pos.y = ty * _TS + _TS // 2
+                pos.prev_x = pos.x;            pos.prev_y = pos.y
+            self._net_last_tx = tx
+            self._net_last_ty = ty
+            print(f"[Client] login ok  eid={self._my_eid}  "
+                  f"user={char.get('name','?')}  tile=({tx},{ty})")
 
         elif msg_type == MsgType.LOGIN_ERROR:
             print(f"[Client] login erro: {payload.get('reason')}")
@@ -2721,6 +2741,41 @@ class GameEngine:
             self._net.move(tx, ty)
             self._net_last_tx = tx
             self._net_last_ty = ty
+
+    def _draw_online_hud(self) -> None:
+        """HUD minimalista de conexão — canto superior direito da tela."""
+        if not self._net:
+            return
+        connected = self._net.connected
+        latency   = self._net.latency_ms
+        n_players = len(self._remote_players)
+
+        # Status de conexão
+        if connected and self._my_eid != -1:
+            status_txt = f"Online  {latency}ms  |  {n_players} jogador(es) próximo(s)"
+            status_col = (80, 220, 80)
+        elif connected:
+            status_txt = "Conectado — aguardando login..."
+            status_col = (220, 220, 80)
+        else:
+            status_txt = "Desconectado"
+            status_col = (220, 80, 80)
+
+        surf = self.font_xs.render(status_txt, True, status_col)
+        x = SCREEN_WIDTH - surf.get_width() - 8
+        y = 6
+        bg = pygame.Surface((surf.get_width() + 6, surf.get_height() + 4), pygame.SRCALPHA)
+        bg.fill((0, 0, 0, 140))
+        self.screen.blit(bg, (x - 3, y - 2))
+        self.screen.blit(surf, (x, y))
+
+        # Posição local (debug)
+        from components import TileMovement
+        tm = self.world.get_component(self.player_entity, TileMovement)
+        if tm:
+            pos_txt = f"tile ({tm.current_tile_x}, {tm.current_tile_y})"
+            ps = self.font_xs.render(pos_txt, True, (160, 160, 160))
+            self.screen.blit(ps, (SCREEN_WIDTH - ps.get_width() - 8, y + surf.get_height() + 2))
 
     def _draw_remote_players(self, cam_x: float, cam_y: float) -> None:
         """
