@@ -1,0 +1,2 @@
+# Servidor — instale com: pip install -r requirements_server.txt
+websockets>=12.0
