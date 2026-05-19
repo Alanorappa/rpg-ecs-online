@@ -415,30 +415,47 @@ class WorldServer:
             if hp_after == 0:
                 self._handle_player_death(player_eid)
 
+    # Tile de respawn padrão do mapa — deve coincidir com spawn do mapa offline
+    RESPAWN_TILE = (115, 389)
+
     def _handle_player_death(self, player_eid: int) -> None:
-        """Player morreu: reseta HP, mobs param de atacar, notifica clientes."""
-        from components import CombatStats, CombatState, TileMovement
+        """Player morreu: reseta HP, teleporta para respawn, mobs param de atacar."""
+        from components import CombatStats, CombatState, TileMovement, Position
         player_cs = self.world.get_component(player_eid, CombatStats)
         if player_cs:
             player_cs.current_hp = player_cs.max_hp
 
-        # Limpa alvo de todos os mobs que estavam atacando este player
+        # Teleporta o player para o spawn no servidor ANTES de limpar aggro.
+        # Isso garante que ServerMobSystem._try_aggro não re-agre imediatamente
+        # porque o player está fora do AGGRO_RANGE após o teleporte.
+        rx, ry = self.RESPAWN_TILE
+        ptm = self.world.get_component(player_eid, TileMovement)
+        pos = self.world.get_component(player_eid, Position)
+        if ptm:
+            ptm.current_tile_x = rx;  ptm.current_tile_y = ry
+            ptm.target_tile_x  = rx;  ptm.target_tile_y  = ry
+        if pos:
+            pos.x = rx * TILE_SIZE + TILE_SIZE // 2
+            pos.y = ry * TILE_SIZE + TILE_SIZE // 2
+
+        # Limpa alvo de todos os mobs
         for mob_eid in self._mob_eids:
             mob_state = self.world.get_component(mob_eid, CombatState)
             if mob_state and mob_state.target_entity_id == player_eid:
                 mob_state.target_entity_id = -1
 
-        # Encontra session_id do player morto e envia PLAYER_DEATH
+        # Encontra session_id para notificar o cliente
         session_id = None
         for sid, eid in self._player_eids.items():
             if eid == player_eid:
                 session_id = sid
                 break
 
-        # Posição de spawn padrão — o cliente usa o spawn do mapa offline
         self._player_deaths_this_tick.append({
             "session_id": session_id,
             "player_eid": player_eid,
+            "respawn_tx": rx,
+            "respawn_ty": ry,
         })
 
     def get_entity_spawn_data(self, eid: int) -> dict | None:
