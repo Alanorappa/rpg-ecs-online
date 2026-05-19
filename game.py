@@ -2913,21 +2913,19 @@ class GameEngine:
         self._remote_mobs_reverse[local_eid]  = server_eid
 
     def _move_remote_mob(self, server_eid: int, new_tx: int, new_ty: int) -> None:
-        """Atualiza posição de mob remoto no ECS local."""
+        """Move mob remoto usando start_tile_movement — TileMovementSystem anima suavemente."""
         from components import TileMovement, Position
-        from shared.constants import TILE_SIZE as _TS
+        from utils import start_tile_movement
         local_eid = self._remote_mobs.get(server_eid)
         if local_eid is None:
             return
-        tm = self.world.get_component(local_eid, TileMovement)
-        if tm:
-            tm.current_tile_x = new_tx;  tm.current_tile_y = new_ty
-            tm.target_tile_x  = new_tx;  tm.target_tile_y  = new_ty
+        tm  = self.world.get_component(local_eid, TileMovement)
         pos = self.world.get_component(local_eid, Position)
-        if pos:
-            pos.prev_x = pos.x;  pos.prev_y = pos.y
-            pos.x = new_tx * _TS + _TS // 2
-            pos.y = new_ty * _TS + _TS // 2
+        if not tm or not pos:
+            return
+        # start_tile_movement configura is_moving=True e progress=0
+        # TileMovementSystem cuida da animação pixel-a-pixel (igual ao player local)
+        start_tile_movement(pos, tm, new_tx, new_ty)
 
     # ── Jogadores remotos — abordagem ECS ────────────────────────────────────
 

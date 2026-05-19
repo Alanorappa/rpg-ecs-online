@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 AGGRO_RANGE   = 8    # tiles — distância para agrrar
 LEASH_RANGE   = 20   # tiles — distância para largar o alvo
-MOVE_INTERVAL = 0.4  # segundos entre passos do mob
+MOVE_INTERVAL = 0.2  # segundos entre passos — igual ao move_duration do TileMovementSystem
 
 
 class ServerMobSystem:
