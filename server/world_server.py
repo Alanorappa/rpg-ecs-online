@@ -340,6 +340,49 @@ class WorldServer:
                 self._attack_timers.pop(session_id, None)
                 print(f"[Combat] mob {target_eid} morto por player {player_eid}")
 
+        # ── Mob → Player ───────────────────────────────────────────────────
+        for mob_eid in list(self._mob_eids):
+            mob_state = self.world.get_component(mob_eid, CombatState)
+            if not mob_state or mob_state.target_entity_id == -1:
+                continue
+            player_eid = mob_state.target_entity_id
+            if player_eid not in self._player_eids.values():
+                continue
+
+            mob_tm     = self.world.get_component(mob_eid, TileMovement)
+            player_tm  = self.world.get_component(player_eid, TileMovement)
+            if not mob_tm or not player_tm:
+                continue
+            if chebyshev(mob_tm.current_tile_x, mob_tm.current_tile_y,
+                         player_tm.current_tile_x, player_tm.current_tile_y) > 1:
+                continue
+
+            mob_key = f"mob_{mob_eid}"
+            mob_timer = self._attack_timers.get(mob_key, 0.0) - dt
+            if mob_timer > 0:
+                self._attack_timers[mob_key] = mob_timer
+                continue
+
+            mob_cs = self.world.get_component(mob_eid, CombatStats)
+            if not mob_cs:
+                continue
+            self._attack_timers[mob_key] = mob_cs.attack_interval
+
+            ap   = mob_cs.attack_power
+            dmg  = random.randint(max(1, int(ap * 0.8)), max(1, int(ap * 1.2)))
+            outcome = "crit" if random.random() < 0.05 else "hit"
+            if outcome == "crit":
+                dmg = int(dmg * 1.5)
+
+            self._combat_this_tick.append({
+                "attacker": mob_eid,
+                "target":   player_eid,
+                "damage":   dmg,
+                "outcome":  outcome,
+                "hp_after": -1,   # cliente gerencia próprio HP por ora
+                "source":   "auto",
+            })
+
     def get_mobs_in_aoi(self, center_tx: int, center_ty: int, radius: int) -> list[dict]:
         """Retorna lista de mobs no AOI — para WORLD_STATE inicial."""
         from components import TileMovement, CombatStats, AIControlled, Renderable

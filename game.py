@@ -2761,27 +2761,38 @@ class GameEngine:
                 self._net.latency_ms = rtt
 
     def _apply_combat_result(self, cr: dict) -> None:
-        """Aplica resultado de combate recebido do servidor."""
-        from components import CombatStats
+        """Aplica resultado de combate do servidor: atualiza HP + texto flutuante."""
+        from components import CombatStats, Position
         from floating_text import FLT
         server_target = cr.get("target", -1)
         damage        = cr.get("damage", 0)
         outcome       = cr.get("outcome", "hit")
-        hp_after      = cr.get("hp_after", 0)
+        hp_after      = cr.get("hp_after", -1)
 
-        # Atualiza HP do mob no ECS local
+        col_crit = (255, 255, 80)
+        col_hit  = (255, 80,  80)
+        col_self = (255, 140, 140)   # dano recebido pelo player local
+
+        # ── Mob foi atacado (player → mob) ────────────────────────────
         local_eid = self._remote_mobs.get(server_target)
         if local_eid is not None:
             cs = self.world.get_component(local_eid, CombatStats)
-            if cs:
-                cs.current_hp = hp_after
-            # Texto flutuante de dano
-            from components import Position
+            if cs and hp_after >= 0:
+                # Servidor é fonte de verdade — cap para não passar de max_hp
+                cs.current_hp = min(hp_after, cs.max_hp)
             pos = self.world.get_component(local_eid, Position)
             if pos and damage > 0:
-                col = (255, 255, 80) if outcome == "crit" else (255, 80, 80)
+                col = col_crit if outcome == "crit" else col_hit
                 txt = f"CRÍTICO! {damage}" if outcome == "crit" else str(damage)
                 FLT.add(txt, pos.x, pos.y, col, size="normal")
+            return
+
+        # ── Player local foi atacado (mob → player) ───────────────────
+        if server_target == self._my_eid and damage > 0:
+            player_pos = self.world.get_component(self.player_entity, Position)
+            if player_pos:
+                txt = f"CRÍTICO! -{damage}" if outcome == "crit" else f"-{damage}"
+                FLT.add(txt, player_pos.x, player_pos.y, col_self, size="normal")
 
     def _sync_combat_target(self) -> None:
         """Envia AUTO_ATTACK ao servidor quando o alvo do jogador muda."""
@@ -2874,12 +2885,17 @@ class GameEngine:
             entity_class = data.get("entity_class", ""),
             level        = data.get("level", 1),
         )
-        # Aplica cor exata do servidor (create_enemy usa cor do tier, pode diferir)
+        # Sincroniza cor, HP e max_hp com o servidor (create_enemy calcula seus próprios valores)
+        from components import CombatStats
         server_color = data.get("color")
         if server_color:
             ren = self.world.get_component(local_eid, Renderable)
             if ren:
                 ren.color = tuple(server_color)
+        cs = self.world.get_component(local_eid, CombatStats)
+        if cs:
+            cs.max_hp     = data.get("hp_max", cs.max_hp)
+            cs.current_hp = data.get("hp",     cs.max_hp)   # servidor é fonte de verdade
         self._remote_mobs[server_eid]         = local_eid
         self._remote_mobs_reverse[local_eid]  = server_eid
 
