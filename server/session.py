@@ -320,9 +320,6 @@ class SessionManager:
                     "eid": death["player_eid"],
                 })
 
-
-        return result
-
     # ── Broadcast helpers ─────────────────────────────────────────────────────
 
     async def _broadcast_all(self, msg_type: MsgType, payload: dict) -> None:
