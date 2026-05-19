@@ -477,6 +477,10 @@ class WorldServer:
             if self.world.get_component(eid, Enemy) and eid not in self._mob_eids \
                     and eid not in self._player_eids.values():
                 self._mob_eids.add(eid)
+                # Garante que o mob tem CombatState para aggro e combat
+                from components import CombatState as _CS
+                if not self.world.get_component(eid, _CS):
+                    self.world.add_component(eid, _CS())
                 self._emit_mob_spawn(eid, tm)
 
         # Detecta mobs que se moveram neste tick

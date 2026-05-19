@@ -2764,9 +2764,10 @@ class GameEngine:
                 self._net.latency_ms = rtt
 
     def _apply_combat_result(self, cr: dict) -> None:
-        """Aplica resultado de combate do servidor: atualiza HP + texto flutuante."""
-        from components import CombatStats, Position
+        """Aplica resultado de combate do servidor: HP + texto flutuante + som."""
+        from components import Position
         from floating_text import FLT
+        from sound_manager import SOUNDS
         server_target = cr.get("target", -1)
         damage        = cr.get("damage", 0)
         outcome       = cr.get("outcome", "hit")
@@ -2774,12 +2775,11 @@ class GameEngine:
 
         col_crit = (255, 255, 80)
         col_hit  = (255, 80,  80)
-        col_self = (255, 140, 140)   # dano recebido pelo player local
+        col_self = (255, 140, 140)
 
         # ── Mob foi atacado (player → mob) ────────────────────────────
         local_eid = self._remote_mobs.get(server_target)
         if local_eid is not None:
-            # Atualiza HP no dict autoritativo do servidor
             if hp_after >= 0:
                 _, hp_max = self._mob_hp.get(server_target, (hp_after, hp_after))
                 self._mob_hp[server_target] = (hp_after, hp_max)
@@ -2788,6 +2788,9 @@ class GameEngine:
                 col = col_crit if outcome == "crit" else col_hit
                 txt = f"CRÍTICO! {damage}" if outcome == "crit" else str(damage)
                 FLT.add(txt, pos.x, pos.y, col, size="normal")
+                # Som de hit — usa canal de ataque físico
+                SOUNDS.play_random(["arrow_impact_1", "arrow_impact_2",
+                                    "arrow_impact_3"], channel_group=(4, 5))
             return
 
         # ── Player local foi atacado (mob → player) ───────────────────
@@ -2796,6 +2799,9 @@ class GameEngine:
             if player_pos:
                 txt = f"CRÍTICO! -{damage}" if outcome == "crit" else f"-{damage}"
                 FLT.add(txt, player_pos.x, player_pos.y, col_self, size="normal")
+                # Som de dano recebido
+                SOUNDS.play_random(["arrow_impact_4", "arrow_impact_5"],
+                                   channel_group=(4, 5))
 
     def _sync_combat_target(self) -> None:
         """Envia AUTO_ATTACK ao servidor quando o alvo do jogador muda."""
