@@ -107,8 +107,9 @@ class GameEngine:
         # Outros jogadores: server_eid → local_eid (entidade ECS real)
         self._remote_players: dict[int, int] = {}
         # Mobs do servidor: server_eid → local_eid e reverse
-        self._remote_mobs:         dict[int, int] = {}
-        self._remote_mobs_reverse: dict[int, int] = {}  # local_eid → server_eid
+        self._remote_mobs:         dict[int, int]          = {}
+        self._remote_mobs_reverse: dict[int, int]          = {}  # local_eid → server_eid
+        self._mob_hp:              dict[int, tuple[int,int]] = {}  # server_eid → (hp, max_hp)
         # Último alvo enviado ao servidor (evita reenvios desnecessários)
         self._net_last_target: int = -2
         # Última posição enviada ao servidor (evita envios duplicados)
@@ -1281,6 +1282,7 @@ class GameEngine:
             self._spell_cast_system.render(cam_x, cam_y)
             if self._online_mode:
                 self._draw_remote_players(cam_x, cam_y)
+                self._draw_mob_hp_bars(cam_x, cam_y)
             FLT.render(self._zoom_surf, cam_x, cam_y)
 
             # ── Escala world_surf → área de jogo na tela nativa (pixel-perfect) ─
@@ -2692,6 +2694,7 @@ class GameEngine:
             self._remove_remote_player_entity(eid)
             # Remove mob do ECS local se era um mob do servidor
             local_eid = self._remote_mobs.pop(eid, None)
+            self._mob_hp.pop(eid, None)
             if local_eid is not None:
                 self._remote_mobs_reverse.pop(local_eid, None)
                 try:
@@ -2776,10 +2779,10 @@ class GameEngine:
         # ── Mob foi atacado (player → mob) ────────────────────────────
         local_eid = self._remote_mobs.get(server_target)
         if local_eid is not None:
-            cs = self.world.get_component(local_eid, CombatStats)
-            if cs and hp_after >= 0:
-                # Servidor é fonte de verdade — cap para não passar de max_hp
-                cs.current_hp = min(hp_after, cs.max_hp)
+            # Atualiza HP no dict autoritativo do servidor
+            if hp_after >= 0:
+                _, hp_max = self._mob_hp.get(server_target, (hp_after, hp_after))
+                self._mob_hp[server_target] = (hp_after, hp_max)
             pos = self.world.get_component(local_eid, Position)
             if pos and damage > 0:
                 col = col_crit if outcome == "crit" else col_hit
@@ -2885,17 +2888,22 @@ class GameEngine:
             entity_class = data.get("entity_class", ""),
             level        = data.get("level", 1),
         )
-        # Sincroniza cor, HP e max_hp com o servidor (create_enemy calcula seus próprios valores)
-        from components import CombatStats
+        # Aplica cor do servidor
         server_color = data.get("color")
         if server_color:
             ren = self.world.get_component(local_eid, Renderable)
             if ren:
                 ren.color = tuple(server_color)
-        cs = self.world.get_component(local_eid, CombatStats)
-        if cs:
-            cs.max_hp     = data.get("hp_max", cs.max_hp)
-            cs.current_hp = data.get("hp",     cs.max_hp)   # servidor é fonte de verdade
+
+        # Remove CombatStats do mob remoto — evita que PlayerInputSystem calcule dano local.
+        # HP é rastreado em _mob_hp e atualizado exclusivamente pelo servidor.
+        from components import CombatStats
+        self.world.remove_component(local_eid, CombatStats)
+
+        # Armazena HP autoritativo do servidor
+        hp_max = data.get("hp_max", 100)
+        hp     = data.get("hp",     hp_max)
+        self._mob_hp[server_eid]              = (hp, hp_max)
         self._remote_mobs[server_eid]         = local_eid
         self._remote_mobs_reverse[local_eid]  = server_eid
 
@@ -2970,6 +2978,28 @@ class GameEngine:
             # Entidade ainda animando: atualiza target para encadear suavemente
             tm.target_tile_x = new_tx
             tm.target_tile_y = new_ty
+
+    def _draw_mob_hp_bars(self, cam_x: float, cam_y: float) -> None:
+        """Desenha barras de HP dos mobs remotos com dados autoritativos do servidor."""
+        if not self._mob_hp:
+            return
+        from components import Position
+        from tileset import TILE_SIZE as _TS
+        W = _TS - 4
+        zoom_surf = self._zoom_surf
+        for server_eid, (hp, hp_max) in self._mob_hp.items():
+            local_eid = self._remote_mobs.get(server_eid)
+            if local_eid is None:
+                continue
+            pos = self.world.get_component(local_eid, Position)
+            if not pos:
+                continue
+            px = int(pos.x - W // 2 - cam_x)
+            py = int(pos.y - W // 2 - cam_y)
+            if hp_max > 0:
+                fill = max(0, int(W * hp / hp_max))
+                pygame.draw.rect(zoom_surf, (100, 0, 0), (px, py + W + 2, W, 4))
+                pygame.draw.rect(zoom_surf, (0, 200, 0), (px, py + W + 2, fill, 4))
 
     def _remove_remote_player_entity(self, server_eid: int) -> None:
         local_eid = self._remote_players.pop(server_eid, None)

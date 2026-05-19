@@ -69,7 +69,8 @@ class WorldServer:
         """Carrega mapa, cria SpawnZones e inicializa sistemas de mob (headless)."""
         from map_loader import load_map_csv
         from entity_factory import create_tilemap
-        from systems import SpawnZoneSystem, EnemyAISystem, EnemyAbilitySystem
+        from systems import SpawnZoneSystem
+        from server.mob_system import ServerMobSystem
 
         print(f"[WorldServer] carregando mapa: {self._map_file}")
         terrain_matrix, object_matrix, spawn_points, terrain_visual = \
@@ -80,15 +81,13 @@ class WorldServer:
 
         self._create_spawn_zones(spawn_points.get("spawn_zones", []))
 
-        # Sistemas de lógica rodando no servidor (sem render)
-        self._enemy_ai_system = EnemyAISystem(self.world, player_entity_id=-1)
-        self._enemy_ab_system = EnemyAbilitySystem(self.world, player_entity_id=-1)
+        # SpawnZoneSystem cria mobs; ServerMobSystem faz AI sem pathfinding
+        self._mob_system = ServerMobSystem(self.world, self._player_eids, self._mob_eids)
         self._systems = [
             SpawnZoneSystem(self.world),
-            self._enemy_ai_system,
-            self._enemy_ab_system,
+            self._mob_system,
         ]
-        print(f"[WorldServer] mapa OK — SpawnZoneSystem + EnemyAISystem ativos")
+        print(f"[WorldServer] mapa OK — SpawnZoneSystem + ServerMobSystem ativos")
 
     def _create_spawn_zones(self, zones_data: list) -> None:
         """Cria entidades SpawnZone a partir dos dados já processados pelo map_loader.
