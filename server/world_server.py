@@ -138,16 +138,19 @@ class WorldServer:
         self.world.add_component(eid, PlayerControlled())
         # CombatState: aggro e estado de combate
         self.world.add_component(eid, CombatState())
-        # CombatStats: usa stats_json salvo para AP real; fallback por classe
+        # CombatStats: prioridade — stats enviados pelo cliente > stats_json > fallback por classe
         import json as _json
         _cls          = char_data.get("class_id", "guerreiro")
         _stats_raw    = char_data.get("stats_json") or char_data.get("stats", {})
-        _stats        = _json.loads(_stats_raw) if isinstance(_stats_raw, str) else _stats_raw
+        _stats        = _json.loads(_stats_raw) if isinstance(_stats_raw, str) else (_stats_raw or {})
         _class_ap     = {"guerreiro": 20, "mago": 10, "arqueiro": 18}
         _class_hp     = {"guerreiro": 180, "mago": 100, "arqueiro": 120}
         _class_int    = {"guerreiro": 2.0, "mago": 2.5, "arqueiro": 1.8}
-        _ap           = _stats.get("attack_power", _class_ap.get(_cls, 20))
-        _hp           = _stats.get("max_hp",       _class_hp.get(_cls, 150))
+        # Stats do cliente têm maior prioridade (enviados no LOGIN)
+        _client_ap    = float(char_data.get("client_ap",     0))
+        _client_hp    = int(char_data.get("client_max_hp", 0))
+        _ap = _client_ap  if _client_ap  > 0 else _stats.get("attack_power", _class_ap.get(_cls, 20))
+        _hp = _client_hp  if _client_hp  > 0 else _stats.get("max_hp",       _class_hp.get(_cls, 150))
         cs_player     = CombatStats(base_attack_power=int(_ap))
         cs_player.max_hp      = int(_hp)
         cs_player.current_hp  = int(_hp)
@@ -524,6 +527,15 @@ class WorldServer:
 
     def get_entity_id(self, session_id: str) -> int:
         return self._player_eids.get(session_id, -1)
+
+    def get_player_hp(self, session_id: str) -> tuple[int, int]:
+        """Retorna (current_hp, max_hp) do player. Usado no LOGIN_OK."""
+        from components import CombatStats
+        eid = self._player_eids.get(session_id)
+        if eid is None:
+            return (0, 0)
+        cs = self.world.get_component(eid, CombatStats)
+        return (cs.current_hp, cs.max_hp) if cs else (0, 0)
 
     def get_tile_pos(self, session_id: str) -> tuple[int, int]:
         from components import TileMovement

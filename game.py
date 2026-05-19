@@ -2614,9 +2614,13 @@ class GameEngine:
 
     def _do_login(self) -> None:
         if self._net and self._net.connected:
-            self._net.login(self._net_user, self._net_pass)
+            # Lê stats reais do personagem para o servidor usar (evita fallbacks)
+            from components import CombatStats
+            cs  = self.world.get_component(self.player_entity, CombatStats)
+            ap      = float(cs.attack_power) if cs else 0.0
+            max_hp  = int(cs.max_hp)         if cs else 0
+            self._net.login(self._net_user, self._net_pass, ap=ap, max_hp=max_hp)
         else:
-            # Ainda não conectou — tenta de novo em 1s
             import threading
             threading.Timer(1.0, self._do_login).start()
 
@@ -2652,8 +2656,17 @@ class GameEngine:
                 pos.prev_x = pos.x;            pos.prev_y = pos.y
             self._net_last_tx = tx
             self._net_last_ty = ty
+            # Sincroniza HP do player com o servidor (evita HP desatualizado do save)
+            from components import CombatStats
+            cs = self.world.get_component(self.player_entity, CombatStats)
+            srv_hp     = payload.get("hp",     0)
+            srv_hp_max = payload.get("hp_max", 0)
+            if cs and srv_hp_max > 0:
+                cs.max_hp     = srv_hp_max
+                cs.current_hp = srv_hp
             print(f"[Client] login ok  eid={self._my_eid}  "
-                  f"user={char.get('name','?')}  tile=({tx},{ty})")
+                  f"user={char.get('name','?')}  tile=({tx},{ty})"
+                  f"  hp={srv_hp}/{srv_hp_max}")
 
         elif msg_type == MsgType.LOGIN_ERROR:
             print(f"[Client] login erro: {payload.get('reason')}")

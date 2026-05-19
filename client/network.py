@@ -70,14 +70,17 @@ class NetworkClient:
         if self._loop:
             asyncio.run_coroutine_threadsafe(self._close(), self._loop)
 
-    def login(self, username: str, password: str) -> None:
-        """Shortcut para enviar LOGIN."""
+    def login(self, username: str, password: str,
+              ap: float = 0.0, max_hp: int = 0) -> None:
+        """Envia LOGIN com stats reais do personagem para o servidor usar."""
         import hashlib
         ph = hashlib.sha256(password.encode()).hexdigest()
         self.send(MsgType.LOGIN, {
             "username": username,
             "password": ph,
             "version":  PROTOCOL_VERSION,
+            "ap":       ap,       # attack_power real do cliente
+            "max_hp":   max_hp,   # max_hp real do cliente
         })
 
     def move(self, tx: int, ty: int) -> None:

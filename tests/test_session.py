@@ -113,6 +113,40 @@ class TestLogin(unittest.IsolatedAsyncioTestCase):
         msgs = get_msgs_of_type(fw, MsgType.WORLD_STATE)
         self.assertEqual(len(msgs), 1, "WORLD_STATE não enviado após login")
 
+    async def test_login_ok_contains_hp_and_hp_max(self):
+        """LOGIN_OK deve conter hp e hp_max para o cliente sincronizar."""
+        _, fw = await fake_login(self.mgr, "s1", "user_hpsync")
+        msg = get_msgs_of_type(fw, MsgType.LOGIN_OK)[0]
+        self.assertIn("hp",     msg, "LOGIN_OK sem campo 'hp'")
+        self.assertIn("hp_max", msg, "LOGIN_OK sem campo 'hp_max'")
+        self.assertGreater(msg["hp_max"], 0, "hp_max deve ser > 0")
+        self.assertEqual(msg["hp"], msg["hp_max"], "hp inicial deve ser = hp_max (servidor inicia full)")
+
+    async def test_client_ap_used_by_server(self):
+        """Servidor deve usar o AP enviado pelo cliente, não o fallback."""
+        from server.auth import _register_sync, _authenticate_sync, _hash
+        from shared.messages import encode
+        _register_sync("user_ap_test", "test123", "guerreiro", 115, 389)
+
+        fake_ws = FakeWS()
+        session = await self.mgr.on_connect(fake_ws, "s_ap")
+        ph = _hash("test123")
+        # Envia AP=50 explicitamente
+        login_msg = encode(MsgType.LOGIN, {
+            "username": "user_ap_test", "password": ph,
+            "version": 1, "ap": 50.0, "max_hp": 200,
+        })
+        await self.mgr.on_message(session, login_msg)
+
+        from components import CombatStats
+        eid = self.mgr.world_server._player_eids.get("s_ap")
+        self.assertIsNotNone(eid)
+        cs = self.mgr.world_server.world.get_component(eid, CombatStats)
+        self.assertAlmostEqual(cs.attack_power, 50.0, delta=1.0,
+                               msg="Servidor não usou o AP enviado pelo cliente")
+        self.assertEqual(cs.max_hp, 200,
+                         "Servidor não usou o max_hp enviado pelo cliente")
+
     async def test_world_state_contains_entities_list(self):
         """WORLD_STATE deve ter campo 'entities'."""
         _, fw = await fake_login(self.mgr, "s1", "user_ent")

@@ -101,6 +101,9 @@ class SessionManager:
                 await session.send(MsgType.LOGIN_ERROR, {"reason": "already_online"})
                 return
 
+        # Inclui stats enviados pelo cliente no char_data para spawn_player usar
+        char_data["client_ap"]     = payload.get("ap",     0.0)
+        char_data["client_max_hp"] = payload.get("max_hp", 0)
         eid = self.world_server.spawn_player(session.session_id, char_data)
 
         session.username       = username
@@ -111,11 +114,15 @@ class SessionManager:
 
         tx, ty = self.world_server.get_tile_pos(session.session_id)
 
+        # HP autoritativo do servidor para o cliente sincronizar
+        srv_hp, srv_hp_max = self.world_server.get_player_hp(session.session_id)
         await session.send(MsgType.LOGIN_OK, {
             "token":     session.session_id,
             "eid":       eid,
             "char":      dict(char_data),
             "server_ts": int(time.time() * 1000),
+            "hp":        srv_hp,
+            "hp_max":    srv_hp_max,
         })
 
         # Snapshot inicial: jogadores próximos
