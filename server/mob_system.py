@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 AGGRO_RANGE   = 8    # tiles — distância para agrrar
 LEASH_RANGE   = 20   # tiles — distância para largar o alvo
-MOVE_INTERVAL = 0.2  # segundos entre passos — igual ao move_duration do TileMovementSystem
+# MOVE_INTERVAL não é constante — calculado por mob a partir de TileMovement.speed
 
 
 class ServerMobSystem:
@@ -94,12 +94,13 @@ class ServerMobSystem:
         if dist <= 1:
             return   # já em melee range, combate cuida do resto
 
-        # Timer de movimento
+        # Intervalo de movimento = move_duration do mob (mesma velocidade do offline)
+        move_interval = mob_tm.move_duration if mob_tm.move_duration > 0 else 0.35
         timer = self._move_timers.get(mob_eid, 0.0) - dt
         if timer > 0:
             self._move_timers[mob_eid] = timer
             return
-        self._move_timers[mob_eid] = MOVE_INTERVAL
+        self._move_timers[mob_eid] = move_interval
 
         # Direção de 1 tile em direção ao player (sem pathfinding)
         dx = ptm.current_tile_x - mob_tm.current_tile_x

@@ -382,6 +382,43 @@ class WorldServer:
                 "source":   "auto",
             })
 
+    def get_entity_spawn_data(self, eid: int) -> dict | None:
+        """Retorna payload completo de ENTITY_SPAWN para qualquer entidade (mob ou player)."""
+        from components import TileMovement
+        if eid not in self._mob_eids:
+            return None   # jogadores são gerenciados separadamente
+        tm = self.world.get_component(eid, TileMovement)
+        if not tm:
+            return None
+        return self._build_mob_spawn_payload(eid, tm)
+
+    def _build_mob_spawn_payload(self, eid: int, tm) -> dict:
+        from components import CombatStats, AIControlled, Renderable, SpawnZoneOwner, SpawnZone
+        cs  = self.world.get_component(eid, CombatStats)
+        ai  = self.world.get_component(eid, AIControlled)
+        ren = self.world.get_component(eid, Renderable)
+        szo = self.world.get_component(eid, SpawnZoneOwner)
+        race="Humanoide"; entity_class="Warrior"; tier="normal"; is_ranged=False
+        if szo:
+            zone = self.world.get_component(szo.zone_entity_id, SpawnZone)
+            if zone:
+                race         = zone.race
+                entity_class = zone.entity_class or entity_class
+                tier         = zone.enemy_tier
+                is_ranged    = (zone.enemy_type == "ranged")
+        return {
+            "eid":          eid, "kind":         "enemy",
+            "tx":           tm.current_tile_x,
+            "ty":           tm.current_tile_y,
+            "race":         race, "entity_class": entity_class,
+            "tier":         tier, "is_ranged":    is_ranged,
+            "color":        list(ren.color) if ren else [150, 60, 60],
+            "hp":           cs.current_hp if cs else 50,
+            "hp_max":       cs.max_hp     if cs else 50,
+            "level":        zone.level_min if szo and zone else 1,
+            "effects":      [],
+        }
+
     def get_mobs_in_aoi(self, center_tx: int, center_ty: int, radius: int) -> list[dict]:
         """Retorna lista de mobs no AOI — para WORLD_STATE inicial."""
         from components import TileMovement, CombatStats, AIControlled, Renderable
@@ -487,9 +524,11 @@ class WorldServer:
         for eid in list(self._mob_eids):
             tm = self.world.get_component(eid, TileMovement)
             if tm is None:
-                # Mob foi removido (morreu)
+                # Mob foi removido (morreu via _process_combat ou outro meio)
                 self._mob_eids.discard(eid)
-                self._despawned_this_tick.append(eid)
+                # Evita duplicata: _process_combat já pode ter adicionado
+                if eid not in self._despawned_this_tick:
+                    self._despawned_this_tick.append(eid)
                 continue
             old = pre_mob_pos.get(eid)
             new = (tm.current_tile_x, tm.current_tile_y)
@@ -507,40 +546,10 @@ class WorldServer:
             cb(self.tick_count, deltas)
 
     def _emit_mob_spawn(self, eid: int, tm) -> None:
-        """Monta payload de ENTITY_SPAWN para um novo mob e coloca em spawned_this_tick."""
-        from components import CombatStats, AIControlled, Renderable, SpawnZoneOwner, SpawnZone
-        cs   = self.world.get_component(eid, CombatStats)
-        ai   = self.world.get_component(eid, AIControlled)
-        ren  = self.world.get_component(eid, Renderable)
-        szo  = self.world.get_component(eid, SpawnZoneOwner)
-        # Pega metadados da zona de origem para o cliente recriar o mob
-        race         = "Humanoide"
-        entity_class = ai.entity_class if ai else "Warrior"
-        tier         = "normal"
-        is_ranged    = False
-        if szo:
-            zone = self.world.get_component(szo.zone_entity_id, SpawnZone)
-            if zone:
-                race         = zone.race
-                entity_class = zone.entity_class or entity_class
-                tier         = zone.enemy_tier
-                is_ranged    = (zone.enemy_type == "ranged")
-
-        self._spawned_this_tick.append({
-            "eid":          eid,
-            "kind":         "enemy",
-            "tx":           tm.current_tile_x,
-            "ty":           tm.current_tile_y,
-            "race":         race,
-            "entity_class": entity_class,
-            "tier":         tier,
-            "is_ranged":    is_ranged,
-            "color":        list(ren.color) if ren else [150, 60, 60],
-            "hp":           cs.current_hp if cs else 50,
-            "hp_max":       cs.max_hp     if cs else 50,
-            "level":        zone.level_min if szo and zone else 1,
-            "effects":      [],
-        })
+        """Adiciona payload de spawn do mob aos deltas do tick atual."""
+        payload = self._build_mob_spawn_payload(eid, tm)
+        if payload:
+            self._spawned_this_tick.append(payload)
 
     def _collect_deltas(self) -> dict:
         deltas = {

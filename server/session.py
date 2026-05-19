@@ -1,17 +1,19 @@
 """
 server/session.py
 Gerencia sessões de jogadores conectados via WebSocket.
+
+Implementa AOI subscription por sessão: cada Session mantém known_eids
+(conjunto de entidades que o cliente já sabe sobre). Isso garante que:
+- Mobs que entram no FOV após o login aparecem via ENTITY_SPAWN
+- Mobs que saem do FOV são despawnados no cliente
+- ENTITY_MOVE só é enviado para entidades já conhecidas
 """
 from __future__ import annotations
 import asyncio
 import time
-from typing import TYPE_CHECKING
 
-from shared.messages import MsgType, encode, decode, make_aoi_update
+from shared.messages import MsgType, encode, decode
 from shared.constants import AOI_RADIUS
-
-if TYPE_CHECKING:
-    pass
 
 
 class Session:
@@ -23,6 +25,7 @@ class Session:
         self.char_data     = {}
         self.authenticated = False
         self._seq          = 0
+        self.known_eids: set[int] = set()   # entidades que este cliente conhece
 
     async def send(self, msg_type: MsgType, payload: dict) -> None:
         try:
@@ -39,8 +42,8 @@ class SessionManager:
 
     def __init__(self, world_server):
         self.world_server = world_server
-        self._sessions:   dict[str, Session] = {}   # session_id → Session
-        self._eid_to_sid: dict[int, str]     = {}   # entity_id  → session_id
+        self._sessions:   dict[str, Session] = {}
+        self._eid_to_sid: dict[int, str]     = {}
         self.world_server.register_on_tick(self._on_tick)
 
     # ── Ciclo de vida ─────────────────────────────────────────────────────────
@@ -57,7 +60,6 @@ class SessionManager:
             return
         if session.entity_id != -1:
             self._eid_to_sid.pop(session.entity_id, None)
-            # Avisa TODOS antes de despawnar — após despawn get_tile_pos retorna (0,0)
             await self._broadcast_all(MsgType.ENTITY_DESPAWN, {"eid": session.entity_id})
             self.world_server.despawn_player(session_id)
         print(f"[Session] -disconnect {session.username!r}")
@@ -90,13 +92,11 @@ class SessionManager:
             await session.send(MsgType.LOGIN_ERROR, {"reason": "invalid_credentials"})
             return
 
-        # Bloqueia login duplo da mesma conta
         for s in self._sessions.values():
             if s.authenticated and s.username == username:
                 await session.send(MsgType.LOGIN_ERROR, {"reason": "already_online"})
                 return
 
-        # Spawn no mundo
         eid = self.world_server.spawn_player(session.session_id, char_data)
 
         session.username       = username
@@ -105,7 +105,6 @@ class SessionManager:
         session.authenticated  = True
         self._eid_to_sid[eid]  = session.session_id
 
-        # Sincroniza posição na sessão
         tx, ty = self.world_server.get_tile_pos(session.session_id)
 
         await session.send(MsgType.LOGIN_OK, {
@@ -115,9 +114,8 @@ class SessionManager:
             "server_ts": int(time.time() * 1000),
         })
 
-        # Envia snapshot inicial: jogadores no AOI
+        # Snapshot inicial: jogadores próximos
         near_players = self.world_server.get_players_in_aoi(session.session_id, AOI_RADIUS)
-        # Adiciona dados de username a cada jogador próximo
         for p in near_players:
             s2 = self._sessions.get(p.get("session_id", ""))
             if s2:
@@ -128,20 +126,25 @@ class SessionManager:
                 p["level"]    = s2.char_data.get("level", 1)
                 p["effects"]  = []
 
-        # Inclui mobs no AOI no snapshot inicial
+        # Snapshot inicial: mobs próximos
         near_mobs = self.world_server.get_mobs_in_aoi(tx, ty, AOI_RADIUS)
 
+        all_entities = near_players + near_mobs
         await session.send(MsgType.WORLD_STATE, {
             "tick":     self.world_server.tick_count,
             "tx":       tx, "ty": ty,
-            "entities": near_players + near_mobs,
+            "entities": all_entities,
         })
 
-        # Avisa jogadores próximos que este entrou
+        # Popula known_eids com tudo que foi enviado no WORLD_STATE
+        session.known_eids.add(eid)  # próprio player
+        for ent in all_entities:
+            session.known_eids.add(ent["eid"])
+
+        # Avisa outros que este player entrou
         spawn_payload = {
-            "eid":      eid,
-            "kind":     "player",
-            "tx":       tx, "ty": ty,
+            "eid":      eid, "kind":     "player",
+            "tx":       tx,  "ty":       ty,
             "name":     username,
             "class_id": char_data.get("class_id", "guerreiro"),
             "hp":       char_data.get("hp", 100),
@@ -150,6 +153,13 @@ class SessionManager:
             "effects":  [],
         }
         await self._broadcast_aoi_except(session, MsgType.ENTITY_SPAWN, spawn_payload)
+        # Outros players passam a conhecer este
+        for s in self._sessions.values():
+            if s.authenticated and s.session_id != session.session_id:
+                sx, sy = self.world_server.get_tile_pos(s.session_id)
+                if abs(sx - tx) <= AOI_RADIUS and abs(sy - ty) <= AOI_RADIUS:
+                    s.known_eids.add(eid)
+
         print(f"[Session] login ok: {username!r}  eid={eid}  tile=({tx},{ty})")
 
     async def _handle_move(self, session: Session, payload: dict, ts: int) -> None:
@@ -157,11 +167,8 @@ class SessionManager:
             return
         tx = int(payload.get("tx", 0))
         ty = int(payload.get("ty", 0))
-
         accepted = self.world_server.move_player(session.session_id, tx, ty)
-
         if accepted:
-            # Broadcast para todos no AOI (incluindo quem moveu — confirmação)
             await self._broadcast_aoi_from_session(session, MsgType.ENTITY_MOVE, {
                 "eid":     session.entity_id,
                 "tx":      tx, "ty": ty,
@@ -169,7 +176,6 @@ class SessionManager:
                 "from_ty": payload.get("from_ty", ty),
             })
         else:
-            # Rejeita: manda posição correta de volta ao cliente
             real_tx, real_ty = self.world_server.get_tile_pos(session.session_id)
             await session.send(MsgType.ENTITY_MOVE, {
                 "eid":     session.entity_id,
@@ -192,7 +198,6 @@ class SessionManager:
     async def _handle_cast_skill(self, session: Session, payload: dict, ts: int) -> None:
         if not session.authenticated:
             return
-        # TODO: SkillSystem (Marco 2+)
         print(f"[Skill]  {session.username} → {payload.get('sid')}  ts={ts}")
 
     async def _handle_chat(self, session: Session, payload: dict, ts: int) -> None:
@@ -216,7 +221,7 @@ class SessionManager:
         MsgType.CHAT_SEND:   _handle_chat,
     }
 
-    # ── Callback do tick ──────────────────────────────────────────────────────
+    # ── AOI subscription — núcleo do sistema ─────────────────────────────────
 
     def _on_tick(self, tick_count: int, deltas: dict) -> None:
         if not any(deltas.values()):
@@ -224,43 +229,81 @@ class SessionManager:
         asyncio.create_task(self._dispatch_tick_deltas(deltas))
 
     async def _dispatch_tick_deltas(self, deltas: dict) -> None:
-        """Distribui deltas do tick para cada cliente, filtrado por AOI."""
+        """Distribui deltas para cada cliente respeitando known_eids (AOI subscription)."""
         try:
             for session in list(self._sessions.values()):
                 if not session.authenticated:
                     continue
                 tx, ty = self.world_server.get_tile_pos(session.session_id)
-                filtered = self._filter_deltas_for(deltas, tx, ty)
-                if filtered:
-                    await session.send(MsgType.AOI_UPDATE, filtered)
+                update = self._build_update_for_session(session, deltas, tx, ty)
+                if update:
+                    await session.send(MsgType.AOI_UPDATE, update)
         except Exception as e:
             import traceback
             print(f"[Session] ERRO em _dispatch_tick_deltas: {e}")
             traceback.print_exc()
 
-    def _filter_deltas_for(self, deltas: dict, cx: int, cy: int) -> dict:
-        """Retorna apenas os deltas visíveis para um jogador em (cx, cy)."""
+    def _build_update_for_session(self, session: Session,
+                                   deltas: dict, cx: int, cy: int) -> dict:
+        """
+        Constrói AOI_UPDATE para uma sessão específica, com subscription tracking:
+        - Entidade entra no AOI → ENTITY_SPAWN + adiciona a known_eids
+        - Entidade sai do AOI  → ENTITY_DESPAWN + remove de known_eids
+        - Entidade em AOI conhecida → ENTITY_MOVE
+        """
         r = AOI_RADIUS
+        result: dict = {}
 
-        def in_aoi(tx, ty):
+        def in_aoi(tx: int, ty: int) -> bool:
             return abs(tx - cx) <= r and abs(ty - cy) <= r
 
-        moved = [m for m in deltas.get("moved", [])
-                 if in_aoi(m["tx"], m["ty"]) or in_aoi(m["from_tx"], m["from_ty"])]
-        spawned   = [e for e in deltas.get("spawned", [])
-                     if in_aoi(e["tx"], e["ty"])]
-        despawned = deltas.get("despawned", [])   # sempre envia — cliente ignora desconhecidos
-        stats     = deltas.get("stats", [])
-        effects   = deltas.get("effects", [])
-        combat    = deltas.get("combat", [])      # resultados de combate neste tick
+        # ── Moves: verifica entradas/saídas de AOI ────────────────────
+        confirmed_moves = []
+        aoi_exits       = []
+        aoi_entries     = []
 
-        result: dict = {}
-        if moved:     result["moved"]     = moved
-        if spawned:   result["spawned"]   = spawned
-        if despawned: result["despawned"] = despawned
-        if stats:     result["stats"]     = stats
-        if effects:   result["effects"]   = effects
-        if combat:    result["combat"]    = combat   # sem filtro AOI: todos veem dano no range
+        for m in deltas.get("moved", []):
+            eid    = m["eid"]
+            in_new = in_aoi(m["tx"],      m["ty"])
+            in_old = in_aoi(m["from_tx"], m["from_ty"])
+
+            if eid in session.known_eids:
+                if in_new:
+                    confirmed_moves.append(m)   # ainda no AOI, envia move
+                else:
+                    aoi_exits.append(eid)       # saiu do AOI
+                    session.known_eids.discard(eid)
+            else:
+                if in_new:
+                    aoi_entries.append(eid)     # entrou no AOI pela primeira vez
+
+        # ── Novas entidades no AOI (via move) ─────────────────────────
+        for eid in aoi_entries:
+            spawn_data = self.world_server.get_entity_spawn_data(eid)
+            if spawn_data:
+                result.setdefault("spawned", []).append(spawn_data)
+                session.known_eids.add(eid)
+
+        # ── Spawns novos (entidades criadas neste tick) ───────────────
+        for sp in deltas.get("spawned", []):
+            if in_aoi(sp["tx"], sp["ty"]):
+                result.setdefault("spawned", []).append(sp)
+                session.known_eids.add(sp["eid"])
+
+        # ── Despawns ──────────────────────────────────────────────────
+        final_despawned = list(aoi_exits)
+        for eid in deltas.get("despawned", []):
+            if eid in session.known_eids:
+                final_despawned.append(eid)
+                session.known_eids.discard(eid)
+
+        # ── Monta resultado ───────────────────────────────────────────
+        if confirmed_moves:  result["moved"]     = confirmed_moves
+        if final_despawned:  result["despawned"] = list(set(final_despawned))
+        for key in ("stats", "effects", "combat"):
+            if deltas.get(key):
+                result[key] = deltas[key]
+
         return result
 
     # ── Broadcast helpers ─────────────────────────────────────────────────────
@@ -273,7 +316,6 @@ class SessionManager:
 
     async def _broadcast_aoi_from_session(self, origin: Session,
                                           msg_type: MsgType, payload: dict) -> None:
-        """Envia para todos (incluindo origin) dentro do AOI_RADIUS de origin."""
         ox, oy = self.world_server.get_tile_pos(origin.session_id)
         tasks = []
         for s in self._sessions.values():
@@ -287,7 +329,6 @@ class SessionManager:
 
     async def _broadcast_aoi_except(self, origin: Session,
                                     msg_type: MsgType, payload: dict) -> None:
-        """Igual _broadcast_aoi_from_session mas exclui o origin."""
         ox, oy = self.world_server.get_tile_pos(origin.session_id)
         tasks = []
         for s in self._sessions.values():

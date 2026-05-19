@@ -110,6 +110,7 @@ class GameEngine:
         self._remote_mobs:         dict[int, int]          = {}
         self._remote_mobs_reverse: dict[int, int]          = {}  # local_eid → server_eid
         self._mob_hp:              dict[int, tuple[int,int]] = {}  # server_eid → (hp, max_hp)
+        self._mob_move_queues:     dict[int, list]          = {}  # server_eid → [(tx,ty)...]
         # Último alvo enviado ao servidor (evita reenvios desnecessários)
         self._net_last_target: int = -2
         # Última posição enviada ao servidor (evita envios duplicados)
@@ -1150,10 +1151,11 @@ class GameEngine:
                 else:
                     system.update(ev, dt)
 
-            # Sincronização online: movimento + alvo de combate
+            # Sincronização online: movimento + alvo de combate + fila de mobs
             if self._online_mode:
                 self._send_player_move()
                 self._sync_combat_target()
+                self._process_mob_move_queues()
 
             # Se shop ou loot acabaram de abrir, fechar os outros modais
             if (not _shop_was_open_before and self._shop_system.is_open) or \
@@ -2913,7 +2915,7 @@ class GameEngine:
         self._remote_mobs_reverse[local_eid]  = server_eid
 
     def _move_remote_mob(self, server_eid: int, new_tx: int, new_ty: int) -> None:
-        """Move mob remoto usando start_tile_movement — TileMovementSystem anima suavemente."""
+        """Move mob remoto: encadeia via queue para animação suave sem saltos."""
         from components import TileMovement, Position
         from utils import start_tile_movement
         local_eid = self._remote_mobs.get(server_eid)
@@ -2923,9 +2925,34 @@ class GameEngine:
         pos = self.world.get_component(local_eid, Position)
         if not tm or not pos:
             return
-        # start_tile_movement configura is_moving=True e progress=0
-        # TileMovementSystem cuida da animação pixel-a-pixel (igual ao player local)
-        start_tile_movement(pos, tm, new_tx, new_ty)
+        if tm.is_moving:
+            # Mob ainda animando: enfileira o próximo passo
+            self._mob_move_queues.setdefault(server_eid, []).append((new_tx, new_ty))
+        else:
+            start_tile_movement(pos, tm, new_tx, new_ty)
+
+    def _process_mob_move_queues(self) -> None:
+        """Processa fila de movimentos de mobs — chamado a cada frame."""
+        from components import TileMovement, Position
+        from utils import start_tile_movement
+        for server_eid, queue in list(self._mob_move_queues.items()):
+            if not queue:
+                del self._mob_move_queues[server_eid]
+                continue
+            local_eid = self._remote_mobs.get(server_eid)
+            if not local_eid:
+                del self._mob_move_queues[server_eid]
+                continue
+            tm  = self.world.get_component(local_eid, TileMovement)
+            pos = self.world.get_component(local_eid, Position)
+            if not tm or not pos:
+                del self._mob_move_queues[server_eid]
+                continue
+            if not tm.is_moving:
+                tx, ty = queue.pop(0)
+                start_tile_movement(pos, tm, tx, ty)
+                if not queue:
+                    del self._mob_move_queues[server_eid]
 
     # ── Jogadores remotos — abordagem ECS ────────────────────────────────────
 
