@@ -57,10 +57,9 @@ class SessionManager:
             return
         if session.entity_id != -1:
             self._eid_to_sid.pop(session.entity_id, None)
+            # Avisa TODOS antes de despawnar — após despawn get_tile_pos retorna (0,0)
+            await self._broadcast_all(MsgType.ENTITY_DESPAWN, {"eid": session.entity_id})
             self.world_server.despawn_player(session_id)
-            # Avisa todos os outros que este jogador saiu
-            await self._broadcast_aoi_from_session(session, MsgType.ENTITY_DESPAWN,
-                                                   {"eid": session.entity_id})
         print(f"[Session] -disconnect {session.username!r}")
 
     async def on_message(self, session: Session, raw: str) -> None:
