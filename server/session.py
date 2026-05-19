@@ -231,6 +231,8 @@ class SessionManager:
     async def _dispatch_tick_deltas(self, deltas: dict) -> None:
         """Distribui deltas para cada cliente respeitando known_eids (AOI subscription)."""
         try:
+            # Mortes de players vão direto ao cliente morto (não AOI)
+            await self._send_player_deaths(deltas)
             for session in list(self._sessions.values()):
                 if not session.authenticated:
                     continue
@@ -303,6 +305,21 @@ class SessionManager:
         for key in ("stats", "effects", "combat"):
             if deltas.get(key):
                 result[key] = deltas[key]
+        return result
+
+    # ── Player deaths — enviados diretamente, não via AOI_UPDATE ─────────────
+
+    async def _send_player_deaths(self, deltas: dict) -> None:
+        for death in deltas.get("player_deaths", []):
+            sid = death.get("session_id")
+            if not sid:
+                continue
+            session = self._sessions.get(sid)
+            if session:
+                await session.send(MsgType.PLAYER_DEATH, {
+                    "eid": death["player_eid"],
+                })
+
 
         return result
 

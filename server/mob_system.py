@@ -68,6 +68,19 @@ class ServerMobSystem:
         if best_eid != -1:
             mob_cs.target_entity_id = best_eid
 
+    def _is_walkable(self, tx: int, ty: int) -> bool:
+        """Verifica walkability via tilemap do servidor — mesma lógica do offline."""
+        from components import Tilemap
+        for _, tc in self.world.get_entities_with(Tilemap):
+            rows = tc.tile_matrix
+            if not rows or ty < 0 or ty >= len(rows):
+                return False
+            row = rows[ty]
+            if tx < 0 or tx >= len(row):
+                return False
+            return not row[tx].is_solid
+        return True  # sem tilemap carregado
+
     def _check_leash(self, mob_eid: int, mob_cs, mob_tm) -> None:
         from components import TileMovement
         from utils import chebyshev
@@ -102,19 +115,33 @@ class ServerMobSystem:
             return
         self._move_timers[mob_eid] = move_interval
 
-        # Direção de 1 tile em direção ao player (sem pathfinding)
+        # Direção em direção ao player — tenta eixo principal, depois alternativo
         dx = ptm.current_tile_x - mob_tm.current_tile_x
         dy = ptm.current_tile_y - mob_tm.current_tile_y
         step_x = (1 if dx > 0 else -1) if dx != 0 else 0
         step_y = (1 if dy > 0 else -1) if dy != 0 else 0
 
-        # Prioriza o eixo com maior delta para movimento diagonal
+        # Candidatos de movimento em ordem de preferência
         if abs(dx) >= abs(dy):
-            new_tx, new_ty = mob_tm.current_tile_x + step_x, mob_tm.current_tile_y
+            candidates = [
+                (mob_tm.current_tile_x + step_x, mob_tm.current_tile_y),
+                (mob_tm.current_tile_x,           mob_tm.current_tile_y + step_y),
+            ]
         else:
-            new_tx, new_ty = mob_tm.current_tile_x, mob_tm.current_tile_y + step_y
+            candidates = [
+                (mob_tm.current_tile_x,           mob_tm.current_tile_y + step_y),
+                (mob_tm.current_tile_x + step_x,  mob_tm.current_tile_y),
+            ]
 
-        # Atualiza posição diretamente (sem validação de tile por ora)
+        new_tx, new_ty = None, None
+        for cx, cy in candidates:
+            if self._is_walkable(cx, cy):
+                new_tx, new_ty = cx, cy
+                break
+
+        if new_tx is None:
+            return  # bloqueado em todas as direções
+
         mob_tm.current_tile_x = new_tx
         mob_tm.current_tile_y = new_ty
         mob_tm.target_tile_x  = new_tx

@@ -48,7 +48,8 @@ class WorldServer:
         self._moved_this_tick:    list[dict] = []
         self._spawned_this_tick:  list[dict] = []
         self._despawned_this_tick: list[int]  = []
-        self._combat_this_tick:   list[dict] = []   # resultados de combate
+        self._combat_this_tick:        list[dict] = []
+        self._player_deaths_this_tick: list[dict] = []   # mortes de players
 
         # Timer de ataque por jogador: session_id → segundos até próximo hit
         self._attack_timers: dict[str, float] = {}
@@ -373,14 +374,51 @@ class WorldServer:
             if outcome == "crit":
                 dmg = int(dmg * 1.5)
 
+            # Aplica dano no HP do player no servidor (fonte de verdade)
+            player_cs = self.world.get_component(player_eid, CombatStats)
+            hp_after  = -1
+            if player_cs:
+                player_cs.current_hp = max(0, player_cs.current_hp - dmg)
+                hp_after = player_cs.current_hp
+
             self._combat_this_tick.append({
                 "attacker": mob_eid,
                 "target":   player_eid,
                 "damage":   dmg,
                 "outcome":  outcome,
-                "hp_after": -1,   # cliente gerencia próprio HP por ora
+                "hp_after": hp_after,
                 "source":   "auto",
             })
+
+            # Detecta morte do player
+            if hp_after == 0:
+                self._handle_player_death(player_eid)
+
+    def _handle_player_death(self, player_eid: int) -> None:
+        """Player morreu: reseta HP, mobs param de atacar, notifica clientes."""
+        from components import CombatStats, CombatState, TileMovement
+        player_cs = self.world.get_component(player_eid, CombatStats)
+        if player_cs:
+            player_cs.current_hp = player_cs.max_hp
+
+        # Limpa alvo de todos os mobs que estavam atacando este player
+        for mob_eid in self._mob_eids:
+            mob_state = self.world.get_component(mob_eid, CombatState)
+            if mob_state and mob_state.target_entity_id == player_eid:
+                mob_state.target_entity_id = -1
+
+        # Encontra session_id do player morto e envia PLAYER_DEATH
+        session_id = None
+        for sid, eid in self._player_eids.items():
+            if eid == player_eid:
+                session_id = sid
+                break
+
+        # Posição de spawn padrão — o cliente usa o spawn do mapa offline
+        self._player_deaths_this_tick.append({
+            "session_id": session_id,
+            "player_eid": player_eid,
+        })
 
     def get_entity_spawn_data(self, eid: int) -> dict | None:
         """Retorna payload completo de ENTITY_SPAWN para qualquer entidade (mob ou player)."""
@@ -481,6 +519,7 @@ class WorldServer:
                     self._spawned_this_tick.clear()
                     self._despawned_this_tick.clear()
                     self._combat_this_tick.clear()
+                    self._player_deaths_this_tick.clear()
                 next_tick += TICK_INTERVAL
                 if time.perf_counter() - next_tick > TICK_INTERVAL:
                     next_tick = time.perf_counter()
@@ -553,17 +592,19 @@ class WorldServer:
 
     def _collect_deltas(self) -> dict:
         deltas = {
-            "moved":     list(self._moved_this_tick),
-            "stats":     [],
-            "effects":   [],
-            "spawned":   list(self._spawned_this_tick),
-            "despawned": list(self._despawned_this_tick),
-            "combat":    list(self._combat_this_tick),
+            "moved":         list(self._moved_this_tick),
+            "stats":         [],
+            "effects":       [],
+            "spawned":       list(self._spawned_this_tick),
+            "despawned":     list(self._despawned_this_tick),
+            "combat":        list(self._combat_this_tick),
+            "player_deaths": list(self._player_deaths_this_tick),
         }
         self._moved_this_tick.clear()
         self._spawned_this_tick.clear()
         self._despawned_this_tick.clear()
         self._combat_this_tick.clear()
+        self._player_deaths_this_tick.clear()
         return deltas
 
     def _store_snapshot(self) -> None:

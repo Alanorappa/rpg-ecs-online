@@ -2760,6 +2760,21 @@ class GameEngine:
                 if "hp" in payload:
                     self._remote_players[eid]["hp"] = payload["hp"]
 
+        elif msg_type == MsgType.PLAYER_DEATH:
+            # Servidor declarou que o player local morreu.
+            # Delega ao DeathRespawnSystem offline que já sabe lidar com isso:
+            # seta current_hp=0 → PendingDeath → DeathRespawnSystem respawna.
+            from components import CombatStats, CombatState
+            cs = self.world.get_component(self.player_entity, CombatStats)
+            if cs:
+                cs.current_hp = 0   # DeathRespawnSystem detecta e respawna
+            # Para de atacar
+            combat_state = self.world.get_component(self.player_entity, CombatState)
+            if combat_state:
+                combat_state.target_entity_id = -1
+                combat_state.is_pursuing      = False
+            self._net_last_target = -1
+
         elif msg_type == MsgType.PONG:
             if self._net:
                 rtt = int(__import__("time").time() * 1000) - payload.get("client_ts", 0)
@@ -2795,10 +2810,10 @@ class GameEngine:
 
         # ── Player local foi atacado (mob → player) ───────────────────
         if server_target == self._my_eid and damage > 0:
-            # Aplica dano no HP local (CombatStats.current_hp → barra de HP atualiza)
+            # Servidor é fonte de verdade para HP do player — usa hp_after
             cs = self.world.get_component(self.player_entity, CombatStats)
-            if cs:
-                cs.current_hp = max(0, cs.current_hp - damage)
+            if cs and hp_after >= 0:
+                cs.current_hp = hp_after  # HP autoritativo do servidor
             player_pos = self.world.get_component(self.player_entity, Position)
             if player_pos:
                 txt = f"CRÍTICO! -{damage}" if outcome == "crit" else f"-{damage}"

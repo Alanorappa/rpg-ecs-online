@@ -67,6 +67,8 @@ class MsgType(str, Enum):
     # ── Stats / HP ────────────────────────────────────────────────
     STATS_UPDATE       = "stats_update"    # S→C  HP/MP/rage/concentration mudou
     LEVEL_UP           = "level_up"        # S→C  jogador levelou
+    PLAYER_DEATH       = "player_death"    # S→C  player morreu — respawn_tx, respawn_ty, hp_max
+    PLAYER_STATS_SYNC  = "player_stats_sync"  # S→C  sincroniza HP autoritativo do player
 
     # ── Entidades ─────────────────────────────────────────────────
     ENTITY_SPAWN       = "entity_spawn"    # S→C  entidade entrou no AOI (detalhes completos)
