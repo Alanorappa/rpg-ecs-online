@@ -104,8 +104,8 @@ class GameEngine:
         self._net_pass    = net_pass
         self._net         = None     # NetworkClient (iniciado após world estar pronto)
         self._my_eid      = -1       # entity_id atribuído pelo servidor
-        # Outros jogadores visíveis: eid → {tx, ty, name, class_id}
-        self._remote_players: dict[int, dict] = {}
+        # Outros jogadores: server_eid → local_eid (entidade ECS real)
+        self._remote_players: dict[int, int] = {}
         # Mobs do servidor: server_eid → local_eid (entidade local no ECS)
         self._remote_mobs: dict[int, int] = {}
         # Última posição enviada ao servidor (evita envios duplicados)
@@ -2659,13 +2659,13 @@ class GameEngine:
                 if kind == "enemy":
                     self._spawn_remote_mob(eid, ent)
                 else:
-                    self._remote_players[eid] = {
+                    self._spawn_remote_player_entity(eid, {
                         "tx": ent.get("tx", 0), "ty": ent.get("ty", 0),
                         "name":     ent.get("name", "?"),
                         "class_id": ent.get("class_id", "guerreiro"),
                         "hp":       ent.get("hp", 100),
                         "hp_max":   ent.get("hp_max", 100),
-                    }
+                    })
 
         elif msg_type == MsgType.ENTITY_SPAWN:
             eid  = payload.get("eid", -1)
@@ -2675,17 +2675,17 @@ class GameEngine:
             elif kind == "enemy":
                 self._spawn_remote_mob(eid, payload)
             else:
-                self._remote_players[eid] = {
+                self._spawn_remote_player_entity(eid, {
                     "tx": payload.get("tx", 0), "ty": payload.get("ty", 0),
                     "name":     payload.get("name", "?"),
                     "class_id": payload.get("class_id", "guerreiro"),
                     "hp":       payload.get("hp", 100),
                     "hp_max":   payload.get("hp_max", 100),
-                }
+                })
 
         elif msg_type == MsgType.ENTITY_DESPAWN:
             eid = payload.get("eid", -1)
-            self._remote_players.pop(eid, None)
+            self._remove_remote_player_entity(eid)
             # Remove mob do ECS local se era um mob do servidor
             local_eid = self._remote_mobs.pop(eid, None)
             if local_eid is not None:
@@ -2731,13 +2731,13 @@ class GameEngine:
             for sp in payload.get("spawned", []):
                 eid = sp.get("eid", -1)
                 if eid != -1 and eid != self._my_eid and sp.get("kind","player") != "enemy":
-                    self._remote_players[eid] = {
+                    self._spawn_remote_player_entity(eid, {
                         "tx": sp.get("tx", 0), "ty": sp.get("ty", 0),
                         "name":     sp.get("name", "?"),
                         "class_id": sp.get("class_id", "guerreiro"),
                         "hp":       sp.get("hp", 100),
                         "hp_max":   sp.get("hp_max", 100),
-                    }
+                    })
             for eid in payload.get("despawned", []):
                 self._remote_players.pop(eid, None)
 
@@ -2848,76 +2848,96 @@ class GameEngine:
             pos.x = new_tx * _TS + _TS // 2
             pos.y = new_ty * _TS + _TS // 2
 
-    def _apply_remote_move(self, eid: int, new_tx: int, new_ty: int) -> None:
-        """Atualiza tile de jogador remoto com dead reckoning e easing."""
-        import time as _t
-        from shared.constants import TILE_SIZE as _TS
-        data = self._remote_players.get(eid)
-        if data is None:
+    # ── Jogadores remotos — abordagem ECS ────────────────────────────────────
+
+    def _spawn_remote_player_entity(self, server_eid: int, data: dict) -> None:
+        """Cria entidade ECS real para jogador remoto. TileMovementSystem anima."""
+        if server_eid in self._remote_players:
             return
+        from components import (Position, TileMovement, Renderable,
+                                 Visible, RemoteControlled)
+        from utils import start_tile_movement
+        from tileset import TILE_SIZE as _TS
 
-        old_tx = data.get("tx", new_tx)
-        old_ty = data.get("ty", new_ty)
+        tx = data.get("tx", 0)
+        ty = data.get("ty", 0)
+        px = tx * _TS + _TS // 2
+        py = ty * _TS + _TS // 2
 
-        # Captura posição pixel atual (incluindo dead reckoning em andamento)
-        cur_px, cur_py = self._interp_pixel(data, _TS)
+        _CLASS_COLORS = {"guerreiro": (200,80,80), "mago": (80,80,220), "arqueiro": (80,200,80)}
+        col = _CLASS_COLORS.get(data.get("class_id", "guerreiro"), (180, 180, 180))
 
-        # Registra direção do movimento para dead reckoning
-        data["dir_tx"]  = new_tx - old_tx
-        data["dir_ty"]  = new_ty - old_ty
-        data["px_src"]  = cur_px
-        data["py_src"]  = cur_py
-        data["tx"]      = new_tx
-        data["ty"]      = new_ty
-        data["move_t"]  = _t.monotonic()
+        local_eid = self.world.create_entity()
+        self.world.add_component(local_eid, Position(x=px, y=py, prev_x=px, prev_y=py))
+        self.world.add_component(local_eid, TileMovement(
+            current_tile_x=tx, current_tile_y=ty,
+            target_tile_x=tx,  target_tile_y=ty,
+        ))
+        self.world.add_component(local_eid, Renderable(
+            color=col, width=_TS - 4, height=_TS - 4))
+        self.world.add_component(local_eid, Visible())
+        self.world.add_component(local_eid, RemoteControlled(
+            server_eid=server_eid,
+            name=data.get("name", "?"),
+            class_id=data.get("class_id", "guerreiro"),
+            hp=data.get("hp", 100),
+            hp_max=data.get("hp_max", 100),
+        ))
+        self._remote_players[server_eid] = local_eid
 
-    @staticmethod
-    def _smooth_step(t: float) -> float:
-        """Easing smooth-step: combina com a animação do TileMovementSystem."""
-        t = max(0.0, min(1.0, t))
-        return t * t * (3.0 - 2.0 * t)
+    def _apply_remote_move(self, eid: int, new_tx: int, new_ty: int) -> None:
+        """Atualiza target_tile do jogador remoto — TileMovementSystem anima."""
+        from components import TileMovement, Position
+        from utils import start_tile_movement
+        local_eid = self._remote_players.get(eid)
+        if local_eid is None:
+            return
+        tm  = self.world.get_component(local_eid, TileMovement)
+        pos = self.world.get_component(local_eid, Position)
+        if not tm or not pos:
+            return
+        if not tm.is_moving:
+            start_tile_movement(pos, tm, new_tx, new_ty)
+        else:
+            # Entidade ainda animando: atualiza target para encadear suavemente
+            tm.target_tile_x = new_tx
+            tm.target_tile_y = new_ty
 
-    def _interp_pixel(self, data: dict, ts: int) -> tuple[float, float]:
-        """Calcula posição pixel atual com interpolação + dead reckoning."""
-        import time as _t
-        dur     = self._REMOTE_MOVE_DURATION
-        elapsed = _t.monotonic() - data.get("move_t", 0.0)
-        dst_px  = data.get("tx", 0) * ts + ts // 2
-        dst_py  = data.get("ty", 0) * ts + ts // 2
-        src_px  = data.get("px_src", dst_px)
-        src_py  = data.get("py_src", dst_py)
-
-        if elapsed < dur:
-            # Interpolação normal com easing
-            t = self._smooth_step(elapsed / dur)
-            return (src_px + (dst_px - src_px) * t,
-                    src_py + (dst_py - src_py) * t)
-
-        # Interpolação concluída — dead reckoning na mesma direção
-        dir_tx = data.get("dir_tx", 0)
-        dir_ty = data.get("dir_ty", 0)
-        over   = elapsed - dur
-        if (dir_tx != 0 or dir_ty != 0) and over < dur:
-            t_pred = self._smooth_step(over / dur)
-            pred_px = dst_px + dir_tx * ts
-            pred_py = dst_py + dir_ty * ts
-            return (dst_px + (pred_px - dst_px) * t_pred,
-                    dst_py + (pred_py - dst_py) * t_pred)
-
-        return dst_px, dst_py
-
-    # Duração da interpolação de movimento remoto.
-    # Deve igualar TileMovement.move_duration (padrão = 0.2s).
-    # Com target_tile como gatilho o MOVE chega no início da animação local
-    # → ambos animam em paralelo; sem gap = sem pause entre tiles.
-    _REMOTE_MOVE_DURATION = 0.20
+    def _remove_remote_player_entity(self, server_eid: int) -> None:
+        local_eid = self._remote_players.pop(server_eid, None)
+        if local_eid is not None:
+            try:
+                self.world.remove_entity(local_eid)
+            except Exception:
+                pass
 
     def _draw_remote_players(self, cam_x: float, cam_y: float) -> None:
-        """
-        Renderiza outros jogadores com interpolação suave entre tiles.
-        Cada jogador tem px_src/py_src (pixel origem) e px_dst/py_dst (pixel destino)
-        e move_t (timestamp do início do movimento). Interpola linearmente.
-        """
+        """Nome + HP dos jogadores remotos. Posição lida do ECS (TileMovementSystem anima)."""
+        if not self._remote_players:
+            return
+        from components import Position, RemoteControlled
+        from tileset import TILE_SIZE as _TS
+        W = H = _TS - 4
+        zoom_surf = self._zoom_surf
+
+        for server_eid, local_eid in self._remote_players.items():
+            pos = self.world.get_component(local_eid, Position)
+            rc  = self.world.get_component(local_eid, RemoteControlled)
+            if not pos or not rc:
+                continue
+            px = pos.x - W // 2 - cam_x
+            py = pos.y - H // 2 - cam_y
+            ns = self.font_xs.render(rc.name, True, (255, 255, 200))
+            zoom_surf.blit(ns, (int(px) + W // 2 - ns.get_width() // 2,
+                                int(py) - ns.get_height() - 2))
+            if rc.hp_max > 0:
+                fill_w = max(0, int(W * rc.hp / rc.hp_max))
+                pygame.draw.rect(zoom_surf, (100, 0, 0),
+                                 (int(px), int(py) + H + 2, W, 4))
+                pygame.draw.rect(zoom_surf, (0, 200, 0),
+                                 (int(px), int(py) + H + 2, fill_w, 4))
+
+    def _draw_remote_players_OLD(self, cam_x, cam_y) -> None:
         if not self._remote_players:
             return
         import time as _t

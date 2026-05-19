@@ -356,6 +356,16 @@ class PlayerControlled:
     pass
 
 @dataclass
+class RemoteControlled:
+    """Tag: jogador online controlado remotamente.
+    Exclui da lógica local de input, IA e pathfinding."""
+    server_eid: int = -1
+    name:       str = ""
+    class_id:   str = "guerreiro"
+    hp:         int = 100
+    hp_max:     int = 100
+
+@dataclass
 class Camera:
     target_entity_id: int = -1
     offset_x: float = 0.0
