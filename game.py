@@ -2764,10 +2764,9 @@ class GameEngine:
                 self._net.latency_ms = rtt
 
     def _apply_combat_result(self, cr: dict) -> None:
-        """Aplica resultado de combate do servidor: HP + texto flutuante + som."""
-        from components import Position
+        """Aplica resultado de combate do servidor: HP + texto flutuante."""
+        from components import Position, CombatStats
         from floating_text import FLT
-        from sound_manager import SOUNDS
         server_target = cr.get("target", -1)
         damage        = cr.get("damage", 0)
         outcome       = cr.get("outcome", "hit")
@@ -2788,20 +2787,20 @@ class GameEngine:
                 col = col_crit if outcome == "crit" else col_hit
                 txt = f"CRÍTICO! {damage}" if outcome == "crit" else str(damage)
                 FLT.add(txt, pos.x, pos.y, col, size="normal")
-                # Som de hit — usa canal de ataque físico
-                SOUNDS.play_random(["arrow_impact_1", "arrow_impact_2",
-                                    "arrow_impact_3"], channel_group=(4, 5))
+                # Sons: o PlayerInputSystem offline já toca o som para o atacante local.
+                # Para o observador remoto, nenhum som adicional por ora.
             return
 
         # ── Player local foi atacado (mob → player) ───────────────────
         if server_target == self._my_eid and damage > 0:
+            # Aplica dano no HP local (CombatStats.current_hp → barra de HP atualiza)
+            cs = self.world.get_component(self.player_entity, CombatStats)
+            if cs:
+                cs.current_hp = max(0, cs.current_hp - damage)
             player_pos = self.world.get_component(self.player_entity, Position)
             if player_pos:
                 txt = f"CRÍTICO! -{damage}" if outcome == "crit" else f"-{damage}"
                 FLT.add(txt, player_pos.x, player_pos.y, col_self, size="normal")
-                # Som de dano recebido
-                SOUNDS.play_random(["arrow_impact_4", "arrow_impact_5"],
-                                   channel_group=(4, 5))
 
     def _sync_combat_target(self) -> None:
         """Envia AUTO_ATTACK ao servidor quando o alvo do jogador muda."""
@@ -3000,12 +2999,16 @@ class GameEngine:
             pos = self.world.get_component(local_eid, Position)
             if not pos:
                 continue
-            px = int(pos.x - W // 2 - cam_x)
-            py = int(pos.y - W // 2 - cam_y)
+            # Posição idêntica ao RenderSystem offline:
+            # bar_y = int(draw_y - height/2) - 7  →  7px acima do topo do sprite
+            draw_x = pos.x - cam_x
+            draw_y = pos.y - cam_y
+            bar_x  = int(draw_x - W / 2)
+            bar_y  = int(draw_y - W / 2) - 7
             if hp_max > 0:
-                fill = max(0, int(W * hp / hp_max))
-                pygame.draw.rect(zoom_surf, (100, 0, 0), (px, py + W + 2, W, 4))
-                pygame.draw.rect(zoom_surf, (0, 200, 0), (px, py + W + 2, fill, 4))
+                ratio = max(0.0, hp / hp_max)
+                pygame.draw.rect(zoom_surf, (80, 0, 0),    (bar_x, bar_y, W, 4))
+                pygame.draw.rect(zoom_surf, (0, 200, 60),  (bar_x, bar_y, int(W * ratio), 4))
 
     def _remove_remote_player_entity(self, server_eid: int) -> None:
         local_eid = self._remote_players.pop(server_eid, None)
