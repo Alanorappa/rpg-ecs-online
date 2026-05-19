@@ -1156,6 +1156,7 @@ class GameEngine:
                 self._send_player_move()
                 self._sync_combat_target()
                 self._process_mob_move_queues()
+                self._ensure_remote_mobs_visible()
 
             # Se shop ou loot acabaram de abrir, fechar os outros modais
             if (not _shop_was_open_before and self._shop_system.is_open) or \
@@ -2958,6 +2959,18 @@ class GameEngine:
             self._mob_move_queues.setdefault(server_eid, []).append((new_tx, new_ty))
         else:
             start_tile_movement(pos, tm, new_tx, new_ty)
+
+    def _ensure_remote_mobs_visible(self) -> None:
+        """
+        Garante que mobs remotos sempre tenham Visible após FogSystem rodar.
+        O servidor decidiu que o cliente deve ver esses mobs (estão no AOI).
+        Sem isso, FogSystem remove Visible quando há paredes no caminho do LOS,
+        causando PlayerInputSystem limpar o target a cada frame.
+        """
+        from components import Visible
+        for local_eid in self._remote_mobs.values():
+            if self.world.get_component(local_eid, Visible) is None:
+                self.world.add_component(local_eid, Visible())
 
     def _process_mob_move_queues(self) -> None:
         """Processa fila de movimentos de mobs — chamado a cada frame."""

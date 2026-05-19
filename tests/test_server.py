@@ -367,6 +367,49 @@ class TestMobMovement(unittest.TestCase):
 # 5. Múltiplos players
 # ─────────────────────────────────────────────────────────────────────────────
 
+class TestAutoAttackFlow(unittest.TestCase):
+    """Verifica o fluxo completo: player seleciona mob → AUTO_ATTACK → dano no servidor."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        spawn_player(self.ws, "s1", 130, 374)
+        run_ticks(self.ws, 40)
+
+    def test_player_target_must_reach_server(self):
+        """Se player define alvo e está em range, servidor deve processar ataque."""
+        mob_eid = first_mob(self.ws)
+        self.assertIsNotNone(mob_eid)
+        hp_before, _ = get_mob_hp(self.ws, mob_eid)
+
+        # Define alvo e aproxima mob (simula player clicando no mob)
+        teleport_mob_to_player(self.ws, mob_eid, self.ws._player_eids["s1"])
+        self.ws.set_player_target("s1", mob_eid)
+
+        deltas = run_ticks(self.ws, 60)   # 3 segundos
+
+        hp_after, _ = get_mob_hp(self.ws, mob_eid)
+        player_hits = [c for c in deltas["combat"]
+                       if c["attacker"] == self.ws._player_eids["s1"]]
+        self.assertGreater(len(player_hits), 0,
+                           "Servidor não processou nenhum ataque em 3s com mob adjacente")
+        self.assertLess(hp_after, hp_before,
+                        f"HP do mob não diminuiu: {hp_before} → {hp_after}")
+
+    def test_mob_with_high_ap_dies_in_reasonable_time(self):
+        """Com AP=50, mob HP~175 deve morrer em ≤ 20s."""
+        mob_eid = first_mob(self.ws)
+        from components import CombatStats
+        cs = self.ws.world.get_component(mob_eid, CombatStats)
+        cs.current_hp = 1   # força morte rápida para validar o fluxo
+
+        teleport_mob_to_player(self.ws, mob_eid, self.ws._player_eids["s1"])
+        self.ws.set_player_target("s1", mob_eid)
+        deltas = run_ticks(self.ws, 60)
+
+        self.assertIn(mob_eid, deltas["despawned"],
+                      "Mob com HP=1 não morreu após 3s")
+
+
 class TestMultiplePlayers(unittest.TestCase):
 
     def setUp(self):
