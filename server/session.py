@@ -60,7 +60,11 @@ class SessionManager:
             return
         if session.entity_id != -1:
             self._eid_to_sid.pop(session.entity_id, None)
-            await self._broadcast_all(MsgType.ENTITY_DESPAWN, {"eid": session.entity_id})
+            eid = session.entity_id
+            # Remove o eid dos known_eids de todos os outros antes de despawnar
+            for other in self._sessions.values():
+                other.known_eids.discard(eid)
+            await self._broadcast_all(MsgType.ENTITY_DESPAWN, {"eid": eid})
             self.world_server.despawn_player(session_id)
         print(f"[Session] -disconnect {session.username!r}")
 
