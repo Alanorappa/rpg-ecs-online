@@ -47,7 +47,11 @@ class WorldServer:
         # Deltas acumulados no tick atual (limpos ao fim de cada tick)
         self._moved_this_tick:    list[dict] = []
         self._spawned_this_tick:  list[dict] = []
-        self._despawned_this_tick: list[int] = []
+        self._despawned_this_tick: list[int]  = []
+        self._combat_this_tick:   list[dict] = []   # resultados de combate
+
+        # Timer de ataque por jogador: session_id → segundos até próximo hit
+        self._attack_timers: dict[str, float] = {}
 
         # Histórico de snapshots
         self._snapshots: list[tuple[int, dict]] = []
@@ -117,7 +121,7 @@ class WorldServer:
         Cria entidade do jogador no ECS.
         Retorna entity_id. Chamado pelo SessionManager no login.
         """
-        from components import Position, TileMovement, PlayerControlled, CombatState
+        from components import Position, TileMovement, PlayerControlled, CombatState, CombatStats
 
         tx = int(char_data.get("tile_x", 10))
         ty = int(char_data.get("tile_y", 10))
@@ -132,8 +136,17 @@ class WorldServer:
         ))
         # PlayerControlled: SpawnZoneSystem e EnemyAISystem encontram o player
         self.world.add_component(eid, PlayerControlled())
-        # CombatState mínimo: EnemyAISystem lê in_combat/target para lógica de aggro
+        # CombatState: aggro e estado de combate
         self.world.add_component(eid, CombatState())
+        # CombatStats: atributos de combate baseados na classe
+        _class_ap = {"guerreiro": 12, "mago": 6, "arqueiro": 10}
+        _class_interval = {"guerreiro": 2.0, "mago": 2.5, "arqueiro": 1.8}
+        _cls = char_data.get("class_id", "guerreiro")
+        cs_player = CombatStats(
+            base_attack_power=_class_ap.get(_cls, 10),
+        )
+        cs_player.attack_interval = _class_interval.get(_cls, 2.0)
+        self.world.add_component(eid, cs_player)
 
         self._player_eids[session_id] = eid
 
@@ -239,6 +252,94 @@ class WorldServer:
                 })
         return result
 
+    def set_player_target(self, session_id: str, target_eid: int) -> None:
+        """Define o alvo de combate do jogador. target_eid=-1 para parar."""
+        from components import CombatState
+        eid = self._player_eids.get(session_id)
+        if eid is None:
+            return
+        cs = self.world.get_component(eid, CombatState)
+        if cs:
+            cs.target_entity_id = target_eid
+
+    def _process_combat(self, dt: float) -> None:
+        """Processa auto-attacks de todos os jogadores em combate."""
+        import random
+        from components import (CombatState, CombatStats, TileMovement, Enemy)
+        from utils import chebyshev
+
+        for session_id, player_eid in list(self._player_eids.items()):
+            cs  = self.world.get_component(player_eid, CombatState)
+            if not cs or cs.target_entity_id == -1:
+                continue
+
+            target_eid = cs.target_entity_id
+            # Valida: mob existe e está vivo
+            target_cs = self.world.get_component(target_eid, CombatStats)
+            if not target_cs or target_cs.current_hp <= 0:
+                cs.target_entity_id = -1
+                continue
+            if not self.world.get_component(target_eid, Enemy):
+                cs.target_entity_id = -1
+                continue
+
+            # Valida range (melee = 1 tile, ranged = até 7)
+            player_tm = self.world.get_component(player_eid, TileMovement)
+            target_tm = self.world.get_component(target_eid, TileMovement)
+            if not player_tm or not target_tm:
+                continue
+            dist = chebyshev(player_tm.current_tile_x, player_tm.current_tile_y,
+                             target_tm.current_tile_x, target_tm.current_tile_y)
+            player_cs = self.world.get_component(player_eid, CombatStats)
+            attack_range = 7 if getattr(player_cs, "is_ranged", False) else 1
+            if dist > attack_range:
+                continue
+
+            # Cooldown de ataque
+            timer = self._attack_timers.get(session_id, 0.0)
+            timer -= dt
+            if timer > 0:
+                self._attack_timers[session_id] = timer
+                continue
+
+            # Reseta timer para o próximo ataque
+            interval = player_cs.attack_interval if player_cs else 2.0
+            self._attack_timers[session_id] = interval
+
+            # Cálculo de dano simplificado (sem Equipment, apenas attack_power)
+            ap      = player_cs.attack_power if player_cs else 5
+            base_dmg = random.randint(max(1, int(ap * 0.8)), max(1, int(ap * 1.2)))
+            armor   = getattr(target_cs, "armor", 0)
+            dmg     = max(1, int(base_dmg * max(0.01, 1.0 - armor * 0.001)))
+            outcome = "crit" if random.random() < 0.05 else "hit"
+            if outcome == "crit":
+                dmg = int(dmg * 1.5)
+
+            # Aplica dano
+            target_cs.current_hp = max(0, target_cs.current_hp - dmg)
+            hp_after = target_cs.current_hp
+
+            self._combat_this_tick.append({
+                "attacker": player_eid,
+                "target":   target_eid,
+                "damage":   dmg,
+                "outcome":  outcome,
+                "hp_after": hp_after,
+                "source":   "auto",
+            })
+
+            # Morte do mob
+            if hp_after <= 0:
+                self._mob_eids.discard(target_eid)
+                self._despawned_this_tick.append(target_eid)
+                try:
+                    self.world.remove_entity(target_eid)
+                except Exception:
+                    pass
+                cs.target_entity_id = -1
+                self._attack_timers.pop(session_id, None)
+                print(f"[Combat] mob {target_eid} morto por player {player_eid}")
+
     def get_mobs_in_aoi(self, center_tx: int, center_ty: int, radius: int) -> list[dict]:
         """Retorna lista de mobs no AOI — para WORLD_STATE inicial."""
         from components import TileMovement, CombatStats, AIControlled, Renderable
@@ -300,6 +401,7 @@ class WorldServer:
                     self._moved_this_tick.clear()
                     self._spawned_this_tick.clear()
                     self._despawned_this_tick.clear()
+                    self._combat_this_tick.clear()
                 next_tick += TICK_INTERVAL
                 if time.perf_counter() - next_tick > TICK_INTERVAL:
                     next_tick = time.perf_counter()
@@ -326,6 +428,8 @@ class WorldServer:
         for system in self._systems:
             system.update(dt=dt)
 
+        self._process_combat(dt)
+
         # Detecta novos mobs criados pelo SpawnZoneSystem neste tick
         for eid, tm in self.world.get_entities_with(TileMovement):
             if self.world.get_component(eid, Enemy) and eid not in self._mob_eids \
@@ -349,6 +453,7 @@ class WorldServer:
                     "from_tx": old[0], "from_ty": old[1],
                 })
 
+        # Limpa deltas de erro do try/except se necessário
         deltas = self._collect_deltas()
         self._store_snapshot()
 
@@ -398,10 +503,12 @@ class WorldServer:
             "effects":   [],
             "spawned":   list(self._spawned_this_tick),
             "despawned": list(self._despawned_this_tick),
+            "combat":    list(self._combat_this_tick),
         }
         self._moved_this_tick.clear()
         self._spawned_this_tick.clear()
         self._despawned_this_tick.clear()
+        self._combat_this_tick.clear()
         return deltas
 
     def _store_snapshot(self) -> None:

@@ -106,8 +106,11 @@ class GameEngine:
         self._my_eid      = -1       # entity_id atribuído pelo servidor
         # Outros jogadores: server_eid → local_eid (entidade ECS real)
         self._remote_players: dict[int, int] = {}
-        # Mobs do servidor: server_eid → local_eid (entidade local no ECS)
-        self._remote_mobs: dict[int, int] = {}
+        # Mobs do servidor: server_eid → local_eid e reverse
+        self._remote_mobs:         dict[int, int] = {}
+        self._remote_mobs_reverse: dict[int, int] = {}  # local_eid → server_eid
+        # Último alvo enviado ao servidor (evita reenvios desnecessários)
+        self._net_last_target: int = -2
         # Última posição enviada ao servidor (evita envios duplicados)
         self._net_last_tx: int = -1
         self._net_last_ty: int = -1
@@ -1146,9 +1149,10 @@ class GameEngine:
                 else:
                     system.update(ev, dt)
 
-            # Detecta movimento do player e envia ao servidor (modo online)
+            # Sincronização online: movimento + alvo de combate
             if self._online_mode:
                 self._send_player_move()
+                self._sync_combat_target()
 
             # Se shop ou loot acabaram de abrir, fechar os outros modais
             if (not _shop_was_open_before and self._shop_system.is_open) or \
@@ -2689,6 +2693,7 @@ class GameEngine:
             # Remove mob do ECS local se era um mob do servidor
             local_eid = self._remote_mobs.pop(eid, None)
             if local_eid is not None:
+                self._remote_mobs_reverse.pop(local_eid, None)
                 try:
                     self.world.remove_entity(local_eid)
                 except Exception:
@@ -2740,6 +2745,9 @@ class GameEngine:
                     })
             for eid in payload.get("despawned", []):
                 self._remote_players.pop(eid, None)
+            # Resultados de combate: atualiza HP e mostra texto flutuante
+            for cr in payload.get("combat", []):
+                self._apply_combat_result(cr)
 
         elif msg_type == MsgType.STATS_UPDATE:
             eid = payload.get("eid", -1)
@@ -2751,6 +2759,49 @@ class GameEngine:
             if self._net:
                 rtt = int(__import__("time").time() * 1000) - payload.get("client_ts", 0)
                 self._net.latency_ms = rtt
+
+    def _apply_combat_result(self, cr: dict) -> None:
+        """Aplica resultado de combate recebido do servidor."""
+        from components import CombatStats
+        from floating_text import FLT
+        server_target = cr.get("target", -1)
+        damage        = cr.get("damage", 0)
+        outcome       = cr.get("outcome", "hit")
+        hp_after      = cr.get("hp_after", 0)
+
+        # Atualiza HP do mob no ECS local
+        local_eid = self._remote_mobs.get(server_target)
+        if local_eid is not None:
+            cs = self.world.get_component(local_eid, CombatStats)
+            if cs:
+                cs.current_hp = hp_after
+            # Texto flutuante de dano
+            from components import Position
+            pos = self.world.get_component(local_eid, Position)
+            if pos and damage > 0:
+                col = (255, 255, 80) if outcome == "crit" else (255, 80, 80)
+                txt = f"CRÍTICO! {damage}" if outcome == "crit" else str(damage)
+                FLT.add(txt, pos.x, pos.y, col, size="normal")
+
+    def _sync_combat_target(self) -> None:
+        """Envia AUTO_ATTACK ao servidor quando o alvo do jogador muda."""
+        if not self._net or not self._net.connected or self._my_eid == -1:
+            return
+        from components import CombatState
+        cs = self.world.get_component(self.player_entity, CombatState)
+        if not cs:
+            return
+        local_target = cs.target_entity_id
+        # Converte local_eid para server_eid (só mobs remotos são válidos)
+        server_target = self._remote_mobs_reverse.get(local_target, -1)
+        # Se não é mob remoto e não é -1 (desfoque de alvo), usa -1
+        if local_target != -1 and server_target == -1:
+            server_target = -1
+        if server_target != self._net_last_target:
+            self._net.send(
+                __import__("shared.messages", fromlist=["MsgType"]).MsgType.AUTO_ATTACK,
+                {"tid": server_target})
+            self._net_last_target = server_target
 
     def _send_player_move(self) -> None:
         """
@@ -2829,7 +2880,8 @@ class GameEngine:
             ren = self.world.get_component(local_eid, Renderable)
             if ren:
                 ren.color = tuple(server_color)
-        self._remote_mobs[server_eid] = local_eid
+        self._remote_mobs[server_eid]         = local_eid
+        self._remote_mobs_reverse[local_eid]  = server_eid
 
     def _move_remote_mob(self, server_eid: int, new_tx: int, new_ty: int) -> None:
         """Atualiza posição de mob remoto no ECS local."""

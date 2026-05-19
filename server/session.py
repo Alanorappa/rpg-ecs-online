@@ -186,8 +186,8 @@ class SessionManager:
     async def _handle_auto_attack(self, session: Session, payload: dict, ts: int) -> None:
         if not session.authenticated:
             return
-        # TODO: CombatSystem (Marco 2)
-        print(f"[Combat] {session.username} → attack tid={payload.get('tid')}")
+        target_eid = int(payload.get("tid", -1))
+        self.world_server.set_player_target(session.session_id, target_eid)
 
     async def _handle_cast_skill(self, session: Session, payload: dict, ts: int) -> None:
         if not session.authenticated:
@@ -252,6 +252,7 @@ class SessionManager:
         despawned = deltas.get("despawned", [])   # sempre envia — cliente ignora desconhecidos
         stats     = deltas.get("stats", [])
         effects   = deltas.get("effects", [])
+        combat    = deltas.get("combat", [])      # resultados de combate neste tick
 
         result: dict = {}
         if moved:     result["moved"]     = moved
@@ -259,6 +260,7 @@ class SessionManager:
         if despawned: result["despawned"] = despawned
         if stats:     result["stats"]     = stats
         if effects:   result["effects"]   = effects
+        if combat:    result["combat"]    = combat   # sem filtro AOI: todos veem dano no range
         return result
 
     # ── Broadcast helpers ─────────────────────────────────────────────────────
