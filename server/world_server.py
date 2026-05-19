@@ -138,14 +138,20 @@ class WorldServer:
         self.world.add_component(eid, PlayerControlled())
         # CombatState: aggro e estado de combate
         self.world.add_component(eid, CombatState())
-        # CombatStats: atributos de combate baseados na classe
-        _class_ap = {"guerreiro": 12, "mago": 6, "arqueiro": 10}
-        _class_interval = {"guerreiro": 2.0, "mago": 2.5, "arqueiro": 1.8}
-        _cls = char_data.get("class_id", "guerreiro")
-        cs_player = CombatStats(
-            base_attack_power=_class_ap.get(_cls, 10),
-        )
-        cs_player.attack_interval = _class_interval.get(_cls, 2.0)
+        # CombatStats: usa stats_json salvo para AP real; fallback por classe
+        import json as _json
+        _cls          = char_data.get("class_id", "guerreiro")
+        _stats_raw    = char_data.get("stats_json") or char_data.get("stats", {})
+        _stats        = _json.loads(_stats_raw) if isinstance(_stats_raw, str) else _stats_raw
+        _class_ap     = {"guerreiro": 20, "mago": 10, "arqueiro": 18}
+        _class_hp     = {"guerreiro": 180, "mago": 100, "arqueiro": 120}
+        _class_int    = {"guerreiro": 2.0, "mago": 2.5, "arqueiro": 1.8}
+        _ap           = _stats.get("attack_power", _class_ap.get(_cls, 20))
+        _hp           = _stats.get("max_hp",       _class_hp.get(_cls, 150))
+        cs_player     = CombatStats(base_attack_power=int(_ap))
+        cs_player.max_hp      = int(_hp)
+        cs_player.current_hp  = int(_hp)
+        cs_player.attack_interval = _class_int.get(_cls, 2.0)
         self.world.add_component(eid, cs_player)
 
         self._player_eids[session_id] = eid
@@ -341,6 +347,9 @@ class WorldServer:
                 print(f"[Combat] mob {target_eid} morto por player {player_eid}")
 
         # ── Mob → Player ───────────────────────────────────────────────────
+        # Controla quantos mobs atacam por tick por player (máximo = 1 mob melee)
+        player_hit_this_tick: set[int] = set()
+
         for mob_eid in list(self._mob_eids):
             mob_state = self.world.get_component(mob_eid, CombatState)
             if not mob_state or mob_state.target_entity_id == -1:
@@ -357,15 +366,27 @@ class WorldServer:
                          player_tm.current_tile_x, player_tm.current_tile_y) > 1:
                 continue
 
+            mob_cs = self.world.get_component(mob_eid, CombatStats)
+            if not mob_cs:
+                continue
+
             mob_key = f"mob_{mob_eid}"
-            mob_timer = self._attack_timers.get(mob_key, 0.0) - dt
+            # Stagger inicial: primeiro ataque é aleatório dentro do intervalo
+            if mob_key not in self._attack_timers:
+                self._attack_timers[mob_key] = random.uniform(
+                    mob_cs.attack_interval * 0.5, mob_cs.attack_interval)
+
+            mob_timer = self._attack_timers[mob_key] - dt
             if mob_timer > 0:
                 self._attack_timers[mob_key] = mob_timer
                 continue
 
-            mob_cs = self.world.get_component(mob_eid, CombatStats)
-            if not mob_cs:
+            # Limite: apenas 1 mob por player por tick (evita burst de dano)
+            if player_eid in player_hit_this_tick:
+                self._attack_timers[mob_key] = mob_timer  # mantém timer negativo para próximo tick
                 continue
+            player_hit_this_tick.add(player_eid)
+
             self._attack_timers[mob_key] = mob_cs.attack_interval
 
             ap   = mob_cs.attack_power
