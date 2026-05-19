@@ -50,14 +50,35 @@ def run_ticks(ws, n: int, dt: float = 0.05) -> dict:
     return accumulated
 
 
+def set_entity_tile(ws, eid: int, tx: int, ty: int) -> None:
+    """Sincroniza TileMovement E Position para o tile dado."""
+    from components import TileMovement, Position
+    from tileset import TILE_SIZE
+    tm = ws.world.get_component(eid, TileMovement)
+    pos = ws.world.get_component(eid, Position)
+    if tm:
+        tm.current_tile_x = tx;  tm.current_tile_y = ty
+        tm.target_tile_x  = tx;  tm.target_tile_y  = ty
+        tm.is_moving = False;    tm.progress = 0.0
+    if pos:
+        pos.x = tx * TILE_SIZE + TILE_SIZE // 2
+        pos.y = ty * TILE_SIZE + TILE_SIZE // 2
+        pos.prev_x = pos.x;     pos.prev_y = pos.y
+
+
 def teleport_mob_to_player(ws, mob_eid: int, player_eid: int, offset_x: int = 1):
-    """Move um mob para o tile adjacente ao player (para testar combate melee)."""
-    from components import TileMovement
-    mob_tm = ws.world.get_component(mob_eid, TileMovement)
-    ptm    = ws.world.get_component(player_eid, TileMovement)
-    if mob_tm and ptm:
-        mob_tm.current_tile_x = ptm.current_tile_x + offset_x
-        mob_tm.current_tile_y = ptm.current_tile_y
+    """Move mob para o tile adjacente ao player, sincroniza Position e reseta AI."""
+    from components import TileMovement, AIControlled
+    ptm = ws.world.get_component(player_eid, TileMovement)
+    if ptm:
+        set_entity_tile(ws, mob_eid, ptm.current_tile_x + offset_x, ptm.current_tile_y)
+    # Reseta AI state para IDLE — garante que aggro check vai funcionar
+    ai = ws.world.get_component(mob_eid, AIControlled)
+    if ai:
+        ai.state              = "IDLE"
+        ai.path               = []
+        ai.aggroed_by_damage  = False
+        ai.path_recalc_timer  = 0.0
 
 
 def first_mob(ws) -> int | None:

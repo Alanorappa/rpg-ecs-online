@@ -67,11 +67,15 @@ class WorldServer:
     # ── Inicialização do mundo ────────────────────────────────────────────────
 
     def _load_map(self) -> None:
-        """Carrega mapa, cria SpawnZones e inicializa sistemas de mob (headless)."""
+        """
+        Carrega mapa e inicializa os MESMOS sistemas do jogo offline (headless).
+        Usa register_services() para habilitar deal_damage() e EnemyAISystem.
+        """
         from map_loader import load_map_csv
         from entity_factory import create_tilemap
-        from systems import SpawnZoneSystem
-        from server.mob_system import ServerMobSystem
+        from systems import (SpawnZoneSystem, EnemyAISystem, EnemyAbilitySystem,
+                             TileValidationSystem, PathfindingSystem, CombatSystem,
+                             TileMovementSystem, register_services)
 
         print(f"[WorldServer] carregando mapa: {self._map_file}")
         terrain_matrix, object_matrix, spawn_points, terrain_visual = \
@@ -82,13 +86,27 @@ class WorldServer:
 
         self._create_spawn_zones(spawn_points.get("spawn_zones", []))
 
-        # SpawnZoneSystem cria mobs; ServerMobSystem faz AI sem pathfinding
-        self._mob_system = ServerMobSystem(self.world, self._player_eids, self._mob_eids)
+        # Cria os mesmos sistemas de serviço do game.py offline
+        tile_validation = TileValidationSystem(self.world)
+        pathfinding     = PathfindingSystem(self.world)
+        combat          = CombatSystem(self.world)
+
+        # Registra serviços — habilita deal_damage() e EnemyAISystem.pathfinding
+        register_services(combat=combat, pathfinding=pathfinding,
+                          tile_validation=tile_validation)
+
+        # Sistemas de lógica idênticos ao offline — sem render, sem input
+        self._enemy_ai_system = EnemyAISystem(self.world, player_entity_id=-1)
+        self._enemy_ab_system = EnemyAbilitySystem(self.world, player_entity_id=-1)
+
         self._systems = [
-            SpawnZoneSystem(self.world),
-            self._mob_system,
+            tile_validation,                          # cache de tiles ocupados
+            SpawnZoneSystem(self.world),              # spawn de mobs (igual offline)
+            self._enemy_ai_system,                    # IA: aggro, pathfinding, ataque
+            self._enemy_ab_system,                    # habilidades especiais de mobs
+            TileMovementSystem(self.world),           # avança progress→current_tile (headless)
         ]
-        print(f"[WorldServer] mapa OK — SpawnZoneSystem + ServerMobSystem ativos")
+        print(f"[WorldServer] mapa OK — EnemyAISystem real + register_services ativos")
 
     def _create_spawn_zones(self, zones_data: list) -> None:
         """Cria entidades SpawnZone a partir dos dados já processados pelo map_loader.
@@ -138,6 +156,9 @@ class WorldServer:
         self.world.add_component(eid, PlayerControlled())
         # CombatState: aggro e estado de combate
         self.world.add_component(eid, CombatState())
+        # Visible: EnemyAISystem verifica se o player está "visível" para mobs
+        from components import Visible as _Vis2
+        self.world.add_component(eid, _Vis2())
         # CombatStats: prioridade — stats enviados pelo cliente > stats_json > fallback por classe
         import json as _json
         _cls          = char_data.get("class_id", "guerreiro")
@@ -271,76 +292,75 @@ class WorldServer:
         if cs:
             cs.target_entity_id = target_eid
 
-    def _process_combat(self, dt: float) -> None:
-        """Processa auto-attacks de todos os jogadores em combate."""
-        import random
-        from components import (CombatState, CombatStats, TileMovement, Enemy)
+    def _process_player_attacks(self, dt: float,
+                               player_hp_snapshot: dict[int, int]) -> None:
+        """
+        Processa auto-attacks dos jogadores em mobs.
+
+        Usa deal_damage() do offline — mesma fórmula de dano, armor reduction,
+        crit, dodge, parry. Mob→player é tratado detectando a variação de HP
+        após EnemyAISystem rodar (EnemyAISystem chama deal_damage internamente).
+        """
+        from systems import deal_damage
+        from components import CombatState, CombatStats, TileMovement, Enemy, PendingDeath
         from utils import chebyshev
 
+        # ── Player → Mob ───────────────────────────────────────────────────
         for session_id, player_eid in list(self._player_eids.items()):
-            cs  = self.world.get_component(player_eid, CombatState)
+            cs = self.world.get_component(player_eid, CombatState)
             if not cs or cs.target_entity_id == -1:
                 continue
 
             target_eid = cs.target_entity_id
-            # Valida: mob existe e está vivo
+            if target_eid not in self._mob_eids:
+                cs.target_entity_id = -1
+                continue
+
             target_cs = self.world.get_component(target_eid, CombatStats)
             if not target_cs or target_cs.current_hp <= 0:
                 cs.target_entity_id = -1
                 continue
-            if not self.world.get_component(target_eid, Enemy):
-                cs.target_entity_id = -1
-                continue
 
-            # Valida range (melee = 1 tile, ranged = até 7)
+            # Valida range
             player_tm = self.world.get_component(player_eid, TileMovement)
             target_tm = self.world.get_component(target_eid, TileMovement)
             if not player_tm or not target_tm:
                 continue
-            dist = chebyshev(player_tm.current_tile_x, player_tm.current_tile_y,
-                             target_tm.current_tile_x, target_tm.current_tile_y)
-            player_cs = self.world.get_component(player_eid, CombatStats)
+            player_cs    = self.world.get_component(player_eid, CombatStats)
             attack_range = 7 if getattr(player_cs, "is_ranged", False) else 1
-            if dist > attack_range:
+            if chebyshev(player_tm.current_tile_x, player_tm.current_tile_y,
+                         target_tm.current_tile_x, target_tm.current_tile_y) > attack_range:
                 continue
 
-            # Cooldown de ataque
-            timer = self._attack_timers.get(session_id, 0.0)
-            timer -= dt
+            # Cooldown de ataque (inicializa em 0 para atacar imediatamente no primeiro range)
+            timer = self._attack_timers.get(session_id, 0.0) - dt
             if timer > 0:
                 self._attack_timers[session_id] = timer
                 continue
-
-            # Reseta timer para o próximo ataque
             interval = player_cs.attack_interval if player_cs else 2.0
             self._attack_timers[session_id] = interval
 
-            # Cálculo de dano simplificado (sem Equipment, apenas attack_power)
-            ap      = player_cs.attack_power if player_cs else 5
-            base_dmg = random.randint(max(1, int(ap * 0.8)), max(1, int(ap * 1.2)))
-            armor   = getattr(target_cs, "armor", 0)
-            dmg     = max(1, int(base_dmg * max(0.01, 1.0 - armor * 0.001)))
-            outcome = "crit" if random.random() < 0.05 else "hit"
-            if outcome == "crit":
-                dmg = int(dmg * 1.5)
-
-            # Aplica dano
-            target_cs.current_hp = max(0, target_cs.current_hp - dmg)
-            hp_after = target_cs.current_hp
+            # ── deal_damage() do offline: mesma fórmula, armor, crit, dodge ──
+            hp_before = target_cs.current_hp
+            dead      = deal_damage(player_eid, target_eid, "physical")
+            hp_after  = 0 if dead else target_cs.current_hp
+            damage    = max(0, hp_before - hp_after)
 
             self._combat_this_tick.append({
                 "attacker": player_eid,
                 "target":   target_eid,
-                "damage":   dmg,
-                "outcome":  outcome,
+                "damage":   damage,
+                "outcome":  "crit" if damage > int(hp_before * 0.15) else "hit",
                 "hp_after": hp_after,
                 "source":   "auto",
             })
 
-            # Morte do mob
-            if hp_after <= 0:
+            if dead:
+                # deal_damage adicionou PendingDeath; removemos manualmente
+                # (sem DeathHandlerSystem, para evitar loot/corpse no servidor por enquanto)
                 self._mob_eids.discard(target_eid)
-                self._despawned_this_tick.append(target_eid)
+                if target_eid not in self._despawned_this_tick:
+                    self._despawned_this_tick.append(target_eid)
                 try:
                     self.world.remove_entity(target_eid)
                 except Exception:
@@ -349,74 +369,32 @@ class WorldServer:
                 self._attack_timers.pop(session_id, None)
                 print(f"[Combat] mob {target_eid} morto por player {player_eid}")
 
-        # ── Mob → Player ───────────────────────────────────────────────────
-        # Controla quantos mobs atacam por tick por player (máximo = 1 mob melee)
-        player_hit_this_tick: set[int] = set()
-
-        for mob_eid in list(self._mob_eids):
-            mob_state = self.world.get_component(mob_eid, CombatState)
-            if not mob_state or mob_state.target_entity_id == -1:
+        # ── Mob → Player: detectado via variação de HP após EnemyAISystem ──
+        # EnemyAISystem já chamou deal_damage() nos players. Basta comparar
+        # o snapshot de HP capturado antes dos sistemas rodarem.
+        for peid, hp_before in player_hp_snapshot.items():
+            pcs = self.world.get_component(peid, CombatStats)
+            if not pcs:
                 continue
-            player_eid = mob_state.target_entity_id
-            if player_eid not in self._player_eids.values():
-                continue
-
-            mob_tm     = self.world.get_component(mob_eid, TileMovement)
-            player_tm  = self.world.get_component(player_eid, TileMovement)
-            if not mob_tm or not player_tm:
-                continue
-            if chebyshev(mob_tm.current_tile_x, mob_tm.current_tile_y,
-                         player_tm.current_tile_x, player_tm.current_tile_y) > 1:
-                continue
-
-            mob_cs = self.world.get_component(mob_eid, CombatStats)
-            if not mob_cs:
-                continue
-
-            mob_key = f"mob_{mob_eid}"
-            # Stagger inicial: primeiro ataque é aleatório dentro do intervalo
-            if mob_key not in self._attack_timers:
-                self._attack_timers[mob_key] = random.uniform(
-                    mob_cs.attack_interval * 0.5, mob_cs.attack_interval)
-
-            mob_timer = self._attack_timers[mob_key] - dt
-            if mob_timer > 0:
-                self._attack_timers[mob_key] = mob_timer
-                continue
-
-            # Limite: apenas 1 mob por player por tick (evita burst de dano)
-            if player_eid in player_hit_this_tick:
-                self._attack_timers[mob_key] = mob_timer  # mantém timer negativo para próximo tick
-                continue
-            player_hit_this_tick.add(player_eid)
-
-            self._attack_timers[mob_key] = mob_cs.attack_interval
-
-            ap   = mob_cs.attack_power
-            dmg  = random.randint(max(1, int(ap * 0.8)), max(1, int(ap * 1.2)))
-            outcome = "crit" if random.random() < 0.05 else "hit"
-            if outcome == "crit":
-                dmg = int(dmg * 1.5)
-
-            # Aplica dano no HP do player no servidor (fonte de verdade)
-            player_cs = self.world.get_component(player_eid, CombatStats)
-            hp_after  = -1
-            if player_cs:
-                player_cs.current_hp = max(0, player_cs.current_hp - dmg)
-                hp_after = player_cs.current_hp
-
-            self._combat_this_tick.append({
-                "attacker": mob_eid,
-                "target":   player_eid,
-                "damage":   dmg,
-                "outcome":  outcome,
-                "hp_after": hp_after,
-                "source":   "auto",
-            })
-
-            # Detecta morte do player
-            if hp_after == 0:
-                self._handle_player_death(player_eid)
+            hp_now = pcs.current_hp
+            if hp_now < hp_before:
+                damage = hp_before - hp_now
+                self._combat_this_tick.append({
+                    "attacker": -1,          # EnemyAISystem não expõe atacante
+                    "target":   peid,
+                    "damage":   damage,
+                    "outcome":  "hit",
+                    "hp_after": max(0, hp_now),
+                    "source":   "auto",
+                })
+                if hp_now <= 0:
+                    # Remove PendingDeath adicionado pelo deal_damage do EnemyAI
+                    from components import PendingDeath as _PD
+                    try:
+                        self.world.remove_component(peid, _PD)
+                    except Exception:
+                        pass
+                    self._handle_player_death(peid)
 
     # Tile de respawn padrão do mapa — deve coincidir com spawn do mapa offline
     RESPAWN_TILE = (115, 389)
@@ -586,27 +564,37 @@ class WorldServer:
         if hasattr(self, "_enemy_ab_system"):
             self._enemy_ab_system.player_entity_id = first_player_eid
 
-        # Snapshot de posições ANTES do tick (para detectar mobs que se moveram)
-        from components import TileMovement, Enemy
-        pre_mob_pos: dict[int, tuple[int, int]] = {}
+        from components import TileMovement, Enemy, CombatStats
+
+        # Snapshot de posições dos mobs e HP dos players ANTES dos sistemas
+        pre_mob_pos:     dict[int, tuple[int, int]] = {}
+        player_hp_snap:  dict[int, int]             = {}
         for eid, tm in self.world.get_entities_with(TileMovement):
             if eid in self._mob_eids:
                 pre_mob_pos[eid] = (tm.current_tile_x, tm.current_tile_y)
+        for peid in self._player_eids.values():
+            pcs = self.world.get_component(peid, CombatStats)
+            player_hp_snap[peid] = pcs.current_hp if pcs else 0
 
+        # Roda sistemas offline reais (EnemyAISystem inclui mob→player via deal_damage)
         for system in self._systems:
             system.update(dt=dt)
 
-        self._process_combat(dt)
+        # Player→mob: usa deal_damage() offline; Mob→player: detectado por variação de HP
+        self._process_player_attacks(dt, player_hp_snap)
 
         # Detecta novos mobs criados pelo SpawnZoneSystem neste tick
         for eid, tm in self.world.get_entities_with(TileMovement):
             if self.world.get_component(eid, Enemy) and eid not in self._mob_eids \
                     and eid not in self._player_eids.values():
                 self._mob_eids.add(eid)
-                # Garante que o mob tem CombatState para aggro e combat
-                from components import CombatState as _CS
+                # CombatState: necessário para aggro do EnemyAISystem
+                from components import CombatState as _CS, Visible as _Vis
                 if not self.world.get_component(eid, _CS):
                     self.world.add_component(eid, _CS())
+                # Visible: EnemyAISystem filtra por Visible (FogSystem não roda no servidor)
+                if not self.world.get_component(eid, _Vis):
+                    self.world.add_component(eid, _Vis())
                 self._emit_mob_spawn(eid, tm)
 
         # Detecta mobs que se moveram neste tick

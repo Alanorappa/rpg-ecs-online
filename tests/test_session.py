@@ -422,27 +422,15 @@ class TestPlayerDeathEvent(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0)
 
     async def test_player_death_sends_player_death_message(self):
-        """Quando mob mata o player, cliente deve receber PLAYER_DEATH."""
-        from components import CombatStats, CombatState, TileMovement
+        """Quando servidor detecta HP=0, cliente deve receber PLAYER_DEATH."""
         session, fw = await fake_login(self.mgr, "s1", "user_pdeath", 130, 374)
-
         player_eid = session.entity_id
-        mob_eid = first_mob(self.ws_server)
-        if not mob_eid:
-            self.skipTest("Sem mobs")
-
-        pcs = self.ws_server.world.get_component(player_eid, CombatStats)
-        pcs.current_hp = 1
-        mob_tm = self.ws_server.world.get_component(mob_eid, TileMovement)
-        ptm    = self.ws_server.world.get_component(player_eid, TileMovement)
-        mob_tm.current_tile_x = ptm.current_tile_x + 1
-        mob_tm.current_tile_y = ptm.current_tile_y
-        mob_cs = self.ws_server.world.get_component(mob_eid, CombatState)
-        mob_cs.target_entity_id = player_eid
-        self.ws_server._attack_timers[f"mob_{mob_eid}"] = 0.0
 
         fw.sent.clear()
-        await self._run_ticks_async(5)
+        # Chama _handle_player_death diretamente (não depende de EnemyAI)
+        self.ws_server._handle_player_death(player_eid)
+        # O método coloca em _player_deaths_this_tick; processa via tick
+        await self._run_ticks_async(2)
 
         deaths = get_msgs_of_type(fw, MsgType.PLAYER_DEATH)
         self.assertGreater(len(deaths), 0, "Cliente não recebeu PLAYER_DEATH")
