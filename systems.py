@@ -63,7 +63,8 @@ def register_services(combat=None, pathfinding=None, tile_validation=None) -> No
 def deal_damage(attacker_id: int, target_id: int, damage_type: str,
                 base_ability_damage: float = 0, apply_armor_reduction: bool = True,
                 multiplier: float = 1.0, is_ability: bool = False,
-                pre_outcome: str = "") -> bool:
+                pre_outcome: str = "") -> tuple:
+    """Retorna (dead: bool, outcome: str). outcome = 'hit'|'crit'|'block'|'miss'|'dodge'|'parry'|''."""
     return _svc['combat'].deal_damage(
         attacker_id, target_id, damage_type,
         base_ability_damage, apply_armor_reduction, multiplier, is_ability,
@@ -467,19 +468,23 @@ class CombatSystem(System):
                     apply_armor_reduction: bool = True,
                     multiplier: float = 1.0,
                     is_ability: bool = False,
-                    pre_outcome: str = "") -> bool:
-        """Aplica dano de um atacante a um alvo. Retorna True se o alvo foi derrotado."""
+                    pre_outcome: str = "") -> tuple:
+        """Aplica dano de um atacante a um alvo.
+        Retorna (dead: bool, outcome: str).
+        outcome = 'hit'|'crit'|'block'|'miss'|'dodge'|'parry'|'immune'|''.
+        self.last_outcome mantido para backward compat com código offline.
+        """
         attacker_stats = self._get_combat_stats(attacker_id)
         target_stats   = self._get_combat_stats(target_id)
         if not attacker_stats or not target_stats:
-            return False
+            return False, ""
         if target_stats.current_hp <= 0:
-            return True
+            return True, "hit"
 
         # Imunidade (ex: Bloco de Gelo)
         target_state = self.world.get_component(target_id, CombatState)
         if target_state and target_state.is_immune:
-            return False
+            return False, "immune"
 
         attacker_is_player = self.world.get_component(attacker_id, PlayerControlled) is not None
         target_is_player   = self.world.get_component(target_id,   PlayerControlled) is not None
@@ -516,15 +521,15 @@ class CombatSystem(System):
             self._emit_avoidance_feedback(outcome, _tx, _ty,
                                           attacker_id, target_id,
                                           attacker_is_player, target_is_player)
-            self.last_outcome = outcome
-            return False
+            self.last_outcome = outcome   # backward compat offline
+            return False, outcome
 
         final_damage = self._resolve_damage_modifiers(
             attacker_id, target_id, calculated_damage, outcome,
             apply_armor_reduction, damage_type,
             attacker_is_player, target_is_player,
         )
-        self.last_outcome = outcome  # captura para _process_player_attacks usar
+        self.last_outcome = outcome   # backward compat offline + skill results fallback
         target_stats.current_hp -= final_damage
 
         # Aggro por dano: ataque do player força inimigo a perseguir independente do raio.
@@ -582,8 +587,8 @@ class CombatSystem(System):
                         self.world.add_component(attacker_id, PendingDeath(killer_entity_id=target_id))
 
         if target_stats.current_hp <= 0:
-            return self._handle_death(target_id, attacker_id)
-        return False
+            return self._handle_death(target_id, attacker_id), outcome
+        return False, outcome
 
     # ------------------------------------------------------------------
     # Helpers internos de deal_damage
@@ -1441,7 +1446,7 @@ class PlayerInputSystem(System):
                 if combat_state.is_pursuing and can_act and combat_stats.attack_cooldown_timer <= 0:
                     SOUNDS.play_emote_attack(is_player=True)
                     _tgt_cs = self.world.get_component(target_id, CombatStats)
-                    dead = deal_damage(entity_id, target_id, "physical")
+                    dead, _ = deal_damage(entity_id, target_id, "physical")
                     combat_stats.attack_cooldown_timer = combat_stats.get_attack_cooldown()
                     enter_combat(combat_state)
                     if dead:
@@ -1469,7 +1474,7 @@ class PlayerInputSystem(System):
                     SOUNDS.play_emote_attack(is_player=True)
                     _tgt_cs    = self.world.get_component(target_id, CombatStats)
                     _hp_before = _tgt_cs.current_hp if _tgt_cs else 0
-                    dead = deal_damage(entity_id, target_id, "physical")
+                    dead, _ = deal_damage(entity_id, target_id, "physical")
                     _hit_landed = dead or (_tgt_cs and _tgt_cs.current_hp < _hp_before)
                     combat_stats.attack_cooldown_timer = combat_stats.get_attack_cooldown()
                     # Rage sempre gerada ao atacar — idêntico ao offline (systems.py:1491)
@@ -1732,7 +1737,7 @@ class PlayerInputSystem(System):
             if tm:
                 dist = chebyshev(pl_x, pl_y, tm.current_tile_x, tm.current_tile_y)
                 if dist <= self.PLAYER_ATTACK_RANGE:
-                    dead = deal_damage(entity_id, tid, "physical")
+                    dead, _ = deal_damage(entity_id, tid, "physical")
                     combat_stats.attack_cooldown_timer = combat_stats.get_attack_cooldown()
                     self._add_rage(entity_id, 5)
                     enter_combat(combat_state)
@@ -1784,7 +1789,7 @@ class PlayerInputSystem(System):
 
         # Ataca imediatamente se já estiver no alcance
         if best_dist <= self.PLAYER_ATTACK_RANGE and combat_stats.attack_cooldown_timer <= 0:
-            dead = deal_damage(entity_id, best_eid, "physical")
+            dead, _ = deal_damage(entity_id, best_eid, "physical")
             combat_stats.attack_cooldown_timer = combat_stats.get_attack_cooldown()
             self._add_rage(entity_id, 5)
             if dead and combat_state:

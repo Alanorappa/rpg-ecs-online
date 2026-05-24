@@ -618,12 +618,12 @@ class WorldServer:
             self._attack_timers[session_id] = interval
 
             # ── deal_damage() do offline: mesma fórmula, armor, crit, dodge ──
-            hp_before  = target_cs.current_hp
-            dead       = deal_damage(player_eid, target_eid, "physical")
+            hp_before        = target_cs.current_hp
+            dead, _outcome   = deal_damage(player_eid, target_eid, "physical")
             # Usa current_hp real (pode ser negativo no golpe fatal) para dano correto
-            hp_real    = target_cs.current_hp      # pode ser negativo se matou
-            hp_after   = max(0, hp_real)           # para display da barra de HP
-            damage     = max(0, hp_before - hp_real)  # dano real (inclui overkill)
+            hp_real  = target_cs.current_hp      # pode ser negativo se matou
+            hp_after = max(0, hp_real)           # para display da barra de HP
+            damage   = max(0, hp_before - hp_real)  # dano real (inclui overkill)
 
             # Ataque disparou → enter_combat + rage (copiado de PlayerInputSystem:1491-1492)
             # Rage é gerada SEMPRE que o ataque dispara — mesmo em miss (igual ao offline)
@@ -643,16 +643,11 @@ class WorldServer:
                 log = self._mob_damage_log.setdefault(target_eid, {})
                 log[player_eid] = log.get(player_eid, 0) + damage
 
-            # Captura outcome real do CombatSystem (evita heurística incorreta)
-            _real_outcome = getattr(
-                getattr(__import__("systems", fromlist=["_svc"]), "_svc", {}).get("combat"),
-                "last_outcome", "hit"
-            )
             self._combat_this_tick.append({
                 "attacker": player_eid,
                 "target":   target_eid,
                 "damage":   damage,
-                "outcome":  _real_outcome,
+                "outcome":  _outcome,   # retornado diretamente por deal_damage (sem singleton)
                 "hp_after": hp_after,
                 "source":   "auto",
             })

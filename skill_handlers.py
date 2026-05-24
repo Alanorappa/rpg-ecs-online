@@ -453,8 +453,8 @@ class SkillHandlers:
 
         skill.charges -= 1
         hp_before = target_cs.current_hp
-        killed = deal_damage(self.player_entity_id, target_id, "physical",
-                                                multiplier=0.45, is_ability=True)
+        killed, _ = deal_damage(self.player_entity_id, target_id, "physical",
+                                multiplier=0.45, is_ability=True)
         hit = killed or target_cs.current_hp < hp_before
         if hit:
             apply_effect(self.world, target_id, "stun", stun_duration)
