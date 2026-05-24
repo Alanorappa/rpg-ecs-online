@@ -94,6 +94,9 @@ class WorldServer:
         from server.server_death_handler import ServerDeathHandler
         self._death_handler = ServerDeathHandler(self.world, world_server=self)
 
+        from core_systems import ServerCombatStateSystem
+        self._combat_state_sys = ServerCombatStateSystem(self.world)
+
         # Fila de skill requests recebidas dos clientes (processada em _tick)
         self._pending_skill_requests: list[dict] = []
         # Resultados de skills processadas no tick (consumido pelo SessionManager)
@@ -1631,57 +1634,18 @@ class WorldServer:
                     "ty":       _tm_ag.current_tile_y,
                 })
 
-        # CombatStateSystem do servidor: in_combat timer + rage decay + HP5 regen
-        # Cópia exata do CombatStateSystem offline (systems.py:919-1022)
-        # Constantes idênticas ao offline (systems.py:919-920)
-        _RAGE_DECAY_AMOUNT   = 5
-        _RAGE_DECAY_INTERVAL = 3.0
-        from components import CombatState as _CombatStateHP, CombatStats as _CombatStatsHP
-        from components import CharacterStats as _CharStatsHP
-        for _session_id, peid in list(self._player_eids.items()):
-            _cs   = self.world.get_component(peid, _CombatStateHP)
-            _cst  = self.world.get_component(peid, _CombatStatsHP)
-            _char = self.world.get_component(peid, _CharStatsHP)
-            if not _cs or not _cst or _cst.current_hp <= 0:
-                continue
-
-            # ── Timer de in_combat (systems.py:925-930) ──────────────────────
-            if _cs.in_combat:
-                _cs.combat_timer = max(0.0, _cs.combat_timer - dt)
-                if _cs.combat_timer <= 0.0:
-                    _cs.in_combat     = False
-                    _cs.is_pursuing   = False  # systems.py:928
-                    _cs.combat_timer  = 0.0
-
-            # ── Rage decay (systems.py:943-950) ──────────────────────────────
-            if _char and _char.rage > 0:
-                if not _cs.in_combat:
-                    _char.rage_decay_timer = getattr(_char, 'rage_decay_timer', 0.0) + dt
-                    if _char.rage_decay_timer >= _RAGE_DECAY_INTERVAL:
-                        _char.rage_decay_timer -= _RAGE_DECAY_INTERVAL
-                        _char.rage = max(0, _char.rage - _RAGE_DECAY_AMOUNT)
-                else:
-                    _char.rage_decay_timer = 0.0
-            if not _cs.in_combat and _cst.current_hp < _cst.max_hp:
-                _hp5_timer = getattr(_cst, 'hp5_timer', 0.0)
-                _hp5_timer += dt
-                if _hp5_timer >= 5.0:
-                    _hp5_timer -= 5.0
-                    _regen = max(1, int(_cst.max_hp * getattr(_cst, 'hp5', 0.05)))
-                    _old_hp = _cst.current_hp
-                    _cst.current_hp = min(_cst.max_hp, _cst.current_hp + _regen)
-                    if _cst.current_hp != _old_hp:
-                        self._combat_this_tick.append({
-                            "attacker": -1,
-                            "target":   peid,
-                            "damage":   -(_cst.current_hp - _old_hp),  # negativo = cura
-                            "outcome":  "regen",
-                            "hp_after": _cst.current_hp,
-                            "source":   "regen",
-                        })
-                setattr(_cst, 'hp5_timer', _hp5_timer)
-            elif _cst.current_hp >= _cst.max_hp:
-                setattr(_cst, 'hp5_timer', 0.0)
+        # CombatStateSystem headless (in_combat timer + rage decay + HP5 regen)
+        # Lógica em core_systems.ServerCombatStateSystem — sem duplicação vs offline.
+        self._combat_state_sys.update(self._player_eids, dt)
+        for _hp5_ev in self._combat_state_sys.hp5_events:
+            self._combat_this_tick.append({
+                "attacker": -1,
+                "target":   _hp5_ev["player_eid"],
+                "damage":   -(_hp5_ev["new_hp"] - _hp5_ev["old_hp"]),  # negativo = cura
+                "outcome":  "regen",
+                "hp_after": _hp5_ev["new_hp"],
+                "source":   "regen",
+            })
 
         # ── ActiveRegen (consumíveis HoT) ─────────────────────────────────────
         # Processa ticks de regeneração de HP dos consumíveis.

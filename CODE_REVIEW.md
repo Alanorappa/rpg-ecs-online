@@ -15,7 +15,7 @@ O projeto tem uma base sólida de ECS e boa separação cliente/servidor no gera
 
 ---
 
-### C1 — `move_player` não valida walkability
+### C1 — `move_player` não valida walkability ✅ RESOLVIDO (commit f8d3777)
 
 **Arquivo:** [server/world_server.py](server/world_server.py) linha 498  
 ```python
@@ -35,7 +35,7 @@ if not is_tile_walkable(eid, tx, ty, from_tx=tm.current_tile_x, from_ty=tm.curre
 
 ---
 
-### C2 — `client_max_hp` e `client_ap` confiados sem validação para personagens novos
+### C2 — `client_max_hp` e `client_ap` confiados sem validação para personagens novos ✅ RESOLVIDO (commit f8d3777)
 
 **Arquivo:** [server/world_server.py](server/world_server.py) linhas 308–318  
 ```python
@@ -53,7 +53,7 @@ if not _stats:          # <-- personagem sem save_json
 
 ---
 
-### C3 — Gold dado como client-autoritativo em `_build_save_merge`
+### C3 — Gold dado como client-autoritativo em `_build_save_merge` ✅ RESOLVIDO (commit fc4b311)
 
 **Arquivo:** [server/session.py](server/session.py) (lógica de save)  
 **Problema:** O gold do player é tratado como autoritativo do cliente no merge do SAVE_STATE. Porém o servidor já mantém `Wallet.gold` server-side nos sistemas de loja (`process_shop_buy`) e loot (`request_loot`). Há dois valores de gold: o do servidor (correto) e o do cliente (mentiroso). Ao fazer SAVE_STATE, o cliente poderia enviar gold inflado.
@@ -62,7 +62,7 @@ if not _stats:          # <-- personagem sem save_json
 
 ---
 
-### C4 — `last_outcome` é estado mutável global
+### C4 — `last_outcome` é estado mutável global ✅ RESOLVIDO (commit 36a7385)
 
 **Arquivo:** [server/world_server.py](server/world_server.py) linhas 637–648  
 ```python
@@ -80,7 +80,7 @@ _real_outcome = getattr(
 
 ---
 
-### C5 — Inventário pendente como atributos dinâmicos no WorldServer
+### C5 — Inventário pendente como atributos dinâmicos no WorldServer ✅ RESOLVIDO (commit 67e49be)
 
 **Arquivo:** [server/world_server.py](server/world_server.py) linhas 1261–1303  
 ```python
