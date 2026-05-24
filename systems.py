@@ -1433,6 +1433,13 @@ class PlayerInputSystem(System):
         pl_tile_y = tile_movement.current_tile_y
         dist = chebyshev(pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y)
 
+        # Guarda pixel: usa posição suave (position.x/y) em vez de flags is_moving/progress.
+        # Resolve race condition online em que o mob acabou de iniciar movimento mas o
+        # tile ainda não foi atualizado — o jogador começaria a atacar em vez de perseguir.
+        # Threshold: PLAYER_ATTACK_RANGE + 0.5 tiles = 1.5 * 32 = 48 px (Chebyshev pixel).
+        _px_chase       = max(abs(position.x - target_pos.x), abs(position.y - target_pos.y))
+        _melee_chase_px = (self.PLAYER_ATTACK_RANGE + 0.5) * TILE_SIZE  # 48 px
+
         char_stats  = self.world.get_component(entity_id, CharacterStats)
         is_mage     = char_stats is not None and char_stats.class_id == "mago"
         is_archer   = char_stats is not None and char_stats.class_id == "arqueiro"
@@ -1440,10 +1447,11 @@ class PlayerInputSystem(System):
         if is_archer:
             self._process_archer_combat(
                 entity_id, position, tile_movement, combat_stats, combat_state,
-                auto_move, can_act, target_id, tgt_tile_x, tgt_tile_y, dt)
+                auto_move, can_act, target_id, tgt_tile_x, tgt_tile_y, dt,
+                _px_chase, _melee_chase_px)
         elif is_mage:
             pursuit_range = self._mage_attack_range(entity_id)
-            if dist <= self.PLAYER_ATTACK_RANGE:
+            if dist <= self.PLAYER_ATTACK_RANGE and _px_chase <= _melee_chase_px:
                 # Adjacente: melee idêntico ao guerreiro (sem geração de Raiva)
                 if auto_move:
                     auto_move.path.clear()
@@ -1470,7 +1478,7 @@ class PlayerInputSystem(System):
                     attack_range=pursuit_range, target_eid=target_id,
                 )
         else:
-            if dist <= self.PLAYER_ATTACK_RANGE:
+            if dist <= self.PLAYER_ATTACK_RANGE and _px_chase <= _melee_chase_px:
                 # Guerreiro no alcance: ataque físico só se estiver perseguindo (botão direito)
                 if auto_move:
                     auto_move.path.clear()
@@ -1512,7 +1520,9 @@ class PlayerInputSystem(System):
 
     def _process_archer_combat(self, entity_id, position, tile_movement,
                                combat_stats, combat_state, auto_move,
-                               can_act, target_id, tgt_tile_x, tgt_tile_y, dt):
+                               can_act, target_id, tgt_tile_x, tgt_tile_y, dt,
+                               px_chase: float = 0.0,
+                               melee_chase_px: float = float("inf")):
         """Auto-attack ranged do arqueiro: verifica arco+aljava e dispara flecha."""
         pl_tile_x = tile_movement.current_tile_x
         pl_tile_y = tile_movement.current_tile_y
@@ -1526,7 +1536,7 @@ class PlayerInputSystem(System):
 
         if not bow_range:
             # Sem arco: fallback ao melee guerreiro (soco lento)
-            if dist <= self.PLAYER_ATTACK_RANGE:
+            if dist <= self.PLAYER_ATTACK_RANGE and px_chase <= melee_chase_px:
                 if auto_move:
                     auto_move.path.clear()
                 if combat_state.is_pursuing and can_act and combat_stats.attack_cooldown_timer <= 0:
