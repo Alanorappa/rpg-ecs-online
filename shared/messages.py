@@ -346,7 +346,8 @@ def _now_ms() -> int:
 
 # ── Helpers de construção de payloads ────────────────────────────────────────
 # Funções factory para os payloads mais complexos.
-# Usadas pelo servidor para garantir consistência de formato.
+# NOTE: ainda não usadas pelos callers — servidor constrói dicts inline.
+# Reservadas para quando o cliente for implementado e precisar de formato canônico.
 
 def make_entity_spawn(eid: int, kind: str, tx: int, ty: int, **kwargs) -> dict:
     d = {"eid": eid, "kind": kind, "tx": tx, "ty": ty}
