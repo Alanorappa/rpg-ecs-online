@@ -28,6 +28,57 @@ from world import World
 from shared.constants import TICK_RATE, TICK_INTERVAL, SNAPSHOT_HISTORY, TILE_SIZE
 
 
+# ── ServerStatusEffectSystem ──────────────────────────────────────────────────
+# Subclasse headless de core_systems.StatusEffectSystem que emite eventos de
+# dano/cura de DoT/HoT diretamente no _combat_this_tick do WorldServer.
+# Definida aqui (módulo) em vez de dentro de _load_map() para evitar re-definição
+# de classe a cada chamada e tornar o código mais navegável.
+
+class _ServerStatusEffectSystem:
+    """Instanciada em _load_map(); world_server passado como srv para callbacks."""
+
+    @staticmethod
+    def build(world, srv) -> "object":
+        """Factory: retorna instância com os hooks de emit acoplados ao srv."""
+        from core_systems import StatusEffectSystem as _Base
+
+        class _Impl(_Base):
+            def __init__(self, world, srv):
+                super().__init__(world)
+                self._srv = srv
+
+            def _emit_damage(self, eid, amount, effect_type, pos, color):
+                from components import CombatStats as _CS
+                cs = self.world.get_component(eid, _CS)
+                self._srv._combat_this_tick.append({
+                    "attacker": -1,
+                    "target":   eid,
+                    "damage":   amount,
+                    "outcome":  "hit",
+                    "hp_after": cs.current_hp if cs else 0,
+                    "source":   effect_type,
+                })
+                # Acumula dano DoT em players para corrigir snapshot HP
+                # (evita duplo COMBAT_RESULT em _process_player_attacks)
+                if eid in self._srv._player_eids.values():
+                    prev = self._srv._sfx_damage_players.get(eid, 0)
+                    self._srv._sfx_damage_players[eid] = prev + amount
+
+            def _emit_heal(self, eid, amount, effect_type, pos, color):
+                from components import CombatStats as _CS
+                cs = self.world.get_component(eid, _CS)
+                self._srv._combat_this_tick.append({
+                    "attacker": -1,
+                    "target":   eid,
+                    "damage":   -amount,   # negativo = cura
+                    "outcome":  "regen",
+                    "hp_after": cs.current_hp if cs else 0,
+                    "source":   effect_type,
+                })
+
+        return _Impl(world, srv)
+
+
 class WorldServer:
 
     MAP_FILE = "maps/map_1.csv"   # mapa padrão carregado pelo servidor
@@ -134,8 +185,6 @@ class WorldServer:
         from systems import (SpawnZoneSystem, EnemyAISystem, EnemyAbilitySystem,
                              TileValidationSystem, PathfindingSystem, CombatSystem,
                              TileMovementSystem, ProjectileSystem, register_services)
-        from core_systems import StatusEffectSystem as _CoreSFX
-
         print(f"[WorldServer] carregando mapa: {self._map_file}")
         terrain_matrix, object_matrix, spawn_points, terrain_visual = \
             load_map_csv(self._map_file)
@@ -158,43 +207,8 @@ class WorldServer:
         self._enemy_ai_system = EnemyAISystem(self.world, player_entity_id=-1)
         self._enemy_ab_system = EnemyAbilitySystem(self.world, player_entity_id=-1)
 
-        # StatusEffectSystem do servidor: herda lógica ECS de core_systems.
-        # _emit_damage/_emit_heal adicionam a _combat_this_tick para broadcast.
-        class _ServerSFX(_CoreSFX):
-            def __init__(sfx_self, world, srv):
-                super().__init__(world)
-                sfx_self._srv = srv
-
-            def _emit_damage(sfx_self, eid, amount, effect_type, pos, color):
-                from components import CombatStats as _CS
-                cs = sfx_self.world.get_component(eid, _CS)
-                sfx_self._srv._combat_this_tick.append({
-                    "attacker": -1,
-                    "target":   eid,
-                    "damage":   amount,
-                    "outcome":  "hit",
-                    "hp_after": cs.current_hp if cs else 0,
-                    "source":   effect_type,   # "poison", "bleed", etc.
-                })
-                # Acumula dano de DoT em players — corrige snapshot HP para evitar
-                # duplo COMBAT_RESULT no caminho "Mob→Player" de _process_player_attacks
-                if eid in sfx_self._srv._player_eids.values():
-                    prev = sfx_self._srv._sfx_damage_players.get(eid, 0)
-                    sfx_self._srv._sfx_damage_players[eid] = prev + amount
-
-            def _emit_heal(sfx_self, eid, amount, effect_type, pos, color):
-                from components import CombatStats as _CS
-                cs = sfx_self.world.get_component(eid, _CS)
-                sfx_self._srv._combat_this_tick.append({
-                    "attacker": -1,
-                    "target":   eid,
-                    "damage":   -amount,       # negativo = cura
-                    "outcome":  "regen",
-                    "hp_after": cs.current_hp if cs else 0,
-                    "source":   effect_type,
-                })
-
-        self._status_effect_system = _ServerSFX(self.world, self)
+        # StatusEffectSystem do servidor — ver _ServerStatusEffectSystem (topo do módulo)
+        self._status_effect_system = _ServerStatusEffectSystem.build(self.world, self)
 
         # SpawnZoneSystem: no servidor não há culling por distância de player.
         # O mundo deve existir independente de conexões — raio ilimitado.
