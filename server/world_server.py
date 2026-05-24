@@ -641,8 +641,22 @@ class WorldServer:
                 continue
             player_cs    = self.world.get_component(player_eid, CombatStats)
             attack_range = 7 if getattr(player_cs, "is_ranged", False) else 1
-            if chebyshev(player_tm.current_tile_x, player_tm.current_tile_y,
-                         target_tm.current_tile_x, target_tm.current_tile_y) > attack_range:
+            _srv_dist = chebyshev(player_tm.current_tile_x, player_tm.current_tile_y,
+                                  target_tm.current_tile_x, target_tm.current_tile_y)
+            # LOG dual cliente/servidor — remove após diagnóstico
+            if _srv_dist <= 3:
+                _sv_k = (player_tm.current_tile_x, player_tm.current_tile_y,
+                         target_tm.current_tile_x, target_tm.current_tile_y,
+                         target_tm.target_tile_x, target_tm.target_tile_y)
+                _sv_cache = getattr(self, '_dbg_srv_key', {})
+                if _sv_cache.get(session_id) != _sv_k:
+                    _sv_cache[session_id] = _sv_k
+                    self._dbg_srv_key = _sv_cache
+                    print(f"[SRV] p=({player_tm.current_tile_x},{player_tm.current_tile_y}) "
+                          f"mob_cur=({target_tm.current_tile_x},{target_tm.current_tile_y}) "
+                          f"mob_tgt=({target_tm.target_tile_x},{target_tm.target_tile_y}) "
+                          f"dist={_srv_dist} in_range={_srv_dist <= attack_range}")
+            if _srv_dist > attack_range:
                 continue
 
             # Cooldown de ataque (inicializa em 0 para atacar imediatamente no primeiro range)

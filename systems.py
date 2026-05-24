@@ -1416,34 +1416,48 @@ class PlayerInputSystem(System):
             return
 
         if target_tm:
-            # Predição de movimento: assim que o mob COMEÇA a mover (progress=0), já usa
-            # o tile destino para cálculo de distância.
-            # Isso faz o jogador começar a perseguir no mesmo frame em que o mob inicia
-            # o movimento, eliminando o delay de 0→50% onde dist ficava =1 e path era
-            # limpo a cada frame sem que o chase fosse disparado.
-            # Threshold progress >= 0 (removido o antigo 0.5): servidor envia o tile antes
-            # do movimento começar, então o target_tile é confiável desde o frame 0.
+            # tgt_tile (CHASE) — tile destino do mob: direciona a perseguição.
+            # Usa target_tile assim que mob inicia movimento → player começa a
+            # seguir no mesmo frame, sem esperar 50% do passo completar.
             if (target_tm.is_moving
                     and (target_tm.target_tile_x != target_tm.current_tile_x
                          or target_tm.target_tile_y != target_tm.current_tile_y)):
                 tgt_tile_x, tgt_tile_y = target_tm.target_tile_x, target_tm.target_tile_y
             else:
                 tgt_tile_x, tgt_tile_y = target_tm.current_tile_x, target_tm.current_tile_y
+            # cur_tile (ATAQUE) — tile atual do mob, igual ao que o servidor usa
+            # no range-check (server usa current_tile, não target_tile).
+            # BUG anterior: usar tgt_tile para ataque fazia dist=2 quando mob
+            # iniciava passo, cliente perseguia em vez de atacar (servidor aceitaria).
+            cur_tile_x, cur_tile_y = target_tm.current_tile_x, target_tm.current_tile_y
         else:
             tgt_tile_x = int(target_pos.x / TILE_SIZE)
             tgt_tile_y = int(target_pos.y / TILE_SIZE)
+            cur_tile_x, cur_tile_y = tgt_tile_x, tgt_tile_y
 
         pl_tile_x = tile_movement.current_tile_x
         pl_tile_y = tile_movement.current_tile_y
-        dist = chebyshev(pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y)
+        dist        = chebyshev(pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y)  # chase
+        dist_attack = chebyshev(pl_tile_x, pl_tile_y, cur_tile_x, cur_tile_y)  # ataque
 
-
-        # Guarda pixel: usa posição suave (position.x/y) em vez de flags is_moving/progress.
-        # Resolve race condition online em que o mob acabou de iniciar movimento mas o
-        # tile ainda não foi atualizado — o jogador começaria a atacar em vez de perseguir.
-        # Threshold: PLAYER_ATTACK_RANGE + 0.5 tiles = 1.5 * 32 = 48 px (Chebyshev pixel).
+        # Pixel distance: guard secundário — evita atacar com mob visualmente longe.
         _px_chase       = max(abs(position.x - target_pos.x), abs(position.y - target_pos.y))
         _melee_chase_px = (self.PLAYER_ATTACK_RANGE + 0.5) * TILE_SIZE  # 48 px
+
+        # LOG dual cliente/servidor — remove após diagnóstico
+        _dbg_k = (dist_attack, dist,
+                  target_tm.is_moving if target_tm else False,
+                  cur_tile_x, cur_tile_y, tgt_tile_x, tgt_tile_y,
+                  tile_movement.is_moving)
+        if dist_attack <= 3 and getattr(self, '_dbg_chase2_key', None) != _dbg_k:
+            self._dbg_chase2_key = _dbg_k
+            _act = ("ATTACK" if dist_attack <= self.PLAYER_ATTACK_RANGE and _px_chase <= _melee_chase_px
+                    else "CHASE" if dist > self.PLAYER_ATTACK_RANGE
+                    else "WAIT")
+            print(f"[CLI] p=({pl_tile_x},{pl_tile_y}) "
+                  f"mob_cur=({cur_tile_x},{cur_tile_y}) mob_tgt=({tgt_tile_x},{tgt_tile_y}) "
+                  f"d_atk={dist_attack} d_ch={dist} px={_px_chase:.0f} "
+                  f"pl_mv={tile_movement.is_moving} →{_act}")
 
         char_stats  = self.world.get_component(entity_id, CharacterStats)
         is_mage     = char_stats is not None and char_stats.class_id == "mago"
@@ -1453,10 +1467,10 @@ class PlayerInputSystem(System):
             self._process_archer_combat(
                 entity_id, position, tile_movement, combat_stats, combat_state,
                 auto_move, can_act, target_id, tgt_tile_x, tgt_tile_y, dt,
-                _px_chase, _melee_chase_px)
+                _px_chase, _melee_chase_px, dist_attack=dist_attack)
         elif is_mage:
             pursuit_range = self._mage_attack_range(entity_id)
-            if dist <= self.PLAYER_ATTACK_RANGE and _px_chase <= _melee_chase_px:
+            if dist_attack <= self.PLAYER_ATTACK_RANGE and _px_chase <= _melee_chase_px:
                 # Adjacente: melee idêntico ao guerreiro (sem geração de Raiva)
                 if auto_move:
                     auto_move.path.clear()
@@ -1483,7 +1497,7 @@ class PlayerInputSystem(System):
                     attack_range=pursuit_range, target_eid=target_id,
                 )
         else:
-            if dist <= self.PLAYER_ATTACK_RANGE and _px_chase <= _melee_chase_px:
+            if dist_attack <= self.PLAYER_ATTACK_RANGE and _px_chase <= _melee_chase_px:
                 # Guerreiro no alcance: ataque físico só se estiver perseguindo (botão direito)
                 if auto_move:
                     auto_move.path.clear()
@@ -1527,11 +1541,16 @@ class PlayerInputSystem(System):
                                combat_stats, combat_state, auto_move,
                                can_act, target_id, tgt_tile_x, tgt_tile_y, dt,
                                px_chase: float = 0.0,
-                               melee_chase_px: float = float("inf")):
+                               melee_chase_px: float = float("inf"),
+                               dist_attack: int = -1):
         """Auto-attack ranged do arqueiro: verifica arco+aljava e dispara flecha."""
         pl_tile_x = tile_movement.current_tile_x
         pl_tile_y = tile_movement.current_tile_y
         dist = chebyshev(pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y)
+        # dist_attack: distância do tile ATUAL do mob (= verificação do servidor).
+        # Se não fornecido, usa dist (retrocompatibilidade com offline).
+        if dist_attack < 0:
+            dist_attack = dist
 
         equip = self.world.get_component(entity_id, Equipment)
         bow    = equip.slots.get("mainhand") if equip else None
@@ -1541,7 +1560,7 @@ class PlayerInputSystem(System):
 
         if not bow_range:
             # Sem arco: fallback ao melee guerreiro (soco lento)
-            if dist <= self.PLAYER_ATTACK_RANGE and px_chase <= melee_chase_px:
+            if dist_attack <= self.PLAYER_ATTACK_RANGE and px_chase <= melee_chase_px:
                 if auto_move:
                     auto_move.path.clear()
                 if combat_state.is_pursuing and can_act and combat_stats.attack_cooldown_timer <= 0:
