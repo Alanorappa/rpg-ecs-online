@@ -118,7 +118,8 @@ def calculate_base_damage(attacker_stats, damage_type: str,
                 attacker_stats.base_physical_damage_max,
             )
     elif damage_type == "physical_fixed":
-        pass
+        pass  # base já setado como base_ability_damage (caller pré-calculou weapon+AP)
+              # multiplier, crit e armor ainda se aplicam abaixo
     elif damage_type == "magical":
         total += attacker_stats.spell_power + attacker_stats.base_magical_damage
     else:
