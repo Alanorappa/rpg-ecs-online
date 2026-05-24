@@ -1895,13 +1895,22 @@ class WorldServer:
             cb(self.tick_count, deltas)
 
     def _remote_mobs_reverse_srv(self, mob_eid: int) -> int:
-        """Retorna server_eid de um mob (identidade própria no servidor = o mesmo eid)."""
-        # No servidor, mob_eid já é o eid canônico — retorna direto.
+        """Retorna o eid canônico de um mob para envio ao cliente.
+
+        Existe por simetria com a API futura do cliente, onde o mapeamento
+        entre eid ECS interno e eid exposto na rede pode ser diferente
+        (ex: instâncias separadas, remapeamento de entidades remotas).
+        No servidor headless: eid ECS == eid de rede → retorna direto.
+        """
         return mob_eid
 
     def _player_seid_by_eid(self, player_eid: int) -> int:
-        """Retorna session_eid de um player a partir do eid ECS."""
-        # No servidor o eid ECS é o mesmo que é exposto aos clientes.
+        """Retorna o eid exposto na rede de um player a partir do eid ECS.
+
+        Mesmo padrão que _remote_mobs_reverse_srv: hook para futura separação
+        entre eid ECS interno e eid transmitido na rede.
+        No servidor headless: eid ECS == eid de rede → retorna direto.
+        """
         return player_eid
 
     def _emit_mob_spawn(self, eid: int, tm) -> None:
