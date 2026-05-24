@@ -305,17 +305,22 @@ class WorldServer:
         _saved_max_hp = int(_stats.get("max_hp", 0))
         if _saved_max_hp > cs.max_hp:
             cs.max_hp = _saved_max_hp
-        # client_max_hp/ap só se usa para personagens sem save (stats_json vazio)
+        # client_max_hp/ap só se usa para personagens sem save (stats_json vazio).
+        # São hints do cliente para equipamento ainda não sincronizado via PLAYER_STAT_SYNC.
+        # Cap: máximo 10× o valor calculado pelo servidor — bloqueia exploits sem
+        # afetar equipamentos legítimos. PLAYER_STAT_SYNC corrige o valor real logo após login.
         _client_hp = int(char_data.get("client_max_hp", 0))
         _client_ap = float(char_data.get("client_ap", 0))
         if not _stats:
+            _cap_hp = cs.max_hp * 10
+            _cap_ap = max(1, cs.base_attack_power) * 10
             if _client_ap > 0:
-                cs.base_attack_power = int(_client_ap)
+                cs.base_attack_power = int(min(_client_ap, _cap_ap))
                 cs._recalculate_effective_stats()   # sincroniza attack_power a partir do novo base
             # Aplica max_hp APÓS recalculate — _recalculate_effective_stats sobrescreve max_hp
             # com base_stamina, então o override do cliente deve ser o último passo.
             if _client_hp > 0:
-                cs.max_hp = _client_hp
+                cs.max_hp = int(min(_client_hp, _cap_hp))
         # Restaura HP salvo; se não houver, usa max_hp; nunca excede max_hp
         saved_hp = int(char_data.get("hp", 0))
         cs.current_hp = min(saved_hp, cs.max_hp) if saved_hp > 0 else cs.max_hp
@@ -495,7 +500,12 @@ class WorldServer:
         if dx > 1 or dy > 1:
             return False
 
-        # TODO: validar walkability com tilemap
+        # Validação: tile de destino deve ser walkable (sólido, fora do mapa, piso errado)
+        # Usa is_tile_walkable do offline — mesma lógica de colisão + elevação.
+        # _svc['tile_validation'] é registrado em _load_map() antes de qualquer MOVE chegar.
+        from systems import is_tile_walkable as _walkable
+        if not _walkable(eid, tx, ty, tm.current_tile_x, tm.current_tile_y):
+            return False
 
         from_tx, from_ty = tm.current_tile_x, tm.current_tile_y
         tm.current_tile_x = tx
