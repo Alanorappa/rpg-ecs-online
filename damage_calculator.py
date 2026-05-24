@@ -1,8 +1,12 @@
 """
 damage_calculator.py — Matemática pura de combate.
 
-Funções sem efeito colateral e sem acesso ao World. Podem ser testadas
-isoladamente. CombatSystem as chama passando os componentes já resolvidos.
+Funções sem acesso ao World. Podem ser testadas isoladamente.
+CombatSystem as chama passando os componentes já resolvidos.
+
+Nota: `calculate_base_damage` e `resolve_attack_outcome` usam `random.randint/random`
+para dano de arma e avoidance — não são determinísticas. Passe `pre_outcome`
+em `deal_damage` ou injete um seed em testes que precisam de resultado fixo.
 """
 from __future__ import annotations
 import random
