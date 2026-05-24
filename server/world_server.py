@@ -1573,7 +1573,13 @@ class WorldServer:
                 if time.perf_counter() - next_tick > TICK_INTERVAL:
                     next_tick = time.perf_counter()
             else:
-                await asyncio.sleep(0)
+                # Dorme até o próximo tick — elimina busy-spin com sleep(0).
+                # Threshold 1ms: abaixo disso yield simples para não overshooting.
+                _sleep = next_tick - time.perf_counter()
+                if _sleep > 0.001:
+                    await asyncio.sleep(_sleep)
+                else:
+                    await asyncio.sleep(0)
 
     def _tick(self, dt: float) -> None:
         self.tick_count += 1
