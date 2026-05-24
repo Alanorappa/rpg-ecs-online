@@ -15,6 +15,7 @@ import sys
 import os
 import time
 import random
+from collections import deque
 
 # Pygame headless — servidor não tem display mas os sistemas usam pygame internamente
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -134,8 +135,8 @@ class WorldServer:
         # e em despawn_player). Substitui o padrão setattr/getattr/delattr anterior.
         self._pending_inv: dict[str, int] = {}
 
-        # Histórico de snapshots
-        self._snapshots: list[tuple[int, dict]] = []
+        # Histórico de snapshots (deque com maxlen evita pop(0) O(n))
+        self._snapshots: deque[tuple[int, dict]] = deque(maxlen=SNAPSHOT_HISTORY)
 
         # Callbacks do SessionManager
         self._on_tick_callbacks: list = []
@@ -1977,8 +1978,7 @@ class WorldServer:
         for eid, tm in self.world.get_entities_with(TileMovement):
             snapshot[eid] = (tm.current_tile_x, tm.current_tile_y)
         self._snapshots.append((self.tick_count, snapshot))
-        if len(self._snapshots) > SNAPSHOT_HISTORY:
-            self._snapshots.pop(0)
+        # deque(maxlen=SNAPSHOT_HISTORY) descarta o elemento mais antigo automaticamente
 
     def get_snapshot_at(self, tick: int) -> dict:
         if not self._snapshots:
