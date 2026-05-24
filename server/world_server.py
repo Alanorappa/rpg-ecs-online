@@ -699,6 +699,16 @@ class WorldServer:
         # o snapshot de HP capturado antes dos sistemas rodarem.
         # IMPORTANTE: subtraímos _sfx_damage_players para não emitir COMBAT_RESULT
         # duplicado de ticks de DoT/HoT que StatusEffectSystem já reportou separado.
+
+        # Pré-constrói reverse map {player_eid → mob_atacante} UMA VEZ (O(mobs)),
+        # em vez de O(mobs×players_danificados) no loop abaixo.
+        from components import AIControlled as _AIAtk
+        _mob_attacker_of: dict[int, int] = {}
+        for _mb in self._mob_eids:
+            _ai_r = self.world.get_component(_mb, _AIAtk)
+            if _ai_r and _ai_r.state in ("ATTACKING", "CHASING") and _ai_r.target_eid != -1:
+                _mob_attacker_of[_ai_r.target_eid] = _mb
+
         for peid, hp_before in player_hp_snapshot.items():
             pcs = self.world.get_component(peid, CombatStats)
             if not pcs:
@@ -708,15 +718,7 @@ class WorldServer:
             mob_delta = (hp_before - sfx_dmg) - hp_now   # dano exclusivo de mobs/projéteis
 
             if mob_delta > 0:
-                # Tenta identificar o mob atacante via AIControlled.target_eid
-                attacker_mob_eid = -1
-                from components import AIControlled as _AIAtk
-                for _mob_eid in self._mob_eids:
-                    _ai_atk = self.world.get_component(_mob_eid, _AIAtk)
-                    if (_ai_atk and _ai_atk.state in ("ATTACKING", "CHASING")
-                            and _ai_atk.target_eid == peid):
-                        attacker_mob_eid = _mob_eid
-                        break
+                attacker_mob_eid = _mob_attacker_of.get(peid, -1)
                 # hp_after = HP intermediário APÓS o ataque do mob, ANTES do DOT tick.
                 # Garante que o cliente aplique: mob_attack (HP cai N) → DOT (HP cai M)
                 # em vez de: DOT (HP cai N+M) → mob_attack (HP não muda).
