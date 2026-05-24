@@ -1973,10 +1973,14 @@ class WorldServer:
         return deltas
 
     def _store_snapshot(self) -> None:
+        """Grava posição (tile_x, tile_y) apenas dos mobs para lag compensation.
+        Players são excluídos: lag comp só valida posição de alvo (mob), não do atacante."""
         from components import TileMovement
         snapshot: dict[int, tuple[int, int]] = {}
-        for eid, tm in self.world.get_entities_with(TileMovement):
-            snapshot[eid] = (tm.current_tile_x, tm.current_tile_y)
+        for eid in self._mob_eids:
+            tm = self.world.get_component(eid, TileMovement)
+            if tm is not None:
+                snapshot[eid] = (tm.current_tile_x, tm.current_tile_y)
         self._snapshots.append((self.tick_count, snapshot))
         # deque(maxlen=SNAPSHOT_HISTORY) descarta o elemento mais antigo automaticamente
 
