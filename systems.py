@@ -1416,10 +1416,14 @@ class PlayerInputSystem(System):
             return
 
         if target_tm:
-            # Predição de movimento: quando o alvo está na metade do tile, assume destino.
-            # Elimina o delay de "esperar o mob completar o tile" durante kiting.
-            # Threshold 0.5 = o alvo já percorreu metade → pathfinding aponta para destino.
-            if (target_tm.is_moving and target_tm.progress >= 0.5
+            # Predição de movimento: assim que o mob COMEÇA a mover (progress=0), já usa
+            # o tile destino para cálculo de distância.
+            # Isso faz o jogador começar a perseguir no mesmo frame em que o mob inicia
+            # o movimento, eliminando o delay de 0→50% onde dist ficava =1 e path era
+            # limpo a cada frame sem que o chase fosse disparado.
+            # Threshold progress >= 0 (removido o antigo 0.5): servidor envia o tile antes
+            # do movimento começar, então o target_tile é confiável desde o frame 0.
+            if (target_tm.is_moving
                     and (target_tm.target_tile_x != target_tm.current_tile_x
                          or target_tm.target_tile_y != target_tm.current_tile_y)):
                 tgt_tile_x, tgt_tile_y = target_tm.target_tile_x, target_tm.target_tile_y
