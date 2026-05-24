@@ -55,7 +55,7 @@ class MsgType(str, Enum):
     CAST_COMPLETE      = "cast_complete"   # S→C  cast concluído (dispara efeito)
     SKILL_RESULT       = "skill_result"    # S→C  efeitos aplicados pela skill
 
-    # ── Projéteis ─────────────────────────────────────────────────
+    # ── Projéteis (reservado — não implementado ainda) ────────────
     PROJECTILE_SPAWN   = "proj_spawn"      # S→C  projétil criado
     PROJECTILE_HIT     = "proj_hit"        # S→C  projétil acertou (ou errou)
     PROJECTILE_DESPAWN = "proj_despawn"    # S→C  projétil removido
