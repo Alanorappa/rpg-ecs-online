@@ -148,6 +148,14 @@ class WorldServer:
         from core_systems import ServerCombatStateSystem
         self._combat_state_sys = ServerCombatStateSystem(self.world)
 
+        # Cache de valor por nome de item: {item_name: value} — evita instanciar
+        # factories no hot path de venda (A5). Populado em _build_item_caches().
+        self._item_value_cache: dict[str, int] = {}
+        # Cache de itens de loja: {shop_id: {item_name: {entry, item_data}}}
+        # Pré-compila item_data para evitar factory() duplicado em compras (A6).
+        self._shop_item_cache: dict[str, dict] = {}
+        self._build_item_caches()
+
         # Fila de skill requests recebidas dos clientes (processada em _tick)
         self._pending_skill_requests: list[dict] = []
         # Resultados de skills processadas no tick (consumido pelo SessionManager)
@@ -1254,23 +1262,21 @@ class WorldServer:
         gold suficiente, espaço no inventário.
         Retorna dict {success, reason, item_data, new_gold}.
         """
-        from merchant_data import SHOPS
         from components import Wallet, Inventory
 
         eid = self._player_eids.get(session_id)
         if eid is None:
             return {"success": False, "reason": "not_logged_in"}
 
-        # 1. Valida catálogo
-        shop = SHOPS.get(shop_id)
-        if not shop:
+        # 1. Valida catálogo — usa cache pré-construído (sem instanciar factories)
+        shop_idx = self._shop_item_cache.get(shop_id)
+        if shop_idx is None:
             return {"success": False, "reason": "invalid_shop"}
-
-        stock = shop.get("stock", [])
-        entry = next((e for e in stock if e["factory"]().name == item_name), None)
-        if not entry:
+        cached = shop_idx.get(item_name)
+        if not cached:
             return {"success": False, "reason": "item_not_in_stock"}
 
+        entry      = cached["entry"]
         price      = int(entry["price"])
         total_cost = price * max(1, quantity)
 
@@ -1295,25 +1301,8 @@ class WorldServer:
         # Rastreia item pendente até próximo SAVE_STATE
         self._pending_inv[session_id] = pending + 1
 
-        # 5. Serializa item para enviar ao cliente
-        item_obj  = entry["factory"]()
-        item_data = {
-            "name":     item_obj.name,
-            "item_type": getattr(item_obj, "item_type", ""),
-            "slot":      getattr(item_obj, "slot", ""),
-            "rarity":    getattr(item_obj, "rarity", "common"),
-            "value":     getattr(item_obj, "value", 0),
-            "consumable": getattr(item_obj, "consumable", None),
-            "max_stack":  getattr(item_obj, "max_stack", 1),
-            "modifiers": [{"attribute": m.attribute, "value": m.value, "type": m.type}
-                          for m in getattr(item_obj, "modifiers", [])],
-        }
-        # Campos opcionais de armas/armaduras
-        for f in ("attack_power", "armor", "spell_power", "stamina",
-                  "two_handed", "attack_speed", "damage_min", "damage_max"):
-            v = getattr(item_obj, f, None)
-            if v is not None:
-                item_data[f] = v
+        # 5. item_data pré-compilado no cache (sem factory() adicional)
+        item_data = cached["item_data"]
 
         return {
             "success":  True,
@@ -1362,39 +1351,78 @@ class WorldServer:
             "new_gold":   wallet.gold,
         }
 
-    def _lookup_item_value(self, item_name: str) -> int | None:
-        """Retorna o valor base de um item buscando em loot_tables e merchant_data.
-        Retorna None se não encontrado em nenhum catálogo."""
-        # loot_tables
+    @staticmethod
+    def _item_data_from_obj(obj) -> dict:
+        """Serializa um item ECS para o dict que o cliente espera no BUY_RESULT."""
+        data = {
+            "name":      obj.name,
+            "item_type": getattr(obj, "item_type", ""),
+            "slot":      getattr(obj, "slot", ""),
+            "rarity":    getattr(obj, "rarity", "common"),
+            "value":     getattr(obj, "value", 0),
+            "consumable": getattr(obj, "consumable", None),
+            "max_stack":  getattr(obj, "max_stack", 1),
+            "modifiers": [{"attribute": m.attribute, "value": m.value, "type": m.type}
+                          for m in getattr(obj, "modifiers", [])],
+        }
+        for f in ("attack_power", "armor", "spell_power", "stamina",
+                  "two_handed", "attack_speed", "damage_min", "damage_max"):
+            v = getattr(obj, f, None)
+            if v is not None:
+                data[f] = v
+        return data
+
+    def _build_item_caches(self) -> None:
+        """Constrói _item_value_cache e _shop_item_cache na inicialização.
+
+        Instancia cada factory UMA VEZ (startup) em vez de a cada venda/compra.
+        _item_value_cache: {nome → valor} para validação de venda (A5).
+        _shop_item_cache:  {shop_id → {nome → {entry, item_data}}} para compras (A6).
+        """
+        # loot_tables._T: {key: factory_fn} — valores são callables diretamente
         try:
             from loot_tables import _T as _LT
-            for _entry in _LT.values():
-                _factory = _entry.get("factory")
-                if callable(_factory):
+            for _f in _LT.values():
+                if callable(_f):
                     try:
-                        _obj = _factory()
-                        if getattr(_obj, "name", None) == item_name:
-                            return int(getattr(_obj, "value", 0))
+                        _o = _f()
+                        _n = getattr(_o, "name", None)
+                        if _n:
+                            self._item_value_cache[_n] = int(getattr(_o, "value", 0))
                     except Exception:
                         pass
         except ImportError:
             pass
-        # merchant_data
+
+        # merchant_data → _shop_item_cache + _item_value_cache
         try:
             from merchant_data import SHOPS
-            for _shop in SHOPS.values():
+            for _sid, _shop in SHOPS.items():
+                _idx: dict[str, dict] = {}
                 for _e in _shop.get("stock", []):
                     _f = _e.get("factory")
                     if callable(_f):
                         try:
-                            _obj = _f()
-                            if getattr(_obj, "name", None) == item_name:
-                                return int(getattr(_obj, "value", 0))
+                            _o = _f()
+                            _n = getattr(_o, "name", None)
+                            if _n:
+                                self._item_value_cache[_n] = int(getattr(_o, "value", 0))
+                                _idx[_n] = {
+                                    "entry":     _e,
+                                    "item_data": self._item_data_from_obj(_o),
+                                }
                         except Exception:
                             pass
+                self._shop_item_cache[_sid] = _idx
         except ImportError:
             pass
-        return None
+        print(f"[WorldServer] caches: {len(self._item_value_cache)} itens, "
+              f"{sum(len(v) for v in self._shop_item_cache.values())} entradas de loja")
+
+    def _lookup_item_value(self, item_name: str) -> int | None:
+        """Retorna o valor base de um item a partir do cache pré-construído.
+        None se não encontrado (foi removido do catálogo após startup)."""
+        return self._item_value_cache.get(item_name)
 
     def apply_consumable(self, session_id: str, payload: dict) -> None:
         """Aplica efeitos de consumível no ECS do servidor (autoritativo).
