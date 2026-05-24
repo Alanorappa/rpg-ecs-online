@@ -36,8 +36,8 @@ class MsgType(str, Enum):
     # ── Mundo / AOI ───────────────────────────────────────────────
     WORLD_STATE        = "world_state"     # S→C  snapshot inicial ao entrar no mundo
     AOI_UPDATE         = "aoi_update"      # S→C  delta a cada tick: spawn/despawn/move
-    ZONE_CHANGE        = "zone_change"     # S→C  jogador mudou de zona/instância
-    ENTER_INSTANCE     = "enter_instance"  # C→S  pedir entrada em instância
+    ZONE_CHANGE        = "zone_change"     # S→C  jogador mudou de zona/instância  # TODO: não implementado
+    ENTER_INSTANCE     = "enter_instance"  # C→S  pedir entrada em instância        # TODO: não implementado
 
     # ── Movimento ─────────────────────────────────────────────────
     MOVE               = "move"            # C→S  jogador quer mover para tile
@@ -50,9 +50,9 @@ class MsgType(str, Enum):
 
     # ── Skills ────────────────────────────────────────────────────
     CAST_SKILL         = "cast_skill"      # C→S  usar skill
-    CAST_START         = "cast_start"      # S→C  entidade começou cast (barra de cast)
-    CAST_CANCEL        = "cast_cancel"     # S→C  cast interrompido
-    CAST_COMPLETE      = "cast_complete"   # S→C  cast concluído (dispara efeito)
+    CAST_START         = "cast_start"      # S→C  entidade começou cast (barra de cast)  # TODO: não implementado
+    CAST_CANCEL        = "cast_cancel"     # S→C  cast interrompido                      # TODO: não implementado
+    CAST_COMPLETE      = "cast_complete"   # S→C  cast concluído (dispara efeito)         # TODO: não implementado
     SKILL_RESULT       = "skill_result"    # S→C  efeitos aplicados pela skill
 
     # ── Projéteis (reservado — não implementado ainda) ────────────
