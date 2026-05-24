@@ -876,6 +876,11 @@ class TileMovement:
     debilitate_elapsed: float = 0.0  # tempo acumulado debilitado contínuo (Foco Mortal)
     is_dash: bool = False             # True durante o dash do Interceptar
     elevation: int = 0               # nível de elevação atual (0=chão, 1=estrutura...)
+    # Tile autoritativo do servidor (online) — sincronizado via from_tx/from_ty do ENTITY_MOVE.
+    # Representa onde o mob ESTÁ no servidor (não a posição visual animada).
+    # 0,0 = não inicializado → fallback para current_tile.
+    server_tile_x: int = 0
+    server_tile_y: int = 0
 
 
 @dataclass

@@ -2982,7 +2982,8 @@ class GameEngine:
                     self._apply_remote_move(eid, m["tx"], m["ty"],
                                             is_dash=m.get("is_dash", False))
                 elif eid in self._remote_mobs:
-                    self._move_remote_mob(eid, m["tx"], m["ty"])
+                    self._move_remote_mob(eid, m["tx"], m["ty"],
+                                          m.get("from_tx"), m.get("from_ty"))
             for sp in payload.get("spawned", []):
                 eid  = sp.get("eid", -1)
                 kind = sp.get("kind", "player")
@@ -3681,6 +3682,13 @@ class GameEngine:
         self._remote_mobs[server_eid]         = local_eid
         self._remote_mobs_reverse[local_eid]  = server_eid
 
+        # Inicializa server_tile com o spawn tile (tile autoritativo do servidor)
+        from components import TileMovement as _TMInit
+        _tm_init = self.world.get_component(local_eid, _TMInit)
+        if _tm_init:
+            _tm_init.server_tile_x = data.get("tx", 0)
+            _tm_init.server_tile_y = data.get("ty", 0)
+
         # Se o mob já estava em movimento no servidor no momento do spawn,
         # inicia a animação imediatamente (evita pop-in estático + teleporte).
         mtx = data.get("moving_to_tx")
@@ -3736,14 +3744,16 @@ class GameEngine:
         # Mapeia server_eid → local para que ENTITY_DESPAWN possa remover
         self._remote_mob_projectiles[server_proj_eid] = local_eid
 
-    def _move_remote_mob(self, server_eid: int, new_tx: int, new_ty: int) -> None:
+    def _move_remote_mob(self, server_eid: int, new_tx: int, new_ty: int,
+                         from_tx: int | None = None, from_ty: int | None = None) -> None:
         """Move mob remoto para o tile destino recebido do servidor.
 
-        O servidor agora envia target_tile quando o movimento COMEÇA (não quando
-        termina), então cliente e servidor animam em paralelo. Lag cai de
-        ~376ms (1 animação) para ~17ms (latência one-way).
+        O servidor envia target_tile quando o movimento COMEÇA (não quando termina),
+        então cliente e servidor animam em paralelo.
 
-        Deduplica: se mob já está indo para new_tx/ty, ignora.
+        from_tx/from_ty: tile onde o mob ESTÁ no servidor quando este passo começa.
+        Gravado em tm.server_tile_x/y para que _process_target use o mesmo critério
+        de distância que o servidor (em vez da posição visual animada, que fica atrás).
         """
         from components import TileMovement, Position
         from utils import start_tile_movement
@@ -3754,6 +3764,12 @@ class GameEngine:
         pos = self.world.get_component(local_eid, Position)
         if not tm or not pos:
             return
+
+        # Atualiza tile autoritativo do servidor (de onde o mob saiu neste passo)
+        if from_tx is not None:
+            tm.server_tile_x = from_tx
+            tm.server_tile_y = from_ty
+
         if tm.is_moving:
             # Já animando para este tile? Não enfileira (servidor emite start, não end)
             if tm.target_tile_x == new_tx and tm.target_tile_y == new_ty:

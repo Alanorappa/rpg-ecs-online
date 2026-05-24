@@ -1425,11 +1425,17 @@ class PlayerInputSystem(System):
                 tgt_tile_x, tgt_tile_y = target_tm.target_tile_x, target_tm.target_tile_y
             else:
                 tgt_tile_x, tgt_tile_y = target_tm.current_tile_x, target_tm.current_tile_y
-            # cur_tile (ATAQUE) — tile atual do mob, igual ao que o servidor usa
-            # no range-check (server usa current_tile, não target_tile).
-            # BUG anterior: usar tgt_tile para ataque fazia dist=2 quando mob
-            # iniciava passo, cliente perseguia em vez de atacar (servidor aceitaria).
-            cur_tile_x, cur_tile_y = target_tm.current_tile_x, target_tm.current_tile_y
+            # cur_tile (ATAQUE) — tile autoritativo do servidor.
+            # server_tile_x/y: gravado via from_tx/from_ty do ENTITY_MOVE;
+            # espelha exatamente o current_tile que o servidor usa no range-check.
+            # Sem isso: cliente usava posição visual animada (atrás do servidor) →
+            # d_atk=1 mas servidor já tem mob 1-2 tiles à frente → ataque rejeitado.
+            _stx = getattr(target_tm, 'server_tile_x', 0)
+            _sty = getattr(target_tm, 'server_tile_y', 0)
+            if _stx or _sty:          # inicializado (online)
+                cur_tile_x, cur_tile_y = _stx, _sty
+            else:                     # offline / não inicializado → fallback
+                cur_tile_x, cur_tile_y = target_tm.current_tile_x, target_tm.current_tile_y
         else:
             tgt_tile_x = int(target_pos.x / TILE_SIZE)
             tgt_tile_y = int(target_pos.y / TILE_SIZE)
@@ -1451,11 +1457,11 @@ class PlayerInputSystem(System):
                   tile_movement.is_moving)
         if dist_attack <= 3 and getattr(self, '_dbg_chase2_key', None) != _dbg_k:
             self._dbg_chase2_key = _dbg_k
-            _act = ("ATTACK" if dist_attack <= self.PLAYER_ATTACK_RANGE and _px_chase <= _melee_chase_px
+            _act = ("ATTACK" if dist_attack <= self.PLAYER_ATTACK_RANGE
                     else "CHASE" if dist > self.PLAYER_ATTACK_RANGE
                     else "WAIT")
             print(f"[CLI] p=({pl_tile_x},{pl_tile_y}) "
-                  f"mob_cur=({cur_tile_x},{cur_tile_y}) mob_tgt=({tgt_tile_x},{tgt_tile_y}) "
+                  f"srv=({cur_tile_x},{cur_tile_y}) mob_tgt=({tgt_tile_x},{tgt_tile_y}) "
                   f"d_atk={dist_attack} d_ch={dist} px={_px_chase:.0f} "
                   f"pl_mv={tile_movement.is_moving} →{_act}")
 
@@ -1470,7 +1476,7 @@ class PlayerInputSystem(System):
                 _px_chase, _melee_chase_px, dist_attack=dist_attack)
         elif is_mage:
             pursuit_range = self._mage_attack_range(entity_id)
-            if dist_attack <= self.PLAYER_ATTACK_RANGE and _px_chase <= _melee_chase_px:
+            if dist_attack <= self.PLAYER_ATTACK_RANGE:
                 # Adjacente: melee idêntico ao guerreiro (sem geração de Raiva)
                 if auto_move:
                     auto_move.path.clear()
@@ -1497,7 +1503,7 @@ class PlayerInputSystem(System):
                     attack_range=pursuit_range, target_eid=target_id,
                 )
         else:
-            if dist_attack <= self.PLAYER_ATTACK_RANGE and _px_chase <= _melee_chase_px:
+            if dist_attack <= self.PLAYER_ATTACK_RANGE:
                 # Guerreiro no alcance: ataque físico só se estiver perseguindo (botão direito)
                 if auto_move:
                     auto_move.path.clear()
@@ -1560,7 +1566,7 @@ class PlayerInputSystem(System):
 
         if not bow_range:
             # Sem arco: fallback ao melee guerreiro (soco lento)
-            if dist_attack <= self.PLAYER_ATTACK_RANGE and px_chase <= melee_chase_px:
+            if dist_attack <= self.PLAYER_ATTACK_RANGE:
                 if auto_move:
                     auto_move.path.clear()
                 if combat_state.is_pursuing and can_act and combat_stats.attack_cooldown_timer <= 0:
