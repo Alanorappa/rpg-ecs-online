@@ -76,6 +76,11 @@ class WorldServer:
         # Timer de ataque por jogador: session_id → segundos até próximo hit
         self._attack_timers: dict[str, float] = {}
 
+        # Itens comprados em loja mas ainda não confirmados por SAVE_STATE.
+        # session_id → contagem de itens pendentes (limpo em confirm_inventory_save
+        # e em despawn_player). Substitui o padrão setattr/getattr/delattr anterior.
+        self._pending_inv: dict[str, int] = {}
+
         # Histórico de snapshots
         self._snapshots: list[tuple[int, dict]] = []
 
@@ -476,6 +481,7 @@ class WorldServer:
         if eid is None:
             return
         self._despawned_this_tick.append({"eid": eid, "tx": None, "ty": None})
+        self._pending_inv.pop(session_id, None)  # limpa itens pendentes de loja
         self.world.remove_entity(eid)
         print(f"[World] despawn player eid={eid}  session={session_id}")
 
@@ -1263,15 +1269,14 @@ class WorldServer:
         #    (inventário real mantido pelo cliente; servidor usa payload para contagem)
         inv_count = len(last_inventory) if last_inventory is not None else 0
         # Soma itens pendentes desta sessão ainda não confirmados por SAVE_STATE
-        pending_key = f"_pending_inv_{session_id}"
-        pending = getattr(self, pending_key, 0)
+        pending = self._pending_inv.get(session_id, 0)
         if inv_count + pending + 1 > 24:  # max_slots default = 24
             return {"success": False, "reason": "inventory_full"}
 
         # 4. Aplica a compra — gold deduzido server-side
         wallet.gold -= total_cost
         # Rastreia item pendente até próximo SAVE_STATE
-        setattr(self, pending_key, pending + 1)
+        self._pending_inv[session_id] = pending + 1
 
         # 5. Serializa item para enviar ao cliente
         item_obj  = entry["factory"]()
@@ -1303,9 +1308,7 @@ class WorldServer:
 
     def confirm_inventory_save(self, session_id: str) -> None:
         """Chamado quando SAVE_STATE chega — zera contador de itens pendentes."""
-        key = f"_pending_inv_{session_id}"
-        if hasattr(self, key):
-            delattr(self, key)
+        self._pending_inv.pop(session_id, None)
 
     # ---- sell ratio igual ao ShopSystem do cliente ----
     _SELL_RATIO = 0.4
