@@ -5,7 +5,7 @@ Processa mortes de mobs no servidor (sem Pygame).
 Responsabilidades neste módulo:
   - Detectar entidades com PendingDeath a cada tick
   - Calcular XP baseado no EnemyTier do mob
-  - Determinar first-attacker via damage_log_fn
+  - Determinar first-attacker via world_server.get_damage_log()
   - Rolar loot via roll_mob_loot e enfileirar pending_loot
   - Notificar SpawnZone (remove eid de active_entity_ids imediatamente)
   - Enfileirar despawns para o WorldServer enviar ENTITY_DESPAWN aos clientes
@@ -43,13 +43,9 @@ def _serialize_item(item) -> dict:
 class ServerDeathHandler:
     """Processa todas as entidades com PendingDeath a cada tick do servidor."""
 
-    def __init__(self, world, world_server=None,
-                 damage_log_fn=None) -> None:
+    def __init__(self, world, world_server=None) -> None:
         self.world          = world
         self.world_server   = world_server
-        # damage_log_fn(mob_eid) -> dict[player_eid, total_damage]
-        # Injetado pelo WorldServer; se None usa apenas killer_eid
-        self.damage_log_fn  = damage_log_fn
         self.pending_xp:       list[dict] = []
         # Cada entrada: {"eid": int, "tx": int, "ty": int}
         self.pending_despawns: list[dict] = []
