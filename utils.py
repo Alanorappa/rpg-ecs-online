@@ -17,6 +17,16 @@ def chebyshev(ax: int, ay: int, bx: int, by: int) -> int:
     return max(abs(ax - bx), abs(ay - by))
 
 
+def in_aoi(cx: int, cy: int, ex: int, ey: int, radius: int) -> bool:
+    """Retorna True se (ex, ey) está dentro do AOI centrado em (cx, cy).
+
+    Métrica canônica: Chebyshev (quadrado de tiles) — mais barata que Euclidiana
+    e consistente com a grade de 8 direções usada em todo o projeto.
+    in_aoi(5, 5, 8, 7, 3) == True  (dx=3, dy=2, max=3 <= 3)
+    """
+    return chebyshev(cx, cy, ex, ey) <= radius
+
+
 def start_tile_movement(position, tile_movement, tgt_x: int, tgt_y: int,
                         extra_speed_mult: float = 1.0) -> None:
     """Inicia um movimento tile-a-tile para (tgt_x, tgt_y).

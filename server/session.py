@@ -14,6 +14,7 @@ import time
 
 from shared.messages import MsgType, encode, decode
 from shared.constants import AOI_RADIUS, PROTOCOL_VERSION
+from utils import in_aoi as _in_aoi
 
 
 class Session:
@@ -223,7 +224,7 @@ class SessionManager:
         for s in self._sessions.values():
             if s.authenticated and s.session_id != session.session_id:
                 sx, sy = self.world_server.get_tile_pos(s.session_id)
-                if (sx - tx) ** 2 + (sy - ty) ** 2 <= AOI_RADIUS ** 2:
+                if _in_aoi(tx, ty, sx, sy, AOI_RADIUS):
                     s.known_eids.add(eid)
 
         print(f"[Session] login ok: {username!r}  eid={eid}  tile=({tx},{ty})")
