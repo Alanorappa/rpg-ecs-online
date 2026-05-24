@@ -1437,27 +1437,6 @@ class PlayerInputSystem(System):
         pl_tile_y = tile_movement.current_tile_y
         dist = chebyshev(pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y)
 
-        # DEBUG chase — captura o momento crítico: mob adjacente (dist≤2) e em movimento.
-        # Imprime sempre que a situação mudar (evita spam de frames idênticos).
-        if target_tm:
-            _dbg_key = (dist, target_tm.is_moving,
-                        target_tm.current_tile_x, target_tm.current_tile_y,
-                        target_tm.target_tile_x,  target_tm.target_tile_y,
-                        tile_movement.is_moving)
-            if dist <= 2 and getattr(self, '_dbg_last_key', None) != _dbg_key:
-                self._dbg_last_key = _dbg_key
-                _px = max(abs(position.x - target_pos.x), abs(position.y - target_pos.y))
-                _used_pred = (target_tm.is_moving and
-                              (target_tm.target_tile_x != target_tm.current_tile_x or
-                               target_tm.target_tile_y != target_tm.current_tile_y))
-                print(
-                    f"[CHASE] dist={dist} pred={'ON' if _used_pred else 'OFF'} "
-                    f"mob_moving={target_tm.is_moving} prog={target_tm.progress:.2f} "
-                    f"mob_cur=({target_tm.current_tile_x},{target_tm.current_tile_y}) "
-                    f"mob_tgt=({target_tm.target_tile_x},{target_tm.target_tile_y}) "
-                    f"px={_px:.0f} pursuing={combat_state.is_pursuing if combat_state else '?'} "
-                    f"pl_moving={tile_movement.is_moving}"
-                )
 
         # Guarda pixel: usa posição suave (position.x/y) em vez de flags is_moving/progress.
         # Resolve race condition online em que o mob acabou de iniciar movimento mas o
