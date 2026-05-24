@@ -742,8 +742,9 @@ class WorldServer:
                     pass
                 self._handle_player_death(peid)
 
-    # Tile de respawn padrão do mapa — deve coincidir com spawn do mapa offline
-    RESPAWN_TILE = (115, 389)
+    # TODO: hardcoded para map_1. Com múltiplos mapas/zonas, mover para
+    #       map_1_entities.json ou propriedade de SpawnZone do player (B3).
+    RESPAWN_TILE = (115, 389)   # deve coincidir com spawn do mapa offline
 
     def _handle_player_death(self, player_eid: int) -> None:
         """Player morreu: reseta HP, teleporta para respawn, mobs param de atacar."""
