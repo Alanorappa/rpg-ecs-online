@@ -112,7 +112,7 @@ self._pending_inv.pop(session_id, None)
 
 ---
 
-### A1 — CombatStateSystem duplicado verbatim em world_server.py
+### A1 — CombatStateSystem duplicado verbatim em world_server.py ✅ RESOLVIDO (commit dbd984d)
 
 **Arquivo:** [server/world_server.py](server/world_server.py) linhas 1626–1676  
 ```python
@@ -125,7 +125,7 @@ self._pending_inv.pop(session_id, None)
 
 ---
 
-### A2 — N² AOI sweep em `session.py` por tick
+### A2 — N² AOI sweep em `session.py` por tick ✅ RESOLVIDO (commit e16d571)
 
 **Arquivo:** [server/session.py](server/session.py) linhas 717–726  
 ```python
@@ -140,7 +140,7 @@ for mob_eid in list(self.world_server._mob_eids):   # O(mobs)
 
 ---
 
-### A3 — Tick loop busy-wait com `asyncio.sleep(0)`
+### A3 — Tick loop busy-wait com `asyncio.sleep(0)` ✅ RESOLVIDO (commit 6ae8a77)
 
 **Arquivo:** [server/world_server.py](server/world_server.py) linha 1565  
 ```python
@@ -160,7 +160,7 @@ else:
 
 ---
 
-### A4 — `_ServerSFX` definida como inner class dentro de `_load_map()`
+### A4 — `_ServerSFX` definida como inner class dentro de `_load_map()` ✅ RESOLVIDO (commit c439259)
 
 **Arquivo:** [server/world_server.py](server/world_server.py) linhas 155–189  
 **Problema:** A classe `_ServerSFX` (override do `StatusEffectSystem` para emitir `COMBAT_RESULT`) é re-definida toda vez que `_load_map()` é chamada. É um padrão opaco: quem lê `_load_map()` encontra uma definição de classe no meio da lógica de inicialização.
@@ -169,7 +169,7 @@ else:
 
 ---
 
-### A5 — `_lookup_item_value` instancia todos os factories por venda
+### A5 — `_lookup_item_value` instancia todos os factories por venda ✅ RESOLVIDO (commit 697bf80)
 
 **Arquivo:** [server/world_server.py](server/world_server.py) linhas 1344–1372  
 ```python
@@ -185,7 +185,7 @@ for _entry in _LT.values():
 
 ---
 
-### A6 — `process_shop_buy` chama `factory()` duas vezes com scan linear
+### A6 — `process_shop_buy` chama `factory()` duas vezes com scan linear ✅ RESOLVIDO (commit 697bf80)
 
 **Arquivo:** [server/world_server.py](server/world_server.py) linhas 1242, 1272  
 ```python
@@ -221,7 +221,7 @@ def _tick(self, dt):
 
 ---
 
-### A8 — `get_session_id_for_player` é O(players), chamado em toda morte
+### A8 — `get_session_id_for_player` é O(players), chamado em toda morte ✅ RESOLVIDO (commit 886cb8e)
 
 **Arquivo:** [server/world_server.py](server/world_server.py) linha 866  
 ```python
@@ -233,7 +233,7 @@ for sid, eid in self._player_eids.items():
 
 ---
 
-### A9 — Mob attacker identification é O(mobs) por player por tick
+### A9 — Mob attacker identification é O(mobs) por player por tick ✅ RESOLVIDO (commit 75e0a6d)
 
 **Arquivo:** [server/world_server.py](server/world_server.py) linhas 673–679  
 Para cada player que recebeu dano, itera todos os mobs do servidor para achar o agressor via `AIControlled.target_eid`. Com 10 players recebendo dano e 200 mobs = 2000 iterações extras por tick.
