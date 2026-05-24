@@ -703,7 +703,7 @@ class WorldServer:
 
         # Pré-constrói reverse map {player_eid → mob_atacante} UMA VEZ (O(mobs)),
         # em vez de O(mobs×players_danificados) no loop abaixo.
-        from components import AIControlled as _AIAtk
+        from components import AIControlled as _AIAtk, PendingDeath as _PD
         _mob_attacker_of: dict[int, int] = {}
         for _mb in self._mob_eids:
             _ai_r = self.world.get_component(_mb, _AIAtk)
@@ -736,7 +736,6 @@ class WorldServer:
             # Morte: qualquer fonte (mob ou DoT) que zerou HP neste tick
             if hp_now <= 0 and hp_before > 0:
                 # Remove PendingDeath adicionado pelo deal_damage do EnemyAI
-                from components import PendingDeath as _PD
                 try:
                     self.world.remove_component(peid, _PD)
                 except Exception:
@@ -1007,9 +1006,8 @@ class WorldServer:
             # em pixels usaria posição errada mesmo com tile correto.
             _mob_tile_snapshots: dict[int, tuple] = {}    # eid → (tile_x, tile_y, pos_x, pos_y)
             _player_tile_snap   = None                    # (tile_x, tile_y, pos_x, pos_y)
-            from components import Position as _PosSnap
+            from components import Position as _PosSnap, TileMovement as _TM
             if tid != -1 and tid in self._mob_eids:
-                from components import TileMovement as _TM
                 _mob_tm  = self.world.get_component(tid, _TM)
                 _mob_pos = self.world.get_component(tid, _PosSnap)
                 if _mob_tm:
@@ -1062,9 +1060,8 @@ class WorldServer:
                     _skill_ok = handler_fn(skill_obj, combat_stats, combat_state, tile_move)
                     # Restaura current_tile E Position do mob e player
                     for _mob_eid, (_old_cx, _old_cy, _old_px, _old_py) in _mob_tile_snapshots.items():
-                        from components import TileMovement as _TM2, Position as _PosR
-                        _m_tm  = self.world.get_component(_mob_eid, _TM2)
-                        _m_pos = self.world.get_component(_mob_eid, _PosR)
+                        _m_tm  = self.world.get_component(_mob_eid, _TM)
+                        _m_pos = self.world.get_component(_mob_eid, _PosSnap)
                         if _m_tm:
                             _m_tm.current_tile_x = _old_cx
                             _m_tm.current_tile_y = _old_cy
