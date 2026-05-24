@@ -73,7 +73,12 @@
       "Bash(ls /c/Users/l4nce/OneDrive/Documentos/Python/rpg_ecs/*.py)",
       "Bash(grep -n \"quest\\\\|task\\\\|objective\\\\|mission\" /c/Users/l4nce/OneDrive/Documentos/Python/rpg_ecs/*.py)",
       "Bash(python3 -c \"import ast; ast.parse\\(open\\(''quest_system.py''\\).read\\(\\)\\); print\\(''quest_system.py OK''\\)\")",
-      "Bash(py -c \"import ast; ast.parse\\(open\\(''quest_system.py''\\).read\\(\\)\\); print\\(''quest_system.py OK''\\); ast.parse\\(open\\(''systems.py''\\).read\\(\\)\\); print\\(''systems.py OK''\\); ast.parse\\(open\\(''game.py''\\).read\\(\\)\\); print\\(''game.py OK''\\)\")"
+      "Bash(py -c \"import ast; ast.parse\\(open\\(''quest_system.py''\\).read\\(\\)\\); print\\(''quest_system.py OK''\\); ast.parse\\(open\\(''systems.py''\\).read\\(\\)\\); print\\(''systems.py OK''\\); ast.parse\\(open\\(''game.py''\\).read\\(\\)\\); print\\(''game.py OK''\\)\")",
+      "Bash(py -3.10 tests/test_server.py)",
+      "Bash(ls -la data/game.db)",
+      "Bash(dir data\\\\game.db)",
+      "Bash(py -3.10 tests/test_server.py TestPlayerAttacksMob.test_no_duplicate_despawn)",
+      "Bash(py -3.10 -m pytest tests/test_server.py -q)"
     ]
   }
 }

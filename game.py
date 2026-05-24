@@ -39,6 +39,15 @@ from minimap import Minimap
 from stat_fns import add_modifier, remove_modifier, learn_recipe
 from save_system import save_game, load_game, has_save, next_free_slot
 
+# Lookup reverso: skill_id → (talent_id, talent_name, min_points_to_unlock)
+# Gerado dinamicamente a partir de talent_data.TALENTS.
+from talent_data import TALENTS as _TT_DATA
+_TALENT_SKILL_REQS: dict[str, tuple[str, str, int]] = {
+    td["unlocks_skill"]: (tid, td["name"], td.get("unlock_at", 1))
+    for tid, td in _TT_DATA.items()
+    if td.get("unlocks_skill")
+}
+
 # --- Configurações do Jogo ---
 SCREEN_WIDTH = 1280
 SCREEN_HEIGHT = 720
@@ -93,13 +102,11 @@ def _merge_display_matrix(terrain: list[str], objects: list) -> list[str]:
 
 class GameEngine:
     def __init__(self, scale: float = 1.0, char_data: "dict | None" = None,
-                 save_slot: int = 0, online: bool = False,
+                 save_slot: int = 0,
                  net_user: str = "", net_pass: str = ""):
         pygame.init()
         self._scale      = scale
         self._save_slot  = save_slot
-        # ── Modo online ───────────────────────────────────────────
-        self._online_mode = online
         self._net_user    = net_user
         self._net_pass    = net_pass
         self._net         = None     # NetworkClient (iniciado após world estar pronto)
@@ -110,7 +117,17 @@ class GameEngine:
         self._remote_mobs:         dict[int, int]          = {}
         self._remote_mobs_reverse: dict[int, int]          = {}  # local_eid → server_eid
         self._mob_hp:              dict[int, tuple[int,int]] = {}  # server_eid → (hp, max_hp)
+        # Timers de passo para players remotos (server_eid → tempo restante)
+        self._remote_step_timers:  dict[int, float]         = {}
+        # Snapshot de stats para detecção de mudanças e envio de PLAYER_STAT_SYNC
+        self._combat_stat_snapshot: dict = {}
         self._mob_move_queues:     dict[int, list]          = {}  # server_eid → [(tx,ty)...]
+        # Projéteis de mobs remotos: server_proj_eid → local_eid (entidade visual)
+        self._remote_mob_projectiles: dict[int, int] = {}
+        # Corpses do servidor: corpse_id → (tx, ty)  — apenas marcador visual
+        self._remote_corpses: dict[int, tuple[int, int]] = {}
+        # Loot disponível para o player local: corpse_id → {items, tx, ty}
+        self._available_loot: dict[int, dict] = {}
         # Último alvo enviado ao servidor (evita reenvios desnecessários)
         self._net_last_target: int = -2
         # Última posição enviada ao servidor (evita envios duplicados)
@@ -198,6 +215,13 @@ class GameEngine:
         self._show_habilidades: bool = False     # painel Habilidades (tecla H)
         self._hab_scroll: int = 0               # scroll do painel Habilidades
         self._hab_drag_skill: "str | None" = None  # skill sendo arrastada do painel H
+        self._inv_drag_item:  "str | None" = None  # nome do item sendo arrastado do inventário
+        self._ui_events:      list = []            # eventos do frame atual (para _draw_* sem parâmetro)
+        # Drag da hotbar (reordenar / remover com Shift)
+        self._hotbar_drag_idx:    "int | None"   = None   # slot de origem do drag
+        self._hb_drag_shift:      bool           = False   # True = Shift+drag (remoção)
+        self._hb_drag_start_pos:  "tuple | None" = None    # posição onde o drag começou
+        self._hb_drag_active:     bool           = False   # threshold ultrapassado
         self._orig_mouse_pos  = pygame.mouse.get_pos  # kept for compatibility
         # Zonas de ambient
         self._ambient_zones:    list = []   # [{name, ambient, rect:(x1,y1,x2,y2)}]
@@ -235,29 +259,41 @@ class GameEngine:
                         if isinstance(s, XPSystem)), len(self.systems))
         self.systems.insert(_xp_idx + 1, self._quest_system)
 
+        # Aplica stats base da classe — necessário offline (char_data) e online (char_data=None)
+        char = self.world.get_component(self.player_entity, CharacterStats)
+        cs   = self.world.get_component(self.player_entity, CombatStats)
+        perm = self.world.get_component(self.player_entity, PermanentStats)
+        from stats_system import CLASS_BASE_STATS, apply_char_stats_to_combat, sync_attack_interval
+        from components import Equipment as _EqNew
+
         if char_data:
-            # Novo personagem — aplica nome/classe e ignora save existente
-            char = self.world.get_component(self.player_entity, CharacterStats)
+            # Novo personagem — aplica nome/classe
             if char:
                 char.name     = char_data.get("name", "Aventureiro")
                 char.class_id = char_data.get("class_id", "guerreiro")
-                # Atributos base por classe — data-driven, sem if/elif por classe
-                from stats_system import CLASS_BASE_STATS
-                _base = CLASS_BASE_STATS.get(char.class_id, CLASS_BASE_STATS["guerreiro"])
+
+        if char:
+            # Atributos base por classe (online: guerreiro padrão até LOGIN_OK confirmar classe)
+            _base = CLASS_BASE_STATS.get(char.class_id, CLASS_BASE_STATS["guerreiro"])
+            if char_data:  # novo personagem — sempre reseta para base
                 char.strength     = _base["strength"]
                 char.intelligence = _base["intelligence"]
                 char.agility      = _base["agility"]
                 char.vitality     = _base["vitality"]
                 char.defense      = _base["defense"]
-            # Recalcula combat stats com os atributos da classe
-            cs   = self.world.get_component(self.player_entity, CombatStats)
-            perm = self.world.get_component(self.player_entity, PermanentStats)
-            if char and cs:
-                from stats_system import apply_char_stats_to_combat, sync_attack_interval
-                from components import Equipment as _EqNew
-                apply_char_stats_to_combat(char, cs, perm)
-                sync_attack_interval(cs, self.world.get_component(self.player_entity, _EqNew))
-                cs.current_hp = cs.max_hp
+            elif char.vitality <= 3:  # online sem char_data — corrige padrão mínimo
+                char.strength     = _base["strength"]
+                char.intelligence = _base["intelligence"]
+                char.agility      = _base["agility"]
+                char.vitality     = _base["vitality"]
+                char.defense      = _base["defense"]
+
+        if char and cs:
+            apply_char_stats_to_combat(char, cs, perm)
+            sync_attack_interval(cs, self.world.get_component(self.player_entity, _EqNew))
+            cs.current_hp = cs.max_hp
+
+        if char_data:
             # Cor do personagem por classe
             rend = self.world.get_component(self.player_entity, Renderable)
             if rend and char:
@@ -279,8 +315,6 @@ class GameEngine:
                                     ps.skills[_idx] = _sk
                                 except ValueError:
                                     ps.skills.append(_sk)
-        else:
-            self._apply_save()
         self._quest_system.auto_start_quests()
         self._quest_system.set_current_map(self._current_map_file)
         self._apply_hotbar_config(new_character=bool(char_data))
@@ -290,9 +324,22 @@ class GameEngine:
         from save_system import register_autosave
         register_autosave(self._autosave)
 
-        # Modo online: conecta ao servidor após o mundo estar pronto
-        if self._online_mode:
-            self._connect_online()
+        # Conecta ao servidor após o mundo estar pronto
+        self._connect_online()
+        # Passa referência de rede ao PirofagiaSystem para modo online
+        self._pirofagia_system._net = self._net
+        # Modo online: SkillSystem delega dano ao servidor; só aplica feedback visual
+        self._skill_system._server_authoritative = True
+        self._skill_system._net = self._net
+        # Injeta referências online para validação client-side (range, HP threshold, proc)
+        self._skill_system._remote_mobs_reverse = self._remote_mobs_reverse
+        self._skill_system._mob_hp              = self._mob_hp
+        # TalentSystem: salva imediatamente ao alocar/desalocar/resetar talento
+        self._talent_system._on_change = self._send_save_state
+        # ConsumableSystem: envia CONSUMABLE_USE ao servidor no modo online
+        self._consumable_system._net = self._net
+        # ShopSystem: envia BUY_REQUEST ao servidor (gold/inventário server-autoritativos)
+        self._shop_system._net = self._net
 
         # --- Profiler de frames ---
         self._prof_accum:       dict[str, float] = {}   # tempo acumulado por seção
@@ -336,24 +383,29 @@ class GameEngine:
         )
 
     def _spawn_entities_from(self, spawn_points: dict):
-        for col, row, enemy_type, enemy_tier in spawn_points.get("enemies", []):
-            is_ranged = (enemy_type == "ranged")
-            create_enemy(self.world, col, row,
-                         attack_range=3 if is_ranged else 1,
-                         is_ranged=is_ranged,
-                         tier=enemy_tier)
+        # Modo online: enemies e spawn_zones são gerenciados exclusivamente pelo servidor.
+        # O cliente não cria mobs nem zonas de spawn — evita duplicação e conflito de estado.
+        _online = bool(getattr(self, "_net", None))
 
-        for zd in spawn_points.get("spawn_zones", []):
-            create_spawn_zone(
-                self.world,
-                center_x=zd["x"], center_y=zd["y"],
-                enemy_type=zd["enemy_type"], enemy_tier=zd["enemy_tier"],
-                radius=zd["radius"], max_count=zd["count"],
-                respawn_cooldown=zd["respawn_cooldown"],
-                level_min=zd.get("level_min", 1), level_max=zd.get("level_max", 1),
-                race=zd.get("race", "Humanoide"),
-                entity_class=zd.get("entity_class", ""),
-            )
+        if not _online:
+            for col, row, enemy_type, enemy_tier in spawn_points.get("enemies", []):
+                is_ranged = (enemy_type == "ranged")
+                create_enemy(self.world, col, row,
+                             attack_range=3 if is_ranged else 1,
+                             is_ranged=is_ranged,
+                             tier=enemy_tier)
+
+            for zd in spawn_points.get("spawn_zones", []):
+                create_spawn_zone(
+                    self.world,
+                    center_x=zd["x"], center_y=zd["y"],
+                    enemy_type=zd["enemy_type"], enemy_tier=zd["enemy_tier"],
+                    radius=zd["radius"], max_count=zd["count"],
+                    respawn_cooldown=zd["respawn_cooldown"],
+                    level_min=zd.get("level_min", 1), level_max=zd.get("level_max", 1),
+                    race=zd.get("race", "Humanoide"),
+                    entity_class=zd.get("entity_class", ""),
+                )
 
         for col, row, shop_id, lvl, prof in spawn_points.get("merchants", []):
             create_merchant(self.world, col, row, shop_id=shop_id,
@@ -482,6 +534,8 @@ class GameEngine:
             on_map_changed    = self._on_god_mode_save,
         )
 
+        self._consumable_system = ConsumableSystem(self.world)
+
         # Ordem dos sistemas por frame — ALTERE COM CUIDADO.
         # As restrições de dependência são verificadas em runtime por _validate_system_order().
         # Se a ordem for violada, o jogo levanta RuntimeError na inicialização.
@@ -492,10 +546,7 @@ class GameEngine:
             loot_system,                                                              # 4
             PlayerInputSystem(self.world, self.screen),                                   # 5
             skill_system,                                                             # 6
-            # IA e spawn de mobs: gerenciados pelo servidor no modo online
-            *([EnemyAISystem(self.world, self.player_entity),                         # 7
-               EnemyAbilitySystem(self.world, self.player_entity)]                    # 8
-              if not self._online_mode else []),
+            # IA e spawn de mobs: gerenciados pelo servidor
             projectile_system,                                                        # 9
             self._player_proj_system,                                                 # 10
             self._spell_cast_system,                                                  # 11
@@ -505,11 +556,8 @@ class GameEngine:
             self._pirofagia_system,                                                   # 15
             self._mana_system,                                                        # 15
             death_handler,                                                            # 15
-            CorpseSystem(self.world),                                                 # 16
-            *([SpawnZoneSystem(self.world)] if not self._online_mode else []),        # 17
-            xp_system,                                                                # 18
-            death_respawn_system,                                                     # 19
-            ConsumableSystem(self.world),                                             # 20
+            death_respawn_system,                                                     # 16
+            self._consumable_system,                                                  # 20
             CombatStateSystem(self.world),                                            # 21
             StatusEffectSystem(self.world),                                           # 22
             TileMovementSystem(self.world),                                           # 23
@@ -945,10 +993,10 @@ class GameEngine:
             self._dt = dt
             SOUNDS.new_frame()  # limpa deduplicação de sons
             # Processa mensagens da rede antes de qualquer sistema
-            if self._online_mode:
-                self._process_network()
+            self._process_network()
             _t0 = _time.perf_counter()
             events = self._scale_events(pygame.event.get())
+            self._ui_events = events          # acesso sem parâmetro em _draw_* helpers
             if PROFILE_FRAMES:
                 self._prof_record("events", _time.perf_counter() - _t0)
 
@@ -963,6 +1011,7 @@ class GameEngine:
 
             for event in events:
                 if event.type == pygame.QUIT:
+                    self._send_save_state()  # salva ao fechar
                     running = False
                 elif _god_was_active:
                     pass   # god mode consumiu — ignora input do jogo
@@ -999,6 +1048,8 @@ class GameEngine:
                         if inv and 0 <= self._selected_inv_idx < len(inv.items):
                             inv.items.pop(self._selected_inv_idx)
                             self._selected_inv_idx = -1
+                            if getattr(self, "_net", None):
+                                self._send_save_state()
                     elif event.key == self._menu_keys.get("talentos", pygame.K_t):
                         already_open = self._show_talents
                         self._close_all_modals()
@@ -1010,6 +1061,8 @@ class GameEngine:
                         self._close_all_modals()
                         if not already_open:
                             self._quest_journal.open()
+                    elif event.key == pygame.K_SPACE:
+                        self._space_engage_online()
                     elif event.key == pygame.K_h:
                         self._show_habilidades = not self._show_habilidades
                         self._hab_scroll       = 0
@@ -1095,6 +1148,9 @@ class GameEngine:
             if self._quest_journal.is_open:
                 self._quest_journal.handle_events(events)
 
+            # Right-click em corpo: LootSystem offline detecta via ECS (entidade Corpse
+            # criada em LOOT_AVAILABLE). Não precisa de handler manual aqui.
+
             # Clique no minimap — detectado ANTES dos sistemas para consumir o evento
             _minimap_click_consumed = False
             if not self._map_overlay.is_open:
@@ -1139,8 +1195,11 @@ class GameEngine:
                 systems_events = [e for e in events
                                   if not (e.type == pygame.MOUSEBUTTONDOWN
                                           and e.button in (1, 3))]
+            _inv_was_open_before   = self._show_inventory
             _shop_was_open_before  = self._shop_system.is_open
             _loot_was_open_before  = self._loot_system.open_corpse_id != -1
+            _ps_before = self.world.get_component(self.player_entity, PlayerSkills)
+            _learned_count_before  = len(_ps_before.learned_skill_ids) if _ps_before else 0
             for system in self.systems:
                 # LootSystem sempre recebe eventos brutos (precisa detectar cliques no modal)
                 ev = events if system is self._loot_system else systems_events
@@ -1152,11 +1211,34 @@ class GameEngine:
                     system.update(ev, dt)
 
             # Sincronização online: movimento + alvo de combate + fila de mobs
-            if self._online_mode:
-                self._send_player_move()
-                self._sync_combat_target()
-                self._process_mob_move_queues()
-                self._ensure_remote_mobs_visible()
+            self._send_player_move()
+            self._sync_combat_target()
+            self._process_mob_move_queues()
+            self._ensure_remote_mobs_visible()
+            # Autosave local a cada 2 minutos (7200 frames @ 60fps)
+            if not hasattr(self, "_save_frame_counter"):
+                self._save_frame_counter = 0
+            self._save_frame_counter += 1
+            if self._save_frame_counter >= 7200:
+                self._save_frame_counter = 0
+                self._send_save_state()
+
+            # Salva quando loja/loot/inventário fecham ou quando aprende nova skill
+            _ps_after = self.world.get_component(self.player_entity, PlayerSkills)
+            _learned_count_after = len(_ps_after.learned_skill_ids) if _ps_after else 0
+            if (_shop_was_open_before  and not self._shop_system.is_open) or \
+               (_loot_was_open_before  and self._loot_system.open_corpse_id == -1) or \
+               (_inv_was_open_before   and not self._show_inventory) or \
+               (_learned_count_after   > _learned_count_before):
+                self._send_save_state()
+
+            # Detecta mudanças em stats de combate (equip, buff, consumível) e sincroniza
+            # com o servidor. Modular: sem hooks em sistemas específicos — detecção por
+            # snapshot após cada frame garante que QUALQUER mudança seja capturada.
+            _new_snapshot = self._get_combat_stat_snapshot()
+            if _new_snapshot != self._combat_stat_snapshot:
+                self._send_combat_stat_sync()
+                self._combat_stat_snapshot = _new_snapshot
 
             # Se shop ou loot acabaram de abrir, fechar os outros modais
             if (not _shop_was_open_before and self._shop_system.is_open) or \
@@ -1221,6 +1303,9 @@ class GameEngine:
             WARN.update(dt)
             DASH_TRAIL.update(dt)
             SOUNDS.update(dt)
+            # Decrementa timers de passo de players remotos
+            for _seid in list(self._remote_step_timers):
+                self._remote_step_timers[_seid] = max(0.0, self._remote_step_timers[_seid] - dt)
             # Verifica zona de ambient do jogador
             _ptm = self.world.get_component(self.player_entity, TileMovement)
             if _ptm:
@@ -1283,9 +1368,9 @@ class GameEngine:
             self._aoe_targeting_system.render(cam_x, cam_y)
             self._pirofagia_system.render(cam_x, cam_y)
             self._spell_cast_system.render(cam_x, cam_y)
-            if self._online_mode:
-                self._draw_remote_players(cam_x, cam_y)
-                self._draw_mob_hp_bars(cam_x, cam_y)
+            self._draw_remote_players(cam_x, cam_y)
+            self._draw_mob_hp_bars(cam_x, cam_y)
+            self._draw_remote_corpses(cam_x, cam_y)
             FLT.render(self._zoom_surf, cam_x, cam_y)
 
             # ── Escala world_surf → área de jogo na tela nativa (pixel-perfect) ─
@@ -1300,8 +1385,7 @@ class GameEngine:
             # Vinheta vermelha pulsante quando HP < 30%
             self._draw_low_hp_vignette()
             # HUD de conexão online (canto superior direito)
-            if self._online_mode:
-                self._draw_online_hud()
+            self._draw_online_hud()
 
             self._pending_tooltip       = None
             self._pending_skill_tooltip = None
@@ -1447,9 +1531,6 @@ class GameEngine:
                 if self._prof_frames >= self._prof_interval:
                     self._prof_report()
 
-        self._autosave()
-        from save_system import flush as _flush_save
-        _flush_save()   # garante que o I/O de disco termine antes do processo encerrar
         pygame.quit()
 
     # ------------------------------------------------------------------
@@ -2657,17 +2738,66 @@ class GameEngine:
                 pos.prev_x = pos.x;            pos.prev_y = pos.y
             self._net_last_tx = tx
             self._net_last_ty = ty
-            # Sincroniza HP do player com o servidor (evita HP desatualizado do save)
-            from components import CombatStats
-            cs = self.world.get_component(self.player_entity, CombatStats)
+            # Sincroniza HP do player com o servidor
+            from components import CombatStats, CharacterStats as _CS_login
+            from stats_system import apply_char_stats_to_combat, sync_attack_interval, process_levelups, CLASS_BASE_STATS
+            cs        = self.world.get_component(self.player_entity, CombatStats)
+            char_stat = self.world.get_component(self.player_entity, _CS_login)
             srv_hp     = payload.get("hp",     0)
             srv_hp_max = payload.get("hp_max", 0)
             if cs and srv_hp_max > 0:
                 cs.max_hp     = srv_hp_max
                 cs.current_hp = srv_hp
+
+            # Restaura level/XP/atributos do save do servidor
+            import json as _jl
+            _stats_raw = char.get("stats_json", "{}")
+            _stats_s   = _jl.loads(_stats_raw) if isinstance(_stats_raw, str) else {}
+            _cls_s  = char.get("class_id", "guerreiro")
+            _base_s = CLASS_BASE_STATS.get(_cls_s, CLASS_BASE_STATS["guerreiro"])
+            if char_stat:
+                # Sempre define class_id para garantir CLASS_MELEE_OVERRIDES
+                char_stat.class_id = _cls_s
+                if _stats_s:
+                    # Personagem com save: restaura tudo
+                    char_stat.level            = int(_stats_s.get("level",         char.get("level", 1)))
+                    char_stat.current_xp       = int(_stats_s.get("current_xp",   0))
+                    char_stat.xp_to_next_level = _CS_login.xp_for_level(char_stat.level)
+                    char_stat.strength         = int(_stats_s.get("strength",     _base_s["strength"]))
+                    char_stat.intelligence     = int(_stats_s.get("intelligence", _base_s["intelligence"]))
+                    char_stat.agility          = int(_stats_s.get("agility",      _base_s["agility"]))
+                    char_stat.vitality         = int(_stats_s.get("vitality",     _base_s["vitality"]))
+                    char_stat.defense          = int(_stats_s.get("defense",      _base_s["defense"]))
+                    _gold_s = int(_stats_s.get("gold", 0))
+                    if _gold_s > 0:
+                        from components import Wallet as _W_login
+                        wallet_login = self.world.get_component(self.player_entity, _W_login)
+                        if wallet_login:
+                            wallet_login.gold = _gold_s
+                else:
+                    # Personagem novo: usa base da classe
+                    char_stat.strength     = _base_s["strength"]
+                    char_stat.intelligence = _base_s["intelligence"]
+                    char_stat.agility      = _base_s["agility"]
+                    char_stat.vitality     = _base_s["vitality"]
+                    char_stat.defense      = _base_s["defense"]
+
+                # SEMPRE recalcula CombatStats — garante CLASS_MELEE_OVERRIDES aplicado
+                from components import PermanentStats as _PS_login
+                from components import Equipment as _EqLogin
+                perm_login = self.world.get_component(self.player_entity, _PS_login)
+                eq_login   = self.world.get_component(self.player_entity, _EqLogin)
+                if cs:
+                    apply_char_stats_to_combat(char_stat, cs, perm_login)
+                    sync_attack_interval(cs, eq_login)
+            # Restaura equipment/talents/skills — aplica modifiers ANTES de definir HP
+            self._restore_save_state(char)
+            # Define HP DEPOIS dos modifiers (max_hp já inclui bônus de equipamento)
+            if cs and srv_hp > 0:
+                cs.current_hp = min(srv_hp, cs.max_hp)
             print(f"[Client] login ok  eid={self._my_eid}  "
-                  f"user={char.get('name','?')}  tile=({tx},{ty})"
-                  f"  hp={srv_hp}/{srv_hp_max}")
+                  f"user={char.get('name','?')}  Nv{char_stat.level if char_stat else 1}"
+                  f"  tile=({tx},{ty})  hp={srv_hp}/{srv_hp_max}")
 
         elif msg_type == MsgType.LOGIN_ERROR:
             print(f"[Client] login erro: {payload.get('reason')}")
@@ -2692,7 +2822,11 @@ class GameEngine:
         elif msg_type == MsgType.ENTITY_SPAWN:
             eid  = payload.get("eid", -1)
             kind = payload.get("kind", "player")
-            if eid == -1 or eid == self._my_eid:
+            # Verifica corpse ANTES do guard eid==-1 (corpse usa eid negativo, -1 inclusive)
+            if kind == "corpse":
+                corpse_id = -eid
+                self._remote_corpses[corpse_id] = (payload.get("tx", 0), payload.get("ty", 0))
+            elif eid == -1 or eid == self._my_eid:
                 pass
             elif kind == "enemy":
                 self._spawn_remote_mob(eid, payload)
@@ -2705,18 +2839,117 @@ class GameEngine:
                     "hp_max":   payload.get("hp_max", 100),
                 })
 
+        elif msg_type == MsgType.COMBAT_RESULT:
+            self._apply_combat_result(payload)
+
+        elif msg_type == MsgType.SKILL_RESULT:
+            caster_eid = payload.get("caster_eid", -1)
+            sid        = payload.get("sid", "")
+            targets    = payload.get("targets", [])
+            # Som da skill — confirmado pelo servidor (evita som sem dano em kiting)
+            if sid:
+                from skill_config import SKILL_CATALOG as _SC_snd
+                from components import Position as _PosSR
+                _sk_entry  = _SC_snd.get(sid, {})
+                _snd_name  = (_sk_entry.get("sound") if isinstance(_sk_entry, dict) else None) or f"skill_{sid}"
+                if caster_eid == self._my_eid:
+                    # Servidor confirmou: aplica GCD + cooldown + som agora
+                    SOUNDS.play_skill(_snd_name)
+                    _ps_sr = self.world.get_component(self.player_entity, PlayerSkills)
+                    if _ps_sr:
+                        _ps_sr.gcd_timer = PlayerSkills.GCD_DURATION
+                        for _sk_sr in _ps_sr.skills:
+                            if _sk_sr and _sk_sr.skill_id == sid:
+                                _sk_sr._server_pending         = False
+                                _sk_sr._server_pending_timeout = 0.0
+                                # Usa cooldown efetivo do servidor (inclui reduções de talento).
+                                # Fallback: cooldown base da skill (compatibilidade com servidor antigo).
+                                _srv_cd = payload.get("cooldown")
+                                _sk_sr.current_cooldown = float(_srv_cd) if _srv_cd is not None else _sk_sr.cooldown
+                                break
+                elif caster_eid in self._remote_players:
+                    # Player remoto: posicional
+                    _cast_local = self._remote_players[caster_eid]
+                    _cast_pos   = self.world.get_component(_cast_local, _PosSR)
+                    if _cast_pos:
+                        _slx, _sly = self._player_world_pos()
+                        SOUNDS.play_skill_at(_snd_name, _cast_pos.x, _cast_pos.y,
+                                             _slx, _sly, base=0.85)
+            for t in targets:
+                self._apply_combat_result({
+                    "attacker": caster_eid,
+                    "target":   t.get("eid",     -1),
+                    "damage":   t.get("damage",   0),
+                    "outcome":  t.get("outcome",  "hit"),
+                    "hp_after": t.get("hp_after", -1),
+                    "source":   "skill",
+                    "sid":      sid,
+                })
+            # LOG de efeitos aplicados pela skill (procs de talento, CC, etc.)
+            if caster_eid == self._my_eid:
+                from status_effects_data import EFFECT_DEFS as _EDEFS_sr
+                for t in targets:
+                    _ae = t.get("applied_effects", [])
+                    if not _ae:
+                        continue
+                    _t_srv = t.get("eid", -1)
+                    _t_local = self._remote_mobs.get(_t_srv)
+                    if _t_local is not None:
+                        from components import EntityIdentity as _EI_sr
+                        _ident_sr = self.world.get_component(_t_local, _EI_sr)
+                        _tname = _ident_sr.name if _ident_sr else "Alvo"
+                    else:
+                        _tname = "Alvo"
+                    for _ef in _ae:
+                        _defn_sr = _EDEFS_sr.get(_ef)
+                        _elabel  = _defn_sr.label if _defn_sr else _ef
+                        LOG.add(f"{_tname} recebeu: {_elabel}!", (255, 200, 80))
+
         elif msg_type == MsgType.ENTITY_DESPAWN:
             eid = payload.get("eid", -1)
-            self._remove_remote_player_entity(eid)
-            # Remove mob do ECS local se era um mob do servidor
-            local_eid = self._remote_mobs.pop(eid, None)
-            self._mob_hp.pop(eid, None)
-            if local_eid is not None:
-                self._remote_mobs_reverse.pop(local_eid, None)
-                try:
-                    self.world.remove_entity(local_eid)
-                except Exception:
-                    pass
+            if eid < 0:
+                # Corpse expirou ou foi saqueado — remove visual
+                corpse_id = -eid
+                self._remote_corpses.pop(corpse_id, None)
+                loot_data = self._available_loot.pop(corpse_id, None)
+                if loot_data:
+                    local_c_eid = loot_data.get("local_eid")
+                    if local_c_eid is not None:
+                        try:
+                            self.world.remove_entity(local_c_eid)
+                        except Exception:
+                            pass
+            else:
+                self._remove_remote_player_entity(eid)
+                # Remove projétil de mob se era um projétil visual
+                _proj_local = self._remote_mob_projectiles.pop(eid, None)
+                if _proj_local is not None:
+                    try:
+                        self.world.remove_entity(_proj_local)
+                    except Exception:
+                        pass
+                # Remove mob do ECS local se era um mob do servidor
+                local_eid = self._remote_mobs.pop(eid, None)
+                self._mob_hp.pop(eid, None)
+                if local_eid is not None:
+                    self._remote_mobs_reverse.pop(local_eid, None)
+                    # Som de morte posicional antes de remover a entidade
+                    try:
+                        from components import Position as _PosD, MobSounds as _MSD
+                        _pos_d = self.world.get_component(local_eid, _PosD)
+                        _snd_d = self.world.get_component(local_eid, _MSD)
+                        if _pos_d:
+                            _dlx, _dly = self._player_world_pos()
+                            SOUNDS.play_mob_sounds_at(_snd_d, "death",
+                                                      _pos_d.x, _pos_d.y,
+                                                      _dlx, _dly, base=0.8,
+                                                      dedup_key=str(local_eid))
+                    except Exception:
+                        pass
+                    try:
+                        self.world.remove_entity(local_eid)
+                    except Exception:
+                        pass
 
         elif msg_type == MsgType.ENTITY_MOVE:
             eid = payload.get("eid", -1)
@@ -2726,8 +2959,12 @@ class GameEngine:
                 real_ty = payload.get("ty", 0)
                 player_tm = self.world.get_component(self.player_entity, TileMovement)
                 if player_tm:
-                    # Só corrige se diferente (evita jitter)
-                    if (player_tm.current_tile_x != real_tx or
+                    # Se cliente já está dashando para o mesmo tile (prediction correta), não interrompe
+                    if (getattr(player_tm, "is_dash", False) and
+                            player_tm.target_tile_x == real_tx and
+                            player_tm.target_tile_y == real_ty):
+                        pass  # animação em curso bate com posição do servidor — mantém
+                    elif (player_tm.current_tile_x != real_tx or
                             player_tm.current_tile_y != real_ty):
                         player_tm.current_tile_x = real_tx
                         player_tm.current_tile_y = real_ty
@@ -2742,7 +2979,8 @@ class GameEngine:
                 if eid == self._my_eid:
                     continue
                 if eid in self._remote_players:
-                    self._apply_remote_move(eid, m["tx"], m["ty"])
+                    self._apply_remote_move(eid, m["tx"], m["ty"],
+                                            is_dash=m.get("is_dash", False))
                 elif eid in self._remote_mobs:
                     self._move_remote_mob(eid, m["tx"], m["ty"])
             for sp in payload.get("spawned", []):
@@ -2751,10 +2989,14 @@ class GameEngine:
                 if eid != -1 and eid != self._my_eid:
                     if kind == "enemy" and eid not in self._remote_mobs:
                         self._spawn_remote_mob(eid, sp)
-                        continue
+                    elif kind == "mob_projectile":
+                        self._spawn_mob_projectile(eid, sp)
             for sp in payload.get("spawned", []):
-                eid = sp.get("eid", -1)
-                if eid != -1 and eid != self._my_eid and sp.get("kind","player") != "enemy":
+                eid  = sp.get("eid", -1)
+                kind = sp.get("kind", "player")
+                # Ignora enemy e mob_projectile (já processados acima) e o próprio player
+                if eid != -1 and eid != self._my_eid \
+                        and kind not in ("enemy", "mob_projectile"):
                     self._spawn_remote_player_entity(eid, {
                         "tx": sp.get("tx", 0), "ty": sp.get("ty", 0),
                         "name":     sp.get("name", "?"),
@@ -2762,17 +3004,124 @@ class GameEngine:
                         "hp":       sp.get("hp", 100),
                         "hp_max":   sp.get("hp_max", 100),
                     })
-            for eid in payload.get("despawned", []):
-                self._remote_players.pop(eid, None)
-            # Resultados de combate: atualiza HP e mostra texto flutuante
+            # Status effects sync (antes de combat para ter CC certo na animação)
+            for eff_payload in payload.get("effects", []):
+                if eff_payload.get("eid") == self._my_eid:
+                    self._sync_player_effects(eff_payload["effects"])
+            # Status effects em mobs remotos (ícones acima da barra + LOG de CC)
+            _mob_efx = payload.get("mob_effects", {})
+            if _mob_efx:
+                self._sync_mob_effects(_mob_efx)
+            # Combat ANTES de despawned: garante floating text do golpe fatal
+            # antes do mob ser removido de _remote_mobs
             for cr in payload.get("combat", []):
                 self._apply_combat_result(cr)
+            for eid in payload.get("despawned", []):
+                self._remove_remote_player_entity(eid)
+                self._remote_players.pop(eid, None)
+                local_eid = self._remote_mobs.pop(eid, None)
+                self._mob_hp.pop(eid, None)
+                self._mob_move_queues.pop(eid, None)
+                if local_eid is not None:
+                    self._remote_mobs_reverse.pop(local_eid, None)
+                    # Som de morte ANTES de remover a entidade
+                    try:
+                        from components import Position as _PosD2, MobSounds as _MSD2
+                        _pos_d2 = self.world.get_component(local_eid, _PosD2)
+                        _snd_d2 = self.world.get_component(local_eid, _MSD2)
+                        if _pos_d2:
+                            _dlx2, _dly2 = self._player_world_pos()
+                            SOUNDS.play_mob_sounds_at(_snd_d2, "death",
+                                                      _pos_d2.x, _pos_d2.y,
+                                                      _dlx2, _dly2, base=0.85,
+                                                      dedup_key=str(local_eid))
+                    except Exception:
+                        pass
+                    try:
+                        self.world.remove_entity(local_eid)
+                    except Exception:
+                        pass
 
         elif msg_type == MsgType.STATS_UPDATE:
+            from components import CombatStats, RemoteControlled
             eid = payload.get("eid", -1)
-            if eid in self._remote_players:
+            if eid == self._my_eid:
+                cs = self.world.get_component(self.player_entity, CombatStats)
+                if cs and "hp" in payload:
+                    cs.current_hp = payload["hp"]
+                if cs and "hp_max" in payload:
+                    cs.max_hp = payload["hp_max"]
+                # Rage/mana sincronizados após skill consumir recursos
+                _srv_rage = payload.get("rage")
+                _srv_mana = payload.get("mana")
+                if _srv_rage is not None or _srv_mana is not None:
+                    from components import CharacterStats as _CSST
+                    _char_sync = self.world.get_component(self.player_entity, _CSST)
+                    if _char_sync and _srv_rage is not None:
+                        _char_sync.rage = _srv_rage
+                    if cs and _srv_mana is not None:
+                        cs.mana = _srv_mana
+                # Cura própria (skill, consumível HoT).
+                # O servidor envia hp=valor_no_momento_da_cura. Como HP5 regen e outros
+                # heals podem ocorrer no mesmo tick (mas com hp_after mais recente no
+                # AOI_UPDATE), aplicamos: max(current, payload_hp) para nunca regredir.
+                _heal_amt = payload.get("heal_amount", 0)
+                if _heal_amt > 0 and cs:
+                    if cs.max_hp > 0 and payload.get("hp_max", 0) > 0:
+                        cs.max_hp = payload["hp_max"]
+                    _hp_from_srv = payload.get("hp", 0)
+                    if _hp_from_srv > 0:
+                        # Mantém o maior entre o HP atual do cliente (já pode incluir
+                        # HP5 regen do AOI_UPDATE) e o HP do servidor neste evento
+                        cs.current_hp = min(cs.max_hp, max(cs.current_hp, _hp_from_srv))
+                    from floating_text import FLT as _FLT_heal
+                    from components import Position as _PosHeal
+                    _pos_h = self.world.get_component(self.player_entity, _PosHeal)
+                    if _pos_h:
+                        _FLT_heal.add(f"+{_heal_amt} HP", _pos_h.x, _pos_h.y - 20,
+                                      (100, 255, 120), size="normal",
+                                      target_id=self.player_entity)
+                # XP ganho (notificação do servidor — XP proporcional por dano)
+                xp_gained = payload.get("xp_gained", 0)
+                if xp_gained > 0:
+                    from components import CharacterStats, Position, PermanentStats
+                    from stats_system import process_levelups
+                    char_stats = self.world.get_component(self.player_entity, CharacterStats)
+                    cs_xp      = self.world.get_component(self.player_entity, CombatStats)
+                    perm_xp    = self.world.get_component(self.player_entity, PermanentStats)
+                    if char_stats:
+                        char_stats.current_xp += xp_gained
+                        process_levelups(self.world, self.player_entity,
+                                         char_stats, cs_xp, perm_xp)
+                    from floating_text import FLT
+                    pos = self.world.get_component(self.player_entity, Position)
+                    if pos:
+                        FLT.add(f"+{xp_gained} XP", pos.x, pos.y - 20, (100, 255, 100), size="small",
+                                target_id=self.player_entity)
+                # Vitória Iminente: servidor confirmou carga
+                if payload.get("vitoria_iminente_charge"):
+                    _ps_vi = self.world.get_component(self.player_entity, PlayerSkills)
+                    if _ps_vi:
+                        for _sk_vi in _ps_vi.skills:
+                            if _sk_vi and _sk_vi.skill_id == "vitoria_iminente":
+                                if _sk_vi.charges < _sk_vi.max_charges:
+                                    _sk_vi.charges      = _sk_vi.max_charges
+                                    _sk_vi.charge_timer = _sk_vi.charge_timeout
+                                from floating_text import WARN
+                                WARN.add("Vitória Iminente!")
+                                break
+            elif eid in self._remote_players:
+                local_eid = self._remote_players[eid]
+                rc = self.world.get_component(local_eid, RemoteControlled)
+                if rc:
+                    if "hp" in payload:
+                        rc.hp = payload["hp"]
+                    if "hp_max" in payload:
+                        rc.hp_max = payload["hp_max"]
+            elif eid in self._mob_hp:
+                _, hp_max = self._mob_hp[eid]
                 if "hp" in payload:
-                    self._remote_players[eid]["hp"] = payload["hp"]
+                    self._mob_hp[eid] = (payload["hp"], payload.get("hp_max", hp_max))
 
         elif msg_type == MsgType.PLAYER_DEATH:
             # Servidor declarou que o player local morreu.
@@ -2789,52 +3138,432 @@ class GameEngine:
                 combat_state.is_pursuing      = False
             self._net_last_target = -1
 
+        elif msg_type == MsgType.LOOT_AVAILABLE:
+            # Servidor concedeu loot ao player local.
+            # Cria entidade Corpse no ECS local para o LootSystem offline
+            # funcionar IDENTICAMENTE ao offline (modal, equip, coins, scroll).
+            from entity_factory import create_corpse
+            from loot_tables import _T
+            from tileset import TILE_SIZE as _TS
+            corpse_id = payload.get("corpse_id", -1)
+            coins     = payload.get("coins", 0)
+            tx        = payload.get("tx", 0)
+            ty        = payload.get("ty", 0)
+            if corpse_id < 0:
+                return
+            # Reconstrói objetos de item a partir dos dados serializados do servidor
+            loot_items = []
+            for item_data in payload.get("items", []):
+                item_name = item_data.get("name", "")
+                for _key, factory in _T.items():
+                    try:
+                        candidate = factory()
+                    except Exception:
+                        continue
+                    if getattr(candidate, "name", "") == item_name:
+                        loot_items.append(candidate)
+                        break
+            # Cria entidade Corpse no ECS local — LootSystem offline lê daqui
+            px = tx * _TS + _TS // 2
+            py = ty * _TS + _TS // 2
+            local_corpse_eid = create_corpse(self.world, px, py, loot_items, coins,
+                                             decay_time=120.0)
+            # Guarda mapeamento corpse_id (servidor) → local ECS eid
+            self._available_loot[corpse_id] = {
+                "local_eid": local_corpse_eid, "tx": tx, "ty": ty
+            }
+            # Também mantém no _remote_corpses para renderização pelos outros players
+            self._remote_corpses[corpse_id] = (tx, ty)
+
+        elif msg_type == MsgType.SOUND_EVENT:
+            _ev_kind  = payload.get("kind", "")
+            _ev_mob   = payload.get("mob_name", "")
+            _ev_seid  = payload.get("mob_eid", -1)
+            _ev_tx    = payload.get("tx", 0)
+            _ev_ty    = payload.get("ty", 0)
+            from tileset import TILE_SIZE as _TS_snd
+            _ev_sx = _ev_tx * _TS_snd + _TS_snd // 2
+            _ev_sy = _ev_ty * _TS_snd + _TS_snd // 2
+            _elx, _ely = self._player_world_pos()
+            if _ev_kind == "mob_aggro":
+                # Usa MobSounds component se o mob estiver no AOI do cliente
+                _ev_local = self._remote_mobs.get(_ev_seid)
+                _ev_snd   = None
+                if _ev_local is not None:
+                    from components import MobSounds as _MSev
+                    _ev_snd = self.world.get_component(_ev_local, _MSev)
+                SOUNDS.play_mob_sounds_at(_ev_snd, "aggro",
+                                          _ev_sx, _ev_sy, _elx, _ely, base=0.8,
+                                          dedup_key=f"aggro_{_ev_seid}")
+
+        elif msg_type == MsgType.LOOT_RESULT:
+            # Servidor confirmou o loot. O LootSystem offline já processou os itens
+            # localmente via entidade Corpse criada em LOOT_AVAILABLE.
+            # Aqui apenas garantimos limpeza caso o corpo ainda exista.
+            corpse_id = payload.get("corpse_id", -1)
+            loot_data = self._available_loot.pop(corpse_id, None)
+            if loot_data:
+                local_eid = loot_data.get("local_eid")
+                if local_eid is not None:
+                    try:
+                        self.world.remove_entity(local_eid)
+                    except Exception:
+                        pass
+            self._remote_corpses.pop(corpse_id, None)
+            # Gold/itens mudaram — sincroniza save com o servidor
+            self._send_save_state()
+
+
+        elif msg_type == MsgType.BUY_RESULT:
+            # Servidor validou a compra — aplica localmente se sucesso
+            if payload.get("success"):
+                from components import Inventory as _InvBR, Wallet as _WalBR
+                inv_br = self.world.get_component(self.player_entity, _InvBR)
+                wal_br = self.world.get_component(self.player_entity, _WalBR)
+                # Atualiza gold (servidor é autoritativo)
+                new_gold = payload.get("new_gold", 0)
+                if wal_br is not None:
+                    wal_br.gold = new_gold
+                # Adiciona item ao inventário local
+                item_data = payload.get("item", {})
+                if inv_br and item_data:
+                    # _item_from_data: dados completos vêm do servidor — não precisa de catálogo
+                    item_br = self._item_from_data(item_data)
+                    if item_br:
+                        qty_br = payload.get("quantity", 1)
+                        # Tenta empilhar
+                        stacked = False
+                        if getattr(item_br, "max_stack", 1) > 1:
+                            for ex_br in inv_br.items:
+                                if ex_br and ex_br.name == item_br.name and \
+                                        ex_br.stack < ex_br.max_stack:
+                                    ex_br.stack = min(ex_br.max_stack,
+                                                      ex_br.stack + qty_br)
+                                    stacked = True
+                                    break
+                        if not stacked and len(inv_br.items) < inv_br.max_slots:
+                            item_br.stack = qty_br
+                            inv_br.items.append(item_br)
+                from combat_log import LOG as _LOG_BR
+                price = payload.get("price", 0)
+                name  = item_data.get("name", "item")
+                _LOG_BR.add(f"Comprado: {name} por {price}g", (255, 215, 0))
+                # Salva imediatamente — inventário e gold foram alterados server-side
+                self._send_save_state()
+            else:
+                reason = payload.get("reason", "")
+                _reason_msg = {
+                    "insufficient_gold": "Ouro insuficiente",
+                    "inventory_full":    "Inventário cheio",
+                    "item_not_in_stock": "Item não disponível",
+                    "invalid_shop":      "Loja inválida",
+                }.get(reason, "Compra recusada")
+                from floating_text import WARN as _WARN_BR
+                _WARN_BR.add(_reason_msg)
+
+        elif msg_type == MsgType.SELL_RESULT:
+            from components import Wallet as _WalSR
+            wal_sr = self.world.get_component(self.player_entity, _WalSR)
+            if payload.get("success"):
+                # Servidor confirma — atualiza gold autoritativo
+                if wal_sr is not None:
+                    wal_sr.gold = payload.get("new_gold", wal_sr.gold)
+                from combat_log import LOG as _LOG_SR
+                _LOG_SR.add(
+                    f"Vendido: {payload.get('item_name','item')} por {payload.get('sell_price',0)}g",
+                    (180, 220, 100))
+                self._send_save_state()
+            else:
+                # Falha rara (sessão inválida etc.) — reverte gold local se servidor informou
+                # o valor correto
+                srv_gold = payload.get("new_gold")
+                if srv_gold is not None and wal_sr is not None:
+                    wal_sr.gold = srv_gold
+                from floating_text import WARN as _WARN_SR
+                _WARN_SR.add(payload.get("reason", "Venda recusada"))
+
         elif msg_type == MsgType.PONG:
             if self._net:
                 rtt = int(__import__("time").time() * 1000) - payload.get("client_ts", 0)
                 self._net.latency_ms = rtt
 
     def _apply_combat_result(self, cr: dict) -> None:
-        """Aplica resultado de combate do servidor: HP + texto flutuante."""
-        from components import Position, CombatStats
+        """Aplica resultado de combate do servidor: HP + texto flutuante + sons.
+
+        Cores idênticas ao offline (systems.py:716-727):
+          auto-attack normal: branco (220,220,220)    auto-attack crit:   branco (255,255,255) + is_crit=True → animação grande
+          skill normal:       amarelo (255,220,0)
+          skill crit:         amarelo (255,220,50) + is_crit=True → animação grande
+          player dano:        vermelho (220,80,80) + is_crit para animação
+        """
+        from components import Position, CombatStats, RemoteControlled
         from floating_text import FLT
-        server_target = cr.get("target", -1)
-        damage        = cr.get("damage", 0)
-        outcome       = cr.get("outcome", "hit")
-        hp_after      = cr.get("hp_after", -1)
+        from sound_manager import SOUNDS
+        server_target   = cr.get("target",   -1)
+        server_attacker = cr.get("attacker", -1)
+        damage          = cr.get("damage",    0)
+        outcome         = cr.get("outcome",   "hit")
+        hp_after        = cr.get("hp_after",  -1)
+        source          = cr.get("source",    "auto")
+        is_crit         = outcome == "crit"
+        is_regen        = outcome == "regen"
+        is_ability      = source == "skill"  # skill=amarelo, auto=branco (igual offline)
+        # DoT/HoT ticks: source != "auto"/"skill" — sem som (bleed, poison, burn, regen…)
+        _is_dot_hot     = source not in ("auto", "skill")
 
-        col_crit = (255, 255, 80)
-        col_hit  = (255, 80,  80)
-        col_self = (255, 140, 140)
+        col_regen = (100, 220, 100)
 
-        # ── Mob foi atacado (player → mob) ────────────────────────────
+        _lx, _ly = self._player_world_pos()
+        from components import MobSounds as _MobSounds, EntityIdentity as _EIdent
+
+        # ── Mob foi atacado (player local ou remoto → mob) ────────────
         local_eid = self._remote_mobs.get(server_target)
         if local_eid is not None:
             if hp_after >= 0:
                 _, hp_max = self._mob_hp.get(server_target, (hp_after, hp_after))
                 self._mob_hp[server_target] = (hp_after, hp_max)
+            _mob_snd = self.world.get_component(local_eid, _MobSounds)
             pos = self.world.get_component(local_eid, Position)
             if pos and damage > 0:
-                col = col_crit if outcome == "crit" else col_hit
-                txt = f"CRÍTICO! {damage}" if outcome == "crit" else str(damage)
-                FLT.add(txt, pos.x, pos.y, col, size="normal")
-                # Sons: o PlayerInputSystem offline já toca o som para o atacante local.
-                # Para o observador remoto, nenhum som adicional por ora.
+                # LOG: jogador local causou dano
+                if server_attacker == self._my_eid and not _is_dot_hot:
+                    from combat_log import LOG as _LOG_cr
+                    _suffix_cr = " (crítico)" if is_crit else ""
+                    _col_cr    = (255, 220, 50) if is_ability else (220, 220, 220)
+                    _LOG_cr.add(f"Você causou {damage} de dano{_suffix_cr}.", _col_cr)
+                if is_crit:
+                    color = (255, 220, 50) if is_ability else (255, 255, 255)
+                    FLT.add(str(damage), pos.x, pos.y, color,
+                            is_crit=True, target_id=server_target)
+                    # Crit: som de impacto + reação do mob (crit sound + emote_get_crit)
+                    if not _is_dot_hot:
+                        SOUNDS.play_random_at(["hit_crit_1", "hit_crit_2", "hit_crit"],
+                                              pos.x, pos.y, _lx, _ly, base=0.8)
+                        SOUNDS.play_mob_sounds_at(_mob_snd, "crit",
+                                                  pos.x, pos.y, _lx, _ly, base=0.7,
+                                                  dedup_key=f"crit_{server_target}")
+                        SOUNDS.play_emote_at(False, _mob_snd, pos.x, pos.y, _lx, _ly,
+                                             is_crit=True, base=0.7)
+                else:
+                    color = (255, 220, 0) if is_ability else (220, 220, 220)
+                    FLT.add(str(damage), pos.x, pos.y, color,
+                            "normal", target_id=server_target)
+                    # Hit normal: impacto + reação vocal do mob (emote_attack = grunt)
+                    if not _is_dot_hot:
+                        SOUNDS.play_random_at(["hit_normal_1", "hit_normal_2",
+                                               "hit_normal_3", "hit_normal"],
+                                              pos.x, pos.y, _lx, _ly, base=0.6)
+                        SOUNDS.play_mob_sounds_at(_mob_snd, "emote_attack",
+                                                  pos.x, pos.y, _lx, _ly, base=0.6,
+                                                  dedup_key=f"dmg_{server_target}")
+            elif pos and damage == 0 and outcome in ("miss", "dodge", "parry", "block"):
+                _AVOID_FLT = {
+                    "miss":  ("Errou!",    (220, 220, 100)),
+                    "dodge": ("Desviou!",  (100, 210, 230)),
+                    "parry": ("Aparou!",   (100, 150, 230)),
+                    "block": ("Bloqueou!", (100, 150, 230)),
+                }
+                txt_av, col_av = _AVOID_FLT.get(outcome, ("Errou!", (220, 220, 100)))
+                FLT.add(txt_av, pos.x, pos.y, col_av, "small", target_id=server_target)
+                SOUNDS.play_random_at([f"combat_{outcome}", f"combat_{outcome}_1",
+                                       f"combat_{outcome}_2"],
+                                      pos.x, pos.y, _lx, _ly, base=0.6)
             return
 
-        # ── Player local foi atacado (mob → player) ───────────────────
-        if server_target == self._my_eid and damage > 0:
-            # Servidor é fonte de verdade para HP do player — usa hp_after
+        # ── Player local foi atacado ou regenerou ─────────────────────
+        if server_target == self._my_eid:
             cs = self.world.get_component(self.player_entity, CombatStats)
             if cs and hp_after >= 0:
-                cs.current_hp = hp_after  # HP autoritativo do servidor
-            player_pos = self.world.get_component(self.player_entity, Position)
-            if player_pos:
-                txt = f"CRÍTICO! -{damage}" if outcome == "crit" else f"-{damage}"
-                FLT.add(txt, player_pos.x, player_pos.y, col_self, size="normal")
+                if is_regen:
+                    # Regen nunca reduz HP: servidor pode estar defasado
+                    cs.current_hp = max(cs.current_hp, hp_after)
+                else:
+                    # Dano: servidor é autoritativo
+                    cs.current_hp = hp_after
+            if is_regen:
+                healed = abs(damage)
+                if healed > 0:
+                    player_pos = self.world.get_component(self.player_entity, Position)
+                    if player_pos:
+                        FLT.add(f"+{healed} HP", player_pos.x, player_pos.y,
+                                col_regen, "normal", target_id=self.player_entity)
+            elif damage > 0:
+                player_pos = self.world.get_component(self.player_entity, Position)
+                if player_pos:
+                    FLT.add(f"-{damage}", player_pos.x, player_pos.y,
+                            (220, 80, 80), target_id=self.player_entity, is_crit=is_crit)
+                # LOG: jogador recebeu dano
+                if not _is_dot_hot:
+                    from combat_log import LOG as _LOG_cr2
+                    _suffix_rcv = " (crítico)" if is_crit else ""
+                    _LOG_cr2.add(f"Você recebeu {damage} de dano{_suffix_rcv}.", (220, 80, 80))
+                # Som do atacante (mob) → posicional se o mob for remoto
+                _atk_mob_local = self._remote_mobs.get(server_attacker)
+                if _atk_mob_local is not None:
+                    _atk_pos  = self.world.get_component(_atk_mob_local, Position)
+                    _atk_snd  = self.world.get_component(_atk_mob_local, _MobSounds)
+                    _atk_ai   = self.world.get_component(_atk_mob_local,
+                                     __import__("components").AIControlled)
+                    if _atk_pos:
+                        # Determina tipo de ataque (igual offline EnemyAISystem)
+                        if _atk_ai and _atk_ai.entity_class in ("Mage","Mago","Warlock","Bruxo"):
+                            _atk_ev = "attack_magic"
+                        elif _atk_ai and _atk_ai.is_ranged:
+                            _atk_ev = "attack_ranged"
+                        else:
+                            _atk_ev = "attack_melee"
+                        # Só o som do ataque (attack_melee/ranged/magic) — sem emote,
+                        # sem hit_normal. O emote_attack é reservado para reação a dano.
+                        if not _is_dot_hot:
+                            SOUNDS.play_mob_sounds_at(_atk_snd, _atk_ev,
+                                                      _atk_pos.x, _atk_pos.y, _lx, _ly,
+                                                      base=0.85, dedup_key=str(server_attacker))
+                else:
+                    # Atacante não é mob remoto rastreado — som local sem atenuação
+                    if not _is_dot_hot:
+                        if is_crit:
+                            SOUNDS.play_emote_get_crit(is_player=True)
+                            SOUNDS.play_random(["hit_crit_1","hit_crit_2","hit_crit"], 0.9)
+                        else:
+                            SOUNDS.play_random(["hit_normal_1","hit_normal_2",
+                                                "hit_normal_3","hit_normal"], 0.7)
+            return
+
+        # ── Player remoto foi atacado ou regenerou ────────────────────
+        if server_target in self._remote_players:
+            local_eid = self._remote_players[server_target]
+            rc = self.world.get_component(local_eid, RemoteControlled)
+            if rc and hp_after >= 0:
+                rc.hp = hp_after
+            pos = self.world.get_component(local_eid, Position)
+            if is_regen:
+                healed = abs(damage)
+                if healed > 0 and pos:
+                    FLT.add(f"+{healed} HP", pos.x, pos.y, col_regen, "normal", target_id=local_eid)
+            elif damage > 0 and pos:
+                FLT.add(f"-{damage}", pos.x, pos.y, (220, 80, 80), target_id=local_eid, is_crit=is_crit)
+                if is_crit:
+                    SOUNDS.play_random_at(["hit_crit_1","hit_crit_2","hit_crit"],
+                                          pos.x, pos.y, _lx, _ly, base=0.7)
+                else:
+                    SOUNDS.play_random_at(["hit_normal_1","hit_normal_2",
+                                           "hit_normal_3","hit_normal"],
+                                          pos.x, pos.y, _lx, _ly, base=0.6)
+
+    def _sync_player_effects(self, effects: list) -> None:
+        """Sincroniza StatusEffects do jogador local com o estado autoritativo do servidor.
+
+        O servidor envia a lista atual de efeitos ativos (type + duration restante).
+        O cliente aplica localmente SEM dano (tick_interval=0) — apenas para:
+          - Exibir ícones de efeito no HUD
+          - Aplicar slow/root/stun ao movimento e ações do cliente
+        O dano real vem separado via COMBAT_RESULT (source = effect_type).
+        """
+        from components import StatusEffects, ActiveEffect
+        from status_effects_data import EFFECT_DEFS as _EDEFS
+        sfx = self.world.get_component(self.player_entity, StatusEffects)
+        if sfx is None:
+            sfx = StatusEffects()
+            self.world.add_component(self.player_entity, sfx)
+
+        server_types = {e["type"] for e in effects}
+
+        # Remove efeitos expirados no servidor — LOG de expiração
+        for k in list(sfx.effects.keys()):
+            if k not in server_types:
+                _defn = _EDEFS.get(k)
+                _label = _defn.label if _defn else k
+                LOG.add(f"{_label} expirou.", (160, 160, 160))
+                sfx.effects.pop(k, None)
+
+        # Aplica / atualiza efeitos do servidor — LOG quando efeito é novo
+        for e in effects:
+            etype = e["type"]
+            dur   = float(e.get("duration", 1.0))
+            if etype not in sfx.effects:
+                # Efeito novo: adiciona e loga
+                _defn = _EDEFS.get(etype)
+                _label = _defn.label if _defn else etype
+                if _defn and _defn.is_buff:
+                    LOG.add(f"{_label} ativado!", (100, 220, 120))
+                else:
+                    LOG.add(f"Você recebeu: {_label}!", (220, 100, 60))
+                sfx.effects[etype] = ActiveEffect(
+                    effect_type=etype,
+                    duration=dur,
+                    magnitude=0.0,      # sem dano local — só servidor aplica dano
+                    tick_interval=0.0,  # sem tick local de dano
+                )
+            else:
+                sfx.effects[etype].duration = dur
+
+    def _sync_mob_effects(self, mob_effects: dict) -> None:
+        """Sincroniza efeitos de status em mobs remotos.
+
+        mob_effects: {str(server_eid): [{type, duration}, ...]}
+        Aplica o componente StatusEffects nas entidades locais dos mobs.
+        sem tick de dano — apenas para renderização (ícones acima da barra de HP)
+        e LOG de novos efeitos de controle.
+        """
+        from components import StatusEffects, ActiveEffect
+        from status_effects_data import EFFECT_DEFS as _EDEFS
+
+        # Limpa efeitos de mobs que o servidor não enviou neste tick
+        _reported_server_eids = {int(k) for k in mob_effects}
+        for srv_eid, local_eid in self._remote_mobs.items():
+            if srv_eid not in _reported_server_eids:
+                sfx = self.world.get_component(local_eid, StatusEffects)
+                if sfx and sfx.effects:
+                    sfx.effects.clear()
+
+        for srv_eid_str, effects in mob_effects.items():
+            srv_eid   = int(srv_eid_str)
+            local_eid = self._remote_mobs.get(srv_eid)
+            if local_eid is None:
+                continue
+
+            sfx = self.world.get_component(local_eid, StatusEffects)
+            if sfx is None:
+                sfx = StatusEffects()
+                self.world.add_component(local_eid, sfx)
+
+            server_types = {e["type"] for e in effects}
+
+            # Remove expirados
+            for k in list(sfx.effects.keys()):
+                if k not in server_types:
+                    sfx.effects.pop(k, None)
+
+            # Aplica / atualiza — LOG para novos efeitos de CC
+            for e in effects:
+                etype = e["type"]
+                dur   = float(e.get("duration", 1.0))
+                if etype not in sfx.effects:
+                    _defn = _EDEFS.get(etype)
+                    if _defn and not _defn.is_buff:
+                        _label = _defn.label
+                        from components import EntityIdentity as _EIdentMob
+                        _ident = self.world.get_component(local_eid, _EIdentMob)
+                        _mname = _ident.name if _ident else "Alvo"
+                        LOG.add(f"{_mname}: {_label}!", (255, 180, 80))
+                    sfx.effects[etype] = ActiveEffect(
+                        effect_type=etype,
+                        duration=dur,
+                        magnitude=0.0,
+                        tick_interval=0.0,
+                    )
+                else:
+                    sfx.effects[etype].duration = dur
 
     def _sync_combat_target(self) -> None:
-        """Envia AUTO_ATTACK ao servidor quando o alvo do jogador muda."""
+        """Envia AUTO_ATTACK ao servidor.
+
+        Offline: clique esquerdo = seleciona (is_pursuing=False), não ataca.
+                 clique direito  = seleciona + persegue (is_pursuing=True), ataca.
+        Online:  só envia AUTO_ATTACK quando is_pursuing=True — igual ao offline.
+        Grace period: após enviar AUTO_ATTACK com alvo válido, aguarda 3 frames antes
+        de enviar -1, evitando que glitches de 1-2 frames de is_pursuing parem o ataque.
+        """
         if not self._net or not self._net.connected or self._my_eid == -1:
             return
         from components import CombatState
@@ -2842,11 +3571,19 @@ class GameEngine:
         if not cs:
             return
         local_target = cs.target_entity_id
-        # Converte local_eid para server_eid (só mobs remotos são válidos)
-        server_target = self._remote_mobs_reverse.get(local_target, -1)
-        # Se não é mob remoto e não é -1 (desfoque de alvo), usa -1
-        if local_target != -1 and server_target == -1:
-            server_target = -1
+        pursuing_target = local_target if cs.is_pursuing else -1
+        server_target = self._remote_mobs_reverse.get(pursuing_target, -1) if pursuing_target != -1 else -1
+
+        # Grace period: se enviamos um alvo válido recentemente, não envia -1 imediatamente
+        # Isso evita que glitches de is_pursuing por 1-2 frames parem o ataque
+        if not hasattr(self, '_sync_grace'):
+            self._sync_grace = 0
+        if server_target != -1:
+            self._sync_grace = 3   # 3 frames de grace após alvo válido
+        elif self._sync_grace > 0:
+            self._sync_grace -= 1
+            return  # ainda no grace period — não envia -1
+
         if server_target != self._net_last_target:
             self._net.send(
                 __import__("shared.messages", fromlist=["MsgType"]).MsgType.AUTO_ATTACK,
@@ -2943,8 +3680,70 @@ class GameEngine:
         self._remote_mobs[server_eid]         = local_eid
         self._remote_mobs_reverse[local_eid]  = server_eid
 
+        # Se o mob já estava em movimento no servidor no momento do spawn,
+        # inicia a animação imediatamente (evita pop-in estático + teleporte).
+        mtx = data.get("moving_to_tx")
+        mty = data.get("moving_to_ty")
+        if mtx is not None and mty is not None:
+            from components import TileMovement as _TMSpawn, Position as _PosSpawn
+            from utils import start_tile_movement as _stm
+            _tm_sp  = self.world.get_component(local_eid, _TMSpawn)
+            _pos_sp = self.world.get_component(local_eid, _PosSpawn)
+            if _tm_sp and _pos_sp:
+                _stm(_pos_sp, _tm_sp, mtx, mty)
+
+    def _spawn_mob_projectile(self, server_proj_eid: int, data: dict) -> None:
+        """Cria entidade visual de projétil de mob para o cliente renderizar.
+
+        O servidor já processa dano — aqui é só cosmético.
+        Reutiliza o ProjectileSystem local (já em self.systems) para mover e remover.
+        target_id = self.player_entity se o alvo for o player local.
+        """
+        from components import Position as _PP, Projectile as _ProjC
+        # Posição inicial enviada pelo servidor (pixel)
+        px = float(data.get("x", 0))
+        py = float(data.get("y", 0))
+
+        # Alvo: servidor envia eid ECS do alvo. Se for o player local, usa player_entity.
+        # Para outros players, ignora por ora (sem entidade local mapeada aqui).
+        target_seid = data.get("target_seid", -1)
+        if target_seid == self._my_eid:
+            target_local = self.player_entity
+        elif target_seid in self._remote_players:
+            target_local = self._remote_players[target_seid]
+        else:
+            return  # alvo não visível localmente
+
+        color    = tuple(data.get("color",    (220, 160, 60)))
+        is_arrow = bool(data.get("is_arrow",  True))
+        dir_x    = float(data.get("dir_x",    1.0))
+        dir_y    = float(data.get("dir_y",    0.0))
+        speed    = float(data.get("speed",    380.0))
+
+        local_eid = self.world.create_entity()
+        self.world.add_component(local_eid, _PP(x=px, y=py, prev_x=px, prev_y=py))
+        self.world.add_component(local_eid, _ProjC(
+            attacker_id  = -1,          # dano já processado no servidor
+            target_id    = target_local,
+            damage_type  = "physical",  # nunca dispara deal_damage (attacker=-1 → sem CombatStats)
+            speed        = speed,
+            color        = color,
+            is_arrow     = is_arrow,
+            dir_x        = dir_x,
+            dir_y        = dir_y,
+        ))
+        # Mapeia server_eid → local para que ENTITY_DESPAWN possa remover
+        self._remote_mob_projectiles[server_proj_eid] = local_eid
+
     def _move_remote_mob(self, server_eid: int, new_tx: int, new_ty: int) -> None:
-        """Move mob remoto: encadeia via queue para animação suave sem saltos."""
+        """Move mob remoto para o tile destino recebido do servidor.
+
+        O servidor agora envia target_tile quando o movimento COMEÇA (não quando
+        termina), então cliente e servidor animam em paralelo. Lag cai de
+        ~376ms (1 animação) para ~17ms (latência one-way).
+
+        Deduplica: se mob já está indo para new_tx/ty, ignora.
+        """
         from components import TileMovement, Position
         from utils import start_tile_movement
         local_eid = self._remote_mobs.get(server_eid)
@@ -2955,8 +3754,14 @@ class GameEngine:
         if not tm or not pos:
             return
         if tm.is_moving:
-            # Mob ainda animando: enfileira o próximo passo
-            self._mob_move_queues.setdefault(server_eid, []).append((new_tx, new_ty))
+            # Já animando para este tile? Não enfileira (servidor emite start, não end)
+            if tm.target_tile_x == new_tx and tm.target_tile_y == new_ty:
+                return
+            # Indo para outro tile — enfileira o próximo passo
+            queue = self._mob_move_queues.setdefault(server_eid, [])
+            # Descarta entrada duplicada no topo da fila
+            if not queue or queue[-1] != (new_tx, new_ty):
+                queue.append((new_tx, new_ty))
         else:
             start_tile_movement(pos, tm, new_tx, new_ty)
 
@@ -3032,8 +3837,12 @@ class GameEngine:
         ))
         self._remote_players[server_eid] = local_eid
 
-    def _apply_remote_move(self, eid: int, new_tx: int, new_ty: int) -> None:
-        """Atualiza target_tile do jogador remoto — TileMovementSystem anima."""
+    def _apply_remote_move(self, eid: int, new_tx: int, new_ty: int,
+                           is_dash: bool = False) -> None:
+        """Atualiza target_tile do jogador remoto — TileMovementSystem anima.
+
+        is_dash=True: usa duração do Interceptar e ativa rastro vermelho.
+        """
         from components import TileMovement, Position
         from utils import start_tile_movement
         local_eid = self._remote_players.get(eid)
@@ -3049,6 +3858,21 @@ class GameEngine:
             # Entidade ainda animando: atualiza target para encadear suavemente
             tm.target_tile_x = new_tx
             tm.target_tile_y = new_ty
+        if is_dash:
+            tm.is_dash       = True
+            tm.move_duration = 0.18   # INTERCEPT_DURATION
+        # Passo do player remoto — atenuado por distância, throttle por timer
+        if not is_dash:
+            _step_timer = self._remote_step_timers.get(eid, 0.0)
+            if _step_timer <= 0.0:
+                _slx, _sly = self._player_world_pos()
+                SOUNDS.play_random_at(
+                    ["step_1","step_2","step_3","step_4","step_5",
+                     "step_6","step_7","step_8","step_9"],
+                    pos.x, pos.y, _slx, _sly, base=0.35,
+                    channel_group=None,
+                )
+                self._remote_step_timers[eid] = 0.25  # 250ms entre passos
 
     def _draw_mob_hp_bars(self, cam_x: float, cam_y: float) -> None:
         """Desenha barras de HP dos mobs remotos com dados autoritativos do servidor."""
@@ -3075,6 +3899,423 @@ class GameEngine:
                 ratio = max(0.0, hp / hp_max)
                 pygame.draw.rect(zoom_surf, (80, 0, 0),    (bar_x, bar_y, W, 4))
                 pygame.draw.rect(zoom_surf, (0, 200, 60),  (bar_x, bar_y, int(W * ratio), 4))
+
+                # Status effect icons acima da barra de HP (idêntico ao RenderSystem offline)
+                from components import StatusEffects as _SfxDraw
+                _sfx = self.world.get_component(local_eid, _SfxDraw)
+                _active_effects = list(_sfx.effects.values()) if _sfx else []
+                if _active_effects:
+                    from effect_animator import get_frame as _get_effect_frame, FRAME_W, FRAME_H
+                    from status_effects_data import EFFECT_DEFS as _EDEFS_draw
+
+                    _anim_frames = []
+                    _sq_colors   = []
+                    for _eff in _active_effects:
+                        _frame = _get_effect_frame(_eff.effect_type)
+                        if _frame is not None:
+                            _anim_frames.append(_frame)
+                        else:
+                            _defn = _EDEFS_draw.get(_eff.effect_type)
+                            if _defn:
+                                _sq_colors.append(_defn.color)
+
+                    if _anim_frames:
+                        _gap_f  = 4
+                        _tot_w  = len(_anim_frames) * FRAME_W + _gap_f * (len(_anim_frames) - 1)
+                        _fx = int(draw_x - _tot_w / 2)
+                        _fy = bar_y - FRAME_H - 4
+                        for _surf in _anim_frames:
+                            zoom_surf.blit(_surf, (_fx, _fy))
+                            _fx += FRAME_W + _gap_f
+
+                    if _sq_colors:
+                        _isz, _gap = 6, 2
+                        _tw = len(_sq_colors) * (_isz + _gap) - _gap
+                        _ix = int(draw_x - _tw / 2)
+                        _sq_offset = (FRAME_H + 6) if _anim_frames else 0
+                        _iy = bar_y - _isz - 2 - _sq_offset
+                        for _col in _sq_colors:
+                            pygame.draw.rect(zoom_surf, _col, (_ix, _iy, _isz, _isz))
+                            _ix += _isz + _gap
+
+    def _draw_remote_corpses(self, cam_x: float, cam_y: float) -> None:
+        """Desenha corpos de mobs mortos recebidos do servidor.
+
+        Visual idêntico ao LootSystem.render_world offline (systems.py:5010-5014):
+          elipse 20×12 centrada no tile, cor por estado de loot.
+        """
+        if not self._remote_corpses:
+            return
+        from tileset import TILE_SIZE as _TS
+        surf = self._zoom_surf
+        for corpse_id, (tx, ty) in self._remote_corpses.items():
+            # Centro do tile em pixels (world-space → zoom-surface)
+            cx = tx * _TS + _TS // 2 - cam_x
+            cy = ty * _TS + _TS // 2 - cam_y
+            loot_data = self._available_loot.get(corpse_id)
+            if loot_data is not None:
+                # Lê estado real do Corpse ECS local (fonte da verdade após LOOT_AVAILABLE)
+                from components import Corpse as _Corpse
+                local_eid  = loot_data.get("local_eid")
+                corpse_comp = self.world.get_component(local_eid, _Corpse) if local_eid else None
+                if corpse_comp:
+                    has_coins = corpse_comp.coins > 0
+                    has_items = bool(corpse_comp.loot)
+                else:
+                    has_coins = False
+                    has_items = False
+                if has_coins:
+                    color = (180, 150, 30)   # dourado — moedas presentes
+                elif has_items:
+                    color = (120, 80, 40)    # marrom — só itens
+                else:
+                    color = (60, 40, 20)     # marrom escuro — vazio
+            else:
+                color = (60, 40, 20)         # marrom escuro — outro player, sem info
+            rect = (int(cx - 10), int(cy - 6), 20, 12)
+            pygame.draw.ellipse(surf, color, rect)
+            pygame.draw.ellipse(surf, (80, 55, 25), rect, 1)
+
+    # ── Save de estado do personagem ─────────────────────────────────────────
+
+    def _serialize_item(self, item) -> dict | None:
+        """Serializa um Item para dict salvo no servidor.
+
+        Inclui todos os campos necessários para restauração fiel,
+        incluindo consumable, max_stack e stack (itens empilháveis).
+        """
+        if item is None:
+            return None
+        d = {"name": getattr(item, "name", "")}
+        for attr in ("icon_key","item_type","slot","rarity","value",
+                     "attack_power","armor","spell_power","stamina",
+                     "two_handed","cast_range","attack_speed"):
+            v = getattr(item, attr, None)
+            if v is not None:
+                d[attr] = v
+        # Campos de itens empilháveis (consumíveis, munição, etc.)
+        max_stack = getattr(item, "max_stack", 1)
+        stack     = getattr(item, "stack", 1)
+        if max_stack > 1:
+            d["max_stack"] = max_stack
+            d["stack"]     = stack
+        # Consumível: salva o dict completo para restaurar funcionalidade
+        consumable = getattr(item, "consumable", None)
+        if consumable:
+            d["consumable"] = consumable
+        mods = []
+        for mod in getattr(item, "modifiers", []):
+            mods.append({"attribute": mod.attribute, "value": mod.value,
+                         "type": getattr(mod, "type", "flat")})
+        if mods:
+            d["modifiers"] = mods
+        return d
+
+    def _item_from_data(self, d: dict):
+        """Reconstrói Item diretamente dos dados serializados (sem lookup em catálogo).
+
+        Usado para itens de loja que podem não estar em loot_tables._T.
+        Todos os campos necessários vêm no próprio dict.
+        """
+        if not d or not d.get("name"):
+            return None
+        from components import Item as _Item, Modifier as _Mod
+        mods = [_Mod(m["attribute"], float(m["value"]), m.get("type", "flat"))
+                for m in d.get("modifiers", []) if "attribute" in m]
+        item = _Item(
+            name       = d["name"],
+            item_type  = d.get("item_type", ""),
+            slot       = d.get("slot", ""),
+            rarity     = d.get("rarity", "common"),
+            value      = int(d.get("value", 0)),
+            consumable = d.get("consumable"),
+            max_stack  = int(d.get("max_stack", 1)),
+            modifiers  = mods,
+        )
+        for f in ("attack_power", "armor", "spell_power", "stamina",
+                  "two_handed", "attack_speed", "damage_min", "damage_max"):
+            if f in d:
+                setattr(item, f, d[f])
+        # Restaura stack salvo (default 1 para itens não empilháveis)
+        item.stack = int(d.get("stack", 1))
+        return item
+
+    def _restore_item(self, d: dict):
+        """Reconstrói Item a partir de dict salvo.
+
+        Tenta primeiro no catálogo _T (preserva atributos do original).
+        Fallback: _item_from_data (reconstrói dos dados — funciona para itens de loja).
+        """
+        if not d:
+            return None
+        from loot_tables import _T
+        name = d.get("name", "")
+        # Tenta achar pelo nome no catálogo (loot drops)
+        for key, factory in _T.items():
+            try:
+                candidate = factory()
+            except Exception:
+                continue
+            if getattr(candidate, "name", "") == name:
+                return candidate
+        # Fallback: reconstrói dos dados (itens de loja, consumíveis, etc.)
+        return self._item_from_data(d)
+
+    def _collect_save_state(self) -> dict:
+        """Coleta estado completo do personagem para enviar ao servidor."""
+        import json
+        from components import (Inventory, Equipment, TalentTree,
+                                 Wallet, CharacterStats, CombatStats, PlayerSkills as _PSCol)
+
+        char  = self.world.get_component(self.player_entity, CharacterStats)
+        cs    = self.world.get_component(self.player_entity, CombatStats)
+        inv   = self.world.get_component(self.player_entity, Inventory)
+        equip = self.world.get_component(self.player_entity, Equipment)
+        tt    = self.world.get_component(self.player_entity, TalentTree)
+        wall  = self.world.get_component(self.player_entity, Wallet)
+
+        stats = {}
+        if char:
+            stats = {
+                "level":            char.level,
+                "current_xp":       char.current_xp,
+                "xp_to_next_level": char.xp_to_next_level,
+                "strength":         char.strength,
+                "intelligence":     char.intelligence,
+                "agility":          char.agility,
+                "vitality":         char.vitality,
+                "defense":          char.defense,
+                "max_hp":           cs.max_hp if cs else 210,
+                "current_hp":       cs.current_hp if cs else 210,
+            }
+        if wall:
+            stats["gold"] = wall.gold
+
+        inv_list = []
+        if inv:
+            for item in inv.items:
+                s = self._serialize_item(item)
+                if s:
+                    inv_list.append(s)
+
+        equipment = {}
+        if equip:
+            for slot, item in equip.slots.items():
+                if item is not None:
+                    s = self._serialize_item(item)
+                    if s:
+                        equipment[slot] = s
+
+        talents = {}
+        if tt:
+            talents = {
+                "chosen_build":     tt.chosen_build,
+                "allocated":        dict(tt.allocated),
+                "available_points": tt.available_points,
+            }
+
+        skills = {}
+        ps_col = self.world.get_component(self.player_entity, _PSCol)
+        if ps_col:
+            skills = {
+                "learned": list(ps_col.learned_skill_ids),
+                "hotbar":  [s.skill_id if s is not None else None for s in ps_col.skills],
+            }
+
+        return {
+            "stats":     stats,
+            "inventory": inv_list,
+            "equipment": equipment,
+            "talents":   talents,
+            "skills":    skills,
+        }
+
+    def _send_save_state(self) -> None:
+        """Envia estado completo do personagem ao servidor para persistência."""
+        if not self._net or not self._net.connected or self._my_eid == -1:
+            return
+        from shared.messages import MsgType
+        state = self._collect_save_state()
+        self._net.send(MsgType.SAVE_STATE, state)
+
+    def _restore_save_state(self, char_data: dict) -> None:
+        """Restaura inventário, equipment e talentos recebidos do servidor no LOGIN_OK."""
+        import json as _jr
+        from components import (Inventory, Equipment, TalentTree,
+                                 Wallet, CharacterStats)
+        from stats_system import apply_char_stats_to_combat, sync_attack_interval
+        from components import CombatStats, PermanentStats
+        from components import Equipment as _EqC
+
+        # Inventário
+        inv_raw = char_data.get("inventory_json", "[]")
+        try:
+            inv_list = _jr.loads(inv_raw) if isinstance(inv_raw, str) else inv_raw
+        except Exception:
+            inv_list = []
+        inv = self.world.get_component(self.player_entity, Inventory)
+        if inv and isinstance(inv_list, list):
+            inv.items.clear()
+            for item_d in inv_list:
+                item = self._restore_item(item_d)
+                if item:
+                    inv.items.append(item)
+
+        # Equipment
+        equip_raw = char_data.get("inventory_json", "[]")  # equipment salvo separado
+        equip_data = char_data.get("equipment_json", "{}")
+        try:
+            equip_dict = _jr.loads(equip_data) if isinstance(equip_data, str) else {}
+        except Exception:
+            equip_dict = {}
+        equip = self.world.get_component(self.player_entity, Equipment)
+        if equip and isinstance(equip_dict, dict):
+            for slot, item_d in equip_dict.items():
+                if slot in equip.slots:
+                    equip.slots[slot] = self._restore_item(item_d)
+
+        # Re-aplica modificadores de todos os itens equipados
+        from components import CombatStats as _CSEq
+        from stat_fns import add_modifier as _add_eq_mod
+        cs_eq = self.world.get_component(self.player_entity, _CSEq)
+        if equip and cs_eq:
+            for _slot_eq, _item_eq in equip.slots.items():
+                if _item_eq is None:
+                    continue
+                if _slot_eq == "mainhand" and getattr(_item_eq, "attack_speed", 0.0) > 0:
+                    cs_eq.base_attack_interval = _item_eq.attack_speed
+                for _mod_eq in getattr(_item_eq, "modifiers", []):
+                    _add_eq_mod(cs_eq, _mod_eq)
+
+        # Talentos
+        tal_raw = char_data.get("talents_json", "{}")
+        try:
+            tal_dict = _jr.loads(tal_raw) if isinstance(tal_raw, str) else {}
+        except Exception:
+            tal_dict = {}
+        tt = self.world.get_component(self.player_entity, TalentTree)
+        if tt and isinstance(tal_dict, dict) and tal_dict:
+            tt.chosen_build     = tal_dict.get("chosen_build", tt.chosen_build)
+            tt.allocated        = dict(tal_dict.get("allocated", {}))
+            tt.available_points = int(tal_dict.get("available_points", 0))
+            # Re-aplica efeitos — igual ao load offline (game.py:637)
+            try:
+                self._talent_system.apply_talent_effects()
+            except Exception:
+                pass
+
+        # Skills — hotbar e learned_ids
+        skills_raw = char_data.get("skills_json", "{}")
+        try:
+            skills_data = _jr.loads(skills_raw) if isinstance(skills_raw, str) else {}
+        except Exception:
+            skills_data = {}
+        if isinstance(skills_data, dict) and skills_data:
+            from components import PlayerSkills as _PSR
+            from skill_config import SKILL_CATALOG as _SC_R
+            ps_r = self.world.get_component(self.player_entity, _PSR)
+            if ps_r:
+                learned_ids = skills_data.get("learned", [])
+                hotbar_ids  = skills_data.get("hotbar",  [])
+                if learned_ids:
+                    ps_r.learned_skill_ids.clear()
+                    for _sid_r in learned_ids:
+                        ps_r.learned_skill_ids.add(_sid_r)
+                if hotbar_ids:
+                    # Reseta hotbar e repõe na ordem salva
+                    for _i_r in range(len(ps_r.skills)):
+                        ps_r.skills[_i_r] = None
+                    for _i_r, _sid_r in enumerate(hotbar_ids):
+                        if _sid_r and _i_r < len(ps_r.skills):
+                            _sk_r = _PSR._make_skill(_sid_r, _SC_R)
+                            if _sk_r:
+                                ps_r.skills[_i_r] = _sk_r
+                elif learned_ids:
+                    # Sem ordem de hotbar salva — preenche do início
+                    for _sid_r in ps_r.learned_skill_ids:
+                        if ps_r.skill_by_id(_sid_r) is None:
+                            _sk_r = _PSR._make_skill(_sid_r, _SC_R)
+                            if _sk_r:
+                                try:
+                                    ps_r.skills[ps_r.skills.index(None)] = _sk_r
+                                except ValueError:
+                                    ps_r.skills.append(_sk_r)
+
+        # Re-adiciona skills de talento a learned_skill_ids após o restore as ter limpado.
+        # apply_talent_effects() também as adiciona, mas é chamado ANTES do clear de learned.
+        _tt_rs = self.world.get_component(self.player_entity, TalentTree)
+        if _tt_rs and _tt_rs._unlocked_skill_ids:
+            _ps_rs = self.world.get_component(self.player_entity, PlayerSkills)
+            if _ps_rs:
+                for _tsid in _tt_rs._unlocked_skill_ids:
+                    _ps_rs.learned_skill_ids.add(_tsid)
+
+    def _get_combat_stat_snapshot(self) -> dict:
+        """Retorna snapshot dos stats de combate relevantes para sync com servidor.
+
+        Usa COMBAT_SYNC_STATS de shared/constants.py como fonte de verdade.
+        Sem hardcode: adicionar nova stat = apenas inserir em COMBAT_SYNC_STATS.
+        """
+        from components import CombatStats as _CSSnap
+        from shared.constants import COMBAT_SYNC_STATS
+        cs = self.world.get_component(self.player_entity, _CSSnap)
+        if not cs:
+            return {}
+        return {eff_attr: getattr(cs, eff_attr, None)
+                for eff_attr in COMBAT_SYNC_STATS
+                if getattr(cs, eff_attr, None) is not None}
+
+    def _send_combat_stat_sync(self) -> None:
+        """Envia PLAYER_STAT_SYNC ao servidor com os stats efetivos atuais."""
+        if not self._net or not self._net.connected or self._my_eid == -1:
+            return
+        from shared.messages import MsgType as _MT
+        snapshot = self._get_combat_stat_snapshot()
+        if snapshot:
+            self._net.send(_MT.PLAYER_STAT_SYNC, snapshot)
+
+    def _player_world_pos(self) -> "tuple[float, float]":
+        """Retorna posição pixel do player local (centro do tile)."""
+        from components import Position as _PosWP
+        _p = self.world.get_component(self.player_entity, _PosWP)
+        return (_p.x, _p.y) if _p else (0.0, 0.0)
+
+    def _space_engage_online(self) -> None:
+        """ESPAÇO: seleciona o mob remoto mais próximo e inicia perseguição (como offline)."""
+        from components import TileMovement, CombatState, PlayerAutoMove
+        tm   = self.world.get_component(self.player_entity, TileMovement)
+        cs_p = self.world.get_component(self.player_entity, CombatState)
+        auto = self.world.get_component(self.player_entity, PlayerAutoMove)
+        if not tm or not cs_p:
+            return
+        pl_x, pl_y = tm.current_tile_x, tm.current_tile_y
+        best_local = -1
+        best_dist  = float("inf")
+        for server_eid, local_eid in self._remote_mobs.items():
+            hp, _ = self._mob_hp.get(server_eid, (0, 0))
+            if hp <= 0:
+                continue
+            mob_tm = self.world.get_component(local_eid, TileMovement)
+            if not mob_tm:
+                continue
+            dist = abs(mob_tm.current_tile_x - pl_x) + abs(mob_tm.current_tile_y - pl_y)
+            if dist < best_dist:
+                best_dist  = dist
+                best_local = local_eid
+        if best_local == -1:
+            return
+        cs_p.target_entity_id = best_local
+        cs_p.is_pursuing = True
+        if auto:
+            auto.ground_target = None
+            auto.path.clear()
+
+    def _send_loot_request(self, corpse_id: int) -> None:
+        """Envia LOOT_REQUEST ao servidor para o corpse_id."""
+        if not self._net or not self._net.connected:
+            return
+        from shared.messages import MsgType
+        self._net.send(MsgType.LOOT_REQUEST, {"corpse_id": corpse_id})
 
     def _remove_remote_player_entity(self, server_eid: int) -> None:
         local_eid = self._remote_players.pop(server_eid, None)
@@ -3107,46 +4348,6 @@ class GameEngine:
                 fill_w = max(0, int(W * rc.hp / rc.hp_max))
                 pygame.draw.rect(zoom_surf, (100, 0, 0),
                                  (int(px), int(py) + H + 2, W, 4))
-                pygame.draw.rect(zoom_surf, (0, 200, 0),
-                                 (int(px), int(py) + H + 2, fill_w, 4))
-
-    def _draw_remote_players_OLD(self, cam_x, cam_y) -> None:
-        if not self._remote_players:
-            return
-        import time as _t
-        from shared.constants import TILE_SIZE as _TS
-        _CLASS_COLORS = {
-            "guerreiro": (200, 80,  80),
-            "mago":      (80,  80,  220),
-            "arqueiro":  (80,  200, 80),
-        }
-        W = H = _TS - 4
-        zoom_surf = self._zoom_surf
-        now = _t.monotonic()
-
-        for eid, data in self._remote_players.items():
-            # Posição pixel com dead reckoning + easing
-            cur_px, cur_py = self._interp_pixel(data, _TS)
-            px = cur_px - W // 2 - cam_x
-            py = cur_py - H // 2 - cam_y
-
-            col = _CLASS_COLORS.get(data.get("class_id", "guerreiro"), (180, 180, 180))
-            pygame.draw.rect(zoom_surf, col, (int(px), int(py), W, H))
-            pygame.draw.rect(zoom_surf, (255, 255, 255), (int(px), int(py), W, H), 1)
-
-            # Nome acima
-            ns = self.font_xs.render(data.get("name", "?"), True, (255, 255, 200))
-            zoom_surf.blit(ns, (int(px) + W // 2 - ns.get_width() // 2,
-                                int(py) - ns.get_height() - 2))
-
-            # Barra de HP
-            hp     = data.get("hp", 100)
-            hp_max = data.get("hp_max", 100)
-            if hp_max > 0:
-                bar_w  = W
-                fill_w = max(0, int(bar_w * hp / hp_max))
-                pygame.draw.rect(zoom_surf, (100, 0, 0),
-                                 (int(px), int(py) + H + 2, bar_w, 4))
                 pygame.draw.rect(zoom_surf, (0, 200, 0),
                                  (int(px), int(py) + H + 2, fill_w, 4))
 
@@ -3337,8 +4538,22 @@ class GameEngine:
         (140,  60, 200),   # 4 Executar
     ]
 
+    def _is_talent_locked(self, skill_id: str) -> bool:
+        """True se a skill requer talento e ele não tem pontos alocados suficientes."""
+        if skill_id not in _TALENT_SKILL_REQS:
+            return False
+        talent_id, _name, min_pts = _TALENT_SKILL_REQS[skill_id]
+        from components import TalentTree as _TTree
+        tt = self.world.get_component(self.player_entity, _TTree)
+        if tt is None:
+            return False
+        return tt.allocated.get(talent_id, 0) < min_pts
+
     def _handle_hotbar_click(self, event):
         """Aciona habilidade ao clicar com botão esquerdo em slot da hotbar."""
+        # Shift+click → drag de remoção, não usa skill
+        if pygame.key.get_mods() & pygame.KMOD_SHIFT:
+            return
         from components import PlayerSkills
         player_skills = self.world.get_component(self.player_entity, PlayerSkills)
         if not player_skills:
@@ -3354,6 +4569,10 @@ class GameEngine:
         for j, (i, skill) in enumerate(occupied):
             sx = x0 + j * (self._HB_W + self._HB_PAD)
             if pygame.Rect(sx, y0, self._HB_W, self._HB_H).collidepoint(mx, my):
+                # Talento removido → skill bloqueada
+                if skill.skill_id and self._is_talent_locked(skill.skill_id):
+                    skill.fail_flash_timer = 0.2
+                    break
                 if not self._skill_system._use_skill(i, skill):
                     skill.fail_flash_timer = 0.2
                 break
@@ -3419,18 +4638,28 @@ class GameEngine:
         if not player_skills:
             return
 
-        # --- Rage atual do jogador ---
+        # --- Rage atual do jogador e CombatStats (para custos modificados por talentos) ---
         from components import CharacterStats as _CS
-        _char = self.world.get_component(self.player_entity, _CS)
+        _char    = self.world.get_component(self.player_entity, _CS)
+        _cs_hb   = self.world.get_component(self.player_entity, CombatStats)
         player_rage = _char.rage if _char else 0
 
-        # --- Dados para verificar proc do Executar (HP% do alvo) ---
+        # --- HP% do alvo para proc do Executar e tooltip ---
         target_hp_ratio = 1.0
         combat_state = self.world.get_component(self.player_entity, CombatState)
         if combat_state and combat_state.target_entity_id != -1:
-            tgt_cs = self.world.get_component(combat_state.target_entity_id, CombatStats)
+            _tgt_local = combat_state.target_entity_id
+            tgt_cs = self.world.get_component(_tgt_local, CombatStats)
             if tgt_cs and tgt_cs.max_hp > 0:
+                # Offline ou mob local com CombatStats
                 target_hp_ratio = tgt_cs.current_hp / tgt_cs.max_hp
+            else:
+                # Mob remoto — CombatStats removido; usa _mob_hp autoritativo do servidor
+                _srv_eid_hb = self._remote_mobs_reverse.get(_tgt_local, -1)
+                if _srv_eid_hb != -1 and _srv_eid_hb in self._mob_hp:
+                    _hp_hb, _hp_max_hb = self._mob_hp[_srv_eid_hb]
+                    if _hp_max_hb > 0:
+                        target_hp_ratio = _hp_hb / _hp_max_hb
 
         # Pulso animado para o brilho (0..1, ciclo ~1.6s)
         pulse = (math.sin(pygame.time.get_ticks() / 250.0) + 1) / 2
@@ -3438,11 +4667,18 @@ class GameEngine:
         # Channeling de Fatiador de Corpos — bloqueia visualmente todas as skills
         channeling = _char is not None and _char.fatiador_timer > 0
 
-        # Durante drag do painel Habilidades: mostra TODOS os slots (incluindo vazios)
-        dragging_skill = getattr(self, "_hab_drag_skill", None)
-        if dragging_skill:
-            from skill_config import NUM_SLOTS as _NS
-            occupied = [(i, player_skills.skills[i]) for i in range(_NS)]
+        # === Drag da hotbar (reordenar / Shift+drag para remover) ===
+        from skill_config import NUM_SLOTS as _NS_HB
+        _hb_events  = self._ui_events
+        _mods_hb    = pygame.key.get_mods()
+        _shift_hb   = bool(_mods_hb & pygame.KMOD_SHIFT)
+        mx, my      = pygame.mouse.get_pos()
+
+        # Posições dos slots — pré-calculadas para uso no drag
+        _dragging_skill = getattr(self, "_hab_drag_skill", None)
+        _hb_drag_show_all = _dragging_skill or self._hb_drag_active
+        if _hb_drag_show_all:
+            occupied = [(i, player_skills.skills[i]) for i in range(_NS_HB)]
         else:
             occupied = [(i, s) for i, s in enumerate(player_skills.skills) if s is not None]
         n_occ   = len(occupied)
@@ -3451,7 +4687,73 @@ class GameEngine:
         total_w = n_occ * self._HB_W + (n_occ - 1) * self._HB_PAD
         x0      = SCREEN_WIDTH  // 2 - total_w // 2
         y0      = SCREEN_HEIGHT - self._HB_H - 10
-        mx, my  = pygame.mouse.get_pos()
+
+        def _hb_slot_rect(j):
+            sx = x0 + j * (self._HB_W + self._HB_PAD)
+            return pygame.Rect(sx, y0, self._HB_W, self._HB_H)
+
+        # MOUSEDOWN → registrar início de drag pendente
+        for _ev_hb in _hb_events:
+            if _ev_hb.type == pygame.MOUSEBUTTONDOWN and _ev_hb.button == 1:
+                for _jj, (_ii, _sk) in enumerate(occupied):
+                    if _sk is not None and _hb_slot_rect(_jj).collidepoint(_ev_hb.pos):
+                        self._hotbar_drag_idx   = _ii
+                        self._hb_drag_shift     = _shift_hb
+                        self._hb_drag_start_pos = _ev_hb.pos
+                        self._hb_drag_active    = _shift_hb  # Shift → ativa imediatamente
+                        break
+                break
+
+        # MOUSEMOTION → ativar drag ao superar threshold de 8px
+        if self._hotbar_drag_idx is not None and not self._hb_drag_active \
+                and self._hb_drag_start_pos is not None:
+            _dx = mx - self._hb_drag_start_pos[0]
+            _dy = my - self._hb_drag_start_pos[1]
+            if _dx * _dx + _dy * _dy > 64:
+                self._hb_drag_active = True
+                # Recalcular occupied p/ mostrar todos os slots
+                occupied = [(i, player_skills.skills[i]) for i in range(_NS_HB)]
+                n_occ    = len(occupied)
+                total_w  = n_occ * self._HB_W + (n_occ - 1) * self._HB_PAD
+                x0       = SCREEN_WIDTH // 2 - total_w // 2
+
+        # MOUSEUP → confirmar drag ou resetar
+        for _ev_hb in _hb_events:
+            if _ev_hb.type == pygame.MOUSEBUTTONUP and _ev_hb.button == 1:
+                if self._hb_drag_active and self._hotbar_drag_idx is not None:
+                    _di   = self._hotbar_drag_idx
+                    _n_occ_full = _NS_HB  # sempre full para drop targets
+                    _full_occ   = [(i, player_skills.skills[i]) for i in range(_n_occ_full)]
+                    _full_w     = _n_occ_full * self._HB_W + (_n_occ_full - 1) * self._HB_PAD
+                    _full_x0    = SCREEN_WIDTH // 2 - _full_w // 2
+
+                    if self._hb_drag_shift:
+                        # Verificar se soltou FORA da barra
+                        _inside_bar = any(
+                            pygame.Rect(_full_x0 + _jj2 * (self._HB_W + self._HB_PAD),
+                                        y0, self._HB_W, self._HB_H).collidepoint(_ev_hb.pos)
+                            for _jj2 in range(_n_occ_full)
+                        )
+                        if not _inside_bar:
+                            player_skills.skills[_di] = None
+                            self._save_config()
+                    else:
+                        # Reordenar: checar slot de destino
+                        for _jj2, (_ii2, _sk2) in enumerate(_full_occ):
+                            _tr = pygame.Rect(_full_x0 + _jj2 * (self._HB_W + self._HB_PAD),
+                                              y0, self._HB_W, self._HB_H)
+                            if _tr.collidepoint(_ev_hb.pos) and _ii2 != _di:
+                                # Swap
+                                player_skills.skills[_di], player_skills.skills[_ii2] = \
+                                    player_skills.skills[_ii2], player_skills.skills[_di]
+                                self._save_config()
+                                break
+                # Reset drag state
+                self._hotbar_drag_idx   = None
+                self._hb_drag_active    = False
+                self._hb_drag_shift     = False
+                self._hb_drag_start_pos = None
+                break
 
         for j, (i, skill) in enumerate(occupied):
             sx = x0 + j * (self._HB_W + self._HB_PAD)
@@ -3471,15 +4773,21 @@ class GameEngine:
                 is_procced   = skill.charges > 0
                 visual_ready = is_procced
             elif skill.skill_id == "executar":
-                # Caso especial: proc composto — carga livre OU (HP% baixo + rage + alvo vivo)
+                # Proc composto: carga livre (Assassino) OU HP% baixo do alvo
                 free_charge  = _char is not None and _char.free_executar_charges > 0
                 rage_ok      = player_rage >= skill.rage_cost
-                target_alive = (combat_state is not None and
+                has_target   = (combat_state is not None and
                                 combat_state.target_entity_id != -1 and
                                 target_hp_ratio > 0)
-                hp_proc      = rage_ok and target_alive and target_hp_ratio <= 0.30
-                is_procced   = free_charge or hp_proc
-                visual_ready = is_procced
+                hp_proc      = rage_ok and has_target and target_hp_ratio <= 0.30
+
+                # is_procced: mostra glow (sinaliza proc disponível, mesmo sem alvo/rage)
+                is_procced   = free_charge or (has_target and target_hp_ratio <= 0.30)
+
+                # visual_ready: skill TOTALMENTE utilizável agora (todas as condições)
+                # — free charge: precisa de alvo vivo
+                # — hp_proc: precisa de alvo vivo + rage suficiente
+                visual_ready = (free_charge and has_target) or hp_proc
             elif skill.proc_attr:
                 # Proc genérico: lê atributo declarado em skill_config.py
                 is_procced   = _char is not None and getattr(_char, skill.proc_attr, 0) > 0
@@ -3541,9 +4849,15 @@ class GameEngine:
                     self.screen.blit(cd_surf, (sx + self._HB_W // 2 - cd_surf.get_width() // 2,
                                                y0 + self._HB_H // 2 - cd_surf.get_height() // 2))
                 elif not is_procced:
-                    # Pronto mas alvo com HP alto — inativo sem texto
+                    # Sem condição de proc — inativo (alvo HP alto e sem carga)
                     ov = pygame.Surface((self._HB_W, self._HB_H), pygame.SRCALPHA)
                     ov.fill((0, 0, 0, 160))
+                    self.screen.blit(ov, (sx, y0))
+                elif not visual_ready:
+                    # Proc disponível mas não totalmente utilizável (sem alvo ou rage insuf.)
+                    # Mostra glow mas ícone levemente escurecido
+                    ov = pygame.Surface((self._HB_W, self._HB_H), pygame.SRCALPHA)
+                    ov.fill((0, 0, 0, 90))
                     self.screen.blit(ov, (sx, y0))
             elif skill.max_charges > 0:
                 # Habilidade baseada em cargas (vitoria_iminente etc.)
@@ -3577,8 +4891,14 @@ class GameEngine:
                 self.screen.blit(cd_surf, (sx + self._HB_W // 2 - cd_surf.get_width() // 2,
                                            y0 + self._HB_H // 2 - cd_surf.get_height() // 2))
 
+            # --- Lock de talento: skill requer talento não alocado ---
+            _talent_locked = skill.skill_id and self._is_talent_locked(skill.skill_id)
+
             # --- Borda (por cima do overlay) ---
-            if is_procced:
+            if _talent_locked:
+                # Borda roxa para indicar requisito de talento
+                pygame.draw.rect(self.screen, (130, 50, 180), r, 2, border_radius=5)
+            elif is_procced:
                 br = int(200 + 55 * pulse)
                 bg_ = int(150 + 60 * pulse)
                 border = (br, bg_, 30)
@@ -3606,10 +4926,12 @@ class GameEngine:
                 self.screen.blit(ov, (sx, y0))
 
             # --- Overlay de Rage insuficiente ---
+            # Usa custo modificado por talentos se disponível (ex: Veterano → golpe_poderoso_rage_cost)
             rage_cost = skill.rage_cost
-            if skill.skill_id == "golpe_poderoso":
-                _cs_hb = self.world.get_component(self.player_entity, CombatStats)
-                rage_cost = _cs_hb.golpe_poderoso_rage_cost if _cs_hb else rage_cost
+            if skill.skill_id and _cs_hb:
+                _talent_rage_hb = getattr(_cs_hb, f"{skill.skill_id}_rage_cost", None)
+                if _talent_rage_hb is not None:
+                    rage_cost = _talent_rage_hb
             # O overlay só é suprimido se o proc explicitamente dispensa o custo
             cost_bypassed = is_procced and skill.proc_ignores_cost
             if rage_cost > 0 and player_rage < rage_cost and not cost_bypassed:
@@ -3617,7 +4939,34 @@ class GameEngine:
                 ov.fill((0, 0, 0, 140))
                 self.screen.blit(ov, (sx, y0))
 
-            # --- Flash de falha (tentativa sem sucesso) ---
+            # --- Overlay de talento removido (roxo) ---
+            if _talent_locked:
+                _tl_ov = pygame.Surface((self._HB_W, self._HB_H), pygame.SRCALPHA)
+                _tl_ov.fill((80, 0, 120, 160))
+                self.screen.blit(_tl_ov, (sx, y0))
+                # Ícone de cadeado simples (X vermelho) no centro
+                _lk_s = self.font_sm.render("✕", True, (220, 80, 220))
+                self.screen.blit(_lk_s, (sx + self._HB_W // 2 - _lk_s.get_width() // 2,
+                                         y0 + self._HB_H // 2 - _lk_s.get_height() // 2))
+
+            # --- Overlay de drag de origem (dimming) ---
+            if self._hb_drag_active and self._hotbar_drag_idx == i:
+                _dim_ov = pygame.Surface((self._HB_W, self._HB_H), pygame.SRCALPHA)
+                _dim_ov.fill((0, 0, 0, 140))
+                self.screen.blit(_dim_ov, (sx, y0))
+
+            # --- Pending-timeout: libera skill se servidor demorar demais ---
+            # Ao expirar (rejeição), aplica mini-GCD local para não enviar nova req imediatamente.
+            if getattr(skill, "_server_pending", False):
+                t = getattr(skill, "_server_pending_timeout", 0.0) - self._dt
+                skill._server_pending_timeout = max(0.0, t)
+                if skill._server_pending_timeout <= 0.0:
+                    skill._server_pending = False
+                    # Garante GCD mesmo quando servidor rejeitou (sem SKILL_RESULT)
+                    if player_skills and player_skills.gcd_timer <= 0:
+                        player_skills.gcd_timer = PlayerSkills.GCD_DURATION * 0.5  # meio-GCD de segurança
+
+            # --- Flash de falha / botão pressionado (aguardando confirmação) ---
             if skill.fail_flash_timer > 0:
                 skill.fail_flash_timer = max(0.0, skill.fail_flash_timer - self._dt)
                 ov = pygame.Surface((self._HB_W, self._HB_H), pygame.SRCALPHA)
@@ -3627,13 +4976,39 @@ class GameEngine:
             # --- Etiqueta da tecla (keybind configurável) ---
             kb_name = pygame.key.name(player_skills.keybinds[i]).upper()
             key_col = (220, 200, 140) if visual_ready else (80, 70, 50)
+            if _talent_locked:
+                key_col = (140, 60, 160)
             self.screen.blit(self.font_sm.render(kb_name, True, key_col), (sx + 3, y0 + 2))
 
             # --- Tooltip no hover ---
-            if r.collidepoint(mx, my):
+            if r.collidepoint(mx, my) and not self._hb_drag_active:
                 lines = self._skill_tooltip_lines(
                     skill, is_procced, visual_ready, target_hp_ratio, player_rage)
+                # Requer talento? Injeta linha no topo
+                if _talent_locked:
+                    _tid_lk, _tname_lk, _mpts_lk = _TALENT_SKILL_REQS[skill.skill_id]
+                    lines.insert(0, (f"⚠ Requer talento: {_tname_lk}", (200, 80, 220)))
+                    lines.insert(1, ("", (100, 100, 100)))
                 self._pending_skill_tooltip = (mx, y0 - 4, skill.name, lines)
+
+        # --- Ghost icon: segue o mouse durante drag ativo ---
+        if self._hb_drag_active and self._hotbar_drag_idx is not None:
+            _gi    = self._hotbar_drag_idx
+            _gsk   = player_skills.skills[_gi]
+            if _gsk is not None:
+                _GSZ = self._HB_ICO
+                _gkey = (ICONS.skill_key_by_name(_gsk.icon_name)
+                          if _gsk.icon_name else ICONS.skill_key(_gi))
+                _gic  = ICONS.get(_gkey, _GSZ)
+                if _gic:
+                    ghost = pygame.Surface((_GSZ, _GSZ), pygame.SRCALPHA)
+                    ghost.blit(_gic, (0, 0))
+                    ghost.set_alpha(180)
+                    self.screen.blit(ghost, (mx - _GSZ // 2, my - _GSZ // 2))
+                # Hint de remoção durante Shift+drag
+                if self._hb_drag_shift:
+                    _hint = self.font_xs.render("Soltar fora → remover", True, (220, 80, 220))
+                    self.screen.blit(_hint, (mx - _hint.get_width() // 2, my - _GSZ // 2 - 14))
 
     # ------------------------------------------------------------------
     # Barra de consumíveis
@@ -3656,8 +5031,15 @@ class GameEngine:
         skills_w      = n_skills_occ * W + max(0, n_skills_occ - 1) * PAD
         skills_x0     = SCREEN_WIDTH // 2 - skills_w // 2
 
-        # Apenas slots de consumíveis ocupados, compactados
-        cons_occ = [(i, cbar.slots[i]) for i in range(_CB.NUM_SLOTS) if cbar.slots[i]]
+        dragging_cons = self._inv_drag_item is not None
+        events_cb     = self._ui_events
+
+        # Durante drag do inventário: mostra TODOS os slots como alvos potenciais
+        if dragging_cons:
+            cons_occ = [(i, cbar.slots[i]) for i in range(_CB.NUM_SLOTS)]
+        else:
+            cons_occ = [(i, cbar.slots[i]) for i in range(_CB.NUM_SLOTS) if cbar.slots[i]]
+
         if not cons_occ:
             return
         cons_w = len(cons_occ) * W + (len(cons_occ) - 1) * PAD
@@ -3665,28 +5047,53 @@ class GameEngine:
         y0     = SCREEN_HEIGHT - H - 10
         mx, my = pygame.mouse.get_pos()
 
+        released_cb = any(e.type == pygame.MOUSEBUTTONUP and e.button == 1
+                          for e in events_cb)
+
         for j, (i, item_name) in enumerate(cons_occ):
             sx = x0 + j * (W + PAD)
             r  = pygame.Rect(sx, y0, W, H)
 
-            # Background
-            pygame.draw.rect(self.screen, (18, 36, 22), r, border_radius=5)
+            # Drop de drag de inventário sobre este slot
+            if dragging_cons and released_cb and r.collidepoint(mx, my):
+                cbar.slots[i] = self._inv_drag_item
+                self._inv_drag_item = None
+                self._save_config()
+                dragging_cons = False
 
-            if item_name and inv:
-                item = next((it for it in inv.items if it.name == item_name), None)
+            # Background (destaque durante drag)
+            if dragging_cons and r.collidepoint(mx, my):
+                bg_col = (30, 65, 40)
+            else:
+                bg_col = (18, 36, 22)
+            pygame.draw.rect(self.screen, bg_col, r, border_radius=5)
+
+            if item_name:
+                _ic_key = "item_" + item_name.lower().replace(" ", "_")
+                item = next((it for it in inv.items if it.name == item_name), None) if inv else None
+                _ic = ICONS.get(_ic_key, W - 2)
                 if item:
-                    _ic_key = "item_" + item_name.lower().replace(" ", "_")
-                    _ic = ICONS.get(_ic_key, W - 2)
+                    # Item disponível — ícone normal
                     if _ic:
                         self.screen.blit(_ic, (r.x + 2, r.y + 2))
                     else:
                         letter = self.font_sm.render(item_name[0].upper(), True, (100, 220, 140))
                         self.screen.blit(letter, letter.get_rect(center=r.center))
-                    # Stack count
                     draw_stack_count(self.screen, item, r, self.font_xs)
                 else:
-                    # Item esgotado — slot visível mas sem ícone (stack chegou a 0)
-                    pass
+                    # Item esgotado — ícone com overlay escuro (igual skill indisponível)
+                    if _ic:
+                        dim = pygame.Surface((W - 2, H - 2), pygame.SRCALPHA)
+                        dim.blit(_ic, (0, 0))
+                        dim.fill((0, 0, 0, 160), special_flags=pygame.BLEND_RGBA_MULT)
+                        self.screen.blit(dim, (r.x + 2, r.y + 2))
+                    else:
+                        letter = self.font_sm.render(item_name[0].upper(), True, (60, 90, 70))
+                        self.screen.blit(letter, letter.get_rect(center=r.center))
+                    # "0" no canto
+                    zero_s = self.font_xs.render("0", True, (200, 80, 80))
+                    self.screen.blit(zero_s, (r.right - zero_s.get_width() - 3,
+                                              r.bottom - zero_s.get_height() - 1))
 
             # GCD overlay
             if cbar.global_cooldown > 0:
@@ -3700,8 +5107,11 @@ class GameEngine:
                     self.screen.blit(cd_s, cd_s.get_rect(
                         centerx=sx + W // 2, y=y0 + H // 2 - cd_s.get_height() // 2))
 
-            # Border
-            border_col = (80, 160, 100) if item_name else (40, 70, 50)
+            # Border — borda verde-clara durante drag hover
+            if dragging_cons and r.collidepoint(mx, my):
+                border_col = (100, 220, 130)
+            else:
+                border_col = (80, 160, 100) if item_name else (40, 70, 50)
             pygame.draw.rect(self.screen, border_col, r, 2, border_radius=5)
 
             # Keybind label
@@ -3709,8 +5119,8 @@ class GameEngine:
             key_col = (140, 210, 160) if item_name else (50, 80, 60)
             self.screen.blit(self.font_sm.render(kb_name, True, key_col), (sx + 3, y0 + 2))
 
-            # Tooltip
-            if r.collidepoint(mx, my) and item_name:
+            # Tooltip (só quando não está em drag)
+            if not dragging_cons and r.collidepoint(mx, my) and item_name:
                 item = next((it for it in inv.items if it.name == item_name), None) if inv else None
                 if item and item.consumable:
                     lines = []
@@ -3725,8 +5135,27 @@ class GameEngine:
                         lines.append((f"Regen: +{h_tick} HP a cada {interv:.0f}s ({ticks}x)", (80, 200, 140)))
                     if ooc:
                         lines.append(("Apenas fora de combate", (220, 160, 60)))
-                    lines.append((f"Quantidade: {item.stack}", (160, 160, 160)))
+                    _qty = item.stack if item else 0
+                    lines.append((f"Quantidade: {_qty}", (160, 160, 160)))
                     self._pending_skill_tooltip = (mx, y0 - 4, item_name, lines)
+
+        # Cancel drag se botão liberado fora da barra
+        if dragging_cons and released_cb:
+            self._inv_drag_item = None
+
+        # Ghost do drag: ícone segue o mouse
+        if self._inv_drag_item:
+            GSZ    = W
+            _gc_k  = "item_" + self._inv_drag_item.lower().replace(" ", "_")
+            _gc_ic = ICONS.get(_gc_k, GSZ - 4)
+            ghost  = pygame.Surface((GSZ, GSZ), pygame.SRCALPHA)
+            ghost.fill((20, 50, 30, 180))
+            if _gc_ic:
+                ghost.blit(_gc_ic, (2, 2))
+            ov_g = pygame.Surface((GSZ, GSZ), pygame.SRCALPHA)
+            ov_g.fill((255, 255, 255, 120))
+            ghost.blit(ov_g, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+            self.screen.blit(ghost, (mx - GSZ // 2, my - GSZ // 2))
 
     # ------------------------------------------------------------------
     # Helpers de tooltip de habilidades
@@ -3924,8 +5353,23 @@ class GameEngine:
                 cost6 = _cs_tt6.golpe_poderoso_rage_cost if _cs_tt6 else cost6
             if player_rage < cost6 and not (is_procced and skill.proc_ignores_cost):
                 status = ("Status: Raiva insuficiente", C_RAGE)
+            elif visual_ready:
+                # Totalmente utilizável (proc + todas condições)
+                if is_procced:
+                    status = ("Status: PRONTO — proc ativo!", C_OK)
+                else:
+                    status = ("Status: Pronto", C_OK)
             elif is_procced:
-                status = ("Status: PRONTO — proc ativo!", C_OK)
+                # Proc existe mas falta alvo ou outra condição
+                if sid == "executar":
+                    from components import CharacterStats as _CStt
+                    _ch_tt = self.world.get_component(self.player_entity, _CStt)
+                    if _ch_tt and getattr(_ch_tt, "free_executar_charges", 0) > 0:
+                        status = ("Status: Assassino — selecione um alvo", C_WARN)
+                    else:
+                        status = ("Status: Alvo fraco — aproxime-se", C_WARN)
+                else:
+                    status = ("Status: Proc ativo — condição incompleta", C_WARN)
             elif not visual_ready:
                 status = (f"Status: Em recarga  {skill.current_cooldown:.1f}s", C_WARN)
             else:
@@ -4083,6 +5527,15 @@ class GameEngine:
                     hp_pct = int(cs.current_hp / max(1, cs.max_hp) * 100)
                     lines.append((f"HP: {cs.current_hp}/{cs.max_hp} ({hp_pct}%)",
                                   C_GREEN if hp_pct > 50 else C_YELLOW if hp_pct > 25 else C_RED))
+                else:
+                    # Mob remoto — HP vem do dict _mob_hp
+                    server_eid_tt = self._remote_mobs_reverse.get(eid)
+                    if server_eid_tt is not None:
+                        _hp_tt, _hp_max_tt = self._mob_hp.get(server_eid_tt, (0, 0))
+                        if _hp_max_tt > 0:
+                            hp_pct = int(_hp_tt / _hp_max_tt * 100)
+                            lines.append((f"HP: {_hp_tt}/{_hp_max_tt} ({hp_pct}%)",
+                                          C_GREEN if hp_pct > 50 else C_YELLOW if hp_pct > 25 else C_RED))
                 break
 
         if title is None:
@@ -4214,6 +5667,36 @@ class GameEngine:
             cd_surf = self.font_sm.render("Ataque: Pronto", True, C_GREEN)
         self.screen.blit(cd_surf, (10, y))
         y += 18
+
+        # --- Ícones de efeitos de estado (debuffs/buffs ativos) ---
+        from components import StatusEffects as _SfxHUD
+        from status_effects_data import EFFECT_DEFS as _EDEFS
+        _sfx_hud = self.world.get_component(self.player_entity, _SfxHUD)
+        if _sfx_hud and _sfx_hud.effects:
+            _ICON = 22   # tamanho do ícone
+            _GAP  = 3
+            _ix   = 10
+            for _etype, _eff in _sfx_hud.effects.items():
+                _defn = _EDEFS.get(_etype)
+                _col  = _defn.color if _defn else (180, 180, 180)
+                _lbl  = (_defn.label[:4] if _defn else _etype[:4])
+                # Fundo escuro + quadrado colorido
+                pygame.draw.rect(self.screen, (20, 20, 20),
+                                 (_ix - 1, y - 1, _ICON + 2, _ICON + 2))
+                pygame.draw.rect(self.screen, _col, (_ix, y, _ICON, _ICON))
+                pygame.draw.rect(self.screen, (255, 255, 255),
+                                 (_ix, y, _ICON, _ICON), 1)
+                # Abreviação do efeito
+                _lbl_surf = self.font_xs.render(_lbl, True, (255, 255, 255))
+                self.screen.blit(_lbl_surf,
+                                 (_ix + _ICON // 2 - _lbl_surf.get_width() // 2, y + 1))
+                # Duração restante
+                _dur_surf = self.font_xs.render(f"{_eff.duration:.0f}s", True, (230, 230, 230))
+                self.screen.blit(_dur_surf,
+                                 (_ix + _ICON // 2 - _dur_surf.get_width() // 2,
+                                  y + _ICON - _dur_surf.get_height()))
+                _ix += _ICON + _GAP
+            y += _ICON + 4
 
         if not char_stats:
             return
@@ -4488,9 +5971,17 @@ class GameEngine:
 
     def _use_consumable(self, item, idx: int, inv) -> None:
         """Usa um item consumível do inventário."""
-        from components import CombatStats, CombatState, ActiveRegen
+        from components import CombatStats, CombatState, ActiveRegen, ConsumableBar as _CB
         from combat_log import LOG
         from floating_text import FLT
+
+        # Modo online: delega para ConsumableSystem (que notifica o servidor)
+        if getattr(self, "_net", None) and self._consumable_system:
+            cbar = self.world.get_component(self.player_entity, _CB)
+            self._consumable_system._use_consumable(
+                self.player_entity, item.name, cbar
+            )
+            return
 
         cs     = self.world.get_component(self.player_entity, CombatStats)
         state  = self.world.get_component(self.player_entity, CombatState)
@@ -4567,6 +6058,13 @@ class GameEngine:
         W, H    = self._PANEL_W, self._PANEL_H
         PAD     = self._PAD
         mx, my  = pygame.mouse.get_pos()
+
+        _inv_ev = self._ui_events
+        _clicked_inv  = any(e.type == pygame.MOUSEBUTTONDOWN and e.button == 1 for e in _inv_ev)
+        _released_inv = any(e.type == pygame.MOUSEBUTTONUP   and e.button == 1 for e in _inv_ev)
+        # Cancelar drag ao soltar fora do inventário
+        if _released_inv and self._inv_drag_item:
+            pass  # será cancelado em _draw_consumable_bar se não cair em slot
 
         # ---- Fundo ----
         overlay = pygame.Surface((W, H), pygame.SRCALPHA)
@@ -4688,8 +6186,11 @@ class GameEngine:
                     lines = item_tooltip_lines(item)
                     is_consumable = getattr(item, "consumable", None)
                     if is_consumable:
-                        lines.append((f"{del_hint}Clique dir. p/ usar", (140, 140, 140)))
+                        lines.append((f"{del_hint}Arraste p/ barra de consumíveis | Dir. p/ usar", (140, 140, 140)))
                         self._pending_tooltip = (mx, my, item.name, lines)
+                        # Iniciar drag ao clicar com botão esquerdo
+                        if _clicked_inv and r.collidepoint(mx, my):
+                            self._inv_drag_item = item.name
                     else:
                         lines.append((f"{del_hint}Clique dir. p/ equipar | Shift p/ comparar", (140, 140, 140)))
                         self._pending_tooltip = (mx, my, item.name, lines,

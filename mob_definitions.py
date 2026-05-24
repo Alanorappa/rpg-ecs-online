@@ -108,7 +108,7 @@ MOB_TABLE: dict[str, dict] = {
             "attack_ranged":  "mob_zumbi_attack_ranged",
             "attack_magic":   "mob_zumbi_attack_magic",
             "crit":           "mob_zumbi_crit",
-            "emote_attack":   "mob_zumbi_emote_attack",
+            "emote_attack":   "mob_zumbi_emote_attack",   # emote de ataque também usa sons de mordida
             "emote_get_crit": "mob_zumbi_emote_get_crit",
         },
     },

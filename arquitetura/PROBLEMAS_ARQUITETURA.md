@@ -1,7 +1,8 @@
 # Problemas de Arquitetura — Análise Crítica
 
 > Avaliação como Arquiteto de Software de Jogos Sênior.
-> Última análise: 2026-05-04 | Próxima revisão sugerida: após nova build ou classe jogável.
+> Última análise: 2026-05-24 | Próxima revisão sugerida: após nova build ou classe jogável.
+> Revisão completa online (world_server, session, death_handler, damage_calculator, messages): ver `CODE_REVIEW.md`
 
 ---
 
@@ -13,6 +14,20 @@
 | 2 | CombatStats com 80+ campos e 25+ flags de talento | CRÍTICO | 🔴 Aberto | Médio |
 | 3 | Skill sem handler não avisar | CRÍTICO | ✅ Corrigido | — |
 | 4 | `fatiador_timer` não reseta no respawn | ALTO | ✅ Corrigido | — |
+| **C1** | `move_player` sem validação de walkability | **CRÍTICO/SEGURANÇA** | 🔴 Aberto | Baixo |
+| **C2** | `client_max_hp`/`client_ap` confiados sem cap | **CRÍTICO/SEGURANÇA** | 🔴 Aberto | Baixo |
+| **C3** | Gold client-autoritativo no save merge | **CRÍTICO/SEGURANÇA** | 🔴 Aberto | Baixo |
+| **C4** | `last_outcome` singleton/mutable global | CRÍTICO | 🔴 Aberto | Médio |
+| **C5** | `_pending_inv` como atributo dinâmico (leak) | ALTO | 🔴 Aberto | Baixo |
+| **A1** | CombatStateSystem duplicado em world_server.py | ALTO | 🔴 Aberto | Médio |
+| **A2** | N² AOI sweep em session.py por tick | ALTO | 🔴 Aberto | Alto |
+| **A3** | Busy-wait `sleep(0)` na tick loop | ALTO | 🔴 Aberto | Baixo |
+| **A4** | `_ServerSFX` inner class em `_load_map()` | MÉDIO | 🔴 Aberto | Baixo |
+| **A5** | `_lookup_item_value` instancia factories por venda | MÉDIO | 🔴 Aberto | Baixo |
+| **A6** | `process_shop_buy` scan linear + factory dupla | MÉDIO | 🔴 Aberto | Baixo |
+| **A7** | `_tick()` 400+ linhas (God Method) | MÉDIO | 🔴 Aberto | Médio |
+| **A8** | `get_session_id_for_player` O(players) em toda morte | MÉDIO | 🔴 Aberto | Baixo |
+| **A9** | Mob attacker lookup O(mobs) por player por tick | MÉDIO | 🔴 Aberto | Médio |
 | 5 | `fire_instant_ready` pendurado | ALTO | ✅ Corrigido | — |
 | 6 | `apply_talent_effects()` recalcula tudo sem batch | ALTO | 🔴 Aberto | Médio |
 | 7 | `thermal_shock_active` é state derivado armazenado | ALTO | 🔴 Aberto | Médio |
@@ -424,15 +439,30 @@ Cada nova skill com cast_time adiciona um `elif`. Sem dispatch automático.
 
 ## Guia de priorização para próximas sessões
 
+### 🚨 Crítico — Segurança (corrigir antes de qualquer teste com usuários reais)
+- **C1**: `move_player` walkability check — ~30min
+- **C2**: Remover trust em `client_max_hp`/`client_ap` — ~1h
+- **C3**: Gold exclusivamente server-side — ~1h
+- **C5**: `_pending_inv` dict próprio + cleanup em despawn — ~30min
+
 ### Corrigir imediatamente (baixo esforço, alto impacto)
+- **A3**: Fix busy-wait tick loop — 15min
+- **A8**: Reverse map `_player_session_by_eid` — 30min
+- **A4**: Extrair `_ServerSFX` para arquivo próprio — 30min
 - **#8**: Remover hardcodes de `skill_id` — 1-2h
 - **#12**: Mover multiplicadores para `SKILL_CATALOG` — 2-3h
 
 ### Planejar antes da próxima classe jogável
+- **A1**: CombatStateSystem em `core_systems.py` — ~2h
+- **C4**: `deal_damage` retornar outcome — ~2h (afeta muitos callers)
 - **#2**: `talent_flags: dict` em CombatStats — refator de ~30 callsites, ~4h
 - **#6**: Batch apply em `apply_talent_effects()` — ~2h
 
-### Planejar para fase de polimento
+### Planejar para fase de polimento / performance
+- **A2**: Spatial hash para AOI sweep — ~4h
+- **A5/A6**: Item lookup caches — ~2h
+- **A7**: Quebrar `_tick()` em submétodos — ~2h
+- **A9**: Mob aggro tracking direto — ~2h
 - **#1**: Separar `CharacterStats` + `CombatRuntime` — refator maior, ~8h
 - **#7**: `thermal_shock_active` como função inline — ~1h
 - **#9**: Separar UI de lógica em Shop/Loot/Crafting — ~16h

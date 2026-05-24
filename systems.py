@@ -6,6 +6,10 @@ import heapq
 import random
 from fonts import make as _font
 
+# Re-exporta apply_effect de core_systems para compatibilidade com todo o código
+# que já faz `from systems import apply_effect`.
+from core_systems import apply_effect, StatusEffectSystem as _CoreStatusEffectSystem
+
 from components import Position, Renderable, PlayerControlled, Camera, Collider, \
                        Enemy, AIControlled, InitialPosition, DetectionRadius, Tilemap, \
                        TileMovement, CombatStats, Modifier, CombatState, PlayerAutoMove, \
@@ -33,6 +37,14 @@ from merchant_data import SHOPS
 import quest_events
 from quest_events import fire as quest_fire
 from stat_fns import add_modifier, remove_modifier, add_timed_modifier, enter_combat
+from talent_data import TALENTS as _TT_DATA_SYS
+
+# Lookup reverso: skill_id → (talent_id, min_points) para verificação de lock no servidor
+_TALENT_SKILL_REQ_SYS: dict[str, tuple[str, int]] = {
+    td["unlocks_skill"]: (tid, td.get("unlock_at", 1))
+    for tid, td in _TT_DATA_SYS.items()
+    if td.get("unlocks_skill")
+}
 
 
 # ── Registro de serviços ─────────────────────────────────────────────────────
@@ -82,50 +94,8 @@ def get_mainhand_weapon(world, entity_id: int):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def apply_effect(
-    world,
-    entity_id: int,
-    effect_type: str,
-    duration: float,
-    magnitude: float = 0.0,
-    tick_interval: float | None = None,
-    on_expire_effect: str = "",
-    on_expire_duration: float = 0.0,
-    on_expire_magnitude: float = 0.0,
-) -> None:
-    """
-    Aplica ou atualiza um efeito ativo em uma entidade.
-
-    - Se o efeito não existir: cria e adiciona.
-    - Se já existir: refresh de duração e magnitude pelo maior valor.
-    - Adiciona StatusEffects à entidade automaticamente se necessário.
-    - on_expire_effect: efeito aplicado automaticamente quando este expira naturalmente.
-    """
-    defn = EFFECT_DEFS.get(effect_type)
-    if defn is None:
-        return
-
-    sfx = world.get_component(entity_id, StatusEffects)
-    if sfx is None:
-        sfx = StatusEffects()
-        world.add_component(entity_id, sfx)
-
-    existing = sfx.get(effect_type)
-    if existing is not None:
-        existing.duration  = max(existing.duration, duration)
-        existing.magnitude = max(existing.magnitude, magnitude)
-        return
-
-    resolved_tick = tick_interval if tick_interval is not None else defn.tick_interval
-    sfx.effects[effect_type] = ActiveEffect(
-        effect_type=effect_type,
-        duration=duration,
-        magnitude=magnitude,
-        tick_interval=resolved_tick,
-        on_expire_effect=on_expire_effect,
-        on_expire_duration=on_expire_duration,
-        on_expire_magnitude=on_expire_magnitude,
-    )
+# apply_effect é re-exportado de core_systems (importado no topo do arquivo).
+# Mantido aqui para backward compatibility com todos os importadores.
 
 
 class System:
@@ -451,6 +421,7 @@ class CombatSystem(System):
 
     def __init__(self, world: World):
         self.world = world
+        self.last_outcome: str = "hit"  # captura o outcome do último deal_damage
 
     def _get_combat_stats(self, entity_id: int) -> CombatStats | None:
         """Helper para obter o componente CombatStats de uma entidade."""
@@ -467,14 +438,17 @@ class CombatSystem(System):
                           damage_type: str, base_ability_damage: float = 0,
                           multiplier: float = 1.0,
                           target_stats: CombatStats = None,
-                          extra_crit: float = 0.0) -> tuple:
+                          extra_crit: float = 0.0,
+                          is_ability: bool = False) -> tuple:
         """Calcula dano e resolve a tabela de ataque. Retorna (damage, outcome).
 
         Delega a matemática pura para damage_calculator.py.
+        is_ability=True: pula o miss roll (abilities só podem ser dodged/parried, não missed).
         """
         if target_stats is not None:
             outcome, block_reduction = resolve_attack_outcome(
-                attacker_stats, target_stats, damage_type, extra_crit)
+                attacker_stats, target_stats, damage_type, extra_crit,
+                is_ability=is_ability)
         else:
             outcome, block_reduction = 'hit', 0.0
 
@@ -535,12 +509,14 @@ class CombatSystem(System):
                 attacker_id, attacker_stats, damage_type,
                 base_ability_damage, multiplier,
                 target_stats=target_stats, extra_crit=extra_crit,
+                is_ability=is_ability,
             )
 
         if outcome in ('miss', 'dodge', 'parry'):
             self._emit_avoidance_feedback(outcome, _tx, _ty,
                                           attacker_id, target_id,
                                           attacker_is_player, target_is_player)
+            self.last_outcome = outcome
             return False
 
         final_damage = self._resolve_damage_modifiers(
@@ -548,6 +524,7 @@ class CombatSystem(System):
             apply_armor_reduction, damage_type,
             attacker_is_player, target_is_player,
         )
+        self.last_outcome = outcome  # captura para _process_player_attacks usar
         target_stats.current_hp -= final_damage
 
         # Aggro por dano: ataque do player força inimigo a perseguir independente do raio.
@@ -1367,13 +1344,12 @@ class PlayerInputSystem(System):
                     tgt_y += 1
 
                 if tgt_x != cur_x or tgt_y != cur_y:
-                    # Teclado cancela auto-move; classes com can_kite mantêm perseguição
+                    # Teclado cancela auto-move mas MANTÉM perseguição — player pode
+                    # mover manualmente e continuar atacando se ainda estiver em range
                     if auto_move:
                         auto_move.active = False
                         auto_move.path.clear()
                         auto_move.ground_target = None
-                    if combat_state and not getattr(combat_stats, "can_kite", False):
-                        combat_state.is_pursuing = False
                     if is_tile_walkable(
                             entity_id, tgt_x, tgt_y, cur_x, cur_y):
                         self._start_tile_movement(position, tile_movement, tgt_x, tgt_y)
@@ -1431,7 +1407,15 @@ class PlayerInputSystem(System):
             return
 
         if target_tm:
-            tgt_tile_x, tgt_tile_y = target_tm.current_tile_x, target_tm.current_tile_y
+            # Predição de movimento: quando o alvo está na metade do tile, assume destino.
+            # Elimina o delay de "esperar o mob completar o tile" durante kiting.
+            # Threshold 0.5 = o alvo já percorreu metade → pathfinding aponta para destino.
+            if (target_tm.is_moving and target_tm.progress >= 0.5
+                    and (target_tm.target_tile_x != target_tm.current_tile_x
+                         or target_tm.target_tile_y != target_tm.current_tile_y)):
+                tgt_tile_x, tgt_tile_y = target_tm.target_tile_x, target_tm.target_tile_y
+            else:
+                tgt_tile_x, tgt_tile_y = target_tm.current_tile_x, target_tm.current_tile_y
         else:
             tgt_tile_x = int(target_pos.x / TILE_SIZE)
             tgt_tile_y = int(target_pos.y / TILE_SIZE)
@@ -1474,7 +1458,7 @@ class PlayerInputSystem(System):
                 self._auto_move_step(
                     entity_id, position, tile_movement,
                     pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y, auto_move, dt,
-                    attack_range=pursuit_range,
+                    attack_range=pursuit_range, target_eid=target_id,
                 )
         else:
             if dist <= self.PLAYER_ATTACK_RANGE:
@@ -1488,6 +1472,8 @@ class PlayerInputSystem(System):
                     dead = deal_damage(entity_id, target_id, "physical")
                     _hit_landed = dead or (_tgt_cs and _tgt_cs.current_hp < _hp_before)
                     combat_stats.attack_cooldown_timer = combat_stats.get_attack_cooldown()
+                    # Rage sempre gerada ao atacar — idêntico ao offline (systems.py:1491)
+                    # Em online, deal_damage não funciona em mobs remotos mas rage é local
                     self._add_rage(entity_id, 5)
                     enter_combat(combat_state)
                     self._increment_pnq_counter(entity_id, _hit_landed)
@@ -1501,6 +1487,7 @@ class PlayerInputSystem(System):
                 self._auto_move_step(
                     entity_id, position, tile_movement,
                     pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y, auto_move, dt,
+                    target_eid=target_id,
                 )
 
     def _mage_attack_range(self, entity_id: int) -> int:
@@ -1540,7 +1527,8 @@ class PlayerInputSystem(System):
                     enter_combat(combat_state)
             elif combat_state.is_pursuing and auto_move and not tile_movement.is_moving:
                 self._auto_move_step(entity_id, position, tile_movement,
-                                     pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y, auto_move, dt)
+                                     pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y, auto_move, dt,
+                                     target_eid=target_id)
             return
 
         # Arco equipado — verificar aljava
@@ -1617,7 +1605,8 @@ class PlayerInputSystem(System):
             auto_move.active = True
             self._auto_move_step(entity_id, position, tile_movement,
                                  pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y,
-                                 auto_move, dt, attack_range=bow_range)
+                                 auto_move, dt, attack_range=bow_range,
+                                 target_eid=target_id)
 
     def _ranged_stop_tile(self, pl_x: int, pl_y: int,
                           tgt_x: int, tgt_y: int, attack_range: int) -> tuple:
@@ -1632,7 +1621,7 @@ class PlayerInputSystem(System):
 
     def _auto_move_step(self, entity_id, position, tile_movement,
                         pl_x, pl_y, tgt_x, tgt_y, auto_move, dt,
-                        attack_range: int = 1):
+                        attack_range: int = 1, target_eid: int = -1):
         """Calcula e executa um passo de movimento em direção ao alvo."""
         auto_move.path_recalc_timer -= dt
         current_tile = (pl_x, pl_y)
@@ -1640,6 +1629,14 @@ class PlayerInputSystem(System):
         if not auto_move.path or auto_move.path_recalc_timer <= 0:
             enemy_tiles = self._get_enemy_tiles()
             enemy_tiles.discard((tgt_x, tgt_y))
+            # Remove todos os tiles do mob alvo (current + target) das obstáculos dinâmicos.
+            # Sem isso, quando o mob atravessa uma porta de 1 tile, seu target_tile bloqueia
+            # a passagem e o jogador desvia para outra entrada em vez de seguir o mob.
+            if target_eid != -1:
+                _tgt_tm = self.world.get_component(target_eid, TileMovement)
+                if _tgt_tm:
+                    enemy_tiles.discard((_tgt_tm.current_tile_x, _tgt_tm.current_tile_y))
+                    enemy_tiles.discard((_tgt_tm.target_tile_x, _tgt_tm.target_tile_y))
 
             if attack_range > 1:
                 # Ranged: caminha até tile a (attack_range-1) tiles do alvo
@@ -1798,6 +1795,8 @@ class PlayerInputSystem(System):
 class EnemyAISystem(System):
     KITING_MIN_DIST      = 3   # tiles: ranged enemy flees if player is this close
     SLEEP_RADIUS_TILES   = 40  # além desta distância (Chebyshev), a AI é completamente suspensa
+    MAX_LEASH_RADIUS     = 20  # tiles: mob retorna ao spawn se afastar mais do que isso (aggro normal)
+    MAX_LEASH_RADIUS_DMG = 25  # tiles: raio maior quando aggroed por dano (evita reset por 1 hit + recuo)
     MAX_PATHFINDS_PER_FRAME = 4  # limite de chamadas A* por frame (evita travamento com muitos inimigos)
     # Ranged: kite limitado
     KITE_MAX_TILES       = 3    # máximo de tiles por sessão de kite
@@ -1806,13 +1805,19 @@ class EnemyAISystem(System):
     RANGED_CAST_TIME     = 1.0  # segundos parado antes de disparar o projétil
     RANGED_ATTACK_CD_MULT = 1.3  # multiplicador no cooldown de ataque (velocidade menor)
 
-    def __init__(self, world: World, player_entity_id: int):
+    # Raças monitoradas pelo debug de ataque (vazio = todas)
+    _DBG_ATK_RACES: set[str] = set()  # vazio = debug desativado
+    # Intervalo mínimo entre logs por mob (segundos) — evita spam no console
+    _DBG_ATK_INTERVAL = 2.0
+
+    def __init__(self, world: World, player_entity_id: int = -1):
         self.world = world
-        self.player_entity_id = player_entity_id
+        self.player_entity_id = player_entity_id  # mantido por backward-compat (não usado internamente)
         self.proximity_threshold_pixels = 5.0
         self.proximity_threshold_tiles = 1
         self.path_recalc_interval = 0.8
         self._pathfind_budget = 0  # resetado a cada frame
+        self._dbg_atk_timers: dict[int, float] = {}  # eid → tempo acumulado desde último log
 
     @staticmethod
     def _has_line_of_sight(tilemap_comp, x0: int, y0: int, x1: int, y1: int) -> bool:
@@ -1859,35 +1864,65 @@ class EnemyAISystem(System):
         self._pathfind_budget -= 1
         return find_path(start, end, dynamic_obstacles=dynamic_obstacles)
 
+    def _select_target(self, mob_eid: int):
+        """Retorna (player_eid, pos, tile_move, combat_stats, combat_state) do alvo mais próximo.
+
+        Prioriza o alvo já agredido via dano (AIControlled.aggroed_by_damage + target_eid).
+        Ignora players mortos e invisíveis.
+        Retorna (-1, None, None, None, None) se nenhum player válido.
+        """
+        ai_ctrl = self.world.get_component(mob_eid, AIControlled)
+        mob_pos = self.world.get_component(mob_eid, Position)
+        if not mob_pos:
+            return (-1, None, None, None, None)
+
+        best_eid   = -1
+        best_dist  = float("inf")
+        best_pos   = None
+        best_tm    = None
+        best_cs    = None
+        best_cst   = None
+
+        for p_eid, p_pos, p_tm, _, p_cs in self.world.get_entities_with(
+                Position, TileMovement, PlayerControlled, CombatStats):
+            if p_cs.current_hp <= 0:
+                continue
+            p_cst = self.world.get_component(p_eid, CombatState)
+            if p_cst is not None and not p_cst.is_visible:
+                continue
+            dist_px = math.sqrt((p_pos.x - mob_pos.x) ** 2 + (p_pos.y - mob_pos.y) ** 2)
+            if dist_px < best_dist:
+                best_dist  = dist_px
+                best_eid   = p_eid
+                best_pos   = p_pos
+                best_tm    = p_tm
+                best_cs    = p_cs
+                best_cst   = p_cst
+
+        return (best_eid, best_pos, best_tm, best_cs, best_cst)
+
     def update(self, events: list = None, dt: float = 0) -> None:
         self._pathfind_budget = self.MAX_PATHFINDS_PER_FRAME
 
-        player_position_comp = None
-        player_tile_move_comp = None
-        player_combat_stats = None
-        # Encontra o jogador e seus componentes relevantes
-        for _, pos, tm_comp, _, combat_s in self.world.get_entities_with(Position, TileMovement, PlayerControlled, CombatStats):
-            player_position_comp = pos
-            player_tile_move_comp = tm_comp
-            player_combat_stats = combat_s
-            break
+        # Verifica se há pelo menos um player vivo; caso contrário, todos os mobs ficam ociosos.
+        any_player_alive = False
+        for _, _, _, _, _p_cs in self.world.get_entities_with(
+                Position, TileMovement, PlayerControlled, CombatStats):
+            if _p_cs.current_hp > 0:
+                any_player_alive = True
+                break
 
-        # Se o jogador não existe ou não tem CombatStats, os inimigos ficam ociosos.
-        if not player_position_comp or not player_combat_stats or player_combat_stats.current_hp <= 0:
+        if not any_player_alive:
             for _, ai_control, tile_movement, combat_stats in self.world.get_entities_with(AIControlled, TileMovement, CombatStats):
                 if not tile_movement.is_moving:
                     ai_control.state = "IDLE"
                 ai_control.is_blocked = False
                 ai_control.blocked_by_entity_id = -1
-                # ai_control.path = None # Não precisa limpar o caminho aqui
-                if combat_stats.attack_cooldown_timer > 0: # Atualiza cooldown mesmo parado
+                if combat_stats.attack_cooldown_timer > 0:
                     combat_stats.attack_cooldown_timer -= dt
             return
 
         all_occupied_tiles = self._get_occupied_tiles()
-
-        player_current_tile_x = player_tile_move_comp.current_tile_x
-        player_current_tile_y = player_tile_move_comp.current_tile_y
 
         for enemy_id, enemy_pos, ai_control, initial_pos, detect_radius, tile_movement, enemy_combat_stats in \
             self.world.get_entities_with(Position, AIControlled, InitialPosition, DetectionRadius, TileMovement, CombatStats):
@@ -1896,22 +1931,67 @@ class EnemyAISystem(System):
             if enemy_combat_stats.current_hp <= 0:
                 continue
 
-            # Player invisível (Camuflagem, etc.) — mob para tudo e volta ao spawn
-            _player_cst_vis = self.world.get_component(self.player_entity_id, CombatState)
-            _player_invisible = _player_cst_vis is not None and not _player_cst_vis.is_visible
+            enemy_current_tile_x = tile_movement.current_tile_x
+            enemy_current_tile_y = tile_movement.current_tile_y
+            current_enemy_tile   = (enemy_current_tile_x, enemy_current_tile_y)
+
+            # --- Seleciona alvo para este mob (N-player support) ---
+            target_eid, player_position_comp, player_tile_move_comp, player_combat_stats, _target_cst = \
+                self._select_target(enemy_id)
+
+            # Se mob tem aggro fixo por dano e esse alvo ainda é válido, mantém.
+            if ai_control.aggroed_by_damage and ai_control.target_eid != -1:
+                _fx_pos = self.world.get_component(ai_control.target_eid, Position)
+                _fx_tm  = self.world.get_component(ai_control.target_eid, TileMovement)
+                _fx_cs  = self.world.get_component(ai_control.target_eid, CombatStats)
+                _fx_cst = self.world.get_component(ai_control.target_eid, CombatState)
+                _fx_pc  = self.world.get_component(ai_control.target_eid, PlayerControlled)
+                if _fx_pos and _fx_tm and _fx_cs and _fx_cs.current_hp > 0 and _fx_pc:
+                    _invis = _fx_cst is not None and not _fx_cst.is_visible
+                    if not _invis:
+                        target_eid           = ai_control.target_eid
+                        player_position_comp = _fx_pos
+                        player_tile_move_comp = _fx_tm
+                        player_combat_stats  = _fx_cs
+                        _target_cst          = _fx_cst
+
+            # Sem alvo válido → grace period antes de ir pro IDLE
+            # Evita ciclo IDLE → AGGRO_DELAY (1s) por perda momentânea de alvo (1-2 ticks)
+            if target_eid == -1 or player_position_comp is None:
+                _was_in_combat = ai_control.state in ("CHASING", "ATTACKING", "AGGRO_DELAY")
+                if _was_in_combat:
+                    ai_control.target_lost_timer += dt
+                    if ai_control.target_lost_timer < 0.6:  # 600ms de grace
+                        if enemy_combat_stats.attack_cooldown_timer > 0:
+                            enemy_combat_stats.attack_cooldown_timer -= dt
+                        continue  # ainda não vai pro IDLE
+                # Grace expirou ou mob já estava IDLE/RETURNING
+                if not tile_movement.is_moving:
+                    ai_control.state = "IDLE"
+                ai_control.target_eid = -1
+                ai_control.target_lost_timer = 0.0
+                if enemy_combat_stats.attack_cooldown_timer > 0:
+                    enemy_combat_stats.attack_cooldown_timer -= dt
+                continue
+
+            # Persiste o alvo no componente
+            ai_control.target_eid = target_eid
+            ai_control.target_lost_timer = 0.0  # alvo encontrado → reset grace
+
+            player_current_tile_x = player_tile_move_comp.current_tile_x
+            player_current_tile_y = player_tile_move_comp.current_tile_y
+
+            # --- Invisibilidade do alvo atual ---
+            _player_invisible = _target_cst is not None and not _target_cst.is_visible
             if _player_invisible:
                 if ai_control.state in ("CHASING", "ATTACKING", "AGGRO_DELAY"):
                     ai_control.state              = "RETURNING"
                     ai_control.aggroed_by_damage  = False
                     ai_control.path_recalc_timer  = 0.0
-                    ai_control.ranged_cast_timer  = 0.0   # cancela cast em andamento
-                # RETURNING: deixa o movimento de volta ao spawn executar normalmente
-                # IDLE: pula — nada a processar
+                    ai_control.ranged_cast_timer  = 0.0
+                    ai_control.target_eid         = -1
                 if ai_control.state != "RETURNING":
                     continue
-
-            enemy_current_tile_x = tile_movement.current_tile_x
-            enemy_current_tile_y = tile_movement.current_tile_y
 
             # --- Efeitos de estado (stun / sleep / fear / root) ---
             _sfx = self.world.get_component(enemy_id, StatusEffects)
@@ -1967,14 +2047,20 @@ class EnemyAISystem(System):
                     ai_control.path_recalc_timer = 0.0
                     # Permite continuar para lógica de ataque (não dá continue aqui)
 
-            # --- Sleep zone: inimigos longe do jogador são completamente ignorados ---
+            # --- Sleep zone: mob dorme se NENHUM player estiver a menos de 40 tiles ---
             # Usa Chebyshev (sem sqrt) para eficiência máxima.
             chebyshev_dist_to_player = max(
                 abs(player_current_tile_x - enemy_current_tile_x),
                 abs(player_current_tile_y - enemy_current_tile_y)
             )
-            if chebyshev_dist_to_player > self.SLEEP_RADIUS_TILES:
-                # Garante que o inimigo fica parado e ocioso ao adormecer
+            # Verifica todos os players — acorda se qualquer um estiver próximo
+            _min_cheb = chebyshev_dist_to_player
+            for _, _ptm, _ in self.world.get_entities_with(TileMovement, PlayerControlled):
+                _d = max(abs(_ptm.current_tile_x - enemy_current_tile_x),
+                         abs(_ptm.current_tile_y - enemy_current_tile_y))
+                if _d < _min_cheb:
+                    _min_cheb = _d
+            if _min_cheb > self.SLEEP_RADIUS_TILES:
                 if ai_control.state != "IDLE":
                     ai_control.state = "IDLE"
                     ai_control.path = None
@@ -2000,12 +2086,11 @@ class EnemyAISystem(System):
             if tile_movement.is_moving:
                 ai_control.is_blocked = False
                 ai_control.blocked_by_entity_id = -1
+                # Debug: mob em estado ATTACKING mas ainda em movimento → não ataca neste tick
                 continue
 
             ai_control.is_blocked = False
             ai_control.blocked_by_entity_id = -1
-            
-            current_enemy_tile = (enemy_current_tile_x, enemy_current_tile_y)
 
             dist_to_player_pixels = math.sqrt(
                 (player_position_comp.x - enemy_pos.x)**2 +
@@ -2044,16 +2129,47 @@ class EnemyAISystem(System):
                 if in_attack_range and _cast_los:
                     ai_control.ranged_cast_timer -= dt
                     if ai_control.ranged_cast_timer <= 0:
-                        # Cast concluído: dispara
+                        # Cast concluído: dispara contra o alvo deste mob
                         ai_control.ranged_cast_timer = 0.0
                         SOUNDS.play_emote_attack(is_player=False, mob_sounds_comp=_ms_atk)
                         SOUNDS.play_mob_sounds(_ms_atk, _atk_event, dedup_key=str(enemy_id))
-                        self._spawn_projectile(enemy_id, self.player_entity_id, damage_type_to_use)
+                        self._spawn_projectile(enemy_id, ai_control.target_eid, damage_type_to_use)
                         enemy_combat_stats.attack_cooldown_timer = (
                             enemy_combat_stats.get_attack_cooldown() * self.RANGED_ATTACK_CD_MULT
                         )
                 else:
                     ai_control.ranged_cast_timer = 0.0  # LOS/alcance perdido: cancela
+
+            # ── Debug de ataque ──────────────────────────────────────────────
+            # ATAQUE_OK: sem rate-limit — cada disparo real é logado com timestamp.
+            # Estado bloqueado: rate-limited a cada _DBG_ATK_INTERVAL s para evitar spam.
+            if self._DBG_ATK_RACES and ai_control.state == "ATTACKING":
+                _dbg_id2 = self.world.get_component(enemy_id, EntityIdentity)
+                if _dbg_id2 and _dbg_id2.name in self._DBG_ATK_RACES:
+                    import time as _time
+                    _ts = _time.strftime("%H:%M:%S") + f".{int(_time.time() * 1000) % 1000:03d}"
+                    _cd_now = enemy_combat_stats.attack_cooldown_timer
+                    _attack_fires = (
+                        not _player_invisible and in_attack_range and _cd_now <= 0
+                    )
+                    if _attack_fires:
+                        # Sempre loga quando o ataque dispara de fato
+                        print(f"[MOB-ATK] {_ts} eid={enemy_id} → ATAQUE_OK  "
+                              f"cd={_cd_now:.3f} cheb={chebyshev_dist_to_player}")
+                        self._dbg_atk_timers[enemy_id] = 0.0  # reseta rate-limit
+                    else:
+                        # Estado bloqueado: rate-limited
+                        _dbg_t2 = self._dbg_atk_timers.get(enemy_id, 0.0)
+                        if _dbg_t2 <= 0:
+                            _bloq = []
+                            if _player_invisible:       _bloq.append("invisivel")
+                            if not in_attack_range:     _bloq.append(f"fora_range(cheb={chebyshev_dist_to_player})")
+                            if _cd_now > 0:             _bloq.append(f"cd={_cd_now:.2f}s")
+                            if tile_movement.is_moving: _bloq.append("moving")
+                            print(f"[MOB-ATK] {_ts} eid={enemy_id} → bloqueado: {'/'.join(_bloq) or '?'}")
+                            self._dbg_atk_timers[enemy_id] = self._DBG_ATK_INTERVAL
+                        else:
+                            self._dbg_atk_timers[enemy_id] = _dbg_t2 - dt
 
             # ── Inicia ataque (cooldown expirou) ──────────────────────────
             if not _player_invisible and in_attack_range and enemy_combat_stats.attack_cooldown_timer <= 0:
@@ -2073,7 +2189,7 @@ class EnemyAISystem(System):
                     SOUNDS.play_mob_sounds(_ms_atk, _atk_event, dedup_key=str(enemy_id))
                     deal_damage(
                         attacker_id=enemy_id,
-                        target_id=self.player_entity_id,
+                        target_id=ai_control.target_eid,
                         damage_type=damage_type_to_use
                     )
                     enemy_combat_stats.attack_cooldown_timer = enemy_combat_stats.get_attack_cooldown()
@@ -2136,24 +2252,31 @@ class EnemyAISystem(System):
             # --- Perseguição do Jogador ---
             in_detect_range = dist_to_player_pixels <= detect_radius.radius
 
-            # Leash: player kiteou além do limite → mob volta ao spawn (RETURNING)
-            # aggroed_by_damage usa raio do detect_radius (mob persegue mais longe quando
-            # foi atacado de fora do range), evitando que o leash cancele aggro por dano.
-            # Aggro por proximidade usa 5 tiles fixos para evitar oscilação.
+            # Leash: mob saiu da área do spawn → volta independente de onde o player está.
+            # Calcula distância Chebyshev da posição ATUAL do mob até seu ponto de SPAWN,
+            # não até o player — evita perseguição infinita quando player foge.
+            # aggroed_by_damage usa raio maior (25 tiles) para não resetar por 1 hit + recuo.
             _aggro_range_px = 5 * TILE_SIZE
-            _leash_range_px = (max(detect_radius.radius, 12 * TILE_SIZE)
-                               if ai_control.aggroed_by_damage
-                               else _aggro_range_px)
+            _spawn_tile_x = int(initial_pos.x / TILE_SIZE)
+            _spawn_tile_y = int(initial_pos.y / TILE_SIZE)
+            _dist_from_spawn = chebyshev(
+                tile_movement.current_tile_x, tile_movement.current_tile_y,
+                _spawn_tile_x, _spawn_tile_y
+            )
+            _leash_radius = (self.MAX_LEASH_RADIUS_DMG
+                             if ai_control.aggroed_by_damage
+                             else self.MAX_LEASH_RADIUS)
 
-            if ai_control.state == "CHASING" and \
-                    dist_to_player_pixels > _leash_range_px:
+            if ai_control.state in ("CHASING", "ATTACKING") and \
+                    _dist_from_spawn > _leash_radius:
                 ai_control.state              = "RETURNING"
                 ai_control.aggroed_by_damage  = False
                 ai_control.path_recalc_timer  = 0.0
+                ai_control.target_eid         = -1
                 tile_movement.path            = []
 
             # Quando o mob aggroed_by_damage chega perto do player (range normal),
-            # transiciona para aggro de proximidade normal (leash de 5 tiles passa a valer)
+            # transiciona para aggro de proximidade normal
             if ai_control.aggroed_by_damage and dist_to_player_pixels <= _aggro_range_px:
                 ai_control.aggroed_by_damage = False
 
@@ -2174,11 +2297,10 @@ class EnemyAISystem(System):
                     ai_control.state       = "AGGRO_DELAY"
                     ai_control.aggro_delay = 1.0
 
-            # Inimigo perseguindo/atacando → player entra em combate (só se visível)
+            # Inimigo perseguindo/atacando → alvo entra em combate (só se visível)
             if not _player_invisible and ai_control.state in ("CHASING", "ATTACKING", "AGGRO_DELAY"):
-                _player_cst = self.world.get_component(self.player_entity_id, CombatState)
-                if _player_cst and not _player_cst.in_combat:
-                    enter_combat(_player_cst)
+                if _target_cst and not _target_cst.in_combat:
+                    enter_combat(_target_cst)
 
             # Perseguição ativa — CHASING persiste mesmo fora do detect_radius (ex: agro por dano)
             if ai_control.state not in ("IDLE", "RETURNING"):
@@ -2284,7 +2406,8 @@ class EnemyAISystem(System):
 
             # --- Retorno à Posição Inicial ---
             else: # Comportamento de retorno à posição inicial
-                ai_control.path = None 
+                ai_control.path = None
+                ai_control.target_eid = -1
                 initial_tile_x = int(initial_pos.x / TILE_SIZE)
                 initial_tile_y = int(initial_pos.y / TILE_SIZE)
 
@@ -3183,109 +3306,27 @@ class FogSystem(System):
                 self.world.remove_component(eid, Visible)
 
 
-class StatusEffectSystem(System):
+class StatusEffectSystem(_CoreStatusEffectSystem, System):
     """
-    Gerencia o ciclo de vida de todos os efeitos de estado (buffs/debuffs).
+    Versão cliente do StatusEffectSystem.
+    Herda toda a lógica ECS de _CoreStatusEffectSystem e adiciona floating text.
 
-    Responsabilidades:
-      - Decrementar a duração de cada ActiveEffect por dt.
-      - Aplicar dano/cura periódica (poison, bleed, burn, regen).
-      - Remover efeitos expirados.
-      - Sincronizar TileMovement.slow_mult a cada frame.
-
-    Nenhum outro sistema deve decrementar timers de efeito manualmente.
+    _CoreStatusEffectSystem (core_systems.py) é a fonte de verdade — sem Pygame.
+    Esta subclasse só acrescenta FLT.add() nos hooks visuais.
     """
 
     def __init__(self, world: World) -> None:
-        self.world = world
+        _CoreStatusEffectSystem.__init__(self, world)
 
-    def update(self, events: list = None, dt: float = 0) -> None:
-        for eid, sfx in self.world.get_entities_with(StatusEffects):
-            if not sfx.effects:
-                continue
+    def _emit_damage(self, eid: int, amount: int, effect_type: str,
+                     pos, color: tuple) -> None:
+        if pos:
+            FLT.add(f"-{amount}", pos.x, pos.y, color, size="normal", target_id=eid)
 
-            to_remove = []
-            for effect in sfx.effects.values():
-                effect.duration -= dt
-
-                if effect.tick_interval > 0:
-                    effect.tick_timer -= dt
-                    if effect.tick_timer <= 0:
-                        effect.tick_timer += effect.tick_interval
-                        self._apply_tick(eid, effect)
-
-                if effect.duration <= 0:
-                    to_remove.append((effect.effect_type,
-                                      effect.on_expire_effect,
-                                      effect.on_expire_duration,
-                                      effect.on_expire_magnitude))
-
-            for key, expire_eff, expire_dur, expire_mag in to_remove:
-                del sfx.effects[key]
-                # Aplica efeito encadeado se definido (ex: sleep → slow)
-                if expire_eff:
-                    apply_effect(self.world, eid, expire_eff, expire_dur,
-                                 magnitude=expire_mag)
-
-            # Sincroniza slow_mult a cada frame com base no estado atual dos efeitos
-            tm = self.world.get_component(eid, TileMovement)
-            if tm:
-                slow = sfx.get("slow")
-                if slow:
-                    tm.slow_mult = slow.magnitude if 0.0 < slow.magnitude < 1.0 else 0.5
-                else:
-                    tm.slow_mult         = 1.0
-                    tm.debilitate_elapsed = 0.0
-
-            # Sincroniza root → CombatState.is_rooted
-            cst = self.world.get_component(eid, CombatState)
-            if cst:
-                cst.is_rooted = sfx.has("root")
-
-            # Sincroniza is_crowd_controlled → CombatStats (lido por damage_calculator)
-            _cs_cc = self.world.get_component(eid, CombatStats)
-            if _cs_cc:
-                _CC = ("stun", "sleep", "fear", "polymorph", "slow", "disoriented", "root")
-                _cs_cc.is_crowd_controlled = any(sfx.has(e) for e in _CC)
-
-    def _apply_tick(self, eid: int, effect: "ActiveEffect") -> None:
-        cs  = self.world.get_component(eid, CombatStats)
-        pos = self.world.get_component(eid, Position)
-        if not cs or cs.current_hp <= 0:
-            return
-
-        defn  = EFFECT_DEFS.get(effect.effect_type)
-        color = defn.color if defn else (255, 255, 255)
-        dmg   = max(1, int(effect.magnitude))
-
-        if effect.effect_type == "regen":
-            cs.current_hp = min(cs.max_hp, cs.current_hp + dmg)
-            if pos:
-                FLT.add(f"+{dmg}", pos.x, pos.y, color, size="normal", target_id=eid)
-        elif effect.effect_type == "polymorph":
-            heal = max(1, int(effect.magnitude))
-            cs.current_hp = min(cs.max_hp, cs.current_hp + heal)
-            if pos:
-                FLT.add(f"+{heal}", pos.x, pos.y, color, size="normal", target_id=eid)
-        elif effect.effect_type == "elemental_lapse":
-            # Auto-burn: consome 1% do HP máximo por tick (auto-dano)
-            burn = max(1, int(cs.max_hp * 0.01))
-            cs.current_hp = max(1, cs.current_hp - burn)  # não mata o próprio jogador
-            if pos:
-                FLT.add(f"-{burn}", pos.x, pos.y, color, size="normal", target_id=eid)
-        else:
-            cs.current_hp = max(0, cs.current_hp - dmg)
-            if pos:
-                FLT.add(f"-{dmg}", pos.x, pos.y, color, size="normal", target_id=eid)
-            # Morte por DoT: garante XP, loot e cadáver (mesmo fluxo que CombatSystem)
-            if cs.current_hp <= 0:
-                is_player = self.world.get_component(eid, PlayerControlled) is not None
-                if not is_player and not self.world.get_component(eid, PendingDeath):
-                    killer_id = -1
-                    for pid, _ in self.world.get_entities_with(PlayerControlled):
-                        killer_id = pid
-                        break
-                    self.world.add_component(eid, PendingDeath(killer_entity_id=killer_id))
+    def _emit_heal(self, eid: int, amount: int, effect_type: str,
+                   pos, color: tuple) -> None:
+        if pos:
+            FLT.add(f"+{amount}", pos.x, pos.y, color, size="normal", target_id=eid)
 
 
 class EnemyAbilitySystem(System):
@@ -3301,17 +3342,20 @@ class EnemyAbilitySystem(System):
     Não lida com IA de movimento — isso é EnemyAISystem.
     """
 
-    def __init__(self, world: World, player_entity_id: int) -> None:
+    def __init__(self, world: World, player_entity_id: int = -1) -> None:
         self.world             = world
-        self.player_entity_id  = player_entity_id
+        self.player_entity_id  = player_entity_id  # mantido por backward-compat
 
     def update(self, events: list = None, dt: float = 0) -> None:
-        player_tm = self.world.get_component(self.player_entity_id, TileMovement)
-        player_cs = self.world.get_component(self.player_entity_id, CombatStats)
-        if not player_tm or not player_cs or player_cs.current_hp <= 0:
-            return
+        # Constrói um mapa rápido eid→(px, py) de todos os players vivos
+        player_tiles: dict[int, tuple[int, int]] = {}
+        for p_eid, p_tm, _, p_cs in self.world.get_entities_with(
+                TileMovement, PlayerControlled, CombatStats):
+            if p_cs.current_hp > 0:
+                player_tiles[p_eid] = (p_tm.current_tile_x, p_tm.current_tile_y)
 
-        px, py = player_tm.current_tile_x, player_tm.current_tile_y
+        if not player_tiles:
+            return
 
         for eid, abilities, etm, ecs in self.world.get_entities_with(
                 EnemyAbilities, TileMovement, CombatStats):
@@ -3328,8 +3372,23 @@ class EnemyAbilitySystem(System):
             if sfx and sfx.has("stun"):
                 continue
 
-            ex, ey   = etm.current_tile_x, etm.current_tile_y
-            dist     = max(abs(ex - px), abs(ey - py))  # Chebyshev
+            ex, ey = etm.current_tile_x, etm.current_tile_y
+
+            # Determina o alvo: usa target_eid do AIControlled se válido, senão player mais próximo
+            target_p_eid = ai.target_eid if ai.target_eid in player_tiles else -1
+            if target_p_eid == -1:
+                # Fallback: player mais próximo
+                best_dist = float("inf")
+                for p_eid, (px, py) in player_tiles.items():
+                    d = max(abs(ex - px), abs(ey - py))
+                    if d < best_dist:
+                        best_dist   = d
+                        target_p_eid = p_eid
+            if target_p_eid == -1:
+                continue
+
+            px, py = player_tiles[target_p_eid]
+            dist   = max(abs(ex - px), abs(ey - py))  # Chebyshev
 
             for slot in abilities.slots:
                 # Tick de cooldown
@@ -3341,9 +3400,9 @@ class EnemyAbilitySystem(System):
                 if not defn or dist > defn.range_tiles:
                     continue
 
-                # Aplica o efeito no jogador
+                # Aplica o efeito no alvo
                 apply_effect(
-                    self.world, self.player_entity_id,
+                    self.world, target_p_eid,
                     defn.effect_type, defn.duration, defn.magnitude,
                     tick_interval=defn.tick_interval,
                 )
@@ -3433,8 +3492,10 @@ class SpawnZoneSystem(System):
                 zone.respawn_timers.append(zone.respawn_cooldown)
 
             # --- Preenchimento inicial: escalonar com timers (evita spike de criação) ---
-            if not zone.respawn_timers and alive < zone.max_count:
-                needed = zone.max_count - alive
+            # Inclui mobs já na _spawn_queue (ainda não spawnados) para não exceder max_count
+            _pending = getattr(zone, "_pending_spawns", 0)
+            if not zone.respawn_timers and alive + _pending < zone.max_count:
+                needed = zone.max_count - alive - _pending
                 for i in range(needed):
                     zone.respawn_timers.append(i * 0.15 + random.uniform(0.0, 0.05))
                 continue
@@ -3451,6 +3512,7 @@ class SpawnZoneSystem(System):
                     dx, dy = dest
                     occupied.add((dx, dy))  # reserva o tile imediatamente
                     self._spawn_queue.append((zone_eid, zone, dx, dy))
+                    zone._pending_spawns = getattr(zone, "_pending_spawns", 0) + 1
                 else:
                     still_waiting.append(t)
             zone.respawn_timers = still_waiting
@@ -3458,6 +3520,7 @@ class SpawnZoneSystem(System):
         # --- Drena fila: máximo MAX_SPAWNS_PER_FRAME criações por frame ---
         for _ in range(min(self.MAX_SPAWNS_PER_FRAME, len(self._spawn_queue))):
             zone_eid, zone, dx, dy = self._spawn_queue.pop(0)
+            zone._pending_spawns = max(0, getattr(zone, "_pending_spawns", 1) - 1)
             new_eid = self._spawn_one(zone_eid, zone, dx, dy)
             zone.active_entity_ids.add(new_eid)
 
@@ -3587,6 +3650,8 @@ class ShopSystem(System):
         self.transaction_history: list = []
         self._shop_scroll: int = 0
         self._bag_scroll:  int = 0
+        # Online: injetado pelo GameEngine. None = modo offline (lógica local)
+        self._net = None
         self.pending_tooltip = None
         self._open_cooldown: float = 0.0  # impede compra/venda logo após abrir a loja
         # Modal de quantidade (Shift+clique direito em item stackável)
@@ -3719,7 +3784,21 @@ class ShopSystem(System):
     def _sell_price(self, item) -> int:
         return max(1, int(item.value * self.SELL_RATIO))
 
-    def _buy(self, entry: dict) -> None:
+    def _buy(self, entry: dict, shop_id: str = "") -> None:
+        """Compra 1 unidade. Online: envia BUY_REQUEST ao servidor (autoritativo).
+        Offline: aplica localmente como antes."""
+        if self._net and shop_id:
+            # Online: servidor valida e responde com BUY_RESULT
+            from shared.messages import MsgType as _MTShop
+            preview = entry["factory"]()
+            self._net.send(_MTShop.BUY_REQUEST, {
+                "shop_id":   shop_id,
+                "item_name": preview.name,
+                "quantity":  1,
+            })
+            return  # UI atualizada quando BUY_RESULT chegar
+
+        # Offline: lógica local (sem rede)
         inv    = self.world.get_component(self.player_entity, Inventory)
         wallet = self.world.get_component(self.player_entity, Wallet)
         if not inv or not wallet:
@@ -3728,7 +3807,6 @@ class ShopSystem(System):
         if wallet.gold < price:
             return
 
-        # Tenta empilhar em slot existente do mesmo item
         preview = entry["factory"]()
         if getattr(preview, "max_stack", 1) > 1:
             for existing in inv.items:
@@ -3742,7 +3820,6 @@ class ShopSystem(System):
                         self.transaction_history.pop(0)
                     return
 
-        # Sem slot empilhável — ocupa novo slot
         if len(inv.items) >= inv.max_slots:
             return
         item = entry["factory"]()
@@ -3752,8 +3829,18 @@ class ShopSystem(System):
         if len(self.transaction_history) > self.MAX_HISTORY:
             self.transaction_history.pop(0)
 
-    def _buy_qty(self, entry: dict, qty: int) -> None:
-        """Compra qty unidades de um item stackável de uma vez."""
+    def _buy_qty(self, entry: dict, qty: int, shop_id: str = "") -> None:
+        """Compra qty unidades de um item stackável. Online: envia BUY_REQUEST."""
+        if self._net and shop_id:
+            from shared.messages import MsgType as _MTShop
+            preview = entry["factory"]()
+            self._net.send(_MTShop.BUY_REQUEST, {
+                "shop_id":   shop_id,
+                "item_name": preview.name,
+                "quantity":  qty,
+            })
+            return
+
         inv    = self.world.get_component(self.player_entity, Inventory)
         wallet = self.world.get_component(self.player_entity, Wallet)
         if not inv or not wallet or qty <= 0:
@@ -3801,7 +3888,7 @@ class ShopSystem(System):
             if len(self.transaction_history) > self.MAX_HISTORY:
                 self.transaction_history.pop(0)
 
-    def _open_qty_modal(self, entry: dict) -> None:
+    def _open_qty_modal(self, entry: dict, shop_id: str = "") -> None:
         """Abre o modal de seleção de quantidade para um item stackável."""
         inv    = self.world.get_component(self.player_entity, Inventory)
         wallet = self.world.get_component(self.player_entity, Wallet)
@@ -3821,6 +3908,7 @@ class ShopSystem(System):
         max_qty     = max(1, min(max_by_gold, max_by_inv, preview.max_stack * 10))
         self._qty_modal = {
             "entry":    entry,
+            "shop_id":  shop_id,
             "preview":  preview,
             "max_qty":  max_qty,
             "qty":      1,
@@ -3838,6 +3926,18 @@ class ShopSystem(System):
             return
         item     = inv.items[item_idx]
         sell_val = self._sell_price(item)
+
+        # Modo online: notifica servidor ANTES de aplicar localmente.
+        # Servidor recalcula sell_price do catálogo e atualiza gold autoritativamente.
+        # Cliente aplica otimisticamente — SELL_RESULT corrige gold se diferir.
+        if self._net:
+            from shared.messages import MsgType as _MTS
+            self._net.send(_MTS.SELL_REQUEST, {
+                "item_name":    item.name,
+                "item_value":   getattr(item, "value", 0),
+                "stack_sold":   1,
+            })
+
         wallet.gold += sell_val
         # Decrementa stack; remove o slot ao esgotar
         item.stack -= 1
@@ -3972,9 +4072,9 @@ class ShopSystem(System):
                         if r.collidepoint(mx, my):
                             preview = entry["factory"]()
                             if shift and getattr(preview, "max_stack", 1) > 1:
-                                self._open_qty_modal(entry)
+                                self._open_qty_modal(entry, shop_id=merch.shop_id)
                             else:
-                                self._buy(entry)
+                                self._buy(entry, shop_id=merch.shop_id)
                             return
 
             # Painel direito: vender (clique direito)
@@ -3997,7 +4097,7 @@ class ShopSystem(System):
             if event.key == pygame.K_ESCAPE:
                 self._close_qty_modal()
             elif event.key == pygame.K_RETURN or event.key == pygame.K_KP_ENTER:
-                self._buy_qty(m["entry"], m["qty"])
+                self._buy_qty(m["entry"], m["qty"], shop_id=m.get("shop_id", ""))
                 self._close_qty_modal()
             elif event.key == pygame.K_BACKSPACE:
                 m["text"] = m["text"][:-1] or "0"
@@ -4041,7 +4141,7 @@ class ShopSystem(System):
                 self._close_qty_modal()
                 return
             if btn_ok.collidepoint(mx, my):
-                self._buy_qty(m["entry"], m["qty"])
+                self._buy_qty(m["entry"], m["qty"], shop_id=m.get("shop_id", ""))
                 self._close_qty_modal()
                 return
 
@@ -4395,10 +4495,17 @@ class ShopSystem(System):
 
 
 class ConsumableSystem(System):
-    """Processa a barra de consumíveis (keybinds + uso) e ActiveRegen (HoT)."""
+    """Processa a barra de consumíveis (keybinds + uso) e ActiveRegen (HoT).
+
+    Online: injete `system._net = self._net` após criação para que o
+    uso de consumíveis seja comunicado ao servidor via CONSUMABLE_USE.
+    O servidor aplica o heal autoritativo; o cliente aplica localmente
+    como predição (floating text + HP visual imediato).
+    """
 
     def __init__(self, world: World):
         self.world = world
+        self._net  = None   # injetado pelo GameEngine no modo online
 
     def update(self, events=None, dt: float = 0) -> None:
         # ── Barra de consumíveis: cooldown + keybinds ─────────────────────
@@ -4432,7 +4539,9 @@ class ConsumableSystem(System):
                 regen.ticks_remaining -= 1
                 healed = min(regen.heal_per_tick, cs.max_hp - cs.current_hp)
                 cs.current_hp = min(cs.max_hp, cs.current_hp + regen.heal_per_tick)
-                if pos_c and healed > 0:
+                # Online: servidor envia COMBAT_RESULT com heal_amount por tick —
+                # suprime FLT local para evitar texto duplicado (+X e +X HP).
+                if pos_c and healed > 0 and not self._net:
                     FLT.add(f"+{healed}", pos_c.x, pos_c.y - 16,
                             (80, 220, 120), "small", eid)
                 if regen.ticks_remaining <= 0:
@@ -4491,10 +4600,30 @@ class ConsumableSystem(System):
         if item.stack <= 0:
             inv.items.remove(item)
 
-        # Cooldown global
-        cbar.global_cooldown = ConsumableBar.GCD_DURATION
+        # Cooldown global (cbar pode ser None se usado pelo painel de inventário)
+        if cbar is not None:
+            cbar.global_cooldown = ConsumableBar.GCD_DURATION
 
         quest_fire("use_consumable", item_name=item.name)
+
+        # Modo online: notifica servidor para aplicar o mesmo efeito autoritativamente.
+        # Payload extensível: "buffs" reservado para efeitos futuros (stat boosts etc.)
+        if self._net:
+            from shared.messages import MsgType as _MTC
+            _hot = None
+            if heal_per_tick > 0 and ticks > 0:
+                _hot = {
+                    "heal_per_tick": heal_per_tick,
+                    "interval":      interval,
+                    "ticks":         ticks,
+                }
+            self._net.send(_MTC.CONSUMABLE_USE, {
+                "item_name":    item_name,
+                "heal_instant": cons.get("heal_instant", 0),
+                "hot":          _hot,
+                "ooc_only":     cons.get("ooc_only", False),
+                "buffs":        [],
+            })
 
 
 class LootSystem(System):
@@ -5082,6 +5211,10 @@ class SkillSystem(System, SkillHandlers):
         self.player_entity_id = player_entity_id
         self.world_surf = screen
         self.hud_surf   = screen
+        # Em modo online o servidor é autoritativo: cliente só aplica feedback visual.
+        # Injetado por game.py após _connect_online(). False = comportamento offline normal.
+        self._server_authoritative: bool = False
+        self._net = None  # NetworkClient — injetado por game.py para enviar CAST_SKILL
 
     def _is_on_screen(self, pos: "Position") -> bool:
         if self.world_surf is None or pos is None:
@@ -5171,6 +5304,20 @@ class SkillSystem(System, SkillHandlers):
     # ------------------------------------------------------------------
     def _use_skill(self, _idx: int, skill) -> bool:
         """Tenta usar a skill. Retorna True se executou, False se falhou."""
+        # Em modo online, o servidor calcula dano e efeitos.
+        # O cliente executa apenas cooldown/GCD/som e envia CAST_SKILL.
+        if self._server_authoritative:
+            return self._use_skill_visual_only(_idx, skill)
+
+        # Talent lock check (offline também)
+        if skill.skill_id and skill.skill_id in _TALENT_SKILL_REQ_SYS:
+            _tl_tid_off, _tl_min_off = _TALENT_SKILL_REQ_SYS[skill.skill_id]
+            from components import TalentTree as _TTLockOff
+            _tt_lk_off = self.world.get_component(self.player_entity_id, _TTLockOff)
+            if _tt_lk_off is not None and _tt_lk_off.allocated.get(_tl_tid_off, 0) < _tl_min_off:
+                WARN.add("Requer talento")
+                return False
+
         combat_state = self.world.get_component(self.player_entity_id, CombatState)
         if combat_state and not combat_state.can_act():
             return False
@@ -5235,6 +5382,248 @@ class SkillSystem(System, SkillHandlers):
             return False
 
         return False
+
+    # ------------------------------------------------------------------
+    def _use_skill_visual_only(self, _idx: int, skill) -> bool:
+        """Modo online: replica as verificações do offline ANTES do visual.
+
+        O offline faz em _use_skill():
+          1. can_act() check
+          2. GCD check
+          3. skill.is_ready() check
+          4. Para ofensivas: _resolve_target → se -1, retorna False
+          5. enter_combat + is_pursuing
+          6. Chama handler → handler verifica rage/mana/range e retorna False se falhar
+          7. Só então: cooldown, GCD, som
+
+        Online não tem o handler local, então replicamos as verificações que dependem
+        de estado local disponível no cliente.
+        """
+        combat_state  = self.world.get_component(self.player_entity_id, CombatState)
+        player_skills = self.world.get_component(self.player_entity_id, PlayerSkills)
+        _tile_move_sk = self.world.get_component(self.player_entity_id,
+                                                  __import__("components").TileMovement)
+
+        # 0. Talent lock: skill requer talento que não está alocado
+        if skill.skill_id and skill.skill_id in _TALENT_SKILL_REQ_SYS:
+            _tl_tid, _tl_min = _TALENT_SKILL_REQ_SYS[skill.skill_id]
+            from components import TalentTree as _TTLock
+            _tt_lk = self.world.get_component(self.player_entity_id, _TTLock)
+            if _tt_lk is not None and _tt_lk.allocated.get(_tl_tid, 0) < _tl_min:
+                WARN.add("Requer talento")
+                return False
+
+        # 1. can_act (igual offline)
+        if combat_state and not combat_state.can_act():
+            return False
+        # 2. GCD (igual offline)
+        if player_skills and player_skills.gcd_timer > 0:
+            return False
+        # 3. Cooldown/cargas + pending server (igual offline + online)
+        if getattr(skill, "_server_pending", False):
+            return False  # aguardando confirmação do servidor
+        if not skill.is_ready():
+            if skill.current_cooldown > 0:
+                WARN.add(f"Em recarga ({skill.current_cooldown:.1f}s)")
+            elif skill.max_charges > 0:
+                WARN.add("Sem cargas")
+            return False
+
+        _is_offensive = getattr(skill, "offensive", True)
+        _has_cast     = getattr(skill, "cast_time", 0.0) > 0
+
+        _is_online = getattr(self, "_remote_mobs_reverse", None) is not None
+        _char = self.world.get_component(self.player_entity_id,
+                                          __import__("components").CharacterStats)
+        _cs   = self.world.get_component(self.player_entity_id,
+                                          __import__("components").CombatStats)
+
+        # 4. Para ofensivas: resolve alvo + inicia chase + verifica range
+        if _is_offensive and combat_state and _tile_move_sk:
+            if _is_online:
+                # Online: mobs remotos não têm CombatStats — verifica target_entity_id diretamente
+                _target_local = combat_state.target_entity_id
+                if _target_local == -1:
+                    WARN.add("Nenhum alvo")
+                    return False
+
+                # enter_combat + is_pursuing ANTES do range check (igual offline _use_skill:5307-5313)
+                # Garante que pressionar skill inicia o chase mesmo fora de alcance.
+                from stat_fns import enter_combat as _ec_pre
+                _ec_pre(combat_state)
+                if not _has_cast:
+                    combat_state.is_pursuing = True
+
+                # Range check UNIVERSAL em pixels.
+                # max_range_px = max_range_tiles * TILE_SIZE + TOLERANCE
+                # min_range_px = min_range_tiles * TILE_SIZE - TOLERANCE  (se > 0)
+                _params          = getattr(skill, "params", {}) or {}
+                _max_range_tiles = _params.get("max_range", 1)
+                _min_range_tiles = _params.get("min_range", 0)
+                _tol = SkillHandlers.RANGE_TOLERANCE_PX
+                _max_px = _max_range_tiles * TILE_SIZE + _tol
+                _min_px = max(0.0, _min_range_tiles * TILE_SIZE - _tol) if _min_range_tiles > 0 else 0.0
+                _pl_pos  = self.world.get_component(self.player_entity_id,
+                                                     __import__("components").Position)
+                _tgt_pos = self.world.get_component(_target_local,
+                                                     __import__("components").Position)
+                if _pl_pos and _tgt_pos:
+                    _dx_r = _pl_pos.x - _tgt_pos.x
+                    _dy_r = _pl_pos.y - _tgt_pos.y
+                    _d_sq = _dx_r*_dx_r + _dy_r*_dy_r
+                    if _d_sq > _max_px * _max_px:
+                        WARN.add("Fora de alcance")
+                        return False
+                    if _min_px > 0 and _d_sq < _min_px * _min_px:
+                        WARN.add("Alvo muito próximo")
+                        return False
+            else:
+                # Offline: _resolve_target auto-seleciona e verifica CombatStats
+                _target = self._resolve_target(combat_state, _tile_move_sk)
+                if _target == -1:
+                    WARN.add("Nenhum alvo")
+                    return False
+
+        # 5. Rage/mana/HP threshold — verifica com awareness de proc (igual offline)
+        _rage_cost = 0
+        _mana_cost = 0
+        # Proc: free charge que ignora custo e restrição de HP (ex: Assassino → Executar)
+        _proc_attr         = getattr(skill, "proc_attr",         "")
+        _proc_ignores_cost = getattr(skill, "proc_ignores_cost", False)
+        _is_procced = bool(
+            _proc_attr and _char and getattr(_char, _proc_attr, 0) > 0
+        )
+        if skill.skill_id and _char and _cs:
+            # Rage: usa custo base do skill, mas prefere custo modificado por talentos
+            # (ex: Golpe Poderoso tem golpe_poderoso_rage_cost = 15 - pontos Veterano)
+            _rage_cost = getattr(skill, "rage_cost", 0)
+            _talent_cost = getattr(_cs, f"{skill.skill_id}_rage_cost", None)
+            if _talent_cost is not None:
+                _rage_cost = _talent_cost  # talento modificou o custo (ex: Veterano)
+            if _rage_cost > 0 and not (_is_procced and _proc_ignores_cost):
+                if _char.rage < _rage_cost:
+                    WARN.add(f"Raiva insuficiente ({_rage_cost})")
+                    return False
+            # Mana
+            _mana_pct = getattr(skill, "mana_cost_pct", 0.0)
+            if _mana_pct > 0 and hasattr(_cs, "max_mana"):
+                _mana_cost = int(_cs.max_mana * _mana_pct)
+                if _mana_cost > 0 and getattr(_cs, "mana", 0) < _mana_cost:
+                    WARN.add("Mana insuficiente")
+                    return False
+        # HP threshold (ex: Executar exige alvo <30% HP) — verifica no cliente via _mob_hp
+        if not (_is_procced and _proc_ignores_cost) and _is_online and combat_state:
+            _params_sk   = getattr(skill, "params", {}) or {}
+            _hp_threshold = _params_sk.get("hp_threshold", 0.0) if isinstance(_params_sk, dict) else 0.0
+            if _hp_threshold > 0:
+                _mob_hp_dict = getattr(self, "_mob_hp", {})
+                _rev_sk      = getattr(self, "_remote_mobs_reverse", {})
+                _tgt_local   = combat_state.target_entity_id
+                _srv_eid_sk  = _rev_sk.get(_tgt_local, -1)
+                if _srv_eid_sk in _mob_hp_dict:
+                    _tgt_hp, _tgt_hp_max = _mob_hp_dict[_srv_eid_sk]
+                    if _tgt_hp / max(1, _tgt_hp_max) >= _hp_threshold:
+                        WARN.add(f"Alvo precisa ter <{int(_hp_threshold * 100)}% HP")
+                        return False
+
+        # 6. Aplica efeitos locais
+        if _is_online:
+            # Online: não aplica GCD nem cooldown — espera confirmação do servidor.
+            # Mostra flash de "botão pressionado" (igual ao de falha por recursos).
+            # GCD + cooldown + som são aplicados em SKILL_RESULT quando confirmado.
+            skill.fail_flash_timer          = 0.15   # flash escuro rápido = "registrado"
+            skill._server_pending           = True   # bloqueia reuso até confirmação
+            skill._server_pending_timeout   = 0.40   # fallback: libera após 400ms (dentro do GCD 0.8s)
+        else:
+            # Offline: aplica tudo imediatamente (sem servidor para confirmar).
+            skill.current_cooldown = skill.cooldown
+            if player_skills:
+                player_skills.gcd_timer = PlayerSkills.GCD_DURATION
+            if skill.sound_name and not _has_cast:
+                SOUNDS.play_skill(skill.sound_name)
+        # Para skills baseadas em cargas: consome localmente (igual ao handler offline)
+        # Servidor também consume a sua cópia; cargas são regrantadas via morte de mob.
+        if skill.max_charges > 0 and skill.charges > 0:
+            skill.charges     -= 1
+            skill.charge_timer = 0.0
+
+        # Cura NÃO é predita localmente — servidor confirma via STATS_UPDATE (heal_amount).
+        # Isso garante que Vitória Iminente só cura se o dano for aplicado no servidor.
+
+        # NÃO deduz rage/mana localmente — servidor é autoritativo
+        # Motivo: se servidor falhar (range/target), rage não deve ser consumida.
+        # Servidor envia STATS_UPDATE com rage real após processar a skill.
+        # Cliente atualiza a partir desse valor (sem "dip" visual falso).
+        _rage_pre  = getattr(_char, "rage",  0) if _char else 0
+        _mana_pre  = getattr(_cs,   "mana",  0) if _cs   else 0
+        # (dedução acontece no servidor via sync_player_resources + handler)
+
+        # 7. enter_combat + is_pursuing — já feito no passo 4 para online ofensivas.
+        # Para não-ofensivas ou offline, aplica aqui.
+        if _is_offensive and combat_state and not _is_online:
+            from stat_fns import enter_combat as _ec_sk
+            _ec_sk(combat_state)
+            if not _has_cast:
+                combat_state.is_pursuing = True
+
+        # Envia CAST_SKILL com rage/mana PRÉ-dedução para o servidor validar corretamente
+        if self._net:
+            from shared.messages import MsgType as _MT
+            _tid_local  = getattr(combat_state, "target_entity_id", -1) if combat_state else -1
+            _rev = getattr(self, "_remote_mobs_reverse", {})
+            _tid_server = _rev.get(_tid_local, -1)
+
+            self._net.send(_MT.CAST_SKILL, {
+                "sid":   skill.skill_id,
+                "tid":   _tid_server,
+                "dir_x": 0.0,
+                "dir_y": 0.0,
+                "rage":  _rage_pre,
+                "mana":  _mana_pre,
+            })
+
+        # Interceptar: executa animação de dash localmente (client-side prediction)
+        # O servidor confirma a posição final via ENTITY_MOVE; se coincidir, não interrompe.
+        if skill.skill_id == "interceptar" and _tile_move_sk and combat_state:
+            self._interceptar_dash_visual(combat_state, _tile_move_sk)
+
+        return True
+
+    def _interceptar_dash_visual(self, combat_state, tile_move) -> None:
+        """Anima o dash do Interceptar localmente, sem verificações de HP (servidor já validou)."""
+        target_id = getattr(combat_state, "target_entity_id", -1)
+        if target_id == -1:
+            return
+        target_tm = self.world.get_component(target_id, TileMovement)
+        if not target_tm:
+            return
+        tx, ty = target_tm.current_tile_x, target_tm.current_tile_y
+        px, py = tile_move.current_tile_x, tile_move.current_tile_y
+        # Tile adjacente mais próximo do player
+        adj = [(tx + dx, ty + dy) for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1))]
+        walkable = [t for t in adj if is_tile_walkable(self.player_entity_id, t[0], t[1])]
+        if not walkable:
+            return
+        dest_x, dest_y = min(walkable, key=lambda t: abs(t[0] - px) + abs(t[1] - py))
+        player_pos = self.world.get_component(self.player_entity_id, Position)
+        new_px = dest_x * TILE_SIZE + TILE_SIZE / 2
+        new_py = dest_y * TILE_SIZE + TILE_SIZE / 2
+        if isinstance(player_pos, Position):
+            tile_move.start_pixel_x = player_pos.x
+            tile_move.start_pixel_y = player_pos.y
+        tile_move.target_pixel_x = new_px
+        tile_move.target_pixel_y = new_py
+        tile_move.target_tile_x  = dest_x
+        tile_move.target_tile_y  = dest_y
+        tile_move.progress       = 0.0
+        tile_move.move_duration  = self.INTERCEPT_DURATION
+        tile_move.is_moving      = True
+        tile_move.is_dash        = True
+        auto = self.world.get_component(self.player_entity_id, PlayerAutoMove)
+        if auto:
+            auto.active        = False
+            auto.path          = []
+            auto.ground_target = None
 
     # ------------------------------------------------------------------
     def _resolve_target(self, combat_state: "CombatState", tile_move: "TileMovement",

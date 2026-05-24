@@ -1,10 +1,11 @@
 # Componentes ECS — Referência Completa
 
 > Todos os componentes em `components.py`. Onde são criados e onde são lidos.
+> Última atualização: 2026-05-22
 
 ---
 
-> ⚠️ **Problema de escala:** `CharacterStats` mistura dados permanentes com state volátil de combate. Ver `PROBLEMAS_ARQUITETURA.md` problema #1 para o plano de separação em `CharacterStats` + `CombatRuntime`.
+> **Problema de escala:** `CharacterStats` mistura dados permanentes com state volátil de combate. Ver `PROBLEMAS_ARQUITETURA.md` problema #1 para o plano de separação em `CharacterStats` + `CombatRuntime`.
 
 ## Componentes de Posição e Visual
 
@@ -14,7 +15,7 @@
 | `Renderable(color,width,height)` | cor e tamanho | entity_factory | RenderSystem |
 | `Collider(width,height)` | hitbox | entity_factory | TileValidationSystem |
 | `Camera(target_entity_id,offset_x,offset_y,zoom)` | state de câmera | entity_factory | CameraSystem, TileRenderSystem |
-| `Visible()` | tag — entidade no FOV | FogSystem | RenderSystem, EnemyAISystem |
+| `Visible()` | tag — entidade no FOV | FogSystem | RenderSystem, EnemyAISystem. **Online:** adicionada manualmente no servidor (FogSystem não roda headless) |
 
 ---
 
@@ -22,9 +23,18 @@
 
 | Componente | Campos principais | Notas |
 |-----------|-------------------|-------|
-| `TileMovement(current_tile_x/y, target_tile_x/y, progress, speed, slow_mult, elevation, is_dash)` | estado de movimento em grid | `slow_mult` setado por StatusEffectSystem |
+| `TileMovement(current_tile_x/y, target_tile_x/y, progress, speed, slow_mult, elevation, is_dash)` | estado de movimento em grid | `slow_mult` setado por StatusEffectSystem. **Online:** `_server_dir_x/_server_dir_y` injetados em runtime por `_process_skill_requests` para skills direcionais |
 | `PlayerAutoMove(active, path, ground_target)` | auto-move por clique | path é lista de (tx,ty) |
 | `InitialPosition(x,y)` | posição de spawn do mob | usado por DeathHandlerSystem para respawn zone |
+
+### Atributos runtime de TileMovement (online)
+
+Injetados dinamicamente em `_process_skill_requests` antes de chamar o handler:
+
+| Atributo | Tipo | Valor | Usado por |
+|---------|------|-------|-----------|
+| `_server_dir_x` | `float` | direção X normalizada do CAST_SKILL | Skills de cone (Pirofagia, Tiro Múltiplo) — **pendente C1** |
+| `_server_dir_y` | `float` | direção Y normalizada do CAST_SKILL | Idem |
 
 ---
 
@@ -33,12 +43,26 @@
 | Componente | Campos principais | Notas |
 |-----------|-------------------|-------|
 | `CombatStats` | 40+ atributos base + efetivos + **25+ flags de talento** | ver seção FLAGS abaixo |
-| `CombatState(is_alive, in_combat, is_stunned, is_rooted, is_casting, is_immune, target_entity_id, is_pursuing, combat_timer, stun_timer)` | estado de combate | `can_act()` e `can_move()` são queries puras |
+| `CombatState(is_alive, in_combat, is_stunned, is_rooted, is_casting, is_immune, target_entity_id, is_pursuing, combat_timer, stun_timer)` | estado de combate | `can_act()` e `can_move()` são queries puras. **Online:** `respawn_immunity_ticks: int` e `is_visible: bool` adicionados em runtime para imunidade pós-morte |
 | `CharacterStats(STR,INT,AGI,VIT,DEF, level, xp, rage, mana, embalo_charges, fire_instant_ready, thermal_shock_active, pnq_counter, fatiador_timer…)` | atributos e progressão | mistura permanente + temporal (ver problemas) |
 | `PermanentStats(STR,INT,AGI,VIT,DEF)` | bônus roguelike acumulados na morte | somado a CharacterStats em apply_char_stats_to_combat |
 | `XPReward(amount)` | XP dado ao matar | criado em create_enemy; lido por DeathHandlerSystem |
-| `EnemyTier(tier)` | "normal"/"elite"/"rare"/"boss" | multiplica HP e dano |
-| `PendingDeath(killer_entity_id)` | marcador de morte a processar | adicionado por CombatSystem ou StatusEffectSystem (DoT) |
+| `EnemyTier(tier)` | "normal"/"elite"/"rare"/"boss" | multiplica HP e dano; XP base: 50/150/300/1000 |
+| `PendingDeath(killer_entity_id)` | marcador de morte a processar | adicionado por CombatSystem ou sweep de HP≤0 no servidor |
+
+### CombatStats — campos usados pelo PLAYER_STAT_SYNC
+
+O handler `PLAYER_STAT_SYNC` (C→S) sobrescreve estes campos via `COMBAT_SYNC_STATS`:
+
+| Campo no CombatStats | Mapeado de (cliente) | Por quê cliente é autoritativo |
+|---------------------|---------------------|-------------------------------|
+| `base_stamina` | `max_hp` | Inclui bônus de equipamento |
+| `base_attack_power` | `attack_power` | Inclui bônus de arma/amuletos |
+| `base_armor` | `armor` | Armadura total equipada |
+| `base_crit_rating` | `crit_rating` | Bônus de equipamento |
+| `base_parry_rating` | `parry_rating` | Bônus de equipamento |
+| `base_dodge_rating` | `dodge_rating` | Bônus de equipamento |
+| `base_attack_interval` | `attack_interval` | Velocidade de ataque real |
 
 > ⚠️ **Problema de escala:** CombatStats tem 80+ campos + 25 flags de talento. Ver `PROBLEMAS_ARQUITETURA.md` problema #2 para o plano de migração para `talent_flags: dict`.
 
@@ -85,8 +109,27 @@ crematoria_enabled           — pir_crematoria: +25% dano em <20% HP
 
 | Componente | Campos principais | Notas |
 |-----------|-------------------|-------|
-| `Skill(name,desc,cooldown,rage_cost,mana_cost,mana_cost_pct,cast_time,cast_range,school,proc_attr,charges,offensive,interruptible)` | skill ativa | `offensive=False` → não inicia combate/perseguição; `mana_cost_pct` para custo percentual (Polimorfia); criada por `_make_skill(id, SKILL_CATALOG)` |
-| `PlayerSkills(skills[10], keybinds[], learned_skill_ids, gcd_timer)` | hotbar e skills aprendidas | `_CHARGE_BASED` define skills de carga |
+| `Skill(name,desc,cooldown,rage_cost,mana_cost,mana_cost_pct,cast_time,cast_range,school,proc_attr,charges,offensive,interruptible)` | skill ativa | `offensive=False` → não inicia combate/perseguição; criada por `_make_skill(id, SKILL_CATALOG)` |
+| `PlayerSkills(skills[10], keybinds[], learned_skill_ids, gcd_timer)` | hotbar e skills aprendidas | `_CHARGE_BASED` define skills de carga; `GCD_DURATION = 0.8s` |
+
+### Skill — atributos runtime online
+
+Adicionados dinamicamente ao objeto `Skill` pelo sistema online (não são campos `__init__`):
+
+| Atributo | Tipo | Valor padrão | Descrição |
+|---------|------|-------------|-----------|
+| `_server_pending` | `bool` | `False` | Skill enviada ao servidor, aguardando `SKILL_RESULT` para confirmar |
+| `_server_pending_timeout` | `float` | `0.0` | Segundos até liberar sem confirmação (fallback = 0.40s) |
+| `fail_flash_timer` | `float` | `0.0` | Slot fica escuro por 0.2s ao falhar range check localmente |
+
+Esses atributos existem na classe `Skill.__init__` (`fail_flash_timer` está lá; `_server_pending` é injetado em runtime pelo `SkillSystem._use_skill_visual_only`).
+
+### PlayerSkills — notas online
+
+| Campo | Valor | Mudança vs. master |
+|-------|-------|-------------------|
+| `GCD_DURATION` | `0.8s` | Era `0.5s` no master |
+| `_GCD_SKILLS` | `{"golpe_poderoso", "executar", "polimorfia"}` | Apenas algumas skills disparam GCD |
 
 ---
 
@@ -94,8 +137,8 @@ crematoria_enabled           — pir_crematoria: +25% dano em <20% HP
 
 | Componente | Campos | Notas |
 |-----------|--------|-------|
-| `SpellCast(spell_id, cast_time, elapsed, target_id, mana_cost, interruptible)` | cast em andamento | `interruptible=False` → Calcinar pode ser castado em movimento; mana deduzida só ao completar |
-| `Channeling(spell_id, duration, elapsed, tick_interval, mana_per_tick, target_x/y, radius_tiles, slow_pct, dmg_weapon_pct, dmg_sp_coeff)` | canalização ativa | apenas Calamidade Flamejante por enquanto |
+| `SpellCast(spell_id, cast_time, elapsed, target_id, mana_cost, interruptible)` | cast em andamento | mana deduzida só ao completar |
+| `Channeling(spell_id, duration, elapsed, tick_interval, mana_per_tick, target_x/y, radius_tiles, slow_pct, dmg_weapon_pct, dmg_sp_coeff)` | canalização ativa | apenas Calamidade Flamejante |
 | `PlayerProjectile(spell_id, attacker_id, target_id, speed, dmg_weapon_pct, dmg_sp_coeff, color)` | projétil do mago em voo | Bola de Fogo |
 | `AoeTargeting(spell_id, radius_tiles, cast_range_tiles, pending_x/y, waiting_for_range, cancel_pending)` | mira AOE de alvo | Calamidade Flamejante |
 | `PirofagiaAiming(elapsed)` | mira de cone ativa | presente enquanto player aponta; removido ao clicar |
@@ -110,10 +153,10 @@ crematoria_enabled           — pir_crematoria: +25% dano em <20% HP
 |-----------|--------|-------|
 | `Inventory(items[], max_slots=20)` | lista de Items | |
 | `Equipment(slots{slot→Item})` | 9 slots de equipamento | mainhand, offhand, head, chest, shoulders, gloves, boots, wrists, ring, neck |
-| `Item(name, item_type, slot, modifiers[], rarity, value, damage_min/max, attack_speed, proc, consumable, armor_class)` | item de jogo | `armor_class`: "placa"/"couro"/"tecido"/"" — restrição por classe via `CLASS_ARMOR_ALLOWED` em `stats_system.py` |
+| `Item(name, item_type, slot, modifiers[], rarity, value, damage_min/max, attack_speed, proc, consumable, armor_class)` | item de jogo | `armor_class`: "placa"/"couro"/"tecido"/"" — restrição via `CLASS_ARMOR_ALLOWED` |
 | `Modifier(attribute, value, type)` | modificador de stat | type: "flat" ou "percentage" |
-| `Wallet(gold)` | ouro do jogador | |
-| `ConsumableBar(slots[], keybinds[], global_cooldown)` | barra de consumíveis | |
+| `Wallet(gold)` | ouro do jogador | **Online:** sincronizado no save via `_build_save_merge` (cliente autoritativo) |
+| `ConsumableBar(slots[], keybinds[], global_cooldown)` | barra de consumíveis | `GCD_DURATION = 1.5s` |
 | `LearnedRecipes(known[])` | receitas aprendidas | modificado via `stat_fns.learn_recipe()` |
 
 ---
@@ -125,7 +168,7 @@ crematoria_enabled           — pir_crematoria: +25% dano em <20% HP
 | `StatusEffects{effects{type→ActiveEffect}}` | efeitos ativos | `has()`, `get()`, `remove()` |
 | `ActiveEffect(effect_type, duration, magnitude, tick_interval, _tick_elapsed)` | efeito singular | magnitude = dano/cura por tick |
 | `ActiveRegen(heal_per_tick, interval, ticks_total, ticks_remaining, tick_timer)` | regen ativa (consumíveis) | ConsumableSystem |
-| `AIControlled(state, path, attack_range_tiles, is_ranged, entity_class, disengage_cd, kite_*, ranged_cast_timer, aggroed_by_damage)` | IA do mob | state: IDLE/CHASING/RETURNING/ATTACKING |
+| `AIControlled(state, path, attack_range_tiles, is_ranged, entity_class, disengage_cd, kite_*, ranged_cast_timer, aggroed_by_damage, target_eid=-1)` | IA do mob | state: IDLE/AGGRO_DELAY/CHASING/RETURNING/ATTACKING; `target_eid` = eid do alvo atual (-1 = sem alvo) |
 | `EnemyAbilities(slots[EnemyAbilitySlot])` | habilidades especiais | EnemyAbilitySystem |
 | `Projectile(attacker_id, target_id, damage_type, speed)` | projétil inimigo | |
 
@@ -137,11 +180,11 @@ crematoria_enabled           — pir_crematoria: +25% dano em <20% HP
 |-----------|--------|-------|
 | `Tilemap(tile_matrix, terrain_matrix, object_matrix, terrain_visual, map_width_tiles, map_height_tiles, tile_size)` | dados do mapa carregado | |
 | `FogOfWar(radius, explore_radius, visible, explored, _explored_maps, _last_tile)` | estado de neblina | `visible` = set de tiles visíveis no frame |
-| `Visible()` | tag adicionada/removida por FogSystem | entidades sem Visible são ignoradas |
+| `Visible()` | tag adicionada/removida por FogSystem | no servidor: adicionada manualmente no spawn de mobs (FogSystem não roda) |
 
 ---
 
-## Componentes de NPC e Quests
+## Componentes de NPC, Mundo e Sons
 
 | Componente | Campos | Notas |
 |-----------|--------|-------|
@@ -151,11 +194,32 @@ crematoria_enabled           — pir_crematoria: +25% dano em <20% HP
 | `Trainer(class_id)` | classe de habilidades ensinadas | |
 | `Blacksmith(shop_id)` | ferreiro com crafting | |
 | `QuestLog(active{qid→progresso[]}, completed{qid})` | estado de quests do jogador | |
-| `SpawnZone(...)` | zona de respawn | gerenciada por SpawnZoneSystem |
+| `SpawnZone(center_x/y, radius, enemy_type, enemy_tier, max_count, respawn_cooldown, level_min/max, race, entity_class, active_entity_ids, respawn_timers)` | zona de respawn | Gerenciada por SpawnZoneSystem |
 | `SpawnZoneOwner(zone_entity_id)` | liga mob à sua zona | |
-| `Corpse(loot[], coins, timer, looted, is_open)` | cadáver com drop | |
-| `MobSounds(aggro, death, attack_*, crit, emote_*)` | chaves de som do mob | |
+| `Corpse(loot[], coins, timer, looted, is_open)` | cadáver com drop | Offline only — servidor usa `_corpses` dict |
 | `EntityIdentity(name, race, entity_class, level, tier)` | identidade completa do mob | lido por DeathHandlerSystem e QuestSystem |
+
+### SpawnZone — atributo runtime online
+
+| Atributo | Tipo | Adicionado por | Descrição |
+|---------|------|---------------|-----------|
+| `_pending_spawns` | `int` | `SpawnZoneSystem` (runtime) | Contador de spawns em andamento no tick. Evita spawnar `max_count` mobs de uma vez. Decrementado no ciclo seguinte. |
+
+### MobSounds
+
+```python
+MobSounds(aggro="", death="", attack_melee="", attack_ranged="",
+          attack_magic="", crit="", emote_attack="", emote_get_crit="")
+```
+
+Cada campo é a chave base do arquivo OGG (sem extensão).
+Variações `_2`, `_3`, `_4` são tentadas automaticamente pelo `SoundManager`.
+
+Como é usado:
+- `SOUNDS.play_mob_sounds(comp, "aggro")` — offline, sem atenuação
+- `SOUNDS.play_mob_sounds_at(comp, "aggro", sx, sy, lx, ly)` — online, com atenuação espacial
+- Definido em `mob_definitions.py["sounds"]` por mob type
+- Para adicionar som: criar `.ogg` em `assets/sounds/sfx/` + adicionar chave no `mob_definitions`
 
 ---
 
@@ -163,7 +227,7 @@ crematoria_enabled           — pir_crematoria: +25% dano em <20% HP
 
 | Componente | Campos | Notas |
 |-----------|--------|-------|
-| `UIState(show_inventory, show_talents)` | visibilidade de painéis | player entity; propriedades em GameEngine roteiam aqui |
+| `UIState(show_inventory, show_talents)` | visibilidade de painéis | player entity |
 | `ShopUIState(open_merchant_id)` | qual loja está aberta | `is_open` property |
 | `LootUIState(open_corpse_id)` | qual cadáver está aberto | |
 
@@ -173,4 +237,4 @@ crematoria_enabled           — pir_crematoria: +25% dano em <20% HP
 
 | Componente | Campos | Notas |
 |-----------|--------|-------|
-| `TalentTree(chosen_build, allocated{}, available_points, _applied_modifiers[], _unlocked_skill_ids[])` | árvore de talentos | `chosen_build` derivado de `class_id` via `CLASS_BUILD_MAP` |
+| `TalentTree(chosen_build, allocated{}, available_points, _applied_modifiers[], _unlocked_skill_ids[])` | árvore de talentos | `chosen_build` derivado de `class_id` via `CLASS_BUILD_MAP`. **Online:** `allocated` enviado no `SAVE_STATE` e re-aplicado via `apply_talent_effects_to_player` no servidor |

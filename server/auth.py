@@ -53,11 +53,12 @@ def init_db() -> None:
             tile_x      INTEGER DEFAULT 10,
             tile_y      INTEGER DEFAULT 10,
             map_id      TEXT DEFAULT 'map_main',
-            hp          INTEGER DEFAULT 100,
+            hp          INTEGER DEFAULT 0,
             mp          INTEGER DEFAULT 100,
-            stats_json  TEXT DEFAULT '{}',
+            stats_json     TEXT DEFAULT '{}',
             inventory_json TEXT DEFAULT '[]',
-            skills_json TEXT DEFAULT '{}',
+            equipment_json TEXT DEFAULT '{}',
+            skills_json    TEXT DEFAULT '{}',
             talents_json   TEXT DEFAULT '{}',
             last_save   INTEGER DEFAULT (strftime('%s','now'))
         );
@@ -80,7 +81,7 @@ async def authenticate(username: str, password: str) -> dict | None:
     Valida credenciais e retorna dados do personagem, ou None se inválido.
     Executado em thread separada para não bloquear o event loop.
     """
-    return await asyncio.get_event_loop().run_in_executor(
+    return await asyncio.get_running_loop().run_in_executor(
         None, _authenticate_sync, username, password)
 
 
@@ -107,7 +108,7 @@ def _authenticate_sync(username: str, password: str) -> dict | None:
 async def register(username: str, password: str,
                    class_id: str = "guerreiro") -> bool:
     """Cria conta + personagem. Retorna True se sucesso, False se username já existe."""
-    return await asyncio.get_event_loop().run_in_executor(
+    return await asyncio.get_running_loop().run_in_executor(
         None, _register_sync, username, password, class_id)
 
 
@@ -134,25 +135,32 @@ def _register_sync(username: str, password: str,
 
 async def save_character(char_id: int, data: dict) -> None:
     """Persiste estado do personagem. Chamado ao desconectar e periodicamente."""
-    await asyncio.get_event_loop().run_in_executor(
+    await asyncio.get_running_loop().run_in_executor(
         None, _save_character_sync, char_id, data)
 
 
 def _save_character_sync(char_id: int, data: dict) -> None:
+    """Persiste estado do personagem. Campos com valor None são ignorados (coluna não é atualizada)."""
     import json
+    _stats = data.get("stats", {})
+    # Campos server-autoritativos — sempre atualizados
+    cols = ["tile_x", "tile_y", "hp", "mp", "level", "stats_json"]
+    vals = [
+        data.get("tile_x", 10), data.get("tile_y", 10),
+        data.get("hp",     100), data.get("mp", 100),
+        _stats.get("level", 1),
+        json.dumps(_stats),
+    ]
+    # Campos client-autoritativos — só atualiza se não for None
+    for key, col in (("inventory", "inventory_json"),
+                     ("equipment", "equipment_json"),
+                     ("skills",    "skills_json"),
+                     ("talents",   "talents_json")):
+        v = data.get(key)
+        if v is not None:
+            cols.append(col)
+            vals.append(json.dumps(v))
+    set_sql = ", ".join(f"{c}=?" for c in cols) + ", last_save=strftime('%s','now')"
+    vals.append(char_id)
     with _get_conn() as conn:
-        conn.execute("""
-            UPDATE characters SET
-                tile_x=?, tile_y=?, hp=?, mp=?,
-                stats_json=?, inventory_json=?, skills_json=?, talents_json=?,
-                last_save=strftime('%s','now')
-            WHERE id=?
-        """, (
-            data.get("tile_x", 10), data.get("tile_y", 10),
-            data.get("hp", 100),    data.get("mp", 100),
-            json.dumps(data.get("stats",     {})),
-            json.dumps(data.get("inventory", [])),
-            json.dumps(data.get("skills",    {})),
-            json.dumps(data.get("talents",   {})),
-            char_id,
-        ))
+        conn.execute(f"UPDATE characters SET {set_sql} WHERE id=?", vals)

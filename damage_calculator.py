@@ -17,7 +17,8 @@ ARMOR_REDUCTION_CAP        = 0.99    # teto: máximo 99% de redução
 
 def resolve_attack_outcome(attacker_stats, target_stats,
                            damage_type: str,
-                           extra_crit: float = 0.0) -> tuple:
+                           extra_crit: float = 0.0,
+                           is_ability: bool = False) -> tuple:
     """Tabela de ataque.
 
     Retorna (outcome, block_reduction):
@@ -47,8 +48,10 @@ def resolve_attack_outcome(attacker_stats, target_stats,
     _af_acerto = getattr(attacker_stats, "alvo_facil_acerto", 0)
     if _af_acerto > 0 and getattr(target_stats, "is_crowd_controlled", False):
         _acerto = min(100.0, _acerto + _af_acerto)
-    miss_chance  = max(0.0, (1.0 - _acerto / 100.0) - attacker_stats.hit_rating / rpp)
-    # Parry/dodge: 1 rating = 0.1% (1/1000)
+    # Abilities (skills) não erram por miss — só por dodge/parry do alvo.
+    # Auto-attacks podem errar por miss (acerto < 100%).
+    miss_chance  = 0.0 if is_ability else max(0.0, (1.0 - _acerto / 100.0) - attacker_stats.hit_rating / rpp)
+    # Parry/dodge: 1 rating = 0.1% (1/1000) — válido para auto E abilities
     dodge_chance = max(0.0, target_stats.dodge_rating / AVOIDANCE_RATING_PER_PCT)
     parry_chance = max(0.0, target_stats.parry_rating / AVOIDANCE_RATING_PER_PCT)
 

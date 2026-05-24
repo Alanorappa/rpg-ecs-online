@@ -74,16 +74,27 @@ class MsgType(str, Enum):
     ENTITY_SPAWN       = "entity_spawn"    # S→C  entidade entrou no AOI (detalhes completos)
     ENTITY_DESPAWN     = "entity_despawn"  # S→C  entidade saiu do AOI ou morreu
     ENTITY_DEATH       = "entity_death"    # S→C  morte com animação (antes de despawn)
+    SOUND_EVENT        = "sound_event"     # S→C  evento sonoro posicional (aggro, etc.)
+    PLAYER_STAT_SYNC   = "player_stat_sync"  # C→S  stats efetivos do player (equip/buff/consumível)
+    CONSUMABLE_USE     = "consumable_use"    # C→S  uso de consumível (heal_instant, HoT, buffs futuros)
+    BUY_REQUEST        = "buy_request"       # C→S  compra em loja {shop_id, item_name, quantity}
+    BUY_RESULT         = "buy_result"        # S→C  resultado da compra {success, reason, item, new_gold}
+    SELL_REQUEST       = "sell_request"      # C→S  {item_name, item_value, stack_sold}
+    SELL_RESULT        = "sell_result"       # S→C  {success, item_name, sell_price, new_gold} | {success:False, reason}
 
     # ── Inventário / Loot ─────────────────────────────────────────
     INVENTORY_UPDATE   = "inv_update"      # S→C  item adicionado/removido/modificado
     LOOT_AVAILABLE     = "loot_available"  # S→C  corpo com loot apareceu no tile
-    LOOT_TAKE          = "loot_take"       # C→S  pegar item do corpo
-    LOOT_RESULT        = "loot_result"     # S→C  item obtido ou negado
+    LOOT_REQUEST       = "loot_request"    # C→S  player clicou no corpo para sacar
+    LOOT_TAKE          = "loot_take"       # C→S  pegar item específico do corpo
+    LOOT_RESULT        = "loot_result"     # S→C  itens obtidos (ou vazio se não for dono)
 
     # ── Chat ──────────────────────────────────────────────────────
     CHAT_SEND          = "chat_send"       # C→S  enviar mensagem
     CHAT_MESSAGE       = "chat_message"    # S→C  mensagem recebida
+
+    # ── Save ──────────────────────────────────────────────────────
+    SAVE_STATE         = "save_state"      # C→S  cliente envia estado completo para salvar
 
     # ── Sistema ───────────────────────────────────────────────────
     PING               = "ping"            # C→S  latência
@@ -302,6 +313,29 @@ def _now_ms() -> int:
 #   "channel": str *     "world" | "local" | "party" | "system"
 #   "color":   list      [R, G, B]
 # }
+
+# ── S→C: LOOT_AVAILABLE ──────────────────────────────────────────────────────
+# {
+#   "corpse_id": int *   id do corpse no servidor
+#   "tx":        int *   tile X do corpse
+#   "ty":        int *   tile Y do corpse
+#   "items":     list *  [{name, icon_key, item_type, rarity, value, slot}]
+# }
+# Enviado APENAS ao dono do loot (first-attacker do mob).
+# Outros players recebem ENTITY_SPAWN {kind:"corpse"} apenas (sem itens).
+
+# ── C→S: LOOT_REQUEST ────────────────────────────────────────────────────────
+# {
+#   "corpse_id": int *   id do corpse clicado
+# }
+# Servidor valida ownership. Se não for dono: silenciosamente ignora.
+
+# ── S→C: LOOT_RESULT ─────────────────────────────────────────────────────────
+# {
+#   "corpse_id": int *   id do corpse
+#   "items":     list *  itens obtidos [{name, icon_key, item_type, rarity, value, slot}]
+# }
+# Enviado APENAS se o player for o dono e houver itens para pegar.
 
 # ── C→S: PING / S→C: PONG ────────────────────────────────────────────────────
 # PING: { "client_ts": int }

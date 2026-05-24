@@ -41,6 +41,46 @@ class SkillHandlers:
 
     AoE_RADIUS = 3  # raio do Impacto em tiles
 
+    # ── Alcance em pixels — padrão universal ────────────────────────────────
+    # Todas as skills usam pixel-based para checagem de range.
+    # Derivação: range_px = tiles * TILE_SIZE ± RANGE_TOLERANCE
+    # Tolerância cobre sub-tile lag (mob animando entre tiles).
+    # ECS note: constantes de regra de negócio do sistema, não do componente.
+
+    # Tolerância em pixels para compensar latência de rede + animação.
+    # MELEE_RANGE_PX = 2.25 tiles:
+    #   - cobre adjacência cardinal (32px) e diagonal (45px)
+    #   - cobre mob movendo 1 tile kiting durante o lag (~40ms = 6px) + snap = 32px extra
+    #   - margem total: 72 - 45 = 27px para acomodar variação de posição
+    RANGE_TOLERANCE_PX: float = 40.0   # tolerância usada na fórmula do cliente
+
+    INTERCEPT_MIN_RANGE_PX: float = 2 * 32 - 20   # 44px  (2 tiles - tolerance)
+    INTERCEPT_MAX_RANGE_PX: float = 6 * 32 + 40   # 232px (6 tiles + tolerance)
+
+    MELEE_RANGE_PX: float = 72.0   # 2.25 tiles — cobre kiting + lag
+
+    def _range_ok(self, player_pos, target_pos,
+                  max_px: float, min_px: float = 0.0) -> bool:
+        """Verifica alcance em pixels (hitbox circular, contínua).
+
+        Usa Position.x/y (posição interpolada) para precisão sub-tile.
+        Padrão universal: mesma fórmula para melee, dash e ranged.
+        """
+        if player_pos is None or target_pos is None:
+            return False
+        dx = player_pos.x - target_pos.x
+        dy = player_pos.y - target_pos.y
+        dist_sq = dx * dx + dy * dy
+        if dist_sq > max_px * max_px:
+            return False
+        if min_px > 0 and dist_sq < min_px * min_px:
+            return False
+        return True
+
+    # Alias melee para backward compat
+    def _melee_ok(self, player_pos, target_pos) -> bool:
+        return self._range_ok(player_pos, target_pos, self.MELEE_RANGE_PX)
+
     # ==================================================================
     # Utilitários internos
     # ==================================================================
@@ -69,9 +109,9 @@ class SkillHandlers:
         if not target_tm or not target_cs or target_cs.current_hp <= 0:
             self._warn("Alvo inválido")
             return
-        dist = max(abs(tile_move.current_tile_x - target_tm.current_tile_x),
-                   abs(tile_move.current_tile_y - target_tm.current_tile_y))
-        if dist > 1:
+        _pl_pos  = self.world.get_component(self.player_entity_id, Position)
+        _tgt_pos = self.world.get_component(target_id, Position)
+        if not self._melee_ok(_pl_pos, _tgt_pos):
             self._warn("Fora de alcance")
             return
         char_stats.rage -= rage_cost
@@ -101,9 +141,9 @@ class SkillHandlers:
         if not target_tm or not target_cs or target_cs.current_hp <= 0:
             self._warn("Alvo inválido")
             return
-        dist = max(abs(tile_move.current_tile_x - target_tm.current_tile_x),
-                   abs(tile_move.current_tile_y - target_tm.current_tile_y))
-        if dist > 1:
+        _pl_pos  = self.world.get_component(self.player_entity_id, Position)
+        _tgt_pos = self.world.get_component(target_id, Position)
+        if not self._melee_ok(_pl_pos, _tgt_pos):
             self._warn("Fora de alcance")
             return
         skill.charges -= 1
@@ -111,8 +151,12 @@ class SkillHandlers:
         deal_damage(self.player_entity_id, target_id, "physical",
                                        multiplier=2.0, is_ability=True)
         heal = int(combat_stats.max_hp * 0.30)
+        heal_actual = min(heal, combat_stats.max_hp - combat_stats.current_hp)
         combat_stats.current_hp = min(combat_stats.max_hp, combat_stats.current_hp + heal)
-        LOG.add(f"Vitória Iminente: +{heal} HP recuperados!", (80, 220, 80))
+        if heal_actual > 0:
+            LOG.add(f"Vitória Iminente: +{heal_actual} HP recuperados!", (80, 220, 80))
+        else:
+            LOG.add("Vitória Iminente: HP já está cheio!", (180, 180, 100))
         if combat_state:
             enter_combat(combat_state)
         return True
@@ -193,15 +237,16 @@ class SkillHandlers:
         if not target_cs or target_cs.current_hp <= 0:
             self._warn("Alvo inválido")
             return
-        if not free_charge and target_cs.current_hp / max(1, target_cs.max_hp) >= 0.30:
+        _hp_ratio = target_cs.current_hp / max(1, target_cs.max_hp)
+        if not free_charge and _hp_ratio >= 0.30:
             self._warn("Alvo precisa ter <30% HP")
             return
         target_tm = self.world.get_component(target_id, TileMovement)
         if not target_tm:
             return
-        dist = max(abs(tile_move.current_tile_x - target_tm.current_tile_x),
-                   abs(tile_move.current_tile_y - target_tm.current_tile_y))
-        if dist > 1:
+        _pl_pos  = self.world.get_component(self.player_entity_id, Position)
+        _tgt_pos = self.world.get_component(target_id, Position)
+        if not self._melee_ok(_pl_pos, _tgt_pos):
             self._warn("Fora de alcance")
             return
 
@@ -277,13 +322,20 @@ class SkillHandlers:
 
         tx, ty = target_tm.current_tile_x, target_tm.current_tile_y
         px, py = tile_move.current_tile_x, tile_move.current_tile_y
-        dist = chebyshev(px, py, tx, ty)
 
-        if dist < self.INTERCEPT_MIN_RANGE:
-            self._warn("Alvo muito próximo")
-            return
-        if dist > self.INTERCEPT_MAX_RANGE:
-            self._warn("Alvo muito longe")
+        # Range check em pixels (padrão universal)
+        _pl_pos  = self.world.get_component(self.player_entity_id, Position)
+        _tgt_pos = self.world.get_component(target_id, Position)
+        if not self._range_ok(_pl_pos, _tgt_pos,
+                               self.INTERCEPT_MAX_RANGE_PX,
+                               self.INTERCEPT_MIN_RANGE_PX):
+            _dx_i = (_pl_pos.x - _tgt_pos.x) if (_pl_pos and _tgt_pos) else 0
+            _dy_i = (_pl_pos.y - _tgt_pos.y) if (_pl_pos and _tgt_pos) else 0
+            _d_i  = (_dx_i*_dx_i + _dy_i*_dy_i)**0.5 if (_pl_pos and _tgt_pos) else 0
+            if _d_i < self.INTERCEPT_MIN_RANGE_PX:
+                self._warn("Alvo muito próximo")
+            else:
+                self._warn("Alvo muito longe")
             return
 
         adj = [(tx + dx, ty + dy) for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1))]
@@ -356,9 +408,9 @@ class SkillHandlers:
         if not target_tm or not target_cs or target_cs.current_hp <= 0:
             self._warn("Alvo inválido")
             return False
-        dist = max(abs(tile_move.current_tile_x - target_tm.current_tile_x),
-                   abs(tile_move.current_tile_y - target_tm.current_tile_y))
-        if dist > 1:
+        _pl_pos  = self.world.get_component(self.player_entity_id, Position)
+        _tgt_pos = self.world.get_component(target_id, Position)
+        if not self._melee_ok(_pl_pos, _tgt_pos):
             self._warn("Fora de alcance")
             return False
         char_stats.rage -= 5
@@ -389,9 +441,9 @@ class SkillHandlers:
         if not target_tm or not target_cs or target_cs.current_hp <= 0:
             self._warn("Alvo inválido")
             return False
-        dist = max(abs(tile_move.current_tile_x - target_tm.current_tile_x),
-                   abs(tile_move.current_tile_y - target_tm.current_tile_y))
-        if dist > 1:
+        _pl_pos  = self.world.get_component(self.player_entity_id, Position)
+        _tgt_pos = self.world.get_component(target_id, Position)
+        if not self._melee_ok(_pl_pos, _tgt_pos):
             self._warn("Fora de alcance")
             return False
 

@@ -13,7 +13,7 @@ import asyncio
 import time
 
 from shared.messages import MsgType, encode, decode
-from shared.constants import AOI_RADIUS
+from shared.constants import AOI_RADIUS, PROTOCOL_VERSION
 
 
 class Session:
@@ -26,6 +26,8 @@ class Session:
         self.authenticated = False
         self._seq          = 0
         self.known_eids: set[int] = set()   # entidades que este cliente conhece
+        # Último payload SAVE_STATE recebido do cliente (inventory/equipment/talents/skills/gold)
+        self.last_client_payload: dict = {}
 
     async def send(self, msg_type: MsgType, payload: dict) -> None:
         try:
@@ -54,14 +56,61 @@ class SessionManager:
         print(f"[Session] +connect {session_id}  total={len(self._sessions)}")
         return session
 
+    @staticmethod
+    def _build_save_merge(srv_data: dict, client_payload: dict) -> dict:
+        """
+        Constrói o dict merged para save_character.
+        Regras de autoridade:
+        - Posição (tile_x, tile_y), hp, mp: servidor autoritativo
+        - gold: cliente autoritativo (fallback srv_data)
+        - max_hp: cliente autoritativo se > 0 (inclui bônus de equipamento)
+        - inventory, equipment, talents: cliente se disponível, None = não sobrescreve DB
+        - skills: cliente se disponível, fallback srv_data
+        - stats base (level, xp, attrs): servidor, mas gold e max_hp overrideados acima
+        """
+        client_p  = client_payload
+        srv_stats = srv_data.get("stats", {})
+        cli_stats = client_p.get("stats", {}) if client_p else {}
+        merged_stats = dict(srv_stats)
+        # gold: cliente autoritativo
+        merged_stats["gold"] = cli_stats.get("gold", srv_stats.get("gold", 0))
+        # max_hp: cliente autoritativo (inclui bônus de equipamento)
+        _cli_mhp = cli_stats.get("max_hp", 0)
+        if _cli_mhp > 0:
+            merged_stats["max_hp"] = _cli_mhp
+        client_skills = (client_p.get("skills") or None) if client_p else None
+        return {
+            "tile_x":    srv_data.get("tile_x", 10),
+            "tile_y":    srv_data.get("tile_y", 10),
+            "hp":        min(srv_data.get("hp", 100), merged_stats.get("max_hp", 9999)),
+            "mp":        srv_data.get("mp", 100),
+            "stats":     merged_stats,
+            "inventory": client_p.get("inventory") if client_p else None,
+            "equipment": client_p.get("equipment") if client_p else None,
+            "talents":   client_p.get("talents")   if client_p else None,
+            "skills":    client_skills if client_skills else (srv_data.get("skills") or None),
+        }
+
     async def on_disconnect(self, session_id: str) -> None:
         session = self._sessions.pop(session_id, None)
         if not session:
             return
         if session.entity_id != -1:
+            # Salva ANTES de remover a entidade do ECS
+            if session.authenticated and session.char_data.get("id"):
+                from server.auth import save_character
+                srv_data = self.world_server.get_player_save_data(session_id)
+                if srv_data:
+                    merged = self._build_save_merge(srv_data, session.last_client_payload)
+                    try:
+                        await save_character(session.char_data["id"], merged)
+                        print(f"[Session] saved {session.username!r}  "
+                              f"tile=({merged['tile_x']},{merged['tile_y']})  "
+                              f"hp={merged['hp']}  gold={merged['stats'].get('gold', 0)}")
+                    except Exception as e:
+                        print(f"[Session] ERRO ao salvar {session.username!r}: {e}")
             self._eid_to_sid.pop(session.entity_id, None)
             eid = session.entity_id
-            # Remove o eid dos known_eids de todos os outros antes de despawnar
             for other in self._sessions.values():
                 other.known_eids.discard(eid)
             await self._broadcast_all(MsgType.ENTITY_DESPAWN, {"eid": eid})
@@ -87,6 +136,9 @@ class SessionManager:
     # ── Handlers C→S ─────────────────────────────────────────────────────────
 
     async def _handle_login(self, session: Session, payload: dict, ts: int) -> None:
+        if payload.get("version", 0) != PROTOCOL_VERSION:
+            await session.send(MsgType.LOGIN_ERROR, {"reason": "version_mismatch"})
+            return
         from server.auth import authenticate
         username = payload.get("username", "")
         password = payload.get("password", "")
@@ -130,10 +182,11 @@ class SessionManager:
         for p in near_players:
             s2 = self._sessions.get(p.get("session_id", ""))
             if s2:
+                _s2_hp, _s2_hp_max = self.world_server.get_player_hp(s2.session_id)
                 p["name"]     = s2.username
                 p["class_id"] = s2.char_data.get("class_id", "guerreiro")
-                p["hp"]       = s2.char_data.get("hp", 100)
-                p["hp_max"]   = s2.char_data.get("hp", 100)
+                p["hp"]       = _s2_hp
+                p["hp_max"]   = _s2_hp_max
                 p["level"]    = s2.char_data.get("level", 1)
                 p["effects"]  = []
 
@@ -153,13 +206,14 @@ class SessionManager:
             session.known_eids.add(ent["eid"])
 
         # Avisa outros que este player entrou
+        _new_hp, _new_hp_max = self.world_server.get_player_hp(session.session_id)
         spawn_payload = {
             "eid":      eid, "kind":     "player",
             "tx":       tx,  "ty":       ty,
             "name":     username,
             "class_id": char_data.get("class_id", "guerreiro"),
-            "hp":       char_data.get("hp", 100),
-            "hp_max":   char_data.get("hp", 100),
+            "hp":       _new_hp,
+            "hp_max":   _new_hp_max,
             "level":    char_data.get("level", 1),
             "effects":  [],
         }
@@ -168,7 +222,7 @@ class SessionManager:
         for s in self._sessions.values():
             if s.authenticated and s.session_id != session.session_id:
                 sx, sy = self.world_server.get_tile_pos(s.session_id)
-                if abs(sx - tx) <= AOI_RADIUS and abs(sy - ty) <= AOI_RADIUS:
+                if (sx - tx) ** 2 + (sy - ty) ** 2 <= AOI_RADIUS ** 2:
                     s.known_eids.add(eid)
 
         print(f"[Session] login ok: {username!r}  eid={eid}  tile=({tx},{ty})")
@@ -205,11 +259,132 @@ class SessionManager:
             return
         target_eid = int(payload.get("tid", -1))
         self.world_server.set_player_target(session.session_id, target_eid)
+        # Clique direito num mob → enter_combat imediatamente (systems.py:1244)
+        # Impede HP5 regen antes do primeiro hit, igual ao offline
+        if target_eid != -1:
+            from components import CombatState as _CS
+            from stat_fns import enter_combat as _ec
+            player_eid = session.entity_id
+            pcst = self.world_server.world.get_component(player_eid, _CS)
+            if pcst:
+                _ec(pcst)
 
     async def _handle_cast_skill(self, session: Session, payload: dict, ts: int) -> None:
         if not session.authenticated:
             return
-        print(f"[Skill]  {session.username} → {payload.get('sid')}  ts={ts}")
+        sid   = payload.get("sid", "")
+        tid   = int(payload.get("tid", -1))
+        dir_x = float(payload.get("dir_x", 0.0))
+        dir_y = float(payload.get("dir_y", 0.0))
+        rage  = int(payload.get("rage", 0))
+        mana  = int(payload.get("mana", 0))
+        if sid:
+            # Sincroniza rage/mana do cliente no ECS do servidor antes de processar a skill
+            self.world_server.sync_player_resources(session.session_id, rage, mana)
+            self.world_server.queue_skill(session.session_id, sid, tid, dir_x, dir_y, ts,
+                                          dbg_seq=payload.get("dbg_seq", 0))
+
+    async def _handle_player_stat_sync(self, session: Session, payload: dict, ts: int) -> None:
+        """Recebe stats efetivos do cliente (equip/buff/consumível) e aplica ao servidor."""
+        if not session.authenticated:
+            return
+        self.world_server.sync_player_combat_stats(session.session_id, payload)
+
+    async def _handle_sell_request(self, session: Session, payload: dict, ts: int) -> None:
+        """Processa venda ao mercador — gold ajustado server-side."""
+        if not session.authenticated:
+            return
+        item_name   = str(payload.get("item_name", ""))
+        item_value  = int(payload.get("item_value", 0))
+        stack_sold  = max(1, int(payload.get("stack_sold", 1)))
+        result = self.world_server.process_shop_sell(
+            session.session_id, item_name, item_value, stack_sold)
+        await session.send(MsgType.SELL_RESULT, result)
+
+    async def _handle_buy_request(self, session: Session, payload: dict, ts: int) -> None:
+        """Processa compra em loja — valida e aplica server-side.
+
+        Gold é server-autoritativo: deduzido aqui, nunca confiado no SAVE_STATE.
+        Inventário: cliente mantém localmente, servidor confirma espaço pelo último
+        last_client_payload para evitar exploits de inventário infinito.
+        """
+        if not session.authenticated:
+            return
+        shop_id   = str(payload.get("shop_id", ""))
+        item_name = str(payload.get("item_name", ""))
+        quantity  = max(1, int(payload.get("quantity", 1)))
+        last_inv  = session.last_client_payload.get("inventory") if session.last_client_payload else None
+        result = self.world_server.process_shop_buy(
+            session.session_id, shop_id, item_name, quantity, last_inv)
+        await session.send(MsgType.BUY_RESULT, result)
+
+    async def _handle_consumable_use(self, session: Session, payload: dict, ts: int) -> None:
+        """Processa uso de consumível — aplica efeitos autoritativamente no servidor.
+
+        Payload: {item_name, heal_instant, hot:{heal_per_tick,interval,ticks},
+                  ooc_only, buffs:[]}
+        Extensível: novos efeitos adicionados em 'buffs' sem mudar o handler.
+        """
+        if not session.authenticated:
+            return
+        self.world_server.apply_consumable(session.session_id, payload)
+
+    async def _handle_save_state(self, session: Session, payload: dict, ts: int) -> None:
+        """Recebe estado completo do cliente e persiste no banco."""
+        if not session.authenticated or not session.char_data.get("id"):
+            return
+        from server.auth import save_character
+        session.last_client_payload = payload   # cache para o save no disconnect
+        # Inventário foi salvo — zera contador de compras pendentes
+        self.world_server.confirm_inventory_save(session.session_id)
+        srv_data = self.world_server.get_player_save_data(session.session_id)
+        merged   = self._build_save_merge(srv_data, payload)
+
+        _eid_sv = self.world_server._player_eids.get(session.session_id)
+
+        # 1. Wallet: gold autoritativo do cliente
+        if _eid_sv is not None:
+            _final_gold = merged["stats"].get("gold", 0)
+            if _final_gold > 0:
+                from components import Wallet as _WSv
+                _wlt = self.world_server.world.get_component(_eid_sv, _WSv)
+                if _wlt:
+                    _wlt.gold = _final_gold
+
+        # 2. Re-aplica talentos (reseta base_stamina → max_hp cai temporariamente)
+        _client_tal = payload.get("talents", {})
+        _tal_alloc  = _client_tal.get("allocated", {}) if isinstance(_client_tal, dict) else {}
+        if _tal_alloc:
+            try:
+                self.world_server.apply_talent_effects_to_player(
+                    session.session_id, _tal_alloc)
+            except Exception as _te:
+                print(f"[Session] aviso: talent effects não re-aplicados — {_te}")
+
+        # 3. Re-aplica stat overrides (restaura max_hp ao valor com equipamento)
+        #    DEVE vir antes do sync de HP — _apply_stat_overrides chama
+        #    _recalculate_effective_stats que clamparia current_hp ao max_hp errado.
+        if _eid_sv is not None and _eid_sv != -1:
+            self.world_server._apply_stat_overrides(_eid_sv)
+
+        # 4. Sincroniza HP do cliente — feito POR ÚLTIMO, após max_hp estar correto.
+        #    Se feito antes, apply_char_stats_to_combat (passo 2) clamparia current_hp
+        #    ao base_stamina (340) mesmo que o player estivesse com HP cheio (380).
+        _cli_hp     = payload.get("stats", {}).get("current_hp")
+        _cli_max_hp = payload.get("stats", {}).get("max_hp")
+        if _eid_sv is not None and _cli_hp is not None:
+            from components import CombatStats as _CSSv
+            _cs_sv = self.world_server.world.get_component(_eid_sv, _CSSv)
+            if _cs_sv:
+                # max_hp: usa o maior entre servidor e cliente (servidor já tem bônus de talento)
+                if _cli_max_hp and int(_cli_max_hp) > _cs_sv.max_hp:
+                    _cs_sv.max_hp = int(_cli_max_hp)
+                # current_hp: cliente é fonte de verdade fora de combate
+                _cs_sv.current_hp = max(1, min(_cs_sv.max_hp, int(_cli_hp)))
+        try:
+            await save_character(session.char_data["id"], merged)
+        except Exception as e:
+            print(f"[Session] ERRO save_state {session.username!r}: {e}")
 
     async def _handle_chat(self, session: Session, payload: dict, ts: int) -> None:
         if not session.authenticated:
@@ -223,19 +398,66 @@ class SessionManager:
         else:
             await self._broadcast_aoi_from_session(session, MsgType.CHAT_MESSAGE, msg)
 
+    async def _handle_loot_request(self, session: Session, payload: dict, ts: int) -> None:
+        """
+        Player clicou num corpo para sacar.
+        Se for o dono → retorna itens via LOOT_RESULT.
+        Se não for o dono → ignora silenciosamente (regra de negócio).
+        """
+        if not session.authenticated:
+            return
+        corpse_id = int(payload.get("corpse_id", -1))
+        if corpse_id < 0:
+            return
+        loot = self.world_server.request_loot(session.session_id, corpse_id)
+        if loot is not None:
+            await session.send(MsgType.LOOT_RESULT, {
+                "corpse_id": corpse_id,
+                "items":     loot["items"],
+                "coins":     loot["coins"],
+            })
+            # Broadcast: corpo some para todos no AOI
+            corpse_data = self.world_server._corpses.get(corpse_id, {})
+            ctX = corpse_data.get("tx", 0)
+            ctY = corpse_data.get("ty", 0)
+            despawn_payload = {"eid": -corpse_id}
+            for s in list(self._sessions.values()):
+                if not s.authenticated:
+                    continue
+                sx, sy = self.world_server.get_tile_pos(s.session_id)
+                if (sx - ctX) ** 2 + (sy - ctY) ** 2 <= AOI_RADIUS ** 2:
+                    await s.send(MsgType.ENTITY_DESPAWN, despawn_payload)
+                    s.known_eids.discard(-corpse_id)
+
     _handlers = {
-        MsgType.LOGIN:       _handle_login,
-        MsgType.MOVE:        _handle_move,
-        MsgType.PING:        _handle_ping,
-        MsgType.AUTO_ATTACK: _handle_auto_attack,
-        MsgType.CAST_SKILL:  _handle_cast_skill,
-        MsgType.CHAT_SEND:   _handle_chat,
+        MsgType.LOGIN:        _handle_login,
+        MsgType.MOVE:         _handle_move,
+        MsgType.PING:         _handle_ping,
+        MsgType.AUTO_ATTACK:  _handle_auto_attack,
+        MsgType.CAST_SKILL:   _handle_cast_skill,
+        MsgType.CHAT_SEND:         _handle_chat,
+        MsgType.LOOT_REQUEST:      _handle_loot_request,
+        MsgType.SAVE_STATE:        _handle_save_state,
+        MsgType.PLAYER_STAT_SYNC:  _handle_player_stat_sync,
+        MsgType.CONSUMABLE_USE:    _handle_consumable_use,
+        MsgType.BUY_REQUEST:       _handle_buy_request,
+        MsgType.SELL_REQUEST:      _handle_sell_request,
     }
 
     # ── AOI subscription — núcleo do sistema ─────────────────────────────────
 
     def _on_tick(self, tick_count: int, deltas: dict) -> None:
-        if not any(deltas.values()):
+        if tick_count % 6000 == 0 and tick_count > 0:  # autosave a cada 5 min (20 tps)
+            asyncio.create_task(self._autosave_all())
+        # Dispatch sempre que há conteúdo — inclui skill_results que não entram em deltas
+        has_pending = (any(deltas.values())
+                       or bool(self.world_server._skill_results_this_tick)
+                       or bool(self.world_server._pending_loot_notifications)
+                       or bool(self.world_server._pending_xp_deliveries)
+                       or bool(self.world_server._expired_corpses_this_tick)
+                       or bool(self.world_server._player_hp_broadcasts_this_tick)
+                       or bool(self.world_server._pending_sound_events))
+        if not has_pending:
             return
         asyncio.create_task(self._dispatch_tick_deltas(deltas))
 
@@ -244,6 +466,21 @@ class SessionManager:
         try:
             # Mortes de players vão direto ao cliente morto (não AOI)
             await self._send_player_deaths(deltas)
+
+            # Resultados de skills ANTES do AOI_UPDATE
+            for skill_result in self.world_server.consume_skill_results():
+                caster_eid = skill_result["caster_eid"]
+                caster_sid = self.world_server.get_session_id_for_player(caster_eid)
+                if not caster_sid:
+                    continue
+                cx, cy = self.world_server.get_tile_pos(caster_sid)
+                for s in list(self._sessions.values()):
+                    if not s.authenticated:
+                        continue
+                    sx, sy = self.world_server.get_tile_pos(s.session_id)
+                    if (sx - cx) ** 2 + (sy - cy) ** 2 <= AOI_RADIUS ** 2:
+                        await s.send(MsgType.SKILL_RESULT, skill_result)
+
             for session in list(self._sessions.values()):
                 if not session.authenticated:
                     continue
@@ -251,6 +488,129 @@ class SessionManager:
                 update = self._build_update_for_session(session, deltas, tx, ty)
                 if update:
                     await session.send(MsgType.AOI_UPDATE, update)
+
+            # Entrega XP proporcional aos jogadores
+            xp_deliveries = self.world_server.consume_xp_deliveries()
+            if xp_deliveries:
+                for xp_entry in xp_deliveries:
+                    sid = self.world_server.get_session_id_for_player(xp_entry["player_eid"])
+                    if sid:
+                        session = self._sessions.get(sid)
+                        if session and session.authenticated:
+                            _payload = {
+                                "eid":       xp_entry["player_eid"],
+                                "xp_gained": xp_entry["xp"],
+                                "mob_eid":   xp_entry["mob_eid"],
+                            }
+                            # Inclui rage/mana se presentes (sync após skill consumir recursos)
+                            if "rage" in xp_entry:
+                                _payload["rage"] = xp_entry["rage"]
+                            if "mana" in xp_entry:
+                                _payload["mana"] = xp_entry["mana"]
+                            if xp_entry.get("vitoria_iminente_charge"):
+                                _payload["vitoria_iminente_charge"] = True
+                            # Inclui hp/heal_amount se skill curou o player (ex: Vitória Iminente)
+                            if "heal_amount" in xp_entry:
+                                _payload["hp"]          = xp_entry["hp"]
+                                _payload["hp_max"]      = xp_entry["hp_max"]
+                                _payload["heal_amount"] = xp_entry["heal_amount"]
+                                _payload["heal_sid"]    = xp_entry.get("heal_sid", "")
+                            await session.send(MsgType.STATS_UPDATE, _payload)
+
+            # Notificações de corpse/loot
+            for notif in self.world_server.consume_loot_notifications():
+                corpse_id  = notif["corpse_id"]
+                owner_eid  = notif["owner_eid"]
+                notif_tx   = notif["tx"]
+                notif_ty   = notif["ty"]
+
+                # 1. ENTITY_SPAWN do corpo para todos no AOI (todos veem o corpo visualmente)
+                spawn_payload = {
+                    "eid":  -corpse_id,   # eid negativo = corpse (não conflita com mobs/players)
+                    "kind": "corpse",
+                    "tx":   notif_tx,
+                    "ty":   notif_ty,
+                }
+                for s in list(self._sessions.values()):
+                    if not s.authenticated:
+                        continue
+                    sx, sy = self.world_server.get_tile_pos(s.session_id)
+                    if (sx - notif_tx) ** 2 + (sy - notif_ty) ** 2 <= AOI_RADIUS ** 2:
+                        await s.send(MsgType.ENTITY_SPAWN, spawn_payload)
+                        s.known_eids.add(-corpse_id)
+
+                # 2. LOOT_AVAILABLE apenas ao dono (inclui lista de itens)
+                owner_sid = self.world_server.get_session_id_for_player(owner_eid)
+                if owner_sid:
+                    owner_session = self._sessions.get(owner_sid)
+                    if owner_session and owner_session.authenticated:
+                        await owner_session.send(MsgType.LOOT_AVAILABLE, {
+                            "corpse_id": corpse_id,
+                            "tx":        notif_tx,
+                            "ty":        notif_ty,
+                            "items":     notif["items"],
+                            "coins":     notif.get("coins", 0),
+                        })
+
+            # HP broadcasts: player se curou com skill — outros players no AOI atualizam barra
+            _hp_bcast = self.world_server.consume_player_hp_broadcasts()
+            if _hp_bcast:
+                for _hp_upd in _hp_bcast:
+                    _caster_eid = _hp_upd["eid"]
+                    _caster_sid = self.world_server.get_session_id_for_player(_caster_eid)
+                    _cx, _cy    = self.world_server.get_tile_pos(_caster_sid) if _caster_sid else (0, 0)
+                    _hp_payload = {"eid": _caster_eid, "hp": _hp_upd["hp"], "hp_max": _hp_upd["hp_max"]}
+                    for s in list(self._sessions.values()):
+                        if not s.authenticated or s.session_id == _caster_sid:
+                            continue  # não envia para o próprio caster (já tem via STATS_UPDATE)
+                        sx, sy = self.world_server.get_tile_pos(s.session_id)
+                        if (sx - _cx) ** 2 + (sy - _cy) ** 2 <= AOI_RADIUS ** 2:
+                            await s.send(MsgType.STATS_UPDATE, _hp_payload)
+
+            # Corpses que expiraram — notifica todos no AOI para remover visualmente
+            for expired in self.world_server.consume_expired_corpses():
+                cid = expired["cid"]
+                ex, ey = expired["tx"], expired["ty"]
+                despawn_payload = {"eid": -cid}
+                for s in list(self._sessions.values()):
+                    if not s.authenticated:
+                        continue
+                    sx, sy = self.world_server.get_tile_pos(s.session_id)
+                    if (sx - ex) ** 2 + (sy - ey) ** 2 <= AOI_RADIUS ** 2:
+                        await s.send(MsgType.ENTITY_DESPAWN, despawn_payload)
+                        s.known_eids.discard(-cid)
+
+            # Eventos de som posicionais (aggro de mob, etc.) → broadcast AOI
+            for _snd_ev in self.world_server.consume_sound_events():
+                _ev_tx = _snd_ev.get("tx", 0)
+                _ev_ty = _snd_ev.get("ty", 0)
+                for s in list(self._sessions.values()):
+                    if not s.authenticated:
+                        continue
+                    sx, sy = self.world_server.get_tile_pos(s.session_id)
+                    if (sx - _ev_tx) ** 2 + (sy - _ev_ty) ** 2 <= AOI_RADIUS ** 2:
+                        await s.send(MsgType.SOUND_EVENT, _snd_ev)
+
+            # Skill results já enviados no início (antes do AOI_UPDATE)
+            # para garantir que o dano aparece antes do ENTITY_DESPAWN remover o mob
+
+            # Correções de posição por skill (ex: Interceptar) — ENTITY_MOVE direto ao caster
+            # O AOI_UPDATE ignora o próprio player (client-side prediction),
+            # então o caster precisa de ENTITY_MOVE direto para aplicar o dash
+            _pos_corrections = self.world_server.consume_skill_position_corrections()
+            for pos_corr in _pos_corrections:
+                p_sid = self.world_server.get_session_id_for_player(pos_corr["player_eid"])
+                if p_sid:
+                    p_session = self._sessions.get(p_sid)
+                    if p_session and p_session.authenticated:
+                        await p_session.send(MsgType.ENTITY_MOVE, {
+                            "eid": pos_corr["player_eid"],
+                            "tx":  pos_corr["tx"],
+                            "ty":  pos_corr["ty"],
+                            "from_tx": pos_corr["tx"],
+                            "from_ty": pos_corr["ty"],
+                        })
+
         except Exception as e:
             import traceback
             print(f"[Session] ERRO em _dispatch_tick_deltas: {e}")
@@ -268,7 +628,7 @@ class SessionManager:
         result: dict = {}
 
         def in_aoi(tx: int, ty: int) -> bool:
-            return abs(tx - cx) <= r and abs(ty - cy) <= r
+            return (tx - cx) ** 2 + (ty - cy) ** 2 <= r * r
 
         # ── Moves: verifica entradas/saídas de AOI ────────────────────
         confirmed_moves = []
@@ -299,26 +659,118 @@ class SessionManager:
 
         # ── Spawns novos (entidades criadas neste tick) ───────────────
         for sp in deltas.get("spawned", []):
+            # Projéteis de mob: sempre enviar ao dono do alvo, sem AOI check.
+            # São transientes — não entram em known_eids (sem despawn assimétrico).
+            if sp.get("kind") == "mob_projectile":
+                if sp.get("target_seid") == session.entity_id:
+                    result.setdefault("spawned", []).append(sp)
+                continue
             if in_aoi(sp["tx"], sp["ty"]):
                 result.setdefault("spawned", []).append(sp)
                 session.known_eids.add(sp["eid"])
 
         # ── Despawns ──────────────────────────────────────────────────
-        final_despawned = list(aoi_exits)
+        final_despawned  = list(aoi_exits)
+        _death_positions = deltas.get("despawned_pos", {})  # eid→(tx,ty)
         for eid in deltas.get("despawned", []):
             if eid in session.known_eids:
                 final_despawned.append(eid)
                 session.known_eids.discard(eid)
+            else:
+                # Mob morreu dentro do AOI mas cliente ainda não sabia dele
+                # (ex: mob entrou/foi teleportado para perto do player e morto no mesmo tick)
+                death_pos = _death_positions.get(eid)
+                if death_pos and in_aoi(death_pos[0], death_pos[1]):
+                    final_despawned.append(eid)
+
+        # ── Combat: filtra eventos relevantes para o AOI desta sessão ─
+        combat_events = [
+            cr for cr in deltas.get("combat", [])
+            if cr.get("target") in session.known_eids
+            or cr.get("attacker") in session.known_eids
+        ]
+
+        # ── Effects: só os do próprio player ─────────────────────────
+        my_effects = [
+            e for e in deltas.get("effects", [])
+            if e.get("eid") == session.entity_id
+        ]
+
+        # ── Mob effects: efeitos em mobs dentro do AOI desta sessão ──
+        _raw_mob_efx = deltas.get("mob_effects", {})
+        mob_effects = {
+            k: v for k, v in _raw_mob_efx.items()
+            if int(k) in session.known_eids
+        }
 
         # ── Monta resultado ───────────────────────────────────────────
         if confirmed_moves:  result["moved"]     = confirmed_moves
         if final_despawned:  result["despawned"] = list(set(final_despawned))
-        for key in ("stats", "effects", "combat"):
-            if deltas.get(key):
-                result[key] = deltas[key]
+        if combat_events:    result["combat"]    = combat_events
+        if my_effects:       result["effects"]   = my_effects
+        if mob_effects:      result["mob_effects"] = mob_effects
+        if deltas.get("stats"):
+            result["stats"] = deltas["stats"]
+
+        # Sweep: entidades em AOI não conhecidas (não detectadas via movimento)
+        # Cobre mobs estacionários e players que entraram em range sem se mover
+        for mob_eid in list(self.world_server._mob_eids):
+            if mob_eid in session.known_eids:
+                continue
+            from components import TileMovement as _TM
+            mob_tm = self.world_server.world.get_component(mob_eid, _TM)
+            if mob_tm and in_aoi(mob_tm.current_tile_x, mob_tm.current_tile_y):
+                spawn_data = self.world_server.get_entity_spawn_data(mob_eid)
+                if spawn_data:
+                    result.setdefault("spawned", []).append(spawn_data)
+                    session.known_eids.add(mob_eid)
+
+        for other_session in self._sessions.values():
+            if not other_session.authenticated:
+                continue
+            other_eid = other_session.entity_id
+            if other_eid == session.entity_id or other_eid in session.known_eids:
+                continue
+            ox, oy = self.world_server.get_tile_pos(other_session.session_id)
+            if in_aoi(ox, oy):
+                from components import TileMovement as _TM2
+                from shared.constants import TILE_SIZE as _TS
+                _hp, _hp_max = self.world_server.get_player_hp(other_session.session_id)
+                spawn_payload = {
+                    "eid":      other_eid,
+                    "kind":     "player",
+                    "tx":       ox, "ty": oy,
+                    "name":     other_session.username,
+                    "class_id": other_session.char_data.get("class_id", "guerreiro"),
+                    "hp":       _hp,
+                    "hp_max":   _hp_max,
+                    "level":    other_session.char_data.get("level", 1),
+                    "effects":  [],
+                }
+                result.setdefault("spawned", []).append(spawn_payload)
+                session.known_eids.add(other_eid)
+
         return result
 
     # ── Player deaths — enviados diretamente, não via AOI_UPDATE ─────────────
+
+    async def _autosave_all(self) -> None:
+        from server.auth import save_character
+        saved = 0
+        for session in list(self._sessions.values()):
+            if not session.authenticated or not session.char_data.get("id"):
+                continue
+            srv_data = self.world_server.get_player_save_data(session.session_id)
+            if not srv_data:
+                continue
+            merged = self._build_save_merge(srv_data, session.last_client_payload)
+            try:
+                await save_character(session.char_data["id"], merged)
+                saved += 1
+            except Exception as e:
+                print(f"[Session] ERRO autosave {session.username!r}: {e}")
+        if saved:
+            print(f"[Session] autosave  players={saved}  tick={self.world_server.tick_count}")
 
     async def _send_player_deaths(self, deltas: dict) -> None:
         for death in deltas.get("player_deaths", []):
@@ -347,7 +799,7 @@ class SessionManager:
             if not s.authenticated:
                 continue
             sx, sy = self.world_server.get_tile_pos(s.session_id)
-            if abs(sx - ox) <= AOI_RADIUS and abs(sy - oy) <= AOI_RADIUS:
+            if (sx - ox) ** 2 + (sy - oy) ** 2 <= AOI_RADIUS ** 2:
                 tasks.append(s.send(msg_type, payload))
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -360,7 +812,7 @@ class SessionManager:
             if not s.authenticated or s.session_id == origin.session_id:
                 continue
             sx, sy = self.world_server.get_tile_pos(s.session_id)
-            if abs(sx - ox) <= AOI_RADIUS and abs(sy - oy) <= AOI_RADIUS:
+            if (sx - ox) ** 2 + (sy - oy) ** 2 <= AOI_RADIUS ** 2:
                 tasks.append(s.send(msg_type, payload))
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)

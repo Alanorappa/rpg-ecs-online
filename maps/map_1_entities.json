@@ -56,8 +56,8 @@
   ],
   "trainers": [
     {
-      "x": 119,
-      "y": 540,
+      "x": 117,
+      "y": 390,
       "name": "Avido Faseo",
       "class_id": "guerreiro",
       "level": 60,
@@ -66,8 +66,8 @@
       "turn_in_ids": ["first_blood", "merchant_greeting"]
     },
     {
-      "x": 123,
-      "y": 540,
+      "x": 117,
+      "y": 392,
       "name": "Selene Vail",
       "class_id": "mago",
       "level": 60,
@@ -76,8 +76,8 @@
       "turn_in_ids": []
     },
     {
-      "x": 125,
-      "y": 538,
+      "x": 117,
+      "y": 395,
       "name": "Andre Von Han'Duch",
       "class_id": "arqueiro",
       "level": 60,

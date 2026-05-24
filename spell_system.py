@@ -1385,23 +1385,19 @@ class ChannelingSystem(System):
             if math.sqrt(dx * dx + dy * dy) > radius_px:
                 continue
             tick_dmg = base_dmg
-            # Piromaníaco: +X% dano em spells de fogo
             if attacker_cs:
                 _pyr = getattr(attacker_cs, "pyromania_bonus", 0.0)
                 if _pyr > 0:
                     tick_dmg = int(tick_dmg * (1.0 + _pyr))
-            # Crematória: +25% dano em alvos com menos de 20% de vida
             if attacker_cs and getattr(attacker_cs, "crematoria_enabled", False):
                 if ecs.max_hp > 0 and ecs.current_hp / ecs.max_hp < 0.20:
                     tick_dmg = int(tick_dmg * 1.25)
-            # Choque Térmico: Calamidade Flamejante é escola fogo — dobra em alvos enraizados
             if attacker_cs and getattr(attacker_cs, "thermal_shock_enabled", False):
                 _t_sfx = self.world.get_component(eid, StatusEffects)
                 if _t_sfx and _t_sfx.has("root"):
                     tick_dmg = int(tick_dmg * 2.0)
             _apply_magic_damage(entity_id, eid, tick_dmg, self.world)
             hit_any = True
-            # Slow — magnitude = slow_mult final (StatusEffectSystem sincroniza a cada frame)
             if ch.slow_pct > 0:
                 from systems import apply_effect
                 apply_effect(self.world, eid, "slow", 2.0, max(0.05, 1.0 - ch.slow_pct))
@@ -1670,12 +1666,20 @@ _PIRO_CONE = (
 
 
 class PirofagiaSystem(System):
-    """Pirofagia com mira: segura a tecla para apontar o cone, solta para disparar."""
+    """Pirofagia com mira: segura a tecla para apontar o cone, solta para disparar.
 
-    def __init__(self, world: World, screen: pygame.Surface):
+    No modo online (net != None) o sistema apenas:
+      - renderiza o cone visual enquanto o jogador aponta
+      - deduz mana e inicia cooldown localmente (feedback imediato)
+      - envia CAST_SKILL {sid, dir_x, dir_y} ao servidor
+    O servidor calcula quem foi atingido (com lag compensation) e devolve SKILL_RESULT.
+    """
+
+    def __init__(self, world: World, screen: pygame.Surface, net=None):
         self.world      = world
         self.world_surf = screen
         self.hud_surf   = screen
+        self._net       = net   # NetworkClient ou None (modo offline)
         # Surface pré-alocada para o preenchimento do cone — reutilizada a cada frame
         _max = int(4.5 * TILE_SIZE + 2.5 * TILE_SIZE) + 10
         self._cone_surf = pygame.Surface((_max * 2, _max * 2), pygame.SRCALPHA)
@@ -1722,8 +1726,7 @@ class PirofagiaSystem(System):
             LOG.add("Pirofagia cancelada.", (180, 80, 30))
 
     def _fire_cone(self, entity_id: int) -> None:
-        from components import Enemy, CharacterStats, PlayerSkills
-        from systems import apply_effect
+        from components import CharacterStats, PlayerSkills
 
         pos = self.world.get_component(entity_id, Position)
         tm  = self.world.get_component(entity_id, TileMovement)
@@ -1747,8 +1750,6 @@ class PirofagiaSystem(System):
 
         # Ângulo do cone baseado na posição atual do mouse
         mx, my = self._mouse_screen()
-        # cam_x/cam_y a partir da diferença entre posição world e posição em screen
-        # Para não duplicar, calcula diretamente pelo Camera
         cam_x = cam_y = 0.0
         for _, cam, cam_pos in self.world.get_entities_with(Camera, Position):
             lw = self.world_surf.get_width()  if self.world_surf else 1280
@@ -1760,8 +1761,12 @@ class PirofagiaSystem(System):
         px    = pos.x - cam_x
         py    = pos.y - cam_y
         angle = math.atan2(my - py, mx - px)
-        cone  = self._cone_tiles(tm.current_tile_x, tm.current_tile_y, angle)
+        dir_x = math.cos(angle)
+        dir_y = math.sin(angle)
 
+        from components import Enemy
+        from systems import apply_effect
+        cone = self._cone_tiles(tm.current_tile_x, tm.current_tile_y, angle)
         hit = 0
         for eid, etm, ecs in self.world.get_entities_with(TileMovement, CombatStats):
             if ecs.current_hp <= 0:
@@ -1773,11 +1778,11 @@ class PirofagiaSystem(System):
                 _apply_magic_damage(entity_id, eid, dmg, self.world)
                 apply_effect(self.world, eid, "disoriented", 3.0)
                 hit += 1
-
         if hit > 0:
             LOG.add(f"Pirofagia! {hit} alvo(s) atingido(s).", (255, 100, 30))
         else:
             LOG.add("Pirofagia — nenhum alvo no cone.", (255, 100, 30))
+
         SOUNDS.play_skill("skill_pirofagia")
 
     # ── Render ───────────────────────────────────────────────────────────────

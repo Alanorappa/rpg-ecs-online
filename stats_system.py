@@ -228,6 +228,7 @@ def process_levelups(world: World, entity_id: int,
 
     if leveled:
         apply_char_stats_to_combat(char, cs, perm)
+        cs.current_hp = cs.max_hp  # HP cheio ao subir de nível
 
 
 # ---------------------------------------------------------------------------

@@ -4,23 +4,26 @@
 Uso:
     from sound_manager import SOUNDS
 
-    SOUNDS.play("skill_interceptar")           # SFX pelo nome
+    SOUNDS.play("skill_interceptar")              # SFX pelo nome
     SOUNDS.play_random(["hit_1","hit_2","hit_3"]) # SFX aleatório da lista
-    SOUNDS.play_mob_event("Lobo", "aggro")     # Som específico de mob (com fallback)
-    SOUNDS.play_ambient("map_surface")         # Loop de ambiente
-    SOUNDS.set_context("cave")                 # Ativa eco dinâmico de caverna
-    SOUNDS.update(dt)                          # Chamado a cada frame
+    SOUNDS.play_mob_sounds(comp, "aggro")         # Som de mob pelo componente MobSounds
+    SOUNDS.play_mob_sounds_at(comp, "death", sx, sy, lx, ly)  # Posicional (com atenuação)
+    SOUNDS.play_ambient("map_surface")            # Loop de ambiente
+    SOUNDS.set_context("cave")                    # Ativa eco dinâmico de caverna
+    SOUNDS.update(dt)                             # Chamado a cada frame
 
-Adicionar novo som:
-    1. Coloque o arquivo .ogg em assets/sounds/sfx/
-    2. Adicione a entrada em _REGISTRY com nome e caminho
-    3. Chame SOUNDS.play("nome") onde necessário
+Sons de mob — única fonte de verdade: mob_definitions.py → componente MobSounds
+    Cada mob define suas chaves de som em mob_definitions.py["sounds"].
+    Acesso sempre via componente: SOUNDS.play_mob_sounds(mob_entity.MobSounds, evento)
+    Para adicionar sons a um mob:
+        1. Crie o .ogg em assets/sounds/sfx/   (ex: mob_orc_aggro.ogg)
+        2. Adicione a chave em mob_definitions.py["sounds"]["aggro"] = "mob_orc_aggro"
+    Variações automáticas: crie mob_orc_aggro_2.ogg, _3.ogg, _4.ogg — são tentadas automaticamente.
+    Sons compartilhados entre mobs (ex: "mob_bite_melee") são perfeitamente válidos.
 
-Sons de mob:
-    Convenção: mob_{nome_lowercase}_{evento}.ogg
-    Eventos: aggro, death, crit
-    Exemplos: mob_lobo_aggro.ogg, mob_orc_death.ogg, mob_aranha_crit.ogg
-    Se o arquivo não existir, cai no fallback genérico: mob_{evento}.ogg
+Sons posicionais (online/multiplayer):
+    play_mob_sounds_at, play_skill_at, play_random_at — versões com distância.
+    Volume: 100% em dist=0, 5% em 10 tiles (320px), 5% além do raio.
 
 Sons com variação aleatória:
     Crie múltiplos arquivos com sufixo _1, _2, _3 e passe a lista:
@@ -90,6 +93,12 @@ _REGISTRY: dict[str, str] = {
     # ── Mobs — sons genéricos de emote (fallback quando o mob não tem som definido) ──
     "mob_emote_attack_1":       _sfx("mob_emote_attack_1"),
     "mob_emote_get_crit_1":     _sfx("mob_emote_get_crit_1"),
+
+    # ── Zumbi — sons de mordida (melee + emote de ataque) ────────────────
+    "mob_bite_melee":           _sfx("mob_bite_melee"),
+    "mob_bite_melee_1":         _sfx("mob_bite_melee_1"),
+    "mob_bite_melee_2":         _sfx("mob_bite_melee_2"),
+    "mob_bite_melee_3":         _sfx("mob_bite_melee_3"),
 
     # ── Passos do player (4 variações) ───────────────────────────────────
     "step_1":                   _sfx("step_1"),
@@ -175,6 +184,67 @@ def _sfx_cave(name: str) -> str:
 
 class SoundManager:
     """Gerencia todos os sons do jogo com suporte a contexto de caverna."""
+
+    # ── Áudio posicional ────────────────────────────────────────────────────
+    # Raio audível em pixels (10 tiles × 32px/tile)
+    MAX_WORLD_SOUND_DIST: float = 10 * 32   # 320px
+    # Volume mínimo na borda do raio (5%)
+    MIN_WORLD_SOUND_VOL:  float = 0.05
+
+    def volume_at(self, sx: float, sy: float,
+                  lx: float, ly: float,
+                  base: float = 1.0) -> float:
+        """Calcula volume baseado na distância fonte → ouvinte.
+
+        Curva linear: 100% em dist=0, 5% em dist=MAX, 5% além do raio.
+        """
+        import math
+        dist = math.hypot(sx - lx, sy - ly)
+        if dist >= self.MAX_WORLD_SOUND_DIST:
+            return base * self.MIN_WORLD_SOUND_VOL
+        t = 1.0 - dist / self.MAX_WORLD_SOUND_DIST   # 1.0 → 0.0
+        return base * (self.MIN_WORLD_SOUND_VOL + (1.0 - self.MIN_WORLD_SOUND_VOL) * t)
+
+    def play_at(self, name: str,
+                sx: float, sy: float, lx: float, ly: float,
+                base: float = 1.0,
+                channel_group: "tuple[int,...] | None" = None) -> None:
+        """Toca som com volume proporcional à distância."""
+        self.play(name, self.volume_at(sx, sy, lx, ly, base), channel_group)
+
+    def play_random_at(self, names: "list[str]",
+                       sx: float, sy: float, lx: float, ly: float,
+                       base: float = 1.0,
+                       channel_group: "tuple[int,...] | None" = None) -> None:
+        """Toca som aleatório com volume proporcional à distância."""
+        self.play_random(names, self.volume_at(sx, sy, lx, ly, base), channel_group)
+
+    def play_skill_at(self, name: str,
+                      sx: float, sy: float, lx: float, ly: float,
+                      base: float = 1.0) -> None:
+        """Toca skill com volume proporcional à distância."""
+        self.play_skill(name, self.volume_at(sx, sy, lx, ly, base))
+
+    def play_mob_sounds_at(self, mob_sounds_comp, event: str,
+                           sx: float, sy: float, lx: float, ly: float,
+                           base: float = 1.0, dedup_key: str = "") -> None:
+        """Toca evento de mob (por componente MobSounds) com atenuação de distância.
+
+        Usa o campo correto do componente — idêntico ao offline play_mob_sounds()
+        mas com volume calculado pela posição.
+        """
+        self.play_mob_sounds(mob_sounds_comp, event,
+                             self.volume_at(sx, sy, lx, ly, base), dedup_key)
+
+    def play_emote_at(self, is_player: bool, mob_sounds_comp,
+                      sx: float, sy: float, lx: float, ly: float,
+                      is_crit: bool = False, base: float = 0.8) -> None:
+        """Toca emote de ataque ou crit com volume proporcional à distância."""
+        vol = self.volume_at(sx, sy, lx, ly, base)
+        if is_crit:
+            self.play_emote_get_crit(is_player, mob_sounds_comp, vol)
+        else:
+            self.play_emote_attack(is_player, mob_sounds_comp, vol)
 
     def __init__(self) -> None:
         self._ready      = False
@@ -308,29 +378,25 @@ class SoundManager:
             return
         self.play(random.choice(available), volume, channel_group)
 
+    # ------------------------------------------------------------------
+    # DEPRECATED — não usar em código novo
+    # Use play_mob_sounds(comp, event) que lê do componente MobSounds.
+    # Mantido apenas para compatibilidade com código legado eventual.
+    # ------------------------------------------------------------------
     def play_mob_event(self, mob_name: str, event: str, volume: float = 1.0,
                        dedup_race: str = "") -> None:
-        """Toca o som de mob específico com fallback em cadeia.
+        """DEPRECATED. Usa convenção de nome para achar o som (quebrável).
 
-        Args:
-            mob_name:   Nome do mob — name do EntityIdentity (ex: "Zumbi", "Lobo")
-            event:      "aggro", "death", "crit",
-                        "attack_melee", "attack_ranged" ou "attack_magic"
-            dedup_race: Raça/tipo usado para deduplicação por frame. Se não vazio,
-                        apenas 1 som deste (event, dedup_race) é emitido por frame,
-                        evitando sobrecarga quando vários mobs da mesma raça agem juntos.
-        Suporte a variações: mob_{nome}_{evento}.ogg + mob_{nome}_{evento}_2/3/4.ogg
-        Fallback: mob_{nome}_{evento} → mob_{evento} → silêncio
+        Prefira: SOUNDS.play_mob_sounds(mob_sounds_comp, event, volume)
+        que lê do componente MobSounds diretamente e é sempre correto.
         """
-        # Deduplicação: mesma raça + mesmo evento → 1 som por frame
         if dedup_race:
             key = (event, dedup_race.lower())
             if key in self._played_this_frame:
                 return
             self._played_this_frame.add(key)
-
-        base      = f"mob_{mob_name.lower()}_{event}"
-        variants  = [base, f"{base}_2", f"{base}_3", f"{base}_4"]
+        base     = f"mob_{mob_name.lower()}_{event}"
+        variants = [base, f"{base}_2", f"{base}_3", f"{base}_4"]
         available = [v for v in variants if self._cache.get(v) is not None]
         if available:
             self.play_mob(random.choice(available), volume)

@@ -252,7 +252,7 @@ class CombatStats:
         for mod in self.modifiers:
             if mod.attribute == "stamina":
                 if mod.type == "flat":
-                    self.stamina += mod.value
+                    self.stamina += mod.value * 10  # 1 stamina = 10 HP (igual vitality)
                 elif mod.type == "percentage":
                     self.stamina *= (1 + mod.value)
             elif mod.attribute == "armor":
@@ -402,6 +402,8 @@ class AIControlled:
     # Ranged: tempo de cast antes de disparar projétil
     ranged_cast_timer: float = 0.0  # >0 = carregando tiro; 0 = pronto/ocioso
     # base_attack_cooldown foi removido, agora está em CombatStats
+    target_eid: int = -1  # eid do alvo atual (multiplayer: cada mob tem o seu)
+    target_lost_timer: float = 0.0  # grace period antes de ir pro IDLE quando perde alvo
     
 @dataclass
 class InitialPosition:
@@ -480,6 +482,7 @@ class CombatState:
         self._just_entered_combat: bool = False  # sinaliza transição para CombatStateSystem disparar procs
         self.combat_timer: float = 0.0  # Conta regressiva para sair do combate
         self.stun_timer:   float = 0.0  # Contador de atordoamento (zerado em CombatStateSystem)
+        self.respawn_immunity_ticks: int = 0  # >0 = invisível para mobs (pós-respawn); decrementado pelo servidor
 
     def can_act(self) -> bool:
         """Retorna True se a entidade pode realizar ações (atacar, usar skill)."""
@@ -800,7 +803,7 @@ class PlayerSkills:
 
     # Skills que disparam GCD
     _GCD_SKILLS: set = {"golpe_poderoso", "executar", "polimorfia"}
-    GCD_DURATION: float = 0.5
+    GCD_DURATION: float = 0.8
 
     def __init__(self):
         from skill_config import DEFAULT_KEYBINDS, NUM_SLOTS

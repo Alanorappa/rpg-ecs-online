@@ -32,3 +32,18 @@ SESSION_TTL_S       = 86_400     # 24h
 
 # ── Versão do protocolo ───────────────────────────────────────────────────────
 PROTOCOL_VERSION = 1             # incrementar ao quebrar compatibilidade
+
+# ── Sincronização de stats de combate (PLAYER_STAT_SYNC) ──────────────────────
+# Mapeamento: nome_efetivo → base_attr no CombatStats
+# O cliente envia os valores efetivos; o servidor atualiza os base_attrs
+# correspondentes e recalcula os efetivos.
+# Para adicionar uma nova stat: basta inserir uma entrada neste dict.
+COMBAT_SYNC_STATS: dict[str, str] = {
+    "max_hp":          "base_stamina",        # max_hp  = stamina = base_stamina + mods
+    "attack_power":    "base_attack_power",   # AP efetivo (inclui arma + equipamento)
+    "armor":           "base_armor",          # armadura total
+    "crit_rating":     "base_crit_rating",    # % crit
+    "parry_rating":    "base_parry_rating",   # % aparo
+    "dodge_rating":    "base_dodge_rating",   # % esquiva
+    "attack_interval": "base_attack_interval",# velocidade de ataque
+}

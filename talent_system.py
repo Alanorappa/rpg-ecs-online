@@ -59,6 +59,9 @@ class TalentSystem:
         self.font_tip_body  = _font(22)
         self._hovered_id: str | None = None
         self.wants_close: bool = False
+        # Callback chamado quando talento é alocado/desalocado/resetado
+        # No online, definido para game._send_save_state; offline usa request_autosave()
+        self._on_change: "callable | None" = None
 
     # -----------------------------------------------------------------------
     # Helpers
@@ -122,6 +125,8 @@ class TalentSystem:
         t = TALENTS[talent_id]
         LOG.add(f"Talento: {t['name']} ({tt.allocated[talent_id]}/{t['max_points']})", C_GOLD)
         request_autosave()
+        if self._on_change:
+            self._on_change()
 
     def deallocate(self, talent_id: str):
         tt = self._talent_tree()
@@ -131,6 +136,8 @@ class TalentSystem:
         tt.available_points += 1
         self.apply_talent_effects()
         request_autosave()
+        if self._on_change:
+            self._on_change()
 
     def reset_talents(self):
         tt = self._talent_tree()
@@ -143,6 +150,8 @@ class TalentSystem:
         if total:
             LOG.add(f"{total} pontos de talento reembolsados.", C_GOLD)
         request_autosave()
+        if self._on_change:
+            self._on_change()
 
     # -----------------------------------------------------------------------
     # Aplicação de efeitos
@@ -186,6 +195,9 @@ class TalentSystem:
 
         # Remove habilidades de talento antigas (substitui por None para preservar comprimento da lista)
         skills.skills = [None if getattr(s, "talent_id", None) else s for s in skills.skills]
+        # Remove também de learned_skill_ids para não aparecer no painel H com talento removido
+        for _old_sid in tt._unlocked_skill_ids:
+            skills.learned_skill_ids.discard(_old_sid)
         tt._unlocked_skill_ids.clear()
 
         # Aplica efeitos dos talentos alocados
@@ -221,6 +233,8 @@ class TalentSystem:
                         except ValueError:
                             skills.skills.append(new_skill)
                     tt._unlocked_skill_ids.add(_sid)
+                    # Garante visibilidade no painel H (fonte 1 do avail list)
+                    skills.learned_skill_ids.add(_sid)
 
         # Aplica flags comportamentais de talentos alocados (lidas por CombatSystem e SkillHandlers)
         for talent_id, points in tt.allocated.items():

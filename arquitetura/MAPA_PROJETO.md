@@ -2,205 +2,153 @@
 
 > Guia rápido para localizar qualquer parte do projeto.
 > Branch: **online** — versão multiplayer em desenvolvimento paralelo ao `master`.
-> Atualizado: 2026-05-18
+> Última atualização: 2026-05-22
 
-> **ATENÇÃO:** Este é o branch `online`. A versão offline (single-player) está em `rpg_ecs/` (branch `master`).
-> Ler `arquitetura/ARQUITETURA_ONLINE.md` antes de qualquer trabalho neste branch.
+> **ATENÇÃO:** Ler `arquitetura/ARQUITETURA_ONLINE.md` antes de qualquer trabalho neste branch.
 
 ---
 
-## Onde encontrar o quê — Online (novo)
+## Onde encontrar o quê — Online (ONLINE-ONLY)
 
 | Quero… | Arquivo | Seção |
 |--------|---------|-------|
-| Definir/modificar um tipo de mensagem | `shared/messages.py` | `MsgType` enum + docstring do payload |
+| Definir/modificar tipo de mensagem | `shared/messages.py` | `MsgType` enum + docstring do payload |
 | Adicionar handler de mensagem no servidor | `server/session.py` | `_handlers` dict + `async def _handle_*` |
 | Alterar constante de rede (tick rate, AOI, etc.) | `shared/constants.py` | constante direta |
+| Adicionar stat ao PLAYER_STAT_SYNC | `shared/constants.py` | `COMBAT_SYNC_STATS` dict |
 | Lógica de autenticação / persistência | `server/auth.py` | `authenticate()`, `save_character()` |
 | Loop de ticks / ECS headless | `server/world_server.py` | `WorldServer._tick()` |
+| Spawn/despawn de player | `server/world_server.py` | `spawn_player()`, `despawn_player()` |
+| Save merge (autoridade por campo) | `server/session.py` | `_build_save_merge()` |
+| Processar mortes de mobs no servidor | `server/server_death_handler.py` | `ServerDeathHandler.update()` |
 | Gerenciar sessões e broadcast AOI | `server/session.py` | `SessionManager` |
-| Iniciar o servidor | `server/main.py` | `python server/main.py` |
+| AOI subscription (known_eids) | `server/session.py` | `_build_update_for_session()` |
+| Sincronizar stats de equipamento/buff | `server/world_server.py` | `sync_player_combat_stats()`, `_apply_stat_overrides()` |
+| Re-aplicar talentos ao ECS do servidor | `server/world_server.py` | `apply_talent_effects_to_player()` |
+| Iniciar o servidor | `server/main.py` | `py -3.10 server/main.py` |
 | Conectar cliente ao servidor | `client/network.py` | `NetworkClient` |
-| Enviar mensagem do cliente | `client/network.py` | `NetworkClient.send()` |
-| Receber mensagens no game loop | `client/network.py` | `NetworkClient.poll()` |
 | Banco de dados / schema | `data/game.db` (SQLite) | criado por `auth.init_db()` |
-| Decisões arquiteturais online | `arquitetura/ARQUITETURA_ONLINE.md` | seções por tópico |
 
-## Onde encontrar o quê — Offline (herdado do master)
+## Onde encontrar o quê — Compartilhado (COMPARTILHADO)
+
+| Quero… | Arquivo | Seção |
+|--------|---------|-------|
+| Definir constantes rede/mundo | `shared/constants.py` | direto |
+| Encodar/decodar mensagem | `shared/messages.py` | `encode()`, `decode()` |
+| COMBAT_SYNC_STATS (stats sincronizadas) | `shared/constants.py` | `COMBAT_SYNC_STATS` |
+
+## Onde encontrar o quê — Offline/herdado (COMPARTILHADO com cliente online)
 
 | Quero… | Arquivo | Seção |
 |--------|---------|-------|
 | Criar/modificar uma skill | `skill_config.py` | `SKILL_CATALOG` |
-| Implementar lógica de uma skill do guerreiro | `skill_handlers.py` | `def _skill_<id>` |
-| Implementar lógica de uma skill do mago | `skill_handlers.py` + `spell_system.py` | `_skill_*` + `_complete_cast` |
+| Implementar handler de skill do guerreiro | `skill_handlers.py` | `_skill_<id>` |
+| Range check de skill (pixel-based) | `skill_handlers.py` | `MELEE_RANGE_PX`, `_range_ok()`, `_melee_ok()` |
+| Implementar skill do mago | `skill_handlers.py` + `spell_system.py` | `_skill_*` + `_complete_cast` |
+| Fórmula de dano + is_ability miss bypass | `damage_calculator.py` | `resolve_attack_outcome(is_ability=)` |
+| Funções de stat (modifier, combat) | `stat_fns.py` | `add_modifier`, `enter_combat`, etc. |
+| Stats base por classe / attack interval | `stats_system.py` | `CLASS_BASE_STATS`, `sync_attack_interval()` |
 | Adicionar talento | `talent_data.py` | `TALENTS` + `CLASS_BUILD_MAP` |
-| Aplicar efeito de talento no jogo | `talent_system.py` | `apply_talent_effects()` |
+| Efeito de talento no jogo | `talent_system.py` | `apply_talent_effects()` |
 | Criar item/arma/arco/aljava | `loot_tables.py` | `_T` dict |
-| Adicionar item em drop de mob | `loot_tables.py` | `MOB_LOOT_TABLES` ou `LOOT_TABLES` |
-| Criar um mob novo | `mob_definitions.py` | `MOB_TABLE` |
-| Definir habilidade de mob | `enemy_abilities_data.py` | `ABILITY_DEFS` + `MOB_ABILITIES` |
-| Criar uma quest | `quests_data.py` | `QUESTS` |
-| Adicionar tipo de efeito de status | `status_effects_data.py` | `EFFECT_DEFS` |
-| Definir atributos base por classe | `stats_system.py` | `CLASS_MELEE_OVERRIDES` |
-| Criar receita de crafting | `crafting_data.py` | `RECIPES` |
-| Criar loja nova | `merchant_data.py` | `SHOPS` |
-| Adicionar um componente ECS | `components.py` | no final da categoria relevante |
-| Criar um novo Sistema ECS | `systems.py` (ou módulo próprio) | herdar de `System` |
-| Registrar sistema no loop | `game.py` | `_init_systems()` → `self.systems` |
-| Modificar fórmula de dano | `damage_calculator.py` | `calculate_base_damage()` |
-| Modificar fórmula de acerto/crit | `damage_calculator.py` | `resolve_attack_outcome()` |
-| Alterar funções de stat | `stat_fns.py` | `add_modifier`, `remove_modifier`, `enter_combat`, `learn_recipe` |
-| Sincronizar velocidade de ataque | `stats_system.py` | `sync_attack_interval(cs, equip)` — só na criação/load |
-| Restrições de armadura por classe | `stats_system.py` | `CLASS_ARMOR_ALLOWED` dict |
-| Velocidade de ataque base por classe | `stats_system.py` | `CLASS_MELEE_OVERRIDES` dict |
-| Criar mapa novo | `maps/*.csv` + `maps/*_entities.json` | ver DOCUMENTACAO.md seção 6 |
+| Adicionar drop de mob | `loot_tables.py` | `MOB_LOOT_TABLES` |
+| Criar mob novo | `mob_definitions.py` | `MOB_TABLE` |
+| Sons de mob (aggro, death, attack) | `mob_definitions.py` | `"sounds"` dict por mob |
+| Sons posicionais online | `sound_manager.py` | `play_mob_sounds_at()`, `volume_at()` |
+| Componente ECS | `components.py` | categoria relevante |
+| Sistema ECS (offline) | `systems.py` | herdar de `System` |
+| Registrar sistema no loop offline | `game.py` | `_init_systems()` → `self.systems` |
 
 ---
 
 ## Estrutura de arquivos
 
 ```
-rpg_ecs_online/               ← este branch (online)
+rpg_ecs_online/
 │
-├── shared/                   ← compartilhado servidor + cliente (sem Pygame, sem game state)
-│   ├── messages.py           ← MsgType enum + encode/decode + make_* factories
-│   └── constants.py          ← TICK_RATE, AOI_RADIUS, TILE_SIZE, portas, versão
+├── shared/                         ← COMPARTILHADO (sem Pygame, sem state)
+│   ├── messages.py                 ← MsgType enum + encode/decode + factories
+│   └── constants.py                ← TICK_RATE, AOI_RADIUS, TILE_SIZE, COMBAT_SYNC_STATS
 │
-├── server/                   ← servidor headless (sem Pygame)
-│   ├── main.py               ← ponto de entrada: asyncio + WebSocket
-│   ├── world_server.py       ← ECS headless: loop de ticks, sistemas de lógica
-│   ├── session.py            ← SessionManager: conexões, dispatch, broadcast AOI
-│   └── auth.py               ← autenticação SQLite + persistência de personagem
+├── server/                         ← ONLINE-ONLY (headless, sem Pygame real)
+│   ├── main.py                     ← ponto de entrada: asyncio + WebSocket
+│   ├── world_server.py             ← ECS headless: loop de ticks, sistemas, skill pipeline
+│   ├── session.py                  ← SessionManager: AOI subscription, dispatch, save
+│   ├── auth.py                     ← autenticação SQLite + persistência
+│   └── server_death_handler.py     ← PendingDeath: XP, loot, SpawnZone, despawn
 │
-├── client/                   ← cliente Pygame (evolução do game.py offline)
-│   └── network.py            ← NetworkClient: WebSocket em background thread
+├── client/                         ← ONLINE-ONLY (cliente de rede)
+│   └── network.py                  ← NetworkClient: WebSocket em background thread
 │
-├── data/                     ← criada automaticamente
-│   └── game.db               ← banco SQLite (contas + personagens)
+├── data/                           ← criada automaticamente
+│   └── game.db                     ← banco SQLite (contas + personagens)
 │
-├── arquitetura/              ← documentação
-│   ├── MAPA_PROJETO.md       ← este arquivo
-│   ├── ARQUITETURA_ONLINE.md ← decisões arquiteturais, protocolo, fases
-│   ├── SISTEMAS_ECS.md       ← sistemas offline (referência) + sistemas do servidor
-│   ├── COMPONENTES_ECS.md    ← componentes ECS
-│   ├── DADOS_JOGO.md         ← conteúdo do jogo
-│   └── PROBLEMAS_ARQUITETURA.md ← débito técnico
+├── tests/                          ← testes do servidor
+│   ├── test_server.py              ← suite principal (47 testes)
+│   └── diag_*.py                   ← scripts de diagnóstico individuais
 │
-└── [demais arquivos]         ← herdados do branch master (versão offline intocada)
-
-rpg_ecs/                      ← branch master (offline, NÃO modificar daqui)
+├── arquitetura/                    ← documentação
+│   ├── MAPA_PROJETO.md             ← este arquivo
+│   ├── ARQUITETURA_ONLINE.md       ← decisões, protocolo, fluxo de tick, problemas
+│   ├── SISTEMAS_ECS.md             ← sistemas offline (referência) + sistemas do servidor
+│   ├── COMPONENTES_ECS.md          ← componentes ECS
+│   ├── DADOS_JOGO.md               ← conteúdo do jogo
+│   └── PROBLEMAS_ARQUITETURA.md    ← débito técnico
+│
+└── [demais arquivos]               ← herdados do master (compartilhados com cliente)
 ```
 
-### Separação de responsabilidades
+### Arquivos-chave do branch online (vs. master)
 
-```
-server/world_server.py    → estado canônico do mundo, lógica de jogo
-server/session.py         → I/O de rede, distribuição de estado
-shared/messages.py        → contrato de comunicação (nem cliente nem servidor decidem o formato)
-client/network.py         → transporte assíncrono transparente ao game loop
-```
-
-**Regra:** `server/` nunca importa Pygame. `client/` nunca executa lógica de jogo (só renderiza estado recebido).
+| Arquivo | Tipo | Mudanças principais |
+|---------|------|---------------------|
+| `server/world_server.py` | ONLINE-ONLY | ECS headless, toda a lógica de servidor |
+| `server/session.py` | ONLINE-ONLY | AOI, save merge, handlers WebSocket |
+| `server/auth.py` | ONLINE-ONLY | SQLite, `asyncio.get_running_loop()` fix |
+| `server/server_death_handler.py` | ONLINE-ONLY | Morte de mobs sem Pygame |
+| `shared/messages.py` | ONLINE-ONLY | Protocolo completo |
+| `shared/constants.py` | ONLINE-ONLY | `COMBAT_SYNC_STATS`, `AOI_RADIUS` |
+| `client/network.py` | ONLINE-ONLY | NetworkClient WebSocket |
+| `core_systems.py` | NOVO (COMPARTILHADO) | `apply_effect()` + `StatusEffectSystem` base sem Pygame; importado por cliente e servidor |
+| `game.py` | MODIFICADO | Handlers online, `_use_skill_visual_only`, `_handle_net_message` |
+| `systems.py` | MODIFICADO | Re-exporta `apply_effect` de `core_systems`; `StatusEffectSystem` subclasse com FLT |
+| `skill_handlers.py` | MODIFICADO | `MELEE_RANGE_PX`, `_range_ok()`, pixel-based range |
+| `damage_calculator.py` | MODIFICADO | `is_ability` flag no `resolve_attack_outcome` |
+| `sound_manager.py` | MODIFICADO | `play_mob_sounds_at()`, `volume_at()`, `play_skill_at()` |
+| `components.py` | MODIFICADO | `Skill._server_pending`, `PlayerSkills.GCD_DURATION=0.8` |
 
 ---
 
-## Estrutura de arquivos (herdados do master)
+## Separação de responsabilidades
 
 ```
-rpg_ecs_online/   ← arquivos abaixo são do branch master, usados pelo cliente
-├── main.py                    ← ponto de entrada
-├── game.py                    ← GameEngine: loop, HUD, orquestração
-├── world.py                   ← registro ECS (entidades + índices)
-├── components.py              ← TODOS os componentes de dados (~1100 linhas)
-├── systems.py                 ← TODOS os sistemas de lógica (~4600 linhas)
-├── entity_factory.py          ← factory functions (create_player, create_enemy…)
-│
-├── spell_system.py            ← sistemas de magia do mago (8 classes)
-├── skill_handlers.py          ← mixin com 20+ handlers de skills
-├── skill_config.py            ← SKILL_CATALOG — fonte única de dados de skills
-├── stats_system.py            ← XPSystem, DeathRespawnSystem, CLASS_MELEE_OVERRIDES
-├── stat_fns.py                ← funções puras: add_modifier, enter_combat, etc.
-├── damage_calculator.py       ← matemática de combate (sem state)
-│
-├── talent_system.py           ← TalentSystem: UI e aplicação de talentos
-├── talent_data.py             ← TALENTS, BUILDS, CLASS_BUILD_MAP
-│
-├── quest_system.py            ← QuestSystem, QuestDialogSystem, QuestJournalSystem
-├── quests_data.py             ← QUESTS, ObjectiveDef, QuestReward
-├── quest_events.py            ← fire(event_type, **data) — bus de eventos de quest
-│
-├── loot_tables.py             ← _T (119 itens), LOOT_TABLES, MOB_LOOT_TABLES
-├── mob_definitions.py         ← MOB_TABLE (14 tipos de mob)
-├── enemy_abilities_data.py    ← ABILITY_DEFS, MOB_ABILITIES
-├── crafting_data.py           ← MATERIALS, RECIPES, RECYCLE_TABLE
-├── merchant_data.py           ← SHOPS (estoque de NPCs mercadores)
-├── status_effects_data.py     ← EFFECT_DEFS (14 efeitos de status)
-│
-├── save_system.py             ← save/load com thread worker persistente
-├── map_loader.py              ← carregamento de CSVs e JSONs de mapa
-├── tileset.py                 ← TileType, TILE_MAPPING, OBJECT_SHEET_FAMILIES
-│
-├── god_mode.py                ← editor in-game (desenvolvimento)
-├── char_creation_screen.py    ← tela de criação de personagem
-├── map_overlay.py             ← overlay de mapa (M)
-├── minimap.py                 ← minimap
-├── floating_text.py           ← textos flutuantes de dano/proc
-├── combat_log.py              ← LOG (singleton) — mensagens de combate
-├── fonts.py                   ← make(size) → pygame.Font
-├── icon_manager.py            ← ICONS (singleton) — cache de ícones PNG
-├── sound_manager.py           ← SOUNDS (singleton) — áudio com canais
-├── paths.py                   ← resource_path (dev + PyInstaller)
-├── config.py                  ← leitura/escrita de config.json
-├── fov.py                     ← shadowcasting (8 octantes)
-├── ui_helpers.py              ← item_tooltip_lines, RARITY_COLORS
-├── ui_compare.py              ← painel de comparação de itens
-├── png_to_map.py              ← ferramenta: converte PNG em CSV de mapa
-│
-├── maps/                      ← mapas do jogo
-│   ├── map_1.csv              ← mapa de teste
-│   ├── map_main.csv           ← mapa principal
-│   ├── map_cave_east.csv
-│   ├── map_cave_west.csv
-│   ├── map_worm_cave.csv
-│   └── *_entities.json        ← NPCs, spawns, transições, zonas de áudio
-│
-├── assets/
-│   ├── tiles/                 ← tilesets PNG (TX Tileset Grass, TX Tileset Wall…)
-│   ├── icons/                 ← ícones de skills (skill_*.png)
-│   └── sounds/sfx/            ← efeitos sonoros (.ogg)
-│
-└── arquitetura/               ← esta pasta
-    ├── MAPA_PROJETO.md        ← este arquivo
-    ├── COMPONENTES_ECS.md     ← todos os componentes documentados
-    ├── SISTEMAS_ECS.md        ← todos os sistemas + ordem de execução
-    ├── DADOS_JOGO.md          ← inventário de conteúdo (skills, itens, mobs…)
-    └── PROBLEMAS_ARQUITETURA.md ← análise crítica e débito técnico
+server/world_server.py    → estado canônico do mundo, lógica de jogo
+server/session.py         → I/O de rede, distribuição de estado, save
+server/server_death_handler.py → morte de mobs (sem Pygame)
+shared/messages.py        → contrato de comunicação
+shared/constants.py       → constantes sincronizadas
+client/network.py         → transporte assíncrono transparente ao game loop
 ```
+
+**Regra:** `server/` nunca importa Pygame para display/input (SDL dummy é workaround para sistemas herdados — ver A1 em ARQUITETURA_ONLINE.md). `client/` nunca executa lógica de jogo (só renderiza estado recebido).
 
 ---
 
 ## Padrões do projeto
 
 ### Adicionar nova skill
-1. `skill_config.py` → entrada em `SKILL_CATALOG` com `params: {}` para todos os valores de gameplay (multiplicadores, raios, durações, percentuais). Campos padrão: `offensive`, `school`, `needs_aoe_target`, `mana_cost_pct`
+1. `skill_config.py` → entrada em `SKILL_CATALOG` com `params: {}`
 2. `skill_handlers.py` → `def _skill_<id>(self, skill, combat_stats, combat_state, tile_move)`
-3. Se tiver cast time → `spell_system.py` → registrar em `SpellCastSystem._CAST_HANDLERS` dict (mana deduzida aqui, não no handler)
-4. Se for desbloquada por talento → `talent_data.py` → `unlocks_skill = "<id>"` (skill já deve estar em `SKILL_CATALOG`)
-5. Se render deve aparecer sobre tiles → chamar explicitamente em `game.py` após `render_fog()` (ver padrão da Pirofagia e Calamidade)
+3. Se tiver cast time → `spell_system.py` → registrar em `SpellCastSystem._CAST_HANDLERS`
+4. Se for desbloqueada por talento → `talent_data.py` → `unlocks_skill`
+5. Testar no servidor: handler é chamado via `_process_skill_requests`
 
-### Adicionar novo talento
-1. `talent_data.py` → entrada em `TALENTS`
-2. `talent_system.py` → reset em `apply_talent_effects()` + linha de aplicação
-3. Se efeito comportamental → campo em `CombatStats.components.py`
-4. Se lógica na gameplay → leitura do flag em sistema relevante
+### Adicionar nova stat ao PLAYER_STAT_SYNC
+1. `shared/constants.py` → inserir em `COMBAT_SYNC_STATS` `{chave_cliente: base_attr_cs}`
+2. Nenhuma outra mudança necessária — `sync_player_combat_stats` e `_apply_stat_overrides` são genéricos
 
-### Adicionar novo efeito de status
-1. `status_effects_data.py` → entrada em `EFFECT_DEFS`
-2. `systems.py StatusEffectSystem._apply_tick()` → caso no if/elif
-3. `systems.py EnemyAISystem` → caso no bloco de controle de IA (stun/fear/polymorph/disoriented)
-
-### Adicionar novo sistema ECS
-1. Criar classe herdando `System` (em `systems.py` ou novo arquivo)
-2. Implementar `update(events, dt)` e/ou `render(cam_x, cam_y)`
-3. `game.py _init_systems()` → instanciar + adicionar a `self.systems`
-4. Se render deve aparecer por cima dos tiles → chamar explicitamente após `tile_render_system.render_fog()`
+### Adicionar novo tipo de mensagem
+1. `shared/messages.py` → adicionar em `MsgType` + documentar payload na docstring
+2. `server/session.py` → handler `async def _handle_*` + entrada em `_handlers`
+3. `game.py` → handler em `_handle_net_message`
+4. `ARQUITETURA_ONLINE.md` → atualizar tabela de mensagens

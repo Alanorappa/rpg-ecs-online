@@ -393,6 +393,8 @@ class TestAutoAttackFlow(unittest.TestCase):
         # Define alvo e aproxima mob (simula player clicando no mob)
         teleport_mob_to_player(self.ws, mob_eid, self.ws._player_eids["s1"])
         self.ws.set_player_target("s1", mob_eid)
+        # Zera timer de ataque para garantir disparo imediato (evita flakiness de estado global)
+        self.ws._attack_timers["s1"] = 0.0
 
         deltas = run_ticks(self.ws, 60)   # 3 segundos
 
@@ -432,9 +434,15 @@ class TestMultiplePlayers(unittest.TestCase):
         self.assertEqual(len(self.ws._player_eids), 2)
 
     def test_player_combat_does_not_affect_other_player_hp(self):
-        """Dano de mob em player A não deve alterar HP de player B."""
+        """Dano de mob em player A não deve alterar HP de player B.
+
+        Player B é colocado longe das zonas de spawn de mobs para garantir
+        isolamento. O mob de teste é explicitamente travado em player A via
+        AIControlled.target_eid (campo usado pelo EnemyAISystem N-players).
+        """
         eid1 = spawn_player(self.ws, "s1", 130, 374)
-        eid2 = spawn_player(self.ws, "s2", 117, 389)
+        # Player B longe das zonas de spawn (tiles ~115-135, ~370-395)
+        eid2 = spawn_player(self.ws, "s2", 10, 10)
         run_ticks(self.ws, 40)
 
         hp_b_before, _ = get_player_hp(self.ws, "s2")
@@ -442,9 +450,16 @@ class TestMultiplePlayers(unittest.TestCase):
         if not mob_eid:
             self.skipTest("Sem mobs")
 
-        from components import CombatState, CombatStats
+        from components import CombatState, CombatStats, AIControlled
+        # Travar o mob explicitamente em player A — EnemyAISystem usa AIControlled.target_eid
+        mob_ai = self.ws.world.get_component(mob_eid, AIControlled)
+        if mob_ai:
+            mob_ai.target_eid        = eid1
+            mob_ai.aggroed_by_damage = True   # mantém foco mesmo com _select_target
+            mob_ai.state             = "CHASING"
         mob_cs_combat = self.ws.world.get_component(mob_eid, CombatState)
-        mob_cs_combat.target_entity_id = eid1
+        if mob_cs_combat:
+            mob_cs_combat.target_entity_id = eid1
 
         pcs1 = self.ws.world.get_component(eid1, CombatStats)
         pcs1.current_hp = 50  # player A com pouco HP para garantir dano
@@ -460,6 +475,143 @@ class TestMultiplePlayers(unittest.TestCase):
         hp_b_after, _ = get_player_hp(self.ws, "s2")
         self.assertEqual(hp_b_before, hp_b_after,
                          "HP de player B foi alterado por dano em player A")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. Bugs reportados pelo usuário — testes de regressão
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestRegressionBugs(unittest.TestCase):
+    """
+    Testes que cobrem bugs encontrados em sessões de teste manuais.
+    Cada teste documenta exatamente o sintoma observado.
+    """
+
+    def setUp(self):
+        self.ws = make_world_server()
+
+    def test_mob_attack_generates_combat_delta_with_player_target(self):
+        """Quando mob ataca player, deltas['combat'] deve ter entry com target=player_eid.
+
+        Sintoma: barra de HP do player não atualiza em tempo real — servidor
+        ataca mas o cliente nunca recebe o hp_after intermediário.
+        """
+        eid = spawn_player(self.ws, "s1", 130, 374)
+        run_ticks(self.ws, 40)
+        mob = first_mob(self.ws)
+        if not mob:
+            self.skipTest("Sem mobs")
+
+        from components import CombatState, CombatStats, AIControlled, TileMovement, Position
+        from tileset import TILE_SIZE as _TS
+        mob_ai  = self.ws.world.get_component(mob, AIControlled)
+        mob_tm  = self.ws.world.get_component(mob, TileMovement)
+        mob_cs  = self.ws.world.get_component(mob, CombatStats)
+        mob_cst = self.ws.world.get_component(mob, CombatState)
+        mob_pos = self.ws.world.get_component(mob, Position)
+        ptm     = self.ws.world.get_component(eid, TileMovement)
+
+        # Posiciona mob adjacente ao player — sincroniza current, target E is_moving=False
+        # Evita que TileMovementSystem mova o mob para longe no próximo tick
+        tx = ptm.current_tile_x + 1
+        ty = ptm.current_tile_y
+        mob_tm.current_tile_x = tx;  mob_tm.target_tile_x = tx
+        mob_tm.current_tile_y = ty;  mob_tm.target_tile_y = ty
+        mob_tm.is_moving = False;    mob_tm.progress = 0.0
+        if mob_pos:
+            mob_pos.x = tx * _TS + _TS // 2
+            mob_pos.y = ty * _TS + _TS // 2
+
+        # Configura mob para atacar imediatamente
+        if mob_ai:
+            mob_ai.target_eid        = eid
+            mob_ai.aggroed_by_damage = True
+            mob_ai.state             = "ATTACKING"
+        if mob_cs:
+            mob_cs.attack_cooldown_timer = 0.0  # permite ataque imediato
+        if mob_cst:
+            mob_cst.target_entity_id = eid
+
+        deltas = run_ticks(self.ws, 5)
+        combat_events = deltas.get("combat", [])
+        player_hits = [cr for cr in combat_events if cr.get("target") == eid]
+
+        self.assertGreater(len(player_hits), 0,
+            "Mob atacou player mas nenhum entry combat com target=player_eid foi emitido")
+
+        for hit in player_hits:
+            self.assertIn("hp_after", hit, "Entry de combate sem campo hp_after")
+            self.assertGreaterEqual(hit["hp_after"], 0,
+                "hp_after negativo no delta de combate")
+
+    def test_corpse_created_in_loot_notifications_after_mob_death(self):
+        """Após mob morrer, _pending_loot_notifications deve ter entrada de corpse.
+
+        Sintoma: mob some sem deixar corpo para lootear.
+        Root cause original: _next_corpse_id=1 → eid=-1 → cliente ignora.
+        """
+        eid = spawn_player(self.ws, "s1", 130, 374)
+        run_ticks(self.ws, 40)
+        mob = first_mob(self.ws)
+        if not mob:
+            self.skipTest("Sem mobs")
+
+        # Mata o mob diretamente via auto-attack simulado
+        from components import CombatStats, TileMovement, CombatState
+        mob_cs = self.ws.world.get_component(mob, CombatStats)
+        ptm    = self.ws.world.get_component(eid, TileMovement)
+        mob_tm = self.ws.world.get_component(mob, TileMovement)
+        mob_cs_c = self.ws.world.get_component(mob, CombatState)
+
+        mob_tm.current_tile_x = ptm.current_tile_x + 1
+        mob_tm.current_tile_y = ptm.current_tile_y
+        if mob_cs_c:
+            mob_cs_c.target_entity_id = -1
+        self.ws.world.get_component(eid, CombatState).target_entity_id = mob
+
+        self.ws._mob_damage_log[mob] = {eid: mob_cs.max_hp}
+
+        # Força morte direto no HP para garantir PendingDeath via sweep
+        mob_cs.current_hp = 0
+        run_ticks(self.ws, 2)
+
+        # Após o tick, corpse deve estar registrado
+        self.assertGreater(len(self.ws._corpses) + len(self.ws._pending_loot_notifications), 0,
+            "Nenhum corpse criado após morte de mob — barra de loot nunca aparecerá no cliente")
+
+    def test_mob_state_returning_immediately_after_player_death(self):
+        """Quando player morre, mobs que o perseguiam devem ir para RETURNING imediatamente.
+
+        Sintoma: mob continua perseguindo o player até o tile de respawn.
+        """
+        eid = spawn_player(self.ws, "s1", 130, 374)
+        run_ticks(self.ws, 40)
+        mob = first_mob(self.ws)
+        if not mob:
+            self.skipTest("Sem mobs")
+
+        from components import AIControlled, CombatState
+        mob_ai = self.ws.world.get_component(mob, AIControlled)
+        if not mob_ai:
+            self.skipTest("Mob sem AIControlled")
+
+        # Simula mob perseguindo o player
+        mob_ai.target_eid        = eid
+        mob_ai.aggroed_by_damage = True
+        mob_ai.state             = "CHASING"
+
+        # Mata o player
+        self.ws._handle_player_death(eid)
+
+        # O mob deve estar em RETURNING imediatamente após a morte
+        ai_after = self.ws.world.get_component(mob, AIControlled)
+        self.assertIsNotNone(ai_after, "Mob foi removido após _handle_player_death")
+        self.assertEqual(ai_after.state, "RETURNING",
+            f"Mob deveria estar RETURNING após player morrer, mas está: {ai_after.state}")
+        self.assertEqual(ai_after.target_eid, -1,
+            "Mob ainda tem target_eid após player morrer")
+        self.assertFalse(ai_after.aggroed_by_damage,
+            "aggroed_by_damage não foi limpo após player morrer")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

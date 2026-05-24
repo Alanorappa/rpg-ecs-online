@@ -1,10 +1,11 @@
 # Sistemas ECS — Referência Completa
 
 > Todos os sistemas do jogo, em ordem de execução, com responsabilidades e dependências.
+> Última atualização: 2026-05-22
 
 ---
 
-## Ordem de execução — `game.py self.systems`
+## Ordem de execução — `game.py self.systems` (offline / cliente online)
 
 | Pos | Sistema | Arquivo | Responsabilidade | Eventos |
 |-----|---------|---------|------------------|---------|
@@ -14,7 +15,7 @@
 | 4 | **LootSystem** | systems.py | Abre modal de loot; coleta itens de cadáveres | **Sim** |
 | 5 | **PlayerInputSystem** | systems.py | Input de teclado/mouse: movimento, auto-ataque, auto-move | **Sim** |
 | 6 | **SkillSystem + SkillHandlers** | systems.py + skill_handlers.py | Dispatch de skills por `skill_id`; GCD | **Sim** |
-| 7 | **EnemyAISystem** | systems.py | Pathfinding, estados (IDLE/CHASING/ATTACKING), kiting, leash | Não |
+| 7 | **EnemyAISystem** | systems.py | Pathfinding, estados (IDLE/CHASING/ATTACKING), kiting, leash — N-player: cada mob seleciona alvo via `_select_target(mob_eid)`, armazena em `AIControlled.target_eid` | Não |
 | 8 | **EnemyAbilitySystem** | systems.py | Cooldowns e triggers de habilidades especiais de mobs | Não |
 | 9 | **ProjectileSystem** | systems.py | Move projéteis de inimigos; aplica dano ao acertar | Não |
 | 10 | **PlayerProjectileSystem** | spell_system.py | Move projéteis do mago; resolve crit, burn, procs | Não |
@@ -22,7 +23,7 @@
 | 12 | **ChannelingSystem** | spell_system.py | Ticks de canalização (Calamidade Flamejante); mana/s | **Sim** |
 | 13 | **IceBlockSystem** | spell_system.py | Duração do Bloco de Gelo; regen HP por tick | Não |
 | 14 | **FireShieldSystem** | spell_system.py | Duração do Escudo de Fogo; remove ao expirar | Não |
-| 15 | **PirofagiaSystem** | spell_system.py | Mira de cone em tempo real; dispara no clique | **Sim** |
+| 15 | **PirofagiaSystem** | spell_system.py | Mira de cone em tempo real; dispara no clique. **Online:** deduz mana/CD localmente e envia `CAST_SKILL {sid, dir_x, dir_y}` — servidor calcula atingidos (lag compensation pendente C1). **Offline:** calcula dano localmente. | **Sim** |
 | 16 | **ManaSystem** | spell_system.py | Regen de mana; decrementa fire_crit_timer; thermal_shock_active | Não |
 | 17 | **DeathHandlerSystem** | systems.py | Processa PendingDeath: loot, corpse, XP, respawn de zona | Não |
 | 18 | **CorpseSystem** | systems.py | Decay de cadáveres (timer); remove entidade ao expirar | Não |
@@ -31,7 +32,7 @@
 | 21 | **DeathRespawnSystem** | stats_system.py | Respawn do jogador; restaura HP | Não |
 | 22 | **ConsumableSystem** | systems.py | Processa ActiveRegen (efeito de consumíveis) | Não |
 | 23 | **CombatStateSystem** | systems.py | Timers de combate (stun, in_combat); procs ao entrar em combate | Não |
-| 24 | **StatusEffectSystem** | systems.py | Decrementar duração; aplicar ticks (poison, burn, regen, elemental_lapse…); morte por DoT | Não |
+| 24 | **StatusEffectSystem** | systems.py | Decrementar duração; aplicar ticks (poison, burn, regen…); morte por DoT | Não |
 | 25 | **TileMovementSystem** | systems.py | Interpolação de movimento; atualiza elevation; som de passos | Não |
 | 26 | **FogSystem** | systems.py | Shadowcasting (8 octantes); atualiza Visible tags | Não |
 | 27 | **CameraSystem** | systems.py | Suaviza câmera em direção ao player | Não |
@@ -54,64 +55,221 @@
 | `_player_proj_system.render()` | **após** fog | spell_system.py |
 | `_channeling_system.render()` | **após** fog | spell_system.py |
 
-> **Regra:** sistemas que rendem por cima de tiles/entidades precisam ser chamados explicitamente APÓS `_tile_render_system.render_fog()`, não dentro do loop genérico.
+> **Regra:** sistemas que rendem por cima de tiles/entidades devem ser chamados explicitamente APÓS `_tile_render_system.render_fog()`.
 
 ---
 
 ## Sistemas do Servidor (branch online) — `server/`
 
-> Estes sistemas rodam **sem Pygame**, em asyncio, no processo do servidor.
-> Nunca importam `pygame`, `game.py` ou qualquer código de render.
+> Estes sistemas rodam **sem Pygame real** (SDL dummy), em asyncio, no processo do servidor.
+> Nunca importam Pygame para display, input ou render.
 
 ### Loop de ticks — `server/world_server.py`
 
-O servidor roda a **20 ticks/s** (50ms por tick). A cada tick:
-1. Executa `system.update(dt)` para cada sistema do servidor
-2. Chama `_collect_deltas()` — coleta o que mudou
-3. Chama `_store_snapshot()` — guarda posições para lag compensation
-4. Chama callbacks `_on_tick_callbacks` → `SessionManager._on_tick()`
+O servidor roda a **20 ticks/s** (50ms por tick). Ver `ARQUITETURA_ONLINE.md → Fluxo de tick` para a ordem completa.
 
-### Sistemas do servidor (a implementar progressivamente)
+### Sistemas na lista `_systems` do servidor
 
-| Ordem | Sistema | Responsabilidade | Status |
-|-------|---------|------------------|--------|
-| 1 | **MovementSystem** (servidor) | Valida e aplica tile-movement de jogadores; anti-teleporte | 🔲 pendente |
-| 2 | **EnemyAISystem** (servidor) | Pathfinding, aggro, leash — idêntico ao offline mas sem render | 🔲 pendente |
-| 3 | **CombatSystem** (servidor) | Auto-attack loop, resolução hit/miss/crit via `damage_calculator.py` | 🔲 pendente |
-| 4 | **SkillSystem** (servidor) | Valida CD, recursos; executa efeitos; lag compensation p/ cones | 🔲 pendente |
-| 5 | **StatusEffectSystem** (servidor) | Ticks de DoT, duração de buffs/debuffs | 🔲 pendente |
-| 6 | **ProjectileSystem** (servidor) | Física de projéteis; confirma hit ou miss; envia PROJECTILE_HIT | 🔲 pendente |
-| 7 | **SpawnSystem** (servidor) | Respawn de mobs por zona; contagem de ativos | 🔲 pendente |
-| 8 | **DeathSystem** (servidor) | Processa mortes: loot, XP, respawn | 🔲 pendente |
-| 9 | **AOISystem** (servidor) | Calcula quais entidades entraram/saíram do FOV de cada jogador | 🔲 pendente |
+Instanciados em `_load_map()`, executados por `_systems.update(dt)` a cada tick:
 
-### Regra de separação cliente/servidor
+| Ordem | Sistema | Responsabilidade | Notas |
+|-------|---------|------------------|-------|
+| 1 | **TileValidationSystem** | Rebuild cache de tiles ocupados; valida walkability | Idêntico ao offline |
+| 2 | **SpawnZoneSystem** (headless) | Spawna mobs; verifica contagem ativa | `ACTIVATION_RADIUS = 999999` — sem culling por distância |
+| 3 | **EnemyAISystem** (headless) | Pathfinding, aggro (SLEEP_RADIUS_TILES=40), ataque mob→player via `deal_damage()` | `MAX_PATHFINDS = 4`; multi-player: `_select_target` por mob |
+| 4 | **EnemyAbilitySystem** (headless) | Habilidades especiais de mobs (poison_bite, lacerate) | Alvo via `AIControlled.target_eid`; aplica via `apply_effect()` de `core_systems` |
+| 5 | **StatusEffectSystem** (headless) | Ticks de DoT (poison, bleed, burn); expiração; slow_mult; PendingDeath por DoT | Subclasse de `core_systems.StatusEffectSystem`; `_emit_damage` → `_combat_this_tick` |
+| 6 | **TileMovementSystem** (headless) | Avança `progress → current_tile` | Sem render, sem som de passos |
+
+### Arquitetura de StatusEffectSystem
+
+```
+core_systems.py
+  └─ StatusEffectSystem (base, sem Pygame)
+        ├─ _emit_damage(eid, amount, etype, pos, color) → hook virtual
+        └─ _emit_heal(eid, amount, etype, pos, color)   → hook virtual
+
+systems.py
+  └─ StatusEffectSystem(_CoreStatusEffectSystem, System)  ← cliente
+        ├─ _emit_damage → FLT.add("-N", ...)
+        └─ _emit_heal   → FLT.add("+N", ...)
+
+server/world_server.py (inline _ServerSFX)
+  └─ _ServerSFX(_CoreStatusEffectSystem)  ← servidor
+        ├─ _emit_damage → _combat_this_tick.append({outcome="hit", source="poison"...})
+        └─ _emit_heal   → _combat_this_tick.append({outcome="regen", ...})
+```
+
+`apply_effect()` vive em `core_systems.py`; `systems.py` re-exporta para compatibilidade retroativa.
+
+### SpawnZoneSystem headless
+
+`ACTIVATION_RADIUS = 999999` — desativa culling por distância de player.
+O servidor processa todas as zonas independente de conexões ativas (mundo persiste).
+
+**Fix `_pending_spawns`:** atributo dinâmico adicionado em runtime ao componente `SpawnZone`.
+Incrementado a cada tentativa de spawn no tick; decrementado no ciclo seguinte.
+Evita que uma zona spawne `max_count` mobs de uma vez ao voltar de cooldown.
+
+```python
+_spawn_sys = SpawnZoneSystem(self.world)
+_spawn_sys.ACTIVATION_RADIUS = 999999
+```
+
+### EnemyAISystem headless
+
+Parâmetros herdados do offline, funcionam sem mudança:
+- `SLEEP_RADIUS_TILES = 40` — distância máxima de aggro
+- `MAX_PATHFINDS = 4` — A* limitado por tick para performance
+- `_select_target(mob_eid)` — seleciona o player mais próximo no raio de aggro
+- Armazena alvo em `AIControlled.target_eid`
+- Chama `deal_damage(mob_eid, player_eid)` → HP diff detectado em `_process_player_attacks`
+
+### CombatStateSystem inline (no `_tick`)
+
+Duplicação conhecida do `CombatStateSystem` offline (systems.py:919-1022).
+Rodado inline após `_systems.update(dt)` para cada player conectado.
+Constantes idênticas ao offline:
+- `RAGE_DECAY_AMOUNT = 5`, `RAGE_DECAY_INTERVAL = 3.0s`
+- HP5: `max(1, int(max_hp * hp5)) a cada 5s` fora de combate
+- Emite `{outcome="regen", damage=negative}` em `_combat_this_tick` para o cliente exibir `+N HP`
+
+> Problema de duplicação: se `CombatStateSystem` offline mudar, o inline do servidor não é atualizado automaticamente. Ver TODO interno.
+
+### `_process_skill_requests` — pipeline de skills no servidor
+
+Executado **antes** do auto-attack a cada tick:
+
+1. Busca objeto `Skill` no `PlayerSkills` local (estado de cargas preservado)
+2. Fallback: instância temporária do `SKILL_CATALOG`
+3. **Lag compensation pixel-based:**
+   - Mob: snapa `current_tile → target_tile` se `progress ≥ 0.5` (espelha predição do cliente)
+   - Player: sempre snapa para `target_tile` (client-side prediction)
+   - Snapa `Position.x/y` também (não só tile) — range check usa pixels
+   - Restaura posições após o handler
+4. Injeta `tile_move._server_dir_x/_server_dir_y` para skills direcionais
+5. Chama `_skill_{sid}()` do `SkillSystem` instanciado (`self._skill_system`)
+6. Detecta movimento do player (Interceptar) → `_skill_position_corrections`
+7. Coleta HP diff dos mobs → monta `targets` do `SKILL_RESULT`
+8. Sincroniza rage/mana/HP em `_pending_xp_deliveries`
+
+### `_process_player_attacks` — auto-attack
+
+**Player→Mob:**
+- Verifica `CombatState.target_entity_id` do player
+- Range check: Chebyshev tiles (1 melee, 7 ranged se `is_ranged`)
+- Cooldown via `_attack_timers[session_id]`
+- Usa `deal_damage(player_eid, mob_eid, "physical")` do offline
+- Rage: +5 por ataque disparado (mesmo em miss)
+- Registra em `_mob_damage_log` para XP proporcional
+
+**Mob→Player:**
+- Detectado via HP diff vs `player_hp_snap` capturado antes de `_systems.update`
+- Identifica atacante via `AIControlled.target_eid` dos mobs
+- Se HP ≤ 0: remove `PendingDeath` (colocado por deal_damage), chama `_handle_player_death`
+
+### ServerDeathHandler
+
+Processa entidades com `PendingDeath` a cada tick:
+
+1. Calcula XP base por tier (`normal=50, elite=150, rare=300, boss=1000`)
+2. XP proporcional: divide por dano total do `_mob_damage_log`
+3. Vitória Iminente: killer ganha carga se tiver skill na hotbar
+4. Determina first-attacker (primeiro a atacar = dono do loot)
+5. Rola loot via `roll_mob_loot(mob_name, tier)` + `roll_coins(tier)`
+6. Notifica `SpawnZone`: remove de `active_entity_ids`, adiciona `respawn_timer`
+7. `remove_entity()` + `pending_despawns`
+
+### PLAYER_STAT_SYNC — handler
+
+Handler `_handle_player_stat_sync` em `session.py`:
+- Recebe `PLAYER_STAT_SYNC` do cliente com stats efetivos
+- Chama `world_server.sync_player_combat_stats(session_id, payload)`
+- Filtra apenas keys em `COMBAT_SYNC_STATS` (evita poluição)
+- Armazena em `_player_stat_overrides[eid]`
+- Aplica via `_apply_stat_overrides(eid)` → `cs._recalculate_effective_stats()`
+- `_apply_stat_overrides` é chamada após qualquer recalculo (spawn, level-up, talents)
+
+---
+
+## Sistemas do Cliente (Online) — modificações no branch online
+
+### `_use_skill_visual_only` (em `SkillSystem`)
+
+Substitui `_use_skill` em modo online (`self._server_authoritative = True`).
+
+Fluxo:
+1. Verifica GCD local (`PlayerSkills.gcd_timer > 0`)
+2. Verifica cooldown local da skill
+3. Verifica range local (usa mesmos handlers de range do servidor para fail_flash)
+4. Se válido: seta `skill._server_pending = True`, `_server_pending_timeout = 0.40s`
+5. Envia `CAST_SKILL` ao servidor
+6. Aguarda `SKILL_RESULT`: confirma + aplica `GCD_DURATION = 0.8s`
+7. Timeout sem resposta → libera com `GCD_DURATION * 0.5` (fallback)
+
+`fail_flash_timer = 0.2s` — slot escurece visualmente quando range inválido.
+
+### `SkillHandlers` — constantes de range
+
+```python
+MELEE_RANGE_PX: float = 72.0           # 2.25 tiles — cobre diagonal + kiting lag
+INTERCEPT_MIN_RANGE_PX: float = 44.0   # 2 tiles - tolerance
+INTERCEPT_MAX_RANGE_PX: float = 232.0  # 6 tiles + tolerance
+RANGE_TOLERANCE_PX: float = 40.0       # tolerância genérica
+```
+
+`_range_ok(player_pos, target_pos, max_px, min_px)` — hitbox circular em `Position.x/y` (interpolada).
+`_melee_ok` é alias para `_range_ok(pos, pos, MELEE_RANGE_PX)`.
+
+`is_ability=True` em `damage_calculator.resolve_attack_outcome` → zera `miss_chance` para skills.
+
+### SpawnZoneSystem no cliente online
+
+`_spawn_entities_from` em modo online pula criação de entities do tipo `enemy` e `spawn_zone`.
+O mundo de mobs é gerenciado exclusivamente pelo servidor — cliente só renderiza o que recebe via AOI.
+
+### SoundManager — áudio espacial (online)
+
+`play_mob_sounds_at(mob_sounds_comp, event, sx, sy, lx, ly)`:
+- `sx/sy` = posição em pixels do som (mob)
+- `lx/ly` = posição em pixels do listener (player)
+- Volume calculado por `volume_at()`: linear de 100% a 0 em 10 tiles (320px)
+
+Fluxo online:
+1. Servidor detecta `IDLE → AGGRO_DELAY` → emite `sound_event {kind="mob_aggro", mob_eid, tx, ty}`
+2. `SessionManager` envia `SOUND_EVENT` para players no AOI
+3. Cliente recebe, busca `MobSounds` do mob local, chama `play_mob_sounds_at`
+
+---
+
+## Regra de separação cliente/servidor
 
 | Responsabilidade | Onde roda | Justificativa |
 |-----------------|-----------|---------------|
 | Cálculo de dano | Servidor | Anti-cheat |
 | Posição de entidades | Servidor (canônico) | Anti-teleporte |
 | IA de mobs | Servidor | Consistência entre clientes |
-| Animações, partículas | Cliente | Cosmético, não afeta gameplay |
-| Previsão de movimento | Cliente | Client-side prediction para fluidez |
-| Aiming de cone (Pirofagia, Tiro Múltiplo) | Cliente envia direção, servidor valida | Lag compensation |
-| Invisibilidade (Camuflagem) | Servidor não envia posição a outros | Segurança — cliente nunca recebe dado de invisível |
+| Animações, partículas | Cliente | Cosmético |
+| Previsão de movimento | Cliente (parcial) | Fluidez |
+| Range check de skill | Ambos | Servidor autoritativo; cliente para fail_flash |
+| Aiming de cone (Pirofagia, Tiro Múltiplo) | Cliente envia dir, servidor valida | Lag compensation |
+| Invisibilidade (Camuflagem) | Servidor não envia posição a outros | Segurança |
 
-### Protocolo de adição de sistema no servidor
+---
+
+## Protocolo de adição de sistema no servidor
 
 1. Criar classe em `server/` herdando de `System` do `world.py` (ou classe simples com `update(dt)`)
-2. Instanciar em `WorldServer._init_systems()` e adicionar a `self._systems`
-3. Se gerar deltas para clientes → adicionar campo em `WorldServer._collect_deltas()`
-4. Se precisar de lag compensation → usar `WorldServer.get_snapshot_at(tick)`
+2. Instanciar em `WorldServer._load_map()` e adicionar a `self._systems`
+3. Se gerar deltas → adicionar campo em `WorldServer._collect_deltas()`
+4. Se precisar lag compensation → usar `WorldServer.get_snapshot_at(tick)`
 5. Documentar na tabela acima com status ✅
 
 ---
 
-> ⚠️ **Problema de qualidade:** ShopSystem, LootSystem e CraftingSystem misturam UI e lógica de negócio. Ver `PROBLEMAS_ARQUITETURA.md` problema #9.
-
 ## Serviços de sistema (módulo-nível)
 
-Funções registradas via `register_services()` em `game.py`. Qualquer sistema pode chamar sem referência direta:
+Registrados via `register_services()` em `world_server._load_map`:
 
 ```python
 from systems import deal_damage, find_path, is_tile_walkable, get_tilemap, get_mainhand_weapon
@@ -125,8 +283,7 @@ from systems import deal_damage, find_path, is_tile_walkable, get_tilemap, get_m
 | `get_tilemap()` | `PathfindingSystem._get_tilemap_component` | Acessa Tilemap component |
 | `get_mainhand_weapon(world, entity)` | helper | Retorna item da mainhand |
 | `apply_effect(world, eid, type, dur, mag)` | module-level em systems.py | Aplica/refresha status effect |
-| `sync_attack_interval(cs, equip)` | stats_system.py | Sincroniza velocidade de ataque com arma equipada — só na criação/load, NUNCA no level-up |
-| `fadeout_skills(ms)` | sound_manager.py `SOUNDS` | Fade out de canais de skill ao cancelar cast/canalização |
+| `sync_attack_interval(cs, equip)` | stats_system.py | Sincroniza velocidade de ataque |
 
 ---
 
@@ -135,11 +292,14 @@ from systems import deal_damage, find_path, is_tile_walkable, get_tilemap, get_m
 ```python
 class System:
     world_surf: pygame.Surface   # surface de mundo (zoom_surf) — atribuída por _assign_world_surf()
-    hud_surf:   pygame.Surface   # surface da tela nativa — NÃO é atualizada por _assign_world_surf
+    hud_surf:   pygame.Surface   # surface da tela nativa
 
     def update(self, events, dt): ...
     def render(self, cam_x=0, cam_y=0): ...
 ```
 
-> `world_surf` é substituída todo frame pelo `GameEngine` para o `_zoom_surf` (superfície com zoom aplicado).
-> `hud_surf` permanece como a tela nativa (necessário para escalar coordenadas do mouse).
+> No servidor, `world_surf` e `hud_surf` não são usadas — sistemas headless ignoram render.
+
+---
+
+> **Problema de qualidade:** ShopSystem, LootSystem e CraftingSystem misturam UI e lógica de negócio. Ver `PROBLEMAS_ARQUITETURA.md` problema #9.
