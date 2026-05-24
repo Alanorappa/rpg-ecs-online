@@ -94,21 +94,26 @@ class ServerDeathHandler:
                     })
 
             # 2b. Vitória Iminente: killer ganha carga ao matar mob
+            # 2b. Skills com on_kill=="charge": killer ganha carga ao matar mob
             try:
                 if killer_eid != -1:
                     from components import PlayerSkills as _PSdh
+                    from skill_config import SKILL_CATALOG as _SC
                     _ks = self.world.get_component(killer_eid, _PSdh)
                     if _ks:
                         for _sk in _ks.skills:
-                            if _sk and _sk.skill_id == "vitoria_iminente" and _sk.max_charges > 0:
+                            if _sk is None or _sk.max_charges <= 0:
+                                continue
+                            _defn = _SC.get(_sk.skill_id, {})
+                            if _defn.get("on_kill") == "charge":
                                 if _sk.charges < _sk.max_charges:
                                     _sk.charges      = _sk.max_charges
                                     _sk.charge_timer = _sk.charge_timeout
                                 self.pending_xp.append({
-                                    "player_eid":              killer_eid,
-                                    "xp":                      0,
-                                    "mob_eid":                 eid,
-                                    "vitoria_iminente_charge": True,
+                                    "player_eid":   killer_eid,
+                                    "xp":           0,
+                                    "mob_eid":      eid,
+                                    "on_kill_skill": _sk.skill_id,
                                 })
                                 break
             except Exception:

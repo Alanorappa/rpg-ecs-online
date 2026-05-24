@@ -63,6 +63,7 @@ SKILL_CATALOG: dict[str, dict] = {
         "proc_attr":        "",
         "proc_ignores_cost": False,
         "class_id":         "guerreiro",
+        "on_kill":          "charge",   # repõe carga ao matar mob
         "params": {"damage_multiplier": 2.0, "heal_pct": 0.30},
     },
     "impacto": {
