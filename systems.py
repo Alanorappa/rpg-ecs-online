@@ -4,6 +4,10 @@ import pygame
 import math
 import heapq
 import random
+# TODO(B4): _font é usado apenas em sistemas visuais (HUD, FloatingText). O servidor
+# importa `from systems import EnemyAISystem` e acaba carregando Pygame fonts pelo
+# caminho. Funciona com SDL_VIDEODRIVER=dummy, mas é dependência desnecessária.
+# Fix futuro: mover sistemas visuais para ClientSystems ou usar lazy import em render().
 from fonts import make as _font
 
 # Re-exporta apply_effect de core_systems para compatibilidade com todo o código
