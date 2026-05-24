@@ -513,8 +513,8 @@ class SessionManager:
                                 _payload["rage"] = xp_entry["rage"]
                             if "mana" in xp_entry:
                                 _payload["mana"] = xp_entry["mana"]
-                            if xp_entry.get("vitoria_iminente_charge"):
-                                _payload["vitoria_iminente_charge"] = True
+                            if xp_entry.get("on_kill_skill"):
+                                _payload["on_kill_skill"] = xp_entry["on_kill_skill"]
                             # Inclui hp/heal_amount se skill curou o player (ex: Vitória Iminente)
                             if "heal_amount" in xp_entry:
                                 _payload["hp"]          = xp_entry["hp"]

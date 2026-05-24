@@ -1437,6 +1437,22 @@ class PlayerInputSystem(System):
         pl_tile_y = tile_movement.current_tile_y
         dist = chebyshev(pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y)
 
+        # DEBUG chase — imprime estado 1x por segundo quando mob está adjacente
+        if not hasattr(self, '_dbg_chase_timer'):
+            self._dbg_chase_timer = 0.0
+        self._dbg_chase_timer -= dt
+        if self._dbg_chase_timer <= 0 and target_tm:
+            self._dbg_chase_timer = 1.0
+            _px = max(abs(position.x - target_pos.x), abs(position.y - target_pos.y))
+            print(
+                f"[CHASE DBG] dist={dist} is_moving={target_tm.is_moving} "
+                f"prog={target_tm.progress:.2f} "
+                f"cur=({target_tm.current_tile_x},{target_tm.current_tile_y}) "
+                f"tgt=({target_tm.target_tile_x},{target_tm.target_tile_y}) "
+                f"px={_px:.0f} pursuing={combat_state.is_pursuing if combat_state else '?'} "
+                f"pl_moving={tile_movement.is_moving}"
+            )
+
         # Guarda pixel: usa posição suave (position.x/y) em vez de flags is_moving/progress.
         # Resolve race condition online em que o mob acabou de iniciar movimento mas o
         # tile ainda não foi atualizado — o jogador começaria a atacar em vez de perseguir.

@@ -3098,12 +3098,13 @@ class GameEngine:
                     if pos:
                         FLT.add(f"+{xp_gained} XP", pos.x, pos.y - 20, (100, 255, 100), size="small",
                                 target_id=self.player_entity)
-                # Vitória Iminente: servidor confirmou carga
-                if payload.get("vitoria_iminente_charge"):
+                # on_kill charge: servidor confirmou carga da skill (ex: Vitória Iminente)
+                _on_kill_sid = payload.get("on_kill_skill")
+                if _on_kill_sid:
                     _ps_vi = self.world.get_component(self.player_entity, PlayerSkills)
                     if _ps_vi:
                         for _sk_vi in _ps_vi.skills:
-                            if _sk_vi and _sk_vi.skill_id == "vitoria_iminente":
+                            if _sk_vi and _sk_vi.skill_id == _on_kill_sid:
                                 if _sk_vi.charges < _sk_vi.max_charges:
                                     _sk_vi.charges      = _sk_vi.max_charges
                                     _sk_vi.charge_timer = _sk_vi.charge_timeout
