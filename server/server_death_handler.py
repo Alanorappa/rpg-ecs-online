@@ -187,8 +187,8 @@ class ServerDeathHandler:
             except Exception:
                 pass
 
-    def consume_despawns(self) -> list[int]:
-        """Retorna e limpa pending_despawns."""
+    def consume_despawns(self) -> list[dict]:
+        """Retorna e limpa pending_despawns. Cada entry: {"eid": int, "tx": int, "ty": int}"""
         result = list(self.pending_despawns)
         self.pending_despawns.clear()
         return result
