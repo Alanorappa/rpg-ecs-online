@@ -476,11 +476,21 @@ class SessionManager:
                     if (sx - cx) ** 2 + (sy - cy) ** 2 <= AOI_RADIUS ** 2:
                         await s.send(MsgType.SKILL_RESULT, skill_result)
 
+            # Pré-calcula posições de todos os mobs UMA VEZ por tick.
+            # Elimina O(mobs) component lookups por player por tick no sweep de AOI.
+            from components import TileMovement as _TM_aoi
+            _mob_positions: dict[int, tuple] = {}
+            for _me in self.world_server._mob_eids:
+                _mt = self.world_server.world.get_component(_me, _TM_aoi)
+                if _mt:
+                    _mob_positions[_me] = (_mt.current_tile_x, _mt.current_tile_y)
+
             for session in list(self._sessions.values()):
                 if not session.authenticated:
                     continue
                 tx, ty = self.world_server.get_tile_pos(session.session_id)
-                update = self._build_update_for_session(session, deltas, tx, ty)
+                update = self._build_update_for_session(session, deltas, tx, ty,
+                                                        _mob_positions)
                 if update:
                     await session.send(MsgType.AOI_UPDATE, update)
 
@@ -612,7 +622,8 @@ class SessionManager:
             traceback.print_exc()
 
     def _build_update_for_session(self, session: Session,
-                                   deltas: dict, cx: int, cy: int) -> dict:
+                                   deltas: dict, cx: int, cy: int,
+                                   mob_positions: dict | None = None) -> dict:
         """
         Constrói AOI_UPDATE para uma sessão específica, com subscription tracking:
         - Entidade entra no AOI → ENTITY_SPAWN + adiciona a known_eids
@@ -707,14 +718,14 @@ class SessionManager:
         if deltas.get("stats"):
             result["stats"] = deltas["stats"]
 
-        # Sweep: entidades em AOI não conhecidas (não detectadas via movimento)
-        # Cobre mobs estacionários e players que entraram em range sem se mover
-        for mob_eid in list(self.world_server._mob_eids):
+        # Sweep: entidades em AOI não conhecidas (não detectadas via movimento).
+        # Cobre mobs estacionários e players que entraram em range sem se mover.
+        # mob_positions pré-calculado em _dispatch_tick_deltas (O(mobs) por tick,
+        # não O(mobs × players × ticks) como seria sem o cache).
+        for mob_eid, (mtx, mty) in (mob_positions or {}).items():
             if mob_eid in session.known_eids:
                 continue
-            from components import TileMovement as _TM
-            mob_tm = self.world_server.world.get_component(mob_eid, _TM)
-            if mob_tm and in_aoi(mob_tm.current_tile_x, mob_tm.current_tile_y):
+            if in_aoi(mtx, mty):
                 spawn_data = self.world_server.get_entity_spawn_data(mob_eid)
                 if spawn_data:
                     result.setdefault("spawned", []).append(spawn_data)
