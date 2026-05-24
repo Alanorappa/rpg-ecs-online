@@ -91,6 +91,8 @@ class WorldServer:
 
         # session_id → entity_id dos jogadores online
         self._player_eids: dict[str, int] = {}
+        # Reverse map: eid → session_id (O(1) lookup em get_session_id_for_player)
+        self._player_eid_to_sid: dict[int, str] = {}
 
         # Eids de mobs gerenciados pelo servidor
         self._mob_eids: set[int] = set()
@@ -431,7 +433,8 @@ class WorldServer:
         except Exception as _e:
             print(f"[World] aviso: PlayerSkills não criado — {_e}")
 
-        self._player_eids[session_id] = eid
+        self._player_eids[session_id]    = eid
+        self._player_eid_to_sid[eid]     = session_id   # reverse map
 
         _srv_hp, _srv_hp_max = self.get_player_hp(session_id)
         self._spawned_this_tick.append({
@@ -505,6 +508,7 @@ class WorldServer:
         eid = self._player_eids.pop(session_id, None)
         if eid is None:
             return
+        self._player_eid_to_sid.pop(eid, None)   # limpa reverse map
         self._despawned_this_tick.append({"eid": eid, "tx": None, "ty": None})
         self._pending_inv.pop(session_id, None)  # limpa itens pendentes de loja
         self.world.remove_entity(eid)
@@ -900,10 +904,8 @@ class WorldServer:
         return self._mob_damage_log.pop(mob_eid, {})
 
     def get_session_id_for_player(self, player_eid: int) -> str | None:
-        """Retorna session_id do player dado seu entity_id, ou None se não encontrado."""
-        for sid, eid in self._player_eids.items():
-            if eid == player_eid:
-                return sid
+        """Retorna session_id do player dado seu entity_id — O(1) via reverse map."""
+        return self._player_eid_to_sid.get(player_eid)
         return None
 
     # ── Skill API ────────────────────────────────────────────────────────────
