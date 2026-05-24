@@ -1717,8 +1717,9 @@ class WorldServer:
             if _regen.tick_timer <= 0:
                 _regen.tick_timer += _regen.interval
                 _regen.ticks_remaining -= 1
-                _healed = min(_regen.heal_per_tick, _rcst.max_hp - _rcst.current_hp)
+                _old_hp = _rcst.current_hp
                 _rcst.current_hp = min(_rcst.max_hp, _rcst.current_hp + _regen.heal_per_tick)
+                _healed = _rcst.current_hp - _old_hp
                 if _healed > 0:
                     # Envia STATS_UPDATE com heal_amount para o cliente
                     self._pending_xp_deliveries.append({
