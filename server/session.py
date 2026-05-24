@@ -62,18 +62,19 @@ class SessionManager:
         Constrói o dict merged para save_character.
         Regras de autoridade:
         - Posição (tile_x, tile_y), hp, mp: servidor autoritativo
-        - gold: cliente autoritativo (fallback srv_data)
+        - gold: SERVIDOR autoritativo (Wallet.gold no ECS — atualizado por compras/vendas/loot)
         - max_hp: cliente autoritativo se > 0 (inclui bônus de equipamento)
         - inventory, equipment, talents: cliente se disponível, None = não sobrescreve DB
         - skills: cliente se disponível, fallback srv_data
-        - stats base (level, xp, attrs): servidor, mas gold e max_hp overrideados acima
+        - stats base (level, xp, attrs): servidor
         """
         client_p  = client_payload
         srv_stats = srv_data.get("stats", {})
         cli_stats = client_p.get("stats", {}) if client_p else {}
         merged_stats = dict(srv_stats)
-        # gold: cliente autoritativo
-        merged_stats["gold"] = cli_stats.get("gold", srv_stats.get("gold", 0))
+        # gold: servidor autoritativo — get_player_save_data já lê Wallet.gold do ECS
+        # Nunca confiar no valor enviado pelo cliente (previne duplicação via SAVE_STATE)
+        merged_stats["gold"] = srv_stats.get("gold", 0)
         # max_hp: cliente autoritativo (inclui bônus de equipamento)
         _cli_mhp = cli_stats.get("max_hp", 0)
         if _cli_mhp > 0:
@@ -342,14 +343,8 @@ class SessionManager:
 
         _eid_sv = self.world_server._player_eids.get(session.session_id)
 
-        # 1. Wallet: gold autoritativo do cliente
-        if _eid_sv is not None:
-            _final_gold = merged["stats"].get("gold", 0)
-            if _final_gold > 0:
-                from components import Wallet as _WSv
-                _wlt = self.world_server.world.get_component(_eid_sv, _WSv)
-                if _wlt:
-                    _wlt.gold = _final_gold
+        # Wallet.gold NÃO é sobrescrito aqui — é server-autoritativo via process_shop_buy/sell
+        # e request_loot. get_player_save_data já lê wall.gold; _build_save_merge usa esse valor.
 
         # 2. Re-aplica talentos (reseta base_stamina → max_hp cai temporariamente)
         _client_tal = payload.get("talents", {})
