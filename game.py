@@ -1000,10 +1000,12 @@ class GameEngine:
                 _gc_counter = 0
             self._dt = dt
             SOUNDS.new_frame()  # limpa deduplicação de sons
-            # Processa mensagens da rede antes de qualquer sistema
-            self._process_network()
 
             # ── Loading screen: aguarda LOGIN_OK antes de renderizar o mundo ──
+            # IMPORTANTE: renderiza o frame de loading ANTES de _process_network()
+            # para garantir ao menos um frame visível — se _process_network fosse
+            # chamado primeiro, LOGIN_OK (que chega rápido em localhost) zeraria
+            # _waiting_for_server antes da tela ser exibida.
             if self._waiting_for_server:
                 self._loading_timeout -= dt
                 if self._loading_timeout <= 0:
@@ -1017,8 +1019,12 @@ class GameEngine:
                             break
                     self._draw_loading_screen(dt)
                     pygame.display.flip()
+                    self._process_network()  # processa rede APÓS renderizar o frame
                     continue
             # ─────────────────────────────────────────────────────────────────
+
+            # Processa mensagens da rede antes de qualquer sistema (frame normal)
+            self._process_network()
 
             _t0 = _time.perf_counter()
             events = self._scale_events(pygame.event.get())
