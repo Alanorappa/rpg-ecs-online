@@ -21,10 +21,13 @@ class AbilityDef(NamedTuple):
     magnitude:     float  # dano/cura por tick
     tick_interval: float  # segundos entre ticks (substitui o default do EFFECT_DEFS)
     range_tiles:   int    # distância máxima (Chebyshev) para usar a habilidade
+    # Campos para habilidades ranged (range_tiles > 1) — projétil visual
+    proj_color:    tuple = (200, 80, 200)  # cor do projétil de habilidade
+    proj_is_arrow: bool  = False           # True → flecha orientada; False → orbe
 
 
 ABILITY_DEFS: dict[str, AbilityDef] = {
-    # Hunter — Flecha Envenenada: aplica veneno a distância de ataque ranged (5 tiles)
+    # Hunter — Flecha Envenenada: projétil ranged que aplica veneno ao acertar
     "poison_arrow": AbilityDef(
         name="Flecha Envenenada",
         effect_type="poison",
@@ -32,6 +35,8 @@ ABILITY_DEFS: dict[str, AbilityDef] = {
         magnitude=15.0,
         tick_interval=3.0,
         range_tiles=5,
+        proj_color=(60, 200, 80),  # verde-venenoso
+        proj_is_arrow=True,
     ),
     # Urso — Laceração: 25 dmg/tick a cada 3s por 25s (melee range)
     "lacerate": AbilityDef(
@@ -60,7 +65,7 @@ ABILITY_DEFS: dict[str, AbilityDef] = {
         tick_interval=3.0,
         range_tiles=1,
     ),
-    # Vampiro — Drenar Vida: DoT que cura o vampiro (burn)
+    # Vampiro — Drenar Vida: projétil ranged que drena HP (burn DoT)
     "drain_life": AbilityDef(
         name="Drenar Vida",
         effect_type="burn",
@@ -68,6 +73,8 @@ ABILITY_DEFS: dict[str, AbilityDef] = {
         magnitude=20.0,
         tick_interval=2.0,
         range_tiles=5,
+        proj_color=(130, 0, 220),  # roxo vampírico
+        proj_is_arrow=False,
     ),
     # Aranha — Teia: slow + bleed
     "web_bite": AbilityDef(

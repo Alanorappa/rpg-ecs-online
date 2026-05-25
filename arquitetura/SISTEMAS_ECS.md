@@ -16,8 +16,8 @@
 | 5 | **PlayerInputSystem** | systems.py | Input de teclado/mouse: movimento, auto-ataque, auto-move | **Sim** |
 | 6 | **SkillSystem + SkillHandlers** | systems.py + skill_handlers.py | Dispatch de skills por `skill_id`; GCD | **Sim** |
 | 7 | **EnemyAISystem** | systems.py | Pathfinding, estados (IDLE/CHASING/ATTACKING), kiting, leash — N-player: cada mob seleciona alvo via `_select_target(mob_eid)`, armazena em `AIControlled.target_eid` | Não |
-| 8 | **EnemyAbilitySystem** | systems.py | Cooldowns e triggers de habilidades especiais de mobs | Não |
-| 9 | **ProjectileSystem** | systems.py | Move projéteis de inimigos; aplica dano ao acertar | Não |
+| 8 | **EnemyAbilitySystem** | systems.py | Cooldowns e triggers de habilidades especiais de mobs. **Ranged (range>1):** verifica LOS (Bresenham) antes de disparar; cria `Projectile` com `ability_id` em vez de `apply_effect` direto. **Melee (range=1):** `apply_effect` direto. Estados ativos: ATTACKING, CHASING, **KITING** | Não |
+| 9 | **ProjectileSystem** | systems.py | Move projéteis de inimigos. Ao acertar: se `ability_id` preenchido → `apply_effect` (DoT/debuff); senão → `deal_damage` (dano direto) | Não |
 | 10 | **PlayerProjectileSystem** | spell_system.py | Move projéteis do mago; resolve crit, burn, procs | Não |
 | 11 | **SpellCastSystem** | spell_system.py | Processa barra de cast; completa ou cancela | Não |
 | 12 | **ChannelingSystem** | spell_system.py | Ticks de canalização (Calamidade Flamejante); mana/s | **Sim** |
@@ -77,7 +77,7 @@ Instanciados em `_load_map()`, executados por `_systems.update(dt)` a cada tick:
 | 1 | **TileValidationSystem** | Rebuild cache de tiles ocupados; valida walkability | Idêntico ao offline |
 | 2 | **SpawnZoneSystem** (headless) | Spawna mobs; verifica contagem ativa | `ACTIVATION_RADIUS = 999999` — sem culling por distância |
 | 3 | **EnemyAISystem** (headless) | Pathfinding, aggro (SLEEP_RADIUS_TILES=40), ataque mob→player via `deal_damage()` | `MAX_PATHFINDS = 4`; multi-player: `_select_target` por mob |
-| 4 | **EnemyAbilitySystem** (headless) | Habilidades especiais de mobs (poison_bite, lacerate) | Alvo via `AIControlled.target_eid`; aplica via `apply_effect()` de `core_systems` |
+| 4 | **EnemyAbilitySystem** (headless) | Habilidades especiais de mobs. **Ranged (range>1):** LOS check + cria `Projectile(ability_id=...)` em vez de `apply_effect` direto. **Melee (range=1):** `apply_effect` direto. Ativo em ATTACKING/CHASING/KITING | Alvo via `AIControlled.target_eid` |
 | 5 | **StatusEffectSystem** (headless) | Ticks de DoT (poison, bleed, burn); expiração; slow_mult; PendingDeath por DoT | Subclasse de `core_systems.StatusEffectSystem`; `_emit_damage` → `_combat_this_tick` |
 | 6 | **TileMovementSystem** (headless) | Avança `progress → current_tile` | Sem render, sem som de passos |
 

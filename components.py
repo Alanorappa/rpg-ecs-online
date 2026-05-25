@@ -615,6 +615,7 @@ class Projectile:
     is_arrow: bool = False         # True → renderizar como linha (flecha)
     dir_x: float = 0.0            # direção normalizada X (para flecha)
     dir_y: float = 0.0            # direção normalizada Y (para flecha)
+    ability_id: str = ""          # se preenchido: apply_effect ao acertar (não deal_damage)
 
 
 class Item:

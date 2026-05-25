@@ -615,6 +615,398 @@ class TestRegressionBugs(unittest.TestCase):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 6. Punho no Queixo — skill de carga do Cavaleiro
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestPunhoNoQueixo(unittest.TestCase):
+    """
+    Fluxo esperado:
+    1. talent cav_punho_queixo alocado → cs.pnq_enabled=True
+    2. 3 auto-ataques com dano → pnq_counter 0→3→0 e skill.charges += 1
+    3. CAST_SKILL punho_no_queixo → dano 45%AP + stun no alvo + charges -= 1
+    4. Skill em cooldown → novos auto-ataques NÃO incrementam o contador
+    """
+
+    def setUp(self):
+        self.ws = make_world_server()
+        # Spawn mobs via SpawnZoneSystem
+        run_ticks(self.ws, 50)
+
+    def _setup_warrior_pnq(self, tx=130, ty=374) -> tuple[int, object, object]:
+        """Spawna guerreiro com pnq ativo; retorna (eid, pnq_sk, char_stats)."""
+        from components import CombatStats, CharacterStats, PlayerSkills
+        from skill_config import SKILL_CATALOG
+
+        eid = spawn_player(self.ws, "s1", tx, ty, class_id="guerreiro")
+        cs = self.ws.world.get_component(eid, CombatStats)
+        cs.pnq_enabled       = True
+        cs.pnq_stun_duration = 1.0
+        cs.acerto            = 100.0   # garante hit em testes (sem miss/dodge)
+
+        ps = self.ws.world.get_component(eid, PlayerSkills)
+        pnq_sk = next((sk for sk in ps.skills if sk and sk.skill_id == 'punho_no_queixo'), None)
+        if pnq_sk is None:
+            pnq_sk = PlayerSkills._make_skill('punho_no_queixo', SKILL_CATALOG)
+            self.assertIsNotNone(pnq_sk, "SKILL_CATALOG não tem punho_no_queixo")
+            try:
+                idx = ps.skills.index(None)
+                ps.skills[idx] = pnq_sk
+            except ValueError:
+                ps.skills.append(pnq_sk)
+
+        char = self.ws.world.get_component(eid, CharacterStats)
+        char.pnq_counter = 0
+        return eid, pnq_sk, char
+
+    def _setup_adjacent_mob(self, player_eid: int) -> int:
+        """Retorna mob existente posicionado adjacente ao player."""
+        from components import CombatState, CombatStats
+        mob = first_mob(self.ws)
+        self.assertIsNotNone(mob, "Nenhum mob spawnado")
+        teleport_mob_to_player(self.ws, mob, player_eid)
+        # Garante mob vivo; zera dodge/parry para evitar flakiness nos testes
+        mob_cs = self.ws.world.get_component(mob, CombatStats)
+        mob_cs.current_hp   = mob_cs.max_hp
+        mob_cs.dodge_rating = 0.0
+        mob_cs.parry_rating = 0.0
+        return mob
+
+    def _force_attack(self, session_id: str, player_eid: int, mob_eid: int):
+        """Força 1 auto-ataque: reseta timer e processa o tick de combate."""
+        from components import CombatState, CombatStats
+        cs_state = self.ws.world.get_component(player_eid, CombatState)
+        cs_state.target_entity_id = mob_eid
+        cs_state.is_pursuing      = True
+        self.ws._attack_timers[session_id] = 0.0
+        mob_cs = self.ws.world.get_component(mob_eid, CombatStats)
+        mob_cs.current_hp = max(mob_cs.current_hp, 1)  # mantém vivo
+        from components import CombatStats as _CS
+        snapshot = {mob_eid: mob_cs.current_hp}
+        self.ws._process_player_attacks(0.05, snapshot)
+
+    # ── Teste 1: 3 acertos geram 1 carga ────────────────────────────────────
+
+    def test_three_hits_grant_one_charge(self):
+        """3 auto-ataques com dano → skill.charges == 1."""
+        eid, pnq_sk, char = self._setup_warrior_pnq()
+        mob = self._setup_adjacent_mob(eid)
+
+        self.assertEqual(pnq_sk.charges, 0, "charges deve iniciar em 0")
+
+        for _ in range(3):
+            self._force_attack("s1", eid, mob)
+
+        self.assertEqual(char.pnq_counter, 0,
+                         "pnq_counter deve ter resetado após 3 acertos")
+        self.assertEqual(pnq_sk.charges, 1,
+                         f"Esperado 1 carga após 3 acertos, got {pnq_sk.charges}")
+
+    # ── Teste 2: cast aplica dano + stun + consome carga ────────────────────
+
+    def test_cast_deals_damage_and_stuns(self):
+        """Usar skill com 1 carga → dano, stun no mob, charges volta a 0."""
+        from components import CombatState, CombatStats, StatusEffects
+
+        eid, pnq_sk, _ = self._setup_warrior_pnq()
+        mob = self._setup_adjacent_mob(eid)
+
+        # Dá 1 carga diretamente (testa o handler, não o acúmulo)
+        pnq_sk.charges = 1
+
+        cs_state = self.ws.world.get_component(eid, CombatState)
+        cs_state.target_entity_id = mob
+        cs_state.is_pursuing      = True
+
+        mob_cs    = self.ws.world.get_component(mob, CombatStats)
+        hp_before = mob_cs.current_hp
+
+        self.ws._pending_skill_requests.append({
+            "player_eid": eid, "sid": "punho_no_queixo",
+            "tid": mob, "dir_x": 0.0, "dir_y": 0.0,
+        })
+        self.ws._process_skill_requests()
+
+        self.assertLess(mob_cs.current_hp, hp_before,
+                        "Mob HP não reduziu após punho_no_queixo")
+        sfx = self.ws.world.get_component(mob, StatusEffects)
+        self.assertIn("stun", sfx.effects if sfx else {},
+                      "Mob não foi atordoado")
+        self.assertEqual(pnq_sk.charges, 0, "Carga não foi consumida")
+
+    # ── Teste 3: sem carga → handler rejeita ────────────────────────────────
+
+    def test_cast_without_charge_fails(self):
+        """Tentar usar skill sem cargas não causa dano."""
+        from components import CombatState, CombatStats
+
+        eid, pnq_sk, _ = self._setup_warrior_pnq()
+        mob = self._setup_adjacent_mob(eid)
+
+        pnq_sk.charges = 0  # sem carga
+
+        cs_state = self.ws.world.get_component(eid, CombatState)
+        cs_state.target_entity_id = mob
+
+        mob_cs    = self.ws.world.get_component(mob, CombatStats)
+        hp_before = mob_cs.current_hp
+
+        self.ws._pending_skill_requests.append({
+            "player_eid": eid, "sid": "punho_no_queixo",
+            "tid": mob, "dir_x": 0.0, "dir_y": 0.0,
+        })
+        self.ws._process_skill_requests()
+
+        self.assertEqual(mob_cs.current_hp, hp_before,
+                         "Dano causado sem carga (handler deveria rejeitar)")
+
+    # ── Teste 4: em cooldown → auto-ataques NÃO acumulam ────────────────────
+
+    def test_hits_during_cooldown_dont_accumulate(self):
+        """Enquanto skill em cooldown, pnq_counter e charges não mudam."""
+        eid, pnq_sk, char = self._setup_warrior_pnq()
+        mob = self._setup_adjacent_mob(eid)
+
+        pnq_sk.current_cooldown = 15.0  # skill em CD
+        pnq_sk.charges          = 0
+        char.pnq_counter        = 0
+
+        for _ in range(3):
+            self._force_attack("s1", eid, mob)
+
+        self.assertEqual(pnq_sk.charges, 0,
+                         "charges acumulou com skill em CD (não deveria)")
+
+    # ── Teste 5: pnq_enabled=False → nenhum acúmulo ─────────────────────────
+
+    def test_no_accumulation_without_talent(self):
+        """Sem talent (pnq_enabled=False) → counter e charges permanecem 0."""
+        from components import CombatStats
+
+        eid, pnq_sk, char = self._setup_warrior_pnq()
+        mob = self._setup_adjacent_mob(eid)
+
+        cs = self.ws.world.get_component(eid, CombatStats)
+        cs.pnq_enabled  = False  # talent não alocado
+        char.pnq_counter = 0
+
+        for _ in range(3):
+            self._force_attack("s1", eid, mob)
+
+        self.assertEqual(char.pnq_counter, 0,
+                         "pnq_counter incrementou sem talent ativo")
+        self.assertEqual(pnq_sk.charges, 0,
+                         "charges acumulou sem talent ativo")
+
+    # ── Teste 6: skill não no hotbar → lazy-create em ps.skills ────��────────
+
+    def test_skill_lazily_added_to_ps_skills(self):
+        """Se punho_no_queixo não está em ps.skills, servidor cria ao primeiro acerto."""
+        from components import CombatStats, PlayerSkills
+
+        eid = spawn_player(self.ws, "s2", 130, 374, class_id="guerreiro")
+        cs = self.ws.world.get_component(eid, CombatStats)
+        cs.pnq_enabled       = True
+        cs.pnq_stun_duration = 1.0
+        cs.acerto            = 100.0   # hit garantido
+
+        # Remove skill do ps.skills (simula hotbar sem ela)
+        ps = self.ws.world.get_component(eid, PlayerSkills)
+        ps.skills = [sk for sk in ps.skills if not (sk and sk.skill_id == 'punho_no_queixo')]
+
+        mob = first_mob(self.ws)
+        teleport_mob_to_player(self.ws, mob, eid)
+        mob_cs = self.ws.world.get_component(mob, CombatStats)
+        mob_cs.current_hp   = mob_cs.max_hp
+        mob_cs.dodge_rating = 0.0
+        mob_cs.parry_rating = 0.0
+
+        from components import CombatState
+        cst = self.ws.world.get_component(eid, CombatState)
+        cst.target_entity_id = mob
+        cst.is_pursuing      = True
+
+        # 3 ataques devem criar a skill lazily e acumular a carga.
+        # Resetar target e HP a cada iteração:
+        #   – deal_damage pode matar o mob na 1ª hit → target_entity_id=-1;
+        #   – PendingDeath não remove da _mob_eids (ServerDeathHandler não rodou),
+        #     mas HP<0 seria detectado como alvo inválido sem o reset.
+        from components import CombatState, PendingDeath
+        for _ in range(3):
+            mob_cs.current_hp = mob_cs.max_hp          # garante alvo vivo
+            self.ws.world.remove_component(mob, PendingDeath)  # limpa morte pendente
+            cst.target_entity_id = mob                 # restaura target (deal_damage zera)
+            self.ws._attack_timers["s2"] = 0.0
+            snap = {mob: mob_cs.current_hp}
+            self.ws._process_player_attacks(0.05, snap)
+
+        pnq_sk = next((sk for sk in ps.skills if sk and sk.skill_id == 'punho_no_queixo'), None)
+        self.assertIsNotNone(pnq_sk, "punho_no_queixo não foi adicionado lazily")
+        self.assertEqual(pnq_sk.charges, 1,
+                         "1 carga esperada após criação lazy + 3 acertos")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 7. Habilidades ranged de mobs — LOS + projétil
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestRangedMobAbilities(unittest.TestCase):
+    """
+    Garante:
+    1. EnemyAbilitySystem ranged (range>1) lança PROJÉTIL em vez de aplicar DoT direto.
+    2. O projétil carrega ability_id e só aplica efeito ao acertar (ProjectileSystem).
+    3. Sem LOS, EnemyAbilitySystem NÃO lança projétil nem consome cooldown.
+    """
+
+    def _make_hunter_mob(self, ws):
+        """Cria um mob Hunter com EnemyAbilities(poison_arrow) e AIControlled ATTACKING."""
+        from world import World
+        from components import (Position, TileMovement, CombatStats, AIControlled,
+                                InitialPosition, DetectionRadius, EnemyAbilities,
+                                EnemyAbilitySlot, EntityIdentity, Enemy)
+        from enemy_abilities_data import ABILITY_DEFS
+        from tileset import TILE_SIZE
+
+        tx, ty = 130, 372  # 2 tiles acima do player (sem parede entre eles)
+        eid = ws.world.create_entity()
+        ws.world.add_component(eid, Position(x=tx * TILE_SIZE, y=ty * TILE_SIZE,
+                                              prev_x=tx * TILE_SIZE, prev_y=ty * TILE_SIZE))
+        ws.world.add_component(eid, TileMovement(current_tile_x=tx, current_tile_y=ty,
+                                                  target_tile_x=tx, target_tile_y=ty))
+        _mob_cs = CombatStats()
+        _mob_cs.max_hp     = 200
+        _mob_cs.current_hp = 200
+        ws.world.add_component(eid, _mob_cs)
+        ws.world.add_component(eid, AIControlled(
+            state="ATTACKING", is_ranged=True, entity_class="Hunter",
+            target_eid=-1,  # será setado no teste
+        ))
+        ws.world.add_component(eid, InitialPosition(x=tx * TILE_SIZE, y=ty * TILE_SIZE))
+        ws.world.add_component(eid, DetectionRadius(radius=8 * TILE_SIZE))
+        ws.world.add_component(eid, Enemy())
+        ws.world.add_component(eid, EntityIdentity(name="Hunter de Teste", race="Fera",
+                                                    entity_class="Hunter"))
+        # Habilidade poison_arrow pronta para disparar (cooldown=0)
+        defn = ABILITY_DEFS["poison_arrow"]
+        slot = EnemyAbilitySlot(ability_id="poison_arrow", cooldown=12.0, current_cooldown=0.0)
+        ws.world.add_component(eid, EnemyAbilities(slots=[slot]))
+        ws._mob_eids.add(eid)
+        return eid
+
+    def setUp(self):
+        self.ws = make_world_server()
+        run_ticks(self.ws, 40)   # deixa SpawnZoneSystem inicializar
+        self.p_eid = spawn_player(self.ws, "s1", 130, 374)
+
+    def test_ranged_ability_spawns_projectile_not_direct_effect(self):
+        """poison_arrow deve criar projétil com ability_id, NÃO aplicar efeito direto."""
+        from components import Projectile, StatusEffects, AIControlled
+        from systems import EnemyAISystem
+
+        hunter = self._make_hunter_mob(self.ws)
+        ai = self.ws.world.get_component(hunter, AIControlled)
+        ai.target_eid = self.p_eid
+
+        # Garante LOS (independe do layout do mapa)
+        original_los = EnemyAISystem._has_line_of_sight
+        EnemyAISystem._has_line_of_sight = staticmethod(lambda *a: True)
+        try:
+            # Antes: player sem poison
+            sfx_before = self.ws.world.get_component(self.p_eid, StatusEffects)
+            had_poison_before = sfx_before.has("poison") if sfx_before else False
+
+            # 1 tick: EnemyAbilitySystem dispara, ProjectileSystem move (não acerta ainda)
+            run_ticks(self.ws, 1)
+
+            # Deve existir projétil com ability_id="poison_arrow"
+            from components import Position as _Pos
+            ability_projs = [
+                (eid, p) for eid, pos, p in self.ws.world.get_entities_with(_Pos, Projectile)
+                if p.ability_id == "poison_arrow"
+            ]
+            self.assertGreater(len(ability_projs), 0,
+                               "EnemyAbilitySystem deveria ter criado projétil de ability")
+
+            # Player NÃO deve ter poison (projétil viajando)
+            sfx_after = self.ws.world.get_component(self.p_eid, StatusEffects)
+            has_poison = sfx_after.has("poison") if sfx_after else False
+            self.assertFalse(has_poison,
+                             "poison não deveria ser aplicado antes do projétil acertar")
+        finally:
+            EnemyAISystem._has_line_of_sight = original_los
+
+    def test_ability_projectile_applies_dot_on_hit(self):
+        """Projétil de ability com ability_id aplica DoT ao acertar (ProjectileSystem)."""
+        from components import Projectile, StatusEffects, Position, AIControlled
+        from tileset import TILE_SIZE
+
+        # Cria projétil já na posição do player (1 tick = hit)
+        p_pos = self.ws.world.get_component(self.p_eid, Position)
+        hunter = self._make_hunter_mob(self.ws)
+        ai = self.ws.world.get_component(hunter, AIControlled)
+        ai.target_eid = self.p_eid
+
+        proj_eid = self.ws.world.create_entity()
+        self.ws.world.add_component(proj_eid, Position(
+            x=p_pos.x, y=p_pos.y, prev_x=p_pos.x, prev_y=p_pos.y))
+        self.ws.world.add_component(proj_eid, Projectile(
+            attacker_id=hunter, target_id=self.p_eid,
+            damage_type="magical", speed=320.0,
+            color=(60, 200, 80), is_arrow=True,
+            ability_id="poison_arrow",
+        ))
+
+        # Roda 1 tick: ProjectileSystem detecta hit (dist=0)
+        run_ticks(self.ws, 1)
+
+        sfx = self.ws.world.get_component(self.p_eid, StatusEffects)
+        has_poison = sfx.has("poison") if sfx else False
+        self.assertTrue(has_poison,
+                        "ProjectileSystem deveria ter aplicado poison ao acertar")
+
+    def test_ability_cooldown_not_consumed_without_los(self):
+        """Sem LOS entre mob e player, ability NÃO dispara e cooldown NÃO é consumido."""
+        from components import Projectile, EnemyAbilities, AIControlled, TileMovement
+        from tileset import TILE_SIZE
+
+        hunter = self._make_hunter_mob(self.ws)
+        ai = self.ws.world.get_component(hunter, AIControlled)
+        ai.target_eid = self.p_eid
+
+        # Coloca parede (tile sólido) entre hunter e player usando o tilemap real
+        # Como é difícil inserir tiles sólidos em testes, simulamos LOS=False
+        # sobrescrevendo o tilemap component e mockando o método estático.
+        # Abordagem: colocar Hunter e player em tiles opostos com colisão garantida
+        # via monkey-patch do _has_line_of_sight.
+        from systems import EnemyAISystem
+        original_los = EnemyAISystem._has_line_of_sight
+
+        # Força LOS=False
+        EnemyAISystem._has_line_of_sight = staticmethod(lambda *a: False)
+        try:
+            # Pega slot antes
+            abilities = self.ws.world.get_component(hunter, EnemyAbilities)
+            slot = abilities.slots[0]
+            cd_before = slot.current_cooldown  # deve ser 0 (pronto para disparar)
+
+            run_ticks(self.ws, 1)
+
+            cd_after = slot.current_cooldown
+            self.assertEqual(cd_after, cd_before,
+                             "Cooldown não deveria ter sido consumido sem LOS")
+
+            # Também não deve existir projétil de ability
+            from components import Position
+            ability_projs = [
+                eid for eid, pos, p in self.ws.world.get_entities_with(Position, Projectile)
+                if p.ability_id == "poison_arrow"
+            ]
+            self.assertEqual(len(ability_projs), 0,
+                             "Nenhum projétil deveria ser criado sem LOS")
+        finally:
+            EnemyAISystem._has_line_of_sight = original_los
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Runner
 # ─────────────────────────────────────────────────────────────────────────────
 

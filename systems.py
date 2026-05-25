@@ -86,8 +86,10 @@ def get_tilemap():
 
 
 def is_tile_walkable(entity_id: int, tx: int, ty: int,
-                     from_tx=None, from_ty=None) -> bool:
-    return _svc['tile_validation'].is_tile_walkable(entity_id, tx, ty, from_tx, from_ty)
+                     from_tx=None, from_ty=None,
+                     ignore_eid: int = -1) -> bool:
+    return _svc['tile_validation'].is_tile_walkable(entity_id, tx, ty, from_tx, from_ty,
+                                                    ignore_eid=ignore_eid)
 
 
 def get_mainhand_weapon(world, entity_id: int):
@@ -265,11 +267,13 @@ class TileValidationSystem(System):
     def is_tile_walkable(self, moving_entity_id: int,
                          target_tile_x: int, target_tile_y: int,
                          from_tile_x: int | None = None,
-                         from_tile_y: int | None = None) -> bool:
+                         from_tile_y: int | None = None,
+                         ignore_eid: int = -1) -> bool:
         """Verifica se o tile destino é acessível para a entidade.
 
         from_tile_x/from_tile_y (opcional): tile de origem para checar colisão
         direcional e regras de elevação. Sem eles, só a colisão base é checada.
+        ignore_eid (opcional): ignora ocupação desse entity_id (ex: mob-alvo do chase).
         """
         tilemap_comp = self._get_tilemap_component()
         if not tilemap_comp:
@@ -402,6 +406,8 @@ class TileValidationSystem(System):
 
         occupant_id = self._occupied.get((target_tile_x, target_tile_y))
         if occupant_id is None or occupant_id == moving_entity_id:
+            return True
+        if ignore_eid != -1 and occupant_id == ignore_eid:
             return True
 
         # Tile ocupado — verifica se inimigo tenta andar no tile do player
@@ -1066,11 +1072,26 @@ class ProjectileSystem(System):
             dist = math.sqrt(dx * dx + dy * dy)
 
             if dist <= self.HIT_THRESHOLD:
-                # Acertou: aplica dano usando stats do atacante no momento do impacto
-                deal_damage(
-                    proj.attacker_id, proj.target_id,
-                    proj.damage_type
-                )
+                if proj.ability_id:
+                    # Projétil de habilidade: aplica DoT/debuff (não dano direto)
+                    from enemy_abilities_data import ABILITY_DEFS as _ABD_P
+                    _defn_p = _ABD_P.get(proj.ability_id)
+                    if _defn_p:
+                        apply_effect(
+                            self.world, proj.target_id,
+                            _defn_p.effect_type, _defn_p.duration, _defn_p.magnitude,
+                            tick_interval=_defn_p.tick_interval,
+                        )
+                        PROC.add(_defn_p.name, (220, 80, 180))
+                        _atk_ident_p = self.world.get_component(proj.attacker_id, EntityIdentity)
+                        _mob_nm_p = _atk_ident_p.name if _atk_ident_p else "Inimigo"
+                        LOG.add(f"{_mob_nm_p} usou {_defn_p.name}!", (220, 80, 180))
+                else:
+                    # Projétil de ataque: aplica dano usando stats do atacante
+                    deal_damage(
+                        proj.attacker_id, proj.target_id,
+                        proj.damage_type
+                    )
                 to_remove.append(proj_id)
             else:
                 # Move em direção ao alvo
@@ -1426,10 +1447,9 @@ class PlayerInputSystem(System):
             else:
                 tgt_tile_x, tgt_tile_y = target_tm.current_tile_x, target_tm.current_tile_y
             # cur_tile (ATAQUE) — tile autoritativo do servidor.
-            # server_tile_x/y: gravado via from_tx/from_ty do ENTITY_MOVE;
-            # espelha exatamente o current_tile que o servidor usa no range-check.
-            # Sem isso: cliente usava posição visual animada (atrás do servidor) →
-            # d_atk=1 mas servidor já tem mob 1-2 tiles à frente → ataque rejeitado.
+            # server_tile_x/y: gravado via new_tx/new_ty (destino) do ENTITY_MOVE;
+            # espelha a posição atual do mob no servidor (move instantâneo server-side).
+            # Sem isso: cliente usaria posição visual animada (atrás do servidor).
             _stx = getattr(target_tm, 'server_tile_x', 0)
             _sty = getattr(target_tm, 'server_tile_y', 0)
             if _stx or _sty:          # inicializado (online)
@@ -1450,20 +1470,6 @@ class PlayerInputSystem(System):
         _px_chase       = max(abs(position.x - target_pos.x), abs(position.y - target_pos.y))
         _melee_chase_px = (self.PLAYER_ATTACK_RANGE + 0.5) * TILE_SIZE  # 48 px
 
-        # LOG dual cliente/servidor — remove após diagnóstico
-        _dbg_k = (dist_attack, dist,
-                  target_tm.is_moving if target_tm else False,
-                  cur_tile_x, cur_tile_y, tgt_tile_x, tgt_tile_y,
-                  tile_movement.is_moving)
-        if dist_attack <= 3 and getattr(self, '_dbg_chase2_key', None) != _dbg_k:
-            self._dbg_chase2_key = _dbg_k
-            _act = ("ATTACK" if dist_attack <= self.PLAYER_ATTACK_RANGE
-                    else "CHASE" if dist > self.PLAYER_ATTACK_RANGE
-                    else "WAIT")
-            print(f"[CLI] p=({pl_tile_x},{pl_tile_y}) "
-                  f"srv=({cur_tile_x},{cur_tile_y}) mob_tgt=({tgt_tile_x},{tgt_tile_y}) "
-                  f"d_atk={dist_attack} d_ch={dist} px={_px_chase:.0f} "
-                  f"pl_mv={tile_movement.is_moving} →{_act}")
 
         char_stats  = self.world.get_component(entity_id, CharacterStats)
         is_mage     = char_stats is not None and char_stats.class_id == "mago"
@@ -1503,10 +1509,10 @@ class PlayerInputSystem(System):
                     attack_range=pursuit_range, target_eid=target_id,
                 )
         else:
+            # Ataque: usa dist_attack (tile autoritativo do servidor) para máxima precisão.
+            # É independente do chase — o guerreiro pode atacar E continuar perseguindo
+            # enquanto o mob ainda está se movendo para tile mais distante.
             if dist_attack <= self.PLAYER_ATTACK_RANGE:
-                # Guerreiro no alcance: ataque físico só se estiver perseguindo (botão direito)
-                if auto_move:
-                    auto_move.path.clear()
                 if combat_state.is_pursuing and can_act and combat_stats.attack_cooldown_timer <= 0:
                     SOUNDS.play_emote_attack(is_player=True)
                     _tgt_cs    = self.world.get_component(target_id, CombatStats)
@@ -1524,8 +1530,13 @@ class PlayerInputSystem(System):
                         combat_state.is_pursuing = False
                         if auto_move:
                             auto_move.active = False
+                        return
+
+            # Chase: para quando adjacente ao tile predito (dist <= range).
+            if dist <= self.PLAYER_ATTACK_RANGE:
+                if auto_move:
+                    auto_move.path.clear()
             elif combat_state.is_pursuing and auto_move and not tile_movement.is_moving:
-                # Guerreiro fora do alcance: persegue até adjacente
                 self._auto_move_step(
                     entity_id, position, tile_movement,
                     pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y, auto_move, dt,
@@ -1678,9 +1689,7 @@ class PlayerInputSystem(System):
         if not auto_move.path or auto_move.path_recalc_timer <= 0:
             enemy_tiles = self._get_enemy_tiles()
             enemy_tiles.discard((tgt_x, tgt_y))
-            # Remove todos os tiles do mob alvo (current + target) das obstáculos dinâmicos.
-            # Sem isso, quando o mob atravessa uma porta de 1 tile, seu target_tile bloqueia
-            # a passagem e o jogador desvia para outra entrada em vez de seguir o mob.
+            # Remove tiles animados do mob alvo: artefatos de animação, mob já saiu deles.
             if target_eid != -1:
                 _tgt_tm = self.world.get_component(target_eid, TileMovement)
                 if _tgt_tm:
@@ -1694,7 +1703,9 @@ class PlayerInputSystem(System):
                                                          dynamic_obstacles=enemy_tiles)
                 auto_move.path = path or []
             else:
-                # Melee: tenta todos os tiles adjacentes ao alvo, do mais próximo ao mais distante
+                # Melee: tenta todos os tiles adjacentes ao alvo, do mais próximo ao mais distante.
+                # Exclui server_tile das candidatas: mob está lá, A* já evita via enemy_tiles,
+                # mas excluir como destino garante que a rota final não termine no server_tile.
                 adj = [
                     (tgt_x + dx, tgt_y + dy)
                     for dy in [-1, 0, 1] for dx in [-1, 0, 1]
@@ -1714,7 +1725,7 @@ class PlayerInputSystem(System):
 
         if auto_move.path:
             nx, ny = auto_move.path[0]
-            if is_tile_walkable(entity_id, nx, ny):
+            if is_tile_walkable(entity_id, nx, ny, ignore_eid=target_eid):
                 self._start_tile_movement(position, tile_movement, nx, ny)
                 auto_move.path.pop(0)
             else:
@@ -3411,9 +3422,10 @@ class EnemyAbilitySystem(System):
             if ecs.current_hp <= 0:
                 continue
 
-            # Só age se o inimigo está em combate ativo
+            # Só age se o inimigo está em combate ativo (KITING incluso — mob ranged
+            # ainda pode usar habilidades enquanto recua)
             ai = self.world.get_component(eid, AIControlled)
-            if not ai or ai.state not in ("ATTACKING", "CHASING"):
+            if not ai or ai.state not in ("ATTACKING", "CHASING", "KITING"):
                 continue
 
             # Inimigo atordoado não usa habilidades
@@ -3449,20 +3461,58 @@ class EnemyAbilitySystem(System):
                 if not defn or dist > defn.range_tiles:
                     continue
 
-                # Aplica o efeito no alvo
-                apply_effect(
-                    self.world, target_p_eid,
-                    defn.effect_type, defn.duration, defn.magnitude,
-                    tick_interval=defn.tick_interval,
-                )
+                if defn.range_tiles > 1:
+                    # ── Habilidade ranged: requer LOS + lança projétil ──────
+                    _tm_ab = get_tilemap()
+                    if _tm_ab is not None and not EnemyAISystem._has_line_of_sight(
+                            _tm_ab, ex, ey, px, py):
+                        continue  # sem LOS — não dispara, não consome cooldown
+
+                    # Calcula direção do projétil
+                    _atk_pos_ab = self.world.get_component(eid, Position)
+                    if not _atk_pos_ab:
+                        continue
+                    _tgt_pos_ab = self.world.get_component(target_p_eid, Position)
+                    _dir_x_ab, _dir_y_ab = 1.0, 0.0
+                    if _tgt_pos_ab:
+                        _dpx_ab = _tgt_pos_ab.x - _atk_pos_ab.x
+                        _dpy_ab = _tgt_pos_ab.y - _atk_pos_ab.y
+                        _dd_ab  = math.sqrt(_dpx_ab * _dpx_ab + _dpy_ab * _dpy_ab)
+                        if _dd_ab > 0:
+                            _dir_x_ab, _dir_y_ab = _dpx_ab / _dd_ab, _dpy_ab / _dd_ab
+
+                    # Cria projétil com ability_id — ProjectileSystem aplica o DoT ao acertar
+                    _aproj = self.world.create_entity()
+                    self.world.add_component(
+                        _aproj,
+                        Position(x=_atk_pos_ab.x, y=_atk_pos_ab.y,
+                                 prev_x=_atk_pos_ab.x, prev_y=_atk_pos_ab.y))
+                    self.world.add_component(
+                        _aproj,
+                        Projectile(
+                            attacker_id = eid,
+                            target_id   = target_p_eid,
+                            damage_type = "magical",
+                            speed       = 320.0,
+                            color       = defn.proj_color,
+                            is_arrow    = defn.proj_is_arrow,
+                            dir_x       = _dir_x_ab,
+                            dir_y       = _dir_y_ab,
+                            ability_id  = slot.ability_id,
+                        ))
+                else:
+                    # ── Habilidade melee (range=1): aplica efeito direto ───
+                    apply_effect(
+                        self.world, target_p_eid,
+                        defn.effect_type, defn.duration, defn.magnitude,
+                        tick_interval=defn.tick_interval,
+                    )
+                    PROC.add(defn.name, (220, 80, 180))
+                    ident = self.world.get_component(eid, EntityIdentity)
+                    mob_name = ident.name if ident else "Inimigo"
+                    LOG.add(f"{mob_name} usou {defn.name}!", (220, 80, 180))
+
                 slot.current_cooldown = slot.cooldown
-
-                # Feedback visual e no log
-                PROC.add(defn.name, (220, 80, 180))
-
-                ident = self.world.get_component(eid, EntityIdentity)
-                mob_name = ident.name if ident else "Inimigo"
-                LOG.add(f"{mob_name} usou {defn.name}!", (220, 80, 180))
 
 
 class CorpseSystem(System):
