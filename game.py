@@ -2809,6 +2809,10 @@ class GameEngine:
                     sync_attack_interval(cs, eq_login)
             # Restaura equipment/talents/skills — aplica modifiers ANTES de definir HP
             self._restore_save_state(char)
+            # Re-aplica layout da hotbar do config.json por cima do restore do servidor.
+            # O servidor pode ter um snapshot antigo (SAVE_STATE do quit pode não ter chegado);
+            # config.json é atualizado a cada mudança local e é a fonte mais recente.
+            self._apply_hotbar_config()
             # Define HP DEPOIS dos modifiers (max_hp já inclui bônus de equipamento)
             if cs and srv_hp > 0:
                 cs.current_hp = min(srv_hp, cs.max_hp)
