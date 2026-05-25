@@ -230,7 +230,12 @@ class GameEngine:
 
         self._map_overlay   = MapOverlay(self.screen)
         self._minimap       = Minimap(self.screen, self._map_overlay)
-        self._loading_save  = False
+        self._loading_save        = False
+        # Loading screen: True enquanto aguarda LOGIN_OK do servidor.
+        # O jogo só renderiza o mundo depois que os dados do personagem chegarem.
+        self._waiting_for_server  = True
+        self._loading_timeout     = 15.0   # segundos antes de desistir e continuar offline
+        self._loading_anim_t      = 0.0    # timer para animação dos pontos (...)
 
         self._load_map_and_entities()
         self._init_systems()
@@ -997,6 +1002,24 @@ class GameEngine:
             SOUNDS.new_frame()  # limpa deduplicação de sons
             # Processa mensagens da rede antes de qualquer sistema
             self._process_network()
+
+            # ── Loading screen: aguarda LOGIN_OK antes de renderizar o mundo ──
+            if self._waiting_for_server:
+                self._loading_timeout -= dt
+                if self._loading_timeout <= 0:
+                    # Timeout: continua com o personagem padrão (offline/sem servidor)
+                    self._waiting_for_server = False
+                else:
+                    for _ev in pygame.event.get():
+                        if _ev.type == pygame.QUIT:
+                            self._save_config()
+                            running = False
+                            break
+                    self._draw_loading_screen(dt)
+                    pygame.display.flip()
+                    continue
+            # ─────────────────────────────────────────────────────────────────
+
             _t0 = _time.perf_counter()
             events = self._scale_events(pygame.event.get())
             self._ui_events = events          # acesso sem parâmetro em _draw_* helpers
@@ -2681,6 +2704,46 @@ class GameEngine:
                     self._save_config()
                     break
 
+    def _draw_loading_screen(self, dt: float) -> None:
+        """Tela de loading exibida enquanto aguarda LOGIN_OK do servidor."""
+        self._loading_anim_t += dt
+        dots = "." * (int(self._loading_anim_t * 2) % 4)
+
+        sw, sh = self.screen.get_width(), self.screen.get_height()
+        self.screen.fill((8, 6, 4))
+
+        # Gradiente sutil no centro
+        _grad = pygame.Surface((sw, sh), pygame.SRCALPHA)
+        _grad.fill((0, 0, 0, 0))
+        for _r in range(min(sw, sh) // 2, 0, -20):
+            _alpha = max(0, 40 - _r // 8)
+            pygame.draw.circle(_grad, (30, 20, 10, _alpha), (sw // 2, sh // 2), _r)
+        self.screen.blit(_grad, (0, 0))
+
+        # Título
+        _title = self.font_lg.render("RPG Online", True, (220, 185, 80))
+        self.screen.blit(_title, _title.get_rect(centerx=sw // 2, centery=sh // 2 - 60))
+
+        # Linha decorativa
+        pygame.draw.line(self.screen, (80, 62, 30),
+                         (sw // 2 - 120, sh // 2 - 32),
+                         (sw // 2 + 120, sh // 2 - 32), 1)
+
+        # Status
+        if self._net and self._net.connected:
+            msg = f"Carregando personagem{dots}"
+        else:
+            msg = f"Conectando ao servidor{dots}"
+        _status = self.font_sm.render(msg, True, (150, 130, 70))
+        self.screen.blit(_status, _status.get_rect(centerx=sw // 2, centery=sh // 2 + 10))
+
+        # Dica de timeout restante (só aparece nos últimos 5s)
+        if self._loading_timeout < 5.0:
+            _hint = self.font_xs.render(
+                f"Sem resposta do servidor — continuando em {self._loading_timeout:.0f}s...",
+                True, (120, 80, 60))
+            self.screen.blit(_hint, _hint.get_rect(centerx=sw // 2, centery=sh // 2 + 40))
+
     def _draw_hab_drag_ghost(self) -> None:
         """Renderiza o ícone fantasma que segue o mouse durante o drag do painel H.
         Chamado APÓS _draw_hotbar() para ficar sempre na frente dos slots."""
@@ -2818,9 +2881,12 @@ class GameEngine:
             print(f"[Client] login ok  eid={self._my_eid}  "
                   f"user={char.get('name','?')}  Nv{char_stat.level if char_stat else 1}"
                   f"  tile=({tx},{ty})  hp={srv_hp}/{srv_hp_max}")
+            # Personagem carregado — libera o jogo (sai da loading screen)
+            self._waiting_for_server = False
 
         elif msg_type == MsgType.LOGIN_ERROR:
             print(f"[Client] login erro: {payload.get('reason')}")
+            self._waiting_for_server = False  # sai da loading screen mesmo com erro
 
         elif msg_type == MsgType.WORLD_STATE:
             for ent in payload.get("entities", []):
