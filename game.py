@@ -4286,12 +4286,23 @@ class GameEngine:
                 "learned": list(ps_col.learned_skill_ids),
             }
 
+        # Fog of War — tiles explorados por mapa (servidor faz union, é aditivo)
+        from components import FogOfWar as _FogCol
+        fog_comp = self.world.get_component(self.player_entity, _FogCol)
+        fog = {}
+        if fog_comp:
+            for map_key, tile_set in fog_comp._explored_maps.items():
+                normalized = map_key.replace("\\", "/")
+                if tile_set:
+                    fog[normalized] = [[x, y] for x, y in tile_set]
+
         return {
             "stats":     stats,
             "inventory": inv_list,
             "equipment": equipment,
             "talents":   talents,
             "skills":    skills,
+            "fog":       fog,
         }
 
     def _send_save_state(self) -> None:
@@ -4394,6 +4405,27 @@ class GameEngine:
             if _ps_rs:
                 for _tsid in _tt_rs._unlocked_skill_ids:
                     _ps_rs.learned_skill_ids.add(_tsid)
+
+        # Fog of War — restaura tiles explorados por mapa a partir do servidor.
+        # char_data pode ter "fog_json" (coluna do DB) ou "fog" (já parseado pelo merge).
+        from components import FogOfWar as _FogR
+        fog_r = self.world.get_component(self.player_entity, _FogR)
+        if fog_r:
+            _fog_raw = char_data.get("fog_json", char_data.get("fog", {}))
+            try:
+                _fog_data = _jr.loads(_fog_raw) if isinstance(_fog_raw, str) else (_fog_raw or {})
+            except Exception:
+                _fog_data = {}
+            for _mk, _coords in _fog_data.items():
+                _mk = _mk.replace("\\", "/")
+                _tile_set = {(int(x), int(y)) for x, y in _coords}
+                if _mk in fog_r._explored_maps:
+                    fog_r._explored_maps[_mk].update(_tile_set)
+                else:
+                    fog_r._explored_maps[_mk] = _tile_set
+            # Sincroniza ponteiro do mapa atual
+            if fog_r._current_map in fog_r._explored_maps:
+                fog_r.explored = fog_r._explored_maps[fog_r._current_map]
 
     def _get_combat_stat_snapshot(self) -> dict:
         """Retorna snapshot dos stats de combate relevantes para sync com servidor.

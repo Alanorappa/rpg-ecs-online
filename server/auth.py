@@ -60,9 +60,16 @@ def init_db() -> None:
             equipment_json TEXT DEFAULT '{}',
             skills_json    TEXT DEFAULT '{}',
             talents_json   TEXT DEFAULT '{}',
+            fog_json       TEXT DEFAULT '{}',
             last_save   INTEGER DEFAULT (strftime('%s','now'))
         );
         """)
+    # Migração: adiciona fog_json em bancos existentes (coluna não existia antes)
+    with _get_conn() as conn:
+        try:
+            conn.execute("ALTER TABLE characters ADD COLUMN fog_json TEXT DEFAULT '{}'")
+        except Exception:
+            pass  # coluna já existe
     print(f"[Auth] banco inicializado: {DB_PATH}")
     _seed_test_accounts()
 
@@ -155,7 +162,8 @@ def _save_character_sync(char_id: int, data: dict) -> None:
     for key, col in (("inventory", "inventory_json"),
                      ("equipment", "equipment_json"),
                      ("skills",    "skills_json"),
-                     ("talents",   "talents_json")):
+                     ("talents",   "talents_json"),
+                     ("fog",       "fog_json")):
         v = data.get(key)
         if v is not None:
             cols.append(col)

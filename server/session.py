@@ -81,6 +81,28 @@ class SessionManager:
         if _cli_mhp > 0:
             merged_stats["max_hp"] = _cli_mhp
         client_skills = (client_p.get("skills") or None) if client_p else None
+
+        # Fog: union de tiles explorados (servidor DB + cliente atual).
+        # O cliente sempre envia o conjunto completo (recebeu o fog do servidor
+        # no LOGIN_OK e acumulou novas descobertas), portanto a autoridade é
+        # do cliente — mas fazemos union para segurança em caso de múltiplos logins.
+        import json as _json
+        _srv_fog_raw = srv_data.get("fog_json", "{}")
+        try:
+            _srv_fog = _json.loads(_srv_fog_raw) if isinstance(_srv_fog_raw, str) else (_srv_fog_raw or {})
+        except Exception:
+            _srv_fog = {}
+        _cli_fog  = (client_p.get("fog") or {}) if client_p else {}
+        if _cli_fog:
+            merged_fog: dict = dict(_srv_fog)
+            for _mk, _coords in _cli_fog.items():
+                _mk = _mk.replace("\\", "/")
+                _srv_set = {tuple(t) for t in merged_fog.get(_mk, [])}
+                _cli_set = {tuple(t) for t in _coords}
+                merged_fog[_mk] = [list(t) for t in (_srv_set | _cli_set)]
+        else:
+            merged_fog = _srv_fog
+
         return {
             "tile_x":    srv_data.get("tile_x", 10),
             "tile_y":    srv_data.get("tile_y", 10),
@@ -91,6 +113,7 @@ class SessionManager:
             "equipment": client_p.get("equipment") if client_p else None,
             "talents":   client_p.get("talents")   if client_p else None,
             "skills":    client_skills if client_skills else (srv_data.get("skills") or None),
+            "fog":       merged_fog if merged_fog else None,
         }
 
     async def on_disconnect(self, session_id: str) -> None:
@@ -609,13 +632,16 @@ class SessionManager:
                 if p_sid:
                     p_session = self._sessions.get(p_sid)
                     if p_session and p_session.authenticated:
-                        await p_session.send(MsgType.ENTITY_MOVE, {
+                        _move_payload = {
                             "eid": pos_corr["player_eid"],
                             "tx":  pos_corr["tx"],
                             "ty":  pos_corr["ty"],
                             "from_tx": pos_corr["tx"],
                             "from_ty": pos_corr["ty"],
-                        })
+                        }
+                        if pos_corr.get("rejected"):
+                            _move_payload["skill_rejected"] = True
+                        await p_session.send(MsgType.ENTITY_MOVE, _move_payload)
 
         except Exception as e:
             import traceback
