@@ -240,6 +240,13 @@ class GameEngine:
         self._loading_timeout     = 15.0   # timeout total antes de continuar offline
         self._loading_anim_t      = 0.0    # timer para animação dos pontos (...)
 
+        # Exibe loading screen antes das operações lentas de init (mapa, sistemas,
+        # rede) para cobrir a janela preta entre set_mode e run(). Static — um frame.
+        self._draw_loading_screen(0.0)
+        self._display.blit(self.screen, (0, 0))
+        pygame.display.flip()
+        pygame.event.pump()   # evita "não responde" no OS durante o carregamento
+
         self._load_map_and_entities()
         self._init_systems()
         self._talent_system = TalentSystem(self.world, self.player_entity, self.screen)
@@ -1026,6 +1033,7 @@ class GameEngine:
                             running = False
                             break
                     self._draw_loading_screen(dt)
+                    self._display.blit(self.screen, (0, 0))  # screen é off-screen; precisa blit
                     pygame.display.flip()
                     self._process_network()  # processa rede APÓS renderizar o frame
                     continue
