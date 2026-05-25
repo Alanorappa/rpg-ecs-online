@@ -13,6 +13,10 @@ from fonts import make as _font
 # Re-exporta apply_effect de core_systems para compatibilidade com todo o código
 # que já faz `from systems import apply_effect`.
 from core_systems import apply_effect, StatusEffectSystem as _CoreStatusEffectSystem
+try:
+    from mob_combat_debug import MCL as _MCL
+except ImportError:
+    _MCL = None  # não disponível no ambiente do cliente
 
 from components import Position, Renderable, PlayerControlled, Camera, Collider, \
                        Enemy, AIControlled, InitialPosition, DetectionRadius, Tilemap, \
@@ -552,6 +556,13 @@ class CombatSystem(System):
                 _ai.state              = "CHASING"
                 _ai.aggroed_by_damage  = True
                 _ai.path_recalc_timer  = 0.0
+                if _MCL:
+                    _ident_dmg = self.world.get_component(target_id, EntityIdentity)
+                    _n = _ident_dmg.name         if _ident_dmg else f"mob#{target_id}"
+                    _r = _ident_dmg.race         if _ident_dmg else "?"
+                    _c = _ident_dmg.entity_class if _ident_dmg else "?"
+                    _MCL.log("AGGRO_DMG", target_id, _n, _r, _c,
+                             dmg=final_damage, attacker=attacker_id)
 
         is_crit  = outcome == 'crit'
         is_block = outcome == 'block'
@@ -1995,6 +2006,17 @@ class EnemyAISystem(System):
             enemy_current_tile_y = tile_movement.current_tile_y
             current_enemy_tile   = (enemy_current_tile_x, enemy_current_tile_y)
 
+            # Identidade para debug (lookup lazy — custo zero quando MCL desativado)
+            if _MCL and _MCL.DBG_ENABLED:
+                _dbg_ident = self.world.get_component(enemy_id, EntityIdentity)
+                _dbg_name  = _dbg_ident.name         if _dbg_ident else f"mob#{enemy_id}"
+                _dbg_race  = _dbg_ident.race         if _dbg_ident else "?"
+                _dbg_cls   = _dbg_ident.entity_class if _dbg_ident else "?"
+                _dbg_prev_state = ai_control.state   # captura estado antes do tick
+            else:
+                _dbg_name = _dbg_race = _dbg_cls = ""
+                _dbg_prev_state = ""
+
             # --- Seleciona alvo para este mob (N-player support) ---
             target_eid, player_position_comp, player_tile_move_comp, player_combat_stats, _target_cst = \
                 self._select_target(enemy_id)
@@ -2027,6 +2049,9 @@ class EnemyAISystem(System):
                         continue  # ainda não vai pro IDLE
                 # Grace expirou ou mob já estava IDLE/RETURNING
                 if not tile_movement.is_moving:
+                    if _MCL: _MCL.log("LOST_TGT", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
+                                      prev=_dbg_prev_state,
+                                      grace=f"{ai_control.target_lost_timer:.2f}s")
                     ai_control.state = "IDLE"
                 ai_control.target_eid = -1
                 ai_control.target_lost_timer = 0.0
@@ -2045,6 +2070,8 @@ class EnemyAISystem(System):
             _player_invisible = _target_cst is not None and not _target_cst.is_visible
             if _player_invisible:
                 if ai_control.state in ("CHASING", "ATTACKING", "AGGRO_DELAY"):
+                    if _MCL: _MCL.log("INVISIBLE", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
+                                      prev=_dbg_prev_state)
                     ai_control.state              = "RETURNING"
                     ai_control.aggroed_by_damage  = False
                     ai_control.path_recalc_timer  = 0.0
@@ -2122,6 +2149,9 @@ class EnemyAISystem(System):
                     _min_cheb = _d
             if _min_cheb > self.SLEEP_RADIUS_TILES:
                 if ai_control.state != "IDLE":
+                    if _MCL: _MCL.log("SLEEP", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
+                                      prev=_dbg_prev_state, min_dist_player=f"{_min_cheb}t",
+                                      radius=self.SLEEP_RADIUS_TILES)
                     ai_control.state = "IDLE"
                     ai_control.path = None
                 continue
@@ -2197,28 +2227,34 @@ class EnemyAISystem(System):
                         enemy_combat_stats.attack_cooldown_timer = (
                             enemy_combat_stats.get_attack_cooldown() * self.RANGED_ATTACK_CD_MULT
                         )
+                        if _MCL:
+                            _MCL.reset_block_timer(enemy_id)
+                            _MCL.log("ATK_FIRE", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
+                                     type="ranged", dist=f"{chebyshev_dist_to_player}t",
+                                     cd_set=f"{enemy_combat_stats.attack_cooldown_timer:.2f}s")
                 else:
+                    if _MCL and ai_control.ranged_cast_timer > 0:
+                        _MCL.log("ATK_BLOCK", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
+                                 why="cast_cancelled(los_or_range_lost)")
                     ai_control.ranged_cast_timer = 0.0  # LOS/alcance perdido: cancela
 
             # ── Debug de ataque ──────────────────────────────────────────────
-            # ATAQUE_OK: sem rate-limit — cada disparo real é logado com timestamp.
-            # Estado bloqueado: rate-limited a cada _DBG_ATK_INTERVAL s para evitar spam.
+            # _DBG_ATK_RACES: debug legado por nome de raça (console print).
+            # _MCL: debug completo em arquivo (ativado via mob_combat_debug.DBG_ENABLED).
             if self._DBG_ATK_RACES and ai_control.state == "ATTACKING":
                 _dbg_id2 = self.world.get_component(enemy_id, EntityIdentity)
                 if _dbg_id2 and _dbg_id2.name in self._DBG_ATK_RACES:
                     import time as _time
-                    _ts = _time.strftime("%H:%M:%S") + f".{int(_time.time() * 1000) % 1000:03d}"
+                    _ts_dbg = _time.strftime("%H:%M:%S") + f".{int(_time.time() * 1000) % 1000:03d}"
                     _cd_now = enemy_combat_stats.attack_cooldown_timer
                     _attack_fires = (
                         not _player_invisible and in_attack_range and _cd_now <= 0
                     )
                     if _attack_fires:
-                        # Sempre loga quando o ataque dispara de fato
-                        print(f"[MOB-ATK] {_ts} eid={enemy_id} → ATAQUE_OK  "
+                        print(f"[MOB-ATK] {_ts_dbg} eid={enemy_id} → ATAQUE_OK  "
                               f"cd={_cd_now:.3f} cheb={chebyshev_dist_to_player}")
-                        self._dbg_atk_timers[enemy_id] = 0.0  # reseta rate-limit
+                        self._dbg_atk_timers[enemy_id] = 0.0
                     else:
-                        # Estado bloqueado: rate-limited
                         _dbg_t2 = self._dbg_atk_timers.get(enemy_id, 0.0)
                         if _dbg_t2 <= 0:
                             _bloq = []
@@ -2226,10 +2262,25 @@ class EnemyAISystem(System):
                             if not in_attack_range:     _bloq.append(f"fora_range(cheb={chebyshev_dist_to_player})")
                             if _cd_now > 0:             _bloq.append(f"cd={_cd_now:.2f}s")
                             if tile_movement.is_moving: _bloq.append("moving")
-                            print(f"[MOB-ATK] {_ts} eid={enemy_id} → bloqueado: {'/'.join(_bloq) or '?'}")
+                            print(f"[MOB-ATK] {_ts_dbg} eid={enemy_id} → bloqueado: {'/'.join(_bloq) or '?'}")
                             self._dbg_atk_timers[enemy_id] = self._DBG_ATK_INTERVAL
                         else:
                             self._dbg_atk_timers[enemy_id] = _dbg_t2 - dt
+
+            # _MCL: log de ATK_BLOCK para todos os mobs quando em combate
+            if _MCL and ai_control.state in ("ATTACKING", "CHASING"):
+                _cd_mcl = enemy_combat_stats.attack_cooldown_timer
+                _can_atk = not _player_invisible and in_attack_range and _cd_mcl <= 0
+                if not _can_atk:
+                    _reasons: list[str] = []
+                    if _player_invisible:                       _reasons.append("invisible")
+                    if not in_attack_range:                     _reasons.append(f"out_range(cheb={chebyshev_dist_to_player})")
+                    if _cd_mcl > 0:                             _reasons.append(f"cd={_cd_mcl:.2f}s")
+                    if tile_movement.is_moving:                 _reasons.append("moving")
+                    if ai_control.ranged_cast_timer > 0:        _reasons.append(f"casting={ai_control.ranged_cast_timer:.2f}s")
+                    if _sfx and _sfx.has("stun"):               _reasons.append("stun")
+                    if _sfx and _sfx.has("root"):               _reasons.append("root")
+                    _MCL.log_atk_block(enemy_id, _dbg_name, _dbg_race, _dbg_cls, dt, _reasons)
 
             # ── Inicia ataque (cooldown expirou) ──────────────────────────
             if not _player_invisible and in_attack_range and enemy_combat_stats.attack_cooldown_timer <= 0:
@@ -2244,6 +2295,12 @@ class EnemyAISystem(System):
                         ))
                         if _atk_los:
                             ai_control.ranged_cast_timer = self.RANGED_CAST_TIME
+                            if _MCL: _MCL.log("ATK_CAST", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
+                                              cast_s=f"{self.RANGED_CAST_TIME:.1f}s",
+                                              dist=f"{chebyshev_dist_to_player}t")
+                        else:
+                            if _MCL: _MCL.log("ATK_BLOCK", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
+                                              why="no_los(ranged_start)")
                 else:
                     SOUNDS.play_emote_attack(is_player=False, mob_sounds_comp=_ms_atk)
                     SOUNDS.play_mob_sounds(_ms_atk, _atk_event, dedup_key=str(enemy_id))
@@ -2253,6 +2310,11 @@ class EnemyAISystem(System):
                         damage_type=damage_type_to_use
                     )
                     enemy_combat_stats.attack_cooldown_timer = enemy_combat_stats.get_attack_cooldown()
+                    if _MCL:
+                        _MCL.reset_block_timer(enemy_id)
+                        _MCL.log("ATK_FIRE", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
+                                 type="melee", dist=f"{chebyshev_dist_to_player}t",
+                                 cd_set=f"{enemy_combat_stats.attack_cooldown_timer:.2f}s")
 
             _is_rooted = _sfx is not None and _sfx.has("root")
             if _is_rooted:
@@ -2265,6 +2327,9 @@ class EnemyAISystem(System):
                     dist_to_player_pixels <= detect_radius.radius):
                 ai_control.disengage_cd = 8.0
                 ai_control.disengage_boost = 3.0
+                if _MCL: _MCL.log("KITING", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
+                                  reason="disengage", dist=f"{chebyshev_dist_to_player}t",
+                                  prev=_dbg_prev_state)
                 ai_control.state = "KITING"
                 ai_control.path = None  # força recalculo imediato
                 self._do_kiting(
@@ -2285,6 +2350,10 @@ class EnemyAISystem(System):
 
             if not _player_invisible and needs_to_kite:
                 # Ranged muito perto: recua para manter distância ideal
+                if _MCL and ai_control.state != "KITING":
+                    _MCL.log("KITING", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
+                             reason="too_close", dist=f"{chebyshev_dist_to_player}t",
+                             prev=_dbg_prev_state)
                 ai_control.state = "KITING"
                 ai_control.ranged_cast_timer = 0.0  # cancela cast em andamento
                 self._do_kiting(
@@ -2297,6 +2366,11 @@ class EnemyAISystem(System):
 
             if not _player_invisible and in_attack_range and not needs_to_kite:
                 # Melee em alcance, ou ranged a boa distância: fica parado
+                if _MCL and ai_control.state != "ATTACKING":
+                    _MCL.log("IN_RANGE", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
+                             dist=f"{chebyshev_dist_to_player}t",
+                             cd=f"{enemy_combat_stats.attack_cooldown_timer:.2f}s",
+                             prev=_dbg_prev_state)
                 ai_control.state = "ATTACKING"
                 continue
 
@@ -2329,6 +2403,10 @@ class EnemyAISystem(System):
 
             if ai_control.state in ("CHASING", "ATTACKING") and \
                     _dist_from_spawn > _leash_radius:
+                if _MCL: _MCL.log("LEASH", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
+                                  dist_spawn=f"{_dist_from_spawn}t",
+                                  leash_r=_leash_radius,
+                                  prev=_dbg_prev_state)
                 ai_control.state              = "RETURNING"
                 ai_control.aggroed_by_damage  = False
                 ai_control.path_recalc_timer  = 0.0
@@ -2356,6 +2434,9 @@ class EnemyAISystem(System):
                     SOUNDS.play_mob_sounds(_ms_aggro, "aggro", dedup_key=str(enemy_id))
                     ai_control.state       = "AGGRO_DELAY"
                     ai_control.aggro_delay = 1.0
+                    if _MCL: _MCL.log("AGGRO", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
+                                      dist=f"{dist_to_player_pixels/TILE_SIZE:.1f}t",
+                                      target=target_eid)
 
             # Inimigo perseguindo/atacando → alvo entra em combate (só se visível)
             if not _player_invisible and ai_control.state in ("CHASING", "ATTACKING", "AGGRO_DELAY"):
@@ -2368,6 +2449,8 @@ class EnemyAISystem(System):
                     ai_control.aggro_delay -= dt
                     if ai_control.aggro_delay <= 0:
                         ai_control.state = "CHASING"
+                        if _MCL: _MCL.log("CHASE", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
+                                          dist=f"{chebyshev_dist_to_player}t")
                         # Jitter: escala o 1º pathfind para não bater com outros inimigos
                         ai_control.path_recalc_timer = random.uniform(0.0, 0.4)
                 ai_control.path_recalc_timer -= dt
@@ -3466,6 +3549,13 @@ class EnemyAbilitySystem(System):
                     _tm_ab = get_tilemap()
                     if _tm_ab is not None and not EnemyAISystem._has_line_of_sight(
                             _tm_ab, ex, ey, px, py):
+                        if _MCL:
+                            _ident_ab = self.world.get_component(eid, EntityIdentity)
+                            _n_ab = _ident_ab.name if _ident_ab else f"mob#{eid}"
+                            _r_ab = _ident_ab.race if _ident_ab else "?"
+                            _c_ab = _ident_ab.entity_class if _ident_ab else "?"
+                            _MCL.log("ABILITY_BLK", eid, _n_ab, _r_ab, _c_ab,
+                                     ability=slot.ability_id, dist=f"{dist}t")
                         continue  # sem LOS — não dispara, não consome cooldown
 
                     # Calcula direção do projétil
@@ -3500,6 +3590,14 @@ class EnemyAbilitySystem(System):
                             dir_y       = _dir_y_ab,
                             ability_id  = slot.ability_id,
                         ))
+                    if _MCL:
+                        _ident_ab = self.world.get_component(eid, EntityIdentity)
+                        _n_ab = _ident_ab.name if _ident_ab else f"mob#{eid}"
+                        _r_ab = _ident_ab.race if _ident_ab else "?"
+                        _c_ab = _ident_ab.entity_class if _ident_ab else "?"
+                        _MCL.log("ABILITY", eid, _n_ab, _r_ab, _c_ab,
+                                 ability=slot.ability_id, dist=f"{dist}t",
+                                 cd_set=f"{slot.cooldown:.0f}s")
                 else:
                     # ── Habilidade melee (range=1): aplica efeito direto ───
                     apply_effect(
@@ -3511,6 +3609,12 @@ class EnemyAbilitySystem(System):
                     ident = self.world.get_component(eid, EntityIdentity)
                     mob_name = ident.name if ident else "Inimigo"
                     LOG.add(f"{mob_name} usou {defn.name}!", (220, 80, 180))
+                    if _MCL:
+                        _MCL.log("ABILITY", eid, mob_name,
+                                 ident.race if ident else "?",
+                                 ident.entity_class if ident else "?",
+                                 ability=slot.ability_id, dist=f"{dist}t",
+                                 cd_set=f"{slot.cooldown:.0f}s")
 
                 slot.current_cooldown = slot.cooldown
 

@@ -11,6 +11,9 @@ build/
 # Save files
 saves/
 
+# Debug logs (gerados por mob_combat_debug.py)
+logs/
+
 # Config local
 config.json
 
