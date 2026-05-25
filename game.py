@@ -2809,9 +2809,8 @@ class GameEngine:
                     sync_attack_interval(cs, eq_login)
             # Restaura equipment/talents/skills — aplica modifiers ANTES de definir HP
             self._restore_save_state(char)
-            # Re-aplica layout da hotbar do config.json por cima do restore do servidor.
-            # O servidor pode ter um snapshot antigo (SAVE_STATE do quit pode não ter chegado);
-            # config.json é atualizado a cada mudança local e é a fonte mais recente.
+            # Aplica layout da hotbar a partir de config.json (fonte de verdade local).
+            # _restore_save_state só restaura learned_skill_ids; posicionamento é UI.
             self._apply_hotbar_config()
             # Define HP DEPOIS dos modifiers (max_hp já inclui bônus de equipamento)
             if cs and srv_hp > 0:
@@ -4179,9 +4178,9 @@ class GameEngine:
         skills = {}
         ps_col = self.world.get_component(self.player_entity, _PSCol)
         if ps_col:
+            # Apenas quais skills foram aprendidas — layout da hotbar é UI local (config.json).
             skills = {
                 "learned": list(ps_col.learned_skill_ids),
-                "hotbar":  [s.skill_id if s is not None else None for s in ps_col.skills],
             }
 
         return {
@@ -4274,34 +4273,15 @@ class GameEngine:
             skills_data = {}
         if isinstance(skills_data, dict) and skills_data:
             from components import PlayerSkills as _PSR
-            from skill_config import SKILL_CATALOG as _SC_R
             ps_r = self.world.get_component(self.player_entity, _PSR)
             if ps_r:
+                # Layout da hotbar é UI local (config.json) — não sincronizado com servidor.
+                # Servidor só guarda quais skills foram aprendidas (gameplay autoritativo).
                 learned_ids = skills_data.get("learned", [])
-                hotbar_ids  = skills_data.get("hotbar",  [])
                 if learned_ids:
                     ps_r.learned_skill_ids.clear()
                     for _sid_r in learned_ids:
                         ps_r.learned_skill_ids.add(_sid_r)
-                if hotbar_ids:
-                    # Reseta hotbar e repõe na ordem salva
-                    for _i_r in range(len(ps_r.skills)):
-                        ps_r.skills[_i_r] = None
-                    for _i_r, _sid_r in enumerate(hotbar_ids):
-                        if _sid_r and _i_r < len(ps_r.skills):
-                            _sk_r = _PSR._make_skill(_sid_r, _SC_R)
-                            if _sk_r:
-                                ps_r.skills[_i_r] = _sk_r
-                elif learned_ids:
-                    # Sem ordem de hotbar salva — preenche do início
-                    for _sid_r in ps_r.learned_skill_ids:
-                        if ps_r.skill_by_id(_sid_r) is None:
-                            _sk_r = _PSR._make_skill(_sid_r, _SC_R)
-                            if _sk_r:
-                                try:
-                                    ps_r.skills[ps_r.skills.index(None)] = _sk_r
-                                except ValueError:
-                                    ps_r.skills.append(_sk_r)
 
         # Re-adiciona skills de talento a learned_skill_ids após o restore as ter limpado.
         # apply_talent_effects() também as adiciona, mas é chamado ANTES do clear de learned.
