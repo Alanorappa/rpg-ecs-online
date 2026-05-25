@@ -231,10 +231,13 @@ class GameEngine:
         self._map_overlay   = MapOverlay(self.screen)
         self._minimap       = Minimap(self.screen, self._map_overlay)
         self._loading_save        = False
-        # Loading screen: True enquanto aguarda LOGIN_OK do servidor.
-        # O jogo só renderiza o mundo depois que os dados do personagem chegarem.
-        self._waiting_for_server  = True
-        self._loading_timeout     = 15.0   # segundos antes de desistir e continuar offline
+        # Loading screen: exibida até LOGIN_OK chegar E tempo mínimo decorrer.
+        # _server_ready: True quando LOGIN_OK (ou erro) é recebido.
+        # _loading_min_t: tempo mínimo de exibição — garante visibilidade mesmo
+        #   quando LOGIN_OK já está na fila no primeiro frame (localhost rápido).
+        self._server_ready        = False
+        self._loading_min_t       = 1.5    # segundos mínimos de tela de loading
+        self._loading_timeout     = 15.0   # timeout total antes de continuar offline
         self._loading_anim_t      = 0.0    # timer para animação dos pontos (...)
 
         self._load_map_and_entities()
@@ -1001,16 +1004,21 @@ class GameEngine:
             self._dt = dt
             SOUNDS.new_frame()  # limpa deduplicação de sons
 
-            # ── Loading screen: aguarda LOGIN_OK antes de renderizar o mundo ──
-            # IMPORTANTE: renderiza o frame de loading ANTES de _process_network()
-            # para garantir ao menos um frame visível — se _process_network fosse
-            # chamado primeiro, LOGIN_OK (que chega rápido em localhost) zeraria
-            # _waiting_for_server antes da tela ser exibida.
-            if self._waiting_for_server:
+            # ── Loading screen ────────────────────────────────────────────────
+            # Mostra loading screen enquanto:
+            #   • servidor ainda não respondeu (!_server_ready), OU
+            #   • tempo mínimo de exibição não decorreu (_loading_min_t > 0)
+            # _process_network é chamado APÓS o flip para garantir que ao menos
+            # um frame de loading seja renderizado antes de LOGIN_OK ser processado
+            # (em localhost o pacote chega antes do primeiro frame).
+            _in_loading = (not self._server_ready) or (self._loading_min_t > 0)
+            if _in_loading:
                 self._loading_timeout -= dt
+                self._loading_min_t   -= dt
                 if self._loading_timeout <= 0:
-                    # Timeout: continua com o personagem padrão (offline/sem servidor)
-                    self._waiting_for_server = False
+                    # Timeout total: entra no jogo com personagem padrão
+                    self._server_ready  = True
+                    self._loading_min_t = 0.0
                 else:
                     for _ev in pygame.event.get():
                         if _ev.type == pygame.QUIT:
@@ -2898,12 +2906,13 @@ class GameEngine:
             print(f"[Client] login ok  eid={self._my_eid}  "
                   f"user={char.get('name','?')}  Nv{char_stat.level if char_stat else 1}"
                   f"  tile=({tx},{ty})  hp={srv_hp}/{srv_hp_max}")
-            # Personagem carregado — libera o jogo (sai da loading screen)
-            self._waiting_for_server = False
+            # Personagem carregado — marca servidor como pronto.
+            # O jogo só entra quando _server_ready=True E _loading_min_t <= 0.
+            self._server_ready = True
 
         elif msg_type == MsgType.LOGIN_ERROR:
             print(f"[Client] login erro: {payload.get('reason')}")
-            self._waiting_for_server = False  # sai da loading screen mesmo com erro
+            self._server_ready = True  # sai da loading screen mesmo com erro
 
         elif msg_type == MsgType.WORLD_STATE:
             for ent in payload.get("entities", []):
