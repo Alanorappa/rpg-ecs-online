@@ -1447,6 +1447,8 @@ class GameEngine:
                 # para que os slots fiquem visíveis e acessíveis durante o drag-to-bar.
                 self._draw_hotbar()
                 self._draw_consumable_bar()
+                # Ghost de drag por cima de tudo (incluindo os slots redesenhados acima).
+                self._draw_hab_drag_ghost()
             if PROFILE_FRAMES:
                 self._prof_record("hud:talents", _time.perf_counter() - _ts)
                 _ts = _time.perf_counter()
@@ -2651,16 +2653,8 @@ class GameEngine:
                 True, (90, 82, 55))
             self.screen.blit(hint, hint.get_rect(centerx=ppx + PW // 2, y=ppy + PH - 20))
 
-        # ── Ghost de drag ─────────────────────────────────────────────────
-        if self._hab_drag_skill:
-            GSZ   = 48
-            ghost = pygame.Surface((GSZ, GSZ), pygame.SRCALPHA)
-            ghost.fill((30, 24, 12, 180))
-            ic_k = ICONS.skill_key_by_name(f"skill_{self._hab_drag_skill}") or ICONS.skill_key(0)
-            ic   = ICONS.get(ic_k, GSZ - 4)
-            if ic:
-                ghost.blit(ic, (2, 2))
-            self.screen.blit(ghost, ghost.get_rect(center=(mx, my)))
+        # Ghost de drag renderizado separadamente (veja _draw_hab_drag_ghost),
+        # APÓS o redesenho da hotbar, para ficar sempre na frente dos slots.
 
         # ── Drop sobre a hotbar ────────────────────────────────────────────
         if released and self._hab_drag_skill:
@@ -2686,6 +2680,21 @@ class GameEngine:
                             ps.skills[i] = new_s
                     self._save_config()
                     break
+
+    def _draw_hab_drag_ghost(self) -> None:
+        """Renderiza o ícone fantasma que segue o mouse durante o drag do painel H.
+        Chamado APÓS _draw_hotbar() para ficar sempre na frente dos slots."""
+        if not self._hab_drag_skill:
+            return
+        GSZ   = 48
+        mx, my = pygame.mouse.get_pos()
+        ghost = pygame.Surface((GSZ, GSZ), pygame.SRCALPHA)
+        ghost.fill((30, 24, 12, 180))
+        ic_k = ICONS.skill_key_by_name(f"skill_{self._hab_drag_skill}") or ICONS.skill_key(0)
+        ic   = ICONS.get(ic_k, GSZ - 4)
+        if ic:
+            ghost.blit(ic, (2, 2))
+        self.screen.blit(ghost, ghost.get_rect(center=(mx, my)))
 
     # ── Modo Online ───────────────────────────────────────────────────────────
 
