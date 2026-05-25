@@ -2759,13 +2759,13 @@ class GameEngine:
         _status = self.font_sm.render(msg, True, (150, 130, 70))
         self.screen.blit(_status, _status.get_rect(centerx=sw // 2, centery=sh // 2 + 10))
 
-        # Barra de progresso indeterminada (oscila via sin enquanto aguarda servidor)
-        import math as _math
+        # Barra de progresso linear: 0% no início → 100% quando loading_min_t zera.
+        # _loading_min_t começa em 1.5 e é decrementado a cada frame.
         _BAR_W, _BAR_H = 400, 10
         _bx = sw // 2 - _BAR_W // 2
         _by = sh // 2 + 32
-        _pct  = (_math.sin(self._loading_anim_t * 1.5) + 1) / 2   # 0.0 → 1.0
-        _fill = max(4, int(_BAR_W * _pct))
+        _pct  = max(0.0, min(1.0, 1.0 - self._loading_min_t / 1.5))
+        _fill = max(1, int(_BAR_W * _pct))
         pygame.draw.rect(self.screen, (70, 15, 15),  (_bx, _by, _BAR_W, _BAR_H), border_radius=3)
         pygame.draw.rect(self.screen, (25, 90, 25),  (_bx, _by, _fill,  _BAR_H), border_radius=3)
         pygame.draw.rect(self.screen, (50, 35, 20),  (_bx, _by, _BAR_W, _BAR_H), 1, border_radius=3)
