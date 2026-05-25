@@ -5739,7 +5739,10 @@ class SkillSystem(System, SkillHandlers):
             skill._server_pending_timeout   = 0.40   # fallback: libera após 400ms (dentro do GCD 0.8s)
         else:
             # Offline: aplica tudo imediatamente (sem servidor para confirmar).
-            skill.current_cooldown = skill.cooldown
+            # Sincroniza cooldown em TODOS os slots com a mesma skill_id (Bug 4).
+            for _sk_sync in player_skills.skills:
+                if _sk_sync and _sk_sync.skill_id == skill.skill_id:
+                    _sk_sync.current_cooldown = skill.cooldown
             if player_skills:
                 player_skills.gcd_timer = PlayerSkills.GCD_DURATION
             if skill.sound_name and not _has_cast:

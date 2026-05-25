@@ -539,12 +539,14 @@ class GameEngine:
         # Ordem dos sistemas por frame — ALTERE COM CUIDADO.
         # As restrições de dependência são verificadas em runtime por _validate_system_order().
         # Se a ordem for violada, o jogo levanta RuntimeError na inicialização.
+        self._player_input_system = PlayerInputSystem(self.world, self.screen)
+
         self.systems = [
             tile_validation,                                                          # 1
             self._aoe_targeting_system,                                               # 2 (antes do targeting)
             MouseTargetingSystem(self.world, self.player_entity, self.screen),        # 3
             loot_system,                                                              # 4
-            PlayerInputSystem(self.world, self.screen),                                   # 5
+            self._player_input_system,                                                # 5
             skill_system,                                                             # 6
             # IA e spawn de mobs: gerenciados pelo servidor
             projectile_system,                                                        # 9
@@ -596,6 +598,7 @@ class GameEngine:
         """Salva o estado atual se não estiver no meio de um carregamento."""
         if not self._loading_save:
             save_game(self.world, self.player_entity, self._current_map_file, self._save_slot)
+            self._save_config()  # sincroniza layout da hotbar com o save do jogo
 
     # ------------------------------------------------------------------
     # Validação de ordem de sistemas
@@ -1012,6 +1015,7 @@ class GameEngine:
             for event in events:
                 if event.type == pygame.QUIT:
                     self._send_save_state()  # salva ao fechar
+                    self._save_config()      # persiste layout da hotbar ao fechar
                     running = False
                 elif _god_was_active:
                     pass   # god mode consumiu — ignora input do jogo
@@ -1439,6 +1443,10 @@ class GameEngine:
                 self._draw_hotbar_editor(events)
             if self._show_habilidades or self._hab_drag_skill:
                 self._draw_habilidades_panel(events)
+                # Redesenha hotbar POR CIMA do overlay escuro do painel de habilidades,
+                # para que os slots fiquem visíveis e acessíveis durante o drag-to-bar.
+                self._draw_hotbar()
+                self._draw_consumable_bar()
             if PROFILE_FRAMES:
                 self._prof_record("hud:talents", _time.perf_counter() - _ts)
                 _ts = _time.perf_counter()
@@ -2858,15 +2866,15 @@ class GameEngine:
                     _ps_sr = self.world.get_component(self.player_entity, PlayerSkills)
                     if _ps_sr:
                         _ps_sr.gcd_timer = PlayerSkills.GCD_DURATION
+                        _srv_cd = payload.get("cooldown")
                         for _sk_sr in _ps_sr.skills:
                             if _sk_sr and _sk_sr.skill_id == sid:
                                 _sk_sr._server_pending         = False
                                 _sk_sr._server_pending_timeout = 0.0
                                 # Usa cooldown efetivo do servidor (inclui reduções de talento).
                                 # Fallback: cooldown base da skill (compatibilidade com servidor antigo).
-                                _srv_cd = payload.get("cooldown")
+                                # Sem break: sincroniza TODOS os slots com a mesma skill_id (Bug 4).
                                 _sk_sr.current_cooldown = float(_srv_cd) if _srv_cd is not None else _sk_sr.cooldown
-                                break
                 elif caster_eid in self._remote_players:
                     # Player remoto: posicional
                     _cast_local = self._remote_players[caster_eid]
@@ -2957,6 +2965,7 @@ class GameEngine:
                 # Servidor corrigiu nossa posição — aplica
                 real_tx = payload.get("tx", 0)
                 real_ty = payload.get("ty", 0)
+                skill_rejected = payload.get("skill_rejected", False)
                 player_tm = self.world.get_component(self.player_entity, TileMovement)
                 if player_tm:
                     # Se cliente já está dashando para o mesmo tile (prediction correta), não interrompe
@@ -2965,11 +2974,26 @@ class GameEngine:
                             player_tm.target_tile_y == real_ty):
                         pass  # animação em curso bate com posição do servidor — mantém
                     elif (player_tm.current_tile_x != real_tx or
-                            player_tm.current_tile_y != real_ty):
+                            player_tm.current_tile_y != real_ty or
+                            skill_rejected):
+                        # Cancela animação de dash se estava em curso (skill rejeitada)
+                        if getattr(player_tm, "is_dash", False):
+                            player_tm.is_dash      = False
+                            player_tm.is_moving    = False
+                            player_tm.progress     = 0.0
                         player_tm.current_tile_x = real_tx
                         player_tm.current_tile_y = real_ty
                         player_tm.target_tile_x  = real_tx
                         player_tm.target_tile_y  = real_ty
+                        if skill_rejected:
+                            # Feedback imediato: avisa que o dash foi bloqueado
+                            from floating_text import FLT
+                            from components import Position as _PosRej
+                            _pos_rej = self.world.get_component(self.player_entity, _PosRej)
+                            if _pos_rej:
+                                FLT.add("Bloqueado!", _pos_rej.x, _pos_rej.y,
+                                        (255, 80, 80), "small",
+                                        target_id=self.player_entity)
             elif eid in self._remote_players:
                 self._apply_remote_move(eid, payload.get("tx", 0), payload.get("ty", 0))
 
@@ -3333,6 +3357,13 @@ class GameEngine:
                     _suffix_cr = " (crítico)" if is_crit else ""
                     _col_cr    = (255, 220, 50) if is_ability else (220, 220, 220)
                     _LOG_cr.add(f"Você causou {damage} de dano{_suffix_cr}.", _col_cr)
+                    # Punho no Queixo: acumula contador no cliente ao receber
+                    # COMBAT_RESULT de auto-ataque do servidor (espelho do offline).
+                    # Online: auto-ataques são processados no servidor, não localmente,
+                    # então _increment_pnq_counter nunca era chamado neste fluxo.
+                    if source == "auto":
+                        self._player_input_system._increment_pnq_counter(
+                            self.player_entity, hit_landed=True)
                 if is_crit:
                     color = (255, 220, 50) if is_ability else (255, 255, 255)
                     FLT.add(str(damage), pos.x, pos.y, color,
@@ -3765,10 +3796,11 @@ class GameEngine:
         if not tm or not pos:
             return
 
-        # Atualiza tile autoritativo do servidor (de onde o mob saiu neste passo)
-        if from_tx is not None:
-            tm.server_tile_x = from_tx
-            tm.server_tile_y = from_ty
+        # Atualiza tile autoritativo do servidor (destino = onde mob ESTÁ no servidor agora).
+        # O servidor move mobs instantaneamente; new_tx/ty é a posição real atual.
+        # from_tx/ty seria a posição anterior — menos útil para dist_attack.
+        tm.server_tile_x = new_tx
+        tm.server_tile_y = new_ty
 
         if tm.is_moving:
             # Já animando para este tile? Não enfileira (servidor emite start, não end)
@@ -4780,7 +4812,9 @@ class GameEngine:
             if skill is None:
                 pygame.draw.rect(self.screen, (38, 32, 16), r, border_radius=5)
                 pygame.draw.rect(self.screen, (160, 130, 50), r, 2, border_radius=5)
-                num_s = self.font_xs.render(str(i + 1), True, (100, 85, 48))
+                # Mostra o atalho configurado (não o índice padrão 1-0)
+                _kb_empty = pygame.key.name(player_skills.keybinds[i]).upper()
+                num_s = self.font_xs.render(_kb_empty, True, (100, 85, 48))
                 self.screen.blit(num_s, (sx + 4, y0 + 4))
                 continue
 

@@ -222,8 +222,16 @@ class TalentSystem:
                     new_skill = PlayerSkills._make_skill(_sid, _SC)
                     new_skill.talent_id = talent_id
                     new_skill.handler   = ""  # dispatch via skill_id (não _talent_*)
-                    # Restaura na posição anterior se existir; caso contrário, primeiro None
+                    # Restaura na posição anterior se existir; caso contrário, primeiro None.
+                    # Também remove cópia sem talent_id carregada do save (previne ícone duplicado).
                     prev_idx = old_positions.get(_sid)
+                    if prev_idx is None:
+                        # Procura cópia legada (save-loaded, talent_id = "") para reutilizar slot
+                        for _k, _ex in enumerate(skills.skills):
+                            if _ex and _ex.skill_id == _sid:
+                                prev_idx = _k
+                                skills.skills[_k] = None  # remove cópia duplicada
+                                break
                     if prev_idx is not None and prev_idx < len(skills.skills) and skills.skills[prev_idx] is None:
                         skills.skills[prev_idx] = new_skill
                     else:
