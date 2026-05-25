@@ -1002,6 +1002,9 @@ class GameEngine:
         _gc.disable()          # GC manual — evita pauses aleatórias no loop de jogo
         _gc_counter = 0
         running = True
+        # Descarta o tempo acumulado durante __init__: sem este tick, o primeiro
+        # dt seria o tempo total de init (2-3s), zerando _loading_min_t no frame 1.
+        self.clock.tick()
         while running:
             dt = self.clock.tick_busy_loop(FPS) / 1000.0
             _gc_counter += 1
