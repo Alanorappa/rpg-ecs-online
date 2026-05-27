@@ -11,6 +11,7 @@ import asyncio
 import argparse
 import sys
 import os
+import ctypes
 
 # Garante que a raiz do projeto está no path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -76,7 +77,21 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=SERVER_PORT)
     args = parser.parse_args()
 
+    # Windows: eleva resolução do timer de ~15ms → 1ms para asyncio.sleep preciso.
+    # Sem isso, ticks a 30+ TPS ficam instáveis (jitter de ±10ms).
+    _timer_set = False
+    if sys.platform == "win32":
+        try:
+            ctypes.windll.winmm.timeBeginPeriod(1)
+            _timer_set = True
+            print("[Server] Windows timer: resolução elevada para 1ms")
+        except Exception:
+            pass
+
     try:
         asyncio.run(main(args.host, args.port))
     except KeyboardInterrupt:
         print("\n[Server] encerrado.")
+    finally:
+        if _timer_set:
+            ctypes.windll.winmm.timeEndPeriod(1)

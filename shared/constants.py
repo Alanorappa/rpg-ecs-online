@@ -7,8 +7,8 @@ Qualquer valor aqui deve ser idêntico nos dois lados.
 # ── Rede ──────────────────────────────────────────────────────────────────────
 SERVER_HOST        = "localhost"
 SERVER_PORT        = 8765
-TICK_RATE          = 20          # ticks por segundo
-TICK_INTERVAL      = 1.0 / TICK_RATE   # 0.05s = 50ms
+TICK_RATE          = 30          # ticks por segundo
+TICK_INTERVAL      = 1.0 / TICK_RATE   # ~33ms
 
 # Janela de lag compensation: servidor aceita inputs com até N ms de atraso
 LAG_COMP_WINDOW_MS = 200

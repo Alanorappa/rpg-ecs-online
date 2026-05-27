@@ -66,8 +66,8 @@
       "turn_in_ids": ["first_blood", "merchant_greeting"]
     },
     {
-      "x": 117,
-      "y": 392,
+      "x": 119,
+      "y": 390,
       "name": "Selene Vail",
       "class_id": "mago",
       "level": 60,
@@ -76,8 +76,8 @@
       "turn_in_ids": []
     },
     {
-      "x": 117,
-      "y": 395,
+      "x": 121,
+      "y": 390,
       "name": "Andre Von Han'Duch",
       "class_id": "arqueiro",
       "level": 60,

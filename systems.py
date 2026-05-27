@@ -422,6 +422,12 @@ class TileValidationSystem(System):
                 ai_control.is_blocked = True
                 ai_control.blocked_by_entity_id = occupant_id
 
+        # Jogador pode mover para tile de inimigo — evita correção server-side ao perseguir
+        # (race condition: cliente calcula path ignorando alvo, servidor vê outro mob no tile)
+        if self.world.get_component(moving_entity_id, PlayerControlled) and \
+           self.world.get_component(occupant_id, Enemy):
+            return True
+
         return False
 
 
@@ -2304,17 +2310,28 @@ class EnemyAISystem(System):
                 else:
                     SOUNDS.play_emote_attack(is_player=False, mob_sounds_comp=_ms_atk)
                     SOUNDS.play_mob_sounds(_ms_atk, _atk_event, dedup_key=str(enemy_id))
-                    deal_damage(
+                    _atk_dead, _atk_outcome = deal_damage(
                         attacker_id=enemy_id,
                         target_id=ai_control.target_eid,
                         damage_type=damage_type_to_use
                     )
                     enemy_combat_stats.attack_cooldown_timer = enemy_combat_stats.get_attack_cooldown()
                     if _MCL:
-                        _MCL.reset_block_timer(enemy_id)
-                        _MCL.log("ATK_FIRE", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
-                                 type="melee", dist=f"{chebyshev_dist_to_player}t",
-                                 cd_set=f"{enemy_combat_stats.attack_cooldown_timer:.2f}s")
+                        try:
+                            _MCL.reset_block_timer(enemy_id)
+                            _tgt_cs = self.world.get_component(ai_control.target_eid, CombatStats)
+                            _tgt_hp = f"{_tgt_cs.current_hp:.0f}/{_tgt_cs.max_hp:.0f}" if _tgt_cs else "?"
+                            _MCL.log("ATK_FIRE", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
+                                     type="melee",
+                                     outcome=_atk_outcome or "hit",
+                                     dist=f"{chebyshev_dist_to_player}t",
+                                     mob_tile=f"({enemy_current_tile_x},{enemy_current_tile_y})",
+                                     tgt_tile=f"({player_current_tile_x},{player_current_tile_y})",
+                                     tgt_hp=_tgt_hp,
+                                     cd_set=f"{enemy_combat_stats.attack_cooldown_timer:.2f}s")
+                        except Exception as _e_atk:
+                            _MCL._open()
+                            _MCL._write(f"[ATK_FIRE_ERR] eid={enemy_id} err={type(_e_atk).__name__}: {_e_atk}")
 
             _is_rooted = _sfx is not None and _sfx.has("root")
             if _is_rooted:

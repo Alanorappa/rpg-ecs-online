@@ -807,6 +807,22 @@ OBJECT_SHEET_FAMILIES: list[dict] = [
             ("stair6",    320, 288,  64,  96,  None, "t", 0, 0, 0),
         ],
     },
+
+    {
+        "file":   "TX Medieval Mansion",
+        "prefix": "ms",
+        "label":  "Medieval Mansion",
+        "color":  (120, 100, 80),
+        "underlying_terrain": ".",
+        "tiles": [
+            # (id,   sx,  sy,    w,    h,   col,                 piso, transp,   sort)
+            ("ms1",   0,  32,   64,  192,   (  0,  96,  64,  96), 1,    1,      1),
+            ("ms2",  64,   0,  128,  128,   None,                 1,    1,      1),
+            ("ms3",  64,  96,  128,  128,   "full",               1,    1,      1),
+            ("ms4",  64, 224,  128,   32,   None,                 1,    1,      1),
+            ("ms5", 192,  32,   64,  192,   (  0,  96,  64,  96),  1,    1,      1),
+        ],
+    },
 ]
 
 # Mapeamento id_tile → (sheet_file, sx, sy, tile_w, tile_h) — lido pelo TileSpriteManager

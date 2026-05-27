@@ -13,7 +13,7 @@ import asyncio
 import time
 
 from shared.messages import MsgType, encode, decode
-from shared.constants import AOI_RADIUS, PROTOCOL_VERSION
+from shared.constants import AOI_RADIUS, PROTOCOL_VERSION, TICK_RATE
 from utils import in_aoi as _in_aoi
 
 
@@ -392,14 +392,20 @@ class SessionManager:
         _cli_hp     = payload.get("stats", {}).get("current_hp")
         _cli_max_hp = payload.get("stats", {}).get("max_hp")
         if _eid_sv is not None and _cli_hp is not None:
-            from components import CombatStats as _CSSv
-            _cs_sv = self.world_server.world.get_component(_eid_sv, _CSSv)
+            from components import CombatStats as _CSSv, CombatState as _CStSv
+            _cs_sv  = self.world_server.world.get_component(_eid_sv, _CSSv)
+            _cst_sv = self.world_server.world.get_component(_eid_sv, _CStSv)
             if _cs_sv:
                 # max_hp: usa o maior entre servidor e cliente (servidor já tem bônus de talento)
                 if _cli_max_hp and int(_cli_max_hp) > _cs_sv.max_hp:
                     _cs_sv.max_hp = int(_cli_max_hp)
-                # current_hp: cliente é fonte de verdade fora de combate
-                _cs_sv.current_hp = max(1, min(_cs_sv.max_hp, int(_cli_hp)))
+                # current_hp: cliente é fonte de verdade APENAS fora de combate.
+                # Em combate, o servidor é autoritativo — ignorar valor do cliente evita
+                # que SAVE_STATE (disparado por loot, inventário, etc.) resete o HP
+                # acumulado por dano de mob, tornando o player efetivamente imortal.
+                _in_combat = _cst_sv.in_combat if _cst_sv else False
+                if not _in_combat:
+                    _cs_sv.current_hp = max(1, min(_cs_sv.max_hp, int(_cli_hp)))
         try:
             await save_character(session.char_data["id"], merged)
         except Exception as e:
@@ -466,7 +472,7 @@ class SessionManager:
     # ── AOI subscription — núcleo do sistema ─────────────────────────────────
 
     def _on_tick(self, tick_count: int, deltas: dict) -> None:
-        if tick_count % 6000 == 0 and tick_count > 0:  # autosave a cada 5 min (20 tps)
+        if tick_count % (TICK_RATE * 300) == 0 and tick_count > 0:  # autosave a cada 5 min
             asyncio.create_task(self._autosave_all())
         # Dispatch sempre que há conteúdo — inclui skill_results que não entram em deltas
         has_pending = (any(deltas.values())
