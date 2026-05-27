@@ -701,17 +701,27 @@ class WorldServer:
             _pnq_hit = _outcome not in ("miss", "dodge", "parry", "block")
             if _pnq_hit and player_cs and player_cs.pnq_enabled and player_char:
                 from components import PlayerSkills as _PKSv
+                from skill_config import SKILL_CATALOG as _SC_pnq
                 _ps_pnq = self.world.get_component(player_eid, _PKSv)
                 if _ps_pnq:
-                    for _sk_p in _ps_pnq.skills:
-                        if _sk_p is not None and _sk_p.skill_id == "punho_no_queixo":
-                            if _sk_p.current_cooldown <= 0:
-                                player_char.pnq_counter += 1
-                                if player_char.pnq_counter >= 3:
-                                    player_char.pnq_counter = 0
-                                    if _sk_p.charges < _sk_p.max_charges:
-                                        _sk_p.charges += 1
-                            break
+                    # Procura skill no hotbar; cria lazily se não estiver (talento alocado
+                    # mas skill não adicionada ao hotbar — servidor ainda precisa rastrear)
+                    _sk_p = next((sk for sk in _ps_pnq.skills
+                                  if sk and sk.skill_id == "punho_no_queixo"), None)
+                    if _sk_p is None:
+                        _sk_p = _PKSv._make_skill("punho_no_queixo", _SC_pnq)
+                        if _sk_p is not None:
+                            try:
+                                idx = _ps_pnq.skills.index(None)
+                                _ps_pnq.skills[idx] = _sk_p
+                            except ValueError:
+                                _ps_pnq.skills.append(_sk_p)
+                    if _sk_p and _sk_p.current_cooldown <= 0:
+                        player_char.pnq_counter += 1
+                        if player_char.pnq_counter >= 3:
+                            player_char.pnq_counter = 0
+                            if _sk_p.charges < _sk_p.max_charges:
+                                _sk_p.charges += 1
 
             if damage > 0:
                 log = self._mob_damage_log.setdefault(target_eid, {})
