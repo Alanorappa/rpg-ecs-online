@@ -159,6 +159,10 @@ class WorldServer:
         self._shop_item_cache: dict[str, dict] = {}
         self._build_item_caches()
 
+        # Cooldown server-side: {(player_eid, sid) → unix_time do último uso}
+        # Impede spam de skills mesmo que o cliente remova o cooldown local.
+        self._skill_last_used: dict[tuple, float] = {}
+
         # Fila de skill requests recebidas dos clientes (processada em _tick)
         self._pending_skill_requests: list[dict] = []
         # Resultados de skills processadas no tick (consumido pelo SessionManager)
@@ -997,6 +1001,24 @@ class WorldServer:
             if skill_obj is None:
                 print(f"[Skill] sid='{sid}' não encontrado no SKILL_CATALOG")
                 continue
+
+            # ── Validação server-side de cooldown ─────────────────────────────
+            # Impede spam mesmo que o cliente manipule current_cooldown local.
+            # Skills com cooldown=0 (Golpe Poderoso, Executar) passam sempre;
+            # skills com cooldown>0 são bloqueadas se o tempo decorrido for menor.
+            import time as _time_mod
+            _sk_cd   = getattr(skill_obj, "cooldown", 0.0)
+            _sk_key  = (player_eid, sid)
+            _now_srv = _time_mod.time()
+            _elapsed = _now_srv - self._skill_last_used.get(_sk_key, 0.0)
+            if _sk_cd > 0 and _elapsed < _sk_cd:
+                print(f"[Skill] REJEITADO (CD) {sid} player={player_eid} "
+                      f"restante={_sk_cd - _elapsed:.1f}s")
+                continue
+            # Registra hora do uso ANTES de chamar o handler (handler pode falhar por
+            # outros motivos; mantemos o registro para evitar retry imediato de exploit)
+            if _sk_cd > 0:
+                self._skill_last_used[_sk_key] = _now_srv
 
             # Aponta o SkillSystem para este player
             self._skill_system.player_entity_id = player_eid

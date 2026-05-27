@@ -15,8 +15,6 @@ from __future__ import annotations
 import math
 import random
 
-import pygame
-
 from components import (
     Position, Enemy, AIControlled, TileMovement, CombatStats, CombatState,
     CharacterStats, Tilemap, PlayerAutoMove, StatusEffects,
