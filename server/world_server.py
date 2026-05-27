@@ -689,6 +689,26 @@ class WorldServer:
             if player_char and player_char.class_id == "guerreiro":
                 player_char.rage = min(getattr(player_char, 'max_rage', 100),
                                        player_char.rage + 5)
+
+            # Punho no Queixo (Cavaleiro): incrementar contador por auto-ataque.
+            # Espelha PlayerInputSystem._increment_pnq_counter; cliente também chama
+            # via COMBAT_RESULT.source=="auto", mas o servidor precisa manter charges
+            # sincronizados para validar CAST_SKILL punho_no_queixo.
+            _pnq_hit = _outcome not in ("miss", "dodge", "parry", "block")
+            if _pnq_hit and player_cs and player_cs.pnq_enabled and player_char:
+                from components import PlayerSkills as _PKSv
+                _ps_pnq = self.world.get_component(player_eid, _PKSv)
+                if _ps_pnq:
+                    for _sk_p in _ps_pnq.skills:
+                        if _sk_p is not None and _sk_p.skill_id == "punho_no_queixo":
+                            if _sk_p.current_cooldown <= 0:
+                                player_char.pnq_counter += 1
+                                if player_char.pnq_counter >= 3:
+                                    player_char.pnq_counter = 0
+                                    if _sk_p.charges < _sk_p.max_charges:
+                                        _sk_p.charges += 1
+                            break
+
             if damage > 0:
                 log = self._mob_damage_log.setdefault(target_eid, {})
                 log[player_eid] = log.get(player_eid, 0) + damage
