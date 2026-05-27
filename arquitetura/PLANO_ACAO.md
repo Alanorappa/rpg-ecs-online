@@ -214,11 +214,19 @@ Só fazer depois de testes cobrindo o comportamento atual.
 
 ## 5. Checklist de entrega
 
-- [ ] Fix de movimento commitado
-- [ ] Fix ATK_FIRE commitado
-- [ ] Cooldown server-side implementado (1.1)
-- [ ] Pirofagia + Tiro Múltiplo funcionam online (1.2)
-- [ ] skill_handlers sem pygame no topo (1.3)
-- [ ] Volatile fields resetam no respawn (2.1)
+- [x] Fix de movimento commitado (5fb5a13)
+- [x] Fix ATK_FIRE commitado (5fb5a13)
+- [x] HP sync guard — SAVE_STATE não reseta HP em combate (5fb5a13)
+- [x] Windows timer 1ms + TICK_RATE 30 TPS (5fb5a13)
+- [x] Punho no Queixo — contador server-side (11f81f2)
+- [x] Cooldown server-side implementado (1.1) — 2909ad1
+- [x] Pirofagia funciona online (1.2) — b3f9962
+- [x] skill_handlers sem pygame no topo (1.3) — 2909ad1
+- [x] Volatile fields resetam no respawn (2.1) — ab3a348
+- [x] max_hp cap no servidor (2.3) — ab3a348
 - [ ] Imports circulares quebrados (2.2)
-- [ ] max_hp cap no servidor (2.3)
+- [ ] Tiro Múltiplo online (futura fase — Arqueiro/Bardo)
+- [ ] Testes automatizados (3.1)
+- [ ] AOI spatial hashing (3.2 — só se >20 jogadores)
+- [ ] Lag comp com timestamps (3.3)
+- [ ] world_server.py refatoração (3.4)
