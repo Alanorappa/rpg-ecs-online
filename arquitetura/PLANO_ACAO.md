@@ -226,7 +226,7 @@ Só fazer depois de testes cobrindo o comportamento atual.
 - [x] max_hp cap no servidor (2.3) — ab3a348
 - [x] Imports circulares quebrados (2.2) — 123f1df
 - [ ] Tiro Múltiplo online (futura fase — Arqueiro/Bardo)
-- [ ] Testes automatizados (3.1)
+- [x] Testes automatizados (3.1) — 9313adb
 - [ ] AOI spatial hashing (3.2 — só se >20 jogadores)
 - [ ] Lag comp com timestamps (3.3)
 - [ ] world_server.py refatoração (3.4)
