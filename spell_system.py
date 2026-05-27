@@ -1764,6 +1764,19 @@ class PirofagiaSystem(System):
         dir_x = math.cos(angle)
         dir_y = math.sin(angle)
 
+        # ── Modo online: delega ao servidor, aplica apenas feedback local ──────
+        if self._net:
+            from shared.messages import MsgType as _MT2
+            self._net.send(_MT2.CAST_SKILL, {
+                "sid":   "pirofagia",
+                "tid":   -1,
+                "dir_x": dir_x,
+                "dir_y": dir_y,
+            })
+            # Feedback visual/sonoro imediato — servidor confirma dano via SKILL_RESULT
+            SOUNDS.play_skill("skill_pirofagia")
+            return
+
         from components import Enemy
         from systems import apply_effect
         cone = self._cone_tiles(tm.current_tile_x, tm.current_tile_y, angle)

@@ -717,10 +717,74 @@ class SkillHandlers:
         SOUNDS.play_skill("skill_fire_shield")
         return True
 
+    # Cone base de Pirofagia (mesmo _PIRO_CONE de spell_system.py) — cópia para
+    # evitar import circular: skill_handlers → spell_system → systems → skill_handlers
+    _PIRO_CONE = (
+        (1,  0),
+        (2,  0),
+        (3, -1), (3,  0), (3,  1),
+        (4, -2), (4, -1), (4,  0), (4,  1), (4,  2),
+    )
+
+    def _piro_cone_tiles(self, tile_x: int, tile_y: int, dir_x: float, dir_y: float) -> set:
+        """Retorna conjunto de tiles no cone de Pirofagia apontado para (dir_x, dir_y)."""
+        import math as _math
+        angle  = _math.atan2(dir_y, dir_x)
+        cos_a, sin_a = _math.cos(angle), _math.sin(angle)
+        tiles  = set()
+        for dx, dy in self._PIRO_CONE:
+            tiles.add((tile_x + round(dx * cos_a - dy * sin_a),
+                       tile_y + round(dx * sin_a + dy * cos_a)))
+        return tiles
+
     def _skill_pirofagia(self, skill, combat_stats, combat_state, tile_move):
-        """Pirofagia — segura a tecla para mirar o cone, solte para disparar. 75 mana / 90s CD."""
-        from components import PirofagiaAiming
+        """Pirofagia — segura a tecla para mirar o cone, solte para disparar. 75 mana / 90s CD.
+
+        Modo servidor: dir_x/dir_y injetados por world_server._process_skill_requests →
+          executa cone diretamente (sem state machine de mira).
+        Modo cliente (offline): adiciona PirofagiaAiming → PirofagiaSystem gerencia click.
+        """
         char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
+
+        # ── Modo servidor: CAST_SKILL chegou com direção → dispara cone imediatamente ──
+        dir_x = getattr(tile_move, "_server_dir_x", 0.0)
+        dir_y = getattr(tile_move, "_server_dir_y", 0.0)
+        if dir_x != 0.0 or dir_y != 0.0:
+            if not self._check_mana(char_stats, skill.mana_cost):
+                return False
+            if not char_stats:
+                return False
+            char_stats.mana -= skill.mana_cost
+            skill.current_cooldown = skill.cooldown
+
+            from components import Enemy
+            from spell_system import _apply_magic_damage
+            pos_p = self.world.get_component(self.player_entity_id, Position)
+            tm_p  = tile_move
+            if not pos_p or not tm_p or not combat_stats:
+                return False
+            cone  = self._piro_cone_tiles(tm_p.current_tile_x, tm_p.current_tile_y,
+                                          dir_x, dir_y)
+            hit   = 0
+            for eid, etm, ecs in self.world.get_entities_with(TileMovement, CombatStats):
+                if ecs.current_hp <= 0:
+                    continue
+                if not self.world.get_component(eid, Enemy):
+                    continue
+                if (etm.current_tile_x, etm.current_tile_y) in cone:
+                    dmg = max(1, 150 + int(combat_stats.spell_power * 1.50))
+                    _apply_magic_damage(self.player_entity_id, eid, dmg, self.world)
+                    apply_effect(self.world, eid, "disoriented", 3.0)
+                    hit += 1
+            if hit > 0:
+                LOG.add(f"Pirofagia! {hit} alvo(s) atingido(s).", (255, 100, 30))
+            if combat_state:
+                from stat_fns import enter_combat as _ec_piro
+                _ec_piro(combat_state)
+            return True
+
+        # ── Modo cliente (offline): state machine de mira ────────────────────
+        from components import PirofagiaAiming
         if not self._check_mana(char_stats, skill.mana_cost):
             return False
         if self.world.get_component(self.player_entity_id, PirofagiaAiming):
