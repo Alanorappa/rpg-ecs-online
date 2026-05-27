@@ -224,7 +224,7 @@ Só fazer depois de testes cobrindo o comportamento atual.
 - [x] skill_handlers sem pygame no topo (1.3) — 2909ad1
 - [x] Volatile fields resetam no respawn (2.1) — ab3a348
 - [x] max_hp cap no servidor (2.3) — ab3a348
-- [ ] Imports circulares quebrados (2.2)
+- [x] Imports circulares quebrados (2.2) — 123f1df
 - [ ] Tiro Múltiplo online (futura fase — Arqueiro/Bardo)
 - [ ] Testes automatizados (3.1)
 - [ ] AOI spatial hashing (3.2 — só se >20 jogadores)
