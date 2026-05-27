@@ -1016,13 +1016,21 @@ class WorldServer:
             _now_srv = _time_mod.time()
             _elapsed = _now_srv - self._skill_last_used.get(_sk_key, 0.0)
             if _sk_cd > 0 and _elapsed < _sk_cd:
+                _cd_remaining = _sk_cd - _elapsed
                 print(f"[Skill] REJEITADO (CD) {sid} player={player_eid} "
-                      f"restante={_sk_cd - _elapsed:.1f}s")
+                      f"restante={_cd_remaining:.1f}s")
+                # Notifica cliente: limpa _server_pending e sincroniza CD local
+                self._skill_results_this_tick.append({
+                    "caster_eid": player_eid,
+                    "sid":        sid,
+                    "targets":    [],
+                    "cooldown":   _cd_remaining,
+                    "failed":     True,
+                })
                 continue
-            # Registra hora do uso ANTES de chamar o handler (handler pode falhar por
-            # outros motivos; mantemos o registro para evitar retry imediato de exploit)
-            if _sk_cd > 0:
-                self._skill_last_used[_sk_key] = _now_srv
+            # NÃO registra CD aqui — só registra APÓS handler retornar True.
+            # Registrar antes causaria 15s de CD desperdiçado em falhas legítimas
+            # (fora de range, "Sem cargas") e silenciaria o próximo uso válido.
 
             # Aponta o SkillSystem para este player
             self._skill_system.player_entity_id = player_eid
@@ -1216,8 +1224,14 @@ class WorldServer:
                         "applied_effects": _applied,
                     })
 
-            # Envia SKILL_RESULT se houve dano OU se a skill executou com sucesso
-            # (ex: Interceptar não causa dano mas remote clients precisam do evento p/ som)
+            # Registra CD server-side APENAS se handler teve sucesso.
+            # Registrar antes causaria CD desperdiçado em falhas legítimas (fora de
+            # range, "Sem cargas"), silenciando o próximo uso válido — BUG verificado.
+            if _skill_ok and _sk_cd > 0:
+                self._skill_last_used[_sk_key] = _now_srv
+
+            # Envia SKILL_RESULT sempre: sucesso (com dano/efeitos) OU falha (failed=True).
+            # Cliente usa failed=True para restaurar carga consumida localmente + limpar pending.
             if results_targets or _skill_ok:
                 # Inclui o cooldown efetivo que foi aplicado no skill_obj pelo handler.
                 # O cliente usa esse valor para setar current_cooldown (respeitando talentos).
@@ -1227,6 +1241,17 @@ class WorldServer:
                     "sid":        sid,
                     "targets":    results_targets,
                     "cooldown":   _eff_cd,
+                    "failed":     False,
+                })
+            else:
+                # Handler retornou False (sem alvo, fora de range, sem cargas, etc.)
+                # Notifica cliente para restaurar estado local (carga, pending).
+                self._skill_results_this_tick.append({
+                    "caster_eid": player_eid,
+                    "sid":        sid,
+                    "targets":    [],
+                    "cooldown":   0,
+                    "failed":     True,
                 })
 
             # Sincroniza rage/mana/hp do player após a skill
