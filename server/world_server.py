@@ -26,7 +26,7 @@ pygame.init()
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from world import World
-from shared.constants import TICK_RATE, TICK_INTERVAL, SNAPSHOT_HISTORY, TILE_SIZE
+from shared.constants import TICK_RATE, TICK_INTERVAL, SNAPSHOT_HISTORY, TILE_SIZE, LAG_COMP_WINDOW_MS
 
 
 # ── ServerStatusEffectSystem ──────────────────────────────────────────────────
@@ -1117,6 +1117,27 @@ class WorldServer:
             tile_move._server_dir_x = req.get("dir_x", 0.0)
             tile_move._server_dir_y = req.get("dir_y", 0.0)
 
+            # Lag compensation por timestamp para skills de cone (dir != 0, sem alvo fixo).
+            # Usa snapshot histórico: posições dos mobs quando o cliente disparou,
+            # em vez das posições atuais que chegaram ~latência ms depois.
+            # Janela máxima: LAG_COMP_WINDOW_MS (200ms) = SNAPSHOT_HISTORY/TICK_RATE.
+            _lag_restored: dict[int, tuple[int, int]] = {}
+            _is_cone = (tile_move._server_dir_x != 0.0 or tile_move._server_dir_y != 0.0) and tid == -1
+            if _is_cone:
+                _client_ts_ms = req.get("ts", 0)
+                if _client_ts_ms:
+                    _lag_ms = _now_srv * 1000.0 - _client_ts_ms
+                    _lag_ms = max(0.0, min(float(_lag_ms), float(LAG_COMP_WINDOW_MS)))
+                    _ticks_ago = int(_lag_ms / (1000.0 / TICK_RATE))
+                    _hist_snap = self.get_snapshot_at(self.tick_count - _ticks_ago)
+                    from components import TileMovement as _TM_lc
+                    for _lc_eid, (_lc_tx, _lc_ty) in _hist_snap.items():
+                        _lc_tm = self.world.get_component(_lc_eid, _TM_lc)
+                        if _lc_tm:
+                            _lag_restored[_lc_eid] = (_lc_tm.current_tile_x, _lc_tm.current_tile_y)
+                            _lc_tm.current_tile_x = _lc_tx
+                            _lc_tm.current_tile_y = _lc_ty
+
             # Skills ofensivas: enter_combat + is_pursuing (copiado de _use_skill:5299-5305)
             # offensive=True + cast_time==0 → enter_combat + is_pursuing=True
             # offensive=True + cast_time>0  → só enter_combat (evita aggro prematuro)
@@ -1137,7 +1158,13 @@ class WorldServer:
             if handler_fn:
                 try:
                     _skill_ok = handler_fn(skill_obj, combat_stats, combat_state, tile_move)
-                    # Restaura current_tile E Position do mob e player
+                    # Restaura posições de lag comp de cone skills (timestamp-based)
+                    for _lc_eid, (_orig_tx, _orig_ty) in _lag_restored.items():
+                        _lc_tm2 = self.world.get_component(_lc_eid, _TM)
+                        if _lc_tm2:
+                            _lc_tm2.current_tile_x = _orig_tx
+                            _lc_tm2.current_tile_y = _orig_ty
+                    # Restaura current_tile E Position do mob e player (inline snap)
                     for _mob_eid, (_old_cx, _old_cy, _old_px, _old_py) in _mob_tile_snapshots.items():
                         _m_tm  = self.world.get_component(_mob_eid, _TM)
                         _m_pos = self.world.get_component(_mob_eid, _PosSnap)
