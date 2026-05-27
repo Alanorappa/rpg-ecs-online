@@ -27,6 +27,48 @@ def in_aoi(cx: int, cy: int, ex: int, ey: int, radius: int) -> bool:
     return chebyshev(cx, cy, ex, ey) <= radius
 
 
+class SpatialHash:
+    """Grade de células para lookup O(candidatos_no_AOI) em vez de O(total_entidades).
+
+    cell_size deve ser >= AOI_RADIUS: garante que verificar células ±1 em cada
+    dimensão cobre todos os candidatos dentro do raio (3×3 = 9 células).
+    Se cell_size < AOI_RADIUS, o span é aumentado automaticamente.
+    """
+
+    def __init__(self, cell_size: int):
+        self._cs = cell_size
+        self._cells: dict[tuple[int, int], set[int]] = {}
+        # span = número de células a verificar em cada direção além da célula central
+        # ceil(AOI_RADIUS / cell_size) via divisão inteira: -(-a // b)
+        self._span = 1  # atualizado em nearby com o radius recebido
+
+    def clear(self) -> None:
+        self._cells.clear()
+
+    def insert(self, eid: int, tx: int, ty: int) -> None:
+        key = tx // self._cs, ty // self._cs
+        bucket = self._cells.get(key)
+        if bucket is None:
+            self._cells[key] = {eid}
+        else:
+            bucket.add(eid)
+
+    def nearby(self, tx: int, ty: int, radius: int) -> set[int]:
+        """Candidatos em células que podem conter entidades dentro de `radius` tiles.
+
+        Retorna um superconjunto — chamador ainda deve filtrar pela distância exata.
+        """
+        span = -(-radius // self._cs)   # ceil(radius / cell_size)
+        cx, cy = tx // self._cs, ty // self._cs
+        result: set[int] = set()
+        for dx in range(-span, span + 1):
+            for dy in range(-span, span + 1):
+                bucket = self._cells.get((cx + dx, cy + dy))
+                if bucket:
+                    result.update(bucket)
+        return result
+
+
 def start_tile_movement(position, tile_movement, tgt_x: int, tgt_y: int,
                         extra_speed_mult: float = 1.0) -> None:
     """Inicia um movimento tile-a-tile para (tgt_x, tgt_y).
