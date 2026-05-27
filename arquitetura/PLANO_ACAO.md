@@ -228,5 +228,5 @@ Só fazer depois de testes cobrindo o comportamento atual.
 - [ ] Tiro Múltiplo online (futura fase — Arqueiro/Bardo)
 - [x] Testes automatizados (3.1) — 9313adb
 - [x] AOI spatial hashing (3.2) — 709b93c
-- [ ] Lag comp com timestamps (3.3)
+- [x] Lag comp com timestamps (3.3) — 6d3c60b
 - [ ] world_server.py refatoração (3.4)
