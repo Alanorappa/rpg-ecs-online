@@ -786,10 +786,14 @@ class WorldServer:
 
     def _handle_player_death(self, player_eid: int) -> None:
         """Player morreu: reseta HP, teleporta para respawn, mobs param de atacar."""
-        from components import CombatStats, CombatState, TileMovement, Position
+        from components import CombatStats, CombatState, TileMovement, Position, CharacterStats
         player_cs = self.world.get_component(player_eid, CombatStats)
         if player_cs:
             player_cs.current_hp = player_cs.max_hp
+        # Reseta campos voláteis de combate (cargas, procs, contadores) — P3
+        player_char = self.world.get_component(player_eid, CharacterStats)
+        if player_char:
+            player_char.reset_volatile()
 
         # Teleporta o player para o spawn no servidor ANTES de limpar aggro.
         # Isso garante que ServerMobSystem._try_aggro não re-agre imediatamente

@@ -397,8 +397,10 @@ class SessionManager:
             _cst_sv = self.world_server.world.get_component(_eid_sv, _CStSv)
             if _cs_sv:
                 # max_hp: usa o maior entre servidor e cliente (servidor já tem bônus de talento)
+                # Cap de 10 000 evita exploit de HP infinito via SAVE_STATE manipulado (NM2).
+                _MAX_HP_CAP = 10_000
                 if _cli_max_hp and int(_cli_max_hp) > _cs_sv.max_hp:
-                    _cs_sv.max_hp = int(_cli_max_hp)
+                    _cs_sv.max_hp = min(int(_cli_max_hp), _MAX_HP_CAP)
                 # current_hp: cliente é fonte de verdade APENAS fora de combate.
                 # Em combate, o servidor é autoritativo — ignorar valor do cliente evita
                 # que SAVE_STATE (disparado por loot, inventário, etc.) resete o HP

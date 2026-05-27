@@ -560,6 +560,29 @@ class CharacterStats:
         self.fatiador_timer: float = 0.0  # duração total restante (5s)
         self.fatiador_tick:  float = 0.0  # tempo até o próximo tick de dano
 
+        self._init_mana_concentration()
+
+    # Campos voláteis de combate: devem ser resetados no respawn/load para evitar
+    # estados persistentes inconsistentes (P3 do plano de ação).
+    _VOLATILE_FIELDS: tuple = (
+        ("free_executar_charges", 0),
+        ("embalo_charges",        0),
+        ("fire_instant_ready",    False),
+        ("thermal_shock_active",  False),
+        ("pnq_counter",           0),
+        ("fatiador_timer",        0.0),
+        ("fatiador_tick",         0.0),
+        ("rage",                  0),
+    )
+
+    def reset_volatile(self) -> None:
+        """Reseta campos voláteis de combate para valores iniciais.
+        Chamar no respawn e no load de personagem."""
+        for field, default in self._VOLATILE_FIELDS:
+            setattr(self, field, default)
+
+    def _init_mana_concentration(self) -> None:
+        """Chamado ao final de __init__ — campos de Mago/Arqueiro."""
         # Mana (classe Mago)
         self.mana: int = 0
         self.max_mana: int = 0
@@ -570,7 +593,6 @@ class CharacterStats:
         self.max_concentration: int   = 0    # 0 = recurso inexistente para esta classe
         # Canção de Ninar — alvos adormecidos durante o canal (limpo ao concluir/cancelar)
         self.lullaby_targets:   list  = []
-
 
     @staticmethod
     def xp_for_level(level: int) -> int:
