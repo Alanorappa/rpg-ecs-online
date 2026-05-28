@@ -549,7 +549,13 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # Usa is_tile_walkable do offline — mesma lógica de colisão + elevação.
         # _svc['tile_validation'] é registrado em _load_map() antes de qualquer MOVE chegar.
         from systems import is_tile_walkable as _walkable
-        if not _walkable(eid, tx, ty, tm.current_tile_x, tm.current_tile_y):
+        from components import CombatState as _CState
+        _cst = self.world.get_component(eid, _CState)
+        _pursuit_target = (_cst.target_entity_id
+                           if _cst and _cst.is_pursuing and _cst.target_entity_id != -1
+                           else -1)
+        if not _walkable(eid, tx, ty, tm.current_tile_x, tm.current_tile_y,
+                         ignore_eid=_pursuit_target):
             return False
 
         from_tx, from_ty = tm.current_tile_x, tm.current_tile_y
