@@ -239,6 +239,7 @@ class GameEngine:
         self._loading_min_t       = 1.5    # segundos mínimos de tela de loading
         self._loading_timeout     = 15.0   # timeout total antes de continuar offline
         self._loading_anim_t      = 0.0    # timer para animação dos pontos (...)
+        self._logged_char_name    = ""     # nome do personagem logado — hotbar per-char
 
         # Exibe loading screen antes das operações lentas de init (mapa, sistemas,
         # rede) para cobrir a janela preta entre set_mode e run(). Static — um frame.
@@ -2911,7 +2912,8 @@ class GameEngine:
             self._restore_save_state(char)
             # Aplica layout da hotbar a partir de config.json (fonte de verdade local).
             # _restore_save_state só restaura learned_skill_ids; posicionamento é UI.
-            self._apply_hotbar_config()
+            self._logged_char_name = char.get("name", "")
+            self._apply_hotbar_config(char_name=self._logged_char_name)
             # Define HP DEPOIS dos modifiers (max_hp já inclui bônus de equipamento)
             if cs and srv_hp > 0:
                 cs.current_hp = min(srv_hp, cs.max_hp)
@@ -4561,9 +4563,9 @@ class GameEngine:
         self._menu_keys = {**defaults, **saved}
 
     def _save_config(self) -> None:
-        """Persiste todas as configurações (resolução + áudio + hotbar) em config.json."""
+        """Persiste configurações em config.json. Hotbar/consumable são salvos por personagem."""
         import config as _cfg
-        _cfg.save({
+        data = {
             "scale":          self._scale,
             "music_volume":   SOUNDS.music_volume,
             "sfx_volume":     SOUNDS.sfx_volume,
@@ -4571,11 +4573,21 @@ class GameEngine:
             "sfx_enabled":    SOUNDS.sfx_enabled,
             "debug_mode":     DEBUG_MODE,
             "profile_frames": PROFILE_FRAMES,
-            "hotbar":         self._hotbar_to_dict(),
-            "consumable_bar": self._consumable_bar_to_dict(),
             "menu_keybinds":  self._menu_keys,
-        })
-        self._load_menu_keys()   # sincroniza em memória após salvar
+        }
+        if self._logged_char_name:
+            existing = _cfg.load()
+            chars = existing.get("characters", {})
+            chars[self._logged_char_name] = {
+                "hotbar":         self._hotbar_to_dict(),
+                "consumable_bar": self._consumable_bar_to_dict(),
+            }
+            data["characters"] = chars
+        else:
+            data["hotbar"]         = self._hotbar_to_dict()
+            data["consumable_bar"] = self._consumable_bar_to_dict()
+        _cfg.save(data)
+        self._load_menu_keys()
 
     def _hotbar_to_dict(self) -> dict:
         """Serializa a hotbar atual (slots + keybinds) para persistência."""
@@ -4598,14 +4610,22 @@ class GameEngine:
             "keybinds": list(cbar.keybinds),
         }
 
-    def _apply_hotbar_config(self, new_character: bool = False) -> None:
+    def _apply_hotbar_config(self, new_character: bool = False, char_name: str = "") -> None:
         """Restaura layout e keybinds da hotbar e barra de consumíveis a partir de config.json."""
         import config as _cfg
         from skill_config import SKILL_CATALOG, NUM_SLOTS, DEFAULT_KEYBINDS
         data = _cfg.load()
 
+        # Per-character lookup: prefer config["characters"][char_name] over legacy top-level
+        if char_name:
+            _char_cfg = data.get("characters", {}).get(char_name, {})
+            hb      = _char_cfg.get("hotbar")      or data.get("hotbar")
+            cb_data = _char_cfg.get("consumable_bar") or data.get("consumable_bar")
+        else:
+            hb      = data.get("hotbar")
+            cb_data = data.get("consumable_bar")
+
         # ── Skills hotbar ────────────────────────────────────────────────
-        hb = data.get("hotbar")
         if hb:
             ps = self.world.get_component(self.player_entity, PlayerSkills)
             if ps:
@@ -4656,7 +4676,6 @@ class GameEngine:
                     ps.keybinds[i] = saved_keybinds[i]
 
         # ── Consumable bar ────────────────────────────────────────────────
-        cb_data = data.get("consumable_bar")
         if cb_data:
             from components import ConsumableBar as _CB
             cbar = self.world.get_component(self.player_entity, _CB)
