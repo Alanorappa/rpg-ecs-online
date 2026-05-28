@@ -4067,10 +4067,14 @@ class GameEngine:
         """Desenha barras de HP dos mobs remotos com dados autoritativos do servidor."""
         if not self._mob_hp:
             return
-        from components import Position
+        from components import Position, FogOfWar as _FogComp
         from tileset import TILE_SIZE as _TS
         W = _TS - 4
         zoom_surf = self._zoom_surf
+        _fog_vis = None
+        for _, _fog in self.world.get_entities_with(_FogComp):
+            _fog_vis = _fog.visible
+            break
         for server_eid, (hp, hp_max) in self._mob_hp.items():
             local_eid = self._remote_mobs.get(server_eid)
             if local_eid is None:
@@ -4078,6 +4082,11 @@ class GameEngine:
             pos = self.world.get_component(local_eid, Position)
             if not pos:
                 continue
+            if _fog_vis is not None:
+                etx = int(pos.x / _TS)
+                ety = int(pos.y / _TS)
+                if (etx, ety) not in _fog_vis:
+                    continue
             # Posição idêntica ao RenderSystem offline:
             # bar_y = int(draw_y - height/2) - 7  →  7px acima do topo do sprite
             draw_x = pos.x - cam_x
@@ -4531,16 +4540,25 @@ class GameEngine:
         """Nome + HP dos jogadores remotos. Posição lida do ECS (TileMovementSystem anima)."""
         if not self._remote_players:
             return
-        from components import Position, RemoteControlled
+        from components import Position, RemoteControlled, FogOfWar as _FogComp
         from tileset import TILE_SIZE as _TS
         W = H = _TS - 4
         zoom_surf = self._zoom_surf
+        _fog_vis = None
+        for _, _fog in self.world.get_entities_with(_FogComp):
+            _fog_vis = _fog.visible
+            break
 
         for server_eid, local_eid in self._remote_players.items():
             pos = self.world.get_component(local_eid, Position)
             rc  = self.world.get_component(local_eid, RemoteControlled)
             if not pos or not rc:
                 continue
+            if _fog_vis is not None:
+                ptx = int(pos.x / _TS)
+                pty = int(pos.y / _TS)
+                if (ptx, pty) not in _fog_vis:
+                    continue
             px = pos.x - W // 2 - cam_x
             py = pos.y - H // 2 - cam_y
             ns = self.font_xs.render(rc.name, True, (255, 255, 200))

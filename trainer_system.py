@@ -325,10 +325,12 @@ class TrainerSystem(System):
     # render_world() — indicador sobre NPC
     # ------------------------------------------------------------------
     def render_world(self, cam_x: float, cam_y: float):
-        from tileset import TILE_SIZE as _TS
+        from components import Visible as _Vis
         font = self._font_sm
         for eid, pos, rend, _ in self.world.get_entities_with(
                 Position, Renderable, Trainer):
+            if not self.world.get_component(eid, _Vis):
+                continue
             sx = int(pos.x - cam_x) - rend.width  // 2
             sy = int(pos.y - cam_y) - rend.height // 2
             label = font.render("T", True, (120, 200, 255))
