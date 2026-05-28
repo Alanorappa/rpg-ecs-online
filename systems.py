@@ -5689,15 +5689,16 @@ class SkillSystem(System, SkillHandlers):
         if _is_offensive and combat_state and _tile_move_sk:
             if _is_online:
                 _target_local = combat_state.target_entity_id
-                if _target_local == -1:
-                    # Auto-select: mesmo comportamento do offline — B6
-                    _params_pre = getattr(skill, "params", {}) or {}
-                    _auto_range = _params_pre.get("max_range", 1)
-                    _target_local = self._resolve_target(
-                        combat_state, _tile_move_sk, _max_range=_auto_range)
-                if _target_local == -1 and _needs_target:
-                    WARN.add("Nenhum alvo")
-                    return False
+                if _needs_target:
+                    if _target_local == -1:
+                        # Auto-select: mesmo comportamento do offline — B6
+                        _params_pre = getattr(skill, "params", {}) or {}
+                        _auto_range = _params_pre.get("max_range", 1)
+                        _target_local = self._resolve_target(
+                            combat_state, _tile_move_sk, _max_range=_auto_range)
+                    if _target_local == -1:
+                        WARN.add("Nenhum alvo")
+                        return False
 
                 # enter_combat + is_pursuing ANTES do range check (igual offline _use_skill:5307-5313)
                 # Garante que pressionar skill inicia o chase mesmo fora de alcance.
@@ -5706,28 +5707,28 @@ class SkillSystem(System, SkillHandlers):
                 if not _has_cast:
                     combat_state.is_pursuing = True
 
-                # Range check UNIVERSAL em pixels — apenas quando há alvo selecionado
-                _params          = getattr(skill, "params", {}) or {}
-                _max_range_tiles = _params.get("max_range", 1)
-                _min_range_tiles = _params.get("min_range", 0)
-                _tol = SkillHandlers.RANGE_TOLERANCE_PX
-                _max_px = _max_range_tiles * TILE_SIZE + _tol
-                _min_px = max(0.0, _min_range_tiles * TILE_SIZE - _tol) if _min_range_tiles > 0 else 0.0
-                _pl_pos  = self.world.get_component(self.player_entity_id,
-                                                     __import__("components").Position)
-                _tgt_pos = (self.world.get_component(_target_local,
-                                                      __import__("components").Position)
-                            if _target_local != -1 else None)
-                if _pl_pos and _tgt_pos:
-                    _dx_r = _pl_pos.x - _tgt_pos.x
-                    _dy_r = _pl_pos.y - _tgt_pos.y
-                    _d_sq = _dx_r*_dx_r + _dy_r*_dy_r
-                    if _d_sq > _max_px * _max_px:
-                        WARN.add("Fora de alcance")
-                        return False
-                    if _min_px > 0 and _d_sq < _min_px * _min_px:
-                        WARN.add("Alvo muito próximo")
-                        return False
+                # Range check — apenas para skills que exigem alvo explícito
+                if _needs_target and _target_local != -1:
+                    _params          = getattr(skill, "params", {}) or {}
+                    _max_range_tiles = _params.get("max_range", 1)
+                    _min_range_tiles = _params.get("min_range", 0)
+                    _tol = SkillHandlers.RANGE_TOLERANCE_PX
+                    _max_px = _max_range_tiles * TILE_SIZE + _tol
+                    _min_px = max(0.0, _min_range_tiles * TILE_SIZE - _tol) if _min_range_tiles > 0 else 0.0
+                    _pl_pos  = self.world.get_component(self.player_entity_id,
+                                                         __import__("components").Position)
+                    _tgt_pos = self.world.get_component(_target_local,
+                                                         __import__("components").Position)
+                    if _pl_pos and _tgt_pos:
+                        _dx_r = _pl_pos.x - _tgt_pos.x
+                        _dy_r = _pl_pos.y - _tgt_pos.y
+                        _d_sq = _dx_r*_dx_r + _dy_r*_dy_r
+                        if _d_sq > _max_px * _max_px:
+                            WARN.add("Fora de alcance")
+                            return False
+                        if _min_px > 0 and _d_sq < _min_px * _min_px:
+                            WARN.add("Alvo muito próximo")
+                            return False
             else:
                 # Offline: _resolve_target auto-seleciona e verifica CombatStats
                 _target = self._resolve_target(combat_state, _tile_move_sk)
