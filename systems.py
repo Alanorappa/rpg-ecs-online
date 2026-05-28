@@ -5914,7 +5914,7 @@ class SkillSystem(System, SkillHandlers):
                 best_id   = eid
         # Online mobs don't have CombatStats — fall back to closest visible enemy
         if best_id == -1:
-            for eid, epos, etm in self.world.get_entities_with(Position, Enemy, TileMovement):
+            for eid, epos, _, etm in self.world.get_entities_with(Position, Enemy, TileMovement):
                 if self.world.get_component(eid, CombatStats):
                     continue  # already handled above
                 if not self.world.get_component(eid, Visible):
