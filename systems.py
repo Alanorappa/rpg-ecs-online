@@ -1534,10 +1534,13 @@ class PlayerInputSystem(System):
                     attack_range=pursuit_range, target_eid=target_id,
                 )
         else:
-            # Ataque: usa dist_attack (tile autoritativo do servidor) para máxima precisão.
-            # É independente do chase — o guerreiro pode atacar E continuar perseguindo
-            # enquanto o mob ainda está se movendo para tile mais distante.
-            if dist_attack <= self.PLAYER_ATTACK_RANGE:
+            # Ataque: usa o mínimo entre server tile e tile visual — B (PnQ moving mob)
+            # server_tile pode estar 1 passo à frente se o servidor processou movimento
+            # antes do cliente receber, criando dist_attack=2 com mob visualmente adjacente.
+            _vis_dist = chebyshev(pl_tile_x, pl_tile_y,
+                                   target_tm.current_tile_x if target_tm else cur_tile_x,
+                                   target_tm.current_tile_y if target_tm else cur_tile_y)
+            if min(dist_attack, _vis_dist) <= self.PLAYER_ATTACK_RANGE:
                 if combat_state.is_pursuing and can_act and combat_stats.attack_cooldown_timer <= 0:
                     SOUNDS.play_emote_attack(is_player=True)
                     _tgt_cs    = self.world.get_component(target_id, CombatStats)
@@ -2194,13 +2197,7 @@ class EnemyAISystem(System):
                 if ai_control.kite_cooldown <= 0:
                     ai_control.kite_tiles_moved = 0
 
-            # Se o inimigo está se movendo, não faz nada além de atualizar cooldown
-            if tile_movement.is_moving:
-                ai_control.is_blocked = False
-                ai_control.blocked_by_entity_id = -1
-                # Debug: mob em estado ATTACKING mas ainda em movimento → não ataca neste tick
-                continue
-
+            # Limpa flags de bloqueio independente de estar se movendo
             ai_control.is_blocked = False
             ai_control.blocked_by_entity_id = -1
 
@@ -2350,8 +2347,8 @@ class EnemyAISystem(System):
                             _MCL._write(f"[ATK_FIRE_ERR] eid={enemy_id} err={type(_e_atk).__name__}: {_e_atk}")
 
             _is_rooted = _sfx is not None and _sfx.has("root")
-            if _is_rooted:
-                continue  # pode atacar já foi processado acima; só bloqueia movimento
+            if _is_rooted or tile_movement.is_moving:
+                continue  # atacou (se estava em range); bloqueia só o pathfinding
 
             # --- Hunter Disengage: dash 4 tiles ao se sentir encurralado ---
             if (ai_control.entity_class == "Hunter" and
