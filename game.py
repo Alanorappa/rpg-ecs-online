@@ -5304,12 +5304,12 @@ class GameEngine:
                 else:
                     # Item esgotado — ícone com overlay escuro (igual skill indisponível)
                     if _ic:
-                        dim = pygame.Surface((W - 2, H - 2), pygame.SRCALPHA)
-                        dim.blit(_ic, (0, 0))
-                        dim.fill((0, 0, 0, 160), special_flags=pygame.BLEND_RGBA_MULT)
-                        self.screen.blit(dim, (r.x + 2, r.y + 2))
+                        self.screen.blit(_ic, (r.x + 2, r.y + 2))
+                        dim_ov = pygame.Surface((W - 2, H - 2), pygame.SRCALPHA)
+                        dim_ov.fill((0, 0, 0, 160))
+                        self.screen.blit(dim_ov, (r.x + 2, r.y + 2))
                     else:
-                        letter = self.font_sm.render(item_name[0].upper(), True, (60, 90, 70))
+                        letter = self.font_sm.render(item_name[0].upper(), True, (100, 140, 120))
                         self.screen.blit(letter, letter.get_rect(center=r.center))
                     # "0" no canto
                     zero_s = self.font_xs.render("0", True, (200, 80, 80))

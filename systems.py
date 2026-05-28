@@ -1893,7 +1893,7 @@ class EnemyAISystem(System):
     SLEEP_RADIUS_TILES   = 40  # além desta distância (Chebyshev), a AI é completamente suspensa
     MAX_LEASH_RADIUS     = 20  # tiles: mob retorna ao spawn se afastar mais do que isso (aggro normal)
     MAX_LEASH_RADIUS_DMG = 25  # tiles: raio maior quando aggroed por dano (evita reset por 1 hit + recuo)
-    MAX_PATHFINDS_PER_FRAME = 4  # limite de chamadas A* por frame (evita travamento com muitos inimigos)
+    MAX_PATHFINDS_PER_FRAME = 10  # limite de chamadas A* por frame (evita travamento com muitos inimigos)
     # Ranged: kite limitado
     KITE_MAX_TILES       = 3    # máximo de tiles por sessão de kite
     KITE_COOLDOWN        = 1.5  # segundos de pausa entre sessões de kite
@@ -2552,11 +2552,16 @@ class EnemyAISystem(System):
                             if ai_control.path:
                                 found_path_to_target = True
                                 break
-                        
+
                         if not found_path_to_target:
                             ai_control.path = None
 
-                    ai_control.path_recalc_timer = self.path_recalc_interval
+                    # Budget exhausted (not a genuine dead-end) → short jitter so mobs
+                    # don't all retry at the same frame 0.8 s later (storm effect).
+                    if not found_path_to_target and available_attack_tiles and self._pathfind_budget <= 0:
+                        ai_control.path_recalc_timer = random.uniform(0.05, 0.25)
+                    else:
+                        ai_control.path_recalc_timer = self.path_recalc_interval
                     ai_control.last_known_player_tile = player_tile_now
                 
                 if ai_control.path and not ai_control.is_blocked:
@@ -5683,8 +5688,13 @@ class SkillSystem(System, SkillHandlers):
         _needs_target = getattr(skill, "needs_target", True)
         if _is_offensive and combat_state and _tile_move_sk:
             if _is_online:
-                # Online: mobs remotos não têm CombatStats — verifica target_entity_id diretamente
                 _target_local = combat_state.target_entity_id
+                if _target_local == -1:
+                    # Auto-select: mesmo comportamento do offline — B6
+                    _params_pre = getattr(skill, "params", {}) or {}
+                    _auto_range = _params_pre.get("max_range", 1)
+                    _target_local = self._resolve_target(
+                        combat_state, _tile_move_sk, _max_range=_auto_range)
                 if _target_local == -1 and _needs_target:
                     WARN.add("Nenhum alvo")
                     return False
@@ -5902,6 +5912,21 @@ class SkillSystem(System, SkillHandlers):
                 best_dist = d
                 best_hp   = ecs.current_hp
                 best_id   = eid
+        # Online mobs don't have CombatStats — fall back to closest visible enemy
+        if best_id == -1:
+            for eid, epos, etm in self.world.get_entities_with(Position, Enemy, TileMovement):
+                if self.world.get_component(eid, CombatStats):
+                    continue  # already handled above
+                if not self.world.get_component(eid, Visible):
+                    continue
+                if not self._is_on_screen(epos):
+                    continue
+                d = chebyshev(px, py, etm.current_tile_x, etm.current_tile_y)
+                if _max_range > 0 and d > _max_range:
+                    continue
+                if d < best_dist:
+                    best_dist = d
+                    best_id   = eid
         if best_id != -1:
             combat_state.target_entity_id = best_id
             combat_state.is_pursuing      = True
