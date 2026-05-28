@@ -716,7 +716,15 @@ class WorldServer:
                                 _ps_pnq.skills[idx] = _sk_p
                             except ValueError:
                                 _ps_pnq.skills.append(_sk_p)
-                    if _sk_p and _sk_p.current_cooldown <= 0:
+                    # Usa _skill_last_used para verificar CD — current_cooldown no
+                    # objeto Skill nunca é decrementado no servidor (SkillSystem.update
+                    # não roda). Sem esta correção, charges param de acumular após
+                    # o primeiro uso.
+                    import time as _t_pnq
+                    _pnq_cd      = getattr(_sk_p, "cooldown", 0.0) if _sk_p else 0.0
+                    _pnq_elapsed = _t_pnq.time() - self._skill_last_used.get(
+                                       (player_eid, "punho_no_queixo"), 0.0)
+                    if _sk_p and _pnq_elapsed >= _pnq_cd:
                         player_char.pnq_counter += 1
                         if player_char.pnq_counter >= 3:
                             player_char.pnq_counter = 0
@@ -1094,13 +1102,29 @@ class WorldServer:
                             _mob_pos.x if _mob_pos else 0,
                             _mob_pos.y if _mob_pos else 0)
                     _mob_tile_snapshots[tid] = _old
-                    # Só snapa se mob está na segunda metade do movimento
-                    if _mob_tm.is_moving and _mob_tm.progress >= 0.5:
-                        _mob_tm.current_tile_x = _mob_tm.target_tile_x
-                        _mob_tm.current_tile_y = _mob_tm.target_tile_y
-                        if _mob_pos:
-                            _mob_pos.x = _mob_tm.target_tile_x * TILE_SIZE + TILE_SIZE / 2
-                            _mob_pos.y = _mob_tm.target_tile_y * TILE_SIZE + TILE_SIZE / 2
+                    if _mob_tm.is_moving:
+                        # Determina posição de referência para o range check.
+                        # Player snapped para target_tile — usa o mesmo como base.
+                        _p_ref_x = tile_move.target_tile_x if tile_move.is_moving else tile_move.current_tile_x
+                        _p_ref_y = tile_move.target_tile_y if tile_move.is_moving else tile_move.current_tile_y
+                        from utils import chebyshev as _cheb_snap
+                        _d_cur = _cheb_snap(_p_ref_x, _p_ref_y,
+                                            _mob_tm.current_tile_x, _mob_tm.current_tile_y)
+                        _d_tgt = _cheb_snap(_p_ref_x, _p_ref_y,
+                                            _mob_tm.target_tile_x,  _mob_tm.target_tile_y)
+                        if _mob_tm.progress >= 0.5 and _d_tgt <= _d_cur:
+                            # Mob se aproximando: snapa para target_tile (espelha predição cliente)
+                            _mob_tm.current_tile_x = _mob_tm.target_tile_x
+                            _mob_tm.current_tile_y = _mob_tm.target_tile_y
+                            if _mob_pos:
+                                _mob_pos.x = _mob_tm.target_tile_x * TILE_SIZE + TILE_SIZE / 2
+                                _mob_pos.y = _mob_tm.target_tile_y * TILE_SIZE + TILE_SIZE / 2
+                        elif _mob_pos:
+                            # Mob se afastando (kiting) ou progress < 0.5: usa centro do
+                            # current_tile — remove bias de interpolação que causa falso
+                            # "fora de alcance" em diagonal (ex: goblins hunters).
+                            _mob_pos.x = _mob_tm.current_tile_x * TILE_SIZE + TILE_SIZE / 2
+                            _mob_pos.y = _mob_tm.current_tile_y * TILE_SIZE + TILE_SIZE / 2
             # Player: snapa sempre para target_tile (cliente usa prediction)
             _player_pos = self.world.get_component(player_eid, _PosSnap)
             if tile_move.is_moving:

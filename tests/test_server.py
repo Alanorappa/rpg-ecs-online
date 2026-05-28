@@ -766,9 +766,11 @@ class TestPunhoNoQueixo(unittest.TestCase):
         eid, pnq_sk, char = self._setup_warrior_pnq()
         mob = self._setup_adjacent_mob(eid)
 
-        pnq_sk.current_cooldown = 15.0  # skill em CD
-        pnq_sk.charges          = 0
-        char.pnq_counter        = 0
+        # Simula cooldown via _skill_last_used (servidor usa isso, não current_cooldown)
+        import time as _t
+        self.ws._skill_last_used[(eid, "punho_no_queixo")] = _t.time()
+        pnq_sk.charges   = 0
+        char.pnq_counter = 0
 
         for _ in range(3):
             self._force_attack("s1", eid, mob)
