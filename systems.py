@@ -5842,6 +5842,14 @@ class SkillSystem(System, SkillHandlers):
         if skill.skill_id == "interceptar" and _tile_move_sk and combat_state:
             self._interceptar_dash_visual(combat_state, _tile_move_sk)
 
+        # Fatiador de Corpos: seta timer local para a animação de channeling (hotbar overlay).
+        # Ticks reais são processados no servidor; o cliente só usa o timer para o visual.
+        # _fatiador_aoe_tick local não causa dano (mobs online não têm CombatStats).
+        if skill.skill_id == "fatiador_de_corpos" and _is_online and _char:
+            _fat_p = getattr(skill, "params", {}) or {}
+            _char.fatiador_timer = _fat_p.get("duration",      5.0)
+            _char.fatiador_tick  = _fat_p.get("tick_interval", 1.0)
+
         return True
 
     def _interceptar_dash_visual(self, combat_state, tile_move) -> None:

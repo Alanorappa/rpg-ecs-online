@@ -164,6 +164,9 @@ class CombatProcessorMixin:
             if _ai_r and _ai_r.state in ("ATTACKING", "CHASING") and _ai_r.target_eid != -1:
                 _mob_attacker_of[_ai_r.target_eid] = _mb
 
+        # ── DEBUG mob stop-attack (remover após diagnóstico) ────────────────
+        _DBG_MOB_ATK = True
+
         for peid, hp_before in player_hp_snapshot.items():
             pcs = self.world.get_component(peid, CombatStats)
             if not pcs:
@@ -171,6 +174,24 @@ class CombatProcessorMixin:
             hp_now    = pcs.current_hp
             sfx_dmg   = self._sfx_damage_players.get(peid, 0)
             mob_delta = (hp_before - sfx_dmg) - hp_now   # dano exclusivo de mobs/projéteis
+
+            if _DBG_MOB_ATK:
+                _mob_atk_dbg = _mob_attacker_of.get(peid, -1)
+                if _mob_atk_dbg != -1 and mob_delta == 0:
+                    _ai_dbg = self.world.get_component(_mob_atk_dbg, _AIAtk)
+                    from components import TileMovement as _TM_dbg
+                    _mob_tm_dbg    = self.world.get_component(_mob_atk_dbg, _TM_dbg)
+                    _player_tm_dbg = self.world.get_component(peid, _TM_dbg)
+                    from utils import chebyshev as _cheb_dbg
+                    _dist_dbg = (_cheb_dbg(_player_tm_dbg.current_tile_x,
+                                           _player_tm_dbg.current_tile_y,
+                                           _mob_tm_dbg.current_tile_x,
+                                           _mob_tm_dbg.current_tile_y)
+                                 if (_player_tm_dbg and _mob_tm_dbg) else -1)
+                    print(f"[DBG_MOB] mob={_mob_atk_dbg} state={_ai_dbg.state if _ai_dbg else '?'} "
+                          f"→ player={peid} dist={_dist_dbg}t "
+                          f"hp_before={hp_before} hp_now={hp_now} sfx={sfx_dmg} delta=0 "
+                          f"(mob em {_ai_dbg.state if _ai_dbg else '?'} mas sem dano detectado)")
 
             if mob_delta > 0:
                 attacker_mob_eid = _mob_attacker_of.get(peid, -1)

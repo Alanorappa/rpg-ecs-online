@@ -1256,6 +1256,49 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # (se ordem fosse invertida, auto-attack poderia matar o mob antes da skill checar HP)
         self._process_skill_requests()
 
+        # Fatiador de Corpos: ticks subsequentes ao cast (tick 0 disparado pelo handler em
+        # _process_skill_requests; PlayerInputSystem só roda no cliente, não no servidor).
+        from components import CharacterStats as _FatCS, TileMovement as _FatTM
+        from components import PlayerSkills as _FatPS, CombatStats as _FatCombatCS
+        from skill_config import SKILL_CATALOG as _FatCat
+        for _fat_peid in list(self._player_eids.values()):
+            _fat_char = self.world.get_component(_fat_peid, _FatCS)
+            if not _fat_char or _fat_char.fatiador_timer <= 0:
+                continue
+            _fat_char.fatiador_timer = max(0.0, _fat_char.fatiador_timer - dt)
+            _fat_char.fatiador_tick  = max(0.0, _fat_char.fatiador_tick  - dt)
+            if _fat_char.fatiador_tick <= 0 and _fat_char.fatiador_timer > 0:
+                _fat_char.fatiador_tick = 1.0
+                _fat_tm = self.world.get_component(_fat_peid, _FatTM)
+                _fat_ps = self.world.get_component(_fat_peid, _FatPS)
+                _fat_sk = _fat_ps.skill_by_id("fatiador_de_corpos") if _fat_ps else None
+                if _fat_sk is None:
+                    _fat_sk = _FatPS._make_skill("fatiador_de_corpos", _FatCat)
+                if _fat_tm and _fat_sk:
+                    _fat_hp_snap: dict[int, int] = {}
+                    for _fat_meid in self._mob_eids:
+                        _fat_mcs = self.world.get_component(_fat_meid, _FatCombatCS)
+                        if _fat_mcs:
+                            _fat_hp_snap[_fat_meid] = _fat_mcs.current_hp
+                    self._skill_system.player_entity_id = _fat_peid
+                    self._skill_system._fatiador_aoe_tick(_fat_sk, _fat_tm)
+                    for _fat_meid, _fat_hp_pre in _fat_hp_snap.items():
+                        _fat_mcs2 = self.world.get_component(_fat_meid, _FatCombatCS)
+                        if not _fat_mcs2:
+                            continue
+                        _fat_dmg = max(0, _fat_hp_pre - _fat_mcs2.current_hp)
+                        if _fat_dmg > 0:
+                            _fat_log = self._mob_damage_log.setdefault(_fat_meid, {})
+                            _fat_log[_fat_peid] = _fat_log.get(_fat_peid, 0) + _fat_dmg
+                            self._combat_this_tick.append({
+                                "attacker": _fat_peid,
+                                "target":   _fat_meid,
+                                "damage":   _fat_dmg,
+                                "outcome":  "hit",
+                                "hp_after": max(0, _fat_mcs2.current_hp),
+                                "source":   "skill",
+                            })
+
         # Player→mob: usa deal_damage() offline; Mob→player: detectado por variação de HP
         self._process_player_attacks(dt, player_hp_snap)
 
