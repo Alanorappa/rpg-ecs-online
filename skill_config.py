@@ -73,6 +73,7 @@ SKILL_CATALOG: dict[str, dict] = {
         "rage_cost":        0,
         "proc_attr":        "",
         "proc_ignores_cost": False,
+        "needs_target":     False,
         "class_id":         "guerreiro",
         "params": {"damage_multiplier": 0.50, "radius_tiles": 3},
     },
@@ -115,6 +116,7 @@ SKILL_CATALOG: dict[str, dict] = {
         "rage_cost":        0,
         "proc_attr":        "",
         "proc_ignores_cost": False,
+        "needs_target":     False,
         "sound":            "skill_brado_provocativo",
         "class_id":         "guerreiro",
         "params": {"radius_tiles": 3, "duration": 10.0},
@@ -137,6 +139,7 @@ SKILL_CATALOG: dict[str, dict] = {
         "rage_cost":        0,
         "proc_attr":        "",
         "proc_ignores_cost": False,
+        "needs_target":     False,
         "class_id":         "guerreiro",
         "params": {
             "damage_multiplier": 0.65,   # % do AP por tick

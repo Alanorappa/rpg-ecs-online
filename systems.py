@@ -422,11 +422,11 @@ class TileValidationSystem(System):
                 ai_control.is_blocked = True
                 ai_control.blocked_by_entity_id = occupant_id
 
-        # Jogador pode mover para tile de inimigo — evita correção server-side ao perseguir
-        # (race condition: cliente calcula path ignorando alvo, servidor vê outro mob no tile)
+        # Jogador pode mover para o tile do alvo explícito (perseguição via A*)
+        # WASD passa ignore_eid=-1 → tile do mob bloqueado normalmente — B1
         if self.world.get_component(moving_entity_id, PlayerControlled) and \
            self.world.get_component(occupant_id, Enemy):
-            return True
+            return occupant_id == ignore_eid
 
         return False
 
@@ -1159,8 +1159,15 @@ class MouseTargetingSystem(System):
 
     def _enemy_at_world_pos(self, world_x: float, world_y: float) -> int:
         """Retorna o entity_id do inimigo vivo e visível na posição mundo, ou -1."""
-        for entity_id, pos, renderable, _, _ in self.world.get_entities_with(
-                Position, Renderable, Enemy, Visible):
+        _fog_vis = None
+        for _, _fw in self.world.get_entities_with(FogOfWar):
+            _fog_vis = _fw.visible
+            break
+        for entity_id, pos, renderable, _, _, etm in self.world.get_entities_with(
+                Position, Renderable, Enemy, Visible, TileMovement):
+            if _fog_vis is not None and \
+                    (etm.current_tile_x, etm.current_tile_y) not in _fog_vis:
+                continue
             hw = renderable.width / 2
             hh = renderable.height / 2
             if (pos.x - hw <= world_x <= pos.x + hw and
@@ -1391,12 +1398,13 @@ class PlayerInputSystem(System):
                     tgt_y += 1
 
                 if tgt_x != cur_x or tgt_y != cur_y:
-                    # Teclado cancela auto-move mas MANTÉM perseguição — player pode
-                    # mover manualmente e continuar atacando se ainda estiver em range
+                    # Teclado cancela auto-move e perseguição — Space re-engaja — B5
                     if auto_move:
                         auto_move.active = False
                         auto_move.path.clear()
                         auto_move.ground_target = None
+                    if combat_state:
+                        combat_state.is_pursuing = False
                     if is_tile_walkable(
                             entity_id, tgt_x, tgt_y, cur_x, cur_y):
                         self._start_tile_movement(position, tile_movement, tgt_x, tgt_y)
@@ -1834,6 +1842,11 @@ class PlayerInputSystem(System):
         pl_x = tile_movement.current_tile_x
         pl_y = tile_movement.current_tile_y
 
+        _fog_vis_se = None
+        for _, _fw_se in self.world.get_entities_with(FogOfWar):
+            _fog_vis_se = _fw_se.visible
+            break
+
         best_eid  = -1
         best_dist = float("inf")
         for eid, epos, _, _, etm, ecs, _ in self.world.get_entities_with(
@@ -1841,6 +1854,9 @@ class PlayerInputSystem(System):
             if ecs.current_hp <= 0:
                 continue
             if not self._is_on_screen(epos):
+                continue
+            if _fog_vis_se is not None and \
+                    (etm.current_tile_x, etm.current_tile_y) not in _fog_vis_se:
                 continue
             dist = chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y)
             if dist < best_dist:
@@ -2548,10 +2564,15 @@ class EnemyAISystem(System):
                 
                 if ai_control.path and not ai_control.is_blocked:
                     next_tile_on_path_x, next_tile_on_path_y = ai_control.path[0]
+                    _next_tile = (next_tile_on_path_x, next_tile_on_path_y)
 
-                    if is_tile_walkable(enemy_id, next_tile_on_path_x, next_tile_on_path_y):
+                    # B2: also guard against another mob already claiming this tile
+                    # in the same frame (all_occupied_tiles tracks target tiles too)
+                    if is_tile_walkable(enemy_id, next_tile_on_path_x, next_tile_on_path_y) and \
+                            _next_tile not in all_occupied_tiles:
                         start_tile_movement(enemy_pos, tile_movement, next_tile_on_path_x, next_tile_on_path_y)
                         ai_control.path.pop(0)
+                        all_occupied_tiles.add(_next_tile)  # claim tile for rest of frame
                     else:
                         ai_control.path = None
                         ai_control.path_recalc_timer = 0.0
@@ -2587,9 +2608,12 @@ class EnemyAISystem(System):
 
                     if ai_control.path and not ai_control.is_blocked:
                         next_tile_on_path_x, next_tile_on_path_y = ai_control.path[0]
-                        if is_tile_walkable(enemy_id, next_tile_on_path_x, next_tile_on_path_y):
+                        _next_ret_tile = (next_tile_on_path_x, next_tile_on_path_y)
+                        if is_tile_walkable(enemy_id, next_tile_on_path_x, next_tile_on_path_y) and \
+                                _next_ret_tile not in all_occupied_tiles:
                             start_tile_movement(enemy_pos, tile_movement, next_tile_on_path_x, next_tile_on_path_y)
                             ai_control.path.pop(0)
+                            all_occupied_tiles.add(_next_ret_tile)
                         else:
                             ai_control.path = None
                             ai_control.path_recalc_timer = 0.0
@@ -5659,11 +5683,12 @@ class SkillSystem(System, SkillHandlers):
                                           __import__("components").CombatStats)
 
         # 4. Para ofensivas: resolve alvo + inicia chase + verifica range
+        _needs_target = getattr(skill, "needs_target", True)
         if _is_offensive and combat_state and _tile_move_sk:
             if _is_online:
                 # Online: mobs remotos não têm CombatStats — verifica target_entity_id diretamente
                 _target_local = combat_state.target_entity_id
-                if _target_local == -1:
+                if _target_local == -1 and _needs_target:
                     WARN.add("Nenhum alvo")
                     return False
 
@@ -5674,9 +5699,7 @@ class SkillSystem(System, SkillHandlers):
                 if not _has_cast:
                     combat_state.is_pursuing = True
 
-                # Range check UNIVERSAL em pixels.
-                # max_range_px = max_range_tiles * TILE_SIZE + TOLERANCE
-                # min_range_px = min_range_tiles * TILE_SIZE - TOLERANCE  (se > 0)
+                # Range check UNIVERSAL em pixels — apenas quando há alvo selecionado
                 _params          = getattr(skill, "params", {}) or {}
                 _max_range_tiles = _params.get("max_range", 1)
                 _min_range_tiles = _params.get("min_range", 0)
@@ -5685,8 +5708,9 @@ class SkillSystem(System, SkillHandlers):
                 _min_px = max(0.0, _min_range_tiles * TILE_SIZE - _tol) if _min_range_tiles > 0 else 0.0
                 _pl_pos  = self.world.get_component(self.player_entity_id,
                                                      __import__("components").Position)
-                _tgt_pos = self.world.get_component(_target_local,
-                                                     __import__("components").Position)
+                _tgt_pos = (self.world.get_component(_target_local,
+                                                      __import__("components").Position)
+                            if _target_local != -1 else None)
                 if _pl_pos and _tgt_pos:
                     _dx_r = _pl_pos.x - _tgt_pos.x
                     _dy_r = _pl_pos.y - _tgt_pos.y
@@ -5700,7 +5724,7 @@ class SkillSystem(System, SkillHandlers):
             else:
                 # Offline: _resolve_target auto-seleciona e verifica CombatStats
                 _target = self._resolve_target(combat_state, _tile_move_sk)
-                if _target == -1:
+                if _target == -1 and _needs_target:
                     WARN.add("Nenhum alvo")
                     return False
 
@@ -5863,10 +5887,11 @@ class SkillSystem(System, SkillHandlers):
             cs = self.world.get_component(current, CombatStats)
             if cs and cs.current_hp > 0:
                 return current
-        # Auto-seleciona o inimigo mais próximo visível na tela e no campo de visão
+        # Auto-seleciona o inimigo em range com menor HP (desempate por distância) — B6
         px, py    = tile_move.current_tile_x, tile_move.current_tile_y
         best_id   = -1
         best_dist = float("inf")
+        best_hp   = float("inf")
         for eid, epos, _, _, etm, ecs, _ in self.world.get_entities_with(
                 Position, Enemy, AIControlled, TileMovement, CombatStats, Visible):
             if ecs.current_hp <= 0:
@@ -5874,8 +5899,11 @@ class SkillSystem(System, SkillHandlers):
             if not self._is_on_screen(epos):
                 continue
             d = chebyshev(px, py, etm.current_tile_x, etm.current_tile_y)
-            if d < best_dist:
+            if _max_range > 0 and d > _max_range:
+                continue
+            if ecs.current_hp < best_hp or (ecs.current_hp == best_hp and d < best_dist):
                 best_dist = d
+                best_hp   = ecs.current_hp
                 best_id   = eid
         if best_id != -1:
             combat_state.target_entity_id = best_id

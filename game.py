@@ -1467,6 +1467,7 @@ class GameEngine:
                     _enemy_tiles = [
                         (etm.current_tile_x, etm.current_tile_y)
                         for _, _, _, etm in self.world.get_entities_with(Enemy, Visible, TileMovement)
+                        if (etm.current_tile_x, etm.current_tile_y) in _fog_mm.visible
                     ]
                     self._minimap.render(
                         _player_tm_m.current_tile_x,
@@ -3116,6 +3117,12 @@ class GameEngine:
                         player_tm.current_tile_y = real_ty
                         player_tm.target_tile_x  = real_tx
                         player_tm.target_tile_y  = real_ty
+                        # Sincroniza pixel position — B10
+                        from components import Position as _PosSync
+                        _ppos = self.world.get_component(self.player_entity, _PosSync)
+                        if _ppos:
+                            _ppos.x = real_tx * TILE_SIZE + TILE_SIZE / 2
+                            _ppos.y = real_ty * TILE_SIZE + TILE_SIZE / 2
                         if skill_rejected:
                             # Feedback imediato: avisa que o dash foi bloqueado
                             from floating_text import FLT

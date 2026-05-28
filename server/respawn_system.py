@@ -34,6 +34,16 @@ class RespawnMixin:
         if player_char:
             player_char.reset_volatile()
 
+        # Limpa efeitos ativos (DoT/HoT) — B8
+        from components import StatusEffects as _SFX, ActiveRegen as _AR
+        sfx = self.world.get_component(player_eid, _SFX)
+        if sfx:
+            sfx.effects.clear()
+        try:
+            self.world.remove_component(player_eid, _AR)
+        except Exception:
+            pass
+
         # Teleporta o player para o spawn no servidor ANTES de limpar aggro.
         # Isso garante que ServerMobSystem._try_aggro não re-agre imediatamente
         # porque o player está fora do AGGRO_RANGE após o teleporte.

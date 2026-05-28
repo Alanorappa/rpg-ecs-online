@@ -803,6 +803,7 @@ class Skill:
         self.school:          str   = ""     # escola de magia: "fogo"|"gelo"|"arcano"|""
         self.mana_cost_pct:   float = 0.0   # custo em % da mana máxima (0 = usa mana_cost fixo)
         self.offensive:       bool  = True  # False = skill utilitária/buff — não inicia combate
+        self.needs_target:    bool  = True  # False = AoE/utilitária — dispara sem alvo selecionado
         # Parâmetros de gameplay da skill (vindos do SKILL_CATALOG["params"])
         # Ex: {"damage_multiplier": 0.45, "radius_tiles": 2, "duration": 5.0}
         self.params:          dict  = {}
@@ -866,6 +867,7 @@ class PlayerSkills:
             s.school            = entry.get("school",            "")
             s.mana_cost_pct     = entry.get("mana_cost_pct",    0.0)
             s.offensive         = entry.get("offensive",         True)
+            s.needs_target      = entry.get("needs_target",      True)
             s.params            = entry.get("params",            {})
             if entry.get("sound"):
                 s.sound_name = entry["sound"]
