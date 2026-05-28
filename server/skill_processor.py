@@ -1,0 +1,357 @@
+"""
+server/skill_processor.py
+Mixin para WorldServer: processamento de skill requests por tick.
+"""
+from __future__ import annotations
+
+from shared.constants import TILE_SIZE, TICK_RATE, LAG_COMP_WINDOW_MS
+
+
+class SkillProcessorMixin:
+
+    def _process_skill_requests(self) -> None:
+        """Processa todas as skills enfileiradas para este tick."""
+        from components import CombatState, CombatStats, TileMovement
+        from skill_config import SKILL_CATALOG
+        from components import PlayerSkills as _PS
+        requests = list(self._pending_skill_requests)
+        self._pending_skill_requests.clear()
+
+        for req in requests:
+            player_eid = req["player_eid"]
+            sid        = req["sid"]
+
+            # Constrói objeto Skill a partir do SKILL_CATALOG (servidor não tem PlayerSkills)
+            # Tenta primeiro no PlayerSkills local se existir (ex: skills com estado de cargas)
+            skill_obj = None
+            player_skills = self.world.get_component(player_eid, _PS)
+            if player_skills:
+                for sk in player_skills.skills:
+                    if sk and sk.skill_id == sid:
+                        skill_obj = sk
+                        break
+            if skill_obj is None:
+                # Fallback: cria instância temporária do SKILL_CATALOG
+                skill_obj = _PS._make_skill(sid, SKILL_CATALOG) if sid in SKILL_CATALOG else None
+            if skill_obj is None:
+                print(f"[Skill] sid='{sid}' não encontrado no SKILL_CATALOG")
+                continue
+
+            # ── Validação server-side de cooldown ─────────────────────────────
+            # Impede spam mesmo que o cliente manipule current_cooldown local.
+            # Skills com cooldown=0 (Golpe Poderoso, Executar) passam sempre;
+            # skills com cooldown>0 são bloqueadas se o tempo decorrido for menor.
+            import time as _time_mod
+            _sk_cd   = getattr(skill_obj, "cooldown", 0.0)
+            _sk_key  = (player_eid, sid)
+            _now_srv = _time_mod.time()
+            _elapsed = _now_srv - self._skill_last_used.get(_sk_key, 0.0)
+            if _sk_cd > 0 and _elapsed < _sk_cd:
+                _cd_remaining = _sk_cd - _elapsed
+                print(f"[Skill] REJEITADO (CD) {sid} player={player_eid} "
+                      f"restante={_cd_remaining:.1f}s")
+                # Notifica cliente: limpa _server_pending e sincroniza CD local
+                self._skill_results_this_tick.append({
+                    "caster_eid": player_eid,
+                    "sid":        sid,
+                    "targets":    [],
+                    "cooldown":   _cd_remaining,
+                    "failed":     True,
+                })
+                continue
+            # NÃO registra CD aqui — só registra APÓS handler retornar True.
+            # Registrar antes causaria 15s de CD desperdiçado em falhas legítimas
+            # (fora de range, "Sem cargas") e silenciaria o próximo uso válido.
+
+            # Aponta o SkillSystem para este player
+            self._skill_system.player_entity_id = player_eid
+
+            # Captura HP antes de processar (para detectar dano causado e auto-cura)
+            hp_snapshot: dict[int, int] = {}
+            for mob_eid in self._mob_eids:
+                cs = self.world.get_component(mob_eid, CombatStats)
+                if cs:
+                    hp_snapshot[mob_eid] = cs.current_hp
+
+            # Captura efeitos de status antes da skill (para detectar novos efeitos aplicados)
+            from components import StatusEffects as _SfxSk
+            effects_snapshot: dict[int, set] = {}
+            for _m_eid in hp_snapshot:
+                _sfx_pre = self.world.get_component(_m_eid, _SfxSk)
+                effects_snapshot[_m_eid] = set(_sfx_pre.effects.keys()) if _sfx_pre else set()
+
+            # Obtém componentes necessários para os handlers
+            combat_stats = self.world.get_component(player_eid, CombatStats)
+            combat_state = self.world.get_component(player_eid, CombatState)
+            tile_move    = self.world.get_component(player_eid, TileMovement)
+            if not combat_stats or not tile_move:
+                continue
+
+            # Snapshot do HP do próprio player (para detectar auto-cura/dano próprio)
+            _player_hp_before = combat_stats.current_hp
+
+            # Seta target no servidor usando tid do CAST_SKILL (server_eid enviado pelo cliente)
+            tid = req.get("tid", -1)
+            if tid != -1 and tid in self._mob_eids and combat_state:
+                combat_state.target_entity_id = tid
+
+            # Lag compensation: snapa posições para o range check de skill.
+            # Player: sempre usa target_tile (cliente vê a si mesmo no destino).
+            # Mob: SÓ snapa se progress >= 0.5 — espelha a predição do cliente
+            #   (sistemas.py _process_target: quando mob >= 50% do caminho, usa target_tile).
+            #   Para kiting (mob acabou de sair), progress < 0.5 → usa current_tile,
+            #   evitando que a lag comp aumente artificialmente a distância.
+            # Lag compensation: snapa tile E Position para o centro do tile alvo.
+            # Position.x/y é interpolado (mid-animation) — sem este snap, o range check
+            # em pixels usaria posição errada mesmo com tile correto.
+            _mob_tile_snapshots: dict[int, tuple] = {}    # eid → (tile_x, tile_y, pos_x, pos_y)
+            _player_tile_snap   = None                    # (tile_x, tile_y, pos_x, pos_y)
+            from components import Position as _PosSnap, TileMovement as _TM
+            if tid != -1 and tid in self._mob_eids:
+                _mob_tm  = self.world.get_component(tid, _TM)
+                _mob_pos = self.world.get_component(tid, _PosSnap)
+                if _mob_tm:
+                    _old = (_mob_tm.current_tile_x, _mob_tm.current_tile_y,
+                            _mob_pos.x if _mob_pos else 0,
+                            _mob_pos.y if _mob_pos else 0)
+                    _mob_tile_snapshots[tid] = _old
+                    if _mob_tm.is_moving:
+                        # Determina posição de referência para o range check.
+                        # Player snapped para target_tile — usa o mesmo como base.
+                        _p_ref_x = tile_move.target_tile_x if tile_move.is_moving else tile_move.current_tile_x
+                        _p_ref_y = tile_move.target_tile_y if tile_move.is_moving else tile_move.current_tile_y
+                        from utils import chebyshev as _cheb_snap
+                        _d_cur = _cheb_snap(_p_ref_x, _p_ref_y,
+                                            _mob_tm.current_tile_x, _mob_tm.current_tile_y)
+                        _d_tgt = _cheb_snap(_p_ref_x, _p_ref_y,
+                                            _mob_tm.target_tile_x,  _mob_tm.target_tile_y)
+                        if _mob_tm.progress >= 0.5 and _d_tgt <= _d_cur:
+                            # Mob se aproximando: snapa para target_tile (espelha predição cliente)
+                            _mob_tm.current_tile_x = _mob_tm.target_tile_x
+                            _mob_tm.current_tile_y = _mob_tm.target_tile_y
+                            if _mob_pos:
+                                _mob_pos.x = _mob_tm.target_tile_x * TILE_SIZE + TILE_SIZE / 2
+                                _mob_pos.y = _mob_tm.target_tile_y * TILE_SIZE + TILE_SIZE / 2
+                        elif _mob_pos:
+                            # Mob se afastando (kiting) ou progress < 0.5: usa centro do
+                            # current_tile — remove bias de interpolação que causa falso
+                            # "fora de alcance" em diagonal (ex: goblins hunters).
+                            _mob_pos.x = _mob_tm.current_tile_x * TILE_SIZE + TILE_SIZE / 2
+                            _mob_pos.y = _mob_tm.current_tile_y * TILE_SIZE + TILE_SIZE / 2
+            # Player: snapa sempre para target_tile (cliente usa prediction)
+            _player_pos = self.world.get_component(player_eid, _PosSnap)
+            if tile_move.is_moving:
+                _player_tile_snap = (tile_move.current_tile_x, tile_move.current_tile_y,
+                                     _player_pos.x if _player_pos else 0,
+                                     _player_pos.y if _player_pos else 0)
+                tile_move.current_tile_x = tile_move.target_tile_x
+                tile_move.current_tile_y = tile_move.target_tile_y
+                if _player_pos:
+                    _player_pos.x = tile_move.target_tile_x * TILE_SIZE + TILE_SIZE / 2
+                    _player_pos.y = tile_move.target_tile_y * TILE_SIZE + TILE_SIZE / 2
+
+            # Para skills direcionais (Pirofagia, Tiro Múltiplo), injeta direção
+            tile_move._server_dir_x = req.get("dir_x", 0.0)
+            tile_move._server_dir_y = req.get("dir_y", 0.0)
+
+            # Lag compensation por timestamp para skills de cone (dir != 0, sem alvo fixo).
+            # Usa snapshot histórico: posições dos mobs quando o cliente disparou,
+            # em vez das posições atuais que chegaram ~latência ms depois.
+            # Janela máxima: LAG_COMP_WINDOW_MS (200ms) = SNAPSHOT_HISTORY/TICK_RATE.
+            _lag_restored: dict[int, tuple[int, int]] = {}
+            _is_cone = (tile_move._server_dir_x != 0.0 or tile_move._server_dir_y != 0.0) and tid == -1
+            if _is_cone:
+                _client_ts_ms = req.get("ts", 0)
+                if _client_ts_ms:
+                    _lag_ms = _now_srv * 1000.0 - _client_ts_ms
+                    _lag_ms = max(0.0, min(float(_lag_ms), float(LAG_COMP_WINDOW_MS)))
+                    _ticks_ago = int(_lag_ms / (1000.0 / TICK_RATE))
+                    _hist_snap = self.get_snapshot_at(self.tick_count - _ticks_ago)
+                    from components import TileMovement as _TM_lc
+                    for _lc_eid, (_lc_tx, _lc_ty) in _hist_snap.items():
+                        _lc_tm = self.world.get_component(_lc_eid, _TM_lc)
+                        if _lc_tm:
+                            _lag_restored[_lc_eid] = (_lc_tm.current_tile_x, _lc_tm.current_tile_y)
+                            _lc_tm.current_tile_x = _lc_tx
+                            _lc_tm.current_tile_y = _lc_ty
+
+            # Skills ofensivas: enter_combat + is_pursuing (copiado de _use_skill:5299-5305)
+            # offensive=True + cast_time==0 → enter_combat + is_pursuing=True
+            # offensive=True + cast_time>0  → só enter_combat (evita aggro prematuro)
+            _is_offensive = getattr(skill_obj, "offensive", True)
+            _has_cast     = getattr(skill_obj, "cast_time", 0.0) > 0
+            if _is_offensive and combat_state:
+                from stat_fns import enter_combat as _ec2
+                _ec2(combat_state)
+                if not _has_cast:
+                    combat_state.is_pursuing = True
+
+            # Snapshot de posição do player antes do handler (para detectar dash/teleporte)
+            _tx_before = tile_move.target_tile_x
+            _ty_before = tile_move.target_tile_y
+
+            # Chama o handler diretamente (mesmo mecanismo do SkillSystem offline)
+            handler_fn = getattr(self._skill_system, f"_skill_{sid}", None)
+            if handler_fn:
+                try:
+                    _skill_ok = handler_fn(skill_obj, combat_stats, combat_state, tile_move)
+                    # Restaura posições de lag comp de cone skills (timestamp-based)
+                    for _lc_eid, (_orig_tx, _orig_ty) in _lag_restored.items():
+                        _lc_tm2 = self.world.get_component(_lc_eid, _TM)
+                        if _lc_tm2:
+                            _lc_tm2.current_tile_x = _orig_tx
+                            _lc_tm2.current_tile_y = _orig_ty
+                    # Restaura current_tile E Position do mob e player (inline snap)
+                    for _mob_eid, (_old_cx, _old_cy, _old_px, _old_py) in _mob_tile_snapshots.items():
+                        _m_tm  = self.world.get_component(_mob_eid, _TM)
+                        _m_pos = self.world.get_component(_mob_eid, _PosSnap)
+                        if _m_tm:
+                            _m_tm.current_tile_x = _old_cx
+                            _m_tm.current_tile_y = _old_cy
+                        if _m_pos:
+                            _m_pos.x = _old_px
+                            _m_pos.y = _old_py
+                    if _player_tile_snap is not None:
+                        _old_ptx, _old_pty, _old_ppx, _old_ppy = _player_tile_snap
+                        tile_move.current_tile_x = _old_ptx
+                        tile_move.current_tile_y = _old_pty
+                        if _player_pos:
+                            _player_pos.x = _old_ppx
+                            _player_pos.y = _old_ppy
+                    # Se skill moveu o player (ex: Interceptar), notifica todos
+                    if (tile_move.target_tile_x != _tx_before or
+                            tile_move.target_tile_y != _ty_before):
+                        _new_tx = tile_move.target_tile_x
+                        _new_ty = tile_move.target_tile_y
+                        # is_dash detectado: handler Interceptar seta tile_move.is_dash=True
+                        _move_is_dash = getattr(tile_move, "is_dash", False)
+                        # AOI_UPDATE para outros players no range
+                        self._moved_this_tick.append({
+                            "eid":     player_eid,
+                            "tx":      _new_tx,
+                            "ty":      _new_ty,
+                            "from_tx": _tx_before,
+                            "from_ty": _ty_before,
+                            "is_dash": _move_is_dash,
+                        })
+                        # Correção direta ao próprio caster (AOI_UPDATE ignora self._my_eid)
+                        # Armazena para _dispatch_tick_deltas enviar via ENTITY_MOVE direto
+                        self._skill_position_corrections.append({
+                            "player_eid": player_eid,
+                            "tx":         _new_tx,
+                            "ty":         _new_ty,
+                        })
+                        tile_move.current_tile_x = _new_tx
+                        tile_move.current_tile_y = _new_ty
+                except Exception as e:
+                    import traceback
+                    print(f"[Skill] ERRO ao processar {sid}: {e}")
+                    traceback.print_exc()
+                    continue
+
+            # Coleta dano causado + feedback de esquiva/miss para o alvo
+            import components as _comp
+            import systems as _sys
+            _combat_svc = getattr(_sys, "_svc", {}).get("combat")
+            _skill_outcome = getattr(_combat_svc, "last_outcome", "hit")
+
+            results_targets = []
+            for mob_eid, hp_before in hp_snapshot.items():
+                cs = self.world.get_component(mob_eid, _comp.CombatStats)
+                if not cs:
+                    continue
+                # Usa cs.current_hp real (pode ser negativo no golpe fatal)
+                # para mostrar dano real no floating text, não o HP restante
+                hp_real  = cs.current_hp               # pode ser negativo se matou
+                hp_after = max(0, hp_real)             # para display da barra
+                damage   = max(0, hp_before - hp_real) # dano real (inclui overkill)
+
+                # Efeitos aplicados por esta skill neste mob
+                _sfx_post  = self.world.get_component(mob_eid, _comp.StatusEffects)
+                _eff_after = set(_sfx_post.effects.keys()) if _sfx_post else set()
+                _applied   = list(_eff_after - effects_snapshot.get(mob_eid, set()))
+
+                if damage > 0:
+                    results_targets.append({
+                        "eid":             mob_eid,
+                        "damage":          damage,
+                        "outcome":         _skill_outcome,
+                        "hp_after":        hp_after,
+                        "applied_effects": _applied,
+                    })
+                elif mob_eid == tid and _skill_outcome in ("miss", "dodge", "parry", "block"):
+                    # Skill esquivada/aparada — inclui no resultado para cliente mostrar feedback
+                    results_targets.append({
+                        "eid":             mob_eid,
+                        "damage":          0,
+                        "outcome":         _skill_outcome,
+                        "hp_after":        hp_after,
+                        "applied_effects": _applied,
+                    })
+                elif _applied and mob_eid == tid:
+                    # Skill aplicou efeito sem dano (raro, ex: debuff puro)
+                    results_targets.append({
+                        "eid":             mob_eid,
+                        "damage":          0,
+                        "outcome":         "hit",
+                        "hp_after":        hp_after,
+                        "applied_effects": _applied,
+                    })
+
+            # Registra CD server-side APENAS se handler teve sucesso.
+            # Registrar antes causaria CD desperdiçado em falhas legítimas (fora de
+            # range, "Sem cargas"), silenciando o próximo uso válido — BUG verificado.
+            if _skill_ok and _sk_cd > 0:
+                self._skill_last_used[_sk_key] = _now_srv
+
+            # Envia SKILL_RESULT sempre: sucesso (com dano/efeitos) OU falha (failed=True).
+            # Cliente usa failed=True para restaurar carga consumida localmente + limpar pending.
+            if results_targets or _skill_ok:
+                # Inclui o cooldown efetivo que foi aplicado no skill_obj pelo handler.
+                # O cliente usa esse valor para setar current_cooldown (respeitando talentos).
+                _eff_cd = getattr(skill_obj, "current_cooldown", skill_obj.cooldown) if skill_obj else None
+                self._skill_results_this_tick.append({
+                    "caster_eid": player_eid,
+                    "sid":        sid,
+                    "targets":    results_targets,
+                    "cooldown":   _eff_cd,
+                    "failed":     False,
+                })
+            else:
+                # Handler retornou False (sem alvo, fora de range, sem cargas, etc.)
+                # Notifica cliente para restaurar estado local (carga, pending).
+                self._skill_results_this_tick.append({
+                    "caster_eid": player_eid,
+                    "sid":        sid,
+                    "targets":    [],
+                    "cooldown":   0,
+                    "failed":     True,
+                })
+
+            # Sincroniza rage/mana/hp do player após a skill
+            from components import CharacterStats as _CShr
+            _char_after = self.world.get_component(player_eid, _CShr)
+            _cs_after   = self.world.get_component(player_eid, CombatStats)
+            if _char_after:
+                _player_hp_after = (_cs_after.current_hp if _cs_after else _player_hp_before)
+                _heal_amount     = max(0, _player_hp_after - _player_hp_before)
+                _stat_entry = {
+                    "player_eid": player_eid,
+                    "xp":         0,
+                    "mob_eid":    -1,
+                    "rage":       _char_after.rage,
+                    "mana":       getattr(_cs_after, "mana", 0),
+                }
+                # Se o player se curou, inclui hp atual e quantidade curada para o cliente
+                if _heal_amount > 0 and _cs_after:
+                    _stat_entry["hp"]          = _cs_after.current_hp
+                    _stat_entry["hp_max"]       = _cs_after.max_hp
+                    _stat_entry["heal_amount"]  = _heal_amount
+                    _stat_entry["heal_sid"]     = sid
+                    # Broadcast do HP para outros players no AOI verem a barra atualizar
+                    self._player_hp_broadcasts_this_tick.append({
+                        "eid":    player_eid,
+                        "hp":     _cs_after.current_hp,
+                        "hp_max": _cs_after.max_hp,
+                    })
+                self._pending_xp_deliveries.append(_stat_entry)
