@@ -322,6 +322,8 @@ def create_merchant(world: World, tile_x: int, tile_y: int, shop_id: str = "gene
     color = shop.get("color", (80, 200, 80))
     eid = world.create_entity()
     world.add_component(eid, Position(x=x, y=y, prev_x=x, prev_y=y))
+    world.add_component(eid, TileMovement(current_tile_x=tile_x, current_tile_y=tile_y,
+                                          target_tile_x=tile_x, target_tile_y=tile_y))
     world.add_component(eid, Renderable(color=color, width=PLAYER_SIZE, height=PLAYER_SIZE))
     world.add_component(eid, NPC(name=npc_name, level=level, profession=profession))
     world.add_component(eid, Merchant(shop_id=shop_id))
@@ -337,6 +339,8 @@ def create_quest_giver(world: World, tile_x: int, tile_y: int,
     y = tile_y * TILE_SIZE + TILE_SIZE / 2
     eid = world.create_entity()
     world.add_component(eid, Position(x=x, y=y, prev_x=x, prev_y=y))
+    world.add_component(eid, TileMovement(current_tile_x=tile_x, current_tile_y=tile_y,
+                                          target_tile_x=tile_x, target_tile_y=tile_y))
     world.add_component(eid, Renderable(color=(200, 180, 60), width=PLAYER_SIZE, height=PLAYER_SIZE))
     world.add_component(eid, NPC(name=name, level=level, profession=profession))
     world.add_component(eid, QuestGiver(quest_ids=tuple(quest_ids),
@@ -356,6 +360,8 @@ def create_blacksmith(world: World, tile_x: int, tile_y: int,
     color = shop.get("color", (180, 120, 40))
     eid = world.create_entity()
     world.add_component(eid, Position(x=x, y=y, prev_x=x, prev_y=y))
+    world.add_component(eid, TileMovement(current_tile_x=tile_x, current_tile_y=tile_y,
+                                          target_tile_x=tile_x, target_tile_y=tile_y))
     world.add_component(eid, Renderable(color=color, width=PLAYER_SIZE, height=PLAYER_SIZE))
     world.add_component(eid, NPC(name=npc_name, level=level, profession=profession))
     world.add_component(eid, Merchant(shop_id=shop_id))
@@ -372,6 +378,8 @@ def create_trainer(world: World, tile_x: int, tile_y: int,
     y = tile_y * TILE_SIZE + TILE_SIZE / 2
     eid = world.create_entity()
     world.add_component(eid, Position(x=x, y=y, prev_x=x, prev_y=y))
+    world.add_component(eid, TileMovement(current_tile_x=tile_x, current_tile_y=tile_y,
+                                          target_tile_x=tile_x, target_tile_y=tile_y))
     world.add_component(eid, Renderable(color=(80, 140, 220), width=PLAYER_SIZE, height=PLAYER_SIZE))
     world.add_component(eid, NPC(name=name, level=level, profession=profession))
     world.add_component(eid, Trainer(class_id=class_id))
