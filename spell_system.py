@@ -206,8 +206,20 @@ class SpellCastSystem(System):
 
     def _complete_cast(self, entity_id: int, spell_cast: SpellCast,
                        combat_state: CombatState) -> None:
-        # Online: cast visual_only — barra preenche mas servidor dispara o efeito
+        # Online: cast visual_only — barra preenche, servidor aplica dano.
+        # Mesmo assim chama o handler para efeitos visuais locais (ex: projétil de BdF).
+        # Handlers verificam target_cs antes de causar dano → no-op para mobs online.
         if spell_cast.visual_only:
+            handler_name = self._CAST_HANDLERS.get(spell_cast.spell_id)
+            if handler_name and spell_cast.target_id != -1:
+                handler = getattr(self, handler_name, None)
+                if handler:
+                    self._current_spell_id = spell_cast.spell_id
+                    try:
+                        handler(entity_id, spell_cast.target_id)
+                    except Exception:
+                        pass
+                    self._current_spell_id = ""
             return
 
         # Deduz recursos aqui — cast completado com sucesso.

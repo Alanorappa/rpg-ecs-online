@@ -5708,7 +5708,7 @@ class SkillSystem(System, SkillHandlers):
                     if _target_local == -1:
                         # Auto-select: mesmo comportamento do offline — B6
                         _params_pre = getattr(skill, "params", {}) or {}
-                        _auto_range = _params_pre.get("max_range", 1)
+                        _auto_range = _params_pre.get("max_range") or getattr(skill, "cast_range", 6)
                         _target_local = self._resolve_target(
                             combat_state, _tile_move_sk, _max_range=_auto_range)
                     if _target_local == -1:
