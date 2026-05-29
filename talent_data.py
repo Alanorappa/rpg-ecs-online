@@ -359,6 +359,7 @@ TALENTS: dict[str, dict] = {
         "effects":     None,
         "unlocks_skill": None,
         "skill_def":     None,
+        "preview_formula": lambda pts: round(pts * 0.1, 1),
         "cs_flags": [
             {"field": "fire_cast_time_reduction", "reset": 0.0,
              "formula": lambda pts: pts * 0.1},
