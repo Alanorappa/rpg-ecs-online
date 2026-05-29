@@ -117,7 +117,7 @@ class SpellCompletionMixin:
         from components import IceBlockEffect as _IBE, CombatState as _CSt, CombatStats as _CS
 
         to_clear = []
-        for player_eid in list(self._player_connections.keys()):
+        for player_eid in list(self._player_eids.values()):
             ibe = self.world.get_component(player_eid, _IBE)
             if ibe is None:
                 continue
