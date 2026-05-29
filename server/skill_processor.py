@@ -199,6 +199,9 @@ class SkillProcessorMixin:
             _tx_before = tile_move.target_tile_x
             _ty_before = tile_move.target_tile_y
 
+            # Expõe lista de spells pendentes ao handler (detecta modo servidor)
+            self._skill_system._server_pending_spells = self._pending_spell_completions
+
             # Chama o handler diretamente (mesmo mecanismo do SkillSystem offline)
             handler_fn = getattr(self._skill_system, f"_skill_{sid}", None)
             if handler_fn:
@@ -256,6 +259,7 @@ class SkillProcessorMixin:
                     import traceback
                     print(f"[Skill] ERRO ao processar {sid}: {e}")
                     traceback.print_exc()
+                    self._skill_system._server_pending_spells = None
                     continue
 
             # Coleta dano causado + feedback de esquiva/miss para o alvo
@@ -374,3 +378,6 @@ class SkillProcessorMixin:
                         "hp_max": _cs_after.max_hp,
                     })
                 self._pending_xp_deliveries.append(_stat_entry)
+
+            # Limpa referência ao pending_spell_completions após cada request
+            self._skill_system._server_pending_spells = None

@@ -183,6 +183,7 @@ SKILL_CATALOG: dict[str, dict] = {
         "mana_cost":        10,
         "cast_time":        1.0,
         "cast_range":       3,
+        "needs_target":     False,
         "class_id":         "mago",
         "school":           "gelo",
     },

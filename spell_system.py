@@ -206,6 +206,10 @@ class SpellCastSystem(System):
 
     def _complete_cast(self, entity_id: int, spell_cast: SpellCast,
                        combat_state: CombatState) -> None:
+        # Online: cast visual_only — barra preenche mas servidor dispara o efeito
+        if spell_cast.visual_only:
+            return
+
         # Deduz recursos aqui — cast completado com sucesso.
         # Interrupções removem SpellCast sem chegar aqui → recurso não é descontado.
         char_stats = self.world.get_component(entity_id, CharacterStats)
@@ -1053,6 +1057,14 @@ class PlayerProjectileSystem(System):
     def _on_hit(self, proj: PlayerProjectile) -> None:
         attacker_cs = self.world.get_component(proj.attacker_id, CombatStats)
         target_cs   = self.world.get_component(proj.target_id,   CombatStats)
+
+        # Online: mob sem CombatStats local — toca impacto e sai (dano via SKILL_RESULT)
+        if target_cs is None:
+            if proj.damage_type == "physical":
+                SOUNDS.play_random(["arrow_impact_1", "arrow_impact_2"], channel_group=(12, 13))
+            else:
+                SOUNDS.play_spell(proj.spell_id, "impact")
+            return
 
         # Flechas usam o pipeline de dano físico (armor, crit, weapon damage)
         if proj.damage_type == "physical":

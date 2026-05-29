@@ -1137,6 +1137,7 @@ class SpellCast:
     concentration_cost: int   = 0     # custo de concentração — também só deduzido ao completar
     interruptible:      bool  = True  # False = movimento não cancela o cast
     on_cancel:          str   = ""    # nome do handler chamado se o cast for interrompido
+    visual_only:        bool  = False # True = online, barra visual apenas — servidor dispara o efeito
 
 
 class Channeling:

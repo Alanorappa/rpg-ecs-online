@@ -581,6 +581,22 @@ class SkillHandlers:
             self._warn("Alvo inválido")
             return False
 
+        # Modo servidor: agenda conclusão diferida em vez de criar SpellCast
+        _server_pending = getattr(self, "_server_pending_spells", None)
+        if _server_pending is not None:
+            _server_pending.append({
+                "player_eid": self.player_entity_id,
+                "spell_id":   "bola_de_fogo",
+                "target_id":  target_id,
+                "timer":      effective_cast,
+                "mana_cost":  effective_cost,
+                "cooldown":   skill.cooldown,
+            })
+            if combat_state:
+                enter_combat(combat_state)
+                combat_state.is_pursuing = True
+            return True
+
         self.world.add_component(self.player_entity_id, SpellCast(
             spell_id  = "bola_de_fogo",
             cast_time = effective_cast,
@@ -651,6 +667,21 @@ class SkillHandlers:
         effective_cast = max(0.0, skill.cast_time
                              - getattr(combat_stats, "ice_cast_time_reduction", 0.0))
 
+        # Modo servidor: agenda conclusão diferida
+        _server_pending = getattr(self, "_server_pending_spells", None)
+        if _server_pending is not None:
+            _server_pending.append({
+                "player_eid": self.player_entity_id,
+                "spell_id":   "nova_congelante",
+                "target_id":  -1,
+                "timer":      effective_cast,
+                "mana_cost":  skill.mana_cost,
+                "cooldown":   skill.cooldown,
+            })
+            if combat_state:
+                enter_combat(combat_state)
+            return True
+
         self.world.add_component(self.player_entity_id, SpellCast(
             spell_id  = "nova_congelante",
             cast_time = effective_cast,
@@ -682,6 +713,19 @@ class SkillHandlers:
             self._warn("Alvo inválido")
             return False
 
+        # Modo servidor: agenda conclusão diferida
+        _server_pending = getattr(self, "_server_pending_spells", None)
+        if _server_pending is not None:
+            _server_pending.append({
+                "player_eid": self.player_entity_id,
+                "spell_id":   "polimorfia",
+                "target_id":  target_id,
+                "timer":      skill.cast_time,
+                "mana_cost":  mana_cost,
+                "cooldown":   skill.cooldown,
+            })
+            return True
+
         self.world.add_component(self.player_entity_id, SpellCast(
             spell_id  = "polimorfia",
             cast_time = skill.cast_time,
@@ -706,7 +750,8 @@ class SkillHandlers:
         self.world.add_component(self.player_entity_id, IceBlockEffect(
             duration=5.0, elapsed=0.0, heal_interval=1.0, last_heal=0.0,
         ))
-        SOUNDS.play_spell("bloco_de_gelo", "cast")
+        if getattr(self, "_server_pending_spells", None) is None:
+            SOUNDS.play_spell("bloco_de_gelo", "cast")
         if combat_state:
             combat_state.is_stunned = True
             combat_state.is_immune  = True
@@ -826,6 +871,21 @@ class SkillHandlers:
         if not target_cs or target_cs.current_hp <= 0:
             self._warn("Alvo inválido")
             return False
+
+        # Modo servidor: agenda conclusão diferida
+        _server_pending = getattr(self, "_server_pending_spells", None)
+        if _server_pending is not None:
+            _server_pending.append({
+                "player_eid": self.player_entity_id,
+                "spell_id":   "calcinar",
+                "target_id":  target_id,
+                "timer":      skill.cast_time,
+                "mana_cost":  effective_cost,
+                "cooldown":   skill.cooldown,
+            })
+            if combat_state:
+                enter_combat(combat_state)
+            return True
 
         # interruptible=False — cast não é cancelado por movimento
         self.world.add_component(self.player_entity_id, SpellCast(

@@ -32,6 +32,7 @@ from server.skill_processor import SkillProcessorMixin
 from server.combat_processor import CombatProcessorMixin
 from server.respawn_system import RespawnMixin
 from server.loot_processor import LootProcessorMixin
+from server.spell_completion_processor import SpellCompletionMixin
 
 
 # ── ServerStatusEffectSystem ──────────────────────────────────────────────────
@@ -85,7 +86,7 @@ class _ServerStatusEffectSystem:
         return _Impl(world, srv)
 
 
-class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootProcessorMixin):
+class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootProcessorMixin, SpellCompletionMixin):
 
     MAP_FILE = "maps/map_1.csv"   # mapa padrão carregado pelo servidor
 
@@ -172,6 +173,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         # Fila de skill requests recebidas dos clientes (processada em _tick)
         self._pending_skill_requests: list[dict] = []
+        # Spells com cast_time pendentes de conclusão (gerenciadas por SpellCompletionMixin)
+        self._pending_spell_completions: list[dict] = []
         # Resultados de skills processadas no tick (consumido pelo SessionManager)
         self._skill_results_this_tick: list[dict] = []
         # Correções de posição por skill (Interceptar etc.) — enviadas direto ao caster
@@ -1285,6 +1288,11 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # Skills ANTES do auto-attack: skill dispara em mob vivo, depois auto-attack
         # (se ordem fosse invertida, auto-attack poderia matar o mob antes da skill checar HP)
         self._process_skill_requests()
+
+        # Conclusão de spells com cast_time (Bola de Fogo, Nova Congelante, etc.)
+        self._process_spell_cast_completions(dt)
+        # Bloco de Gelo: timer server-side (imunidade temporária)
+        self._process_ice_blocks(dt)
 
         # Fatiador de Corpos: ticks subsequentes ao cast (tick 0 disparado pelo handler em
         # _process_skill_requests; PlayerInputSystem só roda no cliente, não no servidor).

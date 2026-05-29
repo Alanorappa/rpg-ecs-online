@@ -3035,6 +3035,16 @@ class GameEngine:
                                   (255, 80, 80))
                     PROC.add("Assassino!", (255, 80, 80))
 
+            if caster_eid == self._my_eid and payload.get("fire_instant_proc"):
+                from components import CharacterStats as _CSfi
+                _char_fi = self.world.get_component(self.player_entity, _CSfi)
+                if _char_fi:
+                    _char_fi.fire_instant_ready = True
+                    from combat_log import LOG as _LOG_fi
+                    _LOG_fi.add("Chama Interna: proxima Bola de Fogo instantanea e gratis!",
+                                (255, 160, 60))
+                    PROC.add("Chama Interna!", (255, 160, 60))
+
             for t in targets:
                 self._apply_combat_result({
                     "attacker": caster_eid,

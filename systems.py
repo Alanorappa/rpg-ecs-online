@@ -5725,7 +5725,8 @@ class SkillSystem(System, SkillHandlers):
                 # Range check — apenas para skills que exigem alvo explícito
                 if _needs_target and _target_local != -1:
                     _params          = getattr(skill, "params", {}) or {}
-                    _max_range_tiles = _params.get("max_range", 1)
+                    # Mago usa cast_range no catálogo; guerreiro/arqueiro usam params.max_range
+                    _max_range_tiles = _params.get("max_range") or getattr(skill, "cast_range", 1)
                     _min_range_tiles = _params.get("min_range", 0)
                     _tol = SkillHandlers.RANGE_TOLERANCE_PX
                     _max_px = _max_range_tiles * TILE_SIZE + _tol
@@ -5851,6 +5852,28 @@ class SkillSystem(System, SkillHandlers):
                 "rage":  _rage_pre,
                 "mana":  _mana_pre,
             })
+
+        # Spells com cast_time: cria SpellCast visual_only para exibir a barra de cast.
+        # Servidor processa o efeito real; cliente remove o SpellCast ao encher sem disparar.
+        if _has_cast and _is_online:
+            from components import SpellCast as _SCVis
+            _sc_tid  = getattr(combat_state, "target_entity_id", -1) if combat_state else -1
+            _sc_cast = getattr(skill, "cast_time", 0.0)
+            # Chama Interna: proc ativo → BdF instantânea, sem barra de cast
+            if skill.skill_id == "bola_de_fogo" and _char and getattr(_char, "fire_instant_ready", False):
+                _sc_cast = 0.0
+            if _sc_cast > 0.0:
+                self.world.add_component(self.player_entity_id, _SCVis(
+                    spell_id     = skill.skill_id,
+                    cast_time    = _sc_cast,
+                    elapsed      = 0.0,
+                    target_id    = _sc_tid,
+                    mana_cost    = 0,
+                    visual_only  = True,
+                    interruptible= True,
+                ))
+                if combat_state:
+                    combat_state.is_casting = True
 
         # Interceptar: executa animação de dash localmente (client-side prediction)
         # O servidor confirma a posição final via ENTITY_MOVE; se coincidir, não interrompe.
