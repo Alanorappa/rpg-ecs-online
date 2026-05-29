@@ -50,6 +50,7 @@ class MsgType(str, Enum):
 
     # ── Skills ────────────────────────────────────────────────────
     CAST_SKILL         = "cast_skill"      # C→S  usar skill
+    CANCEL_CAST        = "cancel_cast"     # C→S  player cancelou cast (movimento durante cast)
     CAST_START         = "cast_start"      # S→C  entidade começou cast (barra de cast)  # TODO: não implementado
     CAST_CANCEL        = "cast_cancel"     # S→C  cast interrompido                      # TODO: não implementado
     CAST_COMPLETE      = "cast_complete"   # S→C  cast concluído (dispara efeito)         # TODO: não implementado

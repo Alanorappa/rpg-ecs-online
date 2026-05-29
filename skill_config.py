@@ -153,11 +153,14 @@ SKILL_CATALOG: dict[str, dict] = {
     # ── Mago — skills de treinador ───────────────────────────────────────────
     "bola_de_fogo": {
         "name":              "Bola de Fogo",
-        "desc":              "Projétil – 1.5s cast. 50% dano + 100% SP. 25 mana.",
+        "desc":              "Lança uma bola de fogo no alvo selecionado.",
         "cooldown":          0.0,
         "mana_cost":         25,
         "cast_time":         1.5,
         "cast_range":        6,
+        "interruptible":     True,   # movimento cancela o cast
+        "dmg_weapon_pct":    0.5,    # 50% dano médio da arma
+        "dmg_sp_coeff":      1.0,    # 100% spell power
         "class_id":          "mago",
         "school":            "fogo",
         "proc_attr":         "fire_instant_ready",
@@ -183,6 +186,8 @@ SKILL_CATALOG: dict[str, dict] = {
         "mana_cost":        10,
         "cast_time":        1.0,
         "cast_range":       3,
+        "interruptible":    True,
+        "dmg_sp_coeff":     0.5,    # 50% spell power (sem componente de arma)
         "needs_target":     False,
         "class_id":         "mago",
         "school":           "gelo",
@@ -206,6 +211,7 @@ SKILL_CATALOG: dict[str, dict] = {
         "mana_cost_pct":    0.10,
         "cast_time":        1.5,
         "cast_range":       7,
+        "interruptible":    True,
         "class_id":         "mago",
         "school":           "arcano",
         "offensive":        False,
@@ -230,6 +236,9 @@ SKILL_CATALOG: dict[str, dict] = {
         "mana_cost":        25,
         "cast_time":        0.6,
         "cast_range":       8,
+        "interruptible":    False,  # pode mover durante o cast
+        "base_dmg":         50,     # dano base fixo
+        "dmg_sp_coeff":     0.25,   # 25% spell power
         "class_id":         "mago",
         "school":           "fogo",
     },

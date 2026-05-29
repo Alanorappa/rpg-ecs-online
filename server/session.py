@@ -294,6 +294,20 @@ class SessionManager:
             if pcst:
                 _ec(pcst)
 
+    async def _handle_cancel_cast(self, session: Session, payload: dict, ts: int) -> None:
+        """Player cancelou cast por movimento — remove da fila de completions do servidor."""
+        if not session.authenticated:
+            return
+        sid = payload.get("sid", "")
+        if not sid:
+            return
+        player_eid = self.world_server.get_entity_id(session.session_id)
+        # Remove entradas pendentes deste player/spell
+        self.world_server._pending_spell_completions = [
+            e for e in self.world_server._pending_spell_completions
+            if not (e["player_eid"] == player_eid and e["spell_id"] == sid)
+        ]
+
     async def _handle_cast_skill(self, session: Session, payload: dict, ts: int) -> None:
         if not session.authenticated:
             return
@@ -462,6 +476,7 @@ class SessionManager:
         MsgType.PING:         _handle_ping,
         MsgType.AUTO_ATTACK:  _handle_auto_attack,
         MsgType.CAST_SKILL:   _handle_cast_skill,
+        MsgType.CANCEL_CAST:  _handle_cancel_cast,
         MsgType.CHAT_SEND:         _handle_chat,
         MsgType.LOOT_REQUEST:      _handle_loot_request,
         MsgType.SAVE_STATE:        _handle_save_state,

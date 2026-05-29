@@ -5881,6 +5881,8 @@ class SkillSystem(System, SkillHandlers):
             if skill.skill_id == "bola_de_fogo" and _char and getattr(_char, "fire_instant_ready", False):
                 _sc_cast = 0.0
             if _sc_cast > 0.0:
+                from skill_config import SKILL_CATALOG as _SC_int
+                _interruptible = _SC_int.get(skill.skill_id, {}).get("interruptible", True)
                 self.world.add_component(self.player_entity_id, _SCVis(
                     spell_id     = skill.skill_id,
                     cast_time    = _sc_cast,
@@ -5888,7 +5890,7 @@ class SkillSystem(System, SkillHandlers):
                     target_id    = _sc_tid,
                     mana_cost    = 0,
                     visual_only  = True,
-                    interruptible= True,
+                    interruptible= _interruptible,
                 ))
                 if combat_state:
                     combat_state.is_casting = True

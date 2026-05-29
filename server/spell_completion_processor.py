@@ -224,6 +224,8 @@ class SpellCompletionMixin:
         from components import CombatStats, StatusEffects, CharacterStats
         from systems import apply_effect
         from damage_calculator import CRITICAL_DAMAGE_MULTIPLIER, resolve_attack_outcome
+        from skill_config import SKILL_CATALOG as _SC_bdf
+        _bdf_data = _SC_bdf.get("bola_de_fogo", {})
 
         if target_id == -1:
             return
@@ -234,7 +236,11 @@ class SpellCompletionMixin:
         player_cs  = self.world.get_component(player_eid, CombatStats)
         char_stats = self.world.get_component(player_eid, CharacterStats)
 
-        base_dmg = self._server_spell_damage(player_eid, 0.5, 1.0)
+        base_dmg = self._server_spell_damage(
+            player_eid,
+            _bdf_data.get("dmg_weapon_pct", 0.5),
+            _bdf_data.get("dmg_sp_coeff",   1.0),
+        )
 
         outcome, _ = resolve_attack_outcome(player_cs, target_cs, "magical")
         is_crit    = (outcome == "crit")
@@ -306,6 +312,8 @@ class SpellCompletionMixin:
 
     def _server_calcinar(self, player_eid: int, target_id: int, entry: dict) -> None:
         from components import CombatStats, StatusEffects, CharacterStats
+        from skill_config import SKILL_CATALOG as _SC_cal
+        _cal = _SC_cal.get("calcinar", {})
 
         if target_id == -1:
             return
@@ -317,7 +325,9 @@ class SpellCompletionMixin:
         char_stats = self.world.get_component(player_eid, CharacterStats)
         sp = player_cs.spell_power if player_cs else 0
 
-        base_dmg = max(1, 50 + int(sp * 0.25))
+        _base = _cal.get("base_dmg",    50)
+        _coef = _cal.get("dmg_sp_coeff", 0.25)
+        base_dmg = max(1, _base + int(sp * _coef))
         if player_cs:
             _pyr = getattr(player_cs, "pyromania_bonus", 0.0)
             if _pyr > 0:
@@ -343,23 +353,27 @@ class SpellCompletionMixin:
         from components import CombatStats, TileMovement, Enemy, AIControlled
         from systems import apply_effect
         from utils import chebyshev
+        from skill_config import SKILL_CATALOG as _SC_nc
+        _nc = _SC_nc.get("nova_congelante", {})
 
         tm_p = self.world.get_component(player_eid, TileMovement)
         cs_p = self.world.get_component(player_eid, CombatStats)
         if not tm_p:
             return
 
-        pl_x = tm_p.current_tile_x
-        pl_y = tm_p.current_tile_y
-        sp   = cs_p.spell_power if cs_p else 0
+        pl_x   = tm_p.current_tile_x
+        pl_y   = tm_p.current_tile_y
+        sp     = cs_p.spell_power if cs_p else 0
+        _coef  = _nc.get("dmg_sp_coeff", 0.5)
+        _range = _nc.get("cast_range", 3)
 
         for eid, _, _, etm, ecs in self.world.get_entities_with(
                 Enemy, AIControlled, TileMovement, CombatStats):
             if ecs.current_hp <= 0:
                 continue
-            if chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y) > 3:
+            if chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y) > _range:
                 continue
-            dmg = max(1, int(sp * 0.5))
+            dmg = max(1, int(sp * _coef))
             self._server_apply_magic_damage(player_eid, eid, dmg)
             apply_effect(self.world, eid, "root", 5.0)
 

@@ -164,6 +164,8 @@ class SpellCastSystem(System):
         # Chave = spell_id do SKILL_CATALOG. Valor = nome do método nesta classe.
         # Adicionar nova spell com cast: inserir entrada aqui.
         self._current_spell_id: str = ""
+        # Casts visual_only cancelados por movimento neste frame — game.py envia CANCEL_CAST
+        self.interrupted_visual_casts: list[str] = []
         self._CAST_HANDLERS: dict[str, str] = {
             "bola_de_fogo":      "_launch_fireball",
             "nova_congelante":   "_apply_nova_congelante",
@@ -194,6 +196,9 @@ class SpellCastSystem(System):
                     cancel_fn = getattr(self, cancel_handler_name, None)
                     if cancel_fn:
                         cancel_fn(entity_id)
+                # Notifica o servidor se era um cast visual (online) — evita dano sem cast
+                if spell_cast.visual_only:
+                    self.interrupted_visual_casts.append(spell_cast.spell_id)
                 self.world.remove_component(entity_id, SpellCast)
                 combat_state.is_casting = False
                 SOUNDS.fadeout_skills(300)
@@ -271,6 +276,8 @@ class SpellCastSystem(System):
         target_cs = self.world.get_component(target_id, CombatStats)
         if target_cs and target_cs.current_hp <= 0:
             return
+        from skill_config import SKILL_CATALOG as _SC_bdf
+        _bdf = _SC_bdf.get("bola_de_fogo", {})
         proj = self.world.create_entity()
         self.world.add_component(proj, Position(pos.x, pos.y, pos.x, pos.y))
         self.world.add_component(proj, PlayerProjectile(
@@ -278,8 +285,8 @@ class SpellCastSystem(System):
             attacker_id=attacker_id,
             target_id=target_id,
             speed=300.0,
-            dmg_weapon_pct=0.5,
-            dmg_sp_coeff=1.0,
+            dmg_weapon_pct=_bdf.get("dmg_weapon_pct", 0.5),
+            dmg_sp_coeff=_bdf.get("dmg_sp_coeff",   1.0),
             color=(255, 120, 20),
         ))
         LOG.add("Bola de Fogo!", (255, 160, 60))

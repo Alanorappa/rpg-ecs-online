@@ -1271,6 +1271,13 @@ class GameEngine:
             if self._bdf_pending:
                 self._process_bdf_pending()
 
+            # Casts cancelados por movimento: notifica servidor para remover da fila
+            if self._net and self._spell_cast_system.interrupted_visual_casts:
+                from shared.messages import MsgType as _MT_cc
+                for _cc_sid in self._spell_cast_system.interrupted_visual_casts:
+                    self._net.send(_MT_cc.CANCEL_CAST, {"sid": _cc_sid})
+                self._spell_cast_system.interrupted_visual_casts.clear()
+
             # Sincronização online: movimento + alvo de combate + fila de mobs
             self._send_player_move()
             self._sync_combat_target()
