@@ -3559,7 +3559,7 @@ class GameEngine:
                 if is_crit:
                     color = (255, 220, 50) if is_ability else (255, 255, 255)
                     FLT.add(str(damage), pos.x, pos.y, color,
-                            is_crit=True, target_id=server_target)
+                            is_crit=True, target_id=local_eid)
                     # Crit: som de impacto + reação do mob (crit sound + emote_get_crit)
                     if not _is_dot_hot:
                         SOUNDS.play_random_at(["hit_crit_1", "hit_crit_2", "hit_crit"],
@@ -3572,7 +3572,7 @@ class GameEngine:
                 else:
                     color = (255, 220, 0) if is_ability else (220, 220, 220)
                     FLT.add(str(damage), pos.x, pos.y, color,
-                            "normal", target_id=server_target)
+                            "normal", target_id=local_eid)
                     # Hit normal: impacto (só auto-attack) + reação vocal do mob
                     if not _is_dot_hot:
                         if not is_ability:
@@ -3590,7 +3590,7 @@ class GameEngine:
                     "block": ("Bloqueou!", (100, 150, 230)),
                 }
                 txt_av, col_av = _AVOID_FLT.get(outcome, ("Errou!", (220, 220, 100)))
-                FLT.add(txt_av, pos.x, pos.y, col_av, "small", target_id=server_target)
+                FLT.add(txt_av, pos.x, pos.y, col_av, "small", target_id=local_eid)
                 SOUNDS.play_random_at([f"combat_{outcome}", f"combat_{outcome}_1",
                                        f"combat_{outcome}_2"],
                                       pos.x, pos.y, _lx, _ly, base=0.6)
