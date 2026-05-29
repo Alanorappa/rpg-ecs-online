@@ -5705,6 +5705,13 @@ class SkillSystem(System, SkillHandlers):
             if _is_online:
                 _target_local = combat_state.target_entity_id
                 if _needs_target:
+                    # Limpa target morto/removido do mundo antes do auto-select
+                    if _target_local != -1:
+                        _stale_pos = self.world.get_component(_target_local,
+                                         __import__("components").Position)
+                        if _stale_pos is None:
+                            _target_local = -1
+                            combat_state.target_entity_id = -1
                     if _target_local == -1:
                         # Auto-select: mesmo comportamento do offline — B6
                         _params_pre = getattr(skill, "params", {}) or {}

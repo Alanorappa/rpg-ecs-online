@@ -53,11 +53,17 @@ class SpellCompletionMixin:
                 "calcinar":        self._server_calcinar,
             }
             fn = _dispatch.get(spell_id)
+            from server.spell_debug_log import splog as _splog2
+            _tcs_pre = self.world.get_component(target_id, _CS)
+            _splog2(f"COMPLETION {spell_id} player={player_eid} target={target_id} "
+                    f"target_alive={_tcs_pre is not None and _tcs_pre.current_hp > 0} "
+                    f"mobs_tracked={len(self._mob_eids)}")
             if fn:
                 try:
                     fn(player_eid, target_id, entry)
                 except Exception as _err:
                     import traceback
+                    _splog2(f"  ERRO: {_err}")
                     print(f"[SpellCompletion] ERRO {spell_id}: {_err}")
                     traceback.print_exc()
 
@@ -70,6 +76,8 @@ class SpellCompletionMixin:
                 hp_real  = _cs2.current_hp
                 hp_after = max(0, hp_real)
                 damage   = max(0, hp_pre - hp_real)
+                if damage > 0:
+                    _splog2(f"  dano mob={mob_eid} dmg={damage} hp_pre={hp_pre} hp_now={hp_after}")
                 _sfx2    = self.world.get_component(mob_eid, _SFX)
                 eff_now  = set(_sfx2.effects.keys()) if _sfx2 else set()
                 applied  = list(eff_now - sfx_before.get(mob_eid, set()))

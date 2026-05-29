@@ -104,6 +104,11 @@ class SkillProcessorMixin:
             if tid != -1 and tid in self._mob_eids and combat_state:
                 combat_state.target_entity_id = tid
 
+            from server.spell_debug_log import splog as _splog
+            _splog(f"CAST_SKILL sid={sid} player={player_eid} tid={tid} "
+                   f"tid_in_mobs={tid in self._mob_eids} "
+                   f"cs.target={getattr(combat_state,'target_entity_id',-1)}")
+
             # Lag compensation: snapa posições para o range check de skill.
             # Player: sempre usa target_tile (cliente vê a si mesmo no destino).
             # Mob: SÓ snapa se progress >= 0.5 — espelha a predição do cliente
@@ -207,6 +212,8 @@ class SkillProcessorMixin:
             if handler_fn:
                 try:
                     _skill_ok = handler_fn(skill_obj, combat_stats, combat_state, tile_move)
+                    _splog(f"  handler _skill_{sid} -> ok={_skill_ok} "
+                           f"pending_spells={len(self._pending_spell_completions)}")
                     # Restaura posições de lag comp de cone skills (timestamp-based)
                     for _lc_eid, (_orig_tx, _orig_ty) in _lag_restored.items():
                         _lc_tm2 = self.world.get_component(_lc_eid, _TM)

@@ -592,9 +592,8 @@ class SkillHandlers:
                 "mana_cost":  effective_cost,
                 "cooldown":   skill.cooldown,
             })
-            if combat_state:
-                enter_combat(combat_state)
-                combat_state.is_pursuing = True
+            # Não seta is_pursuing no servidor durante o cast — evita auto-attack
+            # prematuro e falso agro. O agro ocorre ao completar o cast.
             return True
 
         self.world.add_component(self.player_entity_id, SpellCast(
