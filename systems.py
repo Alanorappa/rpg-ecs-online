@@ -566,7 +566,8 @@ class CombatSystem(System):
             if _ai and _ai.state in ("IDLE", "RETURNING"):
                 _ms_hit = self.world.get_component(target_id, MobSounds)
                 SOUNDS.play_mob_sounds(_ms_hit, "aggro", dedup_key=f"dmg_{target_id}")
-                _ai.state              = "CHASING"
+                _ai.state              = "AGGRO_DELAY"
+                _ai.aggro_delay        = 0.5   # mesmo comportamento do range aggro, mas mais curto
                 _ai.aggroed_by_damage  = True
                 _ai.path_recalc_timer  = 0.0
                 if _MCL:

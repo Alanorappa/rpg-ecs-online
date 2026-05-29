@@ -207,7 +207,8 @@ class SpellCompletionMixin:
                 SOUNDS.play_mob_sounds(_ms, "aggro", dedup_key=f"dmg_{target_id}")
             except Exception:
                 pass
-            _ai.state             = "CHASING"
+            _ai.state             = "AGGRO_DELAY"
+            _ai.aggro_delay       = 0.5   # mesmo comportamento do range aggro, mas mais curto
             _ai.aggroed_by_damage = True
             _ai.path_recalc_timer = 0.0
 
