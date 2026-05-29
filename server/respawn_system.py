@@ -32,6 +32,7 @@ class RespawnMixin:
         # Reseta campos voláteis de combate (cargas, procs, contadores) — P3
         player_char = self.world.get_component(player_eid, CharacterStats)
         if player_char:
+            player_char.mana = player_char.max_mana   # restaura mana cheia no respawn
             player_char.reset_volatile()
 
         # Limpa efeitos ativos (DoT/HoT) — B8

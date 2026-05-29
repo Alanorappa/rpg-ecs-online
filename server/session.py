@@ -832,8 +832,16 @@ class SessionManager:
                 continue
             session = self._sessions.get(sid)
             if session:
+                _death_peid = death["player_eid"]
+                from components import CharacterStats as _CHS_death, CombatStats as _CS_death
+                _char_d = self.world_server.world.get_component(_death_peid, _CHS_death)
+                _cs_d   = self.world_server.world.get_component(_death_peid, _CS_death)
                 await session.send(MsgType.PLAYER_DEATH, {
-                    "eid": death["player_eid"],
+                    "eid":      _death_peid,
+                    "mana":     _char_d.mana     if _char_d else 0,
+                    "max_mana": _char_d.max_mana if _char_d else 0,
+                    "hp":       _cs_d.current_hp if _cs_d   else 0,
+                    "hp_max":   _cs_d.max_hp     if _cs_d   else 0,
                 })
 
     # ── Broadcast helpers ─────────────────────────────────────────────────────

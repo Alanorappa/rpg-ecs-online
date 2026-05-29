@@ -3374,12 +3374,26 @@ class GameEngine:
 
         elif msg_type == MsgType.PLAYER_DEATH:
             # Servidor declarou que o player local morreu.
-            # Delega ao DeathRespawnSystem offline que já sabe lidar com isso:
-            # seta current_hp=0 → PendingDeath → DeathRespawnSystem respawna.
-            from components import CombatStats, CombatState
-            cs = self.world.get_component(self.player_entity, CombatStats)
+            from components import CombatStats, CombatState, CharacterStats as _CHS_d
+            cs      = self.world.get_component(self.player_entity, CombatStats)
+            char_d  = self.world.get_component(self.player_entity, _CHS_d)
             if cs:
                 cs.current_hp = 0   # DeathRespawnSystem detecta e respawna
+                # Restaura HP autoritativo do servidor após respawn
+                _srv_hp      = payload.get("hp",     0)
+                _srv_hp_max  = payload.get("hp_max", 0)
+                if _srv_hp_max > 0:
+                    cs.max_hp     = _srv_hp_max
+                    cs.current_hp = _srv_hp
+            # Restaura mana cheia (servidor já restaurou server-side)
+            if char_d:
+                _srv_mana     = payload.get("mana",     0)
+                _srv_max_mana = payload.get("max_mana", 0)
+                if _srv_max_mana > 0:
+                    char_d.mana     = _srv_mana
+                    char_d.max_mana = _srv_max_mana
+                if cs:
+                    cs.mana = char_d.mana   # sincroniza CombatStats.mana também
             # Para de atacar
             combat_state = self.world.get_component(self.player_entity, CombatState)
             if combat_state:
