@@ -221,10 +221,21 @@ def process_levelups(world: World, entity_id: int,
         tt = world.get_component(entity_id, TalentTree)
         if tt is not None and give_talent_points:
             tt.available_points += 1
-        SOUNDS.play_ui("levelup")
-        gains_str = ", ".join(f"+{v} {k[:3].upper()}" for k, v in gains.items() if v > 0)
-        LOG.add(f"Level up! Nivel {char.level} — {gains_str} | 1 ponto de talento (T).", (255, 200, 0))
-        _qfire("reach_level", level=char.level)
+        # SOUNDS e LOG podem falhar no servidor (sem áudio/display) — nunca devem
+        # interromper a lógica de level-up que precisa rodar tanto no cliente quanto no servidor.
+        try:
+            SOUNDS.play_ui("levelup")
+        except Exception:
+            pass
+        try:
+            gains_str = ", ".join(f"+{v} {k[:3].upper()}" for k, v in gains.items() if v > 0)
+            LOG.add(f"Level up! Nivel {char.level} — {gains_str} | 1 ponto de talento (T).", (255, 200, 0))
+        except Exception:
+            pass
+        try:
+            _qfire("reach_level", level=char.level)
+        except Exception:
+            pass
         leveled = True
 
     if leveled:
