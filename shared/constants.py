@@ -41,6 +41,7 @@ PROTOCOL_VERSION = 1             # incrementar ao quebrar compatibilidade
 COMBAT_SYNC_STATS: dict[str, str] = {
     "max_hp":          "base_stamina",        # max_hp  = stamina = base_stamina + mods
     "attack_power":    "base_attack_power",   # AP efetivo (inclui arma + equipamento)
+    "spell_power":     "base_spell_power",    # SP efetivo (INT + arma mágica + itens)
     "armor":           "base_armor",          # armadura total
     "crit_rating":     "base_crit_rating",    # % crit
     "parry_rating":    "base_parry_rating",   # % aparo
