@@ -5882,7 +5882,12 @@ class SkillSystem(System, SkillHandlers):
                 _sc_cast = 0.0
             if _sc_cast > 0.0:
                 from skill_config import SKILL_CATALOG as _SC_int
-                _interruptible = _SC_int.get(skill.skill_id, {}).get("interruptible", True)
+                _skill_cat = _SC_int.get(skill.skill_id, {})
+                _interruptible = _skill_cat.get("interruptible", True)
+                # Aplica redução de cast_time do talento (ex: Bola de Fogo Aperfeiçoada)
+                _ct_red_attr = _skill_cat.get("cast_time_reduction_attr", "")
+                if _ct_red_attr and _cs:
+                    _sc_cast = max(0.0, _sc_cast - getattr(_cs, _ct_red_attr, 0.0))
                 self.world.add_component(self.player_entity_id, _SCVis(
                     spell_id     = skill.skill_id,
                     cast_time    = _sc_cast,

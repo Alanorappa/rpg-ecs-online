@@ -158,9 +158,10 @@ SKILL_CATALOG: dict[str, dict] = {
         "mana_cost":         25,
         "cast_time":         1.5,
         "cast_range":        6,
-        "interruptible":     True,   # movimento cancela o cast
-        "dmg_weapon_pct":    0.5,    # 50% dano médio da arma
-        "dmg_sp_coeff":      1.0,    # 100% spell power
+        "interruptible":     True,
+        "dmg_weapon_pct":    0.5,
+        "dmg_sp_coeff":      1.0,
+        "cast_time_reduction_attr": "fire_cast_time_reduction",  # CombatStats attr de talento
         "class_id":          "mago",
         "school":            "fogo",
         "proc_attr":         "fire_instant_ready",
@@ -187,7 +188,8 @@ SKILL_CATALOG: dict[str, dict] = {
         "cast_time":        1.0,
         "cast_range":       3,
         "interruptible":    True,
-        "dmg_sp_coeff":     0.5,    # 50% spell power (sem componente de arma)
+        "dmg_sp_coeff":     0.5,
+        "cast_time_reduction_attr": "ice_cast_time_reduction",   # Precisão Elemental
         "needs_target":     False,
         "class_id":         "mago",
         "school":           "gelo",
