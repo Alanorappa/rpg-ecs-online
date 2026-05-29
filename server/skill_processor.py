@@ -94,10 +94,11 @@ class SkillProcessorMixin:
             # Snapshot do HP do próprio player (para detectar auto-cura/dano próprio)
             _player_hp_before = combat_stats.current_hp
 
-            # Snapshot de procs antes do handler (para detectar novos procs)
+            # Snapshot de procs e mana antes do handler
             from components import CharacterStats as _CSsnap
-            _char_snap       = self.world.get_component(player_eid, _CSsnap)
+            _char_snap        = self.world.get_component(player_eid, _CSsnap)
             _free_exec_before = getattr(_char_snap, "free_executar_charges", 0) if _char_snap else 0
+            _mana_before_handler = getattr(_char_snap, "mana", 0) if _char_snap else 0
 
             # Seta target no servidor usando tid do CAST_SKILL (server_eid enviado pelo cliente)
             tid = req.get("tid", -1)
@@ -329,9 +330,8 @@ class SkillProcessorMixin:
             # Envia SKILL_RESULT sempre: sucesso (com dano/efeitos) OU falha (failed=True).
             # Cliente usa failed=True para restaurar carga consumida localmente + limpar pending.
             if results_targets or _skill_ok:
-                # Inclui o cooldown efetivo que foi aplicado no skill_obj pelo handler.
-                # O cliente usa esse valor para setar current_cooldown (respeitando talentos).
-                _eff_cd = getattr(skill_obj, "current_cooldown", skill_obj.cooldown) if skill_obj else None
+                _eff_cd    = getattr(skill_obj, "current_cooldown", skill_obj.cooldown) if skill_obj else None
+                _has_cast  = getattr(skill_obj, "cast_time", 0.0) > 0
                 _result_entry = {
                     "caster_eid": player_eid,
                     "sid":        sid,
@@ -339,6 +339,10 @@ class SkillProcessorMixin:
                     "cooldown":   _eff_cd,
                     "failed":     False,
                 }
+                # Cast com tempo: este SKILL_RESULT é só confirmação — GCD sem som/CD.
+                # Som, cooldown real e dano chegam no SKILL_RESULT da completion.
+                if _has_cast and _skill_ok:
+                    _result_entry["cast_started"] = True
                 # Procs que precisam ser sincronizados para o cliente
                 # Só inclui se o proc ACABOU de ser gerado neste cast (não carga pré-existente).
                 from components import CharacterStats as _CSproc
@@ -365,13 +369,19 @@ class SkillProcessorMixin:
             if _char_after:
                 _player_hp_after = (_cs_after.current_hp if _cs_after else _player_hp_before)
                 _heal_amount     = max(0, _player_hp_after - _player_hp_before)
+                _mana_after_handler = _char_after.mana
                 _stat_entry = {
                     "player_eid": player_eid,
                     "xp":         0,
                     "mob_eid":    -1,
                     "rage":       _char_after.rage,
-                    "mana":       getattr(_cs_after, "mana", 0),
                 }
+                # Mana só é incluída se o handler realmente a deduziu (skills instantâneas).
+                # Spells com cast_time deduzem mana na completion — não enviar aqui ou o
+                # STATS_UPDATE chegaria ao cliente antes do cast terminar e pareceria que
+                # a mana foi subtraída antes do cast completar.
+                if _mana_after_handler != _mana_before_handler:
+                    _stat_entry["mana"] = _mana_after_handler
                 # Se o player se curou, inclui hp atual e quantidade curada para o cliente
                 if _heal_amount > 0 and _cs_after:
                     _stat_entry["hp"]          = _cs_after.current_hp

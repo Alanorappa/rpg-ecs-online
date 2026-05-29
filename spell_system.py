@@ -120,6 +120,8 @@ class ManaSystem(System):
                 rate  = self.REGEN_IC_PCT if in_combat else self.REGEN_OOC_PCT
                 regen = max(1, int(char_stats.max_mana * rate))
                 char_stats.mana = min(char_stats.max_mana, char_stats.mana + regen)
+                # Sincroniza CombatStats.mana para que o próximo CAST_SKILL envie o valor correto
+                combat_stats.mana = char_stats.mana
 
             # Decrementa janela de crits de fogo para Lapso Elemental
             if combat_stats.fire_crit_timer > 0:

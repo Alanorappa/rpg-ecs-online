@@ -90,13 +90,14 @@ class SpellCompletionMixin:
                         "applied_effects": applied,
                     })
 
-            # SKILL_RESULT da conclusão do cast — inclui cooldown=None (já aplicado no cast start)
+            # SKILL_RESULT da conclusão do cast — toca som e aplica cooldown (GCD já foi).
             skill_entry: dict = {
-                "caster_eid": player_eid,
-                "sid":        spell_id,
-                "targets":    results,
-                "cooldown":   None,
-                "failed":     False,
+                "caster_eid":   player_eid,
+                "sid":          spell_id,
+                "targets":      results,
+                "cooldown":     None,   # cliente usa skill.cooldown como fallback
+                "failed":       False,
+                "is_completion": True,  # cliente: som + CD, mas NÃO repete GCD
             }
 
             # Chama Interna: sincroniza proc ao cliente via SKILL_RESULT

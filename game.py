@@ -2981,9 +2981,10 @@ class GameEngine:
                 if caster_eid == self._my_eid:
                     _failed_sr = payload.get("failed", False)
                     _ps_sr     = self.world.get_component(self.player_entity, PlayerSkills)
+                    _cast_started  = payload.get("cast_started",  False)
+                    _is_completion = payload.get("is_completion", False)
                     if _failed_sr:
                         # Servidor rejeitou: limpa pending e restaura carga consumida
-                        # localmente (cliente consome antes da confirmação do servidor).
                         if _ps_sr:
                             _srv_cd_fail = payload.get("cooldown", 0)
                             for _sk_sr in _ps_sr.skills:
@@ -2991,12 +2992,30 @@ class GameEngine:
                                     _sk_sr._server_pending         = False
                                     _sk_sr._server_pending_timeout = 0.0
                                     if _sk_sr.max_charges > 0 and _sk_sr.charges < _sk_sr.max_charges:
-                                        _sk_sr.charges += 1   # desfaz consumo local
+                                        _sk_sr.charges += 1
                                     if _srv_cd_fail > 0:
                                         _sk_sr.current_cooldown = float(_srv_cd_fail)
-                        # Sem som, sem GCD — servidor indicou falha
+                    elif _cast_started:
+                        # Cast com tempo aceito pelo servidor: só GCD + limpa pending.
+                        # Som e cooldown chegam no is_completion quando a spell realmente dispara.
+                        if _ps_sr:
+                            _ps_sr.gcd_timer = PlayerSkills.GCD_DURATION
+                            for _sk_sr in _ps_sr.skills:
+                                if _sk_sr and _sk_sr.skill_id == sid:
+                                    _sk_sr._server_pending         = False
+                                    _sk_sr._server_pending_timeout = 0.0
+                    elif _is_completion:
+                        # Cast completou no servidor: som + cooldown. GCD já foi aplicado.
+                        SOUNDS.play_skill(_snd_name)
+                        if _ps_sr:
+                            _srv_cd = payload.get("cooldown")
+                            for _sk_sr in _ps_sr.skills:
+                                if _sk_sr and _sk_sr.skill_id == sid:
+                                    _sk_sr._server_pending         = False
+                                    _sk_sr._server_pending_timeout = 0.0
+                                    _sk_sr.current_cooldown = float(_srv_cd) if _srv_cd is not None else _sk_sr.cooldown
                     else:
-                        # Servidor confirmou: aplica GCD + cooldown + som agora
+                        # Skill instantânea: GCD + cooldown + som tudo junto (como offline).
                         SOUNDS.play_skill(_snd_name)
                         if _ps_sr:
                             _ps_sr.gcd_timer = PlayerSkills.GCD_DURATION
@@ -3005,9 +3024,6 @@ class GameEngine:
                                 if _sk_sr and _sk_sr.skill_id == sid:
                                     _sk_sr._server_pending         = False
                                     _sk_sr._server_pending_timeout = 0.0
-                                    # Usa cooldown efetivo do servidor (inclui reduções de talento).
-                                    # Fallback: cooldown base da skill (compatibilidade com servidor antigo).
-                                    # Sem break: sincroniza TODOS os slots com a mesma skill_id (Bug 4).
                                     _sk_sr.current_cooldown = float(_srv_cd) if _srv_cd is not None else _sk_sr.cooldown
                 elif caster_eid in self._remote_players:
                     # Player remoto: posicional
