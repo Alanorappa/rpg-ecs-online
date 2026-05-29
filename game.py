@@ -128,6 +128,10 @@ class GameEngine:
         self._remote_corpses: dict[int, tuple[int, int]] = {}
         # Loot disponível para o player local: corpse_id → {items, tx, ty}
         self._available_loot: dict[int, dict] = {}
+        # Projéteis com dano diferido: damage info aguardando projétil ser criado.
+        # Preenchido no SKILL_RESULT is_completion quando projétil ainda não existe.
+        # Processado após os sistemas atualizarem (SpellCastSystem cria o projétil).
+        self._bdf_pending: list[dict] = []
         # Último alvo enviado ao servidor (evita reenvios desnecessários)
         self._net_last_target: int = -2
         # Última posição enviada ao servidor (evita envios duplicados)
@@ -1262,6 +1266,10 @@ class GameEngine:
                     self._prof_record(f"upd:{type(system).__name__}", _time.perf_counter() - _ts)
                 else:
                     system.update(ev, dt)
+
+            # Projéteis BdF com dano diferido: tenta associar AGORA que SpellCastSystem rodou
+            if self._bdf_pending:
+                self._process_bdf_pending()
 
             # Sincronização online: movimento + alvo de combate + fila de mobs
             self._send_player_move()
@@ -3061,9 +3069,13 @@ class GameEngine:
                                 (255, 160, 60))
                     PROC.add("Chama Interna!", (255, 160, 60))
 
-            # BdF: adia FLT/sons ao impacto do projétil visual — HP atualizado imediatamente
+            # BdF: adia FLT/sons ao impacto visual — HP atualizado imediatamente.
+            # Race condition: SKILL_RESULT chega ANTES do SpellCastSystem criar o projétil
+            # (rede processada antes dos sistemas no loop). Se projétil não existe ainda,
+            # guarda em _bdf_pending; _process_bdf_pending() depois do loop de sistemas encontra.
             _bdf_deferred: set = set()
             if caster_eid == self._my_eid and sid == "bola_de_fogo":
+                import time as _t_bdf
                 from components import PlayerProjectile as _PPcomp, Position as _PPpos2
                 for t in targets:
                     _t_srv  = t.get("eid", -1)
@@ -3074,6 +3086,7 @@ class GameEngine:
                         self._mob_hp[_t_srv] = (_t_hp, _hp_mx)
                     if _t_loc == -1:
                         continue
+                    _proj_found = False
                     for _peid, _pp, _ in self.world.get_entities_with(_PPcomp, _PPpos2):
                         if _pp.attacker_id == self.player_entity and _pp.target_id == _t_loc:
                             _pp.deferred_result = {
@@ -3081,7 +3094,20 @@ class GameEngine:
                                 "outcome": t.get("outcome", "hit"),
                             }
                             _bdf_deferred.add(_t_srv)
+                            _proj_found = True
                             break
+                    if not _proj_found:
+                        # Projétil ainda não existe (será criado pelo SpellCastSystem
+                        # neste mesmo frame, depois da rede). Guarda para tentativa pós-sistemas.
+                        self._bdf_pending.append({
+                            "t_srv":    _t_srv,
+                            "t_loc":    _t_loc,
+                            "dmg":      t.get("damage",  0),
+                            "outcome":  t.get("outcome", "hit"),
+                            "hp_after": _t_hp,
+                            "deadline": _t_bdf.time() + 0.2,
+                        })
+                        _bdf_deferred.add(_t_srv)   # evita _apply_combat_result agora
 
             for t in targets:
                 if t.get("eid", -1) in _bdf_deferred:
@@ -3549,6 +3575,47 @@ class GameEngine:
             if self._net:
                 rtt = int(__import__("time").time() * 1000) - payload.get("client_ts", 0)
                 self._net.latency_ms = rtt
+
+    def _process_bdf_pending(self) -> None:
+        """Associa dano diferido de BdF ao projétil visual após o SpellCastSystem rodar.
+
+        Chamado logo após o loop de sistemas — neste ponto o SpellCastSystem já criou
+        o projétil (se o cast completou neste frame). Tenta setar deferred_result no
+        projétil voando para que _on_hit exiba o dano no impacto visual.
+        Fallback após 200ms: exibe imediatamente via _apply_combat_result.
+        """
+        import time as _t_pend
+        from components import PlayerProjectile as _PPpend, Position as _PPpendPos
+        now = _t_pend.time()
+        remaining: list[dict] = []
+        for entry in self._bdf_pending:
+            t_loc = entry["t_loc"]
+            found = False
+            for _peid, _pp, _ in self.world.get_entities_with(_PPpend, _PPpendPos):
+                if (_pp.attacker_id == self.player_entity
+                        and _pp.target_id == t_loc
+                        and not _pp.deferred_result):
+                    _pp.deferred_result = {
+                        "damage":  entry["dmg"],
+                        "outcome": entry["outcome"],
+                    }
+                    found = True
+                    break
+            if not found:
+                if now > entry["deadline"]:
+                    # Projétil sumiu ou nunca foi criado — mostra dano agora
+                    self._apply_combat_result({
+                        "attacker": self._my_eid,
+                        "target":   entry["t_srv"],
+                        "damage":   entry["dmg"],
+                        "outcome":  entry["outcome"],
+                        "hp_after": entry["hp_after"],
+                        "source":   "skill",
+                        "sid":      "bola_de_fogo",
+                    })
+                else:
+                    remaining.append(entry)
+        self._bdf_pending = remaining
 
     def _apply_combat_result(self, cr: dict) -> None:
         """Aplica resultado de combate do servidor: HP + texto flutuante + sons.
