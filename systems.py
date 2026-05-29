@@ -5779,11 +5779,21 @@ class SkillSystem(System, SkillHandlers):
                 if _char.rage < _rage_cost:
                     WARN.add(f"Raiva insuficiente ({_rage_cost})")
                     return False
-            # Mana
+            # Mana custo fixo (ex: Bola de Fogo, Calcinar, Nova Congelante)
+            _fixed_mana = getattr(skill, "mana_cost", 0)
+            if _fixed_mana > 0 and not (_is_procced and _proc_ignores_cost):
+                # Chama Interna: proc ativo → cast grátis (não bloqueia por mana)
+                _fire_free = _char and getattr(_char, "fire_instant_ready", False)
+                if not _fire_free:
+                    _char_mana = getattr(_char, "mana", 0) if _char else 0
+                    if _char_mana < _fixed_mana:
+                        WARN.add("Mana insuficiente")
+                        return False
+            # Mana custo percentual (ex: Polimorfia = 10% mana máxima)
             _mana_pct = getattr(skill, "mana_cost_pct", 0.0)
             if _mana_pct > 0 and hasattr(_cs, "max_mana"):
                 _mana_cost = int(_cs.max_mana * _mana_pct)
-                if _mana_cost > 0 and getattr(_cs, "mana", 0) < _mana_cost:
+                if _mana_cost > 0 and getattr(_char, "mana", 0) < _mana_cost:
                     WARN.add("Mana insuficiente")
                     return False
         # HP threshold (ex: Executar exige alvo <30% HP) — verifica no cliente via _mob_hp
