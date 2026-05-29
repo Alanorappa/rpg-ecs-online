@@ -7,17 +7,26 @@ Para desativar: SPELL_DEBUG = False
 """
 import logging
 import os
+import datetime
 
 SPELL_DEBUG = True
 
 _log_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
 os.makedirs(_log_dir, exist_ok=True)
 
+
+class _MsFormatter(logging.Formatter):
+    """Formatter com milissegundos — %f não funciona no strftime do Windows."""
+    def formatTime(self, record, datefmt=None):
+        ct = datetime.datetime.fromtimestamp(record.created)
+        return ct.strftime("%H:%M:%S") + f".{ct.microsecond // 1000:03d}"
+
+
 _logger = logging.getLogger("spell_debug")
 if not _logger.handlers:
     _fh = logging.FileHandler(os.path.join(_log_dir, "spells_debug.log"),
                                encoding="utf-8", mode="a")
-    _fh.setFormatter(logging.Formatter("%(asctime)s %(message)s", "%H:%M:%S.%f"))
+    _fh.setFormatter(_MsFormatter("%(asctime)s %(message)s"))
     _logger.addHandler(_fh)
     _logger.setLevel(logging.DEBUG)
 
