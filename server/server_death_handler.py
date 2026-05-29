@@ -57,9 +57,27 @@ class ServerDeathHandler:
         """Processa todas as entidades com PendingDeath este tick."""
         from components import PendingDeath, EnemyTier, SpawnZoneOwner, SpawnZone, TileMovement
 
-        to_remove: list[int] = []
+        to_remove:    list[int] = []
+        to_pd_only:   list[int] = []  # boneco de treino: só remove PendingDeath
 
         for eid, pd in self.world.get_entities_with(PendingDeath):
+            # Boneco de treino: reseta HP em vez de morrer
+            from components import TrainingDummy as _TDdh, CombatStats as _CSdh
+            if self.world.get_component(eid, _TDdh) is not None:
+                _td_cs = self.world.get_component(eid, _CSdh)
+                if _td_cs:
+                    _td_cs.current_hp = _td_cs.max_hp
+                    if self.world_server:
+                        self.world_server._combat_this_tick.append({
+                            "attacker": -1, "target": eid,
+                            "damage":   0,  "outcome": "regen",
+                            "hp_after": _td_cs.max_hp, "source": "regen",
+                        })
+                if self.world_server:
+                    self.world_server.get_damage_log(eid)  # descarta log acumulado
+                to_pd_only.append(eid)
+                continue
+
             killer_eid = pd.killer_entity_id
 
             # 1. Log
@@ -174,6 +192,14 @@ class ServerDeathHandler:
                 self.pending_despawns.append({"eid": eid, "tx": mob_tx, "ty": mob_ty})
 
             to_remove.append(eid)
+
+        # Boneco de treino: só remove PendingDeath, mantém entidade
+        for eid in to_pd_only:
+            try:
+                from components import PendingDeath as _PD
+                self.world.remove_component(eid, _PD)
+            except Exception:
+                pass
 
         # Remove PendingDeath ANTES de remove_entity (evita iteração inválida)
         for eid in to_remove:

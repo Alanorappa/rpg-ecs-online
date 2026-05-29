@@ -42,10 +42,14 @@ class SkillProcessorMixin:
             # Skills com cooldown=0 (Golpe Poderoso, Executar) passam sempre;
             # skills com cooldown>0 são bloqueadas se o tempo decorrido for menor.
             import time as _time_mod
-            _sk_cd   = getattr(skill_obj, "cooldown", 0.0)
             _sk_key  = (player_eid, sid)
             _now_srv = _time_mod.time()
             _elapsed = _now_srv - self._skill_last_used.get(_sk_key, 0.0)
+            # Usa o CD efetivo do uso anterior (com reduções de talento), não o base.
+            # Sem isso, talentos que reduzem CD do Interceptar causam rejeição falsa:
+            # o cliente conta 15s (CD reduzido) mas o servidor valida contra 22s (base).
+            _sk_cd   = self._skill_effective_cd.get(_sk_key,
+                           getattr(skill_obj, "cooldown", 0.0))
             if _sk_cd > 0 and _elapsed < _sk_cd:
                 _cd_remaining = _sk_cd - _elapsed
                 print(f"[Skill] REJEITADO (CD) {sid} player={player_eid} "
@@ -89,6 +93,11 @@ class SkillProcessorMixin:
 
             # Snapshot do HP do próprio player (para detectar auto-cura/dano próprio)
             _player_hp_before = combat_stats.current_hp
+
+            # Snapshot de procs antes do handler (para detectar novos procs)
+            from components import CharacterStats as _CSsnap
+            _char_snap       = self.world.get_component(player_eid, _CSsnap)
+            _free_exec_before = getattr(_char_snap, "free_executar_charges", 0) if _char_snap else 0
 
             # Seta target no servidor usando tid do CAST_SKILL (server_eid enviado pelo cliente)
             tid = req.get("tid", -1)
@@ -299,10 +308,12 @@ class SkillProcessorMixin:
                     })
 
             # Registra CD server-side APENAS se handler teve sucesso.
-            # Registrar antes causaria CD desperdiçado em falhas legítimas (fora de
-            # range, "Sem cargas"), silenciando o próximo uso válido — BUG verificado.
+            # Registra CD efetivo (com reduções de talento) para que a validação futura
+            # use o mesmo valor que o cliente recebeu — evita rejeição falsa por dessincronia.
             if _skill_ok and _sk_cd > 0:
-                self._skill_last_used[_sk_key] = _now_srv
+                self._skill_last_used[_sk_key]    = _now_srv
+                _eff_cd_store = getattr(skill_obj, "current_cooldown", _sk_cd)
+                self._skill_effective_cd[_sk_key] = _eff_cd_store
 
             # Envia SKILL_RESULT sempre: sucesso (com dano/efeitos) OU falha (failed=True).
             # Cliente usa failed=True para restaurar carga consumida localmente + limpar pending.
@@ -310,13 +321,21 @@ class SkillProcessorMixin:
                 # Inclui o cooldown efetivo que foi aplicado no skill_obj pelo handler.
                 # O cliente usa esse valor para setar current_cooldown (respeitando talentos).
                 _eff_cd = getattr(skill_obj, "current_cooldown", skill_obj.cooldown) if skill_obj else None
-                self._skill_results_this_tick.append({
+                _result_entry = {
                     "caster_eid": player_eid,
                     "sid":        sid,
                     "targets":    results_targets,
                     "cooldown":   _eff_cd,
                     "failed":     False,
-                })
+                }
+                # Procs que precisam ser sincronizados para o cliente
+                # Só inclui se o proc ACABOU de ser gerado neste cast (não carga pré-existente).
+                from components import CharacterStats as _CSproc
+                _char_proc = self.world.get_component(player_eid, _CSproc)
+                _free_exec_after = getattr(_char_proc, "free_executar_charges", 0) if _char_proc else 0
+                if _free_exec_after > _free_exec_before:
+                    _result_entry["assassino_proc"] = True
+                self._skill_results_this_tick.append(_result_entry)
             else:
                 # Handler retornou False (sem alvo, fora de range, sem cargas, etc.)
                 # Notifica cliente para restaurar estado local (carga, pending).

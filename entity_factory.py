@@ -389,6 +389,51 @@ def create_trainer(world: World, tile_x: int, tile_y: int,
     return eid
 
 
+def create_training_dummy(world: World, tile_x: int, tile_y: int) -> int:
+    """Cria boneco de treino estático para testes de skills e talentos.
+
+    HP: 999 999 | Armadura: 100 | hp5: ~99 999/5s | Sem IA, sem ataque, sem XP.
+    """
+    from components import TrainingDummy as _TD
+    x = tile_x * TILE_SIZE + TILE_SIZE / 2
+    y = tile_y * TILE_SIZE + TILE_SIZE / 2
+
+    eid = world.create_entity()
+    world.add_component(eid, Position(x=x, y=y, prev_x=x, prev_y=y))
+    world.add_component(eid, Renderable(color=(255, 215, 0), width=28, height=28))
+    world.add_component(eid, Collider(width=28, height=28))
+    world.add_component(eid, Enemy())
+    world.add_component(eid, TileMovement(
+        current_tile_x=tile_x, current_tile_y=tile_y,
+        target_tile_x=tile_x,  target_tile_y=tile_y,
+        start_pixel_x=x,  start_pixel_y=y,
+        target_pixel_x=x, target_pixel_y=y,
+        move_duration=1.0, speed=0.0,
+    ))
+    world.add_component(eid, EnemyTier(tier="boss"))
+    world.add_component(eid, StatusEffects())
+    world.add_component(eid, MobSounds())
+    world.add_component(eid, _TD())
+
+    stats = CombatStats(
+        base_stamina=999_999,
+        base_armor=100,
+        base_attack_power=0,
+        base_crit_rating=0.0,
+        base_attack_interval=999.0,
+    )
+    stats.hp5 = 99_999 / 999_999   # ≈ 10% de max_hp por tick de 5s
+    stats._recalculate_effective_stats()
+    stats.current_hp = stats.max_hp
+    world.add_component(eid, stats)
+
+    world.add_component(eid, EntityIdentity(
+        name="Boneco de Treino", race="Construto", entity_class="Guerreiro",
+        level=99, tier="Boss",
+    ))
+    return eid
+
+
 def create_corpse(world: World, x: float, y: float, loot: list, coins: int = 0,
                   decay_time: float = None) -> int:
     corpse_entity = world.create_entity()

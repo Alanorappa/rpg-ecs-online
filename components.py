@@ -1248,3 +1248,9 @@ class AoeTargeting:
     pending_world_y:   float = 0.0
     waiting_for_range: bool  = False  # True = player caminhando até o alcance
     cancel_pending:    bool  = False  # True = cancelado neste frame, removido no próximo
+
+
+@dataclass
+class TrainingDummy:
+    """Tag: boneco de treino. HP resetado ao atingir 0 em vez de morrer."""
+    pass

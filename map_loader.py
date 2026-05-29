@@ -95,17 +95,18 @@ def load_map_csv(filepath: str) -> tuple[list[str], list[str], dict, list | None
         raise FileNotFoundError(f"Mapa não encontrado: {filepath}")
 
     spawn_points = {
-        "player":          player_spawn,
-        "enemies":         enemy_spawns,
-        "portals":         portal_spawns,
-        "merchants":       merchant_spawns,
-        "quest_givers":    [],
-        "blacksmiths":     [],
-        "trainers":        [],
-        "spawn_zones":     [],
-        "transitions":     [],
-        "ambient_zones":   [],
-        "default_ambient": "",
+        "player":            player_spawn,
+        "enemies":           enemy_spawns,
+        "portals":           portal_spawns,
+        "merchants":         merchant_spawns,
+        "quest_givers":      [],
+        "blacksmiths":       [],
+        "trainers":          [],
+        "spawn_zones":       [],
+        "transitions":       [],
+        "ambient_zones":     [],
+        "default_ambient":   "",
+        "training_dummies":  [],
     }
 
     json_path = base + "_entities.json"
@@ -308,6 +309,11 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
                 })
         if spawn_points["spawn_zones"]:
             spawn_points["enemies"] = []
+
+    if "training_dummies" in data:
+        spawn_points["training_dummies"] = [
+            (d["x"], d["y"]) for d in data["training_dummies"]
+        ]
 
     if "default_ambient" in data:
         spawn_points["default_ambient"] = data["default_ambient"]

@@ -3017,6 +3017,24 @@ class GameEngine:
                         _slx, _sly = self._player_world_pos()
                         SOUNDS.play_skill_at(_snd_name, _cast_pos.x, _cast_pos.y,
                                              _slx, _sly, base=0.85)
+            # Consome carga livre de Executar ao usar a skill
+            if caster_eid == self._my_eid and sid == "executar":
+                from components import CharacterStats as _CSexec
+                _char_exec = self.world.get_component(self.player_entity, _CSexec)
+                if _char_exec and _char_exec.free_executar_charges > 0:
+                    _char_exec.free_executar_charges -= 1
+
+            # Procs sincronizados pelo servidor
+            if caster_eid == self._my_eid and payload.get("assassino_proc"):
+                from components import CharacterStats as _CSproc
+                _char_proc = self.world.get_component(self.player_entity, _CSproc)
+                if _char_proc:
+                    _char_proc.free_executar_charges = 1
+                    from combat_log import LOG as _LOG_proc
+                    _LOG_proc.add("Assassino: Executar disponivel! (sem custo, sem restricao de HP)",
+                                  (255, 80, 80))
+                    PROC.add("Assassino!", (255, 80, 80))
+
             for t in targets:
                 self._apply_combat_result({
                     "attacker": caster_eid,
@@ -3521,11 +3539,12 @@ class GameEngine:
                     color = (255, 220, 0) if is_ability else (220, 220, 220)
                     FLT.add(str(damage), pos.x, pos.y, color,
                             "normal", target_id=server_target)
-                    # Hit normal: impacto + reação vocal do mob (emote_attack = grunt)
+                    # Hit normal: impacto (só auto-attack) + reação vocal do mob
                     if not _is_dot_hot:
-                        SOUNDS.play_random_at(["hit_normal_1", "hit_normal_2",
-                                               "hit_normal_3", "hit_normal"],
-                                              pos.x, pos.y, _lx, _ly, base=0.6)
+                        if not is_ability:
+                            SOUNDS.play_random_at(["hit_normal_1", "hit_normal_2",
+                                                   "hit_normal_3", "hit_normal"],
+                                                  pos.x, pos.y, _lx, _ly, base=0.6)
                         SOUNDS.play_mob_sounds_at(_mob_snd, "emote_attack",
                                                   pos.x, pos.y, _lx, _ly, base=0.6,
                                                   dedup_key=f"dmg_{server_target}")
@@ -3600,6 +3619,21 @@ class GameEngine:
                         else:
                             SOUNDS.play_random(["hit_normal_1","hit_normal_2",
                                                 "hit_normal_3","hit_normal"], 0.7)
+            elif damage == 0 and outcome in ("miss", "dodge", "parry", "block"):
+                # Mob atacou o player mas foi evitado — mostra feedback visual/sonoro
+                _AVOID_PLR = {
+                    "miss":  ("Errou!",    (220, 220, 100)),
+                    "dodge": ("Desviou!",  (100, 210, 230)),
+                    "parry": ("Aparou!",   (100, 150, 230)),
+                    "block": ("Bloqueou!", (100, 150, 230)),
+                }
+                _txt_av, _col_av = _AVOID_PLR.get(outcome, ("Errou!", (220, 220, 100)))
+                player_pos = self.world.get_component(self.player_entity, Position)
+                if player_pos:
+                    FLT.add(_txt_av, player_pos.x, player_pos.y, _col_av, "small",
+                            target_id=self.player_entity)
+                SOUNDS.play_random([f"combat_{outcome}", f"combat_{outcome}_1",
+                                    f"combat_{outcome}_2"], 0.7)
             return
 
         # ── Player remoto foi atacado ou regenerou ────────────────────

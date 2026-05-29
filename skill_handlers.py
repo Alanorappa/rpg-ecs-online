@@ -215,9 +215,11 @@ class SkillHandlers:
         LOG.add(msg, (255, 180, 0))
 
         # Proc Assassino: 5% por alvo acertado → 1 carga livre de Executar
-        if player_cs and player_cs.impacto_assassino:
-            proc_chance = 0.05 * len(targets)
-            if random.random() < proc_chance:
+        _assassino_flag = player_cs and player_cs.impacto_assassino
+        _roll = random.random()
+        _proc_chance = 0.05 * len(targets) if _assassino_flag else 0.0
+        if _assassino_flag:
+            if _roll < _proc_chance:
                 char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
                 if char_stats:
                     char_stats.free_executar_charges = 1

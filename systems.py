@@ -26,7 +26,7 @@ from components import Position, Renderable, PlayerControlled, Camera, Collider,
                        EnemyAbilities, EnemyAbilitySlot, EntityIdentity, \
                        MobSounds, PendingDeath, XPReward, SpawnZoneOwner, SpawnZone, \
                        PlayerSkills, NPC, ActiveRegen, ConsumableBar, \
-                       AoeTargeting
+                       AoeTargeting, RemoteControlled
 from world import World
 from tileset import TILE_SIZE, OBJECT_MAPPING
 from utils import chebyshev, start_tile_movement
@@ -443,6 +443,9 @@ class CombatSystem(System):
     def __init__(self, world: World):
         self.world = world
         self.last_outcome: str = "hit"  # captura o outcome do último deal_damage
+        # Avoidances de mob→player (parry/dodge/miss) que o servidor deve repassar ao cliente.
+        # Preenchido em deal_damage; consumido e limpo por combat_processor cada tick.
+        self.mob_avoidance_events: list[tuple] = []  # (attacker_id, target_id, outcome, pos_hp)
 
     def _get_combat_stats(self, entity_id: int) -> CombatStats | None:
         """Helper para obter o componente CombatStats de uma entidade."""
@@ -542,6 +545,10 @@ class CombatSystem(System):
                                           attacker_id, target_id,
                                           attacker_is_player, target_is_player)
             self.last_outcome = outcome   # backward compat offline
+            if not attacker_is_player and target_is_player:
+                _tgt_cs_av = self._get_combat_stats(target_id)
+                _hp_av = _tgt_cs_av.current_hp if _tgt_cs_av else 0
+                self.mob_avoidance_events.append((attacker_id, target_id, outcome, _hp_av))
             return False, outcome
 
         final_damage = self._resolve_damage_modifiers(
@@ -1357,9 +1364,17 @@ class PlayerInputSystem(System):
                         break
 
     def _get_enemy_tiles(self) -> set:
-        """Retorna tiles atualmente ocupados por inimigos (obstáculos dinâmicos para o jogador)."""
+        """Retorna tiles ocupados por inimigos, NPCs e jogadores remotos (obstáculos dinâmicos)."""
         occupied = set()
         for _, tm, _ in self.world.get_entities_with(TileMovement, Enemy):
+            occupied.add((tm.current_tile_x, tm.current_tile_y))
+            if tm.is_moving:
+                occupied.add((tm.target_tile_x, tm.target_tile_y))
+        for _, tm, _ in self.world.get_entities_with(TileMovement, NPC):
+            occupied.add((tm.current_tile_x, tm.current_tile_y))
+            if tm.is_moving:
+                occupied.add((tm.target_tile_x, tm.target_tile_y))
+        for _, tm, _ in self.world.get_entities_with(TileMovement, RemoteControlled):
             occupied.add((tm.current_tile_x, tm.current_tile_y))
             if tm.is_moving:
                 occupied.add((tm.target_tile_x, tm.target_tile_y))
@@ -5849,6 +5864,12 @@ class SkillSystem(System, SkillHandlers):
             _fat_p = getattr(skill, "params", {}) or {}
             _char.fatiador_timer = _fat_p.get("duration",      5.0)
             _char.fatiador_tick  = _fat_p.get("tick_interval", 1.0)
+
+        # Previne auto-attack no mesmo frame que a skill: se o timer já zerou, dá um
+        # mínimo de 1 frame (0.05s) para que PlayerInputSystem não dispare o auto-attack
+        # simultaneamente, evitando o som de ataque sobreposto com o da skill.
+        if _cs and _cs.attack_cooldown_timer <= 0:
+            _cs.attack_cooldown_timer = 0.05
 
         return True
 

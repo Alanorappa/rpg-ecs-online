@@ -166,7 +166,9 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         # Cooldown server-side: {(player_eid, sid) → unix_time do último uso}
         # Impede spam de skills mesmo que o cliente remova o cooldown local.
-        self._skill_last_used: dict[tuple, float] = {}
+        self._skill_last_used:    dict[tuple, float] = {}
+        # CD efetivo por skill (com reduções de talento) — sincroniza com o que o cliente recebeu.
+        self._skill_effective_cd: dict[tuple, float] = {}
 
         # Fila de skill requests recebidas dos clientes (processada em _tick)
         self._pending_skill_requests: list[dict] = []
@@ -250,6 +252,13 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             TileMovementSystem(self.world),           # 7. avança progress→current_tile (headless)
         ]
         print(f"[WorldServer] mapa OK — EnemyAI + EnemyAbility + StatusEffect + Projectile")
+        self._create_training_dummies(spawn_points.get("training_dummies", []))
+
+    def _create_training_dummies(self, dummies_data: list) -> None:
+        from entity_factory import create_training_dummy as _ctd
+        for tx, ty in dummies_data:
+            eid = _ctd(self.world, tx, ty)
+            print(f"[WorldServer] boneco de treino criado eid={eid} tile=({tx},{ty})")
 
     def _create_spawn_zones(self, zones_data: list) -> None:
         """Cria entidades SpawnZone a partir dos dados já processados pelo map_loader.
@@ -1081,7 +1090,11 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # Após esta função, _apply_stat_overrides restaura max_hp com bônus de equip.
         _saved_current_hp = cs.current_hp
 
-        # Recalcula base — limpa modificadores anteriores de talentos
+        # Limpa modifiers anteriores (talentos acumulados de SAVE_STATEs anteriores).
+        # No servidor, cs.modifiers é exclusivo de talentos — equipment usa _apply_stat_overrides.
+        cs.modifiers.clear()
+
+        # Recalcula base a partir dos atributos do personagem
         apply_char_stats_to_combat(char, cs, perm)
         sync_attack_interval(cs, equip)
 
@@ -1212,6 +1225,23 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 "hp_after": _hp5_ev["new_hp"],
                 "source":   "regen",
             })
+
+        # ── Regen do boneco de treino (hp5 = ~10% de max_hp a cada 5s) ──────────
+        from components import TrainingDummy as _TDtk
+        for _td_eid, _td_cs, _ in self.world.get_entities_with(CombatStats, _TDtk):
+            if _td_cs.current_hp < _td_cs.max_hp:
+                _td_cs.hp5_timer += dt
+                if _td_cs.hp5_timer >= 5.0:
+                    _td_cs.hp5_timer -= 5.0
+                    _old_td_hp = _td_cs.current_hp
+                    _regen_td  = max(1, int(_td_cs.max_hp * _td_cs.hp5))
+                    _td_cs.current_hp = min(_td_cs.max_hp, _old_td_hp + _regen_td)
+                    self._combat_this_tick.append({
+                        "attacker": -1, "target":  _td_eid,
+                        "damage":   -(_td_cs.current_hp - _old_td_hp),
+                        "outcome":  "regen", "hp_after": _td_cs.current_hp,
+                        "source":   "regen",
+                    })
 
         # ── ActiveRegen (consumíveis HoT) ─────────────────────────────────────
         # Processa ticks de regeneração de HP dos consumíveis.
