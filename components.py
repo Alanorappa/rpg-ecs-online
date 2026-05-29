@@ -1210,6 +1210,7 @@ class PlayerProjectile:
     on_hit_effect:    str   = ""     # ID do efeito (ex: "slow", "burn", "stun")
     on_hit_duration:  float = 0.0    # duração do efeito em segundos
     on_hit_magnitude: float = 0.0    # magnitude (ex: 0.3 = 30% slow)
+    deferred_result:  dict  = None   # damage/outcome do servidor — exibido ao colidir (online)
 
 
 # ── Components de estado de UI ─────────────────────────────────────────────

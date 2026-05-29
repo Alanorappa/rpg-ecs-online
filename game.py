@@ -3045,7 +3045,31 @@ class GameEngine:
                                 (255, 160, 60))
                     PROC.add("Chama Interna!", (255, 160, 60))
 
+            # BdF: adia FLT/sons ao impacto do projétil visual — HP atualizado imediatamente
+            _bdf_deferred: set = set()
+            if caster_eid == self._my_eid and sid == "bola_de_fogo":
+                from components import PlayerProjectile as _PPcomp, Position as _PPpos2
+                for t in targets:
+                    _t_srv  = t.get("eid", -1)
+                    _t_loc  = self._remote_mobs.get(_t_srv, -1)
+                    _t_hp   = t.get("hp_after", -1)
+                    if _t_hp >= 0 and _t_srv != -1:
+                        _, _hp_mx = self._mob_hp.get(_t_srv, (_t_hp, _t_hp))
+                        self._mob_hp[_t_srv] = (_t_hp, _hp_mx)
+                    if _t_loc == -1:
+                        continue
+                    for _peid, _pp, _ in self.world.get_entities_with(_PPcomp, _PPpos2):
+                        if _pp.attacker_id == self.player_entity and _pp.target_id == _t_loc:
+                            _pp.deferred_result = {
+                                "damage":  t.get("damage",  0),
+                                "outcome": t.get("outcome", "hit"),
+                            }
+                            _bdf_deferred.add(_t_srv)
+                            break
+
             for t in targets:
+                if t.get("eid", -1) in _bdf_deferred:
+                    continue   # FLT será exibido ao impacto do projétil
                 self._apply_combat_result({
                     "attacker": caster_eid,
                     "target":   t.get("eid",     -1),
