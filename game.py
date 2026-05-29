@@ -3276,8 +3276,10 @@ class GameEngine:
                     _char_sync = self.world.get_component(self.player_entity, _CSST)
                     if _char_sync and _srv_rage is not None:
                         _char_sync.rage = _srv_rage
+                    if _char_sync and _srv_mana is not None:
+                        _char_sync.mana = _srv_mana   # CharacterStats.mana — display e _check_mana cliente
                     if cs and _srv_mana is not None:
-                        cs.mana = _srv_mana
+                        cs.mana = _srv_mana            # CombatStats.mana — checks client-side
                 # Cura própria (skill, consumível HoT).
                 # O servidor envia hp=valor_no_momento_da_cura. Como HP5 regen e outros
                 # heals podem ocorrer no mesmo tick (mas com hp_after mais recente no
@@ -3308,13 +3310,26 @@ class GameEngine:
                     perm_xp    = self.world.get_component(self.player_entity, PermanentStats)
                     if char_stats:
                         char_stats.current_xp += xp_gained
+                        # Servidor é autoritativo para pontos de talento — não dá localmente
                         process_levelups(self.world, self.player_entity,
-                                         char_stats, cs_xp, perm_xp)
+                                         char_stats, cs_xp, perm_xp,
+                                         give_talent_points=False)
                     from floating_text import FLT
                     pos = self.world.get_component(self.player_entity, Position)
                     if pos:
                         FLT.add(f"+{xp_gained} XP", pos.x, pos.y - 20, (100, 255, 100), size="small",
                                 target_id=self.player_entity)
+                # Level-up: HP e pontos de talento autoritativos do servidor
+                _srv_tp = payload.get("talent_points")
+                if _srv_tp is not None:
+                    from components import TalentTree as _TTsync
+                    _tt_s = self.world.get_component(self.player_entity, _TTsync)
+                    if _tt_s:
+                        _tt_s.available_points = int(_srv_tp)
+                if "hp" in payload and "heal_amount" not in payload and cs:
+                    cs.current_hp = payload["hp"]
+                    if payload.get("hp_max", 0) > 0:
+                        cs.max_hp = payload["hp_max"]
                 # on_kill charge: servidor confirmou carga da skill (ex: Vitória Iminente)
                 _on_kill_sid = payload.get("on_kill_skill")
                 if _on_kill_sid:

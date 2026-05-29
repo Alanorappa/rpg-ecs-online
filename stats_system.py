@@ -197,7 +197,8 @@ def sync_attack_interval(combat_stats: CombatStats, equipment=None) -> None:
 
 def process_levelups(world: World, entity_id: int,
                      char: CharacterStats, cs: CombatStats,
-                     perm: "PermanentStats | None") -> None:
+                     perm: "PermanentStats | None",
+                     give_talent_points: bool = True) -> None:
     """Processa todos os level-ups pendentes em `char` e aplica os efeitos.
 
     Centraliza a lógica que estava triplicada em XPSystem, QuestSystem e
@@ -218,7 +219,7 @@ def process_levelups(world: World, entity_id: int,
         char.vitality     += gains.get("vitality",     0)
         char.defense      += gains.get("defense",      0)
         tt = world.get_component(entity_id, TalentTree)
-        if tt is not None:
+        if tt is not None and give_talent_points:
             tt.available_points += 1
         SOUNDS.play_ui("levelup")
         gains_str = ", ".join(f"+{v} {k[:3].upper()}" for k, v in gains.items() if v > 0)

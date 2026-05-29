@@ -549,12 +549,16 @@ class SessionManager:
                                 _payload["mana"] = xp_entry["mana"]
                             if xp_entry.get("on_kill_skill"):
                                 _payload["on_kill_skill"] = xp_entry["on_kill_skill"]
-                            # Inclui hp/heal_amount se skill curou o player (ex: Vitória Iminente)
+                            # Inclui hp sempre que presente (level-up ou skill de cura)
+                            if "hp" in xp_entry:
+                                _payload["hp"]     = xp_entry["hp"]
+                                _payload["hp_max"] = xp_entry["hp_max"]
                             if "heal_amount" in xp_entry:
-                                _payload["hp"]          = xp_entry["hp"]
-                                _payload["hp_max"]      = xp_entry["hp_max"]
                                 _payload["heal_amount"] = xp_entry["heal_amount"]
                                 _payload["heal_sid"]    = xp_entry.get("heal_sid", "")
+                            # Pontos de talento do servidor (level-up)
+                            if "talent_points" in xp_entry:
+                                _payload["talent_points"] = xp_entry["talent_points"]
                             await session.send(MsgType.STATS_UPDATE, _payload)
 
             # Notificações de corpse/loot

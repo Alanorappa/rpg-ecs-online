@@ -725,8 +725,10 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         cs   = self.world.get_component(eid, CombatStats)
         if char and rage >= 0:
             char.rage = rage
+        if char and mana >= 0:
+            char.mana = mana   # CharacterStats.mana — lido por _check_mana
         if cs and mana >= 0:
-            cs.mana = mana
+            cs.mana = mana     # CombatStats.mana — lido por _use_skill_visual_only
 
     def get_damage_log(self, mob_eid: int) -> dict[int, int]:
         """Retorna e remove o registro de dano acumulado para o mob. Chamado pelo death handler."""
@@ -1374,12 +1376,15 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 if _char_xp.level > _level_before:
                     # process_levelups recalculou CombatStats — re-aplica overrides de equip
                     self._apply_stat_overrides(_xp_peid)
+                    from components import TalentTree as _TTlv
+                    _tt_lv = self.world.get_component(_xp_peid, _TTlv)
                     self._pending_xp_deliveries.append({
-                        "player_eid": _xp_peid,
-                        "xp":         0,
-                        "mob_eid":    -1,
-                        "hp":         _cs_xp.current_hp,
-                        "hp_max":     _cs_xp.max_hp,
+                        "player_eid":    _xp_peid,
+                        "xp":            0,
+                        "mob_eid":       -1,
+                        "hp":            _cs_xp.current_hp,
+                        "hp_max":        _cs_xp.max_hp,
+                        "talent_points": _tt_lv.available_points if _tt_lv else 0,
                     })
             print(f"[XP] player {_xp_peid} ganhou {_xp_amt} XP (mob {entry['mob_eid']})")
 
