@@ -296,7 +296,7 @@ class SpellCompletionMixin:
         if target_state and target_state.is_immune:
             return False
 
-        target_cs.current_hp = max(0, target_cs.current_hp - dmg)
+        target_cs.current_hp -= dmg  # sem clamp — overkill negativo preserva dano real
 
         # Quebra polimorfia
         _t_sfx = self.world.get_component(target_id, StatusEffects)
