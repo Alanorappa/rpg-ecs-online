@@ -352,14 +352,16 @@ class SkillProcessorMixin:
                     _result_entry["assassino_proc"] = True
                 self._skill_results_this_tick.append(_result_entry)
             else:
-                # Handler retornou False (sem alvo, fora de range, sem cargas, etc.)
-                # Notifica cliente para restaurar estado local (carga, pending).
+                # Handler retornou False — inclui motivo de rejeição para o cliente exibir
+                _fail_reason = getattr(self._skill_system, "_last_warn", "")
+                self._skill_system._last_warn = ""  # limpa para próxima skill
                 self._skill_results_this_tick.append({
                     "caster_eid": player_eid,
                     "sid":        sid,
                     "targets":    [],
                     "cooldown":   0,
                     "failed":     True,
+                    "reason":     _fail_reason,
                 })
 
             # Sincroniza rage/mana/hp do player após a skill

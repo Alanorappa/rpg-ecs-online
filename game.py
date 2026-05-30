@@ -3016,6 +3016,11 @@ class GameEngine:
                                         _sk_sr.charges += 1
                                     if _srv_cd_fail > 0:
                                         _sk_sr.current_cooldown = float(_srv_cd_fail)
+                        # Exibe motivo da rejeição se o servidor enviou
+                        _fail_reason = payload.get("reason", "")
+                        if _fail_reason:
+                            from floating_text import WARN as _WARN_fail
+                            _WARN_fail.add(_fail_reason)
                     elif _cast_started:
                         # Cast com tempo aceito pelo servidor: só GCD + limpa pending.
                         # Som e cooldown chegam no is_completion quando a spell realmente dispara.

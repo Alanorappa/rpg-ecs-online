@@ -99,6 +99,9 @@ class SkillHandlers:
     def _warn(self, text: str) -> None:
         """Exibe aviso de ação bloqueada em posição fixa na tela (não vai para o log)."""
         WARN.add(text)
+        self._last_warn = text  # capturado pelo skill_processor para feedback online
+
+    _last_warn: str = ""  # último motivo de rejeição — enviado em failed SKILL_RESULT
 
     # ==================================================================
     # Habilidades base (skill_config.py)
@@ -762,6 +765,7 @@ class SkillHandlers:
     def _skill_escudo_fogo(self, skill, combat_stats, combat_state, tile_move):
         """Escudo de Fogo — retaliation de fogo em atacantes por 15s. 25 mana / 20s CD."""
         from components import FireShieldEffect
+        _server_mode = getattr(self, "_server_pending_spells", None) is not None
         char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
         if not self._check_mana(char_stats, 25):
             return False
@@ -770,10 +774,16 @@ class SkillHandlers:
             return False
 
         char_stats.mana -= 25
+        # Sync CombatStats.mana para STATS_UPDATE ficar consistente
+        from components import CombatStats as _CombatEF
+        _cs_ef = self.world.get_component(self.player_entity_id, _CombatEF)
+        if _cs_ef:
+            _cs_ef.mana = char_stats.mana
         self.world.add_component(self.player_entity_id, FireShieldEffect(duration=15.0))
         skill.current_cooldown = skill.cooldown
-        LOG.add("Escudo de Fogo ativado! (15s)", (255, 120, 0))
-        SOUNDS.play_skill("skill_fire_shield")
+        if not _server_mode:
+            LOG.add("Escudo de Fogo ativado! (15s)", (255, 120, 0))
+            SOUNDS.play_skill("skill_fire_shield")
         return True
 
     # Cone base de Pirofagia (mesmo _PIRO_CONE de spell_system.py) — cópia para
