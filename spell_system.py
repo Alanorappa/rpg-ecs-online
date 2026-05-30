@@ -958,6 +958,19 @@ class PlayerProjectileSystem(System):
             proj.target_last_x = target_pos.x
             proj.target_last_y = target_pos.y
 
+            # LOS check: bloqueia projétil se há parede entre ele e o alvo
+            from systems import get_tilemap_component as _get_tm, EnemyAISystem as _EAIS
+            from tileset import TILE_SIZE as _TS
+            _tmap = _get_tm()
+            if _tmap:
+                _ptx = int(proj_pos.x / _TS)
+                _pty = int(proj_pos.y / _TS)
+                _ttx = int(target_pos.x / _TS)
+                _tty = int(target_pos.y / _TS)
+                if not _EAIS._has_line_of_sight(_tmap, _ptx, _pty, _ttx, _tty):
+                    to_remove.append(proj_id)
+                    continue
+
             dx   = target_pos.x - proj_pos.x
             dy   = target_pos.y - proj_pos.y
             dist = math.sqrt(dx * dx + dy * dy)
