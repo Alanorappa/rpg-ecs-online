@@ -1211,6 +1211,8 @@ class PlayerProjectile:
     on_hit_duration:  float = 0.0    # duração do efeito em segundos
     on_hit_magnitude: float = 0.0    # magnitude (ex: 0.3 = 30% slow)
     deferred_result:  dict  = None   # damage/outcome do servidor — exibido ao colidir (online)
+    target_last_x:    float = 0.0    # última pos X conhecida do alvo (voa até aqui se despawnar)
+    target_last_y:    float = 0.0    # última pos Y conhecida do alvo
 
 
 # ── Components de estado de UI ─────────────────────────────────────────────

@@ -214,19 +214,9 @@ class SpellCastSystem(System):
     def _complete_cast(self, entity_id: int, spell_cast: SpellCast,
                        combat_state: CombatState) -> None:
         # Online: cast visual_only — barra preenche, servidor aplica dano.
-        # Mesmo assim chama o handler para efeitos visuais locais (ex: projétil de BdF).
-        # Handlers verificam target_cs antes de causar dano → no-op para mobs online.
+        # Projétil de BdF é criado no handler SKILL_RESULT(is_completion) em game.py
+        # (timing correto: mob ainda existe quando SKILL_RESULT chega, antes de ENTITY_DESPAWN).
         if spell_cast.visual_only:
-            handler_name = self._CAST_HANDLERS.get(spell_cast.spell_id)
-            if handler_name and spell_cast.target_id != -1:
-                handler = getattr(self, handler_name, None)
-                if handler:
-                    self._current_spell_id = spell_cast.spell_id
-                    try:
-                        handler(entity_id, spell_cast.target_id)
-                    except Exception:
-                        pass
-                    self._current_spell_id = ""
             return
 
         # Deduz recursos aqui — cast completado com sucesso.
@@ -288,6 +278,8 @@ class SpellCastSystem(System):
             dmg_weapon_pct=_bdf.get("dmg_weapon_pct", 0.5),
             dmg_sp_coeff=_bdf.get("dmg_sp_coeff",   1.0),
             color=(255, 120, 20),
+            target_last_x=target_pos.x,
+            target_last_y=target_pos.y,
         ))
         LOG.add("Bola de Fogo!", (255, 160, 60))
         SOUNDS.play_spell("bola_de_fogo", "launch")
@@ -925,9 +917,32 @@ class PlayerProjectileSystem(System):
             target_pos = self.world.get_component(proj.target_id, Position)
             target_cs  = self.world.get_component(proj.target_id, CombatStats)
 
-            if not target_pos or (target_cs and target_cs.current_hp <= 0):
+            # Offline: remove projétil se alvo morreu
+            if target_cs and target_cs.current_hp <= 0:
                 to_remove.append(proj_id)
                 continue
+
+            # Online: alvo despawnou mas projétil continua voando até a última posição conhecida
+            if target_pos is None:
+                fx, fy = proj.target_last_x, proj.target_last_y
+                if fx == 0.0 and fy == 0.0:
+                    to_remove.append(proj_id)
+                    continue
+                dx   = fx - proj_pos.x
+                dy   = fy - proj_pos.y
+                dist = math.sqrt(dx * dx + dy * dy)
+                if dist <= self.HIT_THRESHOLD:
+                    self._on_hit(proj)
+                    to_remove.append(proj_id)
+                else:
+                    step = proj.speed * dt
+                    proj_pos.x += dx / dist * step
+                    proj_pos.y += dy / dist * step
+                continue
+
+            # Atualiza última posição conhecida (usada se alvo despawnar durante o voo)
+            proj.target_last_x = target_pos.x
+            proj.target_last_y = target_pos.y
 
             dx   = target_pos.x - proj_pos.x
             dy   = target_pos.y - proj_pos.y
