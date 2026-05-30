@@ -4804,11 +4804,15 @@ class ConsumableSystem(System):
             if regen.tick_timer <= 0:
                 regen.tick_timer += regen.interval
                 regen.ticks_remaining -= 1
-                healed = min(regen.heal_per_tick, cs.max_hp - cs.current_hp)
-                cs.current_hp = min(cs.max_hp, cs.current_hp + regen.heal_per_tick)
-                if pos_c and healed > 0 and not self._net:
-                    FLT.add(f"+{healed}", pos_c.x, pos_c.y - 16,
-                            (80, 220, 120), "small", eid)
+                # Offline: aplica HP localmente e exibe FLT.
+                # Online: servidor aplica e envia STATS_UPDATE autoritativo.
+                # Nao alterar HP local no online — evita desync e "correcao" visual ao tomar dano.
+                if not self._net:
+                    healed = min(regen.heal_per_tick, cs.max_hp - cs.current_hp)
+                    cs.current_hp = min(cs.max_hp, cs.current_hp + regen.heal_per_tick)
+                    if pos_c and healed > 0:
+                        FLT.add(f"+{healed}", pos_c.x, pos_c.y - 16,
+                                (80, 220, 120), "small", eid)
                 if regen.ticks_remaining <= 0:
                     to_remove.append(eid)
 
@@ -4829,12 +4833,12 @@ class ConsumableSystem(System):
             if mregen.tick_timer <= 0:
                 mregen.tick_timer += mregen.interval
                 mregen.ticks_remaining -= 1
-                restored = min(mregen.mana_per_tick, char_r.max_mana - char_r.mana)
-                char_r.mana = min(char_r.max_mana, char_r.mana + mregen.mana_per_tick)
-                # Online: servidor envia STATS_UPDATE — suprime FLT local para evitar duplicado
-                if pos_r and restored > 0 and not self._net:
-                    FLT.add(f"+{restored} MP", pos_r.x, pos_r.y - 16,
-                            (100, 180, 255), "small", eid)
+                if not self._net:
+                    restored = min(mregen.mana_per_tick, char_r.max_mana - char_r.mana)
+                    char_r.mana = min(char_r.max_mana, char_r.mana + mregen.mana_per_tick)
+                    if pos_r and restored > 0:
+                        FLT.add(f"+{restored} MP", pos_r.x, pos_r.y - 16,
+                                (100, 180, 255), "small", eid)
                 if mregen.ticks_remaining <= 0:
                     _mana_remove.append(eid)
 
