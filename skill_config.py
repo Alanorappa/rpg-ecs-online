@@ -162,6 +162,7 @@ SKILL_CATALOG: dict[str, dict] = {
         "dmg_weapon_pct":    0.5,
         "dmg_sp_coeff":      1.0,
         "cast_time_reduction_attr": "fire_cast_time_reduction",  # CombatStats attr de talento
+        "mana_discount_attr":       "fire_mana_discount",        # Frieza: -1 mana/ponto
         "class_id":          "mago",
         "school":            "fogo",
         "proc_attr":         "fire_instant_ready",
