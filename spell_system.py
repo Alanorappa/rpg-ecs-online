@@ -214,9 +214,21 @@ class SpellCastSystem(System):
     def _complete_cast(self, entity_id: int, spell_cast: SpellCast,
                        combat_state: CombatState) -> None:
         # Online: cast visual_only — barra preenche, servidor aplica dano.
-        # Projétil de BdF é criado no handler SKILL_RESULT(is_completion) em game.py
-        # (timing correto: mob ainda existe quando SKILL_RESULT chega, antes de ENTITY_DESPAWN).
+        # BdF: projétil criado no SKILL_RESULT(is_completion) em game.py — não chama handler aqui.
+        # Outras spells (nova_congelante, calcinar, polimorfia): chama handler para sons/visuais
+        # locais. Handlers são seguros: verificam target_cs antes de causar dano (online = None).
         if spell_cast.visual_only:
+            if spell_cast.spell_id not in ("bola_de_fogo",):
+                handler_name = self._CAST_HANDLERS.get(spell_cast.spell_id)
+                if handler_name:
+                    handler = getattr(self, handler_name, None)
+                    if handler:
+                        self._current_spell_id = spell_cast.spell_id
+                        try:
+                            handler(entity_id, spell_cast.target_id)
+                        except Exception:
+                            pass
+                        self._current_spell_id = ""
             return
 
         # Deduz recursos aqui — cast completado com sucesso.
