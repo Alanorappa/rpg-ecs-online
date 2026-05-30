@@ -43,25 +43,28 @@ def item_tooltip_lines(item):
 
     if consumable:
         lines.append(("Consumível", (180, 220, 180)))
-        # Descrição personalizada (campo opcional "desc")
-        if consumable.get("desc"):
-            lines.append((consumable["desc"], (200, 200, 200)))
-        if consumable.get("heal_instant", 0):
-            lines.append((f"Cura {consumable['heal_instant']} HP instantaneamente", (80, 220, 120)))
-        if consumable.get("heal_per_tick", 0) and consumable.get("ticks", 0):
-            total = consumable["heal_per_tick"] * consumable["ticks"]
-            dur   = int(consumable["interval"] * consumable["ticks"])
-            lines.append((f"Cura {consumable['heal_per_tick']} HP a cada {consumable['interval']:.0f}s", (80, 220, 120)))
-            lines.append((f"Total: {total} HP em {dur}s", (60, 180, 100)))
-        if consumable.get("mana_restore", 0):
-            lines.append((f"Restaura {consumable['mana_restore']} de mana instantaneamente", (100, 180, 255)))
-        if consumable.get("mana_per_tick", 0) and consumable.get("ticks", 0):
-            total_m = consumable["mana_per_tick"] * consumable["ticks"]
-            dur_m   = int(consumable["interval"] * consumable["ticks"])
-            lines.append((f"Restaura {consumable['mana_per_tick']} de mana a cada {consumable['interval']:.0f}s", (100, 180, 255)))
-            lines.append((f"Total: {total_m} de mana em {dur_m}s", (80, 150, 220)))
-        if consumable.get("ooc_only"):
-            lines.append(("Apenas fora de combate", (220, 160, 60)))
+        _desc = consumable.get("desc", "")
+        if _desc:
+            # Descrição personalizada — não exibe detalhes automáticos (redundantes)
+            lines.append((_desc, (200, 200, 200)))
+        else:
+            # Sem desc: gera linhas automáticas com os dados do consumível
+            if consumable.get("heal_instant", 0):
+                lines.append((f"Cura {consumable['heal_instant']} HP instantaneamente", (80, 220, 120)))
+            if consumable.get("heal_per_tick", 0) and consumable.get("ticks", 0):
+                total = consumable["heal_per_tick"] * consumable["ticks"]
+                dur   = int(consumable["interval"] * consumable["ticks"])
+                lines.append((f"Cura {consumable['heal_per_tick']} HP a cada {consumable['interval']:.0f}s", (80, 220, 120)))
+                lines.append((f"Total: {total} HP em {dur}s", (60, 180, 100)))
+            if consumable.get("mana_restore", 0):
+                lines.append((f"Restaura {consumable['mana_restore']} de mana instantaneamente", (100, 180, 255)))
+            if consumable.get("mana_per_tick", 0) and consumable.get("ticks", 0):
+                total_m = consumable["mana_per_tick"] * consumable["ticks"]
+                dur_m   = int(consumable["interval"] * consumable["ticks"])
+                lines.append((f"Restaura {consumable['mana_per_tick']} de mana a cada {consumable['interval']:.0f}s", (100, 180, 255)))
+                lines.append((f"Total: {total_m} de mana em {dur_m}s", (80, 150, 220)))
+            if consumable.get("ooc_only"):
+                lines.append(("Apenas fora de combate", (220, 160, 60)))
     elif item.item_type == "ammo":
         lines.append(("Munição · Bag", (160, 130, 80)))
         lines.append((f"Quantidade: {item.stack}/{item.max_stack}", (200, 160, 80)))
