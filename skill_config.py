@@ -162,7 +162,8 @@ SKILL_CATALOG: dict[str, dict] = {
         "dmg_weapon_pct":    0.5,
         "dmg_sp_coeff":      1.0,
         "cast_time_reduction_attr": "fire_cast_time_reduction",  # CombatStats attr de talento
-        "mana_discount_attr":       "fire_mana_discount",        # Frieza: -1 mana/ponto
+        "mana_discount_attr":       "fire_mana_discount",        # Frieza: -1 mana/ponto (flat)
+        "mana_pct_discount_attr":   "pyromania_bonus",           # Piromaníaco: X% menos mana
         "class_id":          "mago",
         "school":            "fogo",
         "proc_attr":         "fire_instant_ready",
@@ -239,11 +240,12 @@ SKILL_CATALOG: dict[str, dict] = {
         "mana_cost":        25,
         "cast_time":        0.6,
         "cast_range":       8,
-        "interruptible":    False,  # pode mover durante o cast
-        "base_dmg":         50,     # dano base fixo
-        "dmg_sp_coeff":     0.25,   # 25% spell power
-        "class_id":         "mago",
-        "school":           "fogo",
+        "interruptible":          False,
+        "base_dmg":               50,
+        "dmg_sp_coeff":           0.25,
+        "mana_pct_discount_attr": "pyromania_bonus",  # Piromaníaco: X% menos mana (sem Frieza flat)
+        "class_id":               "mago",
+        "school":                 "fogo",
     },
     "pirofagia": {
         "name":             "Pirofagia",

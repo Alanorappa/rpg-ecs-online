@@ -5783,11 +5783,19 @@ class SkillSystem(System, SkillHandlers):
             # Mana custo fixo (ex: Bola de Fogo, Calcinar, Nova Congelante)
             _fixed_mana = getattr(skill, "mana_cost", 0)
             if _fixed_mana > 0 and not (_is_procced and _proc_ignores_cost):
-                # Aplica desconto de mana por talento (ex: Frieza → fire_mana_discount)
+                # Aplica descontos de mana por talento (mesma lógica dos handlers offline)
                 from skill_config import SKILL_CATALOG as _SC_mc
-                _disc_attr = _SC_mc.get(skill.skill_id, {}).get("mana_discount_attr", "")
+                _skill_mc = _SC_mc.get(skill.skill_id, {})
+                # Desconto flat (ex: Frieza → fire_mana_discount)
+                _disc_attr = _skill_mc.get("mana_discount_attr", "")
                 if _disc_attr and _cs:
                     _fixed_mana = max(0, _fixed_mana - int(getattr(_cs, _disc_attr, 0)))
+                # Desconto percentual (ex: Piromaníaco → pyromania_bonus)
+                _pct_attr = _skill_mc.get("mana_pct_discount_attr", "")
+                if _pct_attr and _cs:
+                    _pct = getattr(_cs, _pct_attr, 0.0)
+                    if _pct > 0:
+                        _fixed_mana = max(0, int(_fixed_mana * (1.0 - _pct)))
                 # Chama Interna: proc ativo → cast grátis (não bloqueia por mana)
                 _fire_free = _char and getattr(_char, "fire_instant_ready", False)
                 if not _fire_free:

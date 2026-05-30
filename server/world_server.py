@@ -1379,7 +1379,14 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 _pu(self.world, _xp_peid, _char_xp, _cs_xp, _perm_xp)
                 # Se subiu de nível, notifica cliente do novo HP (cheio após level up)
                 if _char_xp.level > _level_before:
-                    # process_levelups recalculou CombatStats — re-aplica overrides de equip
+                    # process_levelups recalculou CombatStats — re-aplica talentos e overrides.
+                    # Sem isso, apply_char_stats_to_combat reseta cs_flags (fire_mana_discount etc.)
+                    from components import TalentTree as _TTre
+                    _tt_re = self.world.get_component(_xp_peid, _TTre)
+                    if _tt_re and _tt_re.allocated:
+                        _sid_re = self._player_eid_to_sid.get(_xp_peid, "")
+                        if _sid_re:
+                            self.apply_talent_effects_to_player(_sid_re, _tt_re.allocated)
                     self._apply_stat_overrides(_xp_peid)
                     from components import TalentTree as _TTlv
                     _tt_lv = self.world.get_component(_xp_peid, _TTlv)
