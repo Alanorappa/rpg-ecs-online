@@ -1375,6 +1375,16 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             except Exception:
                 pass
 
+        # ── FireShieldEffect: decrementa timer e remove quando expirar ──────
+        from components import FireShieldEffect as _FSE
+        for _fse_eid, _fse in list(self.world.get_entities_with(_FSE)):
+            _fse.elapsed += dt
+            if _fse.elapsed >= _fse.duration:
+                try:
+                    self.world.remove_component(_fse_eid, _FSE)
+                except Exception:
+                    pass
+
         # Skills ANTES do auto-attack: skill dispara em mob vivo, depois auto-attack
         # (se ordem fosse invertida, auto-attack poderia matar o mob antes da skill checar HP)
         self._process_skill_requests()

@@ -3059,6 +3059,12 @@ class GameEngine:
                         _slx, _sly = self._player_world_pos()
                         SOUNDS.play_skill_at(_snd_name, _cast_pos.x, _cast_pos.y,
                                              _slx, _sly, base=0.85)
+            # Escudo de Fogo confirmado: adiciona FireShieldEffect no cliente para visual + timer
+            if caster_eid == self._my_eid and sid == "escudo_fogo" and not payload.get("failed"):
+                from components import FireShieldEffect as _FSEcl
+                if not self.world.get_component(self.player_entity, _FSEcl):
+                    self.world.add_component(self.player_entity, _FSEcl(duration=15.0))
+
             # Consome carga livre de Executar ao usar a skill
             if caster_eid == self._my_eid and sid == "executar":
                 from components import CharacterStats as _CSexec
