@@ -959,7 +959,7 @@ class PlayerProjectileSystem(System):
             proj.target_last_y = target_pos.y
 
             # LOS check: bloqueia projétil se há parede entre ele e o alvo
-            from systems import get_tilemap_component as _get_tm, EnemyAISystem as _EAIS
+            from systems import get_tilemap as _get_tm, EnemyAISystem as _EAIS
             from tileset import TILE_SIZE as _TS
             _tmap = _get_tm()
             if _tmap:
