@@ -5643,7 +5643,8 @@ class GameEngine:
             self.screen.blit(self.font_sm.render(kb_name, True, key_col), (sx + 3, y0 + 2))
 
             # Tooltip (só quando não está em drag)
-            if not dragging_cons and r.collidepoint(mx, my) and item_name:
+            if not dragging_cons and not self._cbar_drag_active \
+                    and r.collidepoint(mx_cb, my_cb) and item_name:
                 item = next((it for it in inv.items if it.name == item_name), None) if inv else None
                 if item and item.consumable:
                     lines = []
@@ -5667,13 +5668,13 @@ class GameEngine:
                         lines.append(("Apenas fora de combate", (220, 160, 60)))
                     _qty = item.stack if item else 0
                     lines.append((f"Quantidade: {_qty}", (160, 160, 160)))
-                    self._pending_skill_tooltip = (mx, y0 - 4, item_name, lines)
+                    self._pending_skill_tooltip = (mx_cb, y0 - 4, item_name, lines)
 
         # Cancel drag se botão liberado fora da barra
         if dragging_cons and released_cb:
             self._inv_drag_item = None
 
-        # Ghost do drag: ícone segue o mouse
+        # Ghost do drag de inventário: ícone segue o mouse
         if self._inv_drag_item:
             GSZ    = W
             _gc_k  = "item_" + self._inv_drag_item.lower().replace(" ", "_")
@@ -5685,7 +5686,25 @@ class GameEngine:
             ov_g = pygame.Surface((GSZ, GSZ), pygame.SRCALPHA)
             ov_g.fill((255, 255, 255, 120))
             ghost.blit(ov_g, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
-            self.screen.blit(ghost, (mx - GSZ // 2, my - GSZ // 2))
+            self.screen.blit(ghost, (mx_cb - GSZ // 2, my_cb - GSZ // 2))
+
+        # Ghost do Shift+drag do consumable bar: ícone semi-transparente segue o mouse
+        if self._cbar_drag_active and self._cbar_drag_idx is not None:
+            _cg_name = cbar.slots[self._cbar_drag_idx]
+            if _cg_name:
+                _CGZ  = W
+                _cg_k = "item_" + _cg_name.lower().replace(" ", "_")
+                _cg_ic = ICONS.get(_cg_k, _CGZ - 4)
+                _cg_ghost = pygame.Surface((_CGZ, _CGZ), pygame.SRCALPHA)
+                if _cg_ic:
+                    _cg_ghost.blit(_cg_ic, (0, 0))
+                _cg_ghost.set_alpha(180)
+                self.screen.blit(_cg_ghost, (mx_cb - _CGZ // 2, my_cb - _CGZ // 2))
+                # Hint de remoção durante Shift+drag (igual à hotbar de skills)
+                if self._cbar_drag_shift:
+                    _cb_hint = self.font_xs.render("Soltar fora → remover", True, (220, 80, 220))
+                    self.screen.blit(_cb_hint, (mx_cb - _cb_hint.get_width() // 2,
+                                                my_cb - _CGZ // 2 - 14))
 
     # ------------------------------------------------------------------
     # Helpers de tooltip de habilidades
