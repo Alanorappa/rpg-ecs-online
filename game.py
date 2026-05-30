@@ -222,10 +222,15 @@ class GameEngine:
         self._inv_drag_item:  "str | None" = None  # nome do item sendo arrastado do inventário
         self._ui_events:      list = []            # eventos do frame atual (para _draw_* sem parâmetro)
         # Drag da hotbar (reordenar / remover com Shift)
-        self._hotbar_drag_idx:    "int | None"   = None   # slot de origem do drag
-        self._hb_drag_shift:      bool           = False   # True = Shift+drag (remoção)
-        self._hb_drag_start_pos:  "tuple | None" = None    # posição onde o drag começou
-        self._hb_drag_active:     bool           = False   # threshold ultrapassado
+        self._hotbar_drag_idx:    "int | None"   = None
+        self._hb_drag_shift:      bool           = False
+        self._hb_drag_start_pos:  "tuple | None" = None
+        self._hb_drag_active:     bool           = False
+        # Drag da barra de consumíveis (remover com Shift — mesmo padrão da hotbar)
+        self._cbar_drag_idx:      "int | None"   = None
+        self._cbar_drag_shift:    bool           = False
+        self._cbar_drag_start_pos: "tuple | None" = None
+        self._cbar_drag_active:   bool           = False
         self._orig_mouse_pos  = pygame.mouse.get_pos  # kept for compatibility
         # Zonas de ambient
         self._ambient_zones:    list = []   # [{name, ambient, rect:(x1,y1,x2,y2)}]
@@ -5488,9 +5493,66 @@ class GameEngine:
 
         dragging_cons = self._inv_drag_item is not None
         events_cb     = self._ui_events
+        _mods_cb      = pygame.key.get_mods()
+        _shift_cb     = bool(_mods_cb & pygame.KMOD_SHIFT)
+        mx_cb, my_cb  = pygame.mouse.get_pos()
 
-        # Durante drag do inventário: mostra TODOS os slots como alvos potenciais
-        if dragging_cons:
+        # === Shift+drag para remover slot (mesmo padrão da hotbar de skills) ===
+
+        # Pré-calcula posições de todos os slots para uso no drag
+        _cb_all_occ = [(i, cbar.slots[i]) for i in range(_CB.NUM_SLOTS)]
+        _cb_full_w  = _CB.NUM_SLOTS * W + (_CB.NUM_SLOTS - 1) * PAD
+
+        # MOUSEDOWN → registra início de drag pendente
+        for _ev_cb in events_cb:
+            if _ev_cb.type == pygame.MOUSEBUTTONDOWN and _ev_cb.button == 1:
+                if not dragging_cons:
+                    _cb_x0_tmp = skills_x0 + skills_w + 20
+                    _cb_y0_tmp = SCREEN_HEIGHT - H - 10
+                    for _jj_cb, (_ii_cb, _nm_cb) in enumerate(
+                            [(i, cbar.slots[i]) for i in range(_CB.NUM_SLOTS) if cbar.slots[i]]):
+                        _r_cb = pygame.Rect(_cb_x0_tmp + _jj_cb * (W + PAD), _cb_y0_tmp, W, H)
+                        if _r_cb.collidepoint(_ev_cb.pos):
+                            self._cbar_drag_idx       = _ii_cb
+                            self._cbar_drag_shift     = _shift_cb
+                            self._cbar_drag_start_pos = _ev_cb.pos
+                            self._cbar_drag_active    = _shift_cb  # Shift → ativa imediatamente
+                            break
+                break
+
+        # MOUSEMOTION → ativa drag ao superar threshold de 8px
+        if self._cbar_drag_idx is not None and not self._cbar_drag_active \
+                and self._cbar_drag_start_pos is not None:
+            _dx_cb = mx_cb - self._cbar_drag_start_pos[0]
+            _dy_cb = my_cb - self._cbar_drag_start_pos[1]
+            if _dx_cb * _dx_cb + _dy_cb * _dy_cb > 64:
+                self._cbar_drag_active = True
+
+        # MOUSEUP → confirma remoção ou reseta
+        _cb_x0_base = skills_x0 + skills_w + 20
+        _cb_y0_base = SCREEN_HEIGHT - H - 10
+        for _ev_cb in events_cb:
+            if _ev_cb.type == pygame.MOUSEBUTTONUP and _ev_cb.button == 1:
+                if self._cbar_drag_active and self._cbar_drag_idx is not None \
+                        and self._cbar_drag_shift:
+                    # Verifica se soltou FORA da barra
+                    _inside_cb = any(
+                        pygame.Rect(_cb_x0_base + _jj3 * (W + PAD),
+                                    _cb_y0_base, W, H).collidepoint(_ev_cb.pos)
+                        for _jj3 in range(_CB.NUM_SLOTS)
+                    )
+                    if not _inside_cb:
+                        cbar.slots[self._cbar_drag_idx] = None
+                        self._save_config()
+                # Reset
+                self._cbar_drag_idx       = None
+                self._cbar_drag_active    = False
+                self._cbar_drag_shift     = False
+                self._cbar_drag_start_pos = None
+                break
+
+        # Durante drag do inventário OU drag de remoção: mostra TODOS os slots
+        if dragging_cons or self._cbar_drag_active:
             cons_occ = [(i, cbar.slots[i]) for i in range(_CB.NUM_SLOTS)]
         else:
             cons_occ = [(i, cbar.slots[i]) for i in range(_CB.NUM_SLOTS) if cbar.slots[i]]
@@ -5510,15 +5572,19 @@ class GameEngine:
             r  = pygame.Rect(sx, y0, W, H)
 
             # Drop de drag de inventário sobre este slot
-            if dragging_cons and released_cb and r.collidepoint(mx, my):
+            if dragging_cons and released_cb and r.collidepoint(mx_cb, my_cb):
                 cbar.slots[i] = self._inv_drag_item
                 self._inv_drag_item = None
                 self._save_config()
                 dragging_cons = False
 
-            # Background (destaque durante drag)
-            if dragging_cons and r.collidepoint(mx, my):
+            # Background — destaque durante drag
+            _is_dragged_out = self._cbar_drag_active and self._cbar_drag_shift \
+                              and i == self._cbar_drag_idx
+            if dragging_cons and r.collidepoint(mx_cb, my_cb):
                 bg_col = (30, 65, 40)
+            elif _is_dragged_out:
+                bg_col = (65, 20, 20)
             else:
                 bg_col = (18, 36, 22)
             pygame.draw.rect(self.screen, bg_col, r, border_radius=5)
@@ -5562,9 +5628,11 @@ class GameEngine:
                     self.screen.blit(cd_s, cd_s.get_rect(
                         centerx=sx + W // 2, y=y0 + H // 2 - cd_s.get_height() // 2))
 
-            # Border — borda verde-clara durante drag hover
-            if dragging_cons and r.collidepoint(mx, my):
+            # Border
+            if dragging_cons and r.collidepoint(mx_cb, my_cb):
                 border_col = (100, 220, 130)
+            elif _is_dragged_out:
+                border_col = (220, 80, 80)
             else:
                 border_col = (80, 160, 100) if item_name else (40, 70, 50)
             pygame.draw.rect(self.screen, border_col, r, 2, border_radius=5)
