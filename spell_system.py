@@ -848,6 +848,8 @@ class PlayerProjectileSystem(System):
         self._arrow_trails: dict[int, list] = {}
         # Knockbacks pendentes: (attacker_id, target_id, timer_restante)
         self._pending_knockbacks: list[tuple[int, int, float]] = []
+        # Hits de projéteis em mobs online — game.py envia PROJECTILE_HIT_CS ao servidor
+        self.pending_proj_hits: list[dict] = []
         # Animação da Bola de Fogo
         self._fireball_frames: "list[pygame.Surface] | None" = None
         self._fireball_anim:   dict[int, float] = {}   # proj_id → elapsed
@@ -1094,24 +1096,19 @@ class PlayerProjectileSystem(System):
         attacker_cs = self.world.get_component(proj.attacker_id, CombatStats)
         target_cs   = self.world.get_component(proj.target_id,   CombatStats)
 
-        # Online: mob sem CombatStats local — toca impacto e sai (dano via SKILL_RESULT)
+        # Online: mob sem CombatStats local — projétil colidiu, notifica servidor para aplicar dano
         if target_cs is None:
             if proj.damage_type == "physical":
                 SOUNDS.play_random(["arrow_impact_1", "arrow_impact_2"], channel_group=(12, 13))
             else:
                 SOUNDS.play_spell(proj.spell_id, "impact")
-                # Exibe dano adiado (esperava o projétil colidir antes de mostrar o número)
-                _dr = getattr(proj, "deferred_result", None)
-                if _dr:
-                    _dmg = _dr.get("damage", 0)
-                    _out = _dr.get("outcome", "hit")
-                    if _dmg > 0:
-                        _pos = self.world.get_component(proj.target_id, Position)
-                        if _pos:
-                            _is_crit = (_out == "crit")
-                            _col = (255, 220, 50) if _is_crit else (255, 220, 0)
-                            FLT.add(str(_dmg), _pos.x, _pos.y, _col,
-                                    is_crit=_is_crit, target_id=proj.target_id)
+                # Registra hit para game.py enviar PROJECTILE_HIT_CS ao servidor
+                if proj.target_server_id != -1:
+                    self.pending_proj_hits.append({
+                        "spell_id":         proj.spell_id,
+                        "target_server_id": proj.target_server_id,
+                        "attacker_id":      proj.attacker_id,
+                    })
             return
 
         # Flechas usam o pipeline de dano físico (armor, crit, weapon damage)

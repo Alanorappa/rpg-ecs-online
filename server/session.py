@@ -294,6 +294,17 @@ class SessionManager:
             if pcst:
                 _ec(pcst)
 
+    async def _handle_projectile_hit(self, session: Session, payload: dict, ts: int) -> None:
+        """Projétil do player colidiu com o alvo — aplica dano no servidor."""
+        if not session.authenticated:
+            return
+        spell_id  = payload.get("spell_id", "")
+        target_id = int(payload.get("target_id", -1))
+        player_eid = self.world_server.get_entity_id(session.session_id)
+        if not spell_id or target_id == -1 or player_eid == -1:
+            return
+        self.world_server._apply_spell_on_projectile_hit(player_eid, spell_id, target_id)
+
     async def _handle_cancel_cast(self, session: Session, payload: dict, ts: int) -> None:
         """Player cancelou cast por movimento — remove da fila de completions do servidor."""
         if not session.authenticated:
@@ -476,7 +487,8 @@ class SessionManager:
         MsgType.PING:         _handle_ping,
         MsgType.AUTO_ATTACK:  _handle_auto_attack,
         MsgType.CAST_SKILL:   _handle_cast_skill,
-        MsgType.CANCEL_CAST:  _handle_cancel_cast,
+        MsgType.CANCEL_CAST:       _handle_cancel_cast,
+        MsgType.PROJECTILE_HIT_CS: _handle_projectile_hit,
         MsgType.CHAT_SEND:         _handle_chat,
         MsgType.LOOT_REQUEST:      _handle_loot_request,
         MsgType.SAVE_STATE:        _handle_save_state,

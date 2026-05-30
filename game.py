@@ -1267,6 +1267,16 @@ class GameEngine:
                 else:
                     system.update(ev, dt)
 
+            # Projéteis que colidiram com mobs online: envia PROJECTILE_HIT_CS ao servidor
+            if self._net and self._player_proj_system.pending_proj_hits:
+                from shared.messages import MsgType as _MT_ph
+                for _hit in self._player_proj_system.pending_proj_hits:
+                    self._net.send(_MT_ph.PROJECTILE_HIT_CS, {
+                        "spell_id":  _hit["spell_id"],
+                        "target_id": _hit["target_server_id"],
+                    })
+                self._player_proj_system.pending_proj_hits.clear()
+
             # Casts cancelados por movimento: notifica servidor para remover da fila
             if self._net and self._spell_cast_system.interrupted_visual_casts:
                 from shared.messages import MsgType as _MT_cc
@@ -3072,11 +3082,14 @@ class GameEngine:
                                 (255, 160, 60))
                     PROC.add("Chama Interna!", (255, 160, 60))
 
-            # BdF: cria projétil AQUI quando is_completion chega (mob ainda existe,
-            # ENTITY_DESPAWN ainda não foi processado). Deferred result linkado ao projétil.
+            # BdF is_completion: cria projétil (mob existe antes do ENTITY_DESPAWN)
+            # e seta target_server_id para o PROJECTILE_HIT_CS.
+            # is_proj_damage: dano chegou APÓS o projétil colidir — só mostra números.
             _bdf_deferred: set = set()
-            if caster_eid == self._my_eid and sid == "bola_de_fogo" and payload.get("is_completion"):
+            if caster_eid == self._my_eid and sid == "bola_de_fogo":
                 from components import PlayerProjectile as _PPcomp, Position as _PPpos2
+                _is_compl = payload.get("is_completion", False)
+                _is_pdmg  = payload.get("is_proj_damage", False)
                 for t in targets:
                     _t_srv = t.get("eid", -1)
                     _t_loc = self._remote_mobs.get(_t_srv, -1)
@@ -3086,16 +3099,24 @@ class GameEngine:
                         self._mob_hp[_t_srv] = (_t_hp, _hp_mx)
                     if _t_loc == -1:
                         continue
-                    # Cria projétil agora — alvo existe antes do ENTITY_DESPAWN
-                    self._spell_cast_system._launch_fireball(self.player_entity, _t_loc)
-                    # Linka deferred_result ao projétil recém-criado
-                    for _peid, _pp, _ in self.world.get_entities_with(_PPcomp, _PPpos2):
-                        if _pp.attacker_id == self.player_entity and _pp.target_id == _t_loc and not _pp.deferred_result:
-                            _pp.deferred_result = {
-                                "damage":  t.get("damage",  0),
-                                "outcome": t.get("outcome", "hit"),
-                            }
-                            break
+                    if _is_compl:
+                        # Cria projétil e seta server_id para PROJECTILE_HIT_CS
+                        self._spell_cast_system._launch_fireball(self.player_entity, _t_loc)
+                        for _peid, _pp, _ in self.world.get_entities_with(_PPcomp, _PPpos2):
+                            if _pp.attacker_id == self.player_entity and _pp.target_id == _t_loc and _pp.target_server_id == -1:
+                                _pp.target_server_id = _t_srv
+                                break
+                    elif _is_pdmg:
+                        # Dano confirmado pelo servidor após PROJECTILE_HIT_CS → mostra números
+                        self._apply_combat_result({
+                            "attacker": caster_eid,
+                            "target":   _t_srv,
+                            "damage":   t.get("damage",  0),
+                            "outcome":  t.get("outcome", "hit"),
+                            "hp_after": _t_hp,
+                            "source":   "skill",
+                            "sid":      sid,
+                        })
                     _bdf_deferred.add(_t_srv)
 
             for t in targets:

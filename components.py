@@ -1213,6 +1213,7 @@ class PlayerProjectile:
     deferred_result:  dict  = None   # damage/outcome do servidor — exibido ao colidir (online)
     target_last_x:    float = 0.0    # última pos X conhecida do alvo (voa até aqui se despawnar)
     target_last_y:    float = 0.0    # última pos Y conhecida do alvo
+    target_server_id: int   = -1     # server eid do alvo — enviado em PROJECTILE_HIT_CS
 
 
 # ── Components de estado de UI ─────────────────────────────────────────────

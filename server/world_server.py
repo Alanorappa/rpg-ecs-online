@@ -104,6 +104,9 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # Eids de mobs gerenciados pelo servidor
         self._mob_eids: set[int] = set()
 
+        # Spells de projétil aguardando PROJECTILE_HIT_CS do cliente antes de aplicar dano
+        self._spells_in_flight_queue: list[dict] = []
+
         # Deltas acumulados no tick atual (limpos ao fim de cada tick)
         self._moved_this_tick:    list[dict] = []
         self._spawned_this_tick:  list[dict] = []
@@ -1293,6 +1296,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         # Conclusão de spells com cast_time (Bola de Fogo, Nova Congelante, etc.)
         self._process_spell_cast_completions(dt)
+        # Expira projéteis em voo que nunca receberam PROJECTILE_HIT_CS
+        self._expire_spells_in_flight()
         # Bloco de Gelo: timer server-side (imunidade temporária)
         self._process_ice_blocks(dt)
 

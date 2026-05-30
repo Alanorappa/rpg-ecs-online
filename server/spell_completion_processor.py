@@ -46,28 +46,40 @@ class SpellCompletionMixin:
                 _sfx = self.world.get_component(mob_eid, _SFX)
                 sfx_before[mob_eid] = set(_sfx.effects.keys()) if _sfx else set()
 
+            # Spells com projétil: aguardam PROJECTILE_HIT_CS antes de aplicar dano
+            _PROJECTILE_SPELLS = {"bola_de_fogo"}
             _dispatch = {
-                "bola_de_fogo":    self._server_bola_de_fogo,
                 "nova_congelante": self._server_nova_congelante,
                 "polimorfia":      self._server_polimorfia,
                 "calcinar":        self._server_calcinar,
             }
-            fn = _dispatch.get(spell_id)
             from server.spell_debug_log import splog as _splog2
-            _tcs_pre = self.world.get_component(target_id, _CS)
-            _splog2(f"COMPLETION {spell_id} player={player_eid} target={target_id} "
-                    f"target_alive={_tcs_pre is not None and _tcs_pre.current_hp > 0} "
-                    f"mobs_tracked={len(self._mob_eids)}")
-            if fn:
-                try:
-                    fn(player_eid, target_id, entry)
-                except Exception as _err:
-                    import traceback
-                    _splog2(f"  ERRO: {_err}")
-                    print(f"[SpellCompletion] ERRO {spell_id}: {_err}")
-                    traceback.print_exc()
+            if spell_id in _PROJECTILE_SPELLS:
+                import time as _t_if
+                self._spells_in_flight_queue.append({
+                    "player_eid": player_eid,
+                    "spell_id":   spell_id,
+                    "target_id":  target_id,
+                    "entry":      entry,
+                    "expires_at": _t_if.time() + 2.0,
+                })
+                _splog2(f"COMPLETION {spell_id} player={player_eid} target={target_id} → em voo")
+            else:
+                fn = _dispatch.get(spell_id)
+                _tcs_pre = self.world.get_component(target_id, _CS)
+                _splog2(f"COMPLETION {spell_id} player={player_eid} target={target_id} "
+                        f"target_alive={_tcs_pre is not None and _tcs_pre.current_hp > 0} "
+                        f"mobs_tracked={len(self._mob_eids)}")
+                if fn:
+                    try:
+                        fn(player_eid, target_id, entry)
+                    except Exception as _err:
+                        import traceback
+                        _splog2(f"  ERRO: {_err}")
+                        print(f"[SpellCompletion] ERRO {spell_id}: {_err}")
+                        traceback.print_exc()
 
-            # Coleta dano e efeitos aplicados
+            # Coleta dano e efeitos aplicados (apenas para spells sem projétil)
             results = []
             for mob_eid, hp_pre in hp_before.items():
                 _cs2 = self.world.get_component(mob_eid, _CS)
@@ -118,6 +130,100 @@ class SpellCompletionMixin:
                 })
 
         self._pending_spell_completions = still
+
+    # ── Projéteis em voo: aguardando PROJECTILE_HIT_CS ──────────────────────
+
+    def _expire_spells_in_flight(self) -> None:
+        """Remove entradas de _spells_in_flight_queue que expiraram (projétil nunca chegou)."""
+        import time as _t_exp
+        now = _t_exp.time()
+        self._spells_in_flight_queue = [
+            e for e in self._spells_in_flight_queue if e["expires_at"] > now
+        ]
+
+    def _apply_spell_on_projectile_hit(self, player_eid: int, spell_id: str,
+                                        target_id: int) -> None:
+        """Chamado ao receber PROJECTILE_HIT_CS: aplica dano e envia SKILL_RESULT."""
+        from components import CombatStats as _CS, CharacterStats as _CHS, StatusEffects as _SFX
+
+        # Localiza a entrada em voo correspondente
+        entry = None
+        for i, e in enumerate(self._spells_in_flight_queue):
+            if (e["player_eid"] == player_eid and e["spell_id"] == spell_id
+                    and e["target_id"] == target_id):
+                entry = e
+                del self._spells_in_flight_queue[i]
+                break
+        if entry is None:
+            return  # expirou ou nunca foi enfileirado
+
+        _dispatch = {"bola_de_fogo": self._server_bola_de_fogo}
+        fn = _dispatch.get(spell_id)
+        if not fn:
+            return
+
+        # Snapshot HP antes
+        hp_before: dict[int, int] = {}
+        sfx_before: dict[int, set] = {}
+        for mob_eid in self._mob_eids:
+            _cs = self.world.get_component(mob_eid, _CS)
+            if _cs:
+                hp_before[mob_eid] = _cs.current_hp
+            _sfx = self.world.get_component(mob_eid, _SFX)
+            sfx_before[mob_eid] = set(_sfx.effects.keys()) if _sfx else set()
+
+        try:
+            fn(player_eid, target_id, entry["entry"])
+        except Exception as _err:
+            import traceback
+            print(f"[ProjHit] ERRO {spell_id}: {_err}")
+            traceback.print_exc()
+            return
+
+        # Coleta dano
+        results = []
+        for mob_eid, hp_pre in hp_before.items():
+            _cs2 = self.world.get_component(mob_eid, _CS)
+            if not _cs2:
+                continue
+            hp_real  = _cs2.current_hp
+            hp_after = max(0, hp_real)
+            damage   = max(0, hp_pre - hp_real)
+            _sfx2    = self.world.get_component(mob_eid, _SFX)
+            eff_now  = set(_sfx2.effects.keys()) if _sfx2 else set()
+            applied  = list(eff_now - sfx_before.get(mob_eid, set()))
+            if damage > 0 or applied:
+                results.append({
+                    "eid":             mob_eid,
+                    "damage":          damage,
+                    "outcome":         "hit",
+                    "hp_after":        hp_after,
+                    "applied_effects": applied,
+                })
+
+        char = self.world.get_component(player_eid, _CHS)
+        skill_entry: dict = {
+            "caster_eid":    player_eid,
+            "sid":           spell_id,
+            "targets":       results,
+            "cooldown":      None,
+            "failed":        False,
+            "is_proj_damage": True,  # só mostra dano — GCD/CD/som já foram em is_completion
+        }
+        if char and getattr(char, "fire_instant_ready", False):
+            skill_entry["fire_instant_proc"] = True
+
+        self._skill_results_this_tick.append(skill_entry)
+
+        # Sincroniza mana
+        if char:
+            self._pending_xp_deliveries.append({
+                "player_eid": player_eid,
+                "xp":         0,
+                "mob_eid":    -1,
+                "rage":       char.rage,
+                "mana":       char.mana,
+            })
 
     # ── Bloco de Gelo: timer server-side ────────────────────────────────────
 
@@ -238,8 +344,8 @@ class SpellCompletionMixin:
 
         base_dmg = self._server_spell_damage(
             player_eid,
-            _bdf_data.get("dmg_weapon_pct", 0.5),
-            _bdf_data.get("dmg_sp_coeff",   1.0),
+            _bdf_data.get("dmg_weapon_pct", 2.5),
+            _bdf_data.get("dmg_sp_coeff",   2.0),
         )
 
         outcome, _ = resolve_attack_outcome(player_cs, target_cs, "magical")
