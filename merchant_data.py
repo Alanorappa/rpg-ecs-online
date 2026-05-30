@@ -77,29 +77,35 @@ SHOPS = {
             # --- Poções ---
             {"factory": _make_consumable(
                 "Poção Pequena de Vida", "common", 10,
-                {"heal_instant": 50, "ooc_only": False}),
+                {"desc": "Restaura 50 de vida instantaneamente.",
+                 "heal_instant": 50, "ooc_only": False}),
              "price": 10},
             {"factory": _make_consumable(
                 "Poção de Vida", "common", 25,
-                {"heal_instant": 120, "ooc_only": False}),
+                {"desc": "Restaura 120 de vida instantaneamente.",
+                 "heal_instant": 120, "ooc_only": False}),
              "price": 25},
             {"factory": _make_consumable(
                 "Poção Grande de Vida", "common", 50,
-                {"heal_instant": 250, "ooc_only": False}),
+                {"desc": "Restaura 250 de vida instantaneamente.",
+                 "heal_instant": 250, "ooc_only": False}),
              "price": 50},
 
             # --- Comida ---
             {"factory": _make_consumable(
                 "Pão Simples", "common", 5,
-                {"heal_per_tick": 10, "interval": 3.0, "ticks": 10, "ooc_only": True}),
+                {"desc": "Restaura 100 de vida ao longo de 30 segundos.",
+                 "heal_per_tick": 10, "interval": 3.0, "ticks": 10, "ooc_only": True}),
              "price": 5},
             {"factory": _make_consumable(
                 "Carne Assada", "common", 12,
-                {"heal_per_tick": 20, "interval": 3.0, "ticks": 10, "ooc_only": True}),
+                {"desc": "Restaura 200 de vida ao longo de 30 segundos.",
+                 "heal_per_tick": 20, "interval": 3.0, "ticks": 10, "ooc_only": True}),
              "price": 12},
             {"factory": _make_consumable(
                 "Ensopado Revigorante", "common", 20,
-                {"heal_per_tick": 35, "interval": 3.0, "ticks": 10, "ooc_only": True}),
+                {"desc": "Restaura 350 de vida ao longo de 30 segundos.",
+                 "heal_per_tick": 35, "interval": 3.0, "ticks": 10, "ooc_only": True}),
              "price": 20},
 
             # --- Odres (mana HoT, fora de combate) ---
