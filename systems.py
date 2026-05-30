@@ -4801,8 +4801,6 @@ class ConsumableSystem(System):
                 regen.ticks_remaining -= 1
                 healed = min(regen.heal_per_tick, cs.max_hp - cs.current_hp)
                 cs.current_hp = min(cs.max_hp, cs.current_hp + regen.heal_per_tick)
-                # Online: servidor envia COMBAT_RESULT com heal_amount por tick —
-                # suprime FLT local para evitar texto duplicado (+X e +X HP).
                 if pos_c and healed > 0 and not self._net:
                     FLT.add(f"+{healed}", pos_c.x, pos_c.y - 16,
                             (80, 220, 120), "small", eid)
@@ -4811,6 +4809,32 @@ class ConsumableSystem(System):
 
         for eid in to_remove:
             self.world.remove_component(eid, ActiveRegen)
+
+        # ── ActiveManaRegen: ticks de regeneração de mana (odres) ─────────
+        from components import ActiveManaRegen as _AMR, CharacterStats as _CHSr
+        _mana_remove = []
+        for eid, mregen in self.world.get_entities_with(_AMR):
+            char_r = self.world.get_component(eid, _CHSr)
+            pos_r  = self.world.get_component(eid, Position)
+            if not char_r or char_r.max_mana <= 0:
+                _mana_remove.append(eid)
+                continue
+
+            mregen.tick_timer -= dt
+            if mregen.tick_timer <= 0:
+                mregen.tick_timer += mregen.interval
+                mregen.ticks_remaining -= 1
+                restored = min(mregen.mana_per_tick, char_r.max_mana - char_r.mana)
+                char_r.mana = min(char_r.max_mana, char_r.mana + mregen.mana_per_tick)
+                # Online: servidor envia STATS_UPDATE — suprime FLT local para evitar duplicado
+                if pos_r and restored > 0 and not self._net:
+                    FLT.add(f"+{restored} MP", pos_r.x, pos_r.y - 16,
+                            (100, 180, 255), "small", eid)
+                if mregen.ticks_remaining <= 0:
+                    _mana_remove.append(eid)
+
+        for eid in _mana_remove:
+            self.world.remove_component(eid, _AMR)
 
     def _use_consumable(self, entity_id: int, item_name: str, cbar) -> None:
         inv   = self.world.get_component(entity_id, Inventory)
@@ -4832,27 +4856,60 @@ class ConsumableSystem(System):
             WARN.add("Não pode usar em combate")
             return
 
-        # Não pode ser usado com HP cheio
-        if cs.current_hp >= cs.max_hp:
+        # Determina que recursos o consumível restaura
+        _has_hp   = bool(cons.get("heal_instant", 0) or cons.get("heal_per_tick", 0))
+        _has_mana = bool(cons.get("mana_restore", 0) or cons.get("mana_per_tick", 0))
+
+        # Bloqueia se o recurso relevante já está cheio
+        from components import CharacterStats as _CHSu
+        _char_u = self.world.get_component(entity_id, _CHSu)
+        if _has_hp and not _has_mana and cs.current_hp >= cs.max_hp:
             WARN.add("HP já está cheio")
             return
+        if _has_mana and not _has_hp and _char_u and _char_u.max_mana > 0:
+            if _char_u.mana >= _char_u.max_mana:
+                WARN.add("Mana já está cheia")
+                return
 
-        # Cura instantânea
+        # Cura instantânea de HP
         heal_instant = cons.get("heal_instant", 0)
         if heal_instant > 0:
             healed = min(heal_instant, cs.max_hp - cs.current_hp)
             cs.current_hp = min(cs.max_hp, cs.current_hp + heal_instant)
-            if pos_c and healed > 0:
+            if pos_c and healed > 0 and not self._net:
                 FLT.add(f"+{healed}", pos_c.x, pos_c.y - 16,
                         (80, 220, 120), "small", entity_id)
 
-        # HoT (ActiveRegen)
+        # Restauração instantânea de mana
+        mana_restore = cons.get("mana_restore", 0)
+        if mana_restore > 0 and _char_u and _char_u.max_mana > 0:
+            restored = min(mana_restore, _char_u.max_mana - _char_u.mana)
+            _char_u.mana = min(_char_u.max_mana, _char_u.mana + mana_restore)
+            if pos_c and restored > 0 and not self._net:
+                FLT.add(f"+{restored} MP", pos_c.x, pos_c.y - 16,
+                        (100, 180, 255), "small", entity_id)
+
+        # HoT de HP (ActiveRegen)
         heal_per_tick = cons.get("heal_per_tick", 0)
         ticks         = cons.get("ticks", 0)
         interval      = cons.get("interval", 2.0)
         if heal_per_tick > 0 and ticks > 0:
             self.world.add_component(entity_id, ActiveRegen(
                 heal_per_tick=heal_per_tick,
+                interval=interval,
+                ticks_total=ticks,
+            ))
+
+        # HoT de mana (ActiveManaRegen)
+        from components import ActiveManaRegen as _AMRu
+        mana_per_tick = cons.get("mana_per_tick", 0)
+        if mana_per_tick > 0 and ticks > 0 and _char_u and _char_u.max_mana > 0:
+            try:
+                self.world.remove_component(entity_id, _AMRu)
+            except Exception:
+                pass
+            self.world.add_component(entity_id, _AMRu(
+                mana_per_tick=mana_per_tick,
                 interval=interval,
                 ticks_total=ticks,
             ))
@@ -4874,15 +4931,16 @@ class ConsumableSystem(System):
             from shared.messages import MsgType as _MTC
             _hot = None
             if heal_per_tick > 0 and ticks > 0:
-                _hot = {
-                    "heal_per_tick": heal_per_tick,
-                    "interval":      interval,
-                    "ticks":         ticks,
-                }
+                _hot = {"heal_per_tick": heal_per_tick, "interval": interval, "ticks": ticks}
+            _mana_hot = None
+            if mana_per_tick > 0 and ticks > 0:
+                _mana_hot = {"mana_per_tick": mana_per_tick, "interval": interval, "ticks": ticks}
             self._net.send(_MTC.CONSUMABLE_USE, {
                 "item_name":    item_name,
                 "heal_instant": cons.get("heal_instant", 0),
+                "mana_restore": cons.get("mana_restore", 0),
                 "hot":          _hot,
+                "mana_hot":     _mana_hot,
                 "ooc_only":     cons.get("ooc_only", False),
                 "buffs":        [],
             })

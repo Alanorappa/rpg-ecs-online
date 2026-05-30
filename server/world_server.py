@@ -990,25 +990,32 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
     def apply_consumable(self, session_id: str, payload: dict) -> None:
         """Aplica efeitos de consumível no ECS do servidor (autoritativo).
 
-        Suporta heal_instant e HoT (ActiveRegen). Estrutura extensível:
-        o campo 'buffs' (list) é reservado para efeitos futuros de stat boost.
+        Suporta heal_instant, mana_restore, HoT de HP (ActiveRegen) e HoT de mana
+        (ActiveManaRegen). Estrutura extensível via campo 'buffs'.
         """
-        from components import CombatStats, CombatState, ActiveRegen
+        from components import CombatStats, CombatState, ActiveRegen, CharacterStats, ActiveManaRegen
         eid = self._player_eids.get(session_id)
         if eid is None:
             return
         cs     = self.world.get_component(eid, CombatStats)
         cstate = self.world.get_component(eid, CombatState)
+        char   = self.world.get_component(eid, CharacterStats)
         if not cs:
             return
 
         if payload.get("ooc_only", False) and cstate and cstate.in_combat:
             return
 
-        if cs.current_hp >= cs.max_hp:
+        _has_hp   = bool(payload.get("heal_instant", 0) or (isinstance(payload.get("hot"), dict)))
+        _has_mana = bool(payload.get("mana_restore", 0) or (isinstance(payload.get("mana_hot"), dict)))
+
+        # Bloqueia apenas se o recurso relevante estiver cheio
+        if _has_hp and not _has_mana and cs.current_hp >= cs.max_hp:
+            return
+        if _has_mana and not _has_hp and char and char.max_mana > 0 and char.mana >= char.max_mana:
             return
 
-        # 1. Cura instantânea
+        # 1. Cura instantânea de HP
         heal_instant = int(payload.get("heal_instant", 0))
         if heal_instant > 0:
             healed = min(heal_instant, cs.max_hp - cs.current_hp)
@@ -1024,14 +1031,29 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                     "heal_sid":    "consumable_instant",
                 })
 
-        # 2. HoT (Heal over Time) — adiciona ActiveRegen ao ECS
+        # 2. Restauração instantânea de mana
+        mana_restore = int(payload.get("mana_restore", 0))
+        if mana_restore > 0 and char and char.max_mana > 0:
+            restored = min(mana_restore, char.max_mana - char.mana)
+            char.mana = min(char.max_mana, char.mana + mana_restore)
+            if cs:
+                cs.mana = char.mana
+            if restored > 0:
+                self._pending_xp_deliveries.append({
+                    "player_eid":   eid,
+                    "xp":           0,
+                    "mob_eid":      -1,
+                    "mana":         char.mana,
+                    "mana_amount":  restored,
+                })
+
+        # 3. HoT de HP (ActiveRegen)
         hot = payload.get("hot")
         if isinstance(hot, dict):
             heal_per_tick = int(hot.get("heal_per_tick", 0))
             interval      = float(hot.get("interval", 2.0))
             ticks         = int(hot.get("ticks", 0))
             if heal_per_tick > 0 and ticks > 0:
-                # Substitui regen ativa anterior (evita stack de consumíveis)
                 try:
                     self.world.remove_component(eid, ActiveRegen)
                 except Exception:
@@ -1042,9 +1064,22 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                     ticks_total=ticks,
                 ))
 
-        # 3. Buffs futuros (stat boosts, etc.) — reservado, não implementado ainda
-        # for buff in payload.get("buffs", []):
-        #     _apply_buff(eid, buff)
+        # 4. HoT de mana (ActiveManaRegen)
+        mana_hot = payload.get("mana_hot")
+        if isinstance(mana_hot, dict) and char and char.max_mana > 0:
+            mana_per_tick = int(mana_hot.get("mana_per_tick", 0))
+            interval      = float(mana_hot.get("interval", 5.0))
+            ticks         = int(mana_hot.get("ticks", 0))
+            if mana_per_tick > 0 and ticks > 0:
+                try:
+                    self.world.remove_component(eid, ActiveManaRegen)
+                except Exception:
+                    pass
+                self.world.add_component(eid, ActiveManaRegen(
+                    mana_per_tick=mana_per_tick,
+                    interval=interval,
+                    ticks_total=ticks,
+                ))
 
     def consume_sound_events(self) -> list[dict]:
         """Retorna e limpa eventos de som posicionais do tick."""
@@ -1251,9 +1286,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                         "source":   "regen",
                     })
 
-        # ── ActiveRegen (consumíveis HoT) ─────────────────────────────────────
-        # Processa ticks de regeneração de HP dos consumíveis.
-        # Mesmo padrão do ConsumableSystem offline (systems.py:4533-4555).
+        # ── ActiveRegen (consumíveis HoT — HP) ───────────────────────────────
         from components import ActiveRegen as _AR
         _regen_remove = []
         _all_regen = list(self.world.get_entities_with(_AR))
@@ -1287,6 +1320,42 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         for _regen_eid in _regen_remove:
             try:
                 self.world.remove_component(_regen_eid, _AR)
+            except Exception:
+                pass
+
+        # ── ActiveManaRegen (consumíveis HoT — mana) ─────────────────────
+        from components import ActiveManaRegen as _AMR, CharacterStats as _CHSmr
+        _mregen_remove = []
+        for _mregen_eid, _mregen in list(self.world.get_entities_with(_AMR)):
+            if _mregen_eid not in self._player_eids.values():
+                continue
+            _char_mr = self.world.get_component(_mregen_eid, _CHSmr)
+            _cs_mr   = self.world.get_component(_mregen_eid, CombatStats)
+            if not _char_mr or _char_mr.max_mana <= 0:
+                _mregen_remove.append(_mregen_eid)
+                continue
+            _mregen.tick_timer -= dt
+            if _mregen.tick_timer <= 0:
+                _mregen.tick_timer += _mregen.interval
+                _mregen.ticks_remaining -= 1
+                _old_mana = _char_mr.mana
+                _char_mr.mana = min(_char_mr.max_mana, _char_mr.mana + _mregen.mana_per_tick)
+                if _cs_mr:
+                    _cs_mr.mana = _char_mr.mana
+                _restored = _char_mr.mana - _old_mana
+                if _restored > 0:
+                    self._pending_xp_deliveries.append({
+                        "player_eid":  _mregen_eid,
+                        "xp":          0,
+                        "mob_eid":     -1,
+                        "mana":        _char_mr.mana,
+                        "mana_amount": _restored,
+                    })
+                if _mregen.ticks_remaining <= 0:
+                    _mregen_remove.append(_mregen_eid)
+        for _mregen_eid in _mregen_remove:
+            try:
+                self.world.remove_component(_mregen_eid, _AMR)
             except Exception:
                 pass
 

@@ -3337,6 +3337,16 @@ class GameEngine:
                         _char_sync.mana = _srv_mana   # CharacterStats.mana — display e _check_mana cliente
                     if cs and _srv_mana is not None:
                         cs.mana = _srv_mana            # CombatStats.mana — checks client-side
+                # Restauração de mana (consumível instantâneo ou HoT tick)
+                _mana_amt = payload.get("mana_amount", 0)
+                if _mana_amt > 0:
+                    from components import Position as _PosMR
+                    _pos_mr = self.world.get_component(self.player_entity, _PosMR)
+                    if _pos_mr:
+                        from floating_text import FLT as _FLT_mr
+                        _FLT_mr.add(f"+{_mana_amt} MP", _pos_mr.x, _pos_mr.y - 28,
+                                    (100, 180, 255), size="normal", target_id=self.player_entity)
+
                 # Cura própria (skill, consumível HoT).
                 # O servidor envia hp=valor_no_momento_da_cura. Como HP5 regen e outros
                 # heals podem ocorrer no mesmo tick (mas com hp_after mais recente no
@@ -5560,6 +5570,8 @@ class GameEngine:
                     lines = []
                     h_inst = item.consumable.get("heal_instant", 0)
                     h_tick = item.consumable.get("heal_per_tick", 0)
+                    m_inst = item.consumable.get("mana_restore", 0)
+                    m_tick = item.consumable.get("mana_per_tick", 0)
                     ticks  = item.consumable.get("ticks", 0)
                     interv = item.consumable.get("interval", 2.0)
                     ooc    = item.consumable.get("ooc_only", False)
@@ -5567,6 +5579,11 @@ class GameEngine:
                         lines.append((f"Cura: +{h_inst} HP instantâneo", (80, 220, 120)))
                     if h_tick and ticks:
                         lines.append((f"Regen: +{h_tick} HP a cada {interv:.0f}s ({ticks}x)", (80, 200, 140)))
+                    if m_inst:
+                        lines.append((f"Mana: +{m_inst} instantâneo", (100, 180, 255)))
+                    if m_tick and ticks:
+                        total_mana = m_tick * ticks
+                        lines.append((f"Mana: +{m_tick} a cada {interv:.0f}s ({total_mana} total)", (100, 160, 230)))
                     if ooc:
                         lines.append(("Apenas fora de combate", (220, 160, 60)))
                     _qty = item.stack if item else 0
@@ -6445,10 +6462,13 @@ class GameEngine:
 
         ooc_only = c.get("ooc_only", False)
         if ooc_only and state and state.in_combat:
-            LOG.add("Não pode usar comida em combate!", (220, 100, 60))
+            LOG.add("Não pode usar em combate!", (220, 100, 60))
             return
 
-        # Cura instantânea
+        from components import CharacterStats as _CHScons
+        _char_cons = self.world.get_component(self.player_entity, _CHScons)
+
+        # Cura instantânea de HP
         heal_now = c.get("heal_instant", 0)
         if heal_now:
             actual = min(heal_now, cs.max_hp - cs.current_hp)
@@ -6458,10 +6478,20 @@ class GameEngine:
                         self.player_entity)
             LOG.add(f"Usou {item.name}: +{actual} HP", (80, 220, 120))
 
-        # Regeneração ao longo do tempo
+        # Restauração instantânea de mana
+        mana_now = c.get("mana_restore", 0)
+        if mana_now and _char_cons and _char_cons.max_mana > 0:
+            actual_m = min(mana_now, _char_cons.max_mana - _char_cons.mana)
+            _char_cons.mana = min(_char_cons.max_mana, _char_cons.mana + mana_now)
+            cs.mana = _char_cons.mana
+            if pos_c and actual_m > 0:
+                FLT.add(f"+{actual_m} MP", pos_c.x, pos_c.y - 28, (100, 180, 255), "normal",
+                        self.player_entity)
+            LOG.add(f"Usou {item.name}: +{actual_m} mana", (100, 180, 255))
+
+        # HoT de HP
         ticks = c.get("ticks", 0)
         if ticks and c.get("heal_per_tick", 0):
-            # Sobrescreve regen ativa existente
             existing = self.world.get_component(self.player_entity, ActiveRegen)
             if existing:
                 self.world.remove_component(self.player_entity, ActiveRegen)
@@ -6471,6 +6501,20 @@ class GameEngine:
             )
             total = c["heal_per_tick"] * ticks
             LOG.add(f"Usou {item.name}: recupera {total} HP ao longo do tempo", (80, 220, 120))
+
+        # HoT de mana
+        from components import ActiveManaRegen as _AMRcons
+        if ticks and c.get("mana_per_tick", 0) and _char_cons and _char_cons.max_mana > 0:
+            try:
+                self.world.remove_component(self.player_entity, _AMRcons)
+            except Exception:
+                pass
+            self.world.add_component(
+                self.player_entity,
+                _AMRcons(c["mana_per_tick"], c["interval"], ticks),
+            )
+            total_m = c["mana_per_tick"] * ticks
+            LOG.add(f"Usou {item.name}: recupera {total_m} mana ao longo do tempo", (100, 180, 255))
 
         # Decrementa stack; remove o slot apenas quando esgotado
         item.stack -= 1

@@ -670,8 +670,9 @@ class Item:
         self.proc = proc
         self.subtype = subtype  # categoria visual da arma (ex: "Sword", "Mace", "Bow")
         # Consumível: None ou dict com chaves:
-        #   heal_instant (int), heal_per_tick (int), interval (float),
-        #   ticks (int), ooc_only (bool)
+        #   HP:   heal_instant (int), heal_per_tick (int), interval (float), ticks (int)
+        #   Mana: mana_restore (int), mana_per_tick (int)  [interval e ticks compartilhados]
+        #   ooc_only (bool) — bloqueia uso em combate
         self.consumable = consumable
         # Empilhamento
         self.max_stack = max_stack   # > 1 = empilhável
@@ -972,6 +973,16 @@ class ActiveRegen:
         self.ticks_total     = ticks_total
         self.ticks_remaining = ticks_total
         self.tick_timer      = interval  # tempo até o próximo tick
+
+
+class ActiveManaRegen:
+    """Regeneração de mana ativa (de odres de água). Mesma estrutura que ActiveRegen."""
+    def __init__(self, mana_per_tick: int, interval: float, ticks_total: int):
+        self.mana_per_tick   = mana_per_tick
+        self.interval        = interval
+        self.ticks_total     = ticks_total
+        self.ticks_remaining = ticks_total
+        self.tick_timer      = interval
 
 
 class SpawnZone:
