@@ -1446,17 +1446,24 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 _char_xp.current_xp += _xp_amt
                 from stats_system import process_levelups as _pu
                 _pu(self.world, _xp_peid, _char_xp, _cs_xp, _perm_xp)
-                # Se subiu de nível, notifica cliente do novo HP (cheio após level up)
+                # Se subiu de nível: re-aplica talentos/overrides e notifica cliente
                 if _char_xp.level > _level_before:
-                    # process_levelups recalculou CombatStats — re-aplica talentos e overrides.
-                    # Sem isso, apply_char_stats_to_combat reseta cs_flags (fire_mana_discount etc.)
-                    from components import TalentTree as _TTre
-                    _tt_re = self.world.get_component(_xp_peid, _TTre)
-                    if _tt_re and _tt_re.allocated:
-                        _sid_re = self._player_eid_to_sid.get(_xp_peid, "")
-                        if _sid_re:
-                            self.apply_talent_effects_to_player(_sid_re, _tt_re.allocated)
-                    self._apply_stat_overrides(_xp_peid)
+                    # Re-aplica efeitos de talento e overrides de equip em try/except:
+                    # uma falha aqui não deve impedir o envio da notificação ao cliente.
+                    try:
+                        from components import TalentTree as _TTre
+                        _tt_re = self.world.get_component(_xp_peid, _TTre)
+                        if _tt_re and _tt_re.allocated:
+                            _sid_re = self._player_eid_to_sid.get(_xp_peid, "")
+                            if _sid_re:
+                                self.apply_talent_effects_to_player(_sid_re, _tt_re.allocated)
+                        self._apply_stat_overrides(_xp_peid)
+                    except Exception as _lv_err:
+                        print(f"[LevelUp] aviso ao re-aplicar talentos/overrides: {_lv_err}")
+
+                    # Garante HP cheio após qualquer recálculo acima
+                    _cs_xp.current_hp = _cs_xp.max_hp
+
                     from components import TalentTree as _TTlv
                     _tt_lv = self.world.get_component(_xp_peid, _TTlv)
                     self._pending_xp_deliveries.append({
@@ -1467,6 +1474,9 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                         "hp_max":        _cs_xp.max_hp,
                         "talent_points": _tt_lv.available_points if _tt_lv else 0,
                     })
+                    print(f"[LevelUp] player {_xp_peid} → nivel {_char_xp.level} "
+                          f"hp={_cs_xp.current_hp}/{_cs_xp.max_hp} "
+                          f"talentos={_tt_lv.available_points if _tt_lv else '?'}")
             print(f"[XP] player {_xp_peid} ganhou {_xp_amt} XP (mob {entry['mob_eid']})")
 
         self._process_loot_drops(dt)
