@@ -618,6 +618,11 @@ class CombatSystem(System):
                     if _att_pos:
                         FLT.add(f"-{_retaliation}", _att_pos.x, _att_pos.y,
                                 (255, 120, 0), "normal", target_id=attacker_id)
+                    # Online: notifica cliente via _svc callback (servidor não tem FLT)
+                    _emit_ret = _svc.get("emit_retaliation")
+                    if _emit_ret:
+                        _emit_ret(target_id, attacker_id, _retaliation,
+                                  max(0, _att_cs.current_hp))
                     if _att_cs.current_hp <= 0 and not self.world.get_component(attacker_id, PendingDeath):
                         self.world.add_component(attacker_id, PendingDeath(killer_entity_id=target_id))
 

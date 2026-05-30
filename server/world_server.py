@@ -231,6 +231,22 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         register_services(combat=combat, pathfinding=pathfinding,
                           tile_validation=tile_validation)
 
+        # Callback de retaliation do Escudo de Fogo → envia COMBAT_RESULT ao cliente
+        from systems import _svc as _sys_svc
+        _srv_ref = self
+        def _on_retaliation(player_eid: int, mob_eid: int, damage: int, hp_after: int) -> None:
+            from components import CombatStats as _CSEF
+            _cs_mob = _srv_ref.world.get_component(mob_eid, _CSEF)
+            _srv_ref._combat_this_tick.append({
+                "attacker": player_eid,
+                "target":   mob_eid,
+                "damage":   damage,
+                "outcome":  "hit",
+                "hp_after": hp_after,
+                "source":   "skill",
+            })
+        _sys_svc["emit_retaliation"] = _on_retaliation
+
         # Sistemas de lógica idênticos ao offline — sem render, sem input
         self._enemy_ai_system = EnemyAISystem(self.world, player_entity_id=-1)
         self._enemy_ab_system = EnemyAbilitySystem(self.world, player_entity_id=-1)

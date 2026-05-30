@@ -229,6 +229,7 @@ SKILL_CATALOG: dict[str, dict] = {
         "mana_cost":        25,
         "cast_time":        0.0,
         "cast_range":       0,
+        "needs_target":     False,   # self-cast: alvo é o próprio personagem
         "class_id":         "mago",
         "school":           "fogo",
         "offensive":        False,
