@@ -105,29 +105,35 @@ SHOPS = {
             # --- Odres (mana HoT, fora de combate) ---
             {"factory": _make_consumable(
                 "Odre Pequeno", "common", 2,
-                {"mana_per_tick": 25, "interval": 5.0, "ticks": 4, "ooc_only": True}),
+                {"desc": "Restaura 100 de mana ao longo de 20 segundos.",
+                 "mana_per_tick": 25, "interval": 5.0, "ticks": 4, "ooc_only": True}),
              "price": 2},
             {"factory": _make_consumable(
                 "Odre Médio", "common", 5,
-                {"mana_per_tick": 50, "interval": 5.0, "ticks": 4, "ooc_only": True}),
+                {"desc": "Restaura 200 de mana ao longo de 20 segundos.",
+                 "mana_per_tick": 50, "interval": 5.0, "ticks": 4, "ooc_only": True}),
              "price": 5},
             {"factory": _make_consumable(
                 "Odre Grande", "common", 8,
-                {"mana_per_tick": 125, "interval": 5.0, "ticks": 4, "ooc_only": True}),
+                {"desc": "Restaura 500 de mana ao longo de 20 segundos.",
+                 "mana_per_tick": 125, "interval": 5.0, "ticks": 4, "ooc_only": True}),
              "price": 8},
 
             # --- Poções de mana (instantâneas) ---
             {"factory": _make_consumable(
                 "Poção Pequena de Mana", "common", 10,
-                {"mana_restore": 50, "ooc_only": False}),
+                {"desc": "Restaura 50 de mana instantaneamente.",
+                 "mana_restore": 50, "ooc_only": False}),
              "price": 10},
             {"factory": _make_consumable(
                 "Poção de Mana", "common", 15,
-                {"mana_restore": 150, "ooc_only": False}),
+                {"desc": "Restaura 150 de mana instantaneamente.",
+                 "mana_restore": 150, "ooc_only": False}),
              "price": 15},
             {"factory": _make_consumable(
                 "Poção Grande de Mana", "common", 25,
-                {"mana_restore": 350, "ooc_only": False}),
+                {"desc": "Restaura 350 de mana instantaneamente.",
+                 "mana_restore": 350, "ooc_only": False}),
              "price": 25},
 
             # --- Armas 1H físicas ---
