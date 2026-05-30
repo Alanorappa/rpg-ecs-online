@@ -107,9 +107,11 @@ class SpellCompletionMixin:
                 "caster_eid":   player_eid,
                 "sid":          spell_id,
                 "targets":      results,
-                "cooldown":     None,   # cliente usa skill.cooldown como fallback
+                "cooldown":     None,
                 "failed":       False,
-                "is_completion": True,  # cliente: som + CD, mas NÃO repete GCD
+                "is_completion": True,
+                # Para spells com projétil: informa o alvo para o cliente criar o projétil
+                "projectile_target": target_id if spell_id in {"bola_de_fogo"} else -1,
             }
 
             # Chama Interna: sincroniza proc ao cliente via SKILL_RESULT

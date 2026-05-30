@@ -3082,32 +3082,37 @@ class GameEngine:
                                 (255, 160, 60))
                     PROC.add("Chama Interna!", (255, 160, 60))
 
-            # BdF is_completion: cria projétil (mob existe antes do ENTITY_DESPAWN)
-            # e seta target_server_id para o PROJECTILE_HIT_CS.
-            # is_proj_damage: dano chegou APÓS o projétil colidir — só mostra números.
+            # BdF is_completion: servidor envia projectile_target → cria projétil aqui.
+            # is_proj_damage: dano confirmado após PROJECTILE_HIT_CS → mostra números.
             _bdf_deferred: set = set()
             if caster_eid == self._my_eid and sid == "bola_de_fogo":
                 from components import PlayerProjectile as _PPcomp, Position as _PPpos2
                 _is_compl = payload.get("is_completion", False)
                 _is_pdmg  = payload.get("is_proj_damage", False)
-                for t in targets:
-                    _t_srv = t.get("eid", -1)
-                    _t_loc = self._remote_mobs.get(_t_srv, -1)
-                    _t_hp  = t.get("hp_after", -1)
-                    if _t_hp >= 0 and _t_srv != -1:
-                        _, _hp_mx = self._mob_hp.get(_t_srv, (_t_hp, _t_hp))
-                        self._mob_hp[_t_srv] = (_t_hp, _hp_mx)
-                    if _t_loc == -1:
-                        continue
-                    if _is_compl:
-                        # Cria projétil e seta server_id para PROJECTILE_HIT_CS
-                        self._spell_cast_system._launch_fireball(self.player_entity, _t_loc)
+
+                if _is_compl:
+                    # Cria projétil — alvo existe antes do ENTITY_DESPAWN
+                    _proj_srv = payload.get("projectile_target", -1)
+                    _proj_loc = self._remote_mobs.get(_proj_srv, -1) if _proj_srv != -1 else -1
+                    if _proj_loc != -1:
+                        self._spell_cast_system._launch_fireball(self.player_entity, _proj_loc)
                         for _peid, _pp, _ in self.world.get_entities_with(_PPcomp, _PPpos2):
-                            if _pp.attacker_id == self.player_entity and _pp.target_id == _t_loc and _pp.target_server_id == -1:
-                                _pp.target_server_id = _t_srv
+                            if (_pp.attacker_id == self.player_entity
+                                    and _pp.target_id == _proj_loc
+                                    and _pp.target_server_id == -1):
+                                _pp.target_server_id = _proj_srv
                                 break
-                    elif _is_pdmg:
-                        # Dano confirmado pelo servidor após PROJECTILE_HIT_CS → mostra números
+                    if _proj_srv != -1:
+                        _bdf_deferred.add(_proj_srv)
+
+                elif _is_pdmg:
+                    # Dano confirmado após projétil colidir → mostra números
+                    for t in targets:
+                        _t_srv = t.get("eid", -1)
+                        _t_hp  = t.get("hp_after", -1)
+                        if _t_hp >= 0 and _t_srv != -1:
+                            _, _hp_mx = self._mob_hp.get(_t_srv, (_t_hp, _t_hp))
+                            self._mob_hp[_t_srv] = (_t_hp, _hp_mx)
                         self._apply_combat_result({
                             "attacker": caster_eid,
                             "target":   _t_srv,
@@ -3117,7 +3122,7 @@ class GameEngine:
                             "source":   "skill",
                             "sid":      sid,
                         })
-                    _bdf_deferred.add(_t_srv)
+                        _bdf_deferred.add(_t_srv)
 
             for t in targets:
                 if t.get("eid", -1) in _bdf_deferred:
