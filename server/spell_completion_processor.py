@@ -458,7 +458,7 @@ class SpellCompletionMixin:
                     char_stats.fire_instant_ready = True
 
     def _server_nova_congelante(self, player_eid: int, target_id: int, entry: dict) -> None:
-        from components import CombatStats, TileMovement, Enemy, AIControlled
+        from components import CombatStats, TileMovement, Enemy
         from systems import apply_effect
         from utils import chebyshev
         from skill_config import SKILL_CATALOG as _SC_nc
@@ -475,8 +475,8 @@ class SpellCompletionMixin:
         _coef  = _nc.get("dmg_sp_coeff", 0.5)
         _range = _nc.get("cast_range", 3)
 
-        for eid, _, _, etm, ecs in self.world.get_entities_with(
-                Enemy, AIControlled, TileMovement, CombatStats):
+        for eid, _, etm, ecs in self.world.get_entities_with(
+                Enemy, TileMovement, CombatStats):
             if ecs.current_hp <= 0:
                 continue
             if chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y) > _range:

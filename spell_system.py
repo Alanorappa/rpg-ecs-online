@@ -314,7 +314,7 @@ class SpellCastSystem(System):
         from systems import apply_effect
         from floating_text import FLT
         from combat_log import LOG
-        from components import Enemy, AIControlled, TileMovement as _TM, StatusEffects
+        from components import Enemy, TileMovement as _TM, StatusEffects
         from utils import chebyshev
 
         attacker_tm = self.world.get_component(attacker_id, _TM)
@@ -326,8 +326,8 @@ class SpellCastSystem(System):
         sp = attacker_cs.spell_power if attacker_cs else 0
 
         hit = 0
-        for eid, _, _, etm, ecs in self.world.get_entities_with(
-                Enemy, AIControlled, _TM, CombatStats):
+        for eid, _, etm, ecs in self.world.get_entities_with(
+                Enemy, _TM, CombatStats):
             if ecs.current_hp <= 0:
                 continue
             if chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y) > 3:
@@ -1458,8 +1458,8 @@ class ChannelingSystem(System):
         attacker_cs = self.world.get_component(entity_id, CombatStats)
         radius_px = ch.radius_tiles * TILE_SIZE
         hit_any = False
-        for eid, epos, _, _, ecs in self.world.get_entities_with(
-                Position, Enemy, AIControlled, CombatStats):
+        for eid, epos, _, ecs in self.world.get_entities_with(
+                Position, Enemy, CombatStats):
             if ecs.current_hp <= 0:
                 continue
             dx = epos.x - ch.target_x
