@@ -367,6 +367,9 @@ class GameEngine:
         self._shop_system._net = self._net
         # LootSystem: envia só a consequência da ação (gold ou inventário), não o state completo
         self._loot_system._on_loot_collected = self._on_loot_action
+        # CombatStateSystem: notifica servidor quando proc de item escala HP
+        # (servidor não carrega objetos de item com proc, então não dispara localmente)
+        self._combat_state_sys._on_proc_hp_change = self._send_proc_hp_sync
 
         # --- Profiler de frames ---
         self._prof_accum:       dict[str, float] = {}   # tempo acumulado por seção
@@ -540,6 +543,8 @@ class GameEngine:
         self._tile_render_system     = tile_render_system
         self._death_respawn_system   = death_respawn_system
 
+        self._combat_state_sys = CombatStateSystem(self.world)
+
         # Sistemas de magia (classe Mago)
         from spell_system import (ManaSystem, SpellCastSystem, PlayerProjectileSystem,
                                   ChannelingSystem, IceBlockSystem, FireShieldSystem,
@@ -587,7 +592,7 @@ class GameEngine:
             death_handler,                                                            # 15
             death_respawn_system,                                                     # 16
             self._consumable_system,                                                  # 20
-            CombatStateSystem(self.world),                                            # 21
+            self._combat_state_sys,                                                   # 21
             StatusEffectSystem(self.world),                                           # 22
             TileMovementSystem(self.world),                                           # 23
             FogSystem(self.world),                                                    # 24
@@ -4613,6 +4618,13 @@ class GameEngine:
             "skills":    skills,
             "fog":       fog,
         }
+
+    def _send_proc_hp_sync(self, hp: int, max_hp: int) -> None:
+        """Notifica servidor do novo HP após proc de item escalar a vida percentualmente."""
+        if not self._net or not self._net.connected or self._my_eid == -1:
+            return
+        from shared.messages import MsgType as _MT_ps
+        self._net.send(_MT_ps.PLAYER_HP_SYNC, {"hp": hp, "max_hp": max_hp})
 
     def _send_talent_update(self) -> None:
         """Envia apenas os talentos ao servidor quando um ponto é alocado/desalocado."""

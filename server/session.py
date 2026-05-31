@@ -466,6 +466,23 @@ class SessionManager:
         else:
             await self._broadcast_aoi_from_session(session, MsgType.CHAT_MESSAGE, msg)
 
+    async def _handle_player_hp_sync(self, session: Session, payload: dict, ts: int) -> None:
+        """Atualiza HP/maxHP do servidor após proc de item (servidor não tem dados de equip)."""
+        if not session.authenticated:
+            return
+        hp     = int(payload.get("hp",     0))
+        max_hp = int(payload.get("max_hp", 0))
+        if hp <= 0 or max_hp <= 0:
+            return
+        from components import CombatStats as _CS_hp
+        eid = self.world_server._player_eids.get(session.session_id)
+        if eid is None:
+            return
+        cs = self.world_server.world.get_component(eid, _CS_hp)
+        if cs:
+            cs.max_hp     = max_hp
+            cs.current_hp = min(hp, max_hp)
+
     async def _handle_gold_update(self, session: Session, payload: dict, ts: int) -> None:
         """Atualiza gold do servidor quando moedas são coletadas (loot, etc.)."""
         if not session.authenticated:
@@ -577,6 +594,7 @@ class SessionManager:
         MsgType.CONSUMABLE_USE:    _handle_consumable_use,
         MsgType.BUY_REQUEST:     _handle_buy_request,
         MsgType.SELL_REQUEST:      _handle_sell_request,
+        MsgType.PLAYER_HP_SYNC:    _handle_player_hp_sync,
         MsgType.GOLD_UPDATE:       _handle_gold_update,
         MsgType.INV_SYNC:  _handle_inventory_update,
         MsgType.TALENT_UPDATE:     _handle_talent_update,

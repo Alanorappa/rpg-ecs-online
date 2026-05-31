@@ -78,6 +78,7 @@ class MsgType(str, Enum):
     ENTITY_DEATH       = "entity_death"    # S→C  morte com animação (antes de despawn)
     SOUND_EVENT        = "sound_event"     # S→C  evento sonoro posicional (aggro, etc.)
     PLAYER_STAT_SYNC   = "player_stat_sync"  # C→S  stats efetivos do player (equip/buff/consumível)
+    PLAYER_HP_SYNC     = "player_hp_sync"    # C→S  HP/maxHP mudou por proc/buff {hp, max_hp}
     CONSUMABLE_USE     = "consumable_use"    # C→S  uso de consumível (heal_instant, HoT, buffs futuros)
     GOLD_UPDATE        = "gold_update"       # C→S  gold mudou (loot de moedas) {gold: N}
     INV_SYNC           = "inv_sync"          # C→S  inventário mudou (loot de item) {inventory: [...]}

@@ -1077,9 +1077,13 @@ class CombatStateSystem(System):
                     mod = Modifier(p["attribute"], p["value"])
                     add_timed_modifier(combat_stats, mod, p["duration"], p["label"])
                     # Se o proc aumentou o max HP, escala o HP atual pelo mesmo percentual
-                    # Ex: estava em 50% → continua em 50% do novo max
                     if combat_stats.max_hp > _max_before:
                         combat_stats.current_hp = max(1, int(_pct_before * combat_stats.max_hp))
+                        # Online: servidor não tem dados de proc do equipamento —
+                        # notifica o HP/maxHP resultante para o servidor sincronizar
+                        _on_proc_hp = getattr(self, "_on_proc_hp_change", None)
+                        if _on_proc_hp:
+                            _on_proc_hp(combat_stats.current_hp, combat_stats.max_hp)
                     LOG.add(
                         f"PROC [{item.name}]: {p['label']}! "
                         f"+{p['value']} {p['attribute']} por {p['duration']:.0f}s.",
