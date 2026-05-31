@@ -40,6 +40,13 @@ def apply_effect(
     if defn is None:
         return
 
+    # Boneco de treino: recebe DoT e slow para testes de dano/talentos,
+    # mas não recebe polymorph (transformação não faz sentido num manequim).
+    if effect_type == "polymorph":
+        from components import TrainingDummy as _TDcheck
+        if world.get_component(entity_id, _TDcheck) is not None:
+            return
+
     sfx = world.get_component(entity_id, StatusEffects)
     if sfx is None:
         sfx = StatusEffects()
