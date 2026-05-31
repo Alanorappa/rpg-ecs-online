@@ -344,11 +344,13 @@ class SessionManager:
         """Processa venda ao mercador — gold ajustado server-side."""
         if not session.authenticated:
             return
-        item_name   = str(payload.get("item_name", ""))
-        item_value  = int(payload.get("item_value", 0))
-        stack_sold  = max(1, int(payload.get("stack_sold", 1)))
+        item_name    = str(payload.get("item_name", ""))
+        item_value   = int(payload.get("item_value", 0))
+        stack_sold   = max(1, int(payload.get("stack_sold", 1)))
+        current_gold = payload.get("current_gold")
         result = self.world_server.process_shop_sell(
-            session.session_id, item_name, item_value, stack_sold)
+            session.session_id, item_name, item_value, stack_sold,
+            current_gold=int(current_gold) if current_gold is not None else None)
         await session.send(MsgType.SELL_RESULT, result)
 
     async def _handle_buy_request(self, session: Session, payload: dict, ts: int) -> None:
@@ -363,9 +365,11 @@ class SessionManager:
         shop_id   = str(payload.get("shop_id", ""))
         item_name = str(payload.get("item_name", ""))
         quantity  = max(1, int(payload.get("quantity", 1)))
-        last_inv  = session.last_client_payload.get("inventory") if session.last_client_payload else None
+        last_inv     = session.last_client_payload.get("inventory") if session.last_client_payload else None
+        current_gold = payload.get("current_gold")
         result = self.world_server.process_shop_buy(
-            session.session_id, shop_id, item_name, quantity, last_inv)
+            session.session_id, shop_id, item_name, quantity, last_inv,
+            current_gold=int(current_gold) if current_gold is not None else None)
         await session.send(MsgType.BUY_RESULT, result)
 
     async def _handle_consumable_use(self, session: Session, payload: dict, ts: int) -> None:

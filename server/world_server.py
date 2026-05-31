@@ -834,7 +834,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
     def process_shop_buy(self, session_id: str, shop_id: str,
                          item_name: str, quantity: int,
-                         last_inventory: list | None = None) -> dict:
+                         last_inventory: list | None = None,
+                         current_gold: int | None = None) -> dict:
         """Processa compra em loja — autoritativo no servidor.
 
         Valida: shop_id existe no catálogo, item está no estoque,
@@ -859,10 +860,13 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         price      = int(entry["price"])
         total_cost = price * max(1, quantity)
 
-        # 2. Valida gold (Wallet é server-autoritativo)
+        # 2. Valida gold — sincroniza com o valor atual do cliente antes de processar.
+        # O servidor pode ter gold desatualizado (ex: moedas de loot adicionadas localmente).
         wallet = self.world.get_component(eid, Wallet)
         if not wallet:
             return {"success": False, "reason": "no_wallet"}
+        if current_gold is not None and current_gold >= 0:
+            wallet.gold = int(current_gold)
         if wallet.gold < total_cost:
             return {"success": False, "reason": "insufficient_gold",
                     "required": total_cost, "available": wallet.gold}
@@ -899,7 +903,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
     _SELL_RATIO = 0.4
 
     def process_shop_sell(self, session_id: str, item_name: str,
-                          client_value: int, stack_sold: int = 1) -> dict:
+                          client_value: int, stack_sold: int = 1,
+                          current_gold: int | None = None) -> dict:
         """Processa venda ao mercador — autoritativo no servidor.
 
         Calcula sell_price a partir do catálogo (loot_tables → merchant_data).
@@ -914,6 +919,10 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         wallet = self.world.get_component(eid, Wallet)
         if not wallet:
             return {"success": False, "reason": "no_wallet"}
+
+        # Sincroniza gold com o cliente antes de processar (loot coins podem não ter chegado)
+        if current_gold is not None and current_gold >= 0:
+            wallet.gold = int(current_gold)
 
         # Tenta encontrar o item no catálogo para validar value
         canonical_value = self._lookup_item_value(item_name)

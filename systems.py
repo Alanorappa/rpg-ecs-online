@@ -4057,11 +4057,13 @@ class ShopSystem(System):
         if self._net and shop_id:
             # Online: servidor valida e responde com BUY_RESULT
             from shared.messages import MsgType as _MTShop
+            _wallet_buy = self.world.get_component(self.player_entity, Wallet)
             preview = entry["factory"]()
             self._net.send(_MTShop.BUY_REQUEST, {
-                "shop_id":   shop_id,
-                "item_name": preview.name,
-                "quantity":  1,
+                "shop_id":     shop_id,
+                "item_name":   preview.name,
+                "quantity":    1,
+                "current_gold": _wallet_buy.gold if _wallet_buy else 0,
             })
             return  # UI atualizada quando BUY_RESULT chegar
 
@@ -4100,11 +4102,13 @@ class ShopSystem(System):
         """Compra qty unidades de um item stackável. Online: envia BUY_REQUEST."""
         if self._net and shop_id:
             from shared.messages import MsgType as _MTShop
+            _wallet_qty = self.world.get_component(self.player_entity, Wallet)
             preview = entry["factory"]()
             self._net.send(_MTShop.BUY_REQUEST, {
-                "shop_id":   shop_id,
-                "item_name": preview.name,
-                "quantity":  qty,
+                "shop_id":     shop_id,
+                "item_name":   preview.name,
+                "quantity":    qty,
+                "current_gold": _wallet_qty.gold if _wallet_qty else 0,
             })
             return
 
@@ -4203,6 +4207,7 @@ class ShopSystem(System):
                 "item_name":    item.name,
                 "item_value":   getattr(item, "value", 0),
                 "stack_sold":   1,
+                "current_gold": wallet.gold,
             })
             item.stack -= 1
             if item.stack <= 0:
