@@ -888,6 +888,59 @@ class GameEngine:
             return True
         return False
 
+    def _close_modals_if_too_far(self) -> None:
+        """Fecha modais de interação quando o player se afasta do elemento (NPC/corpo)."""
+        from components import TileMovement as _TM_prox, Position as _Pos_prox
+        from utils import chebyshev as _cheb_prox
+        from tileset import TILE_SIZE as _TS_prox
+
+        CLOSE_DIST = 3  # fecha ao se afastar mais de 3 tiles (abre a ≤1)
+
+        player_tm = self.world.get_component(self.player_entity, _TM_prox)
+        if not player_tm:
+            return
+        px, py = player_tm.current_tile_x, player_tm.current_tile_y
+
+        def _tile(eid: int):
+            pos = self.world.get_component(eid, _Pos_prox)
+            if pos:
+                return int(pos.x / _TS_prox), int(pos.y / _TS_prox)
+            tm2 = self.world.get_component(eid, _TM_prox)
+            if tm2:
+                return tm2.current_tile_x, tm2.current_tile_y
+            return None
+
+        # Loot
+        _cid = self._loot_system.open_corpse_id
+        if _cid != -1:
+            t = _tile(_cid)
+            if t and _cheb_prox(px, py, t[0], t[1]) > CLOSE_DIST:
+                self._loot_system._close_modal()
+
+        # Shop
+        if self._shop_system.is_open:
+            t = _tile(self._shop_system.open_merchant_id)
+            if t and _cheb_prox(px, py, t[0], t[1]) > CLOSE_DIST:
+                self._shop_system._close()
+
+        # Crafting
+        if self._crafting_system.is_open:
+            t = _tile(self._crafting_system._bs_eid)
+            if t and _cheb_prox(px, py, t[0], t[1]) > CLOSE_DIST:
+                self._crafting_system._close()
+
+        # Trainer
+        if self._trainer_system.is_open:
+            t = _tile(self._trainer_system._tr_eid)
+            if t and _cheb_prox(px, py, t[0], t[1]) > CLOSE_DIST:
+                self._trainer_system._close()
+
+        # Quest dialog
+        if self._quest_dialog.is_open:
+            t = _tile(self._quest_dialog._dialog_npc_id)
+            if t and _cheb_prox(px, py, t[0], t[1]) > CLOSE_DIST:
+                self._quest_dialog._close()
+
     # ------------------------------------------------------------------
     # ── Zoom ──────────────────────────────────────────────────────────────────
 
@@ -1294,6 +1347,8 @@ class GameEngine:
             self._sync_combat_target()
             self._process_mob_move_queues()
             self._ensure_remote_mobs_visible()
+            # Fecha modais quando o player se afasta do elemento
+            self._close_modals_if_too_far()
             # Autosave local a cada 2 minutos (7200 frames @ 60fps)
             if not hasattr(self, "_save_frame_counter"):
                 self._save_frame_counter = 0
