@@ -1072,13 +1072,14 @@ class CombatStateSystem(System):
                 p = item.proc
                 if random.random() < p["chance"]:
                     _max_before = combat_stats.max_hp
+                    _pct_before = (combat_stats.current_hp / _max_before
+                                   if _max_before > 0 else 1.0)
                     mod = Modifier(p["attribute"], p["value"])
                     add_timed_modifier(combat_stats, mod, p["duration"], p["label"])
-                    # Se o proc aumentou o max HP (ex: stamina), cura o player pelo ganho
-                    _hp_gained = combat_stats.max_hp - _max_before
-                    if _hp_gained > 0:
-                        combat_stats.current_hp = min(combat_stats.max_hp,
-                                                      combat_stats.current_hp + _hp_gained)
+                    # Se o proc aumentou o max HP, escala o HP atual pelo mesmo percentual
+                    # Ex: estava em 50% → continua em 50% do novo max
+                    if combat_stats.max_hp > _max_before:
+                        combat_stats.current_hp = max(1, int(_pct_before * combat_stats.max_hp))
                     LOG.add(
                         f"PROC [{item.name}]: {p['label']}! "
                         f"+{p['value']} {p['attribute']} por {p['duration']:.0f}s.",
