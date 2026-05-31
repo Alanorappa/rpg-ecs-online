@@ -5795,8 +5795,23 @@ class SkillSystem(System, SkillHandlers):
 
         _is_offensive = getattr(skill, "offensive", True)
         _has_cast     = getattr(skill, "cast_time", 0.0) > 0
+        _is_aoe       = getattr(skill, "needs_aoe_target", False)
 
         _is_online = getattr(self, "_remote_mobs_reverse", None) is not None
+
+        # Skills AOE (Calamidade Flamejante): chama o handler diretamente para mostrar
+        # a mira antes do clique — CAST_SKILL é enviado pelo AoeTargetingSystem ao clicar.
+        if _is_aoe and _is_online and skill.skill_id:
+            _aoe_handler = getattr(self, f"_skill_{skill.skill_id}", None)
+            if _aoe_handler:
+                _cs_aoe   = self.world.get_component(self.player_entity_id,
+                                                      __import__("components").CombatStats)
+                _tm_aoe   = self.world.get_component(self.player_entity_id,
+                                                      __import__("components").TileMovement)
+                _cst_aoe  = self.world.get_component(self.player_entity_id,
+                                                      __import__("components").CombatState)
+                return bool(_aoe_handler(skill, _cs_aoe, _cst_aoe, _tm_aoe))
+            return False
         _char = self.world.get_component(self.player_entity_id,
                                           __import__("components").CharacterStats)
         _cs   = self.world.get_component(self.player_entity_id,

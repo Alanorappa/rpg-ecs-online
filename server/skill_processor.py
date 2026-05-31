@@ -168,6 +168,9 @@ class SkillProcessorMixin:
             # Para skills direcionais (Pirofagia, Tiro Múltiplo), injeta direção
             tile_move._server_dir_x = req.get("dir_x", 0.0)
             tile_move._server_dir_y = req.get("dir_y", 0.0)
+            # Para skills AOE com clique (Calamidade Flamejante): dir_x/y carregam coordenadas world
+            tile_move._server_aoe_x = req.get("dir_x", 0.0)
+            tile_move._server_aoe_y = req.get("dir_y", 0.0)
 
             # Lag compensation por timestamp para skills de cone (dir != 0, sem alvo fixo).
             # Usa snapshot histórico: posições dos mobs quando o cliente disparou,

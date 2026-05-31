@@ -1394,6 +1394,9 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 except Exception:
                     pass
 
+        # ── Channeling de players (Calamidade Flamejante) ────────────────────
+        self._process_player_channeling(dt)
+
         # Skills ANTES do auto-attack: skill dispara em mob vivo, depois auto-attack
         # (se ordem fosse invertida, auto-attack poderia matar o mob antes da skill checar HP)
         self._process_skill_requests()

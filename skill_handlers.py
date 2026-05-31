@@ -647,6 +647,33 @@ class SkillHandlers:
         if not self._check_mana(char_stats, skill.mana_cost):
             return False
 
+        # Modo servidor: recebe coordenadas AOE via _server_aoe_x/y (enviadas pelo cliente ao clicar)
+        _server_mode = getattr(self, "_server_pending_spells", None) is not None
+        if _server_mode:
+            aoe_x = getattr(tile_move, "_server_aoe_x", 0.0)
+            aoe_y = getattr(tile_move, "_server_aoe_y", 0.0)
+            if aoe_x == 0.0 and aoe_y == 0.0:
+                return False  # coordenadas não enviadas
+            from components import Channeling as _Chan
+            self.world.add_component(self.player_entity_id, _Chan(
+                spell_id       = "calamidade_flamejante",
+                duration       = 5.0,
+                tick_interval  = 1.0,
+                mana_per_tick  = 10,
+                target_x       = aoe_x,
+                target_y       = aoe_y,
+                radius_tiles   = 3.0,
+                slow_pct       = 0.75,
+                dmg_weapon_pct = 0.15,
+                dmg_sp_coeff   = 1.0,
+            ))
+            if combat_state:
+                from stat_fns import enter_combat as _ec_cf
+                _ec_cf(combat_state)
+            skill.current_cooldown = skill.cooldown
+            return True
+
+        # Modo cliente (offline / aiming online): adiciona componente de mira AOE
         if self.world.get_component(self.player_entity_id, AoeTargeting):
             return False  # já em modo de mira
 

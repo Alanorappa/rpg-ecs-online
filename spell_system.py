@@ -1570,6 +1570,7 @@ class AoeTargetingSystem(System):
         self.player_entity = player_entity
         self.world_surf    = screen
         self.hud_surf      = screen
+        self._net          = None   # injetado por game.py no modo online
 
     def _camera_offset(self) -> tuple[float, float]:
         sw, sh = self.world_surf.get_width(), self.world_surf.get_height()
@@ -1680,6 +1681,21 @@ class AoeTargetingSystem(System):
             if char_stats and char_stats.mana < 10:
                 WARN.add("Mana insuficiente")
                 return
+
+            # Online: envia CAST_SKILL com coordenadas do alvo antes de criar Channeling local.
+            # dir_x/dir_y são reaproveitados para as coordenadas world (servidor lê como aoe_x/y).
+            if self._net:
+                from shared.messages import MsgType as _MT_cf
+                _cs_cf = self.world.get_component(self.player_entity, CombatStats)
+                self._net.send(_MT_cf.CAST_SKILL, {
+                    "sid":   "calamidade_flamejante",
+                    "tid":   -1,
+                    "dir_x": world_x,
+                    "dir_y": world_y,
+                    "rage":  0,
+                    "mana":  getattr(char_stats, "mana", 0) if char_stats else 0,
+                })
+
             self.world.add_component(self.player_entity, Channeling(
                 spell_id      = "calamidade_flamejante",
                 duration      = 5.0,

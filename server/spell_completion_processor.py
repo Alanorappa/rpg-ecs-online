@@ -227,6 +227,66 @@ class SpellCompletionMixin:
                 "mana":       char.mana,
             })
 
+    # ── Channeling de players server-side (Calamidade Flamejante) ───────────
+
+    def _process_player_channeling(self, dt: float) -> None:
+        """Processa ticks de canalização de players (Calamidade Flamejante)."""
+        from components import Channeling as _Chan, CombatStats as _CS, \
+                               CharacterStats as _CHS, TileMovement as _TM
+        from systems import apply_effect
+        from utils import chebyshev
+
+        _to_remove = []
+        for player_eid in list(self._player_eids.values()):
+            ch = self.world.get_component(player_eid, _Chan)
+            if ch is None:
+                continue
+
+            ch.elapsed += dt
+            if ch.elapsed >= ch.duration:
+                _to_remove.append(player_eid)
+                continue
+
+            # Deduz mana por tick
+            char = self.world.get_component(player_eid, _CHS)
+            if char and ch.mana_per_tick > 0:
+                ch.mana_timer = getattr(ch, "mana_timer", 0.0) + dt
+                if ch.mana_timer >= ch.tick_interval:
+                    ch.mana_timer -= ch.tick_interval
+                    char.mana = max(0, char.mana - ch.mana_per_tick)
+                    if char.mana == 0:
+                        _to_remove.append(player_eid)
+                        continue
+
+            # Tick de dano
+            ch.tick_timer = getattr(ch, "tick_timer", ch.tick_interval)
+            ch.tick_timer -= dt
+            if ch.tick_timer <= 0:
+                ch.tick_timer += ch.tick_interval
+                cs_p = self.world.get_component(player_eid, _CS)
+                sp   = cs_p.spell_power if cs_p else 0
+                tx   = int(ch.target_x / 32)
+                ty   = int(ch.target_y / 32)
+
+                for mob_eid in list(self._mob_eids):
+                    mob_tm = self.world.get_component(mob_eid, _TM)
+                    mob_cs = self.world.get_component(mob_eid, _CS)
+                    if not mob_tm or not mob_cs or mob_cs.current_hp <= 0:
+                        continue
+                    if chebyshev(tx, ty, mob_tm.current_tile_x, mob_tm.current_tile_y) > ch.radius_tiles:
+                        continue
+                    dmg = max(1, int(cs_p.base_physical_damage * ch.dmg_weapon_pct
+                                     + sp * ch.dmg_sp_coeff)) if cs_p else 1
+                    self._server_apply_magic_damage(player_eid, mob_eid, dmg)
+                    if ch.slow_pct > 0:
+                        apply_effect(self.world, mob_eid, "slow", 2.0, 1.0 - ch.slow_pct)
+
+        for eid in _to_remove:
+            try:
+                self.world.remove_component(eid, _Chan)
+            except Exception:
+                pass
+
     # ── Bloco de Gelo: timer server-side ────────────────────────────────────
 
     def _process_ice_blocks(self, dt: float) -> None:

@@ -368,8 +368,9 @@ class GameEngine:
         # LootSystem: envia só a consequência da ação (gold ou inventário), não o state completo
         self._loot_system._on_loot_collected = self._on_loot_action
         # CombatStateSystem: notifica servidor quando proc de item escala HP
-        # (servidor não carrega objetos de item com proc, então não dispara localmente)
         self._combat_state_sys._on_proc_hp_change = self._send_proc_hp_sync
+        # AoeTargetingSystem: envia CAST_SKILL com coordenadas ao confirmar posição AOE
+        self._aoe_targeting_system._net = self._net
 
         # --- Profiler de frames ---
         self._prof_accum:       dict[str, float] = {}   # tempo acumulado por seção
