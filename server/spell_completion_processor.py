@@ -259,7 +259,8 @@ class SpellCompletionMixin:
                         continue
 
             # Tick de dano
-            ch.tick_timer = getattr(ch, "tick_timer", ch.tick_interval)
+            if not hasattr(ch, "tick_timer"):
+                ch.tick_timer = ch.tick_interval
             ch.tick_timer -= dt
             if ch.tick_timer <= 0:
                 ch.tick_timer += ch.tick_interval
@@ -277,7 +278,20 @@ class SpellCompletionMixin:
                         continue
                     dmg = max(1, int(cs_p.base_physical_damage * ch.dmg_weapon_pct
                                      + sp * ch.dmg_sp_coeff)) if cs_p else 1
+                    hp_before = mob_cs.current_hp
                     self._server_apply_magic_damage(player_eid, mob_eid, dmg)
+                    hp_after  = max(0, mob_cs.current_hp)
+                    damage    = max(0, hp_before - mob_cs.current_hp)
+                    if damage > 0:
+                        # Envia COMBAT_RESULT ao cliente para exibir FLT
+                        self._combat_this_tick.append({
+                            "attacker": player_eid,
+                            "target":   mob_eid,
+                            "damage":   damage,
+                            "outcome":  "hit",
+                            "hp_after": hp_after,
+                            "source":   "skill",
+                        })
                     if ch.slow_pct > 0:
                         apply_effect(self.world, mob_eid, "slow", 2.0, 1.0 - ch.slow_pct)
 
