@@ -1517,7 +1517,6 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             if _sid_xp and _char_xp and _cs_xp:
                 import asyncio as _asyncio_xp
                 from server.auth import save_character as _save_xp
-                from server.session import SessionManager as _SM_xp
                 _mgr = getattr(self, "_session_manager", None)
                 if _mgr:
                     _sess_xp = _mgr._sessions.get(_sid_xp)
@@ -1526,6 +1525,15 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                         if srv_data_xp:
                             merged_xp = _mgr._build_save_merge(
                                 srv_data_xp, _sess_xp.last_client_payload)
+                            # Sobrescreve talentos com dados autoritativos do servidor ECS.
+                            # last_client_payload ainda tem available_points antigo (notificação
+                            # de level-up ainda não chegou ao cliente), então usar ECS evita
+                            # salvar 0 pontos quando deveria salvar 1+.
+                            from components import TalentTree as _TTxp_save
+                            _tt_xp = self.world.get_component(_xp_peid, _TTxp_save)
+                            if _tt_xp and isinstance(merged_xp.get("talents"), dict):
+                                merged_xp["talents"]["available_points"] = _tt_xp.available_points
+                                merged_xp["talents"]["allocated"]        = dict(_tt_xp.allocated)
                             _asyncio_xp.ensure_future(_save_xp(_sess_xp.char_data["id"], merged_xp))
             print(f"[XP] player {_xp_peid} ganhou {_xp_amt} XP (mob {entry['mob_eid']})")
 
