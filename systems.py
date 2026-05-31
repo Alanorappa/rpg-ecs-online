@@ -1049,7 +1049,13 @@ class CombatStateSystem(System):
                 expired = [e for e in combat_stats.timed_modifiers if e["timer"] <= 0]
                 for entry in expired:
                     combat_stats.timed_modifiers.remove(entry)
+                    _max_before_exp = combat_stats.max_hp
+                    _pct_hp = (combat_stats.current_hp / _max_before_exp
+                               if _max_before_exp > 0 else 1.0)
                     remove_modifier(combat_stats, entry["modifier"])
+                    # Se o max HP reduziu (ex: stamina expirou), mantém percentual de vida
+                    if combat_stats.max_hp < _max_before_exp:
+                        combat_stats.current_hp = max(1, int(_pct_hp * combat_stats.max_hp))
                     LOG.add(f"Efeito '{entry['label']}' expirou.", (160, 160, 160))
 
             if cs._just_entered_combat:
@@ -1065,8 +1071,14 @@ class CombatStateSystem(System):
             if item and item.proc:
                 p = item.proc
                 if random.random() < p["chance"]:
+                    _max_before = combat_stats.max_hp
                     mod = Modifier(p["attribute"], p["value"])
                     add_timed_modifier(combat_stats, mod, p["duration"], p["label"])
+                    # Se o proc aumentou o max HP (ex: stamina), cura o player pelo ganho
+                    _hp_gained = combat_stats.max_hp - _max_before
+                    if _hp_gained > 0:
+                        combat_stats.current_hp = min(combat_stats.max_hp,
+                                                      combat_stats.current_hp + _hp_gained)
                     LOG.add(
                         f"PROC [{item.name}]: {p['label']}! "
                         f"+{p['value']} {p['attribute']} por {p['duration']:.0f}s.",
