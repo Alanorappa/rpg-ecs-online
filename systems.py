@@ -5016,6 +5016,9 @@ class LootSystem(System):
         # open_corpse_id → LootUIState component (via property abaixo)
         self.pending_loot_corpse_id: int = -1
         self.pending_tooltip             = None  # lido por GameEngine no fim do frame
+        # Callback chamado após cada ação de loot (moeda ou item) — injetado pelo GameEngine.
+        # Online: aponta para _send_save_state() para salvar imediatamente na ação.
+        self._on_loot_collected = None
         self.font_sm = _font(20)
         self.font_md = _font(24)
         self._modal_x       = 0   # posição X do modal (definida ao abrir)
@@ -5221,6 +5224,8 @@ class LootSystem(System):
                         LOG.add(f"+{corpse.coins} moedas coletadas!", (255, 215, 0))
                         corpse.coins = 0
                         SOUNDS.play_ui("loot_gold")
+                        if self._on_loot_collected:
+                            self._on_loot_collected()
                         break
                     self._check_auto_close(corpse)
                     return True
@@ -5253,6 +5258,8 @@ class LootSystem(System):
                         LOG.add(f"Coletado: {item.name} ({item.rarity})", col)
                         SOUNDS.play_ui("loot_item")
                         quest_fire("collect_item", item_name=item.name)
+                        if self._on_loot_collected:
+                            self._on_loot_collected()
                         # Corrige scroll se necessário
                         total = (1 if corpse.coins > 0 else 0) + len(corpse.loot)
                         self._scroll_offset = min(self._scroll_offset, max(0, total - self.MAX_ROWS))

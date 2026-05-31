@@ -73,13 +73,12 @@ class SessionManager:
         srv_stats = srv_data.get("stats", {})
         cli_stats = client_p.get("stats", {}) if client_p else {}
         merged_stats = dict(srv_stats)
-        # gold: usa o MAIOR entre servidor e cliente.
-        # O servidor pode ter gold desatualizado (ex: moedas de loot coletadas só no cliente
-        # via LootSystem offline enquanto _send_loot_request não é chamada).
-        # max() garante que gold legítimo nunca seja perdido ao salvar.
+        # gold: cliente autoritativo via SAVE_STATE.
+        # _on_loot_collected garante que SAVE_STATE é disparado na ação de loot,
+        # então o valor do cliente já inclui moedas recém-coletadas.
         _cli_gold = cli_stats.get("gold", 0)
         _srv_gold = srv_stats.get("gold", 0)
-        merged_stats["gold"] = max(_srv_gold, _cli_gold)
+        merged_stats["gold"] = _cli_gold if _cli_gold > 0 else _srv_gold
         # max_hp: cliente autoritativo (inclui bônus de equipamento)
         _cli_mhp = cli_stats.get("max_hp", 0)
         if _cli_mhp > 0:

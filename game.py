@@ -365,6 +365,8 @@ class GameEngine:
         self._consumable_system._net = self._net
         # ShopSystem: envia BUY_REQUEST ao servidor (gold/inventário server-autoritativos)
         self._shop_system._net = self._net
+        # LootSystem: salva imediatamente ao coletar moedas ou itens (gold/inventário atualizados)
+        self._loot_system._on_loot_collected = self._send_save_state
 
         # --- Profiler de frames ---
         self._prof_accum:       dict[str, float] = {}   # tempo acumulado por seção
