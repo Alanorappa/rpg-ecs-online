@@ -5225,7 +5225,7 @@ class LootSystem(System):
                         corpse.coins = 0
                         SOUNDS.play_ui("loot_gold")
                         if self._on_loot_collected:
-                            self._on_loot_collected()
+                            self._on_loot_collected("gold")
                         break
                     self._check_auto_close(corpse)
                     return True
@@ -5259,7 +5259,7 @@ class LootSystem(System):
                         SOUNDS.play_ui("loot_item")
                         quest_fire("collect_item", item_name=item.name)
                         if self._on_loot_collected:
-                            self._on_loot_collected()
+                            self._on_loot_collected("item")
                         # Corrige scroll se necessário
                         total = (1 if corpse.coins > 0 else 0) + len(corpse.loot)
                         self._scroll_offset = min(self._scroll_offset, max(0, total - self.MAX_ROWS))

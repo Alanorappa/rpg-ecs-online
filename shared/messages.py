@@ -79,6 +79,8 @@ class MsgType(str, Enum):
     SOUND_EVENT        = "sound_event"     # S→C  evento sonoro posicional (aggro, etc.)
     PLAYER_STAT_SYNC   = "player_stat_sync"  # C→S  stats efetivos do player (equip/buff/consumível)
     CONSUMABLE_USE     = "consumable_use"    # C→S  uso de consumível (heal_instant, HoT, buffs futuros)
+    GOLD_UPDATE        = "gold_update"       # C→S  gold mudou (loot de moedas) {gold: N}
+    INVENTORY_UPDATE   = "inventory_update"  # C→S  inventário mudou (loot de item) {inventory: [...]}
     BUY_REQUEST        = "buy_request"       # C→S  compra em loja {shop_id, item_name, quantity}
     BUY_RESULT         = "buy_result"        # S→C  resultado da compra {success, reason, item, new_gold}
     SELL_REQUEST       = "sell_request"      # C→S  {item_name, item_value, stack_sold}

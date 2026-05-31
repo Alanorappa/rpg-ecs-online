@@ -466,6 +466,38 @@ class SessionManager:
         else:
             await self._broadcast_aoi_from_session(session, MsgType.CHAT_MESSAGE, msg)
 
+    async def _handle_gold_update(self, session: Session, payload: dict, ts: int) -> None:
+        """Atualiza gold do servidor quando moedas são coletadas (loot, etc.)."""
+        if not session.authenticated:
+            return
+        gold = int(payload.get("gold", 0))
+        if gold < 0:
+            return
+        from components import Wallet as _W_gu
+        eid = self.world_server._player_eids.get(session.session_id)
+        if eid is None:
+            return
+        wall = self.world_server.world.get_component(eid, _W_gu)
+        if wall:
+            wall.gold = gold
+        # Atualiza cache para o próximo save no disconnect
+        if session.last_client_payload is not None:
+            sess_stats = session.last_client_payload.get("stats")
+            if isinstance(sess_stats, dict):
+                sess_stats["gold"] = gold
+
+    async def _handle_inventory_update(self, session: Session, payload: dict, ts: int) -> None:
+        """Atualiza inventário do servidor quando item é coletado (loot, etc.)."""
+        if not session.authenticated:
+            return
+        inventory = payload.get("inventory")
+        if not isinstance(inventory, list):
+            return
+        # Armazena no cache da sessão — usado no próximo save (disconnect ou autosave)
+        if session.last_client_payload is None:
+            session.last_client_payload = {}
+        session.last_client_payload["inventory"] = inventory
+
     async def _handle_loot_request(self, session: Session, payload: dict, ts: int) -> None:
         """
         Player clicou num corpo para sacar.
@@ -510,8 +542,10 @@ class SessionManager:
         MsgType.SAVE_STATE:        _handle_save_state,
         MsgType.PLAYER_STAT_SYNC:  _handle_player_stat_sync,
         MsgType.CONSUMABLE_USE:    _handle_consumable_use,
-        MsgType.BUY_REQUEST:       _handle_buy_request,
+        MsgType.BUY_REQUEST:     _handle_buy_request,
         MsgType.SELL_REQUEST:      _handle_sell_request,
+        MsgType.GOLD_UPDATE:       _handle_gold_update,
+        MsgType.INVENTORY_UPDATE:  _handle_inventory_update,
     }
 
     # ── AOI subscription — núcleo do sistema ─────────────────────────────────

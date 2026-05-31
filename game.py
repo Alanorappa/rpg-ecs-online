@@ -365,8 +365,8 @@ class GameEngine:
         self._consumable_system._net = self._net
         # ShopSystem: envia BUY_REQUEST ao servidor (gold/inventário server-autoritativos)
         self._shop_system._net = self._net
-        # LootSystem: salva imediatamente ao coletar moedas ou itens (gold/inventário atualizados)
-        self._loot_system._on_loot_collected = self._send_save_state
+        # LootSystem: envia só a consequência da ação (gold ou inventário), não o state completo
+        self._loot_system._on_loot_collected = self._on_loot_action
 
         # --- Profiler de frames ---
         self._prof_accum:       dict[str, float] = {}   # tempo acumulado por seção
@@ -4616,6 +4616,24 @@ class GameEngine:
             "skills":    skills,
             "fog":       fog,
         }
+
+    def _on_loot_action(self, change_type: str = "item") -> None:
+        """Envia ao servidor apenas a consequência da ação de loot, não o estado completo."""
+        if not self._net or not self._net.connected or self._my_eid == -1:
+            return
+        from shared.messages import MsgType as _MT_la
+        if change_type == "gold":
+            from components import Wallet as _W_la
+            wall = self.world.get_component(self.player_entity, _W_la)
+            if wall:
+                self._net.send(_MT_la.GOLD_UPDATE, {"gold": wall.gold})
+        elif change_type == "item":
+            from components import Inventory as _Inv_la
+            inv = self.world.get_component(self.player_entity, _Inv_la)
+            if inv:
+                inv_list = [self._serialize_item(it) for it in inv.items if it]
+                inv_list = [s for s in inv_list if s]
+                self._net.send(_MT_la.INVENTORY_UPDATE, {"inventory": inv_list})
 
     def _send_save_state(self) -> None:
         """Envia estado completo do personagem ao servidor para persistência."""
