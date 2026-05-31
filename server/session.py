@@ -73,9 +73,13 @@ class SessionManager:
         srv_stats = srv_data.get("stats", {})
         cli_stats = client_p.get("stats", {}) if client_p else {}
         merged_stats = dict(srv_stats)
-        # gold: servidor autoritativo — get_player_save_data já lê Wallet.gold do ECS
-        # Nunca confiar no valor enviado pelo cliente (previne duplicação via SAVE_STATE)
-        merged_stats["gold"] = srv_stats.get("gold", 0)
+        # gold: usa o MAIOR entre servidor e cliente.
+        # O servidor pode ter gold desatualizado (ex: moedas de loot coletadas só no cliente
+        # via LootSystem offline enquanto _send_loot_request não é chamada).
+        # max() garante que gold legítimo nunca seja perdido ao salvar.
+        _cli_gold = cli_stats.get("gold", 0)
+        _srv_gold = srv_stats.get("gold", 0)
+        merged_stats["gold"] = max(_srv_gold, _cli_gold)
         # max_hp: cliente autoritativo (inclui bônus de equipamento)
         _cli_mhp = cli_stats.get("max_hp", 0)
         if _cli_mhp > 0:
@@ -391,6 +395,15 @@ class SessionManager:
         session.last_client_payload = payload   # cache para o save no disconnect
         # Inventário foi salvo — zera contador de compras pendentes
         self.world_server.confirm_inventory_save(session.session_id)
+        # Sincroniza Wallet do servidor com o gold do cliente (pode ter loot coins não rastreados)
+        _cli_gold_ss = payload.get("stats", {}).get("gold")
+        if _cli_gold_ss is not None:
+            from components import Wallet as _W_ss
+            _eid_ss = self.world_server._player_eids.get(session.session_id)
+            if _eid_ss is not None:
+                _wall_ss = self.world_server.world.get_component(_eid_ss, _W_ss)
+                if _wall_ss:
+                    _wall_ss.gold = max(_wall_ss.gold, int(_cli_gold_ss))
         srv_data = self.world_server.get_player_save_data(session.session_id)
         merged   = self._build_save_merge(srv_data, payload)
 
