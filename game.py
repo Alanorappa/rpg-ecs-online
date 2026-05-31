@@ -4657,7 +4657,7 @@ class GameEngine:
             if inv:
                 inv_list = [self._serialize_item(it) for it in inv.items if it]
                 inv_list = [s for s in inv_list if s]
-                self._net.send(_MT_la.INVENTORY_UPDATE, {"inventory": inv_list})
+                self._net.send(_MT_la.INV_SYNC, {"inventory": inv_list})
 
     def _send_save_state(self) -> None:
         """Envia estado completo do personagem ao servidor para persistência."""

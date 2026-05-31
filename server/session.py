@@ -578,7 +578,7 @@ class SessionManager:
         MsgType.BUY_REQUEST:     _handle_buy_request,
         MsgType.SELL_REQUEST:      _handle_sell_request,
         MsgType.GOLD_UPDATE:       _handle_gold_update,
-        MsgType.INVENTORY_UPDATE:  _handle_inventory_update,
+        MsgType.INV_SYNC:  _handle_inventory_update,
         MsgType.TALENT_UPDATE:     _handle_talent_update,
         MsgType.HOTBAR_UPDATE:     _handle_hotbar_update,
     }

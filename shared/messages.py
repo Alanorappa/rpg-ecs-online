@@ -80,7 +80,7 @@ class MsgType(str, Enum):
     PLAYER_STAT_SYNC   = "player_stat_sync"  # C→S  stats efetivos do player (equip/buff/consumível)
     CONSUMABLE_USE     = "consumable_use"    # C→S  uso de consumível (heal_instant, HoT, buffs futuros)
     GOLD_UPDATE        = "gold_update"       # C→S  gold mudou (loot de moedas) {gold: N}
-    INVENTORY_UPDATE   = "inventory_update"  # C→S  inventário mudou (loot de item) {inventory: [...]}
+    INV_SYNC           = "inv_sync"          # C→S  inventário mudou (loot de item) {inventory: [...]}
     TALENT_UPDATE      = "talent_update"     # C→S  talento alocado/desalocado {allocated, available_points}
     HOTBAR_UPDATE      = "hotbar_update"     # C→S  barra de ações/consumíveis mudou {skills, consumables}
     BUY_REQUEST        = "buy_request"       # C→S  compra em loja {shop_id, item_name, quantity}
