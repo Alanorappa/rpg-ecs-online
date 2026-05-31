@@ -1512,6 +1512,21 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                     print(f"[LevelUp] player {_xp_peid} → nivel {_char_xp.level} "
                           f"hp={_cs_xp.current_hp}/{_cs_xp.max_hp} "
                           f"talentos={_tt_lv.available_points if _tt_lv else '?'}")
+            # Salva XP/level imediatamente após cada kill — crash do servidor não perde progresso
+            _sid_xp = self._player_eid_to_sid.get(_xp_peid, "")
+            if _sid_xp and _char_xp and _cs_xp:
+                import asyncio as _asyncio_xp
+                from server.auth import save_character as _save_xp
+                from server.session import SessionManager as _SM_xp
+                _mgr = getattr(self, "_session_manager", None)
+                if _mgr:
+                    _sess_xp = _mgr._sessions.get(_sid_xp)
+                    if _sess_xp and _sess_xp.char_data.get("id"):
+                        srv_data_xp = self.get_player_save_data(_sid_xp)
+                        if srv_data_xp:
+                            merged_xp = _mgr._build_save_merge(
+                                srv_data_xp, _sess_xp.last_client_payload)
+                            _asyncio_xp.ensure_future(_save_xp(_sess_xp.char_data["id"], merged_xp))
             print(f"[XP] player {_xp_peid} ganhou {_xp_amt} XP (mob {entry['mob_eid']})")
 
         self._process_loot_drops(dt)

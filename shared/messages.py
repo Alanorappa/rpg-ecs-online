@@ -81,6 +81,8 @@ class MsgType(str, Enum):
     CONSUMABLE_USE     = "consumable_use"    # C→S  uso de consumível (heal_instant, HoT, buffs futuros)
     GOLD_UPDATE        = "gold_update"       # C→S  gold mudou (loot de moedas) {gold: N}
     INVENTORY_UPDATE   = "inventory_update"  # C→S  inventário mudou (loot de item) {inventory: [...]}
+    TALENT_UPDATE      = "talent_update"     # C→S  talento alocado/desalocado {allocated, available_points}
+    HOTBAR_UPDATE      = "hotbar_update"     # C→S  barra de ações/consumíveis mudou {skills, consumables}
     BUY_REQUEST        = "buy_request"       # C→S  compra em loja {shop_id, item_name, quantity}
     BUY_RESULT         = "buy_result"        # S→C  resultado da compra {success, reason, item, new_gold}
     SELL_REQUEST       = "sell_request"      # C→S  {item_name, item_value, stack_sold}

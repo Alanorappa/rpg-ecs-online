@@ -493,10 +493,43 @@ class SessionManager:
         inventory = payload.get("inventory")
         if not isinstance(inventory, list):
             return
-        # Armazena no cache da sessão — usado no próximo save (disconnect ou autosave)
         if session.last_client_payload is None:
             session.last_client_payload = {}
         session.last_client_payload["inventory"] = inventory
+
+    async def _handle_talent_update(self, session: Session, payload: dict, ts: int) -> None:
+        """Salva talentos imediatamente quando um ponto é alocado/desalocado."""
+        if not session.authenticated or not session.char_data.get("id"):
+            return
+        talents = payload.get("talents")
+        if not isinstance(talents, dict):
+            return
+        # Atualiza cache e persiste só os talentos no DB
+        if session.last_client_payload is None:
+            session.last_client_payload = {}
+        session.last_client_payload["talents"] = talents
+        from server.auth import save_character
+        srv_data = self.world_server.get_player_save_data(session.session_id)
+        merged   = self._build_save_merge(srv_data, session.last_client_payload)
+        try:
+            await save_character(session.char_data["id"], merged)
+        except Exception as e:
+            print(f"[TalentUpdate] ERRO ao salvar: {e}")
+
+    async def _handle_hotbar_update(self, session: Session, payload: dict, ts: int) -> None:
+        """Atualiza cache da barra de ações — persistido no próximo save completo."""
+        if not session.authenticated:
+            return
+        if session.last_client_payload is None:
+            session.last_client_payload = {}
+        # Atualiza skills (hotbar) no cache da sessão
+        skills = payload.get("skills")
+        if skills is not None:
+            existing = session.last_client_payload.get("skills") or {}
+            if isinstance(existing, dict):
+                existing["hotbar"] = skills
+            session.last_client_payload["skills"] = existing
+        # Consumíveis são UI local — só precisam estar no próximo SAVE_STATE
 
     async def _handle_loot_request(self, session: Session, payload: dict, ts: int) -> None:
         """
@@ -546,6 +579,8 @@ class SessionManager:
         MsgType.SELL_REQUEST:      _handle_sell_request,
         MsgType.GOLD_UPDATE:       _handle_gold_update,
         MsgType.INVENTORY_UPDATE:  _handle_inventory_update,
+        MsgType.TALENT_UPDATE:     _handle_talent_update,
+        MsgType.HOTBAR_UPDATE:     _handle_hotbar_update,
     }
 
     # ── AOI subscription — núcleo do sistema ─────────────────────────────────

@@ -55,6 +55,7 @@ async def main(host: str, port: int) -> None:
     # Inicializa o mundo e o gerenciador de sessões
     world = WorldServer(zone_id="world_main")
     mgr   = SessionManager(world)
+    world._session_manager = mgr  # referência para saves pontuais (XP/level)
 
     print(f"[Server] RPG Online v{PROTOCOL_VERSION}")
     print(f"[Server] WebSocket em ws://{host}:{port}")

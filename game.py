@@ -359,8 +359,8 @@ class GameEngine:
         # Injeta referências online para validação client-side (range, HP threshold, proc)
         self._skill_system._remote_mobs_reverse = self._remote_mobs_reverse
         self._skill_system._mob_hp              = self._mob_hp
-        # TalentSystem: salva imediatamente ao alocar/desalocar/resetar talento
-        self._talent_system._on_change = self._send_save_state
+        # TalentSystem: envia só os talentos ao servidor na alocação/desalocação
+        self._talent_system._on_change = self._send_talent_update
         # ConsumableSystem: envia CONSUMABLE_USE ao servidor no modo online
         self._consumable_system._net = self._net
         # ShopSystem: envia BUY_REQUEST ao servidor (gold/inventário server-autoritativos)
@@ -1359,14 +1359,11 @@ class GameEngine:
                 self._save_frame_counter = 0
                 self._send_save_state()
 
-            # Salva quando loja/loot/inventário fecham ou quando aprende nova skill
+            # Aprender nova skill: salva só as skills
             _ps_after = self.world.get_component(self.player_entity, PlayerSkills)
             _learned_count_after = len(_ps_after.learned_skill_ids) if _ps_after else 0
-            if (_shop_was_open_before  and not self._shop_system.is_open) or \
-               (_loot_was_open_before  and self._loot_system.open_corpse_id == -1) or \
-               (_inv_was_open_before   and not self._show_inventory) or \
-               (_learned_count_after   > _learned_count_before):
-                self._send_save_state()
+            if _learned_count_after > _learned_count_before:
+                self._send_hotbar_update()  # hotbar pode ter mudado com nova skill
 
             # Detecta mudanças em stats de combate (equip, buff, consumível) e sincroniza
             # com o servidor. Modular: sem hooks em sistemas específicos — detecção por
@@ -4617,6 +4614,33 @@ class GameEngine:
             "fog":       fog,
         }
 
+    def _send_talent_update(self) -> None:
+        """Envia apenas os talentos ao servidor quando um ponto é alocado/desalocado."""
+        if not self._net or not self._net.connected or self._my_eid == -1:
+            return
+        from shared.messages import MsgType as _MT_tu
+        from components import TalentTree as _TTu
+        tt = self.world.get_component(self.player_entity, _TTu)
+        if tt:
+            self._net.send(_MT_tu.TALENT_UPDATE, {"talents": {
+                "chosen_build":     tt.chosen_build,
+                "allocated":        dict(tt.allocated),
+                "available_points": tt.available_points,
+            }})
+
+    def _send_hotbar_update(self) -> None:
+        """Envia apenas a barra de ações ao servidor quando ela é alterada."""
+        if not self._net or not self._net.connected or self._my_eid == -1:
+            return
+        from shared.messages import MsgType as _MT_hbu
+        from components import PlayerSkills as _PSu, ConsumableBar as _CBu
+        ps   = self.world.get_component(self.player_entity, _PSu)
+        cbar = self.world.get_component(self.player_entity, _CBu)
+        self._net.send(_MT_hbu.HOTBAR_UPDATE, {
+            "skills":      [sk.skill_id if sk else None for sk in ps.skills] if ps else [],
+            "consumables": list(cbar.slots) if cbar else [],
+        })
+
     def _on_loot_action(self, change_type: str = "item") -> None:
         """Envia ao servidor apenas a consequência da ação de loot, não o estado completo."""
         if not self._net or not self._net.connected or self._my_eid == -1:
@@ -4902,6 +4926,9 @@ class GameEngine:
             data["consumable_bar"] = self._consumable_bar_to_dict()
         _cfg.save(data)
         self._load_menu_keys()
+        # Sincroniza barra de ações com o servidor (só hotbar, não o state completo)
+        if self._logged_char_name:
+            self._send_hotbar_update()
 
     def _hotbar_to_dict(self) -> dict:
         """Serializa a hotbar atual (slots + keybinds) para persistência."""
