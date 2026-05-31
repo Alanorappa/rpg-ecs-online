@@ -155,8 +155,8 @@ class StatusEffectSystem:
     # ── Tick de dano/cura ──────────────────────────────────────────────────
 
     def _apply_tick(self, eid: int, effect) -> None:
-        from components import (CombatStats, Position, PlayerControlled,
-                                 PendingDeath)
+        from components import (CombatStats, CombatState, Position,
+                                 PlayerControlled, PendingDeath)
         from status_effects_data import EFFECT_DEFS
 
         cs  = self.world.get_component(eid, CombatStats)
@@ -164,9 +164,16 @@ class StatusEffectSystem:
         if not cs or cs.current_hp <= 0:
             return
 
+        # DoT não pode ser esquivado, aparado ou reduzido por armadura.
+        # Entidades imunes (Bloco de Gelo) são a única exceção.
+        cst = self.world.get_component(eid, CombatState)
+        if cst and cst.is_immune:
+            return
+
         defn  = EFFECT_DEFS.get(effect.effect_type)
         color = defn.color if defn else (255, 255, 255)
-        dmg   = max(1, int(effect.magnitude))
+        # Dano mínimo garantido de 1 — magnitude nunca resulta em 0
+        dmg   = max(1, round(effect.magnitude))
 
         if effect.effect_type == "regen":
             healed = min(dmg, cs.max_hp - cs.current_hp)
