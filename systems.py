@@ -4194,19 +4194,25 @@ class ShopSystem(System):
         item     = inv.items[item_idx]
         sell_val = self._sell_price(item)
 
-        # Modo online: notifica servidor ANTES de aplicar localmente.
-        # Servidor recalcula sell_price do catálogo e atualiza gold autoritativamente.
-        # Cliente aplica otimisticamente — SELL_RESULT corrige gold se diferir.
         if self._net:
+            # Online: remove item imediatamente (feedback visual), mas NÃO altera gold.
+            # Gold é atualizado quando SELL_RESULT chegar (servidor é autoritativo).
+            # Padrão igual ao buy online que também não altera gold antes da confirmação.
             from shared.messages import MsgType as _MTS
             self._net.send(_MTS.SELL_REQUEST, {
                 "item_name":    item.name,
                 "item_value":   getattr(item, "value", 0),
                 "stack_sold":   1,
             })
+            item.stack -= 1
+            if item.stack <= 0:
+                inv.items.pop(item_idx)
+            if self._bag_scroll > 0 and self._bag_scroll >= len(inv.items):
+                self._bag_scroll = max(0, len(inv.items) - 1)
+            return  # gold atualizado via SELL_RESULT
 
+        # Offline: aplica tudo localmente
         wallet.gold += sell_val
-        # Decrementa stack; remove o slot ao esgotar
         item.stack -= 1
         if item.stack <= 0:
             inv.items.pop(item_idx)
@@ -4319,9 +4325,9 @@ class ShopSystem(System):
                 self._close()
                 return
 
-            # Botão desfazer
+            # Botão desfazer (desabilitado online — servidor já processou a transação)
             undo_r = pygame.Rect(x0 + self.GAP, y0 + 54, 145, 32)
-            if event.button == 1 and undo_r.collidepoint(mx, my):
+            if event.button == 1 and undo_r.collidepoint(mx, my) and not self._net:
                 self._undo()
                 return
 
