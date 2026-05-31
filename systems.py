@@ -5852,6 +5852,20 @@ class SkillSystem(System, SkillHandlers):
                         if _min_px > 0 and _d_sq < _min_px * _min_px:
                             WARN.add("Alvo muito próximo")
                             return False
+                        # LOS check para skills com projétil: bloqueia se há parede no caminho.
+                        # Evita deduzir mana/cooldown quando o projétil seria destruído na parede.
+                        _skill_has_proj = getattr(skill, "skill_id", "") in {"bola_de_fogo"}
+                        if _skill_has_proj:
+                            _tmap_los = get_tilemap()
+                            if _tmap_los:
+                                _ptx_los = int(_pl_pos.x / TILE_SIZE)
+                                _pty_los = int(_pl_pos.y / TILE_SIZE)
+                                _ttx_los = int(_tgt_pos.x / TILE_SIZE)
+                                _tty_los = int(_tgt_pos.y / TILE_SIZE)
+                                if not EnemyAISystem._has_line_of_sight(
+                                        _tmap_los, _ptx_los, _pty_los, _ttx_los, _tty_los):
+                                    WARN.add("Sem linha de visão")
+                                    return False
             else:
                 # Offline: _resolve_target auto-seleciona e verifica CombatStats
                 _target = self._resolve_target(combat_state, _tile_move_sk)
