@@ -5864,7 +5864,7 @@ class SkillSystem(System, SkillHandlers):
                                 _tty_los = int(_tgt_pos.y / TILE_SIZE)
                                 if not EnemyAISystem._has_line_of_sight(
                                         _tmap_los, _ptx_los, _pty_los, _ttx_los, _tty_los):
-                                    WARN.add("Sem linha de visão")
+                                    WARN.add("Há obstáculos no caminho")
                                     return False
             else:
                 # Offline: _resolve_target auto-seleciona e verifica CombatStats
