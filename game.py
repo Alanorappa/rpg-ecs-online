@@ -3189,21 +3189,25 @@ class GameEngine:
                         if _t_hp >= 0 and _t_srv != -1:
                             _, _hp_mx = self._mob_hp.get(_t_srv, (_t_hp, _t_hp))
                             self._mob_hp[_t_srv] = (_t_hp, _hp_mx)
-                        self._apply_combat_result({
-                            "attacker": caster_eid,
-                            "target":   _t_srv,
-                            "damage":   t.get("damage",  0),
-                            "outcome":  t.get("outcome", "hit"),
-                            "hp_after": _t_hp,
-                            "source":   "skill",
-                            "sid":      sid,
-                        })
+                        _cr_pdmg = {
+                            "attacker":      caster_eid,
+                            "target":        _t_srv,
+                            "damage":        t.get("damage",  0),
+                            "outcome":       t.get("outcome", "hit"),
+                            "hp_after":      _t_hp,
+                            "source":        "skill",
+                            "sid":           sid,
+                        }
+                        # Propaga mob_slow_mult para _apply_combat_result sincronizar slow
+                        if "mob_slow_mult" in t:
+                            _cr_pdmg["mob_slow_mult"] = t["mob_slow_mult"]
+                        self._apply_combat_result(_cr_pdmg)
                         _bdf_deferred.add(_t_srv)
 
             for t in targets:
                 if t.get("eid", -1) in _bdf_deferred:
                     continue   # FLT será exibido ao impacto do projétil
-                self._apply_combat_result({
+                _cr_t = {
                     "attacker": caster_eid,
                     "target":   t.get("eid",     -1),
                     "damage":   t.get("damage",   0),
@@ -3211,7 +3215,10 @@ class GameEngine:
                     "hp_after": t.get("hp_after", -1),
                     "source":   "skill",
                     "sid":      sid,
-                })
+                }
+                if "mob_slow_mult" in t:
+                    _cr_t["mob_slow_mult"] = t["mob_slow_mult"]
+                self._apply_combat_result(_cr_t)
             # LOG de efeitos aplicados pela skill (procs de talento, CC, etc.)
             if caster_eid == self._my_eid:
                 from status_effects_data import EFFECT_DEFS as _EDEFS_sr
