@@ -3255,9 +3255,10 @@ class GameEngine:
                 if "mob_slow_mult" in t:
                     _cr_t["mob_slow_mult"] = t["mob_slow_mult"]
                 self._apply_combat_result(_cr_t)
-            # LOG de efeitos aplicados pela skill (procs de talento, CC, etc.)
+            # LOG e aplicação local de efeitos confirmados pelo servidor
             if caster_eid == self._my_eid:
                 from status_effects_data import EFFECT_DEFS as _EDEFS_sr
+                from core_systems import apply_effect as _ae_apply
                 for t in targets:
                     _ae = t.get("applied_effects", [])
                     if not _ae:
@@ -3274,6 +3275,11 @@ class GameEngine:
                         _defn_sr = _EDEFS_sr.get(_ef)
                         _elabel  = _defn_sr.label if _defn_sr else _ef
                         LOG.add(f"{_tname} recebeu: {_elabel}!", (255, 200, 80))
+                        # Aplica efeito no mob local para sincronizar visual imediatamente.
+                        # Root: para interpolação do tile, evitando snapback de 1 tile.
+                        # Slow: gerenciado via mob_slow_mult em _apply_combat_result — pular.
+                        if _t_local is not None and _ef not in ("slow",):
+                            _ae_apply(self.world, _t_local, _ef, 5.0)
 
         elif msg_type == MsgType.ENTITY_DESPAWN:
             eid = payload.get("eid", -1)
@@ -4183,10 +4189,14 @@ class GameEngine:
             if ren:
                 ren.color = tuple(server_color)
 
-        # Remove CombatStats do mob remoto — evita que PlayerInputSystem calcule dano local.
-        # HP é rastreado em _mob_hp e atualizado exclusivamente pelo servidor.
-        from components import CombatStats
+        # Remove CombatStats: HP é autoritativo do servidor (_mob_hp).
+        # Remove AIControlled: mobs remotos são movidos por ENTITY_MOVE do servidor;
+        # sem isso, EnemyAISystem local emite start_tile_movement competindo com o servidor,
+        # causando snapback de 1 tile quando os alvos divergem.
+        from components import CombatStats, AIControlled as _AIC_rm
         self.world.remove_component(local_eid, CombatStats)
+        if self.world.get_component(local_eid, _AIC_rm) is not None:
+            self.world.remove_component(local_eid, _AIC_rm)
 
         # Armazena HP autoritativo do servidor
         hp_max = data.get("hp_max", 100)

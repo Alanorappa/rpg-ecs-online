@@ -195,6 +195,7 @@ SKILL_CATALOG: dict[str, dict] = {
         "needs_target":     False,
         "class_id":         "mago",
         "school":           "gelo",
+        "sound":            "skill_nova_congelante_impact",
     },
     "bloco_de_gelo": {
         "name":             "Bloco de Gelo",
