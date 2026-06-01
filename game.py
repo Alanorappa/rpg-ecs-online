@@ -3753,14 +3753,24 @@ class GameEngine:
             if hp_after >= 0:
                 _, hp_max = self._mob_hp.get(server_target, (hp_after, hp_after))
                 self._mob_hp[server_target] = (hp_after, hp_max)
-            # Sincroniza slow_mult: sem isso o cliente anima o mob em velocidade normal
-            # enquanto o servidor já aplicou slow (Exaustão), causando desync visual.
+            # Sincroniza slow no mob local: aplica efeito "slow" ao StatusEffects do mob
+            # para que StatusEffectSystem mantenha slow_mult correto E expire naturalmente.
+            # Sem isso, o mob no cliente move em velocidade normal enquanto servidor tem slow.
             _mob_slow_mult = cr.get("mob_slow_mult")
             if _mob_slow_mult is not None:
-                from components import TileMovement as _TM_cr
-                _tm_cr = self.world.get_component(local_eid, _TM_cr)
-                if _tm_cr:
-                    _tm_cr.slow_mult = max(0.05, float(_mob_slow_mult))
+                from components import StatusEffects as _SFXcr, ActiveEffect as _AEcr
+                _sfx_cr = self.world.get_component(local_eid, _SFXcr)
+                if _sfx_cr is None:
+                    _sfx_cr = _SFXcr()
+                    self.world.add_component(local_eid, _sfx_cr)
+                _slow_mag = max(0.05, float(_mob_slow_mult))
+                _existing_slow = _sfx_cr.get("slow")
+                if _existing_slow is not None:
+                    # Usa o valor mais restritivo (menor = mais lento)
+                    _existing_slow.magnitude = min(_existing_slow.magnitude, _slow_mag)
+                    _existing_slow.duration  = 6.0  # renova duração
+                else:
+                    _sfx_cr.effects["slow"] = _AEcr("slow", 6.0, _slow_mag, 0.0)
             _mob_snd = self.world.get_component(local_eid, _MobSounds)
             pos = self.world.get_component(local_eid, Position)
             if pos and damage > 0:

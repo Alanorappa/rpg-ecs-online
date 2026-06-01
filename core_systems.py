@@ -137,8 +137,13 @@ class StatusEffectSystem:
                 if slow:
                     tm.slow_mult = slow.magnitude if 0.0 < slow.magnitude < 1.0 else 0.5
                 else:
-                    tm.slow_mult          = 1.0
-                    tm.debilitate_elapsed = 0.0
+                    # Só reseta para 1.0 em entidades com CombatStats (offline/local).
+                    # Mobs online (sem CombatStats no cliente) têm slow_mult gerenciado
+                    # por _apply_combat_result — não resetar aqui evita override.
+                    from components import CombatStats as _CS_slow
+                    if self.world.get_component(eid, _CS_slow) is not None:
+                        tm.slow_mult          = 1.0
+                        tm.debilitate_elapsed = 0.0
 
             # Sincroniza is_rooted
             cst = self.world.get_component(eid, CombatState)
