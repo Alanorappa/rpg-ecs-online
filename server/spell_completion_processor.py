@@ -94,13 +94,19 @@ class SpellCompletionMixin:
                 eff_now  = set(_sfx2.effects.keys()) if _sfx2 else set()
                 applied  = list(eff_now - sfx_before.get(mob_eid, set()))
                 if damage > 0 or applied:
-                    results.append({
+                    _res = {
                         "eid":             mob_eid,
                         "damage":          damage,
                         "outcome":         "hit",
                         "hp_after":        hp_after,
                         "applied_effects": applied,
-                    })
+                    }
+                    # Sincroniza slow_mult ao cliente para evitar desync visual do mob
+                    if _sfx2:
+                        _slow_eff = _sfx2.get("slow")
+                        if _slow_eff:
+                            _res["mob_slow_mult"] = _slow_eff.magnitude
+                    results.append(_res)
 
             # SKILL_RESULT da conclusão do cast — toca som e aplica cooldown (GCD já foi).
             skill_entry: dict = {
@@ -195,13 +201,18 @@ class SpellCompletionMixin:
             eff_now  = set(_sfx2.effects.keys()) if _sfx2 else set()
             applied  = list(eff_now - sfx_before.get(mob_eid, set()))
             if damage > 0 or applied:
-                results.append({
+                _res2 = {
                     "eid":             mob_eid,
                     "damage":          damage,
                     "outcome":         "hit",
                     "hp_after":        hp_after,
                     "applied_effects": applied,
-                })
+                }
+                if _sfx2:
+                    _slow2 = _sfx2.get("slow")
+                    if _slow2:
+                        _res2["mob_slow_mult"] = _slow2.magnitude
+                results.append(_res2)
 
         char = self.world.get_component(player_eid, _CHS)
         skill_entry: dict = {

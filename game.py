@@ -3753,6 +3753,14 @@ class GameEngine:
             if hp_after >= 0:
                 _, hp_max = self._mob_hp.get(server_target, (hp_after, hp_after))
                 self._mob_hp[server_target] = (hp_after, hp_max)
+            # Sincroniza slow_mult: sem isso o cliente anima o mob em velocidade normal
+            # enquanto o servidor já aplicou slow (Exaustão), causando desync visual.
+            _mob_slow_mult = cr.get("mob_slow_mult")
+            if _mob_slow_mult is not None:
+                from components import TileMovement as _TM_cr
+                _tm_cr = self.world.get_component(local_eid, _TM_cr)
+                if _tm_cr:
+                    _tm_cr.slow_mult = max(0.05, float(_mob_slow_mult))
             _mob_snd = self.world.get_component(local_eid, _MobSounds)
             pos = self.world.get_component(local_eid, Position)
             if pos and damage > 0:
