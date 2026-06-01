@@ -152,8 +152,8 @@ def apply_char_stats_to_combat(char_stats: CharacterStats,
 
     combat_stats._recalculate_effective_stats()
 
-    # ── Mana: INT×10 ──────────────────────────────────────────────────────────
-    new_max_mana = 100 + total_int * 10
+    # ── Mana: INT×15 ──────────────────────────────────────────────────────────
+    new_max_mana = 150 + total_int * 15
     if char_stats.max_mana != new_max_mana:
         if char_stats.max_mana == 0:
             char_stats.mana = new_max_mana

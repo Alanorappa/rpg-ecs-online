@@ -6026,6 +6026,7 @@ class SkillSystem(System, SkillHandlers):
             # Chama Interna: proc ativo → BdF instantânea, sem barra de cast
             if skill.skill_id == "bola_de_fogo" and _char and getattr(_char, "fire_instant_ready", False):
                 _sc_cast = 0.0
+                _char.fire_instant_ready = False  # consome proc (servidor já consumiu a sua cópia)
             if _sc_cast > 0.0:
                 from skill_config import SKILL_CATALOG as _SC_int
                 _skill_cat = _SC_int.get(skill.skill_id, {})

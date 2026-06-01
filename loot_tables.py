@@ -130,7 +130,7 @@ _T = {
 
     "mystic_staff": lambda: Item(
         "Cajado Místico", "weapon", "mainhand",
-        modifiers=[Modifier("spell_power", 22), Modifier("stamina", 5)],
+        modifiers=[Modifier("spell_power", 22), Modifier("stamina", 5), Modifier("crit_rating", 0.5)],
         rarity="rare", value=80,
         damage_min=18, damage_max=34, attack_speed=2.3, two_handed=True, subtype="Staff"),
 

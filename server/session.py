@@ -316,9 +316,16 @@ class SessionManager:
         if not sid:
             return
         player_eid = self.world_server.get_entity_id(session.session_id)
-        # Remove entradas pendentes deste player/spell
+        # Remove entradas pendentes (timer ainda correndo)
         self.world_server._pending_spell_completions = [
             e for e in self.world_server._pending_spell_completions
+            if not (e["player_eid"] == player_eid and e["spell_id"] == sid)
+        ]
+        # Remove entradas já em voo (timer expirou, aguardando PROJECTILE_HIT_CS).
+        # Sem isso, cast cancelado no último frame ainda causa dano quando o projétil
+        # visual (criado por is_completion) chega ao alvo e envia PROJECTILE_HIT_CS.
+        self.world_server._spells_in_flight_queue = [
+            e for e in self.world_server._spells_in_flight_queue
             if not (e["player_eid"] == player_eid and e["spell_id"] == sid)
         ]
 

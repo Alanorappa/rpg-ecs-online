@@ -132,6 +132,10 @@ class GameEngine:
         # Preenchido no SKILL_RESULT is_completion quando projétil ainda não existe.
         # Processado após os sistemas atualizarem (SpellCastSystem cria o projétil).
         self._bdf_pending: list[dict] = []
+        # IDs de skills cujo cast foi cancelado localmente (movimento).
+        # Usado para ignorar is_completion tardio do servidor quando o cast
+        # já foi cancelado no cliente — evita projétil fantasma.
+        self._cancelled_spell_ids: set[str] = set()
         # Último alvo enviado ao servidor (evita reenvios desnecessários)
         self._net_last_target: int = -2
         # Última posição enviada ao servidor (evita envios duplicados)
@@ -632,6 +636,9 @@ class GameEngine:
         if not self._loading_save:
             save_game(self.world, self.player_entity, self._current_map_file, self._save_slot)
             self._save_config()  # sincroniza layout da hotbar com o save do jogo
+            # Online: sincroniza com servidor imediatamente para não perder dados em crashes.
+            # Sem isso, compras no treinador (skills, etc.) só chegam ao DB no fechamento normal.
+            self._send_save_state()
 
     # ------------------------------------------------------------------
     # Validação de ordem de sistemas
@@ -1348,6 +1355,7 @@ class GameEngine:
                 from shared.messages import MsgType as _MT_cc
                 for _cc_sid in self._spell_cast_system.interrupted_visual_casts:
                     self._net.send(_MT_cc.CANCEL_CAST, {"sid": _cc_sid})
+                    self._cancelled_spell_ids.add(_cc_sid)
                 self._spell_cast_system.interrupted_visual_casts.clear()
 
             # Sincronização online: movimento + alvo de combate + fila de mobs
@@ -3065,10 +3073,11 @@ class GameEngine:
                 _sk_entry  = _SC_snd.get(sid, {})
                 _snd_name  = (_sk_entry.get("sound") if isinstance(_sk_entry, dict) else None) or f"skill_{sid}"
                 if caster_eid == self._my_eid:
-                    _failed_sr = payload.get("failed", False)
-                    _ps_sr     = self.world.get_component(self.player_entity, PlayerSkills)
+                    _failed_sr     = payload.get("failed",        False)
+                    _ps_sr         = self.world.get_component(self.player_entity, PlayerSkills)
                     _cast_started  = payload.get("cast_started",  False)
                     _is_completion = payload.get("is_completion", False)
+                    _is_proj_dmg   = payload.get("is_proj_damage", False)
                     if _failed_sr:
                         # Servidor rejeitou: limpa pending e restaura carga consumida
                         if _ps_sr:
@@ -3089,6 +3098,8 @@ class GameEngine:
                     elif _cast_started:
                         # Cast com tempo aceito pelo servidor: só GCD + limpa pending.
                         # Som e cooldown chegam no is_completion quando a spell realmente dispara.
+                        # Novo cast aceito: limpa flag de cancelamento anterior desta spell.
+                        self._cancelled_spell_ids.discard(sid)
                         if _ps_sr:
                             _ps_sr.gcd_timer = PlayerSkills.GCD_DURATION
                             for _sk_sr in _ps_sr.skills:
@@ -3105,6 +3116,8 @@ class GameEngine:
                                     _sk_sr._server_pending         = False
                                     _sk_sr._server_pending_timeout = 0.0
                                     _sk_sr.current_cooldown = float(_srv_cd) if _srv_cd is not None else _sk_sr.cooldown
+                    elif _is_proj_dmg:
+                        pass  # só mostra dano — GCD/CD/som já foram em cast_started/is_completion
                     else:
                         # Skill instantânea: GCD + cooldown + som tudo junto (como offline).
                         SOUNDS.play_skill(_snd_name)
@@ -3158,6 +3171,23 @@ class GameEngine:
                                 (255, 160, 60))
                     PROC.add("Chama Interna!", (255, 160, 60))
 
+            if caster_eid == self._my_eid and payload.get("lapso_proc"):
+                _lp = payload["lapso_proc"]
+                _lp_bonus = float(_lp.get("bonus", 0.0))
+                _lp_dur   = float(_lp.get("duration", 5.0))
+                if _lp_bonus > 0:
+                    from components import CombatStats as _CSlp
+                    from components import Modifier as _Modlp
+                    from stat_fns import add_timed_modifier as _atm_lp
+                    _cs_lp = self.world.get_component(self.player_entity, _CSlp)
+                    if _cs_lp:
+                        _atm_lp(_cs_lp, _Modlp("crit_rating", _lp_bonus, "flat"),
+                                _lp_dur, "lapso_elemental")
+                    from combat_log import LOG as _LOG_lp
+                    _LOG_lp.add(f"Lapso Elemental: +{int(_lp_bonus*100)}% Critico por {_lp_dur:.0f}s!",
+                                (255, 180, 50))
+                    PROC.add("Lapso Elemental!", (255, 180, 50))
+
             # BdF is_completion: servidor envia projectile_target → cria projétil aqui.
             # is_proj_damage: dano confirmado após PROJECTILE_HIT_CS → mostra números.
             _bdf_deferred: set = set()
@@ -3167,19 +3197,25 @@ class GameEngine:
                 _is_pdmg  = payload.get("is_proj_damage", False)
 
                 if _is_compl:
-                    # Cria projétil — alvo existe antes do ENTITY_DESPAWN
-                    _proj_srv = payload.get("projectile_target", -1)
-                    _proj_loc = self._remote_mobs.get(_proj_srv, -1) if _proj_srv != -1 else -1
-                    if _proj_loc != -1:
-                        self._spell_cast_system._launch_fireball(self.player_entity, _proj_loc)
-                        for _peid, _pp, _ in self.world.get_entities_with(_PPcomp, _PPpos2):
-                            if (_pp.attacker_id == self.player_entity
-                                    and _pp.target_id == _proj_loc
-                                    and _pp.target_server_id == -1):
-                                _pp.target_server_id = _proj_srv
-                                break
-                    if _proj_srv != -1:
-                        _bdf_deferred.add(_proj_srv)
+                    # Cast foi cancelado localmente? Ignora is_completion tardio do servidor.
+                    # O servidor também removeu a entrada de _spells_in_flight_queue ao
+                    # receber CANCEL_CAST, então nenhum dano seria aplicado de qualquer forma.
+                    if sid in self._cancelled_spell_ids:
+                        self._cancelled_spell_ids.discard(sid)
+                    else:
+                        # Cria projétil — alvo existe antes do ENTITY_DESPAWN
+                        _proj_srv = payload.get("projectile_target", -1)
+                        _proj_loc = self._remote_mobs.get(_proj_srv, -1) if _proj_srv != -1 else -1
+                        if _proj_loc != -1:
+                            self._spell_cast_system._launch_fireball(self.player_entity, _proj_loc)
+                            for _peid, _pp, _ in self.world.get_entities_with(_PPcomp, _PPpos2):
+                                if (_pp.attacker_id == self.player_entity
+                                        and _pp.target_id == _proj_loc
+                                        and _pp.target_server_id == -1):
+                                    _pp.target_server_id = _proj_srv
+                                    break
+                        if _proj_srv != -1:
+                            _bdf_deferred.add(_proj_srv)
 
                 elif _is_pdmg:
                     # Dano confirmado após projétil colidir → mostra números

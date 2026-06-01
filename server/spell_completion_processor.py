@@ -180,6 +180,8 @@ class SpellCompletionMixin:
             _sfx = self.world.get_component(mob_eid, _SFX)
             sfx_before[mob_eid] = set(_sfx.effects.keys()) if _sfx else set()
 
+        self._last_proj_spell_is_crit = False
+        self._last_proj_lapso_proc    = None
         try:
             fn(player_eid, target_id, entry["entry"])
         except Exception as _err:
@@ -187,6 +189,9 @@ class SpellCompletionMixin:
             print(f"[ProjHit] ERRO {spell_id}: {_err}")
             traceback.print_exc()
             return
+
+        _proj_is_crit  = getattr(self, "_last_proj_spell_is_crit", False)
+        _lapso_proc    = getattr(self, "_last_proj_lapso_proc",    None)
 
         # Coleta dano
         results = []
@@ -204,7 +209,7 @@ class SpellCompletionMixin:
                 _res2 = {
                     "eid":             mob_eid,
                     "damage":          damage,
-                    "outcome":         "hit",
+                    "outcome":         "crit" if _proj_is_crit else "hit",
                     "hp_after":        hp_after,
                     "applied_effects": applied,
                 }
@@ -225,6 +230,8 @@ class SpellCompletionMixin:
         }
         if char and getattr(char, "fire_instant_ready", False):
             skill_entry["fire_instant_proc"] = True
+        if _lapso_proc:
+            skill_entry["lapso_proc"] = _lapso_proc
 
         self._skill_results_this_tick.append(skill_entry)
 
@@ -451,6 +458,7 @@ class SpellCompletionMixin:
                 if _sfx and _sfx.has("root"):
                     final_dmg = int(final_dmg * 2.0)
 
+        self._last_proj_spell_is_crit = is_crit
         self._server_apply_magic_damage(player_eid, target_id, final_dmg, is_crit)
 
         # Queimaduras Profundas
@@ -471,6 +479,8 @@ class SpellCompletionMixin:
                 from components import Modifier
                 from stat_fns import add_timed_modifier
                 add_timed_modifier(player_cs, Modifier("crit_rating", _lapse, "flat"), 5.0, "lapso_elemental")
+                # Notifica o cliente para aplicar o modificador visual e mostrar PROC
+                self._last_proj_lapso_proc = {"bonus": _lapse, "duration": 5.0}
 
         # Exaustão: slow progressivo por BdF consecutiva
         if player_cs and getattr(player_cs, "fire_exhaustion_enabled", False):

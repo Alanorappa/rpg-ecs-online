@@ -454,6 +454,6 @@ SKILL_ORDER_BY_CLASS: dict[str, list] = {
 # Chave = class_id, valor = lista de skill_ids iniciais.
 INITIAL_SKILLS_BY_CLASS: dict[str, list] = {
     "guerreiro": [],
-    "mago":      [],
+    "mago":      ["bola_de_fogo", "nova_congelante", "polimorfia", "bloco_de_gelo"],
     "arqueiro":  ["recarregar", "cancao_ninar", "picada_escorpiao", "flecha_reiterada"],
 }

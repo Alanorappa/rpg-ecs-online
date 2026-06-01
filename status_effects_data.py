@@ -30,7 +30,7 @@ EFFECT_DEFS: dict[str, EffectDef] = {
     # ── Debuffs de dano periódico (DoT) ─────────────────────────────────────
     "poison": EffectDef("Veneno",       ( 80, 200,  40), False, 1.0),
     "bleed":  EffectDef("Sangramento",  (200,  30,  30), False, 1.0),
-    "burn":   EffectDef("Queimadura",   (255, 120,   0), False, 1.0),
+    "burn":   EffectDef("Queimadura",   (255, 120,   0), False, 3.0),
     # ── Buffs ────────────────────────────────────────────────────────────────
     "enraged":         EffectDef("Enfurecido",      (255,  80,   0), True,  0.0),
     "elemental_lapse": EffectDef("Lapso Elemental", (255, 100, 200), False, 1.0),  # tick: auto-burn

@@ -1865,11 +1865,15 @@ class PirofagiaSystem(System):
         # ── Modo online: delega ao servidor, aplica apenas feedback local ──────
         if self._net:
             from shared.messages import MsgType as _MT2
+            from components import CharacterStats as _CSfc
+            _char_fc = self.world.get_component(entity_id, _CSfc)
             self._net.send(_MT2.CAST_SKILL, {
                 "sid":   "pirofagia",
                 "tid":   -1,
                 "dir_x": dir_x,
                 "dir_y": dir_y,
+                "rage":  getattr(_char_fc, "rage", 0),
+                "mana":  getattr(_char_fc, "mana", 0),
             })
             # Feedback visual/sonoro imediato — servidor confirma dano via SKILL_RESULT
             SOUNDS.play_skill("skill_pirofagia")
