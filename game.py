@@ -1099,6 +1099,12 @@ class GameEngine:
             # _process_network é chamado APÓS o flip para garantir que ao menos
             # um frame de loading seja renderizado antes de LOGIN_OK ser processado
             # (em localhost o pacote chega antes do primeiro frame).
+            _reconnecting = bool(self._net and getattr(self._net, "reconnecting", False))
+            if _reconnecting and self._server_ready:
+                # Perda de conexão após login bem-sucedido: volta para loading screen
+                self._server_ready  = False
+                self._loading_min_t = 0.0
+                self._loading_timeout = 30.0
             _in_loading = (not self._server_ready) or (self._loading_min_t > 0)
             if _in_loading:
                 self._loading_timeout -= dt
@@ -2853,6 +2859,8 @@ class GameEngine:
         # Status
         if self._net and self._net.connected:
             msg = f"Carregando personagem{dots}"
+        elif self._net and getattr(self._net, "reconnecting", False):
+            msg = f"Reconectando{dots}"
         else:
             msg = f"Conectando ao servidor{dots}"
         _status = self.font_sm.render(msg, True, (150, 130, 70))
@@ -3271,15 +3279,17 @@ class GameEngine:
                         _tname = _ident_sr.name if _ident_sr else "Alvo"
                     else:
                         _tname = "Alvo"
+                    _eff_durs_sr = t.get("effect_durations", {})
                     for _ef in _ae:
                         _defn_sr = _EDEFS_sr.get(_ef)
                         _elabel  = _defn_sr.label if _defn_sr else _ef
                         LOG.add(f"{_tname} recebeu: {_elabel}!", (255, 200, 80))
-                        # Aplica efeito no mob local para sincronizar visual imediatamente.
+                        # Aplica efeito no mob local com a duração real enviada pelo servidor.
                         # Root: para interpolação do tile, evitando snapback de 1 tile.
                         # Slow: gerenciado via mob_slow_mult em _apply_combat_result — pular.
                         if _t_local is not None and _ef not in ("slow",):
-                            _ae_apply(self.world, _t_local, _ef, 5.0)
+                            _dur_sr = _eff_durs_sr.get(_ef, 5.0)
+                            _ae_apply(self.world, _t_local, _ef, _dur_sr)
 
         elif msg_type == MsgType.ENTITY_DESPAWN:
             eid = payload.get("eid", -1)

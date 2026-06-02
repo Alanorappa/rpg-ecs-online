@@ -9,11 +9,14 @@ Fluxo:
   4. Resultado adicionado a _skill_results_this_tick → enviado pelo session.py
 """
 from __future__ import annotations
-import math
 import random
 
 
 class SpellCompletionMixin:
+
+    # Resultado de crit do último _server_apply_magic_damage com roll_crit=True.
+    # Resetado antes de cada handler; lido pela coleta de resultados.
+    _last_magic_is_crit: bool = False
 
     def _process_spell_cast_completions(self, dt: float) -> None:
         """Avança timers de spells pendentes e dispara efeitos quando concluídas."""
@@ -71,6 +74,7 @@ class SpellCompletionMixin:
                         f"target_alive={_tcs_pre is not None and _tcs_pre.current_hp > 0} "
                         f"mobs_tracked={len(self._mob_eids)}")
                 if fn:
+                    self._last_magic_is_crit = False
                     try:
                         fn(player_eid, target_id, entry)
                     except Exception as _err:
@@ -97,10 +101,15 @@ class SpellCompletionMixin:
                     _res = {
                         "eid":             mob_eid,
                         "damage":          damage,
-                        "outcome":         "hit",
+                        "outcome":         "crit" if self._last_magic_is_crit else "hit",
                         "hp_after":        hp_after,
                         "applied_effects": applied,
                     }
+                    if applied and _sfx2:
+                        _res["effect_durations"] = {
+                            ef: round(_sfx2.effects[ef].duration, 2)
+                            for ef in applied if ef in _sfx2.effects
+                        }
                     # Sincroniza slow_mult ao cliente para evitar desync visual do mob
                     if _sfx2:
                         _slow_eff = _sfx2.get("slow")
@@ -127,7 +136,6 @@ class SpellCompletionMixin:
             self._skill_results_this_tick.append(skill_entry)
 
             # Sincroniza mana ao cliente
-            _cs_after = self.world.get_component(player_eid, _CS)
             if char:
                 self._pending_xp_deliveries.append({
                     "player_eid": player_eid,
@@ -180,8 +188,7 @@ class SpellCompletionMixin:
             _sfx = self.world.get_component(mob_eid, _SFX)
             sfx_before[mob_eid] = set(_sfx.effects.keys()) if _sfx else set()
 
-        self._last_proj_spell_is_crit = False
-        self._last_proj_lapso_proc    = None
+        self._proj_spell_result = {"is_crit": False, "lapso_proc": None}
         try:
             fn(player_eid, target_id, entry["entry"])
         except Exception as _err:
@@ -190,8 +197,8 @@ class SpellCompletionMixin:
             traceback.print_exc()
             return
 
-        _proj_is_crit  = getattr(self, "_last_proj_spell_is_crit", False)
-        _lapso_proc    = getattr(self, "_last_proj_lapso_proc",    None)
+        _proj_is_crit  = self._proj_spell_result["is_crit"]
+        _lapso_proc    = self._proj_spell_result["lapso_proc"]
 
         # Coleta dano
         results = []
@@ -213,6 +220,11 @@ class SpellCompletionMixin:
                     "hp_after":        hp_after,
                     "applied_effects": applied,
                 }
+                if applied and _sfx2:
+                    _res2["effect_durations"] = {
+                        ef: round(_sfx2.effects[ef].duration, 2)
+                        for ef in applied if ef in _sfx2.effects
+                    }
                 if _sfx2:
                     _slow2 = _sfx2.get("slow")
                     if _slow2:
@@ -367,8 +379,13 @@ class SpellCompletionMixin:
         return _sd(self.world, player_eid, dmg_weapon_pct, sp_coeff)
 
     def _server_apply_magic_damage(self, attacker_id: int, target_id: int,
-                                   dmg: int, is_crit: bool = False) -> bool:
-        """Aplica dano mágico server-side (sem FLT/WARN/pygame)."""
+                                   dmg: int, is_crit: bool = False,
+                                   roll_crit: bool = False) -> bool:
+        """Aplica dano mágico server-side (sem FLT/WARN/pygame).
+
+        roll_crit=True: calcula crit internamente usando CombatStats do atacante.
+        Retorna is_crit via self._last_magic_is_crit para coleta de resultados.
+        """
         from components import (CombatStats, CombatState, AIControlled,
                                 MobSounds, PendingDeath, StatusEffects)
         from stat_fns import enter_combat
@@ -379,6 +396,16 @@ class SpellCompletionMixin:
         target_state = self.world.get_component(target_id, CombatState)
         if target_state and target_state.is_immune:
             return False
+
+        if roll_crit:
+            from damage_calculator import resolve_attack_outcome, CRITICAL_DAMAGE_MULTIPLIER
+            attacker_cs = self.world.get_component(attacker_id, CombatStats)
+            if attacker_cs:
+                outcome, _ = resolve_attack_outcome(attacker_cs, target_cs, "magical")
+                is_crit = (outcome == "crit")
+                if is_crit:
+                    dmg = int(dmg * CRITICAL_DAMAGE_MULTIPLIER)
+        self._last_magic_is_crit = is_crit
 
         target_cs.current_hp -= dmg  # sem clamp — overkill negativo preserva dano real
 
@@ -450,7 +477,7 @@ class SpellCompletionMixin:
                 if _sfx and _sfx.has("root"):
                     final_dmg = int(final_dmg * 2.0)
 
-        self._last_proj_spell_is_crit = is_crit
+        self._proj_spell_result["is_crit"] = is_crit
         self._server_apply_magic_damage(player_eid, target_id, final_dmg, is_crit)
 
         # Queimaduras Profundas
@@ -472,7 +499,7 @@ class SpellCompletionMixin:
                 from stat_fns import add_timed_modifier
                 add_timed_modifier(player_cs, Modifier("crit_rating", _lapse, "flat"), 5.0, "lapso_elemental")
                 # Notifica o cliente para aplicar o modificador visual e mostrar PROC
-                self._last_proj_lapso_proc = {"bonus": _lapse, "duration": 5.0}
+                self._proj_spell_result["lapso_proc"] = {"bonus": _lapse, "duration": 5.0}
 
         # Exaustão: slow progressivo por BdF consecutiva
         if player_cs and getattr(player_cs, "fire_exhaustion_enabled", False):
@@ -535,7 +562,7 @@ class SpellCompletionMixin:
                 if _sfx and _sfx.has("root"):
                     base_dmg = int(base_dmg * 2.0)
 
-        self._server_apply_magic_damage(player_eid, target_id, base_dmg)
+        self._server_apply_magic_damage(player_eid, target_id, base_dmg, roll_crit=True)
 
         # Chama Interna: proc após hit de fogo
         if player_cs and char_stats:
@@ -570,11 +597,13 @@ class SpellCompletionMixin:
                 continue
             dmg = max(1, int(sp * _coef))
             self._server_apply_magic_damage(player_eid, eid, dmg)
-            apply_effect(self.world, eid, "root", 5.0)
+            _root_dur = _nc.get("effect_durations", {}).get("root", 5.0)
+            apply_effect(self.world, eid, "root", _root_dur)
 
     def _server_polimorfia(self, player_eid: int, target_id: int, entry: dict) -> None:
         from components import CombatStats, CombatState
         from systems import apply_effect
+        from skill_config import SKILL_CATALOG as _SC_poly
 
         if target_id == -1:
             return
@@ -582,8 +611,9 @@ class SpellCompletionMixin:
         if not target_cs or target_cs.current_hp <= 0:
             return
 
+        _poly_dur = _SC_poly.get("polimorfia", {}).get("effect_durations", {}).get("polymorph", 6.0)
         regen_per_tick = max(1, int(target_cs.max_hp * 0.10))
-        apply_effect(self.world, target_id, "polymorph", duration=6.0, magnitude=regen_per_tick)
+        apply_effect(self.world, target_id, "polymorph", duration=_poly_dur, magnitude=regen_per_tick)
 
         attacker_state = self.world.get_component(player_eid, CombatState)
         if attacker_state:

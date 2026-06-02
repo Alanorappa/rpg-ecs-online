@@ -17,11 +17,18 @@ from typing import Callable
 from shared.messages  import MsgType, encode, decode
 from shared.constants import SERVER_HOST, SERVER_PORT, PROTOCOL_VERSION
 
+# Backoff exponencial para reconnect: 1s → 2s → 4s → 8s → … até MAX
+_RECONNECT_INITIAL_DELAY = 1.0
+_RECONNECT_MAX_DELAY     = 30.0
+
 
 class NetworkClient:
     """
     Roda o WebSocket em uma thread separada (asyncio loop próprio).
     O game loop Pygame interage via inbox/outbox thread-safe.
+
+    Reconexão automática: ao perder a conexão, tenta reconectar com
+    backoff exponencial (1s → 2s → 4s → … → 30s).
     """
 
     def __init__(self, host: str = SERVER_HOST, port: int = SERVER_PORT):
@@ -32,10 +39,18 @@ class NetworkClient:
         self.inbox:  queue.Queue = queue.Queue()   # (MsgType, payload, seq, ts)
         self.outbox: queue.Queue = queue.Queue()   # (MsgType, payload)
 
-        self.connected    = False
-        self.latency_ms   = 0      # RTT mais recente
-        self._seq         = 0
-        self._ping_ts     = 0
+        self.connected      = False
+        self.reconnecting   = False   # True entre tentativas de reconexão
+        self.latency_ms     = 0       # RTT mais recente
+        self._seq           = 0
+        self._ping_ts       = 0
+        self._stop          = False   # True = encerrar permanentemente
+
+        # Credenciais para re-login automático após reconnect
+        self._login_username: str = ""
+        self._login_password_hash: str = ""
+        self._login_ap: float  = 0.0
+        self._login_max_hp: int = 0
 
         self._thread: threading.Thread | None = None
         self._loop:   asyncio.AbstractEventLoop | None = None
@@ -45,6 +60,7 @@ class NetworkClient:
 
     def connect(self) -> None:
         """Inicia a thread de rede. Não bloqueia o game loop."""
+        self._stop  = False
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
 
@@ -66,7 +82,8 @@ class NetworkClient:
         return messages
 
     def disconnect(self) -> None:
-        """Encerra a conexão e a thread de rede."""
+        """Encerra a conexão permanentemente (sem reconnect)."""
+        self._stop = True
         if self._loop:
             asyncio.run_coroutine_threadsafe(self._close(), self._loop)
 
@@ -75,12 +92,17 @@ class NetworkClient:
         """Envia LOGIN com stats reais do personagem para o servidor usar."""
         import hashlib
         ph = hashlib.sha256(password.encode()).hexdigest()
+        # Guarda credenciais para re-login automático após reconnect
+        self._login_username      = username
+        self._login_password_hash = ph
+        self._login_ap            = ap
+        self._login_max_hp        = max_hp
         self.send(MsgType.LOGIN, {
             "username": username,
             "password": ph,
             "version":  PROTOCOL_VERSION,
-            "ap":       ap,       # attack_power real do cliente
-            "max_hp":   max_hp,   # max_hp real do cliente
+            "ap":       ap,
+            "max_hp":   max_hp,
         })
 
     def move(self, tx: int, ty: int) -> None:
@@ -105,29 +127,58 @@ class NetworkClient:
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         try:
-            self._loop.run_until_complete(self._connect_and_run())
+            self._loop.run_until_complete(self._connect_with_retry())
         finally:
             self._loop.close()
+
+    async def _connect_with_retry(self) -> None:
+        """Loop de conexão com backoff exponencial. Para quando _stop=True."""
+        delay = _RECONNECT_INITIAL_DELAY
+        first = True
+        while not self._stop:
+            if not first:
+                self.reconnecting = True
+                print(f"[Network] tentando reconectar em {delay:.0f}s…")
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, _RECONNECT_MAX_DELAY)
+            first = False
+
+            try:
+                await self._connect_and_run()
+                delay = _RECONNECT_INITIAL_DELAY   # reconectou com sucesso → reseta backoff
+            except Exception as e:
+                if not self._stop:
+                    print(f"[Network] erro de conexão: {e}")
+
+        self.reconnecting = False
 
     async def _connect_and_run(self) -> None:
         import websockets
         uri = f"ws://{self.host}:{self.port}"
         print(f"[Network] conectando em {uri}")
-        try:
-            async with websockets.connect(uri) as ws:
-                self._ws       = ws
-                self.connected = True
-                print("[Network] conectado.")
+        async with websockets.connect(uri) as ws:
+            self._ws        = ws
+            self.connected  = True
+            self.reconnecting = False
+            print("[Network] conectado.")
+            # Se há credenciais salvas, faz re-login automaticamente
+            if self._login_username:
+                self.send(MsgType.LOGIN, {
+                    "username": self._login_username,
+                    "password": self._login_password_hash,
+                    "version":  PROTOCOL_VERSION,
+                    "ap":       self._login_ap,
+                    "max_hp":   self._login_max_hp,
+                })
+            try:
                 await asyncio.gather(
                     self._recv_loop(ws),
                     self._send_loop(ws),
                     self._ping_loop(),
                 )
-        except Exception as e:
-            print(f"[Network] erro de conexão: {e}")
-        finally:
-            self.connected = False
-            print("[Network] desconectado.")
+            finally:
+                self.connected = False
+                print("[Network] desconectado.")
 
     async def _recv_loop(self, ws) -> None:
         """Recebe mensagens do servidor e coloca na inbox."""

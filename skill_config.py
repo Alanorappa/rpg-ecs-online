@@ -192,6 +192,7 @@ SKILL_CATALOG: dict[str, dict] = {
         "class_id":         "mago",
         "school":           "gelo",
         "sound":            "skill_nova_congelante_impact",
+        "effect_durations": {"root": 5.0},
     },
     "bloco_de_gelo": {
         "name":             "Bloco de Gelo",
@@ -216,6 +217,7 @@ SKILL_CATALOG: dict[str, dict] = {
         "class_id":         "mago",
         "school":           "arcano",
         "offensive":        False,
+        "effect_durations": {"polymorph": 6.0},
     },
 
     # ── Mago — skills de talento (build Piromania) ───────────────────────────
@@ -256,6 +258,11 @@ SKILL_CATALOG: dict[str, dict] = {
         "school":           "fogo",
         "offensive":        False,
         "needs_aoe_target": True,    # impede som automático no SkillSystem — som toca ao disparar
+        "params": {
+            "base_dmg":    150,
+            "sp_coeff":    1.50,
+        },
+        "effect_durations": {"disoriented": 3.0},
     },
 
     # ── Arqueiro ─────────────────────────────────────────────────────────────

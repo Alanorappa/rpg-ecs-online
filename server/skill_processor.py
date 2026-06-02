@@ -294,33 +294,27 @@ class SkillProcessorMixin:
                 _sfx_post  = self.world.get_component(mob_eid, _comp.StatusEffects)
                 _eff_after = set(_sfx_post.effects.keys()) if _sfx_post else set()
                 _applied   = list(_eff_after - effects_snapshot.get(mob_eid, set()))
+                # Duração real de cada efeito novo — lida do StatusEffects que o handler acabou de
+                # popular. Cliente usa isso para aplicar visualmente com o tempo correto.
+                _eff_durs  = {
+                    ef: round(_sfx_post.effects[ef].duration, 2)
+                    for ef in _applied
+                    if _sfx_post and ef in _sfx_post.effects
+                } if _applied else {}
+
+                def _make_result(outcome):
+                    r = {"eid": mob_eid, "damage": damage, "outcome": outcome,
+                         "hp_after": hp_after, "applied_effects": _applied}
+                    if _eff_durs:
+                        r["effect_durations"] = _eff_durs
+                    return r
 
                 if damage > 0:
-                    results_targets.append({
-                        "eid":             mob_eid,
-                        "damage":          damage,
-                        "outcome":         _skill_outcome,
-                        "hp_after":        hp_after,
-                        "applied_effects": _applied,
-                    })
+                    results_targets.append(_make_result(_skill_outcome))
                 elif mob_eid == tid and _skill_outcome in ("miss", "dodge", "parry", "block"):
-                    # Skill esquivada/aparada — inclui no resultado para cliente mostrar feedback
-                    results_targets.append({
-                        "eid":             mob_eid,
-                        "damage":          0,
-                        "outcome":         _skill_outcome,
-                        "hp_after":        hp_after,
-                        "applied_effects": _applied,
-                    })
+                    results_targets.append(_make_result(_skill_outcome))
                 elif _applied and mob_eid == tid:
-                    # Skill aplicou efeito sem dano (raro, ex: debuff puro)
-                    results_targets.append({
-                        "eid":             mob_eid,
-                        "damage":          0,
-                        "outcome":         "hit",
-                        "hp_after":        hp_after,
-                        "applied_effects": _applied,
-                    })
+                    results_targets.append(_make_result("hit"))
 
             # Registra CD server-side APENAS se handler teve sucesso.
             # Registra CD efetivo (com reduções de talento) para que a validação futura

@@ -868,9 +868,19 @@ class SkillHandlers:
                 if not self.world.get_component(eid, Enemy):
                     continue
                 if (etm.current_tile_x, etm.current_tile_y) in cone:
-                    dmg = max(1, 150 + int(combat_stats.spell_power * 1.50))
+                    from skill_config import SKILL_CATALOG as _SC_piro
+                    _piro_d = _SC_piro.get("pirofagia", {})
+                    _piro_p = _piro_d.get("params", {})
+                    _base = _piro_p.get("base_dmg", 150)
+                    _coef = _piro_p.get("sp_coeff", 1.50)
+                    _dis_dur = _piro_d.get("effect_durations", {}).get("disoriented", 3.0)
+                    dmg = max(1, _base + int(combat_stats.spell_power * _coef))
+                    # Em modo servidor: crit calculado via _server_apply_magic_damage (roll_crit).
+                    # Em modo cliente (offline): _apply_magic_damage não tem crit — usa-se o
+                    # PlayerProjectileSystem para skills com projétil, mas Pirofagia é cone direto.
+                    # TODO: adicionar crit offline para Pirofagia via resolve_attack_outcome.
                     _apply_magic_damage(self.player_entity_id, eid, dmg, self.world)
-                    apply_effect(self.world, eid, "disoriented", 3.0)
+                    apply_effect(self.world, eid, "disoriented", _dis_dur)
                     hit += 1
             if hit > 0:
                 LOG.add(f"Pirofagia! {hit} alvo(s) atingido(s).", (255, 100, 30))

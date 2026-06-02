@@ -1876,9 +1876,13 @@ class PirofagiaSystem(System):
             if not self.world.get_component(eid, Enemy):
                 continue
             if (etm.current_tile_x, etm.current_tile_y) in cone:
-                dmg = max(1, 150 + int(cs.spell_power * 1.50))
+                from skill_config import SKILL_CATALOG as _SC_piro2
+                _piro2d = _SC_piro2.get("pirofagia", {})
+                _piro2p = _piro2d.get("params", {})
+                _dis2   = _piro2d.get("effect_durations", {}).get("disoriented", 3.0)
+                dmg = max(1, _piro2p.get("base_dmg", 150) + int(cs.spell_power * _piro2p.get("sp_coeff", 1.50)))
                 _apply_magic_damage(entity_id, eid, dmg, self.world)
-                apply_effect(self.world, eid, "disoriented", 3.0)
+                apply_effect(self.world, eid, "disoriented", _dis2)
                 hit += 1
         if hit > 0:
             LOG.add(f"Pirofagia! {hit} alvo(s) atingido(s).", (255, 100, 30))
