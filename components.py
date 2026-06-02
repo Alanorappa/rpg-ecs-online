@@ -572,6 +572,8 @@ class CharacterStats:
         ("pnq_counter",           0),
         ("fatiador_timer",        0.0),
         ("fatiador_tick",         0.0),
+        ("fire_crit_counter",     0),
+        ("fire_crit_timer",       0.0),
         ("rage",                  0),
     )
 
@@ -907,6 +909,12 @@ class TileMovement:
     # 0,0 = não inicializado → fallback para current_tile.
     server_tile_x: int = 0
     server_tile_y: int = 0
+    # Campos injetados pelo skill_processor do servidor para comunicar direção/alvo AOE ao handler.
+    # Declarados aqui para evitar setattr dinâmico em dataclass (viola type safety).
+    _server_dir_x: float = 0.0   # direção X normalizada (Pirofagia, Tiro Múltiplo)
+    _server_dir_y: float = 0.0   # direção Y normalizada
+    _server_aoe_x: float = 0.0   # coordenada X world do alvo AOE (Calamidade Flamejante)
+    _server_aoe_y: float = 0.0   # coordenada Y world do alvo AOE
 
 
 @dataclass

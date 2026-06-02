@@ -28,16 +28,12 @@ Campos do catálogo:
   class_id          str    — classe que pode usar a skill (informativo)
   sound             str    — nome base do arquivo de som (opcional)
 """
-import pygame
-
 NUM_SLOTS = 10
 
 # Teclas padrão por índice de slot (K_1 … K_0)
-DEFAULT_KEYBINDS: list[int] = [
-    pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4,
-    pygame.K_5, pygame.K_6, pygame.K_7, pygame.K_8,
-    pygame.K_9, pygame.K_0,
-]
+# Valores inteiros diretos (pygame.K_1=49 … pygame.K_0=48) — sem depender de pygame aqui,
+# pois skill_config é importado pelo servidor para SKILL_CATALOG.
+DEFAULT_KEYBINDS: list[int] = [49, 50, 51, 52, 53, 54, 55, 56, 57, 48]
 
 # ---------------------------------------------------------------------------
 # Catálogo de skills — fonte única de dados para todas as skills do jogo

@@ -276,6 +276,11 @@ class SessionManager:
                 "from_tx": real_tx, "from_ty": real_ty,
             })
 
+    async def _handle_logout(self, session: Session, payload: dict, ts: int) -> None:
+        """Cliente pediu desconexão graciosa — salva e remove a sessão."""
+        if session.authenticated:
+            await self.on_disconnect(session.session_id)
+
     async def _handle_ping(self, session: Session, payload: dict, ts: int) -> None:
         await session.send(MsgType.PONG, {
             "client_ts": payload.get("client_ts", 0),
@@ -588,6 +593,7 @@ class SessionManager:
 
     _handlers = {
         MsgType.LOGIN:        _handle_login,
+        MsgType.LOGOUT:       _handle_logout,
         MsgType.MOVE:         _handle_move,
         MsgType.PING:         _handle_ping,
         MsgType.AUTO_ATTACK:  _handle_auto_attack,

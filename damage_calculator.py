@@ -135,3 +135,23 @@ def calculate_base_damage(attacker_stats, damage_type: str,
         total *= CRITICAL_DAMAGE_MULTIPLIER
 
     return max(0.0, total - block_reduction)
+
+
+def spell_damage(world, attacker_id: int, dmg_weapon_pct: float, sp_coeff: float) -> int:
+    """Dano de magia = dano_arma*pct + spell_power*coeff (mínimo 1).
+
+    Fonte única de verdade compartilhada entre spell_system (cliente/offline)
+    e spell_completion_processor (servidor). Elimina duplicação entre
+    _spell_damage() e _server_spell_damage().
+    """
+    from components import CombatStats, Equipment
+    cs = world.get_component(attacker_id, CombatStats)
+    eq = world.get_component(attacker_id, Equipment)
+    if not cs:
+        return 1
+    weapon_dmg = float(cs.base_physical_damage)
+    if eq:
+        wep = eq.slots.get("mainhand")
+        if wep and getattr(wep, "damage_min", 0) and getattr(wep, "damage_max", 0):
+            weapon_dmg = (wep.damage_min + wep.damage_max) / 2.0
+    return max(1, int(weapon_dmg * dmg_weapon_pct + cs.spell_power * sp_coeff))

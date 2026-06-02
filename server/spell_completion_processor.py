@@ -359,20 +359,12 @@ class SpellCompletionMixin:
                 cst.is_stunned = False
                 cst.is_immune  = False
 
-    # ── Dano de magia server-side (sem pygame) ───────────────────────────────
+    # ── Dano de magia server-side ────────────────────────────────────────────
 
     def _server_spell_damage(self, player_eid: int, dmg_weapon_pct: float, sp_coeff: float) -> int:
-        from components import CombatStats, Equipment
-        cs = self.world.get_component(player_eid, CombatStats)
-        eq = self.world.get_component(player_eid, Equipment)
-        if not cs:
-            return 1
-        weapon_dmg = float(cs.base_physical_damage)
-        if eq:
-            wep = eq.slots.get("mainhand")
-            if wep and getattr(wep, "damage_min", 0) and getattr(wep, "damage_max", 0):
-                weapon_dmg = (wep.damage_min + wep.damage_max) / 2.0
-        return max(1, int(weapon_dmg * dmg_weapon_pct + cs.spell_power * sp_coeff))
+        """Delega para damage_calculator.spell_damage — fonte única compartilhada."""
+        from damage_calculator import spell_damage as _sd
+        return _sd(self.world, player_eid, dmg_weapon_pct, sp_coeff)
 
     def _server_apply_magic_damage(self, attacker_id: int, target_id: int,
                                    dmg: int, is_crit: bool = False) -> bool:

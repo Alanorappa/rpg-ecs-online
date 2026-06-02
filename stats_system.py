@@ -5,8 +5,6 @@ Sistemas de progressão do personagem:
   - DeathRespawnSystem     : mecânica roguelike — acumula stats na morte e respawna
 """
 from __future__ import annotations
-import pygame
-
 from world import World
 from components import (
     CharacterStats, PermanentStats, CombatStats, CombatState,
@@ -309,13 +307,8 @@ class DeathRespawnSystem(System):
                  char_stats: CharacterStats) -> None:
         perm = self.world.get_component(entity_id, PermanentStats)
 
-        # Nenhum reset de level, atributos ou talentos — apenas restaura HP
-        char_stats.free_executar_charges = 0
-        char_stats.embalo_charges        = 0
-        char_stats.fire_instant_ready    = False
-        char_stats.thermal_shock_active  = False
-        char_stats.fatiador_timer        = 0.0
-        char_stats.fatiador_tick         = 0.0
+        # Nenhum reset de level, atributos ou talentos — apenas restaura HP + voláteis de combate
+        char_stats.reset_volatile()
         apply_char_stats_to_combat(char_stats, combat_stats, perm)
         combat_stats.current_hp = combat_stats.max_hp
         combat_stats.attack_cooldown_timer = 0.0

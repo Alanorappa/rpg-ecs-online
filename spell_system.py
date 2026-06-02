@@ -30,26 +30,13 @@ from combat_log import LOG
 from floating_text import FLT, WARN
 from sound_manager import SOUNDS
 from stat_fns import enter_combat
-from damage_calculator import resolve_attack_outcome, CRITICAL_DAMAGE_MULTIPLIER
+from damage_calculator import resolve_attack_outcome, CRITICAL_DAMAGE_MULTIPLIER, spell_damage as _spell_damage_fn
 
-
-# ---------------------------------------------------------------------------
-# Utilitário interno — cálculo de dano de magia
-# ---------------------------------------------------------------------------
 
 def _spell_damage(attacker_id: int, world: World,
                   dmg_weapon_pct: float, sp_coeff: float) -> int:
-    """Dano de magia = dano_arma*pct + spell_power*coeff (mínimo 1)."""
-    cs = world.get_component(attacker_id, CombatStats)
-    eq = world.get_component(attacker_id, Equipment)
-    if not cs:
-        return 1
-    weapon_dmg = float(cs.base_physical_damage)
-    if eq:
-        wep = eq.slots.get("mainhand")
-        if wep and wep.damage_min and wep.damage_max:
-            weapon_dmg = (wep.damage_min + wep.damage_max) / 2.0
-    return max(1, int(weapon_dmg * dmg_weapon_pct + cs.spell_power * sp_coeff))
+    """Wrapper para damage_calculator.spell_damage (fonte única)."""
+    return _spell_damage_fn(world, attacker_id, dmg_weapon_pct, sp_coeff)
 
 
 def _apply_magic_damage(attacker_id: int, target_id: int, dmg: int, world: World,
