@@ -1011,6 +1011,9 @@ class GameEngine:
         self._selected_inv_idx = -1
         self._show_talents    = False
         self._show_debug      = False
+        if self._show_habilidades:
+            self._show_habilidades = False
+            self._hab_drag_skill   = None
         if self._loot_system.open_corpse_id != -1:
             self._loot_system._close_modal()
         if self._shop_system.is_open:
@@ -1156,8 +1159,8 @@ class GameEngine:
                     if event.key == pygame.K_ESCAPE:
                         if not self._close_top_modal():
                             self._show_pause = True
-                    elif self._show_hotbar_editor or self._show_habilidades:
-                        pass   # modais abertos: bloqueia atalhos de menu
+                    elif self._show_hotbar_editor:
+                        pass   # editor de hotbar aberto: bloqueia atalhos de menu
                     elif event.key == pygame.K_F10:
                         self._close_all_modals()
                         self._god_mode.toggle()
@@ -1200,10 +1203,12 @@ class GameEngine:
                             self._quest_journal.open()
                     elif event.key == pygame.K_SPACE:
                         self._space_engage_online()
-                    elif event.key == pygame.K_h:
-                        self._show_habilidades = not self._show_habilidades
-                        self._hab_scroll       = 0
-                        self._hab_drag_skill   = None
+                    elif event.key == self._menu_keys.get("habilidades", pygame.K_h):
+                        already_open = self._show_habilidades
+                        self._close_all_modals()
+                        if not already_open:
+                            self._show_habilidades = True
+                            self._hab_scroll       = 0
                     elif event.key in (pygame.K_EQUALS, pygame.K_KP_PLUS) and not self._god_mode.active:
                         new_zoom = min(self._zoom_max, round(self._zoom + self._zoom_step, 10))
                         if new_zoom != self._zoom:
@@ -2605,7 +2610,8 @@ class GameEngine:
         # ── Menus ─────────────────────────────────────────────────────────
         draw_section("Menus")
         for label, mid in [("Inventário", "inventario"), ("Talentos", "talentos"),
-                            ("Mapa", "mapa"), ("Diário de Quests", "diario")]:
+                            ("Mapa", "mapa"), ("Diário de Quests", "diario"),
+                            ("Habilidades", "habilidades")]:
             draw_row(label, self._menu_keys.get(mid, 0), f"menu:{mid}")
 
         # ── Barra de Habilidades ──────────────────────────────────────────
