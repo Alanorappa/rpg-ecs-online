@@ -28,7 +28,11 @@ class CombatProcessorMixin:
 
             target_eid = cs.target_entity_id
             if target_eid not in self._mob_eids:
-                cs.target_entity_id = -1
+                # PvP: alvo pode ser outro jogador
+                if target_eid in self._player_eids.values() and getattr(self, "pvp_enabled", False):
+                    self._process_pvp_attack(player_eid, target_eid, session_id, dt)
+                else:
+                    cs.target_entity_id = -1
                 continue
 
             target_cs = self.world.get_component(target_eid, CombatStats)
@@ -197,3 +201,91 @@ class CombatProcessorMixin:
                 except Exception:
                     pass
                 self._handle_player_death(peid)
+
+    # ── PvP: player → player ──────────────────────────────────────────────────
+
+    def _process_pvp_attack(self, attacker_eid: int, victim_eid: int,
+                             session_id: str, dt: float) -> None:
+        """Auto-attack de player em outro player (PvP).
+
+        Mesma fórmula de dano do PvE (deal_damage → damage_calculator).
+        Resultado vai para _combat_this_tick → AOI_UPDATE para ambos.
+        Vítima recebe HP sync via _pending_xp_deliveries.
+        """
+        from systems import deal_damage
+        from components import CombatState, CombatStats, TileMovement, PendingDeath
+        from utils import chebyshev
+
+        # Validações
+        victim_cs = self.world.get_component(victim_eid, CombatStats)
+        if not victim_cs or victim_cs.current_hp <= 0:
+            return
+
+        attacker_tm = self.world.get_component(attacker_eid, TileMovement)
+        victim_tm   = self.world.get_component(victim_eid,   TileMovement)
+        if not attacker_tm or not victim_tm:
+            return
+
+        attacker_cs = self.world.get_component(attacker_eid, CombatStats)
+        attack_range = 7 if getattr(attacker_cs, "is_ranged", False) else 1
+        dist = chebyshev(attacker_tm.current_tile_x, attacker_tm.current_tile_y,
+                         victim_tm.current_tile_x,   victim_tm.current_tile_y)
+        if dist > attack_range:
+            return
+
+        # Cooldown compartilhado com PvE
+        timer = self._attack_timers.get(session_id, 0.0) - dt
+        if timer > 0:
+            self._attack_timers[session_id] = timer
+            return
+        interval = attacker_cs.attack_interval if attacker_cs else 2.0
+        self._attack_timers[session_id] = interval
+
+        # Aplica dano
+        hp_before      = victim_cs.current_hp
+        dead, _outcome = deal_damage(attacker_eid, victim_eid, "physical")
+        hp_real  = victim_cs.current_hp
+        hp_after = max(0, hp_real)
+        damage   = max(0, hp_before - hp_real)
+
+        # Enter combat no atacante
+        from stat_fns import enter_combat as _ec_pvp
+        attacker_cst = self.world.get_component(attacker_eid, CombatState)
+        if attacker_cst:
+            _ec_pvp(attacker_cst)
+
+        # COMBAT_RESULT → AOI_UPDATE para ambos os clientes
+        self._combat_this_tick.append({
+            "attacker": attacker_eid,
+            "target":   victim_eid,
+            "damage":   damage,
+            "outcome":  _outcome,
+            "hp_after": hp_after,
+            "source":   "auto",
+        })
+
+        # HP sync direto para a vítima (STATS_UPDATE individual)
+        from components import CharacterStats as _CSvic
+        vic_char = self.world.get_component(victim_eid, _CSvic)
+        self._pending_xp_deliveries.append({
+            "player_eid": victim_eid,
+            "xp":         0,
+            "mob_eid":    -1,
+            "rage":       vic_char.rage if vic_char else 0,
+            "hp":         hp_after,
+            "hp_max":     victim_cs.max_hp,
+        })
+
+        # Morte por PvP
+        if dead:
+            # Remove PendingDeath de deal_damage (handler de player é separado)
+            try:
+                self.world.remove_component(victim_eid, PendingDeath)
+            except Exception:
+                pass
+            self._handle_player_death(victim_eid)
+            # Ataque concluído — limpa alvo do atacante
+            attacker_cst2 = self.world.get_component(attacker_eid, CombatState)
+            if attacker_cst2:
+                attacker_cst2.target_entity_id = -1
+            self._attack_timers.pop(session_id, None)

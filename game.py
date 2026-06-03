@@ -4125,7 +4125,15 @@ class GameEngine:
             return
         local_target = cs.target_entity_id
         pursuing_target = local_target if cs.is_pursuing else -1
-        server_target = self._remote_mobs_reverse.get(pursuing_target, -1) if pursuing_target != -1 else -1
+        server_target = -1
+        if pursuing_target != -1:
+            # Primeiro tenta mob remoto; depois player remoto (PvP)
+            server_target = self._remote_mobs_reverse.get(pursuing_target, -1)
+            if server_target == -1:
+                from components import RemoteControlled as _RCsync
+                _rc_sync = self.world.get_component(pursuing_target, _RCsync)
+                if _rc_sync is not None:
+                    server_target = _rc_sync.server_eid
 
         # Grace period: se enviamos um alvo válido recentemente, não envia -1 imediatamente
         # Isso evita que glitches de is_pursuing por 1-2 frames parem o ataque
@@ -5361,12 +5369,18 @@ class GameEngine:
                 # Offline ou mob local com CombatStats
                 target_hp_ratio = tgt_cs.current_hp / tgt_cs.max_hp
             else:
-                # Mob remoto — CombatStats removido; usa _mob_hp autoritativo do servidor
+                # Mob remoto — usa _mob_hp autoritativo do servidor
                 _srv_eid_hb = self._remote_mobs_reverse.get(_tgt_local, -1)
                 if _srv_eid_hb != -1 and _srv_eid_hb in self._mob_hp:
                     _hp_hb, _hp_max_hb = self._mob_hp[_srv_eid_hb]
                     if _hp_max_hb > 0:
                         target_hp_ratio = _hp_hb / _hp_max_hb
+                else:
+                    # Player remoto (PvP) — HP em RemoteControlled
+                    from components import RemoteControlled as _RCratio
+                    _rc_ratio = self.world.get_component(_tgt_local, _RCratio)
+                    if _rc_ratio and _rc_ratio.hp_max > 0:
+                        target_hp_ratio = _rc_ratio.hp / _rc_ratio.hp_max
 
         # Pulso animado para o brilho (0..1, ciclo ~1.6s)
         pulse = (math.sin(pygame.time.get_ticks() / 250.0) + 1) / 2

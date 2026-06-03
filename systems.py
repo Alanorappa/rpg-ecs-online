@@ -1232,6 +1232,26 @@ class MouseTargetingSystem(System):
                     return entity_id
         return -1
 
+    def _remote_player_at_world_pos(self, world_x: float, world_y: float) -> int:
+        """Retorna o entity_id local de um player remoto clicado, ou -1.
+
+        Usado para PvP: permite selecionar outros players como alvo.
+        A verificação de zona PvP fica no servidor — o cliente só faz targeting.
+        """
+        from components import RemoteControlled as _RC
+        for entity_id, pos, renderable, _, _rc in self.world.get_entities_with(
+                Position, Renderable, Visible, _RC):
+            if entity_id == self.player_entity_id:
+                continue  # não seleciona a si mesmo
+            if _rc.hp <= 0:
+                continue  # player morto
+            hw = renderable.width / 2
+            hh = renderable.height / 2
+            if (pos.x - hw <= world_x <= pos.x + hw and
+                    pos.y - hh <= world_y <= pos.y + hh):
+                return entity_id
+        return -1
+
     def _corpse_at_world_pos(self, world_x: float, world_y: float) -> bool:
         """Retorna True se há um cadáver na posição mundo."""
         for _, pos, _ in self.world.get_entities_with(Position, Corpse):
@@ -1305,6 +1325,9 @@ class MouseTargetingSystem(System):
             world_x = event.pos[0] * scale + cam_x
             world_y = event.pos[1] * scale + cam_y
             target_id = self._enemy_at_world_pos(world_x, world_y)
+            # PvP: se nenhum mob clicado, verifica player remoto
+            if target_id == -1:
+                target_id = self._remote_player_at_world_pos(world_x, world_y)
 
             player_cs   = self.world.get_component(self.player_entity_id, CombatState)
             player_auto = self.world.get_component(self.player_entity_id, PlayerAutoMove)

@@ -90,6 +90,10 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
     MAP_FILE = "maps/map_1.csv"   # mapa padrão carregado pelo servidor
 
+    # PvP habilitado globalmente (Fase 1 — zones por mapa virão depois)
+    # True = qualquer zona permite PvP; False = PvP desabilitado (PvE only)
+    pvp_enabled: bool = True
+
     def __init__(self, zone_id: str = "world_main", map_file: str = ""):
         self.zone_id    = zone_id
         self.world      = World()
