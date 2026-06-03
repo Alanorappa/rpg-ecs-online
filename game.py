@@ -5039,12 +5039,8 @@ class GameEngine:
             ns = self.font_xs.render(rc.name, True, (255, 255, 200))
             zoom_surf.blit(ns, (int(px) + W // 2 - ns.get_width() // 2,
                                 int(py) - ns.get_height() - 2))
-            if rc.hp_max > 0:
-                fill_w = max(0, int(W * rc.hp / rc.hp_max))
-                pygame.draw.rect(zoom_surf, (100, 0, 0),
-                                 (int(px), int(py) + H + 2, W, 4))
-                pygame.draw.rect(zoom_surf, (0, 200, 0),
-                                 (int(px), int(py) + H + 2, fill_w, 4))
+            # HP bar removida daqui — desenhada em RenderSystem acima da entidade
+            # (mesmo padrão dos mobs), com rc.hp atualizado via _apply_combat_result.
 
     # ------------------------------------------------------------------
     def _load_menu_keys(self) -> None:

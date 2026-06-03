@@ -70,19 +70,8 @@ class SkillProcessorMixin:
             # Aponta o SkillSystem para este player
             self._skill_system.player_entity_id = player_eid
 
-            # Captura HP antes de processar (para detectar dano causado e auto-cura)
-            hp_snapshot: dict[int, int] = {}
-            for mob_eid in self._mob_eids:
-                cs = self.world.get_component(mob_eid, CombatStats)
-                if cs:
-                    hp_snapshot[mob_eid] = cs.current_hp
-
-            # Captura efeitos de status antes da skill (para detectar novos efeitos aplicados)
-            from components import StatusEffects as _SfxSk
-            effects_snapshot: dict[int, set] = {}
-            for _m_eid in hp_snapshot:
-                _sfx_pre = self.world.get_component(_m_eid, _SfxSk)
-                effects_snapshot[_m_eid] = set(_sfx_pre.effects.keys()) if _sfx_pre else set()
+            # Snapshot unificado: mobs + players PvP (padrão _combat_targets)
+            hp_snapshot, effects_snapshot = self._snapshot_combat_targets(exclude_eid=player_eid)
 
             # Obtém componentes necessários para os handlers
             combat_stats = self.world.get_component(player_eid, CombatStats)
@@ -319,6 +308,25 @@ class SkillProcessorMixin:
                     results_targets.append(_make_result(_skill_outcome))
                 elif _applied and mob_eid == tid:
                     results_targets.append(_make_result("hit"))
+
+            # PvP: sincroniza HP da vítima player via STATS_UPDATE.
+            # SKILL_RESULT só vai para o atacante — a vítima precisa saber que tomou dano.
+            import components as _comp_pvp
+            for _pvp_r in results_targets:
+                _pvp_eid = _pvp_r["eid"]
+                if _pvp_eid in self._player_eids.values() and _pvp_r["damage"] > 0:
+                    _vic_cs = self.world.get_component(_pvp_eid, _comp_pvp.CombatStats)
+                    from components import CharacterStats as _CSvic
+                    _vic_char = self.world.get_component(_pvp_eid, _CSvic)
+                    if _vic_cs:
+                        self._pending_xp_deliveries.append({
+                            "player_eid": _pvp_eid,
+                            "xp":         0,
+                            "mob_eid":    -1,
+                            "rage":       _vic_char.rage if _vic_char else 0,
+                            "hp":         _pvp_r["hp_after"],
+                            "hp_max":     _vic_cs.max_hp,
+                        })
 
             # Registra CD server-side APENAS se handler teve sucesso.
             # Registra CD efetivo (com reduções de talento) para que a validação futura

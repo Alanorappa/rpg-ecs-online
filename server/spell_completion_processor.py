@@ -39,15 +39,8 @@ class SpellCompletionMixin:
             if char and mana_cost > 0:
                 char.mana = max(0, char.mana - mana_cost)
 
-            # HP snapshot de todos os mobs antes de aplicar efeito
-            hp_before  = {}
-            sfx_before = {}
-            for mob_eid in self._mob_eids:
-                _cs = self.world.get_component(mob_eid, _CS)
-                if _cs:
-                    hp_before[mob_eid] = _cs.current_hp
-                _sfx = self.world.get_component(mob_eid, _SFX)
-                sfx_before[mob_eid] = set(_sfx.effects.keys()) if _sfx else set()
+            # Snapshot unificado: mobs + players PvP (padrão ECS — _combat_targets)
+            hp_before, sfx_before = self._snapshot_combat_targets(exclude_eid=player_eid)
 
             # Spells com projétil: aguardam PROJECTILE_HIT_CS antes de aplicar dano
             _PROJECTILE_SPELLS = {"bola_de_fogo"}
@@ -117,6 +110,21 @@ class SpellCompletionMixin:
                             _res["mob_slow_mult"] = _slow_eff.magnitude
                     results.append(_res)
 
+            # PvP: HP sync para vítimas players (SKILL_RESULT só vai para o atacante)
+            for _r in results:
+                _r_eid = _r["eid"]
+                if _r_eid in self._player_eids.values() and _r["damage"] > 0:
+                    from components import CombatStats as _CSvicC, CharacterStats as _CSvcC
+                    _vcs = self.world.get_component(_r_eid, _CSvicC)
+                    _vch = self.world.get_component(_r_eid, _CSvcC)
+                    if _vcs:
+                        self._pending_xp_deliveries.append({
+                            "player_eid": _r_eid,
+                            "xp": 0, "mob_eid": -1,
+                            "rage": _vch.rage if _vch else 0,
+                            "hp": _r["hp_after"], "hp_max": _vcs.max_hp,
+                        })
+
             # SKILL_RESULT da conclusão do cast — toca som e aplica cooldown (GCD já foi).
             skill_entry: dict = {
                 "caster_eid":   player_eid,
@@ -178,15 +186,8 @@ class SpellCompletionMixin:
         if not fn:
             return
 
-        # Snapshot HP antes
-        hp_before: dict[int, int] = {}
-        sfx_before: dict[int, set] = {}
-        for mob_eid in self._mob_eids:
-            _cs = self.world.get_component(mob_eid, _CS)
-            if _cs:
-                hp_before[mob_eid] = _cs.current_hp
-            _sfx = self.world.get_component(mob_eid, _SFX)
-            sfx_before[mob_eid] = set(_sfx.effects.keys()) if _sfx else set()
+        # Snapshot unificado: mobs + players PvP
+        hp_before, sfx_before = self._snapshot_combat_targets(exclude_eid=player_eid)
 
         self._proj_spell_result = {"is_crit": False, "lapso_proc": None}
         try:
@@ -230,6 +231,21 @@ class SpellCompletionMixin:
                     if _slow2:
                         _res2["mob_slow_mult"] = _slow2.magnitude
                 results.append(_res2)
+
+        # PvP: HP sync para vítimas players
+        for _r2 in results:
+            _r2_eid = _r2["eid"]
+            if _r2_eid in self._player_eids.values() and _r2["damage"] > 0:
+                _vcs2 = self.world.get_component(_r2_eid, _CS)
+                from components import CharacterStats as _CSv2
+                _vch2 = self.world.get_component(_r2_eid, _CSv2)
+                if _vcs2:
+                    self._pending_xp_deliveries.append({
+                        "player_eid": _r2_eid,
+                        "xp": 0, "mob_eid": -1,
+                        "rage": _vch2.rage if _vch2 else 0,
+                        "hp": _r2["hp_after"], "hp_max": _vcs2.max_hp,
+                    })
 
         char = self.world.get_component(player_eid, _CHS)
         skill_entry: dict = {

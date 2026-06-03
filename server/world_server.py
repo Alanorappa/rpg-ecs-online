@@ -1196,6 +1196,38 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
     # request_loot → LootProcessorMixin
 
+    # ── Alvo de combate unificado (ECS pattern: combatente = entidade com CombatStats) ──
+
+    def _combat_targets(self, exclude_eid: int = -1) -> set[int]:
+        """Retorna todos os eids que podem receber dano neste tick.
+
+        Padrão ECS consolidado (Overwatch, Guild Wars 2): o sistema de combate
+        não distingue mob de player — qualquer entidade com CombatStats é alvo.
+        PvP: players (exceto o caster) são incluídos quando pvp_enabled=True.
+        """
+        targets = set(self._mob_eids)
+        if self.pvp_enabled:
+            for p_eid in self._player_eids.values():
+                if p_eid != exclude_eid:
+                    targets.add(p_eid)
+        return targets
+
+    def _snapshot_combat_targets(self, exclude_eid: int = -1) -> tuple[dict, dict]:
+        """HP e StatusEffects antes de processar uma skill (para coletar diff depois).
+
+        Retorna (hp_before, sfx_before) incluindo mobs + players PvP.
+        """
+        from components import CombatStats as _CSsnap, StatusEffects as _SFXsnap
+        hp_before: dict[int, int] = {}
+        sfx_before: dict[int, set] = {}
+        for eid in self._combat_targets(exclude_eid):
+            cs = self.world.get_component(eid, _CSsnap)
+            if cs:
+                hp_before[eid] = cs.current_hp
+            sfx = self.world.get_component(eid, _SFXsnap)
+            sfx_before[eid] = set(sfx.effects.keys()) if sfx else set()
+        return hp_before, sfx_before
+
     # ── Loop de ticks ─────────────────────────────────────────────────────────
 
     def register_on_tick(self, callback) -> None:

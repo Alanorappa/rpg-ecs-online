@@ -3063,12 +3063,12 @@ class RenderSystem(System):
                            (_rc_hp is not None and _rc_hp.hp_max > 0)
             if _draw_hp_bar:
                 if combat_stats:
-                    ratio  = max(0.0, combat_stats.current_hp / combat_stats.max_hp)
+                    ratio  = max(0.0, min(1.0, combat_stats.current_hp / combat_stats.max_hp))
                     bar_fg = (0, 200, 60)
                     bar_bg = (80, 0, 0)
                 else:
                     # Player remoto (PvP) — roxo para diferenciar de mob
-                    ratio  = max(0.0, _rc_hp.hp / _rc_hp.hp_max)
+                    ratio  = max(0.0, min(1.0, _rc_hp.hp / _rc_hp.hp_max))
                     bar_fg = (200, 80, 220)
                     bar_bg = (50, 0, 60)
                 bar_w = renderable.width
