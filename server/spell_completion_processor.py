@@ -532,7 +532,7 @@ class SpellCompletionMixin:
                 if not char_stats.fire_instant_ready:
                     char_stats.fire_instant_ready = True
 
-    def _server_calcinar(self, player_eid: int, target_id: int, entry: dict) -> None:
+    def _server_calcinar(self, player_eid: int, target_id: int, _entry: dict) -> None:
         from components import CombatStats, StatusEffects, CharacterStats
         from skill_config import SKILL_CATALOG as _SC_cal
         _cal = _SC_cal.get("calcinar", {})

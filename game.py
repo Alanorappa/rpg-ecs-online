@@ -3152,6 +3152,21 @@ class GameEngine:
                 if not self.world.get_component(self.player_entity, _FSEcl):
                     self.world.add_component(self.player_entity, _FSEcl(duration=15.0))
 
+            # Bloco de Gelo confirmado: adiciona IceBlockEffect no cliente.
+            # Sem isso, IceBlockSystem nunca roda online e a cura (10%/s) nunca
+            # aparece no HP bar — o jogador só vê a cura toda de uma vez quando
+            # o servidor sincroniza o HP por outro motivo.
+            if caster_eid == self._my_eid and sid == "bloco_de_gelo" and not payload.get("failed"):
+                from components import IceBlockEffect as _IBEcl, CombatState as _CStIB
+                if not self.world.get_component(self.player_entity, _IBEcl):
+                    self.world.add_component(self.player_entity, _IBEcl(
+                        duration=5.0, elapsed=0.0, heal_interval=1.0, last_heal=0.0,
+                    ))
+                    _cst_ib = self.world.get_component(self.player_entity, _CStIB)
+                    if _cst_ib:
+                        _cst_ib.is_stunned = True
+                        _cst_ib.is_immune  = True
+
             # Consome carga livre de Executar ao usar a skill
             if caster_eid == self._my_eid and sid == "executar":
                 from components import CharacterStats as _CSexec
