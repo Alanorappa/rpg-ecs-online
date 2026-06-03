@@ -3026,9 +3026,9 @@ class RenderSystem(System):
                     if _root_surf is not None:
                         _rw = _root_surf.get_width()
                         _rh = _root_surf.get_height()
-                        # Centro horizontal na entidade; centro vertical no pé do rect
+                        # Centralizado no mesmo tile da entidade (ambos 32×32)
                         _rx = int(draw_x - _rw / 2)
-                        _ry = rect.bottom - _rh // 2
+                        _ry = int(draw_y - _rh / 2)
                         self.world_surf.blit(_root_surf, (_rx, _ry))
 
             if entity_id == target_id:
