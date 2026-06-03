@@ -3057,14 +3057,26 @@ class RenderSystem(System):
             if entity_id == target_id:
                 pygame.draw.rect(self.world_surf, (255, 220, 0), rect, 2)
 
-            if combat_stats and combat_stats.max_hp > 0:
-                ratio = max(0.0, combat_stats.current_hp / combat_stats.max_hp)
+            # ── HP bar: mobs/player offline (CombatStats) ou players remotos (RemoteControlled) ──
+            _rc_hp = None if combat_stats else self.world.get_component(entity_id, RemoteControlled)
+            _draw_hp_bar = (combat_stats and combat_stats.max_hp > 0) or \
+                           (_rc_hp is not None and _rc_hp.hp_max > 0)
+            if _draw_hp_bar:
+                if combat_stats:
+                    ratio  = max(0.0, combat_stats.current_hp / combat_stats.max_hp)
+                    bar_fg = (0, 200, 60)
+                    bar_bg = (80, 0, 0)
+                else:
+                    # Player remoto (PvP) — roxo para diferenciar de mob
+                    ratio  = max(0.0, _rc_hp.hp / _rc_hp.hp_max)
+                    bar_fg = (200, 80, 220)
+                    bar_bg = (50, 0, 60)
                 bar_w = renderable.width
                 bar_h = 4
                 bar_x = int(draw_x - renderable.width / 2)
                 bar_y = int(draw_y - renderable.height / 2) - 7
-                pygame.draw.rect(self.world_surf, (80, 0, 0), (bar_x, bar_y, bar_w, bar_h))
-                pygame.draw.rect(self.world_surf, (0, 200, 60), (bar_x, bar_y, int(bar_w * ratio), bar_h))
+                pygame.draw.rect(self.world_surf, bar_bg, (bar_x, bar_y, bar_w, bar_h))
+                pygame.draw.rect(self.world_surf, bar_fg, (bar_x, bar_y, int(bar_w * ratio), bar_h))
 
                 _sfx = self.world.get_component(entity_id, StatusEffects)
                 _cst = self.world.get_component(entity_id, CombatState)
@@ -6076,6 +6088,12 @@ class SkillSystem(System, SkillHandlers):
             _tid_local  = getattr(combat_state, "target_entity_id", -1) if combat_state else -1
             _rev = getattr(self, "_remote_mobs_reverse", {})
             _tid_server = _rev.get(_tid_local, -1)
+            # PvP: alvo pode ser player remoto (não está em _remote_mobs_reverse)
+            if _tid_server == -1 and _tid_local != -1:
+                from components import RemoteControlled as _RCcast
+                _rc_cast = self.world.get_component(_tid_local, _RCcast)
+                if _rc_cast is not None:
+                    _tid_server = _rc_cast.server_eid
 
             self._net.send(_MT.CAST_SKILL, {
                 "sid":   skill.skill_id,
