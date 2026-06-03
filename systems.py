@@ -60,6 +60,31 @@ _TALENT_SKILL_REQ_SYS: dict[str, tuple[str, int]] = {
 # Populado por GameEngine.register_services() após criar os sistemas.
 _svc: dict = {}
 
+# ── Cache de sprites de efeito de chão (lazy-loaded) ─────────────────────────
+_GROUND_EFFECT_SPRITES: dict[str, "pygame.Surface | None"] = {}
+
+def _get_ground_effect_sprite(effect_type: str) -> "pygame.Surface | None":
+    """Retorna sprite de efeito de chão para o tipo dado; carrega na primeira vez.
+
+    Usa o mesmo padrão lazy-load do effect_animator — falha silenciosa se
+    o arquivo não existir ou pygame ainda não tiver modo de vídeo ativo.
+    """
+    if effect_type in _GROUND_EFFECT_SPRITES:
+        return _GROUND_EFFECT_SPRITES[effect_type]
+    _PATH_MAP = {
+        "root": "assets/effects/frozen_root.png",
+    }
+    rel_path = _PATH_MAP.get(effect_type)
+    surf = None
+    if rel_path:
+        try:
+            from paths import resource_path as _rp
+            surf = pygame.image.load(_rp(rel_path)).convert_alpha()
+        except Exception:
+            surf = None
+    _GROUND_EFFECT_SPRITES[effect_type] = surf
+    return surf
+
 
 def register_services(combat=None, pathfinding=None, tile_validation=None) -> None:
     """Registra serviços que qualquer sistema pode chamar sem referência direta."""
@@ -2991,6 +3016,21 @@ class RenderSystem(System):
                 )
                 pygame.draw.rect(self.world_surf, renderable.color, rect)
 
+            # ── Efeitos de chão: desenhados NA FRENTE do retângulo da entidade ──
+            # Verificação direta em StatusEffects (sem exigir CombatStats) para
+            # funcionar com mobs remotos, player local e futuros players PvP.
+            if _sfx_rnd is not None:
+                # Root (Nova Congelante e similares): frozen_root.png na base
+                if _sfx_rnd.has("root"):
+                    _root_surf = _get_ground_effect_sprite("root")
+                    if _root_surf is not None:
+                        _rw = _root_surf.get_width()
+                        _rh = _root_surf.get_height()
+                        # Centro horizontal na entidade; centro vertical no pé do rect
+                        _rx = int(draw_x - _rw / 2)
+                        _ry = rect.bottom - _rh // 2
+                        self.world_surf.blit(_root_surf, (_rx, _ry))
+
             if entity_id == target_id:
                 pygame.draw.rect(self.world_surf, (255, 220, 0), rect, 2)
 
@@ -3021,7 +3061,13 @@ class RenderSystem(System):
                     _anim_frames = []   # (Surface, effect_type) — com animação
                     _sq_colors   = []   # (R,G,B)               — sem animação
 
+                    # Efeitos com sprite de chão dedicado não precisam de ícone
+                    # acima da HP bar (evita duplicação visual).
+                    _GROUND_EFFECT_TYPES = {"root"}
+
                     for _eff in _active_effects:
+                        if _eff.effect_type in _GROUND_EFFECT_TYPES:
+                            continue  # visual de chão já foi desenhado
                         _frame = _get_effect_frame(_eff.effect_type)
                         if _frame is not None:
                             _anim_frames.append(_frame)
