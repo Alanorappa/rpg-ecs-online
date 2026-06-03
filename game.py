@@ -121,7 +121,8 @@ class GameEngine:
         self._remote_step_timers:  dict[int, float]         = {}
         # Snapshot de stats para detecção de mudanças e envio de PLAYER_STAT_SYNC
         self._combat_stat_snapshot: dict = {}
-        self._mob_move_queues:     dict[int, list]          = {}  # server_eid → [(tx,ty)...]
+        self._mob_move_queues:         dict[int, list] = {}  # server_eid → [(tx,ty)...]
+        self._remote_player_move_queues: dict[int, list] = {}  # server_eid → [(tx,ty,is_dash)]
         # Projéteis de mobs remotos: server_proj_eid → local_eid (entidade visual)
         self._remote_mob_projectiles: dict[int, int] = {}
         # Corpses do servidor: corpse_id → (tx, ty)  — apenas marcador visual
@@ -4351,6 +4352,29 @@ class GameEngine:
                 if not queue:
                     del self._mob_move_queues[server_eid]
 
+        # Fila de movimentos de players remotos — mesmo padrão dos mobs
+        for server_eid, queue in list(self._remote_player_move_queues.items()):
+            if not queue:
+                del self._remote_player_move_queues[server_eid]
+                continue
+            local_eid = self._remote_players.get(server_eid)
+            if not local_eid:
+                del self._remote_player_move_queues[server_eid]
+                continue
+            tm  = self.world.get_component(local_eid, TileMovement)
+            pos = self.world.get_component(local_eid, Position)
+            if not tm or not pos:
+                del self._remote_player_move_queues[server_eid]
+                continue
+            if not tm.is_moving:
+                tx, ty, is_dash = queue.pop(0)
+                start_tile_movement(pos, tm, tx, ty)
+                if is_dash:
+                    tm.is_dash       = True
+                    tm.move_duration = 0.18
+                if not queue:
+                    del self._remote_player_move_queues[server_eid]
+
     # ── Jogadores remotos — abordagem ECS ────────────────────────────────────
 
     def _spawn_remote_player_entity(self, server_eid: int, data: dict) -> None:
@@ -4392,7 +4416,9 @@ class GameEngine:
                            is_dash: bool = False) -> None:
         """Atualiza target_tile do jogador remoto — TileMovementSystem anima.
 
-        is_dash=True: usa duração do Interceptar e ativa rastro vermelho.
+        Usa fila de movimentos (igual aos mobs remotos) para garantir que a animação
+        atual termine antes de iniciar a próxima. Sem isso, alterar target_tile_x/y
+        mid-animação sem atualizar target_pixel_x/y causava salto no tile seguinte.
         """
         from components import TileMovement, Position
         from utils import start_tile_movement
@@ -4405,13 +4431,17 @@ class GameEngine:
             return
         if not tm.is_moving:
             start_tile_movement(pos, tm, new_tx, new_ty)
+            if is_dash:
+                tm.is_dash       = True
+                tm.move_duration = 0.18
         else:
-            # Entidade ainda animando: atualiza target para encadear suavemente
-            tm.target_tile_x = new_tx
-            tm.target_tile_y = new_ty
-        if is_dash:
-            tm.is_dash       = True
-            tm.move_duration = 0.18   # INTERCEPT_DURATION
+            # Já animando: encadeia na fila para não interromper a animação atual
+            if tm.target_tile_x == new_tx and tm.target_tile_y == new_ty:
+                return  # já está indo para este tile
+            queue = self._remote_player_move_queues.setdefault(eid, [])
+            entry = (new_tx, new_ty, is_dash)
+            if not queue or queue[-1][:2] != (new_tx, new_ty):
+                queue.append(entry)
         # Passo do player remoto — atenuado por distância, throttle por timer
         if not is_dash:
             _step_timer = self._remote_step_timers.get(eid, 0.0)
@@ -4944,6 +4974,8 @@ class GameEngine:
 
     def _remove_remote_player_entity(self, server_eid: int) -> None:
         local_eid = self._remote_players.pop(server_eid, None)
+        self._remote_player_move_queues.pop(server_eid, None)
+        self._remote_step_timers.pop(server_eid, None)
         if local_eid is not None:
             try:
                 self.world.remove_entity(local_eid)

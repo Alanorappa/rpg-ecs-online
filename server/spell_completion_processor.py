@@ -589,6 +589,7 @@ class SpellCompletionMixin:
         _coef  = _nc.get("dmg_sp_coeff", 0.5)
         _range = _nc.get("cast_range", 3)
 
+        from components import Position as _PosNC
         for eid, _, etm, ecs in self.world.get_entities_with(
                 Enemy, TileMovement, CombatStats):
             if ecs.current_hp <= 0:
@@ -599,6 +600,21 @@ class SpellCompletionMixin:
             self._server_apply_magic_damage(player_eid, eid, dmg)
             _root_dur = _nc.get("effect_durations", {}).get("root", 5.0)
             apply_effect(self.world, eid, "root", _root_dur)
+            # Snapa mob para target_tile quando root é aplicado.
+            # O cliente está animando em direção a target_tile — ao chegar lá, ambos
+            # concordam com a mesma posição. Sem este snap, servidor fica em
+            # current_tile (antes da animação completar) e cliente vai para target_tile,
+            # causando desacordo que gera salto visual quando o root expira.
+            if etm.is_moving:
+                etm.current_tile_x = etm.target_tile_x
+                etm.current_tile_y = etm.target_tile_y
+                _nc_pos = self.world.get_component(eid, _PosNC)
+                if _nc_pos:
+                    from shared.constants import TILE_SIZE as _TS_nc
+                    _nc_pos.x = etm.current_tile_x * _TS_nc + _TS_nc // 2
+                    _nc_pos.y = etm.current_tile_y * _TS_nc + _TS_nc // 2
+                etm.is_moving = False
+                etm.progress  = 0.0
 
     def _server_polimorfia(self, player_eid: int, target_id: int, entry: dict) -> None:
         from components import CombatStats, CombatState
