@@ -309,12 +309,16 @@ class SkillProcessorMixin:
                 elif _applied and mob_eid == tid:
                     results_targets.append(_make_result("hit"))
 
-            # PvP: sincroniza HP + efeitos aplicados da vítima player via STATS_UPDATE.
+            # PvP: sincroniza HP + efeitos + rastreia dano para evitar FLT duplo via mob_delta.
             import components as _comp_pvp
             from components import CharacterStats as _CSvic
             for _pvp_r in results_targets:
                 _pvp_eid = _pvp_r["eid"]
                 if _pvp_eid in self._player_eids.values():
+                    # Rastreia dano de skill para subtrair de mob_delta em _process_player_attacks
+                    if _pvp_r["damage"] > 0:
+                        _pvd = getattr(self, "_pvp_damage_this_tick", {})
+                        _pvd[_pvp_eid] = _pvd.get(_pvp_eid, 0) + _pvp_r["damage"]
                     _vic_cs   = self.world.get_component(_pvp_eid, _comp_pvp.CombatStats)
                     _vic_char = self.world.get_component(_pvp_eid, _CSvic)
                     if _vic_cs:

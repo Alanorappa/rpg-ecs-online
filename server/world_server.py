@@ -1272,6 +1272,9 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         from components import TileMovement, Enemy, CombatStats
 
         self._tick_respawn_immunity()
+        # Reseta rastreamento de dano PvP do tick anterior.
+        # Populado por skill_processor e spell_completion_processor além de _process_pvp_attack.
+        self._pvp_damage_this_tick = {}
 
         # Snapshot ANTES dos sistemas:
         #   pre_mob_target: rastreia target_tile (destino do movimento).

@@ -20,9 +20,6 @@ class CombatProcessorMixin:
         from components import CombatState, CombatStats, TileMovement, Enemy, PendingDeath
         from utils import chebyshev
 
-        # Rastreamento de dano PvP neste tick — subtrai de mob_delta para evitar FLT duplo
-        self._pvp_damage_this_tick: dict[int, int] = {}
-
         # ── Player → Mob ───────────────────────────────────────────────────
         for session_id, player_eid in list(self._player_eids.items()):
             cs = self.world.get_component(player_eid, CombatState)
