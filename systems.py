@@ -963,9 +963,12 @@ class CombatStateSystem(System):
 
     def __init__(self, world: World):
         self.world = world
+        # Timer por eid: segundos até o próximo passo aleatório (disoriented/polymorph)
+        self._dis_move_timers: dict[int, float] = {}
 
     RAGE_DECAY_AMOUNT   = 5
     RAGE_DECAY_INTERVAL = 3.0  # segundos entre cada decaimento
+    DIS_MOVE_DELAY      = 0.7  # segundos de pausa entre passos aleatórios
 
     def update(self, events: list = None, dt: float = 0) -> None:
         for eid, cs in self.world.get_entities_with(CombatState):
@@ -992,7 +995,10 @@ class CombatStateSystem(System):
                     cs.is_pursuing = False
                     _auto_dis = self.world.get_component(eid, __import__("components").PlayerAutoMove)
                     _tm_dis   = self.world.get_component(eid, TileMovement)
-                    if _auto_dis and _tm_dis and not _tm_dis.is_moving:
+                    # Decrementa timer de pausa entre passos aleatórios
+                    _dis_t = self._dis_move_timers.get(eid, 0.0) - dt
+                    self._dis_move_timers[eid] = max(0.0, _dis_t)
+                    if _auto_dis and _tm_dis and not _tm_dis.is_moving and _dis_t <= 0:
                         import random as _rand_dis
                         _dirs = [(0,1),(0,-1),(1,0),(-1,0)]
                         _rand_dis.shuffle(_dirs)
@@ -1003,6 +1009,8 @@ class CombatStateSystem(System):
                                 _auto_dis.ground_target = (_fx, _fy)
                                 _auto_dis.active        = True
                                 _auto_dis.path.clear()
+                                # Pausa antes do próximo passo
+                                self._dis_move_timers[eid] = self.DIS_MOVE_DELAY
                                 break
 
             # Decay de Rage e regen de Concentração (apenas jogador)
