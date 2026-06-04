@@ -301,6 +301,13 @@ class SessionManager:
             pcst = self.world_server.world.get_component(player_eid, _CS)
             if pcst:
                 _ec(pcst)
+                pcst.is_pursuing = True   # espelha o clique direito do cliente
+        else:
+            from components import CombatState as _CS_stop
+            player_eid = session.entity_id
+            pcst = self.world_server.world.get_component(player_eid, _CS_stop)
+            if pcst:
+                pcst.is_pursuing = False
 
     async def _handle_projectile_hit(self, session: Session, payload: dict, ts: int) -> None:
         """Projétil do player colidiu com o alvo — aplica dano no servidor."""
