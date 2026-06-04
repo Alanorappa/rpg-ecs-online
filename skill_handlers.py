@@ -181,9 +181,12 @@ class SkillHandlers:
         Máquina de Matar: +15% por inimigo no raio (checado antes do dano)."""
         px, py = tile_move.current_tile_x, tile_move.current_tile_y
 
+        # Itera CombatStats (não Enemy) — inclui players em PvP no servidor
         targets = []
         for enemy_id, _, enemy_tm, enemy_cs in self.world.get_entities_with(
-                Enemy, TileMovement, CombatStats):
+                TileMovement, CombatStats):
+            if enemy_id == self.player_entity_id:
+                continue  # não ataca a si mesmo
             if enemy_cs.current_hp <= 0:
                 continue
             dist = max(abs(px - enemy_tm.current_tile_x),
@@ -506,14 +509,15 @@ class SkillHandlers:
         hit = 0
 
         if use_weapon:
-            # damage_multiplier aplicado sobre AP; dano de arma entra via "physical" normal
-            for eid, _, etm, ecs in self.world.get_entities_with(Enemy, TileMovement, CombatStats):
+            for eid, _, etm, ecs in self.world.get_entities_with(TileMovement, CombatStats):
+                if eid == self.player_entity_id: continue
                 if chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y) <= radius and ecs.current_hp > 0:
                     deal_damage(self.player_entity_id, eid, "physical",
                                 multiplier=mult, is_ability=True)
                     hit += 1
         else:
-            for eid, _, etm, ecs in self.world.get_entities_with(Enemy, TileMovement, CombatStats):
+            for eid, _, etm, ecs in self.world.get_entities_with(TileMovement, CombatStats):
+                if eid == self.player_entity_id: continue
                 if chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y) <= radius and ecs.current_hp > 0:
                     deal_damage(self.player_entity_id, eid, "physical",
                                 multiplier=mult, is_ability=True)
@@ -528,7 +532,8 @@ class SkillHandlers:
         pl_x = tile_move.current_tile_x
         pl_y = tile_move.current_tile_y
         taunted = 0
-        for eid, _, etm, ecs in self.world.get_entities_with(Enemy, TileMovement, CombatStats):
+        for eid, _, etm, ecs in self.world.get_entities_with(TileMovement, CombatStats):
+            if eid == self.player_entity_id: continue
             if ecs.current_hp <= 0:
                 continue
             if chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y) > 3:

@@ -1489,6 +1489,13 @@ class PlayerInputSystem(System):
             can_move = combat_state.can_move() if combat_state else True
             can_act = combat_state.can_act() if combat_state else True
 
+            # Disoriented: bloqueia input do jogador (CombatStateSystem força movimento aleatório)
+            _sfx_inp = self.world.get_component(entity_id, StatusEffects)
+            _is_disoriented = _sfx_inp is not None and _sfx_inp.has("disoriented")
+            if _is_disoriented:
+                can_move = False   # input bloqueado; CombatStateSystem move aleatoriamente
+                can_act  = False   # não pode usar skills nem ataques
+
             # --- Movimento por teclado ---
             if can_move and not tile_movement.is_moving:
                 cur_x = tile_movement.current_tile_x
@@ -6254,6 +6261,22 @@ class SkillSystem(System, SkillHandlers):
             for eid, epos, _, etm in self.world.get_entities_with(Position, Enemy, TileMovement):
                 if self.world.get_component(eid, CombatStats):
                     continue  # already handled above
+                if not self.world.get_component(eid, Visible):
+                    continue
+                if not self._is_on_screen(epos):
+                    continue
+                d = chebyshev(px, py, etm.current_tile_x, etm.current_tile_y)
+                if _max_range > 0 and d > _max_range:
+                    continue
+                if d < best_dist:
+                    best_dist = d
+                    best_id   = eid
+        # PvP: também considera players remotos (RemoteControlled) como alvos válidos
+        if best_id == -1:
+            _rc_cls = __import__("components").RemoteControlled
+            for eid, epos, _, etm in self.world.get_entities_with(Position, _rc_cls, TileMovement):
+                if eid == self.player_entity_id:
+                    continue  # não auto-seleciona a si mesmo
                 if not self.world.get_component(eid, Visible):
                     continue
                 if not self._is_on_screen(epos):

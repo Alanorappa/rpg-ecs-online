@@ -3492,19 +3492,23 @@ class GameEngine:
         elif msg_type == MsgType.STATS_UPDATE:
             from components import CombatStats, RemoteControlled
             eid = payload.get("eid", -1)
-            # Projétil chegando em mim (PvP): cria projétil visual do caster em direção ao player
+            # Projétil chegando em mim (PvP): cria projétil puramente visual (sem dano local).
+            # O dano é autoritativo do servidor — aqui só criamos o efeito visual/sonoro.
             if eid == self._my_eid and payload.get("proj_incoming"):
                 _proj_sid    = payload["proj_incoming"]
                 _proj_caster = payload.get("proj_caster", -1)
                 _caster_local = self._remote_players.get(_proj_caster, -1)
                 if _caster_local != -1 and _proj_sid == "bola_de_fogo":
+                    # Cria projétil visual do caster ao player local
                     self._spell_cast_system._launch_fireball(_caster_local, self.player_entity)
+                    # Marca target_server_id = -2: sinal de "projétil cosmético da vítima"
+                    # PlayerProjectileSystem ignora hits com target_server_id == -2
                     from components import PlayerProjectile as _PPinc, Position as _PPinc_pos
                     for _ppeid, _pp, _ in self.world.get_entities_with(_PPinc, _PPinc_pos):
                         if (_pp.attacker_id == _caster_local
                                 and _pp.target_id == self.player_entity
                                 and _pp.target_server_id == -1):
-                            _pp.target_server_id = _proj_caster
+                            _pp.target_server_id = -2  # cosmético: sem PROJECTILE_HIT_CS
                             break
 
             if eid == self._my_eid:

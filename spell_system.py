@@ -1113,7 +1113,13 @@ class PlayerProjectileSystem(System):
         attacker_cs = self.world.get_component(proj.attacker_id, CombatStats)
         target_cs   = self.world.get_component(proj.target_id,   CombatStats)
 
-        # Online: mob sem CombatStats local — projétil colidiu, notifica servidor para aplicar dano
+        # target_server_id == -2: projétil cosmético da vítima PvP — apenas som, sem dano/HIT_CS
+        if proj.target_server_id == -2:
+            if proj.damage_type != "physical":
+                SOUNDS.play_spell(proj.spell_id, "impact")
+            return
+
+        # Online: mob/player sem CombatStats local — projétil colidiu, notifica servidor
         if target_cs is None:
             if proj.damage_type == "physical":
                 SOUNDS.play_random(["arrow_impact_1", "arrow_impact_2"], channel_group=(12, 13))
