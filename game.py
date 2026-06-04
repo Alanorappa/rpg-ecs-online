@@ -3620,7 +3620,7 @@ class GameEngine:
                 for _ae_pvp_ef in payload["applied_effects"]:
                     _ae_pvp_dur = _ae_pvp_durs.get(_ae_pvp_ef, 5.0)
                     _ae_pvp(self.world, self.player_entity, _ae_pvp_ef, _ae_pvp_dur)
-                    # Root/stun: para movimento imediatamente sem esperar StatusEffectSystem
+                    # Para movimento imediatamente ao receber CC via PvP
                     if _ae_pvp_ef in ("root", "stun", "polymorph", "disoriented"):
                         from components import CombatState as _CStAE, TileMovement as _TMAE
                         from components import PlayerAutoMove as _PAMAE
@@ -3628,17 +3628,26 @@ class GameEngine:
                         _tm_ae  = self.world.get_component(self.player_entity, _TMAE)
                         _am_ae  = self.world.get_component(self.player_entity, _PAMAE)
                         if _ae_pvp_ef == "root" and _cst_ae:
+                            # is_rooted será mantido/resetado por StatusEffectSystem via sfx.has("root")
                             _cst_ae.is_rooted   = True
                             _cst_ae.is_pursuing = False
-                        elif _ae_pvp_ef in ("stun", "polymorph") and _cst_ae:
+                        elif _ae_pvp_ef == "stun" and _cst_ae:
+                            # Stun requer timer para CombatStateSystem poder resetar
                             _cst_ae.is_stunned  = True
+                            _cst_ae.stun_timer  = _ae_pvp_dur
+                            _cst_ae.is_pursuing = False
+                        elif _ae_pvp_ef in ("polymorph", "disoriented") and _cst_ae:
+                            # NÃO seta is_stunned — PlayerInputSystem verifica
+                            # StatusEffects.has("polymorph/disoriented") diretamente.
+                            # Setar is_stunned sem stun_timer deixa is_stunned=True para sempre
+                            # quando polymorph é quebrado por dano (sem passar por CombatStateSystem).
                             _cst_ae.is_pursuing = False
                         # Para a animação de tile atual
                         if _tm_ae and _tm_ae.is_moving:
-                            _tm_ae.is_moving          = False
-                            _tm_ae.progress           = 0.0
-                            _tm_ae.current_tile_x     = _tm_ae.target_tile_x
-                            _tm_ae.current_tile_y     = _tm_ae.target_tile_y
+                            _tm_ae.is_moving      = False
+                            _tm_ae.progress       = 0.0
+                            _tm_ae.current_tile_x = _tm_ae.target_tile_x
+                            _tm_ae.current_tile_y = _tm_ae.target_tile_y
                         # Limpa pursuit e path
                         if _am_ae:
                             _am_ae.active = False
