@@ -1386,6 +1386,8 @@ class ChannelingSystem(System):
         self.world  = world
         self.world_surf = screen
         self.hud_surf   = screen
+        # Spell IDs interrompidos neste frame — game.py envia CANCEL_CAST ao servidor
+        self.interrupted_channelings: list[str] = []
 
     def update(self, events=None, dt: float = 0) -> None:
         to_finish  = []
@@ -1428,6 +1430,9 @@ class ChannelingSystem(System):
                 to_finish.append(entity_id)
 
         for entity_id in interrupted:
+            ch_int = self.world.get_component(entity_id, Channeling)
+            if ch_int:
+                self.interrupted_channelings.append(ch_int.spell_id)
             cs = self.world.get_component(entity_id, CombatState)
             if cs:
                 cs.is_casting = False

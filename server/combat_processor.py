@@ -30,7 +30,16 @@ class CombatProcessorMixin:
             if target_eid not in self._mob_eids:
                 # PvP: alvo pode ser outro jogador
                 if target_eid in self._player_eids.values() and getattr(self, "pvp_enabled", False):
-                    self._process_pvp_attack(player_eid, target_eid, session_id, dt)
+                    # Suprime auto-attack PvP se uma skill disparou neste tick para este player:
+                    # evita FLT duplicado (skill + auto em simultâneo) quando o player
+                    # está perseguindo e usa skill ao mesmo tempo.
+                    _skill_fired = any(
+                        r.get("caster_eid") == player_eid and not r.get("failed")
+                        and not r.get("cast_started")
+                        for r in self._skill_results_this_tick
+                    )
+                    if not _skill_fired:
+                        self._process_pvp_attack(player_eid, target_eid, session_id, dt)
                 else:
                     cs.target_entity_id = -1
                 continue

@@ -1362,6 +1362,13 @@ class GameEngine:
                     })
                 self._player_proj_system.pending_proj_hits.clear()
 
+            # Channeling interrompido: notifica servidor para parar os ticks de dano
+            if self._net and self._channeling_system.interrupted_channelings:
+                from shared.messages import MsgType as _MT_ch
+                for _ch_sid in self._channeling_system.interrupted_channelings:
+                    self._net.send(_MT_ch.CANCEL_CAST, {"sid": _ch_sid})
+                self._channeling_system.interrupted_channelings.clear()
+
             # Casts cancelados por movimento: notifica servidor para remover da fila
             if self._net and self._spell_cast_system.interrupted_visual_casts:
                 from shared.messages import MsgType as _MT_cc

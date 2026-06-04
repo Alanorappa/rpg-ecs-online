@@ -333,6 +333,19 @@ class SessionManager:
             e for e in self.world_server._spells_in_flight_queue
             if not (e["player_eid"] == player_eid and e["spell_id"] == sid)
         ]
+        # Channeling cancelado (ex: Calamidade Flamejante interrompida por movimento):
+        # remove o componente Channeling do player para parar os ticks de dano no servidor.
+        from components import Channeling as _ChanCancel
+        _ch_comp = self.world_server.world.get_component(player_eid, _ChanCancel)
+        if _ch_comp and _ch_comp.spell_id == sid:
+            try:
+                self.world_server.world.remove_component(player_eid, _ChanCancel)
+            except Exception:
+                pass
+            from components import CombatState as _CStCancel
+            _cst_cancel = self.world_server.world.get_component(player_eid, _CStCancel)
+            if _cst_cancel:
+                _cst_cancel.is_casting = False
 
     async def _handle_cast_skill(self, session: Session, payload: dict, ts: int) -> None:
         if not session.authenticated:
@@ -702,6 +715,10 @@ class SessionManager:
                             # Pontos de talento do servidor (level-up)
                             if "talent_points" in xp_entry:
                                 _payload["talent_points"] = xp_entry["talent_points"]
+                            # PvP: efeitos aplicados à vítima (disoriented, polymorph, root…)
+                            if "applied_effects" in xp_entry:
+                                _payload["applied_effects"]  = xp_entry["applied_effects"]
+                                _payload["effect_durations"] = xp_entry.get("effect_durations", {})
                             await session.send(MsgType.STATS_UPDATE, _payload)
 
             # Notificações de corpse/loot

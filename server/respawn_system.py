@@ -97,3 +97,8 @@ class RespawnMixin:
             "respawn_tx": rx,
             "respawn_ty": ry,
         })
+        # Broadcast HP restaurado — outros players atualizam a barra de HP do respawnado
+        if player_cs:
+            self._player_hp_broadcasts_this_tick.append({
+                "eid": player_eid, "hp": player_cs.current_hp, "hp_max": player_cs.max_hp,
+            })
