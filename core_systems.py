@@ -137,10 +137,10 @@ class StatusEffectSystem:
                 if slow:
                     tm.slow_mult = slow.magnitude if 0.0 < slow.magnitude < 1.0 else 0.5
                 elif sfx.has("disoriented") or sfx.has("polymorph"):
-                    # Disoriented/polymorph: 80% da velocidade normal (20% de redução)
-                    from components import CombatStats as _CS_slow
-                    if self.world.get_component(eid, _CS_slow) is not None:
-                        tm.slow_mult = 0.5
+                    # Disoriented/polymorph: 50% da velocidade normal.
+                    # Sem guard de CombatStats — aplica a qualquer entidade com
+                    # TileMovement+StatusEffects (local, remota, com ou sem CombatStats).
+                    tm.slow_mult = 0.5
                 else:
                     # Só reseta para 1.0 em entidades com CombatStats (offline/local).
                     # Mobs online (sem CombatStats no cliente) têm slow_mult gerenciado

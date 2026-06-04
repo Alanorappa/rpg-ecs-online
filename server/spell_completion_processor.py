@@ -60,17 +60,22 @@ class SpellCompletionMixin:
                     "expires_at": _t_if.time() + 2.0,
                 })
                 _splog2(f"COMPLETION {spell_id} player={player_eid} target={target_id} → em voo")
-                # Notifica a vítima player (PvP) via STATS_UPDATE com proj_incoming=True.
-                # O cliente vítima cria o projétil visual voando do caster até si mesmo.
-                if target_id in self._player_eids.values():
-                    from components import CharacterStats as _CHS_proj
-                    _vch_p = self.world.get_component(target_id, _CHS_proj)
+                # Notifica outros players via STATS_UPDATE com proj_incoming para que
+                # criem o projétil visual. Inclui alvo para saber onde ele vai:
+                # - PvP (target = player): proj_target = player_eid
+                # - PvE (target = mob):   proj_target = mob_server_eid
+                from components import CharacterStats as _CHS_proj
+                for _other_eid in list(self._player_eids.values()):
+                    if _other_eid == player_eid:
+                        continue  # o caster já cria localmente
+                    _vch_p = self.world.get_component(_other_eid, _CHS_proj)
                     self._pending_xp_deliveries.append({
-                        "player_eid":    target_id,
+                        "player_eid":    _other_eid,
                         "xp": 0, "mob_eid": -1,
                         "rage": _vch_p.rage if _vch_p else 0,
                         "proj_incoming": spell_id,
                         "proj_caster":   player_eid,
+                        "proj_target":   target_id,
                     })
             else:
                 fn = _dispatch.get(spell_id)

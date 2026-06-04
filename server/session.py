@@ -730,6 +730,7 @@ class SessionManager:
                             if "proj_incoming" in xp_entry:
                                 _payload["proj_incoming"] = xp_entry["proj_incoming"]
                                 _payload["proj_caster"]   = xp_entry.get("proj_caster", -1)
+                                _payload["proj_target"]   = xp_entry.get("proj_target", -1)
                             await session.send(MsgType.STATS_UPDATE, _payload)
 
             # Notificações de corpse/loot
