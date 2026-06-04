@@ -719,6 +719,10 @@ class SessionManager:
                             if "applied_effects" in xp_entry:
                                 _payload["applied_effects"]  = xp_entry["applied_effects"]
                                 _payload["effect_durations"] = xp_entry.get("effect_durations", {})
+                            # PvP: projétil chegando (BdF) — vítima cria visual cosmético
+                            if "proj_incoming" in xp_entry:
+                                _payload["proj_incoming"] = xp_entry["proj_incoming"]
+                                _payload["proj_caster"]   = xp_entry.get("proj_caster", -1)
                             await session.send(MsgType.STATS_UPDATE, _payload)
 
             # Notificações de corpse/loot
