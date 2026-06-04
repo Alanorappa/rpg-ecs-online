@@ -5962,7 +5962,11 @@ class SkillSystem(System, SkillHandlers):
                 if _needs_target and _target_local != -1:
                     _params          = getattr(skill, "params", {}) or {}
                     # Mago usa cast_range no catálogo; guerreiro/arqueiro usam params.max_range
-                    _max_range_tiles = _params.get("max_range") or getattr(skill, "cast_range", 1)
+                    _max_range_tiles = _params.get("max_range") or getattr(skill, "cast_range", 0)
+                    # cast_range=0 significa melee (sem range explícito no catálogo);
+                    # usa 1 tile para o check online — equivale a MELEE_RANGE_PX (1t + tolerance)
+                    if _max_range_tiles == 0:
+                        _max_range_tiles = 1
                     _min_range_tiles = _params.get("min_range", 0)
                     _tol = SkillHandlers.RANGE_TOLERANCE_PX
                     _max_px = _max_range_tiles * TILE_SIZE + _tol
