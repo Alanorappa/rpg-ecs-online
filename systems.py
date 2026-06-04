@@ -982,11 +982,12 @@ class CombatStateSystem(System):
                     cs.is_stunned = False
                     cs.stun_timer = 0.0
 
-            # Disoriented para PLAYERS: bloqueia ações e força movimento aleatório
+            # Disoriented / Polymorph para PLAYERS: bloqueia ações e força movimento aleatório
             # (para mobs: EnemyAISystem faz o wander; para players: aqui)
             if self.world.get_component(eid, PlayerControlled) is not None:
                 _sfx_dis = self.world.get_component(eid, StatusEffects)
-                if _sfx_dis is not None and _sfx_dis.has("disoriented"):
+                if _sfx_dis is not None and (
+                        _sfx_dis.has("disoriented") or _sfx_dis.has("polymorph")):
                     cs.is_pursuing = False
                     _auto_dis = self.world.get_component(eid, __import__("components").PlayerAutoMove)
                     _tm_dis   = self.world.get_component(eid, TileMovement)
@@ -1489,9 +1490,10 @@ class PlayerInputSystem(System):
             can_move = combat_state.can_move() if combat_state else True
             can_act = combat_state.can_act() if combat_state else True
 
-            # Disoriented: bloqueia input do jogador (CombatStateSystem força movimento aleatório)
+            # Disoriented / Polymorph: bloqueia input (CombatStateSystem força movimento aleatório)
             _sfx_inp = self.world.get_component(entity_id, StatusEffects)
-            _is_disoriented = _sfx_inp is not None and _sfx_inp.has("disoriented")
+            _is_disoriented = _sfx_inp is not None and (
+                _sfx_inp.has("disoriented") or _sfx_inp.has("polymorph"))
             if _is_disoriented:
                 can_move = False   # input bloqueado; CombatStateSystem move aleatoriamente
                 can_act  = False   # não pode usar skills nem ataques
