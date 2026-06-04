@@ -110,20 +110,23 @@ class SpellCompletionMixin:
                             _res["mob_slow_mult"] = _slow_eff.magnitude
                     results.append(_res)
 
-            # PvP: HP sync para vítimas players (SKILL_RESULT só vai para o atacante)
+            # PvP: HP + efeitos sync para vítimas players
             for _r in results:
                 _r_eid = _r["eid"]
-                if _r_eid in self._player_eids.values() and _r["damage"] > 0:
+                if _r_eid in self._player_eids.values():
                     from components import CombatStats as _CSvicC, CharacterStats as _CSvcC
                     _vcs = self.world.get_component(_r_eid, _CSvicC)
                     _vch = self.world.get_component(_r_eid, _CSvcC)
                     if _vcs:
-                        self._pending_xp_deliveries.append({
-                            "player_eid": _r_eid,
-                            "xp": 0, "mob_eid": -1,
+                        _r_entry = {
+                            "player_eid": _r_eid, "xp": 0, "mob_eid": -1,
                             "rage": _vch.rage if _vch else 0,
                             "hp": _r["hp_after"], "hp_max": _vcs.max_hp,
-                        })
+                        }
+                        if _r.get("applied_effects"):
+                            _r_entry["applied_effects"]  = _r["applied_effects"]
+                            _r_entry["effect_durations"] = _r.get("effect_durations", {})
+                        self._pending_xp_deliveries.append(_r_entry)
 
             # SKILL_RESULT da conclusão do cast — toca som e aplica cooldown (GCD já foi).
             skill_entry: dict = {
@@ -232,7 +235,7 @@ class SpellCompletionMixin:
                         _res2["mob_slow_mult"] = _slow2.magnitude
                 results.append(_res2)
 
-        # PvP: HP sync para vítimas players
+        # PvP: HP + efeitos sync para vítimas players (BdF)
         for _r2 in results:
             _r2_eid = _r2["eid"]
             if _r2_eid in self._player_eids.values() and _r2["damage"] > 0:
@@ -240,12 +243,15 @@ class SpellCompletionMixin:
                 from components import CharacterStats as _CSv2
                 _vch2 = self.world.get_component(_r2_eid, _CSv2)
                 if _vcs2:
-                    self._pending_xp_deliveries.append({
-                        "player_eid": _r2_eid,
-                        "xp": 0, "mob_eid": -1,
+                    _r2_entry = {
+                        "player_eid": _r2_eid, "xp": 0, "mob_eid": -1,
                         "rage": _vch2.rage if _vch2 else 0,
                         "hp": _r2["hp_after"], "hp_max": _vcs2.max_hp,
-                    })
+                    }
+                    if _r2.get("applied_effects"):
+                        _r2_entry["applied_effects"]  = _r2["applied_effects"]
+                        _r2_entry["effect_durations"] = _r2.get("effect_durations", {})
+                    self._pending_xp_deliveries.append(_r2_entry)
 
         char = self.world.get_component(player_eid, _CHS)
         skill_entry: dict = {
@@ -315,9 +321,9 @@ class SpellCompletionMixin:
                 tx   = int(ch.target_x / 32)
                 ty   = int(ch.target_y / 32)
 
-                for mob_eid in list(self._mob_eids):
-                    mob_tm = self.world.get_component(mob_eid, _TM)
-                    mob_cs = self.world.get_component(mob_eid, _CS)
+                for target_eid in list(self._combat_targets(exclude_eid=player_eid)):
+                    mob_tm = self.world.get_component(target_eid, _TM)
+                    mob_cs = self.world.get_component(target_eid, _CS)
                     if not mob_tm or not mob_cs or mob_cs.current_hp <= 0:
                         continue
                     if chebyshev(tx, ty, mob_tm.current_tile_x, mob_tm.current_tile_y) > ch.radius_tiles:
@@ -325,21 +331,30 @@ class SpellCompletionMixin:
                     dmg = max(1, int(cs_p.base_physical_damage * ch.dmg_weapon_pct
                                      + sp * ch.dmg_sp_coeff)) if cs_p else 1
                     hp_before = mob_cs.current_hp
-                    self._server_apply_magic_damage(player_eid, mob_eid, dmg)
+                    self._server_apply_magic_damage(player_eid, target_eid, dmg)
                     hp_after  = max(0, mob_cs.current_hp)
                     damage    = max(0, hp_before - mob_cs.current_hp)
                     if damage > 0:
-                        # Envia COMBAT_RESULT ao cliente para exibir FLT
                         self._combat_this_tick.append({
                             "attacker": player_eid,
-                            "target":   mob_eid,
+                            "target":   target_eid,
                             "damage":   damage,
                             "outcome":  "hit",
                             "hp_after": hp_after,
                             "source":   "skill",
                         })
+                        # PvP: HP sync para vítima player
+                        if target_eid in self._player_eids.values():
+                            from components import CharacterStats as _CHS2
+                            _vch = self.world.get_component(target_eid, _CHS2)
+                            self._pending_xp_deliveries.append({
+                                "player_eid": target_eid,
+                                "xp": 0, "mob_eid": -1,
+                                "rage": _vch.rage if _vch else 0,
+                                "hp": hp_after, "hp_max": mob_cs.max_hp,
+                            })
                     if ch.slow_pct > 0:
-                        apply_effect(self.world, mob_eid, "slow", 2.0, 1.0 - ch.slow_pct)
+                        apply_effect(self.world, target_eid, "slow", 2.0, 1.0 - ch.slow_pct)
 
         for eid in _to_remove:
             try:

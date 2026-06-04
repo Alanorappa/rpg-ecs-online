@@ -208,15 +208,19 @@ class CombatProcessorMixin:
                              session_id: str, dt: float) -> None:
         """Auto-attack de player em outro player (PvP).
 
-        Mesma fórmula de dano do PvE (deal_damage → damage_calculator).
-        Resultado vai para _combat_this_tick → AOI_UPDATE para ambos.
-        Vítima recebe HP sync via _pending_xp_deliveries.
+        Requer is_pursuing=True: ataque só ocorre quando o jogador está
+        ativamente perseguindo o alvo (clique direito), não apenas selecionado.
+        Usa server_tile_x/y se disponível para range check mais preciso.
         """
         from systems import deal_damage
         from components import CombatState, CombatStats, TileMovement, PendingDeath
         from utils import chebyshev
 
-        # Validações
+        # Requer is_pursuing — previne auto-ataque acidental com alvo só selecionado
+        attacker_cst = self.world.get_component(attacker_eid, CombatState)
+        if not attacker_cst or not attacker_cst.is_pursuing:
+            return
+
         victim_cs = self.world.get_component(victim_eid, CombatStats)
         if not victim_cs or victim_cs.current_hp <= 0:
             return
@@ -228,8 +232,14 @@ class CombatProcessorMixin:
 
         attacker_cs = self.world.get_component(attacker_eid, CombatStats)
         attack_range = 7 if getattr(attacker_cs, "is_ranged", False) else 1
-        dist = chebyshev(attacker_tm.current_tile_x, attacker_tm.current_tile_y,
-                         victim_tm.current_tile_x,   victim_tm.current_tile_y)
+
+        # Usa server_tile_x/y (posição autoritativa) quando disponível;
+        # fallback para current_tile (última posição confirmada)
+        _a_tx = getattr(attacker_tm, "server_tile_x", 0) or attacker_tm.current_tile_x
+        _a_ty = getattr(attacker_tm, "server_tile_y", 0) or attacker_tm.current_tile_y
+        _v_tx = getattr(victim_tm,   "server_tile_x", 0) or victim_tm.current_tile_x
+        _v_ty = getattr(victim_tm,   "server_tile_y", 0) or victim_tm.current_tile_y
+        dist = chebyshev(_a_tx, _a_ty, _v_tx, _v_ty)
         if dist > attack_range:
             return
 

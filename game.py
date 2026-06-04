@@ -3298,11 +3298,16 @@ class GameEngine:
                     if not _ae:
                         continue
                     _t_srv = t.get("eid", -1)
+                    # Busca mob remoto ou player remoto (PvP) como alvo local
                     _t_local = self._remote_mobs.get(_t_srv)
+                    if _t_local is None:
+                        _t_local = self._remote_players.get(_t_srv)
                     if _t_local is not None:
-                        from components import EntityIdentity as _EI_sr
+                        from components import EntityIdentity as _EI_sr, RemoteControlled as _RCae
                         _ident_sr = self.world.get_component(_t_local, _EI_sr)
-                        _tname = _ident_sr.name if _ident_sr else "Alvo"
+                        _rc_ae    = self.world.get_component(_t_local, _RCae)
+                        _tname = (_ident_sr.name if _ident_sr
+                                  else (_rc_ae.name if _rc_ae else "Alvo"))
                     else:
                         _tname = "Alvo"
                     _eff_durs_sr = t.get("effect_durations", {})
@@ -3310,9 +3315,9 @@ class GameEngine:
                         _defn_sr = _EDEFS_sr.get(_ef)
                         _elabel  = _defn_sr.label if _defn_sr else _ef
                         LOG.add(f"{_tname} recebeu: {_elabel}!", (255, 200, 80))
-                        # Aplica efeito no mob local com a duração real enviada pelo servidor.
-                        # Root: para interpolação do tile, evitando snapback de 1 tile.
-                        # Slow: gerenciado via mob_slow_mult em _apply_combat_result — pular.
+                        # Aplica efeito no alvo local (mob ou player remoto PvP).
+                        # Root: para interpolação, evitando snapback.
+                        # Slow: gerenciado via mob_slow_mult em _apply_combat_result.
                         if _t_local is not None and _ef not in ("slow",):
                             _dur_sr = _eff_durs_sr.get(_ef, 5.0)
                             _ae_apply(self.world, _t_local, _ef, _dur_sr)
@@ -3571,6 +3576,14 @@ class GameEngine:
                                 from floating_text import WARN
                                 WARN.add("Vitória Iminente!")
                                 break
+            # PvP: aplica efeitos recebidos pelo próprio jogador (vítima)
+            if eid == self._my_eid and payload.get("applied_effects"):
+                from core_systems import apply_effect as _ae_pvp
+                _ae_pvp_durs = payload.get("effect_durations", {})
+                for _ae_pvp_ef in payload["applied_effects"]:
+                    _ae_pvp_dur = _ae_pvp_durs.get(_ae_pvp_ef, 5.0)
+                    _ae_pvp(self.world, self.player_entity, _ae_pvp_ef, _ae_pvp_dur)
+
             elif eid in self._remote_players:
                 local_eid = self._remote_players[eid]
                 rc = self.world.get_component(local_eid, RemoteControlled)
@@ -3999,13 +4012,15 @@ class GameEngine:
                     FLT.add(f"+{healed} HP", pos.x, pos.y, col_regen, "normal", target_id=local_eid)
             elif damage > 0 and pos:
                 FLT.add(f"-{damage}", pos.x, pos.y, (220, 80, 80), target_id=local_eid, is_crit=is_crit)
-                if is_crit:
-                    SOUNDS.play_random_at(["hit_crit_1","hit_crit_2","hit_crit"],
-                                          pos.x, pos.y, _lx, _ly, base=0.7)
-                else:
-                    SOUNDS.play_random_at(["hit_normal_1","hit_normal_2",
-                                           "hit_normal_3","hit_normal"],
-                                          pos.x, pos.y, _lx, _ly, base=0.6)
+                if not _is_dot_hot:
+                    if is_crit:
+                        SOUNDS.play_random_at(["hit_crit_1","hit_crit_2","hit_crit"],
+                                              pos.x, pos.y, _lx, _ly, base=0.7)
+                    elif not is_ability:
+                        # Só auto-attack toca hit_normal; som de skill já tocou em is_completion
+                        SOUNDS.play_random_at(["hit_normal_1","hit_normal_2",
+                                               "hit_normal_3","hit_normal"],
+                                              pos.x, pos.y, _lx, _ly, base=0.6)
 
     def _sync_player_effects(self, effects: list) -> None:
         """Sincroniza StatusEffects do jogador local com o estado autoritativo do servidor.

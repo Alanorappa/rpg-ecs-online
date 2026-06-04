@@ -309,24 +309,25 @@ class SkillProcessorMixin:
                 elif _applied and mob_eid == tid:
                     results_targets.append(_make_result("hit"))
 
-            # PvP: sincroniza HP da vítima player via STATS_UPDATE.
-            # SKILL_RESULT só vai para o atacante — a vítima precisa saber que tomou dano.
+            # PvP: sincroniza HP + efeitos aplicados da vítima player via STATS_UPDATE.
             import components as _comp_pvp
+            from components import CharacterStats as _CSvic
             for _pvp_r in results_targets:
                 _pvp_eid = _pvp_r["eid"]
-                if _pvp_eid in self._player_eids.values() and _pvp_r["damage"] > 0:
-                    _vic_cs = self.world.get_component(_pvp_eid, _comp_pvp.CombatStats)
-                    from components import CharacterStats as _CSvic
+                if _pvp_eid in self._player_eids.values():
+                    _vic_cs   = self.world.get_component(_pvp_eid, _comp_pvp.CombatStats)
                     _vic_char = self.world.get_component(_pvp_eid, _CSvic)
                     if _vic_cs:
-                        self._pending_xp_deliveries.append({
+                        _pvp_entry = {
                             "player_eid": _pvp_eid,
-                            "xp":         0,
-                            "mob_eid":    -1,
-                            "rage":       _vic_char.rage if _vic_char else 0,
-                            "hp":         _pvp_r["hp_after"],
-                            "hp_max":     _vic_cs.max_hp,
-                        })
+                            "xp": 0, "mob_eid": -1,
+                            "rage": _vic_char.rage if _vic_char else 0,
+                            "hp": _pvp_r["hp_after"], "hp_max": _vic_cs.max_hp,
+                        }
+                        if _pvp_r.get("applied_effects"):
+                            _pvp_entry["applied_effects"]  = _pvp_r["applied_effects"]
+                            _pvp_entry["effect_durations"] = _pvp_r.get("effect_durations", {})
+                        self._pending_xp_deliveries.append(_pvp_entry)
 
             # Registra CD server-side APENAS se handler teve sucesso.
             # Registra CD efetivo (com reduções de talento) para que a validação futura
