@@ -179,11 +179,7 @@ class SkillHandlers:
     def _skill_impacto(self, skill, _combat_stats, combat_state, tile_move):
         """50% dano em todos os inimigos dentro de AoE_RADIUS tiles.
         Máquina de Matar: +15% por inimigo no raio (checado antes do dano)."""
-        # Usa server_tile_x/y (posição autoritativa online) quando disponível
-        px = getattr(tile_move, "server_tile_x", 0) or tile_move.current_tile_x
-        py = getattr(tile_move, "server_tile_y", 0) or tile_move.current_tile_y
-        if px == 0 and py == 0:
-            px, py = tile_move.current_tile_x, tile_move.current_tile_y
+        px, py = tile_move.current_tile_x, tile_move.current_tile_y
 
         # Itera CombatStats (não Enemy) — inclui players em PvP no servidor
         targets = []
@@ -193,12 +189,8 @@ class SkillHandlers:
                 continue  # não ataca a si mesmo
             if enemy_cs.current_hp <= 0:
                 continue
-            # Usa server_tile_x/y para players online também
-            etx = getattr(enemy_tm, "server_tile_x", 0) or enemy_tm.current_tile_x
-            ety = getattr(enemy_tm, "server_tile_y", 0) or enemy_tm.current_tile_y
-            if etx == 0 and ety == 0:
-                etx, ety = enemy_tm.current_tile_x, enemy_tm.current_tile_y
-            dist = max(abs(px - etx), abs(py - ety))
+            dist = max(abs(px - enemy_tm.current_tile_x),
+                       abs(py - enemy_tm.current_tile_y))
             if dist <= self.AoE_RADIUS:
                 targets.append(enemy_id)
 
@@ -537,21 +529,14 @@ class SkillHandlers:
     def _skill_brado_provocativo(self, skill, _combat_stats, combat_state, tile_move):
         """Cavaleiro — Brado Provocativo: provoca inimigos em raio 3, enlouquecendo-os por 10s."""
         from components import StatusEffects as _SE_BP2
-        pl_x = getattr(tile_move, "server_tile_x", 0) or tile_move.current_tile_x
-        pl_y = getattr(tile_move, "server_tile_y", 0) or tile_move.current_tile_y
-        if pl_x == 0 and pl_y == 0:
-            pl_x, pl_y = tile_move.current_tile_x, tile_move.current_tile_y
+        pl_x, pl_y = tile_move.current_tile_x, tile_move.current_tile_y
         taunted = 0
         from components import AIControlled as _AIC_BP, CombatState as _CSt_BP
         for eid, _, etm, ecs in self.world.get_entities_with(TileMovement, CombatStats):
             if eid == self.player_entity_id: continue
             if ecs.current_hp <= 0:
                 continue
-            _etx = getattr(etm, "server_tile_x", 0) or etm.current_tile_x
-            _ety = getattr(etm, "server_tile_y", 0) or etm.current_tile_y
-            if _etx == 0 and _ety == 0:
-                _etx, _ety = etm.current_tile_x, etm.current_tile_y
-            if chebyshev(pl_x, pl_y, _etx, _ety) > 3:
+            if chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y) > 3:
                 continue
             apply_effect(self.world, eid, "enraged", 10.0)
             # Mob: força perseguição via AI
