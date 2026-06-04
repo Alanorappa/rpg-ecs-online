@@ -139,6 +139,8 @@ class GameEngine:
         self._cancelled_spell_ids: set[str] = set()
         # Último alvo enviado ao servidor (evita reenvios desnecessários)
         self._net_last_target: int = -2
+        # Server EID do último player remoto perseguido — reacquire quando respawnar
+        self._pvp_respawn_target: int = -1
         # Última posição enviada ao servidor (evita envios duplicados)
         self._net_last_tx: int = -1
         self._net_last_ty: int = -1
@@ -3618,6 +3620,29 @@ class GameEngine:
                 for _ae_pvp_ef in payload["applied_effects"]:
                     _ae_pvp_dur = _ae_pvp_durs.get(_ae_pvp_ef, 5.0)
                     _ae_pvp(self.world, self.player_entity, _ae_pvp_ef, _ae_pvp_dur)
+                    # Root/stun: para movimento imediatamente sem esperar StatusEffectSystem
+                    if _ae_pvp_ef in ("root", "stun", "polymorph", "disoriented"):
+                        from components import CombatState as _CStAE, TileMovement as _TMAE
+                        from components import PlayerAutoMove as _PAMAE
+                        _cst_ae = self.world.get_component(self.player_entity, _CStAE)
+                        _tm_ae  = self.world.get_component(self.player_entity, _TMAE)
+                        _am_ae  = self.world.get_component(self.player_entity, _PAMAE)
+                        if _ae_pvp_ef == "root" and _cst_ae:
+                            _cst_ae.is_rooted   = True
+                            _cst_ae.is_pursuing = False
+                        elif _ae_pvp_ef in ("stun", "polymorph") and _cst_ae:
+                            _cst_ae.is_stunned  = True
+                            _cst_ae.is_pursuing = False
+                        # Para a animação de tile atual
+                        if _tm_ae and _tm_ae.is_moving:
+                            _tm_ae.is_moving          = False
+                            _tm_ae.progress           = 0.0
+                            _tm_ae.current_tile_x     = _tm_ae.target_tile_x
+                            _tm_ae.current_tile_y     = _tm_ae.target_tile_y
+                        # Limpa pursuit e path
+                        if _am_ae:
+                            _am_ae.active = False
+                            _am_ae.path.clear()
 
             elif eid in self._remote_players:
                 local_eid = self._remote_players[eid]
@@ -4506,6 +4531,14 @@ class GameEngine:
         ))
         self._remote_players[server_eid] = local_eid
 
+        # Reacquire alvo PvP: se estávamos perseguindo este player antes de ele morrer
+        if server_eid == self._pvp_respawn_target:
+            from components import CombatState as _CStRe
+            _cs_re = self.world.get_component(self.player_entity, _CStRe)
+            if _cs_re and _cs_re.is_pursuing:
+                _cs_re.target_entity_id = local_eid
+            self._pvp_respawn_target = -1  # consumido
+
     def _apply_remote_move(self, eid: int, new_tx: int, new_ty: int,
                            from_tx: int | None = None, from_ty: int | None = None,
                            is_dash: bool = False) -> None:
@@ -5080,6 +5113,14 @@ class GameEngine:
         self._remote_player_move_queues.pop(server_eid, None)
         self._remote_step_timers.pop(server_eid, None)
         if local_eid is not None:
+            # Se o player local estava perseguindo esta entidade, guarda o server_eid
+            # para reacquirir o alvo quando o player remoto respawnar.
+            from components import CombatState as _CStRm
+            _cs_rm = self.world.get_component(self.player_entity, _CStRm)
+            if _cs_rm and _cs_rm.target_entity_id == local_eid and _cs_rm.is_pursuing:
+                self._pvp_respawn_target = server_eid
+                # Mantém is_pursuing para indicar intenção de continuar perseguindo
+                # _process_target limpará target_entity_id quando a entidade sumir
             try:
                 self.world.remove_entity(local_eid)
             except Exception:
