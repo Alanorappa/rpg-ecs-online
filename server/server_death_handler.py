@@ -61,6 +61,16 @@ class ServerDeathHandler:
         to_pd_only:   list[int] = []  # boneco de treino: só remove PendingDeath
 
         for eid, pd in self.world.get_entities_with(PendingDeath):
+            # Player morreu (PvP): usa _handle_player_death, NÃO o fluxo de mob
+            # (que criaria corpse com loot, daria XP de mob e despawnaria a entidade).
+            if self.world_server and eid in self.world_server._player_eids.values():
+                self.world_server._handle_player_death(eid)
+                try:
+                    self.world.remove_component(eid, PendingDeath)
+                except Exception:
+                    pass
+                continue
+
             # Boneco de treino: reseta HP em vez de morrer
             from components import TrainingDummy as _TDdh, CombatStats as _CSdh
             if self.world.get_component(eid, _TDdh) is not None:
