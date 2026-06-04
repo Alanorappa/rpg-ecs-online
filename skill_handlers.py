@@ -183,7 +183,7 @@ class SkillHandlers:
 
         # Itera CombatStats (não Enemy) — inclui players em PvP no servidor
         targets = []
-        for enemy_id, _, enemy_tm, enemy_cs in self.world.get_entities_with(
+        for enemy_id, enemy_tm, enemy_cs in self.world.get_entities_with(
                 TileMovement, CombatStats):
             if enemy_id == self.player_entity_id:
                 continue  # não ataca a si mesmo
@@ -509,14 +509,14 @@ class SkillHandlers:
         hit = 0
 
         if use_weapon:
-            for eid, _, etm, ecs in self.world.get_entities_with(TileMovement, CombatStats):
+            for eid, etm, ecs in self.world.get_entities_with(TileMovement, CombatStats):
                 if eid == self.player_entity_id: continue
                 if chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y) <= radius and ecs.current_hp > 0:
                     deal_damage(self.player_entity_id, eid, "physical",
                                 multiplier=mult, is_ability=True)
                     hit += 1
         else:
-            for eid, _, etm, ecs in self.world.get_entities_with(TileMovement, CombatStats):
+            for eid, etm, ecs in self.world.get_entities_with(TileMovement, CombatStats):
                 if eid == self.player_entity_id: continue
                 if chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y) <= radius and ecs.current_hp > 0:
                     deal_damage(self.player_entity_id, eid, "physical",
@@ -532,7 +532,7 @@ class SkillHandlers:
         pl_x, pl_y = tile_move.current_tile_x, tile_move.current_tile_y
         taunted = 0
         from components import AIControlled as _AIC_BP, CombatState as _CSt_BP
-        for eid, _, etm, ecs in self.world.get_entities_with(TileMovement, CombatStats):
+        for eid, etm, ecs in self.world.get_entities_with(TileMovement, CombatStats):
             if eid == self.player_entity_id: continue
             if ecs.current_hp <= 0:
                 continue
