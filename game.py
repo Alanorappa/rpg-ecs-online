@@ -3426,6 +3426,8 @@ class GameEngine:
                     continue
                 if eid in self._remote_players:
                     self._apply_remote_move(eid, m["tx"], m["ty"],
+                                            from_tx=m.get("from_tx"),
+                                            from_ty=m.get("from_ty"),
                                             is_dash=m.get("is_dash", False))
                 elif eid in self._remote_mobs:
                     self._move_remote_mob(eid, m["tx"], m["ty"],
@@ -4485,9 +4487,12 @@ class GameEngine:
 
         local_eid = self.world.create_entity()
         self.world.add_component(local_eid, Position(x=px, y=py, prev_x=px, prev_y=py))
+        from entity_factory import PLAYER_SPEED as _PS_remote
         self.world.add_component(local_eid, TileMovement(
             current_tile_x=tx, current_tile_y=ty,
             target_tile_x=tx,  target_tile_y=ty,
+            speed=_PS_remote,                      # igual ao player local → move_duration correto
+            move_duration=_TS / _PS_remote,        # pre-calcula para o primeiro movimento
         ))
         self.world.add_component(local_eid, Renderable(
             color=col, width=_TS - 4, height=_TS - 4))
@@ -4502,15 +4507,17 @@ class GameEngine:
         self._remote_players[server_eid] = local_eid
 
     def _apply_remote_move(self, eid: int, new_tx: int, new_ty: int,
+                           from_tx: int | None = None, from_ty: int | None = None,
                            is_dash: bool = False) -> None:
         """Atualiza target_tile do jogador remoto — TileMovementSystem anima.
 
-        Usa fila de movimentos (igual aos mobs remotos) para garantir que a animação
-        atual termine antes de iniciar a próxima. Sem isso, alterar target_tile_x/y
-        mid-animação sem atualizar target_pixel_x/y causava salto no tile seguinte.
+        from_tx/from_ty: posição anterior confirmada pelo servidor.
+        Quando disponíveis, garante que a animação parta do tile correto,
+        eliminando desyncs acumulados (player parece "pular" entre tiles).
         """
         from components import TileMovement, Position
         from utils import start_tile_movement
+        from tileset import TILE_SIZE as _TS_rm
         local_eid = self._remote_players.get(eid)
         if local_eid is None:
             return
@@ -4519,6 +4526,13 @@ class GameEngine:
         if not tm or not pos:
             return
         if not tm.is_moving:
+            # Se temos a posição "de" confirmada, alinha o visual antes de animar.
+            # Só aplica quando parado (sem interromper animação em curso).
+            if from_tx is not None and from_ty is not None:
+                pos.x = from_tx * _TS_rm + _TS_rm / 2
+                pos.y = from_ty * _TS_rm + _TS_rm / 2
+                tm.current_tile_x = from_tx
+                tm.current_tile_y = from_ty
             start_tile_movement(pos, tm, new_tx, new_ty)
             if is_dash:
                 tm.is_dash       = True
