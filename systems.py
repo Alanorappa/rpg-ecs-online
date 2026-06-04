@@ -968,7 +968,7 @@ class CombatStateSystem(System):
 
     RAGE_DECAY_AMOUNT   = 5
     RAGE_DECAY_INTERVAL = 3.0  # segundos entre cada decaimento
-    DIS_MOVE_DELAY      = 0.7  # segundos de pausa entre passos aleatórios
+    DIS_MOVE_DELAY      = 1.3  # segundos de pausa entre passos aleatórios
 
     def update(self, events: list = None, dt: float = 0) -> None:
         for eid, cs in self.world.get_entities_with(CombatState):

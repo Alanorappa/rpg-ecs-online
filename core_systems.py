@@ -140,7 +140,7 @@ class StatusEffectSystem:
                     # Disoriented/polymorph: 80% da velocidade normal (20% de redução)
                     from components import CombatStats as _CS_slow
                     if self.world.get_component(eid, _CS_slow) is not None:
-                        tm.slow_mult = 0.8
+                        tm.slow_mult = 0.5
                 else:
                     # Só reseta para 1.0 em entidades com CombatStats (offline/local).
                     # Mobs online (sem CombatStats no cliente) têm slow_mult gerenciado
