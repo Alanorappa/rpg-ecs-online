@@ -284,16 +284,21 @@ class SpellCastSystem(System):
         SOUNDS.play_spell("bola_de_fogo", "launch")
 
     def _apply_calcinar(self, attacker_id: int, target_id: int) -> None:
-        """Calcinar — hit instantâneo: 50 + 25% SP. Escola fogo. Pode ser castado em movimento."""
+        """Calcinar — hit instantâneo: 50 + 25% SP. Escola fogo. Pode ser castado em movimento.
+
+        Online visual_only: target não tem CombatStats no cliente (mob remoto ou player remoto).
+        Dano é calculado no servidor; aqui apenas tocamos o som de impacto.
+        """
         from combat_log import LOG
-        target_cs = self.world.get_component(target_id, CombatStats)
-        if not target_cs or target_cs.current_hp <= 0:
-            return
         attacker_cs = self.world.get_component(attacker_id, CombatStats)
         sp = attacker_cs.spell_power if attacker_cs else 0
-        dmg = max(1, 50 + int(sp * 0.25))
-        _apply_magic_damage(attacker_id, target_id, dmg, self.world)
-        LOG.add(f"Calcinar! {dmg} de dano.", (255, 140, 40))
+        target_cs = self.world.get_component(target_id, CombatStats)
+        if target_cs and target_cs.current_hp > 0:
+            # Offline: aplica dano localmente
+            dmg = max(1, 50 + int(sp * 0.25))
+            _apply_magic_damage(attacker_id, target_id, dmg, self.world)
+            LOG.add(f"Calcinar! {dmg} de dano.", (255, 140, 40))
+        # Som toca sempre: offline (dano local) e online visual_only (servidor aplica dano)
         SOUNDS.play_spell("calcinar", "impact")
 
     def _apply_nova_congelante(self, attacker_id: int, target_id: int = -1) -> None:
@@ -756,11 +761,11 @@ class SpellCastSystem(System):
         from floating_text import FLT
         from combat_log import LOG
         target_cs = self.world.get_component(target_id, CombatStats)
-        if not target_cs or target_cs.current_hp <= 0:
-            return  # alvo morreu durante o cast
-        regen_per_tick = max(1, int(target_cs.max_hp * 0.10))
-        apply_effect(self.world, target_id, "polymorph",
-                     duration=6.0, magnitude=regen_per_tick)
+        if target_cs and target_cs.current_hp > 0:
+            # Offline: aplica efeito localmente
+            regen_per_tick = max(1, int(target_cs.max_hp * 0.10))
+            apply_effect(self.world, target_id, "polymorph",
+                         duration=6.0, magnitude=regen_per_tick)
         # Garante que o atacante NÃO retoma auto-ataque após o cast
         attacker_state = self.world.get_component(attacker_id, CombatState)
         if attacker_state:

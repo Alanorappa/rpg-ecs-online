@@ -3233,9 +3233,13 @@ class GameEngine:
                     if sid in self._cancelled_spell_ids:
                         self._cancelled_spell_ids.discard(sid)
                     else:
-                        # Cria projétil — alvo existe antes do ENTITY_DESPAWN
+                        # Cria projétil — alvo pode ser mob remoto ou player remoto (PvP)
                         _proj_srv = payload.get("projectile_target", -1)
-                        _proj_loc = self._remote_mobs.get(_proj_srv, -1) if _proj_srv != -1 else -1
+                        _proj_loc = -1
+                        if _proj_srv != -1:
+                            _proj_loc = self._remote_mobs.get(_proj_srv, -1)
+                            if _proj_loc == -1:
+                                _proj_loc = self._remote_players.get(_proj_srv, -1)
                         if _proj_loc != -1:
                             self._spell_cast_system._launch_fireball(self.player_entity, _proj_loc)
                             for _peid, _pp, _ in self.world.get_entities_with(_PPcomp, _PPpos2):

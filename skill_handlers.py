@@ -853,7 +853,6 @@ class SkillHandlers:
             char_stats.mana -= skill.mana_cost
             skill.current_cooldown = skill.cooldown
 
-            from components import Enemy
             from spell_system import _apply_magic_damage
             pos_p = self.world.get_component(self.player_entity_id, Position)
             tm_p  = tile_move
@@ -863,9 +862,9 @@ class SkillHandlers:
                                           dir_x, dir_y)
             hit   = 0
             for eid, etm, ecs in self.world.get_entities_with(TileMovement, CombatStats):
+                if eid == self.player_entity_id:
+                    continue  # não afeta o próprio caster
                 if ecs.current_hp <= 0:
-                    continue
-                if not self.world.get_component(eid, Enemy):
                     continue
                 if (etm.current_tile_x, etm.current_tile_y) in cone:
                     from skill_config import SKILL_CATALOG as _SC_piro
