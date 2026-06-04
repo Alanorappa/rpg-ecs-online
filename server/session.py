@@ -910,18 +910,26 @@ class SessionManager:
             or cr.get("attacker") in session.known_eids
         ]
 
-        # ── Effects: só os do próprio player ─────────────────────────
+        # ── Effects: próprio player ───────────────────────────────────
         my_effects = [
             e for e in deltas.get("effects", [])
             if e.get("eid") == session.entity_id
         ]
 
-        # ── Mob effects: efeitos em mobs dentro do AOI desta sessão ──
-        _raw_mob_efx = deltas.get("mob_effects", {})
-        mob_effects = {
-            k: v for k, v in _raw_mob_efx.items()
+        # ── Mob effects: mobs no AOI + outros players no AOI (PvP) ───
+        # Inclui efeitos de outros players no mob_effects para que o
+        # cliente possa exibi-los (enraged, root, etc.) nos players remotos.
+        _raw_mob_efx = dict(
+            (k, v) for k, v in deltas.get("mob_effects", {}).items()
             if int(k) in session.known_eids
-        }
+        )
+        for _pfx_entry in deltas.get("effects", []):
+            _pfx_eid = _pfx_entry.get("eid")
+            if (_pfx_eid is not None
+                    and _pfx_eid != session.entity_id
+                    and _pfx_eid in session.known_eids):
+                _raw_mob_efx[str(_pfx_eid)] = _pfx_entry.get("effects", [])
+        mob_effects = _raw_mob_efx
 
         # ── Monta resultado ───────────────────────────────────────────
         if confirmed_moves:  result["moved"]     = confirmed_moves

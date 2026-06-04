@@ -707,11 +707,12 @@ class CombatSystem(System):
                         dmg *= (1.0 + foco_bonus)
 
         # Brado Provocativo: enraivecido recebe +10% / causa +5%
+        # Funciona para mobs E players (PvP) — sem restrição de tipo de entidade
         _sfx_target = self.world.get_component(target_id, StatusEffects)
-        if _sfx_target and _sfx_target.has("enraged") and not target_is_player:
+        if _sfx_target and _sfx_target.has("enraged"):
             dmg *= 1.10
         _sfx_att = self.world.get_component(attacker_id, StatusEffects)
-        if _sfx_att and _sfx_att.has("enraged") and not attacker_is_player:
+        if _sfx_att and _sfx_att.has("enraged"):
             dmg *= 1.05
 
         return max(0, int(dmg))

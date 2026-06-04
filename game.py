@@ -4121,7 +4121,10 @@ class GameEngine:
 
         for srv_eid_str, effects in mob_effects.items():
             srv_eid   = int(srv_eid_str)
+            # Busca mob remoto OU player remoto (PvP) como entidade local
             local_eid = self._remote_mobs.get(srv_eid)
+            if local_eid is None:
+                local_eid = self._remote_players.get(srv_eid)
             if local_eid is None:
                 continue
 
