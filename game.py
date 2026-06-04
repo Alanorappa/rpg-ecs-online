@@ -3492,6 +3492,21 @@ class GameEngine:
         elif msg_type == MsgType.STATS_UPDATE:
             from components import CombatStats, RemoteControlled
             eid = payload.get("eid", -1)
+            # Projétil chegando em mim (PvP): cria projétil visual do caster em direção ao player
+            if eid == self._my_eid and payload.get("proj_incoming"):
+                _proj_sid    = payload["proj_incoming"]
+                _proj_caster = payload.get("proj_caster", -1)
+                _caster_local = self._remote_players.get(_proj_caster, -1)
+                if _caster_local != -1 and _proj_sid == "bola_de_fogo":
+                    self._spell_cast_system._launch_fireball(_caster_local, self.player_entity)
+                    from components import PlayerProjectile as _PPinc, Position as _PPinc_pos
+                    for _ppeid, _pp, _ in self.world.get_entities_with(_PPinc, _PPinc_pos):
+                        if (_pp.attacker_id == _caster_local
+                                and _pp.target_id == self.player_entity
+                                and _pp.target_server_id == -1):
+                            _pp.target_server_id = _proj_caster
+                            break
+
             if eid == self._my_eid:
                 cs = self.world.get_component(self.player_entity, CombatStats)
                 if cs and "hp" in payload:
@@ -3937,11 +3952,16 @@ class GameEngine:
             cs = self.world.get_component(self.player_entity, CombatStats)
             if cs and hp_after >= 0:
                 if is_regen:
-                    # Regen nunca reduz HP: servidor pode estar defasado
                     cs.current_hp = max(cs.current_hp, hp_after)
                 else:
-                    # Dano: servidor é autoritativo
                     cs.current_hp = hp_after
+            # Entrar em combate ao receber dano (PvP ou mob)
+            if damage > 0:
+                from components import CombatState as _CStPvp
+                from stat_fns import enter_combat as _ec_pvp_client
+                _cst_pvp = self.world.get_component(self.player_entity, _CStPvp)
+                if _cst_pvp:
+                    _ec_pvp_client(_cst_pvp)
             if is_regen:
                 healed = abs(damage)
                 if healed > 0:

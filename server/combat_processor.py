@@ -20,6 +20,9 @@ class CombatProcessorMixin:
         from components import CombatState, CombatStats, TileMovement, Enemy, PendingDeath
         from utils import chebyshev
 
+        # Rastreamento de dano PvP neste tick — subtrai de mob_delta para evitar FLT duplo
+        self._pvp_damage_this_tick: dict[int, int] = {}
+
         # ── Player → Mob ───────────────────────────────────────────────────
         for session_id, player_eid in list(self._player_eids.items()):
             cs = self.world.get_component(player_eid, CombatState)
@@ -185,7 +188,11 @@ class CombatProcessorMixin:
                 continue
             hp_now    = pcs.current_hp
             sfx_dmg   = self._sfx_damage_players.get(peid, 0)
-            mob_delta = (hp_before - sfx_dmg) - hp_now   # dano exclusivo de mobs/projéteis
+            # Subtrai dano PvP (skills + auto-ataque player→player) para não
+            # confundir com dano de mob. Sem isso, dano PvP gerava um segundo
+            # COMBAT_RESULT "de mob" → FLT duplicado na tela do atacante.
+            pvp_dmg   = getattr(self, "_pvp_damage_this_tick", {}).get(peid, 0)
+            mob_delta = (hp_before - sfx_dmg - pvp_dmg) - hp_now
 
             if mob_delta > 0:
                 attacker_mob_eid = _mob_attacker_of.get(peid, -1)
@@ -272,6 +279,10 @@ class CombatProcessorMixin:
         attacker_cst = self.world.get_component(attacker_eid, CombatState)
         if attacker_cst:
             _ec_pvp(attacker_cst)
+
+        # Rastreia dano PvP para subtrair de mob_delta (evita FLT duplo)
+        _pvp = getattr(self, "_pvp_damage_this_tick", {})
+        _pvp[victim_eid] = _pvp.get(victim_eid, 0) + damage
 
         # COMBAT_RESULT → AOI_UPDATE para ambos os clientes
         self._combat_this_tick.append({

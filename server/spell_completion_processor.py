@@ -60,6 +60,18 @@ class SpellCompletionMixin:
                     "expires_at": _t_if.time() + 2.0,
                 })
                 _splog2(f"COMPLETION {spell_id} player={player_eid} target={target_id} → em voo")
+                # Notifica a vítima player (PvP) via STATS_UPDATE com proj_incoming=True.
+                # O cliente vítima cria o projétil visual voando do caster até si mesmo.
+                if target_id in self._player_eids.values():
+                    from components import CharacterStats as _CHS_proj
+                    _vch_p = self.world.get_component(target_id, _CHS_proj)
+                    self._pending_xp_deliveries.append({
+                        "player_eid":    target_id,
+                        "xp": 0, "mob_eid": -1,
+                        "rage": _vch_p.rage if _vch_p else 0,
+                        "proj_incoming": spell_id,
+                        "proj_caster":   player_eid,
+                    })
             else:
                 fn = _dispatch.get(spell_id)
                 _tcs_pre = self.world.get_component(target_id, _CS)
@@ -445,9 +457,13 @@ class SpellCompletionMixin:
         if _t_sfx:
             _t_sfx.remove("polymorph")
 
+        # Entra em combate — tanto atacante quanto vítima (PvP e mobs)
         attacker_state = self.world.get_component(attacker_id, CombatState)
         if attacker_state:
             enter_combat(attacker_state)
+        target_state = self.world.get_component(target_id, CombatState)
+        if target_state:
+            enter_combat(target_state)
 
         _ai = self.world.get_component(target_id, AIControlled)
         if _ai and _ai.state in ("IDLE", "RETURNING"):

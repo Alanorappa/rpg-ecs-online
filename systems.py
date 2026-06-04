@@ -982,6 +982,27 @@ class CombatStateSystem(System):
                     cs.is_stunned = False
                     cs.stun_timer = 0.0
 
+            # Disoriented para PLAYERS: bloqueia ações e força movimento aleatório
+            # (para mobs: EnemyAISystem faz o wander; para players: aqui)
+            if self.world.get_component(eid, PlayerControlled) is not None:
+                _sfx_dis = self.world.get_component(eid, StatusEffects)
+                if _sfx_dis is not None and _sfx_dis.has("disoriented"):
+                    cs.is_pursuing = False
+                    _auto_dis = self.world.get_component(eid, __import__("components").PlayerAutoMove)
+                    _tm_dis   = self.world.get_component(eid, TileMovement)
+                    if _auto_dis and _tm_dis and not _tm_dis.is_moving:
+                        import random as _rand_dis
+                        _dirs = [(0,1),(0,-1),(1,0),(-1,0)]
+                        _rand_dis.shuffle(_dirs)
+                        for _ddx, _ddy in _dirs:
+                            _fx = _tm_dis.current_tile_x + _ddx
+                            _fy = _tm_dis.current_tile_y + _ddy
+                            if is_tile_walkable(eid, _fx, _fy):
+                                _auto_dis.ground_target = (_fx, _fy)
+                                _auto_dis.active        = True
+                                _auto_dis.path.clear()
+                                break
+
             # Decay de Rage e regen de Concentração (apenas jogador)
             if self.world.get_component(eid, PlayerControlled) is not None:
                 char_stats = self.world.get_component(eid, CharacterStats)
