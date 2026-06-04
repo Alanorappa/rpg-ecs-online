@@ -142,11 +142,14 @@ class StatusEffectSystem:
                     # TileMovement+StatusEffects (local, remota, com ou sem CombatStats).
                     tm.slow_mult = 0.5
                 else:
-                    # Só reseta para 1.0 em entidades com CombatStats (offline/local).
-                    # Mobs online (sem CombatStats no cliente) têm slow_mult gerenciado
-                    # por _apply_combat_result — não resetar aqui evita override.
-                    from components import CombatStats as _CS_slow
-                    if self.world.get_component(eid, _CS_slow) is not None:
+                    # Reseta para 1.0 em:
+                    #   - Entidades com CombatStats (offline/local — player, mobs)
+                    #   - RemoteControlled (players remotos em PvP)
+                    # NÃO reseta mobs remotos online (sem CombatStats nem RemoteControlled)
+                    # pois o slow deles é gerenciado por _apply_combat_result.
+                    from components import CombatStats as _CS_slow, RemoteControlled as _RC_slow
+                    if (self.world.get_component(eid, _CS_slow) is not None or
+                            self.world.get_component(eid, _RC_slow) is not None):
                         tm.slow_mult          = 1.0
                         tm.debilitate_elapsed = 0.0
 
