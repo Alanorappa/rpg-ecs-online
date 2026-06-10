@@ -22,7 +22,7 @@ except ImportError:
     print("[ERRO] websockets não instalado. Execute: pip install websockets")
     sys.exit(1)
 
-from server.auth         import init_db, register
+from server.auth         import init_db
 from server.world_server import WorldServer
 from server.session      import SessionManager
 from shared.constants    import SERVER_HOST, SERVER_PORT, PROTOCOL_VERSION
@@ -44,13 +44,8 @@ async def handle_connection(ws, session_manager: SessionManager) -> None:
 
 
 async def main(host: str, port: int) -> None:
-    # Inicializa banco de dados
+    # Inicializa banco de dados (cria contas de teste via _seed_test_accounts)
     init_db()
-
-    # Cria conta de teste se não existir
-    created = await register("teste", "123456", class_id="guerreiro")
-    if created:
-        print("[Server] conta de teste criada: usuario='teste' senha='123456'")
 
     # Inicializa o mundo e o gerenciador de sessões
     world = WorldServer(zone_id="world_main")

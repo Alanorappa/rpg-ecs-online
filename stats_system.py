@@ -88,6 +88,7 @@ CLASS_MELEE_OVERRIDES: dict[str, dict] = {
         "base_physical_damage":        2,
         "base_physical_damage_max":    4,
         "can_kite":                    True,
+        "is_ranged":                   True,
         # concentration_regen_idle/moving NÃO ficam aqui — são gerenciados por
         # cs_flags em talent_data.py (reset=5.0 garante o valor base).
         # Colocar aqui sobrescreveria o efeito do talento "Parado e Concentrado".
@@ -295,8 +296,11 @@ class DeathRespawnSystem(System):
     def __init__(self, world: World):
         self.world = world
         self.pending_respawn: "dict | None" = None  # lido e consumido pelo GameEngine
+        self.online_mode: bool = False  # True → respawn server-autoritativo, sistema não dispara
 
     def update(self, events: list = None, dt: float = 0) -> None:
+        if self.online_mode:
+            return
         for entity_id, combat_stats, char_stats, _ in \
                 self.world.get_entities_with(CombatStats, CharacterStats, PlayerControlled):
             if combat_stats.current_hp > 0:

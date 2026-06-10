@@ -78,7 +78,17 @@
       "Bash(ls -la data/game.db)",
       "Bash(dir data\\\\game.db)",
       "Bash(py -3.10 tests/test_server.py TestPlayerAttacksMob.test_no_duplicate_despawn)",
-      "Bash(py -3.10 -m pytest tests/test_server.py -q)"
+      "Bash(py -3.10 -m pytest tests/test_server.py -q)",
+      "Bash(xargs wc -l)",
+      "Bash(py -3.10 -c ' *)",
+      "Bash(py -3.10 -m pytest tests/test_server.py tests/test_combat.py -x -q)",
+      "Bash(py -3.10 -m pytest tests/test_server.py tests/test_combat.py -q --deselect tests/test_server.py::TestPlayerAttacksMob::test_mob_death_sends_entity_despawn)",
+      "Bash(py -3.10 -m pytest tests/test_server.py::TestMobMovement::test_mob_moves_toward_player -q)",
+      "Bash(git stash *)",
+      "Bash(py -3.10 -m pytest tests/test_server.py::TestMobMovement::test_mob_moves_toward_player tests/test_server.py::TestMobAttacksPlayer::test_mob_attack_reduces_player_hp_on_server -q)",
+      "Bash(py -3.10 -m pytest tests/test_server.py::TestMobAttacksPlayer::test_mob_attack_reduces_player_hp_on_server -q)",
+      "Bash(py -3.10 -m pytest tests/test_server.py tests/test_combat.py -q --ignore=tests/test_session.py)",
+      "Bash(py -3.10 -m pytest tests/test_server.py tests/test_combat.py -q)"
     ]
   }
 }

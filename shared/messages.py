@@ -103,6 +103,21 @@ class MsgType(str, Enum):
     # ── Save ──────────────────────────────────────────────────────
     SAVE_STATE         = "save_state"      # C→S  cliente envia estado completo para salvar
 
+    # ── Utilidade ─────────────────────────────────────────────────
+    UNSTUCK            = "unstuck"         # C→S  teleporta player para o spawn (cooldown 60s)
+
+    # ── Cadastro / Personagem ─────────────────────────────────────
+    REGISTER           = "register"        # C→S  {username, password}
+    REGISTER_OK        = "register_ok"     # S→C  {}
+    REGISTER_ERROR     = "register_error"  # S→C  {reason}
+    AUTH_OK            = "auth_ok"         # S→C  {characters:[...]} login ok, escolher char
+    SELECT_CHARACTER   = "select_char"     # C→S  {char_id: int}
+    CREATE_CHARACTER   = "create_character"# C→S  {name, class_id}
+    CHARACTER_CREATED  = "char_created"    # S→C  {}  (precede LOGIN_OK)
+    CHARACTER_ERROR    = "char_error"      # S→C  {reason}
+    DELETE_CHARACTER   = "delete_char"     # C→S  {char_id: int}
+    DELETE_CHARACTER_OK= "delete_char_ok"  # S→C  {}
+
     # ── Sistema ───────────────────────────────────────────────────
     PING               = "ping"            # C→S  latência
     PONG               = "pong"            # S→C  resposta de latência

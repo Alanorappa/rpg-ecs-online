@@ -75,25 +75,38 @@ def init_db() -> None:
 
 
 def _seed_test_accounts() -> None:
-    """Garante que as contas de teste existam. Idempotente — não recria se já existirem."""
+    """Garante que as contas de teste existam com personagens. Idempotente."""
     for username, password, class_id, tx, ty in _TEST_ACCOUNTS:
-        created = _register_sync(username, password, class_id, tx, ty)
+        # Seed accounts: hasha a senha em texto-plano antes de registrar
+        ph      = _hash(password)
+        created = _register_account_sync(username, ph)
         if created:
+            acc_id = _get_account_id_sync(username)
+            if acc_id:
+                _create_character_sync(acc_id, username, class_id, tx, ty)
             print(f"[Auth] conta de teste criada: usuario='{username}'  "
                   f"classe={class_id}  tile=({tx},{ty})")
 
 
-async def authenticate(username: str, password: str) -> dict | None:
-    """
-    Valida credenciais e retorna dados do personagem, ou None se inválido.
-    Executado em thread separada para não bloquear o event loop.
-    """
+def _get_account_id_sync(username: str) -> "int | None":
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT id FROM accounts WHERE username=?", (username,)
+        ).fetchone()
+        return row["id"] if row else None
+
+
+async def authenticate(username: str, password: str) -> "dict | None":
+    """Valida credenciais. Retorna dict com dados da conta/personagem ou None."""
     return await asyncio.get_running_loop().run_in_executor(
         None, _authenticate_sync, username, password)
 
 
-def _authenticate_sync(username: str, password: str) -> dict | None:
-    # O cliente já envia SHA-256(password) — comparar direto, sem rehashear
+def _authenticate_sync(username: str, password: str) -> "dict | None":
+    """
+    Compara credenciais. password já vem como SHA-256 do cliente — sem rehashear.
+    Retorna {account_id, characters:[...]}. None = credenciais inválidas.
+    """
     with _get_conn() as conn:
         row = conn.execute(
             "SELECT id FROM accounts WHERE username=? AND password_hash=?",
@@ -101,43 +114,93 @@ def _authenticate_sync(username: str, password: str) -> dict | None:
         ).fetchone()
         if not row:
             return None
-
-        char = conn.execute(
-            "SELECT * FROM characters WHERE account_id=? LIMIT 1",
+        chars = conn.execute(
+            "SELECT * FROM characters WHERE account_id=? ORDER BY id LIMIT 3",
             (row["id"],)
-        ).fetchone()
-        if not char:
-            return None
+        ).fetchall()
+        return {
+            "account_id":  row["id"],
+            "characters":  [dict(c) for c in chars],
+        }
 
-        return dict(char)
 
-
-async def register(username: str, password: str,
-                   class_id: str = "guerreiro") -> bool:
-    """Cria conta + personagem. Retorna True se sucesso, False se username já existe."""
+async def register(username: str, password: str) -> bool:
+    """Cria conta (sem personagem). password já vem hasheado pelo cliente."""
     return await asyncio.get_running_loop().run_in_executor(
-        None, _register_sync, username, password, class_id)
+        None, _register_account_sync, username, password)
 
 
-def _register_sync(username: str, password: str,
-                   class_id: str = "guerreiro",
-                   tile_x: int = 10, tile_y: int = 10) -> bool:
-    ph = _hash(password)
+def _register_account_sync(username: str, password: str) -> bool:
+    """Insere conta. password deve ser SHA-256 do texto-plano."""
     try:
         with _get_conn() as conn:
             conn.execute(
                 "INSERT INTO accounts (username, password_hash) VALUES (?,?)",
-                (username, ph)
-            )
-            account_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-            conn.execute(
-                "INSERT INTO characters (account_id, name, class_id, tile_x, tile_y)"
-                " VALUES (?,?,?,?,?)",
-                (account_id, username, class_id, tile_x, tile_y)
+                (username, password)
             )
         return True
     except sqlite3.IntegrityError:
         return False   # username já existe
+
+
+async def create_character(account_id: int, name: str,
+                           class_id: str = "guerreiro") -> bool:
+    """Cria personagem para a conta. Retorna True se sucesso."""
+    return await asyncio.get_running_loop().run_in_executor(
+        None, _create_character_sync, account_id, name, class_id)
+
+
+def _create_character_sync(account_id: int, name: str,
+                           class_id: str = "guerreiro",
+                           tile_x: int = 115, tile_y: int = 389) -> bool:
+    try:
+        with _get_conn() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM characters WHERE account_id=?", (account_id,)
+            ).fetchone()[0]
+            if count >= 3:
+                return False  # limite de 3 personagens por conta
+            conn.execute(
+                "INSERT INTO characters (account_id, name, class_id, tile_x, tile_y)"
+                " VALUES (?,?,?,?,?)",
+                (account_id, name, class_id, tile_x, tile_y)
+            )
+        return True
+    except Exception:
+        return False
+
+
+async def delete_character(account_id: int, char_id: int) -> bool:
+    """Remove personagem verificando que pertence à conta."""
+    return await asyncio.get_running_loop().run_in_executor(
+        None, _delete_character_sync, account_id, char_id)
+
+
+def _delete_character_sync(account_id: int, char_id: int) -> bool:
+    try:
+        with _get_conn() as conn:
+            conn.execute(
+                "DELETE FROM characters WHERE id=? AND account_id=?",
+                (char_id, account_id)
+            )
+        return True
+    except Exception:
+        return False
+
+
+async def get_character(account_id: int, char_id: int) -> "dict | None":
+    """Retorna um personagem verificando que pertence à conta."""
+    return await asyncio.get_running_loop().run_in_executor(
+        None, _get_character_sync, account_id, char_id)
+
+
+def _get_character_sync(account_id: int, char_id: int) -> "dict | None":
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM characters WHERE id=? AND account_id=?",
+            (char_id, account_id)
+        ).fetchone()
+        return dict(row) if row else None
 
 
 async def save_character(char_id: int, data: dict) -> None:

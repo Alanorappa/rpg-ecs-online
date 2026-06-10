@@ -165,6 +165,221 @@ def run(screen: pygame.Surface) -> tuple[int, "dict | None"]:
         pygame.display.flip()
 
 
+def run_creation(screen: pygame.Surface) -> "dict | None":
+    """Tela de criação de personagem (entrada pública para uso externo).
+
+    Retorna {"name": str, "class_id": str} ou None (cancelado).
+    """
+    clock = pygame.time.Clock()
+    sc    = screen.get_height() / 720.0
+    return _run_creation(screen, clock, sc)
+
+
+def run_online(screen: pygame.Surface,
+               char_list: "list[dict]",
+               net) -> bool:
+    """
+    Versão online da tela de seleção/criação de personagens.
+
+    Usa a mesma UI do run() offline, mas com dados do servidor.
+    char_list : lista de dicts de personagem recebida no AUTH_OK.
+    net       : NetworkClient conectado e autenticado.
+
+    Retorna True  → LOGIN_OK + WORLD_STATE foram re-enfileirados em net.inbox,
+                    GameEngine pode iniciar.
+    Retorna False → usuário voltou ao login (sair).
+    """
+    import time
+    from shared.messages import MsgType as _MT
+
+    clock = pygame.time.Clock()
+    sc    = screen.get_height() / 720.0
+    sw, sh = screen.get_size()
+
+    font_lg = _font(int(34 * sc))
+    font_md = _font(int(24 * sc))
+    font_sm = _font(int(19 * sc))
+    font_xs = _font(int(15 * sc))
+
+    char_w   = int(_BASE_CHAR_W  * sc)
+    char_h   = int(_BASE_CHAR_H  * sc)
+    slot_h   = int(_BASE_SLOT_H  * sc)
+    slot_pad = int(_BASE_SLOT_PAD * sc)
+    px = sw // 2 - char_w // 2
+    py = sh // 2 - char_h // 2
+
+    MAX_ONLINE_CHARS = 3
+
+    chars           = list(char_list)   # cópia local, muda ao criar/excluir
+    confirm_del_id  = -1               # char_id aguardando confirmação de exclusão
+    confirm_del_idx = -1
+    status          = ""               # mensagem de erro/info
+    # "selecting": aguardando LOGIN_OK + WORLD_STATE após SELECT_CHARACTER
+    # "creating":  aguardando CHARACTER_CREATED após CREATE_CHARACTER
+    pending_action  = ""
+    pending_start   = 0.0
+    game_buffer: list = []             # mensagens LOGIN_OK + WORLD_STATE para GameEngine
+
+    def _to_save(c: dict, idx: int) -> dict:
+        """Adapta dict do servidor para o formato de _draw_selection."""
+        return {
+            "slot":     idx,
+            "name":     c.get("name",     "Aventureiro"),
+            "class_id": c.get("class_id", "guerreiro"),
+            "level":    c.get("level",    1),
+            "saved_at": None,
+        }
+
+    while True:
+        clock.tick(60)
+        mx, my = pygame.mouse.get_pos()
+
+        # ── Poll de rede ──────────────────────────────────────────────────────
+        msgs = net.poll()
+        for mt, payload, _seq, _ts in msgs:
+            if pending_action == "selecting":
+                # Aguardando LOGIN_OK + WORLD_STATE para entrar no jogo
+                if mt == _MT.WORLD_STATE:
+                    game_buffer.append((mt, payload, _seq, _ts))
+                    for m in game_buffer:
+                        net.inbox.put(m)
+                    return True
+                elif mt == _MT.CHARACTER_ERROR:
+                    status         = f"Erro: {payload.get('reason', 'desconhecido')}"
+                    pending_action = ""
+                    game_buffer.clear()
+                else:
+                    game_buffer.append((mt, payload, _seq, _ts))
+
+            elif pending_action == "creating":
+                # Aguardando confirmação de criação — volta à lista de seleção
+                if mt == _MT.CHARACTER_CREATED:
+                    new_char = payload.get("char")
+                    if new_char:
+                        chars.append(new_char)
+                    pending_action = ""
+                    status = ""
+                elif mt == _MT.CHARACTER_ERROR:
+                    status         = f"Erro ao criar: {payload.get('reason', 'desconhecido')}"
+                    pending_action = ""
+
+            elif mt == _MT.DELETE_CHARACTER_OK:
+                chars           = [c for c in chars if c.get("id") != confirm_del_id]
+                confirm_del_id  = -1
+                confirm_del_idx = -1
+
+        if pending_action and time.time() - pending_start > 15.0:
+            status         = "Servidor não respondeu. Tente novamente."
+            pending_action = ""
+            game_buffer.clear()
+
+        # ── Eventos ───────────────────────────────────────────────────────────
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return False
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                if pending_action == "selecting":
+                    pass   # não cancela enquanto aguarda spawn
+                elif confirm_del_id >= 0:
+                    confirm_del_id  = -1
+                    confirm_del_idx = -1
+                else:
+                    return False
+
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if pending_action:
+                    continue
+
+                # Confirmação de exclusão
+                if confirm_del_id >= 0:
+                    yes_r, no_r = _confirm_btn_rects(sw, sh, sc)
+                    if yes_r.collidepoint(event.pos):
+                        net.send(_MT.DELETE_CHARACTER, {"char_id": confirm_del_id})
+                        # Remoção otimista: já remove da lista local
+                        chars = [c for c in chars if c.get("id") != confirm_del_id]
+                        confirm_del_id  = -1
+                        confirm_del_idx = -1
+                    elif no_r.collidepoint(event.pos):
+                        confirm_del_id  = -1
+                        confirm_del_idx = -1
+                    continue
+
+                saves = [_to_save(c, i) for i, c in enumerate(chars)]
+
+                # Clique nos slots existentes
+                for i, s in enumerate(saves):
+                    r = _slot_rect(px, py, i, char_w, slot_h, slot_pad)
+                    if not r.collidepoint(mx, my):
+                        continue
+                    del_r = _delete_btn_rect(r, slot_h, sc)
+                    if del_r.collidepoint(mx, my):
+                        confirm_del_id  = chars[i].get("id", -1)
+                        confirm_del_idx = i
+                        break
+                    play_r = _play_btn_rect(r, slot_h, sc)
+                    if play_r.collidepoint(mx, my):
+                        net.send(_MT.SELECT_CHARACTER, {"char_id": chars[i].get("id", -1)})
+                        pending_action = "selecting"
+                        pending_start  = time.time()
+                        game_buffer.clear()
+                        break
+
+                # Botão criar personagem
+                if len(chars) < MAX_ONLINE_CHARS:
+                    create_r = _create_btn_rect(px, py, char_w, char_h, slot_h, slot_pad, sc)
+                    if create_r.collidepoint(mx, my):
+                        result = _run_creation(screen, clock, sc)
+                        if result is not None:
+                            net.send(_MT.CREATE_CHARACTER, {
+                                "name":     result["name"],
+                                "class_id": result["class_id"],
+                            })
+                            pending_action = "creating"
+                            pending_start  = time.time()
+
+                # Botão sair
+                quit_r = _quit_btn_rect(px, py, char_w, char_h, sc)
+                if quit_r.collidepoint(mx, my):
+                    return False
+
+        # ── Render ────────────────────────────────────────────────────────────
+        saves = [_to_save(c, i) for i, c in enumerate(chars)]
+        can_create = len(chars) < MAX_ONLINE_CHARS
+        occupied   = set(range(len(chars)))
+
+        if pending_action == "selecting":
+            screen.fill(_BG)
+            lbl = font_md.render("Entrando no mundo...", True, _TITLE_COL)
+            screen.blit(lbl, lbl.get_rect(center=(sw // 2, sh // 2)))
+            if status:
+                e = font_sm.render(status, True, _DEL_TXT)
+                screen.blit(e, e.get_rect(centerx=sw // 2, y=sh // 2 + int(36 * sc)))
+            pygame.display.flip()
+            continue
+
+        if confirm_del_id >= 0:
+            _draw_selection(screen, saves, occupied, can_create,
+                            px, py, mx, my, confirm_del_id,
+                            font_lg, font_md, font_sm, font_xs,
+                            char_w, char_h, slot_h, slot_pad, sc)
+            del_name = chars[confirm_del_idx]["name"] if 0 <= confirm_del_idx < len(chars) else "?"
+            _draw_confirm_overlay(
+                screen, confirm_del_id,
+                [{"slot": confirm_del_id, "name": del_name}],
+                px, py, mx, my, font_md, font_sm, sc)
+        else:
+            _draw_selection(screen, saves, occupied, can_create,
+                            px, py, mx, my, -1,
+                            font_lg, font_md, font_sm, font_xs,
+                            char_w, char_h, slot_h, slot_pad, sc)
+
+        if status:
+            e = font_sm.render(status, True, _DEL_TXT)
+            screen.blit(e, e.get_rect(centerx=sw // 2, y=py - e.get_height() - int(6 * sc)))
+
+        pygame.display.flip()
+
+
 # ── Tela de criação ──────────────────────────────────────────────────────────
 
 def _run_creation(screen, clock, sc: float) -> "dict | None":

@@ -1,469 +1,313 @@
-# Problemas de Arquitetura — Análise Crítica
+06 de junho de 2026
 
-> Avaliação como Arquiteto de Software de Jogos Sênior.
-> Última análise: 2026-05-24 | Próxima revisão sugerida: após nova build ou classe jogável.
-> Revisão completa online (world_server, session, death_handler, damage_calculator, messages): ver `CODE_REVIEW.md`
+Alanorappa
 
----
+Análise Técnica de Arquitetura em MMORPG Python/Pygame
 
-## Status dos problemas
+Identificação de problemas críticos, recomendações e diagramas de fluxo
 
-| # | Problema | Severidade | Status | Esforço fix |
-|---|----------|------------|--------|-------------|
-| 1 | CharacterStats mistura permanente + volátil | CRÍTICO | 🔴 Aberto | Alto |
-| 2 | CombatStats com 80+ campos e 25+ flags de talento | CRÍTICO | 🔴 Aberto | Médio |
-| 3 | Skill sem handler não avisar | CRÍTICO | ✅ Corrigido | — |
-| 4 | `fatiador_timer` não reseta no respawn | ALTO | ✅ Corrigido | — |
-| **C1** | `move_player` sem validação de walkability | **CRÍTICO/SEGURANÇA** | 🔴 Aberto | Baixo |
-| **C2** | `client_max_hp`/`client_ap` confiados sem cap | **CRÍTICO/SEGURANÇA** | 🔴 Aberto | Baixo |
-| **C3** | Gold client-autoritativo no save merge | **CRÍTICO/SEGURANÇA** | 🔴 Aberto | Baixo |
-| **C4** | `last_outcome` singleton/mutable global | CRÍTICO | 🔴 Aberto | Médio |
-| **C5** | `_pending_inv` como atributo dinâmico (leak) | ALTO | 🔴 Aberto | Baixo |
-| **A1** | CombatStateSystem duplicado em world_server.py | ALTO | 🔴 Aberto | Médio |
-| **A2** | N² AOI sweep em session.py por tick | ALTO | 🔴 Aberto | Alto |
-| **A3** | Busy-wait `sleep(0)` na tick loop | ALTO | 🔴 Aberto | Baixo |
-| **A4** | `_ServerSFX` inner class em `_load_map()` | MÉDIO | 🔴 Aberto | Baixo |
-| **A5** | `_lookup_item_value` instancia factories por venda | MÉDIO | 🔴 Aberto | Baixo |
-| **A6** | `process_shop_buy` scan linear + factory dupla | MÉDIO | 🔴 Aberto | Baixo |
-| **A7** | `_tick()` 400+ linhas (God Method) | MÉDIO | 🔴 Aberto | Médio |
-| **A8** | `get_session_id_for_player` O(players) em toda morte | MÉDIO | 🔴 Aberto | Baixo |
-| **A9** | Mob attacker lookup O(mobs) por player por tick | MÉDIO | 🔴 Aberto | Médio |
-| 5 | `fire_instant_ready` pendurado | ALTO | ✅ Corrigido | — |
-| 6 | `apply_talent_effects()` recalcula tudo sem batch | ALTO | 🔴 Aberto | Médio |
-| 7 | `thermal_shock_active` é state derivado armazenado | ALTO | 🔴 Aberto | Médio |
-| 8 | Hardcodes `skill_id` em 3+ lugares | MÉDIO | 🔴 Aberto | Médio |
-| 9 | ShopSystem / LootSystem: UI + lógica inseparável | MÉDIO | 🔴 Aberto | Alto |
-| 10 | `timed_modifiers` sem type hint | MÉDIO | ✅ Corrigido | — |
-| 11 | `_just_entered_combat` sem reset garantido | MÉDIO | ✅ Falso positivo | — |
-| 12 | Fórmulas de skills hardcoded no handler | BAIXO | ✅ Parcialmente corrigido (Skill.params + fatiador) | — |
-| 13 | MOB_ABILITIES sem validação em startup | BAIXO | ✅ Corrigido | — |
-| 14 | `Skill.fail_flash_timer` é state de UI em component | BAIXO | 🔴 Aberto | Médio |
+06 de junho de 2026
 
 ---
 
-## 🔴 CRÍTICO — Escala impossível ou bug ativo
+## 1. DIAGRAMA DE FLUXO: Sincronização Cliente-Servidor (MULTIPLAYER)
 
-### Problema 1 — CharacterStats mistura dados permanentes com state volátil de combate
+### FLUXO CORRETO
 
-**Arquivo:** `components.py` linhas 449–499
-
-**Descrição:**
-`CharacterStats` contém duas categorias completamente distintas de dados:
-- **Permanentes:** `strength`, `intelligence`, `level`, `xp`, `mana`, `max_mana`, `spawn_tile_x`
-- **Voláteis de combate:** `embalo_charges`, `free_executar_charges`, `fire_instant_ready`, `thermal_shock_active`, `pnq_counter`, `fatiador_timer`, `fatiador_tick`
-
-**Por que é crítico:**
-1. Cada nova build adiciona ~10 flags voláteis. Com 5 builds → 50 campos em CharacterStats.
-2. State temporal não deve persistir: `embalo_charges` ao salvar/carregar cria inconsistências.
-3. Qualquer sistema que precisa de `mana` carrega também `thermal_shock_active`, `pnq_counter`, etc.
-4. Impossível saber, sem ler o código, quais campos são permanentes e quais são de combate.
-
-**Evidência:**
-```python
-# components.py CharacterStats.__init__
-self.strength: int = 1          # permanente — faz sentido salvar
-self.level: int = 1             # permanente
-self.embalo_charges: int = 0    # volátil — NÃO deveria salvar
-self.fatiador_timer: float = 0.0 # volátil de combat runtime
+```
+Player A usa Skill
+  ↓
+Cliente A: validação local (feedback rápido)
+  ↓
+CAST_SKILL enviado ao servidor
+  ↓
+Servidor: validação autoritativa
+  ↓
+Servidor: executa handler
+  ↓
+Servidor: aplica efeitos no mundo
+  ↓
+SKILL_RESULT enviado para Player A + AOI
+  ↓
+Player A: aplica efeitos visuais
+Player B (AOI): vê efeito de Player A
 ```
 
-**Fix recomendado:**
-```python
-class CharacterStats:   # dados permanentes e de progressão
-    strength, intelligence, agility, vitality, defense
-    level, xp, xp_to_next_level
-    mana, max_mana, mana_regen_timer
-    rage, max_rage
-    name, class_id, spawn_tile_x, spawn_tile_y, spawn_map
+### FLUXO ATUAL (QUEBRADO)
 
-class CombatRuntime:    # state volátil de combate (não salvar)
-    embalo_charges, free_executar_charges
-    fire_instant_ready, thermal_shock_active
-    pnq_counter, fatiador_timer, fatiador_tick
 ```
-
-**Impacto se não corrigido:** Impossível adicionar 3ª classe sem CharacterStats virar um monolito de 100+ campos.
-
----
-
-### Problema 2 — CombatStats com 80+ campos e flags de talento sem isolamento
-
-**Arquivo:** `components.py` linhas 73–165
-
-**Descrição:**
-`CombatStats` tem ~45 atributos de combate base + 26 flags de talento (12 Cavaleiro + 14 Piromania). Todos os campos existem em TODAS as entidades, mesmo que nunca sejam usados.
-
-**Por que é crítico:**
-1. Com 5 builds × 12 flags = 60 flags novas → CombatStats chega a 120+ campos.
-2. Sistemas do guerreiro lêem flags do mago e vice-versa (sem isolamento).
-3. Impossível debugar qual flag pertence a qual build.
-4. Type checkers não detectam uso incorreto de flag de build errada.
-
-**Evidência:**
-```python
-# CombatStats.__init__ — guerreiro lendo flag do mago (bugável)
-cs.fire_mana_discount    # flag do mago — existe em entidades guerreiro
-cs.golpe_poderoso_rage_cost  # flag do guerreiro — existe em entidades mago
-```
-
-**Fix recomendado (data-driven):**
-```python
-class CombatStats:
-    # Atributos base (manter)
-    base_stamina, armor, spell_power, crit_rating...
-    
-    # Flags de talento — dict em vez de campos fixos
-    talent_flags: dict = field(default_factory=dict)
-    # Ex: {"fire_mana_discount": 5, "embalo_on_crit": True}
-
-# Em skill_handlers.py:
-discount = cs.talent_flags.get("fire_mana_discount", 0)
-```
-
-**Impacto se não corrigido:** Impossível escalar para arqueiro, necromante, etc. sem quebrar os sistemas existentes.
-
----
-
-## 🟡 ALTO — Limita funcionalidade ou escala mal
-
-### Problema 3 ✅ — Skill sem handler não avisava em startup
-
-**Corrigido em:** `game.py` → `_validate_skill_handlers()`
-
----
-
-### Problema 4 ✅ — `fatiador_timer`/`fatiador_tick` não resetavam no respawn
-
-**Corrigido em:** `stats_system.py` → `DeathRespawnSystem._respawn()`
-
----
-
-### Problema 5 ✅ — `fire_instant_ready` podia ficar pendurado
-
-**Corrigido em:** `stats_system.py` → `DeathRespawnSystem._respawn()`
-
----
-
-### Problema 6 — `apply_talent_effects()` recalcula todos os stats a cada clique
-
-**Arquivo:** `talent_system.py` linhas 152–245
-
-**Descrição:**
-A cada clique em nó de talento (alocar/desalocar), `apply_talent_effects()`:
-1. Remove TODOS os modificadores existentes
-2. Itera todos os talentos alocados
-3. Para cada efeito, chama `add_modifier()` que por sua vez chama `_recalculate_effective_stats()`
-4. `_recalculate_effective_stats()` itera sobre toda a lista de `modifiers`
-
-Com 15 talentos × 5 pontos × `_recalculate` completo por modifier = N² operações.
-
-**Evidência:**
-```python
-# talent_system.py
-for talent_id, points in tt.allocated.items():
-    for eff in (t["effects"] or []):
-        mod = Modifier(eff["attribute"], total_value, eff["type"])
-        add_modifier(cs, mod)  # ← chama _recalculate_effective_stats() CADA VEZ
-```
-
-**Fix recomendado:**
-```python
-# stat_fns.py — adicionar batch apply
-def apply_modifiers_batch(cs: CombatStats, modifiers: list[Modifier]) -> None:
-    cs.modifiers.extend(modifiers)
-    cs._recalculate_effective_stats()  # uma vez só
-```
-
-**Impacto:** Lag perceptível (~50ms) ao usar árvore de talentos. Piora com mais talentos.
-
----
-
-### Problema 7 — `thermal_shock_active` é state derivado armazenado em CharacterStats
-
-**Arquivo:** `components.py` linha 491; `spell_system.py` ManaSystem linhas 131–141
-
-**Descrição:**
-`thermal_shock_active` é calculado todo frame por `ManaSystem` e armazenado em `CharacterStats`. É puramente derivado de: "alvo selecionado tem efeito `root`?". Não precisa ser armazenado — pode ser calculado on-demand.
-
-**Problema:** Se ManaSystem não rodar por alguma razão (bug de ordem), o valor fica stale.
-
-**Evidência:**
-```python
-# ManaSystem.update() — recalcula e armazena a cada frame
-char_stats.thermal_shock_active = (
-    _t_sfx is not None and _t_sfx.has("root"))
-
-# game.py hotbar — lê o valor armazenado
-is_procced = _char.thermal_shock_active
-```
-
-**Fix recomendado:** Calcular inline na hotbar:
-```python
-# game.py hotbar — sem armazenar
-def _is_thermal_shock_active(world, player_id, cs):
-    if not getattr(combat_stats, "thermal_shock_enabled", False):
-        return False
-    target_id = combat_state.target_entity_id
-    if target_id == -1:
-        return False
-    sfx = world.get_component(target_id, StatusEffects)
-    return sfx is not None and sfx.has("root")
+Player A usa Skill
+  ↓
+Cliente A: validação local (INCOMPLETA)
+  ↓
+CAST_SKILL enviado ao servidor
+  ↓
+Servidor: validação (PODE REJEITAR POR RAZÃO DIFERENTE)
+  ↓
+Servidor: executa handler (MAS NÃO SABE DOS TALENTOS/PROCS DO CLIENTE)
+  ↓
+Servidor: aplica efeitos (INCONSISTENTES COM CLIENTE)
+  ↓
+SKILL_RESULT enviado (PODE CONTRADIZER O QUE CLIENTE MOSTROU)
+  ↓
+Player A: vê erro diferente do que servidor rejeitou
+Player B (AOI): vê efeito diferente do que Player A viu
 ```
 
 ---
 
-## 🔵 MÉDIO — Débito técnico que limita desenvolvimento
+## 2. DIAGRAMA DE DEPENDÊNCIAS: Acoplamento de Sistemas
 
-### Problema 8 — `skill_id` hardcoded em sistemas para lógica de negócio
-
-**Arquivo:** `systems.py` linhas ~812, ~1165, ~1177
-
-**Descrição:**
-Alguns sistemas verificam `skill.skill_id` diretamente para tomar decisões:
-```python
-if sk.skill_id == "vitoria_iminente" and sk.max_charges > 0: ...
-if sk.skill_id == "punho_no_queixo": ...
 ```
+Skill
+  ├─ depende de Handler
+  │   ├─ depende de CombatStats
+  │   │   ├─ depende de Talento
+  │   │   │   ├─ depende de Modificador
+  │   │   │   └─ depende de Flag comportamental
+  │   │   ├─ depende de Proc
+  │   │   │   └─ depende de CharacterStats
+  │   │   └─ depende de Cooldown
+  │   ├─ depende de TileMovement
+  │   ├─ depende de Position
+  │   └─ depende de Validação (DUPLICADA)
+  ├─ depende de SpellCast (se tem cast_time)
+  ├─ depende de Projectile (se é ranged)
+  └─ depende de StatusEffect (se aplica efeito)
 
-Em vez de usar metadados declarativos na própria skill.
-
-**Impacto:** Adicionar nova skill com carga → buscar e editar todos os `if sk.skill_id ==` manualmente.
-
-**Fix recomendado:** Os campos `max_charges` e `is_charge_based` já existem no `Skill` component. Usar esses campos em vez de verificar pelo ID:
-```python
-# Em vez de:
-if sk.skill_id == "punho_no_queixo":
-    # lógica de carga
-
-# Usar:
-if sk.max_charges > 0 and sk.charges > 0:
-    # lógica genérica de carga
+Problema: Mudança em qualquer um desses afeta Skill
+Solução: Desacoplar via interfaces/eventos
 ```
 
 ---
 
-### Problema 9 — ShopSystem, LootSystem, CraftingSystem: UI + lógica inseparável
+## 3. DIAGRAMA DE ESCALABILIDADE: Impacto de Performance
 
-**Arquivo:** `systems.py` ShopSystem, LootSystem; `crafting_system.py`
+```
+PROBLEMA: AOI Sweep N²
 
-**Descrição:**
-Cada sistema renderiza sua própria UI (blit de surfaces, fontes, botões com 200–400 linhas de render) junto com a lógica de negócio (transações, coleta de itens, crafting).
+Número de Players | Número de Mobs | Iterações/tick | CPU Impact
+1                 | 100            | 100            | <1%
+10                | 100            | 1.000          | 1%
+100               | 100            | 10.000         | 10%
+1000              | 100            | 100.000        | 100% (CRÍTICO)
 
-**Impacto:**
-- Impossível testar lógica sem inicializar pygame
-- Mudança visual (reposicionar um botão) força modificar código de transação
-- Reutilização de lógica em outro contexto é impossível
+PROBLEMA: Factory Instantiation em Lookup
 
-**Fix recomendado (quando houver tempo):**
-```python
-# systems/shop_logic.py
-class ShopLogic:
-    def buy(self, player_id, item_id) -> bool: ...
-    def sell(self, player_id, item_id) -> bool: ...
-    # sem pygame — testável
+Número de Itens | Vendas/min | Objetos criados/min | GC Pressure
+100             | 10         | 1.000               | Baixa
+100             | 100        | 10.000              | Média
+100             | 1000       | 100.000             | Alta (CRÍTICO)
 
-# systems/shop_ui.py
-class ShopUIRenderer:
-    def render(self, shop_state, screen): ...
-    # usa ShopLogic para estado, só UI
+PROBLEMA: Validação Duplicada
+
+Validações/Skill | Tempo/validação | Tempo total/tick | Escalabilidade
+1 (servidor)     | 1ms             | 10ms (100 skills)| Linear
+2 (C+S)          | 1ms             | 20ms (100 skills)| 2x pior
+3 (C+S+Handler)  | 1ms             | 30ms (100 skills)| 3x pior (CRÍTICO)
 ```
 
 ---
 
-### Problema 10 ✅ — `timed_modifiers` sem type hint
+## 4. DIAGRAMA DE FLUXO: Por que Correções não Funcionam
 
-**Corrigido em:** `components.py` — tipado como `list[dict]` com comentário de schema.
-
----
-
-### Problema 11 ✅ — `_just_entered_combat` sem reset garantido
-
-**Falso positivo:** Já é resetado em `CombatStateSystem.update()` linha 887-888 do `systems.py`.
-
----
-
-## 🟢 BAIXO — Qualidade e padronização
-
-### Problema 12 — Fórmulas de skills hardcoded nos handlers
-
-**Arquivo:** `skill_handlers.py`
-
-**Descrição:**
-Multiplicadores e percentuais de skills estão hardcoded nos handlers:
-```python
-deal_damage(..., multiplier=3.0)        # Golpe Poderoso: 3x dano
-deal_damage(..., multiplier=2.0)        # Vitória Iminente: 2x dano
-heal = int(combat_stats.max_hp * 0.30) # Vitória Iminente: 30% cura
 ```
-
-Em vez de virem do `SKILL_CATALOG`.
-
-**Impacto:** Balancear uma skill requer editar código, não dados.
-
-**Fix recomendado:**
-```python
-# skill_config.py
-"golpe_poderoso": {
-    "damage_multiplier": 3.0,   # documentado aqui
-    ...
-}
-
-# skill_handlers.py
-mult = SKILL_CATALOG[sid].get("damage_multiplier", 1.0)
-deal_damage(..., multiplier=mult)
+Você corrige validação de mana no cliente
+  ↓
+Offline: ✅ Funciona (validação local é a única)
+Online: ❌ Servidor ainda rejeita (tem validação própria)
+  ↓
+Você corrige no servidor
+  ↓
+Offline: ❌ Não afeta (servidor não roda offline)
+Online: ✅ Funciona (servidor é autoritativo)
+  ↓
+Você aloca talento
+  ↓
+Offline: ✅ Funciona (apply_talent_effects chamado)
+Online: ❌ Servidor não sincroniza (espera próximo login)
+  ↓
+Você corrige um proc
+  ↓
+Offline: ✅ Funciona (tudo é local)
+Online: ❌ Servidor não sabe do proc (não sincroniza)
 ```
 
 ---
 
-### Problema 13 ✅ — MOB_ABILITIES sem validação
+## 5. DIAGRAMA DE ARQUITETURA: Estrutura Atual vs Ideal
 
-**Corrigido em:** `game.py` → `_validate_skill_handlers()` agora também valida abilities.
+### ESTRUTURA ATUAL (MONOLÍTICA)
 
----
-
-### Problema 14 — `Skill.fail_flash_timer` é state de render em component de dados
-
-**Arquivo:** `components.py` linha ~725
-
-**Descrição:**
-```python
-self.fail_flash_timer: float = 0.0  # escurece o slot por 0.2s ao falhar
 ```
-Timer de animação visual num component de dados de jogo. Viola separação de responsabilidades.
+systems.py (4500+ linhas)
+├─ SkillSystem (validação + handlers)
+├─ SpellSystem (duplicação de spell_damage)
+├─ CombatStateSystem (copiado)
+├─ PlayerInputSystem (validação local)
+├─ EnemyAISystem
+└─ ... 40+ outros sistemas
 
-**Fix recomendado:** Mover para `UIState` component ou gerenciar diretamente no renderer da hotbar com dict local.
+skill_handlers.py (1000+ linhas)
+├─ _skill_golpe_poderoso
+├─ _skill_bola_de_fogo
+├─ _skill_impacto
+└─ ... 30+ handlers
 
----
+talent_system.py (500+ linhas)
+├─ apply_talent_effects (reseta TUDO)
+├─ _live_effects
+└─ UI rendering (acoplado)
 
----
+spell_system.py (800+ linhas)
+├─ SpellCastSystem
+├─ PlayerProjectileSystem
+├─ ChannelingSystem
+└─ ... duplicação de lógica
 
-## Novos problemas identificados — Análise de Escalabilidade (2026-05-04)
-
-### P15 ✅ — `if char.class_id == "mago"` em `game.py` para atributos base
-
-**Corrigido:** `CLASS_BASE_STATS` em `stats_system.py`. Arqueiro já incluso.
-
----
-
-### P16 ✅ — `if entity_class == "Warlock"/"Hunter"/"Mage"` em `EnemyAISystem`
-
-**Corrigido:** `PROJECTILE_BY_CLASS` em `mob_definitions.py`. EnemyAISystem lê do dict.
-
----
-
-### P16-original — `if entity_class == "Warlock"/"Hunter"/"Mage"` em `EnemyAISystem`
-
-**Arquivo:** `systems.py` EnemyAISystem, ~linha 2064
-
-**Descrição:** Lógica de projéteis de mobs inimigos verifica `entity_class` diretamente:
-```python
-if ai_control.entity_class in ("Warlock", "Mage"):
-    # cor de projétil
-if ai_control.entity_class == "Hunter":
-    # comportamento de kiting específico
+Problema: Mudança em um lugar afeta múltiplos lugares
 ```
 
-**Impacto:** Criar mob da classe "Arqueiro" sem adicionar código aqui → comportamentos incorretos.
+### ESTRUTURA IDEAL (MODULAR)
 
-**Fix:** Mover parâmetros de projétil (cor, velocidade, damage_type) para `mob_definitions.py` como dados.
+```
+core/
+├─ skill_system.py
+│  ├─ SkillValidator (interface)
+│  ├─ SkillExecutor (interface)
+│  └─ SkillRegistry (data-driven)
+├─ talent_system.py
+│  ├─ TalentModifier (interface)
+│  ├─ TalentApplier (aplica uma vez)
+│  └─ TalentRegistry (data-driven)
+├─ combat_system.py
+│  ├─ DamageCalculator (função pura)
+│  ├─ EffectApplier (interface)
+│  └─ CombatState (componente puro)
+└─ sync_system.py
+   ├─ StateSync (sincroniza talentos/procs)
+   ├─ EventBroadcaster (notifica outros players)
+   └─ ConflictResolver (resolve inconsistências)
 
-**Esforço:** Médio
+handlers/
+├─ melee_handler.py
+├─ spell_handler.py
+├─ projectile_handler.py
+└─ effect_handler.py
 
----
-
-### P17 — `talent_system.py` tem 25+ flags hardcoded (reset + aplicação)
-
-**Arquivo:** `talent_system.py` linhas 172-200 (reset) e 248-273 (aplicação)
-
-**Descrição:** Para cada nova build de talentos, é necessário:
-1. Adicionar ~15 campos a `CombatStats`
-2. Adicionar reset de cada flag no bloco de reset
-3. Adicionar aplicação de cada flag no bloco de aplicação
-
-Com 3ª classe (arqueiro + build nova) → ~45 flags em CombatStats, ~45 linhas de reset, ~45 linhas de aplicação.
-
-**Fix ideal:**
-```python
-# talent_data.py — cada nó declara seu reset e fórmula
-"cav_veterano": {
-    "flag": "golpe_poderoso_rage_cost",
-    "reset_value": 15,
-    "formula": lambda pts, tt: max(10, 15 - pts),
-}
-# talent_system.py — loop genérico
-for talent_id, t in TALENTS.items():
-    if "flag" in t:
-        setattr(cs, t["flag"], t["reset_value"])  # reset
-        setattr(cs, t["flag"], t["formula"](pts, tt))  # apply
+Vantagem: Mudança em um lugar não afeta outros
 ```
 
-**Esforço:** Alto
+---
+
+## 6. TABELA DE SEVERIDADE: Problemas por Impacto
+
+| Problema | Severidade | Impacto em 1 Player | Impacto em 10 Players | Impacto em 100 Players | Impacto em 1000 Players | Modularidade | Escalabilidade |
+|----------|-----------|-------------------|----------------------|----------------------|------------------------|--------------|-----------------|
+| AOI Sweep N² | CRÍTICO | <1% CPU | 1% CPU | 10% CPU | 100% CPU | Baixa | Impossível |
+| Validação Duplicada | ALTO | 2x latência | 2x latência | 2x latência | 2x latência | Baixa | Ruim |
+| Talentos não sincronizam | ALTO | Funciona offline | Bugs em PvE | Bugs em PvE | Bugs em PvE | Baixa | Ruim |
+| Procs não sincronizam | ALTO | Funciona offline | Bugs em PvE | Bugs em PvE | Bugs em PvE | Baixa | Ruim |
+| Handlers duplicados | MÉDIO | Inconsistências | Inconsistências | Inconsistências | Inconsistências | Muito Baixa | Ruim |
+| Cooldown em 3 lugares | MÉDIO | Bugs ocasionais | Bugs frequentes | Bugs frequentes | Bugs frequentes | Muito Baixa | Ruim |
+| Factory instantiation | MÉDIO | <1% GC | 1% GC | 10% GC | 100% GC | Baixa | Ruim |
+| Client-trusting HP/gold | CRÍTICO | Exploits | Exploits | Exploits | Exploits | Baixa | Impossível |
+| Skill range/LOS não validados | CRÍTICO | Exploits | Exploits | Exploits | Exploits | Baixa | Impossível |
+| Movimento sem walkability | CRÍTICO | Exploits | Exploits | Exploits | Exploits | Baixa | Impossível |
 
 ---
 
-### P18 ✅ — Skills em `spell_system.py` com `_complete_cast` crescendo por skill
+## 7. MATRIZ DE RELACIONAMENTOS: Como os Problemas se Conectam
 
-**Corrigido:** `_CAST_HANDLERS` dict em `SpellCastSystem.__init__`. Adicionar nova spell = 1 linha no dict.
+```
+Duplicação de Código
+  ↓ causa
+Inconsistências entre Cliente/Servidor
+  ↓ causa
+Bugs em Multiplayer (PvE + PvP)
+  ↓ causa
+Impossível corrigir (correção em um lugar não afeta outro)
 
----
+Acoplamento de Sistemas
+  ↓ causa
+Dificuldade de Mudança
+  ↓ causa
+Correções não funcionam (mudança em Talento quebra Skill)
+  ↓ causa
+Débito técnico acumula
 
-### P18-original — Skills em `spell_system.py` com `_complete_cast` crescendo por skill
+Falta de Sincronização
+  ↓ causa
+Estado inconsistente entre Cliente/Servidor
+  ↓ causa
+Bugs em Multiplayer (outro player vê estado diferente)
+  ↓ causa
+Impossível escalar (cada novo player = mais inconsistências)
 
-**Arquivo:** `spell_system.py` SpellCastSystem._complete_cast
+Performance Ruim
+  ↓ causa
+Impossível adicionar mais players
+  ↓ causa
+Impossível escalar (máximo 10-20 players simultâneos)
+  ↓ causa
+Projeto não é viável como MMORPG
 
-**Descrição:**
-```python
-if sid == "bola_de_fogo":
-    self._launch_fireball(...)
-elif sid == "nova_congelante":
-    self._apply_nova_congelante(...)
-elif sid == "polimorfia":
-    ...
-elif sid == "calcinar":
-    ...
+Modularidade Baixa
+  ↓ causa
+Correções afetam múltiplos sistemas
+  ↓ causa
+Risco de regressão
+  ↓ causa
+Desenvolvimento lento e custoso
 ```
 
-Cada nova skill com cast_time adiciona um `elif`. Sem dispatch automático.
+---
 
-**Fix:** Registrar handler de completion no `SKILL_CATALOG`:
-```python
-"bola_de_fogo": {
-    ...
-    "on_cast_complete": "launch_fireball",  # nome de método em SpellCastSystem
-}
-```
+## 8. RECOMENDAÇÕES POR PRIORIDADE
 
-**Esforço:** Médio
+### FASE 1: Segurança (Semana 1-2)
+1. Validação de movimento (walkability)
+2. Server-authoritative HP/gold
+3. Skill range/LOS validation
+4. Proc validation no servidor
+
+### FASE 2: Sincronização (Semana 3-4)
+1. Sincronizar talentos no LOGIN_OK
+2. Sincronizar procs em STATS_UPDATE
+3. Sincronizar cooldown via evento
+4. Sincronizar flags de talento
+
+### FASE 3: Performance (Semana 5-6)
+1. Implementar spatial hash para AOI
+2. Tick loop otimizado
+3. Factory cache
+4. Object pooling
+
+### FASE 4: Modularidade (Semana 7-10)
+1. Desacoplar Talento de Skill
+2. Desacoplar Skill de Handler
+3. Consolidar validação
+4. Separar offline/online
 
 ---
 
-## Guia de priorização para próximas sessões
+## 9. ~~PROBLEMA~~ RESOLVIDO: Globais Mutáveis em game.py (SCREEN_WIDTH/SCREEN_HEIGHT) — Bloqueio para Modularização
 
-### 🚨 Crítico — Segurança (corrigir antes de qualquer teste com usuários reais)
-- **C1**: `move_player` walkability check — ~30min
-- **C2**: Remover trust em `client_max_hp`/`client_ap` — ~1h
-- **C3**: Gold exclusivamente server-side — ~1h
-- **C5**: `_pending_inv` dict próprio + cleanup em despawn — ~30min
+> **Status: ✅ resolvido** (Etapa 4, mesma sessão). `SCREEN_WIDTH`/`SCREEN_HEIGHT` foram eliminados de `game.py` — todas as ~55 ocorrências (29 + 26) foram substituídas por `self.screen.get_width()`/`self.screen.get_height()`, que consultam o `pygame.Surface` ativo (única fonte de verdade, sempre atual — `_apply_scale` apenas reatribui `self.screen` a uma nova `Surface`, sem necessidade de sincronizar nenhum cache). As declarações `global SCREEN_WIDTH, SCREEN_HEIGHT` e as constantes de módulo (`game.py:56-57`) foram removidas por completo. Esse já era o padrão usado em parte do código (`game.py:2875`, `3363` — `sw, sh = self.screen.get_width(), self.screen.get_height()`), então a migração tornou o código **consistente**, não introduziu um padrão novo. Verificado: diff byte-a-byte confirma que SOMENTE as linhas que referenciavam `SCREEN_WIDTH`/`SCREEN_HEIGHT` mudaram; smoke test confirma que os novos valores acompanham trocas de resolução em runtime. Texto original do problema preservado abaixo para referência histórica.
 
-### Corrigir imediatamente (baixo esforço, alto impacto)
-- **A3**: Fix busy-wait tick loop — 15min
-- **A8**: Reverse map `_player_session_by_eid` — 30min
-- **A4**: Extrair `_ServerSFX` para arquivo próprio — 30min
-- **#8**: Remover hardcodes de `skill_id` — 1-2h
-- **#12**: Mover multiplicadores para `SKILL_CATALOG` — 2-3h
+**Descoberto durante:** Etapa 4 (extração de mixins de `game.py`, refatoração `GameEngine` → `init+loop+render`).
 
-### Planejar antes da próxima classe jogável
-- **A1**: CombatStateSystem em `core_systems.py` — ~2h
-- **C4**: `deal_damage` retornar outcome — ~2h (afeta muitos callers)
-- **#2**: `talent_flags: dict` em CombatStats — refator de ~30 callsites, ~4h
-- **#6**: Batch apply em `apply_talent_effects()` — ~2h
+**O problema:**
+`SCREEN_WIDTH`/`SCREEN_HEIGHT` (e também `DEBUG_MODE`/`PROFILE_FRAMES`) são variáveis de **módulo** em `game.py` (`game.py:55-56`), declaradas `global` e reatribuídas em runtime — em `__init__` (`game.py:160-162`) e em `_apply_scale` (`game.py:3220-3224`, chamado ao trocar resolução/escala da janela). Cerca de 30+ métodos de desenho (`_draw_hud`, `_draw_hotbar`, `_draw_consumable_bar`, `_draw_inventory_panel`, `_draw_tooltip`, `_mm_overlay`, `_draw_habilidades_panel`, `_handle_debug_click`, etc.) leem essas variáveis como **nomes livres de módulo** (não `self.SCREEN_WIDTH`).
 
-### Planejar para fase de polimento / performance
-- **A2**: Spatial hash para AOI sweep — ~4h
-- **A5/A6**: Item lookup caches — ~2h
-- **A7**: Quebrar `_tick()` em submétodos — ~2h
-- **A9**: Mob aggro tracking direto — ~2h
-- **#1**: Separar `CharacterStats` + `CombatRuntime` — refator maior, ~8h
-- **#7**: `thermal_shock_active` como função inline — ~1h
-- **#9**: Separar UI de lógica em Shop/Loot/Crafting — ~16h
-- **#14**: `fail_flash_timer` fora do Skill component — ~2h
+**Por que isso bloqueia a modularização (Etapa 4):**
+O padrão de extração mecânica usado com sucesso em `NetworkHandlers`/`RemoteEntityHandlers`/`SaveSyncHandlers` (mixin sem `__init__`, zero reescrita de `self.`, verificação byte-idêntica) **não é seguro** para esses métodos: mover um método que lê `SCREEN_WIDTH` como nome livre para outro módulo faz Python resolver o nome no namespace global do **módulo onde a função foi definida** (o novo arquivo), não em `game.py`. Um `from game import SCREEN_WIDTH` capturaria apenas um snapshot — o novo módulo nunca veria mudanças feitas por `_apply_scale` em runtime, gerando bugs sutis (painéis mal posicionados após trocar resolução).
+
+**Escopo do impacto:** praticamente todos os grupos de métodos de HUD/desenho restantes em `game.py` (telas de menu, tooltip, inventário, hotbar, debug modal, HUD online) têm pelo menos um método com essa dependência — ou seja, isso afeta a maior parte do trabalho que falta para "Etapa 4: `game.py` volta a ser apenas init+loop+render".
+
+**Recomendação (pré-requisito para continuar a Etapa 4 nas telas de HUD):**
+Substituir os globais mutáveis por estado acessível via `self` (ex.: `self.SCREEN_WIDTH`/`self.SCREEN_HEIGHT` setados em `__init__`/`_apply_scale`, lidos como `self.SCREEN_WIDTH` nos métodos de desenho) ou por um pequeno container mutável compartilhado (ex.: `display_state.WIDTH`/`display_state.HEIGHT`, mesmo objeto importado por `game.py` e pelos mixins). Isso é uma reescrita mecânica e bem delimitada (~30 ocorrências de `SCREEN_WIDTH`/`SCREEN_HEIGHT` em `game.py`, busca-e-substituição por nome com limites de palavra), mas é um passo à parte da extração em si — deve ser feito e validado (smoke test trocando resolução em runtime) **antes** de extrair qualquer grupo de métodos de desenho que dependa dessas variáveis.
+
+---
+
+*Documento elaborado em 06 de junho de 2026. As informações contidas são de responsabilidade do solicitante.*

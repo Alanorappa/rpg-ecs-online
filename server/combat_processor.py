@@ -26,6 +26,13 @@ class CombatProcessorMixin:
             if not cs or cs.target_entity_id == -1:
                 continue
 
+            # Espelha o gate offline (PlayerInputSystem usa can_act()): pressionar
+            # uma skill seta is_pursuing=True e dispara AUTO_ATTACK pro alvo, mas o
+            # auto-attack não pode disparar durante o cast — senão ele aplica dano
+            # (e portanto aggro) antes/junto do dano da própria skill.
+            if not cs.can_act():
+                continue
+
             target_eid = cs.target_entity_id
             if target_eid not in self._mob_eids:
                 # PvP: alvo pode ser outro jogador
@@ -55,7 +62,26 @@ class CombatProcessorMixin:
             if not player_tm or not target_tm:
                 continue
             player_cs    = self.world.get_component(player_eid, CombatStats)
-            attack_range = 7 if getattr(player_cs, "is_ranged", False) else 1
+            _is_ranged_p = getattr(player_cs, "is_ranged", False)
+
+            # Range: ranged=7, melee=1.
+            attack_range = 7 if _is_ranged_p else 1
+
+            # Ranged: requer is_pursuing + aljava com flechas.
+            if _is_ranged_p:
+                if not cs.is_pursuing:
+                    continue
+                # Bloqueia somente quando o servidor sabe que a aljava está vazia.
+                # Se não há aljava no ECS do servidor (save antigo / primeiro login),
+                # permite o ataque — o cliente já valida localmente.
+                from components import Equipment as _EqCP
+                _eq_cp = self.world.get_component(player_eid, _EqCP)
+                _qv_cp = _eq_cp.slots.get("offhand") if _eq_cp else None
+                if _qv_cp is not None \
+                        and getattr(_qv_cp, "item_type", "") == "quiver" \
+                        and _qv_cp.arrow_count < 1:
+                    continue
+
             _srv_dist = chebyshev(player_tm.current_tile_x, player_tm.current_tile_y,
                                   target_tm.current_tile_x, target_tm.current_tile_y)
             if _srv_dist > attack_range:
@@ -69,13 +95,19 @@ class CombatProcessorMixin:
             interval = player_cs.attack_interval if player_cs else 2.0
             self._attack_timers[session_id] = interval
 
-            # ── deal_damage() do offline: mesma fórmula, armor, crit, dodge ──
-            hp_before        = target_cs.current_hp
-            dead, _outcome   = deal_damage(player_eid, target_eid, "physical")
-            # Usa current_hp real (pode ser negativo no golpe fatal) para dano correto
-            hp_real  = target_cs.current_hp      # pode ser negativo se matou
-            hp_after = max(0, hp_real)           # para display da barra de HP
-            damage   = max(0, hp_before - hp_real)  # dano real (inclui overkill)
+            # ── Dano: ranged usa _server_apply_ranged_physical (fórmula física completa
+            # com crit/block/armor); melee usa deal_damage normal. ──
+            hp_before = target_cs.current_hp
+            if _is_ranged_p:
+                dead, _outcome, damage = self._server_apply_ranged_physical(
+                    player_eid, target_eid, is_ability=False)
+                hp_real  = target_cs.current_hp
+                hp_after = max(0, hp_real)
+            else:
+                dead, _outcome = deal_damage(player_eid, target_eid, "physical")
+                hp_real  = target_cs.current_hp
+                hp_after = max(0, hp_real)
+                damage   = max(0, hp_before - hp_real)
 
             # Ataque disparou → enter_combat + rage (copiado de PlayerInputSystem:1491-1492)
             # Rage é gerada SEMPRE que o ataque dispara — mesmo em miss (igual ao offline)
@@ -188,21 +220,17 @@ class CombatProcessorMixin:
             # Subtrai dano PvP (skills + auto-ataque player→player) para não
             # confundir com dano de mob. Sem isso, dano PvP gerava um segundo
             # COMBAT_RESULT "de mob" → FLT duplicado na tela do atacante.
-            pvp_dmg   = getattr(self, "_pvp_damage_this_tick", {}).get(peid, 0)
+            pvp_dmg   = self._pvp_damage_this_tick.get(peid, 0)
             mob_delta = (hp_before - sfx_dmg - pvp_dmg) - hp_now
 
             if mob_delta > 0:
                 attacker_mob_eid = _mob_attacker_of.get(peid, -1)
-                # hp_after = HP intermediário APÓS o ataque do mob, ANTES do DOT tick.
-                # Garante que o cliente aplique: mob_attack (HP cai N) → DOT (HP cai M)
-                # em vez de: DOT (HP cai N+M) → mob_attack (HP não muda).
-                # Adicionado em _pending_mob_attacks para ser emitido ANTES dos eventos de DOT.
                 self._pending_mob_attacks.append({
                     "attacker": attacker_mob_eid,
                     "target":   peid,
                     "damage":   mob_delta,
                     "outcome":  "hit",
-                    "hp_after": max(0, hp_before - mob_delta),  # HP antes do DOT
+                    "hp_after": max(0, hp_now),
                     "source":   "auto",
                 })
 
@@ -278,8 +306,9 @@ class CombatProcessorMixin:
             _ec_pvp(attacker_cst)
 
         # Rastreia dano PvP para subtrair de mob_delta (evita FLT duplo)
-        _pvp = getattr(self, "_pvp_damage_this_tick", {})
-        _pvp[victim_eid] = _pvp.get(victim_eid, 0) + damage
+        self._pvp_damage_this_tick[victim_eid] = (
+            self._pvp_damage_this_tick.get(victim_eid, 0) + damage
+        )
 
         # COMBAT_RESULT → AOI_UPDATE para ambos os clientes
         self._combat_this_tick.append({

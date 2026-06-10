@@ -39,25 +39,57 @@ class SpellCompletionMixin:
             if char and mana_cost > 0:
                 char.mana = max(0, char.mana - mana_cost)
 
+            # Cobra concentração ao completar (arqueiro)
+            _conc_cost = entry.get("concentration_cost", 0)
+            if char and _conc_cost > 0:
+                _conc_free = self.world.get_component(player_eid, _CS)
+                if not (_conc_free and getattr(_conc_free, "concentration_free", False)):
+                    char.concentration = max(0, char.concentration - _conc_cost)
+
             # Snapshot unificado: mobs + players PvP (padrão ECS — _combat_targets)
             hp_before, sfx_before = self._snapshot_combat_targets(exclude_eid=player_eid)
 
             # Spells com projétil: aguardam PROJECTILE_HIT_CS antes de aplicar dano
-            _PROJECTILE_SPELLS = {"bola_de_fogo"}
+            _PROJECTILE_SPELLS = {"bola_de_fogo", "flecha_reiterada", "picada_escorpiao", "tiro_repulsivo"}
             _dispatch = {
-                "nova_congelante": self._server_nova_congelante,
-                "polimorfia":      self._server_polimorfia,
-                "calcinar":        self._server_calcinar,
+                "nova_congelante":  self._server_nova_congelante,
+                "polimorfia":       self._server_polimorfia,
+                "calcinar":         self._server_calcinar,
+                # ── Arqueiro ──────────────────────────────────────────────────
+                "picada_escorpiao": self._server_picada_escorpiao,
+                "flecha_reiterada": self._server_flecha_reiterada,
+                "tiro_repulsivo":   self._server_tiro_repulsivo,
+                "tiro_multiplo":    self._server_tiro_multiplo,
+                "cancao_ninar":     self._server_cancao_ninar,
+                "cancao_inspiracao":self._server_cancao_inspiracao,
+                "so_um_gole":       self._server_so_um_gole,
+                "camuflagem":       self._server_camuflagem,
+                "recarregar":       self._server_recarregar,
             }
             from server.spell_debug_log import splog as _splog2
             if spell_id in _PROJECTILE_SPELLS:
                 import time as _t_if
+                # Flecha Reiterada: cada flecha manda PROJECTILE_HIT_CS individualmente.
+                # Calcula quantas flechas esperar (inclui talento Sequência Final).
+                _remaining = 1
+                if spell_id == "flecha_reiterada":
+                    from skill_config import SKILL_CATALOG as _SC_fr_cnt
+                    _fr_cnt_p   = _SC_fr_cnt.get("flecha_reiterada", {}).get("params", {})
+                    _remaining  = _fr_cnt_p.get("arrow_count", 2)
+                    _att_fr_cnt = self.world.get_component(player_eid, _CS)
+                    _tgt_fr_cnt = self.world.get_component(target_id,  _CS)
+                    _thresh_fr  = getattr(_att_fr_cnt, "flecha_reiterada_hp_threshold", 0.0) \
+                                  if _att_fr_cnt else 0.0
+                    if (_tgt_fr_cnt and _thresh_fr > 0 and _tgt_fr_cnt.max_hp > 0
+                            and (_tgt_fr_cnt.current_hp / _tgt_fr_cnt.max_hp) < _thresh_fr):
+                        _remaining = 3
                 self._spells_in_flight_queue.append({
-                    "player_eid": player_eid,
-                    "spell_id":   spell_id,
-                    "target_id":  target_id,
-                    "entry":      entry,
-                    "expires_at": _t_if.time() + 2.0,
+                    "player_eid":     player_eid,
+                    "spell_id":       spell_id,
+                    "target_id":      target_id,
+                    "entry":          entry,
+                    "expires_at":     _t_if.time() + 3.0,
+                    "remaining_hits": _remaining,
                 })
                 _splog2(f"COMPLETION {spell_id} player={player_eid} target={target_id} → em voo")
                 # Notifica outros players via STATS_UPDATE com proj_incoming para que
@@ -158,8 +190,11 @@ class SpellCompletionMixin:
                 "failed":       False,
                 "is_completion": True,
                 # Para spells com projétil: informa o alvo para o cliente criar o projétil
-                "projectile_target": target_id if spell_id in {"bola_de_fogo"} else -1,
+                "projectile_target": target_id if spell_id in _PROJECTILE_SPELLS else -1,
             }
+            # Flecha Reiterada: envia n_arrows para cliente criar flechas corretas
+            if spell_id == "flecha_reiterada":
+                skill_entry["arrow_count"] = _remaining
 
             # Chama Interna: sincroniza proc ao cliente via SKILL_RESULT
             if char and getattr(char, "fire_instant_ready", False):
@@ -167,15 +202,19 @@ class SpellCompletionMixin:
 
             self._skill_results_this_tick.append(skill_entry)
 
-            # Sincroniza mana ao cliente
+            # Sincroniza mana e concentração ao cliente após conclusão do cast
             if char:
-                self._pending_xp_deliveries.append({
+                _compl_sync: dict = {
                     "player_eid": player_eid,
                     "xp":         0,
                     "mob_eid":    -1,
                     "rage":       char.rage,
                     "mana":       char.mana,
-                })
+                }
+                _conc_compl = getattr(char, "concentration", None)
+                if _conc_compl is not None:
+                    _compl_sync["concentration"] = _conc_compl
+                self._pending_xp_deliveries.append(_compl_sync)
 
         self._pending_spell_completions = still
 
@@ -200,12 +239,23 @@ class SpellCompletionMixin:
             if (e["player_eid"] == player_eid and e["spell_id"] == spell_id
                     and e["target_id"] == target_id):
                 entry = e
-                del self._spells_in_flight_queue[i]
+                if e.get("remaining_hits", 1) > 1:
+                    # Multi-hit: mantém entrada para próximas flechas, só decrementa
+                    import time as _t_rh
+                    e["remaining_hits"] -= 1
+                    e["expires_at"] = _t_rh.time() + 2.0  # renova timeout
+                else:
+                    del self._spells_in_flight_queue[i]
                 break
         if entry is None:
             return  # expirou ou nunca foi enfileirado
 
-        _dispatch = {"bola_de_fogo": self._server_bola_de_fogo}
+        _dispatch = {
+            "bola_de_fogo":     self._server_bola_de_fogo,
+            "flecha_reiterada": self._server_flecha_reiterada,
+            "picada_escorpiao": self._server_picada_escorpiao,
+            "tiro_repulsivo":   self._server_tiro_repulsivo,
+        }
         fn = _dispatch.get(spell_id)
         if not fn:
             return
@@ -355,7 +405,7 @@ class SpellCompletionMixin:
                     dmg = max(1, int(cs_p.base_physical_damage * ch.dmg_weapon_pct
                                      + sp * ch.dmg_sp_coeff)) if cs_p else 1
                     hp_before = mob_cs.current_hp
-                    self._server_apply_magic_damage(player_eid, target_eid, dmg)
+                    self._server_apply_magic_damage(player_eid, target_eid, dmg, roll_crit=True)
                     hp_after  = max(0, mob_cs.current_hp)
                     damage    = max(0, hp_before - mob_cs.current_hp)
                     if damage > 0:
@@ -363,7 +413,7 @@ class SpellCompletionMixin:
                             "attacker": player_eid,
                             "target":   target_eid,
                             "damage":   damage,
-                            "outcome":  "hit",
+                            "outcome":  "crit" if self._last_magic_is_crit else "hit",
                             "hp_after": hp_after,
                             "source":   "skill",
                         })
@@ -442,7 +492,7 @@ class SpellCompletionMixin:
         Retorna is_crit via self._last_magic_is_crit para coleta de resultados.
         """
         from components import (CombatStats, CombatState, AIControlled,
-                                MobSounds, PendingDeath, StatusEffects)
+                                PendingDeath, StatusEffects, TileMovement, EntityIdentity)
         from stat_fns import enter_combat
 
         target_cs = self.world.get_component(target_id, CombatStats)
@@ -479,16 +529,24 @@ class SpellCompletionMixin:
 
         _ai = self.world.get_component(target_id, AIControlled)
         if _ai and _ai.state in ("IDLE", "RETURNING"):
-            try:
-                from sound_manager import SOUNDS
-                _ms = self.world.get_component(target_id, MobSounds)
-                SOUNDS.play_mob_sounds(_ms, "aggro", dedup_key=f"dmg_{target_id}")
-            except Exception:
-                pass
             _ai.state             = "AGGRO_DELAY"
             _ai.aggro_delay       = 0.5   # mesmo comportamento do range aggro, mas mais curto
             _ai.aggroed_by_damage = True
             _ai.path_recalc_timer = 0.0
+            # Detector de aggro em world_server.py usa snapshot pré-tick e perde transições
+            # ocorridas entre ticks/dentro de _process_spell_cast_completions e handlers
+            # assíncronos de PROJECTILE_HIT_CS (aqui). Enfileira som diretamente para garantir
+            # que o cliente ouça o aggro quando o dano mágico é aplicado, não ao pressionar a skill.
+            _tm_aggr = self.world.get_component(target_id, TileMovement)
+            _id_aggr = self.world.get_component(target_id, EntityIdentity)
+            if _tm_aggr:
+                self._pending_sound_events.append({
+                    "kind":     "mob_aggro",
+                    "mob_eid":  target_id,
+                    "mob_name": _id_aggr.name if _id_aggr else "",
+                    "tx":       _tm_aggr.current_tile_x,
+                    "ty":       _tm_aggr.current_tile_y,
+                })
 
         if target_cs.current_hp <= 0:
             if not self.world.get_component(target_id, PendingDeath):
@@ -563,6 +621,7 @@ class SpellCompletionMixin:
         # Exaustão: slow progressivo por BdF consecutiva
         if player_cs and getattr(player_cs, "fire_exhaustion_enabled", False):
             from components import ActiveEffect as _AEX, StatusEffects as _SFX2
+            _exh_dur = _bdf_data.get("effect_durations", {}).get("exhaustion", 6.0)
             _t_sfx = self.world.get_component(target_id, _SFX2)
             if _t_sfx is None:
                 _t_sfx = _SFX2()
@@ -571,18 +630,18 @@ class SpellCompletionMixin:
             if _exh:
                 _new_stacks = min(_exh.magnitude + 1, 5)
                 _exh.magnitude = _new_stacks
-                _exh.duration  = 6.0
+                _exh.duration  = _exh_dur
             else:
                 _new_stacks = 1
-                _t_sfx.effects["exhaustion"] = _AEX("exhaustion", 6.0, 1, 0.0)
+                _t_sfx.effects["exhaustion"] = _AEX("exhaustion", _exh_dur, 1, 0.0)
             _slow_pct = (_new_stacks - 1) * 0.05
             if _slow_pct > 0:
                 _slow = _t_sfx.get("slow")
                 if _slow:
                     _slow.magnitude = min(_slow.magnitude, 1.0 - _slow_pct)
-                    _slow.duration  = 6.0
+                    _slow.duration  = _exh_dur
                 else:
-                    _t_sfx.effects["slow"] = _AEX("slow", 6.0, 1.0 - _slow_pct, 0.0)
+                    _t_sfx.effects["slow"] = _AEX("slow", _exh_dur, 1.0 - _slow_pct, 0.0)
 
         # Chama Interna: proc após hit de spell de fogo
         if player_cs and char_stats:
@@ -658,7 +717,7 @@ class SpellCompletionMixin:
             if chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y) > _range:
                 continue
             dmg = max(1, int(sp * _coef))
-            self._server_apply_magic_damage(player_eid, eid, dmg)
+            self._server_apply_magic_damage(player_eid, eid, dmg, roll_crit=True)
             _root_dur = _nc.get("effect_durations", {}).get("root", 5.0)
             apply_effect(self.world, eid, "root", _root_dur)
             # Snapa mob para target_tile quando root é aplicado.
@@ -695,3 +754,380 @@ class SpellCompletionMixin:
         attacker_state = self.world.get_component(player_eid, CombatState)
         if attacker_state:
             attacker_state.is_pursuing = False
+
+    # ── Handlers — Arqueiro ───────────────────────────────────────────────────
+
+    def _server_apply_ranged_physical(self, player_eid: int, target_id: int,
+                                      ap_multiplier: float = 1.0,
+                                      guaranteed_hit: bool = False,
+                                      is_ability: bool = True) -> tuple:
+        """Aplica dano físico ranged server-side.
+
+        Retorna (is_dead, outcome, damage).
+        """
+        from components import CombatStats, CombatState, Equipment, PendingDeath
+        from damage_calculator import (resolve_attack_outcome, calculate_base_damage,
+                                       apply_armor_reduction, CRITICAL_DAMAGE_MULTIPLIER)
+        from stat_fns import enter_combat
+        from systems import apply_effect as _ae
+
+        target_cs = self.world.get_component(target_id, CombatStats)
+        if not target_cs or target_cs.current_hp <= 0:
+            return False, "miss", 0
+
+        attacker_cs = self.world.get_component(player_eid, CombatStats)
+        equip       = self.world.get_component(player_eid, __import__("components").Equipment)
+        bow         = equip.slots.get("mainhand") if equip else None
+
+        if guaranteed_hit:
+            # Picada de Escorpião: sempre acerta, pode critar
+            from damage_calculator import resolve_attack_outcome as _ro
+            _dummy_cs = type("DC", (), {"crit_rating": getattr(attacker_cs,"crit_rating",0.05),
+                                         "dodge_rating":0, "parry_rating":0, "block_rating":0,
+                                         "block_value":0, "armor":0})()
+            outcome, block_r = _ro(attacker_cs, _dummy_cs, "physical",
+                                   is_ability=True) if attacker_cs else ("hit", 0.0)
+            # Force: skip miss/dodge/parry — can only crit or hit
+            if outcome not in ("crit", "hit", "block"):
+                outcome = "hit"
+        else:
+            outcome, block_r = resolve_attack_outcome(attacker_cs, target_cs,
+                                                       "physical", is_ability=is_ability) \
+                if attacker_cs else ("hit", 0.0)
+
+        if outcome in ("miss", "dodge", "parry"):
+            return False, outcome, 0
+
+        base = calculate_base_damage(attacker_cs, "physical", bow,
+                                     multiplier=ap_multiplier,
+                                     outcome=outcome, block_reduction=block_r) \
+               if attacker_cs else 1.0
+        dmg = max(1, int(apply_armor_reduction(base, attacker_cs, target_cs, outcome)))
+
+        # Na Mosca: +25% no próximo disparo após crit
+        if attacker_cs and getattr(attacker_cs, "na_mosca_bonus_active", False):
+            dmg = int(dmg * 1.25)
+            attacker_cs.na_mosca_bonus_active = False
+        # Flechas Despadronizadas: 15% chance +50%
+        if attacker_cs:
+            _fdp = getattr(attacker_cs, "flechas_despadronizadas_chance", 0.0)
+            if _fdp > 0 and random.random() < _fdp:
+                dmg = int(dmg * 1.50)
+
+        target_cs.current_hp -= dmg
+
+        # Na Mosca: ativa o bônus após crit
+        if attacker_cs and getattr(attacker_cs, "na_mosca_enabled", False):
+            if outcome == "crit":
+                attacker_cs.na_mosca_bonus_active = True
+
+        # Quebra polimorfia e entra em combate
+        from components import StatusEffects as _SFX2, CombatState as _CS2, PendingDeath as _PD2
+        _t_sfx = self.world.get_component(target_id, _SFX2)
+        if _t_sfx:
+            _t_sfx.remove("polymorph")
+        attacker_cst = self.world.get_component(player_eid, _CS2)
+        if attacker_cst:
+            enter_combat(attacker_cst)
+        target_cst = self.world.get_component(target_id, _CS2)
+        if target_cst:
+            enter_combat(target_cst)
+
+        # Consume 1 flecha do carcás do servidor
+        _eq = self.world.get_component(player_eid, __import__("components").Equipment)
+        _qv = _eq.slots.get("offhand") if _eq else None
+        if _qv and getattr(_qv, "item_type", "") == "quiver":
+            _qv.arrow_count = max(0, _qv.arrow_count - 1)
+
+        from components import AIControlled as _AIC2
+        _ai = self.world.get_component(target_id, _AIC2)
+        if _ai and _ai.state in ("IDLE", "RETURNING"):
+            _ai.state              = "CHASING"
+            _ai.aggroed_by_damage  = True
+            _ai.target_eid         = player_eid
+            _ai.path_recalc_timer  = 0.0
+            _ai.target_lost_timer  = 0.0
+            # Detector de aggro em world_server.py usa snapshot pré-tick e perde transições
+            # ocorridas entre ticks (aqui). Enfileira som diretamente para garantir que o
+            # cliente ouça o aggro quando a flecha acerta, não ao pressionar a skill.
+            _tm_aggr = self.world.get_component(target_id, __import__("components").TileMovement)
+            _id_aggr = self.world.get_component(target_id, __import__("components").EntityIdentity)
+            if _tm_aggr:
+                self._pending_sound_events.append({
+                    "kind":     "mob_aggro",
+                    "mob_eid":  target_id,
+                    "mob_name": _id_aggr.name if _id_aggr else "",
+                    "tx":       _tm_aggr.current_tile_x,
+                    "ty":       _tm_aggr.current_tile_y,
+                })
+
+        if target_cs.current_hp <= 0:
+            if not self.world.get_component(target_id, _PD2):
+                self.world.add_component(target_id, _PD2(killer_entity_id=player_eid))
+            return True, outcome, dmg
+        return False, outcome, dmg
+
+    def _server_picada_escorpiao(self, player_eid: int, target_id: int, entry: dict) -> None:
+        from skill_config import SKILL_CATALOG as _SC
+        from systems import apply_effect
+        params = _SC.get("picada_escorpiao", {}).get("params", {})
+
+        if target_id == -1:
+            return
+        ap_mult       = params.get("ap_multiplier",    1.5)
+        slow_dur      = params.get("on_hit_duration",  3.0)
+        slow_mag      = params.get("on_hit_magnitude", 0.30)
+
+        dead, outcome, dmg = self._server_apply_ranged_physical(
+            player_eid, target_id, ap_mult, guaranteed_hit=True)
+
+        if outcome not in ("miss", "dodge", "parry") and dmg > 0:
+            apply_effect(self.world, target_id, "slow", slow_dur, magnitude=slow_mag)
+
+    def _server_flecha_reiterada(self, player_eid: int, target_id: int, entry: dict) -> None:
+        """Aplica 1 flecha por chamada. Chamado uma vez por PROJECTILE_HIT_CS recebido."""
+        from skill_config import SKILL_CATALOG as _SC
+        params  = _SC.get("flecha_reiterada", {}).get("params", {})
+        ap_mult = params.get("ap_multiplier", 2.0)
+
+        if target_id == -1:
+            return
+
+        self._server_apply_ranged_physical(player_eid, target_id, ap_mult,
+                                           guaranteed_hit=True)
+        # Nota: _server_apply_ranged_physical já consome 1 flecha por chamada.
+
+    def _server_tiro_repulsivo(self, player_eid: int, target_id: int, entry: dict) -> None:
+        from skill_config import SKILL_CATALOG as _SC
+        from components import (TileMovement, CombatStats, Position,
+                                 CombatState, Tilemap)
+        from shared.constants import TILE_SIZE as _TS
+        from systems import apply_effect
+        params       = _SC.get("tiro_repulsivo", {}).get("params", {})
+        ap_mult      = params.get("ap_multiplier",  1.5)
+        kb_tiles     = params.get("knockback_tiles", 5)
+        stun_dur     = params.get("stun_duration",   3.0)
+
+        if target_id == -1:
+            return
+
+        dead, outcome, dmg = self._server_apply_ranged_physical(
+            player_eid, target_id, ap_mult, guaranteed_hit=True)
+        if outcome in ("miss", "dodge", "parry"):
+            return
+
+        # Knockback: empurra nb tiles na direção oposta ao player
+        p_tm  = self.world.get_component(player_eid, TileMovement)
+        t_tm  = self.world.get_component(target_id,  TileMovement)
+        if not p_tm or not t_tm:
+            return
+
+        dx = t_tm.current_tile_x - p_tm.current_tile_x
+        dy = t_tm.current_tile_y - p_tm.current_tile_y
+        dist = max(1, abs(dx) + abs(dy))
+        sx = round(dx / dist)
+        sy = round(dy / dist)
+        if sx == 0 and sy == 0:
+            sx = 1
+
+        # Busca tilemap para verificar colisão
+        tilemap_comp = None
+        for _, tc in self.world.get_entities_with(Tilemap):
+            tilemap_comp = tc
+            break
+
+        def _is_solid(tx, ty):
+            if not tilemap_comp:
+                return False
+            rows = tilemap_comp.tile_matrix
+            if 0 <= ty < len(rows) and 0 <= tx < len(rows[ty]):
+                return rows[ty][tx].is_solid
+            return True  # fora do mapa = sólido
+
+        stunned = False
+        for step in range(1, kb_tiles + 1):
+            nx = t_tm.current_tile_x + sx
+            ny = t_tm.current_tile_y + sy
+            if _is_solid(nx, ny):
+                stunned = True
+                break
+            t_tm.current_tile_x = nx
+            t_tm.current_tile_y = ny
+            t_tm.target_tile_x  = nx
+            t_tm.target_tile_y  = ny
+            t_pos = self.world.get_component(target_id, Position)
+            if t_pos:
+                t_pos.x = nx * _TS + _TS // 2
+                t_pos.y = ny * _TS + _TS // 2
+            self._moved_this_tick.append({
+                "eid": target_id, "tx": nx, "ty": ny,
+                "from_tx": nx - sx, "from_ty": ny - sy,
+            })
+
+        if stunned:
+            apply_effect(self.world, target_id, "stun", stun_dur)
+
+    def _server_tiro_multiplo(self, player_eid: int, target_id: int, entry: dict) -> None:
+        from skill_config import SKILL_CATALOG as _SC
+        from components import TileMovement, CombatStats
+        import math
+        params     = _SC.get("tiro_multiplo", {}).get("params", {})
+        ap_mult    = params.get("ap_multiplier",   3.0)
+        half_angle = params.get("cone_half_angle", 45.0)
+        range_t    = params.get("range_tiles",     12)
+        attacker_cs= self.world.get_component(player_eid, CombatStats)
+        max_tgts   = getattr(attacker_cs, "tiro_multiplo_targets", 99) if attacker_cs else 99
+
+        p_tm = self.world.get_component(player_eid, TileMovement)
+        if not p_tm:
+            return
+
+        dir_x = entry.get("dir_x", 0.0)
+        dir_y = entry.get("dir_y", 0.0)
+        dlen  = math.hypot(dir_x, dir_y)
+        if dlen < 0.001:
+            return
+        dir_x /= dlen
+        dir_y /= dlen
+
+        half_rad = math.radians(half_angle)
+        cos_half = math.cos(half_rad)
+
+        targets_hit = 0
+        for eid in list(self._combat_targets(exclude_eid=player_eid)):
+            if targets_hit >= max_tgts:
+                break
+            t_tm = self.world.get_component(eid, TileMovement)
+            t_cs = self.world.get_component(eid, CombatStats)
+            if not t_tm or not t_cs or t_cs.current_hp <= 0:
+                continue
+            dx = t_tm.current_tile_x - p_tm.current_tile_x
+            dy = t_tm.current_tile_y - p_tm.current_tile_y
+            dist = math.hypot(dx, dy)
+            if dist > range_t or dist < 0.5:
+                continue
+            cos_angle = (dx * dir_x + dy * dir_y) / dist
+            if cos_angle < cos_half:
+                continue
+            self._server_apply_ranged_physical(player_eid, eid, ap_mult,
+                                               guaranteed_hit=True)
+            targets_hit += 1
+
+    def _server_cancao_ninar(self, player_eid: int, target_id: int, entry: dict) -> None:
+        from skill_config import SKILL_CATALOG as _SC
+        from components import TileMovement, CombatStats, Enemy, AIControlled
+        from systems import apply_effect
+        from utils import chebyshev
+        params    = _SC.get("cancao_ninar", {}).get("params", {})
+        radius    = params.get("radius",          5)
+        sleep_d   = params.get("sleep_duration",  8.0)
+        slow_d    = params.get("slow_duration",   5.0)
+        slow_m    = params.get("slow_magnitude",  0.30)
+
+        p_tm = self.world.get_component(player_eid, TileMovement)
+        if not p_tm:
+            return
+        px, py = p_tm.current_tile_x, p_tm.current_tile_y
+
+        for eid in list(self._mob_eids):
+            t_tm = self.world.get_component(eid, TileMovement)
+            t_cs = self.world.get_component(eid, CombatStats)
+            if not t_tm or not t_cs or t_cs.current_hp <= 0:
+                continue
+            if chebyshev(px, py, t_tm.current_tile_x, t_tm.current_tile_y) <= radius:
+                apply_effect(self.world, eid, "sleep", sleep_d,
+                             on_expire_effect="slow",
+                             on_expire_duration=slow_d,
+                             on_expire_magnitude=slow_m)
+
+    def _server_cancao_inspiracao(self, player_eid: int, target_id: int, entry: dict) -> None:
+        from skill_config import SKILL_CATALOG as _SC
+        from stat_fns import add_timed_modifier
+        from components import CombatStats, Modifier
+        params   = _SC.get("cancao_inspiracao", {}).get("params", {})
+        ap_pct   = params.get("ap_bonus_pct", 0.30)
+        duration = params.get("duration",     20.0)
+        cs = self.world.get_component(player_eid, CombatStats)
+        if cs:
+            mod = Modifier("attack_power", ap_pct, "percentage")
+            add_timed_modifier(cs, mod, duration, label="cancao_inspiracao")
+
+    def _server_so_um_gole(self, player_eid: int, target_id: int, entry: dict) -> None:
+        from skill_config import SKILL_CATALOG as _SC
+        from stat_fns import add_timed_modifier
+        from components import CombatStats, Modifier
+        params     = _SC.get("so_um_gole", {}).get("params", {})
+        duration   = params.get("duration",    10.0)
+        acerto_bns = params.get("acerto_flat", 100.0)
+        cs = self.world.get_component(player_eid, CombatStats)
+        if cs:
+            cs.concentration_free       = True
+            cs.concentration_free_timer = duration
+            mod = Modifier("acerto", acerto_bns, "flat")
+            add_timed_modifier(cs, mod, duration, label="so_um_gole")
+
+    def _server_camuflagem(self, player_eid: int, target_id: int, entry: dict) -> None:
+        from skill_config import SKILL_CATALOG as _SC
+        from components import CombatStats, CombatState, TileMovement, AIControlled
+        import random as _rand
+        params    = _SC.get("camuflagem", {}).get("params", {})
+        duration  = params.get("duration",  5.0)
+        speed_pct = params.get("speed_pct", 0.30)
+
+        cs  = self.world.get_component(player_eid, CombatStats)
+        cst = self.world.get_component(player_eid, CombatState)
+        tm  = self.world.get_component(player_eid, TileMovement)
+
+        try:
+            from tileset import CAMOUFLAGE_OBJECT_IDS
+            chosen = _rand.choice(CAMOUFLAGE_OBJECT_IDS)
+        except Exception:
+            chosen = "tree"
+
+        if cs:
+            cs.camouflage_timer  = duration
+            cs.camouflage_object = chosen
+        if cst:
+            cst.is_visible = False
+        if tm:
+            tm.speed = 110.0 * speed_pct
+
+        # Mobs perdem o alvo
+        for mob_eid in self._mob_eids:
+            mob_ai  = self.world.get_component(mob_eid, AIControlled)
+            mob_cst = self.world.get_component(mob_eid, CombatState)
+            if mob_ai and mob_ai.target_eid == player_eid:
+                mob_ai.target_eid        = -1
+                mob_ai.aggroed_by_damage = False
+                mob_ai.state             = "RETURNING"
+            if mob_cst and mob_cst.target_entity_id == player_eid:
+                mob_cst.target_entity_id = -1
+
+    def _server_recarregar(self, player_eid: int, target_id: int, entry: dict) -> None:
+        """Reabastece a aljava com flechas da mochila no servidor."""
+        from components import Equipment, Inventory
+        equip = self.world.get_component(player_eid, Equipment)
+        inv   = self.world.get_component(player_eid, Inventory)
+        if not equip or not inv:
+            return
+        quiver = equip.slots.get("offhand")
+        if not quiver or getattr(quiver, "item_type", "") != "quiver":
+            return
+        if quiver.max_arrows == 0:
+            quiver.max_arrows = 100
+
+        for item in (inv.items if inv else []):
+            if item is None:
+                continue
+            if item.item_type != "ammo" or item.stack <= 0:
+                continue
+            needed = quiver.max_arrows - quiver.arrow_count
+            if needed <= 0:
+                break
+            take = min(needed, item.stack)
+            item.stack       -= take
+            quiver.arrow_count = min(quiver.max_arrows, quiver.arrow_count + take)
+            quiver.subtype   = item.name
+            if item.stack <= 0:
+                inv.items[inv.items.index(item)] = None
+            break

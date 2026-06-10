@@ -34,7 +34,7 @@ import time
 from pathlib import Path
 
 # ── Ative aqui ───────────────────────────────────────────────────────────────
-DBG_ENABLED: bool = False   # <<< mude para True para gravar o log
+DBG_ENABLED: bool = True   # <<< mude para False para parar de gravar o log
 # ─────────────────────────────────────────────────────────────────────────────
 
 _LOG_DIR  = Path(__file__).parent / "logs"

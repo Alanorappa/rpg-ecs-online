@@ -205,7 +205,8 @@ class SpellCastSystem(System):
         # Outras spells (nova_congelante, calcinar, polimorfia): chama handler para sons/visuais
         # locais. Handlers são seguros: verificam target_cs antes de causar dano (online = None).
         if spell_cast.visual_only:
-            if spell_cast.spell_id not in ("bola_de_fogo",):
+            _PROJ_SPELLS_LOCAL = {"bola_de_fogo", "flecha_reiterada", "picada_escorpiao", "tiro_repulsivo"}
+            if spell_cast.spell_id not in _PROJ_SPELLS_LOCAL:
                 handler_name = self._CAST_HANDLERS.get(spell_cast.spell_id)
                 if handler_name:
                     handler = getattr(self, handler_name, None)
@@ -455,7 +456,10 @@ class SpellCastSystem(System):
 
         att_pos = self.world.get_component(attacker_id, _Pos)
         tgt_cs  = self.world.get_component(target_id, CombatStats)
-        if not att_pos or not tgt_cs or tgt_cs.current_hp <= 0:
+        if not att_pos:
+            return
+        # Online: mob não tem CombatStats local — skip only if definitely dead
+        if tgt_cs is not None and tgt_cs.current_hp <= 0:
             return
 
         # Verifica e consome 1 flecha da aljava
@@ -474,17 +478,21 @@ class SpellCastSystem(System):
         proj_id = self.world.create_entity()
         self.world.add_component(proj_id, _Pos(
             x=att_pos.x, y=att_pos.y, prev_x=att_pos.x, prev_y=att_pos.y))
+        from components import RemoteEntityMeta as _REM_tr
+        _tr_meta   = self.world.get_component(target_id, _REM_tr)
+        _tr_srv_id = _tr_meta.server_eid if _tr_meta else -1
         self.world.add_component(proj_id, _PP(
-            spell_id       = "tiro_repulsivo",
-            attacker_id    = attacker_id,
-            target_id      = target_id,
-            speed          = 800.0,
-            dmg_weapon_pct = 1.0,
-            dmg_sp_coeff   = 0.0,
-            color          = (80, 160, 255),
-            damage_type    = "physical",
-            ap_multiplier  = 1.5,
-            guaranteed_hit = True,
+            spell_id         = "tiro_repulsivo",
+            attacker_id      = attacker_id,
+            target_id        = target_id,
+            speed            = 800.0,
+            dmg_weapon_pct   = 1.0,
+            dmg_sp_coeff     = 0.0,
+            color            = (80, 160, 255),
+            damage_type      = "physical",
+            ap_multiplier    = 1.5,
+            guaranteed_hit   = True,
+            target_server_id = _tr_srv_id,
         ))
         SOUNDS.play_random(["arrow_release_1", "arrow_release_2"], channel_group=(10, 11))
 
@@ -536,10 +544,14 @@ class SpellCastSystem(System):
         from components import CombatState
         from skill_config import SKILL_CATALOG as _SC
 
-        equip  = self.world.get_component(attacker_id, Equipment)
-        pos    = self.world.get_component(attacker_id, _Pos)
-        tgt_cs = self.world.get_component(target_id, CombatStats)
-        if not equip or not pos or not tgt_cs or tgt_cs.current_hp <= 0:
+        equip   = self.world.get_component(attacker_id, Equipment)
+        pos     = self.world.get_component(attacker_id, _Pos)
+        tgt_pos = self.world.get_component(target_id,   _Pos)
+        tgt_cs  = self.world.get_component(target_id,   CombatStats)
+        if not equip or not pos or not tgt_pos:
+            return
+        # Offline: skip se alvo já morreu. Online: mob não tem CombatStats — projétil é visual.
+        if tgt_cs is not None and tgt_cs.current_hp <= 0:
             return
 
         quiver = equip.slots.get("offhand")
@@ -562,27 +574,34 @@ class SpellCastSystem(System):
         dmg_min = getattr(quiver, "damage_min", 0)
         dmg_max = getattr(quiver, "damage_max", 0)
 
+        from components import RemoteEntityMeta as _REM_as
+        _as_meta   = self.world.get_component(target_id, _REM_as)
+        _as_srv_id = _as_meta.server_eid if _as_meta else -1
         for i in range(n_arrows):
             proj_id = self.world.create_entity()
             self.world.add_component(proj_id, _Pos(
                 x=pos.x, y=pos.y, prev_x=pos.x, prev_y=pos.y))
+            # Primeira flecha da skill: spell_id correto + target_server_id para PROJECTILE_HIT_CS
+            _as_sid = self._current_spell_id if i == 0 else "arrow"
+            _as_tsid = _as_srv_id if i == 0 else -1
             self.world.add_component(proj_id, _PP(
-                spell_id        = "arrow",
-                attacker_id     = attacker_id,
-                target_id       = target_id,
-                speed           = 700.0,
-                dmg_weapon_pct  = 1.0,
-                dmg_sp_coeff    = 0.0,
-                color           = (101, 67, 33),
-                damage_type     = "physical",
-                arrow_dmg_min   = dmg_min,
-                arrow_dmg_max   = dmg_max,
-                launch_delay    = i * delay,
-                ap_multiplier   = ap_mult,
-                guaranteed_hit  = g_hit,
-                on_hit_effect   = effect,
-                on_hit_duration = eff_dur,
-                on_hit_magnitude= eff_mag,
+                spell_id         = _as_sid,
+                attacker_id      = attacker_id,
+                target_id        = target_id,
+                speed            = 700.0,
+                dmg_weapon_pct   = 1.0,
+                dmg_sp_coeff     = 0.0,
+                color            = (101, 67, 33),
+                damage_type      = "physical",
+                arrow_dmg_min    = dmg_min,
+                arrow_dmg_max    = dmg_max,
+                launch_delay     = i * delay,
+                ap_multiplier    = ap_mult,
+                guaranteed_hit   = g_hit,
+                on_hit_effect    = effect,
+                on_hit_duration  = eff_dur,
+                on_hit_magnitude = eff_mag,
+                target_server_id = _as_tsid,
             ))
 
         quiver.arrow_count -= n_arrows
@@ -854,6 +873,12 @@ class PlayerProjectileSystem(System):
         self._pending_knockbacks: list[tuple[int, int, float]] = []
         # Hits de projéteis em mobs online — game.py envia PROJECTILE_HIT_CS ao servidor
         self.pending_proj_hits: list[dict] = []
+        # Outcomes pré-calculados — lidos em _on_hit para tocar som correto.
+        # Lista por target (local_eid) para suportar múltiplas flechas (flecha_reiterada).
+        self.pending_arrow_impacts: dict[int, list] = {}
+        # HP updates diferidos: aplicados em game.py após cada projétil colidir.
+        # Tupla (server_eid, hp_after, hp_max) — hp_max=-1 significa "preservar atual".
+        self.deferred_hp_updates: list[tuple[int, int, int]] = []
         # Animação da Bola de Fogo
         self._fireball_frames: "list[pygame.Surface] | None" = None
         self._fireball_anim:   dict[int, float] = {}   # proj_id → elapsed
@@ -975,8 +1000,19 @@ class PlayerProjectileSystem(System):
                         _crit_r = attacker_cs.crit_rating if attacker_cs else 0.05
                         proj.pre_outcome = "crit" if random.random() < _crit_r else "hit"
                     else:
-                        # Auto-attack normal: rola outcome completo
-                        outcome, _ = resolve_attack_outcome(attacker_cs, target_cs, "physical")
+                        # Auto-attack normal: rola outcome completo.
+                        if target_cs is None:
+                            # Online: mob remoto sem CombatStats — usa outcome pré-computado
+                            # pelo servidor (pending_arrow_impacts). Se ainda não chegou,
+                            # assume "hit" para não travar o projétil.
+                            _pend_upd = self.pending_arrow_impacts.get(proj.target_id)
+                            if _pend_upd:
+                                _e = _pend_upd[0]
+                                outcome = _e["outcome"] if isinstance(_e, dict) else _e
+                            else:
+                                outcome = "hit"
+                        else:
+                            outcome, _ = resolve_attack_outcome(attacker_cs, target_cs, "physical")
                         if outcome in ('miss', 'dodge', 'parry'):
                             # Redireciona flecha para ponto desviado
                             att_pos = self.world.get_component(proj.attacker_id, Position)
@@ -994,11 +1030,19 @@ class PlayerProjectileSystem(System):
                                 proj.miss_end_x = proj_pos.x
                                 proj.miss_end_y = proj_pos.y
                             proj.is_miss = True
-                            from floating_text import FLT as _FLT2
+                            # Online: consome o evento pendente (não haverá _on_hit)
+                            if target_cs is None:
+                                _pend_miss = self.pending_arrow_impacts.get(proj.target_id)
+                                if _pend_miss:
+                                    _pend_miss.pop(0)
+                                    if not _pend_miss:
+                                        del self.pending_arrow_impacts[proj.target_id]
                             _avoid_txt = {"miss": "Errou!", "dodge": "Desviou!", "parry": "Aparou!"}
-                            _avoid_col = {"miss": (220,220,100), "dodge": (100,210,230), "parry": (100,150,230)}
-                            _FLT2.add(_avoid_txt[outcome], target_pos.x, target_pos.y,
-                                      _avoid_col[outcome], "small", target_id=proj.target_id)
+                            # Auto-attack: branco; skill: amarelo
+                            _is_ability_miss = getattr(proj, "is_ability", False)
+                            _avoid_col_miss  = (255, 220, 0) if _is_ability_miss else (220, 220, 220)
+                            FLT.add(_avoid_txt[outcome], target_pos.x, target_pos.y,
+                                    _avoid_col_miss, "small", target_id=proj.target_id)
                             continue  # não remove — flecha desvia
                         proj.pre_outcome = outcome  # hit/crit/block pré-rolado
 
@@ -1122,7 +1166,85 @@ class PlayerProjectileSystem(System):
         # Online: mob/player sem CombatStats local — projétil colidiu, notifica servidor
         if target_cs is None:
             if proj.damage_type == "physical":
-                SOUNDS.play_random(["arrow_impact_1", "arrow_impact_2"], channel_group=(12, 13))
+                # Flecha de skill com PROJECTILE_HIT_CS: notifica servidor; FLT chega no is_proj_damage.
+                if proj.target_server_id != -1:
+                    SOUNDS.play_random(["arrow_impact_1", "arrow_impact_2"], channel_group=(12, 13))
+                    self.pending_proj_hits.append({
+                        "spell_id":         proj.spell_id,
+                        "target_server_id": proj.target_server_id,
+                        "attacker_id":      proj.attacker_id,
+                    })
+                    return
+
+                # Online com guaranteed_hit: flecha cosmética de multi-hit (ex: flecha_reiterada arrow 2+).
+                # Dano já foi tratado pelo PROJECTILE_HIT_CS da primeira flecha.
+                # Não consome pending_arrow_impacts (evita consumir evento de auto-attack).
+                if target_cs is None and proj.guaranteed_hit:
+                    SOUNDS.play_random(["arrow_impact_1", "arrow_impact_2"], channel_group=(12, 13))
+                    return
+
+                # Consome evento pré-armazenado pelo COMBAT_RESULT (dict com outcome/damage/is_ability).
+                _pending = self.pending_arrow_impacts.get(proj.target_id)
+                if _pending:
+                    _entry = _pending.pop(0)
+                    if not _pending:
+                        del self.pending_arrow_impacts[proj.target_id]
+                else:
+                    _entry = None
+
+                # Online sem entry: auto-attack chegou antes do COMBAT_RESULT — só som.
+                if _entry is None and target_cs is None:
+                    SOUNDS.play_random(["arrow_impact_1", "arrow_impact_2"], channel_group=(12, 13))
+                    return
+
+                if _entry is not None:
+                    _out_oh  = _entry["outcome"]  if isinstance(_entry, dict) else _entry
+                    _dmg_oh  = _entry.get("damage",     0)     if isinstance(_entry, dict) else 0
+                    _isab_oh = _entry.get("is_ability",  False) if isinstance(_entry, dict) else False
+
+                    # FLT na posição atual do alvo; fallback para target_last quando já despawnado
+                    _tpos_oh = self.world.get_component(proj.target_id, Position)
+                    if _tpos_oh is None and (proj.target_last_x or proj.target_last_y):
+                        class _FakePos:
+                            x = proj.target_last_x
+                            y = proj.target_last_y
+                        _tpos_oh = _FakePos()
+                    if _tpos_oh:
+                        _AVOID_LABELS_OH = {
+                            "miss":  "Errou!",
+                            "dodge": "Desviou!",
+                            "parry": "Aparou!",
+                            "block": "Bloqueou!",
+                        }
+                        if _dmg_oh > 0:
+                            if _out_oh == "crit":
+                                _col_oh = (255, 220, 50) if _isab_oh else (255, 255, 255)
+                                FLT.add(str(_dmg_oh), _tpos_oh.x, _tpos_oh.y,
+                                        _col_oh, target_id=proj.target_id, is_crit=True)
+                            elif _out_oh == "block":
+                                FLT.add(str(_dmg_oh), _tpos_oh.x, _tpos_oh.y,
+                                        (160, 160, 160), "normal", target_id=proj.target_id)
+                            else:
+                                _col_oh = (255, 220, 0) if _isab_oh else (220, 220, 220)
+                                FLT.add(str(_dmg_oh), _tpos_oh.x, _tpos_oh.y,
+                                        _col_oh, "normal", target_id=proj.target_id)
+                        elif _out_oh in _AVOID_LABELS_OH:
+                            _txt_oh  = _AVOID_LABELS_OH[_out_oh]
+                            _col_oh  = (255, 220, 0) if _isab_oh else (220, 220, 220)
+                            FLT.add(_txt_oh, _tpos_oh.x, _tpos_oh.y,
+                                    _col_oh, "small", target_id=proj.target_id)
+
+                    # HP diferido: atualiza RemoteEntityMeta.hp no frame do impacto (não no COMBAT_RESULT)
+                    _srv_eid_oh = _entry.get("server_eid", -1) if isinstance(_entry, dict) else -1
+                    _hp_aft_oh  = _entry.get("hp_after",  -1)  if isinstance(_entry, dict) else -1
+                    _hp_mx_oh   = _entry.get("hp_max",    -1)  if isinstance(_entry, dict) else -1
+                    if _srv_eid_oh != -1 and _hp_aft_oh >= 0:
+                        self.deferred_hp_updates.append((_srv_eid_oh, _hp_aft_oh, _hp_mx_oh))
+
+                    # Som de impacto de flecha
+                    if _out_oh in ("hit", "crit", "block"):
+                        SOUNDS.play_random(["arrow_impact_1", "arrow_impact_2"],
+                                           channel_group=(12, 13))
             else:
                 SOUNDS.play_spell(proj.spell_id, "impact")
                 # Registra hit para game.py enviar PROJECTILE_HIT_CS ao servidor

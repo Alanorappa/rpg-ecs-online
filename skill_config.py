@@ -164,6 +164,7 @@ SKILL_CATALOG: dict[str, dict] = {
         "school":            "fogo",
         "proc_attr":         "fire_instant_ready",
         "proc_ignores_cost": True,
+        "effect_durations":  {"exhaustion": 6.0},
     },
     "calamidade_flamejante": {
         "name":             "Calamidade Flamejante",
@@ -423,8 +424,9 @@ SKILL_LEVEL_REQUIREMENTS: dict[str, int] = {
     "cancao_inspiracao": 1,
     "so_um_gole":        1,
     "cancao_ninar":      1,
-    "picada_escorpiao": 1,
-    "flecha_reiterada":   1,
+    "picada_escorpiao":  1,
+    "flecha_reiterada":  1,
+    "recarregar":        1,
 }
 
 SKILL_COSTS: dict[str, int] = {
@@ -445,13 +447,14 @@ SKILL_COSTS: dict[str, int] = {
     "so_um_gole":        0,
     "cancao_ninar":     0,
     "picada_escorpiao": 0,
-    "flecha_reiterada":   0,
+    "flecha_reiterada": 0,
+    "recarregar":       0,
 }
 
 SKILL_ORDER_BY_CLASS: dict[str, list] = {
     "guerreiro": ["golpe_poderoso", "impacto", "vitoria_iminente", "interceptar", "executar"],
     "mago":      ["bola_de_fogo", "nova_congelante", "polimorfia", "bloco_de_gelo"],
-    "arqueiro":  ["cancao_ninar", "picada_escorpiao", "flecha_reiterada"],
+    "arqueiro":  ["recarregar", "cancao_ninar", "picada_escorpiao", "flecha_reiterada"],
 }
 
 # Skills concedidas automaticamente ao criar um personagem novo (custo 0, nível 1).

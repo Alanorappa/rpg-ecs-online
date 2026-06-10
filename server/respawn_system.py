@@ -35,7 +35,7 @@ class RespawnMixin:
             player_char.mana = player_char.max_mana   # restaura mana cheia no respawn
             player_char.reset_volatile()
 
-        # Limpa efeitos ativos (DoT/HoT) — B8
+        # Limpa efeitos ativos (DoT/HoT) do player — B8
         from components import StatusEffects as _SFX, ActiveRegen as _AR
         sfx = self.world.get_component(player_eid, _SFX)
         if sfx:
@@ -44,6 +44,29 @@ class RespawnMixin:
             self.world.remove_component(player_eid, _AR)
         except Exception:
             pass
+
+        # Cancela Channeling ativo (evita dano AoE pós-morte)
+        from components import Channeling as _Chan
+        try:
+            self.world.remove_component(player_eid, _Chan)
+        except Exception:
+            pass
+
+        # Cancela spells em voo / com cast_time pendente — evita flechas
+        # "fantasma" que acertam mobs após o respawn do player
+        self._pending_spell_completions = [
+            e for e in self._pending_spell_completions
+            if e.get("player_eid") != player_eid
+        ]
+        self._spells_in_flight_queue = [
+            e for e in self._spells_in_flight_queue
+            if e.get("player_eid") != player_eid
+        ]
+
+        # Remove contribuição de dano do player morto nos logs de mob
+        # (XP de kills após a morte não deve ser atribuído a este player)
+        for _log in self._mob_damage_log.values():
+            _log.pop(player_eid, None)
 
         # Teleporta o player para o spawn no servidor ANTES de limpar aggro.
         # Isso garante que ServerMobSystem._try_aggro não re-agre imediatamente

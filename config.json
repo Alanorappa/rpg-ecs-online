@@ -1,11 +1,11 @@
 {
-  "scale": 1.0,
+  "scale": 1.5,
   "server_host": "localhost",
   "server_port": 8765,
   "net_user": "teste",
   "net_pass": "123456",
   "music_volume": 0.031578947368421054,
-  "sfx_volume": 0.17894736842105263,
+  "sfx_volume": 0.05263157894736842,
   "music_enabled": false,
   "sfx_enabled": true,
   "hotbar": {
@@ -38,7 +38,8 @@
     "inventario": 105,
     "talentos": 112,
     "mapa": 109,
-    "diario": 106
+    "diario": 106,
+    "habilidades": 104
   },
   "characters": {
     "teste": {
@@ -117,6 +118,138 @@
           "Po\u00e7\u00e3o de Vida",
           "Odre Grande",
           "Ensopado Revigorante",
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      }
+    },
+    "Aventureiro": {
+      "hotbar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          48
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      }
+    },
+    "Handuch": {
+      "hotbar": {
+        "slots": [
+          "picada_escorpiao",
+          "recarregar",
+          "cancao_ninar",
+          "flecha_reiterada",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          48
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      }
+    },
+    "jungo": {
+      "hotbar": {
+        "slots": [
+          "recarregar",
+          "cancao_ninar",
+          "picada_escorpiao",
+          "flecha_reiterada",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          48
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          "Ensopado Revigorante",
+          "Ensopado Revigorante",
+          null,
           null,
           null
         ],

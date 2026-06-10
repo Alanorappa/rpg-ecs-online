@@ -1235,33 +1235,6 @@ class PlayerProjectile:
     target_server_id: int   = -1     # server eid do alvo — enviado em PROJECTILE_HIT_CS
 
 
-# ── Components de estado de UI ─────────────────────────────────────────────
-
-class UIState:
-    """Estado de painéis de UI do jogador (inventário, talentos)."""
-    def __init__(self):
-        self.show_inventory: bool = False
-        self.show_talents:   bool = False
-
-
-class ShopUIState:
-    """Estado do modal de loja — acessível por qualquer sistema sem referência direta."""
-    def __init__(self):
-        self.open_merchant_id: int = -1   # -1 = fechado
-
-    @property
-    def is_open(self) -> bool:
-        return self.open_merchant_id != -1
-
-
-class LootUIState:
-    """Estado do modal de loot — acessível por qualquer sistema sem referência direta."""
-    def __init__(self):
-        self.open_corpse_id: int = -1   # -1 = fechado
-
-
-# ───────────────────────────────────────────────────────────────────────────
-
 @dataclass
 class AoeTargeting:
     """Modo de mira AOE: próximo clique esquerdo posiciona a magia."""
@@ -1278,3 +1251,23 @@ class AoeTargeting:
 class TrainingDummy:
     """Tag: boneco de treino. HP resetado ao atingir 0 em vez de morrer."""
     pass
+
+
+# ── Online: entidade remota ──────────────────────────────────────────────────
+
+@dataclass
+class RemoteEntityMeta:
+    """Metadados de uma entidade controlada pelo servidor (mob ou player remoto).
+
+    Adicionado a toda entidade local criada como espelho de uma entidade server-side.
+    Centraliza o estado que antes ficava espalhado em dicts avulsos em game.py:
+      _mob_hp             → hp / hp_max
+      _mob_last_pos       → last_x / last_y
+      _remote_mobs_reverse → server_eid (lookup local→server)
+    O dict _remote_mobs (server→local) é mantido como cache O(1) em game.py.
+    """
+    server_eid: int
+    hp:         int   = 0
+    hp_max:     int   = 100
+    last_x:     float = 0.0
+    last_y:     float = 0.0

@@ -25,6 +25,7 @@ class Session:
         self.username      = ""
         self.char_data     = {}
         self.authenticated = False
+        self.account_id    = -1    # preenchido no login; usado para criar personagem
         self._seq          = 0
         self.known_eids: set[int] = set()   # entidades que este cliente conhece
         # Último payload SAVE_STATE recebido do cliente (inventory/equipment/talents/skills/gold)
@@ -163,6 +164,23 @@ class SessionManager:
 
     # ── Handlers C→S ─────────────────────────────────────────────────────────
 
+    async def _handle_register(self, session: Session, payload: dict, ts: int) -> None:
+        """Cria conta (sem personagem). password já vem SHA-256 do cliente."""
+        if session.authenticated:
+            await session.send(MsgType.REGISTER_ERROR, {"reason": "already_logged_in"})
+            return
+        username = str(payload.get("username", "")).strip()
+        password = str(payload.get("password", "")).strip()
+        if not username or not password or len(username) < 3 or len(username) > 20:
+            await session.send(MsgType.REGISTER_ERROR, {"reason": "invalid_input"})
+            return
+        from server.auth import register as _auth_register
+        ok = await _auth_register(username, password)
+        if ok:
+            await session.send(MsgType.REGISTER_OK, {})
+        else:
+            await session.send(MsgType.REGISTER_ERROR, {"reason": "username_taken"})
+
     async def _handle_login(self, session: Session, payload: dict, ts: int) -> None:
         if payload.get("version", 0) != PROTOCOL_VERSION:
             await session.send(MsgType.LOGIN_ERROR, {"reason": "version_mismatch"})
@@ -181,79 +199,18 @@ class SessionManager:
                 await session.send(MsgType.LOGIN_ERROR, {"reason": "already_online"})
                 return
 
-        # Inclui stats enviados pelo cliente no char_data para spawn_player usar
-        char_data["client_ap"]     = payload.get("ap",     0.0)
-        char_data["client_max_hp"] = payload.get("max_hp", 0)
-        eid = self.world_server.spawn_player(session.session_id, char_data)
+        # Armazena dados básicos (sem spawnar ainda — escolha de personagem vem depois)
+        session.username      = username
+        session.account_id    = char_data.get("account_id", -1)
+        session.authenticated = True
 
-        session.username       = username
-        session.entity_id      = eid
-        session.char_data      = dict(char_data)
-        session.authenticated  = True
-        self._eid_to_sid[eid]  = session.session_id
-
-        tx, ty = self.world_server.get_tile_pos(session.session_id)
-
-        # HP autoritativo do servidor para o cliente sincronizar
-        srv_hp, srv_hp_max = self.world_server.get_player_hp(session.session_id)
-        await session.send(MsgType.LOGIN_OK, {
-            "token":     session.session_id,
-            "eid":       eid,
-            "char":      dict(char_data),
-            "server_ts": int(time.time() * 1000),
-            "hp":        srv_hp,
-            "hp_max":    srv_hp_max,
+        chars = char_data.get("characters", [])
+        await session.send(MsgType.AUTH_OK, {
+            "token":      session.session_id,
+            "characters": chars,
+            "server_ts":  int(time.time() * 1000),
         })
-
-        # Snapshot inicial: jogadores próximos
-        near_players = self.world_server.get_players_in_aoi(session.session_id, AOI_RADIUS)
-        for p in near_players:
-            s2 = self._sessions.get(p.get("session_id", ""))
-            if s2:
-                _s2_hp, _s2_hp_max = self.world_server.get_player_hp(s2.session_id)
-                p["name"]     = s2.username
-                p["class_id"] = s2.char_data.get("class_id", "guerreiro")
-                p["hp"]       = _s2_hp
-                p["hp_max"]   = _s2_hp_max
-                p["level"]    = s2.char_data.get("level", 1)
-                p["effects"]  = []
-
-        # Snapshot inicial: mobs próximos
-        near_mobs = self.world_server.get_mobs_in_aoi(tx, ty, AOI_RADIUS)
-
-        all_entities = near_players + near_mobs
-        await session.send(MsgType.WORLD_STATE, {
-            "tick":     self.world_server.tick_count,
-            "tx":       tx, "ty": ty,
-            "entities": all_entities,
-        })
-
-        # Popula known_eids com tudo que foi enviado no WORLD_STATE
-        session.known_eids.add(eid)  # próprio player
-        for ent in all_entities:
-            session.known_eids.add(ent["eid"])
-
-        # Avisa outros que este player entrou
-        _new_hp, _new_hp_max = self.world_server.get_player_hp(session.session_id)
-        spawn_payload = {
-            "eid":      eid, "kind":     "player",
-            "tx":       tx,  "ty":       ty,
-            "name":     username,
-            "class_id": char_data.get("class_id", "guerreiro"),
-            "hp":       _new_hp,
-            "hp_max":   _new_hp_max,
-            "level":    char_data.get("level", 1),
-            "effects":  [],
-        }
-        await self._broadcast_aoi_except(session, MsgType.ENTITY_SPAWN, spawn_payload)
-        # Outros players passam a conhecer este
-        for s in self._sessions.values():
-            if s.authenticated and s.session_id != session.session_id:
-                sx, sy = self.world_server.get_tile_pos(s.session_id)
-                if _in_aoi(tx, ty, sx, sy, AOI_RADIUS):
-                    s.known_eids.add(eid)
-
-        print(f"[Session] login ok: {username!r}  eid={eid}  tile=({tx},{ty})")
+        print(f"[Session] auth ok: {username!r}  chars={len(chars)}")
 
     async def _handle_move(self, session: Session, payload: dict, ts: int) -> None:
         if not session.authenticated:
@@ -545,6 +502,10 @@ class SessionManager:
         if session.last_client_payload is None:
             session.last_client_payload = {}
         session.last_client_payload["inventory"] = inventory
+        # Reconstrói a cópia local (Inventory ECS) para que handlers de skill
+        # (Recarregar, Tiro Múltiplo, etc.) validem munição com dados reais —
+        # sem isso o componente fica vazio e a validação sempre falha/é pulada.
+        self.world_server.sync_player_inventory(session.session_id, inventory)
 
     async def _handle_talent_update(self, session: Session, payload: dict, ts: int) -> None:
         """Salva talentos imediatamente quando um ponto é alocado/desalocado."""
@@ -611,7 +572,203 @@ class SessionManager:
                     await s.send(MsgType.ENTITY_DESPAWN, despawn_payload)
                     s.known_eids.discard(-corpse_id)
 
+    # cooldown per session_id: timestamp do último unstuck (módulo-level dict)
+    _unstuck_cooldowns: "dict[str, float]" = {}
+    _UNSTUCK_CD = 60.0  # segundos
+
+    async def _handle_unstuck(self, session: Session, payload: dict, ts: int) -> None:
+        """Teleporta o player para o spawn sem morte — usa-se quando ficou preso."""
+        if not session.authenticated:
+            return
+        import time as _t
+        sid = session.session_id
+        now = _t.time()
+        last = self._unstuck_cooldowns.get(sid, 0.0)
+        remaining = self._UNSTUCK_CD - (now - last)
+        if remaining > 0:
+            await session.send(MsgType.ERROR, {"reason": f"unstuck_cooldown:{int(remaining)}"})
+            return
+
+        player_eid = self.world_server._player_eids.get(sid, -1)
+        if player_eid == -1:
+            return
+
+        from server.respawn_system import RespawnMixin as _RS
+        rx, ry = _RS.RESPAWN_TILE
+
+        from components import TileMovement, Position, StatusEffects, AIControlled, CombatState
+        from shared.constants import TILE_SIZE
+
+        # Teleporta no servidor
+        ptm = self.world_server.world.get_component(player_eid, TileMovement)
+        pos = self.world_server.world.get_component(player_eid, Position)
+        if ptm:
+            ptm.current_tile_x = rx;  ptm.current_tile_y = ry
+            ptm.target_tile_x  = rx;  ptm.target_tile_y  = ry
+        if pos:
+            pos.x = rx * TILE_SIZE + TILE_SIZE // 2
+            pos.y = ry * TILE_SIZE + TILE_SIZE // 2
+
+        # Limpa efeitos ativos (stun, root, DoT…)
+        sfx = self.world_server.world.get_component(player_eid, StatusEffects)
+        if sfx:
+            sfx.effects.clear()
+
+        # Limpa aggro dos mobs
+        for mob_eid in self.world_server._mob_eids:
+            mob_cst = self.world_server.world.get_component(mob_eid, CombatState)
+            if mob_cst and mob_cst.target_entity_id == player_eid:
+                mob_cst.target_entity_id = -1
+            mob_ai = self.world_server.world.get_component(mob_eid, AIControlled)
+            if mob_ai and mob_ai.target_eid == player_eid:
+                mob_ai.target_eid        = -1
+                mob_ai.aggroed_by_damage = False
+                mob_ai.state             = "RETURNING"
+                mob_ai.path              = None
+
+        # Agenda broadcast para AOI (outros players veem o teleporte)
+        self.world_server._moved_this_tick.append({
+            "eid": player_eid, "tx": rx, "ty": ry, "from_tx": rx, "from_ty": ry,
+        })
+
+        # Envia posição corrigida direto para o próprio jogador
+        await session.send(MsgType.ENTITY_MOVE, {
+            "eid": player_eid, "tx": rx, "ty": ry, "from_tx": rx, "from_ty": ry,
+        })
+
+        self._unstuck_cooldowns[sid] = now
+        print(f"[Unstuck] {sid} teleportado para {rx},{ry}")
+
+    # ── Helpers de spawn ─────────────────────────────────────────────────────
+
+    async def _spawn_and_start(self, session: Session, char_data: dict) -> None:
+        """Spawna o jogador no mundo e envia LOGIN_OK + WORLD_STATE."""
+        char_data["client_ap"]     = 0.0
+        char_data["client_max_hp"] = 0
+        eid = self.world_server.spawn_player(session.session_id, char_data)
+
+        session.entity_id     = eid
+        session.char_data     = dict(char_data)
+        self._eid_to_sid[eid] = session.session_id
+
+        tx, ty = self.world_server.get_tile_pos(session.session_id)
+        srv_hp, srv_hp_max = self.world_server.get_player_hp(session.session_id)
+
+        await session.send(MsgType.LOGIN_OK, {
+            "token":     session.session_id,
+            "eid":       eid,
+            "char":      dict(char_data),
+            "server_ts": int(time.time() * 1000),
+            "hp":        srv_hp,
+            "hp_max":    srv_hp_max,
+        })
+
+        near_players = self.world_server.get_players_in_aoi(session.session_id, AOI_RADIUS)
+        for p in near_players:
+            s2 = self._sessions.get(p.get("session_id", ""))
+            if s2:
+                _h, _hm = self.world_server.get_player_hp(s2.session_id)
+                p.update({"name": s2.username,
+                           "class_id": s2.char_data.get("class_id", "guerreiro"),
+                           "hp": _h, "hp_max": _hm,
+                           "level": s2.char_data.get("level", 1), "effects": []})
+
+        near_mobs    = self.world_server.get_mobs_in_aoi(tx, ty, AOI_RADIUS)
+        all_entities = near_players + near_mobs
+        await session.send(MsgType.WORLD_STATE, {
+            "tick": self.world_server.tick_count, "tx": tx, "ty": ty,
+            "entities": all_entities,
+        })
+        session.known_eids.add(eid)
+        for ent in all_entities:
+            session.known_eids.add(ent["eid"])
+
+        _nh, _nhm = self.world_server.get_player_hp(session.session_id)
+        await self._broadcast_aoi_except(session, MsgType.ENTITY_SPAWN, {
+            "eid": eid, "kind": "player", "tx": tx, "ty": ty,
+            "name":     session.username,
+            "class_id": char_data.get("class_id", "guerreiro"),
+            "hp": _nh, "hp_max": _nhm,
+            "level":    char_data.get("level", 1), "effects": [],
+        })
+        for s in self._sessions.values():
+            if s.authenticated and s.session_id != session.session_id:
+                sx, sy = self.world_server.get_tile_pos(s.session_id)
+                if _in_aoi(tx, ty, sx, sy, AOI_RADIUS):
+                    s.known_eids.add(eid)
+        print(f"[Session] entrou no jogo: {session.username!r}  eid={eid}  tile=({tx},{ty})")
+
+    async def _handle_select_character(self, session: Session,
+                                       payload: dict, ts: int) -> None:
+        """Seleciona personagem existente para jogar."""
+        if not session.authenticated or session.entity_id != -1:
+            return
+        char_id = int(payload.get("char_id", -1))
+        if char_id < 0:
+            await session.send(MsgType.CHARACTER_ERROR, {"reason": "invalid_char_id"})
+            return
+        from server.auth import get_character as _get_char
+        char_data = await _get_char(session.account_id, char_id)
+        if not char_data:
+            await session.send(MsgType.CHARACTER_ERROR, {"reason": "char_not_found"})
+            return
+        await self._spawn_and_start(session, char_data)
+
+    async def _handle_delete_character(self, session: Session,
+                                       payload: dict, ts: int) -> None:
+        """Exclui personagem da conta."""
+        if not session.authenticated or session.entity_id != -1:
+            return
+        char_id = int(payload.get("char_id", -1))
+        if char_id < 0:
+            return
+        from server.auth import delete_character as _del_char
+        await _del_char(session.account_id, char_id)
+        await session.send(MsgType.DELETE_CHARACTER_OK, {})
+
+    async def _handle_create_character(self, session: Session,
+                                       payload: dict, ts: int) -> None:
+        """Cria personagem para conta autenticada que ainda não tem personagem."""
+        if not session.authenticated:
+            await session.send(MsgType.CHARACTER_ERROR, {"reason": "not_authenticated"})
+            return
+        if session.entity_id != -1:
+            await session.send(MsgType.CHARACTER_ERROR, {"reason": "already_has_character"})
+            return
+        name     = str(payload.get("name",     "Aventureiro")).strip() or "Aventureiro"
+        class_id = str(payload.get("class_id", "guerreiro"))
+        if class_id not in ("guerreiro", "mago", "arqueiro"):
+            class_id = "guerreiro"
+
+        from server.auth import create_character as _create_char, _get_conn as _gc
+        ok = await _create_char(session.account_id, name, class_id)
+        if not ok:
+            await session.send(MsgType.CHARACTER_ERROR, {"reason": "creation_failed"})
+            return
+
+        # Lê o personagem recém-criado (maior id da conta)
+        def _fetch():
+            with _gc() as conn:
+                row = conn.execute(
+                    "SELECT * FROM characters WHERE account_id=? ORDER BY id DESC LIMIT 1",
+                    (session.account_id,)
+                ).fetchone()
+                return dict(row) if row else None
+
+        char_data = await asyncio.get_running_loop().run_in_executor(None, _fetch)
+        if not char_data:
+            await session.send(MsgType.CHARACTER_ERROR, {"reason": "creation_failed"})
+            return
+
+        # Envia apenas CHARACTER_CREATED com dados do personagem.
+        # O cliente volta à lista de seleção; o spawn ocorre só ao clicar "Jogar".
+        await session.send(MsgType.CHARACTER_CREATED, {"char": dict(char_data)})
+
     _handlers = {
+        MsgType.REGISTER:           _handle_register,
+        MsgType.CREATE_CHARACTER:   _handle_create_character,
+        MsgType.SELECT_CHARACTER:   _handle_select_character,
+        MsgType.DELETE_CHARACTER:   _handle_delete_character,
         MsgType.LOGIN:        _handle_login,
         MsgType.LOGOUT:       _handle_logout,
         MsgType.MOVE:         _handle_move,
@@ -632,6 +789,7 @@ class SessionManager:
         MsgType.INV_SYNC:  _handle_inventory_update,
         MsgType.TALENT_UPDATE:     _handle_talent_update,
         MsgType.HOTBAR_UPDATE:     _handle_hotbar_update,
+        MsgType.UNSTUCK:           _handle_unstuck,
     }
 
     # ── AOI subscription — núcleo do sistema ─────────────────────────────────
@@ -654,9 +812,6 @@ class SessionManager:
     async def _dispatch_tick_deltas(self, deltas: dict) -> None:
         """Distribui deltas para cada cliente respeitando known_eids (AOI subscription)."""
         try:
-            # Mortes de players vão direto ao cliente morto (não AOI)
-            await self._send_player_deaths(deltas)
-
             # Resultados de skills ANTES do AOI_UPDATE
             for skill_result in self.world_server.consume_skill_results():
                 caster_eid = skill_result["caster_eid"]
@@ -692,6 +847,10 @@ class SessionManager:
                 if update:
                     await session.send(MsgType.AOI_UPDATE, update)
 
+            # Mortes de players APÓS AOI_UPDATE: garante que PLAYER_DEATH chega
+            # depois do COMBAT_RESULT (hp_after=0) do golpe fatal, sobrescrevendo HP.
+            await self._send_player_deaths(deltas)
+
             # Entrega XP proporcional aos jogadores
             xp_deliveries = self.world_server.consume_xp_deliveries()
             if xp_deliveries:
@@ -710,6 +869,8 @@ class SessionManager:
                                 _payload["rage"] = xp_entry["rage"]
                             if "mana" in xp_entry:
                                 _payload["mana"] = xp_entry["mana"]
+                            if "concentration" in xp_entry:
+                                _payload["concentration"] = xp_entry["concentration"]
                             if xp_entry.get("on_kill_skill"):
                                 _payload["on_kill_skill"] = xp_entry["on_kill_skill"]
                             # Inclui hp sempre que presente (level-up ou skill de cura)
@@ -1017,11 +1178,13 @@ class SessionManager:
                 _char_d = self.world_server.world.get_component(_death_peid, _CHS_death)
                 _cs_d   = self.world_server.world.get_component(_death_peid, _CS_death)
                 await session.send(MsgType.PLAYER_DEATH, {
-                    "eid":      _death_peid,
-                    "mana":     _char_d.mana     if _char_d else 0,
-                    "max_mana": _char_d.max_mana if _char_d else 0,
-                    "hp":       _cs_d.current_hp if _cs_d   else 0,
-                    "hp_max":   _cs_d.max_hp     if _cs_d   else 0,
+                    "eid":        _death_peid,
+                    "mana":       _char_d.mana     if _char_d else 0,
+                    "max_mana":   _char_d.max_mana if _char_d else 0,
+                    "hp":         _cs_d.current_hp if _cs_d   else 0,
+                    "hp_max":     _cs_d.max_hp     if _cs_d   else 0,
+                    "respawn_tx": death.get("respawn_tx", 115),
+                    "respawn_ty": death.get("respawn_ty", 389),
                 })
 
     # ── Broadcast helpers ─────────────────────────────────────────────────────

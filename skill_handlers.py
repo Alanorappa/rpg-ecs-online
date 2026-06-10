@@ -103,6 +103,10 @@ class SkillHandlers:
 
     _last_warn: str = ""  # último motivo de rejeição — enviado em failed SKILL_RESULT
 
+    # Setado pelo SkillProcessor (servidor) antes de chamar o handler; lista para
+    # onde projéteis/spells diferidos são empurrados. None = modo offline (sem servidor).
+    _server_pending_spells: list | None = None
+
     # ==================================================================
     # Habilidades base (skill_config.py)
     # ==================================================================
@@ -326,6 +330,34 @@ class SkillHandlers:
                 cy  += sy
         return True
 
+    def _dash_path_clear(self, x0: int, y0: int, x1: int, y1: int) -> bool:
+        """Verifica cada passo Bresenham usando is_tile_walkable com from_x/from_y.
+
+        Diferente de _has_los (só checa is_solid), também bloqueia cortes diagonais
+        entre dois tiles sólidos — replicando exatamente a validação de move_player
+        do servidor.
+        """
+        dx = abs(x1 - x0)
+        dy = abs(y1 - y0)
+        sx = 1 if x1 > x0 else -1
+        sy = 1 if y1 > y0 else -1
+        err = dx - dy
+        cx, cy = x0, y0
+
+        while True:
+            if cx == x1 and cy == y1:
+                return True
+            prev_x, prev_y = cx, cy
+            e2 = err * 2
+            if e2 > -dy:
+                err -= dy
+                cx  += sx
+            if e2 < dx:
+                err += dx
+                cy  += sy
+            if not is_tile_walkable(self.player_entity_id, cx, cy, prev_x, prev_y):
+                return False
+
     # ------------------------------------------------------------------
     def _skill_interceptar(self, skill, _combat_stats, combat_state, tile_move):
         """Dash até o tile adjacente ao alvo (animado, alcance 2–6 tiles)."""
@@ -365,7 +397,7 @@ class SkillHandlers:
             return
         dest_x, dest_y = min(walkable, key=lambda t: abs(t[0] - px) + abs(t[1] - py))
 
-        if not self._has_los(px, py, dest_x, dest_y):
+        if not self._dash_path_clear(px, py, dest_x, dest_y):
             self._warn("Caminho bloqueado")
             return
 
@@ -601,7 +633,7 @@ class SkillHandlers:
             return False
 
         # Modo servidor: agenda conclusão diferida em vez de criar SpellCast
-        _server_pending = getattr(self, "_server_pending_spells", None)
+        _server_pending = self._server_pending_spells
         if _server_pending is not None:
             _server_pending.append({
                 "player_eid": self.player_entity_id,
@@ -664,7 +696,7 @@ class SkillHandlers:
             return False
 
         # Modo servidor: recebe coordenadas AOE via _server_aoe_x/y (enviadas pelo cliente ao clicar)
-        _server_mode = getattr(self, "_server_pending_spells", None) is not None
+        _server_mode = self._server_pending_spells is not None
         if _server_mode:
             aoe_x = getattr(tile_move, "_server_aoe_x", 0.0)
             aoe_y = getattr(tile_move, "_server_aoe_y", 0.0)
@@ -713,7 +745,7 @@ class SkillHandlers:
                              - getattr(combat_stats, "ice_cast_time_reduction", 0.0))
 
         # Modo servidor: agenda conclusão diferida
-        _server_pending = getattr(self, "_server_pending_spells", None)
+        _server_pending = self._server_pending_spells
         if _server_pending is not None:
             _server_pending.append({
                 "player_eid": self.player_entity_id,
@@ -759,7 +791,7 @@ class SkillHandlers:
             return False
 
         # Modo servidor: agenda conclusão diferida
-        _server_pending = getattr(self, "_server_pending_spells", None)
+        _server_pending = self._server_pending_spells
         if _server_pending is not None:
             _server_pending.append({
                 "player_eid": self.player_entity_id,
@@ -795,7 +827,7 @@ class SkillHandlers:
         self.world.add_component(self.player_entity_id, IceBlockEffect(
             duration=5.0, elapsed=0.0, heal_interval=1.0, last_heal=0.0,
         ))
-        if getattr(self, "_server_pending_spells", None) is None:
+        if self._server_pending_spells is None:
             SOUNDS.play_spell("bloco_de_gelo", "cast")
         if combat_state:
             combat_state.is_stunned = True
@@ -808,7 +840,7 @@ class SkillHandlers:
     def _skill_escudo_fogo(self, skill, combat_stats, combat_state, tile_move):
         """Escudo de Fogo — retaliation de fogo em atacantes por 15s. 25 mana / 20s CD."""
         from components import FireShieldEffect
-        _server_mode = getattr(self, "_server_pending_spells", None) is not None
+        _server_mode = self._server_pending_spells is not None
         char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
         if not self._check_mana(char_stats, 25):
             return False
@@ -934,7 +966,7 @@ class SkillHandlers:
             return False
 
         # Modo servidor: agenda conclusão diferida
-        _server_pending = getattr(self, "_server_pending_spells", None)
+        _server_pending = self._server_pending_spells
         if _server_pending is not None:
             _server_pending.append({
                 "player_eid": self.player_entity_id,
@@ -997,6 +1029,9 @@ class SkillHandlers:
             self._warn("Talento insuficiente para Tiro Múltiplo.")
             return False
 
+        # Validação de equipamento — roda em ambos os lados (cliente E servidor).
+        # Servidor valida tudo: sem isso, o handler server-side pulava a checagem
+        # e enfileirava o cast mesmo sem arco/aljava/flechas.
         bow    = equip.slots.get("mainhand") if equip else None
         quiver = equip.slots.get("offhand")  if equip else None
         if not bow or getattr(bow, "subtype", "") != "Bow":
@@ -1005,6 +1040,20 @@ class SkillHandlers:
         if not quiver or getattr(quiver, "item_type", "") != "quiver" or quiver.arrow_count < 1:
             self._warn("Aljava vazia! Use Recarregar.")
             return False
+
+        _server_pending = self._server_pending_spells
+        if _server_pending is not None:
+            _server_pending.append({
+                "player_eid":         self.player_entity_id,
+                "spell_id":           "tiro_multiplo",
+                "target_id":          -1,
+                "timer":              skill.cast_time,
+                "concentration_cost": cost,
+                "cooldown":           skill.cooldown,
+                "dir_x":              getattr(tile_move, "_server_dir_x", 0.0),
+                "dir_y":              getattr(tile_move, "_server_dir_y", 0.0),
+            })
+            return True
 
         self.world.add_component(self.player_entity_id, SpellCast(
             spell_id           = "tiro_multiplo",
@@ -1083,7 +1132,14 @@ class SkillHandlers:
         if not self._check_concentration(char_stats, cost):
             return False
 
-        # Verifica arco e aljava com ao menos 1 flecha
+        target_id = self._resolve_target(combat_state, tile_move, skill.cast_range)
+        if target_id == -1:
+            self._warn("Nenhum alvo")
+            return False
+
+        # Validação de equipamento — roda em ambos os lados (cliente E servidor).
+        # Servidor valida tudo: sem isso, o handler server-side pulava a checagem
+        # e enfileirava o cast mesmo sem arco/aljava/flechas.
         bow    = equip.slots.get("mainhand") if equip else None
         quiver = equip.slots.get("offhand")  if equip else None
         if not bow or getattr(bow, "subtype", "") != "Bow":
@@ -1096,10 +1152,17 @@ class SkillHandlers:
             self._warn("Aljava vazia! Use Recarregar.")
             return False
 
-        target_id = self._resolve_target(combat_state, tile_move, skill.cast_range)
-        if target_id == -1:
-            self._warn("Nenhum alvo")
-            return False
+        _server_pending = self._server_pending_spells
+        if _server_pending is not None:
+            _server_pending.append({
+                "player_eid":         self.player_entity_id,
+                "spell_id":           "tiro_repulsivo",
+                "target_id":          target_id,
+                "timer":              skill.cast_time,
+                "concentration_cost": cost,
+                "cooldown":           skill.cooldown,
+            })
+            return True
 
         self.world.add_component(self.player_entity_id, SpellCast(
             spell_id           = "tiro_repulsivo",
@@ -1208,6 +1271,18 @@ class SkillHandlers:
         SOUNDS.play_skill("skill_cancao_ninar")
 
         # Canal de 2s — se cancelado, _cancel_cancao_ninar acorda os alvos
+        _server_pending = self._server_pending_spells
+        if _server_pending is not None:
+            _server_pending.append({
+                "player_eid":         self.player_entity_id,
+                "spell_id":           "cancao_ninar",
+                "target_id":          -1,
+                "timer":              skill.cast_time,
+                "concentration_cost": cost,
+                "cooldown":           skill.cooldown,
+            })
+            return True
+
         self.world.add_component(self.player_entity_id, SpellCast(
             spell_id           = "cancao_ninar",
             cast_time          = skill.cast_time,
@@ -1232,6 +1307,14 @@ class SkillHandlers:
         if not self._check_concentration(char_stats, cost):
             return False
 
+        target_id = self._resolve_target(combat_state, tile_move, skill.cast_range)
+        if target_id == -1:
+            self._warn("Nenhum alvo")
+            return False
+
+        # Validação de equipamento — roda em ambos os lados (cliente E servidor).
+        # Servidor valida tudo: sem isso, o handler server-side pulava a checagem
+        # e enfileirava o cast mesmo sem arco/aljava/flechas.
         bow    = equip.slots.get("mainhand") if equip else None
         quiver = equip.slots.get("offhand")  if equip else None
         if not bow or getattr(bow, "subtype", "") != "Bow":
@@ -1244,10 +1327,17 @@ class SkillHandlers:
             self._warn("Aljava vazia! Use Recarregar.")
             return False
 
-        target_id = self._resolve_target(combat_state, tile_move, skill.cast_range)
-        if target_id == -1:
-            self._warn("Nenhum alvo")
-            return False
+        _server_pending = self._server_pending_spells
+        if _server_pending is not None:
+            _server_pending.append({
+                "player_eid":         self.player_entity_id,
+                "spell_id":           "picada_escorpiao",
+                "target_id":          target_id,
+                "timer":              skill.cast_time,
+                "concentration_cost": cost,
+                "cooldown":           skill.cooldown,
+            })
+            return True
 
         self.world.add_component(self.player_entity_id, SpellCast(
             spell_id           = "picada_escorpiao",
@@ -1272,25 +1362,38 @@ class SkillHandlers:
         if not self._check_concentration(char_stats, cost):
             return False
 
+        target_id = self._resolve_target(combat_state, tile_move, skill.cast_range)
+        if target_id == -1:
+            self._warn("Nenhum alvo")
+            return False
+
+        # Validação de equipamento — roda em ambos os lados (cliente E servidor).
+        # Servidor valida tudo: sem isso, o handler server-side pulava a checagem
+        # e enfileirava o cast mesmo sem arco/aljava/flechas.
         bow    = equip.slots.get("mainhand") if equip else None
         quiver = equip.slots.get("offhand")  if equip else None
-
         if not bow or getattr(bow, "subtype", "") != "Bow":
             self._warn("Precisa de um arco equipado.")
             return False
         if not quiver or getattr(quiver, "item_type", "") != "quiver":
             self._warn("Precisa de uma aljava equipada.")
             return False
-
         arrows_needed = skill.params.get("arrow_count", 2)
         if quiver.arrow_count < arrows_needed:
             self._warn(f"Flechas insuficientes na aljava ({quiver.arrow_count}/{arrows_needed})")
             return False
 
-        target_id = self._resolve_target(combat_state, tile_move, skill.cast_range)
-        if target_id == -1:
-            self._warn("Nenhum alvo")
-            return False
+        _server_pending = self._server_pending_spells
+        if _server_pending is not None:
+            _server_pending.append({
+                "player_eid":         self.player_entity_id,
+                "spell_id":           "flecha_reiterada",
+                "target_id":          target_id,
+                "timer":              skill.cast_time,
+                "concentration_cost": cost,
+                "cooldown":           skill.cooldown,
+            })
+            return True
 
         self.world.add_component(self.player_entity_id, SpellCast(
             spell_id            = "flecha_reiterada",
@@ -1298,7 +1401,7 @@ class SkillHandlers:
             elapsed             = 0.0,
             target_id           = target_id,
             mana_cost           = 0,
-            concentration_cost  = cost,   # descontado SOMENTE ao completar
+            concentration_cost  = cost,
             interruptible       = True,
         ))
         LOG.add("Flecha Reiterada...", (180, 220, 255))
@@ -1338,6 +1441,18 @@ class SkillHandlers:
 
         # Talento Prático: permite recarga em movimento
         _in_motion = getattr(combat_stats, "recarregar_in_motion", False)
+
+        _server_pending = self._server_pending_spells
+        if _server_pending is not None:
+            _server_pending.append({
+                "player_eid":         self.player_entity_id,
+                "spell_id":           "recarregar",
+                "target_id":          -1,
+                "timer":              skill.cast_time,
+                "concentration_cost": 0,
+                "cooldown":           skill.cooldown,
+            })
+            return True
 
         self.world.add_component(self.player_entity_id, SpellCast(
             spell_id      = "recarregar",

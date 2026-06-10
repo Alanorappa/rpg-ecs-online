@@ -105,6 +105,18 @@ class NetworkClient:
             "max_hp":   max_hp,
         })
 
+    def register(self, username: str, password: str,
+                 class_id: str = "guerreiro", char_name: str = "") -> None:
+        """Envia pedido de cadastro. Resposta chega como REGISTER_OK / REGISTER_ERROR."""
+        import hashlib
+        ph = hashlib.sha256(password.encode()).hexdigest()
+        self.send(MsgType.REGISTER, {
+            "username":  username,
+            "password":  ph,
+            "class_id":  class_id,
+            "char_name": char_name,
+        })
+
     def move(self, tx: int, ty: int) -> None:
         self.send(MsgType.MOVE, {"tx": tx, "ty": ty})
 

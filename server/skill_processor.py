@@ -398,6 +398,11 @@ class SkillProcessorMixin:
                 # a mana foi subtraída antes do cast completar.
                 if _mana_after_handler != _mana_before_handler:
                     _stat_entry["mana"] = _mana_after_handler
+                # Concentração nunca enviada aqui (nem em sucesso nem em falha).
+                # Sync ocorre SOMENTE na completion em spell_completion_processor.py,
+                # quando o custo foi de fato deduzido pelo servidor.
+                # Enviar ao detectar falha causaria queda visual imediata por drift
+                # de regen entre cliente (60 FPS) e servidor (20 TPS).
                 # Se o player se curou, inclui hp atual e quantidade curada para o cliente
                 if _heal_amount > 0 and _cs_after:
                     _stat_entry["hp"]          = _cs_after.current_hp

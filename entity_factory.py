@@ -8,7 +8,8 @@ from components import Position, Renderable, PlayerControlled, Camera, Collider,
                        Corpse, Inventory, Equipment, PlayerSkills, Wallet, TalentTree, Merchant, \
                        SpawnZone, EntityIdentity, StatusEffects, ConsumableBar, MobSounds, FogOfWar, \
                        EnemyAbilities, EnemyAbilitySlot, QuestLog, QuestGiver, NPC, Blacksmith, \
-                       LearnedRecipes, Trainer, UIState, ShopUIState, LootUIState
+                       LearnedRecipes, Trainer
+from ui_components import UIState, ShopUIState, LootUIState
 from tileset import TILE_MAPPING, OBJECT_MAPPING, TILE_SIZE, FLOOR_TILE, get_collision_offsets
 from mob_definitions import MOB_TABLE
 from enemy_abilities_data import MOB_ABILITIES

@@ -63,6 +63,58 @@ _svc: dict = {}
 # ── Cache de sprites de efeito de chão (lazy-loaded) ─────────────────────────
 _GROUND_EFFECT_SPRITES: dict[str, "pygame.Surface | None"] = {}
 
+_GROUND_EFFECT_TYPES_ICONS = {"root"}  # efeitos com sprite de chão: sem ícone na barra
+
+
+def _draw_effect_icons(
+    surf: "pygame.Surface",
+    draw_x: float,
+    bar_y: int,
+    active_effects: list,
+    font: "pygame.font.Font",
+) -> None:
+    """Desenha ícones de efeito ativos acima da barra de HP.
+
+    Ícones 16×16 centralizados no eixo X, enfileirados horizontalmente,
+    10 px acima da barra. Sobreposição do tempo restante em vermelho.
+    """
+    from math import ceil as _ceil
+    from effect_animator import get_frame as _get_frame, FRAME_W, FRAME_H
+    from status_effects_data import EFFECT_DEFS as _EDEFS
+
+    visible = [e for e in active_effects
+               if e.effect_type not in _GROUND_EFFECT_TYPES_ICONS]
+    if not visible:
+        return
+
+    ICON = FRAME_W   # 16
+    GAP  = 3
+    n    = len(visible)
+    total_w = n * ICON + GAP * (n - 1)
+    ix = int(draw_x - total_w / 2)
+    iy = bar_y - ICON - 10
+
+    for eff in visible:
+        frame = _get_frame(eff.effect_type)
+        if frame is not None:
+            surf.blit(frame, (ix, iy))
+        else:
+            defn = _EDEFS.get(eff.effect_type)
+            col  = defn.color if defn else (150, 150, 150)
+            pygame.draw.rect(surf, col, (ix, iy, ICON, ICON))
+
+        dur = getattr(eff, 'duration', 0.0)
+        if 0 < dur <= 99:
+            txt   = str(max(1, _ceil(dur)))
+            shad  = font.render(txt, True, (0, 0, 0))
+            label = font.render(txt, True, (255, 60, 60))
+            tx = ix + (ICON - label.get_width())  // 2
+            ty = iy + (ICON - label.get_height()) // 2
+            surf.blit(shad,  (tx + 1, ty + 1))
+            surf.blit(label, (tx,     ty))
+
+        ix += ICON + GAP
+
 def _get_ground_effect_sprite(effect_type: str) -> "pygame.Surface | None":
     """Retorna sprite de efeito de chão para o tipo dado; carrega na primeira vez.
 
@@ -1528,7 +1580,9 @@ class PlayerInputSystem(System):
                         auto_move.active = False
                         auto_move.path.clear()
                         auto_move.ground_target = None
-                    if combat_state:
+                    # Arqueiro (can_kite): mover não cancela perseguição — pode atirar em movimento
+                    _can_kite_kbm = combat_stats and getattr(combat_stats, "can_kite", False)
+                    if combat_state and not _can_kite_kbm:
                         combat_state.is_pursuing = False
                     if is_tile_walkable(
                             entity_id, tgt_x, tgt_y, cur_x, cur_y):
@@ -1729,19 +1783,14 @@ class PlayerInputSystem(System):
         bow_range = getattr(bow, "cast_range", 8) if bow and getattr(bow, "subtype", "") == "Bow" else 0
 
         if not bow_range:
-            # Sem arco: fallback ao melee guerreiro (soco lento)
-            if dist_attack <= self.PLAYER_ATTACK_RANGE:
-                if auto_move:
-                    auto_move.path.clear()
-                if combat_state.is_pursuing and can_act and combat_stats.attack_cooldown_timer <= 0:
-                    SOUNDS.play_emote_attack(is_player=True)
-                    deal_damage(entity_id, target_id, "physical")
-                    combat_stats.attack_cooldown_timer = combat_stats.get_attack_cooldown()
-                    enter_combat(combat_state)
-            elif combat_state.is_pursuing and auto_move and not tile_movement.is_moving:
-                self._auto_move_step(entity_id, position, tile_movement,
-                                     pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y, auto_move, dt,
-                                     target_eid=target_id)
+            # Sem arco: avisa e para — não faz auto-move para melee nem ataca
+            if combat_state.is_pursuing and can_act and combat_stats.attack_cooldown_timer <= 0:
+                from combat_log import LOG as _LOG_bow
+                _LOG_bow.add("Precisa de um arco equipado para atirar.", (220, 180, 80))
+                combat_stats.attack_cooldown_timer = 2.0  # throttle do aviso
+            if auto_move and not auto_move.ground_target:
+                auto_move.active = False
+                auto_move.path.clear()
             return
 
         # Arco equipado — verificar aljava
@@ -1755,7 +1804,9 @@ class PlayerInputSystem(System):
         _PRE_DRAW_THRESHOLD = 1.0   # segundos antes do disparo para tocar o nock
 
         if dist <= bow_range:
-            if auto_move:
+            # Limpa perseguição apenas quando não há ground_target — se houver,
+            # _process_ground_move cuida do movimento e active deve permanecer True.
+            if auto_move and not auto_move.ground_target:
                 auto_move.path.clear()
                 auto_move.active = False
 
@@ -1814,7 +1865,9 @@ class PlayerInputSystem(System):
                 if random.random() < 0.35:
                     SOUNDS.play_random(["arrow_draw_1", "arrow_draw_2"], channel_group=(8, 9))
                 SOUNDS.play_random(["arrow_release_1", "arrow_release_2"], channel_group=(10, 11))
-        elif auto_move and not tile_movement.is_moving:
+        elif combat_state.is_pursuing and auto_move and not tile_movement.is_moving:
+            # Persegue o mob apenas quando is_pursuing=True — evita sobrescrever
+            # ground_target (clique de chão com is_pursuing=False).
             auto_move.active = True
             self._auto_move_step(entity_id, position, tile_movement,
                                  pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y,
@@ -2973,6 +3026,7 @@ class RenderSystem(System):
         self.world = world
         self.world_surf = screen
         self.hud_surf   = screen
+        self._effect_dur_font = pygame.font.Font(None, 18)
 
     def render(self, camera_offset_x: float = 0, camera_offset_y: float = 0,
                world_objects: list = None) -> None:
@@ -3124,54 +3178,15 @@ class RenderSystem(System):
                 _active_effects = list(_sfx.effects.values()) if _sfx else []
                 if _cst and _cst.is_stunned and _cst.stun_timer > 0:
                     if not (_sfx and _sfx.has("stun")):
+                        _stun_timer_val = _cst.stun_timer
                         class _FakeEff:
                             effect_type = "stun"
+                            duration    = _stun_timer_val
                         _active_effects.append(_FakeEff())
 
                 if _active_effects:
-                    from effect_animator import get_frame as _get_effect_frame
-                    from status_effects_data import EFFECT_DEFS as _EDEFS
-
-                    _anim_frames = []   # (Surface, effect_type) — com animação
-                    _sq_colors   = []   # (R,G,B)               — sem animação
-
-                    # Efeitos com sprite de chão dedicado não precisam de ícone
-                    # acima da HP bar (evita duplicação visual).
-                    _GROUND_EFFECT_TYPES = {"root"}
-
-                    for _eff in _active_effects:
-                        if _eff.effect_type in _GROUND_EFFECT_TYPES:
-                            continue  # visual de chão já foi desenhado
-                        _frame = _get_effect_frame(_eff.effect_type)
-                        if _frame is not None:
-                            _anim_frames.append(_frame)
-                        else:
-                            _defn = _EDEFS.get(_eff.effect_type)
-                            if _defn:
-                                _sq_colors.append(_defn.color)
-
-                    # ── Frames animados: centralizados acima da barra de HP ──
-                    if _anim_frames:
-                        from effect_animator import FRAME_W, FRAME_H
-                        _gap_f = 4
-                        _total_w = len(_anim_frames) * FRAME_W + (_gap_f * (len(_anim_frames) - 1))
-                        _fx = int(draw_x - _total_w / 2)
-                        _fy = bar_y - FRAME_H - 4
-                        for _surf in _anim_frames:
-                            self.world_surf.blit(_surf, (_fx, _fy))
-                            _fx += FRAME_W + _gap_f
-
-                    # ── Quadrados coloridos para efeitos sem animação ─────────
-                    if _sq_colors:
-                        _isz, _gap = 6, 2
-                        _tw = len(_sq_colors) * (_isz + _gap) - _gap
-                        _ix = int(draw_x - _tw / 2)
-                        # Fica abaixo dos frames animados (ou na posição padrão)
-                        _sq_offset = (FRAME_H + 6) if _anim_frames else 0
-                        _iy = bar_y - _isz - 2 - _sq_offset
-                        for _col in _sq_colors:
-                            pygame.draw.rect(self.world_surf, _col, (_ix, _iy, _isz, _isz))
-                            _ix += _isz + _gap
+                    _draw_effect_icons(self.world_surf, draw_x, bar_y,
+                                       _active_effects, self._effect_dur_font)
 
 class CameraSystem(System):
     def __init__(self, world: World):
@@ -4068,13 +4083,13 @@ class ShopSystem(System):
 
     @property
     def open_merchant_id(self) -> int:
-        from components import ShopUIState
+        from ui_components import ShopUIState
         ui = self.world.get_component(self.player_entity, ShopUIState)
         return ui.open_merchant_id if ui else -1
 
     @open_merchant_id.setter
     def open_merchant_id(self, value: int) -> None:
-        from components import ShopUIState
+        from ui_components import ShopUIState
         ui = self.world.get_component(self.player_entity, ShopUIState)
         if ui:
             ui.open_merchant_id = value
@@ -5153,13 +5168,13 @@ class LootSystem(System):
 
     @property
     def open_corpse_id(self) -> int:
-        from components import LootUIState
+        from ui_components import LootUIState
         ui = self.world.get_component(self.player_entity, LootUIState)
         return ui.open_corpse_id if ui else -1
 
     @open_corpse_id.setter
     def open_corpse_id(self, value: int) -> None:
-        from components import LootUIState
+        from ui_components import LootUIState
         ui = self.world.get_component(self.player_entity, LootUIState)
         if ui:
             ui.open_corpse_id = value
@@ -5753,22 +5768,27 @@ class SkillSystem(System, SkillHandlers):
         combat_state = self.world.get_component(self.player_entity_id, CombatState)
         # Canalização activa: tecla de skill cancela a canalização antes de processar
         if combat_state and combat_state.is_casting:
-            from components import Channeling
+            from components import Channeling, SpellCast as _SCGuard
             channeling = self.world.get_component(self.player_entity_id, Channeling)
-            if channeling:
-                for event in events:
-                    if event.type == pygame.KEYDOWN:
-                        any_skill_key = any(
-                            skill is not None and event.key == player_skills.keybinds[i]
-                            for i, skill in enumerate(player_skills.skills)
-                        )
-                        if any_skill_key:
-                            self.world.remove_component(self.player_entity_id, Channeling)
-                            combat_state.is_casting = False
-                            from combat_log import LOG as _LOG
-                            from floating_text import WARN as _WARN
-                            _WARN.add("Canalização interrompida!")
-                            break
+            _sc_guard  = self.world.get_component(self.player_entity_id, _SCGuard)
+            # Safety valve: is_casting preso sem SpellCast nem Channeling → libera input
+            if not channeling and _sc_guard is None:
+                combat_state.is_casting = False
+            else:
+                if channeling:
+                    for event in events:
+                        if event.type == pygame.KEYDOWN:
+                            any_skill_key = any(
+                                skill is not None and event.key == player_skills.keybinds[i]
+                                for i, skill in enumerate(player_skills.skills)
+                            )
+                            if any_skill_key:
+                                self.world.remove_component(self.player_entity_id, Channeling)
+                                combat_state.is_casting = False
+                                from combat_log import LOG as _LOG
+                                from floating_text import WARN as _WARN
+                                _WARN.add("Canalização interrompida!")
+                                break
                 return  # aguarda próximo frame para usar a nova skill
 
         if combat_state and not combat_state.can_act():
@@ -5917,7 +5937,7 @@ class SkillSystem(System, SkillHandlers):
         _has_cast     = getattr(skill, "cast_time", 0.0) > 0
         _is_aoe       = getattr(skill, "needs_aoe_target", False)
 
-        _is_online = getattr(self, "_remote_mobs_reverse", None) is not None
+        _is_online = self._net is not None
 
         # Skills AOE (Calamidade Flamejante): chama o handler diretamente para mostrar
         # a mira antes do clique — CAST_SKILL é enviado pelo AoeTargetingSystem ao clicar.
@@ -5963,11 +5983,12 @@ class SkillSystem(System, SkillHandlers):
                         return False
 
                 # enter_combat + is_pursuing ANTES do range check (igual offline _use_skill:5307-5313)
-                # Garante que pressionar skill inicia o chase mesmo fora de alcance.
+                # Garante que pressionar skill inicia o chase/auto-attack mesmo fora de alcance.
+                # is_pursuing=True para todas as ofensivas — cast-time skills bloqueiam
+                # auto-attack via is_casting=True em can_act() durante o cast.
                 from stat_fns import enter_combat as _ec_pre
                 _ec_pre(combat_state)
-                if not _has_cast:
-                    combat_state.is_pursuing = True
+                combat_state.is_pursuing = True
 
                 # Range check — apenas para skills que exigem alvo explícito
                 if _needs_target and _target_local != -1:
@@ -6067,18 +6088,23 @@ class SkillSystem(System, SkillHandlers):
                 if _mana_cost > 0 and getattr(_char, "mana", 0) < _mana_cost:
                     WARN.add("Mana insuficiente")
                     return False
-        # HP threshold (ex: Executar exige alvo <30% HP) — verifica no cliente via _mob_hp
+            # Concentração (arqueiro) — mesmo check do offline _check_concentration
+            _conc_cost = (getattr(skill, "params", {}) or {}).get("concentration_cost", 0)
+            if _conc_cost > 0 and _char:
+                _conc_free = _cs and getattr(_cs, "concentration_free", False)
+                if not _conc_free and getattr(_char, "concentration", 0) < _conc_cost:
+                    WARN.add(f"Concentração insuficiente ({int(getattr(_char, 'concentration', 0))}/{_conc_cost})")
+                    return False
+        # HP threshold (ex: Executar exige alvo <30% HP) — verifica no cliente via RemoteEntityMeta
         if not (_is_procced and _proc_ignores_cost) and _is_online and combat_state:
             _params_sk   = getattr(skill, "params", {}) or {}
             _hp_threshold = _params_sk.get("hp_threshold", 0.0) if isinstance(_params_sk, dict) else 0.0
             if _hp_threshold > 0:
-                _mob_hp_dict = getattr(self, "_mob_hp", {})
-                _rev_sk      = getattr(self, "_remote_mobs_reverse", {})
-                _tgt_local   = combat_state.target_entity_id
-                _srv_eid_sk  = _rev_sk.get(_tgt_local, -1)
-                if _srv_eid_sk in _mob_hp_dict:
-                    _tgt_hp, _tgt_hp_max = _mob_hp_dict[_srv_eid_sk]
-                    if _tgt_hp / max(1, _tgt_hp_max) >= _hp_threshold:
+                _tgt_local = combat_state.target_entity_id
+                from components import RemoteEntityMeta as _REM_sk
+                _meta_sk = self.world.get_component(_tgt_local, _REM_sk)
+                if _meta_sk and _meta_sk.hp_max > 0:
+                    if _meta_sk.hp / _meta_sk.hp_max >= _hp_threshold:
                         WARN.add(f"Alvo precisa ter <{int(_hp_threshold * 100)}% HP")
                         return False
 
@@ -6129,9 +6155,13 @@ class SkillSystem(System, SkillHandlers):
         if self._net:
             from shared.messages import MsgType as _MT
             _tid_local  = getattr(combat_state, "target_entity_id", -1) if combat_state else -1
-            _rev = getattr(self, "_remote_mobs_reverse", {})
-            _tid_server = _rev.get(_tid_local, -1)
-            # PvP: alvo pode ser player remoto (não está em _remote_mobs_reverse)
+            _tid_server = -1
+            if _tid_local != -1:
+                from components import RemoteEntityMeta as _REM_cast
+                _meta_cast = self.world.get_component(_tid_local, _REM_cast)
+                if _meta_cast:
+                    _tid_server = _meta_cast.server_eid
+            # PvP: alvo pode ser player remoto (não está em RemoteEntityMeta)
             if _tid_server == -1 and _tid_local != -1:
                 from components import RemoteControlled as _RCcast
                 _rc_cast = self.world.get_component(_tid_local, _RCcast)

@@ -143,6 +143,10 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # Timer de ataque por jogador: session_id → segundos até próximo hit
         self._attack_timers: dict[str, float] = {}
 
+        # Dano PvP (player→player) neste tick: player_eid → total dano sofrido
+        # Inicializado aqui e resetado em _tick para evitar getattr() lazy
+        self._pvp_damage_this_tick: dict[int, int] = {}
+
         # Itens comprados em loja mas ainda não confirmados por SAVE_STATE.
         # session_id → contagem de itens pendentes (limpo em confirm_inventory_save
         # e em despawn_player). Substitui o padrão setattr/getattr/delattr anterior.
@@ -319,7 +323,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         """
         from components import (Position, TileMovement, PlayerControlled, CombatState,
                                  CombatStats, CharacterStats, PermanentStats, Visible,
-                                 Equipment, Wallet)
+                                 Equipment, Wallet, Inventory)
         from stats_system import CLASS_BASE_STATS, apply_char_stats_to_combat, sync_attack_interval
         import json as _json
 
@@ -340,8 +344,32 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self.world.add_component(eid, PlayerControlled())
         self.world.add_component(eid, CombatState())
         self.world.add_component(eid, Visible())
-        self.world.add_component(eid, Equipment())
+
+        # Reconstrói TODOS os slots de equipamento do equipment_json — não só a
+        # aljava. Handlers de skill (ex: _skill_tiro_multiplo) checam
+        # equip.slots["mainhand"].subtype == "Bow" no servidor; faltando isso,
+        # "Precisa de um arco equipado." disparava mesmo com arco equipado.
+        _eq_comp = Equipment()
+        _eq_raw  = char_data.get("equipment_json") or char_data.get("equipment") or "{}"
+        try:
+            _eq_data = _json.loads(_eq_raw) if isinstance(_eq_raw, str) else (_eq_raw or {})
+        except Exception:
+            _eq_data = {}
+        if isinstance(_eq_data, dict):
+            for _slot, _item_d in _eq_data.items():
+                if _slot not in _eq_comp.slots or not isinstance(_item_d, dict):
+                    continue
+                _item_d.setdefault("slot", _slot)
+                _eq_comp.slots[_slot] = self._reconstruct_item(_item_d)
+        self.world.add_component(eid, _eq_comp)
         self.world.add_component(eid, Wallet())
+
+        # Inventário: reconstrói do inventory_json salvo. Necessário para que
+        # handlers de skill (ex: _skill_recarregar) validem munição contra o
+        # estado real — sem isso, "Inventory" fica None no servidor e Recarregar
+        # sempre falha com "Não há flechas disponíveis", mesmo com flechas na bag.
+        self.world.add_component(eid, Inventory())
+        self.load_player_inventory(eid, char_data.get("inventory_json", "[]"))
 
         # CharacterStats — restaura stats salvas; usa base da classe para personagens novos
         char = CharacterStats()
@@ -409,25 +437,36 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         if wall:
             wall.gold = _gold
 
-        # Aplica cs_flags dos talentos (ex: impacto_maquina_matar) no servidor
+        # Aplica cs_flags dos talentos (ex: impacto_maquina_matar) no servidor.
+        # Fase de reset SEMPRE roda — garante valores base (ex: concentration_regen=5.0)
+        # mesmo sem talentos alocados, espelhando talent_system.apply_talent_effects().
         try:
             import json as _tjson
+            from talent_data import TALENTS as _TALMAP
+            # 1. Reset: todos os cs_flags para seus valores padrão
+            for _t_all in _TALMAP.values():
+                for _flag in (_t_all.get("cs_flags") or []):
+                    _reset = _flag.get("reset")
+                    if _reset is not None:
+                        try:
+                            setattr(cs, _flag["field"], _reset)
+                        except Exception:
+                            pass
+            # 2. Sobrescreve com valores calculados pelos talentos alocados
             _tal_raw  = char_data.get("talents_json") or "{}"
             _tal_data = _tjson.loads(_tal_raw) if isinstance(_tal_raw, str) else {}
             _tal_alloc = _tal_data.get("allocated", {})
-            if _tal_alloc:
-                from talent_data import TALENTS as _TALMAP
-                for _tid, _pts in _tal_alloc.items():
-                    _t = _TALMAP.get(_tid)
-                    if not _t:
-                        continue
-                    for _flag in (_t.get("cs_flags") or []):
-                        _formula = _flag.get("formula")
-                        if _formula:
-                            try:
-                                setattr(cs, _flag["field"], _formula(_pts))
-                            except Exception:
-                                pass
+            for _tid, _pts in _tal_alloc.items():
+                _t = _TALMAP.get(_tid)
+                if not _t:
+                    continue
+                for _flag in (_t.get("cs_flags") or []):
+                    _formula = _flag.get("formula")
+                    if _formula:
+                        try:
+                            setattr(cs, _flag["field"], _formula(_pts))
+                        except Exception:
+                            pass
         except Exception as _te:
             print(f"[World] aviso: talent cs_flags não aplicados — {_te}")
 
@@ -477,6 +516,18 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             self.world.add_component(eid, ps)
         except Exception as _e:
             print(f"[World] aviso: PlayerSkills não criado — {_e}")
+
+        # TalentTree — necessário para process_levelups() incrementar available_points
+        try:
+            from components import TalentTree as _TT
+            _tt_comp = _TT()
+            _tal_raw2 = char_data.get("talents_json") or "{}"
+            _tal_d2   = _json.loads(_tal_raw2) if isinstance(_tal_raw2, str) else (_tal_raw2 or {})
+            _tt_comp.available_points = int(_tal_d2.get("available_points", 0))
+            _tt_comp.allocated        = dict(_tal_d2.get("allocated", {}))
+            self.world.add_component(eid, _tt_comp)
+        except Exception as _te:
+            print(f"[World] aviso: TalentTree não criado — {_te}")
 
         self._player_eids[session_id]    = eid
         self._player_eid_to_sid[eid]     = session_id   # reverse map
@@ -541,7 +592,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         return {
             "tile_x":     tm.current_tile_x if tm else 10,
             "tile_y":     tm.current_tile_y if tm else 10,
-            "hp":         cs.current_hp     if cs else 100,
+            "hp":         (max(1, cs.current_hp) if cs and cs.current_hp > 0
+                          else (cs.max_hp if cs else 100)),
             "mp":         100,
             "stats":      stats,
             "skills":     skills,
@@ -549,13 +601,23 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
     def despawn_player(self, session_id: str) -> None:
         """Remove entidade do jogador. Chamado no logout/disconnect."""
-        from components import TileMovement, Position
         eid = self._player_eids.pop(session_id, None)
         if eid is None:
             return
-        self._player_eid_to_sid.pop(eid, None)   # limpa reverse map
+        self._player_eid_to_sid.pop(eid, None)
         self._despawned_this_tick.append({"eid": eid, "tx": None, "ty": None})
-        self._pending_inv.pop(session_id, None)  # limpa itens pendentes de loja
+        self._pending_inv.pop(session_id, None)
+        self._attack_timers.pop(session_id, None)
+        self._player_stat_overrides.pop(eid, None)
+        # Cancela spells pendentes do player (evita completions após disconnect)
+        self._pending_spell_completions = [
+            e for e in self._pending_spell_completions
+            if e.get("player_eid") != eid
+        ]
+        self._spells_in_flight_queue = [
+            e for e in self._spells_in_flight_queue
+            if e.get("player_eid") != eid
+        ]
         self.world.remove_entity(eid)
         print(f"[World] despawn player eid={eid}  session={session_id}")
 
@@ -760,7 +822,6 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
     def get_session_id_for_player(self, player_eid: int) -> str | None:
         """Retorna session_id do player dado seu entity_id — O(1) via reverse map."""
         return self._player_eid_to_sid.get(player_eid)
-        return None
 
     # ── Skill API ────────────────────────────────────────────────────────────
 
@@ -1015,6 +1076,100 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         """Retorna o valor base de um item a partir do cache pré-construído.
         None se não encontrado (foi removido do catálogo após startup)."""
         return self._item_value_cache.get(item_name)
+
+    def _reconstruct_item(self, d: dict):
+        """Reconstrói um Item a partir de dict serializado (inventory_json / INV_SYNC).
+
+        Espelha GameEngine._restore_item/_item_from_data (game.py) sem pygame:
+        tenta casar pelo nome no catálogo loot_tables._T (preserva atributos do
+        original), com fallback para reconstrução direta dos dados (itens de loja).
+        Necessário para que handlers de skill validem o Inventory real do jogador
+        no servidor (ex: Recarregar verificando munição "ammo" na bag).
+        """
+        if not d or not d.get("name"):
+            return None
+        from components import Item as _Item, Modifier as _Mod
+        from loot_tables import _T
+        name = d.get("name", "")
+        for _key, factory in _T.items():
+            try:
+                candidate = factory()
+            except Exception:
+                continue
+            if getattr(candidate, "name", "") == name:
+                if "arrow_count" in d:
+                    candidate.arrow_count = int(d["arrow_count"])
+                if "max_arrows" in d:
+                    candidate.max_arrows = int(d["max_arrows"])
+                if "subtype" in d:
+                    candidate.subtype = d["subtype"]
+                if "stack" in d:
+                    candidate.stack = int(d["stack"])
+                if "max_stack" in d:
+                    candidate.max_stack = int(d["max_stack"])
+                return candidate
+        mods = [_Mod(m["attribute"], float(m["value"]), m.get("type", "flat"))
+                for m in d.get("modifiers", []) if "attribute" in m]
+        item = _Item(
+            name        = d["name"],
+            item_type   = d.get("item_type", ""),
+            slot        = d.get("slot", ""),
+            rarity      = d.get("rarity", "common"),
+            value       = int(d.get("value", 0)),
+            consumable  = d.get("consumable"),
+            max_stack   = int(d.get("max_stack", 1)),
+            modifiers   = mods,
+            arrow_count = int(d.get("arrow_count", 0)),
+            max_arrows  = int(d.get("max_arrows",  0)),
+            subtype     = d.get("subtype", ""),
+        )
+        for f in ("attack_power", "armor", "spell_power", "stamina",
+                  "two_handed", "attack_speed", "damage_min", "damage_max"):
+            if f in d:
+                setattr(item, f, d[f])
+        item.stack = int(d.get("stack", 1))
+        return item
+
+    def load_player_inventory(self, eid: int, inventory_json) -> None:
+        """Popula Inventory do jogador a partir do inventory_json salvo (spawn_player)."""
+        from components import Inventory
+        import json as _json
+        inv = self.world.get_component(eid, Inventory)
+        if inv is None:
+            return
+        try:
+            inv_list = _json.loads(inventory_json) if isinstance(inventory_json, str) else (inventory_json or [])
+        except Exception:
+            inv_list = []
+        if not isinstance(inv_list, list):
+            return
+        inv.items.clear()
+        for item_d in inv_list:
+            item = self._reconstruct_item(item_d)
+            if item:
+                inv.items.append(item)
+
+    def sync_player_inventory(self, session_id: str, inventory_list: list) -> None:
+        """Reconstrói Inventory do jogador a partir do payload INV_SYNC.
+
+        O cliente é a fonte do estado de bag (loot/compra/venda já validados pelo
+        servidor antes de alterá-la), mas o servidor precisa de uma cópia local
+        para que handlers de skill (Recarregar, Tiro Múltiplo, etc.) validem
+        munição contra o Inventory real — sem isso o componente fica vazio/None
+        e a validação sempre falha ou é pulada.
+        """
+        from components import Inventory
+        eid = self._player_eids.get(session_id)
+        if eid is None:
+            return
+        inv = self.world.get_component(eid, Inventory)
+        if inv is None or not isinstance(inventory_list, list):
+            return
+        inv.items.clear()
+        for item_d in inventory_list:
+            item = self._reconstruct_item(item_d)
+            if item:
+                inv.items.append(item)
 
     def apply_consumable(self, session_id: str, payload: dict) -> None:
         """Aplica efeitos de consumível no ECS do servidor (autoritativo).
@@ -1309,8 +1464,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             if not _ai_ag or not _tm_ag:
                 continue
             _prev_state = self._mob_states_prev.get(_eid_ag, "IDLE")
-            # Aggro: detecta IDLE → AGGRO_DELAY (é quando EnemyAISystem emite o som localmente)
-            if _prev_state == "IDLE" and _ai_ag.state == "AGGRO_DELAY":
+            # Aggro: detecta IDLE/RETURNING → AGGRO_DELAY ou CHASING (aggro por dano pula AGGRO_DELAY)
+            if _prev_state in ("IDLE", "RETURNING") and _ai_ag.state in ("AGGRO_DELAY", "CHASING"):
                 _ident_ag = self.world.get_component(_eid_ag, _EIdent)
                 self._pending_sound_events.append({
                     "kind":     "mob_aggro",
@@ -1422,6 +1577,58 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 self.world.remove_component(_mregen_eid, _AMR)
             except Exception:
                 pass
+
+        # ── Arqueiro: regen de Concentração + timers de buff ─────────────────
+        from components import CharacterStats as _ConcCS, CombatStats as _ConcCSt, TileMovement as _ConcTM
+        for _conc_eid in list(self._player_eids.values()):
+            _ch = self.world.get_component(_conc_eid, _ConcCS)
+            _cs = self.world.get_component(_conc_eid, _ConcCSt)
+            if not _ch or _ch.max_concentration <= 0:
+                continue
+            if _ch.concentration >= _ch.max_concentration:
+                # concentration_free_timer: zerar quando expirar
+                if _cs and _cs.concentration_free_timer > 0:
+                    _cs.concentration_free_timer -= dt
+                    if _cs.concentration_free_timer <= 0:
+                        _cs.concentration_free       = False
+                        _cs.concentration_free_timer = 0.0
+                # camuflagem_timer
+                if _cs and _cs.camouflage_timer > 0:
+                    _cs.camouflage_timer -= dt
+                    if _cs.camouflage_timer <= 0:
+                        _cs.camouflage_timer  = 0.0
+                        _cs.camouflage_object = ""
+                        _cst = self.world.get_component(_conc_eid, __import__("components").CombatState)
+                        if _cst:
+                            _cst.is_visible = True
+                        _tm_cam = self.world.get_component(_conc_eid, _ConcTM)
+                        if _tm_cam:
+                            _tm_cam.speed = 110.0
+                continue
+            _tm_c = self.world.get_component(_conc_eid, _ConcTM)
+            _is_moving = _tm_c.is_moving if _tm_c else False
+            _rate = (getattr(_cs, "concentration_regen_moving", 5.0) if _is_moving
+                     else getattr(_cs, "concentration_regen_idle", 5.0)) if _cs else 5.0
+            _ch.concentration = min(_ch.max_concentration,
+                                    _ch.concentration + _rate * dt)
+            # timers mesmo durante regen
+            if _cs:
+                if _cs.concentration_free_timer > 0:
+                    _cs.concentration_free_timer -= dt
+                    if _cs.concentration_free_timer <= 0:
+                        _cs.concentration_free       = False
+                        _cs.concentration_free_timer = 0.0
+                if _cs.camouflage_timer > 0:
+                    _cs.camouflage_timer -= dt
+                    if _cs.camouflage_timer <= 0:
+                        _cs.camouflage_timer  = 0.0
+                        _cs.camouflage_object = ""
+                        _cst2 = self.world.get_component(_conc_eid, __import__("components").CombatState)
+                        if _cst2:
+                            _cst2.is_visible = True
+                        _tm_cam2 = self.world.get_component(_conc_eid, _ConcTM)
+                        if _tm_cam2:
+                            _tm_cam2.speed = 110.0
 
         # ── FireShieldEffect: decrementa timer e remove quando expirar ──────
         from components import FireShieldEffect as _FSE

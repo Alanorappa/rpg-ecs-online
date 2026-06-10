@@ -16,8 +16,8 @@ import os
 import pygame
 
 # Dimensões do ícone estático
-ICON_W = 8
-ICON_H = 8
+ICON_W = 16
+ICON_H = 16
 
 # Aliases para compatibilidade com código que lê FRAME_W/FRAME_H
 FRAME_W = ICON_W
@@ -38,6 +38,8 @@ def _load(effect_type: str) -> pygame.Surface | None:
     if os.path.isfile(path):
         try:
             icon = pygame.image.load(path).convert_alpha()
+            if icon.get_width() != ICON_W or icon.get_height() != ICON_H:
+                icon = pygame.transform.scale(icon, (ICON_W, ICON_H))
             _icons[effect_type] = icon
         except Exception:
             _icons[effect_type] = None
