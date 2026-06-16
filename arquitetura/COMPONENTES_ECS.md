@@ -49,6 +49,7 @@ Injetados dinamicamente em `_process_skill_requests` antes de chamar o handler:
 | `XPReward(amount)` | XP dado ao matar | criado em create_enemy; lido por DeathHandlerSystem |
 | `EnemyTier(tier)` | "normal"/"elite"/"rare"/"boss" | multiplica HP e dano; XP base: 50/150/300/1000 |
 | `PendingDeath(killer_entity_id)` | marcador de morte a processar | adicionado por CombatSystem ou sweep de HP≤0 no servidor |
+| `GhostState(is_dead, is_ghost, corpse_tx, corpse_ty, graveyard_timer, near_corpse)` | fluxo de morte/espírito (C30) | `is_dead`: corpo no local da morte, espírito ainda não liberado. `is_ghost`: espírito liberado (intangível, invisível, no cemitério/explorando). `corpse_tx/ty`: tile da morte. `graveyard_timer`: segundos contínuos no raio do cemitério. `near_corpse`: dentro do raio de revive do corpo (mostra prompt "Reviver agora?"). Adicionado ao player em `create_player()` (entity_factory.py) |
 
 ### CombatStats — campos usados pelo PLAYER_STAT_SYNC
 

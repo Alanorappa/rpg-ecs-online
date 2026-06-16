@@ -248,6 +248,14 @@ class SaveSyncHandlers:
                 inv_list = [s for s in inv_list if s]
                 self._net.send(_MT_la.INV_SYNC, {"inventory": inv_list})
 
+    def _on_recarregar_changed(self) -> None:
+        """Recarregar mudou bag (flechas consumidas) e aljava (arrow_count) —
+        sincroniza o Inventory do servidor (Recarregar futuro/inventário cheio)
+        e persiste o estado completo, senão a recarga se perde se o jogador
+        deslogar antes do próximo evento de save."""
+        self._on_loot_action("item")
+        self._send_save_state()
+
     def _send_save_state(self) -> None:
         """Envia estado completo do personagem ao servidor para persistência."""
         if not self._net or not self._net.connected or self._my_eid == -1:

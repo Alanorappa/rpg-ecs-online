@@ -69,8 +69,14 @@ class MsgType(str, Enum):
     # ── Stats / HP ────────────────────────────────────────────────
     STATS_UPDATE       = "stats_update"    # S→C  HP/MP/rage/concentration mudou
     LEVEL_UP           = "level_up"        # S→C  jogador levelou
-    PLAYER_DEATH       = "player_death"    # S→C  player morreu — respawn_tx, respawn_ty, hp_max
+    PLAYER_DEATH       = "player_death"    # S→C  player morreu — corpse_tx, corpse_ty
     PLAYER_STATS_SYNC  = "player_stats_sync"  # S→C  sincroniza HP autoritativo do player
+
+    # ── Morte/respawn: fluxo de espírito (ghost) + cemitério ────────
+    RELEASE_SPIRIT     = "release_spirit"  # C→S  player clicou "Liberar espírito"
+    REVIVE_REQUEST     = "revive_request"  # C→S  player clicou "Reviver agora?" (no corpo)
+    PLAYER_REVIVE      = "player_revive"   # S→C  player reviveu — tx, ty, hp, hp_max, mana, max_mana
+    GHOST_STATE        = "ghost_state"     # S→C  atualiza estado do espírito (near_corpse, graveyard_timer)
 
     # ── Entidades ─────────────────────────────────────────────────
     ENTITY_SPAWN       = "entity_spawn"    # S→C  entidade entrou no AOI (detalhes completos)
@@ -300,10 +306,57 @@ def _now_ms() -> int:
 # Servidor envia apenas os campos que mudaram. Cliente faz merge.
 
 
+# ── S→C: PLAYER_DEATH ────────────────────────────────────────────────────────
+# {
+#   "eid":       int *   eid do player que morreu
+#   "corpse_tx": int *   tile X onde o corpo ficou
+#   "corpse_ty": int *   tile Y onde o corpo ficou
+# }
+# Enviado APENAS ao dono. Corpo fica visível no AOI normalmente (current_hp==0).
+# Cliente: marca GhostState.is_dead=True, inicia timer de 2s p/ modal "Você morreu".
+
+# ── S→C: ENTITY_DEATH ────────────────────────────────────────────────────────
+# {
+#   "eid": int *         eid da entidade que morreu
+#   "tx":  int *         tile X onde morreu (posição do corpo)
+#   "ty":  int *         tile Y onde morreu
+# }
+# Broadcast para AOI (outros players veem o corpo/animação de morte).
+
+# ── C→S: RELEASE_SPIRIT ──────────────────────────────────────────────────────
+# {} — player com GhostState.is_dead=True clicou "Liberar espírito".
+# Servidor teleporta o player (ghost, intangível, invisível) para o cemitério.
+
+# ── C→S: REVIVE_REQUEST ──────────────────────────────────────────────────────
+# {} — ghost dentro do raio do corpo (GHOST_CORPSE_RADIUS_TILES) clicou "Sim".
+# Servidor revalida distância e revive com GHOST_CORPSE_REVIVE_HP_FRAC no corpo.
+
+# ── S→C: PLAYER_REVIVE ───────────────────────────────────────────────────────
+# {
+#   "tx":       int *    tile X de destino (cemitério ou corpo)
+#   "ty":       int *    tile Y de destino
+#   "hp":       int *
+#   "hp_max":   int *
+#   "mana":     int *
+#   "max_mana": int *
+# }
+# Enviado APENAS ao dono. Cliente restaura HP/mana, teleporta, limpa GhostState.
+
+# ── S→C: GHOST_STATE ──────────────────────────────────────────────────────────
+# {
+#   "is_ghost":        bool *
+#   "near_corpse":     bool *   true = mostra prompt "Reviver agora?"
+#   "graveyard_timer": float    segundos contínuos dentro do raio do cemitério
+# }
+# Enviado APENAS ao dono, quando near_corpse muda (ou periodicamente p/ resync).
+
+
 # ── S→C: ENTITY_SPAWN ────────────────────────────────────────────────────────
 # {
 #   "eid":       int *
-#   "kind":      str *   "player" | "enemy" | "npc" | "corpse"
+#   "kind":      str *   "player" | "enemy" | "npc" | "corpse" | "player_corpse"
+#                        ("player_corpse": eid sintético 3_000_000+player_eid,
+#                         marcador visual do corpo após liberar o espírito)
 #   "tx":        int *   tile X atual
 #   "ty":        int *   tile Y atual
 #   "name":      str

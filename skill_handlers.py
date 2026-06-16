@@ -70,6 +70,14 @@ class SkillHandlers:
 
     MELEE_RANGE_PX: float = 72.0   # 2.25 tiles — cobre kiting + lag
 
+    def _target_alive(self, target_id: int) -> bool:
+        from components import RemoteControlled as _RC
+        cs = self.world.get_component(target_id, CombatStats)
+        if cs is not None:
+            return cs.current_hp > 0
+        rc = self.world.get_component(target_id, _RC)
+        return rc is not None and rc.hp > 0
+
     def _range_ok(self, player_pos, target_pos,
                   max_px: float, min_px: float = 0.0) -> bool:
         """Verifica alcance em pixels (hitbox circular, contínua).
@@ -123,8 +131,7 @@ class SkillHandlers:
             self._warn(f"Raiva insuficiente ({rage_cost})")
             return
         target_tm = self.world.get_component(target_id, TileMovement)
-        target_cs = self.world.get_component(target_id, CombatStats)
-        if not target_tm or not target_cs or target_cs.current_hp <= 0:
+        if not target_tm or not self._target_alive(target_id):
             self._warn("Alvo inválido")
             return
         _pl_pos  = self.world.get_component(self.player_entity_id, Position)
@@ -155,8 +162,7 @@ class SkillHandlers:
             self._warn("Nenhum alvo")
             return
         target_tm = self.world.get_component(target_id, TileMovement)
-        target_cs = self.world.get_component(target_id, CombatStats)
-        if not target_tm or not target_cs or target_cs.current_hp <= 0:
+        if not target_tm or not self._target_alive(target_id):
             self._warn("Alvo inválido")
             return
         _pl_pos  = self.world.get_component(self.player_entity_id, Position)
@@ -257,10 +263,18 @@ class SkillHandlers:
                 self._warn("Raiva insuficiente (10)")
                 return
         target_cs = self.world.get_component(target_id, CombatStats)
-        if not target_cs or target_cs.current_hp <= 0:
+        if target_cs is None:
+            from components import RemoteControlled as _RC
+            _rc_tgt = self.world.get_component(target_id, _RC)
+            if _rc_tgt is None or _rc_tgt.hp <= 0:
+                self._warn("Alvo inválido")
+                return
+            _hp_ratio = _rc_tgt.hp / max(1, _rc_tgt.hp_max)
+        elif target_cs.current_hp <= 0:
             self._warn("Alvo inválido")
             return
-        _hp_ratio = target_cs.current_hp / max(1, target_cs.max_hp)
+        else:
+            _hp_ratio = target_cs.current_hp / max(1, target_cs.max_hp)
         if not free_charge and _hp_ratio >= 0.30:
             self._warn("Alvo precisa ter <30% HP")
             return
@@ -366,8 +380,7 @@ class SkillHandlers:
             self._warn("Nenhum alvo")
             return
         target_tm = self.world.get_component(target_id, TileMovement)
-        target_cs = self.world.get_component(target_id, CombatStats)
-        if not target_tm or not target_cs or target_cs.current_hp <= 0:
+        if not target_tm or not self._target_alive(target_id):
             self._warn("Alvo inválido")
             return
 
@@ -455,8 +468,7 @@ class SkillHandlers:
             self._warn("Raiva insuficiente (5)")
             return False
         target_tm = self.world.get_component(target_id, TileMovement)
-        target_cs = self.world.get_component(target_id, CombatStats)
-        if not target_tm or not target_cs or target_cs.current_hp <= 0:
+        if not target_tm or not self._target_alive(target_id):
             self._warn("Alvo inválido")
             return False
         _pl_pos  = self.world.get_component(self.player_entity_id, Position)
@@ -488,8 +500,7 @@ class SkillHandlers:
             self._warn("Sem cargas")
             return False
         target_tm = self.world.get_component(target_id, TileMovement)
-        target_cs = self.world.get_component(target_id, CombatStats)
-        if not target_tm or not target_cs or target_cs.current_hp <= 0:
+        if not target_tm or not self._target_alive(target_id):
             self._warn("Alvo inválido")
             return False
         _pl_pos  = self.world.get_component(self.player_entity_id, Position)
@@ -627,8 +638,7 @@ class SkillHandlers:
             self._warn("Nenhum alvo")
             return False
 
-        target_cs = self.world.get_component(target_id, CombatStats)
-        if not target_cs or target_cs.current_hp <= 0:
+        if not self._target_alive(target_id):
             self._warn("Alvo inválido")
             return False
 
@@ -785,8 +795,7 @@ class SkillHandlers:
             self._warn("Nenhum alvo")
             return False
 
-        target_cs = self.world.get_component(target_id, CombatStats)
-        if not target_cs or target_cs.current_hp <= 0:
+        if not self._target_alive(target_id):
             self._warn("Alvo inválido")
             return False
 
@@ -960,8 +969,7 @@ class SkillHandlers:
         if target_id == -1:
             self._warn("Nenhum alvo")
             return False
-        target_cs = self.world.get_component(target_id, CombatStats)
-        if not target_cs or target_cs.current_hp <= 0:
+        if not self._target_alive(target_id):
             self._warn("Alvo inválido")
             return False
 
@@ -1241,25 +1249,22 @@ class SkillHandlers:
             return False
         px, py = player_tm.current_tile_x, player_tm.current_tile_y
 
-        # Aplica sono imediatamente a todos os inimigos no raio
+        # Aplica sono imediatamente a todos os inimigos no raio — itera
+        # CombatStats (não Enemy/AIControlled) para incluir players em PvP,
+        # igual ao padrão de _skill_impacto.
         targets = []
-        for eid, _, ai, etm in self.world.get_entities_with(
-                __import__("components").Enemy,
-                __import__("components").AIControlled,
-                _TM):
+        for eid, etm, tgt_cs in self.world.get_entities_with(_TM, CombatStats):
+            if eid == self.player_entity_id:
+                continue
+            if tgt_cs.current_hp <= 0:
+                continue
             if chebyshev(px, py, etm.current_tile_x, etm.current_tile_y) <= radius:
-                tgt_cs = self.world.get_component(eid, __import__("components").CombatStats)
-                if tgt_cs and tgt_cs.current_hp > 0:
-                    # Efeito de sono com on_expire_effect → slow
-                    apply_effect(self.world, eid, "sleep", sleep_d,
-                                 on_expire_effect=("slow" if slow_d > 0 else ""),
-                                 on_expire_duration=slow_d,
-                                 on_expire_magnitude=slow_m)
-                    targets.append(eid)
-
-        if not targets:
-            self._warn("Nenhum alvo no raio.")
-            return False
+                # Efeito de sono com on_expire_effect → slow
+                apply_effect(self.world, eid, "sleep", sleep_d,
+                             on_expire_effect=("slow" if slow_d > 0 else ""),
+                             on_expire_duration=slow_d,
+                             on_expire_magnitude=slow_m)
+                targets.append(eid)
 
         char_stats.lullaby_targets = list(targets)
 

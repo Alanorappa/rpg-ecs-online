@@ -23,7 +23,9 @@ Sons de mob — única fonte de verdade: mob_definitions.py → componente MobSo
 
 Sons posicionais (online/multiplayer):
     play_mob_sounds_at, play_skill_at, play_random_at — versões com distância.
-    Volume: 100% em dist=0, 5% em 10 tiles (320px), 5% além do raio.
+    Volume: 100% em dist=0, 5% em AOI_RADIUS tiles (borda do AOI), 0% (não toca)
+    além do AOI — fora da área de interesse o cliente não deveria nem saber
+    que a fonte existe.
 
 Sons com variação aleatória:
     Crie múltiplos arquivos com sufixo _1, _2, _3 e passe a lista:
@@ -35,6 +37,7 @@ import os
 import random
 import pygame
 from paths import resource_path
+from shared.constants import AOI_RADIUS, TILE_SIZE
 
 
 # ---------------------------------------------------------------------------
@@ -186,22 +189,49 @@ class SoundManager:
     """Gerencia todos os sons do jogo com suporte a contexto de caverna."""
 
     # ── Áudio posicional ────────────────────────────────────────────────────
-    # Raio audível em pixels (10 tiles × 32px/tile)
-    MAX_WORLD_SOUND_DIST: float = 10 * 32   # 320px
+    # Raio audível = borda do AOI (mesma área que o servidor considera "em
+    # vista" para esta sessão) — fora dele, a fonte nem deveria ser conhecida
+    # pelo cliente, então o som não toca.
+    MAX_WORLD_SOUND_DIST: float = AOI_RADIUS * TILE_SIZE   # 480px (15 tiles)
     # Volume mínimo na borda do raio (5%)
     MIN_WORLD_SOUND_VOL:  float = 0.05
+
+    def pan_at(self, sx: float, lx: float) -> float:
+        """Posição estéreo da fonte em relação ao ouvinte: -1.0 (totalmente à
+        esquerda) .. 0.0 (centro) .. +1.0 (totalmente à direita).
+
+        Baseado apenas no eixo X do mundo — a câmera deste jogo não rotaciona,
+        então "direita no mundo" == "direita na tela" == canal direito do fone.
+        """
+        dx = sx - lx
+        return max(-1.0, min(1.0, dx / self.MAX_WORLD_SOUND_DIST))
+
+    @staticmethod
+    def _pan_gains(pan: float) -> "tuple[float, float]":
+        """Converte pan [-1..1] em ganhos (esquerda, direita) para Channel.set_volume.
+
+        Linear, sem normalização: no centro (pan=0) ambos os canais ficam em
+        1.0 (idêntico ao comportamento mono anterior — sem perda de volume
+        para sons centrados). Ao se mover para um lado, o canal oposto vai
+        fadeando até 0.
+        """
+        pan = max(-1.0, min(1.0, pan))
+        left  = min(1.0, 1.0 - pan)
+        right = min(1.0, 1.0 + pan)
+        return left, right
 
     def volume_at(self, sx: float, sy: float,
                   lx: float, ly: float,
                   base: float = 1.0) -> float:
         """Calcula volume baseado na distância fonte → ouvinte.
 
-        Curva linear: 100% em dist=0, 5% em dist=MAX, 5% além do raio.
+        Curva linear: 100% em dist=0, 5% em dist=MAX (borda do AOI),
+        0% (silencioso) além do AOI.
         """
         import math
         dist = math.hypot(sx - lx, sy - ly)
         if dist >= self.MAX_WORLD_SOUND_DIST:
-            return base * self.MIN_WORLD_SOUND_VOL
+            return 0.0
         t = 1.0 - dist / self.MAX_WORLD_SOUND_DIST   # 1.0 → 0.0
         return base * (self.MIN_WORLD_SOUND_VOL + (1.0 - self.MIN_WORLD_SOUND_VOL) * t)
 
@@ -209,21 +239,30 @@ class SoundManager:
                 sx: float, sy: float, lx: float, ly: float,
                 base: float = 1.0,
                 channel_group: "tuple[int,...] | None" = None) -> None:
-        """Toca som com volume proporcional à distância."""
-        self.play(name, self.volume_at(sx, sy, lx, ly, base), channel_group)
+        """Toca som com volume/pan proporcional à posição (nada se fora do AOI)."""
+        vol = self.volume_at(sx, sy, lx, ly, base)
+        if vol <= 0.0:
+            return
+        self.play(name, vol, channel_group, pan=self.pan_at(sx, lx))
 
     def play_random_at(self, names: "list[str]",
                        sx: float, sy: float, lx: float, ly: float,
                        base: float = 1.0,
                        channel_group: "tuple[int,...] | None" = None) -> None:
-        """Toca som aleatório com volume proporcional à distância."""
-        self.play_random(names, self.volume_at(sx, sy, lx, ly, base), channel_group)
+        """Toca som aleatório com volume/pan proporcional à posição (nada se fora do AOI)."""
+        vol = self.volume_at(sx, sy, lx, ly, base)
+        if vol <= 0.0:
+            return
+        self.play_random(names, vol, channel_group, pan=self.pan_at(sx, lx))
 
     def play_skill_at(self, name: str,
                       sx: float, sy: float, lx: float, ly: float,
                       base: float = 1.0) -> None:
-        """Toca skill com volume proporcional à distância."""
-        self.play_skill(name, self.volume_at(sx, sy, lx, ly, base))
+        """Toca skill com volume/pan proporcional à posição (nada se fora do AOI)."""
+        vol = self.volume_at(sx, sy, lx, ly, base)
+        if vol <= 0.0:
+            return
+        self.play_skill(name, vol, pan=self.pan_at(sx, lx))
 
     def play_mob_sounds_at(self, mob_sounds_comp, event: str,
                            sx: float, sy: float, lx: float, ly: float,
@@ -231,20 +270,25 @@ class SoundManager:
         """Toca evento de mob (por componente MobSounds) com atenuação de distância.
 
         Usa o campo correto do componente — idêntico ao offline play_mob_sounds()
-        mas com volume calculado pela posição.
+        mas com volume/pan calculados pela posição. Nada toca se fora do AOI.
         """
-        self.play_mob_sounds(mob_sounds_comp, event,
-                             self.volume_at(sx, sy, lx, ly, base), dedup_key)
+        vol = self.volume_at(sx, sy, lx, ly, base)
+        if vol <= 0.0:
+            return
+        self.play_mob_sounds(mob_sounds_comp, event, vol, dedup_key, pan=self.pan_at(sx, lx))
 
     def play_emote_at(self, is_player: bool, mob_sounds_comp,
                       sx: float, sy: float, lx: float, ly: float,
                       is_crit: bool = False, base: float = 0.8) -> None:
-        """Toca emote de ataque ou crit com volume proporcional à distância."""
+        """Toca emote de ataque ou crit com volume/pan proporcional à posição (nada se fora do AOI)."""
         vol = self.volume_at(sx, sy, lx, ly, base)
+        if vol <= 0.0:
+            return
+        pan = self.pan_at(sx, lx)
         if is_crit:
-            self.play_emote_get_crit(is_player, mob_sounds_comp, vol)
+            self.play_emote_get_crit(is_player, mob_sounds_comp, vol, pan=pan)
         else:
-            self.play_emote_attack(is_player, mob_sounds_comp, vol)
+            self.play_emote_attack(is_player, mob_sounds_comp, vol, pan=pan)
 
     def __init__(self) -> None:
         self._ready      = False
@@ -346,8 +390,12 @@ class SoundManager:
         self._context = context
 
     def play(self, name: str, volume: float = 1.0,
-             channel_group: tuple[int, ...] | None = None) -> None:
-        """Toca um SFX pelo nome. Em contexto 'cave' usa a versão processada da pasta cave/."""
+             channel_group: tuple[int, ...] | None = None,
+             pan: float = 0.0) -> None:
+        """Toca um SFX pelo nome. Em contexto 'cave' usa a versão processada da pasta cave/.
+
+        pan: -1.0 (esquerda) .. 0.0 (centro) .. +1.0 (direita) — ver `pan_at`.
+        """
         if not self._ready:
             return
         if self._context == "cave":
@@ -363,9 +411,12 @@ class SoundManager:
         eff = volume * (self.sfx_volume if self.sfx_enabled else 0.0)
         sound.set_volume(eff)
         ch.play(sound)
+        left, right = self._pan_gains(pan)
+        ch.set_volume(left, right)
 
     def play_random(self, names: list[str], volume: float = 1.0,
-                    channel_group: tuple[int, ...] | None = None) -> None:
+                    channel_group: tuple[int, ...] | None = None,
+                    pan: float = 0.0) -> None:
         """Toca um som escolhido aleatoriamente da lista.
 
         Apenas sons disponíveis (arquivo carregado) são candidatos.
@@ -376,7 +427,7 @@ class SoundManager:
         available = [n for n in names if self._cache.get(n) is not None]
         if not available:
             return
-        self.play(random.choice(available), volume, channel_group)
+        self.play(random.choice(available), volume, channel_group, pan=pan)
 
     # ------------------------------------------------------------------
     # DEPRECATED — não usar em código novo
@@ -416,7 +467,8 @@ class SoundManager:
         return self._cache[key]
 
     def play_mob_sounds(self, mob_sounds_comp, event: str,
-                        volume: float = 1.0, dedup_key: str = "") -> None:
+                        volume: float = 1.0, dedup_key: str = "",
+                        pan: float = 0.0) -> None:
         """Toca o som de um mob pelo componente MobSounds e o nome do evento.
 
         Args:
@@ -441,42 +493,42 @@ class SoundManager:
         variants = [base] + [f"{base}_{n}" for n in (1, 2, 3, 4)]
         available = [v for v in variants if self._lazy_load(v) is not None]
         if available:
-            self.play_mob(random.choice(available), volume)
+            self.play_mob(random.choice(available), volume, pan=pan)
 
     def play_emote_attack(self, is_player: bool, mob_sounds_comp=None,
-                          volume: float = 1.0) -> None:
+                          volume: float = 1.0, pan: float = 0.0) -> None:
         """Emote de ataque — 50% de chance. Toca antes do som do golpe."""
         if random.random() > 0.50:
             return
         if is_player:
             variants = [f"player_emote_attack_{n}" for n in (1, 2, 3, 4)]
-            self.play_random(variants, volume, _CH_EMOTES)
+            self.play_random(variants, volume, _CH_EMOTES, pan=pan)
         else:
             base = getattr(mob_sounds_comp, "emote_attack", "") if mob_sounds_comp else ""
             if base:
                 variants = [base] + [f"{base}_{n}" for n in (1, 2, 3, 4)]
                 available = [v for v in variants if self._lazy_load(v) is not None]
                 if available:
-                    self.play_mob(random.choice(available), volume)
+                    self.play_mob(random.choice(available), volume, pan=pan)
                     return
             # fallback genérico
-            self.play_random([f"mob_emote_attack_{n}" for n in (1, 2, 3, 4)], volume, _CH_EMOTES)
+            self.play_random([f"mob_emote_attack_{n}" for n in (1, 2, 3, 4)], volume, _CH_EMOTES, pan=pan)
 
     def play_emote_get_crit(self, is_player: bool, mob_sounds_comp=None,
-                            volume: float = 1.0) -> None:
+                            volume: float = 1.0, pan: float = 0.0) -> None:
         """Emote ao receber crítico — 100% de chance."""
         if is_player:
             variants = [f"player_emote_get_crit_{n}" for n in (1, 2, 3, 4)]
-            self.play_random(variants, volume, _CH_EMOTES)
+            self.play_random(variants, volume, _CH_EMOTES, pan=pan)
         else:
             base = getattr(mob_sounds_comp, "emote_get_crit", "") if mob_sounds_comp else ""
             if base:
                 variants = [base] + [f"{base}_{n}" for n in (1, 2, 3, 4)]
                 available = [v for v in variants if self._lazy_load(v) is not None]
                 if available:
-                    self.play_mob(random.choice(available), volume)
+                    self.play_mob(random.choice(available), volume, pan=pan)
                     return
-            self.play_random([f"mob_emote_get_crit_{n}" for n in (1, 2, 3, 4)], volume, _CH_EMOTES)
+            self.play_random([f"mob_emote_get_crit_{n}" for n in (1, 2, 3, 4)], volume, _CH_EMOTES, pan=pan)
 
     def play_spell(self, spell_id: str, phase: str, volume: float = 1.0) -> None:
         """Toca o som de uma spell em uma fase específica.
@@ -491,7 +543,7 @@ class SoundManager:
         """
         self.play_skill(f"skill_{spell_id}_{phase}", volume)
 
-    def play_skill(self, name: str, volume: float = 1.0) -> None:
+    def play_skill(self, name: str, volume: float = 1.0, pan: float = 0.0) -> None:
         """Toca a skill — carrega variantes dinamicamente se necessário.
 
         Tenta o arquivo base (sem sufixo) e as variações _1, _2, _3, _4.
@@ -506,7 +558,7 @@ class SoundManager:
                     self._cache[v] = pygame.mixer.Sound(path) if os.path.isfile(path) else None
                 except Exception:
                     self._cache[v] = None
-        self.play_random(variants, volume, _CH_SKILLS)
+        self.play_random(variants, volume, _CH_SKILLS, pan=pan)
 
     def play_footstep(self, volume: float = 0.6) -> None:
         """Toca um passo aleatório. 35% de chance de silêncio."""
@@ -532,8 +584,8 @@ class SoundManager:
     def play_ui(self, name: str, volume: float = 0.8) -> None:
         self.play(name, volume, _CH_UI)
 
-    def play_mob(self, name: str, volume: float = 1.0) -> None:
-        self.play(name, volume, _CH_MOBS)
+    def play_mob(self, name: str, volume: float = 1.0, pan: float = 0.0) -> None:
+        self.play(name, volume, _CH_MOBS, pan=pan)
 
     def play_ambient(self, name: str, volume: float = 0.4) -> None:
         """Inicia um ambient imediatamente (sem crossfade). Usado na carga do mapa."""

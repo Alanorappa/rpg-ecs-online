@@ -33,6 +33,7 @@ from server.combat_processor import CombatProcessorMixin
 from server.respawn_system import RespawnMixin
 from server.loot_processor import LootProcessorMixin
 from server.spell_completion_processor import SpellCompletionMixin
+from mob_combat_debug import MCL
 
 
 # ── ServerStatusEffectSystem ──────────────────────────────────────────────────
@@ -108,6 +109,12 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # Eids de mobs gerenciados pelo servidor
         self._mob_eids: set[int] = set()
 
+        # DEBUG Bug2 (regen/desaparecimento no golpe final): current_hp de cada
+        # mob ao FINAL do tick anterior (pós death-sweep) — usado em _tick()
+        # para detectar mutações de current_hp ocorridas ENTRE ticks (handlers
+        # async de mensagem, ex: PROJECTILE_HIT_CS).
+        self._mob_hp_prev: dict[int, float] = {}
+
         # Spells de projétil aguardando PROJECTILE_HIT_CS do cliente antes de aplicar dano
         self._spells_in_flight_queue: list[dict] = []
 
@@ -122,6 +129,14 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # cliente atualize HP em ordem correta (mob attack → DOT, não DOT → mob attack).
         self._pending_mob_attacks:     list[dict] = []
         self._player_deaths_this_tick: list[dict] = []   # mortes de players
+        # Mortes broadcast pra AOI (corpo visível p/ outros players): {eid, tx, ty}
+        self._entity_deaths_this_tick: list[dict] = []
+        # Revives (ghost→vivo): {session_id, player_eid, tx, ty, hp, hp_max, mana, max_mana}
+        self._player_revives_this_tick: list[dict] = []
+        # Atualizações de estado do espírito: {session_id, is_ghost, near_corpse, graveyard_timer}
+        self._ghost_state_updates_this_tick: list[dict] = []
+        # Marcadores de corpo de player: player_eid → (tx, ty)
+        self._player_corpses: dict[int, tuple[int, int]] = {}
         # Dano de DoT/HoT por StatusEffectSystem neste tick: player_eid → total
         # Usado para corrigir o snapshot HP (evitar duplo COMBAT_RESULT)
         self._sfx_damage_players:      dict[int, int]   = {}
@@ -323,7 +338,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         """
         from components import (Position, TileMovement, PlayerControlled, CombatState,
                                  CombatStats, CharacterStats, PermanentStats, Visible,
-                                 Equipment, Wallet, Inventory)
+                                 Equipment, Wallet, Inventory, GhostState)
         from stats_system import CLASS_BASE_STATS, apply_char_stats_to_combat, sync_attack_interval
         import json as _json
 
@@ -343,6 +358,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         ))
         self.world.add_component(eid, PlayerControlled())
         self.world.add_component(eid, CombatState())
+        self.world.add_component(eid, GhostState())
         self.world.add_component(eid, Visible())
 
         # Reconstrói TODOS os slots de equipamento do equipment_json — não só a
@@ -634,6 +650,38 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         tm = self.world.get_component(eid, TileMovement)
         if tm is None:
+            return False
+
+        # Ghost (espírito liberado): intangível — sem CC check, sem walkable.
+        # Só valida 1 tile de distância (anti-cheat básico).
+        from components import GhostState as _GState
+        _gst = self.world.get_component(eid, _GState)
+        if _gst and _gst.is_ghost:
+            if abs(tx - tm.current_tile_x) > 1 or abs(ty - tm.current_tile_y) > 1:
+                return False
+            from_tx, from_ty = tm.current_tile_x, tm.current_tile_y
+            tm.current_tile_x = tm.target_tile_x = tx
+            tm.current_tile_y = tm.target_tile_y = ty
+            pos = self.world.get_component(eid, Position)
+            if pos:
+                pos.prev_x, pos.prev_y = pos.x, pos.y
+                pos.x = tx * TILE_SIZE + TILE_SIZE // 2
+                pos.y = ty * TILE_SIZE + TILE_SIZE // 2
+            self._moved_this_tick.append({
+                "eid":     eid,
+                "tx":      tx, "ty":      ty,
+                "from_tx": from_tx, "from_ty": from_ty,
+            })
+            return True
+
+        # CC totalmente imobilizante (sleep/stun/root) impede movimento — igual
+        # ao bloqueio de IA de mobs (systems.py EnemyAISystem). Disoriented/
+        # polymorph NÃO entram aqui: o wander aleatório é decidido pelo cliente
+        # (CombatStateSystem) e enviado como MOVE normal. Servidor nunca confia
+        # no cliente para não enviar MOVE durante CC totalmente imobilizante.
+        from components import StatusEffects as _SFXmv
+        _sfx_mv = self.world.get_component(eid, _SFXmv)
+        if _sfx_mv and any(_sfx_mv.has(e) for e in ("sleep", "stun", "root")):
             return False
 
         # Validação: máximo 1 tile de distância por move
@@ -951,6 +999,34 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         # 5. item_data pré-compilado no cache (sem factory() adicional)
         item_data = cached["item_data"]
+
+        # 6. Atualiza o Inventory em memória do servidor — sem isso o item só
+        #    aparece nessa cópia após o próximo SAVE_STATE/INV_SYNC, e handlers
+        #    de skill (Recarregar) validam munição contra um Inventory
+        #    desatualizado, recusando "Não há flechas disponíveis" até relogar.
+        inv = self.world.get_component(eid, Inventory)
+        factory = entry.get("factory")
+        if inv is not None and callable(factory):
+            qty       = max(1, quantity)
+            preview   = factory()
+            max_stack = getattr(preview, "max_stack", 1)
+            remaining = qty
+            if max_stack > 1:
+                for existing in inv.items:
+                    if existing is None or remaining <= 0:
+                        continue
+                    if existing.name == item_name and existing.stack < existing.max_stack:
+                        can_add = min(remaining, existing.max_stack - existing.stack)
+                        existing.stack += can_add
+                        remaining -= can_add
+            while remaining > 0:
+                if len(inv.items) >= inv.max_slots:
+                    break
+                new_item = factory()
+                take = min(remaining, getattr(new_item, "max_stack", 1))
+                new_item.stack = take
+                inv.items.append(new_item)
+                remaining -= take
 
         return {
             "success":  True,
@@ -1408,6 +1484,9 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                     self._despawned_this_tick.clear()
                     self._combat_this_tick.clear()
                     self._player_deaths_this_tick.clear()
+                    self._entity_deaths_this_tick.clear()
+                    self._player_revives_this_tick.clear()
+                    self._ghost_state_updates_this_tick.clear()
                 next_tick += TICK_INTERVAL
                 if time.perf_counter() - next_tick > TICK_INTERVAL:
                     next_tick = time.perf_counter()
@@ -1426,7 +1505,30 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # EnemyAISystem e EnemyAbilitySystem iteram todos os PlayerControlled internamente.
         from components import TileMovement, Enemy, CombatStats
 
+        # ── DEBUG Bug2: detecta mutações de current_hp em mobs ocorridas
+        # ENTRE ticks (handlers async de mensagem, ex: PROJECTILE_HIT_CS),
+        # comparando contra o snapshot salvo ao final do tick anterior
+        # (após o death-sweep). Apenas log — não altera comportamento.
+        if MCL.DBG_ENABLED:
+            from components import PendingDeath as _HPPD, EntityIdentity as _HPID
+            for _hp_eid in list(self._mob_eids):
+                _hp_cs = self.world.get_component(_hp_eid, CombatStats)
+                if not _hp_cs:
+                    continue
+                _hp_now  = _hp_cs.current_hp
+                _hp_prev = self._mob_hp_prev.get(_hp_eid)
+                if _hp_prev is not None and _hp_now != _hp_prev:
+                    _hp_pd = self.world.get_component(_hp_eid, _HPPD) is not None
+                    _hp_id = self.world.get_component(_hp_eid, _HPID)
+                    MCL.log("HP_DELTA", _hp_eid,
+                            _hp_id.name if _hp_id else "?",
+                            _hp_id.race if _hp_id else "?",
+                            _hp_id.entity_class if _hp_id else "",
+                            tick=self.tick_count, prev=_hp_prev, now=_hp_now,
+                            pending_death=_hp_pd, where="between-ticks")
+
         self._tick_respawn_immunity()
+        self._tick_ghost_states(dt)
         # Reseta rastreamento de dano PvP do tick anterior.
         # Populado por skill_processor e spell_completion_processor além de _process_pvp_attack.
         self._pvp_damage_this_tick = {}
@@ -1714,6 +1816,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             eid = entry["eid"]
             self._mob_eids.discard(eid)
             self._mob_damage_log.pop(eid, None)  # limpa entradas stale
+            self._mob_hp_prev.pop(eid, None)
             if not any(d["eid"] == eid for d in self._despawned_this_tick):
                 self._despawned_this_tick.append(entry)
         for entry in self._death_handler.consume_xp():
@@ -1853,6 +1956,14 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             self._despawned_this_tick.append({"eid": _gone_peid, "tx": None, "ty": None})
         self._known_projectile_eids = _current_proj_eids
 
+        # ── DEBUG Bug2: snapshot de current_hp dos mobs ao final do tick
+        # (pós death-sweep) — base de comparação para o próximo tick.
+        if MCL.DBG_ENABLED:
+            for _hp_eid3 in self._mob_eids:
+                _hp_cs3 = self.world.get_component(_hp_eid3, CombatStats)
+                if _hp_cs3:
+                    self._mob_hp_prev[_hp_eid3] = _hp_cs3.current_hp
+
         # Limpa deltas de erro do try/except se necessário
         deltas = self._collect_deltas()
         self._store_snapshot()
@@ -1925,6 +2036,22 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         _pos_map  = {d["eid"]: (d["tx"], d["ty"])
                      for d in self._despawned_this_tick
                      if d["tx"] is not None}
+
+        # DEBUG Bug2: registra o(s) combat event(s) do golpe que despawnou o
+        # mob neste mesmo tick — confirma que o servidor GERA o evento (a
+        # questão é se _build_update_for_session o repassa ao cliente).
+        if MCL.DBG_ENABLED and _eids:
+            from components import EntityIdentity as _FHID
+            _all_combat = list(self._pending_mob_attacks) + list(self._combat_this_tick)
+            for _fh_eid in _eids:
+                _fh_evs = [c for c in _all_combat if c.get("target") == _fh_eid]
+                _fh_id  = self.world.get_component(_fh_eid, _FHID)
+                MCL.log("FATAL_HIT", _fh_eid,
+                        _fh_id.name if _fh_id else "?",
+                        _fh_id.race if _fh_id else "?",
+                        _fh_id.entity_class if _fh_id else "",
+                        tick=self.tick_count, combat_events=_fh_evs)
+
         deltas = {
             "moved":          list(self._moved_this_tick),
             "stats":          [],
@@ -1938,6 +2065,9 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             # em vez de DOT (HP = X-N) → mob_attack (HP = X-N, sem mudança visível).
             "combat":         list(self._pending_mob_attacks) + list(self._combat_this_tick),
             "player_deaths":  list(self._player_deaths_this_tick),
+            "entity_deaths":  list(self._entity_deaths_this_tick),
+            "player_revives": list(self._player_revives_this_tick),
+            "ghost_states":   list(self._ghost_state_updates_this_tick),
         }
         self._moved_this_tick.clear()
         self._spawned_this_tick.clear()
@@ -1945,6 +2075,9 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._pending_mob_attacks.clear()
         self._combat_this_tick.clear()
         self._player_deaths_this_tick.clear()
+        self._entity_deaths_this_tick.clear()
+        self._player_revives_this_tick.clear()
+        self._ghost_state_updates_this_tick.clear()
         self._sfx_damage_players.clear()
         return deltas
 

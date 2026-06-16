@@ -53,10 +53,16 @@ class ServerMobSystem:
 
     def _try_aggro(self, mob_eid: int, mob_cs, mob_tm) -> None:
         from utils import chebyshev
+        from components import TileMovement, CombatStats, CombatState as _CSTp
         best_dist = AGGRO_RANGE + 1
         best_eid  = -1
         for player_eid in self._player_eids.values():
-            from components import TileMovement
+            pcs = self.world.get_component(player_eid, CombatStats)
+            if pcs and pcs.current_hp <= 0:
+                continue  # não aggra cadáver
+            pcst = self.world.get_component(player_eid, _CSTp)
+            if pcst and not pcst.is_visible:
+                continue  # não aggra ghost/camuflagem
             ptm = self.world.get_component(player_eid, TileMovement)
             if not ptm:
                 continue
@@ -82,9 +88,19 @@ class ServerMobSystem:
         return True  # sem tilemap carregado
 
     def _check_leash(self, mob_eid: int, mob_cs, mob_tm) -> None:
-        from components import TileMovement
+        from components import TileMovement, CombatStats, CombatState as _CSTl
         from utils import chebyshev
-        ptm = self.world.get_component(mob_cs.target_entity_id, TileMovement)
+        target = mob_cs.target_entity_id
+        # Larga alvo morto ou invisível imediatamente
+        pcs = self.world.get_component(target, CombatStats)
+        if pcs and pcs.current_hp <= 0:
+            mob_cs.target_entity_id = -1
+            return
+        pcst = self.world.get_component(target, _CSTl)
+        if pcst and not pcst.is_visible:
+            mob_cs.target_entity_id = -1
+            return
+        ptm = self.world.get_component(target, TileMovement)
         if not ptm:
             mob_cs.target_entity_id = -1
             return

@@ -4,6 +4,7 @@ Separado de game.py para manter GameEngine conciso. Esta classe NÃO deve ser
 instanciada diretamente — ela é herdada por GameEngine, que fornece
 self.world, self._my_eid, self._net e os demais atributos referenciados aqui.
 """
+import random
 from components import PlayerSkills, TileMovement
 from tileset import TILE_SIZE
 from combat_log import LOG
@@ -12,6 +13,7 @@ from sound_manager import SOUNDS
 
 
 class NetworkHandlers:
+
     def _handle_net_message(self, msg_type, payload: dict) -> None:
         from shared.messages import MsgType
         if msg_type == MsgType.LOGIN_OK:
@@ -36,6 +38,12 @@ class NetworkHandlers:
             self._handle_msg_stats_update(payload)
         elif msg_type == MsgType.PLAYER_DEATH:
             self._handle_msg_player_death(payload)
+        elif msg_type == MsgType.PLAYER_REVIVE:
+            self._handle_msg_player_revive(payload)
+        elif msg_type == MsgType.GHOST_STATE:
+            self._handle_msg_ghost_state(payload)
+        elif msg_type == MsgType.ENTITY_DEATH:
+            self._handle_msg_entity_death(payload)
         elif msg_type == MsgType.LOOT_AVAILABLE:
             self._handle_msg_loot_available(payload)
         elif msg_type == MsgType.SOUND_EVENT:
@@ -156,6 +164,7 @@ class NetworkHandlers:
                     "class_id": ent.get("class_id", "guerreiro"),
                     "hp":       ent.get("hp", 100),
                     "hp_max":   ent.get("hp_max", 100),
+                    "kind":     kind,
                 })
 
     def _handle_msg_entity_spawn(self, payload: dict) -> None:
@@ -176,6 +185,7 @@ class NetworkHandlers:
                 "class_id": payload.get("class_id", "guerreiro"),
                 "hp":       payload.get("hp", 100),
                 "hp_max":   payload.get("hp_max", 100),
+                "kind":     kind,
             })
 
     def _handle_msg_combat_result(self, payload: dict) -> None:
@@ -189,8 +199,9 @@ class NetworkHandlers:
         if sid:
             from skill_config import SKILL_CATALOG as _SC_snd
             from components import Position as _PosSR
-            _sk_entry  = _SC_snd.get(sid, {})
-            _snd_name  = (_sk_entry.get("sound") if isinstance(_sk_entry, dict) else None) or f"skill_{sid}"
+            _sk_entry     = _SC_snd.get(sid, {})
+            _snd_name     = (_sk_entry.get("sound") if isinstance(_sk_entry, dict) else None) or f"skill_{sid}"
+            _snd_on_start = bool(_sk_entry.get("sound_on_cast_start")) if isinstance(_sk_entry, dict) else False
             if caster_eid == self._my_eid:
                 _failed_sr     = payload.get("failed",        False)
                 _ps_sr         = self.world.get_component(self.player_entity, PlayerSkills)
@@ -224,10 +235,13 @@ class NetworkHandlers:
                         from floating_text import WARN as _WARN_fail
                         _WARN_fail.add(_fail_reason)
                 elif _cast_started:
-                    # Cast com tempo aceito pelo servidor: só GCD + limpa pending.
-                    # Som e cooldown chegam no is_completion quando a spell realmente dispara.
-                    # Novo cast aceito: limpa flag de cancelamento anterior desta spell.
+                    # Cast com tempo aceito: GCD + limpa pending.
+                    # Som toca aqui só se sound_on_cast_start=True no catálogo (ex: Canção de Ninar);
+                    # caso contrário, espera is_completion para tocar.
+                    # Limpa flag de cancelamento anterior desta spell.
                     self._cancelled_spell_ids.discard(sid)
+                    if _snd_on_start:
+                        SOUNDS.play_skill(_snd_name)
                     if _ps_sr:
                         _ps_sr.gcd_timer = PlayerSkills.GCD_DURATION
                         for _sk_sr in _ps_sr.skills:
@@ -236,7 +250,8 @@ class NetworkHandlers:
                                 _sk_sr._server_pending_timeout = 0.0
                 elif _is_completion:
                     # Cast completou no servidor: som + cooldown. GCD já foi aplicado.
-                    SOUNDS.play_skill(_snd_name)
+                    if not _snd_on_start:
+                        SOUNDS.play_skill(_snd_name)
                     if _ps_sr:
                         _srv_cd = payload.get("cooldown")
                         for _sk_sr in _ps_sr.skills:
@@ -258,13 +273,22 @@ class NetworkHandlers:
                                 _sk_sr._server_pending_timeout = 0.0
                                 _sk_sr.current_cooldown = float(_srv_cd) if _srv_cd is not None else _sk_sr.cooldown
             elif caster_eid in self._remote_players:
-                # Player remoto: posicional
-                _cast_local = self._remote_players[caster_eid]
-                _cast_pos   = self.world.get_component(_cast_local, _PosSR)
+                # Player remoto: mesma lógica de timing do player local
+                _cast_local      = self._remote_players[caster_eid]
+                _cast_pos        = self.world.get_component(_cast_local, _PosSR)
                 if _cast_pos:
-                    _slx, _sly = self._player_world_pos()
-                    SOUNDS.play_skill_at(_snd_name, _cast_pos.x, _cast_pos.y,
-                                         _slx, _sly, base=0.85)
+                    _slx, _sly       = self._player_world_pos()
+                    _cr_started      = payload.get("cast_started",  False)
+                    _cr_completion   = payload.get("is_completion", False)
+                    _cr_proj_dmg     = payload.get("is_proj_damage", False)
+                    _cr_should_play  = (
+                        (_cr_started    and     _snd_on_start) or
+                        (_cr_completion and not _snd_on_start) or
+                        (not _cr_started and not _cr_completion and not _cr_proj_dmg)
+                    )
+                    if _cr_should_play:
+                        SOUNDS.play_skill_at(_snd_name, _cast_pos.x, _cast_pos.y,
+                                             _slx, _sly, base=0.85)
         # Escudo de Fogo confirmado: adiciona FireShieldEffect no cliente para visual + timer
         if caster_eid == self._my_eid and sid == "escudo_fogo" and not payload.get("failed"):
             from components import FireShieldEffect as _FSEcl
@@ -423,6 +447,7 @@ class NetworkHandlers:
                 "hp_after": t.get("hp_after", -1),
                 "source":   "skill",
                 "sid":      sid,
+                "is_proj_damage": payload.get("is_proj_damage", False),
             }
             if "mob_slow_mult" in t:
                 _cr_t["mob_slow_mult"] = t["mob_slow_mult"]
@@ -560,7 +585,7 @@ class NetworkHandlers:
                         speed            = 700.0,
                         dmg_weapon_pct   = 1.0,
                         dmg_sp_coeff     = 0.0,
-                        color            = (101, 67, 33),
+                        color            = (60, 200, 80),
                         damage_type      = "physical",
                         ap_multiplier    = _pe_ap,
                         guaranteed_hit   = True,
@@ -719,7 +744,8 @@ class NetworkHandlers:
                 self._apply_remote_move(eid, m["tx"], m["ty"],
                                         from_tx=m.get("from_tx"),
                                         from_ty=m.get("from_ty"),
-                                        is_dash=m.get("is_dash", False))
+                                        is_dash=m.get("is_dash", False),
+                                        teleport=m.get("teleport", False))
             elif eid in self._remote_mobs:
                 self._move_remote_mob(eid, m["tx"], m["ty"],
                                       m.get("from_tx"), m.get("from_ty"))
@@ -748,19 +774,24 @@ class NetworkHandlers:
                     "class_id": sp.get("class_id", "guerreiro"),
                     "hp":       sp.get("hp", 100),
                     "hp_max":   sp.get("hp_max", 100),
+                    "kind":     kind,
                 })
         # Status effects sync (antes de combat para ter CC certo na animação)
         for eff_payload in payload.get("effects", []):
             if eff_payload.get("eid") == self._my_eid:
                 self._sync_player_effects(eff_payload["effects"])
-        # Status effects em mobs remotos (ícones acima da barra + LOG de CC)
+        # Status effects em mobs remotos (ícones acima da barra + LOG de CC).
+        # Chamado SEMPRE (mesmo com dict vazio) — o early-clear dentro de
+        # _sync_mob_effects depende de rodar a cada tick para remover ícones
+        # de efeitos que o servidor removeu (ex: sono cancelado a meio do canal),
+        # senão o ícone local persiste contando sozinho via StatusEffectSystem do cliente.
         _mob_efx = payload.get("mob_effects", {})
-        if _mob_efx:
-            self._sync_mob_effects(_mob_efx)
+        self._sync_mob_effects(_mob_efx)
         # Combat ANTES de despawned: garante floating text do golpe fatal
         # antes do mob ser removido de _remote_mobs
         for cr in payload.get("combat", []):
             self._apply_combat_result(cr)
+        _died_eids = set(payload.get("died_eids", []))
         for eid in payload.get("despawned", []):
             self._remove_remote_player_entity(eid)
             self._remote_players.pop(eid, None)
@@ -774,19 +805,21 @@ class NetworkHandlers:
                 _meta_d = self.world.get_component(local_eid, _REM_d)
                 if _meta_d and (_meta_d.last_x or _meta_d.last_y):
                     self._mob_ghost_pos[eid] = (_meta_d.last_x, _meta_d.last_y)
-                # Som de morte ANTES de remover a entidade
-                try:
-                    from components import Position as _PosD2, MobSounds as _MSD2
-                    _pos_d2 = self.world.get_component(local_eid, _PosD2)
-                    _snd_d2 = self.world.get_component(local_eid, _MSD2)
-                    if _pos_d2:
-                        _dlx2, _dly2 = self._player_world_pos()
-                        SOUNDS.play_mob_sounds_at(_snd_d2, "death",
-                                                  _pos_d2.x, _pos_d2.y,
-                                                  _dlx2, _dly2, base=0.85,
-                                                  dedup_key=str(local_eid))
-                except Exception:
-                    pass
+                # Som de morte APENAS para kills reais (não para saída de AOI).
+                # died_eids distingue morte de simples saída do raio de 15 tiles.
+                if eid in _died_eids:
+                    try:
+                        from components import Position as _PosD2, MobSounds as _MSD2
+                        _pos_d2 = self.world.get_component(local_eid, _PosD2)
+                        _snd_d2 = self.world.get_component(local_eid, _MSD2)
+                        if _pos_d2:
+                            _dlx2, _dly2 = self._player_world_pos()
+                            SOUNDS.play_mob_sounds_at(_snd_d2, "death",
+                                                      _pos_d2.x, _pos_d2.y,
+                                                      _dlx2, _dly2, base=0.85,
+                                                      dedup_key=str(local_eid))
+                    except Exception:
+                        pass
                 try:
                     self.world.remove_entity(local_eid)
                 except Exception:
@@ -820,6 +853,65 @@ class NetworkHandlers:
                                 and _pp.target_server_id == -1):
                             _pp.target_server_id = -2  # cosmético: sem PROJECTILE_HIT_CS
                             break
+            elif _caster_local != -1 and _proj_sid in ("flecha_reiterada", "picada_escorpiao",
+                                                         "tiro_repulsivo"):
+                # Arqueiro remoto: cria flecha(s) cosméticas para o espectador
+                # (sem PROJECTILE_HIT_CS — dano já chega via SKILL_RESULT/COMBAT_RESULT).
+                if _proj_tgt == self._my_eid:
+                    _tgt_local = self.player_entity
+                elif _proj_tgt in self._remote_players:
+                    _tgt_local = self._remote_players[_proj_tgt]
+                else:
+                    _tgt_local = self._remote_mobs.get(_proj_tgt, -1)
+                if _tgt_local != -1:
+                    from components import PlayerProjectile as _PParr_inc, Position as _PosArr_inc
+                    _caster_pos_inc = self.world.get_component(_caster_local, _PosArr_inc)
+                    _tgt_pos_inc    = self.world.get_component(_tgt_local,    _PosArr_inc)
+                    if _caster_pos_inc and _tgt_pos_inc:
+                        # Som de saque/disparo posicional (igual ao auto-attack do arqueiro
+                        # remoto, C13) — sem isso o lançamento de Picada de Escorpião/Flecha
+                        # Reiterada/Tiro Repulsivo por player remoto era silencioso.
+                        _slx_inc, _sly_inc = self._player_world_pos()
+                        if random.random() < 0.35:
+                            SOUNDS.play_random_at(["arrow_draw_1", "arrow_draw_2"],
+                                                  _caster_pos_inc.x, _caster_pos_inc.y,
+                                                  _slx_inc, _sly_inc, base=0.5)
+                        SOUNDS.play_random_at(["arrow_release_1", "arrow_release_2"],
+                                              _caster_pos_inc.x, _caster_pos_inc.y,
+                                              _slx_inc, _sly_inc, base=0.5)
+                        if _proj_sid == "flecha_reiterada":
+                            from skill_config import SKILL_CATALOG as _SC_fr_inc
+                            _fr_delay_inc  = _SC_fr_inc.get("flecha_reiterada", {}).get(
+                                "params", {}).get("arrow_delay", 0.25)
+                            _fr_n_inc = int(payload.get("proj_arrow_count", 2))
+                            _fr_speeds_inc = [700.0, 640.0, 580.0]
+                            for _i_inc in range(_fr_n_inc):
+                                _eid_inc = self.world.create_entity()
+                                self.world.add_component(_eid_inc, _PosArr_inc(
+                                    x=_caster_pos_inc.x, y=_caster_pos_inc.y,
+                                    prev_x=_caster_pos_inc.x, prev_y=_caster_pos_inc.y))
+                                self.world.add_component(_eid_inc, _PParr_inc(
+                                    spell_id="arrow", attacker_id=_caster_local, target_id=_tgt_local,
+                                    speed=_fr_speeds_inc[_i_inc] if _i_inc < len(_fr_speeds_inc) else 600.0,
+                                    dmg_weapon_pct=1.0, dmg_sp_coeff=0.0, color=(101, 67, 33),
+                                    damage_type="physical", launch_delay=_fr_delay_inc * _i_inc,
+                                    guaranteed_hit=True,
+                                    target_last_x=_tgt_pos_inc.x, target_last_y=_tgt_pos_inc.y,
+                                    target_server_id=-2,
+                                ))
+                        else:
+                            _col_inc = (60, 200, 80) if _proj_sid == "picada_escorpiao" else (101, 67, 33)
+                            _eid_inc = self.world.create_entity()
+                            self.world.add_component(_eid_inc, _PosArr_inc(
+                                x=_caster_pos_inc.x, y=_caster_pos_inc.y,
+                                prev_x=_caster_pos_inc.x, prev_y=_caster_pos_inc.y))
+                            self.world.add_component(_eid_inc, _PParr_inc(
+                                spell_id="arrow", attacker_id=_caster_local, target_id=_tgt_local,
+                                speed=700.0, dmg_weapon_pct=1.0, dmg_sp_coeff=0.0, color=_col_inc,
+                                damage_type="physical", guaranteed_hit=True,
+                                target_last_x=_tgt_pos_inc.x, target_last_y=_tgt_pos_inc.y,
+                                target_server_id=-2,
+                            ))
 
         if eid == self._my_eid:
             cs = self.world.get_component(self.player_entity, CombatStats)
@@ -971,47 +1063,113 @@ class NetworkHandlers:
                     _meta_ehp.hp_max = payload["hp_max"]
 
     def _handle_msg_player_death(self, payload: dict) -> None:
-        # Servidor declarou que o player local morreu.
-        from components import CombatStats, CombatState, CharacterStats as _CHS_d
-        cs      = self.world.get_component(self.player_entity, CombatStats)
-        char_d  = self.world.get_component(self.player_entity, _CHS_d)
-        if cs:
-            cs.current_hp = 0   # DeathRespawnSystem detecta e respawna
-            # Restaura HP autoritativo do servidor após respawn
-            _srv_hp      = payload.get("hp",     0)
-            _srv_hp_max  = payload.get("hp_max", 0)
-            if _srv_hp_max > 0:
-                cs.max_hp     = _srv_hp_max
-                cs.current_hp = _srv_hp
-        # Restaura mana cheia (servidor já restaurou server-side)
-        if char_d:
-            _srv_mana     = payload.get("mana",     0)
-            _srv_max_mana = payload.get("max_mana", 0)
-            if _srv_max_mana > 0:
-                char_d.mana     = _srv_mana
-                char_d.max_mana = _srv_max_mana
-            if cs:
-                cs.mana = char_d.mana   # sincroniza CombatStats.mana também
-        # Teleporta para o ponto de respawn (servidor envia coords)
-        _rx = payload.get("respawn_tx", 0)
-        _ry = payload.get("respawn_ty", 0)
-        if _rx and _ry:
-            from components import Position as _PosD
-            _ptm = self.world.get_component(self.player_entity, TileMovement)
-            _ppo = self.world.get_component(self.player_entity, _PosD)
-            if _ptm:
-                _ptm.current_tile_x = _rx; _ptm.current_tile_y = _ry
-                _ptm.target_tile_x  = _rx; _ptm.target_tile_y  = _ry
-                _ptm.is_moving = False;     _ptm.progress = 0.0
-            if _ppo:
-                _ppo.x = _rx * TILE_SIZE + TILE_SIZE // 2
-                _ppo.y = _ry * TILE_SIZE + TILE_SIZE // 2
-        # Para de atacar
+        # Servidor declarou que o player local morreu. Corpo fica no local da
+        # morte (current_hp já é 0 via COMBAT_RESULT/SKILL_RESULT que matou o
+        # player) — sem restauração de HP/mana nem teleporte aqui. O cliente
+        # inicia o timer de 2s pra mostrar a janela "Você morreu".
+        from components import CombatState, GhostState
+        gst = self.world.get_component(self.player_entity, GhostState)
+        if gst:
+            gst.is_dead   = True
+            gst.is_ghost  = False
+            gst.corpse_tx = payload.get("corpse_tx", -1)
+            gst.corpse_ty = payload.get("corpse_ty", -1)
+            gst.graveyard_timer = 0.0
+            gst.near_corpse = False
         combat_state = self.world.get_component(self.player_entity, CombatState)
         if combat_state:
             combat_state.target_entity_id = -1
             combat_state.is_pursuing      = False
+            combat_state.is_alive         = False  # can_act()==False: bloqueia skills/ataques
         self._net_last_target = -1
+        self._death_timer = 0.0
+
+    def _handle_msg_player_revive(self, payload: dict) -> None:
+        # Servidor reviveu o player local (cemitério ou corpo) — restaura
+        # hp/mana, teleporta pro destino e limpa o GhostState.
+        from components import CombatStats, CombatState, CharacterStats as _CHS_r, GhostState, Position as _PosR
+        cs     = self.world.get_component(self.player_entity, CombatStats)
+        char_r = self.world.get_component(self.player_entity, _CHS_r)
+        if cs:
+            cs.max_hp     = payload.get("hp_max", cs.max_hp)
+            cs.current_hp = payload.get("hp", cs.current_hp)
+            cs.mana       = payload.get("mana", cs.mana)
+        if char_r:
+            char_r.max_mana = payload.get("max_mana", char_r.max_mana)
+            char_r.mana     = payload.get("mana", char_r.mana)
+
+        tx = payload.get("tx", 0)
+        ty = payload.get("ty", 0)
+        ptm = self.world.get_component(self.player_entity, TileMovement)
+        ppo = self.world.get_component(self.player_entity, _PosR)
+        if ptm:
+            ptm.current_tile_x = ptm.target_tile_x = tx
+            ptm.current_tile_y = ptm.target_tile_y = ty
+            ptm.is_moving = False
+            ptm.progress  = 0.0
+        if ppo:
+            ppo.x = tx * TILE_SIZE + TILE_SIZE // 2
+            ppo.y = ty * TILE_SIZE + TILE_SIZE // 2
+
+        gst = self.world.get_component(self.player_entity, GhostState)
+        if gst:
+            gst.is_dead   = False
+            gst.is_ghost  = False
+            gst.corpse_tx = -1
+            gst.corpse_ty = -1
+            gst.graveyard_timer = 0.0
+            gst.near_corpse = False
+
+        combat_state = self.world.get_component(self.player_entity, CombatState)
+        if combat_state:
+            combat_state.target_entity_id = -1
+            combat_state.is_pursuing      = False
+            combat_state.is_alive         = True
+        self._net_last_target = -1
+        self._death_timer = 0.0
+
+    def _handle_msg_ghost_state(self, payload: dict) -> None:
+        # Atualiza estado do espírito local (raio do corpo / timer do cemitério).
+        from components import GhostState, Position as _PosGS
+        gst = self.world.get_component(self.player_entity, GhostState)
+        if not gst:
+            return
+        gst.is_ghost        = payload.get("is_ghost", gst.is_ghost)
+        gst.near_corpse     = payload.get("near_corpse", gst.near_corpse)
+        gst.graveyard_timer = payload.get("graveyard_timer", gst.graveyard_timer)
+
+        # Liberação do espírito: servidor manda a posição do cemitério —
+        # teleporta já no mesmo tick (sem isso, a posição local só é
+        # corrigida na próxima vez que o player tentar se mover).
+        if "tx" in payload and "ty" in payload:
+            tx, ty = payload["tx"], payload["ty"]
+            ptm = self.world.get_component(self.player_entity, TileMovement)
+            ppo = self.world.get_component(self.player_entity, _PosGS)
+            if ptm:
+                ptm.current_tile_x = ptm.target_tile_x = tx
+                ptm.current_tile_y = ptm.target_tile_y = ty
+                ptm.is_moving = False
+                ptm.progress  = 0.0
+            if ppo:
+                ppo.x = tx * TILE_SIZE + TILE_SIZE // 2
+                ppo.y = ty * TILE_SIZE + TILE_SIZE // 2
+
+    def _handle_msg_entity_death(self, payload: dict) -> None:
+        # Broadcast pra AOI: outro player morreu no tile (tx, ty). Tinge o
+        # sprite remoto em tom acinzentado (corpo) já neste momento — o
+        # marcador "player_corpse" só aparece depois, quando o espírito é
+        # liberado e a entidade original some do AOI.
+        eid = payload.get("eid", -1)
+        local_eid = self._remote_players.get(eid)
+        if local_eid is None:
+            return
+        from components import RemoteControlled, Renderable
+        rc = self.world.get_component(local_eid, RemoteControlled)
+        if rc:
+            rc.hp = 0
+        rnd = self.world.get_component(local_eid, Renderable)
+        if rnd:
+            rnd.color = tuple(int(c * 0.35) + 20 for c in rnd.color[:3])
 
     def _handle_msg_loot_available(self, payload: dict) -> None:
         # Servidor concedeu loot ao player local.

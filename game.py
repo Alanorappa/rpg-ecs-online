@@ -24,7 +24,7 @@ from quest_system import QuestSystem, QuestDialogSystem, QuestJournalSystem
 from quest_events import set_quest_system
 from entity_factory import create_player, create_camera, create_enemy, create_tilemap, create_merchant, create_spawn_zone, create_quest_giver, create_blacksmith, create_trainer
 from god_mode import GodModeEditor
-from components import Inventory, Equipment, PlayerSkills, Wallet
+from components import Inventory, Equipment, PlayerSkills, Wallet, GhostState
 from map_loader import load_map_csv, validate_map
 from tileset import TILE_SIZE
 from combat_log import LOG
@@ -51,6 +51,7 @@ from client.online_mode_handlers import OnlineModeHandlers
 from client.hotbar_handlers import HotbarHandlers
 from client.consumable_bar_handlers import ConsumableBarHandlers
 from client.hud_handlers import HudHandlers
+from client.death_ui_handlers import DeathUIHandlers
 from client.colors import C_WHITE, C_YELLOW, C_GREEN, C_RED, C_GRAY, C_CYAN, C_ORANGE
 
 # --- Configurações do Jogo ---
@@ -87,7 +88,7 @@ def _merge_display_matrix(terrain: list[str], objects: list) -> list[str]:
     return result
 
 
-class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, InventoryHandlers, TooltipHandlers, DebugHandlers, MenuHandlers, HotbarEditorHandlers, HabilidadesHandlers, OnlineModeHandlers, HotbarHandlers, ConsumableBarHandlers, HudHandlers):
+class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, InventoryHandlers, TooltipHandlers, DebugHandlers, MenuHandlers, HotbarEditorHandlers, HabilidadesHandlers, OnlineModeHandlers, HotbarHandlers, ConsumableBarHandlers, HudHandlers, DeathUIHandlers):
     def __init__(self, scale: float = 1.0, char_data: "dict | None" = None,
                  save_slot: int = 0,
                  net_user: str = "", net_pass: str = "",
@@ -135,6 +136,12 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._net_last_target: int = -2
         # Server EID do último player remoto perseguido — reacquire quando respawnar
         self._pvp_respawn_target: int = -1
+        # Fluxo de morte/espírito: timer local (2s) até mostrar "Você morreu",
+        # e timer visual do contador de revive automático no cemitério (45s).
+        self._death_timer: float = 0.0
+        self._ghost_timer: float = 0.0
+        self._death_release_btn: pygame.Rect | None = None
+        self._ghost_revive_btn:  pygame.Rect | None = None
         # Última posição enviada ao servidor (evita envios duplicados)
         self._net_last_tx: int = -1
         self._net_last_ty: int = -1
@@ -367,6 +374,13 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._combat_state_sys._on_proc_hp_change = self._send_proc_hp_sync
         # AoeTargetingSystem: envia CAST_SKILL com coordenadas ao confirmar posição AOE
         self._aoe_targeting_system._net = self._net
+        # PlayerInputSystem: auto-attack ranged do arqueiro vira 100% server-driven
+        # (flecha nasce só ao receber COMBAT_RESULT — igual Bola de Fogo)
+        self._player_input_system._net = self._net
+        # SpellCastSystem: persiste mudanças de bag/aljava (ex: Recarregar) —
+        # sem isso o estado só era salvo no próximo evento de loot, e a recarga
+        # se perdia se o jogador deslogasse antes disso
+        self._spell_cast_system._on_inventory_changed = self._on_recarregar_changed
 
         # --- Profiler de frames ---
         self._prof_accum:       dict[str, float] = {}   # tempo acumulado por seção
@@ -548,7 +562,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                                   PirofagiaSystem, AoeTargetingSystem)
         self._mana_system           = ManaSystem(self.world)
         self._spell_cast_system     = SpellCastSystem(self.world, self.screen)
-        self._player_proj_system    = PlayerProjectileSystem(self.world, self.screen)
+        self._player_proj_system    = PlayerProjectileSystem(self.world, self.screen, self.player_entity)
         self._channeling_system     = ChannelingSystem(self.world, self.screen)
         self._ice_block_system      = IceBlockSystem(self.world)
         self._fire_shield_system    = FireShieldSystem(self.world)
@@ -1244,6 +1258,9 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 if self._talent_system.wants_close:
                     self._show_talents = False
 
+            # UI de morte/espírito: consome cliques nos botões "Liberar espírito"/"Sim"
+            self._update_death_ui(events, dt)
+
             # BlacksmithSystem roda ANTES de shop/quest para consumir cliques nos ferreiros
             self._crafting_system.update(events, dt)
             if self._crafting_system.is_open:
@@ -1544,6 +1561,11 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             # (dest_w < self.screen.get_width() quando o painel está aberto).
             _dest = self.screen.subsurface((0, 0, dest_w, self.screen.get_height()))
             pygame.transform.scale(self._zoom_surf, (dest_w, self.screen.get_height()), _dest)
+            # Morto/espírito (até reviver): mundo em grayscale — sinaliza
+            # visualmente que o player não está mais "no jogo" normal.
+            _gst_gray = self.world.get_component(self.player_entity, GhostState)
+            if _gst_gray is not None and _gst_gray.is_dead:
+                _dest.blit(pygame.transform.grayscale(_dest), (0, 0))
             # Notificações de proc: screen-space, abaixo do player, acima dos avisos
             PROC.render(self.screen)
             # Avisos de ação bloqueada: posição fixa, abaixo do centro
@@ -1558,6 +1580,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             if PROFILE_FRAMES:
                 _ts = _time.perf_counter()
             self._draw_hud()
+            self._render_death_ui()
             if PROFILE_FRAMES:
                 self._prof_record("hud:draw_hud", _time.perf_counter() - _ts)
                 _ts = _time.perf_counter()

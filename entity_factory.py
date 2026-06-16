@@ -3,7 +3,7 @@ from __future__ import annotations
 from world import World
 from components import Position, Renderable, PlayerControlled, Camera, Collider, \
                        Enemy, AIControlled, InitialPosition, DetectionRadius, Tilemap, \
-                       TileMovement, CombatStats, CombatState, PlayerAutoMove, \
+                       TileMovement, CombatStats, CombatState, GhostState, PlayerAutoMove, \
                        CharacterStats, PermanentStats, XPReward, EnemyTier, \
                        Corpse, Inventory, Equipment, PlayerSkills, Wallet, TalentTree, Merchant, \
                        SpawnZone, EntityIdentity, StatusEffects, ConsumableBar, MobSounds, FogOfWar, \
@@ -138,6 +138,7 @@ def create_player(world: World, tile_x: int, tile_y: int,
         base_attack_interval=1.95  # 1.5s base +30% (punhos)
     ))
     world.add_component(player_entity, CombatState())
+    world.add_component(player_entity, GhostState())
     world.add_component(player_entity, PlayerAutoMove())
     # Atributos base (STR=1,INT=1,AGI=1,VIT=3,DEF=2) → CombatStats inicial já está calibrado
     world.add_component(player_entity, CharacterStats(
@@ -150,7 +151,8 @@ def create_player(world: World, tile_x: int, tile_y: int,
     world.add_component(player_entity, Wallet())
     world.add_component(player_entity, TalentTree())
     world.add_component(player_entity, ConsumableBar())
-    _fog = FogOfWar(radius=12)
+    from shared.constants import FOG_RADIUS
+    _fog = FogOfWar(radius=FOG_RADIUS)
     _fog.switch_map(spawn_map)
     world.add_component(player_entity, _fog)
     world.add_component(player_entity, QuestLog())

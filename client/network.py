@@ -129,6 +129,12 @@ class NetworkClient:
             "dir_x": dir_x, "dir_y": dir_y,
         })
 
+    def release_spirit(self) -> None:
+        self.send(MsgType.RELEASE_SPIRIT, {})
+
+    def revive_request(self) -> None:
+        self.send(MsgType.REVIVE_REQUEST, {})
+
     def ping(self) -> None:
         self._ping_ts = int(time.time() * 1000)
         self.send(MsgType.PING, {"client_ts": self._ping_ts})

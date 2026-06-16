@@ -345,6 +345,7 @@ SKILL_CATALOG: dict[str, dict] = {
         "cast_range": 0,
         "class_id":  "arqueiro",
         "offensive": False,   # não-ofensiva: arqueiro não ataca durante o canal
+        "sound_on_cast_start": True,  # som toca ao iniciar o canal, não na conclusão
         "params": {
             "concentration_cost": 25,
             "radius":             5,

@@ -33,6 +33,12 @@ SESSION_TTL_S       = 86_400     # 24h
 # ── Versão do protocolo ───────────────────────────────────────────────────────
 PROTOCOL_VERSION = 1             # incrementar ao quebrar compatibilidade
 
+# ── Morte/respawn: fluxo de espírito (ghost) + cemitério ───────────────────────
+GHOST_GRAVEYARD_RADIUS_TILES = 5   # raio (tiles) do cemitério p/ revive automático
+GHOST_CORPSE_RADIUS_TILES    = 3   # raio (tiles) do corpo p/ prompt "Reviver agora?"
+GHOST_GRAVEYARD_REVIVE_S     = 45.0  # segundos contínuos no cemitério p/ revive full HP
+GHOST_CORPSE_REVIVE_HP_FRAC  = 0.15  # fração de HP ao reviver no corpo
+
 # ── Sincronização de stats de combate (PLAYER_STAT_SYNC) ──────────────────────
 # Mapeamento: nome_efetivo → base_attr no CombatStats
 # O cliente envia os valores efetivos; o servidor atualiza os base_attrs

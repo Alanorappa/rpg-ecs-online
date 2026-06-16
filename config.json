@@ -1,10 +1,10 @@
 {
-  "scale": 1.5,
+  "scale": 1.0,
   "server_host": "localhost",
   "server_port": 8765,
   "net_user": "teste",
   "net_pass": "123456",
-  "music_volume": 0.031578947368421054,
+  "music_volume": 0.06842105263157895,
   "sfx_volume": 0.05263157894736842,
   "music_enabled": false,
   "sfx_enabled": true,
@@ -49,7 +49,7 @@
           "impacto",
           "vitoria_iminente",
           "brado_provocativo",
-          "executar",
+          null,
           "interceptar",
           "punho_no_queixo",
           "golpe_debilitante",
@@ -133,10 +133,10 @@
     "Aventureiro": {
       "hotbar": {
         "slots": [
-          null,
-          null,
-          null,
-          null,
+          "bola_de_fogo",
+          "bloco_de_gelo",
+          "polimorfia",
+          "nova_congelante",
           null,
           null,
           null,

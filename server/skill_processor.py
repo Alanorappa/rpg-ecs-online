@@ -11,7 +11,7 @@ class SkillProcessorMixin:
 
     def _process_skill_requests(self) -> None:
         """Processa todas as skills enfileiradas para este tick."""
-        from components import CombatState, CombatStats, TileMovement
+        from components import CombatState, CombatStats, TileMovement, GhostState, StatusEffects
         from skill_config import SKILL_CATALOG
         from components import PlayerSkills as _PS
         requests = list(self._pending_skill_requests)
@@ -20,6 +20,24 @@ class SkillProcessorMixin:
         for req in requests:
             player_eid = req["player_eid"]
             sid        = req["sid"]
+
+            # Player morto (corpo) ou espírito (ghost): nunca executa skills —
+            # mesmo que o cliente esteja com bug visual ou tente burlar can_act().
+            _gst_skp = self.world.get_component(player_eid, GhostState)
+            if _gst_skp is not None and _gst_skp.is_dead:
+                continue
+
+            # Stun/cast/disoriented/polymorph/sleep: can_act()==False — nunca executa
+            # skills, mesmo que o cliente tente burlar (igual ao bypass de GhostState
+            # acima). Espelha o bloqueio client-side de PlayerInputSystem (systems.py).
+            _cs_skp = self.world.get_component(player_eid, CombatState)
+            if _cs_skp is not None and not _cs_skp.can_act():
+                continue
+            _sfx_skp = self.world.get_component(player_eid, StatusEffects)
+            if _sfx_skp is not None and (
+                    _sfx_skp.has("sleep") or _sfx_skp.has("disoriented")
+                    or _sfx_skp.has("polymorph")):
+                continue
 
             # Constrói objeto Skill a partir do SKILL_CATALOG (servidor não tem PlayerSkills)
             # Tenta primeiro no PlayerSkills local se existir (ex: skills com estado de cargas)
@@ -203,6 +221,17 @@ class SkillProcessorMixin:
 
             # Expõe lista de spells pendentes ao handler (detecta modo servidor)
             self._skill_system._server_pending_spells = self._pending_spell_completions
+            _pending_count_before = len(self._pending_spell_completions)
+
+            # Reseta last_outcome antes do handler: para skills com cast_time que
+            # só ENFILEIRAM a conclusão (sem deal_damage agora), last_outcome
+            # ficava com o valor de um ataque anterior (ex: "miss" do auto-attack)
+            # e o bloco abaixo ("elif _skill_outcome in miss/dodge/...") gerava um
+            # SKILL_RESULT falso de "Errou!" no cast_started, antes da skill resolver.
+            import systems as _sys_reset
+            _combat_svc_reset = getattr(_sys_reset, "_svc", {}).get("combat")
+            if _combat_svc_reset:
+                _combat_svc_reset.last_outcome = "hit"
 
             # Chama o handler diretamente (mesmo mecanismo do SkillSystem offline)
             handler_fn = getattr(self._skill_system, f"_skill_{sid}", None)
@@ -211,6 +240,14 @@ class SkillProcessorMixin:
                     _skill_ok = handler_fn(skill_obj, combat_stats, combat_state, tile_move)
                     _splog(f"  handler _skill_{sid} -> ok={_skill_ok} "
                            f"pending_spells={len(self._pending_spell_completions)}")
+                    # Skill com cast_time enfileirou conclusão diferida → bloqueia
+                    # can_act() (auto-attack) até o cast resolver, espelhando o
+                    # offline (combat_state.is_casting = True em systems.py:5877).
+                    # Sem isso, o auto-attack genérico dispara (e agra o mob) durante
+                    # o cast da própria skill, "antes" do dano dela ser confirmado.
+                    if (_skill_ok and _has_cast and combat_state
+                            and len(self._pending_spell_completions) > _pending_count_before):
+                        combat_state.is_casting = True
                     # Restaura posições de lag comp de cone skills (timestamp-based)
                     for _lc_eid, (_orig_tx, _orig_ty) in _lag_restored.items():
                         _lc_tm2 = self.world.get_component(_lc_eid, _TM)

@@ -435,9 +435,10 @@ class TestPlayerDeathEvent(unittest.IsolatedAsyncioTestCase):
         deaths = get_msgs_of_type(fw, MsgType.PLAYER_DEATH)
         self.assertGreater(len(deaths), 0, "Cliente não recebeu PLAYER_DEATH")
 
-    async def test_player_hp_reset_on_server_after_death(self):
-        """Após morte, HP do player no servidor deve ser resetado para max."""
-        from components import CombatStats, CombatState, TileMovement
+    async def test_player_corpse_stays_dead_until_revive(self):
+        """Após morte, corpo fica com HP=0/GhostState.is_dead até liberar espírito
+        e reviver (fluxo de ghost/cemitério substitui o respawn instantâneo)."""
+        from components import CombatStats, CombatState, TileMovement, GhostState
         session, fw = await fake_login(self.mgr, "s1", "user_hpreset", 130, 374)
 
         player_eid = session.entity_id
@@ -459,8 +460,21 @@ class TestPlayerDeathEvent(unittest.IsolatedAsyncioTestCase):
         await self._run_ticks_async(5)
 
         pcs_after = self.ws_server.world.get_component(player_eid, CombatStats)
-        self.assertEqual(pcs_after.current_hp, hp_max,
-                         "HP do player não foi resetado após morte")
+        gst_after = self.ws_server.world.get_component(player_eid, GhostState)
+        self.assertLessEqual(pcs_after.current_hp, 0,
+                              "Corpo não deveria ter HP restaurado antes do revive")
+        self.assertTrue(gst_after.is_dead, "GhostState.is_dead deveria ser True após morte")
+
+        # Libera espírito e revive no cemitério (hp_frac=1.0)
+        self.ws_server._handle_release_spirit(player_eid)
+        self.assertTrue(gst_after.is_ghost)
+        self.ws_server._revive_player(player_eid, hp_frac=1.0, at_corpse=False)
+
+        pcs_revived = self.ws_server.world.get_component(player_eid, CombatStats)
+        self.assertEqual(pcs_revived.current_hp, hp_max,
+                         "HP do player não foi restaurado após revive no cemitério")
+        self.assertFalse(gst_after.is_dead)
+        self.assertFalse(gst_after.is_ghost)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

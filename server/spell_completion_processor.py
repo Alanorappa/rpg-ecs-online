@@ -101,14 +101,17 @@ class SpellCompletionMixin:
                     if _other_eid == player_eid:
                         continue  # o caster já cria localmente
                     _vch_p = self.world.get_component(_other_eid, _CHS_proj)
-                    self._pending_xp_deliveries.append({
+                    _proj_xp_entry = {
                         "player_eid":    _other_eid,
                         "xp": 0, "mob_eid": -1,
                         "rage": _vch_p.rage if _vch_p else 0,
                         "proj_incoming": spell_id,
                         "proj_caster":   player_eid,
                         "proj_target":   target_id,
-                    })
+                    }
+                    if spell_id == "flecha_reiterada":
+                        _proj_xp_entry["proj_arrow_count"] = _remaining
+                    self._pending_xp_deliveries.append(_proj_xp_entry)
             else:
                 fn = _dispatch.get(spell_id)
                 _tcs_pre = self.world.get_component(target_id, _CS)
@@ -215,6 +218,18 @@ class SpellCompletionMixin:
                 if _conc_compl is not None:
                     _compl_sync["concentration"] = _conc_compl
                 self._pending_xp_deliveries.append(_compl_sync)
+
+        # Libera is_casting (e portanto o auto-attack) para players cujo último
+        # cast pendente acabou de resolver. Mantém True se ainda houver outro
+        # cast enfileirado pelo mesmo player (ex: Flecha Reiterada com 2 casts).
+        from components import CombatState as _CS_done
+        _still_players = {e["player_eid"] for e in still}
+        for _e_done in self._pending_spell_completions:
+            _peid_done = _e_done["player_eid"]
+            if _peid_done not in _still_players:
+                _cst_done = self.world.get_component(_peid_done, _CS_done)
+                if _cst_done:
+                    _cst_done.is_casting = False
 
         self._pending_spell_completions = still
 
@@ -404,29 +419,8 @@ class SpellCompletionMixin:
                         continue
                     dmg = max(1, int(cs_p.base_physical_damage * ch.dmg_weapon_pct
                                      + sp * ch.dmg_sp_coeff)) if cs_p else 1
-                    hp_before = mob_cs.current_hp
-                    self._server_apply_magic_damage(player_eid, target_eid, dmg, roll_crit=True)
-                    hp_after  = max(0, mob_cs.current_hp)
-                    damage    = max(0, hp_before - mob_cs.current_hp)
-                    if damage > 0:
-                        self._combat_this_tick.append({
-                            "attacker": player_eid,
-                            "target":   target_eid,
-                            "damage":   damage,
-                            "outcome":  "crit" if self._last_magic_is_crit else "hit",
-                            "hp_after": hp_after,
-                            "source":   "skill",
-                        })
-                        # PvP: HP sync para vítima player
-                        if target_eid in self._player_eids.values():
-                            from components import CharacterStats as _CHS2
-                            _vch = self.world.get_component(target_eid, _CHS2)
-                            self._pending_xp_deliveries.append({
-                                "player_eid": target_eid,
-                                "xp": 0, "mob_eid": -1,
-                                "rage": _vch.rage if _vch else 0,
-                                "hp": hp_after, "hp_max": mob_cs.max_hp,
-                            })
+                    self._server_apply_magic_damage(player_eid, target_eid, dmg,
+                                                     roll_crit=True, report=True)
                     if ch.slow_pct > 0:
                         apply_effect(self.world, target_eid, "slow", 2.0, 1.0 - ch.slow_pct)
 
@@ -476,6 +470,28 @@ class SpellCompletionMixin:
                 cst.is_stunned = False
                 cst.is_immune  = False
 
+    # ── Ponto único de modificação de HP (servidor) ──────────────────────────
+
+    def _apply_final_damage(self, target_id: int, dmg: int) -> bool:
+        """Aplica dmg ao HP de target_id verificando todas as guardas do servidor.
+
+        Retorna False se bloqueado (HP já zerado, is_immune, etc.).
+        HP pode ficar negativo: overkill preservado para cálculo de dano real.
+
+        ÚNICO lugar onde current_hp é decrementado por dano no servidor.
+        Para adicionar redução de dano, resistências ou novos status de imunidade,
+        editar apenas aqui.
+        """
+        from components import CombatStats as _CS, CombatState as _CSt
+        cs = self.world.get_component(target_id, _CS)
+        if not cs or cs.current_hp <= 0:
+            return False
+        cst = self.world.get_component(target_id, _CSt)
+        if cst and cst.is_immune:
+            return False
+        cs.current_hp -= dmg
+        return True
+
     # ── Dano de magia server-side ────────────────────────────────────────────
 
     def _server_spell_damage(self, player_eid: int, dmg_weapon_pct: float, sp_coeff: float) -> int:
@@ -485,11 +501,19 @@ class SpellCompletionMixin:
 
     def _server_apply_magic_damage(self, attacker_id: int, target_id: int,
                                    dmg: int, is_crit: bool = False,
-                                   roll_crit: bool = False) -> bool:
+                                   roll_crit: bool = False, report: bool = False) -> bool:
         """Aplica dano mágico server-side (sem FLT/WARN/pygame).
 
         roll_crit=True: calcula crit internamente usando CombatStats do atacante.
         Retorna is_crit via self._last_magic_is_crit para coleta de resultados.
+
+        report=True: emite COMBAT_RESULT (_combat_this_tick) + sync de HP PvP
+        diretamente — usar APENAS quando o chamador não coleta resultados via
+        snapshot hp_before/hp_after (ex.: _process_player_channeling, tick a
+        tick). Handlers despachados por _process_spell_cast_completions /
+        _apply_spell_on_projectile_hit (Calcinar, Nova Congelante, BdF) NÃO
+        devem reportar aqui — o chamador já monta "results"/SKILL_RESULT a
+        partir do snapshot, e reportar duas vezes duplicava o FLT de dano.
         """
         from components import (CombatStats, CombatState, AIControlled,
                                 PendingDeath, StatusEffects, TileMovement, EntityIdentity)
@@ -497,9 +521,6 @@ class SpellCompletionMixin:
 
         target_cs = self.world.get_component(target_id, CombatStats)
         if not target_cs or target_cs.current_hp <= 0:
-            return False
-        target_state = self.world.get_component(target_id, CombatState)
-        if target_state and target_state.is_immune:
             return False
 
         if roll_crit:
@@ -512,7 +533,33 @@ class SpellCompletionMixin:
                     dmg = int(dmg * CRITICAL_DAMAGE_MULTIPLIER)
         self._last_magic_is_crit = is_crit
 
-        target_cs.current_hp -= dmg  # sem clamp — overkill negativo preserva dano real
+        hp_before = target_cs.current_hp
+        if not self._apply_final_damage(target_id, dmg):
+            return False
+        hp_after = max(0, target_cs.current_hp)
+        damage   = max(0, hp_before - target_cs.current_hp)
+
+        # Registra evento de combate — apenas quando report=True (chamador sem
+        # coleta própria via snapshot, ex.: Calamidade Flamejante por tick).
+        if report and damage > 0:
+            self._combat_this_tick.append({
+                "attacker": attacker_id,
+                "target":   target_id,
+                "damage":   damage,
+                "outcome":  "crit" if is_crit else "hit",
+                "hp_after": hp_after,
+                "source":   "skill",
+            })
+            # PvP: HP sync para vítima player
+            if target_id in self._player_eids.values():
+                from components import CharacterStats as _CHS_mag
+                _vch = self.world.get_component(target_id, _CHS_mag)
+                self._pending_xp_deliveries.append({
+                    "player_eid": target_id,
+                    "xp": 0, "mob_eid": -1,
+                    "rage": _vch.rage if _vch else 0,
+                    "hp": hp_after, "hp_max": target_cs.max_hp,
+                })
 
         # Quebra polimorfia
         _t_sfx = self.world.get_component(target_id, StatusEffects)
@@ -814,7 +861,8 @@ class SpellCompletionMixin:
             if _fdp > 0 and random.random() < _fdp:
                 dmg = int(dmg * 1.50)
 
-        target_cs.current_hp -= dmg
+        if not self._apply_final_damage(target_id, dmg):
+            return False, "immune", 0
 
         # Na Mosca: ativa o bônus após crit
         if attacker_cs and getattr(attacker_cs, "na_mosca_enabled", False):
@@ -826,6 +874,11 @@ class SpellCompletionMixin:
         _t_sfx = self.world.get_component(target_id, _SFX2)
         if _t_sfx:
             _t_sfx.remove("polymorph")
+            # Sono quebra ao tomar dano — cancela also o slow encadeado
+            _sleep_eff = _t_sfx.get("sleep")
+            if _sleep_eff:
+                _sleep_eff.on_expire_effect = ""
+                _t_sfx.remove("sleep")
         attacker_cst = self.world.get_component(player_eid, _CS2)
         if attacker_cst:
             enter_combat(attacker_cst)
@@ -913,7 +966,7 @@ class SpellCompletionMixin:
 
         dead, outcome, dmg = self._server_apply_ranged_physical(
             player_eid, target_id, ap_mult, guaranteed_hit=True)
-        if outcome in ("miss", "dodge", "parry"):
+        if outcome in ("miss", "dodge", "parry", "immune"):
             return
 
         # Knockback: empurra nb tiles na direção oposta ao player
@@ -1014,31 +1067,13 @@ class SpellCompletionMixin:
             targets_hit += 1
 
     def _server_cancao_ninar(self, player_eid: int, target_id: int, entry: dict) -> None:
-        from skill_config import SKILL_CATALOG as _SC
-        from components import TileMovement, CombatStats, Enemy, AIControlled
-        from systems import apply_effect
-        from utils import chebyshev
-        params    = _SC.get("cancao_ninar", {}).get("params", {})
-        radius    = params.get("radius",          5)
-        sleep_d   = params.get("sleep_duration",  8.0)
-        slow_d    = params.get("slow_duration",   5.0)
-        slow_m    = params.get("slow_magnitude",  0.30)
-
-        p_tm = self.world.get_component(player_eid, TileMovement)
-        if not p_tm:
-            return
-        px, py = p_tm.current_tile_x, p_tm.current_tile_y
-
-        for eid in list(self._mob_eids):
-            t_tm = self.world.get_component(eid, TileMovement)
-            t_cs = self.world.get_component(eid, CombatStats)
-            if not t_tm or not t_cs or t_cs.current_hp <= 0:
-                continue
-            if chebyshev(px, py, t_tm.current_tile_x, t_tm.current_tile_y) <= radius:
-                apply_effect(self.world, eid, "sleep", sleep_d,
-                             on_expire_effect="slow",
-                             on_expire_duration=slow_d,
-                             on_expire_magnitude=slow_m)
+        """Cast completo: o sono continua normalmente (já aplicado no início do
+        canal por _skill_cancao_ninar). Apenas limpa lullaby_targets — o slow
+        será aplicado via on_expire_effect quando o sono acabar."""
+        from components import CharacterStats
+        char_stats = self.world.get_component(player_eid, CharacterStats)
+        if char_stats:
+            char_stats.lullaby_targets.clear()
 
     def _server_cancao_inspiracao(self, player_eid: int, target_id: int, entry: dict) -> None:
         from skill_config import SKILL_CATALOG as _SC

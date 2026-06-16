@@ -497,6 +497,21 @@ class CombatState:
 
 
 @dataclass
+class GhostState:
+    """
+    Fluxo de morte/respawn: corpo fica no local da morte, espírito (ghost)
+    spawna no cemitério (intangível, sem dano/aggro) e revive ao ficar
+    GHOST_GRAVEYARD_REVIVE_S no raio do cemitério ou confirmar revive no corpo.
+    """
+    is_dead: bool = False         # corpo morto, espírito ainda não liberado
+    is_ghost: bool = False        # espírito liberado, vagando/cemitério
+    corpse_tx: int = -1
+    corpse_ty: int = -1
+    graveyard_timer: float = 0.0  # segundos contínuos dentro do raio do cemitério
+    near_corpse: bool = False     # dentro do raio de revive do corpo
+
+
+@dataclass
 class PlayerAutoMove:
     """
     Controla o movimento automático do jogador.

@@ -153,6 +153,9 @@ class SpellCastSystem(System):
         self._current_spell_id: str = ""
         # Casts visual_only cancelados por movimento neste frame — game.py envia CANCEL_CAST
         self.interrupted_visual_casts: list[str] = []
+        # Callback opcional (injetado por game.py no online): notifica mudança de
+        # inventário/equipamento que precisa ser persistida (ex: Recarregar).
+        self._on_inventory_changed = None
         self._CAST_HANDLERS: dict[str, str] = {
             "bola_de_fogo":      "_launch_fireball",
             "nova_congelante":   "_apply_nova_congelante",
@@ -731,6 +734,10 @@ class SpellCastSystem(System):
                 _ret.stack = returned
                 inv.items.append(_ret)
             quiver.arrow_count = 0
+            # Troca de tipo já mutou bag/aljava — persiste mesmo que a recarga
+            # em si não complete abaixo (ex: "Aljava já está cheia").
+            if self._on_inventory_changed:
+                self._on_inventory_changed()
 
         needed = quiver.max_arrows - quiver.arrow_count
         if needed <= 0:
@@ -774,6 +781,8 @@ class SpellCastSystem(System):
             bonus_str = (f" (+{quiver.damage_min}–{quiver.damage_max} dmg)"
                      if quiver.damage_max > 0 else "")
         LOG.add(f"Aljava recarregada: {quiver.arrow_count}/{quiver.max_arrows}{bonus_str}", (180, 220, 100))
+        if self._on_inventory_changed:
+            self._on_inventory_changed()
 
     def _apply_polymorph(self, attacker_id: int, target_id: int) -> None:
         from systems import apply_effect
@@ -863,10 +872,11 @@ class PlayerProjectileSystem(System):
     FIREBALL_FRAMES = 10          # número de frames no sheet
     FIREBALL_SCALE  = 2           # multiplicador de tamanho do sprite
 
-    def __init__(self, world: World, screen: pygame.Surface):
+    def __init__(self, world: World, screen: pygame.Surface, player_entity: int = -1):
         self.world  = world
         self.world_surf = screen
         self.hud_surf   = screen
+        self.player_entity = player_entity
         # rastro de flechas: proj_id → [(x, y), ...]
         self._arrow_trails: dict[int, list] = {}
         # Knockbacks pendentes: (attacker_id, target_id, timer_restante)
@@ -902,6 +912,17 @@ class PlayerProjectileSystem(System):
         except Exception as e:
             print(f"[WARN] Fireball sheet: {e}")
             self._fireball_frames = []
+
+    def _player_world_pos(self) -> "tuple[float, float] | None":
+        from components import TileMovement as _TM
+        tm = self.world.get_component(self.player_entity, _TM)
+        if tm:
+            return tm.current_tile_x * TILE_SIZE + TILE_SIZE / 2, \
+                   tm.current_tile_y * TILE_SIZE + TILE_SIZE / 2
+        pos = self.world.get_component(self.player_entity, Position)
+        if pos:
+            return pos.x, pos.y
+        return None
 
     def update(self, events=None, dt: float = 0) -> None:
         # Processa knockbacks com delay
@@ -963,7 +984,7 @@ class PlayerProjectileSystem(System):
                 dy   = fy - proj_pos.y
                 dist = math.sqrt(dx * dx + dy * dy)
                 if dist <= self.HIT_THRESHOLD:
-                    self._on_hit(proj)
+                    self._on_hit(proj, proj_pos.x, proj_pos.y)
                     to_remove.append(proj_id)
                 else:
                     step = proj.speed * dt
@@ -1001,10 +1022,11 @@ class PlayerProjectileSystem(System):
                         proj.pre_outcome = "crit" if random.random() < _crit_r else "hit"
                     else:
                         # Auto-attack normal: rola outcome completo.
-                        if target_cs is None:
-                            # Online: mob remoto sem CombatStats — usa outcome pré-computado
-                            # pelo servidor (pending_arrow_impacts). Se ainda não chegou,
-                            # assume "hit" para não travar o projétil.
+                        if target_cs is None or attacker_cs is None:
+                            # Online: mob/player remoto sem CombatStats (ou atacante é
+                            # player remoto sem CombatStats local) — usa outcome
+                            # pré-computado pelo servidor (pending_arrow_impacts).
+                            # Se ainda não chegou, assume "hit" para não travar o projétil.
                             _pend_upd = self.pending_arrow_impacts.get(proj.target_id)
                             if _pend_upd:
                                 _e = _pend_upd[0]
@@ -1031,7 +1053,7 @@ class PlayerProjectileSystem(System):
                                 proj.miss_end_y = proj_pos.y
                             proj.is_miss = True
                             # Online: consome o evento pendente (não haverá _on_hit)
-                            if target_cs is None:
+                            if target_cs is None or attacker_cs is None:
                                 _pend_miss = self.pending_arrow_impacts.get(proj.target_id)
                                 if _pend_miss:
                                     _pend_miss.pop(0)
@@ -1046,7 +1068,7 @@ class PlayerProjectileSystem(System):
                             continue  # não remove — flecha desvia
                         proj.pre_outcome = outcome  # hit/crit/block pré-rolado
 
-                self._on_hit(proj)
+                self._on_hit(proj, proj_pos.x, proj_pos.y)
                 to_remove.append(proj_id)
             else:
                 # Guarda posição ANTES de mover (forma o rastro)
@@ -1153,22 +1175,38 @@ class PlayerProjectileSystem(System):
         else:
             LOG.add("Tiro Repulsivo! Alvo repelido.", (120, 200, 255))
 
-    def _on_hit(self, proj: PlayerProjectile) -> None:
+    def _on_hit(self, proj: PlayerProjectile,
+                impact_x: float = None, impact_y: float = None) -> None:
         attacker_cs = self.world.get_component(proj.attacker_id, CombatStats)
         target_cs   = self.world.get_component(proj.target_id,   CombatStats)
 
-        # target_server_id == -2: projétil cosmético da vítima PvP — apenas som, sem dano/HIT_CS
+        # Som de impacto de flecha com falloff por distância até o jogador local.
+        _lpos_oh = self._player_world_pos()
+        def _play_arrow_impact_sound() -> None:
+            if impact_x is not None and _lpos_oh is not None:
+                SOUNDS.play_random_at(["arrow_impact_1", "arrow_impact_2"],
+                                      impact_x, impact_y, _lpos_oh[0], _lpos_oh[1],
+                                      base=1.0, channel_group=(12, 13))
+            else:
+                SOUNDS.play_random(["arrow_impact_1", "arrow_impact_2"], channel_group=(12, 13))
+
+        # target_server_id == -2: projétil cosmético (espectador) — apenas som, sem dano/HIT_CS
         if proj.target_server_id == -2:
-            if proj.damage_type != "physical":
+            if proj.damage_type == "physical":
+                _play_arrow_impact_sound()
+            else:
                 SOUNDS.play_spell(proj.spell_id, "impact")
             return
 
         # Online: mob/player sem CombatStats local — projétil colidiu, notifica servidor
-        if target_cs is None:
+        # (ou atacante é player remoto sem CombatStats local — alvo é o player local
+        # sendo atingido por PvP; dano já foi calculado e confirmado pelo servidor,
+        # client não deve recalcular via deal_damage).
+        if target_cs is None or attacker_cs is None:
             if proj.damage_type == "physical":
                 # Flecha de skill com PROJECTILE_HIT_CS: notifica servidor; FLT chega no is_proj_damage.
                 if proj.target_server_id != -1:
-                    SOUNDS.play_random(["arrow_impact_1", "arrow_impact_2"], channel_group=(12, 13))
+                    _play_arrow_impact_sound()
                     self.pending_proj_hits.append({
                         "spell_id":         proj.spell_id,
                         "target_server_id": proj.target_server_id,
@@ -1180,7 +1218,7 @@ class PlayerProjectileSystem(System):
                 # Dano já foi tratado pelo PROJECTILE_HIT_CS da primeira flecha.
                 # Não consome pending_arrow_impacts (evita consumir evento de auto-attack).
                 if target_cs is None and proj.guaranteed_hit:
-                    SOUNDS.play_random(["arrow_impact_1", "arrow_impact_2"], channel_group=(12, 13))
+                    _play_arrow_impact_sound()
                     return
 
                 # Consome evento pré-armazenado pelo COMBAT_RESULT (dict com outcome/damage/is_ability).
@@ -1194,13 +1232,14 @@ class PlayerProjectileSystem(System):
 
                 # Online sem entry: auto-attack chegou antes do COMBAT_RESULT — só som.
                 if _entry is None and target_cs is None:
-                    SOUNDS.play_random(["arrow_impact_1", "arrow_impact_2"], channel_group=(12, 13))
+                    _play_arrow_impact_sound()
                     return
 
                 if _entry is not None:
                     _out_oh  = _entry["outcome"]  if isinstance(_entry, dict) else _entry
                     _dmg_oh  = _entry.get("damage",     0)     if isinstance(_entry, dict) else 0
                     _isab_oh = _entry.get("is_ability",  False) if isinstance(_entry, dict) else False
+                    _isplr_oh = _entry.get("is_player_target", False) if isinstance(_entry, dict) else False
 
                     # FLT na posição atual do alvo; fallback para target_last quando já despawnado
                     _tpos_oh = self.world.get_component(proj.target_id, Position)
@@ -1217,7 +1256,13 @@ class PlayerProjectileSystem(System):
                             "block": "Bloqueou!",
                         }
                         if _dmg_oh > 0:
-                            if _out_oh == "crit":
+                            if _isplr_oh:
+                                # Dano em player (PvP): vermelho, igual ao padrão
+                                # de "Player local/remoto foi atacado".
+                                FLT.add(str(_dmg_oh), _tpos_oh.x, _tpos_oh.y,
+                                        (220, 80, 80), target_id=proj.target_id,
+                                        is_crit=(_out_oh == "crit"))
+                            elif _out_oh == "crit":
                                 _col_oh = (255, 220, 50) if _isab_oh else (255, 255, 255)
                                 FLT.add(str(_dmg_oh), _tpos_oh.x, _tpos_oh.y,
                                         _col_oh, target_id=proj.target_id, is_crit=True)
@@ -1243,8 +1288,7 @@ class PlayerProjectileSystem(System):
 
                     # Som de impacto de flecha
                     if _out_oh in ("hit", "crit", "block"):
-                        SOUNDS.play_random(["arrow_impact_1", "arrow_impact_2"],
-                                           channel_group=(12, 13))
+                        _play_arrow_impact_sound()
             else:
                 SOUNDS.play_spell(proj.spell_id, "impact")
                 # Registra hit para game.py enviar PROJECTILE_HIT_CS ao servidor
@@ -1324,7 +1368,7 @@ class PlayerProjectileSystem(System):
             target_cs_hit = self.world.get_component(proj.target_id, CombatStats)
             if target_cs_hit:
                 target_cs_hit.arrows_received += 1
-            SOUNDS.play_random(["arrow_impact_1", "arrow_impact_2"], channel_group=(12, 13))
+            _play_arrow_impact_sound()
             return
 
         # Resolve miss/crit usando a tabela de ataque mágica

@@ -17,6 +17,25 @@ from shared.constants import AOI_RADIUS, PROTOCOL_VERSION, TICK_RATE
 from utils import in_aoi as _in_aoi, SpatialHash as _SpatialHash
 
 
+def _can_see(world, viewer_eid: int, target_eid: int) -> bool:
+    """Regra centralizada de visibilidade servidor.
+
+    - Sem CombatState → visível a todos.
+    - is_visible=True  → visível a todos.
+    - is_visible=False + viewer ghost + target ghost → visível (espírito vê espírito).
+    - is_visible=False qualquer outro caso → invisível.
+    """
+    from components import CombatState, GhostState
+    cst = world.get_component(target_eid, CombatState)
+    if cst is None or cst.is_visible:
+        return True
+    viewer_gst = world.get_component(viewer_eid, GhostState)
+    if viewer_gst is None or not viewer_gst.is_ghost:
+        return False
+    target_gst = world.get_component(target_eid, GhostState)
+    return target_gst is not None and target_gst.is_ghost
+
+
 class Session:
     def __init__(self, ws, session_id: str):
         self.ws            = ws
@@ -290,6 +309,37 @@ class SessionManager:
             e for e in self.world_server._pending_spell_completions
             if not (e["player_eid"] == player_eid and e["spell_id"] == sid)
         ]
+        # Remove CAST_SKILL ainda não processado (fila do tick): cast iniciado e
+        # cancelado por movimento no mesmo frame chega aqui ANTES do request ser
+        # convertido em _pending_spell_completions no próximo tick — sem isso o
+        # cast completava normalmente mesmo após o CANCEL_CAST.
+        self.world_server._pending_skill_requests = [
+            e for e in self.world_server._pending_skill_requests
+            if not (e["player_eid"] == player_eid and e["sid"] == sid)
+        ]
+        # Canção de Ninar cancelada no meio do canal: acorda os alvos que já
+        # dormiram (sono é aplicado no início do canal) — igual ao offline
+        # _cancel_cancao_ninar.
+        if sid == "cancao_ninar":
+            from components import CharacterStats as _CSCancelLullaby, StatusEffects as _SFXCancelLullaby
+            _char_stats = self.world_server.world.get_component(player_eid, _CSCancelLullaby)
+            if _char_stats and _char_stats.lullaby_targets:
+                for _tid in _char_stats.lullaby_targets:
+                    _sfx = self.world_server.world.get_component(_tid, _SFXCancelLullaby)
+                    if _sfx and _sfx.has("sleep"):
+                        _eff = _sfx.get("sleep")
+                        if _eff:
+                            _eff.on_expire_effect = ""
+                        _sfx.remove("sleep")
+                _char_stats.lullaby_targets.clear()
+        # Cast cancelado e nenhum outro cast pendente → libera is_casting
+        # (e portanto o auto-attack via can_act()).
+        if not any(e["player_eid"] == player_eid
+                   for e in self.world_server._pending_spell_completions):
+            from components import CombatState as _CStCancelCast
+            _cst_cancel_cast = self.world_server.world.get_component(player_eid, _CStCancelCast)
+            if _cst_cancel_cast:
+                _cst_cancel_cast.is_casting = False
         # Remove entradas já em voo (timer expirou, aguardando PROJECTILE_HIT_CS).
         # Sem isso, cast cancelado no último frame ainda causa dano quando o projétil
         # visual (criado por is_completion) chega ao alvo e envia PROJECTILE_HIT_CS.
@@ -639,6 +689,37 @@ class SessionManager:
         self._unstuck_cooldowns[sid] = now
         print(f"[Unstuck] {sid} teleportado para {rx},{ry}")
 
+    async def _handle_release_spirit(self, session: Session, payload: dict, ts: int) -> None:
+        """Player com corpo morto clicou 'Liberar espírito' — vira ghost no cemitério."""
+        if not session.authenticated:
+            return
+        player_eid = self.world_server._player_eids.get(session.session_id)
+        if player_eid is None:
+            return
+        self.world_server._handle_release_spirit(player_eid)
+
+    async def _handle_revive_request(self, session: Session, payload: dict, ts: int) -> None:
+        """Ghost dentro do raio do corpo clicou 'Sim' — revive com HP parcial no corpo."""
+        if not session.authenticated:
+            return
+        player_eid = self.world_server._player_eids.get(session.session_id)
+        if player_eid is None:
+            return
+
+        from components import GhostState, TileMovement
+        from shared.constants import GHOST_CORPSE_RADIUS_TILES, GHOST_CORPSE_REVIVE_HP_FRAC
+
+        gst = self.world_server.world.get_component(player_eid, GhostState)
+        tm  = self.world_server.world.get_component(player_eid, TileMovement)
+        if not gst or not tm or not gst.is_ghost:
+            return
+        # Revalida distância no momento do request — não confia na flag cacheada
+        if (abs(tm.current_tile_x - gst.corpse_tx) > GHOST_CORPSE_RADIUS_TILES
+                or abs(tm.current_tile_y - gst.corpse_ty) > GHOST_CORPSE_RADIUS_TILES):
+            return
+
+        self.world_server._revive_player(player_eid, hp_frac=GHOST_CORPSE_REVIVE_HP_FRAC, at_corpse=True)
+
     # ── Helpers de spawn ─────────────────────────────────────────────────────
 
     async def _spawn_and_start(self, session: Session, char_data: dict) -> None:
@@ -790,6 +871,8 @@ class SessionManager:
         MsgType.TALENT_UPDATE:     _handle_talent_update,
         MsgType.HOTBAR_UPDATE:     _handle_hotbar_update,
         MsgType.UNSTUCK:           _handle_unstuck,
+        MsgType.RELEASE_SPIRIT:    _handle_release_spirit,
+        MsgType.REVIVE_REQUEST:    _handle_revive_request,
     }
 
     # ── AOI subscription — núcleo do sistema ─────────────────────────────────
@@ -850,6 +933,9 @@ class SessionManager:
             # Mortes de players APÓS AOI_UPDATE: garante que PLAYER_DEATH chega
             # depois do COMBAT_RESULT (hp_after=0) do golpe fatal, sobrescrevendo HP.
             await self._send_player_deaths(deltas)
+            await self._send_entity_deaths(deltas)
+            await self._send_player_revives(deltas)
+            await self._send_ghost_state_updates(deltas)
 
             # Entrega XP proporcional aos jogadores
             xp_deliveries = self.world_server.consume_xp_deliveries()
@@ -892,6 +978,8 @@ class SessionManager:
                                 _payload["proj_incoming"] = xp_entry["proj_incoming"]
                                 _payload["proj_caster"]   = xp_entry.get("proj_caster", -1)
                                 _payload["proj_target"]   = xp_entry.get("proj_target", -1)
+                                if "proj_arrow_count" in xp_entry:
+                                    _payload["proj_arrow_count"] = xp_entry["proj_arrow_count"]
                             await session.send(MsgType.STATS_UPDATE, _payload)
 
             # Notificações de corpse/loot
@@ -935,7 +1023,13 @@ class SessionManager:
                 for _hp_upd in _hp_bcast:
                     _caster_eid = _hp_upd["eid"]
                     _caster_sid = self.world_server.get_session_id_for_player(_caster_eid)
-                    _cx, _cy    = self.world_server.get_tile_pos(_caster_sid) if _caster_sid else (0, 0)
+                    # bcast_tx/ty (ex: respawn pós-morte PvP) sobrescreve a posição
+                    # atual — sem isso o filtro de AOI usaria o tile de respawn
+                    # (longe de quem matou), e o restore de HP nunca chegaria a ele.
+                    if "bcast_tx" in _hp_upd:
+                        _cx, _cy = _hp_upd["bcast_tx"], _hp_upd["bcast_ty"]
+                    else:
+                        _cx, _cy = self.world_server.get_tile_pos(_caster_sid) if _caster_sid else (0, 0)
                     _hp_payload = {"eid": _caster_eid, "hp": _hp_upd["hp"], "hp_max": _hp_upd["hp_max"]}
                     for s in list(self._sessions.values()):
                         if not s.authenticated or s.session_id == _caster_sid:
@@ -1023,7 +1117,11 @@ class SessionManager:
             in_old = in_aoi(m["from_tx"], m["from_ty"])
 
             if eid in session.known_eids:
-                if in_new:
+                if not _can_see(self.world_server.world, session.entity_id, eid):
+                    # Entidade ficou invisível (ex: ghost liberado sem despawn explícito)
+                    aoi_exits.append(eid)
+                    session.known_eids.discard(eid)
+                elif in_new:
                     confirmed_moves.append(m)   # ainda no AOI, envia move
                 else:
                     aoi_exits.append(eid)       # saiu do AOI
@@ -1034,6 +1132,8 @@ class SessionManager:
 
         # ── Novas entidades no AOI (via move) ─────────────────────────
         for eid in aoi_entries:
+            if not _can_see(self.world_server.world, session.entity_id, eid):
+                continue
             spawn_data = self.world_server.get_entity_spawn_data(eid)
             if spawn_data:
                 result.setdefault("spawned", []).append(spawn_data)
@@ -1047,6 +1147,8 @@ class SessionManager:
                 if sp.get("target_seid") == session.entity_id:
                     result.setdefault("spawned", []).append(sp)
                 continue
+            if sp["eid"] == session.entity_id:
+                continue  # próprio player não precisa de spawn de si mesmo
             if in_aoi(sp["tx"], sp["ty"]):
                 result.setdefault("spawned", []).append(sp)
                 session.known_eids.add(sp["eid"])
@@ -1054,23 +1156,76 @@ class SessionManager:
         # ── Despawns ──────────────────────────────────────────────────
         final_despawned  = list(aoi_exits)
         _death_positions = deltas.get("despawned_pos", {})  # eid→(tx,ty)
+        # Mortes reais (mob hp=0, removido do mundo) — distinguido de saídas de AOI
+        # para que o cliente só toque som de morte para kills reais, não para mobs
+        # que simplesmente saíram do raio de 15 tiles (ex: RETURNING ao spawn).
+        _real_death_eids: set[int] = set()
         for eid in deltas.get("despawned", []):
             if eid in session.known_eids:
                 final_despawned.append(eid)
                 session.known_eids.discard(eid)
+                _real_death_eids.add(eid)
             else:
                 # Mob morreu dentro do AOI mas cliente ainda não sabia dele
                 # (ex: mob entrou/foi teleportado para perto do player e morto no mesmo tick)
                 death_pos = _death_positions.get(eid)
                 if death_pos and in_aoi(death_pos[0], death_pos[1]):
                     final_despawned.append(eid)
+                    _real_death_eids.add(eid)
 
         # ── Combat: filtra eventos relevantes para o AOI desta sessão ─
+        # Inclui eids recém-removidos de known_eids neste build (despawn/saída
+        # de AOI no mesmo tick): sem isso, o evento de combate do golpe fatal
+        # (mob despawna no mesmo tick) seria descartado, pois o discard acima
+        # roda ANTES deste filtro — mob "desaparece" sem mostrar o dano final.
+        _combat_known = session.known_eids | set(final_despawned)
         combat_events = [
             cr for cr in deltas.get("combat", [])
-            if cr.get("target") in session.known_eids
-            or cr.get("attacker") in session.known_eids
+            if cr.get("target") in _combat_known
+            or cr.get("attacker") in _combat_known
         ]
+
+        # DEBUG C15/C16: combat event enviado com apenas UM dos lados (atacante/alvo)
+        # dentro do AOI/known_eids desta sessão — o lado de fora pode estar em fog
+        # para este cliente, mas ainda assim gera som/FLT na posição dele.
+        if combat_events:
+            from aoi_debug import AOI_DBG as _AOI_DBG_combat, DBG_ENABLED as _DBG_EN_combat
+            if _DBG_EN_combat:
+                from components import Position as _PosCombatDbg
+                for _cr in combat_events:
+                    _atk = _cr.get("attacker")
+                    _tgt = _cr.get("target")
+                    _atk_known = _atk in _combat_known
+                    _tgt_known = _tgt in _combat_known
+                    if _atk_known != _tgt_known:
+                        _atk_pos = self.world_server.world.get_component(_atk, _PosCombatDbg)
+                        _tgt_pos = self.world_server.world.get_component(_tgt, _PosCombatDbg)
+                        _AOI_DBG_combat.log(
+                            "COMBAT_ASYM", session=session.session_id,
+                            cx=cx, cy=cy,
+                            attacker=_atk, attacker_known=_atk_known,
+                            attacker_pos=(getattr(_atk_pos, "x", None), getattr(_atk_pos, "y", None)),
+                            target=_tgt, target_known=_tgt_known,
+                            target_pos=(getattr(_tgt_pos, "x", None), getattr(_tgt_pos, "y", None)),
+                            source=_cr.get("source"), sid=_cr.get("sid"),
+                        )
+
+        # DEBUG Bug2: para mobs despawnados neste tick, registra se o
+        # combat event correspondente sobreviveu ao filtro de AOI acima.
+        if deltas.get("despawned"):
+            from mob_combat_debug import MCL as _MCL_aoi
+            if _MCL_aoi.DBG_ENABLED:
+                for _eid_fh in deltas["despawned"]:
+                    _evs_all = [c for c in deltas.get("combat", [])
+                                if c.get("target") == _eid_fh]
+                    if not _evs_all:
+                        continue
+                    _evs_sent = [c for c in combat_events if c.get("target") == _eid_fh]
+                    _MCL_aoi.log("FATAL_SENT", _eid_fh, "?", "?", "",
+                                  session=session.session_id,
+                                  in_known_eids=(_eid_fh in session.known_eids),
+                                  in_final_despawned=(_eid_fh in final_despawned),
+                                  n_events=len(_evs_all), n_sent=len(_evs_sent))
 
         # ── Effects: próprio player ───────────────────────────────────
         my_effects = [
@@ -1096,6 +1251,7 @@ class SessionManager:
         # ── Monta resultado ───────────────────────────────────────────
         if confirmed_moves:  result["moved"]     = confirmed_moves
         if final_despawned:  result["despawned"] = list(set(final_despawned))
+        if _real_death_eids: result["died_eids"] = list(_real_death_eids)
         if combat_events:    result["combat"]    = combat_events
         if my_effects:       result["effects"]   = my_effects
         if mob_effects:      result["mob_effects"] = mob_effects
@@ -1125,11 +1281,15 @@ class SessionManager:
             other_eid = other_session.entity_id
             if other_eid == session.entity_id or other_eid in session.known_eids:
                 continue
+            if other_eid in final_despawned:
+                continue  # despawned neste tick — não re-spawnar no mesmo frame
+            if not _can_see(self.world_server.world, session.entity_id, other_eid):
+                continue
             ox, oy = self.world_server.get_tile_pos(other_session.session_id)
             if in_aoi(ox, oy):
-                from components import TileMovement as _TM2
-                from shared.constants import TILE_SIZE as _TS
                 _hp, _hp_max = self.world_server.get_player_hp(other_session.session_id)
+                from components import GhostState as _OtherGST2
+                _ogst = self.world_server.world.get_component(other_eid, _OtherGST2)
                 spawn_payload = {
                     "eid":      other_eid,
                     "kind":     "player",
@@ -1140,9 +1300,41 @@ class SessionManager:
                     "hp_max":   _hp_max,
                     "level":    other_session.char_data.get("level", 1),
                     "effects":  [],
+                    "is_ghost": bool(_ogst and _ogst.is_ghost),
                 }
                 result.setdefault("spawned", []).append(spawn_payload)
                 session.known_eids.add(other_eid)
+
+        # ── Player corpses: corpos não rastreados por mob_positions ──────
+        # Necessário para que um ghost veja o próprio corpo ao se aproximar,
+        # já que o one-shot de _spawned_this_tick foi enviado quando o ghost
+        # estava no cemitério (longe do local da morte).
+        from server.respawn_system import PLAYER_CORPSE_EID_BASE as _PCEB
+        from components import CharacterStats as _CharSweep
+        for _cpeid, _cpdata in list(getattr(self.world_server, "_player_corpses", {}).items()):
+            _seid = _PCEB + _cpeid
+            if _seid in session.known_eids:
+                continue
+            if isinstance(_cpdata, tuple):
+                _ctx, _cty = _cpdata
+                _cchar = self.world_server.world.get_component(_cpeid, _CharSweep)
+                _cname = _cchar.name     if _cchar else ""
+                _ccls  = _cchar.class_id if _cchar else ""
+            else:
+                _ctx, _cty = _cpdata["tx"], _cpdata["ty"]
+                _cname = _cpdata.get("name", "")
+                _ccls  = _cpdata.get("class_id", "")
+            if in_aoi(_ctx, _cty):
+                result.setdefault("spawned", []).append({
+                    "eid":      _seid,
+                    "kind":     "player_corpse",
+                    "tx":       _ctx, "ty": _cty,
+                    "name":     _cname,
+                    "class_id": _ccls,
+                    "hp":       0, "hp_max": 0,
+                    "level":    1, "effects": [],
+                })
+                session.known_eids.add(_seid)
 
         return result
 
@@ -1173,19 +1365,57 @@ class SessionManager:
                 continue
             session = self._sessions.get(sid)
             if session:
-                _death_peid = death["player_eid"]
-                from components import CharacterStats as _CHS_death, CombatStats as _CS_death
-                _char_d = self.world_server.world.get_component(_death_peid, _CHS_death)
-                _cs_d   = self.world_server.world.get_component(_death_peid, _CS_death)
                 await session.send(MsgType.PLAYER_DEATH, {
-                    "eid":        _death_peid,
-                    "mana":       _char_d.mana     if _char_d else 0,
-                    "max_mana":   _char_d.max_mana if _char_d else 0,
-                    "hp":         _cs_d.current_hp if _cs_d   else 0,
-                    "hp_max":     _cs_d.max_hp     if _cs_d   else 0,
-                    "respawn_tx": death.get("respawn_tx", 115),
-                    "respawn_ty": death.get("respawn_ty", 389),
+                    "eid":        death["player_eid"],
+                    "corpse_tx":  death.get("corpse_tx"),
+                    "corpse_ty":  death.get("corpse_ty"),
                 })
+
+    async def _send_entity_deaths(self, deltas: dict) -> None:
+        """Broadcast ENTITY_DEATH para sessões com a posição da morte no AOI."""
+        entity_deaths = deltas.get("entity_deaths", [])
+        if not entity_deaths:
+            return
+        for session in list(self._sessions.values()):
+            if not session.authenticated:
+                continue
+            sx, sy = self.world_server.get_tile_pos(session.session_id)
+            for ed in entity_deaths:
+                if (ed["tx"] - sx) ** 2 + (ed["ty"] - sy) ** 2 <= AOI_RADIUS ** 2:
+                    await session.send(MsgType.ENTITY_DEATH, ed)
+
+    async def _send_player_revives(self, deltas: dict) -> None:
+        for revive in deltas.get("player_revives", []):
+            sid = revive.get("session_id")
+            if not sid:
+                continue
+            session = self._sessions.get(sid)
+            if session:
+                await session.send(MsgType.PLAYER_REVIVE, {
+                    "tx":       revive["tx"],
+                    "ty":       revive["ty"],
+                    "hp":       revive["hp"],
+                    "hp_max":   revive["hp_max"],
+                    "mana":     revive["mana"],
+                    "max_mana": revive["max_mana"],
+                })
+
+    async def _send_ghost_state_updates(self, deltas: dict) -> None:
+        for upd in deltas.get("ghost_states", []):
+            sid = upd.get("session_id")
+            if not sid:
+                continue
+            session = self._sessions.get(sid)
+            if session:
+                payload = {
+                    "is_ghost":        upd["is_ghost"],
+                    "near_corpse":     upd["near_corpse"],
+                    "graveyard_timer": upd["graveyard_timer"],
+                }
+                if "tx" in upd and "ty" in upd:
+                    payload["tx"] = upd["tx"]
+                    payload["ty"] = upd["ty"]
+                await session.send(MsgType.GHOST_STATE, payload)
 
     # ── Broadcast helpers ─────────────────────────────────────────────────────
 

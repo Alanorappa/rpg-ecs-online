@@ -1,7 +1,7 @@
 # Sistemas ECS — Referência Completa
 
 > Todos os sistemas do jogo, em ordem de execução, com responsabilidades e dependências.
-> Última atualização: 2026-05-22
+> Última atualização: 2026-06-15 (`_apply_final_damage` gate de dano servidor; `_target_alive` helper PvP em `SkillHandlers`)
 
 ---
 
@@ -136,6 +136,35 @@ Constantes idênticas ao offline:
 
 > Problema de duplicação: se `CombatStateSystem` offline mudar, o inline do servidor não é atualizado automaticamente. Ver TODO interno.
 
+### `_apply_final_damage(target_id, dmg) -> bool` — gate centralizado de dano
+
+Definido em `server/spell_completion_processor.py` (mixin `SpellCompletionProcessorMixin`).
+
+**Único lugar no servidor onde `CombatStats.current_hp` é decrementado por dano.**
+
+```python
+def _apply_final_damage(self, target_id: int, dmg: int) -> bool:
+    cs = self.world.get_component(target_id, CombatStats)
+    if not cs or cs.current_hp <= 0:
+        return False          # alvo já morto
+    cst = self.world.get_component(target_id, CombatState)
+    if cst and cst.is_immune:
+        return False          # Bloco de Gelo, etc.
+    cs.current_hp -= dmg
+    return True
+```
+
+**Regra:** nenhum código de skill/combate do servidor deve modificar `current_hp` diretamente. Para adicionar redução de dano, resistências ou novos estados de imunidade: editar **apenas aqui**.
+
+Retorna `False` quando bloqueado (sem HP, imune); `True` quando aplicado. HP pode ficar negativo (overkill preservado para cálculo de dano real em chamadores).
+
+Caminhos que delegam para `_apply_final_damage`:
+- `_server_apply_magic_damage` — Bola de Fogo, Calcinar, Nova Congelante, Calamidade Flamejante
+- `_server_apply_ranged_physical` — Flecha Reiterada, Picada de Escorpião, Tiro Repulsivo
+
+Caminho fora do mixin (tem guarda própria já há mais tempo):
+- `deal_damage()` em `systems.py` — auto-attack player→mob e player→player; já checava `is_immune`
+
 ### `_process_skill_requests` — pipeline de skills no servidor
 
 Executado **antes** do auto-attack a cada tick:
@@ -180,6 +209,35 @@ Processa entidades com `PendingDeath` a cada tick:
 6. Notifica `SpawnZone`: remove de `active_entity_ids`, adiciona `respawn_timer`
 7. `remove_entity()` + `pending_despawns`
 
+### RespawnMixin — fluxo de morte/espírito (ghost) + cemitério (C30)
+
+`server/respawn_system.py` — mixin de `WorldServer`. Ver `ARQUITETURA_ONLINE.md →
+Fluxo de morte/espírito (ghost) + cemitério` para o fluxo completo.
+
+- `_tick_respawn_immunity()` — chamado em `_tick`; decrementa
+  `CombatState.respawn_immunity_ticks`, restaura `is_visible=True` ao expirar.
+- `_handle_player_death(player_eid)` — chamado quando HP do player chega a 0
+  (PvE ou PvP). Limpa efeitos/channeling/spells em voo/aggro de mobs (igual
+  versão antiga); marca `GhostState.is_dead=True`, `corpse_tx/ty`=posição da
+  morte; corpo fica visível (`is_visible=True`, `current_hp==0` já bloqueia
+  dano/alvo em todo `combat_processor`/`spell_completion_processor`); registra
+  em `_player_corpses`; emite `_player_deaths_this_tick` e `_entity_deaths_this_tick`.
+- `_handle_release_spirit(player_eid)` — chamado pelo handler de `RELEASE_SPIRIT`.
+  `GhostState.is_ghost=True`; teleporta (`_moved_this_tick`, `teleport=True`)
+  pro `RESPAWN_TILE`; `CombatState.is_visible=False` (ghost intangível/invisível,
+  reaproveita regra de Camuflagem); spawna marcador `kind="player_corpse"`
+  (eid sintético `PLAYER_CORPSE_EID_BASE + player_eid`) no local da morte.
+- `_tick_ghost_states(dt)` — chamado em `_tick` para cada ghost ativo: timer de
+  `GHOST_GRAVEYARD_REVIVE_S` no raio do cemitério (`GHOST_GRAVEYARD_RADIUS_TILES`)
+  → revive automático full HP; calcula `near_corpse` (raio
+  `GHOST_CORPSE_RADIUS_TILES`) e emite `GHOST_STATE` ao mudar.
+- `_revive_player(player_eid, hp_frac, at_corpse)` — restaura HP/mana, reseta
+  `GhostState`, `respawn_immunity_ticks=80`; se `at_corpse`, teleporta pro
+  local do corpo e remove o marcador `player_corpse`; emite
+  `_player_revives_this_tick` (→ `PLAYER_REVIVE`).
+- `move_player()` (world_server.py) — bypass de CC/walkable para
+  `GhostState.is_ghost` (intangível, só valida 1 tile de distância).
+
 ### PLAYER_STAT_SYNC — handler
 
 Handler `_handle_player_stat_sync` em `session.py`:
@@ -209,7 +267,7 @@ Fluxo:
 
 `fail_flash_timer = 0.2s` — slot escurece visualmente quando range inválido.
 
-### `SkillHandlers` — constantes de range
+### `SkillHandlers` — constantes de range e helpers de alvo
 
 ```python
 MELEE_RANGE_PX: float = 72.0           # 2.25 tiles — cobre diagonal + kiting lag
@@ -222,6 +280,21 @@ RANGE_TOLERANCE_PX: float = 40.0       # tolerância genérica
 `_melee_ok` é alias para `_range_ok(pos, pos, MELEE_RANGE_PX)`.
 
 `is_ability=True` em `damage_calculator.resolve_attack_outcome` → zera `miss_chance` para skills.
+
+#### `_target_alive(target_id) -> bool`
+
+Centraliza a checagem "alvo está vivo", cobrindo **mobs/players locais (`CombatStats`) e players remotos (`RemoteControlled`, sem `CombatStats`):**
+
+```python
+def _target_alive(self, target_id: int) -> bool:
+    cs = self.world.get_component(target_id, CombatStats)
+    if cs is not None:
+        return cs.current_hp > 0
+    rc = self.world.get_component(target_id, RemoteControlled)
+    return rc is not None and rc.hp > 0
+```
+
+**Regra:** todos os handlers de skill que verificam validade do alvo devem usar `_target_alive` — nunca acessar `CombatStats.current_hp` diretamente. Garante que skills funcionem em PvP (players remotos não têm `CombatStats`).
 
 ### SpawnZoneSystem no cliente online
 

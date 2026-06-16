@@ -26,7 +26,7 @@ from components import Position, Renderable, PlayerControlled, Camera, Collider,
                        EnemyAbilities, EnemyAbilitySlot, EntityIdentity, \
                        MobSounds, PendingDeath, XPReward, SpawnZoneOwner, SpawnZone, \
                        PlayerSkills, NPC, ActiveRegen, ConsumableBar, \
-                       AoeTargeting, RemoteControlled
+                       AoeTargeting, RemoteControlled, GhostState
 from world import World
 from tileset import TILE_SIZE, OBJECT_MAPPING
 from utils import chebyshev, start_tile_movement
@@ -1461,6 +1461,7 @@ class PlayerInputSystem(System):
         self.world = world
         self.world_surf = screen
         self.hud_surf   = screen
+        self._net = None  # injetado pelo GameEngine no modo online
 
     def _is_on_screen(self, pos: "Position") -> bool:
         """Retorna True se a entidade está dentro dos limites da câmera atual."""
@@ -1551,6 +1552,18 @@ class PlayerInputSystem(System):
             can_move = combat_state.can_move() if combat_state else True
             can_act = combat_state.can_act() if combat_state else True
 
+            # Fluxo de morte/espírito: corpo (is_dead) não se move nem age
+            # (aguarda "Liberar espírito"); ghost (is_ghost) anda livremente
+            # (intangível, sem walkable check) mas não pode agir.
+            _gst_inp = self.world.get_component(entity_id, GhostState)
+            _is_ghost = _gst_inp is not None and _gst_inp.is_ghost
+            if _gst_inp is not None and _gst_inp.is_dead and not _gst_inp.is_ghost:
+                can_move = False
+                can_act  = False
+            elif _is_ghost:
+                can_move = True
+                can_act  = False
+
             # Disoriented / Polymorph: bloqueia input (CombatStateSystem força movimento aleatório)
             _sfx_inp = self.world.get_component(entity_id, StatusEffects)
             _is_disoriented = _sfx_inp is not None and (
@@ -1558,6 +1571,12 @@ class PlayerInputSystem(System):
             if _is_disoriented:
                 can_move = False   # input bloqueado; CombatStateSystem move aleatoriamente
                 can_act  = False   # não pode usar skills nem ataques
+
+            # Sleep (Canção de Ninar etc.): igual a mobs (systems.py EnemyAISystem),
+            # imóvel e sem ações até o efeito expirar ou ser quebrado por dano.
+            if _sfx_inp is not None and _sfx_inp.has("sleep"):
+                can_move = False
+                can_act  = False
 
             # --- Movimento por teclado ---
             if can_move and not tile_movement.is_moving:
@@ -1584,7 +1603,7 @@ class PlayerInputSystem(System):
                     _can_kite_kbm = combat_stats and getattr(combat_stats, "can_kite", False)
                     if combat_state and not _can_kite_kbm:
                         combat_state.is_pursuing = False
-                    if is_tile_walkable(
+                    if _is_ghost or is_tile_walkable(
                             entity_id, tgt_x, tgt_y, cur_x, cur_y):
                         self._start_tile_movement(position, tile_movement, tgt_x, tgt_y)
 
@@ -1830,6 +1849,19 @@ class PlayerInputSystem(System):
                     combat_state.target_entity_id = -1
                     combat_state.is_pursuing = False
                     return
+
+                # Online: flecha 100% server-driven — nasce em _apply_combat_result
+                # ao chegar o COMBAT_RESULT (source="auto"), igual Bola de Fogo nasce
+                # no is_completion. Aqui só avançamos cooldown local (UI) e a aljava;
+                # nada de criar PlayerProjectile/sons — sem isso o golpe fatal podia
+                # ficar sem flecha quando o servidor matava o mob antes do timer local.
+                if self._net:
+                    quiver.arrow_count -= 1
+                    combat_stats.attack_cooldown_timer = combat_stats.get_attack_cooldown()
+                    combat_stats.arrow_pre_draw_ready  = True
+                    enter_combat(combat_state)
+                    return
+
                 from components import PlayerProjectile as _PP
                 proj_id = self.world.create_entity()
                 self.world.add_component(proj_id, Position(
@@ -2178,15 +2210,17 @@ class EnemyAISystem(System):
     def update(self, events: list = None, dt: float = 0) -> None:
         self._pathfind_budget = self.MAX_PATHFINDS_PER_FRAME
 
-        # Verifica se há pelo menos um player vivo; caso contrário, todos os mobs ficam ociosos.
-        any_player_alive = False
-        for _, _, _, _, _p_cs in self.world.get_entities_with(
+        # Verifica se existe pelo menos um player no mundo — caso contrário,
+        # todos os mobs ficam ociosos (servidor vazio). Não checa current_hp:
+        # um player morto/ghost ainda precisa que os mobs voltem ao spawn
+        # (RETURNING, ver bloco "sem alvo válido" abaixo).
+        any_player_exists = False
+        for _ in self.world.get_entities_with(
                 Position, TileMovement, PlayerControlled, CombatStats):
-            if _p_cs.current_hp > 0:
-                any_player_alive = True
-                break
+            any_player_exists = True
+            break
 
-        if not any_player_alive:
+        if not any_player_exists:
             for _, ai_control, tile_movement, combat_stats in self.world.get_entities_with(AIControlled, TileMovement, CombatStats):
                 if not tile_movement.is_moving:
                     ai_control.state = "IDLE"
@@ -2251,15 +2285,61 @@ class EnemyAISystem(System):
                             enemy_combat_stats.attack_cooldown_timer -= dt
                         continue  # ainda não vai pro IDLE
                 # Grace expirou ou mob já estava IDLE/RETURNING
-                if not tile_movement.is_moving:
-                    if _MCL: _MCL.log("LOST_TGT", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
-                                      prev=_dbg_prev_state,
-                                      grace=f"{ai_control.target_lost_timer:.2f}s")
-                    ai_control.state = "IDLE"
                 ai_control.target_eid = -1
                 ai_control.target_lost_timer = 0.0
                 if enemy_combat_stats.attack_cooldown_timer > 0:
                     enemy_combat_stats.attack_cooldown_timer -= dt
+
+                # Sem alvo válido (player morto/ghost/invisível): se o mob está
+                # fora do spawn, processa RETURNING aqui mesmo — o bloco de
+                # perseguição abaixo (leash → RETURNING) só roda com
+                # target_eid != -1, então sem isso o mob travaria em IDLE
+                # parado ao lado do corpo até o player reviver.
+                initial_tile_x = int(initial_pos.x / TILE_SIZE)
+                initial_tile_y = int(initial_pos.y / TILE_SIZE)
+                dist_to_initial_tiles = (abs(initial_tile_x - enemy_current_tile_x) +
+                                          abs(initial_tile_y - enemy_current_tile_y))
+
+                if dist_to_initial_tiles > self.proximity_threshold_tiles:
+                    if _MCL and ai_control.state != "RETURNING":
+                        _MCL.log("LOST_TGT", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
+                                 prev=_dbg_prev_state, ret="RETURNING")
+                    if ai_control.state != "RETURNING":
+                        # Primeira vez entrando em RETURNING: força recálculo imediato
+                        ai_control.path_recalc_timer = 0.0
+                    ai_control.state = "RETURNING"
+                    # Recalcula só quando o timer expira — se a busca falhar (path
+                    # vazio), o timer já foi renovado e evita recálculo a cada tick
+                    # (com muitos mobs retornando ao mesmo tempo, isso saturava o
+                    # orçamento de pathfinding e causava movimento "desorientado").
+                    if ai_control.path_recalc_timer <= 0:
+                        dynamic_obstacles_for_return = self._get_occupied_tiles(except_entity_id=enemy_id)
+                        ai_control.path = self._find_path_budgeted(
+                            current_enemy_tile, (initial_tile_x, initial_tile_y),
+                            dynamic_obstacles=dynamic_obstacles_for_return)
+                        ai_control.path_recalc_timer = self.path_recalc_interval
+                    else:
+                        ai_control.path_recalc_timer -= dt
+
+                    if ai_control.path and not ai_control.is_blocked:
+                        next_tile_on_path_x, next_tile_on_path_y = ai_control.path[0]
+                        _next_ret_tile = (next_tile_on_path_x, next_tile_on_path_y)
+                        if is_tile_walkable(enemy_id, next_tile_on_path_x, next_tile_on_path_y) and \
+                                _next_ret_tile not in all_occupied_tiles:
+                            start_tile_movement(enemy_pos, tile_movement, next_tile_on_path_x, next_tile_on_path_y)
+                            ai_control.path.pop(0)
+                            all_occupied_tiles.add(_next_ret_tile)
+                        else:
+                            ai_control.path = None
+                            ai_control.path_recalc_timer = 0.0
+                elif not tile_movement.is_moving:
+                    if _MCL: _MCL.log("LOST_TGT", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
+                                      prev=_dbg_prev_state,
+                                      grace=f"{ai_control.target_lost_timer:.2f}s")
+                    ai_control.state = "IDLE"
+                    ai_control.aggroed_by_damage = False
+                    enemy_pos.x = initial_pos.x
+                    enemy_pos.y = initial_pos.y
                 continue
 
             # Persiste o alvo no componente
@@ -3057,7 +3137,12 @@ class RenderSystem(System):
         # Entidades vivas
         for entity_id, position, renderable in self.world.get_entities_with(Position, Renderable):
             combat_stats = self.world.get_component(entity_id, CombatStats)
-            if combat_stats and combat_stats.current_hp <= 0:
+            _gst_rnd = self.world.get_component(entity_id, GhostState)
+            # Corpo (morto, espírito ainda não liberado): permanece visível no
+            # local da morte. Ghost (espírito liberado): renderiza semi-transparente.
+            _is_corpse_rnd = _gst_rnd is not None and _gst_rnd.is_dead and not _gst_rnd.is_ghost
+            _is_ghost_rnd  = _gst_rnd is not None and _gst_rnd.is_ghost
+            if combat_stats and combat_stats.current_hp <= 0 and not _is_corpse_rnd and not _is_ghost_rnd:
                 continue
             # Oculta entidades fora do campo de visão (jogador nunca é oculto)
             if _fog_visible is not None:
@@ -3068,7 +3153,7 @@ class RenderSystem(System):
                     if (etx, ety) not in _fog_visible:
                         continue
             foot_y = position.y + renderable.height / 2
-            drawables.append((foot_y, "entity", entity_id, position, renderable, combat_stats))
+            drawables.append((foot_y, "entity", entity_id, position, renderable, combat_stats, _gst_rnd))
 
         # Tile-objetos (árvores, arbustos, pedras — objetos estáticos do mapa)
         if world_objects:
@@ -3096,7 +3181,9 @@ class RenderSystem(System):
                 continue
 
             # ── Entidade ──────────────────────────────────────────────────────
-            _, _, entity_id, position, renderable, combat_stats = item
+            _, _, entity_id, position, renderable, combat_stats, _gst_draw = item
+            _is_corpse_draw = _gst_draw is not None and _gst_draw.is_dead and not _gst_draw.is_ghost
+            _is_ghost_draw  = _gst_draw is not None and _gst_draw.is_ghost
 
             draw_x = position.x - camera_offset_x
             draw_y = position.y - camera_offset_y
@@ -3130,7 +3217,17 @@ class RenderSystem(System):
                     renderable.width,
                     renderable.height
                 )
-                pygame.draw.rect(self.world_surf, renderable.color, rect)
+                if _is_corpse_draw:
+                    # Corpo morto: dessatura pra cinza (pose "morto", sem barra de HP)
+                    _gray = sum(renderable.color[:3]) // 3
+                    pygame.draw.rect(self.world_surf, (_gray, _gray, _gray), rect)
+                elif _is_ghost_draw:
+                    # Espírito: semi-transparente
+                    _ghost_surf = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+                    _ghost_surf.fill((*renderable.color[:3], 127))
+                    self.world_surf.blit(_ghost_surf, rect.topleft)
+                else:
+                    pygame.draw.rect(self.world_surf, renderable.color, rect)
 
             # ── Efeitos de chão: desenhados NA FRENTE do retângulo da entidade ──
             # Verificação direta em StatusEffects (sem exigir CombatStats) para
@@ -3152,8 +3249,9 @@ class RenderSystem(System):
 
             # ── HP bar: mobs/player offline (CombatStats) ou players remotos (RemoteControlled) ──
             _rc_hp = None if combat_stats else self.world.get_component(entity_id, RemoteControlled)
-            _draw_hp_bar = (combat_stats and combat_stats.max_hp > 0) or \
-                           (_rc_hp is not None and _rc_hp.hp_max > 0)
+            _draw_hp_bar = ((combat_stats and combat_stats.max_hp > 0) or
+                            (_rc_hp is not None and _rc_hp.hp_max > 0)) \
+                           and not _is_corpse_draw and not _is_ghost_draw
             if _draw_hp_bar:
                 if combat_stats:
                     ratio  = max(0.0, min(1.0, combat_stats.current_hp / combat_stats.max_hp))
@@ -5825,6 +5923,13 @@ class SkillSystem(System, SkillHandlers):
         combat_state = self.world.get_component(self.player_entity_id, CombatState)
         if combat_state and not combat_state.can_act():
             return False
+        # Sleep/disoriented/polymorph: can_act() não cobre (StatusEffects, não
+        # CombatState) — igual ao bloqueio de PlayerInputSystem para movimento/ações.
+        _sfx_act_off = self.world.get_component(self.player_entity_id, StatusEffects)
+        if _sfx_act_off is not None and (
+                _sfx_act_off.has("sleep") or _sfx_act_off.has("disoriented")
+                or _sfx_act_off.has("polymorph")):
+            return False
 
         player_skills = self.world.get_component(self.player_entity_id, PlayerSkills)
 
@@ -5920,6 +6025,14 @@ class SkillSystem(System, SkillHandlers):
         # 1. can_act (igual offline)
         if combat_state and not combat_state.can_act():
             return False
+        # 1b. Sleep/disoriented/polymorph: can_act() não cobre (StatusEffects, não
+        # CombatState) — igual ao bloqueio de PlayerInputSystem para movimento/ações.
+        from components import StatusEffects as _SfxAct
+        _sfx_act = self.world.get_component(self.player_entity_id, _SfxAct)
+        if _sfx_act is not None and (
+                _sfx_act.has("sleep") or _sfx_act.has("disoriented")
+                or _sfx_act.has("polymorph")):
+            return False
         # 2. GCD (igual offline)
         if player_skills and player_skills.gcd_timer > 0:
             return False
@@ -5969,7 +6082,18 @@ class SkillSystem(System, SkillHandlers):
                                          __import__("components").Position)
                         _stale_vis = self.world.get_component(_target_local,
                                          __import__("components").Visible)
-                        if _stale_pos is None or _stale_vis is None:
+                        # Alvo morto (mob com HP<=0 ou player remoto cujo corpo
+                        # ficou no chão): não é mais alvo válido — limpa igual
+                        # entidade removida, evita tocar som/iniciar cast num corpo.
+                        _stale_cs = self.world.get_component(_target_local,
+                                         __import__("components").CombatStats)
+                        _stale_rc = self.world.get_component(_target_local,
+                                         __import__("components").RemoteControlled)
+                        _is_dead_target = (
+                            (_stale_cs is not None and _stale_cs.current_hp <= 0) or
+                            (_stale_rc is not None and _stale_rc.hp <= 0)
+                        )
+                        if _stale_pos is None or _stale_vis is None or _is_dead_target:
                             _target_local = -1
                             combat_state.target_entity_id = -1
                     if _target_local == -1:
@@ -6283,6 +6407,13 @@ class SkillSystem(System, SkillHandlers):
             cs = self.world.get_component(current, CombatStats)
             if cs and cs.current_hp > 0:
                 return current
+            # Alvo é player remoto (RemoteControlled): sem CombatStats local,
+            # valida via rc.hp (sincronizado pelo servidor via SKILL_RESULT/STATS_UPDATE).
+            if cs is None:
+                from components import RemoteControlled as _RCtgt
+                _rc_tgt = self.world.get_component(current, _RCtgt)
+                if _rc_tgt is not None and _rc_tgt.hp > 0:
+                    return current
         # Auto-seleciona o inimigo em range com menor HP (desempate por distância) — B6
         px, py    = tile_move.current_tile_x, tile_move.current_tile_y
         best_id   = -1
@@ -6319,9 +6450,11 @@ class SkillSystem(System, SkillHandlers):
         # PvP: também considera players remotos (RemoteControlled) como alvos válidos
         if best_id == -1:
             _rc_cls = __import__("components").RemoteControlled
-            for eid, epos, _, etm in self.world.get_entities_with(Position, _rc_cls, TileMovement):
+            for eid, epos, _rc_auto, etm in self.world.get_entities_with(Position, _rc_cls, TileMovement):
                 if eid == self.player_entity_id:
                     continue  # não auto-seleciona a si mesmo
+                if _rc_auto.hp <= 0:
+                    continue  # player morto (corpo) — não é alvo válido
                 if not self.world.get_component(eid, Visible):
                     continue
                 if not self._is_on_screen(epos):

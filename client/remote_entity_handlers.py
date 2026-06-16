@@ -15,6 +15,108 @@ from sound_manager import SOUNDS
 
 
 class RemoteEntityHandlers:
+    # Skills do arqueiro cujo dano é entregue por flecha (projétil físico) —
+    # impacto deve usar arrow_impact_* em vez dos sons genéricos de melee.
+    _ARROW_SKILL_IDS = {"picada_escorpiao", "flecha_reiterada", "tiro_repulsivo"}
+
+    def _play_attacker_mob_sound(self, server_attacker: int, _lx: float, _ly: float) -> bool:
+        """Toca o som de ataque do MOB atacante (attack_melee/ranged/magic via
+        MobSounds + AIControlled), posicional com falloff pela distância.
+
+        Resolução 100% por componentes (MobSounds.<event> aponta para a chave
+        do som, AIControlled.entity_class/is_ranged decide o evento) — nada de
+        nome de mob hardcoded. Usado tanto quando o ALVO é o player local
+        quanto quando é um player remoto, pois o som depende apenas de quem
+        é o ATACANTE, não de quem foi atingido.
+
+        Retorna True se o atacante é um mob remoto rastreado (som tocado),
+        False se o atacante é outra coisa (player local/remoto em PvP) —
+        nesse caso o chamador deve usar o fallback genérico (hit_normal/crit).
+        """
+        from components import MobSounds as _MobSounds, AIControlled as _AICtrl
+        _atk_mob_local = self._remote_mobs.get(server_attacker)
+        if _atk_mob_local is None:
+            return False
+        _atk_pos = self.world.get_component(_atk_mob_local, Position)
+        if not _atk_pos:
+            return False
+        _atk_snd = self.world.get_component(_atk_mob_local, _MobSounds)
+        _atk_ai  = self.world.get_component(_atk_mob_local, _AICtrl)
+        if _atk_ai and _atk_ai.entity_class in ("Mage", "Mago", "Warlock", "Bruxo"):
+            _atk_ev = "attack_magic"
+        elif _atk_ai and _atk_ai.is_ranged:
+            _atk_ev = "attack_ranged"
+        else:
+            _atk_ev = "attack_melee"
+        SOUNDS.play_mob_sounds_at(_atk_snd, _atk_ev, _atk_pos.x, _atk_pos.y, _lx, _ly,
+                                  base=0.85, dedup_key=str(server_attacker))
+        return True
+
+    def _resolve_archer_attack(self, cr: dict, server_attacker: int, source: str):
+        """Detecta se um ataque deve nascer como flecha visual (PlayerProjectile)
+        em vez de dano instantâneo: atacante é arqueiro (local ou remoto) e o
+        ataque é auto-attack ou uma skill de flecha.
+
+        Retorna (is_archer_arrow, attacker_eid, is_self_attacker). attacker_eid
+        é a entidade local de quem disparou (player local ou player remoto).
+        """
+        from components import CharacterStats as _CHS_ar, RemoteControlled as _RC_ar
+        _char_ar = self.world.get_component(self.player_entity, _CHS_ar)
+        _sid_ar  = cr.get("sid", "")
+        _is_proj_damage_ar = cr.get("is_proj_damage", False)
+        _attacker_remote = self._remote_players.get(server_attacker)
+        _is_remote_archer = False
+        if _attacker_remote is not None:
+            _rc_ar = self.world.get_component(_attacker_remote, _RC_ar)
+            _is_remote_archer = _rc_ar is not None and _rc_ar.class_id == "arqueiro"
+        _is_self_archer = (server_attacker == self._my_eid
+                            and _char_ar is not None
+                            and _char_ar.class_id == "arqueiro")
+        _is_arrow = (not _is_proj_damage_ar
+                      and (_is_self_archer or _is_remote_archer)
+                      and (source == "auto" or _sid_ar in self._ARROW_SKILL_IDS))
+        _attacker_eid = self.player_entity if _is_self_archer else _attacker_remote
+        return _is_arrow, _attacker_eid, _is_self_archer
+
+    def _spawn_archer_auto_arrow(self, attacker_eid, is_self_attacker: bool,
+                                  target_local_eid: int, target_pos, _lx: float, _ly: float,
+                                  color: tuple = (101, 67, 33)) -> None:
+        """Cria a flecha visual (PlayerProjectile) do auto-attack do arqueiro e
+        toca os sons de saque/disparo (cheios para o player local, posicionais
+        com falloff para arqueiro remoto)."""
+        import random as _rand_arrow
+        from components import PlayerProjectile as _PParrow
+        if attacker_eid is None:
+            return
+        _ppos = self.world.get_component(attacker_eid, Position)
+        if _ppos is None:
+            return
+        _arrow_id = self.world.create_entity()
+        self.world.add_component(_arrow_id, Position(
+            x=_ppos.x, y=_ppos.y, prev_x=_ppos.x, prev_y=_ppos.y))
+        self.world.add_component(_arrow_id, _PParrow(
+            spell_id="arrow",
+            attacker_id=attacker_eid,
+            target_id=target_local_eid,
+            speed=700.0,
+            dmg_weapon_pct=1.0,
+            dmg_sp_coeff=0.0,
+            color=color,
+            damage_type="physical",
+            target_last_x=target_pos.x,
+            target_last_y=target_pos.y,
+        ))
+        if is_self_attacker:
+            if _rand_arrow.random() < 0.35:
+                SOUNDS.play_random(["arrow_draw_1", "arrow_draw_2"], channel_group=(8, 9))
+            SOUNDS.play_random(["arrow_release_1", "arrow_release_2"], channel_group=(10, 11))
+        else:
+            if _rand_arrow.random() < 0.35:
+                SOUNDS.play_random_at(["arrow_draw_1", "arrow_draw_2"],
+                                      _ppos.x, _ppos.y, _lx, _ly, base=0.5)
+            SOUNDS.play_random_at(["arrow_release_1", "arrow_release_2"],
+                                  _ppos.x, _ppos.y, _lx, _ly, base=0.5)
+
     def _apply_combat_result(self, cr: dict) -> None:
         """Aplica resultado de combate do servidor: HP + texto flutuante + sons.
 
@@ -44,6 +146,31 @@ class RemoteEntityHandlers:
         _lx, _ly = self._player_world_pos()
         from components import MobSounds as _MobSounds, EntityIdentity as _EIdent
 
+        # DEBUG C15/C16: registra distância attacker/target → player local
+        # vs AOI_RADIUS, pra achar sons/FLT vindos de fora da área visível.
+        if not _is_dot_hot:
+            from aoi_debug import AOI_DBG as _AOI_DBG_cr, DBG_ENABLED as _DBG_EN_cr
+            if _DBG_EN_cr:
+                from shared.constants import AOI_RADIUS as _AOI_R_cr
+                import math as _math_cr
+                _aoi_px = _AOI_R_cr * TILE_SIZE
+                _atk_eid_dbg = (self.player_entity if server_attacker == self._my_eid
+                                else self._remote_players.get(server_attacker)
+                                or self._remote_mobs.get(server_attacker))
+                _tgt_eid_dbg = (self.player_entity if server_target == self._my_eid
+                                else self._remote_players.get(server_target)
+                                or self._remote_mobs.get(server_target))
+                _atk_pos_dbg = self.world.get_component(_atk_eid_dbg, Position) if _atk_eid_dbg is not None else None
+                _tgt_pos_dbg = self.world.get_component(_tgt_eid_dbg, Position) if _tgt_eid_dbg is not None else None
+                _atk_dist = _math_cr.hypot(_atk_pos_dbg.x - _lx, _atk_pos_dbg.y - _ly) if _atk_pos_dbg else None
+                _tgt_dist = _math_cr.hypot(_tgt_pos_dbg.x - _lx, _tgt_pos_dbg.y - _ly) if _tgt_pos_dbg else None
+                _AOI_DBG_cr.log(
+                    "COMBAT_RESULT_RECV",
+                    attacker=server_attacker, attacker_eid=_atk_eid_dbg, attacker_dist=_atk_dist,
+                    target=server_target, target_eid=_tgt_eid_dbg, target_dist=_tgt_dist,
+                    aoi_px=_aoi_px, source=source, sid=cr.get("sid"), outcome=outcome, damage=damage,
+                )
+
         # ── Mob foi atacado (player local ou remoto → mob) ────────────
         local_eid = self._remote_mobs.get(server_target)
         # Fallback: mob já despawnou antes do SKILL_RESULT chegar — exibe FLT na última
@@ -54,18 +181,9 @@ class RemoteEntityHandlers:
                 FLT.add(str(damage), _fb[0], _fb[1], (255, 220, 0), "normal")
         if local_eid is not None:
             # Determina se é ataque de flecha ANTES do HP update para poder diferir
-            from components import CharacterStats as _CHS_cr
-            _char_cr  = self.world.get_component(self.player_entity, _CHS_cr)
-            _ARROW_SKILLS = {"picada_escorpiao", "flecha_reiterada", "tiro_repulsivo"}
             _sid_cr = cr.get("sid", "")
-            _is_proj_damage_cr = cr.get("is_proj_damage", False)
-            # is_proj_damage=True: flecha já colidiu, FLT deve aparecer agora (não diferir)
-            _is_archer_arrow = (not _is_proj_damage_cr
-                                and server_attacker == self._my_eid
-                                and _char_cr is not None
-                                and _char_cr.class_id == "arqueiro"
-                                and (source == "auto"
-                                     or _sid_cr in _ARROW_SKILLS))
+            _is_archer_arrow, _attacker_local_remote, _is_self_archer_attacker = \
+                self._resolve_archer_attack(cr, server_attacker, source)
             _is_archer_auto = _is_archer_arrow  # alias mantém compatibilidade abaixo
 
             # HP: atualização imediata apenas para ataques não-projéteis.
@@ -95,6 +213,15 @@ class RemoteEntityHandlers:
                     _sfx_cr.effects["slow"] = _AEcr("slow", 6.0, _slow_mag, 0.0)
             _mob_snd = self.world.get_component(local_eid, _MobSounds)
             pos = self.world.get_component(local_eid, Position)
+
+            # Auto-attack do arqueiro é 100% server-driven: a flecha nasce aqui, ao
+            # confirmar o COMBAT_RESULT, nunca por timer local (igual Bola de Fogo
+            # nasce só no is_completion). Evita a corrida em que o servidor mata o
+            # mob antes do timer client zerar e a flecha nunca chega a existir —
+            # o golpe fatal ficava "invisível" (sem flecha, sem FLT, sem HP update).
+            if source == "auto" and _is_archer_arrow and pos is not None:
+                self._spawn_archer_auto_arrow(_attacker_local_remote, _is_self_archer_attacker,
+                                              local_eid, pos, _lx, _ly)
 
             def _queue_arrow_event(eid: int, entry: dict, n: int = 1) -> None:
                 """Armazena evento(s) de flecha: FLT + som diferido para _on_hit."""
@@ -220,6 +347,29 @@ class RemoteEntityHandlers:
                 _cst_pvp = self.world.get_component(self.player_entity, _CStPvp)
                 if _cst_pvp:
                     _ec_pvp_client(_cst_pvp)
+            # Auto-attack de arqueiro (PvP, local ou remoto): flecha visual nasce
+            # aqui e o dano/som ficam diferidos para o impacto em _on_hit — inclusive
+            # quando erra/desvia (outcome miss/dodge/parry/block, damage=0), igual ao
+            # comportamento contra mobs: a flecha voa e erra, sem som de impacto.
+            if not is_regen and (damage > 0 or outcome in ("miss", "dodge", "parry", "block")):
+                _is_arrow_pl, _atk_eid_pl, _is_self_atk_pl = \
+                    self._resolve_archer_attack(cr, server_attacker, source)
+                if _is_arrow_pl and source == "auto":
+                    player_pos = self.world.get_component(self.player_entity, Position)
+                    if player_pos:
+                        self._spawn_archer_auto_arrow(_atk_eid_pl, _is_self_atk_pl,
+                                                       self.player_entity, player_pos, _lx, _ly)
+                        self._player_proj_system.pending_arrow_impacts.setdefault(
+                            self.player_entity, []).append({
+                                "outcome": outcome, "damage": damage,
+                                "is_ability": is_ability, "is_player_target": True,
+                            })
+                        if damage > 0 and not _is_dot_hot:
+                            from combat_log import LOG as _LOG_arrow_pl
+                            _suffix_arrow_pl = " (crítico)" if is_crit else ""
+                            _LOG_arrow_pl.add(f"Você recebeu {damage} de dano{_suffix_arrow_pl}.",
+                                              (220, 80, 80))
+                        return
             if is_regen:
                 healed = abs(damage)
                 if healed > 0:
@@ -237,37 +387,16 @@ class RemoteEntityHandlers:
                     from combat_log import LOG as _LOG_cr2
                     _suffix_rcv = " (crítico)" if is_crit else ""
                     _LOG_cr2.add(f"Você recebeu {damage} de dano{_suffix_rcv}.", (220, 80, 80))
-                # Som do atacante (mob) → posicional se o mob for remoto
-                _atk_mob_local = self._remote_mobs.get(server_attacker)
-                if _atk_mob_local is not None:
-                    _atk_pos  = self.world.get_component(_atk_mob_local, Position)
-                    _atk_snd  = self.world.get_component(_atk_mob_local, _MobSounds)
-                    _atk_ai   = self.world.get_component(_atk_mob_local,
-                                     __import__("components").AIControlled)
-                    if _atk_pos:
-                        # Determina tipo de ataque (igual offline EnemyAISystem)
-                        if _atk_ai and _atk_ai.entity_class in ("Mage","Mago","Warlock","Bruxo"):
-                            _atk_ev = "attack_magic"
-                        elif _atk_ai and _atk_ai.is_ranged:
-                            _atk_ev = "attack_ranged"
-                        else:
-                            _atk_ev = "attack_melee"
-                        # Só o som do ataque (attack_melee/ranged/magic) — sem emote,
-                        # sem hit_normal. O emote_attack é reservado para reação a dano.
-                        if not _is_dot_hot:
-                            SOUNDS.play_mob_sounds_at(_atk_snd, _atk_ev,
-                                                      _atk_pos.x, _atk_pos.y, _lx, _ly,
-                                                      base=0.85, dedup_key=str(server_attacker))
-                else:
-                    # Atacante não é mob remoto rastreado — som local sem atenuação
-                    if not _is_dot_hot:
-                        from aoi_debug import AOI_DBG
-                        AOI_DBG.log("COMBAT_FALLBACK", server_attacker=server_attacker,
-                                    damage=damage, is_crit=is_crit, source=source,
-                                    in_remote_players=(server_attacker in self._remote_players),
-                                    in_ghost_pos=(server_attacker in self._mob_ghost_pos),
-                                    tracked_mob_eids=sorted(self._remote_mobs.keys()))
-                    if not _is_dot_hot:
+                # Som do atacante: skills de flecha (picada_escorpiao, flecha_reiterada,
+                # tiro_repulsivo) usam som de impacto de flecha, igual ao auto-attack
+                # e ao impacto contra mobs — não o genérico de melee. Se for um mob
+                # remoto, toca o som de ataque dele (attack_melee/ranged/magic via
+                # MobSounds). Caso contrário (PvP melee/magic), som genérico local.
+                if not _is_dot_hot:
+                    if cr.get("sid", "") in self._ARROW_SKILL_IDS:
+                        SOUNDS.play_random(["arrow_impact_1", "arrow_impact_2"],
+                                          channel_group=(12, 13))
+                    elif not self._play_attacker_mob_sound(server_attacker, _lx, _ly):
                         if is_crit:
                             SOUNDS.play_emote_get_crit(is_player=True)
                             SOUNDS.play_random(["hit_crit_1","hit_crit_2","hit_crit"], 0.9)
@@ -298,6 +427,22 @@ class RemoteEntityHandlers:
             if rc and hp_after >= 0:
                 rc.hp = hp_after
             pos = self.world.get_component(local_eid, Position)
+            # Auto-attack de arqueiro (PvP, contra player remoto): flecha visual
+            # nasce aqui; dano/som ficam diferidos para o impacto em _on_hit — inclusive
+            # quando erra/desvia (outcome miss/dodge/parry/block, damage=0), igual ao
+            # comportamento contra mobs: a flecha voa e erra, sem som de impacto.
+            if not is_regen and pos and (damage > 0 or outcome in ("miss", "dodge", "parry", "block")):
+                _is_arrow_rp, _atk_eid_rp, _is_self_atk_rp = \
+                    self._resolve_archer_attack(cr, server_attacker, source)
+                if _is_arrow_rp and source == "auto":
+                    self._spawn_archer_auto_arrow(_atk_eid_rp, _is_self_atk_rp,
+                                                   local_eid, pos, _lx, _ly)
+                    self._player_proj_system.pending_arrow_impacts.setdefault(
+                        local_eid, []).append({
+                            "outcome": outcome, "damage": damage,
+                            "is_ability": is_ability, "is_player_target": True,
+                        })
+                    return
             if is_regen:
                 healed = abs(damage)
                 if healed > 0 and pos:
@@ -305,14 +450,34 @@ class RemoteEntityHandlers:
             elif damage > 0 and pos:
                 FLT.add(f"-{damage}", pos.x, pos.y, (220, 80, 80), target_id=local_eid, is_crit=is_crit)
                 if not _is_dot_hot:
-                    if is_crit:
-                        SOUNDS.play_random_at(["hit_crit_1","hit_crit_2","hit_crit"],
-                                              pos.x, pos.y, _lx, _ly, base=0.7)
-                    elif not is_ability:
-                        # Só auto-attack toca hit_normal; som de skill já tocou em is_completion
-                        SOUNDS.play_random_at(["hit_normal_1","hit_normal_2",
-                                               "hit_normal_3","hit_normal"],
-                                              pos.x, pos.y, _lx, _ly, base=0.6)
+                    # Skills de flecha (picada_escorpiao etc.) usam som de impacto de
+                    # flecha. Mob remoto atacante → som de ataque dele (attack_melee/
+                    # ranged/magic, ex.: "bite"). Caso contrário, genérico (PvP).
+                    if cr.get("sid", "") in self._ARROW_SKILL_IDS:
+                        SOUNDS.play_random_at(["arrow_impact_1", "arrow_impact_2"],
+                                              pos.x, pos.y, _lx, _ly, base=1.0, channel_group=(12, 13))
+                    elif not self._play_attacker_mob_sound(server_attacker, _lx, _ly):
+                        if is_crit:
+                            SOUNDS.play_random_at(["hit_crit_1","hit_crit_2","hit_crit"],
+                                                  pos.x, pos.y, _lx, _ly, base=0.7)
+                        elif not is_ability:
+                            # Só auto-attack toca hit_normal; som de skill já tocou em is_completion
+                            SOUNDS.play_random_at(["hit_normal_1","hit_normal_2",
+                                                   "hit_normal_3","hit_normal"],
+                                                  pos.x, pos.y, _lx, _ly, base=0.6)
+            elif damage == 0 and pos and outcome in ("miss", "dodge", "parry", "block"):
+                _AVOID_RP = {
+                    "miss":  ("Errou!",    (220, 220, 100)),
+                    "dodge": ("Desviou!",  (100, 210, 230)),
+                    "parry": ("Aparou!",   (100, 150, 230)),
+                    "block": ("Bloqueou!", (100, 150, 230)),
+                }
+                _txt_rp, _col_rp = _AVOID_RP.get(outcome, ("Errou!", (220, 220, 100)))
+                FLT.add(_txt_rp, pos.x, pos.y, _col_rp, "small", target_id=local_eid)
+                if not _is_dot_hot:
+                    SOUNDS.play_random_at([f"combat_{outcome}", f"combat_{outcome}_1",
+                                          f"combat_{outcome}_2"],
+                                          pos.x, pos.y, _lx, _ly, base=0.6)
 
     def _sync_player_effects(self, effects: list) -> None:
         """Sincroniza StatusEffects do jogador local com o estado autoritativo do servidor.
@@ -723,6 +888,11 @@ class RemoteEntityHandlers:
 
         _CLASS_COLORS = {"guerreiro": (200,80,80), "mago": (80,80,220), "arqueiro": (80,200,80)}
         col = _CLASS_COLORS.get(data.get("class_id", "guerreiro"), (180, 180, 180))
+        if data.get("kind") == "player_corpse":
+            col = tuple(int(c * 0.35) + 20 for c in col)
+        elif data.get("is_ghost"):
+            # Ghost de outro player: cor semi-transparente (azulada/acinzentada)
+            col = tuple(int(c * 0.4) + 60 for c in col)
 
         local_eid = self.world.create_entity()
         self.world.add_component(local_eid, Position(x=px, y=py, prev_x=px, prev_y=py))
@@ -755,12 +925,15 @@ class RemoteEntityHandlers:
 
     def _apply_remote_move(self, eid: int, new_tx: int, new_ty: int,
                            from_tx: int | None = None, from_ty: int | None = None,
-                           is_dash: bool = False) -> None:
+                           is_dash: bool = False, teleport: bool = False) -> None:
         """Atualiza target_tile do jogador remoto — TileMovementSystem anima.
 
         from_tx/from_ty: posição anterior confirmada pelo servidor.
         Quando disponíveis, garante que a animação parta do tile correto,
         eliminando desyncs acumulados (player parece "pular" entre tiles).
+
+        teleport: posição final é instantânea (ex: respawn pós-morte) — não
+        anima a caminhada entre from_tx/from_ty e new_tx/new_ty.
         """
         from components import TileMovement, Position
         from utils import start_tile_movement
@@ -771,6 +944,18 @@ class RemoteEntityHandlers:
         tm  = self.world.get_component(local_eid, TileMovement)
         pos = self.world.get_component(local_eid, Position)
         if not tm or not pos:
+            return
+        if teleport:
+            self._remote_player_move_queues.pop(eid, None)
+            tm.is_moving      = False
+            tm.is_dash        = False
+            tm.progress       = 0.0
+            tm.current_tile_x = new_tx
+            tm.current_tile_y = new_ty
+            tm.target_tile_x  = new_tx
+            tm.target_tile_y  = new_ty
+            pos.x = new_tx * _TS_rm + _TS_rm / 2
+            pos.y = new_ty * _TS_rm + _TS_rm / 2
             return
         if not tm.is_moving:
             # Se temos a posição "de" confirmada, alinha o visual antes de animar.
