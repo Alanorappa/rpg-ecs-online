@@ -340,7 +340,16 @@ Servidor tem `_apply_final_damage` como único ponto de modificação de HP, com
 
 **Fix:** Extrair para `core_systems.py` com hook visual/broadcast substituível por subclasse.
 
-**Status:** ⏳ PENDENTE
+**Status:** ✅ resolvido — 2 das 3 divergências já tinham sido corrigidas (comentários
+no próprio código dizem "alinhado com servidor"): `_apply_magic_damage` já quebra
+sleep (linha 66-69) e já usa `AGGRO_DELAY` (linha 81), não mais `CHASING`. Restava só
+o clamp de overkill (`max(0, ...)`) — removido agora, current_hp pode ficar negativo
+igual a `deal_damage()`/`_apply_final_damage()`. A função já trata a própria morte
+inline (`PendingDeath` adicionado diretamente ao detectar `current_hp <= 0`), então
+não dependia de overkill preservado pra nenhum consumidor externo — não é mais
+necessário o refactor grande (extrair pra `core_systems.py` com hooks) pra resolver
+o que estava realmente quebrado; ainda é desejável como limpeza arquitetural futura,
+mas não é mais um bug.
 
 ---
 
@@ -394,7 +403,13 @@ pra um helper compartilhado, o que é uma refatoração maior, não um bugfix po
 
 **Fix:** Mover lógica sem dependência Pygame para `core_systems.py` com hooks virtuais (mesmo padrão de `StatusEffectSystem`).
 
-**Status:** ⏳ PENDENTE
+**Status:** ✅ resolvido — já existe `core_systems.BaseCombatStateSystem` (timers de
+combate, rage decay, HP5, concentração) herdado tanto por `core_systems.ServerCombatStateSystem`
+(servidor, adiciona `hp5_events`) quanto por `systems.CombatStateSystem` (cliente,
+adiciona wander de disoriented/polymorph, timer de camuflagem visual, timed_modifiers,
+procs). Confirmado via leitura direta: `CombatStateSystem.update()` só CHAMA os
+métodos herdados (`_tick_combat_timer`, `_tick_rage_decay`, etc.), não reimplementa
+nada — mudança na lógica base se reflete nos dois automaticamente.
 
 ---
 
@@ -412,7 +427,17 @@ Servidor importa `EnemyAISystem` de `systems.py` → arrasta Pygame inteiro. Wor
 
 **Fix:** Mover sistemas headless para arquivo separado sem imports Pygame no topo. `skill_handlers.py` já usa lazy imports — padronizar para `SOUNDS`/`FLT`/`LOG` também.
 
-**Status:** ⏳ PENDENTE
+**Status:** ✅ resolvido (parcial, ver nota) — o risco OPERACIONAL real (servidor
+crasha em deploy headless de verdade) estava em `server/main.py`: ele nunca setava
+`SDL_VIDEODRIVER`/`SDL_AUDIODRIVER`, dependia de alguém exportar isso manualmente
+antes de rodar. Adicionado `os.environ.setdefault(...)` pros dois, mesmo padrão já
+usado e validado em `tests/helpers.py` a sessão inteira — confirmado via teste:
+importar `server.main` num shell limpo (sem as env vars pré-setadas) agora seta
+os drivers ANTES de `systems.py` ser importado, sem crash. **Nota:** isso não
+elimina a causa raiz (servidor ainda importa Pygame de verdade na memória, só não
+crasha mais) — a separação arquitetural completa (mover `EnemyAISystem`/
+`CombatSystem`/etc. pra um módulo sem import de Pygame no topo) continua pendente,
+é um refactor maior e separado tocando a estrutura toda de `systems.py`.
 
 ---
 
@@ -424,7 +449,17 @@ Canal batizado "xp_deliveries" mas carrega: XP, rage, mana, HP, heal_amount, tal
 
 **Fix:** Separar em canais tipados (`_pending_stat_updates`, `_pending_proj_notifs`, `_pending_xp_deliveries`) ou adicionar campo `"kind"` obrigatório com dispatch explícito.
 
-**Status:** ⏳ PENDENTE
+**Status:** 🔍 Investigado, sem bug ativo encontrado — auditados TODOS os 15
+produtores do canal (mais que os 3 arquivos citados originalmente: também
+`server/world_server.py`, 6 ocorrências). Toda entrada, sem exceção, sempre
+inclui `"xp"` e `"mob_eid"` como placeholder (`0`/`-1`) mesmo quando a entrada
+não é sobre XP de kill — o medo de um produtor esquecer esses campos obrigatórios
+(causando `KeyError` no consumer) não se confirmou. O problema permanece real
+como **manutenibilidade** (15 produtores escrevendo no mesmo bag, um campo novo
+precisa entrar aqui em vez de um canal próprio), mas não é uma correção isolada
+e segura — exige tocar os 15 call sites + o dispatch em `server/session.py`.
+Mesmo escopo de F (separação arquitetural completa) — fica pra uma sessão
+dedicada de refactor, não bugfix.
 
 ---
 

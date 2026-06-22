@@ -13,6 +13,13 @@ import sys
 import os
 import ctypes
 
+# systems.py importa pygame no topo (servidor importa EnemyAISystem/CombatSystem
+# de lá) — sem driver de vídeo/áudio, pygame.init() crasha em ambiente headless
+# (container Linux sem display, CI). setdefault: não sobrescreve se o operador já
+# setou algo explicitamente (ex: rodar com display real por algum motivo).
+os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+
 # Garante que a raiz do projeto está no path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

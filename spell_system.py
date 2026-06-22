@@ -48,7 +48,9 @@ def _apply_magic_damage(attacker_id: int, target_id: int, dmg: int, world: World
     target_state = world.get_component(target_id, CombatState)
     if target_state and target_state.is_immune:
         return False
-    target_cs.current_hp = max(0, target_cs.current_hp - dmg)
+    # Overkill preservado (sem max(0, ...)) — mesma convenção de deal_damage()/
+    # _apply_final_damage(), que nunca clampam current_hp ao aplicar dano.
+    target_cs.current_hp -= dmg
     pos = world.get_component(target_id, Position)
     if pos:
         if is_crit:
