@@ -2,12 +2,13 @@
 core_systems.py — Sistemas ECS compartilhados entre cliente e servidor.
 
 Regra: NENHUMA dependência de Pygame aqui.
-Sistemas visuais (FLT, LOG, PROC, sons) ficam nos subclasses de cada lado.
+Sistemas visuais (FLT, LOG, PROC, sons) ficam nas subclasses de cada lado.
 
 Exporta:
   apply_effect()              — aplica/atualiza status effect numa entidade
   StatusEffectSystem          — processa ciclo de vida de status effects (ticks, expiração)
-  ServerCombatStateSystem     — in_combat timer + rage decay + HP5 regen (somente servidor)
+  BaseCombatStateSystem       — núcleo headless: timers de combate, rage, HP5, concentração
+  ServerCombatStateSystem     — herda Base; adiciona hp5_events para o servidor
 """
 from __future__ import annotations
 
@@ -229,14 +230,121 @@ class StatusEffectSystem:
         pass
 
 
+# ── BaseCombatStateSystem ─────────────────────────────────────────────────────
+
+class BaseCombatStateSystem:
+    """Núcleo headless de CombatStateSystem — compartilhado entre cliente e servidor.
+
+    Regra: NENHUMA dependência de Pygame/FLT/LOG/SOUNDS aqui.
+
+    Subclasses:
+      systems.CombatStateSystem        — cliente; adiciona wander de disoriented/polymorph,
+                                         camuflagem, timed_modifiers, procs.
+      core_systems.ServerCombatStateSystem — servidor; adiciona hp5_events.
+
+    Para adicionar nova lógica de combate (ex.: novo decay de recurso), editar
+    apenas aqui — as duas implementações herdam automaticamente.
+    """
+
+    RAGE_DECAY_AMOUNT   = 5
+    RAGE_DECAY_INTERVAL = 3.0   # segundos entre cada decaimento de Rage
+
+    def __init__(self, world) -> None:
+        self.world = world
+
+    # ── Helpers estáticos por componente ──────────────────────────────────
+
+    @staticmethod
+    def _tick_combat_timer(cs, dt: float) -> None:
+        if cs.in_combat and cs.combat_timer > 0:
+            cs.combat_timer -= dt
+            if cs.combat_timer <= 0:
+                cs.in_combat    = False
+                cs.is_pursuing  = False
+                cs.combat_timer = 0.0
+
+    @staticmethod
+    def _tick_stun_timer(cs, dt: float) -> None:
+        if cs.is_stunned and cs.stun_timer > 0:
+            cs.stun_timer -= dt
+            if cs.stun_timer <= 0:
+                cs.is_stunned = False
+                cs.stun_timer = 0.0
+
+    @classmethod
+    def _tick_rage_decay(cls, cs, char, dt: float) -> None:
+        if not char or char.rage <= 0:
+            return
+        if not cs.in_combat:
+            char.rage_decay_timer += dt
+            if char.rage_decay_timer >= cls.RAGE_DECAY_INTERVAL:
+                char.rage_decay_timer -= cls.RAGE_DECAY_INTERVAL
+                char.rage = max(0, char.rage - cls.RAGE_DECAY_AMOUNT)
+        else:
+            char.rage_decay_timer = 0.0
+
+    @staticmethod
+    def _tick_hp5(cs, cst, dt: float):
+        """Processa HP5 regen fora de combate.
+
+        Retorna (old_hp, new_hp) se houve cura, None caso contrário.
+        O servidor usa o retorno para emitir hp5_events; o cliente ignora.
+        """
+        if cs.in_combat or cst.current_hp <= 0:
+            return None
+        if cst.current_hp < cst.max_hp:
+            cst.hp5_timer = getattr(cst, 'hp5_timer', 0.0) + dt
+            if cst.hp5_timer >= 5.0:
+                cst.hp5_timer -= 5.0
+                regen  = max(1, int(cst.max_hp * cst.hp5))
+                old_hp = cst.current_hp
+                cst.current_hp = min(cst.max_hp, cst.current_hp + regen)
+                if cst.current_hp != old_hp:
+                    return (old_hp, cst.current_hp)
+        else:
+            cst.hp5_timer = 0.0
+        return None
+
+    @staticmethod
+    def _tick_concentration_regen(cs, char, cst, tm, dt: float) -> None:
+        """Regen de Concentração (Arqueiro). Taxa varia por movimento."""
+        if char.max_concentration <= 0 or char.concentration >= char.max_concentration:
+            return
+        moving = tm.is_moving if tm else False
+        rate   = (cst.concentration_regen_moving if moving
+                  else cst.concentration_regen_idle)
+        if rate > 0:
+            char.concentration = min(
+                char.max_concentration,
+                char.concentration + rate * dt,
+            )
+
+    @staticmethod
+    def _tick_concentration_free_timer(cst, dt: float) -> None:
+        if cst.concentration_free_timer > 0:
+            cst.concentration_free_timer -= dt
+            if cst.concentration_free_timer <= 0:
+                cst.concentration_free       = False
+                cst.concentration_free_timer = 0.0
+
+    @staticmethod
+    def _tick_standing_seconds(cst, tm, dt: float) -> None:
+        """Acumula segundos parado para o talento 'Calmo e Certeiro'."""
+        if cst.acerto_per_standing_second <= 0:
+            return
+        if tm and tm.is_moving:
+            cst.standing_seconds = 0.0
+        else:
+            cst.standing_seconds += dt
+
+
 # ── ServerCombatStateSystem ───────────────────────────────────────────────────
 
-class ServerCombatStateSystem:
-    """Gerencia in_combat timer, rage decay e HP5 regen para players no servidor.
+class ServerCombatStateSystem(BaseCombatStateSystem):
+    """Gerencia timers de combate e recursos para players no servidor.
 
-    Subconjunto headless do CombatStateSystem offline (systems.py).
-    Skips: stun visual, camuflagem, timed_modifiers, procs — são tratados
-    pelo cliente ou não existem no servidor headless.
+    Herda BaseCombatStateSystem — constantes e lógica core ficam em um só lugar.
+    Adiciona hp5_events para o servidor reportar curas de regen ao cliente.
 
     Uso:
         sys = ServerCombatStateSystem(world)
@@ -246,19 +354,15 @@ class ServerCombatStateSystem:
             ...
     """
 
-    RAGE_DECAY_AMOUNT   = 5
-    RAGE_DECAY_INTERVAL = 3.0  # s entre cada decaimento (idêntico ao offline)
-
     def __init__(self, world) -> None:
-        self.world = world
+        super().__init__(world)
         # Populado a cada update(); limpo no início do próximo update().
-        # Cada entry: {"player_eid": int, "old_hp": int, "new_hp": int, "hp_max": int}
         self.hp5_events: list[dict] = []
 
     def update(self, player_eids: dict, dt: float) -> None:
         """Processa todos os players em player_eids (session_id → eid)."""
         self.hp5_events.clear()
-        from components import CombatState, CombatStats, CharacterStats
+        from components import CombatState, CombatStats, CharacterStats, TileMovement
 
         for _sid, peid in list(player_eids.items()):
             cs   = self.world.get_component(peid, CombatState)
@@ -267,39 +371,23 @@ class ServerCombatStateSystem:
             if not cs or not cst or cst.current_hp <= 0:
                 continue
 
-            # ── Timer de in_combat ────────────────────────────────────────────
-            if cs.in_combat:
-                cs.combat_timer = max(0.0, cs.combat_timer - dt)
-                if cs.combat_timer <= 0.0:
-                    cs.in_combat    = False
-                    cs.is_pursuing  = False
-                    cs.combat_timer = 0.0
+            tm = self.world.get_component(peid, TileMovement)
 
-            # ── Rage decay (apenas fora de combate) ───────────────────────────
-            if char and char.rage > 0:
-                if not cs.in_combat:
-                    char.rage_decay_timer += dt
-                    if char.rage_decay_timer >= self.RAGE_DECAY_INTERVAL:
-                        char.rage_decay_timer -= self.RAGE_DECAY_INTERVAL
-                        char.rage = max(0, char.rage - self.RAGE_DECAY_AMOUNT)
-                else:
-                    char.rage_decay_timer = 0.0
+            self._tick_combat_timer(cs, dt)
+            self._tick_stun_timer(cs, dt)
+            self._tick_rage_decay(cs, char, dt)
 
-            # ── HP5 regen (apenas fora de combate, HP < max) ──────────────────
-            if not cs.in_combat and cst.current_hp < cst.max_hp:
-                hp5_timer = getattr(cst, 'hp5_timer', 0.0) + dt
-                if hp5_timer >= 5.0:
-                    hp5_timer -= 5.0
-                    regen  = max(1, int(cst.max_hp * cst.hp5))
-                    old_hp = cst.current_hp
-                    cst.current_hp = min(cst.max_hp, cst.current_hp + regen)
-                    if cst.current_hp != old_hp:
-                        self.hp5_events.append({
-                            "player_eid": peid,
-                            "old_hp":     old_hp,
-                            "new_hp":     cst.current_hp,
-                            "hp_max":     cst.max_hp,
-                        })
-                cst.hp5_timer = hp5_timer
-            elif cst.current_hp >= cst.max_hp:
-                cst.hp5_timer = 0.0
+            hp5_result = self._tick_hp5(cs, cst, dt)
+            if hp5_result:
+                old_hp, new_hp = hp5_result
+                self.hp5_events.append({
+                    "player_eid": peid,
+                    "old_hp":     old_hp,
+                    "new_hp":     new_hp,
+                    "hp_max":     cst.max_hp,
+                })
+
+            if char:
+                self._tick_concentration_regen(cs, char, cst, tm, dt)
+                self._tick_concentration_free_timer(cst, dt)
+            self._tick_standing_seconds(cst, tm, dt)

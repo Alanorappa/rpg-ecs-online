@@ -88,7 +88,9 @@
       "Bash(py -3.10 -m pytest tests/test_server.py::TestMobMovement::test_mob_moves_toward_player tests/test_server.py::TestMobAttacksPlayer::test_mob_attack_reduces_player_hp_on_server -q)",
       "Bash(py -3.10 -m pytest tests/test_server.py::TestMobAttacksPlayer::test_mob_attack_reduces_player_hp_on_server -q)",
       "Bash(py -3.10 -m pytest tests/test_server.py tests/test_combat.py -q --ignore=tests/test_session.py)",
-      "Bash(py -3.10 -m pytest tests/test_server.py tests/test_combat.py -q)"
+      "Bash(py -3.10 -m pytest tests/test_server.py tests/test_combat.py -q)",
+      "Bash(py -3.10 -m pytest tests/test_server.py::TestMobAttacksPlayer::test_mob_attack_reduces_player_hp_on_server -q --tb=short)",
+      "WebSearch"
     ]
   }
 }

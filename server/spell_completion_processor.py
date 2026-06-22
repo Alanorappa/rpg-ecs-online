@@ -18,6 +18,42 @@ class SpellCompletionMixin:
     # Resetado antes de cada handler; lido pela coleta de resultados.
     _last_magic_is_crit: bool = False
 
+    def _process_knockback_landings(self, dt: float) -> None:
+        """Aplica stun + feedback de colisão só quando a tween de empurrão
+        termina (mesma duração enviada ao cliente em _moved_this_tick),
+        não no instante em que o servidor resolve o knockback (instantâneo).
+        Sem isso o stun "começa" antes do alvo chegar visualmente ao ponto
+        de colisão — servidor e cliente concordam: stun inicia quando o
+        deslocamento acaba.
+        """
+        from core_systems import apply_effect
+
+        still = []
+        for entry in self._pending_knockback_landings:
+            entry["timer"] -= dt
+            if entry["timer"] > 0:
+                still.append(entry)
+                continue
+
+            target_id    = entry["target_id"]
+            collided_eid = entry.get("collided_eid")
+            if self.world.get_components_for_entity(target_id):
+                apply_effect(self.world, target_id, "stun", entry["stun_dur"])
+            if collided_eid is not None and self.world.get_components_for_entity(collided_eid):
+                apply_effect(self.world, collided_eid, "stun", entry["stun_dur"])
+            for _splash_eid in entry.get("splash_eids", ()):
+                if self.world.get_components_for_entity(_splash_eid):
+                    apply_effect(self.world, _splash_eid, "stun", entry["stun_dur"])
+
+            self._skill_effects_this_tick.append({
+                "sid": entry["sid"], "event": "collision",
+                "caster_eid": entry["caster_eid"],
+                "tx": entry["tx"], "ty": entry["ty"],
+                "target_eid": target_id,
+                "collided_eid": collided_eid if collided_eid is not None else -1,
+            })
+        self._pending_knockback_landings = still
+
     def _process_spell_cast_completions(self, dt: float) -> None:
         """Avança timers de spells pendentes e dispara efeitos quando concluídas."""
         from components import CombatStats as _CS, CharacterStats as _CHS, StatusEffects as _SFX
@@ -83,6 +119,17 @@ class SpellCompletionMixin:
                     if (_tgt_fr_cnt and _thresh_fr > 0 and _tgt_fr_cnt.max_hp > 0
                             and (_tgt_fr_cnt.current_hp / _tgt_fr_cnt.max_hp) < _thresh_fr):
                         _remaining = 3
+                # Tiro Repulsivo: congela a posição do atirador no momento do disparo
+                # (= quando o projétil visual nasce no cliente). Sem isso, o knockback
+                # usaria a posição ATUAL do atirador no momento do PROJECTILE_HIT_CS —
+                # se ele andou durante o voo da flecha, a direção do empurrão diverge
+                # da direção visual do tiro.
+                if spell_id == "tiro_repulsivo":
+                    from components import TileMovement as _TM_tr_launch
+                    _tm_launch = self.world.get_component(player_eid, _TM_tr_launch)
+                    if _tm_launch:
+                        entry["launch_tx"] = _tm_launch.current_tile_x
+                        entry["launch_ty"] = _tm_launch.current_tile_y
                 self._spells_in_flight_queue.append({
                     "player_eid":     player_eid,
                     "spell_id":       spell_id,
@@ -204,6 +251,27 @@ class SpellCompletionMixin:
                 skill_entry["fire_instant_proc"] = True
 
             self._skill_results_this_tick.append(skill_entry)
+
+            # ── SKILL_EFFECT: evento de apresentação da conclusão ─────────────
+            from components import TileMovement as _TM_sfx
+            _caster_tm_sfx = self.world.get_component(player_eid, _TM_sfx)
+            _sfx_tx = _caster_tm_sfx.current_tile_x if _caster_tm_sfx else 0
+            _sfx_ty = _caster_tm_sfx.current_tile_y if _caster_tm_sfx else 0
+            if spell_id in _PROJECTILE_SPELLS:
+                # Projétil foi ao ar: launch event (impact chegará via PROJECTILE_HIT_CS)
+                self._skill_effects_this_tick.append({
+                    "sid": spell_id, "event": "launch",
+                    "caster_eid": player_eid, "tx": _sfx_tx, "ty": _sfx_ty,
+                    "target_eid": target_id,
+                })
+            else:
+                # Spell resolve imediatamente: impact (ou miss se sem resultados)
+                _sfx_event = "impact" if results else "miss"
+                self._skill_effects_this_tick.append({
+                    "sid": spell_id, "event": _sfx_event,
+                    "caster_eid": player_eid, "tx": _sfx_tx, "ty": _sfx_ty,
+                    "target_eid": target_id,
+                })
 
             # Sincroniza mana e concentração ao cliente após conclusão do cast
             if char:
@@ -358,6 +426,18 @@ class SpellCompletionMixin:
 
         self._skill_results_this_tick.append(skill_entry)
 
+        # ── SKILL_EFFECT: impact ao acertar (ou miss se sem dano) ────────────
+        from components import TileMovement as _TM_ph
+        _ph_tm = self.world.get_component(player_eid, _TM_ph)
+        _ph_tx = _ph_tm.current_tile_x if _ph_tm else 0
+        _ph_ty = _ph_tm.current_tile_y if _ph_tm else 0
+        _ph_event = "impact" if results else "miss"
+        self._skill_effects_this_tick.append({
+            "sid": spell_id, "event": _ph_event,
+            "caster_eid": player_eid, "tx": _ph_tx, "ty": _ph_ty,
+            "target_eid": target_id,
+        })
+
         # Sincroniza mana
         if char:
             self._pending_xp_deliveries.append({
@@ -374,7 +454,7 @@ class SpellCompletionMixin:
         """Processa ticks de canalização de players (Calamidade Flamejante)."""
         from components import Channeling as _Chan, CombatStats as _CS, \
                                CharacterStats as _CHS, TileMovement as _TM
-        from systems import apply_effect
+        from core_systems import apply_effect
         from utils import chebyshev
 
         _to_remove = []
@@ -482,7 +562,7 @@ class SpellCompletionMixin:
         Para adicionar redução de dano, resistências ou novos status de imunidade,
         editar apenas aqui.
         """
-        from components import CombatStats as _CS, CombatState as _CSt
+        from components import CombatStats as _CS, CombatState as _CSt, StatusEffects as _SFX_fd
         cs = self.world.get_component(target_id, _CS)
         if not cs or cs.current_hp <= 0:
             return False
@@ -490,6 +570,14 @@ class SpellCompletionMixin:
         if cst and cst.is_immune:
             return False
         cs.current_hp -= dmg
+        # Dano quebra polymorph e sleep (qualquer fonte — ponto único servidor)
+        if dmg > 0:
+            _sfx_fd = self.world.get_component(target_id, _SFX_fd)
+            if _sfx_fd:
+                _sfx_fd.effects.pop("polymorph", None)
+                _sleep_fd = _sfx_fd.effects.pop("sleep", None)
+                if _sleep_fd and getattr(_sleep_fd, "on_expire_effect", ""):
+                    _sleep_fd.on_expire_effect = ""
         return True
 
     # ── Dano de magia server-side ────────────────────────────────────────────
@@ -561,11 +649,6 @@ class SpellCompletionMixin:
                     "hp": hp_after, "hp_max": target_cs.max_hp,
                 })
 
-        # Quebra polimorfia
-        _t_sfx = self.world.get_component(target_id, StatusEffects)
-        if _t_sfx:
-            _t_sfx.remove("polymorph")
-
         # Entra em combate — tanto atacante quanto vítima (PvP e mobs)
         attacker_state = self.world.get_component(attacker_id, CombatState)
         if attacker_state:
@@ -605,7 +688,7 @@ class SpellCompletionMixin:
 
     def _server_bola_de_fogo(self, player_eid: int, target_id: int, entry: dict) -> None:
         from components import CombatStats, StatusEffects, CharacterStats
-        from systems import apply_effect
+        from core_systems import apply_effect
         from damage_calculator import CRITICAL_DAMAGE_MULTIPLIER, resolve_attack_outcome
         from skill_config import SKILL_CATALOG as _SC_bdf
         _bdf_data = _SC_bdf.get("bola_de_fogo", {})
@@ -738,7 +821,7 @@ class SpellCompletionMixin:
 
     def _server_nova_congelante(self, player_eid: int, target_id: int, entry: dict) -> None:
         from components import CombatStats, TileMovement
-        from systems import apply_effect
+        from core_systems import apply_effect
         from utils import chebyshev
         from skill_config import SKILL_CATALOG as _SC_nc
         _nc = _SC_nc.get("nova_congelante", {})
@@ -784,15 +867,26 @@ class SpellCompletionMixin:
                 etm.progress  = 0.0
 
     def _server_polimorfia(self, player_eid: int, target_id: int, entry: dict) -> None:
-        from components import CombatStats, CombatState
-        from systems import apply_effect
+        from components import CombatStats, CombatState, StatusEffects as _SFXpoly
+        from core_systems import apply_effect
         from skill_config import SKILL_CATALOG as _SC_poly
+        from status_effects_data import EFFECT_DEFS as _EDEFS_poly
 
         if target_id == -1:
             return
         target_cs = self.world.get_component(target_id, CombatStats)
         if not target_cs or target_cs.current_hp <= 0:
             return
+
+        # Dispela DoTs antes de aplicar polymorph — DoTs quebrariam a transformação
+        # no próximo tick de dano. Remove efeitos periódicos de dano (tick_interval > 0,
+        # is_buff=False) mas preserva CC (root, slow) e buffs.
+        _sfx_poly = self.world.get_component(target_id, _SFXpoly)
+        if _sfx_poly:
+            _dot_keys = [k for k, v in _EDEFS_poly.items()
+                         if not v.is_buff and v.tick_interval > 0 and k != "polymorph"]
+            for _dk in _dot_keys:
+                _sfx_poly.effects.pop(_dk, None)
 
         _poly_dur = _SC_poly.get("polimorfia", {}).get("effect_durations", {}).get("polymorph", 6.0)
         regen_per_tick = max(1, int(target_cs.max_hp * 0.10))
@@ -816,7 +910,7 @@ class SpellCompletionMixin:
         from damage_calculator import (resolve_attack_outcome, calculate_base_damage,
                                        apply_armor_reduction, CRITICAL_DAMAGE_MULTIPLIER)
         from stat_fns import enter_combat
-        from systems import apply_effect as _ae
+        from core_systems import apply_effect as _ae
 
         target_cs = self.world.get_component(target_id, CombatStats)
         if not target_cs or target_cs.current_hp <= 0:
@@ -863,6 +957,11 @@ class SpellCompletionMixin:
 
         if not self._apply_final_damage(target_id, dmg):
             return False, "immune", 0
+
+        # Reciclagem: conta flechas acertadas neste alvo (auto-attack + skills
+        # com flecha, ex.: Tiro Repulsivo, Picada de Escorpião) — payoff em
+        # server_death_handler.py quando o alvo morre.
+        target_cs.arrows_received += 1
 
         # Na Mosca: ativa o bônus após crit
         if attacker_cs and getattr(attacker_cs, "na_mosca_enabled", False):
@@ -922,7 +1021,7 @@ class SpellCompletionMixin:
 
     def _server_picada_escorpiao(self, player_eid: int, target_id: int, entry: dict) -> None:
         from skill_config import SKILL_CATALOG as _SC
-        from systems import apply_effect
+        from core_systems import apply_effect
         params = _SC.get("picada_escorpiao", {}).get("params", {})
 
         if target_id == -1:
@@ -955,7 +1054,6 @@ class SpellCompletionMixin:
         from components import (TileMovement, CombatStats, Position,
                                  CombatState, Tilemap)
         from shared.constants import TILE_SIZE as _TS
-        from systems import apply_effect
         params       = _SC.get("tiro_repulsivo", {}).get("params", {})
         ap_mult      = params.get("ap_multiplier",  1.5)
         kb_tiles     = params.get("knockback_tiles", 5)
@@ -969,21 +1067,31 @@ class SpellCompletionMixin:
         if outcome in ("miss", "dodge", "parry", "immune"):
             return
 
-        # Knockback: empurra nb tiles na direção oposta ao player
-        p_tm  = self.world.get_component(player_eid, TileMovement)
-        t_tm  = self.world.get_component(target_id,  TileMovement)
-        if not p_tm or not t_tm:
+        t_tm = self.world.get_component(target_id, TileMovement)
+        if not t_tm:
             return
 
-        dx = t_tm.current_tile_x - p_tm.current_tile_x
-        dy = t_tm.current_tile_y - p_tm.current_tile_y
-        dist = max(1, abs(dx) + abs(dy))
-        sx = round(dx / dist)
-        sy = round(dy / dist)
-        if sx == 0 and sy == 0:
-            sx = 1
+        # Direção: a partir da posição do atirador NO MOMENTO DO DISPARO (congelada
+        # em entry["launch_tx/ty"], ver _process_spell_cast_completions) — usar a
+        # posição ATUAL do atirador divergiria se ele andou durante o voo da flecha.
+        launch_tx = entry.get("launch_tx")
+        launch_ty = entry.get("launch_ty")
+        if launch_tx is None or launch_ty is None:
+            p_tm = self.world.get_component(player_eid, TileMovement)
+            if not p_tm:
+                return
+            launch_tx, launch_ty = p_tm.current_tile_x, p_tm.current_tile_y
 
-        # Busca tilemap para verificar colisão
+        # Bresenham (mesmo algoritmo de is_tile_walkable/_dash_path_clear), não
+        # snap por sinal: sinal puro colapsa qualquer ângulo intermediário num
+        # dos 8 eixos (ex.: dx=1,dy=3 tem ~72°, sinal virava 45°), divergindo
+        # da direção real do tiro.
+        dx = t_tm.current_tile_x - launch_tx
+        dy = t_tm.current_tile_y - launch_ty
+        from utils import bresenham_ray
+        kb_path = bresenham_ray(dx, dy, kb_tiles)
+
+        # Busca tilemap para verificar colisão com paredes
         tilemap_comp = None
         for _, tc in self.world.get_entities_with(Tilemap):
             tilemap_comp = tc
@@ -997,12 +1105,66 @@ class SpellCompletionMixin:
                 return rows[ty][tx].is_solid
             return True  # fora do mapa = sólido
 
-        stunned = False
-        for step in range(1, kb_tiles + 1):
-            nx = t_tm.current_tile_x + sx
-            ny = t_tm.current_tile_y + sy
-            if _is_solid(nx, ny):
+        def _entity_at_tile(tx, ty, exclude_eid=None):
+            """Outra criatura (mob ou player) ocupando o tile — exclui o próprio alvo."""
+            for other_eid in list(self._mob_eids) + list(self._player_eids.values()):
+                if other_eid == target_id or other_eid == exclude_eid:
+                    continue
+                o_tm = self.world.get_component(other_eid, TileMovement)
+                if o_tm and o_tm.current_tile_x == tx and o_tm.current_tile_y == ty:
+                    return other_eid
+            return None
+
+        def _adjacent_creatures(tx, ty, exclude_eids):
+            """Todas as criaturas a distância Chebyshev 1 de (tx, ty) — splash
+            do stun no ponto de colisão, não só o eid que bloqueou o passo."""
+            found = []
+            for other_eid in list(self._mob_eids) + list(self._player_eids.values()):
+                if other_eid in exclude_eids:
+                    continue
+                o_tm = self.world.get_component(other_eid, TileMovement)
+                if (o_tm and max(abs(o_tm.current_tile_x - tx), abs(o_tm.current_tile_y - ty)) <= 1
+                        and (o_tm.current_tile_x, o_tm.current_tile_y) != (tx, ty)):
+                    found.append(other_eid)
+            return found
+
+        # Alvo é um player conectado (PvP): AOI_UPDATE.moved não chega até ele
+        # mesmo (cliente ignora eid==self._my_eid no array de moved) — precisa
+        # do canal de correção direta também.
+        _target_is_player = target_id in self._player_eids.values()
+
+        # Posição de origem ANTES do empurrão — o cliente precisa dela pra
+        # animar a tween inteira de uma vez (start→end), não passo a passo.
+        _start_tx, _start_ty = t_tm.current_tile_x, t_tm.current_tile_y
+
+        stunned        = False
+        collided_eid   = None
+        tiles_traveled = 0
+        for step_x, step_y in kb_path:
+            if step_x == 0 and step_y == 0:
+                continue
+            nx = t_tm.current_tile_x + step_x
+            ny = t_tm.current_tile_y + step_y
+            # Mesma regra de corte de canto de is_tile_walkable: passo diagonal
+            # com os dois tiles ortogonais sólidos bloqueia mesmo se o tile
+            # diagonal em si estiver livre (sprite não atravessa o vão).
+            _corner_blocked = (step_x != 0 and step_y != 0
+                                and _is_solid(t_tm.current_tile_x + step_x, t_tm.current_tile_y)
+                                and _is_solid(t_tm.current_tile_x, t_tm.current_tile_y + step_y))
+            if _is_solid(nx, ny) or _corner_blocked:
                 stunned = True
+                break
+            _blocker = _entity_at_tile(nx, ny)
+            # Passo diagonal: mesmo sem ocupar o tile exato do passo, uma
+            # criatura num dos dois tiles "de canto" já teria o sprite
+            # atravessado pelo alvo deslizando na diagonal — mesma regra de
+            # corte de canto que is_tile_walkable aplica para paredes.
+            if _blocker is None and step_x != 0 and step_y != 0:
+                _blocker = (_entity_at_tile(t_tm.current_tile_x + step_x, t_tm.current_tile_y)
+                            or _entity_at_tile(t_tm.current_tile_x, t_tm.current_tile_y + step_y))
+            if _blocker is not None:
+                stunned      = True
+                collided_eid = _blocker
                 break
             t_tm.current_tile_x = nx
             t_tm.current_tile_y = ny
@@ -1012,13 +1174,65 @@ class SpellCompletionMixin:
             if t_pos:
                 t_pos.x = nx * _TS + _TS // 2
                 t_pos.y = ny * _TS + _TS // 2
+            tiles_traveled += 1
+
+        # Padrão de deslocamento forçado em rede (LoL/WoW e netcode de
+        # referência): UM evento com posição final + duração total, não um
+        # evento por tile. O cliente anima a tween inteira de uma vez em vez
+        # de enfileirar N passos — elimina a fila descompassando da
+        # perseguição real que já pode começar no mesmo tick, tile pulado por
+        # dedup incorreto, e o atraso entre "servidor já terminou" e "cliente
+        # ainda no meio da fila" que causava dano antes do mob chegar
+        # visualmente. Servidor decide tudo; cliente só interpola o que foi
+        # confirmado — nunca prediz o resultado de um empurrão em outra entidade.
+        _DASH_TILE_S = 0.18  # mesma "sensação" de velocidade já usada antes, por tile
+        _duration = tiles_traveled * _DASH_TILE_S
+        if tiles_traveled > 0:
             self._moved_this_tick.append({
-                "eid": target_id, "tx": nx, "ty": ny,
-                "from_tx": nx - sx, "from_ty": ny - sy,
+                "eid": target_id, "tx": t_tm.current_tile_x, "ty": t_tm.current_tile_y,
+                "from_tx": _start_tx, "from_ty": _start_ty,
+                "is_dash": True, "duration": _duration,
             })
+            if _target_is_player:
+                self._skill_position_corrections.append({
+                    "player_eid": target_id,
+                    "tx": t_tm.current_tile_x, "ty": t_tm.current_tile_y,
+                    "is_dash": True, "duration": _duration,
+                })
 
         if stunned:
-            apply_effect(self.world, target_id, "stun", stun_dur)
+            # Splash: tudo adjacente (Chebyshev 1) ao ponto de colisão também
+            # é pego pelo stun — não só o eid que literalmente bloqueou o
+            # passo (ex.: 2 mobs agrupados, o segundo também deve travar).
+            _splash_eids = _adjacent_creatures(
+                t_tm.current_tile_x, t_tm.current_tile_y,
+                exclude_eids={target_id, collided_eid})
+
+            # Stun + feedback de colisão só pousam quando a tween de empurrão
+            # termina (_duration), não agora — ver _process_knockback_landings.
+            # Mesmo a 0 tiles (alvo já encostado), _duration=0 dispara no
+            # próximo tick, mantendo o feedback sempre pós-deslocamento.
+            self._pending_knockback_landings.append({
+                "timer": _duration,
+                "sid": "tiro_repulsivo",
+                "target_id": target_id,
+                "collided_eid": collided_eid,
+                "splash_eids": _splash_eids,
+                "stun_dur": stun_dur,
+                "caster_eid": player_eid,
+                "tx": t_tm.current_tile_x, "ty": t_tm.current_tile_y,
+            })
+        elif target_id in self._mob_eids:
+            # Sem colisão (stun cobriria isso): o knockback resolve instantaneamente
+            # no servidor, mas o cliente leva _duration segundos pra animar a tween
+            # de saída — o mob já está livre pra perseguir/atacar no servidor antes
+            # do cliente terminar de mostrar ele saindo. Usa a MESMA _duration do
+            # broadcast acima (fonte única) — sem isso, dano podia "acontecer"
+            # (autoritativo) com o mob ainda aparecendo longe na tela.
+            from components import CombatStats as _CS_kb
+            _kb_cs = self.world.get_component(target_id, _CS_kb)
+            if _kb_cs:
+                _kb_cs.attack_cooldown_timer = max(_kb_cs.attack_cooldown_timer, _duration)
 
     def _server_tiro_multiplo(self, player_eid: int, target_id: int, entry: dict) -> None:
         from skill_config import SKILL_CATALOG as _SC
@@ -1107,23 +1321,26 @@ class SpellCompletionMixin:
         import random as _rand
         params    = _SC.get("camuflagem", {}).get("params", {})
         duration  = params.get("duration",  5.0)
-        speed_pct = params.get("speed_pct", 0.30)
+        speed_pct = params.get("speed_pct", 0.60)
 
         cs  = self.world.get_component(player_eid, CombatStats)
         cst = self.world.get_component(player_eid, CombatState)
         tm  = self.world.get_component(player_eid, TileMovement)
 
         try:
-            from tileset import CAMOUFLAGE_OBJECT_IDS
-            chosen = _rand.choice(CAMOUFLAGE_OBJECT_IDS)
+            from tileset import discover_camouflage_variants
+            _variants = discover_camouflage_variants()
+            chosen = _rand.choice(_variants) if _variants else ""
         except Exception:
-            chosen = "tree"
+            chosen = ""
 
         if cs:
             cs.camouflage_timer  = duration
             cs.camouflage_object = chosen
         if cst:
-            cst.is_visible = False
+            cst.is_visible    = False
+            cst.is_immune     = True
+            cst.is_camouflaged = True
         if tm:
             tm.speed = 110.0 * speed_pct
 

@@ -37,7 +37,7 @@ def test_ranged_mob_damages_player():
     cs_p = ws.world.get_component(peid, CombatStats)
     hp_before = cs_p.current_hp
 
-    # 40 ticks × 50ms = 2s — suficiente para cast (0.5s) + viagem do projétil
+    # 40 ticks × 33ms ≈ 1.3s — suficiente para cast (0.5s) + viagem do projétil
     deltas = run_ticks(ws, 40)
 
     hp_after = cs_p.current_hp

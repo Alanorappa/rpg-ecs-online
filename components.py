@@ -475,8 +475,9 @@ class CombatState:
         self.is_stunned: bool = False   # Não pode agir nem mover
         self.is_rooted: bool = False    # Pode agir mas não mover
         self.is_casting: bool = False   # Não pode se mover nem iniciar outra ação
-        self.is_immune:   bool = False   # Imune a todos os danos (Bloco de Gelo)
+        self.is_immune:   bool = False   # Imune a todos os danos (Bloco de Gelo, Camuflagem)
         self.is_visible:  bool = True    # False = invisível (ex: Camuflagem); mobs não agrem
+        self.is_camouflaged: bool = False  # True = Camuflagem ativa; bloqueia can_act() (atacar/usar skill)
         self.target_entity_id: int = -1 # Alvo atual selecionado
         self.is_pursuing: bool = False  # True = persegue o alvo (direito/skill/espaço). False = só selecionado
         self._just_entered_combat: bool = False  # sinaliza transição para CombatStateSystem disparar procs
@@ -486,7 +487,8 @@ class CombatState:
 
     def can_act(self) -> bool:
         """Retorna True se a entidade pode realizar ações (atacar, usar skill)."""
-        return self.is_alive and not self.is_stunned and not self.is_casting
+        return (self.is_alive and not self.is_stunned and not self.is_casting
+                and not self.is_camouflaged)
 
     def can_move(self) -> bool:
         """Retorna True se a entidade pode se mover.

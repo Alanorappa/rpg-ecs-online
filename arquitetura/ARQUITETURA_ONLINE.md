@@ -14,7 +14,7 @@ Clientes Pygame se conectam via WebSocket e recebem estado do mundo por ticks.
 [Cliente Pygame] ──WebSocket──► [Servidor Python / asyncio]
                  ◄──────────────      ECS headless (SDL_VIDEODRIVER=dummy)
                                       SQLite (dev) → PostgreSQL (prod)
-                                      20 ticks/s
+                                      30 ticks/s
 ```
 
 **Separação inviolável:**
@@ -39,8 +39,8 @@ Clientes Pygame se conectam via WebSocket e recebem estado do mundo por ticks.
   - Servidor rejeita versão incompatível com `LOGIN_ERROR: version_mismatch`
   - Implementado: `_handle_login` compara `payload["version"]` com `PROTOCOL_VERSION`
 
-### 3. Tick rate — 20 ticks/s (50ms)
-- Movimento, combate, skills: 20 ticks/s
+### 3. Tick rate — 30 ticks/s (33ms)
+- Movimento, combate, skills: 30 ticks/s
 - Cliente roda a 60 fps com interpolação entre posições (visual fluido)
 - Client-side prediction para movimento próprio (não implementado)
 
@@ -234,6 +234,7 @@ a cada spawn tentado e decrementado no próximo ciclo. Sem isso, uma zona poderi
 | S→C | `PLAYER_REVIVE` | tx, ty, hp, hp_max, mana, max_mana — revive (cemitério ou corpo) | ✅ |
 | S→C | `GHOST_STATE` | is_ghost, near_corpse, graveyard_timer — sync do estado do espírito | ✅ |
 | C→S | `PLAYER_STAT_SYNC` | max_hp, attack_power, armor, crit, parry, dodge, attack_interval | ✅ |
+| C→S | `EQUIP_SYNC` | equipment: {slot→item_dict} — enviado em equip/unequip; servidor reconstrói Equipment ECS | ✅ |
 | C→S | `SAVE_STATE` | inventory, equipment, talents, skills, stats{gold, max_hp} | ✅ |
 | C→S | `PING` / S→C `PONG` | client_ts / {client_ts, server_ts} | ✅ |
 | C→S | `CHAT_SEND` / S→C `CHAT_MESSAGE` | text, channel, color | ✅ |

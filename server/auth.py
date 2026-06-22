@@ -9,6 +9,8 @@ import hashlib
 import sqlite3
 import os
 
+from shared.constants import RESPAWN_TILE
+
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "game.db")
 
 
@@ -24,11 +26,13 @@ def _get_conn() -> sqlite3.Connection:
 
 
 # (username, password, class_id, tile_x, tile_y)
-# Tiles próximos ao spawn padrão do mapa (115, 389) — área sabidamente walkable
+# Tiles próximos ao spawn padrão do mapa — área sabidamente walkable.
+# "teste" spawna exatamente em RESPAWN_TILE (centro do cemitério); teste2/3
+# usam offsets fixos pra não sobrepor quando os 3 conectam ao mesmo tempo.
 _TEST_ACCOUNTS = [
-    ("teste",  "123456", "guerreiro", 115, 389),
-    ("teste2", "123456", "mago",      117, 389),
-    ("teste3", "123456", "arqueiro",  119, 389),
+    ("teste",  "123456", "guerreiro", RESPAWN_TILE[0],     RESPAWN_TILE[1]),
+    ("teste2", "123456", "mago",      RESPAWN_TILE[0] + 2, RESPAWN_TILE[1]),
+    ("teste3", "123456", "arqueiro",  RESPAWN_TILE[0] + 4, RESPAWN_TILE[1]),
 ]
 
 
@@ -152,7 +156,8 @@ async def create_character(account_id: int, name: str,
 
 def _create_character_sync(account_id: int, name: str,
                            class_id: str = "guerreiro",
-                           tile_x: int = 115, tile_y: int = 389) -> bool:
+                           tile_x: int = RESPAWN_TILE[0],
+                           tile_y: int = RESPAWN_TILE[1]) -> bool:
     try:
         with _get_conn() as conn:
             count = conn.execute(

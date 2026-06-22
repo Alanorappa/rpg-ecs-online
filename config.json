@@ -5,7 +5,7 @@
   "net_user": "teste",
   "net_pass": "123456",
   "music_volume": 0.06842105263157895,
-  "sfx_volume": 0.05263157894736842,
+  "sfx_volume": 0.18947368421052632,
   "music_enabled": false,
   "sfx_enabled": true,
   "hotbar": {
@@ -225,8 +225,8 @@
           "cancao_ninar",
           "picada_escorpiao",
           "flecha_reiterada",
-          null,
-          null,
+          "tiro_repulsivo",
+          "camuflagem",
           null,
           null,
           null,
@@ -248,7 +248,7 @@
       "consumable_bar": {
         "slots": [
           "Ensopado Revigorante",
-          "Ensopado Revigorante",
+          "Po\u00e7\u00e3o de Vida",
           null,
           null,
           null

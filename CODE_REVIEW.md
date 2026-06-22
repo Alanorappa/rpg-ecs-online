@@ -134,7 +134,7 @@ for mob_eid in list(self.world_server._mob_eids):   # O(mobs)
         continue
     # ... in_aoi check
 ```
-**Problema:** Para cada jogador, a cada tick, itera TODOS os mobs do servidor para encontrar os que entraram no AOI. Com 10 players × 200 mobs × 20 ticks/s = **40.000 iterações/s**.
+**Problema:** Para cada jogador, a cada tick, itera TODOS os mobs do servidor para encontrar os que entraram no AOI. Com 10 players × 200 mobs × 30 ticks/s = **60.000 iterações/s**.
 
 **Fix:** Usar **spatial hash** (grade de tiles 16×16) para lookup O(1) de entidades em AOI. Ou manter `_mob_eids_by_tile: dict[tuple, set[int]]` atualizado a cada movimento de mob.
 
@@ -144,9 +144,9 @@ for mob_eid in list(self.world_server._mob_eids):   # O(mobs)
 
 **Arquivo:** [server/world_server.py](server/world_server.py) linha 1565  
 ```python
-await asyncio.sleep(0)   # ~50ms de busy-wait entre ticks
+await asyncio.sleep(0)   # ~33ms de busy-wait entre ticks
 ```
-**Problema:** O loop faz `await asyncio.sleep(0)` centenas de vezes entre cada tick (50ms), consumindo CPU desnecessariamente e saturando o event loop.
+**Problema:** O loop faz `await asyncio.sleep(0)` centenas de vezes entre cada tick (33ms), consumindo CPU desnecessariamente e saturando o event loop.
 
 **Fix:**
 ```python
@@ -460,3 +460,72 @@ Métodos de AOI usam diferentes estratégias. Não há tipo inconsistência crí
 ---
 
 *Issues de arquitetura pre-existentes estão documentadas em `arquitetura/PROBLEMAS_ARQUITETURA.md`.*
+
+---
+
+## 🟣 CLIENTE/UI — Bugs de interface e experiência do jogador
+
+> Seção adicionada em 2026-06-17. Cobre bugs identificados nas sessões de desenvolvimento online.
+
+---
+
+### IU1 — Skills perdidas após login sem servidor ✅ RESOLVIDO (sessão 2026-06-17)
+
+**Arquivos:** `client/save_sync_handlers.py`, `server/session.py`
+
+**Problema:** Fluxo de três etapas causava perda de skills:
+1. `main.py` passa `char_data=None` → `PlayerSkills.learned_skill_ids` começa vazio
+2. `_collect_save_state` enviava `{"learned":[]}` (truthy em Python)
+3. `_build_save_merge` tratava `{"learned":[]}` como skills válidas → sobrescrevia DB com lista vazia
+4. Loop: SAVE_STATE periódico perpetuava a corrupção
+
+**Fix:** Três camadas de defesa:
+- `_restore_save_state`: fallback para `INITIAL_SKILLS_BY_CLASS` se ECS estiver vazio
+- `_collect_save_state`: só envia skills se `learned_skill_ids` for não-vazio
+- `_build_save_merge`: trata `{"learned":[]}` como falsy (usa fallback do servidor)
+
+---
+
+### IU2 — Modal de quantidade do mercador não recebia input ✅ RESOLVIDO (sessão 2026-06-17)
+
+**Arquivo:** `systems.py` (`ShopSystem.handle_events`)
+
+**Problema (original):** `return` após processar o primeiro evento saía do método inteiro, descartando todos os eventos subsequentes do mesmo frame.
+
+**Problema (secundário):** `systems_events` em `game.py` não bloqueava `KEYDOWN` → `SkillSystem` ativava skills ao digitar números no modal.
+
+**Problema (visual):** Hover dos itens da loja e `pending_tooltip` eram calculados mesmo com modal por cima, causando tooltip e highlight de itens "fantasmas" através do modal.
+
+**Fix:**
+- `return` → `continue` no loop de `handle_events` (eventos do modal não vazam para lógica da loja)
+- `systems_events = []` quando `qty_modal_open` (bloqueia TODO input de sistemas ECS durante edição)
+- `hov = r.collidepoint(mx, my) and not _modal_open` nos dois painéis de itens
+- `self.pending_tooltip = None` antes de `_render_qty_modal()`
+- `_close_top_modal()` fecha o qty modal antes de fechar a loja inteira (ESC funciona em camadas)
+
+---
+
+### IU3 — Sistema de UI sem modal stack / focus ⚠️ PENDENTE
+
+**Arquivos:** `game.py`, `systems.py` (ShopSystem, CraftingSystem, TrainerSystem, etc.)
+
+**Problema:** Não existe conceito de "modal em foco". Cada sistema gerencia seus próprios eventos independentemente. `game.py` faz roteamento manual ad-hoc para cada handler. `systems_events` é um patch que bloqueia apenas `MOUSEBUTTONDOWN` quando painéis estão abertos — outros tipos de evento (KEYDOWN, MOUSEMOTION) vazam para sistemas que não deveriam recebê-los.
+
+**Consequências:**
+- Tooltip e hover de itens visíveis "através" de modais sobrepostos
+- Skills disparam ao teclar números enquanto modal de texto está aberto
+- Sem hierarquia clara de quem consome o evento primeiro
+- Cursor do mouse responde a elementos cobertos por modal
+- Arrastar (drag-drop) de itens não tem estado ECS explícito — estado implícito em `game.py`
+
+**Fix correto (refatoração futura):**
+Implementar `ModalStack` em `game.py`:
+- Lista de modais abertos em ordem de Z
+- Loop de eventos pergunta ao modal no topo primeiro; só repassa se não consumido
+- Sistemas ECS só recebem eventos quando `modal_stack` está vazio
+- Interações drag-drop explicitadas como componente ECS (`DragState` no player entity):
+  `drag_item`, `drag_source`, `drag_pos` — render lê o componente, input escreve nele
+
+**Workaround atual:** `systems_events = []` quando qty modal aberto; hover/tooltip guardados com `and not _modal_open`.
+
+---

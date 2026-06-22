@@ -59,7 +59,7 @@ _REGISTRY: dict[str, str] = {
     "skill_golpe_poderoso":     _sfx("skill_golpe_poderoso"),
     "skill_golpe_debilitante":  _sfx("skill_golpe_debilitante"),
     "skill_fatiador_de_corpos": _sfx("skill_fatiador"),
-    "skill_punho_queixo":       _sfx("skill_punho_queixo"),
+    "skill_punho_no_queixo":    _sfx("skill_punho_no_queixo"),
     "skill_vitoria_iminente":   _sfx("skill_vitoria_iminente"),
 
     # ── Arqueiro — ciclo completo de sons ────────────────────────────────
@@ -542,6 +542,12 @@ class SoundManager:
         Se o arquivo não existir, nada é tocado (sem erro).
         """
         self.play_skill(f"skill_{spell_id}_{phase}", volume)
+
+    def play_spell_at(self, spell_id: str, phase: str,
+                      sx: float, sy: float, lx: float, ly: float,
+                      base: float = 1.0) -> None:
+        """Toca som de spell com volume/pan proporcional à distância fonte→ouvinte."""
+        self.play_skill_at(f"skill_{spell_id}_{phase}", sx, sy, lx, ly, base)
 
     def play_skill(self, name: str, volume: float = 1.0, pan: float = 0.0) -> None:
         """Toca a skill — carrega variantes dinamicamente se necessário.

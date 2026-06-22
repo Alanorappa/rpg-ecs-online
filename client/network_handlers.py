@@ -28,6 +28,8 @@ class NetworkHandlers:
             self._handle_msg_combat_result(payload)
         elif msg_type == MsgType.SKILL_RESULT:
             self._handle_msg_skill_result(payload)
+        elif msg_type == MsgType.SKILL_EFFECT:
+            self._handle_msg_skill_effect(payload)
         elif msg_type == MsgType.ENTITY_DESPAWN:
             self._handle_msg_entity_despawn(payload)
         elif msg_type == MsgType.ENTITY_MOVE:
@@ -195,100 +197,63 @@ class NetworkHandlers:
         caster_eid = payload.get("caster_eid", -1)
         sid        = payload.get("sid", "")
         targets    = payload.get("targets", [])
-        # Som da skill — confirmado pelo servidor (evita som sem dano em kiting)
-        if sid:
-            from skill_config import SKILL_CATALOG as _SC_snd
-            from components import Position as _PosSR
-            _sk_entry     = _SC_snd.get(sid, {})
-            _snd_name     = (_sk_entry.get("sound") if isinstance(_sk_entry, dict) else None) or f"skill_{sid}"
-            _snd_on_start = bool(_sk_entry.get("sound_on_cast_start")) if isinstance(_sk_entry, dict) else False
-            if caster_eid == self._my_eid:
-                _failed_sr     = payload.get("failed",        False)
-                _ps_sr         = self.world.get_component(self.player_entity, PlayerSkills)
-                _cast_started  = payload.get("cast_started",  False)
-                _is_completion = payload.get("is_completion", False)
-                _is_proj_dmg   = payload.get("is_proj_damage", False)
-                if _failed_sr:
-                    # Servidor rejeitou: limpa pending e restaura carga consumida
-                    if _ps_sr:
-                        _srv_cd_fail = payload.get("cooldown", 0)
-                        for _sk_sr in _ps_sr.skills:
-                            if _sk_sr and _sk_sr.skill_id == sid:
-                                _sk_sr._server_pending         = False
-                                _sk_sr._server_pending_timeout = 0.0
-                                if _sk_sr.max_charges > 0 and _sk_sr.charges < _sk_sr.max_charges:
-                                    _sk_sr.charges += 1
-                                if _srv_cd_fail > 0:
-                                    _sk_sr.current_cooldown = float(_srv_cd_fail)
-                    # Cancela SpellCast visual para o cast bar desaparecer
-                    from components import SpellCast as _SCFail, CombatState as _CSFail
-                    _sc_fail = self.world.get_component(self.player_entity, _SCFail)
-                    if _sc_fail and _sc_fail.spell_id == sid:
-                        self.world.remove_component(self.player_entity, _SCFail)
-                    # Garante que is_casting é limpo — can_act() depende disso
-                    _cs_fail = self.world.get_component(self.player_entity, _CSFail)
-                    if _cs_fail:
-                        _cs_fail.is_casting = False
-                    # Exibe motivo da rejeição se o servidor enviou
-                    _fail_reason = payload.get("reason", "")
-                    if _fail_reason:
-                        from floating_text import WARN as _WARN_fail
-                        _WARN_fail.add(_fail_reason)
-                elif _cast_started:
-                    # Cast com tempo aceito: GCD + limpa pending.
-                    # Som toca aqui só se sound_on_cast_start=True no catálogo (ex: Canção de Ninar);
-                    # caso contrário, espera is_completion para tocar.
-                    # Limpa flag de cancelamento anterior desta spell.
-                    self._cancelled_spell_ids.discard(sid)
-                    if _snd_on_start:
-                        SOUNDS.play_skill(_snd_name)
-                    if _ps_sr:
-                        _ps_sr.gcd_timer = PlayerSkills.GCD_DURATION
-                        for _sk_sr in _ps_sr.skills:
-                            if _sk_sr and _sk_sr.skill_id == sid:
-                                _sk_sr._server_pending         = False
-                                _sk_sr._server_pending_timeout = 0.0
-                elif _is_completion:
-                    # Cast completou no servidor: som + cooldown. GCD já foi aplicado.
-                    if not _snd_on_start:
-                        SOUNDS.play_skill(_snd_name)
-                    if _ps_sr:
-                        _srv_cd = payload.get("cooldown")
-                        for _sk_sr in _ps_sr.skills:
-                            if _sk_sr and _sk_sr.skill_id == sid:
-                                _sk_sr._server_pending         = False
-                                _sk_sr._server_pending_timeout = 0.0
-                                _sk_sr.current_cooldown = float(_srv_cd) if _srv_cd is not None else _sk_sr.cooldown
-                elif _is_proj_dmg:
-                    pass  # só mostra dano — GCD/CD/som já foram em cast_started/is_completion
-                else:
-                    # Skill instantânea: GCD + cooldown + som tudo junto (como offline).
-                    SOUNDS.play_skill(_snd_name)
-                    if _ps_sr:
-                        _ps_sr.gcd_timer = PlayerSkills.GCD_DURATION
-                        _srv_cd = payload.get("cooldown")
-                        for _sk_sr in _ps_sr.skills:
-                            if _sk_sr and _sk_sr.skill_id == sid:
-                                _sk_sr._server_pending         = False
-                                _sk_sr._server_pending_timeout = 0.0
-                                _sk_sr.current_cooldown = float(_srv_cd) if _srv_cd is not None else _sk_sr.cooldown
-            elif caster_eid in self._remote_players:
-                # Player remoto: mesma lógica de timing do player local
-                _cast_local      = self._remote_players[caster_eid]
-                _cast_pos        = self.world.get_component(_cast_local, _PosSR)
-                if _cast_pos:
-                    _slx, _sly       = self._player_world_pos()
-                    _cr_started      = payload.get("cast_started",  False)
-                    _cr_completion   = payload.get("is_completion", False)
-                    _cr_proj_dmg     = payload.get("is_proj_damage", False)
-                    _cr_should_play  = (
-                        (_cr_started    and     _snd_on_start) or
-                        (_cr_completion and not _snd_on_start) or
-                        (not _cr_started and not _cr_completion and not _cr_proj_dmg)
-                    )
-                    if _cr_should_play:
-                        SOUNDS.play_skill_at(_snd_name, _cast_pos.x, _cast_pos.y,
-                                             _slx, _sly, base=0.85)
+        # Apenas gameplay — som/VFX chegam via SKILL_EFFECT separado
+        if caster_eid == self._my_eid:
+            _failed_sr     = payload.get("failed",        False)
+            _ps_sr         = self.world.get_component(self.player_entity, PlayerSkills)
+            _cast_started  = payload.get("cast_started",  False)
+            _is_completion = payload.get("is_completion", False)
+            _is_proj_dmg   = payload.get("is_proj_damage", False)
+            if _failed_sr:
+                if _ps_sr:
+                    _srv_cd_fail = payload.get("cooldown", 0)
+                    for _sk_sr in _ps_sr.skills:
+                        if _sk_sr and _sk_sr.skill_id == sid:
+                            _sk_sr._server_pending         = False
+                            _sk_sr._server_pending_timeout = 0.0
+                            if _sk_sr.max_charges > 0 and _sk_sr.charges < _sk_sr.max_charges:
+                                _sk_sr.charges += 1
+                            if _srv_cd_fail > 0:
+                                _sk_sr.current_cooldown = float(_srv_cd_fail)
+                from components import SpellCast as _SCFail, CombatState as _CSFail
+                _sc_fail = self.world.get_component(self.player_entity, _SCFail)
+                if _sc_fail and _sc_fail.spell_id == sid:
+                    self.world.remove_component(self.player_entity, _SCFail)
+                _cs_fail = self.world.get_component(self.player_entity, _CSFail)
+                if _cs_fail:
+                    _cs_fail.is_casting = False
+                _fail_reason = payload.get("reason", "")
+                if _fail_reason:
+                    from floating_text import WARN as _WARN_fail
+                    _WARN_fail.add(_fail_reason)
+            elif _cast_started:
+                self._cancelled_spell_ids.discard(sid)
+                if _ps_sr:
+                    _ps_sr.gcd_timer = PlayerSkills.GCD_DURATION
+                    for _sk_sr in _ps_sr.skills:
+                        if _sk_sr and _sk_sr.skill_id == sid:
+                            _sk_sr._server_pending         = False
+                            _sk_sr._server_pending_timeout = 0.0
+            elif _is_completion:
+                if _ps_sr:
+                    _srv_cd = payload.get("cooldown")
+                    for _sk_sr in _ps_sr.skills:
+                        if _sk_sr and _sk_sr.skill_id == sid:
+                            _sk_sr._server_pending         = False
+                            _sk_sr._server_pending_timeout = 0.0
+                            _sk_sr.current_cooldown = float(_srv_cd) if _srv_cd is not None else _sk_sr.cooldown
+            elif _is_proj_dmg:
+                pass
+            else:
+                # Skill instantânea: GCD + cooldown
+                if _ps_sr:
+                    _ps_sr.gcd_timer = PlayerSkills.GCD_DURATION
+                    _srv_cd = payload.get("cooldown")
+                    for _sk_sr in _ps_sr.skills:
+                        if _sk_sr and _sk_sr.skill_id == sid:
+                            _sk_sr._server_pending         = False
+                            _sk_sr._server_pending_timeout = 0.0
+                            _sk_sr.current_cooldown = float(_srv_cd) if _srv_cd is not None else _sk_sr.cooldown
         # Escudo de Fogo confirmado: adiciona FireShieldEffect no cliente para visual + timer
         if caster_eid == self._my_eid and sid == "escudo_fogo" and not payload.get("failed"):
             from components import FireShieldEffect as _FSEcl
@@ -309,6 +274,38 @@ class NetworkHandlers:
                 if _cst_ib:
                     _cst_ib.is_stunned = True
                     _cst_ib.is_immune  = True
+
+        # Camuflagem confirmada: aplica localmente (servidor só roda o handler
+        # no _skill_system dele — o cliente nunca chama _skill_camuflagem
+        # diretamente, ver _use_skill_visual_only). Sem isso, o cliente nunca
+        # saberia da velocidade reduzida / disfarce, já que isso não é
+        # client-predicted como Interceptar.
+        if caster_eid == self._my_eid and sid == "camuflagem" and not payload.get("failed"):
+            import random as _rand_cam
+            from components import (CombatStats as _CSCam, CombatState as _CStCam,
+                                    TileMovement as _TMCam, StatusEffects as _SFXCam)
+            from skill_config import SKILL_CATALOG as _SCCam
+            from tileset import discover_camouflage_variants as _disc_cam
+            _params_cam = _SCCam.get("camuflagem", {}).get("params", {})
+            _dur_cam    = _params_cam.get("duration",  5.0)
+            _spd_cam    = _params_cam.get("speed_pct", 0.60)
+            _cs_cam     = self.world.get_component(self.player_entity, _CSCam)
+            _cst_cam    = self.world.get_component(self.player_entity, _CStCam)
+            _tm_cam     = self.world.get_component(self.player_entity, _TMCam)
+            if _cs_cam:
+                _cs_cam.camouflage_timer  = _dur_cam
+                _variants_cam = _disc_cam()
+                _cs_cam.camouflage_object = _rand_cam.choice(_variants_cam) if _variants_cam else ""
+            if _cst_cam:
+                _cst_cam.is_visible    = False
+                _cst_cam.is_immune     = True
+                _cst_cam.is_camouflaged = True
+            if _tm_cam:
+                _tm_cam.speed = 110.0 * _spd_cam
+            _sfx_cam = self.world.get_component(self.player_entity, _SFXCam)
+            if _sfx_cam:
+                for _dot_cam in ("poison", "bleed", "burn"):
+                    _sfx_cam.remove(_dot_cam)
 
         # Consome carga livre de Executar ao usar a skill
         if caster_eid == self._my_eid and sid == "executar":
@@ -549,8 +546,6 @@ class NetworkHandlers:
                             target_last_y=_tly,
                             target_server_id=_fr_srv_tgt,
                         ))
-                    SOUNDS.play_random(["arrow_release_1", "arrow_release_2"],
-                                       channel_group=(10, 11))
 
         # Picada de Escorpião is_completion: cria projétil visual.
         # Primeira (única) flecha envia PROJECTILE_HIT_CS ao colidir.
@@ -593,8 +588,6 @@ class NetworkHandlers:
                         target_last_y    = _pe_tly,
                         target_server_id = _pe_srv_tgt,
                     ))
-                    SOUNDS.play_random(["arrow_release_1", "arrow_release_2"],
-                                       channel_group=(10, 11))
 
         # Tiro Repulsivo is_completion: cria projétil visual.
         # Knockback/stun aplicados pelo servidor após PROJECTILE_HIT_CS.
@@ -637,8 +630,76 @@ class NetworkHandlers:
                         target_last_y    = _tr_tly,
                         target_server_id = _tr_srv_tgt,
                     ))
-                    SOUNDS.play_random(["arrow_release_1", "arrow_release_2"],
-                                       channel_group=(10, 11))
+
+    def _handle_msg_skill_effect(self, payload: dict) -> None:
+        """Handler de SKILL_EFFECT — só apresentação: som/VFX por fase da skill."""
+        from skill_config import SKILL_CATALOG as _SC_sfx
+        sid        = payload.get("sid", "")
+        event      = payload.get("event", "")
+        caster_eid = payload.get("caster_eid", -1)
+        if not sid or not event:
+            return
+        if sid == "tiro_repulsivo" and event == "collision":
+            self._show_knockback_collision(payload)
+            return
+        fx = _SC_sfx.get(sid, {}).get("effects", {}).get(event, {})
+        snd  = fx.get("sound")   # som único → play_skill
+        snds = fx.get("sounds")  # variações aleatórias → play_random
+        if not snd and not snds:
+            return
+        is_local = caster_eid == self._my_eid
+        if is_local:
+            if snd:
+                SOUNDS.play_skill(snd)
+            else:
+                SOUNDS.play_random(snds)
+        else:
+            # Som posicional a partir das coords de tile do payload
+            from tileset import TILE_SIZE as _TS_sfx
+            _sfx_wx = payload.get("tx", 0) * _TS_sfx + _TS_sfx // 2
+            _sfx_wy = payload.get("ty", 0) * _TS_sfx + _TS_sfx // 2
+            _slx, _sly = self._player_world_pos()
+            if snd:
+                SOUNDS.play_skill_at(snd, _sfx_wx, _sfx_wy, _slx, _sly, base=0.85)
+            else:
+                SOUNDS.play_random_at(snds, _sfx_wx, _sfx_wy, _slx, _sly, base=0.85)
+
+    def _show_knockback_collision(self, payload: dict) -> None:
+        """Tiro Repulsivo: feedback dedicado quando o empurrão colide (parede ou
+        criatura) — distinto do "impact" da flecha (que já dispara sempre que o
+        tiro acerta, mesmo com knockback de 0 tiles). Sem isso, uma colisão a 0
+        tiles (alvo já encostado) não tinha nenhum sinal próprio — só o ícone de
+        stun aparecia, dando a impressão de que o stun "aconteceu antes" do
+        empurrão. Reaproveita FLT + som de impacto já existentes (arrow_impact)."""
+        from floating_text import FLT
+        from components import Position as _PosKb
+        from tileset import TILE_SIZE as _TS_kb
+
+        def _local_of(server_eid: int):
+            if server_eid == self._my_eid:
+                return self.player_entity
+            return self._remote_mobs.get(server_eid, self._remote_players.get(server_eid))
+
+        target_eid    = payload.get("target_eid", -1)
+        collided_eid  = payload.get("collided_eid", -1)
+        tx, ty        = payload.get("tx", 0), payload.get("ty", 0)
+        wx, wy = tx * _TS_kb + _TS_kb // 2, ty * _TS_kb + _TS_kb // 2
+
+        _local_tgt = _local_of(target_eid)
+        _tgt_pos = self.world.get_component(_local_tgt, _PosKb) if _local_tgt is not None else None
+        FLT.add("Colisão!", _tgt_pos.x if _tgt_pos else wx, _tgt_pos.y if _tgt_pos else wy,
+                (255, 160, 60), "small", target_id=_local_tgt if _local_tgt is not None else -1)
+
+        if collided_eid != -1:
+            _local_col = _local_of(collided_eid)
+            _col_pos = self.world.get_component(_local_col, _PosKb) if _local_col is not None else None
+            if _col_pos:
+                FLT.add("Colisão!", _col_pos.x, _col_pos.y,
+                        (255, 160, 60), "small", target_id=_local_col)
+
+        _lx, _ly = self._player_world_pos()
+        SOUNDS.play_random_at(["arrow_impact_1", "arrow_impact_2", "arrow_impact_3"],
+                              wx, wy, _lx, _ly, base=0.9)
 
     def _handle_msg_entity_despawn(self, payload: dict) -> None:
         eid = payload.get("eid", -1)
@@ -698,6 +759,7 @@ class NetworkHandlers:
             real_tx = payload.get("tx", 0)
             real_ty = payload.get("ty", 0)
             skill_rejected = payload.get("skill_rejected", False)
+            is_dash_corr   = payload.get("is_dash", False)
             player_tm = self.world.get_component(self.player_entity, TileMovement)
             if player_tm:
                 # Se cliente já está dashando para o mesmo tile (prediction correta), não interrompe
@@ -705,24 +767,81 @@ class NetworkHandlers:
                         player_tm.target_tile_x == real_tx and
                         player_tm.target_tile_y == real_ty):
                     pass  # animação em curso bate com posição do servidor — mantém
+                elif is_dash_corr and not skill_rejected:
+                    _corr_duration = payload.get("duration")
+                    if _corr_duration is not None:
+                        # Deslocamento forçado (ex: vítima de knockback): UM evento
+                        # com posição final + duração explícita — preempta qualquer
+                        # fila/dash em curso (servidor já decidiu tudo, cliente só
+                        # interpola a tween confirmada, sem enfileirar passo a passo
+                        # nem prever o resultado de um empurrão em si mesmo).
+                        self._self_move_queue.clear()
+                        from utils import start_tile_movement
+                        from components import Position as _PosSelfDash
+                        _ppos_sd = self.world.get_component(self.player_entity, _PosSelfDash)
+                        if _ppos_sd:
+                            start_tile_movement(_ppos_sd, player_tm, real_tx, real_ty,
+                                                override_duration=_corr_duration)
+                            player_tm.is_dash = _corr_duration > 0
+                            self._net_last_tx = real_tx
+                            self._net_last_ty = real_ty
+                        return
+                    # Sem duration explícito (ex: Interceptar) — comportamento
+                    # existente: anima em sequência se já tiver dash em curso.
+                    if player_tm.is_moving:
+                        if (not self._self_move_queue
+                                or self._self_move_queue[-1] != (real_tx, real_ty)):
+                            self._self_move_queue.append((real_tx, real_ty))
+                    else:
+                        from utils import start_tile_movement
+                        from components import Position as _PosSelfDash
+                        _ppos_sd = self.world.get_component(self.player_entity, _PosSelfDash)
+                        if _ppos_sd:
+                            start_tile_movement(_ppos_sd, player_tm, real_tx, real_ty)
+                            player_tm.is_dash       = True
+                            player_tm.move_duration = 0.18
+                            # _send_player_move() manda MOVE sempre que target_tile
+                            # muda — sem isso, veria esta mudança (causada pelo
+                            # servidor, não por input) como passo do jogador e
+                            # mandaria de volta. Como o knockback já resolveu a
+                            # posição final instantaneamente no servidor, esse MOVE
+                            # chegaria "atrasado" pedindo um tile intermediário, seria
+                            # rejeitado, e a correção de rejeição cancelaria esta
+                            # própria animação — sincroniza aqui pra suprimir o envio.
+                            self._net_last_tx = real_tx
+                            self._net_last_ty = real_ty
                 elif (player_tm.current_tile_x != real_tx or
                         player_tm.current_tile_y != real_ty or
                         skill_rejected):
-                    # Cancela animação de dash se estava em curso (skill rejeitada)
-                    if getattr(player_tm, "is_dash", False):
-                        player_tm.is_dash      = False
-                        player_tm.is_moving    = False
-                        player_tm.progress     = 0.0
-                    player_tm.current_tile_x = real_tx
-                    player_tm.current_tile_y = real_ty
-                    player_tm.target_tile_x  = real_tx
-                    player_tm.target_tile_y  = real_ty
-                    # Sincroniza pixel position — B10
-                    from components import Position as _PosSync
-                    _ppos = self.world.get_component(self.player_entity, _PosSync)
-                    if _ppos:
-                        _ppos.x = real_tx * TILE_SIZE + TILE_SIZE / 2
-                        _ppos.y = real_ty * TILE_SIZE + TILE_SIZE / 2
+                    _was_dashing = getattr(player_tm, "is_dash", False)
+                    if _was_dashing or not player_tm.is_moving:
+                        # Cancela animação de dash em andamento (predição local que o
+                        # servidor não confirmou) OU, se o player está parado, é seguro
+                        # aplicar a correção (nada legítimo em andamento pra corromper).
+                        if _was_dashing:
+                            player_tm.is_dash      = False
+                            player_tm.is_moving    = False
+                            player_tm.progress     = 0.0
+                        player_tm.current_tile_x = real_tx
+                        player_tm.current_tile_y = real_ty
+                        player_tm.target_tile_x  = real_tx
+                        player_tm.target_tile_y  = real_ty
+                        # Sincroniza pixel position — B10
+                        from components import Position as _PosSync
+                        _ppos = self.world.get_component(self.player_entity, _PosSync)
+                        if _ppos:
+                            _ppos.x = real_tx * TILE_SIZE + TILE_SIZE / 2
+                            _ppos.y = real_ty * TILE_SIZE + TILE_SIZE / 2
+                    # else: andando normalmente, sem dash (ex: perseguição iniciada
+                    # pela própria skill que falhou — enter_combat/is_pursuing roda
+                    # ANTES do handler, mesmo em caso de rejeição). Essa caminhada já
+                    # está sendo validada passo-a-passo pelo pipeline normal de MOVE
+                    # (server/world_server.py::move_player) — forçar esta correção
+                    # (que pode estar desatualizada pelo delay de rede desde quando
+                    # foi gerada) sobrescreveria um movimento legítimo mais recente
+                    # com current==target e is_moving ainda True, deixando o
+                    # TileMovementSystem reanimar a partir de pixels obsoletos no
+                    # próximo frame. Ignora a correção de posição; mantém só o feedback.
                     if skill_rejected:
                         # Feedback imediato: avisa que o dash foi bloqueado
                         from floating_text import FLT
@@ -736,19 +855,13 @@ class NetworkHandlers:
             self._apply_remote_move(eid, payload.get("tx", 0), payload.get("ty", 0))
 
     def _handle_msg_aoi_update(self, payload: dict) -> None:
-        for m in payload.get("moved", []):
-            eid = m.get("eid", -1)
-            if eid == self._my_eid:
-                continue
-            if eid in self._remote_players:
-                self._apply_remote_move(eid, m["tx"], m["ty"],
-                                        from_tx=m.get("from_tx"),
-                                        from_ty=m.get("from_ty"),
-                                        is_dash=m.get("is_dash", False),
-                                        teleport=m.get("teleport", False))
-            elif eid in self._remote_mobs:
-                self._move_remote_mob(eid, m["tx"], m["ty"],
-                                      m.get("from_tx"), m.get("from_ty"))
+        # spawned ANTES de moved: entidades que entram no AOI e já se movem no
+        # MESMO tick (ex: mob voltando a perseguir, knockback empurrando algo
+        # de volta ao range) precisam existir no ECS local antes de receber o
+        # passo de movimento — senão _move_remote_mob/_apply_remote_move
+        # descartam o move (local_eid ainda None) e a entidade só "pisca" na
+        # posição final via spawn, sem nenhuma animação. Padrão genérico: vale
+        # para QUALQUER skill/sistema que mova entidades via _moved_this_tick.
         for sp in payload.get("spawned", []):
             eid  = sp.get("eid", -1)
             kind = sp.get("kind", "player")
@@ -776,6 +889,22 @@ class NetworkHandlers:
                     "hp_max":   sp.get("hp_max", 100),
                     "kind":     kind,
                 })
+        for m in payload.get("moved", []):
+            eid = m.get("eid", -1)
+            if eid == self._my_eid:
+                continue
+            if eid in self._remote_players:
+                self._apply_remote_move(eid, m["tx"], m["ty"],
+                                        from_tx=m.get("from_tx"),
+                                        from_ty=m.get("from_ty"),
+                                        is_dash=m.get("is_dash", False),
+                                        teleport=m.get("teleport", False),
+                                        duration=m.get("duration"))
+            elif eid in self._remote_mobs:
+                self._move_remote_mob(eid, m["tx"], m["ty"],
+                                      m.get("from_tx"), m.get("from_ty"),
+                                      is_dash=m.get("is_dash", False),
+                                      duration=m.get("duration"))
         # Status effects sync (antes de combat para ter CC certo na animação)
         for eff_payload in payload.get("effects", []):
             if eff_payload.get("eid") == self._my_eid:
@@ -796,7 +925,7 @@ class NetworkHandlers:
             self._remove_remote_player_entity(eid)
             self._remote_players.pop(eid, None)
             local_eid = self._remote_mobs.pop(eid, None)
-            self._mob_move_queues.pop(eid, None)
+            _pending_queue = self._mob_move_queues.get(eid)
             if local_eid is not None:
                 from aoi_debug import AOI_DBG
                 AOI_DBG.log("DESPAWN_AOI", server_eid=eid, local_eid=local_eid)
@@ -805,9 +934,9 @@ class NetworkHandlers:
                 _meta_d = self.world.get_component(local_eid, _REM_d)
                 if _meta_d and (_meta_d.last_x or _meta_d.last_y):
                     self._mob_ghost_pos[eid] = (_meta_d.last_x, _meta_d.last_y)
+                _is_kill = eid in _died_eids
                 # Som de morte APENAS para kills reais (não para saída de AOI).
-                # died_eids distingue morte de simples saída do raio de 15 tiles.
-                if eid in _died_eids:
+                if _is_kill:
                     try:
                         from components import Position as _PosD2, MobSounds as _MSD2
                         _pos_d2 = self.world.get_component(local_eid, _PosD2)
@@ -820,10 +949,48 @@ class NetworkHandlers:
                                                       dedup_key=str(local_eid))
                     except Exception:
                         pass
-                try:
-                    self.world.remove_entity(local_eid)
-                except Exception:
-                    pass
+                from components import TileMovement as _TM_dep, Position as _Pos_dep
+                from tileset import TILE_SIZE as _TS_dep
+                _tm_dep  = self.world.get_component(local_eid, _TM_dep)
+                _pos_dep = self.world.get_component(local_eid, _Pos_dep)
+                _defer = False
+                if _is_kill and _pending_queue:
+                    # Sequência de movimento em cadeia pendente (knockback/dash multi-tile):
+                    # deixa _process_mob_move_queues drenar tudo normalmente antes de
+                    # remover a entidade — padrão genérico para qualquer "fast move"
+                    # (is_dash) que termine em morte no meio da animação. Esses passos
+                    # escrevem a posição final no servidor sem interpolação própria
+                    # (igual à escrita instantânea de tile), então o loot já nasce no
+                    # tile certo — sem precisar de redirect aqui.
+                    self._pending_mob_despawn[local_eid] = {"server_eid": eid, "timer": 0.0}
+                    _defer = True
+                elif _is_kill and _tm_dep is not None and _tm_dep.is_moving:
+                    if _tm_dep.progress >= 0.3:
+                        # Mob commitou para o próximo tile: termina animação lá e loot segue.
+                        _srv_tx = _tm_dep.current_tile_x
+                        _srv_ty = _tm_dep.current_tile_y
+                        _tgt_tx = _tm_dep.target_tile_x
+                        _tgt_ty = _tm_dep.target_tile_y
+                        self._pending_mob_despawn[local_eid] = {"server_eid": eid, "timer": 0.0}
+                        self._pending_loot_redirect[(_srv_tx, _srv_ty)] = (_tgt_tx, _tgt_ty)
+                        _defer = True
+                    else:
+                        # Menos de 30% do passo: snap curto de volta ao tile do servidor.
+                        _snap_tx = _tm_dep.current_tile_x
+                        _snap_ty = _tm_dep.current_tile_y
+                        _tm_dep.is_moving     = False
+                        _tm_dep.target_tile_x = _snap_tx
+                        _tm_dep.target_tile_y = _snap_ty
+                        _tm_dep.progress      = 0.0
+                        if _pos_dep:
+                            _pos_dep.x = _snap_tx * _TS_dep + _TS_dep // 2
+                            _pos_dep.y = _snap_ty * _TS_dep + _TS_dep // 2
+                if not _defer:
+                    self._mob_move_queues.pop(eid, None)
+                    try:
+                        self.world.remove_entity(local_eid)
+                    except Exception:
+                        pass
 
     def _handle_msg_stats_update(self, payload: dict) -> None:
         from components import CombatStats, RemoteControlled
@@ -868,17 +1035,7 @@ class NetworkHandlers:
                     _caster_pos_inc = self.world.get_component(_caster_local, _PosArr_inc)
                     _tgt_pos_inc    = self.world.get_component(_tgt_local,    _PosArr_inc)
                     if _caster_pos_inc and _tgt_pos_inc:
-                        # Som de saque/disparo posicional (igual ao auto-attack do arqueiro
-                        # remoto, C13) — sem isso o lançamento de Picada de Escorpião/Flecha
-                        # Reiterada/Tiro Repulsivo por player remoto era silencioso.
-                        _slx_inc, _sly_inc = self._player_world_pos()
-                        if random.random() < 0.35:
-                            SOUNDS.play_random_at(["arrow_draw_1", "arrow_draw_2"],
-                                                  _caster_pos_inc.x, _caster_pos_inc.y,
-                                                  _slx_inc, _sly_inc, base=0.5)
-                        SOUNDS.play_random_at(["arrow_release_1", "arrow_release_2"],
-                                              _caster_pos_inc.x, _caster_pos_inc.y,
-                                              _slx_inc, _sly_inc, base=0.5)
+                        # Sons de lançamento chegam via SKILL_EFFECT{event:"launch"} — aqui só visual
                         if _proj_sid == "flecha_reiterada":
                             from skill_config import SKILL_CATALOG as _SC_fr_inc
                             _fr_delay_inc  = _SC_fr_inc.get("flecha_reiterada", {}).get(
@@ -1064,10 +1221,12 @@ class NetworkHandlers:
 
     def _handle_msg_player_death(self, payload: dict) -> None:
         # Servidor declarou que o player local morreu. Corpo fica no local da
-        # morte (current_hp já é 0 via COMBAT_RESULT/SKILL_RESULT que matou o
-        # player) — sem restauração de HP/mana nem teleporte aqui. O cliente
+        # morte — sem restauração de HP/mana nem teleporte aqui. O cliente
         # inicia o timer de 2s pra mostrar a janela "Você morreu".
-        from components import CombatState, GhostState
+        from components import CombatStats, CombatState, GhostState
+        _cs_death = self.world.get_component(self.player_entity, CombatStats)
+        if _cs_death:
+            _cs_death.current_hp = 0  # garante HP=0 mesmo sem COMBAT_RESULT do golpe fatal
         gst = self.world.get_component(self.player_entity, GhostState)
         if gst:
             gst.is_dead   = True
@@ -1184,6 +1343,12 @@ class NetworkHandlers:
         ty        = payload.get("ty", 0)
         if corpse_id < 0:
             return
+        # Se mob morreu commitado para o próximo tile, loot segue para lá.
+        _redirect = self._pending_loot_redirect.pop((tx, ty), None)
+        if _redirect:
+            tx, ty = _redirect
+            px = tx * _TS + _TS // 2
+            py = ty * _TS + _TS // 2
         # Reconstrói objetos de item a partir dos dados serializados do servidor
         loot_items = []
         for item_data in payload.get("items", []):
@@ -1194,7 +1359,13 @@ class NetworkHandlers:
                 except Exception:
                     continue
                 if getattr(candidate, "name", "") == item_name:
+                    candidate.stack = item_data.get("stack", 1)
                     loot_items.append(candidate)
+                    # Reciclagem: única fonte de loot de ammo com stack>1 hoje —
+                    # mesmo aviso do offline (systems.py), aqui no momento do drop.
+                    if candidate.item_type == "ammo" and candidate.stack > 1:
+                        LOG.add(f"Reciclagem! {candidate.stack} flechas no loot.",
+                                (180, 220, 120))
                     break
         # Cria entidade Corpse no ECS local — LootSystem offline lê daqui
         px = tx * _TS + _TS // 2

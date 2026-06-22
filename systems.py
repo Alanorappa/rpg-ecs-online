@@ -12,7 +12,8 @@ from fonts import make as _font
 
 # Re-exporta apply_effect de core_systems para compatibilidade com todo o código
 # que já faz `from systems import apply_effect`.
-from core_systems import apply_effect, StatusEffectSystem as _CoreStatusEffectSystem
+from core_systems import (apply_effect, StatusEffectSystem as _CoreStatusEffectSystem,
+                          BaseCombatStateSystem as _BaseCombatStateSystem)
 try:
     from mob_combat_debug import MCL as _MCL
 except ImportError:
@@ -688,10 +689,11 @@ class CombatSystem(System):
             _shield = self.world.get_component(target_id, FireShieldEffect)
             if _shield:
                 _retaliation = 10 + int(target_stats.spell_power * 0.20)
-                _att_cs = self._get_combat_stats(attacker_id)
+                _att_cs  = self._get_combat_stats(attacker_id)
+                _att_cst = self.world.get_component(attacker_id, CombatState)
                 _att_pos = self.world.get_component(attacker_id, Position)
-                if _att_cs and _att_cs.current_hp > 0:
-                    _att_cs.current_hp = max(0, _att_cs.current_hp - _retaliation)
+                if _att_cs and _att_cs.current_hp > 0 and not (_att_cst and _att_cst.is_immune):
+                    _att_cs.current_hp -= _retaliation  # overkill preservado (snapshot diff)
                     if _att_pos:
                         FLT.add(f"-{_retaliation}", _att_pos.x, _att_pos.y,
                                 (255, 120, 0), "normal", target_id=attacker_id)
@@ -1010,50 +1012,56 @@ class DeathHandlerSystem(System):
             self.world.remove_entity(entity_id)
 
 
-class CombatStateSystem(System):
-    """Atualiza timers de CombatState, drena modificadores temporários e dispara procs."""
+class CombatStateSystem(_BaseCombatStateSystem, System):
+    """Atualiza timers de CombatState, drena modificadores temporários e dispara procs.
+
+    Herda BaseCombatStateSystem (core_systems.py) — timers de combate, rage decay,
+    HP5 e concentração ficam em um único lugar compartilhado com o servidor.
+    Este sistema adiciona lógica cliente-only: wander de disoriented/polymorph,
+    timer de camuflagem (visual), timed_modifiers e procs de equipamento.
+    """
+
+    # RAGE_DECAY_AMOUNT / RAGE_DECAY_INTERVAL herdados de BaseCombatStateSystem
+    DIS_MOVE_DELAY = 1.3  # segundos de pausa entre passos aleatórios
 
     def __init__(self, world: World):
-        self.world = world
+        _BaseCombatStateSystem.__init__(self, world)
         # Timer por eid: segundos até o próximo passo aleatório (disoriented/polymorph)
         self._dis_move_timers: dict[int, float] = {}
 
-    RAGE_DECAY_AMOUNT   = 5
-    RAGE_DECAY_INTERVAL = 3.0  # segundos entre cada decaimento
-    DIS_MOVE_DELAY      = 1.3  # segundos de pausa entre passos aleatórios
-
     def update(self, events: list = None, dt: float = 0) -> None:
         for eid, cs in self.world.get_entities_with(CombatState):
-            # Timer de saída de combate
-            if cs.in_combat and cs.combat_timer > 0:
-                cs.combat_timer -= dt
-                if cs.combat_timer <= 0:
-                    cs.in_combat = False
-                    cs.is_pursuing = False
-                    cs.combat_timer = 0.0
-            # Timer de stun
-            if cs.is_stunned and cs.stun_timer > 0:
-                cs.stun_timer -= dt
-                if cs.stun_timer <= 0:
-                    cs.is_stunned = False
-                    cs.stun_timer = 0.0
+            combat_stats = self.world.get_component(eid, CombatStats)
 
-            # Disoriented / Polymorph para PLAYERS: bloqueia ações e força movimento aleatório
-            # (para mobs: EnemyAISystem faz o wander; para players: aqui)
+            # ── Timers headless (compartilhados com servidor) ──────────────
+            self._tick_combat_timer(cs, dt)
+            self._tick_stun_timer(cs, dt)
+
             if self.world.get_component(eid, PlayerControlled) is not None:
+                char_stats = self.world.get_component(eid, CharacterStats)
+                tm         = self.world.get_component(eid, TileMovement)
+
+                self._tick_rage_decay(cs, char_stats, dt)
+
+                if combat_stats:
+                    self._tick_concentration_free_timer(combat_stats, dt)
+                    self._tick_standing_seconds(combat_stats, tm, dt)
+                    if char_stats:
+                        self._tick_concentration_regen(cs, char_stats, combat_stats, tm, dt)
+
+                # ── Disoriented / Polymorph: wander aleatório (cliente-only) ──
+                # Para mobs: EnemyAISystem faz o wander; para players: aqui.
                 _sfx_dis = self.world.get_component(eid, StatusEffects)
                 if _sfx_dis is not None and (
                         _sfx_dis.has("disoriented") or _sfx_dis.has("polymorph")):
                     cs.is_pursuing = False
-                    _auto_dis = self.world.get_component(eid, __import__("components").PlayerAutoMove)
-                    _tm_dis   = self.world.get_component(eid, TileMovement)
-                    # Decrementa timer de pausa entre passos aleatórios
+                    _auto_dis = self.world.get_component(eid, PlayerAutoMove)
+                    _tm_dis   = tm
                     _dis_t = self._dis_move_timers.get(eid, 0.0) - dt
                     self._dis_move_timers[eid] = max(0.0, _dis_t)
                     if _auto_dis and _tm_dis and not _tm_dis.is_moving and _dis_t <= 0:
-                        import random as _rand_dis
                         _dirs = [(0,1),(0,-1),(1,0),(-1,0)]
-                        _rand_dis.shuffle(_dirs)
+                        random.shuffle(_dirs)
                         for _ddx, _ddy in _dirs:
                             _fx = _tm_dis.current_tile_x + _ddx
                             _fy = _tm_dis.current_tile_y + _ddy
@@ -1061,95 +1069,33 @@ class CombatStateSystem(System):
                                 _auto_dis.ground_target = (_fx, _fy)
                                 _auto_dis.active        = True
                                 _auto_dis.path.clear()
-                                # Pausa antes do próximo passo
                                 self._dis_move_timers[eid] = self.DIS_MOVE_DELAY
                                 break
 
-            # Decay de Rage e regen de Concentração (apenas jogador)
-            if self.world.get_component(eid, PlayerControlled) is not None:
-                char_stats = self.world.get_component(eid, CharacterStats)
-                if char_stats:
-                    # Rage decay fora de combate
-                    if char_stats.rage > 0:
-                        if not cs.in_combat:
-                            char_stats.rage_decay_timer += dt
-                            if char_stats.rage_decay_timer >= self.RAGE_DECAY_INTERVAL:
-                                char_stats.rage_decay_timer -= self.RAGE_DECAY_INTERVAL
-                                char_stats.rage = max(0, char_stats.rage - self.RAGE_DECAY_AMOUNT)
-                        else:
-                            char_stats.rage_decay_timer = 0.0
+                # ── Camuflagem — timer e restauração visual (cliente-only) ──
+                if combat_stats and combat_stats.camouflage_timer > 0:
+                    combat_stats.camouflage_timer -= dt
+                    if combat_stats.camouflage_timer <= 0:
+                        combat_stats.camouflage_timer  = 0.0
+                        combat_stats.camouflage_object = ""
+                        _rend_cam = self.world.get_component(eid, Renderable)
+                        _char_cam = char_stats
+                        if _rend_cam and _char_cam:
+                            _CLASS_COLORS = {"mago": (80, 80, 220), "arqueiro": (80, 200, 80)}
+                            _rend_cam.color  = _CLASS_COLORS.get(_char_cam.class_id, (255, 0, 0))
+                            _rend_cam.width  = 24
+                            _rend_cam.height = 24
+                        _cst_cam = self.world.get_component(eid, CombatState)
+                        if _cst_cam:
+                            _cst_cam.is_visible    = True
+                            _cst_cam.is_immune     = False
+                            _cst_cam.is_camouflaged = False
+                        if tm:
+                            tm.speed = 110.0   # PLAYER_SPEED original
 
-                    # Camuflagem — tick do timer e restauração ao expirar
-                    _cs_cam = self.world.get_component(eid, CombatStats)
-                    if _cs_cam and _cs_cam.camouflage_timer > 0:
-                        _cs_cam.camouflage_timer -= dt
-                        if _cs_cam.camouflage_timer <= 0:
-                            _cs_cam.camouflage_timer = 0.0
-                            # Restaura cor e velocidade originais
-                            _rend_cam = self.world.get_component(eid, Renderable)
-                            _char_cam = self.world.get_component(eid, CharacterStats)
-                            if _rend_cam and _char_cam:
-                                _CLASS_COLORS = {"mago": (80, 80, 220), "arqueiro": (80, 200, 80)}
-                                _rend_cam.color  = _CLASS_COLORS.get(_char_cam.class_id, (255, 0, 0))
-                                _rend_cam.width  = 24
-                                _rend_cam.height = 24
-                            if _cs_cam:
-                                _cs_cam.camouflage_object = ""
-                            # Restaura visibilidade do player
-                            _cst_cam = self.world.get_component(eid, CombatState)
-                            if _cst_cam:
-                                _cst_cam.is_visible = True
-                            _tm_cam = self.world.get_component(eid, TileMovement)
-                            if _tm_cam:
-                                _tm_cam.speed = 110.0   # PLAYER_SPEED original
-
-                    # Buff "Só um Gole" — Concentração grátis + acerto 100%
-                    _cs_buff = self.world.get_component(eid, CombatStats)
-                    if _cs_buff and _cs_buff.concentration_free_timer > 0:
-                        _cs_buff.concentration_free_timer -= dt
-                        if _cs_buff.concentration_free_timer <= 0:
-                            _cs_buff.concentration_free       = False
-                            _cs_buff.concentration_free_timer = 0.0
-
-                    # Calmo e Certeiro — acumula segundos parado, reseta ao mover
-                    _cs_stand = self.world.get_component(eid, CombatStats)
-                    if _cs_stand and _cs_stand.acerto_per_standing_second > 0:
-                        _tm_stand = self.world.get_component(eid, TileMovement)
-                        if _tm_stand and _tm_stand.is_moving:
-                            _cs_stand.standing_seconds = 0.0
-                        else:
-                            _cs_stand.standing_seconds += dt
-
-                    # Regen de Concentração — taxa definida em CLASS_MELEE_OVERRIDES
-                    if char_stats.max_concentration > 0 and char_stats.concentration < char_stats.max_concentration:
-                        _cs_conc = self.world.get_component(eid, CombatStats)
-                        if _cs_conc:
-                            _tm_conc = self.world.get_component(eid, TileMovement)
-                            _moving  = _tm_conc.is_moving if _tm_conc else False
-                            _rate    = (_cs_conc.concentration_regen_moving
-                                        if _moving else
-                                        _cs_conc.concentration_regen_idle)
-                            if _rate > 0:
-                                char_stats.concentration = min(
-                                    char_stats.max_concentration,
-                                    char_stats.concentration + _rate * dt,
-                                )
-
-            combat_stats = self.world.get_component(eid, CombatStats)
-
-            # HP5 — regeneração fora de combate (jogador e mobs)
-            if combat_stats and not cs.in_combat and combat_stats.current_hp > 0:
-                if combat_stats.current_hp < combat_stats.max_hp:
-                    combat_stats.hp5_timer += dt
-                    if combat_stats.hp5_timer >= 5.0:
-                        combat_stats.hp5_timer -= 5.0
-                        regen = max(1, int(combat_stats.max_hp * combat_stats.hp5))
-                        combat_stats.current_hp = min(
-                            combat_stats.max_hp,
-                            combat_stats.current_hp + regen,
-                        )
-                else:
-                    combat_stats.hp5_timer = 0.0  # HP cheio: zera o timer
+            # HP5 — regen via base method (compartilhado com servidor)
+            if combat_stats:
+                self._tick_hp5(cs, combat_stats, dt)  # retorno ignorado no cliente
 
             if combat_stats and combat_stats.timed_modifiers:
                 for entry in combat_stats.timed_modifiers:
@@ -1564,19 +1510,15 @@ class PlayerInputSystem(System):
                 can_move = True
                 can_act  = False
 
-            # Disoriented / Polymorph: bloqueia input (CombatStateSystem força movimento aleatório)
-            _sfx_inp = self.world.get_component(entity_id, StatusEffects)
-            _is_disoriented = _sfx_inp is not None and (
-                _sfx_inp.has("disoriented") or _sfx_inp.has("polymorph"))
-            if _is_disoriented:
+            # Disoriented/Polymorph/Sleep: bloqueia input (CombatStateSystem força
+            # movimento aleatório em disoriented/polymorph; sleep fica imóvel até
+            # expirar ou ser quebrado por dano). is_action_locked centraliza os 3 —
+            # mesma checagem usada no gate de skills do servidor (skill_processor.py)
+            # e de auto-attack (combat_processor.py), pra não divergir.
+            from utils import is_action_locked
+            if is_action_locked(self.world, entity_id):
                 can_move = False   # input bloqueado; CombatStateSystem move aleatoriamente
                 can_act  = False   # não pode usar skills nem ataques
-
-            # Sleep (Canção de Ninar etc.): igual a mobs (systems.py EnemyAISystem),
-            # imóvel e sem ações até o efeito expirar ou ser quebrado por dano.
-            if _sfx_inp is not None and _sfx_inp.has("sleep"):
-                can_move = False
-                can_act  = False
 
             # --- Movimento por teclado ---
             if can_move and not tile_movement.is_moving:
@@ -1640,11 +1582,15 @@ class PlayerInputSystem(System):
 
         target_pos = self.world.get_component(target_id, Position)
         target_tm = self.world.get_component(target_id, TileMovement)
-        target_cs = self.world.get_component(target_id, CombatStats)
 
-        # Alvo morto ou removido: limpa seleção
-        if not target_pos or (target_cs and target_cs.current_hp <= 0):
+        # Alvo morto ou removido: limpa seleção. is_target_alive cobre mob
+        # local (CombatStats) E player remoto em PvP (RemoteControlled, sem
+        # CombatStats — sem isso, o ciclo de ataque/som de nock fica girando
+        # contra um corpo, já que current_hp não existe nesse alvo).
+        from utils import is_target_alive
+        if not target_pos or not is_target_alive(self.world, target_id):
             combat_state.target_entity_id = -1
+            combat_state.is_pursuing = False
             if auto_move:
                 auto_move.active = False
                 auto_move.path.clear()
@@ -1842,12 +1788,6 @@ class PlayerInputSystem(System):
                     from combat_log import LOG as _LOG
                     _LOG.add("Aljava vazia! Use Recarregar.", (220, 80, 80))
                     combat_stats.attack_cooldown_timer = 1.0
-                    return
-                tgt_pos = self.world.get_component(target_id, Position)
-                tgt_cs  = self.world.get_component(target_id, CombatStats)
-                if not tgt_pos or (tgt_cs and tgt_cs.current_hp <= 0):
-                    combat_state.target_entity_id = -1
-                    combat_state.is_pursuing = False
                     return
 
                 # Online: flecha 100% server-driven — nasce em _apply_combat_result
@@ -2322,16 +2262,21 @@ class EnemyAISystem(System):
                         ai_control.path_recalc_timer -= dt
 
                     if ai_control.path and not ai_control.is_blocked:
-                        next_tile_on_path_x, next_tile_on_path_y = ai_control.path[0]
-                        _next_ret_tile = (next_tile_on_path_x, next_tile_on_path_y)
-                        if is_tile_walkable(enemy_id, next_tile_on_path_x, next_tile_on_path_y) and \
-                                _next_ret_tile not in all_occupied_tiles:
-                            start_tile_movement(enemy_pos, tile_movement, next_tile_on_path_x, next_tile_on_path_y)
-                            ai_control.path.pop(0)
-                            all_occupied_tiles.add(_next_ret_tile)
-                        else:
-                            ai_control.path = None
-                            ai_control.path_recalc_timer = 0.0
+                        if not tile_movement.is_moving:
+                            next_tile_on_path_x, next_tile_on_path_y = ai_control.path[0]
+                            _next_ret_tile = (next_tile_on_path_x, next_tile_on_path_y)
+                            if is_tile_walkable(enemy_id, next_tile_on_path_x, next_tile_on_path_y) and \
+                                    _next_ret_tile not in all_occupied_tiles:
+                                import datetime as _dt_mob2
+                                print(f"[DBG_MOB {_dt_mob2.datetime.now().strftime('%H:%M:%S.%f')[:-3]}] "
+                                      f"SERVER RETURNING(A) eid={enemy_id} cur=({tile_movement.current_tile_x},{tile_movement.current_tile_y}) "
+                                      f"-> next=({next_tile_on_path_x},{next_tile_on_path_y}) state={ai_control.state}")
+                                start_tile_movement(enemy_pos, tile_movement, next_tile_on_path_x, next_tile_on_path_y)
+                                ai_control.path.pop(0)
+                                all_occupied_tiles.add(_next_ret_tile)
+                            else:
+                                ai_control.path = None
+                                ai_control.path_recalc_timer = 0.0
                 elif not tile_movement.is_moving:
                     if _MCL: _MCL.log("LOST_TGT", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
                                       prev=_dbg_prev_state,
@@ -2823,19 +2768,24 @@ class EnemyAISystem(System):
                     ai_control.last_known_player_tile = player_tile_now
                 
                 if ai_control.path and not ai_control.is_blocked:
-                    next_tile_on_path_x, next_tile_on_path_y = ai_control.path[0]
-                    _next_tile = (next_tile_on_path_x, next_tile_on_path_y)
+                    if not tile_movement.is_moving:
+                        next_tile_on_path_x, next_tile_on_path_y = ai_control.path[0]
+                        _next_tile = (next_tile_on_path_x, next_tile_on_path_y)
 
-                    # B2: also guard against another mob already claiming this tile
-                    # in the same frame (all_occupied_tiles tracks target tiles too)
-                    if is_tile_walkable(enemy_id, next_tile_on_path_x, next_tile_on_path_y) and \
-                            _next_tile not in all_occupied_tiles:
-                        start_tile_movement(enemy_pos, tile_movement, next_tile_on_path_x, next_tile_on_path_y)
-                        ai_control.path.pop(0)
-                        all_occupied_tiles.add(_next_tile)  # claim tile for rest of frame
-                    else:
-                        ai_control.path = None
-                        ai_control.path_recalc_timer = 0.0
+                        # B2: also guard against another mob already claiming this tile
+                        # in the same frame (all_occupied_tiles tracks target tiles too)
+                        if is_tile_walkable(enemy_id, next_tile_on_path_x, next_tile_on_path_y) and \
+                                _next_tile not in all_occupied_tiles:
+                            import datetime as _dt_mob1
+                            print(f"[DBG_MOB {_dt_mob1.datetime.now().strftime('%H:%M:%S.%f')[:-3]}] "
+                                  f"SERVER CHASING eid={enemy_id} cur=({tile_movement.current_tile_x},{tile_movement.current_tile_y}) "
+                                  f"-> next=({next_tile_on_path_x},{next_tile_on_path_y}) state={ai_control.state}")
+                            start_tile_movement(enemy_pos, tile_movement, next_tile_on_path_x, next_tile_on_path_y)
+                            ai_control.path.pop(0)
+                            all_occupied_tiles.add(_next_tile)  # claim tile for rest of frame
+                        else:
+                            ai_control.path = None
+                            ai_control.path_recalc_timer = 0.0
                 elif ai_control.is_blocked:
                     ai_control.state = "BLOCKED_BY_PLAYER"
                 else:
@@ -2867,16 +2817,21 @@ class EnemyAISystem(System):
                         ai_control.path_recalc_timer = self.path_recalc_interval
 
                     if ai_control.path and not ai_control.is_blocked:
-                        next_tile_on_path_x, next_tile_on_path_y = ai_control.path[0]
-                        _next_ret_tile = (next_tile_on_path_x, next_tile_on_path_y)
-                        if is_tile_walkable(enemy_id, next_tile_on_path_x, next_tile_on_path_y) and \
-                                _next_ret_tile not in all_occupied_tiles:
-                            start_tile_movement(enemy_pos, tile_movement, next_tile_on_path_x, next_tile_on_path_y)
-                            ai_control.path.pop(0)
-                            all_occupied_tiles.add(_next_ret_tile)
-                        else:
-                            ai_control.path = None
-                            ai_control.path_recalc_timer = 0.0
+                        if not tile_movement.is_moving:
+                            next_tile_on_path_x, next_tile_on_path_y = ai_control.path[0]
+                            _next_ret_tile = (next_tile_on_path_x, next_tile_on_path_y)
+                            if is_tile_walkable(enemy_id, next_tile_on_path_x, next_tile_on_path_y) and \
+                                    _next_ret_tile not in all_occupied_tiles:
+                                import datetime as _dt_mob3
+                                print(f"[DBG_MOB {_dt_mob3.datetime.now().strftime('%H:%M:%S.%f')[:-3]}] "
+                                      f"SERVER RETURNING(B) eid={enemy_id} cur=({tile_movement.current_tile_x},{tile_movement.current_tile_y}) "
+                                      f"-> next=({next_tile_on_path_x},{next_tile_on_path_y}) state={ai_control.state}")
+                                start_tile_movement(enemy_pos, tile_movement, next_tile_on_path_x, next_tile_on_path_y)
+                                ai_control.path.pop(0)
+                                all_occupied_tiles.add(_next_ret_tile)
+                            else:
+                                ai_control.path = None
+                                ai_control.path_recalc_timer = 0.0
                     else:
                         ai_control.state = "IDLE"
                 else:
@@ -2984,7 +2939,7 @@ class EnemyAISystem(System):
             ai_control.path             = None
             return
 
-        if ai_control.path:
+        if ai_control.path and not tile_movement.is_moving:
             nx, ny = ai_control.path[0]
             if is_tile_walkable(enemy_id, nx, ny):
                 boost = 2.0 if ai_control.disengage_boost > 0 else 1.0
@@ -3007,6 +2962,24 @@ class TileMovementSystem(System):
         self._footstep_timer = max(0.0, self._footstep_timer - dt)
         for entity_id, position, tile_movement in self.world.get_entities_with(Position, TileMovement):
             if tile_movement.is_moving:
+                # Stun/sleep interrompe um passo normal já em andamento — sem isso,
+                # um mob que estava no meio de um chase-step (iniciado por
+                # EnemyAISystem ANTES do stun existir, ex: stun por colisão do
+                # Tiro Repulsivo no mesmo tick) terminava o passo mesmo já
+                # stunado. NÃO se aplica a is_dash (knockback/Interceptar): esses
+                # são deslocamentos forçados que devem completar a animação
+                # mesmo que o alvo fique stunado ao final — só passo NORMAL
+                # (caminhada/perseguição) é cancelado.
+                if not tile_movement.is_dash:
+                    _sfx_stop = self.world.get_component(entity_id, StatusEffects)
+                    if _sfx_stop and (_sfx_stop.has("stun") or _sfx_stop.has("sleep")):
+                        tile_movement.is_moving     = False
+                        tile_movement.target_tile_x = tile_movement.current_tile_x
+                        tile_movement.target_tile_y = tile_movement.current_tile_y
+                        position.x = tile_movement.current_tile_x * TILE_SIZE + TILE_SIZE / 2
+                        position.y = tile_movement.current_tile_y * TILE_SIZE + TILE_SIZE / 2
+                        continue
+
                 # Emite rastro antes de mover (posição atual do frame)
                 if tile_movement.is_dash:
                     from floating_text import DASH_TRAIL
@@ -3144,9 +3117,14 @@ class RenderSystem(System):
             _is_ghost_rnd  = _gst_rnd is not None and _gst_rnd.is_ghost
             if combat_stats and combat_stats.current_hp <= 0 and not _is_corpse_rnd and not _is_ghost_rnd:
                 continue
-            # Oculta entidades fora do campo de visão (jogador nunca é oculto)
+            # Oculta entidades fora do campo de visão (jogador local e players
+            # remotos nunca são ocultos por fog — LOS/exploração é mecânica de
+            # "neblina sobre mobs/mapa", não deve esconder outro jogador real
+            # dentro do AOI; invisibilidade de player é regra do servidor
+            # (CombatState.is_visible/_can_see), não de fog of war).
             if _fog_visible is not None:
-                is_player = self.world.get_component(entity_id, PlayerControlled) is not None
+                is_player = (self.world.get_component(entity_id, PlayerControlled) is not None
+                             or self.world.get_component(entity_id, RemoteControlled) is not None)
                 if not is_player:
                     etx = int(position.x / TILE_SIZE)
                     ety = int(position.y / TILE_SIZE)
@@ -3191,14 +3169,20 @@ class RenderSystem(System):
             _sfx_rnd = self.world.get_component(entity_id, StatusEffects)
             _polymorphed = _sfx_rnd is not None and _sfx_rnd.has("polymorph")
 
-            # ── Camuflagem: desenha sprite do objeto do tileset ───────────────
-            _cam_obj = getattr(combat_stats, "camouflage_object", "") if combat_stats else ""
-            if _cam_obj:
-                from tileset import get_camouflage_sprite
-                _cam_sprite = get_camouflage_sprite(_cam_obj)
+            # ── Camuflagem: desenha sprite animado idle/run do disfarce ────────
+            # Gate por camouflage_timer (não pela string de camouflage_object —
+            # a variante base tem sufixo "", que seria falsy numa checagem direta).
+            _cam_active = bool(combat_stats and getattr(combat_stats, "camouflage_timer", 0.0) > 0)
+            if _cam_active:
+                from tileset import get_camouflage_disguise_frame
+                _cam_tm     = self.world.get_component(entity_id, TileMovement)
+                _cam_moving = bool(_cam_tm and _cam_tm.is_moving)
+                _cam_suffix = getattr(combat_stats, "camouflage_object", "") or ""
+                _cam_sprite = get_camouflage_disguise_frame(
+                    _cam_suffix, _cam_moving, pygame.time.get_ticks())
                 if _cam_sprite:
-                    _sw = _cam_sprite.get_width()   # 32
-                    _sh = _cam_sprite.get_height()  # 32 ou 64
+                    _sw = _cam_sprite.get_width()
+                    _sh = _cam_sprite.get_height()
                     # Alinha o fundo do sprite ao pé da entidade
                     _blit_x = int(draw_x - _sw / 2)
                     _blit_y = int(draw_y + 12 - _sh)  # +12 = offset do pé do jogador
@@ -4196,6 +4180,10 @@ class ShopSystem(System):
     def is_open(self) -> bool:
         return self.open_merchant_id != -1
 
+    @property
+    def qty_modal_open(self) -> bool:
+        return self._qty_modal is not None
+
     def open_for(self, merchant_eid: int) -> None:
         """Abre a loja para o merchant_eid especificado, resetando estado interno."""
         self.open_merchant_id   = merchant_eid
@@ -4254,7 +4242,7 @@ class ShopSystem(System):
         cam_x, cam_y = self._get_cam()
 
         for event in events:
-            if event.type == pygame.MOUSEWHEEL and self.is_open:
+            if event.type == pygame.MOUSEWHEEL and self.is_open and self._qty_modal is None:
                 x0, y0  = self._panel_origin()
                 mx, _my = pygame.mouse.get_pos()
                 mid_x   = x0 + self.GAP + self.LEFT_W
@@ -4340,6 +4328,7 @@ class ShopSystem(System):
                     return
 
         if len(inv.items) >= inv.max_slots:
+            LOG.add("Inventario cheio!", (255, 160, 0))
             return
         item = entry["factory"]()
         wallet.gold -= price
@@ -4426,6 +4415,12 @@ class ShopSystem(System):
         )
         free_slots  = inv.max_slots - len(inv.items)
         max_by_inv  = existing_cap + free_slots * preview.max_stack
+        if max_by_gold == 0:
+            LOG.add("Ouro insuficiente!", (220, 80, 80))
+            return
+        if max_by_inv == 0:
+            LOG.add("Inventario cheio!", (255, 160, 0))
+            return
         max_qty     = max(1, min(max_by_gold, max_by_inv, preview.max_stack * 10))
         self._qty_modal = {
             "entry":    entry,
@@ -4557,7 +4552,7 @@ class ShopSystem(System):
             # ── Modal de quantidade aberto → processa antes de tudo ────────
             if self._qty_modal is not None:
                 self._handle_qty_modal_event(event)
-                return   # bloqueia eventos da loja enquanto modal está aberto
+                continue  # consome o evento; não deixa cair na lógica da loja
 
             if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 self._close()
@@ -4723,6 +4718,7 @@ class ShopSystem(System):
         W, H    = self.PANEL_W, self.PANEL_H
         mid_x   = x0 + self.GAP + self.LEFT_W
         mx, my  = pygame.mouse.get_pos()
+        _modal_open = self._qty_modal is not None
 
         # Overlay escuro
         ov = pygame.Surface((SW, SH), pygame.SRCALPHA)
@@ -4809,7 +4805,7 @@ class ShopSystem(System):
             can_afford = wallet and wallet.gold >= entry["price"]
             inv_full   = inv and len(inv.items) >= inv.max_slots
 
-            hov  = r.collidepoint(mx, my)
+            hov  = r.collidepoint(mx, my) and not _modal_open
             if not can_afford or inv_full:
                 bg_c   = (40, 18, 18) if hov else (22, 10, 10)
                 bord_c = (110, 45, 45) if hov else (48, 22, 22)
@@ -4874,7 +4870,7 @@ class ShopSystem(System):
             row_y = body_y + vis_i * self.ROW_H
             r     = pygame.Rect(mid_x + self.GAP, row_y, self.RIGHT_W - 4, self.ROW_H - 2)
 
-            hov    = r.collidepoint(mx, my)
+            hov    = r.collidepoint(mx, my) and not _modal_open
             bg_c   = (50, 40, 20) if hov else (28, 20, 10)
             bord_c = (180, 140, 60) if hov else (60, 45, 25)
             pygame.draw.rect(self.hud_surf, bg_c,   r, border_radius=3)
@@ -4932,6 +4928,7 @@ class ShopSystem(System):
 
         # --- Modal de quantidade ---
         if self._qty_modal is not None:
+            self.pending_tooltip = None  # modal suprime tooltip dos itens abaixo
             self._render_qty_modal(wallet)
 
     def _render_qty_modal(self, wallet) -> None:
@@ -5925,10 +5922,8 @@ class SkillSystem(System, SkillHandlers):
             return False
         # Sleep/disoriented/polymorph: can_act() não cobre (StatusEffects, não
         # CombatState) — igual ao bloqueio de PlayerInputSystem para movimento/ações.
-        _sfx_act_off = self.world.get_component(self.player_entity_id, StatusEffects)
-        if _sfx_act_off is not None and (
-                _sfx_act_off.has("sleep") or _sfx_act_off.has("disoriented")
-                or _sfx_act_off.has("polymorph")):
+        from utils import is_action_locked
+        if is_action_locked(self.world, self.player_entity_id):
             return False
 
         player_skills = self.world.get_component(self.player_entity_id, PlayerSkills)
@@ -6027,11 +6022,8 @@ class SkillSystem(System, SkillHandlers):
             return False
         # 1b. Sleep/disoriented/polymorph: can_act() não cobre (StatusEffects, não
         # CombatState) — igual ao bloqueio de PlayerInputSystem para movimento/ações.
-        from components import StatusEffects as _SfxAct
-        _sfx_act = self.world.get_component(self.player_entity_id, _SfxAct)
-        if _sfx_act is not None and (
-                _sfx_act.has("sleep") or _sfx_act.has("disoriented")
-                or _sfx_act.has("polymorph")):
+        from utils import is_action_locked
+        if is_action_locked(self.world, self.player_entity_id):
             return False
         # 2. GCD (igual offline)
         if player_skills and player_skills.gcd_timer > 0:
@@ -6357,7 +6349,16 @@ class SkillSystem(System, SkillHandlers):
         return True
 
     def _interceptar_dash_visual(self, combat_state, tile_move) -> None:
-        """Anima o dash do Interceptar localmente, sem verificações de HP (servidor já validou)."""
+        """Anima o dash do Interceptar localmente, sem verificações de HP (servidor já validou).
+
+        Replica a MESMA validação de caminho do handler autoritativo
+        (_skill_interceptar/_dash_path_clear, skill_handlers.py) — sem isso, a
+        predição local tocava a animação mesmo com obstáculo entre o player e o
+        destino, e o servidor rejeitava depois (desync: cliente "no destino",
+        servidor na posição antiga — ataques seguintes falham por range).
+        O servidor continua autoritativo (correção via skill_rejected cobre
+        qualquer divergência restante); isto só evita o caso comum visível.
+        """
         target_id = getattr(combat_state, "target_entity_id", -1)
         if target_id == -1:
             return
@@ -6372,6 +6373,8 @@ class SkillSystem(System, SkillHandlers):
         if not walkable:
             return
         dest_x, dest_y = min(walkable, key=lambda t: abs(t[0] - px) + abs(t[1] - py))
+        if not self._dash_path_clear(px, py, dest_x, dest_y):
+            return
         player_pos = self.world.get_component(self.player_entity_id, Position)
         new_px = dest_x * TILE_SIZE + TILE_SIZE / 2
         new_py = dest_y * TILE_SIZE + TILE_SIZE / 2

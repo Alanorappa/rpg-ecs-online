@@ -860,57 +860,85 @@ def _unpack_override(value, default_vision_height: int) -> tuple:
     return value, default_vision_height
 
 
-def get_camouflage_sprite(object_id: str, target_size: int = 32):
-    """Retorna um Surface pygame com o sprite do objeto do tileset (para Camuflagem).
+def discover_camouflage_variants() -> list[str]:
+    """Sufixos de variantes de disfarce da Camuflagem disponíveis em assets/sprites/.
 
-    Busca em OBJECT_SHEET_FAMILIES pelo ID, carrega o PNG e extrai o sub-sprite.
-    Usa cache interno. Retorna None se não encontrado.
+    Cada variante precisa do par camuflagem_idle{suf}.png + camuflagem_run{suf}.png.
+    Variante base = sufixo "" (camuflagem_idle.png/camuflagem_run.png); variantes
+    extras seguem _2, _3, _4... Descoberta dinâmica: só checa arquivos no disco,
+    sem pygame — adicionar uma nova variante não exige mudança de código.
+    """
+    import os
+    from paths import resource_path
+
+    if hasattr(discover_camouflage_variants, "_cache"):
+        return discover_camouflage_variants._cache
+
+    variants: list[str] = []
+    base_dir = resource_path(os.path.join("assets", "sprites"))
+    n = 1
+    suf = ""
+    while True:
+        idle_path = os.path.join(base_dir, f"camuflagem_idle{suf}.png")
+        run_path  = os.path.join(base_dir, f"camuflagem_run{suf}.png")
+        if os.path.exists(idle_path) and os.path.exists(run_path):
+            variants.append(suf)
+            n += 1
+            suf = f"_{n}"
+        else:
+            break
+
+    discover_camouflage_variants._cache = variants
+    return variants
+
+
+_CAMOUFLAGE_FRAME_MS = 55  # duração de cada frame da animação de correr
+
+
+def get_camouflage_disguise_frame(variant_suffix: str, moving: bool, anim_time_ms: int):
+    """Retorna o Surface do frame atual do disfarce de Camuflagem.
+
+    moving=False → frame único de camuflagem_idle{suf}.png (32×32).
+    moving=True  → frame cíclico de camuflagem_run{suf}.png (sheet 32×H, N frames
+                   lado a lado), avançando 1 frame a cada _CAMOUFLAGE_FRAME_MS.
+    Usa cache interno por (kind, variante). Retorna None se o arquivo não existir.
     """
     import pygame
     import os
     from paths import resource_path
 
-    if not hasattr(get_camouflage_sprite, "_cache"):
-        get_camouflage_sprite._cache = {}
+    if not hasattr(get_camouflage_disguise_frame, "_cache"):
+        get_camouflage_disguise_frame._cache = {}
+    cache = get_camouflage_disguise_frame._cache
 
-    if object_id in get_camouflage_sprite._cache:
-        return get_camouflage_sprite._cache[object_id]
+    kind = "run" if moving else "idle"
+    key  = (kind, variant_suffix)
+    if key not in cache:
+        fname      = f"camuflagem_{kind}{variant_suffix}.png"
+        sheet_path = resource_path(os.path.join("assets", "sprites", fname))
+        frames: list = []
+        if os.path.exists(sheet_path):
+            try:
+                sheet = pygame.image.load(sheet_path).convert_alpha()
+                if moving:
+                    frame_w = TILE_SIZE  # frames sempre 1 tile de largura
+                    frame_h = sheet.get_height()
+                    for i in range(sheet.get_width() // frame_w):
+                        frames.append(sheet.subsurface(
+                            pygame.Rect(i * frame_w, 0, frame_w, frame_h)).copy())
+                else:
+                    frames.append(sheet)
+            except Exception:
+                frames = []
+        cache[key] = frames
 
-    result = None
-    for fam in OBJECT_SHEET_FAMILIES:
-        if "tiles" not in fam:
-            continue
-        for entry in fam["tiles"]:
-            if entry[0] == object_id:
-                sheet_path = resource_path(os.path.join("assets", "tiles", fam["file"] + ".png"))
-                if not os.path.exists(sheet_path):
-                    break
-                try:
-                    sheet = pygame.image.load(sheet_path).convert_alpha()
-                    _, sx, sy, tw, th = entry[0], entry[1], entry[2], entry[3], entry[4]
-                    # Extrai sprite no tamanho original (sem escala)
-                    result = sheet.subsurface(pygame.Rect(sx, sy, tw, th)).copy()
-                except Exception:
-                    result = None
-                break
-        if result is not None:
-            break
-
-    get_camouflage_sprite._cache[object_id] = result
-    return result
-
-
-# Objetos disponíveis para disfarce — somente 32×32 e 32×64 (sem distorção)
-CAMOUFLAGE_OBJECT_IDS: list[str] = [
-    # 32×32
-    "rock1", "rock2", "rock3", "rock4", "rock5", "rock6",
-    "bush1", "bush2",
-    # 32×64
-    "barrel",
-    "gravestone", "gravestone2",
-    "bench2", "bench3",
-    "box1", "box2",
-]
+    frames = cache[key]
+    if not frames:
+        return None
+    if not moving:
+        return frames[0]
+    idx = (anim_time_ms // _CAMOUFLAGE_FRAME_MS) % len(frames)
+    return frames[idx]
 
 
 def discover_object_sheet_tiles() -> None:

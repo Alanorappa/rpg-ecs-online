@@ -85,6 +85,15 @@ def first_mob(ws) -> int | None:
     return next(iter(ws._mob_eids), None)
 
 
+def first_ai_mob(ws) -> int | None:
+    """Returns first mob in _mob_eids that has an AIControlled component."""
+    from components import AIControlled
+    for eid in ws._mob_eids:
+        if ws.world.get_component(eid, AIControlled):
+            return eid
+    return None
+
+
 def get_mob_hp(ws, mob_eid: int) -> tuple[int, int]:
     from components import CombatStats
     cs = ws.world.get_component(mob_eid, CombatStats)

@@ -26,7 +26,9 @@ Campos do catálogo:
   school            str    — escola de magia: "fogo" | "gelo" | "arcano" | ""
   offensive         bool   — False = utilitária/buff, não inicia combate (padrão True)
   class_id          str    — classe que pode usar a skill (informativo)
-  sound             str    — nome base do arquivo de som (opcional)
+  effects           dict   — sons/VFX por fase: {"cast_start"|"launch"|"impact"|"miss": {"sound"|"sounds": ...}}
+                             sound  = str  (nome único no registry de sound_manager.py)
+                             sounds = list (variações aleatórias; play_random escolhe uma)
 """
 NUM_SLOTS = 10
 
@@ -49,6 +51,7 @@ SKILL_CATALOG: dict[str, dict] = {
         "proc_attr":        "embalo_charges",
         "proc_ignores_cost": False,
         "class_id":         "guerreiro",
+        "effects":          {"impact": {"sound": "skill_golpe_poderoso"}},
         "params": {"damage_multiplier": 3.0},
     },
     "vitoria_iminente": {
@@ -59,7 +62,8 @@ SKILL_CATALOG: dict[str, dict] = {
         "proc_attr":        "",
         "proc_ignores_cost": False,
         "class_id":         "guerreiro",
-        "on_kill":          "charge",   # repõe carga ao matar mob
+        "on_kill":          "charge",
+        "effects":          {"impact": {"sound": "skill_vitoria_iminente"}},
         "params": {"damage_multiplier": 2.0, "heal_pct": 0.30},
     },
     "impacto": {
@@ -71,6 +75,7 @@ SKILL_CATALOG: dict[str, dict] = {
         "proc_ignores_cost": False,
         "needs_target":     False,
         "class_id":         "guerreiro",
+        "effects":          {"impact": {"sound": "skill_impacto"}},
         "params": {"damage_multiplier": 0.50, "radius_tiles": 3},
     },
     "executar": {
@@ -81,6 +86,7 @@ SKILL_CATALOG: dict[str, dict] = {
         "proc_attr":        "free_executar_charges",
         "proc_ignores_cost": True,
         "class_id":         "guerreiro",
+        "effects":          {"impact": {"sound": "skill_executar"}},
         "params": {"damage_multiplier": 5.0, "hp_threshold": 0.30},
     },
     "interceptar": {
@@ -91,6 +97,7 @@ SKILL_CATALOG: dict[str, dict] = {
         "proc_attr":        "",
         "proc_ignores_cost": False,
         "class_id":         "guerreiro",
+        "effects":          {"impact": {"sound": "skill_interceptar"}},
         "params": {"min_range": 2, "max_range": 6, "duration": 0.18},
     },
 
@@ -103,6 +110,7 @@ SKILL_CATALOG: dict[str, dict] = {
         "proc_attr":        "",
         "proc_ignores_cost": False,
         "class_id":         "guerreiro",
+        "effects":          {"impact": {"sound": "skill_golpe_debilitante"}},
         "params": {"damage_multiplier": 0.50, "slow_pct": 0.50, "slow_duration": 5.0},
     },
     "brado_provocativo": {
@@ -113,8 +121,8 @@ SKILL_CATALOG: dict[str, dict] = {
         "proc_attr":        "",
         "proc_ignores_cost": False,
         "needs_target":     False,
-        "sound":            "skill_brado_provocativo",
         "class_id":         "guerreiro",
+        "effects":          {"impact": {"sound": "skill_brado_provocativo"}},
         "params": {"radius_tiles": 3, "duration": 10.0},
     },
     "punho_no_queixo": {
@@ -124,8 +132,8 @@ SKILL_CATALOG: dict[str, dict] = {
         "rage_cost":        0,
         "proc_attr":        "",
         "proc_ignores_cost": False,
-        "sound":            "skill_punho_no_queixo",
         "class_id":         "guerreiro",
+        "effects":          {"impact": {"sound": "skill_punho_no_queixo"}},
         "params": {"damage_multiplier": 0.45, "hits_required": 3},
     },
     "fatiador_de_corpos": {
@@ -137,6 +145,7 @@ SKILL_CATALOG: dict[str, dict] = {
         "proc_ignores_cost": False,
         "needs_target":     False,
         "class_id":         "guerreiro",
+        "effects":          {"impact": {"sound": "skill_fatiador_de_corpos"}},
         "params": {
             "damage_multiplier": 0.65,   # % do AP por tick
             "include_weapon_dmg": True,  # adiciona dano da arma
@@ -188,11 +197,11 @@ SKILL_CATALOG: dict[str, dict] = {
         "cast_range":       3,
         "interruptible":    True,
         "dmg_sp_coeff":     0.5,
-        "cast_time_reduction_attr": "ice_cast_time_reduction",   # Precisão Elemental
+        "cast_time_reduction_attr": "ice_cast_time_reduction",
         "needs_target":     False,
         "class_id":         "mago",
         "school":           "gelo",
-        "sound":            "skill_nova_congelante_impact",
+        "effects":          {"impact": {"sound": "skill_nova_congelante_impact"}},
         "effect_durations": {"root": 5.0},
     },
     "bloco_de_gelo": {
@@ -205,6 +214,7 @@ SKILL_CATALOG: dict[str, dict] = {
         "class_id":         "mago",
         "school":           "gelo",
         "offensive":        False,
+        "effects":          {"impact": {"sound": "skill_bloco_de_gelo"}},
     },
     "polimorfia": {
         "name":             "Polimorfia",
@@ -275,6 +285,10 @@ SKILL_CATALOG: dict[str, dict] = {
         "cast_range": 0,
         "class_id":  "arqueiro",
         "offensive": False,
+        "effects":   {
+            "cast_start": {"sound": "arrow_nock"},
+            "impact":     {"sound": "arrow_release"},
+        },
         "params": {
             "concentration_cost": 60,
             "ap_multiplier":      3.0,   # 100% weapon + 300% AP (extra_ap = 2× AP)
@@ -284,7 +298,7 @@ SKILL_CATALOG: dict[str, dict] = {
     },
     "camuflagem": {
         "name":      "Camuflagem",
-        "desc":      "O arqueiro se disfarça de um objeto do cenário por 5s. Velocidade 30%, inimigos perdem o alvo. 50 Concentração.",
+        "desc":      "O arqueiro se disfarça com sua capa por 5s. Inalvejável (PvP/PvE) e DOTs são dispelados. Velocidade 60%. 50 Concentração.",
         "cooldown":  45.0,
         "cast_time": 0.0,
         "cast_range": 0,
@@ -293,7 +307,7 @@ SKILL_CATALOG: dict[str, dict] = {
         "params": {
             "concentration_cost": 50,
             "duration":           5.0,
-            "speed_pct":          0.30,   # 30% da velocidade normal
+            "speed_pct":          0.60,   # 60% da velocidade normal
         },
     },
     "tiro_repulsivo": {
@@ -304,6 +318,11 @@ SKILL_CATALOG: dict[str, dict] = {
         "cast_range": 8,
         "class_id":  "arqueiro",
         "offensive": True,
+        "effects":   {
+            "cast_start": {"sound": "arrow_nock"},
+            "launch":     {"sound": "arrow_release"},
+            "impact":     {"sound": "arrow_impact"},
+        },
         "params": {
             "concentration_cost": 100,
             "knockback_tiles":    5,
@@ -344,8 +363,8 @@ SKILL_CATALOG: dict[str, dict] = {
         "cast_time": 2.0,
         "cast_range": 0,
         "class_id":  "arqueiro",
-        "offensive": False,   # não-ofensiva: arqueiro não ataca durante o canal
-        "sound_on_cast_start": True,  # som toca ao iniciar o canal, não na conclusão
+        "offensive": False,
+        "effects":   {"cast_start": {"sound": "skill_cancao_ninar"}},
         "params": {
             "concentration_cost": 25,
             "radius":             5,
@@ -362,6 +381,11 @@ SKILL_CATALOG: dict[str, dict] = {
         "cast_range": 8,
         "class_id":  "arqueiro",
         "offensive": True,
+        "effects":   {
+            "cast_start": {"sound": "arrow_nock"},
+            "launch":     {"sound": "arrow_release"},
+            "impact":     {"sound": "arrow_impact"},
+        },
         "params": {
             "concentration_cost": 20,
             "ap_multiplier":      1.5,
@@ -379,6 +403,11 @@ SKILL_CATALOG: dict[str, dict] = {
         "cast_range": 8,
         "class_id":  "arqueiro",
         "offensive": True,
+        "effects":   {
+            "cast_start": {"sound": "arrow_nock"},
+            "launch":     {"sound": "arrow_release"},
+            "impact":     {"sound": "arrow_impact"},
+        },
         "params": {
             "concentration_cost": 80,
             "arrow_count":        2,

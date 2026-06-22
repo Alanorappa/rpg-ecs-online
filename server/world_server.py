@@ -105,6 +105,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._player_eids: dict[str, int] = {}
         # Reverse map: eid → session_id (O(1) lookup em get_session_id_for_player)
         self._player_eid_to_sid: dict[int, str] = {}
+        # Cache de HP para dirty-check automático a cada tick (eid → (current_hp, max_hp))
+        self._player_hp_cache: dict[int, tuple[int, int]] = {}
 
         # Eids de mobs gerenciados pelo servidor
         self._mob_eids: set[int] = set()
@@ -201,8 +203,14 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._pending_skill_requests: list[dict] = []
         # Spells com cast_time pendentes de conclusão (gerenciadas por SpellCompletionMixin)
         self._pending_spell_completions: list[dict] = []
+        # Pousos de knockback pendentes (stun + feedback de colisão só disparam
+        # quando a tween de deslocamento termina, não no instante em que o
+        # servidor resolve o empurrão — ver SpellCompletionMixin._process_knockback_landings)
+        self._pending_knockback_landings: list[dict] = []
         # Resultados de skills processadas no tick (consumido pelo SessionManager)
         self._skill_results_this_tick: list[dict] = []
+        # Efeitos de apresentação (som/VFX) broadcast AOI — separado do gameplay
+        self._skill_effects_this_tick: list[dict] = []
         # Correções de posição por skill (Interceptar etc.) — enviadas direto ao caster
         self._skill_position_corrections: list[dict] = []
         # HP updates de players para broadcast AOI (ex: auto-cura de skill)
@@ -212,6 +220,10 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._player_stat_overrides: dict[int, dict] = {}
         # Eventos de som posicionais (mob aggro, etc.) para broadcast AOI
         self._pending_sound_events: list[dict] = []
+        # Eids cujo CombatState.is_visible mudou neste tick (ex: Camuflagem
+        # ativa/expira) — força _build_update_for_session a reavaliar _can_see()
+        # mesmo sem a entidade ter se movido (ver session.py)
+        self._visibility_changed_this_tick: list[int] = []
         # Snapshot de estados de mob para detectar transições de aggro
         self._mob_states_prev: dict[int, str] = {}
         # Projéteis de mobs conhecidos (para detectar novos e removidos a cada tick)
@@ -298,12 +310,25 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         ]
         print(f"[WorldServer] mapa OK — EnemyAI + EnemyAbility + StatusEffect + Projectile")
         self._create_training_dummies(spawn_points.get("training_dummies", []))
+        self._create_npc_blockers(spawn_points)
 
     def _create_training_dummies(self, dummies_data: list) -> None:
         from entity_factory import create_training_dummy as _ctd
         for tx, ty in dummies_data:
             eid = _ctd(self.world, tx, ty)
-            print(f"[WorldServer] boneco de treino criado eid={eid} tile=({tx},{ty})")
+
+    def _create_npc_blockers(self, spawn_points: dict) -> None:
+        """Cria entidades mínimas (TileMovement + NPC) para cada NPC do mapa.
+        Sem componentes client-side — só para EnemyAISystem._get_enemy_tiles() funcionar."""
+        from components import TileMovement, NPC
+        for key in ("quest_givers", "merchants", "blacksmiths", "trainers"):
+            for entry in spawn_points.get(key, []):
+                tx, ty = entry[0], entry[1]
+                eid = self.world.create_entity()
+                self.world.add_component(eid, TileMovement(
+                    current_tile_x=tx, current_tile_y=ty,
+                    target_tile_x=tx, target_tile_y=ty))
+                self.world.add_component(eid, NPC())
 
     def _create_spawn_zones(self, zones_data: list) -> None:
         """Cria entidades SpawnZone a partir dos dados já processados pelo map_loader.
@@ -634,6 +659,10 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             e for e in self._spells_in_flight_queue
             if e.get("player_eid") != eid
         ]
+        self._pending_knockback_landings = [
+            e for e in self._pending_knockback_landings
+            if e.get("target_id") != eid and e.get("collided_eid") != eid
+        ]
         self.world.remove_entity(eid)
         print(f"[World] despawn player eid={eid}  session={session_id}")
 
@@ -894,6 +923,12 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         """Retorna e limpa resultados de skills do tick atual (para o SessionManager)."""
         result = list(self._skill_results_this_tick)
         self._skill_results_this_tick.clear()
+        return result
+
+    def consume_skill_effects(self) -> list[dict]:
+        """Retorna e limpa eventos de apresentação (som/VFX) do tick atual."""
+        result = list(self._skill_effects_this_tick)
+        self._skill_effects_this_tick.clear()
         return result
 
     # ── Corpse / Loot API ────────────────────────────────────────────────────
@@ -1353,6 +1388,24 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._player_hp_broadcasts_this_tick.clear()
         return result
 
+    def _sync_player_hp_dirty(self) -> None:
+        """Detecta mudanças de HP/max_hp de qualquer player no tick e emite broadcast AOI.
+        Chamado no início de _collect_deltas() — cobre qualquer fonte de mudança de HP
+        (level-up, consumíveis, skills, DoT, etc.) sem precisar de código por feature."""
+        from components import CombatStats as _CSD
+        _already = {e["eid"] for e in self._player_hp_broadcasts_this_tick}
+        for peid in list(self._player_eids.values()):
+            cs = self.world.get_component(peid, _CSD)
+            if cs is None:
+                continue
+            cur = (cs.current_hp, cs.max_hp)
+            if cur != self._player_hp_cache.get(peid):
+                self._player_hp_cache[peid] = cur
+                if peid not in _already:
+                    self._player_hp_broadcasts_this_tick.append({
+                        "eid": peid, "hp": cs.current_hp, "hp_max": cs.max_hp,
+                    })
+
     def consume_skill_position_corrections(self) -> list[dict]:
         """Retorna e limpa correções de posição por skill (Interceptar etc.)."""
         result = list(self._skill_position_corrections)
@@ -1424,6 +1477,37 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             for eff in (t.get("effects") or []):
                 mod = Modifier(eff["attribute"], eff["value"] * points, eff["type"])
                 add_modifier(cs, mod)
+
+    def update_player_equipment(self, session_id: str, equipment: dict) -> None:
+        """Reconstrói o componente Equipment do player a partir do payload EQUIP_SYNC.
+
+        Chamado toda vez que o cliente equipa ou desequipa um item. Garante que
+        validações server-side (quiver para auto-attack, bow para skills de flecha)
+        usem o estado real do equipamento, não o estado congelado do login.
+        """
+        from components import Equipment as _EqUpd
+        eid = self._player_eids.get(session_id)
+        if eid is None:
+            return
+        eq_comp = self.world.get_component(eid, _EqUpd)
+        if eq_comp is None:
+            eq_comp = _EqUpd()
+            self.world.add_component(eid, eq_comp)
+        for slot, item_d in equipment.items():
+            if slot not in eq_comp.slots or not isinstance(item_d, dict):
+                continue
+            item_d.setdefault("slot", slot)
+            eq_comp.slots[slot] = self._reconstruct_item(item_d)
+        # Slots ausentes no payload → desequipado
+        for slot in list(eq_comp.slots.keys()):
+            if slot not in equipment:
+                eq_comp.slots[slot] = None
+        # Atualiza attack_interval conforme arma equipada
+        from stats_system import sync_attack_interval as _sai
+        from components import CombatStats as _CSUpd
+        cs = self.world.get_component(eid, _CSUpd)
+        if cs:
+            _sai(cs, eq_comp)
 
     # request_loot → LootProcessorMixin
 
@@ -1702,7 +1786,10 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                         _cs.camouflage_object = ""
                         _cst = self.world.get_component(_conc_eid, __import__("components").CombatState)
                         if _cst:
-                            _cst.is_visible = True
+                            _cst.is_visible    = True
+                            _cst.is_immune     = False
+                            _cst.is_camouflaged = False
+                            self._visibility_changed_this_tick.append(_conc_eid)
                         _tm_cam = self.world.get_component(_conc_eid, _ConcTM)
                         if _tm_cam:
                             _tm_cam.speed = 110.0
@@ -1727,7 +1814,10 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                         _cs.camouflage_object = ""
                         _cst2 = self.world.get_component(_conc_eid, __import__("components").CombatState)
                         if _cst2:
-                            _cst2.is_visible = True
+                            _cst2.is_visible    = True
+                            _cst2.is_immune     = False
+                            _cst2.is_camouflaged = False
+                            self._visibility_changed_this_tick.append(_conc_eid)
                         _tm_cam2 = self.world.get_component(_conc_eid, _ConcTM)
                         if _tm_cam2:
                             _tm_cam2.speed = 110.0
@@ -1751,6 +1841,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         # Conclusão de spells com cast_time (Bola de Fogo, Nova Congelante, etc.)
         self._process_spell_cast_completions(dt)
+        # Pousos de knockback (stun/feedback de colisão atrasados até a tween acabar)
+        self._process_knockback_landings(dt)
         # Expira projéteis em voo que nunca receberam PROJECTILE_HIT_CS
         self._expire_spells_in_flight()
         # Bloco de Gelo: timer server-side (imunidade temporária)
@@ -1850,6 +1942,9 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
                     # Garante HP cheio após qualquer recálculo acima
                     _cs_xp.current_hp = _cs_xp.max_hp
+                    # Não é necessário broadcast manual aqui: _sync_player_hp_dirty()
+                    # detecta a mudança de HP/max_hp automaticamente no fim do tick
+                    # e a propaga via _player_hp_broadcasts_this_tick → STATS_UPDATE AOI.
 
                     from components import TalentTree as _TTlv
                     _tt_lv = self.world.get_component(_xp_peid, _TTlv)
@@ -2012,13 +2107,17 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         return result
 
     def _collect_player_effects(self) -> list[dict]:
-        """Returns active status effects for all online players (for client sync)."""
+        """Returns active status effects for all online players (for client sync).
+
+        Always includes every player (even with empty effects) so the client can
+        clear stale effects that were removed server-side (e.g. polymorph broken
+        by damage). Without this, the client never calls _sync_player_effects when
+        the server clears all effects, and CC icons/state persist indefinitely.
+        """
         from components import StatusEffects as _SE, PlayerControlled as _PC
         result = []
         for eid, sfx in self.world.get_entities_with(_SE):
             if not self.world.get_component(eid, _PC):
-                continue
-            if not sfx.effects:
                 continue
             result.append({
                 "eid": eid,
@@ -2030,6 +2129,11 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         return result
 
     def _collect_deltas(self) -> dict:
+        # Detecta qualquer mudança de HP/max_hp de players antes de montar os deltas.
+        # Deve rodar aqui (depois de todos os sistemas do tick) para capturar toda
+        # fonte de mudança: skills, DoT, level-up, consumíveis, respawn, etc.
+        self._sync_player_hp_dirty()
+
         # despawned: lista de eids (ints) para compatibilidade
         # despawned_pos: dict eid→(tx,ty) para AOI check de mobs mortos fora de known_eids
         _eids     = [d["eid"] for d in self._despawned_this_tick]
@@ -2068,6 +2172,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             "entity_deaths":  list(self._entity_deaths_this_tick),
             "player_revives": list(self._player_revives_this_tick),
             "ghost_states":   list(self._ghost_state_updates_this_tick),
+            "visibility_changed": list(self._visibility_changed_this_tick),
         }
         self._moved_this_tick.clear()
         self._spawned_this_tick.clear()
@@ -2079,6 +2184,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._player_revives_this_tick.clear()
         self._ghost_state_updates_this_tick.clear()
         self._sfx_damage_players.clear()
+        self._visibility_changed_this_tick.clear()
         return deltas
 
     def _store_snapshot(self) -> None:

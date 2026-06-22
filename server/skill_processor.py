@@ -6,12 +6,22 @@ from __future__ import annotations
 
 from shared.constants import TILE_SIZE, TICK_RATE, LAG_COMP_WINDOW_MS
 
+# Skills cujo handler compartilhado (skill_handlers.py) move o player e que têm
+# uma predição visual correspondente no cliente (ver *_dash_visual em systems.py,
+# chamada por _use_skill_visual_only). Se o handler FALHAR aqui sem mover o
+# player (ex: Interceptar com "Caminho bloqueado"), a predição local já tocou a
+# animação do dash sem saber disso — sem uma correção explícita, o cliente fica
+# permanentemente desincronizado da posição real do servidor (todo check de
+# range subsequente, como atacar, passa a falhar). Registrar nova skill aqui
+# garante a mesma rede de segurança automaticamente.
+_MOVEMENT_PREDICTED_SKILLS = {"interceptar"}
+
 
 class SkillProcessorMixin:
 
     def _process_skill_requests(self) -> None:
         """Processa todas as skills enfileiradas para este tick."""
-        from components import CombatState, CombatStats, TileMovement, GhostState, StatusEffects
+        from components import CombatState, CombatStats, TileMovement, GhostState
         from skill_config import SKILL_CATALOG
         from components import PlayerSkills as _PS
         requests = list(self._pending_skill_requests)
@@ -33,10 +43,8 @@ class SkillProcessorMixin:
             _cs_skp = self.world.get_component(player_eid, CombatState)
             if _cs_skp is not None and not _cs_skp.can_act():
                 continue
-            _sfx_skp = self.world.get_component(player_eid, StatusEffects)
-            if _sfx_skp is not None and (
-                    _sfx_skp.has("sleep") or _sfx_skp.has("disoriented")
-                    or _sfx_skp.has("polymorph")):
+            from utils import is_action_locked as _is_action_locked_skp
+            if _is_action_locked_skp(self.world, player_eid):
                 continue
 
             # Constrói objeto Skill a partir do SKILL_CATALOG (servidor não tem PlayerSkills)
@@ -222,6 +230,10 @@ class SkillProcessorMixin:
             # Expõe lista de spells pendentes ao handler (detecta modo servidor)
             self._skill_system._server_pending_spells = self._pending_spell_completions
             _pending_count_before = len(self._pending_spell_completions)
+            # Expõe lista de mudanças de visibilidade (ex: Camuflagem) — handler
+            # registra aqui em vez de direto em world_server (self é o SkillSystem,
+            # não o WorldServer, ver _server_visibility_changed em skill_handlers.py)
+            self._skill_system._server_visibility_changed = self._visibility_changed_this_tick
 
             # Reseta last_outcome antes do handler: para skills com cast_time que
             # só ENFILEIRAM a conclusão (sem deal_damage agora), last_outcome
@@ -288,11 +300,19 @@ class SkillProcessorMixin:
                             "is_dash": _move_is_dash,
                         })
                         # Correção direta ao próprio caster (AOI_UPDATE ignora self._my_eid)
-                        # Armazena para _dispatch_tick_deltas enviar via ENTITY_MOVE direto
+                        # Armazena para _dispatch_tick_deltas enviar via ENTITY_MOVE direto.
+                        # is_dash igual ao broadcast acima: sem isso, se a predição local
+                        # do dash já tiver desistido (ex: bloqueado na posição antiga) e o
+                        # player estiver andando normalmente quando esta correção chegar
+                        # (servidor validou com sucesso numa posição mais nova — corrida
+                        # entre MOVE e CAST_SKILL), o cliente trata como correção comum e
+                        # faz snap instantâneo, cancelando o walk em andamento sem nenhuma
+                        # animação de dash. Com is_dash, ele enfileira e anima certinho.
                         self._skill_position_corrections.append({
                             "player_eid": player_eid,
                             "tx":         _new_tx,
                             "ty":         _new_ty,
+                            "is_dash":    _move_is_dash,
                         })
                         tile_move.current_tile_x = _new_tx
                         tile_move.current_tile_y = _new_ty
@@ -394,6 +414,24 @@ class SkillProcessorMixin:
                 # Som, cooldown real e dano chegam no SKILL_RESULT da completion.
                 if _has_cast and _skill_ok:
                     _result_entry["cast_started"] = True
+
+                # ── SKILL_EFFECT: emite evento de apresentação (som/VFX) ─────────
+                _caster_tx = tile_move.current_tile_x
+                _caster_ty = tile_move.current_tile_y
+                if _has_cast and _skill_ok:
+                    # Cast com tempo aceito → som de cast_start (ex: arrow nock, cancao)
+                    self._skill_effects_this_tick.append({
+                        "sid": sid, "event": "cast_start",
+                        "caster_eid": player_eid, "tx": _caster_tx, "ty": _caster_ty,
+                    })
+                elif _skill_ok and not _has_cast:
+                    # Skill instantânea → som de impact ou miss imediatamente
+                    _sfx_event = "miss" if _skill_outcome in ("miss", "dodge", "parry", "block") else "impact"
+                    self._skill_effects_this_tick.append({
+                        "sid": sid, "event": _sfx_event,
+                        "caster_eid": player_eid, "tx": _caster_tx, "ty": _caster_ty,
+                        "target_eid": tid,
+                    })
                 # Procs que precisam ser sincronizados para o cliente
                 # Só inclui se o proc ACABOU de ser gerado neste cast (não carga pré-existente).
                 from components import CharacterStats as _CSproc
@@ -414,6 +452,17 @@ class SkillProcessorMixin:
                     "failed":     True,
                     "reason":     _fail_reason,
                 })
+                # Desfaz predição visual de movimento no cliente (ver comentário
+                # de _MOVEMENT_PREDICTED_SKILLS) — usa o canal já existente de
+                # correção de posição (skill_rejected), mesmo mecanismo usado
+                # quando o handler TEM sucesso e move o player.
+                if sid in _MOVEMENT_PREDICTED_SKILLS:
+                    self._skill_position_corrections.append({
+                        "player_eid": player_eid,
+                        "tx": tile_move.current_tile_x,
+                        "ty": tile_move.current_tile_y,
+                        "rejected": True,
+                    })
 
             # Sincroniza rage/mana/hp do player após a skill
             from components import CharacterStats as _CShr
@@ -439,7 +488,7 @@ class SkillProcessorMixin:
                 # Sync ocorre SOMENTE na completion em spell_completion_processor.py,
                 # quando o custo foi de fato deduzido pelo servidor.
                 # Enviar ao detectar falha causaria queda visual imediata por drift
-                # de regen entre cliente (60 FPS) e servidor (20 TPS).
+                # de regen entre cliente (60 FPS) e servidor (30 TPS).
                 # Se o player se curou, inclui hp atual e quantidade curada para o cliente
                 if _heal_amount > 0 and _cs_after:
                     _stat_entry["hp"]          = _cs_after.current_hp

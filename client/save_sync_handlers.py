@@ -171,8 +171,10 @@ class SaveSyncHandlers:
 
         skills = {}
         ps_col = self.world.get_component(self.player_entity, _PSCol)
-        if ps_col:
+        if ps_col and ps_col.learned_skill_ids:
             # Apenas quais skills foram aprendidas — layout da hotbar é UI local (config.json).
+            # Não envia lista vazia: o servidor interpretaria {} como "não enviado"
+            # mas {"learned":[]} como truthy e sobrescreveria o DB com lista vazia.
             skills = {
                 "learned": list(ps_col.learned_skill_ids),
             }
@@ -247,6 +249,42 @@ class SaveSyncHandlers:
                 inv_list = [self._serialize_item(it) for it in inv.items if it]
                 inv_list = [s for s in inv_list if s]
                 self._net.send(_MT_la.INV_SYNC, {"inventory": inv_list})
+
+    def _get_equip_snapshot(self) -> dict:
+        """Retorna snapshot do equipamento atual como dict slot→item_name (para comparação)."""
+        from components import Equipment as _EqSnap
+        equip = self.world.get_component(self.player_entity, _EqSnap)
+        if not equip:
+            return {}
+        snapshot = {}
+        for slot, item in equip.slots.items():
+            if item is not None:
+                key = getattr(item, "name", "") or ""
+                ac  = getattr(item, "arrow_count", None)
+                snapshot[slot] = f"{key}:{ac}" if ac is not None else key
+        return snapshot
+
+    def _send_equip_sync(self) -> None:
+        """Sincroniza o equipamento atual com o servidor após equip/unequip.
+
+        Atualiza _equip_snapshot para que a detecção passiva em game.py
+        não envie duplicata no mesmo frame.
+        """
+        if not self._net or not self._net.connected or self._my_eid == -1:
+            return
+        from shared.messages import MsgType as _MT_es
+        from components import Equipment as _EqES
+        equip = self.world.get_component(self.player_entity, _EqES)
+        if not equip:
+            return
+        equipment = {}
+        for slot, item in equip.slots.items():
+            if item is not None:
+                s = self._serialize_item(item)
+                if s:
+                    equipment[slot] = s
+        self._net.send(_MT_es.EQUIP_SYNC, {"equipment": equipment})
+        self._equip_snapshot = self._get_equip_snapshot()
 
     def _on_recarregar_changed(self) -> None:
         """Recarregar mudou bag (flechas consumidas) e aljava (arrow_count) —
@@ -338,17 +376,24 @@ class SaveSyncHandlers:
             skills_data = _jr.loads(skills_raw) if isinstance(skills_raw, str) else {}
         except Exception:
             skills_data = {}
-        if isinstance(skills_data, dict) and skills_data:
-            from components import PlayerSkills as _PSR
-            ps_r = self.world.get_component(self.player_entity, _PSR)
-            if ps_r:
-                # Layout da hotbar é UI local (config.json) — não sincronizado com servidor.
-                # Servidor só guarda quais skills foram aprendidas (gameplay autoritativo).
-                learned_ids = skills_data.get("learned", [])
-                if learned_ids:
-                    ps_r.learned_skill_ids.clear()
-                    for _sid_r in learned_ids:
-                        ps_r.learned_skill_ids.add(_sid_r)
+        from components import PlayerSkills as _PSR
+        ps_r = self.world.get_component(self.player_entity, _PSR)
+        if ps_r:
+            # Layout da hotbar é UI local (config.json) — não sincronizado com servidor.
+            # Servidor só guarda quais skills foram aprendidas (gameplay autoritativo).
+            learned_ids = (skills_data.get("learned", [])
+                           if isinstance(skills_data, dict) else [])
+            if learned_ids:
+                ps_r.learned_skill_ids.clear()
+                for _sid_r in learned_ids:
+                    ps_r.learned_skill_ids.add(_sid_r)
+            elif not ps_r.learned_skill_ids:
+                # Novo personagem ou save corrompido (skills_json vazio/learned=[]):
+                # adiciona skills iniciais da classe (igual ao servidor em spawn_player).
+                from skill_config import INITIAL_SKILLS_BY_CLASS as _ISC
+                _cls_rs = char_data.get("class_id", "guerreiro")
+                for _isid in _ISC.get(_cls_rs, []):
+                    ps_r.learned_skill_ids.add(_isid)
 
         # Re-adiciona skills de talento a learned_skill_ids após o restore as ter limpado.
         # apply_talent_effects() também as adiciona, mas é chamado ANTES do clear de learned.

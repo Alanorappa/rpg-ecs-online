@@ -18,6 +18,11 @@ TILE_SIZE          = 32          # pixels por tile (deve ser igual ao cliente)
 AOI_RADIUS         = 15          # tiles de visão ao redor do jogador
 FOG_RADIUS         = 15          # deve coincidir com AOI_RADIUS
 
+# Centro do cemitério — spawn padrão de personagem novo E respawn pós-morte.
+# Fonte única: server/respawn_system.py e server/auth.py importam daqui em vez
+# de hardcoded — mover o cemitério só exige mudar este valor.
+RESPAWN_TILE: tuple[int, int] = (115, 389)
+
 # Instâncias
 MAX_DUNGEON_PLAYERS = 6
 MAX_RAID_PLAYERS    = 20

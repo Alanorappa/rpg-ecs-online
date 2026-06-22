@@ -96,6 +96,7 @@ class InventoryHandlers:
             combat_stats.base_attack_interval = item.attack_speed
         for mod in item.modifiers:
             add_modifier(combat_stats, mod)
+        self._send_equip_sync()
 
     def _unequip_slot(self, slot_name: str):
         inv          = self.world.get_component(self.player_entity, Inventory)
@@ -116,6 +117,7 @@ class InventoryHandlers:
             remove_modifier(combat_stats, mod)
         equip.slots[slot_name] = None
         inv.items.append(item)
+        self._send_equip_sync()
 
     def _handle_inventory_click(self, event):
         if event.button not in (1, 3):

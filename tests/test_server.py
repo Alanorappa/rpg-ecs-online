@@ -197,14 +197,16 @@ class TestMobAttacksPlayer(unittest.TestCase):
 
     def test_mob_attack_reduces_player_hp_on_server(self):
         """Ataque do mob deve reduzir HP do player no servidor."""
-        mob_eid = first_mob(self.ws)
+        from tests.helpers import first_ai_mob
+        mob_eid = first_ai_mob(self.ws)
         player_eid = self.ws._player_eids["s1"]
         hp_before, _ = get_player_hp(self.ws, "s1")
 
         teleport_mob_to_player(self.ws, mob_eid, player_eid)
-        from components import CombatState
-        mob_cs = self.ws.world.get_component(mob_eid, CombatState)
-        mob_cs.target_entity_id = player_eid
+        from components import AIControlled
+        mob_ai = self.ws.world.get_component(mob_eid, AIControlled)
+        mob_ai.state      = "ATTACKING"
+        mob_ai.target_eid = player_eid
 
         run_ticks(self.ws, 80)
         hp_after, _ = get_player_hp(self.ws, "s1")

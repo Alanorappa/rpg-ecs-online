@@ -55,7 +55,8 @@ class MsgType(str, Enum):
     CAST_START         = "cast_start"      # S→C  entidade começou cast (barra de cast)  # TODO: não implementado
     CAST_CANCEL        = "cast_cancel"     # S→C  cast interrompido                      # TODO: não implementado
     CAST_COMPLETE      = "cast_complete"   # S→C  cast concluído (dispara efeito)         # TODO: não implementado
-    SKILL_RESULT       = "skill_result"    # S→C  efeitos aplicados pela skill
+    SKILL_RESULT       = "skill_result"    # S→C  gameplay: dano, cooldown, GCD, failed
+    SKILL_EFFECT       = "skill_effect"    # S→C  apresentação: som/VFX broadcast AOI
 
     # ── Projéteis (reservado — não implementado ainda) ────────────
     PROJECTILE_SPAWN   = "proj_spawn"      # S→C  projétil criado
@@ -85,6 +86,7 @@ class MsgType(str, Enum):
     SOUND_EVENT        = "sound_event"     # S→C  evento sonoro posicional (aggro, etc.)
     PLAYER_STAT_SYNC   = "player_stat_sync"  # C→S  stats efetivos do player (equip/buff/consumível)
     PLAYER_HP_SYNC     = "player_hp_sync"    # C→S  HP/maxHP mudou por proc/buff {hp, max_hp}
+    EQUIP_SYNC         = "equip_sync"        # C→S  equipamento mudou {equipment: {slot: item_dict}}
     CONSUMABLE_USE     = "consumable_use"    # C→S  uso de consumível (heal_instant, HoT, buffs futuros)
     GOLD_UPDATE        = "gold_update"       # C→S  gold mudou (loot de moedas) {gold: N}
     INV_SYNC           = "inv_sync"          # C→S  inventário mudou (loot de item) {inventory: [...]}
@@ -252,12 +254,26 @@ def _now_ms() -> int:
 
 # ── S→C: SKILL_RESULT ────────────────────────────────────────────────────────
 # {
-#   "caster":  int *     eid do caster
-#   "sid":     str *     skill_id
-#   "targets": list      lista de CombatResult por alvo (mesmo formato de COMBAT_RESULT)
-#   "aoe_tx":  int       tile X do centro do AOE (se aplicável)
-#   "aoe_ty":  int
-#   "effects": list      lista de EffectApplied
+#   "caster_eid":  int *     eid do caster
+#   "sid":         str *     skill_id
+#   "targets":     list      lista de CombatResult por alvo
+#   "cooldown":    float     CD efetivo (com talentos)
+#   "failed":      bool      True = servidor rejeitou
+#   "cast_started":bool      cast com tempo foi aceito (GCD sem som/CD)
+#   "is_completion":bool     cast completou (CD real, dano aplicado)
+#   "is_proj_damage":bool    projétil acertou (só mostra dano — sem GCD/CD/som)
+# }
+
+# ── S→C: SKILL_EFFECT ───────────────────────────────────────────────────────
+# Broadcast de apresentação (som/VFX) para todos no AOI do caster.
+# Separado de SKILL_RESULT para que client nunca precise deduzir timing de som.
+# {
+#   "sid":        str *   skill_id (chave de SKILL_CATALOG["effects"])
+#   "event":      str *   "cast_start" | "launch" | "impact" | "miss"
+#   "caster_eid": int *   quem usou a skill
+#   "tx":         int *   tile X do caster (posição do som)
+#   "ty":         int *   tile Y do caster
+#   "target_eid": int     eid do alvo (opcional, para impact em alvo específico)
 # }
 
 

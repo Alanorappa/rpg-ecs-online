@@ -55,23 +55,31 @@ def _apply_magic_damage(attacker_id: int, target_id: int, dmg: int, world: World
             FLT.add(f"{dmg}", pos.x, pos.y, (255, 180, 80), target_id=target_id, is_crit=True)
         else:
             FLT.add(f"-{dmg}", pos.x, pos.y, (180, 100, 255), size="normal", target_id=target_id)
-    # Dano mágico também quebra Polimorfia
+    # Dano mágico quebra Polimorfia e Sono (alinhado com _apply_final_damage do servidor)
     from components import StatusEffects as _SE
     _t_sfx = world.get_component(target_id, _SE)
-    if _t_sfx and _t_sfx.remove("polymorph"):
-        if pos:
-            FLT.add("Polimorfia quebrada!", pos.x, pos.y, (160, 80, 200),
-                    "small", target_id=target_id)
+    if _t_sfx:
+        if _t_sfx.remove("polymorph"):
+            if pos:
+                FLT.add("Polimorfia quebrada!", pos.x, pos.y, (160, 80, 200),
+                        "small", target_id=target_id)
+        _sleep_eff = _t_sfx.get("sleep")
+        if _sleep_eff:
+            _sleep_eff.on_expire_effect = ""
+            _t_sfx.remove("sleep")
+            if pos:
+                FLT.add("Acordou!", pos.x, pos.y, (200, 200, 100), "small",
+                        target_id=target_id)
     attacker_cs = world.get_component(attacker_id, CombatState)
     if attacker_cs:
         enter_combat(attacker_cs)
-    # Aggro por dano mágico: define aggroed_by_damage=True para que o leash
-    # estendido seja aplicado (mob persegue mesmo além do raio normal de detecção)
+    # Aggro por dano mágico — usa AGGRO_DELAY (alinhado com servidor)
     _ai = world.get_component(target_id, AIControlled)
     if _ai and _ai.state in ("IDLE", "RETURNING"):
         _ms = world.get_component(target_id, MobSounds)
         SOUNDS.play_mob_sounds(_ms, "aggro", dedup_key=f"dmg_{target_id}")
-        _ai.state             = "CHASING"
+        _ai.state             = "AGGRO_DELAY"
+        _ai.aggro_delay       = 0.5
         _ai.aggroed_by_damage = True
         _ai.path_recalc_timer = 0.0
     if target_cs.current_hp <= 0:
@@ -285,7 +293,15 @@ class SpellCastSystem(System):
             target_last_y=target_pos.y,
         ))
         LOG.add("Bola de Fogo!", (255, 160, 60))
-        SOUNDS.play_spell("bola_de_fogo", "launch")
+        from components import PlayerControlled as _PC_bdf
+        _lpos_bdf = None
+        for _, _, _lp_bdf in self.world.get_entities_with(_PC_bdf, Position):
+            _lpos_bdf = (_lp_bdf.x, _lp_bdf.y)
+            break
+        if _lpos_bdf:
+            SOUNDS.play_spell_at("bola_de_fogo", "launch", pos.x, pos.y, _lpos_bdf[0], _lpos_bdf[1])
+        else:
+            SOUNDS.play_spell("bola_de_fogo", "launch")
 
     def _apply_calcinar(self, attacker_id: int, target_id: int) -> None:
         """Calcinar — hit instantâneo: 50 + 25% SP. Escola fogo. Pode ser castado em movimento.
@@ -1195,7 +1211,13 @@ class PlayerProjectileSystem(System):
             if proj.damage_type == "physical":
                 _play_arrow_impact_sound()
             else:
-                SOUNDS.play_spell(proj.spell_id, "impact")
+                _tgt_pos_cs = self.world.get_component(proj.target_id, Position)
+                _lpos_cs = self._player_world_pos()
+                if _tgt_pos_cs and _lpos_cs:
+                    SOUNDS.play_spell_at(proj.spell_id, "impact",
+                                         _tgt_pos_cs.x, _tgt_pos_cs.y, _lpos_cs[0], _lpos_cs[1])
+                else:
+                    SOUNDS.play_spell(proj.spell_id, "impact")
             return
 
         # Online: mob/player sem CombatStats local — projétil colidiu, notifica servidor
@@ -1290,7 +1312,13 @@ class PlayerProjectileSystem(System):
                     if _out_oh in ("hit", "crit", "block"):
                         _play_arrow_impact_sound()
             else:
-                SOUNDS.play_spell(proj.spell_id, "impact")
+                _tgt_pos_on = self.world.get_component(proj.target_id, Position)
+                _lpos_on = self._player_world_pos()
+                if _tgt_pos_on and _lpos_on:
+                    SOUNDS.play_spell_at(proj.spell_id, "impact",
+                                         _tgt_pos_on.x, _tgt_pos_on.y, _lpos_on[0], _lpos_on[1])
+                else:
+                    SOUNDS.play_spell(proj.spell_id, "impact")
                 # Registra hit para game.py enviar PROJECTILE_HIT_CS ao servidor
                 if proj.target_server_id != -1:
                     self.pending_proj_hits.append({
@@ -1411,7 +1439,13 @@ class PlayerProjectileSystem(System):
 
         _apply_magic_damage(proj.attacker_id, proj.target_id, final_dmg, self.world,
                             is_crit=is_crit)
-        SOUNDS.play_spell(proj.spell_id, "impact")
+        _tgt_pos_off = self.world.get_component(proj.target_id, Position)
+        _lpos_off = self._player_world_pos()
+        if _tgt_pos_off and _lpos_off:
+            SOUNDS.play_spell_at(proj.spell_id, "impact",
+                                  _tgt_pos_off.x, _tgt_pos_off.y, _lpos_off[0], _lpos_off[1])
+        else:
+            SOUNDS.play_spell(proj.spell_id, "impact")
 
         # Queimaduras Profundas: crit de BdF aplica burn (duração escala com pontos)
         if is_crit and proj.spell_id == "bola_de_fogo" and attacker_cs:
@@ -1446,6 +1480,12 @@ class PlayerProjectileSystem(System):
         if proj.spell_id == "bola_de_fogo" and attacker_cs:
             if getattr(attacker_cs, "fire_exhaustion_enabled", False):
                 from components import ActiveEffect as _AEX
+                # Mesma fonte que o servidor (server/spell_completion_processor.py)
+                # usa pra essa duração — SKILL_CATALOG, não um literal hardcoded
+                # que pode divergir se o catálogo for ajustado.
+                from skill_config import SKILL_CATALOG as _SC_exh
+                _exh_dur = (_SC_exh.get("bola_de_fogo", {})
+                           .get("effect_durations", {}).get("exhaustion", 6.0))
                 _t_sfx = self.world.get_component(proj.target_id, StatusEffects)
                 if _t_sfx is None:
                     _t_sfx = StatusEffects()
@@ -1455,11 +1495,11 @@ class PlayerProjectileSystem(System):
                 if _exh:
                     _new_stacks = min(_exh.magnitude + 1, 5)
                     _exh.magnitude = _new_stacks
-                    _exh.duration  = 6.0  # refresh
+                    _exh.duration  = _exh_dur  # refresh
                 else:
                     _new_stacks = 1
                     _t_sfx.effects["exhaustion"] = _AEX(
-                        effect_type="exhaustion", duration=6.0,
+                        effect_type="exhaustion", duration=_exh_dur,
                         magnitude=1, tick_interval=0.0)
                 # Slow: começa no 2º stack — 5% por stack acima do 1º
                 _slow_pct = (_new_stacks - 1) * 0.05
@@ -1468,10 +1508,10 @@ class PlayerProjectileSystem(System):
                     _slow = _t_sfx.get("slow")
                     if _slow:
                         _slow.magnitude = min(_slow.magnitude, _slow_mult)  # mantém o mais forte
-                        _slow.duration  = 6.0
+                        _slow.duration  = _exh_dur
                     else:
                         _t_sfx.effects["slow"] = _AEX(
-                            effect_type="slow", duration=6.0,
+                            effect_type="slow", duration=_exh_dur,
                             magnitude=_slow_mult, tick_interval=0.0)
 
         # Chama Interna: rola proc após qualquer hit de spell de escola fogo

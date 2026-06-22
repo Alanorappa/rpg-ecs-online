@@ -71,12 +71,8 @@ class SkillHandlers:
     MELEE_RANGE_PX: float = 72.0   # 2.25 tiles — cobre kiting + lag
 
     def _target_alive(self, target_id: int) -> bool:
-        from components import RemoteControlled as _RC
-        cs = self.world.get_component(target_id, CombatStats)
-        if cs is not None:
-            return cs.current_hp > 0
-        rc = self.world.get_component(target_id, _RC)
-        return rc is not None and rc.hp > 0
+        from utils import is_target_alive
+        return is_target_alive(self.world, target_id)
 
     def _range_ok(self, player_pos, target_pos,
                   max_px: float, min_px: float = 0.0) -> bool:
@@ -296,15 +292,14 @@ class SkillHandlers:
             self.player_entity_id, target_id, "physical", multiplier=5.0, is_ability=True)
 
         # Talento "Horrorizante": se alvo sobreviveu, aplica medo por 1s
+        # (usa _target_alive — alvo PvP só tem RemoteControlled, sem CombatStats)
         _cs_exec = self.world.get_component(self.player_entity_id, CombatStats)
-        if _cs_exec and _cs_exec.executar_horrorizante:
-            _tgt_cs = self.world.get_component(target_id, CombatStats)
-            if _tgt_cs and _tgt_cs.current_hp > 0:
-                apply_effect(self.world, target_id, "fear", 1.0)
-                _tpos = self.world.get_component(target_id, Position)
-                if _tpos:
-                    FLT.add("Medo!", _tpos.x, _tpos.y,
-                            (255, 140, 0), size="normal", target_id=target_id)
+        if _cs_exec and _cs_exec.executar_horrorizante and self._target_alive(target_id):
+            apply_effect(self.world, target_id, "fear", 1.0)
+            _tpos = self.world.get_component(target_id, Position)
+            if _tpos:
+                FLT.add("Medo!", _tpos.x, _tpos.y,
+                        (255, 140, 0), size="normal", target_id=target_id)
 
         if combat_state:
             enter_combat(combat_state)
@@ -514,10 +509,11 @@ class SkillHandlers:
         stun_duration = _cs_pnq.pnq_stun_duration if _cs_pnq else 1.0
 
         skill.charges -= 1
-        hp_before = target_cs.current_hp
+        target_cs = self.world.get_component(target_id, CombatStats)
+        hp_before = target_cs.current_hp if target_cs else 0
         killed, _ = deal_damage(self.player_entity_id, target_id, "physical",
                                 multiplier=0.45, is_ability=True)
-        hit = killed or target_cs.current_hp < hp_before
+        hit = killed or (target_cs is not None and target_cs.current_hp < hp_before)
         if hit:
             apply_effect(self.world, target_id, "stun", stun_duration)
             LOG.add(f"Punho no Queixo: alvo atordoado por {stun_duration:.0f}s!", (255, 180, 80))
@@ -1077,10 +1073,12 @@ class SkillHandlers:
 
     # ------------------------------------------------------------------
     def _skill_camuflagem(self, skill, combat_stats, combat_state, tile_move):
-        """Arqueiro — disfarça-se de objeto do tileset; velocidade 30%; inimigos perdem alvo."""
-        from components import CharacterStats, CombatStats as _CS, Renderable, TileMovement as _TM
-        from components import AIControlled, Enemy
-        from tileset import CAMOUFLAGE_OBJECT_IDS
+        """Arqueiro — disfarça-se com a capa (sprite animado idle/run); inalvejável
+        em PvP/PvE (imune a dano, DOTs dispelados), velocidade 75%, inimigos
+        perdem o alvo."""
+        from components import CharacterStats, CombatStats as _CS, TileMovement as _TM
+        from components import AIControlled, Enemy, CombatState as _CSt, StatusEffects as _SFX_cam
+        from tileset import discover_camouflage_variants
         char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
         cs         = self.world.get_component(self.player_entity_id, _CS)
 
@@ -1093,29 +1091,44 @@ class SkillHandlers:
             return False
 
         duration  = skill.params.get("duration",   5.0)
-        speed_pct = skill.params.get("speed_pct",  0.30)
+        speed_pct = skill.params.get("speed_pct",  0.60)
 
-        # Escolhe objeto aleatório do catálogo do tileset
-        chosen_object = random.choice(CAMOUFLAGE_OBJECT_IDS)
+        # Escolhe uma variante de disfarce (sufixo "", "_2", "_3"... conforme
+        # os pares camuflagem_idle{suf}/camuflagem_run{suf} existentes em
+        # assets/sprites/ — descoberta dinâmica, sem precisar editar código
+        # ao adicionar uma nova variante).
+        _variants     = discover_camouflage_variants()
+        chosen_object = random.choice(_variants) if _variants else ""
 
-        # Oculta o visual normal (tamanho 0 × 0 esconde o retângulo)
-        rend = self.world.get_component(self.player_entity_id, Renderable)
-        if rend:
-            rend.width  = 0
-            rend.height = 0
-
-        # Reduz velocidade de movimento para 30%
+        # Reduz velocidade de movimento
         tm = self.world.get_component(self.player_entity_id, _TM)
         if tm:
             tm.speed = 110.0 * speed_pct
 
-        # Ativa timer, armazena objeto e torna o player invisível
+        # Ativa timer e armazena a variante do disfarce (RenderSystem desenha
+        # o sprite animado idle/run enquanto camouflage_timer > 0)
         if cs:
             cs.camouflage_timer  = duration
             cs.camouflage_object = chosen_object
-        player_cst = self.world.get_component(self.player_entity_id, __import__("components").CombatState)
+
+        player_cst = self.world.get_component(self.player_entity_id, _CSt)
         if player_cst:
-            player_cst.is_visible = False
+            player_cst.is_visible    = False
+            player_cst.is_immune     = True   # inalvejável: nenhum dano (PvE/PvP/DOT) passa
+            player_cst.is_camouflaged = True  # bloqueia can_act(): nao pode atacar/usar skill
+            # No servidor, self é o SkillSystem (não o WorldServer) — registra a
+            # mudança na lista bridge (ver skill_processor.py) pra _build_update_for_session
+            # reavaliar _can_see() mesmo sem o player ter se movido neste tick.
+            _vis_list = getattr(self, "_server_visibility_changed", None)
+            if _vis_list is not None:
+                _vis_list.append(self.player_entity_id)
+
+        # DOTs ativos são dispelados ao camuflar (não ficam só pausados pela
+        # imunidade — o usuário quer o efeito removido de fato).
+        sfx = self.world.get_component(self.player_entity_id, _SFX_cam)
+        if sfx:
+            for _dot in ("poison", "bleed", "burn"):
+                sfx.remove(_dot)
 
         # Inimigos perdem o alvo e retornam ao respawn
         for _eid, _ai, _ in self.world.get_entities_with(AIControlled, Enemy):
@@ -1124,8 +1137,15 @@ class SkillHandlers:
                 _ai.aggroed_by_damage = False
                 _ai.path_recalc_timer = 0.0
 
+        # PvP: outros players que já tinham o arqueiro selecionado perdem o
+        # alvo — "inalvejável" inclui quem já travou antes de camuflar, não só
+        # bloqueia seleção de alvo novo (que is_visible=False já impede).
+        for _other_eid, _other_cst in self.world.get_entities_with(_CSt):
+            if _other_eid != self.player_entity_id and _other_cst.target_entity_id == self.player_entity_id:
+                _other_cst.target_entity_id = -1
+
         skill.current_cooldown = skill.cooldown
-        LOG.add(f"Camuflagem! ({chosen_object.replace('_',' ').title()})", (160, 220, 160))
+        LOG.add("Camuflagem!", (160, 220, 160))
         SOUNDS.play_skill("skill_camuflagem")
         return True
 

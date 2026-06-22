@@ -18,7 +18,7 @@ class CombatProcessorMixin:
         """
         from systems import deal_damage
         from components import CombatState, CombatStats, TileMovement, Enemy, PendingDeath
-        from utils import chebyshev
+        from utils import chebyshev, is_action_locked
 
         # ── Player → Mob ───────────────────────────────────────────────────
         for session_id, player_eid in list(self._player_eids.items()):
@@ -30,7 +30,10 @@ class CombatProcessorMixin:
             # uma skill seta is_pursuing=True e dispara AUTO_ATTACK pro alvo, mas o
             # auto-attack não pode disparar durante o cast — senão ele aplica dano
             # (e portanto aggro) antes/junto do dano da própria skill.
-            if not cs.can_act():
+            # is_action_locked cobre sleep/disoriented/polymorph — can_act() não
+            # inclui esses 3 (vivem em StatusEffects); sem o segundo check, um
+            # player adormecido/desorientado/polimorfizado continuava auto-atacando.
+            if not cs.can_act() or is_action_locked(self.world, player_eid):
                 continue
 
             target_eid = cs.target_entity_id
@@ -67,19 +70,18 @@ class CombatProcessorMixin:
             # Range: ranged=7, melee=1.
             attack_range = 7 if _is_ranged_p else 1
 
-            # Ranged: requer is_pursuing + aljava com flechas.
+            # Ranged: requer is_pursuing + arco na mainhand + aljava com flechas no offhand.
             if _is_ranged_p:
                 if not cs.is_pursuing:
                     continue
-                # Bloqueia somente quando o servidor sabe que a aljava está vazia.
-                # Se não há aljava no ECS do servidor (save antigo / primeiro login),
-                # permite o ataque — o cliente já valida localmente.
                 from components import Equipment as _EqCP
                 _eq_cp = self.world.get_component(player_eid, _EqCP)
-                _qv_cp = _eq_cp.slots.get("offhand") if _eq_cp else None
-                if _qv_cp is not None \
-                        and getattr(_qv_cp, "item_type", "") == "quiver" \
-                        and _qv_cp.arrow_count < 1:
+                _bow_cp = _eq_cp.slots.get("mainhand") if _eq_cp else None
+                _qv_cp  = _eq_cp.slots.get("offhand")  if _eq_cp else None
+                if not _bow_cp or getattr(_bow_cp, "subtype", "") != "Bow":
+                    continue
+                if not _qv_cp or getattr(_qv_cp, "item_type", "") != "quiver" \
+                        or _qv_cp.arrow_count < 1:
                     continue
 
             _srv_dist = chebyshev(player_tm.current_tile_x, player_tm.current_tile_y,
@@ -195,6 +197,10 @@ class CombatProcessorMixin:
             _ai_r = self.world.get_component(_mb, _AIAtk)
             if _ai_r and _ai_r.state in ("ATTACKING", "CHASING") and _ai_r.target_eid != -1:
                 _mob_attacker_of[_ai_r.target_eid] = _mb
+                # Atualiza cache do último atacante para fallback no mesmo tick
+                if not hasattr(self, "_last_mob_attacker"):
+                    self._last_mob_attacker = {}
+                self._last_mob_attacker[_ai_r.target_eid] = _mb
 
         # Consome avoidances (parry/dodge/miss) de mob→player coletadas em CombatSystem.
         from systems import _svc as _svc_cp
@@ -211,6 +217,9 @@ class CombatProcessorMixin:
                 })
             _combat_sys_cp.mob_avoidance_events.clear()
 
+        if not hasattr(self, "_last_mob_attacker"):
+            self._last_mob_attacker: dict[int, int] = {}
+
         for peid, hp_before in player_hp_snapshot.items():
             pcs = self.world.get_component(peid, CombatStats)
             if not pcs:
@@ -225,6 +234,12 @@ class CombatProcessorMixin:
 
             if mob_delta > 0:
                 attacker_mob_eid = _mob_attacker_of.get(peid, -1)
+                # Fallback: mob pode ter mudado de estado no mesmo tick após atacar.
+                # Usa o último mob rastreado para este player se disponível.
+                if attacker_mob_eid == -1:
+                    attacker_mob_eid = self._last_mob_attacker.get(peid, -1)
+                elif attacker_mob_eid != -1:
+                    self._last_mob_attacker[peid] = attacker_mob_eid
                 self._pending_mob_attacks.append({
                     "attacker": attacker_mob_eid,
                     "target":   peid,

@@ -107,6 +107,15 @@ class OnlineModeHandlers:
         tm = self.world.get_component(self.player_entity, TileMovement)
         if not tm:
             return
+        # Dash (Interceptar predito localmente, correção de knockback, etc.) muda
+        # target_tile_x/y por conta própria — não é input do jogador. Mandar isso
+        # como MOVE normal cria um pedido paralelo/concorrente com a resolução da
+        # própria skill (validação dx<=1 às vezes aceita, às vezes rejeita,
+        # dependendo da distância do dash) — gera correções fora de ordem e
+        # dessincroniza a posição. Nenhum dash deveria nunca virar um MOVE normal:
+        # a posição final do dash já chega ao servidor pelo canal da skill.
+        if getattr(tm, "is_dash", False):
+            return
         # Usa target (início do movimento) em vez de current (fim da animação)
         # → outro jogador vê o movimento começar junto com a animação local
         tx, ty = tm.target_tile_x, tm.target_tile_y

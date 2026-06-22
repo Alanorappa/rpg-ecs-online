@@ -31,8 +31,12 @@ class ServerMobSystem:
         self._move_timers: dict[int, float] = {}  # mob_eid → tempo até próximo passo
 
     def update(self, dt: float = 0) -> None:
-        from components import CombatState, TileMovement
+        from components import CombatState, TileMovement, NPC
         from utils import chebyshev
+
+        npc_tiles: set[tuple[int, int]] = set()
+        for _, tm, _ in self.world.get_entities_with(TileMovement, NPC):
+            npc_tiles.add((tm.current_tile_x, tm.current_tile_y))
 
         for mob_eid in list(self._mob_eids):
             mob_cs = self.world.get_component(mob_eid, CombatState)
@@ -49,7 +53,7 @@ class ServerMobSystem:
 
             # ── 2. Movimento em direção ao alvo ───────────────────────
             if mob_cs.target_entity_id != -1:
-                self._move_toward_target(mob_eid, mob_cs, mob_tm, dt)
+                self._move_toward_target(mob_eid, mob_cs, mob_tm, dt, npc_tiles)
 
     def _try_aggro(self, mob_eid: int, mob_cs, mob_tm) -> None:
         from utils import chebyshev
@@ -109,11 +113,15 @@ class ServerMobSystem:
         if d > LEASH_RANGE:
             mob_cs.target_entity_id = -1
 
-    def _move_toward_target(self, mob_eid: int, mob_cs, mob_tm, dt: float) -> None:
+    def _move_toward_target(self, mob_eid: int, mob_cs, mob_tm, dt: float,
+                            npc_tiles: set = None) -> None:
         """Move 1 tile em direção ao player se não estiver em melee range."""
         from components import TileMovement, Position
         from utils import chebyshev, start_tile_movement
         from tileset import TILE_SIZE
+
+        if npc_tiles is None:
+            npc_tiles = set()
 
         ptm = self.world.get_component(mob_cs.target_entity_id, TileMovement)
         if not ptm:
@@ -151,7 +159,7 @@ class ServerMobSystem:
 
         new_tx, new_ty = None, None
         for cx, cy in candidates:
-            if self._is_walkable(cx, cy):
+            if self._is_walkable(cx, cy) and (cx, cy) not in npc_tiles:
                 new_tx, new_ty = cx, cy
                 break
 

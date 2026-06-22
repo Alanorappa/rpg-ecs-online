@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from shared.constants import (
     TILE_SIZE,
+    RESPAWN_TILE,
     GHOST_GRAVEYARD_RADIUS_TILES,
     GHOST_CORPSE_RADIUS_TILES,
     GHOST_GRAVEYARD_REVIVE_S,
@@ -37,7 +38,7 @@ class RespawnMixin:
 
     # TODO: hardcoded para map_1. Com múltiplos mapas/zonas, mover para
     #       map_1_entities.json ou propriedade de SpawnZone do player (B3).
-    RESPAWN_TILE = (115, 389)   # centro do cemitério — deve coincidir com spawn offline
+    RESPAWN_TILE = RESPAWN_TILE   # shared/constants.py — fonte única (auth.py também usa)
 
     def _tick_respawn_immunity(self) -> None:
         """Decrementa imunidade pós-respawn; restaura visibilidade ao expirar."""
@@ -82,6 +83,10 @@ class RespawnMixin:
         self._spells_in_flight_queue = [
             e for e in self._spells_in_flight_queue
             if e.get("player_eid") != player_eid and e.get("target_id") != player_eid
+        ]
+        self._pending_knockback_landings = [
+            e for e in self._pending_knockback_landings
+            if e.get("target_id") != player_eid and e.get("collided_eid") != player_eid
         ]
 
         # Remove contribuição de dano do player morto nos logs de mob

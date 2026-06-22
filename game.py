@@ -109,12 +109,24 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         # NÃO limpo após despawn — usado como fallback de FLT quando SKILL_RESULT
         # chega depois que o mob já foi removido de _remote_mobs.
         self._mob_ghost_pos: dict[int, tuple[float, float]] = {}
+        # Kills com animação em andamento (progress >= 0.3): local_eid → {"server_eid": int, "timer": float}
+        # Remoção adiada até is_moving=False; mob termina o passo para target_tile.
+        self._pending_mob_despawn: dict[int, dict] = {}
+        # Redirect de loot: (srv_tx, srv_ty) → (target_tx, target_ty)
+        # Quando mob commitou para next tile (progress >= 0.3), loot segue para lá.
+        self._pending_loot_redirect: dict[tuple[int, int], tuple[int, int]] = {}
         # Timers de passo para players remotos (server_eid → tempo restante)
         self._remote_step_timers:  dict[int, float]         = {}
         # Snapshot de stats para detecção de mudanças e envio de PLAYER_STAT_SYNC
         self._combat_stat_snapshot: dict = {}
-        self._mob_move_queues:         dict[int, list] = {}  # server_eid → [(tx,ty)...]
+        # Snapshot de equipamento para detecção de mudanças e envio de EQUIP_SYNC
+        self._equip_snapshot: dict = {}
+        self._mob_move_queues:         dict[int, list] = {}  # server_eid → [(tx,ty,is_dash)...]
         self._remote_player_move_queues: dict[int, list] = {}  # server_eid → [(tx,ty,is_dash)]
+        # Correções de posição "is_dash" do próprio player (ex: vítima de knockback)
+        # encadeadas — animam em sequência igual a um mob/player remoto, em vez de
+        # aplicar snap instantâneo (usado para correções normais de anti-cheat).
+        self._self_move_queue: list[tuple[int, int]] = []
         # Projéteis de mobs remotos: server_proj_eid → local_eid (entidade visual)
         self._remote_mob_projectiles: dict[int, int] = {}
         # Cache para flechas atrasadas: server_eid → (local_eid, pos_x, pos_y)
@@ -882,6 +894,9 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         if self._quest_journal.is_open:
             self._quest_journal.close()
             return True
+        if self._shop_system.qty_modal_open:
+            self._shop_system._close_qty_modal()
+            return True
         if self._shop_system.is_open:
             self._shop_system._close()
             return True
@@ -1328,6 +1343,10 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             if self._show_hotbar_editor:
                 # Editor aberto: sistemas não recebem nenhum evento de input
                 systems_events = []
+            elif self._shop_system.qty_modal_open:
+                # Modal de quantidade aberto: bloqueia TODO input dos sistemas ECS
+                # (handle_events da loja recebe raw events separadamente — linha 1295)
+                systems_events = []
             elif (_minimap_click_consumed
                     or self._map_overlay.is_open or self._map_overlay.pending_destination is not None
                     or self._show_inventory or self._show_talents
@@ -1359,6 +1378,9 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                     self._prof_record(f"upd:{type(system).__name__}", _time.perf_counter() - _ts)
                 else:
                     system.update(ev, dt)
+
+            # Mobs mortos com animação em andamento: remove entidade ao terminar passo
+            self._flush_pending_mob_despawns(dt)
 
             # Projéteis que colidiram com mobs online: envia PROJECTILE_HIT_CS ao servidor
             if self._net and self._player_proj_system.pending_proj_hits:
@@ -1422,6 +1444,14 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             if _new_snapshot != self._combat_stat_snapshot:
                 self._send_combat_stat_sync()
                 self._combat_stat_snapshot = _new_snapshot
+
+            # Detecta mudanças de equipamento (equip/unequip de qualquer fonte, incluindo
+            # loot direto) e sincroniza com servidor para manter validação server-side correta
+            # (bow+quiver para auto-attack/skills do arqueiro, etc.).
+            _new_equip = self._get_equip_snapshot()
+            if _new_equip != self._equip_snapshot:
+                self._send_equip_sync()
+                self._equip_snapshot = _new_equip
 
             # Se shop ou loot acabaram de abrir, fechar os outros modais
             if (not _shop_was_open_before and self._shop_system.is_open) or \

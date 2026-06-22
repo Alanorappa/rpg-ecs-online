@@ -21,25 +21,25 @@ class RemoteEntityHandlers:
 
     def _play_attacker_mob_sound(self, server_attacker: int, _lx: float, _ly: float) -> bool:
         """Toca o som de ataque do MOB atacante (attack_melee/ranged/magic via
-        MobSounds + AIControlled), posicional com falloff pela distância.
+        MobSounds), posicional com falloff pela distância.
 
-        Resolução 100% por componentes (MobSounds.<event> aponta para a chave
-        do som, AIControlled.entity_class/is_ranged decide o evento) — nada de
-        nome de mob hardcoded. Usado tanto quando o ALVO é o player local
-        quanto quando é um player remoto, pois o som depende apenas de quem
-        é o ATACANTE, não de quem foi atingido.
+        Sons definidos em mob_definitions.py → componente MobSounds (fonte única).
+        Nenhum nome de mob ou som hardcoded aqui.
 
-        Retorna True se o atacante é um mob remoto rastreado (som tocado),
-        False se o atacante é outra coisa (player local/remoto em PvP) —
-        nesse caso o chamador deve usar o fallback genérico (hit_normal/crit).
+        Retorna True se o atacante é um mob (rastreado ou não localmente) —
+        suprime o fallback hit_normal do caller, evitando som de espada errado.
+        Retorna False apenas se o atacante é um player remoto (PvP).
         """
         from components import MobSounds as _MobSounds, AIControlled as _AICtrl
         _atk_mob_local = self._remote_mobs.get(server_attacker)
         if _atk_mob_local is None:
-            return False
+            # Mob fora do AOI local, attacker=-1 (origem não identificada no servidor)
+            # ou ataque de DoT cujo mob já despawnou.
+            # Se o atacante NÃO é um player remoto conhecido → é um mob → suprime hit_normal.
+            return server_attacker not in self._remote_players
         _atk_pos = self.world.get_component(_atk_mob_local, Position)
         if not _atk_pos:
-            return False
+            return True  # Mob existe no ECS mas sem posição — suprime hit_normal
         _atk_snd = self.world.get_component(_atk_mob_local, _MobSounds)
         _atk_ai  = self.world.get_component(_atk_mob_local, _AICtrl)
         if _atk_ai and _atk_ai.entity_class in ("Mage", "Mago", "Warlock", "Bruxo"):
@@ -400,7 +400,8 @@ class RemoteEntityHandlers:
                         if is_crit:
                             SOUNDS.play_emote_get_crit(is_player=True)
                             SOUNDS.play_random(["hit_crit_1","hit_crit_2","hit_crit"], 0.9)
-                        else:
+                        elif not is_ability:
+                            # Só auto-attack toca hit_normal; som de skill chega via SKILL_EFFECT
                             SOUNDS.play_random(["hit_normal_1","hit_normal_2",
                                                 "hit_normal_3","hit_normal"], 0.7)
             elif damage == 0 and outcome in ("miss", "dodge", "parry", "block"):
@@ -426,6 +427,9 @@ class RemoteEntityHandlers:
             rc = self.world.get_component(local_eid, RemoteControlled)
             if rc and hp_after >= 0:
                 rc.hp = hp_after
+                _hp_max_cr = cr.get("hp_max", 0)
+                if _hp_max_cr > 0:
+                    rc.hp_max = _hp_max_cr
             pos = self.world.get_component(local_eid, Position)
             # Auto-attack de arqueiro (PvP, contra player remoto): flecha visual
             # nasce aqui; dano/som ficam diferidos para o impacto em _on_hit — inclusive
@@ -751,7 +755,8 @@ class RemoteEntityHandlers:
         self._remote_mob_projectiles[server_proj_eid] = local_eid
 
     def _move_remote_mob(self, server_eid: int, new_tx: int, new_ty: int,
-                         from_tx: int | None = None, from_ty: int | None = None) -> None:
+                         from_tx: int | None = None, from_ty: int | None = None,
+                         is_dash: bool = False, duration: float | None = None) -> None:
         """Move mob remoto para o tile destino recebido do servidor.
 
         O servidor envia target_tile quando o movimento COMEÇA (não quando termina),
@@ -760,6 +765,14 @@ class RemoteEntityHandlers:
         from_tx/from_ty: tile onde o mob ESTÁ no servidor quando este passo começa.
         Gravado em tm.server_tile_x/y para que _process_target use o mesmo critério
         de distância que o servidor (em vez da posição visual animada, que fica atrás).
+
+        duration: presente apenas em DESLOCAMENTOS FORÇADOS de múltiplos tiles em
+        UM evento só (ex: knockback do Tiro Repulsivo) — servidor já decidiu a
+        posição final e quanto tempo a tween deve levar; cliente não enfileira
+        nem prediz, só anima a tween inteira de uma vez (padrão de netcode pra
+        displacement: servidor autoritativo, cliente só interpola o confirmado).
+        Isso PREEMPTA qualquer animação/fila em andamento — o deslocamento forçado
+        tem prioridade sobre o que o mob estava fazendo.
         """
         from components import TileMovement, Position
         from utils import start_tile_movement
@@ -783,31 +796,82 @@ class RemoteEntityHandlers:
             _meta_mv.last_x = new_tx * TILE_SIZE + TILE_SIZE // 2
             _meta_mv.last_y = new_ty * TILE_SIZE + TILE_SIZE // 2
 
+        if duration is not None:
+            # Deslocamento forçado: descarta qualquer fila/animação em curso e
+            # tween direto, AGORA, do tile atual visual até o destino — uma
+            # transição só, não N passos. Evita por completo a classe de bugs
+            # de fila (tile pulado por dedup, descompasso com perseguição que
+            # já começou, etc), já que não existe mais fila para esse evento.
+            self._mob_move_queues.pop(server_eid, None)
+            start_tile_movement(pos, tm, new_tx, new_ty, override_duration=duration)
+            tm.is_dash = duration > 0
+            return
+
         if tm.is_moving:
-            # Já animando para este tile? Não enfileira (servidor emite start, não end)
-            if tm.target_tile_x == new_tx and tm.target_tile_y == new_ty:
+            # Já animando para este tile A PARTIR DO MESMO PONTO DE PARTIDA? Não
+            # enfileira (servidor emite start, não end — evita reprocessar o mesmo
+            # evento 2x). Compara from_tx/ty também: só o destino não basta — um
+            # caminho de volta que passa pelo MESMO tile de destino do passo de
+            # saída batia o destino por coincidência e era descartado como
+            # "duplicata", pulando esse tile inteiro.
+            _same_origin = (from_tx is None or
+                            (tm.current_tile_x == from_tx and tm.current_tile_y == from_ty))
+            if tm.target_tile_x == new_tx and tm.target_tile_y == new_ty and _same_origin:
                 return
             # Indo para outro tile — enfileira o próximo passo
             queue = self._mob_move_queues.setdefault(server_eid, [])
             # Descarta entrada duplicada no topo da fila
-            if not queue or queue[-1] != (new_tx, new_ty):
-                queue.append((new_tx, new_ty))
+            if not queue or queue[-1][:2] != (new_tx, new_ty):
+                queue.append((new_tx, new_ty, is_dash))
         else:
             start_tile_movement(pos, tm, new_tx, new_ty)
+            if is_dash:
+                tm.is_dash       = True
+                tm.move_duration = 0.18
 
     def _ensure_remote_mobs_visible(self) -> None:
         """
-        Garante que mobs remotos sempre tenham Visible após FogSystem rodar.
-        O servidor decidiu que o cliente deve ver esses mobs (estão no AOI).
-        Sem isso, FogSystem remove Visible quando há paredes no caminho do LOS,
-        causando PlayerInputSystem limpar o target a cada frame.
+        Garante que mobs e players remotos sempre tenham Visible após FogSystem rodar.
+        O servidor decidiu que o cliente deve ver essas entidades (estão no AOI e
+        passaram por _can_see) — fog of war/LOS é mecânica local de exploração, não
+        deve sobrepor essa decisão. Sem isso, FogSystem remove Visible quando há
+        paredes no caminho do LOS, causando PlayerInputSystem limpar o target
+        selecionado a cada frame (mob OU player remoto em PvP).
         """
         from components import Visible
         for local_eid in self._remote_mobs.values():
             if self.world.get_component(local_eid, Visible) is None:
                 self.world.add_component(local_eid, Visible())
+        for local_eid in self._remote_players.values():
+            if self.world.get_component(local_eid, Visible) is None:
+                self.world.add_component(local_eid, Visible())
 
     # ── Helpers de acesso a RemoteEntityMeta ─────────────────────────────────
+
+    # Segundos — segurança se a animação travar. Cobre cadeias longas (ex: knockback
+    # de 5 tiles a 0.18s/tile ≈ 0.9s) com margem, sem deixar o corpse pendurado pra sempre.
+    _PENDING_DESPAWN_TIMEOUT = 2.0
+
+    def _flush_pending_mob_despawns(self, dt: float) -> None:
+        """Remove entidades de mob cujo despawn foi adiado até a animação de movimento concluir."""
+        if not self._pending_mob_despawn:
+            return
+        from components import TileMovement as _TM_pd
+        done = []
+        for local_eid, info in self._pending_mob_despawn.items():
+            info["timer"] += dt
+            tm = self.world.get_component(local_eid, _TM_pd)
+            _queue_pending = bool(self._mob_move_queues.get(info["server_eid"]))
+            if (tm is None or (not tm.is_moving and not _queue_pending)
+                    or info["timer"] >= self._PENDING_DESPAWN_TIMEOUT):
+                done.append(local_eid)
+        for local_eid in done:
+            info = self._pending_mob_despawn.pop(local_eid)
+            self._mob_move_queues.pop(info["server_eid"], None)
+            try:
+                self.world.remove_entity(local_eid)
+            except Exception:
+                pass
 
     def _meta(self, server_eid: int):
         """Retorna RemoteEntityMeta do mob remoto pelo server_eid, ou None."""
@@ -842,8 +906,15 @@ class RemoteEntityHandlers:
                 del self._mob_move_queues[server_eid]
                 continue
             if not tm.is_moving:
-                tx, ty = queue.pop(0)
+                tx, ty, is_dash = queue.pop(0)
+                import datetime as _dt_mob_q
+                print(f"[DBG_MOB {_dt_mob_q.datetime.now().strftime('%H:%M:%S.%f')[:-3]}] "
+                      f"CLIENT drena fila eid={server_eid} -> ({tx},{ty}) is_dash={is_dash} "
+                      f"resta={len(queue)}")
                 start_tile_movement(pos, tm, tx, ty)
+                if is_dash:
+                    tm.is_dash       = True
+                    tm.move_duration = 0.18
                 if not queue:
                     del self._mob_move_queues[server_eid]
 
@@ -869,6 +940,21 @@ class RemoteEntityHandlers:
                     tm.move_duration = 0.18
                 if not queue:
                     del self._remote_player_move_queues[server_eid]
+
+        # Fila de correções "is_dash" do próprio player (ex: knockback sofrido) —
+        # mesmo padrão acima, mas no player_entity local.
+        if self._self_move_queue:
+            tm  = self.world.get_component(self.player_entity, TileMovement)
+            pos = self.world.get_component(self.player_entity, Position)
+            if tm and pos and not tm.is_moving:
+                tx, ty = self._self_move_queue.pop(0)
+                start_tile_movement(pos, tm, tx, ty)
+                tm.is_dash       = True
+                tm.move_duration = 0.18
+                # Suprime o MOVE espúrio que _send_player_move() mandaria por ver
+                # target_tile mudar (mesma razão do sync em network_handlers.py).
+                self._net_last_tx = tx
+                self._net_last_ty = ty
 
     # ── Jogadores remotos — abordagem ECS ────────────────────────────────────
 
@@ -925,7 +1011,8 @@ class RemoteEntityHandlers:
 
     def _apply_remote_move(self, eid: int, new_tx: int, new_ty: int,
                            from_tx: int | None = None, from_ty: int | None = None,
-                           is_dash: bool = False, teleport: bool = False) -> None:
+                           is_dash: bool = False, teleport: bool = False,
+                           duration: float | None = None) -> None:
         """Atualiza target_tile do jogador remoto — TileMovementSystem anima.
 
         from_tx/from_ty: posição anterior confirmada pelo servidor.
@@ -957,6 +1044,15 @@ class RemoteEntityHandlers:
             pos.x = new_tx * _TS_rm + _TS_rm / 2
             pos.y = new_ty * _TS_rm + _TS_rm / 2
             return
+        if duration is not None:
+            # Deslocamento forçado (ex: knockback do Tiro Repulsivo em PvP) — UM
+            # evento com posição final + duração, mesmo padrão de _move_remote_mob.
+            # Preempta fila/animação em curso: servidor já decidiu tudo, cliente
+            # só interpola a tween confirmada, sem enfileirar passo a passo.
+            self._remote_player_move_queues.pop(eid, None)
+            start_tile_movement(pos, tm, new_tx, new_ty, override_duration=duration)
+            tm.is_dash = duration > 0
+            return
         if not tm.is_moving:
             # Se temos a posição "de" confirmada, alinha o visual antes de animar.
             # Só aplica quando parado (sem interromper animação em curso).
@@ -970,9 +1066,16 @@ class RemoteEntityHandlers:
                 tm.is_dash       = True
                 tm.move_duration = 0.18
         else:
-            # Já animando: encadeia na fila para não interromper a animação atual
-            if tm.target_tile_x == new_tx and tm.target_tile_y == new_ty:
-                return  # já está indo para este tile
+            # Já animando: encadeia na fila para não interromper a animação atual.
+            # Compara from_tx/ty também (não só o destino) — mesma razão do mob:
+            # um retorno que passa pelo mesmo tile de destino do passo de saída
+            # (ex: knockback + perseguição na mesma linha) batia o destino por
+            # coincidência com origem diferente e era descartado como duplicata.
+            _same_origin_rm = (from_tx is None or
+                               (tm.current_tile_x == from_tx and tm.current_tile_y == from_ty))
+            if (tm.target_tile_x == new_tx and tm.target_tile_y == new_ty
+                    and _same_origin_rm):
+                return  # já está indo para este tile, a partir da mesma origem
             queue = self._remote_player_move_queues.setdefault(eid, [])
             entry = (new_tx, new_ty, is_dash)
             if not queue or queue[-1][:2] != (new_tx, new_ty):
@@ -1091,28 +1194,24 @@ class RemoteEntityHandlers:
                 pass
 
     def _draw_remote_players(self, cam_x: float, cam_y: float) -> None:
-        """Nome + HP dos jogadores remotos. Posição lida do ECS (TileMovementSystem anima)."""
+        """Nome + HP dos jogadores remotos. Posição lida do ECS (TileMovementSystem anima).
+
+        Sem gate de fog of war — outro jogador real dentro do AOI sempre é visível
+        (invisibilidade é regra do servidor: CombatState.is_visible/_can_see), igual
+        ao corpo dele no RenderSystem.
+        """
         if not self._remote_players:
             return
-        from components import Position, RemoteControlled, FogOfWar as _FogComp
+        from components import Position, RemoteControlled
         from tileset import TILE_SIZE as _TS
         W = H = _TS - 4
         zoom_surf = self._zoom_surf
-        _fog_vis = None
-        for _, _fog in self.world.get_entities_with(_FogComp):
-            _fog_vis = _fog.visible
-            break
 
         for server_eid, local_eid in self._remote_players.items():
             pos = self.world.get_component(local_eid, Position)
             rc  = self.world.get_component(local_eid, RemoteControlled)
             if not pos or not rc:
                 continue
-            if _fog_vis is not None:
-                ptx = int(pos.x / _TS)
-                pty = int(pos.y / _TS)
-                if (ptx, pty) not in _fog_vis:
-                    continue
             px = pos.x - W // 2 - cam_x
             py = pos.y - H // 2 - cam_y
             ns = self.font_xs.render(rc.name, True, (255, 255, 200))

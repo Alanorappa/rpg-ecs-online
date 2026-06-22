@@ -66,7 +66,7 @@
 
 ### Loop de ticks — `server/world_server.py`
 
-O servidor roda a **20 ticks/s** (50ms por tick). Ver `ARQUITETURA_ONLINE.md → Fluxo de tick` para a ordem completa.
+O servidor roda a **30 ticks/s** (33ms por tick). Ver `ARQUITETURA_ONLINE.md → Fluxo de tick` para a ordem completa.
 
 ### Sistemas na lista `_systems` do servidor
 

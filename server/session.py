@@ -103,7 +103,10 @@ class SessionManager:
         _cli_mhp = cli_stats.get("max_hp", 0)
         if _cli_mhp > 0:
             merged_stats["max_hp"] = _cli_mhp
-        client_skills = (client_p.get("skills") or None) if client_p else None
+        # Usa client_skills apenas se tiver "learned" não-vazia; {"learned":[]} é falsy
+        # para evitar que um save com lista vazia sobrescreva skills válidas no DB.
+        _cs_raw = client_p.get("skills") if client_p else None
+        client_skills = _cs_raw if (_cs_raw and _cs_raw.get("learned")) else None
 
         # Fog: union de tiles explorados (servidor DB + cliente atual).
         # O cliente sempre envia o conjunto completo (recebeu o fog do servidor
@@ -238,7 +241,15 @@ class SessionManager:
         ty = int(payload.get("ty", 0))
         accepted = self.world_server.move_player(session.session_id, tx, ty)
         if accepted:
-            await self._broadcast_aoi_from_session(session, MsgType.ENTITY_MOVE, {
+            # _broadcast_aoi_except (não _broadcast_aoi_from_session): o próprio
+            # remetente NÃO deve receber de volta o próprio move confirmado — ele
+            # já sabe que se moveu (foi ele quem mandou). Recebendo de volta, o
+            # cliente trata isso como "correção do servidor" (eid==self._my_eid em
+            # _handle_msg_entity_move) e faz snap instantâneo cancelando a animação
+            # local em andamento — todo passo de caminhada normal virava um
+            # teleporte, já que o eco quase sempre chega com a animação ainda em
+            # progresso (current_tile_x != tx confirmado).
+            await self._broadcast_aoi_except(session, MsgType.ENTITY_MOVE, {
                 "eid":     session.entity_id,
                 "tx":      tx, "ty": ty,
                 "from_tx": payload.get("from_tx", tx),
@@ -521,6 +532,19 @@ class SessionManager:
         if cs:
             cs.max_hp     = max_hp
             cs.current_hp = min(hp, max_hp)
+
+    async def _handle_equip_sync(self, session: Session, payload: dict, ts: int) -> None:
+        """Atualiza o componente Equipment do servidor quando o player equipa/desequipa."""
+        if not session.authenticated:
+            return
+        equipment = payload.get("equipment")
+        if not isinstance(equipment, dict):
+            return
+        self.world_server.update_player_equipment(session.session_id, equipment)
+        # Persiste no cache de save para não perder troca entre login-cycles
+        if session.last_client_payload is None:
+            session.last_client_payload = {}
+        session.last_client_payload["equipment"] = equipment
 
     async def _handle_gold_update(self, session: Session, payload: dict, ts: int) -> None:
         """Atualiza gold do servidor quando moedas são coletadas (loot, etc.)."""
@@ -866,6 +890,7 @@ class SessionManager:
         MsgType.BUY_REQUEST:     _handle_buy_request,
         MsgType.SELL_REQUEST:      _handle_sell_request,
         MsgType.PLAYER_HP_SYNC:    _handle_player_hp_sync,
+        MsgType.EQUIP_SYNC:        _handle_equip_sync,
         MsgType.GOLD_UPDATE:       _handle_gold_update,
         MsgType.INV_SYNC:  _handle_inventory_update,
         MsgType.TALENT_UPDATE:     _handle_talent_update,
@@ -883,6 +908,7 @@ class SessionManager:
         # Dispatch sempre que há conteúdo — inclui skill_results que não entram em deltas
         has_pending = (any(deltas.values())
                        or bool(self.world_server._skill_results_this_tick)
+                       or bool(self.world_server._skill_effects_this_tick)
                        or bool(self.world_server._pending_loot_notifications)
                        or bool(self.world_server._pending_xp_deliveries)
                        or bool(self.world_server._expired_corpses_this_tick)
@@ -908,6 +934,17 @@ class SessionManager:
                     sx, sy = self.world_server.get_tile_pos(s.session_id)
                     if (sx - cx) ** 2 + (sy - cy) ** 2 <= AOI_RADIUS ** 2:
                         await s.send(MsgType.SKILL_RESULT, skill_result)
+
+            # Efeitos de apresentação (som/VFX) — broadcast AOI separado do gameplay
+            for skill_effect in self.world_server.consume_skill_effects():
+                _eff_tx = skill_effect.get("tx", 0)
+                _eff_ty = skill_effect.get("ty", 0)
+                for s in list(self._sessions.values()):
+                    if not s.authenticated:
+                        continue
+                    sx, sy = self.world_server.get_tile_pos(s.session_id)
+                    if (sx - _eff_tx) ** 2 + (sy - _eff_ty) ** 2 <= AOI_RADIUS ** 2:
+                        await s.send(MsgType.SKILL_EFFECT, skill_effect)
 
             # Pré-calcula posições de todos os mobs UMA VEZ por tick.
             # Elimina O(mobs) component lookups por player por tick no sweep de AOI.
@@ -1083,6 +1120,10 @@ class SessionManager:
                         }
                         if pos_corr.get("rejected"):
                             _move_payload["skill_rejected"] = True
+                        if pos_corr.get("is_dash"):
+                            _move_payload["is_dash"] = True
+                        if "duration" in pos_corr:
+                            _move_payload["duration"] = pos_corr["duration"]
                         await p_session.send(MsgType.ENTITY_MOVE, _move_payload)
 
         except Exception as e:
@@ -1129,6 +1170,27 @@ class SessionManager:
             else:
                 if in_new:
                     aoi_entries.append(eid)     # entrou no AOI pela primeira vez
+
+        # ── Mudanças de visibilidade (ex: Camuflagem) ──────────────────
+        # Sem isso, um player que camufla parado nunca some pros outros: o
+        # check de _can_see() acima só roda para eids presentes em "moved"
+        # deste tick, e quem não andou nunca gera esse delta.
+        if deltas.get("visibility_changed"):
+            from components import TileMovement as _VisTM
+            for eid in deltas["visibility_changed"]:
+                if eid == session.entity_id:
+                    continue
+                vis_tm = self.world_server.world.get_component(eid, _VisTM)
+                if not vis_tm:
+                    continue
+                vis_in_aoi  = in_aoi(vis_tm.current_tile_x, vis_tm.current_tile_y)
+                vis_can_see = _can_see(self.world_server.world, session.entity_id, eid)
+                if eid in session.known_eids:
+                    if not vis_can_see:
+                        aoi_exits.append(eid)
+                        session.known_eids.discard(eid)
+                elif vis_in_aoi and vis_can_see:
+                    aoi_entries.append(eid)
 
         # ── Novas entidades no AOI (via move) ─────────────────────────
         for eid in aoi_entries:
@@ -1178,7 +1240,10 @@ class SessionManager:
         # de AOI no mesmo tick): sem isso, o evento de combate do golpe fatal
         # (mob despawna no mesmo tick) seria descartado, pois o discard acima
         # roda ANTES deste filtro — mob "desaparece" sem mostrar o dano final.
-        _combat_known = session.known_eids | set(final_despawned)
+        # Inclui o próprio EID do player para receber eventos de cura/dano onde
+        # o player é alvo (ex: regen de polimorfia, DoT de inimigo). O EID do
+        # dono nunca está em known_eids (que rastreia apenas entidades externas).
+        _combat_known = session.known_eids | set(final_despawned) | {session.entity_id}
         combat_events = [
             cr for cr in deltas.get("combat", [])
             if cr.get("target") in _combat_known

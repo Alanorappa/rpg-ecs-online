@@ -37,6 +37,7 @@ def _serialize_item(item) -> dict:
         "rarity":    getattr(item, "rarity",    "common"),
         "value":     getattr(item, "value",     0),
         "slot":      getattr(item, "slot",      ""),
+        "stack":     getattr(item, "stack",     1),
     }
 
 
@@ -171,6 +172,31 @@ class ServerDeathHandler:
             except Exception:
                 loot_items = []
                 coins      = 0
+
+            # 5b. Reciclagem: flechas que acertaram este mob (contadas em
+            # _server_apply_ranged_physical) voltam como loot pro matador, se ele
+            # tiver o talento. Mesma fórmula do offline (systems.py): 50-100% das
+            # flechas recebidas, mínimo 1.
+            from components import CombatStats as _CSdh, Equipment as _EqDh, Item as _ItemDh
+            _dead_cs = self.world.get_component(eid, _CSdh)
+            if _dead_cs and _dead_cs.arrows_received > 0 and first_attacker_eid != -1:
+                _killer_cs = self.world.get_component(first_attacker_eid, _CSdh)
+                if _killer_cs and getattr(_killer_cs, "arrow_recovery_enabled", False):
+                    import random as _rand_dh
+                    _pct       = _rand_dh.randint(50, 100) / 100.0
+                    _recovered = max(1, int(_dead_cs.arrows_received * _pct))
+                    _equip_r   = self.world.get_component(first_attacker_eid, _EqDh)
+                    _quiver_r  = _equip_r.slots.get("offhand") if _equip_r else None
+                    _atype     = getattr(_quiver_r, "subtype", "") or "Flecha"
+                    _ret = _ItemDh(
+                        name=_atype, item_type="ammo", slot="",
+                        rarity="common", value=1,
+                        damage_min=getattr(_quiver_r, "damage_min", 0),
+                        damage_max=getattr(_quiver_r, "damage_max", 0),
+                        max_stack=1000,
+                    )
+                    _ret.stack = _recovered
+                    loot_items.append(_ret)
 
             # Sempre registra o corpse (visual) — só inclui itens se houve drop.
             # Sem essa entrada, o world_server nunca cria o body e o cliente

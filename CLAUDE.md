@@ -37,7 +37,7 @@ Atualizar os arquivos de arquitetura relevantes:
 - TILE_SIZE = 32px, tela 1280×720, 60 FPS
 
 ### Versão online (este branch)
-- Servidor: Python asyncio + WebSocket, **sem Pygame**, 20 ticks/s
+- Servidor: Python asyncio + WebSocket, **sem Pygame**, 30 ticks/s
 - Cliente: Pygame (evolução do `game.py` offline) + `client/network.py`
 - Banco: SQLite (dev) → PostgreSQL (prod)
 - Protocolo: JSON via WebSocket (→ MessagePack antes do lançamento)
@@ -65,6 +65,18 @@ Atualizar os arquivos de arquitetura relevantes:
 - Invisibilidade (Camuflagem): servidor **nunca** inclui jogador invisível no AOI de outros
 - Dano, drops, posição final de knockback: sempre calculados no servidor
 - SHA-256 do password no cliente antes de enviar — nunca texto puro na rede
+
+### Validação de alvo no cliente — usar `utils.is_target_alive()`
+- **Nunca** checar só `CombatStats.current_hp` pra decidir se um alvo está morto/válido no cliente.
+  Player remoto (PvP) não tem `CombatStats` local — só `RemoteControlled.hp`. Mob remoto só tem
+  `RemoteEntityMeta.hp`. Um check que só olha `CombatStats` nunca detecta a morte desses alvos
+  (bug real: arqueiro continuava tocando som de "nock" e contando cooldown de ataque contra um
+  guerreiro remoto já morto, pois `tgt_cs.current_hp <= 0` nunca era True com `tgt_cs is None`).
+- Toda skill/sistema/classe nova que precisa saber se um alvo está vivo deve chamar
+  `utils.is_target_alive(world, target_id)` (cobre os 3 casos) em vez de reimplementar o check.
+  `skill_handlers.SkillHandlers._target_alive()` é um atalho que já delega pra essa função.
+- Isso só importa no **cliente** — no servidor todo player (local ou remoto) tem `CombatStats`
+  completo, porque o servidor é autoritativo pra todo mundo.
 
 ### Regras herdadas do offline (ainda válidas no cliente)
 - Skills → `SKILL_CATALOG` em `skill_config.py` (fonte única)

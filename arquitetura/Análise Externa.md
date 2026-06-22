@@ -61,7 +61,7 @@ Solução: Substituir os campos individuais por um dicionário genérico talent_
 
 ### PROBLEMA 5: AOI Sweep é O(N²)
 
-A Área de Interesse (AOI) no servidor é implementada na classe SessionManager, mais especificamente no método _dispatch_tick_deltas. Para cada player conectado, o método itera sobre todas as entidades recém-spawnadas (_spawned_this_tick) e verifica a distância até cada uma. Em um cenário com 100 players e 1000 mobs, são realizadas 100.000 verificações de distância por tick. A 20 ticks/segundo, são 2 milhões de operações por segundo.
+A Área de Interesse (AOI) no servidor é implementada na classe SessionManager, mais especificamente no método _dispatch_tick_deltas. Para cada player conectado, o método itera sobre todas as entidades recém-spawnadas (_spawned_this_tick) e verifica a distância até cada uma. Em um cenário com 100 players e 1000 mobs, são realizadas 100.000 verificações de distância por tick. A 30 ticks/segundo, são 3 milhões de operações por segundo.
 
 Impacto: O servidor consome CPU desnecessariamente, podendo causar lag perceptível à medida que a população do jogo cresce. Em ilhas com alta densidade de mobs, o gargalo torna-se evidente.
 
