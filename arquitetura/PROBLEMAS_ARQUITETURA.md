@@ -320,6 +320,61 @@ Substituir os globais mutáveis por estado acessível via `self` (ex.: `self.SCR
 
 ---
 
+## Resumo da sessão de correções — 21/22 de junho de 2026
+
+Passada por todos os itens A–M + K listados abaixo. Branch: `rpg-online-2026-06-22`
+(2 commits, push feito). Suíte completa + diagnósticos sem regressão em cada etapa.
+
+**Resolvidos de fato (bug real corrigido):**
+- **I** — `RESPAWN_TILE` hardcoded em 3 lugares → centralizado em `shared/constants.py`.
+- **K** — bug real confirmado: auto-attack do servidor não checava sleep/disoriented/
+  polymorph (só skills checavam) — player adormecido continuava causando dano.
+  Centralizado em `utils.is_action_locked()`.
+- **D** — duração de "exhaustion" (Pirofagia) divergia entre cliente (hardcoded
+  `6.0`) e servidor (lia do catálogo) — cliente agora lê do mesmo `SKILL_CATALOG`.
+- **B** — overkill do dano mágico estava sendo descartado (`max(0, ...)`) —
+  removido, consistente com `deal_damage()`/`_apply_final_damage()`.
+- **M** — import de `apply_effect` trocado de `systems` (arrasta pygame) pra
+  `core_systems` no servidor, 7 ocorrências.
+- **F (parcial)** — `server/main.py` não setava `SDL_VIDEODRIVER`/`SDL_AUDIODRIVER`,
+  crasharia em deploy headless real. Corrigido com `setdefault`, mesmo padrão já
+  validado em `tests/helpers.py`.
+
+**Já estavam resolvidos, só status desatualizado:**
+- **A** — docs já diziam 30 ticks/s consistentemente.
+- **C** — Escudo de Fogo já tinha o guard `is_immune` + overkill preservado.
+- **E** — `BaseCombatStateSystem` já era herdado por cliente e servidor.
+
+**Investigados, sem bug ativo, mas precisam de refactor maior (não corrigidos):**
+- **H** — auto-attack melee não passa por `_apply_final_damage`, mas `deal_damage`
+  já tem os mesmos guards de forma independente — risco é só prospectivo.
+- **G** — `_pending_xp_deliveries` sem schema, mas todos os 15 produtores (não só
+  os 3 citados) sempre incluem `xp`/`mob_eid` — sem risco de crash, só manutenibilidade.
+- **F (completo)** — separar `EnemyAISystem`/`CombatSystem`/etc. de Pygame de
+  verdade (não só evitar o crash) continua pendente.
+
+**Não tocado:** `IU3` (modal stack de UI em `game.py`) — é feature nova, não bugfix.
+
+**Regressão encontrada e corrigida depois desta rodada (mesmo dia):** Tiro
+Repulsivo voltou a causar "sprint"/correção de posição visual no mob após o
+knockback. Causa raiz: `_server_tiro_repulsivo` escreve `Position`/`current_tile`
+do alvo diretamente e de forma instantânea (sem tween server-side), mas nunca
+resetava `TileMovement.is_moving` — se o alvo estava no meio de um passo normal
+de chase da IA (`is_moving=True`) no momento exato do impacto, esse passo
+"sobrevivia" ao knockback: no tick seguinte, `TileMovementSystem` recalculava
+`Position` usando `start_pixel`/`target_pixel` ANTIGOS (do passo de chase
+interrompido), sobrescrevendo a posição correta do knockback — visualmente
+parecendo um "sprint" de correção. Fix: `t_tm.is_moving = False` explícito no
+início de `_server_tiro_repulsivo`, antes de aplicar o empurrão. Validado com
+diagnóstico reproduzindo o cenário exato (mob mid-chase-step, 40% de um passo,
+atingido por Tiro Repulsivo) — posição agora permanece correta no tick seguinte.
+Mesma classe de bug pode existir em outros pontos que escrevem `current_tile_x/y`
+direto sem passar por `start_tile_movement()` (ex.: Interceptar em
+`server/skill_processor.py:317-318`) — não investigado a fundo nem corrigido
+nesta rodada (fora do escopo pedido).
+
+---
+
 ### 🔴 CRÍTICO A — `TICK_RATE` desalinhado entre código e docs
 
 **Arquivos:** `shared/constants.py:10`, `arquitetura/ARQUITETURA_ONLINE.md`

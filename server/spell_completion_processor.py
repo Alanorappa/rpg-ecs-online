@@ -1133,6 +1133,15 @@ class SpellCompletionMixin:
         # do canal de correção direta também.
         _target_is_player = target_id in self._player_eids.values()
 
+        # Cancela qualquer movimento normal em andamento (ex: alvo estava no meio
+        # de um passo de chase da IA quando a flecha acertou). O empurrão escreve
+        # tile/Position diretamente e de forma instantânea (sem tween server-side)
+        # — se is_moving continuasse True, TileMovementSystem ia recalcular
+        # Position no próximo tick usando start_pixel/target_pixel ANTIGOS (do
+        # passo de chase interrompido), sobrescrevendo a posição correta do
+        # knockback e criando um "sprint"/correção visual no cliente.
+        t_tm.is_moving = False
+
         # Posição de origem ANTES do empurrão — o cliente precisa dela pra
         # animar a tween inteira de uma vez (start→end), não passo a passo.
         _start_tx, _start_ty = t_tm.current_tile_x, t_tm.current_tile_y
