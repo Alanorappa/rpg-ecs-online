@@ -83,26 +83,22 @@ class SessionManager:
         Constrói o dict merged para save_character.
         Regras de autoridade:
         - Posição (tile_x, tile_y), hp, mp: servidor autoritativo
-        - gold: SERVIDOR autoritativo (Wallet.gold no ECS — atualizado por compras/vendas/loot)
-        - max_hp: cliente autoritativo se > 0 (inclui bônus de equipamento)
+        - gold: SERVIDOR autoritativo (Wallet.gold no ECS — atualizado por compras/vendas/loot/
+          GOLD_UPDATE já validado, ver _handle_gold_update). NUNCA confiar no payload do cliente
+          aqui — fazia isso antes (`_cli_gold if _cli_gold > 0 else _srv_gold`), permitindo
+          persistir qualquer valor de gold mandado via SAVE_STATE (ver
+          arquitetura/PROBLEMAS_ARQUITETURA.md, vulnerabilidade de gold absoluto).
+        - max_hp: SERVIDOR autoritativo (CombatStats.max_hp já inclui bônus de equipamento
+          validado, ver Tier B — _reconstruct_item). Mesma razão acima.
         - inventory, equipment, talents: cliente se disponível, None = não sobrescreve DB
         - skills: cliente se disponível, fallback srv_data
         - stats base (level, xp, attrs): servidor
         """
         client_p  = client_payload
         srv_stats = srv_data.get("stats", {})
-        cli_stats = client_p.get("stats", {}) if client_p else {}
+        # gold e max_hp já vêm corretos de get_player_save_data (Wallet/CombatStats vivos) —
+        # dict(srv_stats) preserva os dois sem precisar (e sem dever) olhar o payload do cliente.
         merged_stats = dict(srv_stats)
-        # gold: cliente autoritativo via SAVE_STATE.
-        # _on_loot_collected garante que SAVE_STATE é disparado na ação de loot,
-        # então o valor do cliente já inclui moedas recém-coletadas.
-        _cli_gold = cli_stats.get("gold", 0)
-        _srv_gold = srv_stats.get("gold", 0)
-        merged_stats["gold"] = _cli_gold if _cli_gold > 0 else _srv_gold
-        # max_hp: cliente autoritativo (inclui bônus de equipamento)
-        _cli_mhp = cli_stats.get("max_hp", 0)
-        if _cli_mhp > 0:
-            merged_stats["max_hp"] = _cli_mhp
         # Usa client_skills apenas se tiver "learned" não-vazia; {"learned":[]} é falsy
         # para evitar que um save com lista vazia sobrescreva skills válidas no DB.
         _cs_raw = client_p.get("skills") if client_p else None
@@ -379,19 +375,32 @@ class SessionManager:
         tid   = int(payload.get("tid", -1))
         dir_x = float(payload.get("dir_x", 0.0))
         dir_y = float(payload.get("dir_y", 0.0))
-        rage  = int(payload.get("rage", 0))
-        mana  = int(payload.get("mana", 0))
+        # payload["rage"]/["mana"] NUNCA são lidos aqui — eram adotados direto via
+        # sync_player_resources ("cliente é fonte de verdade"), o que sobrescrevia
+        # o rage/mana REAL do servidor com o que o CLIENTE mandasse. Bug real
+        # encontrado: CombatStats.mana do cliente (campo espelho, default 0) ainda
+        # não tinha sido sincronizado com CharacterStats.mana (cheio) no momento do
+        # primeiro cast após login — o cliente mandava mana=0 e zerava a mana real
+        # do servidor (que já estava correta, calculada em spawn_player), fazendo
+        # TODA skill de Mago falhar por "Mana insuficiente" logo após logar, até
+        # algo no cliente acabar sincronizando o espelho corretamente. O servidor
+        # já rastreia rage/mana 100% por conta própria (ganho de rage em
+        # combat_processor.py, custo deduzido nos próprios handlers de skill +
+        # _process_spell_cast_completions) — nunca precisou confiar no cliente pra
+        # isso. Ver arquitetura/PROBLEMAS_ARQUITETURA.md.
         if sid:
-            # Sincroniza rage/mana do cliente no ECS do servidor antes de processar a skill
-            self.world_server.sync_player_resources(session.session_id, rage, mana)
             self.world_server.queue_skill(session.session_id, sid, tid, dir_x, dir_y, ts,
                                           dbg_seq=payload.get("dbg_seq", 0))
 
     async def _handle_player_stat_sync(self, session: Session, payload: dict, ts: int) -> None:
-        """Recebe stats efetivos do cliente (equip/buff/consumível) e aplica ao servidor."""
-        if not session.authenticated:
-            return
-        self.world_server.sync_player_combat_stats(session.session_id, payload)
+        """Obsoleto. Aplicava direto qualquer attack_power/crit_rating/armor/spell_power/
+        etc. que o cliente mandasse, sem validar contra nada — um cliente malicioso virava
+        deus permanentemente com um único float forjado (ver
+        arquitetura/PROBLEMAS_ARQUITETURA.md). O servidor agora deriva esses stats ele
+        mesmo a partir do Equipment/TalentTree reais (WorldServer._apply_equipment_modifiers
+        / apply_talent_effects_to_player) — não há mais uso legítimo. Mantida só para
+        clientes antigos não quebrarem ao enviá-la."""
+        return
 
     async def _handle_sell_request(self, session: Session, payload: dict, ts: int) -> None:
         """Processa venda ao mercador — gold ajustado server-side."""
@@ -441,64 +450,51 @@ class SessionManager:
         if not session.authenticated or not session.char_data.get("id"):
             return
         from server.auth import save_character
+        # Sanitiza talentos no próprio payload ANTES de cachear/usar no merge —
+        # tanto session.last_client_payload (usado em saves futuros, ex:
+        # disconnect) quanto o merge desta chamada precisam da versão
+        # validada, nunca da alocação crua que o cliente mandou (ver
+        # WorldServer.validate_talent_allocation).
+        _raw_tal = payload.get("talents")
+        if isinstance(_raw_tal, dict):
+            _checked_tal = self.world_server.validate_talent_allocation(session.session_id, _raw_tal)
+            if _checked_tal:
+                payload["talents"] = _checked_tal
+            else:
+                payload.pop("talents", None)
         session.last_client_payload = payload   # cache para o save no disconnect
         # Inventário foi salvo — zera contador de compras pendentes
         self.world_server.confirm_inventory_save(session.session_id)
-        # Sincroniza Wallet do servidor com o gold do cliente (pode ter loot coins não rastreados)
-        _cli_gold_ss = payload.get("stats", {}).get("gold")
-        if _cli_gold_ss is not None:
-            from components import Wallet as _W_ss
-            _eid_ss = self.world_server._player_eids.get(session.session_id)
-            if _eid_ss is not None:
-                _wall_ss = self.world_server.world.get_component(_eid_ss, _W_ss)
-                if _wall_ss:
-                    _wall_ss.gold = max(_wall_ss.gold, int(_cli_gold_ss))
         srv_data = self.world_server.get_player_save_data(session.session_id)
         merged   = self._build_save_merge(srv_data, payload)
 
-        _eid_sv = self.world_server._player_eids.get(session.session_id)
+        # Wallet.gold NÃO é sobrescrito aqui — é server-autoritativo via process_shop_buy/sell,
+        # request_loot e GOLD_UPDATE (já validado/limitado, ver _handle_gold_update). SAVE_STATE
+        # NUNCA deve adotar o gold reportado pelo cliente — fazia isso aqui antes
+        # (`_wall_ss.gold = max(_wall_ss.gold, int(_cli_gold_ss))`), permitindo que qualquer
+        # SAVE_STATE com stats.gold inflado virasse gold real e persistente (ver
+        # arquitetura/PROBLEMAS_ARQUITETURA.md). get_player_save_data já lê wall.gold puro;
+        # _build_save_merge usa esse valor sem olhar o payload.
 
-        # Wallet.gold NÃO é sobrescrito aqui — é server-autoritativo via process_shop_buy/sell
-        # e request_loot. get_player_save_data já lê wall.gold; _build_save_merge usa esse valor.
-
-        # 2. Re-aplica talentos (reseta base_stamina → max_hp cai temporariamente)
-        _client_tal = payload.get("talents", {})
-        _tal_alloc  = _client_tal.get("allocated", {}) if isinstance(_client_tal, dict) else {}
-        if _tal_alloc:
+        # Re-aplica talentos (cs_flags + modifiers de atributo) — payload["talents"]
+        # já foi validado/sanitizado no topo desta função, usa direto sem revalidar
+        # (já reflete o orçamento real do servidor).
+        _checked_tal_alloc = payload.get("talents", {}).get("allocated", {})
+        if _checked_tal_alloc:
             try:
                 self.world_server.apply_talent_effects_to_player(
-                    session.session_id, _tal_alloc)
+                    session.session_id, _checked_tal_alloc)
             except Exception as _te:
                 print(f"[Session] aviso: talent effects não re-aplicados — {_te}")
 
-        # 3. Re-aplica stat overrides (restaura max_hp ao valor com equipamento)
-        #    DEVE vir antes do sync de HP — _apply_stat_overrides chama
-        #    _recalculate_effective_stats que clamparia current_hp ao max_hp errado.
-        if _eid_sv is not None and _eid_sv != -1:
-            self.world_server._apply_stat_overrides(_eid_sv)
-
-        # 4. Sincroniza HP do cliente — feito POR ÚLTIMO, após max_hp estar correto.
-        #    Se feito antes, apply_char_stats_to_combat (passo 2) clamparia current_hp
-        #    ao base_stamina (340) mesmo que o player estivesse com HP cheio (380).
-        _cli_hp     = payload.get("stats", {}).get("current_hp")
-        _cli_max_hp = payload.get("stats", {}).get("max_hp")
-        if _eid_sv is not None and _cli_hp is not None:
-            from components import CombatStats as _CSSv, CombatState as _CStSv
-            _cs_sv  = self.world_server.world.get_component(_eid_sv, _CSSv)
-            _cst_sv = self.world_server.world.get_component(_eid_sv, _CStSv)
-            if _cs_sv:
-                # max_hp: usa o maior entre servidor e cliente (servidor já tem bônus de talento)
-                # Cap de 10 000 evita exploit de HP infinito via SAVE_STATE manipulado (NM2).
-                _MAX_HP_CAP = 10_000
-                if _cli_max_hp and int(_cli_max_hp) > _cs_sv.max_hp:
-                    _cs_sv.max_hp = min(int(_cli_max_hp), _MAX_HP_CAP)
-                # current_hp: cliente é fonte de verdade APENAS fora de combate.
-                # Em combate, o servidor é autoritativo — ignorar valor do cliente evita
-                # que SAVE_STATE (disparado por loot, inventário, etc.) resete o HP
-                # acumulado por dano de mob, tornando o player efetivamente imortal.
-                _in_combat = _cst_sv.in_combat if _cst_sv else False
-                if not _in_combat:
-                    _cs_sv.current_hp = max(1, min(_cs_sv.max_hp, int(_cli_hp)))
+        # max_hp/current_hp NUNCA são lidos do payload aqui. max_hp já é
+        # server-autoritativo (CombatStats deriva de Equipment/TalentTree reais —
+        # ver _apply_equipment_modifiers, Tier B/C) e current_hp idem (dano, regen,
+        # cura de consumível e proc já são 100% server-side, ver Tier D). Antes
+        # havia um bloco aqui que adotava `stats.max_hp`/`stats.current_hp` do
+        # cliente (com cap de 10.000) — vestígio de quando equipamento não tinha
+        # modelagem server-side; root cause removido junto da causa (ver
+        # arquitetura/PROBLEMAS_ARQUITETURA.md).
         try:
             await save_character(session.char_data["id"], merged)
         except Exception as e:
@@ -517,21 +513,17 @@ class SessionManager:
             await self._broadcast_aoi_from_session(session, MsgType.CHAT_MESSAGE, msg)
 
     async def _handle_player_hp_sync(self, session: Session, payload: dict, ts: int) -> None:
-        """Atualiza HP/maxHP do servidor após proc de item (servidor não tem dados de equip)."""
-        if not session.authenticated:
-            return
-        hp     = int(payload.get("hp",     0))
-        max_hp = int(payload.get("max_hp", 0))
-        if hp <= 0 or max_hp <= 0:
-            return
-        from components import CombatStats as _CS_hp
-        eid = self.world_server._player_eids.get(session.session_id)
-        if eid is None:
-            return
-        cs = self.world_server.world.get_component(eid, _CS_hp)
-        if cs:
-            cs.max_hp     = max_hp
-            cs.current_hp = min(hp, max_hp)
+        """Obsoleto desde que procs de item passaram a ser rolados pelo próprio
+        servidor (core_systems.ServerCombatStateSystem._roll_procs, Tier D — ver
+        arquitetura/PROBLEMAS_ARQUITETURA.md). Antes disso esta mensagem era o
+        ÚNICO jeito do servidor saber de mudanças de HP por proc, e o handler
+        adotava hp/max_hp do cliente direto, sem nenhum teto — um cliente
+        malicioso podia mandar PLAYER_HP_SYNC com hp/max_hp arbitrários a
+        qualquer momento. Hoje o servidor já é autoritativo pra toda fonte de
+        mudança de HP (dano, regen, cura de consumível, proc) — não há mais
+        nenhum uso legítimo, então a mensagem é ignorada. Mantida só para
+        clientes antigos não quebrarem ao enviá-la."""
+        return
 
     async def _handle_equip_sync(self, session: Session, payload: dict, ts: int) -> None:
         """Atualiza o componente Equipment do servidor quando o player equipa/desequipa."""
@@ -546,25 +538,42 @@ class SessionManager:
             session.last_client_payload = {}
         session.last_client_payload["equipment"] = equipment
 
+    # Maior recompensa de gold de missão conhecida hoje (quests_data.py) é 25 —
+    # 500 é generoso pra cobrir conteúdo futuro sem permitir "setar" gold arbitrário.
+    _GOLD_UPDATE_DELTA_CAP = 500
+    _GOLD_HARD_CAP         = 1_000_000
+
     async def _handle_gold_update(self, session: Session, payload: dict, ts: int) -> None:
-        """Atualiza gold do servidor quando moedas são coletadas (loot, etc.)."""
+        """Aplica um INCREMENTO de gold reportado pelo cliente (hoje, só recompensa de
+        missão — loot de moedas já é aplicado autoritativamente em loot_processor.py).
+
+        NUNCA adota o valor absoluto do cliente — fazia isso antes (`wall.gold = gold`),
+        deixando qualquer GOLD_UPDATE com `{"gold": 999999999}` setar o gold direto, sem
+        teto algum (ver arquitetura/PROBLEMAS_ARQUITETURA.md, vulnerabilidade de gold
+        absoluto). Em vez disso: calcula o delta contra o gold real do servidor, rejeita
+        deltas negativos (perda de gold não passa por aqui) e limita o incremento a
+        _GOLD_UPDATE_DELTA_CAP por mensagem + _GOLD_HARD_CAP no total.
+
+        O sistema de missões ainda calcula a recompensa no cliente (quest_system.py não
+        tem contraparte server-side) — isso é uma lacuna maior, registrada em
+        PROBLEMAS_ARQUITETURA.md; este cap é mitigação, não a correção definitiva."""
         if not session.authenticated:
             return
-        gold = int(payload.get("gold", 0))
-        if gold < 0:
+        claimed = int(payload.get("gold", 0))
+        if claimed < 0:
             return
         from components import Wallet as _W_gu
         eid = self.world_server._player_eids.get(session.session_id)
         if eid is None:
             return
         wall = self.world_server.world.get_component(eid, _W_gu)
-        if wall:
-            wall.gold = gold
-        # Atualiza cache para o próximo save no disconnect
-        if session.last_client_payload is not None:
-            sess_stats = session.last_client_payload.get("stats")
-            if isinstance(sess_stats, dict):
-                sess_stats["gold"] = gold
+        if not wall:
+            return
+        delta = claimed - wall.gold
+        if delta <= 0:
+            return
+        delta = min(delta, self._GOLD_UPDATE_DELTA_CAP)
+        wall.gold = min(wall.gold + delta, self._GOLD_HARD_CAP)
 
     async def _handle_inventory_update(self, session: Session, payload: dict, ts: int) -> None:
         """Atualiza inventário do servidor quando item é coletado (loot, etc.)."""
@@ -588,10 +597,17 @@ class SessionManager:
         talents = payload.get("talents")
         if not isinstance(talents, dict):
             return
+        # Valida contra o orçamento real do TalentTree do servidor ANTES de
+        # cachear/persistir — senão um payload forjado (ex: 999 pontos num
+        # talento) ficava salvo no banco e voltava a valer no próximo login
+        # (ver WorldServer.validate_talent_allocation).
+        _checked = self.world_server.validate_talent_allocation(session.session_id, talents)
+        if not _checked:
+            return
         # Atualiza cache e persiste só os talentos no DB
         if session.last_client_payload is None:
             session.last_client_payload = {}
-        session.last_client_payload["talents"] = talents
+        session.last_client_payload["talents"] = _checked
         from server.auth import save_character
         srv_data = self.world_server.get_player_save_data(session.session_id)
         merged   = self._build_save_merge(srv_data, session.last_client_payload)
@@ -974,7 +990,22 @@ class SessionManager:
             await self._send_player_revives(deltas)
             await self._send_ghost_state_updates(deltas)
 
-            # Entrega XP proporcional aos jogadores
+            # Entrega XP proporcional aos jogadores.
+            #
+            # _payload = dict(xp_entry) encaminha QUALQUER campo que o produtor
+            # tenha colocado em xp_entry — sem isso, cada campo novo (proj_target,
+            # heal_amount, applied_effects, etc.) precisava de uma linha manual
+            # "if 'x' in xp_entry: _payload['x'] = ..." AQUI, separada e
+            # desconectada do código que CRIA o dict em spell_completion_processor.py/
+            # world_server.py/etc. Esquecer essa segunda linha não dava erro
+            # nenhum — o campo só desaparecia silenciosamente a caminho do
+            # cliente (causa real do bug de Tiro Múltiplo não aparecer pro
+            # player remoto: "proj_targets" foi adicionado no produtor mas não
+            # tinha o espelho aqui). Ver arquitetura/PROBLEMAS_ARQUITETURA.md —
+            # esse é o problema "G" (xp_deliveries sem schema) batendo de novo.
+            # Os produtores em spell_completion_processor.py/world_server.py já
+            # constroem esses dicts especificamente para ir ao cliente (nenhum
+            # campo interno/sensível é colocado ali) — forwarding total é seguro.
             xp_deliveries = self.world_server.consume_xp_deliveries()
             if xp_deliveries:
                 for xp_entry in xp_deliveries:
@@ -982,41 +1013,9 @@ class SessionManager:
                     if sid:
                         session = self._sessions.get(sid)
                         if session and session.authenticated:
-                            _payload = {
-                                "eid":       xp_entry["player_eid"],
-                                "xp_gained": xp_entry["xp"],
-                                "mob_eid":   xp_entry["mob_eid"],
-                            }
-                            # Inclui rage/mana se presentes (sync após skill consumir recursos)
-                            if "rage" in xp_entry:
-                                _payload["rage"] = xp_entry["rage"]
-                            if "mana" in xp_entry:
-                                _payload["mana"] = xp_entry["mana"]
-                            if "concentration" in xp_entry:
-                                _payload["concentration"] = xp_entry["concentration"]
-                            if xp_entry.get("on_kill_skill"):
-                                _payload["on_kill_skill"] = xp_entry["on_kill_skill"]
-                            # Inclui hp sempre que presente (level-up ou skill de cura)
-                            if "hp" in xp_entry:
-                                _payload["hp"]     = xp_entry["hp"]
-                                _payload["hp_max"] = xp_entry["hp_max"]
-                            if "heal_amount" in xp_entry:
-                                _payload["heal_amount"] = xp_entry["heal_amount"]
-                                _payload["heal_sid"]    = xp_entry.get("heal_sid", "")
-                            # Pontos de talento do servidor (level-up)
-                            if "talent_points" in xp_entry:
-                                _payload["talent_points"] = xp_entry["talent_points"]
-                            # PvP: efeitos aplicados à vítima (disoriented, polymorph, root…)
-                            if "applied_effects" in xp_entry:
-                                _payload["applied_effects"]  = xp_entry["applied_effects"]
-                                _payload["effect_durations"] = xp_entry.get("effect_durations", {})
-                            # PvP: projétil chegando (BdF) — vítima cria visual cosmético
-                            if "proj_incoming" in xp_entry:
-                                _payload["proj_incoming"] = xp_entry["proj_incoming"]
-                                _payload["proj_caster"]   = xp_entry.get("proj_caster", -1)
-                                _payload["proj_target"]   = xp_entry.get("proj_target", -1)
-                                if "proj_arrow_count" in xp_entry:
-                                    _payload["proj_arrow_count"] = xp_entry["proj_arrow_count"]
+                            _payload = dict(xp_entry)
+                            _payload["eid"]       = _payload.pop("player_eid")
+                            _payload["xp_gained"] = _payload.pop("xp")
                             await session.send(MsgType.STATS_UPDATE, _payload)
 
             # Notificações de corpse/loot

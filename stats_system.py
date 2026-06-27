@@ -151,8 +151,12 @@ def apply_char_stats_to_combat(char_stats: CharacterStats,
 
     combat_stats._recalculate_effective_stats()
 
-    # ── Mana: INT×15 ──────────────────────────────────────────────────────────
-    new_max_mana = 150 + total_int * 15
+    # ── Mana: INT×15 — só existe para o Mago (0 = recurso inexistente pra
+    # classe, mesmo princípio de CLASS_CONCENTRATION abaixo). Sem esse gate,
+    # Arqueiro/Guerreiro também ganhavam max_mana>0 (150+INT×15) e o painel
+    # de Inventário (que escolhe Mana/Concentração/Raiva olhando qual desses
+    # 3 é >0) mostrava "Mana" errado pra essas classes.
+    new_max_mana = (150 + total_int * 15) if char_stats.class_id == "mago" else 0
     if char_stats.max_mana != new_max_mana:
         if char_stats.max_mana == 0:
             char_stats.mana = new_max_mana

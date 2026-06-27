@@ -16,6 +16,7 @@ from icon_manager import ICONS
 from sound_manager import SOUNDS
 from stat_fns import add_modifier, learn_recipe, remove_modifier
 from ui_helpers import draw_stack_count, item_tooltip_lines
+from ui_sizes import UI
 
 
 class InventoryHandlers:
@@ -28,22 +29,22 @@ class InventoryHandlers:
     }
 
     # Constantes do painel de inventário (usadas por draw E click)
-    _PANEL_W    = 720
-    _PANEL_H    = 660
-    _PAD        = 10
-    _HEADER_H   = 28
-    _EQ_W       = 230   # largura da coluna de equipamento
-    _EQ_SLOT_H  = 36    # altura de cada slot equipado
-    _EQ_ICON    = 28    # ícone dentro do slot de equip
-    _BODY_H     = 360   # 10 slots × 36px
-    _INV_SLOT   = 60    # tamanho do slot de inventário (quadrado)
-    _INV_COLS   = 5     # colunas na grade de inventário
-    _INV_GAP    = 4     # espaço entre slots
+    # Valores em ui_sizes.py (UI.INVENTORY_*) — único lugar pra ajustar.
+    _PANEL_W    = UI.INVENTORY_W
+    _PANEL_H    = UI.INVENTORY_H
+    _PAD        = UI.INVENTORY_PAD
+    _HEADER_H   = UI.INVENTORY_HEADER_H
+    _EQ_W       = UI.INVENTORY_EQ_W       # largura da coluna de equipamento
+    _EQ_SLOT_H  = UI.INVENTORY_EQ_SLOT_H  # altura de cada slot equipado
+    _EQ_ICON    = UI.INVENTORY_EQ_ICON    # ícone dentro do slot de equip
+    _BODY_H     = UI.INVENTORY_BODY_H     # 10 slots × 36px
+    _INV_SLOT   = UI.INVENTORY_SLOT       # tamanho do slot de inventário (quadrado)
+    _INV_COLS   = UI.INVENTORY_COLS       # colunas na grade de inventário
+    _INV_GAP    = UI.INVENTORY_GAP        # espaço entre slots
 
     def _panel_origin(self):
-        x0 = self.screen.get_width()  // 2 - self._PANEL_W // 2
-        y0 = self.screen.get_height() // 2 - self._PANEL_H // 2
-        return x0, y0
+        x0, y0 = self._safe_panel_origin(self._PANEL_W, self._PANEL_H)
+        return x0 + UI.INVENTORY_OFFSET_X, y0 + UI.INVENTORY_OFFSET_Y
     # ------------------------------------------------------------------ #
     #  Equip / Unequip
     # ------------------------------------------------------------------ #
@@ -124,11 +125,11 @@ class InventoryHandlers:
             return
         mx, my = event.pos
         x0, y0 = self._panel_origin()
-        body_y  = y0 + self._PAD + self._HEADER_H
+        body_y  = y0 + self._u(self._PAD) + self._u(self._HEADER_H)
 
         # --- Botão fechar ---
         if event.button == 1:
-            close_r = pygame.Rect(x0 + self._PANEL_W - 36, y0 + 4, 32, 32)
+            close_r = pygame.Rect(x0 + self._u(self._PANEL_W) - self._u(36), y0 + self._u(4), self._u(32), self._u(32))
             if close_r.collidepoint(mx, my):
                 self._show_inventory = False
                 self._selected_inv_idx = -1
@@ -137,13 +138,13 @@ class InventoryHandlers:
         # --- Grade de inventário (esquerdo = selecionar, direito = equipar) ---
         inv = self.world.get_component(self.player_entity, Inventory)
         if inv:
-            gx = x0 + self._EQ_W + self._PAD * 3
-            step = self._INV_SLOT + self._INV_GAP
+            gx = x0 + self._u(self._EQ_W) + self._u(self._PAD) * 3
+            step = self._u(self._INV_SLOT) + self._u(self._INV_GAP)
             for i, item in enumerate(inv.items):
                 col = i % self._INV_COLS
                 row = i // self._INV_COLS
                 r = pygame.Rect(gx + col * step, body_y + row * step,
-                                self._INV_SLOT, self._INV_SLOT)
+                                self._u(self._INV_SLOT), self._u(self._INV_SLOT))
                 if r.collidepoint(mx, my):
                     if event.button == 3:
                         if getattr(item, "consumable", None):
@@ -162,9 +163,9 @@ class InventoryHandlers:
         equip = self.world.get_component(self.player_entity, Equipment)
         if equip:
             for i, slot_name in enumerate(Equipment.SLOT_LABELS):
-                r = pygame.Rect(x0 + self._PAD,
-                                body_y + i * self._EQ_SLOT_H,
-                                self._EQ_W - 2, self._EQ_SLOT_H - 2)
+                r = pygame.Rect(x0 + self._u(self._PAD),
+                                body_y + i * self._u(self._EQ_SLOT_H),
+                                self._u(self._EQ_W) - self._u(2), self._u(self._EQ_SLOT_H) - self._u(2))
                 if r.collidepoint(mx, my) and equip.slots[slot_name] is not None:
                     self._unequip_slot(slot_name)
                     return
@@ -278,15 +279,17 @@ class InventoryHandlers:
             return
 
         x0, y0  = self._panel_origin()
-        W, H    = self._PANEL_W, self._PANEL_H
-        PAD     = self._PAD
+        W, H    = self._u(self._PANEL_W), self._u(self._PANEL_H)
+        PAD     = self._u(self._PAD)
         mx, my  = pygame.mouse.get_pos()
 
         _inv_ev = self._ui_events
         _clicked_inv  = any(e.type == pygame.MOUSEBUTTONDOWN and e.button == 1 for e in _inv_ev)
         _released_inv = any(e.type == pygame.MOUSEBUTTONUP   and e.button == 1 for e in _inv_ev)
         # Cancelar drag ao soltar fora do inventário
-        if _released_inv and self._inv_drag_item:
+        _drag_inv = self._get_drag()
+        if (_released_inv and _drag_inv.kind == "consumable"
+                and _drag_inv.source == "inventory" and _drag_inv.payload):
             pass  # será cancelado em _draw_consumable_bar se não cair em slot
 
         # ---- Fundo ----
@@ -296,10 +299,20 @@ class InventoryHandlers:
         pygame.draw.rect(self.screen, (140, 100, 60), (x0, y0, W, H), 2, border_radius=4)
 
         title = self.font_md.render("Equipamentos", True, (200, 170, 100))
-        self.screen.blit(title, (x0 + PAD, y0 + 4))
+        title_y = y0 + self._u(4)
+        self.screen.blit(title, (x0 + PAD, title_y))
+
+        # Moedas — ao lado do título, topo do painel (longe do rodapé/hotbar)
+        wallet = self.world.get_component(self.player_entity, Wallet)
+        if wallet:
+            coin_x, coin_y = x0 + W - self._u(150), title_y + title.get_height() // 2
+            pygame.draw.circle(self.screen, (180, 140, 0), (coin_x, coin_y), self._u(8))
+            pygame.draw.circle(self.screen, (255, 215, 0), (coin_x, coin_y), self._u(6))
+            gold_surf = self.font_sm.render(f"{wallet.gold}", True, (255, 215, 0))
+            self.screen.blit(gold_surf, (coin_x + self._u(12), coin_y - gold_surf.get_height() // 2))
 
         # Botão X (fechar)
-        close_r = pygame.Rect(x0 + W - 36, y0 + 4, 32, 32)
+        close_r = pygame.Rect(x0 + W - self._u(36), y0 + self._u(4), self._u(32), self._u(32))
         close_hov = close_r.collidepoint(mx, my)
         pygame.draw.rect(self.screen, (180, 60, 60) if close_hov else (100, 35, 35),
                          close_r, border_radius=3)
@@ -307,23 +320,25 @@ class InventoryHandlers:
         self.screen.blit(xs, (close_r.centerx - xs.get_width() // 2,
                                close_r.centery - xs.get_height() // 2))
 
-        body_y    = y0 + PAD + self._HEADER_H
-        divider_y = body_y + self._BODY_H + PAD
-        col_x     = x0 + self._EQ_W + PAD * 3
+        header_y  = title_y + title.get_height() + self._u(4)
+        body_y    = header_y + self.font_sm.get_height() + self._u(6)
+        divider_y = body_y + self._u(self._BODY_H) + PAD
+        col_x     = x0 + self._u(self._EQ_W) + PAD * 3
 
         pygame.draw.line(self.screen, (90, 70, 40), (x0 + PAD, divider_y), (x0 + W - PAD, divider_y))
-        pygame.draw.line(self.screen, (90, 70, 40), (col_x - PAD, y0 + PAD), (col_x - PAD, divider_y))
+        pygame.draw.line(self.screen, (90, 70, 40), (col_x - PAD, header_y), (col_x - PAD, divider_y))
 
-        # ---- Cabeçalhos ----
+        # ---- Cabeçalhos (sem dicas redundantes — interações já aparecem no tooltip de cada item) ----
         hdr = (160, 130, 80)
-        self.screen.blit(self.font_sm.render("Equipado  (clique p/ desequipar)", True, hdr), (x0 + PAD, y0 + PAD + 2))
-        bag_hint = "  [DEL] deletar selecionado" if self._selected_inv_idx >= 0 else "  clique esq. p/ selecionar | dir. p/ equipar"
-        self.screen.blit(self.font_sm.render(f"Mochila ({len(inv.items)}/{inv.max_slots}){bag_hint}", True, hdr), (col_x, y0 + PAD + 2))
+        self.screen.blit(self.font_sm.render("Equipado", True, hdr), (x0 + PAD, header_y))
+        bag_hint = "  [DEL] deletar selecionado" if self._selected_inv_idx >= 0 else ""
+        self.screen.blit(self.font_sm.render(f"Mochila ({len(inv.items)}/{inv.max_slots}){bag_hint}", True, hdr), (col_x, header_y))
 
         # ---- Coluna de equipamentos (ícone + label + nome) ----
+        eq_slot_h = self._u(self._EQ_SLOT_H)
         for i, (slot_name, label) in enumerate(Equipment.SLOT_LABELS.items()):
-            ry     = body_y + i * self._EQ_SLOT_H
-            r      = pygame.Rect(x0 + PAD, ry, self._EQ_W - 2, self._EQ_SLOT_H - 2)
+            ry     = body_y + i * eq_slot_h
+            r      = pygame.Rect(x0 + PAD, ry, self._u(self._EQ_W) - self._u(2), eq_slot_h - self._u(2))
             item   = equip.slots[slot_name]
             locked = (slot_name == "offhand" and equip.is_offhand_locked())
 
@@ -334,8 +349,8 @@ class InventoryHandlers:
             pygame.draw.rect(self.screen, border, r, 1, border_radius=3)
 
             # ícone (quadrado _EQ_ICON × _EQ_ICON)
-            ic = self._EQ_ICON
-            icon_r = pygame.Rect(r.x + 3, r.y + (self._EQ_SLOT_H - 2 - ic) // 2, ic, ic)
+            ic = self._u(self._EQ_ICON)
+            icon_r = pygame.Rect(r.x + self._u(3), r.y + (eq_slot_h - self._u(2) - ic) // 2, ic, ic)
             if item:
                 icon_surf = ICONS.get(ICONS.item_key(item), ic)
                 if icon_surf:
@@ -349,14 +364,14 @@ class InventoryHandlers:
 
             # Label do slot
             lbl_surf = self.font_sm.render(f"{label}", True, (120, 100, 70))
-            self.screen.blit(lbl_surf, (icon_r.right + 4, r.y + 3))
+            self.screen.blit(lbl_surf, (icon_r.right + self._u(4), r.y + self._u(3)))
 
             # Nome do item (linha 2)
             if item:
                 col_name = self._RARITY_COLORS.get(item.rarity, (200, 200, 200))
-                self.screen.blit(self.font_sm.render(item.name, True, col_name), (icon_r.right + 4, r.y + 18))
+                self.screen.blit(self.font_sm.render(item.name, True, col_name), (icon_r.right + self._u(4), r.y + self._u(18)))
             elif locked:
-                self.screen.blit(self.font_sm.render("(2 maos)", True, (100, 60, 60)), (icon_r.right + 4, r.y + 18))
+                self.screen.blit(self.font_sm.render("(2 maos)", True, (100, 60, 60)), (icon_r.right + self._u(4), r.y + self._u(18)))
 
             # Tooltip no hover
             if hovered and item:
@@ -365,14 +380,15 @@ class InventoryHandlers:
                 self._pending_tooltip = (mx, my, item.name, lines)
 
         # ---- Grade de inventário (ícones) ----
-        step  = self._INV_SLOT + self._INV_GAP
+        inv_slot = self._u(self._INV_SLOT)
+        step  = inv_slot + self._u(self._INV_GAP)
         total = inv.max_slots
         for i in range(total):
             col_i = i % self._INV_COLS
             row_i = i // self._INV_COLS
             sx = col_x + col_i * step
             sy = body_y + row_i * step
-            r  = pygame.Rect(sx, sy, self._INV_SLOT, self._INV_SLOT)
+            r  = pygame.Rect(sx, sy, inv_slot, inv_slot)
             item = inv.items[i] if i < len(inv.items) else None
 
             hovered  = r.collidepoint(mx, my)
@@ -388,8 +404,8 @@ class InventoryHandlers:
             pygame.draw.rect(self.screen, border, r, 2 if selected else 1, border_radius=3)
 
             if item:
-                ic        = self._INV_SLOT - 8
-                icon_r    = pygame.Rect(sx + 4, sy + 4, ic, ic)
+                ic        = inv_slot - self._u(8)
+                icon_r    = pygame.Rect(sx + self._u(4), sy + self._u(4), ic, ic)
                 icon_surf = ICONS.get(ICONS.item_key(item), ic)
                 if icon_surf:
                     self.screen.blit(icon_surf, icon_r)
@@ -399,7 +415,7 @@ class InventoryHandlers:
                 # Ponto de raridade (canto inferior direito) — só em não-empilháveis
                 if getattr(item, "max_stack", 1) <= 1:
                     dot_col = self._RARITY_COLORS.get(item.rarity, (150, 150, 150))
-                    pygame.draw.circle(self.screen, dot_col, (r.right - 5, r.bottom - 5), 4)
+                    pygame.draw.circle(self.screen, dot_col, (r.right - self._u(5), r.bottom - self._u(5)), self._u(4))
 
                 # Contador de stack (canto inferior direito)
                 draw_stack_count(self.screen, item, r, self.font_sm)
@@ -413,79 +429,102 @@ class InventoryHandlers:
                         self._pending_tooltip = (mx, my, item.name, lines)
                         # Iniciar drag ao clicar com botão esquerdo
                         if _clicked_inv and r.collidepoint(mx, my):
-                            self._inv_drag_item = item.name
+                            _drag_inv.kind    = "consumable"
+                            _drag_inv.source  = "inventory"
+                            _drag_inv.payload = item.name
+                            _drag_inv.active  = True
                     else:
                         lines.append((f"{del_hint}Clique dir. p/ equipar | Shift p/ comparar", (140, 140, 140)))
                         self._pending_tooltip = (mx, my, item.name, lines,
                                                  item, equip.slots.get(item.slot))
 
-        # ---- Seção de estatísticas (2 colunas) ----
+        # ---- Seção de estatísticas (2 colunas, cada uma com Base | Itens) ----
+        # "Base" = atributo cru + talentos + buffs (tudo que NÃO é item
+        # equipado); "Itens" = só a contribuição do equipamento, isolada via
+        # CombatStats.equipment_bonus() (filtra Modifier.source=="equipment").
+        # Base + Itens == o valor final usado em combate.
         sy2   = divider_y + PAD
         half  = W // 2
-        cL    = x0 + PAD          # coluna esquerda: rótulo
-        cLv   = x0 + 130          # coluna esquerda: valor
-        cR    = x0 + half + PAD   # coluna direita: rótulo
-        cRv   = x0 + half + 130   # coluna direita: valor
+        cL    = x0 + PAD                  # coluna esquerda: rótulo
+        cLb   = x0 + self._u(130)         # coluna esquerda: Base (mesmo offset do label->valor antigo)
+        cLi   = x0 + self._u(200)         # coluna esquerda: Itens
+        cR    = x0 + half + PAD           # coluna direita: rótulo
+        cRb   = x0 + half + self._u(130)  # coluna direita: Base
+        cRi   = x0 + half + self._u(200)  # coluna direita: Itens
         HDR   = (160, 140, 100)
         VAL   = (255, 220, 120)
-        ROW   = 20                 # altura de linha
+        ITEM_COL  = (120, 200, 120)   # verde — bônus de equipamento
+        ROW   = self._u(20)            # altura de linha
 
-        self.screen.blit(self.font_sm.render("── Estatísticas ──", True, (180, 150, 90)), (x0 + PAD, sy2))
+        self.screen.blit(self.font_sm.render("-- Estatísticas --", True, (180, 150, 90)), (x0 + PAD, sy2))
+        hdr_base  = self.font_xs.render("Base",  True, HDR)
+        hdr_itens = self.font_xs.render("Itens", True, HDR)
+        self.screen.blit(hdr_base,  (cLb, sy2 + self._u(2)))
+        self.screen.blit(hdr_itens, (cLi, sy2 + self._u(2)))
+        self.screen.blit(hdr_base,  (cRb, sy2 + self._u(2)))
+        self.screen.blit(hdr_itens, (cRi, sy2 + self._u(2)))
         sy2 += ROW
 
         char_stats = self.world.get_component(self.player_entity, CharacterStats)
 
-        def sv(label, value, col_lbl, col_val, y, color=VAL):
+        def sv(label, total: float, item_bonus: float, col_lbl, col_base, col_item, y,
+              fmt=lambda v: f"{int(round(v))}", item_fmt=None):
+            """Desenha label + Base (total - item_bonus) + Itens (item_bonus,
+            com sinal, ou '—' se não houver contribuição de equipamento)."""
+            item_fmt = item_fmt or fmt
+            base_val = total - item_bonus
             self.screen.blit(self.font_sm.render(label + ":", True, HDR), (col_lbl, y))
-            self.screen.blit(self.font_sm.render(value,        True, color), (col_val, y))
+            self.screen.blit(self.font_sm.render(fmt(base_val), True, VAL), (col_base, y))
+            if abs(item_bonus) >= 0.05:
+                sign = "+" if item_bonus > 0 else ""
+                txt = f"{sign}{item_fmt(item_bonus)}"
+                self.screen.blit(self.font_sm.render(txt, True, ITEM_COL), (col_item, y))
+            else:
+                self.screen.blit(self.font_sm.render("—", True, (90, 80, 60)), (col_item, y))
+
+        eq = combat_stats.equipment_bonus
 
         # Linha 1
-        sv("HP",        f"{int(combat_stats.current_hp)}/{combat_stats.max_hp}", cL, cLv, sy2)
-        sv("Acerto",    f"{combat_stats.acerto:.1f}%", cR, cRv, sy2)
+        sv("HP", combat_stats.max_hp, eq("stamina") * 10, cL, cLb, cLi, sy2)
+        sv("Acerto", combat_stats.acerto, eq("acerto"), cR, cRb, cRi, sy2,
+           fmt=lambda v: f"{v:.1f}%")
         sy2 += ROW
 
         # Linha 2
-        sv("Atq. Físico", f"{int(combat_stats.attack_power)}", cL, cLv, sy2)
-        sv("Esquiva",   f"{combat_stats.dodge_rating / 20:.1f}%", cR, cRv, sy2)
+        sv("Atq. Físico", combat_stats.attack_power, eq("attack_power"), cL, cLb, cLi, sy2)
+        sv("Esquiva", combat_stats.dodge_rating / 20, eq("dodge_rating") / 20, cR, cRb, cRi, sy2,
+           fmt=lambda v: f"{v:.1f}%")
         sy2 += ROW
 
         # Linha 3
-        sv("Atq. Mágico", f"{int(combat_stats.spell_power)}", cL, cLv, sy2)
-        sv("Aparo",     f"{combat_stats.parry_rating / 20:.1f}%", cR, cRv, sy2)
+        sv("Atq. Mágico", combat_stats.spell_power, eq("spell_power"), cL, cLb, cLi, sy2)
+        sv("Aparo", combat_stats.parry_rating / 20, eq("parry_rating") / 20, cR, cRb, cRi, sy2,
+           fmt=lambda v: f"{v:.1f}%")
         sy2 += ROW
 
-        # Linha 4
-        sv("Armadura",  f"{int(combat_stats.armor)}", cL, cLv, sy2)
-        sv("Vel. Ataque", f"{combat_stats.attack_interval:.2f}s", cR, cRv, sy2)
+        # Linha 4 — Vel. Ataque: item_bonus pode ser negativo (item mais rápido
+        # reduz o intervalo) — fmt sem arredondar pro inteiro, é em segundos.
+        sv("Armadura", combat_stats.armor, eq("armor"), cL, cLb, cLi, sy2)
+        sv("Vel. Ataque", combat_stats.attack_interval, eq("attack_interval"), cR, cRb, cRi, sy2,
+           fmt=lambda v: f"{v:.2f}s")
         sy2 += ROW
 
         # Linha 5
-        sv("Estamina",  f"{int(combat_stats.stamina)}", cL, cLv, sy2)
-        sv("Crítico",   f"{combat_stats.crit_rating * 100:.1f}%", cR, cRv, sy2)
+        sv("Estamina", combat_stats.stamina, eq("stamina") * 10, cL, cLb, cLi, sy2)
+        sv("Crítico", combat_stats.crit_rating * 100, eq("crit_rating") * 100, cR, cRb, cRi, sy2,
+           fmt=lambda v: f"{v:.1f}%")
         sy2 += ROW
 
-        # Linha 6 — recurso da classe
+        # Linha 6 — recurso da classe (mesmo critério do HUD: class_id direto,
+        # não "max_X > 0" — um valor de recurso de outra classe ficando > 0
+        # por engano não troca o rótulo errado, ver PROBLEMAS_ARQUITETURA.md).
+        # Equipamento nunca modifica mana/concentração/raiva hoje — "Itens"
+        # sempre fica "—" aqui, mas a linha continua mostrando o total certo.
         if char_stats:
-            if char_stats.max_mana > 0:
-                sv("Mana",  f"{int(char_stats.mana)}/{char_stats.max_mana}", cL, cLv, sy2)
-            elif char_stats.max_concentration > 0:
-                sv("Concentração", f"{int(char_stats.concentration)}/{char_stats.max_concentration}", cL, cLv, sy2)
+            if char_stats.class_id == "mago":
+                sv("Mana",  char_stats.max_mana, 0, cL, cLb, cLi, sy2)
+            elif char_stats.class_id == "arqueiro":
+                sv("Concentração", char_stats.max_concentration, 0, cL, cLb, cLi, sy2)
             else:
-                sv("Raiva", f"{char_stats.rage}/{char_stats.max_rage}", cL, cLv, sy2)
+                sv("Raiva", char_stats.max_rage, 0, cL, cLb, cLi, sy2)
         sy2 += ROW
-
-        # ---- Rodapé: moedas (sempre no rodapé do painel) ----
-        wallet = self.world.get_component(self.player_entity, Wallet)
-        if wallet:
-            footer_y = y0 + H - 34
-            pygame.draw.line(self.screen, (90, 70, 40),
-                             (x0 + PAD, footer_y - 4), (x0 + W - PAD, footer_y - 4))
-            coin_x, coin_y = x0 + PAD + 10, footer_y + 12
-            pygame.draw.circle(self.screen, (180, 140, 0), (coin_x, coin_y), 9)
-            pygame.draw.circle(self.screen, (255, 215, 0), (coin_x, coin_y), 7)
-            pygame.draw.circle(self.screen, (120, 90, 0),  (coin_x, coin_y), 9, 1)
-            g_surf = self.font_sm.render("G", True, (120, 90, 0))
-            self.screen.blit(g_surf, (coin_x - g_surf.get_width() // 2,
-                                      coin_y - g_surf.get_height() // 2))
-            gold_surf = self.font_md.render(f"{wallet.gold} moedas", True, (255, 215, 0))
-            self.screen.blit(gold_surf, (x0 + PAD + 24, footer_y + 6))

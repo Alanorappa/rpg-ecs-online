@@ -5,7 +5,7 @@
   "net_user": "teste",
   "net_pass": "123456",
   "music_volume": 0.06842105263157895,
-  "sfx_volume": 0.18947368421052632,
+  "sfx_volume": 0.042105263157894736,
   "music_enabled": false,
   "sfx_enabled": true,
   "hotbar": {
@@ -49,7 +49,7 @@
           "impacto",
           "vitoria_iminente",
           "brado_provocativo",
-          null,
+          "executar",
           "interceptar",
           "punho_no_queixo",
           "golpe_debilitante",
@@ -159,9 +159,9 @@
       },
       "consumable_bar": {
         "slots": [
-          null,
-          null,
-          null,
+          "Ensopado Revigorante",
+          "Po\u00e7\u00e3o de Vida",
+          "Odre Grande",
           null,
           null
         ],
@@ -227,7 +227,7 @@
           "flecha_reiterada",
           "tiro_repulsivo",
           "camuflagem",
-          null,
+          "tiro_multiplo",
           null,
           null,
           null
@@ -265,7 +265,7 @@
   },
   "debug_mode": true,
   "profile_frames": false,
-  "ui_scale": 1.25,
+  "ui_scale": 1.0,
   "consumable_bar": {
     "slots": [
       null,

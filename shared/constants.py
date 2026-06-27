@@ -44,18 +44,3 @@ GHOST_CORPSE_RADIUS_TILES    = 3   # raio (tiles) do corpo p/ prompt "Reviver ag
 GHOST_GRAVEYARD_REVIVE_S     = 45.0  # segundos contínuos no cemitério p/ revive full HP
 GHOST_CORPSE_REVIVE_HP_FRAC  = 0.15  # fração de HP ao reviver no corpo
 
-# ── Sincronização de stats de combate (PLAYER_STAT_SYNC) ──────────────────────
-# Mapeamento: nome_efetivo → base_attr no CombatStats
-# O cliente envia os valores efetivos; o servidor atualiza os base_attrs
-# correspondentes e recalcula os efetivos.
-# Para adicionar uma nova stat: basta inserir uma entrada neste dict.
-COMBAT_SYNC_STATS: dict[str, str] = {
-    "max_hp":          "base_stamina",        # max_hp  = stamina = base_stamina + mods
-    "attack_power":    "base_attack_power",   # AP efetivo (inclui arma + equipamento)
-    "spell_power":     "base_spell_power",    # SP efetivo (INT + arma mágica + itens)
-    "armor":           "base_armor",          # armadura total
-    "crit_rating":     "base_crit_rating",    # % crit
-    "parry_rating":    "base_parry_rating",   # % aparo
-    "dodge_rating":    "base_dodge_rating",   # % esquiva
-    "attack_interval": "base_attack_interval",# velocidade de ataque
-}

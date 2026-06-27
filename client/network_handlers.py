@@ -345,7 +345,7 @@ class NetworkHandlers:
                 from stat_fns import add_timed_modifier as _atm_lp
                 _cs_lp = self.world.get_component(self.player_entity, _CSlp)
                 if _cs_lp:
-                    _atm_lp(_cs_lp, _Modlp("crit_rating", _lp_bonus, "flat"),
+                    _atm_lp(_cs_lp, _Modlp("crit_rating", _lp_bonus, "flat", source="buff"),
                             _lp_dur, "lapso_elemental")
                 from combat_log import LOG as _LOG_lp
                 _LOG_lp.add(f"Lapso Elemental: +{int(_lp_bonus*100)}% Critico por {_lp_dur:.0f}s!",
@@ -631,8 +631,66 @@ class NetworkHandlers:
                         target_server_id = _tr_srv_tgt,
                     ))
 
+        # Tiro Múltiplo is_completion: 1 flecha por alvo selecionado pelo servidor
+        # (cone de visão + range + talento, ver _complete_tiro_multiplo_cast) — não
+        # mais dano instantâneo de área. Cada flecha tem seu próprio target_server_id
+        # e envia PROJECTILE_HIT_CS independente ao colidir, igual às outras skills
+        # de flecha (mesma mecânica do projeto offline: 1 PlayerProjectile por alvo).
+        _tm_srv_tgts = payload.get("projectile_targets", [])
+        if (caster_eid == self._my_eid
+                and sid == "tiro_multiplo"
+                and payload.get("is_completion")
+                and not payload.get("failed")
+                and sid not in self._cancelled_spell_ids
+                and _tm_srv_tgts):
+            from components import PlayerProjectile as _PPtm
+            from components import Position as _PosTM
+            from skill_config import SKILL_CATALOG as _SC_tm
+            _tm_ap = _SC_tm.get("tiro_multiplo", {}).get("params", {}).get("ap_multiplier", 3.0)
+            _pl_pos_tm = self.world.get_component(self.player_entity, _PosTM)
+            for _tm_idx, _tm_srv_tgt in enumerate(_tm_srv_tgts):
+                _tm_loc = self._remote_mobs.get(
+                    _tm_srv_tgt, self._remote_players.get(_tm_srv_tgt, -1))
+                if _tm_loc == -1 or not _pl_pos_tm:
+                    continue
+                _tgt_pos_tm = self.world.get_component(_tm_loc, _PosTM)
+                _tm_tlx = _tgt_pos_tm.x if _tgt_pos_tm else _pl_pos_tm.x
+                _tm_tly = _tgt_pos_tm.y if _tgt_pos_tm else _pl_pos_tm.y
+                _peid_tm = self.world.create_entity()
+                self.world.add_component(_peid_tm, _PosTM(
+                    x=_pl_pos_tm.x, y=_pl_pos_tm.y,
+                    prev_x=_pl_pos_tm.x, prev_y=_pl_pos_tm.y,
+                ))
+                self.world.add_component(_peid_tm, _PPtm(
+                    spell_id         = "tiro_multiplo",
+                    attacker_id      = self.player_entity,
+                    target_id        = _tm_loc,
+                    speed            = 700.0,
+                    dmg_weapon_pct   = 1.0,
+                    dmg_sp_coeff     = 0.0,
+                    color            = (150, 210, 255),
+                    damage_type      = "physical",
+                    launch_delay     = _tm_idx * 0.06,  # leve escalonamento visual
+                    ap_multiplier    = _tm_ap,
+                    guaranteed_hit   = True,
+                    target_last_x    = _tm_tlx,
+                    target_last_y    = _tm_tly,
+                    target_server_id = _tm_srv_tgt,
+                ))
+
+    # Skills de projétil cujo espectador (player remoto) precisa de uma flecha/bola
+    # cosmética ao receber SKILL_EFFECT{event:"launch"} — ver _spawn_bystander_projectile.
+    _BYSTANDER_PROJECTILE_SKILLS = {"bola_de_fogo", "flecha_reiterada",
+                                     "picada_escorpiao", "tiro_repulsivo", "tiro_multiplo"}
+
     def _handle_msg_skill_effect(self, payload: dict) -> None:
-        """Handler de SKILL_EFFECT — só apresentação: som/VFX por fase da skill."""
+        """Handler de SKILL_EFFECT — apresentação (som/VFX) + projétil cosmético de
+        espectador no evento "launch". Broadcast AOI automático (qualquer player
+        próximo recebe, sem canal/loop manual por skill — ver session.py
+        consume_skill_effects), diferente do antigo proj_incoming (canal per-player
+        sem filtro de AOI, com allowlist de campos fácil de esquecer ao adicionar
+        skill nova — causa raiz do bug "flecha não aparece pro remoto"). Ver
+        arquitetura/PROBLEMAS_ARQUITETURA.md."""
         from skill_config import SKILL_CATALOG as _SC_sfx
         sid        = payload.get("sid", "")
         event      = payload.get("event", "")
@@ -642,12 +700,19 @@ class NetworkHandlers:
         if sid == "tiro_repulsivo" and event == "collision":
             self._show_knockback_collision(payload)
             return
+        is_local = caster_eid == self._my_eid
+        # Projétil cosmético: independente de som — a skill pode não ter "launch"
+        # configurado em SKILL_CATALOG (ex: Tiro Múltiplo) e ainda assim precisa
+        # da flecha visual pro espectador. Caster cria a sua própria via SKILL_RESULT
+        # (is_completion) — aqui é só quem está assistindo.
+        if event == "launch" and not is_local and sid in self._BYSTANDER_PROJECTILE_SKILLS:
+            self._spawn_bystander_projectile(sid, payload)
+
         fx = _SC_sfx.get(sid, {}).get("effects", {}).get(event, {})
         snd  = fx.get("sound")   # som único → play_skill
         snds = fx.get("sounds")  # variações aleatórias → play_random
         if not snd and not snds:
             return
-        is_local = caster_eid == self._my_eid
         if is_local:
             if snd:
                 SOUNDS.play_skill(snd)
@@ -663,6 +728,73 @@ class NetworkHandlers:
                 SOUNDS.play_skill_at(snd, _sfx_wx, _sfx_wy, _slx, _sly, base=0.85)
             else:
                 SOUNDS.play_random_at(snds, _sfx_wx, _sfx_wy, _slx, _sly, base=0.85)
+
+    def _resolve_local_eid(self, server_eid: int) -> int:
+        """Mob remoto, player remoto, ou eu mesmo — local eid do server_eid dado,
+        ou -1 se nenhum (ex: alvo fora do AOI deste cliente)."""
+        if server_eid == self._my_eid:
+            return self.player_entity
+        if server_eid in self._remote_players:
+            return self._remote_players[server_eid]
+        return self._remote_mobs.get(server_eid, -1)
+
+    def _spawn_bystander_projectile(self, sid: str, payload: dict) -> None:
+        """Cria a flecha/bola cosmética que um espectador vê quando OUTRO player
+        lança uma skill de projétil. Nunca envia PROJECTILE_HIT_CS (target_server_id
+        = -2) — o dano desse caster já chega normalmente via SKILL_RESULT/COMBAT_RESULT,
+        isto é 100% visual."""
+        from components import PlayerProjectile as _PPb, Position as _PosB
+        caster_local = self._remote_players.get(payload.get("caster_eid", -1), -1)
+        if caster_local == -1:
+            return
+        caster_pos = self.world.get_component(caster_local, _PosB)
+        if not caster_pos:
+            return
+
+        if sid == "bola_de_fogo":
+            tgt_local = self._resolve_local_eid(payload.get("target_eid", -1))
+            if tgt_local != -1:
+                self._spell_cast_system._launch_fireball(caster_local, tgt_local)
+                for _, _pp, _ in self.world.get_entities_with(_PPb, _PosB):
+                    if (_pp.attacker_id == caster_local and _pp.target_id == tgt_local
+                            and _pp.target_server_id == -1):
+                        _pp.target_server_id = -2  # cosmético: sem PROJECTILE_HIT_CS
+                        break
+            return
+
+        if sid == "tiro_multiplo":
+            target_eids = payload.get("target_eids", [])
+        else:
+            target_eids = [payload.get("target_eid", -1)]
+
+        if sid == "flecha_reiterada":
+            from skill_config import SKILL_CATALOG as _SC_fr
+            _fr_delay  = _SC_fr.get("flecha_reiterada", {}).get("params", {}).get("arrow_delay", 0.25)
+            _fr_speeds = [700.0, 640.0, 580.0]
+            _n_arrows  = int(payload.get("arrow_count", 2))
+            target_eids = target_eids * _n_arrows  # mesma flecha repetida N vezes no mesmo alvo
+        color = {"picada_escorpiao": (60, 200, 80),
+                 "tiro_multiplo":    (150, 210, 255)}.get(sid, (101, 67, 33))
+
+        for _idx, _tgt_srv in enumerate(target_eids):
+            tgt_local = self._resolve_local_eid(_tgt_srv)
+            if tgt_local == -1:
+                continue
+            tgt_pos = self.world.get_component(tgt_local, _PosB)
+            if not tgt_pos:
+                continue
+            _delay = (_fr_delay * _idx) if sid == "flecha_reiterada" else 0.0
+            _speed = (_fr_speeds[_idx] if sid == "flecha_reiterada" and _idx < len(_fr_speeds)
+                      else 700.0 if sid != "tiro_repulsivo" else 800.0)
+            _eid_b = self.world.create_entity()
+            self.world.add_component(_eid_b, _PosB(
+                x=caster_pos.x, y=caster_pos.y, prev_x=caster_pos.x, prev_y=caster_pos.y))
+            self.world.add_component(_eid_b, _PPb(
+                spell_id="arrow", attacker_id=caster_local, target_id=tgt_local,
+                speed=_speed, dmg_weapon_pct=1.0, dmg_sp_coeff=0.0, color=color,
+                damage_type="physical", launch_delay=_delay, guaranteed_hit=True,
+                target_last_x=tgt_pos.x, target_last_y=tgt_pos.y, target_server_id=-2,
+            ))
 
     def _show_knockback_collision(self, payload: dict) -> None:
         """Tiro Repulsivo: feedback dedicado quando o empurrão colide (parede ou
@@ -995,80 +1127,12 @@ class NetworkHandlers:
     def _handle_msg_stats_update(self, payload: dict) -> None:
         from components import CombatStats, RemoteControlled
         eid = payload.get("eid", -1)
-        # Projétil chegando em mim (PvP): cria projétil puramente visual (sem dano local).
-        # Projétil de outro player chegando — cria visual cosmético.
-        # proj_target pode ser mob (proj. para mob) ou player (PvP).
-        if eid == self._my_eid and payload.get("proj_incoming"):
-            _proj_sid    = payload["proj_incoming"]
-            _proj_caster = payload.get("proj_caster", -1)
-            _proj_tgt    = payload.get("proj_target", -1)
-            _caster_local = self._remote_players.get(_proj_caster, -1)
-            if _caster_local != -1 and _proj_sid == "bola_de_fogo":
-                # Resolve entidade local do alvo: mob remoto ou player remoto
-                if _proj_tgt == self._my_eid:
-                    _tgt_local = self.player_entity  # sou o alvo (PvP)
-                elif _proj_tgt in self._remote_players:
-                    _tgt_local = self._remote_players[_proj_tgt]
-                else:
-                    _tgt_local = self._remote_mobs.get(_proj_tgt, -1)
-                if _tgt_local != -1:
-                    self._spell_cast_system._launch_fireball(_caster_local, _tgt_local)
-                    from components import PlayerProjectile as _PPinc, Position as _PPinc_pos
-                    for _ppeid, _pp, _ in self.world.get_entities_with(_PPinc, _PPinc_pos):
-                        if (_pp.attacker_id == _caster_local
-                                and _pp.target_id == _tgt_local
-                                and _pp.target_server_id == -1):
-                            _pp.target_server_id = -2  # cosmético: sem PROJECTILE_HIT_CS
-                            break
-            elif _caster_local != -1 and _proj_sid in ("flecha_reiterada", "picada_escorpiao",
-                                                         "tiro_repulsivo"):
-                # Arqueiro remoto: cria flecha(s) cosméticas para o espectador
-                # (sem PROJECTILE_HIT_CS — dano já chega via SKILL_RESULT/COMBAT_RESULT).
-                if _proj_tgt == self._my_eid:
-                    _tgt_local = self.player_entity
-                elif _proj_tgt in self._remote_players:
-                    _tgt_local = self._remote_players[_proj_tgt]
-                else:
-                    _tgt_local = self._remote_mobs.get(_proj_tgt, -1)
-                if _tgt_local != -1:
-                    from components import PlayerProjectile as _PParr_inc, Position as _PosArr_inc
-                    _caster_pos_inc = self.world.get_component(_caster_local, _PosArr_inc)
-                    _tgt_pos_inc    = self.world.get_component(_tgt_local,    _PosArr_inc)
-                    if _caster_pos_inc and _tgt_pos_inc:
-                        # Sons de lançamento chegam via SKILL_EFFECT{event:"launch"} — aqui só visual
-                        if _proj_sid == "flecha_reiterada":
-                            from skill_config import SKILL_CATALOG as _SC_fr_inc
-                            _fr_delay_inc  = _SC_fr_inc.get("flecha_reiterada", {}).get(
-                                "params", {}).get("arrow_delay", 0.25)
-                            _fr_n_inc = int(payload.get("proj_arrow_count", 2))
-                            _fr_speeds_inc = [700.0, 640.0, 580.0]
-                            for _i_inc in range(_fr_n_inc):
-                                _eid_inc = self.world.create_entity()
-                                self.world.add_component(_eid_inc, _PosArr_inc(
-                                    x=_caster_pos_inc.x, y=_caster_pos_inc.y,
-                                    prev_x=_caster_pos_inc.x, prev_y=_caster_pos_inc.y))
-                                self.world.add_component(_eid_inc, _PParr_inc(
-                                    spell_id="arrow", attacker_id=_caster_local, target_id=_tgt_local,
-                                    speed=_fr_speeds_inc[_i_inc] if _i_inc < len(_fr_speeds_inc) else 600.0,
-                                    dmg_weapon_pct=1.0, dmg_sp_coeff=0.0, color=(101, 67, 33),
-                                    damage_type="physical", launch_delay=_fr_delay_inc * _i_inc,
-                                    guaranteed_hit=True,
-                                    target_last_x=_tgt_pos_inc.x, target_last_y=_tgt_pos_inc.y,
-                                    target_server_id=-2,
-                                ))
-                        else:
-                            _col_inc = (60, 200, 80) if _proj_sid == "picada_escorpiao" else (101, 67, 33)
-                            _eid_inc = self.world.create_entity()
-                            self.world.add_component(_eid_inc, _PosArr_inc(
-                                x=_caster_pos_inc.x, y=_caster_pos_inc.y,
-                                prev_x=_caster_pos_inc.x, prev_y=_caster_pos_inc.y))
-                            self.world.add_component(_eid_inc, _PParr_inc(
-                                spell_id="arrow", attacker_id=_caster_local, target_id=_tgt_local,
-                                speed=700.0, dmg_weapon_pct=1.0, dmg_sp_coeff=0.0, color=_col_inc,
-                                damage_type="physical", guaranteed_hit=True,
-                                target_last_x=_tgt_pos_inc.x, target_last_y=_tgt_pos_inc.y,
-                                target_server_id=-2,
-                            ))
+        # Projétil cosmético de espectador: ver _handle_msg_skill_effect (event="launch").
+        # Antes vivia aqui, num canal STATS_UPDATE per-player sem filtro de AOI e com uma
+        # allowlist de campos em session.py que cada skill nova esquecia de estender —
+        # causa raiz do bug "flecha não aparece pro remoto" (Tiro Múltiplo). Consolidado
+        # no SKILL_EFFECT, que já é broadcast AOI automático pra qualquer skill. Ver
+        # arquitetura/PROBLEMAS_ARQUITETURA.md.
 
         if eid == self._my_eid:
             cs = self.world.get_component(self.player_entity, CombatStats)
@@ -1252,7 +1316,7 @@ class NetworkHandlers:
         if cs:
             cs.max_hp     = payload.get("hp_max", cs.max_hp)
             cs.current_hp = payload.get("hp", cs.current_hp)
-            cs.mana       = payload.get("mana", cs.mana)
+            cs.mana       = payload.get("mana", cs.mana)  # espelho — ver CombatStats.mana
         if char_r:
             char_r.max_mana = payload.get("max_mana", char_r.max_mana)
             char_r.mana     = payload.get("mana", char_r.mana)

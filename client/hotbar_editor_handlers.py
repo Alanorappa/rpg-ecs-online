@@ -11,6 +11,7 @@ atributos referenciados aqui.
 import pygame
 
 from components import PlayerSkills
+from ui_sizes import UI
 
 
 class HotbarEditorHandlers:
@@ -18,8 +19,8 @@ class HotbarEditorHandlers:
     # Editor da hotbar (K)
     # ------------------------------------------------------------------
 
-    _HBE_SZ  = 52
-    _HBE_GAP = 10
+    _HBE_SZ  = UI.HOTBAR_EDITOR_SLOT_SZ
+    _HBE_GAP = UI.HOTBAR_EDITOR_GAP
 
     def _close_hotbar_editor(self) -> None:
         self._show_hotbar_editor    = False
@@ -67,22 +68,23 @@ class HotbarEditorHandlers:
                 return
 
         # ── Geometria ─────────────────────────────────────────────────────
-        PW  = 560
-        ROW_H  = 38
-        KEY_W  = 90
-        KEY_H  = 28
-        BTN_W  = 110
-        BTN_H  = 34
-
         # Conteúdo: 4 menu rows + divider + 10 slot rows + divider + 2 cons rows + buttons
-        n_rows  = 4 + NUM_SLOTS + _CB.NUM_SLOTS
-        PH      = 60 + 22 + n_rows * ROW_H + 20 + BTN_H + 20
-        PH      = max(PH, 400)
-        ppx     = self.screen.get_width()  // 2 - PW // 2
-        ppy     = self.screen.get_height() // 2 - PH // 2
+        n_rows   = 4 + NUM_SLOTS + _CB.NUM_SLOTS
+        base_PH  = max(60 + 22 + n_rows * 38 + 20 + 34 + 20, 400)
+        ppx, ppy = self._safe_panel_origin(UI.HOTBAR_EDITOR_W, base_PH)
+        ppx, ppy = ppx + UI.HOTBAR_EDITOR_OFFSET_X, ppy + UI.HOTBAR_EDITOR_OFFSET_Y
 
-        COL_NAME = ppx + 20
-        COL_KEY  = ppx + PW - KEY_W - 20
+        PW  = self._u(UI.HOTBAR_EDITOR_W)
+        ROW_H  = self._u(38)
+        KEY_W  = self._u(90)
+        KEY_H  = self._u(28)
+        BTN_W  = self._u(110)
+        BTN_H  = self._u(34)
+        PH      = self._u(60) + self._u(22) + n_rows * ROW_H + self._u(20) + BTN_H + self._u(20)
+        PH      = max(PH, self._u(400))
+
+        COL_NAME = ppx + self._u(20)
+        COL_KEY  = ppx + PW - KEY_W - self._u(20)
 
         # Overlay
         ov = pygame.Surface((self.screen.get_width(), self.screen.get_height()), pygame.SRCALPHA)
@@ -95,33 +97,33 @@ class HotbarEditorHandlers:
 
         # Título
         title_s = self.font_md.render("Atalhos do teclado", True, (220, 190, 110))
-        self.screen.blit(title_s, (ppx + PW // 2 - title_s.get_width() // 2, ppy + 12))
+        self.screen.blit(title_s, (ppx + PW // 2 - title_s.get_width() // 2, ppy + self._u(12)))
 
         # ── Cabeçalho de colunas ──────────────────────────────────────────
-        cy = ppy + 42
+        cy = ppy + self._u(42)
         self.screen.blit(self.font_sm.render("Ação", True, (150, 135, 85)),
                          (COL_NAME, cy))
         self.screen.blit(self.font_sm.render("Tecla", True, (150, 135, 85)),
-                         (COL_KEY + KEY_W // 2 - 22, cy))
-        cy += 20
-        pygame.draw.line(self.screen, (72, 58, 32), (ppx + 12, cy), (ppx + PW - 12, cy))
-        cy += 6
+                         (COL_KEY + KEY_W // 2 - self._u(22), cy))
+        cy += self._u(20)
+        pygame.draw.line(self.screen, (72, 58, 32), (ppx + self._u(12), cy), (ppx + PW - self._u(12), cy))
+        cy += self._u(6)
 
         def draw_section(label, color=(185, 158, 80)):
             nonlocal cy
             s = self.font_sm.render(label, True, color)
             self.screen.blit(s, (COL_NAME, cy))
-            cy += 20
+            cy += self._u(20)
             pygame.draw.line(self.screen, (60, 48, 28),
-                             (ppx + 12, cy), (ppx + PW - 12, cy))
-            cy += 4
+                             (ppx + self._u(12), cy), (ppx + PW - self._u(12), cy))
+            cy += self._u(4)
 
         def draw_row(row_label, key_code, key_id):
             nonlocal cy
             alt = ((cy - ppy) // ROW_H) % 2 == 1
             if alt:
                 pygame.draw.rect(self.screen, (34, 28, 16),
-                                 (ppx + 10, cy, PW - 20, ROW_H - 2), border_radius=2)
+                                 (ppx + self._u(10), cy, PW - self._u(20), ROW_H - self._u(2)), border_radius=2)
             name_s = self.font_sm.render(row_label, True, (205, 192, 150))
             self.screen.blit(name_s, (COL_NAME, cy + (ROW_H - name_s.get_height()) // 2))
 
@@ -165,8 +167,8 @@ class HotbarEditorHandlers:
             draw_row(f"Slot {NUM_SLOTS + i + 1}", key_code, f"cons:{i}")
 
         # ── Botões Salvar / Fechar ────────────────────────────────────────
-        btn_y   = ppy + PH - BTN_H - 14
-        btn_gap = 16
+        btn_y   = ppy + PH - BTN_H - self._u(14)
+        btn_gap = self._u(16)
         total_btns_w = 2 * BTN_W + btn_gap
         btn_x0  = ppx + PW // 2 - total_btns_w // 2
 
@@ -193,4 +195,4 @@ class HotbarEditorHandlers:
         else:
             hint = self.font_xs.render(
                 "Clique na tecla para rebindear  |  ESC para fechar", True, (90, 82, 56))
-        self.screen.blit(hint, hint.get_rect(centerx=ppx + PW // 2, y=btn_y - 18))
+        self.screen.blit(hint, hint.get_rect(centerx=ppx + PW // 2, y=btn_y - self._u(18)))

@@ -12,6 +12,8 @@ import pygame
 from client.colors import C_GREEN, C_RED, C_YELLOW
 from components import CharacterStats, CombatStats, Position
 from ui_compare import draw_compare_panel
+from ui_helpers import wrap_text
+from ui_sizes import UI
 
 
 class TooltipHandlers:
@@ -252,13 +254,19 @@ class TooltipHandlers:
         body_font: fonte para as linhas de conteúdo (default: self.font_sm).
         """
         bf        = body_font or self.font_sm
-        PAD       = 8
-        LINE_H    = bf.get_height() + 3
-        COL_GAP   = 20   # espaço mínimo entre coluna esquerda e direita
+        PAD       = self._u(UI.TOOLTIP_PAD)
+        LINE_H    = bf.get_height() + self._u(UI.TOOLTIP_LINE_EXTRA)
+        COL_GAP   = self._u(UI.TOOLTIP_COL_GAP)   # espaço mínimo entre coluna esquerda e direita
+        MAX_W     = self._u(UI.TOOLTIP_MAX_W)
+        max_text_w = MAX_W - PAD * 2
 
         t_surf = self.font_md.render(title, True, title_color)
 
-        # Pré-renderizar todas as linhas
+        # Pré-renderizar todas as linhas. Linhas de uma coluna ("one") que
+        # excedem MAX_W quebram em múltiplas sub-linhas (word-wrap) — sem
+        # isso, uma descrição longa (ex: skill.description cru, usado como
+        # fallback) virava uma única linha gigante e a caixa toda esticava
+        # pra acompanhar (ver PROBLEMAS_ARQUITETURA.md item IU4).
         rendered = []
         for line in lines:
             if isinstance(line[0], tuple):
@@ -267,7 +275,11 @@ class TooltipHandlers:
                                          bf.render(rt, True, rc)))
             else:
                 t, c = line
-                rendered.append(("one", bf.render(t, True, c)))
+                if t and bf.size(t)[0] > max_text_w:
+                    for sub in wrap_text(t, bf, max_text_w):
+                        rendered.append(("one", bf.render(sub, True, c)))
+                else:
+                    rendered.append(("one", bf.render(t, True, c)))
 
         def _line_w(r):
             if r[0] == "two":
@@ -276,12 +288,12 @@ class TooltipHandlers:
 
         content_w = max(((_line_w(r)) for r in rendered), default=0)
         tw = max(t_surf.get_width(), content_w) + PAD * 2
-        th = self.font_md.get_height() + len(rendered) * LINE_H + PAD * 2 + 4
+        th = self.font_md.get_height() + len(rendered) * LINE_H + PAD * 2 + self._u(4)
 
-        tx = mx + 14
-        ty = my - th - 4
+        tx = mx + self._u(14)
+        ty = my - th - self._u(4)
         if tx + tw > self.screen.get_width():
-            tx = mx - tw - 4
+            tx = mx - tw - self._u(4)
         ty = max(0, min(ty, self.screen.get_height() - th))
 
         bg = pygame.Surface((tw, th), pygame.SRCALPHA)
@@ -290,7 +302,7 @@ class TooltipHandlers:
         pygame.draw.rect(self.screen, (120, 90, 50), (tx, ty, tw, th), 1, border_radius=3)
         self.screen.blit(t_surf, (tx + PAD, ty + PAD))
         for i, r in enumerate(rendered):
-            y = ty + PAD + self.font_md.get_height() + 4 + i * LINE_H
+            y = ty + PAD + self.font_md.get_height() + self._u(4) + i * LINE_H
             if r[0] == "two":
                 self.screen.blit(r[1], (tx + PAD, y))
                 self.screen.blit(r[2], (tx + tw - PAD - r[2].get_width(), y))

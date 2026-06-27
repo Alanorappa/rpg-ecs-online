@@ -95,7 +95,6 @@ class SpellCompletionMixin:
                 "picada_escorpiao": self._server_picada_escorpiao,
                 "flecha_reiterada": self._server_flecha_reiterada,
                 "tiro_repulsivo":   self._server_tiro_repulsivo,
-                "tiro_multiplo":    self._server_tiro_multiplo,
                 "cancao_ninar":     self._server_cancao_ninar,
                 "cancao_inspiracao":self._server_cancao_inspiracao,
                 "so_um_gole":       self._server_so_um_gole,
@@ -103,11 +102,21 @@ class SpellCompletionMixin:
                 "recarregar":       self._server_recarregar,
             }
             from server.spell_debug_log import splog as _splog2
-            if spell_id in _PROJECTILE_SPELLS:
+            _tiro_multiplo_targets: list = []
+            _remaining = 1
+            if spell_id == "tiro_multiplo":
+                # Múltiplos alvos, não um target_id fixo: cada alvo selecionado no cone
+                # recebe sua PRÓPRIA flecha (1 entrada em _spells_in_flight_queue cada),
+                # resolvida individualmente por PROJECTILE_HIT_CS — igual ao projeto
+                # offline (flecha física por alvo, não dano instantâneo de área). Ver
+                # arquitetura/PROBLEMAS_ARQUITETURA.md.
+                _tiro_multiplo_targets = self._complete_tiro_multiplo_cast(player_eid, entry)
+                _splog2(f"COMPLETION tiro_multiplo player={player_eid} "
+                        f"targets={_tiro_multiplo_targets} → em voo")
+            elif spell_id in _PROJECTILE_SPELLS:
                 import time as _t_if
                 # Flecha Reiterada: cada flecha manda PROJECTILE_HIT_CS individualmente.
                 # Calcula quantas flechas esperar (inclui talento Sequência Final).
-                _remaining = 1
                 if spell_id == "flecha_reiterada":
                     from skill_config import SKILL_CATALOG as _SC_fr_cnt
                     _fr_cnt_p   = _SC_fr_cnt.get("flecha_reiterada", {}).get("params", {})
@@ -139,26 +148,15 @@ class SpellCompletionMixin:
                     "remaining_hits": _remaining,
                 })
                 _splog2(f"COMPLETION {spell_id} player={player_eid} target={target_id} → em voo")
-                # Notifica outros players via STATS_UPDATE com proj_incoming para que
-                # criem o projétil visual. Inclui alvo para saber onde ele vai:
-                # - PvP (target = player): proj_target = player_eid
-                # - PvE (target = mob):   proj_target = mob_server_eid
-                from components import CharacterStats as _CHS_proj
-                for _other_eid in list(self._player_eids.values()):
-                    if _other_eid == player_eid:
-                        continue  # o caster já cria localmente
-                    _vch_p = self.world.get_component(_other_eid, _CHS_proj)
-                    _proj_xp_entry = {
-                        "player_eid":    _other_eid,
-                        "xp": 0, "mob_eid": -1,
-                        "rage": _vch_p.rage if _vch_p else 0,
-                        "proj_incoming": spell_id,
-                        "proj_caster":   player_eid,
-                        "proj_target":   target_id,
-                    }
-                    if spell_id == "flecha_reiterada":
-                        _proj_xp_entry["proj_arrow_count"] = _remaining
-                    self._pending_xp_deliveries.append(_proj_xp_entry)
+                # Notificação de espectador (projétil cosmético) NÃO é mais enviada aqui —
+                # vai junto do SKILL_EFFECT{event:"launch"} abaixo, que já é broadcast
+                # AOI corretamente (raio de distância automático) para QUALQUER skill,
+                # sem precisar de um canal/loop manual paralelo por feature. Antes havia
+                # um loop aqui sobre TODOS os players conectados (sem filtro de AOI) +
+                # uma allowlist de campos em session.py que cada skill nova precisava
+                # lembrar de estender — causa raiz do bug "flecha não aparece pro
+                # remoto" (Tiro Múltiplo) e da categoria inteira de bugs parecidos. Ver
+                # arquitetura/PROBLEMAS_ARQUITETURA.md.
             else:
                 fn = _dispatch.get(spell_id)
                 _tcs_pre = self.world.get_component(target_id, _CS)
@@ -245,6 +243,9 @@ class SpellCompletionMixin:
             # Flecha Reiterada: envia n_arrows para cliente criar flechas corretas
             if spell_id == "flecha_reiterada":
                 skill_entry["arrow_count"] = _remaining
+            # Tiro Múltiplo: lista de alvos (1 flecha cada) — não um único target_id
+            if spell_id == "tiro_multiplo":
+                skill_entry["projectile_targets"] = _tiro_multiplo_targets
 
             # Chama Interna: sincroniza proc ao cliente via SKILL_RESULT
             if char and getattr(char, "fire_instant_ready", False):
@@ -257,13 +258,22 @@ class SpellCompletionMixin:
             _caster_tm_sfx = self.world.get_component(player_eid, _TM_sfx)
             _sfx_tx = _caster_tm_sfx.current_tile_x if _caster_tm_sfx else 0
             _sfx_ty = _caster_tm_sfx.current_tile_y if _caster_tm_sfx else 0
-            if spell_id in _PROJECTILE_SPELLS:
-                # Projétil foi ao ar: launch event (impact chegará via PROJECTILE_HIT_CS)
-                self._skill_effects_this_tick.append({
+            if spell_id in _PROJECTILE_SPELLS or spell_id == "tiro_multiplo":
+                # Projétil(eis) foram ao ar: launch event (impact chegará via PROJECTILE_HIT_CS).
+                # Broadcast AOI automático (ver consume_skill_effects em session.py) — também
+                # é o evento que o cliente usa para criar o projétil cosmético de espectador
+                # (client/network_handlers.py::_handle_msg_skill_effect), sem precisar de
+                # nenhum canal/loop manual paralelo por skill.
+                _launch_evt = {
                     "sid": spell_id, "event": "launch",
                     "caster_eid": player_eid, "tx": _sfx_tx, "ty": _sfx_ty,
                     "target_eid": target_id,
-                })
+                }
+                if spell_id == "tiro_multiplo":
+                    _launch_evt["target_eids"] = _tiro_multiplo_targets
+                elif spell_id == "flecha_reiterada":
+                    _launch_evt["arrow_count"] = _remaining
+                self._skill_effects_this_tick.append(_launch_evt)
             else:
                 # Spell resolve imediatamente: impact (ou miss se sem resultados)
                 _sfx_event = "impact" if results else "miss"
@@ -338,6 +348,7 @@ class SpellCompletionMixin:
             "flecha_reiterada": self._server_flecha_reiterada,
             "picada_escorpiao": self._server_picada_escorpiao,
             "tiro_repulsivo":   self._server_tiro_repulsivo,
+            "tiro_multiplo":    self._server_tiro_multiplo_hit,
         }
         fn = _dispatch.get(spell_id)
         if not fn:
@@ -744,7 +755,7 @@ class SpellCompletionMixin:
                 apply_effect(self.world, player_eid, "elemental_lapse", 5.0, 0)
                 from components import Modifier
                 from stat_fns import add_timed_modifier
-                add_timed_modifier(player_cs, Modifier("crit_rating", _lapse, "flat"), 5.0, "lapso_elemental")
+                add_timed_modifier(player_cs, Modifier("crit_rating", _lapse, "flat", source="buff"), 5.0, "lapso_elemental")
                 # Notifica o cliente para aplicar o modificador visual e mostrar PROC
                 self._proj_spell_result["lapso_proc"] = {"bonus": _lapse, "duration": 5.0}
 
@@ -1243,36 +1254,44 @@ class SpellCompletionMixin:
             if _kb_cs:
                 _kb_cs.attack_cooldown_timer = max(_kb_cs.attack_cooldown_timer, _duration)
 
-    def _server_tiro_multiplo(self, player_eid: int, target_id: int, entry: dict) -> None:
-        from skill_config import SKILL_CATALOG as _SC
-        from components import TileMovement, CombatStats
+    def _complete_tiro_multiplo_cast(self, player_eid: int, entry: dict) -> list:
+        """Ao concluir o canal: seleciona os alvos no cone de visão (mesmo cálculo
+        de ângulo/range de antes) e enfileira 1 flecha por alvo em
+        _spells_in_flight_queue — cada uma só aplica dano quando o cliente
+        confirma a colisão via PROJECTILE_HIT_CS (_server_tiro_multiplo_hit),
+        igual a Flecha Reiterada/Tiro Repulsivo. Antes, o dano de TODOS os
+        alvos no cone era aplicado aqui mesmo, instantaneamente — sem flechas
+        individuais, diferente da mecânica real (1 flecha por alvo, projeto
+        offline) — ver arquitetura/PROBLEMAS_ARQUITETURA.md.
+
+        Retorna a lista de target_ids selecionados (1 flecha cada)."""
+        import time as _t_tm
         import math
+        from skill_config import SKILL_CATALOG as _SC
+        from components import TileMovement, CombatStats, Equipment
         params     = _SC.get("tiro_multiplo", {}).get("params", {})
-        ap_mult    = params.get("ap_multiplier",   3.0)
         half_angle = params.get("cone_half_angle", 45.0)
         range_t    = params.get("range_tiles",     12)
         attacker_cs= self.world.get_component(player_eid, CombatStats)
-        max_tgts   = getattr(attacker_cs, "tiro_multiplo_targets", 99) if attacker_cs else 99
+        max_tgts   = getattr(attacker_cs, "tiro_multiplo_targets", 0) if attacker_cs else 0
 
         p_tm = self.world.get_component(player_eid, TileMovement)
-        if not p_tm:
-            return
+        if not p_tm or max_tgts <= 0:
+            return []
 
         dir_x = entry.get("dir_x", 0.0)
         dir_y = entry.get("dir_y", 0.0)
         dlen  = math.hypot(dir_x, dir_y)
         if dlen < 0.001:
-            return
+            return []
         dir_x /= dlen
         dir_y /= dlen
 
         half_rad = math.radians(half_angle)
         cos_half = math.cos(half_rad)
 
-        targets_hit = 0
-        for eid in list(self._combat_targets(exclude_eid=player_eid)):
-            if targets_hit >= max_tgts:
-                break
+        candidates = []
+        for eid in self._combat_targets(exclude_eid=player_eid):
             t_tm = self.world.get_component(eid, TileMovement)
             t_cs = self.world.get_component(eid, CombatStats)
             if not t_tm or not t_cs or t_cs.current_hp <= 0:
@@ -1285,9 +1304,45 @@ class SpellCompletionMixin:
             cos_angle = (dx * dir_x + dy * dir_y) / dist
             if cos_angle < cos_half:
                 continue
-            self._server_apply_ranged_physical(player_eid, eid, ap_mult,
-                                               guaranteed_hit=True)
-            targets_hit += 1
+            candidates.append((dist, eid))
+
+        if not candidates:
+            return []
+        candidates.sort(key=lambda t: t[0])
+        if max_tgts < 99:
+            candidates = candidates[:max_tgts]
+
+        # Limita pelas flechas disponíveis na aljava — cada acerto confirmado
+        # consome 1 (_server_apply_ranged_physical, igual Flecha Reiterada).
+        # Sem este cap, um cone com mais alvos do que flechas geraria acertos
+        # "de graça" além da munição real.
+        equip  = self.world.get_component(player_eid, Equipment)
+        quiver = equip.slots.get("offhand") if equip else None
+        arrows = getattr(quiver, "arrow_count", 0) if quiver else 0
+        candidates = candidates[:arrows]
+
+        targets = [eid for _, eid in candidates]
+        for t_eid in targets:
+            self._spells_in_flight_queue.append({
+                "player_eid":     player_eid,
+                "spell_id":       "tiro_multiplo",
+                "target_id":      t_eid,
+                "entry":          entry,
+                "expires_at":     _t_tm.time() + 3.0,
+                "remaining_hits": 1,
+            })
+        return targets
+
+    def _server_tiro_multiplo_hit(self, player_eid: int, target_id: int, entry: dict) -> None:
+        """1 flecha de Tiro Múltiplo acertando seu alvo — chamada uma vez por
+        PROJECTILE_HIT_CS (1 por alvo selecionado em _complete_tiro_multiplo_cast)."""
+        from skill_config import SKILL_CATALOG as _SC
+        params  = _SC.get("tiro_multiplo", {}).get("params", {})
+        ap_mult = params.get("ap_multiplier", 3.0)
+        if target_id == -1:
+            return
+        self._server_apply_ranged_physical(player_eid, target_id, ap_mult,
+                                           guaranteed_hit=True)
 
     def _server_cancao_ninar(self, player_eid: int, target_id: int, entry: dict) -> None:
         """Cast completo: o sono continua normalmente (já aplicado no início do
@@ -1307,7 +1362,7 @@ class SpellCompletionMixin:
         duration = params.get("duration",     20.0)
         cs = self.world.get_component(player_eid, CombatStats)
         if cs:
-            mod = Modifier("attack_power", ap_pct, "percentage")
+            mod = Modifier("attack_power", ap_pct, "percentage", source="buff")
             add_timed_modifier(cs, mod, duration, label="cancao_inspiracao")
 
     def _server_so_um_gole(self, player_eid: int, target_id: int, entry: dict) -> None:
@@ -1321,7 +1376,7 @@ class SpellCompletionMixin:
         if cs:
             cs.concentration_free       = True
             cs.concentration_free_timer = duration
-            mod = Modifier("acerto", acerto_bns, "flat")
+            mod = Modifier("acerto", acerto_bns, "flat", source="buff")
             add_timed_modifier(cs, mod, duration, label="so_um_gole")
 
     def _server_camuflagem(self, player_eid: int, target_id: int, entry: dict) -> None:

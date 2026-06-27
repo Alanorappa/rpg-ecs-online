@@ -11,21 +11,23 @@ from talent_data import BUILDS, TALENTS, BUILD_TALENTS
 from combat_log import LOG
 from save_system import request_autosave
 from stat_fns import add_modifier, remove_modifier
+from ui_scale_mixin import UIScaleMixin
+from ui_sizes import UI
 
 
 # ---------------------------------------------------------------------------
-# Constantes de UI
+# Constantes de UI — valores em ui_sizes.py (UI.TALENTS_*)
 # ---------------------------------------------------------------------------
-PANEL_W       = 800
-PANEL_H       = 640
-NODE_W        = 64
-NODE_H        = 64
-NODE_COL_GAP  = 96    # distância centro-a-centro horizontal
-NODE_ROW_GAP  = 90    # distância centro-a-centro vertical
-GRID_ORIGIN_X = 60    # margem esquerda dentro do painel
-GRID_ORIGIN_Y = 70    # margem superior dentro do painel
+PANEL_W       = UI.TALENTS_W
+PANEL_H       = UI.TALENTS_H
+NODE_W        = UI.TALENTS_NODE_W
+NODE_H        = UI.TALENTS_NODE_H
+NODE_COL_GAP  = UI.TALENTS_NODE_COL_GAP    # distância centro-a-centro horizontal
+NODE_ROW_GAP  = UI.TALENTS_NODE_ROW_GAP    # distância centro-a-centro vertical
+GRID_ORIGIN_X = UI.TALENTS_GRID_ORIGIN_X   # margem esquerda dentro do painel
+GRID_ORIGIN_Y = UI.TALENTS_GRID_ORIGIN_Y   # margem superior dentro do painel
 
-TOOLTIP_W     = 320   # largura do tooltip flutuante
+TOOLTIP_W     = UI.TALENTS_TOOLTIP_W   # largura do tooltip flutuante
 
 # Cores
 C_BG         = (14, 10, 6, 230)
@@ -44,19 +46,26 @@ C_CONNECT_OK = (100, 170, 70)
 C_LOCKED_TXT = (75, 65, 48)
 
 
-class TalentSystem:
+class TalentSystem(UIScaleMixin):
     """Gerencia a UI e a lógica de alocação da árvore de talentos."""
 
+    _FONT_BASES = {
+        "font_lg": 26,
+        "font_md": 20,
+        "font_sm": 17,
+        "font_tip_title": 28,
+        "font_tip_body": 22,
+    }
+
     def __init__(self, world, player_entity_id: int, screen: pygame.Surface):
+        super().__init__()
         self.world       = world
         self.player_id   = player_entity_id
         self.screen      = screen
-        self.font_lg     = _font(26)   # cabeçalho do painel
-        self.font_md     = _font(20)   # subheader e textos de nó
-        self.font_sm     = _font(17)   # contador/estrela nos nós (espaço pequeno)
-        # Fontes de tooltip — mesma escala do tooltip de itens
-        self.font_tip_title = _font(28)
-        self.font_tip_body  = _font(22)
+        # font_lg: cabeçalho do painel | font_md: subheader e textos de nó
+        # font_sm: contador/estrela nos nós (espaço pequeno)
+        # font_tip_title/font_tip_body: tooltip — mesma escala do tooltip de itens
+        # (todas criadas/escaladas por UIScaleMixin.set_ui_scale via _FONT_BASES)
         self._hovered_id: str | None = None
         self.wants_close: bool = False
         # Callback chamado quando talento é alocado/desalocado/resetado
@@ -71,20 +80,22 @@ class TalentSystem:
         return self.world.get_component(self.player_id, TalentTree)
 
     def _panel_rect(self) -> pygame.Rect:
-        sw, sh = self.screen.get_size()
-        return pygame.Rect((sw - PANEL_W) // 2, (sh - PANEL_H) // 2, PANEL_W, PANEL_H)
+        x0, y0 = self._safe_panel_origin(PANEL_W, PANEL_H)
+        x0, y0 = x0 + UI.TALENTS_OFFSET_X, y0 + UI.TALENTS_OFFSET_Y
+        pw, ph = self._u(PANEL_W), self._u(PANEL_H)
+        return pygame.Rect(x0, y0, pw, ph)
 
     def _node_rect(self, panel: pygame.Rect, talent_id: str) -> pygame.Rect:
         t = TALENTS[talent_id]
-        x = panel.x + GRID_ORIGIN_X + t["col"] * NODE_COL_GAP
-        y = panel.y + GRID_ORIGIN_Y + t["row"] * NODE_ROW_GAP
-        return pygame.Rect(x, y, NODE_W, NODE_H)
+        x = panel.x + self._u(GRID_ORIGIN_X) + t["col"] * self._u(NODE_COL_GAP)
+        y = panel.y + self._u(GRID_ORIGIN_Y) + t["row"] * self._u(NODE_ROW_GAP)
+        return pygame.Rect(x, y, self._u(NODE_W), self._u(NODE_H))
 
     def _close_btn_rect(self, panel: pygame.Rect) -> pygame.Rect:
-        return pygame.Rect(panel.right - 34, panel.y + 4, 30, 30)
+        return pygame.Rect(panel.right - self._u(34), panel.y + self._u(4), self._u(30), self._u(30))
 
     def _reset_btn_rect(self, panel: pygame.Rect) -> pygame.Rect:
-        return pygame.Rect(panel.right - 130, panel.y + 8, 90, 22)
+        return pygame.Rect(panel.right - self._u(130), panel.y + self._u(8), self._u(90), self._u(22))
 
     # -----------------------------------------------------------------------
     # Lógica de alocação
@@ -170,6 +181,13 @@ class TalentSystem:
         if char:
             correct_build = CLASS_BUILD_MAP.get(char.class_id, "cavaleiro")
             if tt.chosen_build != correct_build:
+                # Reembolsa os pontos ANTES de limpar — bug real: isso fazia só
+                # tt.allocated.clear() sem devolver nada a available_points,
+                # destruindo pontos permanentemente sempre que chosen_build não
+                # batia com a build da classe (ex: talents_json salvo sem o
+                # campo "chosen_build" — ver validate_talent_allocation,
+                # arquitetura/PROBLEMAS_ARQUITETURA.md).
+                tt.available_points += sum(tt.allocated.values())
                 tt.allocated.clear()       # talentos da build errada são inválidos
                 tt.chosen_build = correct_build
 
@@ -207,7 +225,7 @@ class TalentSystem:
                 continue
             for eff in (t["effects"] or []):
                 total_value = eff["value"] * points
-                mod = Modifier(eff["attribute"], total_value, eff["type"])
+                mod = Modifier(eff["attribute"], total_value, eff["type"], source="talent")
                 add_modifier(cs, mod)
                 tt._applied_modifiers.append(mod)
             # Habilidade desbloqueada quando atinge unlock_at (padrão = max_points)
@@ -330,12 +348,12 @@ class TalentSystem:
 
         # Cabeçalho
         title = self.font_lg.render(f"Talentos — {build['name']}", True, C_TITLE)
-        self.screen.blit(title, (panel.x + 14, panel.y + 10))
+        self.screen.blit(title, (panel.x + self._u(14), panel.y + self._u(10)))
 
         pts_col  = C_GOLD if tt.available_points > 0 else C_GRAY
         pts_surf = self.font_md.render(
             f"Pontos disponíveis: {tt.available_points}", True, pts_col)
-        self.screen.blit(pts_surf, (panel.x + 14, panel.y + 36))
+        self.screen.blit(pts_surf, (panel.x + self._u(14), panel.y + self._u(36)))
 
         # Botão Resetar
         self._draw_button(self._reset_btn_rect(panel), "Resetar",
@@ -392,8 +410,9 @@ class TalentSystem:
         # ── Ícone representativo (rect colorido proporcional ao progresso) ──
         if current > 0:
             fill_ratio = current / t["max_points"]
-            ico_h = int((NODE_H - 8) * fill_ratio)
-            ico_r = pygame.Rect(r.x + 4, r.bottom - 4 - ico_h, NODE_W - 8, ico_h)
+            ico_h = int((self._u(NODE_H) - self._u(8)) * fill_ratio)
+            ico_r = pygame.Rect(r.x + self._u(4), r.bottom - self._u(4) - ico_h,
+                                self._u(NODE_W) - self._u(8), ico_h)
             ico_col = C_MAXED if maxed else (60, 120, 200)
             ico_surf = pygame.Surface((ico_r.w, ico_r.h), pygame.SRCALPHA)
             ico_surf.fill((*ico_col, 80))
@@ -410,14 +429,14 @@ class TalentSystem:
         counter_txt = f"{current}/{t['max_points']}"
         counter_col = C_MAXED if maxed else (C_GRAY if locked else C_WHITE)
         ctr_surf    = self.font_sm.render(counter_txt, True, counter_col)
-        self.screen.blit(ctr_surf, (r.right - ctr_surf.get_width() - 3, r.y + 3))
+        self.screen.blit(ctr_surf, (r.right - ctr_surf.get_width() - self._u(3), r.y + self._u(3)))
 
         # ── Ícone de habilidade desbloqueada (estrela dourada canto inf direito) ──
         if t["unlocks_skill"]:
             star_col = C_GOLD if maxed else (70, 56, 22)
             star_surf = self.font_sm.render("★", True, star_col)
-            self.screen.blit(star_surf, (r.right - star_surf.get_width() - 2,
-                                         r.bottom - star_surf.get_height() - 2))
+            self.screen.blit(star_surf, (r.right - star_surf.get_width() - self._u(2),
+                                         r.bottom - star_surf.get_height() - self._u(2)))
 
         # ── Borda ──
         if maxed:
@@ -443,12 +462,14 @@ class TalentSystem:
         mx, my  = pygame.mouse.get_pos()
         node_r  = self._node_rect(panel, talent_id)
 
+        tooltip_w = self._u(TOOLTIP_W)
+
         # Monta linhas do tooltip
         lines: list[tuple[str, tuple]] = []
 
         # Descrição com valor vivo substituído
         desc = self._live_description(talent_id, current, tt)
-        for line in self._wrap_text(desc, TOOLTIP_W - 16, self.font_tip_body):
+        for line in self._wrap_text(desc, tooltip_w - self._u(16), self.font_tip_body):
             lines.append((line, C_WHITE))
 
         lines.append(("", C_GRAY))  # espaço
@@ -481,7 +502,7 @@ class TalentSystem:
             unlocked = current >= t["max_points"]
             hdr_col  = C_GOLD if unlocked else C_GRAY
             lines.append((f"★ {sd['name']}", hdr_col))
-            for line in self._wrap_text(sd["description"], TOOLTIP_W - 24, self.font_tip_body):
+            for line in self._wrap_text(sd["description"], tooltip_w - self._u(24), self.font_tip_body):
                 lines.append((f"  {line}", C_WHITE if unlocked else (90, 80, 60)))
             if sd["cooldown"] > 0:
                 lines.append((f"  Recarga: {sd['cooldown']:.0f}s", C_GRAY))
@@ -510,20 +531,20 @@ class TalentSystem:
         # Mede altura necessária — dinâmico com base nas fontes reais
         line_h  = self.font_tip_body.get_height() + 3
         title_h = self.font_tip_title.get_height() + 6
-        pad = 8
+        pad = self._u(8)
         tooltip_h = title_h + pad + len(lines) * line_h + pad
 
         # Posição: à direita do nó, se couber no painel, senão à esquerda
-        tx = node_r.right + 10
+        tx = node_r.right + self._u(10)
         ty = node_r.y
-        if tx + TOOLTIP_W > panel.right - 5:
-            tx = node_r.left - TOOLTIP_W - 10
-        if ty + tooltip_h > panel.bottom - 5:
-            ty = panel.bottom - tooltip_h - 5
-        ty = max(panel.y + 5, ty)
+        if tx + tooltip_w > panel.right - self._u(5):
+            tx = node_r.left - tooltip_w - self._u(10)
+        if ty + tooltip_h > panel.bottom - self._u(5):
+            ty = panel.bottom - tooltip_h - self._u(5)
+        ty = max(panel.y + self._u(5), ty)
 
         # Fundo
-        bg_r = pygame.Rect(tx, ty, TOOLTIP_W, tooltip_h)
+        bg_r = pygame.Rect(tx, ty, tooltip_w, tooltip_h)
         bg_surf = pygame.Surface((bg_r.w, bg_r.h), pygame.SRCALPHA)
         bg_surf.fill((16, 12, 6, 240))
         self.screen.blit(bg_surf, bg_r.topleft)
@@ -534,18 +555,18 @@ class TalentSystem:
         name_surf = self.font_tip_title.render(t["name"], True, pts_col)
         pts_str   = f"{current}/{t['max_points']}"
         pts_surf  = self.font_tip_body.render(pts_str, True, pts_col)
-        self.screen.blit(name_surf, (tx + pad, ty + pad // 2 + 2))
-        self.screen.blit(pts_surf,  (tx + TOOLTIP_W - pts_surf.get_width() - pad,
-                                     ty + pad // 2 + 4))
+        self.screen.blit(name_surf, (tx + pad, ty + pad // 2 + self._u(2)))
+        self.screen.blit(pts_surf,  (tx + tooltip_w - pts_surf.get_width() - pad,
+                                     ty + pad // 2 + self._u(4)))
 
         pygame.draw.line(self.screen, C_BORDER,
-                         (tx + 4, ty + title_h), (tx + TOOLTIP_W - 4, ty + title_h))
+                         (tx + self._u(4), ty + title_h), (tx + tooltip_w - self._u(4), ty + title_h))
 
         # Linhas
         ly = ty + title_h + pad // 2
         for text, col in lines:
             if text == "":
-                ly += 4
+                ly += self._u(4)
                 continue
             surf = self.font_tip_body.render(text, True, col)
             self.screen.blit(surf, (tx + pad, ly))

@@ -892,7 +892,7 @@ def discover_camouflage_variants() -> list[str]:
     return variants
 
 
-_CAMOUFLAGE_FRAME_MS = 55  # duração de cada frame da animação de correr
+_CAMOUFLAGE_FRAME_MS = 65  # duração de cada frame da animação de correr (-15% de velocidade vs 55ms)
 
 
 def get_camouflage_disguise_frame(variant_suffix: str, moving: bool, anim_time_ms: int):

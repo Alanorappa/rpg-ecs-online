@@ -5,14 +5,29 @@ Adicionar uma nova quest: inserir uma entrada em QUESTS.
 Adicionar um item de quest: inserir uma lambda em QUEST_ITEMS.
 
 Tipos de objetivo (ObjectiveDef.type):
-    kill            Matar N inimigos. target = nome | raça | "*" (qualquer)
-    collect_item    Coletar N de loot_item de target. Drop condicional via loot_chance.
-    reach_tile      Chegar em location=(tx, ty) ou área (x0, y0, x1, y1).
-    use_skill       Usar skill_id N vezes.
-    use_consumable  Usar consumível N vezes. target = nome do item | "*".
-    reach_level     Alcançar o nível count. (target ignorado)
-    talk_to_npc     Interagir com mercador. target = nome | "*".
-    equip_item      Equipar item. target = nome | item_type | "*".
+    kill              Matar N inimigos. target = nome | raça | "*" (qualquer)
+    collect_item      Coletar N de loot_item de target. Drop condicional via loot_chance.
+    reach_tile        Chegar em location=(tx, ty) ou área (x0, y0, x1, y1).
+    use_skill         Usar skill_id N vezes.
+    use_consumable    Usar consumível N vezes. target = nome do item | "*".
+    reach_level       Alcançar o nível count. (target ignorado)
+    talk_to_npc       Interagir com mercador. target = nome | "*".
+    equip_item        Equipar item. target = nome | item_type | "*".
+    use_item_on_target  Usar um item específico (params["item_name"]) sobre um
+                        alvo. target = nome | raça do alvo | "*" (qualquer).
+                        Evento esperado: quest_events.fire("use_item_on_target",
+                        item_name=..., target_name=..., target_race=...).
+
+Adicionar um tipo de objetivo NOVO (que não é só "item usado em alvo"):
+    1. Documentar aqui (acima) e descrever a forma do evento esperado.
+    2. Se o tipo precisar de algum dado extra que os campos comuns (target/
+       count/location) não cobrem, usar `params: dict` em vez de adicionar
+       outro campo nomeado ao ObjectiveDef — ele existe exatamente pra isso,
+       ver exemplo de use_item_on_target acima.
+    3. Adicionar o branch de match em QuestSystem._matches() e o de label em
+       QuestSystem._obj_label() (quest_system.py).
+    4. Disparar quest_events.fire(tipo, **dados) no sistema que detecta a
+       ação (ex: ConsumableSystem, SkillSystem) — ver quest_events.py.
 """
 from __future__ import annotations
 from typing import NamedTuple
@@ -30,6 +45,10 @@ class ObjectiveDef(NamedTuple):
     location:    tuple = ()    # (tx, ty) ou (x0, y0, x1, y1) para reach_tile
     loot_item:   str   = ""    # nome do item a dropar condicionalmente (collect_item)
     loot_chance: float = 1.0   # chance de drop do item condicional (0.0–1.0)
+    params:      dict  = {}    # catch-all pra dados específicos de um tipo novo —
+                               # NUNCA mutar em runtime (default compartilhado entre
+                               # instâncias); só ler. Ex: use_item_on_target usa
+                               # params["item_name"].
 
 
 class QuestReward(NamedTuple):

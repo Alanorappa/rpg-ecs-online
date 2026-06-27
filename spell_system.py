@@ -1472,7 +1472,7 @@ class PlayerProjectileSystem(System):
                 # Aplica bônus de crit como modifier temporário
                 from components import Modifier
                 from stat_fns import add_timed_modifier
-                _mod = Modifier("crit_rating", _lapse_bonus, "flat")
+                _mod = Modifier("crit_rating", _lapse_bonus, "flat", source="buff")
                 add_timed_modifier(attacker_cs, _mod, 5.0, "lapso_elemental")
                 LOG.add("Lapso Elemental! +crit por 5s (auto-burn ativo).", (255, 100, 200))
                 from floating_text import PROC as _PROC2

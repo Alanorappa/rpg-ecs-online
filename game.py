@@ -4,12 +4,13 @@ import math
 import time as _time
 import gc as _gc
 from fonts import make as _font
+from ui_sizes import UI
 
 from world import World
 from components import Position, Tilemap, CombatStats, CharacterStats, PermanentStats, \
                        TileMovement, PlayerAutoMove, CombatState, FogOfWar, Enemy, Visible, \
                        Camera, Renderable, SpellCast, Channeling, IceBlockEffect, AoeTargeting
-from ui_components import UIState, ShopUIState, LootUIState
+from ui_components import UIState, ShopUIState, LootUIState, DragState
 from systems import (
     PlayerInputSystem, TileMovementSystem, RenderSystem, CameraSystem,
     EnemyAISystem, TileRenderSystem, TileValidationSystem,
@@ -52,6 +53,7 @@ from client.hotbar_handlers import HotbarHandlers
 from client.consumable_bar_handlers import ConsumableBarHandlers
 from client.hud_handlers import HudHandlers
 from client.death_ui_handlers import DeathUIHandlers
+from client.modal_stack_handlers import ModalStackHandlers
 from client.colors import C_WHITE, C_YELLOW, C_GREEN, C_RED, C_GRAY, C_CYAN, C_ORANGE
 
 # --- Configurações do Jogo ---
@@ -88,7 +90,7 @@ def _merge_display_matrix(terrain: list[str], objects: list) -> list[str]:
     return result
 
 
-class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, InventoryHandlers, TooltipHandlers, DebugHandlers, MenuHandlers, HotbarEditorHandlers, HabilidadesHandlers, OnlineModeHandlers, HotbarHandlers, ConsumableBarHandlers, HudHandlers, DeathUIHandlers):
+class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, InventoryHandlers, TooltipHandlers, DebugHandlers, MenuHandlers, HotbarEditorHandlers, HabilidadesHandlers, OnlineModeHandlers, HotbarHandlers, ConsumableBarHandlers, HudHandlers, DeathUIHandlers, ModalStackHandlers):
     def __init__(self, scale: float = 1.0, char_data: "dict | None" = None,
                  save_slot: int = 0,
                  net_user: str = "", net_pass: str = "",
@@ -117,8 +119,6 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._pending_loot_redirect: dict[tuple[int, int], tuple[int, int]] = {}
         # Timers de passo para players remotos (server_eid → tempo restante)
         self._remote_step_timers:  dict[int, float]         = {}
-        # Snapshot de stats para detecção de mudanças e envio de PLAYER_STAT_SYNC
-        self._combat_stat_snapshot: dict = {}
         # Snapshot de equipamento para detecção de mudanças e envio de EQUIP_SYNC
         self._equip_snapshot: dict = {}
         self._mob_move_queues:         dict[int, list] = {}  # server_eid → [(tx,ty,is_dash)...]
@@ -188,6 +188,13 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         ])
 
         self._ui_scale: float = _cfg_data.get("ui_scale", 1.0)
+        # Override temporário de escala — cada painel modal calcula, no início do
+        # seu próprio _draw_*/_handle_*_click, a escala MÁXIMA que ainda cabe na
+        # janela atual (min(_ui_scale, tela/tamanho_base_do_painel)) e guarda aqui
+        # antes de chamar self._u(). Sem isso, _ui_scale alto + janela pequena
+        # produzia modais maiores que a própria tela (ver PROBLEMAS_ARQUITETURA.md
+        # item IU4 — regressão pós-fix original).
+        self._u_scale_override: "float | None" = None
         self._reload_ui_fonts()
 
         self.world = World()
@@ -196,6 +203,12 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._show_debug      = False
         self._debug_buttons: list = []      # [(rect, n_levels)] preenchido em _draw_debug_modal
         self._debug_tab: str = "nivel"      # "nivel" | "itens" | "ouro" | "mapa"
+        # Atributos brutos/ratings de combate no HUD permanente — desligado
+        # por padrão (redundante com a aba Estatísticas do Inventário, só
+        # poluía o HUD); liga na aba Nivel do debug (F12) quando precisar
+        # verificar item/efeito/talento batendo nos stats.
+        self._hud_show_debug_stats: bool = False
+        self._debug_hud_toggle_r: "pygame.Rect | None" = None
         self._debug_item_scroll: int = 0
         self._debug_item_buttons: list = []
         self._debug_gold_buttons: list = []
@@ -235,19 +248,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._hbe_expand_slots: bool = False
         self._show_habilidades: bool = False     # painel Habilidades (tecla H)
         self._hab_scroll: int = 0               # scroll do painel Habilidades
-        self._hab_drag_skill: "str | None" = None  # skill sendo arrastada do painel H
-        self._inv_drag_item:  "str | None" = None  # nome do item sendo arrastado do inventário
         self._ui_events:      list = []            # eventos do frame atual (para _draw_* sem parâmetro)
-        # Drag da hotbar (reordenar / remover com Shift)
-        self._hotbar_drag_idx:    "int | None"   = None
-        self._hb_drag_shift:      bool           = False
-        self._hb_drag_start_pos:  "tuple | None" = None
-        self._hb_drag_active:     bool           = False
-        # Drag da barra de consumíveis (remover com Shift — mesmo padrão da hotbar)
-        self._cbar_drag_idx:      "int | None"   = None
-        self._cbar_drag_shift:    bool           = False
-        self._cbar_drag_start_pos: "tuple | None" = None
-        self._cbar_drag_active:   bool           = False
         self._orig_mouse_pos  = pygame.mouse.get_pos  # kept for compatibility
         # Zonas de ambient
         self._ambient_zones:    list = []   # [{name, ambient, rect:(x1,y1,x2,y2)}]
@@ -255,7 +256,9 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._current_zone:     str  = ""   # nome da zona onde o jogador está
 
         self._map_overlay   = MapOverlay(self.screen)
+        self._map_overlay.set_ui_scale(self._ui_scale)
         self._minimap       = Minimap(self.screen, self._map_overlay)
+        self._minimap.set_ui_scale(self._ui_scale)
         self._loading_save        = False
         # Loading screen: exibida até LOGIN_OK chegar E tempo mínimo decorrer.
         # _server_ready: True quando LOGIN_OK (ou erro) é recebido.
@@ -296,6 +299,14 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             self.world, self.player_entity, self.screen,
             quest_dialog=self._quest_dialog,
         )
+        # Empurra a escala de UI atual pra todos os sistemas de painel que
+        # vivem fora de GameEngine — eles não têm acesso a self._u()/
+        # self.font_* direto, então precisam de set_ui_scale() explícito
+        # (ver ui_scale_mixin.py e arquitetura/PROBLEMAS_ARQUITETURA.md, IU3).
+        for _sys in (self._talent_system, self._shop_system, self._quest_system,
+                     self._quest_dialog, self._quest_journal,
+                     self._crafting_system, self._trainer_system):
+            _sys.set_ui_scale(self._ui_scale)
         # Insere QuestSystem após xp_system (posição 13, depois do índice de xp_system)
         _xp_idx = next((i for i, s in enumerate(self.systems)
                         if isinstance(s, XPSystem)), len(self.systems))
@@ -382,8 +393,6 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._shop_system._net = self._net
         # LootSystem: envia só a consequência da ação (gold ou inventário), não o state completo
         self._loot_system._on_loot_collected = self._on_loot_action
-        # CombatStateSystem: notifica servidor quando proc de item escala HP
-        self._combat_state_sys._on_proc_hp_change = self._send_proc_hp_sync
         # AoeTargetingSystem: envia CAST_SKILL com coordenadas ao confirmar posição AOE
         self._aoe_targeting_system._net = self._net
         # PlayerInputSystem: auto-attack ranged do arqueiro vira 100% server-driven
@@ -553,6 +562,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         xp_system             = XPSystem(self.world, death_handler)
         skill_system          = SkillSystem(self.world, self.player_entity, self.screen)
         loot_system           = LootSystem(self.world, self.screen, self.player_entity)
+        loot_system.set_ui_scale(self._ui_scale)
         projectile_system     = ProjectileSystem(self.world, self.screen)
         render_system         = RenderSystem(self.world, self.screen)
         tile_render_system    = TileRenderSystem(self.world, self.screen)
@@ -791,6 +801,9 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
     def _get_loot_ui(self) -> "LootUIState | None":
         return self.world.get_component(self.player_entity, LootUIState)
 
+    def _get_drag(self) -> "DragState | None":
+        return self.world.get_component(self.player_entity, DragState)
+
     @property
     def _zoom(self) -> float:
         if not hasattr(self, 'camera_entity'):
@@ -839,7 +852,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
     # ------------------------------------------------------------------
     # ── UI Scale — fontes e helper de pixel ───────────────────────────────────
 
-    _UI_FONT_BASES = {"xs": 18, "sm": 22, "md": 28, "lg": 36}
+    _UI_FONT_BASES = {"xs": UI.FONT_XS, "sm": UI.FONT_SM, "md": UI.FONT_MD, "lg": UI.FONT_LG}
 
     def _reload_ui_fonts(self) -> None:
         """Recarrega font_xs/sm/md/lg no tamanho escalado. Chamado na init e ao mudar ui_scale."""
@@ -850,79 +863,89 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self.font_lg = _font(round(self._UI_FONT_BASES["lg"] * s))
 
     def _u(self, px: int) -> int:
-        """Converte pixels base para pixels escalados pela UI scale."""
-        return max(1, round(px * self._ui_scale))
+        """Converte pixels base para pixels escalados pela UI scale (ou pelo
+        override de painel ativo — ver _set_panel_scale)."""
+        s = self._u_scale_override if self._u_scale_override is not None else self._ui_scale
+        return max(1, round(px * s))
+
+    def _set_panel_scale(self, design_w: int, design_h: int, margin: int = 20,
+                         margin_h: "int | None" = None) -> None:
+        """Chamado no início de cada _draw_*/_handle_*_click de painel modal,
+        ANTES de qualquer self._u(). design_w/design_h = tamanho do painel em
+        pixels base (escala 1.0) — os mesmos valores passados pro primeiro
+        self._u(PW)/self._u(PH) daquele painel. Limita a escala efetiva pra
+        garantir que o painel nunca fique maior que a janela atual, mesmo com
+        ui_scale alto numa resolução pequena. Draw e click-handler do mesmo
+        painel devem chamar isso com os MESMOS design_w/design_h pra garantir
+        que o hit-test bata com o que foi desenhado.
+
+        margin = reserva HORIZONTAL (largura); margin_h = reserva VERTICAL
+        (altura), default None = usa margin também (comportamento simétrico
+        antigo). Separar os dois importa pra quem passa uma reserva grande
+        só de largura (ex: _safe_panel_origin reservando HUD/minimapa nas
+        laterais) — aplicar essa mesma reserva na ALTURA por engano fazia
+        (tela_h - margin) ficar negativo numa tela 1280×720 (720 < ~775 de
+        reserva), o que colapsava a escala efetiva pra negativa e, por causa
+        do max(1, ...) em _u(), TODA geometria virava 1px — paineis sem caixa
+        visível, só texto amontoado (bug real, visto em produção)."""
+        mh = margin if margin_h is None else margin_h
+        self._u_scale_override = max(0.15, min(
+            self._ui_scale,
+            (self.screen.get_width()  - margin) / design_w,
+            (self.screen.get_height() - mh)     / design_h,
+        ))
+
+    # Largura reservada pro HUD (canto superior esquerdo) e pro minimapa
+    # (canto superior direito) — painéis centralizados não podem invadir
+    # essas zonas. Bases em pixel escala 1.0. HUD_SAFE_W=360 cobre a linha
+    # mais larga do HUD (status de atributos "FOR:.. INT:.. AGI:.. VIT:..
+    # DEF:.."), não só o bloco de barras — estimativa generosa, não medida
+    # dinamicamente a partir do texto renderizado. Minimapa = Minimap.SIZE
+    # (220) + MARGIN_RIGHT (10) + folga.
+    _HUD_SAFE_W     = UI.HUD_SAFE_W
+    _MINIMAP_SAFE_W = UI.MINIMAP_SAFE_W
+
+    def _safe_panel_origin(self, design_w: int, design_h: int, margin: int = 20) -> "tuple[int, int]":
+        """Como (SW-pw)//2 tradicional, mas centraliza o painel na área LIVRE
+        da tela — excluindo as zonas reservadas pro HUD/minimapa — em vez da
+        tela inteira. Chama _set_panel_scale() internamente (mesmo contrato:
+        design_w/design_h = tamanho do painel em pixels base). A reserva
+        escala junto com ui_scale (o HUD/minimapa também crescem com a
+        escala), senão a zona livre ficaria subestimada em ui_scale alto."""
+        reserved_w = self._HUD_SAFE_W + self._MINIMAP_SAFE_W + margin
+        self._set_panel_scale(design_w, design_h,
+                              margin=round(reserved_w * self._ui_scale),
+                              margin_h=round(margin * self._ui_scale))
+        SW, SH = self.screen.get_width(), self.screen.get_height()
+        pw, ph = self._u(design_w), self._u(design_h)
+        left   = self._u(self._HUD_SAFE_W)
+        right  = self._u(self._MINIMAP_SAFE_W)
+        safe_w = max(pw, SW - left - right)
+        x0 = left + (safe_w - pw) // 2
+        y0 = (SH - ph) // 2
+        return x0, y0
 
     def _set_ui_scale(self, value: float) -> None:
         """Altera ui_scale, recarrega fontes e salva no config."""
         self._ui_scale = round(max(0.5, min(3.0, value)), 2)
         self._reload_ui_fonts()
+        # Sistemas de painel fora de GameEngine (BlacksmithSystem, TrainerSystem,
+        # ShopSystem, QuestSystem/QuestDialogSystem/QuestJournalSystem,
+        # LootSystem, TalentSystem, MapOverlay) têm suas próprias fontes — não
+        # reagem a _reload_ui_fonts(), precisam do push explícito abaixo.
+        for _sys in (self._talent_system, self._shop_system, self._quest_system,
+                     self._quest_dialog, self._quest_journal,
+                     self._crafting_system, self._trainer_system,
+                     self._loot_system, self._map_overlay, self._minimap):
+            _sys.set_ui_scale(self._ui_scale)
         import config as _cfg
         _cfg.save({"ui_scale": self._ui_scale})
 
     # ------------------------------------------------------------------
     # ── Fechamento de modais — ESC unificado ─────────────────────────────────
-
-    def _close_top_modal(self) -> bool:
-        """Fecha o modal de maior prioridade atualmente aberto.
-        Retorna True se fechou algo, False se nada estava aberto."""
-        # Rebind ativo no editor de atalhos — cancela só o rebind, não fecha o painel
-        if self._mkb_rebind is not None:
-            self._mkb_rebind = None
-            return True
-        # Painel de Habilidades
-        if self._show_habilidades:
-            self._show_habilidades = False
-            self._hab_drag_skill   = None
-            return True
-        if self._map_overlay.is_open:
-            SOUNDS.play_ui("map_close")
-            self._map_overlay.is_open = False
-            return True
-        if self._loot_system.open_corpse_id != -1:
-            self._loot_system._close_modal()
-            return True
-        if self._crafting_system.is_open:
-            self._crafting_system._close()
-            return True
-        if self._trainer_system.is_open:
-            self._trainer_system._close()
-            return True
-        if self._quest_dialog.is_open:
-            self._quest_dialog._close()
-            return True
-        if self._quest_journal.is_open:
-            self._quest_journal.close()
-            return True
-        if self._shop_system.qty_modal_open:
-            self._shop_system._close_qty_modal()
-            return True
-        if self._shop_system.is_open:
-            self._shop_system._close()
-            return True
-        if self._show_hotbar_editor:
-            self._close_hotbar_editor()
-            return True
-        if self._show_debug:
-            self._show_debug = False
-            return True
-        if self._show_talents:
-            SOUNDS.play_ui("talent_close")
-            self._show_talents = False
-            return True
-        if self._show_inventory:
-            SOUNDS.play_ui("inventory_close")
-            self._show_inventory  = False
-            self._selected_inv_idx = -1
-            return True
-        if self._show_pause:
-            if self._pause_submenu:
-                self._pause_submenu = ""
-                self._sound_drag    = ""
-            else:
-                self._show_pause = False
-            return True
-        return False
+    # _close_top_modal e o registro de prioridade dos modais agora vivem em
+    # client/modal_stack_handlers.py (ModalStackHandlers) — único ponto de
+    # verdade reaproveitado também pelo filtro de systems_events.
 
     def _close_modals_if_too_far(self) -> None:
         """Fecha modais de interação quando o player se afasta do elemento (NPC/corpo)."""
@@ -1031,9 +1054,13 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._selected_inv_idx = -1
         self._show_talents    = False
         self._show_debug      = False
-        if self._show_habilidades:
-            self._show_habilidades = False
-            self._hab_drag_skill   = None
+        self._show_habilidades = False
+        # Cancela qualquer drag em andamento (habilidades/inventário/hotbar/
+        # consumable bar) — fechar tudo inclui desistir de um drag pendente.
+        # Antes da unificação em DragState, só o drag de habilidades era
+        # limpo aqui; os outros 3 ficavam pendurados até o próprio painel
+        # processar o próximo MOUSEUP.
+        self._get_drag().reset()
         if self._loot_system.open_corpse_id != -1:
             self._loot_system._close_modal()
         if self._shop_system.is_open:
@@ -1338,29 +1365,33 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                                 _minimap_click_consumed = True
                                 break
 
-            # Bloqueia sistemas enquanto um painel estiver aberto ou clique do mapa pendente
+            # Bloqueia sistemas enquanto um painel estiver aberto ou clique do mapa pendente.
+            # _topmost_open_modal() é o único ponto de verdade de prioridade de modal
+            # (client/modal_stack_handlers.py) — reaproveita a mesma ordem do ESC.
             systems_events = events
-            if self._show_hotbar_editor:
-                # Editor aberto: sistemas não recebem nenhum evento de input
+            _top_modal = self._topmost_open_modal()
+            if _top_modal in ("hotbar_editor", "shop_qty"):
+                # Editor/modal de quantidade abertos: sistemas não recebem NENHUM
+                # evento de input (handle_events desses dois recebe raw events
+                # separadamente, fora deste filtro).
                 systems_events = []
-            elif self._shop_system.qty_modal_open:
-                # Modal de quantidade aberto: bloqueia TODO input dos sistemas ECS
-                # (handle_events da loja recebe raw events separadamente — linha 1295)
-                systems_events = []
+            elif _top_modal is not None:
+                # Qualquer outro modal aberto: bloqueia clique, tecla E movimento de
+                # mouse pros sistemas ECS. Antes só MOUSEBUTTONDOWN era bloqueado —
+                # KEYDOWN/MOUSEMOTION vazavam e disparavam gameplay (TAB cicla alvo,
+                # SPACE engaja combate, teclas de hotbar usam skill) com modal aberto.
+                _STRIP_TYPES = (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP,
+                                pygame.KEYDOWN, pygame.MOUSEMOTION, pygame.MOUSEWHEEL)
+                systems_events = [e for e in events if e.type not in _STRIP_TYPES]
             elif (_minimap_click_consumed
-                    or self._map_overlay.is_open or self._map_overlay.pending_destination is not None
-                    or self._show_inventory or self._show_talents
-                    or (self._show_debug and DEBUG_MODE)
-                    or self._crafting_system.is_open
+                    or self._map_overlay.pending_destination is not None
                     or self._crafting_system._right_click_consumed
-                    or self._trainer_system.is_open
                     or self._trainer_system._right_click_consumed
-                    or self._shop_system.is_open
                     or self._shop_system._right_click_consumed
-                    or self._quest_dialog.is_open
-                    or self._quest_dialog._right_click_consumed
-                    or self._quest_journal.is_open
-                    or self._loot_system.open_corpse_id != -1):
+                    or self._quest_dialog._right_click_consumed):
+                # Nenhum modal aberto ainda, mas um right-click já foi consumido
+                # neste frame pra resolver prioridade entre NPCs adjacentes (ou
+                # pelo minimap) — bloqueia só esse clique, não é um modal de fato.
                 systems_events = [e for e in events
                                   if not (e.type == pygame.MOUSEBUTTONDOWN
                                           and e.button in (1, 3))]
@@ -1436,14 +1467,6 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             _learned_count_after = len(_ps_after.learned_skill_ids) if _ps_after else 0
             if _learned_count_after > _learned_count_before:
                 self._send_hotbar_update()  # hotbar pode ter mudado com nova skill
-
-            # Detecta mudanças em stats de combate (equip, buff, consumível) e sincroniza
-            # com o servidor. Modular: sem hooks em sistemas específicos — detecção por
-            # snapshot após cada frame garante que QUALQUER mudança seja capturada.
-            _new_snapshot = self._get_combat_stat_snapshot()
-            if _new_snapshot != self._combat_stat_snapshot:
-                self._send_combat_stat_sync()
-                self._combat_stat_snapshot = _new_snapshot
 
             # Detecta mudanças de equipamento (equip/unequip de qualquer fonte, incluindo
             # loot direto) e sincroniza com servidor para manter validação server-side correta
@@ -1657,7 +1680,9 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 self._talent_system.render()
             if self._show_hotbar_editor:
                 self._draw_hotbar_editor(events)
-            if self._show_habilidades or self._hab_drag_skill:
+            _drag_render = self._get_drag()
+            if (self._show_habilidades
+                    or (_drag_render.kind == "skill" and _drag_render.source == "habilidades")):
                 self._draw_habilidades_panel(events)
                 # Redesenha hotbar POR CIMA do overlay escuro do painel de habilidades,
                 # para que os slots fiquem visíveis e acessíveis durante o drag-to-bar.

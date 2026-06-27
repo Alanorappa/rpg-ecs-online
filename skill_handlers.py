@@ -370,7 +370,16 @@ class SkillHandlers:
     # ------------------------------------------------------------------
     def _skill_interceptar(self, skill, _combat_stats, combat_state, tile_move):
         """Dash até o tile adjacente ao alvo (animado, alcance 2–6 tiles)."""
-        target_id = self._resolve_target(combat_state, tile_move, 1)
+        # _max_range=8 (não 1): Interceptar é um dash de longo alcance, não melee — o
+        # "1" antigo nunca representou o range real da skill, só nunca importava porque
+        # _resolve_target() não validava range de um alvo JÁ selecionado (correção de
+        # segurança posterior, ver Tier E / PROBLEMAS_ARQUITETURA.md). Depois dessa
+        # correção, um alvo de Interceptar a mais de 1 tile passou a ser descartado
+        # aqui antes mesmo de chegar no _range_ok() abaixo (que É a checagem real,
+        # 2–6 tiles + tolerância) — bug real reportado pelo usuário ("BLOQUEADO" mesmo
+        # sem obstáculo). 8 cobre o alcance máximo real (INTERCEPT_MAX_RANGE_PX ≈ 7.25
+        # tiles) com margem; _range_ok() abaixo continua sendo o gate preciso.
+        target_id = self._resolve_target(combat_state, tile_move, 8)
         if target_id == -1:
             self._warn("Nenhum alvo")
             return
@@ -824,10 +833,30 @@ class SkillHandlers:
         return True
 
     def _skill_bloco_de_gelo(self, skill, combat_stats, combat_state, tile_move):
-        """Imunidade + cura 10% HP/s durante 5s. Imóvel durante efeito."""
+        """Imunidade + cura 10% HP/s durante 5s. Imóvel durante efeito.
+
+        is_immune só bloqueia dano/tick NOVO enquanto ativo (ver
+        core_systems.StatusEffectSystem._apply_tick) — não remove efeitos
+        negativos já ativos (slow/root/fear/etc. continuavam agindo
+        normalmente, e DOTs só "pausavam" o tick, retomando ao expirar o
+        bloco). A descrição da skill promete "imune a todo dano e efeito
+        negativo" — dispela tudo que já está ativo, igual ao padrão já usado
+        por Camuflagem (lá só DOTs; aqui TODO efeito com is_buff=False, pois
+        a skill promete isso de forma explícita). StatusEffectSystem
+        resincroniza slow_mult/is_rooted/is_crowd_controlled automaticamente
+        no próximo tick — não precisa replicar isso aqui."""
         if self.world.get_component(self.player_entity_id, IceBlockEffect):
             self._warn("Bloco de Gelo já ativo")
             return False
+
+        from components import StatusEffects as _SFX_ib
+        from status_effects_data import EFFECT_DEFS as _ED_ib
+        sfx = self.world.get_component(self.player_entity_id, _SFX_ib)
+        if sfx:
+            for _eff_name in list(sfx.effects.keys()):
+                _def = _ED_ib.get(_eff_name)
+                if _def and not _def.is_buff:
+                    sfx.remove(_eff_name)
 
         self.world.add_component(self.player_entity_id, IceBlockEffect(
             duration=5.0, elapsed=0.0, heal_interval=1.0, last_heal=0.0,
@@ -1213,7 +1242,7 @@ class SkillHandlers:
         ap_pct   = skill.params.get("ap_bonus_pct", 0.30)
         duration = skill.params.get("duration",     20.0)
 
-        _mod = Modifier("attack_power", ap_pct, "percentage")
+        _mod = Modifier("attack_power", ap_pct, "percentage", source="buff")
         add_timed_modifier(combat_stats, _mod, duration, label="cancao_inspiracao")
 
         skill.current_cooldown = skill.cooldown
@@ -1240,7 +1269,7 @@ class SkillHandlers:
         cs.concentration_free_timer = duration
 
         # Timed modifier que garante acerto = 100 (bônus flat grande)
-        _mod = Modifier("acerto", acerto_bns, "flat")
+        _mod = Modifier("acerto", acerto_bns, "flat", source="buff")
         add_timed_modifier(cs, _mod, duration, label="so_um_gole")
 
         skill.current_cooldown = skill.cooldown   # aplica CD de 120s

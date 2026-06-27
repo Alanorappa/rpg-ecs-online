@@ -45,7 +45,7 @@ SKILL_CATALOG: dict[str, dict] = {
     # ── Guerreiro — skills de treinador ─────────────────────────────────────
     "golpe_poderoso": {
         "name":             "Golpe Poderoso",
-        "desc":             "3x dano — custa 15 Raiva",
+        "desc":             "O guerreiro transforma sua raiva em dano desferindo um golpe poderoso contra o alvo",
         "cooldown":         0.0,
         "rage_cost":        15,
         "proc_attr":        "embalo_charges",
@@ -56,7 +56,7 @@ SKILL_CATALOG: dict[str, dict] = {
     },
     "vitoria_iminente": {
         "name":             "Vitória Iminente",
-        "desc":             "Mata um inimigo para carregar; cura 30% HP",
+        "desc":             "O guerreiro é consumido por um embalo que o faz curar sua vida acertando seu próximo alvo após um abate",
         "cooldown":         0.0,
         "rage_cost":        0,
         "proc_attr":        "",
@@ -68,7 +68,7 @@ SKILL_CATALOG: dict[str, dict] = {
     },
     "impacto": {
         "name":             "Impacto",
-        "desc":             "50% dano em area (raio 3 tiles)",
+        "desc":             "Gira com sua arma acertando vários alvos a sua volta",
         "cooldown":         15.0,
         "rage_cost":        0,
         "proc_attr":        "",
@@ -80,7 +80,7 @@ SKILL_CATALOG: dict[str, dict] = {
     },
     "executar": {
         "name":             "Executar",
-        "desc":             "5x dano (<30% HP) — custa 10 Raiva",
+        "desc":             "O guerreiro após anos de luta percebe que o alvo está a beira da morte, e desfere um golpe de misericórdia.",
         "cooldown":         0.0,
         "rage_cost":        10,
         "proc_attr":        "free_executar_charges",
@@ -91,7 +91,7 @@ SKILL_CATALOG: dict[str, dict] = {
     },
     "interceptar": {
         "name":             "Interceptar",
-        "desc":             "Avanca instantaneamente ao alvo",
+        "desc":             "Avança contra o alvo com toda sua velocidade",
         "cooldown":         22.0,
         "rage_cost":        0,
         "proc_attr":        "",
@@ -104,7 +104,7 @@ SKILL_CATALOG: dict[str, dict] = {
     # ── Guerreiro — skills de talento (build Cavaleiro) ──────────────────────
     "golpe_debilitante": {
         "name":             "Golpe Debilitante",
-        "desc":             "50% dano + slow 50% por 5s. Custo: 5 Raiva.",
+        "desc":             "Mira nas pernas do alvo, diminuindo sua velocidade de movimento significativamente",
         "cooldown":         0.0,
         "rage_cost":        5,
         "proc_attr":        "",
@@ -115,7 +115,7 @@ SKILL_CATALOG: dict[str, dict] = {
     },
     "brado_provocativo": {
         "name":             "Brado Provocativo",
-        "desc":             "Enlouquece inimigos (raio 3 tiles) por 10s. Cooldown 45s.",
+        "desc":             "O grito de guerra do guerreiro faz com que os alvos em sua volta enlouqueçam e o ataquem.",
         "cooldown":         45.0,
         "rage_cost":        0,
         "proc_attr":        "",
@@ -127,7 +127,7 @@ SKILL_CATALOG: dict[str, dict] = {
     },
     "punho_no_queixo": {
         "name":             "Punho no Queixo",
-        "desc":             "3 golpes → 1 carga: 45% AP + atordoa (duração escala com pontos).",
+        "desc":             "Após inúmeros golpes bem sucedidos, o alvo fica com a guarda baixa, possibilitando um golpe atordoante.",
         "cooldown":         15.0,
         "rage_cost":        0,
         "proc_attr":        "",
@@ -138,7 +138,7 @@ SKILL_CATALOG: dict[str, dict] = {
     },
     "fatiador_de_corpos": {
         "name":             "Fatiador de Corpos",
-        "desc":             "Spin AoE: 65% dano + arma/s por 5s a todos ao redor (raio 2 tiles). Cooldown 45s.",
+        "desc":             "O guerreiro gira em seu próprio eixo como um furacão de lâminas, causando um dano massivo a todos ao seu alcance.",
         "cooldown":         45.0,
         "rage_cost":        0,
         "proc_attr":        "",
@@ -147,7 +147,7 @@ SKILL_CATALOG: dict[str, dict] = {
         "class_id":         "guerreiro",
         "effects":          {"impact": {"sound": "skill_fatiador_de_corpos"}},
         "params": {
-            "damage_multiplier": 0.65,   # % do AP por tick
+            "damage_multiplier": 1.65,   # % do AP por tick
             "include_weapon_dmg": True,  # adiciona dano da arma
             "duration":          5.0,
             "tick_interval":     1.0,
@@ -158,7 +158,7 @@ SKILL_CATALOG: dict[str, dict] = {
     # ── Mago — skills de treinador ───────────────────────────────────────────
     "bola_de_fogo": {
         "name":              "Bola de Fogo",
-        "desc":              "Lança uma bola de fogo no alvo selecionado.",
+        "desc":              "Lança uma bola de fogo no alvo.",
         "cooldown":          0.0,
         "mana_cost":         25,
         "cast_time":         1.5,
@@ -177,7 +177,7 @@ SKILL_CATALOG: dict[str, dict] = {
     },
     "calamidade_flamejante": {
         "name":             "Calamidade Flamejante",
-        "desc":             "Canaliza meteoros em área (2 tiles) por 5s. 10 mana/s.",
+        "desc":             "O mago invoca uma chuva de fogo causado dano e exaustão a todos os alvos dentro da área selecionada.",
         "cooldown":         0.0,
         "mana_cost":        10,
         "cast_time":        0.0,
@@ -190,7 +190,7 @@ SKILL_CATALOG: dict[str, dict] = {
     },
     "nova_congelante": {
         "name":             "Nova Congelante",
-        "desc":             "1s cast. Enraíza inimigos a 3 tiles por 5s. 50% SP. 10 mana.",
+        "desc":             "O mago invoca todo o frio para o chão, congelando os pés de todos a sua volta.",
         "cooldown":         6.0,
         "mana_cost":        10,
         "cast_time":        1.0,
@@ -206,7 +206,7 @@ SKILL_CATALOG: dict[str, dict] = {
     },
     "bloco_de_gelo": {
         "name":             "Bloco de Gelo",
-        "desc":             "Imune e imóvel 5s. Cura 10% HP/s. 45s recarga.",
+        "desc":             "Usa poder de gelo para se envolver em um bloco de gelo, ficando imune a todo dano e efeito negativo.",
         "cooldown":         45.0,
         "mana_cost":        0,
         "cast_time":        0.0,
@@ -218,7 +218,7 @@ SKILL_CATALOG: dict[str, dict] = {
     },
     "polimorfia": {
         "name":             "Polimorfia",
-        "desc":             "1.5s cast. Transforma o alvo: perde controle e regenera 10% HP/s. Custo: 10% mana.",
+        "desc":             "Transforma o alvo em um animal durante um tempo, é uma visão perturbadora",
         "cooldown":         0.0,
         "mana_cost":        0,
         "mana_cost_pct":    0.10,

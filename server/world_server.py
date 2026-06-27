@@ -215,9 +215,6 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._skill_position_corrections: list[dict] = []
         # HP updates de players para broadcast AOI (ex: auto-cura de skill)
         self._player_hp_broadcasts_this_tick: list[dict] = []
-        # Overrides de stats de combate por player (equipamento, buffs, consumíveis)
-        # eid → {stat_name: valor} — aplicados após qualquer recalculo de CombatStats
-        self._player_stat_overrides: dict[int, dict] = {}
         # Eventos de som posicionais (mob aggro, etc.) para broadcast AOI
         self._pending_sound_events: list[dict] = []
         # Eids cujo CombatState.is_visible mudou neste tick (ex: Camuflagem
@@ -442,74 +439,25 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         perm = PermanentStats()
         self.world.add_component(eid, perm)
 
-        # CombatStats derivado dos atributos base + prioridade client_max_hp
+        # CombatStats derivado dos atributos base — equipamento e talentos são
+        # aplicados abaixo a partir dos dados REAIS já carregados (Equipment,
+        # TalentTree), nunca de um valor que o cliente diz que deveria ser
+        # (antes: client_max_hp/client_ap, hints confiados sem validar — ver
+        # arquitetura/PROBLEMAS_ARQUITETURA.md).
         cs = CombatStats()
         apply_char_stats_to_combat(char, cs, perm)
+        self.world.add_component(eid, cs)
+        self._apply_equipment_modifiers(eid)   # attack_power/crit/armor/spell_power/etc. reais
         sync_attack_interval(cs, self.world.get_component(eid, Equipment))
-        # max_hp salvo no stats_json inclui bônus de equipamento (cliente é autoritativo).
-        # Aplica sobre o valor calculado para que curas e caps usem o HP real do player.
-        _saved_max_hp = int(_stats.get("max_hp", 0))
-        if _saved_max_hp > cs.max_hp:
-            cs.max_hp = _saved_max_hp
-        # client_max_hp/ap só se usa para personagens sem save (stats_json vazio).
-        # São hints do cliente para equipamento ainda não sincronizado via PLAYER_STAT_SYNC.
-        # Cap: máximo 10× o valor calculado pelo servidor — bloqueia exploits sem
-        # afetar equipamentos legítimos. PLAYER_STAT_SYNC corrige o valor real logo após login.
-        _client_hp = int(char_data.get("client_max_hp", 0))
-        _client_ap = float(char_data.get("client_ap", 0))
-        if not _stats:
-            _cap_hp = cs.max_hp * 10
-            _cap_ap = max(1, cs.base_attack_power) * 10
-            if _client_ap > 0:
-                cs.base_attack_power = int(min(_client_ap, _cap_ap))
-                cs._recalculate_effective_stats()   # sincroniza attack_power a partir do novo base
-            # Aplica max_hp APÓS recalculate — _recalculate_effective_stats sobrescreve max_hp
-            # com base_stamina, então o override do cliente deve ser o último passo.
-            if _client_hp > 0:
-                cs.max_hp = int(min(_client_hp, _cap_hp))
-        # Restaura HP salvo; se não houver, usa max_hp; nunca excede max_hp
+        # Restaura HP salvo; se não houver, usa max_hp (já com bônus de equip); nunca excede max_hp
         saved_hp = int(char_data.get("hp", 0))
         cs.current_hp = min(saved_hp, cs.max_hp) if saved_hp > 0 else cs.max_hp
-        self.world.add_component(eid, cs)
 
         # Wallet: restaura gold salvo
         _gold = int(_stats.get("gold", 0))
         wall = self.world.get_component(eid, Wallet)
         if wall:
             wall.gold = _gold
-
-        # Aplica cs_flags dos talentos (ex: impacto_maquina_matar) no servidor.
-        # Fase de reset SEMPRE roda — garante valores base (ex: concentration_regen=5.0)
-        # mesmo sem talentos alocados, espelhando talent_system.apply_talent_effects().
-        try:
-            import json as _tjson
-            from talent_data import TALENTS as _TALMAP
-            # 1. Reset: todos os cs_flags para seus valores padrão
-            for _t_all in _TALMAP.values():
-                for _flag in (_t_all.get("cs_flags") or []):
-                    _reset = _flag.get("reset")
-                    if _reset is not None:
-                        try:
-                            setattr(cs, _flag["field"], _reset)
-                        except Exception:
-                            pass
-            # 2. Sobrescreve com valores calculados pelos talentos alocados
-            _tal_raw  = char_data.get("talents_json") or "{}"
-            _tal_data = _tjson.loads(_tal_raw) if isinstance(_tal_raw, str) else {}
-            _tal_alloc = _tal_data.get("allocated", {})
-            for _tid, _pts in _tal_alloc.items():
-                _t = _TALMAP.get(_tid)
-                if not _t:
-                    continue
-                for _flag in (_t.get("cs_flags") or []):
-                    _formula = _flag.get("formula")
-                    if _formula:
-                        try:
-                            setattr(cs, _flag["field"], _formula(_pts))
-                        except Exception:
-                            pass
-        except Exception as _te:
-            print(f"[World] aviso: talent cs_flags não aplicados — {_te}")
 
         # PlayerSkills: restaura skills salvas ou usa iniciais da classe
         try:
@@ -559,16 +507,52 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             print(f"[World] aviso: PlayerSkills não criado — {_e}")
 
         # TalentTree — necessário para process_levelups() incrementar available_points
+        _tal_alloc_spawn: dict = {}
         try:
             from components import TalentTree as _TT
             _tt_comp = _TT()
             _tal_raw2 = char_data.get("talents_json") or "{}"
             _tal_d2   = _json.loads(_tal_raw2) if isinstance(_tal_raw2, str) else (_tal_raw2 or {})
+            _tt_comp.chosen_build     = _tal_d2.get("chosen_build", _tt_comp.chosen_build)
             _tt_comp.available_points = int(_tal_d2.get("available_points", 0))
             _tt_comp.allocated        = dict(_tal_d2.get("allocated", {}))
+            # Rede de segurança: o orçamento total (disponível + já gasto) nunca
+            # pode ser menor do que 1 ponto por level-up que o personagem já
+            # teria recebido (process_levelups concede +1 por nível, a partir
+            # do nível 2). Sem isso, qualquer bug de persistência (ex: o de
+            # chosen_build ausente que zerava talentos sem reembolso — ver
+            # arquitetura/PROBLEMAS_ARQUITETURA.md) perde pontos do jogador
+            # PERMANENTEMENTE — autocura aqui, todo login, em vez de só
+            # corrigir a causa e deixar quem já foi afetado sem recuperação.
+            _expected_budget = max(0, char.level - 1)
+            _real_budget = _tt_comp.available_points + sum(_tt_comp.allocated.values())
+            if _real_budget < _expected_budget:
+                _tt_comp.available_points += (_expected_budget - _real_budget)
+                # Propaga a correção pro char_data que vira o payload de
+                # LOGIN_OK (char_data é mutado in-place — o caller usa o
+                # mesmo dict) — sem isso, o cliente recebia de volta o
+                # talents_json ANTIGO (sem o top-up) e desfazia a correção
+                # na primeira sincronização.
+                char_data["talents_json"] = _json.dumps({
+                    "chosen_build":     _tt_comp.chosen_build,
+                    "allocated":        _tt_comp.allocated,
+                    "available_points": _tt_comp.available_points,
+                })
+            _tal_alloc_spawn          = _tt_comp.allocated
             self.world.add_component(eid, _tt_comp)
         except Exception as _te:
             print(f"[World] aviso: TalentTree não criado — {_te}")
+
+        # cs_flags (ex: impacto_maquina_matar) e modifiers de atributo (ex: parry_rating)
+        # dos talentos salvos — antes só os cs_flags eram restaurados aqui (loop
+        # duplicado); modifiers de atributo nunca eram reaplicados no login, ficavam
+        # ausentes até o próximo TALENT_UPDATE/SAVE_STATE. _apply_talent_modifiers
+        # já faz reset + as duas fases num só lugar (mesma lógica de
+        # apply_talent_effects_to_player, sem duplicação).
+        try:
+            self._apply_talent_modifiers(eid, _tal_alloc_spawn)
+        except Exception as _te:
+            print(f"[World] aviso: talent effects não aplicados no spawn — {_te}")
 
         self._player_eids[session_id]    = eid
         self._player_eid_to_sid[eid]     = session_id   # reverse map
@@ -649,7 +633,6 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._despawned_this_tick.append({"eid": eid, "tx": None, "ty": None})
         self._pending_inv.pop(session_id, None)
         self._attack_timers.pop(session_id, None)
-        self._player_stat_overrides.pop(eid, None)
         # Cancela spells pendentes do player (evita completions após disconnect)
         self._pending_spell_completions = [
             e for e in self._pending_spell_completions
@@ -875,9 +858,19 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         return (tm.current_tile_x, tm.current_tile_y) if tm else (0, 0)
 
     def sync_player_resources(self, session_id: str, rage: int, mana: int) -> None:
-        """Sincroniza rage e mana do cliente no ECS do servidor antes de executar skills.
-        O cliente é fonte de verdade para recursos de combate (rage, mana) pois
-        os gera localmente via PlayerInputSystem — igual ao offline.
+        """NÃO é mais chamada pelo fluxo real (server/session.py) — só utilitário
+        de setup pra testes/diagnósticos (ver tests/diag_skills*.py).
+
+        Chegou a ser chamada em todo CAST_SKILL, adotando o rage/mana que o
+        CLIENTE mandasse como verdade ("cliente é fonte de verdade... igual ao
+        offline"). Bug real: o campo-espelho CombatStats.mana do cliente (default
+        0) ainda não tinha sincronizado com CharacterStats.mana (cheio) no
+        primeiro cast pós-login — o cliente mandava mana=0 e isso zerava a mana
+        REAL do servidor, fazendo toda skill de Mago falhar por "Mana
+        insuficiente" logo após logar. O servidor já rastreia rage/mana 100% por
+        conta própria (ganho em combat_processor.py, custo deduzido nos próprios
+        handlers de skill + _process_spell_cast_completions) — nunca precisou
+        confiar no cliente pra isso. Ver arquitetura/PROBLEMAS_ARQUITETURA.md.
         """
         from components import CharacterStats, CombatStats
         eid = self._player_eids.get(session_id)
@@ -935,50 +928,32 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
     # consume_loot_notifications, consume_expired_corpses → LootProcessorMixin
     # _process_skill_requests → SkillProcessorMixin
 
-    def sync_player_combat_stats(self, session_id: str, stats: dict) -> None:
-        """Recebe stats efetivos do cliente e aplica ao CombatStats do servidor.
+    def _apply_equipment_modifiers(self, eid: int) -> None:
+        """Deriva os modificadores de equipamento (source="equipment") em
+        CombatStats a partir dos itens REAIS equipados (Equipment, já validado
+        contra catálogo — ver _reconstruct_item, Tier B).
 
-        Armazena os overrides para reaplicação após qualquer recalculo
-        (level up, re-login, troca de talentos). Modular: adicionar nova
-        stat = apenas inserir em COMBAT_SYNC_STATS em shared/constants.py.
-        """
-        from shared.constants import COMBAT_SYNC_STATS
-        eid = self._player_eids.get(session_id)
-        if eid is None:
-            return
-        # Filtra apenas as stats conhecidas (evita poluição de dados)
-        overrides = {k: float(v) for k, v in stats.items()
-                     if k in COMBAT_SYNC_STATS and isinstance(v, (int, float))}
-        if not overrides:
-            return
-        self._player_stat_overrides[eid] = overrides
-        self._apply_stat_overrides(eid)
+        Substitui o antigo PLAYER_STAT_SYNC/_apply_stat_overrides — antes o
+        servidor confiava direto no valor de attack_power/crit_rating/armor/
+        spell_power/etc. que o CLIENTE calculava e mandava, sem validar contra
+        nada (ver arquitetura/PROBLEMAS_ARQUITETURA.md). Agora o servidor
+        deriva esses valores ele mesmo a partir dos modifiers reais de cada
+        item, exatamente como já faz para talentos (apply_talent_effects_to_player).
 
-    def _apply_stat_overrides(self, eid: int) -> None:
-        """Aplica overrides de stats ao CombatStats do player.
-
-        Chamado após qualquer operação que recalcule o CombatStats
-        (spawn, level up, apply_talent_effects). Sem isso, os bônus de
-        equipamento seriam perdidos após cada recalculo.
-        """
-        overrides = self._player_stat_overrides.get(eid)
-        if not overrides:
+        Chamar sempre que o Equipment mudar (spawn, EQUIP_SYNC). Modifiers de
+        talento/buff (source != "equipment") nunca são tocados aqui."""
+        from components import CombatStats as _CSEq, Equipment as _EqEq, Modifier as _ModEq
+        cs    = self.world.get_component(eid, _CSEq)
+        equip = self.world.get_component(eid, _EqEq)
+        if not cs or not equip:
             return
-        from components import CombatStats as _CS
-        from shared.constants import COMBAT_SYNC_STATS
-        cs = self.world.get_component(eid, _CS)
-        if not cs:
-            return
-        changed = False
-        for eff_attr, base_attr in COMBAT_SYNC_STATS.items():
-            if eff_attr in overrides:
-                new_val = overrides[eff_attr]
-                old_val = getattr(cs, base_attr, None)
-                if old_val is None or abs(float(old_val) - new_val) > 0.01:
-                    setattr(cs, base_attr, type(old_val)(new_val) if old_val is not None else new_val)
-                    changed = True
-        if changed:
-            cs._recalculate_effective_stats()
+        cs.modifiers = [m for m in cs.modifiers if m.source != "equipment"]
+        for item in equip.slots.values():
+            if not item:
+                continue
+            for mod in item.modifiers:
+                cs.modifiers.append(_ModEq(mod.attribute, mod.value, mod.type, source="equipment"))
+        cs._recalculate_effective_stats()
 
     def process_shop_buy(self, session_id: str, shop_id: str,
                          item_name: str, quantity: int,
@@ -1191,36 +1166,91 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
     def _reconstruct_item(self, d: dict):
         """Reconstrói um Item a partir de dict serializado (inventory_json / INV_SYNC).
 
-        Espelha GameEngine._restore_item/_item_from_data (game.py) sem pygame:
-        tenta casar pelo nome no catálogo loot_tables._T (preserva atributos do
-        original), com fallback para reconstrução direta dos dados (itens de loja).
-        Necessário para que handlers de skill validem o Inventory real do jogador
-        no servidor (ex: Recarregar verificando munição "ammo" na bag).
+        Tenta casar pelo nome em QUALQUER catálogo autoritativo do servidor —
+        loot (`loot_tables._T`), loja (`merchant_data.SHOPS`) e forja
+        (`crafting_data.RECIPES[*]["result_factory"]`) — e usa os stats REAIS
+        do catálogo, ignorando `modifiers`/`attack_power`/etc. que o cliente
+        mandou no payload. Só os campos puramente de bookkeeping (contagem de
+        flecha/stack) vêm do cliente, nunca dano/armadura/atributo.
+
+        Sem isso, qualquer item que NÃO esteja em loot_tables._T (ou seja,
+        todo item comprado em loja ou forjado — confirmado: nenhum dos dois
+        catálogos é um subconjunto de _T) caía no fallback abaixo, que monta
+        o Item DIRETO dos campos do payload — um cliente malicioso podia
+        equipar/inventariar um item fake com `modifiers: [{"attribute":
+        "attack_power", "value": 99999}]` e o servidor aplicava sem checar
+        nada (ver arquitetura/PROBLEMAS_ARQUITETURA.md, vulnerabilidade de
+        forja de stats de equipamento).
+
+        Necessário pra que handlers de skill validem o Inventory real do
+        jogador no servidor (ex: Recarregar verificando munição "ammo" na bag).
         """
         if not d or not d.get("name"):
             return None
-        from components import Item as _Item, Modifier as _Mod
-        from loot_tables import _T
+        from components import Item as _Item
         name = d.get("name", "")
+
+        def _apply_client_bookkeeping(candidate):
+            """Campos que o cliente PODE reportar com segurança — nunca dano/
+            stat, só estado descartável (contagem de flecha equipada, stack
+            do slot). Sobrescrever esses não dá vantagem nenhuma a um
+            cliente malicioso."""
+            if "arrow_count" in d:
+                candidate.arrow_count = int(d["arrow_count"])
+            if "max_arrows" in d:
+                candidate.max_arrows = int(d["max_arrows"])
+            if "subtype" in d:
+                candidate.subtype = d["subtype"]
+            if "stack" in d:
+                candidate.stack = int(d["stack"])
+            if "max_stack" in d:
+                candidate.max_stack = int(d["max_stack"])
+            return candidate
+
+        # 1) Catálogo de loot
+        from loot_tables import _T
         for _key, factory in _T.items():
             try:
                 candidate = factory()
             except Exception:
                 continue
             if getattr(candidate, "name", "") == name:
-                if "arrow_count" in d:
-                    candidate.arrow_count = int(d["arrow_count"])
-                if "max_arrows" in d:
-                    candidate.max_arrows = int(d["max_arrows"])
-                if "subtype" in d:
-                    candidate.subtype = d["subtype"]
-                if "stack" in d:
-                    candidate.stack = int(d["stack"])
-                if "max_stack" in d:
-                    candidate.max_stack = int(d["max_stack"])
-                return candidate
-        mods = [_Mod(m["attribute"], float(m["value"]), m.get("type", "flat"))
-                for m in d.get("modifiers", []) if "attribute" in m]
+                return _apply_client_bookkeeping(candidate)
+
+        # 2) Catálogo de loja — todo item comprado de um merchant
+        from merchant_data import SHOPS
+        for _shop in SHOPS.values():
+            for _entry in _shop.get("stock", []):
+                try:
+                    candidate = _entry["factory"]()
+                except Exception:
+                    continue
+                if getattr(candidate, "name", "") == name:
+                    return _apply_client_bookkeeping(candidate)
+
+        # 3) Catálogo de forja — resultado de receita (Espada Afiada, etc.)
+        from crafting_data import RECIPES
+        for _recipe in RECIPES.values():
+            _factory = _recipe.get("result_factory")
+            if not _factory:
+                continue
+            try:
+                candidate = _factory()
+            except Exception:
+                continue
+            if getattr(candidate, "name", "") == name:
+                return _apply_client_bookkeeping(candidate)
+
+        # Fallback: nome não bate com NENHUM catálogo conhecido (loot/loja/
+        # forja) — todo item de gameplay real vem de um desses 3, então isso
+        # só acontece pra nome inválido/inventado. Por segurança, NUNCA
+        # aplica modifiers/dano/atributo vindos do payload aqui — só os
+        # campos puramente descritivos (nome, tipo, raridade, valor de
+        # venda, consumível) e os mesmos campos de bookkeeping seguros de
+        # cima. O item existe (não quebra render/inventário), mas é
+        # mecanicamente inerte — não dá NENHUM bônus de combate, mesmo que o
+        # payload peça (ver arquitetura/PROBLEMAS_ARQUITETURA.md,
+        # vulnerabilidade de forja de stats de equipamento).
         item = _Item(
             name        = d["name"],
             item_type   = d.get("item_type", ""),
@@ -1229,17 +1259,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             value       = int(d.get("value", 0)),
             consumable  = d.get("consumable"),
             max_stack   = int(d.get("max_stack", 1)),
-            modifiers   = mods,
-            arrow_count = int(d.get("arrow_count", 0)),
-            max_arrows  = int(d.get("max_arrows",  0)),
-            subtype     = d.get("subtype", ""),
         )
-        for f in ("attack_power", "armor", "spell_power", "stamina",
-                  "two_handed", "attack_speed", "damage_min", "damage_max"):
-            if f in d:
-                setattr(item, f, d[f])
-        item.stack = int(d.get("stack", 1))
-        return item
+        return _apply_client_bookkeeping(item)
 
     def load_player_inventory(self, eid: int, inventory_json) -> None:
         """Popula Inventory do jogador a partir do inventory_json salvo (spawn_player)."""
@@ -1418,6 +1439,93 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._pending_xp_deliveries.clear()
         return result
 
+    def validate_talent_allocation(self, session_id: str, claimed: dict) -> "dict | None":
+        """Valida um payload `talents` (de TALENT_UPDATE/SAVE_STATE) contra o
+        orçamento REAL de pontos do jogador antes de persistir.
+
+        Sem isso, um cliente malicioso podia mandar `{"allocated":
+        {"qualquer_talento": 999}, "available_points": 999}` e o servidor
+        salvava/aplicava direto — `apply_talent_effects_to_player` faz
+        `eff["value"] * points` sem checar limite (ver
+        arquitetura/PROBLEMAS_ARQUITETURA.md, vulnerabilidade de orçamento
+        de talento).
+
+        `claimed` = {"allocated": {talent_id: pontos}, "available_points": N}
+        (formato exato que o cliente manda). Retorna um dict no MESMO
+        formato, mas corrigido pro orçamento real do servidor — nunca
+        confia em `available_points` do payload, sempre recalcula a partir
+        do total que o `TalentTree` do servidor já sabe que foi ganho
+        (`tt.available_points` atual + pontos já alocados, que só cresce via
+        `process_levelups()` no servidor, nunca por mensagem do cliente).
+        Retorna `None` se `claimed` não for um dict com a forma esperada
+        (chamador deve simplesmente não persistir/aplicar nesse caso)."""
+        from components import TalentTree as _TT_v
+        from talent_data import TALENTS as _TAL_v
+
+        if not isinstance(claimed, dict):
+            return None
+        new_allocated_raw = claimed.get("allocated")
+        if not isinstance(new_allocated_raw, dict):
+            return None
+
+        eid = self._player_eids.get(session_id)
+        tt  = self.world.get_component(eid, _TT_v) if eid is not None else None
+        if tt is None:
+            return None
+
+        total_budget = int(tt.available_points) + sum(int(v) for v in tt.allocated.values())
+
+        new_allocated: dict = {}
+        spent = 0
+        for talent_id, points in new_allocated_raw.items():
+            t = _TAL_v.get(talent_id)
+            if not t:
+                continue   # talento inexistente — descartado silenciosamente
+            try:
+                points = int(points)
+            except (TypeError, ValueError):
+                continue
+            points = max(0, min(points, t.get("max_points", 0)))
+            if points <= 0:
+                continue
+            new_allocated[talent_id] = points
+            spent += points
+
+        if spent > total_budget:
+            # Claim excede o orçamento real — rejeita a alocação inteira (não
+            # tenta "corrigir" proporcionalmente, pra não mascarar bug/cheat).
+            print(f"[TalentBudget] session={session_id} reivindicou {spent} pontos "
+                  f"mas orçamento real é {total_budget} — alocação rejeitada.")
+            return None
+
+        # Persiste o resultado validado de volta no TalentTree AO VIVO da
+        # entidade — sem isso, a próxima chamada calcularia total_budget a
+        # partir do estado antigo (carregado no login), nunca refletindo
+        # alocações feitas durante esta sessão.
+        tt.allocated        = new_allocated
+        tt.available_points = total_budget - spent
+
+        # chosen_build NUNCA pode ser descartado aqui — bug real encontrado:
+        # o retorno antigo só tinha allocated/available_points, e como esse
+        # dict SUBSTITUI payload["talents"] inteiro antes de persistir
+        # (_handle_save_state), talents_json perdia "chosen_build" no primeiro
+        # save após qualquer alocação. Próximo login: cliente não achava
+        # chosen_build salvo, caía no default "cavaleiro", isso nunca batia
+        # com a build real da classe (ex: arqueiro=bardo) e
+        # TalentSystem.apply_talent_effects() considerava TODOS os talentos
+        # "de build errada" e limpava tt.allocated sem devolver os pontos —
+        # perda silenciosa e permanente de pontos gastos (ver
+        # arquitetura/PROBLEMAS_ARQUITETURA.md).
+        chosen_build = claimed.get("chosen_build")
+        if isinstance(chosen_build, str) and chosen_build:
+            tt.chosen_build = chosen_build
+
+        return {
+            "chosen_build":      tt.chosen_build,
+            "allocated":        new_allocated,
+            "available_points": tt.available_points,
+        }
+
     def apply_talent_effects_to_player(self, session_id: str, talent_allocated: dict) -> None:
         """Re-aplica efeitos de talentos ao CombatStats do servidor após salvar.
 
@@ -1425,15 +1533,21 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         servidor precisa dos efeitos para processar skills corretamente
         (ex: impacto_maquina_matar, parry_rating, golpe_poderoso_rage_cost).
         """
+        eid = self._player_eids.get(session_id)
+        if eid is None:
+            return
+        self._apply_talent_modifiers(eid, talent_allocated)
+
+    def _apply_talent_modifiers(self, eid: int, talent_allocated: dict) -> None:
+        """Núcleo de apply_talent_effects_to_player, parametrizado por eid (em vez
+        de session_id) para poder ser chamado em spawn_player antes de
+        self._player_eids estar populado para essa sessão."""
         from components import (CombatStats, CharacterStats, PermanentStats, Modifier)
         from talent_data import TALENTS as _TAL
         from stats_system import apply_char_stats_to_combat, sync_attack_interval
         from stat_fns import add_modifier
         from components import Equipment
 
-        eid = self._player_eids.get(session_id)
-        if eid is None:
-            return
         cs   = self.world.get_component(eid, CombatStats)
         char = self.world.get_component(eid, CharacterStats)
         perm = self.world.get_component(eid, PermanentStats)
@@ -1441,22 +1555,32 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         if not cs or not char:
             return
 
-        # Preserva current_hp: apply_char_stats_to_combat recalcula max_hp a partir
-        # de base_stamina (sem equipamento) e clamparia current_hp para esse valor menor.
-        # Após esta função, _apply_stat_overrides restaura max_hp com bônus de equip.
-        _saved_current_hp = cs.current_hp
+        # Limpa só modifiers de talento (acumulados de SAVE_STATEs anteriores) —
+        # equipment/buff (source != "talent") nunca são tocados aqui, ver
+        # _apply_equipment_modifiers. Antes isso era cs.modifiers.clear() (limpava
+        # TUDO, inclusive bônus de equipamento) e dependia de _apply_stat_overrides
+        # pra "restaurar" o que tinha acabado de apagar — root cause removido.
+        cs.modifiers = [m for m in cs.modifiers if m.source != "talent"]
 
-        # Limpa modifiers anteriores (talentos acumulados de SAVE_STATEs anteriores).
-        # No servidor, cs.modifiers é exclusivo de talentos — equipment usa _apply_stat_overrides.
-        cs.modifiers.clear()
-
-        # Recalcula base a partir dos atributos do personagem
+        # Recalcula base a partir dos atributos do personagem (modifiers de
+        # equipamento/buff sobrevivem ao clear acima, então max_hp/etc. já saem
+        # corretos daqui — sem necessidade de salvar/restaurar current_hp).
         apply_char_stats_to_combat(char, cs, perm)
         sync_attack_interval(cs, equip)
 
-        # Restaura current_hp para o valor antes do reset
-        # (_recalculate_effective_stats no final desta função irá clampá-lo corretamente)
-        cs.current_hp = _saved_current_hp
+        # Reset de cs_flags pro valor padrão ANTES de aplicar a alocação atual —
+        # sem isso, desalocar um talento (ex: trocar de build) deixava o cs_flag
+        # dele travado no último valor calculado, já que o loop abaixo só visita
+        # talentos alocados AGORA. Faltava em apply_talent_effects_to_player desde
+        # sempre; só existia (duplicado) no spawn — unificado aqui pros dois lados.
+        for _t_all in _TAL.values():
+            for _flag in (_t_all.get("cs_flags") or []):
+                _reset = _flag.get("reset")
+                if _reset is not None:
+                    try:
+                        setattr(cs, _flag["field"], _reset)
+                    except Exception:
+                        pass
 
         # Re-aplica cs_flags e modifiers de cada talento alocado
         for talent_id, points in (talent_allocated or {}).items():
@@ -1464,6 +1588,14 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 continue
             t = _TAL.get(talent_id)
             if not t:
+                continue
+            # Defesa em profundidade — o orçamento real já devia ter sido
+            # validado em validate_talent_allocation() antes disso ser salvo,
+            # mas reforça aqui também: nunca aplica mais pontos que o teto do
+            # próprio talento, mesmo que talent_allocated venha de uma fonte
+            # que pulou a validação (ver PROBLEMAS_ARQUITETURA.md).
+            points = min(int(points), t.get("max_points", int(points)))
+            if points <= 0:
                 continue
             # cs_flags comportamentais (ex: impacto_maquina_matar, interceptar_rage_bonus)
             for flag in (t.get("cs_flags") or []):
@@ -1475,7 +1607,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                         pass
             # Modifiers de atributo (ex: parry_rating +20 por ponto de Reflexos Apurados)
             for eff in (t.get("effects") or []):
-                mod = Modifier(eff["attribute"], eff["value"] * points, eff["type"])
+                mod = Modifier(eff["attribute"], eff["value"] * points, eff["type"], source="talent")
                 add_modifier(cs, mod)
 
     def update_player_equipment(self, session_id: str, equipment: dict) -> None:
@@ -1502,6 +1634,10 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         for slot in list(eq_comp.slots.keys()):
             if slot not in equipment:
                 eq_comp.slots[slot] = None
+        # Deriva attack_power/crit_rating/armor/spell_power/etc. dos itens REAIS
+        # agora equipados (ver _apply_equipment_modifiers) — nunca confia em
+        # nenhum valor calculado pelo cliente para isso.
+        self._apply_equipment_modifiers(eid)
         # Atualiza attack_interval conforme arma equipada
         from stats_system import sync_attack_interval as _sai
         from components import CombatStats as _CSUpd
@@ -1673,6 +1809,13 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 "hp_after": _hp5_ev["new_hp"],
                 "source":   "regen",
             })
+        # Procs de item rolados autoritativamente (core_systems.ServerCombatStateSystem.
+        # _roll_procs) — qualquer mudança em current_hp/max_hp já é detectada e
+        # propagada via _sync_player_hp_dirty() abaixo; aqui só log de auditoria.
+        for _proc_ev in self._combat_state_sys.proc_events:
+            print(f"[Proc] player_eid={_proc_ev['player_eid']} item={_proc_ev['item_name']!r} "
+                  f"-> {_proc_ev['label']} (+{_proc_ev['value']} {_proc_ev['attribute']} "
+                  f"por {_proc_ev['duration']:.0f}s)")
 
         # ── Regen do boneco de treino (hp5 = ~10% de max_hp a cada 5s) ──────────
         from components import TrainingDummy as _TDtk
@@ -1925,10 +2068,12 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 _char_xp.current_xp += _xp_amt
                 from stats_system import process_levelups as _pu
                 _pu(self.world, _xp_peid, _char_xp, _cs_xp, _perm_xp)
-                # Se subiu de nível: re-aplica talentos/overrides e notifica cliente
+                # Se subiu de nível: re-aplica talentos e notifica cliente.
+                # Equipment não precisa ser reaplicado aqui — process_levelups()
+                # (acima) chama apply_char_stats_to_combat, que nunca toca em
+                # cs.modifiers, então os modifiers de equipamento (source="equipment")
+                # sobrevivem ao recálculo intactos.
                 if _char_xp.level > _level_before:
-                    # Re-aplica efeitos de talento e overrides de equip em try/except:
-                    # uma falha aqui não deve impedir o envio da notificação ao cliente.
                     try:
                         from components import TalentTree as _TTre
                         _tt_re = self.world.get_component(_xp_peid, _TTre)
@@ -1936,9 +2081,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                             _sid_re = self._player_eid_to_sid.get(_xp_peid, "")
                             if _sid_re:
                                 self.apply_talent_effects_to_player(_sid_re, _tt_re.allocated)
-                        self._apply_stat_overrides(_xp_peid)
                     except Exception as _lv_err:
-                        print(f"[LevelUp] aviso ao re-aplicar talentos/overrides: {_lv_err}")
+                        print(f"[LevelUp] aviso ao re-aplicar talentos: {_lv_err}")
 
                     # Garante HP cheio após qualquer recálculo acima
                     _cs_xp.current_hp = _cs_xp.max_hp

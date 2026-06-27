@@ -27,6 +27,7 @@ class ConsumableBarHandlers:
         inv  = self.world.get_component(self.player_entity, _Inv)
         if not cbar:
             return
+        self._set_hotbar_row_scale()
 
         W   = self._HB_W
         H   = self._HB_H
@@ -38,7 +39,9 @@ class ConsumableBarHandlers:
         skills_w      = n_skills_occ * W + max(0, n_skills_occ - 1) * PAD
         skills_x0     = self.screen.get_width() // 2 - skills_w // 2
 
-        dragging_cons = self._inv_drag_item is not None
+        _drag_cb      = self._get_drag()
+        dragging_cons = (_drag_cb.kind == "consumable" and _drag_cb.source == "inventory"
+                         and _drag_cb.payload is not None)
         events_cb     = self._ui_events
         _mods_cb      = pygame.key.get_mods()
         _shift_cb     = bool(_mods_cb & pygame.KMOD_SHIFT)
@@ -55,33 +58,36 @@ class ConsumableBarHandlers:
             if _ev_cb.type == pygame.MOUSEBUTTONDOWN and _ev_cb.button == 1:
                 if not dragging_cons:
                     _cb_x0_tmp = skills_x0 + skills_w + 20
-                    _cb_y0_tmp = self.screen.get_height() - H - 10
+                    _cb_y0_tmp = self.screen.get_height() - H - self._u(10)
                     for _jj_cb, (_ii_cb, _nm_cb) in enumerate(
                             [(i, cbar.slots[i]) for i in range(_CB.NUM_SLOTS) if cbar.slots[i]]):
                         _r_cb = pygame.Rect(_cb_x0_tmp + _jj_cb * (W + PAD), _cb_y0_tmp, W, H)
                         if _r_cb.collidepoint(_ev_cb.pos):
-                            self._cbar_drag_idx       = _ii_cb
-                            self._cbar_drag_shift     = _shift_cb
-                            self._cbar_drag_start_pos = _ev_cb.pos
-                            self._cbar_drag_active    = _shift_cb  # Shift → ativa imediatamente
+                            _drag_cb.kind       = "consumable"
+                            _drag_cb.source     = "consumable_bar"
+                            _drag_cb.source_idx = _ii_cb
+                            _drag_cb.payload    = _nm_cb
+                            _drag_cb.shift      = _shift_cb
+                            _drag_cb.start_pos  = _ev_cb.pos
+                            _drag_cb.active     = _shift_cb  # Shift → ativa imediatamente
                             break
                 break
 
         # MOUSEMOTION → ativa drag ao superar threshold de 8px
-        if self._cbar_drag_idx is not None and not self._cbar_drag_active \
-                and self._cbar_drag_start_pos is not None:
-            _dx_cb = mx_cb - self._cbar_drag_start_pos[0]
-            _dy_cb = my_cb - self._cbar_drag_start_pos[1]
+        _cb_self_dragging = (_drag_cb.kind == "consumable" and _drag_cb.source == "consumable_bar"
+                             and _drag_cb.source_idx != -1)
+        if _cb_self_dragging and not _drag_cb.active and _drag_cb.start_pos is not None:
+            _dx_cb = mx_cb - _drag_cb.start_pos[0]
+            _dy_cb = my_cb - _drag_cb.start_pos[1]
             if _dx_cb * _dx_cb + _dy_cb * _dy_cb > 64:
-                self._cbar_drag_active = True
+                _drag_cb.active = True
 
         # MOUSEUP → confirma remoção ou reseta
         _cb_x0_base = skills_x0 + skills_w + 20
-        _cb_y0_base = self.screen.get_height() - H - 10
+        _cb_y0_base = self.screen.get_height() - H - self._u(10)
         for _ev_cb in events_cb:
             if _ev_cb.type == pygame.MOUSEBUTTONUP and _ev_cb.button == 1:
-                if self._cbar_drag_active and self._cbar_drag_idx is not None \
-                        and self._cbar_drag_shift:
+                if _cb_self_dragging and _drag_cb.active and _drag_cb.shift:
                     # Verifica se soltou FORA da barra
                     _inside_cb = any(
                         pygame.Rect(_cb_x0_base + _jj3 * (W + PAD),
@@ -89,17 +95,17 @@ class ConsumableBarHandlers:
                         for _jj3 in range(_CB.NUM_SLOTS)
                     )
                     if not _inside_cb:
-                        cbar.slots[self._cbar_drag_idx] = None
+                        cbar.slots[_drag_cb.source_idx] = None
                         self._save_config()
                 # Reset
-                self._cbar_drag_idx       = None
-                self._cbar_drag_active    = False
-                self._cbar_drag_shift     = False
-                self._cbar_drag_start_pos = None
+                if _cb_self_dragging:
+                    _drag_cb.reset()
                 break
 
         # Durante drag do inventário OU drag de remoção: mostra TODOS os slots
-        if dragging_cons or self._cbar_drag_active:
+        _cb_drag_active_now = (_drag_cb.kind == "consumable" and _drag_cb.source == "consumable_bar"
+                               and _drag_cb.active)
+        if dragging_cons or _cb_drag_active_now:
             cons_occ = [(i, cbar.slots[i]) for i in range(_CB.NUM_SLOTS)]
         else:
             cons_occ = [(i, cbar.slots[i]) for i in range(_CB.NUM_SLOTS) if cbar.slots[i]]
@@ -108,7 +114,7 @@ class ConsumableBarHandlers:
             return
         cons_w = len(cons_occ) * W + (len(cons_occ) - 1) * PAD
         x0     = skills_x0 + skills_w + 20
-        y0     = self.screen.get_height() - H - 10
+        y0     = self.screen.get_height() - H - self._u(10)
         mx, my = pygame.mouse.get_pos()
 
         released_cb = any(e.type == pygame.MOUSEBUTTONUP and e.button == 1
@@ -120,14 +126,14 @@ class ConsumableBarHandlers:
 
             # Drop de drag de inventário sobre este slot
             if dragging_cons and released_cb and r.collidepoint(mx_cb, my_cb):
-                cbar.slots[i] = self._inv_drag_item
-                self._inv_drag_item = None
+                cbar.slots[i] = _drag_cb.payload
+                _drag_cb.reset()
                 self._save_config()
                 dragging_cons = False
 
             # Background — destaque durante drag
-            _is_dragged_out = self._cbar_drag_active and self._cbar_drag_shift \
-                              and i == self._cbar_drag_idx
+            _is_dragged_out = (_drag_cb.kind == "consumable" and _drag_cb.source == "consumable_bar"
+                              and _drag_cb.active and _drag_cb.shift and i == _drag_cb.source_idx)
             if dragging_cons and r.collidepoint(mx_cb, my_cb):
                 bg_col = (30, 65, 40)
             elif _is_dragged_out:
@@ -190,7 +196,9 @@ class ConsumableBarHandlers:
             self.screen.blit(self.font_sm.render(kb_name, True, key_col), (sx + 3, y0 + 2))
 
             # Tooltip (só quando não está em drag)
-            if not dragging_cons and not self._cbar_drag_active \
+            _cb_self_drag_active = (_drag_cb.kind == "consumable" and _drag_cb.source == "consumable_bar"
+                                    and _drag_cb.active)
+            if not dragging_cons and not _cb_self_drag_active \
                     and r.collidepoint(mx_cb, my_cb) and item_name:
                 item = next((it for it in inv.items if it.name == item_name), None) if inv else None
                 if item and item.consumable:
@@ -219,12 +227,12 @@ class ConsumableBarHandlers:
 
         # Cancel drag se botão liberado fora da barra
         if dragging_cons and released_cb:
-            self._inv_drag_item = None
+            _drag_cb.reset()
 
         # Ghost do drag de inventário: ícone segue o mouse
-        if self._inv_drag_item:
+        if _drag_cb.kind == "consumable" and _drag_cb.source == "inventory" and _drag_cb.payload:
             GSZ    = W
-            _gc_k  = "item_" + self._inv_drag_item.lower().replace(" ", "_")
+            _gc_k  = "item_" + _drag_cb.payload.lower().replace(" ", "_")
             _gc_ic = ICONS.get(_gc_k, GSZ - 4)
             ghost  = pygame.Surface((GSZ, GSZ), pygame.SRCALPHA)
             ghost.fill((20, 50, 30, 180))
@@ -236,8 +244,9 @@ class ConsumableBarHandlers:
             self.screen.blit(ghost, (mx_cb - GSZ // 2, my_cb - GSZ // 2))
 
         # Ghost do Shift+drag do consumable bar: ícone semi-transparente segue o mouse
-        if self._cbar_drag_active and self._cbar_drag_idx is not None:
-            _cg_name = cbar.slots[self._cbar_drag_idx]
+        if (_drag_cb.kind == "consumable" and _drag_cb.source == "consumable_bar"
+                and _drag_cb.active and _drag_cb.source_idx != -1):
+            _cg_name = cbar.slots[_drag_cb.source_idx]
             if _cg_name:
                 _CGZ  = W
                 _cg_k = "item_" + _cg_name.lower().replace(" ", "_")
@@ -248,7 +257,7 @@ class ConsumableBarHandlers:
                 _cg_ghost.set_alpha(180)
                 self.screen.blit(_cg_ghost, (mx_cb - _CGZ // 2, my_cb - _CGZ // 2))
                 # Hint de remoção durante Shift+drag (igual à hotbar de skills)
-                if self._cbar_drag_shift:
+                if _drag_cb.shift:
                     _cb_hint = self.font_xs.render("Soltar fora → remover", True, (220, 80, 220))
                     self.screen.blit(_cb_hint, (mx_cb - _cb_hint.get_width() // 2,
                                                 my_cb - _CGZ // 2 - 14))

@@ -9,7 +9,7 @@ from components import Position, Renderable, PlayerControlled, Camera, Collider,
                        SpawnZone, EntityIdentity, StatusEffects, ConsumableBar, MobSounds, FogOfWar, \
                        EnemyAbilities, EnemyAbilitySlot, QuestLog, QuestGiver, NPC, Blacksmith, \
                        LearnedRecipes, Trainer
-from ui_components import UIState, ShopUIState, LootUIState
+from ui_components import UIState, ShopUIState, LootUIState, DragState
 from tileset import TILE_MAPPING, OBJECT_MAPPING, TILE_SIZE, FLOOR_TILE, get_collision_offsets
 from mob_definitions import MOB_TABLE
 from enemy_abilities_data import MOB_ABILITIES
@@ -160,6 +160,7 @@ def create_player(world: World, tile_x: int, tile_y: int,
     world.add_component(player_entity, UIState())
     world.add_component(player_entity, ShopUIState())
     world.add_component(player_entity, LootUIState())
+    world.add_component(player_entity, DragState())
     world.add_component(player_entity, EntityIdentity(
         name="Aventureiro", race="Humano", entity_class="Guerreiro",
         level=1, tier="normal",

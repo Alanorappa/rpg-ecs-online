@@ -9,6 +9,8 @@ import random
 # caminho. Funciona com SDL_VIDEODRIVER=dummy, mas é dependência desnecessária.
 # Fix futuro: mover sistemas visuais para ClientSystems ou usar lazy import em render().
 from fonts import make as _font
+from ui_scale_mixin import UIScaleMixin
+from ui_sizes import UI
 
 # Re-exporta apply_effect de core_systems para compatibilidade com todo o código
 # que já faz `from systems import apply_effect`.
@@ -1117,7 +1119,12 @@ class CombatStateSystem(_BaseCombatStateSystem, System):
                 self._trigger_procs(eid, combat_stats)
 
     def _trigger_procs(self, entity_id: int, combat_stats: CombatStats) -> None:
-        """Rola e aplica procs de itens equipados ao entrar em combate."""
+        """Rola procs de itens equipados ao entrar em combate — versão LOCAL/cosmética
+        (LOG + feedback visual). O servidor rola sua própria versão autoritativa
+        independentemente (core_systems.ServerCombatStateSystem._roll_procs) e é quem
+        decide o resultado real de stats/HP, sincronizado de volta via STATS_UPDATE/AOI —
+        ver arquitetura/PROBLEMAS_ARQUITETURA.md. Por isso este roll local pode divergir
+        do servidor (chance independente); é só feedback, não fonte de verdade."""
         equip = self.world.get_component(entity_id, Equipment)
         if not equip or not combat_stats:
             return
@@ -1128,16 +1135,11 @@ class CombatStateSystem(_BaseCombatStateSystem, System):
                     _max_before = combat_stats.max_hp
                     _pct_before = (combat_stats.current_hp / _max_before
                                    if _max_before > 0 else 1.0)
-                    mod = Modifier(p["attribute"], p["value"])
+                    mod = Modifier(p["attribute"], p["value"], source="buff")
                     add_timed_modifier(combat_stats, mod, p["duration"], p["label"])
                     # Se o proc aumentou o max HP, escala o HP atual pelo mesmo percentual
                     if combat_stats.max_hp > _max_before:
                         combat_stats.current_hp = max(1, int(_pct_before * combat_stats.max_hp))
-                        # Online: servidor não tem dados de proc do equipamento —
-                        # notifica o HP/maxHP resultante para o servidor sincronizar
-                        _on_proc_hp = getattr(self, "_on_proc_hp_change", None)
-                        if _on_proc_hp:
-                            _on_proc_hp(combat_stats.current_hp, combat_stats.max_hp)
                     LOG.add(
                         f"PROC [{item.name}]: {p['label']}! "
                         f"+{p['value']} {p['attribute']} por {p['duration']:.0f}s.",
@@ -4111,7 +4113,7 @@ class MobRespawnSystem(System):
             )
 
 
-class ShopSystem(System):
+class ShopSystem(UIScaleMixin, System):
     """
     Sistema de comerciantes NPC.
     - Clique direito no NPC → abre painel de loja.
@@ -4120,16 +4122,18 @@ class ShopSystem(System):
     - Botão [↩ Desfazer] reverte a última transação.
     """
 
-    PANEL_W       = 1120
-    PANEL_H       = 700
-    ROW_H         = 50
-    ICON_S        = 42
-    MAX_ROWS      = 10
-    LEFT_W        = 530
-    RIGHT_W       = 530
-    GAP           = 12
-    BODY_Y_OFFSET = 126   # distância do topo do painel até a primeira linha de item
-    FOOTER_H      = 62    # altura reservada para ouro + dica no rodapé
+    _FONT_BASES = {"_font_sm": 22, "_font_md": 30, "_font_lg": 38}
+
+    PANEL_W       = UI.SHOP_W
+    PANEL_H       = UI.SHOP_H
+    ROW_H         = UI.SHOP_ROW_H
+    ICON_S        = UI.SHOP_ICON_SZ
+    MAX_ROWS      = UI.SHOP_MAX_ROWS
+    LEFT_W        = UI.SHOP_LEFT_W
+    RIGHT_W       = UI.SHOP_RIGHT_W
+    GAP           = UI.SHOP_GAP
+    BODY_Y_OFFSET = UI.SHOP_BODY_Y_OFFSET   # distância do topo do painel até a primeira linha de item
+    FOOTER_H      = UI.SHOP_FOOTER_H        # altura reservada para ouro + dica no rodapé
     SELL_RATIO    = 0.4
     MAX_HISTORY   = 20
 
@@ -4141,6 +4145,7 @@ class ShopSystem(System):
     }
 
     def __init__(self, world: World, player_entity: int, screen):
+        super().__init__()
         self.world         = world
         self.player_entity = player_entity
         self.world_surf = screen
@@ -4159,9 +4164,6 @@ class ShopSystem(System):
         self._qty_modal: dict | None = None  # None = fechado
 
         SW, SH = screen.get_size()
-        self._font_sm = _font(22)
-        self._font_md = _font(30)
-        self._font_lg = _font(38)
 
     @property
     def open_merchant_id(self) -> int:
@@ -4193,8 +4195,8 @@ class ShopSystem(System):
         self._open_cooldown     = 0.3
 
     def _panel_origin(self):
-        SW, SH = self.hud_surf.get_size()
-        return (SW - self.PANEL_W) // 2, (SH - self.PANEL_H) // 2
+        x0, y0 = self._safe_panel_origin(self.PANEL_W, self.PANEL_H)
+        return x0 + UI.SHOP_OFFSET_X, y0 + UI.SHOP_OFFSET_Y
 
     def _get_cam(self):
         SW = self.world_surf.get_width()
@@ -4545,8 +4547,12 @@ class ShopSystem(System):
         stock  = SHOPS.get(merch.shop_id, {}).get("stock", [])
         inv    = self.world.get_component(self.player_entity, Inventory)
         x0, y0 = self._panel_origin()
-        mid_x   = x0 + self.GAP + self.LEFT_W
-        body_y  = y0 + self.BODY_Y_OFFSET
+        gap     = self._u(self.GAP)
+        left_w  = self._u(self.LEFT_W)
+        right_w = self._u(self.RIGHT_W)
+        row_h   = self._u(self.ROW_H)
+        mid_x   = x0 + gap + left_w
+        body_y  = y0 + self._u(self.BODY_Y_OFFSET)
 
         for event in events:
             # ── Modal de quantidade aberto → processa antes de tudo ────────
@@ -4570,13 +4576,13 @@ class ShopSystem(System):
             mx, my = event.pos
 
             # Botão fechar
-            close_r = pygame.Rect(x0 + self.PANEL_W - 40, y0 + 6, 34, 34)
+            close_r = pygame.Rect(x0 + self._u(self.PANEL_W) - self._u(40), y0 + self._u(6), self._u(34), self._u(34))
             if event.button == 1 and close_r.collidepoint(mx, my):
                 self._close()
                 return
 
             # Botão desfazer (desabilitado online — servidor já processou a transação)
-            undo_r = pygame.Rect(x0 + self.GAP, y0 + 54, 145, 32)
+            undo_r = pygame.Rect(x0 + gap, y0 + self._u(54), self._u(145), self._u(32))
             if event.button == 1 and undo_r.collidepoint(mx, my) and not self._net:
                 self._undo()
                 return
@@ -4589,9 +4595,9 @@ class ShopSystem(System):
                 for i, entry in enumerate(stock):
                     vis_i = i - self._shop_scroll
                     if 0 <= vis_i < self.MAX_ROWS:
-                        r = pygame.Rect(x0 + self.GAP,
-                                        body_y + vis_i * self.ROW_H,
-                                        self.LEFT_W - 4, self.ROW_H - 2)
+                        r = pygame.Rect(x0 + gap,
+                                        body_y + vis_i * row_h,
+                                        left_w - self._u(4), row_h - self._u(2))
                         if r.collidepoint(mx, my):
                             preview = entry["factory"]()
                             if shift and getattr(preview, "max_stack", 1) > 1:
@@ -4605,9 +4611,9 @@ class ShopSystem(System):
                 for i, item in enumerate(inv.items):
                     vis_i = i - self._bag_scroll
                     if 0 <= vis_i < self.MAX_ROWS:
-                        r = pygame.Rect(mid_x + self.GAP,
-                                        body_y + vis_i * self.ROW_H,
-                                        self.RIGHT_W - 4, self.ROW_H - 2)
+                        r = pygame.Rect(mid_x + gap,
+                                        body_y + vis_i * row_h,
+                                        right_w - self._u(4), row_h - self._u(2))
                         if r.collidepoint(mx, my):
                             self._sell(i)
                             return
@@ -4640,16 +4646,17 @@ class ShopSystem(System):
 
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             mx, my = event.pos
+            self._set_panel_scale(UI.SHOP_QTY_MODAL_W, UI.SHOP_QTY_MODAL_H)
             SW, SH  = self.hud_surf.get_size()
-            mw, mh  = 460, 240
-            mx0     = (SW - mw) // 2
-            my0     = (SH - mh) // 2
+            mw, mh  = self._u(UI.SHOP_QTY_MODAL_W), self._u(UI.SHOP_QTY_MODAL_H)
+            mx0     = (SW - mw) // 2 + UI.SHOP_QTY_MODAL_OFFSET_X
+            my0     = (SH - mh) // 2 + UI.SHOP_QTY_MODAL_OFFSET_Y
 
             # Slider
-            sl_x  = mx0 + 20
-            sl_y  = my0 + 130
-            sl_w  = mw - 40
-            sl_r  = pygame.Rect(sl_x, sl_y - 10, sl_w, 20)
+            sl_x  = mx0 + self._u(20)
+            sl_y  = my0 + self._u(130)
+            sl_w  = mw - self._u(40)
+            sl_r  = pygame.Rect(sl_x, sl_y - self._u(10), sl_w, self._u(20))
             if sl_r.collidepoint(mx, my):
                 ratio      = max(0.0, min(1.0, (mx - sl_x) / sl_w))
                 m["qty"]   = max(1, round(ratio * m["max_qty"]))
@@ -4658,8 +4665,8 @@ class ShopSystem(System):
                 return
 
             # Botão Cancelar
-            btn_cancel = pygame.Rect(mx0 + 20,      my0 + mh - 54, 190, 38)
-            btn_ok     = pygame.Rect(mx0 + mw - 210, my0 + mh - 54, 190, 38)
+            btn_cancel = pygame.Rect(mx0 + self._u(20),      my0 + mh - self._u(54), self._u(190), self._u(38))
+            btn_ok     = pygame.Rect(mx0 + mw - self._u(210), my0 + mh - self._u(54), self._u(190), self._u(38))
             if btn_cancel.collidepoint(mx, my):
                 self._close_qty_modal()
                 return
@@ -4677,10 +4684,11 @@ class ShopSystem(System):
             m["dragging"] = False
 
         elif event.type == pygame.MOUSEMOTION and m.get("dragging"):
+            self._set_panel_scale(UI.SHOP_QTY_MODAL_W, UI.SHOP_QTY_MODAL_H)
             SW, SH  = self.hud_surf.get_size()
-            mw      = 460
-            mx0     = (SW - mw) // 2
-            sl_x, sl_w = mx0 + 20, mw - 40
+            mw      = self._u(UI.SHOP_QTY_MODAL_W)
+            mx0     = (SW - mw) // 2 + UI.SHOP_QTY_MODAL_OFFSET_X
+            sl_x, sl_w = mx0 + self._u(20), mw - self._u(40)
             mx_now  = event.pos[0]
             ratio   = max(0.0, min(1.0, (mx_now - sl_x) / sl_w))
             m["qty"]  = max(1, round(ratio * m["max_qty"]))
@@ -4715,8 +4723,13 @@ class ShopSystem(System):
 
         SW, SH  = self.hud_surf.get_size()
         x0, y0  = self._panel_origin()
-        W, H    = self.PANEL_W, self.PANEL_H
-        mid_x   = x0 + self.GAP + self.LEFT_W
+        W, H    = self._u(self.PANEL_W), self._u(self.PANEL_H)
+        gap     = self._u(self.GAP)
+        left_w  = self._u(self.LEFT_W)
+        right_w = self._u(self.RIGHT_W)
+        row_h   = self._u(self.ROW_H)
+        icon_s  = self._u(self.ICON_S)
+        mid_x   = x0 + gap + left_w
         mx, my  = pygame.mouse.get_pos()
         _modal_open = self._qty_modal is not None
 
@@ -4733,25 +4746,25 @@ class ShopSystem(System):
 
         # --- Header ---
         title = self._font_lg.render(f"  {shop.get('name', 'Comerciante')}", True, (255, 220, 120))
-        self.hud_surf.blit(title, (x0 + 8, y0 + 8))
+        self.hud_surf.blit(title, (x0 + self._u(8), y0 + self._u(8)))
 
-        close_r   = pygame.Rect(x0 + W - 40, y0 + 6, 34, 34)
+        close_r   = pygame.Rect(x0 + W - self._u(40), y0 + self._u(6), self._u(34), self._u(34))
         close_hov = close_r.collidepoint(mx, my)
         pygame.draw.rect(self.hud_surf, (180, 60, 60) if close_hov else (100, 35, 35), close_r, border_radius=3)
         xs = self._font_md.render("X", True, (255, 255, 255))
         self.hud_surf.blit(xs, (close_r.centerx - xs.get_width() // 2,
                               close_r.centery - xs.get_height() // 2))
 
-        LINE1 = y0 + 50   # linha após o título
-        UNDO_Y = y0 + 54  # barra de desfazer
-        LINE2 = y0 + 92   # linha após desfazer
-        COL_Y = y0 + 96   # cabeçalhos das colunas
-        body_y = y0 + self.BODY_Y_OFFSET
+        LINE1 = y0 + self._u(50)   # linha após o título
+        UNDO_Y = y0 + self._u(54)  # barra de desfazer
+        LINE2 = y0 + self._u(92)   # linha após desfazer
+        COL_Y = y0 + self._u(96)   # cabeçalhos das colunas
+        body_y = y0 + self._u(self.BODY_Y_OFFSET)
 
-        pygame.draw.line(self.hud_surf, (90, 70, 40), (x0 + 4, LINE1), (x0 + W - 4, LINE1))
+        pygame.draw.line(self.hud_surf, (90, 70, 40), (x0 + self._u(4), LINE1), (x0 + W - self._u(4), LINE1))
 
         # --- Barra de desfazer ---
-        undo_r   = pygame.Rect(x0 + self.GAP, UNDO_Y, 145, 32)
+        undo_r   = pygame.Rect(x0 + gap, UNDO_Y, self._u(145), self._u(32))
         has_hist = bool(self.transaction_history)
         undo_hov = undo_r.collidepoint(mx, my) and has_hist
         undo_bg  = (55, 80, 55) if undo_hov else ((38, 55, 38) if has_hist else (28, 28, 28))
@@ -4759,7 +4772,7 @@ class ShopSystem(System):
         pygame.draw.rect(self.hud_surf, undo_bg,  undo_r, border_radius=3)
         pygame.draw.rect(self.hud_surf, undo_col, undo_r, 1, border_radius=3)
         self.hud_surf.blit(self._font_sm.render("↩ Desfazer", True, undo_col),
-                         (undo_r.x + 8, undo_r.y + 7))
+                         (undo_r.x + self._u(8), undo_r.y + self._u(7)))
 
         if self.transaction_history:
             tx  = self.transaction_history[-1]
@@ -4768,26 +4781,26 @@ class ShopSystem(System):
             else:
                 desc = f"Ultima: vendeu {tx['item'].name} por {tx['sell_value']}g"
             self.hud_surf.blit(self._font_sm.render(desc, True, (150, 150, 150)),
-                             (x0 + self.GAP + 155, UNDO_Y + 7))
+                             (x0 + gap + self._u(155), UNDO_Y + self._u(7)))
 
-        pygame.draw.line(self.hud_surf, (90, 70, 40), (x0 + 4, LINE2), (x0 + W - 4, LINE2))
+        pygame.draw.line(self.hud_surf, (90, 70, 40), (x0 + self._u(4), LINE2), (x0 + W - self._u(4), LINE2))
 
         # Divisor vertical
-        pygame.draw.line(self.hud_surf, (90, 70, 40), (mid_x, LINE1), (mid_x, y0 + H - 36))
+        pygame.draw.line(self.hud_surf, (90, 70, 40), (mid_x, LINE1), (mid_x, y0 + H - self._u(36)))
 
         # --- Cabeçalhos das colunas ---
         hdr_col = (160, 130, 80)
         hint    = (90, 80, 60)
         self.hud_surf.blit(self._font_md.render(f"LOJA  ({len(stock)} itens)", True, hdr_col),
-                         (x0 + self.GAP + 4, COL_Y))
+                         (x0 + gap + self._u(4), COL_Y))
         self.hud_surf.blit(self._font_sm.render("clique dir. p/ comprar  |  Shift+dir. = qtd.", True, hint),
-                         (x0 + self.GAP + 4, COL_Y + 26))
+                         (x0 + gap + self._u(4), COL_Y + self._u(26)))
         self.hud_surf.blit(self._font_md.render(f"MOCHILA  ({len(bag)}/{inv.max_slots if inv else 0})", True, hdr_col),
-                         (mid_x + self.GAP + 4, COL_Y))
+                         (mid_x + gap + self._u(4), COL_Y))
         self.hud_surf.blit(self._font_sm.render("clique dir. p/ vender", True, hint),
-                         (mid_x + self.GAP + 4, COL_Y + 26))
+                         (mid_x + gap + self._u(4), COL_Y + self._u(26)))
 
-        pygame.draw.line(self.hud_surf, (70, 55, 30), (x0 + 4, body_y - 2), (x0 + W - 4, body_y - 2))
+        pygame.draw.line(self.hud_surf, (70, 55, 30), (x0 + self._u(4), body_y - self._u(2)), (x0 + W - self._u(4), body_y - self._u(2)))
 
         # --- Painel esquerdo: itens da loja ---
         max_shop = max(0, len(stock) - self.MAX_ROWS)
@@ -4797,8 +4810,8 @@ class ShopSystem(System):
             vis_i = i - self._shop_scroll
             if not (0 <= vis_i < self.MAX_ROWS):
                 continue
-            row_y = body_y + vis_i * self.ROW_H
-            r     = pygame.Rect(x0 + self.GAP, row_y, self.LEFT_W - 4, self.ROW_H - 2)
+            row_y = body_y + vis_i * row_h
+            r     = pygame.Rect(x0 + gap, row_y, left_w - self._u(4), row_h - self._u(2))
 
             # Preview do item (instância temporária apenas para display)
             preview    = entry["factory"]()
@@ -4817,25 +4830,25 @@ class ShopSystem(System):
             pygame.draw.rect(self.hud_surf, bord_c, r, 1, border_radius=3)
 
             rar_col = self._RARITY_COLORS.get(preview.rarity, (100, 100, 100))
-            ic_r    = pygame.Rect(r.x + 4, r.y + (self.ROW_H - 2 - self.ICON_S) // 2,
-                                  self.ICON_S, self.ICON_S)
+            ic_r    = pygame.Rect(r.x + self._u(4), r.y + (row_h - self._u(2) - icon_s) // 2,
+                                  icon_s, icon_s)
             pygame.draw.rect(self.hud_surf, (38, 30, 14), ic_r, border_radius=2)
-            icon_surf = ICONS.get(ICONS.item_key(preview), self.ICON_S)
+            icon_surf = ICONS.get(ICONS.item_key(preview), icon_s)
             if icon_surf:
                 self.hud_surf.blit(icon_surf, ic_r)
             else:
                 pygame.draw.rect(self.hud_surf, rar_col, ic_r, 1, border_radius=2)
-                pygame.draw.circle(self.hud_surf, rar_col, (ic_r.right - 4, ic_r.bottom - 4), 3)
+                pygame.draw.circle(self.hud_surf, rar_col, (ic_r.right - self._u(4), ic_r.bottom - self._u(4)), self._u(3))
 
             name_col = rar_col if (can_afford and not inv_full) else (90, 70, 70)
             self.hud_surf.blit(self._font_sm.render(preview.name,      True, name_col),
-                             (ic_r.right + 6, r.y + 6))
+                             (ic_r.right + self._u(6), r.y + self._u(6)))
             self.hud_surf.blit(self._font_sm.render(preview.item_type, True, (95, 85, 65)),
-                             (ic_r.right + 6, r.y + 24))
+                             (ic_r.right + self._u(6), r.y + self._u(24)))
 
             price_col = (255, 215, 0) if (can_afford and not inv_full) else (130, 70, 70)
             ps = self._font_sm.render(f"{entry['price']}g", True, price_col)
-            self.hud_surf.blit(ps, (r.right - ps.get_width() - 8, r.y + 14))
+            self.hud_surf.blit(ps, (r.right - ps.get_width() - self._u(8), r.y + self._u(14)))
 
             if hov:
                 lines = item_tooltip_lines(preview)
@@ -4852,12 +4865,12 @@ class ShopSystem(System):
 
         # Scrollbar loja
         if len(stock) > self.MAX_ROWS:
-            sb_h    = self.MAX_ROWS * self.ROW_H
-            sb_x    = x0 + self.GAP + self.LEFT_W - 8
+            sb_h    = self.MAX_ROWS * row_h
+            sb_x    = x0 + gap + left_w - self._u(8)
             th      = max(20, sb_h * self.MAX_ROWS // len(stock))
             ty      = body_y + (sb_h - th) * self._shop_scroll // max(1, max_shop)
-            pygame.draw.rect(self.hud_surf, (45, 35, 20), (sb_x, body_y, 5, sb_h), border_radius=2)
-            pygame.draw.rect(self.hud_surf, (140, 110, 60), (sb_x, ty, 5, th), border_radius=2)
+            pygame.draw.rect(self.hud_surf, (45, 35, 20), (sb_x, body_y, self._u(5), sb_h), border_radius=2)
+            pygame.draw.rect(self.hud_surf, (140, 110, 60), (sb_x, ty, self._u(5), th), border_radius=2)
 
         # --- Painel direito: mochila ---
         max_bag = max(0, len(bag) - self.MAX_ROWS)
@@ -4867,8 +4880,8 @@ class ShopSystem(System):
             vis_i = i - self._bag_scroll
             if not (0 <= vis_i < self.MAX_ROWS):
                 continue
-            row_y = body_y + vis_i * self.ROW_H
-            r     = pygame.Rect(mid_x + self.GAP, row_y, self.RIGHT_W - 4, self.ROW_H - 2)
+            row_y = body_y + vis_i * row_h
+            r     = pygame.Rect(mid_x + gap, row_y, right_w - self._u(4), row_h - self._u(2))
 
             hov    = r.collidepoint(mx, my) and not _modal_open
             bg_c   = (50, 40, 20) if hov else (28, 20, 10)
@@ -4877,29 +4890,29 @@ class ShopSystem(System):
             pygame.draw.rect(self.hud_surf, bord_c, r, 1, border_radius=3)
 
             rar_col = self._RARITY_COLORS.get(item.rarity, (100, 100, 100))
-            ic_r    = pygame.Rect(r.x + 4, r.y + (self.ROW_H - 2 - self.ICON_S) // 2,
-                                  self.ICON_S, self.ICON_S)
+            ic_r    = pygame.Rect(r.x + self._u(4), r.y + (row_h - self._u(2) - icon_s) // 2,
+                                  icon_s, icon_s)
             pygame.draw.rect(self.hud_surf, (38, 30, 14), ic_r, border_radius=2)
-            icon_surf = ICONS.get(ICONS.item_key(item), self.ICON_S)
+            icon_surf = ICONS.get(ICONS.item_key(item), icon_s)
             if icon_surf:
                 self.hud_surf.blit(icon_surf, ic_r)
             else:
                 pygame.draw.rect(self.hud_surf, rar_col, ic_r, 1, border_radius=2)
-                pygame.draw.circle(self.hud_surf, rar_col, (ic_r.right - 4, ic_r.bottom - 4), 3)
+                pygame.draw.circle(self.hud_surf, rar_col, (ic_r.right - self._u(4), ic_r.bottom - self._u(4)), self._u(3))
             from ui_helpers import draw_stack_count as _dsc
             _dsc(self.hud_surf, item, ic_r, self._font_sm)
 
             stack = getattr(item, "stack", 1)
             name_label = f"{item.name}" if stack <= 1 else f"{item.name} x{stack}"
             self.hud_surf.blit(self._font_sm.render(name_label, True, rar_col),
-                             (ic_r.right + 6, r.y + 6))
+                             (ic_r.right + self._u(6), r.y + self._u(6)))
             slot_label = item.slot if item.slot else item.item_type
             self.hud_surf.blit(self._font_sm.render(slot_label, True, (95, 85, 65)),
-                             (ic_r.right + 6, r.y + 24))
+                             (ic_r.right + self._u(6), r.y + self._u(24)))
 
             sp     = self._sell_price(item)
             sp_s   = self._font_sm.render(f"+{sp}g", True, (120, 200, 100))
-            self.hud_surf.blit(sp_s, (r.right - sp_s.get_width() - 8, r.y + 14))
+            self.hud_surf.blit(sp_s, (r.right - sp_s.get_width() - self._u(8), r.y + self._u(14)))
 
             if hov:
                 lines = item_tooltip_lines(item)
@@ -4912,19 +4925,19 @@ class ShopSystem(System):
 
         # Scrollbar mochila
         if len(bag) > self.MAX_ROWS:
-            sb_h = self.MAX_ROWS * self.ROW_H
-            sb_x = mid_x + self.GAP + self.RIGHT_W - 8
+            sb_h = self.MAX_ROWS * row_h
+            sb_x = mid_x + gap + right_w - self._u(8)
             th   = max(20, sb_h * self.MAX_ROWS // len(bag))
             ty   = body_y + (sb_h - th) * self._bag_scroll // max(1, max_bag)
-            pygame.draw.rect(self.hud_surf, (45, 35, 20), (sb_x, body_y, 5, sb_h), border_radius=2)
-            pygame.draw.rect(self.hud_surf, (140, 110, 60), (sb_x, ty, 5, th), border_radius=2)
+            pygame.draw.rect(self.hud_surf, (45, 35, 20), (sb_x, body_y, self._u(5), sb_h), border_radius=2)
+            pygame.draw.rect(self.hud_surf, (140, 110, 60), (sb_x, ty, self._u(5), th), border_radius=2)
 
         # --- Footer: ouro do jogador ---
-        foot_y = y0 + H - self.FOOTER_H
-        pygame.draw.line(self.hud_surf, (90, 70, 40), (x0 + 4, foot_y), (x0 + W - 4, foot_y))
+        foot_y = y0 + H - self._u(self.FOOTER_H)
+        pygame.draw.line(self.hud_surf, (90, 70, 40), (x0 + self._u(4), foot_y), (x0 + W - self._u(4), foot_y))
         if wallet:
             gold_s = self._font_md.render(f"Seu ouro: {wallet.gold}g", True, (255, 215, 0))
-            self.hud_surf.blit(gold_s, (x0 + W // 2 - gold_s.get_width() // 2, foot_y + 10))
+            self.hud_surf.blit(gold_s, (x0 + W // 2 - gold_s.get_width() // 2, foot_y + self._u(10)))
 
         # --- Modal de quantidade ---
         if self._qty_modal is not None:
@@ -4934,10 +4947,11 @@ class ShopSystem(System):
     def _render_qty_modal(self, wallet) -> None:
         """Renderiza o modal de seleção de quantidade."""
         m       = self._qty_modal
+        self._set_panel_scale(UI.SHOP_QTY_MODAL_W, UI.SHOP_QTY_MODAL_H)
         SW, SH  = self.hud_surf.get_size()
-        mw, mh  = 460, 240
-        mx0     = (SW - mw) // 2
-        my0     = (SH - mh) // 2
+        mw, mh  = self._u(UI.SHOP_QTY_MODAL_W), self._u(UI.SHOP_QTY_MODAL_H)
+        mx0     = (SW - mw) // 2 + UI.SHOP_QTY_MODAL_OFFSET_X
+        my0     = (SH - mh) // 2 + UI.SHOP_QTY_MODAL_OFFSET_Y
 
         # Overlay semitransparente
         ov = pygame.Surface((SW, SH), pygame.SRCALPHA)
@@ -4952,7 +4966,7 @@ class ShopSystem(System):
 
         # Título
         title_s = self._font_md.render(m["preview"].name, True, (255, 220, 100))
-        self.hud_surf.blit(title_s, (mx0 + mw // 2 - title_s.get_width() // 2, my0 + 12))
+        self.hud_surf.blit(title_s, (mx0 + mw // 2 - title_s.get_width() // 2, my0 + self._u(12)))
 
         # Preço
         price    = m["entry"]["price"]
@@ -4962,39 +4976,39 @@ class ShopSystem(System):
         price_s  = self._font_sm.render(
             f"{price}g por unidade  |  Total: {total}g  (ouro: {gold_avail}g)",
             True, price_col)
-        self.hud_surf.blit(price_s, (mx0 + mw // 2 - price_s.get_width() // 2, my0 + 42))
+        self.hud_surf.blit(price_s, (mx0 + mw // 2 - price_s.get_width() // 2, my0 + self._u(42)))
 
         # ── Slider ────────────────────────────────────────────────────────
-        sl_x  = mx0 + 20
-        sl_y  = my0 + 130
-        sl_w  = mw - 40
+        sl_x  = mx0 + self._u(20)
+        sl_y  = my0 + self._u(130)
+        sl_w  = mw - self._u(40)
         ratio = (m["qty"] - 1) / max(1, m["max_qty"] - 1) if m["max_qty"] > 1 else 0.0
         handle_x = sl_x + int(ratio * sl_w)
 
-        pygame.draw.rect(self.hud_surf, (50, 40, 25), (sl_x, sl_y - 3, sl_w, 6), border_radius=3)
-        pygame.draw.rect(self.hud_surf, (160, 120, 50), (sl_x, sl_y - 3, int(ratio * sl_w), 6), border_radius=3)
-        pygame.draw.circle(self.hud_surf, (220, 180, 80), (handle_x, sl_y), 10)
-        pygame.draw.circle(self.hud_surf, (255, 220, 120), (handle_x, sl_y), 10, 2)
+        pygame.draw.rect(self.hud_surf, (50, 40, 25), (sl_x, sl_y - self._u(3), sl_w, self._u(6)), border_radius=3)
+        pygame.draw.rect(self.hud_surf, (160, 120, 50), (sl_x, sl_y - self._u(3), int(ratio * sl_w), self._u(6)), border_radius=3)
+        pygame.draw.circle(self.hud_surf, (220, 180, 80), (handle_x, sl_y), self._u(10))
+        pygame.draw.circle(self.hud_surf, (255, 220, 120), (handle_x, sl_y), self._u(10), 2)
 
         # Labels min/max do slider
         self.hud_surf.blit(self._font_sm.render("1", True, (130, 110, 70)),
-                           (sl_x, sl_y + 14))
+                           (sl_x, sl_y + self._u(14)))
         max_s = self._font_sm.render(str(m["max_qty"]), True, (130, 110, 70))
-        self.hud_surf.blit(max_s, (sl_x + sl_w - max_s.get_width(), sl_y + 14))
+        self.hud_surf.blit(max_s, (sl_x + sl_w - max_s.get_width(), sl_y + self._u(14)))
 
         # ── Campo de texto ────────────────────────────────────────────────
         qty_s = self._font_lg.render(str(m["qty"]), True, (255, 255, 255))
         txt_x = mx0 + mw // 2 - qty_s.get_width() // 2
-        self.hud_surf.blit(qty_s, (txt_x, my0 + 76))
+        self.hud_surf.blit(qty_s, (txt_x, my0 + self._u(76)))
         # Cursor piscante
         if (pygame.time.get_ticks() // 500) % 2 == 0:
             cx = txt_x + qty_s.get_width() + 2
             pygame.draw.line(self.hud_surf, (200, 200, 200),
-                             (cx, my0 + 78), (cx, my0 + 78 + qty_s.get_height() - 4), 2)
+                             (cx, my0 + self._u(78)), (cx, my0 + self._u(78) + qty_s.get_height() - 4), 2)
 
         # ── Botões ────────────────────────────────────────────────────────
-        btn_cancel = pygame.Rect(mx0 + 20,       my0 + mh - 54, 190, 38)
-        btn_ok     = pygame.Rect(mx0 + mw - 210, my0 + mh - 54, 190, 38)
+        btn_cancel = pygame.Rect(mx0 + self._u(20),       my0 + mh - self._u(54), self._u(190), self._u(38))
+        btn_ok     = pygame.Rect(mx0 + mw - self._u(210), my0 + mh - self._u(54), self._u(190), self._u(38))
         mmx, mmy   = pygame.mouse.get_pos()
 
         for btn, label, ok in ((btn_cancel, "Cancelar", False), (btn_ok, f"Comprar {m['qty']}", True)):
@@ -5016,7 +5030,7 @@ class ShopSystem(System):
 
         # Dica ESC
         esc_s = self._font_sm.render("ESC cancela  |  ENTER confirma", True, (80, 70, 50))
-        self.hud_surf.blit(esc_s, (mx0 + mw // 2 - esc_s.get_width() // 2, my0 + mh - 14))
+        self.hud_surf.blit(esc_s, (mx0 + mw // 2 - esc_s.get_width() // 2, my0 + mh - self._u(14)))
 
 
 class ConsumableSystem(System):
@@ -5213,7 +5227,7 @@ class ConsumableSystem(System):
             })
 
 
-class LootSystem(System):
+class LootSystem(UIScaleMixin, System):
     """
     Detecta clique direito em cadáveres e exibe modal de loot.
     Clique esquerdo em item no modal → move para o inventário do jogador.
@@ -5221,14 +5235,16 @@ class LootSystem(System):
     Shift + hover → painel de comparação com item equipado no mesmo slot.
     """
 
-    # Layout do modal em lista vertical (tamanho fixo)
-    MODAL_W   = 260   # largura fixa do modal
-    ROW_H     = 46    # altura de cada linha (ícone + texto)
-    ICON_S    = 36    # tamanho do ícone dentro da linha
-    MAX_ROWS  = 5     # linhas visíveis (scroll se houver mais)
-    PAD       = 8
-    TITLE_H   = 28
-    SCROLL_W  = 8     # largura da barra de rolagem
+    _FONT_BASES = {"font_sm": 20, "font_md": 24}
+
+    # Layout do modal em lista vertical (tamanho fixo) — ui_sizes.py (UI.LOOT_*)
+    MODAL_W   = UI.LOOT_MODAL_W    # largura fixa do modal
+    ROW_H     = UI.LOOT_ROW_H      # altura de cada linha (ícone + texto)
+    ICON_S    = UI.LOOT_ICON_S     # tamanho do ícone dentro da linha
+    MAX_ROWS  = UI.LOOT_MAX_ROWS   # linhas visíveis (scroll se houver mais)
+    PAD       = UI.LOOT_PAD
+    TITLE_H   = UI.LOOT_TITLE_H
+    SCROLL_W  = UI.LOOT_SCROLL_W   # largura da barra de rolagem
     MODAL_H   = TITLE_H + MAX_ROWS * (ROW_H + PAD // 2) + PAD  # altura fixa
 
     # Cores
@@ -5244,6 +5260,7 @@ class LootSystem(System):
     }
 
     def __init__(self, world: World, screen: pygame.Surface, player_entity: int = -1):
+        super().__init__()
         self.world         = world
         self.player_entity = player_entity
         self.world_surf = screen
@@ -5254,8 +5271,6 @@ class LootSystem(System):
         # Callback chamado após cada ação de loot (moeda ou item) — injetado pelo GameEngine.
         # Online: aponta para _send_save_state() para salvar imediatamente na ação.
         self._on_loot_collected = None
-        self.font_sm = _font(20)
-        self.font_md = _font(24)
         self._modal_x       = 0   # posição X do modal (definida ao abrir)
         self._modal_y       = 0   # posição Y do modal
         self._scroll_offset = 0   # índice da primeira linha visível
@@ -5416,24 +5431,28 @@ class LootSystem(System):
         """Abre o modal ancorado próximo ao ponto (ax, ay), clamped à tela."""
         self.open_corpse_id = entity_id
         self._scroll_offset = 0
+        self._set_panel_scale(self.MODAL_W, self.MODAL_H)
         sw, sh = self.hud_surf.get_size()
-        x = max(4, min(ax + 16, sw - self.MODAL_W - 4))
-        y = max(4, min(ay - self.TITLE_H, sh - self.MODAL_H - 4))
+        modal_w = self._u(self.MODAL_W)
+        modal_h = self._u(self.MODAL_H)
+        x = max(4, min(ax + 16, sw - modal_w - 4))
+        y = max(4, min(ay - self._u(self.TITLE_H), sh - modal_h - 4))
         self._modal_x, self._modal_y = x, y
 
     def _modal_rect(self) -> pygame.Rect:
         """Tamanho sempre fixo — não depende do conteúdo."""
-        return pygame.Rect(self._modal_x, self._modal_y, self.MODAL_W, self.MODAL_H)
+        self._set_panel_scale(self.MODAL_W, self.MODAL_H)
+        return pygame.Rect(self._modal_x, self._modal_y, self._u(self.MODAL_W), self._u(self.MODAL_H))
 
     def _close_btn_rect(self, modal: pygame.Rect) -> pygame.Rect:
         """Botão X no canto superior direito da barra de título."""
-        sz = self.TITLE_H - 6
-        return pygame.Rect(modal.right - sz - 4, modal.y + 3, sz, sz)
+        sz = self._u(self.TITLE_H) - self._u(6)
+        return pygame.Rect(modal.right - sz - self._u(4), modal.y + self._u(3), sz, sz)
 
     def _row_rect(self, modal: pygame.Rect, row: int) -> pygame.Rect:
         """Rect de uma linha da lista (row 0 = primeira linha)."""
-        y = modal.y + self.TITLE_H + row * (self.ROW_H + self.PAD // 2)
-        return pygame.Rect(modal.x + self.PAD, y, self.MODAL_W - self.PAD * 2, self.ROW_H)
+        y = modal.y + self._u(self.TITLE_H) + row * (self._u(self.ROW_H) + self._u(self.PAD) // 2)
+        return pygame.Rect(modal.x + self._u(self.PAD), y, self._u(self.MODAL_W) - self._u(self.PAD) * 2, self._u(self.ROW_H))
 
     def _point_in_modal(self, mx: int, my: int) -> bool:
         return self._modal_rect().collidepoint(mx, my)
@@ -5661,7 +5680,7 @@ class LootSystem(System):
 
         # --- Barra de título ---
         title = self.font_sm.render("Loot", True, self.BORDER_COLOR)
-        self.hud_surf.blit(title, (modal.x + self.PAD, modal.y + (self.TITLE_H - title.get_height()) // 2))
+        self.hud_surf.blit(title, (modal.x + self._u(self.PAD), modal.y + (self._u(self.TITLE_H) - title.get_height()) // 2))
 
         # Botão X
         close_r = self._close_btn_rect(modal)
@@ -5684,21 +5703,22 @@ class LootSystem(System):
 
         # --- Barra de rolagem (se necessário) ---
         need_scroll = total > self.MAX_ROWS
-        row_w = self.MODAL_W - self.PAD * 2 - (self.SCROLL_W + 4 if need_scroll else 0)
+        scroll_w = self._u(self.SCROLL_W)
+        row_w = self._u(self.MODAL_W) - self._u(self.PAD) * 2 - (scroll_w + self._u(4) if need_scroll else 0)
 
         if need_scroll:
             # Trilho
-            track_x = modal.right - self.SCROLL_W - 4
-            track_y = modal.y + self.TITLE_H + self.PAD // 2
-            track_h = self.MAX_ROWS * (self.ROW_H + self.PAD // 2) - self.PAD // 2
+            track_x = modal.right - scroll_w - self._u(4)
+            track_y = modal.y + self._u(self.TITLE_H) + self._u(self.PAD) // 2
+            track_h = self.MAX_ROWS * (self._u(self.ROW_H) + self._u(self.PAD) // 2) - self._u(self.PAD) // 2
             pygame.draw.rect(self.hud_surf, (40, 30, 18),
-                             (track_x, track_y, self.SCROLL_W, track_h), border_radius=3)
+                             (track_x, track_y, scroll_w, track_h), border_radius=3)
             # Thumb
             thumb_h = max(20, track_h * self.MAX_ROWS // total)
             max_scroll = total - self.MAX_ROWS
             thumb_y = track_y + (track_h - thumb_h) * self._scroll_offset // max(1, max_scroll)
             pygame.draw.rect(self.hud_surf, (130, 100, 55),
-                             (track_x, thumb_y, self.SCROLL_W, thumb_h), border_radius=3)
+                             (track_x, thumb_y, scroll_w, thumb_h), border_radius=3)
 
         # --- Renderiza linhas visíveis ---
         visible = virtual[self._scroll_offset: self._scroll_offset + self.MAX_ROWS]
@@ -5712,18 +5732,19 @@ class LootSystem(System):
 
             if entry[0] == "coin":
                 # --- Linha de moedas ---
+                icon_s = self._u(self.ICON_S)
                 pygame.draw.rect(self.hud_surf, (70, 55, 15) if hovered else (28, 20, 8), rr, border_radius=3)
                 pygame.draw.rect(self.hud_surf, (200, 170, 50) if hovered else (100, 80, 20), rr, 1, border_radius=3)
-                icon_r = pygame.Rect(rr.x + 4, rr.centery - self.ICON_S // 2, self.ICON_S, self.ICON_S)
-                r_out = self.ICON_S // 2
-                r_in  = max(1, r_out - 4)
+                icon_r = pygame.Rect(rr.x + self._u(4), rr.centery - icon_s // 2, icon_s, icon_s)
+                r_out = icon_s // 2
+                r_in  = max(1, r_out - self._u(4))
                 pygame.draw.circle(self.hud_surf, (180, 140, 0),  icon_r.center, r_out)
                 pygame.draw.circle(self.hud_surf, (255, 215, 0),  icon_r.center, r_in)
                 pygame.draw.circle(self.hud_surf, (120, 90, 0),   icon_r.center, r_out, 1)
                 g_surf = self.font_sm.render("G", True, (120, 90, 0))
                 self.hud_surf.blit(g_surf, (icon_r.centerx - g_surf.get_width() // 2,
                                           icon_r.centery - g_surf.get_height() // 2))
-                tx = icon_r.right + 8
+                tx = icon_r.right + self._u(8)
                 ty = rr.centery - self.font_md.get_height() // 2
                 self.hud_surf.blit(self.font_md.render(f"{corpse.coins} moedas", True, (255, 215, 0)), (tx, ty))
                 if hovered:
@@ -5734,11 +5755,12 @@ class LootSystem(System):
             else:
                 # --- Linha de item ---
                 item = entry[1]
+                icon_s = self._u(self.ICON_S)
                 bg_col = self.HOVER_COLOR if hovered else (28, 20, 8)
                 pygame.draw.rect(self.hud_surf, bg_col, rr, border_radius=3)
 
-                icon_r = pygame.Rect(rr.x + 4, rr.centery - self.ICON_S // 2, self.ICON_S, self.ICON_S)
-                icon_surf = ICONS.get(ICONS.item_key(item), self.ICON_S)
+                icon_r = pygame.Rect(rr.x + self._u(4), rr.centery - icon_s // 2, icon_s, icon_s)
+                icon_surf = ICONS.get(ICONS.item_key(item), icon_s)
                 if icon_surf:
                     self.hud_surf.blit(icon_surf, icon_r)
                 else:
@@ -5748,7 +5770,7 @@ class LootSystem(System):
                 _dsc2(self.hud_surf, item, icon_r, self.font_sm)
 
                 rc = self.RARITY_COLORS.get(item.rarity, (200, 200, 200))
-                tx = icon_r.right + 8
+                tx = icon_r.right + self._u(8)
                 _stack = getattr(item, "stack", 1)
                 _max_s = getattr(item, "max_stack", 1)
                 _name_lbl = f"{item.name} x{_stack}" if _max_s > 1 else item.name
@@ -5769,7 +5791,7 @@ class LootSystem(System):
         if not virtual:
             empty = self.font_sm.render("(vazio)", True, (120, 100, 80))
             rr = self._row_rect(modal, 0)
-            self.hud_surf.blit(empty, (rr.x + 4, rr.centery - empty.get_height() // 2))
+            self.hud_surf.blit(empty, (rr.x + self._u(4), rr.centery - empty.get_height() // 2))
 
         # Tooltip + comparação no hover
         if hovered_item is not None:
@@ -6284,11 +6306,39 @@ class SkillSystem(System, SkillHandlers):
                 if _rc_cast is not None:
                     _tid_server = _rc_cast.server_eid
 
+            # Direção do player até o mouse (mundo) — capturada no instante do cast,
+            # igual ao alvo (_tid_server) já é. Sem isso ficava hardcoded em (0,0):
+            # skills de cone sem alvo travado (ex: Tiro Múltiplo) chegavam no
+            # servidor com direção nula, _server_tiro_multiplo descartava
+            # (dlen < 0.001) e a skill nunca acertava nada — mostrava a mira,
+            # mas não disparava (ver arquitetura/PROBLEMAS_ARQUITETURA.md).
+            # Pirofagia já calcula isso à parte (PirofagiaSystem, spell_system.py);
+            # aqui cobre as demais skills de cone que passam pelo fluxo genérico.
+            _dir_x, _dir_y = 0.0, 0.0
+            _pos_cast = self.world.get_component(self.player_entity_id, Position)
+            if _pos_cast:
+                _cam_x_cast = _cam_y_cast = 0.0
+                for _, _camc_cast, _camp_cast in self.world.get_entities_with(Camera, Position):
+                    _lw_cast = self.world_surf.get_width()  if self.world_surf else 1280
+                    _lh_cast = self.world_surf.get_height() if self.world_surf else 720
+                    _cam_x_cast = _camp_cast.x - _lw_cast / 2
+                    _cam_y_cast = _camp_cast.y - _lh_cast / 2
+                    break
+                _scale_cast = (self.world_surf.get_width() / max(1, self.hud_surf.get_width())
+                               if self.world_surf and self.hud_surf else 1.0)
+                _msx_cast, _msy_cast = pygame.mouse.get_pos()
+                _mx_cast = _msx_cast * _scale_cast
+                _my_cast = _msy_cast * _scale_cast
+                _ddx_cast = _mx_cast - (_pos_cast.x - _cam_x_cast)
+                _ddy_cast = _my_cast - (_pos_cast.y - _cam_y_cast)
+                _dlen_cast = math.hypot(_ddx_cast, _ddy_cast) or 1.0
+                _dir_x, _dir_y = _ddx_cast / _dlen_cast, _ddy_cast / _dlen_cast
+
             self._net.send(_MT.CAST_SKILL, {
                 "sid":   skill.skill_id,
                 "tid":   _tid_server,
-                "dir_x": 0.0,
-                "dir_y": 0.0,
+                "dir_x": _dir_x,
+                "dir_y": _dir_y,
                 "rage":  _rage_pre,
                 "mana":  _mana_pre,
             })
@@ -6407,16 +6457,29 @@ class SkillSystem(System, SkillHandlers):
             return -1
         current = combat_state.target_entity_id
         if current != -1:
-            cs = self.world.get_component(current, CombatStats)
-            if cs and cs.current_hp > 0:
-                return current
-            # Alvo é player remoto (RemoteControlled): sem CombatStats local,
-            # valida via rc.hp (sincronizado pelo servidor via SKILL_RESULT/STATS_UPDATE).
-            if cs is None:
-                from components import RemoteControlled as _RCtgt
-                _rc_tgt = self.world.get_component(current, _RCtgt)
-                if _rc_tgt is not None and _rc_tgt.hp > 0:
+            # Alvo já selecionado também precisa estar dentro de _max_range —
+            # sem isso, um target_entity_id setado a partir do "tid" que o
+            # CLIENTE manda em CAST_SKILL (server/skill_processor.py) deixava
+            # QUALQUER skill acertar QUALQUER entidade do mapa, porque esse
+            # check só rodava no fallback de auto-seleção abaixo, nunca pro
+            # alvo já setado (ver arquitetura/PROBLEMAS_ARQUITETURA.md,
+            # vulnerabilidade de range/LOS de skill). Fora de range cai pro
+            # mesmo fallback de auto-seleção usado quando o alvo está morto.
+            _cur_tm = self.world.get_component(current, TileMovement)
+            _in_range = (_max_range <= 0 or (_cur_tm is not None and chebyshev(
+                tile_move.current_tile_x, tile_move.current_tile_y,
+                _cur_tm.current_tile_x,   _cur_tm.current_tile_y) <= _max_range))
+            if _in_range:
+                cs = self.world.get_component(current, CombatStats)
+                if cs and cs.current_hp > 0:
                     return current
+                # Alvo é player remoto (RemoteControlled): sem CombatStats local,
+                # valida via rc.hp (sincronizado pelo servidor via SKILL_RESULT/STATS_UPDATE).
+                if cs is None:
+                    from components import RemoteControlled as _RCtgt
+                    _rc_tgt = self.world.get_component(current, _RCtgt)
+                    if _rc_tgt is not None and _rc_tgt.hp > 0:
+                        return current
         # Auto-seleciona o inimigo em range com menor HP (desempate por distância) — B6
         px, py    = tile_move.current_tile_x, tile_move.current_tile_y
         best_id   = -1

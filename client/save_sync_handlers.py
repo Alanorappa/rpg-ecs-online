@@ -198,13 +198,6 @@ class SaveSyncHandlers:
             "fog":       fog,
         }
 
-    def _send_proc_hp_sync(self, hp: int, max_hp: int) -> None:
-        """Notifica servidor do novo HP após proc de item escalar a vida percentualmente."""
-        if not self._net or not self._net.connected or self._my_eid == -1:
-            return
-        from shared.messages import MsgType as _MT_ps
-        self._net.send(_MT_ps.PLAYER_HP_SYNC, {"hp": hp, "max_hp": max_hp})
-
     def _send_talent_update(self) -> None:
         """Envia apenas os talentos ao servidor quando um ponto é alocado/desalocado."""
         if not self._net or not self._net.connected or self._my_eid == -1:
@@ -424,30 +417,6 @@ class SaveSyncHandlers:
             # Sincroniza ponteiro do mapa atual
             if fog_r._current_map in fog_r._explored_maps:
                 fog_r.explored = fog_r._explored_maps[fog_r._current_map]
-
-    def _get_combat_stat_snapshot(self) -> dict:
-        """Retorna snapshot dos stats de combate relevantes para sync com servidor.
-
-        Usa COMBAT_SYNC_STATS de shared/constants.py como fonte de verdade.
-        Sem hardcode: adicionar nova stat = apenas inserir em COMBAT_SYNC_STATS.
-        """
-        from components import CombatStats as _CSSnap
-        from shared.constants import COMBAT_SYNC_STATS
-        cs = self.world.get_component(self.player_entity, _CSSnap)
-        if not cs:
-            return {}
-        return {eff_attr: getattr(cs, eff_attr, None)
-                for eff_attr in COMBAT_SYNC_STATS
-                if getattr(cs, eff_attr, None) is not None}
-
-    def _send_combat_stat_sync(self) -> None:
-        """Envia PLAYER_STAT_SYNC ao servidor com os stats efetivos atuais."""
-        if not self._net or not self._net.connected or self._my_eid == -1:
-            return
-        from shared.messages import MsgType as _MT
-        snapshot = self._get_combat_stat_snapshot()
-        if snapshot:
-            self._net.send(_MT.PLAYER_STAT_SYNC, snapshot)
 
     def _player_world_pos(self) -> "tuple[float, float]":
         """Retorna posição pixel do player local (centro do tile)."""

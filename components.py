@@ -43,20 +43,31 @@ class EntityIdentity:
 # Representa um bônus ou penalidade a um atributo de combate.
 # Permite que itens, talentos e habilidades modifiquem os atributos de forma flexível.
 class Modifier:
-    def __init__(self, attribute: str, value: float, type: str = "flat"):
+    def __init__(self, attribute: str, value: float, type: str = "flat",
+                 source: str = "equipment"):
         """
         Inicializa um modificador de atributo.
-        
+
         Args:
             attribute (str): O nome do atributo a ser modificado (e.g., "stamina", "armor", "attack_power").
             value (float): O valor do modificador.
             type (str): O tipo de modificação ("flat" para soma/subtração, "percentage" para multiplicação).
                         Ex: "flat" com value=10 para +10 de Armadura.
                         Ex: "percentage" com value=0.10 para +10% de Força.
+            source (str): origem do modificador — "equipment" (item equipado,
+                        DEFAULT — é de longe o caso mais comum, todo
+                        Modifier de item em loot_tables.py/crafting_data.py/
+                        merchant_data.py usa o default sem precisar passar
+                        nada), "talent" (ponto de talento alocado) ou "buff"
+                        (efeito temporário de skill/proc). Usado só pra UI
+                        (separar "Base" de "Itens" na aba Estatísticas do
+                        Inventário, ver CombatStats.equipment_bonus()) — não
+                        entra em __eq__/__hash__, não afeta remove_modifier().
         """
         self.attribute = attribute
         self.value = value
         self.type = type
+        self.source = source
 
     def __eq__(self, other):
         # Permite comparar modificadores para remoção (usado para verificar igualdade)
@@ -133,6 +144,17 @@ class CombatStats:
 
         self.max_hp: int = 0
         self.current_hp: int = 0
+        # Espelho de CharacterStats.mana — só pra checagens client/server que
+        # precisam de mana sem puxar o componente CharacterStats inteiro (ver
+        # comentários "CombatStats.mana" em world_server.py/network_handlers.py/
+        # skill_handlers.py/spell_system.py). Sem essa declaração aqui, o
+        # atributo só passava a existir na primeira vez que um desses
+        # caminhos de sync rodasse — e nenhum deles roda pra Guerreiro/
+        # Arqueiro (não usam mana), então `cs.mana` nunca existia pra essas
+        # classes e qualquer leitura (ex: `payload.get("mana", cs.mana)`)
+        # crashava com AttributeError. Bug real visto em produção: Guerreiro
+        # crashou ao reviver no cemitério (ver PROBLEMAS_ARQUITETURA.md).
+        self.mana: int = 0
         self.attack_cooldown_timer: float = 0.0 # Tempo restante para o próximo ataque
         self.hp5: float       = 0.01  # fração de max_hp regenerada a cada 5s (fora de combate)
         self.hp5_timer: float = 0.0   # acumulador de tempo para o tick de regen
@@ -329,6 +351,20 @@ class CombatStats:
         
         # Preserva o HP absoluto; apenas limita ao novo máximo se necessário
         self.current_hp = max(0, min(old_current_hp, self.max_hp))
+
+    def equipment_bonus(self, attribute: str) -> float:
+        """Soma só os modificadores `source="equipment"` (item equipado) de
+        um atributo — usado pela aba Estatísticas do Inventário pra separar
+        "Base" (tudo que não é item: atributo cru + talentos + buffs) de
+        "Itens" (só o que o equipamento adiciona). Todo modificador de
+        equipamento hoje é "flat" (confirmado: nenhum item em
+        loot_tables.py/crafting_data.py/merchant_data.py usa "percentage"),
+        então a soma direta é exata — não precisa simular ordem de
+        aplicação. Se algum dia um item ganhar modificador "percentage",
+        esse método vai ignorá-lo silenciosamente (subestima "Itens") —
+        revisar se isso passar a ser usado."""
+        return sum(m.value for m in self.modifiers
+                  if m.attribute == attribute and m.source == "equipment" and m.type == "flat")
 
     def get_attack_cooldown(self) -> float:
         """

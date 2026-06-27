@@ -344,7 +344,8 @@ class ServerCombatStateSystem(BaseCombatStateSystem):
     """Gerencia timers de combate e recursos para players no servidor.
 
     Herda BaseCombatStateSystem — constantes e lógica core ficam em um só lugar.
-    Adiciona hp5_events para o servidor reportar curas de regen ao cliente.
+    Adiciona hp5_events (curas de regen) e proc_events (procs de item rolados
+    autoritativamente, ver _roll_procs) para o servidor reportar ao cliente.
 
     Uso:
         sys = ServerCombatStateSystem(world)
@@ -352,16 +353,22 @@ class ServerCombatStateSystem(BaseCombatStateSystem):
         for ev in sys.hp5_events:
             # ev = {player_eid, old_hp, new_hp, hp_max}
             ...
+        for ev in sys.proc_events:
+            # ev = {player_eid, item_name, label, attribute, value, duration}
+            ...
     """
 
     def __init__(self, world) -> None:
         super().__init__(world)
         # Populado a cada update(); limpo no início do próximo update().
         self.hp5_events: list[dict] = []
+        # Procs de item rolados autoritativamente pelo servidor neste tick.
+        self.proc_events: list[dict] = []
 
     def update(self, player_eids: dict, dt: float) -> None:
         """Processa todos os players em player_eids (session_id → eid)."""
         self.hp5_events.clear()
+        self.proc_events.clear()
         from components import CombatState, CombatStats, CharacterStats, TileMovement
 
         for _sid, peid in list(player_eids.items()):
@@ -391,3 +398,69 @@ class ServerCombatStateSystem(BaseCombatStateSystem):
                 self._tick_concentration_regen(cs, char, cst, tm, dt)
                 self._tick_concentration_free_timer(cst, dt)
             self._tick_standing_seconds(cst, tm, dt)
+
+            self._tick_timed_modifiers(cst, dt)
+
+            # Procs de item: rolados aqui (autoritativo) em vez de confiar no
+            # cliente reportar hp/max_hp via PLAYER_HP_SYNC depois de "rolar"
+            # localmente — ver arquitetura/PROBLEMAS_ARQUITETURA.md (vulnerabilidade
+            # de HP/proc). O cliente ainda rola sua própria cópia cosmética (LOG/
+            # feedback visual); o resultado real e persistido é sempre este.
+            if cs._just_entered_combat:
+                cs._just_entered_combat = False
+                self._roll_procs(peid, cst)
+
+    @staticmethod
+    def _tick_timed_modifiers(cst, dt: float) -> None:
+        """Expira timed_modifiers (buffs/procs) — equivalente headless de
+        systems.py::CombatStateSystem.update() (sem LOG, servidor é headless).
+
+        Sem isso, um modificador aplicado por _roll_procs nunca expirava no
+        servidor (autoritativo) — o buff ficaria permanente nos stats reais
+        mesmo depois do cliente mostrar o efeito como expirado."""
+        if not cst.timed_modifiers:
+            return
+        from stat_fns import remove_modifier
+        for entry in cst.timed_modifiers:
+            entry["timer"] -= dt
+        expired = [e for e in cst.timed_modifiers if e["timer"] <= 0]
+        for entry in expired:
+            cst.timed_modifiers.remove(entry)
+            _max_before_exp = cst.max_hp
+            _pct_hp = cst.current_hp / _max_before_exp if _max_before_exp > 0 else 1.0
+            remove_modifier(cst, entry["modifier"])
+            if cst.max_hp < _max_before_exp:
+                cst.current_hp = max(1, int(_pct_hp * cst.max_hp))
+
+    def _roll_procs(self, entity_id: int, cst) -> None:
+        """Rola procs de itens equipados ao entrar em combate.
+
+        Versão server-autoritativa de systems.py::CombatStateSystem._trigger_procs
+        — usa o Equipment do próprio servidor (validado contra catálogos, Tier B)
+        em vez de confiar no cliente. Resultado entra em self.proc_events para o
+        SessionManager decidir o que (se algo) notificar aos clientes."""
+        import random
+        from components import Equipment as _Equip, Modifier as _Mod
+        from stat_fns import add_timed_modifier
+
+        equip = self.world.get_component(entity_id, _Equip)
+        if not equip:
+            return
+        for item in equip.slots.values():
+            if item and item.proc:
+                p = item.proc
+                if random.random() < p["chance"]:
+                    _max_before  = cst.max_hp
+                    _pct_before  = cst.current_hp / _max_before if _max_before > 0 else 1.0
+                    mod = _Mod(p["attribute"], p["value"], source="buff")
+                    add_timed_modifier(cst, mod, p["duration"], p["label"])
+                    if cst.max_hp > _max_before:
+                        cst.current_hp = max(1, int(_pct_before * cst.max_hp))
+                    self.proc_events.append({
+                        "player_eid": entity_id,
+                        "item_name":  item.name,
+                        "label":      p["label"],
+                        "attribute":  p["attribute"],
+                        "value":      p["value"],
+                        "duration":   p["duration"],
+                    })

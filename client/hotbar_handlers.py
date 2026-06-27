@@ -16,6 +16,7 @@ import pygame
 from components import CombatState, CombatStats, PlayerSkills
 from icon_manager import ICONS
 from systems import ConsumableSystem
+from ui_sizes import UI
 
 # Lookup reverso: skill_id → (talent_id, talent_name, min_points_to_unlock)
 # Gerado dinamicamente a partir de talent_data.TALENTS.
@@ -35,10 +36,38 @@ class HotbarHandlers:
     # Hotbar de habilidades (1-4)
     # ------------------------------------------------------------------
 
-    _HB_W   = 68
-    _HB_H   = 68
-    _HB_ICO = 64
-    _HB_PAD = 6
+    def _set_hotbar_row_scale(self) -> None:
+        """Calcula o clamp de escala pra LINHA INTEIRA hotbar+consumable bar
+        (lado a lado, mesmo HB_W/HB_PAD) — usa a capacidade MÁXIMA de cada
+        barra (não só os slots ocupados), senão hotbar e consumable bar
+        clampariam em escalas diferentes entre si e os slots ficariam com
+        tamanhos visualmente inconsistentes entre as duas barras. Chamar no
+        início de qualquer método que leia self._HB_W/_HB_H/_HB_ICO/_HB_PAD."""
+        from skill_config import NUM_SLOTS as _NS_HB
+        from components import ConsumableBar as _CB_HB
+        BASE_W, BASE_PAD, BASE_GAP = UI.HOTBAR_SLOT_W, UI.HOTBAR_PAD, UI.HOTBAR_ROW_GAP
+        hotbar_w = _NS_HB * BASE_W + (_NS_HB - 1) * BASE_PAD
+        cons_w   = _CB_HB.NUM_SLOTS * BASE_W + (_CB_HB.NUM_SLOTS - 1) * BASE_PAD
+        self._set_panel_scale(hotbar_w + BASE_GAP + cons_w, BASE_W)
+
+    # Propriedades (não atributos fixos) — precisam reagir a self._ui_scale
+    # em runtime, e hotbar/consumable_bar/habilidades leem essas 4 via
+    # self._HB_*, então não dá pra virar atributo de classe fixo.
+    @property
+    def _HB_W(self) -> int:
+        return self._u(UI.HOTBAR_SLOT_W)
+
+    @property
+    def _HB_H(self) -> int:
+        return self._u(UI.HOTBAR_SLOT_H)
+
+    @property
+    def _HB_ICO(self) -> int:
+        return self._u(UI.HOTBAR_ICON)
+
+    @property
+    def _HB_PAD(self) -> int:
+        return self._u(UI.HOTBAR_PAD)
 
     _SKILL_FALLBACK_COLORS = [
         (180,  60,  60),   # 1 Golpe Poderoso
@@ -60,6 +89,7 @@ class HotbarHandlers:
 
     def _handle_hotbar_click(self, event):
         """Aciona habilidade ao clicar com botão esquerdo em slot da hotbar."""
+        self._set_hotbar_row_scale()
         # Shift+click → drag de remoção, não usa skill
         if pygame.key.get_mods() & pygame.KMOD_SHIFT:
             return
@@ -73,7 +103,7 @@ class HotbarHandlers:
         n_occ   = len(occupied)
         total_w = n_occ * self._HB_W + (n_occ - 1) * self._HB_PAD
         x0      = self.screen.get_width()  // 2 - total_w // 2
-        y0      = self.screen.get_height() - self._HB_H - 10
+        y0      = self.screen.get_height() - self._HB_H - self._u(10)
         mx, my  = event.pos
         for j, (i, skill) in enumerate(occupied):
             sx = x0 + j * (self._HB_W + self._HB_PAD)
@@ -88,6 +118,7 @@ class HotbarHandlers:
 
     def _handle_consumable_bar_click(self, event) -> None:
         """Usa consumível ao clicar com botão esquerdo em slot da barra de consumíveis."""
+        self._set_hotbar_row_scale()
         from components import ConsumableBar as _CB, PlayerSkills as _PS
         cbar = self.world.get_component(self.player_entity, _CB)
         if not cbar:
@@ -101,7 +132,7 @@ class HotbarHandlers:
         n_skills_occ = sum(1 for s in ps.skills if s) if ps else 0
         skills_w     = n_skills_occ * self._HB_W + max(0, n_skills_occ - 1) * self._HB_PAD
         x0           = self.screen.get_width() // 2 - skills_w // 2 + skills_w + 20
-        y0           = self.screen.get_height() - self._HB_H - 10
+        y0           = self.screen.get_height() - self._HB_H - self._u(10)
         mx, my       = event.pos
 
         for j, (i, item_name) in enumerate(cons_occ):
@@ -146,6 +177,7 @@ class HotbarHandlers:
         player_skills = self.world.get_component(self.player_entity, PlayerSkills)
         if not player_skills:
             return
+        self._set_hotbar_row_scale()
 
         # --- Rage atual do jogador e CombatStats (para custos modificados por talentos) ---
         from components import CharacterStats as _CS
@@ -188,8 +220,12 @@ class HotbarHandlers:
         mx, my      = pygame.mouse.get_pos()
 
         # Posições dos slots — pré-calculadas para uso no drag
-        _dragging_skill = getattr(self, "_hab_drag_skill", None)
-        _hb_drag_show_all = _dragging_skill or self._hb_drag_active
+        _drag_hb = self._get_drag()
+        _dragging_skill = (_drag_hb.kind == "skill" and _drag_hb.source == "habilidades"
+                          and _drag_hb.payload is not None)
+        _hb_self_dragging = (_drag_hb.kind == "skill" and _drag_hb.source == "hotbar"
+                            and _drag_hb.source_idx != -1)
+        _hb_drag_show_all = _dragging_skill or (_hb_self_dragging and _drag_hb.active)
         if _hb_drag_show_all:
             occupied = [(i, player_skills.skills[i]) for i in range(_NS_HB)]
         else:
@@ -199,7 +235,7 @@ class HotbarHandlers:
             return
         total_w = n_occ * self._HB_W + (n_occ - 1) * self._HB_PAD
         x0      = self.screen.get_width()  // 2 - total_w // 2
-        y0      = self.screen.get_height() - self._HB_H - 10
+        y0      = self.screen.get_height() - self._HB_H - self._u(10)
 
         def _hb_slot_rect(j):
             sx = x0 + j * (self._HB_W + self._HB_PAD)
@@ -210,20 +246,24 @@ class HotbarHandlers:
             if _ev_hb.type == pygame.MOUSEBUTTONDOWN and _ev_hb.button == 1:
                 for _jj, (_ii, _sk) in enumerate(occupied):
                     if _sk is not None and _hb_slot_rect(_jj).collidepoint(_ev_hb.pos):
-                        self._hotbar_drag_idx   = _ii
-                        self._hb_drag_shift     = _shift_hb
-                        self._hb_drag_start_pos = _ev_hb.pos
-                        self._hb_drag_active    = _shift_hb  # Shift → ativa imediatamente
+                        _drag_hb.kind       = "skill"
+                        _drag_hb.source     = "hotbar"
+                        _drag_hb.source_idx = _ii
+                        _drag_hb.payload    = _sk.skill_id
+                        _drag_hb.shift      = _shift_hb
+                        _drag_hb.start_pos  = _ev_hb.pos
+                        _drag_hb.active     = _shift_hb  # Shift → ativa imediatamente
                         break
                 break
 
         # MOUSEMOTION → ativar drag ao superar threshold de 8px
-        if self._hotbar_drag_idx is not None and not self._hb_drag_active \
-                and self._hb_drag_start_pos is not None:
-            _dx = mx - self._hb_drag_start_pos[0]
-            _dy = my - self._hb_drag_start_pos[1]
+        _hb_self_dragging = (_drag_hb.kind == "skill" and _drag_hb.source == "hotbar"
+                             and _drag_hb.source_idx != -1)
+        if _hb_self_dragging and not _drag_hb.active and _drag_hb.start_pos is not None:
+            _dx = mx - _drag_hb.start_pos[0]
+            _dy = my - _drag_hb.start_pos[1]
             if _dx * _dx + _dy * _dy > 64:
-                self._hb_drag_active = True
+                _drag_hb.active = True
                 # Recalcular occupied p/ mostrar todos os slots
                 occupied = [(i, player_skills.skills[i]) for i in range(_NS_HB)]
                 n_occ    = len(occupied)
@@ -233,14 +273,14 @@ class HotbarHandlers:
         # MOUSEUP → confirmar drag ou resetar
         for _ev_hb in _hb_events:
             if _ev_hb.type == pygame.MOUSEBUTTONUP and _ev_hb.button == 1:
-                if self._hb_drag_active and self._hotbar_drag_idx is not None:
-                    _di   = self._hotbar_drag_idx
+                if _hb_self_dragging and _drag_hb.active:
+                    _di   = _drag_hb.source_idx
                     _n_occ_full = _NS_HB  # sempre full para drop targets
                     _full_occ   = [(i, player_skills.skills[i]) for i in range(_n_occ_full)]
                     _full_w     = _n_occ_full * self._HB_W + (_n_occ_full - 1) * self._HB_PAD
                     _full_x0    = self.screen.get_width() // 2 - _full_w // 2
 
-                    if self._hb_drag_shift:
+                    if _drag_hb.shift:
                         # Verificar se soltou FORA da barra
                         _inside_bar = any(
                             pygame.Rect(_full_x0 + _jj2 * (self._HB_W + self._HB_PAD),
@@ -262,10 +302,8 @@ class HotbarHandlers:
                                 self._save_config()
                                 break
                 # Reset drag state
-                self._hotbar_drag_idx   = None
-                self._hb_drag_active    = False
-                self._hb_drag_shift     = False
-                self._hb_drag_start_pos = None
+                if _hb_self_dragging:
+                    _drag_hb.reset()
                 break
 
         for j, (i, skill) in enumerate(occupied):
@@ -465,7 +503,8 @@ class HotbarHandlers:
                                          y0 + self._HB_H // 2 - _lk_s.get_height() // 2))
 
             # --- Overlay de drag de origem (dimming) ---
-            if self._hb_drag_active and self._hotbar_drag_idx == i:
+            if (_drag_hb.kind == "skill" and _drag_hb.source == "hotbar"
+                    and _drag_hb.active and _drag_hb.source_idx == i):
                 _dim_ov = pygame.Surface((self._HB_W, self._HB_H), pygame.SRCALPHA)
                 _dim_ov.fill((0, 0, 0, 140))
                 self.screen.blit(_dim_ov, (sx, y0))
@@ -496,7 +535,9 @@ class HotbarHandlers:
             self.screen.blit(self.font_sm.render(kb_name, True, key_col), (sx + 3, y0 + 2))
 
             # --- Tooltip no hover ---
-            if r.collidepoint(mx, my) and not self._hb_drag_active:
+            _hb_self_drag_active = (_drag_hb.kind == "skill" and _drag_hb.source == "hotbar"
+                                    and _drag_hb.active)
+            if r.collidepoint(mx, my) and not _hb_self_drag_active:
                 lines = self._skill_tooltip_lines(
                     skill, is_procced, visual_ready, target_hp_ratio, player_rage)
                 # Requer talento? Injeta linha no topo
@@ -507,8 +548,9 @@ class HotbarHandlers:
                 self._pending_skill_tooltip = (mx, y0 - 4, skill.name, lines)
 
         # --- Ghost icon: segue o mouse durante drag ativo ---
-        if self._hb_drag_active and self._hotbar_drag_idx is not None:
-            _gi    = self._hotbar_drag_idx
+        if (_drag_hb.kind == "skill" and _drag_hb.source == "hotbar"
+                and _drag_hb.active and _drag_hb.source_idx != -1):
+            _gi    = _drag_hb.source_idx
             _gsk   = player_skills.skills[_gi]
             if _gsk is not None:
                 _GSZ = self._HB_ICO
@@ -521,6 +563,6 @@ class HotbarHandlers:
                     ghost.set_alpha(180)
                     self.screen.blit(ghost, (mx - _GSZ // 2, my - _GSZ // 2))
                 # Hint de remoção durante Shift+drag
-                if self._hb_drag_shift:
+                if _drag_hb.shift:
                     _hint = self.font_xs.render("Soltar fora → remover", True, (220, 80, 220))
                     self.screen.blit(_hint, (mx - _hint.get_width() // 2, my - _GSZ // 2 - 14))

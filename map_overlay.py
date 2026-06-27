@@ -5,19 +5,23 @@ Escala ajustável de 2 a 100 px/tile. Scroll com roda do mouse, arrastar para mo
 from __future__ import annotations
 import math
 import pygame
-from fonts import make as _font
 from tileset import TILE_MAPPING, OBJECT_MAPPING, FLOOR_TILE
+from ui_scale_mixin import UIScaleMixin
+from ui_sizes import UI
 
 
-class MapOverlay:
+class MapOverlay(UIScaleMixin):
     MIN_SCALE  = 2.0
     MAX_SCALE  = 100.0
-    W_RATIO    = 0.70
-    H_RATIO    = 0.70
+    W_RATIO    = UI.MAP_OVERLAY_W_RATIO
+    H_RATIO    = UI.MAP_OVERLAY_H_RATIO
     BORDER_COL = (140, 100, 60)
     BG_COL     = (8, 6, 4)
 
+    _FONT_BASES = {"_font": 20}
+
     def __init__(self, screen: pygame.Surface):
+        super().__init__()
         self.screen   = screen
         self.is_open  = False
         self._surfaces: dict = {}              # map_file → pygame.Surface (1px/tile)
@@ -33,15 +37,10 @@ class MapOverlay:
         self._drag_offset = (0.0, 0.0)
         self._free_view   = False          # True após arrasto: não recentra até o player mover
         self._last_player_tile = (-1, -1)  # último tile do player para detectar movimento
-        self._font: pygame.font.Font | None = None
         self.pending_destination: "tuple | None" = None   # (tile_x, tile_y) a entregar ao game
         self._dest_marker: "tuple | None" = None          # marcador visual no mapa
 
     # ── Inicialização ────────────────────────────────────────────────────────
-
-    def _init_font(self) -> None:
-        if self._font is None:
-            self._font = _font(20)
 
     def load_map(self, tile_matrix: list[str], map_key: str = "") -> None:
         """
@@ -103,7 +102,8 @@ class MapOverlay:
         return pygame.Rect((sw - mw) // 2, (sh - mh) // 2, mw, mh)
 
     def _close_btn_rect(self, modal: pygame.Rect) -> pygame.Rect:
-        return pygame.Rect(modal.right - 36, modal.y + 4, 32, 32)
+        return pygame.Rect(modal.right - self._u(36), modal.y + self._u(4),
+                            self._u(32), self._u(32))
 
     def _clamp_offset(self, modal: pygame.Rect) -> None:
         map_w = self._cols * self.scale
@@ -192,7 +192,6 @@ class MapOverlay:
         if not self.is_open or self._base_surf is None:
             return
 
-        self._init_font()
         sw, sh = self.screen.get_size()
         modal  = self._modal_rect()
         mx, my = pygame.mouse.get_pos()
@@ -291,7 +290,7 @@ class MapOverlay:
                 pygame.draw.circle(self.screen, (255, 200, 200), (px, py), max(2, r // 2))
 
         # ── Borda ────────────────────────────────────────
-        pygame.draw.rect(self.screen, self.BORDER_COL, modal, 2, border_radius=4)
+        pygame.draw.rect(self.screen, self.BORDER_COL, modal, self._u(2), border_radius=4)
 
         # ── Botão X ──────────────────────────────────────
         close_r   = self._close_btn_rect(modal)
@@ -309,6 +308,6 @@ class MapOverlay:
             True, (180, 150, 100))
         zoom_txt = self._font.render(f"Zoom: {scale:.1f}x",
                                       True, (140, 120, 80))
-        bar_y = modal.y - hint.get_height() - 4
-        self.screen.blit(hint,     (modal.x + 6,                             bar_y))
-        self.screen.blit(zoom_txt, (modal.right - zoom_txt.get_width() - 6,  bar_y))
+        bar_y = modal.y - hint.get_height() - self._u(4)
+        self.screen.blit(hint,     (modal.x + self._u(6),                            bar_y))
+        self.screen.blit(zoom_txt, (modal.right - zoom_txt.get_width() - self._u(6), bar_y))

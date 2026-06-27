@@ -11,7 +11,7 @@ import pygame
 
 from combat_log import LOG
 from components import CharacterStats, CombatStats, Inventory, PermanentStats, TileMovement, Wallet
-from fonts import make as _font
+from ui_sizes import UI
 
 # Nomes amigáveis opcionais — mapas sem entrada aqui usam o nome do arquivo
 _DEBUG_MAP_NAMES: dict[str, str] = {
@@ -42,14 +42,14 @@ class DebugHandlers:
         LOG.add(f"[DEBUG] Nivel {cs.level} — {tt.available_points if tt else 0} pontos de talento.", (120, 200, 255))
 
     def _handle_debug_click(self, event) -> None:
-        PW, PH = 820, 620
-        px = self.screen.get_width()  // 2 - PW // 2
-        py = self.screen.get_height() // 2 - PH // 2
+        px, py = self._safe_panel_origin(UI.DEBUG_W, UI.DEBUG_H)
+        px, py = px + UI.DEBUG_OFFSET_X, py + UI.DEBUG_OFFSET_Y
+        PW, PH = self._u(UI.DEBUG_W), self._u(UI.DEBUG_H)
         mx, my = event.pos
 
         # Botão fechar (X) — botão esquerdo
         if event.button == 1:
-            close_r = pygame.Rect(px + PW - 44, py + 8, 36, 36)
+            close_r = pygame.Rect(px + PW - self._u(44), py + self._u(8), self._u(36), self._u(36))
             if close_r.collidepoint(mx, my):
                 self._show_debug = False
                 return
@@ -71,6 +71,9 @@ class DebugHandlers:
                     if rect.collidepoint(mx, my):
                         self._debug_levelup(n)
                         return
+                if self._debug_hud_toggle_r and self._debug_hud_toggle_r.collidepoint(mx, my):
+                    self._hud_show_debug_stats = not self._hud_show_debug_stats
+                    return
 
             elif self._debug_tab == "ouro":
                 for rect, amount in self._debug_gold_buttons:
@@ -153,14 +156,14 @@ class DebugHandlers:
         if not cs:
             return
 
-        PW, PH = 820, 620
-        px = self.screen.get_width()  // 2 - PW // 2
-        py = self.screen.get_height() // 2 - PH // 2
+        px, py = self._safe_panel_origin(UI.DEBUG_W, UI.DEBUG_H)
+        px, py = px + UI.DEBUG_OFFSET_X, py + UI.DEBUG_OFFSET_Y
+        PW, PH = self._u(UI.DEBUG_W), self._u(UI.DEBUG_H)
         mx, my = pygame.mouse.get_pos()
 
-        font_md = _font(28)
-        font_sm = _font(24)
-        font_lg = _font(36)
+        font_md = self.font_md
+        font_sm = self.font_sm
+        font_lg = self.font_lg
 
         # Fundo
         bg = pygame.Surface((PW, PH), pygame.SRCALPHA)
@@ -170,10 +173,10 @@ class DebugHandlers:
 
         # Título
         title = font_lg.render("DEBUG  [F12]", True, (120, 200, 255))
-        self.screen.blit(title, (px + PW // 2 - title.get_width() // 2, py + 10))
+        self.screen.blit(title, (px + PW // 2 - title.get_width() // 2, py + self._u(10)))
 
         # Botão fechar
-        close_r = pygame.Rect(px + PW - 44, py + 8, 36, 36)
+        close_r = pygame.Rect(px + PW - self._u(44), py + self._u(8), self._u(36), self._u(36))
         close_hov = close_r.collidepoint(mx, my)
         pygame.draw.rect(self.screen, (180, 60, 60) if close_hov else (80, 30, 30),
                          close_r, border_radius=3)
@@ -181,14 +184,15 @@ class DebugHandlers:
         self.screen.blit(xs, (close_r.centerx - xs.get_width() // 2,
                               close_r.centery - xs.get_height() // 2))
 
-        pygame.draw.line(self.screen, (80, 65, 40), (px + 4, py + 52), (px + PW - 4, py + 52))
+        pygame.draw.line(self.screen, (80, 65, 40),
+                         (px + self._u(4), py + self._u(52)), (px + PW - self._u(4), py + self._u(52)))
 
         # --- Abas ---
         TAB_DEFS = [("nivel", "Nivel"), ("itens", "Itens"), ("ouro", "Ouro"), ("mapa", "Mapa")]
-        tab_w, tab_h, tab_gap = 160, 38, 10
+        tab_w, tab_h, tab_gap = self._u(160), self._u(38), self._u(10)
         tabs_total_w = len(TAB_DEFS) * tab_w + (len(TAB_DEFS) - 1) * tab_gap
         tx0 = px + PW // 2 - tabs_total_w // 2
-        ty0 = py + 58
+        ty0 = py + self._u(58)
 
         self._debug_tab_buttons = []
         for i, (tab_id, label) in enumerate(TAB_DEFS):
@@ -208,9 +212,10 @@ class DebugHandlers:
             self.screen.blit(lbl, (tr.centerx - lbl.get_width() // 2,
                                    tr.centery - lbl.get_height() // 2))
 
-        pygame.draw.line(self.screen, (80, 65, 40), (px + 4, py + 104), (px + PW - 4, py + 104))
+        pygame.draw.line(self.screen, (80, 65, 40),
+                         (px + self._u(4), py + self._u(104)), (px + PW - self._u(4), py + self._u(104)))
 
-        content_y = py + 114
+        content_y = py + self._u(114)
 
         if self._debug_tab == "nivel":
             self._draw_debug_tab_nivel(px, content_y, PW, font_md, font_sm, cs, tt, mx, my)
@@ -223,7 +228,7 @@ class DebugHandlers:
 
         # Footer
         hint = font_sm.render("ESC para fechar", True, (80, 75, 60))
-        self.screen.blit(hint, (px + PW // 2 - hint.get_width() // 2, py + PH - 28))
+        self.screen.blit(hint, (px + PW // 2 - hint.get_width() // 2, py + PH - self._u(28)))
 
     def _draw_debug_tab_nivel(self, px, content_y, PW, font_md, font_sm, cs, tt, mx, my) -> None:
         points = tt.available_points if tt else 0
@@ -232,14 +237,14 @@ class DebugHandlers:
             f"Pontos de talento: {points}",
         ]):
             surf = font_sm.render(line, True, (200, 190, 160))
-            self.screen.blit(surf, (px + 20, content_y + 8 + i * 22))
+            self.screen.blit(surf, (px + self._u(20), content_y + self._u(8) + i * self._u(22)))
 
         self._debug_buttons = []
         btn_labels = [("+1 nivel", 1), ("+5 niveis", 5), ("+10 niveis", 10), ("+50 niveis", 50)]
-        btn_w, btn_h, gap = 170, 48, 14
+        btn_w, btn_h, gap = self._u(170), self._u(48), self._u(14)
         cols = 2
         bx0 = px + PW // 2 - (cols * btn_w + (cols - 1) * gap) // 2
-        by0 = content_y + 70
+        by0 = content_y + self._u(70)
         for i, (label, n) in enumerate(btn_labels):
             bx = bx0 + (i % cols) * (btn_w + gap)
             by = by0 + (i // cols) * (btn_h + gap)
@@ -253,17 +258,36 @@ class DebugHandlers:
                                    by + btn_h // 2 - lbl.get_height() // 2))
             self._debug_buttons.append((rect, n))
 
+        # Toggle: atributos brutos/ratings de combate no HUD permanente
+        # (escondido por padrão — redundante com a aba Estatísticas do
+        # Inventário). Linha extra abaixo da grade de botões de nível.
+        toggle_w = cols * btn_w + (cols - 1) * gap
+        toggle_h = self._u(40)
+        toggle_y = by0 + 2 * (btn_h + gap)
+        self._debug_hud_toggle_r = pygame.Rect(bx0, toggle_y, toggle_w, toggle_h)
+        on = self._hud_show_debug_stats
+        hov_t = self._debug_hud_toggle_r.collidepoint(mx, my)
+        col_bg = (40, 110, 60) if on else ((50, 50, 50) if hov_t else (35, 35, 35))
+        pygame.draw.rect(self.screen, col_bg, self._debug_hud_toggle_r, border_radius=4)
+        pygame.draw.rect(self.screen, (100, 200, 130) if on else (90, 90, 90),
+                         self._debug_hud_toggle_r, 1, border_radius=4)
+        toggle_lbl = font_sm.render(
+            f"Stats brutos no HUD: {'ON' if on else 'OFF'}", True,
+            (200, 255, 210) if on else (200, 200, 200))
+        self.screen.blit(toggle_lbl, (self._debug_hud_toggle_r.centerx - toggle_lbl.get_width() // 2,
+                                      self._debug_hud_toggle_r.centery - toggle_lbl.get_height() // 2))
+
     def _draw_debug_tab_ouro(self, px, content_y, PW, font_md, font_sm, wallet, mx, my) -> None:
         gold = wallet.gold if wallet else 0
         gold_s = font_md.render(f"Ouro atual: {gold}g", True, (255, 215, 0))
-        self.screen.blit(gold_s, (px + PW // 2 - gold_s.get_width() // 2, content_y + 10))
+        self.screen.blit(gold_s, (px + PW // 2 - gold_s.get_width() // 2, content_y + self._u(10)))
 
         self._debug_gold_buttons = []
         btn_labels = [("+10g", 10), ("+100g", 100), ("+1000g", 1000)]
-        btn_w, btn_h, gap = 180, 54, 18
+        btn_w, btn_h, gap = self._u(180), self._u(54), self._u(18)
         total_w = len(btn_labels) * btn_w + (len(btn_labels) - 1) * gap
         bx0 = px + PW // 2 - total_w // 2
-        by0 = content_y + 60
+        by0 = content_y + self._u(60)
         for i, (label, amount) in enumerate(btn_labels):
             bx = bx0 + i * (btn_w + gap)
             rect = pygame.Rect(bx, by0, btn_w, btn_h)
@@ -287,14 +311,14 @@ class DebugHandlers:
             for f in csv_files
         ]
         hint = font_sm.render("Clique no mapa para abrir e depois clique dir. para teleportar", True, (90, 80, 60))
-        self.screen.blit(hint, (px + PW // 2 - hint.get_width() // 2, content_y + 4))
+        self.screen.blit(hint, (px + PW // 2 - hint.get_width() // 2, content_y + self._u(4)))
 
         self._debug_map_buttons = []
-        ROW_H, ROW_W = 52, PW - 80
-        rx0 = px + 40
-        ry0 = content_y + 28
+        ROW_H, ROW_W = self._u(52), PW - self._u(80)
+        rx0 = px + self._u(40)
+        ry0 = content_y + self._u(28)
         for i, (map_file, map_name) in enumerate(all_maps):
-            r = pygame.Rect(rx0, ry0 + i * (ROW_H + 10), ROW_W, ROW_H)
+            r = pygame.Rect(rx0, ry0 + i * (ROW_H + self._u(10)), ROW_W, ROW_H)
             is_current = map_file == self._current_map_file
             hov = r.collidepoint(mx, my)
             if hov:
@@ -307,10 +331,10 @@ class DebugHandlers:
             pygame.draw.rect(self.screen, col_bord, r, 1, border_radius=4)
             col_txt = (180, 255, 180) if hov else (200, 190, 160)
             lbl = font_md.render(map_name, True, col_txt)
-            self.screen.blit(lbl, (r.x + 16, r.centery - lbl.get_height() // 2 - 6))
+            self.screen.blit(lbl, (r.x + self._u(16), r.centery - lbl.get_height() // 2 - self._u(6)))
             tag = "[mapa atual]" if is_current else map_file
             tag_s = font_sm.render(tag, True, (80, 160, 80) if is_current else (70, 65, 55))
-            self.screen.blit(tag_s, (r.x + 16, r.centery + 4))
+            self.screen.blit(tag_s, (r.x + self._u(16), r.centery + self._u(4)))
             self._debug_map_buttons.append((r, map_file))
 
     def _draw_debug_tab_itens(self, px, content_y, PW, font_md, font_sm, mx, my) -> None:
@@ -327,12 +351,12 @@ class DebugHandlers:
         hint_col = (150, 80, 80) if inv_full else (90, 80, 60)
         hint_txt = "Mochila cheia!" if inv_full else "Clique direito: adicionar a mochila"
         hint = font_sm.render(hint_txt, True, hint_col)
-        self.screen.blit(hint, (px + PW // 2 - hint.get_width() // 2, content_y + 2))
+        self.screen.blit(hint, (px + PW // 2 - hint.get_width() // 2, content_y + self._u(2)))
 
-        ROW_H, MAX_ROWS = 36, 9
-        LIST_W = PW - 28
-        list_x = px + 14
-        list_y = content_y + 24
+        ROW_H, MAX_ROWS = self._u(36), 9
+        LIST_W = PW - self._u(28)
+        list_x = px + self._u(14)
+        list_y = content_y + self._u(24)
 
         max_scroll = max(0, len(catalog) - MAX_ROWS)
         self._debug_item_scroll = min(self._debug_item_scroll, max_scroll)
@@ -343,26 +367,26 @@ class DebugHandlers:
             if not (0 <= vis_i < MAX_ROWS):
                 continue
             ry = list_y + vis_i * ROW_H
-            r  = pygame.Rect(list_x, ry, LIST_W - 12, ROW_H - 2)
+            r  = pygame.Rect(list_x, ry, LIST_W - self._u(12), ROW_H - self._u(2))
             hov     = r.collidepoint(mx, my)
             rar_col = _RARITY_COLORS.get(rarity, (100, 100, 100))
             pygame.draw.rect(self.screen, (40, 35, 20) if hov else (22, 18, 10),
                              r, border_radius=3)
             pygame.draw.rect(self.screen, rar_col if hov else (50, 40, 25),
                              r, 1, border_radius=3)
-            pygame.draw.circle(self.screen, rar_col, (r.x + 12, r.centery), 5)
+            pygame.draw.circle(self.screen, rar_col, (r.x + self._u(12), r.centery), self._u(5))
             name_s = font_sm.render(name, True, rar_col)
-            self.screen.blit(name_s, (r.x + 26, r.centery - name_s.get_height() // 2))
+            self.screen.blit(name_s, (r.x + self._u(26), r.centery - name_s.get_height() // 2))
             rar_s = font_sm.render(rarity.capitalize(), True, rar_col)
-            self.screen.blit(rar_s, (r.right - rar_s.get_width() - 6,
+            self.screen.blit(rar_s, (r.right - rar_s.get_width() - self._u(6),
                                      r.centery - rar_s.get_height() // 2))
             self._debug_item_buttons.append((r, factory))
 
         # Scrollbar
         if len(catalog) > MAX_ROWS:
             sb_h = MAX_ROWS * ROW_H
-            sb_x = list_x + LIST_W - 10
-            th   = max(20, sb_h * MAX_ROWS // len(catalog))
+            sb_x = list_x + LIST_W - self._u(10)
+            th   = max(self._u(20), sb_h * MAX_ROWS // len(catalog))
             ty   = list_y + (sb_h - th) * self._debug_item_scroll // max(1, max_scroll)
-            pygame.draw.rect(self.screen, (35, 30, 18), (sb_x, list_y, 5, sb_h), border_radius=2)
-            pygame.draw.rect(self.screen, (120, 100, 60), (sb_x, ty, 5, th), border_radius=2)
+            pygame.draw.rect(self.screen, (35, 30, 18), (sb_x, list_y, self._u(5), sb_h), border_radius=2)
+            pygame.draw.rect(self.screen, (120, 100, 60), (sb_x, ty, self._u(5), th), border_radius=2)

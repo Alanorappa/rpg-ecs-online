@@ -12,6 +12,8 @@ Performance:
 """
 from __future__ import annotations
 import pygame
+from ui_scale_mixin import UIScaleMixin
+from ui_sizes import UI
 
 try:
     import numpy as np
@@ -20,11 +22,11 @@ except ImportError:
     _NUMPY_OK = False
 
 
-class Minimap:
-    SIZE         = 220   # frame quadrado em px
-    RADIUS       =  25   # raio em tiles ao redor do player
-    MARGIN_RIGHT =  10
-    MARGIN_TOP   =  68   # abaixo dos textos zona/coords (~y=10..60)
+class Minimap(UIScaleMixin):
+    SIZE         = UI.MINIMAP_SIZE          # frame quadrado em px (base, escala 1.0)
+    RADIUS       = UI.MINIMAP_RADIUS_TILES  # raio em tiles ao redor do player — não escala
+    MARGIN_RIGHT = UI.MINIMAP_MARGIN_RIGHT
+    MARGIN_TOP   = UI.MINIMAP_MARGIN_TOP    # abaixo dos textos zona/coords (~y=10..60)
     BORDER_COL   = (100,  80,  50)
     PLAYER_COL   = (255, 255, 255)
     ENEMY_COL    = (220,  50,  50)
@@ -33,18 +35,35 @@ class Minimap:
         self.screen       = screen
         self._map_overlay = map_overlay
 
-        self._win:          int = 2 * self.RADIUS + 1   # 51 tiles de lado
-        self._tile_px:      int = max(1, self.SIZE // self._win)   # 2 px/tile
-        self._content_size: int = self._win * self._tile_px        # 102 px
-        self._map_ox:       int = (self.SIZE - self._content_size) // 2  # 9 px
-        self._map_oy:       int = (self.SIZE - self._content_size) // 2  # 9 px
+        self._win: int = 2 * self.RADIUS + 1   # 51 tiles de lado — não escala
 
         self._map_arr: "np.ndarray | None" = None   # (cols, rows, 3) uint8
-
         self._cached_surf: "pygame.Surface | None" = None
         self._cache_key:   "tuple | None"           = None
 
+        # set_ui_scale(1.0) é chamado por super().__init__() (UIScaleMixin) e
+        # calcula _tile_px/_content_size/_map_ox/_map_oy abaixo, a partir do
+        # SIZE já escalado — precisa rodar depois de self._win estar setado.
+        super().__init__()
+
         self._load_map_arr()
+
+    def set_ui_scale(self, scale: float) -> None:
+        """Recalcula a geometria derivada (px/tile, offset de centralização)
+        e invalida o cache do minimapa quando a escala muda — antes desta
+        correção, o minimapa nunca reagia à "Escala da UI" do menu de
+        pausa (ver arquitetura/PROBLEMAS_ARQUITETURA.md item IU4)."""
+        changed = scale != self._ui_scale_applied
+        super().set_ui_scale(scale)
+        if not changed:
+            return
+        size = self._u(self.SIZE)
+        self._tile_px:      int = max(1, size // self._win)
+        self._content_size: int = self._win * self._tile_px
+        self._map_ox:       int = (size - self._content_size) // 2
+        self._map_oy:       int = (size - self._content_size) // 2
+        self._cached_surf = None
+        self._cache_key   = None
 
     # ── Inicialização ────────────────────────────────────────────────────────
 
@@ -88,8 +107,8 @@ class Minimap:
             self._cache_key = cache_key
 
         sw, _ = self.screen.get_size()
-        fx = sw - self.SIZE - self.MARGIN_RIGHT
-        fy = self.MARGIN_TOP
+        fx = sw - self._u(self.SIZE) - self._u(self.MARGIN_RIGHT)
+        fy = self._u(self.MARGIN_TOP)
 
         self.screen.blit(self._cached_surf, (fx, fy))
 
@@ -111,15 +130,17 @@ class Minimap:
                 sy = oy + mid + dy * tp
                 pygame.draw.circle(self.screen, self.ENEMY_COL, (sx, sy), 2)
 
+        sz = self._u(self.SIZE)
         pygame.draw.rect(self.screen, self.BORDER_COL,
-                         (fx - 1, fy - 1, self.SIZE + 2, self.SIZE + 2), 1)
+                         (fx - 1, fy - 1, sz + 2, sz + 2), 1)
 
     def get_rect(self) -> "pygame.Rect":
         """Retorna o rect de tela do minimap (mesmo cálculo usado em render)."""
         sw, _ = self.screen.get_size()
-        fx = sw - self.SIZE - self.MARGIN_RIGHT
-        fy = self.MARGIN_TOP
-        return pygame.Rect(fx, fy, self.SIZE, self.SIZE)
+        sz = self._u(self.SIZE)
+        fx = sw - sz - self._u(self.MARGIN_RIGHT)
+        fy = self._u(self.MARGIN_TOP)
+        return pygame.Rect(fx, fy, sz, sz)
 
     def screen_to_tile(self, mx: int, my: int,
                        player_tx: int, player_ty: int) -> "tuple[int,int] | None":
@@ -222,7 +243,7 @@ class Minimap:
 
         content = pygame.surfarray.make_surface(content_arr)
 
-        frame = pygame.Surface((self.SIZE, self.SIZE))
+        frame = pygame.Surface((self._u(self.SIZE), self._u(self.SIZE)))
         frame.fill((0, 0, 0))
         frame.blit(content, (self._map_ox, self._map_oy))
         return frame
@@ -261,7 +282,7 @@ class Minimap:
                     b = b * 45 // 100
                 pygame.draw.rect(content, (r, g, b), (wx * tp, wy * tp, tp, tp))
 
-        frame = pygame.Surface((self.SIZE, self.SIZE))
+        frame = pygame.Surface((self._u(self.SIZE), self._u(self.SIZE)))
         frame.fill((0, 0, 0))
         frame.blit(content, (self._map_ox, self._map_oy))
         return frame

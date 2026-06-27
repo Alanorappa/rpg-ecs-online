@@ -9,6 +9,27 @@ RARITY_COLORS = {
 }
 
 
+def wrap_text(text: str, font, max_px: int) -> list:
+    """Quebra `text` em linhas que cabem em `max_px` pixels com `font`,
+    quebrando só em espaços (word-wrap). Usado por qualquer painel/tooltip
+    que precise impor uma largura máxima a texto livre — ver
+    arquitetura/PROBLEMAS_ARQUITETURA.md item IU4 (tooltip sem limite de
+    largura, virava uma linha só gigante)."""
+    words = text.split()
+    lines, cur = [], ""
+    for word in words:
+        test = cur + (" " if cur else "") + word
+        if font.size(test)[0] <= max_px:
+            cur = test
+        else:
+            if cur:
+                lines.append(cur)
+            cur = word
+    if cur:
+        lines.append(cur)
+    return lines
+
+
 def draw_stack_count(surf, item, rect, font) -> None:
     """Desenha 'xN' no canto inferior direito do ícone para itens stackáveis.
 
