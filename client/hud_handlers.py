@@ -11,7 +11,7 @@ import pygame
 
 from components import (Channeling, CharacterStats, CombatStats, IceBlockEffect,
                         Inventory, PermanentStats, SpellCast, TileMovement, Wallet)
-from client.colors import C_WHITE, C_YELLOW, C_GREEN, C_RED, C_GRAY, C_CYAN, C_ORANGE
+from client.colors import C_WHITE, C_YELLOW, C_GREEN, C_RED, C_GRAY, C_ORANGE
 from ui_sizes import UI
 
 
@@ -161,16 +161,9 @@ class HudHandlers:
         if not char_stats:
             return
 
-        # --- Level e XP ---
-        xp_ratio = char_stats.current_xp / max(1, char_stats.xp_to_next_level)
-        xp_bar_h = self._u(UI.HUD_XP_BAR_H)
-        pygame.draw.rect(self.screen, (0, 40, 80),  (self._u(10), y, bar_w, xp_bar_h))
-        pygame.draw.rect(self.screen, C_CYAN,        (self._u(10), y, int(bar_w * xp_ratio), xp_bar_h))
-        lv_surf = self.font_sm.render(
-            f"Nv {char_stats.level}  XP {char_stats.current_xp}/{char_stats.xp_to_next_level}",
-            True, (255, 255, 255))
-        self.screen.blit(lv_surf, (self._u(14), y))
-        y += lv_surf.get_height() + self._u(2)
+        # Level e XP: removidos do HUD permanente por pedido do usuário — agora
+        # só aparecem no painel de Skill Level (tecla L, skill_level_ui.py).
+        # Reaparecerão aqui em formato ainda a definir.
 
         # --- Atributos brutos / ratings de combate — só com debug ativo (F12) ---
         # Redundante com a seção "Estatísticas" do painel de Inventário; por

@@ -17,6 +17,14 @@ Tipos de objetivo (ObjectiveDef.type):
                         alvo. target = nome | raça do alvo | "*" (qualquer).
                         Evento esperado: quest_events.fire("use_item_on_target",
                         item_name=..., target_name=..., target_race=...).
+    learn_skill       Aprender (treinar) uma skill no treinador. target = skill_id.
+                        Dispara ao comprar/aprender com sucesso em
+                        trainer_system.py::_do_learn — não conta skills
+                        iniciais (INITIAL_SKILLS_BY_CLASS).
+    use_skill (extra) params={"on_dummy": True} exige que o alvo da skill tenha
+                        o componente TrainingDummy (boneco de treino) no
+                        momento do uso — sem o param, aceita qualquer alvo
+                        (comportamento padrão, usado por warrior_trial etc.).
 
 Adicionar um tipo de objetivo NOVO (que não é só "item usado em alvo"):
     1. Documentar aqui (acima) e descrever a forma do evento esperado.
@@ -66,6 +74,11 @@ class QuestDef(NamedTuple):
     requires:    tuple = ()      # tuple[quest_id, ...] pré-requisitos
     next_quest:  str   = ""      # quest_id a iniciar automaticamente ao completar
     level_req:   int   = 0       # nível mínimo para aceitar a quest
+    class_req:   str   = ""      # "" = qualquer classe; senão restrita a essa classe
+                                  # (ex: "mago") — totalmente invisível pra outras
+                                  # classes (sem ícone/indicador, não aparece nem
+                                  # como bloqueada). Cadeia de quests da classe: ligar
+                                  # via requires=(quest_anterior,) / next_quest.
     completion:  str   = ""      # texto do NPC ao receber a entrega (vazio = usa título)
 
 
@@ -98,6 +111,7 @@ QUESTS: dict[str, QuestDef] = {
             ObjectiveDef(type="kill", target="*", count=1),
         ),
         reward=QuestReward(xp=50),
+        requires=("prova_valor"),
         next_quest="survivor",
         completion="Sabia que você conseguiria. Todo guerreiro começa com o primeiro sangue — "
                    "o resto é só questão de prática. Continue assim.",
@@ -228,13 +242,56 @@ QUESTS: dict[str, QuestDef] = {
                    "Você tem o que é preciso para ser um verdadeiro executor.",
     ),
 
+    "iniciacao_arcana": QuestDef(
+        title="Iniciação Arcana",
+        description="Então você se diz ser um mago? Que tipo de mago se quer usa alguma magia? "
+                    "Bom vamos lá, não tenho tempo a perder, eu vou lhe conceder treinamento a uma "
+                    "habilidade sem custos para você iniciar. Após aprender a habilidade, treine em "
+                    "um desses bonecos de treino aqui na frente, vou ficar de olho",
+        objectives=(
+            ObjectiveDef(type="learn_skill", target="bola_de_fogo", count=1),
+            ObjectiveDef(type="use_skill", target="bola_de_fogo", count=5,
+                        params={"on_dummy": True}),
+        ),
+        reward=QuestReward(xp=80),
+        class_req="mago",
+        completion="Pelo visto você tem jeito pra coisa, mas na próxima vez tente pausar um pouco "
+                   "entre os ataques, para não queimar o boneco de treino, você sabe quanto eles custam?",
+    ),
+
+    "prova_valor": QuestDef(
+        title="Prova de Valor",
+        description="Então você escolheu ser um guerreiro. "
+                    "Preciso te contar uma coisa, no começo, será fácil, mas não se acostume "
+                    "A medida que você vai evoluindo, os desafios são maiores, "
+                    "o medo, o sangue, as mortes vão cada vez de consumindo, "
+                    "para você não desistir, terá que focar no seu objetivo, e não se desviar."
+                    "Além disso, você precisa aprender alguns golpes, irei te ensinar um golpe "
+                    "extremamente poderoso que conforme você evolui, esse golpe evluirá também."
+                    "Prove seu valor, vou lhe ensinar um golpe poderoso, assim que aprender"
+                    "desfira-o algumas vezes no boneco de treino aqui na frente.",
+        objectives=(
+            ObjectiveDef(type="learn_skill", target="golpe_poderoso", count=1),
+            ObjectiveDef(type="use_skill", target="golpe_poderoso", count=6,
+                        params={"on_dummy": True}),
+        ),
+        reward=QuestReward(xp=80),
+        class_req="guerreiro",
+        completion="Sua escolha faz sentido, você provou seu valor. "
+                   "O problema é que eu não sabia que você era forte, o boneco de treino"
+                   "ficou todo desfigurado. Sniff...",
+    ),
+
     # ── Social ────────────────────────────────────────────────────────────────
     "merchant_greeting": QuestDef(
         title="Contatos Locais",
         description="Conhecer os comerciantes da região é essencial para qualquer aventureiro. "
                     "Vá falar com um mercador.",
         objectives=(
-            ObjectiveDef(type="talk_to_npc", target="*", count=1),
+            ObjectiveDef(
+                type="talk_to_npc", 
+                target="Fabian Hardek", 
+                count=1),
         ),
         reward=QuestReward(xp=30, gold=5),
         completion="Bons contatos valem ouro nesse mundo. Você está aprendendo rápido.",
@@ -254,13 +311,13 @@ QUESTS: dict[str, QuestDef] = {
             ),
         ),
         reward=QuestReward(xp=150, gold=10),
-        completion="Então é isso que está acontecendo lá dentro... Obrigado por investigar. "
+        completion="Que bizarro, isso quer dizer que talvez eles tenham sido comidos por esses monstros? "
                    "Precisamos fazer algo a respeito disso.",
     ),
     "report_coveiro": QuestDef(
         title="Reporte o Coveiro",
-        description="Tenho um amigo coveiro que se chama Custodio Benevide, ele disse que no cemitério" \
-        "está acontecendo algo parecido. Vá até ele no cemitério Freesoul e reporte o que está" \
+        description="Tenho um amigo coveiro chamado Custodio, ele disse que no cemitério " 
+        "tem uns monstros parecidos. Vá até ele no cemitério Freesoul e reporte o que está " 
         "acontecendo aqui na caverna, talvez o ajude em algo",
         objectives=(
             ObjectiveDef(

@@ -1,5 +1,5 @@
 {
-  "scale": 1.0,
+  "scale": 1.5,
   "server_host": "localhost",
   "server_port": 8765,
   "net_user": "teste",
@@ -39,7 +39,8 @@
     "talentos": 112,
     "mapa": 109,
     "diario": 106,
-    "habilidades": 104
+    "habilidades": 104,
+    "skill_level": 108
   },
   "characters": {
     "teste": {
@@ -228,8 +229,8 @@
           "tiro_repulsivo",
           "camuflagem",
           "tiro_multiplo",
-          null,
-          null,
+          "so_um_gole",
+          "cancao_inspiracao",
           null
         ],
         "keybinds": [
@@ -261,11 +262,99 @@
           98
         ]
       }
+    },
+    "Juugomage": {
+      "hotbar": {
+        "slots": [
+          "bola_de_fogo",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          48
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          "Odre Pequeno",
+          "Ensopado Revigorante",
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      }
+    },
+    "Juugo": {
+      "hotbar": {
+        "slots": [
+          "golpe_poderoso",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          48
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      }
     }
   },
   "debug_mode": true,
   "profile_frames": false,
-  "ui_scale": 1.0,
+  "ui_scale": 1.25,
   "consumable_bar": {
     "slots": [
       null,

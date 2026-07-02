@@ -2,7 +2,7 @@
 
 > Guia rápido para localizar qualquer parte do projeto.
 > Branch: **online** — versão multiplayer em desenvolvimento paralelo ao `master`.
-> Última atualização: 2026-05-22
+> Última atualização: 2026-06-27
 
 > **ATENÇÃO:** Ler `arquitetura/ARQUITETURA_ONLINE.md` antes de qualquer trabalho neste branch.
 
@@ -15,16 +15,23 @@
 | Definir/modificar tipo de mensagem | `shared/messages.py` | `MsgType` enum + docstring do payload |
 | Adicionar handler de mensagem no servidor | `server/session.py` | `_handlers` dict + `async def _handle_*` |
 | Alterar constante de rede (tick rate, AOI, etc.) | `shared/constants.py` | constante direta |
-| Adicionar stat ao PLAYER_STAT_SYNC | `shared/constants.py` | `COMBAT_SYNC_STATS` dict |
 | Lógica de autenticação / persistência | `server/auth.py` | `authenticate()`, `save_character()` |
 | Loop de ticks / ECS headless | `server/world_server.py` | `WorldServer._tick()` |
 | Spawn/despawn de player | `server/world_server.py` | `spawn_player()`, `despawn_player()` |
+| Transição de mapa (servidor) | `server/world_server.py` | `transfer_player()`, `get_player_map()`, `_map_bundles`, `_eid_to_map`, `_player_maps` |
+| Transição de mapa (cliente) | `client/network_handlers.py` | `_handle_msg_zone_change()` → `_do_transition()` |
+| Handler ZONE_CHANGE_REQ | `server/session.py` | `_handle_zone_change_req()` — valida tile + mapa, chama `transfer_player` |
 | Save merge (autoridade por campo) | `server/session.py` | `_build_save_merge()` |
 | Processar mortes de mobs no servidor | `server/server_death_handler.py` | `ServerDeathHandler.update()` |
 | Gerenciar sessões e broadcast AOI | `server/session.py` | `SessionManager` |
 | AOI subscription (known_eids) | `server/session.py` | `_build_update_for_session()` |
-| Sincronizar stats de equipamento/buff | `server/world_server.py` | `sync_player_combat_stats()`, `_apply_stat_overrides()` |
+| Derivar stats de equipamento/talentos (server-autoritativo) | `server/world_server.py` | `_apply_equipment_modifiers()`, `_apply_talent_modifiers()` |
 | Re-aplicar talentos ao ECS do servidor | `server/world_server.py` | `apply_talent_effects_to_player()` |
+| Skill Level (xp/bônus, Tibia-like) | `stats_system.py` | `grant_skill_xp()`, `apply_skill_bonuses_to_combat()`, `weapon_skill_extras()`, `defense_skill_extras()` |
+| Hooks de xp de Skill Level no servidor | `server/spell_completion_processor.py`, `systems.py`, `core_systems.py` | `_server_apply_ranged_physical()`, `_server_apply_magic_damage()`, `CombatSystem.deal_damage(is_server=)`, `StatusEffectSystem._apply_tick()`/`_on_resisted_dot()` |
+| Progresso/entrega de quest (server-autoritativo) | `server/world_server.py` | `_process_quest_events()`, `move_player()`/`apply_consumable()`/`update_player_equipment()` (gatilhos) |
+| Aceitar/entregar quest (QUEST_ACCEPT/QUEST_TURN_IN) | `server/session.py` | `_handle_quest_accept()`, `_handle_quest_turn_in()` |
+| Lógica pura de quest (matching, progresso, recompensa) | `quest_logic.py` | `apply_event()`, `try_start()`, `complete_quest()`, `can_turn_in()` |
 | Iniciar o servidor | `server/main.py` | `py -3.10 server/main.py` |
 | Conectar cliente ao servidor | `client/network.py` | `NetworkClient` |
 | Banco de dados / schema | `data/game.db` (SQLite) | criado por `auth.init_db()` |
@@ -35,7 +42,6 @@
 |--------|---------|-------|
 | Definir constantes rede/mundo | `shared/constants.py` | direto |
 | Encodar/decodar mensagem | `shared/messages.py` | `encode()`, `decode()` |
-| COMBAT_SYNC_STATS (stats sincronizadas) | `shared/constants.py` | `COMBAT_SYNC_STATS` |
 
 ## Onde encontrar o quê — Offline/herdado (COMPARTILHADO com cliente online)
 
@@ -50,9 +56,13 @@
 | Stats base por classe / attack interval | `stats_system.py` | `CLASS_BASE_STATS`, `sync_attack_interval()` |
 | Adicionar talento | `talent_data.py` | `TALENTS` + `CLASS_BUILD_MAP` |
 | Efeito de talento no jogo | `talent_system.py` | `apply_talent_effects()` |
+| Painel read-only de Skill Level (tecla L) | `skill_level_ui.py` | `SkillLevelUI`, registrado em `client/modal_stack_handlers.py` |
 | Criar item/arma/arco/aljava | `loot_tables.py` | `_T` dict |
-| Adicionar drop de mob | `loot_tables.py` | `MOB_LOOT_TABLES` |
-| Criar mob novo | `mob_definitions.py` | `MOB_TABLE` |
+| Adicionar drop de mob | `mob_definitions.py` | `MOB_TABLE[nome]["loot"]` (dict item_key→chance; `loot_tables.py::roll_mob_loot` só lê) |
+| Criar mob novo | `mob_definitions.py` | `MOB_TABLE` (raça/classe/cor + `attributes`/`abilities`/`loot`/`xp_given_by_lvl`) |
+| Atributos de combate de um mob (HP/dano/velocidade/acerto/crit) | `mob_definitions.py` | `MOB_TABLE[nome]["attributes"]` |
+| Habilidade especial de um mob (poison/bleed/stun) | `enemy_abilities_data.py` + `mob_definitions.py` | `ABILITY_DEFS` (dado) + `MOB_TABLE[nome]["abilities"]` (lista) |
+| XP concedido por level do mob | `mob_definitions.py` | `MOB_TABLE[nome]["xp_given_by_lvl"]` |
 | Sons de mob (aggro, death, attack) | `mob_definitions.py` | `"sounds"` dict por mob |
 | Sons posicionais online | `sound_manager.py` | `play_mob_sounds_at()`, `volume_at()` |
 | Componente ECS | `components.py` | categoria relevante |

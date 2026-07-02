@@ -48,6 +48,7 @@ class UI:
     QUEST_DIALOG_W, QUEST_DIALOG_H     = 480, 400  # diálogo de aceitar/entregar quest (NPC com !/?)
     QUEST_JOURNAL_W, QUEST_JOURNAL_H   = 700, 520  # diário de quests (tecla J)
     TALENTS_W, TALENTS_H          = 800, 640   # árvore de talentos (tecla T)
+    SKILL_LEVELS_W, SKILL_LEVELS_H = 700, 560  # painel de Skill Level (tecla L) — nível+xp do personagem + 11 trilhas, read-only
 
     # Menu de pausa (ESC) e seus submenus — cada um é um painel separado
     MENU_QUIT_CONFIRM_W, MENU_QUIT_CONFIRM_H = 320, 150   # "Tem certeza que deseja sair?"
@@ -136,6 +137,16 @@ class UI:
     TALENTS_GRID_ORIGIN_Y = 70    # margem da grade de nós até o TOPO do painel
     TALENTS_TOOLTIP_W     = 320   # largura do tooltip que aparece ao passar o mouse num nó
 
+    # ── Skill Level (tecla L) — geometria interna ──────────────────────────
+    # Arquivo: skill_level_ui.py
+    SKILL_LEVELS_PAD     = 20   # respiro entre a borda do painel e o conteúdo
+    SKILL_LEVELS_HEADER_H = 56  # altura reservada pro título no topo
+    SKILL_LEVELS_CHAR_ROW_H = 52  # altura da linha de Nível+XP do personagem (acima das 11 trilhas)
+    SKILL_LEVELS_ROW_H   = 38   # altura de cada linha — 1 linha só (nome+level+bônus, barra com xp sobreposto)
+    SKILL_LEVELS_BAR_W   = 230  # largura da barra de progresso de xp
+    SKILL_LEVELS_BAR_H   = 22   # altura da barra — alta o bastante pro texto de xp ficar sobreposto, centrado
+    SKILL_LEVELS_NAME_COL_W = 230  # largura reservada pro nome da skill antes da coluna "Lv X (+Y%)"
+
     # ── Mapa-múndi (overlay, tecla M) ────────────────────────────────────────
     # Arquivo: map_overlay.py. Esse painel NÃO usa pixel fixo — o tamanho é
     # sempre uma PROPORÇÃO da tela atual (0.70 = 70% da largura/altura da
@@ -216,6 +227,8 @@ class UI:
     QUEST_JOURNAL_OFFSET_Y = 0
     TALENTS_OFFSET_X      = 0
     TALENTS_OFFSET_Y      = 0
+    SKILL_LEVELS_OFFSET_X = 0
+    SKILL_LEVELS_OFFSET_Y = 0
     MENU_QUIT_CONFIRM_OFFSET_X = 0
     MENU_QUIT_CONFIRM_OFFSET_Y = 0
     MENU_MAIN_OFFSET_X    = 0

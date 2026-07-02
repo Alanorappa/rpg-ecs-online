@@ -127,14 +127,68 @@ Parâmetros herdados do offline, funcionam sem mudança:
 
 ### CombatStateSystem inline (no `_tick`)
 
-Duplicação conhecida do `CombatStateSystem` offline (systems.py:919-1022).
-Rodado inline após `_systems.update(dt)` para cada player conectado.
-Constantes idênticas ao offline:
+Lógica core (rage decay, HP5, regen de mana, stun timer, etc.) NÃO é mais
+duplicada — vive em `core_systems.py::BaseCombatStateSystem` (puro, sem
+Pygame), herdada por `systems.CombatStateSystem` (cliente) e
+`core_systems.ServerCombatStateSystem` (servidor, adiciona `hp5_events`/
+`mana_events`/`proc_events`). `server/world_server.py::_tick()` chama
+`self._combat_state_sys.update(self._player_eids, dt)` pra todos os
+players conectados a cada tick.
 - `RAGE_DECAY_AMOUNT = 5`, `RAGE_DECAY_INTERVAL = 3.0s`
-- HP5: `max(1, int(max_hp * hp5)) a cada 5s` fora de combate
-- Emite `{outcome="regen", damage=negative}` em `_combat_this_tick` para o cliente exibir `+N HP`
+- HP5: `max(1, int(max_hp * hp5)) a cada 5s` fora de combate — emite
+  `{outcome="regen", damage=negative}` em `_combat_this_tick` (cliente
+  exibe `+N HP`)
+- Regen de mana (Mago): `max(1, int(max_mana * pct))` a cada
+  `MANA_REGEN_INTERVAL=5s` — 4% fora de combate, 1% em combate
+  (`_tick_mana_regen`). **Único produtor autoritativo** — enfileira em
+  `_pending_xp_deliveries` (vira `STATS_UPDATE`). O cliente
+  (`spell_system.ManaSystem`) só prediz esse regen quando offline
+  (`self._net` não setado); online, espera o `STATS_UPDATE` do servidor —
+  ver `PROBLEMAS_ARQUITETURA.md` (bug real: cliente regenerava mana
+  sozinho sem o servidor saber, causando "Mana insuficiente" com o HUD
+  mostrando mana de sobra).
 
-> Problema de duplicação: se `CombatStateSystem` offline mudar, o inline do servidor não é atualizado automaticamente. Ver TODO interno.
+### Progresso de quest — `quest_logic.py` + `WorldServer._process_quest_events`
+
+Lógica pura (sem Pygame) extraída de `quest_system.py` pra `quest_logic.py`
+(módulo top-level, paralelo a `quests_data.py`/`quest_events.py`) — usada
+pelo cliente (caminho offline) E pelo servidor (caminho online,
+autoritativo). Funções: `match_objective`, `apply_event`, `try_start`,
+`complete_quest`, `can_turn_in`, `sync_collect_progress`,
+`sync_learn_skill_progress`, `roll_conditional_loot`.
+
+`WorldServer._process_quest_events()` roda 1x por tick (mesmo lugar de
+`_sync_player_skill_levels_dirty`): drena `quest_events.QUEST_EVENTS`
+(eventos com `player_eid` explícito — `fire(event_type, player_eid=eid,
+**data)`), aplica progresso via `quest_logic.apply_event`, e sincroniza
+sem evento dedicado `collect_item` (contra `Inventory`) e `learn_skill`
+(contra `PlayerSkills.learned_skill_ids`). Dirty-check por player → push
+privado `QUEST_UPDATE` (nunca AOI).
+
+Gatilhos server-side (`quest_fire`) por tipo de objetivo:
+- `kill` → `server/server_death_handler.py` (first-attacker)
+- `use_skill` → `server/spell_completion_processor.py::_process_spell_cast_completions`
+  (cast-time) + `server/skill_processor.py` (instantâneas)
+- `use_consumable` → `server/world_server.py::apply_consumable`
+- `equip_item` → `server/world_server.py::update_player_equipment`
+- `reach_tile` → `server/world_server.py::move_player`
+- `reach_level` → `stats_system.py::process_levelups` (já roda nos dois lados)
+- `talk_to_npc` → aplicado inline em `_handle_quest_accept`/`_handle_quest_turn_in`
+  (payload leva `npc_name`)
+
+`QUEST_ACCEPT`/`QUEST_TURN_IN` (C→S) são processados em
+`server/session.py` — validam contra o `QuestLog`/`CharacterStats`/
+`PlayerSkills` do PRÓPRIO servidor, nunca confiam no cliente. Persistência:
+`quests_json` (mesmo padrão de `skill_levels_json` — sempre servidor, ver
+`PROBLEMAS_ARQUITETURA.md`).
+
+`QuestDef.class_req` (`quests_data.py`, default `""` = qualquer classe) —
+restringe a quest a uma classe (ex: `"mago"`). Validado em
+`quest_logic.try_start` (servidor/offline). Quest com classe errada é
+TOTALMENTE invisível pro player (não aparece nem como bloqueada) —
+`QuestDialogSystem._get_available_quests`/`_get_locked_quests` filtram por
+`self._qs._player_class_id()`. Cadeia de quests por classe: encadear via
+`requires=(quest_anterior,)`/`next_quest` (já existia, reaproveitado).
 
 ### `_apply_final_damage(target_id, dmg) -> bool` — gate centralizado de dano
 
@@ -159,8 +213,8 @@ def _apply_final_damage(self, target_id: int, dmg: int) -> bool:
 Retorna `False` quando bloqueado (sem HP, imune); `True` quando aplicado. HP pode ficar negativo (overkill preservado para cálculo de dano real em chamadores).
 
 Caminhos que delegam para `_apply_final_damage`:
-- `_server_apply_magic_damage` — Bola de Fogo, Calcinar, Nova Congelante, Calamidade Flamejante
-- `_server_apply_ranged_physical` — Flecha Reiterada, Picada de Escorpião, Tiro Repulsivo
+- `_server_apply_magic_damage` — Bola de Fogo, Calcinar, Nova Congelante, Calamidade Flamejante. Param `school` (Skill Level — ver seção abaixo) aplica resistência do alvo + bônus de Magic do atacante
+- `_server_apply_ranged_physical` — Flecha Reiterada, Picada de Escorpião, Tiro Repulsivo, Tiro Múltiplo (por flecha). Aplica bônus de Arco/Escudo/Defesa (Skill Level)
 
 Caminho fora do mixin (tem guarda própria já há mais tempo):
 - `deal_damage()` em `systems.py` — auto-attack player→mob e player→player; já checava `is_immune`
@@ -201,7 +255,10 @@ Executado **antes** do auto-attack a cada tick:
 
 Processa entidades com `PendingDeath` a cada tick:
 
-1. Calcula XP base por tier (`normal=50, elite=150, rare=300, boss=1000`)
+1. Calcula XP base: `level_do_mob × MOB_TABLE[nome]["xp_given_by_lvl"] ×
+   ENEMY_TIER_CONFIGS[tier]["xp"]` (mob_definitions.py/entity_factory.py).
+   Mob sem cadastro (ex: "Elemental") cai no fallback antigo flat por tier
+   (`_XP_BY_TIER`: normal=50, elite=150, rare=300, boss=1000)
 2. XP proporcional: divide por dano total do `_mob_damage_log`
 3. Vitória Iminente: killer ganha carga se tiver skill na hotbar
 4. Determina first-attacker (primeiro a atacar = dono do loot)
@@ -238,15 +295,56 @@ Fluxo de morte/espírito (ghost) + cemitério` para o fluxo completo.
 - `move_player()` (world_server.py) — bypass de CC/walkable para
   `GhostState.is_ghost` (intangível, só valida 1 tile de distância).
 
-### PLAYER_STAT_SYNC — handler
+### PLAYER_STAT_SYNC — OBSOLETO (handler é no-op)
 
-Handler `_handle_player_stat_sync` em `session.py`:
-- Recebe `PLAYER_STAT_SYNC` do cliente com stats efetivos
-- Chama `world_server.sync_player_combat_stats(session_id, payload)`
-- Filtra apenas keys em `COMBAT_SYNC_STATS` (evita poluição)
-- Armazena em `_player_stat_overrides[eid]`
-- Aplica via `_apply_stat_overrides(eid)` → `cs._recalculate_effective_stats()`
-- `_apply_stat_overrides` é chamada após qualquer recalculo (spawn, level-up, talents)
+`_handle_player_stat_sync` em `session.py` **não faz mais nada** — o mecanismo
+antigo (cliente envia stats efetivos calculados localmente; servidor confiava
+e sobrescrevia via `sync_player_combat_stats`/`_apply_stat_overrides`/
+`_player_stat_overrides[eid]`) foi removido por confiar em valores que o
+cliente podia forjar (ver `PROBLEMAS_ARQUITETURA.md`, Tier A/F). Substituído
+por `WorldServer._apply_equipment_modifiers`/`_apply_talent_modifiers`, que
+derivam os modificadores de `CombatStats` a partir do `Equipment`/`TalentTree`
+REAIS já validados no servidor — chamados em `spawn_player`,
+`update_player_equipment` e sempre que talentos são realocados. Mantido só
+por compat de protocolo (mensagem ainda existe em `shared/messages.py`).
+
+### Skill Level (Tibia-like) — hooks de xp e bônus no servidor
+
+Ver `COMPONENTES_ECS.md` → "Skill Level" pro componente `SkillLevels` e os
+campos derivados em `CombatStats`. Funções puras de xp/bônus em
+`stats_system.py` (`grant_skill_xp`, `apply_skill_bonuses_to_combat`,
+`weapon_skill_extras`, `defense_skill_extras`, `grant_weapon_skill_xp`,
+`grant_defense_skill_xp`, `grant_resist_skill_xp`) — só o servidor as chama.
+
+Pontos de integração (todos já existentes, estendidos — não criou funil novo):
+- **Magic** (cast): `_process_spell_cast_completions` concede 1 xp quando
+  `mana_cost` efetivo deduzido > 0 (exclui Bloco de Gelo, custo real 0).
+- **Arco/Escudo/Defesa** (Arqueiro): `_server_apply_ranged_physical` lê
+  `weapon_skill_extras`/`defense_skill_extras` do atacante/alvo, passa como
+  `extra_acerto/extra_crit/extra_block/extra_avoid` pro
+  `resolve_attack_outcome` existente, e concede xp via `grant_weapon_skill_xp`
+  (atacante)/`grant_defense_skill_xp` (alvo) — independente de hit/miss.
+- **Arma/Escudo/Defesa, todas as classes** (auto-attack):
+  `CombatSystem.deal_damage`/`_calculate_damage` (systems.py) — mesmo padrão
+  acima. **`CombatSystem` é compartilhado client+server**; novo flag
+  `is_server: bool` (só `True` na instância de `world_server.py`) gateia as
+  chamadas de `grant_*` — leitura dos bônus já calculados é segura nos dois
+  lados (cliente nunca popula esses campos, ficam 0).
+- **Resistência mágica** (Mago): `_server_apply_magic_damage` recebeu novo
+  param `school: "fogo"|"gelo"|"natureza"`; aplica `magic_skill_dmg_bonus`/
+  `magic_skill_crit_bonus` do atacante e `apply_resistance_reduction` +
+  `grant_resist_skill_xp` no alvo quando `school` setado. Callers (Bola de
+  Fogo, Calcinar, Nova Congelante, Calamidade Flamejante) passam a escola.
+- **Resistência em DoT**: `core_systems.StatusEffectSystem._apply_tick` —
+  mapa `DOT_SCHOOL = {"poison": "natureza", "burn": "fogo"}`; aplica
+  `apply_resistance_reduction` e o hook virtual `_on_resisted_dot(eid, school)`
+  (base no-op; servidor sobrescreve em `_ServerStatusEffectSystem` pra
+  conceder xp). **Sangramento (bleed) não muda** — físico, sem resistência,
+  como antes.
+
+Persistência: coluna `skill_levels_json` em `server/auth.py` (mesmo padrão
+`ALTER TABLE` de `fog_json`); `get_player_save_data`/`_build_save_merge`
+sempre do componente vivo do servidor, nunca do payload do cliente.
 
 ---
 

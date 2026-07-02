@@ -74,6 +74,24 @@ class SpellCompletionMixin:
             char = self.world.get_component(player_eid, _CHS)
             if char and mana_cost > 0:
                 char.mana = max(0, char.mana - mana_cost)
+                # Skill Magic — só conta cast com custo efetivo de mana > 0 (exclui
+                # Bloco de Gelo, que tem mana_cost no catálogo mas custo real 0).
+                # Concedido por CAST, independente de acerto/dano — ver stats_system.py.
+                from components import SkillLevels as _SKLm
+                skl = self.world.get_component(player_eid, _SKLm)
+                cs_magic = self.world.get_component(player_eid, _CS)
+                if skl and cs_magic:
+                    from stats_system import grant_skill_xp as _grant_magic_xp
+                    _grant_magic_xp(skl, cs_magic, "magic", 1)
+
+            # Evento de quest "use_skill" — toda magia/skill com tempo de
+            # cast concluída conta, independente de acerto/dano. on_dummy
+            # checa TrainingDummy no alvo (ex: "Iniciação Arcana"). Server-
+            # autoritativo — ver quest_logic.py/PROBLEMAS_ARQUITETURA.md.
+            from components import TrainingDummy as _TDq
+            from quest_events import fire as _qfire_skill
+            _qfire_skill("use_skill", player_eid=player_eid, skill_id=spell_id,
+                         on_dummy=self.world.get_component(target_id, _TDq) is not None)
 
             # Cobra concentração ao completar (arqueiro)
             _conc_cost = entry.get("concentration_cost", 0)
@@ -511,7 +529,7 @@ class SpellCompletionMixin:
                     dmg = max(1, int(cs_p.base_physical_damage * ch.dmg_weapon_pct
                                      + sp * ch.dmg_sp_coeff)) if cs_p else 1
                     self._server_apply_magic_damage(player_eid, target_eid, dmg,
-                                                     roll_crit=True, report=True)
+                                                     roll_crit=True, report=True, school="fogo")
                     if ch.slow_pct > 0:
                         apply_effect(self.world, target_eid, "slow", 2.0, 1.0 - ch.slow_pct)
 
@@ -600,7 +618,8 @@ class SpellCompletionMixin:
 
     def _server_apply_magic_damage(self, attacker_id: int, target_id: int,
                                    dmg: int, is_crit: bool = False,
-                                   roll_crit: bool = False, report: bool = False) -> bool:
+                                   roll_crit: bool = False, report: bool = False,
+                                   school: str = "") -> bool:
         """Aplica dano mágico server-side (sem FLT/WARN/pygame).
 
         roll_crit=True: calcula crit internamente usando CombatStats do atacante.
@@ -613,6 +632,12 @@ class SpellCompletionMixin:
         _apply_spell_on_projectile_hit (Calcinar, Nova Congelante, BdF) NÃO
         devem reportar aqui — o chamador já monta "results"/SKILL_RESULT a
         partir do snapshot, e reportar duas vezes duplicava o FLT de dano.
+
+        school: "fogo"|"gelo"|"natureza" — aplica resist_<school> do alvo
+        (skill level, ver stats_system.py) e concede 1 xp dessa resistência ao
+        alvo. "" (default) = sem escola, sem resistência (ex: dano arcano).
+        Bônus de Magic skill do atacante (dmg%+crit%) aplica sempre, com ou
+        sem escola — qualquer spell que gasta mana conta para o skill Magic.
         """
         from components import (CombatStats, CombatState, AIControlled,
                                 PendingDeath, StatusEffects, TileMovement, EntityIdentity)
@@ -622,15 +647,29 @@ class SpellCompletionMixin:
         if not target_cs or target_cs.current_hp <= 0:
             return False
 
+        attacker_cs = self.world.get_component(attacker_id, CombatStats)
+        _magic_crit_bonus = getattr(attacker_cs, "magic_skill_crit_bonus", 0.0) if attacker_cs else 0.0
+        _magic_dmg_bonus  = getattr(attacker_cs, "magic_skill_dmg_bonus",  0.0) if attacker_cs else 0.0
+
         if roll_crit:
             from damage_calculator import resolve_attack_outcome, CRITICAL_DAMAGE_MULTIPLIER
-            attacker_cs = self.world.get_component(attacker_id, CombatStats)
             if attacker_cs:
-                outcome, _ = resolve_attack_outcome(attacker_cs, target_cs, "magical")
+                outcome, _ = resolve_attack_outcome(attacker_cs, target_cs, "magical",
+                                                    extra_crit=_magic_crit_bonus)
                 is_crit = (outcome == "crit")
                 if is_crit:
                     dmg = int(dmg * CRITICAL_DAMAGE_MULTIPLIER)
         self._last_magic_is_crit = is_crit
+
+        if _magic_dmg_bonus > 0:
+            dmg = int(dmg * (1.0 + _magic_dmg_bonus))
+
+        if school in ("fogo", "gelo", "natureza"):
+            from damage_calculator import apply_resistance_reduction
+            _resist = getattr(target_cs, f"resist_{school}", 0.0)
+            dmg = max(1, int(apply_resistance_reduction(dmg, _resist)))
+            from stats_system import grant_resist_skill_xp
+            grant_resist_skill_xp(self.world, target_id, school)
 
         hp_before = target_cs.current_hp
         if not self._apply_final_damage(target_id, dmg):
@@ -719,7 +758,9 @@ class SpellCompletionMixin:
             _bdf_data.get("dmg_sp_coeff",   2.0),
         )
 
-        outcome, _ = resolve_attack_outcome(player_cs, target_cs, "magical")
+        _magic_crit_bonus = getattr(player_cs, "magic_skill_crit_bonus", 0.0) if player_cs else 0.0
+        outcome, _ = resolve_attack_outcome(player_cs, target_cs, "magical",
+                                            extra_crit=_magic_crit_bonus)
         is_crit    = (outcome == "crit")
         final_dmg  = int(base_dmg * CRITICAL_DAMAGE_MULTIPLIER) if is_crit else base_dmg
 
@@ -736,7 +777,7 @@ class SpellCompletionMixin:
                     final_dmg = int(final_dmg * 2.0)
 
         self._proj_spell_result["is_crit"] = is_crit
-        self._server_apply_magic_damage(player_eid, target_id, final_dmg, is_crit)
+        self._server_apply_magic_damage(player_eid, target_id, final_dmg, is_crit, school="fogo")
 
         # Queimaduras Profundas
         if is_crit and player_cs and getattr(player_cs, "fire_burns_on_crit", False):
@@ -821,7 +862,7 @@ class SpellCompletionMixin:
                 if _sfx and _sfx.has("root"):
                     base_dmg = int(base_dmg * 2.0)
 
-        self._server_apply_magic_damage(player_eid, target_id, base_dmg, roll_crit=True)
+        self._server_apply_magic_damage(player_eid, target_id, base_dmg, roll_crit=True, school="fogo")
 
         # Chama Interna: proc após hit de fogo
         if player_cs and char_stats:
@@ -858,7 +899,7 @@ class SpellCompletionMixin:
             if chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y) > _range:
                 continue
             dmg = max(1, int(sp * _coef))
-            self._server_apply_magic_damage(player_eid, eid, dmg, roll_crit=True)
+            self._server_apply_magic_damage(player_eid, eid, dmg, roll_crit=True, school="gelo")
             _root_dur = _nc.get("effect_durations", {}).get("root", 5.0)
             apply_effect(self.world, eid, "root", _root_dur)
             # Snapa mob para target_tile quando root é aplicado.
@@ -931,6 +972,15 @@ class SpellCompletionMixin:
         equip       = self.world.get_component(player_eid, __import__("components").Equipment)
         bow         = equip.slots.get("mainhand") if equip else None
 
+        # Skill level — Arco (atacante) afeta acerto+crit; Escudo/Defesa (alvo)
+        # afetam block/avoid. Ver stats_system.py, seção Skill Level.
+        from stats_system import (weapon_skill_extras, defense_skill_extras,
+                                  grant_weapon_skill_xp, grant_defense_skill_xp)
+        _extra_acerto, _extra_crit_sk = weapon_skill_extras(self.world, player_eid, bow)
+        _extra_block, _extra_avoid    = defense_skill_extras(self.world, target_id)
+        grant_weapon_skill_xp(self.world, player_eid, bow)
+        grant_defense_skill_xp(self.world, target_id)
+
         if guaranteed_hit:
             # Picada de Escorpião: sempre acerta, pode critar
             from damage_calculator import resolve_attack_outcome as _ro
@@ -938,13 +988,18 @@ class SpellCompletionMixin:
                                          "dodge_rating":0, "parry_rating":0, "block_rating":0,
                                          "block_value":0, "armor":0})()
             outcome, block_r = _ro(attacker_cs, _dummy_cs, "physical",
+                                   extra_crit=_extra_crit_sk,
                                    is_ability=True) if attacker_cs else ("hit", 0.0)
             # Force: skip miss/dodge/parry — can only crit or hit
             if outcome not in ("crit", "hit", "block"):
                 outcome = "hit"
         else:
             outcome, block_r = resolve_attack_outcome(attacker_cs, target_cs,
-                                                       "physical", is_ability=is_ability) \
+                                                       "physical", extra_crit=_extra_crit_sk,
+                                                       extra_acerto=_extra_acerto,
+                                                       extra_block=_extra_block,
+                                                       extra_avoid=_extra_avoid,
+                                                       is_ability=is_ability) \
                 if attacker_cs else ("hit", 0.0)
 
         if outcome in ("miss", "dodge", "parry"):
@@ -1153,6 +1208,14 @@ class SpellCompletionMixin:
         # knockback e criando um "sprint"/correção visual no cliente.
         t_tm.is_moving = False
 
+        # Referência à IA do alvo — usada abaixo (após calcular _duration) pra
+        # represar a IA durante a janela de animação do dash. Buscado aqui
+        # porque _server_apply_ranged_physical (chamado acima) já garante que
+        # o alvo está CHASING/ATTACKING (aggro por dano), então o estado já
+        # reflete o real antes do empurrão.
+        from components import AIControlled as _AICtrl_kb
+        _ai_kb = self.world.get_component(target_id, _AICtrl_kb)
+
         # Posição de origem ANTES do empurrão — o cliente precisa dela pra
         # animar a tween inteira de uma vez (start→end), não passo a passo.
         _start_tx, _start_ty = t_tm.current_tile_x, t_tm.current_tile_y
@@ -1207,6 +1270,35 @@ class SpellCompletionMixin:
         # confirmado — nunca prediz o resultado de um empurrão em outra entidade.
         _DASH_TILE_S = 0.18  # mesma "sensação" de velocidade já usada antes, por tile
         _duration = tiles_traveled * _DASH_TILE_S
+
+        # Represa a IA (estado AGGRO_DELAY = "fica parado", ver EnemyAISystem)
+        # até a tween do empurrão terminar no cliente (_duration). Sem isso,
+        # EnemyAISystem retomava o `path` antigo (calculado pra posição ANTES
+        # do empurrão) já no próprio tick seguinte — `not tile_movement.is_moving`
+        # (resetado acima) mais um path/recalc ainda válidos disparava
+        # start_tile_movement imediatamente, e o mob "voltava" visualmente no
+        # meio do dash que o cliente ainda estava animando (mesma classe do bug
+        # de sprint do comentário acima, só que via IA, não TileMovementSystem).
+        # AGGRO_DELAY expira sozinho e volta a CHASING com path_recalc_timer
+        # novo — não precisa zerar path manualmente nem reimplementar o timer.
+        #
+        # Margem de segurança (_KB_AI_FREEZE_MARGIN): quando o empurrão colide
+        # (stunned=True), _pending_knockback_landings usa essa MESMA _duration
+        # pra decidir quando aplicar o stun (_process_knockback_landings). Os
+        # dois timers (aggro_delay aqui, entry["timer"] lá) decrementam em
+        # lockstep — sem margem, ambos cruzam zero NO MESMO TICK, mas
+        # EnemyAISystem.update() roda ANTES de _process_knockback_landings
+        # nesse tick (ver WorldServer._tick): a IA destrava e já pode mover 1
+        # passo ANTES do stun efetivamente aterrissar — exatamente o "voltar
+        # no dash" relatado, só que bem no instante do stun, não durante o
+        # voo. A margem garante que o stun sempre aterrissa antes da IA
+        # destravar (EnemyAISystem já trava movimento com stun ativo).
+        _KB_AI_FREEZE_MARGIN = 0.1
+        if _ai_kb:
+            _ai_kb.state       = "AGGRO_DELAY"
+            _ai_kb.aggro_delay = max(_ai_kb.aggro_delay, _duration + _KB_AI_FREEZE_MARGIN)
+            _ai_kb.path        = None
+
         if tiles_traveled > 0:
             self._moved_this_tick.append({
                 "eid": target_id, "tx": t_tm.current_tile_x, "ty": t_tm.current_tile_y,

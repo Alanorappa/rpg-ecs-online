@@ -29,7 +29,7 @@ from components import Position, Renderable, PlayerControlled, Camera, Collider,
                        EnemyAbilities, EnemyAbilitySlot, EntityIdentity, \
                        MobSounds, PendingDeath, XPReward, SpawnZoneOwner, SpawnZone, \
                        PlayerSkills, NPC, ActiveRegen, ConsumableBar, \
-                       AoeTargeting, RemoteControlled, GhostState
+                       AoeTargeting, RemoteControlled, GhostState, MapLocation
 from world import World
 from tileset import TILE_SIZE, OBJECT_MAPPING
 from utils import chebyshev, start_tile_movement
@@ -210,15 +210,19 @@ class System:
 
 
 class PathfindingSystem(System):
-    def __init__(self, world: World):
+    def __init__(self, world: World, tilemap_entity: int = -1):
         self.world = world
         self.tilemap_comp = None
+        self._tilemap_entity = tilemap_entity
 
     def _get_tilemap_component(self):
         if not self.tilemap_comp:
-            for _, tm_comp in self.world.get_entities_with(Tilemap):
-                self.tilemap_comp = tm_comp
-                break
+            if self._tilemap_entity >= 0:
+                self.tilemap_comp = self.world.get_component(self._tilemap_entity, Tilemap)
+            else:
+                for _, tm_comp in self.world.get_entities_with(Tilemap):
+                    self.tilemap_comp = tm_comp
+                    break
         return self.tilemap_comp
 
     def _get_distance_heuristic(self, tile1: tuple[int, int], tile2: tuple[int, int]) -> float:
@@ -325,27 +329,41 @@ class PathfindingSystem(System):
 
 
 class TileValidationSystem(System):
-    def __init__(self, world: World):
+    def __init__(self, world: World, tilemap_entity: int = -1, map_filter: str = ""):
         self.world = world
         self.tilemap_comp = None
+        self._tilemap_entity = tilemap_entity
+        self._map_filter = map_filter
         # Cache de tiles ocupados: {(tx, ty): entity_id}
         # Atualizado em update() a cada frame; consultado em O(1) por is_tile_walkable.
         self._occupied: dict = {}
 
     def _get_tilemap_component(self):
         if not self.tilemap_comp:
-            for _, tm_comp in self.world.get_entities_with(Tilemap):
-                self.tilemap_comp = tm_comp
-                break
+            if self._tilemap_entity >= 0:
+                self.tilemap_comp = self.world.get_component(self._tilemap_entity, Tilemap)
+            else:
+                for _, tm_comp in self.world.get_entities_with(Tilemap):
+                    self.tilemap_comp = tm_comp
+                    break
         return self.tilemap_comp
 
     def update(self, events: list = None, dt: float = 0) -> None:
         """Reconstrói o cache de tiles ocupados a cada frame."""
         occupied = {}
-        for entity_id, tm in self.world.get_entities_with(TileMovement):
-            occupied[(tm.current_tile_x, tm.current_tile_y)] = entity_id
-            if tm.is_moving:
-                occupied[(tm.target_tile_x, tm.target_tile_y)] = entity_id
+        if self._map_filter:
+            for entity_id, tm in self.world.get_entities_with(TileMovement):
+                ml = self.world.get_component(entity_id, MapLocation)
+                if ml is None or ml.map_file != self._map_filter:
+                    continue
+                occupied[(tm.current_tile_x, tm.current_tile_y)] = entity_id
+                if tm.is_moving:
+                    occupied[(tm.target_tile_x, tm.target_tile_y)] = entity_id
+        else:
+            for entity_id, tm in self.world.get_entities_with(TileMovement):
+                occupied[(tm.current_tile_x, tm.current_tile_y)] = entity_id
+                if tm.is_moving:
+                    occupied[(tm.target_tile_x, tm.target_tile_y)] = entity_id
         self._occupied = occupied
 
     def is_tile_walkable(self, moving_entity_id: int,
@@ -520,12 +538,18 @@ class CombatSystem(System):
     Lógica de morte (loot, cadáver, XP) movida para DeathHandlerSystem.
     """
 
-    def __init__(self, world: World):
+    def __init__(self, world: World, is_server: bool = False):
         self.world = world
         self.last_outcome: str = "hit"  # captura o outcome do último deal_damage
         # Avoidances de mob→player (parry/dodge/miss) que o servidor deve repassar ao cliente.
         # Preenchido em deal_damage; consumido e limpo por combat_processor cada tick.
         self.mob_avoidance_events: list[tuple] = []  # (attacker_id, target_id, outcome, pos_hp)
+        # True só na instância do servidor (server/world_server.py) — esta classe é
+        # compartilhada client+server (roda também no client offline). Concessão de xp
+        # de SkillLevels (Tibia-like) só pode rodar no servidor; ler bônus já calculados
+        # é seguro nos dois lados (cliente nunca chama apply_skill_bonuses_to_combat,
+        # então os campos *_skill_bonus ficam sempre 0 lá — ver stats_system.py).
+        self.is_server: bool = is_server
 
     def _get_combat_stats(self, entity_id: int) -> CombatStats | None:
         """Helper para obter o componente CombatStats de uma entidade."""
@@ -543,16 +567,22 @@ class CombatSystem(System):
                           multiplier: float = 1.0,
                           target_stats: CombatStats = None,
                           extra_crit: float = 0.0,
+                          extra_acerto: float = 0.0,
+                          extra_block: float = 0.0,
+                          extra_avoid: float = 0.0,
                           is_ability: bool = False) -> tuple:
         """Calcula dano e resolve a tabela de ataque. Retorna (damage, outcome).
 
         Delega a matemática pura para damage_calculator.py.
         is_ability=True: pula o miss roll (abilities só podem ser dodged/parried, não missed).
+        extra_acerto/extra_block/extra_avoid: bônus de skill level (arma do
+        atacante / escudo+defesa do alvo) — resolvidos pelo chamador (deal_damage).
         """
         if target_stats is not None:
             outcome, block_reduction = resolve_attack_outcome(
                 attacker_stats, target_stats, damage_type, extra_crit,
-                is_ability=is_ability)
+                extra_acerto=extra_acerto, extra_block=extra_block,
+                extra_avoid=extra_avoid, is_ability=is_ability)
         else:
             outcome, block_reduction = 'hit', 0.0
 
@@ -598,6 +628,20 @@ class CombatSystem(System):
 
         extra_crit = self._extra_crit_bonus(attacker_id, target_id, attacker_is_player)
 
+        # Skill level — arma do atacante (acerto+crit) e escudo/defesa do alvo
+        # (block+avoid). Leitura é sempre segura (campos ficam 0 no cliente,
+        # que nunca chama apply_skill_bonuses_to_combat); concessão de xp só
+        # roda no servidor (self.is_server) — ver stats_system.py.
+        from stats_system import weapon_skill_extras, defense_skill_extras
+        _weapon = self._get_mainhand_weapon(attacker_id)
+        _wsk_acerto, _wsk_crit = weapon_skill_extras(self.world, attacker_id, _weapon)
+        _def_block, _def_avoid = defense_skill_extras(self.world, target_id)
+        extra_crit += _wsk_crit
+        if self.is_server:
+            from stats_system import grant_weapon_skill_xp, grant_defense_skill_xp
+            grant_weapon_skill_xp(self.world, attacker_id, _weapon)
+            grant_defense_skill_xp(self.world, target_id)
+
         if pre_outcome:
             # Outcome pré-rolado (ex: por flechas que já verificaram miss visualmente)
             outcome = pre_outcome
@@ -617,6 +661,7 @@ class CombatSystem(System):
                 attacker_id, attacker_stats, damage_type,
                 base_ability_damage, multiplier,
                 target_stats=target_stats, extra_crit=extra_crit,
+                extra_acerto=_wsk_acerto, extra_block=_def_block, extra_avoid=_def_avoid,
                 is_ability=is_ability,
             )
 
@@ -1180,9 +1225,13 @@ class ProjectileSystem(System):
                     from enemy_abilities_data import ABILITY_DEFS as _ABD_P
                     _defn_p = _ABD_P.get(proj.ability_id)
                     if _defn_p:
+                        # magnitude é multiplicador do attack_power do caster
+                        # (ver enemy_abilities_data.py) — escala com level/tier.
+                        _atk_cs_p = self.world.get_component(proj.attacker_id, CombatStats)
+                        _ability_dmg_p = _defn_p.magnitude * (_atk_cs_p.base_attack_power if _atk_cs_p else 0.0)
                         apply_effect(
                             self.world, proj.target_id,
-                            _defn_p.effect_type, _defn_p.duration, _defn_p.magnitude,
+                            _defn_p.effect_type, _defn_p.duration, _ability_dmg_p,
                             tick_interval=_defn_p.tick_interval,
                         )
                         PROC.add(_defn_p.name, (220, 80, 180))
@@ -2058,9 +2107,14 @@ class EnemyAISystem(System):
     # Intervalo mínimo entre logs por mob (segundos) — evita spam no console
     _DBG_ATK_INTERVAL = 2.0
 
-    def __init__(self, world: World, player_entity_id: int = -1):
+    def __init__(self, world: World, map_filter: str = "",
+                 pathfinding=None, tile_validation=None):
         self.world = world
-        self.player_entity_id = player_entity_id  # mantido por backward-compat (não usado internamente)
+        self._map_filter = map_filter
+        # Serviços injetados diretamente (P4): elimina dependência no global _svc.
+        # None → fallback para as funções de módulo get_tilemap()/is_tile_walkable().
+        self._pathfinding    = pathfinding
+        self._tile_validation = tile_validation
         self.proximity_threshold_pixels = 5.0
         self.proximity_threshold_tiles = 1
         self.path_recalc_interval = 0.8
@@ -2095,21 +2149,39 @@ class EnemyAISystem(System):
 
     def _get_occupied_tiles(self, except_entity_id: int = None) -> set[tuple[int, int]]:
         occupied_tiles = set()
+        _check_map = bool(self._map_filter)
         for entity_id, tile_move_comp in self.world.get_entities_with(TileMovement):
             if entity_id == except_entity_id:
                 continue
+            if _check_map:
+                _ml_occ = self.world.get_component(entity_id, MapLocation)
+                if _ml_occ is None or _ml_occ.map_file != self._map_filter:
+                    continue
             if not tile_move_comp.is_moving:
                 occupied_tiles.add((tile_move_comp.current_tile_x, tile_move_comp.current_tile_y))
             else:
-                # Se a entidade está se movendo, seu tile futuro também está "ocupado"
                 occupied_tiles.add((tile_move_comp.target_tile_x, tile_move_comp.target_tile_y))
         return occupied_tiles
+
+    def _get_tilemap(self):
+        """Retorna tilemap do bundle injetado, ou global como fallback (offline)."""
+        if self._pathfinding:
+            return self._pathfinding._get_tilemap_component()
+        return get_tilemap()
+
+    def _is_walkable(self, eid, tx, ty, from_tx=None, from_ty=None, ignore_eid=-1):
+        """Routes is_tile_walkable para o tile_validation do bundle, ou global."""
+        if self._tile_validation:
+            return self._tile_validation.is_tile_walkable(eid, tx, ty, from_tx, from_ty, ignore_eid)
+        return is_tile_walkable(eid, tx, ty, from_tx, from_ty, ignore_eid)
 
     def _find_path_budgeted(self, start, end, dynamic_obstacles=None):
         """Chama find_path apenas se o budget do frame ainda não foi esgotado."""
         if self._pathfind_budget <= 0:
             return None
         self._pathfind_budget -= 1
+        if self._pathfinding:
+            return self._pathfinding.find_path(start, end, dynamic_obstacles=dynamic_obstacles)
         return find_path(start, end, dynamic_obstacles=dynamic_obstacles)
 
     def _select_target(self, mob_eid: int):
@@ -2131,8 +2203,16 @@ class EnemyAISystem(System):
         best_cs    = None
         best_cst   = None
 
+        # Filtra players pelo mesmo mapa do mob — evita cross-map targeting.
+        mob_ml  = self.world.get_component(mob_eid, MapLocation)
+        mob_map = mob_ml.map_file if mob_ml else ""
+
         for p_eid, p_pos, p_tm, _, p_cs in self.world.get_entities_with(
                 Position, TileMovement, PlayerControlled, CombatStats):
+            if mob_map:
+                p_ml = self.world.get_component(p_eid, MapLocation)
+                if not p_ml or p_ml.map_file != mob_map:
+                    continue
             if p_cs.current_hp <= 0:
                 continue
             p_cst = self.world.get_component(p_eid, CombatState)
@@ -2152,18 +2232,26 @@ class EnemyAISystem(System):
     def update(self, events: list = None, dt: float = 0) -> None:
         self._pathfind_budget = self.MAX_PATHFINDS_PER_FRAME
 
-        # Verifica se existe pelo menos um player no mundo — caso contrário,
-        # todos os mobs ficam ociosos (servidor vazio). Não checa current_hp:
-        # um player morto/ghost ainda precisa que os mobs voltem ao spawn
-        # (RETURNING, ver bloco "sem alvo válido" abaixo).
+        # Verifica se existe ao menos um player NESTE mapa — sem isso, todos os
+        # mobs do bundle ficam ociosos. Não checa current_hp: player morto/ghost
+        # ainda precisa que os mobs voltem ao spawn (RETURNING).
         any_player_exists = False
-        for _ in self.world.get_entities_with(
+        for _ap_eid, _, _, _, _ in self.world.get_entities_with(
                 Position, TileMovement, PlayerControlled, CombatStats):
+            if self._map_filter:
+                _ap_ml = self.world.get_component(_ap_eid, MapLocation)
+                if not _ap_ml or _ap_ml.map_file != self._map_filter:
+                    continue
             any_player_exists = True
             break
 
         if not any_player_exists:
-            for _, ai_control, tile_movement, combat_stats in self.world.get_entities_with(AIControlled, TileMovement, CombatStats):
+            for _idle_eid, ai_control, tile_movement, combat_stats in self.world.get_entities_with(
+                    AIControlled, TileMovement, CombatStats):
+                if self._map_filter:
+                    _idle_ml = self.world.get_component(_idle_eid, MapLocation)
+                    if not _idle_ml or _idle_ml.map_file != self._map_filter:
+                        continue
                 if not tile_movement.is_moving:
                     ai_control.state = "IDLE"
                 ai_control.is_blocked = False
@@ -2180,6 +2268,12 @@ class EnemyAISystem(System):
             # Inimigo morto? Pula!
             if enemy_combat_stats.current_hp <= 0:
                 continue
+
+            # Filtra por mapa (multi-map): pula entidades que não são deste bundle
+            if self._map_filter:
+                _ml = self.world.get_component(enemy_id, MapLocation)
+                if _ml is None or _ml.map_file != self._map_filter:
+                    continue
 
             enemy_current_tile_x = tile_movement.current_tile_x
             enemy_current_tile_y = tile_movement.current_tile_y
@@ -2267,12 +2361,8 @@ class EnemyAISystem(System):
                         if not tile_movement.is_moving:
                             next_tile_on_path_x, next_tile_on_path_y = ai_control.path[0]
                             _next_ret_tile = (next_tile_on_path_x, next_tile_on_path_y)
-                            if is_tile_walkable(enemy_id, next_tile_on_path_x, next_tile_on_path_y) and \
+                            if self._is_walkable(enemy_id, next_tile_on_path_x, next_tile_on_path_y) and \
                                     _next_ret_tile not in all_occupied_tiles:
-                                import datetime as _dt_mob2
-                                print(f"[DBG_MOB {_dt_mob2.datetime.now().strftime('%H:%M:%S.%f')[:-3]}] "
-                                      f"SERVER RETURNING(A) eid={enemy_id} cur=({tile_movement.current_tile_x},{tile_movement.current_tile_y}) "
-                                      f"-> next=({next_tile_on_path_x},{next_tile_on_path_y}) state={ai_control.state}")
                                 start_tile_movement(enemy_pos, tile_movement, next_tile_on_path_x, next_tile_on_path_y)
                                 ai_control.path.pop(0)
                                 all_occupied_tiles.add(_next_ret_tile)
@@ -2327,7 +2417,7 @@ class EnemyAISystem(System):
                         random.shuffle(dirs)
                         for ddx, ddy in dirs:
                             fx, fy = ex + ddx, ey + ddy
-                            if is_tile_walkable(enemy_id, fx, fy):
+                            if self._is_walkable(enemy_id, fx, fy):
                                 start_tile_movement(enemy_pos, tile_movement,
                                                     fx, fy, extra_speed_mult=0.4)
                                 break
@@ -2343,7 +2433,7 @@ class EnemyAISystem(System):
                         for fx, fy in [(ex + step_x, ey + step_y),
                                        (ex + step_x, ey),
                                        (ex, ey + step_y)]:
-                            if is_tile_walkable(enemy_id, fx, fy):
+                            if self._is_walkable(enemy_id, fx, fy):
                                 tile_movement.target_tile_x  = fx
                                 tile_movement.target_tile_y  = fy
                                 tile_movement.target_pixel_x = fx * TILE_SIZE + TILE_SIZE / 2
@@ -2364,27 +2454,37 @@ class EnemyAISystem(System):
                     ai_control.path_recalc_timer = 0.0
                     # Permite continuar para lógica de ataque (não dá continue aqui)
 
-            # --- Sleep zone: mob dorme se NENHUM player estiver a menos de 40 tiles ---
+            # --- Sleep zone: mob já IDLE (parado em casa, sem nada pendente)
+            # dorme se NENHUM player estiver a menos de 40 tiles — pula o
+            # resto do processamento (economia de CPU pra mobs ociosos longe
+            # de qualquer player). Só se aplica a IDLE: um mob CHASING/
+            # ATTACKING/RETURNING tem trabalho pendente (perseguir até o
+            # leash ou terminar de voltar pro spawn) e precisa continuar
+            # mesmo que o player tenha corrido bem além de 40 tiles — senão
+            # ele trava no meio do caminho pra sempre (bug real: o player
+            # corria mais rápido que o mob, o gap passava de 40 tiles ANTES
+            # do mob se afastar 20 tiles do spawn — leash nunca disparava,
+            # e esse freeze sobrescrevia o RETURNING e descartava o path no
+            # meio da volta). Ver arquitetura/PROBLEMAS_ARQUITETURA.md.
             # Usa Chebyshev (sem sqrt) para eficiência máxima.
             chebyshev_dist_to_player = max(
                 abs(player_current_tile_x - enemy_current_tile_x),
                 abs(player_current_tile_y - enemy_current_tile_y)
             )
-            # Verifica todos os players — acorda se qualquer um estiver próximo
-            _min_cheb = chebyshev_dist_to_player
-            for _, _ptm, _ in self.world.get_entities_with(TileMovement, PlayerControlled):
-                _d = max(abs(_ptm.current_tile_x - enemy_current_tile_x),
-                         abs(_ptm.current_tile_y - enemy_current_tile_y))
-                if _d < _min_cheb:
-                    _min_cheb = _d
-            if _min_cheb > self.SLEEP_RADIUS_TILES:
-                if ai_control.state != "IDLE":
-                    if _MCL: _MCL.log("SLEEP", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
-                                      prev=_dbg_prev_state, min_dist_player=f"{_min_cheb}t",
-                                      radius=self.SLEEP_RADIUS_TILES)
-                    ai_control.state = "IDLE"
-                    ai_control.path = None
-                continue
+            if ai_control.state == "IDLE":
+                # Verifica players do mesmo mapa — acorda se qualquer um estiver próximo
+                _min_cheb = chebyshev_dist_to_player
+                for _p_eid_slp, _ptm, _ in self.world.get_entities_with(TileMovement, PlayerControlled):
+                    if self._map_filter:
+                        _p_ml_slp = self.world.get_component(_p_eid_slp, MapLocation)
+                        if not _p_ml_slp or _p_ml_slp.map_file != self._map_filter:
+                            continue
+                    _d = max(abs(_ptm.current_tile_x - enemy_current_tile_x),
+                             abs(_ptm.current_tile_y - enemy_current_tile_y))
+                    if _d < _min_cheb:
+                        _min_cheb = _d
+                if _min_cheb > self.SLEEP_RADIUS_TILES:
+                    continue
 
             # Atualiza o cooldown de ataque do inimigo
             if enemy_combat_stats.attack_cooldown_timer > 0:
@@ -2413,8 +2513,24 @@ class EnemyAISystem(System):
 
             # chebyshev_dist_to_player já calculado acima no sleep check
             not_same_tile = current_enemy_tile != (player_current_tile_x, player_current_tile_y)
+            # RETURNING: mob já desistiu e está voltando pro spawn — nunca ataca,
+            # mesmo que o player ainda esteja dentro do range físico (ex: leash
+            # dispara no meio do trajeto de volta). NÃO exclui IDLE/AGGRO_DELAY
+            # aqui — são estados pré-combate normais, e o bloco abaixo
+            # (in_attack_range → state="ATTACKING") é o próprio mecanismo que
+            # promove um mob IDLE/AGGRO_DELAY adjacente pra ATTACKING; excluí-los
+            # travaria o mob preso em IDLE pra sempre quando já nasce adjacente
+            # ao player (regressão real, pego por tests/test_server.py).
+            # Sem o gate de RETURNING: o mob continuava desferindo golpes depois
+            # de decidir voltar pro spawn — e como o estado já tinha virado
+            # RETURNING quando server/combat_processor.py monta o mapa de
+            # atacantes (roda DEPOIS de EnemyAISystem.update() no mesmo tick), o
+            # dano chegava ao cliente com attacker=-1 (sem mob pra apontar
+            # visualmente) sempre que não havia um ataque anterior em cache —
+            # ver arquitetura/PROBLEMAS_ARQUITETURA.md.
             in_attack_range = (
                 not_same_tile and
+                ai_control.state != "RETURNING" and
                 1 <= chebyshev_dist_to_player <= ai_control.attack_range_tiles
             )
 
@@ -2434,7 +2550,7 @@ class EnemyAISystem(System):
 
             # ── Ranged: cast timer (fica parado 1s antes de disparar) ──────
             if not _player_invisible and ai_control.is_ranged and ai_control.ranged_cast_timer > 0:
-                _cast_tm  = get_tilemap()
+                _cast_tm  = self._get_tilemap()
                 _cast_los = (_cast_tm is None or self._has_line_of_sight(
                     _cast_tm,
                     enemy_current_tile_x, enemy_current_tile_y,
@@ -2511,7 +2627,7 @@ class EnemyAISystem(System):
                 if ai_control.is_ranged:
                     # Só inicia cast se não estiver já carregando
                     if ai_control.ranged_cast_timer == 0.0:
-                        _atk_tm  = get_tilemap()
+                        _atk_tm  = self._get_tilemap()
                         _atk_los = (_atk_tm is None or self._has_line_of_sight(
                             _atk_tm,
                             enemy_current_tile_x, enemy_current_tile_y,
@@ -2655,7 +2771,7 @@ class EnemyAISystem(System):
 
             # Detecção inicial: apenas mobs IDLE, e somente se o player estiver visível
             if not _player_invisible and dist_to_player_pixels <= _aggro_range_px and ai_control.state == "IDLE":
-                _tilemap_for_los = get_tilemap()
+                _tilemap_for_los = self._get_tilemap()
                 _has_los = (
                     _tilemap_for_los is None or
                     self._has_line_of_sight(
@@ -2728,7 +2844,7 @@ class EnemyAISystem(System):
 
 
                             if is_in_desired_range:
-                                tilemap_comp = get_tilemap()
+                                tilemap_comp = self._get_tilemap()
                                 if tilemap_comp and \
                                    (0 <= target_tile_around_player_x < tilemap_comp.map_width_tiles and
                                     0 <= target_tile_around_player_y < tilemap_comp.map_height_tiles) and \
@@ -2776,12 +2892,8 @@ class EnemyAISystem(System):
 
                         # B2: also guard against another mob already claiming this tile
                         # in the same frame (all_occupied_tiles tracks target tiles too)
-                        if is_tile_walkable(enemy_id, next_tile_on_path_x, next_tile_on_path_y) and \
+                        if self._is_walkable(enemy_id, next_tile_on_path_x, next_tile_on_path_y) and \
                                 _next_tile not in all_occupied_tiles:
-                            import datetime as _dt_mob1
-                            print(f"[DBG_MOB {_dt_mob1.datetime.now().strftime('%H:%M:%S.%f')[:-3]}] "
-                                  f"SERVER CHASING eid={enemy_id} cur=({tile_movement.current_tile_x},{tile_movement.current_tile_y}) "
-                                  f"-> next=({next_tile_on_path_x},{next_tile_on_path_y}) state={ai_control.state}")
                             start_tile_movement(enemy_pos, tile_movement, next_tile_on_path_x, next_tile_on_path_y)
                             ai_control.path.pop(0)
                             all_occupied_tiles.add(_next_tile)  # claim tile for rest of frame
@@ -2791,11 +2903,25 @@ class EnemyAISystem(System):
                 elif ai_control.is_blocked:
                     ai_control.state = "BLOCKED_BY_PLAYER"
                 else:
-                    # Sem caminho disponível: só vai para IDLE se o jogador saiu do raio de detecção.
+                    # Sem caminho disponível: só desiste se o jogador saiu do raio de detecção.
                     # Se ainda estiver em alcance (ex: kite_cooldown ativo), mantém CHASING para
                     # que o pathfinding seja tentado novamente no próximo ciclo.
                     if dist_to_player_pixels > detect_radius.radius:
-                        ai_control.state = "IDLE"
+                        # Desiste de perseguir — mas se estiver longe do spawn, volta pra
+                        # casa (RETURNING) em vez de travar em IDLE no meio do caminho.
+                        # detect_radius (~8 tiles) é bem menor que o leash (20 tiles), então
+                        # esse desistir-por-falha-de-pathfinding podia disparar bem antes do
+                        # leash e deixar o mob parado longe do spawn pra sempre (mesma classe
+                        # de bug do Sleep Zone — ver arquitetura/PROBLEMAS_ARQUITETURA.md).
+                        _ix = int(initial_pos.x / TILE_SIZE)
+                        _iy = int(initial_pos.y / TILE_SIZE)
+                        _dist_init = abs(_ix - enemy_current_tile_x) + abs(_iy - enemy_current_tile_y)
+                        if _dist_init > self.proximity_threshold_tiles:
+                            ai_control.state             = "RETURNING"
+                            ai_control.target_eid         = -1
+                            ai_control.path_recalc_timer  = 0.0
+                        else:
+                            ai_control.state = "IDLE"
 
             # --- Retorno à Posição Inicial ---
             else: # Comportamento de retorno à posição inicial
@@ -2810,7 +2936,7 @@ class EnemyAISystem(System):
                     ai_control.state = "RETURNING"
                     if should_recalculate_path:
                         dynamic_obstacles_for_return = self._get_occupied_tiles(except_entity_id=enemy_id)
-                        
+
                         ai_control.path = self._find_path_budgeted(
                             current_enemy_tile,
                             (initial_tile_x, initial_tile_y),
@@ -2822,20 +2948,26 @@ class EnemyAISystem(System):
                         if not tile_movement.is_moving:
                             next_tile_on_path_x, next_tile_on_path_y = ai_control.path[0]
                             _next_ret_tile = (next_tile_on_path_x, next_tile_on_path_y)
-                            if is_tile_walkable(enemy_id, next_tile_on_path_x, next_tile_on_path_y) and \
+                            if self._is_walkable(enemy_id, next_tile_on_path_x, next_tile_on_path_y) and \
                                     _next_ret_tile not in all_occupied_tiles:
-                                import datetime as _dt_mob3
-                                print(f"[DBG_MOB {_dt_mob3.datetime.now().strftime('%H:%M:%S.%f')[:-3]}] "
-                                      f"SERVER RETURNING(B) eid={enemy_id} cur=({tile_movement.current_tile_x},{tile_movement.current_tile_y}) "
-                                      f"-> next=({next_tile_on_path_x},{next_tile_on_path_y}) state={ai_control.state}")
                                 start_tile_movement(enemy_pos, tile_movement, next_tile_on_path_x, next_tile_on_path_y)
                                 ai_control.path.pop(0)
                                 all_occupied_tiles.add(_next_ret_tile)
                             else:
                                 ai_control.path = None
                                 ai_control.path_recalc_timer = 0.0
-                    else:
-                        ai_control.state = "IDLE"
+                    # Sem path nesta tentativa (ex: budget de pathfinding do
+                    # frame esgotado por outras buscas no mesmo tick — comum
+                    # quando o mob estava CHASING um alvo distante e a leash
+                    # acabou de disparar no mesmo tick) — NÃO desiste pra
+                    # IDLE: mantém RETURNING e força recálculo imediato no
+                    # próximo tick, mesmo padrão do bloco "sem alvo válido"
+                    # (linhas ~2297+) que já lida com isso corretamente. Dar
+                    # IDLE aqui travava o mob longe do spawn pra sempre na
+                    # primeira falha passageira de pathfinding (bug real,
+                    # ver arquitetura/PROBLEMAS_ARQUITETURA.md).
+                    elif not ai_control.path:
+                        ai_control.path_recalc_timer = 0.0
                 else:
                     ai_control.state             = "IDLE"
                     ai_control.aggroed_by_damage = False
@@ -2893,7 +3025,7 @@ class EnemyAISystem(System):
         attack_range = ai_control.attack_range_tiles
 
         if not ai_control.path or ai_control.path_recalc_timer <= 0:
-            tilemap_comp = get_tilemap()
+            tilemap_comp = self._get_tilemap()
             if not tilemap_comp:
                 return
 
@@ -2943,7 +3075,7 @@ class EnemyAISystem(System):
 
         if ai_control.path and not tile_movement.is_moving:
             nx, ny = ai_control.path[0]
-            if is_tile_walkable(enemy_id, nx, ny):
+            if self._is_walkable(enemy_id, nx, ny):
                 boost = 2.0 if ai_control.disengage_boost > 0 else 1.0
                 start_tile_movement(enemy_pos, tile_movement, nx, ny, extra_speed_mult=boost)
                 ai_control.path.pop(0)
@@ -3785,15 +3917,25 @@ class EnemyAbilitySystem(System):
     Não lida com IA de movimento — isso é EnemyAISystem.
     """
 
-    def __init__(self, world: World, player_entity_id: int = -1) -> None:
-        self.world             = world
-        self.player_entity_id  = player_entity_id  # mantido por backward-compat
+    def __init__(self, world: World, map_filter: str = "", pathfinding=None) -> None:
+        self.world        = world
+        self._map_filter  = map_filter
+        self._pathfinding = pathfinding
+
+    def _get_tilemap(self):
+        if self._pathfinding:
+            return self._pathfinding._get_tilemap_component()
+        return get_tilemap()
 
     def update(self, events: list = None, dt: float = 0) -> None:
-        # Constrói um mapa rápido eid→(px, py) de todos os players vivos
+        # Constrói mapa eid→tile de players vivos NO MESMO MAPA que os mobs deste bundle
         player_tiles: dict[int, tuple[int, int]] = {}
         for p_eid, p_tm, _, p_cs in self.world.get_entities_with(
                 TileMovement, PlayerControlled, CombatStats):
+            if self._map_filter:
+                p_ml = self.world.get_component(p_eid, MapLocation)
+                if p_ml is None or p_ml.map_file != self._map_filter:
+                    continue
             if p_cs.current_hp > 0:
                 player_tiles[p_eid] = (p_tm.current_tile_x, p_tm.current_tile_y)
 
@@ -3804,6 +3946,12 @@ class EnemyAbilitySystem(System):
                 EnemyAbilities, TileMovement, CombatStats):
             if ecs.current_hp <= 0:
                 continue
+
+            # Filtra por mapa (multi-map): mesmo padrão de EnemyAISystem
+            if self._map_filter:
+                _ml_ab = self.world.get_component(eid, MapLocation)
+                if _ml_ab is None or _ml_ab.map_file != self._map_filter:
+                    continue
 
             # Só age se o inimigo está em combate ativo (KITING incluso — mob ranged
             # ainda pode usar habilidades enquanto recua)
@@ -3846,7 +3994,7 @@ class EnemyAbilitySystem(System):
 
                 if defn.range_tiles > 1:
                     # ── Habilidade ranged: requer LOS + lança projétil ──────
-                    _tm_ab = get_tilemap()
+                    _tm_ab = self._get_tilemap()
                     if _tm_ab is not None and not EnemyAISystem._has_line_of_sight(
                             _tm_ab, ex, ey, px, py):
                         if _MCL:
@@ -3900,9 +4048,12 @@ class EnemyAbilitySystem(System):
                                  cd_set=f"{slot.cooldown:.0f}s")
                 else:
                     # ── Habilidade melee (range=1): aplica efeito direto ───
+                    # magnitude é multiplicador do attack_power do mob (ver
+                    # enemy_abilities_data.py) — escala com level/tier.
+                    _ability_dmg = defn.magnitude * ecs.base_attack_power
                     apply_effect(
                         self.world, target_p_eid,
-                        defn.effect_type, defn.duration, defn.magnitude,
+                        defn.effect_type, defn.duration, _ability_dmg,
                         tick_interval=defn.tick_interval,
                     )
                     PROC.add(defn.name, (220, 80, 180))
@@ -3950,33 +4101,56 @@ class SpawnZoneSystem(System):
     # Máximo de entidades criadas por frame (globalmente entre todas as zonas)
     MAX_SPAWNS_PER_FRAME = 2
 
-    def __init__(self, world: World):
+    def __init__(self, world: World, map_filter: str = "", pathfinding=None):
         self.world = world
+        self._map_filter = map_filter
+        self._pathfinding = pathfinding
         # Fila de spawns pendentes: (zone_eid, zone, tile_x, tile_y)
         self._spawn_queue: list = []
 
+    def _get_tilemap(self):
+        if self._pathfinding:
+            return self._pathfinding._get_tilemap_component()
+        return get_tilemap()
+
     def update(self, events=None, dt: float = 0) -> None:
-        # Posição do player para culling de zonas distantes
+        # Posição do player do mesmo mapa para culling de zonas distantes
         player_tx, player_ty = 0, 0
-        for _, ptm, _ in self.world.get_entities_with(TileMovement, PlayerControlled):
+        for _sz_peid, ptm, _ in self.world.get_entities_with(TileMovement, PlayerControlled):
+            if self._map_filter:
+                _sz_pml = self.world.get_component(_sz_peid, MapLocation)
+                if _sz_pml is None or _sz_pml.map_file != self._map_filter:
+                    continue
             player_tx = ptm.current_tile_x
             player_ty = ptm.current_tile_y
             break
 
-        # Tiles ocupados (evita spawnar em cima de outra entidade)
+        # Tiles ocupados (evita spawnar em cima de outra entidade) — filtrado por mapa.
         occupied: set = set()
-        for _, tm in self.world.get_entities_with(TileMovement):
-            occupied.add((tm.current_tile_x, tm.current_tile_y))
-            if tm.is_moving:
-                occupied.add((tm.target_tile_x, tm.target_tile_y))
+        if self._map_filter:
+            for _occ_eid, tm in self.world.get_entities_with(TileMovement):
+                _ml_occ = self.world.get_component(_occ_eid, MapLocation)
+                if _ml_occ is None or _ml_occ.map_file != self._map_filter:
+                    continue
+                occupied.add((tm.current_tile_x, tm.current_tile_y))
+                if tm.is_moving:
+                    occupied.add((tm.target_tile_x, tm.target_tile_y))
+        else:
+            for _, tm in self.world.get_entities_with(TileMovement):
+                occupied.add((tm.current_tile_x, tm.current_tile_y))
+                if tm.is_moving:
+                    occupied.add((tm.target_tile_x, tm.target_tile_y))
 
-        # Tilemap para checar solidez
-        tilemap_comp = None
-        for _, tc in self.world.get_entities_with(Tilemap):
-            tilemap_comp = tc
-            break
+        # Tilemap correto para este bundle (via injeção direta, P4).
+        tilemap_comp = self._get_tilemap()
 
         for zone_eid, zone in self.world.get_entities_with(SpawnZone):
+            # Filtra por mapa (multi-map): pula zonas que não são deste bundle
+            if self._map_filter:
+                _ml_sz = self.world.get_component(zone_eid, MapLocation)
+                if _ml_sz is None or _ml_sz.map_file != self._map_filter:
+                    continue
+
             # Pula zonas fora do raio de ativação — preserva timers, não spawna
             dist = chebyshev(zone.center_x, zone.center_y, player_tx, player_ty)
             if dist > self.ACTIVATION_RADIUS:
@@ -4065,6 +4239,8 @@ class SpawnZoneSystem(System):
             level=level,
         )
         self.world.add_component(new_eid, SpawnZoneOwner(zone_eid))
+        if self._map_filter:
+            self.world.add_component(new_eid, MapLocation(self._map_filter))
         return new_eid
 
 
@@ -6001,7 +6177,18 @@ class SkillSystem(System, SkillHandlers):
                         SOUNDS.play_skill(skill.sound_name)
                     if player_skills:
                         player_skills.gcd_timer = PlayerSkills.GCD_DURATION
-                    quest_fire("use_skill", skill_id=skill.skill_id)
+                    # Skills instantâneas (sem cast_time) já causaram dano de forma
+                    # síncrona dentro de handler_fn (ex: deal_damage chamado ali) —
+                    # contar a quest aqui é seguro. Skills com cast (ex: Bola de Fogo)
+                    # só causam dano depois (projétil/PROJECTILE), então a contagem
+                    # acontece em PlayerProjectileSystem._on_hit, após o dano efetivo
+                    # (não aqui, no momento de ativar a skill).
+                    if not has_cast:
+                        from components import TrainingDummy as _TDsk_off
+                        _qf_target_off = getattr(combat_state, "target_entity_id", -1)
+                        _on_dummy_off = (_qf_target_off != -1
+                                        and self.world.get_component(_qf_target_off, _TDsk_off) is not None)
+                        quest_fire("use_skill", skill_id=skill.skill_id, on_dummy=_on_dummy_off)
                 return bool(success)
             else:
                 LOG.add(f"{skill.name}: sem implementacao para '{skill.skill_id}'.", (180, 60, 60))
@@ -6395,6 +6582,17 @@ class SkillSystem(System, SkillHandlers):
         # simultaneamente, evitando o som de ataque sobreposto com o da skill.
         if _cs and _cs.attack_cooldown_timer <= 0:
             _cs.attack_cooldown_timer = 0.05
+
+        # Skills sem cast (instantâneas) já causaram dano de forma síncrona — conta
+        # aqui. Skills com cast (ex: Bola de Fogo) só confirmam dano depois, via
+        # SKILL_RESULT(is_proj_damage) — contadas em
+        # network_handlers.py::_handle_msg_skill_result, não aqui (ativação ≠ dano).
+        if skill.skill_id and not _has_cast:
+            from components import TrainingDummy as _TDsk_vo
+            _qf_target_vo = getattr(combat_state, "target_entity_id", -1) if combat_state else -1
+            _on_dummy_vo = (_qf_target_vo != -1
+                           and self.world.get_component(_qf_target_vo, _TDsk_vo) is not None)
+            quest_fire("use_skill", skill_id=skill.skill_id, on_dummy=_on_dummy_vo)
 
         return True
 

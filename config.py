@@ -24,6 +24,7 @@ DEFAULTS = {
         "mapa":        109,   # K_m
         "diario":      106,   # K_j
         "habilidades": 104,   # K_h  — painel de skills aprendidas
+        "skill_level": 108,   # K_l  — painel de Skill Level (Tibia-like)
     },
 }
 

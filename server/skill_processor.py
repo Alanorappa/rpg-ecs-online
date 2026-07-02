@@ -432,6 +432,15 @@ class SkillProcessorMixin:
                         "caster_eid": player_eid, "tx": _caster_tx, "ty": _caster_ty,
                         "target_eid": tid,
                     })
+                    # Evento de quest "use_skill" — skills instantâneas (golpe_poderoso,
+                    # executar etc.) concluem aqui; skills com cast_time disparam na
+                    # completion (spell_completion_processor.py) pra evitar duplicar.
+                    # Server-autoritativo — ver quest_logic.py/PROBLEMAS_ARQUITETURA.md.
+                    from quest_events import fire as _qfire_uskill
+                    from components import TrainingDummy as _TDsk
+                    _on_dummy_sk = (tid != -1 and self.world.get_component(tid, _TDsk) is not None)
+                    _qfire_uskill("use_skill", player_eid=player_eid, skill_id=sid,
+                                  on_dummy=_on_dummy_sk)
                 # Procs que precisam ser sincronizados para o cliente
                 # Só inclui se o proc ACABOU de ser gerado neste cast (não carga pré-existente).
                 from components import CharacterStats as _CSproc

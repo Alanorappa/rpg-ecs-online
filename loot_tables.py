@@ -732,104 +732,25 @@ def roll_loot(enemy_type: str, tier: str) -> list:
 
 
 # ---------------------------------------------------------------------------
-# Tabelas de drop por mob específico (2-4 itens, 0.5%-5% chance)
-# Prioridade sobre LOOT_TABLES quando o nome do mob é reconhecido.
+# Drop por mob específico: fonte única é MOB_TABLE[mob_name]["loot"]
+# (mob_definitions.py), um dict {item_key: chance} — item_key é a chave
+# nesta tabela (_T). Sem entrada / mob não cadastrado → fallback LOOT_TABLES.
 # ---------------------------------------------------------------------------
-MOB_LOOT_TABLES: dict[str, list] = {
-    "Aranha": [
-        (_T["padded_gloves"],    0.05),
-        (_T["cloth_wrists"],     0.03),
-        (_T["worn_hood"],        0.02),
-    ],
-    "Rato": [
-        (_T["cloth_boots"],      0.05),
-        (_T["padded_gloves"],    0.03),
-        (_T["cloth_wrists"],     0.01),
-    ],
-    "Escorpião": [
-        (_T["padded_wrists"],    0.04),
-        (_T["light_boots"],      0.03),
-        (_T["light_hood"],       0.02),
-        (_T["light_shoulders"],  0.01),
-    ],
-    "Cobra": [
-        (_T["light_boots"],      0.04),
-        (_T["padded_gloves"],    0.03),
-        (_T["leather_vest"],     0.02),
-    ],
-    "Lobo": [
-        (_T["leather_vest"],     0.05),
-        (_T["light_boots"],      0.03),
-        (_T["light_hood"],       0.02),
-    ],
-    "Urso": [
-        (_T["leather_vest"],     0.05),
-        (_T["bone_shield"],      0.03),
-        (_T["cracked_club"],     0.02),
-        (_T["iron_breastplate"], 0.02),
-    ],
-    "Goblin": [
-        (_T["bone_sword"],       0.05),
-        (_T["cracked_club"],     0.04),
-        (_T["iron_gauntlets"],   0.03),
-        (_T["iron_greaves"],     0.02),
-    ],
-    "Zumbi": [
-        (_T["bone_sword"],       0.04),
-        (_T["iron_coif"],        0.03),
-        (_T["bone_shield"],      0.02),
-        (_T["bone_wristguards"], 0.02),
-    ],
-    "Orc": [
-        (_T["iron_sword"],       0.03),
-        (_T["iron_mace"],        0.02),
-        (_T["chain_vest"],       0.01),
-        (_T["iron_shield"],      0.005),
-    ],
-    "Troll": [
-        (_T["cracked_club"],     0.05),
-        (_T["bone_shield"],      0.03),
-        (_T["iron_mace"],        0.02),
-        (_T["chain_vest"],       0.01),
-    ],
-    "Elfo": [
-        (_T["hunter_helm"],      0.03),
-        (_T["hunter_boots"],     0.03),
-        (_T["arcane_wand"],      0.02),
-        (_T["silk_robe"],        0.01),
-    ],
-    "Minotauro": [
-        (_T["apprentice_axe"],   0.03),
-        (_T["chain_vest"],       0.02),
-        (_T["iron_helm"],        0.02),
-        (_T["iron_shield"],      0.01),
-    ],
-    "Vampiro": [
-        (_T["arcane_gloves"],    0.03),
-        (_T["runed_wrists"],     0.02),
-        (_T["shadow_blade"],     0.01),
-        (_T["ring_power"],       0.005),
-    ],
-    "Dragão": [
-        (_T["plate_armor"],      0.02),
-        (_T["war_hammer"],       0.02),
-        (_T["lich_robe"],        0.01),
-        (_T["mystic_staff"],     0.005),
-    ],
-}
-
-
 def roll_mob_loot(mob_name: str, tier: str) -> list:
-    """Rola drops usando a tabela específica do mob. Fallback para LOOT_TABLES."""
-    table = MOB_LOOT_TABLES.get(mob_name)
-    if table is None:
+    """Rola drops usando o loot cadastrado do mob (mob_definitions.py).
+    Fallback para LOOT_TABLES se o mob não tiver loot cadastrado."""
+    from mob_definitions import MOB_TABLE
+    mob_def  = MOB_TABLE.get(mob_name)
+    loot_def = mob_def.get("loot") if mob_def else None
+    if not loot_def:
         return roll_loot("melee", tier)
 
     tier_mult = {"normal": 1.0, "elite": 1.5, "rare": 2.5, "boss": 4.0}
     mult = tier_mult.get(tier, 1.0)
 
     result = []
-    for factory, chance in table:
-        if random.random() < chance * mult:
+    for item_key, chance in loot_def.items():
+        factory = _T.get(item_key)
+        if factory and random.random() < chance * mult:
             result.append(factory())
     return result[:4]

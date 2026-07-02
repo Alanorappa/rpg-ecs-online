@@ -936,7 +936,12 @@ class TestRangedMobAbilities(unittest.TestCase):
             self.assertFalse(has_poison,
                              "poison não deveria ser aplicado antes do projétil acertar")
         finally:
-            EnemyAISystem._has_line_of_sight = original_los
+            # staticmethod(original_los) -- acesso via classe/instancia ja
+            # desempacota o staticmethod original pra funcao pura; reatribuir
+            # sem reembrulhar fazia self._has_line_of_sight(...) (chamada por
+            # instancia) injetar self como 1o arg, quebrando os outros call
+            # sites com TypeError de contagem de args pro resto do processo.
+            EnemyAISystem._has_line_of_sight = staticmethod(original_los)
 
     def test_ability_projectile_applies_dot_on_hit(self):
         """Projétil de ability com ability_id aplica DoT ao acertar (ProjectileSystem)."""
@@ -1007,7 +1012,12 @@ class TestRangedMobAbilities(unittest.TestCase):
             self.assertEqual(len(ability_projs), 0,
                              "Nenhum projétil deveria ser criado sem LOS")
         finally:
-            EnemyAISystem._has_line_of_sight = original_los
+            # staticmethod(original_los) -- acesso via classe/instancia ja
+            # desempacota o staticmethod original pra funcao pura; reatribuir
+            # sem reembrulhar fazia self._has_line_of_sight(...) (chamada por
+            # instancia) injetar self como 1o arg, quebrando os outros call
+            # sites com TypeError de contagem de args pro resto do processo.
+            EnemyAISystem._has_line_of_sight = staticmethod(original_los)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

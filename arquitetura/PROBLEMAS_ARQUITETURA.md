@@ -1469,11 +1469,125 @@ login de um personagem real salvo com talentos de atributo alocados,
 confirmando que o bônus aparece imediatamente (antes ficava ausente até a
 primeira ação que disparasse TALENT_UPDATE/SAVE_STATE).
 
-### 🟡 PENDENTE — Sistema de quests: zero validação server-side (tamanho investigado, não corrigido)
+### ✅ RESOLVIDO — Sistema de quests migrado pra server-autoritativo (era 100% client-side)
 
-Investigação de tamanho pedida pelo usuário (25 de junho de 2026), sem
-implementar a migração ainda — só a parte de extensibilidade do schema
-(abaixo) foi feita nesta rodada.
+Retomado o item dimensionado em 25/06/2026 (entrada antiga preservada
+abaixo da validação) — agora implementado por completo. Motivado por
+relato real do usuário: a quest "Iniciação Arcana" (e na prática TODA
+quest) reaparecia no NPC após reconectar, e a XP que ela concedeu era
+revertida (level voltava ao anterior se o player tinha subido com aquela
+XP) — porque a quest nunca existiu pro servidor; só vivia no `QuestLog`
+local do cliente e no save-slot offline antigo (`save_system.py`), nunca
+chegando ao banco. Mesma classe de bug já corrigida nesta sessão pra mana
+e pro leash de mob: nada que afeta progressão persistente pode existir só
+no cliente.
+
+**Implementação** (mesmo molde da migração de `SkillLevels`, já validada
+em produção — replicado ponto a ponto):
+- **Lógica pura extraída** pra `quest_logic.py` (módulo novo, paralelo a
+  `quests_data.py`/`quest_events.py`): `match_objective`, `apply_event`,
+  `try_start`, `complete_quest`, `can_turn_in`, `sync_collect_progress`,
+  `sync_learn_skill_progress`, `roll_conditional_loot`. Usada pelo cliente
+  (caminho offline, via `quest_system.py`) E pelo servidor (caminho online,
+  autoritativo) — zero duplicação de regra de match/progresso.
+- **`quest_events.fire()`** ganhou `player_eid: int = -1` (default
+  preserva todo chamador client-only existente); `QUEST_EVENTS` virou
+  deque de 3-tuplas `(event_type, player_eid, data)`.
+- **`QuestLog` agora existe no servidor**: criado em
+  `WorldServer.spawn_player()` a partir de `quests_json` (nova coluna,
+  schema + migração `ALTER TABLE` em `server/auth.py`, mesmo padrão de
+  `skill_levels_json`); `get_player_save_data()` lê do componente VIVO do
+  servidor (nunca do cliente); `server/session.py::_build_save_merge`
+  trata `quests` como sempre-servidor.
+- **`WorldServer._process_quest_events()`**, 1x por tick (mesmo lugar de
+  `_sync_player_skill_levels_dirty`): drena `QUEST_EVENTS`, aplica
+  progresso via `quest_logic.apply_event`, sincroniza sem evento dedicado
+  `collect_item` (contra `Inventory`) e `learn_skill` (contra
+  `PlayerSkills.learned_skill_ids` — evita depender da validação de
+  aprender skill em si, que é um gap pré-existente separado, ver nota
+  abaixo). Dirty-check → push privado `QUEST_UPDATE` (nunca AOI).
+- **6 gatilhos server-side** adicionados nos pontos já autoritativos
+  identificados na investigação original: `kill` →
+  `server/server_death_handler.py` (era listado como "Intencional NÃO
+  fazer" no docstring — removido); `use_skill` →
+  `spell_completion_processor.py::_process_spell_cast_completions` (cast)
+  + `server/skill_processor.py` (instantâneas, checando `TrainingDummy`
+  pro param `on_dummy`); `use_consumable` →
+  `world_server.py::apply_consumable`; `equip_item` →
+  `update_player_equipment` (só slots que de fato mudaram de item);
+  `reach_tile` → `move_player()`; `reach_level` → já disparava via
+  `process_levelups` (só passou a incluir `player_eid`).
+- **Drop condicional de quest** (`roll_conditional_loot`, ex: Pelo de
+  Urso) movido para `server/server_death_handler.py`, mesmo ponto que já
+  rola `roll_mob_loot` — antes só existia no cliente
+  (`QuestSystem.get_conditional_loot`), nunca chegava no Inventory real.
+- **`QUEST_ACCEPT`/`QUEST_TURN_IN`** (C→S, novo protocolo) processados em
+  `server/session.py::_handle_quest_accept`/`_handle_quest_turn_in` —
+  validam nível/pré-requisitos/objetivos-completos contra o
+  `QuestLog`/`CharacterStats`/`PlayerSkills` do PRÓPRIO servidor. Entrega
+  concede XP pelo canal já existente (`_pending_xp_deliveries` →
+  `process_levelups`, mesmo usado por mana/HP5), gold direto em
+  `Wallet.gold`, remove itens de quest do `Inventory` real, e persiste
+  imediatamente (mesmo padrão de `TALENT_UPDATE` — crash do servidor não
+  perde a entrega). `talk_to_npc` é aplicado inline nos dois handlers
+  (payload leva `npc_name`) em vez de precisar de uma mensagem extra.
+- **Cliente** (`quest_system.py`): `QuestSystem`/`QuestDialogSystem`
+  ganharam `self._net` (mesmo gate de `ManaSystem`/`ConsumableSystem` —
+  `self._qs._net`, já que `QuestDialogSystem` guarda referência ao
+  `QuestSystem`). Online: `QuestSystem.update()` só descarta
+  `QUEST_EVENTS` locais (servidor já processa) e os botões Aceitar/
+  Concluir mandam `QUEST_ACCEPT`/`QUEST_TURN_IN` em vez de mutar
+  `QuestLog` direto. `QUEST_UPDATE` (handler novo em
+  `client/network_handlers.py`) substitui `QuestLog.active`/`.completed`
+  pelo snapshot do servidor (mesmo padrão de `SKILL_LEVELS_UPDATE`) e
+  dispara o LOG/PROC de "missão completa" quando vem `completed_qid`.
+  `quests_json` restaurado no login em
+  `client/save_sync_handlers.py::_restore_save_state` (snapshot inicial).
+  Caminho offline (`self._net` falsy) **inalterado** — só passou a
+  delegar pra `quest_logic.py` em vez de duplicar a lógica inline.
+
+**Limitações conhecidas, deixadas fora de escopo** (gaps pré-existentes
+separados, não introduzidos por esta migração):
+- `reach_tile` em OUTRO mapa (ex: `atividade_suspeita`,
+  `"maps/map_cave_west.csv"`) não dispara — o servidor só carrega 1 mapa
+  por vez hoje (`ZONE_CHANGE`/`ENTER_INSTANCE` ainda não implementados).
+- `learn_skill` é sincronizado contra `PlayerSkills.learned_skill_ids`
+  (já populado via SAVE_STATE), não contra um evento de "aprendeu skill
+  validado" — `trainer_system.py::_do_learn` (gold/nível pra aprender)
+  continua 100% client-side, sem validação server-side; fora de escopo
+  (economia do treinador, não persistência de quest).
+- `equip_item` herda o mesmo nível de confiança que `EQUIP_SYNC` já tinha
+  (servidor armazena o que o cliente reporta, sem revalidar contra regras
+  de classe/level) — não piorado nem corrigido aqui.
+- Anti-cheat de "está perto do NPC certo" não existe pra
+  `QUEST_ACCEPT`/`QUEST_TURN_IN` (só valida pré-requisitos/objetivos, não
+  proximidade) — escopo desta migração foi persistência/progresso, não
+  anti-cheat completo de interação com NPC.
+
+**Validação**: 4 fases num diagnóstico isolado (`tests/helpers.py` +
+`Session`/`SessionManager` fake, mesmo padrão usado a sessão inteira). (A)
+DB real temporária (não toca `data/game.db`): `quests_json` salvo via
+`save_character`/lido via `get_character` — round-trip idêntico. (B) ciclo
+completo de "Iniciação Arcana" via mensagens reais: `QUEST_ACCEPT` →
+`learn_skill` sincronizado (seta `learned_skill_ids`, 1 tick) →
+`use_skill` x5 `on_dummy=True` (evento real) → `can_turn_in=True` →
+`QUEST_TURN_IN` → XP +80 concedida, quest movida pra `completed`,
+`QUEST_UPDATE` com `completed_qid` recebido. (C) **o repro exato do
+usuário**: `get_player_save_data()` → novo `WorldServer` do zero (simula
+fechar/abrir o jogo) → `spawn_player` com o `quests_json` salvo →
+confirmado `QuestLog.active` vazio e `"iniciacao_arcana" in completed` —
+quest NÃO reaparece, XP não regride. (D) gatilhos reais adicionais: `kill`
+via `server_death_handler.py` (mob real morto, first-attacker correto) e
+`reach_tile` via `move_player()` — ambos disparam com `player_eid`
+correto. Suíte sem regressão (32/49/1, 2 runs estáveis).
+
+---
+
+<details>
+<summary>Entrada original (investigação de tamanho, 25/06/2026) — preservada por contexto histórico</summary>
+
+Investigação de tamanho pedida pelo usuário, sem implementar a migração
+ainda — só a parte de extensibilidade do schema foi feita naquela rodada.
 
 **Estado real, confirmado por leitura direta (não pelo doc antigo)**:
 - `quests_data.py`/`quest_events.py` já são pygame-free — zero mudança
@@ -1505,9 +1619,9 @@ protocolo novo — (1) componente QuestLog + persistência no servidor/DB, (2)
 (3) extrair a lógica pygame-free de `quest_system.py` pro padrão de
 `core_systems.py` (mesmo split já feito pra `CombatStateSystem`) e ligar nos
 6 gatilhos já autoritativos listados acima, (4) religar o cliente pra só
-exibir o estado que o servidor manda, não mais calcular localmente. Multi-
-sessão, não é patch — fora de escopo desta rodada, recomendado como próxima
-frente de segurança/arquitetura.
+exibir o estado que o servidor manda, não mais calcular localmente.
+
+</details>
 
 ### ✅ RESOLVIDO — Extensibilidade de ObjectiveDef (novos tipos de objetivo)
 
@@ -1889,3 +2003,911 @@ mais a mana do servidor (permanece 300). Compile limpo, suíte sem regressão
 **Não validado**: passada manual num cliente real confirmando que a
 primeira skill funciona imediatamente após login, sem esperar os "alguns
 segundos" relatados.
+
+---
+
+### ✅ RESOLVIDO — Skill Level: painel (tecla L) nunca atualizava sem relog
+
+Reportado pelo usuário durante teste manual: matar mobs com o arqueiro pra
+subir skill level de Arco não fazia o xp exibido no painel mudar.
+
+**Causa raiz**: o componente `SkillLevels` do CLIENTE é populado uma única
+vez, no login (`client/save_sync_handlers.py::_restore_save_state`, lendo
+`char_data["skill_levels_json"]`) — exatamente como o plano original previa
+("só pra exibição"). O SERVIDOR concedia xp corretamente (confirmado por
+diagnóstico isolado — `grant_skill_xp` é chamado e funciona), mas não havia
+NENHUM canal de broadcast pra propagar essas mudanças de volta ao cliente
+durante a sessão. O painel mostrava sempre o snapshot do último login,
+congelado — não era um bug de cálculo, era a ausência de um mecanismo de
+sync ao vivo (peça que o plano de implementação original não cobriu).
+
+**Fix**: mesmo padrão de `WorldServer._sync_player_hp_dirty()` (dirty-check
+por tick, cobre qualquer fonte de mudança sem precisar de código por
+feature): novo `_sync_player_skill_levels_dirty()` compara
+`SkillLevels.levels`/`xp` contra um cache por-tick e, se mudou, enfileira um
+snapshot completo em `_skill_levels_broadcasts_this_tick`. Novo
+`SKILL_LEVELS_UPDATE` (S→C, ver `shared/messages.py`) — enviado **só ao
+dono** (nunca broadcast AOI, é dado privado), despachado em
+`server/session.py::_dispatch_tick_deltas` logo após o bloco de HP
+broadcasts. Cliente (`client/network_handlers.py::_handle_msg_skill_levels_update`)
+substitui (replace, não soma) `levels`/`xp` no componente local — mesma
+regra de sempre: nunca usado em cálculo de dano client-side, só exibição.
+
+Validado com diagnóstico isolado simulando 3 ticks consecutivos (sem
+mudança → 0 mensagens; após `grant_skill_xp` → exatamente 1 mensagem com o
+snapshot correto; tick seguinte sem nova mudança → 0 mensagens de novo).
+Compile limpo, suíte sem regressão (32/49/1).
+
+---
+
+### ⚪ DESCARTADO (usuário não reproduziu de novo) — Arqueiro: aljava desconta flechas sem projétil/dano após recarregar em combate
+
+Reportado pelo usuário durante o mesmo teste: depois que a aljava esvazia e
+o arqueiro usa Recarregar ainda em combate, ao reabastecer a aljava volta a
+descontar flechas ao atirar, mas nenhum projétil aparece e nenhum dano é
+causado.
+
+**Investigação**: reproduzido em diagnóstico isolado o cenário exato
+(aljava vazia em combate → cast de Recarregar com `cast_time=1.8s` → aljava
+reabastecida → continua perseguindo o mesmo alvo) — em todas as execuções,
+o auto-attack do SERVIDOR retomou corretamente após o cast completar
+(`is_casting` liberado, `_server_apply_ranged_physical` disparou no próximo
+ciclo de cooldown, consumiu flecha real e aplicou dano real). Não foi
+possível reproduzir um estado "travado permanentemente" só com simulação
+server-side isolada.
+
+**Hipótese mais provável (não confirmada)**: dessincronia client/server na
+transição cast→auto-attack. O contador de flechas que o jogador VÊ na HUD é
+uma PREDIÇÃO COSMÉTICA local (`systems.py` linha ~1822, comentário "Online:
+flecha 100% server-driven — nasce em `_apply_combat_result`...") — o cliente
+decrementa seu próprio `quiver.arrow_count` e avança seu próprio
+`attack_cooldown_timer` LOCALMENTE, a cada vez que SEU PRÓPRIO timer/ammo
+permitem, independente de o servidor ter de fato confirmado aquele tiro via
+`COMBAT_RESULT`. Se o timer/estado de cast do cliente diverge do servidor
+especificamente na janela em que um cast termina (ex: cliente libera
+"can fire" antes/depois do servidor), o jogador veria a munição cair sem o
+projétil/dano correspondente nascer (que só nasce ao chegar um
+`COMBAT_RESULT` real do servidor).
+
+**Instrumentação temporária deixada em `server/combat_processor.py`**
+(`_process_player_attacks`, prefixo `DBG_RELOAD:`) — imprime o motivo de
+cada `continue` no branch ranged (can_act/is_pursuing/bow/quiver/range) e
+confirma cada tiro disparado (`FIRE ranged ... arrows_before/after`).
+**Próximo passo**: reproduzir o bug com um cliente real enquanto o servidor
+roda com essa instrumentação, e comparar o que o servidor realmente fez
+(linhas `DBG_RELOAD:`) contra o que o cliente mostrou na tela.
+
+**Status**: usuário não conseguiu reproduzir de novo em teste subsequente e
+concluiu que não era um bug real (provavelmente percepção de um delay
+normal de cooldown na hora do reload, não um estado travado). Instrumentação
+`DBG_RELOAD:` removida de `server/combat_processor.py`. Junto, removidos
+também debugs pré-existentes não relacionados (`DBG_MOB`, em `systems.py` e
+`client/remote_entity_handlers.py` — prints de cada passo de pathfinding de
+mob CHASING/RETURNING, sobrando de uma sessão de debug anterior).
+
+---
+
+### ⚪ NÃO É BUG — Taxa de acerto do Arqueiro "sempre acertando"
+
+Reportado pelo usuário: auto-attacks do arqueiro acertando quase sempre com
+"pouco mais de 50% de acerto". Debug temporário (`DBG_ACERTO:`, removido após
+diagnóstico) confirmou com dados reais: `acerto=54.0`, mas só 1 miss em 17
+tiros (≈6%, esperado ≈46%).
+
+**Causa raiz (não é bug)**: talento `bardo_calmo_certeiro` ("Calmo e
+Certeiro", build Bardo/Arqueiro) — `talent_data.py`. Descrição do próprio
+talento: *"Enquanto estiver parado, cada segundo concede +{v}% de taxa de
+acerto (acumula **sem limite de tempo**, até 100% total)"*. `formula: lambda
+pts: float(pts)` = +1%/ponto/segundo, `max_points=5` → até +5%/s. Com 5
+pontos alocados, ~9 segundos parado já basta pra saturar `_acerto` em 100%
+(`core_systems.py::_tick_standing_seconds` acumula `standing_seconds` sem
+cap enquanto `acerto_per_standing_second > 0`; `damage_calculator.py` soma
+`_standing_rate * _standing_secs` direto no `_acerto` do roll, sem cap
+próprio — só o `min(100.0, ...)` final). Como o Arqueiro fica parado por
+natureza enquanto atira a distância, esse talento (se alocado) domina o
+combate quase instantaneamente — comportamento **documentado e intencional**
+do talento, não introduzido nesta sessão. Se o balanceamento for considerado
+forte demais, o ajuste é no talento (ex: cap de tempo, ou %/s menor), não no
+código de resolução de combate.
+
+---
+
+### ✅ RESOLVIDO — Tiro Repulsivo: mob "voltava" no dash bem no instante do stun
+
+Regressão relatada pelo usuário no fix anterior desta sessão (ver entrada
+"DESCARTADO" acima sobre Recarregar — esta é uma SKILL diferente, Tiro
+Repulsivo, achado real). O fix anterior (represar a IA em `AGGRO_DELAY`
+durante `_duration`) cobria os dois ramos (`stunned` e livre), mas o
+usuário observou o bug acontecer **justo quando o alvo era stunado** —
+contradição aparente com "só acontecia sem stun" que eu tinha avaliado mal.
+
+**Causa raiz exata**: quando o empurrão colide (`stunned=True`),
+`_pending_knockback_landings` usa a MESMA `_duration` pra decidir quando
+`_process_knockback_landings` aplica o efeito "stun" de fato. Esse timer e o
+`aggro_delay` da IA decrementavam em **lockstep** (mesmo valor inicial, mesmo
+`dt`) — cruzando zero no MESMO tick. Mas `EnemyAISystem.update()` roda ANTES
+de `_process_knockback_landings` dentro de `WorldServer._tick()` (ver ordem:
+`_systems.update` primeiro, `_process_knockback_landings` bem depois). Nesse
+tick exato: a IA destravava (`AGGRO_DELAY`→`CHASING`, possível 1 passo de
+movimento) ANTES do stun realmente aterrissar — um "pulo" de 1 tick bem no
+instante em que o usuário via o stun começar.
+
+**Fix**: margem de segurança (`_KB_AI_FREEZE_MARGIN = 0.1s`) somada à
+`_duration` ao represar `aggro_delay` — sem alterar o `_duration` usado pelo
+broadcast visual nem pelo timer de `_pending_knockback_landings`. Com a
+margem, o stun sempre aterrissa (e `EnemyAISystem` já bloqueia movimento com
+`_sfx.has("stun")`) antes do `AGGRO_DELAY` expirar.
+
+Validado com diagnóstico isolado: mob com path antigo + aggro por dano,
+forçado a colidir (resultando em `stunned=True`); confirmado congelado
+durante toda a janela do dash, depois congelado pelo stun real (3s default),
+e só retoma `CHASING`/`ATTACKING` após o stun expirar — sem nenhum pulo no
+meio do caminho. Compile limpo, suíte sem regressão (32/49/1).
+
+---
+
+### 🔴 CRÍTICO (RESOLVIDO) — `TileMovement.is_moving` de PLAYER nunca era True no servidor — quebrava reset de "Calmo e Certeiro" e regen de Concentração
+
+Veio à tona pela entrada anterior ("Calmo e Certeiro" saturando acerto em
+100%) — o usuário corrigiu minha conclusão: o talento em si está certo
+("acumula sem limite, até 100%"), mas o RESET ao mover (parte central do
+design — "se ele se mover, reseta o bônus") nunca acontecia de verdade no
+servidor, então mesmo kitando ativamente o bônus saturava.
+
+**Causa raiz**: `WorldServer.move_player()` (chamado a cada tile que o
+cliente confirma) faz um SNAP instantâneo —
+`tm.current_tile_x = tm.target_tile_x = tx` — e nunca seta
+`tm.is_moving = True`. Diferente de mobs (que têm tween real via
+`TileMovementSystem`/`start_tile_movement` rodando no servidor), o servidor
+nunca tween-a o movimento do player — só valida e aplica o tile final. Logo
+`TileMovement.is_moving` de qualquer player, no servidor, fica em `False`
+**permanentemente**, não importa quanto o player se mova.
+
+Duas mecânicas server-side dependem desse campo pra diferenciar "parado" de
+"andando":
+- `_tick_standing_seconds` (Calmo e Certeiro) — `if tm.is_moving:
+  standing_seconds = 0.0` nunca disparava → acumulava sem nunca resetar,
+  mesmo kitando sem parar.
+- `_tick_concentration_regen` (Arqueiro) — `moving = tm.is_moving` sempre
+  `False` → sempre usava `concentration_regen_idle`, nunca
+  `concentration_regen_moving`, mesmo com o player andando o tempo todo.
+
+**Fix**: `move_player()` agora seta `tm.is_moving = True` +
+`tm._server_move_grace = PLAYER_MOVE_GRACE_S` (0.4s, > intervalo real entre
+moves consecutivos andando contínuo, ~0.29s a `PLAYER_SPEED`/`TILE_SIZE`) a
+cada move aceito (os dois ramos: normal e ghost). Novo
+`ServerCombatStateSystem._tick_player_move_grace(tm, dt)` (chamado a cada
+tick, antes de `_tick_standing_seconds`/`_tick_concentration_regen`) decai
+essa janela e desliga `is_moving` quando expira — infere "ainda andando" a
+partir da RECORRÊNCIA de moves aceitos, já que não há tween real a observar.
+Novo campo `TileMovement._server_move_grace` (mesmo padrão dos já existentes
+`_server_dir_x/_server_aoe_x` — bookkeeping interno do servidor, não usado
+pelo cliente). Fix é estritamente server-side: a lógica do CLIENTE pra sua
+própria entidade já tinha tween real (`is_moving` sempre correto lá);
+`_tick_player_move_grace` só existe em `ServerCombatStateSystem`, não na
+`BaseCombatStateSystem` compartilhada — não afeta o cliente/offline.
+
+Validado com diagnóstico isolado usando `move_player()` de verdade (não
+forjando `is_moving` manualmente): parado 3s → acumula 3.0s reais; 1 move
+real → `is_moving=True` + reset imediato de `standing_seconds`; kiting
+simulado (move a cada 0.3s, 8.5s totais) → pico de só 0.2s acumulado (antes
+do fix, teria crescido sem parar); parar de mover por 5s → volta a acumular
+normalmente. Compile limpo, suíte sem regressão (32/49/1).
+
+---
+
+### ✅ RESOLVIDO — Quests `use_skill` nunca progrediam no modo online + novos objetivos `learn_skill`/`use_skill(on_dummy)`
+
+Contexto: implementação da quest "Iniciação Arcana" (mago) — treinar Bola de
+Fogo de graça no treinador + usá-la 5x num boneco de treino. Trainer agora
+gate por nível+ouro pras 4 skills do mago (`bola_de_fogo` lvl1/grátis,
+`polimorfia` lvl2/100g, `nova_congelante` lvl4/200g, `bloco_de_gelo`
+lvl8/400g) — `INITIAL_SKILLS_BY_CLASS["mago"]` zerado (antes dava as 4 de
+graça na criação, sem passar pelo treinador).
+
+**Bug real encontrado de carona**: `quest_fire("use_skill", ...)` só existia
+em `_use_skill()` (systems.py) — o caminho **OFFLINE** de execução de skill.
+O caminho **ONLINE** (`_use_skill_visual_only()`, usado sempre que
+`self._server_authoritative=True`) nunca disparava esse evento. Resultado:
+`warrior_trial`/`executioner` (quests "use_skill" já existentes) **nunca
+progrediam de verdade no modo online** — só funcionavam no offline. Não
+percebido antes porque nenhuma quest desse tipo tinha sido testada online.
+Fix: `quest_fire("use_skill", ...)` adicionado também em
+`_use_skill_visual_only()`, mesmo ponto (fim da função, após enviar
+`CAST_SKILL`).
+
+**Novos objetivos** (extensão do sistema, ver docstring de
+`quests_data.py`):
+- `learn_skill` — completa ao aprender (treinar) uma skill no treinador;
+  dispara em `trainer_system.py::_do_learn` após `learned_skill_ids.add(...)`
+  (só skills compradas — skills iniciais de `INITIAL_SKILLS_BY_CLASS` nunca
+  disparam esse evento, não passam por `_do_learn`).
+- `use_skill` ganhou `params={"on_dummy": True}` opcional — exige que o alvo
+  da skill tenha o componente `TrainingDummy` no momento do uso (calculado
+  em `_use_skill`/`_use_skill_visual_only` a partir de
+  `combat_state.target_entity_id`). Sem o param, comportamento idêntico ao
+  anterior (qualquer alvo conta — `warrior_trial`/`executioner` inalterados).
+
+Confirmado que `QuestDef.objectives`/`QuestSystem` já suportavam múltiplos
+objetivos por quest desde sempre (`tuple[ObjectiveDef]` +
+`all(prog[i] >= obj.count ...)` na conclusão) — só nunca tinha sido
+exercitado com mais de 1 objetivo em nenhuma quest até "Iniciação Arcana".
+
+Quest registrada na treinadora do mago (Selene Vail,
+`maps/map_1_entities.json`, já tem bonecos de treino a poucos tiles de
+distância). Validado com diagnóstico isolado: progresso por objetivo
+correto (skill errada não progride; uso fora do boneco não conta pro
+objetivo 2; completa só com os dois objetivos satisfeitos); treinador
+aprende Bola de Fogo de graça no nível 1 mesmo com 0 de ouro; bloqueia
+Polimorfia sem nível, libera com nível+ouro corretos. Compile limpo, suíte
+sem regressão (32/49/1).
+
+---
+
+### ✅ RESOLVIDO — Boneco de treino aparecia como "Humanoide" e objetivo `use_skill(on_dummy)` nunca progredia online
+
+Causa raiz mais profunda do que parecia: `entity_factory.create_training_dummy()`
+**já** tinha `EntityIdentity` correta no servidor. O bug real estava em
+`WorldServer._build_mob_spawn_payload(eid, tm)` — única função que monta o
+payload de spawn de mob enviado ao cliente (WORLD_STATE/ENTITY_SPAWN/
+AOI_UPDATE), com fallback hardcoded `race="Humanoide"; entity_class="Warrior"`
+só sobrescrito quando a entidade tinha `SpawnZoneOwner` → `SpawnZone`. Boneco
+de treino não tem zona de spawn, então caía sempre no fallback errado — **e o
+protocolo nunca tinha campo nenhum pra sinalizar "isto é um TrainingDummy"**,
+então mesmo corrigindo só o nome/raça, a entidade-proxy local do cliente
+jamais ganharia o componente `TrainingDummy`, e o objetivo de quest
+`use_skill(on_dummy=True)` nunca completaria online (client-autoritativo,
+ver seção de quests acima).
+
+Fix em duas pontas:
+- `_build_mob_spawn_payload`: novo `elif ident:` (usa `EntityIdentity.race/
+  entity_class/tier` quando não há `SpawnZoneOwner`); `payload["name"]`
+  enviado quando `ident.name` existe; `payload["is_dummy"] = True` quando a
+  entidade tem componente `TrainingDummy`. Mobs de zona (caminho normal,
+  imensa maioria) continuam 100% inalterados — só entram no `elif`
+  entidades sem `SpawnZoneOwner`.
+- `client/remote_entity_handlers.py::_spawn_remote_mob`: lê `data.get("name")`
+  pra sobrescrever `EntityIdentity.name` do proxy local; lê
+  `data.get("is_dummy")` pra anexar `TrainingDummy()` ao proxy local.
+- `entity_factory.create_training_dummy()`: `EntityIdentity` renomeada pra
+  `name="Boneco de treino", race="Mecânico"` (antes `"Boneco de Treino"`/
+  `"Construto"` — sem outras referências no código, troca segura).
+
+Validado com diagnóstico isolado (servidor real via `create_training_dummy`
++ `_build_mob_spawn_payload`; cliente real via `_spawn_remote_mob`): payload
+do boneco tem `race`/`name`/`is_dummy` corretos; mob de zona real (Elemental,
+confirmado via presença de `SpawnZoneOwner`) mantém raça/classe/tier da
+própria zona, sem `is_dummy` no payload — zero regressão. Compile limpo,
+suíte sem regressão (32/49/1).
+
+---
+
+### ✅ RESOLVIDO — Texto de objetivo de quest inconsistente (sim/não, id de skill, prefixo "v"/"-")
+
+HUD (abaixo do minimapa), diálogo de aceitar quest e diário (tecla J)
+renderizavam objetivos de forma inconsistente: alguns tipos usavam
+`"X: sim"/"X: não"`, outros `"X (n/total)"`; todos mostravam o **id** da
+skill (`bola_de_fogo`) em vez do nome amigável (`Bola de Fogo`); um prefixo
+`"v "`/`"- "` indicava conclusão.
+
+Fix centralizado em `QuestSystem._obj_label()` (única função geradora do
+texto, chamada pelos 3 pontos de renderização): todos os 9 tipos de
+objetivo convertidos pro formato uniforme `"{descrição} ({progresso}/
+{total})"`; novo helper `QuestSystem._skill_label(skill_id)` resolve o nome
+amigável via `SKILL_CATALOG[skill_id]["name"]` (usado em `use_skill` e
+`learn_skill`). Prefixo `"v "`/`"- "` removido dos 3 render sites
+(`QuestSystem._build_hud_surf`, `QuestDialogSystem._render_detail`,
+`QuestJournalSystem`). Cor passou de binária (verde/cinza) pra 3 estados:
+verde = `progress >= count` (completo), branco (`COL_ACTIVE`/`COL_WHITE`,
+novo) = `0 < progress < count` (em evolução — feedback de "está progredindo
+nesse objetivo"), cinza = `progress == 0` (sem evolução).
+
+**Bug latente encontrado de carona ao validar visualmente** (renderização
+real, não só assert de string): `QuestSystem.__init__` reatribuía
+`self._font_title`/`self._font_obj` pra `None` **depois** de
+`super().__init__()` — que já carrega essas fontes de verdade via
+`UIScaleMixin`/`_FONT_BASES`. Como `game.py` chama
+`_sys.set_ui_scale(self._ui_scale)` logo após construir todo painel (ver
+`ui_scale_mixin.py`), e essa chamada é idempotente (não faz nada se
+`scale == self._ui_scale_applied`, e o mixin já tinha aplicado `1.0` no
+próprio `__init__`), o painel só funcionava "por sorte" porque o
+`config.json` deste projeto tem `ui_scale: 1.25` (≠ 1.0). Com `ui_scale`
+exatamente `1.0` (default de fábrica, `_cfg_data.get("ui_scale", 1.0)`,
+ou qualquer instalação nova sem o config ainda ajustado), `render_hud()`
+crashava com `AttributeError: 'NoneType' object has no attribute 'render'`
+na primeira quest ativa. `QuestDialogSystem`/`QuestJournalSystem` não tinham
+esse padrão (não resetavam fonte pra `None` depois do `super().__init__()`)
+— bug isolado a `QuestSystem`. Fix: removidas as duas linhas redundantes;
+fontes ficam só a cargo do mixin.
+
+Validado: render real (`pygame.image.save`) com `ui_scale` padrão (1.0, sem
+chamada explícita de `set_ui_scale`) confirma layout/cores/texto exatos —
+"Aprender Bola de Fogo (1/1)" verde, "Treinar Bola de Fogo no boneco de
+treino (3/5)" branco, e ambos em cinza com progresso zerado. Compile limpo,
+suíte sem regressão (32/49/1).
+
+---
+
+### ✅ RESOLVIDO — 3 ajustes finos pós-implementação de "Iniciação Arcana"
+
+**1. Números de progresso na apresentação da quest (diálogo de aceitar)**:
+usuário pediu pra esconder o `(x/y)` só ali — continua aparecendo no HUD
+(abaixo do minimapa) e no diário (tecla J), porque antes de aceitar a quest
+o progresso é sempre `0/N` e não comunica nada útil. `_obj_label()` ganhou
+parâmetro `show_progress: bool = True`; internamente foi reescrita pra
+montar a descrição (`desc`) separada do sufixo de progresso, só concatenando
+o sufixo quando `show_progress=True`. `QuestDialogSystem._render_detail`
+(diálogo) passa `show_progress=False`; `_build_hud_surf` (HUD) e
+`QuestJournalSystem._render_detail` (diário) usam o default `True`.
+
+**2. `learn_skill` não considerava skill aprendida ANTES de pegar a quest**:
+se o player já tinha treinado a skill antes de aceitar "Iniciação Arcana"
+(cenário legítimo — nada impede aprender a skill primeiro), o objetivo
+nunca completava, porque o evento `learn_skill` só dispara na COMPRA
+(`trainer_system.py::_do_learn`), nunca reavaliado depois. Mesmo padrão já
+existente pra `reach_level` (`_try_start` já checava nível atual no
+momento de iniciar a quest): adicionado `elif obj.type == "learn_skill"
+and self._skill_already_learned(obj.target): prog.append(obj.count)` em
+`QuestSystem._try_start`, com novo helper `_skill_already_learned(skill_id)`
+(consulta `PlayerSkills.learned_skill_ids` direto, sem reimplementar
+bloqueio de aprendizado pré-quest — como o usuário apontou, bloquear seria
+mais complexo que checar o catálogo).
+
+**3. `use_skill(on_dummy)` contava na ATIVAÇÃO da skill, não no dano efetivo**:
+Bola de Fogo tem `cast_time` (1.5s) — o `quest_fire("use_skill", ...)`
+disparava no instante em que o jogador apertava a tecla (`handler_fn`
+retornando sucesso), antes do projétil sair, viajar e confirmar dano —
+então errar o alvo ou o boneco morrer/sumir no meio do cast ainda contava.
+Causa raiz: o ponto de disparo do evento estava acoplado à ativação da
+skill, não ao resultado. Fix — gating por `has_cast`/`_has_cast` (skill sem
+cast_time, ex: Golpe Poderoso/Executar, já causa dano de forma síncrona
+dentro do próprio handler, então continua contando na ativação; skill COM
+cast_time deixa de contar ali) + novo disparo no ponto real de dano
+efetivo:
+- Online (`client/network_handlers.py::_handle_msg_skill_result`, ramo
+  `_is_pdmg` específico de `sid == "bola_de_fogo"`): dispara
+  `quest_fire("use_skill", ...)` só quando `t.get("damage", 0) > 0`, com
+  `on_dummy` resolvido a partir do proxy local do alvo via
+  `self._remote_mobs.get(_t_srv)` — exatamente o ponto onde o servidor já
+  confirmou o dano via `SKILL_RESULT(is_proj_damage=True)`.
+- Offline (`spell_system.py::PlayerProjectileSystem._on_hit`, ramo de dano
+  mágico): disparo movido pra depois de `_apply_magic_damage(...)`, e só é
+  alcançado se `outcome != "miss"` (a função já retorna antes em caso de
+  resistência/erro — dano realmente aconteceu).
+
+Validado com diagnóstico isolado: `_obj_label(obj, 0, show_progress=False)`
+omite o sufixo; `_try_start` pré-completa o objetivo 1 quando
+`learned_skill_ids` já contém a skill antes de iniciar (e NÃO pré-completa
+quando não contém); evento `use_skill` simulado como "dano confirmado"
+incrementa o objetivo 2 corretamente. Render real do diálogo confirma texto
+sem `(x/y)`. Compile limpo, suíte sem regressão (32/49/1).
+
+---
+
+### ✅ RESOLVIDO — Redesign de `mob_definitions.py`: atributos/habilidades/loot/xp por mob (antes só 2 templates fixos)
+
+Antes: `entity_factory.py::create_enemy()` só tinha **2 templates fixos**
+(melee/ranged), iguais pra qualquer raça — Zumbi, Lobo, Orc etc. todos com
+o MESMO HP/dano/acerto/crit/velocidade, diferenciados só por
+`ENEMY_TIER_CONFIGS` (tier) e level. `mob_definitions.py` só guardava
+raça/classe/cor/sons. Habilidades especiais vinham de
+`enemy_abilities_data.py::MOB_ABILITIES`, indexadas por raça OU
+entity_class (ex: toda raça "Hunter" ganhava `poison_arrow`, sem distinção
+por mob). Loot vinha de `loot_tables.py::MOB_LOOT_TABLES`, duplicando a
+lista de itens que já existia conceitualmente "no mob". XP de morte
+(`server/server_death_handler.py::_XP_BY_TIER`) era **flat por tier**, sem
+NENHUMA relação com o level do mob.
+
+**Novo esquema** (`mob_definitions.py::MOB_TABLE[nome]`), migrado pros 14
+mobs existentes:
+- `attributes` — `health`, `armor` (%, convertido em
+  `create_enemy()` pra rating interna: `rating = pct*10`, já que
+  `ARMOR_REDUCTION_PER_POINT=0.001` em `damage_calculator.py`),
+  `attack_min/attack_max` (faixa de dano base), `attack_power` (soma à
+  faixa), `move_speed_pct` (% de `ENEMY_SPEED`), `attack_speed` (intervalo
+  entre ataques), `acerto` (% direto), `crit_chance` (%, convertido pra
+  fração 0-1). Mob físico (Warrior/Hunter) usa `base_physical_damage`/
+  `base_attack_power`; mob "mágico" (entity_class Mage/Mago/Warlock/Bruxo —
+  Vampiro, Dragão) ADICIONALMENTE espelha `attack_power`→`base_spell_power`
+  e a média de `attack_min/attack_max`→`base_magical_damage`, pra
+  `damage_type_to_use` (`EnemyAISystem`) resolver "magical" — **mantém o
+  comportamento original**: dano mágico ignora armadura do alvo (reduzido
+  só por resistência elemental, nunca implementada pra auto-attack genérico
+  de mob — só existe hoje pra skills nomeadas via `_server_apply_magic_damage`,
+  ver Fase 7 do Skill Level). `base_attack_power` continua setado mesmo pra
+  mob mágico (não zerado) — alimenta o multiplicador de dano de habilidade
+  (ver abaixo). `ENEMY_TIER_CONFIGS`/level-scaling (`entity_factory.py`)
+  continuam aplicados POR CIMA destes valores, sem mudança de mecanismo —
+  só mudou a fonte do valor "base" (level 1). **Level do mob vem da
+  `SpawnZone` no JSON do mapa** (`level_min`/`level_max`,
+  `{map}_entities.json`) — não é um campo de `mob_definitions.py`.
+- `abilities` — lista de ability_id (`ABILITY_DEFS`, agora com
+  `default_cooldown` próprio) substituindo o lookup por raça/classe; cada
+  entrada pode ser `"id"` (usa o cooldown default) ou `("id", cooldown)`
+  pra sobrescrever só nesse mob (ex: Cobra usa `poison_bite` com cooldown
+  diferente do Escorpião). `MOB_ABILITIES` removido (dead code).
+  `AbilityDef.magnitude` deixou de ser dano flat por tick e passou a ser
+  **multiplicador do `attack_power`** do mob que usa a habilidade — aplicado
+  em `EnemyAbilitySystem` (melee) e `ProjectileSystem` (ranged, ao colidir)
+  no momento de causar o efeito (`dano_por_tick = magnitude × base_attack_power`,
+  usa `base_` e não o campo efetivo pra não depender de
+  `_recalculate_effective_stats()` já ter sido chamado). Os valores atuais
+  de `magnitude` em `enemy_abilities_data.py` ainda são os antigos (dano
+  flat, ex: 25.0) — precisam ser reduzidos pra escala de multiplicador
+  (ex: 2.0-4.0) antes de ir pra produção.
+- `loot` — dict `{item_key: chance}`, fonte única (antes duplicada em
+  `loot_tables.py::MOB_LOOT_TABLES`, removida). `loot_tables.py::roll_mob_loot`
+  agora só lê `MOB_TABLE[nome]["loot"]` + aplica o multiplicador de tier
+  (mecanismo de chance/tier inalterado).
+- `xp_given_by_lvl` — usado em 2 pontos: `server/server_death_handler.py`
+  (XP real concedido ao matar, server-autoritativo —
+  `level_do_mob × xp_given_by_lvl × tier["xp"]`) e
+  `entity_factory.py::XPReward` (componente offline, mesma fórmula).
+
+**Level-scaling de mob cadastrado é MULTIPLICATIVO, não aditivo** (correção
+pós-implementação, a pedido do usuário): `health`/`attack_power` (e o
+espelho mágico `spell_power`/`magical_damage`, pra mob caster) MULTIPLICAM
+por `level` (`stats.base_stamina = int(stats.base_stamina_pós_tier) × level`)
+— igual à fórmula de XP. `armor`/`acerto`/`crit_chance`/`attack_min`/
+`attack_max`/velocidade ficam fixos, vêm só de `attributes` + tier (level
+NÃO afeta esses campos). Mob sem cadastro (fallback, "Elemental") continua
+com o scaling ADITIVO antigo (`+75 stamina/level`, `+2 AP/level`, `+4
+armor/level`, `+0.01 crit/level`) — `create_enemy()` ramifica em
+`if attrs: ... else: ...` dentro do bloco `if level > 1:`.
+
+**Fallback preservado**: mobs SEM entrada em `MOB_TABLE` (ex: "Elemental",
+usado em zonas reais do mapa mas nunca cadastrado) continuam no template
+genérico antigo (2 templates fixos por `is_ranged`, `ENEMY_SPEED` puro, XP
+flat `level×15×tier`) — `create_enemy()` ramifica em
+`attrs = mob_def.get("attributes") if mob_def else None`, sem alterar esse
+caminho.
+
+**Bug pré-existente encontrado e corrigido de carona**: `tests/test_server.py`
+(`TestRangedMobAbilities`) faz monkeypatch de `EnemyAISystem._has_line_of_sight`
+(staticmethod) pra simular LOS true/false, restaurando com
+`EnemyAISystem._has_line_of_sight = original_los` — mas `original_los` foi
+capturado via acesso de atributo (`EnemyAISystem._has_line_of_sight`), que já
+desempacota o `staticmethod` pra função pura. Reatribuir a função pura (sem
+reembrulhar em `staticmethod(...)`) faz QUALQUER chamada futura por instância
+(`self._has_line_of_sight(...)`, usada em `EnemyAISystem.update()`) injetar
+`self` como 1º argumento automaticamente — `TypeError: takes 5 positional
+arguments but 6 were given` pro resto do processo de teste. Confirmado
+pré-existente (reproduzido na baseline antes desta sessão, com taxa de falha
+variável por seed de hash do processo); só não aparecia nos runs completos
+da suíte porque a ordem fixa de execução "escondia" o efeito na maioria das
+vezes. Fix: `EnemyAISystem._has_line_of_sight = staticmethod(original_los)`
+nos 2 pontos de restore.
+
+Validado com diagnóstico isolado: Zumbi nível 1/tier normal reproduz
+exatamente os atributos do schema; Zumbi tier elite/nível 3 confirma
+tier-mult + level-scaling aplicados corretamente por cima da baseline;
+"Elemental" (sem cadastro) confirma fallback legado 100% intacto; loot e
+habilidade (multiplicador) validados. Suíte sem regressão (32/49/1, diff
+exato contra a baseline).
+
+---
+
+### ✅ RESOLVIDO — Clique direito em NPC (Trainer/Blacksmith/QuestGiver) não funcionava com zoom != 100%
+
+Usuário reportou: "quando dou zoom no jogo, não estou conseguindo interagir
+com os NPCs". Raiz: o zoom (`self._zoom` em `game.py`) não escala a tela
+real 1:1 — o mundo é renderizado numa surface lógica intermediária
+(`self._zoom_surf`, tamanho `lw×lh = tela/zoom`), depois ESCALADA pra
+caber na tela real ao blitar. Convergir um clique de mouse (sempre em
+coordenadas de TELA REAL) pra posição no MUNDO exige multiplicar pelo
+fator de escala `world_surf.width / hud_surf.width` (≈ `1/zoom`) ANTES de
+somar o offset de câmera — e o offset de câmera em si precisa ser
+calculado com as dimensões da surface LÓGICA (`world_surf`), não da tela
+real (`hud_surf`).
+
+`ShopSystem._get_cam()`/click handler (`systems.py`) já fazia isso
+corretamente (`_sc = world_surf.width/hud_surf.width`; `wx = mx*_sc + cam_x`)
+— por isso interagir com Comerciantes nunca quebrava. Mas
+`TrainerSystem` (`trainer_system.py`), `BlacksmithSystem`
+(`crafting_system.py`) e `QuestDialogSystem` (`quest_system.py`) tinham a
+MESMA lógica de clique copiada SEM o fator de escala (`cx = cam.x -
+hud_surf.width/2`; `wx = ev.pos[0] + cx`) — funciona perfeitamente em
+`zoom == 1.0` (`world_surf.width == hud_surf.width`, fator=1, por isso o
+bug só aparece "quando dá zoom") mas erra a posição mundial em qualquer
+outro zoom (erro proporcional à distância do clique ao centro da tela ×
+`(zoom-1)` — facilmente maior que o hitbox do NPC, ~12px de raio).
+
+Fix: replicado o padrão já correto de `ShopSystem` nos 3 sistemas —
+`SW, SH = self.world_surf.get_size()` (não `hud_surf`) pro cálculo de
+`cam_x/cam_y`, e `wx = ev.pos[0] * _sc + cam_x` (com
+`_sc = world_surf.width / hud_surf.width`) pro clique.
+
+Validado com diagnóstico isolado: simulado zoom=1.5, NPC posicionado de
+forma que sua posição de TELA renderizada (calculada à mão, mesma fórmula
+do render real) caia exatamente no ponto clicado — confirma detecção
+correta do clique (`_right_click_consumed=True`, abre o menu do
+treinador) onde antes o cálculo sem escala erraria a posição mundial em
+~20px (maior que o hitbox). Compile limpo, suíte sem regressão (32/49/1).
+
+---
+
+### 🔴 CRÍTICO RESOLVIDO — `ManaSystem` regenerava mana só no cliente, sem o servidor saber (HUD mostrava mana que o servidor não tinha)
+
+Usuário reportou: HUD mostra "Mana 150/195", mas usar uma skill
+(mana_cost=25) mostra "Mana insuficiente (25)".
+
+**Investigação** (descartando hipóteses por ordem, com diagnóstico
+isolado em cada passo):
+1. A mensagem com `(custo)` entre parênteses só existe em
+   `skill_handlers.py::_check_mana`. Client-side online não chama essa
+   função pra Bola de Fogo (só pra skills AOE) — confirmado que a
+   mensagem vinha do **SERVIDOR**, propagada via
+   `SKILL_RESULT(failed=True, reason=_last_warn)`
+   (`server/skill_processor.py`). Logo, o servidor realmente tinha
+   `CharacterStats.mana < 25` — não é check client-side incorreto.
+2. Debug temporário nos dois lados (servidor: cada dedução/regen/envio de
+   STATS_UPDATE; cliente: cada STATS_UPDATE recebido) confirmou: a
+   sequência de deduções do servidor estava **perfeita** (195→170→145→
+   ...→20, sempre -25 exato), e a checagem de mana insuficiente em 20 é
+   correta. Porém o "antes" registrado no cliente, comparado ao último
+   valor que o próprio cliente tinha aplicado, mostrava incrementos
+   pequenos e intermitentes (+1, +1, +8, +1) **entre** as confirmações do
+   servidor — sempre nos intervalos de espera entre casts, nunca nos
+   pares de envio duplicado (sem gap de tempo).
+3. Causa raiz: `spell_system.py::ManaSystem` — sistema cliente que
+   regenera mana periodicamente (a cada 5s, 4% de max_mana fora de
+   combate / 1% em combate) **sem nenhum gate de `self._net`** — rodava
+   exatamente igual online e offline. O **servidor não tinha equivalente
+   nenhum** desse regen passivo (só existiam HoT de poção/`ActiveManaRegen`,
+   ambos corretamente sincronizados). Resultado: o cliente regenerava
+   mana sozinho a cada 5s, de forma crescente e nunca corrigida (cada
+   STATS_UPDATE de gasto subtrai do valor real do servidor, mas o
+   "excesso" client-only nunca é zerado — só cresce com o tempo), até o
+   HUD mostrar bem mais mana do que o servidor realmente tinha.
+
+**Fix** (regen de mana agora segue o MESMO padrão já usado pra HP5/
+Concentração — único produtor autoritativo é o servidor):
+- `core_systems.py::BaseCombatStateSystem` — nova constante
+  `MANA_REGEN_INTERVAL/OOC_PCT/IC_PCT` + `_tick_mana_regen(cs, char, dt)`
+  (classmethod, espelha `_tick_hp5`): retorna `(old_mana, new_mana)` se
+  regenerou, `None` caso contrário.
+- `ServerCombatStateSystem.update()` — chama `_tick_mana_regen` pra cada
+  player, popula novo `self.mana_events` (mesmo padrão de `hp5_events`).
+- `server/world_server.py::_tick()` — consome `mana_events`, enfileira em
+  `_pending_xp_deliveries` (mesmo canal já usado por
+  `ActiveManaRegen`/restauração instantânea) → vira `STATS_UPDATE` real
+  pro cliente.
+- `spell_system.py::ManaSystem` — ganhou `self._net` (injetado por
+  `game.py` após `_connect_online()`, igual `ConsumableSystem`/
+  `SkillSystem`/etc.); só aplica o regen localmente quando
+  `not self._net` (offline). Online, delega 100% pro servidor — chama a
+  MESMA função `_tick_mana_regen` (fonte única) só pra manter o cálculo
+  consistente entre os dois modos, mas o resultado só é aplicado offline.
+
+Validado: fórmula pura testada deterministicamente (4% OOC, 1% IC, sem
+regenerar com mana cheia); integração real via `tests/helpers.py`
+confirma que o servidor regenera e enfileira o STATS_UPDATE
+corretamente; `ManaSystem` client-side confirmado SEM regenerar
+localmente quando `self._net` está setado (online) e CONTINUA
+regenerando normalmente quando `None` (offline, sem servidor pra
+confirmar). Suíte sem regressão (32/49/1, 3 runs estáveis).
+
+---
+
+### 🔴 CRÍTICO RESOLVIDO — Mob em RETURNING continuava atacando o player (dano "do nada", sem mob visível)
+
+Usuário reportou: quando o mob persegue o player e o player sai da zona de
+aggro, o mob deveria voltar pro spawn (RETURNING) — mas o player continuava
+tomando dano sem nada visível na tela causando.
+
+**Causa raiz** (`systems.py::EnemyAISystem.update()`): o bloco de ataque
+(`in_attack_range` + cooldown → `deal_damage`/projétil) nunca checava
+`AIControlled.state` — só checava distância/cooldown/invisibilidade. A
+transição de leash (`_dist_from_spawn > leash_radius` → `state="RETURNING"`,
+`target_eid=-1`) acontece DEPOIS do bloco de ataque, na mesma iteração — ou
+seja, no tick em que o mob desiste e decide voltar, ele já tinha acabado de
+bater. Pior: como o ataque não é bloqueado por estado, um mob que continua
+dentro do `attack_range_tiles` enquanto caminha de volta (corredores
+estreitos, paths que passam perto do player) continuava desferindo golpes
+indefinidamente.
+
+Isso quebrava a atribuição visual do ataque: `server/combat_processor.py`
+(`_mob_attacker_of`, monta o mapa "quem atacou quem" pro cliente) só inclui
+mobs com `state in ("ATTACKING", "CHASING")` — roda DEPOIS de
+`EnemyAISystem.update()` no mesmo tick, então no tick exato da transição o
+mob já está com `state="RETURNING"` e cai fora do mapa. O fallback
+`_last_mob_attacker` (cache do último atacante válido) cobre a maioria dos
+casos, mas não o primeiro hit de uma sequência nem hits subsequentes
+enquanto RETURNING continuasse acertando — resultado: `attacker=-1` chega
+ao cliente, que não tem mob nenhum pra apontar/animar/tocar som
+(`client/remote_entity_handlers.py::_play_attacker_mob_sound` retorna sem
+fazer nada quando `server_attacker == -1`) — dano aparece "do nada".
+
+**Fix** (`systems.py`, no cálculo de `in_attack_range`): adicionado
+`ai_control.state != "RETURNING"` ao gate. Único estado excluído de
+propósito — **não** exclui `IDLE`/`AGGRO_DELAY`: esses são estados
+pré-combate normais, e o próprio bloco que promove um mob pra `"ATTACKING"`
+(`if ... in_attack_range and not needs_to_kite: state="ATTACKING"`) também
+depende de `in_attack_range` — excluí-los travaria PERMANENTEMENTE em
+IDLE/AGGRO_DELAY qualquer mob que já nasça adjacente ao player (regressão
+real, pega por `tests/test_server.py::test_mob_attacks_player_in_range` —
+corrigida revertendo a exclusão pra só `RETURNING`).
+
+Validado com diagnóstico isolado: mob com `state="RETURNING"` forçado a
+cada tick (isolando de outros mobs via HP=0), adjacente ao player por 60
+ticks (3s) — zero dano, zero `COMBAT_RESULT`. Controle (mesmo mob/posição,
+`state="ATTACKING"`) continua causando dano normalmente. Nota lateral
+descoberta durante o diagnóstico (comportamento pré-existente, não é bug):
+se o pathfinding de volta ao spawn falhar (ex: rota bloqueada/inalcançável),
+o mob cai em `IDLE` na posição atual em vez de ficar travado em RETURNING
+pra sempre — intencional. Suíte sem regressão (32/49/1, 3 runs estáveis).
+
+---
+
+### 🔴 CRÍTICO RESOLVIDO — Mob "nunca aparece" ao voltar pro spawn: flicker de spawn/despawn na borda do AOI (sem histerese)
+
+Usuário esclareceu o bug anterior (que eu tinha corrigido a causa errada
+— ver entrada acima, ainda válida, mas não era essa a queixa): "quando o
+mob sai da TELA do player e eu volto pra tentar achá-lo, ele não aparece —
+só aparece no spawn dele quando eu saio da tela do spawn e volto." Ou seja,
+não é sobre dano invisível — é sobre o mob literalmente nunca renderizar de
+forma estável quando o player se aproxima de novo.
+
+**Evidência real**: `logs/aoi_debug.log` (debug já existente no projeto,
+`aoi_debug.py`, `DBG_ENABLED=True` por padrão) já tinha a prova: o mesmo
+`server_eid` gerando `SPAWN_OK`→`DESPAWN_AOI` repetidas vezes em poucos
+segundos, com `local_eid` NOVO a cada vez (40s, 19s, 0.4s de intervalo) e
+posições que mudavam bastante entre cada par. Isso é geometricamente
+impossível pra um mob andando normalmente (poucos tiles/segundo) — só faz
+sentido se o mob ficou invisível (fora do AOI) andando uma distância maior
+ENQUANTO estava despawnado, e só "pisca" visível por uma fração de segundo
+quando o caminho de volta cruza a borda do raio.
+
+**Causa raiz** (`server/session.py::_build_update_for_session`): a checagem
+de entrada E saída de AOI usava o MESMO raio (`AOI_RADIUS=15`, círculo de
+`(tx-cx)²+(ty-cy)² <= r²`) sem nenhuma histerese. Um mob cujo caminho (ex:
+RETURNING pro próprio spawn, que pode ficar bem perto da borda de 15 tiles
+relativa à posição do player) cruza repetidamente esse raio gera um ciclo
+completo de DESPAWN (sai) → SPAWN (volta a entrar) a CADA tick que cruza a
+fronteira — o cliente literalmente nunca tem tempo de manter o mob
+renderizado de forma estável antes de recebê-lo como removido de novo.
+
+**Fix**: histerese — raio de ENTRADA continua `AOI_RADIUS` (15 tiles,
+inalterado, “torna-se conhecido” não muda), mas a permanência (decisão de
+SAÍDA pra quem já está em `known_eids`) agora usa `AOI_RADIUS +
+AOI_EXIT_BUFFER` (nova constante em `shared/constants.py`, buffer=3 → raio
+de saída efetivo 18 tiles). Um mob só é despawnado depois de se afastar
+de verdade, não ao simplesmente cruzar a borda de entrada pela primeira
+vez. Aplica-se só ao mecanismo de "moved" (`in_aoi_exit()`, nova função
+local) — a checagem de invisibilidade (Camuflagem) e o sweep de
+"newly-in-range" (que só ADICIONA, nunca remove) ficam inalterados.
+
+Validado com diagnóstico isolado: mob simulado cruzando repetidamente
+14→16→14→16→14→16→14 tiles de distância (a borda exata de 15) — SEM o
+fix, gera 3 ciclos completos de despawn+spawn (reproduzido explicitamente
+revertendo o fix); COM o fix, zero spawn/despawn durante todo o cruzamento
+repetido. Controle: afastar de verdade (25 tiles, bem além do buffer)
+continua despawnando corretamente. Suíte sem regressão (32/49/1, 3 runs
+estáveis).
+
+---
+
+### 🔴 CRÍTICO RESOLVIDO — Mob perseguindo, player mais rápido: leash nunca disparava, mob travava em IDLE longe do spawn pra sempre
+
+Usuário testou de novo, especificamente: aggrou um mob e correu (mais
+rápido que o mob) pra longe do próprio spawn dele, esperando ver o mob
+voltando quando ele olhasse pra trás. Em vez disso, o mob ficou
+simplesmente **parado no meio do caminho** — sem saber se o RETURNING
+chegou a iniciar. Reproduzido com diagnóstico isolado (`EnemyAISystem`
+real, sem nenhuma forçação manual de estado depois do gatilho inicial de
+CHASING — só ticks reais), revelando **três bugs distintos na mesma
+família**, todos em `systems.py::EnemyAISystem.update`, todos com o mesmo
+padrão: "desistir de perseguir" virava `state="IDLE"` direto na posição
+atual, sem nunca checar se o mob estava longe do próprio spawn primeiro.
+
+1. **Sleep Zone (linha ~2394, `SLEEP_RADIUS_TILES=40`)** rodava o
+   `continue` de congelamento pra **qualquer estado**, não só `IDLE`. Se o
+   player ficasse a mais de 40 tiles do mob, esse check disparava **antes**
+   do leash (20 tiles do próprio spawn, `MAX_LEASH_RADIUS`) no mesmo loop —
+   bastava o player ser mais rápido o bastante pra abrir 40 tiles de gap
+   antes do mob se afastar 20 tiles do spawn. Mob virava `IDLE` ali mesmo,
+   a só 5-9 tiles do spawn (bem longe de precisar de leash), com o path
+   descartado (`path=None`). Fix: o freeze do Sleep Zone só se aplica a
+   mobs **já `IDLE`** (sem chase/return pendente) — `CHASING`, `ATTACKING`
+   e `RETURNING` sempre processam o tick completo, não importa a distância
+   do player.
+2. **Desistência por falha de pathfinding (linha ~2854, dentro do bloco de
+   perseguição)**: quando o mob não achava caminho até o player E o player
+   estava fora do `detect_radius` (`ENEMY_DETECTION_RADIUS=250px`≈7.8
+   tiles — bem menor que o leash de 20!), o mob virava `IDLE` direto, sem
+   checar a distância até o próprio spawn. Fix: nesse caso, se o mob está
+   longe do spawn (`> proximity_threshold_tiles`), vai para `RETURNING`
+   (replicando exatamente o padrão já usado pelo bloco "sem alvo válido")
+   em vez de travar em `IDLE`.
+3. **RETURNING desistia na primeira falha de path (linha ~2892)**: ao
+   contrário do bloco irmão "sem alvo válido" (que em caso de falha só
+   limpa o path e força recálculo no próximo tick, mantendo `RETURNING`),
+   este bloco (usado quando o leash ou o fix #2 acima dispara `RETURNING`
+   dentro do mesmo tick de perseguição) caía pra `IDLE` na primeira
+   tentativa sem path — inclusive quando a falha era só o **orçamento de
+   pathfinding do frame esgotado** (`MAX_PATHFINDS_PER_FRAME=10`, sendo
+   torrado pelas várias tentativas de achar um tile de ataque perto do
+   player ainda no mesmo tick, antes do leash disparar). Fix: mesmo padrão
+   do bloco irmão — sem path disponível (e não bloqueado), só limpa o path
+   e força recálculo imediato, sem rebaixar pra `IDLE`.
+
+**Validação**: diagnóstico com mob real (`EnemyAISystem` de verdade, sem
+forçar nada após o CHASING inicial) — player corre numa direção livre até
+o mob entrar em RETURNING. ANTES dos 3 fixes: mob travava em `IDLE` a
+5-21 tiles do spawn (variava por causa de qual dos 3 bugs disparava
+primeiro) e **nunca** se movia de novo em 15s de ticks reais, mesmo
+parado pra sempre — só "acordava" quando um player chegava bem perto da
+posição travada. DEPOIS dos 3 fixes: leash/desistência aciona
+corretamente, mob entra em `RETURNING` e percorre, sozinho, tile a tile,
+todo o caminho de volta ao spawn (confirmado chegando a 1 tile do centro
+do spawn, indo pra `IDLE` lá — não mais na posição onde travava antes).
+
+**Renderização**: validado também em diagnóstico com `Session`/AOI real
+(não só `WorldServer`) — durante a perseguição longa, o mob corretamente
+*sai* do AOI da sessão (jogador longe); ao caminho de volta cruzar de
+novo o raio do AOI do jogador (que se aproximou andando até ~12 tiles do
+spawn do mob, sem precisar voltar exatamente até o spawn), o cliente
+recebe o respawn dele imediatamente (`AOI_UPDATE`/`spawned`) — confirma
+que os 3 fixes de IA, combinados com a histerese de AOI já corrigida
+(entrada acima), eliminam o "mob nunca aparece de volta" relatado.
+
+Suíte sem regressão (32/49/1, 2 runs estáveis).
+
+---
+
+### ✅ RESOLVIDO — Quest sem restrição de classe + menu de assunto do treinador sempre aparecia (mesmo com 1 única opção)
+
+Pedido do usuário: "Iniciação Arcana" deveria ser estritamente do mago (e
+primeira de uma cadeia da classe), mas o sistema de quest não tinha
+NENHUMA noção de classe — qualquer player de qualquer classe podia
+aceitar qualquer quest de qualquer NPC. Junto, quando um NPC é treinador
+de uma classe mas também oferece quest pra todas: jogando de outra
+classe, o clique direito sempre abria o menu "Treinamento / Quests" pra
+escolher, mesmo treinamento não fazendo sentido pra essa classe (deveria
+pular direto pra quest). E quando o player já tem uma quest pronta pra
+entregar, o menu de assunto não devia aparecer — deveria abrir a entrega
+direto.
+
+**Fix**:
+- `QuestDef` (`quests_data.py`) ganhou `class_req: str = ""` (`""` =
+  qualquer classe). Aplicado `class_req="mago"` em `iniciacao_arcana`.
+  Cadeia de quests por classe: usa o mecanismo `requires`/`next_quest`
+  que já existia (sem mudança) — só faltava a restrição de classe em si.
+- `quest_logic.try_start` valida `class_req` contra
+  `CharacterStats.class_id` do `world`/`player_eid` recebido — vale tanto
+  pro servidor (autoritativo) quanto pro caminho offline.
+- `QuestDialogSystem._get_available_quests`/`_get_locked_quests`
+  (`quest_system.py`) filtram por `_player_class_id()` — decisão do
+  usuário: quest de classe errada é **totalmente invisível** (sem ícone "!"
+  sobre o NPC, não aparece nem como "bloqueada" — diferente do bloqueio
+  por nível, que continua visível/cinza). Não precisou mudar
+  `_get_completable_quests`/`_get_inprogress_quests`: ambos já dependiam
+  de `qid in ql.active`, e `ql.active` só pode conter quests que passaram
+  por `try_start` (já filtra classe).
+- `TrainerSystem` (`trainer_system.py`): `_compute_options(eid)` novo,
+  único lugar que decide quais assuntos existem pra ESSE player com ESSE
+  NPC — "Treinamento" só se `CharacterStats.class_id == Trainer.class_id`;
+  "Quests" só se `_get_available_quests`/`_get_completable_quests`/
+  `_get_inprogress_quests` retornarem algo (não só "o NPC tem
+  `quest_ids`", como era antes — antes disso "Quests" aparecia mesmo sem
+  nada pra mostrar, levando a um beco sem saída no diálogo). `_open_menu`
+  agora: (1) se há quest completável pra entregar, abre o diálogo de
+  quest direto, ignora o menu mesmo com treinamento disponível
+  (prioridade pedida pelo usuário); (2) senão, se só resta 1 opção (ou
+  nenhuma), pula direto pra ela (ou fecha com uma mensagem de log) sem
+  mostrar o menu; (3) só com 2+ opções reais é que o menu de assunto
+  aparece.
+- Menu de assunto redesenhado: tamanho fixo igual ao diálogo de quest
+  (`UI.QUEST_DIALOG_W/H`, mesmo `_safe_panel_origin`, antes era
+  dinamicamente dimensionado pelo número de botões) + botão fechar `[X]`
+  (não tinha) + cabeçalho trocado de "{nome do NPC}" pra "Olá {nome do
+  player}, o que deseja?" (saudação pedida pelo usuário), com os botões de
+  assunto centralizados no espaço abaixo da linha divisória.
+
+**Validação**: diagnóstico isolado (mundo ECS minimal, sem rede) cobrindo
+os 4 cenários — (1) `try_start` aceita mago e rejeita guerreiro pra
+"iniciacao_arcana"; (2) guerreiro não vê a quest nem disponível nem
+bloqueada (só vê a genérica `first_equip`), mago vê as duas; (3) guerreiro
+falando com um treinador de mago que só tem quest de mago vê 0 opções →
+fecha com log (não abre menu vazio); guerreiro falando com treinador da
+própria classe + quest genérica vê as 2 opções → abre o menu; mago
+falando com o MESMO treinador de guerreiro (só a quest genérica é dele)
+pula direto pro diálogo de quest, sem menu; (4) guerreiro com uma quest
+completável + treinamento disponível pula direto pro diálogo em estado
+"turnin", ignorando o menu. Renderização verificada visualmente
+(screenshot) — painel do tamanho certo, saudação correta, botões
+centralizados. Suíte sem regressão (32/49/1).
+
+---
+
+## Bug — IA de mobs cruzando mapas (cross-map AI targeting) — 01/07/2026
+
+**Sintoma relatado:** Player no mapa principal (`map_1`) tomava dano de mobs
+invisíveis. Às vezes flechas, às vezes melee/dodge — mas nenhum mob visível
+ou targetável causando esse dano.
+
+**Causa raiz confirmada (via debug log):** `EnemyAISystem._select_target()`
+iterava sobre **todos** os `PlayerControlled` no world, sem filtro de mapa.
+Numa arquitetura multi-mapa onde todos os mapas compartilham o mesmo `World`
+ECS, um mob em `map_cave_west` enxergava players em `map_1` (coordenadas
+brutas coincidentes no espaço compartilhado) e os atacava normalmente.
+O player atacado nunca via o mob (mob não estava no seu AOI — estava em outro
+mapa) e não conseguia targetá-lo. Mobs de cave com Flecha Certeira ou melee
+causavam dano que o player não podia evitar nem bloquear.
+
+**Bugs colaterais descobertos na mesma análise:**
+- `EnemyAbilitySystem.update()`: `player_tiles` construído sem filtro de mapa
+  → habilidades de mob de cave disparavam contra players de `map_1`
+- `SpawnZoneSystem.update()`: culling de zonas (ACTIVATION_RADIUS) usava
+  posição de qualquer player, não só os do mesmo mapa → zonas de `map_1`
+  não dormiam com map_1 vazio se alguém estivesse no cave
+- `EnemyAISystem.update()` sleep-check (SLEEP_RADIUS, seção IDLE): mesmo
+  problema — lazy import duplicado dentro do loop por mob, causando import
+  redundante a cada iteração
+- `in_aoi`/`in_aoi_exit` (`server/session.py`): predicado invertido —
+  entidades **sem** `MapLocation` passavam pelo filtro silenciosamente
+  (`if _ml and _ml.map_file != _my_map` → `False` sem MapLocation =
+  entidade inclusa, deveria ser excluída)
+
+**Fixes aplicados (branch `rpg-online-2026-06-22`):**
+- `systems.py::EnemyAISystem._select_target()`: filtra `PlayerControlled`
+  por `MapLocation.map_file == mob._map_filter`
+- `systems.py::EnemyAISystem.update()` (any_player_exists e sleep-check):
+  mesmo filtro; lazy imports de `MapLocation` dentro do loop migrados pra
+  uso do import global
+- `systems.py::EnemyAbilitySystem.update()`: `player_tiles` filtrado por mapa
+- `systems.py::SpawnZoneSystem.update()`: culling de player filtrado por mapa
+- `server/session.py::in_aoi`/`in_aoi_exit`: predicado corrigido para
+  `if not _ml or _ml.map_file != _my_map` (entidades sem MapLocation excluídas)
+
+**Cleanup arquitetural junto com o fix:**
+- Todos os lazy imports `from components import MapLocation as _ML_*` dentro
+  de métodos de `systems.py` (10 ocorrências com 7 aliases distintos)
+  eliminados — `MapLocation` agora é import de topo-de-arquivo
+- `_eid_to_map` removido de `server/world_server.py` (P3 completo):
+  era segunda fonte de verdade redundante com `MapLocation`; eliminado de
+  todas as 5 escritas (spawn, transfer, despawn, mob-register, snapshot)
+  e da única leitura (`server/respawn_system.py`, migrado para `MapLocation`)
+- `player_entity_id` removido de `EnemyAISystem.__init__` e
+  `EnemyAbilitySystem.__init__` (atributo morto, nunca usado no corpo dos
+  sistemas — vestigio do single-player onde havia só um player)
+- Aliases mortos removidos de `WorldServer`: `_systems`, `_enemy_ai_system`,
+  `_enemy_ab_system`, `_combat`
+
+**Teste atualizado (`tests/test_map_filter.py`):**
+- `test_spawned_mob_map_location_matches_eid_to_map` (comparava MapLocation
+  com `_eid_to_map`, agora inexistente) → substituído por
+  `test_spawned_mob_map_location_is_a_loaded_map` (verifica que todo mob
+  tem MapLocation apontando para um mapa carregado no servidor). 10/10 passing.
+
+---
+
+## Bug — Tiro Múltiplo: direção capturada no keypress em vez da conclusão do cast — 01/07/2026
+
+**Sintoma:** Cone de Tiro Múltiplo calculado pelo servidor com a direção do mouse no keypress,
+não na conclusão do cast. A mira visual rotacionava corretamente durante o cast, mas o
+dano era aplicado na direção inicial — o que o jogador via diferia do que acertava.
+
+**Causa raiz:**
+- `systems.py::SkillSystem._use_skill_visual_only` enviava `CAST_SKILL {dir_x, dir_y}` imediatamente
+  ao apertar a tecla (mouse capturado naquele instante)
+- `server/skill_processor.py` injetava `_server_dir_x/_server_dir_y` no `TileMovement` do `CAST_SKILL`
+- `skill_handlers.py::_skill_tiro_multiplo` enfileirava `{dir_x, dir_y}` em `_pending_spell_completions`
+  com a direção INICIAL
+- `server/spell_completion_processor.py::_complete_tiro_multiplo_cast` usava essa direção armazenada
+  na conclusão do cast — mas podiam ter passado `cast_time` segundos desde o keypress
+
+**Fix — novo protocolo `CAST_DIR_UPDATE` (C→S):**
+- `spell_system.py::SpellCastSystem._apply_tiro_multiplo`: captura `_dir_x/_dir_y` do mouse
+  ATUAL (conclusão do cast) e appenda em `self.pending_dir_updates`
+- `spell_system.py::SpellCastSystem.__init__`: `pending_dir_updates: list[tuple[str, float, float]] = []`
+- `game.py` (~linha 1470): drena `pending_dir_updates` e envia `CAST_DIR_UPDATE {sid, dir_x, dir_y}`
+  (mesmo padrão de `interrupted_visual_casts`/`CANCEL_CAST`)
+- `shared/messages.py`: `CAST_DIR_UPDATE = "cast_dir_update"` adicionado
+- `server/session.py::_handle_cast_dir_update`: encontra entrada pendente do player em
+  `_pending_spell_completions` e atualiza `dir_x/dir_y` com a direção final
+- Registrado em `_HANDLERS` ao lado de `CANCEL_CAST`
+
+**Race condition residual (aceitável):** Se `CAST_DIR_UPDATE` chegar APÓS o timer do servidor
+expirar (latência alta), o servidor usa a direção inicial do keypress. Ocorre só em latências
+extremas e é muito melhor que o bug original onde SEMPRE usava a direção errada.

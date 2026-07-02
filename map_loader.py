@@ -245,13 +245,15 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
 
     if "merchants" in data:
         spawn_points["merchants"] = [
-            (m["x"], m["y"], m.get("shop_id", "general"),
+            (m["x"], m["y"],
+             m.get("name", "Comerciante"),        # nome customizado do JSON
+             m.get("shop_id", "general"),
              m.get("level", 1), m.get("profession", "Comerciante"))
             for m in data["merchants"]
         ]
     else:
         spawn_points["merchants"] = [
-            (col, row, sid, 1, "Comerciante")
+            (col, row, "Comerciante", sid, 1, "Comerciante")
             for col, row, sid in spawn_points["merchants"]
         ]
 

@@ -240,6 +240,7 @@ class CombatProcessorMixin:
                     attacker_mob_eid = self._last_mob_attacker.get(peid, -1)
                 elif attacker_mob_eid != -1:
                     self._last_mob_attacker[peid] = attacker_mob_eid
+
                 self._pending_mob_attacks.append({
                     "attacker": attacker_mob_eid,
                     "target":   peid,

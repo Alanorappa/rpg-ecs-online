@@ -14,7 +14,6 @@ Responsabilidades neste módulo:
 Intencional NÃO fazer aqui:
   - Criar entidade ECS de cadáver (WorldServer faz via dict simples)
   - Tocar sons (SOUNDS)
-  - Chamar quest_fire
   - Qualquer import de Pygame
 """
 from __future__ import annotations
@@ -94,10 +93,24 @@ class ServerDeathHandler:
             # 1. Log
             print(f"[Death] mob {eid} morto por {killer_eid}")
 
-            # 2. XP proporcional por dano causado
+            # 2. XP proporcional por dano causado — base por level do mob ×
+            # xp_given_by_lvl (mob_definitions.py), modificado pelo
+            # multiplicador de tier. Mobs sem cadastro (ex: "Elemental")
+            # caem no fallback flat por tier (_XP_BY_TIER).
             tier_comp = self.world.get_component(eid, EnemyTier)
             tier      = tier_comp.tier if tier_comp else "normal"
-            base_xp   = _XP_BY_TIER.get(tier, _XP_BY_TIER["normal"])
+
+            from components import EntityIdentity
+            from mob_definitions import MOB_TABLE
+            from entity_factory import ENEMY_TIER_CONFIGS
+            identity = self.world.get_component(eid, EntityIdentity)
+            mob_def  = MOB_TABLE.get(identity.name) if identity else None
+            if mob_def and "xp_given_by_lvl" in mob_def:
+                mob_level  = identity.level if identity else 1
+                tier_mult  = ENEMY_TIER_CONFIGS.get(tier, ENEMY_TIER_CONFIGS["normal"])["xp"]
+                base_xp    = int(mob_level * mob_def["xp_given_by_lvl"] * tier_mult)
+            else:
+                base_xp = _XP_BY_TIER.get(tier, _XP_BY_TIER["normal"])
 
             damage_log: dict = {}
             if self.world_server:
@@ -154,6 +167,14 @@ class ServerDeathHandler:
                 # damage_log é dict preservado em ordem de inserção (Python 3.7+)
                 first_attacker_eid = next(iter(damage_log))
 
+            # 3b. Evento de quest "kill" — first-attacker é o dono do
+            # progresso (mesmo critério de dono do loot). Server-autoritativo
+            # — ver quest_logic.py/PROBLEMAS_ARQUITETURA.md.
+            if first_attacker_eid != -1 and identity:
+                from quest_events import fire as _qfire_kill
+                _qfire_kill("kill", player_eid=first_attacker_eid,
+                            name=identity.name, race=identity.race, tier=tier)
+
             # 4. Posição do mob para registrar corpse
             mob_tx, mob_ty = 0, 0
             tm = self.world.get_component(eid, TileMovement)
@@ -161,8 +182,7 @@ class ServerDeathHandler:
                 mob_tx, mob_ty = tm.current_tile_x, tm.current_tile_y
 
             # 5. Rola loot usando EntityIdentity.name (= race display, ex: "Aranha")
-            from components import EntityIdentity
-            identity = self.world.get_component(eid, EntityIdentity)
+            # (identity já buscado no passo 2, pro cálculo de XP por level)
             mob_name = identity.name if identity else ""
 
             try:
@@ -172,6 +192,17 @@ class ServerDeathHandler:
             except Exception:
                 loot_items = []
                 coins      = 0
+
+            # 5a. Drop condicional de quest (collect_item, ex: Pelo de Urso) —
+            # mesma lógica de quest_system.py::get_conditional_loot, agora
+            # server-autoritativa contra o QuestLog real do first-attacker.
+            if first_attacker_eid != -1 and mob_name:
+                from components import QuestLog as _QLdh
+                _ql_killer = self.world.get_component(first_attacker_eid, _QLdh)
+                if _ql_killer:
+                    import quest_logic as _qlogic_dh
+                    loot_items.extend(
+                        _qlogic_dh.roll_conditional_loot(_ql_killer, mob_name, identity.race if identity else ""))
 
             # 5b. Reciclagem: flechas que acertaram este mob (contadas em
             # _server_apply_ranged_physical) voltam como loot pro matador, se ele

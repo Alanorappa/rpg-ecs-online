@@ -264,16 +264,24 @@ class BlacksmithSystem(UIScaleMixin, System):
                 for ev in events:
                     if ev.type != pygame.MOUSEBUTTONDOWN or ev.button != 3:
                         continue
-                    # Offset de câmera (derivado do Position da entidade câmera)
+                    # Offset de câmera (derivado do Position da entidade câmera).
+                    # Usa world_surf (superfície lógica de zoom), não hud_surf
+                    # (tela real) — sem isso o clique calcula a posição mundial
+                    # errada quando self._zoom != 1.0 (ver ShopSystem._get_cam()
+                    # em systems.py, que já faz certo). Fallback pra hud_surf se
+                    # world_surf ainda não foi atribuído (1º frame, antes de
+                    # game.py::_assign_world_surf rodar — equivale a zoom=1.0).
                     from components import Camera
-                    SW, SH = self.hud_surf.get_size()
+                    _wsurf = self.world_surf or self.hud_surf
+                    SW, SH = _wsurf.get_size()
                     cx, cy = 0.0, 0.0
                     for _, _, _cam_pos in self.world.get_entities_with(Camera, Position):
                         cx = _cam_pos.x - SW / 2
                         cy = _cam_pos.y - SH / 2
                         break
-                    wx = ev.pos[0] + cx
-                    wy = ev.pos[1] + cy
+                    _sc = _wsurf.get_width() / max(1, self.hud_surf.get_width())
+                    wx = ev.pos[0] * _sc + cx
+                    wy = ev.pos[1] * _sc + cy
                     hw = rend.width  / 2
                     hh = rend.height / 2
                     if abs(wx - pos.x) <= hw and abs(wy - pos.y) <= hh:

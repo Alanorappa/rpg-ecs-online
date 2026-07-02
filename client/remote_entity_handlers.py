@@ -644,6 +644,7 @@ class RemoteEntityHandlers:
                         local_eid=_existing_local,
                         entity_alive=(self.world.get_component(_existing_local, Position) is not None))
             return
+
         from entity_factory import create_enemy
         from components import Renderable
         local_eid = create_enemy(
@@ -663,6 +664,25 @@ class RemoteEntityHandlers:
             ren = self.world.get_component(local_eid, Renderable)
             if ren:
                 ren.color = tuple(server_color)
+
+        # Nome próprio do servidor (ex: "Boneco de treino") — create_enemy()
+        # deriva o nome exibido a partir da raça por padrão (mob_display_name
+        # = race), errado pra entidades com identidade própria sem zona de
+        # spawn (ex: boneco de treino, antes aparecia como "Humanoide").
+        _server_name = data.get("name")
+        if _server_name:
+            from components import EntityIdentity as _EIdSpawn
+            _eid_ident = self.world.get_component(local_eid, _EIdSpawn)
+            if _eid_ident:
+                _eid_ident.name = _server_name
+
+        # is_dummy: marca o proxy local como boneco de treino — sem isso, skills
+        # usadas contra ele nunca contavam pra objetivos de quest com
+        # params={"on_dummy": True} (ver quest_system.py / systems.py::_use_skill*),
+        # já que o cliente não tinha nenhum jeito de saber que era um boneco.
+        if data.get("is_dummy"):
+            from components import TrainingDummy as _TDSpawn
+            self.world.add_component(local_eid, _TDSpawn())
 
         # Remove CombatStats: HP é autoritativo pelo servidor (RemoteEntityMeta.hp).
         # Remove AIControlled: mobs remotos são movidos por ENTITY_MOVE do servidor;
@@ -907,10 +927,6 @@ class RemoteEntityHandlers:
                 continue
             if not tm.is_moving:
                 tx, ty, is_dash = queue.pop(0)
-                import datetime as _dt_mob_q
-                print(f"[DBG_MOB {_dt_mob_q.datetime.now().strftime('%H:%M:%S.%f')[:-3]}] "
-                      f"CLIENT drena fila eid={server_eid} -> ({tx},{ty}) is_dash={is_dash} "
-                      f"resta={len(queue)}")
                 start_tile_movement(pos, tm, tx, ty)
                 if is_dash:
                     tm.is_dash       = True

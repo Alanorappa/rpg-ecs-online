@@ -73,6 +73,12 @@ def apply_effect(
 
 # ── StatusEffectSystem ────────────────────────────────────────────────────────
 
+# DoT (dano por tick) cuja escola conta para resist_<escola> do skill level
+# (ver stats_system.py). Sangramento ("bleed") NÃO entra aqui — é físico,
+# ignora toda resistência mágica, como hoje.
+DOT_SCHOOL = {"poison": "natureza", "burn": "fogo"}
+
+
 class StatusEffectSystem:
     """
     Gerencia o ciclo de vida de todos os efeitos de estado (buffs/debuffs).
@@ -204,6 +210,12 @@ class StatusEffectSystem:
 
         else:
             # DoT genérico (poison, bleed, burn, ...)
+            _school = DOT_SCHOOL.get(effect.effect_type, "")
+            if _school:
+                from damage_calculator import apply_resistance_reduction
+                _resist = getattr(cs, f"resist_{_school}", 0.0)
+                dmg = max(1, int(apply_resistance_reduction(dmg, _resist)))
+                self._on_resisted_dot(eid, _school)
             cs.current_hp = max(0, cs.current_hp - dmg)
             self._emit_damage(eid, dmg, effect.effect_type, pos, color)
 
@@ -229,6 +241,11 @@ class StatusEffectSystem:
         """Sobrescrever: cliente → FLT; servidor → COMBAT_RESULT."""
         pass
 
+    def _on_resisted_dot(self, eid: int, school: str) -> None:
+        """Sobrescrever no servidor: concede 1 xp de resist_<school> ao alvo
+        (skill level, ver stats_system.py). Base no-op (cliente nunca concede)."""
+        pass
+
 
 # ── BaseCombatStateSystem ─────────────────────────────────────────────────────
 
@@ -248,6 +265,10 @@ class BaseCombatStateSystem:
 
     RAGE_DECAY_AMOUNT   = 5
     RAGE_DECAY_INTERVAL = 3.0   # segundos entre cada decaimento de Rage
+
+    MANA_REGEN_INTERVAL = 5.0   # segundos entre cada tick de regen de mana
+    MANA_REGEN_OOC_PCT  = 0.04  # % de max_mana por tick fora de combate
+    MANA_REGEN_IC_PCT   = 0.01  # % de max_mana por tick em combate
 
     def __init__(self, world) -> None:
         self.world = world
@@ -305,6 +326,33 @@ class BaseCombatStateSystem:
             cst.hp5_timer = 0.0
         return None
 
+    @classmethod
+    def _tick_mana_regen(cls, cs, char, dt: float):
+        """Regen de mana (Mago) — % de max_mana a cada MANA_REGEN_INTERVAL
+        (menor em combate). Único produtor autoritativo é o SERVIDOR — ver
+        ServerCombatStateSystem.update() em core_systems.py e
+        spell_system.ManaSystem (cliente só prediz offline, sem servidor pra
+        confirmar; online esperava o STATS_UPDATE, evitando o desync onde o
+        cliente regenerava mana sozinho e o servidor nunca sabia — ver
+        PROBLEMAS_ARQUITETURA.md).
+
+        Retorna (old_mana, new_mana) se houve regen, None caso contrário.
+        """
+        if not char or char.max_mana <= 0 or char.mana >= char.max_mana:
+            return None
+        char.mana_regen_timer = getattr(char, "mana_regen_timer", 0.0) + dt
+        if char.mana_regen_timer < cls.MANA_REGEN_INTERVAL:
+            return None
+        char.mana_regen_timer -= cls.MANA_REGEN_INTERVAL
+        in_combat = bool(cs and cs.in_combat)
+        rate      = cls.MANA_REGEN_IC_PCT if in_combat else cls.MANA_REGEN_OOC_PCT
+        regen     = max(1, int(char.max_mana * rate))
+        old_mana  = char.mana
+        char.mana = min(char.max_mana, char.mana + regen)
+        if char.mana != old_mana:
+            return (old_mana, char.mana)
+        return None
+
     @staticmethod
     def _tick_concentration_regen(cs, char, cst, tm, dt: float) -> None:
         """Regen de Concentração (Arqueiro). Taxa varia por movimento."""
@@ -344,14 +392,18 @@ class ServerCombatStateSystem(BaseCombatStateSystem):
     """Gerencia timers de combate e recursos para players no servidor.
 
     Herda BaseCombatStateSystem — constantes e lógica core ficam em um só lugar.
-    Adiciona hp5_events (curas de regen) e proc_events (procs de item rolados
-    autoritativamente, ver _roll_procs) para o servidor reportar ao cliente.
+    Adiciona hp5_events (curas de regen), mana_events (regen de mana do
+    Mago) e proc_events (procs de item rolados autoritativamente, ver
+    _roll_procs) para o servidor reportar ao cliente.
 
     Uso:
         sys = ServerCombatStateSystem(world)
         sys.update(world_server._player_eids, dt)
         for ev in sys.hp5_events:
             # ev = {player_eid, old_hp, new_hp, hp_max}
+            ...
+        for ev in sys.mana_events:
+            # ev = {player_eid, old_mana, new_mana}
             ...
         for ev in sys.proc_events:
             # ev = {player_eid, item_name, label, attribute, value, duration}
@@ -362,12 +414,33 @@ class ServerCombatStateSystem(BaseCombatStateSystem):
         super().__init__(world)
         # Populado a cada update(); limpo no início do próximo update().
         self.hp5_events: list[dict] = []
+        self.mana_events: list[dict] = []
         # Procs de item rolados autoritativamente pelo servidor neste tick.
         self.proc_events: list[dict] = []
+
+    @staticmethod
+    def _tick_player_move_grace(tm, dt: float) -> None:
+        """Decai a janela 'ainda em movimento' usada só pra inferir is_moving
+        de PLAYERS no servidor — server/world_server.py::move_player() faz
+        snap instantâneo de tile (sem tween real, diferente de mob/cliente),
+        então sem essa janela TileMovement.is_moving nunca fica True pra
+        players no servidor, quebrando qualquer mecânica server-side que
+        dependa de "parado vs andando" (Calmo e Certeiro — standing_seconds
+        nunca resetava ao mover; regen de Concentração — sempre usava a taxa
+        idle, nunca a de movimento). move_player() seta is_moving=True +
+        _server_move_grace=PLAYER_MOVE_GRACE_S a cada move aceito; esta
+        função só conta a janela pra baixo e desliga is_moving quando expira."""
+        if tm is None or tm._server_move_grace <= 0:
+            return
+        tm._server_move_grace -= dt
+        if tm._server_move_grace <= 0:
+            tm._server_move_grace = 0.0
+            tm.is_moving = False
 
     def update(self, player_eids: dict, dt: float) -> None:
         """Processa todos os players em player_eids (session_id → eid)."""
         self.hp5_events.clear()
+        self.mana_events.clear()
         self.proc_events.clear()
         from components import CombatState, CombatStats, CharacterStats, TileMovement
 
@@ -379,6 +452,7 @@ class ServerCombatStateSystem(BaseCombatStateSystem):
                 continue
 
             tm = self.world.get_component(peid, TileMovement)
+            self._tick_player_move_grace(tm, dt)
 
             self._tick_combat_timer(cs, dt)
             self._tick_stun_timer(cs, dt)
@@ -393,6 +467,17 @@ class ServerCombatStateSystem(BaseCombatStateSystem):
                     "new_hp":     new_hp,
                     "hp_max":     cst.max_hp,
                 })
+
+            mana_result = self._tick_mana_regen(cs, char, dt)
+            if mana_result:
+                old_mana, new_mana = mana_result
+                self.mana_events.append({
+                    "player_eid": peid,
+                    "old_mana":   old_mana,
+                    "new_mana":   new_mana,
+                })
+                if cst:
+                    cst.mana = new_mana  # CombatStats.mana — espelho lido por outros checks
 
             if char:
                 self._tick_concentration_regen(cs, char, cst, tm, dt)

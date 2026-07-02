@@ -1,7 +1,7 @@
 # Arquitetura Online — Decisões e Referência
 
 > Documento vivo. Atualizar sempre que uma decisão arquitetural for tomada.
-> Última atualização: 2026-06-15 (gate centralizado de dano `_apply_final_damage`; imunidade Bloco de Gelo ranged; `_target_alive` para PvP)
+> Última atualização: 2026-07-01 (cross-map AI fix; `_eid_to_map` eliminado — P3 completo; `player_entity_id` removido de AI systems; tiro_multiplo direction fix via `CAST_DIR_UPDATE`)
 
 ---
 
@@ -100,6 +100,7 @@ Autoridade por campo no merge entre estado do servidor e payload do cliente:
 | `hp` | Servidor (cap em max_hp) | Anti-cheat |
 | `mp` | Servidor | Anti-cheat |
 | `max_hp` | Cliente se > 0 | Inclui bônus de equipamento |
+| `map_id` | Servidor | Anti-teleporte entre zonas |
 | `gold` | Cliente | Gerado localmente via lojas/loot |
 | `inventory`, `equipment`, `talents` | Cliente | Gerenciados localmente |
 | `skills` | Cliente (fallback servidor) | Hotbar local |
@@ -194,7 +195,37 @@ Fontes de LOG no modo online:
 - `_is_dot_hot = source not in ("auto", "skill")` — bloqueia sons em ticks de bleed/burn/poison
 - `_sfx_damage_players` no servidor acumula dano de DoT por player no tick, subtraído do delta HP na detecção mob→player para evitar `COMBAT_RESULT` falso
 
-### 13. Sistema de spawn — SpawnZoneSystem headless
+### 13. Multi-map — transições de zona (ZONE_CHANGE)
+
+**Decisão:** `_MapBundle` por mapa dentro de um único `World()` global.
+
+- `WorldServer._map_bundles: dict[str, _MapBundle]` — bundle de sistemas por mapa
+- `WorldServer._player_maps: dict[str, str]` — mapa atual de cada sessão de player
+- `MapLocation(map_file)` component em **todas** as entidades (mobs, NPCs, spawn_zones) — fonte única de verdade para mapa da entidade (P3 completo; `_eid_to_map` eliminado em 2026-07-01)
+- `EnemyAISystem(map_filter=map_file)` e `SpawnZoneSystem(map_filter=map_file)` por bundle
+- `PathfindingSystem(tilemap_entity=...)` e `TileValidationSystem(tilemap_entity=...)` por bundle
+- `_tick()` itera `_map_bundles`, chama `register_services()` com serviços do bundle antes de cada loop
+
+**Carregamento (depth 1):**
+1. Carrega mapa principal (`MAP_FILE`), lê transições do JSON
+2. Para cada destino único de transição, carrega bundle secundário
+3. Imprime `[WorldServer] mapas carregados: [...]` na startup
+
+**Fluxo de troca de mapa:**
+1. Cliente detecta tile de transição → envia `ZONE_CHANGE_REQ {to_map, target_x, target_y}`
+2. Servidor valida: mapa existe em `_map_bundles`; tile atual do player tem transição para esse mapa
+3. `transfer_player()` atualiza `_player_maps`, `MapLocation` do player, `TileMovement`, `Position`
+4. Servidor envia `ZONE_CHANGE {map_file, target_x, target_y}`; cliente limpa `known_eids`
+5. Cliente executa `_do_transition()` (carrega mapa, reposiciona player)
+
+**AOI filtering por mapa:**
+- `_build_update_for_session` lê `_my_map = get_player_map(session_id)`
+- `in_aoi(tx, ty, eid)` e `in_aoi_exit(tx, ty, eid)` leem `MapLocation` da entidade — se ausente **ou** mapa diferente, exclui
+- Players remotos têm `MapLocation` setado por `transfer_player` — cobertos pelo mesmo filtro
+
+**Persistência:** `map_id` salvo via `_save_character_sync` → coluna `map_id TEXT` na DB.
+
+### 14. Sistema de spawn — SpawnZoneSystem headless
 
 No servidor, `SpawnZoneSystem` é instanciado com `ACTIVATION_RADIUS = 999999`.
 Isso desativa o culling por distância de player — todos os spawns são processados.
@@ -221,8 +252,13 @@ a cada spawn tentado e decrementado no próximo ciclo. Sem isso, uma zona poderi
 | C→S | `AUTO_ATTACK` | Setar/parar alvo de auto-attack | ✅ |
 | S→C | `COMBAT_RESULT` | Hit: attacker, target, outcome, damage, hp_after, source | ✅ |
 | C→S | `CAST_SKILL` | sid, tid, dir_x/y, rage, mana | ✅ |
+| C→S | `CAST_DIR_UPDATE` | sid, dir_x, dir_y — direção final de skill direcional na conclusão do cast (não no keypress) | ✅ |
 | S→C | `SKILL_RESULT` | caster_eid, sid, targets[{eid, damage, outcome, hp_after, applied_effects}] | ✅ |
 | S→C | `STATS_UPDATE` | eid, hp, hp_max, xp_gained, rage, mana, heal_amount, heal_sid | ✅ |
+| S→C | `SKILL_LEVELS_UPDATE` | levels{}, xp{} — snapshot completo, só ao dono (skill level Tibia-like) | ✅ |
+| C→S | `QUEST_ACCEPT` | quest_id, npc_name — aceitar quest no diálogo do NPC | ✅ |
+| C→S | `QUEST_TURN_IN` | quest_id, npc_name — entregar quest no diálogo do NPC | ✅ |
+| S→C | `QUEST_UPDATE` | active{}, completed[], completed_qid — snapshot completo, só ao dono | ✅ |
 | S→C | `ENTITY_SPAWN` | eid, kind, tx, ty, name, class_id, hp, hp_max, level, effects | ✅ |
 | S→C | `ENTITY_DESPAWN` | eid (negativo para corpse) | ✅ |
 | S→C | `LOOT_AVAILABLE` | corpse_id, tx, ty, items, coins — só ao dono | ✅ |
@@ -233,7 +269,7 @@ a cada spawn tentado e decrementado no próximo ciclo. Sem isso, uma zona poderi
 | C→S | `REVIVE_REQUEST` | ghost perto do corpo clicou "Sim" — revive com 15% HP no corpo | ✅ |
 | S→C | `PLAYER_REVIVE` | tx, ty, hp, hp_max, mana, max_mana — revive (cemitério ou corpo) | ✅ |
 | S→C | `GHOST_STATE` | is_ghost, near_corpse, graveyard_timer — sync do estado do espírito | ✅ |
-| C→S | `PLAYER_STAT_SYNC` | max_hp, attack_power, armor, crit, parry, dodge, attack_interval | ✅ |
+| C→S | `PLAYER_STAT_SYNC` | OBSOLETO — handler é no-op, servidor deriva stats de Equipment/TalentTree | ✅ |
 | C→S | `EQUIP_SYNC` | equipment: {slot→item_dict} — enviado em equip/unequip; servidor reconstrói Equipment ECS | ✅ |
 | C→S | `SAVE_STATE` | inventory, equipment, talents, skills, stats{gold, max_hp} | ✅ |
 | C→S | `PING` / S→C `PONG` | client_ts / {client_ts, server_ts} | ✅ |
@@ -243,7 +279,9 @@ a cada spawn tentado e decrementado no próximo ciclo. Sem isso, uma zona poderi
 | S→C | `PROJECTILE_SPAWN` / `PROJECTILE_HIT` | projéteis | 🔲 |
 | S→C | `EFFECT_APPLIED` / `EFFECT_REMOVED` | status effects | 🔲 |
 | S→C | `ENTITY_DEATH` | morte de player com animação/corpo no AOI — implementado p/ players (G3 mobs ainda 🔲) | ✅ |
-| S→C | `ZONE_CHANGE` / C→S `ENTER_INSTANCE` | instâncias | 🔲 |
+| C→S | `ZONE_CHANGE_REQ` | `{to_map, target_x, target_y}` — player pisou em tile de transição | ✅ |
+| S→C | `ZONE_CHANGE` | `{map_file, target_x, target_y}` — confirma troca; cliente executa `_do_transition` | ✅ |
+| C→S | `ENTER_INSTANCE` | instâncias (dungeons/raids) — ver `zone_manager.py` (pendente) | 🔲 |
 
 ---
 
@@ -377,7 +415,7 @@ barra de HP); ghost (`is_ghost`) desenhado semi-transparente (alpha ~120/255).
 | Componente | Status | Arquivo |
 |------------|--------|---------|
 | Protocolo de mensagens | ✅ completo | `shared/messages.py` |
-| Constantes + COMBAT_SYNC_STATS | ✅ completo | `shared/constants.py` |
+| Constantes de rede/mundo | ✅ completo | `shared/constants.py` |
 | Loop de ticks ECS headless | ✅ funcional | `server/world_server.py` |
 | EnemyAISystem real no servidor | ✅ completo | `server/world_server._load_map` |
 | SpawnZoneSystem headless (ACTIVATION_RADIUS=999999) | ✅ completo | `server/world_server._load_map` |
@@ -390,7 +428,7 @@ barra de HP); ghost (`is_ghost`) desenhado semi-transparente (alpha ~120/255).
 | Vitória Iminente: carga ao matar mob | ✅ completo | `server/server_death_handler.py` |
 | Morte/respawn de player (fluxo ghost/cemitério, C30) | ✅ completo | `server/respawn_system.py` |
 | HP max correto no login/spawn | ✅ completo | `server/world_server.spawn_player` |
-| PLAYER_STAT_SYNC + _apply_stat_overrides | ✅ completo | `server/world_server.sync_player_combat_stats` |
+| Stats de equipamento/talentos server-autoritativos (PLAYER_STAT_SYNC obsoleto) | ✅ completo | `server/world_server._apply_equipment_modifiers`/`_apply_talent_modifiers` |
 | AOI subscription (known_eids) | ✅ completo | `server/session.py` |
 | Save merge com autoridade por campo | ✅ completo | `server/session._build_save_merge` |
 | Autosave a cada 5 min | ✅ completo | `server/session._autosave_all` |
@@ -433,6 +471,8 @@ barra de HP); ghost (`is_ghost`) desenhado semi-transparente (alpha ~120/255).
 | Gate centralizado de dano servidor (`_apply_final_damage`) | ✅ completo | `server/spell_completion_processor.py::_apply_final_damage` |
 | Imunidade de Bloco de Gelo a dano ranged (arqueiro) | ✅ completo | `server/spell_completion_processor.py::_server_apply_ranged_physical` → `_apply_final_damage` |
 | PvP: skills de alvo único suportam `RemoteControlled` (`_target_alive`) | ✅ completo | `skill_handlers.py::_target_alive` |
+| Skill Level (Tibia-like) — armas/escudo/defesa/resistências/magic, 0-200, server-autoritativo | ✅ completo | `components.SkillLevels`, `stats_system.py` (xp/bônus), hooks em `server/spell_completion_processor.py`/`systems.py::CombatSystem`/`core_systems.py::StatusEffectSystem`, persistência `skill_levels_json`, UI `skill_level_ui.py` (tecla L) |
+| Migração do sistema de quests para server-autoritativo (QuestLog/progresso/entrega) | ✅ completo | `quest_logic.py` (lógica pura), `server/world_server.py::_process_quest_events`, hooks em `server_death_handler.py`/`spell_completion_processor.py`/`skill_processor.py`/`world_server.move_player`/`apply_consumable`/`update_player_equipment`, `server/session.py::_handle_quest_accept`/`_handle_quest_turn_in`, persistência `quests_json`, ver `PROBLEMAS_ARQUITETURA.md` |
 | Instâncias (dungeons/raids) | 🔲 pendente | `server/zone_manager.py` |
 | Client-side prediction de movimento | 🔲 pendente | `client/` |
 
@@ -486,6 +526,7 @@ barra de HP); ghost (`is_ghost`) desenhado semi-transparente (alpha ~120/255).
 | G3 | `ENTITY_DEATH` implementado para morte de PLAYER (C30); mobs ainda despawnam direto, sem animação de morte | UX ruim (mobs) |
 | G4 | `_server_dir_x/_server_dir_y` injetados em `TileMovement` mas handlers direcionais (Pirofagia, Tiro Múltiplo) não os consomem ainda | Skills de cone sem efeito online |
 | G5 | `move_player()` não valida walkability — TODO comentado no código | Players podem atravessar paredes |
+| G6 | Transições de mapa (tiles em `transitions` do JSON) não existem no servidor — servidor só carrega 1 mapa. Cliente tinha `_do_transition()` disparando online sem gate, causando desync total (entidades remotas removidas, server ainda no mapa antigo, MOVE rejeitados). **Mitigação**: gate `if not self._net` em `game.py` bloqueia a transição silenciosamente online. Implementação real: `ZONE_CHANGE_REQ` C→S → servidor valida tile, move player para ECS do mapa de destino → `ZONE_CHANGE` S→C + novo `WORLD_STATE`. Requer servidor multi-mapa (cada mapa com ECS próprio, AOI por mapa) | Cavernas inacessíveis online; crash de desync se player chegasse ao tile |
 
 ---
 

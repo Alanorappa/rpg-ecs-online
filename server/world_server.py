@@ -35,6 +35,15 @@ from server.loot_processor import LootProcessorMixin
 from server.spell_completion_processor import SpellCompletionMixin
 from mob_combat_debug import MCL
 
+# move_player() faz snap instantâneo de tile (sem tween real) — esta janela é
+# quanto tempo, após o último move aceito, o player ainda conta como "em
+# movimento" pra mecânicas que dependem de TileMovement.is_moving no servidor
+# (Calmo e Certeiro, regen de Concentração — ver
+# ServerCombatStateSystem._tick_player_move_grace). Maior que o intervalo
+# real entre moves consecutivos andando contínuo (~TILE_SIZE/PLAYER_SPEED ≈
+# 0.29s) pra não "piscar" pra parado entre 2 tiles do mesmo movimento.
+PLAYER_MOVE_GRACE_S = 0.4
+
 
 # ── ServerStatusEffectSystem ──────────────────────────────────────────────────
 # Subclasse headless de core_systems.StatusEffectSystem que emite eventos de
@@ -84,7 +93,25 @@ class _ServerStatusEffectSystem:
                     "source":   effect_type,
                 })
 
+            def _on_resisted_dot(self, eid, school):
+                from stats_system import grant_resist_skill_xp
+                grant_resist_skill_xp(self.world, eid, school)
+
         return _Impl(world, srv)
+
+
+class _MapBundle:
+    """Sistemas e dados de UM mapa no mundo compartilhado."""
+    __slots__ = ("map_file", "tilemap_entity", "systems", "transitions",
+                 "tile_validation", "pathfinding")
+
+    def __init__(self):
+        self.map_file        = ""
+        self.tilemap_entity  = -1
+        self.systems         = []
+        self.transitions     = {}   # (tx,ty) -> {target_map, target_x, target_y}
+        self.tile_validation = None
+        self.pathfinding     = None
 
 
 class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootProcessorMixin, SpellCompletionMixin):
@@ -107,6 +134,13 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._player_eid_to_sid: dict[int, str] = {}
         # Cache de HP para dirty-check automático a cada tick (eid → (current_hp, max_hp))
         self._player_hp_cache: dict[int, tuple[int, int]] = {}
+        # Cache de SkillLevels para dirty-check automático a cada tick (eid → snapshot
+        # hashable de levels+xp) — ver _sync_player_skill_levels_dirty().
+        self._player_skill_cache: dict[int, tuple] = {}
+        self._skill_levels_broadcasts_this_tick: list[dict] = []
+        # QuestLog: progresso/entrega de quest server-autoritativo — ver
+        # _process_quest_events()/consume_quest_update_broadcasts().
+        self._quest_update_broadcasts_this_tick: list[dict] = []
 
         # Eids de mobs gerenciados pelo servidor
         self._mob_eids: set[int] = set()
@@ -177,7 +211,21 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._systems: list = []
 
         self._map_file = map_file or self.MAP_FILE
-        self._load_map()
+
+        # Multi-map: bundles de sistemas e dados por mapa
+        self._map_bundles: dict[str, _MapBundle] = {}
+        self._player_maps: dict[str, str] = {}   # session_id → map_file
+
+        self._load_all_maps()
+
+        # Sistemas globais: rodam UMA vez por tick, após todos os bundles.
+        # Se ficassem dentro de cada bundle (sem map_filter) rodariam N×/tick
+        # (N = número de mapas carregados), causando timers/movimento N× rápidos.
+        from systems import TileMovementSystem as _TMS, ProjectileSystem as _ProjSys
+        self._global_tms           = _TMS(self.world)
+        self._global_proj_sys      = _ProjSys(self.world, screen=None)
+        self._global_sfx_sys       = _ServerStatusEffectSystem.build(self.world, self)
+        self._status_effect_system = self._global_sfx_sys  # alias de compat
 
         from server.server_death_handler import ServerDeathHandler
         self._death_handler = ServerDeathHandler(self.world, world_server=self)
@@ -235,35 +283,68 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
     # ── Inicialização do mundo ────────────────────────────────────────────────
 
-    def _load_map(self) -> None:
+    def _load_all_maps(self) -> None:
+        """Carrega mapa principal e todos os mapas de destino das transições (depth 1)."""
+        main_bundle = self._load_map_for(self._map_file)
+        self._map_bundles[self._map_file] = main_bundle
+
+        self.tilemap_entity = main_bundle.tilemap_entity
+
+        # Carrega mapas de destino das transições (depth 1)
+        for trans in main_bundle.transitions.values():
+            tgt = trans["target_map"]
+            if tgt not in self._map_bundles:
+                try:
+                    self._map_bundles[tgt] = self._load_map_for(tgt)
+                except Exception as e:
+                    print(f"[WorldServer] falha ao carregar mapa {tgt}: {e}")
+
+        print(f"[WorldServer] mapas carregados: {list(self._map_bundles.keys())}")
+
+    def _load_map_for(self, map_file: str) -> "_MapBundle":
         """
-        Carrega mapa e inicializa os MESMOS sistemas do jogo offline (headless).
-        Usa register_services() para habilitar deal_damage() e EnemyAISystem.
+        Carrega um mapa e inicializa os sistemas headless para ele.
+        Retorna um _MapBundle com os sistemas e dados deste mapa.
         """
         from map_loader import load_map_csv
         from entity_factory import create_tilemap
         from systems import (SpawnZoneSystem, EnemyAISystem, EnemyAbilitySystem,
                              TileValidationSystem, PathfindingSystem, CombatSystem,
-                             TileMovementSystem, ProjectileSystem, register_services)
-        print(f"[WorldServer] carregando mapa: {self._map_file}")
-        terrain_matrix, object_matrix, spawn_points, terrain_visual = \
-            load_map_csv(self._map_file)
+                             ProjectileSystem, register_services)
+        from components import MapLocation as _MLl
 
-        self.tilemap_entity = create_tilemap(
+        print(f"[WorldServer] carregando mapa: {map_file}")
+        terrain_matrix, object_matrix, spawn_points, terrain_visual = \
+            load_map_csv(map_file)
+
+        # Snapshot de entidades ANTES de criar as do mapa
+        _eids_before = set(self.world._components.keys())
+
+        tilemap_entity = create_tilemap(
             self.world, terrain_matrix, object_matrix, terrain_visual)
 
-        self._create_spawn_zones(spawn_points.get("spawn_zones", []))
+        self._create_spawn_zones_for_map(spawn_points.get("spawn_zones", []), map_file)
+        self._create_training_dummies(spawn_points.get("training_dummies", []))
+        self._create_npc_blockers(spawn_points)
 
-        # Cria os mesmos sistemas de serviço do game.py offline
-        tile_validation = TileValidationSystem(self.world)
-        pathfinding     = PathfindingSystem(self.world)
-        combat          = CombatSystem(self.world)
+        # Snapshot DEPOIS — todas as novas entidades ganham MapLocation
+        _eids_after = set(self.world._components.keys())
+        for _new_eid in (_eids_after - _eids_before):
+            if _new_eid not in self.world._components:
+                continue
+            self.world.add_component(_new_eid, _MLl(map_file))
 
-        # Registra serviços — habilita deal_damage() e EnemyAISystem.pathfinding
+        # Sistemas específicos deste mapa
+        tile_validation = TileValidationSystem(self.world, tilemap_entity=tilemap_entity,
+                                               map_filter=map_file)
+        pathfinding     = PathfindingSystem(self.world, tilemap_entity=tilemap_entity)
+        combat          = CombatSystem(self.world, is_server=True)
+
+        # Registra serviços globais (sobrescrito por _tick() antes de cada bundle)
         register_services(combat=combat, pathfinding=pathfinding,
                           tile_validation=tile_validation)
 
-        # Callback de retaliation do Escudo de Fogo → envia COMBAT_RESULT ao cliente
+        # Callback de retaliation do Escudo de Fogo
         from systems import _svc as _sys_svc
         _srv_ref = self
         def _on_retaliation(player_eid: int, mob_eid: int, damage: int, hp_after: int) -> None:
@@ -279,35 +360,44 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             })
         _sys_svc["emit_retaliation"] = _on_retaliation
 
-        # Sistemas de lógica idênticos ao offline — sem render, sem input
-        self._enemy_ai_system = EnemyAISystem(self.world, player_entity_id=-1)
-        self._enemy_ab_system = EnemyAbilitySystem(self.world, player_entity_id=-1)
+        # P4: injeção direta de serviços por bundle — elimina dependência no global _svc.
+        enemy_ai_system = EnemyAISystem(self.world, map_filter=map_file,
+                                        pathfinding=pathfinding, tile_validation=tile_validation)
+        enemy_ab_system = EnemyAbilitySystem(self.world, map_filter=map_file,
+                                             pathfinding=pathfinding)
 
-        # StatusEffectSystem do servidor — ver _ServerStatusEffectSystem (topo do módulo)
-        self._status_effect_system = _ServerStatusEffectSystem.build(self.world, self)
-
-        # SpawnZoneSystem: no servidor não há culling por distância de player.
-        # O mundo deve existir independente de conexões — raio ilimitado.
-        _spawn_sys = SpawnZoneSystem(self.world)
+        _spawn_sys = SpawnZoneSystem(self.world, map_filter=map_file, pathfinding=pathfinding)
         _spawn_sys.ACTIVATION_RADIUS = 999999
 
-        # ProjectileSystem headless: screen=None — render() nunca é chamado no servidor.
-        # update() é pure ECS: move projétil → chama deal_damage() ao acertar.
-        # HP diff detectado por _process_player_attacks → broadcast COMBAT_RESULT.
-        _proj_sys = ProjectileSystem(self.world, screen=None)
-
-        self._systems = [
-            tile_validation,                          # 1. cache de tiles ocupados
-            _spawn_sys,                               # 2. spawn de mobs — raio ilimitado
-            self._enemy_ai_system,                    # 3. IA: aggro, pathfinding, ataque
-            self._enemy_ab_system,                    # 4. habilidades especiais (DoT, debuffs)
-            self._status_effect_system,               # 5. ticks de status effects (poison, bleed)
-            _proj_sys,                                # 6. projéteis de mobs ranged → deal_damage
-            TileMovementSystem(self.world),           # 7. avança progress→current_tile (headless)
+        systems = [
+            tile_validation,  # 1. cache de tiles ocupados
+            _spawn_sys,       # 2. spawn de mobs — raio ilimitado
+            enemy_ai_system,  # 3. IA: aggro, pathfinding, ataque
+            enemy_ab_system,  # 4. habilidades especiais (DoT, debuffs) — filtrado por mapa
+            # _ServerStatusEffectSystem, ProjectileSystem e TileMovementSystem removidos:
+            # rodam GLOBALMENTE em _tick() após todos os bundles (self._global_*).
         ]
-        print(f"[WorldServer] mapa OK — EnemyAI + EnemyAbility + StatusEffect + Projectile")
-        self._create_training_dummies(spawn_points.get("training_dummies", []))
-        self._create_npc_blockers(spawn_points)
+
+        # Lê transições do mapa
+        transitions = {}
+        for t in spawn_points.get("transitions", []):
+            key = (int(t["x"]), int(t["y"]))
+            transitions[key] = {
+                "target_map": t["target_map"],
+                "target_x":   int(t["target_x"]),
+                "target_y":   int(t["target_y"]),
+            }
+
+        bundle = _MapBundle()
+        bundle.map_file        = map_file
+        bundle.tilemap_entity  = tilemap_entity
+        bundle.systems         = systems
+        bundle.transitions     = transitions
+        bundle.tile_validation = tile_validation
+        bundle.pathfinding     = pathfinding
+
+        print(f"[WorldServer] mapa OK: {map_file} — {len(transitions)} transições")
+        return bundle
 
     def _create_training_dummies(self, dummies_data: list) -> None:
         from entity_factory import create_training_dummy as _ctd
@@ -328,6 +418,10 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 self.world.add_component(eid, NPC())
 
     def _create_spawn_zones(self, zones_data: list) -> None:
+        """Compat: cria SpawnZones sem MapLocation (usado antes do multi-map)."""
+        self._create_spawn_zones_for_map(zones_data, "")
+
+    def _create_spawn_zones_for_map(self, zones_data: list, map_file: str) -> None:
         """Cria entidades SpawnZone a partir dos dados já processados pelo map_loader.
         Cada entrada já é uma zona achatada com enemy_type, enemy_tier, count."""
         from components import SpawnZone
@@ -452,6 +546,13 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # Restaura HP salvo; se não houver, usa max_hp (já com bônus de equip); nunca excede max_hp
         saved_hp = int(char_data.get("hp", 0))
         cs.current_hp = min(saved_hp, cs.max_hp) if saved_hp > 0 else cs.max_hp
+        # Imunidade pós-login: 3s de proteção para mobs não agrirem durante loading.
+        # Mesmo mecanismo do pós-revive (_revive_player) — is_visible restaurado
+        # automaticamente por _tick_respawn_immunity quando o contador zera.
+        _cst_login = self.world.get_component(eid, CombatState)
+        if _cst_login:
+            _cst_login.is_visible             = False
+            _cst_login.respawn_immunity_ticks = 90  # 3s @ 30 ticks/s
 
         # Wallet: restaura gold salvo
         _gold = int(_stats.get("gold", 0))
@@ -554,8 +655,50 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         except Exception as _te:
             print(f"[World] aviso: talent effects não aplicados no spawn — {_te}")
 
+        # SkillLevels — progressão Tibia-like por uso (armas/escudo/defesa/
+        # resistências/magic), server-autoritativo. Ver stats_system.py e
+        # PROBLEMAS_ARQUITETURA.md, seção skill level.
+        try:
+            from components import SkillLevels as _SKL
+            from stats_system import apply_skill_bonuses_to_combat as _apply_skl_bonuses
+            _skl_comp = _SKL()
+            _skl_raw  = char_data.get("skill_levels_json") or "{}"
+            _skl_d    = _json.loads(_skl_raw) if isinstance(_skl_raw, str) else (_skl_raw or {})
+            for _sid, _lvl in (_skl_d.get("levels") or {}).items():
+                if _sid in _skl_comp.levels:
+                    _skl_comp.levels[_sid] = int(_lvl)
+            for _sid, _sxp in (_skl_d.get("xp") or {}).items():
+                if _sid in _skl_comp.xp:
+                    _skl_comp.xp[_sid] = int(_sxp)
+            self.world.add_component(eid, _skl_comp)
+            _apply_skl_bonuses(_skl_comp, cs)
+        except Exception as _skl_err:
+            print(f"[World] aviso: SkillLevels não criado — {_skl_err}")
+
+        # QuestLog — progresso/entrega de quest, server-autoritativo (ver
+        # quest_logic.py e PROBLEMAS_ARQUITETURA.md, migração de quests).
+        try:
+            from components import QuestLog as _QL
+            _ql_comp  = _QL()
+            _ql_raw   = char_data.get("quests_json") or "{}"
+            _ql_d     = _json.loads(_ql_raw) if isinstance(_ql_raw, str) else (_ql_raw or {})
+            for _qid, _prog in (_ql_d.get("active") or {}).items():
+                _ql_comp.active[_qid] = list(_prog)
+            _ql_comp.completed = set(_ql_d.get("completed") or [])
+            self.world.add_component(eid, _ql_comp)
+        except Exception as _ql_err:
+            print(f"[World] aviso: QuestLog não criado — {_ql_err}")
+
         self._player_eids[session_id]    = eid
         self._player_eid_to_sid[eid]     = session_id   # reverse map
+
+        # Multi-map: registra mapa atual do player
+        saved_map_id = char_data.get("map_id", self._map_file)
+        if saved_map_id not in self._map_bundles:
+            saved_map_id = self._map_file
+        self._player_maps[session_id] = saved_map_id
+        from components import MapLocation as _MLp
+        self.world.add_component(eid, _MLp(saved_map_id))
 
         _srv_hp, _srv_hp_max = self.get_player_hp(session_id)
         self._spawned_this_tick.append({
@@ -575,11 +718,38 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
               f"name={char_data.get('name', '?')}")
         return eid
 
+    def get_player_map(self, session_id: str) -> str:
+        """Retorna o mapa atual do player (padrão: mapa principal)."""
+        return self._player_maps.get(session_id, self._map_file)
+
+    def transfer_player(self, session_id: str, player_eid: int,
+                        to_map: str, target_x: int, target_y: int) -> None:
+        """Teleporta player para novo mapa + tile. Atualiza _player_maps e MapLocation."""
+        self._player_maps[session_id] = to_map
+        from components import TileMovement, Position, MapLocation as _MLtp
+        ml = self.world.get_component(player_eid, _MLtp)
+        if ml is not None:
+            ml.map_file = to_map
+        from shared.constants import TILE_SIZE as _TS_tp
+        ptm = self.world.get_component(player_eid, TileMovement)
+        pos = self.world.get_component(player_eid, Position)
+        if ptm and pos:
+            px = target_x * _TS_tp + _TS_tp // 2
+            py = target_y * _TS_tp + _TS_tp // 2
+            ptm.current_tile_x = ptm.target_tile_x = target_x
+            ptm.current_tile_y = ptm.target_tile_y = target_y
+            ptm.target_pixel_x = ptm.start_pixel_x = px
+            ptm.target_pixel_y = ptm.start_pixel_y = py
+            ptm.progress   = 0.0
+            ptm.is_moving  = False
+            pos.x = pos.prev_x = float(px)
+            pos.y = pos.prev_y = float(py)
+
     def get_player_save_data(self, session_id: str) -> dict:
         """Coleta estado ECS completo do jogador para persistência."""
         import json as _json
         from components import (TileMovement, CombatStats, CharacterStats,
-                                 Wallet, PlayerSkills)
+                                 Wallet, PlayerSkills, SkillLevels, QuestLog)
         eid = self._player_eids.get(session_id)
         if eid is None:
             return {}
@@ -588,6 +758,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         char = self.world.get_component(eid, CharacterStats)
         wall = self.world.get_component(eid, Wallet)
         ps   = self.world.get_component(eid, PlayerSkills)
+        skl  = self.world.get_component(eid, SkillLevels)
+        ql   = self.world.get_component(eid, QuestLog)
 
         # Stats: level, xp, atributos base
         stats = {}
@@ -614,14 +786,30 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 "hotbar":  [sk.skill_id if sk else None for sk in ps.skills],
             }
 
+        # SkillLevels: sempre lido do componente vivo do servidor — nunca do
+        # cliente (mesma regra de gold/talentos, ver _build_save_merge em session.py).
+        skill_levels = None
+        if skl:
+            skill_levels = {"levels": dict(skl.levels), "xp": dict(skl.xp)}
+
+        # QuestLog: sempre lido do componente vivo do servidor — nunca do
+        # cliente (mesma regra de skill_levels/gold/talentos).
+        quests = None
+        if ql:
+            quests = {"active": {q: list(p) for q, p in ql.active.items()},
+                      "completed": list(ql.completed)}
+
         return {
-            "tile_x":     tm.current_tile_x if tm else 10,
-            "tile_y":     tm.current_tile_y if tm else 10,
-            "hp":         (max(1, cs.current_hp) if cs and cs.current_hp > 0
-                          else (cs.max_hp if cs else 100)),
-            "mp":         100,
-            "stats":      stats,
-            "skills":     skills,
+            "tile_x":       tm.current_tile_x if tm else 10,
+            "tile_y":       tm.current_tile_y if tm else 10,
+            "hp":           (max(1, cs.current_hp) if cs and cs.current_hp > 0
+                            else (cs.max_hp if cs else 100)),
+            "mp":           100,
+            "stats":        stats,
+            "skills":       skills,
+            "skill_levels": skill_levels,
+            "quests":       quests,
+            "map_id":       self.get_player_map(session_id),
         }
 
     def despawn_player(self, session_id: str) -> None:
@@ -630,6 +818,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         if eid is None:
             return
         self._player_eid_to_sid.pop(eid, None)
+        self._player_maps.pop(session_id, None)
         self._despawned_this_tick.append({"eid": eid, "tx": None, "ty": None})
         self._pending_inv.pop(session_id, None)
         self._attack_timers.pop(session_id, None)
@@ -674,11 +863,25 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             from_tx, from_ty = tm.current_tile_x, tm.current_tile_y
             tm.current_tile_x = tm.target_tile_x = tx
             tm.current_tile_y = tm.target_tile_y = ty
+            tm.is_moving          = True
+            tm._server_move_grace = PLAYER_MOVE_GRACE_S
+            _px_center = tx * TILE_SIZE + TILE_SIZE // 2
+            _py_center = ty * TILE_SIZE + TILE_SIZE // 2
+            # Sincroniza campos de pixel do TileMovement com o snap instantâneo —
+            # sem isso TileMovementSystem sobrescreve Position.x/y com valores
+            # stale da última animação real, quebrando checks de pixel-range de
+            # skills (ex: golpe_poderoso "Fora de alcance" mesmo adjacente ao alvo).
+            tm.target_pixel_x = _px_center
+            tm.target_pixel_y = _py_center
+            tm.start_pixel_x  = _px_center
+            tm.start_pixel_y  = _py_center
+            tm.progress        = 0.0
+            tm.move_duration   = PLAYER_MOVE_GRACE_S
             pos = self.world.get_component(eid, Position)
             if pos:
                 pos.prev_x, pos.prev_y = pos.x, pos.y
-                pos.x = tx * TILE_SIZE + TILE_SIZE // 2
-                pos.y = ty * TILE_SIZE + TILE_SIZE // 2
+                pos.x = _px_center
+                pos.y = _py_center
             self._moved_this_tick.append({
                 "eid":     eid,
                 "tx":      tx, "ty":      ty,
@@ -702,24 +905,51 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         if dx > 1 or dy > 1:
             return False
 
-        # Validação: tile de destino deve ser walkable (sólido, fora do mapa, piso errado)
-        # Usa is_tile_walkable do offline — mesma lógica de colisão + elevação.
-        # _svc['tile_validation'] é registrado em _load_map() antes de qualquer MOVE chegar.
-        from systems import is_tile_walkable as _walkable
+        # Validação: tile de destino deve ser walkable (sólido, fora do mapa, piso errado).
+        # Usa o tile_validation do bundle do mapa atual do player — evita usar o serviço
+        # global que pode apontar pro último mapa do loop de bundles (_tick) em vez do
+        # mapa onde o player realmente está (bug: cave_west 80×60 tiles rejeitava y=316
+        # de map_1, impedindo o player de chegar ao tile de transição para a caverna).
         from components import CombatState as _CState
         _cst = self.world.get_component(eid, _CState)
         _pursuit_target = (_cst.target_entity_id
                            if _cst and _cst.is_pursuing and _cst.target_entity_id != -1
                            else -1)
-        if not _walkable(eid, tx, ty, tm.current_tile_x, tm.current_tile_y,
-                         ignore_eid=_pursuit_target):
-            return False
+        _player_bnd = self._map_bundles.get(self.get_player_map(session_id))
+        _tile_val = _player_bnd.tile_validation if _player_bnd else None
+        if _tile_val:
+            if not _tile_val.is_tile_walkable(eid, tx, ty, tm.current_tile_x, tm.current_tile_y,
+                                              ignore_eid=_pursuit_target):
+                return False
+        else:
+            from systems import is_tile_walkable as _walkable
+            if not _walkable(eid, tx, ty, tm.current_tile_x, tm.current_tile_y,
+                             ignore_eid=_pursuit_target):
+                return False
 
         from_tx, from_ty = tm.current_tile_x, tm.current_tile_y
         tm.current_tile_x = tx
         tm.current_tile_y = ty
         tm.target_tile_x  = tx
         tm.target_tile_y  = ty
+        tm.is_moving          = True
+        tm._server_move_grace = PLAYER_MOVE_GRACE_S
+        _px_center = tx * TILE_SIZE + TILE_SIZE // 2
+        _py_center = ty * TILE_SIZE + TILE_SIZE // 2
+        # Sincroniza campos de pixel do TileMovement com o snap instantâneo —
+        # sem isso TileMovementSystem sobrescreve Position.x/y com valores
+        # stale da última animação real, quebrando checks de pixel-range de
+        # skills (ex: golpe_poderoso "Fora de alcance" mesmo adjacente ao alvo,
+        # funcionando só depois de um Interceptar que atualizava target_pixel_x
+        # corretamente via start_tile_movement). Bug: ordem do tick é
+        # _systems.update (TileMovementSystem) → _process_skill_requests, então
+        # os valores stale são lidos pelos handlers antes de qualquer snap de lag).
+        tm.target_pixel_x = _px_center
+        tm.target_pixel_y = _py_center
+        tm.start_pixel_x  = _px_center
+        tm.start_pixel_y  = _py_center
+        tm.progress        = 0.0
+        tm.move_duration   = PLAYER_MOVE_GRACE_S
 
         pos = self.world.get_component(eid, Position)
         if pos:
@@ -732,6 +962,11 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             "tx":      tx, "ty":      ty,
             "from_tx": from_tx, "from_ty": from_ty,
         })
+
+        from quest_events import fire as _qfire_tile
+        _qfire_tile("reach_tile", player_eid=eid, tx=tx, ty=ty,
+                    map=self._player_maps.get(session_id, self._map_file))
+
         return True
 
     def get_players_in_aoi(self, center_session: str, radius: int) -> list[dict]:
@@ -788,7 +1023,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         return self._build_mob_spawn_payload(eid, tm)
 
     def _build_mob_spawn_payload(self, eid: int, tm) -> dict:
-        from components import CombatStats, AIControlled, Renderable, SpawnZoneOwner, SpawnZone, EntityIdentity
+        from components import (CombatStats, AIControlled, Renderable, SpawnZoneOwner,
+                                SpawnZone, EntityIdentity, TrainingDummy as _TDpay)
         cs    = self.world.get_component(eid, CombatStats)
         ai    = self.world.get_component(eid, AIControlled)
         ren   = self.world.get_component(eid, Renderable)
@@ -802,6 +1038,14 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 entity_class = zone.entity_class or entity_class
                 tier         = zone.enemy_tier
                 is_ranged    = (zone.enemy_type == "ranged")
+        elif ident:
+            # Sem SpawnZone (ex: boneco de treino — entidade fixa, não nasce de
+            # zona) — usa a identidade própria da entidade em vez do fallback
+            # genérico acima. Sem isso, qualquer mob "solto" virava sempre
+            # "Humanoide"/"Warrior" pro cliente, ignorando seu EntityIdentity real.
+            race         = ident.race or race
+            entity_class = ident.entity_class or entity_class
+            tier         = ident.tier or tier
         mob_level = ident.level if ident else (zone.level_min if szo and zone else 1)
         payload = {
             "eid":          eid, "kind":         "enemy",
@@ -815,6 +1059,17 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             "level":        mob_level,
             "effects":      [],
         }
+        # Nome próprio (ex: "Boneco de treino") — sem isso o cliente deriva o
+        # nome exibido a partir da raça (create_enemy: mob_display_name = race),
+        # então qualquer entidade sem zona mostrava raça como nome também.
+        if ident and ident.name:
+            payload["name"] = ident.name
+        # is_dummy: sinaliza ao cliente pra anexar TrainingDummy no proxy local —
+        # sem isso, skills usadas no boneco nunca contavam pra objetivos de quest
+        # com params={"on_dummy": True} (ver quest_system.py), porque o cliente
+        # não tinha NENHUMA forma de saber que aquele mob remoto era um boneco.
+        if self.world.get_component(eid, _TDpay) is not None:
+            payload["is_dummy"] = True
         # Se o mob já está em movimento no momento do spawn, inclui o destino.
         # O cliente inicia a animação imediatamente em vez de esperar o próximo evento.
         if tm.is_moving and (tm.target_tile_x != tm.current_tile_x or
@@ -823,11 +1078,16 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             payload["moving_to_ty"] = tm.target_tile_y
         return payload
 
-    def get_mobs_in_aoi(self, center_tx: int, center_ty: int, radius: int) -> list[dict]:
+    def get_mobs_in_aoi(self, center_tx: int, center_ty: int, radius: int,
+                        map_file: str = "") -> list[dict]:
         """Retorna lista de mobs no AOI — para WORLD_STATE inicial."""
-        from components import TileMovement
+        from components import TileMovement, MapLocation as _ML_gmai
         result = []
         for eid in self._mob_eids:
+            if map_file:
+                _ml = self.world.get_component(eid, _ML_gmai)
+                if _ml and _ml.map_file != map_file:
+                    continue
             tm = self.world.get_component(eid, TileMovement)
             if not tm:
                 continue
@@ -1303,6 +1563,30 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             if item:
                 inv.items.append(item)
 
+    def sync_player_skills(self, session_id: str, skills_data: dict) -> None:
+        """Atualiza PlayerSkills.learned_skill_ids no ECS do servidor a partir
+        dos dados enviados pelo cliente no SAVE_STATE.
+
+        O aprendizado de skills acontece client-side (trainer_system._do_learn)
+        e o servidor precisa de uma cópia viva para que sync_learn_skill_progress
+        (em _process_quest_events) detecte skills recém-aprendidas e avance
+        objetivos de quest do tipo learn_skill — sem isso o componente nunca é
+        atualizado apos o login e o objetivo nunca conta (bug real: quest
+        Prova de Valor / Iniciacao Arcana nao avancava ao aprender Golpe
+        Poderoso / Bola de Fogo via treinador no modo online).
+        """
+        from components import PlayerSkills as _PSSync
+        learned = skills_data.get("learned")
+        if not isinstance(learned, list):
+            return
+        eid = self._player_eids.get(session_id)
+        if eid is None:
+            return
+        ps = self.world.get_component(eid, _PSSync)
+        if ps is None:
+            return
+        ps.learned_skill_ids = set(learned)
+
     def apply_consumable(self, session_id: str, payload: dict) -> None:
         """Aplica efeitos de consumível no ECS do servidor (autoritativo).
 
@@ -1330,6 +1614,13 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             return
         if _has_mana and not _has_hp and char and char.max_mana > 0 and char.mana >= char.max_mana:
             return
+
+        # Evento de quest "use_consumable" — uso aceito (passou pelos blocks
+        # acima). Server-autoritativo — ver quest_logic.py/PROBLEMAS_ARQUITETURA.md.
+        _item_name_cu = payload.get("item_name", "")
+        if _item_name_cu:
+            from quest_events import fire as _qfire_cons
+            _qfire_cons("use_consumable", player_eid=eid, item_name=_item_name_cu)
 
         # 1. Cura instantânea de HP
         heal_instant = int(payload.get("heal_instant", 0))
@@ -1426,6 +1717,100 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                     self._player_hp_broadcasts_this_tick.append({
                         "eid": peid, "hp": cs.current_hp, "hp_max": cs.max_hp,
                     })
+
+    def consume_skill_levels_broadcasts(self) -> list[dict]:
+        """Retorna e limpa updates de SkillLevels do tick atual (para o SessionManager)."""
+        result = list(self._skill_levels_broadcasts_this_tick)
+        self._skill_levels_broadcasts_this_tick.clear()
+        return result
+
+    def _sync_player_skill_levels_dirty(self) -> None:
+        """Detecta mudança em SkillLevels.levels/xp de qualquer player no tick e
+        enfileira snapshot completo pro dono (nunca broadcast AOI — é dado
+        privado). Mesmo padrão de _sync_player_hp_dirty: cobre qualquer fonte
+        de xp (cast de magia, auto-attack, arco, DoT resistido) sem precisar
+        de código por feature — ver stats_system.grant_skill_xp.
+
+        Também detecta level-ups (level novo > level antigo por skill_id) e
+        inclui em "leveled_up" — cliente usa isso pra mostrar o feedback de
+        "Parabéns, você subiu..." + som. Só reporta level-up quando já havia
+        um snapshot anterior em cache (cache vazio = primeiro tick após
+        login/spawn, não é um level-up real, é só o estado já salvo)."""
+        from components import SkillLevels as _SKLd
+        for peid in list(self._player_eids.values()):
+            skl = self.world.get_component(peid, _SKLd)
+            if skl is None:
+                continue
+            snapshot = (tuple(sorted(skl.levels.items())), tuple(sorted(skl.xp.items())))
+            cached = self._player_skill_cache.get(peid)
+            if snapshot != cached:
+                leveled_up = []
+                if cached is not None:
+                    _old_levels = dict(cached[0])
+                    for sid, new_lvl in skl.levels.items():
+                        if new_lvl > _old_levels.get(sid, 0):
+                            leveled_up.append({"skill_id": sid, "level": new_lvl})
+                self._player_skill_cache[peid] = snapshot
+                _entry = {
+                    "eid":    peid,
+                    "levels": dict(skl.levels),
+                    "xp":     dict(skl.xp),
+                }
+                if leveled_up:
+                    _entry["leveled_up"] = leveled_up
+                self._skill_levels_broadcasts_this_tick.append(_entry)
+
+    def consume_quest_update_broadcasts(self) -> list[dict]:
+        """Retorna e limpa updates de QuestLog do tick atual (para o SessionManager)."""
+        result = list(self._quest_update_broadcasts_this_tick)
+        self._quest_update_broadcasts_this_tick.clear()
+        return result
+
+    def _process_quest_events(self) -> None:
+        """Drena QUEST_EVENTS (gatilhos server-side já autoritativos — kill,
+        use_skill, use_consumable, equip_item, reach_tile, reach_level) e
+        aplica progresso ao QuestLog do player_eid de cada evento. Também
+        sincroniza, sem evento dedicado, objetivos collect_item (contra
+        Inventory) e learn_skill (contra PlayerSkills.learned_skill_ids) —
+        ambos já autoritativos no servidor. 1x por tick, mesmo padrão de
+        _sync_player_skill_levels_dirty(). Ver quest_logic.py e
+        arquitetura/PROBLEMAS_ARQUITETURA.md (migração de quests)."""
+        from quest_events import QUEST_EVENTS
+        import quest_logic
+        from components import QuestLog as _QL, Inventory as _Inv, PlayerSkills as _PS
+
+        dirty_eids: set[int] = set()
+
+        while QUEST_EVENTS:
+            event_type, player_eid, data = QUEST_EVENTS.popleft()
+            if player_eid == -1:
+                continue  # evento sem dono explícito — não deveria ocorrer server-side
+            ql = self.world.get_component(player_eid, _QL)
+            if ql is None:
+                continue
+            if quest_logic.apply_event(ql, event_type, data):
+                dirty_eids.add(player_eid)
+
+        for peid in list(self._player_eids.values()):
+            ql = self.world.get_component(peid, _QL)
+            if ql is None or not ql.active:
+                continue
+            inv = self.world.get_component(peid, _Inv)
+            if quest_logic.sync_collect_progress(ql, inv):
+                dirty_eids.add(peid)
+            ps = self.world.get_component(peid, _PS)
+            learned = ps.learned_skill_ids if ps else set()
+            if quest_logic.sync_learn_skill_progress(ql, learned):
+                dirty_eids.add(peid)
+
+        for peid in dirty_eids:
+            ql = self.world.get_component(peid, _QL)
+            if ql:
+                self._quest_update_broadcasts_this_tick.append({
+                    "eid":       peid,
+                    "active":    {q: list(p) for q, p in ql.active.items()},
+                    "completed": list(ql.completed),
+                })
 
     def consume_skill_position_corrections(self) -> list[dict]:
         """Retorna e limpa correções de posição por skill (Interceptar etc.)."""
@@ -1625,6 +2010,10 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         if eq_comp is None:
             eq_comp = _EqUpd()
             self.world.add_component(eid, eq_comp)
+        # Snapshot ANTES de sobrescrever — só dispara evento de quest pra item
+        # que de fato passou a estar equipado agora (evita re-disparo a cada
+        # EQUIP_SYNC redundante, ex: reconectar com o mesmo equipamento).
+        _old_slot_names = {slot: (item.name if item else None) for slot, item in eq_comp.slots.items()}
         for slot, item_d in equipment.items():
             if slot not in eq_comp.slots or not isinstance(item_d, dict):
                 continue
@@ -1634,6 +2023,14 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         for slot in list(eq_comp.slots.keys()):
             if slot not in equipment:
                 eq_comp.slots[slot] = None
+
+        # Evento de quest "equip_item" — só pra slots que mudaram de item.
+        # Server-autoritativo — ver quest_logic.py/PROBLEMAS_ARQUITETURA.md.
+        from quest_events import fire as _qfire_equip
+        for slot, item in eq_comp.slots.items():
+            if item and item.name != _old_slot_names.get(slot):
+                _qfire_equip("equip_item", player_eid=eid,
+                             item_name=item.name, item_type=item.item_type)
         # Deriva attack_power/crit_rating/armor/spell_power/etc. dos itens REAIS
         # agora equipados (ver _apply_equipment_modifiers) — nunca confia em
         # nenhum valor calculado pelo cliente para isso.
@@ -1774,9 +2171,17 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             if _ai_sn:
                 self._mob_states_prev[_eid_sn] = _ai_sn.state
 
-        # Roda sistemas offline reais (EnemyAISystem inclui mob→player via deal_damage)
-        for system in self._systems:
-            system.update(dt=dt)
+        # Roda sistemas offline reais por bundle de mapa.
+        # P4: serviços já injetados diretamente nos sistemas em _load_map_for()
+        # — register_services() não é mais necessário no loop de tick online.
+        for _bnd in self._map_bundles.values():
+            for system in _bnd.systems:
+                system.update(dt=dt)
+
+        # Sistemas globais: rodam UMA vez por tick, após todos os bundles de IA.
+        self._global_tms.update(dt=dt)       # movement: progress → current_tile
+        self._global_sfx_sys.update(dt=dt)   # status effects: DoT/HoT timers
+        self._global_proj_sys.update(dt=dt)  # projéteis de mobs: posição + hit
 
         # Detecta mobs que aggraram neste tick (IDLE → CHASING/ATTACKING)
         from components import EntityIdentity as _EIdent
@@ -1797,7 +2202,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                     "ty":       _tm_ag.current_tile_y,
                 })
 
-        # CombatStateSystem headless (in_combat timer + rage decay + HP5 regen)
+        # CombatStateSystem headless (in_combat timer + rage decay + HP5/mana regen)
         # Lógica em core_systems.ServerCombatStateSystem — sem duplicação vs offline.
         self._combat_state_sys.update(self._player_eids, dt)
         for _hp5_ev in self._combat_state_sys.hp5_events:
@@ -1808,6 +2213,17 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 "outcome":  "regen",
                 "hp_after": _hp5_ev["new_hp"],
                 "source":   "regen",
+            })
+        # Regen de mana (Mago) — único produtor autoritativo; sincroniza via
+        # STATS_UPDATE (mesmo canal de ActiveManaRegen/mana_restore). Cliente
+        # só prediz offline (spell_system.ManaSystem) — ver PROBLEMAS_ARQUITETURA.md
+        # (bug real: cliente regenerava mana sozinho sem o servidor saber).
+        for _mana_ev in self._combat_state_sys.mana_events:
+            self._pending_xp_deliveries.append({
+                "player_eid": _mana_ev["player_eid"],
+                "xp":         0,
+                "mob_eid":    -1,
+                "mana":       _mana_ev["new_mana"],
             })
         # Procs de item rolados autoritativamente (core_systems.ServerCombatStateSystem.
         # _roll_procs) — qualquer mudança em current_hp/max_hp já é detectada e
@@ -2277,6 +2693,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # Deve rodar aqui (depois de todos os sistemas do tick) para capturar toda
         # fonte de mudança: skills, DoT, level-up, consumíveis, respawn, etc.
         self._sync_player_hp_dirty()
+        self._sync_player_skill_levels_dirty()
+        self._process_quest_events()
 
         # despawned: lista de eids (ints) para compatibilidade
         # despawned_pos: dict eid→(tx,ty) para AOI check de mobs mortos fora de known_eids

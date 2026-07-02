@@ -38,6 +38,10 @@ class NetworkHandlers:
             self._handle_msg_aoi_update(payload)
         elif msg_type == MsgType.STATS_UPDATE:
             self._handle_msg_stats_update(payload)
+        elif msg_type == MsgType.SKILL_LEVELS_UPDATE:
+            self._handle_msg_skill_levels_update(payload)
+        elif msg_type == MsgType.QUEST_UPDATE:
+            self._handle_msg_quest_update(payload)
         elif msg_type == MsgType.PLAYER_DEATH:
             self._handle_msg_player_death(payload)
         elif msg_type == MsgType.PLAYER_REVIVE:
@@ -58,6 +62,8 @@ class NetworkHandlers:
             self._handle_msg_sell_result(payload)
         elif msg_type == MsgType.PONG:
             self._handle_msg_pong(payload)
+        elif msg_type == MsgType.ZONE_CHANGE:
+            self._handle_msg_zone_change(payload)
 
 
     def _handle_msg_login_ok(self, payload: dict) -> None:
@@ -146,6 +152,12 @@ class NetworkHandlers:
         # Personagem carregado — marca servidor como pronto.
         # O jogo só entra quando _server_ready=True E _loading_min_t <= 0.
         self._server_ready = True
+        # Carrega o mapa correto se o personagem estava em outro mapa ao deslogar.
+        # Mirrors _restore_save_state do offline: checa map_id e chama _do_transition.
+        # Checa .endswith(".csv") pra ignorar valores legados inválidos (ex: "map_main").
+        _saved_map = char.get("map_id", "")
+        if _saved_map and _saved_map.endswith(".csv") and _saved_map != self._current_map_file:
+            self._do_transition({"target_map": _saved_map, "target_x": tx, "target_y": ty})
 
     def _handle_msg_login_error(self, payload: dict) -> None:
         print(f"[Client] login erro: {payload.get('reason')}")
@@ -408,6 +420,17 @@ class NetworkHandlers:
                         _cr_pdmg["mob_slow_mult"] = t["mob_slow_mult"]
                     self._apply_combat_result(_cr_pdmg)
                     _bdf_deferred.add(_t_srv)
+                    # Quest "use_skill": só conta aqui, quando o dano do projétil já foi
+                    # confirmado pelo servidor — não na ativação da skill (cast iniciado),
+                    # ver _use_skill_visual_only em systems.py. on_dummy checa o proxy
+                    # local do alvo (mob remoto), igual ao resto do client.
+                    if t.get("damage", 0) > 0:
+                        from quest_events import fire as _quest_fire_pdmg
+                        from components import TrainingDummy as _TDpdmg
+                        _t_local_pdmg = self._remote_mobs.get(_t_srv)
+                        _on_dummy_pdmg = (_t_local_pdmg is not None
+                                         and self.world.get_component(_t_local_pdmg, _TDpdmg) is not None)
+                        _quest_fire_pdmg("use_skill", skill_id=sid, on_dummy=_on_dummy_pdmg)
 
         # Archer is_proj_damage: dano confirmado após PROJECTILE_HIT_CS → mostra FLT imediato.
         # O projétil já colidiu — não há entidade de flecha para consumir pending_arrow_impacts.
@@ -1124,6 +1147,63 @@ class NetworkHandlers:
                     except Exception:
                         pass
 
+    def _handle_msg_skill_levels_update(self, payload: dict) -> None:
+        """SKILL_LEVELS_UPDATE: snapshot completo de levels/xp do skill level
+        (Tibia-like), enviado só pro dono pelo servidor sempre que muda (cast
+        de magia, auto-attack, arco, DoT resistido — ver
+        WorldServer._sync_player_skill_levels_dirty). Substitui (não soma) o
+        componente local — só pra exibição no painel (tecla L), nunca usado
+        em cálculo de dano client-side."""
+        from components import SkillLevels
+        skl = self.world.get_component(self.player_entity, SkillLevels)
+        if not skl:
+            return
+        for sid, lvl in (payload.get("levels") or {}).items():
+            if sid in skl.levels:
+                skl.levels[sid] = int(lvl)
+        for sid, xp in (payload.get("xp") or {}).items():
+            if sid in skl.xp:
+                skl.xp[sid] = int(xp)
+
+        # Feedback de level-up de skill: texto no log de combate + centro da
+        # tela (igual Tibia) + som (mesmo som de level-up do personagem, por
+        # enquanto — ver stats_system.py).
+        from skill_level_ui import SKILL_LABELS
+        for entry in (payload.get("leveled_up") or []):
+            _label = SKILL_LABELS.get(entry.get("skill_id", ""), entry.get("skill_id", ""))
+            _msg = (f"Parabéns, você subiu o nível de sua habilidade com "
+                    f"{_label} para o nível {entry.get('level')}.")
+            LOG.add(_msg, (255, 200, 0))
+            PROC.add(_msg, (255, 200, 0), duration=5.0)
+            SOUNDS.play_ui("levelup")
+
+    def _handle_msg_quest_update(self, payload: dict) -> None:
+        """QUEST_UPDATE: snapshot completo de active/completed do QuestLog,
+        enviado só pro dono pelo servidor sempre que muda (evento de
+        progresso, QUEST_ACCEPT, QUEST_TURN_IN — ver
+        WorldServer._process_quest_events / server/session.py). Substitui
+        (não soma) o componente local — servidor é o único produtor
+        autoritativo de progresso/entrega no modo online (ver
+        quest_logic.py/PROBLEMAS_ARQUITETURA.md)."""
+        from components import QuestLog
+        ql = self.world.get_component(self.player_entity, QuestLog)
+        if ql is None:
+            return
+        ql.active = {q: list(p) for q, p in (payload.get("active") or {}).items()}
+        ql.completed = set(payload.get("completed") or [])
+
+        completed_qid = payload.get("completed_qid", "")
+        if completed_qid:
+            from quests_data import QUESTS
+            qdef = QUESTS.get(completed_qid)
+            if qdef:
+                parts = []
+                if qdef.reward.xp:   parts.append(f"+{qdef.reward.xp} XP")
+                if qdef.reward.gold: parts.append(f"+{qdef.reward.gold} ouro")
+                reward_str = f" ({', '.join(parts)})" if parts else ""
+                LOG.add(f'Quest completa: "{qdef.title}"{reward_str}!', (255, 215, 0))
+                PROC.add("Quest Completa!", (255, 215, 0))
+
     def _handle_msg_stats_update(self, payload: dict) -> None:
         from components import CombatStats, RemoteControlled
         eid = payload.get("eid", -1)
@@ -1553,3 +1633,15 @@ class NetworkHandlers:
         if self._net:
             rtt = int(__import__("time").time() * 1000) - payload.get("client_ts", 0)
             self._net.latency_ms = rtt
+
+    def _handle_msg_zone_change(self, payload: dict) -> None:
+        """Servidor autorizou troca de mapa. Executa _do_transition no cliente."""
+        map_file = payload.get("map_file", "")
+        target_x = int(payload.get("target_x", 0))
+        target_y = int(payload.get("target_y", 0))
+        if map_file:
+            self._do_transition({
+                "target_map": map_file,
+                "target_x":   target_x,
+                "target_y":   target_y,
+            })

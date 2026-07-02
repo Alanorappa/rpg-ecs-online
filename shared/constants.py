@@ -18,6 +18,16 @@ TILE_SIZE          = 32          # pixels por tile (deve ser igual ao cliente)
 AOI_RADIUS         = 15          # tiles de visão ao redor do jogador
 FOG_RADIUS         = 15          # deve coincidir com AOI_RADIUS
 
+# Histerese de saída do AOI: uma entidade só é despawnada ao passar de
+# AOI_RADIUS + AOI_EXIT_BUFFER, não exatamente em AOI_RADIUS (continua
+# entrando em AOI_RADIUS normalmente — buffer só no critério de SAÍDA).
+# Sem isso, um mob cujo caminho "raspa" a borda do raio (ex: RETURNING pro
+# spawn cruzando perto de 15 tiles) gera spawn/despawn repetido a cada
+# tick que cruza a fronteira — o cliente nunca chega a renderizar o mob de
+# forma estável, "nunca aparece" mesmo recebendo os dados corretamente.
+# Ver arquitetura/PROBLEMAS_ARQUITETURA.md.
+AOI_EXIT_BUFFER    = 3
+
 # Centro do cemitério — spawn padrão de personagem novo E respawn pós-morte.
 # Fonte única: server/respawn_system.py e server/auth.py importam daqui em vez
 # de hardcoded — mover o cemitério só exige mudar este valor.

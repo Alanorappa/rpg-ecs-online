@@ -166,6 +166,18 @@ class RespawnMixin:
             pos.x = rx * TILE_SIZE + TILE_SIZE // 2
             pos.y = ry * TILE_SIZE + TILE_SIZE // 2
 
+        # Se player morreu num mapa não-principal (ex: cave), transfere o ghost pro
+        # mapa principal antes de tudo. O cliente recebe ZONE_CHANGE junto com
+        # GHOST_STATE via flag "zone_change_map" consumida em _send_ghost_state_updates.
+        session_id   = self._player_eid_to_sid.get(player_eid)
+        from components import MapLocation as _MLrs
+        _ml_rs      = self.world.get_component(player_eid, _MLrs)
+        current_map  = _ml_rs.map_file if _ml_rs else self._map_file
+        _zone_change = None
+        if current_map != self._map_file and session_id:
+            self.transfer_player(session_id, player_eid, self._map_file, rx, ry)
+            _zone_change = self._map_file
+
         # Não usa _moved_this_tick aqui: isso faria o player remoto enxergar
         # o "espírito" se mover/aparecer no cemitério. Em vez disso, despawna
         # a entidade pra quem já a conhecia (igual a um player saindo do AOI)
@@ -183,14 +195,17 @@ class RespawnMixin:
         # só envia GHOST_STATE quando near_corpse MUDA — aqui o estado inicial
         # (near_corpse=False) não conta como mudança, então sem este envio
         # explícito o cliente nunca saberia que is_ghost virou True.
-        self._ghost_state_updates_this_tick.append({
-            "session_id":      self._player_eid_to_sid.get(player_eid),
+        _ghost_upd = {
+            "session_id":      session_id,
             "is_ghost":        True,
             "near_corpse":     False,
             "graveyard_timer": 0.0,
             "tx":              rx,
             "ty":              ry,
-        })
+        }
+        if _zone_change:
+            _ghost_upd["zone_change_map"] = _zone_change
+        self._ghost_state_updates_this_tick.append(_ghost_upd)
 
         # Marcador de corpo pra quem está no AOI (a entidade do player teleportou
         # pro cemitério, mas o corpo deve continuar visível no local da morte)

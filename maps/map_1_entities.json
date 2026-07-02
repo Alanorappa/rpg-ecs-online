@@ -7,6 +7,7 @@
     {
       "x": 151,
       "y": 307,
+      "name": "Fabian Hardek",
       "shop_id": "general",
       "level": 10,
       "profession": "Comerciante"
@@ -62,8 +63,8 @@
       "class_id": "guerreiro",
       "level": 60,
       "profession": "Guerreiro Veterano",
-      "quest_ids": ["first_blood", "merchant_greeting"],
-      "turn_in_ids": ["first_blood", "merchant_greeting"]
+      "quest_ids": ["prova_valor", "first_blood", "merchant_greeting"],
+      "turn_in_ids": ["prova_valor", "first_blood", "merchant_greeting"]
     },
     {
       "x": 119,
@@ -72,8 +73,8 @@
       "class_id": "mago",
       "level": 60,
       "profession": "Arquimaga",
-      "quest_ids": [],
-      "turn_in_ids": []
+      "quest_ids": ["iniciacao_arcana"],
+      "turn_in_ids": ["iniciacao_arcana"]
     },
     {
       "x": 121,
@@ -97,7 +98,7 @@
   ],
   "transitions": [
     {
-      "x": 12,
+      "x": 13,
       "y": 316,
       "target_map": "maps/map_cave_west.csv",
       "target_x": 78,
@@ -206,7 +207,7 @@
       "radius": 12,
       "respawn_cooldown": 60,
       "level_min": 1,
-      "level_max": 3,
+      "level_max": 2,
       "race": "Zumbi",
       "class": "Warrior",
       "spawns": [

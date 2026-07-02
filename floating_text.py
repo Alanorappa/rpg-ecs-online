@@ -270,11 +270,14 @@ class ProcTextManager:
             self._font = _font(self.FONT_SIZE)
         return self._font
 
-    def add(self, text: str, color: tuple = (255, 255, 255)) -> None:
-        """Exibe uma notificação de proc. Empilha para baixo se já houver ativas."""
+    def add(self, text: str, color: tuple = (255, 255, 255),
+            duration: "float | None" = None) -> None:
+        """Exibe uma notificação de proc. Empilha para baixo se já houver ativas.
+        duration=None usa o padrão (DURATION) — passar um valor sobrescreve só
+        esta entrada, sem afetar outras notificações já na fila."""
         for e in self._entries:
             e.offset_y += self.SLOT_HEIGHT
-        self._entries.append(_ProcEntry(text, color, self.DURATION))
+        self._entries.append(_ProcEntry(text, color, duration if duration is not None else self.DURATION))
 
     def update(self, dt: float) -> None:
         alive = []

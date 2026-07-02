@@ -36,7 +36,8 @@ class MsgType(str, Enum):
     # ── Mundo / AOI ───────────────────────────────────────────────
     WORLD_STATE        = "world_state"     # S→C  snapshot inicial ao entrar no mundo
     AOI_UPDATE         = "aoi_update"      # S→C  delta a cada tick: spawn/despawn/move
-    ZONE_CHANGE        = "zone_change"     # S→C  jogador mudou de zona/instância  # TODO: não implementado
+    ZONE_CHANGE_REQ    = "zone_change_req" # C→S  {to_map, target_x, target_y}
+    ZONE_CHANGE        = "zone_change"     # S→C  {map_file, target_x, target_y}
     ENTER_INSTANCE     = "enter_instance"  # C→S  pedir entrada em instância        # TODO: não implementado
 
     # ── Movimento ─────────────────────────────────────────────────
@@ -51,6 +52,7 @@ class MsgType(str, Enum):
     # ── Skills ────────────────────────────────────────────────────
     CAST_SKILL         = "cast_skill"      # C→S  usar skill
     CANCEL_CAST        = "cancel_cast"     # C→S  player cancelou cast (movimento durante cast)
+    CAST_DIR_UPDATE    = "cast_dir_update" # C→S  direção final de skill direcional na conclusão do cast {sid, dir_x, dir_y}
     PROJECTILE_HIT_CS  = "proj_hit_cs"    # C→S  projétil do player colidiu com o alvo
     CAST_START         = "cast_start"      # S→C  entidade começou cast (barra de cast)  # TODO: não implementado
     CAST_CANCEL        = "cast_cancel"     # S→C  cast interrompido                      # TODO: não implementado
@@ -70,8 +72,14 @@ class MsgType(str, Enum):
     # ── Stats / HP ────────────────────────────────────────────────
     STATS_UPDATE       = "stats_update"    # S→C  HP/MP/rage/concentration mudou
     LEVEL_UP           = "level_up"        # S→C  jogador levelou
+    SKILL_LEVELS_UPDATE = "skill_levels_update"  # S→C  xp/level de skill level mudou (só pro dono, ver SkillLevels)
     PLAYER_DEATH       = "player_death"    # S→C  player morreu — corpse_tx, corpse_ty
     PLAYER_STATS_SYNC  = "player_stats_sync"  # S→C  sincroniza HP autoritativo do player
+
+    # ── Quests ────────────────────────────────────────────────────
+    QUEST_ACCEPT       = "quest_accept"    # C→S  aceitar quest no NPC {quest_id}
+    QUEST_TURN_IN      = "quest_turn_in"   # C→S  entregar quest no NPC {quest_id}
+    QUEST_UPDATE       = "quest_update"    # S→C  snapshot active/completed (só pro dono, ver QuestLog)
 
     # ── Morte/respawn: fluxo de espírito (ghost) + cemitério ────────
     RELEASE_SPIRIT     = "release_spirit"  # C→S  player clicou "Liberar espírito"
@@ -322,6 +330,24 @@ def _now_ms() -> int:
 # Servidor envia apenas os campos que mudaram. Cliente faz merge.
 
 
+# ── S→C: SKILL_LEVELS_UPDATE ─────────────────────────────────────────────────
+# {
+#   "levels":     dict[str, int]   *   snapshot completo, 1 entrada por SKILL_IDS
+#   "xp":         dict[str, int]   *   snapshot completo, 1 entrada por SKILL_IDS
+#   "leveled_up": list[{"skill_id": str, "level": int}]   opcional, omitido se nada levelou
+# }
+# Enviado SÓ ao dono (nunca broadcast AOI — progressão é privada). Dirty-check
+# por tick em WorldServer._sync_player_skill_levels_dirty(): qualquer grant_skill_xp
+# (cast de magia, auto-attack, skill de arco, DoT resistido) muda o componente
+# SkillLevels do servidor; este snapshot mantém o painel do cliente (tecla L,
+# skill_level_ui.py) atualizado sem precisar de relog. Cliente faz merge direto
+# (replace, não soma) no componente SkillLevels local — nunca usado em cálculo
+# de dano client-side, só exibição (ver PROBLEMAS_ARQUITETURA.md).
+# "leveled_up": cliente mostra "Parabéns, você subiu o nível de sua habilidade
+# com {skill} para o nível {level}." (LOG) + som de level-up — ver
+# client/network_handlers.py::_handle_msg_skill_levels_update.
+
+
 # ── S→C: PLAYER_DEATH ────────────────────────────────────────────────────────
 # {
 #   "eid":       int *   eid do player que morreu
@@ -366,6 +392,34 @@ def _now_ms() -> int:
 # }
 # Enviado APENAS ao dono, quando near_corpse muda (ou periodicamente p/ resync).
 
+
+# ── C→S: QUEST_ACCEPT ────────────────────────────────────────────────────────
+# {
+#   "quest_id": str *
+# }
+# Servidor valida pré-requisitos/nível com seu PRÓPRIO QuestLog/CharacterStats
+# (nunca confia em progresso reportado pelo cliente). Responde com QUEST_UPDATE
+# (sucesso ou não — cliente só reflete o que o servidor confirma).
+
+# ── C→S: QUEST_TURN_IN ───────────────────────────────────────────────────────
+# {
+#   "quest_id": str *
+# }
+# Servidor valida que todos os objetivos estão completos no QuestLog dele.
+# Se válido: concede XP (via canal já usado por STATS_UPDATE/process_levelups),
+# gold (Wallet.gold direto), remove itens de quest do Inventory, e responde
+# QUEST_UPDATE com completed_qid setado (cliente mostra LOG/PROC/som locais).
+
+# ── S→C: QUEST_UPDATE ────────────────────────────────────────────────────────
+# {
+#   "active":       dict   {quest_id: [progresso_por_objetivo, ...]}
+#   "completed":    list   [quest_id, ...]
+#   "completed_qid": str   setado só na entrega bem-sucedida de uma quest —
+#                          sinaliza o cliente a mostrar o feedback de "completa"
+# }
+# Enviado APENAS ao dono (nunca AOI — progresso de quest é dado privado).
+# Snapshot completo, não incremental — cliente substitui QuestLog.active/
+# .completed inteiro (mesmo padrão de SKILL_LEVELS_UPDATE).
 
 # ── S→C: ENTITY_SPAWN ────────────────────────────────────────────────────────
 # {

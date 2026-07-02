@@ -226,6 +226,18 @@ class CombatStats:
         self.fire_exhaustion_enabled:   bool  = False # pir_exaustao: slow progressivo por BdF consecutiva
         self.crematoria_enabled:        bool  = False # pir_crematoria: +25% dano em alvos <20% HP
 
+        # ── Bônus derivados de SkillLevels (ver stats_system.apply_skill_bonuses_to_combat) ──
+        # Recalculados sob demanda (level-up de skill ou spawn/login), nunca via Modifier —
+        # cada um já é o bônus final (0.0 a 0.15) pronto pra somar no cálculo de combate.
+        self.weapon_skill_bonus: dict[str, float] = {}  # {"machado":0.0, "espada":0.0, "maca":0.0, "arco":0.0, "baculo":0.0}
+        self.shield_skill_block_bonus:  float = 0.0
+        self.defense_skill_avoid_bonus: float = 0.0
+        self.resist_fogo:     float = 0.0
+        self.resist_gelo:     float = 0.0
+        self.resist_natureza: float = 0.0
+        self.magic_skill_dmg_bonus:  float = 0.0
+        self.magic_skill_crit_bonus: float = 0.0
+
         # Validação de invariantes críticos — falha rápido durante desenvolvimento
         if base_stamina <= 0:
             raise ValueError(f"CombatStats: base_stamina deve ser > 0 (recebido: {base_stamina})")
@@ -968,6 +980,13 @@ class TileMovement:
     _server_dir_y: float = 0.0   # direção Y normalizada
     _server_aoe_x: float = 0.0   # coordenada X world do alvo AOE (Calamidade Flamejante)
     _server_aoe_y: float = 0.0   # coordenada Y world do alvo AOE
+    # Janela de "ainda considerado em movimento" só pro servidor inferir is_moving
+    # de PLAYERS — WorldServer.move_player() faz snap instantâneo de tile (sem
+    # tween real, diferente de mob/cliente), então sem isso is_moving nunca
+    # vira True pra players no servidor, quebrando qualquer mecânica que
+    # dependa de "parado vs andando" lá (Calmo e Certeiro, regen de
+    # Concentração — ver ServerCombatStateSystem._tick_player_move_grace).
+    _server_move_grace: float = 0.0
 
 
 @dataclass
@@ -1024,6 +1043,23 @@ class TalentTree:
         self.available_points: int    = 0    # pontos ainda não gastos
         self._applied_modifiers: list = []   # Modifier objects ativos (para remoção)
         self._unlocked_skill_ids: set = set()  # handlers de skills desbloqueadas
+
+
+SKILL_IDS = ("machado", "espada", "maca", "arco", "baculo", "escudo",
+             "defesa", "resist_fogo", "resist_gelo", "resist_natureza", "magic")
+MAX_SKILL_LEVEL = 200
+
+
+class SkillLevels:
+    """
+    Progressão Tibia-like por uso (0-200) — armas, escudo, defesa,
+    resistências mágicas e magic. Server-autoritativo: só o servidor
+    concede xp e persiste; cliente só exibe (ver stats_system.py e
+    PROBLEMAS_ARQUITETURA.md, seção skill level).
+    """
+    def __init__(self):
+        self.levels: dict = {sid: 0 for sid in SKILL_IDS}
+        self.xp:     dict = {sid: 0 for sid in SKILL_IDS}
 
 
 class ActiveRegen:
@@ -1304,6 +1340,12 @@ class AoeTargeting:
 class TrainingDummy:
     """Tag: boneco de treino. HP resetado ao atingir 0 em vez de morrer."""
     pass
+
+
+@dataclass
+class MapLocation:
+    """Qual mapa esta entidade pertence. Adicionado a todos os não-players."""
+    map_file: str = ""
 
 
 # ── Online: entidade remota ──────────────────────────────────────────────────

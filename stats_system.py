@@ -9,6 +9,7 @@ from world import World
 from components import (
     CharacterStats, PermanentStats, CombatStats, CombatState,
     PlayerControlled, PlayerAutoMove, TileMovement, Position, StatusEffects,
+    SkillLevels, SKILL_IDS, MAX_SKILL_LEVEL,
 )
 from systems import System
 from tileset import TILE_SIZE
@@ -236,7 +237,7 @@ def process_levelups(world: World, entity_id: int,
         except Exception:
             pass
         try:
-            _qfire("reach_level", level=char.level)
+            _qfire("reach_level", player_eid=entity_id, level=char.level)
         except Exception:
             pass
         leveled = True
@@ -244,6 +245,159 @@ def process_levelups(world: World, entity_id: int,
     if leveled:
         apply_char_stats_to_combat(char, cs, perm)
         cs.current_hp = cs.max_hp  # HP cheio ao subir de nível
+
+
+# ---------------------------------------------------------------------------
+# Skill Level (Tibia-like) — progressão por uso: armas, escudo, defesa,
+# resistências mágicas e magic. Ver arquitetura/PROBLEMAS_ARQUITETURA.md.
+# Server-autoritativo: grant_skill_xp só deve ser chamado pelo servidor.
+# ---------------------------------------------------------------------------
+
+# Mapeia item.subtype (arma) → skill_id agrupado. Adicionar nova arma:
+# inserir o subtype aqui (1 dos 5 grupos existentes, não cria grupo novo).
+WEAPON_SUBTYPE_TO_SKILL: dict[str, str] = {
+    "Axe":     "machado",
+    "Sword":   "espada",
+    "Dagger":  "espada",
+    "Club":    "maca",
+    "Mace":    "maca",
+    "Hammer":  "maca",
+    "Bow":     "arco",
+    "Staff":   "baculo",
+    "Wand":    "baculo",
+    "Scepter": "baculo",
+}
+
+SKILL_XP_BASE     = 20
+SKILL_XP_EXPONENT = 1.2
+
+
+def skill_xp_for_level(level: int) -> int:
+    """XP necessário para avançar do skill level `level` para `level+1`."""
+    return int(SKILL_XP_BASE * (level + 1) ** SKILL_XP_EXPONENT)
+
+
+def skill_bonus_pct(level: int) -> float:
+    """Bônus linear 0% (level 0) a 15% (level MAX_SKILL_LEVEL)."""
+    return min(1.0, level / MAX_SKILL_LEVEL) * 0.15
+
+
+def grant_skill_xp(skill_levels: SkillLevels, combat_stats: CombatStats,
+                    skill_id: str, amount: int = 1) -> bool:
+    """Concede xp a uma trilha de skill, processa level-ups pendentes (while,
+    igual a process_levelups) e recalcula os bônus derivados se subiu nível.
+    Retorna True se houve ao menos um level-up."""
+    if skill_id not in SKILL_IDS:
+        return False
+    level = skill_levels.levels[skill_id]
+    if level >= MAX_SKILL_LEVEL:
+        return False
+    skill_levels.xp[skill_id] += amount
+    leveled = False
+    while level < MAX_SKILL_LEVEL and skill_levels.xp[skill_id] >= skill_xp_for_level(level):
+        skill_levels.xp[skill_id] -= skill_xp_for_level(level)
+        level += 1
+        leveled = True
+    skill_levels.levels[skill_id] = level
+    if leveled:
+        apply_skill_bonuses_to_combat(skill_levels, combat_stats)
+    return leveled
+
+
+def apply_skill_bonuses_to_combat(skill_levels: SkillLevels, combat_stats: CombatStats) -> None:
+    """Recalcula todos os campos de bônus derivados de SkillLevels em
+    CombatStats de uma vez. Chamar após qualquer level-up de skill e no
+    spawn/login (mesmo gatilho de apply_char_stats_to_combat)."""
+    combat_stats.weapon_skill_bonus = {
+        skill_id: skill_bonus_pct(skill_levels.levels[skill_id])
+        for skill_id in ("machado", "espada", "maca", "arco", "baculo")
+    }
+    combat_stats.shield_skill_block_bonus  = skill_bonus_pct(skill_levels.levels["escudo"])
+    combat_stats.defense_skill_avoid_bonus = skill_bonus_pct(skill_levels.levels["defesa"])
+    combat_stats.resist_fogo     = skill_bonus_pct(skill_levels.levels["resist_fogo"])
+    combat_stats.resist_gelo     = skill_bonus_pct(skill_levels.levels["resist_gelo"])
+    combat_stats.resist_natureza = skill_bonus_pct(skill_levels.levels["resist_natureza"])
+    combat_stats.magic_skill_dmg_bonus  = skill_bonus_pct(skill_levels.levels["magic"])
+    combat_stats.magic_skill_crit_bonus = skill_bonus_pct(skill_levels.levels["magic"])
+
+
+def weapon_skill_extras(world: World, attacker_id: int, weapon) -> tuple[float, float]:
+    """Resolve (extra_acerto_pontos_pct, extra_crit_fracao) do skill de arma do
+    atacante, prontos para passar a `resolve_attack_outcome`. `weapon` é o item
+    na mainhand (ou None — desarmado não tem skill de arma). Retorna (0.0, 0.0)
+    se o atacante não tem SkillLevels rastreado (mob) ou arma sem subtype mapeado.
+    """
+    if weapon is None:
+        return 0.0, 0.0
+    skill_id = WEAPON_SUBTYPE_TO_SKILL.get(getattr(weapon, "subtype", ""))
+    if not skill_id:
+        return 0.0, 0.0
+    attacker_cs = world.get_component(attacker_id, CombatStats)
+    if not attacker_cs:
+        return 0.0, 0.0
+    bonus = attacker_cs.weapon_skill_bonus.get(skill_id, 0.0)
+    return bonus * 100.0, bonus
+
+
+def defense_skill_extras(world: World, target_id: int) -> tuple[float, float]:
+    """Resolve (extra_block_fracao, extra_avoid_fracao) do alvo, prontos para
+    passar a `resolve_attack_outcome`. extra_block só conta se o alvo tem
+    escudo equipado na offhand (ver Equipment) — defesa (avoid) é incondicional."""
+    from components import Equipment as _EqDef
+    target_cs = world.get_component(target_id, CombatStats)
+    if not target_cs:
+        return 0.0, 0.0
+    extra_avoid = getattr(target_cs, "defense_skill_avoid_bonus", 0.0)
+    extra_block = 0.0
+    equip = world.get_component(target_id, _EqDef)
+    if equip:
+        offhand = equip.slots.get("offhand")
+        if offhand is not None and getattr(offhand, "item_type", "") == "shield":
+            extra_block = getattr(target_cs, "shield_skill_block_bonus", 0.0)
+    return extra_block, extra_avoid
+
+
+def grant_weapon_skill_xp(world: World, attacker_id: int, weapon) -> None:
+    """Concede 1 xp na trilha de arma do atacante (ataque físico, hit ou não —
+    1 chamada = 1 uso). Server-autoritativo: só chamar a partir do servidor."""
+    if weapon is None:
+        return
+    skill_id = WEAPON_SUBTYPE_TO_SKILL.get(getattr(weapon, "subtype", ""))
+    if not skill_id:
+        return
+    skl = world.get_component(attacker_id, SkillLevels)
+    cs  = world.get_component(attacker_id, CombatStats)
+    if skl and cs:
+        grant_skill_xp(skl, cs, skill_id, 1)
+
+
+def grant_defense_skill_xp(world: World, target_id: int) -> None:
+    """Concede 1 xp de Defesa (sempre) e 1 xp de Escudo (se equipado) ao alvo
+    de um ataque físico — "ganha de acordo com o dano que recebe". Chamado a
+    cada ataque físico resolvido contra o alvo, hit ou não. Server-autoritativo."""
+    from components import Equipment as _EqDef2
+    skl = world.get_component(target_id, SkillLevels)
+    cs  = world.get_component(target_id, CombatStats)
+    if not (skl and cs):
+        return
+    grant_skill_xp(skl, cs, "defesa", 1)
+    equip = world.get_component(target_id, _EqDef2)
+    if equip:
+        offhand = equip.slots.get("offhand")
+        if offhand is not None and getattr(offhand, "item_type", "") == "shield":
+            grant_skill_xp(skl, cs, "escudo", 1)
+
+
+def grant_resist_skill_xp(world: World, target_id: int, school: str) -> None:
+    """Concede 1 xp de resistência da escola (fogo/gelo/natureza) ao alvo que
+    recebeu dano dessa escola. Server-autoritativo."""
+    skill_id = f"resist_{school}"
+    if skill_id not in SKILL_IDS:
+        return
+    skl = world.get_component(target_id, SkillLevels)
+    cs  = world.get_component(target_id, CombatStats)
+    if skl and cs:
+        grant_skill_xp(skl, cs, skill_id, 1)
 
 
 # ---------------------------------------------------------------------------

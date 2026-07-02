@@ -13,7 +13,7 @@ import asyncio
 import time
 
 from shared.messages import MsgType, encode, decode
-from shared.constants import AOI_RADIUS, PROTOCOL_VERSION, TICK_RATE
+from shared.constants import AOI_RADIUS, AOI_EXIT_BUFFER, PROTOCOL_VERSION, TICK_RATE
 from utils import in_aoi as _in_aoi, SpatialHash as _SpatialHash
 
 
@@ -92,6 +92,8 @@ class SessionManager:
           validado, ver Tier B — _reconstruct_item). Mesma razão acima.
         - inventory, equipment, talents: cliente se disponível, None = não sobrescreve DB
         - skills: cliente se disponível, fallback srv_data
+        - quests: SEMPRE servidor (mesma regra de skill_levels — progresso/entrega de
+          quest é server-autoritativo, ver quest_logic.py/PROBLEMAS_ARQUITETURA.md)
         - stats base (level, xp, attrs): servidor
         """
         client_p  = client_payload
@@ -136,6 +138,15 @@ class SessionManager:
             "talents":   client_p.get("talents")   if client_p else None,
             "skills":    client_skills if client_skills else (srv_data.get("skills") or None),
             "fog":       merged_fog if merged_fog else None,
+            # skill_levels: SEMPRE servidor — progressão por uso é
+            # server-autoritativa, cliente nunca influencia (ver
+            # stats_system.grant_skill_xp / PROBLEMAS_ARQUITETURA.md).
+            "skill_levels": srv_data.get("skill_levels"),
+            # quests: SEMPRE servidor — progresso/entrega é server-autoritativa,
+            # mesma regra de skill_levels (ver quest_logic.py/PROBLEMAS_ARQUITETURA.md).
+            "quests": srv_data.get("quests"),
+            # map_id: SERVIDOR autoritativo — zona atual do player.
+            "map_id": srv_data.get("map_id"),
         }
 
     async def on_disconnect(self, session_id: str) -> None:
@@ -368,6 +379,24 @@ class SessionManager:
             if _cst_cancel:
                 _cst_cancel.is_casting = False
 
+    async def _handle_cast_dir_update(self, session: Session, payload: dict, ts: int) -> None:
+        """Atualiza direção de skill direcional pendente (ex: tiro_multiplo).
+        Enviado pelo cliente na conclusão do cast local, capturando a posição
+        do mouse NAQUELE momento (não quando a tecla foi pressionada)."""
+        if not session.authenticated:
+            return
+        sid   = payload.get("sid", "")
+        dir_x = float(payload.get("dir_x", 0.0))
+        dir_y = float(payload.get("dir_y", 0.0))
+        if not sid or (dir_x == 0.0 and dir_y == 0.0):
+            return
+        player_eid = self.world_server.get_entity_id(session.session_id)
+        for entry in self.world_server._pending_spell_completions:
+            if entry["player_eid"] == player_eid and entry["spell_id"] == sid:
+                entry["dir_x"] = dir_x
+                entry["dir_y"] = dir_y
+                break
+
     async def _handle_cast_skill(self, session: Session, payload: dict, ts: int) -> None:
         if not session.authenticated:
             return
@@ -486,6 +515,16 @@ class SessionManager:
                     session.session_id, _checked_tal_alloc)
             except Exception as _te:
                 print(f"[Session] aviso: talent effects não re-aplicados — {_te}")
+
+        # Skills: atualiza PlayerSkills.learned_skill_ids no ECS vivo do servidor
+        # para que _process_quest_events::sync_learn_skill_progress detecte skills
+        # recém-aprendidas via treinador e avance objetivos de quest learn_skill.
+        # O aprendizado de skills é client-side (gap pré-existente — trainer economy
+        # não é server-validada); aqui só sincronizamos o estado resultante para que
+        # o servidor saiba quais skills o jogador tem agora.
+        _skills_ss = payload.get("skills")
+        if isinstance(_skills_ss, dict):
+            self.world_server.sync_player_skills(session.session_id, _skills_ss)
 
         # max_hp/current_hp NUNCA são lidos do payload aqui. max_hp já é
         # server-autoritativo (CombatStats deriva de Equipment/TalentTree reais —
@@ -615,6 +654,118 @@ class SessionManager:
             await save_character(session.char_data["id"], merged)
         except Exception as e:
             print(f"[TalentUpdate] ERRO ao salvar: {e}")
+
+    async def _handle_quest_accept(self, session: Session, payload: dict, ts: int) -> None:
+        """Aceita quest a partir do diálogo de NPC — valida pré-requisitos/
+        nível com o QuestLog/CharacterStats do PRÓPRIO servidor (nunca confia
+        no cliente). Responde QUEST_UPDATE sempre (sucesso ou não — cliente
+        só reflete o que o servidor confirma, nunca muta localmente).
+
+        Aceita também quest_id="" (vazio) vindo de interações com NPCs que não
+        são QuestGivers (ex: ShopSystem abriu loja de Fabian Hardek) — nesse
+        caso só aplica o evento talk_to_npc sem tentar iniciar nenhuma quest."""
+        if not session.authenticated or not session.char_data.get("id"):
+            return
+        qid = str(payload.get("quest_id", ""))
+        eid = session.entity_id
+        from components import QuestLog
+        ql = self.world_server.world.get_component(eid, QuestLog)
+        if ql is None:
+            return
+        import quest_logic
+        # talk_to_npc SEMPRE antes do try_start — mesmo quando quest_id é vazio
+        # (interação com NPC não-QuestGiver, ex: mercador). O check "if not qid"
+        # antigo ficava ANTES disso e impedia o evento de chegar ao QuestLog.
+        npc_name = payload.get("npc_name", "")
+        if npc_name:
+            quest_logic.apply_event(ql, "talk_to_npc", {"npc_name": npc_name})
+        if not qid:
+            # Só interação de NPC, sem quest pra aceitar — envia o estado atual
+            await session.send(MsgType.QUEST_UPDATE, {
+                "active":    {q: list(p) for q, p in ql.active.items()},
+                "completed": list(ql.completed),
+            })
+            return
+        quest_logic.try_start(self.world_server.world, eid, ql, qid)
+        await session.send(MsgType.QUEST_UPDATE, {
+            "active":    {q: list(p) for q, p in ql.active.items()},
+            "completed": list(ql.completed),
+        })
+
+    async def _handle_quest_turn_in(self, session: Session, payload: dict, ts: int) -> None:
+        """Entrega quest a partir do diálogo de NPC — valida objetivos
+        completos contra o QuestLog do servidor, concede XP/gold e remove
+        itens de quest do Inventory. Server-autoritativo — ver quest_logic.py
+        e arquitetura/PROBLEMAS_ARQUITETURA.md (migração de quests)."""
+        if not session.authenticated or not session.char_data.get("id"):
+            return
+        qid = str(payload.get("quest_id", ""))
+        if not qid:
+            return  # turn_in sem quest_id é sem sentido — rejeita direto
+        eid = session.entity_id
+        from components import QuestLog
+        ql = self.world_server.world.get_component(eid, QuestLog)
+        if ql is None:
+            return
+        import quest_logic
+        # talk_to_npc antes de can_turn_in — garante que objetivos do tipo
+        # talk_to_npc (ex: "fale com o NPC antes de entregar") já estejam
+        # contabilizados quando a validação de entrega rodar.
+        npc_name = payload.get("npc_name", "")
+        if npc_name:
+            quest_logic.apply_event(ql, "talk_to_npc", {"npc_name": npc_name})
+        if not quest_logic.can_turn_in(ql, qid):
+            return
+        reward = quest_logic.complete_quest(self.world_server.world, eid, ql, qid)
+        if reward is None:
+            return
+
+        if reward.xp > 0:
+            from components import CharacterStats, CombatStats, PermanentStats, TalentTree
+            char = self.world_server.world.get_component(eid, CharacterStats)
+            cs   = self.world_server.world.get_component(eid, CombatStats)
+            perm = self.world_server.world.get_component(eid, PermanentStats)
+            if char and cs:
+                self.world_server._pending_xp_deliveries.append({
+                    "player_eid": eid, "xp": reward.xp, "mob_eid": -1,
+                })
+                level_before = char.level
+                char.current_xp += reward.xp
+                from stats_system import process_levelups
+                process_levelups(self.world_server.world, eid, char, cs, perm)
+                if char.level > level_before:
+                    cs.current_hp = cs.max_hp
+                    tt = self.world_server.world.get_component(eid, TalentTree)
+                    self.world_server._pending_xp_deliveries.append({
+                        "player_eid":    eid,
+                        "xp":            0,
+                        "mob_eid":       -1,
+                        "hp":            cs.current_hp,
+                        "hp_max":        cs.max_hp,
+                        "talent_points": tt.available_points if tt else 0,
+                    })
+
+        if reward.gold > 0:
+            from components import Wallet
+            wall = self.world_server.world.get_component(eid, Wallet)
+            if wall:
+                wall.gold += reward.gold
+
+        # Persiste imediatamente (mesmo padrão de TALENT_UPDATE) — crash do
+        # servidor não perde a entrega que já concedeu XP/gold/itens.
+        from server.auth import save_character
+        srv_data = self.world_server.get_player_save_data(session.session_id)
+        merged   = self._build_save_merge(srv_data, session.last_client_payload)
+        try:
+            await save_character(session.char_data["id"], merged)
+        except Exception as e:
+            print(f"[QuestTurnIn] ERRO ao salvar: {e}")
+
+        await session.send(MsgType.QUEST_UPDATE, {
+            "active":        {q: list(p) for q, p in ql.active.items()},
+            "completed":     list(ql.completed),
+            "completed_qid": qid,
+        })
 
     async def _handle_hotbar_update(self, session: Session, payload: dict, ts: int) -> None:
         """Atualiza cache da barra de ações — persistido no próximo save completo."""
@@ -767,6 +918,9 @@ class SessionManager:
         char_data["client_ap"]     = 0.0
         char_data["client_max_hp"] = 0
         eid = self.world_server.spawn_player(session.session_id, char_data)
+        # spawn_player pode ter corrigido map_id (ex: 'map_main' → mapa válido).
+        # Atualiza char_data para que o cliente receba o mapa real.
+        char_data["map_id"] = self.world_server.get_player_map(session.session_id)
 
         session.entity_id     = eid
         session.char_data     = dict(char_data)
@@ -794,7 +948,10 @@ class SessionManager:
                            "hp": _h, "hp_max": _hm,
                            "level": s2.char_data.get("level", 1), "effects": []})
 
-        near_mobs    = self.world_server.get_mobs_in_aoi(tx, ty, AOI_RADIUS)
+        near_mobs    = self.world_server.get_mobs_in_aoi(
+            tx, ty, AOI_RADIUS,
+            map_file=self.world_server.get_player_map(session.session_id),
+        )
         all_entities = near_players + near_mobs
         await session.send(MsgType.WORLD_STATE, {
             "tick": self.world_server.tick_count, "tx": tx, "ty": ty,
@@ -885,6 +1042,41 @@ class SessionManager:
         # O cliente volta à lista de seleção; o spawn ocorre só ao clicar "Jogar".
         await session.send(MsgType.CHARACTER_CREATED, {"char": dict(char_data)})
 
+    async def _handle_zone_change_req(self, session: Session, payload: dict, ts: int = 0) -> None:
+        """Processa pedido de troca de mapa C→S. Servidor valida e executa; envia ZONE_CHANGE.
+
+        Modelo offline: o cliente detecta o tile de transição e envia o pedido — o servidor
+        confia nessa detecção e apenas valida se o mapa destino está carregado. Checar a
+        posição exata server-side causa falsos rejeitos por timing (MOVE em trânsito quando
+        ZONE_CHANGE_REQ chega) ou quando o tile de transição é rejeitado pelo walkability
+        do mapa errado. Não há vantagem de trapaça: o destino (to_map + target_x/y) é fixo
+        no servidor — um cliente desonesto apenas chegaria ao mesmo tile de destino mais cedo.
+        """
+        if not session.authenticated or session.entity_id == -1:
+            return
+        to_map   = str(payload.get("to_map", ""))
+        target_x = int(payload.get("target_x", 0))
+        target_y = int(payload.get("target_y", 0))
+
+        # Única validação: mapa destino deve estar carregado (evita teletransporte arbitrário).
+        if to_map not in self.world_server._map_bundles:
+            return
+
+        # Executa a troca de mapa no servidor
+        self.world_server.transfer_player(
+            session.session_id, session.entity_id,
+            to_map, target_x, target_y,
+        )
+
+        # Notifica o cliente para carregar o novo mapa
+        await session.send(MsgType.ZONE_CHANGE, {
+            "map_file": to_map,
+            "target_x": target_x,
+            "target_y": target_y,
+        })
+        # Invalida known_eids — entidades do mapa antigo não são mais visíveis
+        session.known_eids.clear()
+
     _handlers = {
         MsgType.REGISTER:           _handle_register,
         MsgType.CREATE_CHARACTER:   _handle_create_character,
@@ -895,8 +1087,9 @@ class SessionManager:
         MsgType.MOVE:         _handle_move,
         MsgType.PING:         _handle_ping,
         MsgType.AUTO_ATTACK:  _handle_auto_attack,
-        MsgType.CAST_SKILL:   _handle_cast_skill,
+        MsgType.CAST_SKILL:        _handle_cast_skill,
         MsgType.CANCEL_CAST:       _handle_cancel_cast,
+        MsgType.CAST_DIR_UPDATE:   _handle_cast_dir_update,
         MsgType.PROJECTILE_HIT_CS: _handle_projectile_hit,
         MsgType.CHAT_SEND:         _handle_chat,
         MsgType.LOOT_REQUEST:      _handle_loot_request,
@@ -914,6 +1107,9 @@ class SessionManager:
         MsgType.UNSTUCK:           _handle_unstuck,
         MsgType.RELEASE_SPIRIT:    _handle_release_spirit,
         MsgType.REVIVE_REQUEST:    _handle_revive_request,
+        MsgType.QUEST_ACCEPT:      _handle_quest_accept,
+        MsgType.QUEST_TURN_IN:     _handle_quest_turn_in,
+        MsgType.ZONE_CHANGE_REQ:   _handle_zone_change_req,
     }
 
     # ── AOI subscription — núcleo do sistema ─────────────────────────────────
@@ -929,6 +1125,8 @@ class SessionManager:
                        or bool(self.world_server._pending_xp_deliveries)
                        or bool(self.world_server._expired_corpses_this_tick)
                        or bool(self.world_server._player_hp_broadcasts_this_tick)
+                       or bool(self.world_server._skill_levels_broadcasts_this_tick)
+                       or bool(self.world_server._quest_update_broadcasts_this_tick)
                        or bool(self.world_server._pending_sound_events))
         if not has_pending:
             return
@@ -1074,6 +1272,29 @@ class SessionManager:
                         if (sx - _cx) ** 2 + (sy - _cy) ** 2 <= AOI_RADIUS ** 2:
                             await s.send(MsgType.STATS_UPDATE, _hp_payload)
 
+            # SkillLevels: só pro dono — progressão é privada, nunca broadcast AOI.
+            for _skl_upd in self.world_server.consume_skill_levels_broadcasts():
+                _skl_sid = self.world_server.get_session_id_for_player(_skl_upd["eid"])
+                _skl_sess = self._sessions.get(_skl_sid) if _skl_sid else None
+                if _skl_sess and _skl_sess.authenticated:
+                    _skl_payload = {
+                        "levels": _skl_upd["levels"],
+                        "xp":     _skl_upd["xp"],
+                    }
+                    if "leveled_up" in _skl_upd:
+                        _skl_payload["leveled_up"] = _skl_upd["leveled_up"]
+                    await _skl_sess.send(MsgType.SKILL_LEVELS_UPDATE, _skl_payload)
+
+            # QuestLog: só pro dono — progresso de quest é privado, nunca broadcast AOI.
+            for _ql_upd in self.world_server.consume_quest_update_broadcasts():
+                _ql_sid = self.world_server.get_session_id_for_player(_ql_upd["eid"])
+                _ql_sess = self._sessions.get(_ql_sid) if _ql_sid else None
+                if _ql_sess and _ql_sess.authenticated:
+                    await _ql_sess.send(MsgType.QUEST_UPDATE, {
+                        "active":    _ql_upd["active"],
+                        "completed": _ql_upd["completed"],
+                    })
+
             # Corpses que expiraram — notifica todos no AOI para remover visualmente
             for expired in self.world_server.consume_expired_corpses():
                 cid = expired["cid"]
@@ -1141,10 +1362,40 @@ class SessionManager:
         - Entidade em AOI conhecida → ENTITY_MOVE
         """
         r = AOI_RADIUS
+        r_exit_sq = (AOI_RADIUS + AOI_EXIT_BUFFER) ** 2
         result: dict = {}
 
-        def in_aoi(tx: int, ty: int) -> bool:
-            return (tx - cx) ** 2 + (ty - cy) ** 2 <= r * r
+        # Mapa atual do player que recebe este update.
+        _my_map = self.world_server.get_player_map(session.session_id)
+
+        from components import MapLocation as _ML_aoi
+
+        def in_aoi(tx: int, ty: int, eid: int = -1) -> bool:
+            if (tx - cx) ** 2 + (ty - cy) ** 2 > r * r:
+                return False
+            # MapLocation é a fonte única de verdade para entity→mapa (P3).
+            # Entidade SEM MapLocation é excluída — toda entidade networked deve ter um.
+            if eid >= 0:
+                _ml = self.world_server.world.get_component(eid, _ML_aoi)
+                if not _ml or _ml.map_file != _my_map:
+                    return False
+            return True
+
+        def in_aoi_exit(tx: int, ty: int, eid: int = -1) -> bool:
+            # Histerese: raio de SAÍDA maior que o de ENTRADA (AOI_EXIT_BUFFER).
+            # Sem isso, uma entidade já conhecida cujo caminho "raspa" a borda
+            # de AOI_RADIUS (ex: mob RETURNING cruzando perto de 15 tiles)
+            # gerava despawn/respawn repetido a cada tick que cruzasse a
+            # fronteira — nunca ficava visível tempo suficiente pro cliente
+            # renderizar de forma estável. Entrada continua usando in_aoi()
+            # (raio normal) — só a permanência usa o raio com buffer.
+            if (tx - cx) ** 2 + (ty - cy) ** 2 > r_exit_sq:
+                return False
+            if eid >= 0:
+                _ml = self.world_server.world.get_component(eid, _ML_aoi)
+                if not _ml or _ml.map_file != _my_map:
+                    return False
+            return True
 
         # ── Moves: verifica entradas/saídas de AOI ────────────────────
         confirmed_moves = []
@@ -1153,22 +1404,22 @@ class SessionManager:
 
         for m in deltas.get("moved", []):
             eid    = m["eid"]
-            in_new = in_aoi(m["tx"],      m["ty"])
-            in_old = in_aoi(m["from_tx"], m["from_ty"])
+            in_new = in_aoi(m["tx"],      m["ty"],      eid)
+            in_old = in_aoi(m["from_tx"], m["from_ty"], eid)
 
             if eid in session.known_eids:
                 if not _can_see(self.world_server.world, session.entity_id, eid):
                     # Entidade ficou invisível (ex: ghost liberado sem despawn explícito)
                     aoi_exits.append(eid)
                     session.known_eids.discard(eid)
-                elif in_new:
-                    confirmed_moves.append(m)   # ainda no AOI, envia move
+                elif in_aoi_exit(m["tx"], m["ty"], eid):
+                    confirmed_moves.append(m)   # ainda dentro do raio de saída (com buffer)
                 else:
-                    aoi_exits.append(eid)       # saiu do AOI
+                    aoi_exits.append(eid)       # saiu do AOI (além do buffer)
                     session.known_eids.discard(eid)
             else:
                 if in_new:
-                    aoi_entries.append(eid)     # entrou no AOI pela primeira vez
+                    aoi_entries.append(eid)     # entrou no AOI pela primeira vez (raio normal)
 
         # ── Mudanças de visibilidade (ex: Camuflagem) ──────────────────
         # Sem isso, um player que camufla parado nunca some pros outros: o
@@ -1182,7 +1433,7 @@ class SessionManager:
                 vis_tm = self.world_server.world.get_component(eid, _VisTM)
                 if not vis_tm:
                     continue
-                vis_in_aoi  = in_aoi(vis_tm.current_tile_x, vis_tm.current_tile_y)
+                vis_in_aoi  = in_aoi(vis_tm.current_tile_x, vis_tm.current_tile_y, eid)
                 vis_can_see = _can_see(self.world_server.world, session.entity_id, eid)
                 if eid in session.known_eids:
                     if not vis_can_see:
@@ -1210,7 +1461,7 @@ class SessionManager:
                 continue
             if sp["eid"] == session.entity_id:
                 continue  # próprio player não precisa de spawn de si mesmo
-            if in_aoi(sp["tx"], sp["ty"]):
+            if in_aoi(sp["tx"], sp["ty"], sp["eid"]):
                 result.setdefault("spawned", []).append(sp)
                 session.known_eids.add(sp["eid"])
 
@@ -1230,7 +1481,7 @@ class SessionManager:
                 # Mob morreu dentro do AOI mas cliente ainda não sabia dele
                 # (ex: mob entrou/foi teleportado para perto do player e morto no mesmo tick)
                 death_pos = _death_positions.get(eid)
-                if death_pos and in_aoi(death_pos[0], death_pos[1]):
+                if death_pos and in_aoi(death_pos[0], death_pos[1], eid):
                     final_despawned.append(eid)
                     _real_death_eids.add(eid)
 
@@ -1333,7 +1584,7 @@ class SessionManager:
             if mob_eid in session.known_eids:
                 continue
             pos = mob_positions.get(mob_eid) if mob_positions else None
-            if pos and in_aoi(pos[0], pos[1]):
+            if pos and in_aoi(pos[0], pos[1], mob_eid):
                 spawn_data = self.world_server.get_entity_spawn_data(mob_eid)
                 if spawn_data:
                     result.setdefault("spawned", []).append(spawn_data)
@@ -1350,7 +1601,7 @@ class SessionManager:
             if not _can_see(self.world_server.world, session.entity_id, other_eid):
                 continue
             ox, oy = self.world_server.get_tile_pos(other_session.session_id)
-            if in_aoi(ox, oy):
+            if in_aoi(ox, oy, other_eid):
                 _hp, _hp_max = self.world_server.get_player_hp(other_session.session_id)
                 from components import GhostState as _OtherGST2
                 _ogst = self.world_server.world.get_component(other_eid, _OtherGST2)
@@ -1471,6 +1722,17 @@ class SessionManager:
                 continue
             session = self._sessions.get(sid)
             if session:
+                # Ghost mudou de mapa (morreu em zona não-principal): envia ZONE_CHANGE
+                # antes do GHOST_STATE para o cliente carregar o mapa correto primeiro.
+                zone_map = upd.get("zone_change_map")
+                if zone_map and "tx" in upd and "ty" in upd:
+                    await session.send(MsgType.ZONE_CHANGE, {
+                        "map_file": zone_map,
+                        "target_x": upd["tx"],
+                        "target_y": upd["ty"],
+                    })
+                    session.known_eids.clear()
+
                 payload = {
                     "is_ghost":        upd["is_ghost"],
                     "near_corpse":     upd["near_corpse"],

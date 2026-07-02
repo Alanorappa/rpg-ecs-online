@@ -34,6 +34,7 @@ from icon_manager import ICONS
 from sound_manager import SOUNDS
 from ui_compare import draw_compare_panel
 from talent_system import TalentSystem
+from skill_level_ui import SkillLevelUI
 from ui_helpers import item_tooltip_lines, draw_stack_count, RARITY_COLORS as _ITEM_RARITY_COLORS
 from map_overlay import MapOverlay
 from minimap import Minimap
@@ -247,6 +248,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._hbe_skill_scroll: int = 0
         self._hbe_expand_slots: bool = False
         self._show_habilidades: bool = False     # painel Habilidades (tecla H)
+        self._show_skills: bool = False          # painel Skill Level (tecla L)
         self._hab_scroll: int = 0               # scroll do painel Habilidades
         self._ui_events:      list = []            # eventos do frame atual (para _draw_* sem parâmetro)
         self._orig_mouse_pos  = pygame.mouse.get_pos  # kept for compatibility
@@ -280,6 +282,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._load_map_and_entities()
         self._init_systems()
         self._talent_system = TalentSystem(self.world, self.player_entity, self.screen)
+        self._skill_level_ui = SkillLevelUI(self.world, self.player_entity, self.screen)
         self._shop_system   = ShopSystem(self.world, self.player_entity, self.screen)
         self._quest_system  = QuestSystem(self.world, self.player_entity)
         set_quest_system(self._quest_system)
@@ -303,7 +306,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         # vivem fora de GameEngine — eles não têm acesso a self._u()/
         # self.font_* direto, então precisam de set_ui_scale() explícito
         # (ver ui_scale_mixin.py e arquitetura/PROBLEMAS_ARQUITETURA.md, IU3).
-        for _sys in (self._talent_system, self._shop_system, self._quest_system,
+        for _sys in (self._talent_system, self._skill_level_ui, self._shop_system, self._quest_system,
                      self._quest_dialog, self._quest_journal,
                      self._crafting_system, self._trainer_system):
             _sys.set_ui_scale(self._ui_scale)
@@ -389,6 +392,12 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._talent_system._on_change = self._send_talent_update
         # ConsumableSystem: envia CONSUMABLE_USE ao servidor no modo online
         self._consumable_system._net = self._net
+        # ManaSystem: online, servidor é autoritativo pro regen de mana — não prediz aqui
+        self._mana_system._net = self._net
+        # QuestSystem: online, servidor é autoritativo pro progresso/entrega de
+        # quest — cliente só exibe QuestLog e envia QUEST_ACCEPT/QUEST_TURN_IN
+        # (ver QuestDialogSystem.handle_events, quest_logic.py).
+        self._quest_system._net = self._net
         # ShopSystem: envia BUY_REQUEST ao servidor (gold/inventário server-autoritativos)
         self._shop_system._net = self._net
         # LootSystem: envia só a consequência da ação (gold ou inventário), não o state completo
@@ -469,8 +478,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                     entity_class=zd.get("entity_class", ""),
                 )
 
-        for col, row, shop_id, lvl, prof in spawn_points.get("merchants", []):
-            create_merchant(self.world, col, row, shop_id=shop_id,
+        for col, row, name, shop_id, lvl, prof in spawn_points.get("merchants", []):
+            create_merchant(self.world, col, row, name=name, shop_id=shop_id,
                             level=lvl, profession=prof)
 
         for col, row, name, quest_ids, turn_in_ids, lvl, prof in spawn_points.get("quest_givers", []):
@@ -933,7 +942,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         # ShopSystem, QuestSystem/QuestDialogSystem/QuestJournalSystem,
         # LootSystem, TalentSystem, MapOverlay) têm suas próprias fontes — não
         # reagem a _reload_ui_fonts(), precisam do push explícito abaixo.
-        for _sys in (self._talent_system, self._shop_system, self._quest_system,
+        for _sys in (self._talent_system, self._skill_level_ui, self._shop_system, self._quest_system,
                      self._quest_dialog, self._quest_journal,
                      self._crafting_system, self._trainer_system,
                      self._loot_system, self._map_overlay, self._minimap):
@@ -1055,6 +1064,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._show_talents    = False
         self._show_debug      = False
         self._show_habilidades = False
+        self._show_skills     = False
         # Cancela qualquer drag em andamento (habilidades/inventário/hotbar/
         # consumable bar) — fechar tudo inclui desistir de um drag pendente.
         # Antes da unificação em DragState, só o drag de habilidades era
@@ -1256,6 +1266,11 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                         if not already_open:
                             self._show_habilidades = True
                             self._hab_scroll       = 0
+                    elif event.key == self._menu_keys.get("skill_level", pygame.K_l):
+                        already_open = self._show_skills
+                        self._close_all_modals()
+                        if not already_open:
+                            self._show_skills = True
                     elif event.key in (pygame.K_EQUALS, pygame.K_KP_PLUS) and not self._god_mode.active:
                         new_zoom = min(self._zoom_max, round(self._zoom + self._zoom_step, 10))
                         if new_zoom != self._zoom:
@@ -1299,6 +1314,13 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 self._talent_system.handle_events(events, panel)
                 if self._talent_system.wants_close:
                     self._show_talents = False
+
+            # Painel de Skill Level consome eventos quando aberto (read-only)
+            if self._show_skills:
+                panel = self._skill_level_ui._panel_rect()
+                self._skill_level_ui.handle_events(events, panel)
+                if self._skill_level_ui.wants_close:
+                    self._show_skills = False
 
             # UI de morte/espírito: consome cliques nos botões "Liberar espírito"/"Sim"
             self._update_death_ui(events, dt)
@@ -1447,6 +1469,15 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                     self._cancelled_spell_ids.add(_cc_sid)
                 self._spell_cast_system.interrupted_visual_casts.clear()
 
+            # Direção final de skills direcionais (ex: tiro_multiplo): atualiza servidor
+            # com a direção do mouse no momento da conclusão do cast (não do início).
+            if self._net and self._spell_cast_system.pending_dir_updates:
+                from shared.messages import MsgType as _MT_du
+                for _du_sid, _du_dx, _du_dy in self._spell_cast_system.pending_dir_updates:
+                    self._net.send(_MT_du.CAST_DIR_UPDATE,
+                                   {"sid": _du_sid, "dir_x": _du_dx, "dir_y": _du_dy})
+                self._spell_cast_system.pending_dir_updates.clear()
+
             # Sincronização online: movimento + alvo de combate + fila de mobs
             self._send_player_move()
             self._sync_combat_target()
@@ -1526,7 +1557,17 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 if player_tm and not player_tm.is_moving:
                     key = (player_tm.current_tile_x, player_tm.current_tile_y)
                     if key in self.transition_tiles:
-                        self._do_transition(self.transition_tiles[key])
+                        if self._net:
+                            from shared.messages import MsgType as _MTzc
+                            trans = self.transition_tiles[key]
+                            self._net.send(_MTzc.ZONE_CHANGE_REQ, {
+                                "to_map":   trans["target_map"],
+                                "target_x": trans["target_x"],
+                                "target_y": trans["target_y"],
+                            })
+                            self._transition_cooldown = 2.0
+                        else:
+                            self._do_transition(self.transition_tiles[key])
 
             if self._map_title_timer > 0:
                 self._map_title_timer -= dt
@@ -1678,6 +1719,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 _ts = _time.perf_counter()
             if self._show_talents:
                 self._talent_system.render()
+            if self._show_skills:
+                self._skill_level_ui.render()
             if self._show_hotbar_editor:
                 self._draw_hotbar_editor(events)
             _drag_render = self._get_drag()
@@ -1816,6 +1859,12 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         for eid in list(self.world._components.keys()):
             if eid not in keep:
                 self.world.remove_entity(eid)
+
+        # Limpa caches de entidades remotas — os local_eids foram destruídos acima
+        self._remote_mobs.clear()
+        self._remote_players.clear()
+        self._pending_mob_despawn.clear()
+        self._mob_ghost_pos.clear()
 
         # Reseta caches de tilemap
         self._tile_validation_system.tilemap_comp = None
@@ -2087,6 +2136,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._minimap.screen     = new_screen
         if hasattr(self._talent_system, "screen"):
             self._talent_system.screen = new_screen
+        if hasattr(self._skill_level_ui, "screen"):
+            self._skill_level_ui.screen = new_screen
         if hasattr(self._shop_system, "screen"):
             self._shop_system.screen = new_screen
         if hasattr(self._quest_dialog, "screen"):

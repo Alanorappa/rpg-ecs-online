@@ -96,29 +96,34 @@ def _apply_magic_damage(attacker_id: int, target_id: int, dmg: int, world: World
 # ---------------------------------------------------------------------------
 
 class ManaSystem(System):
-    """Regenera mana do jogador periodicamente."""
+    """Regenera mana do jogador periodicamente.
 
-    REGEN_INTERVAL = 5.0   # segundos entre ticks
-    REGEN_OOC_PCT  = 0.04  # 4% max_mana por tick fora de combate
-    REGEN_IC_PCT   = 0.01  # 1% max_mana por tick em combate
+    Online: NÃO prediz — só o servidor regenera mana (mesma fórmula, ver
+    core_systems.BaseCombatStateSystem._tick_mana_regen), sincronizada via
+    STATS_UPDATE. Bug real corrigido: esta classe regenerava mana
+    localmente sem gate de self._net, e o servidor não tinha regen passivo
+    nenhum — o cliente ficava com mana cada vez mais alta que a real do
+    servidor (nunca corrigida, já que só ia ficando MAIOR, nunca menor o
+    suficiente pra um STATS_UPDATE de gasto sobrescrever o desvio), até uma
+    skill "Mana insuficiente" no servidor com o HUD mostrando mana de
+    sobra. Ver arquitetura/PROBLEMAS_ARQUITETURA.md.
+    """
 
     def __init__(self, world: World):
         self.world = world
+        self._net = None  # injetado por game.py após _connect_online()
 
     def update(self, events=None, dt: float = 0) -> None:
-        for entity_id, char_stats, _, cs, combat_stats in self.world.get_entities_with(
-                CharacterStats, PlayerControlled, CombatState, CombatStats):
+        from core_systems import BaseCombatStateSystem as _BCSS
+        for entity_id, char_stats, cs, _, combat_stats in self.world.get_entities_with(
+                CharacterStats, CombatState, PlayerControlled, CombatStats):
             if char_stats.max_mana <= 0:
                 continue
-            char_stats.mana_regen_timer += dt
-            if char_stats.mana_regen_timer >= self.REGEN_INTERVAL:
-                char_stats.mana_regen_timer -= self.REGEN_INTERVAL
-                in_combat = cs and cs.in_combat
-                rate  = self.REGEN_IC_PCT if in_combat else self.REGEN_OOC_PCT
-                regen = max(1, int(char_stats.max_mana * rate))
-                char_stats.mana = min(char_stats.max_mana, char_stats.mana + regen)
-                # Sincroniza CombatStats.mana para que o próximo CAST_SKILL envie o valor correto
-                combat_stats.mana = char_stats.mana
+            if not self._net:
+                mana_result = _BCSS._tick_mana_regen(cs, char_stats, dt)
+                if mana_result:
+                    # Sincroniza CombatStats.mana para que o próximo CAST_SKILL envie o valor correto
+                    combat_stats.mana = char_stats.mana
 
             # Decrementa janela de crits de fogo para Lapso Elemental
             if combat_stats.fire_crit_timer > 0:
@@ -163,6 +168,10 @@ class SpellCastSystem(System):
         self._current_spell_id: str = ""
         # Casts visual_only cancelados por movimento neste frame — game.py envia CANCEL_CAST
         self.interrupted_visual_casts: list[str] = []
+        # Direção final de skills direcionais (ex: tiro_multiplo) capturada na conclusão
+        # do cast local — game.py lê e envia CAST_DIR_UPDATE ao servidor.
+        # Lista de (spell_id, dir_x, dir_y).
+        self.pending_dir_updates: list[tuple[str, float, float]] = []
         # Callback opcional (injetado por game.py no online): notifica mudança de
         # inventário/equipamento que precisa ser persistida (ex: Recarregar).
         self._on_inventory_changed = None
@@ -218,6 +227,12 @@ class SpellCastSystem(System):
         # Outras spells (nova_congelante, calcinar, polimorfia): chama handler para sons/visuais
         # locais. Handlers são seguros: verificam target_cs antes de causar dano (online = None).
         if spell_cast.visual_only:
+            if spell_cast.spell_id == "tiro_multiplo":
+                # Online: captura direção do mouse AGORA (conclusão do cast) e notifica servidor.
+                # Não checa inimigos locais — mobs remotos não têm componente Enemy.
+                # Projéteis visuais chegam via SKILL_RESULT do servidor.
+                self._capture_tiro_multiplo_dir(entity_id)
+                return
             _PROJ_SPELLS_LOCAL = {"bola_de_fogo", "flecha_reiterada", "picada_escorpiao", "tiro_repulsivo"}
             if spell_cast.spell_id not in _PROJ_SPELLS_LOCAL:
                 handler_name = self._CAST_HANDLERS.get(spell_cast.spell_id)
@@ -359,6 +374,28 @@ class SpellCastSystem(System):
             LOG.add("Nova Congelante — nenhum inimigo no raio.", (100, 180, 255))
 
     # ── Tiro Múltiplo ────────────────────────────────────────────────────────
+
+    def _capture_tiro_multiplo_dir(self, attacker_id: int) -> None:
+        """Online-only: captura direção atual do mouse e enfileira CAST_DIR_UPDATE.
+        Chamado quando o cast visual_only completa — sem checar inimigos locais."""
+        import math, pygame
+        from components import Position as _Pos, Camera as _Cam
+        att_pos = self.world.get_component(attacker_id, _Pos)
+        if not att_pos:
+            return
+        _sw, _sh = self.world_surf.get_size()
+        _cam_x, _cam_y = 0.0, 0.0
+        for _, _cp, _ in self.world.get_entities_with(_Pos, _Cam):
+            _cam_x = _cp.x - _sw / 2
+            _cam_y = _cp.y - _sh / 2
+            break
+        _surf_scale = (_sw / max(1, self.hud_surf.get_width())
+                       if self.world_surf and self.hud_surf else 1.0)
+        _sx, _sy = pygame.mouse.get_pos()
+        _dx = _sx * _surf_scale - (att_pos.x - _cam_x)
+        _dy = _sy * _surf_scale - (att_pos.y - _cam_y)
+        _dlen = math.sqrt(_dx * _dx + _dy * _dy) or 1.0
+        self.pending_dir_updates.append(("tiro_multiplo", _dx / _dlen, _dy / _dlen))
 
     def _apply_tiro_multiplo(self, attacker_id: int, target_id: int) -> None:
         """Dispara flechas em cone de 90° na direção do mouse."""
@@ -1441,6 +1478,13 @@ class PlayerProjectileSystem(System):
 
         _apply_magic_damage(proj.attacker_id, proj.target_id, final_dmg, self.world,
                             is_crit=is_crit)
+        # Quest "use_skill" (offline): só conta aqui, quando o dano do projétil já
+        # foi efetivamente aplicado (outcome != "miss" retornou antes) — não na
+        # ativação da skill, ver gating de has_cast em systems.py::_use_skill.
+        from quest_events import fire as _quest_fire_off
+        from components import TrainingDummy as _TDoff_hit
+        _on_dummy_off_hit = self.world.get_component(proj.target_id, _TDoff_hit) is not None
+        _quest_fire_off("use_skill", skill_id=proj.spell_id, on_dummy=_on_dummy_off_hit)
         _tgt_pos_off = self.world.get_component(proj.target_id, Position)
         _lpos_off = self._player_world_pos()
         if _tgt_pos_off and _lpos_off:

@@ -35,6 +35,7 @@ Injetados dinamicamente em `_process_skill_requests` antes de chamar o handler:
 |---------|------|-------|-----------|
 | `_server_dir_x` | `float` | direção X normalizada do CAST_SKILL | Skills de cone (Pirofagia, Tiro Múltiplo) — **pendente C1** |
 | `_server_dir_y` | `float` | direção Y normalizada do CAST_SKILL | Idem |
+| `_server_move_grace` | `float` | janela (s) decrescente após cada `move_player()` aceito | `ServerCombatStateSystem._tick_player_move_grace` — infere `is_moving=True` de PLAYER no servidor (que faz snap instantâneo, sem tween real). Sem isso, `is_moving` de player nunca era `True` server-side — quebrava reset de "Calmo e Certeiro" e regen de Concentração (ver PROBLEMAS_ARQUITETURA.md) |
 
 ---
 
@@ -51,21 +52,32 @@ Injetados dinamicamente em `_process_skill_requests` antes de chamar o handler:
 | `PendingDeath(killer_entity_id)` | marcador de morte a processar | adicionado por CombatSystem ou sweep de HP≤0 no servidor |
 | `GhostState(is_dead, is_ghost, corpse_tx, corpse_ty, graveyard_timer, near_corpse)` | fluxo de morte/espírito (C30) | `is_dead`: corpo no local da morte, espírito ainda não liberado. `is_ghost`: espírito liberado (intangível, invisível, no cemitério/explorando). `corpse_tx/ty`: tile da morte. `graveyard_timer`: segundos contínuos no raio do cemitério. `near_corpse`: dentro do raio de revive do corpo (mostra prompt "Reviver agora?"). Adicionado ao player em `create_player()` (entity_factory.py) |
 
-### CombatStats — campos usados pelo PLAYER_STAT_SYNC
+### CombatStats — PLAYER_STAT_SYNC (OBSOLETO, removido)
 
-O handler `PLAYER_STAT_SYNC` (C→S) sobrescreve estes campos via `COMBAT_SYNC_STATS`:
-
-| Campo no CombatStats | Mapeado de (cliente) | Por quê cliente é autoritativo |
-|---------------------|---------------------|-------------------------------|
-| `base_stamina` | `max_hp` | Inclui bônus de equipamento |
-| `base_attack_power` | `attack_power` | Inclui bônus de arma/amuletos |
-| `base_armor` | `armor` | Armadura total equipada |
-| `base_crit_rating` | `crit_rating` | Bônus de equipamento |
-| `base_parry_rating` | `parry_rating` | Bônus de equipamento |
-| `base_dodge_rating` | `dodge_rating` | Bônus de equipamento |
-| `base_attack_interval` | `attack_interval` | Velocidade de ataque real |
+`PLAYER_STAT_SYNC`/`COMBAT_SYNC_STATS` foram **removidos** (handler é no-op, dict
+apagado de `shared/constants.py`) — o servidor confiava direto em valores de
+attack_power/crit_rating/armor/etc. que o CLIENTE calculava e enviava, sem
+validar contra equipamento/talentos reais (ver `PROBLEMAS_ARQUITETURA.md`,
+Tier A/F). Substituído por `WorldServer._apply_equipment_modifiers`/
+`_apply_talent_modifiers`, que derivam os modificadores de `CombatStats` a
+partir do `Equipment`/`TalentTree` REAIS já validados no servidor.
 
 > ⚠️ **Problema de escala:** CombatStats tem 80+ campos + 25 flags de talento. Ver `PROBLEMAS_ARQUITETURA.md` problema #2 para o plano de migração para `talent_flags: dict`.
+
+### CombatStats — bônus derivados de Skill Level (Tibia-like)
+
+Campos recalculados sob demanda por `stats_system.apply_skill_bonuses_to_combat`
+(level-up de skill ou spawn/login) — nunca via `Modifier`. Servidor concede xp
+e recalcula; cliente nunca chama essa função, então esses campos ficam sempre
+`0.0`/`{}` no cliente (leitura é sempre segura nos dois lados):
+
+| Campo | Trilha de origem | Onde é lido |
+|------|-------------------|-------------|
+| `weapon_skill_bonus: dict[str, float]` | machado/espada/maca/arco/baculo | `stats_system.weapon_skill_extras` → `resolve_attack_outcome(extra_acerto, extra_crit)` |
+| `shield_skill_block_bonus: float` | escudo (só conta se offhand.item_type=="shield") | `stats_system.defense_skill_extras` → `extra_block` |
+| `defense_skill_avoid_bonus: float` | defesa | `stats_system.defense_skill_extras` → `extra_avoid` (soma em dodge E parry) |
+| `resist_fogo/resist_gelo/resist_natureza: float` | resist_fogo/resist_gelo/resist_natureza | `damage_calculator.apply_resistance_reduction` (dano mágico + DoT poison/burn) |
+| `magic_skill_dmg_bonus`/`magic_skill_crit_bonus: float` | magic | `_server_apply_magic_damage` (dano%) e `resolve_attack_outcome(extra_crit)` |
 
 ### FLAGS de talento em CombatStats
 
@@ -182,6 +194,7 @@ Esses atributos existem na classe `Skill.__init__` (`fail_flash_timer` está lá
 | `Tilemap(tile_matrix, terrain_matrix, object_matrix, terrain_visual, map_width_tiles, map_height_tiles, tile_size)` | dados do mapa carregado | |
 | `FogOfWar(radius, explore_radius, visible, explored, _explored_maps, _last_tile)` | estado de neblina | `visible` = set de tiles visíveis no frame |
 | `Visible()` | tag adicionada/removida por FogSystem | no servidor: adicionada manualmente no spawn de mobs (FogSystem não roda) |
+| `MapLocation(map_file)` | mapa ao qual esta entidade pertence | adicionado a mobs/NPCs/spawn_zones pelo `_load_map_for()`; players usam `WorldServer._player_maps` |
 
 ---
 
@@ -239,3 +252,9 @@ Como é usado:
 | Componente | Campos | Notas |
 |-----------|--------|-------|
 | `TalentTree(chosen_build, allocated{}, available_points, _applied_modifiers[], _unlocked_skill_ids[])` | árvore de talentos | `chosen_build` derivado de `class_id` via `CLASS_BUILD_MAP`. **Online:** `allocated` enviado no `SAVE_STATE` e re-aplicado via `apply_talent_effects_to_player` no servidor |
+
+## Skill Level (Tibia-like)
+
+| Componente | Campos | Notas |
+|-----------|--------|-------|
+| `SkillLevels(levels{}, xp{})` | progressão por uso, 0-200 por trilha | `components.SKILL_IDS` = 11 trilhas: `machado, espada, maca, arco, baculo` (armas, agrupando os 10 `item.subtype` via `stats_system.WEAPON_SUBTYPE_TO_SKILL`), `escudo, defesa, resist_fogo, resist_gelo, resist_natureza, magic`. **Server-autoritativo**: só `stats_system.grant_skill_xp` (chamada apenas do servidor) escreve `levels`/`xp`. Anexado em `entity_factory.create_player` (cliente, vazio — só exibição) e `WorldServer.spawn_player` (servidor, carregado de `skill_levels_json`). Persistido via `server/auth.py` coluna `skill_levels_json` + `get_player_save_data`/`_build_save_merge` (sempre do componente vivo do servidor, nunca do payload do cliente). Fórmula de xp: `stats_system.skill_xp_for_level(level) = 20 × (level+1)^1.2` (`SKILL_XP_BASE`, ajustado de 100→20 após feedback de que o grind original estava difícil demais). Bônus: `stats_system.skill_bonus_pct(level)` linear 0%→15% (level 0→200), aplicado em `CombatStats` via `apply_skill_bonuses_to_combat` — ver seção "CombatStats — bônus derivados de Skill Level" acima. UI read-only em `skill_level_ui.py` (tecla L, `_show_skills` em game.py). Hooks de xp: cast de magia com `mana_cost` efetivo > 0 (Magic), `_server_apply_ranged_physical` (arco/escudo/defesa, Arqueiro), `CombatSystem.deal_damage` com `is_server=True` (arma/escudo/defesa, auto-attack todas as classes), `_server_apply_magic_damage` e `StatusEffectSystem._apply_tick` DoT poison/burn (resistências). **Live sync**: `WorldServer._sync_player_skill_levels_dirty()` (dirty-check por tick, mesmo padrão de `_sync_player_hp_dirty`) detecta qualquer mudança e envia `SKILL_LEVELS_UPDATE` (snapshot completo) só ao dono — sem isso o painel só atualizava no próximo login (bug real, ver PROBLEMAS_ARQUITETURA.md). Payload inclui `leveled_up: [{skill_id, level}]` quando algo subiu — cliente mostra "Parabéns, você subiu..." no `LOG` (chat) + centro da tela (`PROC`, igual Tibia) + som `levelup` (`client/network_handlers.py::_handle_msg_skill_levels_update`). Painel: 1 linha por trilha (nome + "Lv X (+Y%)" + barra com xp sobreposto centrado) — layout original de 2 linhas por trilha ficava alto demais |

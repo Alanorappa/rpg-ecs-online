@@ -22,19 +22,30 @@ ARMOR_REDUCTION_CAP        = 0.99    # teto: máximo 99% de redução
 def resolve_attack_outcome(attacker_stats, target_stats,
                            damage_type: str,
                            extra_crit: float = 0.0,
+                           extra_acerto: float = 0.0,
+                           extra_block: float = 0.0,
+                           extra_avoid: float = 0.0,
                            is_ability: bool = False) -> tuple:
     """Tabela de ataque.
 
     Retorna (outcome, block_reduction):
       outcome: 'miss' | 'dodge' | 'parry' | 'crit' | 'block' | 'hit'
       block_reduction: dano flat absorvido pelo bloqueio (0 se não bloqueou)
+
+    Unidades dos parâmetros `extra_*` (todos vêm de bônus de skill level,
+    ver stats_system.skill_bonus_pct — chamador resolve o valor):
+      extra_crit, extra_block, extra_avoid: fração 0.0–1.0 (mesma escala de
+        crit_rating/block_rating já normalizado/avoidance rating já dividido).
+      extra_acerto: pontos percentuais 0–100 (mesma escala de `acerto`,
+        NÃO fração — skill_bonus_pct() retorna fração, multiplique por 100
+        antes de passar aqui).
     """
     rpp = RATING_PER_PERCENT * 100.0
 
     effective_crit = min(1.0, attacker_stats.crit_rating + extra_crit)
 
     if damage_type == "magical":
-        _acerto = min(100.0, getattr(attacker_stats, "acerto", 75.0))
+        _acerto = min(100.0, getattr(attacker_stats, "acerto", 75.0) + extra_acerto)
         resist = max(0.0, (1.0 - _acerto / 100.0) - attacker_stats.hit_rating / rpp)
         if random.random() < resist:
             return 'miss', 0.0
@@ -47,7 +58,7 @@ def resolve_attack_outcome(attacker_stats, target_stats,
     _standing_rate  = getattr(attacker_stats, "acerto_per_standing_second", 0.0)
     _standing_secs  = getattr(attacker_stats, "standing_seconds", 0.0)
     _standing_bonus = _standing_rate * _standing_secs if _standing_rate > 0 else 0.0
-    _acerto = min(100.0, _acerto_base + _standing_bonus)
+    _acerto = min(100.0, _acerto_base + _standing_bonus + extra_acerto)
     # Alvo Fácil: +X% acerto quando alvo está sob CC
     _af_acerto = getattr(attacker_stats, "alvo_facil_acerto", 0)
     if _af_acerto > 0 and getattr(target_stats, "is_crowd_controlled", False):
@@ -55,9 +66,11 @@ def resolve_attack_outcome(attacker_stats, target_stats,
     # Abilities (skills) não erram por miss — só por dodge/parry do alvo.
     # Auto-attacks podem errar por miss (acerto < 100%).
     miss_chance  = 0.0 if is_ability else max(0.0, (1.0 - _acerto / 100.0) - attacker_stats.hit_rating / rpp)
-    # Parry/dodge: 1 rating = 0.1% (1/1000) — válido para auto E abilities
-    dodge_chance = max(0.0, target_stats.dodge_rating / AVOIDANCE_RATING_PER_PCT)
-    parry_chance = max(0.0, target_stats.parry_rating / AVOIDANCE_RATING_PER_PCT)
+    # Parry/dodge: 1 rating = 0.1% (1/1000) — válido para auto E abilities.
+    # extra_avoid (skill de Defesa do alvo) soma nos dois, igual ao desenho:
+    # "aumenta a chance de desviar OU aparar".
+    dodge_chance = max(0.0, target_stats.dodge_rating / AVOIDANCE_RATING_PER_PCT + extra_avoid)
+    parry_chance = max(0.0, target_stats.parry_rating / AVOIDANCE_RATING_PER_PCT + extra_avoid)
 
     roll       = random.random()
     cumulative = miss_chance
@@ -70,9 +83,10 @@ def resolve_attack_outcome(attacker_stats, target_stats,
     if roll < cumulative:
         return 'parry', 0.0
 
-    # Block — roll independente; reduz dano mas não cancela
+    # Block — roll independente; reduz dano mas não cancela.
+    # extra_block (skill de Escudo do alvo) soma direto na chance.
     block_reduction = 0.0
-    block_chance = max(0.0, target_stats.block_rating / rpp)
+    block_chance = max(0.0, target_stats.block_rating / rpp + extra_block)
     if block_chance > 0.0 and random.random() < block_chance:
         block_reduction = target_stats.block_value
 
@@ -101,14 +115,30 @@ def apply_armor_reduction(damage: float, attacker_stats, target_stats,
     return damage * (1.0 - reduction)
 
 
+def apply_resistance_reduction(damage: float, resist_pct: float) -> float:
+    """Aplica redução de resistência mágica (fogo/gelo/natureza) ao dano.
+
+    Paralela a `apply_armor_reduction`, mas sem exceção de crítico —
+    resistência reduz mesmo dano crítico (diferente de armadura física,
+    por desenho: resistência é uma defesa "elemental", não física).
+    `resist_pct`: fração 0.0–1.0 (ver stats_system.skill_bonus_pct).
+    """
+    resist_pct = max(0.0, min(1.0, resist_pct))
+    return damage * (1.0 - resist_pct)
+
+
 def calculate_base_damage(attacker_stats, damage_type: str,
                           weapon,
                           base_ability_damage: float = 0.0,
                           multiplier: float = 1.0,
                           outcome: str = 'hit',
-                          block_reduction: float = 0.0) -> float:
+                          block_reduction: float = 0.0,
+                          extra_dmg_pct: float = 0.0) -> float:
     """Calcula o dano base (sem armadura). A redução de armadura é aplicada
     separadamente em CombatSystem._resolve_damage_modifiers.
+
+    `extra_dmg_pct`: bônus de dano do skill Magic (fração 0.0–0.15, ver
+    stats_system.skill_bonus_pct), aplicado SÓ ao dano magical.
     """
     total = base_ability_damage
 
@@ -126,6 +156,7 @@ def calculate_base_damage(attacker_stats, damage_type: str,
               # multiplier, crit e armor ainda se aplicam abaixo
     elif damage_type == "magical":
         total += attacker_stats.spell_power + attacker_stats.base_magical_damage
+        total *= (1.0 + extra_dmg_pct)
     else:
         return 0.0
 

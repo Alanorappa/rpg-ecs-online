@@ -6,13 +6,14 @@ from components import Position, Renderable, PlayerControlled, Camera, Collider,
                        TileMovement, CombatStats, CombatState, GhostState, PlayerAutoMove, \
                        CharacterStats, PermanentStats, XPReward, EnemyTier, \
                        Corpse, Inventory, Equipment, PlayerSkills, Wallet, TalentTree, Merchant, \
+                       SkillLevels, \
                        SpawnZone, EntityIdentity, StatusEffects, ConsumableBar, MobSounds, FogOfWar, \
                        EnemyAbilities, EnemyAbilitySlot, QuestLog, QuestGiver, NPC, Blacksmith, \
                        LearnedRecipes, Trainer
 from ui_components import UIState, ShopUIState, LootUIState, DragState
 from tileset import TILE_MAPPING, OBJECT_MAPPING, TILE_SIZE, FLOOR_TILE, get_collision_offsets
 from mob_definitions import MOB_TABLE
-from enemy_abilities_data import MOB_ABILITIES
+from enemy_abilities_data import ABILITY_DEFS
 
 # --- Configurações para as entidades ---
 PLAYER_COLOR = (255, 0, 0)
@@ -27,6 +28,11 @@ ENEMY_SIZE = 24
 ENEMY_SPEED = 85.0
 ENEMY_DETECTION_RADIUS = 250.0
 ENEMY_MELEE_ATTACK_RANGE = 1 # Nova constante para inimigos corpo a corpo
+
+# Mesmo conjunto de entity_class usado em systems.py (EnemyAISystem,
+# escolha de som) pra decidir se o mob causa dano "magical" (ignora
+# armadura do alvo) em vez de "physical".
+_MAGIC_CASTER_CLASSES = {"Mage", "Mago", "Warlock", "Bruxo"}
 
 # --- Configurações de tier de inimigos ---
 # Cada tier define: multiplicador de HP, dano, XP; tamanho; cor (melee, ranged)
@@ -150,6 +156,7 @@ def create_player(world: World, tile_x: int, tile_y: int,
     world.add_component(player_entity, PlayerSkills())
     world.add_component(player_entity, Wallet())
     world.add_component(player_entity, TalentTree())
+    world.add_component(player_entity, SkillLevels())
     world.add_component(player_entity, ConsumableBar())
     from shared.constants import FOG_RADIUS
     _fog = FogOfWar(radius=FOG_RADIUS)
@@ -195,8 +202,12 @@ def create_enemy(world: World, tile_x: int, tile_y: int,
     y = tile_y * TILE_SIZE + TILE_SIZE / 2
     size = cfg["size"]
 
-    # Busca definição do mob pela raça; se encontrado, usa cor e classe específicas
+    # Busca definição do mob pela raça; mobs cadastrados em MOB_TABLE usam
+    # atributos próprios (attributes/abilities/loot/xp_given_by_lvl, ver
+    # mob_definitions.py); mobs sem entrada (ex: "Elemental", definidos só na
+    # SpawnZone do mapa) caem no template genérico por is_ranged (bloco else).
     mob_def = MOB_TABLE.get(race)
+    attrs   = mob_def.get("attributes") if mob_def else None
     if mob_def:
         base_color = mob_def["color"]
         # elite/rare/boss: clarea a cor base levemente
@@ -222,6 +233,11 @@ def create_enemy(world: World, tile_x: int, tile_y: int,
         entity_class=entity_class))
     world.add_component(enemy_entity, InitialPosition(x=x, y=y))
     world.add_component(enemy_entity, DetectionRadius(radius=ENEMY_DETECTION_RADIUS))
+
+    # Velocidade de movimento: mobs cadastrados usam move_speed_pct (% de
+    # ENEMY_SPEED); sem cadastro, usa ENEMY_SPEED puro (comportamento antigo).
+    move_speed = ENEMY_SPEED * (attrs["move_speed_pct"] / 100.0) if attrs else ENEMY_SPEED
+
     world.add_component(enemy_entity, TileMovement(
         current_tile_x=tile_x,
         current_tile_y=tile_y,
@@ -231,12 +247,37 @@ def create_enemy(world: World, tile_x: int, tile_y: int,
         start_pixel_y=y,
         target_pixel_x=x,
         target_pixel_y=y,
-        move_duration=TILE_SIZE / ENEMY_SPEED,
-        speed=ENEMY_SPEED
+        move_duration=TILE_SIZE / move_speed,
+        speed=move_speed
     ))
     world.add_component(enemy_entity, EnemyTier(tier=tier))
 
-    if is_ranged:
+    if attrs:
+        # Atributos próprios do mob (mob_definitions.py) — substitui os 2
+        # templates fixos (melee/ranged) que antes eram iguais pra todo mob.
+        stats = CombatStats(
+            base_stamina         = attrs["health"],
+            base_armor           = attrs.get("armor", 0) * 10,  # % -> rating (1 rating = 0.1% de redução)
+            base_attack_power    = attrs.get("attack_power", 0),
+            base_physical_damage = attrs.get("attack_min", 1),
+            base_attack_interval = attrs.get("attack_speed", 3.0),
+            base_crit_rating     = attrs.get("crit_chance", 5) / 100.0,
+        )
+        stats.base_physical_damage_max = attrs.get("attack_max", stats.base_physical_damage)
+        stats.base_acerto = float(attrs.get("acerto", 95))
+        # Mobs ranged "mágicos" (Mage/Warlock) causam dano magical, não
+        # physical — ignora armadura do alvo (reduzido só por resistência,
+        # nunca implementada pra auto-attack genérico de mob — ver
+        # PROBLEMAS_ARQUITETURA.md). damage_type_to_use (EnemyAISystem)
+        # decide physical/magical olhando spell_power/magical_damage > 0.
+        # base_attack_power continua setado (não-zerado) porque alimenta o
+        # multiplicador de dano de habilidade (magnitude × base_attack_power).
+        if entity_class in _MAGIC_CASTER_CLASSES:
+            stats.base_spell_power    = attrs.get("attack_power", 0)
+            attack_min = attrs.get("attack_min", 1)
+            attack_max = attrs.get("attack_max", attack_min)
+            stats.base_magical_damage = (attack_min + attack_max) / 2.0
+    elif is_ranged:
         stats = CombatStats(
             base_stamina=10,
             base_armor=2,
@@ -257,29 +298,42 @@ def create_enemy(world: World, tile_x: int, tile_y: int,
 
     # Aplica multiplicadores de tier
     if tier != "normal":
-        stats.base_stamina = int(stats.base_stamina * cfg["hp"])
-        stats.base_attack_power = int(stats.base_attack_power * cfg["dmg"])
-        stats.base_spell_power = int(stats.base_spell_power * cfg["dmg"])
-        stats.base_magical_damage = int(stats.base_magical_damage * cfg["dmg"])
+        stats.base_stamina             = int(stats.base_stamina * cfg["hp"])
+        stats.base_attack_power        = int(stats.base_attack_power * cfg["dmg"])
+        stats.base_spell_power         = int(stats.base_spell_power * cfg["dmg"])
+        stats.base_magical_damage      = int(stats.base_magical_damage * cfg["dmg"])
+        stats.base_physical_damage     = int(stats.base_physical_damage * cfg["dmg"])
+        stats.base_physical_damage_max = int(stats.base_physical_damage_max * cfg["dmg"])
 
-    # Aplica scaling de level (mesmo progression que o player por nível acima de 1)
-    # VIT+1 → stamina+5 | STR+1 → AP+2 | AGI+1 → crit+0.01 | DEF+2 → armor+4
+    # Aplica scaling de level. Mob cadastrado (attrs): health e attack_power
+    # (físico e/ou mágico) MULTIPLICAM pelo level — armor/acerto/crit/
+    # velocidade ficam fixos, vêm só de mob_definitions.py + tier (level do
+    # mob vem da SpawnZone no JSON do mapa, level_min/level_max).
+    # Mob sem cadastro (fallback, ex: "Elemental"): scaling aditivo antigo,
+    # inalterado (mesma progressão que o player por nível acima de 1).
     if level > 1:
-        bonus = level - 1
-        stats.base_stamina       += bonus * 75
-        stats.base_attack_power  += bonus * 2
-        stats.base_armor         += bonus * 4
-        stats.base_crit_rating    = min(0.5, stats.base_crit_rating + bonus * 0.01)
-        if is_ranged:
-            stats.base_spell_power   += bonus * 2
-            stats.base_magical_damage += bonus
+        if attrs:
+            stats.base_stamina      = int(stats.base_stamina * level)
+            stats.base_attack_power = int(stats.base_attack_power * level)
+            if entity_class in _MAGIC_CASTER_CLASSES:
+                stats.base_spell_power    = int(stats.base_spell_power * level)
+                stats.base_magical_damage = int(stats.base_magical_damage * level)
+        else:
+            # VIT+1 → stamina+5 | STR+1 → AP+2 | AGI+1 → crit+0.01 | DEF+2 → armor+4
+            bonus = level - 1
+            stats.base_stamina       += bonus * 75
+            stats.base_attack_power  += bonus * 2
+            stats.base_armor         += bonus * 4
+            stats.base_crit_rating    = min(0.5, stats.base_crit_rating + bonus * 0.01)
 
     stats._recalculate_effective_stats()
     stats.current_hp = stats.max_hp
 
     world.add_component(enemy_entity, stats)
-    # XP escala com o level: level * 15, modificado pelo multiplicador de tier
-    world.add_component(enemy_entity, XPReward(amount=int(level * 15 * cfg["xp"])))
+    # XP escala com o level do mob × xp_given_by_lvl (mob_definitions.py),
+    # modificado pelo multiplicador de tier. Mobs sem cadastro: fallback 15/level.
+    _xp_per_lvl = mob_def.get("xp_given_by_lvl", 15) if mob_def else 15
+    world.add_component(enemy_entity, XPReward(amount=int(level * _xp_per_lvl * cfg["xp"])))
     world.add_component(enemy_entity, StatusEffects())
 
     # Sons específicos do mob (definidos em mob_definitions.py)
@@ -303,11 +357,19 @@ def create_enemy(world: World, tile_x: int, tile_y: int,
         level=level, tier=tier_label,
     ))
 
-    # Habilidades especiais — verifica por entity_class e por raça
-    _ability_entries = (
-        MOB_ABILITIES.get(entity_class, []) +
-        MOB_ABILITIES.get(race, [])
-    )
+    # Habilidades especiais — lista explícita por mob em mob_definitions.py
+    # (substitui o lookup antigo por raça/classe). Cada entrada é o
+    # ability_id sozinho (usa default_cooldown de ABILITY_DEFS) ou
+    # (ability_id, cooldown) pra sobrescrever o cooldown nesse mob.
+    _ability_entries = []
+    for _a in (mob_def.get("abilities", []) if mob_def else []):
+        if isinstance(_a, tuple):
+            _aid, _acd = _a
+        else:
+            _aid  = _a
+            _adef = ABILITY_DEFS.get(_aid)
+            _acd  = _adef.default_cooldown if _adef else 12.0
+        _ability_entries.append((_aid, _acd))
     if _ability_entries:
         slots = [EnemyAbilitySlot(aid, cd) for aid, cd in _ability_entries]
         world.add_component(enemy_entity, EnemyAbilities(slots))
@@ -432,7 +494,7 @@ def create_training_dummy(world: World, tile_x: int, tile_y: int) -> int:
     world.add_component(eid, stats)
 
     world.add_component(eid, EntityIdentity(
-        name="Boneco de Treino", race="Construto", entity_class="Guerreiro",
+        name="Boneco de treino", race="Mecânico", entity_class="Guerreiro",
         level=99, tier="Boss",
     ))
     return eid

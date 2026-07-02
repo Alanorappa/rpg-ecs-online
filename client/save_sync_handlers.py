@@ -363,6 +363,41 @@ class SaveSyncHandlers:
             except Exception:
                 pass
 
+        # SkillLevels — progressão Tibia-like por uso. Componente local é
+        # SÓ EXIBIÇÃO (painel de skills): nunca enviado de volta ao servidor,
+        # nunca usado em cálculo de dano no cliente (server-autoritativo,
+        # ver stats_system.grant_skill_xp / PROBLEMAS_ARQUITETURA.md).
+        from components import SkillLevels as _SKLr
+        skl_raw = char_data.get("skill_levels_json", "{}")
+        try:
+            skl_dict = _jr.loads(skl_raw) if isinstance(skl_raw, str) else {}
+        except Exception:
+            skl_dict = {}
+        skl = self.world.get_component(self.player_entity, _SKLr)
+        if skl and isinstance(skl_dict, dict):
+            for _sid_skl, _lvl_skl in (skl_dict.get("levels") or {}).items():
+                if _sid_skl in skl.levels:
+                    skl.levels[_sid_skl] = int(_lvl_skl)
+            for _sid_skl, _xp_skl in (skl_dict.get("xp") or {}).items():
+                if _sid_skl in skl.xp:
+                    skl.xp[_sid_skl] = int(_xp_skl)
+
+        # QuestLog — progresso/entrega de quest. Componente local é SÓ
+        # EXIBIÇÃO (HUD/diálogo/diário): nunca enviado de volta ao servidor,
+        # nunca muta sozinho no modo online (server-autoritativo, ver
+        # quest_logic.py/PROBLEMAS_ARQUITETURA.md). Mudanças subsequentes
+        # chegam via QUEST_UPDATE (client/network_handlers.py).
+        from components import QuestLog as _QLr
+        ql_raw = char_data.get("quests_json", "{}")
+        try:
+            ql_dict = _jr.loads(ql_raw) if isinstance(ql_raw, str) else {}
+        except Exception:
+            ql_dict = {}
+        ql = self.world.get_component(self.player_entity, _QLr)
+        if ql and isinstance(ql_dict, dict):
+            ql.active = {q: list(p) for q, p in (ql_dict.get("active") or {}).items()}
+            ql.completed = set(ql_dict.get("completed") or [])
+
         # Skills — hotbar e learned_ids
         skills_raw = char_data.get("skills_json", "{}")
         try:

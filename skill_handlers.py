@@ -65,7 +65,10 @@ class SkillHandlers:
     #   - margem total: 72 - 45 = 27px para acomodar variação de posição
     RANGE_TOLERANCE_PX: float = 40.0   # tolerância usada na fórmula do cliente
 
-    INTERCEPT_MIN_RANGE_PX: float = 2 * 32 - 20   # 44px  (2 tiles - tolerance)
+    INTERCEPT_MIN_RANGE_PX: float = 2 * 32 + 10   # 74px  (2 tiles + margem) — exclui
+                                                    # TODA adjacência (cardinal 32px,
+                                                    # diagonal ~45px); skill_config min_range=2
+                                                    # agora é respeitado de verdade
     INTERCEPT_MAX_RANGE_PX: float = 6 * 32 + 40   # 232px (6 tiles + tolerance)
 
     MELEE_RANGE_PX: float = 72.0   # 2.25 tiles — cobre kiting + lag

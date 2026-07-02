@@ -65,13 +65,23 @@ def init_db() -> None:
             skills_json    TEXT DEFAULT '{}',
             talents_json   TEXT DEFAULT '{}',
             fog_json       TEXT DEFAULT '{}',
+            skill_levels_json TEXT DEFAULT '{}',
+            quests_json    TEXT DEFAULT '{}',
             last_save   INTEGER DEFAULT (strftime('%s','now'))
         );
         """)
-    # Migração: adiciona fog_json em bancos existentes (coluna não existia antes)
+    # Migração: adiciona colunas em bancos existentes (coluna não existia antes)
     with _get_conn() as conn:
         try:
             conn.execute("ALTER TABLE characters ADD COLUMN fog_json TEXT DEFAULT '{}'")
+        except Exception:
+            pass  # coluna já existe
+        try:
+            conn.execute("ALTER TABLE characters ADD COLUMN skill_levels_json TEXT DEFAULT '{}'")
+        except Exception:
+            pass  # coluna já existe
+        try:
+            conn.execute("ALTER TABLE characters ADD COLUMN quests_json TEXT DEFAULT '{}'")
         except Exception:
             pass  # coluna já existe
     print(f"[Auth] banco inicializado: {DB_PATH}")
@@ -219,19 +229,22 @@ def _save_character_sync(char_id: int, data: dict) -> None:
     import json
     _stats = data.get("stats", {})
     # Campos server-autoritativos — sempre atualizados
-    cols = ["tile_x", "tile_y", "hp", "mp", "level", "stats_json"]
+    cols = ["tile_x", "tile_y", "hp", "mp", "level", "stats_json", "map_id"]
     vals = [
         data.get("tile_x", 10), data.get("tile_y", 10),
         data.get("hp",     100), data.get("mp", 100),
         _stats.get("level", 1),
         json.dumps(_stats),
+        data.get("map_id") or "map_main",
     ]
     # Campos client-autoritativos — só atualiza se não for None
     for key, col in (("inventory", "inventory_json"),
                      ("equipment", "equipment_json"),
                      ("skills",    "skills_json"),
                      ("talents",   "talents_json"),
-                     ("fog",       "fog_json")):
+                     ("fog",       "fog_json"),
+                     ("skill_levels", "skill_levels_json"),
+                     ("quests",    "quests_json")):
         v = data.get(key)
         if v is not None:
             cols.append(col)

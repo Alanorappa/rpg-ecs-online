@@ -37,8 +37,13 @@ def test_ranged_mob_damages_player():
     cs_p = ws.world.get_component(peid, CombatStats)
     hp_before = cs_p.current_hp
 
-    # 40 ticks × 33ms ≈ 1.3s — suficiente para cast (0.5s) + viagem do projétil
-    deltas = run_ticks(ws, 40)
+    # ~350 ticks x 33ms ~= 11.5s -- cobre varios ciclos completos de
+    # ataque ranged (cast 1.0s + cooldown ~3.1s cada) para nao depender de
+    # um unico tiro acertar. Acerto agora e configuravel por mob
+    # (mob_definitions.py) e pode ser < 100%, ao contrario do default
+    # implicito antigo (95% fixo) -- um teste de 1 unica tentativa fica
+    # estatisticamente instavel.
+    deltas = run_ticks(ws, 350)
 
     hp_after = cs_p.current_hp
     dmg      = hp_before - hp_after

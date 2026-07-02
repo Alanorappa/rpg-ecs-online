@@ -11,13 +11,13 @@ Evento: quest_events.py (fire(), QUEST_EVENTS deque)
 Comp:   components.py   (QuestLog, QuestGiver)
 """
 from __future__ import annotations
-import random
 import pygame
 from fonts import make as _font
 
 from systems import System
 from quest_events import QUEST_EVENTS
-from quests_data import QUESTS, QUEST_ITEMS, ObjectiveDef
+from quests_data import QUESTS, ObjectiveDef
+import quest_logic
 from combat_log import LOG
 from floating_text import PROC
 from ui_scale_mixin import UIScaleMixin
@@ -40,8 +40,9 @@ class QuestSystem(UIScaleMixin, System):
 
     # Cores
     COL_TITLE  = (220, 200, 120)
-    COL_PROG   = (170, 170, 170)
-    COL_DONE   = ( 80, 200, 100)
+    COL_PROG   = (170, 170, 170)  # cinza — sem nenhuma evolução ainda (progress == 0)
+    COL_ACTIVE = (230, 230, 230)  # branco — alguma evolução, ainda não completo
+    COL_DONE   = ( 80, 200, 100)  # verde — objetivo completo
     COL_REWARD = (255, 215,   0)
 
     _FONT_BASES = {"_font_title": 18, "_font_obj": 16}
@@ -50,12 +51,14 @@ class QuestSystem(UIScaleMixin, System):
         super().__init__()
         self.world         = world
         self.player_entity = player_entity
-        self._font_title:  "pygame.font.Font | None" = None
-        self._font_obj:    "pygame.font.Font | None" = None
         self._hud_cache_key:  "tuple | None"          = None
         self._hud_cache_surf: "pygame.Surface | None" = None
         self._current_map: str = ""
         self._last_reach_tile: tuple = (-1, -1, "")  # (tx, ty, map) — evita disparo por frame
+        # Online: servidor é o único produtor autoritativo de progresso (ver
+        # quest_logic.py/PROBLEMAS_ARQUITETURA.md) — injetado por game.py
+        # após _connect_online(). None/falsy = caminho offline, inalterado.
+        self._net = None
 
     def set_ui_scale(self, scale: float) -> None:
         super().set_ui_scale(scale)
@@ -78,49 +81,53 @@ class QuestSystem(UIScaleMixin, System):
             QUEST_EVENTS.clear()
             return
 
+        if self._net:
+            # Online: servidor é o produtor autoritativo de progresso de quest.
+            # A maioria dos eventos (kill, use_skill, etc.) já chega no servidor
+            # via gatilhos server-side. Porém eventos disparados por sistemas
+            # PURAMENTE client-side (ShopSystem.open → "talk_to_npc") nunca
+            # chegam ao servidor. Para esses, encaminhamos via QUEST_ACCEPT
+            # com quest_id="" — o handler server-side aplica o evento de
+            # talk_to_npc e responde com QUEST_UPDATE se algo mudou.
+            # Todos os outros eventos são descartados (o servidor já os processa
+            # pelos próprios gatilhos).
+            while QUEST_EVENTS:
+                _evt, _peid, _data = QUEST_EVENTS.popleft()
+                if _evt == "talk_to_npc":
+                    _npc_name = _data.get("npc_name", "")
+                    if _npc_name:
+                        from shared.messages import MsgType as _MTtalk
+                        self._net.send(_MTtalk.QUEST_ACCEPT, {
+                            "quest_id": "",       # nenhuma quest pra aceitar —
+                            "npc_name": _npc_name,# só dispara talk_to_npc no servidor
+                        })
+            return
+
         # Dispara reach_tile com posição atual do player a cada frame
         self._fire_reach_tile(ql)
 
         while QUEST_EVENTS:
-            event_type, data = QUEST_EVENTS.popleft()
-            for qid in list(ql.active.keys()):
-                qdef = QUESTS.get(qid)
-                if qdef is None:
-                    continue
-                prog = ql.active[qid]
-                for i, obj in enumerate(qdef.objectives):
-                    if prog[i] >= obj.count:
-                        continue
-                    if self._matches(event_type, data, obj):
-                        # reach_level: obj.count é o nível-alvo, não uma contagem cumulativa
-                        if obj.type == "reach_level":
-                            prog[i] = obj.count
-                        else:
-                            prog[i] += 1
-                        self._hud_cache_key = None   # invalida cache HUD
+            event_type, _player_eid, data = QUEST_EVENTS.popleft()
+            if quest_logic.apply_event(ql, event_type, data):
+                self._hud_cache_key = None   # invalida cache HUD
 
         # collect_item: sincroniza progresso com inventário real (cobre itens já na bag)
         self._sync_collect_progress(ql)
 
     def _process_talk_to_npc(self, npc_name: str) -> None:
         """Processa imediatamente um evento talk_to_npc sem passar pela fila.
-        Chamado por QuestDialogSystem._open_dialog antes de calcular o estado do diálogo."""
+        Chamado por QuestDialogSystem._open_dialog antes de calcular o estado do
+        diálogo. Só no caminho OFFLINE — online, o servidor processa o mesmo
+        evento dentro de _handle_quest_accept/_handle_quest_turn_in (ver
+        QuestDialogSystem.handle_events) usando o npc_name enviado no payload."""
+        if self._net:
+            return
         from components import QuestLog
         ql = self.world.get_component(self.player_entity, QuestLog)
         if ql is None:
             return
-        data = {"npc_name": npc_name}
-        for qid in list(ql.active.keys()):
-            qdef = QUESTS.get(qid)
-            if qdef is None:
-                continue
-            prog = ql.active[qid]
-            for i, obj in enumerate(qdef.objectives):
-                if prog[i] >= obj.count:
-                    continue
-                if self._matches("talk_to_npc", data, obj):
-                    prog[i] += 1
-                    self._hud_cache_key = None
+        if quest_logic.apply_event(ql, "talk_to_npc", {"npc_name": npc_name}):
+            self._hud_cache_key = None
 
     # ── API para QuestDialogSystem ───────────────────────────────────────────
 
@@ -128,15 +135,13 @@ class QuestSystem(UIScaleMixin, System):
         """True se a quest está ativa e todos os objetivos concluídos."""
         from components import QuestLog
         ql = self.world.get_component(self.player_entity, QuestLog)
-        if ql is None or qid not in ql.active:
+        if ql is None:
             return False
-        qdef = QUESTS.get(qid)
-        if qdef is None:
-            return False
-        return self._all_done(ql.active[qid], qdef)
+        return quest_logic.can_turn_in(ql, qid)
 
     def turn_in(self, qid: str) -> None:
-        """Completa e recompensa a quest. Chamado pelo QuestDialogSystem."""
+        """Completa e recompensa a quest (caminho OFFLINE — online, o
+        QuestDialogSystem manda QUEST_TURN_IN em vez de chamar isto)."""
         from components import QuestLog
         ql = self.world.get_component(self.player_entity, QuestLog)
         if ql:
@@ -145,29 +150,13 @@ class QuestSystem(UIScaleMixin, System):
     # ── Drop condicional ─────────────────────────────────────────────────────
 
     def get_conditional_loot(self, enemy_name: str, enemy_race: str) -> list:
+        """Caminho OFFLINE — online, o drop condicional é rolado no servidor
+        (server/server_death_handler.py) contra o QuestLog autoritativo."""
         from components import QuestLog
         ql = self.world.get_component(self.player_entity, QuestLog)
         if ql is None:
             return []
-        extras = []
-        for qid, prog in ql.active.items():
-            qdef = QUESTS.get(qid)
-            if qdef is None:
-                continue
-            for i, obj in enumerate(qdef.objectives):
-                if obj.type != "collect_item":
-                    continue
-                if obj.target not in ("*", enemy_name, enemy_race):
-                    continue
-                if prog[i] >= obj.count:
-                    continue
-                if not obj.loot_item:
-                    continue
-                if random.random() <= obj.loot_chance:
-                    factory = QUEST_ITEMS.get(obj.loot_item)
-                    if factory:
-                        extras.append(factory())
-        return extras
+        return quest_logic.roll_conditional_loot(ql, enemy_name, enemy_race)
 
     # ── HUD ─────────────────────────────────────────────────────────────────
 
@@ -209,11 +198,14 @@ class QuestSystem(UIScaleMixin, System):
             lines.append((ts, y))
             y += self._u(17)
             for i, obj in enumerate(qdef.objectives):
-                done  = prog[i] >= obj.count
-                color = self.COL_DONE if done else self.COL_PROG
-                mark  = "v " if done else "- "
-                surf  = self._font_obj.render(mark + self._obj_label(obj, prog[i]),
-                                              True, color)
+                p = prog[i]
+                if p >= obj.count:
+                    color = self.COL_DONE
+                elif p > 0:
+                    color = self.COL_ACTIVE
+                else:
+                    color = self.COL_PROG
+                surf = self._font_obj.render(self._obj_label(obj, p), True, color)
                 lines.append((surf, y))
                 y += self._u(14)
             y += self._u(5)
@@ -247,32 +239,24 @@ class QuestSystem(UIScaleMixin, System):
         char = self.world.get_component(self.player_entity, CharacterStats)
         return char.level if char else 1
 
-    def _try_start(self, ql, qid: str) -> bool:
-        if qid in ql.active or qid in ql.completed:
-            return False
-        qdef = QUESTS.get(qid)
-        if qdef is None:
-            return False
-        if not all(r in ql.completed for r in qdef.requires):
-            return False
-        if qdef.level_req > 0 and self._player_level() < qdef.level_req:
-            LOG.add(f'Nivel {qdef.level_req} necessario para "{qdef.title}".', (200, 80, 80))
-            return False
-        # Inicializa progresso; reach_level verifica nível atual no momento do início
-        plvl = self._player_level()
-        prog = []
-        for obj in qdef.objectives:
-            if obj.type == "reach_level" and plvl >= obj.count:
-                prog.append(obj.count)   # já satisfeito
-            else:
-                prog.append(0)
-        ql.active[qid] = prog
-        self._hud_cache_key = None
-        LOG.add(f'Quest: "{qdef.title}" iniciada.', self.COL_TITLE)
-        return True
+    def _player_class_id(self) -> str:
+        from components import CharacterStats
+        char = self.world.get_component(self.player_entity, CharacterStats)
+        return char.class_id if char else ""
 
-    def _all_done(self, prog: list, qdef) -> bool:
-        return all(prog[i] >= obj.count for i, obj in enumerate(qdef.objectives))
+    def _try_start(self, ql, qid: str) -> bool:
+        """Caminho OFFLINE — online, o QuestDialogSystem manda QUEST_ACCEPT
+        em vez de chamar isto (servidor valida com seus próprios dados)."""
+        qdef = QUESTS.get(qid)
+        if qdef and qid not in ql.active and qid not in ql.completed and \
+                all(r in ql.completed for r in qdef.requires) and \
+                qdef.level_req > 0 and self._player_level() < qdef.level_req:
+            LOG.add(f'Nivel {qdef.level_req} necessario para "{qdef.title}".', (200, 80, 80))
+        ok = quest_logic.try_start(self.world, self.player_entity, ql, qid)
+        if ok:
+            self._hud_cache_key = None
+            LOG.add(f'Quest: "{qdef.title}" iniciada.', self.COL_TITLE)
+        return ok
 
     def _fire_reach_tile(self, ql) -> None:
         """Dispara reach_tile apenas quando o player muda de tile (não todo frame)."""
@@ -292,71 +276,32 @@ class QuestSystem(UIScaleMixin, System):
         if not has_reach:
             return
         self._last_reach_tile = current
-        QUEST_EVENTS.append(("reach_tile", {
-            "tx":  tm.current_tile_x,
-            "ty":  tm.current_tile_y,
-            "map": self._current_map,
-        }))
+        from quest_events import fire as _qfire_rt
+        _qfire_rt("reach_tile", tx=tm.current_tile_x, ty=tm.current_tile_y, map=self._current_map)
 
     def _sync_collect_progress(self, ql) -> None:
         """Sincroniza objetivos collect_item com o inventário real do player."""
         from components import Inventory
         inv = self.world.get_component(self.player_entity, Inventory)
-        if inv is None:
-            return
-        for qid, prog in ql.active.items():
-            qdef = QUESTS.get(qid)
-            if qdef is None:
-                continue
-            for i, obj in enumerate(qdef.objectives):
-                if obj.type != "collect_item" or not obj.loot_item:
-                    continue
-                owned = sum(item.stack for item in inv.items if item.name == obj.loot_item)
-                new_prog = min(owned, obj.count)
-                if prog[i] != new_prog:
-                    prog[i] = new_prog
-                    self._hud_cache_key = None
+        if quest_logic.sync_collect_progress(ql, inv):
+            self._hud_cache_key = None
 
     def _complete_quest(self, ql, qid: str) -> None:
-        from components import Wallet, CharacterStats, CombatStats, \
-                               PermanentStats, PlayerControlled
-        from stats_system import apply_char_stats_to_combat
+        """Caminho OFFLINE — online, o QuestDialogSystem manda QUEST_TURN_IN
+        em vez de chamar isto (servidor valida/aplica XP/gold/itens)."""
         from save_system import request_autosave
 
         qdef = QUESTS.get(qid)
         if qdef is None:
             return
 
-        del ql.active[qid]
-        if not qdef.repeatable:
-            ql.completed.add(qid)
+        reward = quest_logic.complete_quest(self.world, self.player_entity, ql, qid)
+        if reward is None:
+            return
         self._hud_cache_key = None
 
-        reward = qdef.reward
-
-        # Remove itens de quest do inventário para objetivos collect_item
-        from components import Inventory, PlayerControlled as _PC
-        for _, inv, _ in self.world.get_entities_with(Inventory, _PC):
-            for obj in qdef.objectives:
-                if obj.type != "collect_item" or not obj.loot_item:
-                    continue
-                needed = obj.count
-                i = 0
-                while i < len(inv.items) and needed > 0:
-                    item = inv.items[i]
-                    if item.name == obj.loot_item:
-                        if item.stack <= needed:
-                            needed -= item.stack
-                            inv.items.pop(i)
-                        else:
-                            item.stack -= needed
-                            needed = 0
-                            i += 1
-                    else:
-                        i += 1
-            break
-
         if reward.xp > 0:
+            from components import CharacterStats, CombatStats, PermanentStats, PlayerControlled
             from stats_system import process_levelups
             for eid, char, cs, _ in self.world.get_entities_with(
                     CharacterStats, CombatStats, PlayerControlled):
@@ -366,7 +311,8 @@ class QuestSystem(UIScaleMixin, System):
                 break
 
         if reward.gold > 0:
-            for _, wlt, _ in self.world.get_entities_with(Wallet, PlayerControlled):
+            from components import Wallet, PlayerControlled as _PCgold
+            for _, wlt, _ in self.world.get_entities_with(Wallet, _PCgold):
                 wlt.gold += reward.gold
                 break
 
@@ -377,81 +323,64 @@ class QuestSystem(UIScaleMixin, System):
         LOG.add(f'Quest completa: "{qdef.title}"{reward_str}!', self.COL_REWARD)
         PROC.add("Quest Completa!", self.COL_REWARD)
 
-        # Desbloqueia quests auto_start com pré-requisitos agora satisfeitos
-        for qid2, qdef2 in QUESTS.items():
-            if qid2 not in ql.active and qid2 not in ql.completed and qdef2.auto_start:
-                self._try_start(ql, qid2)
-
         request_autosave()
 
     # ── Match de evento ──────────────────────────────────────────────────────
 
     @staticmethod
     def _matches(event_type: str, data: dict, obj: ObjectiveDef) -> bool:
-        if event_type != obj.type:
-            return False
-        t = obj.target
-        if obj.type == "kill":
-            return t in ("*", data.get("name", ""), data.get("race", ""))
-        if obj.type == "collect_item":
-            # compara pelo nome do item (loot_item), não pelo mob alvo
-            return data.get("item_name", "") == obj.loot_item
-        if obj.type == "reach_tile":
-            loc = obj.location
-            if not loc:
-                return False
-            # Se target especifica um mapa, verifica se o player está nele
-            if t and t != "*" and data.get("map", "") != t:
-                return False
-            tx, ty = data.get("tx", -1), data.get("ty", -1)
-            if len(loc) == 2:
-                return tx == loc[0] and ty == loc[1]
-            if len(loc) == 4:
-                return loc[0] <= tx <= loc[2] and loc[1] <= ty <= loc[3]
-            return False
-        if obj.type == "use_skill":
-            return t in ("*", data.get("skill_id", ""))
-        if obj.type == "use_consumable":
-            return t in ("*", data.get("item_name", ""))
-        if obj.type == "reach_level":
-            return data.get("level", 0) >= obj.count
-        if obj.type == "talk_to_npc":
-            return t in ("*", data.get("npc_name", ""))
-        if obj.type == "equip_item":
-            return t in ("*", data.get("item_name", ""), data.get("item_type", ""))
-        if obj.type == "use_item_on_target":
-            if data.get("item_name", "") != obj.params.get("item_name", ""):
-                return False
-            return t in ("*", data.get("target_name", ""), data.get("target_race", ""))
-        return False
+        return quest_logic.match_objective(event_type, data, obj)
 
     @staticmethod
-    def _obj_label(obj: ObjectiveDef, progress: int) -> str:
+    def _skill_label(skill_id: str) -> str:
+        """Nome amigável de uma skill pro texto de objetivo de quest (ex:
+        'bola_de_fogo' -> 'Bola de Fogo'). Cai pro id cru se não achar no catálogo."""
+        from skill_config import SKILL_CATALOG
+        entry = SKILL_CATALOG.get(skill_id, {})
+        return entry.get("name", skill_id) if isinstance(entry, dict) else skill_id
+
+    @staticmethod
+    def _obj_label(obj: ObjectiveDef, progress: int, show_progress: bool = True) -> str:
+        """Texto do objetivo. Padrão único pra todos os tipos: '<descrição>
+        (progresso/total)' — nunca 'sim'/'não', sempre numérico (ver pedido do
+        usuário: progresso 0 até completar, N/N quando completo).
+        show_progress=False omite o '(x/y)' — usado na apresentação da quest
+        (diálogo de aceitar, antes de iniciada) a pedido do usuário; HUD e
+        diário continuam mostrando o progresso numérico."""
         if obj.type == "kill":
             alvo = obj.target if obj.target != "*" else "inimigo"
-            return f"Matar {alvo}: {progress}/{obj.count}"
-        if obj.type == "collect_item":
+            desc = f"Matar {alvo}"
+        elif obj.type == "collect_item":
             nome = obj.loot_item or obj.target
-            return f"Coletar {nome}: {progress}/{obj.count}"
-        if obj.type == "reach_tile":
-            return f"Chegar ao destino: {'sim' if progress > 0 else 'nao'}"
-        if obj.type == "use_skill":
-            return f"Usar {obj.target}: {progress}/{obj.count}"
-        if obj.type == "use_consumable":
+            desc = f"Coletar {nome}"
+        elif obj.type == "reach_tile":
+            desc = "Chegar ao destino"
+        elif obj.type == "use_skill":
+            nome = QuestSystem._skill_label(obj.target)
+            desc = (f"Treinar {nome} no boneco de treino" if obj.params.get("on_dummy")
+                    else f"Usar {nome}")
+        elif obj.type == "learn_skill":
+            desc = f"Aprender {QuestSystem._skill_label(obj.target)}"
+        elif obj.type == "use_consumable":
             alvo = obj.target if obj.target != "*" else "consumivel"
-            return f"Usar {alvo}: {progress}/{obj.count}"
-        if obj.type == "reach_level":
-            return f"Alcançar nivel {obj.count}: {'sim' if progress >= obj.count else 'nao'}"
-        if obj.type == "talk_to_npc":
+            desc = f"Usar {alvo}"
+        elif obj.type == "reach_level":
+            desc = f"Alcançar nivel {obj.count}"
+        elif obj.type == "talk_to_npc":
             alvo = obj.target if obj.target != "*" else "NPC"
-            return f"Falar com {alvo}: {'sim' if progress > 0 else 'nao'}"
-        if obj.type == "equip_item":
-            return f"Equipar {obj.target}: {'sim' if progress > 0 else 'nao'}"
-        if obj.type == "use_item_on_target":
+            desc = f"Falar com {alvo}"
+        elif obj.type == "equip_item":
+            desc = f"Equipar {obj.target}"
+        elif obj.type == "use_item_on_target":
             item  = obj.params.get("item_name", "?")
             alvo  = obj.target if obj.target != "*" else "inimigo"
-            return f"Usar {item} em {alvo}: {progress}/{obj.count}"
-        return f"{obj.type}: {progress}/{obj.count}"
+            desc = f"Usar {item} em {alvo}"
+        else:
+            desc = obj.type
+
+        if not show_progress:
+            return desc
+        return f"{desc} ({progress}/{obj.count})"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -551,7 +480,8 @@ class QuestDialogSystem(UIScaleMixin, System):
                     and not self._right_click_consumed
                     and not self.is_open):
                 mx, my = event.pos
-                wx, wy = mx + cam_x, my + cam_y
+                _sc = (self.world_surf or self.hud_surf).get_width() / max(1, self.hud_surf.get_width())
+                wx, wy = mx * _sc + cam_x, my * _sc + cam_y
                 for eid, pos, rend, _ in self.world.get_entities_with(
                         Position, Renderable, _QG):
                     hw = rend.width  / 2
@@ -596,10 +526,17 @@ class QuestDialogSystem(UIScaleMixin, System):
 
             elif self._dialog_state == "detail":
                 if self._accept_rect and self._accept_rect.collidepoint(mx, my):
-                    from components import QuestLog
-                    ql = self.world.get_component(self.player_entity, QuestLog)
-                    if ql:
-                        self._qs._try_start(ql, self._dialog_selected_qid)
+                    qid = self._dialog_selected_qid
+                    if self._qs._net:
+                        from shared.messages import MsgType as _MTqa
+                        self._qs._net.send(_MTqa.QUEST_ACCEPT, {
+                            "quest_id": qid, "npc_name": self._npc_name(self._dialog_npc_id),
+                        })
+                    else:
+                        from components import QuestLog
+                        ql = self.world.get_component(self.player_entity, QuestLog)
+                        if ql:
+                            self._qs._try_start(ql, qid)
                     self._close()
                     return
                 if self._decline_rect and self._decline_rect.collidepoint(mx, my):
@@ -611,12 +548,21 @@ class QuestDialogSystem(UIScaleMixin, System):
                     saved_npc = self._dialog_npc_id
                     qid = self._dialog_selected_qid
                     self._close()
-                    self._qs.turn_in(qid)
-                    # Re-abre se o NPC tiver mais quests (cadeia ou múltiplas)
-                    avail = self._get_available_quests(saved_npc)
-                    comp  = self._get_completable_quests(saved_npc)
-                    if avail or comp:
-                        self._open_dialog(saved_npc)
+                    if self._qs._net:
+                        from shared.messages import MsgType as _MTqt
+                        self._qs._net.send(_MTqt.QUEST_TURN_IN, {
+                            "quest_id": qid, "npc_name": self._npc_name(saved_npc),
+                        })
+                        # Online: reabertura de quests em cadeia depende da
+                        # confirmação do servidor (QUEST_UPDATE) — não reflete
+                        # nesta mesma frame, latência aceitável (1 round-trip).
+                    else:
+                        self._qs.turn_in(qid)
+                        # Re-abre se o NPC tiver mais quests (cadeia ou múltiplas)
+                        avail = self._get_available_quests(saved_npc)
+                        comp  = self._get_completable_quests(saved_npc)
+                        if avail or comp:
+                            self._open_dialog(saved_npc)
                     return
 
     # ── Render — indicadores no mundo ────────────────────────────────────────
@@ -759,7 +705,7 @@ class QuestDialogSystem(UIScaleMixin, System):
                          (x0 + PAD, y))
         y += self._u(18)
         for obj in qdef.objectives:
-            s = self._font_sm.render(f"  - {QuestSystem._obj_label(obj, 0)}",
+            s = self._font_sm.render(f"  {QuestSystem._obj_label(obj, 0, show_progress=False)}",
                                      True, self.COL_GREY)
             self.hud_surf.blit(s, (x0 + PAD, y))
             y += self._u(16)
@@ -860,8 +806,11 @@ class QuestDialogSystem(UIScaleMixin, System):
         self._qs._process_talk_to_npc(_npc_name)
 
         avail = self._get_available_quests(npc_id)
-        # Re-calcula completáveis APÓS processar talk_to_npc
-        comp  = self._get_completable_quests(npc_id)
+        # Re-calcula completáveis APÓS processar talk_to_npc.
+        # Passa _npc_name: online, _process_talk_to_npc é no-op mas o check
+        # de can_turn_in_after_talk permite abrir o modal de entrega para
+        # quests cujo único objetivo pendente é talk_to_npc deste NPC.
+        comp  = self._get_completable_quests(npc_id, _npc_name)
         total = comp + avail   # completáveis têm prioridade na lista
 
         if not total:
@@ -897,7 +846,9 @@ class QuestDialogSystem(UIScaleMixin, System):
     # ── Consultas ao QuestLog ────────────────────────────────────────────────
 
     def _get_available_quests(self, npc_id: int) -> list:
-        """Quests que o NPC pode oferecer (não iniciadas, pré-req ok, nível ok)."""
+        """Quests que o NPC pode oferecer (não iniciadas, pré-req ok, nível ok,
+        classe ok). Quest com class_req != classe do player é tratada como se
+        não existisse pra ele — nunca aparece aqui nem em _get_locked_quests."""
         from components import QuestLog, QuestGiver as _QG
         giver = self.world.get_component(npc_id, _QG)
         if giver is None:
@@ -905,19 +856,24 @@ class QuestDialogSystem(UIScaleMixin, System):
         ql = self.world.get_component(self.player_entity, QuestLog)
         if ql is None:
             return []
-        plvl = self._qs._player_level()
+        plvl  = self._qs._player_level()
+        pclass = self._qs._player_class_id()
         result = []
         for qid in giver.quest_ids:
             if qid in ql.active or qid in ql.completed:
                 continue
             qdef = QUESTS.get(qid)
-            if qdef and all(r in ql.completed for r in qdef.requires):
+            if qdef is None or (qdef.class_req and qdef.class_req != pclass):
+                continue
+            if all(r in ql.completed for r in qdef.requires):
                 if qdef.level_req <= plvl:
                     result.append(qid)
         return result
 
     def _get_locked_quests(self, npc_id: int) -> list:
-        """Quests com level_req acima do nível atual (pré-req ok mas bloqueadas)."""
+        """Quests com level_req acima do nível atual (pré-req ok mas bloqueadas).
+        Quest restrita a outra classe NUNCA aparece aqui (fica invisível, não
+        bloqueada) — ver _get_available_quests."""
         from components import QuestLog, QuestGiver as _QG
         giver = self.world.get_component(npc_id, _QG)
         if giver is None:
@@ -925,25 +881,41 @@ class QuestDialogSystem(UIScaleMixin, System):
         ql = self.world.get_component(self.player_entity, QuestLog)
         if ql is None:
             return []
-        plvl = self._qs._player_level()
+        plvl  = self._qs._player_level()
+        pclass = self._qs._player_class_id()
         result = []
         for qid in giver.quest_ids:
             if qid in ql.active or qid in ql.completed:
                 continue
             qdef = QUESTS.get(qid)
-            if qdef and all(r in ql.completed for r in qdef.requires):
+            if qdef is None or (qdef.class_req and qdef.class_req != pclass):
+                continue
+            if all(r in ql.completed for r in qdef.requires):
                 if qdef.level_req > plvl:
                     result.append(qid)
         return result
 
-    def _get_completable_quests(self, npc_id: int) -> list:
-        """Quests que o NPC aceita para entrega e estão 100% concluídas."""
+    def _get_completable_quests(self, npc_id: int, pending_npc_name: str = "") -> list:
+        """Quests que o NPC aceita para entrega e estão 100% concluídas.
+
+        pending_npc_name: se fornecido, também inclui quests cujo único
+        objetivo pendente é talk_to_npc direcionado a este NPC — espelha o
+        comportamento do servidor que aplica talk_to_npc antes de can_turn_in."""
         from components import QuestGiver as _QG
         giver = self.world.get_component(npc_id, _QG)
         if giver is None:
             return []
         ids = giver.turn_in_ids if giver.turn_in_ids else giver.quest_ids
-        return [qid for qid in ids if self._qs.can_turn_in(qid)]
+        result = []
+        for qid in ids:
+            if self._qs.can_turn_in(qid):
+                result.append(qid)
+            elif pending_npc_name:
+                from components import QuestLog as _QL_ct
+                ql = self.world.get_component(self.player_entity, _QL_ct)
+                if ql and quest_logic.can_turn_in_after_talk(ql, qid, pending_npc_name):
+                    result.append(qid)
+        return result
 
     def _get_inprogress_quests(self, npc_id: int) -> list:
         """Quests aceitas e em progresso (incompletas)."""
@@ -965,8 +937,14 @@ class QuestDialogSystem(UIScaleMixin, System):
     # ── Helpers de navegação/tile ────────────────────────────────────────────
 
     def _get_cam(self):
+        # Usa world_surf (superfície lógica de zoom), não hud_surf (tela
+        # real) — sem isso o clique calcula a posição mundial errada quando
+        # self._zoom != 1.0 (ver ShopSystem._get_cam() em systems.py, que já
+        # faz certo). _open_dialog/click usa esse offset + _sc (ver update()).
+        # Fallback pra hud_surf se world_surf ainda não foi atribuído (1º
+        # frame, antes de game.py::_assign_world_surf rodar — zoom=1.0).
         from components import Camera, Position as _Pos
-        SW, SH = self.hud_surf.get_size()
+        SW, SH = (self.world_surf or self.hud_surf).get_size()
         for _, pos, _ in self.world.get_entities_with(_Pos, Camera):
             return pos.x - SW / 2, pos.y - SH / 2
         return 0.0, 0.0
@@ -981,6 +959,11 @@ class QuestDialogSystem(UIScaleMixin, System):
         from components import Position
         pos = self.world.get_component(eid, Position)
         return (int(pos.x / TS), int(pos.y / TS)) if pos else None
+
+    def _npc_name(self, eid: int) -> str:
+        from components import NPC as _NPCname
+        npc = self.world.get_component(eid, _NPCname)
+        return npc.name if npc else "NPC"
 
     @staticmethod
     def _cheby(t1, t2) -> int:
@@ -1303,10 +1286,14 @@ class QuestJournalSystem(UIScaleMixin, System):
             else:
                 cur, done = 0, False
 
-            col = self.COL_DONE_OBJ if done else self.COL_PROG
-            mark = "v" if done else "-"
+            if done:
+                col = self.COL_DONE_OBJ
+            elif cur > 0:
+                col = self.COL_WHITE
+            else:
+                col = self.COL_PROG
             label = QuestSystem._obj_label(obj, cur)
-            obj_s = self._font_body.render(f"  {mark} {label}", True, col)
+            obj_s = self._font_body.render(f"  {label}", True, col)
             self.hud_surf.blit(obj_s, (dx, dy))
             dy += obj_s.get_height() + self._u(2)
         dy += self._u(8)

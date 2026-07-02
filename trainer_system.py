@@ -3,19 +3,23 @@
 TrainerSystem — gerencia interação com NPCs treinadores de classe.
 
 Fluxo:
-  1. Clique direito em NPC com componente Trainer → action menu
-  2. Action menu: Treinamento / (quests, se NPC tiver QuestGiver)
+  1. Clique direito em NPC com componente Trainer → action menu (ou pula
+     direto pro destino se só houver 1 assunto pra essa classe, ou pra
+     entrega de quest se houver alguma completável — ver _open_menu)
+  2. Action menu: Treinamento / Quests (cada um só aparece se houver algo
+     de fato disponível pra essa classe — ver _compute_options)
   3. Modal de treinamento: lista de skills com requisito de nível e custo
 """
 from __future__ import annotations
 import pygame
 from systems import System
 from components import (Position, Renderable, TileMovement, PlayerAutoMove,
-                        Camera, NPC, QuestGiver, Trainer, Wallet)
+                        Camera, NPC, Trainer, Wallet)
 from skill_config import (SKILL_CATALOG, SKILL_LEVEL_REQUIREMENTS, SKILL_COSTS,
                           NUM_SLOTS, SKILL_ORDER_BY_CLASS)
 from icon_manager import ICONS
 from combat_log import LOG
+from quest_events import fire as quest_fire
 from ui_scale_mixin import UIScaleMixin
 from ui_sizes import UI
 
@@ -180,20 +184,28 @@ class TrainerSystem(UIScaleMixin, System):
 
         # Clique direito em Trainer (apenas quando fechado)
         if self._state == self.STATE_CLOSED and self._open_cooldown <= 0:
-            SW, SH = self.hud_surf.get_size()
+            # Usa world_surf (superfície lógica de zoom), não hud_surf (tela
+            # real) — sem isso o clique calcula a posição mundial errada
+            # quando self._zoom != 1.0 (ver ShopSystem._get_cam() em
+            # systems.py, que já faz certo). Fallback pra hud_surf se
+            # world_surf ainda não foi atribuído (1º frame, antes de
+            # game.py::_assign_world_surf rodar — equivale a zoom=1.0).
+            _wsurf = self.world_surf or self.hud_surf
+            SW, SH = _wsurf.get_size()
             cx, cy = 0.0, 0.0
             for _, _, _cam_pos in self.world.get_entities_with(Camera, Position):
                 cx = _cam_pos.x - SW / 2
                 cy = _cam_pos.y - SH / 2
                 break
+            _sc = _wsurf.get_width() / max(1, self.hud_surf.get_width())
 
             for eid, pos, rend, _ in self.world.get_entities_with(
                     Position, Renderable, Trainer):
                 for ev in events:
                     if ev.type != pygame.MOUSEBUTTONDOWN or ev.button != 3:
                         continue
-                    wx = ev.pos[0] + cx
-                    wy = ev.pos[1] + cy
+                    wx = ev.pos[0] * _sc + cx
+                    wy = ev.pos[1] * _sc + cy
                     hw = rend.width  / 2
                     hh = rend.height / 2
                     if abs(wx - pos.x) <= hw and abs(wy - pos.y) <= hh:
@@ -257,12 +269,61 @@ class TrainerSystem(UIScaleMixin, System):
     # ------------------------------------------------------------------
     # Ações internas
     # ------------------------------------------------------------------
+    def _compute_options(self, eid: int) -> list:
+        """Opções de assunto disponíveis pra ESTE player com ESTE NPC —
+        "Treinamento" só se a classe do player bate com a do treinador;
+        "Quests" só se houver de fato algo pra essa classe (disponível, em
+        progresso ou completável — não só "o NPC tem quest_ids")."""
+        from components import CharacterStats
+        options = []
+        cs = self.world.get_component(self.player_entity, CharacterStats)
+        tr = self.world.get_component(eid, Trainer)
+        tr_class = tr.class_id if tr else "guerreiro"
+        if cs and cs.class_id == tr_class:
+            options.append(("treinamento", "Treinamento"))
+        if self._quest_dialog and (
+                self._quest_dialog._get_available_quests(eid) or
+                self._quest_dialog._get_completable_quests(eid) or
+                self._quest_dialog._get_inprogress_quests(eid)):
+            options.append(("quest:0", "Quests"))
+        return options
+
     def _open_menu(self, eid: int):
         self._tr_eid  = eid
         npc = self.world.get_component(eid, NPC)
         self._tr_name = npc.name if npc else "Treinador"
         tr  = self.world.get_component(eid, Trainer)
         self._tr_class_id = tr.class_id if tr else "guerreiro"
+
+        # Prioridade: quest pronta pra entregar abre direto o diálogo de
+        # quest, nunca o menu de assunto (mesmo com treinamento disponível).
+        if self._quest_dialog and self._quest_dialog._get_completable_quests(eid):
+            self._quest_dialog._open_dialog(eid)
+            self._state = self.STATE_CLOSED
+            self._open_cooldown = 0.3
+            return
+
+        options = self._compute_options(eid)
+
+        # Só 1 assunto (ou nenhum) pra essa classe — pula direto pro
+        # destino, sem mostrar o menu de "o que deseja?".
+        if len(options) <= 1:
+            key = options[0][0] if options else "_none"
+            if key == "treinamento":
+                self._state = self.STATE_TRAINING
+                self._list_scroll = 0
+            elif key.startswith("quest:"):
+                if self._quest_dialog:
+                    self._quest_dialog._open_dialog(eid)
+                self._state = self.STATE_CLOSED
+            else:
+                from components import CharacterStats
+                cs = self.world.get_component(self.player_entity, CharacterStats)
+                LOG.add(f"{self._tr_name}: nada para {cs.name if cs else 'você'} aqui.", _COL_GREY)
+                self._state = self.STATE_CLOSED
+            self._open_cooldown = 0.3
+            return
+
         self._state = self.STATE_MENU
         self._open_cooldown = 0.3
 
@@ -318,6 +379,8 @@ class TrainerSystem(UIScaleMixin, System):
         name  = entry.get("name", skill_id) if isinstance(entry, dict) else skill_id
         LOG.add(f"Aprendido: {name} (-{cost}g)", _COL_GOLD)
 
+        quest_fire("learn_skill", skill_id=skill_id)
+
         from save_system import request_autosave
         request_autosave()
 
@@ -349,41 +412,47 @@ class TrainerSystem(UIScaleMixin, System):
             self._draw_training_modal()
 
     # ------------------------------------------------------------------
-    # Action menu (igual ao BlacksmithSystem)
+    # Action menu — mesmo tamanho do diálogo de quest (UI.QUEST_DIALOG_W/H),
+    # com saudação no lugar do título de NPC ("Olá {player}, o que deseja?").
     # ------------------------------------------------------------------
     def _draw_action_menu(self):
         surf = self.hud_surf
         mx, my = pygame.mouse.get_pos()
-        SW, SH = surf.get_size()
 
-        # Opções disponíveis
-        options = []
+        options = self._compute_options(self._tr_eid)
         from components import CharacterStats
         cs = self.world.get_component(self.player_entity, CharacterStats)
-        if cs and cs.class_id == self._tr_class_id:
-            options.append(("treinamento", "Treinamento"))
-        qg = self.world.get_component(self._tr_eid, QuestGiver)
-        if qg and qg.quest_ids:
-            options.append(("quest:0", "Quests"))
         if not options:
-            options.append(("_none", f"Nada para {cs.name if cs else 'você'} aqui."))
+            options = [("_none", f"Nada para {cs.name if cs else 'você'} aqui.")]
 
-        BTN_W, BTN_H = self._u(220), self._u(46)
-        GAP = self._u(8)
-        total_h = len(options) * (BTN_H + GAP) - GAP + self._u(60)
-        px = (SW - BTN_W) // 2
-        py = (SH - total_h) // 2
+        x0, y0 = self._safe_panel_origin(UI.QUEST_DIALOG_W, UI.QUEST_DIALOG_H)
+        panel_w, panel_h = self._u(UI.QUEST_DIALOG_W), self._u(UI.QUEST_DIALOG_H)
+        pad = self._u(_PAD)
 
         # Fundo
-        pad = self._u(_PAD)
-        bg = pygame.Rect(px - pad, py - pad, BTN_W + pad * 2, total_h + pad * 2)
-        pygame.draw.rect(surf, _COL_PANEL, bg, border_radius=6)
-        pygame.draw.rect(surf, _COL_BORDER, bg, 2, border_radius=6)
+        panel_r = pygame.Rect(x0, y0, panel_w, panel_h)
+        pygame.draw.rect(surf, _COL_PANEL, panel_r, border_radius=6)
+        pygame.draw.rect(surf, _COL_BORDER, panel_r, 2, border_radius=6)
 
-        # Título
-        title_s = self._font_lg.render(self._tr_name, True, _COL_TITLE)
-        surf.blit(title_s, (px + (BTN_W - title_s.get_width()) // 2, py))
-        py += self._u(46)
+        # Botão fechar
+        close_s = self._font_md.render("[X]", True, _COL_RED)
+        self._close_r = pygame.Rect(x0 + panel_w - self._u(36), y0 + self._u(8), self._u(28), self._u(24))
+        surf.blit(close_s, self._close_r.topleft)
+
+        # Saudação
+        player_name = cs.name if cs else "Aventureiro"
+        greeting = f"Olá {player_name}, o que deseja?"
+        title_s = self._font_lg.render(greeting, True, _COL_TITLE)
+        surf.blit(title_s, (x0 + (panel_w - title_s.get_width()) // 2, y0 + self._u(_PAD)))
+        pygame.draw.line(surf, _COL_BORDER,
+                         (x0 + self._u(4), y0 + self._u(54)), (x0 + panel_w - self._u(4), y0 + self._u(54)))
+
+        # Botões de assunto, centralizados verticalmente no espaço restante
+        BTN_W, BTN_H = self._u(220), self._u(46)
+        GAP = self._u(12)
+        total_h = len(options) * (BTN_H + GAP) - GAP
+        px = x0 + (panel_w - BTN_W) // 2
+        py = y0 + self._u(54) + (panel_h - self._u(54) - total_h) // 2
 
         self._menu_rects = {}
         for key, label in options:

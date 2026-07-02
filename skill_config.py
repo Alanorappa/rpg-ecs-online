@@ -438,52 +438,47 @@ SKILL_SLOTS: list[str | None] = [None] * NUM_SLOTS
 # ---------------------------------------------------------------------------
 
 SKILL_LEVEL_REQUIREMENTS: dict[str, int] = {
-    "golpe_poderoso":   2,
-    "impacto":          3,
-    "vitoria_iminente": 5,
-    "interceptar":      6,
-    "executar":         10,
-    "bola_de_fogo":     2,
+    # Guerreiro
+    "golpe_poderoso":   1,
+    "impacto":          2,
+    "vitoria_iminente": 4,
+    "interceptar":      8,
+    "executar":         16,
+    # Mago
+    "bola_de_fogo":     1,
+    "polimorfia":       2,
     "nova_congelante":  4,
-    "polimorfia":       5,
     "bloco_de_gelo":    8,
     # Arqueiro
-    "tiro_multiplo":     1,
-    "camuflagem":        1,
-    "tiro_repulsivo":    1,
-    "cancao_inspiracao": 1,
-    "so_um_gole":        1,
-    "cancao_ninar":      1,
-    "picada_escorpiao":  1,
-    "flecha_reiterada":  1,
-    "recarregar":        1,
+    "recarregar":       1,    
+    "cancao_ninar":     2,
+    "picada_escorpiao": 4,
+    "flecha_reiterada": 8,
 }
 
 SKILL_COSTS: dict[str, int] = {
-    "golpe_poderoso":   100,
-    "impacto":          200,
-    "vitoria_iminente": 400,
-    "interceptar":      800,
+    # Guerreiro
+    "golpe_poderoso":   0,
+    "impacto":          100,
+    "vitoria_iminente": 200,
+    "interceptar":      400,
     "executar":         1600,
-    "bola_de_fogo":     100,
+    # Mago
+    "bola_de_fogo":     0,
+    "polimorfia":       100,
     "nova_congelante":  200,
-    "polimorfia":       300,
-    "bloco_de_gelo":    600,
+    "bloco_de_gelo":    400,
     # Arqueiro
-    "tiro_multiplo":     0,
-    "camuflagem":        0,
-    "tiro_repulsivo":    0,
-    "cancao_inspiracao": 0,
-    "so_um_gole":        0,
-    "cancao_ninar":     0,
-    "picada_escorpiao": 0,
-    "flecha_reiterada": 0,
     "recarregar":       0,
+    "cancao_ninar":     100,
+    "picada_escorpiao": 200,
+    "flecha_reiterada": 400,
+
 }
 
 SKILL_ORDER_BY_CLASS: dict[str, list] = {
     "guerreiro": ["golpe_poderoso", "impacto", "vitoria_iminente", "interceptar", "executar"],
-    "mago":      ["bola_de_fogo", "nova_congelante", "polimorfia", "bloco_de_gelo"],
+    "mago":      ["bola_de_fogo", "polimorfia", "nova_congelante", "bloco_de_gelo"],
     "arqueiro":  ["recarregar", "cancao_ninar", "picada_escorpiao", "flecha_reiterada"],
 }
 
@@ -491,6 +486,9 @@ SKILL_ORDER_BY_CLASS: dict[str, list] = {
 # Chave = class_id, valor = lista de skill_ids iniciais.
 INITIAL_SKILLS_BY_CLASS: dict[str, list] = {
     "guerreiro": [],
-    "mago":      ["bola_de_fogo", "nova_congelante", "polimorfia", "bloco_de_gelo"],
-    "arqueiro":  ["recarregar", "cancao_ninar", "picada_escorpiao", "flecha_reiterada"],
+    # Mago: nenhuma skill inicial — todas (incl. Bola de Fogo, grátis a partir
+    # do nível 1) são aprendidas no treinador. Ver quest "iniciacao_arcana"
+    # (quests_data.py) e SKILL_LEVEL_REQUIREMENTS/SKILL_COSTS acima.
+    "mago":      [],
+    "arqueiro":  [],
 }
