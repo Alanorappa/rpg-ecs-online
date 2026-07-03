@@ -166,13 +166,8 @@ class ServerMobSystem:
         if new_tx is None:
             return  # bloqueado em todas as direções
 
-        mob_tm.current_tile_x = new_tx
-        mob_tm.current_tile_y = new_ty
-        mob_tm.target_tile_x  = new_tx
-        mob_tm.target_tile_y  = new_ty
-        pos = self.world.get_component(mob_eid, Position)
-        if pos:
-            pos.prev_x = pos.x
-            pos.prev_y = pos.y
-            pos.x = new_tx * TILE_SIZE + TILE_SIZE // 2
-            pos.y = new_ty * TILE_SIZE + TILE_SIZE // 2
+        # snap_to_tile: o write manual antigo não resetava is_moving — mob
+        # empurrado no meio de um passo mantinha o tween antigo vivo (classe
+        # de bug do Tiro Repulsivo).
+        from utils import snap_to_tile as _snap_mob
+        _snap_mob(self.world, mob_eid, new_tx, new_ty)

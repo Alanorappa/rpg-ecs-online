@@ -757,20 +757,10 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         ml = self.world.get_component(player_eid, _MLtp)
         if ml is not None:
             ml.map_file = to_map
-        from shared.constants import TILE_SIZE as _TS_tp
-        ptm = self.world.get_component(player_eid, TileMovement)
-        pos = self.world.get_component(player_eid, Position)
-        if ptm and pos:
-            px = target_x * _TS_tp + _TS_tp // 2
-            py = target_y * _TS_tp + _TS_tp // 2
-            ptm.current_tile_x = ptm.target_tile_x = target_x
-            ptm.current_tile_y = ptm.target_tile_y = target_y
-            ptm.target_pixel_x = ptm.start_pixel_x = px
-            ptm.target_pixel_y = ptm.start_pixel_y = py
-            ptm.progress   = 0.0
-            ptm.is_moving  = False
-            pos.x = pos.prev_x = float(px)
-            pos.y = pos.prev_y = float(py)
+        # snap_to_tile: mesmo conjunto de escritas que o bloco manual antigo
+        # fazia aqui — agora centralizado (única forma correta de teleportar).
+        from utils import snap_to_tile as _snap_xfer
+        _snap_xfer(self.world, player_eid, target_x, target_y, carry_prev=False)
 
     def get_player_save_data(self, session_id: str) -> dict:
         """Coleta estado ECS completo do jogador para persistência."""

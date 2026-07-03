@@ -156,15 +156,14 @@ class RespawnMixin:
         gst.near_corpse = False
 
         rx, ry = self.RESPAWN_TILE
-        tm  = self.world.get_component(player_eid, TileMovement)
-        pos = self.world.get_component(player_eid, Position)
+        tm = self.world.get_component(player_eid, TileMovement)
         old_tx, old_ty = (tm.current_tile_x, tm.current_tile_y) if tm else (rx, ry)
-        if tm:
-            tm.current_tile_x = tm.target_tile_x = rx
-            tm.current_tile_y = tm.target_tile_y = ry
-        if pos:
-            pos.x = rx * TILE_SIZE + TILE_SIZE // 2
-            pos.y = ry * TILE_SIZE + TILE_SIZE // 2
+        # snap_to_tile: cancela tween em andamento + sincroniza pixels/Position.
+        # O write manual antigo não resetava is_moving — player que morria no
+        # meio de um passo respawnava com o tween antigo vivo (classe de bug
+        # do Tiro Repulsivo).
+        from utils import snap_to_tile as _snap_rs
+        _snap_rs(self.world, player_eid, rx, ry, carry_prev=False)
 
         # Se player morreu num mapa não-principal (ex: cave), transfere o ghost pro
         # mapa principal antes de tudo. O cliente recebe ZONE_CHANGE junto com

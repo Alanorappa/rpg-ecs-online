@@ -840,15 +840,11 @@ class SessionManager:
         from components import TileMovement, Position, StatusEffects, AIControlled, CombatState
         from shared.constants import TILE_SIZE
 
-        # Teleporta no servidor
-        ptm = self.world_server.world.get_component(player_eid, TileMovement)
-        pos = self.world_server.world.get_component(player_eid, Position)
-        if ptm:
-            ptm.current_tile_x = rx;  ptm.current_tile_y = ry
-            ptm.target_tile_x  = rx;  ptm.target_tile_y  = ry
-        if pos:
-            pos.x = rx * TILE_SIZE + TILE_SIZE // 2
-            pos.y = ry * TILE_SIZE + TILE_SIZE // 2
+        # Teleporta no servidor — snap_to_tile cancela tween em andamento e
+        # sincroniza pixels/Position (o write manual antigo não resetava
+        # is_moving nem os campos de pixel).
+        from utils import snap_to_tile as _snap_tp
+        _snap_tp(self.world_server.world, player_eid, rx, ry, carry_prev=False)
 
         # Limpa efeitos ativos (stun, root, DoT…)
         sfx = self.world_server.world.get_component(player_eid, StatusEffects)

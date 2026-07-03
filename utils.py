@@ -151,6 +151,54 @@ def start_tile_movement(position, tile_movement, tgt_x: int, tgt_y: int,
         tile_movement.move_duration = dist / effective_speed
 
 
+def snap_to_tile(world, entity_id: int, tx: int, ty: int,
+                 carry_prev: bool = True) -> bool:
+    """Teleporta/snap uma entidade para (tx, ty) — ÚNICA forma correta de
+    escrever current_tile_x/y diretamente (knockback, teleporte, respawn,
+    troca de mapa). Retorna False se a entidade não tem TileMovement.
+
+    Faz TODO o conjunto de escritas que um snap seguro exige:
+    - current_tile + target_tile = destino
+    - is_moving = False + progress = 0: cancela qualquer tween em andamento.
+      Sem isso, um passo de movimento interrompido "sobrevive" ao snap e o
+      TileMovementSystem sobrescreve a posição no tick seguinte com
+      start/target_pixel ANTIGOS (bug real: Tiro Repulsivo causava "sprint"
+      visual pós-knockback em mob mid-chase; mesmo risco existia no
+      Interceptar — ver PROBLEMAS_ARQUITETURA.md, rodada 21-22/06).
+    - start/target_pixel = centro do tile destino: sem isso, checks de
+      pixel-range de skills leem valores stale da última animação (bug real:
+      golpe_poderoso "Fora de alcance" adjacente ao alvo).
+    - Position (se existir) = centro do tile destino. carry_prev=True (padrão)
+      preserva prev_* = posição antiga; carry_prev=False zera prev_* no destino
+      (troca de mapa: interpolar da coordenada do mapa antigo não faz sentido).
+
+    NÃO usar para os "rewinds" temporários de lag-compensation (salvar tile,
+    testar, restaurar) — aqueles manipulam current_tile de propósito sem
+    cancelar movimento; este helper é para mudanças REAIS de posição.
+    """
+    from components import TileMovement, Position
+    from shared.constants import TILE_SIZE
+    tm = world.get_component(entity_id, TileMovement)
+    if tm is None:
+        return False
+    tm.current_tile_x = tm.target_tile_x = tx
+    tm.current_tile_y = tm.target_tile_y = ty
+    tm.is_moving = False
+    tm.progress  = 0.0
+    cx = tx * TILE_SIZE + TILE_SIZE // 2
+    cy = ty * TILE_SIZE + TILE_SIZE // 2
+    tm.start_pixel_x = tm.target_pixel_x = cx
+    tm.start_pixel_y = tm.target_pixel_y = cy
+    pos = world.get_component(entity_id, Position)
+    if pos is not None:
+        if carry_prev:
+            pos.prev_x, pos.prev_y = pos.x, pos.y
+        else:
+            pos.prev_x, pos.prev_y = float(cx), float(cy)
+        pos.x, pos.y = float(cx), float(cy)
+    return True
+
+
 def is_target_alive(world, target_id: int) -> bool:
     """Único ponto de verdade pra "esse alvo ainda está vivo?" no cliente.
 

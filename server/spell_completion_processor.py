@@ -908,15 +908,8 @@ class SpellCompletionMixin:
             # current_tile (antes da animação completar) e cliente vai para target_tile,
             # causando desacordo que gera salto visual quando o root expira.
             if etm.is_moving:
-                etm.current_tile_x = etm.target_tile_x
-                etm.current_tile_y = etm.target_tile_y
-                _nc_pos = self.world.get_component(eid, _PosNC)
-                if _nc_pos:
-                    from shared.constants import TILE_SIZE as _TS_nc
-                    _nc_pos.x = etm.current_tile_x * _TS_nc + _TS_nc // 2
-                    _nc_pos.y = etm.current_tile_y * _TS_nc + _TS_nc // 2
-                etm.is_moving = False
-                etm.progress  = 0.0
+                from utils import snap_to_tile as _snap_nc
+                _snap_nc(self.world, eid, etm.target_tile_x, etm.target_tile_y)
 
     def _server_polimorfia(self, player_eid: int, target_id: int, entry: dict) -> None:
         from components import CombatStats, CombatState, StatusEffects as _SFXpoly
@@ -1249,15 +1242,18 @@ class SpellCompletionMixin:
                 stunned      = True
                 collided_eid = _blocker
                 break
+            # Dentro do loop só avança current_tile (base dos checks de colisão
+            # do próximo passo) — o snap completo (target_tile/pixels/Position/
+            # is_moving) é feito UMA vez após o loop, via snap_to_tile.
             t_tm.current_tile_x = nx
             t_tm.current_tile_y = ny
-            t_tm.target_tile_x  = nx
-            t_tm.target_tile_y  = ny
-            t_pos = self.world.get_component(target_id, Position)
-            if t_pos:
-                t_pos.x = nx * _TS + _TS // 2
-                t_pos.y = ny * _TS + _TS // 2
             tiles_traveled += 1
+
+        # Snap canônico na posição final (helper único de teleporte/knockback —
+        # cobre também o reset de is_moving já feito acima, de forma idempotente).
+        if tiles_traveled > 0:
+            from utils import snap_to_tile as _snap_kb
+            _snap_kb(self.world, target_id, t_tm.current_tile_x, t_tm.current_tile_y)
 
         # Padrão de deslocamento forçado em rede (LoL/WoW e netcode de
         # referência): UM evento com posição final + duração total, não um
