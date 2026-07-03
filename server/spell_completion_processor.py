@@ -578,32 +578,21 @@ class SpellCompletionMixin:
     # ── Ponto único de modificação de HP (servidor) ──────────────────────────
 
     def _apply_final_damage(self, target_id: int, dmg: int) -> bool:
-        """Aplica dmg ao HP de target_id verificando todas as guardas do servidor.
+        """Aplica dmg ao HP de target_id verificando todas as guardas.
 
         Retorna False se bloqueado (HP já zerado, is_immune, etc.).
         HP pode ficar negativo: overkill preservado para cálculo de dano real.
 
-        ÚNICO lugar onde current_hp é decrementado por dano no servidor.
-        Para adicionar redução de dano, resistências ou novos status de imunidade,
-        editar apenas aqui.
+        Delegate de core_systems.apply_damage_core — núcleo COMPARTILHADO com
+        deal_damage (melee, world_systems) e _apply_magic_damage (cliente
+        offline, spell_system). Regra nova de mitigação/imunidade entra LÁ,
+        uma vez, e vale para os 3 caminhos (problemas B/H resolvidos).
+        add_pending_death=False: no servidor a morte é tratada pelos
+        chamadores (snapshot hp_before/hp_after + death sweep), não aqui.
         """
-        from components import CombatStats as _CS, CombatState as _CSt, StatusEffects as _SFX_fd
-        cs = self.world.get_component(target_id, _CS)
-        if not cs or cs.current_hp <= 0:
-            return False
-        cst = self.world.get_component(target_id, _CSt)
-        if cst and cst.is_immune:
-            return False
-        cs.current_hp -= dmg
-        # Dano quebra polymorph e sleep (qualquer fonte — ponto único servidor)
-        if dmg > 0:
-            _sfx_fd = self.world.get_component(target_id, _SFX_fd)
-            if _sfx_fd:
-                _sfx_fd.effects.pop("polymorph", None)
-                _sleep_fd = _sfx_fd.effects.pop("sleep", None)
-                if _sleep_fd and getattr(_sleep_fd, "on_expire_effect", ""):
-                    _sleep_fd.on_expire_effect = ""
-        return True
+        from core_systems import apply_damage_core
+        return apply_damage_core(self.world, target_id, dmg,
+                                 add_pending_death=False) in ("applied", "killed")
 
     # ── Dano de magia server-side ────────────────────────────────────────────
 

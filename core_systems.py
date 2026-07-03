@@ -6,11 +6,72 @@ Sistemas visuais (FLT, LOG, PROC, sons) ficam nas subclasses de cada lado.
 
 Exporta:
   apply_effect()              — aplica/atualiza status effect numa entidade
+  apply_damage_core()         — núcleo ÚNICO de aplicação final de dano em HP
   StatusEffectSystem          — processa ciclo de vida de status effects (ticks, expiração)
   BaseCombatStateSystem       — núcleo headless: timers de combate, rage, HP5, concentração
   ServerCombatStateSystem     — herda Base; adiciona hp5_events para o servidor
 """
 from __future__ import annotations
+
+
+# ── apply_damage_core ─────────────────────────────────────────────────────────
+
+def apply_damage_core(world, target_id: int, dmg: int, *,
+                      killer_eid: int = -1,
+                      add_pending_death: bool = True,
+                      on_cc_break=None) -> str:
+    """Núcleo ÚNICO da aplicação FINAL de dano em current_hp.
+
+    Consolida os invariantes que antes viviam duplicados em 3+ lugares
+    (problemas B/H, PROBLEMAS_ARQUITETURA.md): CombatSystem.deal_damage
+    (melee/físico compartilhado), server _apply_final_damage (mágico/ranged
+    server-side) e spell_system._apply_magic_damage (cliente offline).
+    Regra nova de mitigação/imunidade/resistência entra AQUI, uma vez, e
+    vale para os 3 caminhos.
+
+    Invariantes:
+      - alvo com current_hp <= 0 ou is_immune: dano bloqueado
+      - overkill preservado (current_hp pode ficar negativo; nunca clampar)
+      - dano > 0 quebra polymorph e sleep (sleep: on_expire_effect cancelado
+        para não aplicar o slow encadeado ao acordar)
+      - morte: adiciona PendingDeath(killer_eid) se add_pending_death
+
+    on_cc_break: callback opcional `fn(kind: str)` chamado com "polymorph"/
+    "sleep" quando o dano quebra o CC — hook para feedback visual do cliente
+    (FLT); servidor não passa nada.
+
+    Retorna: "blocked_dead" | "blocked_immune" | "applied" | "killed".
+    O chamador mantém a responsabilidade pelo que NÃO é invariante:
+    cálculo do dano, outcome (crit/block/...), aggro, enter_combat,
+    feedback visual, broadcast de rede.
+    """
+    from components import CombatStats, CombatState, StatusEffects, PendingDeath
+    cs = world.get_component(target_id, CombatStats)
+    if not cs or cs.current_hp <= 0:
+        return "blocked_dead"
+    cst = world.get_component(target_id, CombatState)
+    if cst and cst.is_immune:
+        return "blocked_immune"
+
+    cs.current_hp -= dmg  # overkill preservado por contrato
+
+    if dmg > 0:
+        sfx = world.get_component(target_id, StatusEffects)
+        if sfx:
+            if sfx.remove("polymorph") and on_cc_break:
+                on_cc_break("polymorph")
+            sleep_eff = sfx.get("sleep")
+            if sleep_eff:
+                sleep_eff.on_expire_effect = ""  # cancela slow pós-sono
+                sfx.remove("sleep")
+                if on_cc_break:
+                    on_cc_break("sleep")
+
+    if cs.current_hp <= 0:
+        if add_pending_death and not world.get_component(target_id, PendingDeath):
+            world.add_component(target_id, PendingDeath(killer_entity_id=killer_eid))
+        return "killed"
+    return "applied"
 
 
 # ── apply_effect ──────────────────────────────────────────────────────────────

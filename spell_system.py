@@ -41,37 +41,38 @@ def _spell_damage(attacker_id: int, world: World,
 
 def _apply_magic_damage(attacker_id: int, target_id: int, dmg: int, world: World,
                         is_crit: bool = False) -> bool:
-    """Aplica dano mágico ao alvo. Retorna True se o alvo morreu."""
-    target_cs = world.get_component(target_id, CombatStats)
-    if not target_cs or target_cs.current_hp <= 0:
-        return False
-    target_state = world.get_component(target_id, CombatState)
-    if target_state and target_state.is_immune:
-        return False
-    # Overkill preservado (sem max(0, ...)) — mesma convenção de deal_damage()/
-    # _apply_final_damage(), que nunca clampam current_hp ao aplicar dano.
-    target_cs.current_hp -= dmg
+    """Aplica dano mágico ao alvo (cliente/offline). Retorna True se morreu.
+
+    Guards + escrita de HP + quebra de CC + PendingDeath delegados a
+    core_systems.apply_damage_core — MESMO núcleo do servidor
+    (_apply_final_damage) e do melee (deal_damage). Aqui fica só o que é
+    do cliente: FLT, som de aggro, enter_combat, estado de IA.
+    """
+    from core_systems import apply_damage_core
+
     pos = world.get_component(target_id, Position)
+
+    def _on_cc_break(kind: str) -> None:
+        if not pos:
+            return
+        if kind == "polymorph":
+            FLT.add("Polimorfia quebrada!", pos.x, pos.y, (160, 80, 200),
+                    "small", target_id=target_id)
+        elif kind == "sleep":
+            FLT.add("Acordou!", pos.x, pos.y, (200, 200, 100), "small",
+                    target_id=target_id)
+
+    result = apply_damage_core(world, target_id, dmg,
+                               killer_eid=attacker_id,
+                               on_cc_break=_on_cc_break)
+    if result in ("blocked_dead", "blocked_immune"):
+        return False
+
     if pos:
         if is_crit:
             FLT.add(f"{dmg}", pos.x, pos.y, (255, 180, 80), target_id=target_id, is_crit=True)
         else:
             FLT.add(f"-{dmg}", pos.x, pos.y, (180, 100, 255), size="normal", target_id=target_id)
-    # Dano mágico quebra Polimorfia e Sono (alinhado com _apply_final_damage do servidor)
-    from components import StatusEffects as _SE
-    _t_sfx = world.get_component(target_id, _SE)
-    if _t_sfx:
-        if _t_sfx.remove("polymorph"):
-            if pos:
-                FLT.add("Polimorfia quebrada!", pos.x, pos.y, (160, 80, 200),
-                        "small", target_id=target_id)
-        _sleep_eff = _t_sfx.get("sleep")
-        if _sleep_eff:
-            _sleep_eff.on_expire_effect = ""
-            _t_sfx.remove("sleep")
-            if pos:
-                FLT.add("Acordou!", pos.x, pos.y, (200, 200, 100), "small",
-                        target_id=target_id)
     attacker_cs = world.get_component(attacker_id, CombatState)
     if attacker_cs:
         enter_combat(attacker_cs)
@@ -84,11 +85,7 @@ def _apply_magic_damage(attacker_id: int, target_id: int, dmg: int, world: World
         _ai.aggro_delay       = 0.5
         _ai.aggroed_by_damage = True
         _ai.path_recalc_timer = 0.0
-    if target_cs.current_hp <= 0:
-        if not world.get_component(target_id, PendingDeath):
-            world.add_component(target_id, PendingDeath(killer_entity_id=attacker_id))
-        return True
-    return False
+    return result == "killed"
 
 
 # ---------------------------------------------------------------------------

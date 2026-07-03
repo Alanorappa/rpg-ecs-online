@@ -22,7 +22,8 @@ import math
 import heapq
 import random
 
-from core_systems import (apply_effect, StatusEffectSystem as _CoreStatusEffectSystem,
+from core_systems import (apply_effect, apply_damage_core,
+                          StatusEffectSystem as _CoreStatusEffectSystem,
                           BaseCombatStateSystem as _BaseCombatStateSystem)
 try:
     from mob_combat_debug import MCL as _MCL
@@ -593,7 +594,22 @@ class CombatSystem(System):
             attacker_is_player, target_is_player,
         )
         self.last_outcome = outcome   # backward compat offline + skill results fallback
-        target_stats.current_hp -= final_damage
+
+        # Escrita final de HP + quebra de polymorph/sleep: núcleo ÚNICO
+        # compartilhado com o servidor (_apply_final_damage) e o caminho
+        # mágico do cliente (_apply_magic_damage) — problemas B/H.
+        # add_pending_death=False: a morte aqui passa por _handle_death
+        # (XP/loot/corpse), não pelo PendingDeath genérico do núcleo.
+        def _cc_break_fx(kind: str) -> None:
+            if kind == "polymorph":
+                FLT.add("Polimorfia quebrada!", _tx, _ty, (160, 80, 200), "small",
+                        target_id=target_id)
+            elif kind == "sleep":
+                FLT.add("Acordou!", _tx, _ty, (200, 200, 100), "small",
+                        target_id=target_id)
+        apply_damage_core(self.world, target_id, final_damage,
+                          killer_eid=attacker_id, add_pending_death=False,
+                          on_cc_break=_cc_break_fx)
 
         # Aggro por dano: ataque do player força inimigo a perseguir independente do raio.
         # aggroed_by_damage=True desativa o leash de 5 tiles até o mob chegar perto do player.
@@ -621,19 +637,7 @@ class CombatSystem(System):
                                 attacker_is_player, target_is_player, is_ability)
         self._apply_on_hit_procs(attacker_id, is_crit, attacker_is_player)
 
-        # Dano quebra Polimorfia e Sono
-        _t_sfx = self.world.get_component(target_id, StatusEffects)
-        if _t_sfx:
-            if _t_sfx.remove("polymorph"):
-                FLT.add("Polimorfia quebrada!", _tx, _ty, (160, 80, 200), "small",
-                        target_id=target_id)
-            # Sono quebra ao tomar dano — cancela also o slow encadeado
-            _sleep_eff = _t_sfx.get("sleep")
-            if _sleep_eff:
-                _sleep_eff.on_expire_effect = ""   # desfaz slow pós-sono
-                _t_sfx.remove("sleep")
-                FLT.add("Acordou!", _tx, _ty, (200, 200, 100), "small",
-                        target_id=target_id)
+        # (Quebra de Polimorfia/Sono: feita pelo apply_damage_core acima)
 
         # Player recebe dano → entra em combate (impede regen de HP)
         if target_is_player and final_damage > 0:
@@ -648,10 +652,11 @@ class CombatSystem(System):
             if _shield:
                 _retaliation = 10 + int(target_stats.spell_power * 0.20)
                 _att_cs  = self._get_combat_stats(attacker_id)
-                _att_cst = self.world.get_component(attacker_id, CombatState)
                 _att_pos = self.world.get_component(attacker_id, Position)
-                if _att_cs and _att_cs.current_hp > 0 and not (_att_cst and _att_cst.is_immune):
-                    _att_cs.current_hp -= _retaliation  # overkill preservado (snapshot diff)
+                # Núcleo único: guards alive/immune + overkill + PendingDeath
+                _ret_result = apply_damage_core(self.world, attacker_id,
+                                                _retaliation, killer_eid=target_id)
+                if _ret_result in ("applied", "killed") and _att_cs:
                     if _att_pos:
                         FLT.add(f"-{_retaliation}", _att_pos.x, _att_pos.y,
                                 (255, 120, 0), "normal", target_id=attacker_id)
@@ -660,8 +665,6 @@ class CombatSystem(System):
                     if _emit_ret:
                         _emit_ret(target_id, attacker_id, _retaliation,
                                   max(0, _att_cs.current_hp))
-                    if _att_cs.current_hp <= 0 and not self.world.get_component(attacker_id, PendingDeath):
-                        self.world.add_component(attacker_id, PendingDeath(killer_entity_id=target_id))
 
         if target_stats.current_hp <= 0:
             return self._handle_death(target_id, attacker_id), outcome
