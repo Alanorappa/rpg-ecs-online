@@ -259,110 +259,16 @@ class CombatStats:
         return int(self.stamina)
 
     def _recalculate_effective_stats(self):
-        """
-        Recalcula todos os atributos efetivos aplicando os modificadores.
-        Preserva a porcentagem de vida atual se a vida máxima mudar.
-        """
-        # Salva o HP absoluto antes de recalcular a vida máxima
-        old_current_hp = self.current_hp
+        """Delegate — a implementação real (data-driven) vive em
+        stat_fns.recalculate_combat_stats: componente é dado, lógica de
+        mutação fica em stat_fns (regra do projeto). A tabela de atributos
+        modificáveis/clamps está lá (_MODIFIABLE_ATTRS/_STAT_CLAMPS) —
+        atributo novo = 1 entrada na tabela, não uma cadeia de elif aqui.
 
-        # Reseta os atributos efetivos para os valores base
-        self.stamina       = float(self.base_stamina)
-        self.armor         = float(self.base_armor)
-        self.attack_power  = float(self.base_attack_power)
-        self.spell_power   = float(self.base_spell_power)
-        self.haste_rating  = float(self.base_haste_rating)
-        self.crit_rating   = float(self.base_crit_rating)
-        self.attack_interval = float(self.base_attack_interval)
-        self.hit_rating         = float(self.base_hit_rating)
-        self.armor_penetration  = float(self.base_armor_penetration)
-        self.dodge_rating  = float(self.base_dodge_rating)
-        self.parry_rating  = float(self.base_parry_rating)
-        self.block_rating  = float(self.base_block_rating)
-        self.block_value   = float(self.base_block_value)
-        self.acerto        = float(self.base_acerto)
-
-        # Aplica todos os modificadores
-        for mod in self.modifiers:
-            if mod.attribute == "stamina":
-                if mod.type == "flat":
-                    self.stamina += mod.value * 10  # 1 stamina = 10 HP (igual vitality)
-                elif mod.type == "percentage":
-                    self.stamina *= (1 + mod.value)
-            elif mod.attribute == "armor":
-                if mod.type == "flat":
-                    self.armor += mod.value
-                elif mod.type == "percentage":
-                    self.armor *= (1 + mod.value)
-            elif mod.attribute == "attack_power":
-                if mod.type == "flat":
-                    self.attack_power += mod.value
-                elif mod.type == "percentage":
-                    self.attack_power *= (1 + mod.value)
-            elif mod.attribute == "spell_power":
-                if mod.type == "flat":
-                    self.spell_power += mod.value
-                elif mod.type == "percentage":
-                    self.spell_power *= (1 + mod.value)
-            elif mod.attribute == "haste_rating":
-                if mod.type == "flat":
-                    self.haste_rating += mod.value
-                elif mod.type == "percentage":
-                    self.haste_rating *= (1 + mod.value)
-            elif mod.attribute == "crit_rating":
-                if mod.type == "flat":
-                    self.crit_rating += mod.value
-                elif mod.type == "percentage":
-                    self.crit_rating *= (1 + mod.value)
-            elif mod.attribute == "attack_interval":
-                if mod.type == "flat":
-                    self.attack_interval += mod.value
-                elif mod.type == "percentage":
-                    self.attack_interval *= (1 + mod.value)
-            elif mod.attribute == "hit_rating":
-                if mod.type == "flat":   self.hit_rating += mod.value
-                else:                    self.hit_rating *= (1 + mod.value)
-            elif mod.attribute == "dodge_rating":
-                if mod.type == "flat":   self.dodge_rating += mod.value
-                else:                    self.dodge_rating *= (1 + mod.value)
-            elif mod.attribute == "parry_rating":
-                if mod.type == "flat":   self.parry_rating += mod.value
-                else:                    self.parry_rating *= (1 + mod.value)
-            elif mod.attribute == "block_rating":
-                if mod.type == "flat":   self.block_rating += mod.value
-                else:                    self.block_rating *= (1 + mod.value)
-            elif mod.attribute == "block_value":
-                if mod.type == "flat":   self.block_value += mod.value
-                else:                    self.block_value *= (1 + mod.value)
-            elif mod.attribute == "acerto":
-                if mod.type == "flat":   self.acerto += mod.value
-                else:                    self.acerto *= (1 + mod.value)
-            elif mod.attribute == "armor_penetration":
-                if mod.type == "flat":   self.armor_penetration += mod.value
-                else:                    self.armor_penetration *= (1 + mod.value)
-
-        # APLICA A ACELERAÇÃO (HASTE) AO INTERVALO DE ATAQUE
-        # "a cada 10 de haste, diminui 1 segundo o intervalo"
-        self.attack_interval -= (self.haste_rating / 10.0)
-        
-        # Garante que o intervalo de ataque não seja negativo ou muito baixo.
-        # Definir um mínimo para o intervalo (e.g., 0.5 segundos para evitar ataques instantâneos)
-        self.attack_interval = max(0.5, self.attack_interval) # Ajuste 0.5 conforme o desejado
-
-        self.crit_rating  = max(0.0, min(1.0, self.crit_rating))
-        self.hit_rating   = max(0.0, self.hit_rating)
-        self.acerto            = max(0.0, min(100.0, self.acerto))
-        self.armor_penetration = max(0.0, self.armor_penetration)
-        self.dodge_rating = max(0.0, self.dodge_rating)
-        self.parry_rating = max(0.0, self.parry_rating)
-        self.block_rating = max(0.0, self.block_rating)
-        self.block_value  = max(0.0, self.block_value)
-        
-        # Atualiza a vida máxima com a estamina efetiva
-        self.max_hp = self._calculate_max_hp()
-        
-        # Preserva o HP absoluto; apenas limita ao novo máximo se necessário
-        self.current_hp = max(0, min(old_current_hp, self.max_hp))
+        Import local: components.py não pode importar stat_fns no topo
+        (stat_fns importa components — ciclo)."""
+        from stat_fns import recalculate_combat_stats
+        recalculate_combat_stats(self)
 
     def equipment_bonus(self, attribute: str) -> float:
         """Soma só os modificadores `source="equipment"` (item equipado) de
