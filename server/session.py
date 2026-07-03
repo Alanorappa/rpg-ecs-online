@@ -798,18 +798,14 @@ class SessionManager:
                 "items":     loot["items"],
                 "coins":     loot["coins"],
             })
-            # Broadcast: corpo some para todos no AOI
+            # Broadcast: corpo some para todos no AOI (mesmo mapa)
             corpse_data = self.world_server._corpses.get(corpse_id, {})
-            ctX = corpse_data.get("tx", 0)
-            ctY = corpse_data.get("ty", 0)
             despawn_payload = {"eid": -corpse_id}
-            for s in list(self._sessions.values()):
-                if not s.authenticated:
-                    continue
-                sx, sy = self.world_server.get_tile_pos(s.session_id)
-                if (sx - ctX) ** 2 + (sy - ctY) ** 2 <= AOI_RADIUS ** 2:
-                    await s.send(MsgType.ENTITY_DESPAWN, despawn_payload)
-                    s.known_eids.discard(-corpse_id)
+            for s in self._sessions_in_aoi(corpse_data.get("tx", 0),
+                                           corpse_data.get("ty", 0),
+                                           corpse_data.get("map")):
+                await s.send(MsgType.ENTITY_DESPAWN, despawn_payload)
+                s.known_eids.discard(-corpse_id)
 
     # cooldown per session_id: timestamp do último unstuck (módulo-level dict)
     _unstuck_cooldowns: "dict[str, float]" = {}
@@ -1129,30 +1125,29 @@ class SessionManager:
     async def _dispatch_tick_deltas(self, deltas: dict) -> None:
         """Distribui deltas para cada cliente respeitando known_eids (AOI subscription)."""
         try:
-            # Resultados de skills ANTES do AOI_UPDATE
+            # Resultados de skills ANTES do AOI_UPDATE.
+            # _sessions_in_aoi: mesmo mapa do caster + visibilidade (caster
+            # camuflado não vaza eventos pra quem não o vê; o dono sempre recebe).
             for skill_result in self.world_server.consume_skill_results():
                 caster_eid = skill_result["caster_eid"]
                 caster_sid = self.world_server.get_session_id_for_player(caster_eid)
                 if not caster_sid:
                     continue
                 cx, cy = self.world_server.get_tile_pos(caster_sid)
-                for s in list(self._sessions.values()):
-                    if not s.authenticated:
-                        continue
-                    sx, sy = self.world_server.get_tile_pos(s.session_id)
-                    if (sx - cx) ** 2 + (sy - cy) ** 2 <= AOI_RADIUS ** 2:
-                        await s.send(MsgType.SKILL_RESULT, skill_result)
+                _caster_map = self.world_server.get_entity_map(caster_eid)
+                for s in self._sessions_in_aoi(cx, cy, _caster_map,
+                                               origin_eid=caster_eid):
+                    await s.send(MsgType.SKILL_RESULT, skill_result)
 
             # Efeitos de apresentação (som/VFX) — broadcast AOI separado do gameplay
             for skill_effect in self.world_server.consume_skill_effects():
-                _eff_tx = skill_effect.get("tx", 0)
-                _eff_ty = skill_effect.get("ty", 0)
-                for s in list(self._sessions.values()):
-                    if not s.authenticated:
-                        continue
-                    sx, sy = self.world_server.get_tile_pos(s.session_id)
-                    if (sx - _eff_tx) ** 2 + (sy - _eff_ty) ** 2 <= AOI_RADIUS ** 2:
-                        await s.send(MsgType.SKILL_EFFECT, skill_effect)
+                _eff_tx  = skill_effect.get("tx", 0)
+                _eff_ty  = skill_effect.get("ty", 0)
+                _eff_eid = skill_effect.get("caster_eid", -1)
+                _eff_map = self.world_server.get_entity_map(_eff_eid)
+                for s in self._sessions_in_aoi(_eff_tx, _eff_ty, _eff_map,
+                                               origin_eid=_eff_eid):
+                    await s.send(MsgType.SKILL_EFFECT, skill_effect)
 
             # Pré-calcula posições de todos os mobs UMA VEZ por tick.
             # Elimina O(mobs) component lookups por player por tick no sweep de AOI.
@@ -1213,13 +1208,9 @@ class SessionManager:
                     "tx":   notif_tx,
                     "ty":   notif_ty,
                 }
-                for s in list(self._sessions.values()):
-                    if not s.authenticated:
-                        continue
-                    sx, sy = self.world_server.get_tile_pos(s.session_id)
-                    if (sx - notif_tx) ** 2 + (sy - notif_ty) ** 2 <= AOI_RADIUS ** 2:
-                        await s.send(MsgType.ENTITY_SPAWN, spawn_payload)
-                        s.known_eids.add(-corpse_id)
+                for s in self._sessions_in_aoi(notif_tx, notif_ty, notif.get("map")):
+                    await s.send(MsgType.ENTITY_SPAWN, spawn_payload)
+                    s.known_eids.add(-corpse_id)
 
                 # 2. LOOT_AVAILABLE apenas ao dono (inclui lista de itens)
                 owner_sid = self.world_server.get_session_id_for_player(owner_eid)
@@ -1248,12 +1239,12 @@ class SessionManager:
                     else:
                         _cx, _cy = self.world_server.get_tile_pos(_caster_sid) if _caster_sid else (0, 0)
                     _hp_payload = {"eid": _caster_eid, "hp": _hp_upd["hp"], "hp_max": _hp_upd["hp_max"]}
-                    for s in list(self._sessions.values()):
-                        if not s.authenticated or s.session_id == _caster_sid:
-                            continue  # não envia para o próprio caster (já tem via STATS_UPDATE)
-                        sx, sy = self.world_server.get_tile_pos(s.session_id)
-                        if (sx - _cx) ** 2 + (sy - _cy) ** 2 <= AOI_RADIUS ** 2:
-                            await s.send(MsgType.STATS_UPDATE, _hp_payload)
+                    # exclude_sid: não envia ao próprio caster (já tem via STATS_UPDATE)
+                    _hp_map = self.world_server.get_entity_map(_caster_eid)
+                    for s in self._sessions_in_aoi(_cx, _cy, _hp_map,
+                                                   origin_eid=_caster_eid,
+                                                   exclude_sid=_caster_sid):
+                        await s.send(MsgType.STATS_UPDATE, _hp_payload)
 
             # SkillLevels: só pro dono — progressão é privada, nunca broadcast AOI.
             for _skl_upd in self.world_server.consume_skill_levels_broadcasts():
@@ -1281,26 +1272,18 @@ class SessionManager:
             # Corpses que expiraram — notifica todos no AOI para remover visualmente
             for expired in self.world_server.consume_expired_corpses():
                 cid = expired["cid"]
-                ex, ey = expired["tx"], expired["ty"]
                 despawn_payload = {"eid": -cid}
-                for s in list(self._sessions.values()):
-                    if not s.authenticated:
-                        continue
-                    sx, sy = self.world_server.get_tile_pos(s.session_id)
-                    if (sx - ex) ** 2 + (sy - ey) ** 2 <= AOI_RADIUS ** 2:
-                        await s.send(MsgType.ENTITY_DESPAWN, despawn_payload)
-                        s.known_eids.discard(-cid)
+                for s in self._sessions_in_aoi(expired["tx"], expired["ty"],
+                                               expired.get("map")):
+                    await s.send(MsgType.ENTITY_DESPAWN, despawn_payload)
+                    s.known_eids.discard(-cid)
 
             # Eventos de som posicionais (aggro de mob, etc.) → broadcast AOI
             for _snd_ev in self.world_server.consume_sound_events():
-                _ev_tx = _snd_ev.get("tx", 0)
-                _ev_ty = _snd_ev.get("ty", 0)
-                for s in list(self._sessions.values()):
-                    if not s.authenticated:
-                        continue
-                    sx, sy = self.world_server.get_tile_pos(s.session_id)
-                    if (sx - _ev_tx) ** 2 + (sy - _ev_ty) ** 2 <= AOI_RADIUS ** 2:
-                        await s.send(MsgType.SOUND_EVENT, _snd_ev)
+                _snd_map = self.world_server.get_entity_map(_snd_ev.get("mob_eid", -1))
+                for s in self._sessions_in_aoi(_snd_ev.get("tx", 0),
+                                               _snd_ev.get("ty", 0), _snd_map):
+                    await s.send(MsgType.SOUND_EVENT, _snd_ev)
 
             # Skill results já enviados no início (antes do AOI_UPDATE)
             # para garantir que o dano aparece antes do ENTITY_DESPAWN remover o mob
@@ -1344,8 +1327,8 @@ class SessionManager:
         - Entidade sai do AOI  → ENTITY_DESPAWN + remove de known_eids
         - Entidade em AOI conhecida → ENTITY_MOVE
         """
-        r = AOI_RADIUS
-        r_exit_sq = (AOI_RADIUS + AOI_EXIT_BUFFER) ** 2
+        r      = AOI_RADIUS
+        r_exit = AOI_RADIUS + AOI_EXIT_BUFFER
         result: dict = {}
 
         # Mapa atual do player que recebe este update.
@@ -1354,7 +1337,11 @@ class SessionManager:
         from components import MapLocation as _ML_aoi
 
         def in_aoi(tx: int, ty: int, eid: int = -1) -> bool:
-            if (tx - cx) ** 2 + (ty - cy) ** 2 > r * r:
+            # Métrica canônica: Chebyshev (utils.in_aoi) — mesma dos broadcasts
+            # diretos (_sessions_in_aoi) e do spawn inicial (WORLD_STATE).
+            # Antes era círculo Euclidiano só aqui: entidades nos "cantos" do
+            # quadrado entravam por um critério e não pelo outro.
+            if not _in_aoi(cx, cy, tx, ty, r):
                 return False
             # MapLocation é a fonte única de verdade para entity→mapa (P3).
             # Entidade SEM MapLocation é excluída — toda entidade networked deve ter um.
@@ -1372,7 +1359,7 @@ class SessionManager:
             # fronteira — nunca ficava visível tempo suficiente pro cliente
             # renderizar de forma estável. Entrada continua usando in_aoi()
             # (raio normal) — só a permanência usa o raio com buffer.
-            if (tx - cx) ** 2 + (ty - cy) ** 2 > r_exit_sq:
+            if not _in_aoi(cx, cy, tx, ty, r_exit):
                 return False
             if eid >= 0:
                 _ml = self.world_server.world.get_component(eid, _ML_aoi)
@@ -1553,8 +1540,6 @@ class SessionManager:
         if combat_events:    result["combat"]    = combat_events
         if my_effects:       result["effects"]   = my_effects
         if mob_effects:      result["mob_effects"] = mob_effects
-        if deltas.get("stats"):
-            result["stats"] = deltas["stats"]
 
         # Sweep: entidades em AOI não conhecidas (não detectadas via movimento).
         # Cobre mobs estacionários e players que entraram em range sem se mover.
@@ -1670,17 +1655,14 @@ class SessionManager:
                 })
 
     async def _send_entity_deaths(self, deltas: dict) -> None:
-        """Broadcast ENTITY_DEATH para sessões com a posição da morte no AOI."""
-        entity_deaths = deltas.get("entity_deaths", [])
-        if not entity_deaths:
-            return
-        for session in list(self._sessions.values()):
-            if not session.authenticated:
-                continue
-            sx, sy = self.world_server.get_tile_pos(session.session_id)
-            for ed in entity_deaths:
-                if (ed["tx"] - sx) ** 2 + (ed["ty"] - sy) ** 2 <= AOI_RADIUS ** 2:
-                    await session.send(MsgType.ENTITY_DEATH, ed)
+        """Broadcast ENTITY_DEATH para sessões com a posição da morte no AOI.
+
+        Só mortes de PLAYER passam por aqui (mobs usam died_eids no AOI_UPDATE);
+        a entidade persiste como ghost, então o mapa resolve via MapLocation."""
+        for ed in deltas.get("entity_deaths", []):
+            _ed_map = self.world_server.get_entity_map(ed.get("eid", -1))
+            for session in self._sessions_in_aoi(ed["tx"], ed["ty"], _ed_map):
+                await session.send(MsgType.ENTITY_DEATH, ed)
 
     async def _send_player_revives(self, deltas: dict) -> None:
         for revive in deltas.get("player_revives", []):
@@ -1728,6 +1710,42 @@ class SessionManager:
 
     # ── Broadcast helpers ─────────────────────────────────────────────────────
 
+    def _sessions_in_aoi(self, tx: int, ty: int, map_file: "str | None",
+                         origin_eid: int = -1,
+                         exclude_sid: "str | None" = None) -> list:
+        """ÚNICO filtro de destinatários para broadcast direto (fora do
+        AOI_UPDATE): sessões autenticadas com (tx, ty) dentro do AOI.
+
+        Antes cada loop de broadcast (SKILL_RESULT, SKILL_EFFECT, corpses,
+        sons, mortes...) copiava o filtro de distância à mão — e NENHUM
+        checava o MAPA: dois players em mapas diferentes com coordenadas
+        próximas recebiam sons/skills/corpses um do outro (bug cross-map).
+
+        - map_file: mapa do EVENTO (via WorldServer.get_entity_map/produtor).
+          None = sem filtro de mapa (fallback p/ evento sem origem resolvível).
+        - origin_eid >= 0: exige _can_see(receptor, origin_eid) — eventos de
+          um caster invisível (Camuflagem) não vazam posição pra quem não o
+          vê. O PRÓPRIO dono sempre passa (viewer == origin).
+        - Métrica: Chebyshev via utils.in_aoi (canônica do projeto) — antes
+          os broadcasts usavam círculo Euclidiano, divergindo do spawn
+          inicial (WORLD_STATE) que já era Chebyshev.
+        """
+        result = []
+        for s in list(self._sessions.values()):
+            if not s.authenticated or s.session_id == exclude_sid:
+                continue
+            if (map_file is not None
+                    and self.world_server.get_player_map(s.session_id) != map_file):
+                continue
+            sx, sy = self.world_server.get_tile_pos(s.session_id)
+            if not _in_aoi(tx, ty, sx, sy, AOI_RADIUS):
+                continue
+            if (origin_eid >= 0 and s.entity_id != origin_eid
+                    and not _can_see(self.world_server.world, s.entity_id, origin_eid)):
+                continue
+            result.append(s)
+        return result
+
     async def _broadcast_all(self, msg_type: MsgType, payload: dict) -> None:
         tasks = [s.send(msg_type, payload)
                  for s in self._sessions.values() if s.authenticated]
@@ -1737,25 +1755,20 @@ class SessionManager:
     async def _broadcast_aoi_from_session(self, origin: Session,
                                           msg_type: MsgType, payload: dict) -> None:
         ox, oy = self.world_server.get_tile_pos(origin.session_id)
-        tasks = []
-        for s in self._sessions.values():
-            if not s.authenticated:
-                continue
-            sx, sy = self.world_server.get_tile_pos(s.session_id)
-            if (sx - ox) ** 2 + (sy - oy) ** 2 <= AOI_RADIUS ** 2:
-                tasks.append(s.send(msg_type, payload))
+        _map = self.world_server.get_player_map(origin.session_id)
+        tasks = [s.send(msg_type, payload)
+                 for s in self._sessions_in_aoi(ox, oy, _map,
+                                                origin_eid=origin.entity_id)]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _broadcast_aoi_except(self, origin: Session,
                                     msg_type: MsgType, payload: dict) -> None:
         ox, oy = self.world_server.get_tile_pos(origin.session_id)
-        tasks = []
-        for s in self._sessions.values():
-            if not s.authenticated or s.session_id == origin.session_id:
-                continue
-            sx, sy = self.world_server.get_tile_pos(s.session_id)
-            if (sx - ox) ** 2 + (sy - oy) ** 2 <= AOI_RADIUS ** 2:
-                tasks.append(s.send(msg_type, payload))
+        _map = self.world_server.get_player_map(origin.session_id)
+        tasks = [s.send(msg_type, payload)
+                 for s in self._sessions_in_aoi(ox, oy, _map,
+                                                origin_eid=origin.entity_id,
+                                                exclude_sid=origin.session_id)]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)

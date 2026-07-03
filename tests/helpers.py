@@ -27,6 +27,24 @@ def spawn_player(ws, session_id: str, tile_x: int, tile_y: int,
     return ws.spawn_player(session_id, char)
 
 
+def authorize_skill(ws, eid: int, sid: str) -> None:
+    """Autoriza `sid` pro player no servidor: learned_skill_ids + talento
+    (quando a skill é desbloqueada por talento). Necessário desde o gate
+    autoritativo de world_systems.is_skill_authorized — fixtures de teste
+    que castam skill devem 'aprender' primeiro, como um player real."""
+    from components import PlayerSkills, TalentTree
+    from world_systems import _TALENT_SKILL_REQS
+    ps = ws.world.get_component(eid, PlayerSkills)
+    if ps is not None:
+        ps.learned_skill_ids.add(sid)
+    req = _TALENT_SKILL_REQS.get(sid)
+    if req is not None:
+        tid, min_pts = req
+        tt = ws.world.get_component(eid, TalentTree)
+        if tt is not None:
+            tt.allocated[tid] = max(tt.allocated.get(tid, 0), min_pts)
+
+
 def run_ticks(ws, n: int, dt: float = 0.05) -> dict:
     """Roda N ticks e retorna todos os deltas acumulados."""
     accumulated = {

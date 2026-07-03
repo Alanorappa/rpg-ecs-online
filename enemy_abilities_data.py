@@ -46,11 +46,11 @@ ABILITY_DEFS: dict[str, AbilityDef] = {
     "poison_arrow": AbilityDef(
         name="Flecha Envenenada",
         effect_type="poison",
-        duration=15.0,
+        duration=6.0,
         magnitude=2.0,
-        tick_interval=3.0,
+        tick_interval=2.0,
         range_tiles=5,
-        default_cooldown=3.0,
+        default_cooldown=8.0,
         proj_color=(60, 200, 80),  # verde-venenoso
         proj_is_arrow=True,
     ),
@@ -58,11 +58,11 @@ ABILITY_DEFS: dict[str, AbilityDef] = {
     "lacerate": AbilityDef(
         name="Laceração",
         effect_type="bleed",
-        duration=25.0,
+        duration=12.0,
         magnitude=3.0,
         tick_interval=3.0,
         range_tiles=1,
-        default_cooldown=4.0,
+        default_cooldown=8.0,
     ),
     # Escorpião / Cobra — Picada Venenosa: veneno corpo-a-corpo
     "poison_bite": AbilityDef(
@@ -72,7 +72,7 @@ ABILITY_DEFS: dict[str, AbilityDef] = {
         magnitude=3.0,
         tick_interval=3.0,
         range_tiles=1,
-        default_cooldown=3.0,
+        default_cooldown=5.0,
     ),
     # Zumbi — Mordida Apodrecida: bleed mais leve, melee
     "rotting_bite": AbilityDef(
@@ -82,7 +82,7 @@ ABILITY_DEFS: dict[str, AbilityDef] = {
         magnitude=2.0,
         tick_interval=3.0,
         range_tiles=1,
-        default_cooldown=2.0,
+        default_cooldown=15.0,
     ),
     # Vampiro — Drenar Vida: projétil ranged que drena HP (burn DoT)
     "drain_life": AbilityDef(
@@ -104,6 +104,6 @@ ABILITY_DEFS: dict[str, AbilityDef] = {
         magnitude=1.0,
         tick_interval=3.0,
         range_tiles=1,
-        default_cooldown=2.0,
+        default_cooldown=12.0,
     ),
 }

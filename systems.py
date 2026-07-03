@@ -48,14 +48,11 @@ from merchant_data import SHOPS
 import quest_events
 from quest_events import fire as quest_fire
 from stat_fns import add_modifier, remove_modifier, add_timed_modifier, enter_combat
-from talent_data import TALENTS as _TT_DATA_SYS
 
-# Lookup reverso: skill_id → (talent_id, min_points) para verificação de lock no servidor
-_TALENT_SKILL_REQ_SYS: dict[str, tuple[str, int]] = {
-    td["unlocks_skill"]: (tid, td.get("unlock_at", 1))
-    for tid, td in _TT_DATA_SYS.items()
-    if td.get("unlocks_skill")
-}
+# Lookup reverso skill_id → (talent_id, min_points) — fonte única em
+# world_systems (_TALENT_SKILL_REQS, usado também por is_skill_authorized
+# no gate autoritativo do servidor). Alias mantido pro gate de UI local.
+from world_systems import _TALENT_SKILL_REQS as _TALENT_SKILL_REQ_SYS
 
 
 

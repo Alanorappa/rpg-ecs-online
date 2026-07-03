@@ -640,6 +640,10 @@ class TestPunhoNoQueixo(unittest.TestCase):
         from skill_config import SKILL_CATALOG
 
         eid = spawn_player(self.ws, "s1", tx, ty, class_id="guerreiro")
+        # Gate autoritativo (is_skill_authorized): fixture precisa "aprender"
+        # a skill + alocar o talento, como um player real.
+        from tests.helpers import authorize_skill
+        authorize_skill(self.ws, eid, "punho_no_queixo")
         cs = self.ws.world.get_component(eid, CombatStats)
         cs.pnq_enabled       = True
         cs.pnq_stun_duration = 1.0

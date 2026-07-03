@@ -67,6 +67,14 @@ Atualizar os arquivos de arquitetura relevantes:
   (schema na docstring; valida player_eid na origem).
 - **Atributo de combate novo** → par `base_X`/`X` em `CombatStats` + 1 entrada
   em `stat_fns._MODIFIABLE_ATTRS` (+ `_STAT_CLAMPS` se tiver limite).
+- **Broadcast direto novo (fora do AOI_UPDATE)** →
+  `SessionManager._sessions_in_aoi(tx, ty, map_file, origin_eid=...)` —
+  NUNCA iterar `self._sessions` com check de distância à mão (classe de bug:
+  vazamento cross-map + ignora visibilidade de camuflado + métrica errada).
+- **Player pode usar a skill?** → `world_systems.is_skill_authorized()`
+  (classe + talento + learned) — gate autoritativo chamado pelo
+  skill_processor; toda forma nova de adquirir skill entra ALI. Fixtures de
+  teste usam `tests.helpers.authorize_skill()`.
 
 ### Protocolo
 - Todo pacote tem `type` (MsgType), `p` (payload), `seq` (int), `ts` (ms epoch)

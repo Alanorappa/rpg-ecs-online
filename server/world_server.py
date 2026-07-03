@@ -1701,6 +1701,14 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                     ticks_total=ticks,
                 ))
 
+    def get_entity_map(self, eid: int) -> "str | None":
+        """Mapa (map_file) de qualquer entidade via MapLocation — fonte única
+        entity→mapa (P3). None se a entidade não existe/não tem MapLocation
+        (chamador decide o fallback; broadcasts usam None = sem filtro)."""
+        from components import MapLocation as _MLem
+        ml = self.world.get_component(eid, _MLem)
+        return ml.map_file if ml else None
+
     def consume_sound_events(self) -> list[dict]:
         """Retorna e limpa eventos de som posicionais do tick."""
         result = list(self._pending_sound_events)
@@ -2839,7 +2847,6 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         deltas = {
             "moved":          list(self._moved_this_tick),
-            "stats":          [],
             "effects":        self._collect_player_effects(),
             "mob_effects":    self._collect_mob_effects(),
             "spawned":        list(self._spawned_this_tick),

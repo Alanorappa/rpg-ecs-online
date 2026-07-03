@@ -248,11 +248,15 @@ class SpellCompletionMixin:
                         _pvd[_r_eid] = _pvd.get(_r_eid, 0) + _r["damage"]
 
             # SKILL_RESULT da conclusão do cast — toca som e aplica cooldown (GCD já foi).
+            # cooldown: o CD EFETIVO registrado no cast (_skill_effective_cd, já com
+            # reduções de talento) — antes era None e o cliente caía no CD BASE do
+            # catálogo, divergindo da validação futura do servidor (mesma classe do
+            # bug de rejeição falsa do Interceptar).
             skill_entry: dict = {
                 "caster_eid":   player_eid,
                 "sid":          spell_id,
                 "targets":      results,
-                "cooldown":     None,
+                "cooldown":     self._skill_effective_cd.get((player_eid, spell_id)),
                 "failed":       False,
                 "is_completion": True,
                 # Para spells com projétil: informa o alvo para o cliente criar o projétil

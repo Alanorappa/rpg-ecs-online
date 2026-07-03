@@ -56,6 +56,7 @@ class LootProcessorMixin:
                 "items":     loot_entry["items"],
                 "coins":     loot_entry.get("coins", 0),
                 "timer":     120.0,
+                "map":       loot_entry.get("map"),
             }
             self._pending_loot_notifications.append({
                 "corpse_id": corpse_id,
@@ -64,6 +65,7 @@ class LootProcessorMixin:
                 "ty":        loot_entry["ty"],
                 "items":     loot_entry["items"],
                 "coins":     loot_entry.get("coins", 0),
+                "map":       loot_entry.get("map"),
             })
             print(f"[Loot] corpse_id={corpse_id}  owner={owner_eid}  "
                   f"items={len(loot_entry['items'])}  coins={loot_entry.get('coins', 0)}  "
@@ -74,5 +76,6 @@ class LootProcessorMixin:
             c = self._corpses[cid]
             c["timer"] -= dt
             if c["timer"] <= 0:
-                self._expired_corpses_this_tick.append({"cid": cid, "tx": c["tx"], "ty": c["ty"]})
+                self._expired_corpses_this_tick.append(
+                    {"cid": cid, "tx": c["tx"], "ty": c["ty"], "map": c.get("map")})
                 del self._corpses[cid]

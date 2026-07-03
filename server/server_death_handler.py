@@ -233,6 +233,11 @@ class ServerDeathHandler:
             # Sem essa entrada, o world_server nunca cria o body e o cliente
             # nunca recebe ENTITY_SPAWN(kind="corpse").
             if first_attacker_eid != -1:
+                # "map": capturado ANTES do remove_entity — corpse/loot são
+                # broadcast por loops diretos (não AOI_UPDATE) e precisam do
+                # mapa pro filtro cross-map (ver session._sessions_in_aoi).
+                from components import MapLocation as _MLdh
+                _ml_dh = self.world.get_component(eid, _MLdh)
                 self.pending_loot.append({
                     "mob_eid":   eid,
                     "owner_eid": first_attacker_eid,
@@ -240,6 +245,7 @@ class ServerDeathHandler:
                     "coins":     coins,
                     "tx":        mob_tx,
                     "ty":        mob_ty,
+                    "map":       _ml_dh.map_file if _ml_dh else None,
                 })
 
             # 6. Notifica SpawnZone — remove de active_entity_ids e agenda respawn

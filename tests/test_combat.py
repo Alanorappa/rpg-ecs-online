@@ -312,6 +312,10 @@ class TestPirofagiaServerCone(unittest.TestCase):
         self.ws = make_world_server()
         run_ticks(self.ws, 50)  # spawn mobs
         self.eid = spawn_player(self.ws, "s1", 130, 374, class_id="mago")
+        # Gate autoritativo (is_skill_authorized): fixture precisa "aprender"
+        # a skill + alocar o talento, como um player real.
+        from tests.helpers import authorize_skill
+        authorize_skill(self.ws, self.eid, "pirofagia")
         # Garante mana suficiente
         from components import CharacterStats
         char = self.ws.world.get_component(self.eid, CharacterStats)

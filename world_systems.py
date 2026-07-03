@@ -101,6 +101,65 @@ def get_mainhand_weapon(world, entity_id: int):
     return eq.slots.get("mainhand") if eq else None
 
 
+# ── Autorização de skill ──────────────────────────────────────────────────────
+# Lookup reverso skill_id → (talent_id, min_points) derivado de talent_data —
+# fonte única (systems.py re-exporta como _TALENT_SKILL_REQ_SYS pro gate de UI).
+from talent_data import TALENTS as _TT_DATA_WS
+_TALENT_SKILL_REQS: dict[str, tuple[str, int]] = {
+    td["unlocks_skill"]: (tid, td.get("unlock_at", 1))
+    for tid, td in _TT_DATA_WS.items()
+    if td.get("unlocks_skill")
+}
+
+
+def is_skill_authorized(world, entity_id: int, sid: str) -> "tuple[bool, str]":
+    """O player PODE usar essa skill? (classe + talento + aprendizado)
+
+    Gate autoritativo usado pelo servidor (skill_processor) ANTES de executar
+    qualquer handler — sem isso, qualquer `sid` do SKILL_CATALOG era aceito e
+    o único bloqueio real era o custo de recurso dentro do handler (cliente
+    modificado castava skill de outra classe / de talento não alocado / não
+    comprada no treinador). O cliente tem o mesmo gate na UI (systems.py,
+    via _TALENT_SKILL_REQ_SYS) — este é a versão servidor, contra os
+    componentes AUTORITATIVOS (CharacterStats/TalentTree/PlayerSkills).
+
+    Retorna (ok, motivo) — motivo vai no SKILL_RESULT failed=True (WARN no
+    cliente).
+    """
+    from skill_config import (SKILL_CATALOG, SKILL_ORDER_BY_CLASS,
+                              INITIAL_SKILLS_BY_CLASS)
+    from components import CharacterStats, TalentTree, PlayerSkills
+
+    sdef = SKILL_CATALOG.get(sid)
+    if sdef is None:
+        return False, "Skill desconhecida"
+
+    char    = world.get_component(entity_id, CharacterStats)
+    cls     = char.class_id if char else ""
+    req_cls = sdef.get("class_id", "")
+    if req_cls and cls and req_cls != cls:
+        return False, "Skill de outra classe"
+
+    # Skill desbloqueada por talento: exige pontos suficientes no TalentTree
+    _treq = _TALENT_SKILL_REQS.get(sid)
+    if _treq is not None:
+        tid, min_pts = _treq
+        tt = world.get_component(entity_id, TalentTree)
+        if tt is None or tt.allocated.get(tid, 0) < min_pts:
+            return False, "Requer talento"
+        return True, ""
+
+    # Skill de treinador (não-inicial): exige constar em learned_skill_ids
+    _cls_key = req_cls or cls
+    if (sid in SKILL_ORDER_BY_CLASS.get(_cls_key, ())
+            and sid not in INITIAL_SKILLS_BY_CLASS.get(_cls_key, ())):
+        ps = world.get_component(entity_id, PlayerSkills)
+        if ps is None or sid not in ps.learned_skill_ids:
+            return False, "Skill nao aprendida"
+
+    return True, ""
+
+
 class System:
     """
     Classe base para todos os sistemas ECS.

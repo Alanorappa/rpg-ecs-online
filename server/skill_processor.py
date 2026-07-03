@@ -63,6 +63,25 @@ class SkillProcessorMixin:
                 print(f"[Skill] sid='{sid}' não encontrado no SKILL_CATALOG")
                 continue
 
+            # ── Autorização server-side ────────────────────────────────────────
+            # Classe + talento (TalentTree autoritativo) + aprendizado
+            # (learned_skill_ids). Sem isso, qualquer sid do catálogo era
+            # executado — o único gate real era o custo de recurso no handler.
+            from world_systems import is_skill_authorized as _is_auth
+            _auth_ok, _auth_reason = _is_auth(self.world, player_eid, sid)
+            if not _auth_ok:
+                print(f"[Skill] REJEITADO (autorizacao: {_auth_reason}) "
+                      f"{sid} player={player_eid}")
+                self._skill_results_this_tick.append({
+                    "caster_eid": player_eid,
+                    "sid":        sid,
+                    "targets":    [],
+                    "cooldown":   0,
+                    "failed":     True,
+                    "reason":     _auth_reason,
+                })
+                continue
+
             # ── Validação server-side de cooldown ─────────────────────────────
             # Impede spam mesmo que o cliente manipule current_cooldown local.
             # Skills com cooldown=0 (Golpe Poderoso, Executar) passam sempre;

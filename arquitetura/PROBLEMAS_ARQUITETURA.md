@@ -367,6 +367,48 @@ meio de um commit (commit gravado com árvore VAZIA). Recuperado via
 mover o repositório para fora da pasta sincronizada ou excluir `.git/` da
 sincronização.
 
+### Rodada 2 (03/07) — broadcasting e autorização de skills
+
+Análise profunda de talentos/skills/broadcasting encontrou e corrigiu:
+
+1. **CRÍTICO — vazamento cross-map em broadcasts diretos (resolvido)**: o
+   filtro de mapa (MapLocation) existia SÓ no AOI_UPDATE; os ~9 loops de
+   broadcast direto (SKILL_RESULT, SKILL_EFFECT, corpses, sons de aggro,
+   ENTITY_DEATH, HP de cura, chat/ENTITY_MOVE) filtravam só por distância de
+   tile — players em MAPAS diferentes com coords próximas recebiam eventos
+   um do outro. Fix: `SessionManager._sessions_in_aoi(tx, ty, map_file,
+   origin_eid)` é o ÚNICO filtro de destinatários (mapa + AOI + visibilidade);
+   todos os loops migrados. Produtores de eventos pós-remoção (loot/corpse)
+   carregam `"map"`; o resto resolve via `WorldServer.get_entity_map()`.
+2. **CRÍTICO — servidor não validava SE o player pode usar a skill
+   (resolvido)**: qualquer `sid` do SKILL_CATALOG era executado (único gate
+   real: custo de recurso no handler). Fix:
+   `world_systems.is_skill_authorized()` (classe via class_id do catálogo +
+   talento via TalentTree autoritativo + aprendizado via learned_skill_ids)
+   chamado no início de `_process_skill_requests`; rejeição vira SKILL_RESULT
+   failed + reason (WARN no cliente). Nota: TODA skill é de treinador
+   (INITIAL_SKILLS_BY_CLASS vazio por design) — personagem novo não casta
+   nada até aprender. Gap remanescente (pré-existente): a COMPRA no
+   treinador ainda é client-side (learned sync via SAVE_STATE).
+3. **ALTO — eventos de skill vazavam posição de caster camuflado
+   (resolvido)**: `_sessions_in_aoi(origin_eid=caster)` aplica `_can_see`
+   — quem não vê o caster não recebe SKILL_RESULT/SKILL_EFFECT; o dono
+   sempre recebe.
+4. **MÉDIO — métrica de AOI inconsistente (resolvido)**: broadcasts diretos
+   e `_build_update_for_session` usavam círculo Euclidiano; spawn inicial
+   usava Chebyshev (`utils.in_aoi`, a canônica). Padronizado TUDO em
+   Chebyshev (inclusive a histerese de saída).
+5. **MÉDIO — completion de spell mandava `cooldown: None` (resolvido)**:
+   cliente caía no CD base do catálogo enquanto o servidor validava com o
+   CD efetivo (pós-talento) — mesma classe do bug de rejeição falsa do
+   Interceptar. Completion agora envia `_skill_effective_cd`.
+6. **BAIXO — `deltas["stats"]` sempre vazio (removido)**.
+7. **BAIXO (aberto)** — apply de talentos duplicado cliente
+   (`TalentSystem.apply_talent_effects`) vs servidor
+   (`_apply_talent_modifiers`): divergência concreta = cliente reseta
+   `fire_crit_counter/timer`, servidor não. Candidato a `talent_logic.py`
+   (molde do quest_logic) numa rodada futura.
+
 ---
 
 ## Resumo da sessão de correções — 21/22 de junho de 2026
