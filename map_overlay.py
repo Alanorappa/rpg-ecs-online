@@ -21,12 +21,24 @@ class MapOverlay(UIScaleMixin):
 
     _FONT_BASES = {"_font": 20}
 
+    # Cor-chave do fog 1px/tile (pixel "explorado" = transparente via colorkey)
+    _FOG_KEY = (255, 0, 255)
+
     def __init__(self, screen: pygame.Surface):
         super().__init__()
         self.screen   = screen
         self.is_open  = False
         self._surfaces: dict = {}              # map_file → pygame.Surface (1px/tile)
         self._dims: dict = {}                  # map_file → (cols, rows)
+        # Fog 1px/tile por mapa: preto = não explorado; pixel _FOG_KEY = explorado
+        # (transparente via colorkey). Escala junto com o mapa — substitui o loop
+        # Python de ~100k tiles/frame que derrubava o FPS no zoom mínimo.
+        self._fog_surfs: dict = {}             # map_file → pygame.Surface (1px/tile)
+        self._fog_cleared: dict = {}           # map_file → set de tiles já revelados no fog
+        # Cache da view composta (mapa+fog escalados): rebuild só quando o
+        # viewport/zoom/fog mudam — parado, o render é 1 blit.
+        self._view_canvas: "pygame.Surface | None" = None
+        self._view_key: tuple = ()
         self._active_key: str = ""             # chave do mapa atual
         self._cols = 0
         self._rows = 0
@@ -61,6 +73,13 @@ class MapOverlay(UIScaleMixin):
         key = map_key or f"_map_{len(self._surfaces)}"
         self._surfaces[key] = surf
         self._dims[key] = (cols, rows)
+        # (Re)inicia o fog deste mapa: tudo não-explorado (preto opaco)
+        fog = pygame.Surface((cols, rows))
+        fog.fill((0, 0, 0))
+        fog.set_colorkey(self._FOG_KEY)
+        self._fog_surfs[key]   = fog
+        self._fog_cleared[key] = set()
+        self._view_key = ()  # invalida cache da view
         # Ativa automaticamente o primeiro mapa carregado
         if not self._active_key:
             self._active_key = key
@@ -241,31 +260,51 @@ class MapOverlay(UIScaleMixin):
         ix1 = min(self._cols, math.ceil(src_x1))
         iy1 = min(self._rows, math.ceil(src_y1))
 
-        map_surf = pygame.Surface((modal.w, modal.h))
-        map_surf.fill(self.BG_COL)
+        # ── Fog incremental: revela no fog 1px/tile só os tiles NOVOS ────
+        # (antes: loop Python de (ix1-ix0)×(iy1-iy0) tiles POR FRAME — ~113k
+        # iterações + draw.rect no zoom mínimo, a causa da queda de FPS)
+        fog = self._fog_surfs.get(self._active_key)
+        fog_len = -1
+        if explored is not None and fog is not None:
+            cleared = self._fog_cleared[self._active_key]
+            if len(explored) != len(cleared):
+                _set_at = fog.set_at
+                _key    = self._FOG_KEY
+                _cols, _rows = self._cols, self._rows
+                for t in explored:
+                    if t not in cleared:
+                        if 0 <= t[0] < _cols and 0 <= t[1] < _rows:
+                            _set_at(t, _key)
+                        cleared.add(t)
+            fog_len = len(cleared)
 
-        if ix0 < ix1 and iy0 < iy1:
-            crop   = self._base_surf.subsurface(
-                pygame.Rect(ix0, iy0, ix1 - ix0, iy1 - iy0))
-            dst_w  = max(1, int((ix1 - ix0) * scale))
-            dst_h  = max(1, int((iy1 - iy0) * scale))
-            scaled = pygame.transform.scale(crop, (dst_w, dst_h))
-            blit_x = int(ix0 * scale - off_x)
-            blit_y = int(iy0 * scale - off_y)
-            map_surf.blit(scaled, (blit_x, blit_y))
+        # ── View composta (mapa + fog escalados) com cache ───────────────
+        # Rebuild só quando viewport/zoom/fog/tamanho mudam; parado = 1 blit.
+        view_key = (self._active_key, ix0, iy0, ix1, iy1, scale,
+                    int(off_x), int(off_y), modal.w, modal.h, fog_len)
+        if view_key != self._view_key or self._view_canvas is None:
+            self._view_key = view_key
+            if (self._view_canvas is None
+                    or self._view_canvas.get_size() != (modal.w, modal.h)):
+                self._view_canvas = pygame.Surface((modal.w, modal.h))
+            canvas = self._view_canvas
+            canvas.fill(self.BG_COL)
+            if ix0 < ix1 and iy0 < iy1:
+                src_rect = pygame.Rect(ix0, iy0, ix1 - ix0, iy1 - iy0)
+                dst_w  = max(1, int((ix1 - ix0) * scale))
+                dst_h  = max(1, int((iy1 - iy0) * scale))
+                blit_x = int(ix0 * scale - off_x)
+                blit_y = int(iy0 * scale - off_y)
+                scaled = pygame.transform.scale(
+                    self._base_surf.subsurface(src_rect), (dst_w, dst_h))
+                canvas.blit(scaled, (blit_x, blit_y))
+                if explored is not None and fog is not None:
+                    # transform.scale é nearest-neighbor: preserva a cor-chave
+                    fog_scaled = pygame.transform.scale(
+                        fog.subsurface(src_rect), (dst_w, dst_h))
+                    canvas.blit(fog_scaled, (blit_x, blit_y))
 
-        self.screen.blit(map_surf, modal.topleft)
-
-        # ── Fog: cobre tiles não explorados com preto ────
-        if explored is not None:
-            for r in range(iy0, iy1):
-                for c in range(ix0, ix1):
-                    if (c, r) not in explored:
-                        fx = int(c * scale - off_x) + modal.x
-                        fy = int(r * scale - off_y) + modal.y
-                        fw = max(1, int(scale))
-                        fh = max(1, int(scale))
-                        pygame.draw.rect(self.screen, (0, 0, 0), (fx, fy, fw, fh))
+        self.screen.blit(self._view_canvas, modal.topleft)
 
         # ── Marcador de destino ──────────────────────────
         if self._dest_marker:
