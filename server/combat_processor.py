@@ -16,7 +16,7 @@ class CombatProcessorMixin:
         crit, dodge, parry. Mob→player é tratado detectando a variação de HP
         após EnemyAISystem rodar (EnemyAISystem chama deal_damage internamente).
         """
-        from systems import deal_damage
+        from world_systems import deal_damage
         from components import CombatState, CombatStats, TileMovement, Enemy, PendingDeath
         from utils import chebyshev, is_action_locked
 
@@ -203,7 +203,7 @@ class CombatProcessorMixin:
                 self._last_mob_attacker[_ai_r.target_eid] = _mb
 
         # Consome avoidances (parry/dodge/miss) de mob→player coletadas em CombatSystem.
-        from systems import _svc as _svc_cp
+        from world_systems import _svc as _svc_cp
         _combat_sys_cp = _svc_cp.get('combat')
         if _combat_sys_cp and _combat_sys_cp.mob_avoidance_events:
             for _atk_av, _tgt_av, _out_av, _hp_av in _combat_sys_cp.mob_avoidance_events:
@@ -269,7 +269,7 @@ class CombatProcessorMixin:
         ativamente perseguindo o alvo (clique direito), não apenas selecionado.
         Usa server_tile_x/y se disponível para range check mais preciso.
         """
-        from systems import deal_damage
+        from world_systems import deal_damage
         from components import CombatState, CombatStats, TileMovement, PendingDeath
         from utils import chebyshev
 

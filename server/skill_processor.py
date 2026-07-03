@@ -240,7 +240,7 @@ class SkillProcessorMixin:
             # ficava com o valor de um ataque anterior (ex: "miss" do auto-attack)
             # e o bloco abaixo ("elif _skill_outcome in miss/dodge/...") gerava um
             # SKILL_RESULT falso de "Errou!" no cast_started, antes da skill resolver.
-            import systems as _sys_reset
+            import world_systems as _sys_reset
             _combat_svc_reset = getattr(_sys_reset, "_svc", {}).get("combat")
             if _combat_svc_reset:
                 _combat_svc_reset.last_outcome = "hit"
@@ -325,7 +325,7 @@ class SkillProcessorMixin:
 
             # Coleta dano causado + feedback de esquiva/miss para o alvo
             import components as _comp
-            import systems as _sys
+            import world_systems as _sys
             _combat_svc = getattr(_sys, "_svc", {}).get("combat")
             _skill_outcome = getattr(_combat_svc, "last_outcome", "hit")
 

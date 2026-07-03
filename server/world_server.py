@@ -222,7 +222,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # Sistemas globais: rodam UMA vez por tick, após todos os bundles.
         # Se ficassem dentro de cada bundle (sem map_filter) rodariam N×/tick
         # (N = número de mapas carregados), causando timers/movimento N× rápidos.
-        from systems import TileMovementSystem as _TMS, ProjectileSystem as _ProjSys
+        from world_systems import TileMovementSystem as _TMS, ProjectileSystem as _ProjSys
         self._global_tms           = _TMS(self.world)
         self._global_proj_sys      = _ProjSys(self.world, screen=None)
         self._global_sfx_sys       = _ServerStatusEffectSystem.build(self.world, self)
@@ -334,7 +334,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         """
         from map_loader import load_map_csv
         from entity_factory import create_tilemap
-        from systems import (SpawnZoneSystem, EnemyAISystem, EnemyAbilitySystem,
+        from world_systems import (SpawnZoneSystem, EnemyAISystem, EnemyAbilitySystem,
                              TileValidationSystem, PathfindingSystem, CombatSystem,
                              ProjectileSystem, register_services)
         from components import MapLocation as _MLl
@@ -371,7 +371,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                           tile_validation=tile_validation)
 
         # Callback de retaliation do Escudo de Fogo
-        from systems import _svc as _sys_svc
+        from world_systems import _svc as _sys_svc
         _srv_ref = self
         def _on_retaliation(player_eid: int, mob_eid: int, damage: int, hp_after: int) -> None:
             from components import CombatStats as _CSEF
@@ -939,7 +939,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                                               ignore_eid=_pursuit_target):
                 return False
         else:
-            from systems import is_tile_walkable as _walkable
+            from world_systems import is_tile_walkable as _walkable
             if not _walkable(eid, tx, ty, tm.current_tile_x, tm.current_tile_y,
                              ignore_eid=_pursuit_target):
                 return False

@@ -23,23 +23,24 @@ from components import (
 from tileset import TILE_SIZE
 from utils import chebyshev
 from combat_log import LOG
-from sound_manager import SOUNDS
-from floating_text import FLT, WARN, PROC
+# fx: façade headless — no-op no servidor, gerenciadores reais no cliente
+# (fx.bind_client_fx no GameEngine). skill_handlers roda nos dois lados.
+from fx import SOUNDS, FLT, WARN, PROC
 from core_systems import apply_effect   # sem dep circular (systems re-exporta daqui)
 from stat_fns import enter_combat
 
 # Lazy wrappers para deal_damage / is_tile_walkable / get_mainhand_weapon.
-# Evitam "from systems import ..." no topo do módulo, quebrando o ciclo:
-#   skill_handlers → systems → skill_handlers
+# Evitam "from world_systems import ..." no topo do módulo, quebrando o ciclo:
+#   skill_handlers → world_systems → (entity_factory → ...) → skill_handlers
 # Python cacheia o import — overhead apenas no primeiro call.
 def deal_damage(*a, **kw):
-    from systems import deal_damage as _f; return _f(*a, **kw)
+    from world_systems import deal_damage as _f; return _f(*a, **kw)
 
 def is_tile_walkable(*a, **kw):
-    from systems import is_tile_walkable as _f; return _f(*a, **kw)
+    from world_systems import is_tile_walkable as _f; return _f(*a, **kw)
 
 def get_mainhand_weapon(*a, **kw):
-    from systems import get_mainhand_weapon as _f; return _f(*a, **kw)
+    from world_systems import get_mainhand_weapon as _f; return _f(*a, **kw)
 
 
 class SkillHandlers:

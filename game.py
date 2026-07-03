@@ -97,6 +97,11 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                  net_user: str = "", net_pass: str = "",
                  net_client=None):
         pygame.init()
+        # Vincula a façade fx aos gerenciadores reais (FLT/SOUNDS/etc.) —
+        # world_systems/skill_handlers usam os proxies de fx.py, que são
+        # no-op até este bind (e permanecem no-op no servidor headless).
+        import fx as _fx
+        _fx.bind_client_fx()
         self._scale      = scale
         self._save_slot  = save_slot
         self._net_user    = net_user
