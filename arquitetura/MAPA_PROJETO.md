@@ -66,7 +66,13 @@
 | Sons de mob (aggro, death, attack) | `mob_definitions.py` | `"sounds"` dict por mob |
 | Sons posicionais online | `sound_manager.py` | `play_mob_sounds_at()`, `volume_at()` |
 | Componente ECS | `components.py` | categoria relevante |
-| Sistema ECS (offline) | `systems.py` | herdar de `System` |
+| Sistema ECS de GAMEPLAY (headless, cliente+servidor) | `world_systems.py` | herdar de `System`; NUNCA importar pygame no topo |
+| Sistema ECS de UI/render/input (cliente-only) | `systems.py` | herdar de `System` (re-exportado de `world_systems`) |
+| Efeito visual/som em sistema compartilhado | `fx.py` | `from fx import FLT, SOUNDS, ...` (no-op no servidor; cliente vincula via `bind_client_fx()`) |
+| Teleporte/knockback/respawn (escrever current_tile) | `utils.py` | `snap_to_tile()` — NUNCA escrever current_tile_x/y direto |
+| Escrita final de dano em HP | `core_systems.py` | `apply_damage_core()` — único lugar; mitigação/imunidade nova entra aqui |
+| Atributo de combate novo (modifier) | `stat_fns.py` | par `base_X`/`X` em `CombatStats` + 1 entrada em `_MODIFIABLE_ATTRS` (+ `_STAT_CLAMPS`) |
+| STATS_UPDATE privado novo (servidor→dono) | `server/world_server.py` | `queue_stats_update()` (schema na docstring) |
 | Registrar sistema no loop offline | `game.py` | `_init_systems()` → `self.systems` |
 
 ---
@@ -119,6 +125,13 @@ rpg_ecs_online/
 │   ├── COMPONENTES_ECS.md          ← componentes ECS
 │   ├── DADOS_JOGO.md               ← conteúdo do jogo
 │   └── PROBLEMAS_ARQUITETURA.md    ← débito técnico
+│
+├── world_systems.py                ← COMPARTILHADO: 14 sistemas ECS de gameplay headless
+│                                      (EnemyAI, Combat, TileMovement, TileValidation, ...) +
+│                                      _svc/deal_damage/is_tile_walkable. ZERO pygame no topo.
+├── fx.py                           ← COMPARTILHADO: façade de efeitos (FLT/SOUNDS/PROC/WARN/
+│                                      DASH_TRAIL) — no-op no servidor, cliente vincula via
+│                                      bind_client_fx() no GameEngine.__init__
 │
 └── [demais arquivos]               ← herdados do master (compartilhados com cliente)
 ```

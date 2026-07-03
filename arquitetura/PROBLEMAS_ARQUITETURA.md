@@ -320,6 +320,55 @@ Substituir os globais mutáveis por estado acessível via `self` (ex.: `self.SCR
 
 ---
 
+## Resumo da sessão de refatoração arquitetural — 03 de julho de 2026
+
+Branch `rpg-online-2026-06-22`, 6 commits (312425e..e1ac5bf). Suíte com a
+mesma baseline em cada etapa (34 falhas pré-existentes); servidor sobe
+limpo após cada mudança.
+
+1. **perf(ui)**: `fonts.CachedFont` (memoização de `font.render` na própria
+   fonte — cobre os ~260 call sites de UI de uma vez) + `ui_helpers.fill_surf`
+   (Surfaces SRCALPHA pré-preenchidas cacheadas; 46 sites convertidos;
+   overlays de cooldown usam `blit(area=)` p/ não churnar o cache).
+   Consumidores que mutam a surface (fade via `set_alpha`: floating_text,
+   combat_log) usam cópia própria — a surface do cache é compartilhada.
+2. **`utils.snap_to_tile`**: único helper de teleporte/knockback — corrigiu
+   3 bugs latentes da classe "tween sobrevive ao snap" (respawn, revive,
+   empurrão de mob) e centralizou os snaps já corretos. Interceptar
+   (`skill_processor:~317`) deliberadamente NÃO migrado (tween próprio).
+3. **`stat_fns.recalculate_combat_stats`**: recálculo de modifiers
+   data-driven (`_MODIFIABLE_ATTRS`/`_STAT_CLAMPS`) — substitui a cadeia de
+   ~60 linhas de elif em `components.py`. Atributo novo = 1 entrada na
+   tabela. Paridade byte-exata verificada em 6 fixtures.
+4. **Problema F (parcial→substancial)**: novo `world_systems.py` (14
+   sistemas de gameplay headless + `_svc`/`deal_damage`/etc., ZERO pygame
+   no import — verificado em runtime) + `fx.py` (façade FLT/PROC/WARN/
+   DASH_TRAIL/SOUNDS com proxies no-op; cliente vincula via
+   `fx.bind_client_fx()` no `GameEngine.__init__`). `systems.py`
+   (6800→~4200 linhas) re-exporta tudo — zero call site quebrado; servidor
+   importa de `world_systems`. **Nó restante**: `SkillSystem` (input/UI)
+   ainda vem de `systems.py` no servidor — separação completa exige um
+   `ServerSkillSystem` sobre `SkillHandlers` (sessão dedicada).
+5. **Problema G (resolvido)**: `WorldServer.queue_stats_update(entry)` é o
+   único ponto de entrada do canal (valida `player_eid` na origem, schema
+   documentado na docstring); placeholders `xp=0/mob_eid=-1` eliminados dos
+   16 produtores; renomeado p/ `_pending_stats_updates`/`consume_stats_updates`.
+   Wire (STATS_UPDATE) idêntico — cliente já lia com `.get()` + defaults.
+6. **Problemas B/H (resolvidos)**: `core_systems.apply_damage_core` — núcleo
+   único da escrita final de HP (guards morto/imune, overkill preservado,
+   quebra de polymorph/sleep com cancelamento do slow encadeado,
+   PendingDeath opcional, hook `on_cc_break` p/ FLT). `deal_damage`,
+   `_apply_final_damage`, `_apply_magic_damage` e a retaliação do Escudo
+   de Fogo viram delegates. Regra nova de mitigação entra num lugar só.
+
+⚠️ **Incidente OneDrive (03/07)**: o OneDrive corrompeu o índice do git no
+meio de um commit (commit gravado com árvore VAZIA). Recuperado via
+`git reset` pro último commit íntegro + re-commit. **Recomendação forte**:
+mover o repositório para fora da pasta sincronizada ou excluir `.git/` da
+sincronização.
+
+---
+
 ## Resumo da sessão de correções — 21/22 de junho de 2026
 
 Passada por todos os itens A–M + K listados abaixo. Branch: `rpg-online-2026-06-22`

@@ -51,6 +51,23 @@ Atualizar os arquivos de arquitetura relevantes:
 - `client/` **nunca calcula gameplay** — apenas renderiza estado recebido do servidor
 - `shared/` **sem estado** — só constantes e funções puras de serialização
 
+### Pontos únicos de verdade (03/07/2026 — usar SEMPRE, nunca reimplementar)
+- **Sistema de gameplay novo** → `world_systems.py` (headless, ZERO pygame no
+  topo; efeitos via `from fx import FLT, SOUNDS, ...`). Sistema de UI/render →
+  `systems.py` (que re-exporta world_systems pra compatibilidade).
+- **Efeito visual/som em código compartilhado** → façade `fx.py` (no-op no
+  servidor; cliente vincula via `fx.bind_client_fx()` no GameEngine).
+- **Teleporte/knockback/respawn** → `utils.snap_to_tile()` — NUNCA escrever
+  `current_tile_x/y` direto (classe de bug: tween antigo sobrevive ao snap).
+- **Escrita final de dano em HP** → `core_systems.apply_damage_core()` —
+  guards imune/morto, overkill preservado, quebra polymorph/sleep. Regra nova
+  de mitigação/resistência entra SÓ ali (deal_damage/_apply_final_damage/
+  _apply_magic_damage são delegates).
+- **STATS_UPDATE privado (servidor→dono)** → `WorldServer.queue_stats_update()`
+  (schema na docstring; valida player_eid na origem).
+- **Atributo de combate novo** → par `base_X`/`X` em `CombatStats` + 1 entrada
+  em `stat_fns._MODIFIABLE_ATTRS` (+ `_STAT_CLAMPS` se tiver limite).
+
 ### Protocolo
 - Todo pacote tem `type` (MsgType), `p` (payload), `seq` (int), `ts` (ms epoch)
 - Novos tipos de mensagem: adicionar em `MsgType` + documentar payload em `shared/messages.py`

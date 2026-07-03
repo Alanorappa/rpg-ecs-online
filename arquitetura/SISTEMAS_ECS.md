@@ -438,12 +438,26 @@ Fluxo online:
 
 ---
 
+## Divisão física dos sistemas (03/07/2026 — problema F)
+
+| Módulo | Conteúdo | pygame? |
+|--------|----------|---------|
+| `world_systems.py` | 14 sistemas de GAMEPLAY (System base, Pathfinding, TileValidation, Combat, DeathHandler, CombatState, Projectile, EnemyAI, TileMovement, StatusEffect, EnemyAbility, Corpse, SpawnZone, MobRespawn) + `_svc`/`register_services`/`deal_damage`/`find_path`/`is_tile_walkable`/`get_tilemap`/`get_mainhand_weapon` | **NUNCA no topo** (verificado em runtime); efeitos via façade `fx.py` |
+| `systems.py` | Sistemas de UI/render/input do cliente (Render, TileRender, Fog, Camera, Mouse, PlayerInput, Shop, Loot, Consumable, **SkillSystem**) + re-export de tudo de `world_systems` (compatibilidade) | Sim (cliente) |
+| `fx.py` | Proxies FLT/PROC/WARN/DASH_TRAIL/SOUNDS — no-op no servidor; `bind_client_fx()` no GameEngine vincula os reais | Só dentro de `bind_client_fx()` |
+
+Regra: sistema de gameplay novo → `world_systems.py`; sistema de UI → `systems.py`.
+Servidor importa de `world_systems` (exceção documentada: `SkillSystem`).
+
+---
+
 ## Serviços de sistema (módulo-nível)
 
 Registrados via `register_services()` em `world_server._load_map`:
 
 ```python
-from systems import deal_damage, find_path, is_tile_walkable, get_tilemap, get_mainhand_weapon
+from world_systems import deal_damage, find_path, is_tile_walkable, get_tilemap, get_mainhand_weapon
+# (systems.py re-exporta os mesmos nomes para código cliente legado)
 ```
 
 | Função | Implementação real | Para quê |
@@ -453,7 +467,9 @@ from systems import deal_damage, find_path, is_tile_walkable, get_tilemap, get_m
 | `is_tile_walkable(entity, tx, ty, ...)` | `TileValidationSystem.is_tile_walkable` | Valida caminhabilidade |
 | `get_tilemap()` | `PathfindingSystem._get_tilemap_component` | Acessa Tilemap component |
 | `get_mainhand_weapon(world, entity)` | helper | Retorna item da mainhand |
-| `apply_effect(world, eid, type, dur, mag)` | module-level em systems.py | Aplica/refresha status effect |
+| `apply_effect(world, eid, type, dur, mag)` | `core_systems.py` (re-exportado por systems/world_systems) | Aplica/refresha status effect |
+| `apply_damage_core(world, tgt, dmg, ...)` | `core_systems.py` | Escrita FINAL de dano em HP — único lugar (guards imune/morto, overkill, quebra polymorph/sleep, PendingDeath) |
+| `snap_to_tile(world, eid, tx, ty)` | `utils.py` | Único jeito correto de teleportar/knockback (cancela tween) |
 | `sync_attack_interval(cs, equip)` | stats_system.py | Sincroniza velocidade de ataque |
 
 ---
