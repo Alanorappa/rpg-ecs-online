@@ -353,7 +353,7 @@
     }
   },
   "debug_mode": true,
-  "profile_frames": false,
+  "profile_frames": true,
   "ui_scale": 1.25,
   "consumable_bar": {
     "slots": [

@@ -155,6 +155,9 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._ghost_timer: float = 0.0
         self._death_release_btn: pygame.Rect | None = None
         self._ghost_revive_btn:  pygame.Rect | None = None
+        # Buffer pré-alocado para pygame.transform.grayscale(src, dst) — evita alocação por frame.
+        # pygame-ce >=2.4 usa SIMD (AVX2) nessa call: ~2-4ms vs 28ms do pygame upstream.
+        self._ghost_gray_buf: "pygame.Surface | None" = None
         # Última posição enviada ao servidor (evita envios duplicados)
         self._net_last_tx: int = -1
         self._net_last_ty: int = -1
@@ -225,7 +228,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._cam_x = 0.0
         self._cam_y = 0.0
         # _zoom → Camera.zoom component (via property)
-        self._zoom_min:  float = 0.75
+        self._zoom_min:  float = 1.5
         self._zoom_max:  float = 2.5
         self._zoom_step: float = 0.25
         self._zoom_surf: "pygame.Surface | None" = None
@@ -420,6 +423,15 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         _PROF_INTERVAL     = 300                   # frames entre relatórios (~5 s)
         self._prof_interval = _PROF_INTERVAL
         self._prof_spike_ms = 10.0                 # ms para considerar spike em uma seção
+        # Log de profiling gravado em arquivo — limpo a cada execução do cliente.
+        import os as _os
+        _log_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "logs")
+        _os.makedirs(_log_dir, exist_ok=True)
+        self._prof_log = open(_os.path.join(_log_dir, "client_prof.log"), "w",
+                              encoding="utf-8", buffering=1)
+        # Overlay de performance (F11)
+        self._show_perf_overlay: bool = False
+        self._perf_font = None                     # lazy-loaded em _draw_perf_overlay
 
     def _load_map_and_entities(self):
         map_file = MAP_FILES[0]
@@ -452,6 +464,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self.camera_entity = create_camera(
             self.world, self.player_entity, self.screen.get_width(), self.screen.get_height()
         )
+        self._zoom = self._zoom_min
 
     def _spawn_entities_from(self, spawn_points: dict):
         # Modo online: enemies e spawn_zones são gerenciados exclusivamente pelo servidor.
@@ -1120,22 +1133,56 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._prof_frame_accum[label] = self._prof_frame_accum.get(label, 0.0) + elapsed
 
     def _prof_report(self) -> None:
-        """Imprime relatório acumulado e reseta contadores."""
+        """Grava relatório acumulado no log e reseta contadores."""
         n = max(self._prof_frames, 1)
         rows = sorted(self._prof_accum.items(), key=lambda x: -x[1])
         total_avg = sum(v for _, v in rows) / n * 1000
-        print(f"\n[PROF] {n} frames | avg frame total: {total_avg:.2f} ms")
-        print(f"  {'Seção':<30} {'avg ms':>8} {'peak ms':>9}")
-        print(f"  {'─'*50}")
+        _f = self._prof_log
+        print(f"\n[PROF] {n} frames | avg frame total: {total_avg:.2f} ms", file=_f)
+        print(f"  {'Seção':<30} {'avg ms':>8} {'peak ms':>9}", file=_f)
+        print(f"  {'─'*50}", file=_f)
         for label, acc in rows:
             avg_ms  = acc / n * 1000
             peak_ms = self._prof_peak.get(label, 0.0) * 1000
             bar = "!" if peak_ms > self._prof_spike_ms else " "
-            print(f"  {bar}{label:<29} {avg_ms:>8.3f} {peak_ms:>9.3f}")
+            print(f"  {bar}{label:<29} {avg_ms:>8.3f} {peak_ms:>9.3f}", file=_f)
         self._prof_accum  = {}
         self._prof_peak        = {}
         self._prof_frames      = 0
         self._prof_frame_accum: dict[str, float] = {}   # acumulado do frame atual (spike)
+
+    def _draw_perf_overlay(self) -> None:
+        """Overlay de performance (F11): FPS + seções mais lentas do último frame."""
+        import pygame as _pg
+        if self._perf_font is None:
+            self._perf_font = _pg.font.SysFont("Consolas,Courier New,monospace", 13)
+
+        fps      = self.clock.get_fps()
+        frame_ms = (1000.0 / fps) if fps > 0 else 0.0
+        budget   = 1000.0 / FPS
+
+        lines: list[tuple[str, tuple[int,int,int]]] = [
+            (f"FPS: {fps:>5.1f}  frame: {frame_ms:>5.1f}ms  budget: {budget:.0f}ms",
+             (255, 255, 80) if fps >= FPS * 0.9 else (255, 100, 60)),
+        ]
+
+        rows = sorted(self._prof_frame_accum.items(), key=lambda x: -x[1])
+        for lbl, t in rows[:12]:
+            ms  = t * 1000
+            col = (255, 100, 60) if ms > budget * 0.5 else (200, 220, 255)
+            lines.append((f"  {lbl:<32} {ms:>6.2f}ms", col))
+
+        pad  = 6
+        lh   = self._perf_font.get_linesize()
+        w    = max(self._perf_font.size(l)[0] for l, _ in lines) + pad * 2
+        h    = lh * len(lines) + pad * 2
+        surf = _pg.Surface((w, h), _pg.SRCALPHA)
+        surf.fill((0, 0, 0, 180))
+        for i, (txt, col) in enumerate(lines):
+            self._perf_font.render_to(surf, (pad, pad + i * lh), txt, col) \
+                if hasattr(self._perf_font, "render_to") \
+                else surf.blit(self._perf_font.render(txt, True, col), (pad, pad + i * lh))
+        self.screen.blit(surf, (4, 4))
 
     def run(self):
         _gc.disable()          # GC manual — evita pauses aleatórias no loop de jogo
@@ -1187,14 +1234,22 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                     continue
             # ─────────────────────────────────────────────────────────────────
 
-            # Processa mensagens da rede antes de qualquer sistema (frame normal)
-            self._process_network()
-
+            # Frame start: _t0 movido para antes da rede — spike window cobre TUDO.
             _t0 = _time.perf_counter()
+
+            # Processa mensagens da rede antes de qualquer sistema (frame normal)
+            if PROFILE_FRAMES:
+                _ts = _time.perf_counter()
+            self._process_network()
+            if PROFILE_FRAMES:
+                self._prof_record("network_recv", _time.perf_counter() - _ts)
+
+            if PROFILE_FRAMES:
+                _ts = _time.perf_counter()
             events = self._scale_events(pygame.event.get())
             self._ui_events = events          # acesso sem parâmetro em _draw_* helpers
             if PROFILE_FRAMES:
-                self._prof_record("events", _time.perf_counter() - _t0)
+                self._prof_record("events", _time.perf_counter() - _ts)
 
             # God Mode consome eventos quando ativo (bloqueia input do jogo).
             # Salva estado ANTES de handle_events: se o god mode fechar via F10/Esc
@@ -1224,6 +1279,10 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                         if self._god_mode.active and self._zoom != 1.0:
                             self._zoom = 1.0
                             self._tile_render_system.invalidate_cache()
+                    elif event.key == pygame.K_F11:
+                        self._show_perf_overlay = not self._show_perf_overlay
+                        if self._show_perf_overlay:
+                            globals()["PROFILE_FRAMES"] = True
                     elif event.key == self._menu_keys.get("mapa", pygame.K_m):
                         already_open = self._map_overlay.is_open
                         self._close_all_modals()
@@ -1433,6 +1492,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                     system.update(ev, dt)
 
             # Mobs mortos com animação em andamento: remove entidade ao terminar passo
+            if PROFILE_FRAMES:
+                _ts = _time.perf_counter()
             self._flush_pending_mob_despawns(dt)
 
             # Projéteis que colidiram com mobs online: envia PROJECTILE_HIT_CS ao servidor
@@ -1571,6 +1632,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
 
             if self._map_title_timer > 0:
                 self._map_title_timer -= dt
+            if PROFILE_FRAMES:
+                self._prof_record("online_sync", _time.perf_counter() - _ts)
 
             if PROFILE_FRAMES:
                 _ts = _time.perf_counter()
@@ -1650,16 +1713,32 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             self._spell_cast_system.render(cam_x, cam_y)
             FLT.render(self._zoom_surf, cam_x, cam_y)
 
+            # Morto/espírito: grayscale no zoom_surf menor (pré-scale) — ~44% menos
+            # pixels a zoom=1.5 vs aplicar na tela cheia (853×480 vs 1280×720).
+            _gst_gray = self.world.get_component(self.player_entity, GhostState)
+            if _gst_gray is not None and _gst_gray.is_dead:
+                if PROFILE_FRAMES:
+                    _ts = _time.perf_counter()
+                _zsz = self._zoom_surf.get_size()
+                if self._ghost_gray_buf is None or self._ghost_gray_buf.get_size() != _zsz:
+                    self._ghost_gray_buf = pygame.Surface(_zsz)
+                pygame.transform.grayscale(self._zoom_surf, self._ghost_gray_buf)
+                self._zoom_surf.blit(self._ghost_gray_buf, (0, 0))
+                if PROFILE_FRAMES:
+                    self._prof_record("ghost_gray", _time.perf_counter() - _ts)
             # ── Escala world_surf → área de jogo na tela nativa (pixel-perfect) ─
             # subsurface evita alocação extra e resolve o caso do painel do God Mode
             # (dest_w < self.screen.get_width() quando o painel está aberto).
             _dest = self.screen.subsurface((0, 0, dest_w, self.screen.get_height()))
-            pygame.transform.scale(self._zoom_surf, (dest_w, self.screen.get_height()), _dest)
-            # Morto/espírito (até reviver): mundo em grayscale — sinaliza
-            # visualmente que o player não está mais "no jogo" normal.
-            _gst_gray = self.world.get_component(self.player_entity, GhostState)
-            if _gst_gray is not None and _gst_gray.is_dead:
-                _dest.blit(pygame.transform.grayscale(_dest), (0, 0))
+            if PROFILE_FRAMES:
+                _ts = _time.perf_counter()
+            _zh, _zw = self._zoom_surf.get_height(), self._zoom_surf.get_width()
+            if _zw == dest_w and _zh == self.screen.get_height():
+                _dest.blit(self._zoom_surf, (0, 0))
+            else:
+                pygame.transform.scale(self._zoom_surf, (dest_w, self.screen.get_height()), _dest)
+            if PROFILE_FRAMES:
+                self._prof_record("transform_scale", _time.perf_counter() - _ts)
             # Notificações de proc: screen-space, abaixo do player, acima dos avisos
             PROC.render(self.screen)
             # Avisos de ação bloqueada: posição fixa, abaixo do centro
@@ -1810,6 +1889,10 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             self._god_mode.update(cam_x, cam_y, dt)
             self._god_mode.render(cam_x, cam_y)
 
+            # Overlay de performance (F11) — por cima de tudo, antes do flip
+            if self._show_perf_overlay:
+                self._draw_perf_overlay()
+
             # Copia surface interna → janela (resolução nativa, sem escala)
             if PROFILE_FRAMES:
                 _ts = _time.perf_counter()
@@ -1821,16 +1904,18 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 _frame_elapsed = _time.perf_counter() - _t0
                 if _frame_elapsed > 0.050:
                     _fms = _frame_elapsed * 1000
-                    print(f"\n[SPIKE] {_fms:.0f}ms — breakdown do frame:")
+                    _f = self._prof_log
+                    print(f"\n[SPIKE] {_fms:.0f}ms — breakdown do frame:", file=_f)
                     _spike_rows = sorted(self._prof_frame_accum.items(), key=lambda x: -x[1])
                     for _lbl, _lt in _spike_rows:
                         if _lt > 0.002:
-                            print(f"  {'>>':2} {_lbl:<38} {_lt*1000:>7.1f}ms")
+                            print(f"  {'>>':2} {_lbl:<38} {_lt*1000:>7.1f}ms", file=_f)
                 self._prof_frame_accum = {}
                 self._prof_frames += 1
                 if self._prof_frames >= self._prof_interval:
                     self._prof_report()
 
+        self._prof_log.close()
         pygame.quit()
 
     # ------------------------------------------------------------------

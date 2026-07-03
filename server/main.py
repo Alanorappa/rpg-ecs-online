@@ -29,6 +29,10 @@ except ImportError:
     print("[ERRO] websockets não instalado. Execute: pip install websockets")
     sys.exit(1)
 
+import gc as _gc
+_gc.disable()   # GC manual — evita pauses de 50-200ms no loop de ticks.
+                # Coleta periódica é feita manualmente em WorldServer.run().
+
 from server.auth         import init_db
 from server.world_server import WorldServer
 from server.session      import SessionManager

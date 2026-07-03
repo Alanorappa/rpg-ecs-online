@@ -3474,86 +3474,126 @@ class TileRenderSystem(System):
         for _, tilemap_comp in self.world.get_entities_with(Tilemap):
             tile_size = tilemap_comp.tile_size
 
-            # int() mantém offset monotônico (sem jitter ao desacelerar)
             cam_x = int(camera_offset_x)
             cam_y = int(camera_offset_y)
 
-            # Tile de origem (top-left) e offset sub-tile dentro do tile
             tile_ox = cam_x // tile_size
             tile_oy = cam_y // tile_size
             sub_x   = cam_x - tile_ox * tile_size
             sub_y   = cam_y - tile_oy * tile_size
 
-            # Tiles necessários para cobrir a tela + 1 coluna/linha de borda
             tiles_w = self.world_surf.get_width()  // tile_size + 2
             tiles_h = self.world_surf.get_height() // tile_size + 2
 
-            # Reconstrói cache apenas quando o tile de origem muda
-            if (tile_ox != self._cache_tile_x
-                    or tile_oy != self._cache_tile_y
-                    or tiles_w != self._cache_tiles_w
-                    or tiles_h != self._cache_tiles_h
-                    or self._cache_surf is None):
+            _size_changed = (tiles_w != self._cache_tiles_w
+                             or tiles_h != self._cache_tiles_h
+                             or self._cache_surf is None)
+            dx = tile_ox - self._cache_tile_x
+            dy = tile_oy - self._cache_tile_y
 
-                surf_w = tiles_w * tile_size
-                surf_h = tiles_h * tile_size
-                if (self._cache_surf is None
-                        or self._cache_surf.get_width()  != surf_w
-                        or self._cache_surf.get_height() != surf_h):
-                    self._cache_surf = pygame.Surface((surf_w, surf_h))
+            # Reconstrói ou redimensiona cache se necessário
+            surf_w = tiles_w * tile_size
+            surf_h = tiles_h * tile_size
+            if (_size_changed
+                    or self._cache_surf is None
+                    or self._cache_surf.get_width()  != surf_w
+                    or self._cache_surf.get_height() != surf_h):
+                self._cache_surf = pygame.Surface((surf_w, surf_h))
+                _size_changed = True
 
-                TILE_SPRITES = self._tile_sprites
-                _TM          = self._tile_mapping
-                _FT          = self._floor_tile
-                rows          = tilemap_comp.tile_matrix
-                terrain_rows  = tilemap_comp.terrain_matrix
-                vis_rows      = tilemap_comp.terrain_visual  # sheet visual overrides
-                obj_rows      = tilemap_comp.object_matrix   # world objects layer
-                map_h  = tilemap_comp.map_height_tiles
-                map_w  = tilemap_comp.map_width_tiles
+            # Pré-cache de todos os locais pesados — evita lookup de atributo por tile.
+            # (closure captura esses locais; chamada de método re-faria os lookups 1760x)
+            cache_surf   = self._cache_surf
+            TILE_SPRITES = self._tile_sprites
+            _TM          = self._tile_mapping
+            _FT          = self._floor_tile
+            rows         = tilemap_comp.tile_matrix
+            terrain_rows = tilemap_comp.terrain_matrix
+            vis_rows     = tilemap_comp.terrain_visual
+            obj_rows     = tilemap_comp.object_matrix
+            map_h        = tilemap_comp.map_height_tiles
+            map_w        = tilemap_comp.map_width_tiles
+            _blit        = cache_surf.blit
+            _rect        = pygame.draw.rect
+            _black       = (0, 0, 0)
+            _get_spr     = TILE_SPRITES.get
+            _get_raw     = TILE_SPRITES.get_raw_sprite
+
+            def _draw(tx: int, ty: int, rx: int, ry: int) -> None:
+                dest = (tx * tile_size, ty * tile_size, tile_size, tile_size)
+                if 0 <= ry < map_h and 0 <= rx < map_w:
+                    tile_type = rows[ry][rx]
+                    vis_id = (vis_rows[ry][rx]
+                              if vis_rows and ry < len(vis_rows) and rx < len(vis_rows[ry])
+                              else "")
+                    has_obj = (obj_rows and ry < len(obj_rows)
+                               and rx < len(obj_rows[ry])
+                               and obj_rows[ry][rx] not in ("", "."))
+                    if vis_id:
+                        spr = _get_raw(vis_id)
+                        if spr is not None:
+                            _blit(spr, dest[:2])
+                        else:
+                            t_char = terrain_rows[ry][rx] if ry < len(terrain_rows) and rx < len(terrain_rows[ry]) else "G"
+                            _rect(cache_surf, _TM.get(t_char, _FT).color, dest)
+                    elif has_obj or getattr(tile_type, "sprite_px_h", 0) > 0:
+                        t_char = terrain_rows[ry][rx] if ry < len(terrain_rows) and rx < len(terrain_rows[ry]) else "G"
+                        _rect(cache_surf, _TM.get(t_char, _FT).color, dest)
+                    elif tile_type.overlay_height > 0:
+                        _rect(cache_surf, tile_type.color, dest)
+                    else:
+                        sprite = _get_spr(tile_type, rx, ry)
+                        if sprite is not None:
+                            _blit(sprite, dest[:2])
+                        else:
+                            _rect(cache_surf, tile_type.color, dest)
+                else:
+                    _rect(cache_surf, _black, dest)
+
+            if _size_changed or abs(dx) > 2 or abs(dy) > 2:
+                # Rebuild completo
                 for ty in range(tiles_h):
                     for tx in range(tiles_w):
-                        rx, ry = tile_ox + tx, tile_oy + ty
-                        dest = (tx * tile_size, ty * tile_size, tile_size, tile_size)
-                        if 0 <= ry < map_h and 0 <= rx < map_w:
-                            tile_type = rows[ry][rx]
-                            vis_id = (vis_rows[ry][rx]
-                                      if vis_rows and ry < len(vis_rows) and rx < len(vis_rows[ry])
-                                      else "")
-                            has_obj = (obj_rows and ry < len(obj_rows)
-                                       and rx < len(obj_rows[ry])
-                                       and obj_rows[ry][rx] not in ("", "."))
-                            if vis_id:
-                                # Sheet terrain override — always highest priority
-                                spr = TILE_SPRITES.get_raw_sprite(vis_id)
-                                if spr is not None:
-                                    self._cache_surf.blit(spr, dest[:2])
-                                else:
-                                    t_char = terrain_rows[ry][rx] if ry < len(terrain_rows) and rx < len(terrain_rows[ry]) else "G"
-                                    pygame.draw.rect(self._cache_surf, _TM.get(t_char, _FT).color, dest)
-                            elif has_obj or getattr(tile_type, "sprite_px_h", 0) > 0:
-                                # Tile with a world object or multi-tile sprite upper cell:
-                                # draw terrain background so the object renders cleanly on top
-                                t_char = terrain_rows[ry][rx] if ry < len(terrain_rows) and rx < len(terrain_rows[ry]) else "G"
-                                pygame.draw.rect(self._cache_surf, _TM.get(t_char, _FT).color, dest)
-                            elif tile_type.overlay_height > 0:
-                                pygame.draw.rect(self._cache_surf, tile_type.color, dest)
-                            else:
-                                sprite = TILE_SPRITES.get(tile_type, rx, ry)
-                                if sprite is not None:
-                                    self._cache_surf.blit(sprite, dest[:2])
-                                else:
-                                    pygame.draw.rect(self._cache_surf, tile_type.color, dest)
-                        else:
-                            pygame.draw.rect(self._cache_surf, (0, 0, 0), dest)
+                        _draw(tx, ty, tile_ox + tx, tile_oy + ty)
+            elif dx != 0 or dy != 0:
+                # Cache-shift: desloca pixels e redesenha só as bordas expostas.
+                # dx>0 = câmera foi p/ direita (conteúdo desloca p/ esquerda no cache).
+                cache_surf.scroll(-dx * tile_size, -dy * tile_size)
 
-                self._cache_tile_x  = tile_ox
-                self._cache_tile_y  = tile_oy
-                self._cache_tiles_w = tiles_w
-                self._cache_tiles_h = tiles_h
+                # Colunas expostas
+                if dx > 0:
+                    col_range = range(tiles_w - dx, tiles_w)
+                elif dx < 0:
+                    col_range = range(0, -dx)
+                else:
+                    col_range = range(0, 0)
 
-            # 1 blit por frame — ~0.1ms ao invés de ~880 draw.rect
-            self.world_surf.blit(self._cache_surf, (-sub_x, -sub_y))
+                # Linhas expostas
+                if dy > 0:
+                    row_range = range(tiles_h - dy, tiles_h)
+                elif dy < 0:
+                    row_range = range(0, -dy)
+                else:
+                    row_range = range(0, 0)
+
+                # Redesenha somente tiles novos (coluna nova + linha nova)
+                drawn: set = set()
+                for tx in col_range:
+                    for ty in range(tiles_h):
+                        _draw(tx, ty, tile_ox + tx, tile_oy + ty)
+                        drawn.add((tx, ty))
+                for ty in row_range:
+                    for tx in range(tiles_w):
+                        if (tx, ty) not in drawn:
+                            _draw(tx, ty, tile_ox + tx, tile_oy + ty)
+
+            self._cache_tile_x  = tile_ox
+            self._cache_tile_y  = tile_oy
+            self._cache_tiles_w = tiles_w
+            self._cache_tiles_h = tiles_h
+
+            # 1 blit por frame
+            self.world_surf.blit(cache_surf, (-sub_x, -sub_y))
 
             # Fog é desenhado separadamente via render_fog() para permitir
             # que outros sistemas (quest, shop) desenhem seus indicadores

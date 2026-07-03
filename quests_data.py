@@ -317,7 +317,7 @@ QUESTS: dict[str, QuestDef] = {
     "report_coveiro": QuestDef(
         title="Reporte o Coveiro",
         description="Tenho um amigo coveiro chamado Custodio, ele disse que no cemitério " 
-        "tem uns monstros parecidos. Vá até ele no cemitério Freesoul e reporte o que está " 
+        "tem uns monstros parecidos. Vá até ele no cemitério da Luz da Lua e reporte o que está " 
         "acontecendo aqui na caverna, talvez o ajude em algo",
         objectives=(
             ObjectiveDef(

@@ -102,13 +102,14 @@ class _ServerStatusEffectSystem:
 
 class _MapBundle:
     """Sistemas e dados de UM mapa no mundo compartilhado."""
-    __slots__ = ("map_file", "tilemap_entity", "systems", "transitions",
-                 "tile_validation", "pathfinding")
+    __slots__ = ("map_file", "tilemap_entity", "systems", "ai_systems",
+                 "transitions", "tile_validation", "pathfinding")
 
     def __init__(self):
         self.map_file        = ""
         self.tilemap_entity  = -1
         self.systems         = []
+        self.ai_systems      = set()  # subconjunto de systems a pular em mapas sem player
         self.transitions     = {}   # (tx,ty) -> {target_map, target_x, target_y}
         self.tile_validation = None
         self.pathfinding     = None
@@ -281,6 +282,31 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # Servidor usa melee range com lag tolerance (1 + MELEE_LAG_TOLERANCE tiles)
         self._skill_system._server_authoritative = True
 
+        # ── Profiler de tick ─────────────────────────────────────────────────
+        # Acumula tempo por seção; resumo impresso a cada _PERF_REPORT_TICKS ticks.
+        self._perf_accum:       dict[str, float] = {}
+        self._perf_count:       int = 0
+        self._perf_map_active:  dict[str, int]   = {}  # map → ticks com ≥1 player
+        self._perf_peak_maps:   int = 0                # pico de mapas simultâneos ativos
+        self._perf_cpu_sum:     float = 0.0            # soma de % CPU por tick
+        self._perf_cpu_peak:    float = 0.0            # pico de % CPU no período
+        self._PERF_REPORT_TICKS = 300          # ~10s a 30 ticks/s
+        self._PERF_BUDGET_MS    = 1000.0 / 30  # 33.3ms por tick
+        # psutil: medição de CPU do processo. cpu_percent(interval=None) acumula desde
+        # a última chamada — primeiro call inicializa o baseline, por isso chamamos aqui.
+        try:
+            import psutil as _psutil
+            self._perf_proc = _psutil.Process()
+            self._perf_proc.cpu_percent(interval=None)  # baseline
+        except Exception:
+            self._perf_proc = None
+        # Log de perf gravado em arquivo — limpo a cada execução do servidor.
+        import os as _os
+        _log_dir = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "logs")
+        _os.makedirs(_log_dir, exist_ok=True)
+        self._perf_log = open(_os.path.join(_log_dir, "server_perf.log"), "w",
+                              encoding="utf-8", buffering=1)
+
     # ── Inicialização do mundo ────────────────────────────────────────────────
 
     def _load_all_maps(self) -> None:
@@ -392,6 +418,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         bundle.map_file        = map_file
         bundle.tilemap_entity  = tilemap_entity
         bundle.systems         = systems
+        bundle.ai_systems      = {enemy_ai_system, enemy_ab_system}
         bundle.transitions     = transitions
         bundle.tile_validation = tile_validation
         bundle.pathfinding     = pathfinding
@@ -2082,10 +2109,13 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._on_tick_callbacks.append(callback)
 
     async def run(self) -> None:
+        import gc as _gc_srv
         self.running = True
         print(f"[WorldServer] zona='{self.zone_id}' @ {TICK_RATE} ticks/s")
 
-        next_tick = time.perf_counter()
+        next_tick  = time.perf_counter()
+        _gc_ticks  = 0
+        _GC_EVERY  = TICK_RATE * 10   # coleta manual a cada ~10s (evita pauses do GC automático)
         while self.running:
             now = time.perf_counter()
             if now >= next_tick:
@@ -2107,6 +2137,10 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 next_tick += TICK_INTERVAL
                 if time.perf_counter() - next_tick > TICK_INTERVAL:
                     next_tick = time.perf_counter()
+                _gc_ticks += 1
+                if _gc_ticks >= _GC_EVERY:
+                    _gc_ticks = 0
+                    _gc_srv.collect()   # coleta manual entre ticks, nunca durante
             else:
                 # Dorme até o próximo tick — elimina busy-spin com sleep(0).
                 # Threshold 1ms: abaixo disso yield simples para não overshooting.
@@ -2115,9 +2149,21 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                     await asyncio.sleep(_sleep)
                 else:
                     await asyncio.sleep(0)
+        self._perf_log.close()
 
     def _tick(self, dt: float) -> None:
+        import time as _time_tick
+        _t_tick_start = _time_tick.perf_counter()
         self.tick_count += 1
+        # CPU % do processo neste tick (não-bloqueante: acumula desde a chamada anterior).
+        if self._perf_proc is not None:
+            try:
+                _cpu_now = self._perf_proc.cpu_percent(interval=None)
+                self._perf_cpu_sum  += _cpu_now
+                if _cpu_now > self._perf_cpu_peak:
+                    self._perf_cpu_peak = _cpu_now
+            except Exception:
+                pass
 
         # EnemyAISystem e EnemyAbilitySystem iteram todos os PlayerControlled internamente.
         from components import TileMovement, Enemy, CombatStats
@@ -2174,14 +2220,32 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # Roda sistemas offline reais por bundle de mapa.
         # P4: serviços já injetados diretamente nos sistemas em _load_map_for()
         # — register_services() não é mais necessário no loop de tick online.
-        for _bnd in self._map_bundles.values():
+        # Otimização: EnemyAISystem/EnemyAbilitySystem são pulados em mapas sem player —
+        # mobs ficam parados (sem custo de pathfinding) até um player entrar no mapa.
+        _maps_com_player = set(self._player_maps.values())
+        # Profiler: rastreia ticks ativos por mapa e pico de mapas simultâneos.
+        for _m in _maps_com_player:
+            self._perf_map_active[_m] = self._perf_map_active.get(_m, 0) + 1
+        if len(_maps_com_player) > self._perf_peak_maps:
+            self._perf_peak_maps = len(_maps_com_player)
+        _t0p = _time_tick.perf_counter()
+        for _bnd_key, _bnd in self._map_bundles.items():
+            _has_player = _bnd_key in _maps_com_player
+            _t0bnd = _time_tick.perf_counter()
             for system in _bnd.systems:
+                if not _has_player and system in _bnd.ai_systems:
+                    continue  # sem player neste mapa: pula AI (mobs ficam parados)
                 system.update(dt=dt)
+            _bnd_label = "bnd:" + _bnd_key.split("/")[-1].replace(".csv", "")
+            self._perf_accum[_bnd_label] = self._perf_accum.get(_bnd_label, 0.0) + (_time_tick.perf_counter() - _t0bnd)
+        self._perf_accum["ai_bundles"] = self._perf_accum.get("ai_bundles", 0.0) + (_time_tick.perf_counter() - _t0p)
 
         # Sistemas globais: rodam UMA vez por tick, após todos os bundles de IA.
+        _t0p = _time_tick.perf_counter()
         self._global_tms.update(dt=dt)       # movement: progress → current_tile
         self._global_sfx_sys.update(dt=dt)   # status effects: DoT/HoT timers
         self._global_proj_sys.update(dt=dt)  # projéteis de mobs: posição + hit
+        self._perf_accum["global_systems"] = self._perf_accum.get("global_systems", 0.0) + (_time_tick.perf_counter() - _t0p)
 
         # Detecta mobs que aggraram neste tick (IDLE → CHASING/ATTACKING)
         from components import EntityIdentity as _EIdent
@@ -2396,10 +2460,14 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         # Skills ANTES do auto-attack: skill dispara em mob vivo, depois auto-attack
         # (se ordem fosse invertida, auto-attack poderia matar o mob antes da skill checar HP)
+        _t0p = _time_tick.perf_counter()
         self._process_skill_requests()
+        self._perf_accum["skill_requests"] = self._perf_accum.get("skill_requests", 0.0) + (_time_tick.perf_counter() - _t0p)
 
         # Conclusão de spells com cast_time (Bola de Fogo, Nova Congelante, etc.)
+        _t0p = _time_tick.perf_counter()
         self._process_spell_cast_completions(dt)
+        self._perf_accum["spell_completions"] = self._perf_accum.get("spell_completions", 0.0) + (_time_tick.perf_counter() - _t0p)
         # Pousos de knockback (stun/feedback de colisão atrasados até a tween acabar)
         self._process_knockback_landings(dt)
         # Expira projéteis em voo que nunca receberam PROJECTILE_HIT_CS
@@ -2620,11 +2688,58 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                     self._mob_hp_prev[_hp_eid3] = _hp_cs3.current_hp
 
         # Limpa deltas de erro do try/except se necessário
+        _t0p = _time_tick.perf_counter()
         deltas = self._collect_deltas()
+        self._perf_accum["aoi_collect"] = self._perf_accum.get("aoi_collect", 0.0) + (_time_tick.perf_counter() - _t0p)
         self._store_snapshot()
 
         for cb in self._on_tick_callbacks:
             cb(self.tick_count, deltas)
+
+        # ── Relatório de performance do tick ─────────────────────────────────
+        _tick_ms = (_time_tick.perf_counter() - _t_tick_start) * 1000.0
+        self._perf_accum["TOTAL"] = self._perf_accum.get("TOTAL", 0.0) + _tick_ms / 1000.0
+        self._perf_count += 1
+        if _tick_ms > self._PERF_BUDGET_MS:
+            print(f"[PERF] tick lento: {_tick_ms:.1f}ms (budget={self._PERF_BUDGET_MS:.0f}ms) "
+                  f"tick#{self.tick_count} players={len(self._player_eids)} "
+                  f"mobs={len(self._mob_eids)}", file=self._perf_log)
+        if self._perf_count >= self._PERF_REPORT_TICKS:
+            n = self._perf_count
+            total_avg = self._perf_accum.get("TOTAL", 0.0) / n * 1000
+            _n_maps_total  = len(self._map_bundles)
+            _cur_players_by_map: dict[str, int] = {}
+            for _sm in self._player_maps.values():
+                _cur_players_by_map[_sm] = _cur_players_by_map.get(_sm, 0) + 1
+            _cpu_avg  = self._perf_cpu_sum  / n if n else 0.0
+            _cpu_peak = self._perf_cpu_peak
+            _f = self._perf_log
+            print(f"\n[PERF SRV] {n} ticks | avg={total_avg:.2f}ms/tick | budget={self._PERF_BUDGET_MS:.0f}ms"
+                  f" | players={len(self._player_eids)} | maps_ativos_peak={self._perf_peak_maps}/{_n_maps_total}"
+                  f" | cpu_proc avg={_cpu_avg:.1f}% peak={_cpu_peak:.1f}%", file=_f)
+            _rows = sorted(
+                ((k, v) for k, v in self._perf_accum.items() if k != "TOTAL"),
+                key=lambda x: -x[1]
+            )
+            for _lbl, _acc in _rows:
+                _avg = _acc / n * 1000
+                _pct = (_acc / max(self._perf_accum.get("TOTAL", 1), 1e-9)) * 100
+                # Para bundles de mapa, mostra ticks ativos e players atuais
+                _extra = ""
+                for _bk in self._map_bundles:
+                    _bshort = "bnd:" + _bk.split("/")[-1].replace(".csv", "")
+                    if _lbl == _bshort:
+                        _active_t = self._perf_map_active.get(_bk, 0)
+                        _cur_p    = _cur_players_by_map.get(_bk, 0)
+                        _extra = f"  [ativo {_active_t}/{n} ticks, {_cur_p}p agora]"
+                        break
+                print(f"  {_lbl:<22} avg={_avg:>7.3f}ms  {_pct:>5.1f}%{_extra}", file=_f)
+            self._perf_accum    = {}
+            self._perf_count    = 0
+            self._perf_map_active = {}
+            self._perf_peak_maps  = 0
+            self._perf_cpu_sum    = 0.0
+            self._perf_cpu_peak   = 0.0
 
     def _remote_mobs_reverse_srv(self, mob_eid: int) -> int:
         """Retorna o eid canônico de um mob para envio ao cliente.
