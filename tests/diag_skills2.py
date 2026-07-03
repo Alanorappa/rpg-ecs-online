@@ -42,7 +42,7 @@ print(f"2. char.rage após sync(30): {char.rage}")
 ws.queue_skill("s1", "golpe_poderoso", tid=mob, dir_x=0, dir_y=0, ts=0)
 ws._process_skill_requests()
 print(f"3. char.rage após golpe_poderoso: {char.rage}")
-print(f"4. _pending_xp_deliveries: {ws._pending_xp_deliveries}")
+print(f"4. _pending_stats_updates: {ws._pending_stats_updates}")
 
 print()
 print("=== TESTE RANGE CHECK ===")

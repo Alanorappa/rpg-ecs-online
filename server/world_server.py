@@ -182,7 +182,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._mob_damage_log: dict[int, dict[int, int]] = {}
 
         # XP a entregar aos jogadores (populado em _tick, consumido pelo SessionManager)
-        self._pending_xp_deliveries: list[dict] = []
+        self._pending_stats_updates: list[dict] = []
 
         # Corpses: corpse_id → {tx, ty, owner_eid, items, timer}
         self._corpses: dict[int, dict] = {}
@@ -1645,10 +1645,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             healed = min(heal_instant, cs.max_hp - cs.current_hp)
             cs.current_hp = min(cs.max_hp, cs.current_hp + heal_instant)
             if healed > 0:
-                self._pending_xp_deliveries.append({
+                self.queue_stats_update({
                     "player_eid":  eid,
-                    "xp":          0,
-                    "mob_eid":     -1,
                     "hp":          cs.current_hp,
                     "hp_max":      cs.max_hp,
                     "heal_amount": healed,
@@ -1663,10 +1661,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             if cs:
                 cs.mana = char.mana
             if restored > 0:
-                self._pending_xp_deliveries.append({
+                self.queue_stats_update({
                     "player_eid":   eid,
-                    "xp":           0,
-                    "mob_eid":      -1,
                     "mana":         char.mana,
                     "mana_amount":  restored,
                 })
@@ -1835,10 +1831,36 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._skill_position_corrections.clear()
         return result
 
-    def consume_xp_deliveries(self) -> list[dict]:
-        """Retorna e limpa entregas de XP pendentes para o SessionManager."""
-        result = list(self._pending_xp_deliveries)
-        self._pending_xp_deliveries.clear()
+    def queue_stats_update(self, entry: dict) -> None:
+        """Enfileira um STATS_UPDATE privado para o dono de `player_eid`.
+
+        ÚNICO ponto de entrada do canal (problema G, PROBLEMAS_ARQUITETURA.md
+        — antes era o "bag" _pending_xp_deliveries com 16 produtores fazendo
+        append direto e placeholders xp=0/mob_eid=-1 obrigatórios à mão).
+
+        Schema — campos conhecidos (todos opcionais exceto player_eid; o
+        SessionManager encaminha QUALQUER campo extra ao cliente, que lê
+        com .get() e defaults):
+          player_eid  int  OBRIGATÓRIO — destinatário (vira "eid" no wire)
+          xp          int  XP ganho (vira "xp_gained"; ausente = 0)
+          mob_eid     int  eid do mob que deu o XP (FLT posicional no cliente)
+          hp/hp_max   int  sync de HP autoritativo
+          mana        int  sync de mana | mana_amount: quanto restaurou
+          rage        int  sync de fúria
+          heal_amount int  quanto curou | heal_sid: origem da cura
+          talent_points int  pontos de talento (level up)
+          concentration  float  (mago)
+          proj_incoming/proj_caster/proj_target  notificação de projétil
+          applied_effects/effect_durations       efeitos aplicados (PvP)
+        """
+        if "player_eid" not in entry:
+            raise ValueError(f"queue_stats_update sem player_eid: {entry!r}")
+        self._pending_stats_updates.append(entry)
+
+    def consume_stats_updates(self) -> list[dict]:
+        """Retorna e limpa os STATS_UPDATE pendentes para o SessionManager."""
+        result = list(self._pending_stats_updates)
+        self._pending_stats_updates.clear()
         return result
 
     def validate_talent_allocation(self, session_id: str, claimed: dict) -> "dict | None":
@@ -2273,10 +2295,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # só prediz offline (spell_system.ManaSystem) — ver PROBLEMAS_ARQUITETURA.md
         # (bug real: cliente regenerava mana sozinho sem o servidor saber).
         for _mana_ev in self._combat_state_sys.mana_events:
-            self._pending_xp_deliveries.append({
+            self.queue_stats_update({
                 "player_eid": _mana_ev["player_eid"],
-                "xp":         0,
-                "mob_eid":    -1,
                 "mana":       _mana_ev["new_mana"],
             })
         # Procs de item rolados autoritativamente (core_systems.ServerCombatStateSystem.
@@ -2324,10 +2344,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 _healed = _rcst.current_hp - _old_hp
                 if _healed > 0:
                     # Envia STATS_UPDATE com heal_amount para o cliente
-                    self._pending_xp_deliveries.append({
+                    self.queue_stats_update({
                         "player_eid":  _regen_eid,
-                        "xp":          0,
-                        "mob_eid":     -1,
                         "hp":          _rcst.current_hp,
                         "hp_max":      _rcst.max_hp,
                         "heal_amount": _healed,
@@ -2362,10 +2380,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                     _cs_mr.mana = _char_mr.mana
                 _restored = _char_mr.mana - _old_mana
                 if _restored > 0:
-                    self._pending_xp_deliveries.append({
+                    self.queue_stats_update({
                         "player_eid":  _mregen_eid,
-                        "xp":          0,
-                        "mob_eid":     -1,
                         "mana":        _char_mr.mana,
                         "mana_amount": _restored,
                     })
@@ -2529,7 +2545,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             if not any(d["eid"] == eid for d in self._despawned_this_tick):
                 self._despawned_this_tick.append(entry)
         for entry in self._death_handler.consume_xp():
-            self._pending_xp_deliveries.append(entry)
+            self.queue_stats_update(entry)
             # Aplica XP no ECS do servidor para manter level/xp sincronizados no save
             _xp_peid = entry["player_eid"]
             _xp_amt  = entry["xp"]
@@ -2566,10 +2582,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
                     from components import TalentTree as _TTlv
                     _tt_lv = self.world.get_component(_xp_peid, _TTlv)
-                    self._pending_xp_deliveries.append({
+                    self.queue_stats_update({
                         "player_eid":    _xp_peid,
-                        "xp":            0,
-                        "mob_eid":       -1,
                         "hp":            _cs_xp.current_hp,
                         "hp_max":        _cs_xp.max_hp,
                         "talent_points": _tt_lv.available_points if _tt_lv else 0,

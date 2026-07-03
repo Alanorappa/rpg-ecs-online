@@ -381,14 +381,14 @@ class SkillProcessorMixin:
                     if _vic_cs:
                         _pvp_entry = {
                             "player_eid": _pvp_eid,
-                            "xp": 0, "mob_eid": -1,
+                           
                             "rage": _vic_char.rage if _vic_char else 0,
                             "hp": _pvp_r["hp_after"], "hp_max": _vic_cs.max_hp,
                         }
                         if _pvp_r.get("applied_effects"):
                             _pvp_entry["applied_effects"]  = _pvp_r["applied_effects"]
                             _pvp_entry["effect_durations"] = _pvp_r.get("effect_durations", {})
-                        self._pending_xp_deliveries.append(_pvp_entry)
+                        self.queue_stats_update(_pvp_entry)
 
             # Registra CD server-side APENAS se handler teve sucesso.
             # Registra CD efetivo (com reduções de talento) para que a validação futura
@@ -483,8 +483,6 @@ class SkillProcessorMixin:
                 _mana_after_handler = _char_after.mana
                 _stat_entry = {
                     "player_eid": player_eid,
-                    "xp":         0,
-                    "mob_eid":    -1,
                     "rage":       _char_after.rage,
                 }
                 # Mana só é incluída se o handler realmente a deduziu (skills instantâneas).
@@ -510,7 +508,7 @@ class SkillProcessorMixin:
                         "hp":     _cs_after.current_hp,
                         "hp_max": _cs_after.max_hp,
                     })
-                self._pending_xp_deliveries.append(_stat_entry)
+                self.queue_stats_update(_stat_entry)
 
             # Limpa referência ao pending_spell_completions após cada request
             self._skill_system._server_pending_spells = None

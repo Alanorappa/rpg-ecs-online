@@ -339,10 +339,8 @@ class CombatProcessorMixin:
         # HP sync direto para a vítima (STATS_UPDATE individual)
         from components import CharacterStats as _CSvic
         vic_char = self.world.get_component(victim_eid, _CSvic)
-        self._pending_xp_deliveries.append({
+        self.queue_stats_update({
             "player_eid": victim_eid,
-            "xp":         0,
-            "mob_eid":    -1,
             "rage":       vic_char.rage if vic_char else 0,
             "hp":         hp_after,
             "hp_max":     victim_cs.max_hp,

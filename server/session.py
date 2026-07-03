@@ -726,8 +726,8 @@ class SessionManager:
             cs   = self.world_server.world.get_component(eid, CombatStats)
             perm = self.world_server.world.get_component(eid, PermanentStats)
             if char and cs:
-                self.world_server._pending_xp_deliveries.append({
-                    "player_eid": eid, "xp": reward.xp, "mob_eid": -1,
+                self.world_server.queue_stats_update({
+                    "player_eid": eid, "xp": reward.xp,
                 })
                 level_before = char.level
                 char.current_xp += reward.xp
@@ -736,10 +736,8 @@ class SessionManager:
                 if char.level > level_before:
                     cs.current_hp = cs.max_hp
                     tt = self.world_server.world.get_component(eid, TalentTree)
-                    self.world_server._pending_xp_deliveries.append({
+                    self.world_server.queue_stats_update({
                         "player_eid":    eid,
-                        "xp":            0,
-                        "mob_eid":       -1,
                         "hp":            cs.current_hp,
                         "hp_max":        cs.max_hp,
                         "talent_points": tt.available_points if tt else 0,
@@ -1118,7 +1116,7 @@ class SessionManager:
                        or bool(self.world_server._skill_results_this_tick)
                        or bool(self.world_server._skill_effects_this_tick)
                        or bool(self.world_server._pending_loot_notifications)
-                       or bool(self.world_server._pending_xp_deliveries)
+                       or bool(self.world_server._pending_stats_updates)
                        or bool(self.world_server._expired_corpses_this_tick)
                        or bool(self.world_server._player_hp_broadcasts_this_tick)
                        or bool(self.world_server._skill_levels_broadcasts_this_tick)
@@ -1184,33 +1182,22 @@ class SessionManager:
             await self._send_player_revives(deltas)
             await self._send_ghost_state_updates(deltas)
 
-            # Entrega XP proporcional aos jogadores.
-            #
-            # _payload = dict(xp_entry) encaminha QUALQUER campo que o produtor
-            # tenha colocado em xp_entry — sem isso, cada campo novo (proj_target,
-            # heal_amount, applied_effects, etc.) precisava de uma linha manual
-            # "if 'x' in xp_entry: _payload['x'] = ..." AQUI, separada e
-            # desconectada do código que CRIA o dict em spell_completion_processor.py/
-            # world_server.py/etc. Esquecer essa segunda linha não dava erro
-            # nenhum — o campo só desaparecia silenciosamente a caminho do
-            # cliente (causa real do bug de Tiro Múltiplo não aparecer pro
-            # player remoto: "proj_targets" foi adicionado no produtor mas não
-            # tinha o espelho aqui). Ver arquitetura/PROBLEMAS_ARQUITETURA.md —
-            # esse é o problema "G" (xp_deliveries sem schema) batendo de novo.
-            # Os produtores em spell_completion_processor.py/world_server.py já
-            # constroem esses dicts especificamente para ir ao cliente (nenhum
-            # campo interno/sensível é colocado ali) — forwarding total é seguro.
-            xp_deliveries = self.world_server.consume_xp_deliveries()
-            if xp_deliveries:
-                for xp_entry in xp_deliveries:
-                    sid = self.world_server.get_session_id_for_player(xp_entry["player_eid"])
-                    if sid:
-                        session = self._sessions.get(sid)
-                        if session and session.authenticated:
-                            _payload = dict(xp_entry)
-                            _payload["eid"]       = _payload.pop("player_eid")
-                            _payload["xp_gained"] = _payload.pop("xp")
-                            await session.send(MsgType.STATS_UPDATE, _payload)
+            # STATS_UPDATE privados (XP, HP/mana/rage sync, heals, projéteis...).
+            # Canal tipado via WorldServer.queue_stats_update — schema documentado
+            # lá (problema G resolvido: era o "bag" _pending_xp_deliveries com
+            # 16 produtores fazendo append direto e placeholders obrigatórios).
+            # Forwarding total: qualquer campo do produtor chega ao cliente
+            # (que lê com .get() e defaults) — campo novo não precisa de
+            # espelho manual aqui.
+            for xp_entry in self.world_server.consume_stats_updates():
+                sid = self.world_server.get_session_id_for_player(xp_entry["player_eid"])
+                if sid:
+                    session = self._sessions.get(sid)
+                    if session and session.authenticated:
+                        _payload = dict(xp_entry)
+                        _payload["eid"]       = _payload.pop("player_eid")
+                        _payload["xp_gained"] = _payload.pop("xp", 0)
+                        await session.send(MsgType.STATS_UPDATE, _payload)
 
             # Notificações de corpse/loot
             for notif in self.world_server.consume_loot_notifications():

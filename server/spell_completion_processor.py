@@ -234,14 +234,14 @@ class SpellCompletionMixin:
                     _vch = self.world.get_component(_r_eid, _CSvcC)
                     if _vcs:
                         _r_entry = {
-                            "player_eid": _r_eid, "xp": 0, "mob_eid": -1,
+                            "player_eid": _r_eid,
                             "rage": _vch.rage if _vch else 0,
                             "hp": _r["hp_after"], "hp_max": _vcs.max_hp,
                         }
                         if _r.get("applied_effects"):
                             _r_entry["applied_effects"]  = _r["applied_effects"]
                             _r_entry["effect_durations"] = _r.get("effect_durations", {})
-                        self._pending_xp_deliveries.append(_r_entry)
+                        self.queue_stats_update(_r_entry)
                     # Rastreia dano de spell para subtrair de mob_delta
                     if _r["damage"] > 0:
                         _pvd = getattr(self, "_pvp_damage_this_tick", {})
@@ -305,15 +305,13 @@ class SpellCompletionMixin:
             if char:
                 _compl_sync: dict = {
                     "player_eid": player_eid,
-                    "xp":         0,
-                    "mob_eid":    -1,
                     "rage":       char.rage,
                     "mana":       char.mana,
                 }
                 _conc_compl = getattr(char, "concentration", None)
                 if _conc_compl is not None:
                     _compl_sync["concentration"] = _conc_compl
-                self._pending_xp_deliveries.append(_compl_sync)
+                self.queue_stats_update(_compl_sync)
 
         # Libera is_casting (e portanto o auto-attack) para players cujo último
         # cast pendente acabou de resolver. Mantém True se ainda houver outro
@@ -427,14 +425,14 @@ class SpellCompletionMixin:
                 _vch2 = self.world.get_component(_r2_eid, _CSv2)
                 if _vcs2:
                     _r2_entry = {
-                        "player_eid": _r2_eid, "xp": 0, "mob_eid": -1,
+                        "player_eid": _r2_eid,
                         "rage": _vch2.rage if _vch2 else 0,
                         "hp": _r2["hp_after"], "hp_max": _vcs2.max_hp,
                     }
                     if _r2.get("applied_effects"):
                         _r2_entry["applied_effects"]  = _r2["applied_effects"]
                         _r2_entry["effect_durations"] = _r2.get("effect_durations", {})
-                    self._pending_xp_deliveries.append(_r2_entry)
+                    self.queue_stats_update(_r2_entry)
                 # Rastreia dano BdF para subtrair de mob_delta
                 _pvd2 = getattr(self, "_pvp_damage_this_tick", {})
                 _pvd2[_r2_eid] = _pvd2.get(_r2_eid, 0) + _r2["damage"]
@@ -469,10 +467,8 @@ class SpellCompletionMixin:
 
         # Sincroniza mana
         if char:
-            self._pending_xp_deliveries.append({
+            self.queue_stats_update({
                 "player_eid": player_eid,
-                "xp":         0,
-                "mob_eid":    -1,
                 "rage":       char.rage,
                 "mana":       char.mana,
             })
@@ -692,9 +688,9 @@ class SpellCompletionMixin:
             if target_id in self._player_eids.values():
                 from components import CharacterStats as _CHS_mag
                 _vch = self.world.get_component(target_id, _CHS_mag)
-                self._pending_xp_deliveries.append({
+                self.queue_stats_update({
                     "player_eid": target_id,
-                    "xp": 0, "mob_eid": -1,
+                   
                     "rage": _vch.rage if _vch else 0,
                     "hp": hp_after, "hp_max": target_cs.max_hp,
                 })
