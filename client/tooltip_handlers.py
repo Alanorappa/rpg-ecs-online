@@ -12,7 +12,7 @@ import pygame
 from client.colors import C_GREEN, C_RED, C_YELLOW
 from components import CharacterStats, CombatStats, Position
 from ui_compare import draw_compare_panel
-from ui_helpers import wrap_text
+from ui_helpers import wrap_text, fill_surf
 from ui_sizes import UI
 
 
@@ -296,9 +296,7 @@ class TooltipHandlers:
             tx = mx - tw - self._u(4)
         ty = max(0, min(ty, self.screen.get_height() - th))
 
-        bg = pygame.Surface((tw, th), pygame.SRCALPHA)
-        bg.fill((10, 8, 5, 220))
-        self.screen.blit(bg, (tx, ty))
+        self.screen.blit(fill_surf((tw, th), (10, 8, 5, 220)), (tx, ty))
         pygame.draw.rect(self.screen, (120, 90, 50), (tx, ty, tw, th), 1, border_radius=3)
         self.screen.blit(t_surf, (tx + PAD, ty + PAD))
         for i, r in enumerate(rendered):
@@ -414,9 +412,7 @@ class TooltipHandlers:
         th = self.font_md.get_height() + len(line_surfs) * LINE_H + PAD * 2 + 4
         tx = self.screen.get_width()  - tw  - 12
         ty = self.screen.get_height() - th  - 12
-        bg = pygame.Surface((tw, th), pygame.SRCALPHA)
-        bg.fill((10, 8, 5, 210))
-        self.screen.blit(bg, (tx, ty))
+        self.screen.blit(fill_surf((tw, th), (10, 8, 5, 210)), (tx, ty))
         pygame.draw.rect(self.screen, (120, 90, 50), (tx, ty, tw, th), 1, border_radius=3)
         self.screen.blit(t_surf, (tx + PAD, ty + PAD))
         for i, s in enumerate(line_surfs):

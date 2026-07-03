@@ -15,7 +15,7 @@ from combat_log import LOG
 from icon_manager import ICONS
 from sound_manager import SOUNDS
 from stat_fns import add_modifier, learn_recipe, remove_modifier
-from ui_helpers import draw_stack_count, item_tooltip_lines
+from ui_helpers import draw_stack_count, item_tooltip_lines, fill_surf
 from ui_sizes import UI
 
 
@@ -293,9 +293,7 @@ class InventoryHandlers:
             pass  # será cancelado em _draw_consumable_bar se não cair em slot
 
         # ---- Fundo ----
-        overlay = pygame.Surface((W, H), pygame.SRCALPHA)
-        overlay.fill((15, 10, 5, 220))
-        self.screen.blit(overlay, (x0, y0))
+        self.screen.blit(fill_surf((W, H), (15, 10, 5, 220)), (x0, y0))
         pygame.draw.rect(self.screen, (140, 100, 60), (x0, y0, W, H), 2, border_radius=4)
 
         title = self.font_md.render("Equipamentos", True, (200, 170, 100))

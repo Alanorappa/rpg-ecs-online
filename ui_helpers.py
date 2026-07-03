@@ -1,6 +1,35 @@
 # ui_helpers.py
 """Shared UI helpers used by game.py and systems.py."""
 
+# ---------------------------------------------------------------------------
+# fill_surf — cache de Surfaces SRCALPHA pré-preenchidas
+# ---------------------------------------------------------------------------
+# Painéis de UI alocavam pygame.Surface(size, SRCALPHA) + fill() TODO frame
+# (overlay full-screen, fundo de painel, fundo de tooltip) — alocação de
+# MB/frame e spikes medidos (hud:talents 13ms). Cache por (size, rgba):
+# o conteúdo é imutável por construção, então compartilhar é seguro DESDE
+# QUE o consumidor não mute (não fazer set_alpha/fill/blit NELA — só blitá-la).
+_FILL_CACHE: dict = {}
+_FILL_CACHE_MAX = 256
+
+
+def fill_surf(size: tuple, rgba: tuple):
+    """Surface SRCALPHA de `size` preenchida com `rgba`, cacheada.
+
+    COMPARTILHADA — não mutar; use .copy() se precisar desenhar em cima.
+    """
+    import pygame
+    key = (size, rgba)
+    s = _FILL_CACHE.get(key)
+    if s is None:
+        if len(_FILL_CACHE) >= _FILL_CACHE_MAX:
+            _FILL_CACHE.clear()
+        s = pygame.Surface(size, pygame.SRCALPHA)
+        s.fill(rgba)
+        _FILL_CACHE[key] = s
+    return s
+
+
 RARITY_COLORS = {
     "common":   (200, 200, 200),
     "uncommon": (80, 200, 80),

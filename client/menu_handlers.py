@@ -9,6 +9,7 @@ self.screen, self.font_md/font_sm, self._scale/_ui_scale e os demais
 atributos referenciados aqui.
 """
 import pygame
+from ui_helpers import fill_surf
 
 from sound_manager import SOUNDS
 from ui_sizes import UI
@@ -29,16 +30,12 @@ class MenuHandlers:
     _MM_BORDER_HOV= (200, 160, 60)
 
     def _mm_overlay(self):
-        ov = pygame.Surface((self.screen.get_width(), self.screen.get_height()), pygame.SRCALPHA)
-        ov.fill((0, 0, 0, 150))
-        self.screen.blit(ov, (0, 0))
+        self.screen.blit(fill_surf((self.screen.get_width(), self.screen.get_height()), (0, 0, 0, 150)), (0, 0))
 
     def _mm_panel(self, pw, ph, offset=(0, 0)):
         px = self.screen.get_width()  // 2 - pw // 2 + offset[0]
         py = self.screen.get_height() // 2 - ph // 2 + offset[1]
-        bg = pygame.Surface((pw, ph), pygame.SRCALPHA)
-        bg.fill((*self._MM_BG_COL, 240))
-        self.screen.blit(bg, (px, py))
+        self.screen.blit(fill_surf((pw, ph), (*self._MM_BG_COL, 240)), (px, py))
         pygame.draw.rect(self.screen, self._MM_BORDER,
                          (px, py, pw, ph), 2, border_radius=8)
         return px, py

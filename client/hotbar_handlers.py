@@ -12,6 +12,7 @@ self._skill_system e os demais atributos referenciados aqui.
 """
 import math
 import pygame
+from ui_helpers import fill_surf
 
 from components import CombatState, CombatStats, PlayerSkills
 from icon_manager import ICONS
@@ -385,42 +386,36 @@ class HotbarHandlers:
             else:
                 fb      = self._SKILL_FALLBACK_COLORS[i % len(self._SKILL_FALLBACK_COLORS)]
                 alpha   = 200 if visual_ready else 80
-                fb_surf = pygame.Surface((ic, ic), pygame.SRCALPHA)
-                fb_surf.fill((*fb, alpha))
-                self.screen.blit(fb_surf, icon_r)
+                self.screen.blit(fill_surf((ic, ic), (*fb, alpha)), icon_r)
 
             # --- Overlay de cooldown / inatividade / carga ---
             if skill.skill_id == "executar":
                 if skill.current_cooldown > 0:
                     # Em cooldown — overlay normal com contador
+                    # area=: recorta a surface full-size cacheada na altura do
+                    # cooldown — 1 entrada de cache p/ qualquer ov_h (sem churn)
                     cd_ratio = skill.current_cooldown / max(0.001, skill.cooldown)
                     ov_h     = int(self._HB_H * cd_ratio)
-                    ov       = pygame.Surface((self._HB_W, ov_h), pygame.SRCALPHA)
-                    ov.fill((0, 0, 0, 160))
-                    self.screen.blit(ov, (sx, y0))
+                    self.screen.blit(fill_surf((self._HB_W, self._HB_H), (0, 0, 0, 160)),
+                                     (sx, y0), area=pygame.Rect(0, 0, self._HB_W, ov_h))
                     cd_surf = self.font_sm.render(f"{skill.current_cooldown:.1f}", True, (220, 200, 130))
                     self.screen.blit(cd_surf, (sx + self._HB_W // 2 - cd_surf.get_width() // 2,
                                                y0 + self._HB_H // 2 - cd_surf.get_height() // 2))
                 elif not is_procced:
                     # Sem condição de proc — inativo (alvo HP alto e sem carga)
-                    ov = pygame.Surface((self._HB_W, self._HB_H), pygame.SRCALPHA)
-                    ov.fill((0, 0, 0, 160))
-                    self.screen.blit(ov, (sx, y0))
+                    self.screen.blit(fill_surf((self._HB_W, self._HB_H), (0, 0, 0, 160)), (sx, y0))
                 elif not visual_ready:
                     # Proc disponível mas não totalmente utilizável (sem alvo ou rage insuf.)
                     # Mostra glow mas ícone levemente escurecido
-                    ov = pygame.Surface((self._HB_W, self._HB_H), pygame.SRCALPHA)
-                    ov.fill((0, 0, 0, 90))
-                    self.screen.blit(ov, (sx, y0))
+                    self.screen.blit(fill_surf((self._HB_W, self._HB_H), (0, 0, 0, 90)), (sx, y0))
             elif skill.max_charges > 0:
                 # Habilidade baseada em cargas (vitoria_iminente etc.)
                 if skill.current_cooldown > 0:
                     # Em cooldown: overlay progressivo + contador (igual skills normais)
                     cd_ratio = skill.current_cooldown / max(0.001, skill.cooldown)
                     ov_h     = int(self._HB_H * cd_ratio)
-                    ov       = pygame.Surface((self._HB_W, ov_h), pygame.SRCALPHA)
-                    ov.fill((0, 0, 0, 160))
-                    self.screen.blit(ov, (sx, y0))
+                    self.screen.blit(fill_surf((self._HB_W, self._HB_H), (0, 0, 0, 160)),
+                                     (sx, y0), area=pygame.Rect(0, 0, self._HB_W, ov_h))
                     cd_surf = self.font_sm.render(f"{skill.current_cooldown:.1f}", True, (220, 200, 130))
                     self.screen.blit(cd_surf, (sx + self._HB_W // 2 - cd_surf.get_width() // 2,
                                                y0 + self._HB_H // 2 - cd_surf.get_height() // 2))
@@ -430,16 +425,13 @@ class HotbarHandlers:
                         self.screen.blit(timer_surf, (sx + self._HB_W // 2 - timer_surf.get_width() // 2,
                                                       y0 + self._HB_H // 2 - timer_surf.get_height() // 2))
                 else:
-                    ov = pygame.Surface((self._HB_W, self._HB_H), pygame.SRCALPHA)
-                    ov.fill((0, 0, 0, 160))
-                    self.screen.blit(ov, (sx, y0))
+                    self.screen.blit(fill_surf((self._HB_W, self._HB_H), (0, 0, 0, 160)), (sx, y0))
             elif not visual_ready:
                 # Cooldown normal
                 cd_ratio = skill.current_cooldown / max(0.001, skill.cooldown)
                 ov_h     = int(self._HB_H * cd_ratio)
-                ov       = pygame.Surface((self._HB_W, ov_h), pygame.SRCALPHA)
-                ov.fill((0, 0, 0, 160))
-                self.screen.blit(ov, (sx, y0))
+                self.screen.blit(fill_surf((self._HB_W, self._HB_H), (0, 0, 0, 160)),
+                                 (sx, y0), area=pygame.Rect(0, 0, self._HB_W, ov_h))
                 cd_surf = self.font_sm.render(f"{skill.current_cooldown:.1f}", True, (220, 200, 130))
                 self.screen.blit(cd_surf, (sx + self._HB_W // 2 - cd_surf.get_width() // 2,
                                            y0 + self._HB_H // 2 - cd_surf.get_height() // 2))
@@ -464,9 +456,8 @@ class HotbarHandlers:
             if channeling and getattr(skill, "skill_id", None) != "fatiador_de_corpos":
                 ch_ratio = _char.fatiador_timer / 5.0
                 ov_h = int(self._HB_H * ch_ratio)
-                ov   = pygame.Surface((self._HB_W, ov_h), pygame.SRCALPHA)
-                ov.fill((80, 0, 0, 180))
-                self.screen.blit(ov, (sx, y0))
+                self.screen.blit(fill_surf((self._HB_W, self._HB_H), (80, 0, 0, 180)),
+                                 (sx, y0), area=pygame.Rect(0, 0, self._HB_W, ov_h))
 
             # --- Overlay de GCD ---
             from components import PlayerSkills as _PS2
@@ -474,9 +465,8 @@ class HotbarHandlers:
             if not channeling and _pskills and _pskills.gcd_timer > 0:
                 gcd_ratio = _pskills.gcd_timer / _PS2.GCD_DURATION
                 ov_h = int(self._HB_H * gcd_ratio)
-                ov   = pygame.Surface((self._HB_W, ov_h), pygame.SRCALPHA)
-                ov.fill((0, 0, 0, 160))
-                self.screen.blit(ov, (sx, y0))
+                self.screen.blit(fill_surf((self._HB_W, self._HB_H), (0, 0, 0, 160)),
+                                 (sx, y0), area=pygame.Rect(0, 0, self._HB_W, ov_h))
 
             # --- Overlay de Rage insuficiente ---
             # Usa custo modificado por talentos se disponível (ex: Veterano → golpe_poderoso_rage_cost)
@@ -488,15 +478,11 @@ class HotbarHandlers:
             # O overlay só é suprimido se o proc explicitamente dispensa o custo
             cost_bypassed = is_procced and skill.proc_ignores_cost
             if rage_cost > 0 and player_rage < rage_cost and not cost_bypassed:
-                ov = pygame.Surface((self._HB_W, self._HB_H), pygame.SRCALPHA)
-                ov.fill((0, 0, 0, 140))
-                self.screen.blit(ov, (sx, y0))
+                self.screen.blit(fill_surf((self._HB_W, self._HB_H), (0, 0, 0, 140)), (sx, y0))
 
             # --- Overlay de talento removido (roxo) ---
             if _talent_locked:
-                _tl_ov = pygame.Surface((self._HB_W, self._HB_H), pygame.SRCALPHA)
-                _tl_ov.fill((80, 0, 120, 160))
-                self.screen.blit(_tl_ov, (sx, y0))
+                self.screen.blit(fill_surf((self._HB_W, self._HB_H), (80, 0, 120, 160)), (sx, y0))
                 # Ícone de cadeado simples (X vermelho) no centro
                 _lk_s = self.font_sm.render("✕", True, (220, 80, 220))
                 self.screen.blit(_lk_s, (sx + self._HB_W // 2 - _lk_s.get_width() // 2,
@@ -505,9 +491,7 @@ class HotbarHandlers:
             # --- Overlay de drag de origem (dimming) ---
             if (_drag_hb.kind == "skill" and _drag_hb.source == "hotbar"
                     and _drag_hb.active and _drag_hb.source_idx == i):
-                _dim_ov = pygame.Surface((self._HB_W, self._HB_H), pygame.SRCALPHA)
-                _dim_ov.fill((0, 0, 0, 140))
-                self.screen.blit(_dim_ov, (sx, y0))
+                self.screen.blit(fill_surf((self._HB_W, self._HB_H), (0, 0, 0, 140)), (sx, y0))
 
             # --- Pending-timeout: libera skill se servidor demorar demais ---
             # Ao expirar (rejeição), aplica mini-GCD local para não enviar nova req imediatamente.
@@ -523,9 +507,7 @@ class HotbarHandlers:
             # --- Flash de falha / botão pressionado (aguardando confirmação) ---
             if skill.fail_flash_timer > 0:
                 skill.fail_flash_timer = max(0.0, skill.fail_flash_timer - self._dt)
-                ov = pygame.Surface((self._HB_W, self._HB_H), pygame.SRCALPHA)
-                ov.fill((0, 0, 0, 50))  # ~20% escurecimento
-                self.screen.blit(ov, (sx, y0))
+                self.screen.blit(fill_surf((self._HB_W, self._HB_H), (0, 0, 0, 50)), (sx, y0))  # ~20% escurecimento
 
             # --- Etiqueta da tecla (keybind configurável) ---
             kb_name = pygame.key.name(player_skills.keybinds[i]).upper()

@@ -12,6 +12,7 @@ Comp:   components.py   (QuestLog, QuestGiver)
 """
 from __future__ import annotations
 import pygame
+from ui_helpers import fill_surf
 from fonts import make as _font
 
 from systems import System
@@ -613,15 +614,11 @@ class QuestDialogSystem(UIScaleMixin, System):
         npc_name  = _npc_comp.name if _npc_comp else "NPC"
 
         SW, SH = self.hud_surf.get_size()
-        ov = pygame.Surface((SW, SH), pygame.SRCALPHA)
-        ov.fill((0, 0, 0, 160))
-        self.hud_surf.blit(ov, (0, 0))
+        self.hud_surf.blit(fill_surf((SW, SH), (0, 0, 0, 160)), (0, 0))
 
         x0, y0 = self._panel_origin()
         W, H   = self._u(self.PANEL_W), self._u(self.PANEL_H)
-        bg = pygame.Surface((W, H), pygame.SRCALPHA)
-        bg.fill(self.COL_BG)
-        self.hud_surf.blit(bg, (x0, y0))
+        self.hud_surf.blit(fill_surf((W, H), self.COL_BG), (x0, y0))
         pygame.draw.rect(self.hud_surf, self.COL_BORDER, (x0, y0, W, H), 2, border_radius=4)
 
         # Header: nome do NPC
@@ -1136,14 +1133,10 @@ class QuestJournalSystem(UIScaleMixin, System):
         PANEL_W, PANEL_H = self._u(self.PANEL_W), self._u(self.PANEL_H)
 
         # Overlay
-        overlay = pygame.Surface((SW, SH), pygame.SRCALPHA)
-        overlay.fill((0, 0, 0, 160))
-        self.hud_surf.blit(overlay, (0, 0))
+        self.hud_surf.blit(fill_surf((SW, SH), (0, 0, 0, 160)), (0, 0))
 
         # Painel fundo
-        panel = pygame.Surface((PANEL_W, PANEL_H), pygame.SRCALPHA)
-        panel.fill(self.COL_BG)
-        self.hud_surf.blit(panel, (x0, y0))
+        self.hud_surf.blit(fill_surf((PANEL_W, PANEL_H), self.COL_BG), (x0, y0))
         pygame.draw.rect(self.hud_surf, self.COL_BORDER,
                          (x0, y0, PANEL_W, PANEL_H), 2, border_radius=6)
 

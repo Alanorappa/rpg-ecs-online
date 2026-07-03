@@ -8,6 +8,7 @@ fornece self.world, self._my_eid, self.screen e os demais atributos
 referenciados aqui.
 """
 import pygame
+from ui_helpers import fill_surf
 
 from combat_log import LOG
 from components import CharacterStats, CombatStats, Inventory, PermanentStats, TileMovement, Wallet
@@ -166,9 +167,7 @@ class DebugHandlers:
         font_lg = self.font_lg
 
         # Fundo
-        bg = pygame.Surface((PW, PH), pygame.SRCALPHA)
-        bg.fill((10, 8, 5, 238))
-        self.screen.blit(bg, (px, py))
+        self.screen.blit(fill_surf((PW, PH), (10, 8, 5, 238)), (px, py))
         pygame.draw.rect(self.screen, (100, 80, 50), (px, py, PW, PH), 2)
 
         # Título

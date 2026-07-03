@@ -10,6 +10,7 @@ self.player_entity, self.screen, self.font_xs e os demais atributos
 referenciados aqui.
 """
 import pygame
+from ui_helpers import fill_surf
 
 
 class OnlineModeHandlers:
@@ -146,9 +147,7 @@ class OnlineModeHandlers:
         surf = self.font_xs.render(status_txt, True, status_col)
         x = self.screen.get_width() - surf.get_width() - 8
         y = 6
-        bg = pygame.Surface((surf.get_width() + 6, surf.get_height() + 4), pygame.SRCALPHA)
-        bg.fill((0, 0, 0, 140))
-        self.screen.blit(bg, (x - 3, y - 2))
+        self.screen.blit(fill_surf((surf.get_width() + 6, surf.get_height() + 4), (0, 0, 0, 140)), (x - 3, y - 2))
         self.screen.blit(surf, (x, y))
 
         # Posição local (debug)

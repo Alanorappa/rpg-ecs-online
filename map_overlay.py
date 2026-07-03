@@ -5,6 +5,7 @@ Escala ajustável de 2 a 100 px/tile. Scroll com roda do mouse, arrastar para mo
 from __future__ import annotations
 import math
 import pygame
+from ui_helpers import fill_surf
 from tileset import TILE_MAPPING, OBJECT_MAPPING, FLOOR_TILE
 from ui_scale_mixin import UIScaleMixin
 from ui_sizes import UI
@@ -226,9 +227,7 @@ class MapOverlay(UIScaleMixin):
         off_y = self.offset_y
 
         # ── Fundo escurecido ─────────────────────────────
-        ov = pygame.Surface((sw, sh), pygame.SRCALPHA)
-        ov.fill((0, 0, 0, 160))
-        self.screen.blit(ov, (0, 0))
+        self.screen.blit(fill_surf((sw, sh), (0, 0, 0, 160)), (0, 0))
 
         # ── Conteúdo do mapa ─────────────────────────────
         # Calcula quais tiles são visíveis (em coords 1px/tile)

@@ -35,7 +35,7 @@ from sound_manager import SOUNDS
 from ui_compare import draw_compare_panel
 from talent_system import TalentSystem
 from skill_level_ui import SkillLevelUI
-from ui_helpers import item_tooltip_lines, draw_stack_count, RARITY_COLORS as _ITEM_RARITY_COLORS
+from ui_helpers import item_tooltip_lines, draw_stack_count, RARITY_COLORS as _ITEM_RARITY_COLORS, fill_surf
 from map_overlay import MapOverlay
 from minimap import Minimap
 from stat_fns import add_modifier, remove_modifier, learn_recipe
@@ -2044,9 +2044,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         y = self.screen.get_height() // 2 - surf.get_height() // 2
         # fundo semitransparente
         pad = 16
-        bg = pygame.Surface((surf.get_width() + pad * 2, surf.get_height() + pad * 2), pygame.SRCALPHA)
-        bg.fill((0, 0, 0, 160))
-        self.screen.blit(bg, (x - pad, y - pad))
+        self.screen.blit(fill_surf((surf.get_width() + pad * 2, surf.get_height() + pad * 2), (0, 0, 0, 160)), (x - pad, y - pad))
         self.screen.blit(surf, (x, y))
 
     # ------------------------------------------------------------------

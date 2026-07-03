@@ -38,7 +38,7 @@ from combat_log import LOG
 from sound_manager import SOUNDS
 from floating_text import FLT, PROC, WARN
 from icon_manager import ICONS
-from ui_helpers import item_tooltip_lines
+from ui_helpers import item_tooltip_lines, fill_surf
 from status_effects_data import EFFECT_DEFS
 from fov import compute_fov
 from loot_tables import roll_loot, roll_mob_loot, roll_coins
@@ -3213,7 +3213,10 @@ class RenderSystem(System):
         self.world = world
         self.world_surf = screen
         self.hud_surf   = screen
-        self._effect_dur_font = pygame.font.Font(None, 18)
+        # CachedFont: timers de efeito re-renderizam todo frame (texto "3.4s"
+        # por entidade) — cache na fonte evita o custo do TTF render por frame.
+        from fonts import CachedFont as _CF
+        self._effect_dur_font = _CF(None, 18)
 
     def render(self, camera_offset_x: float = 0, camera_offset_y: float = 0,
                world_objects: list = None) -> None:
@@ -3341,9 +3344,7 @@ class RenderSystem(System):
                     pygame.draw.rect(self.world_surf, (_gray, _gray, _gray), rect)
                 elif _is_ghost_draw:
                     # Espírito: semi-transparente
-                    _ghost_surf = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
-                    _ghost_surf.fill((*renderable.color[:3], 127))
-                    self.world_surf.blit(_ghost_surf, rect.topleft)
+                    self.world_surf.blit(fill_surf((rect.width, rect.height), (*renderable.color[:3], 127)), rect.topleft)
                 else:
                     pygame.draw.rect(self.world_surf, renderable.color, rect)
 
@@ -4950,14 +4951,10 @@ class ShopSystem(UIScaleMixin, System):
         _modal_open = self._qty_modal is not None
 
         # Overlay escuro
-        ov = pygame.Surface((SW, SH), pygame.SRCALPHA)
-        ov.fill((0, 0, 0, 160))
-        self.hud_surf.blit(ov, (0, 0))
+        self.hud_surf.blit(fill_surf((SW, SH), (0, 0, 0, 160)), (0, 0))
 
         # Fundo do painel
-        bg = pygame.Surface((W, H), pygame.SRCALPHA)
-        bg.fill((15, 10, 5, 235))
-        self.hud_surf.blit(bg, (x0, y0))
+        self.hud_surf.blit(fill_surf((W, H), (15, 10, 5, 235)), (x0, y0))
         pygame.draw.rect(self.hud_surf, (140, 100, 60), (x0, y0, W, H), 2, border_radius=4)
 
         # --- Header ---
@@ -5170,14 +5167,10 @@ class ShopSystem(UIScaleMixin, System):
         my0     = (SH - mh) // 2 + UI.SHOP_QTY_MODAL_OFFSET_Y
 
         # Overlay semitransparente
-        ov = pygame.Surface((SW, SH), pygame.SRCALPHA)
-        ov.fill((0, 0, 0, 130))
-        self.hud_surf.blit(ov, (0, 0))
+        self.hud_surf.blit(fill_surf((SW, SH), (0, 0, 0, 130)), (0, 0))
 
         # Fundo do modal
-        bg = pygame.Surface((mw, mh), pygame.SRCALPHA)
-        bg.fill((18, 14, 8, 245))
-        self.hud_surf.blit(bg, (mx0, my0))
+        self.hud_surf.blit(fill_surf((mw, mh), (18, 14, 8, 245)), (mx0, my0))
         pygame.draw.rect(self.hud_surf, (180, 140, 70), (mx0, my0, mw, mh), 2, border_radius=6)
 
         # Título
@@ -5889,9 +5882,7 @@ class LootSystem(UIScaleMixin, System):
             return
 
         modal = self._modal_rect()
-        bg = pygame.Surface((modal.w, modal.h), pygame.SRCALPHA)
-        bg.fill(self.BG_COLOR)
-        self.hud_surf.blit(bg, modal.topleft)
+        self.hud_surf.blit(fill_surf((modal.w, modal.h), self.BG_COLOR), modal.topleft)
         pygame.draw.rect(self.hud_surf, self.BORDER_COLOR, modal, 2, border_radius=4)
 
         # --- Barra de título ---

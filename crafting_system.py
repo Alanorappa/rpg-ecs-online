@@ -19,7 +19,7 @@ from crafting_data import (MATERIALS, RECYCLE_TABLE, RECIPES, RECIPE_ITEMS,
                            get_recycle_materials)
 from combat_log import LOG
 from tileset import TILE_SIZE
-from ui_helpers import item_tooltip_lines
+from ui_helpers import item_tooltip_lines, fill_surf
 from ui_sizes import UI
 
 
@@ -979,9 +979,7 @@ class BlacksmithSystem(UIScaleMixin, System):
         self.hud_surf.blit(letter, (icon_r.centerx - letter.get_width() // 2,
                                   icon_r.centery - letter.get_height() // 2))
         if overlay:
-            s = pygame.Surface(icon_r.size, pygame.SRCALPHA)
-            s.fill((0, 0, 0, 160))
-            self.hud_surf.blit(s, icon_r)
+            self.hud_surf.blit(fill_surf(icon_r.size, (0, 0, 0, 160)), icon_r)
         if show_stack:
             from ui_helpers import draw_stack_count
             draw_stack_count(self.hud_surf, item, rect, self._font_sm)

@@ -7,7 +7,7 @@ from fonts import make as _font
 class FloatingTextEntry:
     __slots__ = ("text", "wx", "wy", "color", "font_size",
                  "timer", "duration", "speed_y", "offset_y", "target_id",
-                 "is_crit")
+                 "is_crit", "surf")
 
     def __init__(self, text: str, wx: float, wy: float,
                  color: tuple, font_size: int, duration: float,
@@ -23,6 +23,10 @@ class FloatingTextEntry:
         self.offset_y  = 0.0       # pixels subidos (cresce com speed_y * dt)
         self.target_id = target_id  # entidade dona — usado para empilhar
         self.is_crit   = is_crit    # animação de escala crescente + fade breve
+        # Cópia própria da surface renderizada (lazy, no primeiro render).
+        # font.render() é cacheado/compartilhado (fonts.CachedFont) — o fade
+        # via set_alpha exige uma cópia mutável por entrada.
+        self.surf: "pygame.Surface | None" = None
 
 
 class FloatingTextManager:
@@ -84,8 +88,12 @@ class FloatingTextManager:
         cam_x = int(camera_offset_x)
         cam_y = int(camera_offset_y)
         for e in self._entries:
-            font = self._get_font(e.font_size)
-            base_surf = font.render(e.text, True, e.color)
+            if e.surf is None:
+                font = self._get_font(e.font_size)
+                # .copy(): surface do CachedFont é compartilhada; esta entrada
+                # muta alpha por frame, então precisa de cópia própria.
+                e.surf = font.render(e.text, True, e.color).copy()
+            base_surf = e.surf
 
             if e.is_crit:
                 # Fases: grow rápido (0.25s) → hold (1.0s) → fade breve (0.1s)
@@ -169,14 +177,14 @@ class DashTrailManager:
                camera_offset_x: float, camera_offset_y: float) -> None:
         if not self._segments:
             return
-        import pygame as _pg
+        from ui_helpers import fill_surf
         for s in self._segments:
-            alpha = max(0, int(220 * s.timer / s.duration))
-            surf_s = _pg.Surface((s.width, s.height), _pg.SRCALPHA)
-            surf_s.fill((*self.COLOR, alpha))
+            # Alpha quantizado em passos de 16: visual idêntico, mas limita o
+            # cache do fill_surf a ~14 entradas em vez de 221 (uma por alpha).
+            alpha = (max(0, int(220 * s.timer / s.duration)) // 16) * 16
             sx = int(s.wx - camera_offset_x) - s.width  // 2
             sy = int(s.wy - camera_offset_y) - s.height // 2
-            screen.blit(surf_s, (sx, sy))
+            screen.blit(fill_surf((s.width, s.height), (*self.COLOR, alpha)), (sx, sy))
 
 
 DASH_TRAIL = DashTrailManager()
@@ -203,6 +211,7 @@ class WarnTextManager:
         self._text:     str   = ""
         self._timer:    float = 0.0
         self._font: "pygame.font.Font | None" = None
+        self._surf: "pygame.Surface | None" = None  # cópia mutável do texto atual
 
     def _get_font(self) -> "pygame.font.Font":
         if self._font is None:
@@ -211,6 +220,8 @@ class WarnTextManager:
 
     def add(self, text: str) -> None:
         """Exibe (ou substitui) a mensagem de aviso atual."""
+        if text != self._text:
+            self._surf = None  # texto mudou — re-renderiza no próximo frame
         self._text  = text
         self._timer = self.DURATION
 
@@ -221,10 +232,12 @@ class WarnTextManager:
     def render(self, screen: "pygame.Surface") -> None:
         if self._timer <= 0 or not self._text:
             return
-        font   = self._get_font()
+        if self._surf is None:
+            # .copy(): CachedFont compartilha a surface; set_alpha exige cópia.
+            self._surf = self._get_font().render(self._text, True, self.COLOR).copy()
+        surf   = self._surf
         sw, sh = screen.get_size()
         alpha  = int(255 * min(1.0, self._timer / (self.DURATION * 0.3)))
-        surf   = font.render(self._text, True, self.COLOR)
         surf.set_alpha(alpha)
         x = sw // 2 - surf.get_width() // 2
         y = int(sh * self.Y_RATIO)
@@ -239,7 +252,7 @@ WARN = WarnTextManager()
 # ---------------------------------------------------------------------------
 
 class _ProcEntry:
-    __slots__ = ("text", "color", "timer", "duration", "offset_y")
+    __slots__ = ("text", "color", "timer", "duration", "offset_y", "surf")
 
     def __init__(self, text: str, color: tuple, duration: float):
         self.text     = text
@@ -247,6 +260,7 @@ class _ProcEntry:
         self.timer    = duration
         self.duration = duration
         self.offset_y = 0.0  # deslocamento acumulado para baixo ao empilhar
+        self.surf: "pygame.Surface | None" = None  # cópia mutável (fade)
 
 
 class ProcTextManager:
@@ -296,7 +310,10 @@ class ProcTextManager:
         for e in self._entries:
             fade_start = e.duration * 0.35
             alpha = 255 if e.timer >= fade_start else max(0, int(255 * e.timer / fade_start))
-            surf  = font.render(e.text, True, e.color)
+            if e.surf is None:
+                # .copy(): CachedFont compartilha a surface; set_alpha exige cópia.
+                e.surf = font.render(e.text, True, e.color).copy()
+            surf = e.surf
             surf.set_alpha(alpha)
             x = sw // 2 - surf.get_width() // 2
             y = y_base + int(e.offset_y)

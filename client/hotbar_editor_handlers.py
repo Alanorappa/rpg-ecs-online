@@ -9,6 +9,7 @@ self.screen, self.font_*, self._menu_keys, self._mkb_rebind e os demais
 atributos referenciados aqui.
 """
 import pygame
+from ui_helpers import fill_surf
 
 from components import PlayerSkills
 from ui_sizes import UI
@@ -87,9 +88,7 @@ class HotbarEditorHandlers:
         COL_KEY  = ppx + PW - KEY_W - self._u(20)
 
         # Overlay
-        ov = pygame.Surface((self.screen.get_width(), self.screen.get_height()), pygame.SRCALPHA)
-        ov.fill((0, 0, 0, 170))
-        self.screen.blit(ov, (0, 0))
+        self.screen.blit(fill_surf((self.screen.get_width(), self.screen.get_height()), (0, 0, 0, 170)), (0, 0))
 
         # Painel
         pygame.draw.rect(self.screen, (28, 22, 12), (ppx, ppy, PW, PH), border_radius=8)

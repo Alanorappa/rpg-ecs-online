@@ -7,6 +7,7 @@ alocação manual, o servidor concede xp por uso (ver stats_system.py).
 """
 from __future__ import annotations
 import pygame
+from ui_helpers import fill_surf
 from components import SkillLevels, CharacterStats, SKILL_IDS, MAX_SKILL_LEVEL
 from stats_system import skill_xp_for_level, skill_bonus_pct
 from ui_scale_mixin import UIScaleMixin
@@ -94,13 +95,9 @@ class SkillLevelUI(UIScaleMixin):
 
         panel = self._panel_rect()
 
-        overlay = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
-        overlay.fill((0, 0, 0, 160))
-        self.screen.blit(overlay, (0, 0))
+        self.screen.blit(fill_surf(self.screen.get_size(), (0, 0, 0, 160)), (0, 0))
 
-        bg = pygame.Surface((panel.w, panel.h), pygame.SRCALPHA)
-        bg.fill(C_BG)
-        self.screen.blit(bg, panel.topleft)
+        self.screen.blit(fill_surf((panel.w, panel.h), C_BG), panel.topleft)
         pygame.draw.rect(self.screen, C_BORDER, panel, 2, border_radius=6)
 
         title = self.font_lg.render("Skill Level", True, C_TITLE)

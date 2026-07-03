@@ -9,8 +9,10 @@ class CombatLog:
     def __init__(self):
         # cada entrada: [text, color, timer]
         self._messages: deque = deque()
-        # cache: (text, color) → Surface pré-renderizada com cor cheia
-        # font.render() custa 5-20ms; chamando todo frame causava spikes de 22ms.
+        # cache: (text, color) → CÓPIA mutável da surface renderizada.
+        # O render em si já é cacheado por fonts.CachedFont; a cópia local
+        # existe porque o fade via set_alpha muta a surface — não pode mutar
+        # a surface compartilhada do cache da fonte.
         self._surf_cache: dict = {}
         self._cache_font = None
 
@@ -38,7 +40,7 @@ class CombatLog:
         for i, (text, color, timer) in enumerate(self._messages):
             key = (text, color)
             if key not in self._surf_cache:
-                self._surf_cache[key] = font.render(text, True, color)
+                self._surf_cache[key] = font.render(text, True, color).copy()
             surf = self._surf_cache[key]
             alpha = min(255, int(255 * timer / self.FADE_DURATION))
             surf.set_alpha(alpha)

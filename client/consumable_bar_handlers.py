@@ -12,7 +12,7 @@ import pygame
 
 from components import PlayerSkills
 from icon_manager import ICONS
-from ui_helpers import draw_stack_count
+from ui_helpers import draw_stack_count, fill_surf
 
 
 class ConsumableBarHandlers:
@@ -158,9 +158,7 @@ class ConsumableBarHandlers:
                     # Item esgotado — ícone com overlay escuro (igual skill indisponível)
                     if _ic:
                         self.screen.blit(_ic, (r.x + 2, r.y + 2))
-                        dim_ov = pygame.Surface((W - 2, H - 2), pygame.SRCALPHA)
-                        dim_ov.fill((0, 0, 0, 160))
-                        self.screen.blit(dim_ov, (r.x + 2, r.y + 2))
+                        self.screen.blit(fill_surf((W - 2, H - 2), (0, 0, 0, 160)), (r.x + 2, r.y + 2))
                     else:
                         letter = self.font_sm.render(item_name[0].upper(), True, (100, 140, 120))
                         self.screen.blit(letter, letter.get_rect(center=r.center))
@@ -173,9 +171,9 @@ class ConsumableBarHandlers:
             if cbar.global_cooldown > 0:
                 gcd_ratio = cbar.global_cooldown / _CB.GCD_DURATION
                 ov_h = int(H * gcd_ratio)
-                ov   = pygame.Surface((W, ov_h), pygame.SRCALPHA)
-                ov.fill((0, 0, 0, 160))
-                self.screen.blit(ov, (sx, y0))
+                # area=: 1 entrada de cache p/ qualquer ov_h (sem churn por altura)
+                self.screen.blit(fill_surf((W, H), (0, 0, 0, 160)),
+                                 (sx, y0), area=pygame.Rect(0, 0, W, ov_h))
                 if j == 0:
                     cd_s = self.font_xs.render(f"{cbar.global_cooldown:.1f}", True, (160, 210, 170))
                     self.screen.blit(cd_s, cd_s.get_rect(
@@ -238,9 +236,7 @@ class ConsumableBarHandlers:
             ghost.fill((20, 50, 30, 180))
             if _gc_ic:
                 ghost.blit(_gc_ic, (2, 2))
-            ov_g = pygame.Surface((GSZ, GSZ), pygame.SRCALPHA)
-            ov_g.fill((255, 255, 255, 120))
-            ghost.blit(ov_g, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+            ghost.blit(fill_surf((GSZ, GSZ), (255, 255, 255, 120)), (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
             self.screen.blit(ghost, (mx_cb - GSZ // 2, my_cb - GSZ // 2))
 
         # Ghost do Shift+drag do consumable bar: ícone semi-transparente segue o mouse

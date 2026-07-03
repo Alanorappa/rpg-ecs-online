@@ -13,6 +13,7 @@ from save_system import request_autosave
 from stat_fns import add_modifier, remove_modifier
 from ui_scale_mixin import UIScaleMixin
 from ui_sizes import UI
+from ui_helpers import fill_surf
 
 
 # ---------------------------------------------------------------------------
@@ -69,16 +70,6 @@ class TalentSystem(UIScaleMixin):
         self._hovered_id: str | None = None
         self.wants_close: bool = False
         self._on_change: "callable | None" = None
-        # Cache de superfícies — evita alocações por frame
-        self._overlay_surf: "pygame.Surface | None" = None
-        self._panel_bg_surf: "pygame.Surface | None" = None
-        # Cache (text, color) → Surface para font.render() (invalida só quando fonte muda)
-        self._text_cache: dict = {}
-        self._cache_font_key: "object | None" = None
-        # Cache ico_surf por (talent_id, current, w, h)
-        self._ico_cache: dict = {}
-        # Cache do fundo do tooltip
-        self._tip_bg_surf: "pygame.Surface | None" = None
 
     # -----------------------------------------------------------------------
     # Helpers
@@ -315,19 +306,6 @@ class TalentSystem(UIScaleMixin):
     # -----------------------------------------------------------------------
     # Render principal
     # -----------------------------------------------------------------------
-    def _frnd(self, text: str, color: tuple, font) -> "pygame.Surface":
-        """font.render com cache (text, color) → Surface. Invalida se fonte mudar."""
-        if font is not self._cache_font_key:
-            self._text_cache.clear()
-            self._ico_cache.clear()
-            self._cache_font_key = font
-        key = (text, color)
-        s = self._text_cache.get(key)
-        if s is None:
-            s = font.render(text, True, color)
-            self._text_cache[key] = s
-        return s
-
     def render(self):
         tt = self._talent_tree()
         if not tt:
@@ -335,19 +313,9 @@ class TalentSystem(UIScaleMixin):
 
         panel = self._panel_rect()
 
-        # Overlay semi-transparente — pré-alocado, recriado só se tela mudar de tamanho
-        scr_sz = self.screen.get_size()
-        if self._overlay_surf is None or self._overlay_surf.get_size() != scr_sz:
-            self._overlay_surf = pygame.Surface(scr_sz, pygame.SRCALPHA)
-            self._overlay_surf.fill((0, 0, 0, 160))
-        self.screen.blit(self._overlay_surf, (0, 0))
-
-        # Painel — pré-alocado, recriado só se tamanho mudar
-        pw, ph = panel.w, panel.h
-        if self._panel_bg_surf is None or self._panel_bg_surf.get_size() != (pw, ph):
-            self._panel_bg_surf = pygame.Surface((pw, ph), pygame.SRCALPHA)
-            self._panel_bg_surf.fill(C_BG)
-        self.screen.blit(self._panel_bg_surf, panel.topleft)
+        # fill_surf: surfaces cacheadas — zero alocação por frame
+        self.screen.blit(fill_surf(self.screen.get_size(), (0, 0, 0, 160)), (0, 0))
+        self.screen.blit(fill_surf((panel.w, panel.h), C_BG), panel.topleft)
         pygame.draw.rect(self.screen, C_BORDER, panel, 2, border_radius=6)
 
         self._render_talent_tree(panel, tt)
@@ -358,7 +326,7 @@ class TalentSystem(UIScaleMixin):
         pygame.draw.rect(self.screen,
                          (180, 60, 60) if close_r.collidepoint(mx, my) else (100, 35, 35),
                          close_r, border_radius=3)
-        xs = self._frnd("X", (255, 255, 255), self.font_md)
+        xs = self.font_md.render("X", True, (255, 255, 255))
         self.screen.blit(xs, xs.get_rect(center=close_r.center))
 
         # Tooltip flutuante (desenhado por cima de tudo)
@@ -372,11 +340,11 @@ class TalentSystem(UIScaleMixin):
         build = BUILDS[tt.chosen_build]
 
         # Cabeçalho
-        title = self._frnd(f"Talentos — {build['name']}", C_TITLE, self.font_lg)
+        title = self.font_lg.render(f"Talentos — {build['name']}", True, C_TITLE)
         self.screen.blit(title, (panel.x + self._u(14), panel.y + self._u(10)))
 
         pts_col  = C_GOLD if tt.available_points > 0 else C_GRAY
-        pts_surf = self._frnd(f"Pontos disponíveis: {tt.available_points}", pts_col, self.font_md)
+        pts_surf = self.font_md.render(f"Pontos disponíveis: {tt.available_points}", True, pts_col)
         self.screen.blit(pts_surf, (panel.x + self._u(14), panel.y + self._u(36)))
 
         # Botão Resetar
@@ -438,31 +406,25 @@ class TalentSystem(UIScaleMixin):
             ico_w = self._u(NODE_W) - self._u(8)
             ico_r = pygame.Rect(r.x + self._u(4), r.bottom - self._u(4) - ico_h, ico_w, ico_h)
             ico_col = C_MAXED if maxed else (60, 120, 200)
-            ico_key = (talent_id, current, ico_w, ico_h)
-            ico_surf = self._ico_cache.get(ico_key)
-            if ico_surf is None:
-                ico_surf = pygame.Surface((ico_w, ico_h), pygame.SRCALPHA)
-                ico_surf.fill((*ico_col, 80))
-                self._ico_cache[ico_key] = ico_surf
-            self.screen.blit(ico_surf, ico_r.topleft)
+            self.screen.blit(fill_surf((ico_w, ico_h), (*ico_col, 80)), ico_r.topleft)
 
         # ── Inicial do nome centralizado ──
         initials = t["name"][:2].upper()
         txt_col  = C_LOCKED_TXT if (locked and current == 0) else \
                    C_MAXED if maxed else C_WHITE
-        init_surf = self._frnd(initials, txt_col, self.font_lg)
+        init_surf = self.font_lg.render(initials, True, txt_col)
         self.screen.blit(init_surf, init_surf.get_rect(center=r.center))
 
         # ── Contador x/max no canto superior direito ──
         counter_txt = f"{current}/{t['max_points']}"
         counter_col = C_MAXED if maxed else (C_GRAY if locked else C_WHITE)
-        ctr_surf    = self._frnd(counter_txt, counter_col, self.font_sm)
+        ctr_surf    = self.font_sm.render(counter_txt, True, counter_col)
         self.screen.blit(ctr_surf, (r.right - ctr_surf.get_width() - self._u(3), r.y + self._u(3)))
 
         # ── Ícone de habilidade desbloqueada (estrela dourada canto inf direito) ──
         if t["unlocks_skill"]:
             star_col = C_GOLD if maxed else (70, 56, 22)
-            star_surf = self._frnd("★", star_col, self.font_sm)
+            star_surf = self.font_sm.render("★", True, star_col)
             self.screen.blit(star_surf, (r.right - star_surf.get_width() - self._u(2),
                                          r.bottom - star_surf.get_height() - self._u(2)))
 
@@ -571,19 +533,15 @@ class TalentSystem(UIScaleMixin):
             ty = panel.bottom - tooltip_h - self._u(5)
         ty = max(panel.y + self._u(5), ty)
 
-        # Fundo — pré-alocado, recriado só se tamanho mudar
         bg_r = pygame.Rect(tx, ty, tooltip_w, tooltip_h)
-        if self._tip_bg_surf is None or self._tip_bg_surf.get_size() != (bg_r.w, bg_r.h):
-            self._tip_bg_surf = pygame.Surface((bg_r.w, bg_r.h), pygame.SRCALPHA)
-            self._tip_bg_surf.fill((16, 12, 6, 240))
-        self.screen.blit(self._tip_bg_surf, bg_r.topleft)
+        self.screen.blit(fill_surf((bg_r.w, bg_r.h), (16, 12, 6, 240)), bg_r.topleft)
         pygame.draw.rect(self.screen, C_BORDER, bg_r, 1, border_radius=4)
 
         # Título (nome + pts)
         pts_col   = C_MAXED if current >= t["max_points"] else C_TITLE
-        name_surf = self._frnd(t["name"], pts_col, self.font_tip_title)
+        name_surf = self.font_tip_title.render(t["name"], True, pts_col)
         pts_str   = f"{current}/{t['max_points']}"
-        pts_surf  = self._frnd(pts_str, pts_col, self.font_tip_body)
+        pts_surf  = self.font_tip_body.render(pts_str, True, pts_col)
         self.screen.blit(name_surf, (tx + pad, ty + pad // 2 + self._u(2)))
         self.screen.blit(pts_surf,  (tx + tooltip_w - pts_surf.get_width() - pad,
                                      ty + pad // 2 + self._u(4)))
@@ -597,7 +555,7 @@ class TalentSystem(UIScaleMixin):
             if text == "":
                 ly += self._u(4)
                 continue
-            surf = self._frnd(text, col, self.font_tip_body)
+            surf = self.font_tip_body.render(text, True, col)
             self.screen.blit(surf, (tx + pad, ly))
             ly += line_h
 
@@ -687,7 +645,7 @@ class TalentSystem(UIScaleMixin):
         col = hover_col if r.collidepoint(mx, my) else bg_col
         pygame.draw.rect(self.screen, col, r, border_radius=3)
         pygame.draw.rect(self.screen, C_BORDER, r, 1, border_radius=3)
-        s = self._frnd(text, (230, 230, 230), self.font_sm)
+        s = self.font_sm.render(text, True, (230, 230, 230))
         self.screen.blit(s, s.get_rect(center=r.center))
 
     # -----------------------------------------------------------------------

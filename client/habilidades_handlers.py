@@ -9,6 +9,7 @@ self.screen, self.font_*, self._net e os demais atributos referenciados
 aqui.
 """
 import pygame
+from ui_helpers import fill_surf
 
 from components import PlayerSkills
 from icon_manager import ICONS
@@ -73,9 +74,7 @@ class HabilidadesHandlers:
 
         if self._show_habilidades:
             # Overlay escurecido
-            ov = pygame.Surface((self.screen.get_width(), self.screen.get_height()), pygame.SRCALPHA)
-            ov.fill((0, 0, 0, 160))
-            self.screen.blit(ov, (0, 0))
+            self.screen.blit(fill_surf((self.screen.get_width(), self.screen.get_height()), (0, 0, 0, 160)), (0, 0))
 
             # Fundo do modal
             pygame.draw.rect(self.screen, (26, 20, 10), (ppx, ppy, PW, PH), border_radius=8)
