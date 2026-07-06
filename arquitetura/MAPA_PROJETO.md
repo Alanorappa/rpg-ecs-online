@@ -12,6 +12,7 @@
 
 | Quero… | Arquivo | Seção |
 |--------|---------|-------|
+| Empacotar o cliente pra distribuição (alpha) | `build_client.ps1` + `rpg_online_client.spec` | PyInstaller onedir; assets/maps ao lado do exe; LEIA-ME gerado; config.json criado no 1º run ao lado do exe (`config.py`) |
 | Definir/modificar tipo de mensagem | `shared/messages.py` | `MsgType` enum + docstring do payload |
 | Adicionar handler de mensagem no servidor | `server/session.py` | `_handlers` dict + `async def _handle_*` |
 | Alterar constante de rede (tick rate, AOI, etc.) | `shared/constants.py` | constante direta |
