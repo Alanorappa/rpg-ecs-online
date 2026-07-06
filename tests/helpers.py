@@ -100,7 +100,13 @@ def teleport_mob_to_player(ws, mob_eid: int, player_eid: int, offset_x: int = 1)
 
 
 def first_mob(ws) -> int | None:
-    return next(iter(ws._mob_eids), None)
+    """Primeiro mob REAL (pula o TrainingDummy — ele não ataca, não anda e
+    não morre; testes de combate/morte/loot com ele falham silenciosamente)."""
+    from components import TrainingDummy
+    for eid in ws._mob_eids:
+        if ws.world.get_component(eid, TrainingDummy) is None:
+            return eid
+    return None
 
 
 def first_ai_mob(ws) -> int | None:

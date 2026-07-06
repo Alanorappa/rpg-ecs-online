@@ -47,24 +47,35 @@ async def fake_login(mgr, session_id: str, username: str,
                      tile_x: int = 115, tile_y: int = 389,
                      class_id: str = "guerreiro") -> tuple:
     """
-    Simula o fluxo completo de login de um jogador.
+    Simula o fluxo completo de login de um jogador (fluxo atual:
+    LOGIN → AUTH_OK{characters} → SELECT_CHARACTER → LOGIN_OK/WORLD_STATE).
     Retorna (session, fake_ws).
     """
-    from server.auth import _register_sync, _authenticate_sync, _hash
+    from server.auth import (_register_account_sync, _get_account_id_sync,
+                             _create_character_sync, _hash)
     from shared.messages import encode, MsgType
+    from shared.constants import PROTOCOL_VERSION
 
-    # Garante que a conta existe no banco
-    _register_sync(username, "test123", class_id, tile_x, tile_y)
+    # Garante que conta + personagem existem no banco
+    pw_hash = _hash("test123")
+    _register_account_sync(username, pw_hash)   # no-op se já existe
+    acc_id = _get_account_id_sync(username)
+    _create_character_sync(acc_id, username, class_id, tile_x, tile_y)
 
     fake_ws = FakeWS()
     session = await mgr.on_connect(fake_ws, session_id)
 
-    # Envia LOGIN
-    pw_hash = _hash("test123")
-    login_msg = encode(MsgType.LOGIN, {
-        "username": username, "password": pw_hash, "version": 1
-    })
-    await mgr.on_message(session, login_msg)
+    # LOGIN → AUTH_OK com a lista de personagens
+    await mgr.on_message(session, encode(MsgType.LOGIN, {
+        "username": username, "password": pw_hash, "version": PROTOCOL_VERSION
+    }))
+    auth_msgs = get_msgs_of_type(fake_ws, MsgType.AUTH_OK)
+    chars = auth_msgs[0].get("characters", []) if auth_msgs else []
+    if chars:
+        # Seleciona o primeiro personagem → spawn + LOGIN_OK + WORLD_STATE
+        await mgr.on_message(session, encode(MsgType.SELECT_CHARACTER, {
+            "char_id": chars[0]["id"]
+        }))
 
     return session, fake_ws
 
@@ -122,30 +133,42 @@ class TestLogin(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(msg["hp_max"], 0, "hp_max deve ser > 0")
         self.assertEqual(msg["hp"], msg["hp_max"], "hp inicial deve ser = hp_max (servidor inicia full)")
 
-    async def test_client_ap_used_by_server(self):
-        """Servidor deve usar o AP enviado pelo cliente, não o fallback."""
-        from server.auth import _register_sync, _authenticate_sync, _hash
+    async def test_client_ap_ignored_by_server(self):
+        """Servidor NÃO deve adotar AP/max_hp forjados no LOGIN — stats são
+        derivados server-side (Equipment/TalentTree/level). O teste antigo
+        assertava o comportamento inverso, que era a vulnerabilidade
+        PLAYER_STAT_SYNC (removida — ver PROBLEMAS_ARQUITETURA.md)."""
+        from server.auth import (_register_account_sync, _get_account_id_sync,
+                                 _create_character_sync, _hash)
         from shared.messages import encode
-        _register_sync("user_ap_test", "test123", "guerreiro", 115, 389)
+        from shared.constants import PROTOCOL_VERSION
+        ph = _hash("test123")
+        _register_account_sync("user_ap_test", ph)
+        acc_id = _get_account_id_sync("user_ap_test")
+        _create_character_sync(acc_id, "user_ap_test", "guerreiro", 115, 389)
 
         fake_ws = FakeWS()
         session = await self.mgr.on_connect(fake_ws, "s_ap")
-        ph = _hash("test123")
-        # Envia AP=50 explicitamente
-        login_msg = encode(MsgType.LOGIN, {
+        # Tenta forjar AP/max_hp absurdos no payload de LOGIN
+        await self.mgr.on_message(session, encode(MsgType.LOGIN, {
             "username": "user_ap_test", "password": ph,
-            "version": 1, "ap": 50.0, "max_hp": 200,
-        })
-        await self.mgr.on_message(session, login_msg)
+            "version": PROTOCOL_VERSION, "ap": 99999.0, "max_hp": 999999,
+        }))
+        auth_msgs = get_msgs_of_type(fake_ws, MsgType.AUTH_OK)
+        chars = auth_msgs[0].get("characters", []) if auth_msgs else []
+        self.assertTrue(chars, "AUTH_OK sem personagens")
+        await self.mgr.on_message(session, encode(MsgType.SELECT_CHARACTER, {
+            "char_id": chars[0]["id"]
+        }))
 
         from components import CombatStats
         eid = self.mgr.world_server._player_eids.get("s_ap")
         self.assertIsNotNone(eid)
         cs = self.mgr.world_server.world.get_component(eid, CombatStats)
-        self.assertAlmostEqual(cs.attack_power, 50.0, delta=1.0,
-                               msg="Servidor não usou o AP enviado pelo cliente")
-        self.assertEqual(cs.max_hp, 200,
-                         "Servidor não usou o max_hp enviado pelo cliente")
+        self.assertLess(cs.attack_power, 99999.0,
+                        "Servidor adotou AP forjado do cliente (vulnerabilidade)")
+        self.assertLess(cs.max_hp, 999999,
+                        "Servidor adotou max_hp forjado do cliente (vulnerabilidade)")
 
     async def test_world_state_contains_entities_list(self):
         """WORLD_STATE deve ter campo 'entities'."""

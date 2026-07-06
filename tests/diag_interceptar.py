@@ -4,13 +4,15 @@ os.environ['SDL_VIDEODRIVER'] = 'dummy'; os.environ['SDL_AUDIODRIVER'] = 'dummy'
 import pygame; pygame.init()
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from tests.helpers import make_world_server, spawn_player, run_ticks, first_mob, set_entity_tile
+from tests.helpers import (make_world_server, spawn_player, run_ticks, first_mob,
+                           set_entity_tile, authorize_skill)
 from components import CombatState, CombatStats, PlayerSkills, TileMovement, CharacterStats
 
 ws = make_world_server()
 eid = spawn_player(ws, "s1", 130, 374, class_id="guerreiro")
 run_ticks(ws, 50)
 mob = first_mob(ws)
+authorize_skill(ws, eid, "interceptar")
 
 # Confirma que (134,374) eh parede (achado em sessao anterior)
 from components import Tilemap
@@ -62,7 +64,7 @@ print("OK: posicao nao mudou no servidor E correcao rejected foi enviada")
 
 print()
 print("--- agora testando sucesso (sem obstaculo) ---")
-set_entity_tile(ws, mob, 132, 374)  # bem mais perto, sem parede no meio
+set_entity_tile(ws, mob, 133, 374)  # 3 tiles (96px > INTERCEPT_MIN_RANGE_PX=74), sem parede no meio
 sk.current_cooldown = 0.0
 ws._skill_position_corrections.clear()
 ws._skill_results_this_tick.clear()

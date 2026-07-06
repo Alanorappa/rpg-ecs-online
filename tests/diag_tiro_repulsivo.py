@@ -4,13 +4,15 @@ os.environ['SDL_VIDEODRIVER'] = 'dummy'; os.environ['SDL_AUDIODRIVER'] = 'dummy'
 import pygame; pygame.init()
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from tests.helpers import make_world_server, spawn_player, run_ticks, first_mob, teleport_mob_to_player
+from tests.helpers import (make_world_server, spawn_player, run_ticks, first_mob,
+                           teleport_mob_to_player, authorize_skill)
 from components import CombatStats, CombatState, CharacterStats, Equipment, Item
 
 ws = make_world_server()
 eid = spawn_player(ws, "s1", 130, 374, class_id="arqueiro")
 run_ticks(ws, 50)
 mob = first_mob(ws)
+authorize_skill(ws, eid, "tiro_repulsivo")
 if not mob:
     print("ERRO: sem mobs"); sys.exit(1)
 teleport_mob_to_player(ws, mob, eid, offset_x=3)
