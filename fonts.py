@@ -20,9 +20,13 @@ usar .copy() (barato: ~10µs vs ~1ms do render) ou restaurar o estado após
 usar. Sites que mutam hoje: floating_text.py, combat_log.py — já adaptados.
 """
 from __future__ import annotations
+import os
 import pygame
 
+from paths import resource_path
+
 _FONT_NAME = "determinationregular"
+_FONT_FILE = "assets/fonts/determination.ttf"   # embarcada — vai no build
 _SCALE     = 0.5          # ajuste de métrica: Determination ≈ 2× a fonte padrão
 
 _resolved_path: str | None = None
@@ -30,9 +34,22 @@ _resolved: bool = False
 
 
 def _path() -> str | None:
+    """Resolve a fonte do projeto, nesta ordem:
+    1. arquivo embarcado em assets/fonts/ (funciona no build distribuído —
+       match_font procurava só nas fontes INSTALADAS no Windows: na máquina
+       de dev achava, na do testador caía no default do pygame e ainda com
+       _SCALE 0.5 ficava minúscula);
+    2. fonte instalada no sistema (dev sem o arquivo);
+    3. None → default do pygame (e make() pula o _SCALE, senão o fallback
+       renderiza na metade do tamanho).
+    """
     global _resolved_path, _resolved
     if not _resolved:
-        _resolved_path = pygame.font.match_font(_FONT_NAME) or None
+        _bundled = resource_path(_FONT_FILE)
+        if os.path.isfile(_bundled):
+            _resolved_path = _bundled
+        else:
+            _resolved_path = pygame.font.match_font(_FONT_NAME) or None
         _resolved = True
     return _resolved_path
 
@@ -71,4 +88,8 @@ class CachedFont(pygame.font.Font):
 
 def make(size: int) -> pygame.font.Font:
     """Retorna uma fonte do projeto no tamanho equivalente à fonte padrão de `size` px."""
-    return CachedFont(_path(), max(6, round(size * _SCALE)))
+    p = _path()
+    # _SCALE corrige a métrica da Determination; sem ela (fallback default),
+    # aplicar o scale renderizaria tudo na metade do tamanho.
+    scale = _SCALE if p else 1.0
+    return CachedFont(p, max(6, round(size * scale)))
