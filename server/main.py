@@ -80,7 +80,11 @@ async def main(host: str, port: int) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="RPG ECS — Servidor Online")
-    parser.add_argument("--host", default=SERVER_HOST)
+    # 0.0.0.0 = escuta em TODAS as interfaces (LAN/internet). O default antigo
+    # (SERVER_HOST="localhost", constante pensada pro CLIENTE) fazia o servidor
+    # aceitar conexão só da própria máquina — port forwarding do roteador nunca
+    # chegava nele. Pra voltar ao modo só-local: --host localhost.
+    parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=SERVER_PORT)
     args = parser.parse_args()
 
