@@ -322,6 +322,15 @@ class SessionManager:
         if not sid:
             return
         player_eid = self.world_server.get_entity_id(session.session_id)
+        # Cast estava mesmo pendente? (cancel que chega DEPOIS da conclusão — race —
+        # não pode apagar o cooldown legítimo registrado)
+        _was_pending = any(
+            e["player_eid"] == player_eid and e["spell_id"] == sid
+            for e in self.world_server._pending_spell_completions
+        ) or any(
+            e["player_eid"] == player_eid and e["sid"] == sid
+            for e in self.world_server._pending_skill_requests
+        )
         # Remove entradas pendentes (timer ainda correndo)
         self.world_server._pending_spell_completions = [
             e for e in self.world_server._pending_spell_completions
@@ -335,6 +344,12 @@ class SessionManager:
             e for e in self.world_server._pending_skill_requests
             if not (e["player_eid"] == player_eid and e["sid"] == sid)
         ]
+        # Cast genuinamente cancelado → desarma o CD registrado no início do cast
+        # (skill_processor registra _skill_last_used quando o handler aceita o
+        # cast; sem este pop, cancelar por movimento deixava o CD rodando só no
+        # servidor e o próximo cast era rejeitado com o cliente sem CD na hotbar).
+        if _was_pending:
+            self.world_server._skill_last_used.pop((player_eid, sid), None)
         # Canção de Ninar cancelada no meio do canal: acorda os alvos que já
         # dormiram (sono é aplicado no início do canal) — igual ao offline
         # _cancel_cancao_ninar.

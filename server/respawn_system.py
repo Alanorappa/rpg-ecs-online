@@ -76,10 +76,27 @@ class RespawnMixin:
         # pelo caster (player_eid) quanto pelo alvo (target_id), pois flechas
         # de Flecha Reiterada já em voo continuam acertando o player morto
         # mesmo após ele respawnar com HP restaurado.
+        # Casts purgados = cancelamento forçado: desarma o CD registrado no
+        # início do cast (mesma regra do CANCEL_CAST — cast que nunca completou
+        # não deve queimar cooldown).
+        _purged_cast_sids = [
+            e.get("spell_id") for e in self._pending_spell_completions
+            if e.get("player_eid") == player_eid
+        ]
         self._pending_spell_completions = [
             e for e in self._pending_spell_completions
             if e.get("player_eid") != player_eid and e.get("target_id") != player_eid
         ]
+        for _sid_p in _purged_cast_sids:
+            self._skill_last_used.pop((player_eid, _sid_p), None)
+        # Libera is_casting: só a conclusão/cancel do cast liberam esse flag, e
+        # o pending acabou de ser purgado — sem isto, morrer NO MEIO de um cast
+        # deixava is_casting=True pra sempre e, após o revive, can_act()=False
+        # fazia o skill_processor descartar TODO CAST_SKILL em silêncio (bug
+        # real: mago revivia e nenhuma skill funcionava mais; auto-attack idem).
+        _cst_death_cast = self.world.get_component(player_eid, CombatState)
+        if _cst_death_cast:
+            _cst_death_cast.is_casting = False
         self._spells_in_flight_queue = [
             e for e in self._spells_in_flight_queue
             if e.get("player_eid") != player_eid and e.get("target_id") != player_eid

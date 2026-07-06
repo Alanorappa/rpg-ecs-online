@@ -1046,6 +1046,7 @@ class CombatStateSystem(_BaseCombatStateSystem, System):
 
     def __init__(self, world: World):
         _BaseCombatStateSystem.__init__(self, world)
+        self._net = None  # injetado pelo GameEngine no modo online
         # Timer por eid: segundos até o próximo passo aleatório (disoriented/polymorph)
         self._dis_move_timers: dict[int, float] = {}
 
@@ -1061,7 +1062,11 @@ class CombatStateSystem(_BaseCombatStateSystem, System):
                 char_stats = self.world.get_component(eid, CharacterStats)
                 tm         = self.world.get_component(eid, TileMovement)
 
-                self._tick_rage_decay(cs, char_stats, dt)
+                # Online: rage é 100% server-autoritativa (decay incluso) —
+                # chega via STATS_UPDATE. Decair aqui também dobraria o decay
+                # entre um push e outro do servidor.
+                if self._net is None:
+                    self._tick_rage_decay(cs, char_stats, dt)
 
                 if combat_stats:
                     self._tick_concentration_free_timer(combat_stats, dt)
@@ -1531,9 +1536,13 @@ class EnemyAISystem(System):
                                 ai_control.path = None
                                 ai_control.path_recalc_timer = 0.0
                 elif not tile_movement.is_moving:
-                    if _MCL: _MCL.log("LOST_TGT", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
-                                      prev=_dbg_prev_state,
-                                      grace=f"{ai_control.target_lost_timer:.2f}s")
+                    # Log só na transição real → IDLE — sem esse guard, todo mob
+                    # já IDLE gerava 1 linha LOST_TGT por tick (30/s), inflando o
+                    # log pra GBs.
+                    if _MCL and ai_control.state != "IDLE":
+                        _MCL.log("LOST_TGT", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
+                                 prev=_dbg_prev_state,
+                                 grace=f"{ai_control.target_lost_timer:.2f}s")
                     ai_control.state = "IDLE"
                     ai_control.aggroed_by_damage = False
                     enemy_pos.x = initial_pos.x

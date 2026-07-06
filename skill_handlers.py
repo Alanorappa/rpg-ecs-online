@@ -39,6 +39,9 @@ def deal_damage(*a, **kw):
 def is_tile_walkable(*a, **kw):
     from world_systems import is_tile_walkable as _f; return _f(*a, **kw)
 
+def ability_physical_damage(*a, **kw):
+    from damage_calculator import ability_physical_damage as _f; return _f(*a, **kw)
+
 def get_mainhand_weapon(*a, **kw):
     from world_systems import get_mainhand_weapon as _f; return _f(*a, **kw)
 
@@ -120,7 +123,8 @@ class SkillHandlers:
     # ==================================================================
 
     def _skill_golpe_poderoso(self, skill, _combat_stats, combat_state, tile_move):
-        """3x dano em alvo adjacente — custa 15 de Raiva (talento Veterano reduz até 10)."""
+        """arma + AP×(damage_multiplier + skill level da arma) em alvo adjacente.
+        Custa 15 de Raiva (talento Veterano reduz até 10)."""
         target_id = self._resolve_target(combat_state, tile_move, 1)
         if target_id == -1:
             self._warn("Nenhum alvo")
@@ -147,9 +151,14 @@ class SkillHandlers:
             embalo_bonus = _combat_stats.embalo_bonus_per_charge
             char_stats.embalo_charges -= 1
 
+        # Fórmula única do catálogo (dmg = arma + AP×(mult + 0.01×skill_level))
+        # — antes era multiplier=3.0 HARDCODED em (AP+arma)×3, ignorando o
+        # damage_multiplier do SKILL_CATALOG. Embalo entra como extra_mult.
+        _dano_gp = ability_physical_damage(
+            self.world, self.player_entity_id, skill.params, extra_mult=embalo_bonus)
         deal_damage(
-            self.player_entity_id, target_id, "physical", multiplier=3.0 + embalo_bonus,
-            is_ability=True)
+            self.player_entity_id, target_id, "physical_fixed",
+            base_ability_damage=_dano_gp, is_ability=True)
         if combat_state:
             enter_combat(combat_state)
         return True
@@ -172,8 +181,10 @@ class SkillHandlers:
             return
         skill.charges -= 1
         skill.charge_timer = 0.0
-        deal_damage(self.player_entity_id, target_id, "physical",
-                                       multiplier=2.0, is_ability=True)
+        deal_damage(self.player_entity_id, target_id, "physical_fixed",
+                    base_ability_damage=ability_physical_damage(
+                        self.world, self.player_entity_id, skill.params),
+                    is_ability=True)
         heal = int(combat_stats.max_hp * 0.30)
         heal_actual = min(heal, combat_stats.max_hp - combat_stats.current_hp)
         combat_stats.current_hp = min(combat_stats.max_hp, combat_stats.current_hp + heal)
@@ -209,13 +220,10 @@ class SkillHandlers:
             return False
 
         player_cs = self.world.get_component(self.player_entity_id, CombatStats)
-        ap = player_cs.attack_power if player_cs else 0.0
-        weapon = get_mainhand_weapon(self.world, self.player_entity_id)
-        if weapon and weapon.damage_min > 0:
-            weapon_dmg = random.randint(weapon.damage_min, weapon.damage_max)
-        else:
-            weapon_dmg = player_cs.base_physical_damage if player_cs else 0.0
-        dano_base = weapon_dmg + 0.5 * ap
+        # Fórmula única (já era arma + AP×mult aqui, só que com 0.5 hardcoded;
+        # agora lê damage_multiplier do catálogo + bônus de skill level da arma)
+        dano_base = ability_physical_damage(
+            self.world, self.player_entity_id, skill.params if skill else {})
 
         bonus = 0.15 * len(targets) if (player_cs and player_cs.impacto_maquina_matar) else 0.0
         dano_final = dano_base * (1.0 + bonus)
@@ -293,7 +301,10 @@ class SkillHandlers:
         else:
             char_stats.rage -= 10
         deal_damage(
-            self.player_entity_id, target_id, "physical", multiplier=5.0, is_ability=True)
+            self.player_entity_id, target_id, "physical_fixed",
+            base_ability_damage=ability_physical_damage(
+                self.world, self.player_entity_id, _skill.params if _skill else {}),
+            is_ability=True)
 
         # Talento "Horrorizante": se alvo sobreviveu, aplica medo por 1s
         # (usa _target_alive — alvo PvP só tem RemoteControlled, sem CombatStats)
@@ -485,8 +496,10 @@ class SkillHandlers:
             self._warn("Fora de alcance")
             return False
         char_stats.rage -= 5
-        deal_damage(self.player_entity_id, target_id, "physical",
-                                       multiplier=0.5, is_ability=True)
+        deal_damage(self.player_entity_id, target_id, "physical_fixed",
+                    base_ability_damage=ability_physical_damage(
+                        self.world, self.player_entity_id, skill.params),
+                    is_ability=True)
         apply_effect(self.world, target_id, "slow", 5.0, magnitude=0.5)
         _tpos = self.world.get_component(target_id, Position)
         if _tpos:
@@ -524,8 +537,13 @@ class SkillHandlers:
         skill.charges -= 1
         target_cs = self.world.get_component(target_id, CombatStats)
         hp_before = target_cs.current_hp if target_cs else 0
-        killed, _ = deal_damage(self.player_entity_id, target_id, "physical",
-                                multiplier=0.45, is_ability=True)
+        # dmg_weapon_pct=0.0 no catálogo: soco não usa a arma — o dano é SÓ
+        # AP×multiplier (a docstring "45% AP" agora é verdade; antes o caminho
+        # "physical" somava a arma e multiplicava junto).
+        killed, _ = deal_damage(self.player_entity_id, target_id, "physical_fixed",
+                                base_ability_damage=ability_physical_damage(
+                                    self.world, self.player_entity_id, skill.params),
+                                is_ability=True)
         hit = killed or (target_cs is not None and target_cs.current_hp < hp_before)
         if hit:
             apply_effect(self.world, target_id, "stun", stun_duration)
@@ -551,29 +569,25 @@ class SkillHandlers:
         return True
 
     def _fatiador_aoe_tick(self, skill, tile_move) -> None:
-        """Aplica dano AoE a inimigos no raio. Parâmetros vindos de skill.params."""
+        """Aplica dano AoE a inimigos no raio. Parâmetros vindos de skill.params.
+
+        Fórmula única do catálogo (arma + AP×mult + skill level) — o antigo
+        flag include_weapon_dmg era código MORTO: os dois branches do if eram
+        idênticos ("physical" com multiplier, que multiplicava a arma junto)."""
         p      = skill.params if skill else {}
-        radius = p.get("radius_tiles",      2)
-        mult   = p.get("damage_multiplier", 0.45)
-        use_weapon = p.get("include_weapon_dmg", False)
+        radius = p.get("radius_tiles", 2)
 
         pl_x, pl_y = tile_move.current_tile_x, tile_move.current_tile_y
         hit = 0
 
-        if use_weapon:
-            for eid, etm, ecs in self.world.get_entities_with(TileMovement, CombatStats):
-                if eid == self.player_entity_id: continue
-                if chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y) <= radius and ecs.current_hp > 0:
-                    deal_damage(self.player_entity_id, eid, "physical",
-                                multiplier=mult, is_ability=True)
-                    hit += 1
-        else:
-            for eid, etm, ecs in self.world.get_entities_with(TileMovement, CombatStats):
-                if eid == self.player_entity_id: continue
-                if chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y) <= radius and ecs.current_hp > 0:
-                    deal_damage(self.player_entity_id, eid, "physical",
-                                multiplier=mult, is_ability=True)
-                    hit += 1
+        for eid, etm, ecs in self.world.get_entities_with(TileMovement, CombatStats):
+            if eid == self.player_entity_id: continue
+            if chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y) <= radius and ecs.current_hp > 0:
+                deal_damage(self.player_entity_id, eid, "physical_fixed",
+                            base_ability_damage=ability_physical_damage(
+                                self.world, self.player_entity_id, p),
+                            is_ability=True)
+                hit += 1
 
         if hit:
             LOG.add(f"Fatiador de Corpos: {hit} atingidos!", (255, 120, 60))

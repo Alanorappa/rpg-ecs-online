@@ -414,7 +414,10 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._aoe_targeting_system._net = self._net
         # PlayerInputSystem: auto-attack ranged do arqueiro vira 100% server-driven
         # (flecha nasce só ao receber COMBAT_RESULT — igual Bola de Fogo)
+        # + rage vira só display: _add_rage é no-op online (servidor empurra via STATS_UPDATE)
         self._player_input_system._net = self._net
+        # CombatStateSystem: online, rage decay é server-autoritativo (rage_events)
+        self._combat_state_sys._net = self._net
         # SpellCastSystem: persiste mudanças de bag/aljava (ex: Recarregar) —
         # sem isso o estado só era salvo no próximo evento de loot, e a recarga
         # se perdia se o jogador deslogasse antes disso

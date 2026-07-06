@@ -39,8 +39,7 @@ BUILDS: dict[str, dict] = {
         "description": "Guerreiro de campo aberto. Raiva, controle de grupo e "
                        "habilidades devastadoras para dominar múltiplos inimigos.",
         "pros":        ["+Alta mobilidade com Interceptar",
-                        "+Controle de grupo (stun/medo)",
-                        "+3 habilidades desbloqueáveis"],
+                        "+Controle de grupo (stun/medo)"],
         "cons":        ["-Depende de Raiva para habilidades",
                         "-Cooldowns longos"],
         "color":       (80, 200, 100),
@@ -51,7 +50,6 @@ BUILDS: dict[str, dict] = {
         "description": "Mago especializado na escola de fogo. Maximiza o dano "
                        "de Bola de Fogo e desbloqueia habilidades devastadoras.",
         "pros":        ["+Alto dano mágico de fogo",
-                        "+4 habilidades desbloqueáveis",
                         "+Sinergia fogo/gelo (Choque Térmico)"],
         "cons":        ["-Depende de mana",
                         "-Cast times longos sem talentos"],
@@ -140,7 +138,7 @@ TALENTS: dict[str, dict] = {
     # ── Row 1 ──────────────────────────────────────────────────────────────
     "cav_maquina_matar": {
         "name":          "Máquina de Matar",
-        "description":   "+15% de dano do Impacto por inimigo em raio de 3 tiles",
+        "description":   "Ao ser cercado por múltiplos inimigos, o guerreiro entra em modo de foco, se tornando uma máquina de matar. (15% de dano bônus para cada alvo em um raio de 3 tiles.)",
         "build":         "cavaleiro",
         "col": 0, "row": 1,
         "max_points":    1,

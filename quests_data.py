@@ -111,7 +111,9 @@ QUESTS: dict[str, QuestDef] = {
             ObjectiveDef(type="kill", target="*", count=1),
         ),
         reward=QuestReward(xp=50),
-        requires=("prova_valor"),
+        # ("prova_valor",) com vírgula: sem ela é STRING, e o check de
+        # pré-requisito itera letra por letra ('p','r','o'...) — nunca passa.
+        requires=("prova_valor",),
         next_quest="survivor",
         completion="Sabia que você conseguiria. Todo guerreiro começa com o primeiro sangue — "
                    "o resto é só questão de prática. Continue assim.",

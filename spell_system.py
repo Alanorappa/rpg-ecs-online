@@ -415,7 +415,7 @@ class SpellCastSystem(System):
             return
 
         _params      = _SC.get("tiro_multiplo", {}).get("params", {})
-        _ap_mult     = _params.get("ap_multiplier",   3.0)
+        _ap_mult     = _params.get("damage_multiplier", 3.0)
         _half_angle  = _params.get("cone_half_angle", 45.0)
         _range_tiles = _params.get("range_tiles",     12)
         _range_px    = _range_tiles * TILE_SIZE
@@ -525,7 +525,7 @@ class SpellCastSystem(System):
         quiver.arrow_count -= 1
 
         _params  = _SC.get("tiro_repulsivo", {}).get("params", {})
-        _ap_mult = _params.get("ap_multiplier", 1.5)
+        _ap_mult = _params.get("damage_multiplier", 1.5)
 
         att_cs   = self.world.get_component(attacker_id, CombatStats)
         extra_ap = int(att_cs.attack_power * (_ap_mult - 1.0)) if att_cs else 0
@@ -586,7 +586,8 @@ class SpellCastSystem(System):
         """Handler genérico para skills de flecha — lê params do SKILL_CATALOG.
 
         Campos suportados em params{}:
-          ap_multiplier      float  — multiplicador de AP (padrão 1.0)
+          damage_multiplier  float  — coeficiente do AP (padrão 1.0); dano final
+                                      = arma + AP×(mult + 0.01×skill level do arco)
           guaranteed_hit     bool   — ignora miss/dodge/parry (padrão False)
           on_hit_effect      str    — efeito ao acertar (ex: "slow")
           on_hit_duration    float  — duração do efeito
@@ -614,7 +615,7 @@ class SpellCastSystem(System):
             return
 
         params   = _SC.get(self._current_spell_id, {}).get("params", {})
-        ap_mult  = params.get("ap_multiplier",   1.0)
+        ap_mult  = params.get("damage_multiplier", 1.0)
         g_hit    = params.get("guaranteed_hit",   False)
         effect   = params.get("on_hit_effect",    "")
         eff_dur  = params.get("on_hit_duration",  0.0)
@@ -688,7 +689,7 @@ class SpellCastSystem(System):
 
         from skill_config import SKILL_CATALOG as _SC
         _params  = _SC.get("flecha_reiterada", {}).get("params", {})
-        _ap_mult = _params.get("ap_multiplier", 2.0)
+        _ap_mult = _params.get("damage_multiplier", 2.0)
         _delay   = _params.get("arrow_delay",   0.25)
 
         # Talento Sequência Final: 3ª flecha se alvo abaixo do threshold de HP
@@ -1371,10 +1372,21 @@ class PlayerProjectileSystem(System):
             from components import CombatState
             arrow_bonus = (random.randint(proj.arrow_dmg_min, proj.arrow_dmg_max)
                            if proj.arrow_dmg_max > 0 else 0)
-            # ap_multiplier > 1.0: adiciona AP extra (ex: 2.0 = +1x AP → total 2x AP)
-            if proj.ap_multiplier != 1.0:
+            # ap_multiplier: coeficiente extra de AP somado ao 1× que já vem do
+            # deal_damage("physical") — total = arco + AP×coef. Skills de arco
+            # (spell_id setado) ganham +0.01×skill level do Arco no coeficiente
+            # (fórmula única, espelha _server_apply_ranged_physical); flecha de
+            # AUTO-attack (spell_id vazio) fica na fórmula clássica.
+            _ap_coef = proj.ap_multiplier - 1.0
+            if proj.spell_id:
+                from components import Equipment as _EqSkl
+                from stats_system import weapon_skill_level as _wsl_arrow
+                _eq_skl = self.world.get_component(proj.attacker_id, _EqSkl)
+                _bow_skl = _eq_skl.slots.get("mainhand") if _eq_skl else None
+                _ap_coef += 0.01 * _wsl_arrow(self.world, proj.attacker_id, _bow_skl)
+            if _ap_coef != 0.0:
                 _att_cs = self.world.get_component(proj.attacker_id, CombatStats)
-                extra_ap = int(_att_cs.attack_power * (proj.ap_multiplier - 1.0)) if _att_cs else 0
+                extra_ap = int(_att_cs.attack_power * _ap_coef) if _att_cs else 0
             else:
                 extra_ap = 0
             _is_proc = proj.damage_multiplier > 1.0

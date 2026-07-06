@@ -354,16 +354,27 @@ class BaseCombatStateSystem:
                 cs.stun_timer = 0.0
 
     @classmethod
-    def _tick_rage_decay(cls, cs, char, dt: float) -> None:
+    def _tick_rage_decay(cls, cs, char, dt: float):
+        """Decay de Raiva fora de combate. Único produtor autoritativo é o
+        SERVIDOR (mesmo modelo do regen de mana) — o cliente online NÃO chama
+        este método (ver systems.CombatStateSystem); recebe o valor via
+        STATS_UPDATE (rage_events em ServerCombatStateSystem.update).
+
+        Retorna (old_rage, new_rage) se houve decay, None caso contrário.
+        """
         if not char or char.rage <= 0:
-            return
+            return None
         if not cs.in_combat:
             char.rage_decay_timer += dt
             if char.rage_decay_timer >= cls.RAGE_DECAY_INTERVAL:
                 char.rage_decay_timer -= cls.RAGE_DECAY_INTERVAL
+                old_rage  = char.rage
                 char.rage = max(0, char.rage - cls.RAGE_DECAY_AMOUNT)
+                if char.rage != old_rage:
+                    return (old_rage, char.rage)
         else:
             char.rage_decay_timer = 0.0
+        return None
 
     @staticmethod
     def _tick_hp5(cs, cst, dt: float):
@@ -454,8 +465,9 @@ class ServerCombatStateSystem(BaseCombatStateSystem):
 
     Herda BaseCombatStateSystem — constantes e lógica core ficam em um só lugar.
     Adiciona hp5_events (curas de regen), mana_events (regen de mana do
-    Mago) e proc_events (procs de item rolados autoritativamente, ver
-    _roll_procs) para o servidor reportar ao cliente.
+    Mago), rage_events (decay de Raiva do Guerreiro) e proc_events (procs de
+    item rolados autoritativamente, ver _roll_procs) para o servidor reportar
+    ao cliente.
 
     Uso:
         sys = ServerCombatStateSystem(world)
@@ -465,6 +477,9 @@ class ServerCombatStateSystem(BaseCombatStateSystem):
             ...
         for ev in sys.mana_events:
             # ev = {player_eid, old_mana, new_mana}
+            ...
+        for ev in sys.rage_events:
+            # ev = {player_eid, new_rage}
             ...
         for ev in sys.proc_events:
             # ev = {player_eid, item_name, label, attribute, value, duration}
@@ -476,6 +491,7 @@ class ServerCombatStateSystem(BaseCombatStateSystem):
         # Populado a cada update(); limpo no início do próximo update().
         self.hp5_events: list[dict] = []
         self.mana_events: list[dict] = []
+        self.rage_events: list[dict] = []
         # Procs de item rolados autoritativamente pelo servidor neste tick.
         self.proc_events: list[dict] = []
 
@@ -502,6 +518,7 @@ class ServerCombatStateSystem(BaseCombatStateSystem):
         """Processa todos os players em player_eids (session_id → eid)."""
         self.hp5_events.clear()
         self.mana_events.clear()
+        self.rage_events.clear()
         self.proc_events.clear()
         from components import CombatState, CombatStats, CharacterStats, TileMovement
 
@@ -517,7 +534,12 @@ class ServerCombatStateSystem(BaseCombatStateSystem):
 
             self._tick_combat_timer(cs, dt)
             self._tick_stun_timer(cs, dt)
-            self._tick_rage_decay(cs, char, dt)
+            rage_result = self._tick_rage_decay(cs, char, dt)
+            if rage_result:
+                self.rage_events.append({
+                    "player_eid": peid,
+                    "new_rage":   rage_result[1],
+                })
 
             hp5_result = self._tick_hp5(cs, cst, dt)
             if hp5_result:

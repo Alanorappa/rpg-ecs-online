@@ -119,12 +119,19 @@ class CombatProcessorMixin:
             player_char = self.world.get_component(player_eid, _CS_char)
             if player_cst:
                 _enter_combat(player_cst)
-            # Rage no servidor — mantém sincronizado para validação de skills
-            # O cliente gera rage localmente (igual ao offline); aqui apenas atualizamos
-            # o valor no ECS do servidor para que os handlers de skill possam validar
+            # Rage no servidor — único produtor autoritativo. Todo ganho é empurrado
+            # ao cliente via STATS_UPDATE (o cliente online não gera rage localmente;
+            # dois timers de ataque independentes drifavam e a hotbar acendia com
+            # rage que o servidor não tinha — ver PROBLEMAS_ARQUITETURA.md).
             if player_char and player_char.class_id == "guerreiro":
+                _rage_before = player_char.rage
                 player_char.rage = min(getattr(player_char, 'max_rage', 100),
                                        player_char.rage + 5)
+                if player_char.rage != _rage_before:
+                    self.queue_stats_update({
+                        "player_eid": player_eid,
+                        "rage":       player_char.rage,
+                    })
 
             # Punho no Queixo (Cavaleiro): incrementar contador por auto-ataque.
             # Espelha PlayerInputSystem._increment_pnq_counter; cliente também chama
@@ -320,6 +327,21 @@ class CombatProcessorMixin:
         attacker_cst = self.world.get_component(attacker_eid, CombatState)
         if attacker_cst:
             _ec_pvp(attacker_cst)
+
+        # Rage do atacante (Guerreiro) — mesmo ganho do PvE. Antes só o cliente
+        # gerava rage em PvP (local), o servidor nunca — toda skill com custo de
+        # rage era rejeitada mesmo com a barra cheia no cliente.
+        from components import CharacterStats as _CS_pvp
+        _atk_char = self.world.get_component(attacker_eid, _CS_pvp)
+        if _atk_char and _atk_char.class_id == "guerreiro":
+            _rage_before_pvp = _atk_char.rage
+            _atk_char.rage = min(getattr(_atk_char, 'max_rage', 100),
+                                 _atk_char.rage + 5)
+            if _atk_char.rage != _rage_before_pvp:
+                self.queue_stats_update({
+                    "player_eid": attacker_eid,
+                    "rage":       _atk_char.rage,
+                })
 
         # Rastreia dano PvP para subtrair de mob_delta (evita FLT duplo)
         self._pvp_damage_this_tick[victim_eid] = (

@@ -131,10 +131,17 @@ Lógica core (rage decay, HP5, regen de mana, stun timer, etc.) NÃO é mais
 duplicada — vive em `core_systems.py::BaseCombatStateSystem` (puro, sem
 Pygame), herdada por `systems.CombatStateSystem` (cliente) e
 `core_systems.ServerCombatStateSystem` (servidor, adiciona `hp5_events`/
-`mana_events`/`proc_events`). `server/world_server.py::_tick()` chama
-`self._combat_state_sys.update(self._player_eids, dt)` pra todos os
+`mana_events`/`rage_events`/`proc_events`). `server/world_server.py::_tick()`
+chama `self._combat_state_sys.update(self._player_eids, dt)` pra todos os
 players conectados a cada tick.
-- `RAGE_DECAY_AMOUNT = 5`, `RAGE_DECAY_INTERVAL = 3.0s`
+- `RAGE_DECAY_AMOUNT = 5`, `RAGE_DECAY_INTERVAL = 3.0s` — **único produtor
+  autoritativo é o servidor** (mesmo modelo do regen de mana abaixo): decay
+  emite `rage_events` → `STATS_UPDATE {rage}`; ganho (+5 por auto-attack,
+  PvE e PvP) em `combat_processor.py` também faz push imediato. Cliente
+  online NÃO gera nem decai rage (`PlayerInputSystem._add_rage` e
+  `CombatStateSystem._tick_rage_decay` são no-op com `_net` setado) — ver
+  `PROBLEMAS_ARQUITETURA.md` (bug real: hotbar acendia com rage local à
+  frente do servidor e a skill voltava "Raiva insuficiente" + snap da barra)
 - HP5: `max(1, int(max_hp * hp5)) a cada 5s` fora de combate — emite
   `{outcome="regen", damage=negative}` em `_combat_this_tick` (cliente
   exibe `+N HP`)
@@ -341,6 +348,25 @@ Pontos de integração (todos já existentes, estendidos — não criou funil no
   (base no-op; servidor sobrescreve em `_ServerStatusEffectSystem` pra
   conceder xp). **Sangramento (bleed) não muda** — físico, sem resistência,
   como antes.
+
+- **Dano de skill física** (03/07/2026): fórmula única em
+  `damage_calculator.ability_physical_damage`:
+  `arma×dmg_weapon_pct + AP×(damage_multiplier + 0.01×level_do_skill_da_arma)`.
+  `damage_multiplier`/`dmg_weapon_pct` vêm SÓ do SKILL_CATALOG (handlers não
+  hardcodeiam mais — golpe_poderoso tinha 3.0 fixo ignorando o catálogo);
+  `dmg_weapon_pct: 0.0` = skill sem arma (Punho no Queixo), que também não
+  ganha o bônus de skill level. Trocar de arma troca o skill level usado
+  (`stats_system.weapon_skill_level`). Crit/armadura aplicam depois, via
+  `deal_damage("physical_fixed", base_ability_damage=...)`.
+  **Arqueiro** (mesma fórmula, 03/07/2026): o antigo param `ap_multiplier`
+  virou `damage_multiplier` no catálogo (tiro_multiplo/tiro_repulsivo/
+  picada_escorpiao/flecha_reiterada). Server:
+  `_server_apply_ranged_physical` com `is_ability=True` usa
+  `ability_physical_damage` (arco + AP×(mult + 0.01×skill Arco));
+  `is_ability=False` (AUTO-attack) mantém a fórmula clássica `(AP+arco)`.
+  Cliente offline espelha em `spell_system` (impacto de PlayerProjectile:
+  coeficiente extra de AP ganha o bônus de skill SÓ quando `proj.spell_id`
+  é de skill — flecha de auto-attack fica clássica).
 
 Persistência: coluna `skill_levels_json` em `server/auth.py` (mesmo padrão
 `ALTER TABLE` de `fog_json`); `get_player_save_data`/`_build_save_merge`

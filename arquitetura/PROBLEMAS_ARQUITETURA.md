@@ -2097,6 +2097,278 @@ segundos" relatados.
 
 ---
 
+### ✅ RESOLVIDO — Vitória Iminente não ganhava carga ao matar mobs (03/07/2026)
+
+Reportado pelo usuário: matar mobs não concedia a carga da skill.
+
+**Causa raiz**: mesma classe do bug antigo do Punho no Queixo. O bloco
+on_kill do `server_death_handler` iterava só `ps.skills` (hotbar do
+servidor) — mas skill comprada no treinador DURANTE a sessão só atualiza
+`learned_skill_ids` (`sync_player_skills`); o objeto `Skill` nunca entra em
+`ps.skills` até o relog. Killer sem o objeto → carga jamais concedida.
+Confirmado headless: canal inteiro (grant → pending_xp com `on_kill_skill`
+→ STATS_UPDATE forwarding total → handler do cliente) funciona quando o
+objeto existe; falha silenciosa quando é só learned.
+
+**Fix**: bloco on_kill itera o CATÁLOGO (`on_kill=="charge"`) com
+lazy-create — se o objeto não está em `ps.skills` mas
+`is_skill_authorized()` aprova (gate canônico), cria via `_make_skill` e
+insere (mesmo padrão do PnQ em `combat_processor`). Cargas vêm de
+`PlayerSkills._CHARGE_BASED`, não do catálogo.
+
+Validado headless: (A) kill via golpe_poderoso com VI na hotbar → carga OK
+(killer propagado por deal_damage também em skill kill); (B) VI apenas
+learned, fora de ps.skills → lazy-create + carga OK (antes: FALHOU). Suíte
+sem regressão (34F/57P/1S).
+
+**Não validado**: manual — comprar VI no treinador e matar mob na mesma
+sessão, sem relogar; conferir carga acendendo na hotbar.
+
+---
+
+### ✅ RESOLVIDO — Item de quest (Presa de Lobo) dropava no servidor mas sumia na janela de loot (03/07/2026)
+
+Reportado pelo usuário: quest "Presas Afiadas" (wolf_fangs) ativa, matando
+lobos — o item condicional nunca aparecia no loot.
+
+**Causa raiz — CLIENTE**: o servidor rolava e incluía o item corretamente
+(comprovado headless: `roll_conditional_loot` + corpse com "Presa de Lobo"
+no `pending_loot_notifications`, owner-only como no WoW). Mas o handler de
+`LOOT_AVAILABLE` (`client/network_handlers.py`) reconstrói os itens
+serializados procurando o NOME apenas em `loot_tables._T` (106 itens de
+loot normal) — itens de quest vivem em `quests_data.QUEST_ITEMS`, então
+"Presa de Lobo" era DESCARTADA em silêncio na reconstrução e a janela de
+loot abria sem ela. Toda a cadeia seguinte (pegar item → progresso
+collect_item) nunca começava.
+
+**Fix**: fallback na reconstrução — nome não achado em `_T` → tenta
+`QUEST_ITEMS.get(nome)`. O caminho de restore de save
+(`save_sync_handlers._restore_item`) já tinha fallback genérico
+(`_item_from_data`) e não era afetado — item de quest na bag sobrevive
+relog normalmente.
+
+**Bug irmão achado na investigação (`quests_data.py`)**: `first_blood`
+tinha `requires=("prova_valor")` SEM vírgula — string, não tupla. O check
+`all(r in ql.completed for r in requires)` iterava letra por letra
+('p','r','o'...) e nunca passava → quest impossível de iniciar. Corrigido
+pra `("prova_valor",)`.
+
+Validado: headless — quest ativa via `try_start`, Lobo real morto por
+auto-attack, corpse com "Presa de Lobo" (roll forçado); reconstrução
+client-side testada isolada: "Presa de Lobo" agora reconstrói, item normal
+(Colete de Couro) continua ok. Suíte sem regressão (34F/57P/1S).
+
+**Não validado**: passada manual (aceitar Presas Afiadas, matar lobos até
+dropar — chance 0.6 —, ver item na janela, pegar e conferir progresso da
+quest subindo; conferir que player SEM a quest não vê a presa).
+
+---
+
+### ✅ RESOLVIDO — Morrer no meio de um cast deixava TODAS as skills mudas após reviver (03/07/2026)
+
+Reportado pelo usuário: mago usou Nova Congelante várias vezes (ok), morreu
+e reviveu — depois disso, cercado de inimigos, a skill "não achava alvo"
+em todas as tentativas.
+
+**Causa raiz**: `is_casting` preso em True. Cadeia exata:
+1. skill_processor aceita cast com cast_time → seta `combat_state.is_casting
+   = True` (espelha offline);
+2. player MORRE no meio do cast → `_handle_player_death` purga a entry de
+   `_pending_spell_completions` do player (fix antigo das "flechas
+   fantasma") — mas os ÚNICOS pontos que liberam `is_casting` são a
+   conclusão do cast (`_process_spell_cast_completions`) e o
+   `_handle_cancel_cast`. Entry purgada = nenhum dos dois roda → flag preso;
+3. após reviver, `can_act()` (que exige `not is_casting`) fica False pra
+   sempre → o gate do skill_processor DESCARTA todo CAST_SKILL **em
+   silêncio** (`continue`, sem SKILL_RESULT) e o auto-attack também fica
+   bloqueado (`_process_player_attacks` usa o mesmo `can_act`).
+
+A mensagem que o usuário viu ("nenhum alvo próximo") era o feedback
+COSMÉTICO local do cliente (`spell_system._apply_nova_congelante` — "Nova
+Congelante — nenhum inimigo no raio"), que roda o cast visual por conta
+própria; o servidor nem processava o request. Reproduzido headless: morte
+no tick 2 de um cast de 1s → `is_casting=True pendings=0` → pós-revive
+`can_act=False`, cast retorna dmg=0 e results=[].
+
+**Fix (`_handle_player_death`)**: ao purgar os casts pendentes do morto,
+(a) seta `combat_state.is_casting = False` e (b) desarma
+`_skill_last_used` dos sids purgados (cast que nunca completou não queima
+CD — mesma regra do CANCEL_CAST).
+
+Validado: repro headless — morrer no meio do cast, reviver, castar de novo:
+dano + root aplicados normalmente, completion com CD 6.0s. Suíte sem
+regressão (34F/57P/1S).
+
+**Não validado**: passada manual (morrer castando, reviver, usar skill).
+Observação de robustez futura: os gates do skill_processor (`can_act`,
+`is_action_locked`, GhostState) descartam requests SEM SKILL_RESULT — o
+cliente só se recupera pelo timeout de 0.4s e não recebe motivo; se novos
+"skills mudas" aparecerem, vale emitir failed=True com reason nesses gates.
+
+---
+
+### ✅ RESOLVIDO — Skills com cast_time (arqueiro/mago) SEM cooldown nenhum (03/07/2026)
+
+Reportado pelo usuário: skills do arqueiro spammáveis, sem cooldown na
+hotbar. Afetava TODA skill com cast_time (arqueiro inteiro + magias do
+mago); instantâneas (guerreiro) intactas.
+
+**Causa raiz (server)**: handlers de skill com cast retornam True no INÍCIO
+do cast sem setar `skill.current_cooldown` (o CD real viaja na entry de
+`_pending_spell_completions`, campo "cooldown"). O registro de CD do
+skill_processor fazia `_eff_cd_store = getattr(skill_obj,
+"current_cooldown", _sk_cd)` — o atributo EXISTE (default 0.0), então o
+fallback `_sk_cd` nunca era usado → `_skill_effective_cd[key] = 0.0`. Na
+validação do uso seguinte, `_sk_cd = 0.0` → gate `if _sk_cd > 0` nunca
+bloqueia → skill sem CD server-side PARA SEMPRE (e o registro nunca se
+corrige, porque também é condicionado a `_sk_cd > 0`).
+
+**Por que "apareceu agora" (client)**: o SKILL_RESULT de completion passou
+recentemente a enviar `cooldown = _skill_effective_cd.get(key)` (fix da
+rejeição falsa do Interceptar com talento) — antes enviava None e o cliente
+caía no CD BASE do catálogo, mascarando o buraco visualmente. Com a mudança,
+o cliente passou a receber 0.0 e a hotbar ficou sem CD — expondo o que o
+servidor já não validava.
+
+**Fix (skill_processor)**: registro de CD com fallback em cadeia —
+`current_cooldown` do handler (instantâneas com redução de talento, ex:
+Interceptar) → efetivo do uso anterior (`_sk_cd`) → CD base do catálogo.
+Registro não é mais condicionado ao `_sk_cd` stale (auto-corrige estado
+envenenado).
+
+**Consequência tratada — cancel de cast**: com o registro no início do cast
+valendo de verdade, cancelar por movimento deixaria o CD rodando SÓ no
+servidor (cliente sem CD → rejeição falsa no recast). `_handle_cancel_cast`
+(session.py) agora desarma `_skill_last_used` do sid cancelado — MAS só se o
+cast estava genuinamente pendente (cancel que chega após a conclusão, race,
+não apaga CD legítimo).
+
+Validado: diagnóstico headless — 1º tiro_repulsivo completa com
+`cooldown: 45.0` na completion (cliente aplica CD real); 2º cast imediato
+REJEITADO server-side (restante 44.7s). Suíte sem regressão (34F/57P/1S).
+
+**Não validado**: passada manual (arqueiro: CD aparece na hotbar após o
+cast; cancelar cast por movimento não gera rejeição no recast).
+
+---
+
+### ✅ RESOLVIDO — Interceptar "bloqueado" em terreno aberto / Tiro Repulsivo stunando sem colisão real (03/07/2026)
+
+Reportado pelo usuário: Interceptar mostrava "Bloqueado" sem nenhum
+obstáculo no caminho; Tiro Repulsivo aplicava o stun de colisão sem o alvo
+ter batido em parede/árvore/pedra/mob. NÃO é a regressão antiga do
+`_resolve_target` (entrada anterior nesta seção) — é multi-map.
+
+**Causa raiz (multi-map/P4)**: com `_MapBundle` por mapa, os serviços
+tile_validation/pathfinding passaram a ser injetados DIRETO nos sistemas de
+cada bundle (`_load_map_for`), e o `_svc` GLOBAL de `world_systems` ficou
+apontando pro ÚLTIMO mapa carregado no startup (`map_cave_east`). Os
+handlers compartilhados de skill (`skill_handlers.py`/`spell_system.py`)
+chamam `is_tile_walkable`/`get_tilemap`/`find_path` de MÓDULO — que resolvem
+via `_svc`. Resultado: player em `map_1` tinha o dash validado contra a
+matriz da CAVERNA (maciça de rocha) → "Caminho bloqueado"/"Sem espaço ao
+redor do alvo" em terreno 100% aberto. Reproduzido em diagnóstico:
+`_svc['tile_validation']` apontava pro tilemap_entity=53 (cave_east) com o
+player no map_1.
+
+**Segunda instância da mesma classe**: `_server_tiro_repulsivo`
+(spell_completion_processor) pegava "o primeiro" componente `Tilemap` do
+world inteiro (`get_entities_with(Tilemap)` + break) — com 3 mapas
+carregados, valida colisão de knockback contra o mapa errado → stun em
+parede fantasma. Mesma classe já tinha sido corrigida PONTUALMENTE em
+`move_player()` (comentário lá descrevia o bug de cave_west rejeitando
+movimento em map_1) — mas não foi aplicada aos caminhos de skill.
+
+**Fix — ponto único `WorldServer.register_map_services_for(eid)`**:
+re-registra `_svc` com o bundle do mapa da entidade (via
+`get_entity_map`/`MapLocation`, fonte única entity→mapa do P3). Chamado em:
+- `skill_processor._process_skill_requests` — antes de cada request
+- `spell_completion_processor._process_spell_cast_completions` — por entry
+- `spell_completion_processor._apply_spell_on_projectile_hit` — antes do
+  handler do hit (Tiro Repulsivo/Bola de Fogo/etc.)
+- `_server_tiro_repulsivo` além disso usa o Tilemap do bundle do mapa do
+  ALVO (fallback: primeiro Tilemap, mundo single-map/testes)
+
+REGRA: todo entry point novo do servidor que executar handler compartilhado
+em nome de um player deve chamar `register_map_services_for(player_eid)`
+antes. `server/mob_system.py` também tem o padrão "primeiro Tilemap", mas é
+código morto (não importado por ninguém) — não tratado.
+
+Fixtures atualizadas: `tests/diag_interceptar.py` e
+`tests/diag_tiro_repulsivo.py` não chamavam `tests.helpers.authorize_skill`
+(pré-datavam o gate de autorização) e o caso de sucesso do interceptar usava
+mob a 2 tiles (64px < `INTERCEPT_MIN_RANGE_PX=74`, pré-datava o min range em
+píxeis) — corrigidos.
+
+Validado: repro headless (guerreiro map_1, mob 3 tiles, terreno aberto
+confirmado tile a tile) — antes: `failed=True "Sem espaço ao redor do
+alvo"`; depois: dash completa (130→132, cooldown aplicado).
+`diag_interceptar` (parede REAL continua bloqueando + rejected=True; caminho
+livre move com is_dash) e `diag_tiro_repulsivo` (fluxo completo: cast →
+voo → hit com dano + colisão contra parede real do map_1) passam. Suíte sem
+regressão (34F/57P/1S idêntico ao baseline).
+
+**Não validado**: passada manual num cliente real (Interceptar em terreno
+aberto no map_1 e dentro das cavernas; Tiro Repulsivo só stunando em
+colisão verdadeira).
+
+---
+
+### ✅ RESOLVIDO — Rage: hotbar acendia mas skill voltava "Raiva insuficiente" (03/07/2026)
+
+Reportado pelo usuário: HUD do Guerreiro mostrava rage suficiente e o slot
+da skill acendia, mas o `CAST_SKILL` voltava "Raiva insuficiente" e a barra
+"corrigia" pra baixo em seguida.
+
+**Causa raiz**: rage tinha DOIS produtores independentes, cada um com seu
+relógio. Cliente: +5 por auto-attack disparado pelo timer LOCAL
+(`PlayerInputSystem._add_rage`) + decay local. Servidor: +5 pelo timer
+PRÓPRIO (`combat_processor._attack_timers`) + decay próprio. Os timers nunca
+disparam em sincronia (offset de início, latência, visões diferentes de
+"posso atacar") → cliente ficava +5/+10 à frente. O servidor só empurrava
+rage pro cliente APÓS tentativa de skill (`skill_processor`) — entre skills
+o drift só crescia. Hotbar/checagem de keypress usavam o valor local
+inflado; a validação do handler usava o real. Reconciliação só no erro =
+sintoma clássico. Complemento desde o fix da mana (entrada acima): o
+servidor deixou de confiar no rage do `CAST_SKILL`, então o valor local do
+cliente virou pura ilusão de HUD.
+
+**Agravante PvP**: `_process_pvp_attack` NÃO gerava rage nenhuma no servidor
+— guerreiro em PvP enchia a barra localmente mas toda skill com custo era
+rejeitada.
+
+**Fix** (mesmo modelo do regen de mana — servidor único produtor + push a
+cada mudança):
+- `core_systems._tick_rage_decay` retorna `(old, new)`;
+  `ServerCombatStateSystem` coleta `rage_events` → `_tick()` empurra
+  `STATS_UPDATE {rage}` (igual `mana_events`)
+- `combat_processor.py`: ganho +5 (PvE) faz push imediato via
+  `queue_stats_update`; PvP ganhou o MESMO ganho +5 com push (antes: zero)
+- Cliente: `PlayerInputSystem._add_rage` no-op com `_net`;
+  `CombatStateSystem` (world_systems) pula `_tick_rage_decay` com `_net`
+  (senão decairia em dobro entre pushes); `game.py` injeta `_net` no
+  `_combat_state_sys`
+- `CharacterStats.rage` no cliente online é só display — alimentado por
+  `STATS_UPDATE` (handler já existia em `network_handlers.py`)
+
+Referência de design (jogos consolidados, modelo WoW): recurso 100%
+server-side, push a cada mudança, UI acende com valor real defasado só pela
+latência; predição opcional de custo com rollback — nunca "reconciliação só
+quando dá erro".
+
+Validado: diagnóstico headless (spawn guerreiro + mob real, 100 ticks) —
+ganho 0→10 com 2 pushes `{rage:5}`/`{rage:10}`; decay 10→0 fora de combate
+com pushes `{rage:5}`/`{rage:0}`. Suíte sem regressão (34F/57P/1S idêntico
+ao baseline pré-mudança; falhas pré-existentes).
+
+**Não validado**: passada manual com 2 clientes reais (PvE e PvP) conferindo
+que o slot só acende com rage real e que a mensagem "Raiva insuficiente"
+não aparece mais com a barra cheia. Concentração (Arqueiro) ainda tem regen
+duplicado cliente+servidor (drift pequeno, taxa determinística) — mesma
+classe de problema em escala menor, não tratado aqui.
+
+---
+
 ### ✅ RESOLVIDO — Skill Level: painel (tecla L) nunca atualizava sem relog
 
 Reportado pelo usuário durante teste manual: matar mobs com o arqueiro pra

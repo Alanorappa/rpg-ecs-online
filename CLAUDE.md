@@ -67,6 +67,11 @@ Atualizar os arquivos de arquitetura relevantes:
   (schema na docstring; valida player_eid na origem).
 - **Atributo de combate novo** → par `base_X`/`X` em `CombatStats` + 1 entrada
   em `stat_fns._MODIFIABLE_ATTRS` (+ `_STAT_CLAMPS` se tiver limite).
+- **Dano base de skill FÍSICA** → `damage_calculator.ability_physical_damage()`
+  (`arma×dmg_weapon_pct + AP×(damage_multiplier + 0.01×skill_level_da_arma)`) —
+  multiplicador vem SÓ do SKILL_CATALOG, NUNCA hardcodear no handler (classe
+  de bug: golpe_poderoso com 3.0 fixo tornava o catálogo letra morta).
+  Skill sem arma → `dmg_weapon_pct: 0.0` no catálogo. Magia → `spell_damage()`.
 - **Broadcast direto novo (fora do AOI_UPDATE)** →
   `SessionManager._sessions_in_aoi(tx, ty, map_file, origin_eid=...)` —
   NUNCA iterar `self._sessions` com check de distância à mão (classe de bug:
@@ -75,6 +80,14 @@ Atualizar os arquivos de arquitetura relevantes:
   (classe + talento + learned) — gate autoritativo chamado pelo
   skill_processor; toda forma nova de adquirir skill entra ALI. Fixtures de
   teste usam `tests.helpers.authorize_skill()`.
+- **Entry point server-side novo que executa handler compartilhado em nome
+  de um player** (skill/spell/projectile/channeling) →
+  `WorldServer.register_map_services_for(player_eid)` ANTES do handler —
+  aponta `_svc` (is_tile_walkable/find_path/get_tilemap) pro bundle do MAPA
+  do player (classe de bug: `_svc` fica no último mapa carregado; Interceptar
+  "bloqueado" em terreno aberto, Tiro Repulsivo stunando em parede fantasma).
+  NUNCA pegar "o primeiro" `Tilemap` do world — usar o bundle via
+  `get_entity_map(eid)`.
 
 ### Protocolo
 - Todo pacote tem `type` (MsgType), `p` (payload), `seq` (int), `ts` (ms epoch)

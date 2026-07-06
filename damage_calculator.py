@@ -168,6 +168,57 @@ def calculate_base_damage(attacker_stats, damage_type: str,
     return max(0.0, total - block_reduction)
 
 
+# Bônus de damage_multiplier por level do skill da arma equipada (skills físicas)
+DMG_MULT_PER_WEAPON_SKILL_LEVEL = 0.01
+
+
+def ability_physical_damage(world, attacker_id: int, params: dict,
+                            extra_mult: float = 0.0) -> float:
+    """Dano base de skill FÍSICA — ponto ÚNICO da fórmula (pré-crit/armadura):
+
+        arma_roll × dmg_weapon_pct + AP × (damage_multiplier + 0.01×skill_level + extra_mult)
+
+    - `params`         : skill.params do SKILL_CATALOG (fonte única — handlers
+                         NUNCA hardcodeiam multiplicador; classe de bug real:
+                         golpe_poderoso com 3.0 fixo ignorando o catálogo)
+    - `dmg_weapon_pct` : default 1.0 (skill DE arma soma o dano da arma);
+                         0.0 = skill sem arma (ex.: Punho no Queixo)
+    - `skill_level`    : level do skill da ARMA EQUIPADA (espada/machado/maça/
+                         arco) — trocar de arma muda o bônus; desarmado = 0
+    - `extra_mult`     : bônus dinâmicos de talento (ex.: Embalo) somados ao
+                         multiplicador
+
+    Usar o retorno com deal_damage(..., "physical_fixed",
+    base_ability_damage=resultado, is_ability=True) — crit e armadura
+    continuam sendo aplicados depois, no caminho normal.
+    """
+    from components import CombatStats, Equipment
+    from stats_system import weapon_skill_level
+    cs = world.get_component(attacker_id, CombatStats)
+    if cs is None:
+        return 0.0
+    eq     = world.get_component(attacker_id, Equipment)
+    weapon = eq.slots.get("mainhand") if eq else None
+
+    weapon_pct = params.get("dmg_weapon_pct", 1.0)
+    weapon_dmg = 0.0
+    skill_lvl  = 0
+    if weapon_pct > 0:
+        if weapon is not None and getattr(weapon, "damage_min", 0) > 0:
+            weapon_dmg = random.randint(weapon.damage_min, weapon.damage_max)
+        else:
+            weapon_dmg = random.randint(cs.base_physical_damage,
+                                        cs.base_physical_damage_max)
+        # Bônus de skill level só pra skill que USA a arma — soco (dmg_weapon_pct=0)
+        # não escala com o skill da espada equipada.
+        skill_lvl = weapon_skill_level(world, attacker_id, weapon)
+
+    mult = (params.get("damage_multiplier", 1.0)
+            + DMG_MULT_PER_WEAPON_SKILL_LEVEL * skill_lvl
+            + extra_mult)
+    return weapon_dmg * weapon_pct + cs.attack_power * mult
+
+
 def spell_damage(world, attacker_id: int, dmg_weapon_pct: float, sp_coeff: float) -> int:
     """Dano de magia = dano_arma*pct + spell_power*coeff (mínimo 1).
 

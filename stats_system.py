@@ -339,6 +339,25 @@ def weapon_skill_extras(world: World, attacker_id: int, weapon) -> tuple[float, 
     return bonus * 100.0, bonus
 
 
+def weapon_skill_level(world: World, attacker_id: int, weapon) -> int:
+    """Level do skill da ARMA equipada (espada/machado/maça/arco/báculo).
+
+    Usado pelo bônus de dano de skill física (damage_calculator.
+    ability_physical_damage: +0.01 no damage_multiplier por level) —
+    trocou de arma, o bônus passa a ser o do skill da arma nova.
+    Retorna 0 se desarmado, subtype sem mapeamento ou sem SkillLevels (mob).
+    """
+    if weapon is None:
+        return 0
+    skill_id = WEAPON_SUBTYPE_TO_SKILL.get(getattr(weapon, "subtype", ""))
+    if not skill_id:
+        return 0
+    skl = world.get_component(attacker_id, SkillLevels)
+    if skl is None:
+        return 0
+    return int(skl.levels.get(skill_id, 0))
+
+
 def defense_skill_extras(world: World, target_id: int) -> tuple[float, float]:
     """Resolve (extra_block_fracao, extra_avoid_fracao) do alvo, prontos para
     passar a `resolve_attack_outcome`. extra_block só conta se o alvo tem

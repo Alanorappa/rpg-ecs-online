@@ -384,7 +384,15 @@ class PlayerInputSystem(System):
         return True
 
     def _add_rage(self, entity_id: int, amount: int) -> None:
-        """Adiciona raiva ao jogador, respeitando o limite máximo."""
+        """Adiciona raiva ao jogador, respeitando o limite máximo.
+
+        Online: no-op — o servidor é o único produtor de rage (ganho por
+        auto-attack em combat_processor.py, decay em ServerCombatStateSystem)
+        e empurra todo valor novo via STATS_UPDATE. Gerar aqui também criava
+        dois relógios independentes: a hotbar acendia com rage local que o
+        servidor não tinha e o CAST_SKILL voltava "Raiva insuficiente"."""
+        if self._net is not None:
+            return
         cs = self.world.get_component(entity_id, CharacterStats)
         if cs:
             cs.rage = min(cs.max_rage, cs.rage + amount)

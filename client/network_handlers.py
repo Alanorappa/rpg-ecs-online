@@ -519,7 +519,7 @@ class NetworkHandlers:
             from skill_config import SKILL_CATALOG as _SC_fr2
             _fr_params  = _SC_fr2.get("flecha_reiterada", {}).get("params", {})
             _fr_delay   = _fr_params.get("arrow_delay", 0.25)
-            _fr_ap_mult = _fr_params.get("ap_multiplier", 2.0)
+            _fr_ap_mult = _fr_params.get("damage_multiplier", 2.0)
             # Servidor informa quantas flechas criar (inclui talento Sequência Final)
             _fr_n       = int(payload.get("arrow_count",
                               _fr_params.get("arrow_count", 2)))
@@ -582,7 +582,7 @@ class NetworkHandlers:
             from components import PlayerProjectile as _PPpe
             from components import Position as _PosPS
             from skill_config import SKILL_CATALOG as _SC_pe
-            _pe_ap = _SC_pe.get("picada_escorpiao", {}).get("params", {}).get("ap_multiplier", 1.5)
+            _pe_ap = _SC_pe.get("picada_escorpiao", {}).get("params", {}).get("damage_multiplier", 1.5)
             _pe_loc = self._remote_mobs.get(
                 _pe_srv_tgt, self._remote_players.get(_pe_srv_tgt, -1))
             if _pe_loc != -1:
@@ -624,7 +624,7 @@ class NetworkHandlers:
             from components import PlayerProjectile as _PPtrep
             from components import Position as _PosTR
             from skill_config import SKILL_CATALOG as _SC_tr
-            _tr_ap = _SC_tr.get("tiro_repulsivo", {}).get("params", {}).get("ap_multiplier", 1.5)
+            _tr_ap = _SC_tr.get("tiro_repulsivo", {}).get("params", {}).get("damage_multiplier", 1.5)
             _tr_loc = self._remote_mobs.get(
                 _tr_srv_tgt, self._remote_players.get(_tr_srv_tgt, -1))
             if _tr_loc != -1:
@@ -669,7 +669,7 @@ class NetworkHandlers:
             from components import PlayerProjectile as _PPtm
             from components import Position as _PosTM
             from skill_config import SKILL_CATALOG as _SC_tm
-            _tm_ap = _SC_tm.get("tiro_multiplo", {}).get("params", {}).get("ap_multiplier", 3.0)
+            _tm_ap = _SC_tm.get("tiro_multiplo", {}).get("params", {}).get("damage_multiplier", 3.0)
             _pl_pos_tm = self.world.get_component(self.player_entity, _PosTM)
             for _tm_idx, _tm_srv_tgt in enumerate(_tm_srv_tgts):
                 _tm_loc = self._remote_mobs.get(
@@ -1494,9 +1494,11 @@ class NetworkHandlers:
             px = tx * _TS + _TS // 2
             py = ty * _TS + _TS // 2
         # Reconstrói objetos de item a partir dos dados serializados do servidor
+        from quests_data import QUEST_ITEMS as _QI_loot
         loot_items = []
         for item_data in payload.get("items", []):
             item_name = item_data.get("name", "")
+            _matched = False
             for _key, factory in _T.items():
                 try:
                     candidate = factory()
@@ -1505,12 +1507,26 @@ class NetworkHandlers:
                 if getattr(candidate, "name", "") == item_name:
                     candidate.stack = item_data.get("stack", 1)
                     loot_items.append(candidate)
+                    _matched = True
                     # Reciclagem: única fonte de loot de ammo com stack>1 hoje —
                     # mesmo aviso do offline (systems.py), aqui no momento do drop.
                     if candidate.item_type == "ammo" and candidate.stack > 1:
                         LOG.add(f"Reciclagem! {candidate.stack} flechas no loot.",
                                 (180, 220, 120))
                     break
+            # Itens de quest (drop condicional, ex: Presa de Lobo) vivem em
+            # QUEST_ITEMS, não em loot_tables._T — sem este fallback o item
+            # dropava no servidor mas era DESCARTADO aqui na reconstrução e
+            # nunca aparecia na janela de loot (bug real: "Presas Afiadas").
+            if not _matched:
+                _qi_factory = _QI_loot.get(item_name)
+                if _qi_factory:
+                    try:
+                        candidate = _qi_factory()
+                        candidate.stack = item_data.get("stack", 1)
+                        loot_items.append(candidate)
+                    except Exception:
+                        pass
         # Cria entidade Corpse no ECS local — LootSystem offline lê daqui
         px = tx * _TS + _TS // 2
         py = ty * _TS + _TS // 2

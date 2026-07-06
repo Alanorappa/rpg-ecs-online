@@ -135,29 +135,47 @@ class ServerDeathHandler:
                         "mob_eid":    eid,
                     })
 
-            # 2b. Vitória Iminente: killer ganha carga ao matar mob
-            # 2b. Skills com on_kill=="charge": killer ganha carga ao matar mob
+            # 2b. Skills com on_kill=="charge" (Vitória Iminente): killer ganha
+            # carga ao matar mob. Itera o CATÁLOGO (não ps.skills) com
+            # lazy-create: skill comprada no treinador DURANTE a sessão só
+            # atualiza learned_skill_ids no servidor (sync_player_skills) — o
+            # objeto Skill nunca entrava em ps.skills até o relog e a carga
+            # nunca era concedida (bug real; mesmo padrão do PnQ em
+            # combat_processor).
             try:
                 if killer_eid != -1:
                     from components import PlayerSkills as _PSdh
                     from skill_config import SKILL_CATALOG as _SC
                     _ks = self.world.get_component(killer_eid, _PSdh)
                     if _ks:
-                        for _sk in _ks.skills:
-                            if _sk is None or _sk.max_charges <= 0:
+                        for _sid_ok, _defn in _SC.items():
+                            if _defn.get("on_kill") != "charge":
                                 continue
-                            _defn = _SC.get(_sk.skill_id, {})
-                            if _defn.get("on_kill") == "charge":
-                                if _sk.charges < _sk.max_charges:
-                                    _sk.charges      = _sk.max_charges
-                                    _sk.charge_timer = _sk.charge_timeout
-                                self.pending_xp.append({
-                                    "player_eid":   killer_eid,
-                                    "xp":           0,
-                                    "mob_eid":      eid,
-                                    "on_kill_skill": _sk.skill_id,
-                                })
-                                break
+                            _sk = _ks.skill_by_id(_sid_ok)
+                            if _sk is None:
+                                from world_systems import is_skill_authorized as _auth_dh
+                                if not _auth_dh(self.world, killer_eid, _sid_ok)[0]:
+                                    continue
+                                _sk = _PSdh._make_skill(_sid_ok, _SC)
+                                if _sk is None:
+                                    continue
+                                try:
+                                    _idx_ok = _ks.skills.index(None)
+                                    _ks.skills[_idx_ok] = _sk
+                                except ValueError:
+                                    _ks.skills.append(_sk)
+                            if _sk.max_charges <= 0:
+                                continue
+                            if _sk.charges < _sk.max_charges:
+                                _sk.charges      = _sk.max_charges
+                                _sk.charge_timer = _sk.charge_timeout
+                            self.pending_xp.append({
+                                "player_eid":   killer_eid,
+                                "xp":           0,
+                                "mob_eid":      eid,
+                                "on_kill_skill": _sk.skill_id,
+                            })
+                            break
             except Exception:
                 pass
 

@@ -70,6 +70,10 @@ class SpellCompletionMixin:
             target_id  = entry.get("target_id", -1)
             mana_cost  = entry.get("mana_cost", 0)
 
+            # Serviços globais no bundle do mapa DESTE caster antes dos handlers
+            # (mesma razão de _process_skill_requests — ver register_map_services_for)
+            self.register_map_services_for(player_eid)
+
             # Cobra mana ao completar (foi validada mas não deduzida no handler)
             char = self.world.get_component(player_eid, _CHS)
             if char and mana_cost > 0:
@@ -376,6 +380,10 @@ class SpellCompletionMixin:
 
         # Snapshot unificado: mobs + players PvP
         hp_before, sfx_before = self._snapshot_combat_targets(exclude_eid=player_eid)
+
+        # Serviços globais no bundle do mapa do caster (knockback do Tiro
+        # Repulsivo valida colisão via tilemap — ver register_map_services_for)
+        self.register_map_services_for(player_eid)
 
         self._proj_spell_result = {"is_crit": False, "lapso_proc": None}
         try:
@@ -987,10 +995,23 @@ class SpellCompletionMixin:
         if outcome in ("miss", "dodge", "parry"):
             return False, outcome, 0
 
-        base = calculate_base_damage(attacker_cs, "physical", bow,
-                                     multiplier=ap_multiplier,
-                                     outcome=outcome, block_reduction=block_r) \
-               if attacker_cs else 1.0
+        if is_ability and attacker_cs:
+            # Skills de arco: fórmula única (arco + AP×(mult + 0.01×skill_level
+            # do Arco)) — antes era (AP+arco)×mult, multiplicando a arma junto.
+            # Crit/block aplicam via physical_fixed; armadura logo abaixo.
+            from damage_calculator import ability_physical_damage as _apd_rng
+            _base_raw = _apd_rng(self.world, player_eid,
+                                 {"damage_multiplier": ap_multiplier})
+            base = calculate_base_damage(attacker_cs, "physical_fixed", bow,
+                                         base_ability_damage=_base_raw,
+                                         outcome=outcome, block_reduction=block_r)
+        elif attacker_cs:
+            # Auto-attack ranged: fórmula clássica inalterada (AP + arco)
+            base = calculate_base_damage(attacker_cs, "physical", bow,
+                                         multiplier=ap_multiplier,
+                                         outcome=outcome, block_reduction=block_r)
+        else:
+            base = 1.0
         dmg = max(1, int(apply_armor_reduction(base, attacker_cs, target_cs, outcome)))
 
         # Na Mosca: +25% no próximo disparo após crit
@@ -1074,7 +1095,7 @@ class SpellCompletionMixin:
 
         if target_id == -1:
             return
-        ap_mult       = params.get("ap_multiplier",    1.5)
+        ap_mult       = params.get("damage_multiplier", 1.5)
         slow_dur      = params.get("on_hit_duration",  3.0)
         slow_mag      = params.get("on_hit_magnitude", 0.30)
 
@@ -1088,7 +1109,7 @@ class SpellCompletionMixin:
         """Aplica 1 flecha por chamada. Chamado uma vez por PROJECTILE_HIT_CS recebido."""
         from skill_config import SKILL_CATALOG as _SC
         params  = _SC.get("flecha_reiterada", {}).get("params", {})
-        ap_mult = params.get("ap_multiplier", 2.0)
+        ap_mult = params.get("damage_multiplier", 2.0)
 
         if target_id == -1:
             return
@@ -1103,7 +1124,7 @@ class SpellCompletionMixin:
                                  CombatState, Tilemap)
         from shared.constants import TILE_SIZE as _TS
         params       = _SC.get("tiro_repulsivo", {}).get("params", {})
-        ap_mult      = params.get("ap_multiplier",  1.5)
+        ap_mult      = params.get("damage_multiplier", 1.5)
         kb_tiles     = params.get("knockback_tiles", 5)
         stun_dur     = params.get("stun_duration",   3.0)
 
@@ -1139,11 +1160,18 @@ class SpellCompletionMixin:
         from utils import bresenham_ray
         kb_path = bresenham_ray(dx, dy, kb_tiles)
 
-        # Busca tilemap para verificar colisão com paredes
+        # Tilemap do MAPA DO ALVO (multi-map: existem 3+ entidades Tilemap no
+        # world — pegar "a primeira" validava colisão contra o mapa errado e
+        # stunava em parede fantasma). Fallback: primeira, p/ mundo single-map.
         tilemap_comp = None
-        for _, tc in self.world.get_entities_with(Tilemap):
-            tilemap_comp = tc
-            break
+        _kb_map = self.get_entity_map(target_id)
+        _kb_bundle = self._map_bundles.get(_kb_map) if _kb_map else None
+        if _kb_bundle is not None:
+            tilemap_comp = self.world.get_component(_kb_bundle.tilemap_entity, Tilemap)
+        if tilemap_comp is None:
+            for _, tc in self.world.get_entities_with(Tilemap):
+                tilemap_comp = tc
+                break
 
         def _is_solid(tx, ty):
             if not tilemap_comp:
@@ -1415,7 +1443,7 @@ class SpellCompletionMixin:
         PROJECTILE_HIT_CS (1 por alvo selecionado em _complete_tiro_multiplo_cast)."""
         from skill_config import SKILL_CATALOG as _SC
         params  = _SC.get("tiro_multiplo", {}).get("params", {})
-        ap_mult = params.get("ap_multiplier", 3.0)
+        ap_mult = params.get("damage_multiplier", 3.0)
         if target_id == -1:
             return
         self._server_apply_ranged_physical(player_eid, target_id, ap_mult,

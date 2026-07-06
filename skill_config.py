@@ -29,6 +29,17 @@ Campos do catálogo:
   effects           dict   — sons/VFX por fase: {"cast_start"|"launch"|"impact"|"miss": {"sound"|"sounds": ...}}
                              sound  = str  (nome único no registry de sound_manager.py)
                              sounds = list (variações aleatórias; play_random escolhe uma)
+
+Params de DANO (skills físicas — damage_calculator.ability_physical_damage,
+fórmula única: arma×dmg_weapon_pct + AP×(damage_multiplier + 0.01×skill_level_da_arma)):
+  damage_multiplier float  — coeficiente do attack_power (lido SÓ daqui;
+                             handlers nunca hardcodeiam)
+  dmg_weapon_pct    float  — fração do dano da arma somada (default 1.0;
+                             0.0 = skill sem arma, ex. Punho no Queixo —
+                             também desliga o bônus de skill level da arma)
+Params de DANO (magias — damage_calculator.spell_damage):
+  dmg_weapon_pct    float  — fração do dano da arma (cajado) somada
+  dmg_sp_coeff      float  — coeficiente do spell_power
 """
 NUM_SLOTS = 10
 
@@ -52,7 +63,7 @@ SKILL_CATALOG: dict[str, dict] = {
         "proc_ignores_cost": False,
         "class_id":         "guerreiro",
         "effects":          {"impact": {"sound": "skill_golpe_poderoso"}},
-        "params": {"damage_multiplier": 3.0},
+        "params": {"damage_multiplier": 0.75},
     },
     "vitoria_iminente": {
         "name":             "Vitória Iminente",
@@ -64,7 +75,8 @@ SKILL_CATALOG: dict[str, dict] = {
         "class_id":         "guerreiro",
         "on_kill":          "charge",
         "effects":          {"impact": {"sound": "skill_vitoria_iminente"}},
-        "params": {"damage_multiplier": 2.0, "heal_pct": 0.30},
+        "params": {"damage_multiplier": 0.75, 
+                   "heal_pct": 0.30},
     },
     "impacto": {
         "name":             "Impacto",
@@ -76,7 +88,8 @@ SKILL_CATALOG: dict[str, dict] = {
         "needs_target":     False,
         "class_id":         "guerreiro",
         "effects":          {"impact": {"sound": "skill_impacto"}},
-        "params": {"damage_multiplier": 0.50, "radius_tiles": 3},
+        "params": {"damage_multiplier": 0.75, 
+                   "radius_tiles": 3},
     },
     "executar": {
         "name":             "Executar",
@@ -87,7 +100,8 @@ SKILL_CATALOG: dict[str, dict] = {
         "proc_ignores_cost": True,
         "class_id":         "guerreiro",
         "effects":          {"impact": {"sound": "skill_executar"}},
-        "params": {"damage_multiplier": 5.0, "hp_threshold": 0.30},
+        "params": {"damage_multiplier": 3.0, 
+                   "hp_threshold": 0.30},
     },
     "interceptar": {
         "name":             "Interceptar",
@@ -98,7 +112,9 @@ SKILL_CATALOG: dict[str, dict] = {
         "proc_ignores_cost": False,
         "class_id":         "guerreiro",
         "effects":          {"impact": {"sound": "skill_interceptar"}},
-        "params": {"min_range": 2, "max_range": 6, "duration": 0.18},
+        "params": {"min_range": 2, 
+                   "max_range": 6, 
+                   "duration": 0.18},
     },
 
     # ── Guerreiro — skills de talento (build Cavaleiro) ──────────────────────
@@ -111,7 +127,9 @@ SKILL_CATALOG: dict[str, dict] = {
         "proc_ignores_cost": False,
         "class_id":         "guerreiro",
         "effects":          {"impact": {"sound": "skill_golpe_debilitante"}},
-        "params": {"damage_multiplier": 0.50, "slow_pct": 0.50, "slow_duration": 5.0},
+        "params": {"damage_multiplier": 0.50, 
+                   "slow_pct": 0.50, 
+                   "slow_duration": 5.0},
     },
     "brado_provocativo": {
         "name":             "Brado Provocativo",
@@ -123,7 +141,8 @@ SKILL_CATALOG: dict[str, dict] = {
         "needs_target":     False,
         "class_id":         "guerreiro",
         "effects":          {"impact": {"sound": "skill_brado_provocativo"}},
-        "params": {"radius_tiles": 3, "duration": 10.0},
+        "params": {"radius_tiles": 3, 
+                   "duration": 10.0},
     },
     "punho_no_queixo": {
         "name":             "Punho no Queixo",
@@ -134,7 +153,9 @@ SKILL_CATALOG: dict[str, dict] = {
         "proc_ignores_cost": False,
         "class_id":         "guerreiro",
         "effects":          {"impact": {"sound": "skill_punho_no_queixo"}},
-        "params": {"damage_multiplier": 0.45, "hits_required": 3},
+        "params": {"damage_multiplier": 0.45,
+                   "dmg_weapon_pct": 0.0,   # soco: não usa a arma nem skill level dela
+                   "hits_required": 3},
     },
     "fatiador_de_corpos": {
         "name":             "Fatiador de Corpos",
@@ -147,8 +168,7 @@ SKILL_CATALOG: dict[str, dict] = {
         "class_id":         "guerreiro",
         "effects":          {"impact": {"sound": "skill_fatiador_de_corpos"}},
         "params": {
-            "damage_multiplier": 1.65,   # % do AP por tick
-            "include_weapon_dmg": True,  # adiciona dano da arma
+            "damage_multiplier": 1.75,   # % do AP por tick (arma soma por padrão)
             "duration":          5.0,
             "tick_interval":     1.0,
             "radius_tiles":      2,
@@ -279,7 +299,7 @@ SKILL_CATALOG: dict[str, dict] = {
     # ── Arqueiro ─────────────────────────────────────────────────────────────
     "tiro_multiplo": {
         "name":      "Tiro Múltiplo",
-        "desc":      "Dispara flechas em cone de 90° na direção do mouse. 1pt=2 alvos, 2pt=3 alvos, 3pt=ilimitado. 100% arma + 300% AP. 60 Conc. 90s CD.",
+        "desc":      "Dispara flechas em cone de 90° na direção do mouse. 1pt=2 alvos, 2pt=3 alvos, 3pt=ilimitado.",
         "cooldown":  90.0,
         "cast_time": 1.5,
         "cast_range": 0,
@@ -291,7 +311,7 @@ SKILL_CATALOG: dict[str, dict] = {
         },
         "params": {
             "concentration_cost": 60,
-            "ap_multiplier":      3.0,   # 100% weapon + 300% AP (extra_ap = 2× AP)
+            "damage_multiplier":  3.0,   # dano = arma + AP×(3.0 + skill level do arco)
             "cone_half_angle":    45.0,  # graus — cone total de 90°
             "range_tiles":        12,    # raio FOV padrão do arqueiro
         },
@@ -327,7 +347,7 @@ SKILL_CATALOG: dict[str, dict] = {
             "concentration_cost": 100,
             "knockback_tiles":    5,
             "stun_duration":      3.0,
-            "ap_multiplier":      1.5,   # 1x já vem do deal_damage; +0.5 = 150% total
+            "damage_multiplier":  1.5,   # dano = arma + AP×(1.5 + skill level do arco)
         },
     },
     "cancao_inspiracao": {
@@ -388,7 +408,7 @@ SKILL_CATALOG: dict[str, dict] = {
         },
         "params": {
             "concentration_cost": 20,
-            "ap_multiplier":      1.5,
+            "damage_multiplier":  1.5,
             "guaranteed_hit":     True,
             "on_hit_effect":      "slow",
             "on_hit_duration":    3.0,
@@ -412,7 +432,7 @@ SKILL_CATALOG: dict[str, dict] = {
             "concentration_cost": 80,
             "arrow_count":        2,
             "arrow_delay":        0.25,   # segundos entre a 1ª e 2ª flecha
-            "ap_multiplier":      2.0,    # dano = weapon + arrow + 200% AP
+            "damage_multiplier":  2.0,    # dano = arma + flecha + AP×(2.0 + skill level do arco)
         },
     },
     "recarregar": {

@@ -52,7 +52,13 @@ O servidor é a única fonte de verdade para:
 - Drops de loot
 - Estado de invisibilidade de outros jogadores
 
-**Exceção controlada:** Rage e mana são gerados localmente pelo cliente (igual ao offline) e sincronizados no `CAST_SKILL` via `rage`/`mana` fields. O servidor os aplica via `sync_player_resources()` antes de processar a skill.
+**Recursos (rage/mana/concentração) — servidor é o ÚNICO produtor (03/07/2026):**
+O modelo antigo ("cliente gera localmente e sincroniza no `CAST_SKILL`") foi removido em duas etapas — era vulnerabilidade (cliente forjava valores) e causava dessincronia (dois relógios independentes; hotbar acendia com rage local que o servidor não tinha → "Raiva insuficiente" + snap da barra). Modelo atual:
+- **Ganho de rage** (+5 por auto-attack, PvE e PvP): `combat_processor.py` → push imediato via `queue_stats_update({rage})`
+- **Decay de rage** (−5/3s fora de combate): `ServerCombatStateSystem.rage_events` → STATS_UPDATE
+- **Regen/custo de mana**: `mana_events` + dedução nos handlers/completion → STATS_UPDATE
+- **Custos pós-skill**: `skill_processor` envia rage/mana/concentração após todo attempt
+- Cliente online **não produz** rage: `PlayerInputSystem._add_rage` e o rage decay de `CombatStateSystem` são no-op com `_net` setado — `CharacterStats.rage` local é só display, alimentado por STATS_UPDATE.
 
 **Gate de dano — `_apply_final_damage` (`server/spell_completion_processor.py`):**
 
@@ -204,7 +210,8 @@ Fontes de LOG no modo online:
 - `MapLocation(map_file)` component em **todas** as entidades (mobs, NPCs, spawn_zones) — fonte única de verdade para mapa da entidade (P3 completo; `_eid_to_map` eliminado em 2026-07-01)
 - `EnemyAISystem(map_filter=map_file)` e `SpawnZoneSystem(map_filter=map_file)` por bundle
 - `PathfindingSystem(tilemap_entity=...)` e `TileValidationSystem(tilemap_entity=...)` por bundle
-- `_tick()` itera `_map_bundles`, chama `register_services()` com serviços do bundle antes de cada loop
+- P4: serviços (tile_validation/pathfinding) injetados DIRETO nos sistemas de cada bundle em `_load_map_for` — o `_svc` global fica apontando pro ÚLTIMO mapa carregado
+- **`register_map_services_for(eid)` (ponto único)**: TODO entry point do servidor que executa handler compartilhado em nome de um player (skill request, spell completion, projectile hit) chama isto ANTES do handler — re-registra `_svc` com o bundle do mapa da entidade (via `MapLocation`). Sem isso, `is_tile_walkable`/`find_path`/`get_tilemap` de módulo validavam contra o mapa errado (bug real: Interceptar "Caminho bloqueado" em terreno aberto; Tiro Repulsivo stunando em parede fantasma). `move_player` usa o bundle direto (mesma classe de bug, corrigida antes pontualmente)
 
 **Carregamento (depth 1):**
 1. Carrega mapa principal (`MAP_FILE`), lê transições do JSON
@@ -308,7 +315,7 @@ a cada spawn tentado e decrementado no próximo ciclo. Sem isso, uma zona poderi
 
 5. CombatStateSystem inline (para cada player):
    ├── Decrementa combat_timer; desativa in_combat se expirou
-   ├── Rage decay (−5 a cada 3s fora de combate)
+   ├── Rage decay (−5 a cada 3s fora de combate) → rage_events → STATS_UPDATE {rage}
    └── HP5 regen (5% max_hp a cada 5s fora de combate)
        └── Emite combat_result {outcome="regen"} para cliente mostrar "+N HP"
 

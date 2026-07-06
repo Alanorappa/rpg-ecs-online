@@ -1709,6 +1709,27 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         ml = self.world.get_component(eid, _MLem)
         return ml.map_file if ml else None
 
+    def register_map_services_for(self, eid: int) -> None:
+        """Re-registra os serviços globais (_svc) com o bundle do MAPA da entidade.
+
+        Handlers compartilhados (skill_handlers/spell_system) chamam
+        is_tile_walkable/find_path/get_tilemap de módulo, que resolvem via _svc —
+        e _svc fica apontando pro ÚLTIMO mapa carregado no startup (multi-map).
+        Sem esta chamada, um player em map_1 tinha o caminho validado contra a
+        matriz da CAVERNA (classe de bug: Interceptar "Caminho bloqueado"/"Sem
+        espaço ao redor do alvo" em terreno aberto; Tiro Repulsivo stunando em
+        parede fantasma). Mesmo problema já corrigido pontualmente em
+        move_player() — TODO entry point que executa handler em nome de um
+        player (skill request, spell completion, channeling) deve chamar isto
+        ANTES do handler. Ver PROBLEMAS_ARQUITETURA.md.
+        """
+        from world_systems import register_services
+        _map = self.get_entity_map(eid) or self._map_file
+        bundle = self._map_bundles.get(_map)
+        if bundle is not None and bundle.tile_validation is not None:
+            register_services(tile_validation=bundle.tile_validation,
+                              pathfinding=bundle.pathfinding)
+
     def consume_sound_events(self) -> list[dict]:
         """Retorna e limpa eventos de som posicionais do tick."""
         result = list(self._pending_sound_events)
@@ -2306,6 +2327,15 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             self.queue_stats_update({
                 "player_eid": _mana_ev["player_eid"],
                 "mana":       _mana_ev["new_mana"],
+            })
+        # Decay de Raiva (Guerreiro) — único produtor autoritativo; sincroniza
+        # via STATS_UPDATE. Cliente online NÃO gera/decai rage localmente (ver
+        # PROBLEMAS_ARQUITETURA.md — hotbar acendia com rage local à frente do
+        # servidor e a skill era rejeitada com "Raiva insuficiente").
+        for _rage_ev in self._combat_state_sys.rage_events:
+            self.queue_stats_update({
+                "player_eid": _rage_ev["player_eid"],
+                "rage":       _rage_ev["new_rage"],
             })
         # Procs de item rolados autoritativamente (core_systems.ServerCombatStateSystem.
         # _roll_procs) — qualquer mudança em current_hp/max_hp já é detectada e

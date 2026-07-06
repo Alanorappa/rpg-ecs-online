@@ -31,6 +31,12 @@ class SkillProcessorMixin:
             player_eid = req["player_eid"]
             sid        = req["sid"]
 
+            # Serviços globais (is_tile_walkable/find_path/get_tilemap) apontam
+            # pro bundle do MAPA DESTE player antes de qualquer handler rodar —
+            # sem isso validavam contra o último mapa carregado (Interceptar
+            # "bloqueado" em terreno aberto). Ver register_map_services_for.
+            self.register_map_services_for(player_eid)
+
             # Player morto (corpo) ou espírito (ghost): nunca executa skills —
             # mesmo que o cliente esteja com bug visual ou tente burlar can_act().
             _gst_skp = self.world.get_component(player_eid, GhostState)
@@ -412,10 +418,20 @@ class SkillProcessorMixin:
             # Registra CD server-side APENAS se handler teve sucesso.
             # Registra CD efetivo (com reduções de talento) para que a validação futura
             # use o mesmo valor que o cliente recebeu — evita rejeição falsa por dessincronia.
-            if _skill_ok and _sk_cd > 0:
-                self._skill_last_used[_sk_key]    = _now_srv
-                _eff_cd_store = getattr(skill_obj, "current_cooldown", _sk_cd)
-                self._skill_effective_cd[_sk_key] = _eff_cd_store
+            if _skill_ok:
+                # current_cooldown só é setado pelos handlers de skills INSTANTÂNEAS
+                # (ex: Interceptar com redução de talento). Handlers com cast_time
+                # retornam True sem tocá-lo (CD real só na completion) — usar o valor
+                # cru registrava CD efetivo = 0.0 e a skill ficava SEM cooldown pra
+                # sempre: gate acima nunca bloqueia (0 > 0 falso) e a completion
+                # mandava 0.0 pro cliente (skills do arqueiro/mago spammáveis).
+                # Fallback: efetivo do uso anterior (_sk_cd) ou CD base do catálogo.
+                _eff_cd_store = getattr(skill_obj, "current_cooldown", 0.0)
+                if not _eff_cd_store or _eff_cd_store <= 0:
+                    _eff_cd_store = _sk_cd if _sk_cd > 0 else getattr(skill_obj, "cooldown", 0.0)
+                if _eff_cd_store > 0:
+                    self._skill_last_used[_sk_key]    = _now_srv
+                    self._skill_effective_cd[_sk_key] = _eff_cd_store
 
             # Envia SKILL_RESULT sempre: sucesso (com dano/efeitos) OU falha (failed=True).
             # Cliente usa failed=True para restaurar carga consumida localmente + limpar pending.
