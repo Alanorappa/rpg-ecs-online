@@ -1,4 +1,14 @@
 # main.py
+import os
+import sys
+
+# Build (PyInstaller): CWD = pasta do exe ANTES de qualquer import de jogo —
+# todos os caminhos relativos ("assets/...", "maps/...", logs/, saves/)
+# passam a resolver ao lado do executável, mesmo se o atalho definir outro
+# diretório de trabalho.
+if getattr(sys, "frozen", False):
+    os.chdir(os.path.dirname(sys.executable))
+
 import pygame
 import config
 from game import GameEngine
@@ -84,4 +94,12 @@ if __name__ == "__main__":
         net_user=net_user, net_pass=net_pass,
         net_client=net,          # NetworkClient já conectado, com LOGIN_OK na fila
     )
-    game_engine.run()
+    try:
+        game_engine.run()
+    except Exception:
+        # Build sem console: crash silencioso é indepurável no alpha —
+        # grava traceback em crash.log ao lado do exe pro testador anexar.
+        import traceback
+        with open("crash.log", "w", encoding="utf-8") as _f:
+            traceback.print_exc(file=_f)
+        raise

@@ -9,7 +9,7 @@ import logging
 import os
 import datetime
 
-SPELL_DEBUG = True
+SPELL_DEBUG = False   # True só em dev — NUNCA em build de distribuição
 
 _log_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
 os.makedirs(_log_dir, exist_ok=True)

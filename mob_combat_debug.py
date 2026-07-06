@@ -34,7 +34,7 @@ import time
 from pathlib import Path
 
 # ── Ative aqui ───────────────────────────────────────────────────────────────
-DBG_ENABLED: bool = True   # <<< mude para False para parar de gravar o log
+DBG_ENABLED: bool = False   # <<< mude para True para gravar o log (dev only — NUNCA em build de distribuição)
 # ─────────────────────────────────────────────────────────────────────────────
 
 _LOG_DIR  = Path(__file__).parent / "logs"
@@ -42,6 +42,12 @@ _LOG_FILE = _LOG_DIR / "mob_combat.log"
 
 # Intervalo mínimo entre logs ATK_BLOCK por mob (s) — evita spam de 20 linhas/s
 _ATK_BLOCK_INTERVAL = 2.0
+
+# Rotação: ao passar deste tamanho, mob_combat.log vira mob_combat.log.1
+# (sobrescrevendo a rotação anterior). Checado na abertura e a cada
+# _ROTATE_CHECK_EVERY escritas — pior caso o arquivo ativo fica ~2× isso.
+_MAX_LOG_BYTES     = 50 * 1024 * 1024
+_ROTATE_CHECK_EVERY = 20_000
 
 
 def _ts() -> str:
@@ -59,6 +65,8 @@ class _MobCombatLog:
         self._block_timers: dict[int, float] = {}
         # Estado anterior por mob — para detectar mudanças não instrumentadas
         self._prev_states:  dict[int, str]   = {}
+        # Contador de escritas desde a última checagem de rotação
+        self._writes_since_check = 0
 
     @property
     def DBG_ENABLED(self) -> bool:
@@ -72,12 +80,30 @@ class _MobCombatLog:
     def _open(self) -> None:
         if self._fh is None:
             _LOG_DIR.mkdir(parents=True, exist_ok=True)
+            self._rotate_if_big()
             self._fh = open(_LOG_FILE, "a", encoding="utf-8", buffering=1)
             sep = "=" * 76
             self._fh.write(f"{sep}\n[SESSION] {time.strftime('%Y-%m-%d %H:%M:%S')}\n{sep}\n")
 
+    def _rotate_if_big(self) -> None:
+        """mob_combat.log → mob_combat.log.1 se passou de _MAX_LOG_BYTES."""
+        try:
+            if _LOG_FILE.exists() and _LOG_FILE.stat().st_size > _MAX_LOG_BYTES:
+                if self._fh is not None:
+                    self._fh.close()
+                    self._fh = None
+                _LOG_FILE.replace(_LOG_FILE.with_name(_LOG_FILE.name + ".1"))
+        except OSError:
+            pass  # rotação é best-effort — nunca derrubar o jogo por causa de log
+
     def _write(self, line: str) -> None:
         self._fh.write(line + "\n")
+        self._writes_since_check += 1
+        if self._writes_since_check >= _ROTATE_CHECK_EVERY:
+            self._writes_since_check = 0
+            self._rotate_if_big()
+            if self._fh is None:   # rotacionou no meio da sessão → reabre
+                self._open()
 
     # ── API pública ───────────────────────────────────────────────────────────
 
