@@ -1,4 +1,4 @@
-﻿"""
+"""
 save_sync_handlers.py — Mixin com persistência (save/load de personagem,
 serialização de itens) e mensagens de sincronização ao servidor (talentos,
 hotbar, stats de combate, loot, engage por proximidade). Separado de game.py
@@ -6,7 +6,7 @@ para manter GameEngine conciso. Esta classe NÃO deve ser instanciada
 diretamente — ela é herdada por GameEngine, que fornece self.world,
 self._my_eid, self._net e os demais atributos referenciados aqui.
 """
-from components import PlayerSkills
+from engine.components import PlayerSkills
 
 
 class SaveSyncHandlers:
@@ -65,7 +65,7 @@ class SaveSyncHandlers:
         """
         if not d or not d.get("name"):
             return None
-        from components import Item as _Item, Modifier as _Mod
+        from engine.components import Item as _Item, Modifier as _Mod
         mods = [_Mod(m["attribute"], float(m["value"]), m.get("type", "flat"))
                 for m in d.get("modifiers", []) if "attribute" in m]
         item = _Item(
@@ -98,7 +98,7 @@ class SaveSyncHandlers:
         """
         if not d:
             return None
-        from loot_tables import _T
+        from content.loot_tables import _T
         name = d.get("name", "")
         # Tenta achar pelo nome no catálogo (loot drops)
         for key, factory in _T.items():
@@ -125,7 +125,7 @@ class SaveSyncHandlers:
     def _collect_save_state(self) -> dict:
         """Coleta estado completo do personagem para enviar ao servidor."""
         import json
-        from components import (Inventory, Equipment, TalentTree,
+        from engine.components import (Inventory, Equipment, TalentTree,
                                  Wallet, CharacterStats, CombatStats, PlayerSkills as _PSCol)
 
         char  = self.world.get_component(self.player_entity, CharacterStats)
@@ -186,7 +186,7 @@ class SaveSyncHandlers:
             }
 
         # Fog of War — tiles explorados por mapa (servidor faz union, é aditivo)
-        from components import FogOfWar as _FogCol
+        from engine.components import FogOfWar as _FogCol
         fog_comp = self.world.get_component(self.player_entity, _FogCol)
         fog = {}
         if fog_comp:
@@ -209,7 +209,7 @@ class SaveSyncHandlers:
         if not self._net or not self._net.connected or self._my_eid == -1:
             return
         from shared.messages import MsgType as _MT_tu
-        from components import TalentTree as _TTu
+        from engine.components import TalentTree as _TTu
         tt = self.world.get_component(self.player_entity, _TTu)
         if tt:
             self._net.send(_MT_tu.TALENT_UPDATE, {"talents": {
@@ -223,7 +223,7 @@ class SaveSyncHandlers:
         if not self._net or not self._net.connected or self._my_eid == -1:
             return
         from shared.messages import MsgType as _MT_hbu
-        from components import PlayerSkills as _PSu, ConsumableBar as _CBu
+        from engine.components import PlayerSkills as _PSu, ConsumableBar as _CBu
         ps   = self.world.get_component(self.player_entity, _PSu)
         cbar = self.world.get_component(self.player_entity, _CBu)
         self._net.send(_MT_hbu.HOTBAR_UPDATE, {
@@ -237,12 +237,12 @@ class SaveSyncHandlers:
             return
         from shared.messages import MsgType as _MT_la
         if change_type == "gold":
-            from components import Wallet as _W_la
+            from engine.components import Wallet as _W_la
             wall = self.world.get_component(self.player_entity, _W_la)
             if wall:
                 self._net.send(_MT_la.GOLD_UPDATE, {"gold": wall.gold})
         elif change_type == "item":
-            from components import Inventory as _Inv_la
+            from engine.components import Inventory as _Inv_la
             inv = self.world.get_component(self.player_entity, _Inv_la)
             if inv:
                 inv_list = [self._serialize_item(it) for it in inv.items if it]
@@ -251,7 +251,7 @@ class SaveSyncHandlers:
 
     def _get_equip_snapshot(self) -> dict:
         """Retorna snapshot do equipamento atual como dict slot→item_name (para comparação)."""
-        from components import Equipment as _EqSnap
+        from engine.components import Equipment as _EqSnap
         equip = self.world.get_component(self.player_entity, _EqSnap)
         if not equip:
             return {}
@@ -272,7 +272,7 @@ class SaveSyncHandlers:
         if not self._net or not self._net.connected or self._my_eid == -1:
             return
         from shared.messages import MsgType as _MT_es
-        from components import Equipment as _EqES
+        from engine.components import Equipment as _EqES
         equip = self.world.get_component(self.player_entity, _EqES)
         if not equip:
             return
@@ -304,11 +304,11 @@ class SaveSyncHandlers:
     def _restore_save_state(self, char_data: dict) -> None:
         """Restaura inventário, equipment e talentos recebidos do servidor no LOGIN_OK."""
         import json as _jr
-        from components import (Inventory, Equipment, TalentTree,
+        from engine.components import (Inventory, Equipment, TalentTree,
                                  Wallet, CharacterStats)
-        from stats_system import apply_char_stats_to_combat, sync_attack_interval
-        from components import CombatStats, PermanentStats
-        from components import Equipment as _EqC
+        from engine.stats_system import apply_char_stats_to_combat, sync_attack_interval
+        from engine.components import CombatStats, PermanentStats
+        from engine.components import Equipment as _EqC
 
         # Inventário
         inv_raw = char_data.get("inventory_json", "[]")
@@ -338,8 +338,8 @@ class SaveSyncHandlers:
                     equip.slots[slot] = self._restore_item(item_d)
 
         # Re-aplica modificadores de todos os itens equipados
-        from components import CombatStats as _CSEq
-        from stat_fns import add_modifier as _add_eq_mod
+        from engine.components import CombatStats as _CSEq
+        from engine.stat_fns import add_modifier as _add_eq_mod
         cs_eq = self.world.get_component(self.player_entity, _CSEq)
         if equip and cs_eq:
             for _slot_eq, _item_eq in equip.slots.items():
@@ -373,7 +373,7 @@ class SaveSyncHandlers:
         # SÓ EXIBIÇÃO (painel de skills): nunca enviado de volta ao servidor,
         # nunca usado em cálculo de dano no cliente (server-autoritativo,
         # ver stats_system.grant_skill_xp / PROBLEMAS_ARQUITETURA.md).
-        from components import SkillLevels as _SKLr
+        from engine.components import SkillLevels as _SKLr
         skl_raw = char_data.get("skill_levels_json", "{}")
         try:
             skl_dict = _jr.loads(skl_raw) if isinstance(skl_raw, str) else {}
@@ -393,7 +393,7 @@ class SaveSyncHandlers:
         # nunca muta sozinho no modo online (server-autoritativo, ver
         # quest_logic.py/PROBLEMAS_ARQUITETURA.md). Mudanças subsequentes
         # chegam via QUEST_UPDATE (client/network_handlers.py).
-        from components import QuestLog as _QLr
+        from engine.components import QuestLog as _QLr
         ql_raw = char_data.get("quests_json", "{}")
         try:
             ql_dict = _jr.loads(ql_raw) if isinstance(ql_raw, str) else {}
@@ -410,7 +410,7 @@ class SaveSyncHandlers:
             skills_data = _jr.loads(skills_raw) if isinstance(skills_raw, str) else {}
         except Exception:
             skills_data = {}
-        from components import PlayerSkills as _PSR
+        from engine.components import PlayerSkills as _PSR
         ps_r = self.world.get_component(self.player_entity, _PSR)
         if ps_r:
             # Layout da hotbar é UI local (config.json) — não sincronizado com servidor.
@@ -424,7 +424,7 @@ class SaveSyncHandlers:
             elif not ps_r.learned_skill_ids:
                 # Novo personagem ou save corrompido (skills_json vazio/learned=[]):
                 # adiciona skills iniciais da classe (igual ao servidor em spawn_player).
-                from skill_config import INITIAL_SKILLS_BY_CLASS as _ISC
+                from content.skill_config import INITIAL_SKILLS_BY_CLASS as _ISC
                 _cls_rs = char_data.get("class_id", "guerreiro")
                 for _isid in _ISC.get(_cls_rs, []):
                     ps_r.learned_skill_ids.add(_isid)
@@ -440,7 +440,7 @@ class SaveSyncHandlers:
 
         # Fog of War — restaura tiles explorados por mapa a partir do servidor.
         # char_data pode ter "fog_json" (coluna do DB) ou "fog" (já parseado pelo merge).
-        from components import FogOfWar as _FogR
+        from engine.components import FogOfWar as _FogR
         fog_r = self.world.get_component(self.player_entity, _FogR)
         if fog_r:
             _fog_raw = char_data.get("fog_json", char_data.get("fog", {}))
@@ -461,13 +461,13 @@ class SaveSyncHandlers:
 
     def _player_world_pos(self) -> "tuple[float, float]":
         """Retorna posição pixel do player local (centro do tile)."""
-        from components import Position as _PosWP
+        from engine.components import Position as _PosWP
         _p = self.world.get_component(self.player_entity, _PosWP)
         return (_p.x, _p.y) if _p else (0.0, 0.0)
 
     def _space_engage_online(self) -> None:
         """ESPAÇO: seleciona o mob remoto mais próximo e inicia perseguição (como offline)."""
-        from components import TileMovement, CombatState, PlayerAutoMove
+        from engine.components import TileMovement, CombatState, PlayerAutoMove
         tm   = self.world.get_component(self.player_entity, TileMovement)
         cs_p = self.world.get_component(self.player_entity, CombatState)
         auto = self.world.get_component(self.player_entity, PlayerAutoMove)

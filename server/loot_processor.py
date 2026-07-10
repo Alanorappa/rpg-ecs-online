@@ -36,7 +36,7 @@ class LootProcessorMixin:
         corpse["timer"] = min(corpse["timer"], 15.0)  # reduz timer após saque
         # Atualiza Wallet do servidor para persistência
         if coins > 0:
-            from components import Wallet as _W
+            from engine.components import Wallet as _W
             wallet = self.world.get_component(player_eid, _W)
             if wallet:
                 wallet.gold += coins

@@ -1,15 +1,15 @@
-﻿"""
+"""
 network_handlers.py — Mixin com os handlers de mensagens de rede do cliente.
 Separado de game.py para manter GameEngine conciso. Esta classe NÃO deve ser
 instanciada diretamente — ela é herdada por GameEngine, que fornece
 self.world, self._my_eid, self._net e os demais atributos referenciados aqui.
 """
 import random
-from components import PlayerSkills, TileMovement
-from tileset import TILE_SIZE
-from combat_log import LOG
-from floating_text import PROC
-from sound_manager import SOUNDS
+from engine.components import PlayerSkills, TileMovement
+from engine.tileset import TILE_SIZE
+from ui.combat_log import LOG
+from ui.floating_text import PROC
+from ui.sound_manager import SOUNDS
 
 
 class NetworkHandlers:
@@ -81,13 +81,13 @@ class NetworkHandlers:
 
 
     def _handle_msg_login_ok(self, payload: dict) -> None:
-        from components import TileMovement
+        from engine.components import TileMovement
         self._my_eid = payload.get("eid", -1)
         char = payload.get("char", {})
         tx   = int(char.get("tile_x", 10))
         ty   = int(char.get("tile_y", 10))
         # Sincroniza posição local com o servidor — evita conflito com save offline
-        from components import Position
+        from engine.components import Position
         from shared.constants import TILE_SIZE as _TS
         tm = self.world.get_component(self.player_entity, TileMovement)
         if tm:
@@ -100,8 +100,8 @@ class NetworkHandlers:
         self._net_last_tx = tx
         self._net_last_ty = ty
         # Sincroniza HP do player com o servidor
-        from components import CombatStats, CharacterStats as _CS_login
-        from stats_system import apply_char_stats_to_combat, sync_attack_interval, process_levelups, CLASS_BASE_STATS
+        from engine.components import CombatStats, CharacterStats as _CS_login
+        from engine.stats_system import apply_char_stats_to_combat, sync_attack_interval, process_levelups, CLASS_BASE_STATS
         cs        = self.world.get_component(self.player_entity, CombatStats)
         char_stat = self.world.get_component(self.player_entity, _CS_login)
         srv_hp     = payload.get("hp",     0)
@@ -131,7 +131,7 @@ class NetworkHandlers:
                 char_stat.defense          = int(_stats_s.get("defense",      _base_s["defense"]))
                 _gold_s = int(_stats_s.get("gold", 0))
                 if _gold_s > 0:
-                    from components import Wallet as _W_login
+                    from engine.components import Wallet as _W_login
                     wallet_login = self.world.get_component(self.player_entity, _W_login)
                     if wallet_login:
                         wallet_login.gold = _gold_s
@@ -144,8 +144,8 @@ class NetworkHandlers:
                 char_stat.defense      = _base_s["defense"]
 
             # SEMPRE recalcula CombatStats — garante CLASS_MELEE_OVERRIDES aplicado
-            from components import PermanentStats as _PS_login
-            from components import Equipment as _EqLogin
+            from engine.components import PermanentStats as _PS_login
+            from engine.components import Equipment as _EqLogin
             perm_login = self.world.get_component(self.player_entity, _PS_login)
             eq_login   = self.world.get_component(self.player_entity, _EqLogin)
             if cs:
@@ -241,7 +241,7 @@ class NetworkHandlers:
                                 _sk_sr.charges += 1
                             if _srv_cd_fail > 0:
                                 _sk_sr.current_cooldown = float(_srv_cd_fail)
-                from components import SpellCast as _SCFail, CombatState as _CSFail
+                from engine.components import SpellCast as _SCFail, CombatState as _CSFail
                 _sc_fail = self.world.get_component(self.player_entity, _SCFail)
                 if _sc_fail and _sc_fail.spell_id == sid:
                     self.world.remove_component(self.player_entity, _SCFail)
@@ -250,7 +250,7 @@ class NetworkHandlers:
                     _cs_fail.is_casting = False
                 _fail_reason = payload.get("reason", "")
                 if _fail_reason:
-                    from floating_text import WARN as _WARN_fail
+                    from ui.floating_text import WARN as _WARN_fail
                     _WARN_fail.add(_fail_reason)
             elif _cast_started:
                 self._cancelled_spell_ids.discard(sid)
@@ -282,7 +282,7 @@ class NetworkHandlers:
                             _sk_sr.current_cooldown = float(_srv_cd) if _srv_cd is not None else _sk_sr.cooldown
         # Escudo de Fogo confirmado: adiciona FireShieldEffect no cliente para visual + timer
         if caster_eid == self._my_eid and sid == "escudo_fogo" and not payload.get("failed"):
-            from components import FireShieldEffect as _FSEcl
+            from engine.components import FireShieldEffect as _FSEcl
             if not self.world.get_component(self.player_entity, _FSEcl):
                 self.world.add_component(self.player_entity, _FSEcl(duration=15.0))
 
@@ -291,7 +291,7 @@ class NetworkHandlers:
         # aparece no HP bar — o jogador só vê a cura toda de uma vez quando
         # o servidor sincroniza o HP por outro motivo.
         if caster_eid == self._my_eid and sid == "bloco_de_gelo" and not payload.get("failed"):
-            from components import IceBlockEffect as _IBEcl, CombatState as _CStIB
+            from engine.components import IceBlockEffect as _IBEcl, CombatState as _CStIB
             if not self.world.get_component(self.player_entity, _IBEcl):
                 self.world.add_component(self.player_entity, _IBEcl(
                     duration=5.0, elapsed=0.0, heal_interval=1.0, last_heal=0.0,
@@ -308,10 +308,10 @@ class NetworkHandlers:
         # client-predicted como Interceptar.
         if caster_eid == self._my_eid and sid == "camuflagem" and not payload.get("failed"):
             import random as _rand_cam
-            from components import (CombatStats as _CSCam, CombatState as _CStCam,
+            from engine.components import (CombatStats as _CSCam, CombatState as _CStCam,
                                     TileMovement as _TMCam, StatusEffects as _SFXCam)
-            from skill_config import SKILL_CATALOG as _SCCam
-            from tileset import discover_camouflage_variants as _disc_cam
+            from content.skill_config import SKILL_CATALOG as _SCCam
+            from engine.tileset import discover_camouflage_variants as _disc_cam
             _params_cam = _SCCam.get("camuflagem", {}).get("params", {})
             _dur_cam    = _params_cam.get("duration",  5.0)
             _spd_cam    = _params_cam.get("speed_pct", 0.60)
@@ -335,28 +335,28 @@ class NetworkHandlers:
 
         # Consome carga livre de Executar ao usar a skill
         if caster_eid == self._my_eid and sid == "executar":
-            from components import CharacterStats as _CSexec
+            from engine.components import CharacterStats as _CSexec
             _char_exec = self.world.get_component(self.player_entity, _CSexec)
             if _char_exec and _char_exec.free_executar_charges > 0:
                 _char_exec.free_executar_charges -= 1
 
         # Procs sincronizados pelo servidor
         if caster_eid == self._my_eid and payload.get("assassino_proc"):
-            from components import CharacterStats as _CSproc
+            from engine.components import CharacterStats as _CSproc
             _char_proc = self.world.get_component(self.player_entity, _CSproc)
             if _char_proc:
                 _char_proc.free_executar_charges = 1
-                from combat_log import LOG as _LOG_proc
+                from ui.combat_log import LOG as _LOG_proc
                 _LOG_proc.add("Assassino: Executar disponivel! (sem custo, sem restricao de HP)",
                               (255, 80, 80))
                 PROC.add("Assassino!", (255, 80, 80))
 
         if caster_eid == self._my_eid and payload.get("fire_instant_proc"):
-            from components import CharacterStats as _CSfi
+            from engine.components import CharacterStats as _CSfi
             _char_fi = self.world.get_component(self.player_entity, _CSfi)
             if _char_fi:
                 _char_fi.fire_instant_ready = True
-                from combat_log import LOG as _LOG_fi
+                from ui.combat_log import LOG as _LOG_fi
                 _LOG_fi.add("Chama Interna: proxima Bola de Fogo instantanea e gratis!",
                             (255, 160, 60))
                 PROC.add("Chama Interna!", (255, 160, 60))
@@ -366,14 +366,14 @@ class NetworkHandlers:
             _lp_bonus = float(_lp.get("bonus", 0.0))
             _lp_dur   = float(_lp.get("duration", 5.0))
             if _lp_bonus > 0:
-                from components import CombatStats as _CSlp
-                from components import Modifier as _Modlp
-                from stat_fns import add_timed_modifier as _atm_lp
+                from engine.components import CombatStats as _CSlp
+                from engine.components import Modifier as _Modlp
+                from engine.stat_fns import add_timed_modifier as _atm_lp
                 _cs_lp = self.world.get_component(self.player_entity, _CSlp)
                 if _cs_lp:
                     _atm_lp(_cs_lp, _Modlp("crit_rating", _lp_bonus, "flat", source="buff"),
                             _lp_dur, "lapso_elemental")
-                from combat_log import LOG as _LOG_lp
+                from ui.combat_log import LOG as _LOG_lp
                 _LOG_lp.add(f"Lapso Elemental: +{int(_lp_bonus*100)}% Critico por {_lp_dur:.0f}s!",
                             (255, 180, 50))
                 PROC.add("Lapso Elemental!", (255, 180, 50))
@@ -382,7 +382,7 @@ class NetworkHandlers:
         # is_proj_damage: dano confirmado após PROJECTILE_HIT_CS → mostra números.
         _bdf_deferred: set = set()
         if caster_eid == self._my_eid and sid == "bola_de_fogo":
-            from components import PlayerProjectile as _PPcomp, Position as _PPpos2
+            from engine.components import PlayerProjectile as _PPcomp, Position as _PPpos2
             _is_compl = payload.get("is_completion", False)
             _is_pdmg  = payload.get("is_proj_damage", False)
 
@@ -439,8 +439,8 @@ class NetworkHandlers:
                     # ver _use_skill_visual_only em systems.py. on_dummy checa o proxy
                     # local do alvo (mob remoto), igual ao resto do client.
                     if t.get("damage", 0) > 0:
-                        from quest_events import fire as _quest_fire_pdmg
-                        from components import TrainingDummy as _TDpdmg
+                        from engine.quest_events import fire as _quest_fire_pdmg
+                        from engine.components import TrainingDummy as _TDpdmg
                         _t_local_pdmg = self._remote_mobs.get(_t_srv)
                         _on_dummy_pdmg = (_t_local_pdmg is not None
                                          and self.world.get_component(_t_local_pdmg, _TDpdmg) is not None)
@@ -488,8 +488,8 @@ class NetworkHandlers:
             self._apply_combat_result(_cr_t)
         # LOG e aplicação local de efeitos confirmados pelo servidor
         if caster_eid == self._my_eid:
-            from status_effects_data import EFFECT_DEFS as _EDEFS_sr
-            from core_systems import apply_effect as _ae_apply
+            from content.status_effects_data import EFFECT_DEFS as _EDEFS_sr
+            from engine.core_systems import apply_effect as _ae_apply
             for t in targets:
                 _ae = t.get("applied_effects", [])
                 if not _ae:
@@ -500,7 +500,7 @@ class NetworkHandlers:
                 if _t_local is None:
                     _t_local = self._remote_players.get(_t_srv)
                 if _t_local is not None:
-                    from components import EntityIdentity as _EI_sr, RemoteControlled as _RCae
+                    from engine.components import EntityIdentity as _EI_sr, RemoteControlled as _RCae
                     _ident_sr = self.world.get_component(_t_local, _EI_sr)
                     _rc_ae    = self.world.get_component(_t_local, _RCae)
                     _tname = (_ident_sr.name if _ident_sr
@@ -528,9 +528,9 @@ class NetworkHandlers:
                 and payload.get("is_completion")
                 and not payload.get("failed")
                 and _fr_srv_tgt != -1):
-            from components import PlayerProjectile as _PPfr
-            from components import Position as _PosFR
-            from skill_config import SKILL_CATALOG as _SC_fr2
+            from engine.components import PlayerProjectile as _PPfr
+            from engine.components import Position as _PosFR
+            from content.skill_config import SKILL_CATALOG as _SC_fr2
             _fr_params  = _SC_fr2.get("flecha_reiterada", {}).get("params", {})
             _fr_delay   = _fr_params.get("arrow_delay", 0.25)
             _fr_ap_mult = _fr_params.get("damage_multiplier", 2.0)
@@ -593,9 +593,9 @@ class NetworkHandlers:
                 and not payload.get("failed")
                 and sid not in self._cancelled_spell_ids
                 and _pe_srv_tgt != -1):
-            from components import PlayerProjectile as _PPpe
-            from components import Position as _PosPS
-            from skill_config import SKILL_CATALOG as _SC_pe
+            from engine.components import PlayerProjectile as _PPpe
+            from engine.components import Position as _PosPS
+            from content.skill_config import SKILL_CATALOG as _SC_pe
             _pe_ap = _SC_pe.get("picada_escorpiao", {}).get("params", {}).get("damage_multiplier", 1.5)
             _pe_loc = self._remote_mobs.get(
                 _pe_srv_tgt, self._remote_players.get(_pe_srv_tgt, -1))
@@ -635,9 +635,9 @@ class NetworkHandlers:
                 and not payload.get("failed")
                 and sid not in self._cancelled_spell_ids
                 and _tr_srv_tgt != -1):
-            from components import PlayerProjectile as _PPtrep
-            from components import Position as _PosTR
-            from skill_config import SKILL_CATALOG as _SC_tr
+            from engine.components import PlayerProjectile as _PPtrep
+            from engine.components import Position as _PosTR
+            from content.skill_config import SKILL_CATALOG as _SC_tr
             _tr_ap = _SC_tr.get("tiro_repulsivo", {}).get("params", {}).get("damage_multiplier", 1.5)
             _tr_loc = self._remote_mobs.get(
                 _tr_srv_tgt, self._remote_players.get(_tr_srv_tgt, -1))
@@ -680,9 +680,9 @@ class NetworkHandlers:
                 and not payload.get("failed")
                 and sid not in self._cancelled_spell_ids
                 and _tm_srv_tgts):
-            from components import PlayerProjectile as _PPtm
-            from components import Position as _PosTM
-            from skill_config import SKILL_CATALOG as _SC_tm
+            from engine.components import PlayerProjectile as _PPtm
+            from engine.components import Position as _PosTM
+            from content.skill_config import SKILL_CATALOG as _SC_tm
             _tm_ap = _SC_tm.get("tiro_multiplo", {}).get("params", {}).get("damage_multiplier", 3.0)
             _pl_pos_tm = self.world.get_component(self.player_entity, _PosTM)
             for _tm_idx, _tm_srv_tgt in enumerate(_tm_srv_tgts):
@@ -728,7 +728,7 @@ class NetworkHandlers:
         sem filtro de AOI, com allowlist de campos fácil de esquecer ao adicionar
         skill nova — causa raiz do bug "flecha não aparece pro remoto"). Ver
         arquitetura/PROBLEMAS_ARQUITETURA.md."""
-        from skill_config import SKILL_CATALOG as _SC_sfx
+        from content.skill_config import SKILL_CATALOG as _SC_sfx
         sid        = payload.get("sid", "")
         event      = payload.get("event", "")
         caster_eid = payload.get("caster_eid", -1)
@@ -757,7 +757,7 @@ class NetworkHandlers:
                 SOUNDS.play_random(snds)
         else:
             # Som posicional a partir das coords de tile do payload
-            from tileset import TILE_SIZE as _TS_sfx
+            from engine.tileset import TILE_SIZE as _TS_sfx
             _sfx_wx = payload.get("tx", 0) * _TS_sfx + _TS_sfx // 2
             _sfx_wy = payload.get("ty", 0) * _TS_sfx + _TS_sfx // 2
             _slx, _sly = self._player_world_pos()
@@ -780,7 +780,7 @@ class NetworkHandlers:
         lança uma skill de projétil. Nunca envia PROJECTILE_HIT_CS (target_server_id
         = -2) — o dano desse caster já chega normalmente via SKILL_RESULT/COMBAT_RESULT,
         isto é 100% visual."""
-        from components import PlayerProjectile as _PPb, Position as _PosB
+        from engine.components import PlayerProjectile as _PPb, Position as _PosB
         caster_local = self._remote_players.get(payload.get("caster_eid", -1), -1)
         if caster_local == -1:
             return
@@ -805,7 +805,7 @@ class NetworkHandlers:
             target_eids = [payload.get("target_eid", -1)]
 
         if sid == "flecha_reiterada":
-            from skill_config import SKILL_CATALOG as _SC_fr
+            from content.skill_config import SKILL_CATALOG as _SC_fr
             _fr_delay  = _SC_fr.get("flecha_reiterada", {}).get("params", {}).get("arrow_delay", 0.25)
             _fr_speeds = [700.0, 640.0, 580.0]
             _n_arrows  = int(payload.get("arrow_count", 2))
@@ -840,9 +840,9 @@ class NetworkHandlers:
         tiles (alvo já encostado) não tinha nenhum sinal próprio — só o ícone de
         stun aparecia, dando a impressão de que o stun "aconteceu antes" do
         empurrão. Reaproveita FLT + som de impacto já existentes (arrow_impact)."""
-        from floating_text import FLT
-        from components import Position as _PosKb
-        from tileset import TILE_SIZE as _TS_kb
+        from ui.floating_text import FLT
+        from engine.components import Position as _PosKb
+        from engine.tileset import TILE_SIZE as _TS_kb
 
         def _local_of(server_eid: int):
             if server_eid == self._my_eid:
@@ -896,16 +896,16 @@ class NetworkHandlers:
             # Remove mob do ECS local se era um mob do servidor
             local_eid = self._remote_mobs.pop(eid, None)
             if local_eid is not None:
-                from aoi_debug import AOI_DBG
+                from debug.aoi_debug import AOI_DBG
                 AOI_DBG.log("DESPAWN_ENT", server_eid=eid, local_eid=local_eid)
                 # Salva ghost position ANTES de remover entidade — fallback de FLT
-                from components import RemoteEntityMeta as _REM_d2
+                from engine.components import RemoteEntityMeta as _REM_d2
                 _meta_d2 = self.world.get_component(local_eid, _REM_d2)
                 if _meta_d2 and (_meta_d2.last_x or _meta_d2.last_y):
                     self._mob_ghost_pos[eid] = (_meta_d2.last_x, _meta_d2.last_y)
                 # Som de morte posicional antes de remover a entidade
                 try:
-                    from components import Position as _PosD, MobSounds as _MSD
+                    from engine.components import Position as _PosD, MobSounds as _MSD
                     _pos_d = self.world.get_component(local_eid, _PosD)
                     _snd_d = self.world.get_component(local_eid, _MSD)
                     if _pos_d:
@@ -945,8 +945,8 @@ class NetworkHandlers:
                         # interpola a tween confirmada, sem enfileirar passo a passo
                         # nem prever o resultado de um empurrão em si mesmo).
                         self._self_move_queue.clear()
-                        from utils import start_tile_movement
-                        from components import Position as _PosSelfDash
+                        from engine.utils import start_tile_movement
+                        from engine.components import Position as _PosSelfDash
                         _ppos_sd = self.world.get_component(self.player_entity, _PosSelfDash)
                         if _ppos_sd:
                             start_tile_movement(_ppos_sd, player_tm, real_tx, real_ty,
@@ -962,8 +962,8 @@ class NetworkHandlers:
                                 or self._self_move_queue[-1] != (real_tx, real_ty)):
                             self._self_move_queue.append((real_tx, real_ty))
                     else:
-                        from utils import start_tile_movement
-                        from components import Position as _PosSelfDash
+                        from engine.utils import start_tile_movement
+                        from engine.components import Position as _PosSelfDash
                         _ppos_sd = self.world.get_component(self.player_entity, _PosSelfDash)
                         if _ppos_sd:
                             start_tile_movement(_ppos_sd, player_tm, real_tx, real_ty)
@@ -996,7 +996,7 @@ class NetworkHandlers:
                         player_tm.target_tile_x  = real_tx
                         player_tm.target_tile_y  = real_ty
                         # Sincroniza pixel position — B10
-                        from components import Position as _PosSync
+                        from engine.components import Position as _PosSync
                         _ppos = self.world.get_component(self.player_entity, _PosSync)
                         if _ppos:
                             _ppos.x = real_tx * TILE_SIZE + TILE_SIZE / 2
@@ -1013,8 +1013,8 @@ class NetworkHandlers:
                     # próximo frame. Ignora a correção de posição; mantém só o feedback.
                     if skill_rejected:
                         # Feedback imediato: avisa que o dash foi bloqueado
-                        from floating_text import FLT
-                        from components import Position as _PosRej
+                        from ui.floating_text import FLT
+                        from engine.components import Position as _PosRej
                         _pos_rej = self.world.get_component(self.player_entity, _PosRej)
                         if _pos_rej:
                             FLT.add("Bloqueado!", _pos_rej.x, _pos_rej.y,
@@ -1036,7 +1036,7 @@ class NetworkHandlers:
             kind = sp.get("kind", "player")
             if eid != -1 and eid != self._my_eid:
                 if kind in ("enemy", "mob_projectile"):
-                    from aoi_debug import AOI_DBG
+                    from debug.aoi_debug import AOI_DBG
                     AOI_DBG.log("SPAWN_RAW", server_eid=eid, kind=kind,
                                 tx=sp.get("tx"), ty=sp.get("ty"),
                                 already_tracked=(eid in self._remote_mobs))
@@ -1096,10 +1096,10 @@ class NetworkHandlers:
             local_eid = self._remote_mobs.pop(eid, None)
             _pending_queue = self._mob_move_queues.get(eid)
             if local_eid is not None:
-                from aoi_debug import AOI_DBG
+                from debug.aoi_debug import AOI_DBG
                 AOI_DBG.log("DESPAWN_AOI", server_eid=eid, local_eid=local_eid)
                 # Salva ghost position ANTES de remover entidade — fallback de FLT
-                from components import RemoteEntityMeta as _REM_d
+                from engine.components import RemoteEntityMeta as _REM_d
                 _meta_d = self.world.get_component(local_eid, _REM_d)
                 if _meta_d and (_meta_d.last_x or _meta_d.last_y):
                     self._mob_ghost_pos[eid] = (_meta_d.last_x, _meta_d.last_y)
@@ -1107,7 +1107,7 @@ class NetworkHandlers:
                 # Som de morte APENAS para kills reais (não para saída de AOI).
                 if _is_kill:
                     try:
-                        from components import Position as _PosD2, MobSounds as _MSD2
+                        from engine.components import Position as _PosD2, MobSounds as _MSD2
                         _pos_d2 = self.world.get_component(local_eid, _PosD2)
                         _snd_d2 = self.world.get_component(local_eid, _MSD2)
                         if _pos_d2:
@@ -1118,8 +1118,8 @@ class NetworkHandlers:
                                                       dedup_key=str(local_eid))
                     except Exception:
                         pass
-                from components import TileMovement as _TM_dep, Position as _Pos_dep
-                from tileset import TILE_SIZE as _TS_dep
+                from engine.components import TileMovement as _TM_dep, Position as _Pos_dep
+                from engine.tileset import TILE_SIZE as _TS_dep
                 _tm_dep  = self.world.get_component(local_eid, _TM_dep)
                 _pos_dep = self.world.get_component(local_eid, _Pos_dep)
                 _defer = False
@@ -1168,7 +1168,7 @@ class NetworkHandlers:
         WorldServer._sync_player_skill_levels_dirty). Substitui (não soma) o
         componente local — só pra exibição no painel (tecla L), nunca usado
         em cálculo de dano client-side."""
-        from components import SkillLevels
+        from engine.components import SkillLevels
         skl = self.world.get_component(self.player_entity, SkillLevels)
         if not skl:
             return
@@ -1182,7 +1182,7 @@ class NetworkHandlers:
         # Feedback de level-up de skill: texto no log de combate + centro da
         # tela (igual Tibia) + som (mesmo som de level-up do personagem, por
         # enquanto — ver stats_system.py).
-        from skill_level_ui import SKILL_LABELS
+        from ui.skill_level_ui import SKILL_LABELS
         for entry in (payload.get("leveled_up") or []):
             _label = SKILL_LABELS.get(entry.get("skill_id", ""), entry.get("skill_id", ""))
             _msg = (f"Parabéns, você subiu o nível de sua habilidade com "
@@ -1199,7 +1199,7 @@ class NetworkHandlers:
         (não soma) o componente local — servidor é o único produtor
         autoritativo de progresso/entrega no modo online (ver
         quest_logic.py/PROBLEMAS_ARQUITETURA.md)."""
-        from components import QuestLog
+        from engine.components import QuestLog
         ql = self.world.get_component(self.player_entity, QuestLog)
         if ql is None:
             return
@@ -1208,7 +1208,7 @@ class NetworkHandlers:
 
         completed_qid = payload.get("completed_qid", "")
         if completed_qid:
-            from quests_data import QUESTS
+            from content.quests_data import QUESTS
             qdef = QUESTS.get(completed_qid)
             if qdef:
                 parts = []
@@ -1219,7 +1219,7 @@ class NetworkHandlers:
                 PROC.add("Quest Completa!", (255, 215, 0))
 
     def _handle_msg_stats_update(self, payload: dict) -> None:
-        from components import CombatStats, RemoteControlled
+        from engine.components import CombatStats, RemoteControlled
         eid = payload.get("eid", -1)
         # Projétil cosmético de espectador: ver _handle_msg_skill_effect (event="launch").
         # Antes vivia aqui, num canal STATS_UPDATE per-player sem filtro de AOI e com uma
@@ -1239,7 +1239,7 @@ class NetworkHandlers:
                 if payload.get("consumable_ok"):
                     self._consumable_system._finalize_consumable(self.player_entity, _cons_item)
                 elif payload.get("consumable_rejected"):
-                    from floating_text import WARN as _WARN_cons
+                    from ui.floating_text import WARN as _WARN_cons
                     _cons_msgs = {
                         "hp_full":   "HP já está cheio",
                         "mana_full": "Mana já está cheia",
@@ -1257,7 +1257,7 @@ class NetworkHandlers:
             # após o primeiro uso online — bug real "aljava diz estar cheia
             # mas não está"). Ver PROBLEMAS_ARQUITETURA.md.
             if "quiver_arrow_count" in payload:
-                from components import Equipment as _EqRec
+                from engine.components import Equipment as _EqRec
                 _eq_rec = self.world.get_component(self.player_entity, _EqRec)
                 _quiver_rec = _eq_rec.slots.get("offhand") if _eq_rec else None
                 if _quiver_rec is not None:
@@ -1276,7 +1276,7 @@ class NetworkHandlers:
                 _ammo_name_rec  = payload.get("ammo_name", "")
                 _ammo_taken_rec = payload.get("ammo_taken", 0)
                 if _ammo_name_rec and _ammo_taken_rec > 0:
-                    from components import Inventory as _InvRec
+                    from engine.components import Inventory as _InvRec
                     _inv_rec = self.world.get_component(self.player_entity, _InvRec)
                     if _inv_rec:
                         _ammo_item_rec = next(
@@ -1292,7 +1292,7 @@ class NetworkHandlers:
             # próximo relogin — bug real reportado por testers). Valor
             # ABSOLUTO (não delta), mesmo padrão de hp/hp_max abaixo.
             if "gold" in payload:
-                from components import Wallet as _WalletGold
+                from engine.components import Wallet as _WalletGold
                 _wallet_gold = self.world.get_component(self.player_entity, _WalletGold)
                 if _wallet_gold:
                     _wallet_gold.gold = payload["gold"]
@@ -1307,7 +1307,7 @@ class NetworkHandlers:
             _srv_mana = payload.get("mana")
             _srv_conc = payload.get("concentration")
             if _srv_rage is not None or _srv_mana is not None or _srv_conc is not None:
-                from components import CharacterStats as _CSST
+                from engine.components import CharacterStats as _CSST
                 _char_sync = self.world.get_component(self.player_entity, _CSST)
                 if _char_sync and _srv_rage is not None:
                     _char_sync.rage = _srv_rage
@@ -1320,10 +1320,10 @@ class NetworkHandlers:
             # Restauração de mana (consumível instantâneo ou HoT tick)
             _mana_amt = payload.get("mana_amount", 0)
             if _mana_amt > 0:
-                from components import Position as _PosMR
+                from engine.components import Position as _PosMR
                 _pos_mr = self.world.get_component(self.player_entity, _PosMR)
                 if _pos_mr:
-                    from floating_text import FLT as _FLT_mr
+                    from ui.floating_text import FLT as _FLT_mr
                     _FLT_mr.add(f"+{_mana_amt} MP", _pos_mr.x, _pos_mr.y - 28,
                                 (100, 180, 255), size="normal", target_id=self.player_entity)
 
@@ -1340,8 +1340,8 @@ class NetworkHandlers:
                     # Mantém o maior entre o HP atual do cliente (já pode incluir
                     # HP5 regen do AOI_UPDATE) e o HP do servidor neste evento
                     cs.current_hp = min(cs.max_hp, max(cs.current_hp, _hp_from_srv))
-                from floating_text import FLT as _FLT_heal
-                from components import Position as _PosHeal
+                from ui.floating_text import FLT as _FLT_heal
+                from engine.components import Position as _PosHeal
                 _pos_h = self.world.get_component(self.player_entity, _PosHeal)
                 if _pos_h:
                     _FLT_heal.add(f"+{_heal_amt} HP", _pos_h.x, _pos_h.y - 20,
@@ -1350,8 +1350,8 @@ class NetworkHandlers:
             # XP ganho (notificação do servidor — XP proporcional por dano)
             xp_gained = payload.get("xp_gained", 0)
             if xp_gained > 0:
-                from components import CharacterStats, Position, PermanentStats
-                from stats_system import process_levelups
+                from engine.components import CharacterStats, Position, PermanentStats
+                from engine.stats_system import process_levelups
                 char_stats = self.world.get_component(self.player_entity, CharacterStats)
                 cs_xp      = self.world.get_component(self.player_entity, CombatStats)
                 perm_xp    = self.world.get_component(self.player_entity, PermanentStats)
@@ -1361,7 +1361,7 @@ class NetworkHandlers:
                     process_levelups(self.world, self.player_entity,
                                      char_stats, cs_xp, perm_xp,
                                      give_talent_points=False)
-                from floating_text import FLT
+                from ui.floating_text import FLT
                 pos = self.world.get_component(self.player_entity, Position)
                 if pos:
                     FLT.add(f"+{xp_gained} XP", pos.x, pos.y - 20, (100, 255, 100), size="small",
@@ -1369,7 +1369,7 @@ class NetworkHandlers:
             # Level-up: HP e pontos de talento autoritativos do servidor
             _srv_tp = payload.get("talent_points")
             if _srv_tp is not None:
-                from components import TalentTree as _TTsync
+                from engine.components import TalentTree as _TTsync
                 _tt_s = self.world.get_component(self.player_entity, _TTsync)
                 if _tt_s:
                     _tt_s.available_points = int(_srv_tp)
@@ -1387,20 +1387,20 @@ class NetworkHandlers:
                             if _sk_vi.charges < _sk_vi.max_charges:
                                 _sk_vi.charges      = _sk_vi.max_charges
                                 _sk_vi.charge_timer = _sk_vi.charge_timeout
-                            from floating_text import WARN
+                            from ui.floating_text import WARN
                             WARN.add("Vitória Iminente!")
                             break
         # PvP: aplica efeitos recebidos pelo próprio jogador (vítima)
         if eid == self._my_eid and payload.get("applied_effects"):
-            from core_systems import apply_effect as _ae_pvp
+            from engine.core_systems import apply_effect as _ae_pvp
             _ae_pvp_durs = payload.get("effect_durations", {})
             for _ae_pvp_ef in payload["applied_effects"]:
                 _ae_pvp_dur = _ae_pvp_durs.get(_ae_pvp_ef, 5.0)
                 _ae_pvp(self.world, self.player_entity, _ae_pvp_ef, _ae_pvp_dur)
                 # Para movimento imediatamente ao receber CC via PvP
                 if _ae_pvp_ef in ("root", "stun", "polymorph", "disoriented"):
-                    from components import CombatState as _CStAE, TileMovement as _TMAE
-                    from components import PlayerAutoMove as _PAMAE
+                    from engine.components import CombatState as _CStAE, TileMovement as _TMAE
+                    from engine.components import PlayerAutoMove as _PAMAE
                     _cst_ae = self.world.get_component(self.player_entity, _CStAE)
                     _tm_ae  = self.world.get_component(self.player_entity, _TMAE)
                     _am_ae  = self.world.get_component(self.player_entity, _PAMAE)
@@ -1449,7 +1449,7 @@ class NetworkHandlers:
         # Servidor declarou que o player local morreu. Corpo fica no local da
         # morte — sem restauração de HP/mana nem teleporte aqui. O cliente
         # inicia o timer de 2s pra mostrar a janela "Você morreu".
-        from components import CombatStats, CombatState, GhostState
+        from engine.components import CombatStats, CombatState, GhostState
         _cs_death = self.world.get_component(self.player_entity, CombatStats)
         if _cs_death:
             _cs_death.current_hp = 0  # garante HP=0 mesmo sem COMBAT_RESULT do golpe fatal
@@ -1472,7 +1472,7 @@ class NetworkHandlers:
     def _handle_msg_player_revive(self, payload: dict) -> None:
         # Servidor reviveu o player local (cemitério ou corpo) — restaura
         # hp/mana, teleporta pro destino e limpa o GhostState.
-        from components import CombatStats, CombatState, CharacterStats as _CHS_r, GhostState, Position as _PosR
+        from engine.components import CombatStats, CombatState, CharacterStats as _CHS_r, GhostState, Position as _PosR
         cs     = self.world.get_component(self.player_entity, CombatStats)
         char_r = self.world.get_component(self.player_entity, _CHS_r)
         if cs:
@@ -1515,7 +1515,7 @@ class NetworkHandlers:
 
     def _handle_msg_ghost_state(self, payload: dict) -> None:
         # Atualiza estado do espírito local (raio do corpo / timer do cemitério).
-        from components import GhostState, Position as _PosGS
+        from engine.components import GhostState, Position as _PosGS
         gst = self.world.get_component(self.player_entity, GhostState)
         if not gst:
             return
@@ -1555,7 +1555,7 @@ class NetworkHandlers:
         local_eid = self._remote_players.get(eid)
         if local_eid is None:
             return
-        from components import RemoteControlled, Renderable
+        from engine.components import RemoteControlled, Renderable
         rc = self.world.get_component(local_eid, RemoteControlled)
         if rc:
             rc.hp = 0
@@ -1567,9 +1567,9 @@ class NetworkHandlers:
         # Servidor concedeu loot ao player local.
         # Cria entidade Corpse no ECS local para o LootSystem offline
         # funcionar IDENTICAMENTE ao offline (modal, equip, coins, scroll).
-        from entity_factory import create_corpse
-        from loot_tables import _T
-        from tileset import TILE_SIZE as _TS
+        from engine.entity_factory import create_corpse
+        from content.loot_tables import _T
+        from engine.tileset import TILE_SIZE as _TS
         corpse_id = payload.get("corpse_id", -1)
         coins     = payload.get("coins", 0)
         tx        = payload.get("tx", 0)
@@ -1583,7 +1583,7 @@ class NetworkHandlers:
             px = tx * _TS + _TS // 2
             py = ty * _TS + _TS // 2
         # Reconstrói objetos de item a partir dos dados serializados do servidor
-        from quests_data import QUEST_ITEMS as _QI_loot
+        from content.quests_data import QUEST_ITEMS as _QI_loot
         loot_items = []
         for item_data in payload.get("items", []):
             item_name = item_data.get("name", "")
@@ -1634,7 +1634,7 @@ class NetworkHandlers:
         _ev_seid  = payload.get("mob_eid", -1)
         _ev_tx    = payload.get("tx", 0)
         _ev_ty    = payload.get("ty", 0)
-        from tileset import TILE_SIZE as _TS_snd
+        from engine.tileset import TILE_SIZE as _TS_snd
         _ev_sx = _ev_tx * _TS_snd + _TS_snd // 2
         _ev_sy = _ev_ty * _TS_snd + _TS_snd // 2
         _elx, _ely = self._player_world_pos()
@@ -1643,7 +1643,7 @@ class NetworkHandlers:
             _ev_local = self._remote_mobs.get(_ev_seid)
             _ev_snd   = None
             if _ev_local is not None:
-                from components import MobSounds as _MSev
+                from engine.components import MobSounds as _MSev
                 _ev_snd = self.world.get_component(_ev_local, _MSev)
             SOUNDS.play_mob_sounds_at(_ev_snd, "aggro",
                                       _ev_sx, _ev_sy, _elx, _ely, base=0.8,
@@ -1669,7 +1669,7 @@ class NetworkHandlers:
     def _handle_msg_buy_result(self, payload: dict) -> None:
         # Servidor validou a compra — aplica localmente se sucesso
         if payload.get("success"):
-            from components import Inventory as _InvBR, Wallet as _WalBR
+            from engine.components import Inventory as _InvBR, Wallet as _WalBR
             inv_br = self.world.get_component(self.player_entity, _InvBR)
             wal_br = self.world.get_component(self.player_entity, _WalBR)
             # Atualiza gold (servidor é autoritativo)
@@ -1696,7 +1696,7 @@ class NetworkHandlers:
                     if not stacked and len(inv_br.items) < inv_br.max_slots:
                         item_br.stack = qty_br
                         inv_br.items.append(item_br)
-            from combat_log import LOG as _LOG_BR
+            from ui.combat_log import LOG as _LOG_BR
             price = payload.get("price", 0)
             name  = item_data.get("name", "item")
             _LOG_BR.add(f"Comprado: {name} por {price}g", (255, 215, 0))
@@ -1710,17 +1710,17 @@ class NetworkHandlers:
                 "item_not_in_stock": "Item não disponível",
                 "invalid_shop":      "Loja inválida",
             }.get(reason, "Compra recusada")
-            from floating_text import WARN as _WARN_BR
+            from ui.floating_text import WARN as _WARN_BR
             _WARN_BR.add(_reason_msg)
 
     def _handle_msg_sell_result(self, payload: dict) -> None:
-        from components import Wallet as _WalSR
+        from engine.components import Wallet as _WalSR
         wal_sr = self.world.get_component(self.player_entity, _WalSR)
         if payload.get("success"):
             # Servidor confirma — atualiza gold autoritativo
             if wal_sr is not None:
                 wal_sr.gold = payload.get("new_gold", wal_sr.gold)
-            from combat_log import LOG as _LOG_SR
+            from ui.combat_log import LOG as _LOG_SR
             _LOG_SR.add(
                 f"Vendido: {payload.get('item_name','item')} por {payload.get('sell_price',0)}g",
                 (180, 220, 100))
@@ -1731,7 +1731,7 @@ class NetworkHandlers:
             srv_gold = payload.get("new_gold")
             if srv_gold is not None and wal_sr is not None:
                 wal_sr.gold = srv_gold
-            from floating_text import WARN as _WARN_SR
+            from ui.floating_text import WARN as _WARN_SR
             _WARN_SR.add(payload.get("reason", "Venda recusada"))
 
     def _handle_msg_equip_rejected(self, payload: dict) -> None:
@@ -1742,7 +1742,7 @@ class NetworkHandlers:
         _equip_item é só UX otimista).
         Reverte o slot local: tira o item que foi otimisticamente equipado e
         devolve pra bag (nunca perde o item), e resincroniza."""
-        from components import Equipment as _EqRej, Inventory as _InvRej
+        from engine.components import Equipment as _EqRej, Inventory as _InvRej
         slot      = payload.get("slot", "")
         reason    = payload.get("reason", "")
         item_name = payload.get("item_name", "item")
@@ -1758,7 +1758,7 @@ class NetworkHandlers:
             "class": "sua classe não pode usar esse item",
             "level": "level insuficiente",
         }.get(reason, "requisito não atendido")
-        from floating_text import WARN as _WARN_EqR
+        from ui.floating_text import WARN as _WARN_EqR
         _WARN_EqR.add(f"Não foi possível equipar {item_name}: {_reason_msg}")
         self._send_equip_sync()
 
@@ -1787,7 +1787,7 @@ class NetworkHandlers:
             return
         tui.pending_invite_from_eid  = payload.get("from_eid", -1)
         tui.pending_invite_from_name = payload.get("from_name", "?")
-        from sound_manager import SOUNDS as _SND_TI
+        from ui.sound_manager import SOUNDS as _SND_TI
         _SND_TI.play_ui("levelup")
 
     def _handle_msg_trade_open(self, payload: dict) -> None:
@@ -1811,7 +1811,7 @@ class NetworkHandlers:
         if tui is None or tui.trade_id != payload.get("trade_id", -1):
             return
         from collections import Counter
-        from components import Inventory as _InvTS, Wallet as _WalTS
+        from engine.components import Inventory as _InvTS, Wallet as _WalTS
         inv = self.world.get_component(self.player_entity, _InvTS)
         wal = self.world.get_component(self.player_entity, _WalTS)
 
@@ -1851,7 +1851,7 @@ class NetworkHandlers:
 
     def _handle_msg_trade_result(self, payload: dict) -> None:
         tui = self._get_trade_ui()
-        from components import Inventory as _InvTR, Wallet as _WalTR
+        from engine.components import Inventory as _InvTR, Wallet as _WalTR
         inv = self.world.get_component(self.player_entity, _InvTR)
         wal = self.world.get_component(self.player_entity, _WalTR)
         for d in payload.get("received_items", []):
@@ -1860,7 +1860,7 @@ class NetworkHandlers:
                 inv.items.append(it)
         if wal is not None:
             wal.gold += payload.get("received_gold", 0)
-        from combat_log import LOG as _LOG_TR
+        from ui.combat_log import LOG as _LOG_TR
         _LOG_TR.add("Troca concluída!", (120, 220, 120))
         if tui is not None:
             tui.reset()
@@ -1873,7 +1873,7 @@ class NetworkHandlers:
         if tui.trade_id != -1:
             # Devolve pra Inventory/Wallet local o que estava em my_offer/my_gold
             # (o servidor já devolveu de verdade — isso só sincroniza a cópia local).
-            from components import Inventory as _InvTC, Wallet as _WalTC
+            from engine.components import Inventory as _InvTC, Wallet as _WalTC
             inv = self.world.get_component(self.player_entity, _InvTC)
             wal = self.world.get_component(self.player_entity, _WalTC)
             if inv is not None:
@@ -1893,7 +1893,7 @@ class NetworkHandlers:
             "inventory_full":  "Troca cancelada: mochila cheia",
             "invalid":         "Troca inválida",
         }.get(reason, "Troca cancelada")
-        from floating_text import WARN as _WARN_TC
+        from ui.floating_text import WARN as _WARN_TC
         _WARN_TC.add(_reason_msg)
         self._send_save_state()
 
@@ -1912,7 +1912,7 @@ class NetworkHandlers:
 
         entity_id = self._resolve_chat_sender_entity(sender)
         if entity_id != -1:
-            from chat_bubble import CHAT_BUBBLE
+            from ui.chat_bubble import CHAT_BUBBLE
             CHAT_BUBBLE.add(entity_id, text)
 
     def _resolve_chat_sender_entity(self, sender_name: str) -> int:
@@ -1933,7 +1933,7 @@ class NetworkHandlers:
         já vem como nome do personagem do outro lado."""
         if sender_name == getattr(self, "_logged_char_name", None):
             return self.player_entity
-        from components import RemoteControlled as _RCchat
+        from engine.components import RemoteControlled as _RCchat
         for eid, rc in self.world.get_entities_with(_RCchat):
             if rc.name == sender_name:
                 return eid

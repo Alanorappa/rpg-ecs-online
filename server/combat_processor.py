@@ -16,9 +16,9 @@ class CombatProcessorMixin:
         crit, dodge, parry. Mob→player é tratado detectando a variação de HP
         após EnemyAISystem rodar (EnemyAISystem chama deal_damage internamente).
         """
-        from world_systems import deal_damage
-        from components import CombatState, CombatStats, TileMovement, Enemy, PendingDeath
-        from utils import chebyshev, is_action_locked
+        from engine.world_systems import deal_damage
+        from engine.components import CombatState, CombatStats, TileMovement, Enemy, PendingDeath
+        from engine.utils import chebyshev, is_action_locked
 
         # ── Player → Mob ───────────────────────────────────────────────────
         for session_id, player_eid in list(self._player_eids.items()):
@@ -79,7 +79,7 @@ class CombatProcessorMixin:
             _bow_cp = _qv_cp = None
             _has_bow_equipped = False
             if _class_is_ranged:
-                from components import Equipment as _EqCP
+                from engine.components import Equipment as _EqCP
                 _eq_cp  = self.world.get_component(player_eid, _EqCP)
                 _bow_cp = _eq_cp.slots.get("mainhand") if _eq_cp else None
                 _qv_cp  = _eq_cp.slots.get("offhand")  if _eq_cp else None
@@ -142,8 +142,8 @@ class CombatProcessorMixin:
 
             # Ataque disparou → enter_combat + rage (copiado de PlayerInputSystem:1491-1492)
             # Rage é gerada SEMPRE que o ataque dispara — mesmo em miss (igual ao offline)
-            from stat_fns import enter_combat as _enter_combat
-            from components import CharacterStats as _CS_char
+            from engine.stat_fns import enter_combat as _enter_combat
+            from engine.components import CharacterStats as _CS_char
             player_cst  = self.world.get_component(player_eid, CombatState)
             player_char = self.world.get_component(player_eid, _CS_char)
             if player_cst:
@@ -168,8 +168,8 @@ class CombatProcessorMixin:
             # sincronizados para validar CAST_SKILL punho_no_queixo.
             _pnq_hit = _outcome not in ("miss", "dodge", "parry", "block")
             if _pnq_hit and player_cs and player_cs.pnq_enabled and player_char:
-                from components import PlayerSkills as _PKSv
-                from skill_config import SKILL_CATALOG as _SC_pnq
+                from engine.components import PlayerSkills as _PKSv
+                from content.skill_config import SKILL_CATALOG as _SC_pnq
                 _ps_pnq = self.world.get_component(player_eid, _PKSv)
                 if _ps_pnq:
                     # Procura skill no hotbar; cria lazily se não estiver (talento alocado
@@ -235,7 +235,7 @@ class CombatProcessorMixin:
 
         # Pré-constrói reverse map {player_eid → mob_atacante} UMA VEZ (O(mobs)),
         # em vez de O(mobs×players_danificados) no loop abaixo.
-        from components import AIControlled as _AIAtk, PendingDeath as _PD
+        from engine.components import AIControlled as _AIAtk, PendingDeath as _PD
         _mob_attacker_of: dict[int, int] = {}
         for _mb in self._mob_eids:
             _ai_r = self.world.get_component(_mb, _AIAtk)
@@ -247,7 +247,7 @@ class CombatProcessorMixin:
                 self._last_mob_attacker[_ai_r.target_eid] = _mb
 
         # Consome avoidances (parry/dodge/miss) de mob→player coletadas em CombatSystem.
-        from world_systems import _svc as _svc_cp
+        from engine.world_systems import _svc as _svc_cp
         _combat_sys_cp = _svc_cp.get('combat')
         if _combat_sys_cp and _combat_sys_cp.mob_avoidance_events:
             for _atk_av, _tgt_av, _out_av, _hp_av in _combat_sys_cp.mob_avoidance_events:
@@ -313,9 +313,9 @@ class CombatProcessorMixin:
         ativamente perseguindo o alvo (clique direito), não apenas selecionado.
         Usa server_tile_x/y se disponível para range check mais preciso.
         """
-        from world_systems import deal_damage
-        from components import CombatState, CombatStats, TileMovement, PendingDeath
-        from utils import chebyshev
+        from engine.world_systems import deal_damage
+        from engine.components import CombatState, CombatStats, TileMovement, PendingDeath
+        from engine.utils import chebyshev
 
         # Requer is_pursuing — previne auto-ataque acidental com alvo só selecionado
         attacker_cst = self.world.get_component(attacker_eid, CombatState)
@@ -339,7 +339,7 @@ class CombatProcessorMixin:
         _pvp_class_ranged = getattr(attacker_cs, "is_ranged", False)
         _pvp_has_bow = False
         if _pvp_class_ranged:
-            from components import Equipment as _EqPvp
+            from engine.components import Equipment as _EqPvp
             _eq_pvp  = self.world.get_component(attacker_eid, _EqPvp)
             _bow_pvp = _eq_pvp.slots.get("mainhand") if _eq_pvp else None
             _pvp_has_bow = _bow_pvp is not None and getattr(_bow_pvp, "subtype", "") == "Bow"
@@ -372,7 +372,7 @@ class CombatProcessorMixin:
         damage   = max(0, hp_before - hp_real)
 
         # Enter combat no atacante
-        from stat_fns import enter_combat as _ec_pvp
+        from engine.stat_fns import enter_combat as _ec_pvp
         attacker_cst = self.world.get_component(attacker_eid, CombatState)
         if attacker_cst:
             _ec_pvp(attacker_cst)
@@ -380,7 +380,7 @@ class CombatProcessorMixin:
         # Rage do atacante (Guerreiro) — mesmo ganho do PvE. Antes só o cliente
         # gerava rage em PvP (local), o servidor nunca — toda skill com custo de
         # rage era rejeitada mesmo com a barra cheia no cliente.
-        from components import CharacterStats as _CS_pvp
+        from engine.components import CharacterStats as _CS_pvp
         _atk_char = self.world.get_component(attacker_eid, _CS_pvp)
         if _atk_char and _atk_char.class_id == "guerreiro":
             _rage_before_pvp = _atk_char.rage
@@ -409,7 +409,7 @@ class CombatProcessorMixin:
         })
 
         # HP sync direto para a vítima (STATS_UPDATE individual)
-        from components import CharacterStats as _CSvic
+        from engine.components import CharacterStats as _CSvic
         vic_char = self.world.get_component(victim_eid, _CSvic)
         self.queue_stats_update({
             "player_eid": victim_eid,

@@ -19,9 +19,9 @@ confirmação.
 """
 import pygame
 
-from ui_sizes import UI
-from ui_helpers import wrap_text
-from combat_log import LOG
+from ui.ui_sizes import UI
+from ui.ui_helpers import wrap_text
+from ui.combat_log import LOG
 
 
 _TABS = ("local", "world", "combat")
@@ -34,6 +34,16 @@ class ChatHandlers:
     _MARGIN_LEFT   = 6
     _MARGIN_BOTTOM = 86  # espaço livre acima da hotbar (subido +20px — encostava nela)
 
+    # Hold-to-repeat do Backspace (delay inicial mais longo, depois repete rápido
+    # — igual qualquer campo de texto de verdade). Não usa pygame.key.set_repeat()
+    # global: isso geraria KEYDOWN repetido pra QUALQUER tecla segurada em
+    # QUALQUER lugar do jogo, inclusive fora do chat (ex.: segurar "I" spammaria
+    # abrir/fechar inventário), já que set_repeat afeta a fila de eventos inteira,
+    # não só o campo focado. Polling isolado aqui, mesmo padrão de
+    # pygame.key.get_pressed() que o WASD já usa (PlayerInputSystem).
+    _BS_INITIAL_DELAY   = 0.40
+    _BS_REPEAT_INTERVAL = 0.04
+
     # ── Envio / digitação ────────────────────────────────────────────────
 
     def _open_chat_input(self) -> None:
@@ -41,10 +51,12 @@ class ChatHandlers:
             return  # aba de combate é só leitura, sem campo de digitação
         self._chat_active = True
         self._chat_text = ""
+        pygame.key.start_text_input()
 
     def _close_chat_input(self) -> None:
         self._chat_active = False
         self._chat_text = ""
+        pygame.key.stop_text_input()
 
     def _send_chat_message(self) -> None:
         text = self._chat_text.strip()
@@ -55,6 +67,19 @@ class ChatHandlers:
         self._close_chat_input()
 
     def _handle_chat_key(self, event) -> None:
+        """Só teclas de CONTROLE (Enter/Esc/Backspace) — a digitação de texto
+        em si vem de TEXTINPUT (_handle_chat_text_input), não daqui.
+
+        Usar event.unicode do KEYDOWN pra digitar quebra teclado com tecla
+        morta (ABNT2/US-Intl: "~" + "a" = "ã"): o KEYDOWN do "~" já chega com
+        unicode="~" sozinho (SDL ainda não sabe que vem um "a" combinando
+        depois), então o char errado era inserido ANTES do "ã" combinado
+        chegar — bug real reportado pelo usuário, digitar "não" virava "n~ão".
+        TEXTINPUT só dispara depois que o SDL já resolveu a composição
+        completa (nunca manda a tecla morta sozinha), corrigindo isso de
+        graça — é o mecanismo que o próprio SDL2/pygame recomenda pra
+        entrada de texto internacional.
+        """
         if event.type != pygame.KEYDOWN:
             return
         if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
@@ -63,9 +88,28 @@ class ChatHandlers:
             self._close_chat_input()
         elif event.key == pygame.K_BACKSPACE:
             self._chat_text = self._chat_text[:-1]
-        elif event.unicode and event.unicode.isprintable() \
-                and len(self._chat_text) < self._MAX_CHAT_LEN:
-            self._chat_text += event.unicode
+            self._chat_bs_hold_t    = 0.0
+            self._chat_bs_repeating = False
+
+    def _handle_chat_text_input(self, event) -> None:
+        if event.type != pygame.TEXTINPUT or not self._chat_active:
+            return
+        if len(self._chat_text) < self._MAX_CHAT_LEN:
+            self._chat_text += event.text
+
+    def _update_chat_input(self, dt: float) -> None:
+        """Hold-to-repeat do Backspace — chamado todo frame (game.py), não só
+        em evento. Ver comentário de _BS_INITIAL_DELAY acima."""
+        if not self._chat_active or not pygame.key.get_pressed()[pygame.K_BACKSPACE]:
+            self._chat_bs_hold_t    = 0.0
+            self._chat_bs_repeating = False
+            return
+        self._chat_bs_hold_t += dt
+        threshold = self._BS_REPEAT_INTERVAL if self._chat_bs_repeating else self._BS_INITIAL_DELAY
+        if self._chat_bs_hold_t >= threshold:
+            self._chat_text        = self._chat_text[:-1]
+            self._chat_bs_hold_t    = 0.0
+            self._chat_bs_repeating = True
 
     # ── Geometria (compartilhada por desenho/clique/scroll) ─────────────
 
@@ -191,7 +235,7 @@ class ChatHandlers:
         # fill_surf: Surface SRCALPHA CACHEADA (ui_helpers.py) — evita
         # alocar+preencher uma Surface nova todo frame (lição de perf já
         # documentada no projeto: isso media 13ms+ de spike em outros painéis).
-        from ui_helpers import fill_surf
+        from ui.ui_helpers import fill_surf
         surf.blit(fill_surf(win.size, (18, 18, 22, self._BG_ALPHA)), win.topleft)
         pygame.draw.rect(surf, (90, 80, 60), win, 1, border_radius=4)
 
@@ -242,4 +286,14 @@ class ChatHandlers:
             pygame.draw.rect(surf, (200, 170, 80) if focused else (80, 70, 55), box, 1, border_radius=3)
             shown_text = self._chat_text + ("|" if focused else "")
             input_s = self.font_sm.render(shown_text, False, (225, 225, 215))
-            surf.blit(input_s, (box.x + self._u(4), box.centery - input_s.get_height() // 2))
+            pad_x = self._u(4)
+            dest_y = box.centery - input_s.get_height() // 2
+            avail_w = box.width - pad_x * 2
+            # Texto maior que o campo: corta pela ESQUERDA (mostra sempre o
+            # final, onde o cursor está) em vez de vazar pra fora da caixa —
+            # mesmo comportamento de qualquer campo de texto padrão.
+            if input_s.get_width() > avail_w:
+                src = pygame.Rect(input_s.get_width() - avail_w, 0, avail_w, input_s.get_height())
+                surf.blit(input_s, (box.x + pad_x, dest_y), src)
+            else:
+                surf.blit(input_s, (box.x + pad_x, dest_y))

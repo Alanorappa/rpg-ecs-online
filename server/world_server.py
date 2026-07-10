@@ -25,7 +25,7 @@ pygame.init()
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from world import World
+from engine.world import World
 from shared.constants import TICK_RATE, TICK_INTERVAL, SNAPSHOT_HISTORY, TILE_SIZE, LAG_COMP_WINDOW_MS
 
 from server.skill_processor import SkillProcessorMixin
@@ -34,7 +34,7 @@ from server.respawn_system import RespawnMixin
 from server.loot_processor import LootProcessorMixin
 from server.spell_completion_processor import SpellCompletionMixin
 from server.trade_processor import TradeProcessorMixin
-from mob_combat_debug import MCL
+from debug.mob_combat_debug import MCL
 
 # move_player() faz snap instantâneo de tile (sem tween real) — esta janela é
 # quanto tempo, após o último move aceito, o player ainda conta como "em
@@ -58,7 +58,7 @@ class _ServerStatusEffectSystem:
     @staticmethod
     def build(world, srv) -> "object":
         """Factory: retorna instância com os hooks de emit acoplados ao srv."""
-        from core_systems import StatusEffectSystem as _Base
+        from engine.core_systems import StatusEffectSystem as _Base
 
         class _Impl(_Base):
             def __init__(self, world, srv):
@@ -66,7 +66,7 @@ class _ServerStatusEffectSystem:
                 self._srv = srv
 
             def _emit_damage(self, eid, amount, effect_type, pos, color):
-                from components import CombatStats as _CS
+                from engine.components import CombatStats as _CS
                 cs = self.world.get_component(eid, _CS)
                 self._srv._combat_this_tick.append({
                     "attacker": -1,
@@ -83,7 +83,7 @@ class _ServerStatusEffectSystem:
                     self._srv._sfx_damage_players[eid] = prev + amount
 
             def _emit_heal(self, eid, amount, effect_type, pos, color):
-                from components import CombatStats as _CS
+                from engine.components import CombatStats as _CS
                 cs = self.world.get_component(eid, _CS)
                 self._srv._combat_this_tick.append({
                     "attacker": -1,
@@ -95,7 +95,7 @@ class _ServerStatusEffectSystem:
                 })
 
             def _on_resisted_dot(self, eid, school):
-                from stats_system import grant_resist_skill_xp
+                from engine.stats_system import grant_resist_skill_xp
                 grant_resist_skill_xp(self.world, eid, school)
 
         return _Impl(world, srv)
@@ -235,7 +235,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # Sistemas globais: rodam UMA vez por tick, após todos os bundles.
         # Se ficassem dentro de cada bundle (sem map_filter) rodariam N×/tick
         # (N = número de mapas carregados), causando timers/movimento N× rápidos.
-        from world_systems import TileMovementSystem as _TMS, ProjectileSystem as _ProjSys
+        from engine.world_systems import TileMovementSystem as _TMS, ProjectileSystem as _ProjSys
         self._global_tms           = _TMS(self.world)
         self._global_proj_sys      = _ProjSys(self.world, screen=None)
         self._global_sfx_sys       = _ServerStatusEffectSystem.build(self.world, self)
@@ -244,7 +244,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         from server.server_death_handler import ServerDeathHandler
         self._death_handler = ServerDeathHandler(self.world, world_server=self)
 
-        from core_systems import ServerCombatStateSystem
+        from engine.core_systems import ServerCombatStateSystem
         self._combat_state_sys = ServerCombatStateSystem(self.world)
 
         # Cache de valor por nome de item: {item_name: value} — evita instanciar
@@ -290,7 +290,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         # SkillSystem instanciado AQUI mas NÃO adicionado a self._systems
         # (chamado manualmente em _process_skill_requests)
-        from systems import SkillSystem
+        from ui.systems import SkillSystem
         self._skill_system = SkillSystem(self.world, player_entity_id=-1)
         # Servidor usa melee range com lag tolerance (1 + MELEE_LAG_TOLERANCE tiles)
         self._skill_system._server_authoritative = True
@@ -345,12 +345,12 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         Carrega um mapa e inicializa os sistemas headless para ele.
         Retorna um _MapBundle com os sistemas e dados deste mapa.
         """
-        from map_loader import load_map_csv
-        from entity_factory import create_tilemap
-        from world_systems import (SpawnZoneSystem, EnemyAISystem, EnemyAbilitySystem,
+        from engine.map_loader import load_map_csv
+        from engine.entity_factory import create_tilemap
+        from engine.world_systems import (SpawnZoneSystem, EnemyAISystem, EnemyAbilitySystem,
                              TileValidationSystem, PathfindingSystem, CombatSystem,
                              ProjectileSystem, register_services)
-        from components import MapLocation as _MLl
+        from engine.components import MapLocation as _MLl
 
         print(f"[WorldServer] carregando mapa: {map_file}")
         terrain_matrix, object_matrix, spawn_points, terrain_visual = \
@@ -385,10 +385,10 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                           tile_validation=tile_validation)
 
         # Callback de retaliation do Escudo de Fogo
-        from world_systems import _svc as _sys_svc
+        from engine.world_systems import _svc as _sys_svc
         _srv_ref = self
         def _on_retaliation(player_eid: int, mob_eid: int, damage: int, hp_after: int) -> None:
-            from components import CombatStats as _CSEF
+            from engine.components import CombatStats as _CSEF
             _cs_mob = _srv_ref.world.get_component(mob_eid, _CSEF)
             _srv_ref._combat_this_tick.append({
                 "attacker": player_eid,
@@ -441,14 +441,14 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         return bundle
 
     def _create_training_dummies(self, dummies_data: list) -> None:
-        from entity_factory import create_training_dummy as _ctd
+        from engine.entity_factory import create_training_dummy as _ctd
         for tx, ty in dummies_data:
             eid = _ctd(self.world, tx, ty)
 
     def _create_npc_blockers(self, spawn_points: dict) -> None:
         """Cria entidades mínimas (TileMovement + NPC) para cada NPC do mapa.
         Sem componentes client-side — só para EnemyAISystem._get_enemy_tiles() funcionar."""
-        from components import TileMovement, NPC
+        from engine.components import TileMovement, NPC
         for key in ("quest_givers", "merchants", "blacksmiths", "trainers"):
             for entry in spawn_points.get(key, []):
                 tx, ty = entry[0], entry[1]
@@ -465,7 +465,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
     def _create_spawn_zones_for_map(self, zones_data: list, map_file: str) -> None:
         """Cria entidades SpawnZone a partir dos dados já processados pelo map_loader.
         Cada entrada já é uma zona achatada com enemy_type, enemy_tier, count."""
-        from components import SpawnZone
+        from engine.components import SpawnZone
 
         for z in zones_data:
             count = z.get("count", 1)
@@ -493,10 +493,10 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         Cria entidade do jogador no ECS com todos os componentes necessários para skills.
         Abordagem cirúrgica: cria manualmente sem efeitos colaterais de create_player().
         """
-        from components import (Position, TileMovement, PlayerControlled, CombatState,
+        from engine.components import (Position, TileMovement, PlayerControlled, CombatState,
                                  CombatStats, CharacterStats, PermanentStats, Visible,
                                  Equipment, Wallet, Inventory, GhostState)
-        from stats_system import CLASS_BASE_STATS, apply_char_stats_to_combat, sync_attack_interval
+        from engine.stats_system import CLASS_BASE_STATS, apply_char_stats_to_combat, sync_attack_interval
         import json as _json
 
         tx = int(char_data.get("tile_x", 10))
@@ -603,8 +603,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         # PlayerSkills: restaura skills salvas ou usa iniciais da classe
         try:
-            from components import PlayerSkills as _PS
-            from skill_config import SKILL_CATALOG, INITIAL_SKILLS_BY_CLASS
+            from engine.components import PlayerSkills as _PS
+            from content.skill_config import SKILL_CATALOG, INITIAL_SKILLS_BY_CLASS
             ps = _PS()
             _saved_skills = _stats_raw if isinstance(_stats_raw, str) else ""
             # Tenta restaurar do skills_json salvo
@@ -651,7 +651,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # TalentTree — necessário para process_levelups() incrementar available_points
         _tal_alloc_spawn: dict = {}
         try:
-            from components import TalentTree as _TT
+            from engine.components import TalentTree as _TT
             _tt_comp = _TT()
             _tal_raw2 = char_data.get("talents_json") or "{}"
             _tal_d2   = _json.loads(_tal_raw2) if isinstance(_tal_raw2, str) else (_tal_raw2 or {})
@@ -700,8 +700,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # resistências/magic), server-autoritativo. Ver stats_system.py e
         # PROBLEMAS_ARQUITETURA.md, seção skill level.
         try:
-            from components import SkillLevels as _SKL
-            from stats_system import apply_skill_bonuses_to_combat as _apply_skl_bonuses
+            from engine.components import SkillLevels as _SKL
+            from engine.stats_system import apply_skill_bonuses_to_combat as _apply_skl_bonuses
             _skl_comp = _SKL()
             _skl_raw  = char_data.get("skill_levels_json") or "{}"
             _skl_d    = _json.loads(_skl_raw) if isinstance(_skl_raw, str) else (_skl_raw or {})
@@ -719,7 +719,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # QuestLog — progresso/entrega de quest, server-autoritativo (ver
         # quest_logic.py e PROBLEMAS_ARQUITETURA.md, migração de quests).
         try:
-            from components import QuestLog as _QL
+            from engine.components import QuestLog as _QL
             _ql_comp  = _QL()
             _ql_raw   = char_data.get("quests_json") or "{}"
             _ql_d     = _json.loads(_ql_raw) if isinstance(_ql_raw, str) else (_ql_raw or {})
@@ -738,7 +738,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         if saved_map_id not in self._map_bundles:
             saved_map_id = self._map_file
         self._player_maps[session_id] = saved_map_id
-        from components import MapLocation as _MLp
+        from engine.components import MapLocation as _MLp
         self.world.add_component(eid, _MLp(saved_map_id))
 
         _srv_hp, _srv_hp_max = self.get_player_hp(session_id)
@@ -767,19 +767,19 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                         to_map: str, target_x: int, target_y: int) -> None:
         """Teleporta player para novo mapa + tile. Atualiza _player_maps e MapLocation."""
         self._player_maps[session_id] = to_map
-        from components import TileMovement, Position, MapLocation as _MLtp
+        from engine.components import TileMovement, Position, MapLocation as _MLtp
         ml = self.world.get_component(player_eid, _MLtp)
         if ml is not None:
             ml.map_file = to_map
         # snap_to_tile: mesmo conjunto de escritas que o bloco manual antigo
         # fazia aqui — agora centralizado (única forma correta de teleportar).
-        from utils import snap_to_tile as _snap_xfer
+        from engine.utils import snap_to_tile as _snap_xfer
         _snap_xfer(self.world, player_eid, target_x, target_y, carry_prev=False)
 
     def get_player_save_data(self, session_id: str) -> dict:
         """Coleta estado ECS completo do jogador para persistência."""
         import json as _json
-        from components import (TileMovement, CombatStats, CharacterStats,
+        from engine.components import (TileMovement, CombatStats, CharacterStats,
                                  Wallet, PlayerSkills, SkillLevels, QuestLog)
         eid = self._player_eids.get(session_id)
         if eid is None:
@@ -874,7 +874,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         Valida e aplica movimento de 1 tile para o jogador.
         Retorna True se movimento aceito, False se rejeitado.
         """
-        from components import TileMovement, Position
+        from engine.components import TileMovement, Position
 
         eid = self._player_eids.get(session_id)
         if eid is None:
@@ -886,7 +886,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         # Ghost (espírito liberado): intangível — sem CC check, sem walkable.
         # Só valida 1 tile de distância (anti-cheat básico).
-        from components import GhostState as _GState
+        from engine.components import GhostState as _GState
         _gst = self.world.get_component(eid, _GState)
         if _gst and _gst.is_ghost:
             if abs(tx - tm.current_tile_x) > 1 or abs(ty - tm.current_tile_y) > 1:
@@ -925,7 +925,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # polymorph NÃO entram aqui: o wander aleatório é decidido pelo cliente
         # (CombatStateSystem) e enviado como MOVE normal. Servidor nunca confia
         # no cliente para não enviar MOVE durante CC totalmente imobilizante.
-        from components import StatusEffects as _SFXmv
+        from engine.components import StatusEffects as _SFXmv
         _sfx_mv = self.world.get_component(eid, _SFXmv)
         if _sfx_mv and any(_sfx_mv.has(e) for e in ("sleep", "stun", "root")):
             return False
@@ -941,7 +941,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # global que pode apontar pro último mapa do loop de bundles (_tick) em vez do
         # mapa onde o player realmente está (bug: cave_west 80×60 tiles rejeitava y=316
         # de map_1, impedindo o player de chegar ao tile de transição para a caverna).
-        from components import CombatState as _CState
+        from engine.components import CombatState as _CState
         _cst = self.world.get_component(eid, _CState)
         _pursuit_target = (_cst.target_entity_id
                            if _cst and _cst.is_pursuing and _cst.target_entity_id != -1
@@ -953,7 +953,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                                               ignore_eid=_pursuit_target):
                 return False
         else:
-            from world_systems import is_tile_walkable as _walkable
+            from engine.world_systems import is_tile_walkable as _walkable
             if not _walkable(eid, tx, ty, tm.current_tile_x, tm.current_tile_y,
                              ignore_eid=_pursuit_target):
                 return False
@@ -994,7 +994,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             "from_tx": from_tx, "from_ty": from_ty,
         })
 
-        from quest_events import fire as _qfire_tile
+        from engine.quest_events import fire as _qfire_tile
         _qfire_tile("reach_tile", player_eid=eid, tx=tx, ty=ty,
                     map=self._player_maps.get(session_id, self._map_file))
 
@@ -1005,7 +1005,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         Retorna lista de EntitySpawn para todos os jogadores dentro do raio
         ao redor do jogador `center_session`. Usado no WORLD_STATE inicial.
         """
-        from components import TileMovement
+        from engine.components import TileMovement
         from shared.constants import AOI_RADIUS
 
         r     = radius or AOI_RADIUS
@@ -1035,7 +1035,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
     def set_player_target(self, session_id: str, target_eid: int) -> None:
         """Define o alvo de combate do jogador. target_eid=-1 para parar."""
-        from components import CombatState
+        from engine.components import CombatState
         eid = self._player_eids.get(session_id)
         if eid is None:
             return
@@ -1045,7 +1045,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
     def get_entity_spawn_data(self, eid: int) -> dict | None:
         """Retorna payload completo de ENTITY_SPAWN para qualquer entidade (mob ou player)."""
-        from components import TileMovement
+        from engine.components import TileMovement
         if eid not in self._mob_eids:
             return None   # jogadores são gerenciados separadamente
         tm = self.world.get_component(eid, TileMovement)
@@ -1054,7 +1054,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         return self._build_mob_spawn_payload(eid, tm)
 
     def _build_mob_spawn_payload(self, eid: int, tm) -> dict:
-        from components import (CombatStats, AIControlled, Renderable, SpawnZoneOwner,
+        from engine.components import (CombatStats, AIControlled, Renderable, SpawnZoneOwner,
                                 SpawnZone, EntityIdentity, TrainingDummy as _TDpay)
         cs    = self.world.get_component(eid, CombatStats)
         ai    = self.world.get_component(eid, AIControlled)
@@ -1112,7 +1112,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
     def get_mobs_in_aoi(self, center_tx: int, center_ty: int, radius: int,
                         map_file: str = "") -> list[dict]:
         """Retorna lista de mobs no AOI — para WORLD_STATE inicial."""
-        from components import TileMovement, MapLocation as _ML_gmai
+        from engine.components import TileMovement, MapLocation as _ML_gmai
         result = []
         for eid in self._mob_eids:
             if map_file:
@@ -1133,7 +1133,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
     def get_player_hp(self, session_id: str) -> tuple[int, int]:
         """Retorna (current_hp, max_hp) do player. Usado no LOGIN_OK."""
-        from components import CombatStats
+        from engine.components import CombatStats
         eid = self._player_eids.get(session_id)
         if eid is None:
             return (0, 0)
@@ -1141,7 +1141,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         return (cs.current_hp, cs.max_hp) if cs else (0, 0)
 
     def get_tile_pos(self, session_id: str) -> tuple[int, int]:
-        from components import TileMovement
+        from engine.components import TileMovement
         eid = self._player_eids.get(session_id)
         if eid is None:
             return (0, 0)
@@ -1163,7 +1163,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         handlers de skill + _process_spell_cast_completions) — nunca precisou
         confiar no cliente pra isso. Ver arquitetura/PROBLEMAS_ARQUITETURA.md.
         """
-        from components import CharacterStats, CombatStats
+        from engine.components import CharacterStats, CombatStats
         eid = self._player_eids.get(session_id)
         if eid is None:
             return
@@ -1252,7 +1252,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         Chamar sempre que o Equipment mudar (spawn, EQUIP_SYNC). Modifiers de
         talento/buff (source != "equipment") nunca são tocados aqui."""
-        from components import CombatStats as _CSEq, Equipment as _EqEq, Modifier as _ModEq
+        from engine.components import CombatStats as _CSEq, Equipment as _EqEq, Modifier as _ModEq
         cs    = self.world.get_component(eid, _CSEq)
         equip = self.world.get_component(eid, _EqEq)
         if not cs or not equip:
@@ -1275,7 +1275,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         gold suficiente, espaço no inventário.
         Retorna dict {success, reason, item_data, new_gold}.
         """
-        from components import Wallet, Inventory
+        from engine.components import Wallet, Inventory
 
         eid = self._player_eids.get(session_id)
         if eid is None:
@@ -1373,7 +1373,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         evitar exploits.  Gold adicionado server-side na Wallet ECS.
         Retorna {success, item_name, sell_price, new_gold}.
         """
-        from components import Wallet
+        from engine.components import Wallet
         eid = self._player_eids.get(session_id)
         if eid is None:
             return {"success": False, "reason": "not_logged_in"}
@@ -1433,7 +1433,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         """
         # loot_tables._T: {key: factory_fn} — valores são callables diretamente
         try:
-            from loot_tables import _T as _LT
+            from content.loot_tables import _T as _LT
             for _f in _LT.values():
                 if callable(_f):
                     try:
@@ -1448,7 +1448,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         # merchant_data → _shop_item_cache + _item_value_cache
         try:
-            from merchant_data import SHOPS
+            from content.merchant_data import SHOPS
             for _sid, _shop in SHOPS.items():
                 _idx: dict[str, dict] = {}
                 for _e in _shop.get("stock", []):
@@ -1500,7 +1500,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         """
         if not d or not d.get("name"):
             return None
-        from components import Item as _Item
+        from engine.components import Item as _Item
         name = d.get("name", "")
 
         def _apply_client_bookkeeping(candidate):
@@ -1521,7 +1521,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             return candidate
 
         # 1) Catálogo de loot
-        from loot_tables import _T
+        from content.loot_tables import _T
         for _key, factory in _T.items():
             try:
                 candidate = factory()
@@ -1531,7 +1531,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 return _apply_client_bookkeeping(candidate)
 
         # 2) Catálogo de loja — todo item comprado de um merchant
-        from merchant_data import SHOPS
+        from content.merchant_data import SHOPS
         for _shop in SHOPS.values():
             for _entry in _shop.get("stock", []):
                 try:
@@ -1542,7 +1542,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                     return _apply_client_bookkeeping(candidate)
 
         # 3) Catálogo de forja — resultado de receita (Espada Afiada, etc.)
-        from crafting_data import RECIPES
+        from content.crafting_data import RECIPES
         for _recipe in RECIPES.values():
             _factory = _recipe.get("result_factory")
             if not _factory:
@@ -1580,7 +1580,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
     def load_player_inventory(self, eid: int, inventory_json) -> None:
         """Popula Inventory do jogador a partir do inventory_json salvo (spawn_player)."""
-        from components import Inventory
+        from engine.components import Inventory
         import json as _json
         inv = self.world.get_component(eid, Inventory)
         if inv is None:
@@ -1606,7 +1606,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         munição contra o Inventory real — sem isso o componente fica vazio/None
         e a validação sempre falha ou é pulada.
         """
-        from components import Inventory
+        from engine.components import Inventory
         eid = self._player_eids.get(session_id)
         if eid is None:
             return
@@ -1631,7 +1631,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         Prova de Valor / Iniciacao Arcana nao avancava ao aprender Golpe
         Poderoso / Bola de Fogo via treinador no modo online).
         """
-        from components import PlayerSkills as _PSSync
+        from engine.components import PlayerSkills as _PSSync
         learned = skills_data.get("learned")
         if not isinstance(learned, list):
             return
@@ -1660,7 +1660,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         nenhum (bug real reportado por testers: "consumível às vezes não
         regenera"). Ver PROBLEMAS_ARQUITETURA.md.
         """
-        from components import CombatStats, CombatState, ActiveRegen, CharacterStats, ActiveManaRegen
+        from engine.components import CombatStats, CombatState, ActiveRegen, CharacterStats, ActiveManaRegen
         eid = self._player_eids.get(session_id)
         if eid is None:
             return
@@ -1710,7 +1710,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # Evento de quest "use_consumable" — uso aceito (passou pelos blocks
         # acima). Server-autoritativo — ver quest_logic.py/PROBLEMAS_ARQUITETURA.md.
         if item_name:
-            from quest_events import fire as _qfire_cons
+            from engine.quest_events import fire as _qfire_cons
             _qfire_cons("use_consumable", player_eid=eid, item_name=item_name)
 
         # 1. Cura instantânea de HP
@@ -1779,7 +1779,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         """Mapa (map_file) de qualquer entidade via MapLocation — fonte única
         entity→mapa (P3). None se a entidade não existe/não tem MapLocation
         (chamador decide o fallback; broadcasts usam None = sem filtro)."""
-        from components import MapLocation as _MLem
+        from engine.components import MapLocation as _MLem
         ml = self.world.get_component(eid, _MLem)
         return ml.map_file if ml else None
 
@@ -1797,7 +1797,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         player (skill request, spell completion, channeling) deve chamar isto
         ANTES do handler. Ver PROBLEMAS_ARQUITETURA.md.
         """
-        from world_systems import register_services
+        from engine.world_systems import register_services
         _map = self.get_entity_map(eid) or self._map_file
         bundle = self._map_bundles.get(_map)
         if bundle is not None and bundle.tile_validation is not None:
@@ -1820,7 +1820,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         """Detecta mudanças de HP/max_hp de qualquer player no tick e emite broadcast AOI.
         Chamado no início de _collect_deltas() — cobre qualquer fonte de mudança de HP
         (level-up, consumíveis, skills, DoT, etc.) sem precisar de código por feature."""
-        from components import CombatStats as _CSD
+        from engine.components import CombatStats as _CSD
         _already = {e["eid"] for e in self._player_hp_broadcasts_this_tick}
         for peid in list(self._player_eids.values()):
             cs = self.world.get_component(peid, _CSD)
@@ -1852,7 +1852,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         "Parabéns, você subiu..." + som. Só reporta level-up quando já havia
         um snapshot anterior em cache (cache vazio = primeiro tick após
         login/spawn, não é um level-up real, é só o estado já salvo)."""
-        from components import SkillLevels as _SKLd
+        from engine.components import SkillLevels as _SKLd
         for peid in list(self._player_eids.values()):
             skl = self.world.get_component(peid, _SKLd)
             if skl is None:
@@ -1891,9 +1891,9 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         ambos já autoritativos no servidor. 1x por tick, mesmo padrão de
         _sync_player_skill_levels_dirty(). Ver quest_logic.py e
         arquitetura/PROBLEMAS_ARQUITETURA.md (migração de quests)."""
-        from quest_events import QUEST_EVENTS
-        import quest_logic
-        from components import QuestLog as _QL, Inventory as _Inv, PlayerSkills as _PS
+        from engine.quest_events import QUEST_EVENTS
+        import engine.quest_logic as quest_logic
+        from engine.components import QuestLog as _QL, Inventory as _Inv, PlayerSkills as _PS
 
         dirty_eids: set[int] = set()
 
@@ -1986,8 +1986,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         `process_levelups()` no servidor, nunca por mensagem do cliente).
         Retorna `None` se `claimed` não for um dict com a forma esperada
         (chamador deve simplesmente não persistir/aplicar nesse caso)."""
-        from components import TalentTree as _TT_v
-        from talent_data import TALENTS as _TAL_v
+        from engine.components import TalentTree as _TT_v
+        from content.talent_data import TALENTS as _TAL_v
 
         if not isinstance(claimed, dict):
             return None
@@ -2069,11 +2069,11 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         """Núcleo de apply_talent_effects_to_player, parametrizado por eid (em vez
         de session_id) para poder ser chamado em spawn_player antes de
         self._player_eids estar populado para essa sessão."""
-        from components import (CombatStats, CharacterStats, PermanentStats, Modifier)
-        from talent_data import TALENTS as _TAL
-        from stats_system import apply_char_stats_to_combat, sync_attack_interval
-        from stat_fns import add_modifier
-        from components import Equipment
+        from engine.components import (CombatStats, CharacterStats, PermanentStats, Modifier)
+        from content.talent_data import TALENTS as _TAL
+        from engine.stats_system import apply_char_stats_to_combat, sync_attack_interval
+        from engine.stat_fns import add_modifier
+        from engine.components import Equipment
 
         cs   = self.world.get_component(eid, CombatStats)
         char = self.world.get_component(eid, CharacterStats)
@@ -2155,7 +2155,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         Retorna [{"slot":, "item_name":, "reason": "class"|"level"}, ...].
         """
-        from components import Equipment as _EqUpd, CharacterStats as _CSEquip
+        from engine.components import Equipment as _EqUpd, CharacterStats as _CSEquip
         eid = self._player_eids.get(session_id)
         if eid is None:
             return []
@@ -2168,8 +2168,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # que de fato passou a estar equipado agora (evita re-disparo a cada
         # EQUIP_SYNC redundante, ex: reconectar com o mesmo equipamento).
         _old_slot_names = {slot: (item.name if item else None) for slot, item in eq_comp.slots.items()}
-        from stats_system import CLASS_ARMOR_ALLOWED as _CAA_equip
-        from stats_system import is_weapon_allowed_for_class as _is_weapon_allowed_equip
+        from engine.stats_system import CLASS_ARMOR_ALLOWED as _CAA_equip
+        from engine.stats_system import is_weapon_allowed_for_class as _is_weapon_allowed_equip
         rejected: list[dict] = []
         for slot, item_d in equipment.items():
             if slot not in eq_comp.slots or not isinstance(item_d, dict):
@@ -2199,7 +2199,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         # Evento de quest "equip_item" — só pra slots que mudaram de item.
         # Server-autoritativo — ver quest_logic.py/PROBLEMAS_ARQUITETURA.md.
-        from quest_events import fire as _qfire_equip
+        from engine.quest_events import fire as _qfire_equip
         for slot, item in eq_comp.slots.items():
             if item and item.name != _old_slot_names.get(slot):
                 _qfire_equip("equip_item", player_eid=eid,
@@ -2209,8 +2209,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # nenhum valor calculado pelo cliente para isso.
         self._apply_equipment_modifiers(eid)
         # Atualiza attack_interval conforme arma equipada
-        from stats_system import sync_attack_interval as _sai
-        from components import CombatStats as _CSUpd
+        from engine.stats_system import sync_attack_interval as _sai
+        from engine.components import CombatStats as _CSUpd
         cs = self.world.get_component(eid, _CSUpd)
         if cs:
             _sai(cs, eq_comp)
@@ -2221,7 +2221,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         save — usado por _handle_equip_sync pra nunca persistir um slot que
         update_player_equipment rejeitou (classe/level), mesmo que o cliente
         tenha mandado no payload de EQUIP_SYNC."""
-        from components import Equipment as _EqData
+        from engine.components import Equipment as _EqData
         eid = self._player_eids.get(session_id)
         if eid is None:
             return {}
@@ -2254,7 +2254,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         Retorna (hp_before, sfx_before) incluindo mobs + players PvP.
         """
-        from components import CombatStats as _CSsnap, StatusEffects as _SFXsnap
+        from engine.components import CombatStats as _CSsnap, StatusEffects as _SFXsnap
         hp_before: dict[int, int] = {}
         sfx_before: dict[int, set] = {}
         for eid in self._combat_targets(exclude_eid):
@@ -2328,14 +2328,14 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 pass
 
         # EnemyAISystem e EnemyAbilitySystem iteram todos os PlayerControlled internamente.
-        from components import TileMovement, Enemy, CombatStats
+        from engine.components import TileMovement, Enemy, CombatStats
 
         # ── DEBUG Bug2: detecta mutações de current_hp em mobs ocorridas
         # ENTRE ticks (handlers async de mensagem, ex: PROJECTILE_HIT_CS),
         # comparando contra o snapshot salvo ao final do tick anterior
         # (após o death-sweep). Apenas log — não altera comportamento.
         if MCL.DBG_ENABLED:
-            from components import PendingDeath as _HPPD, EntityIdentity as _HPID
+            from engine.components import PendingDeath as _HPPD, EntityIdentity as _HPID
             for _hp_eid in list(self._mob_eids):
                 _hp_cs = self.world.get_component(_hp_eid, CombatStats)
                 if not _hp_cs:
@@ -2373,7 +2373,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             player_hp_snap[peid] = pcs.current_hp if pcs else 0
 
         # Snapshot de estados de mob antes do AI update (para detectar aggro)
-        from components import AIControlled as _AIC
+        from engine.components import AIControlled as _AIC
         for _eid_sn in self._mob_eids:
             _ai_sn = self.world.get_component(_eid_sn, _AIC)
             if _ai_sn:
@@ -2410,7 +2410,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._perf_accum["global_systems"] = self._perf_accum.get("global_systems", 0.0) + (_time_tick.perf_counter() - _t0p)
 
         # Detecta mobs que aggraram neste tick (IDLE → CHASING/ATTACKING)
-        from components import EntityIdentity as _EIdent
+        from engine.components import EntityIdentity as _EIdent
         for _eid_ag in list(self._mob_eids):
             _ai_ag = self.world.get_component(_eid_ag, _AIC)
             _tm_ag = self.world.get_component(_eid_ag, TileMovement)
@@ -2467,7 +2467,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                   f"por {_proc_ev['duration']:.0f}s)")
 
         # ── Regen do boneco de treino (hp5 = ~10% de max_hp a cada 5s) ──────────
-        from components import TrainingDummy as _TDtk
+        from engine.components import TrainingDummy as _TDtk
         for _td_eid, _td_cs, _ in self.world.get_entities_with(CombatStats, _TDtk):
             if _td_cs.current_hp < _td_cs.max_hp:
                 _td_cs.hp5_timer += dt
@@ -2484,7 +2484,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                     })
 
         # ── ActiveRegen (consumíveis HoT — HP) ───────────────────────────────
-        from components import ActiveRegen as _AR
+        from engine.components import ActiveRegen as _AR
         _regen_remove = []
         _all_regen = list(self.world.get_entities_with(_AR))
         for _regen_eid, _regen in _all_regen:
@@ -2519,7 +2519,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 pass
 
         # ── ActiveManaRegen (consumíveis HoT — mana) ─────────────────────
-        from components import ActiveManaRegen as _AMR, CharacterStats as _CHSmr
+        from engine.components import ActiveManaRegen as _AMR, CharacterStats as _CHSmr
         _mregen_remove = []
         for _mregen_eid, _mregen in list(self.world.get_entities_with(_AMR)):
             if _mregen_eid not in self._player_eids.values():
@@ -2553,7 +2553,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 pass
 
         # ── Arqueiro: regen de Concentração + timers de buff ─────────────────
-        from components import CharacterStats as _ConcCS, CombatStats as _ConcCSt, TileMovement as _ConcTM
+        from engine.components import CharacterStats as _ConcCS, CombatStats as _ConcCSt, TileMovement as _ConcTM
         for _conc_eid in list(self._player_eids.values()):
             _ch = self.world.get_component(_conc_eid, _ConcCS)
             _cs = self.world.get_component(_conc_eid, _ConcCSt)
@@ -2572,7 +2572,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                     if _cs.camouflage_timer <= 0:
                         _cs.camouflage_timer  = 0.0
                         _cs.camouflage_object = ""
-                        _cst = self.world.get_component(_conc_eid, __import__("components").CombatState)
+                        _cst = self.world.get_component(_conc_eid, __import__("engine.components", fromlist=["CombatState"]).CombatState)
                         if _cst:
                             _cst.is_visible    = True
                             _cst.is_immune     = False
@@ -2600,7 +2600,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                     if _cs.camouflage_timer <= 0:
                         _cs.camouflage_timer  = 0.0
                         _cs.camouflage_object = ""
-                        _cst2 = self.world.get_component(_conc_eid, __import__("components").CombatState)
+                        _cst2 = self.world.get_component(_conc_eid, __import__("engine.components", fromlist=["CombatState"]).CombatState)
                         if _cst2:
                             _cst2.is_visible    = True
                             _cst2.is_immune     = False
@@ -2611,7 +2611,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                             _tm_cam2.speed = 110.0
 
         # ── FireShieldEffect: decrementa timer e remove quando expirar ──────
-        from components import FireShieldEffect as _FSE
+        from engine.components import FireShieldEffect as _FSE
         for _fse_eid, _fse in list(self.world.get_entities_with(_FSE)):
             _fse.elapsed += dt
             if _fse.elapsed >= _fse.duration:
@@ -2642,9 +2642,9 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         # Fatiador de Corpos: ticks subsequentes ao cast (tick 0 disparado pelo handler em
         # _process_skill_requests; PlayerInputSystem só roda no cliente, não no servidor).
-        from components import CharacterStats as _FatCS, TileMovement as _FatTM
-        from components import PlayerSkills as _FatPS, CombatStats as _FatCombatCS
-        from skill_config import SKILL_CATALOG as _FatCat
+        from engine.components import CharacterStats as _FatCS, TileMovement as _FatTM
+        from engine.components import PlayerSkills as _FatPS, CombatStats as _FatCombatCS
+        from content.skill_config import SKILL_CATALOG as _FatCat
         for _fat_peid in list(self._player_eids.values()):
             _fat_char = self.world.get_component(_fat_peid, _FatCS)
             if not _fat_char or _fat_char.fatiador_timer <= 0:
@@ -2690,7 +2690,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._process_player_attacks(dt, player_hp_snap)
 
         # Sweep: mobs com HP <= 0 sem PendingDeath (DoT, outros caminhos fora de deal_damage)
-        from components import Enemy as _Enemy, CombatStats as _CS2, PendingDeath as _PD
+        from engine.components import Enemy as _Enemy, CombatStats as _CS2, PendingDeath as _PD
         for eid in list(self._mob_eids):
             _cs = self.world.get_component(eid, _CS2)
             _pd = self.world.get_component(eid, _PD)
@@ -2711,14 +2711,14 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             # Aplica XP no ECS do servidor para manter level/xp sincronizados no save
             _xp_peid = entry["player_eid"]
             _xp_amt  = entry["xp"]
-            from components import CharacterStats as _CharXP, CombatStats as _CsXP, PermanentStats as _PermXP
+            from engine.components import CharacterStats as _CharXP, CombatStats as _CsXP, PermanentStats as _PermXP
             _char_xp = self.world.get_component(_xp_peid, _CharXP)
             _cs_xp   = self.world.get_component(_xp_peid, _CsXP)
             _perm_xp = self.world.get_component(_xp_peid, _PermXP)
             if _char_xp and _cs_xp:
                 _level_before = _char_xp.level
                 _char_xp.current_xp += _xp_amt
-                from stats_system import process_levelups as _pu
+                from engine.stats_system import process_levelups as _pu
                 _pu(self.world, _xp_peid, _char_xp, _cs_xp, _perm_xp)
                 # Se subiu de nível: re-aplica talentos e notifica cliente.
                 # Equipment não precisa ser reaplicado aqui — process_levelups()
@@ -2727,7 +2727,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 # sobrevivem ao recálculo intactos.
                 if _char_xp.level > _level_before:
                     try:
-                        from components import TalentTree as _TTre
+                        from engine.components import TalentTree as _TTre
                         _tt_re = self.world.get_component(_xp_peid, _TTre)
                         if _tt_re and _tt_re.allocated:
                             _sid_re = self._player_eid_to_sid.get(_xp_peid, "")
@@ -2742,7 +2742,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                     # detecta a mudança de HP/max_hp automaticamente no fim do tick
                     # e a propaga via _player_hp_broadcasts_this_tick → STATS_UPDATE AOI.
 
-                    from components import TalentTree as _TTlv
+                    from engine.components import TalentTree as _TTlv
                     _tt_lv = self.world.get_component(_xp_peid, _TTlv)
                     self.queue_stats_update({
                         "player_eid":    _xp_peid,
@@ -2770,7 +2770,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                             # last_client_payload ainda tem available_points antigo (notificação
                             # de level-up ainda não chegou ao cliente), então usar ECS evita
                             # salvar 0 pontos quando deveria salvar 1+.
-                            from components import TalentTree as _TTxp_save
+                            from engine.components import TalentTree as _TTxp_save
                             _tt_xp = self.world.get_component(_xp_peid, _TTxp_save)
                             if _tt_xp and isinstance(merged_xp.get("talents"), dict):
                                 merged_xp["talents"]["available_points"] = _tt_xp.available_points
@@ -2787,7 +2787,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                     and eid not in self._player_eids.values():
                 self._mob_eids.add(eid)
                 # CombatState: necessário para aggro do EnemyAISystem
-                from components import CombatState as _CS, Visible as _Vis
+                from engine.components import CombatState as _CS, Visible as _Vis
                 if not self.world.get_component(eid, _CS):
                     self.world.add_component(eid, _CS())
                 # Visible: EnemyAISystem filtra por Visible (FogSystem não roda no servidor)
@@ -2817,7 +2817,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # Detecta novos projéteis de mobs (criados por EnemyAISystem._spawn_projectile)
         # e envia como ENTITY_SPAWN kind="mob_projectile" para clientes renderizarem.
         # Detecta também projéteis removidos (hit ou alvo morto) para cleanup no cliente.
-        from components import Projectile as _Proj, Position as _ProjPos
+        from engine.components import Projectile as _Proj, Position as _ProjPos
         _current_proj_eids: set[int] = set()
         for _peid, _ppos, _prj in self.world.get_entities_with(_ProjPos, _Proj):
             _current_proj_eids.add(_peid)
@@ -2937,7 +2937,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         """Retorna efeitos ativos em mobs — {str(mob_eid): [effects_list]}.
         Inclui apenas mobs com pelo menos um efeito ativo.
         Chaves são str para compatibilidade JSON."""
-        from components import StatusEffects as _SE
+        from engine.components import StatusEffects as _SE
         result = {}
         for mob_eid in self._mob_eids:
             sfx = self.world.get_component(mob_eid, _SE)
@@ -2956,7 +2956,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         by damage). Without this, the client never calls _sync_player_effects when
         the server clears all effects, and CC icons/state persist indefinitely.
         """
-        from components import StatusEffects as _SE, PlayerControlled as _PC
+        from engine.components import StatusEffects as _SE, PlayerControlled as _PC
         result = []
         for eid, sfx in self.world.get_entities_with(_SE):
             if not self.world.get_component(eid, _PC):
@@ -2989,7 +2989,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # mob neste mesmo tick — confirma que o servidor GERA o evento (a
         # questão é se _build_update_for_session o repassa ao cliente).
         if MCL.DBG_ENABLED and _eids:
-            from components import EntityIdentity as _FHID
+            from engine.components import EntityIdentity as _FHID
             _all_combat = list(self._pending_mob_attacks) + list(self._combat_this_tick)
             for _fh_eid in _eids:
                 _fh_evs = [c for c in _all_combat if c.get("target") == _fh_eid]
@@ -3033,7 +3033,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
     def _store_snapshot(self) -> None:
         """Grava posição (tile_x, tile_y) apenas dos mobs para lag compensation.
         Players são excluídos: lag comp só valida posição de alvo (mob), não do atacante."""
-        from components import TileMovement
+        from engine.components import TileMovement
         snapshot: dict[int, tuple[int, int]] = {}
         for eid in self._mob_eids:
             tm = self.world.get_component(eid, TileMovement)

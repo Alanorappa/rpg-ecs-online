@@ -42,7 +42,7 @@ class RespawnMixin:
 
     def _tick_respawn_immunity(self) -> None:
         """Decrementa imunidade pós-respawn; restaura visibilidade ao expirar."""
-        from components import CombatState as _CS
+        from engine.components import CombatState as _CS
         for peid in self._player_eids.values():
             _pcst = self.world.get_component(peid, _CS)
             if _pcst and _pcst.respawn_immunity_ticks > 0:
@@ -52,10 +52,10 @@ class RespawnMixin:
 
     def _handle_player_death(self, player_eid: int) -> None:
         """Player morreu: corpo fica no local da morte, espírito ainda não liberado."""
-        from components import CombatState, TileMovement, GhostState, CharacterStats
+        from engine.components import CombatState, TileMovement, GhostState, CharacterStats
 
         # Limpa efeitos ativos (DoT/HoT) do player — B8
-        from components import StatusEffects as _SFX, ActiveRegen as _AR
+        from engine.components import StatusEffects as _SFX, ActiveRegen as _AR
         sfx = self.world.get_component(player_eid, _SFX)
         if sfx:
             sfx.effects.clear()
@@ -65,7 +65,7 @@ class RespawnMixin:
             pass
 
         # Cancela Channeling ativo (evita dano AoE pós-morte)
-        from components import Channeling as _Chan
+        from engine.components import Channeling as _Chan
         try:
             self.world.remove_component(player_eid, _Chan)
         except Exception:
@@ -113,7 +113,7 @@ class RespawnMixin:
 
         # Limpa alvo de todos os mobs (CombatState + AIControlled) — corpo não
         # deve continuar sendo perseguido/atacado
-        from components import AIControlled as _AIC
+        from engine.components import AIControlled as _AIC
         for mob_eid in self._mob_eids:
             mob_state = self.world.get_component(mob_eid, CombatState)
             if mob_state and mob_state.target_entity_id == player_eid:
@@ -162,7 +162,7 @@ class RespawnMixin:
     def _handle_release_spirit(self, player_eid: int) -> None:
         """Player clicou 'Liberar espírito': teleporta o espírito pro cemitério,
         intangível e invisível. Corpo permanece no local da morte (marcador)."""
-        from components import CombatState, TileMovement, Position, GhostState, CharacterStats
+        from engine.components import CombatState, TileMovement, Position, GhostState, CharacterStats
 
         gst = self.world.get_component(player_eid, GhostState)
         if not gst or not gst.is_dead or gst.is_ghost:
@@ -179,14 +179,14 @@ class RespawnMixin:
         # O write manual antigo não resetava is_moving — player que morria no
         # meio de um passo respawnava com o tween antigo vivo (classe de bug
         # do Tiro Repulsivo).
-        from utils import snap_to_tile as _snap_rs
+        from engine.utils import snap_to_tile as _snap_rs
         _snap_rs(self.world, player_eid, rx, ry, carry_prev=False)
 
         # Se player morreu num mapa não-principal (ex: cave), transfere o ghost pro
         # mapa principal antes de tudo. O cliente recebe ZONE_CHANGE junto com
         # GHOST_STATE via flag "zone_change_map" consumida em _send_ghost_state_updates.
         session_id   = self._player_eid_to_sid.get(player_eid)
-        from components import MapLocation as _MLrs
+        from engine.components import MapLocation as _MLrs
         _ml_rs      = self.world.get_component(player_eid, _MLrs)
         current_map  = _ml_rs.map_file if _ml_rs else self._map_file
         _zone_change = None
@@ -242,7 +242,7 @@ class RespawnMixin:
     def _tick_ghost_states(self, dt: float) -> None:
         """Atualiza timers/raios de cada espírito ativo; dispara revive automático
         no cemitério ou atualiza near_corpse (prompt 'Reviver agora?')."""
-        from components import TileMovement, GhostState
+        from engine.components import TileMovement, GhostState
 
         gx, gy = self.RESPAWN_TILE
         for peid in list(self._player_eids.values()):
@@ -290,7 +290,7 @@ class RespawnMixin:
         """Revive o player: restaura HP/mana, reseta GhostState, aplica imunidade
         pós-respawn, na posição atual do espírito. at_corpse=True → 15% HP
         (perto do corpo); at_corpse=False → full HP (cemitério)."""
-        from components import (CombatStats, CombatState, CharacterStats,
+        from engine.components import (CombatStats, CombatState, CharacterStats,
                                  TileMovement, GhostState)
 
         gst = self.world.get_component(player_eid, GhostState)
@@ -381,7 +381,7 @@ class RespawnMixin:
         gerados aqui (fora do loop normal de `_tick`) ainda são drenados
         normalmente no próximo tick — mesmo mecanismo que `despawn_player`
         já usa pra `_despawned_this_tick` fora do tick."""
-        from components import GhostState, MapLocation as _MLar
+        from engine.components import GhostState, MapLocation as _MLar
         gst = self.world.get_component(player_eid, GhostState)
         if not gst or not gst.is_dead:
             return
@@ -392,7 +392,7 @@ class RespawnMixin:
         if ml and ml.map_file != self._map_file and session_id:
             self.transfer_player(session_id, player_eid, self._map_file, rx, ry)
 
-        from utils import snap_to_tile as _snap_ar
+        from engine.utils import snap_to_tile as _snap_ar
         _snap_ar(self.world, player_eid, rx, ry, carry_prev=False)
 
         self._revive_player(player_eid, hp_frac=1.0, at_corpse=False)

@@ -6,9 +6,9 @@ import pygame; pygame.init()
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Simula criação do player entity como o GameEngine faz online (char_data=None)
-from world import World
-from entity_factory import create_player
-from components import CombatStats, CharacterStats
+from engine.world import World
+from engine.entity_factory import create_player
+from engine.components import CombatStats, CharacterStats
 
 world = World()
 player_eid = create_player(world, 115 * 32 + 16, 389 * 32 + 16, "maps/map_1.csv")
@@ -26,7 +26,7 @@ print()
 
 # Simula o que apply_char_stats_to_combat faria
 if char and cs:
-    from stats_system import apply_char_stats_to_combat, CLASS_BASE_STATS
+    from engine.stats_system import apply_char_stats_to_combat, CLASS_BASE_STATS
     _base = CLASS_BASE_STATS.get(char.class_id, CLASS_BASE_STATS["guerreiro"])
     char.strength     = _base["strength"]
     char.intelligence = _base["intelligence"]

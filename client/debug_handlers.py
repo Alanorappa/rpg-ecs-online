@@ -1,4 +1,4 @@
-﻿"""
+"""
 debug_handlers.py — Mixin com o modal de debug (F12): subir de
 nível, adicionar ouro/itens e trocar de mapa, incluindo o roteamento
 de cliques e o desenho do modal e de cada aba (Nivel/Itens/Ouro/Mapa).
@@ -8,11 +8,11 @@ fornece self.world, self._my_eid, self.screen e os demais atributos
 referenciados aqui.
 """
 import pygame
-from ui_helpers import fill_surf
+from ui.ui_helpers import fill_surf
 
-from combat_log import LOG
-from components import CharacterStats, CombatStats, Inventory, PermanentStats, TileMovement, Wallet
-from ui_sizes import UI
+from ui.combat_log import LOG
+from engine.components import CharacterStats, CombatStats, Inventory, PermanentStats, TileMovement, Wallet
+from ui.ui_sizes import UI
 
 # Nomes amigáveis opcionais — mapas sem entrada aqui usam o nome do arquivo
 _DEBUG_MAP_NAMES: dict[str, str] = {
@@ -28,8 +28,8 @@ class DebugHandlers:
 
     def _debug_levelup(self, n: int) -> None:
         """Sobe n níveis instantaneamente, concedendo 1 ponto de talento por nível."""
-        from stats_system import process_levelups
-        from components import TalentTree
+        from engine.stats_system import process_levelups
+        from engine.components import TalentTree
         cs   = self.world.get_component(self.player_entity, CharacterStats)
         comb = self.world.get_component(self.player_entity, CombatStats)
         perm = self.world.get_component(self.player_entity, PermanentStats)
@@ -114,7 +114,7 @@ class DebugHandlers:
 
     def _debug_open_map(self, map_file: str) -> None:
         """Carrega map_file no overlay e abre para o jogador clicar o destino de teleporte."""
-        from map_loader import load_map_csv
+        from engine.map_loader import load_map_csv
         terrain_matrix, _, __, ___ = load_map_csv(map_file)
         player_tm = self.world.get_component(self.player_entity, TileMovement)
         ptx = player_tm.current_tile_x if player_tm else 0
@@ -130,8 +130,8 @@ class DebugHandlers:
         """Retorna lista de (name, rarity, factory) de todos os itens do jogo. Cache lazy."""
         if self._debug_item_catalog:
             return self._debug_item_catalog
-        from loot_tables import _T
-        from merchant_data import SHOPS
+        from content.loot_tables import _T
+        from content.merchant_data import SHOPS
         rarity_order = {"common": 0, "uncommon": 1, "rare": 2, "epic": 3,
                         "legendary": 4, "mythic": 5}
         catalog = []
@@ -151,7 +151,7 @@ class DebugHandlers:
 
     def _draw_debug_modal(self) -> None:
         """Desenha o painel de debug (F12) com abas: Nivel / Itens / Ouro."""
-        from components import TalentTree
+        from engine.components import TalentTree
         cs = self.world.get_component(self.player_entity, CharacterStats)
         tt = self.world.get_component(self.player_entity, TalentTree)
         wallet = self.world.get_component(self.player_entity, Wallet)

@@ -409,6 +409,85 @@ completa sem regressão (9F/83P — zero mudança server-side).
 **Não validado:** passada manual com o jogo rodando (visual das 3 abas,
 scrollbar arrastando de verdade, canal Mundial com 2 clientes reais).
 
+### 19. Reorganização da raiz — content/engine/ui/debug/tools/release_tools (09/07/2026)
+
+A raiz tinha ~60 arquivos `.py` soltos sem nenhuma pasta (dados de
+conteúdo, sistemas ECS headless, UI/render client-only e scripts de dev
+todos misturados). Reorganizados em 6 pastas novas, mantendo `server/`/
+`client/`/`shared/` (a separação MAIS importante do projeto) intactos:
+
+- **`content/`** — tabelas de dado puro (`mob_definitions`, `item_table`,
+  `loot_tables`, `merchant_data`, `quests_data`, `talent_data`,
+  `skill_config`, `enemy_abilities_data`, `crafting_data`,
+  `status_effects_data`).
+- **`engine/`** — ECS headless compartilhado client+server (`world`,
+  `components`, `entity_factory`, `core_systems`, `world_systems`,
+  `stat_fns`, `stats_system`, `damage_calculator`, `quest_logic`,
+  `quest_events`, `save_system`, `utils`, `fx`, `map_loader`, `tileset`).
+- **`ui/`** — client-only (render/HUD/painéis/áudio) — **critério não foi
+  "importa pygame?" e sim "quem carrega isso de verdade"**: `combat_log.py`,
+  `skill_handlers.py` e `fov.py` são headless-clean mas só `ui/systems.py`/
+  `game.py` os importam (servidor nunca) — foram pro `ui/` mesmo assim.
+  Verificado via grep no grafo de imports real (`grep -rl "import X" server/`),
+  não por inspeção do topo do arquivo.
+- **`debug/`** — `aoi_debug.py`/`mob_combat_debug.py`: módulos de log
+  ATIVOS importados por server E client em runtime (gated por flag) — NÃO
+  são scripts soltos, por isso pasta própria em vez de ir pro `tools/`.
+- **`tools/`** — `check_surfaces.py`/`png_to_map.py`/`reverb.py`: scripts
+  standalone com **zero importador** em todo o repo (confirmado via grep) —
+  rodados manualmente pelo dev, nunca pelo jogo.
+- **`release_tools/`** — `build_client.ps1` + `rpg_online_client.spec`.
+  **NUNCA nomear essa pasta `packaging/`** — colide com a lib real do PyPI
+  `packaging` (usada pelo próprio PyInstaller internamente via
+  `import packaging.requirements`); como o CWD entra no `sys.path` como
+  namespace package implícito (PEP 420, nem precisa de `__init__.py`), uma
+  pasta local `packaging/` na raiz é encontrada ANTES da lib de verdade e
+  quebra qualquer ferramenta que dependa dela — foi exatamente o que
+  aconteceu no primeiro build de teste desta migração (`ModuleNotFoundError:
+  No module named 'packaging.requirements'`), só descoberto rodando o build
+  de verdade, não só a suíte de testes (pytest não quebrou com a colisão —
+  não confiar só nos testes pra validar mudança de nome de pasta na raiz).
+
+**Mecânica da migração** (não manual — 90 arquivos e centenas de imports):
+`git mv` de cada arquivo, depois script Python com regex por forma de
+import (`import X` → `import NOVO.CAMINHO as X` — alias preserva TODO
+call-site `X.attr` existente sem precisar tocar nele; `from X import Y` →
+`from NOVO.CAMINHO import Y`, nomes importados não mudam). Nomes
+processados do mais longo pro mais curto (`world_systems` antes de
+`world`) — evita colisão de substring (`\bworld\b` não bate dentro de
+"world_systems" porque `_` é caractere de palavra em regex, mas a ordem
+ainda importa pro `from X import`/`import X` ficarem exatos). Casos
+especiais tratados à parte: `__import__("components").Attr")` (usado ~20x
+pra import tardio, evitar ciclo) virou
+`__import__("engine.components", fromlist=["Attr"]).Attr` — `__import__`
+com path pontuado sem `fromlist` retorna o pacote TOP-LEVEL, não o
+submódulo, então trocar só a string sem adicionar `fromlist` quebraria
+silenciosamente (o `.Attr` seguinte falharia com `AttributeError`).
+
+`paths.py`/`config.py` ficaram DE PROPÓSITO na raiz (não entraram em
+`engine/`) — ambos resolvem local via
+`os.path.dirname(os.path.abspath(__file__))` assumindo estar ao lado de
+`assets/`/`maps/`/`config.json`; mover pra uma subpasta mudaria o
+`__file__` e quebraria a resolução de asset em modo dev (não-frozen).
+
+`release_tools/rpg_online_client.spec` precisou de um fix estrutural:
+`Analysis(["main.py"])` é resolvido pelo PyInstaller relativo ao
+**SPECPATH** (pasta do `.spec`), não ao CWD de onde foi invocado — passar a
+viver em `release_tools/` quebrava `main.py` (`ERROR: script ... not found`)
+até trocar pra `os.path.join(SPECPATH, "..", "main.py")`. `build_client.ps1`
+também mudou seu `Set-Location` de `$PSScriptRoot` pra
+`$PSScriptRoot\..` (volta pra raiz do projeto, de onde `assets/`/`maps/`/
+`dist/` sempre foram resolvidos).
+
+Validado: `py_compile` em 100% dos `.py` do repo; suíte completa sem
+regressão (9F/83P — mesma baseline de sempre); rebuild completo via
+PyInstaller (`release_tools/build_client.ps1`) — mesmo tamanho final
+(52,5 MB); exe gerado testado (roda sem `crash.log` nos primeiros
+segundos, mesma checagem usada nos builds anteriores).
+
+**Não validado:** sessão de jogo manual completa com o build novo (só
+smoke-test de processo vivo/sem crash imediato).
+
 ---
 
 ## Protocolo — todas as mensagens implementadas

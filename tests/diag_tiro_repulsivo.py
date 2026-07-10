@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tests.helpers import (make_world_server, spawn_player, run_ticks, first_mob,
                            teleport_mob_to_player, authorize_skill)
-from components import CombatStats, CombatState, CharacterStats, Equipment, Item
+from engine.components import CombatStats, CombatState, CharacterStats, Equipment, Item
 
 ws = make_world_server()
 eid = spawn_player(ws, "s1", 130, 374, class_id="arqueiro")
@@ -70,6 +70,6 @@ except Exception as e:
     sys.exit(1)
 
 print(f"Depois: mob_hp={mob_cs.current_hp}")
-mob_tm = ws.world.get_component(mob, __import__("components").TileMovement)
+mob_tm = ws.world.get_component(mob, __import__("engine.components", fromlist=["TileMovement"]).TileMovement)
 print(f"mob_tile=({mob_tm.current_tile_x},{mob_tm.current_tile_y})")
 print("skill_results_this_tick:", ws._skill_results_this_tick)

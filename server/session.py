@@ -14,7 +14,7 @@ import time
 
 from shared.messages import MsgType, encode, decode
 from shared.constants import AOI_RADIUS, AOI_EXIT_BUFFER, PROTOCOL_VERSION, TICK_RATE
-from utils import in_aoi as _in_aoi, SpatialHash as _SpatialHash
+from engine.utils import in_aoi as _in_aoi, SpatialHash as _SpatialHash
 
 
 def _can_see(world, viewer_eid: int, target_eid: int) -> bool:
@@ -25,7 +25,7 @@ def _can_see(world, viewer_eid: int, target_eid: int) -> bool:
     - is_visible=False + viewer ghost + target ghost → visível (espírito vê espírito).
     - is_visible=False qualquer outro caso → invisível.
     """
-    from components import CombatState, GhostState
+    from engine.components import CombatState, GhostState
     cst = world.get_component(target_eid, CombatState)
     if cst is None or cst.is_visible:
         return True
@@ -342,15 +342,15 @@ class SessionManager:
         # Clique direito num mob → enter_combat imediatamente (systems.py:1244)
         # Impede HP5 regen antes do primeiro hit, igual ao offline
         if target_eid != -1:
-            from components import CombatState as _CS
-            from stat_fns import enter_combat as _ec
+            from engine.components import CombatState as _CS
+            from engine.stat_fns import enter_combat as _ec
             player_eid = session.entity_id
             pcst = self.world_server.world.get_component(player_eid, _CS)
             if pcst:
                 _ec(pcst)
                 pcst.is_pursuing = True   # espelha o clique direito do cliente
         else:
-            from components import CombatState as _CS_stop
+            from engine.components import CombatState as _CS_stop
             player_eid = session.entity_id
             pcst = self.world_server.world.get_component(player_eid, _CS_stop)
             if pcst:
@@ -407,7 +407,7 @@ class SessionManager:
         # dormiram (sono é aplicado no início do canal) — igual ao offline
         # _cancel_cancao_ninar.
         if sid == "cancao_ninar":
-            from components import CharacterStats as _CSCancelLullaby, StatusEffects as _SFXCancelLullaby
+            from engine.components import CharacterStats as _CSCancelLullaby, StatusEffects as _SFXCancelLullaby
             _char_stats = self.world_server.world.get_component(player_eid, _CSCancelLullaby)
             if _char_stats and _char_stats.lullaby_targets:
                 for _tid in _char_stats.lullaby_targets:
@@ -422,7 +422,7 @@ class SessionManager:
         # (e portanto o auto-attack via can_act()).
         if not any(e["player_eid"] == player_eid
                    for e in self.world_server._pending_spell_completions):
-            from components import CombatState as _CStCancelCast
+            from engine.components import CombatState as _CStCancelCast
             _cst_cancel_cast = self.world_server.world.get_component(player_eid, _CStCancelCast)
             if _cst_cancel_cast:
                 _cst_cancel_cast.is_casting = False
@@ -435,14 +435,14 @@ class SessionManager:
         ]
         # Channeling cancelado (ex: Calamidade Flamejante interrompida por movimento):
         # remove o componente Channeling do player para parar os ticks de dano no servidor.
-        from components import Channeling as _ChanCancel
+        from engine.components import Channeling as _ChanCancel
         _ch_comp = self.world_server.world.get_component(player_eid, _ChanCancel)
         if _ch_comp and _ch_comp.spell_id == sid:
             try:
                 self.world_server.world.remove_component(player_eid, _ChanCancel)
             except Exception:
                 pass
-            from components import CombatState as _CStCancel
+            from engine.components import CombatState as _CStCancel
             _cst_cancel = self.world_server.world.get_component(player_eid, _CStCancel)
             if _cst_cancel:
                 _cst_cancel.is_casting = False
@@ -675,7 +675,7 @@ class SessionManager:
         claimed = int(payload.get("gold", 0))
         if claimed < 0:
             return
-        from components import Wallet as _W_gu
+        from engine.components import Wallet as _W_gu
         eid = self.world_server._player_eids.get(session.session_id)
         if eid is None:
             return
@@ -712,8 +712,8 @@ class SessionManager:
         # não relacionado rodasse (ex: o próximo kill) — daí o salto "0 → 2"
         # relatado por testers (dropou a 1ª presa: não contou; dropou a 2ª:
         # contou 2 de uma vez). Ver PROBLEMAS_ARQUITETURA.md.
-        from components import QuestLog as _QLinv, Inventory as _InvQuestSync
-        import quest_logic as _qlogic_inv
+        from engine.components import QuestLog as _QLinv, Inventory as _InvQuestSync
+        import engine.quest_logic as _qlogic_inv
         _inv_eid = self.world_server.get_entity_id(session.session_id)
         _ql_inv  = self.world_server.world.get_component(_inv_eid, _QLinv) \
                    if _inv_eid != -1 else None
@@ -764,11 +764,11 @@ class SessionManager:
             return
         qid = str(payload.get("quest_id", ""))
         eid = session.entity_id
-        from components import QuestLog
+        from engine.components import QuestLog
         ql = self.world_server.world.get_component(eid, QuestLog)
         if ql is None:
             return
-        import quest_logic
+        import engine.quest_logic as quest_logic
         # talk_to_npc SEMPRE antes do try_start — mesmo quando quest_id é vazio
         # (interação com NPC não-QuestGiver, ex: mercador). O check "if not qid"
         # antigo ficava ANTES disso e impedia o evento de chegar ao QuestLog.
@@ -799,11 +799,11 @@ class SessionManager:
         if not qid:
             return  # turn_in sem quest_id é sem sentido — rejeita direto
         eid = session.entity_id
-        from components import QuestLog
+        from engine.components import QuestLog
         ql = self.world_server.world.get_component(eid, QuestLog)
         if ql is None:
             return
-        import quest_logic
+        import engine.quest_logic as quest_logic
         # talk_to_npc antes de can_turn_in — garante que objetivos do tipo
         # talk_to_npc (ex: "fale com o NPC antes de entregar") já estejam
         # contabilizados quando a validação de entrega rodar.
@@ -817,7 +817,7 @@ class SessionManager:
             return
 
         if reward.xp > 0:
-            from components import CharacterStats, CombatStats, PermanentStats, TalentTree
+            from engine.components import CharacterStats, CombatStats, PermanentStats, TalentTree
             char = self.world_server.world.get_component(eid, CharacterStats)
             cs   = self.world_server.world.get_component(eid, CombatStats)
             perm = self.world_server.world.get_component(eid, PermanentStats)
@@ -827,7 +827,7 @@ class SessionManager:
                 })
                 level_before = char.level
                 char.current_xp += reward.xp
-                from stats_system import process_levelups
+                from engine.stats_system import process_levelups
                 process_levelups(self.world_server.world, eid, char, cs, perm)
                 if char.level > level_before:
                     cs.current_hp = cs.max_hp
@@ -840,7 +840,7 @@ class SessionManager:
                     })
 
         if reward.gold > 0:
-            from components import Wallet
+            from engine.components import Wallet
             wall = self.world_server.world.get_component(eid, Wallet)
             if wall:
                 wall.gold += reward.gold
@@ -936,13 +936,13 @@ class SessionManager:
         from server.respawn_system import RespawnMixin as _RS
         rx, ry = _RS.RESPAWN_TILE
 
-        from components import TileMovement, Position, StatusEffects, AIControlled, CombatState
+        from engine.components import TileMovement, Position, StatusEffects, AIControlled, CombatState
         from shared.constants import TILE_SIZE
 
         # Teleporta no servidor — snap_to_tile cancela tween em andamento e
         # sincroniza pixels/Position (o write manual antigo não resetava
         # is_moving nem os campos de pixel).
-        from utils import snap_to_tile as _snap_tp
+        from engine.utils import snap_to_tile as _snap_tp
         _snap_tp(self.world_server.world, player_eid, rx, ry, carry_prev=False)
 
         # Limpa efeitos ativos (stun, root, DoT…)
@@ -992,7 +992,7 @@ class SessionManager:
         if player_eid is None:
             return
 
-        from components import GhostState, TileMovement
+        from engine.components import GhostState, TileMovement
         from shared.constants import GHOST_CORPSE_RADIUS_TILES, GHOST_CORPSE_REVIVE_HP_FRAC
 
         gst = self.world_server.world.get_component(player_eid, GhostState)
@@ -1425,7 +1425,7 @@ class SessionManager:
             # Pré-calcula posições de todos os mobs UMA VEZ por tick.
             # Elimina O(mobs) component lookups por player por tick no sweep de AOI.
             # SpatialHash reduz o sweep de O(P×M) para O(P × candidatos_no_AOI).
-            from components import TileMovement as _TM_aoi
+            from engine.components import TileMovement as _TM_aoi
             _mob_positions: dict[int, tuple] = {}
             _mob_hash = _SpatialHash(cell_size=AOI_RADIUS + 1)
             for _me in self.world_server._mob_eids:
@@ -1630,7 +1630,7 @@ class SessionManager:
         # Mapa atual do player que recebe este update.
         _my_map = self.world_server.get_player_map(session.session_id)
 
-        from components import MapLocation as _ML_aoi
+        from engine.components import MapLocation as _ML_aoi
 
         def in_aoi(tx: int, ty: int, eid: int = -1) -> bool:
             # Métrica canônica: Chebyshev (utils.in_aoi) — mesma dos broadcasts
@@ -1692,7 +1692,7 @@ class SessionManager:
         # check de _can_see() acima só roda para eids presentes em "moved"
         # deste tick, e quem não andou nunca gera esse delta.
         if deltas.get("visibility_changed"):
-            from components import TileMovement as _VisTM
+            from engine.components import TileMovement as _VisTM
             for eid in deltas["visibility_changed"]:
                 if eid == session.entity_id:
                     continue
@@ -1770,9 +1770,9 @@ class SessionManager:
         # dentro do AOI/known_eids desta sessão — o lado de fora pode estar em fog
         # para este cliente, mas ainda assim gera som/FLT na posição dele.
         if combat_events:
-            from aoi_debug import AOI_DBG as _AOI_DBG_combat, DBG_ENABLED as _DBG_EN_combat
+            from debug.aoi_debug import AOI_DBG as _AOI_DBG_combat, DBG_ENABLED as _DBG_EN_combat
             if _DBG_EN_combat:
-                from components import Position as _PosCombatDbg
+                from engine.components import Position as _PosCombatDbg
                 for _cr in combat_events:
                     _atk = _cr.get("attacker")
                     _tgt = _cr.get("target")
@@ -1794,7 +1794,7 @@ class SessionManager:
         # DEBUG Bug2: para mobs despawnados neste tick, registra se o
         # combat event correspondente sobreviveu ao filtro de AOI acima.
         if deltas.get("despawned"):
-            from mob_combat_debug import MCL as _MCL_aoi
+            from debug.mob_combat_debug import MCL as _MCL_aoi
             if _MCL_aoi.DBG_ENABLED:
                 for _eid_fh in deltas["despawned"]:
                     _evs_all = [c for c in deltas.get("combat", [])
@@ -1867,7 +1867,7 @@ class SessionManager:
             ox, oy = self.world_server.get_tile_pos(other_session.session_id)
             if in_aoi(ox, oy, other_eid):
                 _hp, _hp_max = self.world_server.get_player_hp(other_session.session_id)
-                from components import GhostState as _OtherGST2
+                from engine.components import GhostState as _OtherGST2
                 _ogst = self.world_server.world.get_component(other_eid, _OtherGST2)
                 spawn_payload = {
                     "eid":      other_eid,
@@ -1889,7 +1889,7 @@ class SessionManager:
         # já que o one-shot de _spawned_this_tick foi enviado quando o ghost
         # estava no cemitério (longe do local da morte).
         from server.respawn_system import PLAYER_CORPSE_EID_BASE as _PCEB
-        from components import CharacterStats as _CharSweep
+        from engine.components import CharacterStats as _CharSweep
         for _cpeid, _cpdata in list(getattr(self.world_server, "_player_corpses", {}).items()):
             _seid = _PCEB + _cpeid
             if _seid in session.known_eids:

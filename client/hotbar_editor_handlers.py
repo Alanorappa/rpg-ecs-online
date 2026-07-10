@@ -1,4 +1,4 @@
-﻿"""
+"""
 hotbar_editor_handlers.py — Mixin com o editor de atalhos da hotbar
 (tecla K): tabela de rebind de teclas (menus, slots de habilidade e
 consumíveis) com captura de tecla e botões Salvar/Fechar. Inclui as
@@ -9,10 +9,10 @@ self.screen, self.font_*, self._menu_keys, self._mkb_rebind e os demais
 atributos referenciados aqui.
 """
 import pygame
-from ui_helpers import fill_surf
+from ui.ui_helpers import fill_surf
 
-from components import PlayerSkills
-from ui_sizes import UI
+from engine.components import PlayerSkills
+from ui.ui_sizes import UI
 
 
 class HotbarEditorHandlers:
@@ -37,8 +37,8 @@ class HotbarEditorHandlers:
 
     def _draw_hotbar_editor(self, events: list) -> None:
         """Painel 'Atalhos do teclado' — tabela de rebind + Salvar / Fechar."""
-        from skill_config import SKILL_CATALOG, NUM_SLOTS
-        from components import ConsumableBar as _CB
+        from content.skill_config import SKILL_CATALOG, NUM_SLOTS
+        from engine.components import ConsumableBar as _CB
 
         ps   = self.world.get_component(self.player_entity, PlayerSkills)
         cbar = self.world.get_component(self.player_entity, _CB)

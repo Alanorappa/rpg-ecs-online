@@ -1,4 +1,4 @@
-﻿"""
+"""
 habilidades_handlers.py — Mixin com o painel de Habilidades (tecla H):
 lista scrollável de skills aprendidas com drag-and-drop para a hotbar,
 o ghost de drag exibido sobre os slots, e a tela de loading exibida
@@ -9,11 +9,11 @@ self.screen, self.font_*, self._net e os demais atributos referenciados
 aqui.
 """
 import pygame
-from ui_helpers import fill_surf
+from ui.ui_helpers import fill_surf
 
-from components import PlayerSkills
-from icon_manager import ICONS
-from ui_sizes import UI
+from engine.components import PlayerSkills
+from ui.icon_manager import ICONS
+from ui.ui_sizes import UI
 
 
 class HabilidadesHandlers:
@@ -22,8 +22,8 @@ class HabilidadesHandlers:
 
     def _draw_habilidades_panel(self, events: list) -> None:
         """Modal central de habilidades — lista scrollável com descrição completa + drag para hotbar."""
-        from skill_config import SKILL_CATALOG, NUM_SLOTS
-        from components import TalentTree as _TT
+        from content.skill_config import SKILL_CATALOG, NUM_SLOTS
+        from engine.components import TalentTree as _TT
 
         ps = self.world.get_component(self.player_entity, PlayerSkills)
         if not ps:
@@ -48,7 +48,7 @@ class HabilidadesHandlers:
                 avail.append(s.skill_id)
         _tt = self.world.get_component(self.player_entity, _TT)
         if _tt:
-            from talent_data import TALENTS as _TAL
+            from content.talent_data import TALENTS as _TAL
             for tid, pts in _tt.allocated.items():
                 t = _TAL.get(tid)
                 if not t or not t.get("unlocks_skill"):

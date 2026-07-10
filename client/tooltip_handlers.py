@@ -1,4 +1,4 @@
-﻿"""
+"""
 tooltip_handlers.py — Mixin com geração e desenho de tooltips de
 habilidades, itens (compare panel) e entidades do mundo: cálculo de
 dano/alcance para exibição, montagem das linhas de texto e desenho
@@ -10,10 +10,10 @@ e os demais atributos referenciados aqui.
 import pygame
 
 from client.colors import C_GREEN, C_RED, C_YELLOW
-from components import CharacterStats, CombatStats, Position
-from ui_compare import draw_compare_panel
-from ui_helpers import wrap_text, fill_surf
-from ui_sizes import UI
+from engine.components import CharacterStats, CombatStats, Position
+from ui.ui_compare import draw_compare_panel
+from ui.ui_helpers import wrap_text, fill_surf
+from ui.ui_sizes import UI
 
 
 class TooltipHandlers:
@@ -27,7 +27,7 @@ class TooltipHandlers:
         cs = self.world.get_component(self.player_entity, CombatStats)
         if not cs:
             return 0
-        from components import Equipment as _EqSpell
+        from engine.components import Equipment as _EqSpell
         equip  = self.world.get_component(self.player_entity, _EqSpell)
         weapon = equip.slots.get("mainhand") if equip else None
         if weapon and getattr(weapon, "damage_min", 0) > 0:
@@ -41,7 +41,7 @@ class TooltipHandlers:
         cs = self.world.get_component(self.player_entity, CombatStats)
         if not cs:
             return (0, 0)
-        from components import Equipment as _Eq
+        from engine.components import Equipment as _Eq
         equip = self.world.get_component(self.player_entity, _Eq)
         weapon = equip.slots.get("mainhand") if equip else None
         if weapon and weapon.damage_min > 0:
@@ -222,7 +222,7 @@ class TooltipHandlers:
             elif is_procced:
                 # Proc existe mas falta alvo ou outra condição
                 if sid == "executar":
-                    from components import CharacterStats as _CStt
+                    from engine.components import CharacterStats as _CStt
                     _ch_tt = self.world.get_component(self.player_entity, _CStt)
                     if _ch_tt and getattr(_ch_tt, "free_executar_charges", 0) > 0:
                         status = ("Status: Assassino — selecione um alvo", C_WARN)
@@ -338,7 +338,7 @@ class TooltipHandlers:
 
     def _draw_world_tooltip(self):
         """Mostra tooltip fixo no canto inferior direito ao passar o mouse sobre NPCs/mobs."""
-        from components import Enemy, EnemyTier, Renderable, Merchant, QuestGiver, NPC, Visible, EntityIdentity
+        from engine.components import Enemy, EnemyTier, Renderable, Merchant, QuestGiver, NPC, Visible, EntityIdentity
         mx, my = pygame.mouse.get_pos()
         z  = self._zoom
         wx = mx / z + self._cam_x

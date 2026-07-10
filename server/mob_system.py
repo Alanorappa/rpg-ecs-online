@@ -31,8 +31,8 @@ class ServerMobSystem:
         self._move_timers: dict[int, float] = {}  # mob_eid → tempo até próximo passo
 
     def update(self, dt: float = 0) -> None:
-        from components import CombatState, TileMovement, NPC
-        from utils import chebyshev
+        from engine.components import CombatState, TileMovement, NPC
+        from engine.utils import chebyshev
 
         npc_tiles: set[tuple[int, int]] = set()
         for _, tm, _ in self.world.get_entities_with(TileMovement, NPC):
@@ -56,8 +56,8 @@ class ServerMobSystem:
                 self._move_toward_target(mob_eid, mob_cs, mob_tm, dt, npc_tiles)
 
     def _try_aggro(self, mob_eid: int, mob_cs, mob_tm) -> None:
-        from utils import chebyshev
-        from components import TileMovement, CombatStats, CombatState as _CSTp
+        from engine.utils import chebyshev
+        from engine.components import TileMovement, CombatStats, CombatState as _CSTp
         best_dist = AGGRO_RANGE + 1
         best_eid  = -1
         for player_eid in self._player_eids.values():
@@ -80,7 +80,7 @@ class ServerMobSystem:
 
     def _is_walkable(self, tx: int, ty: int) -> bool:
         """Verifica walkability via tilemap do servidor — mesma lógica do offline."""
-        from components import Tilemap
+        from engine.components import Tilemap
         for _, tc in self.world.get_entities_with(Tilemap):
             rows = tc.tile_matrix
             if not rows or ty < 0 or ty >= len(rows):
@@ -92,8 +92,8 @@ class ServerMobSystem:
         return True  # sem tilemap carregado
 
     def _check_leash(self, mob_eid: int, mob_cs, mob_tm) -> None:
-        from components import TileMovement, CombatStats, CombatState as _CSTl
-        from utils import chebyshev
+        from engine.components import TileMovement, CombatStats, CombatState as _CSTl
+        from engine.utils import chebyshev
         target = mob_cs.target_entity_id
         # Larga alvo morto ou invisível imediatamente
         pcs = self.world.get_component(target, CombatStats)
@@ -116,9 +116,9 @@ class ServerMobSystem:
     def _move_toward_target(self, mob_eid: int, mob_cs, mob_tm, dt: float,
                             npc_tiles: set = None) -> None:
         """Move 1 tile em direção ao player se não estiver em melee range."""
-        from components import TileMovement, Position
-        from utils import chebyshev, start_tile_movement
-        from tileset import TILE_SIZE
+        from engine.components import TileMovement, Position
+        from engine.utils import chebyshev, start_tile_movement
+        from engine.tileset import TILE_SIZE
 
         if npc_tiles is None:
             npc_tiles = set()
@@ -169,5 +169,5 @@ class ServerMobSystem:
         # snap_to_tile: o write manual antigo não resetava is_moving — mob
         # empurrado no meio de um passo mantinha o tween antigo vivo (classe
         # de bug do Tiro Repulsivo).
-        from utils import snap_to_tile as _snap_mob
+        from engine.utils import snap_to_tile as _snap_mob
         _snap_mob(self.world, mob_eid, new_tx, new_ty)

@@ -6,8 +6,8 @@ import pygame; pygame.init()
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tests.helpers import make_world_server, spawn_player, set_entity_tile
-from entity_factory import create_enemy
-from components import CombatStats, CombatState, CharacterStats, Equipment, Item
+from engine.entity_factory import create_enemy
+from engine.components import CombatStats, CombatState, CharacterStats, Equipment, Item
 
 ws = make_world_server()
 eid = spawn_player(ws, "s1", 10, 10, class_id="arqueiro")

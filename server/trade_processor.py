@@ -68,8 +68,8 @@ class TradeProcessorMixin:
         """Mesmo mapa e distância chebyshev <= TRADE_MAX_DIST_TILES."""
         if self.get_entity_map(eid_a) != self.get_entity_map(eid_b):
             return False
-        from components import TileMovement as _TradeTM
-        from utils import chebyshev
+        from engine.components import TileMovement as _TradeTM
+        from engine.utils import chebyshev
         tm_a = self.world.get_component(eid_a, _TradeTM)
         tm_b = self.world.get_component(eid_b, _TradeTM)
         if not tm_a or not tm_b:
@@ -79,7 +79,7 @@ class TradeProcessorMixin:
 
     def _cancel_trade_session(self, session: TradeSession, reason: str) -> None:
         """Devolve itens/gold em custódia dos DOIS lados e remove a sessão."""
-        from components import Inventory as _TradeInv, Wallet as _TradeWallet
+        from engine.components import Inventory as _TradeInv, Wallet as _TradeWallet
         inv_a = self.world.get_component(session.player_a, _TradeInv)
         inv_b = self.world.get_component(session.player_b, _TradeInv)
         wallet_a = self.world.get_component(session.player_a, _TradeWallet)
@@ -104,7 +104,7 @@ class TradeProcessorMixin:
         """Troca itens/gold cruzados. Valida espaço de Inventory nos dois
         lados ANTES de mexer em qualquer coisa — se faltar espaço, cancela
         (devolve tudo) e retorna "inventory_full" em vez de "executed"."""
-        from components import Inventory as _TradeInv, Wallet as _TradeWallet
+        from engine.components import Inventory as _TradeInv, Wallet as _TradeWallet
         inv_a = self.world.get_component(session.player_a, _TradeInv)
         inv_b = self.world.get_component(session.player_b, _TradeInv)
         if inv_a is None or inv_b is None:
@@ -178,7 +178,7 @@ class TradeProcessorMixin:
         offer = session.offer_of(player_eid)
         if len(offer) >= 5:
             return "invalid"
-        from components import Inventory as _TradeInv
+        from engine.components import Inventory as _TradeInv
         inv = self.world.get_component(player_eid, _TradeInv)
         if not inv or not (0 <= inv_index < len(inv.items)):
             return "invalid"
@@ -194,7 +194,7 @@ class TradeProcessorMixin:
         offer = session.offer_of(player_eid)
         if not (0 <= offer_slot < len(offer)):
             return "invalid"
-        from components import Inventory as _TradeInv
+        from engine.components import Inventory as _TradeInv
         inv = self.world.get_component(player_eid, _TradeInv)
         if not inv:
             return "invalid"
@@ -211,7 +211,7 @@ class TradeProcessorMixin:
             return "invalid"
         if amount < 0:
             return "invalid"
-        from components import Wallet as _TradeWallet
+        from engine.components import Wallet as _TradeWallet
         wallet = self.world.get_component(player_eid, _TradeWallet)
         if not wallet:
             return "invalid"

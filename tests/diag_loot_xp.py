@@ -6,7 +6,7 @@ import pygame; pygame.init()
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from server.world_server import WorldServer
-from components import CombatStats, PendingDeath, EntityIdentity, AIControlled, TileMovement
+from engine.components import CombatStats, PendingDeath, EntityIdentity, AIControlled, TileMovement
 
 ws = WorldServer()
 char_data = {'tile_x':130,'tile_y':374,'hp':200,'level':1,'class_id':'guerreiro',
@@ -40,11 +40,11 @@ if mob:
 # === XP: process_levelups ===
 print()
 print("=== XP ===")
-from stats_system import process_levelups
-from components import CharacterStats, PermanentStats
-from world import World
+from engine.stats_system import process_levelups
+from engine.components import CharacterStats, PermanentStats
+from engine.world import World
 w2 = World()
-from entity_factory import create_player
+from engine.entity_factory import create_player
 p2 = create_player(w2, 1000, 1000, "maps/map_1.csv")
 char = w2.get_component(p2, CharacterStats)
 cs = w2.get_component(p2, CombatStats)

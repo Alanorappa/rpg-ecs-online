@@ -5,7 +5,7 @@ import pygame; pygame.init()
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tests.helpers import make_world_server, spawn_player, run_ticks, first_mob
-from components import CombatStats, CombatState, TileMovement, CharacterStats, Position
+from engine.components import CombatStats, CombatState, TileMovement, CharacterStats, Position
 
 ws = make_world_server()
 eid = spawn_player(ws, "s1", 130, 374)

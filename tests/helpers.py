@@ -32,8 +32,8 @@ def authorize_skill(ws, eid: int, sid: str) -> None:
     (quando a skill é desbloqueada por talento). Necessário desde o gate
     autoritativo de world_systems.is_skill_authorized — fixtures de teste
     que castam skill devem 'aprender' primeiro, como um player real."""
-    from components import PlayerSkills, TalentTree
-    from world_systems import _TALENT_SKILL_REQS
+    from engine.components import PlayerSkills, TalentTree
+    from engine.world_systems import _TALENT_SKILL_REQS
     ps = ws.world.get_component(eid, PlayerSkills)
     if ps is not None:
         ps.learned_skill_ids.add(sid)
@@ -70,8 +70,8 @@ def run_ticks(ws, n: int, dt: float = 0.05) -> dict:
 
 def set_entity_tile(ws, eid: int, tx: int, ty: int) -> None:
     """Sincroniza TileMovement E Position para o tile dado."""
-    from components import TileMovement, Position
-    from tileset import TILE_SIZE
+    from engine.components import TileMovement, Position
+    from engine.tileset import TILE_SIZE
     tm = ws.world.get_component(eid, TileMovement)
     pos = ws.world.get_component(eid, Position)
     if tm:
@@ -86,7 +86,7 @@ def set_entity_tile(ws, eid: int, tx: int, ty: int) -> None:
 
 def teleport_mob_to_player(ws, mob_eid: int, player_eid: int, offset_x: int = 1):
     """Move mob para o tile adjacente ao player, sincroniza Position e reseta AI."""
-    from components import TileMovement, AIControlled
+    from engine.components import TileMovement, AIControlled
     ptm = ws.world.get_component(player_eid, TileMovement)
     if ptm:
         set_entity_tile(ws, mob_eid, ptm.current_tile_x + offset_x, ptm.current_tile_y)
@@ -102,7 +102,7 @@ def teleport_mob_to_player(ws, mob_eid: int, player_eid: int, offset_x: int = 1)
 def first_mob(ws) -> int | None:
     """Primeiro mob REAL (pula o TrainingDummy — ele não ataca, não anda e
     não morre; testes de combate/morte/loot com ele falham silenciosamente)."""
-    from components import TrainingDummy
+    from engine.components import TrainingDummy
     for eid in ws._mob_eids:
         if ws.world.get_component(eid, TrainingDummy) is None:
             return eid
@@ -111,7 +111,7 @@ def first_mob(ws) -> int | None:
 
 def first_ai_mob(ws) -> int | None:
     """Returns first mob in _mob_eids that has an AIControlled component."""
-    from components import AIControlled
+    from engine.components import AIControlled
     for eid in ws._mob_eids:
         if ws.world.get_component(eid, AIControlled):
             return eid
@@ -119,13 +119,13 @@ def first_ai_mob(ws) -> int | None:
 
 
 def get_mob_hp(ws, mob_eid: int) -> tuple[int, int]:
-    from components import CombatStats
+    from engine.components import CombatStats
     cs = ws.world.get_component(mob_eid, CombatStats)
     return (cs.current_hp, cs.max_hp) if cs else (0, 0)
 
 
 def get_player_hp(ws, session_id: str) -> tuple[int, int]:
-    from components import CombatStats
+    from engine.components import CombatStats
     eid = ws._player_eids.get(session_id)
     cs  = ws.world.get_component(eid, CombatStats) if eid else None
     return (cs.current_hp, cs.max_hp) if cs else (0, 0)

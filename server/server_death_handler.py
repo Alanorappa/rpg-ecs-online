@@ -55,7 +55,7 @@ class ServerDeathHandler:
 
     def update(self) -> None:
         """Processa todas as entidades com PendingDeath este tick."""
-        from components import PendingDeath, EnemyTier, SpawnZoneOwner, SpawnZone, TileMovement
+        from engine.components import PendingDeath, EnemyTier, SpawnZoneOwner, SpawnZone, TileMovement
 
         to_remove:    list[int] = []
         to_pd_only:   list[int] = []  # boneco de treino: só remove PendingDeath
@@ -72,7 +72,7 @@ class ServerDeathHandler:
                 continue
 
             # Boneco de treino: reseta HP em vez de morrer
-            from components import TrainingDummy as _TDdh, CombatStats as _CSdh
+            from engine.components import TrainingDummy as _TDdh, CombatStats as _CSdh
             if self.world.get_component(eid, _TDdh) is not None:
                 _td_cs = self.world.get_component(eid, _CSdh)
                 if _td_cs:
@@ -100,9 +100,9 @@ class ServerDeathHandler:
             tier_comp = self.world.get_component(eid, EnemyTier)
             tier      = tier_comp.tier if tier_comp else "normal"
 
-            from components import EntityIdentity
-            from mob_definitions import MOB_TABLE
-            from entity_factory import ENEMY_TIER_CONFIGS
+            from engine.components import EntityIdentity
+            from content.mob_definitions import MOB_TABLE
+            from engine.entity_factory import ENEMY_TIER_CONFIGS
             identity = self.world.get_component(eid, EntityIdentity)
             mob_def  = MOB_TABLE.get(identity.name) if identity else None
             if mob_def and "xp_given_by_lvl" in mob_def:
@@ -144,8 +144,8 @@ class ServerDeathHandler:
             # combat_processor).
             try:
                 if killer_eid != -1:
-                    from components import PlayerSkills as _PSdh
-                    from skill_config import SKILL_CATALOG as _SC
+                    from engine.components import PlayerSkills as _PSdh
+                    from content.skill_config import SKILL_CATALOG as _SC
                     _ks = self.world.get_component(killer_eid, _PSdh)
                     if _ks:
                         for _sid_ok, _defn in _SC.items():
@@ -153,7 +153,7 @@ class ServerDeathHandler:
                                 continue
                             _sk = _ks.skill_by_id(_sid_ok)
                             if _sk is None:
-                                from world_systems import is_skill_authorized as _auth_dh
+                                from engine.world_systems import is_skill_authorized as _auth_dh
                                 if not _auth_dh(self.world, killer_eid, _sid_ok)[0]:
                                     continue
                                 _sk = _PSdh._make_skill(_sid_ok, _SC)
@@ -189,7 +189,7 @@ class ServerDeathHandler:
             # progresso (mesmo critério de dono do loot). Server-autoritativo
             # — ver quest_logic.py/PROBLEMAS_ARQUITETURA.md.
             if first_attacker_eid != -1 and identity:
-                from quest_events import fire as _qfire_kill
+                from engine.quest_events import fire as _qfire_kill
                 _qfire_kill("kill", player_eid=first_attacker_eid,
                             name=identity.name, race=identity.race, tier=tier)
 
@@ -204,7 +204,7 @@ class ServerDeathHandler:
             mob_name = identity.name if identity else ""
 
             try:
-                from loot_tables import roll_mob_loot, roll_mob_coins as _roll_mob_coins
+                from content.loot_tables import roll_mob_loot, roll_mob_coins as _roll_mob_coins
                 loot_items = roll_mob_loot(mob_name, tier) if mob_name else []
                 coins      = _roll_mob_coins(mob_name, tier) if (mob_name and tier) else 0
             except Exception:
@@ -215,10 +215,10 @@ class ServerDeathHandler:
             # mesma lógica de quest_system.py::get_conditional_loot, agora
             # server-autoritativa contra o QuestLog real do first-attacker.
             if first_attacker_eid != -1 and mob_name:
-                from components import QuestLog as _QLdh
+                from engine.components import QuestLog as _QLdh
                 _ql_killer = self.world.get_component(first_attacker_eid, _QLdh)
                 if _ql_killer:
-                    import quest_logic as _qlogic_dh
+                    import engine.quest_logic as _qlogic_dh
                     loot_items.extend(
                         _qlogic_dh.roll_conditional_loot(_ql_killer, mob_name, identity.race if identity else ""))
 
@@ -226,7 +226,7 @@ class ServerDeathHandler:
             # _server_apply_ranged_physical) voltam como loot pro matador, se ele
             # tiver o talento. Mesma fórmula do offline (systems.py): 50-100% das
             # flechas recebidas, mínimo 1.
-            from components import CombatStats as _CSdh, Equipment as _EqDh, Item as _ItemDh
+            from engine.components import CombatStats as _CSdh, Equipment as _EqDh, Item as _ItemDh
             _dead_cs = self.world.get_component(eid, _CSdh)
             if _dead_cs and _dead_cs.arrows_received > 0 and first_attacker_eid != -1:
                 _killer_cs = self.world.get_component(first_attacker_eid, _CSdh)
@@ -254,7 +254,7 @@ class ServerDeathHandler:
                 # "map": capturado ANTES do remove_entity — corpse/loot são
                 # broadcast por loops diretos (não AOI_UPDATE) e precisam do
                 # mapa pro filtro cross-map (ver session._sessions_in_aoi).
-                from components import MapLocation as _MLdh
+                from engine.components import MapLocation as _MLdh
                 _ml_dh = self.world.get_component(eid, _MLdh)
                 self.pending_loot.append({
                     "mob_eid":   eid,
@@ -287,7 +287,7 @@ class ServerDeathHandler:
         # Boneco de treino: só remove PendingDeath, mantém entidade
         for eid in to_pd_only:
             try:
-                from components import PendingDeath as _PD
+                from engine.components import PendingDeath as _PD
                 self.world.remove_component(eid, _PD)
             except Exception:
                 pass
@@ -295,7 +295,7 @@ class ServerDeathHandler:
         # Remove PendingDeath ANTES de remove_entity (evita iteração inválida)
         for eid in to_remove:
             try:
-                from components import PendingDeath as _PD
+                from engine.components import PendingDeath as _PD
                 self.world.remove_component(eid, _PD)
             except Exception:
                 pass

@@ -1,4 +1,4 @@
-﻿"""
+"""
 hud_handlers.py — Mixin com o HUD principal (vida/mana/fúria, buffs,
 minimapa, ouro, equipamentos rápidos, talentos alocados) e a barra
 de cast/canalização exibida no centro inferior da tela durante
@@ -9,10 +9,10 @@ self.screen, self.font_sm e os demais atributos referenciados aqui.
 """
 import pygame
 
-from components import (Channeling, CharacterStats, CombatStats, IceBlockEffect,
+from engine.components import (Channeling, CharacterStats, CombatStats, IceBlockEffect,
                         Inventory, PermanentStats, SpellCast, TileMovement, Wallet)
 from client.colors import C_WHITE, C_YELLOW, C_GREEN, C_RED, C_GRAY, C_ORANGE
-from ui_sizes import UI
+from ui.ui_sizes import UI
 
 
 class HudHandlers:
@@ -95,7 +95,7 @@ class HudHandlers:
                 self.screen.blit(conc_surf, (self._u(14), y))
                 y += self._u(18)
                 # Barra de Aljava
-                from components import Equipment as _EqHUD
+                from engine.components import Equipment as _EqHUD
                 _eq_hud = self.world.get_component(self.player_entity, _EqHUD)
                 _quiver = _eq_hud.slots.get("offhand") if _eq_hud else None
                 if _quiver and getattr(_quiver, "item_type", "") == "quiver":
@@ -127,8 +127,8 @@ class HudHandlers:
         y += self._u(18)
 
         # --- Ícones de efeitos de estado (debuffs/buffs ativos) ---
-        from components import StatusEffects as _SfxHUD
-        from status_effects_data import EFFECT_DEFS as _EDEFS
+        from engine.components import StatusEffects as _SfxHUD
+        from content.status_effects_data import EFFECT_DEFS as _EDEFS
         _sfx_hud = self.world.get_component(self.player_entity, _SfxHUD)
         if _sfx_hud and _sfx_hud.effects:
             _ICON = self._u(22)   # tamanho do ícone
@@ -213,7 +213,7 @@ class HudHandlers:
             y += inv_surf.get_height() + self._u(2)
 
         # --- Talentos pendentes ---
-        from components import TalentTree
+        from engine.components import TalentTree
         tt = self.world.get_component(self.player_entity, TalentTree)
         if tt and tt.available_points > 0:
             blink = int(pygame.time.get_ticks() / 500) % 2 == 0

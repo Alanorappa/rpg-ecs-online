@@ -70,7 +70,7 @@ if __name__ == "__main__":
             break
         net_user, net_pass = args.user, args.password
     else:
-        from login_screen import run as _login_run
+        from ui.login_screen import run as _login_run
         result = _login_run(screen, host, port)
         if result is None:
             pygame.quit()
@@ -78,7 +78,7 @@ if __name__ == "__main__":
         net_user, net_pass, net, char_list = result
 
     # ── Etapa 2: Seleção / Criação de Personagem ──────────────────────────────
-    from char_creation_screen import run_online as _char_run
+    from ui.char_creation_screen import run_online as _char_run
     ok = _char_run(screen, char_list, net)
     if not ok:
         # Usuário voltou ao login → reinicia (recursão simples via re-exec ou loop)

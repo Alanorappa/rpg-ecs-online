@@ -26,7 +26,7 @@ class SpellCompletionMixin:
         de colisão — servidor e cliente concordam: stun inicia quando o
         deslocamento acaba.
         """
-        from core_systems import apply_effect
+        from engine.core_systems import apply_effect
 
         still = []
         for entry in self._pending_knockback_landings:
@@ -56,7 +56,7 @@ class SpellCompletionMixin:
 
     def _process_spell_cast_completions(self, dt: float) -> None:
         """Avança timers de spells pendentes e dispara efeitos quando concluídas."""
-        from components import CombatStats as _CS, CharacterStats as _CHS, StatusEffects as _SFX
+        from engine.components import CombatStats as _CS, CharacterStats as _CHS, StatusEffects as _SFX
 
         still = []
         for entry in self._pending_spell_completions:
@@ -81,19 +81,19 @@ class SpellCompletionMixin:
                 # Skill Magic — só conta cast com custo efetivo de mana > 0 (exclui
                 # Bloco de Gelo, que tem mana_cost no catálogo mas custo real 0).
                 # Concedido por CAST, independente de acerto/dano — ver stats_system.py.
-                from components import SkillLevels as _SKLm
+                from engine.components import SkillLevels as _SKLm
                 skl = self.world.get_component(player_eid, _SKLm)
                 cs_magic = self.world.get_component(player_eid, _CS)
                 if skl and cs_magic:
-                    from stats_system import grant_skill_xp as _grant_magic_xp
+                    from engine.stats_system import grant_skill_xp as _grant_magic_xp
                     _grant_magic_xp(skl, cs_magic, "magic", 1)
 
             # Evento de quest "use_skill" — toda magia/skill com tempo de
             # cast concluída conta, independente de acerto/dano. on_dummy
             # checa TrainingDummy no alvo (ex: "Iniciação Arcana"). Server-
             # autoritativo — ver quest_logic.py/PROBLEMAS_ARQUITETURA.md.
-            from components import TrainingDummy as _TDq
-            from quest_events import fire as _qfire_skill
+            from engine.components import TrainingDummy as _TDq
+            from engine.quest_events import fire as _qfire_skill
             _qfire_skill("use_skill", player_eid=player_eid, skill_id=spell_id,
                          on_dummy=self.world.get_component(target_id, _TDq) is not None)
 
@@ -140,7 +140,7 @@ class SpellCompletionMixin:
                 # Flecha Reiterada: cada flecha manda PROJECTILE_HIT_CS individualmente.
                 # Calcula quantas flechas esperar (inclui talento Sequência Final).
                 if spell_id == "flecha_reiterada":
-                    from skill_config import SKILL_CATALOG as _SC_fr_cnt
+                    from content.skill_config import SKILL_CATALOG as _SC_fr_cnt
                     _fr_cnt_p   = _SC_fr_cnt.get("flecha_reiterada", {}).get("params", {})
                     _remaining  = _fr_cnt_p.get("arrow_count", 2)
                     _att_fr_cnt = self.world.get_component(player_eid, _CS)
@@ -156,7 +156,7 @@ class SpellCompletionMixin:
                 # se ele andou durante o voo da flecha, a direção do empurrão diverge
                 # da direção visual do tiro.
                 if spell_id == "tiro_repulsivo":
-                    from components import TileMovement as _TM_tr_launch
+                    from engine.components import TileMovement as _TM_tr_launch
                     _tm_launch = self.world.get_component(player_eid, _TM_tr_launch)
                     if _tm_launch:
                         entry["launch_tx"] = _tm_launch.current_tile_x
@@ -233,7 +233,7 @@ class SpellCompletionMixin:
             for _r in results:
                 _r_eid = _r["eid"]
                 if _r_eid in self._player_eids.values():
-                    from components import CombatStats as _CSvicC, CharacterStats as _CSvcC
+                    from engine.components import CombatStats as _CSvicC, CharacterStats as _CSvcC
                     _vcs = self.world.get_component(_r_eid, _CSvicC)
                     _vch = self.world.get_component(_r_eid, _CSvcC)
                     if _vcs:
@@ -280,7 +280,7 @@ class SpellCompletionMixin:
             self._skill_results_this_tick.append(skill_entry)
 
             # ── SKILL_EFFECT: evento de apresentação da conclusão ─────────────
-            from components import TileMovement as _TM_sfx
+            from engine.components import TileMovement as _TM_sfx
             _caster_tm_sfx = self.world.get_component(player_eid, _TM_sfx)
             _sfx_tx = _caster_tm_sfx.current_tile_x if _caster_tm_sfx else 0
             _sfx_ty = _caster_tm_sfx.current_tile_y if _caster_tm_sfx else 0
@@ -324,7 +324,7 @@ class SpellCompletionMixin:
         # Libera is_casting (e portanto o auto-attack) para players cujo último
         # cast pendente acabou de resolver. Mantém True se ainda houver outro
         # cast enfileirado pelo mesmo player (ex: Flecha Reiterada com 2 casts).
-        from components import CombatState as _CS_done
+        from engine.components import CombatState as _CS_done
         _still_players = {e["player_eid"] for e in still}
         for _e_done in self._pending_spell_completions:
             _peid_done = _e_done["player_eid"]
@@ -348,7 +348,7 @@ class SpellCompletionMixin:
     def _apply_spell_on_projectile_hit(self, player_eid: int, spell_id: str,
                                         target_id: int) -> None:
         """Chamado ao receber PROJECTILE_HIT_CS: aplica dano e envia SKILL_RESULT."""
-        from components import CombatStats as _CS, CharacterStats as _CHS, StatusEffects as _SFX
+        from engine.components import CombatStats as _CS, CharacterStats as _CHS, StatusEffects as _SFX
 
         # Localiza a entrada em voo correspondente
         entry = None
@@ -433,7 +433,7 @@ class SpellCompletionMixin:
             _r2_eid = _r2["eid"]
             if _r2_eid in self._player_eids.values() and _r2["damage"] > 0:
                 _vcs2 = self.world.get_component(_r2_eid, _CS)
-                from components import CharacterStats as _CSv2
+                from engine.components import CharacterStats as _CSv2
                 _vch2 = self.world.get_component(_r2_eid, _CSv2)
                 if _vcs2:
                     _r2_entry = {
@@ -466,7 +466,7 @@ class SpellCompletionMixin:
         self._skill_results_this_tick.append(skill_entry)
 
         # ── SKILL_EFFECT: impact ao acertar (ou miss se sem dano) ────────────
-        from components import TileMovement as _TM_ph
+        from engine.components import TileMovement as _TM_ph
         _ph_tm = self.world.get_component(player_eid, _TM_ph)
         _ph_tx = _ph_tm.current_tile_x if _ph_tm else 0
         _ph_ty = _ph_tm.current_tile_y if _ph_tm else 0
@@ -489,10 +489,10 @@ class SpellCompletionMixin:
 
     def _process_player_channeling(self, dt: float) -> None:
         """Processa ticks de canalização de players (Calamidade Flamejante)."""
-        from components import Channeling as _Chan, CombatStats as _CS, \
+        from engine.components import Channeling as _Chan, CombatStats as _CS, \
                                CharacterStats as _CHS, TileMovement as _TM
-        from core_systems import apply_effect
-        from utils import chebyshev
+        from engine.core_systems import apply_effect
+        from engine.utils import chebyshev
 
         _to_remove = []
         for player_eid in list(self._player_eids.values()):
@@ -551,7 +551,7 @@ class SpellCompletionMixin:
 
     def _process_ice_blocks(self, dt: float) -> None:
         """Avança o timer de Bloco de Gelo e limpa is_immune/is_stunned ao expirar."""
-        from components import IceBlockEffect as _IBE, CombatState as _CSt, CombatStats as _CS
+        from engine.components import IceBlockEffect as _IBE, CombatState as _CSt, CombatStats as _CS
 
         to_clear = []
         for player_eid in list(self._player_eids.values()):
@@ -609,7 +609,7 @@ class SpellCompletionMixin:
         apareciam no log e o loot ia parar com quem desse a sorte de
         auto-atacar depois.
         """
-        from core_systems import apply_damage_core
+        from engine.core_systems import apply_damage_core
         return apply_damage_core(self.world, target_id, dmg,
                                  killer_eid=attacker_id, add_pending_death=False,
                                  on_damage_dealt=self._log_mob_damage_hit
@@ -619,7 +619,7 @@ class SpellCompletionMixin:
 
     def _server_spell_damage(self, player_eid: int, dmg_weapon_pct: float, sp_coeff: float) -> int:
         """Delega para damage_calculator.spell_damage — fonte única compartilhada."""
-        from damage_calculator import spell_damage as _sd
+        from engine.damage_calculator import spell_damage as _sd
         return _sd(self.world, player_eid, dmg_weapon_pct, sp_coeff)
 
     def _server_apply_magic_damage(self, attacker_id: int, target_id: int,
@@ -645,9 +645,9 @@ class SpellCompletionMixin:
         Bônus de Magic skill do atacante (dmg%+crit%) aplica sempre, com ou
         sem escola — qualquer spell que gasta mana conta para o skill Magic.
         """
-        from components import (CombatStats, CombatState, AIControlled,
+        from engine.components import (CombatStats, CombatState, AIControlled,
                                 PendingDeath, StatusEffects, TileMovement, EntityIdentity)
-        from stat_fns import enter_combat
+        from engine.stat_fns import enter_combat
 
         target_cs = self.world.get_component(target_id, CombatStats)
         if not target_cs or target_cs.current_hp <= 0:
@@ -658,7 +658,7 @@ class SpellCompletionMixin:
         _magic_dmg_bonus  = getattr(attacker_cs, "magic_skill_dmg_bonus",  0.0) if attacker_cs else 0.0
 
         if roll_crit:
-            from damage_calculator import resolve_attack_outcome, CRITICAL_DAMAGE_MULTIPLIER
+            from engine.damage_calculator import resolve_attack_outcome, CRITICAL_DAMAGE_MULTIPLIER
             if attacker_cs:
                 outcome, _ = resolve_attack_outcome(attacker_cs, target_cs, "magical",
                                                     extra_crit=_magic_crit_bonus)
@@ -671,10 +671,10 @@ class SpellCompletionMixin:
             dmg = int(dmg * (1.0 + _magic_dmg_bonus))
 
         if school in ("fogo", "gelo", "natureza"):
-            from damage_calculator import apply_resistance_reduction
+            from engine.damage_calculator import apply_resistance_reduction
             _resist = getattr(target_cs, f"resist_{school}", 0.0)
             dmg = max(1, int(apply_resistance_reduction(dmg, _resist)))
-            from stats_system import grant_resist_skill_xp
+            from engine.stats_system import grant_resist_skill_xp
             grant_resist_skill_xp(self.world, target_id, school)
 
         hp_before = target_cs.current_hp
@@ -696,7 +696,7 @@ class SpellCompletionMixin:
             })
             # PvP: HP sync para vítima player
             if target_id in self._player_eids.values():
-                from components import CharacterStats as _CHS_mag
+                from engine.components import CharacterStats as _CHS_mag
                 _vch = self.world.get_component(target_id, _CHS_mag)
                 self.queue_stats_update({
                     "player_eid": target_id,
@@ -743,10 +743,10 @@ class SpellCompletionMixin:
     # ── Handlers de conclusão de cada spell ──────────────────────────────────
 
     def _server_bola_de_fogo(self, player_eid: int, target_id: int, entry: dict) -> None:
-        from components import CombatStats, StatusEffects, CharacterStats
-        from core_systems import apply_effect
-        from damage_calculator import CRITICAL_DAMAGE_MULTIPLIER, resolve_attack_outcome
-        from skill_config import SKILL_CATALOG as _SC_bdf
+        from engine.components import CombatStats, StatusEffects, CharacterStats
+        from engine.core_systems import apply_effect
+        from engine.damage_calculator import CRITICAL_DAMAGE_MULTIPLIER, resolve_attack_outcome
+        from content.skill_config import SKILL_CATALOG as _SC_bdf
         _bdf_data = _SC_bdf.get("bola_de_fogo", {})
 
         if target_id == -1:
@@ -800,15 +800,15 @@ class SpellCompletionMixin:
                 player_cs.fire_crit_counter = 0
                 player_cs.fire_crit_timer   = 0.0
                 apply_effect(self.world, player_eid, "elemental_lapse", 5.0, 0)
-                from components import Modifier
-                from stat_fns import add_timed_modifier
+                from engine.components import Modifier
+                from engine.stat_fns import add_timed_modifier
                 add_timed_modifier(player_cs, Modifier("crit_rating", _lapse, "flat", source="buff"), 5.0, "lapso_elemental")
                 # Notifica o cliente para aplicar o modificador visual e mostrar PROC
                 self._proj_spell_result["lapso_proc"] = {"bonus": _lapse, "duration": 5.0}
 
         # Exaustão: slow progressivo por BdF consecutiva
         if player_cs and getattr(player_cs, "fire_exhaustion_enabled", False):
-            from components import ActiveEffect as _AEX, StatusEffects as _SFX2
+            from engine.components import ActiveEffect as _AEX, StatusEffects as _SFX2
             _exh_dur = _bdf_data.get("effect_durations", {}).get("exhaustion", 6.0)
             _t_sfx = self.world.get_component(target_id, _SFX2)
             if _t_sfx is None:
@@ -839,8 +839,8 @@ class SpellCompletionMixin:
                     char_stats.fire_instant_ready = True
 
     def _server_calcinar(self, player_eid: int, target_id: int, _entry: dict) -> None:
-        from components import CombatStats, StatusEffects, CharacterStats
-        from skill_config import SKILL_CATALOG as _SC_cal
+        from engine.components import CombatStats, StatusEffects, CharacterStats
+        from content.skill_config import SKILL_CATALOG as _SC_cal
         _cal = _SC_cal.get("calcinar", {})
 
         if target_id == -1:
@@ -878,10 +878,10 @@ class SpellCompletionMixin:
                     char_stats.fire_instant_ready = True
 
     def _server_nova_congelante(self, player_eid: int, target_id: int, entry: dict) -> None:
-        from components import CombatStats, TileMovement
-        from core_systems import apply_effect
-        from utils import chebyshev
-        from skill_config import SKILL_CATALOG as _SC_nc
+        from engine.components import CombatStats, TileMovement
+        from engine.core_systems import apply_effect
+        from engine.utils import chebyshev
+        from content.skill_config import SKILL_CATALOG as _SC_nc
         _nc = _SC_nc.get("nova_congelante", {})
 
         tm_p = self.world.get_component(player_eid, TileMovement)
@@ -895,7 +895,7 @@ class SpellCompletionMixin:
         _coef  = _nc.get("dmg_sp_coeff", 0.5)
         _range = _nc.get("cast_range", 3)
 
-        from components import Position as _PosNC
+        from engine.components import Position as _PosNC
         # Itera _combat_targets: mobs + players PvP (sem Enemy check, igual ao padrão ECS)
         for eid in self._combat_targets(exclude_eid=player_eid):
             etm = self.world.get_component(eid, TileMovement)
@@ -914,14 +914,14 @@ class SpellCompletionMixin:
             # current_tile (antes da animação completar) e cliente vai para target_tile,
             # causando desacordo que gera salto visual quando o root expira.
             if etm.is_moving:
-                from utils import snap_to_tile as _snap_nc
+                from engine.utils import snap_to_tile as _snap_nc
                 _snap_nc(self.world, eid, etm.target_tile_x, etm.target_tile_y)
 
     def _server_polimorfia(self, player_eid: int, target_id: int, entry: dict) -> None:
-        from components import CombatStats, CombatState, StatusEffects as _SFXpoly
-        from core_systems import apply_effect
-        from skill_config import SKILL_CATALOG as _SC_poly
-        from status_effects_data import EFFECT_DEFS as _EDEFS_poly
+        from engine.components import CombatStats, CombatState, StatusEffects as _SFXpoly
+        from engine.core_systems import apply_effect
+        from content.skill_config import SKILL_CATALOG as _SC_poly
+        from content.status_effects_data import EFFECT_DEFS as _EDEFS_poly
 
         if target_id == -1:
             return
@@ -957,23 +957,23 @@ class SpellCompletionMixin:
 
         Retorna (is_dead, outcome, damage).
         """
-        from components import CombatStats, CombatState, Equipment, PendingDeath
-        from damage_calculator import (resolve_attack_outcome, calculate_base_damage,
+        from engine.components import CombatStats, CombatState, Equipment, PendingDeath
+        from engine.damage_calculator import (resolve_attack_outcome, calculate_base_damage,
                                        apply_armor_reduction, CRITICAL_DAMAGE_MULTIPLIER)
-        from stat_fns import enter_combat
-        from core_systems import apply_effect as _ae
+        from engine.stat_fns import enter_combat
+        from engine.core_systems import apply_effect as _ae
 
         target_cs = self.world.get_component(target_id, CombatStats)
         if not target_cs or target_cs.current_hp <= 0:
             return False, "miss", 0
 
         attacker_cs = self.world.get_component(player_eid, CombatStats)
-        equip       = self.world.get_component(player_eid, __import__("components").Equipment)
+        equip       = self.world.get_component(player_eid, __import__("engine.components", fromlist=["Equipment"]).Equipment)
         bow         = equip.slots.get("mainhand") if equip else None
 
         # Skill level — Arco (atacante) afeta acerto+crit; Escudo/Defesa (alvo)
         # afetam block/avoid. Ver stats_system.py, seção Skill Level.
-        from stats_system import (weapon_skill_extras, defense_skill_extras,
+        from engine.stats_system import (weapon_skill_extras, defense_skill_extras,
                                   grant_weapon_skill_xp, grant_defense_skill_xp)
         _extra_acerto, _extra_crit_sk = weapon_skill_extras(self.world, player_eid, bow)
         _extra_block, _extra_avoid    = defense_skill_extras(self.world, target_id)
@@ -982,7 +982,7 @@ class SpellCompletionMixin:
 
         if guaranteed_hit:
             # Picada de Escorpião: sempre acerta, pode critar
-            from damage_calculator import resolve_attack_outcome as _ro
+            from engine.damage_calculator import resolve_attack_outcome as _ro
             _dummy_cs = type("DC", (), {"crit_rating": getattr(attacker_cs,"crit_rating",0.05),
                                          "dodge_rating":0, "parry_rating":0, "block_rating":0,
                                          "block_value":0, "armor":0})()
@@ -1008,7 +1008,7 @@ class SpellCompletionMixin:
             # Skills de arco: fórmula única (arco + AP×(mult + 0.01×skill_level
             # do Arco)) — antes era (AP+arco)×mult, multiplicando a arma junto.
             # Crit/block aplicam via physical_fixed; armadura logo abaixo.
-            from damage_calculator import ability_physical_damage as _apd_rng
+            from engine.damage_calculator import ability_physical_damage as _apd_rng
             _base_raw = _apd_rng(self.world, player_eid,
                                  {"damage_multiplier": ap_multiplier})
             base = calculate_base_damage(attacker_cs, "physical_fixed", bow,
@@ -1020,7 +1020,7 @@ class SpellCompletionMixin:
             # golpe básico (antes só ganhava +acerto/+crit via
             # weapon_skill_extras, nunca dano — inconsistência real entre
             # skill e auto-attack). Ver PROBLEMAS_ARQUITETURA.md.
-            from stats_system import weapon_skill_level as _wsl_ranged_auto
+            from engine.stats_system import weapon_skill_level as _wsl_ranged_auto
             _ap_skill_mult_auto = 1.0 + 0.01 * _wsl_ranged_auto(self.world, player_eid, bow)
             base = calculate_base_damage(attacker_cs, "physical", bow,
                                          multiplier=ap_multiplier,
@@ -1054,7 +1054,7 @@ class SpellCompletionMixin:
                 attacker_cs.na_mosca_bonus_active = True
 
         # Quebra polimorfia e entra em combate
-        from components import StatusEffects as _SFX2, CombatState as _CS2, PendingDeath as _PD2
+        from engine.components import StatusEffects as _SFX2, CombatState as _CS2, PendingDeath as _PD2
         _t_sfx = self.world.get_component(target_id, _SFX2)
         if _t_sfx:
             _t_sfx.remove("polymorph")
@@ -1071,12 +1071,12 @@ class SpellCompletionMixin:
             enter_combat(target_cst)
 
         # Consume 1 flecha do carcás do servidor
-        _eq = self.world.get_component(player_eid, __import__("components").Equipment)
+        _eq = self.world.get_component(player_eid, __import__("engine.components", fromlist=["Equipment"]).Equipment)
         _qv = _eq.slots.get("offhand") if _eq else None
         if _qv and getattr(_qv, "item_type", "") == "quiver":
             _qv.arrow_count = max(0, _qv.arrow_count - 1)
 
-        from components import AIControlled as _AIC2
+        from engine.components import AIControlled as _AIC2
         _ai = self.world.get_component(target_id, _AIC2)
         if _ai and _ai.state in ("IDLE", "RETURNING"):
             _ai.state              = "CHASING"
@@ -1087,8 +1087,8 @@ class SpellCompletionMixin:
             # Detector de aggro em world_server.py usa snapshot pré-tick e perde transições
             # ocorridas entre ticks (aqui). Enfileira som diretamente para garantir que o
             # cliente ouça o aggro quando a flecha acerta, não ao pressionar a skill.
-            _tm_aggr = self.world.get_component(target_id, __import__("components").TileMovement)
-            _id_aggr = self.world.get_component(target_id, __import__("components").EntityIdentity)
+            _tm_aggr = self.world.get_component(target_id, __import__("engine.components", fromlist=["TileMovement"]).TileMovement)
+            _id_aggr = self.world.get_component(target_id, __import__("engine.components", fromlist=["EntityIdentity"]).EntityIdentity)
             if _tm_aggr:
                 self._pending_sound_events.append({
                     "kind":     "mob_aggro",
@@ -1105,8 +1105,8 @@ class SpellCompletionMixin:
         return False, outcome, dmg
 
     def _server_picada_escorpiao(self, player_eid: int, target_id: int, entry: dict) -> None:
-        from skill_config import SKILL_CATALOG as _SC
-        from core_systems import apply_effect
+        from content.skill_config import SKILL_CATALOG as _SC
+        from engine.core_systems import apply_effect
         params = _SC.get("picada_escorpiao", {}).get("params", {})
 
         if target_id == -1:
@@ -1123,7 +1123,7 @@ class SpellCompletionMixin:
 
     def _server_flecha_reiterada(self, player_eid: int, target_id: int, entry: dict) -> None:
         """Aplica 1 flecha por chamada. Chamado uma vez por PROJECTILE_HIT_CS recebido."""
-        from skill_config import SKILL_CATALOG as _SC
+        from content.skill_config import SKILL_CATALOG as _SC
         params  = _SC.get("flecha_reiterada", {}).get("params", {})
         ap_mult = params.get("damage_multiplier", 2.0)
 
@@ -1135,8 +1135,8 @@ class SpellCompletionMixin:
         # Nota: _server_apply_ranged_physical já consome 1 flecha por chamada.
 
     def _server_tiro_repulsivo(self, player_eid: int, target_id: int, entry: dict) -> None:
-        from skill_config import SKILL_CATALOG as _SC
-        from components import (TileMovement, CombatStats, Position,
+        from content.skill_config import SKILL_CATALOG as _SC
+        from engine.components import (TileMovement, CombatStats, Position,
                                  CombatState, Tilemap)
         from shared.constants import TILE_SIZE as _TS
         params       = _SC.get("tiro_repulsivo", {}).get("params", {})
@@ -1173,7 +1173,7 @@ class SpellCompletionMixin:
         # da direção real do tiro.
         dx = t_tm.current_tile_x - launch_tx
         dy = t_tm.current_tile_y - launch_ty
-        from utils import bresenham_ray
+        from engine.utils import bresenham_ray
         kb_path = bresenham_ray(dx, dy, kb_tiles)
 
         # Tilemap do MAPA DO ALVO (multi-map: existem 3+ entidades Tilemap no
@@ -1239,7 +1239,7 @@ class SpellCompletionMixin:
         # porque _server_apply_ranged_physical (chamado acima) já garante que
         # o alvo está CHASING/ATTACKING (aggro por dano), então o estado já
         # reflete o real antes do empurrão.
-        from components import AIControlled as _AICtrl_kb
+        from engine.components import AIControlled as _AICtrl_kb
         _ai_kb = self.world.get_component(target_id, _AICtrl_kb)
 
         # Posição de origem ANTES do empurrão — o cliente precisa dela pra
@@ -1263,14 +1263,17 @@ class SpellCompletionMixin:
             if _is_solid(nx, ny) or _corner_blocked:
                 stunned = True
                 break
-            _blocker = _entity_at_tile(nx, ny)
+            # exclude_eid=player_eid: o atirador nunca pode ser o "bloqueador"
+            # do próprio empurrão (viraria collided_eid e seria stunado pela
+            # própria skill — mesma classe do bug do splash abaixo).
+            _blocker = _entity_at_tile(nx, ny, exclude_eid=player_eid)
             # Passo diagonal: mesmo sem ocupar o tile exato do passo, uma
             # criatura num dos dois tiles "de canto" já teria o sprite
             # atravessado pelo alvo deslizando na diagonal — mesma regra de
             # corte de canto que is_tile_walkable aplica para paredes.
             if _blocker is None and step_x != 0 and step_y != 0:
-                _blocker = (_entity_at_tile(t_tm.current_tile_x + step_x, t_tm.current_tile_y)
-                            or _entity_at_tile(t_tm.current_tile_x, t_tm.current_tile_y + step_y))
+                _blocker = (_entity_at_tile(t_tm.current_tile_x + step_x, t_tm.current_tile_y, exclude_eid=player_eid)
+                            or _entity_at_tile(t_tm.current_tile_x, t_tm.current_tile_y + step_y, exclude_eid=player_eid))
             if _blocker is not None:
                 stunned      = True
                 collided_eid = _blocker
@@ -1285,7 +1288,7 @@ class SpellCompletionMixin:
         # Snap canônico na posição final (helper único de teleporte/knockback —
         # cobre também o reset de is_moving já feito acima, de forma idempotente).
         if tiles_traveled > 0:
-            from utils import snap_to_tile as _snap_kb
+            from engine.utils import snap_to_tile as _snap_kb
             _snap_kb(self.world, target_id, t_tm.current_tile_x, t_tm.current_tile_y)
 
         # Padrão de deslocamento forçado em rede (LoL/WoW e netcode de
@@ -1345,9 +1348,18 @@ class SpellCompletionMixin:
             # Splash: tudo adjacente (Chebyshev 1) ao ponto de colisão também
             # é pego pelo stun — não só o eid que literalmente bloqueou o
             # passo (ex.: 2 mobs agrupados, o segundo também deve travar).
+            # player_eid (o PRÓPRIO atirador) SEMPRE excluído — bug real
+            # reportado pelo usuário: alvo adjacente ao arqueiro colide a 0
+            # tiles (empurrão nem sai do lugar), e como o arqueiro literalmente
+            # está a distância Chebyshev 1 do ponto de colisão (ele mesmo), a
+            # busca de splash pegava o próprio atirador e o stunava com a
+            # própria flecha. Nunca faz sentido o autor do knockback ser
+            # vítima dele (só em PvP, quando o CASTER é outro jogador, o alvo
+            # member pode legitimamente ser splashado se estiver perto — aqui
+            # é sempre o ATACANTE que fica de fora, nunca o alvo).
             _splash_eids = _adjacent_creatures(
                 t_tm.current_tile_x, t_tm.current_tile_y,
-                exclude_eids={target_id, collided_eid})
+                exclude_eids={target_id, collided_eid, player_eid})
 
             # Stun + feedback de colisão só pousam quando a tween de empurrão
             # termina (_duration), não agora — ver _process_knockback_landings.
@@ -1370,7 +1382,7 @@ class SpellCompletionMixin:
             # do cliente terminar de mostrar ele saindo. Usa a MESMA _duration do
             # broadcast acima (fonte única) — sem isso, dano podia "acontecer"
             # (autoritativo) com o mob ainda aparecendo longe na tela.
-            from components import CombatStats as _CS_kb
+            from engine.components import CombatStats as _CS_kb
             _kb_cs = self.world.get_component(target_id, _CS_kb)
             if _kb_cs:
                 _kb_cs.attack_cooldown_timer = max(_kb_cs.attack_cooldown_timer, _duration)
@@ -1388,8 +1400,8 @@ class SpellCompletionMixin:
         Retorna a lista de target_ids selecionados (1 flecha cada)."""
         import time as _t_tm
         import math
-        from skill_config import SKILL_CATALOG as _SC
-        from components import TileMovement, CombatStats, Equipment
+        from content.skill_config import SKILL_CATALOG as _SC
+        from engine.components import TileMovement, CombatStats, Equipment
         params     = _SC.get("tiro_multiplo", {}).get("params", {})
         half_angle = params.get("cone_half_angle", 45.0)
         range_t    = params.get("range_tiles",     12)
@@ -1457,7 +1469,7 @@ class SpellCompletionMixin:
     def _server_tiro_multiplo_hit(self, player_eid: int, target_id: int, entry: dict) -> None:
         """1 flecha de Tiro Múltiplo acertando seu alvo — chamada uma vez por
         PROJECTILE_HIT_CS (1 por alvo selecionado em _complete_tiro_multiplo_cast)."""
-        from skill_config import SKILL_CATALOG as _SC
+        from content.skill_config import SKILL_CATALOG as _SC
         params  = _SC.get("tiro_multiplo", {}).get("params", {})
         ap_mult = params.get("damage_multiplier", 3.0)
         if target_id == -1:
@@ -1469,15 +1481,15 @@ class SpellCompletionMixin:
         """Cast completo: o sono continua normalmente (já aplicado no início do
         canal por _skill_cancao_ninar). Apenas limpa lullaby_targets — o slow
         será aplicado via on_expire_effect quando o sono acabar."""
-        from components import CharacterStats
+        from engine.components import CharacterStats
         char_stats = self.world.get_component(player_eid, CharacterStats)
         if char_stats:
             char_stats.lullaby_targets.clear()
 
     def _server_cancao_inspiracao(self, player_eid: int, target_id: int, entry: dict) -> None:
-        from skill_config import SKILL_CATALOG as _SC
-        from stat_fns import add_timed_modifier
-        from components import CombatStats, Modifier
+        from content.skill_config import SKILL_CATALOG as _SC
+        from engine.stat_fns import add_timed_modifier
+        from engine.components import CombatStats, Modifier
         params   = _SC.get("cancao_inspiracao", {}).get("params", {})
         ap_pct   = params.get("ap_bonus_pct", 0.30)
         duration = params.get("duration",     20.0)
@@ -1487,9 +1499,9 @@ class SpellCompletionMixin:
             add_timed_modifier(cs, mod, duration, label="cancao_inspiracao")
 
     def _server_so_um_gole(self, player_eid: int, target_id: int, entry: dict) -> None:
-        from skill_config import SKILL_CATALOG as _SC
-        from stat_fns import add_timed_modifier
-        from components import CombatStats, Modifier
+        from content.skill_config import SKILL_CATALOG as _SC
+        from engine.stat_fns import add_timed_modifier
+        from engine.components import CombatStats, Modifier
         params     = _SC.get("so_um_gole", {}).get("params", {})
         duration   = params.get("duration",    10.0)
         acerto_bns = params.get("acerto_flat", 100.0)
@@ -1501,8 +1513,8 @@ class SpellCompletionMixin:
             add_timed_modifier(cs, mod, duration, label="so_um_gole")
 
     def _server_camuflagem(self, player_eid: int, target_id: int, entry: dict) -> None:
-        from skill_config import SKILL_CATALOG as _SC
-        from components import CombatStats, CombatState, TileMovement, AIControlled
+        from content.skill_config import SKILL_CATALOG as _SC
+        from engine.components import CombatStats, CombatState, TileMovement, AIControlled
         import random as _rand
         params    = _SC.get("camuflagem", {}).get("params", {})
         duration  = params.get("duration",  5.0)
@@ -1513,7 +1525,7 @@ class SpellCompletionMixin:
         tm  = self.world.get_component(player_eid, TileMovement)
 
         try:
-            from tileset import discover_camouflage_variants
+            from engine.tileset import discover_camouflage_variants
             _variants = discover_camouflage_variants()
             chosen = _rand.choice(_variants) if _variants else ""
         except Exception:
@@ -1550,7 +1562,7 @@ class SpellCompletionMixin:
         depois do primeiro uso online (bug real reportado por testers —
         "aljava diz estar cheia mas não está"). Ver PROBLEMAS_ARQUITETURA.md.
         """
-        from components import Equipment, Inventory
+        from engine.components import Equipment, Inventory
         equip = self.world.get_component(player_eid, Equipment)
         inv   = self.world.get_component(player_eid, Inventory)
         if not equip or not inv:

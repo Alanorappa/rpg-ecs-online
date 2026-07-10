@@ -1,4 +1,4 @@
-﻿"""
+"""
 menu_handlers.py — Mixin com o menu de pausa (ESC) e seus submenus:
 tela principal, confirmação de saída, resolução, interface (escala
 de UI) e som. Inclui os helpers de estilo reutilizados (_mm_overlay/
@@ -9,10 +9,10 @@ self.screen, self.font_md/font_sm, self._scale/_ui_scale e os demais
 atributos referenciados aqui.
 """
 import pygame
-from ui_helpers import fill_surf
+from ui.ui_helpers import fill_surf
 
-from sound_manager import SOUNDS
-from ui_sizes import UI
+from ui.sound_manager import SOUNDS
+from ui.ui_sizes import UI
 
 
 class MenuHandlers:
@@ -132,7 +132,7 @@ class MenuHandlers:
 
     # ── Submenu Resolution ─────────────────────────────────────────────────
     def _draw_resolution_submenu(self, events: list) -> "str | None":
-        from settings_screen import SCALE_OPTIONS
+        from ui.settings_screen import SCALE_OPTIONS
         self._set_panel_scale(UI.MENU_RESOLUTION_W, UI.MENU_RESOLUTION_H)
         PW, PH = self._u(UI.MENU_RESOLUTION_W), self._u(UI.MENU_RESOLUTION_H)
         self._mm_overlay()

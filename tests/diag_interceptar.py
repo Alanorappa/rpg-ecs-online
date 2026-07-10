@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tests.helpers import (make_world_server, spawn_player, run_ticks, first_mob,
                            set_entity_tile, authorize_skill)
-from components import CombatState, CombatStats, PlayerSkills, TileMovement, CharacterStats
+from engine.components import CombatState, CombatStats, PlayerSkills, TileMovement, CharacterStats
 
 ws = make_world_server()
 eid = spawn_player(ws, "s1", 130, 374, class_id="guerreiro")
@@ -15,7 +15,7 @@ mob = first_mob(ws)
 authorize_skill(ws, eid, "interceptar")
 
 # Confirma que (134,374) eh parede (achado em sessao anterior)
-from components import Tilemap
+from engine.components import Tilemap
 tc = None
 for _, t in ws.world.get_entities_with(Tilemap):
     tc = t; break
@@ -32,7 +32,7 @@ char = ws.world.get_component(eid, CharacterStats)
 char.rage = 100
 
 ps = ws.world.get_component(eid, PlayerSkills)
-from skill_config import SKILL_CATALOG
+from content.skill_config import SKILL_CATALOG
 sk = next((s for s in ps.skills if s and s.skill_id == 'interceptar'), None)
 if sk is None:
     sk = PlayerSkills._make_skill('interceptar', SKILL_CATALOG)

@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tests.helpers import make_world_server, spawn_player, run_ticks, first_mob
 from server.session import Session, SessionManager
-from components import CombatStats, CombatState, TileMovement, Position
+from engine.components import CombatStats, CombatState, TileMovement, Position
 
 # UM unico WorldServer
 ws = make_world_server()

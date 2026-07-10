@@ -12,7 +12,7 @@
 
 | Quero… | Arquivo | Seção |
 |--------|---------|-------|
-| Empacotar o cliente pra distribuição (alpha) | `build_client.ps1` + `rpg_online_client.spec` | PyInstaller onedir; assets/maps ao lado do exe; LEIA-ME gerado; config.json criado no 1º run ao lado do exe (`config.py`) |
+| Empacotar o cliente pra distribuição (alpha) | `release_tools/build_client.ps1` + `release_tools/rpg_online_client.spec` | PyInstaller onedir; assets/maps ao lado do exe; LEIA-ME gerado; config.json criado no 1º run ao lado do exe (`config.py`) |
 | Definir/modificar tipo de mensagem | `shared/messages.py` | `MsgType` enum + docstring do payload |
 | Adicionar handler de mensagem no servidor | `server/session.py` | `_handlers` dict + `async def _handle_*` |
 | Alterar constante de rede (tick rate, AOI, etc.) | `shared/constants.py` | constante direta |
@@ -28,18 +28,18 @@
 | AOI subscription (known_eids) | `server/session.py` | `_build_update_for_session()` |
 | Derivar stats de equipamento/talentos (server-autoritativo) | `server/world_server.py` | `_apply_equipment_modifiers()`, `_apply_talent_modifiers()` |
 | Re-aplicar talentos ao ECS do servidor | `server/world_server.py` | `apply_talent_effects_to_player()` |
-| Skill Level (xp/bônus, Tibia-like) | `stats_system.py` | `grant_skill_xp()`, `apply_skill_bonuses_to_combat()`, `weapon_skill_extras()`, `defense_skill_extras()` |
-| Hooks de xp de Skill Level no servidor | `server/spell_completion_processor.py`, `systems.py`, `core_systems.py` | `_server_apply_ranged_physical()`, `_server_apply_magic_damage()`, `CombatSystem.deal_damage(is_server=)`, `StatusEffectSystem._apply_tick()`/`_on_resisted_dot()` |
+| Skill Level (xp/bônus, Tibia-like) | `engine/stats_system.py` | `grant_skill_xp()`, `apply_skill_bonuses_to_combat()`, `weapon_skill_extras()`, `defense_skill_extras()` |
+| Hooks de xp de Skill Level no servidor | `server/spell_completion_processor.py`, `ui/systems.py`, `engine/core_systems.py` | `_server_apply_ranged_physical()`, `_server_apply_magic_damage()`, `CombatSystem.deal_damage(is_server=)`, `StatusEffectSystem._apply_tick()`/`_on_resisted_dot()` |
 | Progresso/entrega de quest (server-autoritativo) | `server/world_server.py` | `_process_quest_events()`, `move_player()`/`apply_consumable()`/`update_player_equipment()` (gatilhos) |
 | Aceitar/entregar quest (QUEST_ACCEPT/QUEST_TURN_IN) | `server/session.py` | `_handle_quest_accept()`, `_handle_quest_turn_in()` |
-| Lógica pura de quest (matching, progresso, recompensa) | `quest_logic.py` | `apply_event()`, `try_start()`, `complete_quest()`, `can_turn_in()` |
+| Lógica pura de quest (matching, progresso, recompensa) | `engine/quest_logic.py` | `apply_event()`, `try_start()`, `complete_quest()`, `can_turn_in()` |
 | Trade (player↔player) — servidor | `server/trade_processor.py` | `TradeProcessorMixin`, `TradeSession` — request/aceite/oferta/gold/confirma/cancela |
 | Trade (player↔player) — handlers de rede | `server/session.py` | `_handle_trade_*` (8), hook de desconexão em `on_disconnect` |
 | Trade (player↔player) — cliente | `client/trade_handlers.py` | `TradeHandlers` — popup Shift+clique, convite, janela (5 slots+gold) |
-| Trade (player↔player) — estado de UI | `ui_components.py` | `TradeUIState` (componente ECS no player) |
+| Trade (player↔player) — estado de UI | `ui/ui_components.py` | `TradeUIState` (componente ECS no player) |
 | Chat (texto, 3 abas Local/Mundial/Combate) — cliente | `client/chat_handlers.py` | `ChatHandlers` — Enter abre campo, digita, Enter envia; abas, scrollbar, wrap de linha (500 entradas/aba) |
-| Chat — balão de fala acima da cabeça | `chat_bubble.py` | `ChatBubbleManager`/`CHAT_BUBBLE` — rastreia Position ao vivo (diferente de `floating_text.py`) |
-| Chat — aba "Combate" (log de dano/cura/proc/loot) | `combat_log.py` | `CombatLog`/`LOG` — histórico persistente (500), `add(text, color)` mesma assinatura de sempre, `entries` property lida pela aba |
+| Chat — balão de fala acima da cabeça | `ui/chat_bubble.py` | `ChatBubbleManager`/`CHAT_BUBBLE` — rastreia Position ao vivo (diferente de `ui/floating_text.py`) |
+| Chat — aba "Combate" (log de dano/cura/proc/loot) | `ui/combat_log.py` | `CombatLog`/`LOG` — histórico persistente (500), `add(text, color)` mesma assinatura de sempre, `entries` property lida pela aba |
 | Iniciar o servidor | `server/main.py` | `py -3.10 server/main.py` |
 | Conectar cliente ao servidor | `client/network.py` | `NetworkClient` |
 | Banco de dados / schema | `data/game.db` (SQLite) | criado por `auth.init_db()` |
@@ -55,33 +55,33 @@
 
 | Quero… | Arquivo | Seção |
 |--------|---------|-------|
-| Criar/modificar uma skill | `skill_config.py` | `SKILL_CATALOG` |
-| Implementar handler de skill do guerreiro | `skill_handlers.py` | `_skill_<id>` |
-| Range check de skill (pixel-based) | `skill_handlers.py` | `MELEE_RANGE_PX`, `_range_ok()`, `_melee_ok()` |
-| Implementar skill do mago | `skill_handlers.py` + `spell_system.py` | `_skill_*` + `_complete_cast` |
-| Fórmula de dano + is_ability miss bypass | `damage_calculator.py` | `resolve_attack_outcome(is_ability=)` |
-| Funções de stat (modifier, combat) | `stat_fns.py` | `add_modifier`, `enter_combat`, etc. |
-| Stats base por classe / attack interval | `stats_system.py` | `CLASS_BASE_STATS`, `sync_attack_interval()` |
-| Adicionar talento | `talent_data.py` | `TALENTS` + `CLASS_BUILD_MAP` |
-| Efeito de talento no jogo | `talent_system.py` | `apply_talent_effects()` |
-| Painel read-only de Skill Level (tecla L) | `skill_level_ui.py` | `SkillLevelUI`, registrado em `client/modal_stack_handlers.py` |
-| Criar item/arma/arco/aljava (catálogo único — loot + loja) | `item_table.py` | `ITEMS` dict (07/07/2026 — antes duplicado em `loot_tables.py`/`merchant_data.py`; `loot_tables._T` e `merchant_data`'s stock agora só referenciam daqui) |
-| Adicionar drop de mob | `mob_definitions.py` | `MOB_TABLE[nome]["loot"]` (dict item_key→chance, chave de `item_table.ITEMS`; `loot_tables.py::roll_mob_loot` só lê) |
-| Configurar gold de um mob (chance/faixa min-max, 07/07/2026) | `mob_definitions.py` | `MOB_TABLE[nome]["gold_chance"/"gold_min"/"gold_max"]` — opcionais, sem eles cai no genérico por tier (`COIN_DROPS`); `loot_tables.py::roll_mob_coins` só lê |
-| Adicionar item à loja | `merchant_data.py` | `SHOPS[shop_id]["stock"]` — `{"factory": item_table.ITEMS["key"], "price": N}` |
-| Criar mob novo | `mob_definitions.py` | `MOB_TABLE` (raça/classe/cor + `attributes`/`abilities`/`loot`/`xp_given_by_lvl`) |
-| Atributos de combate de um mob (HP/dano/velocidade/acerto/crit) | `mob_definitions.py` | `MOB_TABLE[nome]["attributes"]` |
-| Habilidade especial de um mob (poison/bleed/stun) | `enemy_abilities_data.py` + `mob_definitions.py` | `ABILITY_DEFS` (dado) + `MOB_TABLE[nome]["abilities"]` (lista) |
-| XP concedido por level do mob | `mob_definitions.py` | `MOB_TABLE[nome]["xp_given_by_lvl"]` |
-| Sons de mob (aggro, death, attack) | `mob_definitions.py` | `"sounds"` dict por mob |
-| Sons posicionais online | `sound_manager.py` | `play_mob_sounds_at()`, `volume_at()` |
-| Componente ECS | `components.py` | categoria relevante |
-| Sistema ECS de GAMEPLAY (headless, cliente+servidor) | `world_systems.py` | herdar de `System`; NUNCA importar pygame no topo |
-| Sistema ECS de UI/render/input (cliente-only) | `systems.py` | herdar de `System` (re-exportado de `world_systems`) |
-| Efeito visual/som em sistema compartilhado | `fx.py` | `from fx import FLT, SOUNDS, ...` (no-op no servidor; cliente vincula via `bind_client_fx()`) |
-| Teleporte/knockback/respawn (escrever current_tile) | `utils.py` | `snap_to_tile()` — NUNCA escrever current_tile_x/y direto |
-| Escrita final de dano em HP | `core_systems.py` | `apply_damage_core()` — único lugar; mitigação/imunidade nova entra aqui |
-| Atributo de combate novo (modifier) | `stat_fns.py` | par `base_X`/`X` em `CombatStats` + 1 entrada em `_MODIFIABLE_ATTRS` (+ `_STAT_CLAMPS`) |
+| Criar/modificar uma skill | `content/skill_config.py` | `SKILL_CATALOG` |
+| Implementar handler de skill do guerreiro | `ui/skill_handlers.py` | `_skill_<id>` |
+| Range check de skill (pixel-based) | `ui/skill_handlers.py` | `MELEE_RANGE_PX`, `_range_ok()`, `_melee_ok()` |
+| Implementar skill do mago | `ui/skill_handlers.py` + `ui/spell_system.py` | `_skill_*` + `_complete_cast` |
+| Fórmula de dano + is_ability miss bypass | `engine/damage_calculator.py` | `resolve_attack_outcome(is_ability=)` |
+| Funções de stat (modifier, combat) | `engine/stat_fns.py` | `add_modifier`, `enter_combat`, etc. |
+| Stats base por classe / attack interval | `engine/stats_system.py` | `CLASS_BASE_STATS`, `sync_attack_interval()` |
+| Adicionar talento | `content/talent_data.py` | `TALENTS` + `CLASS_BUILD_MAP` |
+| Efeito de talento no jogo | `ui/talent_system.py` | `apply_talent_effects()` |
+| Painel read-only de Skill Level (tecla L) | `ui/skill_level_ui.py` | `SkillLevelUI`, registrado em `client/modal_stack_handlers.py` |
+| Criar item/arma/arco/aljava (catálogo único — loot + loja) | `content/item_table.py` | `ITEMS` dict (07/07/2026 — antes duplicado em `content/loot_tables.py`/`content/merchant_data.py`; `loot_tables._T` e `merchant_data`'s stock agora só referenciam daqui) |
+| Adicionar drop de mob | `content/mob_definitions.py` | `MOB_TABLE[nome]["loot"]` (dict item_key→chance, chave de `item_table.ITEMS`; `content/loot_tables.py::roll_mob_loot` só lê) |
+| Configurar gold de um mob (chance/faixa min-max, 07/07/2026) | `content/mob_definitions.py` | `MOB_TABLE[nome]["gold_chance"/"gold_min"/"gold_max"]` — opcionais, sem eles cai no genérico por tier (`COIN_DROPS`); `content/loot_tables.py::roll_mob_coins` só lê |
+| Adicionar item à loja | `content/merchant_data.py` | `SHOPS[shop_id]["stock"]` — `{"factory": item_table.ITEMS["key"], "price": N}` |
+| Criar mob novo | `content/mob_definitions.py` | `MOB_TABLE` (raça/classe/cor + `attributes`/`abilities`/`loot`/`xp_given_by_lvl`) |
+| Atributos de combate de um mob (HP/dano/velocidade/acerto/crit) | `content/mob_definitions.py` | `MOB_TABLE[nome]["attributes"]` |
+| Habilidade especial de um mob (poison/bleed/stun) | `content/enemy_abilities_data.py` + `content/mob_definitions.py` | `ABILITY_DEFS` (dado) + `MOB_TABLE[nome]["abilities"]` (lista) |
+| XP concedido por level do mob | `content/mob_definitions.py` | `MOB_TABLE[nome]["xp_given_by_lvl"]` |
+| Sons de mob (aggro, death, attack) | `content/mob_definitions.py` | `"sounds"` dict por mob |
+| Sons posicionais online | `ui/sound_manager.py` | `play_mob_sounds_at()`, `volume_at()` |
+| Componente ECS | `engine/components.py` | categoria relevante |
+| Sistema ECS de GAMEPLAY (headless, cliente+servidor) | `engine/world_systems.py` | herdar de `System`; NUNCA importar pygame no topo |
+| Sistema ECS de UI/render/input (cliente-only) | `ui/systems.py` | herdar de `System` (re-exportado de `world_systems`) |
+| Efeito visual/som em sistema compartilhado | `engine/fx.py` | `from fx import FLT, SOUNDS, ...` (no-op no servidor; cliente vincula via `bind_client_fx()`) |
+| Teleporte/knockback/respawn (escrever current_tile) | `engine/utils.py` | `snap_to_tile()` — NUNCA escrever current_tile_x/y direto |
+| Escrita final de dano em HP | `engine/core_systems.py` | `apply_damage_core()` — único lugar; mitigação/imunidade nova entra aqui |
+| Atributo de combate novo (modifier) | `engine/stat_fns.py` | par `base_X`/`X` em `CombatStats` + 1 entrada em `_MODIFIABLE_ATTRS` (+ `_STAT_CLAMPS`) |
 | STATS_UPDATE privado novo (servidor→dono) | `server/world_server.py` | `queue_stats_update()` (schema na docstring) |
 | Registrar sistema no loop offline | `game.py` | `_init_systems()` → `self.systems` |
 
@@ -89,63 +89,132 @@
 
 ## Estrutura de arquivos
 
+> **Reorganização de 09/07/2026** — a raiz tinha ~60 arquivos `.py` soltos
+> misturando dados de conteúdo, lógica ECS headless, UI/render client-only e
+> scripts de dev, sem nenhuma pasta. Critério usado pra separar (verificado
+> pelo grafo de imports real, não só "impora pygame?"): **quem carrega esse
+> módulo em produção** — `content/`/`engine/` = usado pelo servidor headless
+> (direto ou transitivo); `ui/` = client-only mesmo quando o arquivo em si
+> não importa pygame (ex.: `combat_log.py`, `skill_handlers.py`, `fov.py` —
+> só `ui/systems.py`/`game.py` os carregam, servidor nunca). Ver
+> `ARQUITETURA_ONLINE.md` (Decisão 19) pro registro completo da migração
+> (mapeamento arquivo-a-arquivo, casos especiais de `__import__` dinâmico, e
+> o motivo do nome `release_tools/` em vez de `packaging/`).
+>
+> `server/`/`client/`/`shared/` (já existiam, não mudaram de lugar) continuam
+> sendo a separação PRINCIPAL e mais importante do projeto — as pastas novas
+> abaixo só organizam o que antes vivia solto na raiz.
+
 ```
 rpg_ecs_online/
 │
-├── shared/                         ← COMPARTILHADO (sem Pygame, sem state)
-│   ├── messages.py                 ← MsgType enum + encode/decode + factories
-│   └── constants.py                ← TICK_RATE, AOI_RADIUS, TILE_SIZE, COMBAT_SYNC_STATS
+├── main.py, game.py                ← entry points (ficam na raiz por convenção)
+├── config.py, paths.py             ← ficam na raiz DE PROPÓSITO: resolvem
+│                                      caminho via os.path.dirname(__file__)
+│                                      assumindo estar ao lado de assets/maps/
+│                                      config.json — mover quebraria isso
 │
-├── server/                         ← ONLINE-ONLY (headless, sem Pygame real)
-│   ├── main.py                     ← ponto de entrada: asyncio + WebSocket
-│   ├── world_server.py             ← ECS headless: loop de ticks, sistemas, skill pipeline
-│   ├── session.py                  ← SessionManager: AOI subscription, dispatch, save
-│   ├── auth.py                     ← autenticação SQLite + persistência
-│   ├── trade_processor.py          ← TradeProcessorMixin/TradeSession: trade player↔player
-│   └── server_death_handler.py     ← PendingDeath: XP, loot, SpawnZone, despawn
+├── content/                        ← COMPARTILHADO: tabelas de conteúdo do
+│   │                                  jogo (dado, sem lógica de sistema)
+│   ├── mob_definitions.py          ← MOB_TABLE (raça/classe/loot/abilities)
+│   ├── item_table.py               ← ITEMS (catálogo único — loot + loja)
+│   ├── loot_tables.py              ← roll_mob_loot()/roll_mob_coins() (só lê item_table/mob_definitions)
+│   ├── merchant_data.py            ← SHOPS[shop_id]["stock"]
+│   ├── quests_data.py              ← definições de quest
+│   ├── talent_data.py              ← TALENTS + CLASS_BUILD_MAP
+│   ├── skill_config.py             ← SKILL_CATALOG (fonte única de skill)
+│   ├── enemy_abilities_data.py     ← ABILITY_DEFS (poison/bleed/stun de mob)
+│   ├── crafting_data.py            ← materiais/receitas de crafting
+│   └── status_effects_data.py      ← definições de buff/debuff
 │
-├── client/                         ← ONLINE-ONLY (cliente de rede)
-│   ├── network.py                  ← NetworkClient: WebSocket em background thread
-│   ├── network_handlers.py         ← NetworkHandlers: mixin com _handle_net_message + _handle_msg_*
-│   ├── remote_entity_handlers.py   ← RemoteEntityHandlers: mixin com spawn/move/sync/draw de mobs e players remotos
-│   ├── save_sync_handlers.py       ← SaveSyncHandlers: mixin com save/load de personagem + envio de sync ao servidor
-│   ├── inventory_handlers.py       ← InventoryHandlers: mixin com painel de equipamentos/inventário (tecla I)
-│   ├── tooltip_handlers.py         ← TooltipHandlers: mixin com cálculo de dano/alcance e desenho de tooltips (skills, itens, mundo)
-│   ├── debug_handlers.py           ← DebugHandlers: mixin com o modal de debug (F12) — abas Nivel/Itens/Ouro/Mapa
-│   ├── menu_handlers.py            ← MenuHandlers: mixin com o menu de pausa (ESC) e submenus (resolução/interface/som)
-│   ├── hotbar_editor_handlers.py   ← HotbarEditorHandlers: mixin com o editor de atalhos da hotbar (tecla K)
-│   ├── habilidades_handlers.py     ← HabilidadesHandlers: mixin com o painel de Habilidades (H), drag ghost e tela de loading
-│   ├── online_mode_handlers.py     ← OnlineModeHandlers: mixin com conexão/login, processamento de rede e HUD de status online
-│   ├── hotbar_handlers.py          ← HotbarHandlers: mixin com a hotbar de habilidades (1-4), bloqueio por talento e vinheta de HP baixo
-│   ├── consumable_bar_handlers.py  ← ConsumableBarHandlers: mixin com o desenho da barra de consumíveis (slots, ícones, drag-and-drop)
-│   ├── hud_handlers.py             ← HudHandlers: mixin com o HUD principal (vida/mana/fúria, buffs, minimapa, ouro) e a barra de cast/canalização
-│   ├── modal_stack_handlers.py     ← ModalStackHandlers: mixin com o registro centralizado de prioridade de modais (ModalStack) — único ponto de verdade reusado por ESC e pelo filtro de systems_events
-│   ├── trade_handlers.py           ← TradeHandlers: mixin com o trade player↔player (popup, convite, janela 5 slots+gold)
-│   └── colors.py                   ← paleta de cores do HUD (C_WHITE/C_YELLOW/...) — fonte única para game.py e mixins
+├── engine/                         ← COMPARTILHADO: ECS headless (server+client),
+│   │                                  ZERO pygame no topo — servidor importa direto
+│   ├── world.py                    ← registry ECS (World, get_component, etc.)
+│   ├── components.py                ← componentes ECS (dado puro)
+│   ├── entity_factory.py           ← criação de entidades (player/mob)
+│   ├── core_systems.py             ← apply_effect()/StatusEffectSystem base
+│   ├── world_systems.py            ← 14 sistemas ECS de gameplay (EnemyAI,
+│   │                                  Combat, TileMovement, TileValidation...)
+│   ├── stat_fns.py                 ← add_modifier/enter_combat/etc.
+│   ├── stats_system.py             ← CLASS_BASE_STATS, Skill Level (xp/bônus)
+│   ├── damage_calculator.py        ← fórmulas de dano, resolve_attack_outcome
+│   ├── quest_logic.py              ← apply_event/try_start/complete_quest
+│   ├── quest_events.py             ← barramento de eventos de quest
+│   ├── save_system.py              ← request_autosave e afins
+│   ├── utils.py                    ← snap_to_tile(), bresenham_ray, etc.
+│   ├── fx.py                       ← façade de efeitos (FLT/SOUNDS/PROC/WARN) —
+│   │                                  no-op no servidor, cliente vincula via bind_client_fx()
+│   ├── map_loader.py               ← carrega .csv de mapa em Tilemap
+│   └── tileset.py                  ← Tile/Tilemap, is_solid, etc.
 │
-├── data/                           ← criada automaticamente
-│   └── game.db                     ← banco SQLite (contas + personagens)
+├── ui/                              ← ONLINE-ONLY na prática: client-only mesmo
+│   │                                  quando headless-clean (servidor nunca importa)
+│   ├── systems.py                   ← sistemas ECS de UI/render (re-exporta world_systems)
+│   ├── skill_handlers.py           ← handler de skill do lado do CLIENTE (botão/predição)
+│   ├── spell_system.py             ← SpellCastSystem client-side (cast bar)
+│   ├── combat_log.py               ← CombatLog/LOG — histórico da aba "Combate" do chat
+│   ├── chat_bubble.py               ← balão de fala acima da cabeça
+│   ├── ui_components.py/ui_helpers.py/ui_sizes.py/ui_scale_mixin.py/ui_compare.py
+│   ├── fonts.py, sound_manager.py, icon_manager.py, tile_sprite_manager.py, fov.py
+│   ├── floating_text.py, effect_animator.py, minimap.py, map_overlay.py
+│   ├── god_mode.py                  ← editor de nível/level (F10)
+│   ├── login_screen.py, char_creation_screen.py, settings_screen.py
+│   ├── skill_level_ui.py, talent_system.py, quest_system.py, trainer_system.py,
+│   │   crafting_system.py           ← painéis/telas modais (todos pygame)
 │
-├── tests/                          ← testes do servidor
-│   ├── test_server.py              ← suite principal (47 testes)
-│   └── diag_*.py                   ← scripts de diagnóstico individuais
+├── debug/                           ← módulos de log de diagnóstico ATIVOS —
+│   │                                  importados de verdade por server E client
+│   │                                  (gated por flag), não são scripts soltos
+│   ├── aoi_debug.py                 ← log de AOI subscription/broadcast
+│   └── mob_combat_debug.py          ← MCL — log de combate de mob
 │
-├── arquitetura/                    ← documentação
-│   ├── MAPA_PROJETO.md             ← este arquivo
-│   ├── ARQUITETURA_ONLINE.md       ← decisões, protocolo, fluxo de tick, problemas
-│   ├── SISTEMAS_ECS.md             ← sistemas offline (referência) + sistemas do servidor
-│   ├── COMPONENTES_ECS.md          ← componentes ECS
-│   ├── DADOS_JOGO.md               ← conteúdo do jogo
-│   └── PROBLEMAS_ARQUITETURA.md    ← débito técnico
+├── tools/                           ← scripts de dev STANDALONE (zero importador
+│   │                                  em runtime — rodados manualmente)
+│   ├── check_surfaces.py            ← audita antialiasing/smoothscale no repo
+│   ├── png_to_map.py                ← converte PNG de referência em CSV de mapa
+│   └── reverb.py                    ← pré-processa reverb em assets de áudio (offline)
 │
-├── world_systems.py                ← COMPARTILHADO: 14 sistemas ECS de gameplay headless
-│                                      (EnemyAI, Combat, TileMovement, TileValidation, ...) +
-│                                      _svc/deal_damage/is_tile_walkable. ZERO pygame no topo.
-├── fx.py                           ← COMPARTILHADO: façade de efeitos (FLT/SOUNDS/PROC/WARN/
-│                                      DASH_TRAIL) — no-op no servidor, cliente vincula via
-│                                      bind_client_fx() no GameEngine.__init__
+├── release_tools/                   ← build/empacotamento (NUNCA "packaging/" —
+│   │                                  colide com a lib real `packaging` do
+│   │                                  PyPI, usada pelo próprio PyInstaller)
+│   ├── build_client.ps1             ← builda + copia assets/maps + gera LEIA-ME
+│   └── rpg_online_client.spec       ← spec do PyInstaller (usa SPECPATH p/ achar main.py)
 │
-└── [demais arquivos]               ← herdados do master (compartilhados com cliente)
+├── shared/                          ← COMPARTILHADO (sem Pygame, sem state)
+│   ├── messages.py                  ← MsgType enum + encode/decode + factories
+│   └── constants.py                 ← TICK_RATE, AOI_RADIUS, TILE_SIZE, COMBAT_SYNC_STATS
+│
+├── server/                          ← ONLINE-ONLY (headless, sem Pygame real)
+│   ├── main.py                      ← ponto de entrada: asyncio + WebSocket
+│   ├── world_server.py              ← ECS headless: loop de ticks, sistemas, skill pipeline
+│   ├── session.py                   ← SessionManager: AOI subscription, dispatch, save
+│   ├── auth.py                      ← autenticação SQLite + persistência
+│   ├── trade_processor.py           ← TradeProcessorMixin/TradeSession: trade player↔player
+│   └── server_death_handler.py      ← PendingDeath: XP, loot, SpawnZone, despawn
+│
+├── client/                          ← ONLINE-ONLY (cliente de rede — mixins de GameEngine)
+│   ├── network.py, network_handlers.py, remote_entity_handlers.py,
+│   │   save_sync_handlers.py, inventory_handlers.py, tooltip_handlers.py,
+│   │   debug_handlers.py, menu_handlers.py, hotbar_editor_handlers.py,
+│   │   habilidades_handlers.py, online_mode_handlers.py, hotbar_handlers.py,
+│   │   consumable_bar_handlers.py, hud_handlers.py, modal_stack_handlers.py,
+│   │   trade_handlers.py, chat_handlers.py, colors.py
+│
+├── data/                            ← criada automaticamente
+│   └── game.db                      ← banco SQLite (contas + personagens)
+│
+├── tests/                           ← testes do servidor
+│   ├── test_server.py               ← suite principal
+│   └── diag_*.py                    ← scripts de diagnóstico individuais
+│
+└── arquitetura/                     ← documentação
+    ├── MAPA_PROJETO.md              ← este arquivo
+    ├── ARQUITETURA_ONLINE.md        ← decisões, protocolo, fluxo de tick, problemas
+    ├── SISTEMAS_ECS.md              ← sistemas offline (referência) + sistemas do servidor
+    ├── COMPONENTES_ECS.md           ← componentes ECS
+    ├── DADOS_JOGO.md                ← conteúdo do jogo
+    ├── PROBLEMAS_ARQUITETURA.md     ← débito técnico
+    └── CODE_REVIEW.md, DOCUMENTACAO.md, talent_map.md  ← docs soltos, movidos pra cá (09/07/2026)
 ```
 
 ### Arquivos-chave do branch online (vs. master)
@@ -174,15 +243,15 @@ rpg_ecs_online/
 | `client/hud_handlers.py` | NOVO (ONLINE-ONLY) | `HudHandlers`: mixin com o HUD principal e a barra de cast — 2 métodos: barras de vida/mana/fúria, ícones de buff/debuff, minimapa, ouro, equipamentos rápidos e talentos alocados (`_draw_hud`), e a barra de cast/canalização exibida no centro inferior da tela durante spells canalizadas (`_draw_cast_bar`), extraído de `game.py` como bloco contíguo único — divisor de uma linha (sem título) viajou junto com a seção, mesmo princípio de `OnlineModeHandlers`/`ConsumableBarHandlers`; extração via slice literal de linhas (métodos separados só por uma linha em branco, sem constantes de classe intercaladas) |
 | `client/colors.py` | NOVO (ONLINE-ONLY) | Paleta de cores do HUD (`C_WHITE`, `C_YELLOW`, `C_GREEN`, `C_RED`, `C_GRAY`, `C_CYAN`, `C_ORANGE`) — fonte única para `game.py` e mixins; eliminou definições locais duplicadas que bloqueariam extrações futuras (mesmo princípio da correção SCREEN_WIDTH/HEIGHT, ver `PROBLEMAS_ARQUITETURA.md` §9) |
 | `client/modal_stack_handlers.py` | NOVO (ONLINE-ONLY) | `ModalStackHandlers`: mixin com `_modal_registry()` (ordem de prioridade dos ~14 modais), `_topmost_open_modal()`/`_any_modal_open()` e `_close_top_modal()` refatorado — único ponto de verdade reusado pelo ESC e pelo filtro de `systems_events` em `game.py` (ver `PROBLEMAS_ARQUITETURA.md` item IU3) |
-| `ui_scale_mixin.py` | NOVO (COMPARTILHADO) | `UIScaleMixin`: dá `self._u(px)` e `self.set_ui_scale(scale)` pra Systems de UI que vivem fora de `GameEngine` (`BlacksmithSystem`, `TrainerSystem`, `ShopSystem`, `LootSystem`, `QuestSystem`/`QuestDialogSystem`/`QuestJournalSystem`, `TalentSystem`, `MapOverlay`, `Minimap`) e por isso não tinham acesso a `self._ui_scale` da engine — cada um criava fontes fixas uma vez e nunca escalava (ver `PROBLEMAS_ARQUITETURA.md` item IU4) |
-| `ui_sizes.py` | NOVO (COMPARTILHADO) | `UI`: único lugar com todos os tamanhos de design (escala 1.0) da UI — painéis modais, geometria interna de cada painel, HUD, hotbar, minimapa, tooltip, reservas de área segura, bases de fonte. Cada arquivo de painel mantém sua constante local de mesmo nome, só redirecionada pra cá (`_PANEL_W = UI.INVENTORY_W`) — editar um valor aqui afeta o painel automaticamente (ver `PROBLEMAS_ARQUITETURA.md` item IU4) |
-| `core_systems.py` | NOVO (COMPARTILHADO) | `apply_effect()` + `StatusEffectSystem` base sem Pygame; importado por cliente e servidor |
+| `ui/ui_scale_mixin.py` | NOVO (COMPARTILHADO) | `UIScaleMixin`: dá `self._u(px)` e `self.set_ui_scale(scale)` pra Systems de UI que vivem fora de `GameEngine` (`BlacksmithSystem`, `TrainerSystem`, `ShopSystem`, `LootSystem`, `QuestSystem`/`QuestDialogSystem`/`QuestJournalSystem`, `TalentSystem`, `MapOverlay`, `Minimap`) e por isso não tinham acesso a `self._ui_scale` da engine — cada um criava fontes fixas uma vez e nunca escalava (ver `PROBLEMAS_ARQUITETURA.md` item IU4) |
+| `ui/ui_sizes.py` | NOVO (COMPARTILHADO) | `UI`: único lugar com todos os tamanhos de design (escala 1.0) da UI — painéis modais, geometria interna de cada painel, HUD, hotbar, minimapa, tooltip, reservas de área segura, bases de fonte. Cada arquivo de painel mantém sua constante local de mesmo nome, só redirecionada pra cá (`_PANEL_W = UI.INVENTORY_W`) — editar um valor aqui afeta o painel automaticamente (ver `PROBLEMAS_ARQUITETURA.md` item IU4) |
+| `engine/core_systems.py` | NOVO (COMPARTILHADO) | `apply_effect()` + `StatusEffectSystem` base sem Pygame; importado por cliente e servidor |
 | `game.py` | MODIFICADO | `_use_skill_visual_only` + init/loop/render; rede, entidades remotas, save/sync, inventário, tooltips, modal de debug, menu de pausa, editor de hotbar, painel de habilidades, modo online, hotbar de habilidades, barra de consumíveis e HUD principal+cast bar agora vêm de `NetworkHandlers`/`RemoteEntityHandlers`/`SaveSyncHandlers`/`InventoryHandlers`/`TooltipHandlers`/`DebugHandlers`/`MenuHandlers`/`HotbarEditorHandlers`/`HabilidadesHandlers`/`OnlineModeHandlers`/`HotbarHandlers`/`ConsumableBarHandlers`/`HudHandlers` (ver `client/network_handlers.py`, `client/remote_entity_handlers.py`, `client/save_sync_handlers.py`, `client/inventory_handlers.py`, `client/tooltip_handlers.py`, `client/debug_handlers.py`, `client/menu_handlers.py`, `client/hotbar_editor_handlers.py`, `client/habilidades_handlers.py`, `client/online_mode_handlers.py`, `client/hotbar_handlers.py`, `client/consumable_bar_handlers.py`, `client/hud_handlers.py`); cores do HUD vêm de `client/colors.py` |
-| `systems.py` | MODIFICADO | Re-exporta `apply_effect` de `core_systems`; `StatusEffectSystem` subclasse com FLT |
-| `skill_handlers.py` | MODIFICADO | `MELEE_RANGE_PX`, `_range_ok()`, pixel-based range |
-| `damage_calculator.py` | MODIFICADO | `is_ability` flag no `resolve_attack_outcome` |
-| `sound_manager.py` | MODIFICADO | `play_mob_sounds_at()`, `volume_at()`, `play_skill_at()` |
-| `components.py` | MODIFICADO | `Skill._server_pending`, `PlayerSkills.GCD_DURATION=0.8` |
+| `ui/systems.py` | MODIFICADO | Re-exporta `apply_effect` de `core_systems`; `StatusEffectSystem` subclasse com FLT |
+| `ui/skill_handlers.py` | MODIFICADO | `MELEE_RANGE_PX`, `_range_ok()`, pixel-based range |
+| `engine/damage_calculator.py` | MODIFICADO | `is_ability` flag no `resolve_attack_outcome` |
+| `ui/sound_manager.py` | MODIFICADO | `play_mob_sounds_at()`, `volume_at()`, `play_skill_at()` |
+| `engine/components.py` | MODIFICADO | `Skill._server_pending`, `PlayerSkills.GCD_DURATION=0.8` |
 
 ---
 
@@ -204,10 +273,10 @@ client/network.py         → transporte assíncrono transparente ao game loop
 ## Padrões do projeto
 
 ### Adicionar nova skill
-1. `skill_config.py` → entrada em `SKILL_CATALOG` com `params: {}`
-2. `skill_handlers.py` → `def _skill_<id>(self, skill, combat_stats, combat_state, tile_move)`
-3. Se tiver cast time → `spell_system.py` → registrar em `SpellCastSystem._CAST_HANDLERS`
-4. Se for desbloqueada por talento → `talent_data.py` → `unlocks_skill`
+1. `content/skill_config.py` → entrada em `SKILL_CATALOG` com `params: {}`
+2. `ui/skill_handlers.py` → `def _skill_<id>(self, skill, combat_stats, combat_state, tile_move)`
+3. Se tiver cast time → `ui/spell_system.py` → registrar em `SpellCastSystem._CAST_HANDLERS`
+4. Se for desbloqueada por talento → `content/talent_data.py` → `unlocks_skill`
 5. Testar no servidor: handler é chamado via `_process_skill_requests`
 
 ### Adicionar nova stat ao PLAYER_STAT_SYNC

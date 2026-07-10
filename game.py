@@ -1,17 +1,17 @@
-﻿# game.py
+# game.py
 import pygame
 import math
 import time as _time
 import gc as _gc
-from fonts import make as _font
-from ui_sizes import UI
+from ui.fonts import make as _font
+from ui.ui_sizes import UI
 
-from world import World
-from components import Position, Tilemap, CombatStats, CharacterStats, PermanentStats, \
+from engine.world import World
+from engine.components import Position, Tilemap, CombatStats, CharacterStats, PermanentStats, \
                        TileMovement, PlayerAutoMove, CombatState, FogOfWar, Enemy, Visible, \
                        Camera, Renderable, SpellCast, Channeling, IceBlockEffect, AoeTargeting
-from ui_components import UIState, ShopUIState, LootUIState, DragState, TradeUIState
-from systems import (
+from ui.ui_components import UIState, ShopUIState, LootUIState, DragState, TradeUIState
+from ui.systems import (
     PlayerInputSystem, TileMovementSystem, RenderSystem, CameraSystem,
     EnemyAISystem, TileRenderSystem, TileValidationSystem,
     PathfindingSystem, CombatSystem, CombatStateSystem, MouseTargetingSystem,
@@ -20,27 +20,27 @@ from systems import (
     StatusEffectSystem, EnemyAbilitySystem,
     register_services,
 )
-from stats_system import XPSystem, DeathRespawnSystem
-from quest_system import QuestSystem, QuestDialogSystem, QuestJournalSystem
-from quest_events import set_quest_system
-from entity_factory import create_player, create_camera, create_enemy, create_tilemap, create_merchant, create_spawn_zone, create_quest_giver, create_blacksmith, create_trainer
-from god_mode import GodModeEditor
-from components import Inventory, Equipment, PlayerSkills, Wallet, GhostState
-from map_loader import load_map_csv, validate_map
-from tileset import TILE_SIZE
-from combat_log import LOG
-from floating_text import FLT, DASH_TRAIL, WARN, PROC
-from chat_bubble import CHAT_BUBBLE
-from icon_manager import ICONS
-from sound_manager import SOUNDS
-from ui_compare import draw_compare_panel
-from talent_system import TalentSystem
-from skill_level_ui import SkillLevelUI
-from ui_helpers import item_tooltip_lines, draw_stack_count, RARITY_COLORS as _ITEM_RARITY_COLORS, fill_surf
-from map_overlay import MapOverlay
-from minimap import Minimap
-from stat_fns import add_modifier, remove_modifier, learn_recipe
-from save_system import save_game, load_game, has_save, next_free_slot
+from engine.stats_system import XPSystem, DeathRespawnSystem
+from ui.quest_system import QuestSystem, QuestDialogSystem, QuestJournalSystem
+from engine.quest_events import set_quest_system
+from engine.entity_factory import create_player, create_camera, create_enemy, create_tilemap, create_merchant, create_spawn_zone, create_quest_giver, create_blacksmith, create_trainer
+from ui.god_mode import GodModeEditor
+from engine.components import Inventory, Equipment, PlayerSkills, Wallet, GhostState
+from engine.map_loader import load_map_csv, validate_map
+from engine.tileset import TILE_SIZE
+from ui.combat_log import LOG
+from ui.floating_text import FLT, DASH_TRAIL, WARN, PROC
+from ui.chat_bubble import CHAT_BUBBLE
+from ui.icon_manager import ICONS
+from ui.sound_manager import SOUNDS
+from ui.ui_compare import draw_compare_panel
+from ui.talent_system import TalentSystem
+from ui.skill_level_ui import SkillLevelUI
+from ui.ui_helpers import item_tooltip_lines, draw_stack_count, RARITY_COLORS as _ITEM_RARITY_COLORS, fill_surf
+from ui.map_overlay import MapOverlay
+from ui.minimap import Minimap
+from engine.stat_fns import add_modifier, remove_modifier, learn_recipe
+from engine.save_system import save_game, load_game, has_save, next_free_slot
 from client.network_handlers import NetworkHandlers
 from client.remote_entity_handlers import RemoteEntityHandlers
 from client.save_sync_handlers import SaveSyncHandlers
@@ -103,7 +103,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         # Vincula a façade fx aos gerenciadores reais (FLT/SOUNDS/etc.) —
         # world_systems/skill_handlers usam os proxies de fx.py, que são
         # no-op até este bind (e permanecem no-op no servidor headless).
-        import fx as _fx
+        import engine.fx as _fx
         _fx.bind_client_fx()
         self._scale      = scale
         self._save_slot  = save_slot
@@ -237,6 +237,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._chat_local: "_deque_chat" = _deque_chat(maxlen=500)  # (sender, text, color)
         self._chat_world: "_deque_chat" = _deque_chat(maxlen=500)  # (sender, text, color)
         self._chat_scroll: dict = {"local": 0, "world": 0, "combat": 0}  # linhas rolado (0 = mais recente)
+        self._chat_bs_hold_t:    float = 0.0    # hold-to-repeat do Backspace (ver chat_handlers.py)
+        self._chat_bs_repeating: bool  = False
         self._current_map_file: str = MAP_FILES[0]
         self.transition_tiles: dict = {}   # (tile_x, tile_y) → trans_dict
         self._transition_cooldown = 0.0
@@ -309,14 +311,14 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             self.world, self.player_entity, self.screen, self._quest_system)
         self._quest_journal = QuestJournalSystem(
             self.world, self.player_entity, self.screen, self._quest_system)
-        from crafting_system import BlacksmithSystem
+        from ui.crafting_system import BlacksmithSystem
         self._crafting_system = BlacksmithSystem(
             self.world, self.player_entity, self.screen,
             shop_system=self._shop_system,
             quest_dialog=self._quest_dialog,
             quest_system=self._quest_system,
         )
-        from trainer_system import TrainerSystem
+        from ui.trainer_system import TrainerSystem
         self._trainer_system = TrainerSystem(
             self.world, self.player_entity, self.screen,
             quest_dialog=self._quest_dialog,
@@ -338,8 +340,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         char = self.world.get_component(self.player_entity, CharacterStats)
         cs   = self.world.get_component(self.player_entity, CombatStats)
         perm = self.world.get_component(self.player_entity, PermanentStats)
-        from stats_system import CLASS_BASE_STATS, apply_char_stats_to_combat, sync_attack_interval
-        from components import Equipment as _EqNew
+        from engine.stats_system import CLASS_BASE_STATS, apply_char_stats_to_combat, sync_attack_interval
+        from engine.components import Equipment as _EqNew
 
         if char_data:
             # Novo personagem — aplica nome/classe
@@ -376,8 +378,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 rend.color = _CLASS_COLORS.get(char.class_id, (255, 0, 0))
             # Skills iniciais concedidas automaticamente (ex: Recarregar do arqueiro)
             if char:
-                from skill_config import INITIAL_SKILLS_BY_CLASS, SKILL_CATALOG
-                from components import PlayerSkills as _PS
+                from content.skill_config import INITIAL_SKILLS_BY_CLASS, SKILL_CATALOG
+                from engine.components import PlayerSkills as _PS
                 ps = self.world.get_component(self.player_entity, _PS)
                 if ps:
                     for _sid in INITIAL_SKILLS_BY_CLASS.get(char.class_id, []):
@@ -396,7 +398,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._load_menu_keys()
 
         # Registra autosave global — sistemas usam request_autosave() de save_system.py
-        from save_system import register_autosave
+        from engine.save_system import register_autosave
         register_autosave(self._autosave)
 
         # Conecta ao servidor após o mundo estar pronto
@@ -620,7 +622,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._combat_state_sys = CombatStateSystem(self.world)
 
         # Sistemas de magia (classe Mago)
-        from spell_system import (ManaSystem, SpellCastSystem, PlayerProjectileSystem,
+        from ui.spell_system import (ManaSystem, SpellCastSystem, PlayerProjectileSystem,
                                   ChannelingSystem, IceBlockSystem, FireShieldSystem,
                                   PirofagiaSystem, AoeTargetingSystem)
         self._mana_system           = ManaSystem(self.world)
@@ -691,7 +693,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
     def _on_god_mode_save(self) -> None:
         """Chamado pelo GodModeEditor após salvar — atualiza minimap/overlay."""
         for _, tilemap_comp in self.world.get_entities_with(Tilemap):
-            from tileset import OBJECT_MAPPING
+            from engine.tileset import OBJECT_MAPPING
             self._map_overlay.load_map(
                 _merge_display_matrix(tilemap_comp.terrain_matrix,
                                       tilemap_comp.object_matrix),
@@ -755,14 +757,14 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
     def _validate_skill_handlers(self) -> None:
         """Verifica em startup que toda skill no catálogo tem handler e que
         abilities referenciadas por mobs existem em ABILITY_DEFS."""
-        from skill_config import SKILL_CATALOG
+        from content.skill_config import SKILL_CATALOG
         missing_handlers = [sid for sid in SKILL_CATALOG
                             if not hasattr(self._skill_system, f"_skill_{sid}")]
         if missing_handlers:
             print(f"[WARN] Skills sem handler em SkillSystem: {missing_handlers}")
 
         try:
-            from enemy_abilities_data import ABILITY_DEFS, MOB_ABILITIES
+            from content.enemy_abilities_data import ABILITY_DEFS, MOB_ABILITIES
             for mob_id, abilities in MOB_ABILITIES.items():
                 for ability_id, _ in abilities:
                     if ability_id not in ABILITY_DEFS:
@@ -789,7 +791,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         if char and cs:
             # Migração de save: recalcula atributos base a partir de classe+nível,
             # garantindo consistência com CLASS_BASE_STATS e CLASS_LEVEL_GAINS atuais.
-            from stats_system import CLASS_BASE_STATS, CLASS_LEVEL_GAINS
+            from engine.stats_system import CLASS_BASE_STATS, CLASS_LEVEL_GAINS
             _base   = CLASS_BASE_STATS.get(char.class_id, CLASS_BASE_STATS["guerreiro"])
             _gains  = CLASS_LEVEL_GAINS.get(char.class_id, {})
             _lvls   = max(0, char.level - 1)
@@ -799,8 +801,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             char.vitality     = _base["vitality"]     + _gains.get("vitality",     0) * _lvls
             char.defense      = _base["defense"]      + _gains.get("defense",      0) * _lvls
 
-            from stats_system import apply_char_stats_to_combat, sync_attack_interval
-            from components import Equipment as _EqLoad
+            from engine.stats_system import apply_char_stats_to_combat, sync_attack_interval
+            from engine.components import Equipment as _EqLoad
             apply_char_stats_to_combat(char, cs, perm)
             sync_attack_interval(cs, self.world.get_component(self.player_entity, _EqLoad))
             # Restaura HP salvo (proporcional ao max_hp recalculado)
@@ -1008,9 +1010,9 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
 
     def _close_modals_if_too_far(self) -> None:
         """Fecha modais de interação quando o player se afasta do elemento (NPC/corpo)."""
-        from components import TileMovement as _TM_prox, Position as _Pos_prox
-        from utils import chebyshev as _cheb_prox
-        from tileset import TILE_SIZE as _TS_prox
+        from engine.components import TileMovement as _TM_prox, Position as _Pos_prox
+        from engine.utils import chebyshev as _cheb_prox
+        from engine.tileset import TILE_SIZE as _TS_prox
 
         CLOSE_DIST = 3  # fecha ao se afastar mais de 3 tiles (abre a ≤1)
 
@@ -1391,6 +1393,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                         self._close_all_modals()
                         if not already_open:
                             self._show_debug = True
+                elif event.type == pygame.TEXTINPUT:
+                    self._handle_chat_text_input(event)
                 elif (event.type == pygame.MOUSEBUTTONDOWN
                       and self._handle_trade_click(event)):
                     pass
@@ -1437,6 +1441,9 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
 
             # UI de morte/espírito: consome cliques nos botões "Liberar espírito"/"Sim"
             self._update_death_ui(events, dt)
+
+            # Hold-to-repeat do Backspace no campo de chat (ver chat_handlers.py)
+            self._update_chat_input(dt)
 
             # Exclusividade entre os 4 modais de interação de NPC (crafting/
             # trainer/shop/quest_dialog): se QUALQUER um já está aberto (de
@@ -1519,7 +1526,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                                 _player_tm_mm.current_tile_y,
                             )
                             if _mm_tile is not None:
-                                from components import PlayerAutoMove
+                                from engine.components import PlayerAutoMove
                                 for _, _auto in self.world.get_entities_with(PlayerAutoMove):
                                     _auto.ground_target = _mm_tile
                                     _auto.path          = []
@@ -1668,7 +1675,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                     self._debug_teleport_map = ""
                     self._do_transition({"target_map": target, "target_x": tx, "target_y": ty})
                 else:
-                    from components import PlayerAutoMove
+                    from engine.components import PlayerAutoMove
                     for _, auto in self.world.get_entities_with(PlayerAutoMove):
                         auto.ground_target = (tx, ty)
                         auto.path          = []
@@ -1682,7 +1689,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
 
             # Limpa marcador X do mapa quando ground_target foi cancelado ou chegou ao destino
             if self._map_overlay._dest_marker is not None:
-                from components import PlayerAutoMove
+                from engine.components import PlayerAutoMove
                 _auto = self.world.get_component(self.player_entity, PlayerAutoMove)
                 if _auto is None or _auto.ground_target is None:
                     self._map_overlay._dest_marker = None
@@ -2182,7 +2189,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
 
     def _consumable_bar_to_dict(self) -> dict:
         """Serializa a barra de consumíveis para persistência."""
-        from components import ConsumableBar as _CB
+        from engine.components import ConsumableBar as _CB
         cbar = self.world.get_component(self.player_entity, _CB)
         if not cbar:
             return {}
@@ -2194,7 +2201,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
     def _apply_hotbar_config(self, new_character: bool = False, char_name: str = "") -> None:
         """Restaura layout e keybinds da hotbar e barra de consumíveis a partir de config.json."""
         import config as _cfg
-        from skill_config import SKILL_CATALOG, NUM_SLOTS, DEFAULT_KEYBINDS
+        from content.skill_config import SKILL_CATALOG, NUM_SLOTS, DEFAULT_KEYBINDS
         data = _cfg.load()
 
         # Per-character lookup: prefer config["characters"][char_name] over legacy top-level
@@ -2258,7 +2265,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
 
         # ── Consumable bar ────────────────────────────────────────────────
         if cb_data:
-            from components import ConsumableBar as _CB
+            from engine.components import ConsumableBar as _CB
             cbar = self.world.get_component(self.player_entity, _CB)
             if cbar:
                 saved_keybinds = cb_data.get("keybinds", [])

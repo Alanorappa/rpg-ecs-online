@@ -5,7 +5,7 @@ import pygame; pygame.init()
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tests.helpers import make_world_server, spawn_player, run_ticks, first_mob, teleport_mob_to_player
-from components import CombatStats, CombatState, CharacterStats, PlayerSkills
+from engine.components import CombatStats, CombatState, CharacterStats, PlayerSkills
 
 ws = make_world_server()
 eid = spawn_player(ws, "s1", 130, 374, class_id="guerreiro")
@@ -19,7 +19,7 @@ cs.pnq_stun_duration = 1.0
 cs.acerto = 100.0
 
 ps = ws.world.get_component(eid, PlayerSkills)
-from skill_config import SKILL_CATALOG
+from content.skill_config import SKILL_CATALOG
 pnq_sk = next((sk for sk in ps.skills if sk and sk.skill_id == 'punho_no_queixo'), None)
 if pnq_sk is None:
     pnq_sk = PlayerSkills._make_skill('punho_no_queixo', SKILL_CATALOG)

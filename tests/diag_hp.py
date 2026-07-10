@@ -6,7 +6,7 @@ import pygame; pygame.init()
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from server.world_server import WorldServer
-from components import CombatStats
+from engine.components import CombatStats
 
 print("=== Cenário 1: client_max_hp=0 (cliente não enviou) ===")
 ws = WorldServer()

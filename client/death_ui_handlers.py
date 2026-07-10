@@ -9,7 +9,7 @@ demais atributos referenciados aqui.
 """
 import pygame
 
-from components import GhostState
+from engine.components import GhostState
 from client.colors import C_WHITE, C_YELLOW, C_RED, C_GREEN
 from shared.constants import GHOST_GRAVEYARD_REVIVE_S
 

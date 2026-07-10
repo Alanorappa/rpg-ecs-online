@@ -1,4 +1,4 @@
-﻿"""
+"""
 hotbar_handlers.py — Mixin com a hotbar de habilidades (slots 1-4),
 barra de consumíveis (cliques) e vinheta de HP baixo: detecção de
 clique em slots, bloqueio de skill por talento não alocado, e o
@@ -12,16 +12,16 @@ self._skill_system e os demais atributos referenciados aqui.
 """
 import math
 import pygame
-from ui_helpers import fill_surf
+from ui.ui_helpers import fill_surf
 
-from components import CombatState, CombatStats, PlayerSkills
-from icon_manager import ICONS
-from systems import ConsumableSystem
-from ui_sizes import UI
+from engine.components import CombatState, CombatStats, PlayerSkills
+from ui.icon_manager import ICONS
+from ui.systems import ConsumableSystem
+from ui.ui_sizes import UI
 
 # Lookup reverso: skill_id → (talent_id, talent_name, min_points_to_unlock)
 # Gerado dinamicamente a partir de talent_data.TALENTS.
-from talent_data import TALENTS as _TT_DATA
+from content.talent_data import TALENTS as _TT_DATA
 _TALENT_SKILL_REQS: dict[str, tuple[str, str, int]] = {
     td["unlocks_skill"]: (tid, td["name"], td.get("unlock_at", 1))
     for tid, td in _TT_DATA.items()
@@ -44,8 +44,8 @@ class HotbarHandlers:
         clampariam em escalas diferentes entre si e os slots ficariam com
         tamanhos visualmente inconsistentes entre as duas barras. Chamar no
         início de qualquer método que leia self._HB_W/_HB_H/_HB_ICO/_HB_PAD."""
-        from skill_config import NUM_SLOTS as _NS_HB
-        from components import ConsumableBar as _CB_HB
+        from content.skill_config import NUM_SLOTS as _NS_HB
+        from engine.components import ConsumableBar as _CB_HB
         BASE_W, BASE_PAD, BASE_GAP = UI.HOTBAR_SLOT_W, UI.HOTBAR_PAD, UI.HOTBAR_ROW_GAP
         hotbar_w = _NS_HB * BASE_W + (_NS_HB - 1) * BASE_PAD
         cons_w   = _CB_HB.NUM_SLOTS * BASE_W + (_CB_HB.NUM_SLOTS - 1) * BASE_PAD
@@ -82,7 +82,7 @@ class HotbarHandlers:
         if skill_id not in _TALENT_SKILL_REQS:
             return False
         talent_id, _name, min_pts = _TALENT_SKILL_REQS[skill_id]
-        from components import TalentTree as _TTree
+        from engine.components import TalentTree as _TTree
         tt = self.world.get_component(self.player_entity, _TTree)
         if tt is None:
             return False
@@ -94,7 +94,7 @@ class HotbarHandlers:
         # Shift+click → drag de remoção, não usa skill
         if pygame.key.get_mods() & pygame.KMOD_SHIFT:
             return
-        from components import PlayerSkills
+        from engine.components import PlayerSkills
         player_skills = self.world.get_component(self.player_entity, PlayerSkills)
         if not player_skills:
             return
@@ -120,7 +120,7 @@ class HotbarHandlers:
     def _handle_consumable_bar_click(self, event) -> None:
         """Usa consumível ao clicar com botão esquerdo em slot da barra de consumíveis."""
         self._set_hotbar_row_scale()
-        from components import ConsumableBar as _CB, PlayerSkills as _PS
+        from engine.components import ConsumableBar as _CB, PlayerSkills as _PS
         cbar = self.world.get_component(self.player_entity, _CB)
         if not cbar:
             return
@@ -150,7 +150,7 @@ class HotbarHandlers:
 
     def _draw_low_hp_vignette(self) -> None:
         """Vinheta vermelha pulsante na borda da tela quando HP < 30%."""
-        from components import CombatStats as _CS_V
+        from engine.components import CombatStats as _CS_V
         cs = self.world.get_component(self.player_entity, _CS_V)
         if not cs or cs.max_hp <= 0:
             return
@@ -181,7 +181,7 @@ class HotbarHandlers:
         self._set_hotbar_row_scale()
 
         # --- Rage atual do jogador e CombatStats (para custos modificados por talentos) ---
-        from components import CharacterStats as _CS
+        from engine.components import CharacterStats as _CS
         _char    = self.world.get_component(self.player_entity, _CS)
         _cs_hb   = self.world.get_component(self.player_entity, CombatStats)
         player_rage = _char.rage if _char else 0
@@ -202,7 +202,7 @@ class HotbarHandlers:
                     target_hp_ratio = _meta_hb.hp / _meta_hb.hp_max
                 else:
                     # Player remoto (PvP) — HP em RemoteControlled
-                    from components import RemoteControlled as _RCratio
+                    from engine.components import RemoteControlled as _RCratio
                     _rc_ratio = self.world.get_component(_tgt_local, _RCratio)
                     if _rc_ratio and _rc_ratio.hp_max > 0:
                         target_hp_ratio = _rc_ratio.hp / _rc_ratio.hp_max
@@ -214,7 +214,7 @@ class HotbarHandlers:
         channeling = _char is not None and _char.fatiador_timer > 0
 
         # === Drag da hotbar (reordenar / Shift+drag para remover) ===
-        from skill_config import NUM_SLOTS as _NS_HB
+        from content.skill_config import NUM_SLOTS as _NS_HB
         _hb_events  = self._ui_events
         _mods_hb    = pygame.key.get_mods()
         _shift_hb   = bool(_mods_hb & pygame.KMOD_SHIFT)
@@ -460,7 +460,7 @@ class HotbarHandlers:
                                  (sx, y0), area=pygame.Rect(0, 0, self._HB_W, ov_h))
 
             # --- Overlay de GCD ---
-            from components import PlayerSkills as _PS2
+            from engine.components import PlayerSkills as _PS2
             _pskills = self.world.get_component(self.player_entity, _PS2)
             if not channeling and _pskills and _pskills.gcd_timer > 0:
                 gcd_ratio = _pskills.gcd_timer / _PS2.GCD_DURATION

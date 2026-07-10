@@ -21,9 +21,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pygame
 pygame.init()
 
-from world import World
-from components import TileMovement, MapLocation
-from systems import TileValidationSystem, EnemyAISystem
+from engine.world import World
+from engine.components import TileMovement, MapLocation
+from ui.systems import TileValidationSystem, EnemyAISystem
 from tests.helpers import make_world_server, spawn_player, run_ticks, first_mob
 
 
@@ -176,7 +176,7 @@ class TestAttackCooldownDecrementedOnce(unittest.TestCase):
         self.ws = make_world_server()
 
     def _first_ai_mob_on_map1(self):
-        from components import AIControlled
+        from engine.components import AIControlled
         for eid in self.ws._mob_eids:
             ml  = self.ws.world.get_component(eid, MapLocation)
             ai  = self.ws.world.get_component(eid, AIControlled)
@@ -186,7 +186,7 @@ class TestAttackCooldownDecrementedOnce(unittest.TestCase):
 
     def test_cooldown_decrements_once_per_tick(self):
         """attack_cooldown_timer diminui em dt (não 3×dt) por tick."""
-        from components import CombatStats
+        from engine.components import CombatStats
         spawn_player(self.ws, "s1", 130, 374)
         run_ticks(self.ws, 60)   # spawna mobs
 

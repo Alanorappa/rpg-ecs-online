@@ -16,12 +16,12 @@ TRADE_STATE — nunca otimista (mesmo racional do EQUIP_REJECTED).
 """
 import pygame
 
-from components import Inventory, RemoteControlled, Wallet
-from combat_log import LOG
-from icon_manager import ICONS
-from sound_manager import SOUNDS
-from ui_helpers import item_tooltip_lines, draw_stack_count
-from ui_sizes import UI
+from engine.components import Inventory, RemoteControlled, Wallet
+from ui.combat_log import LOG
+from ui.icon_manager import ICONS
+from ui.sound_manager import SOUNDS
+from ui.ui_helpers import item_tooltip_lines, draw_stack_count
+from ui.ui_sizes import UI
 
 
 _RARITY_COLORS = {
@@ -278,7 +278,7 @@ class TradeHandlers:
                 return True
 
         if event.button == 3:
-            from components import Inventory as _InvTC
+            from engine.components import Inventory as _InvTC
             inv = self.world.get_component(self.player_entity, _InvTC)
             if inv is not None:
                 for i, r in enumerate(L["bag"]):
@@ -391,7 +391,7 @@ class TradeHandlers:
         self.screen.blit(gold_bal_s, (L["bag_x"], y0 + title_h + self._u(18)))
 
         # ── Bag (própria) ──
-        from components import Inventory as _InvDraw
+        from engine.components import Inventory as _InvDraw
         inv = self.world.get_component(self.player_entity, _InvDraw)
         mx, my = pygame.mouse.get_pos()
         for i, r in enumerate(L["bag"]):

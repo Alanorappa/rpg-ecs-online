@@ -4160,3 +4160,34 @@ completa sem regressão (9F/83P).
 
 **Não validado:** passada manual com 2 clientes reais em contas onde login ≠ nome do personagem —
 confirmar nameplate, chat e trade mostrando o nome do personagem em todos os casos.
+
+## Bug — Tiro Repulsivo (arqueiro) stunava o PRÓPRIO atirador quando o alvo estava adjacente — 09/07/2026
+
+**Reportado pelo usuário:** ao usar Tiro Repulsivo num alvo adjacente, o arqueiro tomava stun da
+própria skill — sem sentido, já que a flecha empurra o alvo pra LONGE do atirador (direção
+correta, `dx,dy = tile_alvo - tile_atirador_no_disparo`), e o próprio atirador nunca deveria ser
+vítima do próprio knockback (só faria sentido em PvP, quando OUTRO player dispara nele).
+
+**Causa raiz:** `server/spell_completion_processor.py::_server_tiro_repulsivo`. Quando o alvo
+adjacente colide (0 tiles percorridos — ex.: encostado numa parede ou noutro mob logo atrás),
+o ponto de colisão é o próprio tile onde o alvo já estava, ou seja, ainda adjacente ao arqueiro.
+O splash de stun em área (`_adjacent_creatures`, Chebyshev ≤ 1 do ponto de colisão — pra pegar
+mobs agrupados perto do impacto) só excluía `{target_id, collided_eid}`, nunca `player_eid` — o
+próprio atirador, estando a distância 1 do ponto de colisão (ele mesmo é quem estava adjacente ao
+alvo), caía na busca e recebia o stun da própria flecha. Mesma classe de bug, mais estreita,
+também existia na detecção de bloqueador (`_entity_at_tile`, chamada sem `exclude_eid`): se o
+atirador se movesse durante o voo da flecha e acabasse na trajetória do empurrão, viraria
+`collided_eid` e seria stunado igual.
+
+**Fix:** `player_eid` adicionado ao `exclude_eids` do splash (`_adjacent_creatures`) e passado como
+`exclude_eid` nas 3 chamadas de `_entity_at_tile` que detectam o bloqueador do knockback — o
+atirador nunca mais pode ser `collided_eid` nem entrar no splash da própria skill.
+
+Validado (headless, `tests/diag_tiro_repulsivo.py` + script novo reproduzindo alvo adjacente +
+bloqueador logo atrás → colisão a 0 tiles): confirmado que o bug reproduzia (`player_stunned=True`)
+antes do fix e sumiu depois (`player_stunned=False`, alvo e bloqueador continuam stunados
+normalmente). Suíte completa sem regressão (9F/83P).
+
+**Não validado:** cenário PvP real (outro player disparando Tiro Repulsivo em alguém adjacente a
+uma 3ª entidade) — confirmar que o splash ainda pega bystanders de verdade, só o CASTER que fica
+sempre de fora.

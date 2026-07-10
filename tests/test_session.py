@@ -161,7 +161,7 @@ class TestLogin(unittest.IsolatedAsyncioTestCase):
             "char_id": chars[0]["id"]
         }))
 
-        from components import CombatStats
+        from engine.components import CombatStats
         eid = self.mgr.world_server._player_eids.get("s_ap")
         self.assertIsNotNone(eid)
         cs = self.mgr.world_server.world.get_component(eid, CombatStats)
@@ -280,7 +280,7 @@ class TestAOIUpdate(unittest.IsolatedAsyncioTestCase):
 
     async def test_mob_combat_result_sent_to_both_players(self):
         """COMBAT_RESULT de mob deve chegar aos dois players no AOI."""
-        from components import CombatState, CombatStats, TileMovement
+        from engine.components import CombatState, CombatStats, TileMovement
         session_a, fw_a = await fake_login(self.mgr, "s1", "cr_a", 115, 389)
         session_b, fw_b = await fake_login(self.mgr, "s2", "cr_b", 117, 389)
 
@@ -313,7 +313,7 @@ class TestAOIUpdate(unittest.IsolatedAsyncioTestCase):
 
     async def test_mob_despawn_sent_to_both_players(self):
         """Quando mob morre, ENTITY_DESPAWN deve chegar aos dois players."""
-        from components import CombatState, CombatStats, TileMovement
+        from engine.components import CombatState, CombatStats, TileMovement
         # Login próximo à zona para garantir mobs no WORLD_STATE (known_eids)
         session_a, fw_a = await fake_login(self.mgr, "s1", "dp_a", 128, 374)
         session_b, fw_b = await fake_login(self.mgr, "s2", "dp_b", 132, 374)
@@ -393,7 +393,7 @@ class TestDisconnect(unittest.IsolatedAsyncioTestCase):
 
     async def test_disconnect_removes_player_from_ecs(self):
         """Após disconnect, entidade do player deve ser removida do ECS."""
-        from components import TileMovement
+        from engine.components import TileMovement
         session, _ = await fake_login(self.mgr, "s1", "user_disc_ecs")
         player_eid = session.entity_id
         await self.mgr.on_disconnect("s1")
@@ -461,7 +461,7 @@ class TestPlayerDeathEvent(unittest.IsolatedAsyncioTestCase):
     async def test_player_corpse_stays_dead_until_revive(self):
         """Após morte, corpo fica com HP=0/GhostState.is_dead até liberar espírito
         e reviver (fluxo de ghost/cemitério substitui o respawn instantâneo)."""
-        from components import CombatStats, CombatState, TileMovement, GhostState
+        from engine.components import CombatStats, CombatState, TileMovement, GhostState
         session, fw = await fake_login(self.mgr, "s1", "user_hpreset", 130, 374)
 
         player_eid = session.entity_id

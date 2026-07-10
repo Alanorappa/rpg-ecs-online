@@ -113,7 +113,7 @@ class TestPlayerAttacksMob(unittest.TestCase):
     def test_mob_death_sends_entity_despawn(self):
         """Quando mob morre, ENTITY_DESPAWN deve ser emitido."""
         mob_eid = first_mob(self.ws)
-        from components import CombatStats
+        from engine.components import CombatStats
         cs = self.ws.world.get_component(mob_eid, CombatStats)
         cs.current_hp = 1   # mata na primeira pancada
 
@@ -127,7 +127,7 @@ class TestPlayerAttacksMob(unittest.TestCase):
     def test_mob_removed_from_mob_eids_on_death(self):
         """Mob morto deve ser removido de ws._mob_eids."""
         mob_eid = first_mob(self.ws)
-        from components import CombatStats
+        from engine.components import CombatStats
         cs = self.ws.world.get_component(mob_eid, CombatStats)
         cs.current_hp = 1
 
@@ -141,7 +141,7 @@ class TestPlayerAttacksMob(unittest.TestCase):
     def test_no_duplicate_despawn(self):
         """ENTITY_DESPAWN não deve ser emitido em duplicata."""
         mob_eid = first_mob(self.ws)
-        from components import CombatStats
+        from engine.components import CombatStats
         cs = self.ws.world.get_component(mob_eid, CombatStats)
         cs.current_hp = 1
 
@@ -168,14 +168,14 @@ class TestMobAttacksPlayer(unittest.TestCase):
 
     def test_mob_has_combat_state(self):
         """Todo mob spawnado deve ter CombatState (necessário para aggro)."""
-        from components import CombatState
+        from engine.components import CombatState
         for mob_eid in self.ws._mob_eids:
             cs = self.ws.world.get_component(mob_eid, CombatState)
             self.assertIsNotNone(cs, f"Mob {mob_eid} sem CombatState")
 
     def test_mob_attacks_player_in_range(self):
         """EnemyAISystem deve atacar player e gerar queda de HP ou COMBAT_RESULT."""
-        from components import CombatStats, TileMovement
+        from engine.components import CombatStats, TileMovement
         mob_eid    = first_mob(self.ws)
         player_eid = self.ws._player_eids["s1"]
 
@@ -203,7 +203,7 @@ class TestMobAttacksPlayer(unittest.TestCase):
         hp_before, _ = get_player_hp(self.ws, "s1")
 
         teleport_mob_to_player(self.ws, mob_eid, player_eid)
-        from components import AIControlled
+        from engine.components import AIControlled
         mob_ai = self.ws.world.get_component(mob_eid, AIControlled)
         mob_ai.state      = "ATTACKING"
         mob_ai.target_eid = player_eid
@@ -217,14 +217,14 @@ class TestMobAttacksPlayer(unittest.TestCase):
         """Apenas 1 mob deve atacar o mesmo player por tick (evita burst de dano)."""
         player_eid = self.ws._player_eids["s1"]
         # Coloca TODOS os mobs adjacentes ao player
-        from components import TileMovement
+        from engine.components import TileMovement
         for i, mob_eid in enumerate(list(self.ws._mob_eids)[:5]):
             mob_tm = self.ws.world.get_component(mob_eid, TileMovement)
             ptm    = self.ws.world.get_component(player_eid, TileMovement)
             if mob_tm and ptm:
                 mob_tm.current_tile_x = ptm.current_tile_x + (i % 2)
                 mob_tm.current_tile_y = ptm.current_tile_y
-            from components import CombatState
+            from engine.components import CombatState
             mob_cs = self.ws.world.get_component(mob_eid, CombatState)
             if mob_cs:
                 mob_cs.target_entity_id = player_eid
@@ -250,7 +250,7 @@ class TestMobAttacksPlayer(unittest.TestCase):
 
     def test_player_death_emits_player_death_event(self):
         """Quando player HP é reduzido para 0 pelo servidor, deve emitir player_deaths."""
-        from components import CombatStats, TileMovement
+        from engine.components import CombatStats, TileMovement
         mob_eid    = first_mob(self.ws)
         player_eid = self.ws._player_eids["s1"]
 
@@ -272,7 +272,7 @@ class TestMobAttacksPlayer(unittest.TestCase):
         player_eid = self.ws._player_eids["s1"]
 
         # Seta aggro manualmente (simula mob que estava atacando o player)
-        from components import CombatState
+        from engine.components import CombatState
         mob_cs_state = self.ws.world.get_component(mob_eid, CombatState)
         mob_cs_state.target_entity_id = player_eid
 
@@ -299,8 +299,8 @@ class TestMobMovement(unittest.TestCase):
 
     def test_mob_moves_toward_player(self):
         """EnemyAISystem: mob dentro do aggro range (<=5 tiles) deve perseguir player."""
-        from components import TileMovement
-        from utils import chebyshev
+        from engine.components import TileMovement
+        from engine.utils import chebyshev
         mob_eid = first_mob(self.ws)
         player_eid = self.ws._player_eids["s1"]
         ptm    = self.ws.world.get_component(player_eid, TileMovement)
@@ -310,7 +310,7 @@ class TestMobMovement(unittest.TestCase):
         nat_x = mob_tm.current_tile_x;  nat_y = mob_tm.current_tile_y
         set_entity_tile(self.ws, player_eid, nat_x + 3, nat_y)
         # Reseta AI para IDLE
-        from components import AIControlled
+        from engine.components import AIControlled
         ai = self.ws.world.get_component(mob_eid, AIControlled)
         if ai:
             ai.state = "IDLE";  ai.path = [];  ai.aggroed_by_damage = False
@@ -327,7 +327,7 @@ class TestMobMovement(unittest.TestCase):
 
     def test_mob_does_not_walk_through_solid_tile(self):
         """EnemyAISystem usa pathfinding — mobs não caminham por tiles sólidos."""
-        from components import Tilemap, TileMovement
+        from engine.components import Tilemap, TileMovement
         mob_eid = first_mob(self.ws)
         if not mob_eid:
             self.skipTest("Sem mobs")
@@ -353,7 +353,7 @@ class TestMobMovement(unittest.TestCase):
 
     def test_mob_moved_deltas_emitted(self):
         """Mobs em movimento devem gerar deltas['moved']."""
-        from components import TileMovement
+        from engine.components import TileMovement
         mob_eid = first_mob(self.ws)
         player_eid = self.ws._player_eids["s1"]
         ptm    = self.ws.world.get_component(player_eid, TileMovement)
@@ -362,7 +362,7 @@ class TestMobMovement(unittest.TestCase):
         # Usa posição natural do mob; player a 3 tiles — sincroniza Position
         nat_x = mob_tm.current_tile_x;  nat_y = mob_tm.current_tile_y
         set_entity_tile(self.ws, player_eid, nat_x + 3, nat_y)
-        from components import AIControlled
+        from engine.components import AIControlled
         ai = self.ws.world.get_component(mob_eid, AIControlled)
         if ai:
             ai.state = "IDLE";  ai.path = [];  ai.aggroed_by_damage = False
@@ -411,7 +411,7 @@ class TestAutoAttackFlow(unittest.TestCase):
     def test_mob_with_high_ap_dies_in_reasonable_time(self):
         """Com AP=50, mob HP~175 deve morrer em ≤ 20s."""
         mob_eid = first_mob(self.ws)
-        from components import CombatStats
+        from engine.components import CombatStats
         cs = self.ws.world.get_component(mob_eid, CombatStats)
         cs.current_hp = 1   # força morte rápida para validar o fluxo
 
@@ -452,7 +452,7 @@ class TestMultiplePlayers(unittest.TestCase):
         if not mob_eid:
             self.skipTest("Sem mobs")
 
-        from components import CombatState, CombatStats, AIControlled
+        from engine.components import CombatState, CombatStats, AIControlled
         # Travar o mob explicitamente em player A — EnemyAISystem usa AIControlled.target_eid
         mob_ai = self.ws.world.get_component(mob_eid, AIControlled)
         if mob_ai:
@@ -466,7 +466,7 @@ class TestMultiplePlayers(unittest.TestCase):
         pcs1 = self.ws.world.get_component(eid1, CombatStats)
         pcs1.current_hp = 50  # player A com pouco HP para garantir dano
 
-        from components import TileMovement
+        from engine.components import TileMovement
         mob_tm = self.ws.world.get_component(mob_eid, TileMovement)
         ptm1   = self.ws.world.get_component(eid1, TileMovement)
         mob_tm.current_tile_x = ptm1.current_tile_x + 1
@@ -504,8 +504,8 @@ class TestRegressionBugs(unittest.TestCase):
         if not mob:
             self.skipTest("Sem mobs")
 
-        from components import CombatState, CombatStats, AIControlled, TileMovement, Position
-        from tileset import TILE_SIZE as _TS
+        from engine.components import CombatState, CombatStats, AIControlled, TileMovement, Position
+        from engine.tileset import TILE_SIZE as _TS
         mob_ai  = self.ws.world.get_component(mob, AIControlled)
         mob_tm  = self.ws.world.get_component(mob, TileMovement)
         mob_cs  = self.ws.world.get_component(mob, CombatStats)
@@ -559,7 +559,7 @@ class TestRegressionBugs(unittest.TestCase):
             self.skipTest("Sem mobs")
 
         # Mata o mob diretamente via auto-attack simulado
-        from components import CombatStats, TileMovement, CombatState
+        from engine.components import CombatStats, TileMovement, CombatState
         mob_cs = self.ws.world.get_component(mob, CombatStats)
         ptm    = self.ws.world.get_component(eid, TileMovement)
         mob_tm = self.ws.world.get_component(mob, TileMovement)
@@ -592,7 +592,7 @@ class TestRegressionBugs(unittest.TestCase):
         if not mob:
             self.skipTest("Sem mobs")
 
-        from components import AIControlled, CombatState
+        from engine.components import AIControlled, CombatState
         mob_ai = self.ws.world.get_component(mob, AIControlled)
         if not mob_ai:
             self.skipTest("Mob sem AIControlled")
@@ -636,8 +636,8 @@ class TestPunhoNoQueixo(unittest.TestCase):
 
     def _setup_warrior_pnq(self, tx=130, ty=374) -> tuple[int, object, object]:
         """Spawna guerreiro com pnq ativo; retorna (eid, pnq_sk, char_stats)."""
-        from components import CombatStats, CharacterStats, PlayerSkills
-        from skill_config import SKILL_CATALOG
+        from engine.components import CombatStats, CharacterStats, PlayerSkills
+        from content.skill_config import SKILL_CATALOG
 
         eid = spawn_player(self.ws, "s1", tx, ty, class_id="guerreiro")
         # Gate autoritativo (is_skill_authorized): fixture precisa "aprender"
@@ -666,7 +666,7 @@ class TestPunhoNoQueixo(unittest.TestCase):
 
     def _setup_adjacent_mob(self, player_eid: int) -> int:
         """Retorna mob existente posicionado adjacente ao player."""
-        from components import CombatState, CombatStats
+        from engine.components import CombatState, CombatStats
         mob = first_mob(self.ws)
         self.assertIsNotNone(mob, "Nenhum mob spawnado")
         teleport_mob_to_player(self.ws, mob, player_eid)
@@ -679,14 +679,14 @@ class TestPunhoNoQueixo(unittest.TestCase):
 
     def _force_attack(self, session_id: str, player_eid: int, mob_eid: int):
         """Força 1 auto-ataque: reseta timer e processa o tick de combate."""
-        from components import CombatState, CombatStats
+        from engine.components import CombatState, CombatStats
         cs_state = self.ws.world.get_component(player_eid, CombatState)
         cs_state.target_entity_id = mob_eid
         cs_state.is_pursuing      = True
         self.ws._attack_timers[session_id] = 0.0
         mob_cs = self.ws.world.get_component(mob_eid, CombatStats)
         mob_cs.current_hp = max(mob_cs.current_hp, 1)  # mantém vivo
-        from components import CombatStats as _CS
+        from engine.components import CombatStats as _CS
         snapshot = {mob_eid: mob_cs.current_hp}
         self.ws._process_player_attacks(0.05, snapshot)
 
@@ -711,7 +711,7 @@ class TestPunhoNoQueixo(unittest.TestCase):
 
     def test_cast_deals_damage_and_stuns(self):
         """Usar skill com 1 carga → dano, stun no mob, charges volta a 0."""
-        from components import CombatState, CombatStats, StatusEffects
+        from engine.components import CombatState, CombatStats, StatusEffects
 
         eid, pnq_sk, _ = self._setup_warrior_pnq()
         mob = self._setup_adjacent_mob(eid)
@@ -743,7 +743,7 @@ class TestPunhoNoQueixo(unittest.TestCase):
 
     def test_cast_without_charge_fails(self):
         """Tentar usar skill sem cargas não causa dano."""
-        from components import CombatState, CombatStats
+        from engine.components import CombatState, CombatStats
 
         eid, pnq_sk, _ = self._setup_warrior_pnq()
         mob = self._setup_adjacent_mob(eid)
@@ -788,7 +788,7 @@ class TestPunhoNoQueixo(unittest.TestCase):
 
     def test_no_accumulation_without_talent(self):
         """Sem talent (pnq_enabled=False) → counter e charges permanecem 0."""
-        from components import CombatStats
+        from engine.components import CombatStats
 
         eid, pnq_sk, char = self._setup_warrior_pnq()
         mob = self._setup_adjacent_mob(eid)
@@ -809,7 +809,7 @@ class TestPunhoNoQueixo(unittest.TestCase):
 
     def test_skill_lazily_added_to_ps_skills(self):
         """Se punho_no_queixo não está em ps.skills, servidor cria ao primeiro acerto."""
-        from components import CombatStats, PlayerSkills
+        from engine.components import CombatStats, PlayerSkills
 
         eid = spawn_player(self.ws, "s2", 130, 374, class_id="guerreiro")
         cs = self.ws.world.get_component(eid, CombatStats)
@@ -828,7 +828,7 @@ class TestPunhoNoQueixo(unittest.TestCase):
         mob_cs.dodge_rating = 0.0
         mob_cs.parry_rating = 0.0
 
-        from components import CombatState
+        from engine.components import CombatState
         cst = self.ws.world.get_component(eid, CombatState)
         cst.target_entity_id = mob
         cst.is_pursuing      = True
@@ -838,7 +838,7 @@ class TestPunhoNoQueixo(unittest.TestCase):
         #   – deal_damage pode matar o mob na 1ª hit → target_entity_id=-1;
         #   – PendingDeath não remove da _mob_eids (ServerDeathHandler não rodou),
         #     mas HP<0 seria detectado como alvo inválido sem o reset.
-        from components import CombatState, PendingDeath
+        from engine.components import CombatState, PendingDeath
         for _ in range(3):
             mob_cs.current_hp = mob_cs.max_hp          # garante alvo vivo
             self.ws.world.remove_component(mob, PendingDeath)  # limpa morte pendente
@@ -867,12 +867,12 @@ class TestRangedMobAbilities(unittest.TestCase):
 
     def _make_hunter_mob(self, ws):
         """Cria um mob Hunter com EnemyAbilities(poison_arrow) e AIControlled ATTACKING."""
-        from world import World
-        from components import (Position, TileMovement, CombatStats, AIControlled,
+        from engine.world import World
+        from engine.components import (Position, TileMovement, CombatStats, AIControlled,
                                 InitialPosition, DetectionRadius, EnemyAbilities,
                                 EnemyAbilitySlot, EntityIdentity, Enemy)
-        from enemy_abilities_data import ABILITY_DEFS
-        from tileset import TILE_SIZE
+        from content.enemy_abilities_data import ABILITY_DEFS
+        from engine.tileset import TILE_SIZE
 
         tx, ty = 130, 372  # 2 tiles acima do player (sem parede entre eles)
         eid = ws.world.create_entity()
@@ -907,8 +907,8 @@ class TestRangedMobAbilities(unittest.TestCase):
 
     def test_ranged_ability_spawns_projectile_not_direct_effect(self):
         """poison_arrow deve criar projétil com ability_id, NÃO aplicar efeito direto."""
-        from components import Projectile, StatusEffects, AIControlled
-        from systems import EnemyAISystem
+        from engine.components import Projectile, StatusEffects, AIControlled
+        from ui.systems import EnemyAISystem
 
         hunter = self._make_hunter_mob(self.ws)
         ai = self.ws.world.get_component(hunter, AIControlled)
@@ -926,7 +926,7 @@ class TestRangedMobAbilities(unittest.TestCase):
             run_ticks(self.ws, 1)
 
             # Deve existir projétil com ability_id="poison_arrow"
-            from components import Position as _Pos
+            from engine.components import Position as _Pos
             ability_projs = [
                 (eid, p) for eid, pos, p in self.ws.world.get_entities_with(_Pos, Projectile)
                 if p.ability_id == "poison_arrow"
@@ -949,8 +949,8 @@ class TestRangedMobAbilities(unittest.TestCase):
 
     def test_ability_projectile_applies_dot_on_hit(self):
         """Projétil de ability com ability_id aplica DoT ao acertar (ProjectileSystem)."""
-        from components import Projectile, StatusEffects, Position, AIControlled
-        from tileset import TILE_SIZE
+        from engine.components import Projectile, StatusEffects, Position, AIControlled
+        from engine.tileset import TILE_SIZE
 
         # Cria projétil já na posição do player (1 tick = hit)
         p_pos = self.ws.world.get_component(self.p_eid, Position)
@@ -978,8 +978,8 @@ class TestRangedMobAbilities(unittest.TestCase):
 
     def test_ability_cooldown_not_consumed_without_los(self):
         """Sem LOS entre mob e player, ability NÃO dispara e cooldown NÃO é consumido."""
-        from components import Projectile, EnemyAbilities, AIControlled, TileMovement
-        from tileset import TILE_SIZE
+        from engine.components import Projectile, EnemyAbilities, AIControlled, TileMovement
+        from engine.tileset import TILE_SIZE
 
         hunter = self._make_hunter_mob(self.ws)
         ai = self.ws.world.get_component(hunter, AIControlled)
@@ -990,7 +990,7 @@ class TestRangedMobAbilities(unittest.TestCase):
         # sobrescrevendo o tilemap component e mockando o método estático.
         # Abordagem: colocar Hunter e player em tiles opostos com colisão garantida
         # via monkey-patch do _has_line_of_sight.
-        from systems import EnemyAISystem
+        from ui.systems import EnemyAISystem
         original_los = EnemyAISystem._has_line_of_sight
 
         # Força LOS=False
@@ -1008,7 +1008,7 @@ class TestRangedMobAbilities(unittest.TestCase):
                              "Cooldown não deveria ter sido consumido sem LOS")
 
             # Também não deve existir projétil de ability
-            from components import Position
+            from engine.components import Position
             ability_projs = [
                 eid for eid, pos, p in self.ws.world.get_entities_with(Position, Projectile)
                 if p.ability_id == "poison_arrow"

@@ -37,8 +37,8 @@ player_eid = ws.spawn_player(sid_player, char_data)
 print(f"player_eid={player_eid}")
 
 # Encontra um mob spawnado pelo SpawnZoneSystem ou cria um
-from entity_factory import create_enemy
-from components import TileMovement, CombatStats, Position
+from engine.entity_factory import create_enemy
+from engine.components import TileMovement, CombatStats, Position
 
 mob_eid = create_enemy(ws.world, 11, 10, attack_range=1, level=3)
 ws._mob_eids.add(mob_eid)

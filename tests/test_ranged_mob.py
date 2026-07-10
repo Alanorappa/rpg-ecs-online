@@ -1,6 +1,6 @@
 """Teste: mob ranged (Goblin Hunter) aplica dano ao player via projétil."""
 from tests.helpers import make_world_server, spawn_player, run_ticks, set_entity_tile
-from components import AIControlled, CombatState, Visible, Projectile
+from engine.components import AIControlled, CombatState, Visible, Projectile
 
 
 def test_ranged_mob_damages_player():
@@ -9,7 +9,7 @@ def test_ranged_mob_damages_player():
     peid = ws._player_eids["s1"]
 
     # Pega o primeiro mob ranged spawnado pelo mapa
-    from components import Enemy
+    from engine.components import Enemy
     ranged_eid = None
     for eid in list(ws._mob_eids):
         ai = ws.world.get_component(eid, AIControlled)
@@ -19,7 +19,7 @@ def test_ranged_mob_damages_player():
 
     if ranged_eid is None:
         # Cria um mob ranged manualmente se o mapa não tiver nenhum perto
-        from entity_factory import create_enemy
+        from engine.entity_factory import create_enemy
         ranged_eid = create_enemy(ws.world, 132, 374, is_ranged=True, race="Goblin")
         ws._mob_eids.add(ranged_eid)
         ws.world.add_component(ranged_eid, CombatState())
@@ -33,7 +33,7 @@ def test_ranged_mob_damages_player():
     ai.state      = "ATTACKING"
     ai.target_eid = peid
 
-    from components import CombatStats
+    from engine.components import CombatStats
     cs_p = ws.world.get_component(peid, CombatStats)
     hp_before = cs_p.current_hp
 

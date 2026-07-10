@@ -1,4 +1,4 @@
-﻿"""
+"""
 remote_entity_handlers.py — Mixin com a gestão de entidades remotas
 (mobs e players controlados pelo servidor): spawn, despawn, movimento,
 sincronização de efeitos/combate e desenho de HP bars/corpses/players remotos.
@@ -8,10 +8,10 @@ self.world, self._my_eid, self._net e os demais atributos referenciados aqui.
 """
 import pygame
 
-from components import Position
-from tileset import TILE_SIZE
-from combat_log import LOG
-from sound_manager import SOUNDS
+from engine.components import Position
+from engine.tileset import TILE_SIZE
+from ui.combat_log import LOG
+from ui.sound_manager import SOUNDS
 
 
 class RemoteEntityHandlers:
@@ -30,7 +30,7 @@ class RemoteEntityHandlers:
         suprime o fallback hit_normal do caller, evitando som de espada errado.
         Retorna False apenas se o atacante é um player remoto (PvP).
         """
-        from components import MobSounds as _MobSounds, AIControlled as _AICtrl
+        from engine.components import MobSounds as _MobSounds, AIControlled as _AICtrl
         _atk_mob_local = self._remote_mobs.get(server_attacker)
         if _atk_mob_local is None:
             # Mob fora do AOI local, attacker=-1 (origem não identificada no servidor)
@@ -60,7 +60,7 @@ class RemoteEntityHandlers:
         Retorna (is_archer_arrow, attacker_eid, is_self_attacker). attacker_eid
         é a entidade local de quem disparou (player local ou player remoto).
         """
-        from components import CharacterStats as _CHS_ar, RemoteControlled as _RC_ar
+        from engine.components import CharacterStats as _CHS_ar, RemoteControlled as _RC_ar
         _char_ar = self.world.get_component(self.player_entity, _CHS_ar)
         _sid_ar  = cr.get("sid", "")
         _is_proj_damage_ar = cr.get("is_proj_damage", False)
@@ -95,7 +95,7 @@ class RemoteEntityHandlers:
         toca os sons de saque/disparo (cheios para o player local, posicionais
         com falloff para arqueiro remoto)."""
         import random as _rand_arrow
-        from components import PlayerProjectile as _PParrow
+        from engine.components import PlayerProjectile as _PParrow
         if attacker_eid is None:
             return
         _ppos = self.world.get_component(attacker_eid, Position)
@@ -136,9 +136,9 @@ class RemoteEntityHandlers:
           skill crit:         amarelo (255,220,50) + is_crit=True → animação grande
           player dano:        vermelho (220,80,80) + is_crit para animação
         """
-        from components import Position, CombatStats, RemoteControlled
-        from floating_text import FLT
-        from sound_manager import SOUNDS
+        from engine.components import Position, CombatStats, RemoteControlled
+        from ui.floating_text import FLT
+        from ui.sound_manager import SOUNDS
         server_target   = cr.get("target",   -1)
         server_attacker = cr.get("attacker", -1)
         damage          = cr.get("damage",    0)
@@ -154,12 +154,12 @@ class RemoteEntityHandlers:
         col_regen = (100, 220, 100)
 
         _lx, _ly = self._player_world_pos()
-        from components import MobSounds as _MobSounds, EntityIdentity as _EIdent
+        from engine.components import MobSounds as _MobSounds, EntityIdentity as _EIdent
 
         # DEBUG C15/C16: registra distância attacker/target → player local
         # vs AOI_RADIUS, pra achar sons/FLT vindos de fora da área visível.
         if not _is_dot_hot:
-            from aoi_debug import AOI_DBG as _AOI_DBG_cr, DBG_ENABLED as _DBG_EN_cr
+            from debug.aoi_debug import AOI_DBG as _AOI_DBG_cr, DBG_ENABLED as _DBG_EN_cr
             if _DBG_EN_cr:
                 from shared.constants import AOI_RADIUS as _AOI_R_cr
                 import math as _math_cr
@@ -199,7 +199,7 @@ class RemoteEntityHandlers:
             # HP: atualização imediata apenas para ataques não-projéteis.
             # Flechas diferem para o momento de colisão (deferred_hp_updates em _on_hit).
             if hp_after >= 0 and not _is_archer_arrow:
-                from components import RemoteEntityMeta as _REM_cr
+                from engine.components import RemoteEntityMeta as _REM_cr
                 _meta_cr = self.world.get_component(local_eid, _REM_cr)
                 if _meta_cr:
                     _meta_cr.hp = hp_after
@@ -208,7 +208,7 @@ class RemoteEntityHandlers:
             # Sem isso, o mob no cliente move em velocidade normal enquanto servidor tem slow.
             _mob_slow_mult = cr.get("mob_slow_mult")
             if _mob_slow_mult is not None:
-                from components import StatusEffects as _SFXcr, ActiveEffect as _AEcr
+                from engine.components import StatusEffects as _SFXcr, ActiveEffect as _AEcr
                 _sfx_cr = self.world.get_component(local_eid, _SFXcr)
                 if _sfx_cr is None:
                     _sfx_cr = _SFXcr()
@@ -245,7 +245,7 @@ class RemoteEntityHandlers:
             if pos and damage > 0:
                 # LOG: jogador local causou dano (imediato — confirmação do servidor)
                 if server_attacker == self._my_eid and not _is_dot_hot:
-                    from combat_log import LOG as _LOG_cr
+                    from ui.combat_log import LOG as _LOG_cr
                     _suffix_cr = " (crítico)" if is_crit else ""
                     _col_cr    = (255, 220, 50) if is_ability else (220, 220, 220)
                     _LOG_cr.add(f"Você causou {damage} de dano{_suffix_cr}.", _col_cr)
@@ -352,8 +352,8 @@ class RemoteEntityHandlers:
                     cs.current_hp = hp_after
             # Entrar em combate ao receber dano (PvP ou mob)
             if damage > 0:
-                from components import CombatState as _CStPvp
-                from stat_fns import enter_combat as _ec_pvp_client
+                from engine.components import CombatState as _CStPvp
+                from engine.stat_fns import enter_combat as _ec_pvp_client
                 _cst_pvp = self.world.get_component(self.player_entity, _CStPvp)
                 if _cst_pvp:
                     _ec_pvp_client(_cst_pvp)
@@ -375,7 +375,7 @@ class RemoteEntityHandlers:
                                 "is_ability": is_ability, "is_player_target": True,
                             })
                         if damage > 0 and not _is_dot_hot:
-                            from combat_log import LOG as _LOG_arrow_pl
+                            from ui.combat_log import LOG as _LOG_arrow_pl
                             _suffix_arrow_pl = " (crítico)" if is_crit else ""
                             _LOG_arrow_pl.add(f"Você recebeu {damage} de dano{_suffix_arrow_pl}.",
                                               (220, 80, 80))
@@ -394,7 +394,7 @@ class RemoteEntityHandlers:
                             (220, 80, 80), target_id=self.player_entity, is_crit=is_crit)
                 # LOG: jogador recebeu dano
                 if not _is_dot_hot:
-                    from combat_log import LOG as _LOG_cr2
+                    from ui.combat_log import LOG as _LOG_cr2
                     _suffix_rcv = " (crítico)" if is_crit else ""
                     _LOG_cr2.add(f"Você recebeu {damage} de dano{_suffix_rcv}.", (220, 80, 80))
                 # Som do atacante: skills de flecha (picada_escorpiao, flecha_reiterada,
@@ -502,8 +502,8 @@ class RemoteEntityHandlers:
           - Aplicar slow/root/stun ao movimento e ações do cliente
         O dano real vem separado via COMBAT_RESULT (source = effect_type).
         """
-        from components import StatusEffects, ActiveEffect
-        from status_effects_data import EFFECT_DEFS as _EDEFS
+        from engine.components import StatusEffects, ActiveEffect
+        from content.status_effects_data import EFFECT_DEFS as _EDEFS
         sfx = self.world.get_component(self.player_entity, StatusEffects)
         if sfx is None:
             sfx = StatusEffects()
@@ -548,8 +548,8 @@ class RemoteEntityHandlers:
         sem tick de dano — apenas para renderização (ícones acima da barra de HP)
         e LOG de novos efeitos de controle.
         """
-        from components import StatusEffects, ActiveEffect
-        from status_effects_data import EFFECT_DEFS as _EDEFS
+        from engine.components import StatusEffects, ActiveEffect
+        from content.status_effects_data import EFFECT_DEFS as _EDEFS
 
         # Limpa efeitos de mobs que o servidor não enviou neste tick
         _reported_server_eids = {int(k) for k in mob_effects}
@@ -588,7 +588,7 @@ class RemoteEntityHandlers:
                     _defn = _EDEFS.get(etype)
                     if _defn and not _defn.is_buff:
                         _label = _defn.label
-                        from components import EntityIdentity as _EIdentMob
+                        from engine.components import EntityIdentity as _EIdentMob
                         _ident = self.world.get_component(local_eid, _EIdentMob)
                         _mname = _ident.name if _ident else "Alvo"
                         LOG.add(f"{_mname}: {_label}!", (255, 180, 80))
@@ -612,7 +612,7 @@ class RemoteEntityHandlers:
         """
         if not self._net or not self._net.connected or self._my_eid == -1:
             return
-        from components import CombatState
+        from engine.components import CombatState
         cs = self.world.get_component(self.player_entity, CombatState)
         if not cs:
             return
@@ -624,7 +624,7 @@ class RemoteEntityHandlers:
             _meta_st = self._meta_from_local(pursuing_target)
             server_target = _meta_st.server_eid if _meta_st else -1
             if server_target == -1:
-                from components import RemoteControlled as _RCsync
+                from engine.components import RemoteControlled as _RCsync
                 _rc_sync = self.world.get_component(pursuing_target, _RCsync)
                 if _rc_sync is not None:
                     server_target = _rc_sync.server_eid
@@ -648,15 +648,15 @@ class RemoteEntityHandlers:
     def _spawn_remote_mob(self, server_eid: int, data: dict) -> None:
         """Cria mob no ECS local a partir de dados do servidor."""
         if server_eid in self._remote_mobs:
-            from aoi_debug import AOI_DBG
+            from debug.aoi_debug import AOI_DBG
             _existing_local = self._remote_mobs[server_eid]
             AOI_DBG.log("SPAWN_SKIP", server_eid=server_eid,
                         local_eid=_existing_local,
                         entity_alive=(self.world.get_component(_existing_local, Position) is not None))
             return
 
-        from entity_factory import create_enemy
-        from components import Renderable
+        from engine.entity_factory import create_enemy
+        from engine.components import Renderable
         local_eid = create_enemy(
             self.world,
             data.get("tx", 0),
@@ -681,7 +681,7 @@ class RemoteEntityHandlers:
         # spawn (ex: boneco de treino, antes aparecia como "Humanoide").
         _server_name = data.get("name")
         if _server_name:
-            from components import EntityIdentity as _EIdSpawn
+            from engine.components import EntityIdentity as _EIdSpawn
             _eid_ident = self.world.get_component(local_eid, _EIdSpawn)
             if _eid_ident:
                 _eid_ident.name = _server_name
@@ -691,14 +691,14 @@ class RemoteEntityHandlers:
         # params={"on_dummy": True} (ver quest_system.py / systems.py::_use_skill*),
         # já que o cliente não tinha nenhum jeito de saber que era um boneco.
         if data.get("is_dummy"):
-            from components import TrainingDummy as _TDSpawn
+            from engine.components import TrainingDummy as _TDSpawn
             self.world.add_component(local_eid, _TDSpawn())
 
         # Remove CombatStats: HP é autoritativo pelo servidor (RemoteEntityMeta.hp).
         # Remove AIControlled: mobs remotos são movidos por ENTITY_MOVE do servidor;
         # sem isso, EnemyAISystem local emite start_tile_movement competindo com o servidor,
         # causando snapback de 1 tile quando os alvos divergem.
-        from components import CombatStats, AIControlled as _AIC_rm
+        from engine.components import CombatStats, AIControlled as _AIC_rm
         self.world.remove_component(local_eid, CombatStats)
         if self.world.get_component(local_eid, _AIC_rm) is not None:
             self.world.remove_component(local_eid, _AIC_rm)
@@ -706,7 +706,7 @@ class RemoteEntityHandlers:
         # Inicializa RemoteEntityMeta — substitui _mob_hp, _mob_last_pos, _remote_mobs_reverse
         hp_max = data.get("hp_max", 100)
         hp     = data.get("hp",     hp_max)
-        from components import RemoteEntityMeta as _REM, Position as _PosLp
+        from engine.components import RemoteEntityMeta as _REM, Position as _PosLp
         _pos_lp = self.world.get_component(local_eid, _PosLp)
         _meta = _REM(
             server_eid = server_eid,
@@ -717,13 +717,13 @@ class RemoteEntityHandlers:
         )
         self.world.add_component(local_eid, _meta)
         self._remote_mobs[server_eid] = local_eid
-        from aoi_debug import AOI_DBG
+        from debug.aoi_debug import AOI_DBG
         AOI_DBG.log("SPAWN_OK", server_eid=server_eid, local_eid=local_eid,
                     tx=data.get("tx"), ty=data.get("ty"),
                     race=data.get("race"), entity_class=data.get("entity_class"))
 
         # Inicializa server_tile com o spawn tile (tile autoritativo do servidor)
-        from components import TileMovement as _TMInit
+        from engine.components import TileMovement as _TMInit
         _tm_init = self.world.get_component(local_eid, _TMInit)
         if _tm_init:
             _tm_init.server_tile_x = data.get("tx", 0)
@@ -734,8 +734,8 @@ class RemoteEntityHandlers:
         mtx = data.get("moving_to_tx")
         mty = data.get("moving_to_ty")
         if mtx is not None and mty is not None:
-            from components import TileMovement as _TMSpawn, Position as _PosSpawn
-            from utils import start_tile_movement as _stm
+            from engine.components import TileMovement as _TMSpawn, Position as _PosSpawn
+            from engine.utils import start_tile_movement as _stm
             _tm_sp  = self.world.get_component(local_eid, _TMSpawn)
             _pos_sp = self.world.get_component(local_eid, _PosSpawn)
             if _tm_sp and _pos_sp:
@@ -748,7 +748,7 @@ class RemoteEntityHandlers:
         Reutiliza o ProjectileSystem local (já em self.systems) para mover e remover.
         target_id = self.player_entity se o alvo for o player local.
         """
-        from components import Position as _PP, Projectile as _ProjC
+        from engine.components import Position as _PP, Projectile as _ProjC
         # Posição inicial enviada pelo servidor (pixel)
         px = float(data.get("x", 0))
         py = float(data.get("y", 0))
@@ -804,8 +804,8 @@ class RemoteEntityHandlers:
         Isso PREEMPTA qualquer animação/fila em andamento — o deslocamento forçado
         tem prioridade sobre o que o mob estava fazendo.
         """
-        from components import TileMovement, Position
-        from utils import start_tile_movement
+        from engine.components import TileMovement, Position
+        from engine.utils import start_tile_movement
         local_eid = self._remote_mobs.get(server_eid)
         if local_eid is None:
             return
@@ -820,7 +820,7 @@ class RemoteEntityHandlers:
         tm.server_tile_x = new_tx
         tm.server_tile_y = new_ty
         # Mantém last_x/y no componente para leituras ECS enquanto mob vive
-        from components import RemoteEntityMeta as _REM_mv
+        from engine.components import RemoteEntityMeta as _REM_mv
         _meta_mv = self.world.get_component(local_eid, _REM_mv)
         if _meta_mv:
             _meta_mv.last_x = new_tx * TILE_SIZE + TILE_SIZE // 2
@@ -868,7 +868,7 @@ class RemoteEntityHandlers:
         paredes no caminho do LOS, causando PlayerInputSystem limpar o target
         selecionado a cada frame (mob OU player remoto em PvP).
         """
-        from components import Visible
+        from engine.components import Visible
         for local_eid in self._remote_mobs.values():
             if self.world.get_component(local_eid, Visible) is None:
                 self.world.add_component(local_eid, Visible())
@@ -886,7 +886,7 @@ class RemoteEntityHandlers:
         """Remove entidades de mob cujo despawn foi adiado até a animação de movimento concluir."""
         if not self._pending_mob_despawn:
             return
-        from components import TileMovement as _TM_pd
+        from engine.components import TileMovement as _TM_pd
         done = []
         for local_eid, info in self._pending_mob_despawn.items():
             info["timer"] += dt
@@ -908,20 +908,20 @@ class RemoteEntityHandlers:
         local_eid = self._remote_mobs.get(server_eid)
         if local_eid is None:
             return None
-        from components import RemoteEntityMeta as _REM
+        from engine.components import RemoteEntityMeta as _REM
         return self.world.get_component(local_eid, _REM)
 
     def _meta_from_local(self, local_eid: int):
         """Retorna RemoteEntityMeta do mob remoto pelo local_eid, ou None."""
-        from components import RemoteEntityMeta as _REM
+        from engine.components import RemoteEntityMeta as _REM
         return self.world.get_component(local_eid, _REM)
 
     # ─────────────────────────────────────────────────────────────────────────
 
     def _process_mob_move_queues(self) -> None:
         """Processa fila de movimentos de mobs — chamado a cada frame."""
-        from components import TileMovement, Position
-        from utils import start_tile_movement
+        from engine.components import TileMovement, Position
+        from engine.utils import start_tile_movement
         for server_eid, queue in list(self._mob_move_queues.items()):
             if not queue:
                 del self._mob_move_queues[server_eid]
@@ -988,10 +988,10 @@ class RemoteEntityHandlers:
         """Cria entidade ECS real para jogador remoto. TileMovementSystem anima."""
         if server_eid in self._remote_players:
             return
-        from components import (Position, TileMovement, Renderable,
+        from engine.components import (Position, TileMovement, Renderable,
                                  Visible, RemoteControlled)
-        from utils import start_tile_movement
-        from tileset import TILE_SIZE as _TS
+        from engine.utils import start_tile_movement
+        from engine.tileset import TILE_SIZE as _TS
 
         tx = data.get("tx", 0)
         ty = data.get("ty", 0)
@@ -1008,7 +1008,7 @@ class RemoteEntityHandlers:
 
         local_eid = self.world.create_entity()
         self.world.add_component(local_eid, Position(x=px, y=py, prev_x=px, prev_y=py))
-        from entity_factory import PLAYER_SPEED as _PS_remote
+        from engine.entity_factory import PLAYER_SPEED as _PS_remote
         self.world.add_component(local_eid, TileMovement(
             current_tile_x=tx, current_tile_y=ty,
             target_tile_x=tx,  target_tile_y=ty,
@@ -1029,7 +1029,7 @@ class RemoteEntityHandlers:
 
         # Reacquire alvo PvP: se estávamos perseguindo este player antes de ele morrer
         if server_eid == self._pvp_respawn_target:
-            from components import CombatState as _CStRe
+            from engine.components import CombatState as _CStRe
             _cs_re = self.world.get_component(self.player_entity, _CStRe)
             if _cs_re and _cs_re.is_pursuing:
                 _cs_re.target_entity_id = local_eid
@@ -1048,9 +1048,9 @@ class RemoteEntityHandlers:
         teleport: posição final é instantânea (ex: respawn pós-morte) — não
         anima a caminhada entre from_tx/from_ty e new_tx/new_ty.
         """
-        from components import TileMovement, Position
-        from utils import start_tile_movement
-        from tileset import TILE_SIZE as _TS_rm
+        from engine.components import TileMovement, Position
+        from engine.utils import start_tile_movement
+        from engine.tileset import TILE_SIZE as _TS_rm
         local_eid = self._remote_players.get(eid)
         if local_eid is None:
             return
@@ -1121,10 +1121,10 @@ class RemoteEntityHandlers:
 
     def _draw_mob_hp_bars(self, cam_x: float, cam_y: float) -> None:
         """Desenha barras de HP dos mobs remotos com dados autoritativos do servidor."""
-        from components import Position, FogOfWar as _FogComp, RemoteEntityMeta as _REM_hb
+        from engine.components import Position, FogOfWar as _FogComp, RemoteEntityMeta as _REM_hb
         if not self._remote_mobs:
             return
-        from tileset import TILE_SIZE as _TS
+        from engine.tileset import TILE_SIZE as _TS
         W = _TS - 4
         zoom_surf = self._zoom_surf
         _fog_vis = None
@@ -1153,11 +1153,11 @@ class RemoteEntityHandlers:
                 pygame.draw.rect(zoom_surf, (0, 200, 60),  (bar_x, bar_y, int(W * ratio), 4))
 
                 # Status effect icons acima da barra de HP
-                from components import StatusEffects as _SfxDraw
+                from engine.components import StatusEffects as _SfxDraw
                 _sfx = self.world.get_component(local_eid, _SfxDraw)
                 _active_effects = list(_sfx.effects.values()) if _sfx else []
                 if _active_effects:
-                    from systems import _draw_effect_icons as _dei
+                    from ui.systems import _draw_effect_icons as _dei
                     if not hasattr(self, '_mob_eff_font'):
                         import pygame as _pg
                         self._mob_eff_font = _pg.font.Font(None, 18)
@@ -1171,7 +1171,7 @@ class RemoteEntityHandlers:
         """
         if not self._remote_corpses:
             return
-        from tileset import TILE_SIZE as _TS
+        from engine.tileset import TILE_SIZE as _TS
         surf = self._zoom_surf
         for corpse_id, (tx, ty) in self._remote_corpses.items():
             # Centro do tile em pixels (world-space → zoom-surface)
@@ -1180,7 +1180,7 @@ class RemoteEntityHandlers:
             loot_data = self._available_loot.get(corpse_id)
             if loot_data is not None:
                 # Lê estado real do Corpse ECS local (fonte da verdade após LOOT_AVAILABLE)
-                from components import Corpse as _Corpse
+                from engine.components import Corpse as _Corpse
                 local_eid  = loot_data.get("local_eid")
                 corpse_comp = self.world.get_component(local_eid, _Corpse) if local_eid else None
                 if corpse_comp:
@@ -1208,7 +1208,7 @@ class RemoteEntityHandlers:
         if local_eid is not None:
             # Se o player local estava perseguindo esta entidade, guarda o server_eid
             # para reacquirir o alvo quando o player remoto respawnar.
-            from components import CombatState as _CStRm
+            from engine.components import CombatState as _CStRm
             _cs_rm = self.world.get_component(self.player_entity, _CStRm)
             if _cs_rm and _cs_rm.target_entity_id == local_eid and _cs_rm.is_pursuing:
                 self._pvp_respawn_target = server_eid
@@ -1228,8 +1228,8 @@ class RemoteEntityHandlers:
         """
         if not self._remote_players:
             return
-        from components import Position, RemoteControlled
-        from tileset import TILE_SIZE as _TS
+        from engine.components import Position, RemoteControlled
+        from engine.tileset import TILE_SIZE as _TS
         W = H = _TS - 4
         zoom_surf = self._zoom_surf
 

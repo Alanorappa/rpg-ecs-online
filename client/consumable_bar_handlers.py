@@ -1,4 +1,4 @@
-﻿"""
+"""
 consumable_bar_handlers.py — Mixin com o desenho da barra de
 consumíveis: slots, ícones, cooldown/GCD compartilhado com a hotbar
 de skills, contagem de stack, atalhos de teclado e drag-and-drop com
@@ -10,9 +10,9 @@ referenciados aqui.
 """
 import pygame
 
-from components import PlayerSkills
-from icon_manager import ICONS
-from ui_helpers import draw_stack_count, fill_surf
+from engine.components import PlayerSkills
+from ui.icon_manager import ICONS
+from ui.ui_helpers import draw_stack_count, fill_surf
 
 
 class ConsumableBarHandlers:
@@ -22,7 +22,7 @@ class ConsumableBarHandlers:
     # ------------------------------------------------------------------
 
     def _draw_consumable_bar(self) -> None:
-        from components import ConsumableBar as _CB, Inventory as _Inv
+        from engine.components import ConsumableBar as _CB, Inventory as _Inv
         cbar = self.world.get_component(self.player_entity, _CB)
         inv  = self.world.get_component(self.player_entity, _Inv)
         if not cbar:

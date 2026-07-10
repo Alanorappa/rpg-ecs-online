@@ -21,9 +21,9 @@ class SkillProcessorMixin:
 
     def _process_skill_requests(self) -> None:
         """Processa todas as skills enfileiradas para este tick."""
-        from components import CombatState, CombatStats, TileMovement, GhostState
-        from skill_config import SKILL_CATALOG
-        from components import PlayerSkills as _PS
+        from engine.components import CombatState, CombatStats, TileMovement, GhostState
+        from content.skill_config import SKILL_CATALOG
+        from engine.components import PlayerSkills as _PS
         requests = list(self._pending_skill_requests)
         self._pending_skill_requests.clear()
 
@@ -49,7 +49,7 @@ class SkillProcessorMixin:
             _cs_skp = self.world.get_component(player_eid, CombatState)
             if _cs_skp is not None and not _cs_skp.can_act():
                 continue
-            from utils import is_action_locked as _is_action_locked_skp
+            from engine.utils import is_action_locked as _is_action_locked_skp
             if _is_action_locked_skp(self.world, player_eid):
                 continue
 
@@ -73,7 +73,7 @@ class SkillProcessorMixin:
             # Classe + talento (TalentTree autoritativo) + aprendizado
             # (learned_skill_ids). Sem isso, qualquer sid do catálogo era
             # executado — o único gate real era o custo de recurso no handler.
-            from world_systems import is_skill_authorized as _is_auth
+            from engine.world_systems import is_skill_authorized as _is_auth
             _auth_ok, _auth_reason = _is_auth(self.world, player_eid, sid)
             if not _auth_ok:
                 print(f"[Skill] REJEITADO (autorizacao: {_auth_reason}) "
@@ -135,7 +135,7 @@ class SkillProcessorMixin:
             _player_hp_before = combat_stats.current_hp
 
             # Snapshot de procs e mana antes do handler
-            from components import CharacterStats as _CSsnap
+            from engine.components import CharacterStats as _CSsnap
             _char_snap        = self.world.get_component(player_eid, _CSsnap)
             _free_exec_before = getattr(_char_snap, "free_executar_charges", 0) if _char_snap else 0
             _mana_before_handler = getattr(_char_snap, "mana", 0) if _char_snap else 0
@@ -165,7 +165,7 @@ class SkillProcessorMixin:
             # em pixels usaria posição errada mesmo com tile correto.
             _mob_tile_snapshots: dict[int, tuple] = {}    # eid → (tile_x, tile_y, pos_x, pos_y)
             _player_tile_snap   = None                    # (tile_x, tile_y, pos_x, pos_y)
-            from components import Position as _PosSnap, TileMovement as _TM
+            from engine.components import Position as _PosSnap, TileMovement as _TM
             if tid != -1 and tid in self._mob_eids:
                 _mob_tm  = self.world.get_component(tid, _TM)
                 _mob_pos = self.world.get_component(tid, _PosSnap)
@@ -179,7 +179,7 @@ class SkillProcessorMixin:
                         # Player snapped para target_tile — usa o mesmo como base.
                         _p_ref_x = tile_move.target_tile_x if tile_move.is_moving else tile_move.current_tile_x
                         _p_ref_y = tile_move.target_tile_y if tile_move.is_moving else tile_move.current_tile_y
-                        from utils import chebyshev as _cheb_snap
+                        from engine.utils import chebyshev as _cheb_snap
                         _d_cur = _cheb_snap(_p_ref_x, _p_ref_y,
                                             _mob_tm.current_tile_x, _mob_tm.current_tile_y)
                         _d_tgt = _cheb_snap(_p_ref_x, _p_ref_y,
@@ -229,7 +229,7 @@ class SkillProcessorMixin:
                     _lag_ms = max(0.0, min(float(_lag_ms), float(LAG_COMP_WINDOW_MS)))
                     _ticks_ago = int(_lag_ms / (1000.0 / TICK_RATE))
                     _hist_snap = self.get_snapshot_at(self.tick_count - _ticks_ago)
-                    from components import TileMovement as _TM_lc
+                    from engine.components import TileMovement as _TM_lc
                     for _lc_eid, (_lc_tx, _lc_ty) in _hist_snap.items():
                         _lc_tm = self.world.get_component(_lc_eid, _TM_lc)
                         if _lc_tm:
@@ -243,7 +243,7 @@ class SkillProcessorMixin:
             _is_offensive = getattr(skill_obj, "offensive", True)
             _has_cast     = getattr(skill_obj, "cast_time", 0.0) > 0
             if _is_offensive and combat_state:
-                from stat_fns import enter_combat as _ec2
+                from engine.stat_fns import enter_combat as _ec2
                 _ec2(combat_state)
                 if not _has_cast:
                     combat_state.is_pursuing = True
@@ -265,7 +265,7 @@ class SkillProcessorMixin:
             # ficava com o valor de um ataque anterior (ex: "miss" do auto-attack)
             # e o bloco abaixo ("elif _skill_outcome in miss/dodge/...") gerava um
             # SKILL_RESULT falso de "Errou!" no cast_started, antes da skill resolver.
-            import world_systems as _sys_reset
+            import engine.world_systems as _sys_reset
             _combat_svc_reset = getattr(_sys_reset, "_svc", {}).get("combat")
             if _combat_svc_reset:
                 _combat_svc_reset.last_outcome = "hit"
@@ -349,8 +349,8 @@ class SkillProcessorMixin:
                     continue
 
             # Coleta dano causado + feedback de esquiva/miss para o alvo
-            import components as _comp
-            import world_systems as _sys
+            import engine.components as _comp
+            import engine.world_systems as _sys
             _combat_svc = getattr(_sys, "_svc", {}).get("combat")
             _skill_outcome = getattr(_combat_svc, "last_outcome", "hit")
 
@@ -392,8 +392,8 @@ class SkillProcessorMixin:
                     results_targets.append(_make_result("hit"))
 
             # PvP: sincroniza HP + efeitos + rastreia dano para evitar FLT duplo via mob_delta.
-            import components as _comp_pvp
-            from components import CharacterStats as _CSvic
+            import engine.components as _comp_pvp
+            from engine.components import CharacterStats as _CSvic
             for _pvp_r in results_targets:
                 _pvp_eid = _pvp_r["eid"]
                 if _pvp_eid in self._player_eids.values():
@@ -471,14 +471,14 @@ class SkillProcessorMixin:
                     # executar etc.) concluem aqui; skills com cast_time disparam na
                     # completion (spell_completion_processor.py) pra evitar duplicar.
                     # Server-autoritativo — ver quest_logic.py/PROBLEMAS_ARQUITETURA.md.
-                    from quest_events import fire as _qfire_uskill
-                    from components import TrainingDummy as _TDsk
+                    from engine.quest_events import fire as _qfire_uskill
+                    from engine.components import TrainingDummy as _TDsk
                     _on_dummy_sk = (tid != -1 and self.world.get_component(tid, _TDsk) is not None)
                     _qfire_uskill("use_skill", player_eid=player_eid, skill_id=sid,
                                   on_dummy=_on_dummy_sk)
                 # Procs que precisam ser sincronizados para o cliente
                 # Só inclui se o proc ACABOU de ser gerado neste cast (não carga pré-existente).
-                from components import CharacterStats as _CSproc
+                from engine.components import CharacterStats as _CSproc
                 _char_proc = self.world.get_component(player_eid, _CSproc)
                 _free_exec_after = getattr(_char_proc, "free_executar_charges", 0) if _char_proc else 0
                 if _free_exec_after > _free_exec_before:
@@ -509,7 +509,7 @@ class SkillProcessorMixin:
                     })
 
             # Sincroniza rage/mana/hp do player após a skill
-            from components import CharacterStats as _CShr
+            from engine.components import CharacterStats as _CShr
             _char_after = self.world.get_component(player_eid, _CShr)
             _cs_after   = self.world.get_component(player_eid, CombatStats)
             if _char_after:

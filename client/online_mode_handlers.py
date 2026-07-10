@@ -1,4 +1,4 @@
-﻿"""
+"""
 online_mode_handlers.py — Mixin com o ciclo de vida da conexão online:
 abre/mantém a conexão com o servidor, processa login, drena mensagens
 recebidas (_process_network), resolve dano diferido de Bola de Fogo
@@ -10,7 +10,7 @@ self.player_entity, self.screen, self.font_xs e os demais atributos
 referenciados aqui.
 """
 import pygame
-from ui_helpers import fill_surf
+from ui.ui_helpers import fill_surf
 
 
 class OnlineModeHandlers:
@@ -37,7 +37,7 @@ class OnlineModeHandlers:
     def _do_login(self) -> None:
         if self._net and self._net.connected:
             # Lê stats reais do personagem para o servidor usar (evita fallbacks)
-            from components import CombatStats
+            from engine.components import CombatStats
             cs  = self.world.get_component(self.player_entity, CombatStats)
             ap      = float(cs.attack_power) if cs else 0.0
             max_hp  = int(cs.max_hp)         if cs else 0
@@ -65,7 +65,7 @@ class OnlineModeHandlers:
         Fallback após 200ms: exibe imediatamente via _apply_combat_result.
         """
         import time as _t_pend
-        from components import PlayerProjectile as _PPpend, Position as _PPpendPos
+        from engine.components import PlayerProjectile as _PPpend, Position as _PPpendPos
         now = _t_pend.time()
         remaining: list[dict] = []
         for entry in self._bdf_pending:
@@ -104,7 +104,7 @@ class OnlineModeHandlers:
         """
         if not self._net or not self._net.connected or self._my_eid == -1:
             return
-        from components import TileMovement
+        from engine.components import TileMovement
         tm = self.world.get_component(self.player_entity, TileMovement)
         if not tm:
             return
@@ -151,7 +151,7 @@ class OnlineModeHandlers:
         self.screen.blit(surf, (x, y))
 
         # Posição local (debug)
-        from components import TileMovement
+        from engine.components import TileMovement
         tm = self.world.get_component(self.player_entity, TileMovement)
         if tm:
             pos_txt = f"tile ({tm.current_tile_x}, {tm.current_tile_y})"

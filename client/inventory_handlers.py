@@ -1,4 +1,4 @@
-﻿"""
+"""
 inventory_handlers.py — Mixin com o painel de equipamentos/inventário
 (tecla I): equipar/desequipar itens, clique em slots, uso de consumíveis
 e desenho do painel. Separado de game.py para manter GameEngine conciso.
@@ -10,13 +10,13 @@ classe — eram as únicas usuárias quando ainda viviam em GameEngine.
 """
 import pygame
 
-from components import CharacterStats, CombatStats, Equipment, Inventory, Position, Wallet
-from combat_log import LOG
-from icon_manager import ICONS
-from sound_manager import SOUNDS
-from stat_fns import add_modifier, learn_recipe, remove_modifier
-from ui_helpers import draw_stack_count, item_tooltip_lines, fill_surf
-from ui_sizes import UI
+from engine.components import CharacterStats, CombatStats, Equipment, Inventory, Position, Wallet
+from ui.combat_log import LOG
+from ui.icon_manager import ICONS
+from ui.sound_manager import SOUNDS
+from engine.stat_fns import add_modifier, learn_recipe, remove_modifier
+from ui.ui_helpers import draw_stack_count, item_tooltip_lines, fill_surf
+from ui.ui_sizes import UI
 
 
 class InventoryHandlers:
@@ -68,7 +68,7 @@ class InventoryHandlers:
         # imediato; servidor valida de novo em update_player_equipment
         # (autoritativo, fonte única de verdade — este check aqui é só UX).
         if getattr(item, "armor_class", "") and item.item_type == "armor":
-            from stats_system import CLASS_ARMOR_ALLOWED
+            from engine.stats_system import CLASS_ARMOR_ALLOWED
             allowed = CLASS_ARMOR_ALLOWED.get(char.class_id if char else "", frozenset())
             if item.armor_class not in allowed:
                 _names = {"placa": "Placa", "couro": "Couro", "tecido": "Tecido"}
@@ -78,7 +78,7 @@ class InventoryHandlers:
         # Restrição de arma/escudo/aljava por classe — mesmo racional do
         # armor_class acima (feedback imediato; servidor valida de novo).
         if item.item_type in ("weapon", "shield", "quiver"):
-            from stats_system import is_weapon_allowed_for_class
+            from engine.stats_system import is_weapon_allowed_for_class
             if not is_weapon_allowed_for_class(item, char.class_id if char else ""):
                 LOG.add(f"Sua classe não pode usar {item.name}.", (255, 100, 80))
                 return
@@ -196,9 +196,9 @@ class InventoryHandlers:
 
     def _use_consumable(self, item, idx: int, inv) -> None:
         """Usa um item consumível do inventário."""
-        from components import CombatStats, CombatState, ActiveRegen, ConsumableBar as _CB
-        from combat_log import LOG
-        from floating_text import FLT
+        from engine.components import CombatStats, CombatState, ActiveRegen, ConsumableBar as _CB
+        from ui.combat_log import LOG
+        from ui.floating_text import FLT
 
         # Modo online: delega para ConsumableSystem (que notifica o servidor)
         if getattr(self, "_net", None) and self._consumable_system:
@@ -218,12 +218,12 @@ class InventoryHandlers:
 
         # Receita: aprende e remove da bag imediatamente
         if "learn_recipe" in c:
-            from components import LearnedRecipes
+            from engine.components import LearnedRecipes
             lr = self.world.get_component(self.player_entity, LearnedRecipes)
             if lr:
                 recipe_id = c["learn_recipe"]
                 if learn_recipe(lr, recipe_id):
-                    from crafting_data import RECIPES
+                    from content.crafting_data import RECIPES
                     rname = RECIPES.get(recipe_id, {}).get("name", recipe_id)
                     LOG.add(f"Receita aprendida: {rname}!", (220, 180, 50))
                     SOUNDS.play_ui("levelup")
@@ -239,7 +239,7 @@ class InventoryHandlers:
             LOG.add("Não pode usar em combate!", (220, 100, 60))
             return
 
-        from components import CharacterStats as _CHScons
+        from engine.components import CharacterStats as _CHScons
         _char_cons = self.world.get_component(self.player_entity, _CHScons)
 
         # Cura instantânea de HP
@@ -277,7 +277,7 @@ class InventoryHandlers:
             LOG.add(f"Usou {item.name}: recupera {total} HP ao longo do tempo", (80, 220, 120))
 
         # HoT de mana
-        from components import ActiveManaRegen as _AMRcons
+        from engine.components import ActiveManaRegen as _AMRcons
         if ticks and c.get("mana_per_tick", 0) and _char_cons and _char_cons.max_mana > 0:
             try:
                 self.world.remove_component(self.player_entity, _AMRcons)

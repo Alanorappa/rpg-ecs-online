@@ -51,13 +51,13 @@ class _Stats:
 class TestApplyArmorReduction(unittest.TestCase):
 
     def test_zero_armor_no_reduction(self):
-        from damage_calculator import apply_armor_reduction
+        from engine.damage_calculator import apply_armor_reduction
         atk = _Stats(armor_penetration=0.0)
         tgt = _Stats(armor=0.0)
         self.assertAlmostEqual(apply_armor_reduction(100.0, atk, tgt, 'hit'), 100.0)
 
     def test_armor_reduces_damage(self):
-        from damage_calculator import apply_armor_reduction, ARMOR_REDUCTION_PER_POINT
+        from engine.damage_calculator import apply_armor_reduction, ARMOR_REDUCTION_PER_POINT
         atk = _Stats(armor_penetration=0.0)
         tgt = _Stats(armor=500.0)
         dmg = apply_armor_reduction(100.0, atk, tgt, 'hit')
@@ -65,13 +65,13 @@ class TestApplyArmorReduction(unittest.TestCase):
         self.assertAlmostEqual(dmg, expected, places=5)
 
     def test_crit_ignores_armor(self):
-        from damage_calculator import apply_armor_reduction
+        from engine.damage_calculator import apply_armor_reduction
         atk = _Stats(armor_penetration=0.0)
         tgt = _Stats(armor=9999.0)
         self.assertAlmostEqual(apply_armor_reduction(100.0, atk, tgt, 'crit'), 100.0)
 
     def test_armor_pen_reduces_effective_armor(self):
-        from damage_calculator import apply_armor_reduction, ARMOR_REDUCTION_PER_POINT
+        from engine.damage_calculator import apply_armor_reduction, ARMOR_REDUCTION_PER_POINT
         atk = _Stats(armor_penetration=200.0)
         tgt = _Stats(armor=200.0)
         # pen == armor → eff_armor = 0 → nenhuma redução
@@ -79,7 +79,7 @@ class TestApplyArmorReduction(unittest.TestCase):
         self.assertAlmostEqual(dmg, 100.0, places=5)
 
     def test_armor_reduction_cap(self):
-        from damage_calculator import apply_armor_reduction, ARMOR_REDUCTION_CAP
+        from engine.damage_calculator import apply_armor_reduction, ARMOR_REDUCTION_CAP
         atk = _Stats(armor_penetration=0.0)
         tgt = _Stats(armor=99999.0)  # enorme armor → cap em 99%
         dmg = apply_armor_reduction(100.0, atk, tgt, 'hit')
@@ -90,7 +90,7 @@ class TestCalculateBaseDamage(unittest.TestCase):
     """Usa physical_fixed para evitar aleatoriedade."""
 
     def test_physical_fixed_multiplier(self):
-        from damage_calculator import calculate_base_damage
+        from engine.damage_calculator import calculate_base_damage
         atk = _Stats()
         dmg = calculate_base_damage(atk, 'physical_fixed', None,
                                     base_ability_damage=100.0,
@@ -98,14 +98,14 @@ class TestCalculateBaseDamage(unittest.TestCase):
         self.assertAlmostEqual(dmg, 150.0)
 
     def test_physical_fixed_crit_doubles(self):
-        from damage_calculator import calculate_base_damage, CRITICAL_DAMAGE_MULTIPLIER
+        from engine.damage_calculator import calculate_base_damage, CRITICAL_DAMAGE_MULTIPLIER
         atk = _Stats()
         dmg = calculate_base_damage(atk, 'physical_fixed', None,
                                     base_ability_damage=100.0, outcome='crit')
         self.assertAlmostEqual(dmg, 100.0 * CRITICAL_DAMAGE_MULTIPLIER)
 
     def test_block_reduction_applied(self):
-        from damage_calculator import calculate_base_damage
+        from engine.damage_calculator import calculate_base_damage
         atk = _Stats()
         dmg = calculate_base_damage(atk, 'physical_fixed', None,
                                     base_ability_damage=100.0,
@@ -113,14 +113,14 @@ class TestCalculateBaseDamage(unittest.TestCase):
         self.assertAlmostEqual(dmg, 70.0)
 
     def test_unknown_damage_type_returns_zero(self):
-        from damage_calculator import calculate_base_damage
+        from engine.damage_calculator import calculate_base_damage
         atk = _Stats()
         dmg = calculate_base_damage(atk, 'unknown', None,
                                     base_ability_damage=100.0)
         self.assertEqual(dmg, 0.0)
 
     def test_magical_adds_spell_power(self):
-        from damage_calculator import calculate_base_damage
+        from engine.damage_calculator import calculate_base_damage
         atk = _Stats(spell_power=50, base_magical_damage=10)
         dmg = calculate_base_damage(atk, 'magical', None, outcome='hit')
         self.assertAlmostEqual(dmg, 60.0)
@@ -131,7 +131,7 @@ class TestResolveAttackOutcome(unittest.TestCase):
 
     def test_no_avoidance_returns_hit_or_crit(self):
         import random
-        from damage_calculator import resolve_attack_outcome
+        from engine.damage_calculator import resolve_attack_outcome
         atk = _Stats(acerto=100.0, crit_rating=0.0)
         tgt = _Stats(dodge_rating=0.0, parry_rating=0.0, block_rating=0.0)
         random.seed(42)
@@ -141,7 +141,7 @@ class TestResolveAttackOutcome(unittest.TestCase):
 
     def test_100pct_crit_always_crits(self):
         import random
-        from damage_calculator import resolve_attack_outcome
+        from engine.damage_calculator import resolve_attack_outcome
         atk = _Stats(acerto=100.0, crit_rating=1.0)
         tgt = _Stats(dodge_rating=0.0, parry_rating=0.0, block_rating=0.0)
         random.seed(0)
@@ -151,7 +151,7 @@ class TestResolveAttackOutcome(unittest.TestCase):
 
     def test_ability_cannot_miss(self):
         import random
-        from damage_calculator import resolve_attack_outcome
+        from engine.damage_calculator import resolve_attack_outcome
         atk = _Stats(acerto=0.0, hit_rating=0.0)
         tgt = _Stats(dodge_rating=0.0, parry_rating=0.0, block_rating=0.0)
         random.seed(1)
@@ -161,7 +161,7 @@ class TestResolveAttackOutcome(unittest.TestCase):
 
     def test_magical_no_dodge_parry(self):
         import random
-        from damage_calculator import resolve_attack_outcome
+        from engine.damage_calculator import resolve_attack_outcome
         atk = _Stats(acerto=100.0, crit_rating=0.0)
         tgt = _Stats()
         random.seed(5)
@@ -182,7 +182,7 @@ class TestSkillCooldownServer(unittest.TestCase):
         self.eid = spawn_player(self.ws, "s1", 130, 374, class_id="mago")
 
     def _get_mago_skill(self, eid, sid: str):
-        from components import PlayerSkills
+        from engine.components import PlayerSkills
         ps = self.ws.world.get_component(eid, PlayerSkills)
         if not ps:
             return None
@@ -190,7 +190,7 @@ class TestSkillCooldownServer(unittest.TestCase):
 
     def test_first_cast_accepted(self):
         """Sem cooldown prévio → _skill_results_this_tick recebe failed=False."""
-        from components import CombatState, CombatStats
+        from engine.components import CombatState, CombatStats
         mob = first_mob(self.ws)
         self.assertIsNotNone(mob)
         set_entity_tile(self.ws, mob, 130, 375)
@@ -264,8 +264,8 @@ class TestSkillCooldownServer(unittest.TestCase):
 
     def test_cooldown_registered_after_successful_cast(self):
         """Após cast bem-sucedido, _skill_last_used é atualizado."""
-        from components import CharacterStats, CombatState, CombatStats
-        from skill_config import SKILL_CATALOG
+        from engine.components import CharacterStats, CombatState, CombatStats
+        from content.skill_config import SKILL_CATALOG
 
         sid = "calcinar"
         # Zera cooldown anterior
@@ -317,14 +317,14 @@ class TestPirofagiaServerCone(unittest.TestCase):
         from tests.helpers import authorize_skill
         authorize_skill(self.ws, self.eid, "pirofagia")
         # Garante mana suficiente
-        from components import CharacterStats
+        from engine.components import CharacterStats
         char = self.ws.world.get_component(self.eid, CharacterStats)
         if char:
             char.mana = 9999
 
     def _place_mob_in_cone(self, player_tx, player_ty, dir_x, dir_y, offset=3):
         """Move um mob para dentro do cone de Pirofagia apontado em (dir_x, dir_y)."""
-        from components import CombatStats
+        from engine.components import CombatStats
         mob = first_mob(self.ws)
         self.assertIsNotNone(mob, "Sem mob para testar Pirofagia")
         # Posição na direção do cone (offset tiles à frente, mesma linha)
@@ -339,7 +339,7 @@ class TestPirofagiaServerCone(unittest.TestCase):
 
     def test_mob_in_cone_takes_damage(self):
         """Mob dentro do cone de Pirofagia recebe dano quando executado server-side."""
-        from components import CombatStats
+        from engine.components import CombatStats
         player_tx, player_ty = 130, 374
         set_entity_tile(self.ws, self.eid, player_tx, player_ty)
 
@@ -360,7 +360,7 @@ class TestPirofagiaServerCone(unittest.TestCase):
 
     def test_mob_behind_player_not_hit(self):
         """Mob atrás do player (fora do cone) não recebe dano."""
-        from components import CombatStats
+        from engine.components import CombatStats
         player_tx, player_ty = 130, 374
         set_entity_tile(self.ws, self.eid, player_tx, player_ty)
 
@@ -401,7 +401,7 @@ class TestPirofagiaServerCone(unittest.TestCase):
 
     def test_pirofagia_without_dir_falls_back_to_client_mode(self):
         """dir_x=dir_y=0 → modo cliente (state machine), não executa cone."""
-        from components import CombatStats
+        from engine.components import CombatStats
         player_tx, player_ty = 130, 374
         set_entity_tile(self.ws, self.eid, player_tx, player_ty)
 

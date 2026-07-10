@@ -17,7 +17,7 @@ self._show_talents, self._show_skills, self._show_inventory, self._show_pause,
 self._pause_submenu, self._sound_drag, self._selected_inv_idx e
 self._close_hotbar_editor (já existe em hotbar_editor_handlers.py).
 """
-from sound_manager import SOUNDS
+from ui.sound_manager import SOUNDS
 
 
 class ModalStackHandlers:
