@@ -56,11 +56,11 @@ def _skill_order_for(class_id: str) -> list:
 
 def _draw_text(surf, text: str, font, color, x: int, y: int, max_w: int = 0):
     """Renderiza texto, truncando com '...' se exceder max_w."""
-    s = font.render(text, True, color)
+    s = font.render(text, False, color)
     if max_w and s.get_width() > max_w:
         while len(text) > 1 and font.size(text + "...")[0] > max_w:
             text = text[:-1]
-        s = font.render(text + "...", True, color)
+        s = font.render(text + "...", False, color)
     surf.blit(s, (x, y))
     return s.get_width()
 
@@ -396,7 +396,7 @@ class TrainerSystem(UIScaleMixin, System):
                 continue
             sx = int(pos.x - cam_x) - rend.width  // 2
             sy = int(pos.y - cam_y) - rend.height // 2
-            label = font.render("T", True, (120, 200, 255))
+            label = font.render("T", False, (120, 200, 255))
             self.world_surf.blit(label, (sx + rend.width // 2 - label.get_width() // 2,
                                      sy - 14))
 
@@ -435,14 +435,14 @@ class TrainerSystem(UIScaleMixin, System):
         pygame.draw.rect(surf, _COL_BORDER, panel_r, 2, border_radius=6)
 
         # Botão fechar
-        close_s = self._font_md.render("[X]", True, _COL_RED)
+        close_s = self._font_md.render("[X]", False, _COL_RED)
         self._close_r = pygame.Rect(x0 + panel_w - self._u(36), y0 + self._u(8), self._u(28), self._u(24))
         surf.blit(close_s, self._close_r.topleft)
 
         # Saudação
         player_name = cs.name if cs else "Aventureiro"
         greeting = f"Olá {player_name}, o que deseja?"
-        title_s = self._font_lg.render(greeting, True, _COL_TITLE)
+        title_s = self._font_lg.render(greeting, False, _COL_TITLE)
         surf.blit(title_s, (x0 + (panel_w - title_s.get_width()) // 2, y0 + self._u(_PAD)))
         pygame.draw.line(surf, _COL_BORDER,
                          (x0 + self._u(4), y0 + self._u(54)), (x0 + panel_w - self._u(4), y0 + self._u(54)))
@@ -460,7 +460,7 @@ class TrainerSystem(UIScaleMixin, System):
             hov = r.collidepoint(mx, my)
             pygame.draw.rect(surf, (40, 35, 20) if hov else _COL_DARK, r, border_radius=4)
             pygame.draw.rect(surf, _COL_BORDER if hov else (60, 50, 25), r, 1, border_radius=4)
-            s = self._font_md.render(label, True, _COL_TITLE if hov else _COL_WHITE)
+            s = self._font_md.render(label, False, _COL_TITLE if hov else _COL_WHITE)
             surf.blit(s, (r.x + (r.w - s.get_width()) // 2, r.y + (r.h - s.get_height()) // 2))
             self._menu_rects[key] = r
             py += BTN_H + GAP
@@ -488,20 +488,20 @@ class TrainerSystem(UIScaleMixin, System):
         pygame.draw.rect(surf, _COL_PANEL, title_bar)
         pygame.draw.line(surf, _COL_BORDER, (x0, y0 + self._u(40)), (x0 + panel_w, y0 + self._u(40)))
         title_s = self._font_lg.render(
-            f"{self._tr_name}  —  Treinamento", True, _COL_TITLE)
+            f"{self._tr_name}  —  Treinamento", False, _COL_TITLE)
         surf.blit(title_s, (x0 + pad, y0 + self._u(10)))
 
         # Botão fechar
-        close_s = self._font_md.render("[X]", True, _COL_RED)
+        close_s = self._font_md.render("[X]", False, _COL_RED)
         self._close_r = pygame.Rect(x0 + panel_w - self._u(36), y0 + self._u(8), self._u(28), self._u(24))
         surf.blit(close_s, self._close_r.topleft)
 
         # Cabeçalho de colunas
         hy = y0 + self._u(46)
         pygame.draw.line(surf, _COL_BORDER, (x0, hy + self._u(18)), (x0 + panel_w, hy + self._u(18)))
-        surf.blit(self._font_sm.render("Habilidade", True, _COL_GREY),  (x0 + pad + icon_sz + self._u(8), hy))
-        surf.blit(self._font_sm.render("Nível",      True, _COL_GREY),  (x0 + self._u(390), hy))
-        surf.blit(self._font_sm.render("Custo",      True, _COL_GREY),  (x0 + self._u(470), hy))
+        surf.blit(self._font_sm.render("Habilidade", False, _COL_GREY),  (x0 + pad + icon_sz + self._u(8), hy))
+        surf.blit(self._font_sm.render("Nível", False, _COL_GREY),  (x0 + self._u(390), hy))
+        surf.blit(self._font_sm.render("Custo", False, _COL_GREY),  (x0 + self._u(470), hy))
 
         # Lista de skills
         ps    = self._player_skills()
@@ -546,7 +546,7 @@ class TrainerSystem(UIScaleMixin, System):
             else:
                 icon_col = (80, 80, 80) if learned else ((50, 100, 50) if can_learn else (80, 30, 30))
                 pygame.draw.rect(surf, icon_col, icon_r, border_radius=3)
-                init_s = self._font_md.render(name[0].upper(), True,
+                init_s = self._font_md.render(name[0].upper(), False,
                                               _COL_GREY if learned else _COL_WHITE)
                 surf.blit(init_s, (icon_r.centerx - init_s.get_width() // 2,
                                    icon_r.centery - init_s.get_height() // 2))
@@ -555,15 +555,15 @@ class TrainerSystem(UIScaleMixin, System):
             # Nome + descrição
             tx = x0 + pad + icon_sz + self._u(10)
             name_col = _COL_GREY if learned else _COL_WHITE
-            surf.blit(self._font_md.render(name, True, name_col), (tx, ry + self._u(10)))
-            surf.blit(self._font_sm.render(desc, True, _COL_GREY),  (tx, ry + self._u(32)))
+            surf.blit(self._font_md.render(name, False, name_col), (tx, ry + self._u(10)))
+            surf.blit(self._font_sm.render(desc, False, _COL_GREY),  (tx, ry + self._u(32)))
 
             # Nível requerido
             req_col = _COL_GREEN if level >= req else _COL_RED
-            surf.blit(self._font_md.render(f"Nível {req}", True, req_col), (x0 + self._u(385), ry + self._u(22)))
+            surf.blit(self._font_md.render(f"Nível {req}", False, req_col), (x0 + self._u(385), ry + self._u(22)))
 
             # Custo
-            surf.blit(self._font_md.render(f"{cost}g", True, _COL_GOLD), (x0 + self._u(468), ry + self._u(22)))
+            surf.blit(self._font_md.render(f"{cost}g", False, _COL_GOLD), (x0 + self._u(468), ry + self._u(22)))
 
             # Botão Aprender / Aprendido
             btn_w, btn_h = self._u(90), self._u(30)
@@ -572,7 +572,7 @@ class TrainerSystem(UIScaleMixin, System):
 
             if learned:
                 pygame.draw.rect(surf, _COL_BTN_DIS, btn_r, border_radius=4)
-                s = self._font_sm.render("Aprendido", True, _COL_GREY)
+                s = self._font_sm.render("Aprendido", False, _COL_GREY)
                 surf.blit(s, (btn_r.centerx - s.get_width() // 2,
                               btn_r.centery - s.get_height() // 2))
                 self._skill_rects.append((skill_id, None))
@@ -584,7 +584,7 @@ class TrainerSystem(UIScaleMixin, System):
                 pygame.draw.rect(surf, btn_col, btn_r, border_radius=4)
                 pygame.draw.rect(surf, _COL_GREEN if btn_enabled else _COL_BORDER,
                                  btn_r, 1, border_radius=4)
-                s = self._font_sm.render("Aprender", True,
+                s = self._font_sm.render("Aprender", False,
                                          _COL_WHITE if btn_enabled else _COL_GREY)
                 surf.blit(s, (btn_r.centerx - s.get_width() // 2,
                               btn_r.centery - s.get_height() // 2))
@@ -608,9 +608,9 @@ class TrainerSystem(UIScaleMixin, System):
         # Ouro do jogador (footer)
         wallet = self._player_wallet()
         if wallet:
-            gold_s = self._font_md.render(f"Seu ouro: {wallet.gold}g", True, _COL_GOLD)
+            gold_s = self._font_md.render(f"Seu ouro: {wallet.gold}g", False, _COL_GOLD)
             surf.blit(gold_s, (x0 + pad, y0 + panel_h - self._u(26)))
 
         # Nível do jogador (footer direita)
-        lv_s = self._font_md.render(f"Seu nível: {level}", True, _COL_WHITE)
+        lv_s = self._font_md.render(f"Seu nível: {level}", False, _COL_WHITE)
         surf.blit(lv_s, (x0 + panel_w - lv_s.get_width() - pad, y0 + panel_h - self._u(26)))

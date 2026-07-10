@@ -151,7 +151,7 @@ class ConsumableBarHandlers:
                     if _ic:
                         self.screen.blit(_ic, (r.x + 2, r.y + 2))
                     else:
-                        letter = self.font_sm.render(item_name[0].upper(), True, (100, 220, 140))
+                        letter = self.font_sm.render(item_name[0].upper(), False, (100, 220, 140))
                         self.screen.blit(letter, letter.get_rect(center=r.center))
                     draw_stack_count(self.screen, item, r, self.font_xs)
                 else:
@@ -160,10 +160,10 @@ class ConsumableBarHandlers:
                         self.screen.blit(_ic, (r.x + 2, r.y + 2))
                         self.screen.blit(fill_surf((W - 2, H - 2), (0, 0, 0, 160)), (r.x + 2, r.y + 2))
                     else:
-                        letter = self.font_sm.render(item_name[0].upper(), True, (100, 140, 120))
+                        letter = self.font_sm.render(item_name[0].upper(), False, (100, 140, 120))
                         self.screen.blit(letter, letter.get_rect(center=r.center))
                     # "0" no canto
-                    zero_s = self.font_xs.render("0", True, (200, 80, 80))
+                    zero_s = self.font_xs.render("0", False, (200, 80, 80))
                     self.screen.blit(zero_s, (r.right - zero_s.get_width() - 3,
                                               r.bottom - zero_s.get_height() - 1))
 
@@ -175,7 +175,7 @@ class ConsumableBarHandlers:
                 self.screen.blit(fill_surf((W, H), (0, 0, 0, 160)),
                                  (sx, y0), area=pygame.Rect(0, 0, W, ov_h))
                 if j == 0:
-                    cd_s = self.font_xs.render(f"{cbar.global_cooldown:.1f}", True, (160, 210, 170))
+                    cd_s = self.font_xs.render(f"{cbar.global_cooldown:.1f}", False, (160, 210, 170))
                     self.screen.blit(cd_s, cd_s.get_rect(
                         centerx=sx + W // 2, y=y0 + H // 2 - cd_s.get_height() // 2))
 
@@ -191,7 +191,7 @@ class ConsumableBarHandlers:
             # Keybind label
             kb_name = pygame.key.name(cbar.keybinds[i]).upper()
             key_col = (140, 210, 160) if item_name else (50, 80, 60)
-            self.screen.blit(self.font_sm.render(kb_name, True, key_col), (sx + 3, y0 + 2))
+            self.screen.blit(self.font_sm.render(kb_name, False, key_col), (sx + 3, y0 + 2))
 
             # Tooltip (só quando não está em drag)
             _cb_self_drag_active = (_drag_cb.kind == "consumable" and _drag_cb.source == "consumable_bar"
@@ -254,6 +254,6 @@ class ConsumableBarHandlers:
                 self.screen.blit(_cg_ghost, (mx_cb - _CGZ // 2, my_cb - _CGZ // 2))
                 # Hint de remoção durante Shift+drag (igual à hotbar de skills)
                 if _drag_cb.shift:
-                    _cb_hint = self.font_xs.render("Soltar fora → remover", True, (220, 80, 220))
+                    _cb_hint = self.font_xs.render("Soltar fora → remover", False, (220, 80, 220))
                     self.screen.blit(_cb_hint, (mx_cb - _cb_hint.get_width() // 2,
                                                 my_cb - _CGZ // 2 - 14))

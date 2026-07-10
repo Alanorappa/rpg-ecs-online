@@ -29,23 +29,23 @@ class HudHandlers:
         # --- Indicador de zoom (canto superior esquerdo, só quando ≠ 100%) ---
         if self._zoom != 1.0:
             z_pct  = int(round(self._zoom * 100))
-            z_surf = self.font_xs.render(f"zoom {z_pct}%", True, C_YELLOW)
+            z_surf = self.font_xs.render(f"zoom {z_pct}%", False, C_YELLOW)
             self.screen.blit(z_surf, (self._u(10), self._u(10)))
 
         # --- Zona atual + coordenadas (canto superior direito) ---
         import os
         map_name = os.path.splitext(os.path.basename(self._current_map_file))[0].replace("_", " ").title()
-        zone_surf = self.font_sm.render(map_name, True, C_YELLOW)
+        zone_surf = self.font_sm.render(map_name, False, C_YELLOW)
         self.screen.blit(zone_surf, (self.screen.get_width() - zone_surf.get_width() - self._u(10), self._u(10)))
 
         tile_move = self.world.get_component(self.player_entity, TileMovement)
         if tile_move:
             map_file = os.path.basename(self._current_map_file)
             coord_txt = f"Map: {map_file} | Tile: {tile_move.current_tile_x}, {tile_move.current_tile_y}"
-            coord_surf = self.font_sm.render(coord_txt, True, (180, 180, 180))
+            coord_surf = self.font_sm.render(coord_txt, False, (180, 180, 180))
             self.screen.blit(coord_surf, (self.screen.get_width() - coord_surf.get_width() - self._u(10), self._u(28)))
             if self._current_zone:
-                zone_txt  = self.font_sm.render(self._current_zone, True, (160, 200, 160))
+                zone_txt  = self.font_sm.render(self._current_zone, False, (160, 200, 160))
                 self.screen.blit(zone_txt, (self.screen.get_width() - zone_txt.get_width() - self._u(10), self._u(46)))
 
         y = self._u(10)  # cursor vertical
@@ -53,8 +53,7 @@ class HudHandlers:
         # --- Nome do personagem ---
         if char_stats:
             name_surf = self.font_sm.render(
-                f"{char_stats.name}  [{char_stats.class_id.capitalize()}]",
-                True, (210, 185, 255))
+                f"{char_stats.name}  [{char_stats.class_id.capitalize()}]", False, (210, 185, 255))
             self.screen.blit(name_surf, (self._u(10), y))
             y += name_surf.get_height() + self._u(2)
 
@@ -65,7 +64,7 @@ class HudHandlers:
         pygame.draw.rect(self.screen, (80, 0, 0),   (self._u(10), y, bar_w, bar_h))
         pygame.draw.rect(self.screen, C_RED,         (self._u(10), y, int(bar_w * hp_ratio), bar_h))
         hp_surf = self.font_sm.render(
-            f"HP {combat_stats.current_hp}/{combat_stats.max_hp}", True, C_WHITE)
+            f"HP {combat_stats.current_hp}/{combat_stats.max_hp}", False, C_WHITE)
         self.screen.blit(hp_surf, (self._u(14), y))
         y += self._u(18)
 
@@ -76,7 +75,7 @@ class HudHandlers:
                 pygame.draw.rect(self.screen, (0, 20, 80),    (self._u(10), y, bar_w, bar_h))
                 pygame.draw.rect(self.screen, (50, 100, 255), (self._u(10), y, int(bar_w * mana_ratio), bar_h))
                 mana_surf = self.font_sm.render(
-                    f"Mana {char_stats.mana}/{char_stats.max_mana}", True, C_WHITE)
+                    f"Mana {char_stats.mana}/{char_stats.max_mana}", False, C_WHITE)
                 self.screen.blit(mana_surf, (self._u(14), y))
             elif char_stats.class_id == "arqueiro":
                 # Barra de Concentração
@@ -92,8 +91,7 @@ class HudHandlers:
                              getattr(_cs_conc, "concentration_regen_idle",   0.0))
                 _rate_str = f"  (+{_rate:.0f}/s)" if _rate > 0 else ""
                 conc_surf = self.font_sm.render(
-                    f"Conc. {int(char_stats.concentration)}/{char_stats.max_concentration}{_rate_str}",
-                    True, C_WHITE)
+                    f"Conc. {int(char_stats.concentration)}/{char_stats.max_concentration}{_rate_str}", False, C_WHITE)
                 self.screen.blit(conc_surf, (self._u(14), y))
                 y += self._u(18)
                 # Barra de Aljava
@@ -105,26 +103,26 @@ class HudHandlers:
                     pygame.draw.rect(self.screen, (40, 30, 10),  (self._u(10), y, bar_w, bar_h))
                     pygame.draw.rect(self.screen, (200, 160, 60), (self._u(10), y, int(bar_w * _arrow_ratio), bar_h))
                     arrow_surf = self.font_sm.render(
-                        f"Aljava {_quiver.arrow_count}/{_quiver.max_arrows}", True, C_WHITE)
+                        f"Aljava {_quiver.arrow_count}/{_quiver.max_arrows}", False, C_WHITE)
                     self.screen.blit(arrow_surf, (self._u(14), y))
                 else:
-                    no_q_surf = self.font_sm.render("Sem aljava", True, (180, 130, 50))
+                    no_q_surf = self.font_sm.render("Sem aljava", False, (180, 130, 50))
                     self.screen.blit(no_q_surf, (self._u(14), y))
             else:
                 rage_ratio = char_stats.rage / max(1, char_stats.max_rage)
                 pygame.draw.rect(self.screen, (60, 20, 0),   (self._u(10), y, bar_w, bar_h))
                 pygame.draw.rect(self.screen, C_ORANGE,       (self._u(10), y, int(bar_w * rage_ratio), bar_h))
                 rage_surf = self.font_sm.render(
-                    f"Raiva {char_stats.rage}/{char_stats.max_rage}", True, C_WHITE)
+                    f"Raiva {char_stats.rage}/{char_stats.max_rage}", False, C_WHITE)
                 self.screen.blit(rage_surf, (self._u(14), y))
             y += self._u(18)
 
         # --- Ataque CD ---
         if combat_stats.attack_cooldown_timer > 0:
             cd_surf = self.font_sm.render(
-                f"Ataque CD: {combat_stats.attack_cooldown_timer:.1f}s", True, C_YELLOW)
+                f"Ataque CD: {combat_stats.attack_cooldown_timer:.1f}s", False, C_YELLOW)
         else:
-            cd_surf = self.font_sm.render("Ataque: Pronto", True, C_GREEN)
+            cd_surf = self.font_sm.render("Ataque: Pronto", False, C_GREEN)
         self.screen.blit(cd_surf, (self._u(10), y))
         y += self._u(18)
 
@@ -147,11 +145,11 @@ class HudHandlers:
                 pygame.draw.rect(self.screen, (255, 255, 255),
                                  (_ix, y, _ICON, _ICON), 1)
                 # Abreviação do efeito
-                _lbl_surf = self.font_xs.render(_lbl, True, (255, 255, 255))
+                _lbl_surf = self.font_xs.render(_lbl, False, (255, 255, 255))
                 self.screen.blit(_lbl_surf,
                                  (_ix + _ICON // 2 - _lbl_surf.get_width() // 2, y + self._u(1)))
                 # Duração restante
-                _dur_surf = self.font_xs.render(f"{_eff.duration:.0f}s", True, (230, 230, 230))
+                _dur_surf = self.font_xs.render(f"{_eff.duration:.0f}s", False, (230, 230, 230))
                 self.screen.blit(_dur_surf,
                                  (_ix + _ICON // 2 - _dur_surf.get_width() // 2,
                                   y + _ICON - _dur_surf.get_height()))
@@ -179,7 +177,7 @@ class HudHandlers:
                 f"VIT:{s.vitality}(+{p.vitality if p else 0})  "
                 f"DEF:{s.defense}(+{p.defense if p else 0})"
             )
-            attr_surf = self.font_sm.render(attrs, True, C_GRAY)
+            attr_surf = self.font_sm.render(attrs, False, C_GRAY)
             self.screen.blit(attr_surf, (self._u(10), y))
             y += attr_surf.get_height() + self._u(2)
 
@@ -192,7 +190,7 @@ class HudHandlers:
                 f"Aparo:{parry_pct:.1f}%  "
                 f"Esquiva:{dodge_pct:.1f}%"
             )
-            rating_surf = self.font_sm.render(ratings, True, C_GRAY)
+            rating_surf = self.font_sm.render(ratings, False, C_GRAY)
             self.screen.blit(rating_surf, (self._u(10), y))
             y += rating_surf.get_height() + self._u(2)
 
@@ -202,7 +200,7 @@ class HudHandlers:
             # Pequeno círculo dourado + valor
             pygame.draw.circle(self.screen, (210, 175, 30), (self._u(18), y + self._u(7)), self._u(6))
             pygame.draw.circle(self.screen, (255, 220, 60), (self._u(18), y + self._u(7)), self._u(5))
-            gold_surf = self.font_sm.render(f"{wallet.gold}", True, (255, 215, 0))
+            gold_surf = self.font_sm.render(f"{wallet.gold}", False, (255, 215, 0))
             self.screen.blit(gold_surf, (self._u(28), y))
             y += gold_surf.get_height() + self._u(2)
 
@@ -210,7 +208,7 @@ class HudHandlers:
         inv = self.world.get_component(self.player_entity, Inventory)
         if inv:
             inv_surf = self.font_sm.render(
-                f"Mochila: {len(inv.items)}/{inv.max_slots}", True, C_GRAY)
+                f"Mochila: {len(inv.items)}/{inv.max_slots}", False, C_GRAY)
             self.screen.blit(inv_surf, (self._u(10), y))
             y += inv_surf.get_height() + self._u(2)
 
@@ -221,8 +219,7 @@ class HudHandlers:
             blink = int(pygame.time.get_ticks() / 500) % 2 == 0
             color = (180, 120, 255) if blink else (130, 80, 220)
             tal_surf = self.font_md.render(
-                f"+{tt.available_points} TALENTO(S)! Pressione T para alocar",
-                True, color)
+                f"+{tt.available_points} TALENTO(S)! Pressione T para alocar", False, color)
             self.screen.blit(tal_surf, (self._u(10), y))
 
         # --- Barra de cast / canalização (centro inferior da tela) ---
@@ -259,6 +256,6 @@ class HudHandlers:
         pygame.draw.rect(self.screen, bg_col, (bx, by, BAR_W, BAR_H), border_radius=3)
         pygame.draw.rect(self.screen, bar_col, (bx, by, int(BAR_W * ratio), BAR_H), border_radius=3)
         pygame.draw.rect(self.screen, (200, 200, 200), (bx, by, BAR_W, BAR_H), 1, border_radius=3)
-        txt = self.font_sm.render(label, True, (255, 255, 255))
+        txt = self.font_sm.render(label, False, (255, 255, 255))
         self.screen.blit(txt, (bx + BAR_W // 2 - txt.get_width() // 2,
                                by + BAR_H // 2 - txt.get_height() // 2))

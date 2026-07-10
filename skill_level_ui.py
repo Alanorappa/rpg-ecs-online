@@ -100,7 +100,7 @@ class SkillLevelUI(UIScaleMixin):
         self.screen.blit(fill_surf((panel.w, panel.h), C_BG), panel.topleft)
         pygame.draw.rect(self.screen, C_BORDER, panel, 2, border_radius=6)
 
-        title = self.font_lg.render("Skill Level", True, C_TITLE)
+        title = self.font_lg.render("Skill Level", False, C_TITLE)
         self.screen.blit(title, (panel.x + self._u(PAD), panel.y + self._u(8)))
 
         row_y = panel.y + self._u(HEADER_H)
@@ -118,7 +118,7 @@ class SkillLevelUI(UIScaleMixin):
         pygame.draw.rect(self.screen,
                          (180, 60, 60) if close_r.collidepoint(mx, my) else (100, 35, 35),
                          close_r, border_radius=3)
-        xs = self.font_md.render("X", True, (255, 255, 255))
+        xs = self.font_md.render("X", False, (255, 255, 255))
         self.screen.blit(xs, xs.get_rect(center=close_r.center))
 
     def _render_char_level(self, panel: pygame.Rect, row_y: int,
@@ -127,7 +127,7 @@ class SkillLevelUI(UIScaleMixin):
         — removido do HUD permanente por pedido do usuário, mostrado só aqui
         por enquanto (ver client/hud_handlers.py)."""
         x = panel.x + self._u(PAD)
-        name_surf = self.font_md.render(f"Nível {char.level}", True, C_WHITE)
+        name_surf = self.font_md.render(f"Nível {char.level}", False, C_WHITE)
         name_y = row_y + (self._u(CHAR_ROW_H) - self._u(8) - name_surf.get_height()) // 2
         self.screen.blit(name_surf, (x, name_y))
 
@@ -142,8 +142,7 @@ class SkillLevelUI(UIScaleMixin):
                          (bar_rect.x, bar_rect.y, fill_w, bar_rect.h), border_radius=3)
         pygame.draw.rect(self.screen, C_BORDER, bar_rect, 1, border_radius=3)
 
-        xp_surf = self.font_sm.render(f"{char.current_xp}/{char.xp_to_next_level}",
-                                      True, C_BAR_TEXT)
+        xp_surf = self.font_sm.render(f"{char.current_xp}/{char.xp_to_next_level}", False, C_BAR_TEXT)
         self.screen.blit(xp_surf, xp_surf.get_rect(center=bar_rect.center))
 
         sep_y = row_y + self._u(CHAR_ROW_H) - self._u(6)
@@ -161,12 +160,12 @@ class SkillLevelUI(UIScaleMixin):
         bonus = skill_bonus_pct(level)
 
         x = panel.x + self._u(PAD)
-        name_surf = self.font_md.render(label, True, C_WHITE)
+        name_surf = self.font_md.render(label, False, C_WHITE)
         name_y = row_y + (self._u(ROW_H) - name_surf.get_height()) // 2
         self.screen.blit(name_surf, (x, name_y))
 
         lvl_color = C_GOLD if level >= MAX_SKILL_LEVEL else C_WHITE
-        lvl_surf  = self.font_sm.render(f"Lv {level} (+{bonus * 100:.1f}%)", True, lvl_color)
+        lvl_surf  = self.font_sm.render(f"Lv {level} (+{bonus * 100:.1f}%)", False, lvl_color)
         lvl_x = panel.x + self._u(PAD) + self._u(NAME_COL_W)
         lvl_y = row_y + (self._u(ROW_H) - lvl_surf.get_height()) // 2
         self.screen.blit(lvl_surf, (lvl_x, lvl_y))
@@ -188,5 +187,5 @@ class SkillLevelUI(UIScaleMixin):
             pct_text = f"{xp}/{needed}"
         pygame.draw.rect(self.screen, C_BORDER, bar_rect, 1, border_radius=3)
 
-        pct_surf = self.font_sm.render(pct_text, True, C_BAR_TEXT)
+        pct_surf = self.font_sm.render(pct_text, False, C_BAR_TEXT)
         self.screen.blit(pct_surf, pct_surf.get_rect(center=bar_rect.center))

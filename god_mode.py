@@ -330,7 +330,7 @@ class GodModeEditor:
                                  (0, 0, TILE_SIZE, TILE_SIZE), thick)
                 self._screen.blit(surf, (sx, sy))
                 # Label "DEL" acima do tile
-                lbl = self._font_sm.render("DEL", True, (255, 200, 50))
+                lbl = self._font_sm.render("DEL", False, (255, 200, 50))
                 self._screen.blit(lbl, (sx + 2, sy - lbl.get_height() - 1))
 
         # ── Tile sob o cursor — preview do elemento selecionado ───────────────
@@ -384,7 +384,7 @@ class GodModeEditor:
         x0 = panel_x + M
 
         # Título
-        title = self._font_med.render("GOD MODE", True, _C_SEL)
+        title = self._font_med.render("GOD MODE", False, _C_SEL)
         screen.blit(title, (x0, y))
         y += title.get_height() + int(6 * sc)
         pygame.draw.line(screen, _C_BORDER, (panel_x + 4, y), (sw - 4, y))
@@ -399,7 +399,7 @@ class GodModeEditor:
             r = pygame.Rect(x0 + i * tab_w, y, tab_w, tab_h)
             pygame.draw.rect(screen, _C_TAB_ACT if self._tab == i else _C_TAB_IDLE, r)
             pygame.draw.rect(screen, _C_BORDER, r, 1)
-            txt = self._font_sm.render(label, True, _C_TEXT)
+            txt = self._font_sm.render(label, False, _C_TEXT)
             screen.blit(txt, txt.get_rect(center=r.center))
             self._tab_rects.append(r)
         y += tab_h + int(8 * sc)
@@ -456,24 +456,24 @@ class GodModeEditor:
         pygame.draw.line(screen, _C_BORDER, (panel_x + 4, y), (sw - 4, y))
         y += int(8 * sc)
 
-        txt = self._font_sm.render("Selecionado:", True, (160, 160, 170))
+        txt = self._font_sm.render("Selecionado:", False, (160, 160, 170))
         screen.blit(txt, (x0, y))
         y += txt.get_height() + int(4 * sc)
 
         sw_size = int(20 * sc)
         sw_r    = pygame.Rect(x0, y, sw_size, sw_size)
         pygame.draw.rect(screen, self._sel_color, sw_r, border_radius=3)
-        sel_lbl = self._font_sm.render(f"[{self._sel_char}] {self._sel_name}", True, _C_TEXT)
+        sel_lbl = self._font_sm.render(f"[{self._sel_char}] {self._sel_name}", False, _C_TEXT)
         screen.blit(sel_lbl, (x0 + sw_size + int(6 * sc), y + 2))
         y += sw_size + int(8 * sc)
 
         if self._hover_tile:
             hx, hy = self._hover_tile
-            screen.blit(self._font_sm.render(f"Tile: ({hx}, {hy})", True, (150, 150, 160)), (x0, y))
+            screen.blit(self._font_sm.render(f"Tile: ({hx}, {hy})", False, (150, 150, 160)), (x0, y))
         y += self._font_sm.get_height() + int(4 * sc)
 
         if self._unsaved:
-            screen.blit(self._font_sm.render("* alteracoes nao salvas", True, (220, 120, 60)), (x0, y))
+            screen.blit(self._font_sm.render("* alteracoes nao salvas", False, (220, 120, 60)), (x0, y))
         y += self._font_sm.get_height() + int(4 * sc)
 
         pygame.draw.line(screen, _C_BORDER, (panel_x + 4, y), (sw - 4, y))
@@ -491,7 +491,7 @@ class GodModeEditor:
             btn_lbl = "Salvar  (Ctrl+S)"
         pygame.draw.rect(screen, btn_col, save_rect, border_radius=6)
         pygame.draw.rect(screen, _C_BORDER, save_rect, 1, border_radius=6)
-        s_lbl = self._font_med.render(btn_lbl, True, (240, 240, 240))
+        s_lbl = self._font_med.render(btn_lbl, False, (240, 240, 240))
         screen.blit(s_lbl, s_lbl.get_rect(center=save_rect.center))
         self._save_btn_rect = save_rect
         y += save_h + int(8 * sc)
@@ -501,13 +501,13 @@ class GodModeEditor:
         quit_col = (110, 40, 40) if quit_rect.collidepoint(mx_now, my_now) else (70, 28, 28)
         pygame.draw.rect(screen, quit_col, quit_rect, border_radius=6)
         pygame.draw.rect(screen, (140, 60, 60), quit_rect, 1, border_radius=6)
-        q_lbl = self._font_med.render("Sair  (F10 / Esc)", True, (240, 200, 200))
+        q_lbl = self._font_med.render("Sair  (F10 / Esc)", False, (240, 200, 200))
         screen.blit(q_lbl, q_lbl.get_rect(center=quit_rect.center))
         self._quit_btn_rect = quit_rect
         y += save_h + int(12 * sc)
 
         for hint in ("Clique — seleciona tile", "Arrasto — pinta", "Delete — apaga selecionado"):
-            h = self._font_sm.render(hint, True, (100, 100, 110))
+            h = self._font_sm.render(hint, False, (100, 100, 110))
             screen.blit(h, (x0, y))
             y += h.get_height() + int(2 * sc)
 
@@ -535,13 +535,13 @@ class GodModeEditor:
                 from tile_sprite_manager import TILE_SPRITES
                 raw = TILE_SPRITES.get_raw_sprite(tile.sprite_name)
                 if raw:
-                    screen.blit(pygame.transform.smoothscale(raw, (SWATCH - 2, SWATCH - 2)),
+                    screen.blit(pygame.transform.scale(raw, (SWATCH - 2, SWATCH - 2)),
                                 (cx_sw + 1, row_y + 1))
 
             bw = 2 if char == self._sel_char else 1
             pygame.draw.rect(screen, _C_SEL if char == self._sel_char else _C_BORDER,
                              swatch_rect, bw, border_radius=4)
-            lbl = self._font_sm.render(char, True, (255, 255, 255) if tile and getattr(tile, "sprite_name", "") else (230, 230, 230))
+            lbl = self._font_sm.render(char, False, (255, 255, 255) if tile and getattr(tile, "sprite_name", "") else (230, 230, 230))
             screen.blit(lbl, (swatch_rect.right - lbl.get_width() - 2,
                                swatch_rect.bottom - lbl.get_height() - 2))
             self._palette_rects.append((swatch_rect, char, name, color))
@@ -554,7 +554,7 @@ class GodModeEditor:
         # Sheet picker de terreno (tab 0)
         if self._tab == 0 and SHEET_FAMILIES:
             from tile_sprite_manager import TILE_SPRITES
-            sep = self._font_sm.render("Tiles de terreno:", True, (140, 140, 150))
+            sep = self._font_sm.render("Tiles de terreno:", False, (140, 140, 150))
             screen.blit(sep, (x0, cy))
             cy += sep.get_height() + int(4 * sc)
 
@@ -575,7 +575,7 @@ class GodModeEditor:
                         pygame.draw.rect(screen, fam["color"], cr)
                         raw = TILE_SPRITES.get_raw_sprite(tid)
                         if raw:
-                            screen.blit(pygame.transform.smoothscale(raw, (cell_size, cell_size)), (cx_t, cy))
+                            screen.blit(pygame.transform.scale(raw, (cell_size, cell_size)), (cx_t, cy))
                         pygame.draw.rect(screen, _C_SEL if tid == self._sel_char else _C_BORDER, cr,
                                          2 if tid == self._sel_char else 1)
                         self._sheet_cell_rects.append((cr, tid, f"{fam['label']} ({col},{row})", fam["color"]))
@@ -585,7 +585,7 @@ class GodModeEditor:
         # Sheet picker de objetos (tab 1)
         elif self._tab == 1 and OBJECT_SHEET_FAMILIES:
             from tile_sprite_manager import TILE_SPRITES
-            sep = self._font_sm.render("Tiles de objetos:", True, (140, 140, 150))
+            sep = self._font_sm.render("Tiles de objetos:", False, (140, 140, 150))
             screen.blit(sep, (x0, cy))
             cy += sep.get_height() + int(4 * sc)
 
@@ -595,7 +595,7 @@ class GodModeEditor:
                                 if tid.startswith(prefix + "_")]
                 if not family_tiles:
                     continue
-                lbl = self._font_sm.render(fam["label"], True, (140, 140, 150))
+                lbl = self._font_sm.render(fam["label"], False, (140, 140, 150))
                 screen.blit(lbl, (x0, cy))
                 cy += lbl.get_height() + int(3 * sc)
 
@@ -614,7 +614,7 @@ class GodModeEditor:
                     pygame.draw.rect(screen, fam["color"], cr)
                     raw = TILE_SPRITES.get_raw_sprite(tid)
                     if raw:
-                        screen.blit(pygame.transform.smoothscale(raw, (cell_w, cell_h)), (cur_x, row_y))
+                        screen.blit(pygame.transform.scale(raw, (cell_w, cell_h)), (cur_x, row_y))
                     pygame.draw.rect(screen, _C_SEL if tid == self._sel_char else _C_BORDER, cr,
                                      2 if tid == self._sel_char else 1)
                     self._obj_sheet_cell_rects.append((cr, tid, f"{fam['label']}: {tid}", fam["color"]))

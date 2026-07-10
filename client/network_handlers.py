@@ -64,6 +64,20 @@ class NetworkHandlers:
             self._handle_msg_pong(payload)
         elif msg_type == MsgType.ZONE_CHANGE:
             self._handle_msg_zone_change(payload)
+        elif msg_type == MsgType.EQUIP_REJECTED:
+            self._handle_msg_equip_rejected(payload)
+        elif msg_type == MsgType.TRADE_INVITE:
+            self._handle_msg_trade_invite(payload)
+        elif msg_type == MsgType.TRADE_OPEN:
+            self._handle_msg_trade_open(payload)
+        elif msg_type == MsgType.TRADE_STATE:
+            self._handle_msg_trade_state(payload)
+        elif msg_type == MsgType.TRADE_RESULT:
+            self._handle_msg_trade_result(payload)
+        elif msg_type == MsgType.TRADE_CANCELLED:
+            self._handle_msg_trade_cancelled(payload)
+        elif msg_type == MsgType.CHAT_MESSAGE:
+            self._handle_msg_chat_message(payload)
 
 
     def _handle_msg_login_ok(self, payload: dict) -> None:
@@ -1215,6 +1229,74 @@ class NetworkHandlers:
         # arquitetura/PROBLEMAS_ARQUITETURA.md.
 
         if eid == self._my_eid:
+            # Confirmação/rejeição de CONSUMABLE_USE — SÓ AGORA o item sai da
+            # bag local (ver ConsumableSystem._use_consumable/_finalize_consumable).
+            # Sem esperar isso, um consumível bloqueado no servidor (drift de
+            # HP/mana entre cliente e servidor) perdia o item em silêncio, sem
+            # curar de verdade e sem nenhum aviso — ver PROBLEMAS_ARQUITETURA.md.
+            _cons_item = payload.get("item_name")
+            if _cons_item:
+                if payload.get("consumable_ok"):
+                    self._consumable_system._finalize_consumable(self.player_entity, _cons_item)
+                elif payload.get("consumable_rejected"):
+                    from floating_text import WARN as _WARN_cons
+                    _cons_msgs = {
+                        "hp_full":   "HP já está cheio",
+                        "mana_full": "Mana já está cheia",
+                        "in_combat": "Não pode usar em combate",
+                    }
+                    _WARN_cons.add(_cons_msgs.get(payload.get("reason", ""),
+                                                  "Não foi possível usar o item"))
+                if self._consumable_system.pending_item_name == _cons_item:
+                    self._consumable_system.pending_item_name = ""
+
+            # Confirmação de Recarregar — o servidor já reabasteceu a aljava
+            # de verdade; aqui só espelhamos o resultado real na bag/aljava
+            # LOCAIS. Sem isso, o cliente nunca ficava sabendo do reload
+            # (arrow_count/munição da bag divergiam do servidor pra sempre
+            # após o primeiro uso online — bug real "aljava diz estar cheia
+            # mas não está"). Ver PROBLEMAS_ARQUITETURA.md.
+            if "quiver_arrow_count" in payload:
+                from components import Equipment as _EqRec
+                _eq_rec = self.world.get_component(self.player_entity, _EqRec)
+                _quiver_rec = _eq_rec.slots.get("offhand") if _eq_rec else None
+                if _quiver_rec is not None:
+                    _quiver_rec.arrow_count = payload["quiver_arrow_count"]
+                    # max_arrows: servidor é quem resolve o fallback de aljavas
+                    # legadas (max_arrows==0 -> 100) — sem espelhar aqui, a cópia
+                    # LOCAL ficava travada em 0 pra sempre (HUD mostrava "100/0").
+                    # Dinâmico por item: aljavas de tier maior (125/150...) mandam
+                    # o próprio valor, não hardcoded aqui.
+                    _max_rec = payload.get("quiver_max_arrows")
+                    if _max_rec:
+                        _quiver_rec.max_arrows = _max_rec
+                    _subtype_rec = payload.get("quiver_subtype")
+                    if _subtype_rec:
+                        _quiver_rec.subtype = _subtype_rec
+                _ammo_name_rec  = payload.get("ammo_name", "")
+                _ammo_taken_rec = payload.get("ammo_taken", 0)
+                if _ammo_name_rec and _ammo_taken_rec > 0:
+                    from components import Inventory as _InvRec
+                    _inv_rec = self.world.get_component(self.player_entity, _InvRec)
+                    if _inv_rec:
+                        _ammo_item_rec = next(
+                            (it for it in _inv_rec.items
+                             if it is not None and it.name == _ammo_name_rec), None)
+                        if _ammo_item_rec is not None:
+                            _ammo_item_rec.stack -= _ammo_taken_rec
+                            if _ammo_item_rec.stack <= 0:
+                                _inv_rec.items.remove(_ammo_item_rec)
+
+            # Gold — hoje só usado pela recompensa de quest (_handle_quest_turn_in
+            # já persiste certo, mas sem isso o cliente só via o valor novo no
+            # próximo relogin — bug real reportado por testers). Valor
+            # ABSOLUTO (não delta), mesmo padrão de hp/hp_max abaixo.
+            if "gold" in payload:
+                from components import Wallet as _WalletGold
+                _wallet_gold = self.world.get_component(self.player_entity, _WalletGold)
+                if _wallet_gold:
+                    _wallet_gold.gold = payload["gold"]
+
             cs = self.world.get_component(self.player_entity, CombatStats)
             if cs and "hp" in payload:
                 cs.current_hp = payload["hp"]
@@ -1440,6 +1522,13 @@ class NetworkHandlers:
         gst.is_ghost        = payload.get("is_ghost", gst.is_ghost)
         gst.near_corpse     = payload.get("near_corpse", gst.near_corpse)
         gst.graveyard_timer = payload.get("graveyard_timer", gst.graveyard_timer)
+        # Resincroniza o contador LOCAL de exibição (death_ui_handlers.py::
+        # _ghost_timer) com o valor autoritativo do servidor — sem isso, ele
+        # incrementa sem parar independente do player estar dentro do raio
+        # do cemitério, e mostrava "revive em Xs" contando até 0 mesmo com o
+        # timer real do servidor zerado (saiu do raio) — nunca revivia.
+        if "graveyard_timer" in payload:
+            self._ghost_timer = payload["graveyard_timer"]
 
         # Liberação do espírito: servidor manda a posição do cemitério —
         # teleporta já no mesmo tick (sem isso, a posição local só é
@@ -1645,6 +1734,34 @@ class NetworkHandlers:
             from floating_text import WARN as _WARN_SR
             _WARN_SR.add(payload.get("reason", "Venda recusada"))
 
+    def _handle_msg_equip_rejected(self, payload: dict) -> None:
+        """Servidor recusou um slot do último EQUIP_SYNC (classe ou level
+        insuficiente — ver server/world_server.py::update_player_equipment,
+        único ponto que valida CLASS_ARMOR_ALLOWED/is_weapon_allowed_for_class/
+        level_requirement de verdade, já que o check do cliente em
+        _equip_item é só UX otimista).
+        Reverte o slot local: tira o item que foi otimisticamente equipado e
+        devolve pra bag (nunca perde o item), e resincroniza."""
+        from components import Equipment as _EqRej, Inventory as _InvRej
+        slot      = payload.get("slot", "")
+        reason    = payload.get("reason", "")
+        item_name = payload.get("item_name", "item")
+        equip = self.world.get_component(self.player_entity, _EqRej)
+        inv   = self.world.get_component(self.player_entity, _InvRej)
+        if equip is not None and slot in equip.slots:
+            rejected_item = equip.slots.get(slot)
+            equip.slots[slot] = None
+            if (rejected_item is not None and inv is not None
+                    and len(inv.items) < inv.max_slots):
+                inv.items.append(rejected_item)
+        _reason_msg = {
+            "class": "sua classe não pode usar esse item",
+            "level": "level insuficiente",
+        }.get(reason, "requisito não atendido")
+        from floating_text import WARN as _WARN_EqR
+        _WARN_EqR.add(f"Não foi possível equipar {item_name}: {_reason_msg}")
+        self._send_equip_sync()
+
     def _handle_msg_pong(self, payload: dict) -> None:
         if self._net:
             rtt = int(__import__("time").time() * 1000) - payload.get("client_ts", 0)
@@ -1661,3 +1778,163 @@ class NetworkHandlers:
                 "target_x":   target_x,
                 "target_y":   target_y,
             })
+
+    # ── Trade (player↔player) — ver server/trade_processor.py ────────────────
+
+    def _handle_msg_trade_invite(self, payload: dict) -> None:
+        tui = self._get_trade_ui()
+        if tui is None:
+            return
+        tui.pending_invite_from_eid  = payload.get("from_eid", -1)
+        tui.pending_invite_from_name = payload.get("from_name", "?")
+        from sound_manager import SOUNDS as _SND_TI
+        _SND_TI.play_ui("levelup")
+
+    def _handle_msg_trade_open(self, payload: dict) -> None:
+        tui = self._get_trade_ui()
+        if tui is None:
+            return
+        tui.reset()
+        tui.clear_invite()
+        tui.trade_id   = payload.get("trade_id", -1)
+        tui.other_eid  = payload.get("other_eid", -1)
+        tui.other_name = payload.get("other_name", "?")
+        tui.popup_target_eid = -1
+
+    def _handle_msg_trade_state(self, payload: dict) -> None:
+        """Único ponto onde um item ofertado sai da Inventory local de
+        verdade (nunca otimista — ver TradeUIState/plano do trade). Compara
+        (via multiset por nome) a oferta antiga com a nova pra decidir o que
+        remover/devolver — mesmo racional do match-por-nome já usado em
+        Recarregar."""
+        tui = self._get_trade_ui()
+        if tui is None or tui.trade_id != payload.get("trade_id", -1):
+            return
+        from collections import Counter
+        from components import Inventory as _InvTS, Wallet as _WalTS
+        inv = self.world.get_component(self.player_entity, _InvTS)
+        wal = self.world.get_component(self.player_entity, _WalTS)
+
+        old_items = list(tui.my_offer)
+        new_data  = payload.get("my_offer", [])
+        old_counter = Counter(getattr(it, "name", "") for it in old_items)
+        new_counter = Counter(d.get("name", "") for d in new_data)
+        newly_offered = new_counter - old_counter   # sai da bag
+        newly_withdrawn = old_counter - new_counter  # volta pra bag
+
+        if inv is not None:
+            for name, cnt in newly_offered.items():
+                for _ in range(cnt):
+                    for idx, it in enumerate(inv.items):
+                        if it.name == name:
+                            inv.items.pop(idx)
+                            break
+            for name, cnt in newly_withdrawn.items():
+                matched = 0
+                for it in old_items:
+                    if matched >= cnt:
+                        break
+                    if getattr(it, "name", "") == name:
+                        inv.items.append(it)
+                        matched += 1
+
+        new_my_gold = payload.get("my_gold", 0)
+        if wal is not None:
+            wal.gold -= (new_my_gold - tui.my_gold)
+
+        tui.my_offer        = [self._item_from_data(d) for d in new_data]
+        tui.their_offer     = [self._item_from_data(d) for d in payload.get("their_offer", [])]
+        tui.my_gold          = new_my_gold
+        tui.their_gold       = payload.get("their_gold", 0)
+        tui.my_confirmed     = payload.get("my_confirmed", False)
+        tui.their_confirmed  = payload.get("their_confirmed", False)
+
+    def _handle_msg_trade_result(self, payload: dict) -> None:
+        tui = self._get_trade_ui()
+        from components import Inventory as _InvTR, Wallet as _WalTR
+        inv = self.world.get_component(self.player_entity, _InvTR)
+        wal = self.world.get_component(self.player_entity, _WalTR)
+        for d in payload.get("received_items", []):
+            it = self._item_from_data(d)
+            if it and inv is not None and len(inv.items) < inv.max_slots:
+                inv.items.append(it)
+        if wal is not None:
+            wal.gold += payload.get("received_gold", 0)
+        from combat_log import LOG as _LOG_TR
+        _LOG_TR.add("Troca concluída!", (120, 220, 120))
+        if tui is not None:
+            tui.reset()
+        self._send_save_state()
+
+    def _handle_msg_trade_cancelled(self, payload: dict) -> None:
+        tui = self._get_trade_ui()
+        if tui is None:
+            return
+        if tui.trade_id != -1:
+            # Devolve pra Inventory/Wallet local o que estava em my_offer/my_gold
+            # (o servidor já devolveu de verdade — isso só sincroniza a cópia local).
+            from components import Inventory as _InvTC, Wallet as _WalTC
+            inv = self.world.get_component(self.player_entity, _InvTC)
+            wal = self.world.get_component(self.player_entity, _WalTC)
+            if inv is not None:
+                for it in tui.my_offer:
+                    if len(inv.items) < inv.max_slots:
+                        inv.items.append(it)
+            if wal is not None:
+                wal.gold += tui.my_gold
+        tui.reset()
+        tui.clear_invite()
+        reason = payload.get("reason", "")
+        _reason_msg = {
+            "declined":        "Convite de troca recusado",
+            "cancelled":       "Troca cancelada",
+            "distance":        "Troca cancelada: jogador saiu de alcance",
+            "disconnect":      "Troca cancelada: jogador desconectou",
+            "inventory_full":  "Troca cancelada: mochila cheia",
+            "invalid":         "Troca inválida",
+        }.get(reason, "Troca cancelada")
+        from floating_text import WARN as _WARN_TC
+        _WARN_TC.add(_reason_msg)
+        self._send_save_state()
+
+    def _handle_msg_chat_message(self, payload: dict) -> None:
+        """Mensagem de chat confirmada pelo servidor (server/session.py::
+        _handle_chat) — inclui o próprio remetente, já que o AOI (canal
+        "local") ou o broadcast global (canal "world") sempre engloba o
+        dono. Cliente nunca ecoa a mensagem antes desta chegada. Roteada
+        pro histórico da aba certa (client/chat_handlers.py) por `channel`."""
+        sender  = payload.get("sender", "?")
+        text    = payload.get("text", "")
+        color   = tuple(payload.get("color", [220, 210, 150]))
+        channel = payload.get("channel", "local")
+        target  = self._chat_world if channel == "world" else self._chat_local
+        target.append((sender, text, color))
+
+        entity_id = self._resolve_chat_sender_entity(sender)
+        if entity_id != -1:
+            from chat_bubble import CHAT_BUBBLE
+            CHAT_BUBBLE.add(entity_id, text)
+
+    def _resolve_chat_sender_entity(self, sender_name: str) -> int:
+        """Resolve o nome do remetente pro eid LOCAL (próprio player ou
+        player remoto) — usado só pra posicionar o balão de fala; se não
+        achar (mob/NPC não manda chat, ou remetente já desconectou), -1.
+
+        `sender` em CHAT_MESSAGE é `Session.display_name` (nome do
+        PERSONAGEM — ver server/session.py::Session.display_name/
+        _handle_chat). Bug real corrigido nesta rodada: o servidor mandava
+        `session.username` (login da conta) em vários lugares — chat,
+        nameplate (ENTITY_SPAWN/AOI_UPDATE de player) e trade — só
+        coincidia com o nome do personagem quando o jogador escolhia os
+        dois iguais. Agora tudo usa `display_name` de forma consistente,
+        então comparar com `_logged_char_name` (nome do PRÓPRIO
+        personagem, setado no login) é a checagem certa de novo, e
+        `RemoteControlled.name` (branch de player remoto abaixo) também
+        já vem como nome do personagem do outro lado."""
+        if sender_name == getattr(self, "_logged_char_name", None):
+            return self.player_entity
+        from components import RemoteControlled as _RCchat
+        for eid, rc in self.world.get_entities_with(_RCchat):
+            if rc.name == sender_name:
+                return eid
+        return -1

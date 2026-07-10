@@ -44,6 +44,26 @@ loot: dict {item_key: chance} — item_key é a chave em loot_tables.py::_T.
   Fonte única de verdade (loot_tables.py não duplica mais essa lista; só
   aplica o multiplicador de tier e instancia os Items via _T[item_key]()).
 
+gold_chance/gold_min/gold_max (todos opcionais — sem eles, cai no genérico
+  por tier em loot_tables.COIN_DROPS, mesmo comportamento de antes):
+  gold_chance — 0.0 a 1.0, chance de dropar gold NESTE kill. 0.0 pra mobs
+                que não fazem sentido carregar moedas (Feras: Lobo, Aranha,
+                Escorpião, Cobra, Urso, Rato).
+  gold_min/gold_max — faixa de gold na tier "normal" (mesma convenção de
+                `attributes`: baseline, escalado por _TIER_MULT de
+                loot_tables.py pra elite/rare/boss). Sem os dois, usa a
+                faixa genérica do tier (COIN_DROPS).
+  Rolado por loot_tables.roll_mob_coins(mob_name, tier).
+
+alt_variant (opcional, str — nome de outra entrada em MOB_TABLE): usado por
+  entity_factory._resolve_mob_race_variant quando uma spawn zone pede um
+  "type" (melee/ranged, ver map_1_entities.json) que NÃO bate com o
+  is_ranged fixo desta raça. Ex.: "Goblin" é sempre ranged (Hunter); uma
+  zona com {"type": "melee", "race": "Goblin", ...} troca automaticamente
+  pra "Goblin Guerreiro" (alt_variant do Goblin) se essa entrada existir e
+  for melee de verdade. Sem alt_variant (ou variant que também não bate o
+  modo pedido) — usa a própria raça pedida sem mudança, igual sempre foi.
+
 xp_given_by_lvl: XP concedido por level do mob ao morrer (xp_total =
   level_do_mob × xp_given_by_lvl × multiplicador_de_tier["xp"]). Usado pelo
   servidor (server/server_death_handler.py) e pelo XPReward offline
@@ -95,6 +115,7 @@ MOB_TABLE: dict[str, dict] = {
         },
         "abilities": [],
         "loot": {"cloth_boots": 0.05, "padded_gloves": 0.03, "cloth_wrists": 0.01},
+        "gold_chance": 0.0,   # Fera — não faz sentido carregar moedas
         "xp_given_by_lvl": 8,
         "sounds": _NO_SOUNDS,
     },
@@ -109,6 +130,7 @@ MOB_TABLE: dict[str, dict] = {
         },
         "abilities": ["web_bite"],
         "loot": {"padded_gloves": 0.05, "cloth_wrists": 0.03, "worn_hood": 0.02},
+        "gold_chance": 0.0,   # Fera — não faz sentido carregar moedas
         "xp_given_by_lvl": 10,
         "sounds": _NO_SOUNDS,
     },
@@ -123,6 +145,7 @@ MOB_TABLE: dict[str, dict] = {
         },
         "abilities": ["poison_bite"],
         "loot": {"padded_wrists": 0.04, "light_boots": 0.03, "light_hood": 0.02, "light_shoulders": 0.01},
+        "gold_chance": 0.0,   # Fera — não faz sentido carregar moedas
         "xp_given_by_lvl": 10,
         "sounds": _NO_SOUNDS,
     },
@@ -137,6 +160,7 @@ MOB_TABLE: dict[str, dict] = {
         },
         "abilities": [("poison_bite", 5.0)],   # cooldown diferente do Escorpião (default 3.0)
         "loot": {"light_boots": 0.04, "padded_gloves": 0.03, "leather_vest": 0.02},
+        "gold_chance": 0.0,   # Fera — não faz sentido carregar moedas
         "xp_given_by_lvl": 10,
         "sounds": _NO_SOUNDS,
     },
@@ -151,6 +175,7 @@ MOB_TABLE: dict[str, dict] = {
         },
         "abilities": [],
         "loot": {"leather_vest": 0.05, "light_boots": 0.03, "light_hood": 0.02},
+        "gold_chance": 0.0,   # Fera — não faz sentido carregar moedas
         "xp_given_by_lvl": 14,
         "sounds": {
             "aggro":            "mob_lobo_aggro",
@@ -167,13 +192,17 @@ MOB_TABLE: dict[str, dict] = {
         "race": "Fera", "entity_class": "Warrior", "is_ranged": False,
         "color": (108, 72, 40),  # marrom escuro
         "attributes": {
-            "health": 65, "armor": 15,
-            "attack_min": 3, "attack_max": 6, "attack_power": 2,
-            "move_speed_pct": 60, "attack_speed": 2.8,
+            "health": 65, 
+            "armor": 15,
+            "attack_min": 3, "attack_max": 6, 
+            "attack_power": 2,
+            "move_speed_pct": 60, 
+            "attack_speed": 2.8,
             "acerto": 85, "crit_chance": 10,
         },
         "abilities": ["lacerate"],
         "loot": {"leather_vest": 0.05, "bone_shield": 0.03, "cracked_club": 0.02, "iron_breastplate": 0.02},
+        "gold_chance": 0.0,   # Fera — não faz sentido carregar moedas
         "xp_given_by_lvl": 20,
         "sounds": {
             "aggro":            "mob_urso_aggro",
@@ -192,14 +221,23 @@ MOB_TABLE: dict[str, dict] = {
         "race": "Humanoide", "entity_class": "Hunter", "is_ranged": True,
         "color": (98, 158, 58),  # verde brilhante
         "attributes": {
-            "health": 30, "armor": 5,
-            "attack_min": 2, "attack_max": 4, "attack_power": 1,
-            "move_speed_pct": 75, "attack_speed": 2.4,
+            "health": 30,
+            "armor": 5,
+            "attack_min": 2, "attack_max": 4,
+            "attack_power": 1,
+            "move_speed_pct": 75,
+            "attack_speed": 2.4,
             "acerto": 85, "crit_chance": 10,
         },
         "abilities": ["poison_arrow"],
-        "loot": {"bone_sword": 0.05, "cracked_club": 0.04, "iron_gauntlets": 0.03, "iron_greaves": 0.02},
-        "xp_given_by_lvl": 14,
+        "loot": {"hunter_bow": 0.05, 
+                 "basic_quiver": 0.04, 
+                 "iron_gauntlets": 0.03, 
+                 "iron_greaves": 0.02},
+        "xp_given_by_lvl": 16,
+        # alt_variant: raça a usar quando uma spawn zone pede "type": "melee"
+        # pra "Goblin" (sempre ranged) — ver entity_factory._resolve_mob_race_variant.
+        "alt_variant": "Goblin Guerreiro",
         "sounds": {
             "aggro":            "mob_goblin_aggro",
             "death":            "mob_goblin_death",
@@ -211,17 +249,55 @@ MOB_TABLE: dict[str, dict] = {
             "emote_get_crit":   "mob_goblin_get_crit",
         },
     },
+    "Goblin Guerreiro": {
+        "race": "Humanoide", "entity_class": "Warrior", "is_ranged": False,
+        "color": (98, 158, 58),  # mesma cor do Goblin — mesma raça, outro estilo de combate
+        "attributes": {
+            "health": 25, 
+            "armor": 8,
+            "attack_min": 3, "attack_max": 8, 
+            "attack_power": 1,
+            "move_speed_pct": 65, 
+            "attack_speed": 1.9,
+            "acerto": 85, 
+            "crit_chance": 10,
+        },
+        "abilities": [],
+        "loot": {"bone_sword": 0.03, 
+                 "iron_gauntlets": 0.01, 
+                 "iron_greaves": 0.01},
+        "gold_chance": 0.55, "gold_min": 5, "gold_max": 25,
+        "xp_given_by_lvl": 16,
+        # alt_variant simétrico — se uma zona apontar essa raça direto e pedir
+        # "ranged", volta pro Goblin arqueiro.
+        "alt_variant": "Goblin",
+        "sounds": {
+            "aggro":            "mob_goblin_aggro",
+            "death":            "mob_goblin_death",
+            "attack_melee":     "hit_normal",
+            "attack_ranged":    None,
+            "attack_magic":     None,
+            "crit":             "hit_crit",
+            "emote_attack":     "mob_goblin_emote_attack",
+            "emote_get_crit":   "mob_goblin_get_crit",
+        },
+    },
     "Zumbi": {
         "race": "Morto-Vivo", "entity_class": "Warrior", "is_ranged": False,
         "color": (88, 118, 78),  # verde pálido
         "attributes": {
-            "health": 50, "armor": 20,
-            "attack_min": 1, "attack_max": 3, "attack_power": 1,
-            "move_speed_pct": 50, "attack_speed": 3.2,
-            "acerto": 65, "crit_chance": 15,
+            "health": 50, 
+            "armor": 20,
+            "attack_min": 1, "attack_max": 3, 
+            "attack_power": 1,
+            "move_speed_pct": 50, 
+            "attack_speed": 3.2,
+            "acerto": 65, 
+            "crit_chance": 15,
         },
         "abilities": ["rotting_bite"],
-        "loot": {"bone_sword": 0.04, "iron_coif": 0.03, "bone_shield": 0.02, "bone_wristguards": 0.02},
+        "loot": {"bone_sword": 0.04, "iron_coif": 0.01, "bone_shield": 0.02, "bone_wristguards": 0.02},
+        "gold_chance": 0.35, "gold_min": 3, "gold_max": 12,
         "xp_given_by_lvl": 25,
         "sounds": {
             "aggro":          "mob_zumbi_aggro",

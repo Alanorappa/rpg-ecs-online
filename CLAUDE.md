@@ -72,6 +72,15 @@ Atualizar os arquivos de arquitetura relevantes:
   multiplicador vem SÓ do SKILL_CATALOG, NUNCA hardcodear no handler (classe
   de bug: golpe_poderoso com 3.0 fixo tornava o catálogo letra morta).
   Skill sem arma → `dmg_weapon_pct: 0.0` no catálogo. Magia → `spell_damage()`.
+- **Dano base de AUTO-ATTACK físico** (melee/ranged, guerreiro/arqueiro) →
+  `damage_calculator.calculate_base_damage(..., ap_skill_mult=...)` — mesma
+  fórmula de skill_level das skills (`1.0 + 0.01×weapon_skill_level`), só que
+  aplicada ao AP dentro do branch `damage_type=="physical"`. Resolvida pelo
+  CHAMADOR (`world_systems.py::_calculate_damage`/`deal_damage`,
+  `server/spell_completion_processor.py::_server_apply_ranged_physical`) —
+  NUNCA hardcodear `ap_skill_mult=1.0` num call site novo de auto-attack, ou
+  ele fica pra sempre fora da escala de skill_level (era o estado ORIGINAL,
+  corrigido em 07/07/2026).
 - **Broadcast direto novo (fora do AOI_UPDATE)** →
   `SessionManager._sessions_in_aoi(tx, ty, map_file, origin_eid=...)` —
   NUNCA iterar `self._sessions` com check de distância à mão (classe de bug:

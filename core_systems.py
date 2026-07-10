@@ -19,7 +19,8 @@ from __future__ import annotations
 def apply_damage_core(world, target_id: int, dmg: int, *,
                       killer_eid: int = -1,
                       add_pending_death: bool = True,
-                      on_cc_break=None) -> str:
+                      on_cc_break=None,
+                      on_damage_dealt=None) -> str:
     """Núcleo ÚNICO da aplicação FINAL de dano em current_hp.
 
     Consolida os invariantes que antes viviam duplicados em 3+ lugares
@@ -40,6 +41,15 @@ def apply_damage_core(world, target_id: int, dmg: int, *,
     "sleep" quando o dano quebra o CC — hook para feedback visual do cliente
     (FLT); servidor não passa nada.
 
+    on_damage_dealt: callback opcional `fn(attacker_eid: int, target_id: int,
+    dmg: int)` chamado quando dano > 0 é efetivamente aplicado, com
+    `killer_eid` como identidade do atacante (mesmo campo, propósito duplo:
+    quem credita a morte E quem fez o dano — só dispara se killer_eid != -1).
+    Usado pelo SERVIDOR pra popular o log de dano por mob (dono do
+    loot/quest kill = quem ataca PRIMEIRO, ver PROBLEMAS_ARQUITETURA.md) sem
+    duplicar esse hook em cada handler de skill — client offline não passa
+    nada (no-op).
+
     Retorna: "blocked_dead" | "blocked_immune" | "applied" | "killed".
     O chamador mantém a responsabilidade pelo que NÃO é invariante:
     cálculo do dano, outcome (crit/block/...), aggro, enter_combat,
@@ -56,6 +66,8 @@ def apply_damage_core(world, target_id: int, dmg: int, *,
     cs.current_hp -= dmg  # overkill preservado por contrato
 
     if dmg > 0:
+        if on_damage_dealt is not None and killer_eid != -1:
+            on_damage_dealt(killer_eid, target_id, dmg)
         sfx = world.get_component(target_id, StatusEffects)
         if sfx:
             if sfx.remove("polymorph") and on_cc_break:

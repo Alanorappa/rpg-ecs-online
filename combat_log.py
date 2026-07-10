@@ -1,50 +1,32 @@
 # combat_log.py
+"""Log de combate persistente (dano, cura, proc, loot, etc.).
+
+Antes desta versão era um popup flutuante (8 mensagens, fade em 8s) desenhado
+perto do HUD. Virou histórico persistente (até 500 entradas) consumido pela
+aba "Combate" da janela de chat (client/chat_handlers.py) — sem popup
+próprio. `add(text, color)` mantém a MESMA assinatura de sempre: ~145
+call-sites espalhados por skill_handlers/spell_system/world_systems/etc. só
+chamam `.add()` e nunca leem estado interno, então nenhum deles precisa
+mudar. Sem pygame — seguro pro servidor headless importar (via
+world_systems.py e módulos de skill/spell compartilhados).
+"""
 from collections import deque
 
 class CombatLog:
-    MAX_MESSAGES     = 8
-    MESSAGE_DURATION = 8.0
-    FADE_DURATION    = 2.0
+    MAX_ENTRIES = 500
 
     def __init__(self):
-        # cada entrada: [text, color, timer]
-        self._messages: deque = deque()
-        # cache: (text, color) → CÓPIA mutável da surface renderizada.
-        # O render em si já é cacheado por fonts.CachedFont; a cópia local
-        # existe porque o fade via set_alpha muta a surface — não pode mutar
-        # a surface compartilhada do cache da fonte.
-        self._surf_cache: dict = {}
-        self._cache_font = None
+        # cada entrada: (text, color)
+        self._entries: deque = deque(maxlen=self.MAX_ENTRIES)
 
     def add(self, text: str, color: tuple = (220, 220, 220)):
-        self._messages.appendleft([text, color, self.MESSAGE_DURATION])
-        while len(self._messages) > self.MAX_MESSAGES:
-            self._messages.pop()
+        self._entries.append((text, color))
 
-    def update(self, dt: float):
-        updated = []
-        for entry in self._messages:
-            entry[2] -= dt
-            if entry[2] > 0:
-                updated.append(entry)
-        self._messages = deque(updated)
-        if not self._messages:
-            self._surf_cache.clear()
-
-    def draw(self, screen, font, x: int, bottom_y: int):
-        if font is not self._cache_font:
-            # fonte mudou (ex: resize) — invalida cache
-            self._surf_cache.clear()
-            self._cache_font = font
-        line_h = 18
-        for i, (text, color, timer) in enumerate(self._messages):
-            key = (text, color)
-            if key not in self._surf_cache:
-                self._surf_cache[key] = font.render(text, True, color).copy()
-            surf = self._surf_cache[key]
-            alpha = min(255, int(255 * timer / self.FADE_DURATION))
-            surf.set_alpha(alpha)
-            screen.blit(surf, (x, bottom_y - (i + 1) * line_h))
+    @property
+    def entries(self) -> deque:
+        """Histórico completo, mais recente por último — read-only pro
+        consumidor (aba Combate em client/chat_handlers.py)."""
+        return self._entries
 
 
 LOG = CombatLog()

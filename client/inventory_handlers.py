@@ -22,10 +22,12 @@ from ui_sizes import UI
 class InventoryHandlers:
 
     _RARITY_COLORS = {
-        "common":   (200, 200, 200),
-        "uncommon": ( 30, 200,  30),
-        "rare":     ( 80, 140, 255),
-        "epic":     (180,  50, 255),
+        "common":    (200, 200, 200),
+        "uncommon":  ( 30, 200,  30),
+        "rare":      ( 80, 140, 255),
+        "epic":      (180,  50, 255),
+        "legendary": (224, 135,  47),
+        "mythic":    (221,  68,  68),
     }
 
     # Constantes do painel de inventário (usadas por draw E click)
@@ -60,15 +62,34 @@ class InventoryHandlers:
         if target_slot not in equip.slots:
             return
 
-        # Restrição de armor_class por classe do personagem
+        char = self.world.get_component(self.player_entity, CharacterStats)
+
+        # Restrição de armor_class por classe do personagem — feedback
+        # imediato; servidor valida de novo em update_player_equipment
+        # (autoritativo, fonte única de verdade — este check aqui é só UX).
         if getattr(item, "armor_class", "") and item.item_type == "armor":
             from stats_system import CLASS_ARMOR_ALLOWED
-            char = self.world.get_component(self.player_entity, CharacterStats)
             allowed = CLASS_ARMOR_ALLOWED.get(char.class_id if char else "", frozenset())
             if item.armor_class not in allowed:
                 _names = {"placa": "Placa", "couro": "Couro", "tecido": "Tecido"}
                 LOG.add(f"Sua classe não pode usar armadura de {_names.get(item.armor_class, item.armor_class)}.", (255, 100, 80))
                 return
+
+        # Restrição de arma/escudo/aljava por classe — mesmo racional do
+        # armor_class acima (feedback imediato; servidor valida de novo).
+        if item.item_type in ("weapon", "shield", "quiver"):
+            from stats_system import is_weapon_allowed_for_class
+            if not is_weapon_allowed_for_class(item, char.class_id if char else ""):
+                LOG.add(f"Sua classe não pode usar {item.name}.", (255, 100, 80))
+                return
+
+        # Nível requerido — mesmo racional: feedback imediato, servidor é
+        # quem realmente bloqueia (EQUIP_REJECTED se este check aqui for
+        # burlado, ex. cliente modificado).
+        _lvl_req = getattr(item, "level_requirement", 1)
+        if char is not None and char.level < _lvl_req:
+            LOG.add(f"Requer nível {_lvl_req} (você está no nível {char.level}).", (255, 100, 80))
+            return
 
         # Arma de duas mãos → desequipa offhand se houver
         if getattr(item, 'two_handed', False) and target_slot == "mainhand":
@@ -147,7 +168,10 @@ class InventoryHandlers:
                                 self._u(self._INV_SLOT), self._u(self._INV_SLOT))
                 if r.collidepoint(mx, my):
                     if event.button == 3:
-                        if getattr(item, "consumable", None):
+                        _trade_ui = self._get_trade_ui()
+                        if _trade_ui is not None and _trade_ui.is_open:
+                            self._offer_trade_item(i)
+                        elif getattr(item, "consumable", None):
                             self._use_consumable(item, i, inv)
                         else:
                             self._equip_item(item)
@@ -277,6 +301,8 @@ class InventoryHandlers:
         combat_stats = self.world.get_component(self.player_entity, CombatStats)
         if not (inv and equip and combat_stats):
             return
+        _char_inv    = self.world.get_component(self.player_entity, CharacterStats)
+        _viewer_cls  = _char_inv.class_id if _char_inv else None
 
         x0, y0  = self._panel_origin()
         W, H    = self._u(self._PANEL_W), self._u(self._PANEL_H)
@@ -296,7 +322,7 @@ class InventoryHandlers:
         self.screen.blit(fill_surf((W, H), (15, 10, 5, 220)), (x0, y0))
         pygame.draw.rect(self.screen, (140, 100, 60), (x0, y0, W, H), 2, border_radius=4)
 
-        title = self.font_md.render("Equipamentos", True, (200, 170, 100))
+        title = self.font_md.render("Equipamentos", False, (200, 170, 100))
         title_y = y0 + self._u(4)
         self.screen.blit(title, (x0 + PAD, title_y))
 
@@ -306,7 +332,7 @@ class InventoryHandlers:
             coin_x, coin_y = x0 + W - self._u(150), title_y + title.get_height() // 2
             pygame.draw.circle(self.screen, (180, 140, 0), (coin_x, coin_y), self._u(8))
             pygame.draw.circle(self.screen, (255, 215, 0), (coin_x, coin_y), self._u(6))
-            gold_surf = self.font_sm.render(f"{wallet.gold}", True, (255, 215, 0))
+            gold_surf = self.font_sm.render(f"{wallet.gold}", False, (255, 215, 0))
             self.screen.blit(gold_surf, (coin_x + self._u(12), coin_y - gold_surf.get_height() // 2))
 
         # Botão X (fechar)
@@ -314,7 +340,7 @@ class InventoryHandlers:
         close_hov = close_r.collidepoint(mx, my)
         pygame.draw.rect(self.screen, (180, 60, 60) if close_hov else (100, 35, 35),
                          close_r, border_radius=3)
-        xs = self.font_md.render("X", True, (255, 255, 255))
+        xs = self.font_md.render("X", False, (255, 255, 255))
         self.screen.blit(xs, (close_r.centerx - xs.get_width() // 2,
                                close_r.centery - xs.get_height() // 2))
 
@@ -328,9 +354,9 @@ class InventoryHandlers:
 
         # ---- Cabeçalhos (sem dicas redundantes — interações já aparecem no tooltip de cada item) ----
         hdr = (160, 130, 80)
-        self.screen.blit(self.font_sm.render("Equipado", True, hdr), (x0 + PAD, header_y))
+        self.screen.blit(self.font_sm.render("Equipado", False, hdr), (x0 + PAD, header_y))
         bag_hint = "  [DEL] deletar selecionado" if self._selected_inv_idx >= 0 else ""
-        self.screen.blit(self.font_sm.render(f"Mochila ({len(inv.items)}/{inv.max_slots}){bag_hint}", True, hdr), (col_x, header_y))
+        self.screen.blit(self.font_sm.render(f"Mochila ({len(inv.items)}/{inv.max_slots}){bag_hint}", False, hdr), (col_x, header_y))
 
         # ---- Coluna de equipamentos (ícone + label + nome) ----
         eq_slot_h = self._u(self._EQ_SLOT_H)
@@ -361,21 +387,22 @@ class InventoryHandlers:
                 pygame.draw.rect(self.screen, border, icon_r, 1, border_radius=2)
 
             # Label do slot
-            lbl_surf = self.font_sm.render(f"{label}", True, (120, 100, 70))
+            lbl_surf = self.font_sm.render(f"{label}", False, (120, 100, 70))
             self.screen.blit(lbl_surf, (icon_r.right + self._u(4), r.y + self._u(3)))
 
             # Nome do item (linha 2)
             if item:
                 col_name = self._RARITY_COLORS.get(item.rarity, (200, 200, 200))
-                self.screen.blit(self.font_sm.render(item.name, True, col_name), (icon_r.right + self._u(4), r.y + self._u(18)))
+                self.screen.blit(self.font_sm.render(item.name, False, col_name), (icon_r.right + self._u(4), r.y + self._u(18)))
             elif locked:
-                self.screen.blit(self.font_sm.render("(2 maos)", True, (100, 60, 60)), (icon_r.right + self._u(4), r.y + self._u(18)))
+                self.screen.blit(self.font_sm.render("(2 maos)", False, (100, 60, 60)), (icon_r.right + self._u(4), r.y + self._u(18)))
 
             # Tooltip no hover
             if hovered and item:
-                lines = item_tooltip_lines(item)
+                lines = item_tooltip_lines(item, _viewer_cls)
                 lines.append(("Clique p/ desequipar", (140, 140, 140)))
-                self._pending_tooltip = (mx, my, item.name, lines)
+                name_col = self._RARITY_COLORS.get(item.rarity, (255, 220, 100))
+                self._pending_tooltip = (mx, my, item.name, lines, name_col)
 
         # ---- Grade de inventário (ícones) ----
         inv_slot = self._u(self._INV_SLOT)
@@ -420,11 +447,12 @@ class InventoryHandlers:
 
                 if hovered:
                     del_hint = "DEL p/ deletar | " if selected else ""
-                    lines = item_tooltip_lines(item)
+                    lines = item_tooltip_lines(item, _viewer_cls)
+                    name_col = self._RARITY_COLORS.get(item.rarity, (255, 220, 100))
                     is_consumable = getattr(item, "consumable", None)
                     if is_consumable:
                         lines.append((f"{del_hint}Arraste p/ barra de consumíveis | Dir. p/ usar", (140, 140, 140)))
-                        self._pending_tooltip = (mx, my, item.name, lines)
+                        self._pending_tooltip = (mx, my, item.name, lines, name_col)
                         # Iniciar drag ao clicar com botão esquerdo
                         if _clicked_inv and r.collidepoint(mx, my):
                             _drag_inv.kind    = "consumable"
@@ -433,7 +461,7 @@ class InventoryHandlers:
                             _drag_inv.active  = True
                     else:
                         lines.append((f"{del_hint}Clique dir. p/ equipar | Shift p/ comparar", (140, 140, 140)))
-                        self._pending_tooltip = (mx, my, item.name, lines,
+                        self._pending_tooltip = (mx, my, item.name, lines, name_col,
                                                  item, equip.slots.get(item.slot))
 
         # ---- Seção de estatísticas (2 colunas, cada uma com Base | Itens) ----
@@ -454,9 +482,9 @@ class InventoryHandlers:
         ITEM_COL  = (120, 200, 120)   # verde — bônus de equipamento
         ROW   = self._u(20)            # altura de linha
 
-        self.screen.blit(self.font_sm.render("-- Estatísticas --", True, (180, 150, 90)), (x0 + PAD, sy2))
-        hdr_base  = self.font_xs.render("Base",  True, HDR)
-        hdr_itens = self.font_xs.render("Itens", True, HDR)
+        self.screen.blit(self.font_sm.render("-- Estatísticas --", False, (180, 150, 90)), (x0 + PAD, sy2))
+        hdr_base  = self.font_xs.render("Base", False, HDR)
+        hdr_itens = self.font_xs.render("Itens", False, HDR)
         self.screen.blit(hdr_base,  (cLb, sy2 + self._u(2)))
         self.screen.blit(hdr_itens, (cLi, sy2 + self._u(2)))
         self.screen.blit(hdr_base,  (cRb, sy2 + self._u(2)))
@@ -471,14 +499,14 @@ class InventoryHandlers:
             com sinal, ou '—' se não houver contribuição de equipamento)."""
             item_fmt = item_fmt or fmt
             base_val = total - item_bonus
-            self.screen.blit(self.font_sm.render(label + ":", True, HDR), (col_lbl, y))
-            self.screen.blit(self.font_sm.render(fmt(base_val), True, VAL), (col_base, y))
+            self.screen.blit(self.font_sm.render(label + ":", False, HDR), (col_lbl, y))
+            self.screen.blit(self.font_sm.render(fmt(base_val), False, VAL), (col_base, y))
             if abs(item_bonus) >= 0.05:
                 sign = "+" if item_bonus > 0 else ""
                 txt = f"{sign}{item_fmt(item_bonus)}"
-                self.screen.blit(self.font_sm.render(txt, True, ITEM_COL), (col_item, y))
+                self.screen.blit(self.font_sm.render(txt, False, ITEM_COL), (col_item, y))
             else:
-                self.screen.blit(self.font_sm.render("—", True, (90, 80, 60)), (col_item, y))
+                self.screen.blit(self.font_sm.render("—", False, (90, 80, 60)), (col_item, y))
 
         eq = combat_stats.equipment_bonus
 

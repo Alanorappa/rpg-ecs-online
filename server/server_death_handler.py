@@ -204,9 +204,9 @@ class ServerDeathHandler:
             mob_name = identity.name if identity else ""
 
             try:
-                from loot_tables import roll_mob_loot, roll_coins as _roll_coins
+                from loot_tables import roll_mob_loot, roll_mob_coins as _roll_mob_coins
                 loot_items = roll_mob_loot(mob_name, tier) if mob_name else []
-                coins      = _roll_coins(tier) if tier else 0
+                coins      = _roll_mob_coins(mob_name, tier) if (mob_name and tier) else 0
             except Exception:
                 loot_items = []
                 coins      = 0

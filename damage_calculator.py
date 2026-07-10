@@ -133,21 +133,33 @@ def calculate_base_damage(attacker_stats, damage_type: str,
                           multiplier: float = 1.0,
                           outcome: str = 'hit',
                           block_reduction: float = 0.0,
-                          extra_dmg_pct: float = 0.0) -> float:
+                          extra_dmg_pct: float = 0.0,
+                          ap_skill_mult: float = 1.0) -> float:
     """Calcula o dano base (sem armadura). A redução de armadura é aplicada
     separadamente em CombatSystem._resolve_damage_modifiers.
 
     `extra_dmg_pct`: bônus de dano do skill Magic (fração 0.0–0.15, ver
     stats_system.skill_bonus_pct), aplicado SÓ ao dano magical.
+
+    `ap_skill_mult`: multiplicador sobre o attack_power no dano físico do
+    AUTO-ATTACK — `1.0 + 0.01×skill_level` da arma equipada, mesma fórmula
+    já usada nas skills físicas (ver `ability_physical_damage`, mais
+    abaixo). Antes o auto-attack não ganhava NENHUM bônus direto de dano
+    por skill_level (só +acerto/+crit via `weapon_skill_extras`), diferente
+    das skills (que já escalam via +0.01/level) — inconsistência real entre
+    as duas fontes de dano. Resolvido pelo CHAMADOR (tem acesso a
+    world/attacker_id/weapon, ver `stats_system.weapon_skill_level`);
+    default 1.0 preserva o comportamento antigo pra quem não passar nada
+    (magical/physical_fixed nunca usam este parâmetro).
     """
     total = base_ability_damage
 
     if damage_type == "physical":
         if weapon and weapon.damage_min > 0:
             weapon_dmg = random.randint(weapon.damage_min, weapon.damage_max)
-            total += attacker_stats.attack_power + weapon_dmg
+            total += attacker_stats.attack_power * ap_skill_mult + weapon_dmg
         else:
-            total += attacker_stats.attack_power + random.randint(
+            total += attacker_stats.attack_power * ap_skill_mult + random.randint(
                 attacker_stats.base_physical_damage,
                 attacker_stats.base_physical_damage_max,
             )

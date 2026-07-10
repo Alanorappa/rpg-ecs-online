@@ -54,3 +54,8 @@ GHOST_CORPSE_RADIUS_TILES    = 3   # raio (tiles) do corpo p/ prompt "Reviver ag
 GHOST_GRAVEYARD_REVIVE_S     = 45.0  # segundos contínuos no cemitério p/ revive full HP
 GHOST_CORPSE_REVIVE_HP_FRAC  = 0.15  # fração de HP ao reviver no corpo
 
+# ── Trade (player↔player) ──────────────────────────────────────────────────────
+# Distância máxima (chebyshev) entre os dois players pra abrir/manter um trade.
+# Checada 1x/tick — estourar cancela a sessão (reason="distance").
+TRADE_MAX_DIST_TILES = 5
+

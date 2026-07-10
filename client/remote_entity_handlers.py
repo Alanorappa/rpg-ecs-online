@@ -72,9 +72,19 @@ class RemoteEntityHandlers:
         _is_self_archer = (server_attacker == self._my_eid
                             and _char_ar is not None
                             and _char_ar.class_id == "arqueiro")
-        _is_arrow = (not _is_proj_damage_ar
-                      and (_is_self_archer or _is_remote_archer)
-                      and (source == "auto" or _sid_ar in self._ARROW_SKILL_IDS))
+        _is_archer = _is_self_archer or _is_remote_archer
+        if source == "auto":
+            # Auto-attack: o servidor decide ranged x melee golpe-a-golpe (arma
+            # REAL equipada agora — arqueiro sem arco/com arma melee cai pra
+            # melee), via combat_processor.py, e manda o veredito em is_ranged.
+            # Nunca re-derivar isso so de class_id aqui: o cliente (sobretudo
+            # pra arqueiro REMOTO) não tem visibilidade do equipamento atual
+            # do atacante — só o servidor sabe. Sem este campo (combat result
+            # antigo/DoT), assume True (comportamento anterior). Ver
+            # PROBLEMAS_ARQUITETURA.md.
+            _is_arrow = not _is_proj_damage_ar and _is_archer and cr.get("is_ranged", True)
+        else:
+            _is_arrow = not _is_proj_damage_ar and _is_archer and _sid_ar in self._ARROW_SKILL_IDS
         _attacker_eid = self.player_entity if _is_self_archer else _attacker_remote
         return _is_arrow, _attacker_eid, _is_self_archer
 
@@ -1230,7 +1240,7 @@ class RemoteEntityHandlers:
                 continue
             px = pos.x - W // 2 - cam_x
             py = pos.y - H // 2 - cam_y
-            ns = self.font_xs.render(rc.name, True, (255, 255, 200))
+            ns = self.font_xs.render(rc.name, False, (255, 255, 200))
             zoom_surf.blit(ns, (int(px) + W // 2 - ns.get_width() // 2,
                                 int(py) - ns.get_height() - 2))
             # HP bar removida daqui — desenhada em RenderSystem acima da entidade

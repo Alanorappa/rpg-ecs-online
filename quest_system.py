@@ -46,7 +46,7 @@ class QuestSystem(UIScaleMixin, System):
     COL_DONE   = ( 80, 200, 100)  # verde — objetivo completo
     COL_REWARD = (255, 215,   0)
 
-    _FONT_BASES = {"_font_title": 18, "_font_obj": 16}
+    _FONT_BASES = {"_font_title": 23, "_font_obj": 21}
 
     def __init__(self, world, player_entity: int) -> None:
         super().__init__()
@@ -195,9 +195,9 @@ class QuestSystem(UIScaleMixin, System):
             qdef = QUESTS.get(qid)
             if qdef is None:
                 continue
-            ts = self._font_title.render(qdef.title, True, self.COL_TITLE)
+            ts = self._font_title.render(qdef.title, False, self.COL_TITLE)
             lines.append((ts, y))
-            y += self._u(17)
+            y += self._u(20)
             for i, obj in enumerate(qdef.objectives):
                 p = prog[i]
                 if p >= obj.count:
@@ -206,9 +206,9 @@ class QuestSystem(UIScaleMixin, System):
                     color = self.COL_ACTIVE
                 else:
                     color = self.COL_PROG
-                surf = self._font_obj.render(self._obj_label(obj, p), True, color)
+                surf = self._font_obj.render(self._obj_label(obj, p), False, color)
                 lines.append((surf, y))
-                y += self._u(14)
+                y += self._u(17)
             y += self._u(5)
             shown += 1
 
@@ -418,7 +418,7 @@ class QuestDialogSystem(UIScaleMixin, System):
     COL_BG     = ( 15,  10,   5, 235)
     COL_BORDER = (140, 100,  60)
 
-    _FONT_BASES = {"_font_lg": 26, "_font_body": 21, "_font_sm": 18}
+    _FONT_BASES = {"_font_lg": 29, "_font_body": 24, "_font_sm": 21}
 
     def __init__(self, world, player_entity: int,
                  screen: pygame.Surface, quest_system: QuestSystem) -> None:
@@ -595,7 +595,7 @@ class QuestDialogSystem(UIScaleMixin, System):
 
             pygame.draw.circle(self.world_surf, (30, 25, 10), (sx, sy), 9)
             pygame.draw.circle(self.world_surf, color, (sx, sy), 9, 2)
-            glyph = self._font_lg.render(symbol, True, color)
+            glyph = self._font_lg.render(symbol, False, color)
             self.world_surf.blit(glyph, (sx - glyph.get_width() // 2,
                                      sy - glyph.get_height() // 2))
 
@@ -622,7 +622,7 @@ class QuestDialogSystem(UIScaleMixin, System):
         pygame.draw.rect(self.hud_surf, self.COL_BORDER, (x0, y0, W, H), 2, border_radius=4)
 
         # Header: nome do NPC
-        npc_surf = self._font_lg.render(npc_name, True, self.COL_TITLE)
+        npc_surf = self._font_lg.render(npc_name, False, self.COL_TITLE)
         self.hud_surf.blit(npc_surf, (x0 + self._u(self.PAD), y0 + self._u(self.PAD)))
         pygame.draw.line(self.hud_surf, self.COL_BORDER,
                          (x0 + self._u(4), y0 + self._u(42)), (x0 + W - self._u(4), y0 + self._u(42)))
@@ -633,7 +633,7 @@ class QuestDialogSystem(UIScaleMixin, System):
         hov_x   = close_r.collidepoint(mx, my)
         pygame.draw.rect(self.hud_surf, (180, 60, 60) if hov_x else (100, 35, 35),
                          close_r, border_radius=3)
-        xs = self._font_body.render("X", True, (255, 255, 255))
+        xs = self._font_body.render("X", False, (255, 255, 255))
         self.hud_surf.blit(xs, (close_r.centerx - xs.get_width() // 2,
                               close_r.centery - xs.get_height() // 2))
         self._close_rect = close_r
@@ -655,9 +655,9 @@ class QuestDialogSystem(UIScaleMixin, System):
         PAD = self._u(self.PAD)
         y = y0 + self._u(52)
 
-        hint = self._font_sm.render("Escolha uma missao:", True, self.COL_GREY)
+        hint = self._font_sm.render("Escolha uma missao:", False, self.COL_GREY)
         self.hud_surf.blit(hint, (x0 + PAD, y))
-        y += self._u(22)
+        y += self._u(26)
 
         for qid, is_turnin in [(q, True) for q in comp] + [(q, False) for q in avail]:
             qdef = QUESTS.get(qid)
@@ -665,14 +665,14 @@ class QuestDialogSystem(UIScaleMixin, System):
                 continue
             symbol = "?" if is_turnin else "!"
             color  = self.COL_GOLD
-            row_r  = pygame.Rect(x0 + PAD, y, self._u(self.PANEL_W) - PAD * 2, self._u(30))
+            row_r  = pygame.Rect(x0 + PAD, y, self._u(self.PANEL_W) - PAD * 2, self._u(34))
             if row_r.collidepoint(mx, my):
                 pygame.draw.rect(self.hud_surf, (45, 38, 18), row_r, border_radius=3)
                 pygame.draw.rect(self.hud_surf, self.COL_BORDER, row_r, 1, border_radius=3)
-            label = self._font_body.render(f"[{symbol}]  {qdef.title}", True, color)
+            label = self._font_body.render(f"[{symbol}]  {qdef.title}", False, color)
             self.hud_surf.blit(label, (x0 + PAD + self._u(6), y + self._u(6)))
             self._list_rects[qid] = row_r
-            y += self._u(34)
+            y += self._u(38)
 
     def _render_detail(self, x0: int, y0: int) -> None:
         self._accept_rect  = None
@@ -686,26 +686,26 @@ class QuestDialogSystem(UIScaleMixin, System):
         y = y0 + self._u(52)
 
         # Título da quest
-        ts = self._font_lg.render(qdef.title, True, self.COL_TITLE)
+        ts = self._font_lg.render(qdef.title, False, self.COL_TITLE)
         self.hud_surf.blit(ts, (x0 + PAD, y))
-        y += self._u(28)
+        y += self._u(32)
 
         # Descrição
         for line in self._wrap(qdef.description, W - PAD * 2, self._font_body):
-            self.hud_surf.blit(self._font_body.render(line, True, self.COL_WHITE),
+            self.hud_surf.blit(self._font_body.render(line, False, self.COL_WHITE),
                              (x0 + PAD, y))
-            y += self._u(20)
+            y += self._u(25)
         y += self._u(8)
 
         # Objetivos
-        self.hud_surf.blit(self._font_sm.render("Objetivos:", True, self.COL_GREY),
+        self.hud_surf.blit(self._font_sm.render("Objetivos:", False, self.COL_GREY),
                          (x0 + PAD, y))
-        y += self._u(18)
+        y += self._u(23)
         for obj in qdef.objectives:
             s = self._font_sm.render(f"  {QuestSystem._obj_label(obj, 0, show_progress=False)}",
-                                     True, self.COL_GREY)
+                                     False, self.COL_GREY)
             self.hud_surf.blit(s, (x0 + PAD, y))
-            y += self._u(16)
+            y += self._u(21)
         y += self._u(8)
 
         # Recompensas
@@ -714,7 +714,7 @@ class QuestDialogSystem(UIScaleMixin, System):
         if qdef.reward.gold: parts.append(f"+{qdef.reward.gold} ouro")
         if parts:
             rew = self._font_sm.render("Recompensa: " + ", ".join(parts),
-                                       True, self.COL_GOLD)
+                                       False, self.COL_GOLD)
             self.hud_surf.blit(rew, (x0 + PAD, y))
 
         # Botões na base do painel — alinhados à direita: [Recusar] [Aceitar]
@@ -728,7 +728,7 @@ class QuestDialogSystem(UIScaleMixin, System):
             hov = rect.collidepoint(mx, my)
             pygame.draw.rect(self.hud_surf, c_hov if hov else c_nor, rect, border_radius=4)
             pygame.draw.rect(self.hud_surf, self.COL_BORDER, rect, 1, border_radius=4)
-            txt = self._font_body.render(label, True, self.COL_WHITE)
+            txt = self._font_body.render(label, False, self.COL_WHITE)
             self.hud_surf.blit(txt, (rect.centerx - txt.get_width() // 2,
                                    rect.centery - txt.get_height() // 2))
         self._accept_rect  = acc_r
@@ -747,14 +747,14 @@ class QuestDialogSystem(UIScaleMixin, System):
         y        = y0 + self._u(52)
 
         # Cabeçalho
-        hdr = self._font_lg.render("Missao Completa!", True, self.COL_GOLD)
+        hdr = self._font_lg.render("Missao Completa!", False, self.COL_GOLD)
         self.hud_surf.blit(hdr, (x0 + PAD, y))
-        y += self._u(28)
+        y += self._u(32)
 
         # Título da quest
-        ts = self._font_body.render(qdef.title, True, self.COL_TITLE)
+        ts = self._font_body.render(qdef.title, False, self.COL_TITLE)
         self.hud_surf.blit(ts, (x0 + PAD, y))
-        y += self._u(22)
+        y += self._u(26)
 
         # Linha separadora
         pygame.draw.line(self.hud_surf, self.COL_BORDER,
@@ -764,7 +764,7 @@ class QuestDialogSystem(UIScaleMixin, System):
         # Texto de conclusão do NPC (ou fallback genérico)
         completion_text = getattr(qdef, "completion", "") or "Bom trabalho. Aqui esta sua recompensa."
         for line in self._wrap(completion_text, max_w, self._font_body):
-            s = self._font_body.render(line, True, self.COL_WHITE)
+            s = self._font_body.render(line, False, self.COL_WHITE)
             self.hud_surf.blit(s, (x0 + PAD, y))
             y += s.get_height() + self._u(2)
         y += self._u(12)
@@ -774,10 +774,10 @@ class QuestDialogSystem(UIScaleMixin, System):
         if qdef.reward.xp:   parts.append(f"+{qdef.reward.xp} XP")
         if qdef.reward.gold: parts.append(f"+{qdef.reward.gold} ouro")
         if parts:
-            rew_hdr = self._font_sm.render("Recompensa:", True, (160, 140, 80))
+            rew_hdr = self._font_sm.render("Recompensa:", False, (160, 140, 80))
             self.hud_surf.blit(rew_hdr, (x0 + PAD, y))
             y += rew_hdr.get_height() + self._u(4)
-            rew = self._font_body.render("  " + "  |  ".join(parts), True, self.COL_GOLD)
+            rew = self._font_body.render("  " + "  |  ".join(parts), False, self.COL_GOLD)
             self.hud_surf.blit(rew, (x0 + PAD, y))
 
         # Botão Concluir
@@ -786,7 +786,7 @@ class QuestDialogSystem(UIScaleMixin, System):
         pygame.draw.rect(self.hud_surf, (60, 110, 60) if hov else (35, 65, 35),
                          comp_r, border_radius=4)
         pygame.draw.rect(self.hud_surf, self.COL_BORDER, comp_r, 1, border_radius=4)
-        txt = self._font_body.render("Concluir", True, self.COL_WHITE)
+        txt = self._font_body.render("Concluir", False, self.COL_WHITE)
         self.hud_surf.blit(txt, (comp_r.centerx - txt.get_width() // 2,
                                comp_r.centery - txt.get_height() // 2))
         self._complete_rect = comp_r
@@ -1141,14 +1141,14 @@ class QuestJournalSystem(UIScaleMixin, System):
                          (x0, y0, PANEL_W, PANEL_H), 2, border_radius=6)
 
         # Titulo
-        title_s = self._font_title.render("Diario de Quests", True, self.COL_HEADER)
+        title_s = self._font_title.render("Diario de Quests", False, self.COL_HEADER)
         self.hud_surf.blit(title_s, (x0 + self._u(self.PAD), y0 + self._u(self.PAD)))
 
         # Botão X
         close_r = pygame.Rect(x0 + PANEL_W - self._u(28), y0 + self._u(8), self._u(22), self._u(22))
         pygame.draw.rect(self.hud_surf, (80, 40, 30), close_r, border_radius=3)
         pygame.draw.rect(self.hud_surf, self.COL_BORDER, close_r, 1, border_radius=3)
-        xs = self._font_body.render("X", True, (220, 180, 140))
+        xs = self._font_body.render("X", False, (220, 180, 140))
         self.hud_surf.blit(xs, (close_r.centerx - xs.get_width() // 2,
                                close_r.centery - xs.get_height() // 2))
         self._close_rect = close_r
@@ -1199,7 +1199,7 @@ class QuestJournalSystem(UIScaleMixin, System):
                 continue
 
             if is_header:
-                sep_s = self._font_sm.render(label, True, color)
+                sep_s = self._font_sm.render(label, False, color)
                 self.hud_surf.blit(sep_s, (row_abs.x + self._u(4), row_abs.centery - sep_s.get_height() // 2))
                 continue
 
@@ -1211,14 +1211,14 @@ class QuestJournalSystem(UIScaleMixin, System):
             if is_sel:
                 pygame.draw.rect(self.hud_surf, self.COL_BORDER, row_abs, 1)
 
-            txt_s = self._font_sm.render(label, True, color)
+            txt_s = self._font_sm.render(label, False, color)
             self.hud_surf.blit(txt_s, (row_abs.x + self._u(8), row_abs.centery - txt_s.get_height() // 2))
             self._entry_rects.append((row_abs, qid))
 
     def _render_detail(self, x0: int, y0: int) -> None:
         from components import QuestLog
         if not self._selected_qid:
-            hint = self._font_body.render("Selecione uma quest na lista.", True, self.COL_GREY)
+            hint = self._font_body.render("Selecione uma quest na lista.", False, self.COL_GREY)
             dx = x0 + self._u(self.LIST_W) + self._u(self.PAD)
             dy = y0 + self._u(self.PANEL_H) // 2
             self.hud_surf.blit(hint, (dx, dy))
@@ -1239,7 +1239,7 @@ class QuestJournalSystem(UIScaleMixin, System):
         # Título
         col_t = self.COL_GREY if is_completed else self.COL_ACTIVE
         title_text = f"{qdef.title} (Done)" if is_completed else qdef.title
-        title_s = self._font_title.render(title_text, True, col_t)
+        title_s = self._font_title.render(title_text, False, col_t)
         self.hud_surf.blit(title_s, (dx, dy))
         dy += title_s.get_height() + self._u(4)
 
@@ -1247,7 +1247,7 @@ class QuestJournalSystem(UIScaleMixin, System):
         if qdef.level_req > 0:
             plvl = self._qs._player_level()
             lvl_col = self.COL_GREY if plvl >= qdef.level_req else (200, 80, 80)
-            lvl_s = self._font_sm.render(f"Nivel minimo: {qdef.level_req}", True, lvl_col)
+            lvl_s = self._font_sm.render(f"Nivel minimo: {qdef.level_req}", False, lvl_col)
             self.hud_surf.blit(lvl_s, (dx, dy))
             dy += lvl_s.get_height() + self._u(6)
         else:
@@ -1260,13 +1260,13 @@ class QuestJournalSystem(UIScaleMixin, System):
 
         # Descrição
         for line in self._wrap(qdef.description, max_w, self._font_body):
-            s = self._font_body.render(line, True, self.COL_WHITE)
+            s = self._font_body.render(line, False, self.COL_WHITE)
             self.hud_surf.blit(s, (dx, dy))
             dy += s.get_height() + self._u(2)
         dy += self._u(8)
 
         # Objetivos
-        obj_hdr = self._font_sm.render("Objetivos:", True, self.COL_HEADER)
+        obj_hdr = self._font_sm.render("Objetivos:", False, self.COL_HEADER)
         self.hud_surf.blit(obj_hdr, (dx, dy))
         dy += obj_hdr.get_height() + self._u(4)
 
@@ -1286,13 +1286,13 @@ class QuestJournalSystem(UIScaleMixin, System):
             else:
                 col = self.COL_PROG
             label = QuestSystem._obj_label(obj, cur)
-            obj_s = self._font_body.render(f"  {label}", True, col)
+            obj_s = self._font_body.render(f"  {label}", False, col)
             self.hud_surf.blit(obj_s, (dx, dy))
             dy += obj_s.get_height() + self._u(2)
         dy += self._u(8)
 
         # Recompensas
-        rew_hdr = self._font_sm.render("Recompensas:", True, self.COL_HEADER)
+        rew_hdr = self._font_sm.render("Recompensas:", False, self.COL_HEADER)
         self.hud_surf.blit(rew_hdr, (dx, dy))
         dy += rew_hdr.get_height() + self._u(4)
 
@@ -1300,7 +1300,7 @@ class QuestJournalSystem(UIScaleMixin, System):
         if qdef.reward.xp:   parts.append(f"{qdef.reward.xp} XP")
         if qdef.reward.gold: parts.append(f"{qdef.reward.gold} Ouro")
         rew_text = "  " + "  |  ".join(parts) if parts else "  Nenhuma"
-        rew_s = self._font_body.render(rew_text, True, self.COL_REWARD)
+        rew_s = self._font_body.render(rew_text, False, self.COL_REWARD)
         self.hud_surf.blit(rew_s, (dx, dy))
 
         # Botão Abandonar — só para quests ativas (não completas)
@@ -1313,7 +1313,7 @@ class QuestJournalSystem(UIScaleMixin, System):
             pygame.draw.rect(self.hud_surf, (100, 35, 25) if hov else (65, 20, 15),
                              abn_r, border_radius=4)
             pygame.draw.rect(self.hud_surf, (160, 70, 50), abn_r, 1, border_radius=4)
-            lbl = self._font_body.render("Abandonar Quest", True, (230, 160, 140))
+            lbl = self._font_body.render("Abandonar Quest", False, (230, 160, 140))
             self.hud_surf.blit(lbl, (abn_r.centerx - lbl.get_width() // 2,
                                    abn_r.centery - lbl.get_height() // 2))
             self._abandon_rect = abn_r

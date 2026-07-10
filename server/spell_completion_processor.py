@@ -589,7 +589,7 @@ class SpellCompletionMixin:
 
     # ── Ponto único de modificação de HP (servidor) ──────────────────────────
 
-    def _apply_final_damage(self, target_id: int, dmg: int) -> bool:
+    def _apply_final_damage(self, target_id: int, dmg: int, attacker_id: int = -1) -> bool:
         """Aplica dmg ao HP de target_id verificando todas as guardas.
 
         Retorna False se bloqueado (HP já zerado, is_immune, etc.).
@@ -601,10 +601,19 @@ class SpellCompletionMixin:
         uma vez, e vale para os 3 caminhos (problemas B/H resolvidos).
         add_pending_death=False: no servidor a morte é tratada pelos
         chamadores (snapshot hp_before/hp_after + death sweep), não aqui.
+
+        attacker_id: alimenta o log de dano por mob (dono do loot/quest kill
+        — ver WorldServer._log_mob_damage_hit/PROBLEMAS_ARQUITETURA.md).
+        Chamadores (magia, ranged skill/auto-attack) sempre têm o atacante
+        disponível — sem passar aqui, essas duas classes de dano nunca
+        apareciam no log e o loot ia parar com quem desse a sorte de
+        auto-atacar depois.
         """
         from core_systems import apply_damage_core
         return apply_damage_core(self.world, target_id, dmg,
-                                 add_pending_death=False) in ("applied", "killed")
+                                 killer_eid=attacker_id, add_pending_death=False,
+                                 on_damage_dealt=self._log_mob_damage_hit
+                                 ) in ("applied", "killed")
 
     # ── Dano de magia server-side ────────────────────────────────────────────
 
@@ -669,7 +678,7 @@ class SpellCompletionMixin:
             grant_resist_skill_xp(self.world, target_id, school)
 
         hp_before = target_cs.current_hp
-        if not self._apply_final_damage(target_id, dmg):
+        if not self._apply_final_damage(target_id, dmg, attacker_id):
             return False
         hp_after = max(0, target_cs.current_hp)
         damage   = max(0, hp_before - target_cs.current_hp)
@@ -1006,10 +1015,17 @@ class SpellCompletionMixin:
                                          base_ability_damage=_base_raw,
                                          outcome=outcome, block_reduction=block_r)
         elif attacker_cs:
-            # Auto-attack ranged: fórmula clássica inalterada (AP + arco)
+            # Auto-attack ranged: arco + AP×(1.0 + 0.01×skill_level do Arco) —
+            # mesmo bônus de skill_level das skills físicas, agora também no
+            # golpe básico (antes só ganhava +acerto/+crit via
+            # weapon_skill_extras, nunca dano — inconsistência real entre
+            # skill e auto-attack). Ver PROBLEMAS_ARQUITETURA.md.
+            from stats_system import weapon_skill_level as _wsl_ranged_auto
+            _ap_skill_mult_auto = 1.0 + 0.01 * _wsl_ranged_auto(self.world, player_eid, bow)
             base = calculate_base_damage(attacker_cs, "physical", bow,
                                          multiplier=ap_multiplier,
-                                         outcome=outcome, block_reduction=block_r)
+                                         outcome=outcome, block_reduction=block_r,
+                                         ap_skill_mult=_ap_skill_mult_auto)
         else:
             base = 1.0
         dmg = max(1, int(apply_armor_reduction(base, attacker_cs, target_cs, outcome)))
@@ -1024,7 +1040,7 @@ class SpellCompletionMixin:
             if _fdp > 0 and random.random() < _fdp:
                 dmg = int(dmg * 1.50)
 
-        if not self._apply_final_damage(target_id, dmg):
+        if not self._apply_final_damage(target_id, dmg, player_eid):
             return False, "immune", 0
 
         # Reciclagem: conta flechas acertadas neste alvo (auto-attack + skills
@@ -1525,7 +1541,15 @@ class SpellCompletionMixin:
                 mob_cst.target_entity_id = -1
 
     def _server_recarregar(self, player_eid: int, target_id: int, entry: dict) -> None:
-        """Reabastece a aljava com flechas da mochila no servidor."""
+        """Reabastece a aljava com flechas da mochila no servidor.
+
+        Envia confirmação ao cliente (arrow_count/subtype da aljava + munição
+        consumida) — sem isso, a cópia LOCAL do cliente (arrow_count, item de
+        munição na bag) nunca era atualizada: o servidor recarregava de
+        verdade mas o cliente nunca ficava sabendo, divergindo pra sempre
+        depois do primeiro uso online (bug real reportado por testers —
+        "aljava diz estar cheia mas não está"). Ver PROBLEMAS_ARQUITETURA.md.
+        """
         from components import Equipment, Inventory
         equip = self.world.get_component(player_eid, Equipment)
         inv   = self.world.get_component(player_eid, Inventory)
@@ -1537,6 +1561,8 @@ class SpellCompletionMixin:
         if quiver.max_arrows == 0:
             quiver.max_arrows = 100
 
+        _ammo_name  = ""
+        _ammo_taken = 0
         for item in (inv.items if inv else []):
             if item is None:
                 continue
@@ -1549,6 +1575,17 @@ class SpellCompletionMixin:
             item.stack       -= take
             quiver.arrow_count = min(quiver.max_arrows, quiver.arrow_count + take)
             quiver.subtype   = item.name
+            _ammo_name  = item.name
+            _ammo_taken = take
             if item.stack <= 0:
                 inv.items[inv.items.index(item)] = None
-            break
+            break  # só o primeiro tipo de munição disponível por uso (comportamento original)
+
+        self.queue_stats_update({
+            "player_eid":         player_eid,
+            "quiver_arrow_count": quiver.arrow_count,
+            "quiver_max_arrows":  quiver.max_arrows,
+            "quiver_subtype":     quiver.subtype,
+            "ammo_name":          _ammo_name,
+            "ammo_taken":         _ammo_taken,
+        })

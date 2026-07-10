@@ -49,13 +49,48 @@ class Session:
         self.known_eids: set[int] = set()   # entidades que este cliente conhece
         # Último payload SAVE_STATE recebido do cliente (inventory/equipment/talents/skills/gold)
         self.last_client_payload: dict = {}
+        # Serializa ws.send() nesta sessão: o handler de mensagens recebidas
+        # (task própria por conexão, em server/main.py) e o loop de ticks
+        # (task separada, via SessionManager._on_tick) podem chamar send()
+        # concorrentemente na MESMA conexão — a lib `websockets` não é segura
+        # pra send() concorrente (pode levantar ConcurrencyError). Sem lock,
+        # essa falha era engolida em silêncio (ver abaixo) e o pacote se
+        # perdia — causa real de "player remoto para de atualizar posição":
+        # um ENTITY_SPAWN perdido nunca é reenviado, e known_eids do servidor
+        # já foi marcado como entregue, então todo MOVE seguinte pra aquele
+        # eid é descartado no cliente (entidade local nunca existiu).
+        self._send_lock = asyncio.Lock()
 
-    async def send(self, msg_type: MsgType, payload: dict) -> None:
+    @property
+    def display_name(self) -> str:
+        """Nome do PERSONAGEM pra mostrar a outros players (nameplate, chat,
+        trade) — NUNCA `self.username` (login da conta). Bug real: várias
+        mensagens (ENTITY_SPAWN/AOI_UPDATE de player, CHAT_MESSAGE,
+        TRADE_INVITE/TRADE_OPEN) mandavam `session.username` como "nome" —
+        só coincidia com o nome do personagem quando o jogador escolhia os
+        dois iguais; pra qualquer conta onde divergem, o nameplate/chat/
+        trade mostrava o LOGIN da conta pros outros players. Fonte única
+        agora — `char_data["name"]` é setado no login/seleção de personagem
+        (ver _handle_select_character/_handle_create_character), cai pro
+        username só como fallback defensivo (não deveria faltar em uso normal)."""
+        return self.char_data.get("name") or self.username
+
+    async def send(self, msg_type: MsgType, payload: dict) -> bool:
+        """Envia ao cliente. Retorna True se entregue, False se falhou.
+
+        Falhas NUNCA derrubam o servidor (conexão pode já estar fechando),
+        mas agora são logadas — antes eram descartadas em silêncio, o que
+        escondia o desync descrito acima até virar um bug "fantasma" só
+        reproduzível em rede real (nunca em localhost)."""
         try:
-            self._seq += 1
-            await self.ws.send(encode(msg_type, payload, seq=self._seq))
-        except Exception:
-            pass
+            async with self._send_lock:
+                self._seq += 1
+                await self.ws.send(encode(msg_type, payload, seq=self._seq))
+            return True
+        except Exception as e:
+            print(f"[Session] send falhou (session={self.session_id} "
+                  f"type={msg_type}): {e!r}")
+            return False
 
     def __repr__(self) -> str:
         return f"Session({self.username!r} eid={self.entity_id})"
@@ -154,6 +189,12 @@ class SessionManager:
         if not session:
             return
         if session.entity_id != -1:
+            # Se o player está morto/fantasma, revive no cemitério ANTES de
+            # salvar — sem isso, o relogin trazia o personagem "vivo" na
+            # posição crua salva (local da morte ou onde o fantasma vagou) e
+            # deixava o marcador de corpo órfão pra quem já o via no AOI
+            # (ver RespawnMixin._auto_revive_on_disconnect).
+            self.world_server._auto_revive_on_disconnect(session.entity_id)
             # Salva ANTES de remover a entidade do ECS
             if session.authenticated and session.char_data.get("id"):
                 from server.auth import save_character
@@ -169,6 +210,18 @@ class SessionManager:
                         print(f"[Session] ERRO ao salvar {session.username!r}: {e}")
             self._eid_to_sid.pop(session.entity_id, None)
             eid = session.entity_id
+            # Cancela trade ativa (se houver) ANTES de despawnar — avisa o
+            # outro lado, que senão ficaria com uma janela de trade aberta
+            # apontando pra um player que já não existe mais no world.
+            trade_session = self.world_server.get_trade_session(eid)
+            if trade_session is not None:
+                other_eid = trade_session.other_of(eid)
+                trade_id = self.world_server.cancel_trade(eid, "disconnect")
+                other_sid = self.world_server.get_session_id_for_player(other_eid)
+                other_session = self._sessions.get(other_sid) if other_sid else None
+                if other_session and other_session.authenticated:
+                    await other_session.send(MsgType.TRADE_CANCELLED,
+                                              {"trade_id": trade_id, "reason": "disconnect"})
             for other in self._sessions.values():
                 other.known_eids.discard(eid)
             await self._broadcast_all(MsgType.ENTITY_DESPAWN, {"eid": eid})
@@ -559,7 +612,7 @@ class SessionManager:
             return
         text    = str(payload.get("text", ""))[:200]
         channel = payload.get("channel", "local")
-        msg = {"sender": session.username, "text": text,
+        msg = {"sender": session.display_name, "text": text,
                "channel": channel, "color": [220, 210, 150]}
         if channel == "world":
             await self._broadcast_all(MsgType.CHAT_MESSAGE, msg)
@@ -586,11 +639,17 @@ class SessionManager:
         equipment = payload.get("equipment")
         if not isinstance(equipment, dict):
             return
-        self.world_server.update_player_equipment(session.session_id, equipment)
-        # Persiste no cache de save para não perder troca entre login-cycles
+        rejected = self.world_server.update_player_equipment(session.session_id, equipment)
+        for _rej in rejected:
+            await session.send(MsgType.EQUIP_REJECTED, _rej)
+        # Persiste no cache de save o estado REAL pós-validação (não o payload
+        # cru do cliente) — senão um slot rejeitado (classe/level) ainda seria
+        # salvo no disconnect via _build_save_merge, mesmo nunca tendo sido
+        # aplicado ao Equipment ao vivo do servidor.
         if session.last_client_payload is None:
             session.last_client_payload = {}
-        session.last_client_payload["equipment"] = equipment
+        session.last_client_payload["equipment"] = \
+            self.world_server.get_player_equipment_data(session.session_id)
 
     # Maior recompensa de gold de missão conhecida hoje (quests_data.py) é 25 —
     # 500 é generoso pra cobrir conteúdo futuro sem permitir "setar" gold arbitrário.
@@ -643,6 +702,28 @@ class SessionManager:
         # (Recarregar, Tiro Múltiplo, etc.) validem munição com dados reais —
         # sem isso o componente fica vazio e a validação sempre falha/é pulada.
         self.world_server.sync_player_inventory(session.session_id, inventory)
+
+        # Sincroniza objetivos collect_item IMEDIATAMENTE após o Inventory
+        # real do servidor mudar (loot é o gatilho mais comum de INV_SYNC).
+        # Antes, o progresso só era recalculado como efeito colateral de
+        # OUTROS eventos de quest (kill, use_skill) passando por
+        # _process_quest_events — pegar um item de quest não disparava nada
+        # por si só, e o contador só atualizava na PRÓXIMA vez que um evento
+        # não relacionado rodasse (ex: o próximo kill) — daí o salto "0 → 2"
+        # relatado por testers (dropou a 1ª presa: não contou; dropou a 2ª:
+        # contou 2 de uma vez). Ver PROBLEMAS_ARQUITETURA.md.
+        from components import QuestLog as _QLinv, Inventory as _InvQuestSync
+        import quest_logic as _qlogic_inv
+        _inv_eid = self.world_server.get_entity_id(session.session_id)
+        _ql_inv  = self.world_server.world.get_component(_inv_eid, _QLinv) \
+                   if _inv_eid != -1 else None
+        if _ql_inv and _ql_inv.active:
+            _inv_comp = self.world_server.world.get_component(_inv_eid, _InvQuestSync)
+            if _qlogic_inv.sync_collect_progress(_ql_inv, _inv_comp):
+                await session.send(MsgType.QUEST_UPDATE, {
+                    "active":    {q: list(p) for q, p in _ql_inv.active.items()},
+                    "completed": list(_ql_inv.completed),
+                })
 
     async def _handle_talent_update(self, session: Session, payload: dict, ts: int) -> None:
         """Salva talentos imediatamente quando um ponto é alocado/desalocado."""
@@ -763,6 +844,15 @@ class SessionManager:
             wall = self.world_server.world.get_component(eid, Wallet)
             if wall:
                 wall.gold += reward.gold
+                # Persistência já estava correta (get_player_save_data lê o
+                # Wallet vivo), mas NADA avisava o cliente — diferente do
+                # bloco de XP logo acima, que já chama queue_stats_update.
+                # Jogador só via o gold certo no próximo relogin (bug real
+                # reportado por testers: "quest dava X gold e não deu").
+                self.world_server.queue_stats_update({
+                    "player_eid": eid,
+                    "gold":       wall.gold,
+                })
 
         # Persiste imediatamente (mesmo padrão de TALENT_UPDATE) — crash do
         # servidor não perde a entrega que já concedeu XP/gold/itens.
@@ -948,7 +1038,7 @@ class SessionManager:
             s2 = self._sessions.get(p.get("session_id", ""))
             if s2:
                 _h, _hm = self.world_server.get_player_hp(s2.session_id)
-                p.update({"name": s2.username,
+                p.update({"name": s2.display_name,
                            "class_id": s2.char_data.get("class_id", "guerreiro"),
                            "hp": _h, "hp_max": _hm,
                            "level": s2.char_data.get("level", 1), "effects": []})
@@ -969,7 +1059,7 @@ class SessionManager:
         _nh, _nhm = self.world_server.get_player_hp(session.session_id)
         await self._broadcast_aoi_except(session, MsgType.ENTITY_SPAWN, {
             "eid": eid, "kind": "player", "tx": tx, "ty": ty,
-            "name":     session.username,
+            "name":     session.display_name,
             "class_id": char_data.get("class_id", "guerreiro"),
             "hp": _nh, "hp_max": _nhm,
             "level":    char_data.get("level", 1), "effects": [],
@@ -1082,6 +1172,166 @@ class SessionManager:
         # Invalida known_eids — entidades do mapa antigo não são mais visíveis
         session.known_eids.clear()
 
+    # ── Trade (player↔player) — ver server/trade_processor.py ────────────────
+
+    async def _broadcast_trade_state(self, trade_id: int) -> None:
+        """Envia TRADE_STATE personalizado (my_*/their_* já resolvidos) pros
+        dois lados de uma sessão de trade ativa."""
+        trade_session = self.world_server._trade_sessions.get(trade_id)
+        if trade_session is None:
+            return
+        for eid in (trade_session.player_a, trade_session.player_b):
+            sid = self.world_server.get_session_id_for_player(eid)
+            sess = self._sessions.get(sid) if sid else None
+            if sess and sess.authenticated:
+                await sess.send(MsgType.TRADE_STATE,
+                                 self.world_server.build_trade_state_payload(trade_session, eid))
+
+    async def _handle_trade_request(self, session: Session, payload: dict, ts: int) -> None:
+        """Player pediu trade a um alvo remoto (Shift+clique no cliente)."""
+        if not session.authenticated:
+            return
+        requester_eid = self.world_server._player_eids.get(session.session_id)
+        if requester_eid is None:
+            return
+        target_eid = int(payload.get("target_eid", -1))
+        reason = self.world_server.request_trade(requester_eid, target_eid)
+        if reason is not None:
+            await session.send(MsgType.TRADE_CANCELLED, {"trade_id": -1, "reason": reason})
+            return
+        target_sid = self.world_server.get_session_id_for_player(target_eid)
+        target_session = self._sessions.get(target_sid) if target_sid else None
+        if target_session and target_session.authenticated:
+            await target_session.send(MsgType.TRADE_INVITE, {
+                "from_eid":  requester_eid,
+                "from_name": session.display_name,
+            })
+
+    async def _respond_trade_invite(self, session: Session, accept: bool) -> None:
+        """Compartilhado por TRADE_ACCEPT/TRADE_DECLINE — só o valor de
+        `accept` muda entre os dois handlers."""
+        if not session.authenticated:
+            return
+        target_eid = self.world_server._player_eids.get(session.session_id)
+        if target_eid is None:
+            return
+        requester_eid, trade_id = self.world_server.respond_trade_invite(target_eid, accept)
+        if requester_eid is None:
+            return  # não havia convite pendente — nada a fazer
+        requester_sid = self.world_server.get_session_id_for_player(requester_eid)
+        requester_session = self._sessions.get(requester_sid) if requester_sid else None
+        if trade_id is None:
+            reason = "declined" if not accept else "invalid"
+            if requester_session and requester_session.authenticated:
+                await requester_session.send(MsgType.TRADE_CANCELLED, {"trade_id": -1, "reason": reason})
+            return
+        await session.send(MsgType.TRADE_OPEN, {
+            "trade_id":  trade_id,
+            "other_eid": requester_eid,
+            "other_name": requester_session.display_name if requester_session else "?",
+        })
+        if requester_session and requester_session.authenticated:
+            await requester_session.send(MsgType.TRADE_OPEN, {
+                "trade_id":   trade_id,
+                "other_eid":  target_eid,
+                "other_name": session.display_name,
+            })
+
+    async def _handle_trade_accept(self, session: Session, payload: dict, ts: int) -> None:
+        await self._respond_trade_invite(session, True)
+
+    async def _handle_trade_decline(self, session: Session, payload: dict, ts: int) -> None:
+        await self._respond_trade_invite(session, False)
+
+    async def _handle_trade_offer_item(self, session: Session, payload: dict, ts: int) -> None:
+        if not session.authenticated:
+            return
+        player_eid = self.world_server._player_eids.get(session.session_id)
+        if player_eid is None:
+            return
+        trade_id = self.world_server._player_trade.get(player_eid)
+        if trade_id is None:
+            return
+        inv_index = int(payload.get("inv_index", -1))
+        if self.world_server.add_trade_item(player_eid, inv_index) is None:
+            await self._broadcast_trade_state(trade_id)
+
+    async def _handle_trade_withdraw_item(self, session: Session, payload: dict, ts: int) -> None:
+        if not session.authenticated:
+            return
+        player_eid = self.world_server._player_eids.get(session.session_id)
+        if player_eid is None:
+            return
+        trade_id = self.world_server._player_trade.get(player_eid)
+        if trade_id is None:
+            return
+        offer_slot = int(payload.get("offer_slot", -1))
+        if self.world_server.withdraw_trade_item(player_eid, offer_slot) is None:
+            await self._broadcast_trade_state(trade_id)
+
+    async def _handle_trade_set_gold(self, session: Session, payload: dict, ts: int) -> None:
+        if not session.authenticated:
+            return
+        player_eid = self.world_server._player_eids.get(session.session_id)
+        if player_eid is None:
+            return
+        trade_id = self.world_server._player_trade.get(player_eid)
+        if trade_id is None:
+            return
+        amount = int(payload.get("amount", -1))
+        if self.world_server.set_trade_gold(player_eid, amount) is None:
+            await self._broadcast_trade_state(trade_id)
+
+    async def _handle_trade_confirm(self, session: Session, payload: dict, ts: int) -> None:
+        if not session.authenticated:
+            return
+        player_eid = self.world_server._player_eids.get(session.session_id)
+        if player_eid is None:
+            return
+        trade_id = self.world_server._player_trade.get(player_eid)
+        if trade_id is None:
+            return
+        status, trade_session = self.world_server.confirm_trade(player_eid)
+        if status == "state":
+            await self._broadcast_trade_state(trade_id)
+        elif status == "executed":
+            for eid, received_items, received_gold in (
+                    (trade_session.player_a, trade_session.offer_b, trade_session.gold_b),
+                    (trade_session.player_b, trade_session.offer_a, trade_session.gold_a)):
+                sid = self.world_server.get_session_id_for_player(eid)
+                sess = self._sessions.get(sid) if sid else None
+                if sess and sess.authenticated:
+                    await sess.send(MsgType.TRADE_RESULT, {
+                        "trade_id":       trade_id,
+                        "received_items": [self.world_server._item_data_from_obj(i) for i in received_items],
+                        "received_gold":  received_gold,
+                    })
+        elif status == "inventory_full":
+            for eid in (trade_session.player_a, trade_session.player_b):
+                sid = self.world_server.get_session_id_for_player(eid)
+                sess = self._sessions.get(sid) if sid else None
+                if sess and sess.authenticated:
+                    await sess.send(MsgType.TRADE_CANCELLED, {"trade_id": trade_id, "reason": "inventory_full"})
+
+    async def _handle_trade_cancel(self, session: Session, payload: dict, ts: int) -> None:
+        if not session.authenticated:
+            return
+        player_eid = self.world_server._player_eids.get(session.session_id)
+        if player_eid is None:
+            return
+        trade_session = self.world_server.get_trade_session(player_eid)
+        if trade_session is None:
+            return
+        other_eid = trade_session.other_of(player_eid)
+        trade_id = self.world_server.cancel_trade(player_eid, "cancelled")
+        if trade_id is None:
+            return
+        await session.send(MsgType.TRADE_CANCELLED, {"trade_id": trade_id, "reason": "cancelled"})
+        other_sid = self.world_server.get_session_id_for_player(other_eid)
+        other_session = self._sessions.get(other_sid) if other_sid else None
+        if other_session and other_session.authenticated:
+            await other_session.send(MsgType.TRADE_CANCELLED, {"trade_id": trade_id, "reason": "cancelled"})
+
     _handlers = {
         MsgType.REGISTER:           _handle_register,
         MsgType.CREATE_CHARACTER:   _handle_create_character,
@@ -1115,6 +1365,14 @@ class SessionManager:
         MsgType.QUEST_ACCEPT:      _handle_quest_accept,
         MsgType.QUEST_TURN_IN:     _handle_quest_turn_in,
         MsgType.ZONE_CHANGE_REQ:   _handle_zone_change_req,
+        MsgType.TRADE_REQUEST:       _handle_trade_request,
+        MsgType.TRADE_ACCEPT:        _handle_trade_accept,
+        MsgType.TRADE_DECLINE:       _handle_trade_decline,
+        MsgType.TRADE_OFFER_ITEM:    _handle_trade_offer_item,
+        MsgType.TRADE_WITHDRAW_ITEM: _handle_trade_withdraw_item,
+        MsgType.TRADE_SET_GOLD:      _handle_trade_set_gold,
+        MsgType.TRADE_CONFIRM:       _handle_trade_confirm,
+        MsgType.TRADE_CANCEL:        _handle_trade_cancel,
     }
 
     # ── AOI subscription — núcleo do sistema ─────────────────────────────────
@@ -1183,7 +1441,19 @@ class SessionManager:
                 update = self._build_update_for_session(session, deltas, tx, ty,
                                                         _mob_positions, _mob_hash)
                 if update:
-                    await session.send(MsgType.AOI_UPDATE, update)
+                    ok = await session.send(MsgType.AOI_UPDATE, update)
+                    if not ok:
+                        # send falhou DEPOIS de _build_update_for_session já ter
+                        # mutado known_eids (spawn/despawn) assumindo entrega —
+                        # sem isso, o servidor acha que o cliente já conhece
+                        # entidades que na real nunca chegaram lá, e todo MOVE
+                        # seguinte pra elas é descartado no cliente pra sempre.
+                        # Reverter a mutação cirurgicamente não é viável aqui
+                        # (entrelaçada com o cálculo do payload); em vez disso,
+                        # zera known_eids — o próximo tick com send bem-sucedido
+                        # trata TUDO que está no raio como "novo" e reenvia os
+                        # ENTITY_SPAWN, resincronizando sozinho.
+                        session.known_eids.clear()
 
             # Mortes de players APÓS AOI_UPDATE: garante que PLAYER_DEATH chega
             # depois do COMBAT_RESULT (hp_after=0) do golpe fatal, sobrescrevendo HP.
@@ -1292,6 +1562,17 @@ class SessionManager:
                                                expired.get("map")):
                     await s.send(MsgType.ENTITY_DESPAWN, despawn_payload)
                     s.known_eids.discard(-cid)
+
+            # Trades cancelados por distância neste tick — avisa os dois lados
+            for _trd_cancel in self.world_server.consume_trade_cancellations():
+                for _trd_eid in (_trd_cancel["player_a"], _trd_cancel["player_b"]):
+                    _trd_sid = self.world_server.get_session_id_for_player(_trd_eid)
+                    _trd_sess = self._sessions.get(_trd_sid) if _trd_sid else None
+                    if _trd_sess and _trd_sess.authenticated:
+                        await _trd_sess.send(MsgType.TRADE_CANCELLED, {
+                            "trade_id": _trd_cancel["trade_id"],
+                            "reason":   _trd_cancel["reason"],
+                        })
 
             # Eventos de som posicionais (aggro de mob, etc.) → broadcast AOI
             for _snd_ev in self.world_server.consume_sound_events():
@@ -1592,7 +1873,7 @@ class SessionManager:
                     "eid":      other_eid,
                     "kind":     "player",
                     "tx":       ox, "ty": oy,
-                    "name":     other_session.username,
+                    "name":     other_session.display_name,
                     "class_id": other_session.char_data.get("class_id", "guerreiro"),
                     "hp":       _hp,
                     "hp_max":   _hp_max,

@@ -52,6 +52,51 @@ CLASS_ARMOR_ALLOWED: dict[str, frozenset] = {
     "mago":      frozenset({"tecido"}),
 }
 
+
+def is_weapon_allowed_for_class(item, class_id: str) -> bool:
+    """Restrição de arma/offhand por classe — equivalente de CLASS_ARMOR_ALLOWED
+    pra arma (mainhand) e escudo/aljava (offhand). Único ponto de verdade:
+    client (`_equip_item`, feedback imediato) e servidor
+    (`update_player_equipment`, autoritativo) chamam esta função — nunca
+    reimplementar a checagem em outro lugar.
+
+    Regras (decisão do usuário, 07/07/2026):
+      guerreiro — só não pode Bow (mainhand) nem quiver (offhand). Todo o
+                  resto (inclusive Wand/Staff/Scepter) é usado como arma
+                  melee — mesmo caminho de deal_damage("physical") que já
+                  existe, sem checagem extra aqui.
+      arqueiro  — só não pode escudo (offhand). Bow ativa o auto-attack
+                  ranged; qualquer outra arma (inclusive Wand/Staff/Scepter)
+                  vira melee — já implementado no dispatcher client/server.
+      mago      — sem Bow/quiver, sem Axe/Mace/Hammer/Club (armas físicas
+                  pesadas). Sword só se for de UMA mão (two_handed=False) —
+                  Dagger sempre permitida. Wand/Staff/Scepter sempre
+                  permitidas (Staff/Scepter são de duas mãos por definição
+                  do próprio item — bloqueiam escudo sozinhas, via
+                  is_offhand_locked(), sem precisar de regra extra aqui).
+    """
+    item_type  = getattr(item, "item_type", "")
+    subtype    = getattr(item, "subtype", "")
+    two_handed = getattr(item, "two_handed", False)
+
+    if class_id == "guerreiro":
+        if item_type == "quiver" or (item_type == "weapon" and subtype == "Bow"):
+            return False
+        return True
+    if class_id == "arqueiro":
+        if item_type == "shield":
+            return False
+        return True
+    if class_id == "mago":
+        if item_type == "quiver" or (item_type == "weapon" and subtype == "Bow"):
+            return False
+        if item_type == "weapon" and subtype in ("Axe", "Mace", "Hammer", "Club"):
+            return False
+        if item_type == "weapon" and subtype == "Sword" and two_handed:
+            return False
+        return True
+    return True  # classe desconhecida — sem restrição (não deveria acontecer)
+
 # HP base fixo por classe (antes dos ganhos de VIT).
 CLASS_BASE_HP: dict[str, int] = {
     "guerreiro": 180,

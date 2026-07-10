@@ -166,7 +166,7 @@ Esses atributos existem na classe `Skill.__init__` (`fail_flash_timer` está lá
 |-----------|--------|-------|
 | `Inventory(items[], max_slots=20)` | lista de Items | |
 | `Equipment(slots{slot→Item})` | 9 slots de equipamento | mainhand, offhand, head, chest, shoulders, gloves, boots, wrists, ring, neck |
-| `Item(name, item_type, slot, modifiers[], rarity, value, damage_min/max, attack_speed, proc, consumable, armor_class)` | item de jogo | `armor_class`: "placa"/"couro"/"tecido"/"" — restrição via `CLASS_ARMOR_ALLOWED` |
+| `Item(name, item_type, slot, modifiers[], rarity, value, damage_min/max, attack_speed, proc, consumable, armor_class, item_level, level_requirement, description)` | item de jogo | `armor_class`: "placa"/"couro"/"tecido"/"" — restrição via `CLASS_ARMOR_ALLOWED`, validada no servidor em `update_player_equipment` (07/07/2026). Arma/escudo/aljava (subtype + item_type) têm restrição equivalente via `stats_system.is_weapon_allowed_for_class` (07/07/2026) — mesmo ponto de validação. `rarity`: common/uncommon/rare/epic/legendary/mythic. `item_level`: exibição, derivado de (rarity, value) via `item_table._derive_item_level`. `level_requirement`: bloqueia equipar de verdade (servidor rejeita com `EQUIP_REJECTED`); todo item do catálogo está em 1 por enquanto (ajuste manual futuro). `description`: texto livre opcional, exibido no rodapé do tooltip. |
 | `Modifier(attribute, value, type)` | modificador de stat | type: "flat" ou "percentage" |
 | `Wallet(gold)` | ouro do jogador | **Online:** sincronizado no save via `_build_save_merge` (cliente autoritativo) |
 | `ConsumableBar(slots[], keybinds[], global_cooldown)` | barra de consumíveis | `GCD_DURATION = 1.5s` |
@@ -241,9 +241,10 @@ Como é usado:
 
 | Componente | Campos | Notas |
 |-----------|--------|-------|
-| `UIState(show_inventory, show_talents)` | visibilidade de painéis | player entity |
+| `UIState(show_inventory, show_talents, chat_active)` | visibilidade de painéis + campo de chat focado | player entity; `chat_active` é lido por `PlayerInputSystem` (bloqueia WASD, que usa `pygame.key.get_pressed()` e por isso escapa do filtro de `systems_events`) |
 | `ShopUIState(open_merchant_id)` | qual loja está aberta | `is_open` property |
 | `LootUIState(open_corpse_id)` | qual cadáver está aberto | |
+| `TradeUIState(trade_id, other_eid/name, my_offer[], their_offer[], my_gold, their_gold, my_confirmed, their_confirmed, pending_invite_from_*, awaiting_response_to_*, popup_target_*)` | estado do trade player↔player | `is_open` property; ver `server/trade_processor.py` (autoridade) e `client/trade_handlers.py` (UI) |
 
 ---
 

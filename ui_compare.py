@@ -18,10 +18,12 @@ from __future__ import annotations
 import pygame
 
 RARITY_COLORS = {
-    "common":   (200, 200, 200),
-    "uncommon": ( 30, 200,  30),
-    "rare":     ( 80, 140, 255),
-    "epic":     (180,  50, 255),
+    "common":    (200, 200, 200),
+    "uncommon":  ( 30, 200,  30),
+    "rare":      ( 80, 140, 255),
+    "epic":      (180,  50, 255),
+    "legendary": (224, 135,  47),
+    "mythic":    (221,  68,  68),
 }
 
 _ATTR_LABELS = {
@@ -94,7 +96,7 @@ def draw_compare_panel(
     cy = y + _PAD
 
     # Label
-    lbl = font_sm.render("Equipado atualmente", True, (130, 110, 80))
+    lbl = font_sm.render("Equipado atualmente", False, (130, 110, 80))
     screen.blit(lbl, (x + _PAD, cy))
     cy += lbl_h
 
@@ -108,15 +110,15 @@ def draw_compare_panel(
         else:
             pygame.draw.rect(screen, rc, icon_r, border_radius=2)
         name_col  = RARITY_COLORS.get(equipped_item.rarity, (200, 200, 200))
-        name_surf = font_md.render(equipped_item.name[:16], True, name_col)
-        rar_surf  = font_sm.render(equipped_item.rarity.capitalize(), True, name_col)
+        name_surf = font_md.render(equipped_item.name[:16], False, name_col)
+        rar_surf  = font_sm.render(equipped_item.rarity.capitalize(), False, name_col)
         screen.blit(name_surf, (icon_r.right + _PAD, cy))
         screen.blit(rar_surf,  (icon_r.right + _PAD, cy + name_surf.get_height() + 2))
     else:
         pygame.draw.rect(screen, (40, 30, 20), icon_r, border_radius=2)
         pygame.draw.rect(screen, (65, 48, 35), icon_r, 1, border_radius=2)
-        screen.blit(font_md.render("Slot vazio",      True, (90, 75, 55)),  (icon_r.right + _PAD, cy))
-        screen.blit(font_sm.render("(nada equipado)", True, (75, 60, 45)),
+        screen.blit(font_md.render("Slot vazio", False, (90, 75, 55)),  (icon_r.right + _PAD, cy))
+        screen.blit(font_sm.render("(nada equipado)", False, (75, 60, 45)),
                     (icon_r.right + _PAD, cy + font_md.get_height() + 2))
 
     cy += _ICON_S + _PAD
@@ -130,8 +132,8 @@ def draw_compare_panel(
         if equipped_item and equipped_item.item_type == "weapon":
             hand = "Two Hand" if equipped_item.two_handed else "One Hand"
             sub  = equipped_item.subtype if equipped_item.subtype else "Weapon"
-            screen.blit(font_sm.render(hand, True, (160, 130, 80)), (x + _PAD, cy))
-            sub_s = font_sm.render(sub, True, (200, 200, 200))
+            screen.blit(font_sm.render(hand, False, (160, 130, 80)), (x + _PAD, cy))
+            sub_s = font_sm.render(sub, False, (200, 200, 200))
             screen.blit(sub_s, (x + _W - _PAD - sub_s.get_width(), cy))
         cy += _ROW_H
 
@@ -140,7 +142,7 @@ def draw_compare_panel(
     DIFF_X = x + _PAD + 165
 
     if not all_attrs:
-        screen.blit(font_sm.render("(sem atributos)", True, (100, 90, 75)), (x + _PAD, cy))
+        screen.blit(font_sm.render("(sem atributos)", False, (100, 90, 75)), (x + _PAD, cy))
         return
 
     for attr in all_attrs:
@@ -187,7 +189,7 @@ def draw_compare_panel(
             else:
                 d_str, d_col = "=", (140, 140, 140)
 
-        screen.blit(font_sm.render(short,   True, (165, 155, 140)), (x + _PAD, cy))
-        screen.blit(font_sm.render(val_str, True, val_col),          (VAL_X,   cy))
-        screen.blit(font_sm.render(d_str,   True, d_col),            (DIFF_X,  cy))
+        screen.blit(font_sm.render(short, False, (165, 155, 140)), (x + _PAD, cy))
+        screen.blit(font_sm.render(val_str, False, val_col),          (VAL_X,   cy))
+        screen.blit(font_sm.render(d_str, False, d_col),            (DIFF_X,  cy))
         cy += _ROW_H

@@ -95,14 +95,14 @@ class HotbarEditorHandlers:
         pygame.draw.rect(self.screen, (90, 72, 44), (ppx, ppy, PW, PH), 2, border_radius=8)
 
         # Título
-        title_s = self.font_md.render("Atalhos do teclado", True, (220, 190, 110))
+        title_s = self.font_md.render("Atalhos do teclado", False, (220, 190, 110))
         self.screen.blit(title_s, (ppx + PW // 2 - title_s.get_width() // 2, ppy + self._u(12)))
 
         # ── Cabeçalho de colunas ──────────────────────────────────────────
         cy = ppy + self._u(42)
-        self.screen.blit(self.font_sm.render("Ação", True, (150, 135, 85)),
+        self.screen.blit(self.font_sm.render("Ação", False, (150, 135, 85)),
                          (COL_NAME, cy))
-        self.screen.blit(self.font_sm.render("Tecla", True, (150, 135, 85)),
+        self.screen.blit(self.font_sm.render("Tecla", False, (150, 135, 85)),
                          (COL_KEY + KEY_W // 2 - self._u(22), cy))
         cy += self._u(20)
         pygame.draw.line(self.screen, (72, 58, 32), (ppx + self._u(12), cy), (ppx + PW - self._u(12), cy))
@@ -110,7 +110,7 @@ class HotbarEditorHandlers:
 
         def draw_section(label, color=(185, 158, 80)):
             nonlocal cy
-            s = self.font_sm.render(label, True, color)
+            s = self.font_sm.render(label, False, color)
             self.screen.blit(s, (COL_NAME, cy))
             cy += self._u(20)
             pygame.draw.line(self.screen, (60, 48, 28),
@@ -123,7 +123,7 @@ class HotbarEditorHandlers:
             if alt:
                 pygame.draw.rect(self.screen, (34, 28, 16),
                                  (ppx + self._u(10), cy, PW - self._u(20), ROW_H - self._u(2)), border_radius=2)
-            name_s = self.font_sm.render(row_label, True, (205, 192, 150))
+            name_s = self.font_sm.render(row_label, False, (205, 192, 150))
             self.screen.blit(name_s, (COL_NAME, cy + (ROW_H - name_s.get_height()) // 2))
 
             waiting  = (self._mkb_rebind == key_id)
@@ -140,7 +140,7 @@ class HotbarEditorHandlers:
 
             pygame.draw.rect(self.screen, bg, kr, border_radius=4)
             pygame.draw.rect(self.screen, bd, kr, 1, border_radius=4)
-            ks = self.font_sm.render(kt, True, kc)
+            ks = self.font_sm.render(kt, False, kc)
             self.screen.blit(ks, ks.get_rect(center=kr.center))
             if clicked and hov and not waiting:
                 self._mkb_rebind = key_id
@@ -179,7 +179,7 @@ class HotbarEditorHandlers:
             hov  = br.collidepoint(mx, my)
             pygame.draw.rect(self.screen, bhover if hov else bcolor, br, border_radius=6)
             pygame.draw.rect(self.screen, (120, 100, 55), br, 1, border_radius=6)
-            bs   = self.font_sm.render(blabel, True, (220, 205, 150))
+            bs   = self.font_sm.render(blabel, False, (220, 205, 150))
             self.screen.blit(bs, bs.get_rect(center=br.center))
             if clicked and hov:
                 self._save_config()
@@ -190,8 +190,8 @@ class HotbarEditorHandlers:
         # Dica
         if self._mkb_rebind:
             hint = self.font_xs.render(
-                "Pressione a nova tecla  |  ESC para cancelar", True, (200, 180, 80))
+                "Pressione a nova tecla  |  ESC para cancelar", False, (200, 180, 80))
         else:
             hint = self.font_xs.render(
-                "Clique na tecla para rebindear  |  ESC para fechar", True, (90, 82, 56))
+                "Clique na tecla para rebindear  |  ESC para fechar", False, (90, 82, 56))
         self.screen.blit(hint, hint.get_rect(centerx=ppx + PW // 2, y=btn_y - self._u(18)))

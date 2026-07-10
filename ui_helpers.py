@@ -31,10 +31,12 @@ def fill_surf(size: tuple, rgba: tuple):
 
 
 RARITY_COLORS = {
-    "common":   (200, 200, 200),
-    "uncommon": (80, 200, 80),
-    "rare":     (80, 120, 255),
-    "epic":     (180, 80, 220),
+    "common":    (200, 200, 200),
+    "uncommon":  (80, 200, 80),
+    "rare":      (80, 120, 255),
+    "epic":      (180, 80, 220),
+    "legendary": (224, 135, 47),
+    "mythic":    (221, 68, 68),
 }
 
 
@@ -71,23 +73,40 @@ def draw_stack_count(surf, item, rect, font) -> None:
     stack = getattr(item, "stack", 1)
     text  = f"x{stack}"
     # Sombra para legibilidade sobre qualquer cor de fundo
-    shadow = font.render(text, True, (0, 0, 0))
-    label  = font.render(text, True, (255, 255, 255))
+    shadow = font.render(text, False, (0, 0, 0))
+    label  = font.render(text, False, (255, 255, 255))
     x = rect.right  - label.get_width()  - 2
     y = rect.bottom - label.get_height() - 1
     surf.blit(shadow, (x + 1, y + 1))
     surf.blit(label,  (x, y))
 
 
-def item_tooltip_lines(item):
+# Atributos guardados como fração 0..1 no Modifier (ex: crit_rating=0.06) —
+# mostrar como inteiro percentual (+6%), nunca a fração crua (+0.06). Os
+# demais ratings (dodge/parry/block/haste) já são pontos inteiros na fonte
+# dos dados (ver stat_fns._STAT_CLAMPS) — não precisam dessa conversão.
+_PERCENT_FRACTION_ATTRS = frozenset({"crit_rating"})
+
+_MATERIAL_LABELS = {"placa": "Placa", "couro": "Couro", "tecido": "Tecido"}
+
+
+def item_tooltip_lines(item, viewer_class_id: str | None = None):
     """
     Build tooltip body lines for an item.
     Returns a list of either:
       (text, color)                              -- single-column line
       ((left_text, left_color), (right_text, right_color))  -- two-column line
     The title (item.name) is NOT included; pass it separately to _draw_tooltip.
+
+    viewer_class_id: classe do personagem que está vendo o tooltip (dono do
+    inventário sendo olhado, sempre o player local) — usada só pra colorir a
+    linha de material de armadura (verde/vermelho conforme
+    stats_system.CLASS_ARMOR_ALLOWED). None = sem checagem (mostra neutro).
     """
     lines = []
+
+    rar_col = RARITY_COLORS.get(item.rarity, (200, 200, 200))
+    lines.append((f"Raridade: {item.rarity.capitalize()}", rar_col))
 
     consumable = getattr(item, "consumable", None)
 
@@ -147,15 +166,36 @@ def item_tooltip_lines(item):
                 dmg_str = f"{item.damage_min} - {item.damage_max} Damage"
                 spd_str = f"Speed {item.attack_speed:.1f}"
                 lines.append(((dmg_str, (200, 180, 100)), (spd_str, (200, 180, 100))))
+    elif item.item_type == "shield":
+        hand = "Two Hand" if item.two_handed else "Off Hand"
+        if viewer_class_id is not None:
+            from stats_system import is_weapon_allowed_for_class
+            shield_col = (80, 220, 80) if is_weapon_allowed_for_class(item, viewer_class_id) else (220, 80, 80)
+        else:
+            shield_col = (200, 200, 200)
+        lines.append(((hand, (160, 130, 80)), ("Escudo", shield_col)))
+    elif item.item_type == "armor":
+        mat = getattr(item, "armor_class", "")
+        mat_label = _MATERIAL_LABELS.get(mat, mat or "—")
+        if mat and viewer_class_id is not None:
+            from stats_system import CLASS_ARMOR_ALLOWED
+            allowed = mat in CLASS_ARMOR_ALLOWED.get(viewer_class_id, frozenset())
+            mat_col = (80, 220, 80) if allowed else (220, 80, 80)
+        else:
+            mat_col = (200, 200, 200)
+        slot_label = item.slot.capitalize() if item.slot else "—"
+        lines.append(((slot_label, (160, 130, 80)), (mat_label, mat_col)))
     else:
         lines.append((f"Slot: {item.slot}", (160, 130, 80)))
 
-    rar_col = RARITY_COLORS.get(item.rarity, (200, 200, 200))
-    lines.append((f"Raridade: {item.rarity.capitalize()}", rar_col))
+    item_level = getattr(item, "item_level", 1)
+    lines.append((f"Nível do Item {item_level}", (217, 172, 66)))
 
     for m in item.modifiers:
         val = m.value
-        if isinstance(val, float) and val == int(val):
+        if m.attribute in _PERCENT_FRACTION_ATTRS:
+            val_str = f"+{round(val * 100)}%"
+        elif isinstance(val, float) and val == int(val):
             val_str = f"+{int(val)}"
         elif isinstance(val, float):
             val_str = f"+{val:.2f}"
@@ -163,8 +203,17 @@ def item_tooltip_lines(item):
             val_str = f"+{val}"
         lines.append((f"{val_str} {m.attribute}", (130, 200, 130)))
 
+    level_req = getattr(item, "level_requirement", 1)
+    lines.append((f"Requer Nível {level_req}", (170, 160, 145)))
+
     if item.proc:
         chance_pct = int(item.proc.get("chance", 0) * 100)
         lines.append((f"Proc ({chance_pct}%): {item.proc['label']}", (180, 120, 220)))
+
+    lines.append((f"Valor de venda: {item.value}g", (150, 130, 90)))
+
+    description = getattr(item, "description", "")
+    if description:
+        lines.append((description, (150, 140, 160)))
 
     return lines

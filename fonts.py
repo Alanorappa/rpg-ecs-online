@@ -55,13 +55,16 @@ def _path() -> str | None:
 
 
 class CachedFont(pygame.font.Font):
-    """pygame.font.Font com memoização de render(text, True, color).
+    """pygame.font.Font com memoização de render(text, antialias, color).
 
     - Cache por instância: fontes recriadas na troca de escala de UI
       (UIScaleMixin.set_ui_scale / GameEngine._reload_ui_fonts) começam
       com cache vazio — invalidação automática, sem estado global.
-    - Só cacheia o caso quente (antialias=True, sem background); chamadas
-      com background delegam direto pra Font.render.
+    - Cacheia sempre que não há `background` (chave inclui `antialias` pra
+      não misturar variantes) — visual pixelizado do jogo usa
+      antialias=False em 100% dos call sites (08/07/2026), então é o caso
+      quente de verdade; chamadas com background delegam direto pra
+      Font.render (raras, não vale cachear).
     - _CACHE_MAX limita memória: textos dinâmicos (timers, contadores)
       churnam o cache; ao estourar, limpa tudo (mais simples e mais rápido
       que LRU — o refill é barato e o estouro é raro).
@@ -73,10 +76,10 @@ class CachedFont(pygame.font.Font):
         super().__init__(*args, **kwargs)
         self._text_cache: dict = {}
 
-    def render(self, text, antialias=True, color=(255, 255, 255), background=None):
-        if background is not None or not antialias:
+    def render(self, text, antialias=False, color=(255, 255, 255), background=None):
+        if background is not None:
             return super().render(text, antialias, color, background)
-        key = (text, color if not isinstance(color, list) else tuple(color))
+        key = (text, color if not isinstance(color, list) else tuple(color), antialias)
         surf = self._text_cache.get(key)
         if surf is None:
             if len(self._text_cache) >= self._CACHE_MAX:

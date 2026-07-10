@@ -242,6 +242,173 @@ O contador `zone._pending_spawns` (atributo dinâmico adicionado em runtime) é 
 a cada spawn tentado e decrementado no próximo ciclo. Sem isso, uma zona poderia spawnar
 `max_count` mobs num único tick após respawn.
 
+### 15. Catálogo de itens único — `item_table.py` (07/07/2026)
+
+Antes desta data, itens eram definidos em até 3 lugares (`loot_tables.py`,
+`merchant_data.py`, `crafting_data.py`) — 3 nomes ("Espada de Ferro", "Grevas
+de Ferro", "Luvas de Couro") já tinham divergido de verdade (raridade/dano/
+valor/mods diferentes dependendo de onde vinham comprados vs. dropados).
+
+`item_table.py` agora é o catálogo único pra tudo que é loot ou vendido em
+loja (`ITEMS` dict — 126 entradas). `loot_tables.py` mantém só as tabelas de
+drop (`LOOT_TABLES`, `roll_loot`, `roll_mob_loot`) e reexporta `ITEMS` como
+`_T` (compat — nada mais no código precisou mudar). `merchant_data.py` só
+lista quais `item_table.ITEMS[...]` aparecem em cada loja e por quanto.
+`crafting_data.py` fica de fora (materiais/receitas são exclusivos de
+crafting, nunca duplicados em outro catálogo).
+
+`Item` ganhou `item_level` (exibição, derivado de rarity+value via
+`item_table._derive_item_level` — sem precisar tocar cada factory),
+`level_requirement` (bloqueio real de equip — todo item em 1 por enquanto,
+ajuste manual futuro) e `description` (texto livre opcional). Raridade
+ganhou `legendary`/`mythic` (cor laranja/vermelho) em todos os mapas de cor
+do cliente + `crafting_data.RARITY_RECYCLE_COST`/`RECYCLE_TABLE`.
+
+**Bloqueio de equip server-autoritativo:** `update_player_equipment`
+(`server/world_server.py`) agora valida `armor_class` (`CLASS_ARMOR_ALLOWED`)
+e `level_requirement` por slot ANTES de aplicar — fechando uma brecha que só
+existia como check client-side (`_equip_item`, nunca validado no servidor).
+Slot que falha não é aplicado; servidor responde `EQUIP_REJECTED` (ver
+tabela de mensagens) e o cliente reverte a UI otimista.
+
+### 16. Sistema de trade (player↔player) — 08/07/2026
+
+Shift+clique esquerdo num player remoto abre um mini-popup local (sem rede)
+com botão "Trade"; aceitar/recusar convite e a janela de troca em si (5
+slots + gold por lado, confirmar/cancelar) seguem o mesmo modelo WoW.
+Autoridade total no servidor — `server/trade_processor.py`
+(`TradeProcessorMixin` + `TradeSession`, sem ECS, mesmo nível de
+bookkeeping que `_corpses`/`_mob_damage_log` em `WorldServer`).
+
+**Custódia imediata:** item ofertado é REMOVIDO da `Inventory` real na hora
+(não só "travado") e gold ofertado é debitado da `Wallet` na hora — fica em
+custódia na `TradeSession` até confirmar (soma no destinatário) ou cancelar
+(devolve ao dono original). Elimina de graça qualquer chance de vender/
+equipar/usar o item ofertado durante o trade, sem checagem extra em nenhum
+sistema existente. Cliente nunca muta a Inventory/Wallet local
+otimisticamente — só reflete depois que `TRADE_STATE`/`TRADE_RESULT`/
+`TRADE_CANCELLED` confirmam (mesmo racional do `EQUIP_REJECTED`), via
+diff-por-nome (multiset, `collections.Counter`) entre a oferta antiga e a
+nova em `client/network_handlers.py::_handle_msg_trade_state`.
+
+**Distância máxima** (`TRADE_MAX_DIST_TILES`, `shared/constants.py`) checada
+1×/tick (`WorldServer._tick_trade_distance_check`, chebyshev, mesmo mapa) —
+sair do alcance cancela e devolve tudo (`reason="distance"`). Desconexão de
+qualquer um dos dois lados durante um trade ativo também cancela e avisa o
+outro (`server/session.py::on_disconnect`). Confirmar reseta ao MUDAR
+qualquer oferta (item ou gold, de qualquer lado), igual WoW. Execução final
+valida espaço de `Inventory` nos DOIS lados antes de aplicar — mochila cheia
+recusa com `reason="inventory_full"` sem perder nada de ninguém.
+
+Cliente: `client/trade_handlers.py` (mixin, popup/invite/janela),
+`ui_components.TradeUIState` (componente ECS no player, mesmo padrão de
+`ShopUIState`/`LootUIState`). Colocar item na oferta é clique DIREITO no
+item da bag (não drag — `DragState` só cobre skill/consumível), mesmo
+padrão já usado em `crafting_system.py::_handle_bag_rclick`.
+
+**Layout da janela (08/07/2026, revisado por feedback visual):** a própria
+bag (20 slots, 4×5) é renderizada DENTRO da janela de trade — não é mais um
+painel de Inventory separado sobreposto (ficava impossível arrastar/ofertar
+item com as duas janelas competindo pelo mesmo espaço). Ao lado da bag, 2
+colunas de 5 slots alinhadas às linhas da bag: "minha oferta" (gold
+editável num retângulo acima + itens ofertados, clique direito num slot
+ofertado retira) e "oferta do outro" (read-only, mesmo formato). Cada
+jogador só vê a PRÓPRIA bag — nunca a do outro, que só aparece via sua
+coluna de oferta (já era assim no protocolo, `their_offer` nunca inclui a
+bag inteira). Botão "Negociar" (confirma) + "Cancelar"; ao confirmar, uma
+layer verde semi-transparente cobre a coluna de quem confirmou — dos dois
+lados quando ambos confirmam.
+
+### 17. Chat de texto — cliente implementado (08/07/2026)
+
+O protocolo (`CHAT_SEND`/`CHAT_MESSAGE`) e o handler do servidor
+(`server/session.py::_handle_chat`) já existiam de uma sessão anterior —
+faltava o CLIENTE de verdade (campo pra digitar, log na tela, balão de
+fala). Servidor continua 100% autoritativo e inalterado: valida
+`channel` (`"local"` → AOI via `_broadcast_aoi_from_session`, `"world"` →
+todos), corta o texto em 200 chars, e o AOI **sempre inclui o próprio
+remetente** — por isso o cliente nunca ecoa a mensagem otimisticamente,
+só reflete quando o `CHAT_MESSAGE` confirmado chega de volta (mesmo
+racional de EQUIP_REJECTED/trade).
+
+Cliente v1: Enter abre o campo, digita, Enter de novo manda `CHAT_SEND` com
+`channel="local"` fixo (sem seletor de canal). Log era um único histórico
+de 50 mensagens, sempre visível no canto inferior esquerdo. **Substituído
+pelo redesign com abas (08/07/2026) descrito logo abaixo** — mantido aqui
+só o histórico da decisão original.
+
+**Achado no caminho — WASD escapa do filtro de `systems_events`:** o
+filtro genérico que bloqueia KEYDOWN/clique dos sistemas ECS quando um
+modal está aberto (`modal_stack_handlers.py`, reaproveitado aqui
+registrando `"chat"` no registry) NÃO bloqueia movimento, porque
+`PlayerInputSystem` lê `pygame.key.get_pressed()` direto (estado bruto
+do teclado), não os eventos KEYDOWN da lista filtrada — digitar "w"/"a"/
+"s"/"d" numa mensagem também moveria o personagem. Fix: `UIState` ganhou
+`chat_active` (componente ECS, acessível de qualquer sistema sem
+referência direta — mesmo racional de `show_inventory`/`show_talents`);
+`PlayerInputSystem` checa esse campo e força `can_move = False` enquanto
+o chat está focado. Balão de fala resolve o remetente pro eid local via
+nome (`RemoteControlled.name` pra players remotos, `_logged_char_name`
+pro próprio) — mobs/NPCs nunca mandam chat, então não precisam de match.
+
+Validado (headless): suíte completa sem regressão (9F/83P — chat
+server-side já existia e não foi alterado).
+
+**Não validado:** passada manual com 2 clientes reais (campo de
+digitação, balão de fala seguindo o personagem andando, WASD realmente
+bloqueado durante a digitação).
+
+### 18. Chat com abas (Local/Mundial/Combate) — redesign (08/07/2026)
+
+A v1 (item 17) tinha só 1 canal e nenhum histórico de verdade. Redesenho
+pra 3 abas — mesmo padrão visual de `client/debug_handlers.py`
+(`self._chat_tab` + `self._chat_tab_buttons` construído no draw, checado
+no clique): **Local** (AOI, igual antes), **Mundial** (o protocolo já
+suportava `channel="world"` desde sempre — só nunca teve UI: aba nova
+manda `CHAT_SEND` com esse canal), **Combate** (não é chat — é
+`combat_log.py`, ver abaixo). Histórico de até **500 entradas POR ABA**
+(3 deques independentes, não 1 total somado), scrollbar (track+thumb,
+mesmo padrão de `LootSystem` em `systems.py`) e quebra de linha
+(`ui_helpers.wrap_text`, já usada em tooltips).
+
+**`combat_log.py` deixou de ser popup flutuante — virou histórico
+persistente lido pela aba Combate.** Antes: `deque(maxlen=8)` com timer de
+fade (8s + 2s), desenhado perto do HUD via `LOG.update(dt)`/`LOG.draw(...)`
+(removidos de `game.py`). Agora: `deque(maxlen=500)`, sem timer/fade,
+nova property `LOG.entries` (read-only) que a aba Combate lê direto.
+**`LOG.add(text, color)` manteve a MESMA assinatura** — os ~145
+call-sites espalhados por `skill_handlers.py`/`spell_system.py`/
+`world_systems.py`/etc. (dano, cura, proc, loot) não mudaram NADA, só
+chamam `.add()` e nunca liam estado interno. Decisão do usuário: remover
+o popup flutuante de vez (sem redundância com a aba nova) — não os dois
+juntos.
+
+**Scroll ancorado no FUNDO (não no topo, diferente de outras listas do
+projeto):** `_chat_scroll[aba] = 0` sempre mostra as mensagens mais
+recentes (segue o chat automaticamente); rolar a roda pra cima
+AUMENTA o scroll (revela histórico mais antigo) — convenção oposta à de
+listas ancoradas no topo tipo `debug_handlers.py::_debug_item_scroll`
+(lá, `scroll=0` é o INÍCIO da lista, rolar pra cima diminui). Cada aba
+lembra seu próprio scroll ao trocar de aba.
+
+Aba Combate nunca abre campo de digitação (`_open_chat_input` vira no-op
+se `self._chat_tab == "combat"`) — é só leitura.
+
+**Persistência em arquivo:** avaliada e descartada por enquanto (não é
+requisito) — cap de 500/aba já resolve memória; fica registrado como
+ideia de v2 se um dia fizer falta (suporte a jogador, revisar log após
+fechar o jogo).
+
+Validado (headless): `combat_log.py` cap de 500 + ordem + assinatura de
+`add()` preservada; lógica de `chat_handlers.py` (clique fora da janela
+não consome, clique em aba troca `_chat_tab`, aba Combate bloqueia input,
+geração de linhas com wrap, scroll segue mensagem mais recente em
+scroll=0, direção do scroll, aba Combate lê `LOG.entries`). Suíte
+completa sem regressão (9F/83P — zero mudança server-side).
+
+**Não validado:** passada manual com o jogo rodando (visual das 3 abas,
+scrollbar arrastando de verdade, canal Mundial com 2 clientes reais).
+
 ---
 
 ## Protocolo — todas as mensagens implementadas
@@ -277,7 +444,8 @@ a cada spawn tentado e decrementado no próximo ciclo. Sem isso, uma zona poderi
 | S→C | `PLAYER_REVIVE` | tx, ty, hp, hp_max, mana, max_mana — revive (cemitério ou corpo) | ✅ |
 | S→C | `GHOST_STATE` | is_ghost, near_corpse, graveyard_timer — sync do estado do espírito | ✅ |
 | C→S | `PLAYER_STAT_SYNC` | OBSOLETO — handler é no-op, servidor deriva stats de Equipment/TalentTree | ✅ |
-| C→S | `EQUIP_SYNC` | equipment: {slot→item_dict} — enviado em equip/unequip; servidor reconstrói Equipment ECS | ✅ |
+| C→S | `EQUIP_SYNC` | equipment: {slot→item_dict} — enviado em equip/unequip; servidor reconstrói Equipment ECS, valida armor_class (`CLASS_ARMOR_ALLOWED`) e level_requirement por slot antes de aplicar | ✅ |
+| S→C | `EQUIP_REJECTED` | slot, item_name, reason ("class"\|"level") — servidor recusou um slot do último EQUIP_SYNC (07/07/2026); cliente reverte slot pra bag e avisa | ✅ |
 | C→S | `SAVE_STATE` | inventory, equipment, talents, skills, stats{gold, max_hp} | ✅ |
 | C→S | `PING` / S→C `PONG` | client_ts / {client_ts, server_ts} | ✅ |
 | C→S | `CHAT_SEND` / S→C `CHAT_MESSAGE` | text, channel, color | ✅ |
@@ -289,6 +457,18 @@ a cada spawn tentado e decrementado no próximo ciclo. Sem isso, uma zona poderi
 | C→S | `ZONE_CHANGE_REQ` | `{to_map, target_x, target_y}` — player pisou em tile de transição | ✅ |
 | S→C | `ZONE_CHANGE` | `{map_file, target_x, target_y}` — confirma troca; cliente executa `_do_transition` | ✅ |
 | C→S | `ENTER_INSTANCE` | instâncias (dungeons/raids) — ver `zone_manager.py` (pendente) | 🔲 |
+| C→S | `TRADE_REQUEST` | `{target_eid}` — Shift+clique num player remoto, botão "Trade" do popup | ✅ |
+| S→C | `TRADE_INVITE` | `{from_eid, from_name}` — só ao alvo | ✅ |
+| C→S | `TRADE_ACCEPT` / `TRADE_DECLINE` | `{}` — resposta ao convite pendente | ✅ |
+| S→C | `TRADE_OPEN` | `{trade_id, other_eid, other_name}` — pros dois, ao aceitar | ✅ |
+| C→S | `TRADE_OFFER_ITEM` | `{inv_index}` — oferta item da própria Inventory (clique direito na bag) | ✅ |
+| C→S | `TRADE_WITHDRAW_ITEM` | `{offer_slot}` — retira item da própria oferta | ✅ |
+| C→S | `TRADE_SET_GOLD` | `{amount}` — substitui o gold ofertado (débito/crédito da diferença) | ✅ |
+| S→C | `TRADE_STATE` | `{trade_id, my_offer[], my_gold, their_offer[], their_gold, my_confirmed, their_confirmed}` — personalizado por lado, a cada mudança de oferta | ✅ |
+| C→S | `TRADE_CONFIRM` | `{}` — confirma; executa quando os 2 lados confirmarem | ✅ |
+| S→C | `TRADE_RESULT` | `{trade_id, received_items[], received_gold}` — pros dois, troca executada | ✅ |
+| C→S | `TRADE_CANCEL` | `{}` — cancela a qualquer momento, devolve custódia dos 2 lados | ✅ |
+| S→C | `TRADE_CANCELLED` | `{trade_id, reason}` — `declined\|cancelled\|distance\|disconnect\|inventory_full\|invalid` | ✅ |
 
 ---
 

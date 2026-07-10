@@ -326,7 +326,7 @@ class TalentSystem(UIScaleMixin):
         pygame.draw.rect(self.screen,
                          (180, 60, 60) if close_r.collidepoint(mx, my) else (100, 35, 35),
                          close_r, border_radius=3)
-        xs = self.font_md.render("X", True, (255, 255, 255))
+        xs = self.font_md.render("X", False, (255, 255, 255))
         self.screen.blit(xs, xs.get_rect(center=close_r.center))
 
         # Tooltip flutuante (desenhado por cima de tudo)
@@ -340,11 +340,11 @@ class TalentSystem(UIScaleMixin):
         build = BUILDS[tt.chosen_build]
 
         # Cabeçalho
-        title = self.font_lg.render(f"Talentos — {build['name']}", True, C_TITLE)
+        title = self.font_lg.render(f"Talentos — {build['name']}", False, C_TITLE)
         self.screen.blit(title, (panel.x + self._u(14), panel.y + self._u(10)))
 
         pts_col  = C_GOLD if tt.available_points > 0 else C_GRAY
-        pts_surf = self.font_md.render(f"Pontos disponíveis: {tt.available_points}", True, pts_col)
+        pts_surf = self.font_md.render(f"Pontos disponíveis: {tt.available_points}", False, pts_col)
         self.screen.blit(pts_surf, (panel.x + self._u(14), panel.y + self._u(36)))
 
         # Botão Resetar
@@ -412,19 +412,19 @@ class TalentSystem(UIScaleMixin):
         initials = t["name"][:2].upper()
         txt_col  = C_LOCKED_TXT if (locked and current == 0) else \
                    C_MAXED if maxed else C_WHITE
-        init_surf = self.font_lg.render(initials, True, txt_col)
+        init_surf = self.font_lg.render(initials, False, txt_col)
         self.screen.blit(init_surf, init_surf.get_rect(center=r.center))
 
         # ── Contador x/max no canto superior direito ──
         counter_txt = f"{current}/{t['max_points']}"
         counter_col = C_MAXED if maxed else (C_GRAY if locked else C_WHITE)
-        ctr_surf    = self.font_sm.render(counter_txt, True, counter_col)
+        ctr_surf    = self.font_sm.render(counter_txt, False, counter_col)
         self.screen.blit(ctr_surf, (r.right - ctr_surf.get_width() - self._u(3), r.y + self._u(3)))
 
         # ── Ícone de habilidade desbloqueada (estrela dourada canto inf direito) ──
         if t["unlocks_skill"]:
             star_col = C_GOLD if maxed else (70, 56, 22)
-            star_surf = self.font_sm.render("★", True, star_col)
+            star_surf = self.font_sm.render("★", False, star_col)
             self.screen.blit(star_surf, (r.right - star_surf.get_width() - self._u(2),
                                          r.bottom - star_surf.get_height() - self._u(2)))
 
@@ -539,9 +539,9 @@ class TalentSystem(UIScaleMixin):
 
         # Título (nome + pts)
         pts_col   = C_MAXED if current >= t["max_points"] else C_TITLE
-        name_surf = self.font_tip_title.render(t["name"], True, pts_col)
+        name_surf = self.font_tip_title.render(t["name"], False, pts_col)
         pts_str   = f"{current}/{t['max_points']}"
-        pts_surf  = self.font_tip_body.render(pts_str, True, pts_col)
+        pts_surf  = self.font_tip_body.render(pts_str, False, pts_col)
         self.screen.blit(name_surf, (tx + pad, ty + pad // 2 + self._u(2)))
         self.screen.blit(pts_surf,  (tx + tooltip_w - pts_surf.get_width() - pad,
                                      ty + pad // 2 + self._u(4)))
@@ -555,7 +555,7 @@ class TalentSystem(UIScaleMixin):
             if text == "":
                 ly += self._u(4)
                 continue
-            surf = self.font_tip_body.render(text, True, col)
+            surf = self.font_tip_body.render(text, False, col)
             self.screen.blit(surf, (tx + pad, ly))
             ly += line_h
 
@@ -645,7 +645,7 @@ class TalentSystem(UIScaleMixin):
         col = hover_col if r.collidepoint(mx, my) else bg_col
         pygame.draw.rect(self.screen, col, r, border_radius=3)
         pygame.draw.rect(self.screen, C_BORDER, r, 1, border_radius=3)
-        s = self.font_sm.render(text, True, (230, 230, 230))
+        s = self.font_sm.render(text, False, (230, 230, 230))
         self.screen.blit(s, s.get_rect(center=r.center))
 
     # -----------------------------------------------------------------------

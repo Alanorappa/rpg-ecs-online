@@ -64,21 +64,50 @@ class CombatProcessorMixin:
             target_tm = self.world.get_component(target_eid, TileMovement)
             if not player_tm or not target_tm:
                 continue
-            player_cs    = self.world.get_component(player_eid, CombatStats)
-            _is_ranged_p = getattr(player_cs, "is_ranged", False)
+            player_cs = self.world.get_component(player_eid, CombatStats)
 
-            # Range: ranged=7, melee=1.
-            attack_range = 7 if _is_ranged_p else 1
-
-            # Ranged: requer is_pursuing + arco na mainhand + aljava com flechas no offhand.
-            if _is_ranged_p:
-                if not cs.is_pursuing:
-                    continue
+            # is_ranged (CombatStats) é um flag ESTÁTICO por classe
+            # (CLASS_MELEE_OVERRIDES — arqueiro=True sempre), nunca
+            # reavaliado contra o equipamento real. Servidor autoritativo:
+            # só entra em modo ranged se a classe É ranged E tem um ARCO de
+            # verdade equipado agora — sem arma, ou com arma melee
+            # equipada, cai pro MESMO caminho de dano melee (deal_damage)
+            # que guerreiro/mago já usam, em vez de simplesmente pular o
+            # auto-attack do player inteiro (`continue`) como antes. Ver
+            # PROBLEMAS_ARQUITETURA.md.
+            _class_is_ranged = getattr(player_cs, "is_ranged", False)
+            _bow_cp = _qv_cp = None
+            _has_bow_equipped = False
+            if _class_is_ranged:
                 from components import Equipment as _EqCP
-                _eq_cp = self.world.get_component(player_eid, _EqCP)
+                _eq_cp  = self.world.get_component(player_eid, _EqCP)
                 _bow_cp = _eq_cp.slots.get("mainhand") if _eq_cp else None
                 _qv_cp  = _eq_cp.slots.get("offhand")  if _eq_cp else None
-                if not _bow_cp or getattr(_bow_cp, "subtype", "") != "Bow":
+                _has_bow_equipped = (_bow_cp is not None
+                                    and getattr(_bow_cp, "subtype", "") == "Bow")
+            _is_ranged_p = _class_is_ranged and _has_bow_equipped
+
+            # Range: ranged usa o cast_range REAL do arco equipado (Arco
+            # Curto=7, do Caçador=8, Élfico=9...) — nunca hardcoded. Antes
+            # era fixo em 7 pra qualquer arco: um arqueiro com arco de
+            # cast_range>7 (ex. Arco Élfico=9) tinha o cliente parando a
+            # perseguição na distância certa (bow_range real, ver
+            # systems.py::_process_archer_combat) mas o SERVOR rejeitando
+            # todo golpe por estar "fora de alcance" (7 fixo) — o cliente
+            # tocava o som de disparo e descontava flecha otimisticamente
+            # (nunca espera confirmação, ver comentário "100% server-driven"
+            # em _process_archer_combat) mas o ataque nunca completava de
+            # verdade, pois o COMBAT_RESULT nunca chegava. Ver
+            # PROBLEMAS_ARQUITETURA.md.
+            attack_range = (getattr(_bow_cp, "cast_range", 0) or 7) if _is_ranged_p else 1
+
+            # Ranged (arco de verdade equipado): requer is_pursuing + aljava
+            # com flechas no offhand — sem isso, NÃO ataca (nem ranged nem
+            # melee: tem arco em mãos, só falta munição — "Use Recarregar" é
+            # o fluxo esperado, não cair pra soco). Sem arco: nem entra
+            # aqui, já segue reto pro dano melee mais abaixo.
+            if _is_ranged_p:
+                if not cs.is_pursuing:
                     continue
                 if not _qv_cp or getattr(_qv_cp, "item_type", "") != "quiver" \
                         or _qv_cp.arrow_count < 1:
@@ -170,9 +199,11 @@ class CombatProcessorMixin:
                             if _sk_p.charges < _sk_p.max_charges:
                                 _sk_p.charges += 1
 
-            if damage > 0:
-                log = self._mob_damage_log.setdefault(target_eid, {})
-                log[player_eid] = log.get(player_eid, 0) + damage
+            # _mob_damage_log agora é populado de forma centralizada por
+            # WorldServer._log_mob_damage_hit, injetado em CombatSystem
+            # (melee, via deal_damage) e em _apply_final_damage (ranged, via
+            # _server_apply_ranged_physical acima) — escrever aqui também
+            # contaria o MESMO golpe em dobro. Ver PROBLEMAS_ARQUITETURA.md.
 
             self._combat_this_tick.append({
                 "attacker": player_eid,
@@ -181,6 +212,12 @@ class CombatProcessorMixin:
                 "outcome":  _outcome,   # retornado diretamente por deal_damage (sem singleton)
                 "hp_after": hp_after,
                 "source":   "auto",
+                # Diz ao cliente se ESTE golpe especifico foi ranged ou melee —
+                # arqueiro sem arco/com arma melee cai pro mesmo "auto" mas com
+                # is_ranged=False. Cliente NAO deve re-derivar isso de class_id
+                # sozinho (remote_entity_handlers.py so sabe a classe do
+                # remoto, nunca o equipamento) — ver PROBLEMAS_ARQUITETURA.md.
+                "is_ranged": _is_ranged_p,
             })
 
             if dead:
@@ -295,7 +332,19 @@ class CombatProcessorMixin:
             return
 
         attacker_cs = self.world.get_component(attacker_eid, CombatStats)
-        attack_range = 7 if getattr(attacker_cs, "is_ranged", False) else 1
+        # Mesmo critério dinâmico do PvE (_process_player_attacks): só é
+        # ranged se a classe É ranged E tem arco de verdade equipado agora —
+        # arqueiro sem arco (ou com arma melee) briga em PvP na distância
+        # melee, igual qualquer outra classe.
+        _pvp_class_ranged = getattr(attacker_cs, "is_ranged", False)
+        _pvp_has_bow = False
+        if _pvp_class_ranged:
+            from components import Equipment as _EqPvp
+            _eq_pvp  = self.world.get_component(attacker_eid, _EqPvp)
+            _bow_pvp = _eq_pvp.slots.get("mainhand") if _eq_pvp else None
+            _pvp_has_bow = _bow_pvp is not None and getattr(_bow_pvp, "subtype", "") == "Bow"
+        # Mesmo fix do PvE: usa cast_range REAL do arco, nunca 7 fixo.
+        attack_range = (getattr(_bow_pvp, "cast_range", 0) or 7) if (_pvp_class_ranged and _pvp_has_bow) else 1
 
         # Usa server_tile_x/y (posição autoritativa) quando disponível;
         # fallback para current_tile (última posição confirmada)
@@ -356,6 +405,7 @@ class CombatProcessorMixin:
             "outcome":  _outcome,
             "hp_after": hp_after,
             "source":   "auto",
+            "is_ranged": _pvp_class_ranged and _pvp_has_bow,
         })
 
         # HP sync direto para a vítima (STATS_UPDATE individual)

@@ -52,6 +52,9 @@ def _item_to_dict(item: Item) -> dict:
         "arrow_count":  item.arrow_count,
         "max_arrows":   item.max_arrows,
         "cast_range":   item.cast_range,
+        "item_level":         item.item_level,
+        "level_requirement":  item.level_requirement,
+        "description":        item.description,
         "modifiers":    [
             {"attribute": m.attribute, "value": m.value, "type": m.type}
             for m in item.modifiers
@@ -84,6 +87,9 @@ def _dict_to_item(d: dict) -> Item:
         arrow_count  = d.get("arrow_count", 0),
         max_arrows   = d.get("max_arrows", 0),
         cast_range   = d.get("cast_range", 0),
+        item_level        = d.get("item_level", 1),
+        level_requirement = d.get("level_requirement", 1),
+        description       = d.get("description", ""),
     )
     item.stack = d.get("stack", 1)
     return item

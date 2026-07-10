@@ -95,6 +95,23 @@ class MsgType(str, Enum):
     PLAYER_STAT_SYNC   = "player_stat_sync"  # C→S  OBSOLETO — servidor ignora (handler é no-op). Mantido só por compat.
     PLAYER_HP_SYNC     = "player_hp_sync"    # C→S  OBSOLETO — servidor ignora (handler é no-op). Mantido só por compat.
     EQUIP_SYNC         = "equip_sync"        # C→S  equipamento mudou {equipment: {slot: item_dict}}
+    EQUIP_REJECTED     = "equip_rejected"    # S→C  slot recusado (level/classe) {slot, item_name, reason}
+
+    # ── Trade (player↔player) ──────────────────────────────────────
+    TRADE_REQUEST      = "trade_request"      # C→S  {target_eid}
+    TRADE_INVITE       = "trade_invite"       # S→C  {from_eid, from_name} (só pro alvo)
+    TRADE_ACCEPT       = "trade_accept"       # C→S  {} (alvo aceitou o convite pendente)
+    TRADE_DECLINE      = "trade_decline"      # C→S  {} (alvo recusou o convite pendente)
+    TRADE_OPEN         = "trade_open"         # S→C  {trade_id, other_eid, other_name} (pros dois)
+    TRADE_OFFER_ITEM   = "trade_offer_item"   # C→S  {inv_index}
+    TRADE_WITHDRAW_ITEM= "trade_withdraw_item"# C→S  {offer_slot}
+    TRADE_SET_GOLD     = "trade_set_gold"     # C→S  {amount}
+    TRADE_STATE        = "trade_state"        # S→C  {trade_id, my_offer[], my_gold, their_offer[], their_gold, my_confirmed, their_confirmed}
+    TRADE_CONFIRM      = "trade_confirm"      # C→S  {}
+    TRADE_RESULT       = "trade_result"       # S→C  {trade_id, received_items[], received_gold} (pros dois)
+    TRADE_CANCEL       = "trade_cancel"       # C→S  {} (qualquer um dos dois pode cancelar a qualquer momento)
+    TRADE_CANCELLED    = "trade_cancelled"    # S→C  {trade_id, reason} declined|cancelled|distance|disconnect|inventory_full|invalid
+
     CONSUMABLE_USE     = "consumable_use"    # C→S  uso de consumível (heal_instant, HoT, buffs futuros)
     GOLD_UPDATE        = "gold_update"       # C→S  gold mudou (loot de moedas) {gold: N}
     INV_SYNC           = "inv_sync"          # C→S  inventário mudou (loot de item) {inventory: [...]}
@@ -481,6 +498,137 @@ def _now_ms() -> int:
 #   "items":     list *  itens obtidos [{name, icon_key, item_type, rarity, value, slot}]
 # }
 # Enviado APENAS se o player for o dono e houver itens para pegar.
+
+# ── C→S: EQUIP_SYNC ──────────────────────────────────────────────────────────
+# {
+#   "equipment": dict *   {slot: item_dict}  — snapshot completo do Equipment
+#                         local (slots ausentes = desequipados)
+# }
+# Servidor reconstrói cada item via catálogo (loot/loja/forja, por nome) e
+# valida por slot: armor_class contra stats_system.CLASS_ARMOR_ALLOWED[classe]
+# e level_requirement contra CharacterStats.level. Slot que falha NÃO é
+# aplicado (mantém o que já estava equipado) — servidor responde
+# EQUIP_REJECTED pra esse slot; slots válidos são aplicados normalmente
+# (sem confirmação — EQUIP_SYNC nunca falha silenciosamente sem aviso, mas
+# sucesso também não gera reply, só o AOI_UPDATE natural refletindo o estado).
+
+# ── S→C: EQUIP_REJECTED ──────────────────────────────────────────────────────
+# {
+#   "slot":      str *   slot recusado (ex: "chest")
+#   "item_name": str *   nome do item que não pôde ser equipado
+#   "reason":    str *   "class" (armor_class incompatível) | "level" (level_requirement)
+# }
+# Enviado APENAS ao dono, um por slot recusado. Cliente reverte o slot local
+# pro estado anterior e mostra aviso via combat_log.
+
+# ── C→S: TRADE_REQUEST ───────────────────────────────────────────────────────
+# {
+#   "target_eid": int *   eid do player remoto que o requester quer negociar
+# }
+# Servidor valida: target existe/online, não é o próprio requester, distância
+# ≤ TRADE_MAX_DIST_TILES, nenhum dos dois já em trade ou convite pendente. Se
+# inválido, responde ao requester com TRADE_CANCELLED{trade_id:-1, reason}
+# sem gerar TRADE_INVITE. Se válido, manda TRADE_INVITE só pro target.
+
+# ── S→C: TRADE_INVITE ────────────────────────────────────────────────────────
+# {
+#   "from_eid":  int *   eid de quem pediu o trade
+#   "from_name": str *   nome de exibição de quem pediu
+# }
+# Enviado APENAS ao target. Cliente mostra modal "Fulano quer negociar —
+# Aceitar/Recusar".
+
+# ── C→S: TRADE_ACCEPT / TRADE_DECLINE ────────────────────────────────────────
+# {} — sem payload. Resposta do target a um convite pendente. Aceitar cria a
+# TradeSession no servidor e dispara TRADE_OPEN pros dois lados; recusar só
+# limpa o convite pendente e manda TRADE_CANCELLED{reason:"declined"} pro
+# requester original.
+
+# ── S→C: TRADE_OPEN ──────────────────────────────────────────────────────────
+# {
+#   "trade_id":  int *   id da sessão de trade recém-criada
+#   "other_eid": int *   eid do OUTRO participante (não o destinatário)
+#   "other_name":str *   nome de exibição do outro participante
+# }
+# Enviado pros DOIS lados (payload com "other_*" já resolvido por sessão —
+# cada cliente só enxerga o lado oposto). Cliente abre a janela de trade
+# zerada (ofertas/gold/confirmação limpos).
+
+# ── C→S: TRADE_OFFER_ITEM ────────────────────────────────────────────────────
+# {
+#   "inv_index": int *   índice do item na Inventory do próprio player
+# }
+# Servidor remove o item da Inventory real e adiciona no lado do ofertante
+# na TradeSession (máx 5 slots), reseta confirmed dos dois lados, responde
+# TRADE_STATE pros dois. Índice inválido/sessão inativa/já 5 itens: ignorado
+# silenciosamente (não há reason dedicado — não deveria ocorrer com client
+# correto).
+
+# ── C→S: TRADE_WITHDRAW_ITEM ─────────────────────────────────────────────────
+# {
+#   "offer_slot": int *   índice dentro da PRÓPRIA oferta (não da Inventory)
+# }
+# Inverso do OFFER_ITEM — devolve o item pra Inventory real do ofertante
+# (valida espaço antes), reseta confirmed dos dois lados, responde
+# TRADE_STATE pros dois.
+
+# ── C→S: TRADE_SET_GOLD ──────────────────────────────────────────────────────
+# {
+#   "amount": int *   gold total que o próprio player quer ofertar (>= 0)
+# }
+# Substitui (não soma) o valor ofertado; servidor valida contra
+# wallet.gold + valor já em custódia desse lado, debita/credita a diferença,
+# reseta confirmed dos dois lados, responde TRADE_STATE pros dois.
+
+# ── S→C: TRADE_STATE ─────────────────────────────────────────────────────────
+# {
+#   "trade_id":        int *
+#   "my_offer":        list *  itens que EU ofertei [{name, icon_key, item_type, rarity, value, slot}]
+#   "my_gold":         int *
+#   "their_offer":     list *  itens que o OUTRO ofertou (mesmo formato)
+#   "their_gold":      int *
+#   "my_confirmed":    bool *
+#   "their_confirmed": bool *
+# }
+# Enviado individualmente pros DOIS lados (cada um recebe sua própria versão
+# com "my"/"their" já resolvido — nunca broadcast bruto) toda vez que a
+# oferta muda (item ofertado/retirado, gold alterado, confirmação). É o
+# ÚNICO ponto em que o cliente remove o item ofertado da Inventory local de
+# verdade — nunca otimisticamente antes disso (mesmo racional do
+# EQUIP_REJECTED: servidor confirma primeiro, cliente reflete depois).
+
+# ── C→S: TRADE_CONFIRM ───────────────────────────────────────────────────────
+# {} — sem payload. Seta a flag de confirmação do próprio lado. Se os dois
+# lados já confirmados, servidor executa a troca (valida espaço de Inventory
+# nos dois lados ANTES de mexer em qualquer coisa — falha vira
+# TRADE_CANCELLED{reason:"inventory_full"} sem perder nada de ninguém) e
+# responde TRADE_RESULT pros dois; senão só reenvia TRADE_STATE.
+
+# ── S→C: TRADE_RESULT ────────────────────────────────────────────────────────
+# {
+#   "trade_id":        int *
+#   "received_items":  list *  itens que ESTE player recebeu (formato de item)
+#   "received_gold":   int *   gold que este player recebeu
+# }
+# Enviado pros DOIS lados (cada um com o que É seu) quando a troca é
+# executada com sucesso. Cliente soma os itens/gold na Inventory/Wallet
+# local e fecha a janela de trade.
+
+# ── C→S: TRADE_CANCEL ────────────────────────────────────────────────────────
+# {} — sem payload. Qualquer um dos dois lados pode cancelar a qualquer
+# momento enquanto a sessão está aberta (inclusive antes de qualquer oferta).
+# Servidor devolve itens/gold em custódia dos DOIS lados e responde
+# TRADE_CANCELLED{reason:"cancelled"} pros dois.
+
+# ── S→C: TRADE_CANCELLED ─────────────────────────────────────────────────────
+# {
+#   "trade_id": int *   -1 se o trade nunca chegou a abrir (ex: TRADE_REQUEST inválido)
+#   "reason":   str *   "declined" | "cancelled" | "distance" | "disconnect" |
+#                       "inventory_full" | "invalid"
+# }
+# Cliente devolve pra Inventory/Wallet local qualquer item/gold que estava em
+# my_offer/my_gold (o servidor já devolveu de verdade — isso só sincroniza a
+# cópia local), fecha a janela de trade e mostra o motivo no combat_log.
 
 # ── C→S: PING / S→C: PONG ────────────────────────────────────────────────────
 # PING: { "client_ts": int }

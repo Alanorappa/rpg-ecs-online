@@ -71,10 +71,10 @@ def run(screen: pygame.Surface) -> float:
         pygame.draw.rect(screen, _PANEL_BG, panel, border_radius=6)
         pygame.draw.rect(screen, _BORDER,   panel, 2, border_radius=6)
 
-        title = font_lg.render("Configuracoes", True, _TITLE_COL)
+        title = font_lg.render("Configuracoes", False, _TITLE_COL)
         screen.blit(title, (px + _W // 2 - title.get_width() // 2, py + 18))
 
-        sub = font_sm.render("Resolucao / Escala de renderizacao", True, _TEXT_COL)
+        sub = font_sm.render("Resolucao / Escala de renderizacao", False, _TEXT_COL)
         screen.blit(sub, (px + _W // 2 - sub.get_width() // 2, py + 52))
 
         for idx, (label, val) in enumerate(SCALE_OPTIONS):
@@ -86,14 +86,14 @@ def run(screen: pygame.Surface) -> float:
             bdr_w  = 2 if is_sel else 1
             pygame.draw.rect(screen, bg,  opt_r, border_radius=4)
             pygame.draw.rect(screen, bdr, opt_r, bdr_w, border_radius=4)
-            lbl_s = font_md.render(label, True, _SEL_BDR if is_sel else _TEXT_COL)
+            lbl_s = font_md.render(label, False, _SEL_BDR if is_sel else _TEXT_COL)
             screen.blit(lbl_s, lbl_s.get_rect(center=opt_r.center))
 
         btn_r = _btn_rect(sw, sh)
         is_hov = btn_r.collidepoint(mx, my)
         pygame.draw.rect(screen, _BTN_HOV if is_hov else _BTN_BG, btn_r, border_radius=4)
         pygame.draw.rect(screen, _SEL_BDR, btn_r, 2, border_radius=4)
-        btn_s = font_md.render("Confirmar  (Enter)", True, _BTN_TXT)
+        btn_s = font_md.render("Confirmar  (Enter)", False, _BTN_TXT)
         screen.blit(btn_s, btn_s.get_rect(center=btn_r.center))
 
         pygame.display.flip()

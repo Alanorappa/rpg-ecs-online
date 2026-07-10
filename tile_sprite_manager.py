@@ -68,7 +68,7 @@ class TileSpriteManager:
         if raw.get_width() == target_w and raw.get_height() == target_h:
             self._scaled[key] = raw
         else:
-            self._scaled[key] = pygame.transform.smoothscale(raw, (target_w, target_h))
+            self._scaled[key] = pygame.transform.scale(raw, (target_w, target_h))
 
         return self._scaled[key]
 

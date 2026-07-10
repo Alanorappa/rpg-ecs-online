@@ -10,7 +10,7 @@ from components import Position, Renderable, PlayerControlled, Camera, Collider,
                        SpawnZone, EntityIdentity, StatusEffects, ConsumableBar, MobSounds, FogOfWar, \
                        EnemyAbilities, EnemyAbilitySlot, QuestLog, QuestGiver, NPC, Blacksmith, \
                        LearnedRecipes, Trainer
-from ui_components import UIState, ShopUIState, LootUIState, DragState
+from ui_components import UIState, ShopUIState, LootUIState, DragState, TradeUIState
 from tileset import TILE_MAPPING, OBJECT_MAPPING, TILE_SIZE, FLOOR_TILE, get_collision_offsets
 from mob_definitions import MOB_TABLE
 from enemy_abilities_data import ABILITY_DEFS
@@ -168,6 +168,7 @@ def create_player(world: World, tile_x: int, tile_y: int,
     world.add_component(player_entity, ShopUIState())
     world.add_component(player_entity, LootUIState())
     world.add_component(player_entity, DragState())
+    world.add_component(player_entity, TradeUIState())
     world.add_component(player_entity, EntityIdentity(
         name="Aventureiro", race="Humano", entity_class="Guerreiro",
         level=1, tier="normal",
@@ -190,6 +191,29 @@ def create_camera(world: World, target_entity_id: int, screen_width: int, screen
                                                offset_y=screen_height / 2))
     return camera_entity
 
+def _resolve_mob_race_variant(race: str, want_ranged: bool) -> str:
+    """Troca pra um `alt_variant` cadastrado quando o modo de combate pedido
+    (want_ranged, vindo do "type" melee/ranged da spawn zone no JSON do mapa)
+    não bate com o modo FIXO da raça em MOB_TABLE — ex.: zona pede "melee"
+    pra "Goblin" (sempre ranged, entity_class="Hunter" fixo); se "Goblin"
+    tiver `alt_variant: "Goblin Guerreiro"` e essa entrada for melee de
+    verdade, usa ela em vez de silenciosamente ignorar o "type" pedido
+    (era o comportamento antigo — toda entrada "melee" de uma zona cujo
+    race só existe ranged em MOB_TABLE nascia ranged do mesmo jeito).
+
+    Sem `alt_variant` cadastrado (ou variant que também não bate o modo
+    pedido, ou raça sem entrada em MOB_TABLE) — devolve a raça pedida sem
+    mudança: fallback pro que já existe, nunca quebra."""
+    mob_def = MOB_TABLE.get(race)
+    if mob_def is None or mob_def["is_ranged"] == want_ranged:
+        return race
+    alt_race = mob_def.get("alt_variant")
+    alt_def  = MOB_TABLE.get(alt_race) if alt_race else None
+    if alt_def is not None and alt_def["is_ranged"] == want_ranged:
+        return alt_race
+    return race
+
+
 def create_enemy(world: World, tile_x: int, tile_y: int,
                  attack_range: int = ENEMY_MELEE_ATTACK_RANGE,
                  is_ranged: bool = False,
@@ -206,6 +230,7 @@ def create_enemy(world: World, tile_x: int, tile_y: int,
     # atributos próprios (attributes/abilities/loot/xp_given_by_lvl, ver
     # mob_definitions.py); mobs sem entrada (ex: "Elemental", definidos só na
     # SpawnZone do mapa) caem no template genérico por is_ranged (bloco else).
+    race = _resolve_mob_race_variant(race, is_ranged)
     mob_def = MOB_TABLE.get(race)
     attrs   = mob_def.get("attributes") if mob_def else None
     if mob_def:

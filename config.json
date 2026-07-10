@@ -5,7 +5,7 @@
   "net_user": "teste",
   "net_pass": "123456",
   "music_volume": 0.06842105263157895,
-  "sfx_volume": 0.042105263157894736,
+  "sfx_volume": 0.0456140350877193,
   "music_enabled": false,
   "sfx_enabled": true,
   "hotbar": {
@@ -134,10 +134,10 @@
     "Aventureiro": {
       "hotbar": {
         "slots": [
-          "bola_de_fogo",
-          "bloco_de_gelo",
-          "polimorfia",
-          "nova_congelante",
+          "recarregar",
+          "cancao_ninar",
+          null,
+          null,
           null,
           null,
           null,
@@ -160,9 +160,9 @@
       },
       "consumable_bar": {
         "slots": [
-          "Ensopado Revigorante",
-          "Po\u00e7\u00e3o de Vida",
-          "Odre Grande",
+          null,
+          null,
+          null,
           null,
           null
         ],
@@ -267,8 +267,8 @@
       "hotbar": {
         "slots": [
           "bola_de_fogo",
-          null,
-          null,
+          "polimorfia",
+          "nova_congelante",
           null,
           null,
           null,
@@ -350,11 +350,55 @@
           98
         ]
       }
+    },
+    "Guerreiro": {
+      "hotbar": {
+        "slots": [
+          "golpe_poderoso",
+          "impacto",
+          "vitoria_iminente",
+          "interceptar",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          48
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          "P\u00e3o Simples",
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      }
     }
   },
   "debug_mode": true,
   "profile_frames": true,
-  "ui_scale": 1.25,
+  "ui_scale": 1.5,
   "consumable_bar": {
     "slots": [
       null,

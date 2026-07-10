@@ -33,6 +33,13 @@
 | Progresso/entrega de quest (server-autoritativo) | `server/world_server.py` | `_process_quest_events()`, `move_player()`/`apply_consumable()`/`update_player_equipment()` (gatilhos) |
 | Aceitar/entregar quest (QUEST_ACCEPT/QUEST_TURN_IN) | `server/session.py` | `_handle_quest_accept()`, `_handle_quest_turn_in()` |
 | Lógica pura de quest (matching, progresso, recompensa) | `quest_logic.py` | `apply_event()`, `try_start()`, `complete_quest()`, `can_turn_in()` |
+| Trade (player↔player) — servidor | `server/trade_processor.py` | `TradeProcessorMixin`, `TradeSession` — request/aceite/oferta/gold/confirma/cancela |
+| Trade (player↔player) — handlers de rede | `server/session.py` | `_handle_trade_*` (8), hook de desconexão em `on_disconnect` |
+| Trade (player↔player) — cliente | `client/trade_handlers.py` | `TradeHandlers` — popup Shift+clique, convite, janela (5 slots+gold) |
+| Trade (player↔player) — estado de UI | `ui_components.py` | `TradeUIState` (componente ECS no player) |
+| Chat (texto, 3 abas Local/Mundial/Combate) — cliente | `client/chat_handlers.py` | `ChatHandlers` — Enter abre campo, digita, Enter envia; abas, scrollbar, wrap de linha (500 entradas/aba) |
+| Chat — balão de fala acima da cabeça | `chat_bubble.py` | `ChatBubbleManager`/`CHAT_BUBBLE` — rastreia Position ao vivo (diferente de `floating_text.py`) |
+| Chat — aba "Combate" (log de dano/cura/proc/loot) | `combat_log.py` | `CombatLog`/`LOG` — histórico persistente (500), `add(text, color)` mesma assinatura de sempre, `entries` property lida pela aba |
 | Iniciar o servidor | `server/main.py` | `py -3.10 server/main.py` |
 | Conectar cliente ao servidor | `client/network.py` | `NetworkClient` |
 | Banco de dados / schema | `data/game.db` (SQLite) | criado por `auth.init_db()` |
@@ -58,8 +65,10 @@
 | Adicionar talento | `talent_data.py` | `TALENTS` + `CLASS_BUILD_MAP` |
 | Efeito de talento no jogo | `talent_system.py` | `apply_talent_effects()` |
 | Painel read-only de Skill Level (tecla L) | `skill_level_ui.py` | `SkillLevelUI`, registrado em `client/modal_stack_handlers.py` |
-| Criar item/arma/arco/aljava | `loot_tables.py` | `_T` dict |
-| Adicionar drop de mob | `mob_definitions.py` | `MOB_TABLE[nome]["loot"]` (dict item_key→chance; `loot_tables.py::roll_mob_loot` só lê) |
+| Criar item/arma/arco/aljava (catálogo único — loot + loja) | `item_table.py` | `ITEMS` dict (07/07/2026 — antes duplicado em `loot_tables.py`/`merchant_data.py`; `loot_tables._T` e `merchant_data`'s stock agora só referenciam daqui) |
+| Adicionar drop de mob | `mob_definitions.py` | `MOB_TABLE[nome]["loot"]` (dict item_key→chance, chave de `item_table.ITEMS`; `loot_tables.py::roll_mob_loot` só lê) |
+| Configurar gold de um mob (chance/faixa min-max, 07/07/2026) | `mob_definitions.py` | `MOB_TABLE[nome]["gold_chance"/"gold_min"/"gold_max"]` — opcionais, sem eles cai no genérico por tier (`COIN_DROPS`); `loot_tables.py::roll_mob_coins` só lê |
+| Adicionar item à loja | `merchant_data.py` | `SHOPS[shop_id]["stock"]` — `{"factory": item_table.ITEMS["key"], "price": N}` |
 | Criar mob novo | `mob_definitions.py` | `MOB_TABLE` (raça/classe/cor + `attributes`/`abilities`/`loot`/`xp_given_by_lvl`) |
 | Atributos de combate de um mob (HP/dano/velocidade/acerto/crit) | `mob_definitions.py` | `MOB_TABLE[nome]["attributes"]` |
 | Habilidade especial de um mob (poison/bleed/stun) | `enemy_abilities_data.py` + `mob_definitions.py` | `ABILITY_DEFS` (dado) + `MOB_TABLE[nome]["abilities"]` (lista) |
@@ -92,6 +101,7 @@ rpg_ecs_online/
 │   ├── world_server.py             ← ECS headless: loop de ticks, sistemas, skill pipeline
 │   ├── session.py                  ← SessionManager: AOI subscription, dispatch, save
 │   ├── auth.py                     ← autenticação SQLite + persistência
+│   ├── trade_processor.py          ← TradeProcessorMixin/TradeSession: trade player↔player
 │   └── server_death_handler.py     ← PendingDeath: XP, loot, SpawnZone, despawn
 │
 ├── client/                         ← ONLINE-ONLY (cliente de rede)
@@ -110,6 +120,7 @@ rpg_ecs_online/
 │   ├── consumable_bar_handlers.py  ← ConsumableBarHandlers: mixin com o desenho da barra de consumíveis (slots, ícones, drag-and-drop)
 │   ├── hud_handlers.py             ← HudHandlers: mixin com o HUD principal (vida/mana/fúria, buffs, minimapa, ouro) e a barra de cast/canalização
 │   ├── modal_stack_handlers.py     ← ModalStackHandlers: mixin com o registro centralizado de prioridade de modais (ModalStack) — único ponto de verdade reusado por ESC e pelo filtro de systems_events
+│   ├── trade_handlers.py           ← TradeHandlers: mixin com o trade player↔player (popup, convite, janela 5 slots+gold)
 │   └── colors.py                   ← paleta de cores do HUD (C_WHITE/C_YELLOW/...) — fonte única para game.py e mixins
 │
 ├── data/                           ← criada automaticamente

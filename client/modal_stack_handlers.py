@@ -29,6 +29,7 @@ class ModalStackHandlers:
         em vez de criar mais um if/elif solto em outro lugar."""
         return [
             ("mkb_rebind",    lambda: self._mkb_rebind is not None,           self._close_mkb_rebind),
+            ("chat",          lambda: self._chat_active,                      self._close_chat_input),
             ("habilidades",   lambda: self._show_habilidades,                 self._close_habilidades),
             ("map_overlay",   lambda: self._map_overlay.is_open,              self._close_map_overlay),
             ("loot",          lambda: self._loot_system.open_corpse_id != -1, self._loot_system._close_modal),
@@ -38,6 +39,7 @@ class ModalStackHandlers:
             ("quest_journal", lambda: self._quest_journal.is_open,             self._quest_journal.close),
             ("shop_qty",      lambda: self._shop_system.qty_modal_open,        self._shop_system._close_qty_modal),
             ("shop",          lambda: self._shop_system.is_open,               self._shop_system._close),
+            ("trade",         lambda: self._trade_is_open,                     self._close_trade),
             ("hotbar_editor", lambda: self._show_hotbar_editor,                self._close_hotbar_editor),
             ("debug",         lambda: self._show_debug,                       self._close_debug),
             ("talents",       lambda: self._show_talents,                     self._close_talents),

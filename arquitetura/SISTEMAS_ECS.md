@@ -302,6 +302,32 @@ Fluxo de morte/espírito (ghost) + cemitério` para o fluxo completo.
 - `move_player()` (world_server.py) — bypass de CC/walkable para
   `GhostState.is_ghost` (intangível, só valida 1 tile de distância).
 
+### TradeProcessorMixin — trade player↔player (08/07/2026)
+
+`server/trade_processor.py` — mixin de `WorldServer`. Ver `ARQUITETURA_ONLINE.md
+→ decisão 16` para o fluxo completo (protocolo, custódia, distância).
+
+- `TradeSession` (não-ECS, mesmo nível de `_corpses`/`_mob_damage_log`):
+  `trade_id, player_a, player_b, offer_a/b: list[Item], gold_a/b, confirmed_a/b`.
+  Estado global em `WorldServer.__init__`: `_trade_sessions` (trade_id→session),
+  `_player_trade` (player_eid→trade_id), `_pending_trade_invites`
+  (target_eid→requester_eid), `_trade_cancellations_this_tick`.
+- `request_trade`/`respond_trade_invite` — convite: valida distância/mapa
+  (`_trade_in_range`, chebyshev ≤ `TRADE_MAX_DIST_TILES`), ninguém já em
+  trade/convite pendente.
+- `add_trade_item`/`withdraw_trade_item` — move o `Item` de verdade entre
+  `Inventory.items` e `offer_a/b` (custódia real, não só "travado");
+  `set_trade_gold` idem com `Wallet.gold`. Todos chamam `reset_confirms()`.
+- `confirm_trade` → `_execute_trade` quando os 2 confirmam: valida espaço de
+  `Inventory` nos DOIS lados ANTES de aplicar; falha = `_cancel_trade_session`
+  (`reason="inventory_full"`, devolve tudo) em vez de trocar.
+- `cancel_trade`/`_cancel_trade_session` — devolve itens/gold em custódia dos
+  DOIS lados. Chamado por `TRADE_CANCEL` explícito, `_tick_trade_distance_check`
+  (1×/tick, sai do alcance) e `on_disconnect` (session.py).
+- `build_trade_state_payload(session, viewer_eid)` — resolve `my_*`/`their_*`
+  por perspectiva; serialização de item via `WorldServer._item_data_from_obj`
+  (mesmo formato do `BUY_RESULT`).
+
 ### PLAYER_STAT_SYNC — OBSOLETO (handler é no-op)
 
 `_handle_player_stat_sync` em `session.py` **não faz mais nada** — o mecanismo
@@ -362,11 +388,19 @@ Pontos de integração (todos já existentes, estendidos — não criou funil no
   virou `damage_multiplier` no catálogo (tiro_multiplo/tiro_repulsivo/
   picada_escorpiao/flecha_reiterada). Server:
   `_server_apply_ranged_physical` com `is_ability=True` usa
-  `ability_physical_damage` (arco + AP×(mult + 0.01×skill Arco));
-  `is_ability=False` (AUTO-attack) mantém a fórmula clássica `(AP+arco)`.
-  Cliente offline espelha em `spell_system` (impacto de PlayerProjectile:
-  coeficiente extra de AP ganha o bônus de skill SÓ quando `proj.spell_id`
-  é de skill — flecha de auto-attack fica clássica).
+  `ability_physical_damage` (arco + AP×(mult + 0.01×skill Arco)).
+  **Auto-attack (07/07/2026)**: `damage_calculator.calculate_base_damage`
+  ganhou o param `ap_skill_mult` (default 1.0) — aplicado SÓ no branch
+  `damage_type=="physical"` (`AP×ap_skill_mult + arma`, em vez de `AP + arma`
+  fixo). Os 3 call sites de auto-attack real (melee via
+  `CombatSystem._calculate_damage`/o branch `pre_outcome` de `deal_damage`
+  em `world_systems.py`; ranged via `_server_apply_ranged_physical`
+  `is_ability=False`) resolvem `1.0 + 0.01×weapon_skill_level(...)` e
+  passam. Antes o auto-attack não ganhava NENHUM bônus de dano por
+  skill_level — só +acerto/+crit via `weapon_skill_extras` — inconsistente
+  com as skills, que já escalavam. `"physical_fixed"` (skills, já com o
+  bônus embutido em `base_ability_damage`) e `"magical"` nunca usam este
+  parâmetro — sem risco de dobrar a conta.
 
 Persistência: coluna `skill_levels_json` em `server/auth.py` (mesmo padrão
 `ALTER TABLE` de `fog_json`); `get_player_save_data`/`_build_save_merge`

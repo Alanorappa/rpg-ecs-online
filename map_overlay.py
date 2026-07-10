@@ -336,16 +336,14 @@ class MapOverlay(UIScaleMixin):
         pygame.draw.rect(self.screen,
                          (180, 60, 60) if close_hov else (100, 35, 35),
                          close_r, border_radius=3)
-        xs = self._font.render("X", True, (255, 255, 255))
+        xs = self._font.render("X", False, (255, 255, 255))
         self.screen.blit(xs, (close_r.centerx - xs.get_width() // 2,
                                close_r.centery - xs.get_height() // 2))
 
         # ── Legenda ──────────────────────────────────────
         hint = self._font.render(
-            "MAPA   [M] fechar  |  scroll: zoom  |  arrastar: mover",
-            True, (180, 150, 100))
-        zoom_txt = self._font.render(f"Zoom: {scale:.1f}x",
-                                      True, (140, 120, 80))
+            "MAPA   [M] fechar  |  scroll: zoom  |  arrastar: mover", False, (180, 150, 100))
+        zoom_txt = self._font.render(f"Zoom: {scale:.1f}x", False, (140, 120, 80))
         bar_y = modal.y - hint.get_height() - self._u(4)
         self.screen.blit(hint,     (modal.x + self._u(6),                            bar_y))
         self.screen.blit(zoom_txt, (modal.right - zoom_txt.get_width() - self._u(6), bar_y))

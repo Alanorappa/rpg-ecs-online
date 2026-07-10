@@ -260,7 +260,7 @@ class TooltipHandlers:
         MAX_W     = self._u(UI.TOOLTIP_MAX_W)
         max_text_w = MAX_W - PAD * 2
 
-        t_surf = self.font_md.render(title, True, title_color)
+        t_surf = self.font_md.render(title, False, title_color)
 
         # Pré-renderizar todas as linhas. Linhas de uma coluna ("one") que
         # excedem MAX_W quebram em múltiplas sub-linhas (word-wrap) — sem
@@ -271,15 +271,15 @@ class TooltipHandlers:
         for line in lines:
             if isinstance(line[0], tuple):
                 (lt, lc), (rt, rc) = line
-                rendered.append(("two", bf.render(lt, True, lc),
-                                         bf.render(rt, True, rc)))
+                rendered.append(("two", bf.render(lt, False, lc),
+                                         bf.render(rt, False, rc)))
             else:
                 t, c = line
                 if t and bf.size(t)[0] > max_text_w:
                     for sub in wrap_text(t, bf, max_text_w):
-                        rendered.append(("one", bf.render(sub, True, c)))
+                        rendered.append(("one", bf.render(sub, False, c)))
                 else:
-                    rendered.append(("one", bf.render(t, True, c)))
+                    rendered.append(("one", bf.render(t, False, c)))
 
         def _line_w(r):
             if r[0] == "two":
@@ -406,8 +406,8 @@ class TooltipHandlers:
         # Renderizar tooltip fixo no canto inferior direito
         PAD    = 10
         LINE_H = self.font_sm.get_height() + 3
-        t_surf = self.font_md.render(title, True, title_col)
-        line_surfs = [self.font_sm.render(l[0], True, l[1]) for l in lines]
+        t_surf = self.font_md.render(title, False, title_col)
+        line_surfs = [self.font_sm.render(l[0], False, l[1]) for l in lines]
         tw = max(t_surf.get_width(), *(s.get_width() for s in line_surfs)) + PAD * 2
         th = self.font_md.get_height() + len(line_surfs) * LINE_H + PAD * 2 + 4
         tx = self.screen.get_width()  - tw  - 12

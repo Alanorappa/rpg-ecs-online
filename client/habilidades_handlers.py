@@ -81,7 +81,7 @@ class HabilidadesHandlers:
             pygame.draw.rect(self.screen, (90, 72, 44), (ppx, ppy, PW, PH), 2, border_radius=8)
 
             # Título
-            ts = self.font_md.render("Habilidades", True, (225, 195, 110))
+            ts = self.font_md.render("Habilidades", False, (225, 195, 110))
             self.screen.blit(ts, (ppx + PW // 2 - ts.get_width() // 2, ppy + self._u(10)))
 
             # Botão [X]
@@ -89,7 +89,7 @@ class HabilidadesHandlers:
             pygame.draw.rect(self.screen, (80, 40, 30) if cr.collidepoint(mx, my) else (50, 30, 20),
                              cr, border_radius=4)
             pygame.draw.rect(self.screen, (180, 80, 60), cr, 1, border_radius=4)
-            xs = self.font_md.render("X", True, (220, 120, 100))
+            xs = self.font_md.render("X", False, (220, 120, 100))
             self.screen.blit(xs, xs.get_rect(center=cr.center))
             if clicked and cr.collidepoint(mx, my):
                 self._show_habilidades = False
@@ -127,7 +127,7 @@ class HabilidadesHandlers:
                 tx = LIST_X + ICON_SZ + self._u(20)
 
                 # Nome
-                self.screen.blit(self.font_sm.render(name_txt, True, (230, 210, 148)),
+                self.screen.blit(self.font_sm.render(name_txt, False, (230, 210, 148)),
                                  (tx, ry + self._u(6)))
 
                 # Descrição completa — quebrada em duas linhas se necessário
@@ -137,10 +137,10 @@ class HabilidadesHandlers:
                     line1, line2 = desc_txt[:cut], desc_txt[cut:].strip()
                 else:
                     line1, line2 = desc_txt, ""
-                self.screen.blit(self.font_xs.render(line1, True, (155, 140, 95)),
+                self.screen.blit(self.font_xs.render(line1, False, (155, 140, 95)),
                                  (tx, ry + self._u(28)))
                 if line2:
-                    self.screen.blit(self.font_xs.render(line2, True, (155, 140, 95)),
+                    self.screen.blit(self.font_xs.render(line2, False, (155, 140, 95)),
                                      (tx, ry + self._u(44)))
 
                 # Metadados (CD / cast) — canto direito da linha
@@ -150,7 +150,7 @@ class HabilidadesHandlers:
                 if cast_t:
                     meta_parts.append(f"Cast {cast_t:.1f}s")
                 if meta_parts:
-                    meta_s = self.font_xs.render("  ·  ".join(meta_parts), True, (110, 100, 65))
+                    meta_s = self.font_xs.render("  ·  ".join(meta_parts), False, (110, 100, 65))
                     self.screen.blit(meta_s, (LIST_X + LIST_W - meta_s.get_width() - self._u(10),
                                               ry + ROW_H - meta_s.get_height() - self._u(8)))
 
@@ -172,8 +172,7 @@ class HabilidadesHandlers:
 
             # Dica de rodapé
             hint = self.font_xs.render(
-                "Clique e arraste uma habilidade para um slot da hotbar  |  H ou [X] para fechar",
-                True, (90, 82, 55))
+                "Clique e arraste uma habilidade para um slot da hotbar  |  H ou [X] para fechar", False, (90, 82, 55))
             self.screen.blit(hint, hint.get_rect(centerx=ppx + PW // 2, y=ppy + PH - self._u(20)))
 
         # Ghost de drag renderizado separadamente (veja _draw_hab_drag_ghost),
@@ -225,7 +224,7 @@ class HabilidadesHandlers:
         self.screen.blit(_grad, (0, 0))
 
         # Título
-        _title = self.font_lg.render("RPG Online", True, (220, 185, 80))
+        _title = self.font_lg.render("RPG Online", False, (220, 185, 80))
         self.screen.blit(_title, _title.get_rect(centerx=sw // 2, centery=sh // 2 - 60))
 
         # Linha decorativa
@@ -240,7 +239,7 @@ class HabilidadesHandlers:
             msg = f"Reconectando{dots}"
         else:
             msg = f"Conectando ao servidor{dots}"
-        _status = self.font_sm.render(msg, True, (150, 130, 70))
+        _status = self.font_sm.render(msg, False, (150, 130, 70))
         self.screen.blit(_status, _status.get_rect(centerx=sw // 2, centery=sh // 2 + 10))
 
         # Barra de progresso linear: 0% no início → 100% quando loading_min_t zera.
@@ -257,8 +256,7 @@ class HabilidadesHandlers:
         # Dica de timeout restante (só aparece nos últimos 5s)
         if self._loading_timeout < 5.0:
             _hint = self.font_xs.render(
-                f"Sem resposta do servidor — continuando em {self._loading_timeout:.0f}s...",
-                True, (120, 80, 60))
+                f"Sem resposta do servidor — continuando em {self._loading_timeout:.0f}s...", False, (120, 80, 60))
             self.screen.blit(_hint, _hint.get_rect(centerx=sw // 2, centery=sh // 2 + 55))
 
     def _draw_hab_drag_ghost(self) -> None:

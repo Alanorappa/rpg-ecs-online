@@ -92,7 +92,7 @@ class FloatingTextManager:
                 font = self._get_font(e.font_size)
                 # .copy(): surface do CachedFont é compartilhada; esta entrada
                 # muta alpha por frame, então precisa de cópia própria.
-                e.surf = font.render(e.text, True, e.color).copy()
+                e.surf = font.render(e.text, False, e.color).copy()
             base_surf = e.surf
 
             if e.is_crit:
@@ -234,7 +234,7 @@ class WarnTextManager:
             return
         if self._surf is None:
             # .copy(): CachedFont compartilha a surface; set_alpha exige cópia.
-            self._surf = self._get_font().render(self._text, True, self.COLOR).copy()
+            self._surf = self._get_font().render(self._text, False, self.COLOR).copy()
         surf   = self._surf
         sw, sh = screen.get_size()
         alpha  = int(255 * min(1.0, self._timer / (self.DURATION * 0.3)))
@@ -312,7 +312,7 @@ class ProcTextManager:
             alpha = 255 if e.timer >= fade_start else max(0, int(255 * e.timer / fade_start))
             if e.surf is None:
                 # .copy(): CachedFont compartilha a surface; set_alpha exige cópia.
-                e.surf = font.render(e.text, True, e.color).copy()
+                e.surf = font.render(e.text, False, e.color).copy()
             surf = e.surf
             surf.set_alpha(alpha)
             x = sw // 2 - surf.get_width() // 2

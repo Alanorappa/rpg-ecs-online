@@ -9,16 +9,19 @@ RECIPE_ITEMS   — factories de itens de receita (droppáveis / vendáveis)
 """
 from __future__ import annotations
 from components import Item, Modifier
+from item_table import _derive_item_level
 
 
 # ---------------------------------------------------------------------------
 # Custos por raridade
 # ---------------------------------------------------------------------------
 RARITY_RECYCLE_COST: dict = {
-    "common":   250,
-    "uncommon": 500,
-    "rare":     1000,
-    "epic":     2500,
+    "common":    250,
+    "uncommon":  500,
+    "rare":      1000,
+    "epic":      2500,
+    "legendary": 5000,
+    "mythic":    10000,
 }
 RARITY_FORGE_COST: dict = RARITY_RECYCLE_COST
 
@@ -56,31 +59,43 @@ RECYCLE_TABLE: dict = {
     ("weapon", "Sword", "uncommon"):  [("fragmento_ferro", 3), ("fibra_madeira", 1), ("essencia_comum", 1)],
     ("weapon", "Sword", "rare"):      [("fragmento_ferro", 4), ("essencia_arcana", 1), ("joia_bruta", 1)],
     ("weapon", "Sword", "epic"):      [("fragmento_ferro", 5), ("essencia_arcana", 2), ("cristal_poder", 1)],
+    ("weapon", "Sword", "legendary"): [("fragmento_ferro", 6), ("essencia_arcana", 3), ("cristal_poder", 2)],
+    ("weapon", "Sword", "mythic"):    [("fragmento_ferro", 8), ("essencia_arcana", 4), ("cristal_poder", 3)],
     # --- Dagger ---
     ("weapon", "Dagger", "common"):   [("fragmento_ferro", 1), ("tira_couro", 1)],
     ("weapon", "Dagger", "uncommon"): [("fragmento_ferro", 2), ("tira_couro", 1), ("essencia_comum", 1)],
     ("weapon", "Dagger", "rare"):     [("fragmento_ferro", 2), ("tira_couro", 2), ("essencia_arcana", 1)],
     ("weapon", "Dagger", "epic"):     [("fragmento_ferro", 3), ("tira_couro", 2), ("essencia_arcana", 1), ("cristal_poder", 1)],
+    ("weapon", "Dagger", "legendary"):[("fragmento_ferro", 4), ("tira_couro", 3), ("essencia_arcana", 2), ("cristal_poder", 2)],
+    ("weapon", "Dagger", "mythic"):   [("fragmento_ferro", 5), ("tira_couro", 4), ("essencia_arcana", 3), ("cristal_poder", 3)],
     # --- Wand ---
     ("weapon", "Wand", "common"):     [("fibra_madeira", 2), ("fragmento_ferro", 1)],
     ("weapon", "Wand", "uncommon"):   [("fibra_madeira", 2), ("essencia_comum", 1), ("fragmento_ferro", 1)],
     ("weapon", "Wand", "rare"):       [("fibra_madeira", 3), ("essencia_arcana", 2)],
     ("weapon", "Wand", "epic"):       [("fibra_madeira", 3), ("essencia_arcana", 2), ("cristal_poder", 1)],
+    ("weapon", "Wand", "legendary"):  [("fibra_madeira", 4), ("essencia_arcana", 3), ("cristal_poder", 2)],
+    ("weapon", "Wand", "mythic"):     [("fibra_madeira", 5), ("essencia_arcana", 4), ("cristal_poder", 3)],
     # --- Shield ---
     ("shield", "", "common"):         [("fragmento_ferro", 2), ("fibra_madeira", 2)],
     ("shield", "", "uncommon"):       [("fragmento_ferro", 3), ("fibra_madeira", 2), ("essencia_comum", 1)],
     ("shield", "", "rare"):           [("fragmento_ferro", 4), ("fibra_madeira", 2), ("joia_bruta", 1)],
     ("shield", "", "epic"):           [("fragmento_ferro", 5), ("fibra_madeira", 2), ("essencia_arcana", 1), ("cristal_poder", 1)],
+    ("shield", "", "legendary"):      [("fragmento_ferro", 6), ("fibra_madeira", 3), ("essencia_arcana", 2), ("cristal_poder", 2)],
+    ("shield", "", "mythic"):         [("fragmento_ferro", 8), ("fibra_madeira", 4), ("essencia_arcana", 3), ("cristal_poder", 3)],
     # --- Armor ---
     ("armor", "", "common"):          [("tira_couro", 2), ("fibra_resistente", 1)],
     ("armor", "", "uncommon"):        [("tira_couro", 3), ("fibra_resistente", 1), ("essencia_comum", 1)],
     ("armor", "", "rare"):            [("tira_couro", 4), ("fibra_resistente", 2), ("joia_bruta", 1)],
     ("armor", "", "epic"):            [("tira_couro", 4), ("fibra_resistente", 2), ("essencia_arcana", 1), ("cristal_poder", 1)],
+    ("armor", "", "legendary"):       [("tira_couro", 5), ("fibra_resistente", 3), ("essencia_arcana", 2), ("cristal_poder", 2)],
+    ("armor", "", "mythic"):          [("tira_couro", 6), ("fibra_resistente", 4), ("essencia_arcana", 3), ("cristal_poder", 3)],
     # --- Jewelry ---
     ("jewelry", "", "common"):        [("po_de_joia", 1)],
     ("jewelry", "", "uncommon"):      [("po_de_joia", 2), ("fio_de_prata", 1)],
     ("jewelry", "", "rare"):          [("po_de_joia", 3), ("fio_de_prata", 1), ("joia_bruta", 1)],
     ("jewelry", "", "epic"):          [("po_de_joia", 3), ("fio_de_prata", 2), ("joia_bruta", 1), ("cristal_poder", 1)],
+    ("jewelry", "", "legendary"):     [("po_de_joia", 4), ("fio_de_prata", 3), ("joia_bruta", 2), ("cristal_poder", 2)],
+    ("jewelry", "", "mythic"):        [("po_de_joia", 5), ("fio_de_prata", 4), ("joia_bruta", 3), ("cristal_poder", 3)],
 }
 
 
@@ -110,6 +125,7 @@ def _make_result(name, item_type, slot, rarity, value, mods=None,
             rarity=rarity, value=value, two_handed=two_handed,
             damage_min=damage_min, damage_max=damage_max,
             attack_speed=attack_speed, subtype=subtype,
+            item_level=_derive_item_level(rarity, value), level_requirement=1,
         )
     return factory
 

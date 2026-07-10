@@ -2097,6 +2097,628 @@ segundos" relatados.
 
 ---
 
+### ✅ RESOLVIDO — Consumível às vezes não regenera (feedback de testers, 06/07/2026)
+
+Reportado por testers: em alguns momentos, usar um consumível (poção etc.)
+não curava/restaurava nada — e o item sumia do inventário mesmo assim.
+
+**Causa raiz**: modelo antigo era "cliente aplica local + avisa servidor".
+`ConsumableSystem._use_consumable` (systems.py) mutava `current_hp`/`mana`
+e CONSUMIA o item (`item.stack -= 1`) IMEDIATAMENTE, ANTES de qualquer
+confirmação do servidor. O servidor (`apply_consumable`,
+`server/world_server.py`) tinha seu próprio check de "recurso já cheio"
+usando o HP/mana REAL dele (que pode divergir do que o cliente acha, por
+qualquer drift natural de tick/latência) — se bloqueasse, `apply_consumable`
+simplesmente `return`ava, **sem mandar nenhum pacote de volta**. Resultado:
+cliente já tinha "curado" visualmente e perdido o item; servidor nunca
+aplicou nada de verdade e nunca avisou; jogador fica sem efeito real e sem
+o item, sem entender por quê.
+
+**Fix — modelo invertido (servidor decide, cliente só reflete)**:
+- `apply_consumable` (`server/world_server.py`) agora SEMPRE responde ao
+  `CONSUMABLE_USE`, aceito ou rejeitado, via `queue_stats_update` com
+  `item_name` (chave de correlação) + `consumable_ok: True` OU
+  `consumable_rejected: True, reason: "hp_full"|"mana_full"|"in_combat"`.
+- `ConsumableSystem._use_consumable` (systems.py), modo online: não muta
+  MAIS nada localmente (nem HP/mana, nem HoT, nem o item) — só valida
+  localmente pra feedback rápido (mesmos avisos de antes), manda o
+  `CONSUMABLE_USE` e guarda `pending_item_name`. Offline: comportamento
+  inalterado (aplica tudo local, sem servidor).
+- `ConsumableSystem._finalize_consumable` (novo): chamado só quando o
+  servidor confirma — AGORA remove 1 unidade do item e aplica os HoTs
+  locais (a cura/mana instantânea chega via `heal_amount`/`mana_amount` no
+  mesmo canal, já tratado por `network_handlers.py`).
+- `client/network_handlers.py::_handle_msg_stats_update`: novo bloco no
+  topo do `if eid == self._my_eid` — em `consumable_ok`, chama
+  `_finalize_consumable`; em `consumable_rejected`, mostra `WARN` com o
+  motivo (mapeado pra mensagem em PT). Limpa `pending_item_name` nos dois casos.
+
+Validado: teste headless — servidor aceita e cura quando há espaço (envia
+`consumable_ok` + `heal_amount`), rejeita com `reason="hp_full"` sem curar
+quando já cheio (nenhum `heal_amount` enviado); cliente NÃO muta HP/stack/HoT
+no momento do uso (só ao receber `_finalize_consumable`), e SÓ ENTÃO remove
+o item e aplica o HoT. Suíte sem regressão (9F/83P, mesmo baseline).
+
+**Não validado**: passada manual em rede real confirmando que o consumível
+nunca mais "some" sem efeito, e que a latência de confirmação (round-trip
+servidor) não introduz atraso perceptível no feedback visual.
+
+---
+
+### ✅ RESOLVIDO — Loot/quest kill ia pro player errado quando alguém só usava skill (feedback de testers, 06/07/2026)
+
+Reportado por testers: loot deveria ir pra quem ataca PRIMEIRO, não pra
+quem "aggra" o mob.
+
+**Causa raiz**: `_mob_damage_log` (dict `mob_eid → {player_eid: dano
+somado}`, em ordem de inserção — `next(iter(...))` no death handler decide
+quem foi o "primeiro atacante" = dono do loot/quest kill) só era escrito
+manualmente em DOIS lugares: `combat_processor.py` (loop de auto-attack) e
+um ponto específico de Fatiador de Corpos (`world_server.py`). **Nenhuma
+outra skill logava dano** — Bola de Fogo, Golpe Poderoso, Executar,
+Impacto, Vitória Iminente, Punho no Queixo, flechas de skill (Tiro
+Repulsivo, Flecha Reiterada, Picada de Escorpião, Tiro Múltiplo), Nova
+Congelante, Calcinar. Se um player só usa skill contra um mob (ex: mago
+solando com magia) e outro player chega depois e dá um único auto-attack,
+o SEGUNDO player "rouba" o loot e o crédito de kill de quest — porque é o
+primeiro (e único) nome a aparecer no log. Caso extremo pior: um mob morto
+SÓ por skills nunca tinha `damage_log` nem `killer_eid` válido (mortes via
+skill recebem `PendingDeath(killer_entity_id=-1)` do sweep genérico, não do
+handler específico) — `first_attacker_eid` caía em `-1`, e o corpse/loot
+podia nem ser gerado.
+
+**Fix — centralizado em `core_systems.apply_damage_core`** (núcleo único já
+usado por TODO caminho de dano — problemas B/H desta sessão de trabalho):
+- Novo callback `on_damage_dealt(attacker_eid, target_id, dmg)`, chamado
+  sempre que `dmg > 0` é efetivamente aplicado (com `killer_eid` como
+  identidade do atacante — mesmo campo, propósito duplo).
+- `CombatSystem.__init__` ganha `on_damage_dealt=None`; `WorldServer`
+  injeta `self._log_mob_damage_hit` na construção (`is_server=True`) — como
+  `deal_damage()` é o núcleo COMPARTILHADO de melee auto-attack E de TODA
+  skill física (`"physical_fixed"`), isso cobre as duas classes de uma vez.
+- `_apply_final_damage` (`server/spell_completion_processor.py`, núcleo do
+  dano mágico/ranged) ganha parâmetro `attacker_id` e passa o mesmo
+  callback — cobre magia (`_server_apply_magic_damage`) e ranged
+  (`_server_apply_ranged_physical`, tanto skill quanto auto-attack).
+- `WorldServer._log_mob_damage_hit(attacker_eid, target_id, dmg)`: método
+  único que escreve em `_mob_damage_log`.
+- **Removidas as 2 escritas manuais antigas** (`combat_processor.py`,
+  `world_server.py`/Fatiador) — com a centralização, elas contariam o MESMO
+  golpe em dobro (inflaria XP proporcional e dano "por atacante").
+
+Validado: 4 cenários headless — (1) skill física sozinha loga; (2) skill
+mágica sozinha loga; (3) auto-attack melee continua logando o valor EXATO
+do dano real (sem dobro, confirmando que a remoção das escritas manuais não
+regrediu nem duplicou); (4) **cenário exato do bug relatado** — mago ataca
+primeiro só com Bola de Fogo, guerreiro chega depois e auto-ataca:
+`first_attacker` resolve corretamente pro mago, não pro guerreiro. Suíte
+sem regressão (9F/83P, mesmo baseline).
+
+**Não validado**: passada manual com 2+ players reais em grupo, conferindo
+que o loot/XP proporcional e o crédito de quest "kill" vão pro jogador que
+realmente engajou primeiro, incluindo o caso de solo 100% skill.
+
+---
+
+### ✅ RESOLVIDO — Arqueiro: "Precisa de arco" falso + Recarregar não sincroniza (feedback de testers, 06/07/2026)
+
+Reportado por testers: (a) aljava diz estar cheia mas não está depois de
+usar Recarregar; (b) atacar com o arqueiro retorna "Precisa de um arco
+equipado" mesmo com arco e aljava genuinamente equipados.
+
+**Causa (a) — Recarregar nunca sincronizava**: `_skill_recarregar`
+(skill_handlers.py), no modo online, só enfileirava o cast no servidor e
+retornava — nunca tocava `arrow_count`/inventário locais. O servidor
+recarregava de verdade (`_server_recarregar`,
+`server/spell_completion_processor.py`) mas **nunca avisava o cliente**. A
+cópia local do jogador (contagem de flechas na aljava, munição na bag)
+ficava congelada no valor de quando foi equipada, divergindo do servidor
+pra sempre após o primeiro uso online.
+
+**Fix (a)**: `_server_recarregar` agora sempre envia confirmação via
+`queue_stats_update` — `quiver_arrow_count`, `quiver_subtype`, `ammo_name`
++ `ammo_taken` (munição consumida da bag). `client/network_handlers.py::
+_handle_msg_stats_update` aplica isso na `Equipment.offhand` e decrementa/
+remove o item de munição correspondente no `Inventory` local.
+
+**Causa (b) — subtype da arma nunca era salvo**: `_serialize_item`
+(client/save_sync_handlers.py) só gravava o campo `subtype` dentro do
+bloco condicional de aljava (`item_type == "quiver"`) — NUNCA para a arma
+em si. Ao relogar, `_restore_item` tenta casar o item por NOME em
+`loot_tables._T`; se o arco tiver um nome que não existe nesse catálogo
+(comprado em loja com nome próprio, ou forjado), cai no fallback
+`_item_from_data`, que lê `subtype = d.get("subtype", "")` — como nunca foi
+salvo, vira `""`. Todo check `subtype == "Bow"` (inclusive o que decide se
+o arqueiro "tem arco equipado") passa a falhar, mesmo com o item
+visivelmente equipado.
+
+**Fix (b)**: `subtype` incluído no loop geral de atributos sempre
+serializados, não só no bloco específico de aljava — cobre QUALQUER item
+com subtype (armas de qualquer classe), não só flechas.
+
+Validado (headless): (5) servidor recarrega e sempre manda a confirmação
+com os valores corretos; simulação do cliente aplicando a confirmação
+atualiza `arrow_count`/`subtype` da aljava E decrementa a munição certa da
+bag. (6) arma com nome FORA do catálogo de loot preserva `subtype="Bow"`
+através de serializar→salvar→restaurar (antes virava `""`); aljava
+continua funcionando (não regrediu). Suíte sem regressão (9F/83P, mesmo
+baseline).
+
+**Achado à parte (não corrigido — fora do escopo aprovado)**: o fallback
+`_item_from_data` também não restaura `cast_range` (nem outros poucos
+atributos fora da lista curta que ele copia) — gap pré-existente,
+independente deste fix; provavelmente vale uma rodada própria revendo TODOS
+os atributos de `Item` cobertos por esse fallback.
+
+**Não validado**: passada manual em rede real — usar Recarregar online e
+conferir que a aljava mostra o valor real (não "cheia" indevidamente);
+relogar com um arco comprado/forjado (nome fora do catálogo de loot) e
+confirmar que o arqueiro ataca normalmente sem a mensagem falsa.
+
+---
+
+### ✅ RESOLVIDO — Recompensa de gold da quest não aparecia (feedback de testers, 06/07/2026)
+
+Reportado por testers: quest "De volta a terra" prometia 15 gold e não deu.
+
+**Causa raiz**: `_handle_quest_turn_in` (`server/session.py`) credita
+`wall.gold += reward.gold` corretamente — a persistência já estava certa
+(`get_player_save_data` lê o `Wallet` vivo). Mas, ao contrário do bloco de
+XP logo ACIMA no mesmo handler (que já chama `queue_stats_update`), o bloco
+de gold **nunca notificava o cliente**. O jogador só veria o gold correto
+no próximo relogin — na sessão atual, o contador na tela ficava parado.
+
+**Fix**: `queue_stats_update({"player_eid": eid, "gold": wall.gold})` logo
+após creditar — mesmo padrão já usado pro XP. `client/network_handlers.py::
+_handle_msg_stats_update` ganha um novo bloco lendo `"gold"` do payload e
+aplicando (valor ABSOLUTO, mesmo padrão de hp/hp_max) no `Wallet` local.
+
+Validado: teste headless via `_handle_quest_turn_in` real (quest
+"de_volta_a_terra", progresso forçado como completo, save_character
+mockado) — `Wallet.gold` vai de 0→15 E a notificação
+`{"player_eid": eid, "gold": 15}` é corretamente enfileirada em
+`queue_stats_update` (antes: nada). Suíte sem regressão (9F/83P, mesmo
+baseline).
+
+**Não validado**: passada manual completando uma quest com recompensa de
+gold em rede real, conferindo que o contador na tela atualiza na hora, sem
+precisar relogar.
+
+---
+
+### ✅ RESOLVIDO — Progresso de quest (collect_item) atrasado (feedback de testers, 06/07/2026)
+
+Reportado por testers: quest "Presas Afiadas" — dropou a 1ª Presa de Lobo e
+o objetivo não contou; dropou a 2ª e aí contou "2" de uma vez.
+
+**Causa raiz**: `quest_logic.sync_collect_progress` (recalcula o progresso
+comparando `Inventory` real do servidor contra `obj.count`) só era chamada
+dentro de `_process_quest_events` — **como efeito colateral de OUTROS
+eventos de quest** (kill, use_skill, etc.) passando pela fila
+`QUEST_EVENTS`. Pegar um item de quest do corpo (`LOOT_REQUEST` →
+`request_loot`, que nem chega a tocar o `Inventory` do servidor — quem
+atualiza é o `INV_SYNC` que o cliente manda logo depois, via
+`_on_loot_action`) **não disparava nenhuma sincronização por si só**. O
+contador só era recalculado na PRÓXIMA vez que um evento NÃO relacionado
+passasse por `_process_quest_events` — tipicamente o próximo kill —,
+momento em que o Inventory já refletia AMBOS os itens looteados
+enquanto isso, daí o salto "0 → 2".
+
+**Fix**: `_handle_inventory_update` (`server/session.py`, handler do
+`INV_SYNC` — disparado pelo cliente logo após todo loot) agora chama
+`quest_logic.sync_collect_progress` diretamente, logo após
+`sync_player_inventory` reconstruir o `Inventory` real do servidor. Se
+mudou, envia `QUEST_UPDATE` na hora pra sessão. `_process_quest_events`
+continua rodando a mesma sincronização (não regride nada — cobre
+progresso derivado de OUTRAS mudanças de inventário, ex: craft, compra).
+
+Validado: teste headless — quest "Presas Afiadas" ativa, INV_SYNC com 1
+Presa de Lobo chamado ISOLADAMENTE (sem nenhum kill/evento no meio) →
+progresso atualiza pra `[1]` NA HORA + `QUEST_UPDATE` enviado; segundo
+INV_SYNC com 2 presas → progresso vai corretamente pra `[2]` (sem pular).
+Suíte sem regressão (9F/83P, mesmo baseline).
+
+**Não validado**: passada manual em rede real — lootar itens de quest um a
+um e conferir que o diário de quests atualiza a cada pickup, sem esperar a
+próxima morte de mob.
+
+---
+
+### ✅ RESOLVIDO — Hotbar não escurecia por mana/concentração insuficiente (feedback de testers, 06/07/2026)
+
+Reportado por testers: a skill deveria ficar escura quando não há recurso
+suficiente pra usá-la.
+
+**Causa raiz**: já existia um overlay de "recurso insuficiente" em
+`client/hotbar_handlers.py::_draw_hotbar`, mas cobria **só rage**
+(guerreiro) — `rage_cost > 0 and player_rage < rage_cost`. Mago (mana) e
+arqueiro (concentração) nunca tinham NENHUM overlay equivalente — a skill
+ficava sempre "acesa" e só o jogador descobria que faltava recurso ao
+tentar usar e levar a rejeição do servidor.
+
+**Fix**: overlay generalizado pra também checar `mana_cost`/`mana_cost_pct`
+(resolvido como `max_mana × pct` quando aplicável) e
+`concentration_cost` (lido de `skill.params`, já que não é campo de
+primeira classe em `Skill` — arqueiro). Mantém o desconto por talento já
+existente pra rage (`f"{skill.skill_id}_rage_cost"` em `CombatStats`);
+mana/concentração usam o custo BASE do catálogo — skills com desconto de
+talento específico (ex: Pyromania) podem escurecer um pouco antes da hora
+em casos raros, mas isso é uma melhoria grande sobre NUNCA escurecer.
+
+Validado: lógica extraída e testada isoladamente contra objetos reais
+`Skill`/`CharacterStats`/`CombatStats` — 6 cenários (guerreiro c/ rage
+insuficiente e suficiente; mago c/ mana insuficiente e suficiente; arqueiro
+c/ concentração insuficiente e suficiente), todos corretos. Suíte sem
+regressão (9F/83P, mesmo baseline).
+
+**Não validado**: a própria renderização visual (`_draw_hotbar` depende de
+superfície pygame + estado completo do `GameEngine` — fora do escopo de um
+teste headless leve; só a lógica de decisão foi testada isoladamente).
+Precisa de passada manual no cliente real conferindo que o slot escurece
+visualmente ao ficar sem mana/concentração, além de rage.
+
+---
+
+### ✅ RESOLVIDO — Shop aberto + clique em outro NPC abria um segundo modal (feedback de testers, confirmado por teste manual, 06/07/2026)
+
+Reportado por testers e CONFIRMADO por teste manual em cliente real: com a
+loja aberta, clicar num NPC diferente (que estava na posição do clique)
+abria o modal DELE também, simultaneamente.
+
+**Causa raiz**: `game.py` chama `self._crafting_system.update()`,
+`self._trainer_system.update()`, `self._shop_system.update()` e
+`self._quest_dialog.update()` em sequência, todo frame. Já existia
+filtragem de right-click ENTRE esses 4 sistemas **dentro do mesmo frame**
+(`_right_click_consumed`, resolve qual NPC ganha quando há vários
+adjacentes) — mas NENHUM deles verificava se um modal **de um frame
+anterior** já estava aberto antes de processar um NOVO right-click capaz
+de abrir a SI PRÓPRIO. Um clique numa NPC de tipo diferente (ex: trainer)
+enquanto a loja já estava na tela era processado normalmente pelo
+`TrainerSystem` (que não sabe nem se importa que a loja está aberta),
+abrindo um segundo modal por cima.
+
+**Fix**: no início do bloco (`game.py`), calcula
+`_any_npc_modal_open` (`OR` de `is_open` dos 4 sistemas, ANTES de
+qualquer `.update()` deste frame rodar) e uma função
+`_strip_open_click(evs, already_open)` — se outro modal já está aberto E o
+sistema perguntando NÃO é o que já está aberto, remove o `MOUSEBUTTONDOWN`
+botão 3 dos eventos passados pro `.update()` daquele sistema. O sistema
+JÁ aberto continua recebendo seus próprios eventos normalmente (senão
+nunca reagiria a cliques internos/fechamento).
+
+Validado: lógica extraída e testada isoladamente — (1) nenhum modal
+aberto → clique passa normal; (2) **cenário exato do bug confirmado
+manualmente** — shop aberto + clique num NPC diferente e fechado → clique
+removido; (3) shop aberto processando A SI MESMO → clique preservado (não
+quebra a própria interação da loja). Suíte sem regressão (9F/83P, mesmo
+baseline).
+
+**Não validado (pendente de nova passada manual)**: repetir o teste manual
+que reproduziu o bug (loja aberta + clique num NPC diferente) confirmando
+que agora só a loja permanece aberta.
+
+---
+
+### ✅ IMPLEMENTADO — Arqueiro ataca melee quando sem arco (ou com arma melee) equipado (07/07/2026)
+
+Pedido do usuário: arqueiro sem arco (ou com arma melee equipada) deve
+atacar corpo-a-corpo no auto-attack, igual ao mago já faz quando adjacente
+(mago nunca teve auto-attack ranged; arqueiro tem, daí precisar da
+diferenciação). Ataque melee de mago E arqueiro deve somar o skill_level da
+arma melee equipada (mesma fórmula do auto-attack já implementada em
+07/07/2026 — ver entrada de análise acima).
+
+**Causa raiz de por que isso não funcionava**: `CombatStats.is_ranged` é um
+flag **ESTÁTICO por classe** (`CLASS_MELEE_OVERRIDES["arqueiro"]["is_ranged"]
+= True`, aplicado uma vez em `apply_char_stats_to_combat`) — nunca
+reavaliado contra o equipamento real. Servidor (`combat_processor.py`) e
+cliente (`_process_archer_combat`, `systems.py`) tratavam "é arqueiro" como
+sinônimo de "está atacando à distância": sem arco válido, o SERVIDOR
+simplesmente `continue`ava (pulava o auto-attack do player inteiro, todo
+tick) e o CLIENTE só exibia "Precisa de um arco equipado" e parava — sem
+NENHUMA opção de ataque.
+
+**Fix — decisão dinâmica baseada na arma real equipada, não na classe**:
+- `server/combat_processor.py::_process_player_attacks`: `_is_ranged_p`
+  agora é `is_ranged (classe) AND tem_arco_equipado (agora)` — sem arco,
+  cai direto pro caminho de dano MELEE (`deal_damage`) já usado por
+  guerreiro/mago, em vez de pular o player. Arco equipado mas SEM
+  aljava/flechas continua **sem atacar** (não vira melee — tem arma em
+  mãos, só falta munição; fluxo esperado é "Use Recarregar", preservado
+  como estava).
+- `server/combat_processor.py::_process_pvp_attack`: mesmo critério dinâmico
+  pro `attack_range` (7 só com arco de verdade; senão 1, igual PvE).
+- `client/systems.py` (`PlayerInputSystem`): dispatcher agora só entra em
+  `_process_archer_combat` (ranged) se `is_archer AND mainhand.subtype ==
+  "Bow"` — caso contrário cai no MESMO branch `else` que guerreiro usa
+  (chase até adjacente + `deal_damage("physical")`). `_add_rage`/
+  `_increment_pnq_counter` chamados nesse branch são sempre no-op pra quem
+  não é guerreiro (`_add_rage` é no-op online; `_increment_pnq_counter`
+  exige `pnq_enabled`, talento exclusivo de Cavaleiro) — seguro reusar o
+  branch inteiro sem duplicar lógica nem precisar "limpar" nada.
+- Bônus de skill_level da arma melee: **automático, zero código novo** — já
+  vem de graça da mudança de auto-attack desta mesma sessão
+  (`ap_skill_mult` em `calculate_base_damage`, resolvido via
+  `weapon_skill_level` a partir do que está REALMENTE equipado, sem
+  checagem de classe). Mago já usava `deal_damage("physical")` no melee, e
+  arqueiro agora usa o mesmo caminho — os dois ganham o bônus igual
+  guerreiro.
+
+Validado (headless, 5 cenários): (A) arqueiro desarmado adjacente a um mob
+→ ataca melee (antes ficava mudo); (B) arqueiro com espada equipada →
+dano escala com skill_level de Espada (120→320, skill 0→200, igual
+guerreiro); (C) arqueiro com arco válido → **continua ranged sem
+regressão** (56 de dano a 3 tiles); (D) arco equipado mas aljava vazia →
+**continua sem atacar** (não veio melee por engano — comportamento
+restritivo intencional preservado); (E) PvP com arqueiro desarmado → usa
+range melee (1), não alcança vítima a 3 tiles (só alcançaria com arco de
+verdade). Suíte sem regressão (9F/83P, mesmo baseline).
+
+**Não validado**: passada manual no cliente real — arqueiro desequipando o
+arco e trocando por uma espada/machado/maça em combate, conferindo que o
+auto-attack muda de flecha pra golpe corpo-a-corpo suavemente (sem travar a
+perseguição) e que o feedback visual (animação/som) faz sentido pro golpe
+melee de um arqueiro.
+
+### ✅ IMPLEMENTADO — Follow-up: flecha/som de flecha sobrevivia ao melee fallback do arqueiro + aljava "100/0" (07/07/2026)
+
+Teste manual do fix acima achou 3 problemas na camada de FEEDBACK (visual/
+som) do cliente, que não tinha sido auditada junto com a mudança
+server-side: (1) arqueiro sem arco atacando melee continuava **nascendo
+flecha visual e tocando som de flecha/arco**; (2) dúvida do usuário se o
+arqueiro RANGED também perseguia até ficar adjacente (não — ver abaixo);
+(3) aljava mostrava "100/0" na HUD após Recarregar (deveria ser "100/100"),
+e a capacidade precisava ser dinâmica por item (100/125/150...).
+
+**Causa raiz #1 (flecha fantasma)**: `_resolve_archer_attack`
+(`client/remote_entity_handlers.py`) decidia "é flecha" olhando **só
+`class_id == "arqueiro"`** — nunca o equipamento real. Isso é uma classe de
+bug arquitetural: o cliente **não tem visibilidade do inventário/equip de
+players remotos** (só sabe `class_id` via `RemoteControlled`), então
+reconstituir "está atirando ou batendo agora" a partir da classe sozinha é
+estruturalmente impossível de acertar — só o SERVIDOR sabe qual caminho
+(`_is_ranged_p`) foi usado neste golpe específico.
+
+**Fix #1 — servidor manda o veredito, cliente para de adivinhar**:
+- `server/combat_processor.py`: os dois `_combat_this_tick.append(...)` de
+  auto-attack (PvE em `_process_player_attacks`, PvP em
+  `_process_pvp_attack`) agora incluem `"is_ranged": _is_ranged_p` (PvE) /
+  `_pvp_class_ranged and _pvp_has_bow` (PvP) — o mesmo booleano que já
+  decidiu range/dano deste golpe, agora também viaja no COMBAT_RESULT.
+- `client/remote_entity_handlers.py::_resolve_archer_attack`: para
+  `source == "auto"`, usa `cr.get("is_ranged", True)` em vez de assumir
+  True sempre que a classe é arqueiro (default True só cobre combat
+  results antigos/antes deste campo existir — nunca acontece em produção
+  pós-fix). Para skills (`source != "auto"`), mantém a lista
+  `_ARROW_SKILL_IDS` (essas skills já exigem arco pra serem autorizadas).
+  Efeito colateral automático: como a flecha deixa de nascer, o ataque cai
+  no branch `else` de `_apply_combat_result` que já toca `hit_normal_*`
+  (mesmo som que guerreiro/mago) — sem precisar duplicar lógica de som.
+
+**Questão #2 (perseguição) — não era bug**: `_process_archer_combat`
+(`systems.py:758`) só limpa a perseguição (`auto_move.path.clear()`)
+quando `dist <= bow_range` (8 tiles) — nunca persegue até adjacente. Esse
+código não foi tocado pela mudança de melee-fallback (que só altera o
+dispatcher em `_process_archer_combat` vs o branch `else`, nunca o
+comportamento INTERNO de `_process_archer_combat`). Confirmado por leitura
+de código: arqueiro com arco válido continua parando no alcance do arco,
+sem regressão.
+
+**Causa raiz #3 (aljava "100/0")**: `_server_recarregar`
+(`server/spell_completion_processor.py`) tem um fallback de auto-reparo
+`if quiver.max_arrows == 0: quiver.max_arrows = 100` (cobre aljavas
+legadas/salvas antes deste campo existir) — mas o `queue_stats_update(...)`
+de confirmação só mandava `quiver_arrow_count`, nunca `quiver_max_arrows`.
+A cópia LOCAL da aljava no cliente ficava travada em `max_arrows=0` pra
+sempre (HUD faz `arrow_count/max_arrows` → "100/0"), mesmo com o servidor
+já tendo reparado o valor.
+
+**Fix #3**: `_server_recarregar` agora inclui `"quiver_max_arrows":
+quiver.max_arrows` no payload; `client/network_handlers.py`
+(`_handle_msg_stats_update`) aplica `payload.get("quiver_max_arrows")` na
+aljava local no mesmo bloco que já sincroniza `arrow_count`/`subtype`.
+
+**Capacidade dinâmica (item #4 do pedido) — já era arquitetura correta,
+sem mudança necessária**: `merchant_data.py::_make_quiver(...,
+max_arrows=100)` e `loot_tables.py` já definem `max_arrows` por item (o
+fallback `==0 → 100` só cobre o caso legado, nunca sobrescreve uma aljava
+de tier maior com valor já setado — ex.: uma aljava de 150 nunca é
+rebaixada). `hud_handlers.py` já lê `_quiver.max_arrows` dinamicamente (sem
+hardcode). O bug real era só a sincronização (#3) — o suporte a
+100/125/150 etc. já funciona fim-a-fim assim que a aljava carrega o valor
+certo e o cliente fica sabendo dele.
+
+Validado (headless, 3 cenários, script descartável): (A) arqueiro
+desarmado → todo combat_result de auto-attack vem com `is_ranged=False`;
+(B) arqueiro com arco de verdade → todo combat_result vem com
+`is_ranged=True` (nenhuma regressão no caminho ranged); (C)
+`_server_recarregar` numa aljava legada (`max_arrows=0`) → STATS_UPDATE
+sai com `quiver_max_arrows=100` (reparo agora chega ao cliente). Suíte sem
+regressão (9F/83P, mesmo baseline).
+
+**Não validado**: passada manual no cliente real confirmando que (1) o
+som/visual de melee do arqueiro sem arco soa idêntico ao guerreiro; (2) a
+HUD mostra "100/100" (não "100/0") após Recarregar uma aljava antiga.
+
+### ✅ CORRIGIDO — Arco COMPRADO NA LOJA nascia sem `subtype`, quebrando ranged na hora (07/07/2026)
+
+Usuário testou o fix acima e reportou o oposto do esperado: arqueiro COM
+arco+aljava genuinamente equipados, comprados na loja, também perseguia até
+melee e atacava melee — imediato, todo clique, sem precisar relogar.
+Investigação por leitura de código (dispatcher, sync de equip, save/load)
+não achou nada — testes headless isolados confirmavam o dispatcher correto.
+Causa só apareceu com log de diagnóstico temporário no cliente real.
+
+**Causa raiz**: `WorldServer._item_data_from_obj` (`server/world_server.py`)
+monta o payload `BUY_RESULT.item` a partir de uma lista curta e explícita de
+campos (`attack_power, armor, spell_power, stamina, two_handed,
+attack_speed, damage_min, damage_max`) — **sem `subtype` nem
+`cast_range`**. `client/network_handlers.py::_handle_msg_buy_result`
+reconstrói o item local via `_item_from_data` (SEM lookup em catálogo —
+comentário do próprio método diz "usado para itens de loja que podem não
+estar em loot_tables._T"), que só preenche os campos presentes no dict
+recebido. Resultado: **todo item comprado numa loja nasce no cliente com
+`subtype=""` e `cast_range=0`, desde o instante da compra** — quebra
+`_archer_has_bow` (`subtype=="Bow"`) na mesma hora, sem precisar de
+relogin. `cast_range` não quebrou nesse caso específico só porque "Arco
+Curto" TAMBÉM existe em `loot_tables._T` com os mesmos stats — se o
+personagem relogar, `_restore_item` acha o nome no catálogo de loot e
+reaplica `cast_range=7` do factory; mas **`subtype` é sobrescrito de volta
+pelo valor quebrado salvo** (`_restore_item` reaplica `d["subtype"]`
+mesmo após achar candidato no catálogo — nunca confia só no factory pra
+esse campo, por ser bookkeeping mutável em aljavas). Afeta QUALQUER arma
+comprada em loja (guerreiro/mago também), não só arco — qualquer check de
+`subtype` client-side (skill_level da arma, ícones, etc.) fica errado até
+o item ser vendido/recomprado ou sofrer um ciclo save→load que bata com o
+catálogo de loot.
+
+**Fix**: `_item_data_from_obj` agora inclui `subtype` e `cast_range` na
+lista de campos copiados do objeto Item pro payload do BUY_RESULT.
+`client/save_sync_handlers.py::_item_from_data` (usado tanto por
+`_handle_msg_buy_result` quanto como fallback de `_restore_item` pra itens
+fora do catálogo de loot) ganhou `cast_range` na sua própria lista de
+campos copiados — antes só existia no `_serialize_item` (o que salvava
+certo mas nunca restaurava, gap já flagueado como "achado à parte, fora do
+escopo" numa entrada anterior deste arquivo).
+
+Validado (headless, script descartável): monta o objeto real da factory de
+loja de "Arco Curto" (`merchant_data.SHOPS`), serializa via
+`_item_data_from_obj` (confirma `subtype`/`cast_range` presentes no dict),
+reconstrói via `_item_from_data` real do cliente (confirma
+`subtype="Bow"`/`cast_range=7` no item final, batendo com o original).
+Suíte sem regressão (9F/83P, mesmo baseline).
+
+**Não validado**: passada manual comprando "Arco Curto" na loja (sem
+relogar) e confirmando que o arqueiro ataca ranged imediatamente após
+equipar.
+
+---
+
+### ✅ CORRIGIDO — Arqueiro com arco de alcance >7 "atira mas não acerta" (07/07/2026)
+
+Usuário reportou: clicar num alvo faz o arqueiro andar até "parecer" estar
+no alcance, parar, tocar som de disparo e descontar flecha da aljava — mas
+o ataque nunca sai (sem dano, sem COMBAT_RESULT). O usuário já suspeitava
+corretamente que o cálculo de distância deveria usar o `cast_range` do arco.
+
+**Causa raiz**: `server/combat_processor.py` tinha `attack_range = 7 if
+_is_ranged_p else 1` — **hardcoded**, ignorando o `cast_range` real do
+arco equipado (mesmo bug em `_process_player_attacks` e
+`_process_pvp_attack`). O cliente (`systems.py::_process_archer_combat`)
+sempre usou o `cast_range` real do item (correto) — com "Arco Curto"
+(cast_range=7) os dois valores coincidiam por acaso, mascarando o bug.
+Qualquer arco melhor ("Arco do Caçador"=8, "Arco Élfico"=9) expunha:
+cliente parava a 7-8 tiles (distância real do bow_range), servidor só
+aceitava até 7 → todo golpe fora disso caía em `continue` silencioso.
+Como o auto-attack ranged é "100% server-driven" (flecha/som só nascem ao
+receber COMBAT_RESULT — ver entrada de arquitetura sobre isso), mas o
+cliente decrementa `arrow_count`/cooldown **otimisticamente** sem esperar
+confirmação (comentário "flecha nasce 100% server-driven... aqui só
+avançamos cooldown local e a aljava"), o jogador via o ciclo de disparo
+completo (som de nock, desconto de flecha) rodando pra sempre sem nunca
+conectar.
+
+**Fix**: `attack_range` agora usa `getattr(_bow_cp, "cast_range", 0) or 7`
+(fallback 7 só se o item não tiver o campo) em vez do valor fixo, nos dois
+pontos (PvE e PvP).
+
+Validado (headless): arqueiro com Arco Élfico (cast_range=9) a 8 tiles do
+alvo → antes 0 de dano (rejeitado), agora conecta normalmente; mesmo teste
+em PvP. Suíte sem regressão (9F/83P, mesmo baseline).
+
+### ✅ CORRIGIDO — Mago para de perseguir fora do alcance da skill que vai usar (07/07/2026)
+
+Mesmo usuário, mesma sessão: clicar num alvo (ou apertar uma skill) faz o
+mago perseguir e parar antes da distância realmente necessária pra lançar
+a skill — servidor rejeita com "Fora de alcance" mesmo o personagem tendo
+acabado de parar de andar em direção ao alvo. Usuário corretamente
+identificou que, ao contrário do arqueiro, o alcance do mago não vem da
+arma (Wand/Staff não tem `cast_range`) — vem da própria skill
+(`skill_config.py`), já que mago não tem auto-attack ranged.
+
+**Causa raiz**: `systems.py::_mage_attack_range` calculava o **MAIOR**
+`cast_range` entre TODAS as skills da hotbar do mago, não da skill
+específica que o jogador está prestes a usar. Ex.: hotbar com Bola de Fogo
+(alcance 6) + Polimorfia (alcance 7) → perseguição genérica (clique
+direito) parava a 7 tiles; apertar Bola de Fogo naquela distância falhava
+("Fora de alcance") porque o check específico da skill em
+`_use_skill_visual_only` (que usa corretamente `skill.cast_range` da skill
+pressionada) exige ≤6. A perseguição genérica e o check da skill usavam
+fontes de alcance diferentes (hotbar inteira vs. skill específica) —
+sempre que a skill pressionada tinha alcance MENOR que a mais longa da
+hotbar, dava esse falso "fora de alcance" logo após parar de perseguir.
+
+**Fix (opção escolhida pelo usuário)**: `_mage_attack_range` agora calcula
+o **MENOR** `cast_range` entre as skills ofensivas com alvo da hotbar
+(ignora self-buff/utilitárias como Bloco de Gelo — `needs_target=False` —
+e skills sem alcance definido, `cast_range<=0`). Ao parar de perseguir, o
+mago está automaticamente dentro do alcance de QUALQUER skill da hotbar,
+não só da mais longa. Efeito colateral aceito: o mago sempre se aproxima
+até a distância da sua skill de alcance mais curto, mesmo pretendendo usar
+só a de alcance maior.
+
+Validado (headless): hotbar com Bola de Fogo(6)/Nova Congelante(3)/
+Polimorfia(7)/Bloco de Gelo(self) → `_mage_attack_range` retorna 3 (antes
+retornava 7); hotbar só com self-buff → fallback 5 (comportamento antigo
+preservado quando não há skill ofensiva com alvo). Suíte sem regressão
+(9F/83P, mesmo baseline).
+
+**Não validado**: passada manual — mago com Bola de Fogo e Polimorfia na
+hotbar, clicar num alvo distante e confirmar que a perseguição agora para
+mais perto (na distância de Nova Congelante, se equipada) e as 3 skills
+ofensivas lançam sem "Fora de alcance" assim que a perseguição termina.
+
+---
+
+### ✅ RESOLVIDO — Player remoto "congela" na tela (feedback de testers, 06/07/2026)
+
+Reportado por testers em rede real (nunca reproduzido em localhost): em
+alguns momentos, um player remoto para de atualizar posição na tela de
+outro cliente — fica parado enquanto continua se movendo normalmente pro
+resto do mundo.
+
+**Causa raiz**: `Session.send()` (`server/session.py`) engolia QUALQUER
+exceção com `except Exception: pass` — sem log, sem retry, sem sinalizar
+falha ao chamador. Combinado com isso, `_build_update_for_session` MUTA
+`session.known_eids` (marca a entidade como "o cliente já conhece") ANTES
+de `_dispatch_tick_deltas` sequer tentar enviar o pacote. Se ESSE envio
+específico falhar — rede real tem perdas/hiccups que localhost não tem, e
+há ainda um risco de concorrência real: o handler de mensagens recebidas
+(task própria por conexão) e o loop de ticks (task separada) podiam chamar
+`ws.send()` na MESMA conexão ao mesmo tempo, e a lib `websockets` não é
+segura pra `send()` concorrente — o servidor passa a acreditar que o
+cliente já recebeu aquele ENTITY_SPAWN, mas o pacote nunca chegou. Dali em
+diante, todo ENTITY_MOVE seguinte pra aquele eid é descartado no cliente em
+silêncio (`eid not in self._remote_players`), porque a entidade local nunca
+foi criada — desync permanente até a entidade sair e voltar do raio de
+visão (ou até o cliente relogar).
+
+**Fix** (`server/session.py`):
+- `Session._send_lock` (`asyncio.Lock`) protegendo todo `ws.send()` —
+  elimina o hazard de concorrência entre a task de mensagens recebidas e a
+  task do tick loop.
+- `Session.send()` agora retorna `bool` (sucesso/falha) e LOGA a exceção em
+  vez de descartá-la silenciosamente.
+- `_dispatch_tick_deltas`: se o envio do AOI_UPDATE falhar, `session.
+  known_eids.clear()` — em vez de tentar desfazer cirurgicamente as
+  mutações (entrelaçadas com o cálculo do payload dentro de
+  `_build_update_for_session`), o próximo tick com envio bem-sucedido trata
+  TODO mob/player no raio como "novo" (via sweep que já roda todo tick) e
+  reenvia os ENTITY_SPAWN — resync automático, sem intervenção manual.
+
+Validado: teste headless simulando falha de rede — `send()` retorna
+True/False corretamente sem propagar exceção; duas chamadas concorrentes
+de `send()` na mesma sessão não colidem (lock funciona); `known_eids` vai
+de populado → limpo (na falha simulada) → repopulado automaticamente (no
+próximo dispatch bem-sucedido). Suíte sem regressão (9F/83P, mesmo baseline
+pré-existente desta sessão).
+
+**Não validado**: passada manual com 2+ testers em rede real confirmando
+que o congelamento não volta a ocorrer (o bug original só era reproduzível
+em condições de rede real, não em localhost/dev).
+
+---
+
 ### ✅ RESOLVIDO — Vitória Iminente não ganhava carga ao matar mobs (03/07/2026)
 
 Reportado pelo usuário: matar mobs não concedia a carga da skill.
@@ -3274,3 +3896,267 @@ dano era aplicado na direção inicial — o que o jogador via diferia do que ac
 **Race condition residual (aceitável):** Se `CAST_DIR_UPDATE` chegar APÓS o timer do servidor
 expirar (latência alta), o servidor usa a direção inicial do keypress. Ocorre só em latências
 extremas e é muito melhor que o bug original onde SEMPRE usava a direção errada.
+
+---
+
+## Feature — Variante melee/ranged por raça de mob (`alt_variant`) — 07/07/2026
+
+**Pergunta do usuário:** zona de spawn de "Goblin" no `map_1_entities.json` tem entradas
+`{"type": "melee", ...}` e `{"type": "ranged", ...}` — mas só nascem Goblins ranged na área.
+
+**Causa raiz:** `map_loader.py` (linha ~296-311) lê cada zona e, se a entrada de spawn não tiver
+`"race"`/`"class"` própria, usa o `race`/`class` da ZONA inteira pra todas as entradas — inclusive
+as marcadas `"melee"`. Isso por si só é só um detalhe de herança; o problema real é em
+`entity_factory.py::create_enemy` (linha ~205-219): assim que `race` bate com uma entrada em
+`MOB_TABLE` (mob_definitions.py), `entity_class`/`is_ranged` são **sobrescritos** pelos valores
+FIXOS daquela raça, descartando o `is_ranged` calculado a partir do `"type"` do JSON. Como só
+existia UM arquétipo de "Goblin" (sempre `entity_class="Hunter", is_ranged=True`), toda entrada
+`"melee"` da zona virava ranged do mesmo jeito — o campo `"type"` só criava "baldes" de contagem
+separados, sem nenhum efeito real no resultado. Isso só afeta raças cadastradas em `MOB_TABLE`;
+raças genéricas sem entrada (ex. `"Elemental"`) usam o `"type"` normalmente (fallback pros 2
+templates antigos por `is_ranged`).
+
+**Fix — `alt_variant` (opcional) em `MOB_TABLE`:** uma entrada pode apontar pra outra raça a usar
+quando o `"type"` pedido não bate com seu próprio `is_ranged` fixo:
+- `entity_factory._resolve_mob_race_variant(race, want_ranged)`: se `MOB_TABLE[race].is_ranged`
+  já bate com `want_ranged`, devolve `race` sem mudança. Se não bate, olha
+  `MOB_TABLE[race]["alt_variant"]` — se essa raça alternativa existir E bater com `want_ranged`,
+  usa ela. Sem `alt_variant` (ou variant que também não bate) — devolve a raça pedida sem
+  mudança, **fallback pro que já existe** (nunca quebra, nunca fica sem mob).
+- Chamado logo no início de `create_enemy`, reatribuindo a variável local `race` — isso propaga
+  automaticamente pro nome de exibição (`EntityIdentity.name`), loot (`roll_mob_loot` é keyado
+  pelo nome), xp e sons, já que todos usam a MESMA variável `race` resolvida.
+- `mob_definitions.py`: "Goblin" (ranged, Hunter) ganhou `"alt_variant": "Goblin Guerreiro"`; nova
+  entrada "Goblin Guerreiro" (melee, Warrior, stats/loot adaptados) ganhou `"alt_variant":
+  "Goblin"` simétrico. Nenhuma mudança necessária no JSON dos mapas — o `"type"` que já estava lá
+  passa a ter efeito de verdade.
+
+Validado (headless): `_resolve_mob_race_variant` nos 5 cenários (Goblin+melee→Goblin Guerreiro,
+Goblin+ranged→Goblin, Goblin Guerreiro+ranged→Goblin, Lobo+ranged sem alt_variant→Lobo sem
+mudança, raça genérica fora de MOB_TABLE→sem mudança) + `create_enemy` end-to-end criando
+`AIControlled.entity_class`/`is_ranged` corretos conforme o `"type"` pedido. Suíte sem regressão
+(9F/83P, mesmo baseline).
+
+**Não validado:** passada manual — visitar a zona de Goblin no mapa 1 e confirmar visualmente
+Goblins de espada (Warrior, melee) misturados com os de arco (Hunter, ranged).
+
+---
+
+## Feature — Restrição de arma/escudo/aljava por classe (`is_weapon_allowed_for_class`) — 07/07/2026
+
+**Reportado pelo usuário:** guerreiro conseguia equipar um Arco e atacar corpo-a-corpo com ele,
+inclusive subindo skill_level de arco, sem nunca disparar uma flecha de verdade — "não faz
+sentido". Causa raiz: `CLASS_ARMOR_ALLOWED` (material de armadura) já existia desde antes desta
+sessão, mas **nunca existiu equivalente pra arma/escudo/aljava** — qualquer classe sempre pôde
+equipar qualquer arma, sem nenhuma validação (nem cliente, nem servidor).
+
+**Fix — `stats_system.is_weapon_allowed_for_class(item, class_id)`** (mesmo padrão de
+`CLASS_ARMOR_ALLOWED`, único ponto de verdade — client `_equip_item` pra feedback imediato,
+servidor `update_player_equipment` autoritativo, ambos chamando a mesma função):
+- **Guerreiro** — só não pode Bow (mainhand) nem quiver (offhand). Todo o resto, incl.
+  Wand/Staff/Scepter, é permitido e vira arma melee (mesmo `deal_damage("physical")` +
+  `weapon_skill_level` que já existia pro fallback do arqueiro).
+- **Arqueiro** — só não pode escudo (offhand). Bow ativa ranged; qualquer outra arma vira melee
+  (dispatcher já implementado numa sessão anterior).
+- **Mago** — sem Bow/quiver, sem Axe/Mace/Hammer/Club (armas físicas pesadas). Sword só se for de
+  UMA mão (`two_handed=False`); Dagger sempre permitida. Wand/Staff/Scepter sempre permitidas —
+  Staff/Scepter são de duas mãos por definição do próprio item, então bloqueiam escudo sozinhas
+  via `is_offhand_locked()` já existente, sem precisar de regra extra aqui.
+
+**Achado no caminho — `item_table.py`:** "Cetro do Lich" (subtype Scepter) não tinha
+`two_handed=True`, quebrando a regra "Staff e Scepter são sempre de duas mãos" confirmada pelo
+usuário. Corrigido (mesma classe de inconsistência de dado que "Espada de Ferro"/"Grevas de
+Ferro"/"Luvas de Couro" divergentes, já vista antes nesta sessão).
+
+**Achado no caminho — tooltip do escudo:** `ui_helpers.py::item_tooltip_lines` tinha branches pra
+`weapon` e `armor`, mas `shield` caía no `else` genérico (`"Slot: offhand"`) sem mostrar
+"Escudo" — diferente de espada/arco, que sempre mostram o subtype à direita. Adicionado branch
+`elif item.item_type == "shield"`, com a mesma cor verde/vermelho por classe que material de
+armadura já usa (agora relevante: arqueiro não pode escudo).
+
+Validado (headless): `is_weapon_allowed_for_class` em 22 combinações (3 classes × Bow/quiver/
+Sword/Wand/Axe/Mace/Hammer/Club/Dagger/Staff/Scepter/shield, incl. Sword duas-mãos pro mago) +
+`update_player_equipment` end-to-end (guerreiro+Arco rejeitado, guerreiro+Espada aceito,
+arqueiro+Escudo rejeitado, mago+Machado rejeitado, mago+Cetro do Lich aceito com two_handed
+correto). Suíte sem regressão (9F/83P, mesmo baseline).
+
+**Não validado:** passada manual — tentar equipar item fora da classe em cada uma das 3 classes
+e confirmar a reversão de UI (slot volta pra bag) + mensagem de aviso.
+
+## Feature (trade) — Stack de item errado na negociação + gold "zerava" ao confirmar — 08/07/2026
+
+**Reportado pelo usuário:** ofertar um stack de 150 flechas no trade descontava as 150 da própria
+bag, mas o player remoto recebia só 1 flecha. E digitar um valor de gold e clicar em "Negociar"
+zerava o campo sem nada acontecer com o gold na troca.
+
+**Causa raiz 1 (stack):** `WorldServer._item_data_from_obj` (usado por `BUY_RESULT` e agora
+também por `build_trade_state_payload`/`TRADE_RESULT`) serializava `max_stack` mas nunca `stack`
+— o ECS do servidor sempre moveu o objeto `Item` real (stack correto), o bug era só na
+serialização pro cliente: `_item_from_data` (client/save_sync_handlers.py) cai no default
+`stack=1` quando a chave não vem no dict. Fix: adicionado `"stack": getattr(obj, "stack", 1)`
+em `_item_data_from_obj`. `client/trade_handlers.py` também nunca chamava `draw_stack_count` nos
+slots de trade — corrigido junto.
+
+**Causa raiz 2 (gold):** `client/trade_handlers.py::_click_trade_window` só mandava
+`TRADE_SET_GOLD` ao servidor quando o player apertava Enter no campo — clicar direto em
+"Negociar" sem apertar Enter antes só desfocava o campo (`_trade_gold_focus = False`) e
+descartava o texto digitado, nunca enviando o valor. A troca então sempre executava com
+`gold_a/gold_b = 0` (nunca setados), e o campo "voltava a 0" porque nenhum `TRADE_STATE` novo
+jamais confirmava um valor diferente. Fix: clicar em "Negociar" (ou em qualquer lugar fora do
+campo) agora chama `_confirm_trade_gold()` primeiro se o campo estava focado, antes de processar
+o clique restante.
+
+Validado (headless): `_item_data_from_obj` inclui `stack` corretamente; item recebido no ECS do
+servidor E reconstruído via `_item_from_data` no cliente preserva `stack=150`. Suíte sem
+regressão (9F/83P).
+
+**Não validado:** passada manual com 2 clientes reais (renderização da contagem "x150" no slot,
+digitar gold e clicar em Negociar sem apertar Enter).
+
+## Bug — Relogar após morrer trazia o personagem "vivo" em posição arbitrária + corpo órfão pra sempre — 08/07/2026
+
+**Reportado pelo usuário:** morrer, deslogar e logar de novo trazia o personagem vivo, mas o
+corpo (marcador visual no local da morte/liberação de espírito) continuava lá pra sempre, visível
+pra outros players.
+
+**Causa raiz:** 2 lacunas independentes. (1) `despawn_player` (chamado no disconnect) só remove a
+entidade REAL do player do ECS — nunca limpava `_player_corpses[eid]` nem despawnava o marcador
+sintético `PLAYER_CORPSE_EID_BASE+eid` criado por `_handle_release_spirit`; só `_revive_player`
+fazia essa limpeza, e ela só roda em fluxo normal (auto-revive no cemitério / revive no corpo),
+nunca no disconnect. (2) `GhostState` não é persistido — `spawn_player` sempre cria um
+`GhostState()` fresco (vivo) no relogin; como `get_player_save_data` salva `max_hp` quando o
+player está morto (current_hp=0), o relogin trazia HP cheio na posição CRUA salva — que pode ser
+o local da morte (cheio de mob) ou qualquer lugar que o fantasma tenha vagado (intangível,
+atravessa parede).
+
+**Fix — `RespawnMixin._auto_revive_on_disconnect(player_eid)`** (server/respawn_system.py),
+chamado em `session.py::on_disconnect` ANTES de coletar dados de save: se `GhostState.is_dead`,
+força posição pro `RESPAWN_TILE` (nunca revive "in place" — é exatamente o cenário
+perigoso/exploitável) + troca de mapa se necessário (mesmo bloco de `_handle_release_spirit`) e
+reaproveita `_revive_player` (já reseta `GhostState`, restaura HP cheio, limpa `_player_corpses` +
+enfileira despawn do marcador pro AOI). Nenhum campo novo precisou ser persistido — o char
+simplesmente já está "vivo e revivido no cemitério" no ECS por ocasião do save, então
+`get_player_save_data`/`_build_save_merge` gravam o estado correto sem mudança nenhuma neles.
+
+Considerado e descartado: persistir o `GhostState` completo (is_ghost/corpse_tx/ty/timers) e
+devolver o player como espírito no relogin — mais fiel ao fluxo real, mas exige um caminho novo
+pro cliente já nascer com a UI de espírito ativa no login (hoje só é empurrada reativamente após
+`RELEASE_SPIRIT`/mudança de tick) para uma diferença de UX pequena. Descartado por decisão do
+usuário (opção mais simples escolhida).
+
+Validado (headless, 3 cenários): morto sem liberar espírito desconecta → revive no cemitério com
+HP cheio, corpo limpo; fantasma vagando longe desconecta → mesmo resultado; player vivo
+desconecta → no-op (não mexe em nada). Suíte sem regressão (9F/83P).
+
+**Não validado:** passada manual com 2 clientes reais (confirmar que o corpo desaparece
+imediatamente da tela do OUTRO player ao primeiro desconectar morto/fantasma).
+
+## Bug — Fantasma esperando no cemitério nunca revivia automaticamente — 08/07/2026
+
+**Reportado pelo usuário:** ao morrer, o player pode correr até o corpo (revive parcial) ou
+esperar no cemitério pelo revive automático (`GHOST_GRAVEYARD_REVIVE_S` = 45s) — mas esperando,
+nunca revivia.
+
+**Causa raiz — desync entre o contador exibido e o contador real:** `_tick_ghost_states`
+(server/respawn_system.py) já funcionava perfeitamente sozinho (validado headless, isolado E via
+`_tick()` completo, 75s simulados) — o timer real (`GhostState.graveyard_timer`) conta certinho e
+reseta pra 0 sempre que o fantasma sai do raio de `GHOST_GRAVEYARD_RADIUS_TILES` (5 tiles) do
+`RESPAWN_TILE`. O bug é 100% client-side: `death_ui_handlers.py::_update_death_ui` incrementa
+`self._ghost_timer` (o número mostrado em "revive automático em Xs") **sem checar raio nenhum** —
+só olha `gst.is_ghost`. E o servidor só mandava `GHOST_STATE` quando `near_corpse` mudava, nunca
+quando o `graveyard_timer` real zerava por ter saído do raio. Resultado: o player anda um pouco
+enquanto espera (fantasma não é travado, nada de anormal em se mexer), o servidor reseta o
+contador em silêncio, mas o cliente continua contando pra baixo do jeito dele até chegar em "0s" —
+e nunca reviva de verdade, porque o servidor nunca chegou nem perto.
+
+**Fix:**
+- `server/respawn_system.py::_tick_ghost_states` — agora também dispara `GHOST_STATE` quando o
+  `graveyard_timer` **reseta** (estava > 0, foi pra 0 por sair do raio), não só quando
+  `near_corpse` muda.
+- `client/network_handlers.py::_handle_msg_ghost_state` — resincroniza `self._ghost_timer` (o
+  contador local de exibição) com `payload["graveyard_timer"]` toda vez que um `GHOST_STATE`
+  chega, em vez de deixá-lo rodar 100% independente do servidor.
+
+Validado (headless, 3 cenários): acumula tempo dentro do raio → sai do raio (timer zera + exatos
+1 `GHOST_STATE` disparado avisando) → volta pro raio e completa o tempo → revive normalmente.
+Suíte sem regressão (9F/83P).
+
+**Não validado:** passada manual (confirmar visualmente que o texto "revive automático em Xs"
+volta a mostrar ~45s ao sair e reentrar no cemitério, em vez de continuar contando pra 0).
+
+## Bug — Texto e sprites de tile com antialiasing (visual borrado, jogo é pra ser pixelizado) — 08/07/2026
+
+**Reportado pelo usuário:** letras do balão de chat (e de outros lugares, ao olhar melhor) ficavam
+levemente desfocadas — incompatível com o visual pixel-art pretendido do jogo.
+
+**Causa raiz 1 (texto):** `fonts.py::CachedFont.render()` tinha `antialias=True` como default, e
+**todos os ~330 call-sites de `.render()` do cliente (30 arquivos)** passavam `True` explicitamente
+— nenhum usava `False`. Confirmado via scan AST completo do repositório (não só grep — regex de
+uma linha falha silenciosamente em casos como `render(f"Tile: ({hx}, {hy})", True, cor)`, onde a
+vírgula dentro do próprio argumento de texto quebra um regex ingênuo; usar `ast.parse` +
+`ast.walk` procurando `Call` cujo `func.attr == "render"` é a forma correta de auditar isso sem
+falso-negativo).
+
+**Fix:** troca mecânica de `True`→`False` no 2º argumento posicional (ou `antialias=`) em TODOS os
+call-sites, mais o default de `CachedFont.render()` (agora `antialias=False`).
+
+**Achado no caminho — armadilha de performance:** `CachedFont` só cacheava o `render()` quando
+`antialias=True` (`if background is not None or not antialias: return super().render(...)` —
+bypass completo do cache pra `antialias=False`). Trocar todos os call-sites pra `False` sem também
+corrigir essa condição teria **desativado o cache inteiro** silenciosamente — exatamente o spike de
+13-22ms/frame que o cache foi criado pra resolver (ver docstring de `fonts.py`). Corrigido: cache
+agora aplica sempre que não há `background` (chave inclui `antialias` pra não misturar variantes
+caso algum call-site volte a usar `True` no futuro).
+
+**Causa raiz 2 (sprites de tile):** `tile_sprite_manager.py::_get_scaled()` usava
+`pygame.transform.smoothscale` (interpolado, borra) em vez de `pygame.transform.scale`
+(nearest-neighbor, preserva pixel art) ao redimensionar um PNG pro tamanho alvo em tile. `god_mode.py`
+(editor de nível, acessível via F10 no jogo real) tinha o mesmo problema em 3 lugares (swatches de
+paleta de tile). Ambos trocados pra `scale`. `icon_manager.py` (ícones de item) e o pipeline de zoom
+de câmera (`game.py`, `pygame.transform.scale` no `_zoom_surf`) já usavam `scale` — não precisaram
+de mudança.
+
+**Fora de escopo (decisão do usuário):** cantos arredondados de painel (`border_radius`, ~258
+usos) — suavizados por design do próprio pygame ao desenhar a curva, mas é uma escolha visual
+(quina reta vs arredondada), não um bug técnico de antialiasing. Deixado como está.
+
+Validado: scan AST confirma zero `.render(...)` com `antialias=True` restante em todo o repo
+(excluindo um worktree não-relacionado de outro agente, `.claude/worktrees/...`, fora do escopo
+desta sessão); zero `smoothscale` restante. Compile-check de todos os ~32 arquivos tocados + suíte
+completa sem regressão (9F/83P).
+
+**Não validado:** passada visual com o jogo rodando (confirmar que texto e tiles realmente
+aparecem nítidos/pixelizados, sem survivor de cache stale de fontes antigas).
+
+## Bug — Nameplate/chat/trade mostravam o LOGIN da conta em vez do nome do personagem — 08/07/2026
+
+**Reportado pelo usuário:** balão de chat não aparecia numa conta ("teste") mas aparecia em outra
+("juugo"); investigando, achou também que players remotos sempre mostraram o login da conta como
+nome acima da cabeça (não o nome do personagem), mesmo antes do chat existir — pediu pra corrigir
+os dois juntos.
+
+**Causa raiz (única, 6 pontos de sintoma):** `server/session.py` mandava `session.username` (LOGIN
+da conta) como `"name"`/`"sender"` em 6 lugares diferentes — nameplate (`ENTITY_SPAWN` no login +
+`WORLD_STATE` inicial + `AOI_UPDATE` de player entrando no raio), `CHAT_MESSAGE.sender`, e
+`TRADE_INVITE.from_name`/`TRADE_OPEN.other_name` (introduzidos na sessão do trade) — nunca o nome
+do PERSONAGEM (`char_data["name"]`, escolhido na criação). Só "funcionava" por coincidência quando
+o jogador escolhia os dois iguais (explica por que "juugo" funcionava e "teste" não). O balão de
+chat especificamente também tinha uma 2ª camada do mesmo bug no CLIENTE:
+`_resolve_chat_sender_entity` comparava `sender_name` contra `_logged_char_name` (nome do
+personagem) — certo em teoria, mas como o servidor mandava o LOGIN, a comparação só batia por
+coincidência (mesma raiz, lado espelhado).
+
+**Fix — fonte única no servidor:** `Session.display_name` (property nova) — `char_data.get("name")
+or username` (fallback defensivo). Os 6 pontos agora usam `session.display_name`/
+`s2.display_name`/`other_session.display_name`/`requester_session.display_name` em vez de
+`.username` cru. Client-side, `_resolve_chat_sender_entity` mantido comparando contra
+`_logged_char_name` (nome do personagem) — agora corretamente consistente, já que o servidor
+sempre manda nome de personagem.
+
+Validado (headless): `Session.display_name` retorna o nome do personagem quando `char_data` tem
+`"name"`, cai pro `username` só se faltar; resolução do balão de chat confirmada consistente nos
+dois lados (servidor manda nome do personagem, cliente compara com nome do personagem). Suíte
+completa sem regressão (9F/83P).
+
+**Não validado:** passada manual com 2 clientes reais em contas onde login ≠ nome do personagem —
+confirmar nameplate, chat e trade mostrando o nome do personagem em todos os casos.

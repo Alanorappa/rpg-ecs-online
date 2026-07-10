@@ -144,7 +144,7 @@ class OnlineModeHandlers:
             status_txt = "Desconectado"
             status_col = (220, 80, 80)
 
-        surf = self.font_xs.render(status_txt, True, status_col)
+        surf = self.font_xs.render(status_txt, False, status_col)
         x = self.screen.get_width() - surf.get_width() - 8
         y = 6
         self.screen.blit(fill_surf((surf.get_width() + 6, surf.get_height() + 4), (0, 0, 0, 140)), (x - 3, y - 2))
@@ -155,5 +155,5 @@ class OnlineModeHandlers:
         tm = self.world.get_component(self.player_entity, TileMovement)
         if tm:
             pos_txt = f"tile ({tm.current_tile_x}, {tm.current_tile_y})"
-            ps = self.font_xs.render(pos_txt, True, (160, 160, 160))
+            ps = self.font_xs.render(pos_txt, False, (160, 160, 160))
             self.screen.blit(ps, (self.screen.get_width() - ps.get_width() - 8, y + surf.get_height() + 2))

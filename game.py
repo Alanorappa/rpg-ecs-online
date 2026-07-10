@@ -10,7 +10,7 @@ from world import World
 from components import Position, Tilemap, CombatStats, CharacterStats, PermanentStats, \
                        TileMovement, PlayerAutoMove, CombatState, FogOfWar, Enemy, Visible, \
                        Camera, Renderable, SpellCast, Channeling, IceBlockEffect, AoeTargeting
-from ui_components import UIState, ShopUIState, LootUIState, DragState
+from ui_components import UIState, ShopUIState, LootUIState, DragState, TradeUIState
 from systems import (
     PlayerInputSystem, TileMovementSystem, RenderSystem, CameraSystem,
     EnemyAISystem, TileRenderSystem, TileValidationSystem,
@@ -30,6 +30,7 @@ from map_loader import load_map_csv, validate_map
 from tileset import TILE_SIZE
 from combat_log import LOG
 from floating_text import FLT, DASH_TRAIL, WARN, PROC
+from chat_bubble import CHAT_BUBBLE
 from icon_manager import ICONS
 from sound_manager import SOUNDS
 from ui_compare import draw_compare_panel
@@ -55,6 +56,8 @@ from client.consumable_bar_handlers import ConsumableBarHandlers
 from client.hud_handlers import HudHandlers
 from client.death_ui_handlers import DeathUIHandlers
 from client.modal_stack_handlers import ModalStackHandlers
+from client.trade_handlers import TradeHandlers
+from client.chat_handlers import ChatHandlers
 from client.colors import C_WHITE, C_YELLOW, C_GREEN, C_RED, C_GRAY, C_CYAN, C_ORANGE
 
 # --- Configurações do Jogo ---
@@ -91,7 +94,7 @@ def _merge_display_matrix(terrain: list[str], objects: list) -> list[str]:
     return result
 
 
-class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, InventoryHandlers, TooltipHandlers, DebugHandlers, MenuHandlers, HotbarEditorHandlers, HabilidadesHandlers, OnlineModeHandlers, HotbarHandlers, ConsumableBarHandlers, HudHandlers, DeathUIHandlers, ModalStackHandlers):
+class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, InventoryHandlers, TooltipHandlers, DebugHandlers, MenuHandlers, HotbarEditorHandlers, HabilidadesHandlers, OnlineModeHandlers, HotbarHandlers, ConsumableBarHandlers, HudHandlers, DeathUIHandlers, ModalStackHandlers, TradeHandlers, ChatHandlers):
     def __init__(self, scale: float = 1.0, char_data: "dict | None" = None,
                  save_slot: int = 0,
                  net_user: str = "", net_pass: str = "",
@@ -226,6 +229,14 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._debug_map_buttons:  list = []
         self._debug_teleport_map: str = ""   # quando não-vazio, pending_destination → teleporte
         self._selected_inv_idx = -1
+        self._trade_gold_focus: bool = False   # campo de gold da janela de trade tem foco?
+        self._trade_gold_text:  str  = ""      # texto digitado enquanto focado
+        self._chat_text:    str = ""           # texto digitado enquanto o chat está focado
+        self._chat_tab:     str = "local"      # aba ativa: "local" | "world" | "combat"
+        from collections import deque as _deque_chat
+        self._chat_local: "_deque_chat" = _deque_chat(maxlen=500)  # (sender, text, color)
+        self._chat_world: "_deque_chat" = _deque_chat(maxlen=500)  # (sender, text, color)
+        self._chat_scroll: dict = {"local": 0, "world": 0, "combat": 0}  # linhas rolado (0 = mais recente)
         self._current_map_file: str = MAP_FILES[0]
         self.transition_tiles: dict = {}   # (tile_x, tile_y) → trans_dict
         self._transition_cooldown = 0.0
@@ -834,6 +845,9 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
     def _get_drag(self) -> "DragState | None":
         return self.world.get_component(self.player_entity, DragState)
 
+    def _get_trade_ui(self) -> "TradeUIState | None":
+        return self.world.get_component(self.player_entity, TradeUIState)
+
     @property
     def _zoom(self) -> float:
         if not hasattr(self, 'camera_entity'):
@@ -870,6 +884,21 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             return False
         ui = self._get_ui()
         return ui.show_talents if ui else False
+
+    @property
+    def _chat_active(self) -> bool:
+        if not hasattr(self, 'player_entity'):
+            return False
+        ui = self._get_ui()
+        return ui.chat_active if ui else False
+
+    @_chat_active.setter
+    def _chat_active(self, value: bool) -> None:
+        if not hasattr(self, 'player_entity'):
+            return
+        ui = self._get_ui()
+        if ui:
+            ui.chat_active = value
 
     @_show_talents.setter
     def _show_talents(self, value: bool) -> None:
@@ -1189,7 +1218,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         for i, (txt, col) in enumerate(lines):
             self._perf_font.render_to(surf, (pad, pad + i * lh), txt, col) \
                 if hasattr(self._perf_font, "render_to") \
-                else surf.blit(self._perf_font.render(txt, True, col), (pad, pad + i * lh))
+                else surf.blit(self._perf_font.render(txt, False, col), (pad, pad + i * lh))
         self.screen.blit(surf, (4, 4))
 
     def run(self):
@@ -1277,8 +1306,17 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                     pass   # god mode consumiu — ignora input do jogo
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
-                        if not self._close_top_modal():
+                        if self._chat_active:
+                            self._close_chat_input()
+                        elif not self._close_top_modal():
                             self._show_pause = True
+                    elif self._chat_active:
+                        self._handle_chat_key(event)
+                    elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER) \
+                            and not self._any_modal_open():
+                        self._open_chat_input()
+                    elif self._trade_gold_focus:
+                        self._handle_trade_gold_key(event)
                     elif self._show_hotbar_editor:
                         pass   # editor de hotbar aberto: bloqueia atalhos de menu
                     elif event.key == pygame.K_F10:
@@ -1354,6 +1392,12 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                         if not already_open:
                             self._show_debug = True
                 elif (event.type == pygame.MOUSEBUTTONDOWN
+                      and self._handle_trade_click(event)):
+                    pass
+                elif (event.type == pygame.MOUSEBUTTONDOWN
+                      and self._handle_chat_click(event)):
+                    pass
+                elif (event.type == pygame.MOUSEBUTTONDOWN
                       and self._show_inventory):
                     self._handle_inventory_click(event)
                 elif event.type == pygame.MOUSEBUTTONDOWN:
@@ -1367,6 +1411,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                         max_sc = max(0, len(self._debug_item_catalog) - 8)
                         self._debug_item_scroll = max(0, min(max_sc,
                                                              self._debug_item_scroll - event.y))
+                elif event.type == pygame.MOUSEWHEEL and self._handle_chat_scroll(event):
+                    pass
                 elif event.type == pygame.MOUSEWHEEL:
                     self._handle_scroll_zoom(event.y)
 
@@ -1392,8 +1438,33 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             # UI de morte/espírito: consome cliques nos botões "Liberar espírito"/"Sim"
             self._update_death_ui(events, dt)
 
+            # Exclusividade entre os 4 modais de interação de NPC (crafting/
+            # trainer/shop/quest_dialog): se QUALQUER um já está aberto (de
+            # um frame anterior), os OUTROS não podem abrir por cima dele —
+            # sem isso, um right-click numa NPC diferente (ex: um trainer)
+            # enquanto a loja já está aberta processa normalmente nesse
+            # OUTRO sistema (que não sabe nem se importa que a loja está na
+            # tela) e abre um segundo modal simultâneo. Bug real confirmado
+            # por teste manual: shop aberto + clique em outro NPC abria o
+            # diálogo dele também. Snapshot pego ANTES de qualquer .update()
+            # deste bloco rodar neste frame — cada sistema só fica de fora
+            # do silenciamento se ele MESMO já é o que está aberto (senão
+            # nunca fecharia/reagiria a cliques dentro do próprio modal).
+            _any_npc_modal_open = (self._crafting_system.is_open
+                                   or self._trainer_system.is_open
+                                   or self._shop_system.is_open
+                                   or self._quest_dialog.is_open
+                                   or self._trade_is_open)
+
+            def _strip_open_click(evs, _already_open: bool):
+                if not _any_npc_modal_open or _already_open:
+                    return evs
+                return [e for e in evs
+                        if not (e.type == pygame.MOUSEBUTTONDOWN and e.button == 3)]
+
             # BlacksmithSystem roda ANTES de shop/quest para consumir cliques nos ferreiros
-            self._crafting_system.update(events, dt)
+            self._crafting_system.update(
+                _strip_open_click(events, self._crafting_system.is_open), dt)
             if self._crafting_system.is_open:
                 self._crafting_system.handle_events(events)
 
@@ -1403,7 +1474,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                  if not (e.type == pygame.MOUSEBUTTONDOWN and e.button == 3)]
                 if self._crafting_system._right_click_consumed else events
             )
-            self._trainer_system.update(_after_craft_ev, dt)
+            self._trainer_system.update(
+                _strip_open_click(_after_craft_ev, self._trainer_system.is_open), dt)
             if self._trainer_system.is_open:
                 self._trainer_system.handle_events(events)
 
@@ -1416,12 +1488,14 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             )
 
             # Shop recebe eventos (possivelmente filtrados se crafting consumiu o clique)
-            self._shop_system.update(_craft_ev, dt)
+            self._shop_system.update(
+                _strip_open_click(_craft_ev, self._shop_system.is_open), dt)
             if self._shop_system.is_open:
                 self._shop_system.handle_events(events)
 
             # Quest dialog recebe eventos (possivelmente filtrados)
-            self._quest_dialog.update(_craft_ev, dt)
+            self._quest_dialog.update(
+                _strip_open_click(_craft_ev, self._quest_dialog.is_open), dt)
             if self._quest_dialog.is_open:
                 self._quest_dialog.handle_events(events)
 
@@ -1645,12 +1719,12 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
 
             if PROFILE_FRAMES:
                 _ts = _time.perf_counter()
-            LOG.update(dt)
             FLT.update(dt)
             PROC.update(dt)
             WARN.update(dt)
             DASH_TRAIL.update(dt)
             SOUNDS.update(dt)
+            CHAT_BUBBLE.update(dt)
             # Decrementa timers de passo de players remotos
             for _seid in list(self._remote_step_timers):
                 self._remote_step_timers[_seid] = max(0.0, self._remote_step_timers[_seid] - dt)
@@ -1720,6 +1794,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             self._pirofagia_system.render(cam_x, cam_y)
             self._spell_cast_system.render(cam_x, cam_y)
             FLT.render(self._zoom_surf, cam_x, cam_y)
+            CHAT_BUBBLE.render(self._zoom_surf, self.world, cam_x, cam_y)
 
             # Morto/espírito: grayscale no zoom_surf menor (pré-scale) — ~44% menos
             # pixels a zoom=1.5 vs aplicar na tela cheia (853×480 vs 1280×720).
@@ -1755,6 +1830,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             self._draw_low_hp_vignette()
             # HUD de conexão online (canto superior direito)
             self._draw_online_hud()
+            # Chat: log (canto inferior esquerdo) + campo de digitação quando focado
+            self._draw_chat_log()
 
             self._pending_tooltip       = None
             self._pending_skill_tooltip = None
@@ -1775,8 +1852,6 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             if PROFILE_FRAMES:
                 self._prof_record("hud:tooltip", _time.perf_counter() - _ts)
                 _ts = _time.perf_counter()
-            LOG.draw(self.screen, self.font_sm, x=10, bottom_y=self.screen.get_height() - 78)
-
             # Minimapa (canto superior direito) — oculto enquanto mapa grande estiver aberto
             if not self._map_overlay.is_open:
                 _fog_mm      = self.world.get_component(self.player_entity, FogOfWar)
@@ -1804,6 +1879,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             if PROFILE_FRAMES:
                 self._prof_record("hud:inventory", _time.perf_counter() - _ts)
                 _ts = _time.perf_counter()
+            self._draw_trade_ui()
             if self._show_talents:
                 self._talent_system.render()
             if self._show_skills:
@@ -2047,7 +2123,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
     def _draw_map_title(self):
         import os
         text = os.path.splitext(os.path.basename(self._current_map_file))[0].replace("_", " ").title()
-        surf = self.font_lg.render(text, True, (255, 200, 0))
+        surf = self.font_lg.render(text, False, (255, 200, 0))
         x = self.screen.get_width()  // 2 - surf.get_width()  // 2
         y = self.screen.get_height() // 2 - surf.get_height() // 2
         # fundo semitransparente

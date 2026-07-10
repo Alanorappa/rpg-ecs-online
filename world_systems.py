@@ -46,7 +46,7 @@ from damage_calculator import resolve_attack_outcome, calculate_base_damage
 from combat_log import LOG
 from fx import FLT, PROC, WARN, SOUNDS, DASH_TRAIL
 from status_effects_data import EFFECT_DEFS
-from loot_tables import roll_loot, roll_mob_loot, roll_coins
+from loot_tables import roll_loot, roll_mob_loot, roll_coins, roll_mob_coins
 from entity_factory import create_corpse, create_enemy
 from enemy_abilities_data import ABILITY_DEFS
 import quest_events
@@ -509,7 +509,7 @@ class CombatSystem(System):
     Lógica de morte (loot, cadáver, XP) movida para DeathHandlerSystem.
     """
 
-    def __init__(self, world: World, is_server: bool = False):
+    def __init__(self, world: World, is_server: bool = False, on_damage_dealt=None):
         self.world = world
         self.last_outcome: str = "hit"  # captura o outcome do último deal_damage
         # Avoidances de mob→player (parry/dodge/miss) que o servidor deve repassar ao cliente.
@@ -521,6 +521,16 @@ class CombatSystem(System):
         # é seguro nos dois lados (cliente nunca chama apply_skill_bonuses_to_combat,
         # então os campos *_skill_bonus ficam sempre 0 lá — ver stats_system.py).
         self.is_server: bool = is_server
+        # Callback opcional `fn(attacker_eid, target_id, dmg)` — só setado pelo
+        # servidor (WorldServer._log_mob_damage_hit), repassado pro núcleo único
+        # apply_damage_core em deal_damage(). Ponto ÚNICO de log de "quem ataca
+        # primeiro" (dono do loot/quest kill) — cobre TODA skill física
+        # (Golpe Poderoso, Executar, Fatiador, etc.) e auto-attack melee, sem
+        # precisar de write manual espalhado por handler (ver
+        # PROBLEMAS_ARQUITETURA.md — skills nunca logavam, loot ia pra quem
+        # desse a sorte de dar o PRIMEIRO auto-attack, não quem realmente
+        # aggrou/lutou primeiro).
+        self.on_damage_dealt = on_damage_dealt
 
     def _get_combat_stats(self, entity_id: int) -> CombatStats | None:
         """Helper para obter o componente CombatStats de uma entidade."""
@@ -561,9 +571,19 @@ class CombatSystem(System):
             return 0, outcome
 
         weapon = self._get_mainhand_weapon(attacker_id)
+        # Auto-attack (damage_type=="physical"): AP escala com skill_level da
+        # arma equipada, mesma fórmula das skills físicas — ver
+        # damage_calculator.ability_physical_damage/PROBLEMAS_ARQUITETURA.md.
+        # Skills usam "physical_fixed" (bônus já embutido no valor pré-calculado
+        # que chega em base_ability_damage) — não passam por aqui.
+        _ap_skill_mult = 1.0
+        if damage_type == "physical":
+            from stats_system import weapon_skill_level as _wsl_auto
+            _ap_skill_mult = 1.0 + 0.01 * _wsl_auto(self.world, attacker_id, weapon)
         total_damage = calculate_base_damage(
             attacker_stats, damage_type, weapon,
-            base_ability_damage, multiplier, outcome, block_reduction
+            base_ability_damage, multiplier, outcome, block_reduction,
+            ap_skill_mult=_ap_skill_mult,
         )
         return total_damage, outcome
 
@@ -617,10 +637,17 @@ class CombatSystem(System):
             # Outcome pré-rolado (ex: por flechas que já verificaram miss visualmente)
             outcome = pre_outcome
             block_reduction = 0.0
+            # Mesmo bônus de skill_level no AP que _calculate_damage aplica
+            # (ver comentário lá) — este branch é outro caminho pro mesmo
+            # damage_type=="physical" de auto-attack, só com outcome pré-rolado.
+            _ap_skill_mult_pre = 1.0
+            if damage_type == "physical":
+                from stats_system import weapon_skill_level as _wsl_pre
+                _ap_skill_mult_pre = 1.0 + 0.01 * _wsl_pre(self.world, attacker_id, _weapon)
             calculated_damage = calculate_base_damage(
-                attacker_stats, damage_type,
-                self._get_mainhand_weapon(attacker_id),
+                attacker_stats, damage_type, _weapon,
                 base_ability_damage, multiplier, outcome, block_reduction,
+                ap_skill_mult=_ap_skill_mult_pre,
             )
             calculated_damage = self._resolve_damage_modifiers(
                 attacker_id, target_id, calculated_damage, outcome,
@@ -668,7 +695,8 @@ class CombatSystem(System):
                         target_id=target_id)
         apply_damage_core(self.world, target_id, final_damage,
                           killer_eid=attacker_id, add_pending_death=False,
-                          on_cc_break=_cc_break_fx)
+                          on_cc_break=_cc_break_fx,
+                          on_damage_dealt=self.on_damage_dealt)
 
         # Aggro por dano: ataque do player força inimigo a perseguir independente do raio.
         # aggroed_by_damage=True desativa o leash de 5 tiles até o mob chegar perto do player.
@@ -964,7 +992,8 @@ class DeathHandlerSystem(System):
                 else:
                     enemy_type = "ranged" if ai.is_ranged else "melee"
                     loot = roll_loot(enemy_type, tier_comp.tier)
-                coins = roll_coins(tier_comp.tier)
+                coins = (roll_mob_coins(ident.name, tier_comp.tier) if ident
+                        else roll_coins(tier_comp.tier))
 
                 # Drops condicionais de quests (collect_item)
                 if quest_events._quest_system_ref is not None and ident:

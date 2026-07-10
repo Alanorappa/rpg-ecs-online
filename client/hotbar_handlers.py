@@ -317,7 +317,7 @@ class HotbarHandlers:
                 pygame.draw.rect(self.screen, (160, 130, 50), r, 2, border_radius=5)
                 # Mostra o atalho configurado (não o índice padrão 1-0)
                 _kb_empty = pygame.key.name(player_skills.keybinds[i]).upper()
-                num_s = self.font_xs.render(_kb_empty, True, (100, 85, 48))
+                num_s = self.font_xs.render(_kb_empty, False, (100, 85, 48))
                 self.screen.blit(num_s, (sx + 4, y0 + 4))
                 continue
 
@@ -398,7 +398,7 @@ class HotbarHandlers:
                     ov_h     = int(self._HB_H * cd_ratio)
                     self.screen.blit(fill_surf((self._HB_W, self._HB_H), (0, 0, 0, 160)),
                                      (sx, y0), area=pygame.Rect(0, 0, self._HB_W, ov_h))
-                    cd_surf = self.font_sm.render(f"{skill.current_cooldown:.1f}", True, (220, 200, 130))
+                    cd_surf = self.font_sm.render(f"{skill.current_cooldown:.1f}", False, (220, 200, 130))
                     self.screen.blit(cd_surf, (sx + self._HB_W // 2 - cd_surf.get_width() // 2,
                                                y0 + self._HB_H // 2 - cd_surf.get_height() // 2))
                 elif not is_procced:
@@ -416,12 +416,12 @@ class HotbarHandlers:
                     ov_h     = int(self._HB_H * cd_ratio)
                     self.screen.blit(fill_surf((self._HB_W, self._HB_H), (0, 0, 0, 160)),
                                      (sx, y0), area=pygame.Rect(0, 0, self._HB_W, ov_h))
-                    cd_surf = self.font_sm.render(f"{skill.current_cooldown:.1f}", True, (220, 200, 130))
+                    cd_surf = self.font_sm.render(f"{skill.current_cooldown:.1f}", False, (220, 200, 130))
                     self.screen.blit(cd_surf, (sx + self._HB_W // 2 - cd_surf.get_width() // 2,
                                                y0 + self._HB_H // 2 - cd_surf.get_height() // 2))
                 elif is_procced:
                     if skill.charge_timeout > 0 and skill.charge_timer > 0:
-                        timer_surf = self.font_sm.render(f"{skill.charge_timer:.0f}s", True, (100, 255, 120))
+                        timer_surf = self.font_sm.render(f"{skill.charge_timer:.0f}s", False, (100, 255, 120))
                         self.screen.blit(timer_surf, (sx + self._HB_W // 2 - timer_surf.get_width() // 2,
                                                       y0 + self._HB_H // 2 - timer_surf.get_height() // 2))
                 else:
@@ -432,7 +432,7 @@ class HotbarHandlers:
                 ov_h     = int(self._HB_H * cd_ratio)
                 self.screen.blit(fill_surf((self._HB_W, self._HB_H), (0, 0, 0, 160)),
                                  (sx, y0), area=pygame.Rect(0, 0, self._HB_W, ov_h))
-                cd_surf = self.font_sm.render(f"{skill.current_cooldown:.1f}", True, (220, 200, 130))
+                cd_surf = self.font_sm.render(f"{skill.current_cooldown:.1f}", False, (220, 200, 130))
                 self.screen.blit(cd_surf, (sx + self._HB_W // 2 - cd_surf.get_width() // 2,
                                            y0 + self._HB_H // 2 - cd_surf.get_height() // 2))
 
@@ -468,23 +468,41 @@ class HotbarHandlers:
                 self.screen.blit(fill_surf((self._HB_W, self._HB_H), (0, 0, 0, 160)),
                                  (sx, y0), area=pygame.Rect(0, 0, self._HB_W, ov_h))
 
-            # --- Overlay de Rage insuficiente ---
-            # Usa custo modificado por talentos se disponível (ex: Veterano → golpe_poderoso_rage_cost)
+            # --- Overlay de recurso insuficiente (rage/mana/concentração) ---
+            # Antes só existia pra rage (guerreiro) — mago/arqueiro nunca
+            # escureciam por mana/concentração insuficiente, só descobriam ao
+            # tentar usar e levar "Mana insuficiente"/"Concentração
+            # insuficiente" do servidor (bug real reportado por testers).
+            # Usa custo modificado por talentos se disponível pra rage (ex:
+            # Veterano → golpe_poderoso_rage_cost); mana/concentração usam o
+            # custo base do catálogo — descontos específicos de talento (ex:
+            # Pyromania) não entram aqui, então em casos raros a hotbar pode
+            # escurecer um pouco ANTES da hora (ainda assim, bem melhor que
+            # nunca escurecer). Ver PROBLEMAS_ARQUITETURA.md.
             rage_cost = skill.rage_cost
             if skill.skill_id and _cs_hb:
                 _talent_rage_hb = getattr(_cs_hb, f"{skill.skill_id}_rage_cost", None)
                 if _talent_rage_hb is not None:
                     rage_cost = _talent_rage_hb
+            mana_cost = skill.mana_cost
+            if skill.mana_cost_pct > 0 and _char is not None:
+                mana_cost = max(1, int(_char.max_mana * skill.mana_cost_pct))
+            conc_cost = skill.params.get("concentration_cost", 0) if skill.params else 0
+
+            _insuf_rage = rage_cost > 0 and player_rage < rage_cost
+            _insuf_mana = mana_cost > 0 and _char is not None and _char.mana < mana_cost
+            _insuf_conc = conc_cost > 0 and _char is not None and _char.concentration < conc_cost
+
             # O overlay só é suprimido se o proc explicitamente dispensa o custo
             cost_bypassed = is_procced and skill.proc_ignores_cost
-            if rage_cost > 0 and player_rage < rage_cost and not cost_bypassed:
+            if (_insuf_rage or _insuf_mana or _insuf_conc) and not cost_bypassed:
                 self.screen.blit(fill_surf((self._HB_W, self._HB_H), (0, 0, 0, 140)), (sx, y0))
 
             # --- Overlay de talento removido (roxo) ---
             if _talent_locked:
                 self.screen.blit(fill_surf((self._HB_W, self._HB_H), (80, 0, 120, 160)), (sx, y0))
                 # Ícone de cadeado simples (X vermelho) no centro
-                _lk_s = self.font_sm.render("✕", True, (220, 80, 220))
+                _lk_s = self.font_sm.render("✕", False, (220, 80, 220))
                 self.screen.blit(_lk_s, (sx + self._HB_W // 2 - _lk_s.get_width() // 2,
                                          y0 + self._HB_H // 2 - _lk_s.get_height() // 2))
 
@@ -514,7 +532,7 @@ class HotbarHandlers:
             key_col = (220, 200, 140) if visual_ready else (80, 70, 50)
             if _talent_locked:
                 key_col = (140, 60, 160)
-            self.screen.blit(self.font_sm.render(kb_name, True, key_col), (sx + 3, y0 + 2))
+            self.screen.blit(self.font_sm.render(kb_name, False, key_col), (sx + 3, y0 + 2))
 
             # --- Tooltip no hover ---
             _hb_self_drag_active = (_drag_hb.kind == "skill" and _drag_hb.source == "hotbar"
@@ -546,5 +564,5 @@ class HotbarHandlers:
                     self.screen.blit(ghost, (mx - _GSZ // 2, my - _GSZ // 2))
                 # Hint de remoção durante Shift+drag
                 if _drag_hb.shift:
-                    _hint = self.font_xs.render("Soltar fora → remover", True, (220, 80, 220))
+                    _hint = self.font_xs.render("Soltar fora → remover", False, (220, 80, 220))
                     self.screen.blit(_hint, (mx - _hint.get_width() // 2, my - _GSZ // 2 - 14))

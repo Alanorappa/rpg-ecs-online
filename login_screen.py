@@ -72,7 +72,7 @@ class _TextInput:
             disp += "|"
         col = _TEXT_COL if (self.text or self.active) else _LABEL_COL
         txt = disp if (self.text or self.active) else self.placeholder
-        lbl = font.render(txt, True, col)
+        lbl = font.render(txt, False, col)
         cy  = self.rect.y + (self.rect.h - lbl.get_height()) // 2
         clip = pygame.Rect(self.rect.x + 2, self.rect.y + 2,
                            self.rect.w - 4, self.rect.h - 4)
@@ -85,7 +85,7 @@ def _btn(surf, rect, label, font, hov, primary=False):
     bg = (_BTN_PRI_H if hov else _BTN_PRI) if primary else (_BTN_HOV if hov else _BTN_NRM)
     pygame.draw.rect(surf, bg,      rect, border_radius=5)
     pygame.draw.rect(surf, _BORDER, rect, 1, border_radius=5)
-    lbl = font.render(label, True, _BTN_TXT)
+    lbl = font.render(label, False, _BTN_TXT)
     surf.blit(lbl, lbl.get_rect(center=rect.center))
 
 
@@ -238,7 +238,7 @@ def run(screen: pygame.Surface, host: str = "localhost", port: int = 8765):
         # ── Render ────────────────────────────────────────────────────────────
         screen.fill(_BG)
         _panel(screen, pygame.Rect(px, py, PW, PH))
-        title = font_title.render("RPG ECS Online", True, _TITLE_COL)
+        title = font_title.render("RPG ECS Online", False, _TITLE_COL)
         screen.blit(title, title.get_rect(centerx=W // 2, y=py + 14))
 
         tab_w, tab_h, tab_y = PW // 2, 34, py + 58
@@ -253,7 +253,7 @@ def run(screen: pygame.Surface, host: str = "localhost", port: int = 8765):
                 bg = tuple(min(255, c + 14) for c in bg)
             pygame.draw.rect(screen, bg, tr, border_radius=4)
             pygame.draw.rect(screen, _BORDER, tr, 1, border_radius=4)
-            lbl = font_md.render(label, True, _TEXT_COL if act else _LABEL_COL)
+            lbl = font_md.render(label, False, _TEXT_COL if act else _LABEL_COL)
             screen.blit(lbl, lbl.get_rect(center=tr.center))
             if not act and tr.collidepoint(mx, my) and clicked and not st["pending"]:
                 st["tab"] = tid; st["status_msg"] = ""
@@ -261,16 +261,16 @@ def run(screen: pygame.Surface, host: str = "localhost", port: int = 8765):
         btn_y = py + PH - 56
 
         if st["tab"] == "login":
-            screen.blit(font_sm.render("Usuário", True, _LABEL_COL), (px + 20, py + 104))
+            screen.blit(font_sm.render("Usuário", False, _LABEL_COL), (px + 20, py + 104))
             f_user_l.draw(screen, font_md)
-            screen.blit(font_sm.render("Senha", True, _LABEL_COL), (px + 20, py + 164))
+            screen.blit(font_sm.render("Senha", False, _LABEL_COL), (px + 20, py + 164))
             f_pass_l.draw(screen, font_md)
         else:
-            screen.blit(font_sm.render("Usuário", True, _LABEL_COL), (px + 20, py + 104))
+            screen.blit(font_sm.render("Usuário", False, _LABEL_COL), (px + 20, py + 104))
             f_user_r.draw(screen, font_md)
-            screen.blit(font_sm.render("Senha", True, _LABEL_COL), (px + 20, py + 164))
+            screen.blit(font_sm.render("Senha", False, _LABEL_COL), (px + 20, py + 164))
             f_pass_r.draw(screen, font_md)
-            screen.blit(font_sm.render("Confirmar senha", True, _LABEL_COL), (px + 20, py + 224))
+            screen.blit(font_sm.render("Confirmar senha", False, _LABEL_COL), (px + 20, py + 224))
             f_pass_r2.draw(screen, font_md)
 
         btn_lbl  = "Entrar" if st["tab"] == "login" else "Criar conta"
@@ -283,12 +283,12 @@ def run(screen: pygame.Surface, host: str = "localhost", port: int = 8765):
 
         if st["status_msg"]:
             col  = _OK_COL if st["status_ok"] else _ERR_COL
-            smsg = font_sm.render(st["status_msg"], True, col)
+            smsg = font_sm.render(st["status_msg"], False, col)
             screen.blit(smsg, smsg.get_rect(centerx=W // 2, y=btn_y - 22))
 
         if st["pending"]:
             dots = "." * (int(time.time() * 2) % 4)
-            spin = font_sm.render(f"Aguardando{dots}", True, _LABEL_COL)
+            spin = font_sm.render(f"Aguardando{dots}", False, _LABEL_COL)
             screen.blit(spin, spin.get_rect(centerx=W // 2, y=btn_y + 46))
 
         pygame.display.flip()

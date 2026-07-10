@@ -238,6 +238,7 @@ QUESTS: dict[str, QuestDef] = {
             ObjectiveDef(type="use_skill", target="executar", count=5),
         ),
         reward=QuestReward(xp=150, gold=8),
+        class_req="guerreiro",
         requires=("warrior_trial",),
         level_req=3,
         completion="Cinco execuções. Frio, calculista, eficiente. "
@@ -259,6 +260,22 @@ QUESTS: dict[str, QuestDef] = {
         class_req="mago",
         completion="Pelo visto você tem jeito pra coisa, mas na próxima vez tente pausar um pouco "
                    "entre os ataques, para não queimar o boneco de treino, você sabe quanto eles custam?",
+    ),
+
+    "coach_quantic": QuestDef(
+        title="Conheça seu mentor",
+        description="Olá Guerreiro, você chegou em boa hora, precisamos de muita força nova "
+                    "para nos ajudar a lidar com alguns problemas. ",
+        objectives=(
+            ObjectiveDef(type="learn_skill", target="golpe_poderoso", count=1),
+            ObjectiveDef(type="use_skill", target="golpe_poderoso", count=6,
+                        params={"on_dummy": True}),
+        ),
+        reward=QuestReward(xp=80),
+        class_req="guerreiro",
+        completion="Sua escolha faz sentido, você provou seu valor. "
+                   "O problema é que eu não sabia que você era forte, o boneco de treino"
+                   "ficou todo desfigurado. Sniff...",
     ),
 
     "prova_valor": QuestDef(
@@ -330,15 +347,15 @@ QUESTS: dict[str, QuestDef] = {
         ),
         reward=QuestReward(xp=125, gold=25),
         requires= ["atividade_suspeita"],
-        completion="Ferdinando te mandou aqui?" \
-        "Nossa, eu achei que era só aqui, esses malditos desmiolados são lentos e fracos" \
-        "mas baixe a guarda e vai ver quantos deles estarão em cima de você, eu já tentei de tudo para" \
+        completion="Ferdinando te mandou aqui? " \
+        "Nossa, eu achei que era só aqui, esses malditos desmiolados são lentos e fracos " \
+        "mas baixe a guarda e vai ver quantos deles estarão em cima de você, eu já tentei de tudo para " \
         "prendê-los de alguma forma, mas eles são pacientes e nunca desistem. Quer me ajudar com isso?",
     ),
     "de_volta_a_terra": QuestDef(
         title="De volta a terra",
         description="Precisamos descobrir como dar um jeito nesses desmiolados, eu os chamo assim, " \
-        "mas cada um que vem aqui chamam eles de um jeito, não existe um consenso, não que isso seja" \
+        "mas cada um que vem aqui chama eles de um jeito, não existe um consenso, não que isso seja" \
         " um problema, desde que estejam a sete palmos e não voltem mais." \
         "Mate 10 desmiolados para que eu possa enterrá-los novamente.",
         objectives=(

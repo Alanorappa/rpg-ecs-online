@@ -2,599 +2,25 @@
 """
 Tabelas de drop por tipo e tier de inimigo.
 
+Definição dos itens em si mora em item_table.py (catálogo único —
+loot/loja compartilham as mesmas factories, sem duplicata). `_T` é mantido
+aqui como alias de compatibilidade — todo `from loot_tables import _T`
+existente no resto do código continua funcionando sem mudança.
+
 armor_class (apenas item_type == "armor"):
   "placa"  — foco em força/stamina/armadura.  Permitido: guerreiro
   "couro"  — foco em crítico/agilidade.       Permitido: guerreiro, arqueiro
   "tecido" — foco em intelecto/spell_power.   Permitido: guerreiro, arqueiro, mago
 
 Restrições por classe definidas em stats_system.CLASS_ARMOR_ALLOWED.
+
+Gold por mob: `roll_mob_coins(mob_name, tier)` lê `gold_chance`/`gold_min`/
+`gold_max` de MOB_TABLE[mob_name] (mob_definitions.py) — sem essa config,
+cai no genérico por tier (COIN_DROPS/roll_coins), igual antes.
 """
 from __future__ import annotations
 import random
-from components import Item, Modifier
-
-# ---------------------------------------------------------------------------
-# Templates de itens
-# ---------------------------------------------------------------------------
-_T = {
-
-    # ================================================================ WEAPONS (sem armor_class)
-    "bone_sword": lambda: Item(
-        "Espada de Osso", "weapon", "mainhand",
-        modifiers=[], rarity="common", value=10,
-        damage_min=3, damage_max=8, attack_speed=1.6, subtype="Sword"),
-
-    "cracked_club": lambda: Item(
-        "Clava Rachada", "weapon", "mainhand",
-        modifiers=[Modifier("stamina", 1)], rarity="common", value=7,
-        damage_min=2, damage_max=7, attack_speed=1.8, subtype="Club"),
-
-    "wood_wand": lambda: Item(
-        "Varinha de Madeira", "weapon", "mainhand",
-        modifiers=[Modifier("spell_power", 6)], rarity="common", value=10,
-        damage_min=4, damage_max=9, attack_speed=1.4, subtype="Wand"),
-
-    "bone_shield": lambda: Item(
-        "Escudo de Osso", "shield", "offhand",
-        modifiers=[Modifier("armor", 5), Modifier("stamina", 1)],
-        rarity="common", value=8),
-
-    "iron_sword": lambda: Item(
-        "Espada de Ferro", "weapon", "mainhand",
-        modifiers=[Modifier("attack_power", 3)], rarity="uncommon", value=35,
-        damage_min=8, damage_max=16, attack_speed=1.4, subtype="Sword"),
-
-    "iron_mace": lambda: Item(
-        "Maça de Ferro", "weapon", "mainhand",
-        modifiers=[Modifier("stamina", 3)], rarity="uncommon", value=30,
-        damage_min=7, damage_max=15, attack_speed=1.7, subtype="Mace"),
-
-    "apprentice_axe": lambda: Item(
-        "Machadão do Aprendiz", "weapon", "mainhand",
-        modifiers=[Modifier("attack_power", 5)], rarity="uncommon", value=45,
-        damage_min=14, damage_max=26, attack_speed=2.6, two_handed=True, subtype="Axe"),
-
-    # ── Bows (arqueiro) ───────────────────────────────────────────────────────
-    "short_bow": lambda: Item(
-        "Arco Curto", "weapon", "mainhand",
-        modifiers=[Modifier("crit_rating", 0.02)],
-        rarity="common", value=20,
-        damage_min=5, damage_max=22, attack_speed=1.8, subtype="Bow", cast_range=7),
-
-    "hunter_bow": lambda: Item(
-        "Arco do Caçador", "weapon", "mainhand",
-        modifiers=[Modifier("crit_rating", 0.04), Modifier("attack_power", 4)],
-        rarity="uncommon", value=38,
-        damage_min=8, damage_max=30, attack_speed=2.0, subtype="Bow", cast_range=8),
-
-    "elven_bow": lambda: Item(
-        "Arco Élfico", "weapon", "mainhand",
-        modifiers=[Modifier("crit_rating", 0.06), Modifier("attack_power", 6), Modifier("agility", 2)],
-        rarity="rare", value=95,
-        damage_min=12, damage_max=42, attack_speed=1.6, subtype="Bow", cast_range=9),
-
-    # ── Quivers (arqueiro off-hand) ────────────────────────────────────────────
-    "basic_quiver": lambda: Item(
-        "Aljava Básica", "quiver", "offhand",
-        modifiers=[], rarity="common", value=5,
-        arrow_count=100, max_arrows=100, subtype="Flecha"),
-
-    "sturdy_quiver": lambda: Item(
-        "Aljava Reforçada", "quiver", "offhand",
-        modifiers=[Modifier("crit_rating", 0.01)], rarity="uncommon", value=25,
-        arrow_count=100, max_arrows=100, subtype="Flecha"),
-
-    # ── Ammo ──────────────────────────────────────────────────────────────────
-    "arrow": lambda: Item(
-        "Flecha", "ammo", "",
-        modifiers=[], rarity="common", value=1,
-        damage_min=0, damage_max=0, max_stack=1000),
-
-    "arrow_broadhead": lambda: Item(
-        "Flecha Perfurante", "ammo", "",
-        modifiers=[], rarity="uncommon", value=3,
-        damage_min=4, damage_max=8, max_stack=1000),
-
-    "arrow_heavy": lambda: Item(
-        "Flecha Pesada", "ammo", "",
-        modifiers=[], rarity="rare", value=6,
-        damage_min=8, damage_max=14, max_stack=1000),
-
-    "arcane_wand": lambda: Item(
-        "Varinha Arcana", "weapon", "mainhand",
-        modifiers=[Modifier("spell_power", 14), Modifier("stamina", 2)],
-        rarity="uncommon", value=32,
-        damage_min=9, damage_max=18, attack_speed=1.3, subtype="Wand"),
-
-    "iron_shield": lambda: Item(
-        "Escudo de Ferro", "shield", "offhand",
-        modifiers=[Modifier("armor", 12), Modifier("stamina", 3)],
-        rarity="uncommon", value=38),
-
-    "steel_ring": lambda: Item(
-        "Anel de Aço", "jewelry", "ring",
-        modifiers=[Modifier("attack_power", 4), Modifier("stamina", 2)],
-        rarity="uncommon", value=40),
-
-    "shadow_blade": lambda: Item(
-        "Lâmina Sombria", "weapon", "mainhand",
-        modifiers=[Modifier("crit_rating", 0.05), Modifier("attack_power", 5)],
-        rarity="rare", value=90,
-        damage_min=15, damage_max=27, attack_speed=1.3, subtype="Sword"),
-
-    "war_hammer": lambda: Item(
-        "Martelo de Guerra", "weapon", "mainhand",
-        modifiers=[Modifier("stamina", 8), Modifier("attack_power", 6)],
-        rarity="rare", value=85,
-        damage_min=22, damage_max=40, attack_speed=2.9, two_handed=True, subtype="Hammer"),
-
-    "mystic_staff": lambda: Item(
-        "Cajado Místico", "weapon", "mainhand",
-        modifiers=[Modifier("spell_power", 22), Modifier("stamina", 5), Modifier("crit_rating", 0.5)],
-        rarity="rare", value=80,
-        damage_min=18, damage_max=34, attack_speed=2.3, two_handed=True, subtype="Staff"),
-
-    "shadow_bow": lambda: Item(
-        "Arco das Sombras", "weapon", "mainhand",
-        modifiers=[Modifier("crit_rating", 0.08), Modifier("attack_power", 8)],
-        rarity="rare", value=88,
-        damage_min=18, damage_max=34, attack_speed=1.9, two_handed=True, subtype="Sword"),
-
-    "tower_shield": lambda: Item(
-        "Escudo Torre", "shield", "offhand",
-        modifiers=[Modifier("armor", 22), Modifier("stamina", 8)],
-        rarity="rare", value=95),
-
-    "ring_power": lambda: Item(
-        "Anel do Poder", "jewelry", "ring",
-        modifiers=[Modifier("attack_power", 8), Modifier("spell_power", 8)],
-        rarity="rare", value=85),
-
-    "amulet_warrior": lambda: Item(
-        "Amuleto do Guerreiro", "jewelry", "neck",
-        modifiers=[Modifier("stamina", 10), Modifier("attack_power", 5)],
-        rarity="rare", value=90,
-        proc={"attribute": "attack_power", "value": 24, "duration": 16.0,
-              "chance": 0.25, "label": "Fúria do Guerreiro"}),
-
-    "amulet_hunter": lambda: Item(
-        "Amuleto do Caçador", "jewelry", "neck",
-        modifiers=[Modifier("crit_rating", 0.06), Modifier("stamina", 6)],
-        rarity="rare", value=88,
-        proc={"attribute": "crit_rating", "value": 0.20, "duration": 12.0,
-              "chance": 0.20, "label": "Olho de Águia"}),
-
-    "amulet_arcane": lambda: Item(
-        "Amuleto Arcano", "jewelry", "neck",
-        modifiers=[Modifier("spell_power", 14), Modifier("stamina", 5)],
-        rarity="rare", value=85,
-        proc={"attribute": "spell_power", "value": 30, "duration": 12.0,
-              "chance": 0.20, "label": "Surto Arcano"}),
-
-    "death_blade": lambda: Item(
-        "Lâmina da Morte", "weapon", "mainhand",
-        modifiers=[Modifier("crit_rating", 0.10), Modifier("attack_power", 10)],
-        rarity="epic", value=220,
-        damage_min=24, damage_max=42, attack_speed=1.2, subtype="Sword",
-        proc={"attribute": "crit_rating", "value": 0.35, "duration": 16.0,
-              "chance": 0.15, "label": "Sede de Sangue"}),
-
-    "doom_axe": lambda: Item(
-        "Machado da Perdição", "weapon", "mainhand",
-        modifiers=[Modifier("attack_power", 14), Modifier("stamina", 12)],
-        rarity="epic", value=230,
-        damage_min=40, damage_max=72, attack_speed=3.0, two_handed=True, subtype="Axe",
-        proc={"attribute": "armor", "value": 50, "duration": 20.0,
-              "chance": 0.20, "label": "Carcaça de Ferro"}),
-
-    "phantom_bow": lambda: Item(
-        "Arco Fantasma", "weapon", "mainhand",
-        modifiers=[Modifier("crit_rating", 0.12), Modifier("attack_power", 14)],
-        rarity="epic", value=225,
-        damage_min=30, damage_max=56, attack_speed=1.8, two_handed=True, subtype="Sword",
-        proc={"attribute": "crit_rating", "value": 0.40, "duration": 12.0,
-              "chance": 0.15, "label": "Tiro Fantasma"}),
-
-    "lich_scepter": lambda: Item(
-        "Cetro do Lich", "weapon", "mainhand",
-        modifiers=[Modifier("spell_power", 42), Modifier("stamina", 10)],
-        rarity="epic", value=215,
-        damage_min=30, damage_max=55, attack_speed=1.8, subtype="Scepter"),
-
-    "aegis_shield": lambda: Item(
-        "Égide Sagrada", "shield", "offhand",
-        modifiers=[Modifier("armor", 35), Modifier("stamina", 14), Modifier("crit_rating", 0.05)],
-        rarity="epic", value=240),
-
-    "amulet_undying": lambda: Item(
-        "Amuleto do Imortal", "jewelry", "neck",
-        modifiers=[Modifier("stamina", 20), Modifier("armor", 10)],
-        rarity="epic", value=260,
-        proc={"attribute": "stamina", "value": 60, "duration": 15.0,
-              "chance": 0.30, "label": "Vontade Imortal"}),
-
-    "ring_fury": lambda: Item(
-        "Anel da Fúria", "jewelry", "ring",
-        modifiers=[Modifier("attack_power", 12), Modifier("crit_rating", 0.05)],
-        rarity="epic", value=245,
-        proc={"attribute": "attack_power", "value": 50, "duration": 16.0,
-              "chance": 0.20, "label": "Fúria Épica"}),
-
-    # ================================================================ PLACA — Guerreiro
-    # COMMON placa
-    "bone_shoulders": lambda: Item(
-        "Ombreiras de Osso", "armor", "shoulders",
-        modifiers=[Modifier("armor", 3), Modifier("stamina", 1)],
-        rarity="common", value=5, armor_class="placa"),
-
-    "bone_wristguards": lambda: Item(
-        "Punhos de Osso", "armor", "wrists",
-        modifiers=[Modifier("armor", 2), Modifier("stamina", 1)],
-        rarity="common", value=4, armor_class="placa"),
-
-    "iron_breastplate": lambda: Item(
-        "Peitoral de Ferro", "armor", "chest",
-        modifiers=[Modifier("armor", 5), Modifier("stamina", 2)],
-        rarity="common", value=9, armor_class="placa"),
-
-    "iron_greaves": lambda: Item(
-        "Grevas de Ferro", "armor", "boots",
-        modifiers=[Modifier("armor", 3), Modifier("stamina", 1)],
-        rarity="common", value=5, armor_class="placa"),
-
-    "iron_gauntlets": lambda: Item(
-        "Manoplas de Ferro", "armor", "gloves",
-        modifiers=[Modifier("armor", 3), Modifier("attack_power", 1)],
-        rarity="common", value=5, armor_class="placa"),
-
-    "iron_coif": lambda: Item(
-        "Coifa de Ferro", "armor", "head",
-        modifiers=[Modifier("armor", 3), Modifier("stamina", 1)],
-        rarity="common", value=5, armor_class="placa"),
-
-    # UNCOMMON placa
-    "iron_helm": lambda: Item(
-        "Elmo de Ferro", "armor", "head",
-        modifiers=[Modifier("armor", 7), Modifier("stamina", 3)],
-        rarity="uncommon", value=28, armor_class="placa"),
-
-    "chain_vest": lambda: Item(
-        "Peitoral de Malha", "armor", "chest",
-        modifiers=[Modifier("armor", 10), Modifier("stamina", 4)],
-        rarity="uncommon", value=38, armor_class="placa"),
-
-    "chain_shoulders": lambda: Item(
-        "Ombreiras de Malha", "armor", "shoulders",
-        modifiers=[Modifier("armor", 7), Modifier("stamina", 3)],
-        rarity="uncommon", value=26, armor_class="placa"),
-
-    "iron_boots": lambda: Item(
-        "Botas de Ferro", "armor", "boots",
-        modifiers=[Modifier("armor", 7), Modifier("stamina", 3)],
-        rarity="uncommon", value=26, armor_class="placa"),
-
-    "chain_wrists": lambda: Item(
-        "Punhos de Malha", "armor", "wrists",
-        modifiers=[Modifier("armor", 5), Modifier("stamina", 2)],
-        rarity="uncommon", value=22, armor_class="placa"),
-
-    "plate_gauntlets": lambda: Item(
-        "Manoplas de Placa", "armor", "gloves",
-        modifiers=[Modifier("armor", 6), Modifier("attack_power", 3)],
-        rarity="uncommon", value=24, armor_class="placa"),
-
-    # RARE placa
-    "plate_helm": lambda: Item(
-        "Elmo de Placa", "armor", "head",
-        modifiers=[Modifier("armor", 14), Modifier("stamina", 8)],
-        rarity="rare", value=80, armor_class="placa"),
-
-    "plate_armor": lambda: Item(
-        "Armadura de Placa", "armor", "chest",
-        modifiers=[Modifier("armor", 18), Modifier("stamina", 10)],
-        rarity="rare", value=95, armor_class="placa"),
-
-    "savage_shoulders": lambda: Item(
-        "Ombreiras Selvagens", "armor", "shoulders",
-        modifiers=[Modifier("armor", 12), Modifier("attack_power", 6)],
-        rarity="rare", value=78, armor_class="placa"),
-
-    "plate_boots": lambda: Item(
-        "Botas de Placa", "armor", "boots",
-        modifiers=[Modifier("armor", 12), Modifier("stamina", 7)],
-        rarity="rare", value=75, armor_class="placa"),
-
-    "plate_wrists": lambda: Item(
-        "Punhos de Placa", "armor", "wrists",
-        modifiers=[Modifier("armor", 9), Modifier("stamina", 5)],
-        rarity="rare", value=68, armor_class="placa"),
-
-    "plate_gloves": lambda: Item(
-        "Luvas de Placa", "armor", "gloves",
-        modifiers=[Modifier("armor", 9), Modifier("attack_power", 5)],
-        rarity="rare", value=70, armor_class="placa"),
-
-    # EPIC placa
-    "soul_armor": lambda: Item(
-        "Armadura da Alma", "armor", "chest",
-        modifiers=[Modifier("armor", 28), Modifier("stamina", 18)],
-        rarity="epic", value=225, armor_class="placa"),
-
-    "doom_shoulders": lambda: Item(
-        "Ombreiras da Perdição", "armor", "shoulders",
-        modifiers=[Modifier("armor", 20), Modifier("attack_power", 14)],
-        rarity="epic", value=215, armor_class="placa"),
-
-    "death_treads": lambda: Item(
-        "Passos da Morte", "armor", "boots",
-        modifiers=[Modifier("armor", 20), Modifier("stamina", 12)],
-        rarity="epic", value=210, armor_class="placa"),
-
-    "titan_helm": lambda: Item(
-        "Elmo do Titã", "armor", "head",
-        modifiers=[Modifier("armor", 22), Modifier("stamina", 16)],
-        rarity="epic", value=218, armor_class="placa"),
-
-    "titan_wrists": lambda: Item(
-        "Punhos do Titã", "armor", "wrists",
-        modifiers=[Modifier("armor", 16), Modifier("stamina", 10)],
-        rarity="epic", value=200, armor_class="placa"),
-
-    "titan_gloves": lambda: Item(
-        "Manoplas do Titã", "armor", "gloves",
-        modifiers=[Modifier("armor", 16), Modifier("attack_power", 12)],
-        rarity="epic", value=205, armor_class="placa"),
-
-    # ================================================================ COURO — Arqueiro
-    # COMMON couro
-    "leather_vest": lambda: Item(
-        "Colete de Couro", "armor", "chest",
-        modifiers=[Modifier("armor", 4), Modifier("stamina", 2)],
-        rarity="common", value=8, armor_class="couro"),
-
-    "light_hood": lambda: Item(
-        "Capuz Leve", "armor", "head",
-        modifiers=[Modifier("armor", 3), Modifier("crit_rating", 0.01)],
-        rarity="common", value=5, armor_class="couro"),
-
-    "light_shoulders": lambda: Item(
-        "Ombros Leves", "armor", "shoulders",
-        modifiers=[Modifier("armor", 2), Modifier("crit_rating", 0.01)],
-        rarity="common", value=4, armor_class="couro"),
-
-    "padded_gloves": lambda: Item(
-        "Luvas Acolchoadas", "armor", "gloves",
-        modifiers=[Modifier("armor", 2), Modifier("crit_rating", 0.01)],
-        rarity="common", value=4, armor_class="couro"),
-
-    "light_boots": lambda: Item(
-        "Botas Leves", "armor", "boots",
-        modifiers=[Modifier("armor", 2), Modifier("crit_rating", 0.01)],
-        rarity="common", value=4, armor_class="couro"),
-
-    "padded_wrists": lambda: Item(
-        "Pulsos Acolchoados", "armor", "wrists",
-        modifiers=[Modifier("armor", 2), Modifier("stamina", 1)],
-        rarity="common", value=3, armor_class="couro"),
-
-    # UNCOMMON couro
-    "hunter_helm": lambda: Item(
-        "Elmo do Caçador", "armor", "head",
-        modifiers=[Modifier("armor", 6), Modifier("crit_rating", 0.03)],
-        rarity="uncommon", value=26, armor_class="couro"),
-
-    "hunter_vest": lambda: Item(
-        "Colete do Caçador", "armor", "chest",
-        modifiers=[Modifier("armor", 9), Modifier("crit_rating", 0.03)],
-        rarity="uncommon", value=36, armor_class="couro"),
-
-    "hunter_shoulders": lambda: Item(
-        "Ombros do Caçador", "armor", "shoulders",
-        modifiers=[Modifier("armor", 6), Modifier("crit_rating", 0.02)],
-        rarity="uncommon", value=24, armor_class="couro"),
-
-    "leather_gloves": lambda: Item(
-        "Luvas de Couro", "armor", "gloves",
-        modifiers=[Modifier("armor", 5), Modifier("attack_power", 2)],
-        rarity="uncommon", value=22, armor_class="couro"),
-
-    "hunter_boots": lambda: Item(
-        "Botas do Caçador", "armor", "boots",
-        modifiers=[Modifier("armor", 6), Modifier("crit_rating", 0.02)],
-        rarity="uncommon", value=24, armor_class="couro"),
-
-    "hunter_wrists": lambda: Item(
-        "Pulsos do Caçador", "armor", "wrists",
-        modifiers=[Modifier("armor", 4), Modifier("crit_rating", 0.02)],
-        rarity="uncommon", value=20, armor_class="couro"),
-
-    # RARE couro
-    "stalker_helm": lambda: Item(
-        "Elmo do Perseguidor", "armor", "head",
-        modifiers=[Modifier("armor", 11), Modifier("crit_rating", 0.05)],
-        rarity="rare", value=76, armor_class="couro"),
-
-    "stalker_vest": lambda: Item(
-        "Colete do Perseguidor", "armor", "chest",
-        modifiers=[Modifier("armor", 14), Modifier("crit_rating", 0.05)],
-        rarity="rare", value=88, armor_class="couro"),
-
-    "stalker_shoulders": lambda: Item(
-        "Ombros do Perseguidor", "armor", "shoulders",
-        modifiers=[Modifier("armor", 10), Modifier("crit_rating", 0.04)],
-        rarity="rare", value=74, armor_class="couro"),
-
-    "stalker_gloves": lambda: Item(
-        "Luvas do Perseguidor", "armor", "gloves",
-        modifiers=[Modifier("armor", 8), Modifier("crit_rating", 0.04)],
-        rarity="rare", value=68, armor_class="couro"),
-
-    "stalker_boots": lambda: Item(
-        "Botas do Perseguidor", "armor", "boots",
-        modifiers=[Modifier("armor", 10), Modifier("crit_rating", 0.04)],
-        rarity="rare", value=72, armor_class="couro"),
-
-    "stalker_wrists": lambda: Item(
-        "Pulsos do Perseguidor", "armor", "wrists",
-        modifiers=[Modifier("armor", 7), Modifier("crit_rating", 0.03)],
-        rarity="rare", value=65, armor_class="couro"),
-
-    # EPIC couro
-    "shadow_gloves": lambda: Item(
-        "Luvas das Sombras", "armor", "gloves",
-        modifiers=[Modifier("armor", 16), Modifier("crit_rating", 0.07)],
-        rarity="epic", value=200, armor_class="couro"),
-
-    "assassin_helm": lambda: Item(
-        "Capuz do Assassino", "armor", "head",
-        modifiers=[Modifier("armor", 18), Modifier("crit_rating", 0.08)],
-        rarity="epic", value=205, armor_class="couro"),
-
-    "assassin_vest": lambda: Item(
-        "Colete do Assassino", "armor", "chest",
-        modifiers=[Modifier("armor", 22), Modifier("crit_rating", 0.08)],
-        rarity="epic", value=218, armor_class="couro"),
-
-    "assassin_shoulders": lambda: Item(
-        "Ombros do Assassino", "armor", "shoulders",
-        modifiers=[Modifier("armor", 16), Modifier("crit_rating", 0.06)],
-        rarity="epic", value=198, armor_class="couro"),
-
-    "assassin_boots": lambda: Item(
-        "Botas do Assassino", "armor", "boots",
-        modifiers=[Modifier("armor", 16), Modifier("crit_rating", 0.06)],
-        rarity="epic", value=200, armor_class="couro"),
-
-    "assassin_wrists": lambda: Item(
-        "Pulsos do Assassino", "armor", "wrists",
-        modifiers=[Modifier("armor", 12), Modifier("crit_rating", 0.05)],
-        rarity="epic", value=192, armor_class="couro"),
-
-    # ================================================================ TECIDO — Mago
-    # COMMON tecido
-    "worn_hood": lambda: Item(
-        "Capuz Puído", "armor", "head",
-        modifiers=[Modifier("armor", 1), Modifier("stamina", 1)],
-        rarity="common", value=4, armor_class="tecido"),
-
-    "tattered_robe": lambda: Item(
-        "Robe Surrado", "armor", "chest",
-        modifiers=[Modifier("armor", 2), Modifier("spell_power", 3)],
-        rarity="common", value=7, armor_class="tecido"),
-
-    "cloth_shoulders": lambda: Item(
-        "Ombros de Tecido", "armor", "shoulders",
-        modifiers=[Modifier("armor", 1), Modifier("spell_power", 2)],
-        rarity="common", value=3, armor_class="tecido"),
-
-    "cloth_gloves": lambda: Item(
-        "Luvas de Tecido", "armor", "gloves",
-        modifiers=[Modifier("armor", 1), Modifier("spell_power", 2)],
-        rarity="common", value=3, armor_class="tecido"),
-
-    "cloth_boots": lambda: Item(
-        "Botas de Tecido", "armor", "boots",
-        modifiers=[Modifier("armor", 1), Modifier("spell_power", 2)],
-        rarity="common", value=3, armor_class="tecido"),
-
-    "cloth_wrists": lambda: Item(
-        "Pulsos de Tecido", "armor", "wrists",
-        modifiers=[Modifier("armor", 1), Modifier("spell_power", 1)],
-        rarity="common", value=2, armor_class="tecido"),
-
-    # UNCOMMON tecido
-    "silk_hood": lambda: Item(
-        "Capuz de Seda", "armor", "head",
-        modifiers=[Modifier("armor", 4), Modifier("spell_power", 6)],
-        rarity="uncommon", value=24, armor_class="tecido"),
-
-    "silk_robe": lambda: Item(
-        "Manto de Seda", "armor", "chest",
-        modifiers=[Modifier("armor", 6), Modifier("spell_power", 9)],
-        rarity="uncommon", value=34, armor_class="tecido"),
-
-    "silk_shoulders": lambda: Item(
-        "Ombros de Seda", "armor", "shoulders",
-        modifiers=[Modifier("armor", 4), Modifier("spell_power", 6)],
-        rarity="uncommon", value=22, armor_class="tecido"),
-
-    "silk_gloves": lambda: Item(
-        "Luvas de Seda", "armor", "gloves",
-        modifiers=[Modifier("armor", 3), Modifier("spell_power", 5)],
-        rarity="uncommon", value=20, armor_class="tecido"),
-
-    "silk_boots": lambda: Item(
-        "Botas de Seda", "armor", "boots",
-        modifiers=[Modifier("armor", 4), Modifier("spell_power", 5)],
-        rarity="uncommon", value=22, armor_class="tecido"),
-
-    "silk_wrists": lambda: Item(
-        "Pulsos de Seda", "armor", "wrists",
-        modifiers=[Modifier("armor", 3), Modifier("spell_power", 5)],
-        rarity="uncommon", value=18, armor_class="tecido"),
-
-    # RARE tecido
-    "arcane_hood": lambda: Item(
-        "Capuz Arcano", "armor", "head",
-        modifiers=[Modifier("armor", 8), Modifier("spell_power", 12)],
-        rarity="rare", value=74, armor_class="tecido"),
-
-    "arcane_robe": lambda: Item(
-        "Manto Arcano", "armor", "chest",
-        modifiers=[Modifier("armor", 10), Modifier("spell_power", 16)],
-        rarity="rare", value=88, armor_class="tecido"),
-
-    "arcane_shoulders": lambda: Item(
-        "Ombros Arcanos", "armor", "shoulders",
-        modifiers=[Modifier("armor", 7), Modifier("spell_power", 11)],
-        rarity="rare", value=70, armor_class="tecido"),
-
-    "arcane_gloves": lambda: Item(
-        "Luvas Arcanas", "armor", "gloves",
-        modifiers=[Modifier("armor", 6), Modifier("spell_power", 9)],
-        rarity="rare", value=68, armor_class="tecido"),
-
-    "arcane_boots": lambda: Item(
-        "Botas Arcanas", "armor", "boots",
-        modifiers=[Modifier("armor", 7), Modifier("spell_power", 10)],
-        rarity="rare", value=70, armor_class="tecido"),
-
-    "runed_wrists": lambda: Item(
-        "Punhos Rúnicos", "armor", "wrists",
-        modifiers=[Modifier("armor", 5), Modifier("spell_power", 9)],
-        rarity="rare", value=65, armor_class="tecido"),
-
-    # EPIC tecido
-    "lich_hood": lambda: Item(
-        "Capuz do Lich", "armor", "head",
-        modifiers=[Modifier("armor", 14), Modifier("spell_power", 20)],
-        rarity="epic", value=200, armor_class="tecido"),
-
-    "lich_robe": lambda: Item(
-        "Manto do Lich", "armor", "chest",
-        modifiers=[Modifier("armor", 18), Modifier("spell_power", 28)],
-        rarity="epic", value=220, armor_class="tecido"),
-
-    "lich_shoulders": lambda: Item(
-        "Ombros do Lich", "armor", "shoulders",
-        modifiers=[Modifier("armor", 12), Modifier("spell_power", 18)],
-        rarity="epic", value=196, armor_class="tecido"),
-
-    "lich_gloves": lambda: Item(
-        "Luvas do Lich", "armor", "gloves",
-        modifiers=[Modifier("armor", 10), Modifier("spell_power", 16)],
-        rarity="epic", value=190, armor_class="tecido"),
-
-    "lich_boots": lambda: Item(
-        "Botas do Lich", "armor", "boots",
-        modifiers=[Modifier("armor", 12), Modifier("spell_power", 16)],
-        rarity="epic", value=194, armor_class="tecido"),
-
-    "lich_wrists": lambda: Item(
-        "Punhos do Lich", "armor", "wrists",
-        modifiers=[Modifier("armor", 9), Modifier("spell_power", 14)],
-        rarity="epic", value=188, armor_class="tecido"),
-}
+from item_table import ITEMS as _T
 
 # ---------------------------------------------------------------------------
 # Tabelas de drop: (enemy_type, tier) → [(factory, chance), ...]
@@ -709,15 +135,55 @@ LOOT_TABLES: dict = {
 # Moedas por tier
 # ---------------------------------------------------------------------------
 COIN_DROPS = {
-    "normal": (5,   20),
-    "elite":  (20,  55),
-    "rare":   (55, 130),
-    "boss":   (160, 320),
+    "normal": (0,   20),
+    "elite":  (0,  55),
+    "rare":   (0, 130),
+    "boss":   (160, 3200),
 }
 
 
 def roll_coins(tier: str) -> int:
     lo, hi = COIN_DROPS.get(tier, (5, 20))
+    return random.randint(lo, hi)
+
+
+# Multiplicador de tier — mesma escala usada pra chance de item (roll_mob_loot)
+# e agora também pra faixa de gold por mob (roll_mob_coins). Único lugar:
+# mudar a escala de um tier específico não exige tocar em duas funções.
+_TIER_MULT: dict = {"normal": 1.0, "elite": 1.5, "rare": 2.5, "boss": 4.0}
+
+
+def roll_mob_coins(mob_name: str, tier: str) -> int:
+    """Rola o gold dropado por um mob específico.
+
+    `gold_chance`/`gold_min`/`gold_max` em MOB_TABLE[mob_name]
+    (mob_definitions.py) têm prioridade — sem essa configuração (ou mob não
+    cadastrado), cai no comportamento genérico por tier (COIN_DROPS via
+    roll_coins), igual antes desta função existir.
+
+    `gold_chance` (0.0–1.0, default 1.0): chance de dropar gold NESTE kill —
+    0.0 pra mobs que não fazem sentido carregar moedas (Fera: Lobo, Aranha
+    etc.). `gold_min`/`gold_max`: faixa na tier "normal" (mesma convenção de
+    `attributes` em mob_definitions.py); escalada pelo mesmo `_TIER_MULT` de
+    roll_mob_loot pra elite/rare/boss.
+    """
+    from mob_definitions import MOB_TABLE
+    mob_def = MOB_TABLE.get(mob_name)
+    if not mob_def:
+        return roll_coins(tier)
+
+    gold_chance = mob_def.get("gold_chance", 1.0)
+    if random.random() >= gold_chance:
+        return 0
+
+    gold_min = mob_def.get("gold_min")
+    gold_max = mob_def.get("gold_max")
+    if gold_min is None or gold_max is None:
+        return roll_coins(tier)
+
+    mult = _TIER_MULT.get(tier, 1.0)
+    lo = max(0, round(gold_min * mult))
+    hi = max(lo, round(gold_max * mult))
     return random.randint(lo, hi)
 
 
@@ -745,8 +211,7 @@ def roll_mob_loot(mob_name: str, tier: str) -> list:
     if not loot_def:
         return roll_loot("melee", tier)
 
-    tier_mult = {"normal": 1.0, "elite": 1.5, "rare": 2.5, "boss": 4.0}
-    mult = tier_mult.get(tier, 1.0)
+    mult = _TIER_MULT.get(tier, 1.0)
 
     result = []
     for item_key, chance in loot_def.items():

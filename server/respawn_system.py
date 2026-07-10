@@ -255,6 +255,7 @@ class RespawnMixin:
 
             in_graveyard = (abs(tm.current_tile_x - gx) <= GHOST_GRAVEYARD_RADIUS_TILES
                             and abs(tm.current_tile_y - gy) <= GHOST_GRAVEYARD_RADIUS_TILES)
+            _timer_before = gst.graveyard_timer
             if in_graveyard:
                 gst.graveyard_timer += dt
                 if gst.graveyard_timer >= GHOST_GRAVEYARD_REVIVE_S:
@@ -265,7 +266,18 @@ class RespawnMixin:
 
             near_corpse = (abs(tm.current_tile_x - gst.corpse_tx) <= GHOST_CORPSE_RADIUS_TILES
                            and abs(tm.current_tile_y - gst.corpse_ty) <= GHOST_CORPSE_RADIUS_TILES)
-            if near_corpse != gst.near_corpse:
+            # Reseta (saiu do raio do cemitério após já ter acumulado tempo)
+            # precisa de um GHOST_STATE explícito — sem isso, o cliente nunca
+            # fica sabendo que o contador zerou (client_ghost_timer é uma
+            # contagem LOCAL independente, incrementada sem checar raio
+            # nenhum — ver death_ui_handlers.py) e continua mostrando "revive
+            # em Xs" contando pra baixo até 0 mesmo com o timer real do
+            # servidor zerado, deixando o player "esperando" pra sempre sem
+            # nunca reviver (bug real reportado: andar um pouco dentro do
+            # cemitério — nada incomum, fantasma não é travado — reseta o
+            # contador em silêncio).
+            _timer_reset = _timer_before > 0.0 and gst.graveyard_timer == 0.0
+            if near_corpse != gst.near_corpse or _timer_reset:
                 gst.near_corpse = near_corpse
                 self._ghost_state_updates_this_tick.append({
                     "session_id":      self._player_eid_to_sid.get(peid),
@@ -348,3 +360,39 @@ class RespawnMixin:
             "level":    char.level if char else 1,
             "effects":  [],
         })
+
+    def _auto_revive_on_disconnect(self, player_eid: int) -> None:
+        """Chamado em `session.py::on_disconnect` ANTES de salvar/despawnar,
+        se o player está morto ou fantasma no momento da desconexão.
+
+        Sem isto, o relogin trazia o personagem "vivo" (HP salvo ao morrer é
+        max_hp — ver `get_player_save_data`) na posição CRUA salva, que pode
+        ser o local da morte (perigoso — cheio de mob) ou qualquer lugar que
+        o fantasma tenha vagado (intangível, atravessa parede) — e o
+        marcador de corpo sintético (`PLAYER_CORPSE_EID_BASE+eid`), se o
+        espírito já tinha sido liberado, nunca era despawnado pra quem já o
+        via no AOI (`despawn_player` só remove a entidade real do player).
+
+        Fix: reaproveita `_revive_player` (já limpa `_player_corpses` +
+        broadcast de despawn do marcador) — mas primeiro força a posição pro
+        RESPAWN_TILE (nunca revive "in place", que é exatamente o cenário
+        perigoso/exploitável acima) e troca de mapa se necessário (mesmo
+        bloco de `_handle_release_spirit`). Broadcasts de revive/respawn
+        gerados aqui (fora do loop normal de `_tick`) ainda são drenados
+        normalmente no próximo tick — mesmo mecanismo que `despawn_player`
+        já usa pra `_despawned_this_tick` fora do tick."""
+        from components import GhostState, MapLocation as _MLar
+        gst = self.world.get_component(player_eid, GhostState)
+        if not gst or not gst.is_dead:
+            return
+
+        rx, ry = self.RESPAWN_TILE
+        session_id = self._player_eid_to_sid.get(player_eid)
+        ml = self.world.get_component(player_eid, _MLar)
+        if ml and ml.map_file != self._map_file and session_id:
+            self.transfer_player(session_id, player_eid, self._map_file, rx, ry)
+
+        from utils import snap_to_tile as _snap_ar
+        _snap_ar(self.world, player_eid, rx, ry, carry_prev=False)
+
+        self._revive_player(player_eid, hp_frac=1.0, at_corpse=False)

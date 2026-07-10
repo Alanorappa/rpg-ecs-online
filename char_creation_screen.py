@@ -349,10 +349,10 @@ def run_online(screen: pygame.Surface,
 
         if pending_action == "selecting":
             screen.fill(_BG)
-            lbl = font_md.render("Entrando no mundo...", True, _TITLE_COL)
+            lbl = font_md.render("Entrando no mundo...", False, _TITLE_COL)
             screen.blit(lbl, lbl.get_rect(center=(sw // 2, sh // 2)))
             if status:
-                e = font_sm.render(status, True, _DEL_TXT)
+                e = font_sm.render(status, False, _DEL_TXT)
                 screen.blit(e, e.get_rect(centerx=sw // 2, y=sh // 2 + int(36 * sc)))
             pygame.display.flip()
             continue
@@ -374,7 +374,7 @@ def run_online(screen: pygame.Surface,
                             char_w, char_h, slot_h, slot_pad, sc)
 
         if status:
-            e = font_sm.render(status, True, _DEL_TXT)
+            e = font_sm.render(status, False, _DEL_TXT)
             screen.blit(e, e.get_rect(centerx=sw // 2, y=py - e.get_height() - int(6 * sc)))
 
         pygame.display.flip()
@@ -449,10 +449,10 @@ def _run_creation(screen, clock, sc: float) -> "dict | None":
         pygame.draw.rect(screen, _PANEL_BG, panel, border_radius=8)
         pygame.draw.rect(screen, _BORDER,   panel, 2, border_radius=8)
 
-        title = font_lg.render("Criar Personagem", True, _TITLE_COL)
+        title = font_lg.render("Criar Personagem", False, _TITLE_COL)
         screen.blit(title, (px + PW // 2 - title.get_width() // 2, py + int(18 * sc)))
 
-        lbl = font_sm.render("Nome do personagem:", True, _TEXT_COL)
+        lbl = font_sm.render("Nome do personagem:", False, _TEXT_COL)
         screen.blit(lbl, (name_rect.x, name_rect.y - lbl.get_height() - int(4 * sc)))
 
         bdr_col = _INPUT_ACT if name_active else _INPUT_BDR
@@ -461,11 +461,11 @@ def _run_creation(screen, clock, sc: float) -> "dict | None":
         cursor   = "|" if name_active and pygame.time.get_ticks() % 1000 < 500 else ""
         disp_txt = (name_text + cursor) if name_text else ("Aventureiro" if not name_active else cursor)
         txt_col  = _TEXT_COL if name_text else _LOCK_TXT
-        txt_surf = font_md.render(disp_txt, True, txt_col)
+        txt_surf = font_md.render(disp_txt, False, txt_col)
         screen.blit(txt_surf, (name_rect.x + int(10 * sc),
                                name_rect.y + name_rect.h // 2 - txt_surf.get_height() // 2))
 
-        lbl2 = font_sm.render("Escolha sua classe:", True, _TEXT_COL)
+        lbl2 = font_sm.render("Escolha sua classe:", False, _TEXT_COL)
         screen.blit(lbl2, (px + PW // 2 - lbl2.get_width() // 2, cards_y - lbl2.get_height() - int(8 * sc)))
 
         icon_sz = int(36 * sc)
@@ -490,15 +490,15 @@ def _run_creation(screen, clock, sc: float) -> "dict | None":
             pygame.draw.rect(screen, icon_col, icon_r, border_radius=4)
 
             n_col  = _LOCK_TXT if locked else (_SEL_BDR if is_sel else _TEXT_COL)
-            n_surf = font_sm.render(cls["label"], True, n_col)
+            n_surf = font_sm.render(cls["label"], False, n_col)
             screen.blit(n_surf, (r.x + r.w // 2 - n_surf.get_width() // 2, r.y + int(64 * sc)))
 
             for li, line in enumerate(cls["description"].split("\n")):
-                d = font_xs.render(line, True, _LOCK_TXT if locked else _TEXT_COL)
+                d = font_xs.render(line, False, _LOCK_TXT if locked else _TEXT_COL)
                 screen.blit(d, (r.x + r.w // 2 - d.get_width() // 2,
                                 r.y + int(90 * sc) + li * (font_xs.get_height() + int(2 * sc))))
             if locked:
-                lock_s = font_xs.render("[em breve]", True, _LOCK_COL)
+                lock_s = font_xs.render("[em breve]", False, _LOCK_COL)
                 screen.blit(lock_s, (r.x + r.w // 2 - lock_s.get_width() // 2, r.y + int(138 * sc)))
 
         for r, label, bg, bdr in [
@@ -508,7 +508,7 @@ def _run_creation(screen, clock, sc: float) -> "dict | None":
             hov = r.collidepoint(mx, my)
             pygame.draw.rect(screen, _BTN_HOV if hov else bg, r, border_radius=5)
             pygame.draw.rect(screen, bdr, r, 2, border_radius=5)
-            s = font_md.render(label, True, _BTN_TXT)
+            s = font_md.render(label, False, _BTN_TXT)
             screen.blit(s, s.get_rect(center=r.center))
 
         pygame.display.flip()
@@ -525,7 +525,7 @@ def _draw_selection(screen, saves, occupied, can_create,
     pygame.draw.rect(screen, _PANEL_BG, panel, border_radius=8)
     pygame.draw.rect(screen, _BORDER,   panel, 2, border_radius=8)
 
-    title = font_lg.render("Selecionar Personagem", True, _TITLE_COL)
+    title = font_lg.render("Selecionar Personagem", False, _TITLE_COL)
     screen.blit(title, (px + char_w // 2 - title.get_width() // 2, py + int(16 * sc)))
 
     for i, s in enumerate(saves):
@@ -540,30 +540,30 @@ def _draw_selection(screen, saves, occupied, can_create,
         icon = pygame.Rect(r.x + int(14 * sc), r.y + slot_h // 2 - icon_sz // 2, icon_sz, icon_sz)
         pygame.draw.rect(screen, col, icon, border_radius=4)
 
-        name_s = font_md.render(s["name"], True, _TITLE_COL)
+        name_s = font_md.render(s["name"], False, _TITLE_COL)
         screen.blit(name_s, (r.x + int(64 * sc), r.y + int(12 * sc)))
 
         cls_label = s["class_id"].capitalize()
-        info_s = font_sm.render(f"{cls_label}  —  Nivel {s['level']}", True, _TEXT_COL)
+        info_s = font_sm.render(f"{cls_label}  —  Nivel {s['level']}", False, _TEXT_COL)
         screen.blit(info_s, (r.x + int(64 * sc), r.y + int(12 * sc) + name_s.get_height() + int(2 * sc)))
 
         if s["saved_at"]:
             date_str = s["saved_at"].replace("T", "  ")
-            date_s = font_xs.render(date_str, True, _SUB_COL)
+            date_s = font_xs.render(date_str, False, _SUB_COL)
             screen.blit(date_s, (r.x + int(64 * sc), r.y + slot_h - date_s.get_height() - int(8 * sc)))
 
         play_r = _play_btn_rect(r, slot_h, sc)
         hov_p  = play_r.collidepoint(mx, my)
         pygame.draw.rect(screen, _BTN_HOV if hov_p else _BTN_BG, play_r, border_radius=4)
         pygame.draw.rect(screen, _SEL_BDR, play_r, 2, border_radius=4)
-        play_s = font_sm.render("Jogar", True, _BTN_TXT)
+        play_s = font_sm.render("Jogar", False, _BTN_TXT)
         screen.blit(play_s, play_s.get_rect(center=play_r.center))
 
         del_r = _delete_btn_rect(r, slot_h, sc)
         hov_d = del_r.collidepoint(mx, my)
         pygame.draw.rect(screen, _DEL_HOV if hov_d else _DEL_BG, del_r, border_radius=4)
         pygame.draw.rect(screen, _DEL_TXT, del_r, 1, border_radius=4)
-        del_s = font_xs.render("Excluir", True, _DEL_TXT)
+        del_s = font_xs.render("Excluir", False, _DEL_TXT)
         screen.blit(del_s, del_s.get_rect(center=del_r.center))
 
     create_r = _create_btn_rect(px, py, char_w, char_h, slot_h, slot_pad, sc)
@@ -571,19 +571,19 @@ def _draw_selection(screen, saves, occupied, can_create,
         hov_c = create_r.collidepoint(mx, my)
         pygame.draw.rect(screen, _NEW_HOV if hov_c else _NEW_BG, create_r, border_radius=5)
         pygame.draw.rect(screen, _NEW_BDR, create_r, 2, border_radius=5)
-        c_s = font_md.render("+ Criar Personagem", True, _NEW_TXT)
+        c_s = font_md.render("+ Criar Personagem", False, _NEW_TXT)
         screen.blit(c_s, c_s.get_rect(center=create_r.center))
     else:
         pygame.draw.rect(screen, _PANEL_BG, create_r, border_radius=5)
         pygame.draw.rect(screen, _LOCK_COL, create_r, 1, border_radius=5)
-        c_s = font_sm.render("Slots cheios (max 8)", True, _LOCK_TXT)
+        c_s = font_sm.render("Slots cheios (max 8)", False, _LOCK_TXT)
         screen.blit(c_s, c_s.get_rect(center=create_r.center))
 
     quit_r = _quit_btn_rect(px, py, char_w, char_h, sc)
     hov_q  = quit_r.collidepoint(mx, my)
     pygame.draw.rect(screen, _BTN_HOV if hov_q else _BTN_BG, quit_r, border_radius=5)
     pygame.draw.rect(screen, _BORDER, quit_r, 2, border_radius=5)
-    q_s = font_md.render("Sair", True, _BTN_TXT)
+    q_s = font_md.render("Sair", False, _BTN_TXT)
     screen.blit(q_s, q_s.get_rect(center=quit_r.center))
 
 
@@ -603,8 +603,8 @@ def _draw_confirm_overlay(screen, slot, saves, px, py, mx, my, font_md, font_sm,
 
     save_info = next((s for s in saves if s["slot"] == slot), None)
     name_str  = save_info["name"] if save_info else "?"
-    line1 = font_md.render("Excluir personagem?", True, (255, 200, 200))
-    line2 = font_sm.render(f'"{name_str}" sera removido permanentemente.', True, _TEXT_COL)
+    line1 = font_md.render("Excluir personagem?", False, (255, 200, 200))
+    line2 = font_sm.render(f'"{name_str}" sera removido permanentemente.', False, _TEXT_COL)
     screen.blit(line1, (dx + DW // 2 - line1.get_width() // 2, dy + int(20 * sc)))
     screen.blit(line2, (dx + DW // 2 - line2.get_width() // 2, dy + int(20 * sc) + line1.get_height() + int(8 * sc)))
 
@@ -616,7 +616,7 @@ def _draw_confirm_overlay(screen, slot, saves, px, py, mx, my, font_md, font_sm,
         hov = r.collidepoint(mx, my)
         pygame.draw.rect(screen, hov_bg if hov else bg, r, border_radius=5)
         pygame.draw.rect(screen, col, r, 2, border_radius=5)
-        s = font_md.render(label, True, col)
+        s = font_md.render(label, False, col)
         screen.blit(s, s.get_rect(center=r.center))
 
 

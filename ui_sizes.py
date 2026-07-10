@@ -49,6 +49,10 @@ class UI:
     QUEST_JOURNAL_W, QUEST_JOURNAL_H   = 700, 520  # diário de quests (tecla J)
     TALENTS_W, TALENTS_H          = 800, 640   # árvore de talentos (tecla T)
     SKILL_LEVELS_W, SKILL_LEVELS_H = 700, 560  # painel de Skill Level (tecla L) — nível+xp do personagem + 11 trilhas, read-only
+    TRADE_W, TRADE_H              = 440, 450   # janela de trade (player↔player) — bag própria + 2 colunas de oferta
+    CHAT_W, CHAT_H                = 380, 220   # janela de chat (canto inferior esquerdo) — abas Local/Mundial/Combate
+    TRADE_POPUP_W, TRADE_POPUP_H  = 140, 70    # mini-popup "Trade" (Shift+clique num player remoto)
+    TRADE_INVITE_W, TRADE_INVITE_H = 360, 150  # modal "Fulano quer negociar"
 
     # Menu de pausa (ESC) e seus submenus — cada um é um painel separado
     MENU_QUIT_CONFIRM_W, MENU_QUIT_CONFIRM_H = 320, 150   # "Tem certeza que deseja sair?"
@@ -82,6 +86,20 @@ class UI:
     CRAFTING_PAD       = 14    # respiro entre a borda do painel e o conteúdo
     CRAFTING_SLOT_SZ   = 60    # tamanho de cada slot da grade de mochila (painel direito)
     CRAFTING_SLOT_GAP  = 6     # espaço entre slots vizinhos da grade de mochila
+
+    # ── Trade (player↔player) — geometria interna ──────────────────────────
+    # Arquivo: client/trade_handlers.py
+    TRADE_PAD      = 14   # respiro entre a borda do painel e o conteúdo
+    TRADE_SLOT_SZ  = 56   # tamanho de cada slot de oferta (5 por lado)
+    TRADE_SLOT_GAP = 8    # espaço entre slots vizinhos de oferta
+
+    # ── Chat (Local/Mundial/Combate) — geometria interna ───────────────────
+    # Arquivo: client/chat_handlers.py
+    CHAT_PAD       = 6    # respiro entre a borda da janela e o conteúdo
+    CHAT_TAB_H     = 22   # altura da linha de abas
+    CHAT_INPUT_H   = 22   # altura do campo de digitação (oculto na aba Combate)
+    CHAT_LINE_H    = 16   # altura de cada linha de texto na área de mensagens
+    CHAT_SCROLL_W  = 8    # largura da barra de rolagem — igual LOOT_SCROLL_W
     CRAFTING_BAG_COLS  = 5     # quantos slots cabem por linha na grade (contagem, não pixel)
     CRAFTING_ITEM_SLOT = 64    # tamanho do slot "item a reciclar" / "resultado da receita" (painel esquerdo)
     CRAFTING_MAT_SZ    = 46    # tamanho de cada slot de material exigido pela receita (painel esquerdo)
@@ -229,6 +247,10 @@ class UI:
     TALENTS_OFFSET_Y      = 0
     SKILL_LEVELS_OFFSET_X = 0
     SKILL_LEVELS_OFFSET_Y = 0
+    TRADE_OFFSET_X        = 0
+    TRADE_OFFSET_Y        = 0
+    CHAT_OFFSET_X         = 0
+    CHAT_OFFSET_Y         = 0
     MENU_QUIT_CONFIRM_OFFSET_X = 0
     MENU_QUIT_CONFIRM_OFFSET_Y = 0
     MENU_MAIN_OFFSET_X    = 0

@@ -21,19 +21,24 @@ class SaveSyncHandlers:
         if item is None:
             return None
         d = {"name": getattr(item, "name", "")}
+        # subtype: categoria da arma (ex: "Bow") — precisa estar aqui, não só
+        # no bloco de quiver abaixo. Faltando isso, uma arma cujo nome não
+        # bate com nenhum factory de loot_tables._T (comprada em loja com
+        # nome próprio, ou forjada) reconstrói com subtype="" no relogin —
+        # todo check `subtype == "Bow"` passa a falhar, disparando "Precisa
+        # de um arco equipado" mesmo com o arco genuinamente equipado (bug
+        # real reportado por testers). Ver PROBLEMAS_ARQUITETURA.md.
         for attr in ("icon_key","item_type","slot","rarity","value",
                      "attack_power","armor","spell_power","stamina",
-                     "two_handed","cast_range","attack_speed"):
+                     "two_handed","cast_range","attack_speed","subtype",
+                     "item_level","level_requirement","description"):
             v = getattr(item, attr, None)
             if v is not None:
                 d[attr] = v
-        # Quiver: salva contagem atual de flechas
+        # Quiver: salva contagem atual de flechas (subtype já coberto acima)
         if getattr(item, "item_type", "") == "quiver":
             d["arrow_count"] = getattr(item, "arrow_count", 0)
             d["max_arrows"]  = getattr(item, "max_arrows",  0)
-            _subtype = getattr(item, "subtype", "")
-            if _subtype:
-                d["subtype"] = _subtype
         # Campos de itens empilháveis (consumíveis, munição, etc.)
         max_stack = getattr(item, "max_stack", 1)
         stack     = getattr(item, "stack", 1)
@@ -77,7 +82,8 @@ class SaveSyncHandlers:
             subtype     = d.get("subtype", ""),
         )
         for f in ("attack_power", "armor", "spell_power", "stamina",
-                  "two_handed", "attack_speed", "damage_min", "damage_max"):
+                  "two_handed", "attack_speed", "damage_min", "damage_max",
+                  "cast_range", "item_level", "level_requirement", "description"):
             if f in d:
                 setattr(item, f, d[f])
         # Restaura stack salvo (default 1 para itens não empilháveis)

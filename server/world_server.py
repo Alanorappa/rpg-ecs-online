@@ -33,6 +33,7 @@ from server.combat_processor import CombatProcessorMixin
 from server.respawn_system import RespawnMixin
 from server.loot_processor import LootProcessorMixin
 from server.spell_completion_processor import SpellCompletionMixin
+from server.trade_processor import TradeProcessorMixin
 from mob_combat_debug import MCL
 
 # move_player() faz snap instantâneo de tile (sem tween real) — esta janela é
@@ -115,7 +116,8 @@ class _MapBundle:
         self.pathfinding     = None
 
 
-class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootProcessorMixin, SpellCompletionMixin):
+class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootProcessorMixin,
+                   SpellCompletionMixin, TradeProcessorMixin):
 
     MAP_FILE = "maps/map_1.csv"   # mapa padrão carregado pelo servidor
 
@@ -191,6 +193,17 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._pending_loot_notifications: list[dict] = []
         # Corpses que expiraram neste tick: list de {cid, tx, ty}
         self._expired_corpses_this_tick: list[dict] = []
+
+        # Trade (player↔player) — ver server/trade_processor.py.
+        # trade_id → TradeSession; player_eid → trade_id (O(1) "já está em
+        # trade?"); target_eid → requester_eid (convite pendente, só 1 por vez
+        # como alvo OU como requester — checado em request_trade).
+        self._trade_sessions: dict[int, "object"] = {}
+        self._player_trade: dict[int, int] = {}
+        self._pending_trade_invites: dict[int, int] = {}
+        self._next_trade_id: int = 1
+        # Cancelamentos de trade por distância neste tick: {trade_id, player_a, player_b, reason}
+        self._trade_cancellations_this_tick: list[dict] = []
 
         # Timer de ataque por jogador: session_id → segundos até próximo hit
         self._attack_timers: dict[str, float] = {}
@@ -364,7 +377,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         tile_validation = TileValidationSystem(self.world, tilemap_entity=tilemap_entity,
                                                map_filter=map_file)
         pathfinding     = PathfindingSystem(self.world, tilemap_entity=tilemap_entity)
-        combat          = CombatSystem(self.world, is_server=True)
+        combat          = CombatSystem(self.world, is_server=True,
+                                       on_damage_dealt=self._log_mob_damage_hit)
 
         # Registra serviços globais (sobrescrito por _tick() antes de cada bundle)
         register_services(combat=combat, pathfinding=pathfinding,
@@ -1166,6 +1180,25 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         """Retorna e remove o registro de dano acumulado para o mob. Chamado pelo death handler."""
         return self._mob_damage_log.pop(mob_eid, {})
 
+    def _log_mob_damage_hit(self, attacker_eid: int, target_id: int, dmg: int) -> None:
+        """Callback ÚNICO de log de dano por mob — injetado em CombatSystem
+        (deal_damage, cobre auto-attack melee + TODA skill física) e em
+        _apply_final_damage (spell_completion_processor.py, cobre auto-attack
+        ranged + skills mágicas/ranged). `_mob_damage_log[mob][player] = soma`,
+        em ordem de inserção — `next(iter(...))` no death handler assume o
+        PRIMEIRO player a aparecer = quem atacou primeiro (dono do loot/quest
+        kill). Antes desta centralização, só auto-attack melee/ranged loga(va)
+        manualmente em 2 pontos (combat_processor.py, world_server.py —
+        REMOVIDOS nesta mudança, teriam dano contado em dobro agora) e NENHUMA
+        skill logava — um player que só usa skill (ex: mago) nunca aparecia
+        no log, e quem chegasse depois com um auto-attack "roubava" o loot/XP
+        mesmo tendo feito uma fração do trabalho. Ver PROBLEMAS_ARQUITETURA.md.
+        """
+        if dmg <= 0:
+            return
+        log = self._mob_damage_log.setdefault(target_id, {})
+        log[attacker_eid] = log.get(attacker_eid, 0) + dmg
+
     def get_session_id_for_player(self, player_eid: int) -> str | None:
         """Retorna session_id do player dado seu entity_id — O(1) via reverse map."""
         return self._player_eid_to_sid.get(player_eid)
@@ -1378,11 +1411,14 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             "value":     getattr(obj, "value", 0),
             "consumable": getattr(obj, "consumable", None),
             "max_stack":  getattr(obj, "max_stack", 1),
+            "stack":      getattr(obj, "stack", 1),
             "modifiers": [{"attribute": m.attribute, "value": m.value, "type": m.type}
                           for m in getattr(obj, "modifiers", [])],
         }
         for f in ("attack_power", "armor", "spell_power", "stamina",
-                  "two_handed", "attack_speed", "damage_min", "damage_max"):
+                  "two_handed", "attack_speed", "damage_min", "damage_max",
+                  "subtype", "cast_range",
+                  "item_level", "level_requirement", "description"):
             v = getattr(obj, f, None)
             if v is not None:
                 data[f] = v
@@ -1536,6 +1572,9 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             value       = int(d.get("value", 0)),
             consumable  = d.get("consumable"),
             max_stack   = int(d.get("max_stack", 1)),
+            item_level        = int(d.get("item_level", 1)),
+            level_requirement = int(d.get("level_requirement", 1)),
+            description       = d.get("description", ""),
         )
         return _apply_client_bookkeeping(item)
 
@@ -1609,6 +1648,17 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         Suporta heal_instant, mana_restore, HoT de HP (ActiveRegen) e HoT de mana
         (ActiveManaRegen). Estrutura extensível via campo 'buffs'.
+
+        SEMPRE responde ao CONSUMABLE_USE (aceito OU rejeitado) via
+        queue_stats_update com `item_name` — o cliente NÃO consome o item
+        localmente até essa confirmação chegar (ver ConsumableSystem/
+        network_handlers.py). Antes, um bloqueio aqui (ex: HP já cheio no
+        SERVIDOR, mesmo que o cliente ache que não está — drift natural
+        entre os dois lados) retornava em silêncio: o cliente já tinha
+        curado localmente (predição) e consumido o item ANTES de saber que
+        o servidor não fez nada — item perdido, sem cura real, sem aviso
+        nenhum (bug real reportado por testers: "consumível às vezes não
+        regenera"). Ver PROBLEMAS_ARQUITETURA.md.
         """
         from components import CombatStats, CombatState, ActiveRegen, CharacterStats, ActiveManaRegen
         eid = self._player_eids.get(session_id)
@@ -1617,10 +1667,23 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         cs     = self.world.get_component(eid, CombatStats)
         cstate = self.world.get_component(eid, CombatState)
         char   = self.world.get_component(eid, CharacterStats)
+        item_name = payload.get("item_name", "")
+
+        def _reject(reason: str) -> None:
+            if item_name:
+                self.queue_stats_update({
+                    "player_eid":          eid,
+                    "item_name":           item_name,
+                    "consumable_rejected": True,
+                    "reason":              reason,
+                })
+
         if not cs:
+            _reject("no_stats")
             return
 
         if payload.get("ooc_only", False) and cstate and cstate.in_combat:
+            _reject("in_combat")
             return
 
         _has_hp   = bool(payload.get("heal_instant", 0) or (isinstance(payload.get("hot"), dict)))
@@ -1628,16 +1691,27 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         # Bloqueia apenas se o recurso relevante estiver cheio
         if _has_hp and not _has_mana and cs.current_hp >= cs.max_hp:
+            _reject("hp_full")
             return
         if _has_mana and not _has_hp and char and char.max_mana > 0 and char.mana >= char.max_mana:
+            _reject("mana_full")
             return
+
+        # Aceito — confirma ANTES de aplicar os efeitos: só agora o cliente
+        # pode remover o item do Inventory local com segurança (o servidor
+        # já garantiu que vai aplicar algo de verdade).
+        if item_name:
+            self.queue_stats_update({
+                "player_eid":    eid,
+                "item_name":     item_name,
+                "consumable_ok": True,
+            })
 
         # Evento de quest "use_consumable" — uso aceito (passou pelos blocks
         # acima). Server-autoritativo — ver quest_logic.py/PROBLEMAS_ARQUITETURA.md.
-        _item_name_cu = payload.get("item_name", "")
-        if _item_name_cu:
+        if item_name:
             from quest_events import fire as _qfire_cons
-            _qfire_cons("use_consumable", player_eid=eid, item_name=_item_name_cu)
+            _qfire_cons("use_consumable", player_eid=eid, item_name=item_name)
 
         # 1. Cura instantânea de HP
         heal_instant = int(payload.get("heal_instant", 0))
@@ -2063,30 +2137,61 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 mod = Modifier(eff["attribute"], eff["value"] * points, eff["type"], source="talent")
                 add_modifier(cs, mod)
 
-    def update_player_equipment(self, session_id: str, equipment: dict) -> None:
+    def update_player_equipment(self, session_id: str, equipment: dict) -> list[dict]:
         """Reconstrói o componente Equipment do player a partir do payload EQUIP_SYNC.
 
         Chamado toda vez que o cliente equipa ou desequipa um item. Garante que
         validações server-side (quiver para auto-attack, bow para skills de flecha)
         usem o estado real do equipamento, não o estado congelado do login.
+
+        Valida por slot, ANTES de aplicar: armor_class contra
+        stats_system.CLASS_ARMOR_ALLOWED[classe] (antes só existia no cliente,
+        client/inventory_handlers.py::_equip_item — um cliente malicioso podia
+        equipar qualquer material em qualquer classe) e level_requirement
+        contra CharacterStats.level. Slot que falha mantém o item anterior
+        (nunca aplica o candidato) e entra na lista de retorno — o caller
+        (server/session.py::_handle_equip_sync) manda EQUIP_REJECTED por
+        rejeição pro cliente reverter a UI otimista e avisar o jogador.
+
+        Retorna [{"slot":, "item_name":, "reason": "class"|"level"}, ...].
         """
-        from components import Equipment as _EqUpd
+        from components import Equipment as _EqUpd, CharacterStats as _CSEquip
         eid = self._player_eids.get(session_id)
         if eid is None:
-            return
+            return []
         eq_comp = self.world.get_component(eid, _EqUpd)
         if eq_comp is None:
             eq_comp = _EqUpd()
             self.world.add_component(eid, eq_comp)
+        char = self.world.get_component(eid, _CSEquip)
         # Snapshot ANTES de sobrescrever — só dispara evento de quest pra item
         # que de fato passou a estar equipado agora (evita re-disparo a cada
         # EQUIP_SYNC redundante, ex: reconectar com o mesmo equipamento).
         _old_slot_names = {slot: (item.name if item else None) for slot, item in eq_comp.slots.items()}
+        from stats_system import CLASS_ARMOR_ALLOWED as _CAA_equip
+        from stats_system import is_weapon_allowed_for_class as _is_weapon_allowed_equip
+        rejected: list[dict] = []
         for slot, item_d in equipment.items():
             if slot not in eq_comp.slots or not isinstance(item_d, dict):
                 continue
             item_d.setdefault("slot", slot)
-            eq_comp.slots[slot] = self._reconstruct_item(item_d)
+            candidate = self._reconstruct_item(item_d)
+            if candidate is None:
+                continue
+            if char is not None:
+                _mat = getattr(candidate, "armor_class", "")
+                if (candidate.item_type == "armor" and _mat
+                        and _mat not in _CAA_equip.get(char.class_id, frozenset())):
+                    rejected.append({"slot": slot, "item_name": candidate.name, "reason": "class"})
+                    continue
+                if (candidate.item_type in ("weapon", "shield", "quiver")
+                        and not _is_weapon_allowed_equip(candidate, char.class_id)):
+                    rejected.append({"slot": slot, "item_name": candidate.name, "reason": "class"})
+                    continue
+                if char.level < getattr(candidate, "level_requirement", 1):
+                    rejected.append({"slot": slot, "item_name": candidate.name, "reason": "level"})
+                    continue
+            eq_comp.slots[slot] = candidate
         # Slots ausentes no payload → desequipado
         for slot in list(eq_comp.slots.keys()):
             if slot not in equipment:
@@ -2109,6 +2214,22 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         cs = self.world.get_component(eid, _CSUpd)
         if cs:
             _sai(cs, eq_comp)
+        return rejected
+
+    def get_player_equipment_data(self, session_id: str) -> dict:
+        """Serializa o Equipment ATUAL (pós-validação) do player pra cache de
+        save — usado por _handle_equip_sync pra nunca persistir um slot que
+        update_player_equipment rejeitou (classe/level), mesmo que o cliente
+        tenha mandado no payload de EQUIP_SYNC."""
+        from components import Equipment as _EqData
+        eid = self._player_eids.get(session_id)
+        if eid is None:
+            return {}
+        eq_comp = self.world.get_component(eid, _EqData)
+        if eq_comp is None:
+            return {}
+        return {slot: self._item_data_from_obj(item)
+                for slot, item in eq_comp.slots.items() if item is not None}
 
     # request_loot → LootProcessorMixin
 
@@ -2551,8 +2672,11 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                             continue
                         _fat_dmg = max(0, _fat_hp_pre - _fat_mcs2.current_hp)
                         if _fat_dmg > 0:
-                            _fat_log = self._mob_damage_log.setdefault(_fat_meid, {})
-                            _fat_log[_fat_peid] = _fat_log.get(_fat_peid, 0) + _fat_dmg
+                            # _mob_damage_log já populado centralizadamente por
+                            # WorldServer._log_mob_damage_hit (injetado em
+                            # CombatSystem — _fatiador_aoe_tick chama deal_damage
+                            # internamente) — escrever aqui de novo contaria o
+                            # mesmo tick em dobro. Ver PROBLEMAS_ARQUITETURA.md.
                             self._combat_this_tick.append({
                                 "attacker": _fat_peid,
                                 "target":   _fat_meid,
@@ -2655,6 +2779,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             print(f"[XP] player {_xp_peid} ganhou {_xp_amt} XP (mob {entry['mob_eid']})")
 
         self._process_loot_drops(dt)
+        self._tick_trade_distance_check()
 
         # Detecta novos mobs criados pelo SpawnZoneSystem neste tick
         for eid, tm in self.world.get_entities_with(TileMovement):

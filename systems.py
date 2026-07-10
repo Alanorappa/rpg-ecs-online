@@ -117,8 +117,8 @@ def _draw_effect_icons(
         dur = getattr(eff, 'duration', 0.0)
         if 0 < dur <= 99:
             txt   = str(max(1, _ceil(dur)))
-            shad  = font.render(txt, True, (0, 0, 0))
-            label = font.render(txt, True, (255, 60, 60))
+            shad  = font.render(txt, False, (0, 0, 0))
+            label = font.render(txt, False, (255, 60, 60))
             tx = ix + (ICON - label.get_width())  // 2
             ty = iy + (ICON - label.get_height()) // 2
             surf.blit(shad,  (tx + 1, ty + 1))
@@ -314,9 +314,27 @@ class MouseTargetingSystem(System):
             world_x = event.pos[0] * scale + cam_x
             world_y = event.pos[1] * scale + cam_y
             target_id = self._enemy_at_world_pos(world_x, world_y)
+            remote_player_id = -1
             # PvP: se nenhum mob clicado, verifica player remoto
             if target_id == -1:
-                target_id = self._remote_player_at_world_pos(world_x, world_y)
+                remote_player_id = self._remote_player_at_world_pos(world_x, world_y)
+                target_id = remote_player_id
+
+            # Shift+clique esquerdo num player remoto → popup "Trade" local
+            # (sem rede ainda — só abre o mini-popup; TRADE_REQUEST só sai
+            # quando o botão "Trade" dentro dele é clicado, ver
+            # client/trade_handlers.py). Não seleciona como alvo de combate.
+            if (event.button == 1 and remote_player_id != -1
+                    and pygame.key.get_mods() & pygame.KMOD_SHIFT):
+                from components import RemoteControlled as _RCtp
+                from ui_components import TradeUIState as _TUStp
+                rc = self.world.get_component(remote_player_id, _RCtp)
+                tui = self.world.get_component(self.player_entity_id, _TUStp)
+                if tui is not None:
+                    tui.popup_target_eid  = remote_player_id
+                    tui.popup_target_name = rc.name if rc else "Jogador"
+                    tui.popup_screen_pos  = event.pos
+                continue
 
             player_cs   = self.world.get_component(self.player_entity_id, CombatState)
             player_auto = self.world.get_component(self.player_entity_id, PlayerAutoMove)
@@ -488,6 +506,15 @@ class PlayerInputSystem(System):
                 can_move = False   # input bloqueado; CombatStateSystem move aleatoriamente
                 can_act  = False   # não pode usar skills nem ataques
 
+            # Campo de chat focado: WASD é lido via pygame.key.get_pressed()
+            # aqui embaixo, não pelos eventos KEYDOWN que o filtro de
+            # systems_events já bloqueia com modal aberto — sem este check,
+            # digitar "w"/"a"/"s"/"d" numa mensagem também moveria o player.
+            from ui_components import UIState as _UIStateInp
+            _ui_inp = self.world.get_component(entity_id, _UIStateInp)
+            if _ui_inp is not None and _ui_inp.chat_active:
+                can_move = False
+
             # --- Movimento por teclado ---
             if can_move and not tile_movement.is_moving:
                 cur_x = tile_movement.current_tile_x
@@ -612,7 +639,26 @@ class PlayerInputSystem(System):
         is_mage     = char_stats is not None and char_stats.class_id == "mago"
         is_archer   = char_stats is not None and char_stats.class_id == "arqueiro"
 
+        # Arqueiro só entra no combate ranged se tiver um ARCO de verdade
+        # equipado — desarmado ou com arma melee equipada, cai no MESMO
+        # branch de melee do guerreiro logo abaixo (chase até adjacente +
+        # deal_damage "physical"). _add_rage/_increment_pnq_counter nesse
+        # branch são sempre no-op pra quem não é guerreiro (checam
+        # self._net e combat_stats.pnq_enabled respectivamente) — seguro
+        # reusar sem duplicar lógica. O skill_level da arma melee equipada
+        # entra automaticamente via deal_damage → CombatSystem.
+        # _calculate_damage (damage_calculator.ap_skill_mult). Antes: um
+        # arqueiro sem arco só recebia o aviso "Precisa de um arco
+        # equipado" e ficava parado, sem NENHUMA opção de ataque. Ver
+        # PROBLEMAS_ARQUITETURA.md.
+        _archer_has_bow = False
         if is_archer:
+            _equip_ac    = self.world.get_component(entity_id, Equipment)
+            _mainhand_ac = _equip_ac.slots.get("mainhand") if _equip_ac else None
+            _archer_has_bow = (_mainhand_ac is not None
+                               and getattr(_mainhand_ac, "subtype", "") == "Bow")
+
+        if is_archer and _archer_has_bow:
             self._process_archer_combat(
                 entity_id, position, tile_movement, combat_stats, combat_state,
                 auto_move, can_act, target_id, tgt_tile_x, tgt_tile_y, dt,
@@ -684,15 +730,33 @@ class PlayerInputSystem(System):
                 )
 
     def _mage_attack_range(self, entity_id: int) -> int:
-        """Retorna o maior cast_range entre as skills equipadas pelo mago (mínimo 5)."""
+        """Retorna o MENOR cast_range entre as skills ofensivas com alvo da
+        hotbar do mago — garante que, quando a perseguição genérica (clique
+        direito) parar, TODAS as skills do jogador já estão em alcance.
+
+        Antes usava o MAIOR cast_range: com Bola de Fogo (6) + Polimorfia (7)
+        na hotbar, a perseguição parava a 7 tiles — distância em que Bola de
+        Fogo (alcance 6) já dava "Fora de alcance" ao apertar, mesmo o
+        personagem tendo acabado de parar de andar em direção ao alvo (ver
+        PROBLEMAS_ARQUITETURA.md). Ignora skills self-cast/utilitárias
+        (needs_target=False, ex. Bloco de Gelo) e sem alcance definido
+        (cast_range<=0, corpo-a-corpo) — essas não participam da checagem
+        de distância pra perseguir.
+        """
         skills = self.world.get_component(entity_id, PlayerSkills)
         if not skills:
             return 5
-        max_range = 5
+        min_range = None
         for s in skills.skills:
-            if s is not None and s.cast_range > max_range:
-                max_range = s.cast_range
-        return max_range
+            if s is None:
+                continue
+            if not getattr(s, "offensive", True) or not getattr(s, "needs_target", True):
+                continue
+            if s.cast_range <= 0:
+                continue
+            if min_range is None or s.cast_range < min_range:
+                min_range = s.cast_range
+        return min_range if min_range is not None else 5
 
     def _process_archer_combat(self, entity_id, position, tile_movement,
                                combat_stats, combat_state, auto_move,
@@ -1758,10 +1822,12 @@ class ShopSystem(UIScaleMixin, System):
     MAX_HISTORY   = 20
 
     _RARITY_COLORS = {
-        "common":   (200, 200, 200),
-        "uncommon": ( 30, 200,  30),
-        "rare":     ( 80, 140, 255),
-        "epic":     (180,  50, 255),
+        "common":    (200, 200, 200),
+        "uncommon":  ( 30, 200,  30),
+        "rare":      ( 80, 140, 255),
+        "epic":      (180,  50, 255),
+        "legendary": (224, 135,  47),
+        "mythic":    (221,  68,  68),
     }
 
     def __init__(self, world: World, player_entity: int, screen):
@@ -2340,6 +2406,8 @@ class ShopSystem(UIScaleMixin, System):
         inv    = self.world.get_component(self.player_entity, Inventory)
         wallet = self.world.get_component(self.player_entity, Wallet)
         bag    = inv.items if inv else []
+        _char_shop  = self.world.get_component(self.player_entity, CharacterStats)
+        _viewer_cls = _char_shop.class_id if _char_shop else None
 
         SW, SH  = self.hud_surf.get_size()
         x0, y0  = self._panel_origin()
@@ -2361,13 +2429,13 @@ class ShopSystem(UIScaleMixin, System):
         pygame.draw.rect(self.hud_surf, (140, 100, 60), (x0, y0, W, H), 2, border_radius=4)
 
         # --- Header ---
-        title = self._font_lg.render(f"  {shop.get('name', 'Comerciante')}", True, (255, 220, 120))
+        title = self._font_lg.render(f"  {shop.get('name', 'Comerciante')}", False, (255, 220, 120))
         self.hud_surf.blit(title, (x0 + self._u(8), y0 + self._u(8)))
 
         close_r   = pygame.Rect(x0 + W - self._u(40), y0 + self._u(6), self._u(34), self._u(34))
         close_hov = close_r.collidepoint(mx, my)
         pygame.draw.rect(self.hud_surf, (180, 60, 60) if close_hov else (100, 35, 35), close_r, border_radius=3)
-        xs = self._font_md.render("X", True, (255, 255, 255))
+        xs = self._font_md.render("X", False, (255, 255, 255))
         self.hud_surf.blit(xs, (close_r.centerx - xs.get_width() // 2,
                               close_r.centery - xs.get_height() // 2))
 
@@ -2387,7 +2455,7 @@ class ShopSystem(UIScaleMixin, System):
         undo_col = (150, 220, 150) if has_hist else (70, 70, 70)
         pygame.draw.rect(self.hud_surf, undo_bg,  undo_r, border_radius=3)
         pygame.draw.rect(self.hud_surf, undo_col, undo_r, 1, border_radius=3)
-        self.hud_surf.blit(self._font_sm.render("↩ Desfazer", True, undo_col),
+        self.hud_surf.blit(self._font_sm.render("↩ Desfazer", False, undo_col),
                          (undo_r.x + self._u(8), undo_r.y + self._u(7)))
 
         if self.transaction_history:
@@ -2396,7 +2464,7 @@ class ShopSystem(UIScaleMixin, System):
                 desc = f"Ultima: comprou {tx['item'].name} por {tx['price']}g"
             else:
                 desc = f"Ultima: vendeu {tx['item'].name} por {tx['sell_value']}g"
-            self.hud_surf.blit(self._font_sm.render(desc, True, (150, 150, 150)),
+            self.hud_surf.blit(self._font_sm.render(desc, False, (150, 150, 150)),
                              (x0 + gap + self._u(155), UNDO_Y + self._u(7)))
 
         pygame.draw.line(self.hud_surf, (90, 70, 40), (x0 + self._u(4), LINE2), (x0 + W - self._u(4), LINE2))
@@ -2407,13 +2475,13 @@ class ShopSystem(UIScaleMixin, System):
         # --- Cabeçalhos das colunas ---
         hdr_col = (160, 130, 80)
         hint    = (90, 80, 60)
-        self.hud_surf.blit(self._font_md.render(f"LOJA  ({len(stock)} itens)", True, hdr_col),
+        self.hud_surf.blit(self._font_md.render(f"LOJA  ({len(stock)} itens)", False, hdr_col),
                          (x0 + gap + self._u(4), COL_Y))
-        self.hud_surf.blit(self._font_sm.render("clique dir. p/ comprar  |  Shift+dir. = qtd.", True, hint),
+        self.hud_surf.blit(self._font_sm.render("clique dir. p/ comprar  |  Shift+dir. = qtd.", False, hint),
                          (x0 + gap + self._u(4), COL_Y + self._u(26)))
-        self.hud_surf.blit(self._font_md.render(f"MOCHILA  ({len(bag)}/{inv.max_slots if inv else 0})", True, hdr_col),
+        self.hud_surf.blit(self._font_md.render(f"MOCHILA  ({len(bag)}/{inv.max_slots if inv else 0})", False, hdr_col),
                          (mid_x + gap + self._u(4), COL_Y))
-        self.hud_surf.blit(self._font_sm.render("clique dir. p/ vender", True, hint),
+        self.hud_surf.blit(self._font_sm.render("clique dir. p/ vender", False, hint),
                          (mid_x + gap + self._u(4), COL_Y + self._u(26)))
 
         pygame.draw.line(self.hud_surf, (70, 55, 30), (x0 + self._u(4), body_y - self._u(2)), (x0 + W - self._u(4), body_y - self._u(2)))
@@ -2457,27 +2525,27 @@ class ShopSystem(UIScaleMixin, System):
                 pygame.draw.circle(self.hud_surf, rar_col, (ic_r.right - self._u(4), ic_r.bottom - self._u(4)), self._u(3))
 
             name_col = rar_col if (can_afford and not inv_full) else (90, 70, 70)
-            self.hud_surf.blit(self._font_sm.render(preview.name,      True, name_col),
+            self.hud_surf.blit(self._font_sm.render(preview.name, False, name_col),
                              (ic_r.right + self._u(6), r.y + self._u(6)))
-            self.hud_surf.blit(self._font_sm.render(preview.item_type, True, (95, 85, 65)),
+            self.hud_surf.blit(self._font_sm.render(preview.item_type, False, (95, 85, 65)),
                              (ic_r.right + self._u(6), r.y + self._u(24)))
 
             price_col = (255, 215, 0) if (can_afford and not inv_full) else (130, 70, 70)
-            ps = self._font_sm.render(f"{entry['price']}g", True, price_col)
+            ps = self._font_sm.render(f"{entry['price']}g", False, price_col)
             self.hud_surf.blit(ps, (r.right - ps.get_width() - self._u(8), r.y + self._u(14)))
 
             if hov:
-                lines = item_tooltip_lines(preview)
+                lines = item_tooltip_lines(preview, _viewer_cls)
                 if not can_afford:
                     lines.append(("Ouro insuficiente!", (220, 80, 80)))
                 elif inv_full:
                     lines.append(("Mochila cheia!", (220, 150, 50)))
                 lines.append((f"Preco: {entry['price']}g | Venda estimada: {self._sell_price(preview)}g",
                               (120, 120, 120)))
-                # 6-tuple enables Shift+hover comparison with equipped item
+                # 7-tuple: title_color + Shift+hover comparison with equipped item
                 equip_c = self.world.get_component(self.player_entity, Equipment)
                 eq_item = equip_c.slots.get(preview.slot) if equip_c and preview.slot else None
-                self.pending_tooltip = (mx, my, preview.name, lines, preview, eq_item)
+                self.pending_tooltip = (mx, my, preview.name, lines, rar_col, preview, eq_item)
 
         # Scrollbar loja
         if len(stock) > self.MAX_ROWS:
@@ -2520,24 +2588,24 @@ class ShopSystem(UIScaleMixin, System):
 
             stack = getattr(item, "stack", 1)
             name_label = f"{item.name}" if stack <= 1 else f"{item.name} x{stack}"
-            self.hud_surf.blit(self._font_sm.render(name_label, True, rar_col),
+            self.hud_surf.blit(self._font_sm.render(name_label, False, rar_col),
                              (ic_r.right + self._u(6), r.y + self._u(6)))
             slot_label = item.slot if item.slot else item.item_type
-            self.hud_surf.blit(self._font_sm.render(slot_label, True, (95, 85, 65)),
+            self.hud_surf.blit(self._font_sm.render(slot_label, False, (95, 85, 65)),
                              (ic_r.right + self._u(6), r.y + self._u(24)))
 
             sp     = self._sell_price(item)
-            sp_s   = self._font_sm.render(f"+{sp}g", True, (120, 200, 100))
+            sp_s   = self._font_sm.render(f"+{sp}g", False, (120, 200, 100))
             self.hud_surf.blit(sp_s, (r.right - sp_s.get_width() - self._u(8), r.y + self._u(14)))
 
             if hov:
-                lines = item_tooltip_lines(item)
+                lines = item_tooltip_lines(item, _viewer_cls)
                 if stack > 1:
                     lines.append((f"Quantidade: {stack}", (180, 180, 180)))
                 lines.append((f"Venda: {sp}g | Valor base: {item.value}g", (120, 120, 120)))
                 equip_c = self.world.get_component(self.player_entity, Equipment)
                 eq_item = equip_c.slots.get(item.slot) if equip_c and item.slot else None
-                self.pending_tooltip = (mx, my, item.name, lines, item, eq_item)
+                self.pending_tooltip = (mx, my, item.name, lines, rar_col, item, eq_item)
 
         # Scrollbar mochila
         if len(bag) > self.MAX_ROWS:
@@ -2552,7 +2620,7 @@ class ShopSystem(UIScaleMixin, System):
         foot_y = y0 + H - self._u(self.FOOTER_H)
         pygame.draw.line(self.hud_surf, (90, 70, 40), (x0 + self._u(4), foot_y), (x0 + W - self._u(4), foot_y))
         if wallet:
-            gold_s = self._font_md.render(f"Seu ouro: {wallet.gold}g", True, (255, 215, 0))
+            gold_s = self._font_md.render(f"Seu ouro: {wallet.gold}g", False, (255, 215, 0))
             self.hud_surf.blit(gold_s, (x0 + W // 2 - gold_s.get_width() // 2, foot_y + self._u(10)))
 
         # --- Modal de quantidade ---
@@ -2577,7 +2645,7 @@ class ShopSystem(UIScaleMixin, System):
         pygame.draw.rect(self.hud_surf, (180, 140, 70), (mx0, my0, mw, mh), 2, border_radius=6)
 
         # Título
-        title_s = self._font_md.render(m["preview"].name, True, (255, 220, 100))
+        title_s = self._font_md.render(m["preview"].name, False, (255, 220, 100))
         self.hud_surf.blit(title_s, (mx0 + mw // 2 - title_s.get_width() // 2, my0 + self._u(12)))
 
         # Preço
@@ -2586,8 +2654,7 @@ class ShopSystem(UIScaleMixin, System):
         gold_avail = wallet.gold if wallet else 0
         price_col  = (255, 215, 0) if total <= gold_avail else (220, 80, 80)
         price_s  = self._font_sm.render(
-            f"{price}g por unidade  |  Total: {total}g  (ouro: {gold_avail}g)",
-            True, price_col)
+            f"{price}g por unidade  |  Total: {total}g  (ouro: {gold_avail}g)", False, price_col)
         self.hud_surf.blit(price_s, (mx0 + mw // 2 - price_s.get_width() // 2, my0 + self._u(42)))
 
         # ── Slider ────────────────────────────────────────────────────────
@@ -2603,13 +2670,13 @@ class ShopSystem(UIScaleMixin, System):
         pygame.draw.circle(self.hud_surf, (255, 220, 120), (handle_x, sl_y), self._u(10), 2)
 
         # Labels min/max do slider
-        self.hud_surf.blit(self._font_sm.render("1", True, (130, 110, 70)),
+        self.hud_surf.blit(self._font_sm.render("1", False, (130, 110, 70)),
                            (sl_x, sl_y + self._u(14)))
-        max_s = self._font_sm.render(str(m["max_qty"]), True, (130, 110, 70))
+        max_s = self._font_sm.render(str(m["max_qty"]), False, (130, 110, 70))
         self.hud_surf.blit(max_s, (sl_x + sl_w - max_s.get_width(), sl_y + self._u(14)))
 
         # ── Campo de texto ────────────────────────────────────────────────
-        qty_s = self._font_lg.render(str(m["qty"]), True, (255, 255, 255))
+        qty_s = self._font_lg.render(str(m["qty"]), False, (255, 255, 255))
         txt_x = mx0 + mw // 2 - qty_s.get_width() // 2
         self.hud_surf.blit(qty_s, (txt_x, my0 + self._u(76)))
         # Cursor piscante
@@ -2636,12 +2703,12 @@ class ShopSystem(UIScaleMixin, System):
                 col_txt = (220, 160, 100)
             pygame.draw.rect(self.hud_surf, col_bg,  btn, border_radius=4)
             pygame.draw.rect(self.hud_surf, col_brd, btn, 1, border_radius=4)
-            lbl_s = self._font_sm.render(label, True, col_txt)
+            lbl_s = self._font_sm.render(label, False, col_txt)
             self.hud_surf.blit(lbl_s, (btn.centerx - lbl_s.get_width() // 2,
                                         btn.centery - lbl_s.get_height() // 2))
 
         # Dica ESC
-        esc_s = self._font_sm.render("ESC cancela  |  ENTER confirma", True, (80, 70, 50))
+        esc_s = self._font_sm.render("ESC cancela  |  ENTER confirma", False, (80, 70, 50))
         self.hud_surf.blit(esc_s, (mx0 + mw // 2 - esc_s.get_width() // 2, my0 + mh - self._u(14)))
 
 
@@ -2650,13 +2717,22 @@ class ConsumableSystem(System):
 
     Online: injete `system._net = self._net` após criação para que o
     uso de consumíveis seja comunicado ao servidor via CONSUMABLE_USE.
-    O servidor aplica o heal autoritativo; o cliente aplica localmente
-    como predição (floating text + HP visual imediato).
+    O servidor é autoritativo — cura/mana/HoT e a remoção do item da bag
+    só se aplicam no cliente APÓS a confirmação (STATS_UPDATE com
+    `item_name`+`consumable_ok`, ver client/network_handlers.py). Sem
+    isso, um consumível bloqueado no servidor (ex: HP já cheio lá, mesmo
+    que o cliente ache que não está) era perdido em silêncio: cliente já
+    tinha curado localmente e consumido o item antes de saber que o
+    servidor não fez nada (bug real reportado por testers — ver
+    PROBLEMAS_ARQUITETURA.md). Offline: aplica tudo localmente, sem espera.
     """
 
     def __init__(self, world: World):
         self.world = world
         self._net  = None   # injetado pelo GameEngine no modo online
+        # Item aguardando confirmação do servidor (online) — resolvido por
+        # network_handlers.py._handle_msg_stats_update ao chegar a resposta.
+        self.pending_item_name: str = ""
 
     def update(self, events=None, dt: float = 0) -> None:
         # ── Barra de consumíveis: cooldown + keybinds ─────────────────────
@@ -2753,7 +2829,9 @@ class ConsumableSystem(System):
         _has_hp   = bool(cons.get("heal_instant", 0) or cons.get("heal_per_tick", 0))
         _has_mana = bool(cons.get("mana_restore", 0) or cons.get("mana_per_tick", 0))
 
-        # Bloqueia se o recurso relevante já está cheio
+        # Bloqueia se o recurso relevante já está cheio (checagem LOCAL —
+        # feedback rápido; o servidor, online, faz a checagem real e pode
+        # rejeitar mesmo que passe aqui, ver abaixo)
         from components import CharacterStats as _CHSu
         _char_u = self.world.get_component(entity_id, _CHSu)
         if _has_hp and not _has_mana and cs.current_hp >= cs.max_hp:
@@ -2764,28 +2842,56 @@ class ConsumableSystem(System):
                 WARN.add("Mana já está cheia")
                 return
 
-        # Cura instantânea de HP
-        heal_instant = cons.get("heal_instant", 0)
-        if heal_instant > 0:
-            healed = min(heal_instant, cs.max_hp - cs.current_hp)
-            cs.current_hp = min(cs.max_hp, cs.current_hp + heal_instant)
-            if pos_c and healed > 0 and not self._net:
-                FLT.add(f"+{healed}", pos_c.x, pos_c.y - 16,
-                        (80, 220, 120), "small", entity_id)
-
-        # Restauração instantânea de mana
-        mana_restore = cons.get("mana_restore", 0)
-        if mana_restore > 0 and _char_u and _char_u.max_mana > 0:
-            restored = min(mana_restore, _char_u.max_mana - _char_u.mana)
-            _char_u.mana = min(_char_u.max_mana, _char_u.mana + mana_restore)
-            if pos_c and restored > 0 and not self._net:
-                FLT.add(f"+{restored} MP", pos_c.x, pos_c.y - 16,
-                        (100, 180, 255), "small", entity_id)
-
-        # HoT de HP (ActiveRegen)
         heal_per_tick = cons.get("heal_per_tick", 0)
         ticks         = cons.get("ticks", 0)
         interval      = cons.get("interval", 2.0)
+        mana_per_tick = cons.get("mana_per_tick", 0)
+        heal_instant  = cons.get("heal_instant", 0)
+        mana_restore  = cons.get("mana_restore", 0)
+
+        if self._net:
+            # Online: SÓ manda o pedido — nada é mutado aqui (nem HP/mana,
+            # nem HoT, nem o item). O servidor é quem decide se aceita, e só
+            # ao confirmar (STATS_UPDATE com item_name+consumable_ok, ver
+            # network_handlers.py) o item é removido e os efeitos aplicados.
+            # Sem isso, um consumível bloqueado no SERVIDOR (drift natural
+            # entre os dois lados — ex: HP5 regen que o cliente ainda não
+            # viu) era perdido em silêncio: cliente já tinha curado local e
+            # consumido o item antes de saber que nada aconteceu de verdade.
+            if cbar is not None:
+                cbar.global_cooldown = ConsumableBar.GCD_DURATION
+            self.pending_item_name = item_name
+            from shared.messages import MsgType as _MTC
+            _hot = {"heal_per_tick": heal_per_tick, "interval": interval, "ticks": ticks} \
+                   if heal_per_tick > 0 and ticks > 0 else None
+            _mana_hot = {"mana_per_tick": mana_per_tick, "interval": interval, "ticks": ticks} \
+                        if mana_per_tick > 0 and ticks > 0 else None
+            self._net.send(_MTC.CONSUMABLE_USE, {
+                "item_name":    item_name,
+                "heal_instant": heal_instant,
+                "mana_restore": mana_restore,
+                "hot":          _hot,
+                "mana_hot":     _mana_hot,
+                "ooc_only":     cons.get("ooc_only", False),
+                "buffs":        [],
+            })
+            return
+
+        # Offline: aplica tudo localmente, sem espera.
+        if heal_instant > 0:
+            healed = min(heal_instant, cs.max_hp - cs.current_hp)
+            cs.current_hp = min(cs.max_hp, cs.current_hp + heal_instant)
+            if pos_c and healed > 0:
+                FLT.add(f"+{healed}", pos_c.x, pos_c.y - 16,
+                        (80, 220, 120), "small", entity_id)
+
+        if mana_restore > 0 and _char_u and _char_u.max_mana > 0:
+            restored = min(mana_restore, _char_u.max_mana - _char_u.mana)
+            _char_u.mana = min(_char_u.max_mana, _char_u.mana + mana_restore)
+            if pos_c and restored > 0:
+                FLT.add(f"+{restored} MP", pos_c.x, pos_c.y - 16,
+                        (100, 180, 255), "small", entity_id)
+
         if heal_per_tick > 0 and ticks > 0:
             self.world.add_component(entity_id, ActiveRegen(
                 heal_per_tick=heal_per_tick,
@@ -2793,9 +2899,7 @@ class ConsumableSystem(System):
                 ticks_total=ticks,
             ))
 
-        # HoT de mana (ActiveManaRegen)
         from components import ActiveManaRegen as _AMRu
-        mana_per_tick = cons.get("mana_per_tick", 0)
         if mana_per_tick > 0 and ticks > 0 and _char_u and _char_u.max_mana > 0:
             try:
                 self.world.remove_component(entity_id, _AMRu)
@@ -2807,36 +2911,50 @@ class ConsumableSystem(System):
                 ticks_total=ticks,
             ))
 
-        # Consome 1 unidade do stack
         item.stack -= 1
         if item.stack <= 0:
             inv.items.remove(item)
 
-        # Cooldown global (cbar pode ser None se usado pelo painel de inventário)
         if cbar is not None:
             cbar.global_cooldown = ConsumableBar.GCD_DURATION
 
         quest_fire("use_consumable", item_name=item.name)
 
-        # Modo online: notifica servidor para aplicar o mesmo efeito autoritativamente.
-        # Payload extensível: "buffs" reservado para efeitos futuros (stat boosts etc.)
-        if self._net:
-            from shared.messages import MsgType as _MTC
-            _hot = None
-            if heal_per_tick > 0 and ticks > 0:
-                _hot = {"heal_per_tick": heal_per_tick, "interval": interval, "ticks": ticks}
-            _mana_hot = None
-            if mana_per_tick > 0 and ticks > 0:
-                _mana_hot = {"mana_per_tick": mana_per_tick, "interval": interval, "ticks": ticks}
-            self._net.send(_MTC.CONSUMABLE_USE, {
-                "item_name":    item_name,
-                "heal_instant": cons.get("heal_instant", 0),
-                "mana_restore": cons.get("mana_restore", 0),
-                "hot":          _hot,
-                "mana_hot":     _mana_hot,
-                "ooc_only":     cons.get("ooc_only", False),
-                "buffs":        [],
-            })
+    def _finalize_consumable(self, entity_id: int, item_name: str) -> None:
+        """Chamado por network_handlers.py ao chegar consumable_ok do servidor
+        — SÓ AGORA remove 1 unidade do item da bag local (online). Aplica os
+        HoTs locais (ActiveRegen/ActiveManaRegen) — a cura/mana instantânea já
+        chega via heal_amount/mana_amount no mesmo STATS_UPDATE, tratada em
+        network_handlers.py."""
+        inv = self.world.get_component(entity_id, Inventory)
+        if not inv:
+            return
+        item = next((it for it in inv.items
+                     if it.name == item_name and it.consumable), None)
+        if not item:
+            return
+        cons = item.consumable
+        heal_per_tick = cons.get("heal_per_tick", 0)
+        ticks         = cons.get("ticks", 0)
+        interval      = cons.get("interval", 2.0)
+        mana_per_tick = cons.get("mana_per_tick", 0)
+        if heal_per_tick > 0 and ticks > 0:
+            self.world.add_component(entity_id, ActiveRegen(
+                heal_per_tick=heal_per_tick, interval=interval, ticks_total=ticks,
+            ))
+        from components import ActiveManaRegen as _AMRu2
+        if mana_per_tick > 0 and ticks > 0:
+            try:
+                self.world.remove_component(entity_id, _AMRu2)
+            except Exception:
+                pass
+            self.world.add_component(entity_id, _AMRu2(
+                mana_per_tick=mana_per_tick, interval=interval, ticks_total=ticks,
+            ))
+        item.stack -= 1
+        if item.stack <= 0:
+            inv.items.remove(item)
+        quest_fire("use_consumable", item_name=item_name)
 
 
 class LootSystem(UIScaleMixin, System):
@@ -2865,10 +2983,12 @@ class LootSystem(UIScaleMixin, System):
     HOVER_COLOR  = (60, 45, 20)
 
     RARITY_COLORS = {
-        "common":   (200, 200, 200),
-        "uncommon": ( 30, 200,  30),
-        "rare":     ( 80, 140, 255),
-        "epic":     (180,  50, 255),
+        "common":    (200, 200, 200),
+        "uncommon":  ( 30, 200,  30),
+        "rare":      ( 80, 140, 255),
+        "epic":      (180,  50, 255),
+        "legendary": (224, 135,  47),
+        "mythic":    (221,  68,  68),
     }
 
     def __init__(self, world: World, screen: pygame.Surface, player_entity: int = -1):
@@ -3283,19 +3403,21 @@ class LootSystem(UIScaleMixin, System):
         corpse = self.world.get_component(self.open_corpse_id, Corpse)
         if not corpse:
             return
+        _char_loot  = self.world.get_component(self.player_entity, CharacterStats)
+        _viewer_cls = _char_loot.class_id if _char_loot else None
 
         modal = self._modal_rect()
         self.hud_surf.blit(fill_surf((modal.w, modal.h), self.BG_COLOR), modal.topleft)
         pygame.draw.rect(self.hud_surf, self.BORDER_COLOR, modal, 2, border_radius=4)
 
         # --- Barra de título ---
-        title = self.font_sm.render("Loot", True, self.BORDER_COLOR)
+        title = self.font_sm.render("Loot", False, self.BORDER_COLOR)
         self.hud_surf.blit(title, (modal.x + self._u(self.PAD), modal.y + (self._u(self.TITLE_H) - title.get_height()) // 2))
 
         # Botão X
         close_r = self._close_btn_rect(modal)
         pygame.draw.rect(self.hud_surf, (90, 30, 30), close_r, border_radius=2)
-        x_surf = self.font_sm.render("X", True, (220, 100, 100))
+        x_surf = self.font_sm.render("X", False, (220, 100, 100))
         self.hud_surf.blit(x_surf, (close_r.centerx - x_surf.get_width() // 2,
                                   close_r.centery - x_surf.get_height() // 2))
 
@@ -3351,12 +3473,12 @@ class LootSystem(UIScaleMixin, System):
                 pygame.draw.circle(self.hud_surf, (180, 140, 0),  icon_r.center, r_out)
                 pygame.draw.circle(self.hud_surf, (255, 215, 0),  icon_r.center, r_in)
                 pygame.draw.circle(self.hud_surf, (120, 90, 0),   icon_r.center, r_out, 1)
-                g_surf = self.font_sm.render("G", True, (120, 90, 0))
+                g_surf = self.font_sm.render("G", False, (120, 90, 0))
                 self.hud_surf.blit(g_surf, (icon_r.centerx - g_surf.get_width() // 2,
                                           icon_r.centery - g_surf.get_height() // 2))
                 tx = icon_r.right + self._u(8)
                 ty = rr.centery - self.font_md.get_height() // 2
-                self.hud_surf.blit(self.font_md.render(f"{corpse.coins} moedas", True, (255, 215, 0)), (tx, ty))
+                self.hud_surf.blit(self.font_md.render(f"{corpse.coins} moedas", False, (255, 215, 0)), (tx, ty))
                 if hovered:
                     self.pending_tooltip = (mx, my, "Moedas",
                                             [(f"{corpse.coins} moedas disponíveis", (255, 215, 0)),
@@ -3384,8 +3506,8 @@ class LootSystem(UIScaleMixin, System):
                 _stack = getattr(item, "stack", 1)
                 _max_s = getattr(item, "max_stack", 1)
                 _name_lbl = f"{item.name} x{_stack}" if _max_s > 1 else item.name
-                name_surf = self.font_md.render(_name_lbl, True, rc)
-                sub_surf  = self.font_sm.render(f"{item.item_type}  •  {item.slot}", True, (130, 115, 95))
+                name_surf = self.font_md.render(_name_lbl, False, rc)
+                sub_surf  = self.font_sm.render(f"{item.item_type}  •  {item.slot}", False, (130, 115, 95))
                 total_h   = name_surf.get_height() + 2 + sub_surf.get_height()
                 ty = rr.centery - total_h // 2
                 self.hud_surf.blit(name_surf, (tx, ty))
@@ -3399,20 +3521,21 @@ class LootSystem(UIScaleMixin, System):
 
         # Vazio
         if not virtual:
-            empty = self.font_sm.render("(vazio)", True, (120, 100, 80))
+            empty = self.font_sm.render("(vazio)", False, (120, 100, 80))
             rr = self._row_rect(modal, 0)
             self.hud_surf.blit(empty, (rr.x + self._u(4), rr.centery - empty.get_height() // 2))
 
         # Tooltip + comparação no hover
         if hovered_item is not None:
-            lines = item_tooltip_lines(hovered_item)
+            lines = item_tooltip_lines(hovered_item, _viewer_cls)
             lines.append(("Clique p/ pegar | Shift p/ comparar", (140, 140, 140)))
             equip = None
             for _, eq, _ in self.world.get_entities_with(Equipment, PlayerControlled):
                 equip = eq
                 break
             equipped_item = equip.slots.get(hovered_item.slot) if equip else None
-            self.pending_tooltip = (mx, my, hovered_item.name, lines,
+            name_col = self.RARITY_COLORS.get(hovered_item.rarity, (255, 220, 100))
+            self.pending_tooltip = (mx, my, hovered_item.name, lines, name_col,
                                     hovered_item, equipped_item)
 
 

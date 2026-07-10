@@ -195,10 +195,9 @@
       "race": "Goblin",
       "class": "Hunter",
       "spawns": [
-        { "type": "melee",   "tier": "normal", "count": 6 },
-        { "type": "ranged",  "tier": "normal", "count": 4 },
-        { "type": "melee",   "tier": "elite",  "count": 3 },
-        { "type": "melee",   "tier": "rare",   "count": 3 }
+        { "type": "melee",   "tier": "normal", "count": 8 },
+        { "type": "ranged",  "tier": "normal", "count": 8 }
+
       ]
     },
     {

@@ -627,12 +627,15 @@ class Item:
                  armor_class: str = "",
                  arrow_count: int = 0,
                  max_arrows: int = 0,
-                 cast_range: int = 0):
+                 cast_range: int = 0,
+                 item_level: int = 1,
+                 level_requirement: int = 1,
+                 description: str = ""):
         self.name = name
         self.item_type = item_type  # "weapon", "armor", "shield", "jewelry", "consumable", "quiver", "ammo"
         self.slot = slot            # "mainhand", "offhand", "head", "chest", etc.
         self.modifiers = modifiers if modifiers is not None else []
-        self.rarity = rarity        # "common", "uncommon", "rare", "epic"
+        self.rarity = rarity        # "common", "uncommon", "rare", "epic", "legendary", "mythic"
         self.value = value
         self.two_handed = two_handed  # se True, bloqueia o slot offhand
         # Atributos exclusivos de armas físicas
@@ -657,6 +660,13 @@ class Item:
         self.max_arrows:  int = max_arrows   # capacidade máxima (100 para aljava padrão)
         # Alcance ranged (item_type=="weapon", subtype=="Bow"): tiles de alcance
         self.cast_range: int = cast_range    # 0 = não ranged
+        # Nível do item (exibição, escala com raridade) e nível mínimo do
+        # personagem pra equipar (validado em update_player_equipment no
+        # servidor — ver server/world_server.py). Descrição é opcional,
+        # texto livre de lore (ex.: item lendário com história própria).
+        self.item_level:        int = item_level
+        self.level_requirement: int = level_requirement
+        self.description:       str = description
 
     def __repr__(self):
         return f"Item({self.name!r}, {self.rarity})"

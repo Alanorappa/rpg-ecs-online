@@ -45,7 +45,7 @@ class MenuHandlers:
         bdr  = self._MM_BORDER_HOV if hov else self._MM_BORDER
         pygame.draw.rect(self.screen, bg_c, rect, border_radius=5)
         pygame.draw.rect(self.screen, bdr,  rect, 1, border_radius=5)
-        lbl = self.font_md.render(label, True, self._MM_BTN_TXT)
+        lbl = self.font_md.render(label, False, self._MM_BTN_TXT)
         self.screen.blit(lbl, lbl.get_rect(center=rect.center))
 
     # ── Menu principal ─────────────────────────────────────────────────────
@@ -69,7 +69,7 @@ class MenuHandlers:
         mx, my  = pygame.mouse.get_pos()
         clicked = any(e.type == pygame.MOUSEBUTTONDOWN and e.button == 1 for e in events)
 
-        msg  = self.font_md.render("Tem certeza que deseja sair?", True, (210, 190, 150))
+        msg  = self.font_md.render("Tem certeza que deseja sair?", False, (210, 190, 150))
         self.screen.blit(msg, msg.get_rect(center=(px + PW // 2, py + self._u(40))))
 
         btn_w, btn_h = self._u(100), self._u(36)
@@ -86,7 +86,7 @@ class MenuHandlers:
         pygame.draw.rect(self.screen, (100, 30, 20) if hov_sim else (70, 20, 15),
                          sim_rect, border_radius=5)
         pygame.draw.rect(self.screen, (200, 60, 40), sim_rect, 1, border_radius=5)
-        lbl = self.font_md.render("Sim", True, (255, 140, 120))
+        lbl = self.font_md.render("Sim", False, (255, 140, 120))
         self.screen.blit(lbl, lbl.get_rect(center=sim_rect.center))
         if hov_sim and clicked:
             return "quit"
@@ -112,7 +112,7 @@ class MenuHandlers:
         self._mm_overlay()
         px, py = self._mm_panel(PW, PH, (UI.MENU_MAIN_OFFSET_X, UI.MENU_MAIN_OFFSET_Y))
 
-        title = self.font_md.render("Main Menu", True, self._MM_TITLE_COL)
+        title = self.font_md.render("Main Menu", False, self._MM_TITLE_COL)
         self.screen.blit(title, (px + PW // 2 - title.get_width() // 2, py + self._u(16)))
 
         mx, my  = pygame.mouse.get_pos()
@@ -138,7 +138,7 @@ class MenuHandlers:
         self._mm_overlay()
         px, py = self._mm_panel(PW, PH, (UI.MENU_RESOLUTION_OFFSET_X, UI.MENU_RESOLUTION_OFFSET_Y))
 
-        title = self.font_md.render("Resolution", True, self._MM_TITLE_COL)
+        title = self.font_md.render("Resolution", False, self._MM_TITLE_COL)
         self.screen.blit(title, (px + PW // 2 - title.get_width() // 2, py + self._u(14)))
 
         mx, my  = pygame.mouse.get_pos()
@@ -155,7 +155,7 @@ class MenuHandlers:
             bdr_w = 2 if is_sel else 1
             pygame.draw.rect(self.screen, bg_c, rect, border_radius=4)
             pygame.draw.rect(self.screen, bdr,  rect, bdr_w, border_radius=4)
-            lbl = self.font_md.render(label, True, (200, 160, 60) if is_sel else self._MM_BTN_TXT)
+            lbl = self.font_md.render(label, False, (200, 160, 60) if is_sel else self._MM_BTN_TXT)
             self.screen.blit(lbl, lbl.get_rect(center=rect.center))
             if hov and clicked and not is_sel:
                 return f"resolution:{val}"
@@ -177,15 +177,15 @@ class MenuHandlers:
         self._mm_overlay()
         px, py  = self._mm_panel(PW, PH, (UI.MENU_INTERFACE_OFFSET_X, UI.MENU_INTERFACE_OFFSET_Y))
 
-        title = self.font_md.render("Interface", True, self._MM_TITLE_COL)
+        title = self.font_md.render("Interface", False, self._MM_TITLE_COL)
         self.screen.blit(title, (px + PW // 2 - title.get_width() // 2, py + self._u(14)))
 
         # Label
-        lbl = self.font_sm.render("Escala da UI", True, (190, 175, 130))
+        lbl = self.font_sm.render("Escala da UI", False, (190, 175, 130))
         self.screen.blit(lbl, (px + self._u(24), py + self._u(62)))
 
         # Valor atual
-        cur_s = self.font_sm.render(f"{self._ui_scale:.2f}×", True, (230, 210, 120))
+        cur_s = self.font_sm.render(f"{self._ui_scale:.2f}×", False, (230, 210, 120))
         self.screen.blit(cur_s, (px + PW - cur_s.get_width() - self._u(24), py + self._u(62)))
 
         # Barra / botões −  +
@@ -203,7 +203,7 @@ class MenuHandlers:
             hov = r.collidepoint(mx, my)
             pygame.draw.rect(self.screen, (55, 45, 25) if hov else (38, 30, 14), r, border_radius=5)
             pygame.draw.rect(self.screen, (140, 115, 60), r, 1, border_radius=5)
-            ss = self.font_md.render(sym, True, (230, 210, 120))
+            ss = self.font_md.render(sym, False, (230, 210, 120))
             self.screen.blit(ss, ss.get_rect(center=r.center))
 
         # Pontinhos de passo
@@ -227,7 +227,7 @@ class MenuHandlers:
         hov_b  = back_r.collidepoint(mx, my)
         pygame.draw.rect(self.screen, (55, 44, 24) if hov_b else (38, 30, 14), back_r, border_radius=6)
         pygame.draw.rect(self.screen, (110, 90, 50), back_r, 1, border_radius=6)
-        bs = self.font_sm.render("← Voltar", True, (210, 192, 135))
+        bs = self.font_sm.render("← Voltar", False, (210, 192, 135))
         self.screen.blit(bs, bs.get_rect(center=back_r.center))
         if clicked and hov_b:
             self._pause_submenu = ""
@@ -239,7 +239,7 @@ class MenuHandlers:
         self._mm_overlay()
         px, py  = self._mm_panel(PW, PH, (UI.MENU_SOUND_OFFSET_X, UI.MENU_SOUND_OFFSET_Y))
 
-        title = self.font_md.render("Sound", True, self._MM_TITLE_COL)
+        title = self.font_md.render("Sound", False, self._MM_TITLE_COL)
         self.screen.blit(title, (px + PW // 2 - title.get_width() // 2, py + self._u(14)))
 
         mx, my   = pygame.mouse.get_pos()
@@ -266,7 +266,7 @@ class MenuHandlers:
             row_y = py + self._u(70) + i * self._u(60)
 
             # Label
-            lbl = self.font_sm.render(label, True, (200, 185, 155))
+            lbl = self.font_sm.render(label, False, (200, 185, 155))
             self.screen.blit(lbl, (px + self._u(16), row_y + self._u(2)))
 
             # Slider track
@@ -301,7 +301,7 @@ class MenuHandlers:
             tog_bd_c = (80, 200, 100) if enabled else self._MM_BORDER
             pygame.draw.rect(self.screen, tog_on_c,  tog_rect, border_radius=13)
             pygame.draw.rect(self.screen, tog_bd_c,  tog_rect, 1, border_radius=13)
-            tog_txt = self.font_sm.render("ON" if enabled else "OFF", True,
+            tog_txt = self.font_sm.render("ON" if enabled else "OFF", False,
                                           (200, 255, 200) if enabled else (160, 140, 120))
             self.screen.blit(tog_txt, tog_txt.get_rect(center=tog_rect.center))
             if clicked and tog_rect.collidepoint(mx, my):
@@ -313,7 +313,7 @@ class MenuHandlers:
                 self._save_config()
 
             # Percent label
-            pct = self.font_sm.render(f"{int(vol * 100)}%", True, (160, 150, 120))
+            pct = self.font_sm.render(f"{int(vol * 100)}%", False, (160, 150, 120))
             self.screen.blit(pct, (SLX + SL_W + self._u(4), row_y - self._u(1)))
 
         # Botão Voltar
