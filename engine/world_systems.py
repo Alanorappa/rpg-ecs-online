@@ -595,7 +595,7 @@ class CombatSystem(System):
                     pre_outcome: str = "") -> tuple:
         """Aplica dano de um atacante a um alvo.
         Retorna (dead: bool, outcome: str).
-        outcome = 'hit'|'crit'|'block'|'miss'|'dodge'|'parry'|'immune'|''.
+        outcome = 'hit'|'crit'|'block'|'miss'|'dodge'|'parry'|'immune'|'evade'|''.
         self.last_outcome mantido para backward compat com código offline.
         """
         attacker_stats = self._get_combat_stats(attacker_id)
@@ -616,6 +616,18 @@ class CombatSystem(System):
         target_pos = self.world.get_component(target_id, Position)
         _tx = target_pos.x if target_pos else 0.0
         _ty = target_pos.y if target_pos else 0.0
+
+        # Modo evasão (estilo WoW): mob em RETURNING (voltando pro spawn após
+        # estourar o leash) é imune a dano/aggro até chegar — diferente da
+        # imunidade acima, aqui queremos feedback visível ("Evadiu!"), já que
+        # é o comportamento explicitamente pedido pelo usuário (sem isso,
+        # bater no mob durante o retorno resetava a perseguição de graça).
+        # Rede de segurança final em apply_damage_core::"blocked_evade".
+        _ai_evade = self.world.get_component(target_id, AIControlled)
+        if _ai_evade and _ai_evade.state == "RETURNING":
+            self._emit_avoidance_feedback("evade", _tx, _ty, attacker_id, target_id,
+                                          attacker_is_player, target_is_player)
+            return False, "evade"
 
         extra_crit = self._extra_crit_bonus(attacker_id, target_id, attacker_is_player)
 
@@ -700,9 +712,12 @@ class CombatSystem(System):
 
         # Aggro por dano: ataque do player força inimigo a perseguir independente do raio.
         # aggroed_by_damage=True desativa o leash de 5 tiles até o mob chegar perto do player.
+        # Só IDLE — RETURNING nunca chega aqui de verdade (early-return acima,
+        # modo evasão), mas o gate fica explícito pra não reintroduzir o bug
+        # numa refatoração futura que reordene esses blocos.
         if attacker_is_player:
             _ai = self.world.get_component(target_id, AIControlled)
-            if _ai and _ai.state in ("IDLE", "RETURNING"):
+            if _ai and _ai.state == "IDLE":
                 _ms_hit = self.world.get_component(target_id, MobSounds)
                 SOUNDS.play_mob_sounds(_ms_hit, "aggro", dedup_key=f"dmg_{target_id}")
                 _ai.state              = "AGGRO_DELAY"
@@ -823,21 +838,27 @@ class CombatSystem(System):
                                   attacker_id: int, target_id: int,
                                   attacker_is_player: bool,
                                   target_is_player: bool) -> None:
-        """Texto flutuante, log e som para ataques evitados (miss/dodge/parry)."""
+        """Texto flutuante, log e som para ataques evitados (miss/dodge/parry/evade)."""
         _AVOID = {
             'miss':  ("Errou!",   (220, 220, 100), "small"),
             'dodge': ("Desviou!", (100, 210, 230), "small"),
             'parry': ("Aparou!",  (100, 150, 230), "small"),
+            'evade': ("Evadiu!",  (150, 150, 150), "small"),
         }
         _AVOID_LOG = {
             'miss':  ("Voce errou!",      "Inimigo errou!",      (200, 200, 100)),
             'dodge': ("Inimigo desviou!", "Voce desviou!",       (100, 210, 230)),
             'parry': ("Inimigo aparou!",  "Voce aparou!",        (100, 150, 230)),
+            # Alvo em modo evasão só existe pro lado mob (RETURNING) — enemy_msg
+            # nunca dispara aqui (target_is_player sempre False nesse caso).
+            'evade': ("Alvo evadiu!",     "",                    (150, 150, 150)),
         }
         _SND = {
             'miss':  ["combat_miss",  "combat_miss_1",  "combat_miss_2",  "combat_miss_3",  "combat_miss_4"],
             'parry': ["combat_parry", "combat_parry_1", "combat_parry_2", "combat_parry_3", "combat_parry_4"],
             'dodge': ["combat_dodge", "combat_dodge_1", "combat_dodge_2", "combat_dodge_3", "combat_dodge_4"],
+            # Reaproveita os sons de "miss" — evasão soa como um golpe que não conecta.
+            'evade': ["combat_miss",  "combat_miss_1",  "combat_miss_2",  "combat_miss_3",  "combat_miss_4"],
         }
         flt_text, flt_color, flt_size = _AVOID[outcome]
         FLT.add(flt_text, tx, ty, flt_color, flt_size, target_id=target_id)
@@ -1572,10 +1593,30 @@ class EnemyAISystem(System):
                         _MCL.log("LOST_TGT", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
                                  prev=_dbg_prev_state,
                                  grace=f"{ai_control.target_lost_timer:.2f}s")
+                    # Reset completo estilo WoW SÓ na transição de verdade
+                    # RETURNING→IDLE (saindo da evasão) — este branco também é
+                    # o "no-op de manutenção" rodado em TODO tick pra qualquer
+                    # mob já IDLE parado perto de casa sem alvo (a grande
+                    # maioria dos mobs do mundo, o tempo todo); sem este guard,
+                    # a cura/limpeza de debuff disparava every tick pra
+                    # QUALQUER mob parado, não só ao sair de RETURNING (bug
+                    # real pego pela suíte de testes — via
+                    # tests/helpers.py::teleport_mob_to_player).
+                    _was_returning_a = ai_control.state == "RETURNING"
                     ai_control.state = "IDLE"
                     ai_control.aggroed_by_damage = False
                     enemy_pos.x = initial_pos.x
                     enemy_pos.y = initial_pos.y
+                    if _was_returning_a:
+                        # HP não cura mais instantaneamente aqui — regen
+                        # gradual (1% max_hp/3s, fora de combate) cuida disso
+                        # com sync correto pro client (ver WorldServer._tick,
+                        # bloco "Regen de mob fora de combate", e Decisão 20
+                        # em ARQUITETURA_ONLINE.md). Debuff/DoT residual ainda
+                        # limpa aqui — reset de status effects continua instantâneo.
+                        _sfx_reset_a = self.world.get_component(enemy_id, StatusEffects)
+                        if _sfx_reset_a:
+                            _sfx_reset_a.effects.clear()
                 continue
 
             # Persiste o alvo no componente
@@ -2120,7 +2161,16 @@ class EnemyAISystem(System):
                             ai_control.target_eid         = -1
                             ai_control.path_recalc_timer  = 0.0
                         else:
+                            # Já perto do spawn (desistiu do pathfind sem
+                            # nunca ter passado por RETURNING) — mesmo reset
+                            # completo dos outros dois pontos de chegada, por
+                            # consistência (ver ARQUITETURA_ONLINE.md).
                             ai_control.state = "IDLE"
+                            ai_control.aggroed_by_damage = False
+                            enemy_combat_stats.current_hp = enemy_combat_stats.max_hp
+                            _sfx_reset_c = self.world.get_component(enemy_id, StatusEffects)
+                            if _sfx_reset_c:
+                                _sfx_reset_c.effects.clear()
 
             # --- Retorno à Posição Inicial ---
             else: # Comportamento de retorno à posição inicial
@@ -2168,11 +2218,25 @@ class EnemyAISystem(System):
                     elif not ai_control.path:
                         ai_control.path_recalc_timer = 0.0
                 else:
+                    # Guard igual ao do bloco irmão "sem alvo válido" acima —
+                    # este else roda pra QUALQUER mob IDLE ou RETURNING já
+                    # perto de casa (a condição externa é
+                    # `state not in ("IDLE","RETURNING")` pro bloco de
+                    # perseguição, então isto é o "else" de AMBOS), não só na
+                    # transição de saída de RETURNING — sem o guard, cura/
+                    # limpa debuff every tick de qualquer mob parado em casa.
+                    _was_returning_b = ai_control.state == "RETURNING"
                     ai_control.state             = "IDLE"
                     ai_control.aggroed_by_damage = False
                     enemy_pos.x = initial_pos.x
                     enemy_pos.y = initial_pos.y
-            
+                    if _was_returning_b:
+                        # HP cura via regen gradual, não instantâneo aqui —
+                        # ver comentário irmão acima e WorldServer._tick().
+                        _sfx_reset_b = self.world.get_component(enemy_id, StatusEffects)
+                        if _sfx_reset_b:
+                            _sfx_reset_b.effects.clear()
+
             # Garante que a posição pixel da entidade esteja alinhada ao tile quando está parada.
             if not tile_movement.is_moving and ai_control.state == "IDLE":
                 enemy_pos.x = enemy_current_tile_x * TILE_SIZE + TILE_SIZE / 2

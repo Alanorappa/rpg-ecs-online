@@ -589,6 +589,20 @@ class SpellCompletionMixin:
 
     # ── Ponto único de modificação de HP (servidor) ──────────────────────────
 
+    def _is_evading(self, target_id: int) -> bool:
+        """True se target_id é um mob em modo evasão (AIControlled.state ==
+        "RETURNING", voltando pro spawn após estourar o leash — ver
+        EnemyAISystem/ARQUITETURA_ONLINE.md). Usado pelos handlers de skill
+        mágica/à distância pra pular efeitos SECUNDÁRIOS (DoT, lentidão,
+        knockback) num alvo evadindo — o dano direto já é bloqueado por
+        apply_damage_core ("blocked_evade"), mas antes disso os handlers
+        aplicavam esses efeitos incondicionalmente, mesmo o dano principal
+        tendo sido barrado (mesmo buraco pré-existente que já afetava
+        Bloco de Gelo/is_immune)."""
+        from engine.components import AIControlled
+        ai = self.world.get_component(target_id, AIControlled)
+        return bool(ai and ai.state == "RETURNING")
+
     def _apply_final_damage(self, target_id: int, dmg: int, attacker_id: int = -1) -> bool:
         """Aplica dmg ao HP de target_id verificando todas as guardas.
 
@@ -653,6 +667,13 @@ class SpellCompletionMixin:
         if not target_cs or target_cs.current_hp <= 0:
             return False
 
+        # Modo evasão: bloqueia ANTES de rolar crit/resistência/xp — sem isso,
+        # _is_evading() ainda bloquearia o dano final (apply_damage_core), mas
+        # o alvo ganharia xp de resistência (grant_resist_skill_xp) por um
+        # golpe que nunca vai acontecer.
+        if self._is_evading(target_id):
+            return False
+
         attacker_cs = self.world.get_component(attacker_id, CombatStats)
         _magic_crit_bonus = getattr(attacker_cs, "magic_skill_crit_bonus", 0.0) if attacker_cs else 0.0
         _magic_dmg_bonus  = getattr(attacker_cs, "magic_skill_dmg_bonus",  0.0) if attacker_cs else 0.0
@@ -714,7 +735,7 @@ class SpellCompletionMixin:
             enter_combat(target_state)
 
         _ai = self.world.get_component(target_id, AIControlled)
-        if _ai and _ai.state in ("IDLE", "RETURNING"):
+        if _ai and _ai.state == "IDLE":
             _ai.state             = "AGGRO_DELAY"
             _ai.aggro_delay       = 0.5   # mesmo comportamento do range aggro, mas mais curto
             _ai.aggroed_by_damage = True
@@ -753,6 +774,11 @@ class SpellCompletionMixin:
             return
         target_cs = self.world.get_component(target_id, CombatStats)
         if not target_cs or target_cs.current_hp <= 0:
+            return
+        if self._is_evading(target_id):
+            # Modo evasão: pula dano E efeitos secundários (burn/exaustão) —
+            # sem isso, o dano já era bloqueado (apply_damage_core) mas o
+            # burn/slow ainda vazavam pro alvo evadindo.
             return
 
         player_cs  = self.world.get_component(player_eid, CombatStats)
@@ -848,6 +874,8 @@ class SpellCompletionMixin:
         target_cs = self.world.get_component(target_id, CombatStats)
         if not target_cs or target_cs.current_hp <= 0:
             return
+        if self._is_evading(target_id):
+            return
 
         player_cs  = self.world.get_component(player_eid, CombatStats)
         char_stats = self.world.get_component(player_eid, CharacterStats)
@@ -901,6 +929,8 @@ class SpellCompletionMixin:
             etm = self.world.get_component(eid, TileMovement)
             ecs = self.world.get_component(eid, CombatStats)
             if not etm or not ecs or ecs.current_hp <= 0:
+                continue
+            if self._is_evading(eid):
                 continue
             if chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y) > _range:
                 continue
@@ -966,6 +996,39 @@ class SpellCompletionMixin:
         target_cs = self.world.get_component(target_id, CombatStats)
         if not target_cs or target_cs.current_hp <= 0:
             return False, "miss", 0
+        if self._is_evading(target_id):
+            # Bloqueia ANTES de rolar acerto/crit e conceder xp de arma/defesa
+            # — sem isso, o alvo evadindo ainda ganharia essas duas xp por um
+            # golpe que apply_damage_core ia barrar de qualquer forma.
+            return False, "evade", 0
+
+        # Linha de visão: NENHUM outro ponto do pipeline (auto-attack em
+        # combat_processor.py, nem esta função) checava obstáculo entre
+        # atirador e alvo — só existia uma checagem de LOS do lado do
+        # CLIENTE (ui/spell_system.py::PlayerProjectileSystem), tarde
+        # demais e só cosmética: o servidor já tinha aplicado dano,
+        # descontado flecha e agrado o mob antes disso. Bug real reportado
+        # pelo usuário (recorrente): atirar com parede na frente do alvo
+        # tocava som + descontava flecha + agrava mob, mas sem dano nem
+        # projétil (o client destruía o projétil silenciosamente ao
+        # detectar o obstáculo, tarde demais pra desfazer o resto). Trata
+        # como "miss" — mesmo outcome de um erro de verdade, então o
+        # cliente já sabe renderizar (redireciona a flecha, sem consumir
+        # aljava, sem agro) sem precisar de nenhuma mudança nova.
+        from engine.components import TileMovement as _TM_los, Tilemap as _TMap_los
+        _atk_tm = self.world.get_component(player_eid, _TM_los)
+        _tgt_tm = self.world.get_component(target_id, _TM_los)
+        if _atk_tm and _tgt_tm:
+            _los_map = self.get_entity_map(target_id)
+            _los_bundle = self._map_bundles.get(_los_map) if _los_map else None
+            _los_tilemap = (self.world.get_component(_los_bundle.tilemap_entity, _TMap_los)
+                            if _los_bundle is not None else None)
+            if _los_tilemap is not None:
+                from engine.world_systems import EnemyAISystem as _EAIS_los
+                if not _EAIS_los._has_line_of_sight(
+                        _los_tilemap, _atk_tm.current_tile_x, _atk_tm.current_tile_y,
+                        _tgt_tm.current_tile_x, _tgt_tm.current_tile_y):
+                    return False, "miss", 0
 
         attacker_cs = self.world.get_component(player_eid, CombatStats)
         equip       = self.world.get_component(player_eid, __import__("engine.components", fromlist=["Equipment"]).Equipment)
@@ -1000,6 +1063,20 @@ class SpellCompletionMixin:
                                                        extra_avoid=_extra_avoid,
                                                        is_ability=is_ability) \
                 if attacker_cs else ("hit", 0.0)
+
+        # Consome 1 flecha do carcás assim que o tiro é autorizado e resolvido
+        # (LOS/alcance/perseguição/munição já passaram em combat_processor.py,
+        # e o alvo passou nos checks de morto/evadindo/LOS acima) — flecha foi
+        # fisicamente disparada, então é gasta INDEPENDENTE do resultado
+        # (hit/crit/block E TAMBÉM miss/dodge/parry). Correção do usuário
+        # (10/07/2026): antes só consumia em hit/crit (depois de
+        # _apply_final_damage), o que deixava miss "de graça" — errado, quem
+        # atira e erra ainda gastou a flecha. Fica ANTES do
+        # `if outcome in (miss/dodge/parry): return` de propósito.
+        _eq_ar = self.world.get_component(player_eid, __import__("engine.components", fromlist=["Equipment"]).Equipment)
+        _qv_ar = _eq_ar.slots.get("offhand") if _eq_ar else None
+        if _qv_ar and getattr(_qv_ar, "item_type", "") == "quiver":
+            _qv_ar.arrow_count = max(0, _qv_ar.arrow_count - 1)
 
         if outcome in ("miss", "dodge", "parry"):
             return False, outcome, 0
@@ -1070,15 +1147,9 @@ class SpellCompletionMixin:
         if target_cst:
             enter_combat(target_cst)
 
-        # Consume 1 flecha do carcás do servidor
-        _eq = self.world.get_component(player_eid, __import__("engine.components", fromlist=["Equipment"]).Equipment)
-        _qv = _eq.slots.get("offhand") if _eq else None
-        if _qv and getattr(_qv, "item_type", "") == "quiver":
-            _qv.arrow_count = max(0, _qv.arrow_count - 1)
-
         from engine.components import AIControlled as _AIC2
         _ai = self.world.get_component(target_id, _AIC2)
-        if _ai and _ai.state in ("IDLE", "RETURNING"):
+        if _ai and _ai.state == "IDLE":
             _ai.state              = "CHASING"
             _ai.aggroed_by_damage  = True
             _ai.target_eid         = player_eid
@@ -1149,7 +1220,9 @@ class SpellCompletionMixin:
 
         dead, outcome, dmg = self._server_apply_ranged_physical(
             player_eid, target_id, ap_mult, guaranteed_hit=True)
-        if outcome in ("miss", "dodge", "parry", "immune"):
+        if outcome in ("miss", "dodge", "parry", "immune", "evade"):
+            # "evade": mob em modo evasão não pode ser empurrado nem stunado
+            # por Tiro Repulsivo — dano já bloqueado, knockback também.
             return
 
         t_tm = self.world.get_component(target_id, TileMovement)

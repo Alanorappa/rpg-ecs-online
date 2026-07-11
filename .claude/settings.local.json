@@ -90,7 +90,15 @@
       "Bash(py -3.10 -m pytest tests/test_server.py tests/test_combat.py -q --ignore=tests/test_session.py)",
       "Bash(py -3.10 -m pytest tests/test_server.py tests/test_combat.py -q)",
       "Bash(py -3.10 -m pytest tests/test_server.py::TestMobAttacksPlayer::test_mob_attack_reduces_player_hp_on_server -q --tb=short)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(python -c ' *)",
+      "Bash(PYTHONIOENCODING=utf-8 py -3.10 -m pytest -q)",
+      "Bash(PYTHONIOENCODING=utf-8 py -3.10 -c ' *)",
+      "Bash(set -e)",
+      "Bash(git mv *)",
+      "Bash(git restore *)",
+      "Bash(py -3.10 -m pytest -q)",
+      "WebFetch(domain:trinitycore.atlassian.net)"
     ]
   }
 }

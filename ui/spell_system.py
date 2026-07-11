@@ -65,6 +65,12 @@ def _apply_magic_damage(attacker_id: int, target_id: int, dmg: int, world: World
     result = apply_damage_core(world, target_id, dmg,
                                killer_eid=attacker_id,
                                on_cc_break=_on_cc_break)
+    if result == "blocked_evade":
+        # Modo evasão: diferente de blocked_immune (silencioso), aqui
+        # queremos feedback visível — é o pedido explícito do usuário.
+        if pos:
+            FLT.add("Evadiu!", pos.x, pos.y, (150, 150, 150), "small", target_id=target_id)
+        return False
     if result in ("blocked_dead", "blocked_immune"):
         return False
 
@@ -78,7 +84,7 @@ def _apply_magic_damage(attacker_id: int, target_id: int, dmg: int, world: World
         enter_combat(attacker_cs)
     # Aggro por dano mágico — usa AGGRO_DELAY (alinhado com servidor)
     _ai = world.get_component(target_id, AIControlled)
-    if _ai and _ai.state in ("IDLE", "RETURNING"):
+    if _ai and _ai.state == "IDLE":
         _ms = world.get_component(target_id, MobSounds)
         SOUNDS.play_mob_sounds(_ms, "aggro", dedup_key=f"dmg_{target_id}")
         _ai.state             = "AGGRO_DELAY"
@@ -117,7 +123,7 @@ class ManaSystem(System):
             if char_stats.max_mana <= 0:
                 continue
             if not self._net:
-                mana_result = _BCSS._tick_mana_regen(cs, char_stats, dt)
+                mana_result = _BCSS._tick_mana_regen(cs, char_stats, combat_stats, dt)
                 if mana_result:
                     # Sincroniza CombatStats.mana para que o próximo CAST_SKILL envie o valor correto
                     combat_stats.mana = char_stats.mana
@@ -1049,18 +1055,32 @@ class PlayerProjectileSystem(System):
             proj.target_last_x = target_pos.x
             proj.target_last_y = target_pos.y
 
-            # LOS check: bloqueia projétil se há parede entre ele e o alvo
-            from ui.systems import get_tilemap as _get_tm, EnemyAISystem as _EAIS
-            from engine.tileset import TILE_SIZE as _TS
-            _tmap = _get_tm()
-            if _tmap:
-                _ptx = int(proj_pos.x / _TS)
-                _pty = int(proj_pos.y / _TS)
-                _ttx = int(target_pos.x / _TS)
-                _tty = int(target_pos.y / _TS)
-                if not _EAIS._has_line_of_sight(_tmap, _ptx, _pty, _ttx, _tty):
-                    to_remove.append(proj_id)
-                    continue
+            # LOS check: bloqueia projétil se há parede entre ele e o alvo.
+            # EXCLUI flecha de auto-attack (spell_id=="arrow"): desde que o
+            # servidor passou a validar LOS em _server_apply_ranged_physical
+            # (ver ARQUITETURA_ONLINE.md), um tiro bloqueado já chega como
+            # outcome="miss" pelo canal normal — deixar cair no bloco de
+            # resolução de outcome logo abaixo dá o redirecionamento visual
+            # correto (flecha desvia, "Errou!", consome pending_arrow_impacts
+            # direito) em vez de destruir o projétil aqui silenciosamente
+            # (bug real: "some sem dano nem projétil aparecer" — o destroy
+            # cedo demais nunca dava baixa em pending_arrow_impacts, e uma
+            # flecha seguinte no mesmo alvo aplicava o outcome errado/velho).
+            # Mantido para skills com projétil de verdade (Bola de Fogo etc.)
+            # — alvo pode se esconder atrás de parede DURANTE o voo, cenário
+            # que o outcome já resolvido no lançamento não cobre.
+            if proj.spell_id != "arrow":
+                from ui.systems import get_tilemap as _get_tm, EnemyAISystem as _EAIS
+                from engine.tileset import TILE_SIZE as _TS
+                _tmap = _get_tm()
+                if _tmap:
+                    _ptx = int(proj_pos.x / _TS)
+                    _pty = int(proj_pos.y / _TS)
+                    _ttx = int(target_pos.x / _TS)
+                    _tty = int(target_pos.y / _TS)
+                    if not _EAIS._has_line_of_sight(_tmap, _ptx, _pty, _ttx, _tty):
+                        to_remove.append(proj_id)
+                        continue
 
             dx   = target_pos.x - proj_pos.x
             dy   = target_pos.y - proj_pos.y

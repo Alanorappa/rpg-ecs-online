@@ -116,6 +116,9 @@ class RemoteEntityHandlers:
             target_last_x=target_pos.x,
             target_last_y=target_pos.y,
         ))
+        from debug.archer_debug import ADBG_CLIENT as _ADBG_c_spawn
+        _ADBG_c_spawn.log("SOUND", attacker_eid, target_local_eid,
+                          which="release", is_self=is_self_attacker, proj_id=_arrow_id)
         if is_self_attacker:
             if _rand_arrow.random() < 0.35:
                 SOUNDS.play_random(["arrow_draw_1", "arrow_draw_2"], channel_group=(8, 9))
@@ -196,6 +199,12 @@ class RemoteEntityHandlers:
                 self._resolve_archer_attack(cr, server_attacker, source)
             _is_archer_auto = _is_archer_arrow  # alias mantém compatibilidade abaixo
 
+            if _is_archer_arrow:
+                from debug.archer_debug import ADBG_CLIENT as _ADBG_c_recv
+                _ADBG_c_recv.log("RECV", server_attacker, server_target,
+                                 outcome=outcome, damage=damage, hp_after=hp_after,
+                                 is_self=_is_self_archer_attacker)
+
             # HP: atualização imediata apenas para ataques não-projéteis.
             # Flechas diferem para o momento de colisão (deferred_hp_updates em _on_hit).
             if hp_after >= 0 and not _is_archer_arrow:
@@ -232,6 +241,26 @@ class RemoteEntityHandlers:
             if source == "auto" and _is_archer_arrow and pos is not None:
                 self._spawn_archer_auto_arrow(_attacker_local_remote, _is_self_archer_attacker,
                                               local_eid, pos, _lx, _ly)
+                # Desconto REAL da aljava local acontece só AQUI agora — mesmo
+                # evento que cria a flecha visual, nunca antecipado (ver
+                # ui/systems.py::_process_archer_combat, bug real 10/07/2026:
+                # cooldown local não congelava igual ao do servidor durante
+                # bloqueio, causando descontos "fantasma" sem tiro real por
+                # trás). Espelha a regra do servidor
+                # (spell_completion_processor.py::_server_apply_ranged_physical):
+                # a flecha é gasta sempre que o tiro é autorizado e resolvido —
+                # inclusive em miss/dodge/parry (quem atira e erra ainda gastou
+                # a flecha; correção do usuário 10/07/2026, versão anterior só
+                # consumia em dano>0). Só "evade" (alvo em modo evasão/RETURNING)
+                # não consome — nesse caso o servidor nem chega a soltar a
+                # flecha de verdade. Só o PRÓPRIO player tem Equipment/aljava
+                # local.
+                if _is_self_archer_attacker and outcome != "evade":
+                    from engine.components import Equipment as _Eq_arrow
+                    _eq_arrow = self.world.get_component(self.player_entity, _Eq_arrow)
+                    _qv_arrow = _eq_arrow.slots.get("offhand") if _eq_arrow else None
+                    if _qv_arrow is not None and getattr(_qv_arrow, "item_type", "") == "quiver":
+                        _qv_arrow.arrow_count = max(0, _qv_arrow.arrow_count - 1)
 
             def _queue_arrow_event(eid: int, entry: dict, n: int = 1) -> None:
                 """Armazena evento(s) de flecha: FLT + som diferido para _on_hit."""
@@ -319,12 +348,15 @@ class RemoteEntityHandlers:
                             SOUNDS.play_mob_sounds_at(_mob_snd, "emote_attack",
                                                       pos.x, pos.y, _lx, _ly, base=0.6,
                                                       dedup_key=f"dmg_{server_target}")
-            elif pos and damage == 0 and outcome in ("miss", "dodge", "parry", "block"):
+            elif pos and damage == 0 and outcome in ("miss", "dodge", "parry", "block", "evade"):
                 _AVOID_LABELS = {
                     "miss":  "Errou!",
                     "dodge": "Desviou!",
                     "parry": "Aparou!",
                     "block": "Bloqueou!",
+                    # Modo evasão (RETURNING) — outcome vindo de
+                    # _server_apply_ranged_physical (ver ARQUITETURA_ONLINE.md).
+                    "evade": "Evadiu!",
                 }
                 if _is_archer_arrow and local_eid is not None:
                     # Texto de esquiva/erro também diferido para colisão visual

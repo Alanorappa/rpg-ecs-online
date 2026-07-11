@@ -129,6 +129,9 @@ class NetworkHandlers:
                 char_stat.agility          = int(_stats_s.get("agility",      _base_s["agility"]))
                 char_stat.vitality         = int(_stats_s.get("vitality",     _base_s["vitality"]))
                 char_stat.defense          = int(_stats_s.get("defense",      _base_s["defense"]))
+                # Spirit NÃO está em CLASS_BASE_STATS (não cresce com level/
+                # classe, só item/talento futuro) — default literal 0.
+                char_stat.spirit           = int(_stats_s.get("spirit", 0))
                 _gold_s = int(_stats_s.get("gold", 0))
                 if _gold_s > 0:
                     from engine.components import Wallet as _W_login
@@ -142,6 +145,7 @@ class NetworkHandlers:
                 char_stat.agility      = _base_s["agility"]
                 char_stat.vitality     = _base_s["vitality"]
                 char_stat.defense      = _base_s["defense"]
+                char_stat.spirit       = 0
 
             # SEMPRE recalcula CombatStats — garante CLASS_MELEE_OVERRIDES aplicado
             from engine.components import PermanentStats as _PS_login

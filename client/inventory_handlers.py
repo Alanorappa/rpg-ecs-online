@@ -553,4 +553,14 @@ class InventoryHandlers:
                 sv("Concentração", char_stats.max_concentration, 0, cL, cLb, cLi, sy2)
             else:
                 sv("Raiva", char_stats.max_rage, 0, cL, cLb, cLi, sy2)
+            # Espírito (coluna direita desta linha, antes vazia) — atributo
+            # que alimenta HP5/MP5 fora de combate (10 pts = +1%, ver
+            # ARQUITETURA_ONLINE.md Decisão 20.2). Sem "Itens" de verdade
+            # ainda (nenhum equipamento concede Spirit hoje), mas já soma
+            # PermanentStats (mesma mecânica roguelike dos outros 5
+            # atributos) igual ao total usado em apply_char_stats_to_combat.
+            from engine.components import PermanentStats as _PermSpirit
+            _perm_inv = self.world.get_component(self.player_entity, _PermSpirit)
+            _spirit_total = char_stats.spirit + (_perm_inv.spirit if _perm_inv else 0)
+            sv("Espírito", _spirit_total, 0, cR, cRb, cRi, sy2)
         sy2 += ROW

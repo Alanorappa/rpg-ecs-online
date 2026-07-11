@@ -156,8 +156,22 @@ class CombatStats:
         # crashou ao reviver no cemitério (ver PROBLEMAS_ARQUITETURA.md).
         self.mana: int = 0
         self.attack_cooldown_timer: float = 0.0 # Tempo restante para o próximo ataque
-        self.hp5: float       = 0.01  # fração de max_hp regenerada a cada 5s (fora de combate)
-        self.hp5_timer: float = 0.0   # acumulador de tempo para o tick de regen
+        # hp5/mp5: fração de max_hp/max_mana regenerada a cada 5s FORA de
+        # combate — base fixa por classe (CLASS_BASE_REGEN, stats_system.py)
+        # + Spirit (CharacterStats.spirit, 10 pontos = +1%, só de itens/
+        # talentos futuros — nunca cresce com level). mp5_ic é a mana EM
+        # combate — NUNCA afetada por Spirit, só por talento (decisão do
+        # usuário) — por isso é um _MODIFIABLE_ATTR separado de mp5, não
+        # uma fração do mesmo valor. Mob nunca passa por
+        # apply_char_stats_to_combat (não tem CharacterStats), então mantém
+        # o base_hp5 default abaixo (1%) como sempre teve.
+        self.base_hp5: float    = 0.01
+        self.hp5: float         = 0.01
+        self.hp5_timer: float   = 0.0   # acumulador de tempo para o tick de regen de HP
+        self.base_mp5: float    = 0.0
+        self.mp5: float         = 0.0
+        self.base_mp5_ic: float = 0.0
+        self.mp5_ic: float      = 0.0
 
         # Flags de comportamento de combate — setadas por CLASS_MELEE_OVERRIDES em stats_system.
         # Sistemas lêem esses flags sem precisar conhecer class_id.
@@ -358,7 +372,8 @@ class AIControlled:
     # base_attack_cooldown foi removido, agora está em CombatStats
     target_eid: int = -1  # eid do alvo atual (multiplayer: cada mob tem o seu)
     target_lost_timer: float = 0.0  # grace period antes de ir pro IDLE quando perde alvo
-    
+    regen_timer: float = 0.0  # acumulador do regen fora de combate (3s/tick, ver WorldServer._tick)
+
 @dataclass
 class InitialPosition:
     x: float
@@ -489,6 +504,7 @@ class CharacterStats:
 
     def __init__(self, strength: int = 1, intelligence: int = 1,
                  agility: int = 1, vitality: int = 3, defense: int = 2,
+                 spirit: int = 0,
                  spawn_tile_x: int = 0, spawn_tile_y: int = 0,
                  spawn_map: str = "maps/map_1.csv",
                  name: str = "Aventureiro", class_id: str = "guerreiro"):
@@ -499,6 +515,15 @@ class CharacterStats:
         self.agility = agility            # AGI → crit, velocidade
         self.vitality = vitality          # VIT → HP, stamina
         self.defense = defense            # DEF → armor
+        # ESP → hp5/mp5 (10 pontos = +1%), SÓ fora de combate — mana em
+        # combate é controlada por talento, não por spirit (decisão do
+        # usuário). Default 0 e SEM entrada em CLASS_BASE_STATS/
+        # CLASS_LEVEL_GAINS de propósito — regen já é percentual, então
+        # spirit não cresce com level (ficaria absurdo somado a
+        # itens/talentos); a base de hp5/mp5 por classe é um valor FIXO
+        # (CLASS_BASE_REGEN, stats_system.py) e spirit é só o que
+        # itens/talentos futuros adicionarem em cima disso.
+        self.spirit = spirit
 
         self.level = 1
         self.current_xp = 0
@@ -585,6 +610,7 @@ class PermanentStats:
     agility: int = 0
     vitality: int = 0
     defense: int = 0
+    spirit: int = 0
 
 
 @dataclass

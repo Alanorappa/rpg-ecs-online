@@ -488,6 +488,559 @@ segundos, mesma checagem usada nos builds anteriores).
 **Não validado:** sessão de jogo manual completa com o build novo (só
 smoke-test de processo vivo/sem crash imediato).
 
+### 20. Modo Evasão (estilo WoW) para mobs em RETURNING (09/07/2026)
+
+**Reportado pelo usuário:** quando um mob estoura o leash (raio de
+perseguição, ver `EnemyAISystem`/`MAX_LEASH_RADIUS`) e entra em
+`RETURNING` (voltando pro spawn), ele NÃO era imune a dano nem a
+re-aggro — bater nele durante o retorno resetava a perseguição de graça.
+Como mobs nunca regeneram HP (não existe regen de mob no código), o dano
+acumulado nesses ciclos ficava permanente até o mob morrer — "prato cheio
+pra bug abusers" (palavras do usuário).
+
+**Decisão de design:** reaproveitar `AIControlled.state == "RETURNING"`
+como o próprio marcador de evasão, sem criar campo novo — já é a única
+exclusão do `in_attack_range`, já é sincronizado em rede, evita 2 fontes
+de verdade. Ao chegar no spawn (3 pontos de saída de `RETURNING` no
+`EnemyAISystem.update()`), reset completo: cura HP pra `max_hp` + limpa
+`StatusEffects` (debuffs/DoTs residuais) — não só a cura, confirmado com
+o usuário (estilo WoW: mob volta 100% novo pro combate seguinte).
+
+**Implementação — 4 "portas de entrada" de dano, nenhuma passa por uma
+função comum antes de escrever HP:**
+- `apply_damage_core()` (`engine/core_systems.py`) — novo guard
+  `"blocked_evade"` (mesmo padrão de `"blocked_immune"`), rede de
+  segurança final que cobre qualquer chamador presente ou futuro. Sozinho
+  não dá feedback visual correto — por isso os 4 pontos abaixo também têm
+  guard cedo, ANTES de rolar acerto/crit/conceder skill xp (sem isso, um
+  golpe bloqueado ainda concedia xp de arma/resistência ao alvo evadindo).
+- `CombatSystem.deal_damage()` (`engine/world_systems.py`, melee/geral) —
+  guard cedo + `_emit_avoidance_feedback("evade", ...)` (diferente de
+  `is_immune`, que é silencioso — aqui o feedback é visível de propósito,
+  pedido explícito do usuário). Novo outcome `'evade'` em `_AVOID`/
+  `_AVOID_LOG`/`_SND` (indexação direta, sem `.get()` — as 3 precisavam da
+  entrada nova ou dava `KeyError`).
+- `_server_apply_magic_damage()`/`_server_apply_ranged_physical()`
+  (`server/spell_completion_processor.py`) — guard cedo via novo helper
+  `_is_evading(target_id)`; `_apply_ranged_physical` retorna `"evade"`
+  igual já fazia com `"immune"`.
+- `_apply_magic_damage()` (`ui/spell_system.py`, client-offline) — mesmo
+  guard, espelhado.
+- `StatusEffectSystem._apply_tick()` (`engine/core_systems.py`, tick de
+  DoT/HoT) — escreve HP direto, não passa por `apply_damage_core`; guard
+  próprio ao lado do `is_immune` já existente ali.
+
+**Extensão de escopo confirmada com o usuário** — fechar o vazamento de
+efeitos SECUNDÁRIOS (mesmo buraco pré-existente que já afetava Bloco de
+Gelo/`is_immune`, não introduzido por esta mudança): dos ~7 handlers de
+skill mágica/à distância que chamam as duas funções acima
+(`_server_bola_de_fogo`, `_server_calcinar`, `_server_nova_congelante`,
+`_server_picada_escorpiao`, `_server_flecha_reiterada`,
+`_server_tiro_repulsivo`, `_server_tiro_multiplo_hit`), 3 precisaram de
+guard explícito via `_is_evading()` (bola de fogo, calcinar — burn/
+exaustão vazavam mesmo com dano bloqueado; nova congelante, dentro do
+loop AOE, já que é multi-alvo). `tiro_repulsivo` tinha um bug: seu guard
+de outcome (`if outcome in ("miss","dodge","parry","immune"): return`)
+não incluía `"evade"` — sem o fix, o KNOCKBACK ainda empurraria/stunaria
+um mob evadindo mesmo com o dano direto já bloqueado. Os outros 3
+(picada_escorpiao, flecha_reiterada, tiro_multiplo_hit) já eram seguros
+por construção (checam `dmg > 0` antes do efeito secundário, ou não têm
+efeito secundário nenhum).
+
+**Re-aggro:** os 4 pontos que já existiam de "dano de player re-agra mob
+parado" (todos com o mesmo gate `_ai.state in ("IDLE", "RETURNING")`,
+inconsistentes entre si: `deal_damage`/`_server_apply_magic_damage` usam
+`AGGRO_DELAY` 0.5s, `_server_apply_ranged_physical` pula direto pra
+`CHASING` — inconsistência pré-existente, não mexida aqui) tiveram o gate
+apertado pra `_ai.state == "IDLE"` — depois do guard de evasão acima, esse
+código já é inalcançável pra um mob RETURNING, mas o aperto remove a
+intenção enganosa do código (uma refatoração futura que reordenasse os
+blocos poderia reintroduzir o bug silenciosamente).
+
+**Bug pego durante a própria validação:** os 2 pontos de reset (A e B)
+inicialmente curavam/limpavam debuff em TODO tick de qualquer mob IDLE já
+parado perto de casa sem alvo (o "no-op de manutenção" mais comum do
+jogo), não só na transição de saída de `RETURNING` — pego pela suíte
+(6 testes de dano/morte de mob começaram a falhar: HP nunca baixava,
+porque o mob se auto-curava antes do próximo tick rodar). Corrigido
+capturando `_was_returning` antes de sobrescrever `ai_control.state`, e
+só curando/limpando debuff se o estado anterior era de fato `RETURNING`.
+Também exigiu ajustar `tests/helpers.py::teleport_mob_to_player` — o
+helper movia o mob sem realinhar `InitialPosition`, deixando-o
+"impossivelmente longe" do próprio spawn e disparando `RETURNING` em
+qualquer teste de combate que teleporta o mob perto do player (agora
+realinha `InitialPosition` junto).
+
+Validado: `py_compile` em 100% dos arquivos tocados; suíte completa —
+**7F/85P** (melhora sobre a baseline 9F/83P: 2 falhas pré-existentes
+sumiram, nenhuma nova, mesmas 7 falhas de sempre); script headless
+dedicado cobrindo os 4 caminhos de dano (`apply_damage_core` direto,
+`CombatSystem.deal_damage` melee, `_server_apply_ranged_physical` +
+`_server_tiro_repulsivo` sem knockback, `_server_apply_magic_damage` +
+`_server_bola_de_fogo` sem burn secundário) + DoT parando de tickar +
+reset completo (cura full, limpa debuff, volta a `IDLE`) ao chegar no
+spawn — todos os asserts passaram.
+
+**Não validado:** sessão de jogo manual com o cliente pygame de verdade
+(puxar mob até o leash visualmente, confirmar o feedback "Evadiu!" na
+tela, e os 3 caminhos de dano em multiplayer real com 2+ clientes).
+
+### 20.1 Revisão: cura instantânea → regen gradual (1%/3s) + fix de sync (09/07/2026)
+
+**Reportado pelo usuário** após validar a Decisão 20 no jogo de verdade: o
+HP do mob no client não atualizava quando ele curava ao sair da evasão.
+Causa raiz: a cura instantânea (`enemy_combat_stats.current_hp =
+enemy_combat_stats.max_hp`, dentro de `EnemyAISystem.update()`, código
+COMPARTILHADO client+server) nunca passava por nenhum canal de
+broadcast — mudar `current_hp` direto no componente ECS servidor não
+propaga sozinho pro client; só client sabe que o HP mudou quando algo
+enfileira um evento em `_combat_this_tick`/`_pending_mob_attacks` (que
+viram o array `"combat"` de `AOI_UPDATE`, consumido por
+`client/remote_entity_handlers.py`, linha ~199-205, que atualiza
+`RemoteEntityMeta.hp` genericamente pra qualquer entrada com
+`hp_after` — não precisa ser um "hit" de verdade).
+
+**Decisão (usuário):** trocar a cura instantânea por regen gradual —
+**1% do max_hp a cada 3 segundos**, enquanto o mob está fora de combate
+(`state` em `IDLE`/`RETURNING`), até `max_hp`. Mesmo mecanismo/canal já
+usado pelo HP5 de player (`BaseCombatStateSystem._tick_hp5`,
+`engine/core_systems.py`) e pelo regen do Boneco de Treino
+(`WorldServer._tick()`, ~linha 2469) — ambos já emitem
+`{"attacker": -1, "outcome": "regen", "hp_after": ...}` em
+`_combat_this_tick`, que É broadcast a QUALQUER observador com o mob em
+`known_eids` (não só um "dono", já que mob não tem dono — ver
+`server/session.py::_build_update_for_session`).
+
+**Implementação:**
+- `engine/components.py`: novo campo `AIControlled.regen_timer: float`
+  (acumulador dedicado — NÃO reaproveita `CombatStats.hp5_timer`, que já
+  assume 5s pra player/dummy; o intervalo do mob é 3s, diferente).
+  `CombatStats.hp5` (fração por tick, default `0.01` = 1%) já existe e
+  **nunca é sobrescrito por mob comum** em `entity_factory.create_enemy`
+  — só o TrainingDummy customiza — então reaproveitar esse campo pro
+  VALOR (1%) já dava de graça, só faltava o tick com intervalo próprio.
+- `server/world_server.py::_tick()`: novo bloco "Regen de mob fora de
+  combate", ao lado do regen do Boneco de Treino — itera `self._mob_eids`,
+  pula mob morto/já em combate (`state not in ("IDLE","RETURNING")`)/já
+  em max_hp, acumula `dt` em `regen_timer`, a cada 3s cura
+  `max(1, round(max_hp * hp5))` e enfileira o evento `"regen"` em
+  `_combat_this_tick` (mesmo formato do HP5/dummy).
+- `engine/world_systems.py::EnemyAISystem.update()`: os 2 pontos de
+  chegada no spawn (RETURNING→IDLE) **não curam mais HP instantaneamente**
+  — só limpam debuffs/DoTs residuais (isso continua instantâneo, não fazia
+  parte da reclamação). HP agora só sobe via o novo regen gradual.
+
+**Reentrada no AOI (a outra parte do pedido do usuário) — já funcionava
+corretamente, confirmado por investigação, sem necessidade de fix:**
+`session.known_eids` é um `set` por sessão, descartado (`.discard(eid)`)
+sempre que um mob sai do AOI de um player, e todo re-ingresso (seja por
+movimento do mob, seja por sweep de posição estática) sempre busca um
+payload de spawn FRESCO via `get_entity_spawn_data()` →
+`_build_mob_spawn_payload()`, que lê `cs.current_hp` ao vivo no momento
+da chamada — nunca um valor cacheado/antigo. Um mob que sai da tela e
+volta sempre chega com o HP atual do servidor.
+
+Validado: `py_compile` completo; suíte sem regressão (7F/85P, mesma
+baseline pós-Decisão-20); script headless dedicado confirmando (a) mob
+em combate NÃO regenera, (b) mob fora de combate regenera exatamente
+`round(max_hp×0.01)` a cada 3s E emite o evento de broadcast
+`{"outcome":"regen","hp_after":...}`, (c) não regenera acima de `max_hp`.
+
+**Não validado:** client de verdade mostrando a barra de HP do mob subir
+gradualmente (o client já consome esse canal genericamente pra outros
+casos de regen — player HP5, dummy — mas nunca foi visto rodando pra
+mob; também não há feedback visual tipo "+HP" pra mob regenerando, só
+pra player — cosmético, não pedido pelo usuário).
+
+### 20.2 HP5/MP5 viram atributos por classe + atributo Spirit (09/07/2026)
+
+**Contexto:** o regen de mob (20.1) usou o mesmo mecanismo do HP5 de
+player, que até aqui era um valor GLOBAL fixo (`CombatStats.hp5 = 0.01`,
+1%/5s pra todo mundo) — o usuário percebeu essa discrepância na conversa
+e pediu pra tornar HP5/MP5 atributos de verdade do personagem, com um
+atributo novo **Spirit** (`CharacterStats.spirit`) alimentando os dois:
+10 pontos de Spirit = +1% de HP5/MP5.
+
+**Decisão final do usuário (após 2 rodadas de perguntas):**
+1. Spirit só afeta a regen de mana FORA de combate (`mp5`). Mana EM
+   combate (`mp5_ic`) é controlada exclusivamente por talento — Spirit
+   nunca entra ali. HP segue a mesma regra de sempre (só regenera fora
+   de combate).
+2. Spirit NÃO cresce com level (`CLASS_LEVEL_GAINS` não tem entrada pra
+   ele, de propósito) — como o regen é percentual, deixar Spirit crescer
+   por level somaria com item/talento até virar um regen absurdo. Em vez
+   disso, cada classe tem uma **base FIXA** de hp5/mp5/mp5_ic (não deriva
+   de nenhum atributo), e Spirit (só de item/talento futuro — nada seta
+   ele hoje) soma POR CIMA dessa base:
+   - Arqueiro: 1% HP5 (sem mana)
+   - Guerreiro: 3% HP5 (sem mana)
+   - Mago: 1% HP5, 4% MP5 fora de combate, 1% MP5 em combate
+
+**Implementação — mesmo padrão "fonte única" já usado pros outros 5
+atributos (STR/INT/AGI/VIT/DEF), ver `CLAUDE.md`:**
+- `engine/components.py`: `CharacterStats.spirit: int = 0` (default 0,
+  SEM entrada em `CLASS_BASE_STATS` — todas as classes começam em 0,
+  só item/talento futuro incrementa). `PermanentStats.spirit: int = 0`
+  (mesma mecânica roguelike dos outros 5 — soma na morte). `CombatStats`
+  ganha os pares `base_hp5`/`hp5` (já existia, sem base_ antes),
+  `base_mp5`/`mp5` (novo — mana fora de combate) e
+  `base_mp5_ic`/`mp5_ic` (novo — mana em combate, nunca leva Spirit).
+- `engine/stat_fns.py`: `"hp5"`, `"mp5"`, `"mp5_ic"` entram em
+  `_MODIFIABLE_ATTRS` (+ clamp `(0.0, None)`) — item/talento futuro que
+  queira dar bônus de regen já funciona de graça via `Modifier`, mesmo
+  mecanismo de `attack_power`/`crit_rating`/etc., sem precisar de código
+  novo.
+- `engine/stats_system.py`: nova tabela `CLASS_BASE_REGEN` (valores
+  fixos acima) + `apply_char_stats_to_combat()` agora computa
+  `total_spirit` (personagem + `PermanentStats`, mesmo padrão dos outros
+  atributos) e seta `base_hp5 = CLASS_BASE_REGEN[classe]["hp5"] +
+  spirit×0.001`, `base_mp5` igual, e `base_mp5_ic = CLASS_BASE_REGEN[...]
+  ["mp5_ic"]` **sem** somar spirit.
+- `engine/core_systems.py::_tick_mana_regen`: assinatura ganhou o
+  parâmetro `cst` (CombatStats) — a taxa não vem mais das constantes
+  globais `MANA_REGEN_OOC_PCT`/`MANA_REGEN_IC_PCT` (removidas), vem de
+  `cst.mp5`/`cst.mp5_ic`. 2 call sites atualizados
+  (`ServerCombatStateSystem.update()` e `ui/spell_system.py::ManaSystem`,
+  client-offline).
+- Mob **não é afetado** — nunca passa por `apply_char_stats_to_combat`
+  (não tem `CharacterStats`), então mantém `hp5=0.01` (o default de
+  `CombatStats.__init__`) exatamente como no regen gradual de 20.1.
+- Save/load (`engine/save_system.py`) e sync de rede
+  (`server/world_server.py` ×3 pontos, `client/save_sync_handlers.py`,
+  `client/network_handlers.py`) passaram a incluir `spirit` — saves
+  antigos sem o campo caem no default 0 automaticamente (sem migração
+  necessária, já que 0 é exatamente o valor "correto" pra um personagem
+  que nunca ganhou Spirit de item/talento).
+
+**Fora de escopo (explicitamente, por instrução do usuário):** nenhum
+item/talento existente foi alterado pra conceder Spirit — o atributo
+existe e o cálculo funciona, só não há NENHUMA fonte que o incremente
+ainda (fica pronto pra quando isso for implementado).
+
+Validado: `py_compile` completo; suíte sem regressão (7F/85P). Script
+headless dedicado confirma os valores exatos por classe (guerreiro 3%
+hp5/0% mp5, mago 1%/4%/1%, arqueiro 1%/0%), que Spirit (personagem E
+`PermanentStats`) soma corretamente em hp5/mp5 mas NUNCA em mp5_ic, e que
+mob continua com hp5=0.01 (não afetado). `_tick_mana_regen` testado
+isoladamente confirma a taxa correta aplicada dentro/fora de combate
+(um teste inicial via tick de mundo completo deu resultado errado por
+um mob próximo manter o player em combate de verdade via aggro —
+artefato do ambiente de teste, não bug de produção; resolvido isolando a
+função pura sem o resto do mundo).
+
+**Não validado:** sessão manual — criar um Guerreiro/Mago/Arqueiro e
+observar a régua de vida/mana regenerando na taxa certa em tempo real.
+
+### 21. Auto-attack do arqueiro nunca validava linha de visão (LOS) — 09/07/2026
+
+**Reportado pelo usuário (bug recorrente, já reportado outras vezes):**
+atirar num alvo com obstáculo na frente tocava o som de disparo, descontava
+flecha da aljava e agrava o mob — mas sem dano nenhum e sem o projétil
+aparecer. Variante relatada também: às vezes o ataque fica silencioso mas
+ainda desconta flecha.
+
+**Causa raiz (confirmada por investigação exaustiva):** em todo o pipeline
+de auto-attack (client trigger → som → servidor → consumo de flecha →
+agro → dano), o **único** ponto que checava linha de visão era um check
+puramente **cosmético e tardio demais**, do lado do CLIENTE, dentro de
+`ui/spell_system.py::PlayerProjectileSystem.update()` — ele destruía o
+projétil visual (`PlayerProjectile`) silenciosamente ao detectar parede,
+MAS isso rodava só DEPOIS do servidor já ter aplicado dano de verdade,
+descontado a flecha e agrado o mob (`server/spell_completion_processor.py::
+_server_apply_ranged_physical` e `server/combat_processor.py::
+_process_player_attacks` nunca checavam obstáculo — só distância
+Chebyshev). Ou seja: o servidor sempre deixava o tiro "acontecer" de
+verdade através da parede; o cliente só escondia visualmente o resultado
+depois do fato consumado. Esse mesmo destroy silencioso também nunca
+limpava `pending_arrow_impacts` (fila de outcomes pendentes por alvo),
+deixando uma entrada órfã que uma flecha SEGUINTE no mesmo alvo aplicava
+por engano (outcome/dano errado/velho) — bug secundário do mesmo código.
+
+**Fix — 3 pontos:**
+1. **`server/spell_completion_processor.py::_server_apply_ranged_physical`**
+   — novo guard de LOS logo no topo da função (mesmo padrão dos guards de
+   `_is_evading`/alvo morto já existentes), usando
+   `EnemyAISystem._has_line_of_sight` (mesma primitiva Bresenham que
+   `EnemyAISystem` já usa pro lado mob→player, nunca antes usada pro lado
+   player→mob) + lookup de tilemap multi-mapa (`get_entity_map`/
+   `_map_bundles`, mesmo padrão de `_server_tiro_repulsivo`). Retorna
+   `(False, "miss", 0)` — MESMO outcome de um erro de verdade, então todo
+   o resto do pipeline (client, `_combat_this_tick`, feedback) já sabe
+   lidar sem nenhuma mudança adicional: sem LOS, não há consumo de flecha
+   nem agro (ambos só rodam depois do guard, na mesma função). Cobre
+   auto-attack E as skills que reusam esta função (Picada de Escorpião,
+   Flecha Reiterada, Tiro Repulsivo, Tiro Múltiplo).
+2. **`ui/systems.py::_process_archer_combat`** — mesmo guard de LOS
+   ANTES do bloco de predição otimista local (`if self._net: quiver.
+   arrow_count -= 1; ...`), usando a mesma primitiva (já reexportada por
+   `ui/systems.py`). Evita a aljava exibida no HUD cair achando que o
+   tiro vai sair quando o servidor já vai bloquear.
+3. **`ui/spell_system.py::PlayerProjectileSystem.update()`** — o check de
+   LOS por-frame (cosmético) agora **exclui** `spell_id=="arrow"` (flecha
+   de auto-attack): como o servidor já valida LOS na origem, um tiro
+   bloqueado agora chega como `outcome="miss"` pelo canal normal de
+   `COMBAT_RESULT`, e cai no bloco de resolução de outcome já existente
+   (flecha desvia visualmente, "Errou!", consome `pending_arrow_impacts`
+   corretamente) em vez de ser destruído cedo demais e silenciosamente.
+   Mantido para projéteis de skill de verdade (Bola de Fogo etc.) — ali
+   o alvo pode se esconder atrás de parede DURANTE o voo, cenário que o
+   outcome já resolvido no lançamento não cobre.
+
+Validado: `py_compile` completo; suíte sem regressão (7F/85P). Script
+headless dedicado: tiro com parede no meio do caminho retorna
+`outcome="miss"`, HP/flecha/estado de IA do mob inalterados; removendo a
+parede, o MESMO tiro conecta normalmente (hit + consumo de flecha) —
+confirma que o fix bloqueia só quando deveria, sem quebrar tiros válidos.
+
+**Não validado:** sessão manual (visual do redirecionamento da flecha
+bloqueada, som, e o caso "silencioso mas consome" — esse último tem causa
+DIFERENTE, ainda não corrigida: `_apply_combat_result` só toca som/spawna
+projétil se o mob já estiver rastreado localmente pelo AOI do cliente
+— `client/remote_entity_handlers.py`, `local_eid = self._remote_mobs.get(...)`;
+se o COMBAT_RESULT chega numa janela em que o cliente ainda não conhece o
+mob, o servidor (corretamente autoritativo) já aplicou o resultado mas o
+cliente não tem o que renderizar — janela de corrida ligada a timing de
+AOI, não coberta por este fix, mais rara que o caso de parede).
+
+### 21.1 Revisão: LOS bloqueada deve impedir o ataque INTEIRO, não virar "miss" (09/07/2026)
+
+**Reportado pelo usuário, testando a Decisão 21:** com obstáculo no
+caminho, o comportamento ficou quase o inverso do bug original — o
+projétil agora era criado, acertava a posição do mob, mostrava "Erro" no
+floating text e tocava o som de disparo, só que sem descontar flecha nem
+agrar. Ou seja: o fix anterior tratou obstáculo como um **"miss" de
+verdade** (dano 0, sem consumo, sem agro, mas AINDA com som+projétil
+visíveis) — o usuário corrigiu: o certo é **nada acontecer**, igual estar
+fora de alcance — sem som, sem projétil, sem qualquer efeito colateral.
+
+**Fix:** moveu a checagem de LOS pra **antes** de qualquer coisa
+acontecer, direto em `server/combat_processor.py::_process_player_attacks`
+— logo depois do check de range (`_srv_dist > attack_range: continue`) e
+ANTES do cooldown, mesmo tratamento: obstáculo faz o ataque nem ser
+tentado neste tick (nenhum `_combat_this_tick.append(...)`, logo nenhum
+`COMBAT_RESULT` é emitido — sem isso o client nunca chama
+`_apply_combat_result`, então nunca toca som nem spawna projétil).
+Cooldown não é consumido (igual ao check de range) — assim que a LOS
+desobstrui, o tiro sai imediatamente, sem esperar o intervalo de ataque
+"desperdiçado" num tiro que nunca aconteceu.
+
+O guard de LOS dentro de `_server_apply_ranged_physical` (Decisão 21,
+retorna `"miss"`) **continua existindo** — vira rede de segurança só pras
+SKILLS que reusam essa função (Tiro Repulsivo, Picada de Escorpião, Flecha
+Reiterada, Tiro Múltiplo): essas já commitam visualmente o lançamento
+(cast bar + broadcast de "launch") ANTES do hit resolver, então não dá
+pra simplesmente "não acontecer" — a skill já foi visualmente disparada,
+então tratar como miss (flecha desvia, sem dano/consumo/agro) é o
+comportamento certo pra elas. Só o auto-attack — que nunca commitou nada
+visualmente antes deste ponto — ganhou o bloqueio total.
+
+Validado: `py_compile` completo; suíte sem regressão (7F/85P). Script
+headless reescrito pra rodar o pipeline completo (`_process_player_attacks`
+via ticks reais, não a função de dano isolada): com parede, **zero**
+entradas em `_combat_this_tick` pro mob (nenhum `COMBAT_RESULT`), HP/
+flecha/estado de IA inalterados; sem parede, ataques disparam normalmente
+no intervalo esperado, com consumo de flecha correto. Teste anterior
+(chamada direta a `_server_apply_ranged_physical`, retornando `"miss"`)
+continua passando — confirma que o guard interno (usado pelas skills)
+não foi quebrado pela mudança.
+
+**Não validado:** sessão manual confirmando que nenhum som/projétil
+aparece mais num tiro bloqueado, e que skills com obstáculo ainda mostram
+o redirecionamento visual de "miss" corretamente.
+
+### 21.2 Causa raiz achada via log: LOS bloqueada esgotava is_pursuing (regressão da 21.1) — 09/07/2026
+
+**Reportado pelo usuário:** depois da Decisão 21.1, o arqueiro "do nada"
+parava de atacar, e voltava o bug de descontar flecha da aljava sem gerar
+flecha/dano. Instrumentado `debug/archer_debug.py` (client+server,
+eventos ATTEMPT/BLOCK/LOS/FIRE/ARROW/AGGRO/SOUND/RECV) e pedido pro
+usuário reproduzir — o log confirmou a causa raiz com precisão de
+milissegundo.
+
+**Causa raiz (confirmada pelo log, não suposição):** o log do servidor
+mostrou o player em combate contra um mob, alternando `los_blocked`/
+`cooldown` (alvo entrando/saindo de cobertura), e então:
+```
+[21:12:50.902] FIRE      outcome=miss
+...(só los_blocked/cooldown, nenhum FIRE)...
+[21:12:56.937] BLOCK     reason=not_pursuing
+```
+**Exatos 6.035s entre o último ataque de verdade e `is_pursuing` virar
+`False`** — bate com `CombatState.OUT_OF_COMBAT_DURATION = 6.0`
+(`engine/components.py`). A Decisão 21.1 moveu o bloqueio de LOS pra
+**antes** do `continue` de cooldown — mas o `enter_combat()` que reseta
+`combat_timer` só roda **depois** do cooldown, na seção "Ataque disparou"
+(`server/combat_processor.py`, ~linha 217). Resultado: um tiro bloqueado
+por LOS nunca mais chamava `enter_combat()`. Se o alvo passa 6s+
+alternando dentro/fora de cobertura sem NENHUM tiro desbloqueado passar
+(nem hit nem miss — os dois chamavam `enter_combat` antes),
+`_tick_combat_timer` (`engine/core_systems.py`) deixa `combat_timer`
+chegar a zero e força `in_combat=False` + **`is_pursuing=False`** — o
+arqueiro para de atacar de verdade, servidor autoritativo.
+
+**A segunda metade do bug (desconta sem gerar flecha) é consequência
+direta:** `is_pursuing` do SERVIDOR nunca é resincronizado de volta pro
+CLIENTE — é um valor que o cliente seta uma vez (clique direito) e nunca
+mais reavalia sozinho. Uma vez que o servidor desiste silenciosamente, o
+`combat_state.is_pursuing` local do cliente continua `True` pra sempre, e
+`ui/systems.py::_process_archer_combat` continua rodando o bloco de
+predição otimista (`quiver.arrow_count -= 1`) a cada cooldown local — sem
+NUNCA receber um `COMBAT_RESULT` de volta (`RECV` sumiu do log do
+cliente na mesma janela), já que o servidor não dispara mais nada.
+Exatamente o "desconta flecha sem gerar flecha".
+
+**Fix:** `enter_combat(player_cst)` agora roda também no `continue` de
+LOS bloqueada (`server/combat_processor.py`) — o disparo em si continua
+100% bloqueado (sem som, projétil, flecha, agro — a decisão 21.1
+continua valendo), mas **tentar atirar conta como estar em combate**,
+então `combat_timer` nunca expira só por causa de obstáculo, e
+`is_pursuing` nunca cai sozinho enquanto o player está genuinamente
+tentando lutar.
+
+**Risco residual (não corrigido, fora de escopo desta rodada):** o gap
+arquitetural raiz — `is_pursuing` do servidor nunca é resincronizado pro
+cliente — continua existindo pra QUALQUER outro motivo de timeout (não
+só LOS). Esta correção fecha o caso concreto reproduzido (o único
+conhecido até agora), mas se outro caminho ainda inexplorado também
+zerar `is_pursuing` no servidor sem o cliente saber, o mesmo sintoma
+("desconta sem gerar flecha") pode reaparecer por uma causa diferente.
+Uma correção mais robusta seria sincronizar `is_pursuing` explicitamente
+(ex.: via `STATS_UPDATE` ou canal equivalente) sempre que o servidor
+mudar esse valor — não implementado agora por ser uma mudança maior de
+protocolo, mas registrado aqui como próximo passo se o sintoma voltar por
+outro caminho.
+
+Validado: `py_compile` completo; suíte sem regressão (7F/85P); script
+headless confirmando que `is_pursuing`/`in_combat` sobrevivem a LOS
+bloqueada sustentada (o teste tem uma variável não totalmente controlada
+— o mob pode se mover durante o teste — mas mostra qualitativamente
+`combat_timer` erodindo sem o fix e se mantendo no máximo com o fix,
+consistente com a teoria; a evidência forte de verdade é o log real do
+usuário, com o match exato de 6.0s).
+
+**Não validado:** sessão manual reproduzindo o cenário exato do log
+(mob alternando dentro/fora de cobertura por mais de 6s) e confirmando
+que o arqueiro não para mais de atacar.
+
+---
+
+### 21.3 Causa raiz REAL de "desconta flecha sem projétil": cooldown local não congela igual ao do servidor — 10/07/2026
+
+**Reportado pelo usuário (após 21.2 já em produção):** "ainda desconta
+flechas da aljava algumas vezes sem aparecer o projétil sair, e também
+uma das vezes parou de atacar, tive que clicar novamente com o direito
+no alvo para voltar a atacar." A Decisão 21.2 corrigiu o caso concreto
+que ela mesma diagnosticou (timeout de `is_pursuing` por LOS bloqueada
+6s+), mas o sintoma central (desconto sem flecha) continuou.
+
+**Causa raiz (medida diretamente no log, não suposição):** comparando o
+mesmo teste de ~124s (sessão 21:37:22) nos dois lados:
+- Servidor: 29 disparos resolvidos de verdade (`FIRE`, hit+miss juntos),
+  dos quais só 15 consumiram flecha real (`ARROW`, só em hit/crit — miss
+  não consome, `spell_completion_processor.py` linha ~1136-1140 só chega
+  lá depois de `_apply_final_damage` ter sucesso).
+- Cliente: **52 descontos locais** de `quiver.arrow_count`
+  (`ui/systems.py::_process_archer_combat`, nota
+  `predicao_local_otimista`) no mesmo intervalo — 23 a mais que o total
+  de disparos reais do servidor, e nenhum correspondente a um tiro que
+  nunca existiu (contagem via `RECV`, que bateu exatamente com os 29
+  disparos reais — nenhuma mensagem perdida na rede).
+
+**Por quê:** o congelamento de cooldown durante bloqueio (LOS/alcance/
+perseguição/aljava vazia) funciona de formas ARQUITETURALMENTE
+diferentes nos dois lados:
+- **Servidor** (`server/combat_processor.py::_process_player_attacks`):
+  os checks de `not_pursuing`/`no_quiver_or_empty`/`out_of_range`/
+  `los_blocked` rodam **todo tick, incondicionalmente**, e todos usam
+  `continue` **antes** de `self._attack_timers[session_id] -= dt` (linha
+  ~202). Ou seja, o cooldown real fica congelado durante O BLOQUEIO
+  INTEIRO, tick a tick, não importa o valor atual do timer.
+- **Cliente** (`ui/systems.py::update`, linha ~479-480): o decremento de
+  `combat_stats.attack_cooldown_timer` é genérico e **incondicional**,
+  rodando todo frame pra QUALQUER classe, **antes** de
+  `_process_archer_combat` sequer saber se o tiro seria bloqueado. Os
+  checks de LOS/alcance/aljava só são avaliados **depois** que o timer já
+  chegou a zero (dentro do `if attack_cooldown_timer <= 0:`) — então o
+  cooldown local termina de contar (de cheio até zero) mesmo durante todo
+  um bloqueio (perseguindo fora de alcance, ou LOS piscando dentro/fora
+  de cobertura repetidamente, como no log). Quando o bloqueio abre uma
+  brecha mesmo que breve, o timer já está zerado há tempo e dispara
+  IMEDIATAMENTE (desconta flecha), enquanto o servidor — que só conta o
+  cooldown durante os ticks em que NÃO houve bloqueio — ainda não estava
+  pronto de verdade. Resultado: desconto local sem tiro real por trás.
+
+**Fix (mais simples e robusto que tentar espelhar o congelamento exato
+do servidor):** o desconto de `quiver.arrow_count` na predição otimista
+não tinha motivo pra existir de forma antecipada — o comentário do
+próprio código já dizia "flecha 100% server-driven" (a flecha VISUAL só
+nasce ao chegar `COMBAT_RESULT`, nunca por timer local). Só o CONTADOR
+da aljava é que ainda descontava cedo. Solução: parar de descontar
+`quiver.arrow_count` em `_process_archer_combat` (mantém só cooldown/
+pré-tensionamento locais, que são só UI e não controlam a cadência real
+de disparo do servidor — o servidor dispara sozinho no timer dele,
+client nunca manda mensagem nenhuma nesse branch) e mover o desconto
+REAL pra `client/remote_entity_handlers.py::_apply_combat_result`, no
+mesmo bloco que já cria a flecha visual (`_spawn_archer_auto_arrow`),
+condicionado a `damage > 0` (mesma regra do servidor: miss não consome).
+Agora desconto de flecha e flecha aparecendo são **literalmente o mesmo
+evento** — não tem mais como divergir.
+
+Validado: `py_compile` dos dois arquivos; suíte completa sem regressão
+(7F/85P, mesma baseline). Não dá pra escrever um teste headless pra isso
+(é lógica de `ui/systems.py`/cliente pygame, não do servidor) — a
+evidência é a contagem exata extraída do log real do usuário (52 vs 29
+vs 15). **Não validado:** sessão manual confirmando que a contagem da
+aljava no HUD nunca mais diverge do número de flechas que realmente
+saíram.
+
+---
+
+### 21.4 Correção: miss/dodge/parry TAMBÉM consomem flecha (10/07/2026)
+
+**Reportado pelo usuário:** a 21.3 descreveu (e manteve) o comportamento
+pré-existente de só consumir flecha em hit/crit como se fosse a regra
+correta a espelhar no cliente. Está errado — fisicamente, se a flecha
+saiu do arco (o servidor autorizou e resolveu o tiro), ela foi gasta,
+não importa se acertou ou errou. Miss consumir "de graça" nunca fez
+sentido e nunca foi intencional, era só onde o `return` antigo cortava
+o fluxo antes de chegar no bloco de consumo.
+
+**Fluxo correto (conforme o usuário):** alvo em condição de ser atacado
+→ servidor autoriza → client gera projétil + som + FLT + desconta
+aljava. Servidor não autoriza (fora de alcance/sem LOS/sem
+perseguição/sem munição — Decisão 21.1) → espera o próximo tick em que
+as condições se repetem, sem nenhum efeito colateral. Binário: autorizou
+e resolveu (consome, seja qual for o resultado) ou não autorizou (nada
+acontece, tenta de novo depois).
+
+**Fix:**
+- `server/spell_completion_processor.py::_server_apply_ranged_physical`:
+  o bloco de consumo de flecha foi movido pra **logo depois do
+  hit-roll** (`resolve_attack_outcome`), **antes** do
+  `if outcome in ("miss","dodge","parry"): return`. Agora consome em
+  hit/crit/block E TAMBÉM em miss/dodge/parry — qualquer resultado que
+  passou pelas checagens de autorização (alvo vivo, não evadindo, LOS
+  ok) consome. Só os retornos ANTERIORES ao hit-roll (alvo morto,
+  `_is_evading` → outcome `"evade"`, LOS falhando dentro da própria
+  função — rede de segurança só relevante pra skills, auto-attack já é
+  barrado antes disso pela Decisão 21.1) continuam sem consumir, porque
+  nesses casos o tiro nem chega a ser autorizado/resolvido de verdade.
+- `client/remote_entity_handlers.py::_apply_combat_result`: a condição
+  de desconto local (adicionada na 21.3) mudou de `damage > 0` pra
+  `outcome != "evade"` — desconta em qualquer resultado real (incluindo
+  miss/dodge/parry/immune), só não desconta no caso "evade" (o único
+  outcome de "não autorizado" que ainda assim chega ao cliente via
+  COMBAT_RESULT, já que `combat_processor.py` sempre despacha o
+  resultado de `_server_apply_ranged_physical`, autorizado ou não).
+
+Validado: `py_compile`; suíte completa sem regressão (7F/85P, mesma
+baseline); script headless novo (`test_miss_consumes_arrow.py`, força
+`acerto=0` e confirma que a aljava desconta mesmo com HP do alvo
+inalterado) confirma que miss consome flecha no servidor.
+**Não validado:** sessão manual confirmando a paridade visual completa
+(flecha aparece + aljava desconta juntos, inclusive em erro) e o caso
+"evade" (mob em RETURNING) não descontando.
+
 ---
 
 ## Protocolo — todas as mensagens implementadas

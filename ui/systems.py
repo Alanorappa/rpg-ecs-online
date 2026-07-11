@@ -796,6 +796,8 @@ class PlayerInputSystem(System):
                 from ui.combat_log import LOG as _LOG
                 _LOG.add("Precisa de uma aljava equipada para atirar.", (220, 180, 80))
                 combat_stats.attack_cooldown_timer = 1.0  # cooldown de aviso
+                from debug.archer_debug import ADBG_CLIENT as _ADBG_c_nq
+                _ADBG_c_nq.log_block(entity_id, target_id, "no_quiver_equipped")
             return
 
         _PRE_DRAW_THRESHOLD = 1.0   # segundos antes do disparo para tocar o nock
@@ -814,21 +816,55 @@ class PlayerInputSystem(System):
                 combat_stats.arrow_pre_draw_ready = False
                 if random.random() < 0.30:
                     SOUNDS.play_random(["arrow_nock_1", "arrow_nock_2"], channel_group=(6, 7))
+                    from debug.archer_debug import ADBG_CLIENT as _ADBG_c_nock
+                    _ADBG_c_nock.log("SOUND", entity_id, target_id, which="nock")
 
             if combat_state.is_pursuing and can_act and combat_stats.attack_cooldown_timer <= 0:
                 if quiver.arrow_count <= 0:
                     from ui.combat_log import LOG as _LOG
                     _LOG.add("Aljava vazia! Use Recarregar.", (220, 80, 80))
                     combat_stats.attack_cooldown_timer = 1.0
+                    from debug.archer_debug import ADBG_CLIENT as _ADBG_c_empty
+                    _ADBG_c_empty.log_block(entity_id, target_id, "quiver_empty")
+                    return
+
+                # LOS: bloqueia ANTES de descontar flecha/cooldown otimisticamente
+                # — mesmo padrão já usado pra Bola de Fogo (ver bloco
+                # "_skill_has_proj" acima). Sem isso, um tiro com parede na
+                # frente do alvo tocava som + descontava aljava no cliente
+                # mesmo quando o servidor ia bloquear o disparo (bug real
+                # reportado pelo usuário — ver
+                # server/spell_completion_processor.py::_server_apply_ranged_physical,
+                # ARQUITETURA_ONLINE.md).
+                from debug.archer_debug import ADBG_CLIENT as _ADBG_c_los
+                _tmap_arch_los = get_tilemap()
+                _has_los_c = (not _tmap_arch_los) or EnemyAISystem._has_line_of_sight(
+                        _tmap_arch_los, pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y)
+                _ADBG_c_los.log_los(entity_id, target_id, _has_los_c,
+                                    p_tile=(pl_tile_x, pl_tile_y), t_tile=(tgt_tile_x, tgt_tile_y))
+                if not _has_los_c:
+                    WARN.add("Há obstáculos no caminho")
+                    combat_stats.attack_cooldown_timer = 0.5  # throttle do aviso
+                    _ADBG_c_los.log_block(entity_id, target_id, "los_blocked")
                     return
 
                 # Online: flecha 100% server-driven — nasce em _apply_combat_result
                 # ao chegar o COMBAT_RESULT (source="auto"), igual Bola de Fogo nasce
-                # no is_completion. Aqui só avançamos cooldown local (UI) e a aljava;
-                # nada de criar PlayerProjectile/sons — sem isso o golpe fatal podia
-                # ficar sem flecha quando o servidor matava o mob antes do timer local.
+                # no is_completion. O desconto da aljava TAMBÉM só acontece lá agora
+                # (mesmo evento que cria a flecha visual) — NUNCA aqui antecipado.
+                # Bug real (10/07/2026): este cooldown LOCAL não congela do mesmo
+                # jeito que o do servidor (server/combat_processor.py congela o
+                # tick INTEIRO enquanto bloqueado por LOS/alcance/perseguição; aqui
+                # só decrementa sem parar, então zera mais cedo sempre que há
+                # bloqueio) — o cliente "atirava" (descontava flecha) bem mais vezes
+                # que o servidor de verdade disparava (medido: 52 descontos locais
+                # vs 29 tiros reais do servidor no mesmo teste), causando flecha
+                # descontada sem projétil nenhum aparecer. Aqui só avançamos
+                # cooldown/pré-tensionamento locais (feel de UI); ver
+                # client/remote_entity_handlers.py::_apply_combat_result pro
+                # desconto real.
                 if self._net:
-                    quiver.arrow_count -= 1
+                    _ADBG_c_los.log_fire_ok(entity_id)
                     combat_stats.attack_cooldown_timer = combat_stats.get_attack_cooldown()
                     combat_stats.arrow_pre_draw_ready  = True
                     enter_combat(combat_state)

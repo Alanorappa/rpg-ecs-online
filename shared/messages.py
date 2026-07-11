@@ -252,8 +252,10 @@ def _now_ms() -> int:
 # {
 #   "attacker": int      eid do atacante
 #   "target":   int      eid do alvo
-#   "outcome":  str      "hit" | "miss" | "crit" | "dodge" | "parry" | "block"
-#   "damage":   int      dano causado (0 em miss/dodge/parry)
+#   "outcome":  str      "hit" | "miss" | "crit" | "dodge" | "parry" | "block" |
+#                        "evade" (mob em modo evasão/RETURNING — dano 0, sem
+#                        aggro, ver ARQUITETURA_ONLINE.md)
+#   "damage":   int      dano causado (0 em miss/dodge/parry/evade)
 #   "hp_after": int      HP do alvo após o golpe
 #   "source":   str      "auto" | skill_id (o que causou o dano)
 # }

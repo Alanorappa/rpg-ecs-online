@@ -111,6 +111,20 @@ CLASS_BASE_ACERTO: dict[str, float] = {
     "arqueiro":  50.0,
 }
 
+# Regen base por classe (fração de max_hp/max_mana a cada 5s, FORA de combate
+# — ver BaseCombatStateSystem._tick_hp5/_tick_mana_regen, core_systems.py).
+# Valor FIXO por classe — decisão do usuário (09/07/2026): regen é percentual,
+# então NÃO cresce com level (senão empilharia com Spirit de item/talento até
+# ficar um regen absurdo). "hp5"/"mp5" somam com Spirit (CharacterStats.spirit,
+# 10 pts = +1%) em apply_char_stats_to_combat; "mp5_ic" (mana EM combate)
+# NUNCA leva Spirit — só talento pode alterá-lo (via Modifier, já que está em
+# stat_fns._MODIFIABLE_ATTRS). Campo ausente = 0 (classe sem o recurso).
+CLASS_BASE_REGEN: dict[str, dict] = {
+    "guerreiro": {"hp5": 0.03},
+    "mago":      {"hp5": 0.01, "mp5": 0.04, "mp5_ic": 0.01},
+    "arqueiro":  {"hp5": 0.01},
+}
+
 # Concentração máxima por classe (0 = recurso inexistente para a classe).
 # Inicia sempre cheia — é um recurso de sustain, não de acúmulo como a Raiva.
 CLASS_CONCENTRATION: dict[str, int] = {
@@ -157,11 +171,12 @@ def apply_char_stats_to_combat(char_stats: CharacterStats,
     gerenciados por sync_attack_interval (init/load) e pelo sistema de equip/unequip.
     """
     p = permanent
-    total_str = char_stats.strength      + (p.strength      if p else 0)
-    total_int = char_stats.intelligence  + (p.intelligence  if p else 0)
-    total_agi = char_stats.agility       + (p.agility       if p else 0)
-    total_vit = char_stats.vitality      + (p.vitality      if p else 0)
-    total_def = char_stats.defense       + (p.defense       if p else 0)
+    total_str    = char_stats.strength      + (p.strength      if p else 0)
+    total_int    = char_stats.intelligence  + (p.intelligence  if p else 0)
+    total_agi    = char_stats.agility       + (p.agility       if p else 0)
+    total_vit    = char_stats.vitality      + (p.vitality      if p else 0)
+    total_def    = char_stats.defense       + (p.defense       if p else 0)
+    total_spirit = char_stats.spirit        + (p.spirit        if p else 0)
 
     # ── HP: base fixo por classe + VIT×10 (stamina = HP direto, ×1) ──────────
     _base_hp = CLASS_BASE_HP.get(char_stats.class_id, 100)
@@ -194,6 +209,14 @@ def apply_char_stats_to_combat(char_stats: CharacterStats,
     # ── Acerto: base por classe + todos os atributos ×0.1% ────────────────────
     _base_acerto = CLASS_BASE_ACERTO.get(char_stats.class_id, 50.0)
     combat_stats.base_acerto = _base_acerto + (total_str + total_int + total_agi) * 0.1
+
+    # ── Regen (hp5/mp5 fora de combate, mp5_ic em combate) ────────────────────
+    # Base fixa por classe (CLASS_BASE_REGEN) + Spirit só em hp5/mp5 (10 pts =
+    # +1%) — mp5_ic NUNCA leva Spirit, só talento (decisão do usuário).
+    _regen = CLASS_BASE_REGEN.get(char_stats.class_id, {})
+    combat_stats.base_hp5    = _regen.get("hp5", 0.01) + total_spirit * 0.001
+    combat_stats.base_mp5    = _regen.get("mp5", 0.0)  + total_spirit * 0.001
+    combat_stats.base_mp5_ic = _regen.get("mp5_ic", 0.0)
 
     combat_stats._recalculate_effective_stats()
 

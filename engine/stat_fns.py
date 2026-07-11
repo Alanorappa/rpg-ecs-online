@@ -16,6 +16,10 @@ _MODIFIABLE_ATTRS: tuple = (
     "stamina", "armor", "attack_power", "spell_power", "haste_rating",
     "crit_rating", "attack_interval", "hit_rating", "armor_penetration",
     "dodge_rating", "parry_rating", "block_rating", "block_value", "acerto",
+    # hp5/mp5 (regen fora de combate) e mp5_ic (mana EM combate) — base fixa
+    # por classe (CLASS_BASE_REGEN, stats_system.py); item/talento futuro
+    # entra aqui de graça via Modifier, mesmo mecanismo dos outros atributos.
+    "hp5", "mp5", "mp5_ic",
 )
 _MODIFIABLE_SET = frozenset(_MODIFIABLE_ATTRS)
 
@@ -34,6 +38,9 @@ _STAT_CLAMPS: dict = {
     "parry_rating":      (0.0, None),
     "block_rating":      (0.0, None),
     "block_value":       (0.0, None),
+    "hp5":               (0.0, None),   # fração 0..N (0.01 = 1%) — nunca negativo
+    "mp5":               (0.0, None),
+    "mp5_ic":            (0.0, None),
 }
 
 

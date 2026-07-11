@@ -146,6 +146,7 @@ class SaveSyncHandlers:
                 "agility":          char.agility,
                 "vitality":         char.vitality,
                 "defense":          char.defense,
+                "spirit":           char.spirit,
                 "max_hp":           cs.max_hp if cs else 210,
                 "current_hp":       cs.current_hp if cs else 210,
             }

@@ -31,7 +31,8 @@ def apply_damage_core(world, target_id: int, dmg: int, *,
     vale para os 3 caminhos.
 
     Invariantes:
-      - alvo com current_hp <= 0 ou is_immune: dano bloqueado
+      - alvo com current_hp <= 0, is_immune ou em modo evasão (AIControlled.
+        state == "RETURNING", ver EnemyAISystem): dano bloqueado
       - overkill preservado (current_hp pode ficar negativo; nunca clampar)
       - dano > 0 quebra polymorph e sleep (sleep: on_expire_effect cancelado
         para não aplicar o slow encadeado ao acordar)
@@ -50,18 +51,25 @@ def apply_damage_core(world, target_id: int, dmg: int, *,
     duplicar esse hook em cada handler de skill — client offline não passa
     nada (no-op).
 
-    Retorna: "blocked_dead" | "blocked_immune" | "applied" | "killed".
+    Retorna: "blocked_dead" | "blocked_immune" | "blocked_evade" | "applied" | "killed".
     O chamador mantém a responsabilidade pelo que NÃO é invariante:
     cálculo do dano, outcome (crit/block/...), aggro, enter_combat,
     feedback visual, broadcast de rede.
     """
-    from engine.components import CombatStats, CombatState, StatusEffects, PendingDeath
+    from engine.components import CombatStats, CombatState, StatusEffects, PendingDeath, AIControlled
     cs = world.get_component(target_id, CombatStats)
     if not cs or cs.current_hp <= 0:
         return "blocked_dead"
     cst = world.get_component(target_id, CombatState)
     if cst and cst.is_immune:
         return "blocked_immune"
+    ai = world.get_component(target_id, AIControlled)
+    if ai and ai.state == "RETURNING":
+        # Modo evasão (estilo WoW): mob voltando pro spawn é imune a
+        # dano/aggro até chegar — rede de segurança final aqui; o feedback
+        # visual ("Evadiu!") e o bloqueio de re-aggro ficam por conta de
+        # cada chamador (ver EnemyAISystem/CombatSystem.deal_damage).
+        return "blocked_evade"
 
     cs.current_hp -= dmg  # overkill preservado por contrato
 
@@ -245,7 +253,7 @@ class StatusEffectSystem:
 
     def _apply_tick(self, eid: int, effect) -> None:
         from engine.components import (CombatStats, CombatState, Position,
-                                 PlayerControlled, PendingDeath)
+                                 PlayerControlled, PendingDeath, AIControlled)
         from content.status_effects_data import EFFECT_DEFS
 
         cs  = self.world.get_component(eid, CombatStats)
@@ -257,6 +265,11 @@ class StatusEffectSystem:
         # Entidades imunes (Bloco de Gelo) são a única exceção.
         cst = self.world.get_component(eid, CombatState)
         if cst and cst.is_immune:
+            return
+        # Modo evasão: mob em RETURNING não sofre (nem se cura por) tick de
+        # status effect — mesmo guard de is_immune acima, ver apply_damage_core.
+        ai = self.world.get_component(eid, AIControlled)
+        if ai and ai.state == "RETURNING":
             return
 
         defn  = EFFECT_DEFS.get(effect.effect_type)
@@ -340,8 +353,10 @@ class BaseCombatStateSystem:
     RAGE_DECAY_INTERVAL = 3.0   # segundos entre cada decaimento de Rage
 
     MANA_REGEN_INTERVAL = 5.0   # segundos entre cada tick de regen de mana
-    MANA_REGEN_OOC_PCT  = 0.04  # % de max_mana por tick fora de combate
-    MANA_REGEN_IC_PCT   = 0.01  # % de max_mana por tick em combate
+    # Taxas (% de max_mana por tick) NÃO são mais constantes fixas — vêm de
+    # CombatStats.mp5 (fora de combate) / .mp5_ic (em combate), derivadas por
+    # classe em stats_system.CLASS_BASE_REGEN + Spirit (só mp5, nunca mp5_ic —
+    # mana em combate é controlada por talento). Ver _tick_mana_regen.
 
     def __init__(self, world) -> None:
         self.world = world
@@ -411,10 +426,12 @@ class BaseCombatStateSystem:
         return None
 
     @classmethod
-    def _tick_mana_regen(cls, cs, char, dt: float):
-        """Regen de mana (Mago) — % de max_mana a cada MANA_REGEN_INTERVAL
-        (menor em combate). Único produtor autoritativo é o SERVIDOR — ver
-        ServerCombatStateSystem.update() em core_systems.py e
+    def _tick_mana_regen(cls, cs, char, cst, dt: float):
+        """Regen de mana (Mago) — % de max_mana a cada MANA_REGEN_INTERVAL,
+        taxa vinda de CombatStats.mp5 (fora de combate, Spirit entra aqui) ou
+        .mp5_ic (em combate, SÓ talento — Spirit nunca afeta mana em combate,
+        decisão do usuário 09/07/2026). Único produtor autoritativo é o
+        SERVIDOR — ver ServerCombatStateSystem.update() em core_systems.py e
         spell_system.ManaSystem (cliente só prediz offline, sem servidor pra
         confirmar; online esperava o STATS_UPDATE, evitando o desync onde o
         cliente regenerava mana sozinho e o servidor nunca sabia — ver
@@ -429,7 +446,9 @@ class BaseCombatStateSystem:
             return None
         char.mana_regen_timer -= cls.MANA_REGEN_INTERVAL
         in_combat = bool(cs and cs.in_combat)
-        rate      = cls.MANA_REGEN_IC_PCT if in_combat else cls.MANA_REGEN_OOC_PCT
+        rate      = (cst.mp5_ic if in_combat else cst.mp5) if cst else 0.0
+        if rate <= 0:
+            return None
         regen     = max(1, int(char.max_mana * rate))
         old_mana  = char.mana
         char.mana = min(char.max_mana, char.mana + regen)
@@ -563,7 +582,7 @@ class ServerCombatStateSystem(BaseCombatStateSystem):
                     "hp_max":     cst.max_hp,
                 })
 
-            mana_result = self._tick_mana_regen(cs, char, dt)
+            mana_result = self._tick_mana_regen(cs, char, cst, dt)
             if mana_result:
                 old_mana, new_mana = mana_result
                 self.mana_events.append({

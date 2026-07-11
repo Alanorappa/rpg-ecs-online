@@ -108,20 +108,103 @@ class CombatProcessorMixin:
             # aqui, já segue reto pro dano melee mais abaixo.
             if _is_ranged_p:
                 if not cs.is_pursuing:
+                    from debug.archer_debug import ADBG_SERVER as _ADBG_np
+                    _ADBG_np.log_block(player_eid, target_eid, "not_pursuing")
                     continue
                 if not _qv_cp or getattr(_qv_cp, "item_type", "") != "quiver" \
                         or _qv_cp.arrow_count < 1:
+                    from debug.archer_debug import ADBG_SERVER as _ADBG_nq
+                    _ADBG_nq.log_block(player_eid, target_eid, "no_quiver_or_empty",
+                                       arrows=getattr(_qv_cp, "arrow_count", None))
                     continue
 
             _srv_dist = chebyshev(player_tm.current_tile_x, player_tm.current_tile_y,
                                   target_tm.current_tile_x, target_tm.current_tile_y)
+            if _is_ranged_p:
+                from debug.archer_debug import ADBG_SERVER as _ADBG_attempt
+                _ADBG_attempt.log_periodic("ATTEMPT", player_eid, target_eid, interval=1.0,
+                                  dist=_srv_dist, attack_range=attack_range,
+                                  cooldown=round(self._attack_timers.get(session_id, 0.0), 2),
+                                  arrows=_qv_cp.arrow_count if _qv_cp else None,
+                                  is_pursuing=cs.is_pursuing)
             if _srv_dist > attack_range:
+                if _is_ranged_p:
+                    from debug.archer_debug import ADBG_SERVER as _ADBG_range
+                    _ADBG_range.log_block(player_eid, target_eid, "out_of_range",
+                                          dist=_srv_dist, attack_range=attack_range)
                 continue
+
+            # Linha de visão (só ranged — melee é range=1, obstrução não se
+            # aplica na prática): obstáculo BLOQUEIA O ATAQUE INTEIRO, antes
+            # de qualquer efeito colateral — nem cooldown é consumido (mesmo
+            # tratamento do check de range acima: o tiro nem foi tentado).
+            # Decisão do usuário (revisão da Decisão 21, ARQUITETURA_ONLINE.md):
+            # a primeira versão deste fix tratava obstáculo como "miss" (dano
+            # 0, mas som+projétil ainda apareciam, só sem consumir flecha/agro)
+            # — o usuário corrigiu: o comportamento certo é NADA acontecer
+            # (sem som, sem projétil, sem flecha, sem agro), igual estar fora
+            # de alcance. O guard dentro de _server_apply_ranged_physical
+            # (retorna "miss") continua existindo só como rede de segurança
+            # pras SKILLS que reusam essa função (Tiro Repulsivo etc. já
+            # commitaram visualmente o lançamento antes do hit resolver —
+            # não dá pra "descommitar" do mesmo jeito que o auto-attack, que
+            # ainda nem tinha tocado som nenhum neste ponto).
+            if _is_ranged_p:
+                from engine.components import Tilemap as _TMap_cp
+                from debug.archer_debug import ADBG_SERVER as _ADBG_los
+                _los_map_cp    = self.get_entity_map(target_eid)
+                _los_bundle_cp = self._map_bundles.get(_los_map_cp) if _los_map_cp else None
+                _los_tmap_cp   = (self.world.get_component(_los_bundle_cp.tilemap_entity, _TMap_cp)
+                                  if _los_bundle_cp is not None else None)
+                if _los_tmap_cp is not None:
+                    from engine.world_systems import EnemyAISystem as _EAIS_cp
+                    _has_los_cp = _EAIS_cp._has_line_of_sight(
+                            _los_tmap_cp, player_tm.current_tile_x, player_tm.current_tile_y,
+                            target_tm.current_tile_x, target_tm.current_tile_y)
+                    _ADBG_los.log_los(player_eid, target_eid, _has_los_cp,
+                                      p_tile=(player_tm.current_tile_x, player_tm.current_tile_y),
+                                      t_tile=(target_tm.current_tile_x, target_tm.current_tile_y))
+                    if not _has_los_cp:
+                        _ADBG_los.log_block(player_eid, target_eid, "los_blocked")
+                        # Bug real encontrado via debug log (09/07/2026): o
+                        # `continue` aqui pula o enter_combat() que só rodava
+                        # DEPOIS do cooldown (linha ~217, "Ataque disparou →
+                        # enter_combat"). Antes deste fix de LOS existir, um
+                        # tiro "bloqueado" ainda chegava até lá (virava "miss"
+                        # server-side) e mantinha o timer de combate vivo. Com
+                        # o bloqueio adiantado (decisão do usuário — não gerar
+                        # som/projétil), um alvo alternando dentro/fora de
+                        # cobertura por 6s+ (OUT_OF_COMBAT_DURATION,
+                        # components.py) nunca mais chamava enter_combat,
+                        # `combat_timer` expirava sozinho
+                        # (_tick_combat_timer, core_systems.py) e
+                        # `is_pursuing` virava False silenciosamente — o
+                        # arqueiro "parava de atacar do nada", e como o
+                        # client nunca fica sabendo que o servidor desistiu
+                        # (is_pursuing não é resincronizado), o client
+                        # continuava a predição local otimista de flecha pra
+                        # sempre (o bug de "desconta sem gerar flecha").
+                        # Continuar tentando atirar (mesmo bloqueado) CONTA
+                        # como estar em combate — só o disparo em si (som/
+                        # projétil/flecha/agro) fica bloqueado.
+                        _player_cst_los = self.world.get_component(player_eid, CombatState)
+                        if _player_cst_los:
+                            from engine.stat_fns import enter_combat as _enter_combat_los
+                            _enter_combat_los(_player_cst_los)
+                        continue
+                else:
+                    # Tilemap não encontrado pro mapa do alvo — LOS não checada
+                    # de verdade (deixa passar); logar pra saber se é a causa
+                    # do "para do nada" (register_map_services_for não rodou?).
+                    _ADBG_los.log("LOS", player_eid, target_eid, has_los="NO_TILEMAP")
 
             # Cooldown de ataque (inicializa em 0 para atacar imediatamente no primeiro range)
             timer = self._attack_timers.get(session_id, 0.0) - dt
             if timer > 0:
                 self._attack_timers[session_id] = timer
+                if _is_ranged_p:
+                    from debug.archer_debug import ADBG_SERVER as _ADBG_cd
+                    _ADBG_cd.log_block(player_eid, target_eid, "cooldown", remaining=round(timer, 2))
                 continue
             interval = player_cs.attack_interval if player_cs else 2.0
             self._attack_timers[session_id] = interval
@@ -130,10 +213,26 @@ class CombatProcessorMixin:
             # com crit/block/armor); melee usa deal_damage normal. ──
             hp_before = target_cs.current_hp
             if _is_ranged_p:
+                from debug.archer_debug import ADBG_SERVER as _ADBG_fire
+                from engine.components import AIControlled as _AIC_dbg
+                _arrows_before_fire = _qv_cp.arrow_count if _qv_cp else None
+                _mob_ai_dbg = self.world.get_component(target_eid, _AIC_dbg)
+                _ai_state_before_fire = _mob_ai_dbg.state if _mob_ai_dbg else None
+                _ADBG_fire.log_fire_ok(player_eid)
                 dead, _outcome, damage = self._server_apply_ranged_physical(
                     player_eid, target_eid, is_ability=False)
                 hp_real  = target_cs.current_hp
                 hp_after = max(0, hp_real)
+                _arrows_after_fire = _qv_cp.arrow_count if _qv_cp else None
+                _ADBG_fire.log("FIRE", player_eid, target_eid,
+                               outcome=_outcome, damage=damage)
+                if _arrows_before_fire != _arrows_after_fire:
+                    _ADBG_fire.log("ARROW", player_eid, target_eid,
+                                   arrows_before=_arrows_before_fire, arrows_after=_arrows_after_fire)
+                _ai_state_after_fire = _mob_ai_dbg.state if _mob_ai_dbg else None
+                if _ai_state_before_fire != _ai_state_after_fire:
+                    _ADBG_fire.log("AGGRO", player_eid, target_eid,
+                                   state_before=_ai_state_before_fire, state_after=_ai_state_after_fire)
             else:
                 dead, _outcome = deal_damage(player_eid, target_eid, "physical")
                 hp_real  = target_cs.current_hp

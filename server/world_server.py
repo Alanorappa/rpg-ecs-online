@@ -569,6 +569,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             char.agility          = int(_stats.get("agility",      char.agility))
             char.vitality         = int(_stats.get("vitality",     char.vitality))
             char.defense          = int(_stats.get("defense",      char.defense))
+            char.spirit           = int(_stats.get("spirit",       char.spirit))
         self.world.add_component(eid, char)
 
         perm = PermanentStats()
@@ -804,6 +805,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 "agility":          char.agility,
                 "vitality":         char.vitality,
                 "defense":          char.defense,
+                "spirit":           char.spirit,
                 "max_hp":           cs.max_hp if cs else 200,
             }
         if wall:
@@ -2482,6 +2484,42 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                         "outcome":  "regen", "hp_after": _td_cs.current_hp,
                         "source":   "regen",
                     })
+
+        # ── Regen de mob fora de combate (1% de max_hp a cada 3s) ────────────
+        # Substitui a cura instantânea que existia ao sair de RETURNING
+        # (EnemyAISystem, Decisão 20 em ARQUITETURA_ONLINE.md) — o usuário
+        # reportou que o client não via o HP atualizar (a cura instantânea
+        # nunca passava pelo canal de broadcast). Reaproveita CombatStats.hp5
+        # (já default 0.01 = 1% pra qualquer mob — nunca sobrescrito em
+        # create_enemy, só o TrainingDummy customiza) com intervalo PRÓPRIO
+        # de 3s (distinto do hp5 de player/dummy, que é 5s) — daí o timer
+        # separado (_mob_regen_timer) em vez de reusar hp5_timer, que
+        # assumiria sempre 5s se algum outro código também o lesse.
+        # Só regenera fora de combate (IDLE/RETURNING, igual ao "in_combat"
+        # do player) — mob CHASING/ATTACKING/AGGRO_DELAY/KITING não cura.
+        # Broadcast via _combat_this_tick (mesmo canal do HP5 de player/
+        # dummy acima) — chega a QUALQUER observador com o mob em
+        # known_eids, não só o dono (mob não tem "dono").
+        from engine.components import AIControlled as _AICregen
+        for _mregen_eid in self._mob_eids:
+            _mregen_cs = self.world.get_component(_mregen_eid, CombatStats)
+            if not _mregen_cs or _mregen_cs.current_hp <= 0 or _mregen_cs.current_hp >= _mregen_cs.max_hp:
+                continue
+            _mregen_ai = self.world.get_component(_mregen_eid, _AICregen)
+            if not _mregen_ai or _mregen_ai.state not in ("IDLE", "RETURNING"):
+                continue
+            _mregen_ai.regen_timer += dt
+            if _mregen_ai.regen_timer >= 3.0:
+                _mregen_ai.regen_timer -= 3.0
+                _old_mregen_hp = _mregen_cs.current_hp
+                _regen_amt     = max(1, round(_mregen_cs.max_hp * _mregen_cs.hp5))
+                _mregen_cs.current_hp = min(_mregen_cs.max_hp, _old_mregen_hp + _regen_amt)
+                self._combat_this_tick.append({
+                    "attacker": -1, "target":  _mregen_eid,
+                    "damage":   -(_mregen_cs.current_hp - _old_mregen_hp),
+                    "outcome":  "regen", "hp_after": _mregen_cs.current_hp,
+                    "source":   "regen",
+                })
 
         # ── ActiveRegen (consumíveis HoT — HP) ───────────────────────────────
         from engine.components import ActiveRegen as _AR

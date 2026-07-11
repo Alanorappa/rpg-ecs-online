@@ -85,11 +85,25 @@ def set_entity_tile(ws, eid: int, tx: int, ty: int) -> None:
 
 
 def teleport_mob_to_player(ws, mob_eid: int, player_eid: int, offset_x: int = 1):
-    """Move mob para o tile adjacente ao player, sincroniza Position e reseta AI."""
-    from engine.components import TileMovement, AIControlled
+    """Move mob para o tile adjacente ao player, sincroniza Position e reseta AI.
+
+    Também realinha InitialPosition (âncora do leash) pro tile novo — sem
+    isso, o mob fica "impossivelmente longe" do próprio spawn original e
+    EnemyAISystem entra em RETURNING/evasão assim que o teste roda um tick
+    (ver ARQUITETURA_ONLINE.md, Decisão 20: mob em RETURNING é imune a
+    dano/aggro). Testes que quiserem exercitar leash/RETURNING de propósito
+    devem mover o mob SEM essa realinhagem (ou setar InitialPosition manualmente
+    de volta pra longe, depois de chamar este helper)."""
+    from engine.components import TileMovement, AIControlled, InitialPosition
+    from engine.tileset import TILE_SIZE as _TS_tp
     ptm = ws.world.get_component(player_eid, TileMovement)
     if ptm:
-        set_entity_tile(ws, mob_eid, ptm.current_tile_x + offset_x, ptm.current_tile_y)
+        _tx, _ty = ptm.current_tile_x + offset_x, ptm.current_tile_y
+        set_entity_tile(ws, mob_eid, _tx, _ty)
+        ip = ws.world.get_component(mob_eid, InitialPosition)
+        if ip:
+            ip.x = _tx * _TS_tp + _TS_tp // 2
+            ip.y = _ty * _TS_tp + _TS_tp // 2
     # Reseta AI state para IDLE — garante que aggro check vai funcionar
     ai = ws.world.get_component(mob_eid, AIControlled)
     if ai:

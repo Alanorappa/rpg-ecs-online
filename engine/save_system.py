@@ -168,6 +168,7 @@ def save_game(world, player_entity: int, current_map_file: str, slot: int = 0) -
             "agility":          char.agility,
             "vitality":         char.vitality,
             "defense":          char.defense,
+            "spirit":           char.spirit,
             "spawn_tile_x":     char.spawn_tile_x,
             "spawn_tile_y":     char.spawn_tile_y,
             "spawn_map":        char.spawn_map,
@@ -179,6 +180,7 @@ def save_game(world, player_entity: int, current_map_file: str, slot: int = 0) -
                 "agility":      perm.agility      if perm else 0,
                 "vitality":     perm.vitality     if perm else 0,
                 "defense":      perm.defense      if perm else 0,
+                "spirit":       perm.spirit       if perm else 0,
             },
         },
 
@@ -289,6 +291,7 @@ def load_game(world, player_entity: int, slot: int = 0) -> dict | None:
         char.agility          = c.get("agility", 1)
         char.vitality         = c.get("vitality", 3)
         char.defense          = c.get("defense", 2)
+        char.spirit           = c.get("spirit", 0)  # saves antigos não têm — default 0 (correto)
         char.spawn_tile_x = c.get("spawn_tile_x", 1)
         char.spawn_tile_y = c.get("spawn_tile_y", 1)
         char.spawn_map    = c.get("spawn_map", "maps/map_1.csv")
@@ -301,6 +304,7 @@ def load_game(world, player_entity: int, slot: int = 0) -> dict | None:
         perm.agility      = ps.get("agility", 0)
         perm.vitality     = ps.get("vitality", 0)
         perm.defense      = ps.get("defense", 0)
+        perm.spirit       = ps.get("spirit", 0)
 
     # ── Talentos (dados apenas — apply_talent_effects() pelo chamador) ────
     t  = data.get("talents", {})
