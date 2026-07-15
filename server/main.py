@@ -7,7 +7,6 @@ Uso:
     python server/main.py --host 0.0.0.0 --port 8765
 """
 from __future__ import annotations
-from server.log import log
 import asyncio
 import argparse
 import sys
@@ -23,6 +22,15 @@ os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
 # Garante que a raiz do projeto está no path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# IMPORTANTE: qualquer import `server.*`/`shared.*` só funciona DEPOIS do
+# sys.path.insert acima quando este arquivo roda como script
+# (`python server/main.py`) — import no topo quebra com ModuleNotFoundError.
+# Regressão real (15/07/2026): a migração print→logging injetou
+# `from server.log import log` antes do bootstrap e o servidor não subia;
+# a suíte não pegou porque importa módulos como pacote, nunca executa o
+# entry point — ver tests/test_server_entrypoint.py.
+from server.log import log
 
 try:
     import websockets
