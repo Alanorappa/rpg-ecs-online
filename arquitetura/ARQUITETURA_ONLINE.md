@@ -2465,6 +2465,13 @@ Payload `char_data` do servidor confirmado (via grep) sempre incluindo
 **Não validado (na época):** sessão manual em jogo real — confirmado
 posteriormente pelo usuário ("Funcionou perfeitamente").
 
+**Correção (ver §33):** o ajuste de `P_BAR_X1`/`M_HP_X1` descrito acima
+estava ERRADO pro caso do mob (46→47 avançou 1px demais, sobre a própria
+borda) — só coincidentemente certo pras barras de HP/recurso do player.
+Raiz real do "1px curto" original: os 3 pares X0/X1 eram compartilhados
+entre barras cujo asset tem bordas em colunas DIFERENTES (mapeado por
+scan pixel a pixel em §33, não "de olho" como da primeira vez).
+
 ---
 
 ### 32. Mover-se cancelava o auto-attack de guerreiro/mago — generaliza a exceção do arqueiro (can_kite) pra todas as classes (15/07/2026)
@@ -2504,6 +2511,54 @@ _process_player_attacks` só olha `CombatState.target_entity_id` +
 validado em sessão manual de jogo real com mob de verdade (mesma limitação
 de sempre pra fixes de combate — pedido explícito de validação visual do
 usuário fica pendente).
+
+---
+
+### 33. Correção do fix de barras (§31): borda do asset não é reta — X1 único por bar-type causava overflow (15/07/2026)
+
+Usuário reportou regressão: a barra de HP do MOB (após o fix de §31) agora
+passava 1px da conta, pintando por cima da própria borda direita e
+"sumindo" o contorno. Causa raiz: o fix de §31 tinha sido validado só
+visualmente (screenshot ampliado, "olho"), sem inspecionar os pixels reais
+do PNG — assumiu que a borda de cada asset era uma coluna reta única e
+girou `P_BAR_X1`/`M_HP_X1` pra "o último índice válido da arte" (63→62
+convertido pra base nativa: 62; 47 pro mob), quando o correto é "o último
+pixel de INTERIOR antes da borda", que **varia por linha** nesses 2 PNGs
+(bevel/contorno não é geometricamente reto).
+
+Scan pixel a pixel real (`pygame.Surface.get_at()`, script headless,
+15/07/2026) do último pixel de interior (opaco, não-preto) por linha:
+
+| Asset | Linha(s) | Último pixel de interior |
+|---|---|---|
+| `player_hud_bar.png` (64×16) | XP (y=3) | **x=61** |
+| `player_hud_bar.png` | HP (y=5..8) | **x=62** |
+| `player_hud_bar.png` | Recurso (y=10..11) | **x=62** |
+| `mob_hud_bar.png` (48×12) | HP (y=5..6) | **x=46** |
+
+Ou seja: o fix de §31 estava CORRETO para HP/recurso do player (62 é
+certo) mas ERRADO pra XP do player (61, não 62) e pro HP do mob (46, não
+47) — coincidência de 2 dos 3 valores terem ficado certos escondeu o erro
+até o usuário notar visualmente na barra do mob (mais visível em combate
+que a XP, cuja cor roxa contra fundo escuro disfarça o overflow de 1px).
+
+Fix: `ui/hud_bars.py` ganhou um par dedicado `P_XP_X0, P_XP_X1 = 16, 61`
+(só pra XP; `P_BAR_X0/X1 = 16, 62` continua servindo HP+recurso, já
+estava certo) e `M_HP_X1` revertido de 47 para **46**.
+
+**Validado** (desta vez com inspeção de pixel, não só visual): script
+headless que (1) escaneia `x1_native+1` de cada barra nas 4 combinações
+acima e confirma que o pixel é preto/borda intacta, e (2) confirma que o
+fill a 100% realmente alcança `x1_native` (não regride pro bug original de
+"1px curto"). As 4 combinações passam nos 2 checks. Suíte completa sem
+regressão (118/118). `py_compile`.
+
+**Lição:** validação visual de "olho" em screenshot ampliado não pega
+erro de 1px de forma confiável, mesmo ampliado 8x — o próximo ajuste de
+coordenada de asset pixel-art deve usar scan automatizado
+(`get_at()` por linha) em vez de inspeção visual, como feito aqui.
+
+**Não validado:** sessão manual em jogo real.
 
 ---
 

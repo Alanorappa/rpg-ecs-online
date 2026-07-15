@@ -62,10 +62,17 @@ LEVEL_FONT_SIZE = 16
 # player_hud_bar.png — 64x16
 P_SIZE      = (64, 16)
 P_LEVEL_BOX = (1, 1, 14, 14)     # x0, y0, x1, y1 (inclusive)
-# P_BAR_X1: +1 em relação ao mapeamento original (61) — usuário reportou
-# que a barra cheia (100%) terminava 1px antes da borda direita da HUD.
-# Ver M_HP_X1 pro mesmo ajuste na barra de HP do mob (15/07/2026).
+# A borda direita do asset NÃO é reta — mapeada pixel a pixel (15/07/2026,
+# scan automatizado por linha do último pixel de interior não-preto):
+# linha da XP (y=3) termina em x=61; linhas de HP (y=5..8) e recurso
+# (y=10..11) terminam em x=62. Um X1 único (62) pra tudo — ajuste anterior
+# pro relato "barra cheia terminava 1px antes da borda" — corrigia HP/
+# recurso mas fazia a barra de XP pintar por cima do próprio contorno
+# (mesma classe do bug do mob abaixo, achado ao investigar o relato do
+# usuário 15/07/2026 sobre a barra do MOB). P_BAR_X0/X1 seguem servindo
+# HP e recurso; XP usa o par dedicado P_XP_X0/X1.
 P_BAR_X0, P_BAR_X1 = 16, 62
+P_XP_X0,  P_XP_X1  = 16, 61
 P_XP_Y  = (3, 3)
 P_HP_Y  = (5, 8)
 # (10, 11): 2 linhas de preenchimento — linha 12 é a borda preta INFERIOR
@@ -77,10 +84,17 @@ P_RES_Y = (10, 11)
 # mob_hud_bar.png — 48x12
 M_SIZE      = (48, 12)
 M_LEVEL_BOX = (0, 1, 11, 10)
-# M_HP_X1: +1 (46→47) — mesmo ajuste de P_BAR_X1 acima (barra cheia
-# terminava 1px antes da borda direita; 47 é o último índice válido da
-# arte de 48px de largura). 15/07/2026.
-M_HP_X0, M_HP_X1 = 12, 47
+# M_HP_X1 = 46: revertido de 47 (15/07/2026). O scan pixel a pixel (ver
+# comentário de P_BAR_X1 acima) mostra que o último pixel de INTERIOR da
+# barra de HP do mob (linhas y=5,6) é x=46 — x=47 já É o pixel de borda
+# preta. O ajuste anterior (46→47, mesma rodada do fix da barra do
+# player) usou "último índice válido da arte" em vez do último índice de
+# INTERIOR — estavam desalinhados pra este asset especificamente (o do
+# player por coincidência tem HP/recurso terminando exatamente no último
+# índice da arte, mas o do mob não). Causa raiz do bug relatado pelo
+# usuário: a barra a 100% pintava por cima do próprio contorno direito,
+# "sumindo" a borda.
+M_HP_X0, M_HP_X1 = 12, 46
 M_HP_Y = (5, 6)
 
 # Respiro fixo (px de tela) entre sprite→HUD e HUD→fila de efeitos — usado
@@ -193,7 +207,7 @@ def build_player_hud(hp_ratio: float, xp_ratio: float, resource_ratio: float,
     w, h = P_SIZE
     base = pygame.Surface((w, h), pygame.SRCALPHA)
     base.blit(_player_art, (0, 0))
-    _fill_row(base, (P_BAR_X0, P_BAR_X1), P_XP_Y,  xp_ratio,       XP_COLOR)
+    _fill_row(base, (P_XP_X0, P_XP_X1),   P_XP_Y,  xp_ratio,       XP_COLOR)
     _fill_row(base, (P_BAR_X0, P_BAR_X1), P_HP_Y,  hp_ratio,       HP_COLOR)
     _fill_row(base, (P_BAR_X0, P_BAR_X1), P_RES_Y, resource_ratio, resource_color)
 
