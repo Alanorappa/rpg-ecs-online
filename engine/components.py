@@ -359,7 +359,7 @@ class Faction:
     Faction (NPC estático, boneco de treino, blocker) é tratada como
     "sem facção" (sentinela neutro) por engine/faction_system.py — nunca
     quebra por ausência do componente."""
-    faction_id: str = "vida_selvagem"
+    faction_id: str = "monstros_hostis"
 
 @dataclass
 class AIControlled:
@@ -1062,7 +1062,7 @@ class SpawnZone:
                  respawn_cooldown: float,
                  level_min: int = 1, level_max: int = 1,
                  race: str = "Humanoide", entity_class: str = "",
-                 faction: str = "vida_selvagem"):
+                 faction: str = "monstros_hostis"):
         self.center_x = center_x
         self.center_y = center_y
         self.enemy_type = enemy_type        # "melee" ou "ranged"
@@ -1075,10 +1075,11 @@ class SpawnZone:
         self.race = race                    # raça dos inimigos desta zona
         self.entity_class = entity_class   # "" = derivado do tipo (melee→Guerreiro, ranged→Arqueiro)
         # Facção dos mobs desta zona (content/faction_data.py) — default
-        # "vida_selvagem" (neutro com o player) é INTENCIONALMENTE seguro:
-        # zonas de mapa existentes que não migrarem pra uma facção hostil
-        # explícita viram neutras em vez de continuarem hostis "por
-        # engano" (ver ARQUITETURA_ONLINE.md, migração de dados da Fase 2).
+        # "monstros_hostis" preserva o comportamento ATUAL de todo mob
+        # (100% hostil por proximidade hoje): zona não migrada continua
+        # se comportando exatamente como antes, em vez de virar neutra
+        # "por acidente" e mudar o balanceamento do jogo sem intenção
+        # (ver ARQUITETURA_ONLINE.md, Fase 2 do Sistema de Facções).
         self.faction = faction
         self.active_entity_ids: set = set()
         self.respawn_timers: list = []  # um float por morte; cada um corre independentemente

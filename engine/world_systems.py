@@ -52,6 +52,7 @@ from content.enemy_abilities_data import ABILITY_DEFS
 import engine.quest_events as quest_events
 from engine.quest_events import fire as quest_fire
 from engine.stat_fns import add_modifier, remove_modifier, add_timed_modifier, enter_combat
+from engine.faction_system import is_hostile
 
 
 # ── Registro de serviços ─────────────────────────────────────────────────────
@@ -1793,10 +1794,22 @@ class EnemyAISystem(System):
             # dano chegava ao cliente com attacker=-1 (sem mob pra apontar
             # visualmente) sempre que não havia um ataque anterior em cache —
             # ver arquitetura/PROBLEMAS_ARQUITETURA.md.
+            # Facção "neutra"/"amigavel" nunca ataca a partir de IDLE, mesmo
+            # adjacente — só quando já saiu de IDLE por algum motivo legítimo
+            # (AGGRO_DELAY/CHASING/ATTACKING/KITING, sempre alcançados via
+            # aggro por proximidade — já filtrado por is_hostile() acima — ou
+            # aggro por dano, que já move o mob pra fora de IDLE no mesmo
+            # tick em que acontece). Sistema de Facções, Fase 2. Mob hostil
+            # continua podendo atacar direto de IDLE quando nasce/fica
+            # adjacente (comportamento pré-existente, ver comentário acima
+            # sobre a regressão de test_server.py — não mexer nisso pra
+            # facção hostil).
             in_attack_range = (
                 not_same_tile and
                 ai_control.state != "RETURNING" and
-                1 <= chebyshev_dist_to_player <= ai_control.attack_range_tiles
+                1 <= chebyshev_dist_to_player <= ai_control.attack_range_tiles and
+                (ai_control.state != "IDLE"
+                 or is_hostile(self.world, enemy_id, ai_control.target_eid))
             )
 
             # --- Ataque (separado do movimento) ---
@@ -2034,8 +2047,14 @@ class EnemyAISystem(System):
             if ai_control.aggroed_by_damage and dist_to_player_pixels <= _aggro_range_px:
                 ai_control.aggroed_by_damage = False
 
-            # Detecção inicial: apenas mobs IDLE, e somente se o player estiver visível
-            if not _player_invisible and dist_to_player_pixels <= _aggro_range_px and ai_control.state == "IDLE":
+            # Detecção inicial: apenas mobs IDLE, e somente se o player estiver visível.
+            # Facção "neutra" (ou "amigavel") nunca agroa por proximidade — só
+            # entra em combate se atacada primeiro (ver bloco de aggro por dano
+            # em CombatSystem.deal_damage, que já é incondicional e cobre esse
+            # caso). Sistema de Facções, Fase 2 (ARQUITETURA_ONLINE.md).
+            if (not _player_invisible and dist_to_player_pixels <= _aggro_range_px
+                    and ai_control.state == "IDLE"
+                    and is_hostile(self.world, enemy_id, target_eid)):
                 _tilemap_for_los = self._get_tilemap()
                 _has_los = (
                     _tilemap_for_los is None or

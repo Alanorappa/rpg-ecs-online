@@ -2613,10 +2613,14 @@ nenhum**:
   NÃO ganha o componente — facção resolvida via `PlayerControlled` +
   constante, pra não tocar em nenhum call-site de spawn de player nem no
   formato de save.
-- `SpawnZone` (`engine/components.py`) ganha campo `faction` (default
-  `"vida_selvagem"` — INTENCIONALMENTE seguro: zona não migrada vira
-  neutra em vez de continuar hostil "por engano" quando a Fase 2
-  consultar o campo).
+- `SpawnZone`/`Faction`/`create_enemy()` (`engine/components.py`,
+  `engine/entity_factory.py`) — default `"monstros_hostis"` (**correção
+  feita ainda durante a Fase 2**, ver abaixo — o default original desta
+  entrada era `"vida_selvagem"`, que é NEUTRO com o player; como 100% dos
+  mobs hoje são hostis, esse default teria revertido silenciosamente todo
+  mob não migrado pra neutro assim que a Fase 2 passasse a consultar o
+  campo — o oposto de retrocompatível. Corrigido pra `"monstros_hostis"`
+  antes de qualquer sistema de jogo consultar o campo de verdade).
 - `create_enemy()`/`create_spawn_zone()` (`engine/entity_factory.py`)
   ganham parâmetro `faction` opcional, repassado a `Faction()`.
   `SpawnZoneSystem._spawn_one()` (`engine/world_systems.py`) passa
@@ -2641,13 +2645,77 @@ todos os arquivos tocados.
 
 **Próximas fases** (plano completo em
 `C:\Users\l4nce\.claude\plans\expressive-wondering-starlight.md`, será
-copiado pra este arquivo conforme cada fase fecha): Fase 2 (hostil/neutro
-mob-vs-player + migração de dados), Fase 3 (nameplate de NPC — badge de
+copiado pra este arquivo conforme cada fase fecha): Fase 2 (✅ ver §34.1
+abaixo), Fase 3 (nameplate de NPC — badge de
 nível igual ao mob, sem barra de HP), Fase 4 (novo arquétipo de NPC de
 combate + componente `Combatant` genérico pro gate de sync
 `server/world_server.py:2940`, hoje restrito a `Enemy`), Fase 5 (combate
 multi-tipo faccionado de verdade — `_select_target()` deixa de assumir
 `PlayerControlled`, assist/co-aggro entre aliados).
+
+---
+
+### 34.1 Sistema de Facções — Fase 2: hostil/neutro em relação ao player (15/07/2026)
+
+**Correção de design feita ANTES de qualquer sistema consultar o campo**:
+o default `faction="vida_selvagem"` escolhido na Fase 1 (§34) era neutro
+com o player — como 100% dos mobs hoje são hostis, esse default teria
+revertido silenciosamente todo mob não migrado pra neutro assim que
+`EnemyAISystem` passasse a consultar, mudando o balanceamento do jogo sem
+intenção. Trocado pra `"monstros_hostis"` em TODOS os pontos (componente
+`Faction`, `create_enemy()`, `create_spawn_zone()`, `SpawnZone`,
+`_create_spawn_zones_for_map`, `engine/map_loader.py`, `game.py`) —
+retrocompatível de verdade: zona/mob não migrado se comporta EXATAMENTE
+como antes.
+
+**Migração de dados**: os 3 mapas existentes (21 zonas de spawn, contadas
+por leitura direta) ganharam `"faction": "monstros_hostis"` explícito em
+cada `spawn_zone` do JSON (`maps/{map_1,cave_east,cave_west}_entities.json`)
+— migração de conteúdo SEM MUDANÇA DE COMPORTAMENTO (só torna explícito o
+que já era o default). Inserção cirúrgica via regex ancorada em
+`"respawn_cooldown"` (única por zona, confirmado por contagem antes de
+editar) — evita reserializar o JSON inteiro e gerar diff gigante de
+reformatação (primeira tentativa, com `json.dump`, gerou 296 linhas de
+diff pra 10 zonas só por causa de reformatação de arrays; revertida e
+refeita cirurgicamente). Qual raça vira neutra de verdade (ex: lobo) é
+decisão de design/balanceamento do usuário, não tomada aqui — fica pra um
+pedido futuro explícito.
+
+**Mudança de comportamento (2 gates, não 1)**: a primeira tentativa só
+gateou a transição `IDLE→AGGRO_DELAY` por proximidade
+(`EnemyAISystem.update()`, bloco "Detecção inicial") com
+`is_hostile(world, mob_eid, target_eid)`. Suíte nova (`tests/
+test_faction.py`) pegou um SEGUNDO caminho que ignorava esse gate por
+completo: `in_attack_range` (mesma função, ~linha 1797) já é `True` pra
+QUALQUER mob adjacente ao alvo independente do `AIControlled.state`
+(inclusive `IDLE` "de nascença" — comportamento pré-existente e
+INTENCIONAL, documentado inline como fix de uma regressão real anterior:
+sem isso, um mob que nasce adjacente ao player travava em IDLE pra
+sempre). Esse `in_attack_range` alimenta TANTO a promoção de estado pra
+`ATTACKING` quanto a execução de verdade do ataque (`deal_damage`/cast
+ranged) — um mob neutro adjacente a um player atacava imediatamente,
+nunca tendo passado pelo gate de aggro. Fix: `in_attack_range` ganhou mais
+uma cláusula — `ai_control.state != "IDLE" or is_hostile(...)` — mob
+hostil continua atacando direto de IDLE (comportamento antigo intocado);
+mob neutro/amigável só ataca depois de sair de IDLE por um motivo
+legítimo (aggro por dano, que já move o mob pra `AGGRO_DELAY` no mesmo
+tick em que acontece — nunca fica "IDLE com alvo válido provocado").
+
+**Validado**: `tests/test_faction.py` ganhou `TestProximityAggroByFaction`
+(4 testes novos, 18 no arquivo): regressão (mob hostil ainda agroa por
+proximidade — usa `WorldServer` real + `EnemyAISystem.update()` de
+verdade, não só os helpers puros), mob neutro ignora proximidade, mob
+neutro agroa ao ser atacado (via `_process_player_attacks`, mesmo caminho
+real do servidor — precisou de hit garantido, `acerto=100`+
+`dodge_rating=parry_rating=0`, senão o teste era flaky por RNG de acerto,
+pego rodando 5x em sequência), mob neutro agroado por dano ainda respeita
+leash/RETURNING (prova que facção não interfere no mecanismo de evasão já
+existente — reaproveitado sem alteração). Suíte completa 136/136 (132 +
+4), rodada 2x em sequência pra descartar flakiness residual de RNG em
+outros testes que compartilham o mesmo código de combate.
+
+**Não validado:** sessão manual em jogo real com um mob de fação neutra
+de verdade.
 
 ---
 

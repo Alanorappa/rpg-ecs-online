@@ -1,8 +1,14 @@
 """
-tests/test_faction.py — Fase 1 do sistema de facções (ARQUITETURA_ONLINE.md,
-"Sistema de Facções"). Testa content/faction_data.py e engine/faction_system.py
-isoladamente, sem rodar EnemyAISystem/CombatSystem (ainda não os consultam
-nesta fase — infraestrutura pura).
+tests/test_faction.py — Sistema de Facções (ARQUITETURA_ONLINE.md).
+
+TestGetRelationship/TestFactionSystemHelpers: Fase 1, infraestrutura pura
+(content/faction_data.py + engine/faction_system.py isolados, sem rodar
+nenhum sistema de jogo).
+
+TestProximityAggroByFaction: Fase 2, comportamento real de
+EnemyAISystem — mob hostil continua agroando por proximidade
+(regressão), mob neutro ignora proximidade mas agroa ao ser atacado, e
+reverte via o mesmo mecanismo de leash/evasão já existente (RETURNING).
 """
 import os, sys
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -113,6 +119,102 @@ class TestFactionSystemHelpers(unittest.TestCase):
         self.assertTrue(is_hostile(self.world, bandido, guarda))
         # guardas_vila-vs-bandidos é "hostil" (não amigavel) -> can_engage True
         self.assertTrue(can_engage(self.world, guarda, bandido))
+
+
+class TestProximityAggroByFaction(unittest.TestCase):
+    """Fase 2: EnemyAISystem passa a consultar is_hostile() no gate de
+    aggro por proximidade (engine/world_systems.py, bloco "Detecção
+    inicial"). Usa um WorldServer real — precisa do tick completo
+    (EnemyAISystem.update) rodando de verdade, não só os helpers puros
+    de faction_system."""
+
+    def setUp(self):
+        from tests.helpers import make_world_server, spawn_player
+        self.ws  = make_world_server()
+        spawn_player(self.ws, "s1", 130, 374)
+        self.peid = self.ws._player_eids["s1"]
+
+    def _spawn_mob(self, tx: int, ty: int, faction: str) -> int:
+        from engine.entity_factory import create_enemy
+        from engine.components import CombatState, Visible, MapLocation
+        from tests.helpers import set_entity_tile
+        eid = create_enemy(self.ws.world, tx, ty, faction=faction)
+        self.ws._mob_eids.add(eid)
+        self.ws.world.add_component(eid, CombatState())
+        self.ws.world.add_component(eid, Visible())
+        # EnemyAISystem tem 1 instância por mapa, filtrada por MapLocation
+        # (world_systems.py:1515-1517) — mob sem o componente é IGNORADO
+        # por toda instância filtrada, nunca entrando em nenhum tick de IA.
+        self.ws.world.add_component(eid, MapLocation(self.ws._map_file))
+        set_entity_tile(self.ws, eid, tx, ty)
+        return eid
+
+    def test_regressao_mob_hostil_ainda_agroa_por_proximidade(self):
+        from tests.helpers import run_ticks
+        from engine.components import AIControlled
+        mob = self._spawn_mob(131, 374, faction="monstros_hostis")
+        run_ticks(self.ws, 5)   # bem dentro do raio de aggro (adjacente)
+        ai = self.ws.world.get_component(mob, AIControlled)
+        self.assertNotEqual(ai.state, "IDLE",
+                            "mob hostil deveria ter entrado em AGGRO_DELAY/CHASING")
+
+    def test_mob_neutro_ignora_proximidade(self):
+        from tests.helpers import run_ticks
+        from engine.components import AIControlled
+        mob = self._spawn_mob(131, 374, faction="vida_selvagem")
+        run_ticks(self.ws, 30)   # tempo de sobra pra provar que NÃO agroa
+        ai = self.ws.world.get_component(mob, AIControlled)
+        self.assertEqual(ai.state, "IDLE",
+                         "mob neutro não deveria agroar só por proximidade")
+
+    def test_mob_neutro_agroa_ao_ser_atacado(self):
+        from engine.components import AIControlled, CombatState, CombatStats
+        mob = self._spawn_mob(131, 374, faction="vida_selvagem")
+        cst = self.ws.world.get_component(self.peid, CombatState)
+        cst.target_entity_id = mob
+        cst.is_pursuing       = True
+        player_cs = self.ws.world.get_component(self.peid, CombatStats)
+        player_cs.acerto = 100.0   # hit garantido — aggro por dano só dispara se acertar
+        mob_cs = self.ws.world.get_component(mob, CombatStats)
+        mob_cs.current_hp    = mob_cs.max_hp
+        mob_cs.dodge_rating  = 0.0
+        mob_cs.parry_rating  = 0.0
+        self.ws._attack_timers["s1"] = 0.0
+        snap = {mob: mob_cs.current_hp}
+        self.ws._process_player_attacks(0.05, snap)
+
+        ai = self.ws.world.get_component(mob, AIControlled)
+        self.assertNotEqual(ai.state, "IDLE",
+                            "mob neutro deveria agroar após ser atacado")
+        self.assertTrue(ai.aggroed_by_damage)
+
+    def test_mob_neutro_reverte_apos_leash_mesmo_mecanismo_de_hostil(self):
+        """Não é lógica NOVA — prova que o gate de facção não interfere no
+        mecanismo de leash/RETURNING já existente (evasão), reaproveitado
+        sem alteração pra mobs neutros agroados por dano.
+
+        Mob precisa ficar FORA do attack_range_tiles do player (senão
+        EnemyAISystem entra no branch "in_attack_range" — world_systems.py
+        ~1984-1992 — que dá `continue` ANTES do bloco de leash rodar nesse
+        tick, um comportamento pré-existente e independente de facção)."""
+        from engine.components import AIControlled, InitialPosition
+        from tests.helpers import run_ticks, set_entity_tile
+        mob = self._spawn_mob(140, 374, faction="vida_selvagem")
+        set_entity_tile(self.ws, mob, 140, 374)   # 10 tiles do player — fora do attack_range
+        ai = self.ws.world.get_component(mob, AIControlled)
+        ai.state             = "CHASING"
+        ai.target_eid         = self.peid
+        ai.aggroed_by_damage  = True
+        # Afasta o spawn original (InitialPosition) pra além do leash de
+        # dano (MAX_LEASH_RADIUS_DMG=25 tiles) sem mover o mob de verdade.
+        ip = self.ws.world.get_component(mob, InitialPosition)
+        from engine.tileset import TILE_SIZE
+        ip.x = (140 - 30) * TILE_SIZE
+        ip.y = 374 * TILE_SIZE
+
+        run_ticks(self.ws, 3)
+        self.assertEqual(ai.state, "RETURNING",
+                         "mob neutro agroado por dano deveria respeitar leash igual hostil")
 
 
 if __name__ == "__main__":

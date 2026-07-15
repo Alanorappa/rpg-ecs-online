@@ -221,7 +221,7 @@ def create_enemy(world: World, tile_x: int, tile_y: int,
                  race: str = "Humanoide",
                  entity_class: str = "",
                  level: int = 1,
-                 faction: str = "vida_selvagem") -> int:
+                 faction: str = "monstros_hostis") -> int:
     cfg = ENEMY_TIER_CONFIGS.get(tier, ENEMY_TIER_CONFIGS["normal"])
     x = tile_x * TILE_SIZE + TILE_SIZE / 2
     y = tile_y * TILE_SIZE + TILE_SIZE / 2
@@ -542,7 +542,7 @@ def create_spawn_zone(world: World,
                       respawn_cooldown: float,
                       level_min: int = 1, level_max: int = 1,
                       race: str = "Humanoide", entity_class: str = "",
-                      faction: str = "vida_selvagem") -> int:
+                      faction: str = "monstros_hostis") -> int:
     """
     Cria uma entidade invisível de SpawnZone centrada em (center_x, center_y).
     O SpawnZoneSystem gerencia o spawn e respawn dos inimigos desta zona.
