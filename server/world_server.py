@@ -401,6 +401,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         self._create_spawn_zones_for_map(spawn_points.get("spawn_zones", []), map_file)
         self._create_training_dummies(spawn_points.get("training_dummies", []))
+        self._create_combat_npcs(spawn_points.get("combat_npcs", []), map_file)
         self._create_npc_blockers(spawn_points)
 
         # Snapshot DEPOIS — todas as novas entidades ganham MapLocation
@@ -481,6 +482,31 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         from engine.entity_factory import create_training_dummy as _ctd
         for tx, ty in dummies_data:
             eid = _ctd(self.world, tx, ty)
+
+    def _create_combat_npcs(self, combat_npcs_data: list, map_file: str) -> None:
+        """Cria NPCs de combate (guarda, etc — Sistema de Facções, Fase 4) a
+        partir de `{mapa}_entities.json::combat_npcs`. Diferente de
+        `_create_npc_blockers` (entidade mínima, só pra pathfinding): NPC de
+        combate já nasce com todos os componentes reais via
+        `create_combat_npc()`/`_build_combat_entity` (TileMovement/
+        CombatStats/AIControlled/Combatant) — não precisa de blocker
+        separado, e sincroniza pro cliente pelo mesmo pipeline de mob
+        (`_mob_eids`, gate `Combatant`, ver tick principal)."""
+        from engine.entity_factory import create_combat_npc
+        from engine.components import MapLocation as _MLcnpc
+        for c in combat_npcs_data:
+            eid = create_combat_npc(
+                self.world, c["x"], c["y"],
+                faction=c.get("faction", "guardas_vila"),
+                name=c.get("name", ""),
+                profession=c.get("profession", "Guarda"),
+                race=c.get("race", "Humanoide"),
+                entity_class=c.get("entity_class", ""),
+                level=c.get("level", 1),
+                tier=c.get("tier", "normal"),
+                is_ranged=c.get("is_ranged", False),
+            )
+            self.world.add_component(eid, _MLcnpc(map_file))
 
     def _create_npc_blockers(self, spawn_points: dict) -> None:
         """Cria entidades mínimas (TileMovement + NPC) para cada NPC do mapa.

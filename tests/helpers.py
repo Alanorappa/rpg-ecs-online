@@ -142,20 +142,28 @@ def teleport_mob_to_player(ws, mob_eid: int, player_eid: int, offset_x: int = 1)
 
 
 def first_mob(ws) -> int | None:
-    """Primeiro mob REAL (pula o TrainingDummy — ele não ataca, não anda e
-    não morre; testes de combate/morte/loot com ele falham silenciosamente)."""
-    from engine.components import TrainingDummy
+    """Primeiro mob HOSTIL real (pula o TrainingDummy — ele não ataca, não
+    anda e não morre; testes de combate/morte/loot com ele falham
+    silenciosamente — e pula NPC de combate, ex. "Guarda Real" em
+    map_1_entities.json::combat_npcs, Sistema de Facções Fase 4: sua
+    facção normalmente é amigável ao player, então `deal_damage` contra
+    ele é bloqueado por `apply_damage_core`'s `can_engage()` — testes que
+    esperam dano/morte precisam de um mob de verdade, `Enemy`-tagged)."""
+    from engine.components import TrainingDummy, NPC
     for eid in ws._mob_eids:
-        if ws.world.get_component(eid, TrainingDummy) is None:
+        if (ws.world.get_component(eid, TrainingDummy) is None
+                and ws.world.get_component(eid, NPC) is None):
             return eid
     return None
 
 
 def first_ai_mob(ws) -> int | None:
-    """Returns first mob in _mob_eids that has an AIControlled component."""
-    from engine.components import AIControlled
+    """Returns first HOSTILE mob in _mob_eids with AIControlled (pula NPC
+    de combate — ver first_mob() acima)."""
+    from engine.components import AIControlled, NPC
     for eid in ws._mob_eids:
-        if ws.world.get_component(eid, AIControlled):
+        if (ws.world.get_component(eid, AIControlled)
+                and ws.world.get_component(eid, NPC) is None):
             return eid
     return None
 

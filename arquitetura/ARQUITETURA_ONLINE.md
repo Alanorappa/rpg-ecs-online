@@ -2867,8 +2867,58 @@ RNG); regressão: NPC de combate de facção HOSTIL (bandido) continua
 recebendo dano normalmente (gate não é geral demais). Suíte completa
 141/141 (136 + 5), rodada 3x pra descartar flakiness.
 
-**Não validado**: sessão manual em jogo real (nenhum NPC de combate
-existe em mapa nenhum ainda — capacidade pura, sem conteúdo).
+**Não validado (na época)**: sessão manual em jogo real — ver §34.5, o
+usuário pediu conteúdo de teste real logo em seguida.
+
+---
+
+### 34.5 Conteúdo real: loader de `combat_npcs` + guarda de teste (15/07/2026)
+
+Usuário pediu uma forma de validar a Fase 4 ao vivo. Em vez de um hack
+descartável, implementado o loader de conteúdo real que qualquer NPC de
+combate (guarda, etc.) vai precisar de qualquer forma — mesmo padrão já
+usado por `merchants`/`quest_givers`/`spawn_zones`:
+
+- `engine/map_loader.py::_merge_entities_json`: nova chave JSON
+  `"combat_npcs"` (lista de `{x, y, faction, name, profession, race,
+  entity_class, level, tier, is_ranged}`, todos opcionais exceto x/y).
+- `server/world_server.py::_create_combat_npcs()` (novo, chamado em
+  `_load_map_for` junto com spawn_zones/training_dummies): lê a lista e
+  chama `create_combat_npc()` por entrada — diferente de
+  `_create_npc_blockers` (entidade mínima só pra pathfinding), o NPC de
+  combate já nasce com todos os componentes reais, sem precisar de
+  blocker separado.
+- `maps/map_1_entities.json`: 1 entrada de teste — "Guarda Real"
+  (`guardas_vila`, nível 10) em `(117, 388)`, perto do spawn do player
+  `(115, 389)` e dos bonecos de treino. Reversível — remover a entrada
+  de `combat_npcs` some com ele.
+
+**Regressão real pega ao adicionar o conteúdo**: rodar a suíte completa
+DEPOIS de adicionar o guarda de teste (não só depois do código da Fase
+4) quebrou 16 testes, de forma determinística nas 3 repetições — `tests/
+helpers.py::first_mob()`/`first_ai_mob()` (usados por boa parte da
+suíte de combate) só pulavam `TrainingDummy`, então passaram a pegar o
+"Guarda Real" no lugar de um mob hostil de verdade. Como a facção do
+guarda (`guardas_vila`) é `amigavel` com o player, todo `deal_damage`
+contra ele nos testes era bloqueado pelo gate novo de `apply_damage_core`
+(§34.4) — HP nunca mudava, e os testes que esperavam dano/morte falhavam.
+Fix: `first_mob()`/`first_ai_mob()` passaram a pular também qualquer
+entidade com componente `NPC` (não só `TrainingDummy`) — "mob" nesses
+helpers sempre quis dizer "criatura hostil `Enemy`-tagged", nunca um NPC
+de combate amigável, e agora essa distinção existe de verdade no código.
+
+**Lição**: testar Fase 4 "só com testes automatizados" não é suficiente
+depois que CONTEÚDO REAL entra no mapa — helpers de teste que assumem
+"todo mob em `_mob_eids` é hostil" (verdade até a Fase 4 existir) podem
+quebrar silenciosamente. Vale reconferir a suíte completa toda vez que
+conteúdo real (não só código) mudar, mesmo que o código em si já estivesse testado.
+
+**Validado**: smoke-test manual confirmando o guarda spawna, entra em
+`_mob_eids`, facção correta, payload de `ENTITY_SPAWN` com `name`/
+`faction` certos. Suíte completa 141/141, rodada 3x, DEPOIS da correção
+dos helpers.
+
+**Não validado**: sessão manual em jogo real (usuário vai testar agora).
 
 ---
 

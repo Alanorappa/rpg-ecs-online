@@ -107,6 +107,7 @@ def load_map_csv(filepath: str) -> tuple[list[str], list[str], dict, list | None
         "ambient_zones":     [],
         "default_ambient":   "",
         "training_dummies":  [],
+        "combat_npcs":       [],
     }
 
     json_path = base + "_entities.json"
@@ -288,6 +289,26 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
              t.get("level", 1),
              t.get("profession", "Treinador"))
             for t in data["trainers"]
+        ]
+
+    if "combat_npcs" in data:
+        # NPC de combate (guarda, etc — Sistema de Facções, Fase 4):
+        # entidade plenamente sincronizada (Combatant/CombatStats/AIControlled),
+        # não confundir com merchants/quest_givers/blacksmiths/trainers
+        # acima (100% estáticos, sem HP, nunca sincronizados pelo servidor).
+        spawn_points["combat_npcs"] = [
+            {
+                "x":            c["x"], "y": c["y"],
+                "faction":      c.get("faction", "guardas_vila"),
+                "name":         c.get("name", ""),
+                "profession":   c.get("profession", "Guarda"),
+                "race":         c.get("race", "Humanoide"),
+                "entity_class": c.get("entity_class", ""),
+                "level":        c.get("level", 1),
+                "tier":         c.get("tier", "normal"),
+                "is_ranged":    c.get("is_ranged", False),
+            }
+            for c in data["combat_npcs"]
         ]
 
     if "transitions" in data:

@@ -96,6 +96,15 @@
     { "x": 122, "y": 386 },
     { "x": 121, "y": 386 }
   ],
+  "combat_npcs": [
+    {
+      "x": 117, "y": 388,
+      "faction": "guardas_vila",
+      "name": "Guarda Real",
+      "profession": "Guarda",
+      "level": 10
+    }
+  ],
   "transitions": [
     {
       "x": 13,
