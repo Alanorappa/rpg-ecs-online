@@ -47,7 +47,7 @@ import time
 from pathlib import Path
 
 # ── Ative aqui ───────────────────────────────────────────────────────────────
-DBG_ENABLED: bool = True   # <<< já ativado pra depurar o bug do arqueiro — volte pra False depois (dev only — NUNCA em build de distribuição)
+DBG_ENABLED: bool = False  # dev only — NUNCA em build de distribuição
 # ─────────────────────────────────────────────────────────────────────────────
 
 _LOG_DIR = Path(__file__).parent / "logs"

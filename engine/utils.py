@@ -185,6 +185,14 @@ def snap_to_tile(world, entity_id: int, tx: int, ty: int,
     tm.current_tile_y = tm.target_tile_y = ty
     tm.is_moving = False
     tm.progress  = 0.0
+    # Baseline anti-cheat (WorldServer.move_player()): todo deslocamento
+    # forçado real (knockback/teleporte/respawn) precisa resincronizar aqui,
+    # senão o PRIMEIRO MOVE normal depois dele compara contra uma posição
+    # antiga e parece um salto implausível pra velocidade de caminhada.
+    import time as _time_snap
+    tm._last_valid_tile_x = tx
+    tm._last_valid_tile_y = ty
+    tm._last_valid_ts     = _time_snap.time()
     cx = tx * TILE_SIZE + TILE_SIZE // 2
     cy = ty * TILE_SIZE + TILE_SIZE // 2
     tm.start_pixel_x = tm.target_pixel_x = cx

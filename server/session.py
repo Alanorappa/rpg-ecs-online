@@ -113,7 +113,8 @@ class SessionManager:
         return session
 
     @staticmethod
-    def _build_save_merge(srv_data: dict, client_payload: dict) -> dict:
+    def _build_save_merge(srv_data: dict, client_payload: dict,
+                          live_equipment: dict | None = None) -> dict:
         """
         Constrói o dict merged para save_character.
         Regras de autoridade:
@@ -125,7 +126,17 @@ class SessionManager:
           arquitetura/PROBLEMAS_ARQUITETURA.md, vulnerabilidade de gold absoluto).
         - max_hp: SERVIDOR autoritativo (CombatStats.max_hp já inclui bônus de equipamento
           validado, ver Tier B — _reconstruct_item). Mesma razão acima.
-        - inventory, equipment, talents: cliente se disponível, None = não sobrescreve DB
+        - inventory, talents: cliente se disponível, None = não sobrescreve DB
+        - equipment: SERVIDOR autoritativo quando `live_equipment` é fornecido — bug real
+          (11/07/2026): aljava sempre voltava cheia no relogin porque `client_payload["equipment"]`
+          é só um cache (`session.last_client_payload`) do último EQUIP_SYNC/SAVE_STATE que o
+          cliente mandou, nunca atualizado quando flechas são gastas em combate normal (isso é
+          100% server-side, `_server_apply_ranged_physical` mexe direto no Equipment do ECS sem
+          avisar o cliente) — o cache ficava com a contagem de quando a aljava foi equipada
+          (cheia) e essa versão stale sobrescrevia o DB no disconnect/autosave. `live_equipment`
+          (WorldServer.get_player_equipment_data, chamado na hora do save) é o Equipment ATUAL
+          do ECS — sempre correto, elimina a janela de staleness. client_p["equipment"] só
+          sobra como fallback se o entity já não existir mais (ex: corrida rara no disconnect).
         - skills: cliente se disponível, fallback srv_data
         - quests: SEMPRE servidor (mesma regra de skill_levels — progresso/entrega de
           quest é server-autoritativo, ver quest_logic.py/PROBLEMAS_ARQUITETURA.md)
@@ -169,7 +180,7 @@ class SessionManager:
             "mp":        srv_data.get("mp", 100),
             "stats":     merged_stats,
             "inventory": client_p.get("inventory") if client_p else None,
-            "equipment": client_p.get("equipment") if client_p else None,
+            "equipment": live_equipment if live_equipment else (client_p.get("equipment") if client_p else None),
             "talents":   client_p.get("talents")   if client_p else None,
             "skills":    client_skills if client_skills else (srv_data.get("skills") or None),
             "fog":       merged_fog if merged_fog else None,
@@ -200,7 +211,8 @@ class SessionManager:
                 from server.auth import save_character
                 srv_data = self.world_server.get_player_save_data(session_id)
                 if srv_data:
-                    merged = self._build_save_merge(srv_data, session.last_client_payload)
+                    _live_eq = self.world_server.get_player_equipment_data(session_id)
+                    merged = self._build_save_merge(srv_data, session.last_client_payload, _live_eq)
                     try:
                         await save_character(session.char_data["id"], merged)
                         print(f"[Session] saved {session.username!r}  "
@@ -563,7 +575,8 @@ class SessionManager:
         # Inventário foi salvo — zera contador de compras pendentes
         self.world_server.confirm_inventory_save(session.session_id)
         srv_data = self.world_server.get_player_save_data(session.session_id)
-        merged   = self._build_save_merge(srv_data, payload)
+        _live_eq = self.world_server.get_player_equipment_data(session.session_id)
+        merged   = self._build_save_merge(srv_data, payload, _live_eq)
 
         # Wallet.gold NÃO é sobrescrito aqui — é server-autoritativo via process_shop_buy/sell,
         # request_loot e GOLD_UPDATE (já validado/limitado, ver _handle_gold_update). SAVE_STATE
@@ -745,7 +758,8 @@ class SessionManager:
         session.last_client_payload["talents"] = _checked
         from server.auth import save_character
         srv_data = self.world_server.get_player_save_data(session.session_id)
-        merged   = self._build_save_merge(srv_data, session.last_client_payload)
+        _live_eq = self.world_server.get_player_equipment_data(session.session_id)
+        merged   = self._build_save_merge(srv_data, session.last_client_payload, _live_eq)
         try:
             await save_character(session.char_data["id"], merged)
         except Exception as e:
@@ -858,7 +872,8 @@ class SessionManager:
         # servidor não perde a entrega que já concedeu XP/gold/itens.
         from server.auth import save_character
         srv_data = self.world_server.get_player_save_data(session.session_id)
-        merged   = self._build_save_merge(srv_data, session.last_client_payload)
+        _live_eq = self.world_server.get_player_equipment_data(session.session_id)
+        merged   = self._build_save_merge(srv_data, session.last_client_payload, _live_eq)
         try:
             await save_character(session.char_data["id"], merged)
         except Exception as e:
@@ -1928,7 +1943,8 @@ class SessionManager:
             srv_data = self.world_server.get_player_save_data(session.session_id)
             if not srv_data:
                 continue
-            merged = self._build_save_merge(srv_data, session.last_client_payload)
+            _live_eq = self.world_server.get_player_equipment_data(session.session_id)
+            merged = self._build_save_merge(srv_data, session.last_client_payload, _live_eq)
             try:
                 await save_character(session.char_data["id"], merged)
                 saved += 1

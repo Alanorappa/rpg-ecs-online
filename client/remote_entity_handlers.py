@@ -1056,6 +1056,7 @@ class RemoteEntityHandlers:
             class_id=data.get("class_id", "guerreiro"),
             hp=data.get("hp", 100),
             hp_max=data.get("hp_max", 100),
+            level=data.get("level", 1),
         ))
         self._remote_players[server_eid] = local_eid
 
@@ -1173,27 +1174,57 @@ class RemoteEntityHandlers:
                 ety = int(pos.y / _TS)
                 if (etx, ety) not in _fog_vis:
                     continue
-            # Posição idêntica ao RenderSystem offline:
-            # bar_y = int(draw_y - height/2) - 7  →  7px acima do topo do sprite
-            draw_x = pos.x - cam_x
-            draw_y = pos.y - cam_y
-            bar_x  = int(draw_x - W / 2)
-            bar_y  = int(draw_y - W / 2) - 7
+            # Fundo+barra+número do nível saem como UMA ÚNICA Surface (ver
+            # ui/hud_bars.py) inteira em WORLD_LABELS (screen-space) —
+            # nunca mais divididos entre espaço de mundo e espaço de tela
+            # (causava um bug real: número "flutuando" fora da caixinha,
+            # ver ARQUITETURA_ONLINE.md 23.9).
+            _world_y_top = pos.y - W / 2
             if hp_max > 0:
+                from ui.hud_bars import build_mob_hud as _bmh_hb, HUD_GAP_PX as _HGP_hb, effects_row_offset as _ero_hb
+                from ui.world_labels import WORLD_LABELS as _WL_hb
                 ratio = max(0.0, hp / hp_max)
-                pygame.draw.rect(zoom_surf, (80, 0, 0),    (bar_x, bar_y, W, 4))
-                pygame.draw.rect(zoom_surf, (0, 200, 60),  (bar_x, bar_y, int(W * ratio), 4))
 
-                # Status effect icons acima da barra de HP
+                from engine.components import EntityIdentity as _EIdHb
+                _mob_id_hb = self.world.get_component(local_eid, _EIdHb)
+                _level_hb = _mob_id_hb.level if _mob_id_hb is not None else 1
+
+                if not hasattr(self, '_mob_name_font'):
+                    from ui.fonts import make_pixel as _make_pixel_hb
+                    self._mob_name_font = _make_pixel_hb()
+                if not hasattr(self, '_mob_level_font'):
+                    from ui.fonts import make_pixel as _make_pixel_hb2
+                    from ui.hud_bars import LEVEL_FONT_SIZE as _LFS_hb
+                    self._mob_level_font = _make_pixel_hb2(_LFS_hb)
+
+                _hud_surf = _bmh_hb(ratio, _level_hb, self._mob_level_font)
+                _WL_hb.add_icon(pos.x, _world_y_top, _hud_surf,
+                                stack_key=local_eid, gap_before=_HGP_hb)
+
+                # Nome — mesmo padrão do RenderSystem offline (ui/systems.py),
+                # espelhado aqui porque mob remoto não passa por aquele loop
+                # (renderizado à parte, ver _spawn_remote_mob).
+                # EntityIdentity.name/.level já são setados no spawn.
+                if _mob_id_hb is not None:
+                    _WL_hb.add_text(pos.x, _world_y_top,
+                                    _mob_id_hb.name, self._mob_name_font, (220, 200, 180),
+                                    stack_key=local_eid, gap_before=2)
+
+                # Ícones de efeito à DIREITA da HUD (pedido do usuário 11/07/2026)
                 from engine.components import StatusEffects as _SfxDraw
                 _sfx = self.world.get_component(local_eid, _SfxDraw)
                 _active_effects = list(_sfx.effects.values()) if _sfx else []
                 if _active_effects:
-                    from ui.systems import _draw_effect_icons as _dei
+                    from ui.systems import _build_effects_row as _ber_hb
                     if not hasattr(self, '_mob_eff_font'):
                         import pygame as _pg
                         self._mob_eff_font = _pg.font.Font(None, 18)
-                    _dei(zoom_surf, draw_x, bar_y, _active_effects, self._mob_eff_font)
+                    _row = _ber_hb(_active_effects, self._mob_eff_font)
+                    if _row is not None:
+                        _xo, _yo = _ero_hb(_hud_surf)
+                        _WL_hb.add_icon_offset(pos.x, _world_y_top, _row,
+                                              x_offset=_xo, y_offset=_yo,
+                                              halign="left", valign="center")
 
     def _draw_remote_corpses(self, cam_x: float, cam_y: float) -> None:
         """Desenha corpos de mobs mortos recebidos do servidor.
@@ -1252,28 +1283,48 @@ class RemoteEntityHandlers:
                 pass
 
     def _draw_remote_players(self, cam_x: float, cam_y: float) -> None:
-        """Nome + HP dos jogadores remotos. Posição lida do ECS (TileMovementSystem anima).
+        """HUD completa (nível + HP + nome) dos jogadores remotos. Posição
+        lida do ECS (TileMovementSystem anima).
 
         Sem gate de fog of war — outro jogador real dentro do AOI sempre é visível
         (invisibilidade é regra do servidor: CombatState.is_visible/_can_see), igual
         ao corpo dele no RenderSystem.
+
+        Fundo+barras+número do nível saem como UMA ÚNICA Surface (ver
+        ui/hud_bars.py) inteira em WORLD_LABELS (screen-space) — nunca
+        mais divididos entre espaço de mundo e espaço de tela (causava um
+        bug real: número "flutuando" fora da caixinha, ver
+        ARQUITETURA_ONLINE.md 23.9). XP/recurso não existem aqui (player
+        remoto não expõe esse dado pro cliente, só o dono vê o próprio) —
+        as duas linhas ficam vazias (só o "trilho" do asset aparece, sem
+        preenchimento).
         """
         if not self._remote_players:
             return
         from engine.components import Position, RemoteControlled
-        from engine.tileset import TILE_SIZE as _TS
-        W = H = _TS - 4
-        zoom_surf = self._zoom_surf
+        from ui.world_labels import WORLD_LABELS as _WL_rp
+        from ui.hud_bars import build_player_hud as _bph_rp, HUD_GAP_PX as _HGP_rp
+
+        if not hasattr(self, '_player_name_font'):
+            from ui.fonts import make_pixel as _make_pixel_rp
+            self._player_name_font = _make_pixel_rp()
+        if not hasattr(self, '_player_level_font'):
+            from ui.fonts import make_pixel as _make_pixel_rp2
+            from ui.hud_bars import LEVEL_FONT_SIZE as _LFS_rp
+            self._player_level_font = _make_pixel_rp2(_LFS_rp)
+
+        from engine.tileset import TILE_SIZE as _TS_rp
+        _sprite_h = _TS_rp - 4   # mesma convenção de altura já usada aqui (W = H = TILE_SIZE-4)
 
         for server_eid, local_eid in self._remote_players.items():
             pos = self.world.get_component(local_eid, Position)
             rc  = self.world.get_component(local_eid, RemoteControlled)
             if not pos or not rc:
                 continue
-            px = pos.x - W // 2 - cam_x
-            py = pos.y - H // 2 - cam_y
-            ns = self.font_xs.render(rc.name, False, (255, 255, 200))
-            zoom_surf.blit(ns, (int(px) + W // 2 - ns.get_width() // 2,
-                                int(py) - ns.get_height() - 2))
-            # HP bar removida daqui — desenhada em RenderSystem acima da entidade
-            # (mesmo padrão dos mobs), com rc.hp atualizado via _apply_combat_result.
+            ratio = max(0.0, min(1.0, rc.hp / max(1, rc.hp_max)))
+            _hud_surf = _bph_rp(ratio, 0.0, 0.0, (0, 0, 0, 0), rc.level, self._player_level_font)
+            _world_y_top = pos.y - _sprite_h / 2
+            _WL_rp.add_icon(pos.x, _world_y_top, _hud_surf,
+                            stack_key=local_eid, gap_before=_HGP_rp)
+            _WL_rp.add_text(pos.x, _world_y_top, rc.name, self._player_name_font,
+                            (255, 255, 200), stack_key=local_eid, gap_before=2)

@@ -14,6 +14,7 @@ from __future__ import annotations
 import pygame
 from ui.ui_scale_mixin import UIScaleMixin
 from ui.ui_sizes import UI
+from ui.icon_manager import ICONS
 
 try:
     import numpy as np
@@ -30,6 +31,8 @@ class Minimap(UIScaleMixin):
     BORDER_COL   = (100,  80,  50)
     PLAYER_COL   = (255, 255, 255)
     ENEMY_COL    = (220,  50,  50)
+
+    _FONT_BASES = {"_font": 12}   # glifo de fallback dos marcadores (!/?/T/$)
 
     def __init__(self, screen: pygame.Surface, map_overlay) -> None:
         self.screen       = screen
@@ -92,6 +95,7 @@ class Minimap(UIScaleMixin):
         explored:    set,
         visible:     set,
         enemy_tiles: "list[tuple[int,int]]",
+        markers:     "list | None" = None,
     ) -> None:
         if self._map_overlay._cols == 0:
             return
@@ -129,6 +133,37 @@ class Minimap(UIScaleMixin):
                 sx = ox + mid + dx * tp
                 sy = oy + mid + dy * tp
                 pygame.draw.circle(self.screen, self.ENEMY_COL, (sx, sy), 2)
+
+        # Marcadores (morte, quest givers, treinadores, mercadores...) —
+        # ícone se existir; senão círculo colorido + glifo pequeno. Corpo é
+        # o único que não expira com o fog (é a posição já conhecida do
+        # próprio player) — os demais já vêm pré-filtrados por Visible em
+        # ui/map_markers.py::collect_markers. Tamanho FIXO (só escala com
+        # "Escala da UI", não com tp) e posições desconflitadas antes de
+        # desenhar — mesmo motivo do mapa grande (ver MapOverlay.render).
+        if markers:
+            # Tamanho fixo de tela, independente de tp/zoom — ver
+            # ui/map_markers.py::MAP_ICON_SIZE pro histórico (8px nativo
+            # ficou ilegível em jogo, subiu pra 16 = 2x nearest-neighbor).
+            from ui.map_markers import deconflict_positions, MAP_ICON_SIZE
+            icon_size = MAP_ICON_SIZE
+            _in_range = [mk for mk in markers
+                        if abs(mk.tile_x - player_tx) <= self.RADIUS
+                        and abs(mk.tile_y - player_ty) <= self.RADIUS]
+            _raw_pts = [(ox + mid + (mk.tile_x - player_tx) * tp,
+                        oy + mid + (mk.tile_y - player_ty) * tp) for mk in _in_range]
+            _placed_pts = deconflict_positions(_raw_pts, icon_size * 0.9)
+            for mk, (sx, sy) in zip(_in_range, _placed_pts):
+                icon = ICONS.get(mk.icon_name, icon_size)
+                if icon is not None:
+                    self.screen.blit(icon, (sx - icon_size // 2, sy - icon_size // 2))
+                else:
+                    r = icon_size // 2
+                    pygame.draw.circle(self.screen, mk.fallback_color, (sx, sy), r)
+                    if mk.fallback_symbol:
+                        glyph = self._font.render(mk.fallback_symbol, False, (20, 20, 20))
+                        self.screen.blit(glyph, (sx - glyph.get_width() // 2,
+                                             sy - glyph.get_height() // 2))
 
         sz = self._u(self.SIZE)
         pygame.draw.rect(self.screen, self.BORDER_COL,
@@ -212,23 +247,30 @@ class Minimap(UIScaleMixin):
         # 2=unexplored(preto), 1=explored-not-visible(escuro), 0=visible
         fog = np.full((win, win), 2, dtype=np.uint8)
 
-        if explored:
-            exp = np.array(list(explored), dtype=np.int32)
-            wx  = exp[:, 0] - x0
-            wy  = exp[:, 1] - y0
-            ok  = (wx >= 0) & (wx < win) & (wy >= 0) & (wy < win)
-            wx, wy = wx[ok], wy[ok]
-            if wx.size:
-                fog[wx, wy] = 1
+        # Interseção com o conjunto de tiles da JANELA (bounded, win*win ~2601)
+        # ANTES de converter pra numpy — `explored` só CRESCE ao longo da
+        # sessão (nunca encolhe, ver engine/components.py::FogOfWar), então
+        # `np.array(list(explored))` reprocessava o set INTEIRO toda vez que
+        # o player mudava de tile (= toda vez que o cache do minimap invalida,
+        # linha ~108) — custo crescendo sem limite conforme mais mapa é
+        # explorado (medido: ~10-13ms por rebuild numa sessão já explorada,
+        # rótulo enganoso "hud:combat_log" no profiler — na verdade cronometra
+        # o render do minimapa). `set & set` em CPython sempre itera o MENOR
+        # dos dois operandos — com window_tiles bounded, o custo fica
+        # O(win²) CONSTANTE, nunca O(len(explored)). Bug relatado pelo
+        # usuário 14/07/2026 (spike de frame ao andar com o arqueiro, achado
+        # via log de profiler — ver ARQUITETURA_ONLINE.md).
+        window_tiles = {(x0 + wx, y0 + wy) for wx in range(win) for wy in range(win)}
 
-        if visible:
-            vis = np.array(list(visible), dtype=np.int32)
-            wx  = vis[:, 0] - x0
-            wy  = vis[:, 1] - y0
-            ok  = (wx >= 0) & (wx < win) & (wy >= 0) & (wy < win)
-            wx, wy = wx[ok], wy[ok]
-            if wx.size:
-                fog[wx, wy] = 0
+        exp_in_window = explored & window_tiles
+        if exp_in_window:
+            exp = np.array(list(exp_in_window), dtype=np.int32)
+            fog[exp[:, 0] - x0, exp[:, 1] - y0] = 1
+
+        vis_in_window = visible & window_tiles
+        if vis_in_window:
+            vis = np.array(list(vis_in_window), dtype=np.int32)
+            fog[vis[:, 0] - x0, vis[:, 1] - y0] = 0
 
         # ── Aplica fog (C-level) ─────────────────────────────────────────────
         win_arr[fog == 2] = 0

@@ -172,8 +172,24 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         win_w = int(1280 * scale)
         win_h = int(720  * scale)
         # Renderiza na resolução nativa da janela — sem escala no frame final
+        # (win_w/win_h == tamanho lógico == tamanho da janela, então
+        # pygame.SCALED não faz nenhum upscale de verdade aqui — só troca o
+        # caminho de apresentação).
+        #
+        # SCALED + vsync=1: sem SCALED, set_mode() cria uma surface de
+        # software (blit via GDI) — vsync=1 nesse caminho, em modo janela no
+        # Windows, faz flip() bloquear esperando o compositor (DWM) de forma
+        # bem inconsistente (medido: display_flip variando 5-47ms, sem
+        # nenhuma correlação com carga real de trabalho — ver
+        # logs/client_prof.log, investigação com o usuário 14/07/2026,
+        # ARQUITETURA_ONLINE.md). SCALED troca pro SDL_Renderer acelerado por
+        # hardware (caminho "flip model" no Windows/DXGI) — apresenta sem
+        # cópia pelo compositor, o mesmo princípio que engines grandes usam
+        # (swap chain com present direto). `clock.tick_busy_loop(FPS)` (em
+        # run(), abaixo) continua fazendo o pacing de FPS — vsync aqui é só
+        # pra eliminar tearing, não pra travar o frame rate.
         self._display = pygame.display.set_mode(
-            (win_w, win_h), pygame.DOUBLEBUF, vsync=1)
+            (win_w, win_h), pygame.DOUBLEBUF | pygame.SCALED, vsync=1)
         self.screen   = pygame.Surface((win_w, win_h))
         pygame.display.set_caption("RPG ECS")
         self.clock = pygame.time.Clock()
@@ -249,6 +265,23 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._zoom_min:  float = 1.5
         self._zoom_max:  float = 2.5
         self._zoom_step: float = 0.25
+        # Debounce do zoom via scroll do mouse — cada "clique" da roda mudava
+        # self._zoom NA HORA, e o bloco "Zoom surf: dimensiona a world_surf"
+        # (run(), mais abaixo) recalcula lw/lh a partir de self._zoom TODO
+        # FRAME e já invalida+reconstrói o cache de tiles sozinho sempre que
+        # o tamanho lógico muda — ou seja, cada clique de scroll já disparava
+        # sua PRÓPRIA reconstrução completa (até ~150ms medido em
+        # logs/client_prof.log), mesmo sem nenhuma chamada explícita extra.
+        # Um gesto normal de zoom (vários cliques em sequência rápida) virava
+        # uma rajada de reconstruções — reportado pelo usuário 14/07/2026.
+        # Fix: scroll NÃO escreve mais em self._zoom direto — acumula em
+        # _zoom_pending, e só comita (self._zoom = self._zoom_pending) depois
+        # que o scroll parar por _ZOOM_DEBOUNCE_S sem novo clique. O bloco
+        # "Zoom surf" só vê UMA mudança de tamanho por gesto inteiro, não uma
+        # por clique — reconstrói 1x em vez de N. -1.0 = nada pendente.
+        self._ZOOM_DEBOUNCE_S = 0.15
+        self._zoom_cache_dirty_timer: float = -1.0
+        self._zoom_pending: float = self._zoom_min
         self._zoom_surf: "pygame.Surface | None" = None
         self._zoom_surf_sz: tuple = (0, 0)
         self._pending_tooltip       = None  # (mx, my, title, lines) – render no fim do frame
@@ -444,6 +477,11 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         _PROF_INTERVAL     = 300                   # frames entre relatórios (~5 s)
         self._prof_interval = _PROF_INTERVAL
         self._prof_spike_ms = 10.0                 # ms para considerar spike em uma seção
+        # ms de frame total pra disparar o breakdown imediato em [SPIKE] no log
+        # (era 50ms fixo — reduzido pra pegar engasgos menores que uma trava
+        # grande, rápidos demais pra screenshot manual; pedido do usuário
+        # 14/07/2026, investigação de stutter ao mover o arqueiro).
+        self._SPIKE_THRESHOLD_S = 0.022
         # Log de profiling gravado em arquivo — limpo a cada execução do cliente.
         import os as _os
         _log_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "logs")
@@ -1074,14 +1112,23 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 or self._show_hotbar_editor or self._god_mode.active
                 or self._show_habilidades
                 or getattr(self._shop_system, "is_open", False)
-                or getattr(self._quest_journal, "is_open", False)):
+                or getattr(self._quest_journal, "is_open", False)
+                or self._quest_dialog.is_open):
             return
 
+        # Acumula em cima do PENDENTE (não de self._zoom) se já houver um
+        # debounce em andamento — senão cada clique subsequente do mesmo
+        # gesto recomeçaria do valor antigo já commitado. Ver __init__
+        # (_ZOOM_DEBOUNCE_S) e o tick em run() — self._zoom só é escrito lá,
+        # quando o gesto de scroll termina, evitando N reconstruções caras
+        # de cache por gesto (bloco "Zoom surf" em run() já invalida sozinho
+        # sempre que self._zoom muda de tamanho lógico).
+        base = self._zoom_pending if self._zoom_cache_dirty_timer >= 0.0 else self._zoom
         step = self._zoom_step if scroll_y > 0 else -self._zoom_step
-        new_zoom = round(max(self._zoom_min, min(self._zoom_max, self._zoom + step)), 10)
-        if new_zoom != self._zoom:
-            self._zoom = new_zoom
-            self._tile_render_system.invalidate_cache()
+        new_zoom = round(max(self._zoom_min, min(self._zoom_max, base + step)), 10)
+        if new_zoom != base:
+            self._zoom_pending           = new_zoom
+            self._zoom_cache_dirty_timer = self._ZOOM_DEBOUNCE_S
 
     _WORLD_SYSTEM_ATTRS = (
         "_tile_render_system", "_render_system", "_loot_system",
@@ -1145,6 +1192,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._hbe_rebind_slot    = None
         self._hbe_tab            = 0
         self._mkb_rebind         = None
+        self._mkb_scroll         = 0
 
     # Game loop
     # ------------------------------------------------------------------
@@ -1221,7 +1269,17 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             self._perf_font.render_to(surf, (pad, pad + i * lh), txt, col) \
                 if hasattr(self._perf_font, "render_to") \
                 else surf.blit(self._perf_font.render(txt, False, col), (pad, pad + i * lh))
-        self.screen.blit(surf, (4, 4))
+        # y=110: abaixo do HUD de texto (nome+HP+recurso de classe+aljava,
+        # ~90px de altura em client/hud_handlers.py::_draw_hud), ambos
+        # ancorados no canto superior esquerdo — sem o offset, as duas
+        # coisas desenhavam sobrepostas (texto "Conc. XX/XX (+6/s)" do HUD
+        # embaralhado com as linhas do profiler). Bug relatado pelo usuário
+        # 14/07/2026 (print mostrando o texto ilegível/sobreposto ao apertar
+        # F11 andando com o arqueiro — só aparecia então porque a taxa de
+        # regen de Concentração/"(+Xs)" só é != 0 e mostrada nessas
+        # condições, mas a causa raiz é a MESMA sobreposição, com ou sem
+        # arqueiro).
+        self.screen.blit(surf, (4, 110))
 
     def run(self):
         _gc.disable()          # GC manual — evita pauses aleatórias no loop de jogo
@@ -1238,6 +1296,18 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 _gc_counter = 0
             self._dt = dt
             SOUNDS.new_frame()  # limpa deduplicação de sons
+
+            # Debounce do zoom (scroll do mouse) — ver __init__/_handle_scroll_zoom.
+            # Só comita o valor final acumulado em self._zoom; NÃO chama
+            # invalidate_cache() aqui — o bloco "Zoom surf: dimensiona a
+            # world_surf" (mais abaixo, roda todo frame) já detecta a
+            # mudança de tamanho lógico e invalida sozinho, exatamente uma
+            # vez, no primeiro frame após o commit.
+            if self._zoom_cache_dirty_timer >= 0.0:
+                self._zoom_cache_dirty_timer -= dt
+                if self._zoom_cache_dirty_timer <= 0.0:
+                    self._zoom = self._zoom_pending
+                    self._zoom_cache_dirty_timer = -1.0
 
             # ── Loading screen ────────────────────────────────────────────────
             # Mostra loading screen enquanto:
@@ -1327,6 +1397,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                         if self._god_mode.active and self._zoom != 1.0:
                             self._zoom = 1.0
                             self._tile_render_system.invalidate_cache()
+                            self._zoom_cache_dirty_timer = -1.0  # cancela debounce pendente de scroll
                     elif event.key == pygame.K_F11:
                         self._show_perf_overlay = not self._show_perf_overlay
                         if self._show_perf_overlay:
@@ -1383,11 +1454,13 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                         if new_zoom != self._zoom:
                             self._zoom = new_zoom
                             self._tile_render_system.invalidate_cache()
+                            self._zoom_cache_dirty_timer = -1.0  # cancela debounce pendente de scroll
                     elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS) and not self._god_mode.active:
                         new_zoom = max(self._zoom_min, round(self._zoom - self._zoom_step, 10))
                         if new_zoom != self._zoom:
                             self._zoom = new_zoom
                             self._tile_render_system.invalidate_cache()
+                            self._zoom_cache_dirty_timer = -1.0  # cancela debounce pendente de scroll
                     elif event.key == pygame.K_F12 and DEBUG_MODE:
                         already_open = self._show_debug
                         self._close_all_modals()
@@ -1788,7 +1861,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             self._draw_remote_corpses(cam_x, cam_y)
             self._render_system.render(cam_x, cam_y, world_objects=_world_objs)
             self._shop_system.render_world(cam_x, cam_y)
-            self._quest_dialog.render_world(cam_x, cam_y)
+            self._quest_dialog.render_world(cam_x, cam_y, self._zoom)
             self._crafting_system.render_world(cam_x, cam_y)
             self._trainer_system.render_world(cam_x, cam_y)
             self._draw_remote_players(cam_x, cam_y)
@@ -1829,6 +1902,12 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 pygame.transform.scale(self._zoom_surf, (dest_w, self.screen.get_height()), _dest)
             if PROFILE_FRAMES:
                 self._prof_record("transform_scale", _time.perf_counter() - _ts)
+            # Nomes de NPC/mob + ícone de quest: screen-space, DEPOIS do
+            # scale acima — nascem no tamanho final de tela, nunca são
+            # reamostrados pelo zoom da câmera (fix 11/07/2026: fonte
+            # pixel-perfect borrava quando desenhada dentro do world_surf).
+            from ui.world_labels import WORLD_LABELS
+            WORLD_LABELS.render(self.screen, cam_x, cam_y, z)
             # Notificações de proc: screen-space, abaixo do player, acima dos avisos
             PROC.render(self.screen)
             # Avisos de ação bloqueada: posição fixa, abaixo do centro
@@ -1869,12 +1948,14 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                         for _, _, _, etm in self.world.get_entities_with(Enemy, Visible, TileMovement)
                         if (etm.current_tile_x, etm.current_tile_y) in _fog_mm.visible
                     ]
+                    from ui.map_markers import collect_markers
                     self._minimap.render(
                         _player_tm_m.current_tile_x,
                         _player_tm_m.current_tile_y,
                         _fog_mm.explored,
                         _fog_mm.visible,
                         _enemy_tiles,
+                        collect_markers(self.world, self.player_entity, self._quest_dialog),
                     )
                 # HUD de quests — abaixo do minimap
                 self._quest_system.render_hud(self.screen)
@@ -1948,8 +2029,11 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 tx = player_tm.current_tile_x if player_tm else -1
                 ty = player_tm.current_tile_y if player_tm else -1
                 _fog_comp = self.world.get_component(self.player_entity, FogOfWar)
+                from ui.map_markers import collect_markers
                 self._map_overlay.render(tx, ty,
-                                         explored=_fog_comp.explored if _fog_comp else None)
+                                         explored=_fog_comp.explored if _fog_comp else None,
+                                         markers=collect_markers(self.world, self.player_entity,
+                                                                 self._quest_dialog))
 
             # Menu de pausa (por cima de tudo)
             if self._pending_quit:
@@ -1967,6 +2051,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                     self._show_pause         = False
                     self._pause_submenu      = ""
                     self._show_hotbar_editor = True
+                    self._mkb_scroll         = 0
                 elif action == "unstuck":
                     self._show_pause    = False
                     self._pause_submenu = ""
@@ -1991,12 +2076,37 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             pygame.display.flip()
             if PROFILE_FRAMES:
                 self._prof_record("display_flip", _time.perf_counter() - _ts)
-                # Detecção de spike: imprime breakdown imediato se o frame demorou >50ms
+                # Detecção de spike: imprime breakdown imediato se o frame demorou
+                # mais que _SPIKE_THRESHOLD_S — reduzido de 50ms pra 22ms (budget
+                # é 16.7ms a 60 FPS; 50ms só pegava travadas grandes, não os
+                # engasgos menores que o usuário reportou sentir andando com o
+                # arqueiro, rápido demais pra capturar num screenshot manual —
+                # pedido do usuário 14/07/2026: "grave isso num log pra
+                # analisar"). Contexto do player (classe/is_moving/is_pursuing/
+                # cooldown de ataque) incluso na linha do spike pra correlacionar
+                # direto com "estava andando/perseguindo como arqueiro" sem
+                # precisar cruzar timestamp a mão.
                 _frame_elapsed = _time.perf_counter() - _t0
-                if _frame_elapsed > 0.050:
+                if _frame_elapsed > self._SPIKE_THRESHOLD_S:
                     _fms = _frame_elapsed * 1000
                     _f = self._prof_log
-                    print(f"\n[SPIKE] {_fms:.0f}ms — breakdown do frame:", file=_f)
+                    _ctx = ""
+                    try:
+                        _cs_spk  = self.world.get_component(self.player_entity, CharacterStats)
+                        _tm_spk  = self.world.get_component(self.player_entity, TileMovement)
+                        _cst_spk = self.world.get_component(self.player_entity, CombatState)
+                        _cbs_spk = self.world.get_component(self.player_entity, CombatStats)
+                        _parts = [
+                            f"class={_cs_spk.class_id if _cs_spk else '?'}",
+                            f"is_moving={_tm_spk.is_moving if _tm_spk else '?'}",
+                            f"is_pursuing={_cst_spk.is_pursuing if _cst_spk else '?'}",
+                        ]
+                        if _cbs_spk:
+                            _parts.append(f"atk_cd={_cbs_spk.attack_cooldown_timer:.2f}")
+                        _ctx = " | " + " ".join(_parts)
+                    except Exception:
+                        pass
+                    print(f"\n[SPIKE] {_fms:.0f}ms{_ctx} — breakdown do frame:", file=_f)
                     _spike_rows = sorted(self._prof_frame_accum.items(), key=lambda x: -x[1])
                     for _lbl, _lt in _spike_rows:
                         if _lt > 0.002:
@@ -2284,8 +2394,10 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         win_w         = int(1280 * scale)
         win_h         = int(720  * scale)
         self.screen   = pygame.Surface((win_w, win_h))
+        # SCALED + vsync=1: mesma razão do set_mode() em __init__ — ver
+        # comentário lá.
         self._display = pygame.display.set_mode(
-            (win_w, win_h), pygame.DOUBLEBUF, vsync=1)
+            (win_w, win_h), pygame.DOUBLEBUF | pygame.SCALED, vsync=1)
         self._rebuild_screen_refs(self.screen)
         # Atualiza Camera component para que offset_x/offset_y reflitam a nova resolução
         for _, cam, _ in self.world.get_entities_with(Camera, Position):

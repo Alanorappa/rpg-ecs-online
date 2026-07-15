@@ -45,6 +45,27 @@ from debug.mob_combat_debug import MCL
 # 0.29s) pra não "piscar" pra parado entre 2 tiles do mesmo movimento.
 PLAYER_MOVE_GRACE_S = 0.4
 
+# move_player(): validação de MOVE não exige mais adjacência exata (1 tile)
+# com a última posição confirmada — modelo antigo travava PERMANENTEMENTE
+# um player assim que UM move fosse rejeitado por qualquer motivo transitório
+# (tile temporariamente ocupado por outro player/mob cruzando o caminho, por
+# exemplo), porque todo MOVE seguinte era calculado relativo à posição LOCAL
+# do cliente (que diverge cada vez mais da posição congelada do servidor) —
+# ver ARQUITETURA_ONLINE.md, decisão sobre desync "player parado pros outros,
+# não agra mob". Modelo novo (mesma família do que WoW faz de verdade,
+# pesquisado: cliente é confiável pra posição, servidor só valida
+# plausibilidade — não repetição exata): aceita qualquer destino alcançável
+# dentro do orçamento tempo×velocidade desde a última posição de confiança, e
+# sem tile sólido no caminho (linha reta, Bresenham) — pega speedhack/
+# teleporte sem travar quem só teve um passo rejeitado por colisão dinâmica.
+MOVE_SPEED_TOLERANCE = 2.0   # margem sobre a velocidade nominal (lag/jitter)
+MOVE_ELAPSED_CAP_S    = 2.0  # teto de crédito acumulado (evita orçamento
+                              # infinito pra quem ficou parado/AFK)
+# Fallback só usado se tm.speed nunca foi setado (não deveria acontecer em
+# uso normal — TileMovement de player sempre nasce com speed=PLAYER_SPEED,
+# entity_factory.py). Mesmo valor (110 px/s), evita import cruzado só por isso.
+PLAYER_SPEED_TILES_FALLBACK = 110 / TILE_SIZE
+
 
 # ── ServerStatusEffectSystem ──────────────────────────────────────────────────
 # Subclasse headless de core_systems.StatusEffectSystem que emite eventos de
@@ -932,10 +953,27 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         if _sfx_mv and any(_sfx_mv.has(e) for e in ("sleep", "stun", "root")):
             return False
 
-        # Validação: máximo 1 tile de distância por move
-        dx = abs(tx - tm.current_tile_x)
-        dy = abs(ty - tm.current_tile_y)
-        if dx > 1 or dy > 1:
+        # Baseline anti-cheat: primeira vez que este player move desde o spawn
+        # (ou componente recém-criado) — inicializa com a posição atual, sem
+        # crédito de tempo acumulado (equivale ao comportamento antigo só
+        # nesse instante específico).
+        if tm._last_valid_ts <= 0.0:
+            tm._last_valid_tile_x = tm.current_tile_x
+            tm._last_valid_tile_y = tm.current_tile_y
+            tm._last_valid_ts     = time.time()
+
+        # Validação: destino precisa estar dentro do orçamento tempo×velocidade
+        # desde a última posição de confiança (pega speedhack/teleporte), e o
+        # caminho reto até lá não pode cruzar tile sólido (pega clip de
+        # parede) — ver comentário de MOVE_SPEED_TOLERANCE acima pro porquê de
+        # não exigir mais adjacência exata tile a tile.
+        _elapsed   = min(time.time() - tm._last_valid_ts, MOVE_ELAPSED_CAP_S)
+        _speed_tps = (tm.speed / TILE_SIZE) if tm.speed > 0 else (PLAYER_SPEED_TILES_FALLBACK)
+        import math as _math_mv
+        _budget = max(1, _math_mv.ceil(_elapsed * _speed_tps * MOVE_SPEED_TOLERANCE))
+        dx = abs(tx - tm._last_valid_tile_x)
+        dy = abs(ty - tm._last_valid_tile_y)
+        if max(dx, dy) > _budget:
             return False
 
         # Validação: tile de destino deve ser walkable (sólido, fora do mapa, piso errado).
@@ -951,14 +989,28 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         _player_bnd = self._map_bundles.get(self.get_player_map(session_id))
         _tile_val = _player_bnd.tile_validation if _player_bnd else None
         if _tile_val:
-            if not _tile_val.is_tile_walkable(eid, tx, ty, tm.current_tile_x, tm.current_tile_y,
+            if not _tile_val.is_tile_walkable(eid, tx, ty, tm._last_valid_tile_x, tm._last_valid_tile_y,
                                               ignore_eid=_pursuit_target):
                 return False
         else:
             from engine.world_systems import is_tile_walkable as _walkable
-            if not _walkable(eid, tx, ty, tm.current_tile_x, tm.current_tile_y,
+            if not _walkable(eid, tx, ty, tm._last_valid_tile_x, tm._last_valid_tile_y,
                              ignore_eid=_pursuit_target):
                 return False
+
+        # Validação: caminho reto (última posição confirmada → destino) não
+        # pode cruzar tile sólido — sem isto, um destino andável mas alcançado
+        # "pulando por cima" de uma parede passaria só pelos 2 checks acima
+        # (orçamento de distância + tile final andável).
+        if max(dx, dy) > 1:
+            from engine.components import Tilemap as _TMap_mv
+            _tilemap_mv = (self.world.get_component(_player_bnd.tilemap_entity, _TMap_mv)
+                          if _player_bnd is not None else None)
+            if _tilemap_mv is not None:
+                from engine.world_systems import EnemyAISystem as _EAIS_mv
+                if not _EAIS_mv._has_line_of_sight(_tilemap_mv, tm._last_valid_tile_x,
+                                                   tm._last_valid_tile_y, tx, ty):
+                    return False
 
         from_tx, from_ty = tm.current_tile_x, tm.current_tile_y
         tm.current_tile_x = tx
@@ -967,6 +1019,9 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         tm.target_tile_y  = ty
         tm.is_moving          = True
         tm._server_move_grace = PLAYER_MOVE_GRACE_S
+        tm._last_valid_tile_x = tx
+        tm._last_valid_tile_y = ty
+        tm._last_valid_ts     = time.time()
         _px_center = tx * TILE_SIZE + TILE_SIZE // 2
         _py_center = ty * TILE_SIZE + TILE_SIZE // 2
         # Sincroniza campos de pixel do TileMovement com o snap instantâneo —
@@ -1404,7 +1459,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
     @staticmethod
     def _item_data_from_obj(obj) -> dict:
-        """Serializa um item ECS para o dict que o cliente espera no BUY_RESULT."""
+        """Serializa um item ECS para o dict que o cliente espera no BUY_RESULT
+        (e, via get_player_equipment_data, pro cache de save de EQUIP_SYNC)."""
         data = {
             "name":      obj.name,
             "item_type": getattr(obj, "item_type", ""),
@@ -1417,6 +1473,13 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             "modifiers": [{"attribute": m.attribute, "value": m.value, "type": m.type}
                           for m in getattr(obj, "modifiers", [])],
         }
+        # Aljava: contagem de flechas — faltava aqui (bug real, 11/07/2026:
+        # aljava sempre salvava cheia no relogin, mesmo com flechas gastas
+        # em combate, porque este dict — usado por get_player_equipment_data
+        # pro cache de save — nunca incluía o campo).
+        if getattr(obj, "item_type", "") == "quiver":
+            data["arrow_count"] = getattr(obj, "arrow_count", 0)
+            data["max_arrows"]  = getattr(obj, "max_arrows",  0)
         for f in ("attack_power", "armor", "spell_power", "stamina",
                   "two_handed", "attack_speed", "damage_min", "damage_max",
                   "subtype", "cast_range",
@@ -2590,63 +2653,37 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             except Exception:
                 pass
 
-        # ── Arqueiro: regen de Concentração + timers de buff ─────────────────
-        from engine.components import CharacterStats as _ConcCS, CombatStats as _ConcCSt, TileMovement as _ConcTM
+        # ── Arqueiro: timer de Camuflagem ─────────────────────────────────────
+        # Regen de Concentração e concentration_free_timer (buff "Só um Gole")
+        # JÁ são tratados por core_systems.ServerCombatStateSystem.update()
+        # (chamado acima nesta mesma função) — este bloco antes DUPLICAVA os
+        # dois com o mesmo dt/fórmula, então a Concentração regenerava 2x mais
+        # rápido que o pretendido e concentration_free_timer (10s de "Só um
+        # Gole") zerava em ~5s reais no servidor, sem nenhum aviso ao cliente.
+        # Bug real reportado pelo usuário (13/07/2026): "às vezes" uma skill
+        # de Concentração ainda cobrava custo com o buff supostamente ainda
+        # ativo — o servidor (autoritativo, quem decide o desconto em
+        # spell_completion_processor.py) já tinha voltado concentration_free
+        # a False bem antes dos 10s aparentes. camouflage_timer NÃO é tratado
+        # em nenhum outro lugar — continua só aqui.
+        from engine.components import CombatStats as _ConcCSt, TileMovement as _ConcTM
         for _conc_eid in list(self._player_eids.values()):
-            _ch = self.world.get_component(_conc_eid, _ConcCS)
             _cs = self.world.get_component(_conc_eid, _ConcCSt)
-            if not _ch or _ch.max_concentration <= 0:
+            if not _cs or _cs.camouflage_timer <= 0:
                 continue
-            if _ch.concentration >= _ch.max_concentration:
-                # concentration_free_timer: zerar quando expirar
-                if _cs and _cs.concentration_free_timer > 0:
-                    _cs.concentration_free_timer -= dt
-                    if _cs.concentration_free_timer <= 0:
-                        _cs.concentration_free       = False
-                        _cs.concentration_free_timer = 0.0
-                # camuflagem_timer
-                if _cs and _cs.camouflage_timer > 0:
-                    _cs.camouflage_timer -= dt
-                    if _cs.camouflage_timer <= 0:
-                        _cs.camouflage_timer  = 0.0
-                        _cs.camouflage_object = ""
-                        _cst = self.world.get_component(_conc_eid, __import__("engine.components", fromlist=["CombatState"]).CombatState)
-                        if _cst:
-                            _cst.is_visible    = True
-                            _cst.is_immune     = False
-                            _cst.is_camouflaged = False
-                            self._visibility_changed_this_tick.append(_conc_eid)
-                        _tm_cam = self.world.get_component(_conc_eid, _ConcTM)
-                        if _tm_cam:
-                            _tm_cam.speed = 110.0
-                continue
-            _tm_c = self.world.get_component(_conc_eid, _ConcTM)
-            _is_moving = _tm_c.is_moving if _tm_c else False
-            _rate = (getattr(_cs, "concentration_regen_moving", 5.0) if _is_moving
-                     else getattr(_cs, "concentration_regen_idle", 5.0)) if _cs else 5.0
-            _ch.concentration = min(_ch.max_concentration,
-                                    _ch.concentration + _rate * dt)
-            # timers mesmo durante regen
-            if _cs:
-                if _cs.concentration_free_timer > 0:
-                    _cs.concentration_free_timer -= dt
-                    if _cs.concentration_free_timer <= 0:
-                        _cs.concentration_free       = False
-                        _cs.concentration_free_timer = 0.0
-                if _cs.camouflage_timer > 0:
-                    _cs.camouflage_timer -= dt
-                    if _cs.camouflage_timer <= 0:
-                        _cs.camouflage_timer  = 0.0
-                        _cs.camouflage_object = ""
-                        _cst2 = self.world.get_component(_conc_eid, __import__("engine.components", fromlist=["CombatState"]).CombatState)
-                        if _cst2:
-                            _cst2.is_visible    = True
-                            _cst2.is_immune     = False
-                            _cst2.is_camouflaged = False
-                            self._visibility_changed_this_tick.append(_conc_eid)
-                        _tm_cam2 = self.world.get_component(_conc_eid, _ConcTM)
-                        if _tm_cam2:
-                            _tm_cam2.speed = 110.0
+            _cs.camouflage_timer -= dt
+            if _cs.camouflage_timer <= 0:
+                _cs.camouflage_timer  = 0.0
+                _cs.camouflage_object = ""
+                _cst = self.world.get_component(_conc_eid, __import__("engine.components", fromlist=["CombatState"]).CombatState)
+                if _cst:
+                    _cst.is_visible    = True
+                    _cst.is_immune     = False
+                    _cst.is_camouflaged = False
+                    self._visibility_changed_this_tick.append(_conc_eid)
+                _tm_cam = self.world.get_component(_conc_eid, _ConcTM)
+                if _tm_cam:
+                    _tm_cam.speed = 110.0
 
         # ── FireShieldEffect: decrementa timer e remove quando expirar ──────
         from engine.components import FireShieldEffect as _FSE

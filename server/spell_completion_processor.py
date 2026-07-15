@@ -1077,6 +1077,24 @@ class SpellCompletionMixin:
         _qv_ar = _eq_ar.slots.get("offhand") if _eq_ar else None
         if _qv_ar and getattr(_qv_ar, "item_type", "") == "quiver":
             _qv_ar.arrow_count = max(0, _qv_ar.arrow_count - 1)
+            # Sincroniza a cópia LOCAL da aljava do caster — auto-attack já se
+            # mantinha sincronizado via decremento espelhado no COMBAT_RESULT
+            # (client/remote_entity_handlers.py:263), mas as 4 skills que
+            # também consomem flecha por AQUI (Picada de Escorpião, Flecha
+            # Reiterada, Tiro Repulsivo, Tiro Múltiplo — todas chamam esta
+            # função) nunca avisavam o cliente. Resultado: `quiver.arrow_count`
+            # local ficava sempre ACIMA do valor real do servidor a cada uso de
+            # skill, então "Aljava vazia! Use Recarregar." (ui/systems.py) só
+            # dispararia quando o cliente, defasado, também chegasse a 0 — até
+            # lá o servidor já recusava o tiro silenciosamente (mesmo "continue"
+            # sem feedback de LOS/alcance/cooldown) e o auto-attack simplesmente
+            # não saía, sem nenhuma mensagem (bug real reportado pelo usuário
+            # 13/07/2026: "tem 1 flecha na aljava mas ele não consegue atacar").
+            # Mesmo padrão de confirmação já usado por Recarregar (linha ~1671).
+            self.queue_stats_update({
+                "player_eid":         player_eid,
+                "quiver_arrow_count": _qv_ar.arrow_count,
+            })
 
         if outcome in ("miss", "dodge", "parry"):
             return False, outcome, 0

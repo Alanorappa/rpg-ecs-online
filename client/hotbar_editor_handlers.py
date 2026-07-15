@@ -31,6 +31,7 @@ class HotbarEditorHandlers:
         self._hbe_cons_rebind_slot  = None
         self._hbe_tab               = 0
         self._mkb_rebind            = None
+        self._mkb_scroll            = 0
         self._hbe_skill_scroll      = 0
         self._hbe_expand_slots      = False
         self._save_config()
@@ -69,20 +70,29 @@ class HotbarEditorHandlers:
                 return
 
         # ── Geometria ─────────────────────────────────────────────────────
-        # Conteúdo: 4 menu rows + divider + 10 slot rows + divider + 2 cons rows + buttons
-        n_rows   = 4 + NUM_SLOTS + _CB.NUM_SLOTS
-        base_PH  = max(60 + 22 + n_rows * 38 + 20 + 34 + 20, 400)
-        ppx, ppy = self._safe_panel_origin(UI.HOTBAR_EDITOR_W, base_PH)
+        # Altura do painel agora é um TETO fixo (HOTBAR_EDITOR_MAX_H) — antes
+        # crescia com o nº de linhas (menus+slots+consumíveis) sem limite,
+        # transbordando a tela quando havia muitos slots (bug relatado pelo
+        # usuário 13/07/2026, print mostrando "Slot 15" cortado no rodapé e
+        # os botões Salvar/Fechar soltos no meio do conteúdo). A área de
+        # linhas agora é uma viewport com clip + scroll (self._mkb_scroll,
+        # px) — mesmo tratamento aplicado ao diálogo de quest (ver
+        # ui/quest_system.py::_blit_scrollable).
+        _MENU_ROWS = [("Inventário", "inventario"), ("Talentos", "talentos"),
+                      ("Mapa", "mapa"), ("Diário de Quests", "diario"),
+                      ("Habilidades", "habilidades")]
+        n_rows   = len(_MENU_ROWS) + NUM_SLOTS + _CB.NUM_SLOTS
+        ppx, ppy = self._safe_panel_origin(UI.HOTBAR_EDITOR_W, UI.HOTBAR_EDITOR_MAX_H)
         ppx, ppy = ppx + UI.HOTBAR_EDITOR_OFFSET_X, ppy + UI.HOTBAR_EDITOR_OFFSET_Y
 
         PW  = self._u(UI.HOTBAR_EDITOR_W)
+        PH  = self._u(UI.HOTBAR_EDITOR_MAX_H)
         ROW_H  = self._u(38)
+        SEC_H  = self._u(24)   # altura de um cabeçalho de seção (label + linha + respiro)
         KEY_W  = self._u(90)
         KEY_H  = self._u(28)
         BTN_W  = self._u(110)
         BTN_H  = self._u(34)
-        PH      = self._u(60) + self._u(22) + n_rows * ROW_H + self._u(20) + BTN_H + self._u(20)
-        PH      = max(PH, self._u(400))
 
         COL_NAME = ppx + self._u(20)
         COL_KEY  = ppx + PW - KEY_W - self._u(20)
@@ -99,14 +109,34 @@ class HotbarEditorHandlers:
         self.screen.blit(title_s, (ppx + PW // 2 - title_s.get_width() // 2, ppy + self._u(12)))
 
         # ── Cabeçalho de colunas ──────────────────────────────────────────
-        cy = ppy + self._u(42)
+        hdr_y = ppy + self._u(42)
         self.screen.blit(self.font_sm.render("Ação", False, (150, 135, 85)),
-                         (COL_NAME, cy))
+                         (COL_NAME, hdr_y))
         self.screen.blit(self.font_sm.render("Tecla", False, (150, 135, 85)),
-                         (COL_KEY + KEY_W // 2 - self._u(22), cy))
-        cy += self._u(20)
-        pygame.draw.line(self.screen, (72, 58, 32), (ppx + self._u(12), cy), (ppx + PW - self._u(12), cy))
-        cy += self._u(6)
+                         (COL_KEY + KEY_W // 2 - self._u(22), hdr_y))
+        hdr_y += self._u(20)
+        pygame.draw.line(self.screen, (72, 58, 32), (ppx + self._u(12), hdr_y), (ppx + PW - self._u(12), hdr_y))
+        hdr_y += self._u(6)
+
+        # ── Viewport rolável das linhas (entre o cabeçalho e os botões) ────
+        BTN_ZONE_H  = BTN_H + self._u(58)   # botões + respiro + dica abaixo das linhas
+        rows_top    = hdr_y
+        rows_bottom = ppy + PH - BTN_ZONE_H
+        view_h      = max(0, rows_bottom - rows_top)
+
+        content_h  = 3 * SEC_H + n_rows * ROW_H
+        max_scroll = max(0, content_h - view_h)
+        self._mkb_scroll = max(0, min(self._mkb_scroll, max_scroll))
+
+        # Mouse wheel — rola a lista (só quando o mouse está sobre o painel)
+        panel_r = pygame.Rect(ppx, ppy, PW, PH)
+        for e in events:
+            if e.type == pygame.MOUSEWHEEL and panel_r.collidepoint(mx, my):
+                self._mkb_scroll = max(0, min(max_scroll, self._mkb_scroll - e.y * self._u(30)))
+
+        prev_clip = self.screen.get_clip()
+        self.screen.set_clip(pygame.Rect(ppx, rows_top, PW, view_h))
+        cy = rows_top - self._mkb_scroll
 
         def draw_section(label, color=(185, 158, 80)):
             nonlocal cy
@@ -119,7 +149,16 @@ class HotbarEditorHandlers:
 
         def draw_row(row_label, key_code, key_id):
             nonlocal cy
-            alt = ((cy - ppy) // ROW_H) % 2 == 1
+            # Linha fora da viewport (rolada pra fora) não recebe hover/clique —
+            # sem isso, um clique "invisível" (linha escondida atrás do clip,
+            # mas o rect ainda existia em coords de tela) podia disparar rebind
+            # de uma linha que nem estava sendo mostrada.
+            visible = rows_top - ROW_H < cy < rows_bottom
+            if not visible:
+                cy += ROW_H
+                return
+
+            alt = ((cy - rows_top + self._mkb_scroll) // ROW_H) % 2 == 1
             if alt:
                 pygame.draw.rect(self.screen, (34, 28, 16),
                                  (ppx + self._u(10), cy, PW - self._u(20), ROW_H - self._u(2)), border_radius=2)
@@ -129,7 +168,8 @@ class HotbarEditorHandlers:
             waiting  = (self._mkb_rebind == key_id)
             key_name = pygame.key.name(key_code).upper() if key_code else "—"
             kr       = pygame.Rect(COL_KEY, cy + (ROW_H - KEY_H) // 2, KEY_W, KEY_H)
-            hov      = kr.collidepoint(mx, my)
+            row_fully_visible = rows_top <= cy and (cy + ROW_H) <= rows_bottom
+            hov      = row_fully_visible and kr.collidepoint(mx, my)
 
             if waiting:
                 bg, bd, kt, kc = (72,56,18), (225,185,62), "...", (255,225,82)
@@ -148,9 +188,7 @@ class HotbarEditorHandlers:
 
         # ── Menus ─────────────────────────────────────────────────────────
         draw_section("Menus")
-        for label, mid in [("Inventário", "inventario"), ("Talentos", "talentos"),
-                            ("Mapa", "mapa"), ("Diário de Quests", "diario"),
-                            ("Habilidades", "habilidades")]:
+        for label, mid in _MENU_ROWS:
             draw_row(label, self._menu_keys.get(mid, 0), f"menu:{mid}")
 
         # ── Barra de Habilidades ──────────────────────────────────────────
@@ -164,6 +202,17 @@ class HotbarEditorHandlers:
         for i in range(_CB.NUM_SLOTS):
             key_code = cbar.keybinds[i] if cbar and i < len(cbar.keybinds) else 0
             draw_row(f"Slot {NUM_SLOTS + i + 1}", key_code, f"cons:{i}")
+
+        self.screen.set_clip(prev_clip)
+
+        # ── Barra de rolagem (só quando o conteúdo não cabe) ───────────────
+        if max_scroll > 0 and view_h > 0:
+            sb_w    = self._u(5)
+            sb_x    = ppx + PW - self._u(10)
+            thumb_h = max(self._u(20), int(view_h * view_h / content_h))
+            thumb_y = rows_top + int((view_h - thumb_h) * self._mkb_scroll / max_scroll)
+            pygame.draw.rect(self.screen, (40, 34, 18), (sb_x, rows_top, sb_w, view_h), border_radius=2)
+            pygame.draw.rect(self.screen, (90, 72, 44), (sb_x, thumb_y, sb_w, thumb_h), border_radius=2)
 
         # ── Botões Salvar / Fechar ────────────────────────────────────────
         btn_y   = ppy + PH - BTN_H - self._u(14)

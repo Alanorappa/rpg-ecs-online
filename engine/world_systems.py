@@ -2396,6 +2396,15 @@ class TileMovementSystem(System):
                     tile_movement.current_tile_x = tile_movement.target_tile_x
                     tile_movement.current_tile_y = tile_movement.target_tile_y
                     tile_movement.is_moving = False
+                    # Baseline anti-cheat (WorldServer.move_player()): dash do
+                    # Interceptar termina AQUI (é o mesmo tween de qualquer
+                    # movimento, só com move_duration curto) — sem isto, o
+                    # primeiro MOVE normal após o dash pareceria um salto
+                    # implausível comparado à posição pré-dash congelada.
+                    import time as _time_tw
+                    tile_movement._last_valid_tile_x = tile_movement.current_tile_x
+                    tile_movement._last_valid_tile_y = tile_movement.current_tile_y
+                    tile_movement._last_valid_ts     = _time_tw.time()
 
                     # Atualiza elevation ao chegar num tile:
                     # • tile de transição ("t"): elevation NÃO muda aqui —

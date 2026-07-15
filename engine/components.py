@@ -332,6 +332,7 @@ class RemoteControlled:
     class_id:   str = "guerreiro"
     hp:         int = 100
     hp_max:     int = 100
+    level:      int = 1
 
 @dataclass
 class Camera:
@@ -929,6 +930,19 @@ class TileMovement:
     # dependa de "parado vs andando" lá (Calmo e Certeiro, regen de
     # Concentração — ver ServerCombatStateSystem._tick_player_move_grace).
     _server_move_grace: float = 0.0
+    # Baseline anti-cheat do servidor pra validação de MOVE (WorldServer.
+    # move_player()): última posição "de confiança" + timestamp real
+    # (time.time(), nunca o ts do cliente). -1 = não inicializado ainda
+    # (primeiro MOVE após spawn usa current_tile_x/y como fallback). Tocado
+    # em TODO ponto que escreve a posição de verdade — snap_to_tile()
+    # (knockback/teleporte/respawn) e a finalização do tween em
+    # TileMovementSystem (cobre o dash do Interceptar) — pra não punir o
+    # PRIMEIRO passo normal logo depois de um deslocamento forçado como se
+    # fosse um salto implausível. Só tem sentido no servidor; no cliente é
+    # bookkeeping morto (sem custo real, mesmo padrão de _server_move_grace).
+    _last_valid_tile_x: int = -1
+    _last_valid_tile_y: int = -1
+    _last_valid_ts:     float = 0.0
 
 
 @dataclass

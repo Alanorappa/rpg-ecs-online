@@ -987,7 +987,19 @@ class NetworkHandlers:
                         player_tm.current_tile_y != real_ty or
                         skill_rejected):
                     _was_dashing = getattr(player_tm, "is_dash", False)
-                    if _was_dashing or not player_tm.is_moving:
+                    # Gap grande mesmo andando normal = desync de verdade, não
+                    # correção obsoleta de 1 passo (ver comentário no else
+                    # abaixo) — servidor agora só rejeita MOVE por motivo real
+                    # (fora do orçamento tempo×velocidade ou atravessou parede,
+                    # ver WorldServer.move_player), então uma correção com gap
+                    # >1 tile aqui é sempre genuína, nunca desatualizada por
+                    # delay de rede (bug real: cliente ignorava toda correção
+                    # andando normal, então um desync ficava permanente pra
+                    # sempre — ver ARQUITETURA_ONLINE.md).
+                    from engine.utils import chebyshev as _chb_corr
+                    _corr_gap = _chb_corr(player_tm.current_tile_x, player_tm.current_tile_y,
+                                          real_tx, real_ty)
+                    if _was_dashing or not player_tm.is_moving or _corr_gap > 1:
                         # Cancela animação de dash em andamento (predição local que o
                         # servidor não confirmou) OU, se o player está parado, é seguro
                         # aplicar a correção (nada legítimo em andamento pra corromper).

@@ -388,17 +388,12 @@ class TrainerSystem(UIScaleMixin, System):
     # render_world() — indicador sobre NPC
     # ------------------------------------------------------------------
     def render_world(self, cam_x: float, cam_y: float):
-        from engine.components import Visible as _Vis
-        font = self._font_sm
-        for eid, pos, rend, _ in self.world.get_entities_with(
-                Position, Renderable, Trainer):
-            if not self.world.get_component(eid, _Vis):
-                continue
-            sx = int(pos.x - cam_x) - rend.width  // 2
-            sy = int(pos.y - cam_y) - rend.height // 2
-            label = font.render("T", False, (120, 200, 255))
-            self.world_surf.blit(label, (sx + rend.width // 2 - label.get_width() // 2,
-                                     sy - 14))
+        # Indicador "T" removido (11/07/2026) — o nome do NPC (NPC.name,
+        # desenhado por ui/systems.py::RenderSystem pra QUALQUER NPC) já
+        # identifica o treinador, mesmo padrão do merchant "LOJA" removido
+        # antes (ui/systems.py::ShopSystem.render_world). Ícone por classe
+        # (map_trainer_*) existe só pro mapa/minimapa (ui/map_markers.py).
+        pass
 
     # ------------------------------------------------------------------
     # render() — modal de UI

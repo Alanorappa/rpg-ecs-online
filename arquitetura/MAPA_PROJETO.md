@@ -157,6 +157,9 @@ rpg_ecs_online/
 │   ├── ui_components.py/ui_helpers.py/ui_sizes.py/ui_scale_mixin.py/ui_compare.py
 │   ├── fonts.py, sound_manager.py, icon_manager.py, tile_sprite_manager.py, fov.py
 │   ├── floating_text.py, effect_animator.py, minimap.py, map_overlay.py
+│   ├── map_markers.py               ← MapMarker/collect_markers — pontos de
+│   │   interesse do mapa/minimapa (morte, quest givers, treinadores,
+│   │   mercadores), consumido por map_overlay.py/minimap.py
 │   ├── god_mode.py                  ← editor de nível/level (F10)
 │   ├── login_screen.py, char_creation_screen.py, settings_screen.py
 │   ├── skill_level_ui.py, talent_system.py, quest_system.py, trainer_system.py,

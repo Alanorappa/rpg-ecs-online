@@ -39,7 +39,8 @@ class UI:
     INVENTORY_W, INVENTORY_H     = 660, 580   # painel de Equipamentos/Inventário (tecla I)
     DEBUG_W, DEBUG_H             = 820, 620   # modal de debug (F12)
     HABILIDADES_W, HABILIDADES_H = 720, 560   # painel de Habilidades (tecla H)
-    HOTBAR_EDITOR_W              = 560        # editor de atalhos (tecla K) — altura é dinâmica (depende do nº de slots/linhas)
+    HOTBAR_EDITOR_W              = 560        # editor de atalhos (tecla K)
+    HOTBAR_EDITOR_MAX_H          = 620        # teto de altura — acima disso, a lista de linhas rola (ver hotbar_editor_handlers.py)
     CRAFTING_W, CRAFTING_H       = 700, 510   # modal de Forja/Reciclagem (ferreiro)
     TRAINER_W, TRAINER_H         = 640, 480   # modal de treinamento de skills (trainer NPC)
     SHOP_W, SHOP_H                = 1120, 700  # modal de loja (comerciante NPC) — o maior painel do jogo

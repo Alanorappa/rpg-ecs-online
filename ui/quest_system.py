@@ -444,6 +444,11 @@ class QuestDialogSystem(UIScaleMixin, System):
         self._complete_rect: "pygame.Rect | None"    = None
         self._close_rect:    "pygame.Rect | None"    = None
 
+        # Scroll (px) do bloco de texto rolável em "detail"/"turnin" — conteúdo
+        # variável (descrição + objetivos + recompensa) pode ultrapassar a
+        # altura fixa do painel; ver _render_detail/_render_turnin.
+        self._detail_scroll: int = 0
+
     @property
     def is_open(self) -> bool:
         return self._dialog_npc_id != -1
@@ -507,6 +512,10 @@ class QuestDialogSystem(UIScaleMixin, System):
             if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 self._close()
                 return
+            if event.type == pygame.MOUSEWHEEL:
+                if self._dialog_state in ("detail", "turnin"):
+                    self._detail_scroll = max(0, self._detail_scroll - event.y * self._u(24))
+                return
             if event.type != pygame.MOUSEBUTTONDOWN or event.button != 1:
                 continue
             mx, my = event.pos
@@ -522,6 +531,7 @@ class QuestDialogSystem(UIScaleMixin, System):
                 for qid, rect in self._list_rects.items():
                     if rect.collidepoint(mx, my):
                         self._dialog_selected_qid = qid
+                        self._detail_scroll        = 0
                         self._dialog_state = "turnin" if self._qs.can_turn_in(qid) else "detail"
                         return
 
@@ -566,38 +576,89 @@ class QuestDialogSystem(UIScaleMixin, System):
                             self._open_dialog(saved_npc)
                     return
 
+    # ── Marcador de estado de quest (fonte única) ────────────────────────────
+    # Reaproveitado por render_world() (indicador acima da cabeça, no mundo)
+    # E por ui/map_markers.py (ícone no mapa/minimapa) — mesma regra de
+    # estado nos 3 lugares, nunca duplicada.
+
+    # icon_name segue a convenção map_<algo>.png de assets/icons/ (mesmo
+    # padrão de skill_/item_/enemy_ já usado por IconManager). Ainda não
+    # existem os arquivos — ICONS.get() retorna None e quem desenha cai pro
+    # fallback (color, symbol) automaticamente.
+    _QUEST_ICONS = {
+        "completable": "map_quest_complete",
+        "avail":       "map_quest_available",
+        "inprog":      "map_quest_inprogress",
+        "locked":      "map_quest_locked",
+    }
+
+    def marker_for(self, npc_id: int) -> "tuple[str, tuple, str] | None":
+        """Estado de quest deste NPC pro player local: (icon_name, cor de
+        fallback, símbolo de fallback), ou None se não há nada a mostrar
+        (sem quest disponível/em progresso/completável/bloqueada)."""
+        avail       = self._get_available_quests(npc_id)
+        completable = self._get_completable_quests(npc_id)
+        inprog      = self._get_inprogress_quests(npc_id)
+        locked      = self._get_locked_quests(npc_id)
+
+        if completable:
+            state, color, symbol = "completable", self.COL_GOLD, "?"
+        elif avail:
+            state, color, symbol = "avail",       self.COL_GOLD, "!"
+        elif inprog:
+            state, color, symbol = "inprog",      self.COL_GREY, "?"
+        elif locked:
+            state, color, symbol = "locked",      self.COL_GREY, "!"
+        else:
+            return None
+        return self._QUEST_ICONS[state], color, symbol
+
     # ── Render — indicadores no mundo ────────────────────────────────────────
 
-    def render_world(self, cam_x: float = 0, cam_y: float = 0) -> None:
+    def render_world(self, cam_x: float = 0, cam_y: float = 0, zoom: float = 1.0) -> None:
         from engine.components import QuestGiver as _QG, Position, Renderable, Visible
+        from ui.icon_manager import ICONS
+        from ui.world_labels import WORLD_LABELS
+
+        # Ícone e nome do NPC (ui/systems.py::RenderSystem) empilham no
+        # MESMO stack_key=eid em WORLD_LABELS — desenhados em espaço de
+        # tela, pós-zoom, nunca dentro do world_surf (fix 11/07/2026: fonte/
+        # ícone pixel-perfect borravam no transform.scale do zoom da
+        # câmera). Sem compensação de zoom no tamanho — 8px literal, igual
+        # mapa/minimapa (23.1/23.2), já que isso nunca mais passa pela
+        # escala do mundo.
+        icon_size = 8
 
         for eid, pos, rend, _, _ in self.world.get_entities_with(Position, Renderable, _QG, Visible):
-            avail       = self._get_available_quests(eid)
-            completable = self._get_completable_quests(eid)
-            inprog      = self._get_inprogress_quests(eid)
-            locked      = self._get_locked_quests(eid)
-
-            if not avail and not completable and not inprog and not locked:
+            marker = self.marker_for(eid)
+            if marker is None:
                 continue
+            icon_name, color, symbol = marker
 
-            if completable:
-                color, symbol = self.COL_GOLD, "?"
-            elif avail:
-                color, symbol = self.COL_GOLD, "!"
-            elif inprog:
-                color, symbol = self.COL_GREY, "?"
-            else:
-                # somente quests bloqueadas por nível
-                color, symbol = self.COL_GREY, "!"
+            icon = ICONS.get(icon_name, icon_size)
+            if icon is None:
+                icon = self._fallback_marker_surf(color, symbol)
+            WORLD_LABELS.add_icon(pos.x, pos.y - rend.height / 2, icon, stack_key=eid)
 
-            sx = int(pos.x - cam_x)
-            sy = int(pos.y - cam_y - rend.height / 2 - 14)
+    _fallback_marker_cache: dict = {}
 
-            pygame.draw.circle(self.world_surf, (30, 25, 10), (sx, sy), 9)
-            pygame.draw.circle(self.world_surf, color, (sx, sy), 9, 2)
+    def _fallback_marker_surf(self, color: tuple, symbol: str) -> "pygame.Surface":
+        """Círculo + glifo pra quando o arquivo map_quest_*.png ainda não
+        existe — mesmo visual de antes (23.2), agora numa Surface própria
+        (cacheada por cor+símbolo) pra poder ir pro WORLD_LABELS igual um
+        ícone de verdade."""
+        key = (color, symbol)
+        surf = self._fallback_marker_cache.get(key)
+        if surf is None:
+            size = 18
+            surf = pygame.Surface((size, size), pygame.SRCALPHA)
+            pygame.draw.circle(surf, (30, 25, 10), (size // 2, size // 2), size // 2 - 1)
+            pygame.draw.circle(surf, color, (size // 2, size // 2), size // 2 - 1, 2)
             glyph = self._font_lg.render(symbol, False, color)
-            self.world_surf.blit(glyph, (sx - glyph.get_width() // 2,
-                                     sy - glyph.get_height() // 2))
+            surf.blit(glyph, (size // 2 - glyph.get_width() // 2,
+                              size // 2 - glyph.get_height() // 2))
+            self._fallback_marker_cache[key] = surf
+        return surf
 
     # ── Render — modal ───────────────────────────────────────────────────────
 
@@ -674,6 +735,40 @@ class QuestDialogSystem(UIScaleMixin, System):
             self._list_rects[qid] = row_r
             y += self._u(38)
 
+    def _blit_scrollable(self, ops: list, x0: int, view_top: int,
+                         panel_w: int, view_h: int) -> None:
+        """Desenha `ops` (lista de (surf, rel_y), rel_y relativo ao topo do
+        bloco) dentro da faixa [view_top, view_top+view_h), cortando
+        (set_clip) o que passar da altura disponível e aplicando
+        self._detail_scroll (px, clampado aqui). Desenha uma barra de
+        rolagem à direita quando o conteúdo não cabe inteiro — mesmo padrão
+        visual de crafting_system.py (thumb proporcional). Usado por
+        _render_detail/_render_turnin — conteúdo de texto varia por quest,
+        diferente do painel fixo original que deixava a descrição/objetivos
+        vazar pra fora do modal (bug relatado pelo usuário 13/07/2026)."""
+        view_h = max(0, view_h)
+        content_h = 0
+        for surf, rel_y in ops:
+            content_h = max(content_h, rel_y + surf.get_height())
+
+        max_scroll = max(0, content_h - view_h)
+        self._detail_scroll = max(0, min(self._detail_scroll, max_scroll))
+
+        PAD = self._u(self.PAD)
+        prev_clip = self.hud_surf.get_clip()
+        self.hud_surf.set_clip(pygame.Rect(x0, view_top, panel_w, view_h))
+        for surf, rel_y in ops:
+            self.hud_surf.blit(surf, (x0 + PAD, view_top + rel_y - self._detail_scroll))
+        self.hud_surf.set_clip(prev_clip)
+
+        if max_scroll > 0 and view_h > 0:
+            sb_w    = self._u(5)
+            sb_x    = x0 + panel_w - self._u(10)
+            thumb_h = max(self._u(20), int(view_h * view_h / content_h))
+            thumb_y = view_top + int((view_h - thumb_h) * self._detail_scroll / max_scroll)
+            pygame.draw.rect(self.hud_surf, (40, 34, 18), (sb_x, view_top, sb_w, view_h), border_radius=2)
+            pygame.draw.rect(self.hud_surf, self.COL_BORDER, (sb_x, thumb_y, sb_w, thumb_h), border_radius=2)
+
     def _render_detail(self, x0: int, y0: int) -> None:
         self._accept_rect  = None
         self._decline_rect = None
@@ -683,42 +778,43 @@ class QuestDialogSystem(UIScaleMixin, System):
 
         W, PAD = self._u(self.PANEL_W), self._u(self.PAD)
         mx, my = pygame.mouse.get_pos()
-        y = y0 + self._u(52)
 
-        # Título da quest
+        # Botões na base do painel — alinhados à direita: [Recusar] [Aceitar]
+        btn_y  = y0 + self._u(self.PANEL_H) - self._u(48)
+
+        # ── Monta as linhas de conteúdo em coordenadas RELATIVAS (y=0 no
+        # topo do bloco) — permite medir a altura total antes de desenhar,
+        # pra rolar/cortar sem depender do conteúdo caber no painel fixo
+        # (descrição/objetivos têm tamanho variável por quest). Ver
+        # ARQUITETURA_ONLINE.md — modal overflow reportado pelo usuário.
+        ops: list[tuple] = []   # (surf, rel_y)
+        ry = 0
+
         ts = self._font_lg.render(qdef.title, False, self.COL_TITLE)
-        self.hud_surf.blit(ts, (x0 + PAD, y))
-        y += self._u(32)
+        ops.append((ts, ry)); ry += self._u(32)
 
-        # Descrição
         for line in self._wrap(qdef.description, W - PAD * 2, self._font_body):
-            self.hud_surf.blit(self._font_body.render(line, False, self.COL_WHITE),
-                             (x0 + PAD, y))
-            y += self._u(25)
-        y += self._u(8)
+            ops.append((self._font_body.render(line, False, self.COL_WHITE), ry))
+            ry += self._u(25)
+        ry += self._u(8)
 
-        # Objetivos
-        self.hud_surf.blit(self._font_sm.render("Objetivos:", False, self.COL_GREY),
-                         (x0 + PAD, y))
-        y += self._u(23)
+        ops.append((self._font_sm.render("Objetivos:", False, self.COL_GREY), ry))
+        ry += self._u(23)
         for obj in qdef.objectives:
             s = self._font_sm.render(f"  {QuestSystem._obj_label(obj, 0, show_progress=False)}",
                                      False, self.COL_GREY)
-            self.hud_surf.blit(s, (x0 + PAD, y))
-            y += self._u(21)
-        y += self._u(8)
+            ops.append((s, ry)); ry += self._u(21)
+        ry += self._u(8)
 
-        # Recompensas
         parts = []
         if qdef.reward.xp:   parts.append(f"+{qdef.reward.xp} XP")
         if qdef.reward.gold: parts.append(f"+{qdef.reward.gold} ouro")
         if parts:
             rew = self._font_sm.render("Recompensa: " + ", ".join(parts),
                                        False, self.COL_GOLD)
-            self.hud_surf.blit(rew, (x0 + PAD, y))
+            ops.append((rew, ry)); ry += rew.get_height()
 
-        # Botões na base do painel — alinhados à direita: [Recusar] [Aceitar]
-        btn_y  = y0 + self._u(self.PANEL_H) - self._u(48)
+        self._blit_scrollable(ops, x0, y0 + self._u(52), W, btn_y - self._u(10) - (y0 + self._u(52)))
         acc_r  = pygame.Rect(x0 + self._u(self.PANEL_W) - PAD - self._u(150), btn_y, self._u(150), self._u(32))
         dec_r  = pygame.Rect(x0 + self._u(self.PANEL_W) - PAD - self._u(150) - self._u(158), btn_y, self._u(150), self._u(32))
         for rect, label, c_hov, c_nor in [
@@ -740,45 +836,45 @@ class QuestDialogSystem(UIScaleMixin, System):
         if qdef is None:
             return
 
+        W        = self._u(self.PANEL_W)
         PAD      = self._u(self.PAD)
-        max_w    = self._u(self.PANEL_W) - PAD * 2
+        max_w    = W - PAD * 2
         mx, my   = pygame.mouse.get_pos()
         btn_y    = y0 + self._u(self.PANEL_H) - self._u(48)
-        y        = y0 + self._u(52)
 
-        # Cabeçalho
+        ops: list[tuple] = []   # (surf, rel_y) — ver _render_detail
+        ry = 0
+
         hdr = self._font_lg.render("Missao Completa!", False, self.COL_GOLD)
-        self.hud_surf.blit(hdr, (x0 + PAD, y))
-        y += self._u(32)
+        ops.append((hdr, ry)); ry += self._u(32)
 
-        # Título da quest
         ts = self._font_body.render(qdef.title, False, self.COL_TITLE)
-        self.hud_surf.blit(ts, (x0 + PAD, y))
-        y += self._u(26)
+        ops.append((ts, ry)); ry += self._u(26)
 
-        # Linha separadora
-        pygame.draw.line(self.hud_surf, self.COL_BORDER,
-                         (x0 + PAD, y), (x0 + self._u(self.PANEL_W) - PAD, y))
-        y += self._u(10)
+        # Linha separadora — vira uma "surf" de 1px pra rolar junto com o
+        # resto do conteúdo (senão ficaria fixa entre o título e o texto,
+        # dessincronizando do que ela deveria separar assim que rolasse).
+        sep_surf = pygame.Surface((max_w, 1))
+        sep_surf.fill(self.COL_BORDER)
+        ops.append((sep_surf, ry)); ry += self._u(10)
 
-        # Texto de conclusão do NPC (ou fallback genérico)
         completion_text = getattr(qdef, "completion", "") or "Bom trabalho. Aqui esta sua recompensa."
         for line in self._wrap(completion_text, max_w, self._font_body):
             s = self._font_body.render(line, False, self.COL_WHITE)
-            self.hud_surf.blit(s, (x0 + PAD, y))
-            y += s.get_height() + self._u(2)
-        y += self._u(12)
+            ops.append((s, ry)); ry += s.get_height() + self._u(2)
+        ry += self._u(12)
 
-        # Recompensas
         parts = []
         if qdef.reward.xp:   parts.append(f"+{qdef.reward.xp} XP")
         if qdef.reward.gold: parts.append(f"+{qdef.reward.gold} ouro")
         if parts:
             rew_hdr = self._font_sm.render("Recompensa:", False, (160, 140, 80))
-            self.hud_surf.blit(rew_hdr, (x0 + PAD, y))
-            y += rew_hdr.get_height() + self._u(4)
+            ops.append((rew_hdr, ry)); ry += rew_hdr.get_height() + self._u(4)
             rew = self._font_body.render("  " + "  |  ".join(parts), False, self.COL_GOLD)
-            self.hud_surf.blit(rew, (x0 + PAD, y))
+            ops.append((rew, ry)); ry += rew.get_height()
+
+        view_top = y0 + self._u(52)
+        self._blit_scrollable(ops, x0, view_top, W, btn_y - self._u(10) - view_top)
 
         # Botão Concluir
         comp_r = pygame.Rect(x0 + self._u(self.PANEL_W) - PAD - self._u(180), btn_y, self._u(180), self._u(32))
@@ -821,6 +917,7 @@ class QuestDialogSystem(UIScaleMixin, System):
 
         self._dialog_npc_id = npc_id
         self._list_rects    = {}
+        self._detail_scroll = 0
 
         if len(total) == 1:
             qid = total[0]

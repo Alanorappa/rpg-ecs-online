@@ -34,11 +34,17 @@ class FloatingTextManager:
 
     Quando um novo texto chega para um alvo que já tem textos ativos:
       - Os textos existentes sobem imediatamente SLOT_HEIGHT pixels.
-      - O novo texto aparece na posição base (acima da cabeça do alvo).
+      - O novo texto aparece na posição base (pés do alvo) e sobe dali —
+        mesma animação de sempre (deriva pra cima + empilhamento), só o
+        ponto de partida mudou. Antes nascia ACIMA da cabeça (BASE_Y_OFFSET
+        positivo), colidindo com a HUD de nível/barras nova (pedido do
+        usuário 11/07/2026: nascer da base, "na frente do personagem",
+        subindo através do sprite — mesmo efeito, sem brigar com a HUD).
     """
 
     SLOT_HEIGHT = 20   # px de separação entre textos empilhados
-    BASE_Y_OFFSET = 20  # px acima do centro da entidade onde o 1º texto aparece
+    BASE_Y_OFFSET = -14  # px abaixo do centro da entidade onde o 1º texto
+                          # aparece (negativo = pra baixo, ver fórmula em add())
 
     _PRESETS = {
         #         (font_size, duration, speed_y_idle)

@@ -9,6 +9,7 @@ from ui.ui_helpers import fill_surf
 from engine.tileset import TILE_MAPPING, OBJECT_MAPPING, FLOOR_TILE
 from ui.ui_scale_mixin import UIScaleMixin
 from ui.ui_sizes import UI
+from ui.icon_manager import ICONS
 
 
 class MapOverlay(UIScaleMixin):
@@ -208,7 +209,8 @@ class MapOverlay(UIScaleMixin):
     # ── Renderização ─────────────────────────────────────────────────────────
 
     def render(self, player_tile_x: int = -1, player_tile_y: int = -1,
-               explored: "set | None" = None) -> None:
+               explored: "set | None" = None,
+               markers: "list | None" = None) -> None:
         if not self.is_open or self._base_surf is None:
             return
 
@@ -317,6 +319,39 @@ class MapOverlay(UIScaleMixin):
                                  (dx - arm, dy - arm), (dx + arm, dy + arm), 2)
                 pygame.draw.line(self.screen, (255, 220,   0),
                                  (dx + arm, dy - arm), (dx - arm, dy + arm), 2)
+
+        # ── Marcadores (morte, quest givers, treinadores, mercadores...) ──
+        # Ícone se existir o arquivo; senão círculo colorido + glifo — mesmo
+        # padrão de fallback do indicador acima da cabeça (ver
+        # ui/map_markers.py e ui/quest_system.py::marker_for). Tamanho FIXO
+        # (só escala com "Escala da UI", nunca com o zoom do mapa — pedido
+        # do usuário: ícone não deve crescer/encolher junto com o scroll) —
+        # e posições desconflitadas ANTES de desenhar, pra dois marcadores
+        # no mesmo tile (ou vizinhos, quando o zoom aproxima os tiles) não
+        # ficarem um em cima do outro.
+        if markers:
+            # Tamanho fixo de tela (não self._u(...), não escala com o
+            # zoom do mapa) — ver ui/map_markers.py::MAP_ICON_SIZE pro
+            # histórico completo (8px nativo ficou ilegível em jogo,
+            # subiu pra 16 = 2x, ainda nearest-neighbor sem esticar).
+            from ui.map_markers import deconflict_positions, MAP_ICON_SIZE
+            icon_size = MAP_ICON_SIZE
+            _raw_pts = [(int(mk.tile_x * scale - off_x) + modal.x,
+                        int(mk.tile_y * scale - off_y) + modal.y) for mk in markers]
+            _placed_pts = deconflict_positions(_raw_pts, icon_size * 0.9)
+            for mk, (mx_, my_) in zip(markers, _placed_pts):
+                if not modal.collidepoint(mx_, my_):
+                    continue
+                icon = ICONS.get(mk.icon_name, icon_size)
+                if icon is not None:
+                    self.screen.blit(icon, (mx_ - icon_size // 2, my_ - icon_size // 2))
+                else:
+                    r = icon_size // 2
+                    pygame.draw.circle(self.screen, mk.fallback_color, (mx_, my_), r)
+                    if mk.fallback_symbol:
+                        glyph = self._font.render(mk.fallback_symbol, False, (20, 20, 20))
+                        self.screen.blit(glyph, (mx_ - glyph.get_width() // 2,
+                                             my_ - glyph.get_height() // 2))
 
         # ── Marcador do jogador ──────────────────────────
         if 0 <= player_tile_x < self._cols and 0 <= player_tile_y < self._rows:

@@ -96,3 +96,94 @@ def make(size: int) -> pygame.font.Font:
     # aplicar o scale renderizaria tudo na metade do tamanho.
     scale = _SCALE if p else 1.0
     return CachedFont(p, max(6, round(size * scale)))
+
+
+# ── Fonte pixel-perfect (teste, 11/07/2026) ────────────────────────────────
+# Convive com a Determination acima — usuário pediu pra testar em paralelo
+# pra labels pequenos (nome de NPC/mob acima da cabeça), não substitui a
+# fonte do projeto inteiro. Sem _SCALE: fontes bitmap/pixel já vêm
+# desenhadas na grade certa pro tamanho nativo — aplicar uma correção de
+# métrica aqui (como a Determination precisa) distorceria e voltaria a
+# ficar borrado. MEGAMAN10 é desenhada pra ~10px (nome do arquivo).
+_PIXEL_FONT_NAME = "megaman10"
+_PIXEL_FONT_FILE = "assets/fonts/MEGAMAN10.ttf"
+
+_pixel_resolved_path: str | None = None
+_pixel_resolved: bool = False
+
+
+def _pixel_path() -> str | None:
+    global _pixel_resolved_path, _pixel_resolved
+    if not _pixel_resolved:
+        _bundled = resource_path(_PIXEL_FONT_FILE)
+        if os.path.isfile(_bundled):
+            _pixel_resolved_path = _bundled
+        else:
+            _pixel_resolved_path = pygame.font.match_font(_PIXEL_FONT_NAME) or None
+        _pixel_resolved = True
+    return _pixel_resolved_path
+
+
+def make_pixel(size: int = 16) -> pygame.font.Font:
+    """Fonte pixel-perfect (MEGAMAN10) — sem correção de métrica, sem
+    antialias (mesma regra do resto do projeto: CachedFont.render default
+    já é antialias=False). Agora que só é usada via ui/world_labels.py
+    (desenhada em espaço de tela, nunca reamostrada pelo zoom da câmera —
+    ver ARQUITETURA_ONLINE.md 23.5), o tamanho é puramente estético: 10
+    (nome do arquivo) ficou pequeno demais pra ler em jogo (usuário
+    reportou "ilegível" mesmo já pixel-perfect), 16 é o valor "razoável"
+    ajustado depois do teste — mude aqui se ainda não bastar."""
+    p = _pixel_path()
+    return CachedFont(p, size)
+
+
+# ── Render compacto (corrige bearing desproporcional de glifos estreitos) ──
+# MEGAMAN10 (e potencialmente outras fontes pixel) tem bearing esquerdo
+# grande em glifos estreitos — medido: "i" tem advance=6px mas a tinta só
+# começa em x=3 (metade do avanço é espaço vazio antes do desenho).
+# font.render("Zumbi") respeita esse bearing literalmente, produzindo um
+# vão visível antes do "i" ("Zumb i") — reportado pelo usuário 11/07/2026.
+# Fix: renderiza caractere por caractere e reempacota pela TINTA real
+# (pygame.mask) + respiro fixo, descartando o bearing/kerning original da
+# fonte. Pra uma fonte pixel (quase monoespaçada, sem kerning fino por
+# natureza), isso não perde nada perceptível — e em fontes SEM esse
+# problema o resultado fica quase idêntico ao render normal.
+_TIGHT_CACHE_MAX = 512
+_tight_cache: dict = {}
+
+
+def render_tight(font: pygame.font.Font, text: str, color: tuple, gap: int = 1) -> pygame.Surface:
+    key = (id(font), text, tuple(color) if not isinstance(color, tuple) else color, gap)
+    cached = _tight_cache.get(key)
+    if cached is not None:
+        return cached
+    if not text:
+        surf = pygame.Surface((1, 1), pygame.SRCALPHA)
+    else:
+        glyphs = []
+        total_w = 0
+        max_h = 0
+        for ch in text:
+            g_surf = font.render(ch, False, color)
+            mask = pygame.mask.from_surface(g_surf)
+            rects = mask.get_bounding_rects()
+            if rects:
+                ink = rects[0]
+                for r in rects[1:]:
+                    ink = ink.union(r)
+            else:
+                # sem tinta (ex: espaço) — usa a largura nominal do glifo
+                ink = pygame.Rect(0, 0, g_surf.get_width(), g_surf.get_height())
+            glyphs.append((g_surf, ink))
+            total_w += ink.width + gap
+            max_h = max(max_h, g_surf.get_height())
+        total_w = max(1, total_w - gap)
+        surf = pygame.Surface((total_w, max_h), pygame.SRCALPHA)
+        x = 0
+        for g_surf, ink in glyphs:
+            surf.blit(g_surf, (x - ink.x, 0))
+            x += ink.width + gap
+    if len(_tight_cache) >= _TIGHT_CACHE_MAX:
+        _tight_cache.clear()
+    _tight_cache[key] = surf
+    return surf

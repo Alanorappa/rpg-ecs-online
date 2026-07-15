@@ -11,6 +11,9 @@ import random
 from ui.fonts import make as _font
 from ui.ui_scale_mixin import UIScaleMixin
 from ui.ui_sizes import UI
+from ui.world_labels import WORLD_LABELS
+from ui.hud_bars import (build_player_hud, build_mob_hud, RESOURCE_COLORS,
+                       HUD_GAP_PX, effects_row_offset)
 
 # Re-exporta apply_effect de core_systems para compatibilidade com todo o código
 # que já faz `from systems import apply_effect`.
@@ -77,17 +80,25 @@ _GROUND_EFFECT_SPRITES: dict[str, "pygame.Surface | None"] = {}
 _GROUND_EFFECT_TYPES_ICONS = {"root"}  # efeitos com sprite de chão: sem ícone na barra
 
 
-def _draw_effect_icons(
-    surf: "pygame.Surface",
-    draw_x: float,
-    bar_y: int,
-    active_effects: list,
-    font: "pygame.font.Font",
-) -> None:
-    """Desenha ícones de efeito ativos acima da barra de HP.
+def _build_effects_row(active_effects: list, font: "pygame.font.Font") -> "pygame.Surface | None":
+    """Monta a fila de ícones de efeito ativos (bleed/stun/sleep/...) numa
+    ÚNICA Surface — vai inteira pro WORLD_LABELS (screen-space, via
+    add_icon_offset, encostada na borda direita da HUD de barras) em vez
+    de desenhar direto no world_surf. Motivo: a HUD (ui/hud_bars.py) já é
+    screen-space desde a correção do bug "número flutuando fora da caixa"
+    (ARQUITETURA_ONLINE.md 23.9) — desenhar os ícones de efeito em espaço
+    de MUNDO de novo reintroduziria o mesmo desalinhamento (a fila
+    desgrudaria da HUD conforme o zoom da câmera muda). Ícones 16×16,
+    sobreposição do tempo restante em vermelho.
 
-    Ícones 16×16 centralizados no eixo X, enfileirados horizontalmente,
-    10 px acima da barra. Sobreposição do tempo restante em vermelho.
+    Fila "estilo WoW": a ordem é a própria ordem de inserção no dict de
+    StatusEffects (Python preserva ordem de inserção) — recalculada do
+    zero a cada frame, então não são posições fixas por efeito. O mais
+    antigo fica mais perto da HUD (esquerda da fila), o mais novo entra
+    sempre na ponta direita; quando um efeito expira, os seguintes
+    "puxam" pra esquerda sozinhos (é só a lista atual desenhada em
+    sequência, ninguém guarda slot fixo) — efeito novo ocupa a posição
+    livre automaticamente, sem pular a fila.
     """
     from math import ceil as _ceil
     from ui.effect_animator import get_frame as _get_frame, FRAME_W, FRAME_H
@@ -96,23 +107,22 @@ def _draw_effect_icons(
     visible = [e for e in active_effects
                if e.effect_type not in _GROUND_EFFECT_TYPES_ICONS]
     if not visible:
-        return
+        return None
 
     ICON = FRAME_W   # 16
     GAP  = 3
-    n    = len(visible)
-    total_w = n * ICON + GAP * (n - 1)
-    ix = int(draw_x - total_w / 2)
-    iy = bar_y - ICON - 10
+    n = len(visible)
+    row = pygame.Surface((n * ICON + (n - 1) * GAP, ICON), pygame.SRCALPHA)
+    ix = 0
 
     for eff in visible:
         frame = _get_frame(eff.effect_type)
         if frame is not None:
-            surf.blit(frame, (ix, iy))
+            row.blit(frame, (ix, 0))
         else:
             defn = _EDEFS.get(eff.effect_type)
             col  = defn.color if defn else (150, 150, 150)
-            pygame.draw.rect(surf, col, (ix, iy, ICON, ICON))
+            pygame.draw.rect(row, col, (ix, 0, ICON, ICON))
 
         dur = getattr(eff, 'duration', 0.0)
         if 0 < dur <= 99:
@@ -120,11 +130,13 @@ def _draw_effect_icons(
             shad  = font.render(txt, False, (0, 0, 0))
             label = font.render(txt, False, (255, 60, 60))
             tx = ix + (ICON - label.get_width())  // 2
-            ty = iy + (ICON - label.get_height()) // 2
-            surf.blit(shad,  (tx + 1, ty + 1))
-            surf.blit(label, (tx,     ty))
+            ty = (ICON - label.get_height()) // 2
+            row.blit(shad,  (tx + 1, ty + 1))
+            row.blit(label, (tx,     ty))
 
         ix += ICON + GAP
+
+    return row
 
 def _get_ground_effect_sprite(effect_type: str) -> "pygame.Surface | None":
     """Retorna sprite de efeito de chão para o tipo dado; carrega na primeira vez.
@@ -1118,6 +1130,22 @@ class RenderSystem(System):
         # por entidade) — cache na fonte evita o custo do TTF render por frame.
         from ui.fonts import CachedFont as _CF
         self._effect_dur_font = _CF(None, 18)
+        # Nome flutuante acima de NPCs (e, no cliente online, mobs — ver
+        # client/remote_entity_handlers.py::_draw_mob_hp_bars, que usa o
+        # próprio font local em vez desta instância porque roda numa classe
+        # diferente). Fonte pixel-perfect (MEGAMAN10, em teste — ver
+        # ui/fonts.py::make_pixel) — a primeira versão usava
+        # pygame.font.Font(None, ...) por engano (fonte padrão feia, não a
+        # do projeto), motivo do "ilegível" reportado (11/07/2026).
+        from ui.fonts import make_pixel as _make_pixel
+        self._name_font = _make_pixel()
+        # Fonte do número de nível — tamanho escolhido testando visualmente
+        # (ver ui/hud_bars.py::LEVEL_FONT_SIZE), não é o mesmo tamanho do
+        # nome (a caixinha da HUD tem proporção diferente).
+        from ui.hud_bars import LEVEL_FONT_SIZE as _LFS
+        self._level_font = _make_pixel(_LFS)
+        # Offset/tamanho não é mais escolhido aqui — WORLD_LABELS empilha
+        # (ver ui/world_labels.py) e desenha em espaço de tela, pós-zoom.
 
     def render(self, camera_offset_x: float = 0, camera_offset_y: float = 0,
                world_objects: list = None) -> None:
@@ -1267,27 +1295,59 @@ class RenderSystem(System):
             if entity_id == target_id:
                 pygame.draw.rect(self.world_surf, (255, 220, 0), rect, 2)
 
-            # ── HP bar: mobs/player offline (CombatStats) ou players remotos (RemoteControlled) ──
-            _rc_hp = None if combat_stats else self.world.get_component(entity_id, RemoteControlled)
-            _draw_hp_bar = ((combat_stats and combat_stats.max_hp > 0) or
-                            (_rc_hp is not None and _rc_hp.hp_max > 0)) \
-                           and not _is_corpse_draw and not _is_ghost_draw
+            # ── HUD de barras: mobs/player LOCAIS (CombatStats) ──────────────
+            # Player remoto (PvP) tem seu próprio passe completo em
+            # client/remote_entity_handlers.py::_draw_remote_players (não
+            # tem dado de XP/recurso local pra mostrar aqui, e desenhar 2x
+            # seria bug) — por isso NÃO entra mais nesta condição.
+            #
+            # TUDO (fundo+barras+número do nível) sai como UMA ÚNICA
+            # Surface via ui/hud_bars.py, enfileirada inteira em
+            # WORLD_LABELS (screen-space) — nunca mais misturado (fundo em
+            # espaço de mundo + número em espaço de tela causava um bug
+            # real: "99" de 2 dígitos não cabia na caixinha nativa de
+            # 12px e ficava flutuando fora dela, ver ARQUITETURA_ONLINE.md
+            # 23.9). O nome empilha por cima com gap_before=2 (pedido do
+            # usuário); efeitos ativos encostam na borda direita.
+            _draw_hp_bar = (combat_stats and combat_stats.max_hp > 0
+                           and not _is_corpse_draw and not _is_ghost_draw)
             if _draw_hp_bar:
-                if combat_stats:
-                    ratio  = max(0.0, min(1.0, combat_stats.current_hp / combat_stats.max_hp))
-                    bar_fg = (0, 200, 60)
-                    bar_bg = (80, 0, 0)
+                ratio = max(0.0, min(1.0, combat_stats.current_hp / combat_stats.max_hp))
+                _is_local_player = self.world.get_component(entity_id, PlayerControlled) is not None
+                _hud_top_world_y = position.y - renderable.height / 2
+                _hud_surf = None
+
+                if _is_local_player:
+                    _char_id = self.world.get_component(entity_id, CharacterStats)
+                    if _char_id is not None:
+                        _xp_ratio = _char_id.current_xp / max(1, _char_id.xp_to_next_level)
+                        if _char_id.class_id == "mago":
+                            _res_ratio = _char_id.mana / max(1, _char_id.max_mana)
+                        elif _char_id.class_id == "arqueiro":
+                            _res_ratio = _char_id.concentration / max(1, _char_id.max_concentration)
+                        else:
+                            _res_ratio = _char_id.rage / max(1, _char_id.max_rage)
+                        _res_color = RESOURCE_COLORS.get(_char_id.class_id, (150, 150, 150))
+                        _hud_surf = build_player_hud(ratio, _xp_ratio, _res_ratio, _res_color,
+                                                     _char_id.level, self._level_font)
+                        WORLD_LABELS.add_icon(position.x, _hud_top_world_y, _hud_surf,
+                                              stack_key=entity_id, gap_before=HUD_GAP_PX)
+                        WORLD_LABELS.add_text(
+                            position.x, _hud_top_world_y,
+                            _char_id.name, self._name_font, (255, 255, 200),
+                            stack_key=entity_id, gap_before=2)
                 else:
-                    # Player remoto (PvP) — roxo para diferenciar de mob
-                    ratio  = max(0.0, min(1.0, _rc_hp.hp / _rc_hp.hp_max))
-                    bar_fg = (200, 80, 220)
-                    bar_bg = (50, 0, 60)
-                bar_w = renderable.width
-                bar_h = 4
-                bar_x = int(draw_x - renderable.width / 2)
-                bar_y = int(draw_y - renderable.height / 2) - 7
-                pygame.draw.rect(self.world_surf, bar_bg, (bar_x, bar_y, bar_w, bar_h))
-                pygame.draw.rect(self.world_surf, bar_fg, (bar_x, bar_y, int(bar_w * ratio), bar_h))
+                    # Mob local/offline — mob remoto usa
+                    # client/remote_entity_handlers.py::_draw_mob_hp_bars.
+                    _mob_id = self.world.get_component(entity_id, EntityIdentity)
+                    if _mob_id is not None:
+                        _hud_surf = build_mob_hud(ratio, _mob_id.level, self._level_font)
+                        WORLD_LABELS.add_icon(position.x, _hud_top_world_y, _hud_surf,
+                                              stack_key=entity_id, gap_before=HUD_GAP_PX)
+                        WORLD_LABELS.add_text(
+                            position.x, _hud_top_world_y,
+                            _mob_id.name, self._name_font, (220, 200, 180),
+                            stack_key=entity_id, gap_before=2)
 
                 _sfx = self.world.get_component(entity_id, StatusEffects)
                 _cst = self.world.get_component(entity_id, CombatState)
@@ -1302,9 +1362,27 @@ class RenderSystem(System):
                             duration    = _stun_timer_val
                         _active_effects.append(_FakeEff())
 
-                if _active_effects:
-                    _draw_effect_icons(self.world_surf, draw_x, bar_y,
-                                       _active_effects, self._effect_dur_font)
+                if _active_effects and _hud_surf is not None:
+                    _row = _build_effects_row(_active_effects, self._effect_dur_font)
+                    if _row is not None:
+                        _xo, _yo = effects_row_offset(_hud_surf)
+                        WORLD_LABELS.add_icon_offset(
+                            position.x, _hud_top_world_y, _row,
+                            x_offset=_xo, y_offset=_yo, halign="left", valign="center")
+
+            # ── Nome de NPC (mercador/treinador/quest giver/ferreiro...) ──
+            # Substitui a letra "T" que só o treinador tinha — agora todo
+            # NPC mostra o próprio nome (NPC.name), sempre. Ícone de quest
+            # (QuestDialogSystem.render_world, chamado depois deste passe em
+            # game.py) empilha ACIMA deste texto via o mesmo stack_key=eid
+            # em WORLD_LABELS — nunca desenhado direto no world_surf (mesmo
+            # motivo do nome do mob acima).
+            _npc_id = self.world.get_component(entity_id, NPC)
+            if _npc_id is not None and not _draw_hp_bar:
+                WORLD_LABELS.add_text(
+                    position.x, position.y - renderable.height / 2,
+                    _npc_id.name, self._name_font, (220, 220, 180),
+                    stack_key=entity_id)
 
 class CameraSystem(System):
     def __init__(self, world: World):

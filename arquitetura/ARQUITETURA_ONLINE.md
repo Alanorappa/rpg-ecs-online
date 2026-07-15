@@ -1043,6 +1043,1296 @@ inalterado) confirma que miss consome flecha no servidor.
 
 ---
 
+### 22. Validação de MOVE trocada de lockstep exato pra orçamento tempo×velocidade (11/07/2026)
+
+**Reportado pelo usuário (tester em rede real, não localhost):** um player
+ficava com o personagem "desincronizado" — se movia normal na tela dele,
+mas pros outros players ficava parado, e nem mobs agravam nele (a IA de
+mob lê a posição real do servidor — se ela nunca atualiza, nunca detecta
+proximidade).
+
+**Causa raiz:** `WorldServer.move_player()` exigia que todo `MOVE`
+estivesse a EXATAMENTE 1 tile da última posição CONFIRMADA pelo servidor
+— senão rejeitava (`server/world_server.py`, checagem antiga `dx>1 or
+dy>1`). Um motivo comum e nada exótico de rejeição (ex.: tile
+temporariamente ocupado por outro player/mob cruzando o caminho) já
+bastava pra travar; e a rejeição SÓ se autocorrigia
+(`client/network_handlers.py::_handle_msg_entity_move`) quando o player
+estava parado ou dando dash — andando normal, a correção de posição era
+**deliberadamente ignorada** (comentário explícito no código: evitar que
+uma correção desatualizada pelo delay de rede sobrescrevesse um passo
+legítimo mais recente). Combinado, isso é auto-alimentado: 1 rejeição →
+client nunca aprende a posição real → todo MOVE seguinte, calculado
+relativo à posição LOCAL (que só diverge mais), também é rejeitado → trava
+permanente, só resolvida saindo e voltando da área de visão ou relogando.
+
+**Pesquisa (a pedido do usuário) — como MMOs consolidados resolvem isso:**
+o modelo do WoW (documentado no wiki da TrinityCore, que reimplementa o
+protocolo original) é cliente autoritativo pra posição — servidor não
+exige repetição exata, só valida **plausibilidade**: alcançável dado
+tempo decorrido × velocidade, com folga generosa em rajada de lag. Troca
+consciente (menos rígido contra cheat, mas sem travar jogador legítimo) —
+adotada aqui na mesma linha, dado que é um teste alpha pequeno, não uma
+produção com milhares de estranhos.
+
+**Fix — `WorldServer.move_player()` não exige mais adjacência exata:**
+- Novo baseline por player em `TileMovement` (`_last_valid_tile_x/y`,
+  `_last_valid_ts` — `engine/components.py`): última posição de confiança
+  + timestamp REAL do servidor (`time.time()`, nunca o `ts` do payload do
+  cliente — evita um cliente modificado inflar o próprio orçamento
+  mentindo sobre o tempo).
+- Aceita qualquer destino dentro do orçamento `tempo_decorrido ×
+  velocidade × MOVE_SPEED_TOLERANCE` (tolerância=2.0, teto de crédito
+  `MOVE_ELAPSED_CAP_S=2.0` pra quem ficou parado/AFK não acumular
+  orçamento infinito) — pega speedhack/teleporte em chão aberto.
+- Caminho reto (última posição confirmada → destino) não pode cruzar tile
+  sólido — reusa `EnemyAISystem._has_line_of_sight` (mesmo Bresenham do LOS
+  do arqueiro) como "checagem de parede no meio do caminho" — pega
+  teleporte por cima de parede que passaria só pelo check de distância.
+- Se passar nos dois: servidor **adota a posição reportada direto** (não
+  precisa mais de cadeia ininterrupta de confirmações) — isso sozinho já
+  elimina a trava permanente, porque o servidor "alcança" onde o cliente
+  legitimamente está, em vez de exigir que nunca tenha havido nenhuma
+  rejeição no meio do caminho.
+- Baseline resincronizada em TODO ponto que escreve a posição real — `snap_to_tile()` (`engine/utils.py`, cobre knockback/
+  teleporte/respawn) e a finalização do tween em
+  `TileMovementSystem.update()` (`engine/world_systems.py`, cobre o dash
+  do Interceptar, que usa o MESMO tween só com `move_duration` curto) —
+  sem isso, o PRIMEIRO `MOVE` normal logo depois de um Tiro Repulsivo ou
+  Interceptar pareceria um salto implausível comparado à posição
+  pré-deslocamento congelada. Nem Interceptar nem Tiro Repulsivo passam
+  por `move_player()` diretamente (ambos já usavam `snap_to_tile`/tween
+  próprio antes desta mudança) — o único ponto de contato é essa
+  resincronização de baseline.
+- `client/network_handlers.py::_handle_msg_entity_move`: a correção de
+  posição andando normal (que antes era sempre ignorada) agora É aplicada
+  quando o gap é maior que 1 tile — um gap de 1 tile continua sendo
+  tratado como "correção desatualizada, ignora" (raciocínio original
+  preservado pro caso comum), mas um gap maior só acontece hoje por
+  rejeição REAL (fora do orçamento ou atravessou parede — já não é mais o
+  caso comum de colisão dinâmica transitória), então vale a pena aplicar
+  mesmo andando, como rede de segurança final.
+
+Validado: `py_compile` de todos os arquivos tocados; suíte completa sem
+regressão (7F/85P, mesma baseline); script headless novo
+(`test_move_validation.py`) confirma os 5 casos: (1) move normal de 1
+tile aceito, (2) salto de 20 tiles sem tempo decorrido rejeitado, (3) —
+**o caso que reproduz o bug relatado** — um move de 1 tile logo após uma
+rejeição anterior agora é ACEITO (no modelo antigo, ficaria travado pra
+sempre), (4) pulo por cima de parede rejeitado mesmo dentro do orçamento
+de distância/tempo, (5) move normal aceito imediatamente após
+`snap_to_tile` (knockback), sem falso-positivo de salto implausível.
+
+**Não validado:** sessão manual com testers em rede real confirmando que
+o desync não volta a ocorrer (o bug original só era reproduzível em rede
+real, nunca em localhost/dev — mesma limitação do bug "player remoto
+congela" de 06/07/2026, ver `PROBLEMAS_ARQUITETURA.md`); passada manual
+específica com Interceptar/Tiro Repulsivo em sequência rápida com
+movimento normal, pra confirmar na prática que a resincronização de
+baseline evita falso-positivo.
+
+---
+
+### 23. Sistema de ícones de mapa/minimapa — morte, quests, treinadores, mercadores (11/07/2026)
+
+**Pedido do usuário:** ao morrer, o player não tinha como saber onde no
+mapa ficou seu corpo/espírito — "o player teria que lembrar onde morreu".
+Pedido inicial era só um ícone de morte no mapa (M) e minimapa; o usuário
+então pediu pra generalizar num sistema, já prevendo quest givers
+(disponível/em progresso/completável), treinadores (ícone por classe) e
+mercadores — a maioria dos ícones ainda não existe, então o sistema
+precisa de fallback (círculo + símbolo) até os arquivos chegarem.
+
+**Fonte única de estado, reaproveitada em 3 lugares (nunca duplicada):**
+`QuestDialogSystem.marker_for(npc_id)` (`ui/quest_system.py`) — extraído
+da lógica que já existia em `render_world()` (indicador acima da cabeça do
+NPC) — retorna `(icon_name, cor_fallback, símbolo_fallback)` ou `None`.
+Usado por `render_world()` (mundo) E por `ui/map_markers.py::collect_markers`
+(mapa/minimapa). Estados (mantido igual ao que já existia no indicador
+acima da cabeça — usuário confirmou depois de eu apontar a diferença que
+tinha proposto por engano): disponível=dourado **!**, em progresso=cinza
+**?**, completável=dourado **?**, bloqueada por nível=cinza **!**.
+
+**`ui/map_markers.py`** (novo): `MapMarker(tile_x, tile_y, icon_name,
+fallback_color, fallback_symbol)` + `collect_markers(world, player_entity,
+quest_dialog)`. Fontes: `GhostState.corpse_tx/ty` do player local (morte —
+única exceção que NÃO filtra por `Visible`, é a posição já conhecida do
+próprio player, sempre mostrada enquanto o corpo existir); `QuestGiver`/
+`Trainer`/`Merchant`, todos filtrados pelo componente `Visible` (mesma tag
+dinâmica de FoW que já gate os indicadores acima da cabeça — mesma regra,
+sem duplicar).
+
+**Ícones**: convenção `map_<algo>.png` em `assets/icons/` (mesmo padrão
+`skill_`/`item_`/`enemy_` já usado por `IconManager`/`ICONS`, sem pasta
+nova — `assets/` é o único lugar de asset do projeto, `ui/` é código).
+`death.png`/`death.ase` renomeados pra `map_death.png`/`map_death.ase`.
+Arquivos que ainda faltam (usuário vai providenciar): `map_quest_available`,
+`map_quest_inprogress`, `map_quest_complete`, `map_quest_locked`,
+`map_trainer_guerreiro`, `map_trainer_mago`, `map_trainer_arqueiro`,
+`map_merchant`. `ICONS.get()` já retorna `None` de forma graciosa pro que
+não existe — `MapOverlay.render()`/`Minimap.render()` caem pro fallback
+(círculo colorido + glifo) automaticamente, sem nenhum código condicional
+extra por marcador — assim que o arquivo aparecer em `assets/icons/`, o
+ícone substitui o fallback sozinho, nos 3 lugares (mundo, mapa, minimapa).
+
+**Trainer (`ui/trainer_system.py::render_world`)**: mesma troca —
+ícone `map_trainer_{class_id}` primeiro, fallback letra "T" (comportamento
+anterior, preservado).
+
+**`MapOverlay.render()`/`Minimap.render()`**: parâmetro único `corpse_tile`
+(implementação inicial, só morte) generalizado pra `markers: list[MapMarker]`
+antes de eu terminar de conectar em `game.py` — os dois métodos de desenho
+não sabem nada sobre tipos de marcador, só iteram a lista.
+
+**Limitação conhecida (RESOLVIDA na Decisão 25 — 11/07/2026):** o mapa
+grande (M) usava o mesmo `collect_markers` do minimapa, filtrado por
+`Visible` (visão atual) — um quest giver fora do campo de visão atual não
+aparecia. Ver Decisão 25: `collect_markers` parou de filtrar por
+`Visible` de propósito, isso deixou de ser limitação.
+
+Validado: `py_compile` de todos os arquivos tocados; suíte completa sem
+regressão (7F/85P, mesma baseline); smoke test confirma `map_death.png`
+carrega via `ICONS.get()` e um ícone inexistente retorna `None` (aciona o
+fallback) como esperado.
+
+**Não validado:** sessão manual no jogo confirmando visualmente o ícone de
+morte no mapa/minimapa após morrer, e o fallback (círculo+símbolo) nos
+demais marcadores até os ícones reais chegarem.
+
+---
+
+### 23.1 Ajustes: ícones não sobrepõem, tamanho fixo (não escala com zoom) (11/07/2026)
+
+**Pedido do usuário:** dois problemas na implementação inicial da Decisão
+23 — (1) marcadores no mesmo tile (ou próximos) ficavam desenhados um em
+cima do outro; (2) o tamanho do ícone no mapa grande crescia/encolhia
+junto com o zoom (scroll), e no minimapa não tinha um tamanho "correto"
+definido. Usuário vai padronizar os ícones-fonte em 8×8px.
+
+**Fix — desconflito de posição:** `ui/map_markers.py::deconflict_positions(
+points, min_dist)` — recebe centros já em coordenada de TELA (não tile) e
+devolve a mesma lista com qualquer posição que colidiria (a menos de
+`min_dist` de outra já resolvida) empurrada em busca espiral (8 direções,
+raio crescente) até achar um slot livre. Puramente geométrico, não sabe
+nada sobre tipo de marcador — `MapOverlay.render()` e `Minimap.render()`
+chamam isso ANTES de desenhar, com `min_dist = icon_size * 0.9`.
+
+**Fix — tamanho fixo:** `icon_size` deixou de derivar de `scale` (mapa
+grande) ou `tp` (minimapa) — agora é `self._u(20)` (mapa) / `self._u(12)`
+(minimapa), só reage à "Escala da UI" do menu de pausa (mesmo padrão do
+resto da HUD), nunca ao zoom/scroll do mapa nem ao tamanho de tile do
+minimapa. `IconManager` já escala o ícone-fonte (8×8 planejado) pro
+tamanho de destino via nearest-neighbor, então o tamanho de exibição é
+sempre o mesmo independente da resolução do arquivo.
+
+Validado: `py_compile`; suíte completa sem regressão (7F/85P); smoke test
+novo confirma 3 marcadores no MESMO ponto saírem com distância >= `min_dist`
+entre todos os pares depois de `deconflict_positions`.
+
+**Não validado:** sessão manual confirmando visualmente que os ícones não
+se sobrepõem em campo (vários NPCs próximos) e que o tamanho fica estável
+em qualquer zoom do mapa grande.
+
+---
+
+### 23.2 Correção: 8px de verdade (não upscale), e indicador acima da cabeça só pra quest (11/07/2026)
+
+**Reportado pelo usuário:** a 23.1 "esticou uma sprite de 8px pra 32px" —
+`self._u(20)`/`self._u(12)` não é "tamanho fixo que não escala com zoom",
+é "tamanho fixo que escala com a Escala da UI" — não era o que o usuário
+queria. Pedido real: ícone do tamanho REAL do arquivo-fonte (8×8), sem
+upscale nenhum, em qualquer resolução de mapa/minimapa. Além disso, o
+usuário decidiu que o indicador acima da cabeça do NPC (mundo do jogo) só
+faz sentido pra quest givers — treinador não precisa (a letra "T" que já
+existia é suficiente).
+
+**Fix:**
+- `MapOverlay.render()`/`Minimap.render()`: `icon_size` virou uma
+  constante literal `8` (sem `self._u()` nenhum) — pedido pra
+  `deconflict_positions` ajustado junto (`icon_size * 0.9`).
+- `ui/trainer_system.py::render_world`: revertido pro comportamento
+  original (só letra "T", nunca tenta ícone) — ícone por classe
+  (`map_trainer_*`) continua existindo, só que exclusivamente pro
+  mapa/minimapa (`ui/map_markers.py`).
+- `ui/quest_system.py::QuestDialogSystem.render_world`: mantém o ícone
+  (usuário confirmou via pergunta direta: quer o ícone acima da cabeça do
+  quest giver, só que do tamanho certo) — mas `world_surf` é desenhada em
+  coordenada LÓGICA (`screen/zoom`, ver `game.py` — só escalada pro
+  tamanho real da tela DEPOIS de tudo desenhado), então pedir `8` direto
+  pro `IconManager` ali dava 8px lógicos, que viravam `8*zoom` px reais de
+  tela — daí o "ainda 32x32" (zoom da câmera do jogo, não tem relação com
+  o zoom do mapa M). Fix: `icon_size = max(1, round(8 / zoom))`, com
+  `zoom` agora passado como 3º parâmetro de `render_world()` (novo,
+  `game.py` passa `self._zoom`) — resultado sempre 8px reais de tela,
+  qualquer nível de zoom da câmera.
+
+Validado: `py_compile`; suíte completa sem regressão (7F/85P, mesma
+baseline).
+
+**Não validado:** sessão manual confirmando visualmente 8px reais nos 3
+lugares (mapa, minimapa, acima da cabeça do quest giver) em pelo menos 2
+níveis de zoom da câmera diferentes.
+
+---
+
+### 23.3 Nome flutuante acima de NPCs e mobs (substitui a letra "T") (11/07/2026)
+
+**Pedido do usuário:** tirar a letra "T" do treinador; todo NPC (mercador,
+treinador, quest giver, ferreiro) deve mostrar o próprio nome acima da
+cabeça, e o mesmo padrão vale pra mobs. Ícone de quest (23.2) continua
+existindo, mas agora fica ACIMA do nome, não no lugar dele.
+
+**Fix:**
+- `ui/systems.py::RenderSystem` — novo `_name_font` (14px, "tamanho que
+  achei razoável", ajustável) + `NAME_OFFSET_Y=14`. Dois pontos no loop
+  principal de entidades: (1) qualquer entidade com `NPC` e SEM barra de
+  HP desenha `NPC.name` na âncora `draw_y - height/2 - NAME_OFFSET_Y`
+  (mesma posição que a letra "T"/indicador de quest usavam antes); (2)
+  qualquer entidade com `EntityIdentity` e HP bar, que NÃO seja
+  `PlayerControlled`/`RemoteControlled` (ou seja, mob local/offline),
+  desenha o nome logo acima da própria barra de HP. Cobre NPCs e mobs
+  locais (usados em modo single-player/teste headless).
+- `client/remote_entity_handlers.py::_draw_mob_hp_bars` — mob remoto
+  (online, servidor autoritativo) não passa pelo `RenderSystem` acima
+  (renderizado à parte, ver `_spawn_remote_mob`), então o mesmo desenho de
+  nome foi espelhado aqui, usando o `EntityIdentity.name` já setado no
+  spawn (nome próprio do servidor, ex. "Boneco de treino", ou derivado da
+  raça).
+- `ui/trainer_system.py::render_world`: letra "T" removida — treinador não
+  tem mais NENHUM indicador próprio acima da cabeça (o nome já cobre isso,
+  via `RenderSystem`).
+- `ui/quest_system.py::render_world`: âncora do ícone (`sy`) deslocada pra
+  cima em `14 (NAME_OFFSET_Y) + 18 (altura aprox. do nome) + 4 (respiro)` —
+  números fixos, não lê o valor real do outro arquivo (simplicidade,
+  suficiente porque só precisa ser "generoso o bastante" pra não
+  sobrepor).
+
+Validado: `py_compile`; suíte completa sem regressão (7F/85P, mesma
+baseline).
+
+**Não validado:** sessão manual confirmando visualmente nome acima de
+cada tipo de NPC/mob (local e remoto) e ícone de quest não sobrepondo o
+nome.
+
+---
+
+### 23.4 Fix: "T" ainda aparecia, fonte ilegível (11/07/2026)
+
+**Reportado pelo usuário:** dois problemas na 23.3 — (1) a letra "T" do
+treinador continuava aparecendo (a 23.3 só tirou a TENTATIVA de ícone,
+mas manteve o fallback de letra por engano — nunca virou de fato um
+no-op); (2) fonte do nome ilegível — **causa raiz**: `self._name_font =
+CachedFont(None, 14)` usava `None` como caminho, ou seja `pygame.font.
+Font(None, 14)` = fonte PADRÃO do pygame, não a fonte pixelizada do
+projeto (`ui/fonts.py::make()`, Determination) — nunca estava carregando
+nada do projeto.
+
+**Fix:**
+- `ui/trainer_system.py::render_world`: corpo inteiro virou `pass` (mesmo
+  padrão já usado pro indicador "LOJA" do mercador, removido antes por
+  motivo idêntico).
+- `ui/fonts.py`: nova `make_pixel(size=10)`, carrega
+  `assets/fonts/MEGAMAN10.ttf` (fonte pixel, pedida pelo usuário pra
+  TESTAR em paralelo com a Determination — não substitui a fonte do
+  projeto inteiro, só os labels de nome por enquanto) — sem `_SCALE`
+  (fontes bitmap já vêm na grade certa; aplicar correção de métrica
+  desenharia errado). Segue a mesma regra de pixel-perfect do resto do
+  projeto: `CachedFont.render()` default é `antialias=False`.
+- `ui/systems.py::RenderSystem`/`client/remote_entity_handlers.py::_draw_mob_hp_bars`:
+  `_name_font`/`_mob_name_font` trocados de `pygame.font.Font(None, ...)`
+  pra `ui.fonts.make_pixel()`.
+
+Validado: `py_compile`; smoke test confirma a fonte carrega de
+`assets/fonts/MEGAMAN10.ttf` (não cai no fallback) e renderiza texto;
+suíte completa sem regressão (7F/85P, mesma baseline).
+
+**Não validado:** sessão manual confirmando visualmente que o "T" sumiu
+de vez e que MEGAMAN10 fica legível no tamanho nativo (10) — se não
+ficar bom o suficiente, é só chamar `make_pixel(outro_tamanho)`.
+
+---
+
+### 23.5 Causa raiz real do "ilegível": zoom da câmera reamostrava a fonte (11/07/2026)
+
+**Reportado pelo usuário (com screenshot):** mesmo depois da 23.4 (fonte
+certa carregada), o nome continuava ilegível — vários "Boneco de treino"
+sobrepostos numa sopa de letra. Pedido explícito: mostrar a fonte no
+TAMANHO DELA, sem o zoom da câmera alterar esse tamanho, "pois isso
+distorce a mesma".
+
+**Causa raiz:** todo o mundo (`ui/systems.py`, `ui/quest_system.py`,
+`client/remote_entity_handlers.py`) desenha numa surface LÓGICA menor
+(`world_surf`/`zoom_surf`, tamanho `tela/zoom`) que só DEPOIS é escalada
+pro tamanho real da tela via `pygame.transform.scale()` (`game.py`, passe
+final do frame). Isso é perfeito pra sprites/tiles (pixel art desenhada
+num grid, escala bem), mas texto desenhado a partir de um TTF nesse
+espaço lógico é rasterizado UMA VEZ no tamanho lógico e depois
+redimensionado por um fator não-inteiro (o zoom) — a fonte nunca aparece
+no tamanho que o rasterizador desenhou de verdade, sempre borrada/
+distorcida pelo resize. A 23.4 corrigiu QUAL fonte carregar, mas não
+onde ela era desenhada — continuava passando pelo mesmo resize.
+
+**Fix — `ui/world_labels.py`** (novo): fila `WORLD_LABELS` que recebe
+posição de MUNDO + texto/ícone durante o passe de mundo mas só desenha
+DEPOIS do `pygame.transform.scale()` já ter rodado, direto em
+`self.screen` — nasce no pixel final da tela, nunca é reamostrado.
+Empilha por `stack_key` (entity_id): nome primeiro, ícone de quest por
+cima, respiro fixo de 4px de TELA (não escala com zoom, de propósito).
+- `ui/systems.py::RenderSystem` — nome de NPC e nome de mob local
+  enfileiram em vez de desenhar direto no `world_surf`.
+- `client/remote_entity_handlers.py::_draw_mob_hp_bars` — mesma troca pro
+  nome do mob remoto (online).
+- `ui/quest_system.py::render_world` — ícone (ou fallback círculo+glifo,
+  agora numa Surface própria cacheada por cor+símbolo, pra poder entrar
+  na fila igual um ícone de verdade) enfileira com o MESMO `stack_key`
+  do NPC, empilhando por cima do nome automaticamente. `icon_size` volta
+  a ser `8` literal — a compensação `8/zoom` da 23.2 não é mais
+  necessária (o ícone nunca mais passa pela escala do mundo).
+- `game.py`: `WORLD_LABELS.render(self.screen, cam_x, cam_y, z)` chamado
+  uma vez, logo depois do `pygame.transform.scale()` do mundo.
+
+Validado: `py_compile`; smoke test da fila (add_text/add_icon/render sem
+erro, fila esvazia sozinha); suíte completa sem regressão (7F/85P, mesma
+baseline).
+
+**Validado visualmente pelo usuário** (11/07/2026, com screenshot): nome
+nítido e estável, sem borrão do zoom — confirma a causa raiz (reamostragem
+no `transform.scale`, não a fonte em si). Único ajuste necessário depois
+disso foi tamanho: `make_pixel()` default subiu de 10 (nome do arquivo)
+pra 16px — 10 era pixel-perfect mas pequeno demais pra ler em jogo; como
+agora o tamanho é puramente estético (nunca mais reamostrado), é só
+questão de escolher um valor confortável, sem risco de distorcer.
+
+---
+
+### 23.6 Nome de player (local + remoto) via WORLD_LABELS, com círculo de nível (11/07/2026)
+
+**Pedido do usuário:** mesmo tratamento pixel-perfect (23.5) pro nome dos
+PLAYERS (não só NPC/mob), e um círculo com o nível à esquerda do nome.
+
+**Achado:** player remoto JÁ tinha nome desenhado
+(`client/remote_entity_handlers.py::_draw_remote_players`), mas do jeito
+antigo — direto no `zoom_surf` via `self.font_xs`, sofrendo o mesmo
+borrão do zoom que os NPCs/mobs tinham antes da 23.5. Nível de player
+remoto não existia no cliente — `RemoteControlled` não tinha o campo,
+apesar do SERVIDOR já mandar `"level"` no payload de spawn há tempos
+(`server/session.py`, 3 pontos: `WORLD_STATE`/`ENTITY_SPAWN`/reconexão) —
+o cliente só nunca lia.
+
+**Fix:**
+- `engine/components.py::RemoteControlled`: novo campo `level: int = 1`.
+- `client/remote_entity_handlers.py::_spawn_remote_player_entity`: lê
+  `data.get("level", 1)` (dado que o servidor já mandava).
+- `ui/world_labels.py::build_name_row(font, name, level, ...)` (novo):
+  monta círculo+número e nome lado a lado numa Surface só, MESMA fonte
+  pixel-perfect pro número e pro nome — entra em `WORLD_LABELS.add_icon()`
+  como um item único (nunca separa nome do círculo na pilha).
+- `_draw_remote_players`: nome antigo trocado por
+  `WORLD_LABELS.add_icon(..., build_name_row(...))`.
+- `ui/systems.py::RenderSystem`: novo bloco pro player LOCAL
+  especificamente (`PlayerControlled`, usa `CharacterStats.name/.level` —
+  fonte sempre atualizada, ao contrário de `EntityIdentity.level` que
+  nunca é tocado depois do spawn) — `elif` do bloco de nome de mob, pra
+  não desenhar 2x um player remoto (esse já é tratado em
+  `_draw_remote_players`, que roda por fora deste loop).
+
+Validado: `py_compile`; smoke test de `build_name_row` (gera Surface sem
+erro, dimensões consistentes); suíte completa sem regressão (7F/85P,
+mesma baseline).
+
+**Não validado:** sessão manual confirmando visualmente nome+nível do
+próprio player e de players remotos (precisa de 2+ contas pra testar o
+caso remoto).
+
+---
+
+### 23.7 HUD de barras com asset próprio (nível+XP+HP+recurso) — substitui a barra retangular (11/07/2026)
+
+**Pedido do usuário:** dois assets desenhados à mão
+(`assets/hud/player_hud_bar.png` 64×16, `assets/hud/mob_hud_bar.png`
+48×12) — quadrado de nível à esquerda + barras de XP/HP/recurso (player)
+ou só HP (mob) — pra SUBSTITUIR a barra retangular simples de sempre (só
+o preenchimento, o fundo/trilho já vem no asset). Pergunta em aberto do
+usuário: como centralizar o preenchimento em cima do asset, como validar,
+e como evitar distorção (o asset foi desenhado com base no grid de tile
+do jogo, 32×32).
+
+**Mapeamento de coordenadas — nunca por olho:** RLE (run-length encoding)
+de cada linha dos dois PNGs, depois validado com uma imagem de debug
+(contorno colorido sobre o asset ampliado 8x nearest-neighbor) antes de
+escrever qualquer código de jogo. Coordenadas nativas resultantes em
+`ui/hud_bars.py` (`P_LEVEL_BOX`, `P_BAR_X0/X1`, `P_XP_Y`/`P_HP_Y`/
+`P_RES_Y` pro player; `M_LEVEL_BOX`, `M_HP_X0/X1`, `M_HP_Y` pro mob).
+
+**Decisão de "sem distorção" — duas camadas em espaços diferentes:**
+- **Fundo do asset + barras de preenchimento** (bloco de cor sólida, sem
+  detalhe fino): ESPAÇO DE MUNDO (`world_surf`/`zoom_surf`), tamanho
+  NATIVO do arquivo, SEM escala extra nenhuma. Já que o usuário desenhou
+  o asset no grid de tile (32×32) de propósito, ficando em espaço de
+  mundo a HUD escala junto com o sprite/zoom da câmera exatamente como
+  toda pixel art do jogo já faz — zero distorção RELATIVA ao personagem
+  que carrega (é a mesma pipeline de sprite/tile, nunca reclamada de
+  "borrada"; só texto fino sofre visivelmente com resample de zoom não-
+  inteiro, ver 23.5).
+- **Número do nível + nome**: texto fino — esse sim vai por
+  `ui/world_labels.py::WORLD_LABELS` (screen-space, pós-zoom), senão
+  ficaria borrado que nem o nome ficava antes da 23.5. Novo
+  `add_text_centered()`/`add_icon_centered()` (posição exata, sem pilha)
+  pro número do nível; `add_text()`/`add_icon()` ganharam `gap_before`
+  (px de tela) pra suportar o pedido específico "nome 2px acima da HUD"
+  sem quebrar o gap padrão (4px) usado pelo ícone de quest acima do nome
+  de NPC.
+
+**Cores** (`ui/hud_bars.py`): HP verde `(0,200,60)` (igual já era), XP
+roxo claro `(190,140,230)` (pedido do usuário), recurso por classe
+reaproveitando as MESMAS cores já usadas no HUD lateral
+(`client/hud_handlers.py`) — mana `(50,100,255)`, concentração
+`(80,160,220)`, raiva `(255,160,0)`.
+
+**`ui/hud_bars.py`** (novo): `draw_player_hud()`/`draw_mob_hud()` —
+desenham fundo+preenchimento em `world_surf` e devolvem DELTAS (não
+posição absoluta) relativos ao ponto de entrada, pro caller somar com a
+posição de MUNDO (não a lógica/deslocada-de-câmera) da entidade e
+alimentar `WORLD_LABELS` corretamente.
+
+**Substituições** (removeu o retângulo simples fundo+preenchimento de
+vez, "o fundo já tem na hud"):
+- `ui/systems.py::RenderSystem` — player LOCAL (`PlayerControlled`) usa
+  `draw_player_hud` com XP/recurso reais (`CharacterStats`); mob local/
+  offline usa `draw_mob_hud`. Player remoto (PvP) SAIU desta função de
+  vez (antes tinha um branch `RemoteControlled`/`_rc_hp` aqui) — foi pra
+  `_draw_remote_players`, senão desenharia 2x.
+- `client/remote_entity_handlers.py::_draw_remote_players` — reescrita
+  completa: `draw_player_hud` com XP/recurso zerados (player remoto não
+  expõe esse dado pro cliente, só o dono vê o próprio — linhas ficam só
+  com o trilho vazio do asset, sem preenchimento).
+- `client/remote_entity_handlers.py::_draw_mob_hp_bars` — `draw_mob_hud`
+  no lugar do retângulo antigo; nome/nível/status-icons reposicionados
+  pro novo topo da HUD (mais alta que a barra antiga de 4px).
+
+Validado: `py_compile` de todos os arquivos tocados; suíte completa sem
+regressão (7F/85P, mesma baseline); **teste end-to-end real** — `World`
+com player+mob de verdade, `RenderSystem.render()` + `WORLD_LABELS.render()`
+executados sem exceção, screenshot capturada e conferida visualmente
+(nível no quadrado, barras nas proporções certas — HP 70%, XP 40%, raiva
+55% no player; HP 40% no mob —, nome com o espaçamento pedido).
+
+**Não validado:** sessão manual dentro do jogo de verdade (o teste
+end-to-end usou entidades sintéticas, não o fluxo completo de spawn/
+rede); confirmação visual do caso remoto (precisa 2+ contas).
+
+---
+
+### 23.8 Ícones de efeito (bleed/stun/sleep...) migram pra fila à direita da HUD (11/07/2026)
+
+**Pedido do usuário:** ícones de efeito ativo deixam de ficar centralizados
+acima da barra de HP — vão pra uma fila horizontal à DIREITA da HUD nova
+(23.7). Comportamento de fila: o mais antigo fica mais perto da HUD, cada
+novo efeito entra na ponta direita; quando um expira, o efeito novo
+"entra no lugar do anterior" (não fica pulando posição).
+
+**Achado — já era assim, só precisava mudar a âncora:** `_draw_effect_icons`
+já iterava `active_effects` (vindo de `StatusEffects.effects`, um dict —
+Python preserva ordem de inserção) e desenhava cada ícone
+`ICON+GAP` px à direita do anterior, recalculado do zero a cada frame. Ou
+seja, a fila "estilo WoW" (mais antigo primeiro, reflow automático quando
+um expira, novo sempre na ponta) já existia — só faltava trocar de onde
+ela começa a desenhar: era centralizada acima da barra (`draw_x -
+total_w/2`, `bar_y - ICON - 10`), virou a partir da borda direita da HUD
+(`start_x`, `center_y`).
+
+**Fix:**
+- `ui/hud_bars.py::draw_player_hud`/`draw_mob_hud` — retorno estendido de
+  3 pra 5 deltas: `(dx_level, dy_level, dy_top, dx_right, dy_center)` —
+  os 2 novos são a borda direita e o meio vertical da HUD.
+- `ui/systems.py::_draw_effect_icons` — assinatura trocou de
+  `(draw_x, bar_y)` pra `(start_x, center_y)`; ícones desenham a partir
+  daí crescendo pra direita, centralizados verticalmente (antes:
+  centralizados horizontalmente, crescendo a partir do centro).
+- Os 2 call sites (`ui/systems.py::RenderSystem`,
+  `client/remote_entity_handlers.py::_draw_mob_hp_bars`) passam
+  `draw_x + dx_right, draw_y + dy_center` (valores devolvidos por
+  `draw_player_hud`/`draw_mob_hud` no mesmo frame) em vez do `bar_y`
+  antigo.
+
+Validado: `py_compile`; suíte completa sem regressão (7F/85P, mesma
+baseline); **teste end-to-end real** — `World` com player + 3 efeitos
+ativos (bleed/stun/sleep, adicionados nessa ordem), `RenderSystem.render()`
++ `WORLD_LABELS.render()`, screenshot conferida visualmente: os 3 ícones
+aparecem em fila à direita da HUD, bleed (inserido primeiro) mais perto,
+sleep (inserido por último) mais à direita — confirma a ordem e o reflow
+automático.
+
+**Não validado:** sessão manual dentro do jogo de verdade confirmando o
+reflow ao vivo (um efeito expirando enquanto outros continuam ativos).
+
+---
+
+### 23.9 Causa raiz do desalinhamento: fundo+número da HUD em dois espaços de escala diferentes — composição única (11/07/2026)
+
+**Reportado pelo usuário (com screenshot):** a barra de HP de um boneco de
+treino aparecia ACIMA da HUD e ABAIXO do número do nível — nem dentro do
+quadrado, nem alinhada com o resto. Pedido: agrupar HUD+barra+nível (e o
+mesmo pros players) pra nunca mais ficar fora de ordem.
+
+**Causa raiz:** a 23.7/23.8 desenhavam fundo+barras em ESPAÇO DE MUNDO
+(escala com o zoom da câmera) e número do nível em ESPAÇO DE TELA via
+`WORLD_LABELS` (tamanho fixo, nunca escala — pixel-perfect de propósito).
+Dois sistemas de escala DIFERENTES pro mesmo elemento visual: um número de
+2 dígitos ("99", nível de boneco de treino) não cabia no quadrado nativo
+de só 12px de largura do asset do mob, e "vazava" pra fora — parecia
+flutuar desconectado da HUD, exatamente como reportado.
+
+**Fix — unificar tudo no mesmo espaço, de vez:** `ui/hud_bars.py`
+reescrito — `build_player_hud()`/`build_mob_hud()` agora montam fundo +
+barras + número do nível numa ÚNICA Surface, com um upscale fixo
+(`SCALE=3`, nearest-neighbor — não é "distorção", é ampliação de pixel
+art, só existe pra o número de 2 dígitos caber na caixinha; câmera não
+influencia esse fator). Essa Surface inteira vai pro `WORLD_LABELS` como
+UM ícone só (`add_icon`, mesmo `stack_key` do nome) — impossível
+desalinhar arte de número, porque nascem juntos no mesmo pixel da mesma
+Surface. Efeitos ativos passaram pelo mesmo tratamento: `_draw_effect_icons`
+virou `_build_effects_row()` (monta a fila numa Surface própria) +
+`ui/world_labels.py::add_icon_offset()` (novo — projeta a posição pra tela
+e soma um deslocamento em PX DE TELA fixo com alinhamento de borda,
+`ui/hud_bars.py::effects_row_offset()` calcula o deslocamento certo a
+partir do tamanho conhecido da Surface da HUD) — senão a fila
+desalinharia da HUD do mesmo jeito conforme o zoom mudasse.
+
+Removido: `draw_player_hud`/`draw_mob_hud` (retornavam deltas pra dois
+espaços diferentes) e `WORLD_LABELS.add_text_centered`/`add_icon_centered`
+(só existiam pra esse caso, agora sem uso).
+
+Validado: `py_compile`; suíte completa sem regressão (7F/85P, mesma
+baseline); **teste end-to-end reproduzindo o cenário exato do screenshot**
+— player + 3 bonecos de treino próximos, nível 99 nos dois tipos de HUD,
+efeito ativo, floating text — screenshot conferida: "99" cabe dentro dos
+dois quadrados (player e mob) sem vazar, barras alinhadas com o fundo,
+fila de efeito à direita funcionando.
+
+**Limitação conhecida, NÃO resolvida agora** (visível no próprio teste de
+validação): quando várias entidades ficam muito próximas (ex: grade de
+bonecos de treino lado a lado, como no screenshot original), os NOMES de
+entidades DIFERENTES ainda se sobrepõem entre si — é um problema
+DIFERENTE do que foi corrigido aqui (esse era desalinhamento DENTRO da
+HUD de uma única entidade; aquele é colisão ENTRE HUDs de entidades
+vizinhas). A mesma técnica de `ui/map_markers.py::deconflict_positions`
+(23.1, já usada no mapa/minimapa) resolveria — não implementado ainda
+porque não foi pedido nesta rodada.
+
+---
+
+### 23.10 Floating text nasce na base do personagem (11/07/2026)
+
+**Pedido do usuário:** floating text (números de dano) ficou bagunçado
+aparecendo em cima da HUD nova — pediu pra nascer da BASE do personagem
+em vez de acima da cabeça, "na frente do personagem", mesma animação.
+
+**Fix:** `ui/floating_text.py::FloatingTextManager.BASE_Y_OFFSET` mudou de
+`20` (positivo — `wy - 20`, 20px ACIMA do centro) pra `-14` (negativo —
+`wy - (-14) = wy + 14`, 14px ABAIXO do centro, perto da base/pés).
+Animação inalterada (deriva pra cima + empilhamento por alvo) — só o
+ponto de partida mudou, então o texto agora sobe A PARTIR da base,
+passando na frente do sprite (a camada de floating text já desenha por
+cima da entidade).
+
+Validado: `py_compile`; suíte sem regressão; teste end-to-end (mesmo
+screenshot da 23.9) confirma o número nascendo abaixo do sprite.
+
+---
+
+### 23.11 Fonte do número de nível ilegível (12px sumindo dentro da caixa 3x maior) (11/07/2026)
+
+**Reportado pelo usuário (com screenshot):** depois da 23.9, o número do
+nível ficou minúsculo dentro da caixinha — apontou (com razão) que eu não
+tinha conferido visualmente o resultado antes de reportar como pronto.
+Causa: a caixinha cresceu 3x (`SCALE`, pra caber o "99" sem vazar — 23.9),
+mas a fonte do número continuou em 12px (escolha antiga, de quando a
+caixa era nativa) — sobrou caixa vazia enorme ao redor de um número
+minúsculo.
+
+**Fix — testado visualmente, não calculado:** gerei uma comparação lado a
+lado com 12/16/20/24/28/32px (`ui/hud_bars.py::LEVEL_FONT_SIZE`, nova
+constante) e OLHEI o resultado antes de decidir — 24 preenche bem os dois
+tamanhos de caixa (player quadrado 42px, mob círculo 36px) sem vazar; 28+
+já estoura o círculo do mob (mob é a restrição mais apertada, círculo
+inscrito tem menos área útil que o quadrado do player). `LEVEL_FONT_SIZE`
+centralizado em `ui/hud_bars.py`, usado nos 3 call sites (player local em
+`ui/systems.py`, player e mob remotos em
+`client/remote_entity_handlers.py`) — um valor só, fácil de reajustar se
+o usuário pedir de novo.
+
+Validado: `py_compile`; suíte sem regressão (7F/85P); **conferido
+visualmente antes de reportar** (screenshot da comparação 12-32px +
+re-render do teste end-to-end da 23.9 com o valor final) — "99" legível,
+centralizado, preenchendo a caixa sem vazar, nos dois tipos de HUD.
+
+---
+
+### 23.12 Reversão: HUD ficou grande demais mesmo com a fonte corrigida — SCALE 3→2 (11/07/2026)
+
+**Reportado pelo usuário:** a 23.11 corrigiu a fonte, mas não reduziu o
+tamanho da CAIXA — o usuário queria a HUD de volta a um tamanho parecido
+com o de antes da 23.9, só com fonte legível dentro dela (sugeriu testar
+fonte 14).
+
+**Fix — testado visualmente ANTES de aplicar (aprendizado da 23.11):**
+gerada comparação lado a lado de `(SCALE, fonte)` = `(1,10) (1,14) (2,14)
+(2,16) (3,14)` — `SCALE=1` (nativo) não cabe nem fonte pequena sem vazar
+(caixa native é menor que qualquer fonte legível); `SCALE=2` com fonte 14
+cabe "99" sem vazar E é visivelmente mais compacto que `SCALE=3`.
+Aplicado: `ui/hud_bars.py::SCALE = 2`, `LEVEL_FONT_SIZE = 14`.
+
+Validado: `py_compile`; suíte sem regressão (7F/85P); re-render do mesmo
+teste end-to-end de ponta a ponta (player + 3 bonecos + efeito + floating
+text) conferido visualmente — HUD mais compacta, "99" ainda legível sem
+vazar, fila de efeitos e floating text continuam alinhados (dependem do
+tamanho da Surface da HUD dinamicamente, não precisaram de ajuste).
+
+---
+
+### 23.13 Fonte 14→16 + causa raiz do "não parece centralizado": centralizar pela tinta, não pelo tamanho nominal da fonte (11/07/2026)
+
+**Reportado pelo usuário (com screenshot):** ainda sobrava espaço pra
+fonte maior (pediu 16), e o número não parecia centralizado no quadrado.
+
+**Causa raiz do desalinhamento (medida, não suposta):**
+`font.render("99", ...)` devolve uma Surface do tamanho da LINHA da fonte
+inteira (inclui espaço reservado pra acento/descendente, ex: a "cauda" de
+um "g" ou "y") — mas dígitos como "9" não usam esse espaço. Medido
+diretamente: `"99"` em 16px gera uma Surface de 13px de altura, mas a
+tinta visível ocupa só 7px, começando em `y=4` (não `y=0`). Centralizar
+pela Surface inteira (`surf.width/2`, `surf.height/2`, o que já estava
+sendo feito) deslocava o número visualmente pra cima do centro real da
+caixa, porque metade da Surface é espaço vazio que o "9" nunca usa.
+
+**Fix:** `ui/hud_bars.py::_blit_centered_by_ink()` (novo) — usa
+`pygame.mask.from_surface(...).get_bounding_rects()` pra achar o
+retângulo REAL da tinta (não o nominal da fonte) e centraliza por esse
+retângulo. `LEVEL_FONT_SIZE` subiu de 14 pra 16 (ainda cabe sem vazar,
+usa melhor o espaço — 18 já toca a borda do círculo do mob).
+
+Validado: `py_compile`; suíte sem regressão (7F/85P); **diagnóstico visual
+com cruz marcando o centro geométrico da caixa** sobreposta ao número
+renderizado (12/14/16/18px) — antes do fix a cruz caía visivelmente acima
+do centro do "99"; depois do fix, a cruz cai exatamente no meio do
+glifo, nos dois tipos de HUD, em todos os tamanhos testados; re-render do
+teste end-to-end completo confirma o resultado final.
+
+---
+
+### 23.14 Barra de recurso tampava o contorno inferior + vão gigante até a fila de efeitos (11/07/2026)
+
+**Reportado pelo usuário (com screenshot):** a barra de raiva/mana/
+concentração cobria a borda preta de baixo da HUD, e o ícone de efeito
+aparecia bem longe da HUD em vez de colado nela.
+
+**Causa raiz #1 (barra tampando borda):** `P_RES_Y = (10, 12)` incluía a
+linha 12 do asset — mas o mapeamento pixel a pixel (RLE, já feito antes)
+mostra que a linha 12 é a BORDA PRETA inferior (preto sólido nas 48
+colunas da barra), não faz parte do preenchimento — só as linhas 10-11
+são a barra de verdade. Preencher a linha 12 com a cor do recurso pintava
+por cima do contorno. Fix: `P_RES_Y = (10, 11)`.
+
+**Causa raiz #2 (vão gigante):** `effects_row_offset()` calculava
+`xo = hud_surf.get_width() + EFFECTS_GAP_PX` — mas a âncora usada
+(`position.x`) é o CENTRO da HUD, não a borda esquerda. Pra chegar na
+borda direita a partir do centro só precisa de METADE da largura, não da
+largura inteira — sobrava um vão do tamanho da HUD inteira entre ela e a
+fila de efeitos. Fix: `xo = hud_surf.get_width() / 2 + EFFECTS_GAP_PX`.
+
+Validado: `py_compile`; suíte sem regressão (7F/85P); render isolado da
+HUD do player em zoom 6x confirma o contorno preto de baixo intacto (não
+mais coberto pela barra de raiva); re-render do teste end-to-end completo
+confirma o ícone de efeito colado na borda direita da HUD.
+
+---
+
+### 23.15 Ícones do mapa/minimapa (treinador etc.) 8px→16px (11/07/2026)
+
+**Reportado pelo usuário (com screenshot):** os ícones de treinador
+(agora com arquivos reais em `assets/icons/`, ex. `map_trainer_guerreiro.png`)
+apareciam minúsculos/irreconhecíveis no mapa e minimapa. Pedido: 2x.
+
+**Contexto:** o tamanho de 8px (nativo, sem upscale) foi pedido
+explicitamente pelo usuário na Decisão 23.1/23.2 pra evitar "esticar"
+demais um ícone pequeno — mas com os arquivos reais em mãos (na época só
+existia `map_death.png`), 8px se mostrou pequeno demais pra reconhecer o
+desenho de verdade em jogo.
+
+**Fix:** nova constante `ui/map_markers.py::MAP_ICON_SIZE = 16` (fonte
+única, substitui os dois `icon_size = 8` duplicados em
+`ui/map_overlay.py`/`ui/minimap.py`) — continua fixo (não escala com zoom
+do mapa nem com `tp` do minimapa, mesma regra de sempre), só o valor
+mudou. Ainda nearest-neighbor a partir do arquivo-fonte 8×8 — 16 é
+exatamente 2x, upscale limpo sem esticar de forma desproporcional.
+
+Validado: `py_compile`; suíte sem regressão (7F/85P); render dos 5 ícones
+reais (`map_trainer_guerreiro/mago/arqueiro`, `map_merchant`, `map_death`)
+no tamanho novo, conferido visualmente — nítidos e reconhecíveis (espada,
+cajado, arco, bolsa, ícone de morte).
+
+---
+
+### 23.16 Vão grande antes do "i" nos nomes — bearing desproporcional da MEGAMAN10 (11/07/2026)
+
+**Reportado pelo usuário (com screenshot):** "Zumbi" aparecia como
+"Zumb i", "Custodio Benevide" como "Custod io Benev ide" — vão visível
+antes de todo "i".
+
+**Causa raiz (medida via `font.metrics()`, não suposta):** o glifo "i" da
+MEGAMAN10 tem `advance=6px`, mas a tinta só começa em `x=3` dentro dessa
+célula — ou seja, quase METADE do avanço do caractere é espaço vazio
+reservado antes do desenho. `font.render()` respeita esse bearing
+literalmente, produzindo o vão. Não é bug de código, é como o arquivo
+`.ttf` foi desenhado — mas dava pra corrigir sem trocar de fonte.
+
+**Fix:** `ui/fonts.py::render_tight()` (novo) — renderiza caractere por
+caractere e reempacota pela TINTA REAL de cada um (`pygame.mask`, mesma
+técnica da 23.13) + respiro fixo de 1px, descartando o bearing/kerning
+original da fonte. Pra uma fonte pixel (quase monoespaçada por natureza),
+isso não perde nada perceptível. Cacheado por `(fonte, texto, cor, gap)`
+— texto de nome não muda todo frame. `ui/world_labels.py::add_text()`
+trocou `font.render()` por esse helper — corrige TODO nome (NPC/mob/
+player) de uma vez, um lugar só.
+
+Validado: `py_compile`; suíte sem regressão (7F/85P); comparação lado a
+lado render normal vs. `render_tight` pra "Zumbi"/"Custodio Benevide" —
+vão desaparece; re-teste isolado pela pipeline real (`RenderSystem` +
+`WORLD_LABELS`) confirma "Custodio Benevide" renderizando limpo em jogo.
+
+---
+
+### 24. Aljava sempre voltava cheia no relogin — save de equipamento usava cache stale do cliente (11/07/2026)
+
+**Reportado pelo usuário:** deslogou o arqueiro com 4 flechas na aljava,
+relogou e a aljava estava cheia (75/75).
+
+**Investigação** (agente `Explore` em paralelo + verificação direta):
+achou DOIS bugs empilhados, ambos no lado do servidor.
+
+**Bug 1 — `WorldServer._item_data_from_obj`** (`server/world_server.py`):
+o dict que serializa um item do ECS pra cache de save (usado por
+`get_player_equipment_data`, chamado depois de todo `EQUIP_SYNC`) nunca
+incluía `arrow_count`/`max_arrows` — faltava o bloco `if item_type ==
+"quiver"` que a versão do CLIENTE (`_serialize_item`) e a versão antiga
+de save single-player (`engine/save_system.py::_item_to_dict`) já tinham.
+Mesmo se o resto do fluxo estivesse certo, esse dict sempre "esquecia"
+quantas flechas tinham.
+
+**Bug 2 (a causa raiz de verdade) — `SessionManager._build_save_merge`**
+(`server/session.py`): por convenção documentada ("autoridade por
+campo"), `equipment` é tratado como client-autoritativo no merge —
+`client_p.get("equipment")`, onde `client_p` é `session.last_client_payload`,
+um CACHE do último `EQUIP_SYNC`/`SAVE_STATE` que o cliente mandou. Esse
+cache só é atualizado em 2 situações: equipar/desequipar um item, ou
+Recarregar (que dispara `_send_save_state()` explicitamente). **Consumir
+flecha em combate normal (auto-attack) é 100% server-side** —
+`_server_apply_ranged_physical` mexe direto no `Equipment.arrow_count` do
+ECS sem nunca avisar o cliente — então o cache nunca era atualizado
+depois disso. No disconnect/autosave, esse cache STALE (contagem de
+quando a aljava foi equipada — cheia) sobrescrevia o banco, apagando o
+consumo real.
+
+**Fix:**
+- `_item_data_from_obj`: adiciona `arrow_count`/`max_arrows` pra itens
+  `quiver` (mesmo padrão do client `_serialize_item`).
+- `_build_save_merge` ganhou um 3º parâmetro `live_equipment` — quando
+  fornecido, usa ele em vez do cache do cliente pro campo `equipment`.
+  Todo os 6 call sites (`on_disconnect`, `_handle_save_state`,
+  `_handle_talent_update`-like, `_autosave_all`, etc.) agora chamam
+  `WorldServer.get_player_equipment_data(session_id)` (já existia, usado
+  por `EQUIP_SYNC`, só nunca tinha sido reaproveitado nos pontos de save)
+  ANTES de montar o merge — Equipment ATUAL do ECS, nunca desatualizado.
+
+Validado: `py_compile`; suíte sem regressão (7F/85P); **teste headless
+reproduzindo o cenário exato**: aljava equipada 75/75, consumida até 4
+via mutação direta do ECS (mesma coisa que `_server_apply_ranged_physical`
+faz), SEM nenhum EQUIP_SYNC novo — `get_player_equipment_data` confirma
+`arrow_count=4` capturado corretamente, e `_build_save_merge` com esse
+valor e um cache de cliente stale (75) produz `arrow_count=4` no dict
+final que iria pro banco.
+
+**Não validado:** sessão manual completa (equipar aljava → atirar em
+combate real → deslogar → relogar) confirmando a contagem certa vindo do
+banco de verdade (o teste validou a lógica de merge isoladamente, não o
+fluxo de rede+DB ponta a ponta).
+
+---
+
+### 25. Ícones de mapa/minimapa não exigem mais linha de visão (11/07/2026)
+
+**Pedido do usuário:** os ícones de mapa/minimapa (quest giver, treinador,
+mercador) só apareciam quando o NPC estava dentro do componente `Visible`
+(tag dinâmica de FoW/linha de visão) — mas esses ícones servem pra GUIAR
+o player, diferente do indicador acima da cabeça no MUNDO (que faz
+sentido exigir visão direta, já que é desenhado em cima do NPC de
+verdade na tela). Um quest giver do outro lado de uma parede, ou fora do
+raio de visão atual mas na mesma zona carregada, deveria continuar
+aparecendo no mapa/minimapa — é exatamente quando o jogador mais precisa
+do ícone pra se guiar até lá.
+
+**Fix:** `ui/map_markers.py::collect_markers` — removido o componente
+`Visible` da query de `QuestGiver`/`Trainer`/`Merchant`
+(`world.get_entities_with(TileMovement, QuestGiver)` em vez de
+`(TileMovement, QuestGiver, Visible)`, idem pros outros dois). Morte
+(`GhostState`) já não dependia disso. O indicador acima da cabeça no
+MUNDO (`QuestDialogSystem.render_world`, `TrainerSystem.render_world`)
+continua exigindo `Visible` — não mudou, faz sentido diferente do
+mapa/minimapa.
+
+Efeito colateral positivo: resolve de graça a limitação já documentada na
+Decisão 23 (mapa grande não mostrava NPC fora do campo de visão atual,
+mesmo em área já explorada) — não precisou de nenhum conceito novo de
+"NPC conhecido", só parar de filtrar por `Visible`.
+
+Validado: `py_compile`; suíte sem regressão (7F/85P); teste headless — um
+treinador SEM componente `Visible` (fora de FoW) e um mercador COM
+`Visible` — confirma que os dois aparecem na lista de `collect_markers`
+(antes do fix, o treinador sem `Visible` seria descartado).
+
+---
+
+### 26. Aljava do arqueiro dessincroniza ao usar skill de flecha — auto-attack trava "sem munição" mas sem aviso (13/07/2026)
+
+**Reportado pelo usuário:** "tem 1 flecha na aljava do arqueiro mas ele não
+consegue atacar, não aparece a mensagem de que a aljava está vazia, mas
+também não sai o ataque."
+
+**Causa raiz:** `_server_apply_ranged_physical` (`spell_completion_processor.py`,
+única função que desconta flecha de verdade) é chamada por 5 caminhos: o
+auto-attack (`combat_processor.py`) e as 4 skills de flecha (Picada de
+Escorpião, Flecha Reiterada, Tiro Repulsivo, Tiro Múltiplo). Só o
+auto-attack tinha o espelho client-side (`client/remote_entity_handlers.py:263`,
+decrementa a cópia LOCAL da aljava ao receber `COMBAT_RESULT` — ver
+Decisão 21). As 4 skills descontavam a flecha SÓ no servidor — nenhum
+`STATS_UPDATE`/confirmação avisava o cliente, então `Equipment.offhand
+.arrow_count` local nunca refletia esses usos, ficando cada vez mais
+ACIMA do valor real do servidor a cada skill de flecha usada. Com o
+cliente "achando" que ainda tem munição (não dispara o aviso "Aljava
+vazia! Use Recarregar." de `ui/systems.py::_process_archer_combat`, que
+só olha a cópia local), o auto-attack seguinte chegava ao servidor, que
+recusava silenciosamente por munição real esgotada (`combat_processor.py`
+linha ~114, um `continue` sem nenhum feedback ao cliente — mesmo
+tratamento silencioso de LOS/alcance/cooldown) — o tiro simplesmente não
+saía, sem nenhuma mensagem.
+
+**Fix:** `_server_apply_ranged_physical` agora enfileira
+`queue_stats_update({"player_eid": player_eid, "quiver_arrow_count":
+_qv_ar.arrow_count})` logo após descontar a flecha (mesmo padrão já usado
+por Recarregar) — cobre os 5 chamadores de uma vez só (ponto único de
+verdade, nenhuma skill precisou de código próprio). Cliente já tinha o
+handler genérico pronto (`client/network_handlers.py::_handle_msg_stats_update`,
+`if "quiver_arrow_count" in payload:`), sem alteração necessária ali.
+
+Validado: `py_compile`; suíte sem regressão (7F/85P).
+
+**Não validado:** sessão manual (usar Picada de Escorpião/Flecha
+Reiterada/Tiro Repulsivo/Tiro Múltiplo algumas vezes e confirmar que o
+HUD da aljava cai em tempo real, e que o auto-attack acusa "Aljava
+vazia!" corretamente quando a munição de verdade acaba).
+
+---
+
+### 27. Modais de diálogo de quest e de atalhos do teclado transbordavam a tela — sem clip/scroll (13/07/2026)
+
+**Reportado pelo usuário:** prints mostrando (1) o modal "Atalhos do
+teclado" (tecla K) com as linhas de baixo (barra de consumíveis) cortadas
+no fundo da tela e os botões Salvar/Fechar soltos no meio do conteúdo, e
+(2) o diálogo de quest do NPC ("Prova de Valor") com a descrição vazando
+pra baixo do painel, sobrepondo os botões Aceitar/Recusar. Pedido:
+conteúdo deve ficar CONTIDO dentro da borda do modal, com barra de
+rolagem quando não couber; e todo modal do jogo com barra de rolagem deve
+também rolar com o scroll do mouse.
+
+**Causa raiz:** os dois modais desenhavam o conteúdo com um `cy`/`y`
+incremental sem nenhum teto — a altura do painel (`PH`) ou crescia pra
+acomodar TUDO (`hotbar_editor_handlers.py`, `base_PH` calculado a partir
+de `n_rows`, sem limite) ou era fixa mas o conteúdo (descrição de quest,
+tamanho variável por definição) não respeitava esse limite
+(`quest_system.py::_render_detail`/`_render_turnin`, botões desenhados
+numa posição FIXA no fim do painel, texto acima sem clip nenhum).
+Nenhum dos dois tinha estado de scroll.
+
+**Fix — mesmo padrão nos dois lugares:** altura do painel vira um teto
+fixo (`UI.HOTBAR_EDITOR_MAX_H` novo; `QUEST_DIALOG_H` já era fixo) e a
+área de conteúdo variável vira uma viewport com `set_clip()` +
+scroll em px, com barra de rolagem (thumb proporcional, mesmo visual já
+usado por `crafting_system.py`) quando o conteúdo não cabe:
+- `ui/quest_system.py::_blit_scrollable()` — novo helper: recebe uma
+  lista de `(surf, rel_y)` (coordenadas relativas ao topo do bloco),
+  mede a altura total, clampa `self._detail_scroll` (px) a
+  `[0, content_h - view_h]`, desenha com `set_clip()` na faixa entre o
+  header e os botões (que continuam FIXOS, fora do clip). Usado por
+  `_render_detail` e `_render_turnin`. Scroll reseta a 0 toda vez que o
+  diálogo entra em "detail"/"turnin" (`_open_dialog`, clique na lista).
+- `client/hotbar_editor_handlers.py::_draw_hotbar_editor` — mesma ideia,
+  porém as linhas (`draw_row`) são interativas (hover/clique pra
+  rebind): uma linha rolada pra fora da viewport (`visible`/
+  `row_fully_visible`) não recebe hover nem clique, senão um clique
+  "invisível" atrás do clip ainda acionava rebind da linha errada.
+- Mouse wheel: `quest_system.py::handle_events` ganhou um branch
+  `MOUSEWHEEL` (`self._detail_scroll -= event.y * self._u(24)`, clampado
+  no próprio `_blit_scrollable` no próximo frame); `_draw_hotbar_editor`
+  ganhou o mesmo, lendo os `events` que já recebe direto (não passa por
+  `handle_events`, é chamado 1x por frame em `game.py`).
+- `game.py::_handle_scroll_zoom` (zoom da câmera com scroll do mouse) já
+  tinha uma lista de "modal aberto bloqueia zoom" que incluía
+  `_show_hotbar_editor` mas NÃO o diálogo de quest — sem isso, rolar o
+  nosso scroll novo também zoomaria a câmera ao mesmo tempo. Adicionado
+  `self._quest_dialog.is_open` à lista.
+
+Demais modais com barra de rolagem já tratavam `MOUSEWHEEL`
+individualmente (`chat_handlers.py`, `crafting_system.py`,
+`trainer_system.py`, `habilidades_handlers.py`, `map_overlay.py`,
+`god_mode.py`, diário de quests em `quest_system.py`, debug F12 via
+`game.py`) — não precisaram de mudança.
+
+Validado: `py_compile` nos arquivos tocados; suíte sem regressão
+(7F/85P); renderização headless (SDL dummy driver) dos dois modais com
+conteúdo propositalmente maior que a viewport — confirma clip+scrollbar
+funcionando (screenshot conferido visualmente antes de reportar) e o
+scroll de mouse simulado via evento `MOUSEWHEEL` real (com
+`pygame.display.set_mode`, necessário pro rastreio de mouse funcionar
+headless) alterando `self._mkb_scroll` corretamente (clampado nos dois
+extremos).
+
+**Não validado:** sessão manual em jogo real (redimensionar/ter muitos
+slots de hotbar e rolar com o mouse de verdade; abrir uma quest com
+descrição longa e conferir a barra de rolagem+scroll do mouse).
+
+---
+
+### 28. "Só um Gole" (arqueiro): Concentração grátis expira ~2x mais rápido que os 10s prometidos — buff falha "às vezes" (14/07/2026)
+
+**Reportado pelo usuário:** usar "Último Gole" (Só um Gole) às vezes não
+deixa as skills de Concentração grátis como a descrição promete
+("habilidades de Concentração ficam grátis... por 10s") — o custo é
+cobrado mesmo com o buff supostamente ainda ativo.
+
+**Causa raiz:** `server/world_server.py` tinha um bloco manual ("Arqueiro:
+regen de Concentração + timers de buff") que DUPLICAVA por completo o que
+`core_systems.ServerCombatStateSystem.update()` já faz — e que já é
+chamado nesta mesma função, mais acima (`self._combat_state_sys.update(...)`,
+que internamente roda `_tick_concentration_regen` e
+`_tick_concentration_free_timer` pra cada player). Os dois blocos rodavam
+no MESMO tick, sem nenhuma guarda contra duplicação:
+- `concentration_free_timer` (contagem regressiva do buff de "Só um
+  Gole") decrementava `dt` DUAS vezes por tick → os 10s de duração
+  configurados em `skill_config.py` na prática expiravam em ~5s reais no
+  servidor (autoritativo — quem decide o desconto de Concentração em
+  `spell_completion_processor.py::_process_spell_cast_completions`).
+  Nada avisa o cliente dessa expiração antecipada (não existe
+  resincronização de `concentration_free` via STATS_UPDATE), então o
+  jogador via o buff "ainda dentro dos 10s" (contagem local, client-side,
+  ticando na velocidade CORRETA de 1x) mas o servidor já tinha voltado a
+  cobrar o custo havia segundos — exatamente o "às vezes" relatado
+  (dependia de quanto tempo se passava entre ativar o buff e usar a
+  próxima skill custosa).
+- Regen de Concentração (fora de combate) também dobrava de velocidade
+  pelo mesmo motivo (mesma fórmula, mesmo `dt`, calculada duas vezes) —
+  efeito colateral não reportado mas real, corrigido junto.
+- `camouflage_timer` (Camuflagem) só existia nesse bloco manual — não
+  duplicado em `ServerCombatStateSystem`, preservado como estava.
+
+**Fix:** removido o bloco manual de regen de Concentração +
+`concentration_free_timer` de `world_server.py` — `ServerCombatStateSystem`
+(já chamado antes, mesma função) passa a ser a ÚNICA fonte de verdade
+pros dois, igual ao cliente (`engine/world_systems.py::PlayerCombatStateSystem`,
+que sempre teve só UMA chamada de cada). O bloco que sobrou trata só
+`camouflage_timer`, sem mexer em Concentração.
+
+Validado: `py_compile`; suíte sem regressão (7F/85P); inspeção de código
+confirmando 1 única chamada de `_tick_concentration_free_timer`/
+`_tick_concentration_regen` em cada lado (cliente e servidor) após o fix
+(antes: 2 no servidor, 1 no cliente).
+
+**Não validado:** sessão manual em jogo real (usar "Só um Gole", esperar
+~6-9s e confirmar que uma skill de Concentração ainda sai grátis dentro
+da janela de 10s; conferir também que a regen de Concentração fora de
+combate não ficou mais lenta do que antes — o valor "correto" agora é
+metade da velocidade observada antes do fix, que estava dobrada por
+engano).
+
+---
+
+### 29. Investigação de performance com o arqueiro (14/07/2026) — 2 achados
+
+**Reportado pelo usuário:** "ainda tem algo com o desempenho" ao andar
+com o arqueiro; depois, com print do overlay de F11: um texto de 2
+dígitos ilegível, sobreposto às linhas do profiler, sempre no canto
+superior esquerdo.
+
+**Achado 1 — `debug/archer_debug.py` com log ligado:** `DBG_ENABLED`
+estava `True` (deixado ligado da investigação do bug de auto-attack
+desta sessão) — client e servidor gravavam uma linha por decisão de
+disparo (ATTEMPT/BLOCK/LOS/FIRE/ARROW/AGGRO) em
+`logs/archer_debug_{client,server}.log`. Fix: `DBG_ENABLED = False`.
+Outros flags de debug do projeto (`aoi_debug.py`, `mob_combat_debug.py`,
+`spell_debug_log.py`) já estavam desligados — conferido, não precisou
+mexer.
+
+**Achado 2 (real, mas modesto) — `ui/hud_bars.py` sem cache do número de
+nível:** `build_player_hud`/`build_mob_hud` (HUD de nível+barras acima da
+cabeça, feature desta sessão) recalculavam `pygame.mask.from_surface(...)
+.get_bounding_rects()` do número do nível TODO FRAME, pra CADA entidade
+visível com barra de HP — custo que escala com quantos mobs estão em
+campo de visão (cresce ao andar por áreas mais povoadas). Fix: número do
+nível (`surf`, centro de tinta) cacheado por `(level, id(font))` — level
+muda raríssimo (level up), cache quase sempre quente. Nova função
+`_level_surf()` substitui `_blit_centered_by_ink()` (removida, sem outros
+call sites). Microbenchmark: ~15.1µs → ~9.8µs por chamada (~35%) — real,
+mas não explica sozinho uma queda perceptível de FPS.
+
+**Achado 3 (a causa real do "texto de 2 dígitos"):** não era um bug de
+performance — era sobreposição visual de DOIS painéis independentes, os
+dois ancorados no canto superior esquerdo:
+- `_draw_perf_overlay()` (`game.py`, o próprio overlay de F11): `self.
+  screen.blit(surf, (4, 4))`.
+- `_draw_hud()` (`client/hud_handlers.py`, HUD de texto permanente:
+  nome/HP/recurso da classe/aljava) desenha a partir de
+  `(self._u(10), self._u(10))` pra baixo — pro arqueiro, a linha
+  "Conc. XX/XX  (+N/s)" (`hud_handlers.py:92`, `_rate_str = f"  (+{_rate:
+  .0f}/s)"`) cai bem na faixa vertical onde o overlay de F11 também
+  desenha suas primeiras linhas. `_rate` só é > 0 (e portanto o texto só
+  aparece) quando há regen de Concentração ativo — daí "sempre que o
+  arqueiro anda" (regen idle/moving são taxas diferentes, mas quase
+  sempre > 0 fora de combate) e nunca é notado sem F11 aberto (os dois
+  painéis convivem bem SEM o overlay de debug por cima). O "2 dígitos"
+  era literalmente o "+6" de "(+6/s)" ilegível por causa da sobreposição.
+
+**Fix:** `_draw_perf_overlay()` (`game.py`) desenha em `(4, 110)` em vez
+de `(4, 4)` — 110px é espaço suficiente pro HUD de texto (nome+HP+recurso
++aljava, ~90px de altura) nunca encostar no overlay de debug. Overlay de
+F11 é dev-only; mover ele (não o HUD de gameplay) é a escolha certa.
+
+Validado: `py_compile`; suíte sem regressão (7F/85P).
+
+**Não validado:** sessão manual em jogo real confirmando visualmente que
+os dois painéis não sobrepõem mais com F11 aberto, e que o "desempenho"
+percebido melhora minimamente com o Achado 2 (não esperado resolver
+sozinho uma queda de FPS grande — se persistir, precisa de outro print
+de F11 focado só nas seções mais altas, sem o "2 dígitos" ilegível
+atrapalhando a leitura).
+
+**Adendo (mesmo dia):** usuário esclareceu — a dúvida real não era o
+texto sobreposto (Achado 3), era descobrir o que CAUSA um spike de frame
+ao andar com o arqueiro. Como o spike "acontece em uma fração de
+milésimo" (rápido demais pra print manual), pediu log automático em vez
+de captura manual.
+
+Infra já existia (`game.py::run()`, perto do fim do loop) — detecção de
+spike de frame com breakdown por seção gravado em `logs/client_prof.log`
+(criado do zero a cada execução), ativo sempre que `PROFILE_FRAMES=True`
+(setado ao apertar F11 uma vez — fica ligado o resto da sessão mesmo
+fechando o overlay visual depois). Dois problemas nela pro caso de uso
+atual: **(1)** threshold de 50ms só pegava travadas grandes — o budget é
+16.7ms a 60 FPS, um engasgo de 20-35ms (perceptível, mas bem menor que
+50ms) passava batido. **(2)** a linha `[SPIKE]` só tinha o breakdown por
+seção, sem nenhum dado do PLAYER — não dava pra confirmar de cara se o
+spike coincidia com "andando/perseguindo como arqueiro" sem cruzar
+timestamp a mão contra outro log.
+
+**Fix:** `game.py::run()` — `_SPIKE_THRESHOLD_S` (novo, `__init__`) reduz
+o gatilho de 50ms pra 22ms; a linha `[SPIKE]` agora inclui
+`class_id`/`is_moving`/`is_pursuing`/`attack_cooldown_timer` do player
+local (lidos com fallback seguro — `try/except` — pra nunca quebrar o
+loop principal por causa de instrumentação). Nenhuma mudança de
+comportamento fora do bloco `if PROFILE_FRAMES:` (custo zero quando o
+profiler está desligado, igual antes).
+
+Validado: `py_compile`; suíte sem regressão (7F/85P).
+
+**Adendo 2 (mesmo dia) — CAUSA REAL encontrada via `logs/client_prof.log`:**
+usuário reproduziu e o log capturou dezenas de `[SPIKE]` (22-70ms,
+threshold reduzido do Achado acima). Analisando os `[PROF]` agregados de
+várias janelas de 300 frames, UMA seção domina de forma consistente:
+`hud:combat_log` — nome ENGANOSO no profiler (`game.py`), na real
+cronometra o bloco `self._minimap.render(...)` +
+`self._quest_system.render_hud(...)`, não o log de combate. Avg 0.5-0.9ms
+mas PEAK de 12-19.6ms, aparecendo em praticamente toda janela — bem mais
+consistente que qualquer outra seção.
+
+Causa raiz: `ui/minimap.py::Minimap._rebuild_numpy()` — o cache do
+minimapa (`cache_key = (player_tx, player_ty, len(explored))`, linha
+~108) invalida toda vez que o player muda de TILE — ou seja, toda vez que
+anda. No rebuild, `explored` (o `set` de `FogOfWar`, que só CRESCE e
+nunca encolhe — "persiste entre movimentos", `engine/components.py`) era
+convertido INTEIRO pra numpy (`np.array(list(explored))`) antes de
+filtrar só os tiles que cabem na janela de 51×51 (`RADIUS=25`) do
+minimapa — processava o histórico de exploração da sessão inteira (que só
+cresce, podendo chegar a milhares de tiles num mapa grande já explorado)
+pra descartar quase tudo logo em seguida. Custo crescendo sem limite
+conforme mais mapa é revelado — explica tanto "sempre que anda" (rebuild
+só dispara em troca de tile) quanto o padrão de piorar ao longo da
+sessão.
+
+**Fix:** `_rebuild_numpy()` agora intersecta `explored`/`visible` com um
+`set` da JANELA atual (bounded, `win²` ~2601 tiles, construído a cada
+rebuild mas barato) ANTES de converter pra numpy — `set & set` em CPython
+sempre itera o MENOR dos dois operandos, então com `window_tiles` bounded
+o custo vira O(win²) CONSTANTE, nunca mais O(len(explored)). `visible`
+recebeu o mesmo tratamento por consistência (já era pequeno — raio de LOS
+~8 tiles — mas mantém o mesmo padrão). `_rebuild_python` (fallback sem
+numpy) não precisou de mudança — já fazia checagem de pertencimento
+tile-a-tile dentro da janela (`(tx,ty) not in explored`), sempre O(win²).
+
+Validado: `py_compile`; suíte sem regressão (7F/85P); teste de
+corretude headless (mesmo `explored`/`visible` sintéticos, incluindo
+tiles negativos/fora da janela — resultado do fog ANTES vs DEPOIS
+`np.array_equal` idêntico); microbenchmark com 8000 tiles explorados
+(~sessão longa): 2205µs → 746µs por rebuild (~3x mais rápido) — e a
+vantagem CRESCE ainda mais quanto mais o mapa for explorado, já que a
+versão antiga era O(n) e a nova é O(1) em relação a `len(explored)`.
+
+**Não validado:** sessão manual em jogo real confirmando que o engasgo
+some/reduz ao andar com o arqueiro (esperado, já que a causa raiz mais
+provável — confirmada pelos próprios logs do usuário — está corrigida),
+e que o minimapa continua visualmente correto (fog/exploração) em jogo
+de verdade, não só no teste sintético.
+
+**Adendo 3 (mesmo dia) — `display_flip` engasgando mesmo parado, sem
+correlação com ação nenhuma:** usuário testou de novo depois do fix do
+minimapa e reportou que a queda de FPS também acontece parado, sem
+nenhuma ação. Log já tinha crescido pra 2735 linhas — analisado de novo.
+
+Achado: em praticamente TODO `[SPIKE]` do log (a esmagadora maioria com
+`is_moving=False is_pursuing=False`), a seção `display_flip`
+(`pygame.display.flip()`, presenteção do frame) domina — 5-47ms,
+totalmente errático, sem relação com nenhum sistema do jogo específico
+(às vezes sozinha, às vezes com `transform_scale` — que também teve um
+pico isolado de 26ms). Isso é a assinatura clássica de jitter de VSync em
+janela no Windows (compositor DWM segurando o present).
+
+Causa provável: `game.py` configurava `pygame.display.set_mode(...,
+vsync=1)` **E** já fazia pacing manual de FPS via
+`self.clock.tick_busy_loop(FPS)` no loop principal (`run()`) — dois
+mecanismos de controle de frame rodando ao mesmo tempo, brigando entre
+si. `vsync=1` em janela (não fullscreen exclusivo) no Windows é conhecido
+por causar exatamente esse tipo de stall imprevisível independente da
+carga real de trabalho.
+
+**Fix (aprovado pelo usuário via pergunta explícita — trade-off aceito):**
+`vsync=0` nos dois `pygame.display.set_mode()` (`__init__` e
+`_apply_scale()`, resolução muda no menu de opções) — o `tick_busy_loop`
+já existente assume 100% do pacing de FPS. Risco aceito: pode aparecer
+tearing (corte horizontal) se o FPS variar — não mitigado agora (usuário
+optou por testar vsync desligado antes de considerar tornar
+configurável).
+
+Validado: `py_compile`; suíte sem regressão (7F/85P) — testes são
+server-side headless, não tocam nesse código.
+
+**Não validado:** sessão manual em jogo real confirmando que os spikes de
+`display_flip` desaparecem/reduzem, e que não há tearing perceptível. Se
+o tearing incomodar, próximo passo natural é a opção "Deixa configurável
+nas opções" que o usuário não escolheu desta vez (toggle de VSync no menu
+de opções).
+
+**Adendo 4 (mesmo dia) — `vsync=0` resolveu o jitter, mas trouxe tearing
+de volta:** usuário confirmou FPS estável com `vsync=0`, mas reportou
+tearing perceptível depois de eu explicar o que é. Perguntou como
+engines grandes resolvem — expliquei (swap chain com apresentação por
+hardware/"flip model", fullscreen exclusivo, VRR) e propus testar trocar
+pro caminho acelerado do SDL (`pygame.SCALED`) com vsync ligado de novo,
+em vez de aceitar o tearing permanentemente ou só desligar vsync.
+Usuário aprovou o teste.
+
+**Fix:** `game.py` — os dois `pygame.display.set_mode(...)` (`__init__`
+e `_apply_scale()`) voltam a `vsync=1`, mas agora com a flag
+`pygame.SCALED` adicionada (`pygame.DOUBLEBUF | pygame.SCALED`). Sem
+`SCALED`, `set_mode()` cria uma surface de software (caminho GDI/blit por
+CPU) — é nesse caminho que `vsync=1` em janela no Windows trava o
+`flip()` esperando o compositor (DWM) de forma inconsistente (Adendo 3).
+`SCALED` troca pro `SDL_Renderer` acelerado por hardware, que no Windows
+usa apresentação em "flip model" (DXGI) — o mesmo princípio de swap chain
+que engines grandes usam pra ter vsync sem tearing E sem o overhead do
+compositor. Como `win_w`/`win_h` passados pro `set_mode()` já são
+EXATAMENTE o tamanho da janela (a lógica de escala do jogo já embute o
+fator em `win_w = int(1280*scale)` antes de chamar `set_mode`), `SCALED`
+não faz nenhum upscale de verdade aqui — só troca o caminho de
+apresentação, sem mudar a nitidez/resolução renderizada.
+`clock.tick_busy_loop(FPS)` continua fazendo o pacing de FPS como antes
+— vsync agora serve só pra eliminar tearing, sem competir pelo controle
+do frame rate.
+
+Validado: `py_compile`; suíte sem regressão (7F/85P, headless, não toca
+nesse código); smoke test estrutural (SDL dummy driver) confirmando que
+`set_mode(SCALED|DOUBLEBUF, vsync=1)` + blit + `flip()` não lança exceção,
+inclusive numa troca de resolução simulando `_apply_scale()` (960×540 em
+cima de uma janela já aberta em 1280×720) — mas o dummy driver não tem
+GPU de verdade, então NÃO valida vsync/tearing/aceleração de hardware de
+verdade, só a ausência de crash.
+
+**Não validado (importante — só dá pra confirmar na máquina do
+usuário):** se o `SDL_Renderer` acelerado realmente engata no driver de
+vídeo do usuário (sem GPU compatível, pode cair num fallback por
+software que reintroduz o jitter do Adendo 3); se o tearing some de
+verdade com vsync+SCALED; se a nitidez/escala da imagem permanece
+idêntica a antes (não deveria mudar, já que a escala lógica sempre bate
+1:1 com o tamanho da janela, mas só confirma em jogo real). Se
+`SCALED` não engatar aceleração de hardware na máquina do usuário
+(warning "no fast renderer available", visto no smoke test headless — lá
+é esperado por não ter GPU real; na máquina do usuário NÃO deveria
+aparecer), o fallback é voltar pra `vsync=0` (Adendo 3) ou expor o
+toggle configurável.
+
+**Adendo 5 (mesmo dia) — confirmado sem regressão + achado novo (zoom
+causando rajada de reconstrução de cache):** usuário confirmou média de
+frame estável na sessão com SCALED+vsync=1 (log de 3932 linhas, 8-10ms
+consistente, sem tendência de piora — Adendo 4 validado). Pedido de
+reanálise numa sessão seguinte (log novo, 3069 linhas, jogo reiniciado)
+revelou um problema DIFERENTE e pré-existente (não introduzido pelo
+vsync/SCALED): uma rajada de picos consecutivos (54/78/44/**157**/**95**/
+58/47ms) com dois deles dominados quase inteiramente por UMA seção
+(`rnd:TileRenderSystem`=141ms, `transform_scale`=78.9ms, sozinhas).
+
+Causa raiz: `game.py::_handle_scroll_zoom()` escrevia `self._zoom`
+diretamente a cada "clique" da roda do mouse. O bloco "Zoom surf:
+dimensiona a world_surf" (`run()`, roda todo frame) recalcula o tamanho
+lógico do mundo a partir de `self._zoom` e — sozinho, sem nenhuma chamada
+externa — já invalida e reconstrói o cache de tiles sempre que esse
+tamanho muda. Ou seja, CADA clique de scroll (não só o primeiro) já
+disparava sua própria reconstrução completa por conta desse mecanismo
+automático — um gesto normal de zoom (vários cliques em sequência rápida)
+virava uma rajada de N reconstruções caras, uma por clique.
+
+**Correção de rumo importante:** a primeira tentativa de fix (mesma
+sessão) só debounceu a chamada EXPLÍCITA de `invalidate_cache()` dentro
+de `_handle_scroll_zoom` — mas essa chamada já era redundante (o bloco
+"Zoom surf" invalida sozinho todo frame que o tamanho muda), então esse
+primeiro fix não teria resolvido nada de verdade — a análise do log
+`rnd:TileRenderSystem`/`transform_scale` revelou a causa real ANTES do
+fix errado ser reportado como pronto, e foi corrigido na mesma resposta.
+
+**Fix (correto):** `_handle_scroll_zoom` não escreve mais em `self._zoom`
+diretamente — acumula em `self._zoom_pending` (somando a partir do
+pendente se já houver um debounce em andamento, não do valor antigo já
+commitado) e arma `self._zoom_cache_dirty_timer = _ZOOM_DEBOUNCE_S`
+(0.15s). O tick do debounce (`run()`, todo frame) só comita
+`self._zoom = self._zoom_pending` quando o timer expira — SEM chamar
+`invalidate_cache()` diretamente, deixando o bloco "Zoom surf" (que já
+roda todo frame) detectar a mudança de tamanho e reconstruir sozinho,
+exatamente 1x por gesto inteiro em vez de 1x por clique. Os outros 2
+pontos que escrevem `self._zoom` direto (reset de zoom do God Mode/F10;
+zoom por teclado `+`/`-`) continuam imediatos — não gestos de rajada,
+sem necessidade de debounce — mas agora cancelam explicitamente
+`self._zoom_cache_dirty_timer = -1.0` pra não deixar um debounce de
+scroll pendente sobrescrever a mudança deles depois.
+
+Validado: `py_compile`; suíte sem regressão (7F/85P); teste headless
+isolado simulando 4 cliques de scroll em rajada (16ms entre cada, bem
+dentro da janela de 150ms) — confirma `self._zoom` só muda (e o
+"invalidate" só dispara) DEPOIS que o debounce estoura, uma única vez
+pro gesto inteiro (4 cliques → 1 reconstrução, não 4).
+
+**Não validado:** sessão manual em jogo real confirmando que a rajada de
+picos ao dar zoom desaparece, e que o zoom ainda parece responsivo o
+suficiente com o atraso de 150ms antes de "commitar" visualmente (trade-
+off aceito: pequeno delay perceptível vs. rajada de travamento).
+
+---
+
 ## Protocolo — todas as mensagens implementadas
 
 | Direção | Tipo | Quando | Implementado |

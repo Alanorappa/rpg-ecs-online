@@ -4191,3 +4191,201 @@ normalmente). Suíte completa sem regressão (9F/83P).
 **Não validado:** cenário PvP real (outro player disparando Tiro Repulsivo em alguém adjacente a
 uma 3ª entidade) — confirmar que o splash ainda pega bystanders de verdade, só o CASTER que fica
 sempre de fora.
+
+---
+
+## 11. AUDITORIA ARQUITETURAL AMPLA — 15 de julho de 2026
+
+Análise minuciosa (pedido do usuário): ECS core, componentes, sistemas,
+gerenciamento de entidades, rede, dados e processo. Checklist de "feito de um
+jeito, mas existia um jeito muito melhor". Itens já documentados nas seções
+1-10 não são repetidos — isto é o que SOBRA depois de tudo já consertado.
+
+### 🔴 A1 — Componentes-Deus: `CombatStats` (~120 campos) e `CharacterStats`
+
+`CombatStats` mistura stats genéricos de combate com flags de TALENTO
+específicas de cada build de cada classe (`fire_burns_on_crit`,
+`pnq_enabled`, `interceptar_rage_bonus`, `flechas_despadronizadas_chance`,
+`camouflage_timer`, `na_mosca_bonus_active`, ~40 flags assim). Todo mob do
+servidor carrega os campos de talento de Piromania do Mago. Cada talento novo
+= editar o componente compartilhado por TODAS as entidades. `CharacterStats`
+idem: rage + mana + concentration + cargas de Embalo/PnQ/fatiador juntos.
+
+**Melhor:** o ponto do ECS é composição — recursos de classe deviam ser
+componentes próprios (`Rage`, `Mana`, `Concentration`) adicionados só a quem
+tem, e flags de talento deviam viver num componente por build
+(`PyromaniaTalents`, `ArcherTalents`) criado quando o talento é alocado, ou
+num dict genérico `talent_flags` populado por `apply_talent_effects()`.
+Custo de migrar hoje: alto (dezenas de call sites) — fazer por classe, na
+próxima vez que a build daquela classe for mexida.
+
+### 🔴 A2 — Dual-mode online/offline: 65 branches `if self._net` espalhados
+
+`ui/systems.py`, `ui/spell_system.py`, `ui/quest_system.py`,
+`engine/world_systems.py` e `game.py` decidem "roda local ou espera servidor"
+com `if self._net:` caso a caso. É a maior fonte única de bugs da história
+recente (predição de flecha, mana/rage regen local duplicado, aljava
+dessincronizada, timer de Só um Gole duplicado — todos da mesma classe).
+
+**Melhor:** uma interface de autoridade (`LocalAuthority`/`RemoteAuthority`)
+injetada uma vez, com os pontos de decisão CENTRALIZADOS (aplicar dano?
+descontar recurso? criar projétil?), em vez de cada mecânica reimplementar a
+escolha. Alternativa mais barata: matar o modo offline do branch online (o
+offline já vive no `rpg_ecs/` master) — metade dos branches morre.
+
+### 🔴 A3 — `_svc` global mutável + `register_map_services_for()`
+
+Service locator global (`world_systems._svc`) aponta pro bundle do "mapa
+atual"; com multi-mapa no servidor, TODO entry-point novo tem que LEMBRAR de
+chamar `register_map_services_for(player_eid)` antes do handler (classe de
+bug já materializada 2x: Interceptar "bloqueado" em terreno aberto, Tiro
+Repulsivo stunando em parede fantasma — ver CLAUDE.md). É contexto implícito
+que depende de disciplina.
+
+**Melhor:** contexto explícito — handlers recebem o bundle do mapa como
+parâmetro (ou serviços por-World em vez de globais de módulo). Enquanto isso
+não acontece, a regra do CLAUDE.md é a única defesa.
+
+### 🔴 A4 — Persistência com autoridade híbrida (inventário/talentos client-side)
+
+`_build_save_merge` decide campo a campo quem manda (server: pos/hp/quests/
+skill_levels/equipment; CLIENTE: inventory/talents) usando o cache
+`session.last_client_payload` — que já causou o bug da aljava (Decisão 26,
+ARQUITETURA_ONLINE.md) e continua sendo vetor de item-duplication via cliente
+modificado, mesmo com `_reconstruct_item` validando contra catálogo.
+
+**Melhor:** inventário 100% server-authoritative (o servidor JÁ mantém
+`Inventory` em memória e já tem INV_SYNC; falta inverter a direção: cliente
+pede mutação, servidor aplica e ecoa). Talents idem (budget já é validado —
+falta o conteúdo da árvore). Eliminaria `last_client_payload` inteiro.
+
+### 🟡 B1 — Orquestração de frame/tick manual e gigante
+
+`game.py::run()` (~800 linhas) e `WorldServer._tick()` (~600 linhas) chamam
+cada sistema hard-coded, com 40+ blocos repetidos de
+`if PROFILE_FRAMES: _ts = perf_counter()` inline.
+
+**Melhor:** lista ordenada declarativa de sistemas
+(`PIPELINE = [(nome, fn), ...]`) com loop único que já cronometra cada etapa
+— o profiler manual inteiro (e o rótulo mentiroso `hud:combat_log`, que
+atrasou o diagnóstico do minimapa em 14/07) desaparece de graça, e adicionar
+sistema vira 1 linha em vez de cirurgia num método gigante.
+
+### 🟡 B2 — Handlers de spell duplicados cliente/servidor por skill
+
+Cada skill de projétil tem DUAS implementações espelhadas:
+`ui/spell_system.py::_apply_*` (offline/visual) e
+`server/spell_completion_processor.py::_server_*` (autoritativa).
+Divergências entre as duas são classe recorrente de bug (C20, consumo de
+flecha da Decisão 26, knockback...).
+
+**Melhor:** completar o padrão que `world_systems`/`core_systems`/`fx.py` já
+começaram — UM handler headless por skill, efeitos visuais via façade,
+chamado pelos dois lados. O doc já chama isso de "nó restante do problema F";
+vale promover a prioridade: é onde os bugs de skill nascem.
+
+### 🟡 B3 — Servidor reusa o `SkillSystem` do cliente via `getattr(f"_skill_{sid}")`
+
+`skill_processor.py` muta `self._skill_system.player_entity_id = player_eid`
+a cada request e despacha por convenção de nome numa classe de UI
+(`ui/systems.py`). Funciona, mas: estado mutável compartilhado entre
+requests, zero checagem estática de handlers, e o servidor importa módulo de
+UI.
+
+**Melhor:** registry explícito `SKILL_HANDLERS: dict[str, callable]` headless
+(em `engine/` ou `content/`), handlers recebendo contexto como parâmetro em
+vez de atributo mutado.
+
+### 🟡 B4 — Protocolo sem schema tipado
+
+Payloads são dicts livres; `queue_stats_update` aceita "qualquer campo
+extra"; COMBAT_RESULT acumulou campos ad-hoc. Typo em chave vira bug
+silencioso (`payload.get()` com default engole). MsgType é a única parte
+tipada.
+
+**Melhor:** TypedDict/dataclass por mensagem em `shared/messages.py` (que já
+documenta payloads em comentário — formalizar o que já está escrito) +
+validação na borda do servidor. Também prepara a migração JSON→MessagePack já
+planejada.
+
+### 🟡 B5 — Sem índice espacial (varreduras lineares por tick)
+
+`_entity_at_tile`, `_adjacent_creatures`, `_sessions_in_aoi`, coleta de
+`enemy_tiles`: tudo O(N) sobre todos os mobs+players, por tick. Escala atual
+aguenta; 10x mobs/players não.
+
+**Melhor:** dict `tile → set[eid]` mantido por `snap_to_tile`/
+`TileMovementSystem` (os únicos pontos que já escrevem posição, por regra do
+projeto) — consultas viram O(1), custo de manutenção 1 remove+1 add por
+passo.
+
+### 🟡 C1 — Auth: SHA-256 sem salt, hash é a senha
+
+Cliente manda SHA-256(senha) em texto pelo WebSocket (sem TLS); o servidor
+guarda esse hash direto. Replay do hash = login (pass-the-hash); rainbow
+table quebra senhas fracas.
+
+**Melhor (pré-lançamento):** wss:// + salt por conta + argon2/bcrypt no
+servidor. Registrado pra não virar "regra esquecida" — hoje o CLAUDE.md
+descreve o esquema atual como se fosse o desejado.
+
+### 🟡 C2 — Identidade de item é o nome (string)
+
+Saves/protocolo/reconstrução usam `item.name` como chave. Renomear item no
+catálogo quebra saves existentes silenciosamente.
+
+**Melhor:** `item_id` estável no catálogo (nome vira display), com migração
+única nos saves.
+
+### 🟢 D1 — Baseline de testes permanentemente vermelho
+
+Suíte estabilizou em "7 failed / 85 passed" (às vezes 9F/83P) e todo mundo
+trata como "verde". A 8ª falha nova passa invisível.
+
+**Melhor:** ou consertar os 7, ou marcá-los `xfail(reason=...)` — custo de
+uma tarde, devolve o sinal binário "passou/quebrou".
+
+### 🟢 D2 — Zero testes de cliente; validações headless descartadas
+
+Toda a lógica de predição (a MAIOR fonte de bugs) não tem teste permanente.
+Os scripts headless que validaram cada fix da semana (quiver, marcador, zoom
+debounce, fog do minimapa...) morreram no scratchpad.
+
+**Melhor:** promover esses scripts a `tests/client/` — o padrão SDL dummy
+driver já está provado e é barato.
+
+### 🟢 D3 — Flags de debug como constante no código
+
+`DBG_ENABLED = True` esquecido ligado (aconteceu 14/07 com archer_debug;
+spell_debug/aoi_debug têm o mesmo padrão).
+
+**Melhor:** ler de env var (`RPG_DEBUG_ARCHER=1`) ou do config.json — flag
+ligada nunca entra em commit/build por acidente.
+
+### 🟢 D4 — `print()` como logging do servidor
+
+Sem níveis, sem rotação, timestamps inconsistentes.
+**Melhor:** `logging` com formatter único (o projeto já usa em
+spell_debug_log.py — estender o padrão).
+
+### 🟢 D5 — `ui/systems.py` (4410 linhas) como gaveta de tudo
+
+10 classes sem relação entre si (Shop, Loot, Fog, TileRender, Consumable,
+Input, Render, Camera, MouseTargeting, Skill) no mesmo arquivo.
+**Melhor:** 1 arquivo por sistema (o projeto já faz isso pra quest/trainer/
+crafting — terminar o padrão). Baixo risco, alto ganho de navegação.
+
+### ✅ O que está genuinamente BEM (pra não perder de vista)
+
+- `World` com índice invertido: simples, correto, rápido o suficiente.
+- Façade `fx.py` + `core_systems`/`world_systems` headless: a decisão
+  estrutural mais importante do projeto, e funciona.
+- "Pontos únicos de verdade" documentados no CLAUDE.md com as classes de bug
+  que cada um previne — prática rara e valiosa.
+- Conteúdo data-driven (`skill_config`, `talent_data`, `mob_definitions`,
+  `quests_data`) — adicionar conteúdo não exige tocar em sistema.
+- Validação server-side pós-auditoria (Tiers A-F) — os buracos grandes de
+  segurança de gameplay foram fechados de verdade.
+- AOI + snapshot history/lag comp + save merge documentado campo a campo.
+- Disciplina de documentar CADA decisão/bug com causa raiz — este arquivo e o
+  ARQUITETURA_ONLINE.md são o motivo de bugs velhos não voltarem.
