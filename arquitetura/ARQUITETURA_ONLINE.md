@@ -2377,7 +2377,7 @@ detalhes, validações e plano dos restantes estão TODOS lá (§11 e
 | C→S | `QUEST_ACCEPT` | quest_id, npc_name — aceitar quest no diálogo do NPC | ✅ |
 | C→S | `QUEST_TURN_IN` | quest_id, npc_name — entregar quest no diálogo do NPC | ✅ |
 | S→C | `QUEST_UPDATE` | active{}, completed[], completed_qid — snapshot completo, só ao dono | ✅ |
-| S→C | `ENTITY_SPAWN` | eid, kind, tx, ty, name, class_id, hp, hp_max, level, effects | ✅ |
+| S→C | `ENTITY_SPAWN` | eid, kind, tx, ty, name, class_id, hp, hp_max, level, effects — mobs (`kind=enemy`) também levam `race, entity_class, tier, is_ranged, color, faction` (Sistema de Facções, 15/07/2026 — `content/faction_data.py`, cliente resolve disposição hostil/neutro/amigavel pra colorir a barra de HP) | ✅ |
 | S→C | `ENTITY_DESPAWN` | eid (negativo para corpse) | ✅ |
 | S→C | `LOOT_AVAILABLE` | corpse_id, tx, ty, items, coins — só ao dono | ✅ |
 | C→S | `LOOT_REQUEST` | corpse_id | ✅ |
@@ -2724,6 +2724,46 @@ feita explicitamente pra dar ao usuário algo pra testar ao vivo (todo o
 resto da Fase 2 preserva o comportamento anterior). Reversível a qualquer
 momento voltando pra `"monstros_hostis"`. Demais raças/zonas continuam
 hostis.
+
+---
+
+### 34.2 Identificação visual de disposição — barra de HP por cor (hostil/neutro/amigável) (15/07/2026)
+
+Pedido do usuário logo após testar o Lobo neutro pela 1ª vez: "quero criar
+uma identificação de mobs hostis e neutros, os hostis a barra de HP é
+vermelha, neutros é amarela clara, e os NPCs que forem amigáveis(friendly)
+terão a barra verde". Implementado como função pura da DISPOSIÇÃO (tier
+`hostil`/`neutro`/`amigavel` de `content/faction_data.py::get_relationship()`),
+não do tipo de entidade — qualquer mob cuja facção resolva `amigavel`
+também fica verde, não só um futuro NPC de combate (Fase 4).
+
+- `ui/hud_bars.py`: `DISPOSITION_HP_COLORS = {"hostil": (200,40,40),
+  "neutro": (235,220,110), "amigavel": HP_COLOR}` (amigável reaproveita o
+  verde de sempre). `build_mob_hud()` ganha parâmetro `hp_color` (default
+  `HP_COLOR`, mantém os 2 call sites antigos — testes e o caminho morto de
+  `ui/systems.py` — funcionando sem mudança).
+- **Protocolo**: `server/world_server.py::_build_mob_spawn_payload()`
+  (única função por trás de `WORLD_STATE`/`ENTITY_SPAWN`/`AOI_UPDATE`
+  spawned — confirmado, sem caminho duplicado) ganha campo `"faction"` no
+  payload, lido do componente `Faction` do mob (nunca existia antes —
+  cliente não tinha NENHUMA info de facção). Documentado na tabela de
+  mensagens (linha `ENTITY_SPAWN`).
+- Cliente: `client/remote_entity_handlers.py::_spawn_remote_mob()` passa
+  `faction=data.get("faction", ...)` pro `create_enemy()` que já roda ali
+  — reaproveita o componente `Faction` que `create_enemy()` já anexa
+  (nenhum campo novo em `RemoteEntityMeta`, evita duplicar o mesmo dado em
+  2 lugares). `_draw_mob_hp_bars()` resolve `get_relationship(Faction.
+  faction_id, PLAYER_FACTION)` e passa a cor pra `build_mob_hud()`.
+
+**Validado**: suíte completa 136/136. Script headless renderizando as 3
+disposições lado a lado (`build_mob_hud` com cada `DISPOSITION_HP_COLORS`)
+confirmando visualmente vermelho/amarelo-claro/verde; e resolução real de
+`get_relationship()` pras 3 facções de conteúdo existentes (Lobo=neutro,
+Zumbi=hostil, guardas_vila=amigável, essa última ainda sem uso em nenhuma
+zona real — só a tabela).
+
+**Não validado**: sessão manual em jogo real vendo as barras coloridas de
+verdade (Lobo amarelo-claro vs. resto vermelho).
 
 ---
 

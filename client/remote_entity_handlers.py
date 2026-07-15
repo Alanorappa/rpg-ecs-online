@@ -699,6 +699,12 @@ class RemoteEntityHandlers:
             race         = data.get("race", "Humanoide"),
             entity_class = data.get("entity_class", ""),
             level        = data.get("level", 1),
+            # Facção real do servidor (content/faction_data.py) — usada só
+            # pra colorir a barra de HP do nameplate por disposição
+            # (vermelho/amarelo claro/verde, ver _draw_mob_hp_bars). O
+            # componente Faction que create_enemy() já anexa ficava sempre
+            # no default (monstros_hostis) sem isso.
+            faction      = data.get("faction", "monstros_hostis"),
         )
         # Aplica cor do servidor
         server_color = data.get("color")
@@ -1197,7 +1203,19 @@ class RemoteEntityHandlers:
                     from ui.hud_bars import LEVEL_FONT_SIZE as _LFS_hb
                     self._mob_level_font = _make_pixel_hb2(_LFS_hb)
 
-                _hud_surf = _bmh_hb(ratio, _level_hb, self._mob_level_font)
+                # Cor da barra por disposição (hostil/neutro/amigavel) —
+                # Faction real do servidor foi anexada em _spawn_remote_mob
+                # via create_enemy(faction=...). Pedido do usuário
+                # 15/07/2026, depois de testar o Lobo neutro pela 1ª vez.
+                from engine.components import Faction as _FacHb
+                from content.faction_data import get_relationship as _getrel_hb, PLAYER_FACTION as _PF_hb
+                from ui.hud_bars import DISPOSITION_HP_COLORS as _DISPCOL_hb
+                _fac_hb = self.world.get_component(local_eid, _FacHb)
+                _tier_hb = (_getrel_hb(_fac_hb.faction_id, _PF_hb)
+                           if _fac_hb is not None else "hostil")
+                _hp_color_hb = _DISPCOL_hb.get(_tier_hb, _DISPCOL_hb["hostil"])
+
+                _hud_surf = _bmh_hb(ratio, _level_hb, self._mob_level_font, hp_color=_hp_color_hb)
                 _WL_hb.add_icon(pos.x, _world_y_top, _hud_surf,
                                 stack_key=local_eid, gap_before=_HGP_hb)
 

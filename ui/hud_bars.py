@@ -42,6 +42,19 @@ SCALE = 2
 # ── Cores ────────────────────────────────────────────────────────────────
 HP_COLOR = (0, 200, 60)      # mesma cor já usada na barra de HP antiga
 XP_COLOR = (190, 140, 230)   # roxo claro (pedido do usuário 11/07/2026)
+# Cor da barra de HP do mob por DISPOSIÇÃO — mesmos 3 tiers de
+# content/faction_data.py (hostil/neutro/amigavel), resolvidos contra
+# PLAYER_FACTION do ponto de vista de quem está olhando. Pedido do
+# usuário 15/07/2026, depois de testar hostil/neutro pela primeira vez
+# (Lobo neutro em map_1): "hostis a barra de HP é vermelha, neutros é
+# amarela clara, e NPCs amigáveis terão a barra verde" — "amigavel" reusa
+# o HP_COLOR verde de sempre (não é exclusivo de NPC: qualquer mob cuja
+# facção resolva amigavel usa a mesma cor, ver DISPOSITION_HP_COLORS).
+DISPOSITION_HP_COLORS = {
+    "hostil":   (200, 40, 40),
+    "neutro":   (235, 220, 110),
+    "amigavel": HP_COLOR,
+}
 # Mesma cor de cada recurso já usada no HUD lateral (client/hud_handlers.py)
 # — não inventa cor nova, só reaproveita (C_RED/C_ORANGE de client/colors.py).
 # Pedido do usuário 15/07/2026: raiva vira vermelha (era laranja, confundia
@@ -220,15 +233,18 @@ def build_player_hud(hp_ratio: float, xp_ratio: float, resource_ratio: float,
     return big
 
 
-def build_mob_hud(hp_ratio: float, level: int, level_font) -> "pygame.Surface":
+def build_mob_hud(hp_ratio: float, level: int, level_font,
+                  hp_color: tuple = HP_COLOR) -> "pygame.Surface":
     """Mesma ideia de build_player_hud, só com barra de HP (mobs não têm
     XP/recurso — pedido do usuário: "no caso dos mobs é a barra de hp e o
-    level somente")."""
+    level somente"). `hp_color` default mantém compatibilidade com quem
+    não resolve disposição (ex: boneco de treino) — caller com facção
+    disponível deve passar `DISPOSITION_HP_COLORS[tier]`."""
     _load()
     w, h = M_SIZE
     base = pygame.Surface((w, h), pygame.SRCALPHA)
     base.blit(_mob_art, (0, 0))
-    _fill_row(base, (M_HP_X0, M_HP_X1), M_HP_Y, hp_ratio, HP_COLOR)
+    _fill_row(base, (M_HP_X0, M_HP_X1), M_HP_Y, hp_ratio, hp_color)
 
     big = pygame.transform.scale(base, (w * SCALE, h * SCALE))
     lcx, lcy = _level_center_px(M_LEVEL_BOX)

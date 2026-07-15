@@ -1129,12 +1129,13 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
     def _build_mob_spawn_payload(self, eid: int, tm) -> dict:
         from engine.components import (CombatStats, AIControlled, Renderable, SpawnZoneOwner,
-                                SpawnZone, EntityIdentity, TrainingDummy as _TDpay)
+                                SpawnZone, EntityIdentity, TrainingDummy as _TDpay, Faction as _FacPay)
         cs    = self.world.get_component(eid, CombatStats)
         ai    = self.world.get_component(eid, AIControlled)
         ren   = self.world.get_component(eid, Renderable)
         szo   = self.world.get_component(eid, SpawnZoneOwner)
         ident = self.world.get_component(eid, EntityIdentity)
+        fac   = self.world.get_component(eid, _FacPay)
         race="Humanoide"; entity_class="Warrior"; tier="normal"; is_ranged=False; zone=None
         if szo:
             zone = self.world.get_component(szo.zone_entity_id, SpawnZone)
@@ -1163,6 +1164,13 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             "hp_max":       cs.max_hp     if cs else 50,
             "level":        mob_level,
             "effects":      [],
+            # Facção do mob (content/faction_data.py) — cliente resolve a
+            # disposição (hostil/neutro/amigavel) contra PLAYER_FACTION pra
+            # colorir a barra de HP do nameplate (vermelho/amarelo claro/
+            # verde). Pedido do usuário 15/07/2026. Default espelha o
+            # mesmo default de Faction/create_enemy (retrocompatível: mob
+            # sem componente — não deveria existir, mas nunca quebra).
+            "faction":      fac.faction_id if fac else "monstros_hostis",
         }
         # Nome próprio (ex: "Boneco de treino") — sem isso o cliente deriva o
         # nome exibido a partir da raça (create_enemy: mob_display_name = race),
