@@ -247,6 +247,16 @@ class SessionManager:
         except ValueError as e:
             await session.send(MsgType.ERROR, {"reason": str(e)})
             return
+        # Validação de payload na borda (item B4, PROBLEMAS_ARQUITETURA §11):
+        # campos núcleo ausentes/de tipo errado nunca chegam ao handler —
+        # ERROR de volta + log, em vez de bug silencioso via .get(default).
+        from shared.messages import validate_c2s
+        _verr = validate_c2s(msg_type, payload)
+        if _verr is not None:
+            log.warning(f"[Session] payload inválido de {session.username or session.session_id!r}: "
+                        f"{msg_type.value} → {_verr}")
+            await session.send(MsgType.ERROR, {"reason": f"invalid_payload:{_verr}"})
+            return
         handler = self._handlers.get(msg_type)
         if handler:
             try:

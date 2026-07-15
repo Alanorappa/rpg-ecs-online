@@ -4362,6 +4362,24 @@ documenta payloads em comentário — formalizar o que já está escrito) +
 validação na borda do servidor. Também prepara a migração JSON→MessagePack já
 planejada.
 
+**✅ PARCIALMENTE RESOLVIDO (15/07/2026) — validação runtime na borda.**
+`shared/messages.py::C2S_REQUIRED` (26 mensagens C→S: campos NÚCLEO +
+tipos) + `validate_c2s()`, chamado por `SessionManager.on_message` ANTES
+do dispatch: payload malformado → `ERROR{invalid_payload:...}` + warning
+no log, handler nunca roda. Schema PERMISSIVO de propósito (só campos que
+o handler assume; numérico aceita int|float; mensagem sem entrada = sem
+validação extra — compat por default). Mensagem nova: adicionar entrada
+junto (ideal, não obrigatório).
+
+Validado: 7 testes novos (`tests/test_protocol_validation.py` — unidade da
+função + integração na borda: MOVE malformado leva ERROR e não move; MOVE
+legítimo continua passando) + suíte inteira 117/117 (os testes de sessão
+exercitam todos os fluxos reais C→S — nada legítimo rejeitado).
+
+**Continua no plano:** TypedDicts formais por mensagem (documentação
+tipada, sem efeito runtime) + validação dos payloads S→C no cliente —
+ambos naturais de fazer na migração JSON→MessagePack.
+
 ### 🟡 B5 — Sem índice espacial (varreduras lineares por tick)
 
 `_entity_at_tile`, `_adjacent_creatures`, `_sessions_in_aoi`, coleta de

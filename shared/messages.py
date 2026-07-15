@@ -188,6 +188,68 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+# ── Validação de payload na borda C→S ────────────────────────────────────────
+# Item B4 da auditoria (PROBLEMAS_ARQUITETURA.md §11): payloads eram dicts
+# livres — typo/tipo errado virava bug silencioso dentro do handler
+# (`payload.get()` com default engole tudo). Este é o passo RUNTIME do plano
+# (schema formal TypedDict completo continua no plano; aqui é a proteção que
+# roda de verdade): campos que o handler ASSUME existirem/serem daquele tipo
+# são checados ANTES do dispatch (SessionManager.on_message) — mensagem
+# malformada leva ERROR de volta e nunca chega ao handler.
+#
+# Regras de projeto deste schema:
+# - PERMISSIVO de propósito: só os campos NÚCLEO de cada mensagem — campos
+#   opcionais NÃO entram (senão todo campo novo vira mensagem rejeitada).
+# - Numérico é sempre (int, float) — nunca rejeitar um int onde cabe float.
+#   bool passa como int (subclasse) — inofensivo, os handlers fazem int().
+# - Mensagem sem entrada aqui = sem validação extra (compat por default;
+#   adicionar a entrada JUNTO da mensagem nova é o ideal, não obrigatório).
+_NUM = (int, float)
+C2S_REQUIRED: dict = {
+    MsgType.LOGIN:              {"username": str, "password": str},
+    MsgType.REGISTER:           {"username": str, "password": str},
+    MsgType.SELECT_CHARACTER:   {"char_id": _NUM},
+    MsgType.CREATE_CHARACTER:   {"name": str, "class_id": str},
+    MsgType.MOVE:               {"tx": _NUM, "ty": _NUM},
+    MsgType.CAST_SKILL:         {"sid": str},
+    MsgType.CANCEL_CAST:        {"sid": str},
+    MsgType.CAST_DIR_UPDATE:    {"sid": str, "dir_x": _NUM, "dir_y": _NUM},
+    MsgType.PROJECTILE_HIT_CS:  {"spell_id": str, "target_id": _NUM},
+    MsgType.CONSUMABLE_USE:     {"item_name": str},
+    MsgType.GOLD_UPDATE:        {"gold": _NUM},
+    MsgType.INV_SYNC:           {"inventory": list},
+    MsgType.EQUIP_SYNC:         {"equipment": dict},
+    MsgType.TALENT_UPDATE:      {"allocated": dict},
+    MsgType.HOTBAR_UPDATE:      {"skills": list},
+    MsgType.BUY_REQUEST:        {"shop_id": str, "item_name": str},
+    MsgType.SELL_REQUEST:       {"item_name": str},
+    MsgType.QUEST_ACCEPT:       {"quest_id": str},
+    MsgType.QUEST_TURN_IN:      {"quest_id": str},
+    MsgType.CHAT_SEND:          {"text": str},
+    MsgType.TRADE_REQUEST:      {"target_eid": _NUM},
+    MsgType.TRADE_OFFER_ITEM:   {"inv_index": _NUM},
+    MsgType.TRADE_WITHDRAW_ITEM:{"offer_slot": _NUM},
+    MsgType.TRADE_SET_GOLD:     {"amount": _NUM},
+    MsgType.SAVE_STATE:         {},   # payload inteiro é dict validado a fundo no handler
+}
+
+
+def validate_c2s(msg_type: "MsgType", payload) -> "str | None":
+    """None = ok; senão string curta com o motivo (vai no ERROR pro cliente).
+    Só valida mensagens com entrada em C2S_REQUIRED — ver regras acima."""
+    schema = C2S_REQUIRED.get(msg_type)
+    if schema is None:
+        return None
+    if not isinstance(payload, dict):
+        return "payload_not_dict"
+    for field, ftype in schema.items():
+        if field not in payload:
+            return f"missing_field:{field}"
+        if not isinstance(payload[field], ftype):
+            return f"bad_type:{field}"
+    return None
+
+
 # ── Definição dos payloads ────────────────────────────────────────────────────
 #
 # Cada seção documenta os campos obrigatórios (*) e opcionais do payload.
