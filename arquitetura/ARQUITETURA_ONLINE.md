@@ -2717,6 +2717,14 @@ outros testes que compartilham o mesmo código de combate.
 **Não validado:** sessão manual em jogo real com um mob de fação neutra
 de verdade.
 
+**Conteúdo de teste (15/07/2026, a pedido do usuário)**: as 5 zonas de
+Lobo em `maps/map_1_entities.json` viraram `faction: "vida_selvagem"`
+(neutro com o player) — única mudança de balanceamento real desta rodada,
+feita explicitamente pra dar ao usuário algo pra testar ao vivo (todo o
+resto da Fase 2 preserva o comportamento anterior). Reversível a qualquer
+momento voltando pra `"monstros_hostis"`. Demais raças/zonas continuam
+hostis.
+
 ---
 
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
