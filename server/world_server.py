@@ -361,6 +361,21 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         print(f"[WorldServer] mapas carregados: {list(self._map_bundles.keys())}")
 
+        # Guarda AUTOMÁTICA contra "_svc apontando pro mapa errado" (item A3,
+        # PROBLEMAS_ARQUITETURA.md §11): resolver por-entidade — funções de
+        # módulo que recebem entity_id (is_tile_walkable) resolvem o bundle
+        # do mapa da PRÓPRIA entidade por chamada, sem depender de
+        # register_map_services_for() ter sido lembrado no entry point.
+        # find_path()/get_tilemap() (sem eid na assinatura) continuam
+        # cobertos só pela regra do register — ver CLAUDE.md.
+        from engine.world_systems import register_service_resolver
+
+        def _resolve_bundle_for_eid(eid: int):
+            _m = self.get_entity_map(eid)
+            return self._map_bundles.get(_m) if _m else None
+
+        register_service_resolver(_resolve_bundle_for_eid)
+
     def _load_map_for(self, map_file: str) -> "_MapBundle":
         """
         Carrega um mapa e inicializa os sistemas headless para ele.

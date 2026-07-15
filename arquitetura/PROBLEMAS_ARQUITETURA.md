@@ -4246,6 +4246,24 @@ que depende de disciplina.
 parâmetro (ou serviços por-World em vez de globais de módulo). Enquanto isso
 não acontece, a regra do CLAUDE.md é a única defesa.
 
+**✅ MITIGADO (15/07/2026) — resolver por-entidade.** Novo
+`world_systems.register_service_resolver(fn)`: o WorldServer instala (ao fim
+de `_load_all_maps`) um resolver `eid → bundle do mapa da entidade`
+(via `get_entity_map`/MapLocation). `is_tile_walkable()` de módulo — que já
+recebe `entity_id` como 1º argumento — resolve o bundle CERTO por chamada,
+automaticamente; `register_map_services_for()` deixa de ser ponto único de
+falha pra essa função. Cliente nunca instala resolver (mapa único, `_svc`
+como sempre). `find_path()`/`get_tilemap()` não têm eid na assinatura —
+pra essas a regra do register no entry point CONTINUA obrigatória
+(CLAUDE.md); a defesa automática cobre a função mais chamada pelos handlers
+compartilhados (Interceptar/knockback/walkability de dash).
+
+Validado: teste dirigido reproduzindo a classe de bug real — `_svc`
+deliberadamente apontado pro bundle da caverna (80×60) e
+`is_tile_walkable(player_de_map_1, 131, 374)`: True com resolver (valida
+contra map_1), False sem (fora dos limites da caverna = o bug antigo) —
++ suíte 92/92 verde.
+
 ### 🔴 A4 — Persistência com autoridade híbrida (inventário/talentos client-side)
 
 `_build_save_merge` decide campo a campo quem manda (server: pos/hp/quests/

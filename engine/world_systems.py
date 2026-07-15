@@ -59,6 +59,24 @@ from engine.stat_fns import add_modifier, remove_modifier, add_timed_modifier, e
 # Populado por GameEngine.register_services() após criar os sistemas.
 _svc: dict = {}
 
+# Resolver por-entidade (SÓ servidor, multi-mapa): callable(eid) -> objeto
+# com .tile_validation/.pathfinding do bundle do MAPA daquela entidade, ou
+# None. Guarda AUTOMÁTICA contra a classe de bug "_svc apontando pro último
+# mapa carregado" (Interceptar 'bloqueado' em terreno aberto, Tiro Repulsivo
+# stunando em parede fantasma — ver PROBLEMAS_ARQUITETURA.md §11 item A3):
+# funções de módulo que RECEBEM entity_id (is_tile_walkable) resolvem o
+# bundle certo por chamada, sem depender de ninguém lembrar de chamar
+# register_map_services_for() antes. find_path()/get_tilemap() não têm eid
+# na assinatura — pra essas a regra do register_map_services_for continua
+# obrigatória (CLAUDE.md). Cliente nunca instala resolver (mapa único).
+_svc_resolver = None
+
+
+def register_service_resolver(resolver) -> None:
+    """Instala o resolver por-entidade (WorldServer) — ver comentário acima."""
+    global _svc_resolver
+    _svc_resolver = resolver
+
 
 def register_services(combat=None, pathfinding=None, tile_validation=None) -> None:
     """Registra serviços que qualquer sistema pode chamar sem referência direta."""
@@ -91,6 +109,13 @@ def get_tilemap():
 def is_tile_walkable(entity_id: int, tx: int, ty: int,
                      from_tx=None, from_ty=None,
                      ignore_eid: int = -1) -> bool:
+    # Servidor multi-mapa: resolve o tile_validation do bundle do MAPA da
+    # PRÓPRIA entidade (guarda automática — ver _svc_resolver acima).
+    if _svc_resolver is not None:
+        _bundle = _svc_resolver(entity_id)
+        if _bundle is not None and getattr(_bundle, 'tile_validation', None) is not None:
+            return _bundle.tile_validation.is_tile_walkable(
+                entity_id, tx, ty, from_tx, from_ty, ignore_eid=ignore_eid)
     return _svc['tile_validation'].is_tile_walkable(entity_id, tx, ty, from_tx, from_ty,
                                                     ignore_eid=ignore_eid)
 
