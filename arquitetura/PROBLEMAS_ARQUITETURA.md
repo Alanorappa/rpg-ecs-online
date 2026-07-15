@@ -4355,6 +4355,21 @@ aguenta; 10x mobs/players não.
 projeto) — consultas viram O(1), custo de manutenção 1 remove+1 add por
 passo.
 
+**✅ REAVALIADO/MITIGADO (15/07/2026):** a auditoria superestimou o caso —
+o caminho MAIS quente (`is_tile_walkable`, chamado pelo pathfinding de
+todos os mobs) já era O(1) via `TileValidationSystem._occupied` (dict
+tile→eid reconstruído 1×/tick por bundle). O que era linear de verdade e
+foi convertido: `_entity_at_tile`/`_adjacent_creatures` do knockback
+(Tiro Repulsivo) varriam todos os mobs+players POR PASSO do empurrão
+(~15 varreduras/uso) — agora constroem um índice `tile → [eids]` UMA vez
+por knockback (snapshot seguro: nada além do próprio alvo move durante a
+resolução). Validado com teste dirigido de colisão (alvo + bloqueador
+atrás: alvo parado, ambos stunados, atirador nunca) + suíte 92/92.
+Restante linear (`_sessions_in_aoi` ~dezenas de sessões, `_select_target`
+N_mobs×N_players, coleta de enemy_tiles no cliente) é adequado na escala
+atual e prevista — o índice incremental global só se justifica se
+mobs/players crescerem ~10x; fica como plano, não pendência.
+
 ### 🟡 C1 — Auth: SHA-256 sem salt, hash é a senha
 
 Cliente manda SHA-256(senha) em texto pelo WebSocket (sem TLS); o servidor

@@ -1288,13 +1288,26 @@ class SpellCompletionMixin:
                 return rows[ty][tx].is_solid
             return True  # fora do mapa = sólido
 
+        # Índice de ocupação construído UMA VEZ por knockback — antes,
+        # _entity_at_tile/_adjacent_creatures varriam TODOS os mobs+players
+        # a cada chamada, e são chamadas por PASSO do empurrão (até ~15
+        # varreduras O(N) por Tiro Repulsivo). tile → [eids] (lista: dois
+        # corpos podem compartilhar tile durante animações). Snapshot é
+        # seguro aqui: nada move DENTRO da resolução do knockback (o loop
+        # abaixo só muda o current_tile do PRÓPRIO alvo, que nunca entra no
+        # índice). Item (9)/B5 da auditoria — PROBLEMAS_ARQUITETURA.md §11.
+        _occ_kb: dict = {}
+        for other_eid in list(self._mob_eids) + list(self._player_eids.values()):
+            if other_eid == target_id:
+                continue
+            o_tm = self.world.get_component(other_eid, TileMovement)
+            if o_tm:
+                _occ_kb.setdefault((o_tm.current_tile_x, o_tm.current_tile_y), []).append(other_eid)
+
         def _entity_at_tile(tx, ty, exclude_eid=None):
             """Outra criatura (mob ou player) ocupando o tile — exclui o próprio alvo."""
-            for other_eid in list(self._mob_eids) + list(self._player_eids.values()):
-                if other_eid == target_id or other_eid == exclude_eid:
-                    continue
-                o_tm = self.world.get_component(other_eid, TileMovement)
-                if o_tm and o_tm.current_tile_x == tx and o_tm.current_tile_y == ty:
+            for other_eid in _occ_kb.get((tx, ty), ()):
+                if other_eid != exclude_eid:
                     return other_eid
             return None
 
@@ -1302,13 +1315,13 @@ class SpellCompletionMixin:
             """Todas as criaturas a distância Chebyshev 1 de (tx, ty) — splash
             do stun no ponto de colisão, não só o eid que bloqueou o passo."""
             found = []
-            for other_eid in list(self._mob_eids) + list(self._player_eids.values()):
-                if other_eid in exclude_eids:
-                    continue
-                o_tm = self.world.get_component(other_eid, TileMovement)
-                if (o_tm and max(abs(o_tm.current_tile_x - tx), abs(o_tm.current_tile_y - ty)) <= 1
-                        and (o_tm.current_tile_x, o_tm.current_tile_y) != (tx, ty)):
-                    found.append(other_eid)
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    if dx == 0 and dy == 0:
+                        continue   # tile central excluído (mesma regra de antes)
+                    for other_eid in _occ_kb.get((tx + dx, ty + dy), ()):
+                        if other_eid not in exclude_eids:
+                            found.append(other_eid)
             return found
 
         # Alvo é um player conectado (PvP): AOI_UPDATE.moved não chega até ele
