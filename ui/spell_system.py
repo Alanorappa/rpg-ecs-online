@@ -99,17 +99,14 @@ def _apply_magic_damage(attacker_id: int, target_id: int, dmg: int, world: World
 # ---------------------------------------------------------------------------
 
 class ManaSystem(System):
-    """Regenera mana do jogador periodicamente.
+    """Timers de proc de fogo + indicador de Choque Térmico (nome histórico).
 
-    Online: NÃO prediz — só o servidor regenera mana (mesma fórmula, ver
+    Mana NÃO é regenerada aqui: só o servidor regenera (ver
     core_systems.BaseCombatStateSystem._tick_mana_regen), sincronizada via
-    STATS_UPDATE. Bug real corrigido: esta classe regenerava mana
-    localmente sem gate de self._net, e o servidor não tinha regen passivo
-    nenhum — o cliente ficava com mana cada vez mais alta que a real do
-    servidor (nunca corrigida, já que só ia ficando MAIOR, nunca menor o
-    suficiente pra um STATS_UPDATE de gasto sobrescrever o desvio), até uma
-    skill "Mana insuficiente" no servidor com o HUD mostrando mana de
-    sobra. Ver arquitetura/PROBLEMAS_ARQUITETURA.md.
+    STATS_UPDATE — bug real documentado em PROBLEMAS_ARQUITETURA.md (cliente
+    regenerava sozinho e divergia pra sempre). O branch offline de regen
+    local foi REMOVIDO junto do modo offline (15/07/2026, item A2 §11 —
+    offline vive só no master).
     """
 
     def __init__(self, world: World):
@@ -117,17 +114,10 @@ class ManaSystem(System):
         self._net = None  # injetado por game.py após _connect_online()
 
     def update(self, events=None, dt: float = 0) -> None:
-        from engine.core_systems import BaseCombatStateSystem as _BCSS
         for entity_id, char_stats, cs, _, combat_stats in self.world.get_entities_with(
                 CharacterStats, CombatState, PlayerControlled, CombatStats):
             if char_stats.max_mana <= 0:
                 continue
-            if not self._net:
-                mana_result = _BCSS._tick_mana_regen(cs, char_stats, combat_stats, dt)
-                if mana_result:
-                    # Sincroniza CombatStats.mana para que o próximo CAST_SKILL envie o valor correto
-                    combat_stats.mana = char_stats.mana
-
             # Decrementa janela de crits de fogo para Lapso Elemental
             if combat_stats.fire_crit_timer > 0:
                 combat_stats.fire_crit_timer -= dt

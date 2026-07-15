@@ -82,53 +82,35 @@ class QuestSystem(UIScaleMixin, System):
             QUEST_EVENTS.clear()
             return
 
-        if self._net:
-            # Online: servidor é o produtor autoritativo de progresso de quest.
-            # A maioria dos eventos (kill, use_skill, etc.) já chega no servidor
-            # via gatilhos server-side. Porém eventos disparados por sistemas
-            # PURAMENTE client-side (ShopSystem.open → "talk_to_npc") nunca
-            # chegam ao servidor. Para esses, encaminhamos via QUEST_ACCEPT
-            # com quest_id="" — o handler server-side aplica o evento de
-            # talk_to_npc e responde com QUEST_UPDATE se algo mudou.
-            # Todos os outros eventos são descartados (o servidor já os processa
-            # pelos próprios gatilhos).
-            while QUEST_EVENTS:
-                _evt, _peid, _data = QUEST_EVENTS.popleft()
-                if _evt == "talk_to_npc":
-                    _npc_name = _data.get("npc_name", "")
-                    if _npc_name:
-                        from shared.messages import MsgType as _MTtalk
-                        self._net.send(_MTtalk.QUEST_ACCEPT, {
-                            "quest_id": "",       # nenhuma quest pra aceitar —
-                            "npc_name": _npc_name,# só dispara talk_to_npc no servidor
-                        })
-            return
-
-        # Dispara reach_tile com posição atual do player a cada frame
-        self._fire_reach_tile(ql)
-
+        # Servidor é o produtor autoritativo de progresso de quest. A maioria
+        # dos eventos (kill, use_skill, etc.) já chega no servidor via
+        # gatilhos server-side. Porém eventos disparados por sistemas
+        # PURAMENTE client-side (ShopSystem.open → "talk_to_npc") nunca
+        # chegam ao servidor. Para esses, encaminhamos via QUEST_ACCEPT
+        # com quest_id="" — o handler server-side aplica o evento de
+        # talk_to_npc e responde com QUEST_UPDATE se algo mudou.
+        # Todos os outros eventos são descartados (o servidor já os processa
+        # pelos próprios gatilhos). O processamento LOCAL de eventos
+        # (quest_logic.apply_event/reach_tile/sync_collect) era do modo
+        # offline — removido deste branch (15/07/2026, item A2 §11).
         while QUEST_EVENTS:
-            event_type, _player_eid, data = QUEST_EVENTS.popleft()
-            if quest_logic.apply_event(ql, event_type, data):
-                self._hud_cache_key = None   # invalida cache HUD
-
-        # collect_item: sincroniza progresso com inventário real (cobre itens já na bag)
-        self._sync_collect_progress(ql)
+            _evt, _peid, _data = QUEST_EVENTS.popleft()
+            if _evt == "talk_to_npc" and self._net:
+                _npc_name = _data.get("npc_name", "")
+                if _npc_name:
+                    from shared.messages import MsgType as _MTtalk
+                    self._net.send(_MTtalk.QUEST_ACCEPT, {
+                        "quest_id": "",       # nenhuma quest pra aceitar —
+                        "npc_name": _npc_name,# só dispara talk_to_npc no servidor
+                    })
 
     def _process_talk_to_npc(self, npc_name: str) -> None:
-        """Processa imediatamente um evento talk_to_npc sem passar pela fila.
-        Chamado por QuestDialogSystem._open_dialog antes de calcular o estado do
-        diálogo. Só no caminho OFFLINE — online, o servidor processa o mesmo
-        evento dentro de _handle_quest_accept/_handle_quest_turn_in (ver
-        QuestDialogSystem.handle_events) usando o npc_name enviado no payload."""
-        if self._net:
-            return
-        from engine.components import QuestLog
-        ql = self.world.get_component(self.player_entity, QuestLog)
-        if ql is None:
-            return
-        if quest_logic.apply_event(ql, "talk_to_npc", {"npc_name": npc_name}):
-            self._hud_cache_key = None
+        """No-op mantido por compatibilidade de chamada
+        (QuestDialogSystem._open_dialog) — o processamento local era do modo
+        offline (removido, item A2 §11); online o servidor processa o mesmo
+        evento em _handle_quest_accept/_handle_quest_turn_in usando o
+        npc_name enviado no payload."""
+        return
 
     # ── API para QuestDialogSystem ───────────────────────────────────────────
 
@@ -538,16 +520,13 @@ class QuestDialogSystem(UIScaleMixin, System):
             elif self._dialog_state == "detail":
                 if self._accept_rect and self._accept_rect.collidepoint(mx, my):
                     qid = self._dialog_selected_qid
+                    # Server-autoritativo: aceite local era do modo offline,
+                    # removido deste branch (15/07/2026, item A2 §11).
                     if self._qs._net:
                         from shared.messages import MsgType as _MTqa
                         self._qs._net.send(_MTqa.QUEST_ACCEPT, {
                             "quest_id": qid, "npc_name": self._npc_name(self._dialog_npc_id),
                         })
-                    else:
-                        from engine.components import QuestLog
-                        ql = self.world.get_component(self.player_entity, QuestLog)
-                        if ql:
-                            self._qs._try_start(ql, qid)
                     self._close()
                     return
                 if self._decline_rect and self._decline_rect.collidepoint(mx, my):
@@ -559,21 +538,16 @@ class QuestDialogSystem(UIScaleMixin, System):
                     saved_npc = self._dialog_npc_id
                     qid = self._dialog_selected_qid
                     self._close()
+                    # Server-autoritativo: entrega local era do modo offline,
+                    # removida deste branch (15/07/2026, item A2 §11).
+                    # Reabertura de quests em cadeia depende da confirmação do
+                    # servidor (QUEST_UPDATE) — não reflete nesta mesma frame,
+                    # latência aceitável (1 round-trip).
                     if self._qs._net:
                         from shared.messages import MsgType as _MTqt
                         self._qs._net.send(_MTqt.QUEST_TURN_IN, {
                             "quest_id": qid, "npc_name": self._npc_name(saved_npc),
                         })
-                        # Online: reabertura de quests em cadeia depende da
-                        # confirmação do servidor (QUEST_UPDATE) — não reflete
-                        # nesta mesma frame, latência aceitável (1 round-trip).
-                    else:
-                        self._qs.turn_in(qid)
-                        # Re-abre se o NPC tiver mais quests (cadeia ou múltiplas)
-                        avail = self._get_available_quests(saved_npc)
-                        comp  = self._get_completable_quests(saved_npc)
-                        if avail or comp:
-                            self._open_dialog(saved_npc)
                     return
 
     # ── Marcador de estado de quest (fonte única) ────────────────────────────

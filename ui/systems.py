@@ -860,63 +860,25 @@ class PlayerInputSystem(System):
                     _ADBG_c_los.log_block(entity_id, target_id, "los_blocked")
                     return
 
-                # Online: flecha 100% server-driven — nasce em _apply_combat_result
+                # Flecha 100% server-driven — nasce em _apply_combat_result
                 # ao chegar o COMBAT_RESULT (source="auto"), igual Bola de Fogo nasce
-                # no is_completion. O desconto da aljava TAMBÉM só acontece lá agora
+                # no is_completion. O desconto da aljava TAMBÉM só acontece lá
                 # (mesmo evento que cria a flecha visual) — NUNCA aqui antecipado.
                 # Bug real (10/07/2026): este cooldown LOCAL não congela do mesmo
                 # jeito que o do servidor (server/combat_processor.py congela o
                 # tick INTEIRO enquanto bloqueado por LOS/alcance/perseguição; aqui
                 # só decrementa sem parar, então zera mais cedo sempre que há
                 # bloqueio) — o cliente "atirava" (descontava flecha) bem mais vezes
-                # que o servidor de verdade disparava (medido: 52 descontos locais
-                # vs 29 tiros reais do servidor no mesmo teste), causando flecha
-                # descontada sem projétil nenhum aparecer. Aqui só avançamos
+                # que o servidor de verdade disparava. Aqui só avançamos
                 # cooldown/pré-tensionamento locais (feel de UI); ver
                 # client/remote_entity_handlers.py::_apply_combat_result pro
-                # desconto real.
-                if self._net:
-                    _ADBG_c_los.log_fire_ok(entity_id)
-                    combat_stats.attack_cooldown_timer = combat_stats.get_attack_cooldown()
-                    combat_stats.arrow_pre_draw_ready  = True
-                    enter_combat(combat_state)
-                    return
-
-                from engine.components import PlayerProjectile as _PP
-                proj_id = self.world.create_entity()
-                self.world.add_component(proj_id, Position(
-                    x=position.x, y=position.y,
-                    prev_x=position.x, prev_y=position.y))
-                # Flechas Despadronizadas: 15% de proc → +50% dano
-                _proc_chance = getattr(combat_stats, "flechas_despadronizadas_chance", 0.0)
-                _is_proc     = _proc_chance > 0 and random.random() < _proc_chance
-                _dmg_mult    = 1.5 if _is_proc else 1.0
-                _arrow_color = (220, 130, 20) if _is_proc else (101, 67, 33)
-
-                self.world.add_component(proj_id, _PP(
-                    spell_id="arrow",
-                    attacker_id=entity_id,
-                    target_id=target_id,
-                    speed=700.0,
-                    dmg_weapon_pct=1.0,
-                    dmg_sp_coeff=0.0,
-                    color=_arrow_color,
-                    damage_type="physical",
-                    arrow_dmg_min=getattr(quiver, "damage_min", 0),
-                    arrow_dmg_max=getattr(quiver, "damage_max", 0),
-                    damage_multiplier=_dmg_mult,
-                ))
-                if _is_proc:
-                    from ui.floating_text import PROC as _PROC_FD
-                    _PROC_FD.add("Despadronizada!", (220, 130, 20))
-                quiver.arrow_count -= 1
+                # desconto real. O bloco offline (criava PlayerProjectile local +
+                # descontava aljava + som) foi REMOVIDO junto do modo offline
+                # (15/07/2026, item A2 §11 — offline vive só no master).
+                _ADBG_c_los.log_fire_ok(entity_id)
                 combat_stats.attack_cooldown_timer = combat_stats.get_attack_cooldown()
-                combat_stats.arrow_pre_draw_ready  = True   # pronto para o próximo ciclo
+                combat_stats.arrow_pre_draw_ready  = True
                 enter_combat(combat_state)
-                # Disparo: draw (35%) + release (sempre)
-                if random.random() < 0.35:
-                    SOUNDS.play_random(["arrow_draw_1", "arrow_draw_2"], channel_group=(8, 9))
-                SOUNDS.play_random(["arrow_release_1", "arrow_release_2"], channel_group=(10, 11))
         elif combat_state.is_pursuing and auto_move and not tile_movement.is_moving:
             # Persegue o mob apenas quando is_pursuing=True — evita sobrescrever
             # ground_target (clique de chão com is_pursuing=False).

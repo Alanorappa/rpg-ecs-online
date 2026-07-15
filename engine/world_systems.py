@@ -1137,11 +1137,11 @@ class CombatStateSystem(_BaseCombatStateSystem, System):
                 char_stats = self.world.get_component(eid, CharacterStats)
                 tm         = self.world.get_component(eid, TileMovement)
 
-                # Online: rage é 100% server-autoritativa (decay incluso) —
-                # chega via STATS_UPDATE. Decair aqui também dobraria o decay
+                # Rage é 100% server-autoritativa (decay incluso) — chega via
+                # STATS_UPDATE. O decay local era do modo offline, removido
+                # deste branch (15/07/2026, item A2 §11 — decisão do usuário:
+                # offline vive só no master). Decair aqui dobraria o decay
                 # entre um push e outro do servidor.
-                if self._net is None:
-                    self._tick_rage_decay(cs, char_stats, dt)
 
                 if combat_stats:
                     self._tick_concentration_free_timer(combat_stats, dt)

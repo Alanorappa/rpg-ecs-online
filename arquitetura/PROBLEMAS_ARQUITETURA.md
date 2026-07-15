@@ -4497,13 +4497,36 @@ crafting — terminar o padrão). Baixo risco, alto ganho de navegação.
 **Plano dos itens grandes (cada um = sessão dedicada; ordem recomendada):**
 
 1. **(2/A2) Matar o dual-mode `if self._net`** — o de maior retorno.
-   Decisão prévia necessária (do usuário): manter modo offline neste branch
-   ou não? Se NÃO (recomendado — offline já vive no master), a sessão vira
-   remoção mecânica de ~metade dos 65 branches + simplificação dos handlers
-   de spell (só o caminho visual sobra no cliente). Se SIM, implementar
-   interface de autoridade (LocalAuthority/RemoteAuthority) e migrar
-   mecânica por mecânica. Risco: alto (toca todo o gameplay do cliente).
-   Pré-requisito já pronto: suíte verde + testes de cliente (12/13).
+   ~~Decisão prévia necessária~~ **DECIDIDO pelo usuário (15/07/2026):
+   REMOVER o modo offline deste branch** (era só referência de
+   implementação; offline vive no master).
+
+   **FASE 1 FEITA (15/07/2026):** constatado que a ENTRADA já era
+   online-only (main.py sempre passa por login screen → NetworkClient;
+   não existe --offline). Podados os branches offline que geraram bugs
+   reais: rage decay local (`world_systems.CombatStateSystem`), regen
+   local de mana (`spell_system.ManaSystem`, virou só timers de proc),
+   criação local de flecha do auto-attack (`systems.PlayerInputSystem::
+   _process_archer_combat`), aceite/entrega/progresso local de quest
+   (`quest_system`: dialog + fila de eventos + `_process_talk_to_npc`
+   virou no-op de compatibilidade). Suíte 109/109 verde.
+
+   **FASE 2 (pendente — sessão dedicada):**
+   - `game.py`: save LOCAL em `_autosave` (save_game slot 0 roda até
+     online, redundante com o DB do servidor) + `load_game`/`has_save`
+     no boot — estudar interação com WORLD_STATE antes de remover;
+     `auto_start_quests()` no boot (client muta QuestLog antes do sync —
+     conferir se o servidor cobre auto_start e remover).
+   - `ui/spell_system.py`: dano local em `PlayerProjectileSystem._on_hit`
+     (caminho offline via deal_damage), caminho não-visual_only do
+     `SpellCastSystem` (dedução local de recurso), handlers `_apply_*`
+     de dano local — melhor junto do item 6 (unificação).
+   - `ui/systems.py` PlayerInputSystem/LootSystem/DeathRespawnSystem:
+     demais branches offline.
+   - **CUIDADO PERMANENTE:** em `SkillSystem`/`skill_handlers.py`, o
+     branch "offline" É O CÓDIGO DO SERVIDOR (skill_processor reusa com
+     `_net=None`) — intocável até o item 6/7 mover os handlers pra
+     registry headless.
 
 2. **(6/B2) Unificar handlers de spell cliente/servidor** — segundo maior
    retorno em bugs evitados. Um handler headless por skill (padrão
