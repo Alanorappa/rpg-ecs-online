@@ -147,7 +147,6 @@ CLASS_MELEE_OVERRIDES: dict[str, dict] = {
         "_default_attack_interval":    2.2,
         "base_physical_damage":        2,
         "base_physical_damage_max":    4,
-        "can_kite":                    True,
         "is_ranged":                   True,
         # concentration_regen_idle/moving NÃO ficam aqui — são gerenciados por
         # cs_flags em talent_data.py (reset=5.0 garante o valor base).

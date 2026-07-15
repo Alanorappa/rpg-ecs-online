@@ -543,15 +543,17 @@ class PlayerInputSystem(System):
                     tgt_y += 1
 
                 if tgt_x != cur_x or tgt_y != cur_y:
-                    # Teclado cancela auto-move e perseguição — Space re-engaja — B5
+                    # Teclado cancela auto-move (path/ground-target) mas NUNCA a
+                    # perseguição/auto-attack — só deselecionar o alvo (TAB,
+                    # clique vazio, alvo morto/fora de visão) para de fato parar
+                    # de atacar. Antes só o arqueiro (ex-flag can_kite) tinha essa
+                    # garantia; generalizado pra todas as classes (pedido do
+                    # usuário 15/07/2026: guerreiro perdia o auto-attack ao se
+                    # mover, tinha que re-clicar o alvo pra retomar).
                     if auto_move:
                         auto_move.active = False
                         auto_move.path.clear()
                         auto_move.ground_target = None
-                    # Arqueiro (can_kite): mover não cancela perseguição — pode atirar em movimento
-                    _can_kite_kbm = combat_stats and getattr(combat_stats, "can_kite", False)
-                    if combat_state and not _can_kite_kbm:
-                        combat_state.is_pursuing = False
                     if _is_ghost or is_tile_walkable(
                             entity_id, tgt_x, tgt_y, cur_x, cur_y):
                         self._start_tile_movement(position, tile_movement, tgt_x, tgt_y)

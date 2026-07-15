@@ -2462,9 +2462,48 @@ de um retângulo opaco simulando um nameplate no mesmo ponto de tela.
 Payload `char_data` do servidor confirmado (via grep) sempre incluindo
 `name` antes de virar `LOGIN_OK.char`.
 
-**Não validado:** sessão manual em jogo real (nome do próprio personagem
-no nameplate, olho no gap das barras em combate de verdade, floating text
-por cima do nameplate com stack de números durante DPS real).
+**Não validado (na época):** sessão manual em jogo real — confirmado
+posteriormente pelo usuário ("Funcionou perfeitamente").
+
+---
+
+### 32. Mover-se cancelava o auto-attack de guerreiro/mago — generaliza a exceção do arqueiro (can_kite) pra todas as classes (15/07/2026)
+
+Bug reportado pelo usuário: atacando um mob e movendo o personagem
+(teclado), o guerreiro parava de atacar — precisava re-clicar/re-selecionar
+o alvo pra retomar, mesmo com o mob ainda perseguindo/alcançando o player.
+Comportamento esperado: mover NUNCA desliga o auto-attack; só deselecionar
+o alvo (TAB, clique vazio, alvo morto/fora de visão) deve parar.
+
+Causa raiz: `PlayerInputSystem.update()` (`ui/systems.py`, bloco de
+movimento por teclado) setava `combat_state.is_pursuing = False`
+incondicionalmente a cada passo de movimento manual — EXCETO se
+`combat_stats.can_kite` fosse `True`, uma flag que só o arqueiro tinha
+(`CLASS_MELEE_OVERRIDES["arqueiro"]`, stats_system.py), criada
+originalmente pra permitir "kitar" (atirar enquanto anda). Guerreiro e
+mago nunca tiveram essa flag, então todo passo de movimento os tirava do
+modo perseguição — o mesmo bug que o arqueiro já teve e já tinha sido
+corrigido, só que a correção nunca foi generalizada pras outras classes.
+
+Fix: removida a checagem `can_kite` inteira — `is_pursuing` nunca mais é
+setado como `False` por movimento de teclado, pra nenhuma classe (só
+`auto_move`/path de clique-de-chão é cancelado, que é o comportamento
+correto de "teclado assume controle manual"). Como isso deixa `can_kite`
+sem nenhum consumidor (confirmado via grep — só existia essa 1 leitura),
+removida também a flag em si: `CombatStats.can_kite` (`engine/
+components.py`) e a entrada `"can_kite": True` em `CLASS_MELEE_OVERRIDES`
+(`engine/stats_system.py`).
+
+Sem mudança de protocolo — é lógica 100% client-local de input
+(`PlayerInputSystem` só processa a entidade com `PlayerControlled`); o
+servidor já era agnóstico a isso (`combat_processor.py::
+_process_player_attacks` só olha `CombatState.target_entity_id` +
+`is_pursuing` + range, nunca cancela por movimento).
+
+**Validado:** suíte completa sem regressão (118/118); `py_compile`. Não
+validado em sessão manual de jogo real com mob de verdade (mesma limitação
+de sempre pra fixes de combate — pedido explícito de validação visual do
+usuário fica pendente).
 
 ---
 

@@ -175,7 +175,6 @@ class CombatStats:
 
         # Flags de comportamento de combate — setadas por CLASS_MELEE_OVERRIDES em stats_system.
         # Sistemas lêem esses flags sem precisar conhecer class_id.
-        self.can_kite: bool = False  # True = pode mover+atacar (arqueiro). Movimento não cancela perseguição.
         self.arrow_pre_draw_ready: bool = True  # True = pode tocar som de pré-tensionamento no próximo ciclo
         # Taxa de regen de Concentração (pontos/segundo). Lida pelo CombatStateSystem.
         self.concentration_regen_idle:   float = 0.0  # parado
