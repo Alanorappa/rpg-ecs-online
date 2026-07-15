@@ -4259,6 +4259,42 @@ modificado, mesmo com `_reconstruct_item` validando contra catálogo.
 pede mutação, servidor aplica e ecoa). Talents idem (budget já é validado —
 falta o conteúdo da árvore). Eliminaria `last_client_payload` inteiro.
 
+**✅ MITIGADO (15/07/2026) — sanitização na borda de persistência.** A
+inversão completa do protocolo (cliente pede mutação, servidor aplica)
+continua como plano; o que foi FECHADO agora é o vetor de save-forging:
+
+- `WorldServer.sanitize_inventory_payload()` (novo): round-trip de cada
+  item do payload pelo catálogo autoritativo (`_reconstruct_item` →
+  `_item_data_from_obj`) — o que persiste é o item do CATÁLOGO (stats/
+  modifiers/valor reais) + bookkeeping clampado; item de nome fora dos 3
+  catálogos (loot/loja/forja) é DESCARTADO, nunca salvo.
+- Ligado nas DUAS bordas onde inventário do cliente entra em persistência:
+  `_handle_save_state` (antes de cachear em `last_client_payload`) e
+  `_handle_inventory_update`/INV_SYNC (cache + ECS agora recebem a versão
+  sanitizada).
+- `_reconstruct_item._apply_client_bookkeeping`: cliente NÃO sobrescreve
+  mais `max_arrows`/`max_stack` (deixava forjar capacidade — aljava de
+  999999 flechas); `arrow_count`/`stack` agora são clampados contra a
+  capacidade do CATÁLOGO. Nenhuma mecânica legítima muda capacidade em
+  runtime (única mutação real: fallback legado `max_arrows==0→100`).
+- Fix de quebra descoberto no caminho: `_build_item_caches` só cobria
+  loot+loja — item FORJADO (crafting) ficava fora do `_item_value_cache`,
+  então `process_shop_sell` vendia item craftado pelo branch "desconhecido"
+  (client_value com teto 500, errado/manipulável) e o sanitizador novo
+  descartaria item craftado legítimo. Cache agora cobre os 3 catálogos.
+
+Validado: teste headless (item legítimo de CADA catálogo sobrevive com
+stats do catálogo; item forjado com modifiers/value absurdos descartado;
+stack estourado clampado; entrada não-dict ignorada; None/não-lista →
+None) + suíte completa 92/92 verde.
+
+Talentos já eram validados na borda (`validate_talent_allocation` em
+`_handle_save_state`) — sem mudança.
+
+**Não validado:** sessão manual online (lootar/comprar/forjar itens,
+deslogar, relogar e conferir que a bag volta idêntica — em especial itens
+CRAFTADOS, que dependem do fix do cache).
+
 ### 🟡 B1 — Orquestração de frame/tick manual e gigante
 
 `game.py::run()` (~800 linhas) e `WorldServer._tick()` (~600 linhas) chamam

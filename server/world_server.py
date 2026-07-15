@@ -1533,6 +1533,28 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 self._shop_item_cache[_sid] = _idx
         except ImportError:
             pass
+
+        # crafting_data.RECIPES → _item_value_cache — SEM isso, todo item
+        # FORJADO (Espada Afiada etc.) ficava fora do cache: process_shop_sell
+        # caía no branch "desconhecido → client_value com teto de 500" (valor
+        # de venda errado/manipulável) e sanitize_inventory_payload (item A4,
+        # seção 11) descartaria item craftado legítimo como se fosse forjado
+        # por cliente malicioso. _reconstruct_item sempre cobriu os 3
+        # catálogos — o cache é que tinha ficado só com 2.
+        try:
+            from content.crafting_data import RECIPES
+            for _rec in RECIPES.values():
+                _f = _rec.get("result_factory")
+                if callable(_f):
+                    try:
+                        _o = _f()
+                        _n = getattr(_o, "name", None)
+                        if _n and _n not in self._item_value_cache:
+                            self._item_value_cache[_n] = int(getattr(_o, "value", 0))
+                    except Exception:
+                        pass
+        except ImportError:
+            pass
         print(f"[WorldServer] caches: {len(self._item_value_cache)} itens, "
               f"{sum(len(v) for v in self._shop_item_cache.values())} entradas de loja")
 
@@ -1571,18 +1593,22 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         def _apply_client_bookkeeping(candidate):
             """Campos que o cliente PODE reportar com segurança — nunca dano/
             stat, só estado descartável (contagem de flecha equipada, stack
-            do slot). Sobrescrever esses não dá vantagem nenhuma a um
-            cliente malicioso."""
+            do slot), e sempre CLAMPADO contra a capacidade do CATÁLOGO
+            (candidate.max_arrows/max_stack, vindos da factory). Antes o
+            cliente também sobrescrevia max_arrows/max_stack — deixava
+            forjar capacidade (aljava de 999999 flechas, stack ilimitado)
+            mesmo com o item base validado. Nenhuma mecânica legítima muda
+            capacidade em runtime (única mutação real é o fallback legado
+            max_arrows==0→100 em _server_recarregar). Ver
+            PROBLEMAS_ARQUITETURA.md seção 11 item A4."""
             if "arrow_count" in d:
-                candidate.arrow_count = int(d["arrow_count"])
-            if "max_arrows" in d:
-                candidate.max_arrows = int(d["max_arrows"])
+                _cap_ar = candidate.max_arrows if candidate.max_arrows > 0 else 100
+                candidate.arrow_count = max(0, min(int(d["arrow_count"]), _cap_ar))
             if "subtype" in d:
-                candidate.subtype = d["subtype"]
+                candidate.subtype = str(d["subtype"])[:40]
             if "stack" in d:
-                candidate.stack = int(d["stack"])
-            if "max_stack" in d:
-                candidate.max_stack = int(d["max_stack"])
+                _cap_st = max(1, candidate.max_stack)
+                candidate.stack = max(1, min(int(d["stack"]), _cap_st))
             return candidate
 
         # 1) Catálogo de loot
@@ -1661,6 +1687,43 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             item = self._reconstruct_item(item_d)
             if item:
                 inv.items.append(item)
+
+    def sanitize_inventory_payload(self, inventory_list) -> "list | None":
+        """Round-trip de CADA item do payload pelo catálogo autoritativo
+        (_reconstruct_item → _item_data_from_obj) antes de qualquer uso em
+        persistência — o que sobrevive é o item do CATÁLOGO (stats/
+        modifiers/valor reais) + bookkeeping clampado (stack/arrow_count),
+        nunca o dict cru do cliente.
+
+        Fecha o vetor de save-forging do item A4 (PROBLEMAS_ARQUITETURA.md
+        seção 11): antes, SAVE_STATE/INV_SYNC cacheavam o payload cru em
+        session.last_client_payload e _build_save_merge persistia
+        `client_p["inventory"]` direto no banco — um cliente modificado
+        gravava item com modifiers/valor inventados que voltavam como itens
+        reais no próximo login (o load valida via _reconstruct_item, mas o
+        fallback de nome desconhecido ainda preservava value/consumable
+        arbitrários). Item de nome desconhecido é DESCARTADO aqui (todo
+        item legítimo vem de loot/loja/forja — os 3 catálogos cobertos).
+
+        None se o payload nem é uma lista (caller trata como "sem dado")."""
+        if not isinstance(inventory_list, list):
+            return None
+        sanitized = []
+        for item_d in inventory_list:
+            if not isinstance(item_d, dict):
+                continue
+            obj = self._reconstruct_item(item_d)
+            # Descarta itens fora de QUALQUER catálogo: _reconstruct_item
+            # devolve um fallback "inerte" pra eles (compat de render), mas
+            # persistir isso eterniza lixo forjado no banco. Detecção: o
+            # fallback é o único caminho que preserva o item_type cru do
+            # payload sem match de nome — re-checa contra o catálogo.
+            if obj is None or self._lookup_item_value(getattr(obj, "name", "")) is None:
+                continue
+            data = self._item_data_from_obj(obj)
+            if data:
+                sanitized.append(data)
+        return sanitized
 
     def sync_player_inventory(self, session_id: str, inventory_list: list) -> None:
         """Reconstrói Inventory do jogador a partir do payload INV_SYNC.

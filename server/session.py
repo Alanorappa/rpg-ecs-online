@@ -571,6 +571,15 @@ class SessionManager:
                 payload["talents"] = _checked_tal
             else:
                 payload.pop("talents", None)
+        # Sanitiza o inventário na MESMA borda (item A4, PROBLEMAS_ARQUITETURA
+        # seção 11): cada item round-trip pelo catálogo autoritativo — o que
+        # persiste é o item do catálogo + bookkeeping clampado, nunca o dict
+        # cru do cliente. Item de nome desconhecido (forjado) é descartado.
+        _san_inv = self.world_server.sanitize_inventory_payload(payload.get("inventory"))
+        if _san_inv is not None:
+            payload["inventory"] = _san_inv
+        else:
+            payload.pop("inventory", None)
         session.last_client_payload = payload   # cache para o save no disconnect
         # Inventário foi salvo — zera contador de compras pendentes
         self.world_server.confirm_inventory_save(session.session_id)
@@ -705,11 +714,14 @@ class SessionManager:
         """Atualiza inventário do servidor quando item é coletado (loot, etc.)."""
         if not session.authenticated:
             return
-        inventory = payload.get("inventory")
-        if not isinstance(inventory, list):
+        inventory = self.world_server.sanitize_inventory_payload(payload.get("inventory"))
+        if inventory is None:
             return
         if session.last_client_payload is None:
             session.last_client_payload = {}
+        # Cacheia a versão SANITIZADA (round-trip pelo catálogo, item A4 —
+        # PROBLEMAS_ARQUITETURA seção 11), nunca o payload cru — este cache
+        # alimenta _build_save_merge no save/disconnect.
         session.last_client_payload["inventory"] = inventory
         # Reconstrói a cópia local (Inventory ECS) para que handlers de skill
         # (Recarregar, Tiro Múltiplo, etc.) validem munição com dados reais —
