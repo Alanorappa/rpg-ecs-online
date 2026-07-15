@@ -46,8 +46,14 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-# ── Ative aqui ───────────────────────────────────────────────────────────────
-DBG_ENABLED: bool = False  # dev only — NUNCA em build de distribuição
+# ── Ativação por env var (nunca constante no código) ─────────────────────────
+# `set RPG_DEBUG_ARCHER=1` antes de rodar client/servidor. Antes era uma
+# constante editada à mão — DBG_ENABLED=True esquecido ligado já foi parar em
+# sessão de teste real (14/07/2026, degradando performance sem ninguém saber
+# por quê). Env var nunca entra em commit/build por acidente. Ver
+# PROBLEMAS_ARQUITETURA.md seção 11 item D3.
+import os as _os
+DBG_ENABLED: bool = _os.environ.get("RPG_DEBUG_ARCHER", "") not in ("", "0")
 # ─────────────────────────────────────────────────────────────────────────────
 
 _LOG_DIR = Path(__file__).parent / "logs"

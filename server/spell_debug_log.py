@@ -9,7 +9,9 @@ import logging
 import os
 import datetime
 
-SPELL_DEBUG = False   # True só em dev — NUNCA em build de distribuição
+# Ativação por env var: `set RPG_DEBUG_SPELLS=1` (nunca constante no código —
+# ver debug/archer_debug.py, item D3 da seção 11 de PROBLEMAS_ARQUITETURA.md).
+SPELL_DEBUG = os.environ.get("RPG_DEBUG_SPELLS", "") not in ("", "0")
 
 _log_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
 os.makedirs(_log_dir, exist_ok=True)

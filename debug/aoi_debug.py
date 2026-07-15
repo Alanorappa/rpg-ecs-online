@@ -22,8 +22,12 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-# ── Ative aqui ───────────────────────────────────────────────────────────────
-DBG_ENABLED: bool = False   # <<< mude para True para gravar o log (dev only — NUNCA em build de distribuição)
+# ── Ativação por env var (nunca constante no código) ─────────────────────────
+# `set RPG_DEBUG_AOI=1` antes de rodar. Ver debug/archer_debug.py pro porquê
+# (flag esquecida ligada degradou sessão de teste real — item D3, seção 11 de
+# PROBLEMAS_ARQUITETURA.md).
+import os as _os
+DBG_ENABLED: bool = _os.environ.get("RPG_DEBUG_AOI", "") not in ("", "0")
 # ─────────────────────────────────────────────────────────────────────────────
 
 _LOG_DIR  = Path(__file__).parent / "logs"

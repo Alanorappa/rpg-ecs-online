@@ -33,8 +33,10 @@ import os
 import time
 from pathlib import Path
 
-# ── Ative aqui ───────────────────────────────────────────────────────────────
-DBG_ENABLED: bool = False   # <<< mude para True para gravar o log (dev only — NUNCA em build de distribuição)
+# ── Ativação por env var (nunca constante no código) ─────────────────────────
+# `set RPG_DEBUG_MOB_COMBAT=1` antes de rodar. Ver debug/archer_debug.py pro
+# porquê (item D3, seção 11 de PROBLEMAS_ARQUITETURA.md).
+DBG_ENABLED: bool = os.environ.get("RPG_DEBUG_MOB_COMBAT", "") not in ("", "0")
 # ─────────────────────────────────────────────────────────────────────────────
 
 _LOG_DIR  = Path(__file__).parent / "logs"
