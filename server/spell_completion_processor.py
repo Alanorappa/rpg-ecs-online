@@ -736,7 +736,8 @@ class SpellCompletionMixin:
             enter_combat(target_state)
 
         _ai = self.world.get_component(target_id, AIControlled)
-        if _ai and _ai.state == "IDLE":
+        from engine.faction_system import can_engage as _can_engage_magic
+        if _ai and _ai.state == "IDLE" and _can_engage_magic(self.world, attacker_id, target_id):
             _ai.state             = "AGGRO_DELAY"
             _ai.aggro_delay       = 0.5   # mesmo comportamento do range aggro, mas mais curto
             _ai.aggroed_by_damage = True
@@ -1167,8 +1168,9 @@ class SpellCompletionMixin:
             enter_combat(target_cst)
 
         from engine.components import AIControlled as _AIC2
+        from engine.faction_system import can_engage as _can_engage_ranged
         _ai = self.world.get_component(target_id, _AIC2)
-        if _ai and _ai.state == "IDLE":
+        if _ai and _ai.state == "IDLE" and _can_engage_ranged(self.world, player_eid, target_id):
             _ai.state              = "CHASING"
             _ai.aggroed_by_damage  = True
             _ai.target_eid         = player_eid

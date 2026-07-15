@@ -1134,13 +1134,26 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         return result
 
     def set_player_target(self, session_id: str, target_eid: int) -> None:
-        """Define o alvo de combate do jogador. target_eid=-1 para parar."""
+        """Define o alvo de combate do jogador. target_eid=-1 para parar.
+
+        Recusa alvos de facção "amigavel" (Sistema de Facções) — nem
+        entra em combate: sem isso, `_process_player_attacks` ficava
+        tentando atacar em loop (sempre bloqueado por `apply_damage_core`,
+        dano sempre 0) e o alvo era arrastado pro estado de "combate" só
+        por ter um `target_entity_id` setado contra ele (aggro visual
+        incorreto). Pedido do usuário 15/07/2026, depois de tentar atacar
+        o "Guarda Real" de teste."""
         from engine.components import CombatState
         eid = self._player_eids.get(session_id)
         if eid is None:
             return
         cs = self.world.get_component(eid, CombatState)
         if cs:
+            if target_eid != -1:
+                from engine.faction_system import can_engage
+                if not can_engage(self.world, eid, target_eid):
+                    cs.target_entity_id = -1
+                    return
             cs.target_entity_id = target_eid
 
     def get_entity_spawn_data(self, eid: int) -> dict | None:

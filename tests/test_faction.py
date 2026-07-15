@@ -303,6 +303,50 @@ class TestCombatNpcArchetype(unittest.TestCase):
         self.assertLess(bandit_cs.current_hp, hp_before,
                         "dano entre facções hostis não deveria ser bloqueado")
 
+    def test_set_player_target_recusa_alvo_amigavel(self):
+        """Regressão real relatada pelo usuário 15/07/2026: atacar o
+        "Guarda Real" de teste entrava em combate (golpes "erravam" em
+        loop) e o guarda passava a perseguir o player. Causa raiz: só o
+        dano final era bloqueado (apply_damage_core) — nada impedia o
+        combate de sequer começar. Fix: set_player_target() recusa o
+        alvo na origem."""
+        from engine.entity_factory import create_combat_npc
+        from engine.components import CombatState
+        guard = create_combat_npc(self.ws.world, 131, 374, faction="guardas_vila")
+        self.ws.world.add_component(guard, CombatState())
+
+        self.ws.set_player_target("s1", guard)
+
+        cst = self.ws.world.get_component(self.peid, CombatState)
+        self.assertEqual(cst.target_entity_id, -1,
+                         "set_player_target não deveria aceitar alvo amigavel")
+
+    def test_auto_attack_completo_nao_faz_guarda_amigavel_perseguir(self):
+        """Reproduz o bug relatado ponta a ponta: seta o alvo (mesmo
+        caminho de AUTO_ATTACK) e roda o loop real de
+        _process_player_attacks várias vezes — confirma que o guarda
+        NUNCA sai de IDLE (não persegue) e nunca perde HP."""
+        from engine.entity_factory import create_combat_npc
+        from engine.components import CombatState, CombatStats, AIControlled
+        guard = create_combat_npc(self.ws.world, 131, 374, faction="guardas_vila")
+        self.ws.world.add_component(guard, CombatState())
+        guard_cs = self.ws.world.get_component(guard, CombatStats)
+        guard_ai = self.ws.world.get_component(guard, AIControlled)
+        hp_before = guard_cs.current_hp
+
+        self.ws.set_player_target("s1", guard)
+        for _ in range(10):
+            self.ws._attack_timers["s1"] = 0.0
+            snap = {guard: guard_cs.current_hp}
+            self.ws._process_player_attacks(0.05, snap)
+
+        self.assertEqual(guard_ai.state, "IDLE",
+                         "guarda amigavel não deveria sair de IDLE (perseguir o player)")
+        self.assertEqual(guard_cs.current_hp, hp_before)
+        cst = self.ws.world.get_component(self.peid, CombatState)
+        self.assertEqual(cst.target_entity_id, -1,
+                         "alvo amigavel deveria ser limpo, não ficar preso em loop de ataque")
+
 
 if __name__ == "__main__":
     unittest.main()

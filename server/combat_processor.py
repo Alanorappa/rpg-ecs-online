@@ -59,6 +59,14 @@ class CombatProcessorMixin:
                 cs.target_entity_id = -1
                 continue
 
+            # Facção "amigavel" nunca é alvo de auto-attack — rede de segurança
+            # além do gate em set_player_target() (já recusa o alvo na origem),
+            # cobre qualquer forma de um target_entity_id amigavel chegar aqui.
+            from engine.faction_system import can_engage as _can_engage_paa
+            if not _can_engage_paa(self.world, player_eid, target_eid):
+                cs.target_entity_id = -1
+                continue
+
             # Valida range
             player_tm = self.world.get_component(player_eid, TileMovement)
             target_tm = self.world.get_component(target_eid, TileMovement)

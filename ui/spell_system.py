@@ -84,7 +84,8 @@ def _apply_magic_damage(attacker_id: int, target_id: int, dmg: int, world: World
         enter_combat(attacker_cs)
     # Aggro por dano mágico — usa AGGRO_DELAY (alinhado com servidor)
     _ai = world.get_component(target_id, AIControlled)
-    if _ai and _ai.state == "IDLE":
+    from engine.faction_system import can_engage as _can_engage_magic_local
+    if _ai and _ai.state == "IDLE" and _can_engage_magic_local(world, attacker_id, target_id):
         _ms = world.get_component(target_id, MobSounds)
         SOUNDS.play_mob_sounds(_ms, "aggro", dedup_key=f"dmg_{target_id}")
         _ai.state             = "AGGRO_DELAY"

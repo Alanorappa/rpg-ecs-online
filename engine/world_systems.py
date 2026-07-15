@@ -52,7 +52,7 @@ from content.enemy_abilities_data import ABILITY_DEFS
 import engine.quest_events as quest_events
 from engine.quest_events import fire as quest_fire
 from engine.stat_fns import add_modifier, remove_modifier, add_timed_modifier, enter_combat
-from engine.faction_system import is_hostile
+from engine.faction_system import is_hostile, can_engage
 
 
 # ── Registro de serviços ─────────────────────────────────────────────────────
@@ -741,7 +741,14 @@ class CombatSystem(System):
         # Só IDLE — RETURNING nunca chega aqui de verdade (early-return acima,
         # modo evasão), mas o gate fica explícito pra não reintroduzir o bug
         # numa refatoração futura que reordene esses blocos.
-        if attacker_is_player:
+        # Facção "amigavel": nunca agroa por dano, mesmo que o dano em si já
+        # tenha sido bloqueado por apply_damage_core — sem este gate aqui, um
+        # NPC de combate amigável passava a "perseguir" o player só por ter
+        # recebido uma tentativa de ataque (aggro visual incorreto, bug real
+        # relatado pelo usuário 15/07/2026 testando o "Guarda Real" de teste;
+        # ver também os gates em set_player_target()/combat_processor.py, que
+        # impedem o auto-attack de sequer tentar contra alvo amigavel).
+        if attacker_is_player and can_engage(self.world, attacker_id, target_id):
             _ai = self.world.get_component(target_id, AIControlled)
             if _ai and _ai.state == "IDLE":
                 _ms_hit = self.world.get_component(target_id, MobSounds)

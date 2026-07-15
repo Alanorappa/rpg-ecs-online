@@ -2918,7 +2918,62 @@ conteúdo real (não só código) mudar, mesmo que o código em si já estivesse
 `faction` certos. Suíte completa 141/141, rodada 3x, DEPOIS da correção
 dos helpers.
 
-**Não validado**: sessão manual em jogo real (usuário vai testar agora).
+**Não validado (na época)**: sessão manual em jogo real — ver §34.6, o
+usuário testou e achou 2 bugs reais na proteção "amigável".
+
+---
+
+### 34.6 Correção real: bloquear só o dano final não bastava — combate nem deveria começar (15/07/2026)
+
+Usuário testou o "Guarda Real" e relatou 2 bugs: (1) atacá-lo iniciava
+combate normalmente, golpes "erravam" em loop (dano sempre 0, sem
+feedback claro do porquê); (2) depois disso, o guarda passava a
+**perseguir** o player, como se estivesse em combate — claramente errado
+pra uma facção amigável. Causa raiz: o gate de §34.4
+(`apply_damage_core` bloqueando a escrita final de HP) só cobria UM
+sintoma — nada impedia o combate de sequer COMEÇAR, e existiam **outros
+3 blocos duplicados** de "aggro por dano" (fora do que já tinha sido
+corrigido no aggro por proximidade da Fase 2) que nunca checavam
+facção, disparando incondicionalmente sempre que `attacker_is_player`:
+`CombatSystem.deal_damage` (melee, `engine/world_systems.py`),
+`_server_apply_magic_damage`/`_server_apply_ranged_physical`
+(`server/spell_completion_processor.py`), e `_apply_magic_damage`
+(`ui/spell_system.py`, client-side).
+
+Fix em 2 camadas (gate na origem + rede de segurança, mesmo padrão já
+usado nesta feature):
+1. **Origem — nem entra em combate**: `WorldServer.set_player_target()`
+   (`server/world_server.py`) passa a recusar `target_eid` de facção
+   `amigavel` — `can_engage()` checado ANTES de aceitar o alvo. Sem alvo
+   válido, `_process_player_attacks` nunca tenta atacar (não há golpes
+   "errando" em loop).
+2. **Rede de segurança**: `combat_processor.py::_process_player_attacks`
+   ganha o mesmo gate (limpa `target_entity_id` se, por qualquer via, um
+   alvo amigavel chegar até ali) — mesmo padrão do check de "alvo morto"
+   já existente ali do lado. E os 4 blocos de aggro-por-dano (o de
+   `deal_damage` + os 3 recém-descobertos) ganham `can_engage(attacker,
+   target)` no `if`, ao lado do `state == "IDLE"` — nenhum deles seta
+   `AGGRO_DELAY`/`CHASING` contra alvo amigavel, mesmo que o dano em si
+   já estivesse bloqueado em outro lugar.
+- **Não corrigido** (fora do escopo deste bug report): o bloco de
+  colisão de knockback do Tiro Repulsivo (`ui/spell_system.py`, ~linha
+  1230) também seta aggro sem checar facção — não foi tocado porque
+  exigiria rastrear a identidade do atacante original num contexto onde
+  ela não está prontamente disponível; fica anotado pra Fase 5 (que já
+  vai revisitar todos os efeitos secundários de skill contra alvo
+  faccionado).
+
+**Validado**: 2 testes novos em `tests/test_faction.py`
+(`test_set_player_target_recusa_alvo_amigavel`,
+`test_auto_attack_completo_nao_faz_guarda_amigavel_perseguir` — este
+último reproduz o bug ponta a ponta: seta o alvo pelo MESMO caminho de
+`AUTO_ATTACK`, roda `_process_player_attacks` 10x de verdade, confirma
+`AIControlled.state` do guarda continua `IDLE` e `target_entity_id` do
+player volta pra `-1`). Suíte completa 143/143 (141 + 2), sem regressão.
+
+**Não validado**: nova sessão manual em jogo real confirmando os 2 bugs
+específicos relatados (loop de golpes errando, guarda perseguindo) estão
+resolvidos.
 
 ---
 
