@@ -62,7 +62,10 @@ LEVEL_FONT_SIZE = 16
 # player_hud_bar.png — 64x16
 P_SIZE      = (64, 16)
 P_LEVEL_BOX = (1, 1, 14, 14)     # x0, y0, x1, y1 (inclusive)
-P_BAR_X0, P_BAR_X1 = 16, 61
+# P_BAR_X1: +1 em relação ao mapeamento original (61) — usuário reportou
+# que a barra cheia (100%) terminava 1px antes da borda direita da HUD.
+# Ver M_HP_X1 pro mesmo ajuste na barra de HP do mob (15/07/2026).
+P_BAR_X0, P_BAR_X1 = 16, 62
 P_XP_Y  = (3, 3)
 P_HP_Y  = (5, 8)
 # (10, 11): 2 linhas de preenchimento — linha 12 é a borda preta INFERIOR
@@ -74,7 +77,10 @@ P_RES_Y = (10, 11)
 # mob_hud_bar.png — 48x12
 M_SIZE      = (48, 12)
 M_LEVEL_BOX = (0, 1, 11, 10)
-M_HP_X0, M_HP_X1 = 12, 46
+# M_HP_X1: +1 (46→47) — mesmo ajuste de P_BAR_X1 acima (barra cheia
+# terminava 1px antes da borda direita; 47 é o último índice válido da
+# arte de 48px de largura). 15/07/2026.
+M_HP_X0, M_HP_X1 = 12, 47
 M_HP_Y = (5, 6)
 
 # Respiro fixo (px de tela) entre sprite→HUD e HUD→fila de efeitos — usado

@@ -2416,6 +2416,58 @@ detalhes, validações e plano dos restantes estão TODOS lá (§11 e
 
 ---
 
+### 31. Nameplates: nome "Aventureiro", barra 1px curta, floating text atrás e sem contorno (15/07/2026)
+
+3 bugs reportados pelo usuário na mesma leva, todos em UI de HUD/overlay
+(sem protocolo novo):
+
+- **Nome do próprio personagem sempre "Aventureiro"**: `CharacterStats.name`
+  só era setado no caminho offline (removido na §30); no caminho online,
+  `LOGIN_OK.char` já trazia `name` (coluna do banco, usado há tempos pelo
+  SERVIDOR pra ENTITY_SPAWN/AOI de outros players), mas o handler do
+  cliente (`client/network_handlers.py::_handle_msg_login_ok`) nunca
+  aplicava esse campo na própria cópia local — só `class_id`. Fix: 1 linha
+  (`char_stat.name = char.get("name") or char_stat.name`) logo depois do
+  `class_id`.
+- **Barras de XP/HP/recurso (player) e HP (mob) terminando 1px antes da
+  borda direita**: `P_BAR_X1`/`M_HP_X1` em `ui/hud_bars.py` estavam 1px
+  curtos do índice de pixel real da arte (61→62 numa arte de 64px;
+  46→47 numa de 48px). Confirmado visualmente renderizando
+  `build_player_hud`/`build_mob_hud` a 100% e ampliando 8x.
+- **Floating text atrás dos nameplates + sem contorno**: causa raiz
+  arquitetural — `FLT.render()` desenhava em **world-space**
+  (`self._zoom_surf`, ANTES do flatten+scale pra `self.screen`), enquanto
+  `WORLD_LABELS` (nameplates) já desenhava em **screen-space** (depois do
+  flatten). O floating text ficava "cozido" dentro da imagem do mundo
+  antes dos nameplates desenharem por cima — não dava pra resolver só
+  reordenando chamadas, precisava mudar de espaço de coordenadas (mesma
+  classe de problema já resolvida pro nome/HUD em 23.5/23.9). Fix:
+  `FloatingTextManager.render()` ganhou parâmetro `zoom`, converte
+  `wx/wy` (mundo) pra tela (`(wx - cam_x) * zoom`) internamente, e a
+  chamada em `game.py` moveu de antes do flatten pra **depois** de
+  `WORLD_LABELS.render(...)`, alvo `self.screen`. Contorno: helper novo
+  `_render_outlined()` (8 blits do texto em preto ao redor + 1 blit da
+  cor normal no centro), cacheado por `(id(font), text, color,
+  outline_color, thickness)` — `FloatingTextEntry` perdeu o slot `surf`
+  cacheado por entrada (não fazia mais sentido: tamanho efetivo da fonte
+  agora depende do zoom da câmera, que pode mudar durante a vida do
+  texto).
+
+**Validado:** suíte completa sem regressão (118/118); `py_compile` nos 4
+arquivos tocados; script headless renderizando `build_player_hud`/
+`build_mob_hud` a 100% confirmando fill até a borda (sem gap); script
+headless confirmando que o composto outlined tem pixels pretos na borda
+E pixels da cor original no centro, e que `FLT.render()` desenha por cima
+de um retângulo opaco simulando um nameplate no mesmo ponto de tela.
+Payload `char_data` do servidor confirmado (via grep) sempre incluindo
+`name` antes de virar `LOGIN_OK.char`.
+
+**Não validado:** sessão manual em jogo real (nome do próprio personagem
+no nameplate, olho no gap das barras em combate de verdade, floating text
+por cima do nameplate com stack de números durante DPS real).
+
+---
+
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
 
 ```

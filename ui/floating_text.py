@@ -3,11 +3,41 @@
 import pygame
 from ui.fonts import make as _font
 
+# Cache de texto com CONTORNO (pedido do usuário 15/07/2026: "está muito
+# ruim sem contorno") — chave (id(font), text, color, outline_color,
+# thickness). font.render() em si já é cacheado por CachedFont
+# (ui/fonts.py); aqui cacheia o COMPOSTO (contorno + texto), que senão
+# seria remontado (8 blits) todo frame pra cada floating text ativo.
+_OUTLINE_CACHE_MAX = 512
+_outline_cache: dict = {}
+
+
+def _render_outlined(font, text: str, color: tuple,
+                     outline_color: tuple = (0, 0, 0), thickness: int = 1) -> pygame.Surface:
+    key = (id(font), text, color, outline_color, thickness)
+    cached = _outline_cache.get(key)
+    if cached is not None:
+        return cached
+    inner = font.render(text, False, color)
+    outline_glyph = font.render(text, False, outline_color)
+    w, h = inner.get_size()
+    surf = pygame.Surface((w + thickness * 2, h + thickness * 2), pygame.SRCALPHA)
+    for dx in range(-thickness, thickness + 1):
+        for dy in range(-thickness, thickness + 1):
+            if dx == 0 and dy == 0:
+                continue
+            surf.blit(outline_glyph, (thickness + dx, thickness + dy))
+    surf.blit(inner, (thickness, thickness))
+    if len(_outline_cache) >= _OUTLINE_CACHE_MAX:
+        _outline_cache.clear()
+    _outline_cache[key] = surf
+    return surf
+
 
 class FloatingTextEntry:
     __slots__ = ("text", "wx", "wy", "color", "font_size",
                  "timer", "duration", "speed_y", "offset_y", "target_id",
-                 "is_crit", "surf")
+                 "is_crit")
 
     def __init__(self, text: str, wx: float, wy: float,
                  color: tuple, font_size: int, duration: float,
@@ -23,10 +53,13 @@ class FloatingTextEntry:
         self.offset_y  = 0.0       # pixels subidos (cresce com speed_y * dt)
         self.target_id = target_id  # entidade dona — usado para empilhar
         self.is_crit   = is_crit    # animação de escala crescente + fade breve
-        # Cópia própria da surface renderizada (lazy, no primeiro render).
-        # font.render() é cacheado/compartilhado (fonts.CachedFont) — o fade
-        # via set_alpha exige uma cópia mutável por entrada.
-        self.surf: "pygame.Surface | None" = None
+        # Surface (com contorno) montada sob demanda em render() — não é
+        # mais cacheada NA ENTRADA (era: renderizada 1x e reusada por toda
+        # a vida do texto): agora o tamanho de fonte depende do ZOOM da
+        # câmera (renderiza em screen-space, ver render()), que pode mudar
+        # enquanto o texto ainda está na tela. `_render_outlined()` já
+        # cacheia o composto por (fonte, texto, cor) — recriar a Surface
+        # aqui é só um dict lookup na maioria dos frames, não um re-render.
 
 
 class FloatingTextManager:
@@ -90,16 +123,28 @@ class FloatingTextManager:
         self._entries = alive
 
     def render(self, screen: pygame.Surface,
-               camera_offset_x: float, camera_offset_y: float) -> None:
-        cam_x = int(camera_offset_x)
-        cam_y = int(camera_offset_y)
+               camera_offset_x: float, camera_offset_y: float,
+               zoom: float = 1.0) -> None:
+        """screen-space (pós-zoom), igual ui/world_labels.py — pedido do
+        usuário 15/07/2026: antes desenhava em world-space (self._zoom_surf,
+        pré-scale), então o mundo INTEIRO (incluindo o floating text) virava
+        uma imagem achatada e escalada ANTES dos nameplates (WORLD_LABELS)
+        desenharem por cima — o floating text ficava sempre ATRÁS dos
+        nameplates, sem jeito de reordenar sem trocar de espaço de
+        coordenadas. Aqui, na tela final, o floating text pode desenhar
+        DEPOIS dos nameplates (chamado nessa ordem em game.py) e fica
+        pixel-perfect no mesmo zoom que os nameplates já usam — sem esse
+        fix ele também ficaria borrado em zoom não-inteiro, mesma classe do
+        bug de nome resolvido em 11/07/2026 (ver ARQUITETURA_ONLINE.md)."""
+        cam_x = camera_offset_x
+        cam_y = camera_offset_y
         for e in self._entries:
-            if e.surf is None:
-                font = self._get_font(e.font_size)
-                # .copy(): surface do CachedFont é compartilhada; esta entrada
-                # muta alpha por frame, então precisa de cópia própria.
-                e.surf = font.render(e.text, False, e.color).copy()
-            base_surf = e.surf
+            eff_size = max(1, round(e.font_size * zoom))
+            font = self._get_font(eff_size)
+            # .copy(): a surface com contorno é CACHEADA por conteúdo
+            # (_render_outlined) — esta entrada muta alpha por frame,
+            # então precisa da própria cópia, nunca do objeto cacheado.
+            base_surf = _render_outlined(font, e.text, e.color).copy()
 
             if e.is_crit:
                 # Fases: grow rápido (0.25s) → hold (1.0s) → fade breve (0.1s)
@@ -121,16 +166,16 @@ class FloatingTextManager:
                 new_h = max(1, int(base_surf.get_height() * scale))
                 scaled = pygame.transform.scale(base_surf, (new_w, new_h))
                 scaled.set_alpha(alpha)
-                sx = int(e.wx - cam_x) - new_w // 2
-                sy = int(e.wy - cam_y - e.offset_y) - new_h  # âncora bottom-center + empilhamento
+                sx = int((e.wx - cam_x) * zoom) - new_w // 2
+                sy = int((e.wy - cam_y - e.offset_y) * zoom) - new_h  # âncora bottom-center + empilhamento
                 screen.blit(scaled, (sx, sy))
             else:
                 # Fade nos últimos 35% do tempo de vida + deriva para cima
                 fade_start = e.duration * 0.35
                 alpha = 255 if e.timer >= fade_start else max(0, int(255 * e.timer / fade_start))
                 base_surf.set_alpha(alpha)
-                sx = int(e.wx - cam_x) - base_surf.get_width()  // 2
-                sy = int(e.wy - cam_y - e.offset_y) - base_surf.get_height() // 2
+                sx = int((e.wx - cam_x) * zoom) - base_surf.get_width()  // 2
+                sy = int((e.wy - cam_y - e.offset_y) * zoom) - base_surf.get_height() // 2
                 screen.blit(base_surf, (sx, sy))
 
 

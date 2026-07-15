@@ -119,6 +119,14 @@ class NetworkHandlers:
         if char_stat:
             # Sempre define class_id para garantir CLASS_MELEE_OVERRIDES
             char_stat.class_id = _cls_s
+            # Nome real do personagem (coluna `name` do banco, sempre presente
+            # no payload "char") — sem isso, CharacterStats.name nunca saía do
+            # default "Aventureiro" (só o SERVIDOR aplicava o nome real na sua
+            # própria cópia, via WorldServer.spawn_player; a cópia LOCAL do
+            # próprio player nunca recebia) — nameplate do próprio personagem
+            # sempre mostrava "Aventureiro" em vez do nome de verdade. Bug
+            # relatado pelo usuário 15/07/2026.
+            char_stat.name = char.get("name") or char_stat.name
             if _stats_s:
                 # Personagem com save: restaura tudo
                 char_stat.level            = int(_stats_s.get("level",         char.get("level", 1)))

@@ -1828,7 +1828,11 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             self._aoe_targeting_system.render(cam_x, cam_y)
             self._pirofagia_system.render(cam_x, cam_y)
             self._spell_cast_system.render(cam_x, cam_y)
-            FLT.render(self._zoom_surf, cam_x, cam_y)
+            # FLT (floating text) NÃO renderiza mais aqui (world-space, pré-
+            # zoom) — movido pra screen-space, DEPOIS do WORLD_LABELS (ver
+            # comentário em FLT.render() e no ponto de chamada abaixo).
+            # Pedido do usuário 15/07/2026: floating text ficava atrás dos
+            # nameplates.
             CHAT_BUBBLE.render(self._zoom_surf, self.world, cam_x, cam_y)
 
             # Morto/espírito: grayscale no zoom_surf menor (pré-scale) — ~44% menos
@@ -1863,6 +1867,12 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             # pixel-perfect borrava quando desenhada dentro do world_surf).
             from ui.world_labels import WORLD_LABELS
             WORLD_LABELS.render(self.screen, cam_x, cam_y, z)
+            # Floating text em screen-space, DEPOIS do WORLD_LABELS (nameplates)
+            # — pedido do usuário 15/07/2026: antes ficava atrás dos nameplates
+            # porque renderizava em world-space (self._zoom_surf), antes do
+            # flatten+scale. FLT.render() agora recebe `z` (zoom) e converte
+            # coordenadas de mundo pra tela internamente.
+            FLT.render(self.screen, cam_x, cam_y, z)
             # Notificações de proc: screen-space, abaixo do player, acima dos avisos
             PROC.render(self.screen)
             # Avisos de ação bloqueada: posição fixa, abaixo do centro
