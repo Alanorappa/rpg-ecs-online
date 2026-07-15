@@ -4477,3 +4477,64 @@ crafting — terminar o padrão). Baixo risco, alto ganho de navegação.
 - AOI + snapshot history/lag comp + save merge documentado campo a campo.
 - Disciplina de documentar CADA decisão/bug com causa raiz — este arquivo e o
   ARQUITETURA_ONLINE.md são o motivo de bugs velhos não voltarem.
+
+---
+
+### §11-EXECUÇÃO (15/07/2026) — status e plano dos restantes
+
+**Resolvidos nesta rodada (1 commit cada, suíte verde após cada um):**
+| Item | O quê | Commit |
+|------|-------|--------|
+| 12/D1 | Suíte 100% verde (7 testes desatualizados corrigidos; causa única: features pós-teste) | `5337805` |
+| 14/D3 | Flags de debug → env var (`RPG_DEBUG_*`) | `16e56f4` |
+| 4/A4 | Sanitização de inventário na borda de persistência (anti save-forging) + cache de forja | `3b45630` |
+| 9/B5 | Índice de ocupação no knockback; reavaliação honesta (hot path já era O(1)) | `50cbd00` |
+| 3/A3 | Resolver por-entidade neutraliza `_svc` no mapa errado (`is_tile_walkable`) | `16d43f2` |
+| 10/C1 | Salt por conta + upgrade transparente + `hmac.compare_digest` | `9dfe105` |
+| 13/D2 | 4 arquivos de testes permanentes (15 testes novos; 107 total) | `1377bd5` |
+| 15a/D4 | `print()` → `logging` no servidor (server/log.py, rotativo, `RPG_LOG_LEVEL`) | `b0d2bb0` |
+
+**Plano dos itens grandes (cada um = sessão dedicada; ordem recomendada):**
+
+1. **(2/A2) Matar o dual-mode `if self._net`** — o de maior retorno.
+   Decisão prévia necessária (do usuário): manter modo offline neste branch
+   ou não? Se NÃO (recomendado — offline já vive no master), a sessão vira
+   remoção mecânica de ~metade dos 65 branches + simplificação dos handlers
+   de spell (só o caminho visual sobra no cliente). Se SIM, implementar
+   interface de autoridade (LocalAuthority/RemoteAuthority) e migrar
+   mecânica por mecânica. Risco: alto (toca todo o gameplay do cliente).
+   Pré-requisito já pronto: suíte verde + testes de cliente (12/13).
+
+2. **(6/B2) Unificar handlers de spell cliente/servidor** — segundo maior
+   retorno em bugs evitados. Um handler headless por skill (padrão
+   `world_systems` + façade fx), chamado pelos dois lados; `_server_*` e
+   `_apply_*` viram wrappers finos até sumirem. Fazer DEPOIS do item 2
+   (o dual-mode decide quanto do caminho visual sobra). Migrar 1 skill
+   piloto (ex: Picada de Escorpião) antes de generalizar.
+
+3. **(7/B3) Registry explícito de skill handlers** — natural de fazer JUNTO
+   do item 6 (mesmos arquivos): `SKILL_HANDLERS: dict[str, callable]`
+   headless substitui `getattr(f"_skill_{sid}")` + o estado mutado
+   (`player_entity_id`) vira parâmetro de contexto.
+
+4. **(8/B4) Schemas tipados do protocolo** — TypedDict por mensagem em
+   `shared/messages.py` (formalizar o que os comentários já dizem) +
+   validação na borda do servidor. Independente dos anteriores; bom
+   "primeiro item" se quiser algo de risco baixo. Também destrava a
+   migração JSON→MessagePack já planejada.
+
+5. **(1/A1) Decompor os componentes-Deus** — fazer POR CLASSE, na próxima
+   vez que a build daquela classe for retrabalhada (nunca "big bang"):
+   recursos → componentes próprios (`Rage`/`Mana`/`Concentration`), flags
+   de talento → componente por build. O mais invasivo de todos; só compensa
+   com os itens 2-3 já feitos (menos call sites duplicados pra migrar).
+
+6. **(5/B1) Pipeline declarativa de sistemas** — lista ordenada com
+   profiling automático em `game.py::run()` e `WorldServer._tick()`.
+   Ganho: manutenção + fim dos rótulos mentirosos do profiler. Fazer por
+   último (mexe na espinha dos dois loops; melhor com tudo estável).
+
+7. **(11/C2) `item_id` estável** — pequeno mas exige migração de saves;
+   agrupar com qualquer sessão futura que já mexa em persistência.
+   **(15b/D5) Fatiar `ui/systems.py`** — mecânico, zero risco de lógica;
+   bom preenchimento de fim de sessão.
