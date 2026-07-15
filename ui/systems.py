@@ -12,7 +12,7 @@ from ui.fonts import make as _font
 from ui.ui_scale_mixin import UIScaleMixin
 from ui.ui_sizes import UI
 from ui.world_labels import WORLD_LABELS
-from ui.hud_bars import (build_player_hud, build_mob_hud, RESOURCE_COLORS,
+from ui.hud_bars import (build_player_hud, build_mob_hud, build_npc_badge, RESOURCE_COLORS,
                        HUD_GAP_PX, effects_row_offset)
 
 # Re-exporta apply_effect de core_systems para compatibilidade com todo o código
@@ -1334,19 +1334,25 @@ class RenderSystem(System):
                             position.x, _hud_top_world_y, _row,
                             x_offset=_xo, y_offset=_yo, halign="left", valign="center")
 
-            # ── Nome de NPC (mercador/treinador/quest giver/ferreiro...) ──
-            # Substitui a letra "T" que só o treinador tinha — agora todo
-            # NPC mostra o próprio nome (NPC.name), sempre. Ícone de quest
-            # (QuestDialogSystem.render_world, chamado depois deste passe em
-            # game.py) empilha ACIMA deste texto via o mesmo stack_key=eid
-            # em WORLD_LABELS — nunca desenhado direto no world_surf (mesmo
+            # ── Nameplate de NPC (mercador/treinador/quest giver/ferreiro...) ──
+            # Badge de nível + nome — mesma linguagem visual do nameplate
+            # de mob (build_mob_hud), só sem barra de HP (NPC não-combatente
+            # não tem CombatStats). Pedido do usuário 15/07/2026: "NPCs
+            # também quero que tenham nameplates igual aos mobs". Ícone de
+            # quest (QuestDialogSystem.render_world, chamado depois deste
+            # passe em game.py) empilha ACIMA via o mesmo stack_key=eid em
+            # WORLD_LABELS — nunca desenhado direto no world_surf (mesmo
             # motivo do nome do mob acima).
             _npc_id = self.world.get_component(entity_id, NPC)
             if _npc_id is not None and not _draw_hp_bar:
+                _npc_top_world_y = position.y - renderable.height / 2
+                _npc_badge = build_npc_badge(_npc_id.level, self._level_font)
+                WORLD_LABELS.add_icon(position.x, _npc_top_world_y, _npc_badge,
+                                      stack_key=entity_id, gap_before=HUD_GAP_PX)
                 WORLD_LABELS.add_text(
-                    position.x, position.y - renderable.height / 2,
+                    position.x, _npc_top_world_y,
                     _npc_id.name, self._name_font, (220, 220, 180),
-                    stack_key=entity_id)
+                    stack_key=entity_id, gap_before=2)
 
 class CameraSystem(System):
     def __init__(self, world: World):

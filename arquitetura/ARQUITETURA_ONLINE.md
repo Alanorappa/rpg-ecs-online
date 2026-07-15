@@ -2762,8 +2762,45 @@ confirmando visualmente vermelho/amarelo-claro/verde; e resolução real de
 Zumbi=hostil, guardas_vila=amigável, essa última ainda sem uso em nenhuma
 zona real — só a tabela).
 
-**Não validado**: sessão manual em jogo real vendo as barras coloridas de
-verdade (Lobo amarelo-claro vs. resto vermelho).
+**Validado em jogo real pelo usuário** (15/07/2026): "deu certo".
+
+---
+
+### 34.3 Nameplate de NPC — badge de nível, sem barra de HP (Fase 3, 15/07/2026)
+
+NPC não-combatente (vendedor/quest-giver/ferreiro/treinador) só tinha um
+texto solto com o nome (`WORLD_LABELS.add_text`, sem nenhuma arte) —
+pedido do usuário: "NPCs também quero que tenham nameplates igual aos
+mobs". Como NPC não tem `CombatStats`, uma barra de HP não faz sentido —
+só o badge (círculo + número de nível) faz.
+
+- `ui/hud_bars.py::build_npc_badge(level, level_font)` (novo): recorta só
+  a região do círculo de nível (`_NPC_BADGE_W = 12`px) do MESMO asset
+  `mob_hud_bar.png` que os mobs usam — antes da coluna divisória sólida
+  que separa o badge da barra de HP (confirmado no mapeamento pixel a
+  pixel da rodada anterior, §31/33) — sem duplicar arte nem criar PNG
+  novo. Reaproveita `_level_center_px`/`_blit_level_number` já existentes.
+- `ui/systems.py` (bloco "Nameplate de NPC", antes só `WORLD_LABELS.
+  add_text`): agora enfileira `build_npc_badge(...)` via `WORLD_LABELS.
+  add_icon` (mesmo padrão do mob/player) + o nome via `add_text` com
+  `gap_before=2` — mesmo `stack_key=entity_id` de sempre, então o ícone
+  de quest (`QuestDialogSystem.render_world`) continua empilhando
+  corretamente por cima.
+- **Não é caminho morto**: diferente do bloco de mob HP-bar na mesma
+  função (morto em modo online — mob remoto usa
+  `client/remote_entity_handlers.py`), NPCs não-combatentes SEMPRE são
+  entidades locais client-side (`game.py`, spawnadas direto do JSON do
+  mapa — nunca sincronizadas pelo servidor) — este código roda de
+  verdade em modo online.
+
+**Validado**: script headless comparando `build_npc_badge` lado a lado
+com `build_mob_hud` (mesmo círculo/número, visualmente idêntico) +
+verificação pixel a pixel de que nenhuma cor de barra de HP vaza pro
+recorte do badge. Suíte completa 136/136.
+
+**Não validado**: sessão manual em jogo real (nameplate de vendedor/
+quest-giver/treinador/ferreiro com o badge novo, empilhamento do ícone de
+quest por cima).
 
 ---
 

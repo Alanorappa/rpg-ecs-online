@@ -250,3 +250,27 @@ def build_mob_hud(hp_ratio: float, level: int, level_font,
     lcx, lcy = _level_center_px(M_LEVEL_BOX)
     _blit_level_number(big, level, level_font, lcx, lcy)
     return big
+
+
+# Largura nativa do círculo de nível dentro de mob_hud_bar.png — recorte
+# ANTES da coluna divisória sólida que separa o badge da barra de HP
+# (linha 4 do asset é preta em toda a largura, confirmado no mapeamento
+# pixel a pixel; o círculo em si nunca ultrapassa essa coluna). Reaproveita
+# o MESMO asset do mob — não é um PNG novo.
+_NPC_BADGE_W = 12
+
+
+def build_npc_badge(level: int, level_font) -> "pygame.Surface":
+    """Nameplate de NPC não-combatente (vendedor/quest-giver/ferreiro/
+    treinador): só o badge de nível (círculo + número), SEM barra de HP —
+    não faz sentido pra quem não tem CombatStats. Recortado do mesmo
+    asset `mob_hud_bar.png` que os mobs usam (build_mob_hud), pra ficar
+    visualmente idêntico ao badge deles — pedido do usuário 15/07/2026:
+    "NPCs também quero que tenham nameplates igual aos mobs"."""
+    _load()
+    h = M_SIZE[1]
+    badge_native = _mob_art.subsurface(pygame.Rect(0, 0, _NPC_BADGE_W, h)).copy()
+    big = pygame.transform.scale(badge_native, (_NPC_BADGE_W * SCALE, h * SCALE))
+    lcx, lcy = _level_center_px(M_LEVEL_BOX)
+    _blit_level_number(big, level, level_font, lcx, lcy)
+    return big
