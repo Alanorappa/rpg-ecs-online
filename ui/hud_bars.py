@@ -43,11 +43,14 @@ SCALE = 2
 HP_COLOR = (0, 200, 60)      # mesma cor já usada na barra de HP antiga
 XP_COLOR = (190, 140, 230)   # roxo claro (pedido do usuário 11/07/2026)
 # Mesma cor de cada recurso já usada no HUD lateral (client/hud_handlers.py)
-# — não inventa cor nova, só reaproveita.
+# — não inventa cor nova, só reaproveita (C_RED/C_ORANGE de client/colors.py).
+# Pedido do usuário 15/07/2026: raiva vira vermelha (era laranja, confundia
+# com a própria concentração) e concentração vira laranja forte (era azul,
+# confundia com mana).
 RESOURCE_COLORS = {
-    "mago":      (50, 100, 255),   # barra de mana
-    "arqueiro":  (80, 160, 220),   # barra de concentração
-    "guerreiro": (255, 160, 0),    # barra de raiva (C_ORANGE)
+    "mago":      (50, 100, 255),   # barra de mana (inalterada)
+    "arqueiro":  (255, 160, 0),    # barra de concentração — C_ORANGE
+    "guerreiro": (220, 50, 50),    # barra de raiva — C_RED
 }
 LEVEL_TEXT_COLOR = (255, 240, 200)
 # Tamanho da fonte pixel (ui/fonts.py::make_pixel) pro número do nível —

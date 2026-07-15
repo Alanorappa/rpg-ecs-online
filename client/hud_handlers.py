@@ -78,10 +78,12 @@ class HudHandlers:
                     f"Mana {char_stats.mana}/{char_stats.max_mana}", False, C_WHITE)
                 self.screen.blit(mana_surf, (self._u(14), y))
             elif char_stats.class_id == "arqueiro":
-                # Barra de Concentração
+                # Barra de Concentração — laranja forte (C_ORANGE); vira
+                # vermelha (C_RED) perto de esvaziar, mesmo aviso de sempre.
+                # Pedido do usuário 15/07/2026: era azul, confundia com mana.
                 _conc_ratio = char_stats.concentration / max(1, char_stats.max_concentration)
-                _conc_col   = (80, 160, 220) if _conc_ratio > 0.3 else (180, 100, 60)
-                pygame.draw.rect(self.screen, (10, 30, 55),  (self._u(10), y, bar_w, bar_h))
+                _conc_col   = C_ORANGE if _conc_ratio > 0.3 else C_RED
+                pygame.draw.rect(self.screen, (55, 30, 5),   (self._u(10), y, bar_w, bar_h))
                 pygame.draw.rect(self.screen, _conc_col, (self._u(10), y, int(bar_w * _conc_ratio), bar_h))
                 _cs_conc  = self.world.get_component(self.player_entity, CombatStats)
                 _tm_conc  = self.world.get_component(self.player_entity, TileMovement)
@@ -109,9 +111,11 @@ class HudHandlers:
                     no_q_surf = self.font_sm.render("Sem aljava", False, (180, 130, 50))
                     self.screen.blit(no_q_surf, (self._u(14), y))
             else:
+                # Vermelha (C_RED) — pedido do usuário 15/07/2026: era
+                # laranja (C_ORANGE), confundia com a concentração do arqueiro.
                 rage_ratio = char_stats.rage / max(1, char_stats.max_rage)
                 pygame.draw.rect(self.screen, (60, 20, 0),   (self._u(10), y, bar_w, bar_h))
-                pygame.draw.rect(self.screen, C_ORANGE,       (self._u(10), y, int(bar_w * rage_ratio), bar_h))
+                pygame.draw.rect(self.screen, C_RED,          (self._u(10), y, int(bar_w * rage_ratio), bar_h))
                 rage_surf = self.font_sm.render(
                     f"Raiva {char_stats.rage}/{char_stats.max_rage}", False, C_WHITE)
                 self.screen.blit(rage_surf, (self._u(14), y))
