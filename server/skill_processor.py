@@ -3,6 +3,7 @@ server/skill_processor.py
 Mixin para WorldServer: processamento de skill requests por tick.
 """
 from __future__ import annotations
+from server.log import log
 
 from shared.constants import TILE_SIZE, TICK_RATE, LAG_COMP_WINDOW_MS
 
@@ -66,7 +67,7 @@ class SkillProcessorMixin:
                 # Fallback: cria instância temporária do SKILL_CATALOG
                 skill_obj = _PS._make_skill(sid, SKILL_CATALOG) if sid in SKILL_CATALOG else None
             if skill_obj is None:
-                print(f"[Skill] sid='{sid}' não encontrado no SKILL_CATALOG")
+                log.info(f"[Skill] sid='{sid}' não encontrado no SKILL_CATALOG")
                 continue
 
             # ── Autorização server-side ────────────────────────────────────────
@@ -76,7 +77,7 @@ class SkillProcessorMixin:
             from engine.world_systems import is_skill_authorized as _is_auth
             _auth_ok, _auth_reason = _is_auth(self.world, player_eid, sid)
             if not _auth_ok:
-                print(f"[Skill] REJEITADO (autorizacao: {_auth_reason}) "
+                log.warning(f"[Skill] REJEITADO (autorizacao: {_auth_reason}) "
                       f"{sid} player={player_eid}")
                 self._skill_results_this_tick.append({
                     "caster_eid": player_eid,
@@ -103,7 +104,7 @@ class SkillProcessorMixin:
                            getattr(skill_obj, "cooldown", 0.0))
             if _sk_cd > 0 and _elapsed < _sk_cd:
                 _cd_remaining = _sk_cd - _elapsed
-                print(f"[Skill] REJEITADO (CD) {sid} player={player_eid} "
+                log.warning(f"[Skill] REJEITADO (CD) {sid} player={player_eid} "
                       f"restante={_cd_remaining:.1f}s")
                 # Notifica cliente: limpa _server_pending e sincroniza CD local
                 self._skill_results_this_tick.append({
@@ -343,7 +344,7 @@ class SkillProcessorMixin:
                         tile_move.current_tile_y = _new_ty
                 except Exception as e:
                     import traceback
-                    print(f"[Skill] ERRO ao processar {sid}: {e}")
+                    log.error(f"[Skill] ERRO ao processar {sid}: {e}")
                     traceback.print_exc()
                     self._skill_system._server_pending_spells = None
                     continue

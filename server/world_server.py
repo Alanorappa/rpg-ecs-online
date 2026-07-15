@@ -10,6 +10,7 @@ Responsabilidades:
   - Notificar SessionManager sobre deltas a cada tick
 """
 from __future__ import annotations
+from server.log import log
 import asyncio
 import sys
 import os
@@ -357,9 +358,9 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 try:
                     self._map_bundles[tgt] = self._load_map_for(tgt)
                 except Exception as e:
-                    print(f"[WorldServer] falha ao carregar mapa {tgt}: {e}")
+                    log.warning(f"[WorldServer] falha ao carregar mapa {tgt}: {e}")
 
-        print(f"[WorldServer] mapas carregados: {list(self._map_bundles.keys())}")
+        log.info(f"[WorldServer] mapas carregados: {list(self._map_bundles.keys())}")
 
         # Guarda AUTOMÁTICA contra "_svc apontando pro mapa errado" (item A3,
         # PROBLEMAS_ARQUITETURA.md §11): resolver por-entidade — funções de
@@ -388,7 +389,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                              ProjectileSystem, register_services)
         from engine.components import MapLocation as _MLl
 
-        print(f"[WorldServer] carregando mapa: {map_file}")
+        log.info(f"[WorldServer] carregando mapa: {map_file}")
         terrain_matrix, object_matrix, spawn_points, terrain_visual = \
             load_map_csv(map_file)
 
@@ -473,7 +474,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         bundle.tile_validation = tile_validation
         bundle.pathfinding     = pathfinding
 
-        print(f"[WorldServer] mapa OK: {map_file} — {len(transitions)} transições")
+        log.info(f"[WorldServer] mapa OK: {map_file} — {len(transitions)} transições")
         return bundle
 
     def _create_training_dummies(self, dummies_data: list) -> None:
@@ -683,7 +684,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                                 ps.skills.append(sk)
             self.world.add_component(eid, ps)
         except Exception as _e:
-            print(f"[World] aviso: PlayerSkills não criado — {_e}")
+            log.warning(f"[World] aviso: PlayerSkills não criado — {_e}")
 
         # TalentTree — necessário para process_levelups() incrementar available_points
         _tal_alloc_spawn: dict = {}
@@ -720,7 +721,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             _tal_alloc_spawn          = _tt_comp.allocated
             self.world.add_component(eid, _tt_comp)
         except Exception as _te:
-            print(f"[World] aviso: TalentTree não criado — {_te}")
+            log.warning(f"[World] aviso: TalentTree não criado — {_te}")
 
         # cs_flags (ex: impacto_maquina_matar) e modifiers de atributo (ex: parry_rating)
         # dos talentos salvos — antes só os cs_flags eram restaurados aqui (loop
@@ -731,7 +732,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         try:
             self._apply_talent_modifiers(eid, _tal_alloc_spawn)
         except Exception as _te:
-            print(f"[World] aviso: talent effects não aplicados no spawn — {_te}")
+            log.warning(f"[World] aviso: talent effects não aplicados no spawn — {_te}")
 
         # SkillLevels — progressão Tibia-like por uso (armas/escudo/defesa/
         # resistências/magic), server-autoritativo. Ver stats_system.py e
@@ -751,7 +752,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             self.world.add_component(eid, _skl_comp)
             _apply_skl_bonuses(_skl_comp, cs)
         except Exception as _skl_err:
-            print(f"[World] aviso: SkillLevels não criado — {_skl_err}")
+            log.warning(f"[World] aviso: SkillLevels não criado — {_skl_err}")
 
         # QuestLog — progresso/entrega de quest, server-autoritativo (ver
         # quest_logic.py e PROBLEMAS_ARQUITETURA.md, migração de quests).
@@ -765,7 +766,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             _ql_comp.completed = set(_ql_d.get("completed") or [])
             self.world.add_component(eid, _ql_comp)
         except Exception as _ql_err:
-            print(f"[World] aviso: QuestLog não criado — {_ql_err}")
+            log.warning(f"[World] aviso: QuestLog não criado — {_ql_err}")
 
         self._player_eids[session_id]    = eid
         self._player_eid_to_sid[eid]     = session_id   # reverse map
@@ -792,7 +793,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             "effects":  [],
         })
 
-        print(f"[World] spawn player eid={eid}  tile=({tx},{ty})  "
+        log.info(f"[World] spawn player eid={eid}  tile=({tx},{ty})  "
               f"name={char_data.get('name', '?')}")
         return eid
 
@@ -905,7 +906,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             if e.get("target_id") != eid and e.get("collided_eid") != eid
         ]
         self.world.remove_entity(eid)
-        print(f"[World] despawn player eid={eid}  session={session_id}")
+        log.info(f"[World] despawn player eid={eid}  session={session_id}")
 
     def move_player(self, session_id: str, tx: int, ty: int) -> bool:
         """
@@ -1570,7 +1571,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                         pass
         except ImportError:
             pass
-        print(f"[WorldServer] caches: {len(self._item_value_cache)} itens, "
+        log.info(f"[WorldServer] caches: {len(self._item_value_cache)} itens, "
               f"{sum(len(v) for v in self._shop_item_cache.values())} entradas de loja")
 
     def _lookup_item_value(self, item_name: str) -> int | None:
@@ -2164,7 +2165,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         if spent > total_budget:
             # Claim excede o orçamento real — rejeita a alocação inteira (não
             # tenta "corrigir" proporcionalmente, pra não mascarar bug/cheat).
-            print(f"[TalentBudget] session={session_id} reivindicou {spent} pontos "
+            log.info(f"[TalentBudget] session={session_id} reivindicou {spent} pontos "
                   f"mas orçamento real é {total_budget} — alocação rejeitada.")
             return None
 
@@ -2416,7 +2417,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
     async def run(self) -> None:
         import gc as _gc_srv
         self.running = True
-        print(f"[WorldServer] zona='{self.zone_id}' @ {TICK_RATE} ticks/s")
+        log.info(f"[WorldServer] zona='{self.zone_id}' @ {TICK_RATE} ticks/s")
 
         next_tick  = time.perf_counter()
         _gc_ticks  = 0
@@ -2428,7 +2429,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                     self._tick(TICK_INTERVAL)
                 except Exception as e:
                     import traceback
-                    print(f"[WorldServer] ERRO no tick {self.tick_count}: {e}")
+                    log.error(f"[WorldServer] ERRO no tick {self.tick_count}: {e}")
                     traceback.print_exc()
                     # Limpa deltas pendentes para não propagar estado corrompido
                     self._moved_this_tick.clear()
@@ -2605,7 +2606,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # _roll_procs) — qualquer mudança em current_hp/max_hp já é detectada e
         # propagada via _sync_player_hp_dirty() abaixo; aqui só log de auditoria.
         for _proc_ev in self._combat_state_sys.proc_events:
-            print(f"[Proc] player_eid={_proc_ev['player_eid']} item={_proc_ev['item_name']!r} "
+            log.info(f"[Proc] player_eid={_proc_ev['player_eid']} item={_proc_ev['item_name']!r} "
                   f"-> {_proc_ev['label']} (+{_proc_ev['value']} {_proc_ev['attribute']} "
                   f"por {_proc_ev['duration']:.0f}s)")
 
@@ -2887,7 +2888,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                             if _sid_re:
                                 self.apply_talent_effects_to_player(_sid_re, _tt_re.allocated)
                     except Exception as _lv_err:
-                        print(f"[LevelUp] aviso ao re-aplicar talentos: {_lv_err}")
+                        log.warning(f"[LevelUp] aviso ao re-aplicar talentos: {_lv_err}")
 
                     # Garante HP cheio após qualquer recálculo acima
                     _cs_xp.current_hp = _cs_xp.max_hp
@@ -2903,7 +2904,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                         "hp_max":        _cs_xp.max_hp,
                         "talent_points": _tt_lv.available_points if _tt_lv else 0,
                     })
-                    print(f"[LevelUp] player {_xp_peid} → nivel {_char_xp.level} "
+                    log.info(f"[LevelUp] player {_xp_peid} → nivel {_char_xp.level} "
                           f"hp={_cs_xp.current_hp}/{_cs_xp.max_hp} "
                           f"talentos={_tt_lv.available_points if _tt_lv else '?'}")
             # Salva XP/level imediatamente após cada kill — crash do servidor não perde progresso
@@ -2929,7 +2930,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                                 merged_xp["talents"]["available_points"] = _tt_xp.available_points
                                 merged_xp["talents"]["allocated"]        = dict(_tt_xp.allocated)
                             _asyncio_xp.ensure_future(_save_xp(_sess_xp.char_data["id"], merged_xp))
-            print(f"[XP] player {_xp_peid} ganhou {_xp_amt} XP (mob {entry['mob_eid']})")
+            log.info(f"[XP] player {_xp_peid} ganhou {_xp_amt} XP (mob {entry['mob_eid']})")
 
         self._process_loot_drops(dt)
         self._tick_trade_distance_check()
@@ -3021,6 +3022,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._perf_accum["TOTAL"] = self._perf_accum.get("TOTAL", 0.0) + _tick_ms / 1000.0
         self._perf_count += 1
         if _tick_ms > self._PERF_BUDGET_MS:
+            # print de propósito: escreve no ARQUIVO de perf (não no console/log)
             print(f"[PERF] tick lento: {_tick_ms:.1f}ms (budget={self._PERF_BUDGET_MS:.0f}ms) "
                   f"tick#{self.tick_count} players={len(self._player_eids)} "
                   f"mobs={len(self._mob_eids)}", file=self._perf_log)
@@ -3034,6 +3036,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             _cpu_avg  = self._perf_cpu_sum  / n if n else 0.0
             _cpu_peak = self._perf_cpu_peak
             _f = self._perf_log
+            # print de propósito: escreve no ARQUIVO de perf (não no console/log)
             print(f"\n[PERF SRV] {n} ticks | avg={total_avg:.2f}ms/tick | budget={self._PERF_BUDGET_MS:.0f}ms"
                   f" | players={len(self._player_eids)} | maps_ativos_peak={self._perf_peak_maps}/{_n_maps_total}"
                   f" | cpu_proc avg={_cpu_avg:.1f}% peak={_cpu_peak:.1f}%", file=_f)
@@ -3208,4 +3211,4 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
     def stop(self) -> None:
         self.running = False
-        print(f"[WorldServer] encerrado no tick {self.tick_count}")
+        log.info(f"[WorldServer] encerrado no tick {self.tick_count}")

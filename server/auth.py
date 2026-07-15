@@ -4,6 +4,7 @@ Autenticação simples para fase de desenvolvimento.
 SQLite com hashes SHA-256. Fácil migrar para PostgreSQL depois.
 """
 from __future__ import annotations
+from server.log import log
 import asyncio
 import hashlib
 import sqlite3
@@ -125,7 +126,7 @@ def init_db() -> None:
             conn.execute("ALTER TABLE characters ADD COLUMN quests_json TEXT DEFAULT '{}'")
         except Exception:
             pass  # coluna já existe
-    print(f"[Auth] banco inicializado: {DB_PATH}")
+    log.info(f"[Auth] banco inicializado: {DB_PATH}")
     _seed_test_accounts()
 
 
@@ -139,7 +140,7 @@ def _seed_test_accounts() -> None:
             acc_id = _get_account_id_sync(username)
             if acc_id:
                 _create_character_sync(acc_id, username, class_id, tx, ty)
-            print(f"[Auth] conta de teste criada: usuario='{username}'  "
+            log.info(f"[Auth] conta de teste criada: usuario='{username}'  "
                   f"classe={class_id}  tile=({tx},{ty})")
 
 

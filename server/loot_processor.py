@@ -3,6 +3,7 @@ server/loot_processor.py
 Mixin para WorldServer: loot, corpses, notificações de drop.
 """
 from __future__ import annotations
+from server.log import log
 
 
 class LootProcessorMixin:
@@ -67,7 +68,7 @@ class LootProcessorMixin:
                 "coins":     loot_entry.get("coins", 0),
                 "map":       loot_entry.get("map"),
             })
-            print(f"[Loot] corpse_id={corpse_id}  owner={owner_eid}  "
+            log.info(f"[Loot] corpse_id={corpse_id}  owner={owner_eid}  "
                   f"items={len(loot_entry['items'])}  coins={loot_entry.get('coins', 0)}  "
                   f"tile=({loot_entry['tx']},{loot_entry['ty']})")
 

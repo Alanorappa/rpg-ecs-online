@@ -7,6 +7,7 @@ Uso:
     python server/main.py --host 0.0.0.0 --port 8765
 """
 from __future__ import annotations
+from server.log import log
 import asyncio
 import argparse
 import sys
@@ -26,7 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
     import websockets
 except ImportError:
-    print("[ERRO] websockets não instalado. Execute: pip install websockets")
+    log.error("[ERRO] websockets não instalado. Execute: pip install websockets")
     sys.exit(1)
 
 import gc as _gc
@@ -63,9 +64,9 @@ async def main(host: str, port: int) -> None:
     mgr   = SessionManager(world)
     world._session_manager = mgr  # referência para saves pontuais (XP/level)
 
-    print(f"[Server] RPG Online v{PROTOCOL_VERSION}")
-    print(f"[Server] WebSocket em ws://{host}:{port}")
-    print(f"[Server] Ctrl+C para encerrar\n")
+    log.info(f"[Server] RPG Online v{PROTOCOL_VERSION}")
+    log.info(f"[Server] WebSocket em ws://{host}:{port}")
+    log.info(f"[Server] Ctrl+C para encerrar\n")
 
     # Roda servidor WebSocket e loop de ticks em paralelo
     async with websockets.serve(
@@ -95,14 +96,14 @@ if __name__ == "__main__":
         try:
             ctypes.windll.winmm.timeBeginPeriod(1)
             _timer_set = True
-            print("[Server] Windows timer: resolução elevada para 1ms")
+            log.info("[Server] Windows timer: resolução elevada para 1ms")
         except Exception:
             pass
 
     try:
         asyncio.run(main(args.host, args.port))
     except KeyboardInterrupt:
-        print("\n[Server] encerrado.")
+        log.info("\n[Server] encerrado.")
     finally:
         if _timer_set:
             ctypes.windll.winmm.timeEndPeriod(1)

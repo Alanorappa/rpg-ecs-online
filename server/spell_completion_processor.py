@@ -9,6 +9,7 @@ Fluxo:
   4. Resultado adicionado a _skill_results_this_tick → enviado pelo session.py
 """
 from __future__ import annotations
+from server.log import log
 import random
 
 
@@ -192,7 +193,7 @@ class SpellCompletionMixin:
                     except Exception as _err:
                         import traceback
                         _splog2(f"  ERRO: {_err}")
-                        print(f"[SpellCompletion] ERRO {spell_id}: {_err}")
+                        log.error(f"[SpellCompletion] ERRO {spell_id}: {_err}")
                         traceback.print_exc()
 
             # Coleta dano e efeitos aplicados (apenas para spells sem projétil)
@@ -390,7 +391,7 @@ class SpellCompletionMixin:
             fn(player_eid, target_id, entry["entry"])
         except Exception as _err:
             import traceback
-            print(f"[ProjHit] ERRO {spell_id}: {_err}")
+            log.error(f"[ProjHit] ERRO {spell_id}: {_err}")
             traceback.print_exc()
             return
 

@@ -9,6 +9,7 @@ Implementa AOI subscription por sessão: cada Session mantém known_eids
 - ENTITY_MOVE só é enviado para entidades já conhecidas
 """
 from __future__ import annotations
+from server.log import log
 import asyncio
 import time
 
@@ -88,7 +89,7 @@ class Session:
                 await self.ws.send(encode(msg_type, payload, seq=self._seq))
             return True
         except Exception as e:
-            print(f"[Session] send falhou (session={self.session_id} "
+            log.info(f"[Session] send falhou (session={self.session_id} "
                   f"type={msg_type}): {e!r}")
             return False
 
@@ -109,7 +110,7 @@ class SessionManager:
     async def on_connect(self, ws, session_id: str) -> Session:
         session = Session(ws, session_id)
         self._sessions[session_id] = session
-        print(f"[Session] +connect {session_id}  total={len(self._sessions)}")
+        log.info(f"[Session] +connect {session_id}  total={len(self._sessions)}")
         return session
 
     @staticmethod
@@ -215,11 +216,11 @@ class SessionManager:
                     merged = self._build_save_merge(srv_data, session.last_client_payload, _live_eq)
                     try:
                         await save_character(session.char_data["id"], merged)
-                        print(f"[Session] saved {session.username!r}  "
+                        log.info(f"[Session] saved {session.username!r}  "
                               f"tile=({merged['tile_x']},{merged['tile_y']})  "
                               f"hp={merged['hp']}  gold={merged['stats'].get('gold', 0)}")
                     except Exception as e:
-                        print(f"[Session] ERRO ao salvar {session.username!r}: {e}")
+                        log.error(f"[Session] ERRO ao salvar {session.username!r}: {e}")
             self._eid_to_sid.pop(session.entity_id, None)
             eid = session.entity_id
             # Cancela trade ativa (se houver) ANTES de despawnar — avisa o
@@ -238,7 +239,7 @@ class SessionManager:
                 other.known_eids.discard(eid)
             await self._broadcast_all(MsgType.ENTITY_DESPAWN, {"eid": eid})
             self.world_server.despawn_player(session_id)
-        print(f"[Session] -disconnect {session.username!r}")
+        log.info(f"[Session] -disconnect {session.username!r}")
 
     async def on_message(self, session: Session, raw: str) -> None:
         try:
@@ -252,7 +253,7 @@ class SessionManager:
                 await handler(self, session, payload, ts)
             except Exception as e:
                 import traceback
-                print(f"[Session] ERRO em handler {msg_type}: {e}")
+                log.error(f"[Session] ERRO em handler {msg_type}: {e}")
                 traceback.print_exc()
                 await session.send(MsgType.ERROR, {"reason": f"server_error:{type(e).__name__}"})
 
@@ -304,7 +305,7 @@ class SessionManager:
             "characters": chars,
             "server_ts":  int(time.time() * 1000),
         })
-        print(f"[Session] auth ok: {username!r}  chars={len(chars)}")
+        log.info(f"[Session] auth ok: {username!r}  chars={len(chars)}")
 
     async def _handle_move(self, session: Session, payload: dict, ts: int) -> None:
         if not session.authenticated:
@@ -604,7 +605,7 @@ class SessionManager:
                 self.world_server.apply_talent_effects_to_player(
                     session.session_id, _checked_tal_alloc)
             except Exception as _te:
-                print(f"[Session] aviso: talent effects não re-aplicados — {_te}")
+                log.warning(f"[Session] aviso: talent effects não re-aplicados — {_te}")
 
         # Skills: atualiza PlayerSkills.learned_skill_ids no ECS vivo do servidor
         # para que _process_quest_events::sync_learn_skill_progress detecte skills
@@ -627,7 +628,7 @@ class SessionManager:
         try:
             await save_character(session.char_data["id"], merged)
         except Exception as e:
-            print(f"[Session] ERRO save_state {session.username!r}: {e}")
+            log.error(f"[Session] ERRO save_state {session.username!r}: {e}")
 
     async def _handle_chat(self, session: Session, payload: dict, ts: int) -> None:
         if not session.authenticated:
@@ -775,7 +776,7 @@ class SessionManager:
         try:
             await save_character(session.char_data["id"], merged)
         except Exception as e:
-            print(f"[TalentUpdate] ERRO ao salvar: {e}")
+            log.error(f"[TalentUpdate] ERRO ao salvar: {e}")
 
     async def _handle_quest_accept(self, session: Session, payload: dict, ts: int) -> None:
         """Aceita quest a partir do diálogo de NPC — valida pré-requisitos/
@@ -889,7 +890,7 @@ class SessionManager:
         try:
             await save_character(session.char_data["id"], merged)
         except Exception as e:
-            print(f"[QuestTurnIn] ERRO ao salvar: {e}")
+            log.error(f"[QuestTurnIn] ERRO ao salvar: {e}")
 
         await session.send(MsgType.QUEST_UPDATE, {
             "active":        {q: list(p) for q, p in ql.active.items()},
@@ -1000,7 +1001,7 @@ class SessionManager:
         })
 
         self._unstuck_cooldowns[sid] = now
-        print(f"[Unstuck] {sid} teleportado para {rx},{ry}")
+        log.info(f"[Unstuck] {sid} teleportado para {rx},{ry}")
 
     async def _handle_release_spirit(self, session: Session, payload: dict, ts: int) -> None:
         """Player com corpo morto clicou 'Liberar espírito' — vira ghost no cemitério."""
@@ -1096,7 +1097,7 @@ class SessionManager:
                 sx, sy = self.world_server.get_tile_pos(s.session_id)
                 if _in_aoi(tx, ty, sx, sy, AOI_RADIUS):
                     s.known_eids.add(eid)
-        print(f"[Session] entrou no jogo: {session.username!r}  eid={eid}  tile=({tx},{ty})")
+        log.info(f"[Session] entrou no jogo: {session.username!r}  eid={eid}  tile=({tx},{ty})")
 
     async def _handle_select_character(self, session: Session,
                                        payload: dict, ts: int) -> None:
@@ -1637,7 +1638,7 @@ class SessionManager:
 
         except Exception as e:
             import traceback
-            print(f"[Session] ERRO em _dispatch_tick_deltas: {e}")
+            log.error(f"[Session] ERRO em _dispatch_tick_deltas: {e}")
             traceback.print_exc()
 
     def _build_update_for_session(self, session: Session,
@@ -1961,9 +1962,9 @@ class SessionManager:
                 await save_character(session.char_data["id"], merged)
                 saved += 1
             except Exception as e:
-                print(f"[Session] ERRO autosave {session.username!r}: {e}")
+                log.error(f"[Session] ERRO autosave {session.username!r}: {e}")
         if saved:
-            print(f"[Session] autosave  players={saved}  tick={self.world_server.tick_count}")
+            log.info(f"[Session] autosave  players={saved}  tick={self.world_server.tick_count}")
 
     async def _send_player_deaths(self, deltas: dict) -> None:
         for death in deltas.get("player_deaths", []):

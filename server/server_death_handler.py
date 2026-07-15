@@ -17,6 +17,7 @@ Intencional NÃO fazer aqui:
   - Qualquer import de Pygame
 """
 from __future__ import annotations
+from server.log import log
 
 
 _XP_BY_TIER: dict[str, int] = {
@@ -91,7 +92,7 @@ class ServerDeathHandler:
             killer_eid = pd.killer_entity_id
 
             # 1. Log
-            print(f"[Death] mob {eid} morto por {killer_eid}")
+            log.info(f"[Death] mob {eid} morto por {killer_eid}")
 
             # 2. XP proporcional por dano causado — base por level do mob ×
             # xp_given_by_lvl (mob_definitions.py), modificado pelo
