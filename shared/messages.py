@@ -115,7 +115,7 @@ class MsgType(str, Enum):
     CONSUMABLE_USE     = "consumable_use"    # C→S  uso de consumível (heal_instant, HoT, buffs futuros)
     GOLD_UPDATE        = "gold_update"       # C→S  gold mudou (loot de moedas) {gold: N}
     INV_SYNC           = "inv_sync"          # C→S  inventário mudou (loot de item) {inventory: [...]}
-    TALENT_UPDATE      = "talent_update"     # C→S  talento alocado/desalocado {allocated, available_points}
+    TALENT_UPDATE      = "talent_update"     # C→S  talento alocado/desalocado {talents: {chosen_build, allocated, available_points}}
     HOTBAR_UPDATE      = "hotbar_update"     # C→S  barra de ações/consumíveis mudou {skills, consumables}
     BUY_REQUEST        = "buy_request"       # C→S  compra em loja {shop_id, item_name, quantity}
     BUY_RESULT         = "buy_result"        # S→C  resultado da compra {success, reason, item, new_gold}
@@ -219,7 +219,12 @@ C2S_REQUIRED: dict = {
     MsgType.GOLD_UPDATE:        {"gold": _NUM},
     MsgType.INV_SYNC:           {"inventory": list},
     MsgType.EQUIP_SYNC:         {"equipment": dict},
-    MsgType.TALENT_UPDATE:      {"allocated": dict},
+    # Shape real do cliente (client/save_sync_handlers.py::_send_talent_update):
+    # tudo aninhado em "talents" — {"talents": {chosen_build, allocated,
+    # available_points}}. O comentário antigo do MsgType ("{allocated, ...}")
+    # estava desatualizado e levou o primeiro schema a exigir "allocated" no
+    # topo — warning real em teste do usuário 15/07/2026.
+    MsgType.TALENT_UPDATE:      {"talents": dict},
     MsgType.HOTBAR_UPDATE:      {"skills": list},
     MsgType.BUY_REQUEST:        {"shop_id": str, "item_name": str},
     MsgType.SELL_REQUEST:       {"item_name": str},

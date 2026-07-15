@@ -42,6 +42,16 @@ class TestValidateC2S(unittest.TestCase):
                                                              "tid": 3}))
         self.assertIsNone(validate_c2s(MsgType.TRADE_SET_GOLD, {"amount": 50}))
 
+    def test_talent_update_shape_real_do_cliente(self):
+        """Regressão do warning real (15/07/2026): o cliente aninha tudo em
+        'talents' (_send_talent_update) — o primeiro schema exigia
+        'allocated' no topo e rejeitava alocação legítima de talento."""
+        self.assertIsNone(validate_c2s(MsgType.TALENT_UPDATE, {"talents": {
+            "chosen_build": "cavaleiro", "allocated": {"cav_explorador": 2},
+            "available_points": 3}}))
+        self.assertEqual(validate_c2s(MsgType.TALENT_UPDATE, {"allocated": {}}),
+                         "missing_field:talents")
+
 
 class TestEdgeRejection(unittest.IsolatedAsyncioTestCase):
     """Integração: a borda (on_message) rejeita antes do handler."""
