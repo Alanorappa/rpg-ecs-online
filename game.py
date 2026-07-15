@@ -552,6 +552,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                     level_min=zd.get("level_min", 1), level_max=zd.get("level_max", 1),
                     race=zd.get("race", "Humanoide"),
                     entity_class=zd.get("entity_class", ""),
+                    faction=zd.get("faction", "vida_selvagem"),
                 )
 
         for col, row, name, shop_id, lvl, prof in spawn_points.get("merchants", []):

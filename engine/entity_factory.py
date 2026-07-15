@@ -9,7 +9,7 @@ from engine.components import Position, Renderable, PlayerControlled, Camera, Co
                        SkillLevels, \
                        SpawnZone, EntityIdentity, StatusEffects, ConsumableBar, MobSounds, FogOfWar, \
                        EnemyAbilities, EnemyAbilitySlot, QuestLog, QuestGiver, NPC, Blacksmith, \
-                       LearnedRecipes, Trainer
+                       LearnedRecipes, Trainer, Faction
 from ui.ui_components import UIState, ShopUIState, LootUIState, DragState, TradeUIState
 from engine.tileset import TILE_MAPPING, OBJECT_MAPPING, TILE_SIZE, FLOOR_TILE, get_collision_offsets
 from content.mob_definitions import MOB_TABLE
@@ -220,7 +220,8 @@ def create_enemy(world: World, tile_x: int, tile_y: int,
                  tier: str = "normal",
                  race: str = "Humanoide",
                  entity_class: str = "",
-                 level: int = 1) -> int:
+                 level: int = 1,
+                 faction: str = "vida_selvagem") -> int:
     cfg = ENEMY_TIER_CONFIGS.get(tier, ENEMY_TIER_CONFIGS["normal"])
     x = tile_x * TILE_SIZE + TILE_SIZE / 2
     y = tile_y * TILE_SIZE + TILE_SIZE / 2
@@ -253,6 +254,7 @@ def create_enemy(world: World, tile_x: int, tile_y: int,
     world.add_component(enemy_entity, Renderable(color=color, width=size, height=size))
     world.add_component(enemy_entity, Collider(width=size, height=size))
     world.add_component(enemy_entity, Enemy())
+    world.add_component(enemy_entity, Faction(faction_id=faction))
     world.add_component(enemy_entity, AIControlled(
         state="IDLE", attack_range_tiles=attack_range, is_ranged=is_ranged,
         entity_class=entity_class))
@@ -539,7 +541,8 @@ def create_spawn_zone(world: World,
                       radius: int, max_count: int,
                       respawn_cooldown: float,
                       level_min: int = 1, level_max: int = 1,
-                      race: str = "Humanoide", entity_class: str = "") -> int:
+                      race: str = "Humanoide", entity_class: str = "",
+                      faction: str = "vida_selvagem") -> int:
     """
     Cria uma entidade invisível de SpawnZone centrada em (center_x, center_y).
     O SpawnZoneSystem gerencia o spawn e respawn dos inimigos desta zona.
@@ -556,5 +559,6 @@ def create_spawn_zone(world: World,
         respawn_cooldown=respawn_cooldown,
         level_min=level_min, level_max=level_max,
         race=race, entity_class=entity_class,
+        faction=faction,
     ))
     return eid

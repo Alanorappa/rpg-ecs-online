@@ -350,6 +350,18 @@ class Enemy:
     pass
 
 @dataclass
+class Faction:
+    """Facção de combate de um mob/NPC — resolve quem ataca quem via
+    content/faction_data.py::get_relationship() (chamado através de
+    engine/faction_system.py, nunca direto). Player NÃO tem este
+    componente — a facção dele é a constante PLAYER_FACTION, resolvida
+    via PlayerControlled em engine/faction_system.py. Entidade sem
+    Faction (NPC estático, boneco de treino, blocker) é tratada como
+    "sem facção" (sentinela neutro) por engine/faction_system.py — nunca
+    quebra por ausência do componente."""
+    faction_id: str = "vida_selvagem"
+
+@dataclass
 class AIControlled:
     state: str = "IDLE"
     is_blocked: bool = False
@@ -1049,7 +1061,8 @@ class SpawnZone:
                  radius: int, max_count: int,
                  respawn_cooldown: float,
                  level_min: int = 1, level_max: int = 1,
-                 race: str = "Humanoide", entity_class: str = ""):
+                 race: str = "Humanoide", entity_class: str = "",
+                 faction: str = "vida_selvagem"):
         self.center_x = center_x
         self.center_y = center_y
         self.enemy_type = enemy_type        # "melee" ou "ranged"
@@ -1061,6 +1074,12 @@ class SpawnZone:
         self.level_max = level_max
         self.race = race                    # raça dos inimigos desta zona
         self.entity_class = entity_class   # "" = derivado do tipo (melee→Guerreiro, ranged→Arqueiro)
+        # Facção dos mobs desta zona (content/faction_data.py) — default
+        # "vida_selvagem" (neutro com o player) é INTENCIONALMENTE seguro:
+        # zonas de mapa existentes que não migrarem pra uma facção hostil
+        # explícita viram neutras em vez de continuarem hostis "por
+        # engano" (ver ARQUITETURA_ONLINE.md, migração de dados da Fase 2).
+        self.faction = faction
         self.active_entity_ids: set = set()
         self.respawn_timers: list = []  # um float por morte; cada um corre independentemente
 

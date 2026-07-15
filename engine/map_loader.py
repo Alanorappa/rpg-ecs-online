@@ -308,6 +308,7 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
                     "count":            sp.get("count", 1),
                     "race":             sp.get("race", zone.get("race", "Humanoide")),
                     "entity_class":     sp.get("class", zone.get("class", "")),
+                    "faction":          sp.get("faction", zone.get("faction", "vida_selvagem")),
                 })
         if spawn_points["spawn_zones"]:
             spawn_points["enemies"] = []

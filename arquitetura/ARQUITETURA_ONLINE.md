@@ -2562,6 +2562,95 @@ coordenada de asset pixel-art deve usar scan automatizado
 
 ---
 
+### 34. Sistema de Facções (hostil/neutro/amigável) + NPCs de combate — Fase 1: infraestrutura (15/07/2026)
+
+Início de uma feature grande, planejada em fases (plano completo salvo
+pré-implementação, ver processo abaixo). Motivação do usuário: hoje todo
+mob é incondicionalmente hostil (agroa só por proximidade) e NPC
+(vendedor/quest-giver/treinador/ferreiro) é uma entidade 100% estática sem
+nenhum sistema de combate — não existe qualquer conceito de facção,
+hostilidade ou relação entre entidades no código (confirmado por grep
+amplo antes de começar: zero ocorrências de "hostile/neutral/faction/
+disposition" fora de docs não relacionadas). Pedido: mobs hostis (agroam
+por proximidade) vs. neutros (só brigam se atacados, revertem depois —
+estilo WoW), e no fim das fases, NPCs/mobs de facções diferentes brigando
+entre si sem depender do player como intermediário. Requisito explícito
+do usuário: nenhum puxadinho — a base tem que ser genérica o bastante pra
+sustentar isso sem gambiarra por par de entidade.
+
+**Processo**: pesquisa no código (mapeamento completo de como NPC/Mob
+funcionam hoje, incl. state machine completa do `AIControlled` da
+`EnemyAISystem`) + pesquisa web sobre o sistema de reputação/aggro do WoW
+(tiers Hostil/Neutro/Amigável, mecanismo de "co-aggro"/assist entre
+aliados da mesma facção — fontes:
+[Reputation](https://wowpedia.fandom.com/wiki/Reputation),
+[Hostile](https://vanilla-wow-archive.fandom.com/wiki/Hostile),
+[Neutral](https://vanilla-wow-archive.fandom.com/wiki/Neutral),
+[Aggro radius](https://wowpedia.fandom.com/wiki/Aggro_radius)) + plano
+formal em modo de planejamento, com 3 decisões de design confirmadas
+explicitamente com o usuário antes de escrever qualquer código:
+1. Modelo de facção = **facções nomeadas + matriz de relação entre cada
+   par** (não um binário hostil/neutro só relativo ao player) — é o único
+   jeito de expressar "bandido ataca guarda" sem hardcode por par.
+2. Só um **novo arquétipo** de NPC de combate herda a infraestrutura de
+   mob — vendedor/quest-giver/ferreiro/treinador continuam exatamente
+   como são, só ganham nameplate por consistência visual (Fase 3).
+3. Entrega **em fases** independentes, cada uma testável sem regressão na
+   suíte, em vez de uma implementação monolítica.
+
+**Fase 1 (esta entrada) — infraestrutura pura, sem mudar comportamento
+nenhum**:
+- `content/faction_data.py` (novo): tabela estática `RELATIONSHIP` — par
+  de facção → tier (`"hostil"`/`"neutro"`/`"amigavel"`), busca simétrica
+  via `get_relationship()`, default `"neutro"` pra par não listado.
+  Facções seed: `monstros_hostis`, `vida_selvagem`, `guardas_vila`,
+  `bandidos`, `jogadores` (`PLAYER_FACTION`).
+- `engine/faction_system.py` (novo): `get_entity_faction()`,
+  `get_relationship_between()`, `can_engage()`, `is_hostile()` — únicos
+  pontos que `EnemyAISystem`/`CombatSystem` vão consultar nas próximas
+  fases (nunca reimplementar a lógica inline num call site).
+- `engine/components.py`: novo componente `Faction(faction_id)`. Player
+  NÃO ganha o componente — facção resolvida via `PlayerControlled` +
+  constante, pra não tocar em nenhum call-site de spawn de player nem no
+  formato de save.
+- `SpawnZone` (`engine/components.py`) ganha campo `faction` (default
+  `"vida_selvagem"` — INTENCIONALMENTE seguro: zona não migrada vira
+  neutra em vez de continuar hostil "por engano" quando a Fase 2
+  consultar o campo).
+- `create_enemy()`/`create_spawn_zone()` (`engine/entity_factory.py`)
+  ganham parâmetro `faction` opcional, repassado a `Faction()`.
+  `SpawnZoneSystem._spawn_one()` (`engine/world_systems.py`) passa
+  `faction=zone.faction`.
+- **Ponto de achatamento real encontrado**: `engine/map_loader.py`
+  (~linha 296-311) reconstrói um dict NOVO a partir do JSON do mapa,
+  descartando qualquer chave não listada explicitamente — sem adicionar
+  `"faction"` nessa lista, o campo nunca chegaria de
+  `{mapa}_entities.json` até `_create_spawn_zones_for_map`
+  (`server/world_server.py`), mesmo com todo o resto pronto. Corrigido.
+- Ainda **dead code** nesta fase: `EnemyAISystem`/`CombatSystem` não
+  consultam facção — todo mob continua se comportando exatamente como
+  antes (hostil por proximidade, sem exceção). Migração de dados dos 3
+  mapas existentes (só 21 zonas de spawn no total, escopo pequeno) fica
+  pra Fase 2, junto com o comportamento hostil/neutro de verdade.
+
+**Validado**: `tests/test_faction.py` (novo, 14 testes) — tabela-verdade
+de `get_relationship()`/`can_engage()`/`is_hostile()` contra entidades
+dummy num `World` isolado (sem rodar nenhum sistema de jogo). Suíte
+completa sem regressão (132/132, era 118 + 14 novos). `py_compile` em
+todos os arquivos tocados.
+
+**Próximas fases** (plano completo em
+`C:\Users\l4nce\.claude\plans\expressive-wondering-starlight.md`, será
+copiado pra este arquivo conforme cada fase fecha): Fase 2 (hostil/neutro
+mob-vs-player + migração de dados), Fase 3 (nameplate de NPC — badge de
+nível igual ao mob, sem barra de HP), Fase 4 (novo arquétipo de NPC de
+combate + componente `Combatant` genérico pro gate de sync
+`server/world_server.py:2940`, hoje restrito a `Enemy`), Fase 5 (combate
+multi-tipo faccionado de verdade — `_select_target()` deixa de assumir
+`PlayerControlled`, assist/co-aggro entre aliados).
+
+---
+
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
 
 ```

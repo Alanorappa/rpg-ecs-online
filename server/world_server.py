@@ -521,6 +521,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 level_max      = z.get("level_max",  5),
                 race           = z.get("race",          "Humanoide"),
                 entity_class   = z.get("entity_class",  ""),
+                faction        = z.get("faction",       "vida_selvagem"),
             ))
 
     # ── API pública para SessionManager ──────────────────────────────────────
