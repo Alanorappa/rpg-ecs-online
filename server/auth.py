@@ -15,13 +15,46 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "game.db")
 
 
 def _hash(password: str) -> str:
+    """SHA-256 simples — é o que o CLIENTE calcula e manda na rede
+    (client_hash). Usado por seeds/testes pra derivar o client_hash de uma
+    senha em texto. NÃO é mais o que fica no banco — ver _server_hash."""
     return hashlib.sha256(password.encode()).hexdigest()
 
 
+def _server_hash(salt: str, client_hash: str) -> str:
+    """Hash de ARMAZENAMENTO: sha256(salt + client_hash), salt aleatório por
+    conta. Antes o banco guardava o client_hash direto — vazou o banco,
+    logava-se com o próprio hash (pass-the-hash) e sha256 sem salt cai em
+    rainbow table. Com salt por conta, o dump do banco não autentica ninguém
+    (login exige o client_hash, pré-imagem) nem quebra em tabela pronta.
+    Limite conhecido e aceito em dev: o client_hash na REDE continua sendo
+    'a senha' (falta TLS/wss — ver PROBLEMAS_ARQUITETURA.md §11 item C1);
+    argon2/bcrypt ficam pra migração de produção junto do TLS."""
+    return hashlib.sha256((salt + client_hash).encode()).hexdigest()
+
+
+def _new_salt() -> str:
+    import secrets
+    return secrets.token_hex(16)
+
+
+# Migração lazy (1x por processo): a coluna `salt` precisa existir em QUALQUER
+# caminho que abra o banco — testes e utilitários usam _get_conn() direto sem
+# passar por init_db() (que também migra, mas só roda no startup do servidor).
+_schema_ensured = False
+
+
 def _get_conn() -> sqlite3.Connection:
+    global _schema_ensured
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    if not _schema_ensured:
+        _schema_ensured = True
+        try:
+            conn.execute("ALTER TABLE accounts ADD COLUMN salt TEXT DEFAULT NULL")
+        except Exception:
+            pass  # coluna já existe (ou tabela ainda não existe — init_db cria com ela)
     return conn
 
 
@@ -44,6 +77,7 @@ def init_db() -> None:
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             username    TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
+            salt        TEXT DEFAULT NULL,
             created_at  INTEGER DEFAULT (strftime('%s','now'))
         );
 
@@ -72,6 +106,13 @@ def init_db() -> None:
         """)
     # Migração: adiciona colunas em bancos existentes (coluna não existia antes)
     with _get_conn() as conn:
+        try:
+            # Salt por conta (item C1, PROBLEMAS_ARQUITETURA.md §11). NULL =
+            # conta legada (hash antigo, sem salt) — upgrade transparente no
+            # próximo login bem-sucedido (ver _authenticate_sync).
+            conn.execute("ALTER TABLE accounts ADD COLUMN salt TEXT DEFAULT NULL")
+        except Exception:
+            pass  # coluna já existe
         try:
             conn.execute("ALTER TABLE characters ADD COLUMN fog_json TEXT DEFAULT '{}'")
         except Exception:
@@ -118,15 +159,36 @@ async def authenticate(username: str, password: str) -> "dict | None":
 
 def _authenticate_sync(username: str, password: str) -> "dict | None":
     """
-    Compara credenciais. password já vem como SHA-256 do cliente — sem rehashear.
+    Compara credenciais. `password` é o client_hash (SHA-256 do texto, feito
+    no cliente). No banco: sha256(salt + client_hash) com salt por conta —
+    contas legadas (salt NULL, hash antigo = client_hash direto) são
+    verificadas pelo esquema antigo e MIGRADAS transparentemente no próprio
+    login bem-sucedido. Ver _server_hash pro racional.
     Retorna {account_id, characters:[...]}. None = credenciais inválidas.
     """
+    import hmac
     with _get_conn() as conn:
         row = conn.execute(
-            "SELECT id FROM accounts WHERE username=? AND password_hash=?",
-            (username, password)
+            "SELECT id, password_hash, salt FROM accounts WHERE username=?",
+            (username,)
         ).fetchone()
         if not row:
+            return None
+        salt = row["salt"]
+        if salt:
+            ok = hmac.compare_digest(row["password_hash"], _server_hash(salt, password))
+        else:
+            # Conta legada (pré-salt): hash armazenado == client_hash direto.
+            ok = hmac.compare_digest(row["password_hash"], password)
+            if ok:
+                # Upgrade transparente: re-armazena com salt novo. A partir
+                # daqui o dump do banco não serve mais pra logar nesta conta.
+                new_salt = _new_salt()
+                conn.execute(
+                    "UPDATE accounts SET salt=?, password_hash=? WHERE id=?",
+                    (new_salt, _server_hash(new_salt, password), row["id"])
+                )
+        if not ok:
             return None
         chars = conn.execute(
             "SELECT * FROM characters WHERE account_id=? ORDER BY id LIMIT 3",
@@ -145,12 +207,14 @@ async def register(username: str, password: str) -> bool:
 
 
 def _register_account_sync(username: str, password: str) -> bool:
-    """Insere conta. password deve ser SHA-256 do texto-plano."""
+    """Insere conta. `password` é o client_hash (SHA-256 do texto, cliente);
+    armazenamento sempre com salt novo — ver _server_hash."""
     try:
+        salt = _new_salt()
         with _get_conn() as conn:
             conn.execute(
-                "INSERT INTO accounts (username, password_hash) VALUES (?,?)",
-                (username, password)
+                "INSERT INTO accounts (username, password_hash, salt) VALUES (?,?,?)",
+                (username, _server_hash(salt, password), salt)
             )
         return True
     except sqlite3.IntegrityError:

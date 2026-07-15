@@ -4398,6 +4398,25 @@ table quebra senhas fracas.
 servidor. Registrado pra não virar "regra esquecida" — hoje o CLAUDE.md
 descreve o esquema atual como se fosse o desejado.
 
+**✅ PARCIALMENTE RESOLVIDO (15/07/2026) — salt por conta + upgrade
+transparente.** Banco agora guarda `sha256(salt + client_hash)` com salt
+aleatório por conta (`secrets.token_hex(16)`): dump do banco não autentica
+mais ninguém (pass-the-hash morto — login exige o client_hash, pré-imagem)
+nem cai em rainbow table. Contas legadas (salt NULL) são verificadas pelo
+esquema antigo e MIGRADAS no próprio login bem-sucedido, sem o jogador
+perceber. Comparações via `hmac.compare_digest` (timing-safe). Migração de
+schema é lazy (1x por processo em `_get_conn()` + coluna no CREATE TABLE) —
+cobre testes/utilitários que nunca chamam `init_db()`. Cliente inalterado
+(continua mandando o mesmo client_hash).
+
+Validado: teste dirigido (conta nova salted; login certo/errado; conta
+legada migra no login e continua logando; hash vazado do banco NÃO loga)
++ suíte 92/92.
+
+**Continua pendente (produção):** TLS/wss (o client_hash na rede ainda é
+"a senha") e argon2/bcrypt no lugar de sha256 — os dois juntos na migração
+de infra pré-lançamento.
+
 ### 🟡 C2 — Identidade de item é o nome (string)
 
 Saves/protocolo/reconstrução usam `item.name` como chave. Renomear item no
