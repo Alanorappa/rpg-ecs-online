@@ -24,7 +24,35 @@ def spawn_player(ws, session_id: str, tile_x: int, tile_y: int,
         "hp": hp, "level": 1,
         "stats_json": '{"attack_power": 50, "max_hp": ' + str(hp) + '}',
     }
-    return ws.spawn_player(session_id, char)
+    eid = ws.spawn_player(session_id, char)
+    clear_login_immunity(ws, eid)
+    return eid
+
+
+def clear_login_immunity(ws, eid: int) -> None:
+    """Zera a imunidade/invisibilidade pós-login (3s = 90 ticks, ver
+    WorldServer.spawn_player) — simula "o loading já terminou faz tempo".
+
+    Sem isso, TODO teste que age logo após o spawn falha silenciosamente:
+    o player é invisível pra broadcasts (`_can_see` → False, então nenhum
+    ENTITY_MOVE/COMBAT_RESULT/DESPAWN chega ao outro player) e imune a
+    dano (`blocked_immune`, então mob nunca gera delta de combate). Foi a
+    causa raiz ÚNICA dos 7 testes "permanentemente vermelhos" da suíte
+    (baseline 7F/85P) — a feature de imunidade é intencional e posterior
+    aos testes; o que faltava era os testes simularem a janela expirada."""
+    from engine.components import CombatState
+    cst = ws.world.get_component(eid, CombatState)
+    if cst:
+        _was_invisible = not cst.is_visible
+        cst.respawn_immunity_ticks = 0
+        cst.is_visible = True
+        cst.is_immune  = False
+        # Imita a expiração real (_tick_respawn_immunity): a restauração de
+        # visibilidade é anunciada via delta "visibility_changed" — sem isso,
+        # outros players nunca recebem o ENTITY_SPAWN deste eid (o broadcast
+        # de login foi filtrado por _can_see enquanto invisível).
+        if _was_invisible:
+            ws._visibility_changed_this_tick.append(eid)
 
 
 def authorize_skill(ws, eid: int, sid: str) -> None:

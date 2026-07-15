@@ -77,6 +77,14 @@ async def fake_login(mgr, session_id: str, username: str,
             "char_id": chars[0]["id"]
         }))
 
+    # Expira a imunidade/invisibilidade pós-login (3s) — sem isso, broadcasts
+    # pra/sobre este player são filtrados por _can_see e dano vira
+    # blocked_immune nos primeiros 90 ticks. Ver tests/helpers.py::
+    # clear_login_immunity (mesma razão, mesma causa raiz dos 7F da suíte).
+    if session.entity_id != -1:
+        from tests.helpers import clear_login_immunity
+        clear_login_immunity(mgr.world_server, session.entity_id)
+
     return session, fake_ws
 
 
@@ -251,12 +259,29 @@ class TestAOISubscription(unittest.IsolatedAsyncioTestCase):
                       "Eid de B não está em known_eids de A")
 
     async def test_first_player_receives_entity_spawn_when_b_logs_in(self):
-        """Quando B loga perto de A, A deve receber ENTITY_SPAWN de B."""
+        """Quando B loga perto de A, A deve receber ENTITY_SPAWN de B.
+
+        Desde a imunidade pós-login (3s invisível), o ENTITY_SPAWN de B não
+        sai mais NO login (broadcast filtrado por _can_see) — ele chega
+        quando a visibilidade é restaurada, via delta visibility_changed no
+        tick seguinte. fake_login já expira a imunidade (clear_login_immunity,
+        que também anuncia em _visibility_changed_this_tick); só falta rodar
+        o tick que despacha."""
         session_a, fw_a = await fake_login(self.mgr, "s1", "user_spa", 115, 389)
         fw_a.sent.clear()   # limpa mensagens do próprio login de A
-        _, _ = await fake_login(self.mgr, "s2", "user_spb", 117, 389)
-        spawns = get_msgs_of_type(fw_a, MsgType.ENTITY_SPAWN)
-        self.assertGreater(len(spawns), 0, "A não recebeu ENTITY_SPAWN quando B logou")
+        session_b, _ = await fake_login(self.mgr, "s2", "user_spb", 117, 389)
+        for _ in range(3):
+            self.ws_server._tick(0.05)
+            await asyncio.sleep(0)   # processa o create_task do dispatch
+        # Aceita os dois canais: ENTITY_SPAWN avulso OU AOI_UPDATE.spawned
+        # (o caminho atual entrega via AOI_UPDATE).
+        b_eid = session_b.entity_id
+        spawn_eids = [s.get("eid") for s in get_msgs_of_type(fw_a, MsgType.ENTITY_SPAWN)]
+        for mt, payload, _, _ in get_messages(fw_a):
+            if mt == MsgType.AOI_UPDATE:
+                spawn_eids += [s.get("eid") for s in payload.get("spawned", [])]
+        self.assertIn(b_eid, spawn_eids,
+                      "A não recebeu spawn de B (nem ENTITY_SPAWN nem AOI_UPDATE.spawned)")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -323,12 +348,27 @@ class TestAOIUpdate(unittest.IsolatedAsyncioTestCase):
             self.skipTest("Sem mobs")
 
         mob_cs = self.ws_server.world.get_component(mob_eid, CombatStats)
-        mob_cs.current_hp = 1
         player_eid = session_a.entity_id
         mob_tm = self.ws_server.world.get_component(mob_eid, TileMovement)
         ptm    = self.ws_server.world.get_component(player_eid, TileMovement)
-        mob_tm.current_tile_x = ptm.current_tile_x + 1
-        mob_tm.current_tile_y = ptm.current_tile_y
+        _from_tx, _from_ty = mob_tm.current_tile_x, mob_tm.current_tile_y
+        mob_tm.current_tile_x = mob_tm.target_tile_x = ptm.current_tile_x + 1
+        mob_tm.current_tile_y = mob_tm.target_tile_y = ptm.current_tile_y
+        # Teleporte manual não gera evento de movimento — sem registrar em
+        # _moved_this_tick, o AOI nunca detecta o mob entrando no raio dos
+        # players, ele nunca entra em known_eids, e o despawn da morte é
+        # filtrado (só se despawna o que o cliente CONHECE). Registra o
+        # deslocamento como um move real e dá uns ticks pro spawn chegar.
+        self.ws_server._moved_this_tick.append({
+            "eid": mob_eid,
+            "tx": mob_tm.current_tile_x, "ty": mob_tm.current_tile_y,
+            "from_tx": _from_tx, "from_ty": _from_ty,
+        })
+        await self._run_ticks_async(3)
+        self.assertIn(mob_eid, session_a.known_eids,
+                      "mob não entrou em known_eids de A após mover pro AOI")
+
+        mob_cs.current_hp = 1
         self.ws_server.set_player_target("s1", mob_eid)
         fw_a.sent.clear()
         fw_b.sent.clear()

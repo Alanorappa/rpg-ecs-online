@@ -893,6 +893,12 @@ class TestRangedMobAbilities(unittest.TestCase):
         ws.world.add_component(eid, Enemy())
         ws.world.add_component(eid, EntityIdentity(name="Hunter de Teste", race="Fera",
                                                     entity_class="Hunter"))
+        # MapLocation: obrigatório desde o refactor multi-mapa — os sistemas
+        # por-bundle (EnemyAbilitySystem/EnemyAISystem com _map_filter) pulam
+        # entidades sem MapLocation do próprio mapa; sem isso o mob sintético
+        # é invisível pra TODOS os bundles e a habilidade nunca dispara.
+        from engine.components import MapLocation as _MapLoc
+        ws.world.add_component(eid, _MapLoc(map_file="maps/map_1.csv"))
         # Habilidade poison_arrow pronta para disparar (cooldown=0)
         defn = ABILITY_DEFS["poison_arrow"]
         slot = EnemyAbilitySlot(ability_id="poison_arrow", cooldown=12.0, current_cooldown=0.0)

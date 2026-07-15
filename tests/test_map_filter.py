@@ -186,8 +186,8 @@ class TestAttackCooldownDecrementedOnce(unittest.TestCase):
 
     def test_cooldown_decrements_once_per_tick(self):
         """attack_cooldown_timer diminui em dt (não 3×dt) por tick."""
-        from engine.components import CombatStats
-        spawn_player(self.ws, "s1", 130, 374)
+        from engine.components import CombatStats, TileMovement
+        eid = spawn_player(self.ws, "s1", 130, 374)
         run_ticks(self.ws, 60)   # spawna mobs
 
         mob_eid = self._first_ai_mob_on_map1()
@@ -195,6 +195,20 @@ class TestAttackCooldownDecrementedOnce(unittest.TestCase):
 
         cs = self.ws.world.get_component(mob_eid, CombatStats)
         self.assertIsNotNone(cs)
+
+        # Mob IDLE sem player a <40 tiles DORME (sleep zone, EnemyAISystem) e
+        # pula todo o processamento — cooldown incluso, de propósito. Pra
+        # testar o decremento, o mob precisa estar ACORDADO: teleporta o
+        # PLAYER pra ~12 tiles do mob (dentro dos 40 da sleep zone, fora do
+        # raio de detecção — mob fica IDLE acordado, sem virar CHASING).
+        # Antes o teste passava por acidente: o player nascia invisível
+        # (imunidade pós-login) e o mob caía no branch "sem alvo válido",
+        # que também decrementa — o fixture agora expira a imunidade
+        # (tests/helpers.py::clear_login_immunity) e expôs a dependência.
+        mob_tm = self.ws.world.get_component(mob_eid, TileMovement)
+        ptm    = self.ws.world.get_component(eid, TileMovement)
+        ptm.current_tile_x = ptm.target_tile_x = mob_tm.current_tile_x + 12
+        ptm.current_tile_y = ptm.target_tile_y = mob_tm.current_tile_y
 
         # Força cooldown alto para garantir que o mob não ataque neste tick
         FIXED_CD = 10.0
