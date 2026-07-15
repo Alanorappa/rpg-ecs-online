@@ -184,6 +184,8 @@ Esses atributos existem na classe `Skill.__init__` (`fail_flash_timer` está lá
 | `AIControlled(state, path, attack_range_tiles, is_ranged, entity_class, disengage_cd, kite_*, ranged_cast_timer, aggroed_by_damage, target_eid=-1)` | IA do mob | state: IDLE/AGGRO_DELAY/CHASING/RETURNING/ATTACKING; `target_eid` = eid do alvo atual (-1 = sem alvo) |
 | `EnemyAbilities(slots[EnemyAbilitySlot])` | habilidades especiais | EnemyAbilitySystem |
 | `Projectile(attacker_id, target_id, damage_type, speed)` | projétil inimigo | |
+| `Faction(faction_id)` | facção de combate (mob/NPC de combate) | resolve hostil/neutro/amigavel via `content/faction_data.py::get_relationship()`, sempre através de `engine/faction_system.py`. Player não tem o componente (facção = constante `PLAYER_FACTION`, via `PlayerControlled`). Default `"monstros_hostis"` (retrocompatível — todo mob era hostil antes do Sistema de Facções). Sistema de Facções, Fase 1/2 |
+| `Combatant()` | marcador: entidade sincronizada pelo servidor como combatente | anexado por `_build_combat_entity` (mob E NPC de combate) — gate de registro em `_mob_eids`/`ENTITY_SPAWN` em `server/world_server.py` (não `Enemy` sozinho, que implicaria "hostil ao player"). Sistema de Facções, Fase 4 |
 
 ---
 
@@ -208,7 +210,7 @@ Esses atributos existem na classe `Skill.__init__` (`fail_flash_timer` está lá
 | `Trainer(class_id)` | classe de habilidades ensinadas | |
 | `Blacksmith(shop_id)` | ferreiro com crafting | |
 | `QuestLog(active{qid→progresso[]}, completed{qid})` | estado de quests do jogador | |
-| `SpawnZone(center_x/y, radius, enemy_type, enemy_tier, max_count, respawn_cooldown, level_min/max, race, entity_class, active_entity_ids, respawn_timers)` | zona de respawn | Gerenciada por SpawnZoneSystem |
+| `SpawnZone(center_x/y, radius, enemy_type, enemy_tier, max_count, respawn_cooldown, level_min/max, race, entity_class, faction, active_entity_ids, respawn_timers)` | zona de respawn | Gerenciada por SpawnZoneSystem. `faction` (default `"monstros_hostis"`) define a facção dos mobs spawnados — Sistema de Facções, Fase 1/2 |
 | `SpawnZoneOwner(zone_entity_id)` | liga mob à sua zona | |
 | `Corpse(loot[], coins, timer, looted, is_open)` | cadáver com drop | Offline only — servidor usa `_corpses` dict |
 | `EntityIdentity(name, race, entity_class, level, tier)` | identidade completa do mob | lido por DeathHandlerSystem e QuestSystem |

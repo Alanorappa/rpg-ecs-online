@@ -350,6 +350,17 @@ class Enemy:
     pass
 
 @dataclass
+class Combatant:
+    """Marcador genérico: entidade plenamente sincronizada pelo servidor
+    como combatente (mob OU NPC de combate — engine/entity_factory.py::
+    _build_combat_entity anexa em ambos). server/world_server.py usa este
+    componente (não `Enemy`) pra decidir quem entra em `_mob_eids`/recebe
+    `ENTITY_SPAWN` — `Enemy` sozinho implicaria "hostil ao player", o que
+    não é verdade pra um NPC de combate amigável (ex: guarda). Sistema de
+    Facções, Fase 4 (ARQUITETURA_ONLINE.md)."""
+    pass
+
+@dataclass
 class Faction:
     """Facção de combate de um mob/NPC — resolve quem ataca quem via
     content/faction_data.py::get_relationship() (chamado através de

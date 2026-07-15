@@ -9,7 +9,7 @@ from engine.components import Position, Renderable, PlayerControlled, Camera, Co
                        SkillLevels, \
                        SpawnZone, EntityIdentity, StatusEffects, ConsumableBar, MobSounds, FogOfWar, \
                        EnemyAbilities, EnemyAbilitySlot, QuestLog, QuestGiver, NPC, Blacksmith, \
-                       LearnedRecipes, Trainer, Faction
+                       LearnedRecipes, Trainer, Faction, Combatant
 from ui.ui_components import UIState, ShopUIState, LootUIState, DragState, TradeUIState
 from engine.tileset import TILE_MAPPING, OBJECT_MAPPING, TILE_SIZE, FLOOR_TILE, get_collision_offsets
 from content.mob_definitions import MOB_TABLE
@@ -214,14 +214,21 @@ def _resolve_mob_race_variant(race: str, want_ranged: bool) -> str:
     return race
 
 
-def create_enemy(world: World, tile_x: int, tile_y: int,
-                 attack_range: int = ENEMY_MELEE_ATTACK_RANGE,
-                 is_ranged: bool = False,
-                 tier: str = "normal",
-                 race: str = "Humanoide",
-                 entity_class: str = "",
-                 level: int = 1,
-                 faction: str = "monstros_hostis") -> int:
+def _build_combat_entity(world: World, tile_x: int, tile_y: int,
+                         attack_range: int, is_ranged: bool, tier: str,
+                         race: str, entity_class: str, level: int,
+                         faction: str, identity_name: str = "") -> int:
+    """Corpo compartilhado entre `create_enemy()` (mob hostil "clássico")
+    e `create_combat_npc()` (NPC de combate — guarda, etc: mesma
+    infraestrutura de IA/combate, só com facção tipicamente amigável e
+    identidade de NPC em vez de Enemy). Retorna a entidade SEM o
+    componente de tag (`Enemy`/`NPC`) — quem chama decide qual anexar.
+
+    `identity_name`, se não-vazio, sobrescreve o nome exibido
+    (`EntityIdentity.name`, default = raça) — usado por
+    `create_combat_npc()` pra dar um nome próprio ("Guarda Real") em vez
+    de mostrar a raça genérica, igual ao `_server_name` que mobs remotos
+    já recebem via `ENTITY_SPAWN.name` (ver client/remote_entity_handlers.py)."""
     cfg = ENEMY_TIER_CONFIGS.get(tier, ENEMY_TIER_CONFIGS["normal"])
     x = tile_x * TILE_SIZE + TILE_SIZE / 2
     y = tile_y * TILE_SIZE + TILE_SIZE / 2
@@ -253,7 +260,7 @@ def create_enemy(world: World, tile_x: int, tile_y: int,
     world.add_component(enemy_entity, Position(x=x, y=y, prev_x=x, prev_y=y))
     world.add_component(enemy_entity, Renderable(color=color, width=size, height=size))
     world.add_component(enemy_entity, Collider(width=size, height=size))
-    world.add_component(enemy_entity, Enemy())
+    world.add_component(enemy_entity, Combatant())
     world.add_component(enemy_entity, Faction(faction_id=faction))
     world.add_component(enemy_entity, AIControlled(
         state="IDLE", attack_range_tiles=attack_range, is_ranged=is_ranged,
@@ -377,7 +384,7 @@ def create_enemy(world: World, tile_x: int, tile_y: int,
     ))
 
     tier_label      = tier.capitalize()
-    mob_display_name = race                                  # "Zumbi", "Aranha", etc.
+    mob_display_name = identity_name or race                 # "Zumbi", "Aranha", ou nome próprio
     mob_actual_race  = mob_def["race"] if mob_def else race  # "Morto-Vivo", "Fera", etc.
     world.add_component(enemy_entity, EntityIdentity(
         name=mob_display_name, race=mob_actual_race, entity_class=entity_class,
@@ -402,6 +409,51 @@ def create_enemy(world: World, tile_x: int, tile_y: int,
         world.add_component(enemy_entity, EnemyAbilities(slots))
 
     return enemy_entity
+
+
+def create_enemy(world: World, tile_x: int, tile_y: int,
+                 attack_range: int = ENEMY_MELEE_ATTACK_RANGE,
+                 is_ranged: bool = False,
+                 tier: str = "normal",
+                 race: str = "Humanoide",
+                 entity_class: str = "",
+                 level: int = 1,
+                 faction: str = "monstros_hostis") -> int:
+    eid = _build_combat_entity(world, tile_x, tile_y, attack_range, is_ranged,
+                               tier, race, entity_class, level, faction)
+    world.add_component(eid, Enemy())
+    return eid
+
+
+def create_combat_npc(world: World, tile_x: int, tile_y: int,
+                      faction: str,
+                      name: str = "",
+                      profession: str = "Guarda",
+                      attack_range: int = ENEMY_MELEE_ATTACK_RANGE,
+                      is_ranged: bool = False,
+                      tier: str = "normal",
+                      race: str = "Humanoide",
+                      entity_class: str = "",
+                      level: int = 1) -> int:
+    """NPC de combate (guarda, etc.) — mesma infraestrutura de IA/combate/
+    sync de `create_enemy()` (via `_build_combat_entity`), mas com tag
+    `NPC` (identidade nome/level/profissão) em vez de `Enemy`. Facção
+    tipicamente amigável ou neutra ao player (ex: "guardas_vila") — não é
+    obrigatório, um NPC de combate hostil também é válido (ex: bandido
+    "civil"). Sistema de Facções, Fase 4 (ARQUITETURA_ONLINE.md).
+
+    Diferente de vendedor/quest-giver/treinador/ferreiro (`create_merchant`
+    etc.): estes continuam 100% estáticos e client-side, sem `CombatStats`
+    nem sync com o servidor. `create_combat_npc` produz uma entidade
+    plenamente sincronizada (`Combatant`, ver server/world_server.py),
+    com HP real e IA de combate — pode lutar, ser atacado (sujeito ao
+    gate de facção `amigavel` em `apply_damage_core`), e (Fase 5) brigar
+    com outras entidades não-jogador."""
+    eid = _build_combat_entity(world, tile_x, tile_y, attack_range, is_ranged,
+                               tier, race, entity_class, level, faction,
+                               identity_name=name)
+    world.add_component(eid, NPC(name=name or race, level=level, profession=profession))
+    return eid
 
 
 def create_merchant(world: World, tile_x: int, tile_y: int, shop_id: str = "general",
@@ -496,6 +548,10 @@ def create_training_dummy(world: World, tile_x: int, tile_y: int) -> int:
     world.add_component(eid, Renderable(color=(255, 215, 0), width=28, height=28))
     world.add_component(eid, Collider(width=28, height=28))
     world.add_component(eid, Enemy())
+    # Combatant: gate de registro em _mob_eids/sync agora é este componente,
+    # não Enemy sozinho (Sistema de Facções, Fase 4) — sem isso o boneco de
+    # treino pararia de ser sincronizado pro cliente.
+    world.add_component(eid, Combatant())
     world.add_component(eid, TileMovement(
         current_tile_x=tile_x, current_tile_y=tile_y,
         target_tile_x=tile_x,  target_tile_y=tile_y,

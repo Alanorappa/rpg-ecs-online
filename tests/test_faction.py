@@ -9,6 +9,12 @@ TestProximityAggroByFaction: Fase 2, comportamento real de
 EnemyAISystem — mob hostil continua agroando por proximidade
 (regressão), mob neutro ignora proximidade mas agroa ao ser atacado, e
 reverte via o mesmo mecanismo de leash/evasão já existente (RETURNING).
+
+TestCombatNpcArchetype: Fase 4 — create_combat_npc() (novo arquétipo,
+compartilha _build_combat_entity com create_enemy), componente
+Combatant genérico como gate de sync (server/world_server.py, no lugar
+de Enemy sozinho), e o gate de dano "amigavel" trazido da Fase 5
+(apply_damage_core) pra já valer aqui.
 """
 import os, sys
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -215,6 +221,87 @@ class TestProximityAggroByFaction(unittest.TestCase):
         run_ticks(self.ws, 3)
         self.assertEqual(ai.state, "RETURNING",
                          "mob neutro agroado por dano deveria respeitar leash igual hostil")
+
+
+class TestCombatNpcArchetype(unittest.TestCase):
+    """Fase 4: create_combat_npc() (novo arquétipo), componente Combatant
+    como gate de sync genérico, e o gate de dano "amigavel" (trazido da
+    Fase 5 pra já proteger o NPC de combate amigável nesta fase)."""
+
+    def setUp(self):
+        from tests.helpers import make_world_server, spawn_player
+        self.ws  = make_world_server()
+        spawn_player(self.ws, "s1", 130, 374)
+        self.peid = self.ws._player_eids["s1"]
+
+    def test_create_combat_npc_tem_combatant_faction_npc_e_combatstats(self):
+        from engine.entity_factory import create_combat_npc
+        from engine.components import Combatant, Faction, NPC, CombatStats, Enemy
+        eid = create_combat_npc(self.ws.world, 131, 374, faction="guardas_vila",
+                                name="Guarda Real", profession="Guarda")
+        self.assertIsNotNone(self.ws.world.get_component(eid, Combatant))
+        fac = self.ws.world.get_component(eid, Faction)
+        self.assertEqual(fac.faction_id, "guardas_vila")
+        npc = self.ws.world.get_component(eid, NPC)
+        self.assertEqual(npc.name, "Guarda Real")
+        self.assertIsNotNone(self.ws.world.get_component(eid, CombatStats))
+        # NÃO é Enemy — combatente amigável não é "inimigo" do player.
+        self.assertIsNone(self.ws.world.get_component(eid, Enemy))
+
+    def test_combat_npc_e_registrado_em_mob_eids_via_combatant(self):
+        from engine.entity_factory import create_combat_npc
+        from engine.components import MapLocation
+        from tests.helpers import run_ticks
+        eid = create_combat_npc(self.ws.world, 135, 374, faction="guardas_vila")
+        self.ws.world.add_component(eid, MapLocation(self.ws._map_file))
+        run_ticks(self.ws, 2)
+        self.assertIn(eid, self.ws._mob_eids,
+                     "NPC de combate deveria ser registrado em _mob_eids via Combatant")
+
+    def test_spawn_payload_do_npc_de_combate_inclui_faction(self):
+        from engine.entity_factory import create_combat_npc
+        from engine.components import TileMovement
+        eid = create_combat_npc(self.ws.world, 140, 374, faction="guardas_vila",
+                                name="Guarda Real")
+        tm = self.ws.world.get_component(eid, TileMovement)
+        payload = self.ws._build_mob_spawn_payload(eid, tm)
+        self.assertEqual(payload["faction"], "guardas_vila")
+        self.assertEqual(payload["name"], "Guarda Real")
+
+    def test_npc_de_combate_amigavel_nao_pode_ser_atacado(self):
+        """Peça da Fase 5 (gate can_engage em apply_damage_core) trazida
+        pra já valer na Fase 4 — sem ela, um NPC "amigável" seria
+        livremente matável, contradizendo a própria palavra."""
+        from engine.entity_factory import create_combat_npc
+        from engine.components import CombatState, CombatStats
+        from engine.world_systems import deal_damage
+        guard = create_combat_npc(self.ws.world, 131, 374, faction="guardas_vila")
+        self.ws.world.add_component(guard, CombatState())
+        guard_cs = self.ws.world.get_component(guard, CombatStats)
+        hp_before = guard_cs.current_hp
+
+        dead, outcome = deal_damage(self.peid, guard, "physical", pre_outcome="hit")
+
+        self.assertEqual(guard_cs.current_hp, hp_before,
+                         "dano entre facções amigaveis deveria ser bloqueado (HP intacto)")
+        self.assertFalse(dead)
+
+    def test_npc_de_combate_hostil_pode_ser_atacado_normalmente(self):
+        """Regressão: o gate novo não bloqueia dano fora do caso amigavel —
+        um NPC de combate de facção hostil (ex: bandido) continua
+        recebendo dano normalmente."""
+        from engine.entity_factory import create_combat_npc
+        from engine.components import CombatState, CombatStats
+        from engine.world_systems import deal_damage
+        bandit = create_combat_npc(self.ws.world, 131, 374, faction="bandidos")
+        self.ws.world.add_component(bandit, CombatState())
+        bandit_cs = self.ws.world.get_component(bandit, CombatStats)
+        hp_before = bandit_cs.current_hp
+
+        deal_damage(self.peid, bandit, "physical", pre_outcome="hit")
+
+        self.assertLess(bandit_cs.current_hp, hp_before,
+                        "dano entre facções hostis não deveria ser bloqueado")
 
 
 if __name__ == "__main__":

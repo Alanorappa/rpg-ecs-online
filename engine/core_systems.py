@@ -33,6 +33,8 @@ def apply_damage_core(world, target_id: int, dmg: int, *,
     Invariantes:
       - alvo com current_hp <= 0, is_immune ou em modo evasão (AIControlled.
         state == "RETURNING", ver EnemyAISystem): dano bloqueado
+      - atacante e alvo de facção "amigavel" entre si (content/
+        faction_data.py, só checado se killer_eid != -1): dano bloqueado
       - overkill preservado (current_hp pode ficar negativo; nunca clampar)
       - dano > 0 quebra polymorph e sleep (sleep: on_expire_effect cancelado
         para não aplicar o slow encadeado ao acordar)
@@ -51,7 +53,8 @@ def apply_damage_core(world, target_id: int, dmg: int, *,
     duplicar esse hook em cada handler de skill — client offline não passa
     nada (no-op).
 
-    Retorna: "blocked_dead" | "blocked_immune" | "blocked_evade" | "applied" | "killed".
+    Retorna: "blocked_dead" | "blocked_immune" | "blocked_evade" |
+    "blocked_friendly" | "applied" | "killed".
     O chamador mantém a responsabilidade pelo que NÃO é invariante:
     cálculo do dano, outcome (crit/block/...), aggro, enter_combat,
     feedback visual, broadcast de rede.
@@ -70,6 +73,17 @@ def apply_damage_core(world, target_id: int, dmg: int, *,
         # visual ("Evadiu!") e o bloqueio de re-aggro ficam por conta de
         # cada chamador (ver EnemyAISystem/CombatSystem.deal_damage).
         return "blocked_evade"
+    if killer_eid != -1:
+        # Facção "amigavel" nunca pode ser alvo de dano — rede de segurança
+        # final (mesmo padrão do blocked_evade acima), trazida da Fase 5 do
+        # Sistema de Facções pra já valer na Fase 4 (NPC de combate "amigável"
+        # sem isso seria livremente matável, contradizendo a própria palavra).
+        # killer_eid == -1 (DoT/ambiente sem atacante identificado) não checa
+        # — não dá pra resolver facção de "ninguém". Feedback visual/bloqueio
+        # de efeitos secundários (knockback/DoT) por chamador fica pra Fase 5.
+        from engine.faction_system import can_engage
+        if not can_engage(world, killer_eid, target_id):
+            return "blocked_friendly"
 
     cs.current_hp -= dmg  # overkill preservado por contrato
 

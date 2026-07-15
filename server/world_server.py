@@ -2944,9 +2944,15 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._process_loot_drops(dt)
         self._tick_trade_distance_check()
 
-        # Detecta novos mobs criados pelo SpawnZoneSystem neste tick
+        # Detecta novos mobs/NPCs de combate criados pelo SpawnZoneSystem
+        # neste tick — gate é Combatant, não Enemy (Sistema de Facções,
+        # Fase 4): Enemy sozinho implicaria "hostil ao player", que não é
+        # verdade pra um NPC de combate amigável (ex: guarda). Combatant
+        # cobre os dois (Enemy sempre implica Combatant, ver
+        # engine/entity_factory.py::_build_combat_entity).
+        from engine.components import Combatant as _Combatant_reg
         for eid, tm in self.world.get_entities_with(TileMovement):
-            if self.world.get_component(eid, Enemy) and eid not in self._mob_eids \
+            if self.world.get_component(eid, _Combatant_reg) and eid not in self._mob_eids \
                     and eid not in self._player_eids.values():
                 self._mob_eids.add(eid)
                 # CombatState: necessário para aggro do EnemyAISystem

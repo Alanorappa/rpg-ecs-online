@@ -2804,6 +2804,74 @@ quest por cima).
 
 ---
 
+### 34.4 Novo arquétipo de NPC de combate + componente `Combatant` (Fase 4, 15/07/2026)
+
+Objetivo: NPC de combate (guarda, etc.) precisa da MESMA infraestrutura
+de IA/combate/sync que mob já tem, mas com identidade de NPC (não
+`Enemy`) e facção tipicamente amigável/neutra. Reaproveitar em vez de
+duplicar — mesmo espírito de "nada de puxadinho" do pedido original.
+
+- `engine/entity_factory.py`: corpo de `create_enemy()` (tudo — Position/
+  Renderable/Collider/`AIControlled`/`InitialPosition`/`DetectionRadius`/
+  `TileMovement`/`EnemyTier`/`CombatStats`/`EntityIdentity`/`Faction`/
+  `EnemyAbilities` — a lógica inteira de resolução de atributos por
+  mob_definitions/tier/level) fatorado num helper privado
+  `_build_combat_entity(...)`, que retorna a entidade SEM tag de tipo.
+  `create_enemy()` vira wrapper fino (`_build_combat_entity(...)` +
+  `Enemy()`). Novo `create_combat_npc(world, tile_x, tile_y, faction,
+  name="", profession="Guarda", ...)` — mesmo helper + `NPC(name, level,
+  profession)` no lugar de `Enemy`. Ganha também `identity_name`
+  (parâmetro novo em `_build_combat_entity`) pra dar nome próprio ("Guarda
+  Real") em vez de mostrar só a raça genérica.
+- Novo componente marcador `Combatant()` (`engine/components.py`),
+  anexado por `_build_combat_entity()` — mob E NPC de combate carregam.
+  `server/world_server.py` (detecção de novas entidades pra `_mob_eids`/
+  `ENTITY_SPAWN`, tick principal): gate trocado de `Enemy` pra
+  `Combatant` — `Enemy` sozinho implicaria "hostil ao player", falso pra
+  um NPC de combate amigável. Retrocompatível: todo `Enemy` sempre
+  implica `Combatant` (mesma função os anexa os dois).
+- **Achado durante o refactor**: `create_training_dummy()` (função
+  separada, não passa por `_build_combat_entity`) anexava `Enemy()`
+  direto — sem `Combatant`, o boneco de treino pararia de sincronizar
+  pro cliente assim que o gate mudasse. Corrigido (ganhou `Combatant()`
+  também).
+- **Peça da Fase 5 trazida pra cá**: `apply_damage_core()`
+  (`engine/core_systems.py`) ganha o gate `can_engage(world, killer_eid,
+  target_id)` (novo retorno `"blocked_friendly"`, mesmo padrão de
+  `blocked_dead`/`blocked_immune`/`blocked_evade`) — só checado quando
+  `killer_eid != -1` (DoT/ambiente sem atacante identificado não tem
+  facção pra resolver). Sem isso, um NPC de combate "amigável" recém-
+  criado seria livremente matável, contradizendo a própria palavra —
+  shippar a Fase 4 sem essa proteção teria sido um estado
+  visivelmente quebrado. O resto da Fase 5 (feedback visual do bloqueio,
+  bloqueio de efeitos secundários tipo knockback/DoT, e principalmente
+  `_select_target()` deixar de assumir `PlayerControlled` — combate
+  NPC-vs-NPC/mob-vs-NPC de verdade) continua isolado, não implementado
+  aqui.
+- Spawn de conteúdo real (colocar um guarda de verdade num mapa) fica
+  pra depois — Fase 4 entrega só a CAPACIDADE (função + componente +
+  gate de sync), provada por teste, sem adicionar NPC de combate a
+  nenhum mapa ainda.
+- Documentação: `COMPONENTES_ECS.md` (entradas `Faction`/`Combatant`,
+  faltavam desde a Fase 1 — corrigido agora) e `MAPA_PROJETO.md`
+  (`content/faction_data.py`, `engine/faction_system.py`, tabela "onde
+  encontrar o quê").
+
+**Validado**: `tests/test_faction.py` ganhou `TestCombatNpcArchetype` (5
+testes, 23 no arquivo): `create_combat_npc` tem `Combatant`+`Faction`+
+`NPC`+`CombatStats` e NÃO tem `Enemy`; registra em `_mob_eids` via
+`Combatant` depois de 2 ticks reais; `_build_mob_spawn_payload` inclui
+`faction`/`name` corretos; NPC de combate amigável não perde HP ao ser
+atacado (`deal_damage` com `pre_outcome="hit"`, determinístico — sem
+RNG); regressão: NPC de combate de facção HOSTIL (bandido) continua
+recebendo dano normalmente (gate não é geral demais). Suíte completa
+141/141 (136 + 5), rodada 3x pra descartar flakiness.
+
+**Não validado**: sessão manual em jogo real (nenhum NPC de combate
+existe em mapa nenhum ainda — capacidade pura, sem conteúdo).
+
+---
+
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
 
 ```

@@ -84,6 +84,10 @@
 | Atributo de combate novo (modifier) | `engine/stat_fns.py` | par `base_X`/`X` em `CombatStats` + 1 entrada em `_MODIFIABLE_ATTRS` (+ `_STAT_CLAMPS`) |
 | STATS_UPDATE privado novo (servidor→dono) | `server/world_server.py` | `queue_stats_update()` (schema na docstring) |
 | Registrar sistema no loop offline | `game.py` | `_init_systems()` → `self.systems` |
+| Adicionar facção / relação hostil-neutro-amigavel | `content/faction_data.py` | `RELATIONSHIP` (par de facção → tier) + `get_relationship()` |
+| Checar se entidade pode brigar com outra (facção) | `engine/faction_system.py` | `can_engage()`, `is_hostile()`, `get_relationship_between()` — nunca reimplementar inline |
+| Criar mob de combate hostil ("clássico") | `engine/entity_factory.py` | `create_enemy()` (tag `Enemy`) |
+| Criar NPC de combate (guarda, etc — facção tipicamente amigável) | `engine/entity_factory.py` | `create_combat_npc()` (tag `NPC`) — ambos compartilham `_build_combat_entity()` |
 
 ---
 
@@ -125,7 +129,8 @@ rpg_ecs_online/
 │   ├── skill_config.py             ← SKILL_CATALOG (fonte única de skill)
 │   ├── enemy_abilities_data.py     ← ABILITY_DEFS (poison/bleed/stun de mob)
 │   ├── crafting_data.py            ← materiais/receitas de crafting
-│   └── status_effects_data.py      ← definições de buff/debuff
+│   ├── status_effects_data.py      ← definições de buff/debuff
+│   └── faction_data.py             ← RELATIONSHIP (facção→facção→tier), get_relationship()
 │
 ├── engine/                         ← COMPARTILHADO: ECS headless (server+client),
 │   │                                  ZERO pygame no topo — servidor importa direto
@@ -145,7 +150,8 @@ rpg_ecs_online/
 │   ├── fx.py                       ← façade de efeitos (FLT/SOUNDS/PROC/WARN) —
 │   │                                  no-op no servidor, cliente vincula via bind_client_fx()
 │   ├── map_loader.py               ← carrega .csv de mapa em Tilemap
-│   └── tileset.py                  ← Tile/Tilemap, is_solid, etc.
+│   ├── tileset.py                  ← Tile/Tilemap, is_solid, etc.
+│   └── faction_system.py           ← can_engage()/is_hostile()/get_relationship_between()
 │
 ├── ui/                              ← ONLINE-ONLY na prática: client-only mesmo
 │   │                                  quando headless-clean (servidor nunca importa)
