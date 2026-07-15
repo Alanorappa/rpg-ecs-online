@@ -41,6 +41,20 @@ class TestServerEntrypoint(unittest.TestCase):
             proc.returncode, 0,
             f"server/main.py depende do cwd:\n{proc.stderr[-2000:]}")
 
+    def test_client_main_py_executa_como_script(self):
+        """Mesma classe de regressão pro CLIENTE: `python main.py --help`
+        exercita a cadeia inteira de imports (pygame/config/game/GameEngine)
+        do jeito que o jogador roda."""
+        env = dict(os.environ, SDL_VIDEODRIVER="dummy", SDL_AUDIODRIVER="dummy")
+        proc = subprocess.run(
+            [sys.executable, os.path.join(_ROOT, "main.py"), "--help"],
+            capture_output=True, text=True, timeout=60,
+            cwd=_ROOT, env=env,
+        )
+        self.assertEqual(
+            proc.returncode, 0,
+            f"main.py (cliente) nao sobe como script:\n{proc.stderr[-2000:]}")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

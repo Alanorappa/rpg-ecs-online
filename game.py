@@ -40,7 +40,8 @@ from ui.ui_helpers import item_tooltip_lines, draw_stack_count, RARITY_COLORS as
 from ui.map_overlay import MapOverlay
 from ui.minimap import Minimap
 from engine.stat_fns import add_modifier, remove_modifier, learn_recipe
-from engine.save_system import save_game, load_game, has_save, next_free_slot
+# save_game/load_game/has_save/next_free_slot (saves locais) removidos junto
+# do modo offline (item A2 §11) — persistência de personagem é só o servidor.
 from client.network_handlers import NetworkHandlers
 from client.remote_entity_handlers import RemoteEntityHandlers
 from client.save_sync_handlers import SaveSyncHandlers
@@ -425,7 +426,10 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                                     ps.skills[_idx] = _sk
                                 except ValueError:
                                     ps.skills.append(_sk)
-        self._quest_system.auto_start_quests()
+        # auto_start_quests() local removido junto do modo offline (item A2
+        # §11): nenhuma quest usa auto_start=True hoje, e o desbloqueio em
+        # cadeia pós-entrega roda no SERVIDOR (quest_logic.py) — semear
+        # QuestLog local antes do sync só criava divergência em potencial.
         self._quest_system.set_current_map(self._current_map_file)
         self._apply_hotbar_config(new_character=bool(char_data))
         self._load_menu_keys()
@@ -741,11 +745,15 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             break
 
     def _autosave(self) -> None:
-        """Salva o estado atual se não estiver no meio de um carregamento."""
+        """Persiste o estado atual: config local (hotbar) + SAVE_STATE ao servidor.
+
+        O save LOCAL (saves/slot_N.json, save_game) foi removido junto do modo
+        offline (15/07/2026, item A2 §11) — online, o banco do servidor é a
+        única fonte de persistência de personagem; o arquivo local era
+        redundante e enganoso (dava a impressão de que restaurava algo)."""
         if not self._loading_save:
-            save_game(self.world, self.player_entity, self._current_map_file, self._save_slot)
-            self._save_config()  # sincroniza layout da hotbar com o save do jogo
-            # Online: sincroniza com servidor imediatamente para não perder dados em crashes.
+            self._save_config()  # sincroniza layout da hotbar com o config local
+            # Sincroniza com servidor imediatamente para não perder dados em crashes.
             # Sem isso, compras no treinador (skills, etc.) só chegam ao DB no fechamento normal.
             self._send_save_state()
 
@@ -810,62 +818,9 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         except Exception:
             pass
 
-    def _apply_save(self):
-        """Carrega o save do slot ativo e reposiciona o jogador no mapa salvo."""
-        if not has_save(self._save_slot):
-            return
-
-        self._loading_save = True
-        pos_data = load_game(self.world, self.player_entity, self._save_slot)
-        if pos_data is None:
-            self._loading_save = False
-            return
-
-        # Recalcula atributos com talentos e stats permanentes
-        self._talent_system.apply_talent_effects()
-        char = self.world.get_component(self.player_entity, CharacterStats)
-        cs   = self.world.get_component(self.player_entity, CombatStats)
-        perm = self.world.get_component(self.player_entity, PermanentStats)
-        if char and cs:
-            # Migração de save: recalcula atributos base a partir de classe+nível,
-            # garantindo consistência com CLASS_BASE_STATS e CLASS_LEVEL_GAINS atuais.
-            from engine.stats_system import CLASS_BASE_STATS, CLASS_LEVEL_GAINS
-            _base   = CLASS_BASE_STATS.get(char.class_id, CLASS_BASE_STATS["guerreiro"])
-            _gains  = CLASS_LEVEL_GAINS.get(char.class_id, {})
-            _lvls   = max(0, char.level - 1)
-            char.strength     = _base["strength"]     + _gains.get("strength",     0) * _lvls
-            char.intelligence = _base["intelligence"] + _gains.get("intelligence", 0) * _lvls
-            char.agility      = _base["agility"]      + _gains.get("agility",      0) * _lvls
-            char.vitality     = _base["vitality"]     + _gains.get("vitality",     0) * _lvls
-            char.defense      = _base["defense"]      + _gains.get("defense",      0) * _lvls
-
-            from engine.stats_system import apply_char_stats_to_combat, sync_attack_interval
-            from engine.components import Equipment as _EqLoad
-            apply_char_stats_to_combat(char, cs, perm)
-            sync_attack_interval(cs, self.world.get_component(self.player_entity, _EqLoad))
-            # Restaura HP salvo (proporcional ao max_hp recalculado)
-            if cs._saved_hp > 0:
-                cs.current_hp = min(float(cs._saved_hp), cs.max_hp)
-                cs._saved_hp  = 0
-                cs._saved_max = 0
-        # Cor do personagem por classe (atualiza ao carregar save)
-        if char:
-            rend = self.world.get_component(self.player_entity, Renderable)
-            if rend:
-                _CLASS_COLORS = {"mago": (80, 80, 220), "arqueiro": (80, 200, 80)}
-                rend.color = _CLASS_COLORS.get(char.class_id, (255, 0, 0))
-
-        # Carrega mapa correto se diferente do atual
-        saved_map = pos_data.get("map", "")
-        tx = pos_data.get("tile_x", 1)
-        ty = pos_data.get("tile_y", 1)
-        if saved_map and saved_map != self._current_map_file:
-            self._do_transition({"target_map": saved_map, "target_x": tx, "target_y": ty})
-        else:
-            self._reposition_player(tx, ty)
-
-        self._loading_save = False
-        LOG.add("Partida carregada.", (100, 220, 100))
+    # _apply_save() (restaurar de saves/slot_N.json local) foi REMOVIDO junto
+    # do modo offline (15/07/2026, item A2 §11 — já era código morto: nenhum
+    # caller no fluxo online; o estado vem do WORLD_STATE do servidor).
 
     # ------------------------------------------------------------------
     # ── Properties que roteiam para components ECS ───────────────────────────

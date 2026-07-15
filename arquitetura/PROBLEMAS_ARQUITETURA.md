@@ -4511,12 +4511,24 @@ crafting — terminar o padrão). Baixo risco, alto ganho de navegação.
    (`quest_system`: dialog + fila de eventos + `_process_talk_to_npc`
    virou no-op de compatibilidade). Suíte 109/109 verde.
 
-   **FASE 2 (pendente — sessão dedicada):**
-   - `game.py`: save LOCAL em `_autosave` (save_game slot 0 roda até
-     online, redundante com o DB do servidor) + `load_game`/`has_save`
-     no boot — estudar interação com WORLD_STATE antes de remover;
-     `auto_start_quests()` no boot (client muta QuestLog antes do sync —
-     conferir se o servidor cobre auto_start e remover).
+   **FASE 2 FEITA (15/07/2026) — game.py saves/boot:**
+   - `_apply_save()` deletado (restore de saves/slot_N.json — já era
+     código morto: nenhum caller no fluxo online; estado vem do
+     WORLD_STATE).
+   - `_autosave()` não grava mais save local (`save_game`) — só config
+     de hotbar + `_send_save_state()` pro servidor (única persistência).
+   - `auto_start_quests()` removido do boot: nenhuma quest usa
+     `auto_start=True` hoje e o desbloqueio em cadeia roda no servidor
+     (`quest_logic.py`) — semear QuestLog local antes do sync só criava
+     divergência em potencial.
+   - Teste de entry point do CLIENTE adicionado (`main.py --help` como
+     subprocess, mesma classe de regressão do servidor). Suíte 110/110.
+   - Ainda offline-only e intocado (código morto isolado, sem risco de
+     dual-mode): `ui/char_creation_screen.run()` (seleção de slot local)
+     e `engine/save_system.py` (API de slots — `request_autosave`/
+     `register_autosave` continuam em uso pelo caminho online).
+
+   **FASE 3 (pendente — junto do item 6):**
    - `ui/spell_system.py`: dano local em `PlayerProjectileSystem._on_hit`
      (caminho offline via deal_damage), caminho não-visual_only do
      `SpellCastSystem` (dedução local de recurso), handlers `_apply_*`
