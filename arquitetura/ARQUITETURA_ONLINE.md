@@ -2333,7 +2333,29 @@ off aceito: pequeno delay perceptível vs. rajada de travamento).
 
 ---
 
-## Protocolo — todas as mensagens implementadas
+### 30. Execução da auditoria arquitetural + REMOÇÃO DO MODO OFFLINE (15/07/2026)
+
+Rodada de execução da auditoria da seção 11 de PROBLEMAS_ARQUITETURA.md —
+detalhes, validações e plano dos restantes estão TODOS lá (§11 e
+§11-EXECUÇÃO); esta entrada é o registro de decisão. 13 commits
+(`5337805`..`aa1b1b6`).
+
+**Decisões novas desta rodada:**
+- **Modo offline REMOVIDO deste branch** (decisão do usuário — offline
+  vive só no `rpg_ecs/` master). Entrada já era online-only; fases 1-2
+  podaram: rage decay/mana regen/flecha de auto-attack/quests locais,
+  saves locais (`_apply_save` deletado, `_autosave` sem `save_game`),
+  `auto_start_quests` do boot. Fase 3 (dano local em spell_system +
+  branches restantes) sai junto da unificação de handlers (§11 item 6).
+  REGRA que continua valendo: em `SkillSystem`/`skill_handlers.py` o
+  branch "offline" É o código do servidor — intocável até o item 6/7.
+- **Suíte é sinal binário de novo**: 0 falhas toleradas (110/110 hoje).
+  Testes de entry point rodam `server/main.py` E `main.py` como
+  subprocess — regressão de import de script nunca mais passa batida.
+- **Persistência de inventário é sanitizada na borda** (item A4) e
+  **auth usa salt por conta** (item C1) — cliente inalterado nos dois.
+- **Logs do servidor**: `server/log.py` (`RPG_LOG_LEVEL`, arquivo
+  rotativo). **Flags de debug**: só env var (`RPG_DEBUG_*`).
 
 | Direção | Tipo | Quando | Implementado |
 |---------|------|--------|-------------|

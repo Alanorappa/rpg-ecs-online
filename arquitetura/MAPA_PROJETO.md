@@ -191,7 +191,8 @@ rpg_ecs_online/
 │   ├── main.py                      ← ponto de entrada: asyncio + WebSocket
 │   ├── world_server.py              ← ECS headless: loop de ticks, sistemas, skill pipeline
 │   ├── session.py                   ← SessionManager: AOI subscription, dispatch, save
-│   ├── auth.py                      ← autenticação SQLite + persistência
+│   ├── auth.py                      ← autenticação SQLite (salt por conta) + persistência
+│   ├── log.py                       ← logger do servidor (console + logs/server.log rotativo; RPG_LOG_LEVEL)
 │   ├── trade_processor.py           ← TradeProcessorMixin/TradeSession: trade player↔player
 │   └── server_death_handler.py      ← PendingDeath: XP, loot, SpawnZone, despawn
 │
@@ -206,8 +207,15 @@ rpg_ecs_online/
 ├── data/                            ← criada automaticamente
 │   └── game.db                      ← banco SQLite (contas + personagens)
 │
-├── tests/                           ← testes do servidor
-│   ├── test_server.py               ← suite principal
+├── tests/                           ← suíte (servidor + cliente headless)
+│   ├── test_server.py               ← suite principal do servidor
+│   ├── test_session.py, test_combat.py, test_map_filter.py, ...
+│   ├── test_client_ui.py            ← testes de UI do cliente (SDL dummy) — 15/07/2026
+│   ├── test_auth_salt.py            ← salt/upgrade de auth (banco temporário)
+│   ├── test_save_sanitize.py        ← sanitização de inventário na persistência
+│   ├── test_map_services.py         ← resolver por-entidade do _svc
+│   ├── test_server_entrypoint.py    ← main.py (server E cliente) sobe como script
+│   ├── helpers.py                   ← spawn_player/run_ticks/clear_login_immunity
 │   └── diag_*.py                    ← scripts de diagnóstico individuais
 │
 └── arquitetura/                     ← documentação
