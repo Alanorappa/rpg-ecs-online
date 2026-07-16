@@ -38,8 +38,13 @@ class CombatProcessorMixin:
 
             target_eid = cs.target_entity_id
             if target_eid not in self._mob_eids:
-                # PvP: alvo pode ser outro jogador
-                if target_eid in self._player_eids.values() and getattr(self, "pvp_enabled", False):
+                # PvP: alvo pode ser outro jogador — o CONTEXTO decide
+                # (duelo/zona/arena, via can_engage → _pvp_allowed_between;
+                # players são amigáveis por default, 16/07/2026). Antes:
+                # flag global pvp_enabled ("mundo inteiro é zona PvP").
+                from engine.faction_system import can_engage as _can_engage_pvp
+                if (target_eid in self._player_eids.values()
+                        and _can_engage_pvp(self.world, player_eid, target_eid)):
                     # Suprime auto-attack PvP se uma skill disparou neste tick para este player:
                     # evita FLT duplicado (skill + auto em simultâneo) quando o player
                     # está perseguindo e usa skill ao mesmo tempo.

@@ -12,7 +12,7 @@ nenhum sistema de jogo.
 from __future__ import annotations
 
 from engine.world import World
-from engine.components import Faction, PlayerControlled
+from engine.components import Faction, PlayerControlled, RemoteControlled
 from content.faction_data import PLAYER_FACTION, get_relationship
 
 # Sentinela pra entidade sem Faction e sem PlayerControlled (NPC estático,
@@ -46,11 +46,22 @@ def register_pvp_context(resolver) -> None:
 
 def get_entity_faction(world: World, entity_id: int) -> str:
     """Facção de uma entidade: Faction.faction_id se presente; senão
-    PLAYER_FACTION se for um player; senão o sentinela "sem facção"."""
+    PLAYER_FACTION se for um player — local (PlayerControlled, os dois
+    lados) OU remoto (RemoteControlled, proxy client-side de outro
+    player); senão o sentinela "sem facção".
+
+    RemoteControlled entrou em 16/07/2026 (players amigáveis por
+    default): sem ele, o proxy de player remoto no CLIENTE caía no
+    sentinela (neutro → atacável) e clique direito/SPACE iniciavam
+    ataque contra qualquer player. No servidor todo player é
+    PlayerControlled, então o braço RemoteControlled só executa no
+    cliente."""
     faction = world.get_component(entity_id, Faction)
     if faction is not None:
         return faction.faction_id
     if world.get_component(entity_id, PlayerControlled) is not None:
+        return PLAYER_FACTION
+    if world.get_component(entity_id, RemoteControlled) is not None:
         return PLAYER_FACTION
     return _NO_FACTION
 

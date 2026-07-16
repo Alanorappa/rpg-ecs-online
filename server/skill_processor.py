@@ -142,13 +142,17 @@ class SkillProcessorMixin:
             _mana_before_handler = getattr(_char_snap, "mana", 0) if _char_snap else 0
 
             # Seta target no servidor usando tid do CAST_SKILL (server_eid enviado pelo cliente)
-            # tid pode ser mob (PvE) ou player (PvP — exceto o próprio caster)
+            # tid pode ser mob (PvE) ou player (PvP — exceto o próprio caster,
+            # e só se o CONTEXTO permitir: duelo/zona/arena via can_engage —
+            # players são amigáveis por default, 16/07/2026)
             tid = req.get("tid", -1)
             if tid != -1 and combat_state:
                 if tid in self._mob_eids:
                     combat_state.target_entity_id = tid
                 elif tid in self._player_eids.values() and tid != player_eid:
-                    combat_state.target_entity_id = tid  # alvo PvP
+                    from engine.faction_system import can_engage as _can_engage_sk
+                    if _can_engage_sk(self.world, player_eid, tid):
+                        combat_state.target_entity_id = tid  # alvo PvP (contexto liberou)
 
             from server.spell_debug_log import splog as _splog
             _splog(f"CAST_SKILL sid={sid} player={player_eid} tid={tid} "

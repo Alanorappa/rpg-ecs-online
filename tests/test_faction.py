@@ -666,17 +666,16 @@ class TestAcquisitionVsRetention(unittest.TestCase):
 
 
 class TestPvpContext(unittest.TestCase):
-    """Contexto PvP plugável (decisão do usuário 16/07/2026: PvP é
-    contextual — duelo, arena, zona, campo de batalha por times — não uma
-    regra fixa de facção). Cobre também a regressão real que motivou:
-    PvP de mundo aberto ficou silenciosamente bloqueado quando o gate de
-    facção amigável nasceu (dois players = mesma facção "jogadores" =
-    dano 0), sem nenhum teste de dano PvP ponta a ponta pra acusar.
+    """Contexto PvP plugável (decisão do usuário 16/07/2026: players são
+    TODOS amigáveis por default — PvP só existe em contexto explícito:
+    duelo aceito, zona PvP, arena/campo de batalha). O "PvP de mundo
+    aberto" via flag global foi descontinuado de propósito; pvp_enabled
+    virou só kill-switch de emergência (desliga TODO contexto).
 
     Também é a fundação MOBA: players com Faction de time sobrescrevem o
     default "jogadores" (resolução componente-primeiro) — inter-times
     briga por regra de facção pura, mesmo time fica protegido de fogo
-    amigo mesmo com o flag global ligado."""
+    amigo sempre."""
 
     def setUp(self):
         from tests.helpers import make_world_server, spawn_player
@@ -692,41 +691,53 @@ class TestPvpContext(unittest.TestCase):
         deal_damage(attacker, target, "physical", pre_outcome="hit")
         return hp_before - cs.current_hp
 
-    def test_pvp_mundo_aberto_funciona_com_flag_ligada(self):
-        self.assertTrue(self.ws.pvp_enabled, "pré-condição: flag global ligada por default")
-        self.assertGreater(self._hit(self.a, self.b), 0,
-                           "PvP mundo aberto deveria causar dano com pvp_enabled=True")
+    def test_players_amigaveis_por_default_nao_se_atacam(self):
+        """A inversão de semântica (16/07/2026): sem contexto (nenhum
+        duelo ativo), players NÃO podem se ferir — mesmo com o
+        kill-switch pvp_enabled em True."""
+        self.assertTrue(self.ws.pvp_enabled)
+        self.assertEqual(len(self.ws._duel_pairs), 0, "pré-condição: nenhum duelo ativo")
+        self.assertEqual(self._hit(self.a, self.b), 0,
+                         "players sem contexto PvP deveriam ser amigáveis (dano 0)")
 
-    def test_pvp_bloqueado_com_flag_desligada(self):
+    def test_par_em_duelo_pode_se_atacar(self):
+        """O primeiro contexto real: par presente em _duel_pairs libera o
+        dano mútuo — e SÓ pra esse par."""
+        self.ws._duel_pairs[frozenset((self.a, self.b))] = {}
+        try:
+            self.assertGreater(self._hit(self.a, self.b), 0,
+                               "par em duelo deveria poder se ferir")
+            self.assertGreater(self._hit(self.b, self.a), 0,
+                               "duelo é mútuo — os dois lados atacam")
+        finally:
+            self.ws._duel_pairs.clear()
+
+    def test_kill_switch_desliga_todo_contexto(self):
+        self.ws._duel_pairs[frozenset((self.a, self.b))] = {}
         self.ws.pvp_enabled = False
         try:
             self.assertEqual(self._hit(self.a, self.b), 0,
-                             "PvP deveria ser bloqueado com pvp_enabled=False")
+                             "pvp_enabled=False é kill-switch: nem duelo libera dano")
         finally:
             self.ws.pvp_enabled = True
+            self.ws._duel_pairs.clear()
 
-    def test_times_diferentes_brigam_por_faccao_sem_depender_do_flag(self):
+    def test_times_diferentes_brigam_por_faccao_sem_depender_do_contexto(self):
         """Fundação MOBA: Faction de time no player sobrescreve
         "jogadores"; times distintos brigam por regra de facção pura —
         nem passa pelo contexto (relação não é amigavel)."""
         from engine.components import Faction
         self.ws.world.add_component(self.a, Faction(faction_id="time_a"))
         self.ws.world.add_component(self.b, Faction(faction_id="time_b"))
-        self.ws.pvp_enabled = False   # prova que NÃO depende do contexto
-        try:
-            self.assertGreater(self._hit(self.a, self.b), 0,
-                               "times distintos deveriam brigar por facção, sem contexto PvP")
-        finally:
-            self.ws.pvp_enabled = True
+        self.assertGreater(self._hit(self.a, self.b), 0,
+                           "times distintos deveriam brigar por facção, sem contexto PvP")
 
-    def test_mesmo_time_protegido_de_fogo_amigo_mesmo_com_flag_ligada(self):
-        """Fogo amigo de time: o flag global só vale pro caso sem time
-        (facção default "jogadores") — companheiros de time_a nunca se
-        ferem, mesmo com pvp_enabled=True."""
+    def test_mesmo_time_protegido_de_fogo_amigo(self):
+        """Fogo amigo de time: companheiros de time_a nunca se ferem —
+        o contexto de duelo é o único que liberaria, e não há duelo."""
         from engine.components import Faction
         self.ws.world.add_component(self.a, Faction(faction_id="time_a"))
         self.ws.world.add_component(self.b, Faction(faction_id="time_a"))
-        self.assertTrue(self.ws.pvp_enabled)
         self.assertEqual(self._hit(self.a, self.b), 0,
                          "fogo amigo entre companheiros de time deveria ser bloqueado")
 
@@ -745,6 +756,28 @@ class TestPvpContext(unittest.TestCase):
 
         self.assertEqual(guard_cs.current_hp, hp_before,
                          "player vs NPC amigável continua bloqueado — contexto é só player-vs-player")
+
+    def test_remote_controlled_resolve_como_jogadores(self):
+        """Client-side: proxy de player remoto (RemoteControlled, sem
+        PlayerControlled/Faction) resolve pra facção "jogadores" —
+        amigável ao player local por default. Sem isso, o proxy caía no
+        sentinela sem-facção (neutro → atacável) e clique direito/SPACE
+        iniciavam ataque contra qualquer player."""
+        from engine.world import World
+        from engine.components import RemoteControlled, PlayerControlled
+        from engine.faction_system import get_entity_faction, can_engage
+        from content.faction_data import PLAYER_FACTION
+
+        w = World()
+        me = w.create_entity(); w.add_component(me, PlayerControlled())
+        remote = w.create_entity(); w.add_component(remote, RemoteControlled())
+
+        self.assertEqual(get_entity_faction(w, remote), PLAYER_FACTION)
+        # Mundo de CLIENTE: pode haver resolver de contexto registrado por
+        # um WorldServer de outro teste (global) — mas ele consulta
+        # _duel_pairs, vazio ⇒ bloqueado. O que importa: não atacável.
+        self.assertFalse(can_engage(w, me, remote),
+                         "player remoto deveria ser amigável (inatacável) por default no cliente")
 
 
 if __name__ == "__main__":

@@ -143,8 +143,11 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
     MAP_FILE = "maps/map_1.csv"   # mapa padrão carregado pelo servidor
 
-    # PvP habilitado globalmente (Fase 1 — zones por mapa virão depois)
-    # True = qualquer zona permite PvP; False = PvP desabilitado (PvE only)
+    # DESCONTINUADO como "PvP de mundo aberto" (16/07/2026): players são
+    # amigáveis por default e PvP só existe em contexto explícito (duelo/
+    # zona/arena — ver _pvp_allowed_between). Mantido APENAS como
+    # kill-switch de emergência: False desliga TODO contexto PvP de uma
+    # vez (duelo incluso). Nunca mais significa "todo mundo pode brigar".
     pvp_enabled: bool = True
 
     def __init__(self, zone_id: str = "world_main", map_file: str = ""):
@@ -226,6 +229,12 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._next_trade_id: int = 1
         # Cancelamentos de trade por distância neste tick: {trade_id, player_a, player_b, reason}
         self._trade_cancellations_this_tick: list[dict] = []
+
+        # Duelo (player↔player) — ver server/duel_processor.py e o contexto
+        # PvP registrado em _load_all_maps. par (frozenset de 2 eids) →
+        # info do duelo; target_eid → requester_eid (convite pendente).
+        self._duel_pairs: dict[frozenset, dict] = {}
+        self._pending_duel_invites: dict[int, int] = {}
 
         # Timer de ataque por jogador: session_id → segundos até próximo hit
         self._attack_timers: dict[str, float] = {}
@@ -379,28 +388,18 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         # Contexto PvP (engine/faction_system.py): entre dois PLAYERS de
         # facção amigável, quem decide se o dano é permitido é o CONTEXTO
-        # (duelo/arena/zona/campo de batalha — decisão do usuário
-        # 16/07/2026). Primeira implementação: a flag global pvp_enabled
-        # de sempre ("mundo inteiro é zona PvP") — restaura o PvP de
-        # mundo aberto que o gate de facção tinha bloqueado
-        # silenciosamente. Duelo por convite/arenas plugam AQUI depois,
-        # trocando este resolver por um que consulte o estado real (par
-        # em duelo, zona da posição, time de campo de batalha).
-        #
-        # O flag só vale pro caso SEM TIME (ambos na facção default
-        # "jogadores"): players que ganharem Faction de time (MOBA,
-        # futuro) ficam sob a regra de facção pura — fogo amigo entre
-        # companheiros de time continua bloqueado mesmo com o flag global
-        # ligado; inter-times nem precisa de contexto (facções hostis).
-        from engine.faction_system import register_pvp_context, get_entity_faction
-        from content.faction_data import PLAYER_FACTION as _PF_ctx
-
-        def _pvp_context_global_flag(w, attacker_id, target_id):
-            return (self.pvp_enabled
-                    and get_entity_faction(w, attacker_id) == _PF_ctx
-                    and get_entity_faction(w, target_id) == _PF_ctx)
-
-        register_pvp_context(_pvp_context_global_flag)
+        # (decisão do usuário 16/07/2026: players são TODOS amigáveis por
+        # default — PvP só existe em contexto explícito: duelo aceito,
+        # zona PvP, arena/campo de batalha). O "PvP de mundo aberto"
+        # global (flag pvp_enabled liberando o mundo inteiro) foi
+        # descontinuado de propósito — era o provisório da Fase 1.
+        # Resolver COMPOSTO: cada contexto novo entra como mais uma
+        # consulta aqui (duelo → par em _duel_pairs; futuro: zona PvP da
+        # posição dos dois + exceção de party; times/MOBA nem passam por
+        # aqui — Faction de time sobrescreve "jogadores" e a regra de
+        # facção pura decide).
+        from engine.faction_system import register_pvp_context
+        register_pvp_context(self._pvp_allowed_between)
 
     def _load_map_for(self, map_file: str) -> "_MapBundle":
         """
@@ -1157,6 +1156,17 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                     "session_id": sid,
                 })
         return result
+
+    def _pvp_allowed_between(self, world, attacker_id: int, target_id: int) -> bool:
+        """Resolver de contexto PvP (registrado em _load_all_maps via
+        engine/faction_system.register_pvp_context) — consultado SÓ quando
+        a relação de facção é "amigavel" e ambos são players. Composto:
+        cada contexto novo (zona PvP, arena) entra como mais uma consulta
+        aqui. pvp_enabled é só kill-switch de emergência (ver classe)."""
+        if not self.pvp_enabled:
+            return False
+        # Duelo aceito: par hostil somente um ao outro.
+        return frozenset((attacker_id, target_id)) in self._duel_pairs
 
     def set_player_target(self, session_id: str, target_eid: int) -> None:
         """Define o alvo de combate do jogador. target_eid=-1 para parar.
@@ -2481,13 +2491,19 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         Padrão ECS consolidado (Overwatch, Guild Wars 2): o sistema de combate
         não distingue mob de player — qualquer entidade com CombatStats é alvo.
-        PvP: players (exceto o caster) são incluídos quando pvp_enabled=True.
+        PvP: outro player só entra como alvo se can_engage(caster, player) —
+        contexto (duelo/zona/arena) decide; players são amigáveis por default
+        (16/07/2026 — antes: flag global pvp_enabled incluía todo mundo).
+        exclude_eid é o CASTER, então dá pra resolver a relação por par.
         """
+        from engine.faction_system import can_engage as _can_engage_ct
         targets = set(self._mob_eids)
-        if self.pvp_enabled:
-            for p_eid in self._player_eids.values():
-                if p_eid != exclude_eid:
-                    targets.add(p_eid)
+        for p_eid in self._player_eids.values():
+            if p_eid == exclude_eid:
+                continue
+            if exclude_eid != -1 and not _can_engage_ct(self.world, exclude_eid, p_eid):
+                continue
+            targets.add(p_eid)
         return targets
 
     def _snapshot_combat_targets(self, exclude_eid: int = -1) -> tuple[dict, dict]:
