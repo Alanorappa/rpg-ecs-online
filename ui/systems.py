@@ -365,6 +365,25 @@ class MouseTargetingSystem(System):
 
             elif event.button == 3:
                 if target_id != -1:
+                    # Alvo AMIGÁVEL (facção — ex: Guarda Real, futuro
+                    # companheiro de time): clique direito NÃO inicia
+                    # combate nem perseguição — vira seleção pura, igual
+                    # ao clique esquerdo (bug real relatado pelo usuário
+                    # 16/07/2026: perseguia o guarda e entrava em combate
+                    # — o servidor já recusava o alvo, mas o cliente
+                    # perseguia/marcava in_combat localmente mesmo assim).
+                    # O proxy local do mob/NPC remoto carrega Faction real
+                    # do servidor (ENTITY_SPAWN.faction), então can_engage
+                    # resolve certo aqui; player remoto sem facção resolve
+                    # neutro (atacável — PvP), e quando a facção de player
+                    # for sincronizada (times/MOBA), este mesmo gate passa
+                    # a proteger aliados automaticamente.
+                    from engine.faction_system import can_engage as _can_engage_click
+                    if not _can_engage_click(self.world, self.player_entity_id, target_id):
+                        if player_cs:
+                            player_cs.target_entity_id = target_id
+                            player_cs.is_pursuing = False
+                        continue
                     # Clique direito em inimigo → seleciona alvo, entra em combate e persegue
                     if player_cs:
                         player_cs.target_entity_id = target_id
@@ -1044,11 +1063,18 @@ class PlayerInputSystem(System):
             _fog_vis_se = _fw_se.visible
             break
 
+        from engine.faction_system import can_engage as _can_engage_space
         best_eid  = -1
         best_dist = float("inf")
         for eid, epos, _, _, etm, ecs, _ in self.world.get_entities_with(
                 Position, Enemy, AIControlled, TileMovement, CombatStats, Visible):
             if ecs.current_hp <= 0:
+                continue
+            # Alvo amigável (facção) nunca é engajável — mesmo gate do
+            # clique direito (o proxy do NPC de combate remoto carrega a
+            # tag Enemy no cliente, então sem este filtro o SPACE podia
+            # engajar o Guarda Real se ele fosse o mais próximo).
+            if not _can_engage_space(self.world, entity_id, eid):
                 continue
             if not self._is_on_screen(epos):
                 continue

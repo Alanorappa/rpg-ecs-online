@@ -3331,6 +3331,42 @@ player-vs-player). Suíte completa 158/158 (153+5), rodada 3x.
 
 ---
 
+### 34.12 Clique direito/SPACE em alvo amigável não inicia mais combate/perseguição (16/07/2026)
+
+Bug relatado pelo usuário: clique direito no Guarda Real fazia o player
+PERSEGUI-LO e entrar em combate. O servidor já recusava o alvo
+(`set_player_target`, §34.6), mas o CLIENTE setava `is_pursuing=True` +
+`enter_combat()` localmente antes de qualquer resposta — perseguição
+visual + status de combate (bloqueia regen) contra um alvo que nunca
+seria atacável.
+
+Fix client-side, no gate de decisão (`ui/systems.py`):
+- **Clique direito** em alvo com relação `amigavel` (`can_engage` False)
+  vira SELEÇÃO PURA — mesmo comportamento do clique esquerdo (seleciona,
+  não persegue, não entra em combate). O proxy local do mob/NPC remoto
+  carrega a `Faction` real do servidor (`ENTITY_SPAWN.faction`, §34.2),
+  então o cliente resolve a relação corretamente sozinho.
+- **SPACE** (`_space_engage`): candidatos amigáveis são pulados — o
+  proxy do NPC de combate carrega a tag `Enemy` no cliente (via
+  `create_enemy` em `_spawn_remote_mob`), então sem o filtro o SPACE
+  podia engajar o guarda se ele fosse o inimigo mais próximo.
+- **Player remoto**: sem `Faction` e sem `PlayerControlled` no cliente,
+  resolve pro sentinela sem-facção → `neutro` → atacável (PvP de mundo
+  aberto preservado). Quando a facção de player for sincronizada
+  (times/MOBA, lacuna já mapeada em §34.11), este MESMO gate passa a
+  proteger aliados automaticamente — pedido do usuário ("o mesmo serve
+  para o player quando está com o status friendly") coberto por design,
+  pendente só da sincronização.
+
+**Validado**: script client-shaped confirmando as 3 decisões do gate
+(guarda amigável → False; mob hostil → True; player remoto → True).
+Suíte completa 158/158.
+
+**Não validado**: clique real em jogo (perseguição não iniciando, seleção
+ainda funcionando).
+
+---
+
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
 
 ```
