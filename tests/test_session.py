@@ -11,7 +11,7 @@ Uso:
 import os, sys, asyncio, unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from tests.helpers import make_world_server, spawn_player, run_ticks, first_mob
+from tests.helpers import make_world_server, spawn_player, run_ticks, first_mob, set_entity_tile
 from shared.messages import MsgType
 
 
@@ -314,10 +314,15 @@ class TestAOIUpdate(unittest.IsolatedAsyncioTestCase):
             self.skipTest("Sem mobs")
 
         player_eid = session_a.entity_id
-        mob_tm = self.ws_server.world.get_component(mob_eid, TileMovement)
-        ptm    = self.ws_server.world.get_component(player_eid, TileMovement)
-        mob_tm.current_tile_x = ptm.current_tile_x + 1
-        mob_tm.current_tile_y = ptm.current_tile_y
+        ptm = self.ws_server.world.get_component(player_eid, TileMovement)
+        # set_entity_tile sincroniza TileMovement E Position (pixel) — só
+        # mexer em current_tile_x/y (como antes) deixava o mob fisicamente
+        # longe (Position ainda na zona de spawn real dele), e
+        # _select_target (Sistema de Facções, Fase 5 — agora também
+        # considera NPCs de combate como candidato) podia escolher um NPC
+        # de combate mais perto em pixel real do que o player "teleportado"
+        # só por tile, mesmo intenção do teste sendo atacar o player.
+        set_entity_tile(self.ws_server, mob_eid, ptm.current_tile_x + 1, ptm.current_tile_y)
         mob_cs_state = self.ws_server.world.get_component(mob_eid, CombatState)
         mob_cs_state.target_entity_id = player_eid
         self.ws_server._attack_timers[f"mob_{mob_eid}"] = 0.0

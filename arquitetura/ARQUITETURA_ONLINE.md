@@ -2971,9 +2971,80 @@ usado nesta feature):
 `AIControlled.state` do guarda continua `IDLE` e `target_entity_id` do
 player volta pra `-1`). Suíte completa 143/143 (141 + 2), sem regressão.
 
-**Não validado**: nova sessão manual em jogo real confirmando os 2 bugs
-específicos relatados (loop de golpes errando, guarda perseguindo) estão
-resolvidos.
+**Validado em jogo real pelo usuário** (15/07/2026): confirmou os 2 bugs
+resolvidos (nenhum golpe/perseguição). Observação do usuário — clique
+direito no guarda ainda "seleciona/persegue" visualmente como um mob
+comum: **não é bug** — seleção via clique usa só `CombatStats`
+(qualquer combatente), a proteção real é só no combate de fato (dano/
+aggro), que já está bloqueado.
+
+---
+
+### 34.7 Fase 5: combate multi-tipo faccionado — `_select_target()` deixa de assumir só player (15/07/2026)
+
+Última fase do Sistema de Facções, a mais arriscada por design (mexe no
+núcleo do `EnemyAISystem`, usado por TODO mob do jogo, todo tick).
+Objetivo: permitir combate de verdade entre não-jogadores (NPC-vs-NPC,
+mob-vs-NPC) — o pedido original do usuário ("haverá situações em que
+NPCs se atacarão entre si").
+
+- **`_select_target()`** (`engine/world_systems.py:1436`): além do loop
+  de `PlayerControlled` de sempre (inalterado), ganha um segundo loop
+  sobre outros combatentes cuja relação com o mob não seja `amigavel`
+  (`can_engage()`). Documentação da função também deixou de dizer
+  "player" — a lógica interna JÁ era genérica (usa `CombatStats`/
+  `TileMovement`/`Position`/`CombatState`, nomeados `player_*` só por
+  motivo histórico), só a QUERY é que era restrita.
+- **Sticky target por dano** (linha ~1581, `aggroed_by_damage`): validação
+  exigia `PlayerControlled` no alvo persistido — generalizada pra aceitar
+  `PlayerControlled` OU `Combatant` (sem isso, um NPC/mob agroado por
+  dano de outro NPC/mob perdia o alvo fixo no tick seguinte).
+- **Bloco de aggro-por-dano em `CombatSystem.deal_damage()`** (linha
+  ~751): removida a restrição `attacker_is_player` — qualquer atacante
+  válido (`can_engage()` já filtra `amigavel`) força o alvo a perseguir,
+  não só quando o atacante é o player.
+- **Regressão de performance real, pega e corrigida ainda nesta fase**:
+  a primeira versão fazia CADA mob reconsultar `get_entities_with(
+  Combatant, ...)` do zero dentro do próprio `_select_target()` — como
+  TODO mob também é `Combatant`, isso é O(mobs²) por tick. Suíte completa
+  foi de ~50s pra ~150s. Fix: 2 caches computados 1x por tick em
+  `update()` (`_npc_combatants_cache`, pool pequeno — usado quando quem
+  procura NÃO é NPC; `_all_combatants_cache`, pool maior — usado só
+  quando quem procura É um NPC, e NPCs são sempre poucos por mapa).
+  Resultado: O(mobs×npcs) em vez de O(mobs²), suíte de volta a ~55s.
+- **Regressão funcional real, pega pela suíte (não visual)**: com o
+  "Guarda Real" de teste agora um candidato válido de `_select_target`,
+  1 teste pré-existente (`test_mob_combat_result_sent_to_both_players`)
+  quebrou — o teste teleportava um mob só mexendo em `TileMovement.
+  current_tile_x/y`, sem sincronizar `Position` (pixel), deixando o mob
+  "fisicamente" ainda na zona de spawn real dele; a escolha de alvo por
+  distância em pixel virou uma quase-empate entre o player (intenção do
+  teste) e o guarda (~26px mais perto por coincidência de tile). Fix:
+  teste passou a usar `tests/helpers.py::set_entity_tile()` (já existe
+  pra isso, sincroniza os dois) em vez de mexer só em `TileMovement`.
+- **Escopo desta entrega**: cobre o caso mais comum e já testável de
+  verdade — combate mútuo por PROXIMIDADE (ambos hostis entre si, IA de
+  cada lado se ataca independente, mesmo mecanismo já generalizado nas
+  Fases 2/5a). O aggro-por-dano à distância (ex: skill/projétil de um
+  NPC provocando um mob fora do raio de detecção) e o assist/co-aggro
+  entre aliados da mesma facção (mencionados no plano original) **ainda
+  não foram implementados** — ver plano em
+  `C:\Users\l4nce\.claude\plans\expressive-wondering-starlight.md`,
+  seguem como trabalho futuro, a confirmar com o usuário se/quando
+  entrar.
+
+**Validado**: `tests/test_faction.py` ganhou `TestMultiTargetCombat` (4
+testes, 29 no arquivo): mob hostil escolhe NPC de combate como alvo
+(mesmo com player mais longe), NPC de combate escolhe mob hostil como
+alvo (prova o lado `_all_combatants_cache`), combate mútuo completo
+(200 ticks — os dois lados perdem HP um do outro, sem player envolvido),
+regressão — mob neutro ainda ignora NPC amigável por proximidade. Suíte
+completa 147/147 (143 + 4), sem regressão, rodada múltiplas vezes com
+timing conferido (~55s, sem o regresso de performance).
+
+**Não validado**: sessão manual em jogo real (nenhum mob/NPC hostil de
+teste posicionado perto o bastante do "Guarda Real" pra brigar de
+verdade ainda — o guarda está isolado perto do spawn do player).
 
 ---
 

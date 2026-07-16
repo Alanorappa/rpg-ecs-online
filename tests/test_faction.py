@@ -15,6 +15,11 @@ compartilha _build_combat_entity com create_enemy), componente
 Combatant genérico como gate de sync (server/world_server.py, no lugar
 de Enemy sozinho), e o gate de dano "amigavel" trazido da Fase 5
 (apply_damage_core) pra já valer aqui.
+
+TestMultiTargetCombat: Fase 5 — _select_target() deixa de assumir só
+PlayerControlled: mob hostil pode escolher um NPC de combate (ou outro
+mob) como alvo, via can_engage(); NPC de combate (guarda) pode alvejar
+mob hostil de volta.
 """
 import os, sys
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -346,6 +351,104 @@ class TestCombatNpcArchetype(unittest.TestCase):
         cst = self.ws.world.get_component(self.peid, CombatState)
         self.assertEqual(cst.target_entity_id, -1,
                          "alvo amigavel deveria ser limpo, não ficar preso em loop de ataque")
+
+
+class TestMultiTargetCombat(unittest.TestCase):
+    """Fase 5: _select_target() deixa de assumir só PlayerControlled —
+    mob hostil pode alvejar NPC de combate (e vice-versa), sem player
+    envolvido. Player nesta suíte fica LONGE de propósito (10,10), fora
+    de qualquer disputa de "mais perto", pra isolar o comportamento
+    mob↔NPC sem interferência."""
+
+    def setUp(self):
+        from tests.helpers import make_world_server, spawn_player
+        self.ws = make_world_server()
+        spawn_player(self.ws, "s1", 10, 10)
+        self.peid = self.ws._player_eids["s1"]
+
+    def _spawn_mob(self, tx, ty, faction):
+        from engine.entity_factory import create_enemy
+        from engine.components import CombatState, Visible, MapLocation
+        eid = create_enemy(self.ws.world, tx, ty, faction=faction)
+        self.ws._mob_eids.add(eid)
+        self.ws.world.add_component(eid, CombatState())
+        self.ws.world.add_component(eid, Visible())
+        self.ws.world.add_component(eid, MapLocation(self.ws._map_file))
+        return eid
+
+    def _spawn_guard(self, tx, ty, faction="guardas_vila"):
+        from engine.entity_factory import create_combat_npc
+        from engine.components import CombatState, Visible, MapLocation
+        eid = create_combat_npc(self.ws.world, tx, ty, faction=faction)
+        self.ws._mob_eids.add(eid)
+        self.ws.world.add_component(eid, CombatState())
+        self.ws.world.add_component(eid, Visible())
+        self.ws.world.add_component(eid, MapLocation(self.ws._map_file))
+        return eid
+
+    def test_mob_hostil_escolhe_npc_de_combate_como_alvo(self):
+        from engine.components import AIControlled
+        from tests.helpers import run_ticks
+        guard = self._spawn_guard(131, 374)
+        mob   = self._spawn_mob(132, 374, faction="monstros_hostis")
+
+        run_ticks(self.ws, 3)
+
+        ai = self.ws.world.get_component(mob, AIControlled)
+        self.assertEqual(ai.target_eid, guard,
+                         "mob hostil deveria escolher o guarda (só candidato perto) como alvo")
+
+    def test_npc_de_combate_escolhe_mob_hostil_como_alvo(self):
+        """Prova o outro lado do gate assimétrico (busca por _all_combatants_cache
+        quando quem procura é um NPC) — sem isso o guarda nunca "vê" o mob."""
+        from engine.components import AIControlled
+        from tests.helpers import run_ticks
+        guard = self._spawn_guard(131, 374)
+        mob   = self._spawn_mob(132, 374, faction="monstros_hostis")
+
+        run_ticks(self.ws, 3)
+
+        guard_ai = self.ws.world.get_component(guard, AIControlled)
+        self.assertEqual(guard_ai.target_eid, mob,
+                         "NPC de combate deveria escolher o mob hostil como alvo")
+
+    def test_combate_completo_mob_vs_npc_e_mutuo(self):
+        """Integração ponta a ponta: mob hostil e guarda adjacentes, sem
+        player por perto — os dois devem se ferir mutuamente com o tempo,
+        exatamente o "NPCs se atacarão entre si" pedido pelo usuário."""
+        from engine.components import CombatStats
+        from tests.helpers import run_ticks
+        guard = self._spawn_guard(131, 374)
+        mob   = self._spawn_mob(132, 374, faction="monstros_hostis")
+        guard_cs = self.ws.world.get_component(guard, CombatStats)
+        mob_cs   = self.ws.world.get_component(mob, CombatStats)
+        guard_hp_before = guard_cs.current_hp
+        mob_hp_before   = mob_cs.current_hp
+
+        run_ticks(self.ws, 200)   # tempo de sobra: aggro_delay + adjacência + cooldown de ataque
+
+        self.assertLess(guard_cs.current_hp, guard_hp_before,
+                        "guarda deveria ter recebido dano do mob hostil")
+        self.assertLess(mob_cs.current_hp, mob_hp_before,
+                        "mob deveria ter recebido dano de volta do guarda")
+
+    def test_mob_neutro_nao_ataca_npc_amigavel_por_proximidade(self):
+        """Regressão: relação neutra (ex: vida_selvagem vs guardas_vila)
+        não inicia combate por proximidade — mesma regra da Fase 2, agora
+        também vale entre não-jogadores."""
+        from engine.components import AIControlled, CombatStats
+        from tests.helpers import run_ticks
+        guard = self._spawn_guard(131, 374)
+        mob   = self._spawn_mob(132, 374, faction="vida_selvagem")
+        guard_cs = self.ws.world.get_component(guard, CombatStats)
+        hp_before = guard_cs.current_hp
+
+        run_ticks(self.ws, 30)
+
+        ai = self.ws.world.get_component(mob, AIControlled)
+        self.assertEqual(ai.state, "IDLE",
+                         "mob neutro não deveria agroar o guarda só por proximidade")
+        self.assertEqual(guard_cs.current_hp, hp_before)
 
 
 if __name__ == "__main__":

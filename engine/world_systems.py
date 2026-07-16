@@ -38,7 +38,7 @@ from engine.components import Position, Renderable, PlayerControlled, Camera, Co
                        EnemyAbilities, EnemyAbilitySlot, EntityIdentity, \
                        MobSounds, PendingDeath, XPReward, SpawnZoneOwner, SpawnZone, \
                        PlayerSkills, NPC, ActiveRegen, ConsumableBar, \
-                       AoeTargeting, RemoteControlled, GhostState, MapLocation
+                       AoeTargeting, RemoteControlled, GhostState, MapLocation, Combatant
 from engine.world import World
 from engine.tileset import TILE_SIZE, OBJECT_MAPPING
 from engine.utils import chebyshev, start_tile_movement
@@ -736,8 +736,11 @@ class CombatSystem(System):
                           on_cc_break=_cc_break_fx,
                           on_damage_dealt=self.on_damage_dealt)
 
-        # Aggro por dano: ataque do player força inimigo a perseguir independente do raio.
-        # aggroed_by_damage=True desativa o leash de 5 tiles até o mob chegar perto do player.
+        # Aggro por dano: ataque força o alvo a perseguir independente do raio
+        # (cobre players E outros combatentes — Sistema de Facções, Fase 5:
+        # um NPC/mob atacado à distância por outro NPC/mob também precisa
+        # revidar, não só quando o atacante é o player).
+        # aggroed_by_damage=True desativa o leash de 5 tiles até o mob chegar perto do alvo.
         # Só IDLE — RETURNING nunca chega aqui de verdade (early-return acima,
         # modo evasão), mas o gate fica explícito pra não reintroduzir o bug
         # numa refatoração futura que reordene esses blocos.
@@ -748,7 +751,7 @@ class CombatSystem(System):
         # relatado pelo usuário 15/07/2026 testando o "Guarda Real" de teste;
         # ver também os gates em set_player_target()/combat_processor.py, que
         # impedem o auto-attack de sequer tentar contra alvo amigavel).
-        if attacker_is_player and can_engage(self.world, attacker_id, target_id):
+        if can_engage(self.world, attacker_id, target_id):
             _ai = self.world.get_component(target_id, AIControlled)
             if _ai and _ai.state == "IDLE":
                 _ms_hit = self.world.get_component(target_id, MobSounds)
@@ -1369,6 +1372,11 @@ class EnemyAISystem(System):
         self.path_recalc_interval = 0.8
         self._pathfind_budget = 0  # resetado a cada frame
         self._dbg_atk_timers: dict[int, float] = {}  # eid → tempo acumulado desde último log
+        # Caches de "outros combatentes" pra _select_target — populados de
+        # verdade em update() (1x por tick); vazios aqui só como fallback
+        # seguro caso _select_target seja chamado antes do 1º update().
+        self._npc_combatants_cache: list = []
+        self._all_combatants_cache: list = []
 
     @staticmethod
     def _has_line_of_sight(tilemap_comp, x0: int, y0: int, x1: int, y1: int) -> bool:
@@ -1434,11 +1442,18 @@ class EnemyAISystem(System):
         return find_path(start, end, dynamic_obstacles=dynamic_obstacles)
 
     def _select_target(self, mob_eid: int):
-        """Retorna (player_eid, pos, tile_move, combat_stats, combat_state) do alvo mais próximo.
+        """Retorna (target_eid, pos, tile_move, combat_stats, combat_state) do
+        alvo mais próximo — player OU outra entidade `Combatant` (mob/NPC de
+        combate, Sistema de Facções Fase 5) cuja relação com este mob não
+        seja `amigavel` (nunca vale a pena rastrear um alvo que nunca vai
+        ser atacado). A decisão de agroar OU NÃO por proximidade continua
+        inteiramente no chamador (`is_hostile()`, ver bloco "Detecção
+        inicial" em `update()`) — aqui só se escolhe o candidato mais
+        próximo, exatamente como sempre foi feito só com players.
 
         Prioriza o alvo já agredido via dano (AIControlled.aggroed_by_damage + target_eid).
-        Ignora players mortos e invisíveis.
-        Retorna (-1, None, None, None, None) se nenhum player válido.
+        Ignora alvos mortos e invisíveis.
+        Retorna (-1, None, None, None, None) se nenhum alvo válido.
         """
         ai_ctrl = self.world.get_component(mob_eid, AIControlled)
         mob_pos = self.world.get_component(mob_eid, Position)
@@ -1452,7 +1467,7 @@ class EnemyAISystem(System):
         best_cs    = None
         best_cst   = None
 
-        # Filtra players pelo mesmo mapa do mob — evita cross-map targeting.
+        # Filtra candidatos pelo mesmo mapa do mob — evita cross-map targeting.
         mob_ml  = self.world.get_component(mob_eid, MapLocation)
         mob_map = mob_ml.map_file if mob_ml else ""
 
@@ -1476,10 +1491,70 @@ class EnemyAISystem(System):
                 best_cs    = p_cs
                 best_cst   = p_cst
 
+        # Outros combatentes cuja relação com este mob permita brigar
+        # (Sistema de Facções, Fase 5). Exclui a si mesmo; "amigavel"
+        # nunca é candidato (nunca seria atacado de qualquer forma).
+        #
+        # Lê dos caches computados 1x por tick em update() — NÃO
+        # requery `get_entities_with` aqui (regressão real medida: ~50s
+        # pra ~150s na suíte completa com um scan Combatant×Combatant
+        # feito por mob). Quem procura NÃO é NPC usa só
+        # `_npc_combatants_cache` (pool pequeno — mob-vs-mob nunca entra
+        # aqui, custo O(mobs×npcs)). Quem procura É NPC (guarda
+        # defendendo, etc.) usa `_all_combatants_cache` (pool maior, mas
+        # só os poucos NPCs do mapa pagam esse scan mais largo).
+        _searcher_is_npc = self.world.get_component(mob_eid, NPC) is not None
+        _other_candidates = (self._all_combatants_cache if _searcher_is_npc
+                            else self._npc_combatants_cache)
+        for c_eid, c_pos, c_tm, c_cs in _other_candidates:
+            if c_eid == mob_eid:
+                continue
+            if c_cs.current_hp <= 0:
+                continue
+            if not can_engage(self.world, mob_eid, c_eid):
+                continue
+            c_cst = self.world.get_component(c_eid, CombatState)
+            if c_cst is not None and not c_cst.is_visible:
+                continue
+            dist_px = math.sqrt((c_pos.x - mob_pos.x) ** 2 + (c_pos.y - mob_pos.y) ** 2)
+            if dist_px < best_dist:
+                best_dist  = dist_px
+                best_eid   = c_eid
+                best_pos   = c_pos
+                best_tm    = c_tm
+                best_cs    = c_cs
+                best_cst   = c_cst
+
         return (best_eid, best_pos, best_tm, best_cs, best_cst)
 
     def update(self, events: list = None, dt: float = 0) -> None:
         self._pathfind_budget = self.MAX_PATHFINDS_PER_FRAME
+
+        # Caches de "outros combatentes" pra _select_target (Sistema de
+        # Facções, Fase 5) — computados UMA VEZ por tick aqui, não por mob
+        # (evitava um scan O(mobs²) real: cada mob reconsultando
+        # get_entities_with(Combatant) do zero — regressão medida de ~50s
+        # pra ~150s na suíte completa antes deste cache). NPCs são sempre
+        # um conjunto pequeno (poucos por mapa); `_all_combatants_cache`
+        # só é de fato iterado quando QUEM PROCURA é um NPC (ver
+        # _select_target), então seu tamanho maior não pesa no caso comum
+        # (mob normal só varre `_npc_combatants_cache`).
+        def _same_map(eid: int) -> bool:
+            if not self._map_filter:
+                return True
+            _ml = self.world.get_component(eid, MapLocation)
+            return _ml is not None and _ml.map_file == self._map_filter
+
+        self._npc_combatants_cache = [
+            (eid, pos, tm, cs) for eid, pos, tm, _npc, _cbt, cs in self.world.get_entities_with(
+                Position, TileMovement, NPC, Combatant, CombatStats)
+            if _same_map(eid)
+        ]
+        self._all_combatants_cache = [
+            (eid, pos, tm, cs) for eid, pos, tm, _cbt, cs in self.world.get_entities_with(
+                Position, TileMovement, Combatant, CombatStats)
+            if _same_map(eid)
+        ]
 
         # Verifica se existe ao menos um player NESTE mapa — sem isso, todos os
         # mobs do bundle ficam ociosos. Não checa current_hp: player morto/ghost
@@ -1544,13 +1619,19 @@ class EnemyAISystem(System):
                 self._select_target(enemy_id)
 
             # Se mob tem aggro fixo por dano e esse alvo ainda é válido, mantém.
+            # Alvo válido = player OU outra entidade Combatant (mob/NPC de
+            # combate, Sistema de Facções Fase 5) — antes exigia
+            # PlayerControlled, o que quebrava o "sticky target" pra
+            # aggro entre não-jogadores (mob atacado por outro mob/NPC
+            # perdia o alvo fixo no tick seguinte).
             if ai_control.aggroed_by_damage and ai_control.target_eid != -1:
                 _fx_pos = self.world.get_component(ai_control.target_eid, Position)
                 _fx_tm  = self.world.get_component(ai_control.target_eid, TileMovement)
                 _fx_cs  = self.world.get_component(ai_control.target_eid, CombatStats)
                 _fx_cst = self.world.get_component(ai_control.target_eid, CombatState)
                 _fx_pc  = self.world.get_component(ai_control.target_eid, PlayerControlled)
-                if _fx_pos and _fx_tm and _fx_cs and _fx_cs.current_hp > 0 and _fx_pc:
+                _fx_cbt = self.world.get_component(ai_control.target_eid, Combatant)
+                if _fx_pos and _fx_tm and _fx_cs and _fx_cs.current_hp > 0 and (_fx_pc or _fx_cbt):
                     _invis = _fx_cst is not None and not _fx_cst.is_visible
                     if not _invis:
                         target_eid           = ai_control.target_eid
