@@ -495,5 +495,109 @@ class TestMultiTargetCombat(unittest.TestCase):
                          "guarda deveria escolher o bandido hostil (único candidato válido), mesmo mais longe")
 
 
+class TestAcquisitionVsRetention(unittest.TestCase):
+    """Modelo WoW de aquisição vs retenção de alvo (bugs reais relatados
+    pelo usuário 15/07/2026 testando Guarda Real vs Bandido ao vivo):
+
+    1. Guarda matava o bandido e passava a PERSEGUIR o player — o loop de
+       players em _select_target não tinha filtro de facção (legado de
+       "todo mob é hostil ao player"), então na morte do alvo o guarda em
+       estado de combate recebia o player como "próximo alvo válido".
+       Aquisição agora exige is_hostile (WoW: aggro radius só em unidade
+       "red"; LoL: minion só adquire alvo do time inimigo).
+    2. A revidada do mob NEUTRO dependia por acidente desse mesmo loop sem
+       filtro (após aggroed_by_damage ser limpo na aproximação) — virou
+       RETENÇÃO explícita: alvo engajado persiste enquanto vivo/visível/
+       atacável, independente de hostilidade (WoW: quem está na threat
+       table continua alvo até a tabela esvaziar).
+    3. Combate mob-vs-mob acontecia inteiro server-side de forma invisível
+       (nenhum COMBAT_RESULT emitido) — cliente via os dois parados "sem
+       desferir dano" com HP cheio.
+    """
+
+    def setUp(self):
+        from tests.helpers import make_world_server, spawn_player
+        self.ws = make_world_server()
+        spawn_player(self.ws, "s1", 50, 300)   # terreno aberto, longe de zonas reais
+        self.peid = self.ws._player_eids["s1"]
+
+    def _spawn(self, factory_kind, tx, ty, faction):
+        from engine.entity_factory import create_enemy, create_combat_npc
+        from engine.components import CombatState, Visible, MapLocation
+        fn = create_combat_npc if factory_kind == "npc" else create_enemy
+        eid = fn(self.ws.world, tx, ty, faction=faction)
+        self.ws._mob_eids.add(eid)
+        self.ws.world.add_component(eid, CombatState())
+        self.ws.world.add_component(eid, Visible())
+        self.ws.world.add_component(eid, MapLocation(self.ws._map_file))
+        return eid
+
+    def test_guarda_nao_persegue_player_apos_matar_o_bandido(self):
+        """Reproduz o bug relatado: player ADJACENTE ao guarda, guarda em
+        combate com o bandido; bandido morre → guarda NUNCA pode receber
+        o player como alvo (relação amigável), deve resetar e voltar pra
+        casa (threat table vazia → evade, modelo WoW)."""
+        from engine.components import AIControlled, CombatStats
+        from tests.helpers import run_ticks, set_entity_tile
+        set_entity_tile(self.ws, self.peid, 50, 300)
+        guard  = self._spawn("npc", 51, 300, "guardas_vila")   # adjacente ao player
+        bandit = self._spawn("mob", 52, 300, "bandidos")
+
+        run_ticks(self.ws, 60)   # engajam (aggro_delay 1s + aproximação)
+        guard_ai = self.ws.world.get_component(guard, AIControlled)
+        self.assertEqual(guard_ai.target_eid, bandit, "pré-condição: guarda em combate com o bandido")
+
+        # Bandido morre
+        bandit_cs = self.ws.world.get_component(bandit, CombatStats)
+        bandit_cs.current_hp = 0
+        run_ticks(self.ws, 60)   # grace de 600ms + reset
+
+        self.assertNotEqual(guard_ai.target_eid, self.peid,
+                            "guarda amigável nunca deve receber o player como alvo")
+        self.assertIn(guard_ai.state, ("IDLE", "RETURNING"),
+                      "guarda deveria resetar (voltar pra casa) após o alvo morrer")
+
+    def test_mob_neutro_mantem_retaliacao_sem_aggroed_by_damage(self):
+        """Guarda de regressão da retenção: lobo neutro engajado no player
+        continua revidando mesmo com aggroed_by_damage=False (o bloco
+        "chegou perto → aggroed_by_damage=False" limpa a flag em combate
+        normal) — antes, isso dependia do loop de players SEM filtro em
+        _select_target, que o fix da aquisição removeu."""
+        from engine.components import AIControlled
+        from tests.helpers import run_ticks, set_entity_tile
+        set_entity_tile(self.ws, self.peid, 50, 300)
+        wolf = self._spawn("mob", 51, 300, "vida_selvagem")
+        ai = self.ws.world.get_component(wolf, AIControlled)
+        ai.state             = "ATTACKING"
+        ai.target_eid         = self.peid
+        ai.aggroed_by_damage  = False    # já foi limpo pela aproximação
+
+        run_ticks(self.ws, 30)
+
+        self.assertEqual(ai.target_eid, self.peid,
+                         "retenção: alvo neutro engajado deve persistir sem aggroed_by_damage")
+        self.assertIn(ai.state, ("ATTACKING", "CHASING"),
+                      "lobo deveria continuar em combate com o player")
+
+    def test_dano_mob_vs_mob_gera_combat_result_broadcast(self):
+        """Sintoma "frente a frente sem desferir dano": o dano acontecia
+        server-side mas nunca era transmitido — agora todo hit mob-vs-mob
+        entra no canal de COMBAT_RESULT (via _log_mob_damage_hit)."""
+        from tests.helpers import run_ticks
+        guard  = self._spawn("npc", 51, 300, "guardas_vila")
+        bandit = self._spawn("mob", 52, 300, "bandidos")
+
+        deltas = run_ticks(self.ws, 200)
+
+        pair = {guard, bandit}
+        mvm_hits = [c for c in deltas["combat"]
+                    if c.get("attacker") in pair and c.get("target") in pair
+                    and c.get("damage", 0) > 0]
+        self.assertTrue(mvm_hits,
+                        "hits mob-vs-mob deveriam gerar COMBAT_RESULT no delta")
+        self.assertGreaterEqual(mvm_hits[0].get("hp_after", -1), 0,
+                                "COMBAT_RESULT mob-vs-mob deve carregar hp_after pro sync de HP")
+
+
 if __name__ == "__main__":
     unittest.main()

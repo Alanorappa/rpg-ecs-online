@@ -1479,6 +1479,19 @@ class EnemyAISystem(System):
                     continue
             if p_cs.current_hp <= 0:
                 continue
+            # AQUISIÇÃO por proximidade só considera alvos HOSTIS — mesmo
+            # modelo do WoW (aggro radius só se aplica a unidades "red") e
+            # dos minions do LoL (aquisição só considera o time inimigo).
+            # Este loop era o legado de "todo mob é hostil ao player" (sem
+            # filtro nenhum) — bug real relatado pelo usuário 15/07/2026:
+            # o Guarda Real (amigável) matava o Bandido e, ainda em estado
+            # de combate, recebia o player mais próximo como alvo daqui e
+            # PERSEGUIA o player (a janela de grace de 600ms nunca expirava
+            # porque este loop sempre devolvia um alvo "válido"). RETENÇÃO
+            # de um alvo neutro já engajado (ex: lobo revidando) NÃO passa
+            # por aqui — é o bloco de alvo fixo no chamador (ver update()).
+            if not is_hostile(self.world, mob_eid, p_eid):
+                continue
             p_cst = self.world.get_component(p_eid, CombatState)
             if p_cst is not None and not p_cst.is_visible:
                 continue
@@ -1628,20 +1641,32 @@ class EnemyAISystem(System):
             target_eid, player_position_comp, player_tile_move_comp, player_combat_stats, _target_cst = \
                 self._select_target(enemy_id)
 
-            # Se mob tem aggro fixo por dano e esse alvo ainda é válido, mantém.
-            # Alvo válido = player OU outra entidade Combatant (mob/NPC de
-            # combate, Sistema de Facções Fase 5) — antes exigia
-            # PlayerControlled, o que quebrava o "sticky target" pra
-            # aggro entre não-jogadores (mob atacado por outro mob/NPC
-            # perdia o alvo fixo no tick seguinte).
-            if ai_control.aggroed_by_damage and ai_control.target_eid != -1:
+            # RETENÇÃO do alvo engajado — modelo WoW de threat table: uma vez
+            # em combate com alguém, o mob MANTÉM esse alvo enquanto ele for
+            # válido (vivo, visível, atacável via can_engage), independente
+            # da relação ser "hostil" ou "neutra" — um lobo neutro socado
+            # pelo player continua revidando mesmo depois que
+            # aggroed_by_damage é limpo na aproximação (ver bloco "chegou
+            # perto" abaixo). Hostilidade só importa na AQUISIÇÃO
+            # (_select_target, filtrada por is_hostile) — nunca na retenção.
+            # Quando o alvo morre/some, a retenção falha, a aquisição não
+            # acha ninguém hostil, e o mob "reseta" e volta pra casa (grace
+            # → RETURNING → IDLE) — o equivalente do "threat table vazia →
+            # evade/reset" do WoW. Antes: a retenção exigia
+            # aggroed_by_damage=True, e a revidada do neutro dependia (por
+            # acidente) do loop de players sem filtro em _select_target.
+            _in_combat_state = ai_control.state in (
+                "AGGRO_DELAY", "CHASING", "ATTACKING", "KITING", "BLOCKED_BY_PLAYER")
+            if ai_control.target_eid != -1 and (ai_control.aggroed_by_damage or _in_combat_state):
                 _fx_pos = self.world.get_component(ai_control.target_eid, Position)
                 _fx_tm  = self.world.get_component(ai_control.target_eid, TileMovement)
                 _fx_cs  = self.world.get_component(ai_control.target_eid, CombatStats)
                 _fx_cst = self.world.get_component(ai_control.target_eid, CombatState)
                 _fx_pc  = self.world.get_component(ai_control.target_eid, PlayerControlled)
                 _fx_cbt = self.world.get_component(ai_control.target_eid, Combatant)
-                if _fx_pos and _fx_tm and _fx_cs and _fx_cs.current_hp > 0 and (_fx_pc or _fx_cbt):
+                if (_fx_pos and _fx_tm and _fx_cs and _fx_cs.current_hp > 0
+                        and (_fx_pc or _fx_cbt)
+                        and can_engage(self.world, enemy_id, ai_control.target_eid)):
                     _invis = _fx_cst is not None and not _fx_cst.is_visible
                     if not _invis:
                         target_eid           = ai_control.target_eid
@@ -2709,9 +2734,20 @@ class EnemyAbilitySystem(System):
             # Determina o alvo: usa target_eid do AIControlled se válido, senão player mais próximo
             target_p_eid = ai.target_eid if ai.target_eid in player_tiles else -1
             if target_p_eid == -1:
-                # Fallback: player mais próximo
+                # Alvo real do mob é OUTRO combatente (mob/NPC — Sistema de
+                # Facções, Fase 5): não dispara habilidade em bystander
+                # player nenhum. Habilidades contra alvo não-player ainda
+                # não são suportadas (os handlers de efeito/projétil abaixo
+                # assumem player) — anotado como trabalho futuro; auto-attack
+                # normal do mob já cobre o combate mob-vs-mob.
+                if ai.target_eid != -1 and ai.target_eid not in player_tiles:
+                    continue
+                # Fallback: player mais próximo — só HOSTIL (um guarda
+                # amigável com habilidades nunca deve mirar num player).
                 best_dist = float("inf")
                 for p_eid, (px, py) in player_tiles.items():
+                    if not is_hostile(self.world, eid, p_eid):
+                        continue
                     d = max(abs(ex - px), abs(ey - py))
                     if d < best_dist:
                         best_dist   = d

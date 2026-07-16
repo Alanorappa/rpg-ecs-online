@@ -1320,6 +1320,30 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         log = self._mob_damage_log.setdefault(target_id, {})
         log[attacker_eid] = log.get(attacker_eid, 0) + dmg
 
+        # Dano mob-vs-mob/NPC (Sistema de Facções, Fase 5): broadcast pro
+        # cliente via o MESMO canal de "mob atacou" (COMBAT_RESULT dentro do
+        # AOI_UPDATE). Sem isto, o combate NPC-vs-NPC acontecia inteiro
+        # server-side de forma INVISÍVEL — cliente via os dois parados com
+        # HP cheio "sem desferir dano", e ao atacar o alvo já quase morto no
+        # servidor, ele "morria instantaneamente" (bug real relatado pelo
+        # usuário 15/07/2026 testando Guarda Real vs Bandido). O caminho
+        # mob→PLAYER não passa por aqui de verdade (é detectado por snapshot
+        # de HP de players em combat_processor.py) — só mob→mob entra.
+        # Outcome sempre "hit": este hook roda depois da escrita de HP em
+        # apply_damage_core e não conhece o outcome real (crit/block) — bom
+        # o suficiente pra sincronizar HP + FLT; misses nem chegam aqui.
+        if attacker_eid in self._mob_eids and target_id in self._mob_eids:
+            from engine.components import CombatStats as _CS_mvm
+            _cs_mvm = self.world.get_component(target_id, _CS_mvm)
+            self._pending_mob_attacks.append({
+                "attacker": attacker_eid,
+                "target":   target_id,
+                "damage":   dmg,
+                "outcome":  "hit",
+                "hp_after": max(0, _cs_mvm.current_hp) if _cs_mvm else 0,
+                "source":   "auto",
+            })
+
     def get_session_id_for_player(self, player_eid: int) -> str | None:
         """Retorna session_id do player dado seu entity_id — O(1) via reverse map."""
         return self._player_eid_to_sid.get(player_eid)

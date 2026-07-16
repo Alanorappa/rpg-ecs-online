@@ -3108,8 +3108,101 @@ aggro, mesmo raiz do bug do bystander). `tests/test_ranged_mob.py`
 confirmado estável em 25 execuções seguidas (0 falhas). Suíte completa
 rodada 5x seguidas (0 falhas).
 
-**Não validado**: sessão manual em jogo real vendo o Bandido e o Guarda
-Real brigando de verdade.
+**Não validado (na época)**: sessão manual em jogo real — o usuário
+testou e relatou 3 sintomas reais, ver §34.9.
+
+---
+
+### 34.9 Aquisição vs Retenção de alvo (modelo WoW/LoL) + broadcast de combate mob-vs-mob (16/07/2026)
+
+Usuário testou o Guarda vs Bandido ao vivo e relatou 3 sintomas: (1)
+"ficaram frente a frente mas nenhum deles desferiu dano"; (2) ao ajudar a
+matar o bandido, "o guarda ficou me perseguindo, como se estivesse em
+combate comigo"; (3) o bandido "acabou morrendo" rápido demais com um
+clique. Pediu explicitamente pesquisa nas mecânicas do WoW e dos minions
+do LoL antes de arquitetar a solução.
+
+**Pesquisa (fontes)**: no WoW, cada NPC tem uma *threat table* — a
+AQUISIÇÃO por proximidade (aggro radius) só se aplica a unidades hostis
+("red"), mas a RETENÇÃO independe de disposição: quem entrou na tabela
+(ex: por dano) continua alvo até morrer/sair de alcance, e quando a
+tabela esvazia o NPC "evade" (reseta e volta pra casa) — ver
+[Threat (Warcraft Wiki)](https://warcraft.wiki.gg/wiki/Threat) e
+[Aggro table (onlyfarms)](https://onlyfarms.gg/wiki/world-of-warcraft/aggro-table).
+Nos minions do LoL, aquisição só considera unidades do TIME INIMIGO
+(nunca aliados/neutros), com lista de prioridade e troca de alvo só por
+prioridade maior — ver
+[Minion (LoL Wiki)](https://wiki.leagueoflegends.com/en-us/Minion) e a
+[documentação de IA de minions da Riot](https://boards.na.leagueoflegends.com/en/c/developer-corner/qRHotV9k-minion-ai-rules-documentation?show=rundown).
+O código violava exatamente essa separação: aquisição sem filtro de
+facção, e retenção implementada por acidente EM CIMA da aquisição.
+
+**Causas raiz e fixes (3):**
+
+1. **Sintoma "nenhum dano" → dano invisível**: o combate ACONTECIA
+   inteiro server-side (HP caindo confirmado por smoke test), mas
+   `COMBAT_RESULT` de mob só nasce do snapshot de HP de PLAYERS
+   (`combat_processor.py`) — dano mob→mob não gerava evento nenhum;
+   cliente via os dois parados com HP cheio. E por isso o bandido
+   "morria instantâneo" pro player: já estava quase morto no servidor.
+   Fix: `WorldServer._log_mob_damage_hit` (hook `on_damage_dealt`, já
+   chamado em todo hit via `apply_damage_core`) agora, quando atacante E
+   alvo estão em `_mob_eids`, appenda um COMBAT_RESULT (`hp_after`
+   incluso) em `_pending_mob_attacks` — mesmo canal do mob→player, o
+   cliente já sabia renderizar (atualiza `RemoteEntityMeta.hp` + FLT).
+   Outcome sempre `"hit"` (o hook roda depois da escrita de HP e não
+   conhece crit/block — suficiente pra sync visual; miss nem chega ali).
+
+2. **Sintoma "guarda me perseguiu" → aquisição sem filtro de facção**:
+   o loop de PLAYERS em `_select_target()` nunca teve filtro (legado de
+   "todo mob é hostil ao player") — quando o bandido morria, o guarda
+   ainda em estado de combate recebia o player mais próximo como "alvo
+   válido" dali (a grace de 600ms nunca expirava) e seguia perseguindo,
+   inclusive marcando o player como `in_combat` (bloqueia regen — "como
+   se estivesse em combate comigo", literal). Fix: aquisição de players
+   agora exige `is_hostile()`, igual o loop de combatentes já fazia
+   (§34.8) — modelo WoW/LoL: proximidade só adquire alvo hostil.
+
+3. **Retenção explícita (o que impedia o fix 2 antes)**: a revidada do
+   mob NEUTRO (lobo atacado) dependia POR ACIDENTE do loop sem filtro —
+   quando `aggroed_by_damage` é limpo na aproximação (transição
+   documentada no próprio código), era a aquisição irrestrita que
+   mantinha o player como alvo. Fix: o bloco de "sticky target" virou
+   RETENÇÃO de verdade — mantém o alvo engajado enquanto o mob está em
+   estado de combate (`AGGRO_DELAY/CHASING/ATTACKING/KITING/
+   BLOCKED_BY_PLAYER`) OU `aggroed_by_damage`, validando só
+   vivo+visível+`can_engage` (nunca hostilidade — retenção independe de
+   disposição, igual WoW). Alvo morre → retenção falha → aquisição
+   (filtrada) não acha ninguém → grace → RETURNING → IDLE — o
+   equivalente exato do "threat table vazia → evade/reset".
+
+- **Bônus (mesma classe)**: `EnemyAbilitySystem` tinha fallback de
+  "player mais próximo" pra habilidades quando `target_eid` não era
+  player — um mob brigando com um NPC atiraria poison/etc num player
+  bystander (e um guarda com habilidades miraria no próprio player que
+  protege). Fix: se o alvo real é outro combatente, NÃO dispara em
+  player nenhum (habilidade contra alvo não-player fica como trabalho
+  futuro — auto-attack já cobre mob-vs-mob); fallback filtrado por
+  `is_hostile`.
+
+**Comportamento emergente correto confirmado**: no smoke test do cenário
+real, após matar o bandido o guarda adquiriu um ZUMBI (hostil a
+`guardas_vila`) que tinha se aproximado perseguindo o player — guarda
+defendendo o player de monstros, exatamente o que a matriz de facções
+promete, sem uma linha de código específica pra isso.
+
+**Validado**: 3 testes novos (`TestAcquisitionVsRetention`): guarda com
+player ADJACENTE nunca alveja o player após a morte do bandido e reseta
+(reproduz o sintoma 2 ponta a ponta); lobo neutro engajado mantém
+retaliação com `aggroed_by_damage=False` (guarda de regressão do fix 2);
+hits mob-vs-mob aparecem no delta de combate com `hp_after` (sintoma 1).
+Suíte completa 151/151 (148+3), rodada 3x. Smoke test do cenário exato
+relatado (player no spawn real, guarda+bandido de conteúdo real): 10
+COMBAT_RESULTs mob-vs-mob emitidos, guarda nunca alvejou o player.
+
+**Não validado**: sessão manual em jogo real (ver a briga com os
+próprios olhos, dano flutuante + barras caindo + guarda ignorando o
+player após a vitória).
 
 ---
 
