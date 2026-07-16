@@ -511,11 +511,18 @@ class PlayerAutoMove:
     Controla o movimento automático do jogador.
     - Clique direito em inimigo → segue e ataca (target_entity_id em CombatState)
     - Clique esquerdo no chão → move até ground_target
+    - Botão "Seguir" do modal de player → acompanha follow_eid (sem combate)
     """
     active: bool = False
     path: list = field(default_factory=list)
     path_recalc_timer: float = 0.0
     ground_target: tuple = None   # (tile_x, tile_y) para movimento de chão
+    # "Seguir" (modal de interação com player, 16/07/2026): eid LOCAL do
+    # player seguido (-1 = não seguindo). Acompanha o alvo em movimento
+    # (mesmo pathing da perseguição de combate, parando adjacente), sem
+    # nenhum combate envolvido. Cancelado por WASD/clique de chão/
+    # perseguição de combate/alvo sumir.
+    follow_eid: int = -1
 
 
 class CharacterStats:

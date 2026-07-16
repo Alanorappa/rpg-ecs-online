@@ -112,6 +112,14 @@ class MsgType(str, Enum):
     TRADE_CANCEL       = "trade_cancel"       # C→S  {} (qualquer um dos dois pode cancelar a qualquer momento)
     TRADE_CANCELLED    = "trade_cancelled"    # S→C  {trade_id, reason} declined|cancelled|distance|disconnect|inventory_full|invalid
 
+    # Duelo (contexto PvP por convite — ver server/duel_processor.py)
+    DUEL_REQUEST       = "duel_request"       # C→S  {target_eid} — botão "Duelar" do modal de interação
+    DUEL_INVITE        = "duel_invite"        # S→C  {from_eid, from_name} — só ao alvo
+    DUEL_ACCEPT        = "duel_accept"        # C→S  {} — resposta ao convite pendente
+    DUEL_DECLINE       = "duel_decline"       # C→S  {} — idem
+    DUEL_START         = "duel_start"         # S→C  {opponent_eid, opponent_name} — pros dois; par vira hostil um ao outro
+    DUEL_END           = "duel_end"           # S→C  {winner_eid, loser_eid, reason} win|declined|distance|disconnect — pros dois
+
     CONSUMABLE_USE     = "consumable_use"    # C→S  uso de consumível (heal_instant, HoT, buffs futuros)
     GOLD_UPDATE        = "gold_update"       # C→S  gold mudou (loot de moedas) {gold: N}
     INV_SYNC           = "inv_sync"          # C→S  inventário mudou (loot de item) {inventory: [...]}
@@ -235,6 +243,9 @@ C2S_REQUIRED: dict = {
     MsgType.TRADE_OFFER_ITEM:   {"inv_index": _NUM},
     MsgType.TRADE_WITHDRAW_ITEM:{"offer_slot": _NUM},
     MsgType.TRADE_SET_GOLD:     {"amount": _NUM},
+    # Duelo — schema validado contra o send REAL do cliente
+    # (client/trade_handlers.py::_send_duel_request / duel_handlers.py):
+    MsgType.DUEL_REQUEST:       {"target_eid": _NUM},
     MsgType.SAVE_STATE:         {},   # payload inteiro é dict validado a fundo no handler
 }
 

@@ -52,7 +52,9 @@ class UI:
     SKILL_LEVELS_W, SKILL_LEVELS_H = 700, 560  # painel de Skill Level (tecla L) — nível+xp do personagem + 11 trilhas, read-only
     TRADE_W, TRADE_H              = 440, 450   # janela de trade (player↔player) — bag própria + 2 colunas de oferta
     CHAT_W, CHAT_H                = 380, 220   # janela de chat (canto inferior esquerdo) — abas Local/Mundial/Combate
-    TRADE_POPUP_W, TRADE_POPUP_H  = 140, 70    # mini-popup "Trade" (Shift+clique num player remoto)
+    # Modal de interação com player (clique direito em player amigável —
+    # substituiu o shift+clique/"Trade", 16/07/2026): Negociar/Duelar/Seguir.
+    TRADE_POPUP_W, TRADE_POPUP_H  = 140, 138
     TRADE_INVITE_W, TRADE_INVITE_H = 360, 150  # modal "Fulano quer negociar"
 
     # Menu de pausa (ESC) e seus submenus — cada um é um painel separado

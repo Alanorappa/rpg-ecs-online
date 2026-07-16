@@ -332,22 +332,6 @@ class MouseTargetingSystem(System):
                 remote_player_id = self._remote_player_at_world_pos(world_x, world_y)
                 target_id = remote_player_id
 
-            # Shift+clique esquerdo num player remoto → popup "Trade" local
-            # (sem rede ainda — só abre o mini-popup; TRADE_REQUEST só sai
-            # quando o botão "Trade" dentro dele é clicado, ver
-            # client/trade_handlers.py). Não seleciona como alvo de combate.
-            if (event.button == 1 and remote_player_id != -1
-                    and pygame.key.get_mods() & pygame.KMOD_SHIFT):
-                from engine.components import RemoteControlled as _RCtp
-                from ui.ui_components import TradeUIState as _TUStp
-                rc = self.world.get_component(remote_player_id, _RCtp)
-                tui = self.world.get_component(self.player_entity_id, _TUStp)
-                if tui is not None:
-                    tui.popup_target_eid  = remote_player_id
-                    tui.popup_target_name = rc.name if rc else "Jogador"
-                    tui.popup_screen_pos  = event.pos
-                continue
-
             player_cs   = self.world.get_component(self.player_entity_id, CombatState)
             player_auto = self.world.get_component(self.player_entity_id, PlayerAutoMove)
 
@@ -365,24 +349,29 @@ class MouseTargetingSystem(System):
 
             elif event.button == 3:
                 if target_id != -1:
-                    # Alvo AMIGÁVEL (facção — ex: Guarda Real, futuro
-                    # companheiro de time): clique direito NÃO inicia
-                    # combate nem perseguição — vira seleção pura, igual
-                    # ao clique esquerdo (bug real relatado pelo usuário
-                    # 16/07/2026: perseguia o guarda e entrava em combate
-                    # — o servidor já recusava o alvo, mas o cliente
-                    # perseguia/marcava in_combat localmente mesmo assim).
-                    # O proxy local do mob/NPC remoto carrega Faction real
-                    # do servidor (ENTITY_SPAWN.faction), então can_engage
-                    # resolve certo aqui; player remoto sem facção resolve
-                    # neutro (atacável — PvP), e quando a facção de player
-                    # for sincronizada (times/MOBA), este mesmo gate passa
-                    # a proteger aliados automaticamente.
+                    # Alvo AMIGÁVEL (facção — Guarda Real, player remoto
+                    # sem contexto PvP, futuro companheiro de time): clique
+                    # direito NÃO inicia combate nem perseguição (bug real
+                    # 16/07/2026 — o servidor já recusava o alvo, mas o
+                    # cliente perseguia/marcava in_combat localmente).
+                    # PLAYER remoto amigável → abre o modal de interação
+                    # (Negociar/Duelar/Seguir — substitui o shift+clique
+                    # antigo, decisão do usuário 16/07/2026); NPC amigável
+                    # (guarda) → seleção pura, modal é só pra players.
                     from engine.faction_system import can_engage as _can_engage_click
                     if not _can_engage_click(self.world, self.player_entity_id, target_id):
                         if player_cs:
                             player_cs.target_entity_id = target_id
                             player_cs.is_pursuing = False
+                        if remote_player_id != -1:
+                            from engine.components import RemoteControlled as _RCtp
+                            from ui.ui_components import TradeUIState as _TUStp
+                            rc  = self.world.get_component(remote_player_id, _RCtp)
+                            tui = self.world.get_component(self.player_entity_id, _TUStp)
+                            if tui is not None:
+                                tui.popup_target_eid  = remote_player_id
+                                tui.popup_target_name = rc.name if rc else "Jogador"
+                                tui.popup_screen_pos  = event.pos
                         continue
                     # Clique direito em inimigo → seleciona alvo, entra em combate e persegue
                     if player_cs:
@@ -562,17 +551,18 @@ class PlayerInputSystem(System):
                     tgt_y += 1
 
                 if tgt_x != cur_x or tgt_y != cur_y:
-                    # Teclado cancela auto-move (path/ground-target) mas NUNCA a
-                    # perseguição/auto-attack — só deselecionar o alvo (TAB,
-                    # clique vazio, alvo morto/fora de visão) para de fato parar
-                    # de atacar. Antes só o arqueiro (ex-flag can_kite) tinha essa
-                    # garantia; generalizado pra todas as classes (pedido do
-                    # usuário 15/07/2026: guerreiro perdia o auto-attack ao se
-                    # mover, tinha que re-clicar o alvo pra retomar).
+                    # Teclado cancela auto-move (path/ground-target/Seguir) mas
+                    # NUNCA a perseguição/auto-attack — só deselecionar o alvo
+                    # (TAB, clique vazio, alvo morto/fora de visão) para de fato
+                    # parar de atacar. Antes só o arqueiro (ex-flag can_kite)
+                    # tinha essa garantia; generalizado pra todas as classes
+                    # (pedido do usuário 15/07/2026: guerreiro perdia o
+                    # auto-attack ao se mover, tinha que re-clicar o alvo).
                     if auto_move:
                         auto_move.active = False
                         auto_move.path.clear()
                         auto_move.ground_target = None
+                        auto_move.follow_eid = -1
                     if _is_ghost or is_tile_walkable(
                             entity_id, tgt_x, tgt_y, cur_x, cur_y):
                         self._start_tile_movement(position, tile_movement, tgt_x, tgt_y)
@@ -580,7 +570,12 @@ class PlayerInputSystem(System):
             # --- Auto-move e auto-ataque em direção ao alvo selecionado ---
             _aoe_targeting = self.world.get_component(entity_id, AoeTargeting)
             _has_ground = auto_move and auto_move.active and auto_move.ground_target
+            _is_following = auto_move is not None and auto_move.follow_eid != -1
             if combat_state and combat_state.target_entity_id != -1 and not _aoe_targeting:
+                # Perseguição de combate tem precedência sobre "Seguir"
+                if _is_following and combat_state.is_pursuing:
+                    auto_move.follow_eid = -1
+                    _is_following = False
                 # Sempre chama _process_target para validação (limpa alvo morto/fora de visão)
                 self._process_target(
                     entity_id, position, tile_movement,
@@ -589,6 +584,11 @@ class PlayerInputSystem(System):
                 # Se não está perseguindo e há destino de chão, move para lá
                 if not combat_state.is_pursuing and _has_ground:
                     self._process_ground_move(entity_id, position, tile_movement, auto_move, dt)
+                elif not combat_state.is_pursuing and _is_following:
+                    self._process_follow(entity_id, position, tile_movement, auto_move, dt)
+            # --- "Seguir" player (modal de interação, 16/07/2026) ---
+            elif _is_following:
+                self._process_follow(entity_id, position, tile_movement, auto_move, dt)
             # --- Movimento de chão (sem alvo selecionado) ---
             elif _has_ground:
                 self._process_ground_move(entity_id, position, tile_movement, auto_move, dt)
@@ -1017,6 +1017,40 @@ class PlayerInputSystem(System):
             else:
                 auto_move.path.clear()
                 auto_move.path_recalc_timer = 0.0
+
+    def _process_follow(self, entity_id, position, tile_movement, auto_move, dt):
+        """"Seguir" (modal de interação com player, 16/07/2026): acompanha
+        o player em follow_eid, parando adjacente — reutiliza o pathing de
+        alvo MÓVEL da perseguição de combate (_auto_move_step lê o tile
+        vivo do alvo a cada recalc), sem nenhum combate envolvido."""
+        from engine.components import RemoteControlled as _RCfl
+        target_tm  = self.world.get_component(auto_move.follow_eid, TileMovement)
+        target_vis = self.world.get_component(auto_move.follow_eid, Visible)
+        # Alvo sumiu (deslogou/despawnou/fora da visão): para de seguir.
+        if (target_tm is None or target_vis is None
+                or self.world.get_component(auto_move.follow_eid, _RCfl) is None):
+            auto_move.follow_eid = -1
+            auto_move.path.clear()
+            return
+
+        pl_x = tile_movement.current_tile_x
+        pl_y = tile_movement.current_tile_y
+        # Tile "vivo" do seguido: destino do passo atual se estiver andando
+        # (mesma predição da perseguição de combate — começa a seguir no
+        # mesmo frame em que o alvo inicia o movimento).
+        if target_tm.is_moving:
+            tgt_x, tgt_y = target_tm.target_tile_x, target_tm.target_tile_y
+        else:
+            tgt_x, tgt_y = target_tm.current_tile_x, target_tm.current_tile_y
+
+        if chebyshev(pl_x, pl_y, tgt_x, tgt_y) <= 1:
+            auto_move.path.clear()   # adjacente: fica parado (não empurra)
+            return
+        if tile_movement.is_moving:
+            return
+        self._auto_move_step(entity_id, position, tile_movement,
+                             pl_x, pl_y, tgt_x, tgt_y, auto_move, dt,
+                             attack_range=1, target_eid=auto_move.follow_eid)
 
     def _start_tile_movement(self, position, tile_movement, tgt_x, tgt_y):
         start_tile_movement(position, tile_movement, tgt_x, tgt_y)

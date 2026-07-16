@@ -51,6 +51,17 @@ class TradeHandlers:
             tui.awaiting_response_to_name = rc.name
         self._net.send(MsgType.TRADE_REQUEST, {"target_eid": rc.server_eid})
 
+    def _send_duel_request(self, target_local_eid: int) -> None:
+        """Botão "Duelar" do modal de interação — mesmo formato do trade
+        (server resolve convite/aceite, ver server/duel_processor.py)."""
+        if not self._net:
+            return
+        rc = self.world.get_component(target_local_eid, RemoteControlled)
+        if rc is None:
+            return
+        from shared.messages import MsgType
+        self._net.send(MsgType.DUEL_REQUEST, {"target_eid": rc.server_eid})
+
     def _offer_trade_item(self, inv_index: int) -> None:
         if not self._net:
             return
@@ -142,19 +153,29 @@ class TradeHandlers:
 
     def _click_trade_popup(self, event, tui) -> bool:
         mx, my = event.pos
-        px, py = tui.popup_screen_pos
-        w, h = self._u(UI.TRADE_POPUP_W), self._u(UI.TRADE_POPUP_H)
-        rect = pygame.Rect(int(px - w / 2), int(py), w, h)
+        rect, btns = self._player_popup_button_rects(tui)
         if not rect.collidepoint(mx, my):
             return False
         if event.button != 1:
             return True
-        btn = pygame.Rect(rect.x + self._u(10), rect.y + self._u(30),
-                          w - self._u(20), self._u(28))
-        if btn.collidepoint(mx, my):
-            target_eid = tui.popup_target_eid
+        target_eid = tui.popup_target_eid
+        if btns[0].collidepoint(mx, my):      # Negociar
             tui.popup_target_eid = -1
             self._send_trade_request(target_eid)
+            SOUNDS.play_ui("button_click")
+        elif btns[1].collidepoint(mx, my):    # Duelar
+            tui.popup_target_eid = -1
+            self._send_duel_request(target_eid)
+            SOUNDS.play_ui("button_click")
+        elif btns[2].collidepoint(mx, my):    # Seguir
+            tui.popup_target_eid = -1
+            from engine.components import PlayerAutoMove as _PAMfl
+            _pam = self.world.get_component(self.player_entity, _PAMfl)
+            if _pam is not None:
+                _pam.follow_eid    = target_eid   # eid LOCAL do proxy remoto
+                _pam.ground_target = None
+                _pam.path.clear()
+                _pam.path_recalc_timer = 0.0
             SOUNDS.play_ui("button_click")
         return True
 
@@ -306,19 +327,40 @@ class TradeHandlers:
         if tui.is_open:
             self._draw_trade_window(tui)
 
-    def _draw_trade_popup(self, tui) -> None:
+    # Modal de interação com player (clique direito em player amigável —
+    # substituiu o shift+clique/"Trade", decisão do usuário 16/07/2026).
+    # (label, cor_fundo, cor_borda, cor_texto) na ordem vertical dos botões.
+    _PLAYER_POPUP_BUTTONS = (
+        ("Negociar", (60, 90, 50),  (110, 170, 90), (220, 240, 220)),
+        ("Duelar",   (90, 50, 50),  (170, 100, 90), (240, 220, 220)),
+        ("Seguir",   (50, 70, 95),  (100, 140, 180), (220, 230, 240)),
+    )
+
+    def _player_popup_button_rects(self, tui) -> "tuple[pygame.Rect, list[pygame.Rect]]":
+        """(rect do popup, [rect de cada botão na ordem de _PLAYER_POPUP_BUTTONS])
+        — geometria única compartilhada entre draw e hit-test (nunca duplicar)."""
         px, py = tui.popup_screen_pos
         w, h = self._u(UI.TRADE_POPUP_W), self._u(UI.TRADE_POPUP_H)
         rect = pygame.Rect(int(px - w / 2), int(py), w, h)
+        btns = []
+        for i in range(len(self._PLAYER_POPUP_BUTTONS)):
+            btns.append(pygame.Rect(rect.x + self._u(10),
+                                    rect.y + self._u(30) + i * self._u(34),
+                                    w - self._u(20), self._u(28)))
+        return rect, btns
+
+    def _draw_trade_popup(self, tui) -> None:
+        rect, btns = self._player_popup_button_rects(tui)
         pygame.draw.rect(self.screen, (30, 25, 18), rect, border_radius=6)
         pygame.draw.rect(self.screen, (140, 110, 60), rect, 1, border_radius=6)
         name_s = self.font_sm.render(tui.popup_target_name, False, (220, 210, 190))
         self.screen.blit(name_s, (rect.x + self._u(8), rect.y + self._u(4)))
-        btn = pygame.Rect(rect.x + self._u(10), rect.y + self._u(30), w - self._u(20), self._u(28))
-        pygame.draw.rect(self.screen, (60, 90, 50), btn, border_radius=4)
-        pygame.draw.rect(self.screen, (110, 170, 90), btn, 1, border_radius=4)
-        lbl = self.font_sm.render("Trade", False, (220, 240, 220))
-        self.screen.blit(lbl, (btn.centerx - lbl.get_width() // 2, btn.centery - lbl.get_height() // 2))
+        for (label, bg, border, txt), btn in zip(self._PLAYER_POPUP_BUTTONS, btns):
+            pygame.draw.rect(self.screen, bg, btn, border_radius=4)
+            pygame.draw.rect(self.screen, border, btn, 1, border_radius=4)
+            lbl = self.font_sm.render(label, False, txt)
+            self.screen.blit(lbl, (btn.centerx - lbl.get_width() // 2,
+                                   btn.centery - lbl.get_height() // 2))
 
     def _draw_trade_invite(self, tui) -> None:
         SW, SH = self.screen.get_size()
