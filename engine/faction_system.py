@@ -93,10 +93,23 @@ def can_engage(world: World, attacker_id: int, target_id: int) -> bool:
     if get_relationship_between(world, attacker_id, target_id) != "amigavel":
         return True
     if (_pvp_context_resolver is not None
-            and world.get_component(attacker_id, PlayerControlled) is not None
-            and world.get_component(target_id, PlayerControlled) is not None):
+            and _is_player_entity(world, attacker_id)
+            and _is_player_entity(world, target_id)):
         return bool(_pvp_context_resolver(world, attacker_id, target_id))
     return False
+
+
+def _is_player_entity(world: World, entity_id: int) -> bool:
+    """Player pro gate de contexto PvP: local (PlayerControlled) OU proxy
+    remoto no cliente (RemoteControlled). Bug real relatado pelo usuário
+    16/07/2026: durante o duelo, clique direito no oponente ainda abria o
+    modal em vez de atacar — o gate exigia PlayerControlled dos DOIS
+    lados, mas no CLIENTE o oponente é RemoteControlled, então o contexto
+    de duelo registrado pelo DUEL_START nunca era consultado e can_engage
+    devolvia False (amigável → modal). No servidor nada muda (todo player
+    é PlayerControlled lá)."""
+    return (world.get_component(entity_id, PlayerControlled) is not None
+            or world.get_component(entity_id, RemoteControlled) is not None)
 
 
 def is_hostile(world: World, entity_id: int, target_id: int) -> bool:

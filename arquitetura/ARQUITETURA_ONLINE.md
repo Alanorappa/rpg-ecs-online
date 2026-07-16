@@ -3442,8 +3442,42 @@ terceiro player protegido durante duelo, NPC amigável inatacável,
 kill-switch) + `TestPvpContext` reescrito (7 — semântica invertida).
 Suíte completa 169/169, rodada 3x.
 
-**Não validado**: sessão manual com 2 clientes (modal, duelo completo,
-nameplate vermelho, Seguir, Negociar, regressões de mob/NPC).
+**Validado em jogo real pelo usuário** (16/07/2026) — com 1 correção,
+ver §34.14.
+
+---
+
+### 34.14 Correção real: durante o duelo, clique direito no oponente abria o modal em vez de atacar (16/07/2026)
+
+Usuário validou a Leva 1 com 2 clientes e achou o único problema: após
+aceitar o duelo, clique direito no oponente ainda abria o modal de
+interação (Negociar/Duelar/Seguir) — deveria INICIAR O COMBATE, igual
+mob.
+
+Causa raiz: o gate do contexto PvP em
+`engine/faction_system.py::can_engage` exigia `PlayerControlled` dos
+DOIS lados antes de consultar o resolver — correto no SERVIDOR (todo
+player é `PlayerControlled` lá), mas no CLIENTE o oponente é um proxy
+`RemoteControlled`. O contexto de duelo registrado pelo `DUEL_START`
+(client/duel_handlers.py) nunca era consultado → `can_engage` devolvia
+`False` (amigável) → o clique direito caía no ramo do modal. O
+DANO/perseguição funcionavam porque o servidor (autoritativo) liberava —
+só a UX do clique estava presa no ramo errado.
+
+Fix: helper `_is_player_entity()` — "player" pro gate de contexto é
+`PlayerControlled` OU `RemoteControlled` (consistente com
+`get_entity_faction`, que já tratava os dois como `"jogadores"` desde a
+Fase A). Servidor inalterado.
+
+**Validado**: `TestDuelClientSide` (3 testes novos, mundo com formato de
+cliente — local `PlayerControlled` + proxy `RemoteControlled` + contexto
+espelhando o `_duel_ctx` real): oponente em duelo vira engajável
+(clique direito → ataque), terceiro proxy remoto continua amigável
+(modal), e sem contexto volta ao modal (pós-DUEL_END). Suíte completa
+172/172, rodada 3x.
+
+**Não validado**: novo teste manual com 2 clientes (clique direito no
+oponente atacando direto durante o duelo).
 
 ---
 

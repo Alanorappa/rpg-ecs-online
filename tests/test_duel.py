@@ -143,5 +143,51 @@ class TestDuelLifecycle(unittest.TestCase):
             self.ws.pvp_enabled = True
 
 
+class TestDuelClientSide(unittest.TestCase):
+    """Lado CLIENTE do contexto de duelo — bug real relatado pelo usuário
+    16/07/2026: durante o duelo, clique direito no oponente ainda abria o
+    modal de interação em vez de atacar. Causa raiz: o gate do contexto
+    PvP em can_engage exigia PlayerControlled dos DOIS lados, mas no
+    cliente o oponente é um proxy RemoteControlled — o contexto registrado
+    pelo DUEL_START nunca era consultado (can_engage False → ramo do
+    modal). Fix: _is_player_entity aceita RemoteControlled também."""
+
+    def setUp(self):
+        from engine.world import World
+        from engine.components import PlayerControlled, RemoteControlled
+        from engine.faction_system import register_pvp_context
+        self.w = World()
+        self.me     = self.w.create_entity()
+        self.remote = self.w.create_entity()
+        self.w.add_component(self.me, PlayerControlled())
+        self.w.add_component(self.remote, RemoteControlled())
+        # Espelho exato do _duel_ctx de client/duel_handlers.py
+        pair = {self.me, self.remote}
+        register_pvp_context(lambda _w, a, b: {a, b} == pair)
+
+    def tearDown(self):
+        from engine.faction_system import register_pvp_context
+        register_pvp_context(None)
+
+    def test_oponente_de_duelo_vira_atacavel_no_cliente(self):
+        """can_engage(local, proxy remoto) com contexto de duelo ativo →
+        True — o clique direito cai no ramo de ATAQUE, não no modal."""
+        self.assertTrue(can_engage(self.w, self.me, self.remote),
+                        "com duelo ativo, o oponente remoto deve ser engajável no cliente")
+
+    def test_terceiro_proxy_remoto_continua_amigavel(self):
+        from engine.components import RemoteControlled
+        other = self.w.create_entity()
+        self.w.add_component(other, RemoteControlled())
+        self.assertFalse(can_engage(self.w, self.me, other),
+                         "contexto de duelo libera SÓ o par — outro player remoto segue amigável (modal)")
+
+    def test_sem_contexto_volta_ao_modal(self):
+        from engine.faction_system import register_pvp_context
+        register_pvp_context(None)   # DUEL_END desregistra
+        self.assertFalse(can_engage(self.w, self.me, self.remote),
+                         "sem duelo ativo, oponente volta a ser amigável (clique direito → modal)")
+
+
 if __name__ == "__main__":
     unittest.main()
