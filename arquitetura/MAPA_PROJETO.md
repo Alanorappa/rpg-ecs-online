@@ -86,6 +86,8 @@
 | Registrar sistema no loop offline | `game.py` | `_init_systems()` → `self.systems` |
 | Adicionar facção / relação hostil-neutro-amigavel | `content/faction_data.py` | `RELATIONSHIP` (par de facção → tier) + `get_relationship()` |
 | Checar se entidade pode brigar com outra (facção) | `engine/faction_system.py` | `can_engage()`, `is_hostile()`, `get_relationship_between()` — nunca reimplementar inline |
+| Nova forma de liberar PvP entre players (duelo/arena/zona/campo de batalha) | `engine/faction_system.py` + `server/world_server.py::_load_all_maps` | `register_pvp_context(resolver)` — contexto plugável, só player-vs-player; a flag global `pvp_enabled` é a implementação atual |
+| Dar time/facção a um player (MOBA) | `engine/components.py` | anexar `Faction(faction_id="time_x")` no player — sobrescreve o default `"jogadores"` (resolução componente-primeiro em `get_entity_faction`) |
 | Criar mob de combate hostil ("clássico") | `engine/entity_factory.py` | `create_enemy()` (tag `Enemy`) |
 | Criar NPC de combate (guarda, etc — facção tipicamente amigável) | `engine/entity_factory.py` | `create_combat_npc()` (tag `NPC`) — ambos compartilham `_build_combat_entity()` |
 | Adicionar NPC de combate a um mapa (conteúdo real) | `maps/{mapa}_entities.json` | chave `"combat_npcs"` (lista de `{x,y,faction,name,profession,...}`) — lido por `engine/map_loader.py` + `server/world_server.py::_create_combat_npcs()` |

@@ -3271,6 +3271,66 @@ e após a morte do bandido o guarda fica `target=-1, IDLE` em casa.
 
 ---
 
+### 34.11 Prontidão pra MOBA (times) + contexto PvP plugável + regressão PvP corrigida (16/07/2026)
+
+Usuário explicou o objetivo de longo prazo: campos de batalha estilo
+MOBA com 2 times — NPCs do time A hostis a NPCs E players do time B, e
+vice-versa — e perguntou se a arquitetura atual cobre. Resposta
+(verificada por script, não por suposição):
+
+**Já coberto por design:**
+- Times = facções na matriz (`"time_a"`/`"time_b"` hostis = 2 linhas em
+  `faction_data.py`). NPC-vs-NPC de times é exatamente o Guarda vs
+  Bandido já validado.
+- Player pode ter time HOJE: `get_entity_faction()` é
+  componente-primeiro — `Faction` anexado num player SOBRESCREVE o
+  default `"jogadores"` (provado por script: `time_a` vs `time_b` →
+  `can_engage` True, dano flui). Minion adquirindo player inimigo usa o
+  mesmo caminho de aquisição já existente (agnóstico a player/NPC).
+- Fogo amigo intra-time bloqueado de graça (mesma facção = amigável).
+
+**Lacunas mapeadas (futuras):** fluxo de atribuição de time (matchmaking
+/entrada no campo anexa a Faction), facção de player no protocolo
+(`ENTITY_SPAWN` de player não carrega facção → nameplate de player
+inimigo não fica vermelho ainda), torres/estruturas (combatente
+estacionário), waves com pathing de lane, assist/co-aggro, instância de
+mapa (`ENTER_INSTANCE` 🔲).
+
+**Regressão real descoberta na verificação**: o PvP de mundo aberto
+(flag global `pvp_enabled`) estava silenciosamente MORTO desde o gate de
+facção amigável (§34.4) — dois players = mesma facção `"jogadores"` =
+amigável = dano 0. Nenhum teste de dano PvP ponta a ponta existia pra
+acusar (o único teste "PvP" da suíte assertava justamente a AUSÊNCIA de
+efeito colateral). Confirmado por script antes de afirmar.
+
+**Fix — contexto PvP plugável** (decisão do usuário: PvP vai existir em
+situações diferentes — duelo por convite, arenas, zonas, campos de
+batalha — ou seja, PvP é CONTEXTUAL, não regra fixa de facção; mesmo
+modelo do WoW, onde duelo/war mode/arena são camadas de permissão sobre
+as facções):
+- `engine/faction_system.py::register_pvp_context(resolver)` — o gate de
+  facção continua o padrão (amigável = bloqueado); entre DOIS PLAYERS
+  (nunca mob/NPC), um contexto registrado pode liberar. Ponto único onde
+  duelo/arena/zona vão plugar.
+- Primeira implementação (registrada em `WorldServer._load_all_maps`): a
+  flag global `pvp_enabled` de sempre — mas só válida pro caso SEM TIME
+  (ambos na facção default `"jogadores"`). Restaura o PvP de mundo
+  aberto exatamente como era, e players com Faction de time (futuro
+  MOBA) ficam sob regra de facção pura: inter-times briga sem depender
+  de contexto, intra-time protegido de fogo amigo mesmo com a flag
+  global ligada.
+
+**Validado**: `TestPvpContext` (5 testes novos): PvP mundo aberto
+funciona com a flag ligada (a regressão), bloqueado com flag desligada,
+times distintos brigam por facção pura (flag DESLIGADA de propósito —
+prova que não depende do contexto), mesmo time protegido de fogo amigo
+com a flag LIGADA, e mob nunca ganha permissão por contexto (só
+player-vs-player). Suíte completa 158/158 (153+5), rodada 3x.
+
+**Não validado**: PvP manual em jogo real com 2 clientes.
+
+---
+
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
 
 ```

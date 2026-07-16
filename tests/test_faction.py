@@ -665,5 +665,87 @@ class TestAcquisitionVsRetention(unittest.TestCase):
                                 "COMBAT_RESULT mob-vs-mob deve carregar hp_after pro sync de HP")
 
 
+class TestPvpContext(unittest.TestCase):
+    """Contexto PvP plugável (decisão do usuário 16/07/2026: PvP é
+    contextual — duelo, arena, zona, campo de batalha por times — não uma
+    regra fixa de facção). Cobre também a regressão real que motivou:
+    PvP de mundo aberto ficou silenciosamente bloqueado quando o gate de
+    facção amigável nasceu (dois players = mesma facção "jogadores" =
+    dano 0), sem nenhum teste de dano PvP ponta a ponta pra acusar.
+
+    Também é a fundação MOBA: players com Faction de time sobrescrevem o
+    default "jogadores" (resolução componente-primeiro) — inter-times
+    briga por regra de facção pura, mesmo time fica protegido de fogo
+    amigo mesmo com o flag global ligado."""
+
+    def setUp(self):
+        from tests.helpers import make_world_server, spawn_player
+        self.ws = make_world_server()
+        self.a = spawn_player(self.ws, "s1", 130, 374)
+        self.b = spawn_player(self.ws, "s2", 131, 374)
+
+    def _hit(self, attacker, target) -> int:
+        from engine.components import CombatStats
+        from engine.world_systems import deal_damage
+        cs = self.ws.world.get_component(target, CombatStats)
+        hp_before = cs.current_hp
+        deal_damage(attacker, target, "physical", pre_outcome="hit")
+        return hp_before - cs.current_hp
+
+    def test_pvp_mundo_aberto_funciona_com_flag_ligada(self):
+        self.assertTrue(self.ws.pvp_enabled, "pré-condição: flag global ligada por default")
+        self.assertGreater(self._hit(self.a, self.b), 0,
+                           "PvP mundo aberto deveria causar dano com pvp_enabled=True")
+
+    def test_pvp_bloqueado_com_flag_desligada(self):
+        self.ws.pvp_enabled = False
+        try:
+            self.assertEqual(self._hit(self.a, self.b), 0,
+                             "PvP deveria ser bloqueado com pvp_enabled=False")
+        finally:
+            self.ws.pvp_enabled = True
+
+    def test_times_diferentes_brigam_por_faccao_sem_depender_do_flag(self):
+        """Fundação MOBA: Faction de time no player sobrescreve
+        "jogadores"; times distintos brigam por regra de facção pura —
+        nem passa pelo contexto (relação não é amigavel)."""
+        from engine.components import Faction
+        self.ws.world.add_component(self.a, Faction(faction_id="time_a"))
+        self.ws.world.add_component(self.b, Faction(faction_id="time_b"))
+        self.ws.pvp_enabled = False   # prova que NÃO depende do contexto
+        try:
+            self.assertGreater(self._hit(self.a, self.b), 0,
+                               "times distintos deveriam brigar por facção, sem contexto PvP")
+        finally:
+            self.ws.pvp_enabled = True
+
+    def test_mesmo_time_protegido_de_fogo_amigo_mesmo_com_flag_ligada(self):
+        """Fogo amigo de time: o flag global só vale pro caso sem time
+        (facção default "jogadores") — companheiros de time_a nunca se
+        ferem, mesmo com pvp_enabled=True."""
+        from engine.components import Faction
+        self.ws.world.add_component(self.a, Faction(faction_id="time_a"))
+        self.ws.world.add_component(self.b, Faction(faction_id="time_a"))
+        self.assertTrue(self.ws.pvp_enabled)
+        self.assertEqual(self._hit(self.a, self.b), 0,
+                         "fogo amigo entre companheiros de time deveria ser bloqueado")
+
+    def test_contexto_nunca_libera_mob_contra_amigavel(self):
+        """O contexto PvP só se aplica entre DOIS PLAYERS — um mob nunca
+        ganha permissão contra alvo amigável por contexto."""
+        from engine.entity_factory import create_combat_npc
+        from engine.components import CombatState, CombatStats
+        from engine.world_systems import deal_damage
+        guard = create_combat_npc(self.ws.world, 132, 374, faction="guardas_vila")
+        self.ws.world.add_component(guard, CombatState())
+        guard_cs = self.ws.world.get_component(guard, CombatStats)
+        hp_before = guard_cs.current_hp
+
+        deal_damage(self.a, guard, "physical", pre_outcome="hit")
+
+        self.assertEqual(guard_cs.current_hp, hp_before,
+                         "player vs NPC amigável continua bloqueado — contexto é só player-vs-player")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -377,6 +377,31 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         register_service_resolver(_resolve_bundle_for_eid)
 
+        # Contexto PvP (engine/faction_system.py): entre dois PLAYERS de
+        # facção amigável, quem decide se o dano é permitido é o CONTEXTO
+        # (duelo/arena/zona/campo de batalha — decisão do usuário
+        # 16/07/2026). Primeira implementação: a flag global pvp_enabled
+        # de sempre ("mundo inteiro é zona PvP") — restaura o PvP de
+        # mundo aberto que o gate de facção tinha bloqueado
+        # silenciosamente. Duelo por convite/arenas plugam AQUI depois,
+        # trocando este resolver por um que consulte o estado real (par
+        # em duelo, zona da posição, time de campo de batalha).
+        #
+        # O flag só vale pro caso SEM TIME (ambos na facção default
+        # "jogadores"): players que ganharem Faction de time (MOBA,
+        # futuro) ficam sob a regra de facção pura — fogo amigo entre
+        # companheiros de time continua bloqueado mesmo com o flag global
+        # ligado; inter-times nem precisa de contexto (facções hostis).
+        from engine.faction_system import register_pvp_context, get_entity_faction
+        from content.faction_data import PLAYER_FACTION as _PF_ctx
+
+        def _pvp_context_global_flag(w, attacker_id, target_id):
+            return (self.pvp_enabled
+                    and get_entity_faction(w, attacker_id) == _PF_ctx
+                    and get_entity_faction(w, target_id) == _PF_ctx)
+
+        register_pvp_context(_pvp_context_global_flag)
+
     def _load_map_for(self, map_file: str) -> "_MapBundle":
         """
         Carrega um mapa e inicializa os sistemas headless para ele.
