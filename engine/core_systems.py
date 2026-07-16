@@ -7,11 +7,29 @@ Sistemas visuais (FLT, LOG, PROC, sons) ficam nas subclasses de cada lado.
 Exporta:
   apply_effect()              — aplica/atualiza status effect numa entidade
   apply_damage_core()         — núcleo ÚNICO de aplicação final de dano em HP
+  register_lethal_interceptor() — hook de golpe letal (duelo estilo WoW)
   StatusEffectSystem          — processa ciclo de vida de status effects (ticks, expiração)
   BaseCombatStateSystem       — núcleo headless: timers de combate, rage, HP5, concentração
   ServerCombatStateSystem     — herda Base; adiciona hp5_events para o servidor
 """
 from __future__ import annotations
+
+# ── Interceptor de golpe letal (plugável) ────────────────────────────────────
+# Duelo estilo WoW (decisão do usuário 16/07/2026): o golpe que MATARIA um
+# player em duelo encerra o duelo — o perdedor fica com 1 HP, ninguém morre.
+# Mesmo padrão dos outros hooks engine↔server (register_pvp_context em
+# faction_system, register_service_resolver em world_systems): o engine fica
+# puro, o WorldServer registra a implementação no boot.
+# `fn(world, killer_eid, target_id) -> bool` — True = intercepta (HP vira 1
+# em vez de morte); False/None = morte segue normal.
+_lethal_interceptor = None
+
+
+def register_lethal_interceptor(fn) -> None:
+    """Registra o interceptor de golpe letal (server: no boot). `None`
+    desregistra (morte volta a ser sempre final — default seguro)."""
+    global _lethal_interceptor
+    _lethal_interceptor = fn
 
 
 # ── apply_damage_core ─────────────────────────────────────────────────────────
@@ -102,6 +120,15 @@ def apply_damage_core(world, target_id: int, dmg: int, *,
                     on_cc_break("sleep")
 
     if cs.current_hp <= 0:
+        # Golpe letal interceptável (duelo estilo WoW): o interceptor
+        # decide se esta morte vira "perdedor com 1 HP" (True) — só o
+        # servidor registra um, e só intercepta pares em duelo. killer -1
+        # (DoT/ambiente sem atacante) não intercepta — sem identidade não
+        # há duelo a resolver.
+        if (killer_eid != -1 and _lethal_interceptor is not None
+                and _lethal_interceptor(world, killer_eid, target_id)):
+            cs.current_hp = 1
+            return "applied"
         if add_pending_death and not world.get_component(target_id, PendingDeath):
             world.add_component(target_id, PendingDeath(killer_entity_id=killer_eid))
         return "killed"

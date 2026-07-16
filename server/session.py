@@ -235,6 +235,10 @@ class SessionManager:
                 if other_session and other_session.authenticated:
                     await other_session.send(MsgType.TRADE_CANCELLED,
                                               {"trade_id": trade_id, "reason": "disconnect"})
+            # Duelo ativo/convites pendentes morrem no logout — o DUEL_END
+            # pro lado que ficou sai pelo broadcast loop do próximo tick
+            # (consume_duel_end_events), o desconectado não precisa receber.
+            self.world_server.end_duels_of(eid, "disconnect")
             for other in self._sessions.values():
                 other.known_eids.discard(eid)
             await self._broadcast_all(MsgType.ENTITY_DESPAWN, {"eid": eid})
@@ -1281,6 +1285,62 @@ class SessionManager:
     async def _handle_trade_decline(self, session: Session, payload: dict, ts: int) -> None:
         await self._respond_trade_invite(session, False)
 
+    # ── Duelo (mesmo formato do trade — ver server/duel_processor.py) ────────
+
+    async def _handle_duel_request(self, session: Session, payload: dict, ts: int) -> None:
+        """Botão "Duelar" do modal de interação com player."""
+        if not session.authenticated:
+            return
+        requester_eid = self.world_server._player_eids.get(session.session_id)
+        if requester_eid is None:
+            return
+        target_eid = int(payload.get("target_eid", -1))
+        reason = self.world_server.request_duel(requester_eid, target_eid)
+        if reason is not None:
+            await session.send(MsgType.DUEL_END, {
+                "winner_eid": -1, "loser_eid": -1, "reason": reason})
+            return
+        target_sid = self.world_server.get_session_id_for_player(target_eid)
+        target_session = self._sessions.get(target_sid) if target_sid else None
+        if target_session and target_session.authenticated:
+            await target_session.send(MsgType.DUEL_INVITE, {
+                "from_eid":  requester_eid,
+                "from_name": session.display_name,
+            })
+
+    async def _respond_duel_invite(self, session: Session, accept: bool) -> None:
+        if not session.authenticated:
+            return
+        target_eid = self.world_server._player_eids.get(session.session_id)
+        if target_eid is None:
+            return
+        requester_eid, started = self.world_server.respond_duel_invite(target_eid, accept)
+        if requester_eid is None:
+            return  # não havia convite pendente
+        requester_sid = self.world_server.get_session_id_for_player(requester_eid)
+        requester_session = self._sessions.get(requester_sid) if requester_sid else None
+        if not started:
+            reason = "declined" if not accept else "invalid"
+            if requester_session and requester_session.authenticated:
+                await requester_session.send(MsgType.DUEL_END, {
+                    "winner_eid": -1, "loser_eid": -1, "reason": reason})
+            return
+        await session.send(MsgType.DUEL_START, {
+            "opponent_eid":  requester_eid,
+            "opponent_name": requester_session.display_name if requester_session else "?",
+        })
+        if requester_session and requester_session.authenticated:
+            await requester_session.send(MsgType.DUEL_START, {
+                "opponent_eid":  target_eid,
+                "opponent_name": session.display_name,
+            })
+
+    async def _handle_duel_accept(self, session: Session, payload: dict, ts: int) -> None:
+        await self._respond_duel_invite(session, True)
+
+    async def _handle_duel_decline(self, session: Session, payload: dict, ts: int) -> None:
+        await self._respond_duel_invite(session, False)
+
     async def _handle_trade_offer_item(self, session: Session, payload: dict, ts: int) -> None:
         if not session.authenticated:
             return
@@ -1411,6 +1471,9 @@ class SessionManager:
         MsgType.TRADE_SET_GOLD:      _handle_trade_set_gold,
         MsgType.TRADE_CONFIRM:       _handle_trade_confirm,
         MsgType.TRADE_CANCEL:        _handle_trade_cancel,
+        MsgType.DUEL_REQUEST:        _handle_duel_request,
+        MsgType.DUEL_ACCEPT:         _handle_duel_accept,
+        MsgType.DUEL_DECLINE:        _handle_duel_decline,
     }
 
     # ── AOI subscription — núcleo do sistema ─────────────────────────────────
@@ -1610,6 +1673,19 @@ class SessionManager:
                         await _trd_sess.send(MsgType.TRADE_CANCELLED, {
                             "trade_id": _trd_cancel["trade_id"],
                             "reason":   _trd_cancel["reason"],
+                        })
+
+            # Duelos encerrados neste tick (golpe letal/distância/logout) —
+            # avisa os dois lados (win chega junto do COMBAT_RESULT do golpe)
+            for _duel_end in self.world_server.consume_duel_end_events():
+                for _duel_eid in (_duel_end["player_a"], _duel_end["player_b"]):
+                    _duel_sid = self.world_server.get_session_id_for_player(_duel_eid)
+                    _duel_sess = self._sessions.get(_duel_sid) if _duel_sid else None
+                    if _duel_sess and _duel_sess.authenticated:
+                        await _duel_sess.send(MsgType.DUEL_END, {
+                            "winner_eid": _duel_end["winner_eid"],
+                            "loser_eid":  _duel_end["loser_eid"],
+                            "reason":     _duel_end["reason"],
                         })
 
             # Eventos de som posicionais (aggro de mob, etc.) → broadcast AOI

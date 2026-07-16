@@ -212,19 +212,22 @@ def _blit_level_number(dest_surf, level: int, font, cx: float, cy: float) -> Non
 
 
 def build_player_hud(hp_ratio: float, xp_ratio: float, resource_ratio: float,
-                     resource_color: tuple, level: int, level_font) -> "pygame.Surface":
+                     resource_color: tuple, level: int, level_font,
+                     hp_color: tuple = HP_COLOR) -> "pygame.Surface":
     """Monta fundo+barras+número do nível numa Surface só, já no tamanho
     de tela final (SCALE fixo, nearest-neighbor). Caller usa
     surf.get_width()/get_height() pra saber onde encostar outros
     elementos (ex: fila de efeitos na borda direita, via
     ui/world_labels.py::add_icon_offset) — não precisa devolver isso à
-    parte, é só ler da Surface."""
+    parte, é só ler da Surface. `hp_color` (default verde de sempre):
+    disposição de player remoto — oponente de duelo fica vermelho
+    (DISPOSITION_HP_COLORS["hostil"]), mesmo esquema do mob."""
     _load()
     w, h = P_SIZE
     base = pygame.Surface((w, h), pygame.SRCALPHA)
     base.blit(_player_art, (0, 0))
     _fill_row(base, (P_XP_X0, P_XP_X1),   P_XP_Y,  xp_ratio,       XP_COLOR)
-    _fill_row(base, (P_BAR_X0, P_BAR_X1), P_HP_Y,  hp_ratio,       HP_COLOR)
+    _fill_row(base, (P_BAR_X0, P_BAR_X1), P_HP_Y,  hp_ratio,       hp_color)
     _fill_row(base, (P_BAR_X0, P_BAR_X1), P_RES_Y, resource_ratio, resource_color)
 
     big = pygame.transform.scale(base, (w * SCALE, h * SCALE))

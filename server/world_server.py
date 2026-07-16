@@ -35,6 +35,7 @@ from server.respawn_system import RespawnMixin
 from server.loot_processor import LootProcessorMixin
 from server.spell_completion_processor import SpellCompletionMixin
 from server.trade_processor import TradeProcessorMixin
+from server.duel_processor import DuelProcessorMixin
 from debug.mob_combat_debug import MCL
 
 # move_player() faz snap instantâneo de tile (sem tween real) — esta janela é
@@ -139,7 +140,7 @@ class _MapBundle:
 
 
 class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootProcessorMixin,
-                   SpellCompletionMixin, TradeProcessorMixin):
+                   SpellCompletionMixin, TradeProcessorMixin, DuelProcessorMixin):
 
     MAP_FILE = "maps/map_1.csv"   # mapa padrão carregado pelo servidor
 
@@ -235,6 +236,9 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # info do duelo; target_eid → requester_eid (convite pendente).
         self._duel_pairs: dict[frozenset, dict] = {}
         self._pending_duel_invites: dict[int, int] = {}
+        # DUEL_END do tick (win/distance/disconnect) — consumidos pelo
+        # broadcast loop do SessionManager (consume_duel_end_events).
+        self._duel_end_events_this_tick: list[dict] = []
 
         # Timer de ataque por jogador: session_id → segundos até próximo hit
         self._attack_timers: dict[str, float] = {}
@@ -400,6 +404,13 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # facção pura decide).
         from engine.faction_system import register_pvp_context
         register_pvp_context(self._pvp_allowed_between)
+
+        # Golpe letal em duelo (estilo WoW): o golpe que mataria encerra o
+        # duelo com o perdedor a 1 HP — ninguém morre. Hook plugável no
+        # ponto único de dano (engine/core_systems.apply_damage_core);
+        # implementação em server/duel_processor.py.
+        from engine.core_systems import register_lethal_interceptor
+        register_lethal_interceptor(self._duel_lethal_interceptor)
 
     def _load_map_for(self, map_file: str) -> "_MapBundle":
         """
@@ -3047,6 +3058,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         self._process_loot_drops(dt)
         self._tick_trade_distance_check()
+        self._tick_duel_distance_check()
 
         # Detecta novos mobs/NPCs de combate criados pelo SpawnZoneSystem
         # neste tick — gate é Combatant, não Enemy (Sistema de Facções,

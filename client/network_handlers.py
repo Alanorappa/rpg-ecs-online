@@ -76,6 +76,12 @@ class NetworkHandlers:
             self._handle_msg_trade_result(payload)
         elif msg_type == MsgType.TRADE_CANCELLED:
             self._handle_msg_trade_cancelled(payload)
+        elif msg_type == MsgType.DUEL_INVITE:
+            self._handle_msg_duel_invite(payload)
+        elif msg_type == MsgType.DUEL_START:
+            self._handle_msg_duel_start(payload)
+        elif msg_type == MsgType.DUEL_END:
+            self._handle_msg_duel_end(payload)
         elif msg_type == MsgType.CHAT_MESSAGE:
             self._handle_msg_chat_message(payload)
 

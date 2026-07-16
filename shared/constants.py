@@ -59,3 +59,10 @@ GHOST_CORPSE_REVIVE_HP_FRAC  = 0.15  # fração de HP ao reviver no corpo
 # Checada 1x/tick — estourar cancela a sessão (reason="distance").
 TRADE_MAX_DIST_TILES = 5
 
+# ── Duelo (contexto PvP por convite) ───────────────────────────────────────────
+# Convite exige a mesma proximidade do trade (TRADE_MAX_DIST_TILES); durante o
+# duelo o par pode se espalhar até este raio — estourar encerra por "distance"
+# (checado 1x/tick, mesmo padrão do trade). Maior que o do trade de propósito:
+# a luta precisa de espaço (kite de arqueiro/mago).
+DUEL_MAX_DIST_TILES = 20
+

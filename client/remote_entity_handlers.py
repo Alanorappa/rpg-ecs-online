@@ -1334,15 +1334,23 @@ class RemoteEntityHandlers:
         from engine.tileset import TILE_SIZE as _TS_rp
         _sprite_h = _TS_rp - 4   # mesma convenção de altura já usada aqui (W = H = TILE_SIZE-4)
 
+        from ui.hud_bars import DISPOSITION_HP_COLORS as _DISP_rp, HP_COLOR as _HPC_rp
+        _duel_opp = getattr(self, "_duel_opponent_local_val", -1)
         for server_eid, local_eid in self._remote_players.items():
             pos = self.world.get_component(local_eid, Position)
             rc  = self.world.get_component(local_eid, RemoteControlled)
             if not pos or not rc:
                 continue
             ratio = max(0.0, min(1.0, rc.hp / max(1, rc.hp_max)))
-            _hud_surf = _bph_rp(ratio, 0.0, 0.0, (0, 0, 0, 0), rc.level, self._player_level_font)
+            # Oponente de duelo: barra + nome vermelhos enquanto durar
+            # (client/duel_handlers.py mantém _duel_opponent_local_val).
+            _is_duel_opp = (local_eid == _duel_opp)
+            _hp_col_rp   = _DISP_rp["hostil"] if _is_duel_opp else _HPC_rp
+            _name_col_rp = (255, 90, 90) if _is_duel_opp else (255, 255, 200)
+            _hud_surf = _bph_rp(ratio, 0.0, 0.0, (0, 0, 0, 0), rc.level,
+                                self._player_level_font, hp_color=_hp_col_rp)
             _world_y_top = pos.y - _sprite_h / 2
             _WL_rp.add_icon(pos.x, _world_y_top, _hud_surf,
                             stack_key=local_eid, gap_before=_HGP_rp)
             _WL_rp.add_text(pos.x, _world_y_top, rc.name, self._player_name_font,
-                            (255, 255, 200), stack_key=local_eid, gap_before=2)
+                            _name_col_rp, stack_key=local_eid, gap_before=2)
