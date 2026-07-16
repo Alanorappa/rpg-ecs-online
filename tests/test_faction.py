@@ -450,6 +450,50 @@ class TestMultiTargetCombat(unittest.TestCase):
                          "mob neutro não deveria agroar o guarda só por proximidade")
         self.assertEqual(guard_cs.current_hp, hp_before)
 
+    def test_bystander_neutro_mais_perto_nao_rouba_a_vaga_do_alvo_hostil_mais_longe(self):
+        """Regressão real: conteúdo de teste (Bandido perto do Guarda Real,
+        maps/map_1_entities.json) nunca engajava — o guarda sempre
+        escolhia o boneco de treino mais próximo (sem facção → resolve
+        "neutro", passa em can_engage mas nunca deveria "roubar a vaga"
+        de um alvo hostil de verdade só por estar mais perto). Fix:
+        _select_target() filtra o loop de "outros combatentes" por
+        is_hostile(), não can_engage() — só amigavel é excluído por
+        can_engage, mas bystander neutro tinha que ser excluído também
+        (a menos que já seja o alvo fixo por dano, tratado à parte)."""
+        from tests.helpers import run_ticks
+        from engine.world_systems import EnemyAISystem
+
+        # Bystander sem Faction (ex: boneco de treino) bem mais perto do
+        # guarda do que o bandido — sem o fix, ele "vencia" a seleção de
+        # alvo por distância e o combate nunca começava.
+        bystander = self._spawn_guard(131, 374, faction="__nunca_usada__")
+        from engine.components import Faction as _FacRm
+        self.ws.world.remove_component(bystander, _FacRm)  # simula "sem facção" (ex: boneco)
+
+        guard  = self._spawn_guard(132, 374)                       # 1 tile do bystander
+        bandit = self._spawn_mob(140, 374, faction="bandidos")     # 8 tiles do guarda — mais longe,
+                                                                    # fora do raio de aggro por
+                                                                    # proximidade (~5 tiles)
+
+        # Chama _select_target() diretamente em vez de checar
+        # AIControlled.target_eid após N ticks: um alvo fora do raio de
+        # aggro nunca faz o mob sair de IDLE, e o target_eid é limpo no
+        # fim do MESMO tick pra qualquer mob que continua IDLE (ver
+        # world_systems.py, bloco "Retorno à Posição Inicial") — checar o
+        # estado persistido testaria só se ALGUM mob de conteúdo real do
+        # mapa (zonas de spawn) por acaso vagou perto o bastante,
+        # resultando num teste flaky. _select_target() isolado testa a
+        # ESCOLHA em si, independente de aggro persistir ou não.
+        run_ticks(self.ws, 1)  # popula os caches de EnemyAISystem.update()
+        bundle = self.ws._map_bundles[self.ws._map_file]
+        ai_sys = next(s for s in bundle.systems if isinstance(s, EnemyAISystem))
+        result_eid = ai_sys._select_target(guard)[0]
+
+        self.assertNotEqual(result_eid, bystander,
+                            "bystander neutro nunca deveria ser escolhido como alvo")
+        self.assertEqual(result_eid, bandit,
+                         "guarda deveria escolher o bandido hostil (único candidato válido), mesmo mais longe")
+
 
 if __name__ == "__main__":
     unittest.main()

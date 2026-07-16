@@ -103,6 +103,13 @@
       "name": "Guarda Real",
       "profession": "Guarda",
       "level": 10
+    },
+    {
+      "x": 121, "y": 389,
+      "faction": "bandidos",
+      "name": "Bandido",
+      "profession": "Bandido",
+      "level": 8
     }
   ],
   "transitions": [

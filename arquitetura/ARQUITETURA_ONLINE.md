@@ -3042,9 +3042,74 @@ regressão — mob neutro ainda ignora NPC amigável por proximidade. Suíte
 completa 147/147 (143 + 4), sem regressão, rodada múltiplas vezes com
 timing conferido (~55s, sem o regresso de performance).
 
-**Não validado**: sessão manual em jogo real (nenhum mob/NPC hostil de
-teste posicionado perto o bastante do "Guarda Real" pra brigar de
-verdade ainda — o guarda está isolado perto do spawn do player).
+**Não validado (na época)**: sessão manual em jogo real — ver §34.8, o
+usuário pediu conteúdo hostil real de teste (Bandido) logo em seguida.
+
+---
+
+### 34.8 Bandido de teste + correção real: bystander neutro "roubava a vaga" do alvo hostil (15/07/2026)
+
+Usuário pediu um NPC/mob hostil de teste perto do "Guarda Real" pra ver
+o combate NPC-vs-NPC ao vivo — "Bandido" (`bandidos`, hostil ao guarda
+e ao player) adicionado em `maps/map_1_entities.json::combat_npcs`.
+
+**Bug real encontrado ao validar o conteúdo**: guarda e bandido nunca
+engajavam, mesmo dentro do raio de aggro. Causa raiz:
+`_select_target()`'s segundo loop (Fase 5, §34.7) filtrava candidatos
+por `can_engage()` — que só exclui `amigavel`. Um bystander SEM facção
+(ex: boneco de treino — `create_training_dummy()` não anexa `Faction`,
+resolve pro sentinela "sem facção", que cai no `DEFAULT_RELATIONSHIP`
+"neutro") passa em `can_engage` mas nunca deveria "vencer" a seleção de
+alvo por estar mais perto — ele nunca vai ser atacado de verdade
+(`is_hostile` é `False` pra ele), só ocupava a vaga do candidato hostil
+real (o bandido), que ficava sempre mais longe. Fix: o loop passou a
+filtrar por `is_hostile()`, não `can_engage()` — a diferença entre os
+dois é exatamente essa: `can_engage` responde "posso causar dano nisso"
+(usado no gate de dano), `is_hostile` responde "eu ATACO isso por
+iniciativa própria" (o que `_select_target` precisa pra escolher um
+alvo de proximidade). Aggro por dano (mob neutro atacado) continua
+funcionando via o "sticky target" separado, não afetado.
+
+**Regressão em teste pré-existente, descoberta e corrigida durante a
+validação**: `tests/test_ranged_mob.py` ficou flaky (confirmado: 10/10
+verde ANTES de qualquer mudança da Fase 5 em `_select_target`; ~10-50%
+de falha depois, mesmo sem nenhuma relação de facção no cenário do
+teste). Causas reais, em camadas:
+1. O teste reaproveitava "o primeiro mob ranged encontrado em `_mob_eids`"
+   — podia ser um mob REAL de uma zona distante, teleportado pro tile de
+   teste via `set_entity_tile()` sem realinhar `InitialPosition` — mesma
+   classe de bug documentada em `teleport_mob_to_player()`. Generalizar
+   `_select_target()` tornou o timing por tick sensível o bastante pra
+   expor essa fragilidade com mais frequência.
+2. O local do teste (130,374) coincide com o CENTRO de uma zona real de
+   Zumbi (raio 12) — um zumbi real vagando entre o mob de teste e o
+   player bloqueava a linha de visão do tiro intermitentemente.
+3. Acerto do mob (`mob_definitions.py`) pode ser <100%, somando mais uma
+   fonte de variância.
+
+Fix: teste reescrito pra sempre criar um mob sintético (nunca reaproveita
+conteúdo real), em coordenadas confirmadas caminháveis e longe de
+qualquer `SpawnZone` real (scan de `Tilemap.tile_matrix` antes de
+escolher — uma tentativa inicial usando `(10,10)` sem checar acabou
+sendo terreno 100% sólido, falhando 15/15; lição: nunca escolher
+coordenada de teste "de olho"), `acerto=100` fixo (remove RNG), e
+**`MapLocation` explícito no mob sintético** — sem isso, `EnemyAISystem`
+(que filtra todo mob por mapa) simplesmente ignorava a entidade por
+completo (nunca processada, nunca ataca); o teste antigo raramente caía
+nesse caminho porque quase sempre reaproveitava um mob real (que já
+vinha com `MapLocation` da própria zona de spawn).
+
+**Validado**: suíte completa 148/148 (147 + 1: novo teste de regressão
+`test_bystander_neutro_mais_perto_nao_rouba_a_vaga_do_alvo_hostil_mais_longe`,
+que chama `_select_target()` diretamente em vez de checar estado
+persistido — ver comentário no teste sobre por que checar
+`AIControlled.target_eid` após N ticks é nulo pra alvos fora do raio de
+aggro, mesmo raiz do bug do bystander). `tests/test_ranged_mob.py`
+confirmado estável em 25 execuções seguidas (0 falhas). Suíte completa
+rodada 5x seguidas (0 falhas).
+
+**Não validado**: sessão manual em jogo real vendo o Bandido e o Guarda
+Real brigando de verdade.
 
 ---
 

@@ -1491,16 +1491,26 @@ class EnemyAISystem(System):
                 best_cs    = p_cs
                 best_cst   = p_cst
 
-        # Outros combatentes cuja relação com este mob permita brigar
-        # (Sistema de Facções, Fase 5). Exclui a si mesmo; "amigavel"
-        # nunca é candidato (nunca seria atacado de qualquer forma).
+        # Outros combatentes que este mob REALMENTE quer brigar por
+        # proximidade (Sistema de Facções, Fase 5) — exige `is_hostile`,
+        # não só `can_engage` (que só exclui "amigavel"). Diferença real:
+        # um bystander sem facção (ex: boneco de treino) resolve pra
+        # "neutro" (não "amigavel"), então passaria em `can_engage` — mas
+        # nunca deveria "roubar a vaga" de um alvo hostil de verdade só
+        # por estar mais perto (bug real encontrado testando o Bandido de
+        # conteúdo: o guarda sempre escolhia o boneco de treino mais
+        # próximo em vez do bandido hostil, e como a relação com o boneco
+        # é neutra, nada nunca acontecia). Aggro por DANO (mob neutro
+        # atacado por alguém) não passa por aqui — é o "sticky target"
+        # (`aggroed_by_damage`, checado ANTES desta função) que já cobre
+        # esse caso sem depender de hostilidade.
         #
-        # Lê dos caches computados 1x por tick em update() — NÃO
-        # requery `get_entities_with` aqui (regressão real medida: ~50s
-        # pra ~150s na suíte completa com um scan Combatant×Combatant
-        # feito por mob). Quem procura NÃO é NPC usa só
-        # `_npc_combatants_cache` (pool pequeno — mob-vs-mob nunca entra
-        # aqui, custo O(mobs×npcs)). Quem procura É NPC (guarda
+        # Exclui a si mesmo. Lê dos caches computados 1x por tick em
+        # update() — NÃO requery `get_entities_with` aqui (regressão real
+        # medida: ~50s pra ~150s na suíte completa com um scan
+        # Combatant×Combatant feito por mob). Quem procura NÃO é NPC usa
+        # só `_npc_combatants_cache` (pool pequeno — mob-vs-mob nunca
+        # entra aqui, custo O(mobs×npcs)). Quem procura É NPC (guarda
         # defendendo, etc.) usa `_all_combatants_cache` (pool maior, mas
         # só os poucos NPCs do mapa pagam esse scan mais largo).
         _searcher_is_npc = self.world.get_component(mob_eid, NPC) is not None
@@ -1511,7 +1521,7 @@ class EnemyAISystem(System):
                 continue
             if c_cs.current_hp <= 0:
                 continue
-            if not can_engage(self.world, mob_eid, c_eid):
+            if not is_hostile(self.world, mob_eid, c_eid):
                 continue
             c_cst = self.world.get_component(c_eid, CombatState)
             if c_cst is not None and not c_cst.is_visible:
