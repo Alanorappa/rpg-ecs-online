@@ -741,6 +741,11 @@ class SpellCompletionMixin:
             _ai.state             = "AGGRO_DELAY"
             _ai.aggro_delay       = 0.5   # mesmo comportamento do range aggro, mas mais curto
             _ai.aggroed_by_damage = True
+            # Quem bateu vira o alvo — mesma razão do bloco melee em
+            # CombatSystem.deal_damage (ver comentário lá): sem isto, mob
+            # NEUTRO atacado por magia nunca recebia alvo (aquisição é
+            # filtrada por hostilidade + raio) e desistia sem revidar.
+            _ai.target_eid        = attacker_id
             _ai.path_recalc_timer = 0.0
             # Detector de aggro em world_server.py usa snapshot pré-tick e perde transições
             # ocorridas entre ticks/dentro de _process_spell_cast_completions e handlers

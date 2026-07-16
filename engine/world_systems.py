@@ -759,6 +759,14 @@ class CombatSystem(System):
                 _ai.state              = "AGGRO_DELAY"
                 _ai.aggro_delay        = 0.5   # mesmo comportamento do range aggro, mas mais curto
                 _ai.aggroed_by_damage  = True
+                # QUEM bateu vira o alvo — semântica de threat table (dano
+                # põe o atacante na tabela). Antes o alvo vinha por acidente
+                # do loop de aquisição SEM filtro de facção em
+                # _select_target; com a aquisição filtrada por is_hostile
+                # (§34.9) e limitada ao raio de aggro (§34.10), um mob
+                # NEUTRO atacado em melee nunca mais receberia alvo nenhum
+                # e "desistia" da revidada em 600ms sem nunca golpear.
+                _ai.target_eid         = attacker_id
                 _ai.path_recalc_timer  = 0.0
                 if _MCL:
                     _ident_dmg = self.world.get_component(target_id, EntityIdentity)
@@ -1343,6 +1351,18 @@ class ProjectileSystem(System):
 # Modificação no EnemyAISystem para integrar o CombatSystem
 class EnemyAISystem(System):
     KITING_MIN_DIST      = 3   # tiles: ranged enemy flees if player is this close
+    # Raio de AQUISIÇÃO de alvo (aggro por proximidade E handoff pós-morte
+    # do alvo atual) — antes era um local `_aggro_range_px = 5*TILE_SIZE`
+    # usado só no gate IDLE→AGGRO_DELAY; virou constante única porque
+    # _select_target também precisa dele (§34.10): sem o cap na aquisição,
+    # um mob em estado de combate cujo alvo morre recebia o próximo hostil
+    # a QUALQUER distância (até o leash de 20 tiles) e saía "caçando" pelo
+    # mapa — bug real relatado pelo usuário 16/07/2026 (Guarda Real matou
+    # o Bandido e saiu atacando zumbis longe). RETENÇÃO do alvo já
+    # engajado NÃO usa este raio (perseguição além dele é normal — só o
+    # leash limita); aggro por DANO também não (revidada em qualquer
+    # distância, ver blocos aggroed_by_damage).
+    AGGRO_RADIUS_TILES   = 5
     SLEEP_RADIUS_TILES   = 40  # além desta distância (Chebyshev), a AI é completamente suspensa
     MAX_LEASH_RADIUS     = 20  # tiles: mob retorna ao spawn se afastar mais do que isso (aggro normal)
     MAX_LEASH_RADIUS_DMG = 25  # tiles: raio maior quando aggroed por dano (evita reset por 1 hit + recuo)
@@ -1461,7 +1481,15 @@ class EnemyAISystem(System):
             return (-1, None, None, None, None)
 
         best_eid   = -1
-        best_dist  = float("inf")
+        # AQUISIÇÃO limitada ao raio de aggro (§34.10) — candidato mais
+        # distante que isso nunca é adquirido, nem no handoff pós-morte do
+        # alvo atual (o mob reseta e volta pra casa em vez de "caçar" o
+        # próximo hostil do mapa). Inicializar best_dist com o raio (em
+        # vez de infinito) É o cap: só distâncias menores vencem. O +0.01
+        # preserva a semântica INCLUSIVA do gate de aggro antigo
+        # (`dist <= 5*TILE_SIZE`): alvo a exatamente 5 tiles no mesmo eixo
+        # dá 160.0px cravados, e `160.0 < 160.0` o rejeitaria.
+        best_dist  = self.AGGRO_RADIUS_TILES * TILE_SIZE + 0.01
         best_pos   = None
         best_tm    = None
         best_cs    = None
@@ -2142,7 +2170,7 @@ class EnemyAISystem(System):
             # Calcula distância Chebyshev da posição ATUAL do mob até seu ponto de SPAWN,
             # não até o player — evita perseguição infinita quando player foge.
             # aggroed_by_damage usa raio maior (25 tiles) para não resetar por 1 hit + recuo.
-            _aggro_range_px = 5 * TILE_SIZE
+            _aggro_range_px = self.AGGRO_RADIUS_TILES * TILE_SIZE
             _spawn_tile_x = int(initial_pos.x / TILE_SIZE)
             _spawn_tile_y = int(initial_pos.y / TILE_SIZE)
             _dist_from_spawn = chebyshev(

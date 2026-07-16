@@ -91,6 +91,10 @@ def _apply_magic_damage(attacker_id: int, target_id: int, dmg: int, world: World
         _ai.state             = "AGGRO_DELAY"
         _ai.aggro_delay       = 0.5
         _ai.aggroed_by_damage = True
+        # Quem bateu vira o alvo — espelha o bloco melee de deal_damage
+        # (ver comentário lá): aquisição é filtrada por hostilidade+raio,
+        # então sem isto um mob neutro atacado nunca recebia alvo.
+        _ai.target_eid        = attacker_id
         _ai.path_recalc_timer = 0.0
     return result == "killed"
 

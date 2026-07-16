@@ -471,9 +471,11 @@ class TestMultiTargetCombat(unittest.TestCase):
         self.ws.world.remove_component(bystander, _FacRm)  # simula "sem facção" (ex: boneco)
 
         guard  = self._spawn_guard(132, 374)                       # 1 tile do bystander
-        bandit = self._spawn_mob(140, 374, faction="bandidos")     # 8 tiles do guarda — mais longe,
-                                                                    # fora do raio de aggro por
-                                                                    # proximidade (~5 tiles)
+        bandit = self._spawn_mob(136, 374, faction="bandidos")     # 4 tiles do guarda — mais longe
+                                                                    # que o bystander, mas DENTRO do
+                                                                    # raio de aquisição (5 tiles,
+                                                                    # AGGRO_RADIUS_TILES — §34.10:
+                                                                    # aquisição nunca passa disso)
 
         # Chama _select_target() diretamente em vez de checar
         # AIControlled.target_eid após N ticks: um alvo fora do raio de
@@ -578,6 +580,70 @@ class TestAcquisitionVsRetention(unittest.TestCase):
                          "retenção: alvo neutro engajado deve persistir sem aggroed_by_damage")
         self.assertIn(ai.state, ("ATTACKING", "CHASING"),
                       "lobo deveria continuar em combate com o player")
+
+    def test_apos_matar_o_alvo_nao_adquire_hostil_fora_do_raio_de_aggro(self):
+        """Bug real relatado pelo usuário 16/07/2026: "após matar o
+        bandido, o guarda saiu atacando outros alvos" — o handoff
+        pós-morte entregava o próximo hostil a QUALQUER distância (até o
+        leash de 20 tiles), porque o cap de 5 tiles só existia no gate
+        IDLE→AGGRO_DELAY, não na aquisição em si. Modelo WoW: só quem
+        está dentro do aggro radius (ou quem o atacou — threat table)
+        pode virar alvo; senão o NPC reseta e volta pra casa."""
+        from engine.components import AIControlled, CombatStats
+        from tests.helpers import run_ticks
+        guard   = self._spawn("npc", 51, 300, "guardas_vila")
+        bandit  = self._spawn("mob", 52, 300, "bandidos")
+        far_foe = self._spawn("mob", 61, 300, "bandidos")   # 10 tiles do guarda — hostil, mas longe
+
+        run_ticks(self.ws, 60)   # guarda engaja o bandido adjacente
+        guard_ai = self.ws.world.get_component(guard, AIControlled)
+        self.assertEqual(guard_ai.target_eid, bandit, "pré-condição: guarda vs bandido")
+
+        bandit_cs = self.ws.world.get_component(bandit, CombatStats)
+        bandit_cs.current_hp = 0
+        run_ticks(self.ws, 60)
+
+        self.assertNotEqual(guard_ai.target_eid, far_foe,
+                            "hostil a 10 tiles não pode ser adquirido no handoff pós-morte")
+        self.assertIn(guard_ai.state, ("IDLE", "RETURNING"),
+                      "sem alvo dentro do raio, o guarda deve resetar e voltar pra casa")
+
+    def test_mob_neutro_revida_ataque_melee_ponta_a_ponta(self):
+        """Gap real achado implementando o raio de aquisição: o bloco de
+        aggro por dano setava estado/aggroed_by_damage mas NUNCA o
+        target_eid — a revidada do neutro dependia por acidente do loop
+        de aquisição sem filtro (removido em §34.9). Sem o fix (dano põe
+        o atacante na threat table: target_eid = attacker), um lobo
+        neutro atacado em melee entrava em AGGRO_DELAY por 600ms e
+        desistia sem nunca golpear de volta."""
+        from engine.components import AIControlled, CombatState, CombatStats
+        from tests.helpers import run_ticks, set_entity_tile
+        set_entity_tile(self.ws, self.peid, 50, 300)
+        wolf = self._spawn("mob", 51, 300, "vida_selvagem")
+
+        # Ataque real do player pelo mesmo caminho do servidor
+        cst = self.ws.world.get_component(self.peid, CombatState)
+        cst.target_entity_id = wolf
+        cst.is_pursuing       = True
+        pcs = self.ws.world.get_component(self.peid, CombatStats)
+        pcs.acerto = 100.0
+        wolf_cs = self.ws.world.get_component(wolf, CombatStats)
+        wolf_cs.dodge_rating = 0.0
+        wolf_cs.parry_rating = 0.0
+        self.ws._attack_timers["s1"] = 0.0
+        self.ws._process_player_attacks(0.05, {wolf: wolf_cs.current_hp})
+
+        ai = self.ws.world.get_component(wolf, AIControlled)
+        self.assertEqual(ai.target_eid, self.peid,
+                         "dano deve pôr o atacante como alvo (threat table)")
+
+        # Bem além dos 600ms de grace: o lobo tem que CONTINUAR engajado
+        # no player (retenção), não desistir e voltar pra casa.
+        run_ticks(self.ws, 60)
+        self.assertEqual(ai.target_eid, self.peid,
+                         "lobo neutro deve continuar revidando após a grace de 600ms")
+        self.assertIn(ai.state, ("AGGRO_DELAY", "CHASING", "ATTACKING"),
+                      "lobo neutro deveria estar em combate com quem o atacou")
 
     def test_dano_mob_vs_mob_gera_combat_result_broadcast(self):
         """Sintoma "frente a frente sem desferir dano": o dano acontecia

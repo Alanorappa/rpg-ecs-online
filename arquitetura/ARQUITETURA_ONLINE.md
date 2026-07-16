@@ -3200,9 +3200,74 @@ Suíte completa 151/151 (148+3), rodada 3x. Smoke test do cenário exato
 relatado (player no spawn real, guarda+bandido de conteúdo real): 10
 COMBAT_RESULTs mob-vs-mob emitidos, guarda nunca alvejou o player.
 
-**Não validado**: sessão manual em jogo real (ver a briga com os
-próprios olhos, dano flutuante + barras caindo + guarda ignorando o
-player após a vitória).
+**Não validado (na época)**: sessão manual — o usuário testou e achou o
+refinamento seguinte (§34.10).
+
+---
+
+### 34.10 Raio de aquisição + retaliação explícita ("dano põe na threat table") (16/07/2026)
+
+Usuário testou §34.9 ao vivo: a briga funcionou, mas "após matar o
+bandido, o guarda saiu atacando outros alvos" (zumbis longe) — pediu um
+raio de aquisição, "ou quem o ataca, assim como funciona com os mobs".
+Era a metade que faltava do modelo WoW: §34.9 filtrou QUEM pode ser
+adquirido (hostilidade), mas não A QUE DISTÂNCIA.
+
+**Causa raiz 1 — handoff pós-morte sem limite de distância**: o cap de 5
+tiles do aggro por proximidade só existia no gate `IDLE→AGGRO_DELAY`
+(local `_aggro_range_px`). Um mob já em estado de combate cujo alvo
+morre recebia da aquisição o próximo hostil a QUALQUER distância (até o
+leash de 20 tiles) e emendava caçada em caçada — o guarda limpava a zona
+de zumbis inteira. Fix: `AGGRO_RADIUS_TILES = 5` virou constante de
+classe (fonte única — o gate usa a mesma), e `_select_target()`
+inicializa `best_dist` com o raio (+0.01 pra preservar a semântica
+inclusiva do gate antigo em distâncias cravadas) — candidato fora do
+raio nunca vence, nos DOIS loops (players e combatentes). Alvo morre +
+ninguém hostil dentro de 5 tiles → reset e volta pra casa ("threat
+table vazia → evade", igual §34.9 prometia). RETENÇÃO do alvo já
+engajado continua ilimitada (perseguição além do raio é normal — só o
+leash limita), e aggro por DANO também (revidada a qualquer distância).
+
+**Causa raiz 2 — "quem o ataca" não funcionava de verdade (gap real
+descoberto implementando o raio)**: os blocos de aggro por dano
+(melee em `CombatSystem.deal_damage`, mágico em
+`spell_completion_processor`/`ui/spell_system`) setavam
+estado/`aggroed_by_damage` mas NUNCA `target_eid` — o alvo da revidada
+vinha POR ACIDENTE do loop de aquisição sem filtro (removido em §34.9).
+Ou seja: desde §34.9, um mob NEUTRO atacado em melee entrava em
+AGGRO_DELAY por 600ms e desistia sem nunca golpear de volta (a aquisição
+filtrada não lhe dava alvo nenhum) — regressão silenciosa que nenhum
+teste pegava (o teste da Fase 2 só checava `state != IDLE` logo após o
+hit, não a briga sustentada). Fix: os 3 blocos setam
+`target_eid = attacker_id` — semântica de threat table: dano põe o
+atacante na tabela; a RETENÇÃO (§34.9) faz o resto. O bloco ranged
+(`_server_apply_ranged_physical`) já setava desde sempre.
+
+**Regressão em 2 testes pré-existentes, mesma classe já vista**:
+`test_mob_despawn_sent_to_both_players` e
+`test_player_corpse_stays_dead_until_revive` teleportavam mob só por
+tile (Position/pixel ficava na zona original) — com a aquisição agora
+limitada por distância EM PIXEL, o mob "fisicamente longe" não achava
+alvo, entrava em RETURNING (evasão = imune) e não morria/não atacava.
+Fix: os 2 passaram a usar `tests/helpers.py::teleport_mob_to_player()`
+(tile+pixel+InitialPosition), que existe exatamente pra isso. Terceira
+ocorrência dessa fragilidade (após `test_mob_combat_result...` e
+`test_ranged_mob`) — TODO teste que mover mob deve usar os helpers,
+nunca escrever `current_tile_x/y` na mão (mesma regra que o código de
+produção já tem com `snap_to_tile`).
+
+**Validado**: 2 testes novos —
+`test_apos_matar_o_alvo_nao_adquire_hostil_fora_do_raio_de_aggro`
+(reproduz o relato: hostil a 10 tiles NÃO é adquirido no handoff, guarda
+reseta) e `test_mob_neutro_revida_ataque_melee_ponta_a_ponta` (lobo
+neutro atacado via `_process_player_attacks` real ganha o atacante como
+alvo e CONTINUA brigando após a grace — pega a regressão silenciosa da
+causa 2). Teste do bystander ajustado (bandido pra dentro do raio — a
+intenção dele é hostilidade, não distância). Suíte completa 153/153
+(151+2), rodada 3x. Smoke do cenário real: 10 COMBAT_RESULTs mob-vs-mob,
+e após a morte do bandido o guarda fica `target=-1, IDLE` em casa.
+
+**Não validado**: sessão manual em jogo real.
 
 ---
 

@@ -355,10 +355,15 @@ class TestAOIUpdate(unittest.IsolatedAsyncioTestCase):
         mob_cs = self.ws_server.world.get_component(mob_eid, CombatStats)
         player_eid = session_a.entity_id
         mob_tm = self.ws_server.world.get_component(mob_eid, TileMovement)
-        ptm    = self.ws_server.world.get_component(player_eid, TileMovement)
         _from_tx, _from_ty = mob_tm.current_tile_x, mob_tm.current_tile_y
-        mob_tm.current_tile_x = mob_tm.target_tile_x = ptm.current_tile_x + 1
-        mob_tm.current_tile_y = mob_tm.target_tile_y = ptm.current_tile_y
+        # teleport_mob_to_player sincroniza TileMovement + Position (pixel) +
+        # InitialPosition + reseta a IA — mexer só em current_tile_x/y (como
+        # antes) deixava o mob "fisicamente" na zona de spawn original: a
+        # aquisição de alvo (pixel, limitada ao raio de aggro — §34.10) não
+        # achava ninguém, o mob entrava em RETURNING (modo evasão = IMUNE) e
+        # o ataque do player nunca o matava — despawn nunca acontecia.
+        from tests.helpers import teleport_mob_to_player
+        teleport_mob_to_player(self.ws_server, mob_eid, player_eid)
         # Teleporte manual não gera evento de movimento — sem registrar em
         # _moved_this_tick, o AOI nunca detecta o mob entrando no raio dos
         # players, ele nunca entra em known_eids, e o despawn da morte é
@@ -517,10 +522,13 @@ class TestPlayerDeathEvent(unittest.IsolatedAsyncioTestCase):
         pcs = self.ws_server.world.get_component(player_eid, CombatStats)
         hp_max = pcs.max_hp
         pcs.current_hp = 1
-        mob_tm = self.ws_server.world.get_component(mob_eid, TileMovement)
-        ptm    = self.ws_server.world.get_component(player_eid, TileMovement)
-        mob_tm.current_tile_x = ptm.current_tile_x + 1
-        mob_tm.current_tile_y = ptm.current_tile_y
+        # teleport_mob_to_player sincroniza tile + pixel + InitialPosition —
+        # mexer só nos tiles deixava o mob "fisicamente" longe: a aquisição
+        # de alvo (pixel, limitada ao raio de aggro — §34.10) não achava o
+        # player, o mob entrava em RETURNING e nunca atacava (player nunca
+        # morria). Mesma classe de fragilidade do test_mob_despawn acima.
+        from tests.helpers import teleport_mob_to_player
+        teleport_mob_to_player(self.ws_server, mob_eid, player_eid)
         mob_cs = self.ws_server.world.get_component(mob_eid, CombatState)
         mob_cs.target_entity_id = player_eid
         self.ws_server._attack_timers[f"mob_{mob_eid}"] = 0.0
