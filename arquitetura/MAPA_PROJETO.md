@@ -35,7 +35,9 @@
 | Lógica pura de quest (matching, progresso, recompensa) | `engine/quest_logic.py` | `apply_event()`, `try_start()`, `complete_quest()`, `can_turn_in()` |
 | Trade (player↔player) — servidor | `server/trade_processor.py` | `TradeProcessorMixin`, `TradeSession` — request/aceite/oferta/gold/confirma/cancela |
 | Trade (player↔player) — handlers de rede | `server/session.py` | `_handle_trade_*` (8), hook de desconexão em `on_disconnect` |
-| Trade (player↔player) — cliente | `client/trade_handlers.py` | `TradeHandlers` — popup Shift+clique, convite, janela (5 slots+gold) |
+| Trade (player↔player) — cliente | `client/trade_handlers.py` | `TradeHandlers` — modal de interação (clique direito em player), convite, janela (5 slots+gold) |
+| Duelo — servidor | `server/duel_processor.py` | `DuelProcessorMixin` — `_duel_pairs`, convites, tick de distância, interceptor de golpe letal |
+| Duelo — cliente | `client/duel_handlers.py` | `DuelHandlers` — modal de convite, contexto PvP client-side, avisos, nameplate vermelho do oponente |
 | Trade (player↔player) — estado de UI | `ui/ui_components.py` | `TradeUIState` (componente ECS no player) |
 | Chat (texto, 3 abas Local/Mundial/Combate) — cliente | `client/chat_handlers.py` | `ChatHandlers` — Enter abre campo, digita, Enter envia; abas, scrollbar, wrap de linha (500 entradas/aba) |
 | Chat — balão de fala acima da cabeça | `ui/chat_bubble.py` | `ChatBubbleManager`/`CHAT_BUBBLE` — rastreia Position ao vivo (diferente de `ui/floating_text.py`) |
@@ -86,7 +88,10 @@
 | Registrar sistema no loop offline | `game.py` | `_init_systems()` → `self.systems` |
 | Adicionar facção / relação hostil-neutro-amigavel | `content/faction_data.py` | `RELATIONSHIP` (par de facção → tier) + `get_relationship()` |
 | Checar se entidade pode brigar com outra (facção) | `engine/faction_system.py` | `can_engage()`, `is_hostile()`, `get_relationship_between()` — nunca reimplementar inline |
-| Nova forma de liberar PvP entre players (duelo/arena/zona/campo de batalha) | `engine/faction_system.py` + `server/world_server.py::_load_all_maps` | `register_pvp_context(resolver)` — contexto plugável, só player-vs-player; a flag global `pvp_enabled` é a implementação atual |
+| Nova forma de liberar PvP entre players (duelo/arena/zona/campo de batalha) | `server/world_server.py::_pvp_allowed_between` | resolver COMPOSTO registrado via `register_pvp_context` — cada contexto novo entra como mais uma consulta ali; `pvp_enabled` é só kill-switch |
+| Duelo (convite/aceite/fim, golpe letal → 1 HP) | `server/duel_processor.py` + `client/duel_handlers.py` | `DuelProcessorMixin` (server) espelha o trade; interceptor de golpe letal via `engine/core_systems.register_lethal_interceptor` |
+| Interceptar morte (nunca deixar morrer, ex: duelo) | `engine/core_systems.py` | `register_lethal_interceptor(fn)` — hook no ponto único de dano; server registra |
+| Modal de interação com player (Negociar/Duelar/Seguir) | `client/trade_handlers.py` | `_player_popup_button_rects`/`_draw_trade_popup`/`_click_trade_popup` — aberto pelo clique direito em player amigável (`ui/systems.py`) |
 | Dar time/facção a um player (MOBA) | `engine/components.py` | anexar `Faction(faction_id="time_x")` no player — sobrescreve o default `"jogadores"` (resolução componente-primeiro em `get_entity_faction`) |
 | Criar mob de combate hostil ("clássico") | `engine/entity_factory.py` | `create_enemy()` (tag `Enemy`) |
 | Criar NPC de combate (guarda, etc — facção tipicamente amigável) | `engine/entity_factory.py` | `create_combat_npc()` (tag `NPC`) — ambos compartilham `_build_combat_entity()` |
@@ -203,6 +208,7 @@ rpg_ecs_online/
 │   ├── auth.py                      ← autenticação SQLite (salt por conta) + persistência
 │   ├── log.py                       ← logger do servidor (console + logs/server.log rotativo; RPG_LOG_LEVEL)
 │   ├── trade_processor.py           ← TradeProcessorMixin/TradeSession: trade player↔player
+│   ├── duel_processor.py            ← DuelProcessorMixin: duelo (contexto PvP, golpe letal → 1 HP)
 │   └── server_death_handler.py      ← PendingDeath: XP, loot, SpawnZone, despawn
 │
 ├── client/                          ← ONLINE-ONLY (cliente de rede — mixins de GameEngine)
@@ -211,7 +217,7 @@ rpg_ecs_online/
 │   │   debug_handlers.py, menu_handlers.py, hotbar_editor_handlers.py,
 │   │   habilidades_handlers.py, online_mode_handlers.py, hotbar_handlers.py,
 │   │   consumable_bar_handlers.py, hud_handlers.py, modal_stack_handlers.py,
-│   │   trade_handlers.py, chat_handlers.py, colors.py
+│   │   trade_handlers.py, duel_handlers.py, chat_handlers.py, colors.py
 │
 ├── data/                            ← criada automaticamente
 │   └── game.db                      ← banco SQLite (contas + personagens)

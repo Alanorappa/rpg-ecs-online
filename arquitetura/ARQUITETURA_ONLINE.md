@@ -2413,6 +2413,11 @@ detalhes, validações e plano dos restantes estão TODOS lá (§11 e
 | S→C | `TRADE_RESULT` | `{trade_id, received_items[], received_gold}` — pros dois, troca executada | ✅ |
 | C→S | `TRADE_CANCEL` | `{}` — cancela a qualquer momento, devolve custódia dos 2 lados | ✅ |
 | S→C | `TRADE_CANCELLED` | `{trade_id, reason}` — `declined\|cancelled\|distance\|disconnect\|inventory_full\|invalid` | ✅ |
+| C→S | `DUEL_REQUEST` | `{target_eid}` — botão "Duelar" do modal de interação com player | ✅ |
+| S→C | `DUEL_INVITE` | `{from_eid, from_name}` — só ao alvo | ✅ |
+| C→S | `DUEL_ACCEPT` / `DUEL_DECLINE` | `{}` — resposta ao convite pendente | ✅ |
+| S→C | `DUEL_START` | `{opponent_eid, opponent_name}` — pros dois; par vira hostil um ao outro | ✅ |
+| S→C | `DUEL_END` | `{winner_eid, loser_eid, reason}` — `win\|declined\|distance\|disconnect\|invalid`; win = golpe letal deixou o perdedor com 1 HP (ninguém morre) | ✅ |
 
 ---
 
@@ -3364,6 +3369,81 @@ Suíte completa 158/158.
 
 **Não validado**: clique real em jogo (perseguição não iniciando, seleção
 ainda funcionando).
+
+---
+
+### 34.13 Contextos PvP — friendly por default, modal de interação, duelo (16/07/2026)
+
+Visão do usuário formalizada em plano aprovado (roadmap completo no
+plano; Leva 1 = Fases A-C abaixo): **players são todos amigáveis por
+default** — PvP só existe em contexto explícito: (1) duelo por convite
+(hostis somente um ao outro); (2) facção de player inimiga; (3) zona PvP
+(solo = todos hostis; em party = só quem está fora do grupo); (4) campos
+de batalha/arenas por times (players E NPCs). Decisões travadas: duelo
+termina estilo WoW (golpe letal → perdedor com 1 HP, ninguém morre); o
+modal de interação substitui o shift+clique por completo.
+
+**Fase A — friendly por default** (`6f4c450`): o "PvP de mundo aberto"
+via flag global morreu de propósito — `pvp_enabled` virou só kill-switch
+de emergência. `WorldServer._pvp_allowed_between` é o resolver COMPOSTO
+registrado como contexto PvP (por ora consulta só `_duel_pairs`; zona
+PvP/etc. entram como novas consultas). Os 3 consumidores do flag antigo
+migraram pra `can_engage`: auto-attack PvP (`combat_processor`), inclusão
+de players em alvo de AoE (`_combat_targets`, agora por par caster/alvo)
+e tid de player em CAST_SKILL (`skill_processor`). Cliente:
+`get_entity_faction` também resolve `RemoteControlled` como
+`"jogadores"` — proxy de player remoto era sentinela sem-facção
+(neutro→atacável); agora amigável, e os gates de clique direito/SPACE
+(§34.12) bloqueiam de graça.
+
+**Fase B — modal de interação + Seguir** (`1f46a48`): clique direito em
+player amigável abre o modal Negociar/Duelar/Seguir (shift+clique
+removido; NPC amigável continua seleção pura — modal é só pra players).
+Popup generalizado em `client/trade_handlers.py` com geometria única
+draw/hit-test (`_player_popup_button_rects`). "Seguir":
+`PlayerAutoMove.follow_eid` + `_process_follow` (`ui/systems.py`) —
+acompanha o player em movimento reutilizando o pathing de alvo móvel da
+perseguição (`_auto_move_step`), parando adjacente; cancela em WASD,
+perseguição de combate, clique de chão, alvo sumido.
+
+**Fase C — duelo** (`975a945`): fluxo espelha o trade.
+`server/duel_processor.py` (`DuelProcessorMixin`): `_duel_pairs`
+(consultado pelo contexto PvP — par hostil somente um ao outro),
+convites, tick de distância (`DUEL_MAX_DIST_TILES=20` — maior que o do
+trade de propósito, a luta precisa de espaço pra kite), disconnect.
+**Golpe letal**: `register_lethal_interceptor` em `engine/core_systems`
+(hook plugável no ponto único de dano — engine puro, server registra,
+mesmo padrão do `register_pvp_context`): o golpe que mataria deixa o
+perdedor com 1 HP, encerra o duelo e enfileira `DUEL_END{win}`
+(consumido pelo broadcast loop por tick — a morte acontece dentro do
+tick, longe de qualquer sessão async). Cliente
+(`client/duel_handlers.py`): modal de convite, `DUEL_START` registra
+contexto PvP client-side (só o oponente vira atacável) + aviso,
+`DUEL_END` limpa e anuncia vitória/derrota; nameplate do oponente fica
+VERMELHO durante o duelo (`build_player_hud` ganhou `hp_color`, mesmo
+esquema de disposição do mob).
+
+**Pontos de atenção anotados no plano** (interferências futuras):
+1. **DoT em duelo pode matar de verdade** — `StatusEffectSystem.
+   _apply_tick` escreve HP direto, sem passar por `apply_damage_core`; o
+   interceptor de golpe letal não cobre tick de DoT. Bug conhecido da
+   Leva 1; a correção certa (rotear `_apply_tick` pelo core) é refactor
+   à parte.
+2. Facção de player no protocolo é pré-requisito das fases D (facções) e
+   G (times) — o duelo não depende (canal próprio DUEL_START/END).
+3. Party (fase E) vem antes de zonas PvP (fase F) — regra "só quem está
+   fora do grupo".
+4. Contextos são só player-vs-player por design — NPC nunca ganha
+   permissão por contexto.
+
+**Validado**: `tests/test_duel.py` (9 testes — lifecycle, golpe
+letal→1HP+DUEL_END+hostilidade encerrada, decline, distância, logout,
+terceiro player protegido durante duelo, NPC amigável inatacável,
+kill-switch) + `TestPvpContext` reescrito (7 — semântica invertida).
+Suíte completa 169/169, rodada 3x.
+
+**Não validado**: sessão manual com 2 clientes (modal, duelo completo,
+nameplate vermelho, Seguir, Negociar, regressões de mob/NPC).
 
 ---
 
