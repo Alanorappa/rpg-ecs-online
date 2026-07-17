@@ -3479,6 +3479,29 @@ espelhando o `_duel_ctx` real): oponente em duelo vira engajável
 **Não validado**: novo teste manual com 2 clientes (clique direito no
 oponente atacando direto durante o duelo).
 
+### 34.15 Mensagens de fim de duelo (16/07/2026)
+
+Pedido do usuário após validar §34.14: no golpe letal, além do
+`WARN` de vitória/derrota, um anúncio deve aparecer no CHAT (aba
+"Combate", não como floating text sobre o personagem). `client/
+duel_handlers.py::_handle_msg_duel_end`:
+- Vencedor vê `WARN` "Você venceu o duelo"; perdedor vê "Você foi
+  derrotado" (textos exatos pedidos pelo usuário, substituindo "Vitória/
+  Derrota no duelo!").
+- Aba Combate (`ui/combat_log.py::LOG`, já headless/sem pygame — mesmo
+  sink usado por dano/cura/loot) recebe `"{vencedor} venceu {perdedor}
+  em um duelo!"` — cada cliente monta a frase localmente a partir do
+  próprio nome (`_logged_char_name`) + nome do oponente (novo
+  `_duel_opponent_name_val`, guardado no `DUEL_START` — antes só usado
+  pro aviso "Duelo iniciado!", nunca persistido).
+
+**Validado**: suíte completa 172/172, rodada 3x (mensagens são só UX
+client-side, sem novo teste dedicado — comportamento coberto
+indiretamente pelos testes de `TestDuelLifecycle`).
+
+**Não validado**: sessão manual com 2 clientes (aba Combate mostra o
+anúncio pros dois lados, mensagem de tela certa em cada um).
+
 ---
 
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata

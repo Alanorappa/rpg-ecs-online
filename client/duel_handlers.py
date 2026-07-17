@@ -39,7 +39,8 @@ class DuelHandlers:
         opp_server_eid = payload.get("opponent_eid", -1)
         opp_name       = payload.get("opponent_name", "?")
         opp_local      = self._remote_players.get(opp_server_eid, -1)
-        self._duel_opponent_local_val = opp_local
+        self._duel_opponent_local_val  = opp_local
+        self._duel_opponent_name_val   = opp_name
         # Contexto PvP client-side: libera can_engage SÓ contra o oponente
         # (clique direito ataca, skills miram, SPACE engaja) — espelho do
         # que o servidor liberou em _duel_pairs. Desregistrado no DUEL_END.
@@ -68,8 +69,17 @@ class DuelHandlers:
         winner = payload.get("winner_eid", -1)
         from ui.floating_text import WARN
         if reason == "win":
-            WARN.add("Vitória no duelo!" if winner == self._my_eid
-                     else "Derrota no duelo!")
+            i_won = winner == self._my_eid
+            WARN.add("Você venceu o duelo" if i_won else "Você foi derrotado")
+            # Anúncio no chat (aba Combate) — nomes dos DOIS lados, visível
+            # localmente pros dois clientes (cada um recebe seu próprio
+            # DUEL_END e monta a mesma frase, sem round-trip extra).
+            my_name  = getattr(self, "_logged_char_name", "") or "Você"
+            opp_name = getattr(self, "_duel_opponent_name_val", "?")
+            winner_name, loser_name = (my_name, opp_name) if i_won else (opp_name, my_name)
+            from ui.combat_log import LOG
+            LOG.add(f"{winner_name} venceu {loser_name} em um duelo!", (255, 200, 80))
+            self._duel_opponent_name_val = None
         elif reason == "declined":
             WARN.add("Duelo recusado.")
         elif reason == "distance":
