@@ -59,6 +59,14 @@ class RespawnMixin:
         sfx = self.world.get_component(player_eid, _SFX)
         if sfx:
             sfx.effects.clear()
+            # StatusEffectSystem.update() pula a entidade inteira quando
+            # effects fica vazio (ver engine/core_systems.py) — sem resetar
+            # aqui, slow_mult ficava PARADO no valor antigo do momento da
+            # morte até o player ganhar um efeito novo (podia sobreviver ao
+            # respawn).
+            tm_resp = self.world.get_component(player_eid, TileMovement)
+            if tm_resp:
+                tm_resp.slow_mult = 1.0
         try:
             self.world.remove_component(player_eid, _AR)
         except Exception:

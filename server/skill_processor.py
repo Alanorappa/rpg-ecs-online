@@ -145,14 +145,36 @@ class SkillProcessorMixin:
             # tid pode ser mob (PvE) ou player (PvP — exceto o próprio caster,
             # e só se o CONTEXTO permitir: duelo/zona/arena via can_engage —
             # players são amigáveis por default, 16/07/2026)
+            #
+            # Bug real relatado pelo usuário 16/07/2026: Picada de Escorpião/
+            # Flecha Reiterada (arqueiro) e Bola de Fogo (mago) miradas no
+            # "Guarda Real" (NPC amigável) — a flecha/bola viajava até o alvo
+            # e só então o dano final era bloqueado (apply_damage_core),
+            # gastando mana/cooldown/cast time à toa. Causa raiz: só o
+            # branch de PLAYER checava can_engage aqui; mob/NPC entrava
+            # incondicionalmente. E mesmo o branch de player, ao falhar,
+            # só deixava de ATUALIZAR o alvo — sem recusar o cast, o handler
+            # rodava igual usando qualquer target_entity_id anterior (stale).
+            # Fix: os dois branches agora RECUSAM o cast inteiro (mesma
+            # proteção que set_player_target já dava pro auto-attack), antes
+            # de qualquer mana/cooldown/cast time ser gasto.
             tid = req.get("tid", -1)
             if tid != -1 and combat_state:
-                if tid in self._mob_eids:
+                from engine.faction_system import can_engage as _can_engage_sk
+                _tid_is_mob    = tid in self._mob_eids
+                _tid_is_player = tid in self._player_eids.values() and tid != player_eid
+                if (_tid_is_mob or _tid_is_player) and not _can_engage_sk(self.world, player_eid, tid):
+                    self._skill_results_this_tick.append({
+                        "caster_eid": player_eid,
+                        "sid":        sid,
+                        "targets":    [],
+                        "cooldown":   0,
+                        "failed":     True,
+                        "reason":     "Alvo amigável",
+                    })
+                    continue
+                if _tid_is_mob or _tid_is_player:
                     combat_state.target_entity_id = tid
-                elif tid in self._player_eids.values() and tid != player_eid:
-                    from engine.faction_system import can_engage as _can_engage_sk
-                    if _can_engage_sk(self.world, player_eid, tid):
-                        combat_state.target_entity_id = tid  # alvo PvP (contexto liberou)
 
             from server.spell_debug_log import splog as _splog
             _splog(f"CAST_SKILL sid={sid} player={player_eid} tid={tid} "

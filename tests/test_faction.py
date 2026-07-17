@@ -403,6 +403,52 @@ class TestCombatNpcArchetype(unittest.TestCase):
         self.assertFalse(has_root,
                          "Nova Congelante nao deveria enraizar o guarda amigavel")
 
+    def test_cast_skill_recusa_alvo_amigavel_sem_gastar_recurso(self):
+        """Regressão real relatada pelo usuário 16/07/2026: Picada de
+        Escorpião/Flecha Reiterada (arqueiro) e Bola de Fogo (mago)
+        miradas no "Guarda Real" faziam a flecha/bola viajar até o alvo
+        (cast time completo, animação de impacto) e só então o dano era
+        bloqueado (apply_damage_core) — mana/cooldown gastos à toa.
+
+        Causa raiz: server/skill_processor.py só validava can_engage()
+        pro branch de PLAYER (PvP) na resolução de `tid` do CAST_SKILL;
+        o branch de mob/NPC aceitava QUALQUER eid em _mob_eids sem
+        checar hostilidade — e mesmo o branch de player, ao falhar, só
+        deixava de ATUALIZAR combat_state.target_entity_id (sem recusar
+        o cast), então o handler rodava do mesmo jeito com um alvo
+        antigo. Fix: os dois branches agora recusam o CAST_SKILL inteiro
+        (mesma proteção que set_player_target já dava pro auto-attack),
+        antes de qualquer mana/cooldown/cast time ser gasto."""
+        from tests.helpers import spawn_player, authorize_skill
+        from engine.entity_factory import create_combat_npc
+        from engine.components import CombatStats, CharacterStats
+        archer = spawn_player(self.ws, "s_arch", 130, 374, class_id="arqueiro")
+        authorize_skill(self.ws, archer, "picada_escorpiao")
+        guard = create_combat_npc(self.ws.world, 131, 374, faction="guardas_vila",
+                                  name="Guarda Real")
+        self.ws._mob_eids.add(guard)
+        guard_cs = self.ws.world.get_component(guard, CombatStats)
+        hp_before = guard_cs.current_hp
+        char = self.ws.world.get_component(archer, CharacterStats)
+        mana_before = char.mana
+
+        self.ws._pending_skill_requests.append({
+            "player_eid": archer, "sid": "picada_escorpiao",
+            "tid": guard, "dir_x": 0.0, "dir_y": 0.0,
+        })
+        self.ws._process_skill_requests()
+
+        self.assertEqual(guard_cs.current_hp, hp_before,
+                         "guarda amigavel nao deveria receber dano")
+        self.assertEqual(char.mana, mana_before,
+                         "mana/concentracao nao deveria ser gasta contra alvo amigavel")
+        self.assertNotIn((archer, "picada_escorpiao"), self.ws._skill_last_used,
+                         "cooldown nao deveria ser registrado contra alvo amigavel")
+        results = self.ws._skill_results_this_tick
+        self.assertTrue(any(r.get("failed") and r.get("sid") == "picada_escorpiao"
+                            for r in results),
+                       "deveria reportar failed=True pro cliente (feedback de alvo invalido)")
+
 
 class TestMultiTargetCombat(unittest.TestCase):
     """Fase 5: _select_target() deixa de assumir só PlayerControlled —

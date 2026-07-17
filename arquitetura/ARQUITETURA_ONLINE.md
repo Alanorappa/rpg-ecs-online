@@ -3571,6 +3571,67 @@ ponto de atenção pra quem mexer em `first_mob()`/spawn de mobs no
 futuro — considerar seedar `random` por teste ou tornar `first_mob()`
 determinístico.
 
+### 34.17 Skill à distância mirada em NPC amigável gastava mana/cooldown à toa (16/07/2026)
+
+Usuário relatou: arqueiro/mago usando Picada de Escorpião, Flecha
+Reiterada e Bola de Fogo contra o "Guarda Real" — a flecha/bola viaja
+até o NPC, mas não causa dano.
+
+O "sem dano" em si é CORRETO (mesma proteção de `apply_damage_core`'s
+`blocked_friendly` que já vale pra melee, §34.16, agora confirmada
+também pra magia/à distância). O bug real é ANTES disso: `server/
+skill_processor.py::_process_skill_requests` resolve o `tid` do
+`CAST_SKILL` em dois branches — mob e player. O branch de PLAYER já
+checava `can_engage()` (Fase A, 16/07/2026), mas o branch de MOB/NPC
+aceitava QUALQUER eid em `_mob_eids` incondicionalmente, sem checar
+hostilidade — e mesmo o branch de player, ao falhar, só deixava de
+ATUALIZAR `combat_state.target_entity_id` (sem recusar o cast), então o
+handler rodava do mesmo jeito com o alvo antigo/stale. Resultado: cast
+time completo, animação de projétil, mana e cooldown gastos — tudo pra
+um golpe que nunca poderia ter efeito, sem nenhum feedback ao jogador
+explicando por quê.
+
+Fix: os dois branches agora RECUSAM o `CAST_SKILL` inteiro quando
+`can_engage(caster, tid)` é `False` — mesma proteção que
+`set_player_target()` já dava pro auto-attack (§ anterior), só que
+aplicada ANTES de qualquer mana/cooldown/cast time ser gasto. Recusa
+envia `SKILL_RESULT{failed:True, reason:"Alvo amigável"}` — o cliente já
+tinha o pipeline pra isso (`client/network_handlers.py` mostra
+`payload.reason` como `WARN` automaticamente, mesmo padrão usado por
+`is_skill_authorized`).
+
+**Validado**: `tests/test_faction.py::TestCombatNpcArchetype::
+test_cast_skill_recusa_alvo_amigavel_sem_gastar_recurso` — Picada de
+Escorpião contra Guarda Real: HP intacto, mana intacta, cooldown NÃO
+registrado, `SKILL_RESULT` com `failed=True`. Suíte completa 175/175.
+
+**Não validado**: sessão manual com arqueiro/mago mirando o Guarda Real
+(deveria recusar o cast na hora, sem animação/consumo de recurso).
+
+**Investigado e NÃO confirmado como bug** (mesmo relato do usuário): mago
+vencedor de duelo contra arqueiro observado "estranhamente devagar" logo
+após o golpe letal. Não foi encontrado nenhum código no caminho de fim
+de duelo (`server/duel_processor.py::end_duel`/`_duel_lethal_interceptor`,
+`engine/core_systems.py::apply_damage_core`) que toque velocidade,
+`StatusEffects` ou `TileMovement.slow_mult` do VENCEDOR — só o perdedor
+tem "polymorph"/"sleep" removidos ali, e só quando dano > 0. Hipótese
+mais provável: "slow" de 30% aplicado por Picada de Escorpião (arqueiro,
+3s de duração, reaplicado a cada acerto) ainda ativo no mago no momento
+exato da vitória — expira sozinho, sem relação com o fim do duelo.
+Achado colateral digno de registro: `StatusEffectSystem.update()`
+(`engine/core_systems.py`) pula a entidade inteira (`if not sfx.effects:
+continue`) quando `StatusEffects.effects` está vazio — qualquer código
+que chame `.effects.clear()` diretamente (fora do loop de expiração
+normal) deixa `TileMovement.slow_mult`/`CombatState.is_rooted` PARADOS
+no valor antigo até a entidade ganhar um efeito novo, já que o bloco de
+sincronização nunca roda de novo enquanto `effects` continuar vazio.
+Confirmado em 3 call sites de MOB (`engine/world_systems.py:1796/2368/
+2433`, reset de leash/RETURNING→IDLE) que fazem `.clear()` sem resetar
+`slow_mult` — não explica o relato do mago (esses 3 são só de mob), mas
+é uma classe de bug real pra investigar se o padrão aparecer de novo.
+Pendente: usuário confirmar se a lentidão persistiu além de ~3-5s (slow
+natural expirando) ou pareceu permanente (nesse caso, revisitar).
+
 ---
 
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata

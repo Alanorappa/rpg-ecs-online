@@ -991,6 +991,13 @@ class SessionManager:
         sfx = self.world_server.world.get_component(player_eid, StatusEffects)
         if sfx:
             sfx.effects.clear()
+            # StatusEffectSystem.update() pula a entidade inteira quando
+            # effects fica vazio (ver engine/core_systems.py) — sem resetar
+            # aqui, slow_mult ficava PARADO no valor antigo (ex: teleporte
+            # com um slow ativo) até o player ganhar um efeito novo.
+            tm_tp = self.world_server.world.get_component(player_eid, TileMovement)
+            if tm_tp:
+                tm_tp.slow_mult = 1.0
 
         # Limpa aggro dos mobs
         for mob_eid in self.world_server._mob_eids:

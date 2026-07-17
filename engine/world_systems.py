@@ -1794,6 +1794,12 @@ class EnemyAISystem(System):
                         _sfx_reset_a = self.world.get_component(enemy_id, StatusEffects)
                         if _sfx_reset_a:
                             _sfx_reset_a.effects.clear()
+                            # StatusEffectSystem.update() pula a entidade inteira
+                            # quando effects fica vazio (ver core_systems.py) —
+                            # sem resetar aqui, slow_mult ficava PARADO no valor
+                            # antigo até o mob ganhar um efeito novo (nunca, se
+                            # ele voltar a ficar parado em casa pro resto do jogo).
+                            tile_movement.slow_mult = 1.0
                 continue
 
             # Persiste o alvo no componente
@@ -2366,6 +2372,7 @@ class EnemyAISystem(System):
                             _sfx_reset_c = self.world.get_component(enemy_id, StatusEffects)
                             if _sfx_reset_c:
                                 _sfx_reset_c.effects.clear()
+                                tile_movement.slow_mult = 1.0   # ver comentário irmão acima
 
             # --- Retorno à Posição Inicial ---
             else: # Comportamento de retorno à posição inicial
@@ -2431,6 +2438,7 @@ class EnemyAISystem(System):
                         _sfx_reset_b = self.world.get_component(enemy_id, StatusEffects)
                         if _sfx_reset_b:
                             _sfx_reset_b.effects.clear()
+                            tile_movement.slow_mult = 1.0   # ver comentário irmão acima
 
             # Garante que a posição pixel da entidade esteja alinhada ao tile quando está parada.
             if not tile_movement.is_moving and ai_control.state == "IDLE":
