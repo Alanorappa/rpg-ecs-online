@@ -36,6 +36,7 @@ from server.loot_processor import LootProcessorMixin
 from server.spell_completion_processor import SpellCompletionMixin
 from server.trade_processor import TradeProcessorMixin
 from server.duel_processor import DuelProcessorMixin
+from server.party_processor import PartyProcessorMixin
 from debug.mob_combat_debug import MCL
 
 # move_player() faz snap instantâneo de tile (sem tween real) — esta janela é
@@ -140,7 +141,7 @@ class _MapBundle:
 
 
 class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootProcessorMixin,
-                   SpellCompletionMixin, TradeProcessorMixin, DuelProcessorMixin):
+                   SpellCompletionMixin, TradeProcessorMixin, DuelProcessorMixin, PartyProcessorMixin):
 
     MAP_FILE = "maps/map_1.csv"   # mapa padrão carregado pelo servidor
 
@@ -239,6 +240,18 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # DUEL_END do tick (win/distance/disconnect) — consumidos pelo
         # broadcast loop do SessionManager (consume_duel_end_events).
         self._duel_end_events_this_tick: list[dict] = []
+
+        # Party/Grupo (ver server/party_processor.py) — party_id → info do
+        # grupo; índice reverso pra achar rápido o grupo de um eid;
+        # target_eid → requester_eid (convite pendente, sem checagem de
+        # distância — ver decisão em ARQUITETURA_ONLINE.md §34.19).
+        self._parties: dict[int, dict] = {}
+        self._player_party_id: dict[int, int] = {}
+        self._next_party_id: int = 1
+        self._pending_party_invites: dict[int, int] = {}
+        # Eventos de grupo do tick (party_id mudou, ou ("left", eid)) —
+        # consumidos pelo broadcast loop do SessionManager.
+        self._party_state_events_this_tick: list = []
 
         # Timer de ataque por jogador: session_id → segundos até próximo hit
         self._attack_timers: dict[str, float] = {}

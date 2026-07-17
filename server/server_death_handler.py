@@ -94,6 +94,15 @@ class ServerDeathHandler:
             # 1. Log
             log.info(f"[Death] mob {eid} morto por {killer_eid}")
 
+            # Posição/mapa do mob — precisa vir ANTES do bloco de XP (usado
+            # pelo split de XP compartilhado de grupo, passo 2c abaixo) e
+            # também é usada mais adiante pro registro de corpse.
+            mob_tx, mob_ty = 0, 0
+            tm = self.world.get_component(eid, TileMovement)
+            if tm:
+                mob_tx, mob_ty = tm.current_tile_x, tm.current_tile_y
+            mob_map = self.world_server.get_entity_map(eid) if self.world_server else None
+
             # 2. XP proporcional por dano causado — base por level do mob ×
             # xp_given_by_lvl (mob_definitions.py), modificado pelo
             # multiplicador de tier. Mobs sem cadastro (ex: "Elemental")
@@ -117,6 +126,7 @@ class ServerDeathHandler:
             if self.world_server:
                 damage_log = self.world_server.get_damage_log(eid)
 
+            _xp_entries_start = len(self.pending_xp)
             if damage_log:
                 total_damage = sum(damage_log.values())
                 for p_eid, dmg in damage_log.items():
@@ -135,6 +145,47 @@ class ServerDeathHandler:
                         "xp":         base_xp,
                         "mob_eid":    eid,
                     })
+
+            # 2c. Party: XP compartilhado (decisão do usuário 17/07/2026,
+            # ver ARQUITETURA_ONLINE.md §34.19). As fatias proporcionais por
+            # dano acima continuam valendo entre atacantes SEM grupo em
+            # comum — mas entre membros do MESMO grupo, a soma das fatias
+            # que esse grupo ganharia forma um "pool", redistribuído
+            # IGUALMENTE entre todos os membros do grupo dentro do raio da
+            # morte (PARTY_XP_SHARE_RADIUS_TILES), incluindo quem não bateu.
+            # Quem está fora do raio não ganha nada dessa morte. Atacantes
+            # de outro grupo (ou sem grupo) mantêm a fatia individual.
+            if self.world_server:
+                from shared.constants import PARTY_XP_SHARE_RADIUS_TILES as _PXPR
+                _this_death_entries = self.pending_xp[_xp_entries_start:]
+                _by_party: dict = {}
+                _solo_entries = []
+                for _entry in _this_death_entries:
+                    _pid = self.world_server.get_party_id_of(_entry["player_eid"])
+                    if _pid == -1:
+                        _solo_entries.append(_entry)
+                    else:
+                        _by_party.setdefault(_pid, []).append(_entry)
+
+                if _by_party:
+                    _new_entries = list(_solo_entries)
+                    for _pid, _party_entries in _by_party.items():
+                        _pool = sum(_e["xp"] for _e in _party_entries)
+                        _in_range = self.world_server._party_members_in_range(
+                            _pid, mob_tx, mob_ty, mob_map, _PXPR)
+                        if not _in_range:
+                            # Ninguém do grupo por perto (raro) — mantém as
+                            # fatias originais dos que bateram.
+                            _new_entries.extend(_party_entries)
+                            continue
+                        _share = max(1, _pool // len(_in_range))
+                        for _m_eid in _in_range:
+                            _new_entries.append({
+                                "player_eid": _m_eid,
+                                "xp":         _share,
+                                "mob_eid":    eid,
+                            })
+                    self.pending_xp[_xp_entries_start:] = _new_entries
 
             # 2b. Skills com on_kill=="charge" (Vitória Iminente): killer ganha
             # carga ao matar mob. Itera o CATÁLOGO (não ps.skills) com
@@ -194,11 +245,8 @@ class ServerDeathHandler:
                 _qfire_kill("kill", player_eid=first_attacker_eid,
                             name=identity.name, race=identity.race, tier=tier)
 
-            # 4. Posição do mob para registrar corpse
-            mob_tx, mob_ty = 0, 0
-            tm = self.world.get_component(eid, TileMovement)
-            if tm:
-                mob_tx, mob_ty = tm.current_tile_x, tm.current_tile_y
+            # 4. Posição do mob para registrar corpse — já lida antes do
+            # bloco de XP (mob_tx/mob_ty), reaproveitada aqui.
 
             # 5. Rola loot usando EntityIdentity.name (= race display, ex: "Aranha")
             # (identity já buscado no passo 2, pro cálculo de XP por level)

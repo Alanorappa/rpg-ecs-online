@@ -60,6 +60,14 @@ class ChatHandlers:
 
     def _send_chat_message(self) -> None:
         text = self._chat_text.strip()
+        # Comando de grupo ("/convidar Nome") — primeira vez que o chat
+        # interpreta algo antes de mandar como texto normal (17/07/2026,
+        # ver client/party_handlers.py::_try_handle_party_chat_command).
+        # Resolve nome→eid local e despacha PARTY_INVITE; nunca vira
+        # CHAT_SEND (comando consumido, achando o alvo ou não).
+        if text and self._try_handle_party_chat_command(text):
+            self._close_chat_input()
+            return
         if text and self._net:
             from shared.messages import MsgType
             channel = "local" if self._chat_tab == "local" else "world"

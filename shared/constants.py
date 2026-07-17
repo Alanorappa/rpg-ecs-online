@@ -66,3 +66,13 @@ TRADE_MAX_DIST_TILES = 5
 # a luta precisa de espaço (kite de arqueiro/mago).
 DUEL_MAX_DIST_TILES = 20
 
+# ── Party/Grupo ──────────────────────────────────────────────────────────────
+# Tamanho máximo do grupo (decisão do usuário 17/07/2026). Sem checagem de
+# distância pra convidar/permanecer agrupado (diferente de trade/duelo) —
+# replica o /invite de WoW, que funciona no mapa inteiro.
+PARTY_MAX_SIZE = 5
+# Raio (chebyshev, mesmo mapa) pra XP compartilhado alcançar um membro do
+# grupo que não bateu no mob — reusa AOI_RADIUS (mesma noção de "por perto"
+# já usada pra visibilidade/broadcast em todo o resto do projeto).
+PARTY_XP_SHARE_RADIUS_TILES = AOI_RADIUS
+

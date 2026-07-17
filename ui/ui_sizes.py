@@ -53,8 +53,9 @@ class UI:
     TRADE_W, TRADE_H              = 440, 450   # janela de trade (player↔player) — bag própria + 2 colunas de oferta
     CHAT_W, CHAT_H                = 380, 220   # janela de chat (canto inferior esquerdo) — abas Local/Mundial/Combate
     # Modal de interação com player (clique direito em player amigável —
-    # substituiu o shift+clique/"Trade", 16/07/2026): Negociar/Duelar/Seguir.
-    TRADE_POPUP_W, TRADE_POPUP_H  = 140, 138
+    # substituiu o shift+clique/"Trade", 16/07/2026): Negociar/Duelar/Seguir/
+    # Convidar p/ Grupo (4º botão, 17/07/2026).
+    TRADE_POPUP_W, TRADE_POPUP_H  = 140, 172
     TRADE_INVITE_W, TRADE_INVITE_H = 360, 150  # modal "Fulano quer negociar"
 
     # Menu de pausa (ESC) e seus submenus — cada um é um painel separado

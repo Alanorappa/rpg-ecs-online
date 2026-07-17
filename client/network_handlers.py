@@ -82,6 +82,12 @@ class NetworkHandlers:
             self._handle_msg_duel_start(payload)
         elif msg_type == MsgType.DUEL_END:
             self._handle_msg_duel_end(payload)
+        elif msg_type == MsgType.PARTY_INVITE_RECEIVED:
+            self._handle_msg_party_invite_received(payload)
+        elif msg_type == MsgType.PARTY_INVITE_FAILED:
+            self._handle_msg_party_invite_failed(payload)
+        elif msg_type == MsgType.PARTY_STATE:
+            self._handle_msg_party_state(payload)
         elif msg_type == MsgType.CHAT_MESSAGE:
             self._handle_msg_chat_message(payload)
 

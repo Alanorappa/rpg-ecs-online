@@ -120,6 +120,16 @@ class MsgType(str, Enum):
     DUEL_START         = "duel_start"         # S→C  {opponent_eid, opponent_name} — pros dois; par vira hostil um ao outro
     DUEL_END           = "duel_end"           # S→C  {winner_eid, loser_eid, reason} win|declined|distance|disconnect — pros dois
 
+    # Party/Grupo (ver server/party_processor.py) — convite via modal OU comando de chat "/convidar"
+    PARTY_INVITE        = "party_invite"        # C→S  {target_eid} — botão "Convidar p/ Grupo" ou /convidar
+    PARTY_INVITE_RECEIVED = "party_invite_received"  # S→C  {from_eid, from_name} — só ao alvo
+    PARTY_INVITE_FAILED = "party_invite_failed" # S→C  {reason} — só ao requester, convite recusado na origem
+    PARTY_ACCEPT        = "party_accept"        # C→S  {} — resposta ao convite pendente
+    PARTY_DECLINE       = "party_decline"       # C→S  {} — idem
+    PARTY_STATE         = "party_state"         # S→C  {party_id, leader_eid, members:[{eid,name,class_id,level,hp,hp_max}]} — pra todos os membros a cada mudança; party_id=-1/members=[] individual pra quem saiu/foi expulso
+    PARTY_LEAVE         = "party_leave"         # C→S  {}
+    PARTY_KICK          = "party_kick"          # C→S  {target_eid} — só líder
+
     CONSUMABLE_USE     = "consumable_use"    # C→S  uso de consumível (heal_instant, HoT, buffs futuros)
     GOLD_UPDATE        = "gold_update"       # C→S  gold mudou (loot de moedas) {gold: N}
     INV_SYNC           = "inv_sync"          # C→S  inventário mudou (loot de item) {inventory: [...]}
@@ -246,6 +256,11 @@ C2S_REQUIRED: dict = {
     # Duelo — schema validado contra o send REAL do cliente
     # (client/trade_handlers.py::_send_duel_request / duel_handlers.py):
     MsgType.DUEL_REQUEST:       {"target_eid": _NUM},
+    # Party — schema validado contra o send REAL do cliente
+    # (client/trade_handlers.py::_send_party_invite_request /
+    # client/party_handlers.py::_try_handle_party_chat_command):
+    MsgType.PARTY_INVITE:       {"target_eid": _NUM},
+    MsgType.PARTY_KICK:         {"target_eid": _NUM},
     MsgType.SAVE_STATE:         {},   # payload inteiro é dict validado a fundo no handler
 }
 

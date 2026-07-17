@@ -62,6 +62,19 @@ class TradeHandlers:
         from shared.messages import MsgType
         self._net.send(MsgType.DUEL_REQUEST, {"target_eid": rc.server_eid})
 
+    def _send_party_invite_request(self, target_local_eid: int) -> None:
+        """Botão "Convidar p/ Grupo" do modal — mesmo formato do trade/
+        duelo (server resolve convite/aceite, ver server/party_processor.py).
+        Também usado pelo comando de chat "/convidar" (client/
+        party_handlers.py) depois de resolver o nome pro eid local."""
+        if not self._net:
+            return
+        rc = self.world.get_component(target_local_eid, RemoteControlled)
+        if rc is None:
+            return
+        from shared.messages import MsgType
+        self._net.send(MsgType.PARTY_INVITE, {"target_eid": rc.server_eid})
+
     def _offer_trade_item(self, inv_index: int) -> None:
         if not self._net:
             return
@@ -176,6 +189,10 @@ class TradeHandlers:
                 _pam.ground_target = None
                 _pam.path.clear()
                 _pam.path_recalc_timer = 0.0
+            SOUNDS.play_ui("button_click")
+        elif btns[3].collidepoint(mx, my):    # Convidar p/ Grupo
+            tui.popup_target_eid = -1
+            self._send_party_invite_request(target_eid)
             SOUNDS.play_ui("button_click")
         return True
 
@@ -334,6 +351,7 @@ class TradeHandlers:
         ("Negociar", (60, 90, 50),  (110, 170, 90), (220, 240, 220)),
         ("Duelar",   (90, 50, 50),  (170, 100, 90), (240, 220, 220)),
         ("Seguir",   (50, 70, 95),  (100, 140, 180), (220, 230, 240)),
+        ("Convidar p/ Grupo", (80, 75, 40), (150, 140, 80), (240, 235, 210)),
     )
 
     def _player_popup_button_rects(self, tui) -> "tuple[pygame.Rect, list[pygame.Rect]]":

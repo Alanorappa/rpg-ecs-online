@@ -2418,6 +2418,13 @@ detalhes, validações e plano dos restantes estão TODOS lá (§11 e
 | C→S | `DUEL_ACCEPT` / `DUEL_DECLINE` | `{}` — resposta ao convite pendente | ✅ |
 | S→C | `DUEL_START` | `{opponent_eid, opponent_name}` — pros dois; par vira hostil um ao outro | ✅ |
 | S→C | `DUEL_END` | `{winner_eid, loser_eid, reason}` — `win\|declined\|distance\|disconnect\|invalid`; win = golpe letal deixou o perdedor com 1 HP (ninguém morre) | ✅ |
+| C→S | `PARTY_INVITE` | `{target_eid}` — botão "Convidar p/ Grupo" do modal OU comando de chat `/convidar` | ✅ |
+| S→C | `PARTY_INVITE_RECEIVED` | `{from_eid, from_name}` — só ao alvo | ✅ |
+| S→C | `PARTY_INVITE_FAILED` | `{reason}` — só ao requester, convite recusado na origem (`invalid`/`declined`) | ✅ |
+| C→S | `PARTY_ACCEPT` / `PARTY_DECLINE` | `{}` — resposta ao convite pendente | ✅ |
+| S→C | `PARTY_STATE` | `{party_id, leader_eid, members:[{eid,name,class_id,level,hp,hp_max}]}` — a todos os membros a cada mudança; `party_id:-1, members:[]` individual pra quem saiu/foi expulso | ✅ |
+| C→S | `PARTY_LEAVE` | `{}` | ✅ |
+| C→S | `PARTY_KICK` | `{target_eid}` — só líder | ✅ |
 
 ---
 
@@ -3679,6 +3686,98 @@ recusa em si).
 **Não validado**: sessão manual com arqueiro/mago mirando o Guarda Real
 (deveria recusar a skill NA HORA — sem som, sem entrar em combate, sem
 perseguição).
+
+### 34.19 Party/Grupo + XP compartilhado (Fase E do roadmap, 17/07/2026)
+
+Próximo item do roadmap combinado com o usuário depois da Leva 1 (PvP
+por contexto + duelo): **Fase E — Party/Grupo**, pré-requisito da Fase F
+(Zonas PvP: "sozinho = todos hostis, em grupo = só quem tá fora").
+Decisões do usuário: convite pelas DUAS vias (modal **e** comando de
+chat `/convidar Nome`, estilo WoW), tamanho máximo 5, escopo com XP
+compartilhado incluído.
+
+**Achado-chave da exploração**: XP **já** era dividida
+proporcionalmente por dano entre múltiplos atacantes
+(`server/server_death_handler.py`, `_mob_damage_log`) — não era "só
+quem mata leva tudo". O que faltava pro grupo: quem NÃO bateu no mob
+(mas está no grupo e por perto) também ganhar uma fatia.
+
+**Decisões de design** (engenharia, não perguntadas ao usuário):
+- Qualquer membro do grupo pode convidar (não só o líder) — só
+  **expulsar** exige ser líder.
+- **Sem checagem de distância** pra convidar OU permanecer agrupado —
+  diferente de trade/duelo, replica o `/invite` de WoW (funciona no
+  mapa inteiro). A única restrição de fato é o comando de chat só
+  resolver nomes de players **visíveis** (`RemoteControlled` local,
+  sem lookup de nome global no servidor).
+- **XP compartilhado**: fatia por proporção de dano continua entre
+  atacantes SEM grupo em comum. Entre membros do MESMO grupo, a soma
+  das fatias que esse grupo ganharia forma um "pool", redistribuído
+  IGUALMENTE entre os membros do grupo dentro de
+  `PARTY_XP_SHARE_RADIUS_TILES` (reusa `AOI_RADIUS`) da morte —
+  incluindo quem não bateu. Fora do raio, não ganha nada dessa morte.
+  Loot/quest-kill continuam "primeiro atacante" (inalterado) — só XP é
+  compartilhada nesta leva.
+- **HP no frame de grupo**: só atualiza em tempo real pra membros
+  visíveis no AOI do próprio cliente (igual qualquer player remoto já
+  funciona). Membro fora de alcance mostra o último HP do
+  `PARTY_STATE`. Sincronização de HP independente de distância é
+  limitação conhecida — fica pra uma leva futura.
+- **Sem componente ECS novo**: estado de grupo vive em dicts no
+  `WorldServer` (`_parties`, `_player_party_id` — mesmo padrão de
+  `_duel_pairs`), não em componente sincronizado por entidade.
+
+**Servidor**: `server/party_processor.py` (`PartyProcessorMixin`,
+espelha `DuelProcessorMixin`, mas N-ário em vez de par fixo —
+`_parties: dict[party_id, {"leader_eid","members"}]` +
+`_player_party_id` como índice reverso). API: `request_party_invite`/
+`respond_party_invite` (cria grupo novo OU expande o existente do
+requester), `leave_party` (promove o próximo membro se o líder sai,
+desfaz o grupo se sobra só 1), `kick_from_party` (só líder),
+`end_parties_of` (disconnect), `get_party_snapshot` (monta o payload de
+`PARTY_STATE` lendo `CharacterStats`/`CombatStats` direto — este mixin
+vive no `WorldServer`, sem acesso aos objetos `Session`),
+`_party_members_in_range` (chebyshev + mesmo mapa, generalização de
+`_duel_in_range` pra N membros). Eventos de mudança de estado
+enfileirados (`consume_party_state_events`, mesmo padrão de
+`consume_duel_end_events`) e consumidos pelo broadcast loop de
+`server/session.py` — cada item é um `party_id` (manda `PARTY_STATE`
+pra todos os membros atuais) ou uma tupla `("left", eid)` (`PARTY_STATE`
+vazio individual pra quem saiu/foi expulso).
+
+**XP compartilhado**: `server/server_death_handler.py` — a leitura de
+posição/mapa do mob foi movida pra ANTES do bloco de XP (usada pelo
+split de grupo). Depois do split proporcional existente por
+`damage_log`, passo novo agrupa as entradas de `pending_xp` recém-
+geradas por `party_id`, soma em um pool por grupo, acha quem está no
+raio (`_party_members_in_range`) e substitui as entradas originais
+desse grupo por uma entrada por membro em range
+(`pool // len(in_range)`, mínimo 1). Atacante sem grupo ou de outro
+grupo mantém a entrada individual intocada.
+
+**Cliente**: `client/party_handlers.py` (`PartyHandlers`, espelha
+`DuelHandlers`) — modal de convite (Aceitar/Recusar), frame de grupo
+simples (nome+nível+barra de HP, canto superior esquerdo, com botão
+Sair/Expulsar por linha), e `_try_handle_party_chat_command()` — parsing
+de `/convidar Nome` (primeira vez que o chat interpreta algo antes de
+mandar como texto normal, chamado por
+`client/chat_handlers.py::_send_chat_message`). `client/
+trade_handlers.py::_PLAYER_POPUP_BUTTONS` ganhou um 4º botão "Convidar
+p/ Grupo" (mesma geometria genérica de `_player_popup_button_rects`,
+`TRADE_POPUP_H` cresceu 138→172).
+
+**Validado**: `tests/test_party.py` (14 testes) — ciclo de vida completo
+(convite/aceite/recusa/crescer grupo existente/limite de 5/sair/líder
+sai promove próximo/grupo de 2 desfaz/expulsão só líder/desconexão/
+convite pra alvo já agrupado) + XP compartilhado (membro que não bateu
+recebe fatia igual, membro fora do raio não recebe nada, atacante de
+fora do grupo mantém fatia individual intocada). Suíte completa
+189/189, rodada 3x.
+
+**Não validado**: sessão manual com 2+ clientes — convidar via modal E
+via `/convidar Nome`, grupo crescendo por convite de não-líder, líder
+saindo com promoção automática, expulsão recusada por não-líder, XP
+compartilhado com um membro fora de alcance.
 
 ---
 

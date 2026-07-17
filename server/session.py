@@ -239,6 +239,9 @@ class SessionManager:
             # pro lado que ficou sai pelo broadcast loop do próximo tick
             # (consume_duel_end_events), o desconectado não precisa receber.
             self.world_server.end_duels_of(eid, "disconnect")
+            # Grupo: mesma lógica — o PARTY_STATE pro resto do grupo sai
+            # pelo broadcast loop do próximo tick (consume_party_state_events).
+            self.world_server.end_parties_of(eid)
             for other in self._sessions.values():
                 other.known_eids.discard(eid)
             await self._broadcast_all(MsgType.ENTITY_DESPAWN, {"eid": eid})
@@ -1348,6 +1351,71 @@ class SessionManager:
     async def _handle_duel_decline(self, session: Session, payload: dict, ts: int) -> None:
         await self._respond_duel_invite(session, False)
 
+    # ── Party/Grupo (mesmo formato do duelo — ver server/party_processor.py) ──
+
+    async def _handle_party_invite(self, session: Session, payload: dict, ts: int) -> None:
+        """Botão "Convidar p/ Grupo" do modal de interação OU comando de
+        chat "/convidar" (client/party_handlers.py) — mesmo PARTY_INVITE."""
+        if not session.authenticated:
+            return
+        requester_eid = self.world_server._player_eids.get(session.session_id)
+        if requester_eid is None:
+            return
+        target_eid = int(payload.get("target_eid", -1))
+        reason = self.world_server.request_party_invite(requester_eid, target_eid)
+        if reason is not None:
+            await session.send(MsgType.PARTY_INVITE_FAILED, {"reason": reason})
+            return
+        target_sid = self.world_server.get_session_id_for_player(target_eid)
+        target_session = self._sessions.get(target_sid) if target_sid else None
+        if target_session and target_session.authenticated:
+            await target_session.send(MsgType.PARTY_INVITE_RECEIVED, {
+                "from_eid":  requester_eid,
+                "from_name": session.display_name,
+            })
+
+    async def _respond_party_invite(self, session: Session, accept: bool) -> None:
+        if not session.authenticated:
+            return
+        target_eid = self.world_server._player_eids.get(session.session_id)
+        if target_eid is None:
+            return
+        requester_eid, started = self.world_server.respond_party_invite(target_eid, accept)
+        if requester_eid is None:
+            return  # não havia convite pendente
+        if not started:
+            requester_sid = self.world_server.get_session_id_for_player(requester_eid)
+            requester_session = self._sessions.get(requester_sid) if requester_sid else None
+            reason = "declined" if not accept else "invalid"
+            if requester_session and requester_session.authenticated:
+                await requester_session.send(MsgType.PARTY_INVITE_FAILED, {"reason": reason})
+            return
+        # PARTY_STATE pros membros vai pelo broadcast loop do tick
+        # (consume_party_state_events) — não precisa mandar nada aqui.
+
+    async def _handle_party_accept(self, session: Session, payload: dict, ts: int) -> None:
+        await self._respond_party_invite(session, True)
+
+    async def _handle_party_decline(self, session: Session, payload: dict, ts: int) -> None:
+        await self._respond_party_invite(session, False)
+
+    async def _handle_party_leave(self, session: Session, payload: dict, ts: int) -> None:
+        if not session.authenticated:
+            return
+        eid = self.world_server._player_eids.get(session.session_id)
+        if eid is None:
+            return
+        self.world_server.leave_party(eid)
+
+    async def _handle_party_kick(self, session: Session, payload: dict, ts: int) -> None:
+        if not session.authenticated:
+            return
+        leader_eid = self.world_server._player_eids.get(session.session_id)
+        if leader_eid is None:
+            return
+        target_eid = int(payload.get("target_eid", -1))
+        self.world_server.kick_from_party(leader_eid, target_eid)
+
     async def _handle_trade_offer_item(self, session: Session, payload: dict, ts: int) -> None:
         if not session.authenticated:
             return
@@ -1481,6 +1549,11 @@ class SessionManager:
         MsgType.DUEL_REQUEST:        _handle_duel_request,
         MsgType.DUEL_ACCEPT:         _handle_duel_accept,
         MsgType.DUEL_DECLINE:        _handle_duel_decline,
+        MsgType.PARTY_INVITE:        _handle_party_invite,
+        MsgType.PARTY_ACCEPT:        _handle_party_accept,
+        MsgType.PARTY_DECLINE:       _handle_party_decline,
+        MsgType.PARTY_LEAVE:         _handle_party_leave,
+        MsgType.PARTY_KICK:          _handle_party_kick,
     }
 
     # ── AOI subscription — núcleo do sistema ─────────────────────────────────
@@ -1714,6 +1787,31 @@ class SessionManager:
                     for s in self._sessions_in_aoi(_duel_end["tx"], _duel_end["ty"],
                                                    _duel_end["map"]):
                         await s.send(MsgType.CHAT_MESSAGE, _duel_chat_msg)
+
+            # Grupo mudou neste tick (convite aceito, saída, expulsão,
+            # promoção de líder, disconnect) — avisa todo mundo afetado.
+            # Item é um party_id (int, grupo mudou — manda PARTY_STATE pra
+            # cada membro ATUAL) ou uma tupla ("left", eid) (eid saiu/foi
+            # expulso e não está em nenhum grupo mais — PARTY_STATE vazio
+            # só pra ele, se ainda estiver conectado).
+            for _pty_ev in self.world_server.consume_party_state_events():
+                if isinstance(_pty_ev, tuple):
+                    _pty_left_eid = _pty_ev[1]
+                    _pty_left_sid = self.world_server.get_session_id_for_player(_pty_left_eid)
+                    _pty_left_sess = self._sessions.get(_pty_left_sid) if _pty_left_sid else None
+                    if _pty_left_sess and _pty_left_sess.authenticated:
+                        await _pty_left_sess.send(MsgType.PARTY_STATE, {
+                            "party_id": -1, "leader_eid": -1, "members": [],
+                        })
+                    continue
+                _pty_snap = self.world_server.get_party_snapshot(_pty_ev)
+                if _pty_snap is None:
+                    continue
+                for _pty_member in _pty_snap["members"]:
+                    _pty_sid = self.world_server.get_session_id_for_player(_pty_member["eid"])
+                    _pty_sess = self._sessions.get(_pty_sid) if _pty_sid else None
+                    if _pty_sess and _pty_sess.authenticated:
+                        await _pty_sess.send(MsgType.PARTY_STATE, _pty_snap)
 
             # Eventos de som posicionais (aggro de mob, etc.) → broadcast AOI
             for _snd_ev in self.world_server.consume_sound_events():
