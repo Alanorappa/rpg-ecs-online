@@ -2501,14 +2501,25 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         """Retorna todos os eids que podem receber dano neste tick.
 
         Padrão ECS consolidado (Overwatch, Guild Wars 2): o sistema de combate
-        não distingue mob de player — qualquer entidade com CombatStats é alvo.
-        PvP: outro player só entra como alvo se can_engage(caster, player) —
-        contexto (duelo/zona/arena) decide; players são amigáveis por default
-        (16/07/2026 — antes: flag global pvp_enabled incluía todo mundo).
-        exclude_eid é o CASTER, então dá pra resolver a relação por par.
+        não distingue mob de player — qualquer entidade com CombatStats é alvo,
+        DESDE QUE can_engage(caster, alvo) — contexto (facção/duelo/zona/arena)
+        decide, igual pro player quanto pro mob/NPC. exclude_eid é o CASTER
+        (sempre um player — todo chamador é uma skill/spell de player), então
+        dá pra resolver a relação por par.
+
+        Bug real corrigido 16/07/2026: `_mob_eids` inclui QUALQUER Combatant,
+        não só mob hostil — NPC de combate amigável (ex: Guarda Real) também
+        entra ali (gate é Combatant, não Enemy, ver _tick comment). Nova
+        Congelante (AoE) iterava _mob_eids sem filtro de hostilidade e
+        enraizava/danificava o guarda. Antes só players passavam por
+        can_engage aqui; agora mobs/NPCs passam pelo mesmo crivo.
         """
         from engine.faction_system import can_engage as _can_engage_ct
-        targets = set(self._mob_eids)
+        targets = set()
+        for m_eid in self._mob_eids:
+            if exclude_eid != -1 and not _can_engage_ct(self.world, exclude_eid, m_eid):
+                continue
+            targets.add(m_eid)
         for p_eid in self._player_eids.values():
             if p_eid == exclude_eid:
                 continue

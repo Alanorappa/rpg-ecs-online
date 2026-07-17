@@ -352,6 +352,57 @@ class TestCombatNpcArchetype(unittest.TestCase):
         self.assertEqual(cst.target_entity_id, -1,
                          "alvo amigavel deveria ser limpo, não ficar preso em loop de ataque")
 
+    def test_combat_targets_exclui_npc_amigavel_de_aoe(self):
+        """Regressão real relatada pelo usuário 16/07/2026: Nova Congelante
+        (AoE) enraizava o "Guarda Real" também. Causa raiz:
+        _combat_targets() incluía TODO _mob_eids sem filtro de hostilidade
+        — só players passavam por can_engage ali. NPC de combate amigável
+        (gate é Combatant, não Enemy — guarda entra em _mob_eids igual
+        bandido) virava alvo válido de qualquer AoE que iterasse
+        _combat_targets (Nova Congelante, e qualquer outra atual/futura).
+        Fix: mob/NPC agora passa pelo mesmo crivo can_engage que já
+        protegia o player em duelo."""
+        from engine.entity_factory import create_combat_npc
+        guard = create_combat_npc(self.ws.world, 131, 374, faction="guardas_vila",
+                                  name="Guarda Real")
+        bandit = create_combat_npc(self.ws.world, 132, 374, faction="bandidos")
+        # Registra direto em _mob_eids (o que o _tick faz via Combatant) —
+        # sem run_ticks: evita rodar SpawnZoneSystem/AI reais (consomem do
+        # random global não-seedado, e esse teste só quer exercitar
+        # _combat_targets isoladamente).
+        self.ws._mob_eids.update({guard, bandit})
+
+        targets = self.ws._combat_targets(exclude_eid=self.peid)
+
+        self.assertNotIn(guard, targets,
+                         "NPC de combate amigavel nao deveria ser alvo de AoE")
+        self.assertIn(bandit, targets,
+                     "NPC de combate hostil continua sendo alvo valido de AoE")
+
+    def test_nova_congelante_nao_enraiza_npc_amigavel(self):
+        """Mesmo cenário, ponta a ponta pelo handler real da skill —
+        Guarda Real dentro do raio da Nova Congelante não recebe dano
+        nem o efeito 'root'."""
+        from engine.entity_factory import create_combat_npc
+        from engine.components import CombatStats, StatusEffects
+        # Guarda já nasce adjacente ao player (130,374) — dentro do raio
+        # da Nova Congelante (cast_range=3). Registra em _mob_eids direto
+        # (sem run_ticks — ver comentário do teste acima).
+        guard = create_combat_npc(self.ws.world, 131, 374, faction="guardas_vila",
+                                  name="Guarda Real")
+        self.ws._mob_eids.add(guard)
+        guard_cs = self.ws.world.get_component(guard, CombatStats)
+        hp_before = guard_cs.current_hp
+
+        self.ws._server_nova_congelante(self.peid, -1, {})
+
+        self.assertEqual(guard_cs.current_hp, hp_before,
+                         "Nova Congelante nao deveria causar dano no guarda amigavel")
+        guard_sfx = self.ws.world.get_component(guard, StatusEffects)
+        has_root = bool(guard_sfx and guard_sfx.has("root"))
+        self.assertFalse(has_root,
+                         "Nova Congelante nao deveria enraizar o guarda amigavel")
+
 
 class TestMultiTargetCombat(unittest.TestCase):
     """Fase 5: _select_target() deixa de assumir só PlayerControlled —

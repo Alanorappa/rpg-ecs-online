@@ -3514,6 +3514,63 @@ rodada 3x.
 **Não validado**: sessão manual com 2 clientes + um terceiro observador
 parado perto (deve ver o anúncio na aba Local sem ter duelado).
 
+### 34.16 AoE (Nova Congelante) enraizava/danificava NPC amigável (16/07/2026)
+
+Usuário relatou: usar Nova Congelante enraizou o "Guarda Real" (NPC de
+combate amigável) também — precisava investigar dano em área acertando
+alvos amigáveis.
+
+Causa raiz: `server/world_server.py::_combat_targets()` — o ponto único
+de alvos válidos pra qualquer skill/spell de player (AoE, snapshot de
+HP/efeitos, etc.) — incluía `set(self._mob_eids)` **sem nenhum filtro de
+hostilidade**. `_mob_eids` guarda QUALQUER `Combatant` (gate é
+`Combatant`, não `Enemy` — decisão da Fase 4 do Sistema de Facções,
+propositalmente inclusiva pra cobrir NPC de combate amigável tipo
+guarda), então "Guarda Real" sempre esteve ali junto dos mobs hostis. Só
+PLAYERS passavam por `can_engage()` nessa função (herança da Fase A —
+antes disso "amigável" só existia entre players); mob/NPC nunca passou
+pelo mesmo crivo. `_server_nova_congelante` (`server/
+spell_completion_processor.py`) itera `_combat_targets()` e aplica dano
++ `apply_effect(..., "root", ...)` incondicionalmente pra cada entidade
+retornada — o dano em si teria sido bloqueado por `apply_damage_core`
+(gate `blocked_friendly`), mas o **root nunca passava por lá** (efeito
+de status é aplicado direto, fora do choke point de dano), então o
+guarda enraizava mesmo com 0 de dano.
+
+Fix: `_combat_targets()` agora aplica `can_engage(exclude_eid, alvo)`
+tanto pra mobs/NPCs quanto pra players — mesmo crivo, uma função só.
+`exclude_eid` é sempre o CASTER (todo chamador de `_combat_targets` é
+uma skill/spell de player), então a relação por par já resolve certo:
+mob hostil/neutro → `can_engage` True (comportamento inalterado); NPC
+amigável → False (excluído, como devia ser desde sempre); par de
+duelo/contexto PvP → inalterado (já usava esse crivo). Como é o ÚNICO
+ponto de alvos de AoE no servidor, a correção cobre Nova Congelante E
+qualquer outra skill em área atual/futura de graça — não precisou
+mexer em nenhum handler de skill individual.
+
+**Validado**: `tests/test_faction.py::TestCombatNpcArchetype` ganhou 2
+testes — `test_combat_targets_exclui_npc_amigavel_de_aoe` (unitário,
+direto na função) e `test_nova_congelante_nao_enraiza_npc_amigavel`
+(ponta a ponta pelo handler real: sem dano, sem root). Suíte completa
+174/174, rodada 3x.
+
+**Nota sobre flakiness observada durante a investigação**: rodar a
+suíte completa junto com este fix expôs uma instabilidade JÁ EXISTENTE
+e não relacionada em `tests/test_server.py`/`tests/test_session.py`
+(`first_mob()` escolhe "o primeiro mob hostil" de `_mob_eids` — depende
+de qual mob o `SpawnZoneSystem` sorteou durante os ticks de `setUp`, e
+alguns testes de auto-attack dependem de rolagens de acerto reais
+dentro de uma janela curta de ticks; nada disso usa `_combat_targets`
+nem foi tocado aqui). Confirmado por comparação: HEAD limpo (sem este
+fix) — 5/5 rodadas OK; com o fix — 3/3 rodadas OK depois de ajustar os
+2 testes novos pra não chamar `run_ticks` (evitando consumir do
+`random` global à toa); as falhas esporádicas vistas no meio do caminho
+apareceram em testes que não tocam AoE/facção, confirmando que são
+pré-existentes. Não é uma regressão deste fix, mas fica registrado como
+ponto de atenção pra quem mexer em `first_mob()`/spawn de mobs no
+futuro — considerar seedar `random` por teste ou tornar `first_mob()`
+determinístico.
+
 ---
 
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
