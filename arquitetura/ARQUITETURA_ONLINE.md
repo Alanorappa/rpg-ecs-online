@@ -3605,8 +3605,8 @@ test_cast_skill_recusa_alvo_amigavel_sem_gastar_recurso` — Picada de
 Escorpião contra Guarda Real: HP intacto, mana intacta, cooldown NÃO
 registrado, `SKILL_RESULT` com `failed=True`. Suíte completa 175/175.
 
-**Não validado**: sessão manual com arqueiro/mago mirando o Guarda Real
-(deveria recusar o cast na hora, sem animação/consumo de recurso).
+**Validado em jogo real pelo usuário** (17/07/2026) — com 1 efeito
+colateral do lado cliente, ver §34.18.
 
 **Investigado e NÃO confirmado como bug** (mesmo relato do usuário): mago
 vencedor de duelo contra arqueiro observado "estranhamente devagar" logo
@@ -3631,6 +3631,54 @@ Confirmado em 3 call sites de MOB (`engine/world_systems.py:1796/2368/
 é uma classe de bug real pra investigar se o padrão aparecer de novo.
 Pendente: usuário confirmar se a lentidão persistiu além de ~3-5s (slow
 natural expirando) ou pareceu permanente (nesse caso, revisitar).
+
+### 34.18 Arqueiro travado perseguindo o Guarda Real após CAST_SKILL ser recusado (17/07/2026)
+
+Efeito colateral do fix §34.17: usuário testou o arqueiro mirando o
+Guarda Real de novo — o arco "tensiona" (som de `cast_start` toca), mas
+o tiro não sai, E o personagem entra em combate e volta pra posição de
+range sempre que tenta andar pra outro lado.
+
+Causa raiz: `ui/systems.py::_use_skill_visual_only` (caminho ONLINE de
+uso de skill) seta `combat_state.is_pursuing = True` **incondicionalmente
+pra qualquer skill ofensiva, ANTES do range check** — mesmo com
+`cast_time` (comentário original: "Garante que pressionar skill inicia o
+chase/auto-attack mesmo fora de alcance"). Isso é client-side prediction
+sem qualquer noção de facção: o alvo resolvido (`combat_state.
+target_entity_id`, já selecionado manualmente antes de apertar a skill)
+nunca era checado contra `can_engage()` no cliente.
+
+Antes do fix §34.17, o servidor ACEITAVA o cast (bug antigo) e a
+conclusão normal do cast eventualmente limpava o estado client-side —
+o "preso pra sempre" não acontecia, só o "sem dano" silencioso. Com o
+CAST_SKILL agora sendo recusado na origem (`failed:True`), o round-trip
+de conclusão normal nunca chega, e **nada no cliente limpava
+`is_pursuing` numa falha** (só num cast bem-sucedido) — o personagem
+fica perseguindo o Guarda Real pra sempre.
+
+Fix (2 camadas, mesmo padrão "recusar antes de fingir que funcionou" do
+§34.17):
+1. **Gate primário** — `ui/systems.py::_use_skill_visual_only`: logo após
+   resolver `_target_local` (explícito ou auto-selecionado), checa
+   `can_engage(player, alvo)` — se `False`, `WARN.add("Alvo amigável")` e
+   `return False` ANTES de tocar som/`enter_combat`/`is_pursuing`. Mesmo
+   `can_engage` já usado no gate de clique direito (§34.12) — o
+   componente `Faction` real do NPC já chega ao cliente via
+   `ENTITY_SPAWN`/`AOI_UPDATE` (`client/remote_entity_handlers.py:707`).
+2. **Rede de segurança** — `client/network_handlers.py::
+   _handle_msg_skill_result`, branch `failed=True`: quando
+   `reason == "Alvo amigável"`, limpa `combat_state.is_pursuing = False`
+   também (cobre qualquer caso que escape do gate #1, ex.: alvo virou
+   amigável DEPOIS do clique mas antes do servidor responder).
+
+**Validado**: suíte completa 175/175, rodada 3x (mudança é só
+client-side/UX — sem novo teste automatizado dedicado, coberto
+indiretamente pela suíte de regressão do servidor que já valida a
+recusa em si).
+
+**Não validado**: sessão manual com arqueiro/mago mirando o Guarda Real
+(deveria recusar a skill NA HORA — sem som, sem entrar em combate, sem
+perseguição).
 
 ---
 

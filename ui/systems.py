@@ -4008,6 +4008,20 @@ class SkillSystem(System, SkillHandlers):
                         WARN.add("Nenhum alvo")
                         return False
 
+                    # Alvo amigável: recusa AQUI, antes de tocar som/entrar em
+                    # perseguição. Servidor também recusa (server/
+                    # skill_processor.py — CAST_SKILL contra alvo amigável),
+                    # mas sem este gate client-side o arco "tensiona" (som
+                    # toca), o personagem entra em combate e persegue o alvo
+                    # pra sempre — o SKILL_RESULT failed que volta do
+                    # servidor não completava o cast, então nada limpava
+                    # is_pursuing (bug real relatado pelo usuário 17/07/2026,
+                    # arqueiro travado tentando alcançar o Guarda Real).
+                    from engine.faction_system import can_engage as _can_engage_skill
+                    if not _can_engage_skill(self.world, self.player_entity_id, _target_local):
+                        WARN.add("Alvo amigável")
+                        return False
+
                 # enter_combat + is_pursuing ANTES do range check (igual offline _use_skill:5307-5313)
                 # Garante que pressionar skill inicia o chase/auto-attack mesmo fora de alcance.
                 # is_pursuing=True para todas as ofensivas — cast-time skills bloqueiam

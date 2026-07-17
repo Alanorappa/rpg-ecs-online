@@ -270,6 +270,17 @@ class NetworkHandlers:
                 if _fail_reason:
                     from ui.floating_text import WARN as _WARN_fail
                     _WARN_fail.add(_fail_reason)
+                    # "Alvo amigável" (server/skill_processor.py): o cast
+                    # nunca vai completar contra esse alvo — sem limpar
+                    # is_pursuing aqui, o personagem fica perseguindo o NPC
+                    # pra sempre (nenhum outro código limpa is_pursuing numa
+                    # falha, só num cast bem-sucedido). Bug real relatado
+                    # pelo usuário 17/07/2026 (arqueiro travado tentando
+                    # alcançar o Guarda Real). O gate client-side em
+                    # ui/systems.py::_use_skill_visual_only já evita a
+                    # maioria dos casos — isto é rede de segurança.
+                    if _fail_reason == "Alvo amigável" and _cs_fail:
+                        _cs_fail.is_pursuing = False
             elif _cast_started:
                 self._cancelled_spell_ids.discard(sid)
                 if _ps_sr:
