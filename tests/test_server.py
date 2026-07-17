@@ -615,6 +615,49 @@ class TestRegressionBugs(unittest.TestCase):
         self.assertFalse(ai_after.aggroed_by_damage,
             "aggroed_by_damage não foi limpo após player morrer")
 
+    def test_level_up_inclui_level_no_broadcast_de_hp_para_observadores(self):
+        """Bug real relatado pelo usuário 17/07/2026: nameplate de player
+        remoto travava no level de LOGIN pra sempre, nunca refletia
+        level-up em tempo real. Causa raiz: o payload de "player ficou
+        visível" usava Session.char_data["level"] (snapshot de login,
+        nunca atualizado) e o level-up só notificava o PRÓPRIO dono
+        (queue_stats_update é privado) — quem já estava observando nunca
+        recebia a atualização. Fix: _sync_player_hp_dirty (que já
+        detecta qualquer mudança de HP/max_hp pra broadcast AOI — e
+        level-up sempre muda max_hp via ganho de vitalidade) passou a
+        incluir "level" no mesmo payload."""
+        from engine.components import CharacterStats, CombatStats
+        eid = spawn_player(self.ws, "s1", 130, 374)
+        char = self.ws.world.get_component(eid, CharacterStats)
+        cs   = self.ws.world.get_component(eid, CombatStats)
+        level_before = char.level
+
+        char.current_xp = char.xp_to_next_level   # força level-up
+        from engine.stats_system import process_levelups
+        process_levelups(self.ws.world, eid, char, cs, None)
+        self.assertGreater(char.level, level_before, "setup do teste falhou em subir de nível")
+
+        self.ws._sync_player_hp_dirty()
+        events = self.ws.consume_player_hp_broadcasts()
+
+        entry = next((e for e in events if e["eid"] == eid), None)
+        self.assertIsNotNone(entry, "level-up deveria disparar broadcast de HP (max_hp sempre muda)")
+        self.assertEqual(entry.get("level"), char.level,
+                         "broadcast de HP deveria incluir o level atualizado")
+
+    def test_sync_hp_dirty_nao_reemite_sem_mudanca(self):
+        """Regressão do fix acima: chamar _sync_player_hp_dirty() de novo
+        sem NENHUMA mudança de hp/max_hp/level não deveria reemitir o
+        broadcast (cache de dirty-check precisa comparar a tupla inteira,
+        incluindo o level novo — não só hp/max_hp como antes)."""
+        eid = spawn_player(self.ws, "s1", 130, 374)
+        self.ws._sync_player_hp_dirty()
+        self.ws.consume_player_hp_broadcasts()   # limpa o primeiro broadcast (spawn inicial)
+
+        self.ws._sync_player_hp_dirty()
+        events = self.ws.consume_player_hp_broadcasts()
+        self.assertEqual([e for e in events if e["eid"] == eid], [])
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 6. Punho no Queixo — skill de carga do Cavaleiro

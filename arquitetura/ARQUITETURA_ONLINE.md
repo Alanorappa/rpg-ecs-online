@@ -3779,6 +3779,81 @@ via `/convidar Nome`, grupo crescendo por convite de não-líder, líder
 saindo com promoção automática, expulsão recusada por não-líder, XP
 compartilhado com um membro fora de alcance.
 
+**Validado em jogo real pelo usuário** (17/07/2026) — com 2 bugs
+encontrados, ver §34.20 e §34.21.
+
+### 34.20 Nameplate de player remoto travava no level de login (17/07/2026)
+
+Usuário relatou: level do player remoto não sincroniza — nameplate
+mostra sempre o level de quando ele logou, nunca reflete level-up.
+
+Causa raiz DUPLA: (1) `server/session.py` (payload de "player ficou
+visível" no AOI) lia `Session.char_data["level"]` — um snapshot
+cacheado no LOGIN, nunca atualizado durante a sessão; (2) o
+`queue_stats_update` do level-up (`server/world_server.py`, consumo de
+`_death_handler.consume_xp()`) é **privado** (só o dono recebe) —
+ninguém que já estivesse observando o player era avisado quando ele
+subia de nível de verdade.
+
+Fix, sem novo mecanismo — reaproveitando o que já existia:
+- `WorldServer._sync_player_hp_dirty()` (`server/world_server.py`) já
+  detecta QUALQUER mudança de HP/max_hp de qualquer player a cada tick
+  e broadcasta AOI automaticamente ("sem precisar de código por
+  feature", doc original) — passou a rastrear `char.level` na mesma
+  tupla de dirty-check e incluir `"level"` no payload. Level-up SEMPRE
+  muda `max_hp` (ganho de vitalidade), então o dirty-check já disparava
+  nesse exato momento — só faltava carregar o level junto.
+- `server/session.py`: o payload de "player ficou visível" (AOI_UPDATE)
+  passou a ler `CharacterStats.level` (componente VIVO) em vez de
+  `char_data["level"]` (snapshot morto) — corrige quem vê o player PELA
+  PRIMEIRA VEZ depois de ele já ter subido de nível.
+- `client/network_handlers.py::_handle_msg_stats_update` (branch de
+  player remoto): passou a aplicar `payload["level"]` em
+  `RemoteControlled.level`, igual já fazia com hp/hp_max.
+
+**Validado**: `tests/test_server.py::TestRegressionBugs` ganhou 2 testes
+— level-up dispara o broadcast de HP com `level` atualizado, e uma
+segunda chamada sem mudança nenhuma não reemite (dirty-check cobre a
+tupla completa, não só hp/max_hp como antes). Suíte completa 195/195,
+rodada 3x.
+
+**Não validado**: sessão manual com 2 clientes — um player subir de
+nível e o outro ver o nameplate atualizar em tempo real, sem precisar
+sair e voltar da área de visão.
+
+### 34.21 Loot não era free-for-all dentro do grupo (17/07/2026)
+
+Usuário observou (não implementado na Fase E original): grupo deveria
+ter loot free-for-all — qualquer membro pode lootear, não só quem
+atacou primeiro.
+
+Causa raiz: `server/loot_processor.py::request_loot()` só autorizava
+`player_eid == corpse["owner_eid"]` (primeiro atacante, "dono" do
+corpo) — sem nenhuma noção de grupo. E mesmo que autorizasse, só o dono
+recebia `LOOT_AVAILABLE` (`server/session.py`) — o resto do grupo nunca
+saberia que tinha itens pra pegar.
+
+Fix:
+- `request_loot()`: além do dono, autoriza qualquer player no MESMO
+  `party_id` do dono (`get_party_id_of`). Fora do grupo do dono continua
+  bloqueado, como sempre. Primeiro do grupo a lootear esvazia
+  items/coins — quem tenta depois recebe `{items:[],coins:0}`, mesmo
+  comportamento padrão de "free for all" de qualquer MMO (não
+  implementado turno/prioridade de loot nesta leva).
+- `server/session.py`: `LOOT_AVAILABLE` agora vai pra `get_party_members
+  (owner_eid)` inteiro (ou só o dono, se ele não estiver em grupo) — cada
+  membro recebe a notificação e a lista de itens independentemente.
+
+**Validado**: `tests/test_party.py::TestPartyLootFreeForAll` (4 testes)
+— membro do grupo consegue lootear o corpo do dono, fora do grupo
+continua bloqueado, dois grupos diferentes não se misturam, segundo
+membro do grupo recebe vazio depois do primeiro lootear. Suíte completa
+195/195, rodada 3x.
+
+**Não validado**: sessão manual com 2+ clientes agrupados — matar um
+mob, os dois verem o corpo com itens disponíveis, qualquer um dos dois
+conseguir lootear (não só quem bateu primeiro).
+
 ---
 
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata

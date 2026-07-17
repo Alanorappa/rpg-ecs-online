@@ -1678,12 +1678,16 @@ class SessionManager:
                     await s.send(MsgType.ENTITY_SPAWN, spawn_payload)
                     s.known_eids.add(-corpse_id)
 
-                # 2. LOOT_AVAILABLE apenas ao dono (inclui lista de itens)
-                owner_sid = self.world_server.get_session_id_for_player(owner_eid)
-                if owner_sid:
-                    owner_session = self._sessions.get(owner_sid)
-                    if owner_session and owner_session.authenticated:
-                        await owner_session.send(MsgType.LOOT_AVAILABLE, {
+                # 2. LOOT_AVAILABLE ao dono E, se ele estiver em grupo, a todo
+                # o grupo (free-for-all — decisão do usuário 17/07/2026;
+                # request_loot() já autoriza qualquer membro do mesmo grupo
+                # do dono, isto aqui é só quem recebe o aviso/lista de itens).
+                _loot_recipients = self.world_server.get_party_members(owner_eid) or [owner_eid]
+                for _loot_eid in _loot_recipients:
+                    _loot_sid = self.world_server.get_session_id_for_player(_loot_eid)
+                    _loot_sess = self._sessions.get(_loot_sid) if _loot_sid else None
+                    if _loot_sess and _loot_sess.authenticated:
+                        await _loot_sess.send(MsgType.LOOT_AVAILABLE, {
                             "corpse_id": corpse_id,
                             "tx":        notif_tx,
                             "ty":        notif_ty,
@@ -1705,6 +1709,8 @@ class SessionManager:
                     else:
                         _cx, _cy = self.world_server.get_tile_pos(_caster_sid) if _caster_sid else (0, 0)
                     _hp_payload = {"eid": _caster_eid, "hp": _hp_upd["hp"], "hp_max": _hp_upd["hp_max"]}
+                    if "level" in _hp_upd:
+                        _hp_payload["level"] = _hp_upd["level"]
                     # exclude_sid: não envia ao próprio caster (já tem via STATS_UPDATE)
                     _hp_map = self.world_server.get_entity_map(_caster_eid)
                     for s in self._sessions_in_aoi(_cx, _cy, _hp_map,
@@ -2106,8 +2112,14 @@ class SessionManager:
             ox, oy = self.world_server.get_tile_pos(other_session.session_id)
             if in_aoi(ox, oy, other_eid):
                 _hp, _hp_max = self.world_server.get_player_hp(other_session.session_id)
-                from engine.components import GhostState as _OtherGST2
+                from engine.components import GhostState as _OtherGST2, CharacterStats as _OtherCharAOI
                 _ogst = self.world_server.world.get_component(other_eid, _OtherGST2)
+                # level: componente VIVO, não other_session.char_data (snapshot
+                # de login, nunca atualizado — mesma causa raiz do bug corrigido
+                # em _sync_player_hp_dirty acima; sem isso, um player visto pela
+                # primeira vez DEPOIS de subir de nível ainda mostraria o level
+                # antigo aqui, mesmo com o fix do broadcast em tempo real).
+                _ochar_aoi = self.world_server.world.get_component(other_eid, _OtherCharAOI)
                 spawn_payload = {
                     "eid":      other_eid,
                     "kind":     "player",
@@ -2116,7 +2128,7 @@ class SessionManager:
                     "class_id": other_session.char_data.get("class_id", "guerreiro"),
                     "hp":       _hp,
                     "hp_max":   _hp_max,
-                    "level":    other_session.char_data.get("level", 1),
+                    "level":    _ochar_aoi.level if _ochar_aoi else 1,
                     "effects":  [],
                     "is_ghost": bool(_ogst and _ogst.is_ghost),
                 }

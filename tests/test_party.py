@@ -218,5 +218,70 @@ class TestPartySharedXp(unittest.TestCase):
         self.assertEqual(xp[self.b], 12)
 
 
+class TestPartyLootFreeForAll(unittest.TestCase):
+    """Loot free-for-all dentro do grupo (bug real relatado pelo usuário
+    17/07/2026: só o "dono" do corpo conseguia lootear mesmo com o
+    resto do grupo do lado — server/loot_processor.py::request_loot só
+    checava `player_eid == corpse["owner_eid"]`, sem noção de grupo)."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        self.a = spawn_player(self.ws, "s1", 130, 374)
+        self.b = spawn_player(self.ws, "s2", 131, 374)
+
+    def _make_corpse(self, owner_eid: int) -> int:
+        cid = self.ws._next_corpse_id
+        self.ws._next_corpse_id += 1
+        self.ws._corpses[cid] = {
+            "tx": 130, "ty": 374, "owner_eid": owner_eid,
+            "items": [{"name": "Item Teste"}], "coins": 10,
+            "timer": 120.0, "map": self.ws._map_file,
+        }
+        return cid
+
+    def test_membro_do_grupo_pode_lootear_corpo_do_dono(self):
+        self.assertIsNone(self.ws.request_party_invite(self.a, self.b))
+        self.ws.respond_party_invite(self.b, accept=True)
+        cid = self._make_corpse(owner_eid=self.a)
+
+        result = self.ws.request_loot("s2", cid)
+
+        self.assertIsNotNone(result, "membro do grupo deveria conseguir lootear o corpo do dono")
+        self.assertEqual(len(result["items"]), 1)
+        self.assertEqual(result["coins"], 10)
+
+    def test_fora_do_grupo_continua_bloqueado(self):
+        spawn_player(self.ws, "s3", 132, 374)   # sem grupo com "a"
+        cid = self._make_corpse(owner_eid=self.a)
+
+        result = self.ws.request_loot("s3", cid)
+
+        self.assertIsNone(result, "player fora do grupo do dono não deveria conseguir lootear")
+
+    def test_grupos_diferentes_nao_se_misturam(self):
+        c = spawn_player(self.ws, "s3", 132, 374)
+        d = spawn_player(self.ws, "s4", 133, 374)
+        self.assertIsNone(self.ws.request_party_invite(c, d))
+        self.ws.respond_party_invite(d, accept=True)   # "c"/"d" em outro grupo
+        cid = self._make_corpse(owner_eid=self.a)      # "a" sem grupo
+
+        self.assertIsNone(self.ws.request_loot("s3", cid))
+        self.assertIsNone(self.ws.request_loot("s4", cid))
+
+    def test_segundo_membro_recebe_vazio_apos_primeiro_lootear(self):
+        """Free-for-all = primeiro que clicar leva tudo — mesmo
+        comportamento padrão de qualquer MMO."""
+        self.assertIsNone(self.ws.request_party_invite(self.a, self.b))
+        self.ws.respond_party_invite(self.b, accept=True)
+        cid = self._make_corpse(owner_eid=self.a)
+
+        first  = self.ws.request_loot("s1", cid)
+        second = self.ws.request_loot("s2", cid)
+
+        self.assertEqual(len(first["items"]), 1)
+        self.assertEqual(second["items"], [])
+        self.assertEqual(second["coins"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

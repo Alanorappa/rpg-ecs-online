@@ -22,16 +22,23 @@ class LootProcessorMixin:
 
     def request_loot(self, session_id: str, corpse_id: int) -> dict | None:
         """
-        Retorna {items, coins} do corpse se o player for o dono, None caso contrário.
-        Após sacar: esvazia items/coins e reduz timer para 15s.
-        Outros players recebem None silenciosamente (regra de negócio: ignorar).
+        Retorna {items, coins} do corpse se o player for o dono OU membro do
+        MESMO grupo do dono (free-for-all dentro do grupo — decisão do
+        usuário 17/07/2026), None caso contrário.
+        Após sacar: esvazia items/coins e reduz timer para 15s — primeiro do
+        grupo a lootar leva tudo, os outros recebem {items:[],coins:0} depois
+        (mesmo comportamento de "free for all" de qualquer MMO).
+        Fora do dono/grupo: recebem None silenciosamente (regra de negócio).
         """
         corpse = self._corpses.get(corpse_id)
         if not corpse:
             return None
         player_eid = self._player_eids.get(session_id, -1)
-        if player_eid != corpse["owner_eid"]:
-            return None  # não é o dono — ignora silenciosamente
+        owner_eid  = corpse["owner_eid"]
+        if player_eid != owner_eid:
+            owner_pid = self.get_party_id_of(owner_eid)
+            if owner_pid == -1 or self.get_party_id_of(player_eid) != owner_pid:
+                return None  # não é o dono nem está no mesmo grupo — ignora
         items = corpse.pop("items", [])
         coins = corpse.pop("coins", 0)
         corpse["timer"] = min(corpse["timer"], 15.0)  # reduz timer após saque

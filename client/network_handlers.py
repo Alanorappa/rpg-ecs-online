@@ -1485,6 +1485,12 @@ class NetworkHandlers:
                     rc.hp = payload["hp"]
                 if "hp_max" in payload:
                     rc.hp_max = payload["hp_max"]
+                # Bug real relatado pelo usuário 17/07/2026: nameplate de
+                # player remoto travava no level de login (server/
+                # world_server.py::_sync_player_hp_dirty agora inclui level
+                # no mesmo broadcast de HP — level-up sempre muda max_hp).
+                if "level" in payload:
+                    rc.level = payload["level"]
         elif eid in self._remote_mobs:
             _meta_ehp = self._meta(eid)
             if _meta_ehp and "hp" in payload:

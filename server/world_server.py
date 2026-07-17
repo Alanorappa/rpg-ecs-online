@@ -163,7 +163,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # Reverse map: eid → session_id (O(1) lookup em get_session_id_for_player)
         self._player_eid_to_sid: dict[int, str] = {}
         # Cache de HP para dirty-check automático a cada tick (eid → (current_hp, max_hp))
-        self._player_hp_cache: dict[int, tuple[int, int]] = {}
+        self._player_hp_cache: dict[int, tuple[int, int, int]] = {}   # (hp, hp_max, level)
         # Cache de SkillLevels para dirty-check automático a cada tick (eid → snapshot
         # hashable de levels+xp) — ver _sync_player_skill_levels_dirty().
         self._player_skill_cache: dict[int, tuple] = {}
@@ -2092,21 +2092,36 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         return result
 
     def _sync_player_hp_dirty(self) -> None:
-        """Detecta mudanças de HP/max_hp de qualquer player no tick e emite broadcast AOI.
-        Chamado no início de _collect_deltas() — cobre qualquer fonte de mudança de HP
-        (level-up, consumíveis, skills, DoT, etc.) sem precisar de código por feature."""
-        from engine.components import CombatStats as _CSD
+        """Detecta mudanças de HP/max_hp/level de qualquer player no tick e
+        emite broadcast AOI. Chamado no início de _collect_deltas() — cobre
+        qualquer fonte de mudança (level-up, consumíveis, skills, DoT, etc.)
+        sem precisar de código por feature.
+
+        `level` entrou aqui 17/07/2026 — bug real relatado pelo usuário:
+        nameplate de player remoto travava no level de LOGIN pra sempre.
+        Causa raiz: o payload de "player ficou visível" (server/session.py,
+        AOI_UPDATE) usa `Session.char_data["level"]` — um snapshot cacheado
+        no login, nunca atualizado — e nada mais notificava quem JÁ estava
+        visível quando o personagem subia de nível de verdade (o
+        `queue_stats_update` do level-up é privado, só o dono recebe).
+        Level-up sempre muda max_hp (ganho de vitalidade), então o dirty-
+        check de HP já disparava nesse momento — só faltava incluir o
+        level no payload."""
+        from engine.components import CombatStats as _CSD, CharacterStats as _CharD
         _already = {e["eid"] for e in self._player_hp_broadcasts_this_tick}
         for peid in list(self._player_eids.values()):
             cs = self.world.get_component(peid, _CSD)
             if cs is None:
                 continue
-            cur = (cs.current_hp, cs.max_hp)
+            char  = self.world.get_component(peid, _CharD)
+            level = char.level if char else 1
+            cur = (cs.current_hp, cs.max_hp, level)
             if cur != self._player_hp_cache.get(peid):
                 self._player_hp_cache[peid] = cur
                 if peid not in _already:
                     self._player_hp_broadcasts_this_tick.append({
                         "eid": peid, "hp": cs.current_hp, "hp_max": cs.max_hp,
+                        "level": level,
                     })
 
     def consume_skill_levels_broadcasts(self) -> list[dict]:
