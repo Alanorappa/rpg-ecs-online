@@ -1687,6 +1687,26 @@ class SessionManager:
                             "loser_eid":  _duel_end["loser_eid"],
                             "reason":     _duel_end["reason"],
                         })
+                # Golpe letal: anuncia na aba Local pra QUALQUER UM na área
+                # (pedido do usuário 16/07/2026 — não só os dois duelistas,
+                # quem está por perto também vê). tx/ty/map vêm da posição
+                # do vencedor no momento do golpe (duel_processor.end_duel).
+                if _duel_end["reason"] == "win":
+                    _dw_sid  = self.world_server.get_session_id_for_player(_duel_end["winner_eid"])
+                    _dl_sid  = self.world_server.get_session_id_for_player(_duel_end["loser_eid"])
+                    _dw_sess = self._sessions.get(_dw_sid) if _dw_sid else None
+                    _dl_sess = self._sessions.get(_dl_sid) if _dl_sid else None
+                    _dw_name = _dw_sess.display_name if _dw_sess else "?"
+                    _dl_name = _dl_sess.display_name if _dl_sess else "?"
+                    _duel_chat_msg = {
+                        "sender":  "Sistema",
+                        "text":    f"{_dw_name} venceu {_dl_name} em um duelo!",
+                        "channel": "local",
+                        "color":   [255, 200, 80],
+                    }
+                    for s in self._sessions_in_aoi(_duel_end["tx"], _duel_end["ty"],
+                                                   _duel_end["map"]):
+                        await s.send(MsgType.CHAT_MESSAGE, _duel_chat_msg)
 
             # Eventos de som posicionais (aggro de mob, etc.) → broadcast AOI
             for _snd_ev in self.world_server.consume_sound_events():

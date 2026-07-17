@@ -93,6 +93,11 @@ class TestDuelLifecycle(unittest.TestCase):
         self.assertEqual(events[0]["winner_eid"], self.a)
         self.assertEqual(events[0]["loser_eid"], self.b)
         self.assertEqual(events[0]["reason"], "win")
+        # tx/ty/map (posição do vencedor) — usados pelo broadcast AOI do
+        # anúncio na aba Local (server/session.py), não só DM aos duelistas.
+        self.assertEqual(events[0]["tx"], 130)
+        self.assertEqual(events[0]["ty"], 374)
+        self.assertIsNotNone(events[0]["map"])
         # Hostilidade acabou: novo hit é bloqueado
         hp_before = b_cs.current_hp
         deal_damage(self.a, self.b, "physical", pre_outcome="hit")

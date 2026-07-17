@@ -3479,28 +3479,40 @@ espelhando o `_duel_ctx` real): oponente em duelo vira engajável
 **Não validado**: novo teste manual com 2 clientes (clique direito no
 oponente atacando direto durante o duelo).
 
-### 34.15 Mensagens de fim de duelo (16/07/2026)
+### 34.15 Mensagens de fim de duelo (16/07/2026, revisado no mesmo dia)
 
 Pedido do usuário após validar §34.14: no golpe letal, além do
-`WARN` de vitória/derrota, um anúncio deve aparecer no CHAT (aba
-"Combate", não como floating text sobre o personagem). `client/
-duel_handlers.py::_handle_msg_duel_end`:
-- Vencedor vê `WARN` "Você venceu o duelo"; perdedor vê "Você foi
-  derrotado" (textos exatos pedidos pelo usuário, substituindo "Vitória/
-  Derrota no duelo!").
-- Aba Combate (`ui/combat_log.py::LOG`, já headless/sem pygame — mesmo
-  sink usado por dano/cura/loot) recebe `"{vencedor} venceu {perdedor}
-  em um duelo!"` — cada cliente monta a frase localmente a partir do
-  próprio nome (`_logged_char_name`) + nome do oponente (novo
-  `_duel_opponent_name_val`, guardado no `DUEL_START` — antes só usado
-  pro aviso "Duelo iniciado!", nunca persistido).
+`WARN` de vitória/derrota, um anúncio deve aparecer no chat.
 
-**Validado**: suíte completa 172/172, rodada 3x (mensagens são só UX
-client-side, sem novo teste dedicado — comportamento coberto
-indiretamente pelos testes de `TestDuelLifecycle`).
+Primeira tentativa (client-side, aba Combate) foi corrigida pelo usuário
+no ato: ele queria a aba **Local** — visível pra QUALQUER UM na área, não
+só os dois duelistas. Como a aba Local é alimentada por `CHAT_MESSAGE`
+via broadcast **AOI do servidor** (não dá pra montar client-side sem
+round-trip, e cada cliente só saberia dos próprios vizinhos via AOI de
+qualquer forma), o anúncio virou uma responsabilidade do servidor:
 
-**Não validado**: sessão manual com 2 clientes (aba Combate mostra o
-anúncio pros dois lados, mensagem de tela certa em cada um).
+- `server/duel_processor.py::end_duel` — quando `reason="win"`, captura
+  `tx`/`ty` (tile do vencedor no momento do golpe, via `TileMovement`) e
+  `map` (via `get_entity_map(winner_eid)`) no evento enfileirado.
+- `server/session.py` (broadcast loop, junto do `consume_duel_end_events`
+  existente): pro caso `"win"`, resolve os nomes dos dois lados via
+  sessão (mesmo padrão dos outros broadcasts) e manda `CHAT_MESSAGE
+  {sender:"Sistema", text:"{vencedor} venceu {perdedor} em um duelo!",
+  channel:"local", color:[255,200,80]}` via
+  `_sessions_in_aoi(tx, ty, map)` — regra do projeto (CLAUDE.md): nunca
+  iterar `_sessions` com distância à mão pra broadcast direto novo.
+- Cliente: `client/duel_handlers.py::_handle_msg_duel_end` manteve só o
+  `WARN` de tela ("Você venceu o duelo" / "Você foi derrotado") — o
+  anúncio de chat não é mais responsabilidade dele, o `CHAT_MESSAGE`
+  chega pelo pipeline normal (`_handle_msg_chat_message`) e cai na aba
+  Local sozinho.
+
+**Validado**: `TestDuelLifecycle::test_golpe_letal_deixa_perdedor_com_1hp_e_encerra`
+ganhou assert de `tx`/`ty`/`map` no evento. Suíte completa 172/172,
+rodada 3x.
+
+**Não validado**: sessão manual com 2 clientes + um terceiro observador
+parado perto (deve ver o anúncio na aba Local sem ter duelado).
 
 ---
 

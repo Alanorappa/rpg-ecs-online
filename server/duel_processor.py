@@ -91,19 +91,36 @@ class DuelProcessorMixin:
     def end_duel(self, pair: frozenset, winner_eid: int, reason: str) -> None:
         """Encerra o duelo e enfileira o DUEL_END pros dois lados (consumido
         pelo broadcast loop do SessionManager — consume_duel_end_events).
-        winner_eid=-1 quando não há vencedor (distance/disconnect)."""
+        winner_eid=-1 quando não há vencedor (distance/disconnect).
+
+        Golpe letal (reason="win") também carrega tile/mapa do vencedor —
+        o broadcast loop usa isso pra anunciar o resultado na aba Local do
+        chat pra todo mundo na área via _sessions_in_aoi (pedido do
+        usuário 16/07/2026: não só os dois duelistas, quem está por perto
+        também deve ver)."""
         if self._duel_pairs.pop(pair, None) is None:
             return
         eids = list(pair)
         loser_eid = -1
         if winner_eid in eids:
             loser_eid = eids[0] if eids[1] == winner_eid else eids[1]
+        tx = ty = 0
+        map_file = None
+        if winner_eid != -1:
+            from engine.components import TileMovement as _DuelEndTM
+            tm = self.world.get_component(winner_eid, _DuelEndTM)
+            if tm is not None:
+                tx, ty = tm.current_tile_x, tm.current_tile_y
+            map_file = self.get_entity_map(winner_eid)
         self._duel_end_events_this_tick.append({
             "player_a":   eids[0],
             "player_b":   eids[1],
             "winner_eid": winner_eid,
             "loser_eid":  loser_eid,
             "reason":     reason,
+            "tx":         tx,
+            "ty":         ty,
+            "map":        map_file,
         })
 
     def end_duels_of(self, eid: int, reason: str) -> None:
