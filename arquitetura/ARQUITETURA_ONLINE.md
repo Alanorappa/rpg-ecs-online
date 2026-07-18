@@ -4290,6 +4290,50 @@ de reiniciar o servidor não deveria mais mostrar level/hp/nome
 desatualizado de nenhum player remoto; level de membro do grupo deve
 atualizar no frame no mesmo momento em que atualiza no nameplate.
 
+**Follow-up (mesmo dia) — causa raiz real, mais simples**: usuário
+testou o fix acima. Frame de grupo: correto pros 2 imediatamente. Mas
+nameplate: level só atualizou depois de batalhar com um mob (dano →
+STATS_UPDATE) — reproduzindo o sintoma de sempre, e perguntou
+diretamente: "Não é possível atualizar o level no momento que o player
+entra na AOI do outro player? Assim como atualiza a posição?"
+
+Essa pergunta apontou pro lugar certo. Reauditoria dos handlers
+`ENTITY_SPAWN`/`WORLD_STATE`/`AOI_UPDATE` **no cliente** (não no
+servidor — esses já estavam corretos há 4 rounds) achou o bug real:
+`client/network_handlers.py::_handle_msg_world_state`,
+`_handle_msg_entity_spawn` e `_handle_msg_aoi_update` (bloco
+"spawned") reconstroem manualmente um dict pra passar pro
+`RemoteEntityHandlers._spawn_remote_player_entity(server_eid, data)` —
+e os 3 esqueciam de repassar o campo `"level"` que o payload do
+servidor **já continha corretamente** desde os fixes anteriores. Como
+`_spawn_remote_player_entity` lê `data.get("level", 1)`, toda entidade
+remota nascia sempre com level 1 (ou, em versões anteriores desta
+sessão, com o level de uma entidade reciclada) — e só era corrigida
+depois por um `STATS_UPDATE` de HP (o único handler que de fato
+aplicava `payload["level"]` a `rc.level`). Isso explica TODOS os
+sintomas reportados nesta thread inteira, de forma muito mais simples
+que a teoria de reciclagem de eid do follow-up anterior (que também
+era um bug real e válido de se corrigir, só não era a causa
+predominante deste sintoma específico).
+
+Fix: os 3 call sites agora incluem `"level": <campo>.get("level", 1)`
+no dict passado pra `_spawn_remote_player_entity` — nível chega junto
+com posição/hp/nome no exato momento em que a entidade nasce (seja no
+login, seja ao entrar na AOI por movimento), sem depender de nenhum
+evento de HP subsequente.
+
+**Validado**: `tests/test_client_ui.py` ganhou 3 testes (fixture
+`_NetHandlerFixture`, combina `NetworkHandlers`+`RemoteEntityHandlers`
+sem precisar de `GameEngine` completo) — `ENTITY_SPAWN`, `WORLD_STATE`
+e `AOI_UPDATE` (bloco spawned) cada um propaga o level do payload pro
+`RemoteControlled.level` da entidade recém-criada. Suíte completa
+212/212, rodada 3x.
+
+**Não validado**: sessão manual — nameplate de player remoto mostra o
+level correto no EXATO momento em que ele entra na AOI (reconectar,
+se mover pra perto, ou logar depois de alguém já ter subido de nível),
+sem precisar de nenhum combate/regen pra "destravar".
+
 ---
 
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata

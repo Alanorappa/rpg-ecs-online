@@ -235,6 +235,7 @@ class NetworkHandlers:
                     "class_id": ent.get("class_id", "guerreiro"),
                     "hp":       ent.get("hp", 100),
                     "hp_max":   ent.get("hp_max", 100),
+                    "level":    ent.get("level", 1),
                     "kind":     kind,
                 })
 
@@ -256,6 +257,7 @@ class NetworkHandlers:
                 "class_id": payload.get("class_id", "guerreiro"),
                 "hp":       payload.get("hp", 100),
                 "hp_max":   payload.get("hp_max", 100),
+                "level":    payload.get("level", 1),
                 "kind":     kind,
             })
 
@@ -1122,6 +1124,7 @@ class NetworkHandlers:
                     "class_id": sp.get("class_id", "guerreiro"),
                     "hp":       sp.get("hp", 100),
                     "hp_max":   sp.get("hp_max", 100),
+                    "level":    sp.get("level", 1),
                     "kind":     kind,
                 })
         for m in payload.get("moved", []):

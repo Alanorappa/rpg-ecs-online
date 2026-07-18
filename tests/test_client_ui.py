@@ -210,6 +210,83 @@ def test_online_loot_request_item_manda_take_item_com_nome():
     assert sent == [(corpse, "item", item.name)]
 
 
+# ── client/network_handlers.py — spawn de player remoto propaga "level" ──────
+# Bug real relatado pelo usuário 18/07/2026: nameplate de player remoto só
+# atualizava o level quando o servidor reenviava HP (regen/dano), nunca no
+# momento em que o player entrava na AOI — igual a posição já fazia. Causa
+# raiz: WORLD_STATE/ENTITY_SPAWN/AOI_UPDATE já mandavam "level" corretamente
+# (fix anterior do servidor), mas os 3 pontos que chamam
+# _spawn_remote_player_entity no cliente reconstruíam o dict manualmente e
+# esqueciam de repassar o campo "level" — a entidade sempre nascia com o
+# default (1), só corrigido depois por um STATS_UPDATE de HP.
+
+from client.network_handlers import NetworkHandlers as _NH
+from client.remote_entity_handlers import RemoteEntityHandlers as _REH
+
+
+class _NetHandlerFixture(_NH, _REH):
+
+    def __init__(self, world, player_entity):
+        self.world = world
+        self.player_entity = player_entity
+        self._my_eid = -1
+        self._remote_players = {}
+        self._pvp_respawn_target = -1
+        # Estado de mobs remotos — não usado por estes testes (só players),
+        # mas _handle_msg_aoi_update/_sync_mob_effects leem incondicionalmente.
+        self._remote_mobs = {}
+        self._mob_move_queues = {}
+        self._pending_mob_despawn = {}
+        self._mob_ghost_pos = {}
+        self._pending_loot_redirect = {}
+
+
+def _make_net_fixture():
+    from engine.world import World
+    world = World()
+    player = world.create_entity()
+    return _NetHandlerFixture(world, player)
+
+
+def test_entity_spawn_propaga_level_do_player_remoto():
+    from engine.components import RemoteControlled
+    fx = _make_net_fixture()
+    fx._handle_msg_entity_spawn({
+        "eid": 42, "kind": "player", "tx": 5, "ty": 5,
+        "name": "Fulano", "class_id": "mago", "hp": 80, "hp_max": 100,
+        "level": 7,
+    })
+    local_eid = fx._remote_players[42]
+    rc = fx.world.get_component(local_eid, RemoteControlled)
+    assert rc.level == 7, "ENTITY_SPAWN deveria propagar o level pro RemoteControlled"
+
+
+def test_world_state_propaga_level_do_player_remoto():
+    from engine.components import RemoteControlled
+    fx = _make_net_fixture()
+    fx._handle_msg_world_state({"entities": [{
+        "eid": 42, "kind": "player", "tx": 5, "ty": 5,
+        "name": "Fulano", "class_id": "mago", "hp": 80, "hp_max": 100,
+        "level": 9,
+    }]})
+    local_eid = fx._remote_players[42]
+    rc = fx.world.get_component(local_eid, RemoteControlled)
+    assert rc.level == 9, "WORLD_STATE deveria propagar o level pro RemoteControlled"
+
+
+def test_aoi_update_spawned_propaga_level_do_player_remoto():
+    from engine.components import RemoteControlled
+    fx = _make_net_fixture()
+    fx._handle_msg_aoi_update({"spawned": [{
+        "eid": 42, "kind": "player", "tx": 5, "ty": 5,
+        "name": "Fulano", "class_id": "mago", "hp": 80, "hp_max": 100,
+        "level": 4,
+    }]})
+    local_eid = fx._remote_players[42]
+    rc = fx.world.get_component(local_eid, RemoteControlled)
+    assert rc.level == 4, "AOI_UPDATE (spawned) deveria propagar o level pro RemoteControlled"
+
+
 def test_offline_sem_requester_continua_creditando_local():
     """Regressão: sem set_online_loot_requester (modo legado/offline), o
     fluxo antigo — creditar na hora do clique — continua intacto."""
