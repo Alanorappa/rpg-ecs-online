@@ -3980,6 +3980,32 @@ indiretamente pelo resto do nameplate).
 mesmo com pilha alta (ex: player com efeitos extras), texto nítido em
 qualquer zoom não-inteiro, fade-out continua suave.
 
+**Follow-up (mesmo dia)**: usuário comparou nameplate vs chat lado a
+lado (print) e confirmou que o nameplate ainda parecia "bold" mesmo já
+na Determination. Causa raiz: `ui/world_labels.py::add_text()`
+(caminho de TODO nome de player/mob/NPC acima da cabeça) sempre
+renderizava via `render_tight()` — função criada 11/07/2026
+especificamente pra corrigir o bearing esquerdo desproporcional da
+MEGAMAN10 ("Zumbi" virava "Zumb i"), que empacota glifo por glifo com
+só **1px de respiro FIXO** entre a tinta real, descartando o
+kerning/bearing natural da fonte. Pra uma fonte PROPORCIONAL como a
+Determination (usada pelo chat via `font.render()` normal, espaçamento
+correto), esse 1px fixo é bem menor que o espaçamento natural — letras
+ficavam empacotadas demais, lido como "bold" por comparação direta com
+o chat.
+
+Fix: `add_text()` agora chama `font.render(text, False, color)`
+direto, igual o chat — sem bug de fonte pra corrigir na Determination,
+não tem motivo pra reempacotar. `render_tight()` não foi removida (seu
+motivo original de existir, MEGAMAN10, continua no arquivo como
+utilitário "convive em paralelo" — mesmo padrão do §34.22).
+
+**Validado**: suíte completa 196/196, rodada 3x.
+
+**Não validado**: visual em jogo — nameplate com o mesmo peso de traço
+do chat, espaçamento entre letras natural (nem apertado nem com vão
+estranho tipo o bug original da MEGAMAN10).
+
 ---
 
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata

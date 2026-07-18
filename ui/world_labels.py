@@ -52,12 +52,19 @@ class _WorldOverlayQueue:
         já deslocado pra cima de algo (ex: topo da HUD de barras) — a
         pilha soma a partir daí.
 
-        render_tight (não font.render direto): corrige bearing
-        desproporcional de glifos estreitos (ex: "i" da MEGAMAN10 tinha
-        quase metade do avanço em espaço vazio, "Zumbi" virava "Zumb i" —
-        reportado pelo usuário 11/07/2026). Ver ui/fonts.py::render_tight."""
-        from ui.fonts import render_tight as _render_tight
-        surf = _render_tight(font, text, color)
+        font.render() direto (não render_tight) desde 17/07/2026 — a
+        nameplate trocou de MEGAMAN10 pra Determination (mesma fonte do
+        chat, ver §34.22 ARQUITETURA_ONLINE.md). `render_tight` empacota
+        glifo por glifo com só 1px de respiro FIXO entre a tinta real —
+        criado pra corrigir o bearing esquerdo desproporcional da
+        MEGAMAN10 ("Zumbi" virava "Zumb i", 11/07/2026), mas pra uma
+        fonte proporcional como a Determination esse respiro fixo é bem
+        menor que o espaçamento natural da fonte, empacotando letras
+        demais — lido pelo usuário como "parece bold" comparado ao chat
+        (que usa font.render() normal, mesma fonte, espaçamento
+        correto). Sem font-specific bug pra corrigir aqui, o render
+        direto é o certo — mesmo caminho do chat."""
+        surf = font.render(text, False, color)
         self._queue(world_x, world_y, surf, stack_key, gap_before)
 
     def add_icon(self, world_x: float, world_y: float, surf, stack_key=None,
