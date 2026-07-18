@@ -2106,9 +2106,25 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         `queue_stats_update` do level-up é privado, só o dono recebe).
         Level-up sempre muda max_hp (ganho de vitalidade), então o dirty-
         check de HP já disparava nesse momento — só faltava incluir o
-        level no payload."""
+        level no payload.
+
+        Follow-up 18/07/2026 (usuário reportou que persistia — nameplate
+        às vezes travava mesmo assim, coincidindo com duelo/combate):
+        `_already` existia pra NÃO duplicar STATS_UPDATE quando outro
+        sistema (`skill_processor.py`/`spell_completion_processor.py`,
+        dano PvP) já tinha enfileirado uma entrada pro MESMO player NESTE
+        tick — mas o guard antigo (`if peid not in _already: append`)
+        pulava a entrada INTEIRA, level junto. Se o level-up acontecesse
+        no MESMO tick de qualquer dano/cura do player (chance real e alta
+        durante duelo, onde HP muda a cada golpe), o level nunca entrava
+        em NENHUM broadcast daquele tick — silenciosamente perdido, sem
+        outro tick pra tentar de novo (o cache já foi atualizado acima,
+        então na próxima chamada `cur == cache` e nada dispara mais).
+        Fix: em vez de pular, MESCLA o level na entrada já existente
+        (mesmo dict, mutado in-place — `_already` guarda referências, não
+        cópias)."""
         from engine.components import CombatStats as _CSD, CharacterStats as _CharD
-        _already = {e["eid"] for e in self._player_hp_broadcasts_this_tick}
+        _already = {e["eid"]: e for e in self._player_hp_broadcasts_this_tick}
         for peid in list(self._player_eids.values()):
             cs = self.world.get_component(peid, _CSD)
             if cs is None:
@@ -2118,7 +2134,10 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             cur = (cs.current_hp, cs.max_hp, level)
             if cur != self._player_hp_cache.get(peid):
                 self._player_hp_cache[peid] = cur
-                if peid not in _already:
+                _existing = _already.get(peid)
+                if _existing is not None:
+                    _existing["level"] = level
+                else:
                     self._player_hp_broadcasts_this_tick.append({
                         "eid": peid, "hp": cs.current_hp, "hp_max": cs.max_hp,
                         "level": level,

@@ -658,6 +658,43 @@ class TestRegressionBugs(unittest.TestCase):
         events = self.ws.consume_player_hp_broadcasts()
         self.assertEqual([e for e in events if e["eid"] == eid], [])
 
+    def test_level_up_nao_some_quando_coincide_com_outro_broadcast_de_hp_no_mesmo_tick(self):
+        """Bug real relatado pelo usuário 18/07/2026 (follow-up do teste
+        acima) — o fix persistia, mas SÓ ÀS VEZES: quando o level-up
+        acontecia no MESMO tick de outro evento de HP do player (dano
+        PvP, cura — comum durante duelo, chance real e alta), o dedup
+        que evita duas mensagens de STATS_UPDATE pro mesmo player no
+        mesmo tick pulava a entrada INTEIRA, level junto — silenciosamente
+        perdido pra sempre (o cache já é atualizado antes do dedup, então
+        nenhum tick seguinte tenta de novo). Fix: em vez de pular, mescla
+        o level na entrada já enfileirada por outro sistema."""
+        from engine.components import CharacterStats, CombatStats
+        eid = spawn_player(self.ws, "s1", 130, 374)
+        char = self.ws.world.get_component(eid, CharacterStats)
+        cs   = self.ws.world.get_component(eid, CombatStats)
+        level_before = char.level
+
+        # Simula outro sistema (ex: skill_processor.py, dano PvP) já tendo
+        # enfileirado um broadcast de HP pro MESMO player NESTE tick —
+        # sem "level", igual a esses call sites reais fazem.
+        self.ws._player_hp_broadcasts_this_tick.append({
+            "eid": eid, "hp": cs.current_hp, "hp_max": cs.max_hp,
+        })
+
+        char.current_xp = char.xp_to_next_level   # força level-up
+        from engine.stats_system import process_levelups
+        process_levelups(self.ws.world, eid, char, cs, None)
+        self.assertGreater(char.level, level_before, "setup do teste falhou em subir de nível")
+
+        self.ws._sync_player_hp_dirty()
+        events = self.ws.consume_player_hp_broadcasts()
+
+        matching = [e for e in events if e["eid"] == eid]
+        self.assertEqual(len(matching), 1,
+                         "não deveria duplicar a mensagem — só mesclar o level nela")
+        self.assertEqual(matching[0].get("level"), char.level,
+                         "level não deveria se perder quando colide com outro broadcast no mesmo tick")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 6. Punho no Queixo — skill de carga do Cavaleiro

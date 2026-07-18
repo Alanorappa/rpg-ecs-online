@@ -3844,6 +3844,35 @@ level 10 via componente (simulando progressão real pós-login, sem
 tocar `char_data`), player B loga depois e o `WORLD_STATE` de B mostra
 level 10 de A, não 1. Suíte completa 196/196, rodada 3x.
 
+**Follow-up 2 (18/07/2026)**: usuário confirmou ter reiniciado servidor
+E cliente e reportou que AINDA acontecia, de forma intermitente (print
+mostrando o mesmo player com level 7 numa tela e level 1 noutra).
+Reaudita dos 3 pontos já corrigidos não achou regressão — causa raiz
+era uma QUARTA, mais sutil: `_sync_player_hp_dirty()` tem um dedup
+(`_already`) pra não mandar DOIS `STATS_UPDATE` do mesmo player no
+mesmo tick quando outro sistema (`skill_processor.py`/
+`spell_completion_processor.py`, dano PvP — chance real e alta durante
+duelo, onde HP muda a cada golpe) JÁ enfileirou um broadcast de HP pro
+mesmo player. O guard antigo (`if peid not in _already: append`)
+pulava a ENTRADA INTEIRA quando havia colisão — level junto. Se o
+level-up caía no MESMO tick de qualquer dano/cura do player, o level
+nunca entrava em NENHUM broadcast daquele tick — e como o cache de
+dirty-check já tinha sido atualizado ANTES do dedup, nenhum tick
+seguinte tentava de novo (silenciosamente perdido pra sempre, até o
+próximo level-up REAL, se algum dia acontecer no mesmo cliente já
+observando).
+
+Fix: em vez de pular a entrada colidida, MESCLA o level nela
+(`_already` virou `dict[eid, entry]` — guarda a REFERÊNCIA do dict já
+enfileirado, muta `entry["level"] = level` in-place em vez de decidir
+"enfileira ou não").
+
+**Validado**: `tests/test_server.py::TestRegressionBugs::
+test_level_up_nao_some_quando_coincide_com_outro_broadcast_de_hp_no_mesmo_tick`
+— pré-enfileira um broadcast de HP sem level (simulando dano PvP no
+mesmo tick), força level-up, confirma que sai UMA mensagem só (sem
+duplicar) e que ela TEM o level novo. Suíte completa 207/207, rodada 3x.
+
 ### 34.21 Loot não era free-for-all dentro do grupo (17/07/2026)
 
 Usuário observou (não implementado na Fase E original): grupo deveria
