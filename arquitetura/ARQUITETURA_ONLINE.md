@@ -4041,6 +4041,67 @@ especificamente sobre o NOME.
 tamanho/peso do chat lado a lado; mudar a escala de UI (menu de opções)
 mantém os dois em sincronia.
 
+### 34.24 Loot free-for-all duplicava ouro/itens entre membros do grupo (17/07/2026)
+
+Usuário validou §34.21 (loot free-for-all) e achou o bug real: mago e
+arqueiro no mesmo grupo matam um zumbi, mago lootea 11 de ouro, arqueiro
+abre o MESMO corpo e o ouro ainda aparece lá (deveria ter sumido).
+
+Causa raiz — bem mais funda que §34.21: o loot em modo online **sempre
+foi 100% client-autoritativo**, apesar do protocolo `LOOT_REQUEST`/
+`LOOT_RESULT` já existir completo no servidor (`server/session.py::
+_handle_loot_request` → `WorldServer.request_loot()`, já corretamente
+esvazia o corpo no primeiro saque — validado por
+`TestPartyLootFreeForAll`). O cliente NUNCA mandava `LOOT_REQUEST`:
+`client/save_sync_handlers.py::_send_loot_request` existia mas era
+**código morto**, zero call sites. O fluxo real: `LOOT_AVAILABLE` cria
+uma entidade `Corpse` ECS LOCAL com os itens/coins (mecanismo
+compartilhado com o singleplayer, comentário original: "LootSystem
+offline funcionar IDENTICAMENTE ao offline"); `ui/systems.py::
+LootSystem._try_take_item` credita `Wallet`/`Inventory` **direto da
+cópia local**, sem round-trip nenhum; só DEPOIS manda `GOLD_UPDATE`/
+`INV_SYNC` informando o servidor do novo total (client dita, servidor
+só registra — sem validar a quantidade). Antes da Fase E isso era
+inofensivo por acidente: só o first-attacker recebia `LOOT_AVAILABLE`
+(um destinatário só, sem como duplicar). §34.21 mandou `LOOT_AVAILABLE`
+pro GRUPO INTEIRO — cada membro passou a ter sua PRÓPRIA cópia local
+completa e processá-la de forma 100% independente, sem nenhuma
+sincronização entre clientes.
+
+Fix — ativa o protocolo que já existia (nenhuma mensagem nova):
+- `ui/systems.py::LootSystem` ganhou `_online_loot_requester` (setado
+  só em modo online) + `_online_loot_pending` (evita reenvio enquanto
+  uma resposta está em voo). Clicar em ouro OU item, com o requester
+  setado, NÃO credita nada localmente — manda o request e retorna.
+  Mesma proteção em `_try_equip_item` (equipar direto do loot): cai pro
+  fluxo de request também (trade-off: item vai pro inventário, não
+  equipa direto — aceitável por segurança).
+- `client/save_sync_handlers.py::_send_loot_request_for_local_corpse`
+  (novo) — ponte entre o eid LOCAL que o `LootSystem` conhece e o
+  `corpse_id` do SERVIDOR que o protocolo espera (espaços de id
+  diferentes; resolve via `self._available_loot`, o dict que já mapeia
+  um pro outro desde `LOOT_AVAILABLE`).
+- `client/network_handlers.py::_handle_msg_loot_result` — antes só
+  limpava a entidade local; agora é onde o crédito REAL acontece,
+  usando o que o servidor confirma que sobrava (reconstrói itens via
+  `content.loot_tables._T`/`QUEST_ITEMS`, mesmo padrão de
+  `_handle_msg_loot_available`). Se `coins==0` e `items==[]` (outro
+  membro já pegou tudo), mostra "Já foi saqueado" em vez de creditar
+  nada.
+- `game.py`: injeta o requester no `LootSystem` junto da wiring online
+  já existente (`_on_loot_collected`).
+
+**Validado**: `tests/test_client_ui.py` ganhou 3 testes — modo online
+não credita localmente e manda o request certo (eid local do corpse);
+clique duplicado enquanto o request está em voo não reenvia; modo
+offline/legado (sem requester setado) continua creditando local igual
+sempre foi (regressão). Suíte completa 199/199, rodada 3x.
+
+**Não validado**: sessão manual com 2+ clientes agrupados — mago
+lootea o ouro, arqueiro abre o MESMO corpo e vê vazio ("Já foi
+saqueado"); item também não duplica; modo offline/singleplayer (se
+algum dia rodar de novo) continua funcionando sem regressão.
+
 ---
 
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata

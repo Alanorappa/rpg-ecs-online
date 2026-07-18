@@ -3158,10 +3158,38 @@ class LootSystem(UIScaleMixin, System):
         # Callback chamado após cada ação de loot (moeda ou item) — injetado pelo GameEngine.
         # Online: aponta para _send_save_state() para salvar imediatamente na ação.
         self._on_loot_collected = None
+        # SÓ setado em modo online (game.py) — quando presente, clicar em
+        # qualquer linha do loot (ouro OU item) NÃO credita nada localmente:
+        # manda LOOT_REQUEST(local_corpse_eid) e espera LOOT_RESULT (client/
+        # network_handlers.py::_handle_msg_loot_result) creditar o que o
+        # servidor confirmar que ainda sobra. Sem isso, cada cliente
+        # processava sua PRÓPRIA cópia local do corpse (criada em
+        # LOOT_AVAILABLE) de forma independente — em grupo, dois membros
+        # lootavam o MESMO ouro (bug real relatado pelo usuário
+        # 17/07/2026). fn(local_corpse_eid: int) -> None.
+        self._online_loot_requester = None
+        self._online_loot_pending: set = set()  # local_corpse_eid com request em voo
         self._modal_x       = 0   # posição X do modal (definida ao abrir)
         self._modal_y       = 0   # posição Y do modal
         self._scroll_offset = 0   # índice da primeira linha visível
         self._pending_cursor = (0, 0)  # cursor quando o loot foi solicitado
+
+    def set_online_loot_requester(self, fn) -> None:
+        """GameEngine chama isto (só em modo online) com
+        self._send_loot_request_for_local_corpse — ver docstring dela."""
+        self._online_loot_requester = fn
+
+    def _try_send_online_loot_request(self) -> bool:
+        """True = modo online, request enfileirado (ou já em voo) — chamador
+        deve consumir o clique sem creditar nada localmente. False = modo
+        offline (sem requester setado), segue o fluxo local de sempre."""
+        if self._online_loot_requester is None:
+            return False
+        corpse_id = self.open_corpse_id
+        if corpse_id not in self._online_loot_pending:
+            self._online_loot_pending.add(corpse_id)
+            self._online_loot_requester(corpse_id)
+        return True
 
     @property
     def open_corpse_id(self) -> int:
@@ -3360,6 +3388,8 @@ class LootSystem(UIScaleMixin, System):
         if has_coins:
             if virtual_row >= self._scroll_offset and screen_row < self.MAX_ROWS:
                 if self._row_rect(modal, screen_row).collidepoint(mx, my):
+                    if self._try_send_online_loot_request():
+                        return True
                     for _, wallet, _ in self.world.get_entities_with(Wallet, PlayerControlled):
                         wallet.gold += corpse.coins
                         LOG.add(f"+{corpse.coins} moedas coletadas!", (255, 215, 0))
@@ -3376,6 +3406,8 @@ class LootSystem(UIScaleMixin, System):
         for i, item in enumerate(corpse.loot):
             if virtual_row >= self._scroll_offset and screen_row < self.MAX_ROWS:
                 if self._row_rect(modal, screen_row).collidepoint(mx, my):
+                    if self._try_send_online_loot_request():
+                        return True
                     for _, inv, _ in self.world.get_entities_with(Inventory, PlayerControlled):
                         # Tenta empilhar em stack existente
                         stacked = False
@@ -3432,6 +3464,14 @@ class LootSystem(UIScaleMixin, System):
         for i, item in enumerate(corpse.loot):
             if virtual_row >= self._scroll_offset and screen_row < self.MAX_ROWS:
                 if self._row_rect(modal, screen_row).collidepoint(mx, my):
+                    # Modo online: mesma proteção de _try_take_item — sem
+                    # isso, equipar direto do loot creditava o item da
+                    # cópia LOCAL do corpse sem checar com o servidor se
+                    # outro membro do grupo já pegou (mesma classe de bug
+                    # do ouro duplicado). Cai pro inventário (LOOT_RESULT),
+                    # não equipa direto — trade-off aceitável por segurança.
+                    if self._try_send_online_loot_request():
+                        return True
                     equip        = None
                     inv          = None
                     combat_stats = None

@@ -1703,14 +1703,86 @@ class NetworkHandlers:
                                       dedup_key=f"aggro_{_ev_seid}")
 
     def _handle_msg_loot_result(self, payload: dict) -> None:
-        # Servidor confirmou o loot. O LootSystem offline já processou os itens
-        # localmente via entidade Corpse criada em LOOT_AVAILABLE.
-        # Aqui apenas garantimos limpeza caso o corpo ainda exista.
+        """Resposta ao LOOT_REQUEST (ui/systems.py::LootSystem, via
+        _online_loot_requester — bug real relatado pelo usuário
+        17/07/2026: em grupo, cada membro processava sua PRÓPRIA cópia
+        local do corpse [criada em LOOT_AVAILABLE] de forma independente,
+        sem checar com o servidor — dois membros lootavam o MESMO ouro.
+        Agora o crédito real só acontece AQUI, com o que o servidor
+        confirma que ainda sobrava no corpse — se outro membro do grupo
+        já pegou tudo, chega vazio (items=[], coins=0) e nada é creditado."""
         corpse_id = payload.get("corpse_id", -1)
+        coins     = payload.get("coins", 0)
+        items     = payload.get("items", [])
+
+        if coins > 0:
+            from engine.components import Wallet as _WalLr
+            wallet = self.world.get_component(self.player_entity, _WalLr)
+            if wallet:
+                wallet.gold += coins
+                LOG.add(f"+{coins} moedas coletadas!", (255, 215, 0))
+
+        if items:
+            from engine.components import Inventory as _InvLr
+            from content.loot_tables import _T as _LootTableLr
+            from content.quests_data import QUEST_ITEMS as _QILr
+            inv = self.world.get_component(self.player_entity, _InvLr)
+            if inv:
+                for item_data in items:
+                    item_name = item_data.get("name", "")
+                    obj = None
+                    for _key, factory in _LootTableLr.items():
+                        try:
+                            candidate = factory()
+                        except Exception:
+                            continue
+                        if getattr(candidate, "name", "") == item_name:
+                            obj = candidate
+                            break
+                    if obj is None:
+                        _qi_factory = _QILr.get(item_name)
+                        if _qi_factory:
+                            try:
+                                obj = _qi_factory()
+                            except Exception:
+                                obj = None
+                    if obj is None:
+                        continue
+                    obj.stack = item_data.get("stack", 1)
+                    # Tenta empilhar em stack existente (mesma lógica de
+                    # ui/systems.py::LootSystem._try_take_item)
+                    stacked = False
+                    if obj.max_stack > 1:
+                        for existing in inv.items:
+                            if existing is not None and existing.name == obj.name \
+                                    and existing.stack < existing.max_stack:
+                                existing.stack += obj.stack
+                                stacked = True
+                                break
+                    if not stacked:
+                        if len(inv.items) < inv.max_slots:
+                            inv.items.append(obj)
+                        else:
+                            LOG.add("Inventario cheio!", (255, 160, 0))
+                            continue
+                    col = {"common": (200,200,200), "uncommon": (30,200,30),
+                          "rare": (80,140,255), "epic": (180,50,255),
+                          "legendary": (224,135,47), "mythic": (221,68,68)
+                          }.get(getattr(obj, "rarity", "common"), (200, 200, 200))
+                    LOG.add(f"Coletado: {obj.name} ({getattr(obj, 'rarity', 'common')})", col)
+
+        if coins == 0 and not items:
+            from ui.floating_text import WARN as _WarnLr
+            _WarnLr.add("Já foi saqueado")
+
+        if coins > 0 or items:
+            SOUNDS.play_ui("loot_gold" if coins > 0 else "loot_item")
+
         loot_data = self._available_loot.pop(corpse_id, None)
         if loot_data:
             local_eid = loot_data.get("local_eid")
             if local_eid is not None:
+                self._loot_system._online_loot_pending.discard(local_eid)
                 try:
                     self.world.remove_entity(local_eid)
                 except Exception:

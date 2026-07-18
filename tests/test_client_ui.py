@@ -106,3 +106,83 @@ def test_effects_row_offset_meia_largura():
     xo, yo = hb.effects_row_offset(surf)
     assert xo == surf.get_width() / 2 + hb.EFFECTS_GAP_PX
     assert yo == -hb.HUD_GAP_PX - surf.get_height() / 2
+
+
+# ── ui/systems.py::LootSystem — loot free-for-all de grupo, sem duplicar ──────
+# Bug real relatado pelo usuário 17/07/2026: em grupo, cada membro processava
+# sua PRÓPRIA cópia local do corpse (criada em LOOT_AVAILABLE) de forma
+# independente — dois membros lootavam o MESMO ouro. Fix: em modo online
+# (_online_loot_requester setado), clicar manda LOOT_REQUEST em vez de
+# creditar da cópia local; crédito real só acontece em LOOT_RESULT
+# (client/network_handlers.py::_handle_msg_loot_result).
+
+def _make_loot_world():
+    from engine.world import World
+    from engine.entity_factory import create_corpse
+    from engine.components import Wallet, Inventory, PlayerControlled
+    from ui.ui_components import LootUIState
+    world = World()
+    player = world.create_entity()
+    world.add_component(player, PlayerControlled())
+    world.add_component(player, Wallet(gold=0))
+    world.add_component(player, Inventory())
+    world.add_component(player, LootUIState())
+    corpse = create_corpse(world, 100, 100, [], coins=11)
+    return world, player, corpse
+
+
+def _click_gold_row(loot_system, corpse_eid) -> bool:
+    loot_system._open_modal(corpse_eid, 50, 50)
+    modal = loot_system._modal_rect()
+    row = loot_system._row_rect(modal, 0)   # linha 0 = ouro
+    return loot_system._try_take_item(row.centerx, row.centery)
+
+
+def test_online_loot_request_nao_credita_localmente():
+    from ui.systems import LootSystem
+    from engine.components import Wallet, Corpse
+    world, player, corpse = _make_loot_world()
+    screen = pygame.display.get_surface()
+    loot = LootSystem(world, screen, player_entity=player)
+
+    sent = []
+    loot.set_online_loot_requester(lambda local_eid: sent.append(local_eid))
+    result = _click_gold_row(loot, corpse)
+
+    wallet = world.get_component(player, Wallet)
+    assert result is True
+    assert wallet.gold == 0, "modo online nao deveria creditar ouro localmente no clique"
+    assert sent == [corpse], "deveria mandar o request com o eid LOCAL do corpse"
+    assert world.get_component(corpse, Corpse).coins == 11, \
+        "corpse local nao deveria ser mutado antes do LOOT_RESULT confirmar"
+
+
+def test_online_loot_request_nao_duplica_pedido_em_voo():
+    from ui.systems import LootSystem
+    world, player, corpse = _make_loot_world()
+    screen = pygame.display.get_surface()
+    loot = LootSystem(world, screen, player_entity=player)
+
+    sent = []
+    loot.set_online_loot_requester(lambda local_eid: sent.append(local_eid))
+    _click_gold_row(loot, corpse)
+    _click_gold_row(loot, corpse)   # 2º clique antes do LOOT_RESULT responder
+
+    assert sent == [corpse], "clique duplicado enquanto o request está em voo não deveria reenviar"
+
+
+def test_offline_sem_requester_continua_creditando_local():
+    """Regressão: sem set_online_loot_requester (modo legado/offline), o
+    fluxo antigo — creditar na hora do clique — continua intacto."""
+    from ui.systems import LootSystem
+    from engine.components import Wallet, Corpse
+    world, player, corpse = _make_loot_world()
+    screen = pygame.display.get_surface()
+    loot = LootSystem(world, screen, player_entity=player)
+
+    result = _click_gold_row(loot, corpse)
+
+    wallet = world.get_component(player, Wallet)
+    assert result is True
+    assert wallet.gold == 11
+    assert world.get_component(corpse, Corpse).coins == 0

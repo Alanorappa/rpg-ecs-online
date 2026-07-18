@@ -462,6 +462,12 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._shop_system._net = self._net
         # LootSystem: envia só a consequência da ação (gold ou inventário), não o state completo
         self._loot_system._on_loot_collected = self._on_loot_action
+        # LootSystem: clicar em ouro/item manda LOOT_REQUEST em vez de
+        # creditar da cópia LOCAL do corpse — servidor decide o que ainda
+        # sobra (bug real relatado pelo usuário 17/07/2026: grupo lootando
+        # o mesmo ouro duas vezes). Ver client/save_sync_handlers.py::
+        # _send_loot_request_for_local_corpse.
+        self._loot_system.set_online_loot_requester(self._send_loot_request_for_local_corpse)
         # AoeTargetingSystem: envia CAST_SKILL com coordenadas ao confirmar posição AOE
         self._aoe_targeting_system._net = self._net
         # PlayerInputSystem: auto-attack ranged do arqueiro vira 100% server-driven

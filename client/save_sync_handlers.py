@@ -502,3 +502,27 @@ class SaveSyncHandlers:
             return
         from shared.messages import MsgType
         self._net.send(MsgType.LOOT_REQUEST, {"corpse_id": corpse_id})
+
+    def _send_loot_request_for_local_corpse(self, local_corpse_eid: int) -> None:
+        """Ponte pro LootSystem (ui/systems.py) — ele só conhece o eid ECS
+        LOCAL do corpse (a entidade Corpse criada por _handle_msg_loot_
+        available), não o corpse_id do SERVIDOR (chave de
+        self._available_loot). Resolve a tradução aqui antes de mandar
+        LOOT_REQUEST — sem isso o servidor nunca acharia o corpse (espaços
+        de id totalmente diferentes).
+
+        Injetada em LootSystem SÓ em modo online (ver game.py) — o modo
+        online passa a mandar LOOT_REQUEST em vez de creditar gold/item
+        localmente na hora do clique (bug real relatado pelo usuário
+        17/07/2026: grupo com loot free-for-all — cada membro recebia
+        LOOT_AVAILABLE com os MESMOS itens/coins e processava a própria
+        cópia local de forma independente, sem nenhuma validação do
+        servidor — resultado: dois membros do grupo lootavam o MESMO ouro,
+        cada um vendo o total "cheio" mesmo depois do outro já ter
+        pegado). O crédito real agora só acontece em
+        _handle_msg_loot_result, com o que o servidor confirma que ainda
+        sobrava — se outro membro já pegou tudo, chega vazio."""
+        corpse_id = next((cid for cid, data in self._available_loot.items()
+                          if data.get("local_eid") == local_corpse_eid), None)
+        if corpse_id is not None:
+            self._send_loot_request(corpse_id)
