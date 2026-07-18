@@ -695,6 +695,38 @@ class TestRegressionBugs(unittest.TestCase):
         self.assertEqual(matching[0].get("level"), char.level,
                          "level não deveria se perder quando colide com outro broadcast no mesmo tick")
 
+    def test_level_up_de_membro_do_grupo_marca_party_state_sujo(self):
+        """Bug real relatado pelo usuário 18/07/2026: o level nos slots do
+        frame de grupo não atualizava mesmo quando o nameplate já
+        atualizava. Causa raiz: PARTY_STATE só é reenviado em eventos de
+        composição (entrar/sair/expulsar/promoção) — level-up de um
+        membro nunca marcava o grupo como sujo. Fix: _sync_player_hp_dirty
+        também enfileira o party_id em _party_state_events_this_tick
+        quando detecta mudança de level (reusa o mesmo pipe do
+        PartyProcessorMixin)."""
+        from engine.components import CharacterStats, CombatStats
+        a = spawn_player(self.ws, "s1", 130, 374)
+        b = spawn_player(self.ws, "s2", 131, 374)
+        self.assertIsNone(self.ws.request_party_invite(a, b))
+        self.ws.respond_party_invite(b, accept=True)
+        pid = self.ws.get_party_id_of(a)
+
+        self.ws._sync_player_hp_dirty()
+        self.ws.consume_player_hp_broadcasts()
+
+        char = self.ws.world.get_component(a, CharacterStats)
+        cs   = self.ws.world.get_component(a, CombatStats)
+        char.current_xp = char.xp_to_next_level
+        from engine.stats_system import process_levelups
+        process_levelups(self.ws.world, a, char, cs, None)
+
+        self.ws._sync_player_hp_dirty()
+        self.ws.consume_player_hp_broadcasts()
+
+        dirty = self.ws.consume_party_state_events()
+        self.assertIn(pid, dirty,
+                      "level-up de um membro deveria marcar o grupo pra reenviar PARTY_STATE")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 6. Punho no Queixo — skill de carga do Cavaleiro

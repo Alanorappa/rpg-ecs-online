@@ -96,6 +96,23 @@ class NetworkHandlers:
 
     def _handle_msg_login_ok(self, payload: dict) -> None:
         from engine.components import TileMovement
+        # Reseta espelhamento de players remotos de uma sessão anterior no
+        # MESMO processo de cliente (reconectar sem fechar o jogo). Sem isso,
+        # se o servidor reiniciar e reciclar os mesmos server_eids, o guard
+        # de _spawn_remote_player_entity ("if server_eid in self._remote_players:
+        # return") acha que a entidade já existe e NUNCA aplica o payload
+        # novo (level/hp/nome atuais) — a entidade ECS antiga (com level
+        # desatualizado) sobrevive até um evento que sobrescreva por
+        # inteiro (ex: STATS_UPDATE de HP), o que parecia "level só
+        # atualiza quando o HP muda" (bug relatado 18/07/2026).
+        for _local_eid in self._remote_players.values():
+            try:
+                self.world.remove_entity(_local_eid)
+            except Exception:
+                pass
+        self._remote_players.clear()
+        self._remote_player_move_queues.clear()
+        self._remote_step_timers.clear()
         self._my_eid = payload.get("eid", -1)
         char = payload.get("char", {})
         tx   = int(char.get("tile_x", 10))

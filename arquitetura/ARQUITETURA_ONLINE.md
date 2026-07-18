@@ -4215,6 +4215,81 @@ janela em tempo real; item continua disponível pros dois até alguém
 pegar; corpo só some de verdade quando fica realmente vazio pros dois
 lados.
 
+**Validado (18/07/2026, sessão seguinte)**: usuário testou tudo acima
+em jogo — "Sobre o loot, validei e está tudo certo". Fecha a thread de
+loot; nenhuma ação pendente.
+
+### §34.25 — Level-sync: causa raiz real (reconexão sem reiniciar o cliente) + gap do frame de grupo
+
+Depois de 4 rounds de fix em `_sync_player_hp_dirty` (§34.20/§34.24),
+usuário reproduziu com precisão: logou com 2 contas, e o level de um
+player remoto só "acertava" quando o HP dele mudava (regen tick ou
+dano de mob) — nunca de forma independente. Concluiu (corretamente)
+que era um problema arquitetural, não mais um bug pontual, e pediu
+pesquisa de como MMOs tratam esse tipo de sincronização antes de
+qualquer novo patch.
+
+**Pesquisa (web)**: o padrão-mestre da indústria (Unreal `PlayerState`/
+`OnRep_MyProperty`, replicação por "dirty flag" genérico) é: cada campo
+replicado tem seu PRÓPRIO gatilho de mudança, independente de qualquer
+OUTRO campo — nunca "campo B só é reenviado quando o campo A muda".
+Confirma que empacotar `level` dentro da tupla de dirty-check do HP
+(mesmo já capturando corretamente uma mudança de level sozinha, ver
+auditoria abaixo) era a escolha arquitetural errada — mistura dois
+conceitos que deveriam ser independentes.
+
+**Auditoria de código** (antes de mexer): reli as 3 correções
+anteriores (`_sync_player_hp_dirty`, WORLD_STATE-no-login em
+`_spawn_and_start`, "player ficou visível" em `_handle_msg_aoi_update`)
+— todas continuam corretas e usam o componente VIVO, não snapshot de
+login. A tupla `(hp, hp_max, level)` já detecta uma mudança de level
+MESMO sem hp/max_hp mudarem (a tupla inteira difere do cache). Ou
+seja: o mecanismo de broadcast, no papel, já não dependia de HP mudar.
+
+**Causa raiz real encontrada**: `client/network_handlers.py::
+_spawn_remote_player_entity` tem um guard `if server_eid in
+self._remote_players: return` — e NADA no cliente limpava
+`self._remote_players` (nem destruía as entidades ECS locais) ao
+reconectar/relogar no MESMO processo do jogo. Se o servidor reiniciar
+entre sessões de teste (fluxo comum enquanto o usuário testa) e
+reciclar os mesmos `server_eid` sequenciais, o cliente acha que a
+entidade "já existe" e nunca aplica o payload novo (level/hp/nome
+atuais) — a entidade antiga (com o level da sessão de teste ANTERIOR)
+sobrevive até algo que sobrescreva por inteiro via `STATS_UPDATE`
+(ex: HP mudando), o que parecia exatamente "level só atualiza quando o
+HP muda".
+
+Fix: `_handle_msg_login_ok` agora destrói as entidades ECS de todo
+`self._remote_players` e limpa esse dict + `_remote_player_move_queues`
++ `_remote_step_timers` logo no início — toda sessão de LOGIN_OK (seja
+o primeiro login do processo ou um relogin) começa com espelhamento de
+players remotos zerado, igual uma reconexão de verdade deveria.
+
+**Gap separado, também relatado pelo usuário**: level nos slots do
+frame de grupo não atualizava mesmo quando o nameplate atualizava.
+Causa: `PARTY_STATE` (que alimenta `client/party_handlers.py::
+_handle_msg_party_state`) só é reenviado em eventos de COMPOSIÇÃO do
+grupo (entrar/sair/expulsar/promoção) — nunca em mudança de level de um
+membro. Fix: `_sync_player_hp_dirty`, ao detectar mudança de level,
+agora também enfileira o `party_id` do player (se houver) em
+`_party_state_events_this_tick` — reusa o mesmo pipe que já existe
+pra reenviar `PARTY_STATE` a todo o grupo, sem pipeline novo.
+
+**Validado**: `tests/test_server.py::
+test_level_up_de_membro_do_grupo_marca_party_state_sujo` — level-up de
+um membro marca o grupo como sujo em `consume_party_state_events()`.
+Suíte completa 209/209, rodada 3x. O fix de `_handle_msg_login_ok`
+(destruir entidades remotas antigas no login) não tem teste automatizado
+— exigiria simular uma reconexão completa de `GameEngine`, sem
+precedente nos testes de cliente existentes; fica pendente de validação
+manual (relogar 2x no mesmo processo sem reiniciar o cliente, servidor
+reiniciado no meio).
+
+**Não validado**: sessão manual — relogar (sem fechar o client) depois
+de reiniciar o servidor não deveria mais mostrar level/hp/nome
+desatualizado de nenhum player remoto; level de membro do grupo deve
+atualizar no frame no mesmo momento em que atualiza no nameplate.
+
 ---
 
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata

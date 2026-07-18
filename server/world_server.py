@@ -2122,7 +2122,17 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         então na próxima chamada `cur == cache` e nada dispara mais).
         Fix: em vez de pular, MESCLA o level na entrada já existente
         (mesmo dict, mutado in-place — `_already` guarda referências, não
-        cópias)."""
+        cópias).
+
+        Follow-up 18/07/2026 (frame de grupo não atualizava o level mesmo
+        quando o nameplate atualizava): PARTY_STATE só é reenviado em
+        eventos de composição de grupo (entrar/sair/expulsar/promoção) —
+        `consume_party_state_events()` nunca sabia que um MEMBRO subiu de
+        nível, então o frame usava o snapshot antigo pra sempre. Fix: toda
+        mudança de level detectada aqui também marca o grupo do player
+        (se houver) como sujo em `_party_state_events_this_tick`, reusando
+        o MESMO pipe que já reenvia PARTY_STATE pro grupo inteiro — sem
+        precisar de um pipeline de replicação novo."""
         from engine.components import CombatStats as _CSD, CharacterStats as _CharD
         _already = {e["eid"]: e for e in self._player_hp_broadcasts_this_tick}
         for peid in list(self._player_eids.values()):
@@ -2131,8 +2141,9 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 continue
             char  = self.world.get_component(peid, _CharD)
             level = char.level if char else 1
+            _prev = self._player_hp_cache.get(peid)
             cur = (cs.current_hp, cs.max_hp, level)
-            if cur != self._player_hp_cache.get(peid):
+            if cur != _prev:
                 self._player_hp_cache[peid] = cur
                 _existing = _already.get(peid)
                 if _existing is not None:
@@ -2142,6 +2153,10 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                         "eid": peid, "hp": cs.current_hp, "hp_max": cs.max_hp,
                         "level": level,
                     })
+                if _prev is not None and _prev[2] != level:
+                    _pid = self.get_party_id_of(peid)
+                    if _pid != -1 and _pid not in self._party_state_events_this_tick:
+                        self._party_state_events_this_tick.append(_pid)
 
     def consume_skill_levels_broadcasts(self) -> list[dict]:
         """Retorna e limpa updates de SkillLevels do tick atual (para o SessionManager)."""
