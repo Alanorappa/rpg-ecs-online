@@ -3877,6 +3877,43 @@ membro do grupo recebe vazio depois do primeiro lootear. Suíte completa
 mob, os dois verem o corpo com itens disponíveis, qualquer um dos dois
 conseguir lootear (não só quem bateu primeiro).
 
+### 34.22 Nameplate trocado de MEGAMAN10 pra Determination (17/07/2026)
+
+Usuário reportou incômodo visual: na fonte pixel MEGAMAN10 (usada nos
+nomes acima da cabeça de player/mob/NPC desde 11/07/2026, `ui/
+fonts.py::make_pixel`), o "g" minúsculo parece um "9" — quirk comum de
+fontes pixel pequenas (descendente curto, curva fecha parecido).
+Pedido do usuário: trocar pela Determination, a fonte principal do
+projeto (`ui/fonts.py::make`, já usada em todo o resto da UI).
+
+Fix: os 3 call sites de produção que usavam `make_pixel()` pra nome/
+nível de nameplate passaram a usar `make()` (mesmo tamanho, 16 pro nome
+e `LEVEL_FONT_SIZE` pro nível — `make()` já aplica a correção de escala
+certa pra Determination, não precisou de ajuste extra):
+- `client/remote_entity_handlers.py` — nome/nível de mob remoto e de
+  player remoto (2 pares de font).
+- `ui/systems.py::RenderSystem.__init__` — nome flutuante de NPC (e
+  mob, no client online, reaproveitado de lá).
+
+`make_pixel()`/MEGAMAN10.ttf **não foram removidos** — ficam como
+utilitário "convive em paralelo" (mesmo espírito do comentário original
+em `ui/fonts.py`), ainda exercidos por `tests/test_client_ui.py`
+diretamente; só pararam de ser CHAMADOS pelos 3 sites de produção.
+`render_tight()` (correção de bearing/kerning, `ui/world_labels.py::
+add_text`) continua em uso pra QUALQUER fonte de nameplate — é genérica
+(repacota pela tinta real + respiro fixo), não exclusiva da MEGAMAN10,
+então não precisou ser removida/trocada.
+
+**Validado**: suíte completa 196/196, rodada 3x (mudança é puramente
+visual — sem teste automatizado dedicado, `tests/test_client_ui.py`
+continua validando `make_pixel`/`render_tight` em isolamento, agora só
+não mais wireados na nameplate).
+
+**Não validado**: visual em jogo — "g" legível, espaçamento do
+`render_tight` não ficando estranho pra Determination (fonte
+proporcional, diferente da MEGAMAN10 quase-monoespaçada que motivou
+aquele fix originalmente).
+
 ---
 
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata

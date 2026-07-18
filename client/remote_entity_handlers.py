@@ -1196,12 +1196,16 @@ class RemoteEntityHandlers:
                 _level_hb = _mob_id_hb.level if _mob_id_hb is not None else 1
 
                 if not hasattr(self, '_mob_name_font'):
-                    from ui.fonts import make_pixel as _make_pixel_hb
-                    self._mob_name_font = _make_pixel_hb()
+                    # Determination (fonte do projeto) em vez da pixel font
+                    # MEGAMAN10 — usuário reportou "g" parecendo "9" nela
+                    # (17/07/2026). make() já aplica a correção de escala
+                    # certa pra Determination (ver ui/fonts.py).
+                    from ui.fonts import make as _make_name_hb
+                    self._mob_name_font = _make_name_hb(16)
                 if not hasattr(self, '_mob_level_font'):
-                    from ui.fonts import make_pixel as _make_pixel_hb2
+                    from ui.fonts import make as _make_name_hb2
                     from ui.hud_bars import LEVEL_FONT_SIZE as _LFS_hb
-                    self._mob_level_font = _make_pixel_hb2(_LFS_hb)
+                    self._mob_level_font = _make_name_hb2(_LFS_hb)
 
                 # Cor da barra por disposição (hostil/neutro/amigavel) —
                 # Faction real do servidor foi anexada em _spawn_remote_mob
@@ -1324,12 +1328,16 @@ class RemoteEntityHandlers:
         from ui.hud_bars import build_player_hud as _bph_rp, HUD_GAP_PX as _HGP_rp
 
         if not hasattr(self, '_player_name_font'):
-            from ui.fonts import make_pixel as _make_pixel_rp
-            self._player_name_font = _make_pixel_rp()
+            # Determination (fonte do projeto) em vez da pixel font
+            # MEGAMAN10 — usuário reportou "g" parecendo "9" nela
+            # (17/07/2026). make() já aplica a correção de escala certa
+            # pra Determination (ver ui/fonts.py).
+            from ui.fonts import make as _make_name_rp
+            self._player_name_font = _make_name_rp(16)
         if not hasattr(self, '_player_level_font'):
-            from ui.fonts import make_pixel as _make_pixel_rp2
+            from ui.fonts import make as _make_name_rp2
             from ui.hud_bars import LEVEL_FONT_SIZE as _LFS_rp
-            self._player_level_font = _make_pixel_rp2(_LFS_rp)
+            self._player_level_font = _make_name_rp2(_LFS_rp)
 
         from engine.tileset import TILE_SIZE as _TS_rp
         _sprite_h = _TS_rp - 4   # mesma convenção de altura já usada aqui (W = H = TILE_SIZE-4)

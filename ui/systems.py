@@ -1157,17 +1157,18 @@ class RenderSystem(System):
         # Nome flutuante acima de NPCs (e, no cliente online, mobs — ver
         # client/remote_entity_handlers.py::_draw_mob_hp_bars, que usa o
         # próprio font local em vez desta instância porque roda numa classe
-        # diferente). Fonte pixel-perfect (MEGAMAN10, em teste — ver
-        # ui/fonts.py::make_pixel) — a primeira versão usava
-        # pygame.font.Font(None, ...) por engano (fonte padrão feia, não a
-        # do projeto), motivo do "ilegível" reportado (11/07/2026).
-        from ui.fonts import make_pixel as _make_pixel
-        self._name_font = _make_pixel()
+        # diferente). Determination (fonte do projeto) — usava a pixel font
+        # MEGAMAN10 (ver ui/fonts.py::make_pixel) até o usuário reportar o
+        # "g" parecendo "9" nela (17/07/2026); antes disso já tinha passado
+        # por pygame.font.Font(None, ...) por engano (fonte padrão feia,
+        # motivo do "ilegível" reportado 11/07/2026).
+        from ui.fonts import make as _make_name
+        self._name_font = _make_name(16)
         # Fonte do número de nível — tamanho escolhido testando visualmente
         # (ver ui/hud_bars.py::LEVEL_FONT_SIZE), não é o mesmo tamanho do
         # nome (a caixinha da HUD tem proporção diferente).
         from ui.hud_bars import LEVEL_FONT_SIZE as _LFS
-        self._level_font = _make_pixel(_LFS)
+        self._level_font = _make_name(_LFS)
         # Offset/tamanho não é mais escolhido aqui — WORLD_LABELS empilha
         # (ver ui/world_labels.py) e desenha em espaço de tela, pós-zoom.
 

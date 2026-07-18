@@ -66,7 +66,8 @@ RESOURCE_COLORS = {
     "guerreiro": (220, 50, 50),    # barra de raiva — C_RED
 }
 LEVEL_TEXT_COLOR = (255, 240, 200)
-# Tamanho da fonte pixel (ui/fonts.py::make_pixel) pro número do nível —
+# Tamanho da fonte do nome/nível (ui/fonts.py::make, Determination — trocou
+# de make_pixel/MEGAMAN10 em 17/07/2026, ver ui/systems.py) pro número do nível —
 # escolhido testando visualmente ao lado de SCALE (não por cálculo). 16
 # ainda cabe sem vazar com SCALE=2 e usa melhor o espaço que sobrava com
 # 14 (pedido do usuário 11/07/2026). 18 já começa a tocar a borda do
