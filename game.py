@@ -60,6 +60,7 @@ from client.modal_stack_handlers import ModalStackHandlers
 from client.trade_handlers import TradeHandlers
 from client.duel_handlers import DuelHandlers
 from client.party_handlers import PartyHandlers
+from client.pvp_zone_handlers import PvpZoneHandlers
 from client.chat_handlers import ChatHandlers
 from client.colors import C_WHITE, C_YELLOW, C_GREEN, C_RED, C_GRAY, C_CYAN, C_ORANGE
 
@@ -97,7 +98,7 @@ def _merge_display_matrix(terrain: list[str], objects: list) -> list[str]:
     return result
 
 
-class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, InventoryHandlers, TooltipHandlers, DebugHandlers, MenuHandlers, HotbarEditorHandlers, HabilidadesHandlers, OnlineModeHandlers, HotbarHandlers, ConsumableBarHandlers, HudHandlers, DeathUIHandlers, ModalStackHandlers, TradeHandlers, DuelHandlers, PartyHandlers, ChatHandlers):
+class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, InventoryHandlers, TooltipHandlers, DebugHandlers, MenuHandlers, HotbarEditorHandlers, HabilidadesHandlers, OnlineModeHandlers, HotbarHandlers, ConsumableBarHandlers, HudHandlers, DeathUIHandlers, ModalStackHandlers, TradeHandlers, DuelHandlers, PartyHandlers, PvpZoneHandlers, ChatHandlers):
     def __init__(self, scale: float = 1.0, char_data: "dict | None" = None,
                  save_slot: int = 0,
                  net_user: str = "", net_pass: str = "",
@@ -313,6 +314,10 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._ambient_zones:    list = []   # [{name, ambient, rect:(x1,y1,x2,y2)}]
         self._default_ambient:  str  = ""   # ambient padrão do mapa
         self._current_zone:     str  = ""   # nome da zona onde o jogador está
+        # Zonas PvP (Fase F) — cosmético; decisão de dano é do servidor.
+        self._pvp_zones:        list = []   # [{name, rect:(x1,y1,x2,y2)}]
+        self._in_pvp_zone_flag: bool = False
+        self._current_pvp_zone: str  = ""
 
         self._map_overlay   = MapOverlay(self.screen)
         self._map_overlay.set_ui_scale(self._ui_scale)
@@ -526,6 +531,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self.map_height_px = tilemap_comp.map_height_tiles * TILE_SIZE
         self._build_transition_tiles(spawn_points)
         self._load_ambient_zones(spawn_points)
+        self._load_pvp_zones(spawn_points)
 
         px, py = spawn_points["player"] if spawn_points["player"] else (1, 1)
         self.player_entity = create_player(self.world, px, py, self._current_map_file)
@@ -1796,6 +1802,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             _ptm = self.world.get_component(self.player_entity, TileMovement)
             if _ptm:
                 self._update_ambient_zone(_ptm.current_tile_x, _ptm.current_tile_y)
+                self._update_pvp_zone_indicator(_ptm.current_tile_x, _ptm.current_tile_y)
             if PROFILE_FRAMES:
                 self._prof_record("sounds+ambient", _time.perf_counter() - _ts)
 
@@ -1965,6 +1972,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             self._draw_duel_ui()
             self._draw_party_frames()
             self._draw_party_invite_ui()
+            self._draw_pvp_zone_banner()
             if self._show_talents:
                 self._talent_system.render()
             if self._show_skills:
@@ -2195,6 +2203,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
 
         self._build_transition_tiles(spawn_points)
         self._load_ambient_zones(spawn_points)
+        self._load_pvp_zones(spawn_points)
         self._spawn_entities_from(spawn_points)
 
         # Reposiciona o jogador

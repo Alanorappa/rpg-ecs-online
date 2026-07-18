@@ -37,6 +37,7 @@ from server.spell_completion_processor import SpellCompletionMixin
 from server.trade_processor import TradeProcessorMixin
 from server.duel_processor import DuelProcessorMixin
 from server.party_processor import PartyProcessorMixin
+from server.pvp_zone_processor import PvpZoneProcessorMixin
 from debug.mob_combat_debug import MCL
 
 # move_player() faz snap instantâneo de tile (sem tween real) — esta janela é
@@ -141,7 +142,8 @@ class _MapBundle:
 
 
 class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootProcessorMixin,
-                   SpellCompletionMixin, TradeProcessorMixin, DuelProcessorMixin, PartyProcessorMixin):
+                   SpellCompletionMixin, TradeProcessorMixin, DuelProcessorMixin, PartyProcessorMixin,
+                   PvpZoneProcessorMixin):
 
     MAP_FILE = "maps/map_1.csv"   # mapa padrão carregado pelo servidor
 
@@ -252,6 +254,12 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # Eventos de grupo do tick (party_id mudou, ou ("left", eid)) —
         # consumidos pelo broadcast loop do SessionManager.
         self._party_state_events_this_tick: list = []
+
+        # Zona PvP (Fase F, ver server/pvp_zone_processor.py) — map_file →
+        # lista de {"name","rect"}, populado por _load_map_for. Sem estado
+        # de pares/tick-check: é um predicado stateless (ver docstring do
+        # mixin).
+        self._pvp_zones_by_map: dict[str, list[dict]] = {}
 
         # Timer de ataque por jogador: session_id → segundos até próximo hit
         self._attack_timers: dict[str, float] = {}
@@ -440,6 +448,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         log.info(f"[WorldServer] carregando mapa: {map_file}")
         terrain_matrix, object_matrix, spawn_points, terrain_visual = \
             load_map_csv(map_file)
+        self._pvp_zones_by_map[map_file] = spawn_points.get("pvp_zones", [])
 
         # Snapshot de entidades ANTES de criar as do mapa
         _eids_before = set(self.world._components.keys())
@@ -1190,7 +1199,11 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         if not self.pvp_enabled:
             return False
         # Duelo aceito: par hostil somente um ao outro.
-        return frozenset((attacker_id, target_id)) in self._duel_pairs
+        if frozenset((attacker_id, target_id)) in self._duel_pairs:
+            return True
+        # Zona PvP (Fase F): ambos dentro da mesma zona, exceto mesmo grupo
+        # (server/pvp_zone_processor.py).
+        return self._pvp_zone_allows(attacker_id, target_id)
 
     def set_player_target(self, session_id: str, target_eid: int) -> None:
         """Define o alvo de combate do jogador. target_eid=-1 para parar.

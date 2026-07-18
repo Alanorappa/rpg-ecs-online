@@ -142,6 +142,12 @@
     "music": ["birdsong_forest_theme_1.ogg"]
   }
   ],
+  "pvp_zones": [
+  {
+    "name": "Arena Selvagem",
+    "rect": [180, 389, 196, 400]
+  }
+  ],
   "spawn_zones": [
     {
       "x": 80,

@@ -105,6 +105,7 @@ def load_map_csv(filepath: str) -> tuple[list[str], list[str], dict, list | None
         "spawn_zones":       [],
         "transitions":       [],
         "ambient_zones":     [],
+        "pvp_zones":         [],
         "default_ambient":   "",
         "training_dummies":  [],
         "combat_npcs":       [],
@@ -356,6 +357,14 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
                 "ambient": ambient_raw,
                 "music":   music_raw,
                 "rect":    (int(r[0]), int(r[1]), int(r[2]), int(r[3])),
+            })
+
+    if "pvp_zones" in data:
+        for z in data["pvp_zones"]:
+            r = z.get("rect", [0, 0, 0, 0])
+            spawn_points["pvp_zones"].append({
+                "name": z.get("name", ""),
+                "rect": (int(r[0]), int(r[1]), int(r[2]), int(r[3])),
             })
 
 

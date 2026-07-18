@@ -4329,10 +4329,90 @@ e `AOI_UPDATE` (bloco spawned) cada um propaga o level do payload pro
 `RemoteControlled.level` da entidade recém-criada. Suíte completa
 212/212, rodada 3x.
 
-**Não validado**: sessão manual — nameplate de player remoto mostra o
-level correto no EXATO momento em que ele entra na AOI (reconectar,
-se mover pra perto, ou logar depois de alguém já ter subido de nível),
-sem precisar de nenhum combate/regen pra "destravar".
+**Validado (18/07/2026)**: usuário testou em jogo e confirmou — "Validado."
+Fecha a thread de level-sync inteira (4 rounds de fix + a causa raiz real).
+
+---
+
+### §34.26 — Zona PvP (Fase F do roadmap, 18/07/2026)
+
+Próximo item do roadmap combinado com o usuário depois da Leva 1 e da
+Fase E (Party): **Fase F — Zonas PvP**, comportamento já decidido em
+§34.13/§34.19 antes mesmo da Fase E começar: "solo = todos hostis; em
+party = só quem está fora do grupo". Party era pré-requisito explícito —
+sem `get_party_id_of()` não dava pra implementar a exceção de grupo.
+
+Decisões do usuário: (1) 1ª zona fica numa área nova dentro do `map_1`
+(mundo aberto), não uma caverna inteira nem só o mecanismo sem conteúdo;
+(2) indicador visual = mensagem no log de entrada/saída **+** banner
+persistente na tela enquanto dentro (não só o log).
+
+Achado-chave da exploração: zona PvP **não precisa de estado próprio nem
+de checagem por tick** — diferente de duelo (que precisa de `_duel_pairs`
++ `_tick_duel_distance_check` porque é um acordo persistente que pode
+ficar "pendurado" até os players se afastarem), zona é um predicado 100%
+computado a partir da posição atual. `can_engage()` já é consultado a
+CADA tentativa de ataque (`server/combat_processor.py`,
+`server/skill_processor.py`, `server/spell_completion_processor.py`),
+então sair da zona no meio de uma luta já bloqueia o próximo golpe
+automaticamente — nenhum código novo de "encerrar combate" foi
+necessário.
+
+Auditoria confirmou que morte de player hoje não dropa gold/item nem
+penaliza XP em NENHUM caso (nem PvE nem duelo) — uma morte PvP em zona
+reusa o pipeline de morte existente (`server/respawn_system.py::
+_handle_player_death`, fantasma/respawn, sem lethal interceptor como o
+duelo) sem NENHUMA mudança, e já sai consequence-free de graça.
+
+**Servidor**:
+- Geometria da zona é **retângulo de tiles por mapa**, declarada em
+  `pvp_zones` no `_entities.json` do mapa (mesmo padrão de
+  `ambient_zones`, já usado pra som ambiente) — `engine/map_loader.py::
+  _merge_entities_json` ganhou o parse; `maps/map_1_entities.json` ganhou
+  a 1ª zona ("Arena Selvagem", rect `[180, 389, 196, 400]`, área aberta
+  ao sul de uma casa perto do spawn (115,389) — coordenadas de 1ª leva,
+  ajuste é só JSON, sem código).
+- `server/pvp_zone_processor.py` (novo, `PvpZoneProcessorMixin`, SEM
+  estado de pares/tick-check) — `_in_pvp_zone(eid)` (rect containment via
+  `get_entity_map` + `TileMovement.current_tile_x/y`) e
+  `_pvp_zone_allows(attacker_id, target_id)` (ambos dentro da zona E não
+  no mesmo grupo, via `get_party_id_of` já existente do
+  `PartyProcessorMixin`).
+- `server/world_server.py`: `_pvp_zones_by_map: dict[str, list[dict]]`
+  populado em `_load_map_for` (logo após `load_map_csv`);
+  `_pvp_allowed_between` ganhou o `or`-clause que já estava reservado por
+  comentário desde a Leva 1 ("futuro: zona PvP da posição dos dois +
+  exceção de party").
+
+**Cliente**: `client/pvp_zone_handlers.py` (novo, `PvpZoneHandlers`) —
+`_load_pvp_zones`/`_update_pvp_zone_indicator` espelham
+`_load_ambient_zones`/`_update_ambient_zone` byte a byte (mesmo
+algoritmo de rect containment com detecção de MUDANÇA de estado);
+`_draw_pvp_zone_banner` desenha "ZONA PVP" fixo no topo-centro enquanto
+dentro. **Nenhuma mensagem de rede nova** — a geometria da zona vem do
+MESMO `_entities.json` que o cliente já carrega localmente pra
+`ambient_zones`, então não precisa trafegar; a decisão de dano continua
+100% autoritativa no servidor via `can_engage`, o indicador é puramente
+cosmético.
+
+**Validado**: `tests/test_pvp_zone.py` (7 testes) — dois sem grupo dentro
+da zona se engajam nos dois sentidos; um dentro/um fora continua
+amigável; mesmo grupo dentro da zona continua amigável (exceção);
+grupos DIFERENTES dentro da zona são hostis entre si; fora de qualquer
+zona sem duelo/grupo continua amigável (regressão da Leva 1); mapa sem
+`pvp_zones` (cavernas) não quebra; duelo continua funcionando
+independente da zona (regressão). `tests/test_client_ui.py` ganhou 2
+testes do indicador (entra/sai alterna a flag do banner sem "piscar"
+dentro do mesmo estado; mapa sem zonas nunca liga a flag). Suíte
+completa 221/221, rodada 3x.
+
+**Não validado**: sessão manual com 2 clientes — os dois entram juntos
+no retângulo sem grupo e conseguem se atacar; um sai da zona no meio da
+luta e o próximo golpe já é bloqueado sem reconectar; agrupados (mesmo
+dentro da zona) NÃO conseguem se atacar; fora da zona segue amigável
+(duelo por convite continua funcionando); morte na zona segue o ciclo
+normal de fantasma/respawn sem perda de gold/item/XP; banner "ZONA PVP"
+aparece ao entrar e some ao sair, log mostra as duas mensagens.
 
 ---
 
@@ -4524,6 +4604,10 @@ barra de HP); ghost (`is_ghost`) desenhado semi-transparente (alpha ~120/255).
 | PvP: skills de alvo único suportam `RemoteControlled` (`_target_alive`) | ✅ completo | `skill_handlers.py::_target_alive` |
 | Skill Level (Tibia-like) — armas/escudo/defesa/resistências/magic, 0-200, server-autoritativo | ✅ completo | `components.SkillLevels`, `stats_system.py` (xp/bônus), hooks em `server/spell_completion_processor.py`/`systems.py::CombatSystem`/`core_systems.py::StatusEffectSystem`, persistência `skill_levels_json`, UI `skill_level_ui.py` (tecla L) |
 | Migração do sistema de quests para server-autoritativo (QuestLog/progresso/entrega) | ✅ completo | `quest_logic.py` (lógica pura), `server/world_server.py::_process_quest_events`, hooks em `server_death_handler.py`/`spell_completion_processor.py`/`skill_processor.py`/`world_server.move_player`/`apply_consumable`/`update_player_equipment`, `server/session.py::_handle_quest_accept`/`_handle_quest_turn_in`, persistência `quests_json`, ver `PROBLEMAS_ARQUITETURA.md` |
+| Duelo (contexto PvP por convite, estilo WoW) | ✅ completo, validado em jogo | `server/duel_processor.py`, `client/duel_handlers.py` |
+| Party/Grupo + XP compartilhado (Fase E) | ✅ completo, validado em jogo | `server/party_processor.py`, `client/party_handlers.py` |
+| Zona PvP (Fase F — "solo=hostil, grupo=exceção") | ✅ completo, não validado em jogo | `server/pvp_zone_processor.py`, `client/pvp_zone_handlers.py` |
+| Times/arenas (Fase G do roadmap) | 🔲 pendente | — |
 | Instâncias (dungeons/raids) | 🔲 pendente | `server/zone_manager.py` |
 | Client-side prediction de movimento | 🔲 pendente | `client/` |
 

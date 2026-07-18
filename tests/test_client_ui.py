@@ -287,6 +287,36 @@ def test_aoi_update_spawned_propaga_level_do_player_remoto():
     assert rc.level == 4, "AOI_UPDATE (spawned) deveria propagar o level pro RemoteControlled"
 
 
+# ── client/pvp_zone_handlers.py — indicador de Zona PvP (Fase F) ─────────────
+# Cosmético apenas (decisão de dano é do servidor) — cobre entrar/sair do
+# retângulo disparando o log certo e ligando/desligando a flag do banner.
+
+def test_pvp_zone_indicador_entra_e_sai():
+    from client.pvp_zone_handlers import PvpZoneHandlers
+
+    fx = PvpZoneHandlers()
+    fx._load_pvp_zones({"pvp_zones": [{"name": "Arena Selvagem", "rect": (10, 10, 20, 20)}]})
+    assert fx._in_pvp_zone_flag is False
+
+    fx._update_pvp_zone_indicator(15, 15)   # dentro do rect
+    assert fx._in_pvp_zone_flag is True
+
+    fx._update_pvp_zone_indicator(15, 16)   # ainda dentro — não deveria "piscar"
+    assert fx._in_pvp_zone_flag is True
+
+    fx._update_pvp_zone_indicator(0, 0)     # fora do rect
+    assert fx._in_pvp_zone_flag is False
+
+
+def test_pvp_zone_sem_zonas_no_mapa_nunca_liga_flag():
+    from client.pvp_zone_handlers import PvpZoneHandlers
+
+    fx = PvpZoneHandlers()
+    fx._load_pvp_zones({})   # mapa sem pvp_zones (ex: cavernas)
+    fx._update_pvp_zone_indicator(15, 15)
+    assert fx._in_pvp_zone_flag is False
+
+
 def test_offline_sem_requester_continua_creditando_local():
     """Regressão: sem set_online_loot_requester (modo legado/offline), o
     fluxo antigo — creditar na hora do clique — continua intacto."""
