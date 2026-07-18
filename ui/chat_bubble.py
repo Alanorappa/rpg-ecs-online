@@ -38,8 +38,23 @@ class ChatBubbleManager:
         # 1 balão por entidade — mensagem nova substitui a anterior
         self._entries: dict[int, _ChatBubbleEntry] = {}
         self._font: "pygame.font.Font | None" = None
+        self._external_font: "pygame.font.Font | None" = None
+
+    def set_font(self, font: "pygame.font.Font") -> None:
+        """GameEngine._reload_ui_fonts() chama isto com self.font_sm — o
+        balão passa a usar o MESMO objeto de fonte da janela de chat
+        (mesmo tamanho renderizado, mesmo _ui_scale) em vez da própria
+        instância fixa em FONT_SIZE=22 (ignorava _ui_scale). Usuário
+        reportou 17/07/2026 que o balão "parecia" a fonte do chat só que
+        bold — eram o mesmo arquivo/tamanho NOMINAL, mas escalas
+        diferentes (font_sm segue _ui_scale, o balão não) fazem uma fonte
+        sem antialiasing renderizar com peso de traço visualmente
+        diferente a cada tamanho inteiro distinto."""
+        self._external_font = font
 
     def _get_font(self) -> "pygame.font.Font":
+        if self._external_font is not None:
+            return self._external_font
         if self._font is None:
             self._font = _font(self.FONT_SIZE)
         return self._font

@@ -918,6 +918,10 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self.font_sm = _font(round(self._UI_FONT_BASES["sm"] * s))
         self.font_md = _font(round(self._UI_FONT_BASES["md"] * s))
         self.font_lg = _font(round(self._UI_FONT_BASES["lg"] * s))
+        # Balão de fala usa a MESMA fonte da janela de chat (mesmo objeto,
+        # mesmo _ui_scale) — pedido do usuário 17/07/2026, ver
+        # ui/chat_bubble.py::set_font.
+        CHAT_BUBBLE.set_font(self.font_sm)
 
     def _u(self, px: int) -> int:
         """Converte pixels base para pixels escalados pela UI scale (ou pelo
