@@ -1090,10 +1090,20 @@ class SessionManager:
             s2 = self._sessions.get(p.get("session_id", ""))
             if s2:
                 _h, _hm = self.world_server.get_player_hp(s2.session_id)
+                # level: componente VIVO, não s2.char_data (snapshot do LOGIN
+                # do outro player, nunca atualizado — mesma causa raiz do
+                # §34.20; aqui é o pior caso: quem loga DEPOIS de alguém já
+                # ter subido de nível recebe o level velho no WORLD_STATE
+                # inicial, e como o eid já entra em known_eids aqui, o
+                # "player ficou visível" nunca re-roda pra corrigir depois —
+                # só o tick-broadcast de _sync_player_hp_dirty salvaria, e só
+                # no PRÓXIMO level-up que acontecer DEPOIS deste login).
+                from engine.components import CharacterStats as _S2CharAOI
+                _s2char = self.world_server.world.get_component(s2.entity_id, _S2CharAOI)
                 p.update({"name": s2.display_name,
                            "class_id": s2.char_data.get("class_id", "guerreiro"),
                            "hp": _h, "hp_max": _hm,
-                           "level": s2.char_data.get("level", 1), "effects": []})
+                           "level": _s2char.level if _s2char else 1, "effects": []})
 
         near_mobs    = self.world_server.get_mobs_in_aoi(
             tx, ty, AOI_RADIUS,

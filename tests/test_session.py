@@ -251,6 +251,25 @@ class TestAOISubscription(unittest.IsolatedAsyncioTestCase):
         self.assertIn(session_a.entity_id, player_eids,
                       "Player A não apareceu no WORLD_STATE de B")
 
+    async def test_world_state_mostra_level_atual_nao_o_de_login(self):
+        """Bug real relatado pelo usuário 17/07/2026: mago que loga DEPOIS
+        do guerreiro já ter subido de nível recebia o level de LOGIN do
+        guerreiro no WORLD_STATE inicial (Session.char_data["level"],
+        nunca atualizado durante a sessão) — e como o eid já entra em
+        known_eids ali, o "player ficou visível" nunca re-roda depois pra
+        corrigir (só o próximo level-up, via broadcast de tick, salvaria)."""
+        session_a, _ = await fake_login(self.mgr, "s1", "user_lvl_a", 115, 389)
+        from engine.components import CharacterStats
+        char_a = self.ws_server.world.get_component(session_a.entity_id, CharacterStats)
+        char_a.level = 10   # progressão real DEPOIS do login de A (char_data não sabe)
+
+        _, fw_b = await fake_login(self.mgr, "s2", "user_lvl_b", 117, 389)
+        ws_b = get_msgs_of_type(fw_b, MsgType.WORLD_STATE)[0]
+        player_a_entity = next(e for e in ws_b["entities"]
+                              if e.get("kind") == "player" and e["eid"] == session_a.entity_id)
+        self.assertEqual(player_a_entity["level"], 10,
+                         "WORLD_STATE deveria mostrar o level ATUAL de A, não o de login")
+
     async def test_second_player_in_known_eids_of_first(self):
         """Quando B loga perto de A, o eid de B deve ir para known_eids de A."""
         session_a, _ = await fake_login(self.mgr, "s1", "user_ka", 115, 389)

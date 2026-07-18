@@ -3821,6 +3821,29 @@ rodada 3x.
 nível e o outro ver o nameplate atualizar em tempo real, sem precisar
 sair e voltar da área de visão.
 
+**Follow-up (mesmo dia)**: usuário testou e reportou que persistia —
+"na tela do guerreiro está correto [óbvio, é o próprio HUD local, nunca
+passou por rede], mas na tela do mago o level do guerreiro ainda está
+1". Faltava um TERCEIRO ponto com a mesma causa raiz, o pior dos três:
+`server/session.py::_spawn_and_start` (snapshot `WORLD_STATE` enviado
+no LOGIN de um player, listando quem já está por perto) lia
+`s2.char_data.get("level", 1)` — o snapshot de login do OUTRO player
+(`s2`), não o level ao vivo. Se o mago loga DEPOIS do guerreiro já ter
+subido de nível, recebe o level congelado em quando o guerreiro logou
+(nesse caso, 1). E como esse mesmo bloco já marca o eid como
+`known_eids`, o caminho "player ficou visível" (o fix original acima)
+NUNCA re-roda pra corrigir depois — só um level-up NOVO, que aconteça
+DEPOIS do mago logar, dispararia o broadcast de tick e salvaria. Fix:
+mesma troca de `char_data`→componente vivo (`CharacterStats.level` de
+`s2.entity_id`), agora nos 3 pontos (tick-broadcast, "ficou visível",
+WORLD_STATE de login).
+
+**Validado**: `tests/test_session.py::TestAOISubscription::
+test_world_state_mostra_level_atual_nao_o_de_login` — player A sobe pra
+level 10 via componente (simulando progressão real pós-login, sem
+tocar `char_data`), player B loga depois e o `WORLD_STATE` de B mostra
+level 10 de A, não 1. Suíte completa 196/196, rodada 3x.
+
 ### 34.21 Loot não era free-for-all dentro do grupo (17/07/2026)
 
 Usuário observou (não implementado na Fase E original): grupo deveria
