@@ -1162,13 +1162,17 @@ class RenderSystem(System):
         # "g" parecendo "9" nela (17/07/2026); antes disso já tinha passado
         # por pygame.font.Font(None, ...) por engano (fonte padrão feia,
         # motivo do "ilegível" reportado 11/07/2026).
+        # make() aplica _SCALE=0.5 (Determination renderiza ~2x mais alta
+        # que a fonte padrão no mesmo size) — dobra o size (×2) pra manter
+        # o tamanho visual equivalente ao make_pixel(16) antigo (sem
+        # correção nenhuma); usuário reportou "muito pequena" sem isso.
         from ui.fonts import make as _make_name
-        self._name_font = _make_name(16)
+        self._name_font = _make_name(32)
         # Fonte do número de nível — tamanho escolhido testando visualmente
         # (ver ui/hud_bars.py::LEVEL_FONT_SIZE), não é o mesmo tamanho do
         # nome (a caixinha da HUD tem proporção diferente).
         from ui.hud_bars import LEVEL_FONT_SIZE as _LFS
-        self._level_font = _make_name(_LFS)
+        self._level_font = _make_name(_LFS * 2)
         # Offset/tamanho não é mais escolhido aqui — WORLD_LABELS empilha
         # (ver ui/world_labels.py) e desenha em espaço de tela, pós-zoom.
 
