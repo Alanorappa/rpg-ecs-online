@@ -4006,6 +4006,41 @@ utilitário "convive em paralelo" — mesmo padrão do §34.22).
 do chat, espaçamento entre letras natural (nem apertado nem com vão
 estranho tipo o bug original da MEGAMAN10).
 
+**Follow-up final (mesmo dia)**: mesmo depois do fix de `render_tight`,
+usuário comparou lado a lado de novo (print com "Juugomage" no
+nameplate vs "Juugomage:" no chat) e pediu de forma explícita: "quero
+que a fonte fique no mesmo estilo do nick que está no chat". Causa
+residual: nameplate usava `make(32)` (uma instância PRÓPRIA, criada só
+pra igualar o tamanho visual da antiga MEGAMAN10) — mesma fonte/render,
+mas tamanho (~16pt efetivo) MAIOR que o do chat (`font_sm`, ~11pt
+efetivo) — grande o bastante pra ainda ler como "outro estilo" numa
+comparação direta.
+
+Fix definitivo: nameplate de player/mob/NPC para de criar fonte
+PRÓPRIA — usa o MESMO objeto `self.font_sm` da janela de chat.
+- `client/remote_entity_handlers.py` (mob remoto, player remoto): passa
+  a ler `self.font_sm` direto no `add_text()` a cada frame (sem cache
+  numa instância própria) — GameEngine já recria `font_sm` em
+  `_reload_ui_fonts()`, então fica sempre em sincronia com `_ui_scale`
+  de graça, sem precisar de nenhum mecanismo de invalidação.
+- `ui/systems.py::RenderSystem` (NPC/mob local, offline) é uma classe
+  SEPARADA (não mixin de `GameEngine`, sem acesso a `self.font_sm`) —
+  ganhou `set_name_font(font)`; `game.py` injeta `self.font_sm` logo
+  após construir o `RenderSystem` E de novo a cada
+  `_reload_ui_fonts()` (mesmo padrão do `CHAT_BUBBLE.set_font()`,
+  §34.23 acima — sem isso, mudar `_ui_scale` deixaria a fonte da
+  nameplate dessincronizada da do chat de novo).
+
+Fonte do NÍVEL (número dentro do círculo) NÃO mudou — continua com
+tamanho próprio (`LEVEL_FONT_SIZE * 2`), o pedido do usuário era
+especificamente sobre o NOME.
+
+**Validado**: suíte completa 196/196, rodada 3x.
+
+**Não validado**: visual em jogo — nameplate literalmente no mesmo
+tamanho/peso do chat lado a lado; mudar a escala de UI (menu de opções)
+mantém os dois em sincronia.
+
 ---
 
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata

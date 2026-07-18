@@ -663,6 +663,10 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._render_system          = render_system
         self._tile_render_system     = tile_render_system
         self._death_respawn_system   = death_respawn_system
+        # Nameplate de NPC/mob local usa o MESMO objeto de fonte da janela
+        # de chat (pedido do usuário 17/07/2026) — ver
+        # ui/systems.py::RenderSystem.set_name_font.
+        render_system.set_name_font(self.font_sm)
 
         self._combat_state_sys = CombatStateSystem(self.world)
 
@@ -918,10 +922,16 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self.font_sm = _font(round(self._UI_FONT_BASES["sm"] * s))
         self.font_md = _font(round(self._UI_FONT_BASES["md"] * s))
         self.font_lg = _font(round(self._UI_FONT_BASES["lg"] * s))
-        # Balão de fala usa a MESMA fonte da janela de chat (mesmo objeto,
-        # mesmo _ui_scale) — pedido do usuário 17/07/2026, ver
-        # ui/chat_bubble.py::set_font.
+        # Balão de fala e nameplate de NPC/mob local usam a MESMA fonte da
+        # janela de chat (mesmo objeto, mesmo _ui_scale) — pedido do
+        # usuário 17/07/2026, ver ui/chat_bubble.py::set_font e
+        # ui/systems.py::RenderSystem.set_name_font. _render_system ainda
+        # não existe na 1ª chamada (init, antes da linha que o cria) — a
+        # injeção inicial roda logo após a criação (ver mais abaixo).
         CHAT_BUBBLE.set_font(self.font_sm)
+        _rs = getattr(self, "_render_system", None)
+        if _rs is not None:
+            _rs.set_name_font(self.font_sm)
 
     def _u(self, px: int) -> int:
         """Converte pixels base para pixels escalados pela UI scale (ou pelo

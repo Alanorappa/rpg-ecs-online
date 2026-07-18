@@ -1195,17 +1195,6 @@ class RemoteEntityHandlers:
                 _mob_id_hb = self.world.get_component(local_eid, _EIdHb)
                 _level_hb = _mob_id_hb.level if _mob_id_hb is not None else 1
 
-                if not hasattr(self, '_mob_name_font'):
-                    # Determination (fonte do projeto) em vez da pixel font
-                    # MEGAMAN10 — usuário reportou "g" parecendo "9" nela
-                    # (17/07/2026). make() aplica _SCALE=0.5 (Determination
-                    # renderiza ~2x mais alta que a fonte padrão no mesmo
-                    # size — ver ui/fonts.py) — dobra o size (×2) pra manter
-                    # o tamanho visual equivalente ao make_pixel(16) antigo
-                    # (sem correção nenhuma); usuário reportou "muito
-                    # pequena" na primeira tentativa sem essa compensação.
-                    from ui.fonts import make as _make_name_hb
-                    self._mob_name_font = _make_name_hb(32)
                 if not hasattr(self, '_mob_level_font'):
                     from ui.fonts import make as _make_name_hb2
                     from ui.hud_bars import LEVEL_FONT_SIZE as _LFS_hb
@@ -1231,9 +1220,15 @@ class RemoteEntityHandlers:
                 # espelhado aqui porque mob remoto não passa por aquele loop
                 # (renderizado à parte, ver _spawn_remote_mob).
                 # EntityIdentity.name/.level já são setados no spawn.
+                # self.font_sm (não uma instância própria): MESMO objeto de
+                # fonte da janela de chat — pedido explícito do usuário
+                # 17/07/2026 ("mesmo estilo do nick que está no chat"). Usar
+                # o atributo direto (em vez de cachear numa instância
+                # própria) mantém sincronia automática se _ui_scale mudar
+                # (self.font_sm é recriado por _reload_ui_fonts()).
                 if _mob_id_hb is not None:
                     _WL_hb.add_text(pos.x, _world_y_top,
-                                    _mob_id_hb.name, self._mob_name_font, (220, 200, 180),
+                                    _mob_id_hb.name, self.font_sm, (220, 200, 180),
                                     stack_key=local_eid, gap_before=2)
 
                 # Ícones de efeito à DIREITA da HUD (pedido do usuário 11/07/2026)
@@ -1331,14 +1326,6 @@ class RemoteEntityHandlers:
         from ui.world_labels import WORLD_LABELS as _WL_rp
         from ui.hud_bars import build_player_hud as _bph_rp, HUD_GAP_PX as _HGP_rp
 
-        if not hasattr(self, '_player_name_font'):
-            # Determination (fonte do projeto) em vez da pixel font
-            # MEGAMAN10 — usuário reportou "g" parecendo "9" nela
-            # (17/07/2026). make() aplica _SCALE=0.5 — dobra o size (×2)
-            # pra manter o tamanho visual equivalente ao make_pixel(16)
-            # antigo (ver comentário irmão em _draw_mob_hp_bars acima).
-            from ui.fonts import make as _make_name_rp
-            self._player_name_font = _make_name_rp(32)
         if not hasattr(self, '_player_level_font'):
             from ui.fonts import make as _make_name_rp2
             from ui.hud_bars import LEVEL_FONT_SIZE as _LFS_rp
@@ -1365,5 +1352,7 @@ class RemoteEntityHandlers:
             _world_y_top = pos.y - _sprite_h / 2
             _WL_rp.add_icon(pos.x, _world_y_top, _hud_surf,
                             stack_key=local_eid, gap_before=_HGP_rp)
-            _WL_rp.add_text(pos.x, _world_y_top, rc.name, self._player_name_font,
+            # self.font_sm: MESMO objeto de fonte da janela de chat (ver
+            # comentário irmão em _draw_mob_hp_bars acima).
+            _WL_rp.add_text(pos.x, _world_y_top, rc.name, self.font_sm,
                             _name_col_rp, stack_key=local_eid, gap_before=2)

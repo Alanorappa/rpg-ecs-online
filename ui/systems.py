@@ -1155,26 +1155,32 @@ class RenderSystem(System):
         from ui.fonts import CachedFont as _CF
         self._effect_dur_font = _CF(None, 18)
         # Nome flutuante acima de NPCs (e, no cliente online, mobs — ver
-        # client/remote_entity_handlers.py::_draw_mob_hp_bars, que usa o
-        # próprio font local em vez desta instância porque roda numa classe
-        # diferente). Determination (fonte do projeto) — usava a pixel font
-        # MEGAMAN10 (ver ui/fonts.py::make_pixel) até o usuário reportar o
-        # "g" parecendo "9" nela (17/07/2026); antes disso já tinha passado
-        # por pygame.font.Font(None, ...) por engano (fonte padrão feia,
-        # motivo do "ilegível" reportado 11/07/2026).
-        # make() aplica _SCALE=0.5 (Determination renderiza ~2x mais alta
-        # que a fonte padrão no mesmo size) — dobra o size (×2) pra manter
-        # o tamanho visual equivalente ao make_pixel(16) antigo (sem
-        # correção nenhuma); usuário reportou "muito pequena" sem isso.
+        # client/remote_entity_handlers.py::_draw_mob_hp_bars, que usa
+        # self.font_sm de lá porque roda numa classe diferente/mixin de
+        # GameEngine). Determination (fonte do projeto) — usava a pixel
+        # font MEGAMAN10 até o usuário reportar o "g" parecendo "9"
+        # (17/07/2026), depois "muito pequena" com o size mal corrigido, e
+        # por fim "ainda parece diferente do chat" — pedido explícito:
+        # "mesmo estilo do nick que está no chat". self._name_font aqui é
+        # só um FALLBACK até set_name_font() ser chamado (GameEngine
+        # injeta o próprio self.font_sm logo após construir este objeto e
+        # de novo a cada _reload_ui_fonts(), ver game.py) — garante o
+        # MESMO tamanho/objeto da janela de chat, nunca um `make()`
+        # próprio e potencialmente dessincronizado de _ui_scale.
         from ui.fonts import make as _make_name
-        self._name_font = _make_name(32)
+        self._name_font = _make_name(22)
         # Fonte do número de nível — tamanho escolhido testando visualmente
         # (ver ui/hud_bars.py::LEVEL_FONT_SIZE), não é o mesmo tamanho do
         # nome (a caixinha da HUD tem proporção diferente).
         from ui.hud_bars import LEVEL_FONT_SIZE as _LFS
         self._level_font = _make_name(_LFS * 2)
-        # Offset/tamanho não é mais escolhido aqui — WORLD_LABELS empilha
-        # (ver ui/world_labels.py) e desenha em espaço de tela, pós-zoom.
+
+    def set_name_font(self, font: "pygame.font.Font") -> None:
+        """GameEngine injeta self.font_sm aqui (logo após construir este
+        objeto, e de novo a cada _reload_ui_fonts()) — nameplate de NPC/
+        mob local passa a usar o MESMO objeto de fonte da janela de chat.
+        Ver comentário em __init__."""
+        self._name_font = font
 
     def render(self, camera_offset_x: float = 0, camera_offset_y: float = 0,
                world_objects: list = None) -> None:
