@@ -932,29 +932,37 @@ class SessionManager:
 
     async def _handle_loot_request(self, session: Session, payload: dict, ts: int) -> None:
         """
-        Player clicou num corpo para sacar.
-        Se for o dono → retorna itens via LOOT_RESULT.
-        Se não for o dono → ignora silenciosamente (regra de negócio).
+        Player clicou num corpo para sacar (granular — `take`: "gold"/
+        "item"/"all", ver WorldServer.request_loot).
+        Se for o dono/grupo → retorna itens via LOOT_RESULT.
+        Se não → ignora silenciosamente (regra de negócio).
         """
         if not session.authenticated:
             return
         corpse_id = int(payload.get("corpse_id", -1))
         if corpse_id < 0:
             return
-        loot = self.world_server.request_loot(session.session_id, corpse_id)
+        take      = payload.get("take", "all")
+        item_name = payload.get("item_name", "")
+        loot = self.world_server.request_loot(session.session_id, corpse_id, take, item_name)
         if loot is not None:
             await session.send(MsgType.LOOT_RESULT, {
                 "corpse_id": corpse_id,
                 "items":     loot["items"],
                 "coins":     loot["coins"],
             })
-            # Broadcast: corpo some para todos no AOI (mesmo mapa)
+            # Corpo só some pra AOI quando fica REALMENTE vazio — sacar só
+            # o ouro (ou só um item) não deveria remover o resto do loot
+            # da visão do resto do grupo (bug real relatado pelo usuário
+            # 17/07/2026: corpo sumia com itens ainda dentro).
             corpse_data = self.world_server._corpses.get(corpse_id, {})
-            despawn_payload = {"eid": -corpse_id}
-            for s in self._sessions_in_aoi(corpse_data.get("tx", 0),
-                                           corpse_data.get("ty", 0),
-                                           corpse_data.get("map")):
-                await s.send(MsgType.ENTITY_DESPAWN, despawn_payload)
+            _still_has_loot = bool(corpse_data.get("items")) or corpse_data.get("coins", 0) > 0
+            if not _still_has_loot:
+                despawn_payload = {"eid": -corpse_id}
+                for s in self._sessions_in_aoi(corpse_data.get("tx", 0),
+                                               corpse_data.get("ty", 0),
+                                               corpse_data.get("map")):
+                    await s.send(MsgType.ENTITY_DESPAWN, despawn_payload)
                 s.known_eids.discard(-corpse_id)
 
     # cooldown per session_id: timestamp do último unstuck (módulo-level dict)

@@ -496,14 +496,24 @@ class SaveSyncHandlers:
             auto.ground_target = None
             auto.path.clear()
 
-    def _send_loot_request(self, corpse_id: int) -> None:
-        """Envia LOOT_REQUEST ao servidor para o corpse_id."""
+    def _send_loot_request(self, corpse_id: int, take: str = "all",
+                           item_name: str = "") -> None:
+        """Envia LOOT_REQUEST ao servidor para o corpse_id.
+
+        `take`: "gold"/"item"/"all" — granular desde 17/07/2026 (sacar só
+        o ouro não deveria levar junto o resto do loot — ver
+        server/loot_processor.py::request_loot)."""
         if not self._net or not self._net.connected:
             return
         from shared.messages import MsgType
-        self._net.send(MsgType.LOOT_REQUEST, {"corpse_id": corpse_id})
+        payload = {"corpse_id": corpse_id, "take": take}
+        if item_name:
+            payload["item_name"] = item_name
+        self._net.send(MsgType.LOOT_REQUEST, payload)
 
-    def _send_loot_request_for_local_corpse(self, local_corpse_eid: int) -> None:
+    def _send_loot_request_for_local_corpse(self, local_corpse_eid: int,
+                                            take: str = "all",
+                                            item_name: str = "") -> None:
         """Ponte pro LootSystem (ui/systems.py) — ele só conhece o eid ECS
         LOCAL do corpse (a entidade Corpse criada por _handle_msg_loot_
         available), não o corpse_id do SERVIDOR (chave de
@@ -525,4 +535,4 @@ class SaveSyncHandlers:
         corpse_id = next((cid for cid, data in self._available_loot.items()
                           if data.get("local_eid") == local_corpse_eid), None)
         if corpse_id is not None:
-            self._send_loot_request(corpse_id)
+            self._send_loot_request(corpse_id, take, item_name)

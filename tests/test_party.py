@@ -283,5 +283,65 @@ class TestPartyLootFreeForAll(unittest.TestCase):
         self.assertEqual(second["coins"], 0)
 
 
+class TestLootGranular(unittest.TestCase):
+    """`take` granular (bug real relatado pelo usuário 17/07/2026: sacar
+    só o ouro levava junto os itens que sobravam — corpo sumia com loot
+    ainda dentro). request_loot() agora aceita take="gold"/"item"/"all"."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        self.a = spawn_player(self.ws, "s1", 130, 374)
+
+    def _make_corpse(self, items: list, coins: int) -> int:
+        cid = self.ws._next_corpse_id
+        self.ws._next_corpse_id += 1
+        self.ws._corpses[cid] = {
+            "tx": 130, "ty": 374, "owner_eid": self.a,
+            "items": items, "coins": coins,
+            "timer": 120.0, "map": self.ws._map_file,
+        }
+        return cid
+
+    def test_take_gold_nao_leva_itens_junto(self):
+        cid = self._make_corpse([{"name": "Poção"}], coins=10)
+
+        result = self.ws.request_loot("s1", cid, take="gold")
+
+        self.assertEqual(result["coins"], 10)
+        self.assertEqual(result["items"], [])
+        self.assertEqual(self.ws._corpses[cid]["coins"], 0)
+        self.assertEqual(len(self.ws._corpses[cid]["items"]), 1,
+                         "item nao deveria ter sido removido junto do ouro")
+
+    def test_take_item_nao_leva_ouro_junto(self):
+        cid = self._make_corpse([{"name": "Poção"}], coins=10)
+
+        result = self.ws.request_loot("s1", cid, take="item", item_name="Poção")
+
+        self.assertEqual(len(result["items"]), 1)
+        self.assertEqual(result["coins"], 0)
+        self.assertEqual(self.ws._corpses[cid]["items"], [],
+                         "item pedido deveria ter sido removido")
+        self.assertEqual(self.ws._corpses[cid]["coins"], 10,
+                         "ouro nao deveria ter sido tocado")
+
+    def test_take_item_remove_so_o_item_pedido_por_nome(self):
+        cid = self._make_corpse([{"name": "Poção"}, {"name": "Espada"}], coins=0)
+
+        result = self.ws.request_loot("s1", cid, take="item", item_name="Espada")
+
+        self.assertEqual([i["name"] for i in result["items"]], ["Espada"])
+        remaining = [i["name"] for i in self.ws._corpses[cid]["items"]]
+        self.assertEqual(remaining, ["Poção"], "só o item pedido deveria sair")
+
+    def test_take_item_nome_ja_pego_retorna_vazio(self):
+        cid = self._make_corpse([{"name": "Poção"}], coins=0)
+        self.ws.request_loot("s1", cid, take="item", item_name="Poção")
+
+        result = self.ws.request_loot("s1", cid, take="item", item_name="Poção")
+
+        self.assertEqual(result["items"], [], "item ja retirado nao deveria sair de novo")
+
+
 if __name__ == "__main__":
     unittest.main()

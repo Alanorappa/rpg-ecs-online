@@ -4102,6 +4102,47 @@ lootea o ouro, arqueiro abre o MESMO corpo e vê vazio ("Já foi
 saqueado"); item também não duplica; modo offline/singleplayer (se
 algum dia rodar de novo) continua funcionando sem regressão.
 
+**Follow-up (mesmo dia)**: usuário testou o fix acima e achou outro
+sintoma da mesma raiz: "o corpo com loot some quando eu looteio o gold,
+se tiver mais algum drop os players perdem a chance de lootear". Causa:
+`request_loot()` (mesmo já corrigido pro grupo) continuava "tudo ou
+nada" — sacar o ouro esvaziava items JUNTO na mesma chamada. E
+`server/session.py::_handle_loot_request` mandava `ENTITY_DESPAWN` do
+corpo pra TODO MUNDO no AOI incondicionalmente em QUALQUER saque
+bem-sucedido, mesmo sobrando loot — o corpo "sumia" da tela de todo o
+grupo mesmo com itens ainda dentro.
+
+Fix — protocolo `LOOT_REQUEST` ganhou `take` (`"gold"`/`"item"`/`"all"`)
++ `item_name` (não índice — quebraria se outro membro do grupo já
+tivesse tirado algo antes, deslocando a lista):
+- `server/loot_processor.py::request_loot()` — `take="gold"` só mexe em
+  `coins`; `take="item"` remove só o PRIMEIRO item da lista atual com
+  aquele nome; `"all"` continua existindo (compat, não usado pelo
+  cliente).
+- `server/session.py::_handle_loot_request` — `ENTITY_DESPAWN` só sai
+  quando o corpo fica REALMENTE vazio (`not items and coins<=0`), não
+  mais em toda resposta.
+- `ui/systems.py::LootSystem._try_send_online_loot_request(take,
+  item_name)` — clicar ouro manda `take="gold"`; clicar item (inclusive
+  `_try_equip_item`, botão direito) manda `take="item"` + `item.name`.
+- `client/network_handlers.py::_handle_msg_loot_result` — em vez de
+  remover a entidade `Corpse` LOCAL incondicionalmente, agora remove só
+  o que veio confirmado (`corpse_comp.coins=0` / pop do item por nome) e
+  só fecha/remove a entidade quando ela fica REALMENTE vazia — o resto
+  do loot continua visível e lootável (pelo mesmo player ou por
+  qualquer um do grupo).
+
+**Validado**: `tests/test_party.py::TestLootGranular` (4 testes) —
+sacar ouro não leva item junto (e vice-versa), sacar item por nome
+remove só aquele (com outro item presente permanecendo intocado), pedir
+de novo o mesmo item já retirado volta vazio. `tests/test_client_ui.py`
+ganhou o teste de clicar item mandando `take="item"`+nome certo. Suíte
+completa 204/204, rodada 3x.
+
+**Não validado**: sessão manual — sacar só o ouro deixa o corpo aberto
+com os itens ainda lá (pro mesmo player E pro resto do grupo); sacar
+tudo aos poucos até esvaziar de verdade some o corpo pra todo mundo.
+
 ---
 
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata

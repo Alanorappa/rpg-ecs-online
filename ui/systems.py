@@ -3179,16 +3179,23 @@ class LootSystem(UIScaleMixin, System):
         self._send_loot_request_for_local_corpse — ver docstring dela."""
         self._online_loot_requester = fn
 
-    def _try_send_online_loot_request(self) -> bool:
-        """True = modo online, request enfileirado (ou já em voo) — chamador
-        deve consumir o clique sem creditar nada localmente. False = modo
-        offline (sem requester setado), segue o fluxo local de sempre."""
+    def _try_send_online_loot_request(self, take: str, item_name: str = "") -> bool:
+        """True = modo online, request enfileirado (ou já em voo pra este
+        corpse) — chamador deve consumir o clique sem creditar nada
+        localmente. False = modo offline (sem requester setado), segue o
+        fluxo local de sempre.
+
+        `take`: "gold" ou "item" (com `item_name`) — granular desde
+        17/07/2026, sacar só o ouro não deveria levar junto o resto do
+        loot. Um request em voo bloqueia OUTROS cliques no MESMO corpse
+        (não por linha) — próximo clique só depois do LOOT_RESULT
+        responder, evita spam de request duplicado."""
         if self._online_loot_requester is None:
             return False
         corpse_id = self.open_corpse_id
         if corpse_id not in self._online_loot_pending:
             self._online_loot_pending.add(corpse_id)
-            self._online_loot_requester(corpse_id)
+            self._online_loot_requester(corpse_id, take, item_name)
         return True
 
     @property
@@ -3388,7 +3395,7 @@ class LootSystem(UIScaleMixin, System):
         if has_coins:
             if virtual_row >= self._scroll_offset and screen_row < self.MAX_ROWS:
                 if self._row_rect(modal, screen_row).collidepoint(mx, my):
-                    if self._try_send_online_loot_request():
+                    if self._try_send_online_loot_request("gold"):
                         return True
                     for _, wallet, _ in self.world.get_entities_with(Wallet, PlayerControlled):
                         wallet.gold += corpse.coins
@@ -3406,7 +3413,7 @@ class LootSystem(UIScaleMixin, System):
         for i, item in enumerate(corpse.loot):
             if virtual_row >= self._scroll_offset and screen_row < self.MAX_ROWS:
                 if self._row_rect(modal, screen_row).collidepoint(mx, my):
-                    if self._try_send_online_loot_request():
+                    if self._try_send_online_loot_request("item", item.name):
                         return True
                     for _, inv, _ in self.world.get_entities_with(Inventory, PlayerControlled):
                         # Tenta empilhar em stack existente
@@ -3470,7 +3477,7 @@ class LootSystem(UIScaleMixin, System):
                     # outro membro do grupo já pegou (mesma classe de bug
                     # do ouro duplicado). Cai pro inventário (LOOT_RESULT),
                     # não equipa direto — trade-off aceitável por segurança.
-                    if self._try_send_online_loot_request():
+                    if self._try_send_online_loot_request("item", item.name):
                         return True
                     equip        = None
                     inv          = None

@@ -138,6 +138,13 @@ def _click_gold_row(loot_system, corpse_eid) -> bool:
     return loot_system._try_take_item(row.centerx, row.centery)
 
 
+def _click_row(loot_system, corpse_eid, row_index: int) -> bool:
+    loot_system._open_modal(corpse_eid, 50, 50)
+    modal = loot_system._modal_rect()
+    row = loot_system._row_rect(modal, row_index)
+    return loot_system._try_take_item(row.centerx, row.centery)
+
+
 def test_online_loot_request_nao_credita_localmente():
     from ui.systems import LootSystem
     from engine.components import Wallet, Corpse
@@ -146,13 +153,14 @@ def test_online_loot_request_nao_credita_localmente():
     loot = LootSystem(world, screen, player_entity=player)
 
     sent = []
-    loot.set_online_loot_requester(lambda local_eid: sent.append(local_eid))
+    loot.set_online_loot_requester(lambda local_eid, take, item_name: sent.append((local_eid, take, item_name)))
     result = _click_gold_row(loot, corpse)
 
     wallet = world.get_component(player, Wallet)
     assert result is True
     assert wallet.gold == 0, "modo online nao deveria creditar ouro localmente no clique"
-    assert sent == [corpse], "deveria mandar o request com o eid LOCAL do corpse"
+    assert sent == [(corpse, "gold", "")], \
+        "deveria mandar o request com o eid LOCAL do corpse e take='gold'"
     assert world.get_component(corpse, Corpse).coins == 11, \
         "corpse local nao deveria ser mutado antes do LOOT_RESULT confirmar"
 
@@ -164,11 +172,42 @@ def test_online_loot_request_nao_duplica_pedido_em_voo():
     loot = LootSystem(world, screen, player_entity=player)
 
     sent = []
-    loot.set_online_loot_requester(lambda local_eid: sent.append(local_eid))
+    loot.set_online_loot_requester(lambda local_eid, take, item_name: sent.append((local_eid, take, item_name)))
     _click_gold_row(loot, corpse)
     _click_gold_row(loot, corpse)   # 2º clique antes do LOOT_RESULT responder
 
-    assert sent == [corpse], "clique duplicado enquanto o request está em voo não deveria reenviar"
+    assert sent == [(corpse, "gold", "")], \
+        "clique duplicado enquanto o request está em voo não deveria reenviar"
+
+
+def test_online_loot_request_item_manda_take_item_com_nome():
+    """Clicar num item (não no ouro) manda take='item' + item_name — não
+    'all' (senão o request levaria o ouro junto, bug real relatado pelo
+    usuário 17/07/2026: sacar parcial não deveria afetar o resto)."""
+    from ui.systems import LootSystem
+    from content.item_table import ITEMS
+    from engine.entity_factory import create_corpse
+    from engine.components import Wallet, Inventory, PlayerControlled
+    from ui.ui_components import LootUIState
+    from engine.world import World
+
+    world = World()
+    player = world.create_entity()
+    world.add_component(player, PlayerControlled())
+    world.add_component(player, Wallet(gold=0))
+    world.add_component(player, Inventory())
+    world.add_component(player, LootUIState())
+    item = next(iter(ITEMS.values()))()
+    corpse = create_corpse(world, 100, 100, [item], coins=11)
+
+    screen = pygame.display.get_surface()
+    loot = LootSystem(world, screen, player_entity=player)
+    sent = []
+    loot.set_online_loot_requester(lambda local_eid, take, item_name: sent.append((local_eid, take, item_name)))
+    result = _click_row(loot, corpse, 1)   # linha 1 = 1º item (linha 0 é o ouro)
+
+    assert result is True
+    assert sent == [(corpse, "item", item.name)]
 
 
 def test_offline_sem_requester_continua_creditando_local():

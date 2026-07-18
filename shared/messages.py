@@ -576,22 +576,35 @@ def validate_c2s(msg_type: "MsgType", payload) -> "str | None":
 #   "corpse_id": int *   id do corpse no servidor
 #   "tx":        int *   tile X do corpse
 #   "ty":        int *   tile Y do corpse
-#   "items":     list *  [{name, icon_key, item_type, rarity, value, slot}]
+#   "items":     list *  [{name, icon_key, item_type, rarity, value, slot, stack}]
+#   "coins":     int *   moedas no corpo
 # }
-# Enviado APENAS ao dono do loot (first-attacker do mob).
-# Outros players recebem ENTITY_SPAWN {kind:"corpse"} apenas (sem itens).
+# Enviado ao dono do loot (first-attacker do mob) E, se ele estiver em
+# grupo, a TODO o grupo (free-for-all — ver server/loot_processor.py).
+# Fora do dono/grupo: ENTITY_SPAWN {kind:"corpse"} apenas (sem itens).
 
 # ── C→S: LOOT_REQUEST ────────────────────────────────────────────────────────
 # {
 #   "corpse_id": int *   id do corpse clicado
+#   "take":      str     "gold" | "item" | "all" (default "all")
+#   "item_name": str     nome do item — obrigatório se take=="item" (pega o
+#                        PRIMEIRO item da lista atual com esse nome; nunca
+#                        índice cru, que quebraria se outro membro do grupo
+#                        já tivesse tirado algo antes e deslocado a lista)
 # }
-# Servidor valida ownership. Se não for dono: silenciosamente ignora.
+# Servidor valida ownership/grupo (WorldServer.request_loot). Fora do
+# dono/grupo: silenciosamente ignora. `take` granular desde 17/07/2026 —
+# sacar só o ouro não deveria levar junto o resto do loot.
 
 # ── S→C: LOOT_RESULT ─────────────────────────────────────────────────────────
 # {
 #   "corpse_id": int *   id do corpse
-#   "items":     list *  itens obtidos [{name, icon_key, item_type, rarity, value, slot}]
+#   "items":     list *  itens obtidos [{name, icon_key, item_type, rarity, value, slot, stack}]
+#   "coins":     int *   moedas obtidas (0 se o pedido era só "item")
 # }
+# Vazio (items=[], coins=0) = já não tinha mais nada pra pegar (outro
+# membro do grupo já levou). Corpo só recebe ENTITY_DESPAWN quando fica
+# REALMENTE vazio — sacar parcial mantém o resto visível/lootável.
 # Enviado APENAS se o player for o dono e houver itens para pegar.
 
 # ── C→S: EQUIP_SYNC ──────────────────────────────────────────────────────────

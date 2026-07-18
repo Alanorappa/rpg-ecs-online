@@ -20,15 +20,26 @@ class LootProcessorMixin:
         self._expired_corpses_this_tick.clear()
         return result
 
-    def request_loot(self, session_id: str, corpse_id: int) -> dict | None:
+    def request_loot(self, session_id: str, corpse_id: int,
+                     take: str = "all", item_name: str = "") -> dict | None:
         """
         Retorna {items, coins} do corpse se o player for o dono OU membro do
         MESMO grupo do dono (free-for-all dentro do grupo — decisão do
         usuário 17/07/2026), None caso contrário.
-        Após sacar: esvazia items/coins e reduz timer para 15s — primeiro do
-        grupo a lootar leva tudo, os outros recebem {items:[],coins:0} depois
-        (mesmo comportamento de "free for all" de qualquer MMO).
-        Fora do dono/grupo: recebem None silenciosamente (regra de negócio).
+
+        `take` decide o que sai do corpse nesta chamada (granular desde
+        17/07/2026 — bug real relatado pelo usuário: sacar só o ouro
+        também levava junto os itens que sobravam, corpo sumia com loot
+        ainda dentro):
+          - "gold": só as moedas, itens intocados.
+          - "item": só o PRIMEIRO item da lista atual com name==item_name
+            (nome, não índice — índice cru quebraria se outro membro do
+            grupo já tivesse tirado um item antes, deslocando a lista).
+          - "all" (default/compat): tudo, comportamento antigo.
+        Após sacar: reduz timer pra 15s — primeiro do grupo a lootar leva
+        o que pediu, os outros recebem {items:[],coins:0} se pedirem a
+        MESMA coisa depois (mesmo comportamento de "free for all" de
+        qualquer MMO). Fora do dono/grupo: None silenciosamente.
         """
         corpse = self._corpses.get(corpse_id)
         if not corpse:
@@ -39,8 +50,23 @@ class LootProcessorMixin:
             owner_pid = self.get_party_id_of(owner_eid)
             if owner_pid == -1 or self.get_party_id_of(player_eid) != owner_pid:
                 return None  # não é o dono nem está no mesmo grupo — ignora
-        items = corpse.pop("items", [])
-        coins = corpse.pop("coins", 0)
+
+        if take == "gold":
+            coins = corpse.get("coins", 0)
+            corpse["coins"] = 0
+            items = []
+        elif take == "item":
+            items_list = corpse.get("items", [])
+            items = []
+            for i, it in enumerate(items_list):
+                if it.get("name") == item_name:
+                    items = [items_list.pop(i)]
+                    break
+            coins = 0
+        else:
+            items = corpse.pop("items", [])
+            coins = corpse.pop("coins", 0)
+
         corpse["timer"] = min(corpse["timer"], 15.0)  # reduz timer após saque
         # Atualiza Wallet do servidor para persistência
         if coins > 0:

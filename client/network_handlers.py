@@ -1772,22 +1772,48 @@ class NetworkHandlers:
                     LOG.add(f"Coletado: {obj.name} ({getattr(obj, 'rarity', 'common')})", col)
 
         if coins == 0 and not items:
+            # Resposta vazia pro que foi pedido especificamente (só ouro,
+            # ou só aquele item) — outro membro do grupo já pegou. NÃO
+            # significa que o corpo inteiro esvaziou (ver still_has_loot
+            # abaixo, que decide se o resto continua disponível).
             from ui.floating_text import WARN as _WarnLr
             _WarnLr.add("Já foi saqueado")
 
         if coins > 0 or items:
             SOUNDS.play_ui("loot_gold" if coins > 0 else "loot_item")
 
-        loot_data = self._available_loot.pop(corpse_id, None)
+        # Atualiza a cópia LOCAL do corpse com só o que foi CONFIRMADO —
+        # e só remove a entidade/fecha o modal quando fica REALMENTE
+        # vazia. Bug real relatado pelo usuário 17/07/2026: sacar só o
+        # ouro removia o corpo inteiro da tela, levando junto os itens
+        # que ainda sobravam (LOOT_REQUEST/RESULT granular por `take`,
+        # mas o cliente removia a entidade incondicionalmente em QUALQUER
+        # resposta).
+        loot_data = self._available_loot.get(corpse_id)
         if loot_data:
             local_eid = loot_data.get("local_eid")
             if local_eid is not None:
                 self._loot_system._online_loot_pending.discard(local_eid)
-                try:
-                    self.world.remove_entity(local_eid)
-                except Exception:
-                    pass
-        self._remote_corpses.pop(corpse_id, None)
+                from engine.components import Corpse as _CorpseLr
+                corpse_comp = self.world.get_component(local_eid, _CorpseLr)
+                still_has_loot = False
+                if corpse_comp is not None:
+                    if coins > 0:
+                        corpse_comp.coins = 0
+                    for item_data in items:
+                        _iname = item_data.get("name", "")
+                        for _idx, _existing in enumerate(corpse_comp.loot):
+                            if getattr(_existing, "name", "") == _iname:
+                                corpse_comp.loot.pop(_idx)
+                                break
+                    still_has_loot = bool(corpse_comp.loot) or corpse_comp.coins > 0
+                if not still_has_loot:
+                    self._available_loot.pop(corpse_id, None)
+                    self._remote_corpses.pop(corpse_id, None)
+                    try:
+                        self.world.remove_entity(local_eid)
+                    except Exception:
+                        pass
         # Gold/itens mudaram — sincroniza save com o servidor
         self._send_save_state()
 
