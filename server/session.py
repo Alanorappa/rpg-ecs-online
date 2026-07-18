@@ -951,6 +951,32 @@ class SessionManager:
                 "items":     loot["items"],
                 "coins":     loot["coins"],
             })
+            # Avisa o RESTO do grupo (todos que também receberam este
+            # corpse via LOOT_AVAILABLE, exceto quem acabou de sacar) que
+            # algo saiu — sem isso cada um só descobre a mudança quando
+            # CLICA algo próprio, e até lá fica vendo ouro/item "fantasma"
+            # já pego por outro membro (bug real relatado pelo usuário
+            # 17/07/2026: clicar no fantasma voltava vazio e o corpo
+            # sumia sem nunca ter dado nada — a cópia local nunca era
+            # corrigida). Cliente só sincroniza a cópia local, nunca
+            # credita (ver ui/systems.py::LootSystem / client/
+            # network_handlers.py::_handle_msg_loot_update).
+            if loot["coins"] > 0 or loot["items"]:
+                _requester_eid = self.world_server._player_eids.get(session.session_id)
+                _loot_owner_eid = self.world_server._corpses.get(corpse_id, {}).get("owner_eid", -1)
+                _party_eids = self.world_server.get_party_members(_loot_owner_eid)
+                _update_payload = {
+                    "corpse_id":        corpse_id,
+                    "coins_taken":      loot["coins"],
+                    "item_names_taken": [it.get("name", "") for it in loot["items"]],
+                }
+                for _p_eid in _party_eids:
+                    if _p_eid == _requester_eid:
+                        continue
+                    _p_sid = self.world_server.get_session_id_for_player(_p_eid)
+                    _p_sess = self._sessions.get(_p_sid) if _p_sid else None
+                    if _p_sess and _p_sess.authenticated:
+                        await _p_sess.send(MsgType.LOOT_UPDATE, _update_payload)
             # Corpo só some pra AOI quando fica REALMENTE vazio — sacar só
             # o ouro (ou só um item) não deveria remover o resto do loot
             # da visão do resto do grupo (bug real relatado pelo usuário

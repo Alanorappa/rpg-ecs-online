@@ -573,6 +573,81 @@ class TestPlayerDeathEvent(unittest.IsolatedAsyncioTestCase):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 6. Loot em grupo — LOOT_UPDATE sincroniza quem não clicou
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestPartyLootSync(unittest.IsolatedAsyncioTestCase):
+    """Bug real relatado pelo usuário 17/07/2026: quando A sacava algo de
+    um corpse compartilhado do grupo, B (que também tinha o corpse
+    aberto, via LOOT_AVAILABLE) nunca ficava sabendo — via ouro/item
+    "fantasma" já pego, clicar nele voltava vazio sem nunca corrigir a
+    cópia local, e o corpo "bugava e fechava". Fix: LOOT_UPDATE avisa o
+    resto do grupo (exceto quem sacou) toda vez que algo sai do corpse."""
+
+    async def asyncSetUp(self):
+        self.ws_server, self.mgr = make_session_manager()
+
+    def _make_corpse(self, owner_eid: int, coins: int = 11, items: list = None) -> int:
+        cid = self.ws_server._next_corpse_id
+        self.ws_server._next_corpse_id += 1
+        self.ws_server._corpses[cid] = {
+            "tx": 130, "ty": 374, "owner_eid": owner_eid,
+            "items": items or [], "coins": coins,
+            "timer": 120.0, "map": self.ws_server._map_file,
+        }
+        return cid
+
+    async def test_loot_update_avisa_resto_do_grupo(self):
+        from shared.messages import encode
+        session_a, fw_a = await fake_login(self.mgr, "s1", "user_loot_a", 130, 374)
+        session_b, fw_b = await fake_login(self.mgr, "s2", "user_loot_b", 131, 374)
+        self.assertIsNone(self.ws_server.request_party_invite(
+            session_a.entity_id, session_b.entity_id))
+        self.ws_server.respond_party_invite(session_b.entity_id, accept=True)
+        cid = self._make_corpse(owner_eid=session_a.entity_id)
+
+        fw_b.sent.clear()
+        await self.mgr.on_message(session_a, encode(
+            MsgType.LOOT_REQUEST, {"corpse_id": cid, "take": "gold"}))
+
+        updates = get_msgs_of_type(fw_b, MsgType.LOOT_UPDATE)
+        self.assertEqual(len(updates), 1,
+                         "B deveria receber LOOT_UPDATE quando A sacou o ouro do corpse compartilhado")
+        self.assertEqual(updates[0]["corpse_id"], cid)
+        self.assertEqual(updates[0]["coins_taken"], 11)
+        self.assertEqual(updates[0]["item_names_taken"], [])
+
+    async def test_loot_update_nao_volta_pro_proprio_requester(self):
+        from shared.messages import encode
+        session_a, fw_a = await fake_login(self.mgr, "s1", "user_loot_c", 130, 374)
+        session_b, _    = await fake_login(self.mgr, "s2", "user_loot_d", 131, 374)
+        self.assertIsNone(self.ws_server.request_party_invite(
+            session_a.entity_id, session_b.entity_id))
+        self.ws_server.respond_party_invite(session_b.entity_id, accept=True)
+        cid = self._make_corpse(owner_eid=session_a.entity_id)
+
+        fw_a.sent.clear()
+        await self.mgr.on_message(session_a, encode(
+            MsgType.LOOT_REQUEST, {"corpse_id": cid, "take": "gold"}))
+
+        self.assertEqual(len(get_msgs_of_type(fw_a, MsgType.LOOT_UPDATE)), 0,
+                         "quem sacou já sabe via LOOT_RESULT — não deveria receber LOOT_UPDATE também")
+        self.assertEqual(len(get_msgs_of_type(fw_a, MsgType.LOOT_RESULT)), 1)
+
+    async def test_sem_grupo_nao_manda_loot_update_pra_ninguem(self):
+        from shared.messages import encode
+        session_a, fw_a = await fake_login(self.mgr, "s1", "user_loot_solo", 130, 374)
+        cid = self._make_corpse(owner_eid=session_a.entity_id)
+
+        fw_a.sent.clear()
+        await self.mgr.on_message(session_a, encode(
+            MsgType.LOOT_REQUEST, {"corpse_id": cid, "take": "gold"}))
+
+        self.assertEqual(len(get_msgs_of_type(fw_a, MsgType.LOOT_UPDATE)), 0)
+        self.assertEqual(len(get_msgs_of_type(fw_a, MsgType.LOOT_RESULT)), 1)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Runner
 # ─────────────────────────────────────────────────────────────────────────────
 

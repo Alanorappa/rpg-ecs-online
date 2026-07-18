@@ -4143,6 +4143,49 @@ completa 204/204, rodada 3x.
 com os itens ainda lá (pro mesmo player E pro resto do grupo); sacar
 tudo aos poucos até esvaziar de verdade some o corpo pra todo mundo.
 
+**Follow-up (18/07/2026)**: usuário testou de novo e achou o pedaço que
+faltava — o `take` granular resolveu "sacar ouro não deveria levar
+item", mas SÓ pra quem clicou. Repro relatado: A saca o ouro; B (que
+também tem o MESMO corpse aberto, via `LOOT_AVAILABLE`) continua vendo
+o ouro lá — "fantasma", já pego. B clica no ouro fantasma → volta vazio
+→ "buga e fecha o loot, e o loot some" (mesmo com o item ainda por
+pegar). Mesma coisa acontecia se B pegasse o item primeiro.
+
+Causa raiz: `LOOT_RESULT` (resposta ao `LOOT_REQUEST`) só ia pro
+REQUISITANTE — ninguém mais do grupo era avisado que o corpse mudou.
+Cada cliente só corrige a própria cópia LOCAL quando recebe uma
+resposta ao PRÓPRIO clique; sem clicar em nada, B nunca saberia que A
+já tinha levado o ouro. Pior: no handler de resultado, `corpse_comp.
+coins` só era zerado `if coins > 0` (== "eu recebi ouro agora") — uma
+resposta vazia (`coins=0`, porque outro já pegou) NUNCA corrigia o
+valor antigo, deixando o ouro "fantasma" preso pra sempre até o timer
+de decay do corpse (até 120s).
+
+Fix: novo `LOOT_UPDATE` (S→C) — `server/session.py::
+_handle_loot_request`, depois de responder `LOOT_RESULT` pro
+requisitante, avisa TODO o resto do grupo do dono do corpse (exceto
+quem acabou de sacar) com `{corpse_id, coins_taken, item_names_taken}`.
+Cliente (`client/network_handlers.py::_handle_msg_loot_update`) só
+SINCRONIZA a cópia local (zera coins/remove item por nome) — nunca
+credita Wallet/Inventory, já que quem recebe isso não pegou nada, só
+está sendo avisado que sumiu. Lógica de "zerar/remover e decidir se
+ainda sobra loot" foi extraída pra um helper compartilhado
+(`_sync_local_corpse_after_take`) usado tanto pelo `LOOT_RESULT`
+(minha própria resposta) quanto pelo `LOOT_UPDATE` (resposta de
+outro) — elimina a classe inteira de "fantasma nunca corrigido".
+
+**Validado**: `tests/test_session.py::TestPartyLootSync` (3 testes,
+`IsolatedAsyncioTestCase` com `fake_login`/duas sessões reais) — B
+recebe `LOOT_UPDATE` com `coins_taken` correto quando A saca; quem
+sacou NÃO recebe `LOOT_UPDATE` de volta (só `LOOT_RESULT`); sem grupo,
+ninguém mais recebe nada. Suíte completa 207/207, rodada 3x.
+
+**Não validado**: sessão manual com 2+ clientes agrupados — A saca o
+ouro, B (com o loot já aberto, sem clicar em nada) vê o ouro sumir da
+janela em tempo real; item continua disponível pros dois até alguém
+pegar; corpo só some de verdade quando fica realmente vazio pros dois
+lados.
+
 ---
 
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata

@@ -146,6 +146,7 @@ class MsgType(str, Enum):
     LOOT_REQUEST       = "loot_request"    # C→S  player clicou no corpo para sacar
     LOOT_TAKE          = "loot_take"       # C→S  pegar item específico do corpo
     LOOT_RESULT        = "loot_result"     # S→C  itens obtidos (ou vazio se não for dono)
+    LOOT_UPDATE        = "loot_update"     # S→C  outro membro do grupo sacou algo — sincroniza a cópia LOCAL (sem creditar)
 
     # ── Chat ──────────────────────────────────────────────────────
     CHAT_SEND          = "chat_send"       # C→S  enviar mensagem
@@ -606,6 +607,21 @@ def validate_c2s(msg_type: "MsgType", payload) -> "str | None":
 # membro do grupo já levou). Corpo só recebe ENTITY_DESPAWN quando fica
 # REALMENTE vazio — sacar parcial mantém o resto visível/lootável.
 # Enviado APENAS se o player for o dono e houver itens para pegar.
+
+# ── S→C: LOOT_UPDATE ─────────────────────────────────────────────────────────
+# {
+#   "corpse_id":         int *
+#   "coins_taken":       int *  > 0 se ALGUÉM (outro membro do grupo) sacou ouro
+#   "item_names_taken":  list * nomes dos itens que ALGUÉM sacou
+# }
+# Enviado a TODO o grupo do dono do corpse EXCETO quem fez o LOOT_REQUEST
+# (esse já sabe via LOOT_RESULT) sempre que um saque bem-sucedido
+# acontece (17/07/2026 — bug real: sem isso, quem não clicou continuava
+# vendo ouro/item já pego por outro membro do grupo — "ouro fantasma",
+# clicar nele voltava vazio e o corpo sumia sem nunca ter dado nada).
+# Cliente só SINCRONIZA a cópia local (zera coins/remove item por nome)
+# — NUNCA credita Wallet/Inventory aqui (quem recebe isso não pegou
+# nada, só está sendo avisado que sumiu).
 
 # ── C→S: EQUIP_SYNC ──────────────────────────────────────────────────────────
 # {

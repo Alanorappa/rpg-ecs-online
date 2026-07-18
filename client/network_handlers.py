@@ -56,6 +56,8 @@ class NetworkHandlers:
             self._handle_msg_sound_event(payload)
         elif msg_type == MsgType.LOOT_RESULT:
             self._handle_msg_loot_result(payload)
+        elif msg_type == MsgType.LOOT_UPDATE:
+            self._handle_msg_loot_update(payload)
         elif msg_type == MsgType.BUY_RESULT:
             self._handle_msg_buy_result(payload)
         elif msg_type == MsgType.SELL_RESULT:
@@ -1782,40 +1784,63 @@ class NetworkHandlers:
         if coins > 0 or items:
             SOUNDS.play_ui("loot_gold" if coins > 0 else "loot_item")
 
-        # Atualiza a cópia LOCAL do corpse com só o que foi CONFIRMADO —
-        # e só remove a entidade/fecha o modal quando fica REALMENTE
-        # vazia. Bug real relatado pelo usuário 17/07/2026: sacar só o
-        # ouro removia o corpo inteiro da tela, levando junto os itens
-        # que ainda sobravam (LOOT_REQUEST/RESULT granular por `take`,
-        # mas o cliente removia a entidade incondicionalmente em QUALQUER
-        # resposta).
-        loot_data = self._available_loot.get(corpse_id)
-        if loot_data:
-            local_eid = loot_data.get("local_eid")
-            if local_eid is not None:
-                self._loot_system._online_loot_pending.discard(local_eid)
-                from engine.components import Corpse as _CorpseLr
-                corpse_comp = self.world.get_component(local_eid, _CorpseLr)
-                still_has_loot = False
-                if corpse_comp is not None:
-                    if coins > 0:
-                        corpse_comp.coins = 0
-                    for item_data in items:
-                        _iname = item_data.get("name", "")
-                        for _idx, _existing in enumerate(corpse_comp.loot):
-                            if getattr(_existing, "name", "") == _iname:
-                                corpse_comp.loot.pop(_idx)
-                                break
-                    still_has_loot = bool(corpse_comp.loot) or corpse_comp.coins > 0
-                if not still_has_loot:
-                    self._available_loot.pop(corpse_id, None)
-                    self._remote_corpses.pop(corpse_id, None)
-                    try:
-                        self.world.remove_entity(local_eid)
-                    except Exception:
-                        pass
+        # Atualiza a cópia LOCAL do corpse com só o que foi CONFIRMADO — e
+        # só remove a entidade/fecha o modal quando fica REALMENTE vazia
+        # (ver docstring de _sync_local_corpse_after_take).
+        item_names = [it.get("name", "") for it in items]
+        self._sync_local_corpse_after_take(corpse_id, coins, item_names)
         # Gold/itens mudaram — sincroniza save com o servidor
         self._send_save_state()
+
+    def _handle_msg_loot_update(self, payload: dict) -> None:
+        """Outro membro do grupo sacou algo do MESMO corpse (LOOT_RESULT
+        dele, server/session.py::_handle_loot_request) — sincroniza a
+        cópia LOCAL sem creditar nada (quem recebe isto não pegou nada,
+        só está sendo avisado que sumiu). Sem isso, cada membro do grupo
+        só descobria a mudança ao CLICAR algo próprio — até lá via ouro/
+        item "fantasma" já pego por outro, e clicar nele voltava vazio
+        sem nunca corrigir a cópia local (bug real relatado pelo usuário
+        17/07/2026: corpo "bugava e fechava" ao clicar no fantasma)."""
+        corpse_id  = payload.get("corpse_id", -1)
+        coins_taken = payload.get("coins_taken", 0)
+        item_names  = payload.get("item_names_taken", [])
+        self._sync_local_corpse_after_take(corpse_id, coins_taken, item_names)
+
+    def _sync_local_corpse_after_take(self, corpse_id: int, coins_taken: int,
+                                      item_names_taken: list) -> None:
+        """Remove da cópia LOCAL do corpse (`Corpse` ECS) o que acabou de
+        sair — meu próprio saque (_handle_msg_loot_result) ou o de outro
+        membro do grupo (_handle_msg_loot_update). Só remove a entidade/
+        fecha o modal quando fica REALMENTE vazia — sacar parcial mantém
+        o resto visível/lootável (bug real relatado pelo usuário
+        17/07/2026: sacar só o ouro removia o corpo inteiro da tela,
+        levando junto os itens que ainda sobravam)."""
+        loot_data = self._available_loot.get(corpse_id)
+        if not loot_data:
+            return
+        local_eid = loot_data.get("local_eid")
+        if local_eid is None:
+            return
+        self._loot_system._online_loot_pending.discard(local_eid)
+        from engine.components import Corpse as _CorpseLr
+        corpse_comp = self.world.get_component(local_eid, _CorpseLr)
+        if corpse_comp is None:
+            return
+        if coins_taken > 0:
+            corpse_comp.coins = 0
+        for _iname in item_names_taken:
+            for _idx, _existing in enumerate(corpse_comp.loot):
+                if getattr(_existing, "name", "") == _iname:
+                    corpse_comp.loot.pop(_idx)
+                    break
+        still_has_loot = bool(corpse_comp.loot) or corpse_comp.coins > 0
+        if not still_has_loot:
+            self._available_loot.pop(corpse_id, None)
+            self._remote_corpses.pop(corpse_id, None)
+            try:
+                self.world.remove_entity(local_eid)
+            except Exception:
+                pass
 
     def _handle_msg_buy_result(self, payload: dict) -> None:
         # Servidor validou a compra — aplica localmente se sucesso
