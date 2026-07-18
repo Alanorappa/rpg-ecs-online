@@ -1846,7 +1846,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             # comentário em FLT.render() e no ponto de chamada abaixo).
             # Pedido do usuário 15/07/2026: floating text ficava atrás dos
             # nameplates.
-            CHAT_BUBBLE.render(self._zoom_surf, self.world, cam_x, cam_y)
+            CHAT_BUBBLE.render(self.world)
 
             # Morto/espírito: grayscale no zoom_surf menor (pré-scale) — ~44% menos
             # pixels a zoom=1.5 vs aplicar na tela cheia (853×480 vs 1280×720).

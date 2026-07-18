@@ -3914,6 +3914,72 @@ não mais wireados na nameplate).
 proporcional, diferente da MEGAMAN10 quase-monoespaçada que motivou
 aquele fix originalmente).
 
+**Follow-up 1 (mesmo dia, `720eb2e`)**: usuário reportou "muito
+pequena" depois do fix acima. Causa: `make()` aplica `_SCALE=0.5`
+internamente (Determination renderiza ~2× mais alta que a fonte padrão
+no mesmo size) — `make_pixel(16)` (sem correção nenhuma) virou
+`make(16)` sem compensar, saindo com ~8pt reais em vez dos 16pt que a
+MEGAMAN10 usava. Fix: dobrou o `size` (×2) nos 3 call sites pra manter
+o tamanho visual equivalente ao anterior.
+
+**Follow-up 2 (mesmo dia, `89841ad`)**: pedido separado do usuário — o
+balão de fala (`ui/chat_bubble.py`) devia usar a MESMA fonte da janela
+de chat, "parecia" a mesma só que bold. Eram o mesmo arquivo e mesmo
+size NOMINAL (22), mas o balão criava sua própria instância via
+`make(22)` fixo enquanto a janela de chat usa `font_sm`
+(`make(UI.FONT_SM * _ui_scale)`) — escalas diferentes fazem uma fonte
+sem antialiasing renderizar peso de traço visualmente diferente a cada
+tamanho inteiro distinto. Fix: `ChatBubbleManager.set_font()` —
+`GameEngine._reload_ui_fonts()` passa o próprio `self.font_sm` pro
+balão usar o MESMO objeto de fonte, sempre em sincronia com qualquer
+mudança de `_ui_scale`. Ver §34.23 pro follow-up seguinte (posição +
+nitidez do balão).
+
+### 34.23 Balão de fala: sobrepunha o nameplate e não era pixel-perfect (17/07/2026)
+
+Terceiro follow-up da mesma sessão de ajustes de fonte (§34.22). Usuário
+pediu: (1) mover o balão pra cima — texto caindo em cima do nameplate
+(nome/nível/HP), ilegível; (2) fonte do balão não estava pixel-perfect
+como a do chat.
+
+Causa raiz ÚNICA pros dois: `ui/chat_bubble.py::ChatBubbleManager.render()`
+blitava direto em `self._zoom_surf` (surface de MUNDO, pré-zoom) com um
+gap FIXO (`GAP_ABOVE_HEAD`) do topo do sprite — sem nenhuma noção da
+altura do nameplate (que é empilhado por `_draw_remote_players` via
+`ui/world_labels.py::WORLD_LABELS`, variável conforme nome+nível+HP
+bar). Dois sintomas da mesma causa: (a) gap fixo menor que a pilha real
+→ balão sobrepõe; (b) `_zoom_surf` passa por `pygame.transform.scale()`
+no fim do frame (zoom da câmera) — exatamente o bug documentado no topo
+de `ui/world_labels.py` desde 11/07/2026 ("texto de fonte pixel-perfect
+... sai BORRADO/DISTORCIDO quando redimensionado por zoom não-inteiro"),
+mas o balão nunca tinha sido migrado pra lá.
+
+Fix: `ChatBubbleManager.render()` não blita mais sozinho — constrói o
+balão inteiro (fundo+borda+linhas) como UMA Surface e enfileira via
+`WORLD_LABELS.add_icon(pos.x, world_y_top, bubble_surf,
+stack_key=entity_id, gap_before=...)`, MESMO `stack_key` que o
+nameplate já usa (`entity_id`/`local_eid`). Como `_draw_remote_players`/
+`_draw_mob_hp_bars` (que enfileiram o nameplate) já rodam ANTES no
+`game.py` (mesmo ponto de chamada de sempre, só mudou o que a função
+faz por dentro), `WORLD_LABELS._stack_offset` já reflete a altura do
+nameplate quando o balão é enfileirado — empilha automaticamente ACIMA,
+qualquer que seja a altura real (sem gap fixo pra manter sincronizado).
+E como `WORLD_LABELS.render()` desenha em `self.screen` (screen-space,
+NUNCA passa pelo scale do zoom — mesma garantia que já vale pro
+nameplate), o texto sai tão nítido quanto o da janela de chat, de
+graça. `set_alpha()` do fade-out (últimos 1s de vida do balão) segue
+funcionando — muta a Surface cacheada ANTES de enfileirar a cada
+frame, não é a Surface compartilhada de `CachedFont` (regra de "não
+mutar" em `ui/fonts.py` não se aplica aqui).
+
+**Validado**: suíte completa 196/196, rodada 3x (mudança visual, sem
+teste dedicado — `WORLD_LABELS` é mecanismo já usado e testado
+indiretamente pelo resto do nameplate).
+
+**Não validado**: visual em jogo — balão não sobrepõe mais nome/HP
+mesmo com pilha alta (ex: player com efeitos extras), texto nítido em
+qualquer zoom não-inteiro, fade-out continua suave.
+
 ---
 
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata

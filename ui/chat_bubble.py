@@ -6,6 +6,20 @@ mundo NO MOMENTO da criação (adequado pra números de dano, que só sobem);
 este RASTREIA a posição viva da entidade a cada frame (Position component),
 já que o balão precisa acompanhar o personagem andando enquanto a mensagem
 ainda está visível.
+
+Enfileirado em ui/world_labels.py::WORLD_LABELS (não blitado direto no
+zoom_surf) — MESMO stack_key do nameplate (entity_id), pra empilhar
+SEMPRE acima do que já foi desenhado ali (nome/nível/HP) na mesma frame.
+Dois problemas reportados pelo usuário 17/07/2026 vêm da MESMA causa:
+blitar direto no zoom_surf (mundo, pré-zoom) sujeita o texto ao
+`pygame.transform.scale()` de zoom não-inteiro no fim do frame — nasce
+nítido mas sai borrado ("fonte não pixel perfect, como no chat" — o
+chat É pixel-perfect porque desenha em screen-space, nunca passa por
+esse scale) — e não tinha NENHUMA noção da altura do nameplate (só um
+gap fixo do topo do sprite), então sobrepunha nome/HP quando a pilha
+era mais alta que o gap ("balão em cima do nameplate, ilegível"). Rotear
+por WORLD_LABELS resolve os dois de graça: nasce em screen-space (nunca
+mais borra) e herda a altura acumulada da pilha (nunca mais sobrepõe).
 """
 import pygame
 from ui.fonts import make as _font
@@ -13,13 +27,13 @@ from ui.ui_helpers import wrap_text
 
 
 class _ChatBubbleEntry:
-    __slots__ = ("lines", "timer", "duration", "surfs")
+    __slots__ = ("lines", "timer", "duration", "bubble_surf")
 
     def __init__(self, lines: list, duration: float):
-        self.lines    = lines
-        self.timer    = duration
-        self.duration = duration
-        self.surfs: "list | None" = None  # lazy render
+        self.lines       = lines
+        self.timer        = duration
+        self.duration     = duration
+        self.bubble_surf: "pygame.Surface | None" = None  # lazy, construído 1x
 
 
 class ChatBubbleManager:
@@ -29,10 +43,17 @@ class ChatBubbleManager:
     # o tamanho REAL renderizado é metade disso (~11px, igual font_sm da UI).
     # Em 16 dava 8px reais — ilegível nessa fonte (bug real reportado pelo
     # usuário, print do balão mostrando "aeudhia" em vez do texto digitado).
+    # Só usado como FALLBACK — set_font() (chamado por
+    # GameEngine._reload_ui_fonts) substitui por font_sm de verdade.
     FONT_SIZE  = 22
     PAD        = 8
     LINE_H     = 22
-    GAP_ABOVE_HEAD = 16  # espaço entre o topo do sprite e a base do balão
+    # Respiro entre o TOPO da pilha de nameplate (nome/nível/HP já
+    # empilhados por _draw_remote_players) e a base do balão — só importa
+    # como fallback se por algum motivo a entidade não tiver nameplate
+    # enfileirado ainda nesta frame (WORLD_LABELS._queue usa o offset já
+    # acumulado, ignorando isto, sempre que já existe algo na pilha).
+    GAP_ABOVE_STACK = 8
 
     def __init__(self):
         # 1 balão por entidade — mensagem nova substitui a anterior
@@ -72,13 +93,28 @@ class ChatBubbleManager:
         for eid in dead:
             del self._entries[eid]
 
-    def render(self, screen: "pygame.Surface", world,
-               camera_offset_x: float, camera_offset_y: float) -> None:
+    def _build_bubble_surf(self, entry: _ChatBubbleEntry) -> None:
+        font = self._get_font()
+        surfs = [font.render(l, False, (235, 235, 235)).copy() for l in entry.lines]
+        w = max((s.get_width() for s in surfs), default=0) + self.PAD * 2
+        h = len(surfs) * self.LINE_H + self.PAD * 2
+        bubble = pygame.Surface((w, h), pygame.SRCALPHA)
+        bubble.fill((20, 20, 26, 200))
+        pygame.draw.rect(bubble, (150, 150, 165, 220), bubble.get_rect(),
+                         width=1, border_radius=4)
+        for i, s in enumerate(surfs):
+            bubble.blit(s, (self.PAD, self.PAD + i * self.LINE_H))
+        entry.bubble_surf = bubble
+
+    def render(self, world) -> None:
+        """Enfileira o balão de cada entidade em WORLD_LABELS — chamar
+        DEPOIS de _draw_remote_players/_draw_mob_hp_bars (que já
+        enfileiraram nome/nível/HP) e ANTES de WORLD_LABELS.render() —
+        mesmo ponto onde este método já era chamado em game.py."""
         if not self._entries:
             return
         from engine.components import Position, Renderable
-        font = self._get_font()
-        cam_x, cam_y = int(camera_offset_x), int(camera_offset_y)
+        from ui.world_labels import WORLD_LABELS
         for entity_id, entry in list(self._entries.items()):
             pos = world.get_component(entity_id, Position)
             if pos is None:
@@ -87,27 +123,16 @@ class ChatBubbleManager:
                 continue
             rend = world.get_component(entity_id, Renderable)
             top_h = rend.height / 2 if rend else 16
+            world_y_top = pos.y - top_h
 
-            if entry.surfs is None:
-                entry.surfs = [font.render(l, False, (235, 235, 235)).copy()
-                              for l in entry.lines]
-
-            w = max((s.get_width() for s in entry.surfs), default=0) + self.PAD * 2
-            h = len(entry.surfs) * self.LINE_H + self.PAD * 2
-
-            bx = int(pos.x - cam_x) - w // 2
-            by = int(pos.y - cam_y - top_h) - h - self.GAP_ABOVE_HEAD
+            if entry.bubble_surf is None:
+                self._build_bubble_surf(entry)
 
             alpha = 255 if entry.timer > 1.0 else max(0, int(255 * entry.timer))
+            entry.bubble_surf.set_alpha(alpha)
 
-            bubble = pygame.Surface((w, h), pygame.SRCALPHA)
-            bubble.fill((20, 20, 26, 200))
-            pygame.draw.rect(bubble, (150, 150, 165, 220), bubble.get_rect(),
-                             width=1, border_radius=4)
-            for i, s in enumerate(entry.surfs):
-                bubble.blit(s, (self.PAD, self.PAD + i * self.LINE_H))
-            bubble.set_alpha(alpha)
-            screen.blit(bubble, (bx, by))
+            WORLD_LABELS.add_icon(pos.x, world_y_top, entry.bubble_surf,
+                                  stack_key=entity_id, gap_before=self.GAP_ABOVE_STACK)
 
 
 CHAT_BUBBLE = ChatBubbleManager()
