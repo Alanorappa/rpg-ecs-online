@@ -4414,6 +4414,51 @@ dentro da zona) NÃO conseguem se atacar; fora da zona segue amigável
 normal de fantasma/respawn sem perda de gold/item/XP; banner "ZONA PVP"
 aparece ao entrar e some ao sair, log mostra as duas mensagens.
 
+**Follow-up (mesmo dia)**: usuário testou dentro da zona (banner "ZONA
+PVP" confirmado no topo) e reportou que os 2 players continuavam
+amigáveis — clique direito abria o modal de trade/duelo/seguir em vez de
+atacar, e castar skill contra o alvo retornava "Alvo amigável".
+
+Causa raiz: `can_engage()` é usado tanto no SERVIDOR (decide dano de
+verdade) quanto no CLIENTE (decide UX local — clique direito ataca vs
+abre modal, valida skill ANTES de mandar `CAST_SKILL` pro servidor,
+SPACE engaja). Cada lado roda no seu próprio processo Python, então
+`engine.faction_system._pvp_context_resolver` é um global DIFERENTE em
+cada um — o resolver do servidor (`_pvp_allowed_between`, já corrigido
+acima) nunca foi o problema; o resolver do CLIENTE só sabia sobre
+DUELO (`client/duel_handlers.py` registrava um resolver temporário só
+com o oponente do duelo, via `register_pvp_context`, enquanto durava) —
+nunca soube nada sobre zona PvP. O servidor liberava corretamente, mas
+o cliente barrava a AÇÃO antes de sequer mandar a mensagem.
+
+Fix: como `register_pvp_context` só guarda UM slot (não é uma lista
+componível como o `_pvp_allowed_between` do servidor), a composição
+"duelo OU zona" agora mora numa função ÚNICA, `game.py::
+GameEngine._client_pvp_context`, registrada UMA VEZ em
+`_load_map_and_entities` (não mais registrada/desregistrada a cada
+início/fim de duelo — `_handle_msg_duel_start`/`_handle_msg_duel_end`
+só atualizam o estado que o composto lê, `_duel_opponent_local_eid`).
+A parte de zona reusa a MESMA geometria (`self._pvp_zones`) já usada
+pelo banner, resolve o server_eid de cada lado do par via
+`_local_eid_to_server_eid` (próprio player → `self._my_eid`; remoto →
+`RemoteControlled.server_eid`) e aplica a mesma exceção de grupo
+(`self._party_members`) que o servidor já aplicava. Continua sendo
+PURA decisão de UX — o servidor permanece a única autoridade real
+sobre dano.
+
+**Validado**: `tests/test_client_ui.py` ganhou 4 testes
+(`_PvpCtxFixture`, combina `DuelHandlers`+`PvpZoneHandlers`+
+`PartyHandlers` com os 2 métodos de `GameEngine` vinculados, sem
+precisar de `GameEngine` completo) — ambos dentro da zona libera; um
+fora bloqueia; mesmo grupo dentro da zona continua bloqueando (exceção);
+duelo libera independente de estar dentro ou fora da zona. Suíte
+completa 225/225, rodada 3x.
+
+**Não validado**: sessão manual — dentro da zona, clique direito ataca
+direto (não abre mais o modal); skill contra o alvo dentro da zona
+completa normalmente (sem "Alvo amigável"); fora da zona ou em grupo,
+clique direito continua abrindo o modal normalmente (regressão).
+
 ---
 
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata

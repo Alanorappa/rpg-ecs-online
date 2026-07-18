@@ -317,6 +317,80 @@ def test_pvp_zone_sem_zonas_no_mapa_nunca_liga_flag():
     assert fx._in_pvp_zone_flag is False
 
 
+# ── game.py::_client_pvp_context — resolver PvP client-side (Fase F) ────────
+# Bug real relatado pelo usuário 18/07/2026: dentro da Zona PvP, clique
+# direito no outro player abria o modal de trade/duelo em vez de atacar, e
+# castar skill retornava "Alvo amigável" — o servidor já liberava
+# corretamente (_pvp_allowed_between), mas o resolver PvP client-side
+# (registrado em engine.faction_system) só conhecia duelo, nunca zona;
+# como can_engage() do lado cliente decide ANTES de mandar qualquer coisa
+# pro servidor, a ação nunca saía do cliente.
+
+from client.duel_handlers import DuelHandlers
+from client.pvp_zone_handlers import PvpZoneHandlers
+from client.party_handlers import PartyHandlers
+
+
+class _PvpCtxFixture(DuelHandlers, PvpZoneHandlers, PartyHandlers):
+    def __init__(self, world, player_entity, my_eid=1):
+        self.world = world
+        self.player_entity = player_entity
+        self._my_eid = my_eid
+        self._pvp_zones = []
+        self._duel_opponent_local_val = -1
+        self._party_id_val = -1
+        self._party_members_val = []
+
+
+from game import GameEngine as _GE_pvp
+_PvpCtxFixture._client_pvp_context      = _GE_pvp._client_pvp_context
+_PvpCtxFixture._local_eid_to_server_eid = _GE_pvp._local_eid_to_server_eid
+
+
+def _make_pvp_ctx_world(rect=(10, 10, 20, 20)):
+    from engine.world import World
+    from engine.components import TileMovement, RemoteControlled
+
+    world = World()
+    me = world.create_entity()
+    world.add_component(me, TileMovement(current_tile_x=15, current_tile_y=15))
+    other = world.create_entity()
+    world.add_component(other, TileMovement(current_tile_x=15, current_tile_y=15))
+    world.add_component(other, RemoteControlled(server_eid=99, name="Alvo"))
+    fx = _PvpCtxFixture(world, me)
+    fx._pvp_zones = [{"name": "Teste", "rect": rect}]
+    return fx, me, other
+
+
+def test_client_pvp_context_libera_ambos_dentro_da_zona():
+    fx, me, other = _make_pvp_ctx_world()
+    assert fx._client_pvp_context(fx.world, me, other) is True
+
+
+def test_client_pvp_context_bloqueia_fora_da_zona():
+    from engine.components import TileMovement
+    fx, me, other = _make_pvp_ctx_world()
+    fx.world.get_component(other, TileMovement).current_tile_x = 0
+    fx.world.get_component(other, TileMovement).current_tile_y = 0
+    assert fx._client_pvp_context(fx.world, me, other) is False
+
+
+def test_client_pvp_context_mesmo_grupo_dentro_da_zona_continua_amigavel():
+    fx, me, other = _make_pvp_ctx_world()
+    fx._party_id_val = 7
+    fx._party_members_val = [{"eid": fx._my_eid}, {"eid": 99}]
+    assert fx._client_pvp_context(fx.world, me, other) is False
+
+
+def test_client_pvp_context_duelo_libera_independente_de_zona():
+    fx, me, other = _make_pvp_ctx_world()
+    from engine.components import TileMovement
+    fx.world.get_component(other, TileMovement).current_tile_x = 0
+    fx.world.get_component(other, TileMovement).current_tile_y = 0
+    fx._duel_opponent_local_val = other
+    assert fx._client_pvp_context(fx.world, me, other) is True
+
+
 def test_offline_sem_requester_continua_creditando_local():
     """Regressão: sem set_online_loot_requester (modo legado/offline), o
     fluxo antigo — creditar na hora do clique — continua intacto."""

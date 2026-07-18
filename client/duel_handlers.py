@@ -42,20 +42,15 @@ class DuelHandlers:
         self._duel_opponent_local_val = opp_local
         # Contexto PvP client-side: libera can_engage SÓ contra o oponente
         # (clique direito ataca, skills miram, SPACE engaja) — espelho do
-        # que o servidor liberou em _duel_pairs. Desregistrado no DUEL_END.
-        from engine.faction_system import register_pvp_context
-
-        def _duel_ctx(_w, a, b):
-            pair = {self.player_entity, self._duel_opponent_local_eid}
-            return self._duel_opponent_local_eid != -1 and {a, b} == pair
-
-        register_pvp_context(_duel_ctx)
+        # que o servidor liberou em _duel_pairs. O resolver em si é o
+        # composto ÚNICO registrado em game.py::_client_pvp_context (duelo
+        # OU zona PvP) — aqui só atualiza o estado que ele lê
+        # (_duel_opponent_local_eid); desregistrar não é mais necessário,
+        # o composto já volta a False quando o duelo acaba.
         from ui.floating_text import WARN
         WARN.add(f"Duelo contra {opp_name}!")
 
     def _handle_msg_duel_end(self, payload: dict) -> None:
-        from engine.faction_system import register_pvp_context
-        register_pvp_context(None)
         self._duel_opponent_local_val = -1
         self._duel_invite_from_val    = None
         # Oponente deixa de ser alvo válido: limpa target/perseguição locais

@@ -536,6 +536,22 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         px, py = spawn_points["player"] if spawn_points["player"] else (1, 1)
         self.player_entity = create_player(self.world, px, py, self._current_map_file)
 
+        # Contexto PvP client-side — registrado UMA VEZ (composto, ao contrário
+        # do servidor onde cada contexto é uma consulta dentro de
+        # _pvp_allowed_between: aqui o slot de register_pvp_context é único,
+        # então a composição (duelo OU zona) mora nesta função só). Sem isso,
+        # can_engage() do lado cliente (que decide se clique direito ataca ou
+        # abre o modal de interação, e valida skill localmente antes de
+        # mandar pro servidor) nunca sabe de nenhum contexto de PvP — o
+        # servidor já libera corretamente (_pvp_allowed_between), mas o
+        # cliente barra a AÇÃO antes de sequer mandar a mensagem (bug real
+        # relatado pelo usuário 18/07/2026: dentro da Zona PvP, clique
+        # direito abria o modal de trade/duelo em vez de atacar, e skill
+        # retornava "Alvo amigável" — o resolver client-side só conhecia
+        # duelo, nunca zona).
+        from engine.faction_system import register_pvp_context
+        register_pvp_context(self._client_pvp_context)
+
         self._spawn_entities_from(spawn_points)
 
         self.camera_entity = create_camera(
@@ -950,6 +966,46 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         override de painel ativo — ver _set_panel_scale)."""
         s = self._u_scale_override if self._u_scale_override is not None else self._ui_scale
         return max(1, round(px * s))
+
+    def _local_eid_to_server_eid(self, eid: int) -> int:
+        """eid local (ECS deste cliente) → server_eid. Próprio player usa
+        self._my_eid; player remoto lê RemoteControlled.server_eid."""
+        if eid == self.player_entity:
+            return self._my_eid
+        from engine.components import RemoteControlled as _RCe2s
+        rc = self.world.get_component(eid, _RCe2s)
+        return rc.server_eid if rc else -1
+
+    def _client_pvp_context(self, world, a: int, b: int) -> bool:
+        """Resolver ÚNICO registrado em engine.faction_system — composto
+        (duelo OU zona PvP), já que register_pvp_context só guarda UM slot.
+        Só decide UX local (clique direito ataca vs abre modal, validação
+        de skill antes de mandar pro servidor) — a decisão de dano
+        continua 100% autoritativa no servidor (WorldServer._pvp_allowed_
+        between), que já faz a mesma composição do lado dele."""
+        if self._duel_opponent_local_eid != -1 and \
+                {a, b} == {self.player_entity, self._duel_opponent_local_eid}:
+            return True
+        if not self._pvp_zones:
+            return False
+        from engine.components import TileMovement as _TMzc
+        def _in_zone(eid: int) -> bool:
+            tm = world.get_component(eid, _TMzc)
+            if tm is None:
+                return False
+            for z in self._pvp_zones:
+                x1, y1, x2, y2 = z["rect"]
+                if x1 <= tm.current_tile_x <= x2 and y1 <= tm.current_tile_y <= y2:
+                    return True
+            return False
+        if not (_in_zone(a) and _in_zone(b)):
+            return False
+        if self._party_id != -1:
+            party_server_eids = {m["eid"] for m in self._party_members}
+            if self._local_eid_to_server_eid(a) in party_server_eids and \
+                    self._local_eid_to_server_eid(b) in party_server_eids:
+                return False
+        return True
 
     def _set_panel_scale(self, design_w: int, design_h: int, margin: int = 20,
                          margin_h: "int | None" = None) -> None:
