@@ -210,6 +210,74 @@ def test_online_loot_request_item_manda_take_item_com_nome():
     assert sent == [(corpse, "item", item.name)]
 
 
+# ── client/network_handlers.py::_handle_msg_loot_result — INV_SYNC ───────────
+# Bug real relatado pelo usuário 18/07/2026: progresso de quest "colete N
+# itens" parou de atualizar no HUD/diário (entrega ainda funcionava, só a
+# EXIBIÇÃO travava). Causa raiz: a reescrita do loot granular/free-for-all
+# (17/07/2026) passou a creditar itens direto em _handle_msg_loot_result,
+# mas esqueceu de mandar INV_SYNC pro servidor depois — sem isso, o
+# Inventory ECS do SERVIDOR nunca sabe do item novo, e
+# sync_collect_progress (server/session.py::_handle_inventory_update)
+# nunca roda. Mesmo padrão que _on_recarregar_changed já usava certo.
+
+from client.network_handlers import NetworkHandlers as _NH_loot
+
+
+class _LootResultFixture(_NH_loot):
+    def __init__(self, world, player_entity):
+        self.world = world
+        self.player_entity = player_entity
+        self._available_loot = {}
+        self._remote_corpses = {}
+        self._loot_system = type("_FakeLootSys", (), {"_online_loot_pending": set()})()
+        self.loot_actions = []
+        self.save_state_calls = 0
+
+    def _on_loot_action(self, change_type: str = "item") -> None:
+        self.loot_actions.append(change_type)
+
+    def _send_save_state(self) -> None:
+        self.save_state_calls += 1
+
+
+def _make_loot_result_fixture():
+    from engine.world import World
+    from engine.components import Wallet, Inventory
+
+    world = World()
+    player = world.create_entity()
+    world.add_component(player, Wallet(gold=0))
+    world.add_component(player, Inventory())
+    return _LootResultFixture(world, player)
+
+
+def test_loot_result_com_item_manda_inv_sync():
+    fx = _make_loot_result_fixture()
+    fx._handle_msg_loot_result({
+        "corpse_id": 1, "coins": 0,
+        "items": [{"name": "Pelo de Urso", "stack": 1}],
+    })
+    assert fx.loot_actions == ["item"], \
+        "creditar item deveria disparar INV_SYNC (_on_loot_action) pro servidor saber do Inventory novo"
+    assert fx.save_state_calls == 1
+
+
+def test_loot_result_so_ouro_nao_manda_inv_sync():
+    """Ouro já é server-authoritative (request_loot credita o Wallet do
+    servidor direto) — não precisa de INV_SYNC, só itens passam pela
+    Inventory local sem o servidor saber."""
+    fx = _make_loot_result_fixture()
+    fx._handle_msg_loot_result({"corpse_id": 1, "coins": 11, "items": []})
+    assert fx.loot_actions == []
+    assert fx.save_state_calls == 1
+
+
+def test_loot_result_vazio_nao_manda_inv_sync():
+    fx = _make_loot_result_fixture()
+    fx._handle_msg_loot_result({"corpse_id": 1, "coins": 0, "items": []})
+    assert fx.loot_actions == []
+
+
 # ── client/network_handlers.py — spawn de player remoto propaga "level" ──────
 # Bug real relatado pelo usuário 18/07/2026: nameplate de player remoto só
 # atualizava o level quando o servidor reenviava HP (regen/dano), nunca no

@@ -1809,6 +1809,23 @@ class NetworkHandlers:
         # (ver docstring de _sync_local_corpse_after_take).
         item_names = [it.get("name", "") for it in items]
         self._sync_local_corpse_after_take(corpse_id, coins, item_names)
+        if items:
+            # Sincroniza o Inventory ECS do SERVIDOR (INV_SYNC) — sem isso,
+            # o servidor nunca fica sabendo do item recém-creditado (loot
+            # online é resolvido só no cliente, `request_loot()` não toca
+            # a Inventory do player, só o Wallet pro ouro). Regressão real
+            # relatada pelo usuário 18/07/2026: a reescrita do loot
+            # granular/free-for-all (17/07/2026) passou a creditar itens
+            # direto aqui e esqueceu esta chamada — que era, antes disso,
+            # feita automaticamente via ui/systems.py::LootSystem/
+            # _on_loot_collected no fluxo antigo. Sem INV_SYNC,
+            # `sync_collect_progress` (server/session.py::
+            # _handle_inventory_update) nunca roda e o progresso de quest
+            # "colete N itens" trava no HUD/diário (entrega só voltava a
+            # funcionar depois de relogar, quando spawn_player recarrega a
+            # Inventory do banco). Mesmo padrão de
+            # _on_recarregar_changed (que já fazia isto certo).
+            self._on_loot_action("item")
         # Gold/itens mudaram — sincroniza save com o servidor
         self._send_save_state()
 

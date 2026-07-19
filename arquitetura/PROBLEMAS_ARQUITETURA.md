@@ -2322,6 +2322,43 @@ Suíte sem regressão (9F/83P, mesmo baseline).
 um e conferir que o diário de quests atualiza a cada pickup, sem esperar a
 próxima morte de mob.
 
+**Regressão (feedback de testers, 18/07/2026)**: voltou — progresso de
+"colete N itens" parou de atualizar no HUD/diário (entrega ainda
+funcionava se o player tivesse os itens, só a EXIBIÇÃO travava).
+
+**Causa raiz**: a reescrita do loot online pra granular/free-for-all de
+grupo (17/07/2026, ver ARQUITETURA_ONLINE.md §34.24) trocou COMO o
+cliente credita itens de loot — antes passava por
+`ui/systems.py::LootSystem`/`_on_loot_collected`, que sempre disparava
+`_on_loot_action("item")` (manda `INV_SYNC`) depois de creditar; a
+reescrita passou a creditar DIRETO em
+`client/network_handlers.py::_handle_msg_loot_result` (novo fluxo
+LOOT_REQUEST/LOOT_RESULT), mas esqueceu de mandar o `INV_SYNC`
+depois — só chamava `_send_save_state()` (persiste no banco, mas não
+sincroniza o `Inventory` ECS AO VIVO do servidor, nem chama
+`sync_player_inventory`/`sync_collect_progress`). Sem `INV_SYNC`, o fix
+de 06/07 acima nunca dispara, e o fallback por tick também nunca vê o
+item novo (mesmo `Inventory` do servidor, nunca atualizado). Entrega
+ainda funcionava porque `spawn_player` reconstrói o `Inventory` do zero
+a partir do banco em todo login/reconnect — um relog no meio do
+caminho "resolvia" acidentalmente, mascarando o sintoma.
+
+**Fix**: `_handle_msg_loot_result` agora chama `self._on_loot_action("item")`
+(mesmo padrão de `_on_recarregar_changed`) sempre que `items` não é
+vazio, ANTES de `_send_save_state()`. Ouro não precisa disso —
+`server/loot_processor.py::request_loot` já credita o `Wallet` do
+servidor DIRETO (server-autoritativo desde sempre), só item que
+depende do cliente avisar de volta.
+
+Validado: `tests/test_client_ui.py` — creditar item dispara
+`_on_loot_action("item")`; só ouro ou resposta vazia não dispara (ouro
+já é server-authoritative, não precisa). Suíte completa 228/228,
+rodada 3x.
+
+Não validado: sessão manual — lootar item de quest em grupo (fluxo
+LOOT_REQUEST/LOOT_RESULT) atualiza o diário na hora, sem precisar
+relogar.
+
 ---
 
 ### ✅ RESOLVIDO — Hotbar não escurecia por mana/concentração insuficiente (feedback de testers, 06/07/2026)
