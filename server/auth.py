@@ -191,8 +191,20 @@ def _authenticate_sync(username: str, password: str) -> "dict | None":
                 )
         if not ok:
             return None
+        # Só os campos que a tela de seleção de personagem realmente usa
+        # (ui/char_creation_screen.py: id/name/class_id/level) — NUNCA os
+        # blobs JSON grandes (inventory/equipment/stats/skills/talents/
+        # fog/skill_levels/quests): _handle_select_character já busca o
+        # personagem escolhido de novo, por inteiro, via get_character()
+        # (server/session.py), então mandar tudo aqui é só peso morto. Bug
+        # real 19/07/2026: fog_json (grid de fog-of-war, cresce sem limite
+        # por tile explorado) somado nos 3 personagens de uma conta passou
+        # de 1 MB — o frame WebSocket inteiro (limite 1048576 bytes) era
+        # rejeitado com "message too big", derrubando a conexão logo após
+        # autenticar, antes até da tela de escolha de personagem aparecer.
         chars = conn.execute(
-            "SELECT * FROM characters WHERE account_id=? ORDER BY id LIMIT 3",
+            "SELECT id, name, class_id, level FROM characters "
+            "WHERE account_id=? ORDER BY id LIMIT 3",
             (row["id"],)
         ).fetchall()
         return {

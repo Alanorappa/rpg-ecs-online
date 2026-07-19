@@ -2361,6 +2361,46 @@ relogar.
 
 ---
 
+### ✅ RESOLVIDO — Conexão caía logo após autenticar: "sent 1009 (message too big)" (feedback do usuário, 19/07/2026)
+
+Reportado: login falhava em loop (conecta → autentica → desconecta →
+reconecta) com o cliente logando `erro de conexão: sent 1009 (message
+too big) frame exceeds limit of 1048576 bytes`. Servidor não crashava
+nem logava erro — a sessão só nunca chegava a mandar `SELECT_CHARACTER`
+(desconectava antes até da tela de escolha de personagem aparecer).
+
+**Causa raiz**: `server/auth.py::_authenticate_sync` fazia
+`SELECT * FROM characters WHERE account_id=? ... LIMIT 3` e mandava a
+linha INTEIRA de cada personagem em `AUTH_OK.characters` — incluindo
+`fog_json` (grid de fog-of-war, cresce sem limite conforme o mapa é
+explorado, nunca compactado/podado) e os demais blobs JSON grandes
+(`inventory_json`, `equipment_json`, `stats_json`, etc.), nenhum dos
+quais a tela de seleção de personagem usa de verdade (só
+`id`/`name`/`class_id`/`level` — `ui/char_creation_screen.py`;
+`_handle_select_character`, ao escolher um personagem, busca ele de
+novo por inteiro via `get_character()`, então o dado pesado em
+`AUTH_OK` é só peso morto). Numa conta com 3 personagens bem
+explorados/testados, a soma dos `fog_json` sozinha passou de 1 MB — o
+limite do frame WebSocket (`server/main.py`, `max_size=1_048_576`),
+derrubando a conexão com 1009 assim que o servidor tentava mandar o
+`AUTH_OK`.
+
+**Fix**: a query agora seleciona só as 4 colunas leves
+(`id, name, class_id, level`) — nem chega a ler os blobs grandes do
+banco pra essa mensagem.
+
+Validado: `tests/test_session.py::
+TestLogin::test_auth_ok_nao_manda_blobs_json_pesados` — infla
+`fog_json` pra 600 KB no banco pra uma conta de teste, loga, confirma
+que `AUTH_OK.characters` só tem as 4 chaves esperadas e o payload
+inteiro fica bem abaixo de 100 KB. Suíte completa 229/229, rodada 3x.
+
+**Não validado**: reiniciar o servidor (o processo em produção precisa
+ser reiniciado pra pegar o fix — código Python não recarrega sozinho)
+e confirmar que a conta afetada consegue logar normalmente.
+
+---
+
 ### ✅ RESOLVIDO — Hotbar não escurecia por mana/concentração insuficiente (feedback de testers, 06/07/2026)
 
 Reportado por testers: a skill deveria ficar escura quando não há recurso

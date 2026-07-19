@@ -178,6 +178,50 @@ class TestLogin(unittest.IsolatedAsyncioTestCase):
         self.assertLess(cs.max_hp, 999999,
                         "Servidor adotou max_hp forjado do cliente (vulnerabilidade)")
 
+    async def test_auth_ok_nao_manda_blobs_json_pesados(self):
+        """Bug real relatado pelo usuário 19/07/2026: conexão caía logo após
+        autenticar com "sent 1009 (message too big)". Causa raiz:
+        AUTH_OK mandava a linha INTEIRA de `characters` (SELECT *) — inclui
+        fog_json (grid de fog-of-war, cresce sem limite por tile explorado)
+        e outros blobs JSON grandes, que não fazem falta nenhuma na tela de
+        seleção de personagem (só usa id/name/class_id/level — ver
+        ui/char_creation_screen.py; _handle_select_character busca o
+        personagem escolhido de novo, por inteiro, via get_character()).
+        Somados nos 3 personagens de uma conta bem testada, passava do
+        limite de 1 MB do frame WebSocket. Fix: authenticate() só seleciona
+        as 4 colunas leves do banco."""
+        from server.auth import (_register_account_sync, _get_account_id_sync,
+                                 _create_character_sync, _hash, _get_conn)
+        from shared.messages import encode
+        from shared.constants import PROTOCOL_VERSION
+        ph = _hash("test123")
+        _register_account_sync("user_fog_grande", ph)
+        acc_id = _get_account_id_sync("user_fog_grande")
+        _create_character_sync(acc_id, "user_fog_grande", "guerreiro", 115, 389)
+
+        # Simula fog_json inchado (como um personagem MUITO explorado teria).
+        _fog_grande = "x" * 600_000
+        with _get_conn() as conn:
+            conn.execute("UPDATE characters SET fog_json=? WHERE account_id=?",
+                        (_fog_grande, acc_id))
+
+        fake_ws = FakeWS()
+        session = await self.mgr.on_connect(fake_ws, "s_fog")
+        await self.mgr.on_message(session, encode(MsgType.LOGIN, {
+            "username": "user_fog_grande", "password": ph, "version": PROTOCOL_VERSION,
+        }))
+        auth_msgs = get_msgs_of_type(fake_ws, MsgType.AUTH_OK)
+        self.assertEqual(len(auth_msgs), 1, "AUTH_OK não enviado")
+        chars = auth_msgs[0].get("characters", [])
+        self.assertTrue(chars, "AUTH_OK sem personagens")
+        for c in chars:
+            self.assertEqual(set(c.keys()), {"id", "name", "class_id", "level"},
+                            "AUTH_OK.characters vazando campos além do necessário pra seleção")
+        import json as _json_test
+        raw = _json_test.dumps(auth_msgs[0]).encode()
+        self.assertLess(len(raw), 100_000,
+                        "AUTH_OK muito grande mesmo com fog_json inchado no banco")
+
     async def test_world_state_contains_entities_list(self):
         """WORLD_STATE deve ter campo 'entities'."""
         _, fw = await fake_login(self.mgr, "s1", "user_ent")
