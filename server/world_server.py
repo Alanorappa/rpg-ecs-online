@@ -1715,6 +1715,29 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                         pass
         except ImportError:
             pass
+
+        # quests_data.QUEST_ITEMS — 4º catálogo autoritativo, faltando desde
+        # sempre (item A4/Tier B só cobriam loot/loja/forja). Bug real
+        # relatado pelo usuário 19/07/2026: progresso de "colete N itens"
+        # nunca contava (mesmo com o item de verdade na mochila) porque
+        # sanitize_inventory_payload descartava SILENCIOSAMENTE qualquer
+        # item de quest — _lookup_item_value nunca achava "Presa de Lobo"
+        # etc. (só existem em QUEST_ITEMS, nunca em loot_tables._T). O
+        # Inventory AO VIVO do servidor nunca chegava a ter o item, então
+        # sync_collect_progress nunca via nada pra contar.
+        try:
+            from content.quests_data import QUEST_ITEMS
+            for _f in QUEST_ITEMS.values():
+                if callable(_f):
+                    try:
+                        _o = _f()
+                        _n = getattr(_o, "name", None)
+                        if _n and _n not in self._item_value_cache:
+                            self._item_value_cache[_n] = int(getattr(_o, "value", 0))
+                    except Exception:
+                        pass
+        except ImportError:
+            pass
         log.info(f"[WorldServer] caches: {len(self._item_value_cache)} itens, "
               f"{sum(len(v) for v in self._shop_item_cache.values())} entradas de loja")
 
@@ -1727,10 +1750,11 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         """Reconstrói um Item a partir de dict serializado (inventory_json / INV_SYNC).
 
         Tenta casar pelo nome em QUALQUER catálogo autoritativo do servidor —
-        loot (`loot_tables._T`), loja (`merchant_data.SHOPS`) e forja
-        (`crafting_data.RECIPES[*]["result_factory"]`) — e usa os stats REAIS
-        do catálogo, ignorando `modifiers`/`attack_power`/etc. que o cliente
-        mandou no payload. Só os campos puramente de bookkeeping (contagem de
+        loot (`loot_tables._T`), loja (`merchant_data.SHOPS`), forja
+        (`crafting_data.RECIPES[*]["result_factory"]`) e itens de quest
+        (`quests_data.QUEST_ITEMS`) — e usa os stats REAIS do catálogo,
+        ignorando `modifiers`/`attack_power`/etc. que o cliente mandou no
+        payload. Só os campos puramente de bookkeeping (contagem de
         flecha/stack) vêm do cliente, nunca dano/armadura/atributo.
 
         Sem isso, qualquer item que NÃO esteja em loot_tables._T (ou seja,
@@ -1805,8 +1829,21 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             if getattr(candidate, "name", "") == name:
                 return _apply_client_bookkeeping(candidate)
 
+        # 4) Catálogo de itens de quest (Presa de Lobo, Pelo de Urso, etc.) —
+        # só existem em quests_data.QUEST_ITEMS, nunca em loot_tables._T
+        # (drop condicional a quest ativa, ver engine/quest_logic.py). Faltava
+        # aqui — bug real 19/07/2026, ver docstring de sanitize_inventory_payload.
+        from content.quests_data import QUEST_ITEMS
+        for _factory in QUEST_ITEMS.values():
+            try:
+                candidate = _factory()
+            except Exception:
+                continue
+            if getattr(candidate, "name", "") == name:
+                return _apply_client_bookkeeping(candidate)
+
         # Fallback: nome não bate com NENHUM catálogo conhecido (loot/loja/
-        # forja) — todo item de gameplay real vem de um desses 3, então isso
+        # forja/quest) — todo item de gameplay real vem de um desses, então isso
         # só acontece pra nome inválido/inventado. Por segurança, NUNCA
         # aplica modifiers/dano/atributo vindos do payload aqui — só os
         # campos puramente descritivos (nome, tipo, raridade, valor de
@@ -1863,7 +1900,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         reais no próximo login (o load valida via _reconstruct_item, mas o
         fallback de nome desconhecido ainda preservava value/consumable
         arbitrários). Item de nome desconhecido é DESCARTADO aqui (todo
-        item legítimo vem de loot/loja/forja — os 3 catálogos cobertos).
+        item legítimo vem de loot/loja/forja/quest — os 4 catálogos
+        cobertos, ver _reconstruct_item e _build_item_caches).
 
         None se o payload nem é uma lista (caller trata como "sem dado")."""
         if not isinstance(inventory_list, list):

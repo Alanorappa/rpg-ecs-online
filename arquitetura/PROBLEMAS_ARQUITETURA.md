@@ -2359,6 +2359,61 @@ Não validado: sessão manual — lootar item de quest em grupo (fluxo
 LOOT_REQUEST/LOOT_RESULT) atualiza o diário na hora, sem precisar
 relogar.
 
+**Follow-up (19/07/2026) — causa raiz mais funda, o fix acima não era
+suficiente**: usuário testou (print: mochila com 8x "Presa de Lobo",
+quest "Presas Afiadas" ainda em "Coletar Presa de Lobo (0/5)") — o
+INV_SYNC agora dispara certinho (fix anterior), mas o progresso
+CONTINUA sem contar. Sintoma relacionado: NPC da quest ("Levi Hawk")
+parou de abrir o diálogo de interação, mesmo relogando várias vezes.
+
+Causa raiz: `WorldServer.sanitize_inventory_payload`/`_reconstruct_item`
+(item A4, round-trip de segurança contra item forjado) só reconheciam 3
+catálogos autoritativos — `loot_tables._T`, `merchant_data.SHOPS`,
+`crafting_data.RECIPES` — nunca `quests_data.QUEST_ITEMS`. "Presa de
+Lobo" só existe em `QUEST_ITEMS` (drop condicional a quest ativa, ver
+`engine/quest_logic.py`), então `_lookup_item_value("Presa de Lobo")`
+sempre retornava `None` e `sanitize_inventory_payload` DESCARTAVA o
+item em silêncio — o `Inventory` AO VIVO do servidor nunca chegava a
+ter o item de verdade, então `sync_collect_progress` nunca tinha nada
+pra contar, não importa quantas vezes o INV_SYNC disparasse certinho.
+
+Esse gap é ANTIGO (o item A4/Tier B nunca cobriu `QUEST_ITEMS` desde
+que foi criado) — só não aparecia antes porque, até a reescrita do loot
+online desta sessão (Fase E), o item de quest nem passava por um
+round-trip de servidor que importasse pra progresso de quest (o fix de
+06/07 tinha `INV_SYNC` funcionando corretamente contra um Inventory que
+ainda não tinha esse filtro; o filtro A4 veio depois e nunca foi
+re-testado contra item de quest).
+
+**"Levi Hawk" sem diálogo explicado pelo MESMO bug**: `ui/quest_system.py::
+_open_dialog` só abre o painel visual se houver quest disponível OU
+completável (`total = comp + avail`); se `total` estiver vazio (ex:
+todas as quests do NPC já estão ativas, nenhuma completável), o
+"diálogo" vira só uma mensagem no LOG de chat ("Continue sua missão.")
+— nunca um modal. Como "Presas Afiadas" nunca ficava completável (bug
+acima) e as outras quests de Levi Hawk já estavam aceitas/concluídas,
+`total` ficava vazio TODA vez — não era um bug de clique/targeting no
+NPC, era a interação silenciosamente virando só uma linha de log que o
+usuário não notou.
+
+**Fix**: `QUEST_ITEMS` virou o 4º catálogo autoritativo — adicionado em
+`WorldServer._build_item_caches()` (`_item_value_cache`) e
+`WorldServer._reconstruct_item()` (mesmo padrão dos outros 3: tenta a
+factory, casa pelo nome, aplica bookkeeping seguro do cliente).
+
+**Validado**: `tests/test_server.py::TestQuestItemInventorySync` (4
+testes) — `_lookup_item_value("Presa de Lobo")` não é mais `None`;
+`_reconstruct_item` monta o item certo (tipo/stack) pelo catálogo;
+`sanitize_inventory_payload` não descarta mais o item; fluxo completo
+(INV_SYNC → Inventory ao vivo → `sync_collect_progress`) avança o
+objetivo da quest `wolf_fangs` corretamente. Suíte completa 243/243,
+rodada 3x.
+
+**Não validado**: sessão manual — com o servidor reiniciado, lootar
+"Presa de Lobo" (ou qualquer outro item de `QUEST_ITEMS`) atualiza o
+diário na hora; "Levi Hawk" volta a abrir o diálogo normalmente quando
+há quest completável (ex: "Presas Afiadas" com 5+ presas na mochila).
+
 ---
 
 ### ✅ RESOLVIDO — Conexão caía logo após autenticar: "sent 1009 (message too big)" (feedback do usuário, 19/07/2026)

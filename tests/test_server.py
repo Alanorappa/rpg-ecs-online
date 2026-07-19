@@ -728,6 +728,59 @@ class TestRegressionBugs(unittest.TestCase):
                       "level-up de um membro deveria marcar o grupo pra reenviar PARTY_STATE")
 
 
+class TestQuestItemInventorySync(unittest.TestCase):
+    """Bug real relatado pelo usuário 19/07/2026: progresso de quest
+    "colete N itens" travava no HUD mesmo com o item de verdade na
+    mochila. Causa raiz mais funda que o fix anterior (INV_SYNC ausente,
+    §revisão de loot online): sanitize_inventory_payload/_reconstruct_item
+    só reconheciam 3 catálogos (loot_tables._T, merchant_data.SHOPS,
+    crafting_data.RECIPES) — qualquer item que só existe em
+    quests_data.QUEST_ITEMS (ex: "Presa de Lobo") era DESCARTADO em
+    silêncio pelo round-trip de segurança (item A4), então o Inventory
+    AO VIVO do servidor nunca tinha o item, mesmo depois do INV_SYNC
+    chegar certinho."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        self.eid = spawn_player(self.ws, "s1", 130, 374)
+
+    def test_lookup_item_value_reconhece_item_de_quest(self):
+        self.assertIsNotNone(self.ws._lookup_item_value("Presa de Lobo"),
+                             "QUEST_ITEMS deveria estar no cache de valores (_build_item_caches)")
+
+    def test_reconstruct_item_monta_item_de_quest_pelo_catalogo(self):
+        item = self.ws._reconstruct_item({"name": "Presa de Lobo", "stack": 3})
+        self.assertIsNotNone(item)
+        self.assertEqual(item.item_type, "material")
+        self.assertEqual(item.stack, 3)
+
+    def test_sanitize_inventory_payload_nao_descarta_item_de_quest(self):
+        sanitized = self.ws.sanitize_inventory_payload(
+            [{"name": "Presa de Lobo", "item_type": "material", "stack": 2}])
+        self.assertEqual(len(sanitized), 1,
+                         "sanitize_inventory_payload descartou item de quest válido")
+        self.assertEqual(sanitized[0]["name"], "Presa de Lobo")
+
+    def test_inv_sync_com_item_de_quest_avanca_progresso_da_quest(self):
+        """Fluxo completo: INV_SYNC com item de quest → Inventory ao vivo do
+        servidor → sync_collect_progress conta certo (quest 'wolf_fangs',
+        objetivo collect_item 'Presa de Lobo', count=5)."""
+        from engine.components import QuestLog
+        ql = self.ws.world.get_component(self.eid, QuestLog)
+        ql.active["wolf_fangs"] = [0]
+
+        sanitized = self.ws.sanitize_inventory_payload(
+            [{"name": "Presa de Lobo", "item_type": "material", "stack": 3}])
+        self.ws.sync_player_inventory("s1", sanitized)
+
+        from engine.components import Inventory
+        import engine.quest_logic as quest_logic
+        inv = self.ws.world.get_component(self.eid, Inventory)
+        changed = quest_logic.sync_collect_progress(ql, inv)
+        self.assertTrue(changed)
+        self.assertEqual(ql.active["wolf_fangs"][0], 3)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 6. Punho no Queixo — skill de carga do Cavaleiro
 # ─────────────────────────────────────────────────────────────────────────────
