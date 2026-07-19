@@ -264,6 +264,7 @@ rpg_ecs_online/
 | `server/server_death_handler.py` | ONLINE-ONLY | Morte de mobs sem Pygame |
 | `shared/messages.py` | ONLINE-ONLY | Protocolo completo |
 | `shared/constants.py` | ONLINE-ONLY | `COMBAT_SYNC_STATS`, `AOI_RADIUS` |
+| `shared/fog_codec.py` | ONLINE-ONLY | `encode_fog`/`decode_fog` — Fog of War persistido em bitmap+zlib (não lista de coordenadas) |
 | `client/network.py` | ONLINE-ONLY | NetworkClient WebSocket |
 | `client/network_handlers.py` | NOVO (ONLINE-ONLY) | `NetworkHandlers`: mixin com dispatcher + 17 `_handle_msg_*`, extraído de `game.py` |
 | `client/remote_entity_handlers.py` | NOVO (ONLINE-ONLY) | `RemoteEntityHandlers`: mixin com 17 métodos de spawn/despawn/movimento/sync de mobs e players remotos + `_apply_combat_result`, extraído de `game.py` |

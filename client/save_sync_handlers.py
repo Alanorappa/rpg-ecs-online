@@ -186,15 +186,20 @@ class SaveSyncHandlers:
                 "learned": list(ps_col.learned_skill_ids),
             }
 
-        # Fog of War — tiles explorados por mapa (servidor faz union, é aditivo)
+        # Fog of War — tiles explorados por mapa (servidor faz union, é aditivo).
+        # Bitmap comprimido (shared/fog_codec.py) — formato de coordenada crua
+        # antigo passava de 1 MB numa conta bem explorada (ver
+        # PROBLEMAS_ARQUITETURA.md, bug real 19/07/2026).
         from engine.components import FogOfWar as _FogCol
+        from shared.fog_codec import encode_fog as _encode_fog_col
         fog_comp = self.world.get_component(self.player_entity, _FogCol)
         fog = {}
         if fog_comp:
-            for map_key, tile_set in fog_comp._explored_maps.items():
-                normalized = map_key.replace("\\", "/")
-                if tile_set:
-                    fog[normalized] = [[x, y] for x, y in tile_set]
+            _normalized_maps = {
+                map_key.replace("\\", "/"): tile_set
+                for map_key, tile_set in fog_comp._explored_maps.items()
+            }
+            fog = _encode_fog_col(_normalized_maps)
 
         return {
             "stats":     stats,
@@ -441,7 +446,10 @@ class SaveSyncHandlers:
 
         # Fog of War — restaura tiles explorados por mapa a partir do servidor.
         # char_data pode ter "fog_json" (coluna do DB) ou "fog" (já parseado pelo merge).
+        # decode_fog aceita formato novo (bitmap) OU antigo ([[x,y],...]) —
+        # migração transparente entre os dois (ver shared/fog_codec.py).
         from engine.components import FogOfWar as _FogR
+        from shared.fog_codec import decode_fog as _decode_fog_r
         fog_r = self.world.get_component(self.player_entity, _FogR)
         if fog_r:
             _fog_raw = char_data.get("fog_json", char_data.get("fog", {}))
@@ -449,9 +457,8 @@ class SaveSyncHandlers:
                 _fog_data = _jr.loads(_fog_raw) if isinstance(_fog_raw, str) else (_fog_raw or {})
             except Exception:
                 _fog_data = {}
-            for _mk, _coords in _fog_data.items():
+            for _mk, _tile_set in _decode_fog_r(_fog_data).items():
                 _mk = _mk.replace("\\", "/")
-                _tile_set = {(int(x), int(y)) for x, y in _coords}
                 if _mk in fog_r._explored_maps:
                     fog_r._explored_maps[_mk].update(_tile_set)
                 else:

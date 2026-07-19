@@ -194,7 +194,7 @@ Esses atributos existem na classe `Skill.__init__` (`fail_flash_timer` está lá
 | Componente | Campos | Notas |
 |-----------|--------|-------|
 | `Tilemap(tile_matrix, terrain_matrix, object_matrix, terrain_visual, map_width_tiles, map_height_tiles, tile_size)` | dados do mapa carregado | |
-| `FogOfWar(radius, explore_radius, visible, explored, _explored_maps, _last_tile)` | estado de neblina | `visible` = set de tiles visíveis no frame |
+| `FogOfWar(radius, explore_radius, visible, explored, _explored_maps, _last_tile)` | estado de neblina | `visible` = set de tiles visíveis no frame; persistência de `_explored_maps` usa `shared/fog_codec.py` (bitmap+zlib, não lista de coordenadas — ver PROBLEMAS_ARQUITETURA.md) |
 | `Visible()` | tag adicionada/removida por FogSystem | no servidor: adicionada manualmente no spawn de mobs (FogSystem não roda) |
 | `MapLocation(map_file)` | mapa ao qual esta entidade pertence | adicionado a mobs/NPCs/spawn_zones pelo `_load_map_for()`; players usam `WorldServer._player_maps` |
 

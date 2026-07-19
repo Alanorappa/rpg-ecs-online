@@ -108,6 +108,42 @@ def get_msgs_of_type(fake_ws: FakeWS, msg_type: MsgType) -> list[dict]:
 # 1. Login e sessão
 # ─────────────────────────────────────────────────────────────────────────────
 
+class TestBuildSaveMergeFog(unittest.TestCase):
+    """_build_save_merge — union de fog (servidor + cliente) com o novo
+    codec bitmap+zlib (shared/fog_codec.py, bug real 19/07/2026). Cobre a
+    migração transparente: DB pode ter o formato ANTIGO (lista de
+    coordenadas) de personagens salvos antes do fix."""
+
+    def test_fog_do_cliente_sozinho_vira_formato_novo(self):
+        from server.session import SessionManager
+        from shared.fog_codec import encode_fog, decode_fog
+        cli_fog = encode_fog({"maps/map_1.csv": {(1, 1), (2, 2)}})
+        merged = SessionManager._build_save_merge(
+            {"fog_json": "{}"}, {"fog": cli_fog})
+        self.assertEqual(decode_fog(merged["fog"])["maps/map_1.csv"], {(1, 1), (2, 2)})
+
+    def test_fog_antigo_no_banco_faz_union_com_fog_novo_do_cliente(self):
+        """Personagem salvo ANTES do fix (fog_json em formato de lista) —
+        próximo save precisa unir com o que o cliente manda (já no formato
+        novo) sem perder nada, e persistir tudo no formato novo."""
+        import json
+        from server.session import SessionManager
+        from shared.fog_codec import encode_fog, decode_fog
+        srv_data = {"fog_json": json.dumps({"maps/map_1.csv": [[1, 1], [2, 2]]})}
+        cli_fog  = encode_fog({"maps/map_1.csv": {(2, 2), (3, 3)}})
+        merged = SessionManager._build_save_merge(srv_data, {"fog": cli_fog})
+        self.assertEqual(decode_fog(merged["fog"])["maps/map_1.csv"],
+                         {(1, 1), (2, 2), (3, 3)})
+
+    def test_sem_payload_do_cliente_mantem_fog_do_servidor(self):
+        import json
+        from server.session import SessionManager
+        from shared.fog_codec import decode_fog
+        srv_data = {"fog_json": json.dumps({"maps/map_1.csv": [[9, 9]]})}
+        merged = SessionManager._build_save_merge(srv_data, {})
+        self.assertEqual(decode_fog(merged["fog"])["maps/map_1.csv"], {(9, 9)})
+
+
 class TestLogin(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):

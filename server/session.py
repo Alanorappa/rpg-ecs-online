@@ -157,22 +157,27 @@ class SessionManager:
         # O cliente sempre envia o conjunto completo (recebeu o fog do servidor
         # no LOGIN_OK e acumulou novas descobertas), portanto a autoridade é
         # do cliente — mas fazemos union para segurança em caso de múltiplos logins.
+        # Bitmap comprimido (shared/fog_codec.py) — decode_fog aceita formato
+        # novo E antigo (coordenada crua), encode_fog sempre grava no novo (ver
+        # PROBLEMAS_ARQUITETURA.md, bug real 19/07/2026 — fog_json passava de
+        # 1 MB numa conta bem explorada).
         import json as _json
+        from shared.fog_codec import encode_fog as _encode_fog_sv, decode_fog as _decode_fog_sv
         _srv_fog_raw = srv_data.get("fog_json", "{}")
         try:
-            _srv_fog = _json.loads(_srv_fog_raw) if isinstance(_srv_fog_raw, str) else (_srv_fog_raw or {})
+            _srv_fog_data = _json.loads(_srv_fog_raw) if isinstance(_srv_fog_raw, str) else (_srv_fog_raw or {})
         except Exception:
-            _srv_fog = {}
-        _cli_fog  = (client_p.get("fog") or {}) if client_p else {}
+            _srv_fog_data = {}
+        _srv_fog = _decode_fog_sv(_srv_fog_data)
+        _cli_fog = _decode_fog_sv((client_p.get("fog") or {}) if client_p else {})
         if _cli_fog:
-            merged_fog: dict = dict(_srv_fog)
-            for _mk, _coords in _cli_fog.items():
+            merged_sets: dict = dict(_srv_fog)
+            for _mk, _cli_set in _cli_fog.items():
                 _mk = _mk.replace("\\", "/")
-                _srv_set = {tuple(t) for t in merged_fog.get(_mk, [])}
-                _cli_set = {tuple(t) for t in _coords}
-                merged_fog[_mk] = [list(t) for t in (_srv_set | _cli_set)]
+                merged_sets[_mk] = merged_sets.get(_mk, set()) | _cli_set
+            merged_fog = _encode_fog_sv(merged_sets)
         else:
-            merged_fog = _srv_fog
+            merged_fog = _encode_fog_sv(_srv_fog)
 
         return {
             "tile_x":    srv_data.get("tile_x", 10),

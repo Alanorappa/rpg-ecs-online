@@ -2401,6 +2401,57 @@ e confirmar que a conta afetada consegue logar normalmente.
 
 ---
 
+### ✅ RESOLVIDO — Causa raiz do fog_json gigante: formato sem compressão (feedback do usuário, 19/07/2026)
+
+O fix acima (trimar `AUTH_OK`) resolve o sintoma imediato (login), mas o
+usuário apontou corretamente que o PROBLEMA de fundo — `fog_json`
+(tiles explorados de Fog of War) crescendo sem limite — só ia piorar
+com mapas maiores/mais explorados, eventualmente estourando 1 MB de
+novo em outras mensagens (ex: o personagem escolhido sozinho no
+`LOGIN_OK`/`SELECT_CHARACTER`).
+
+**Causa raiz**: `_explored_maps` (por mapa, `set[(x,y)]`) era serializado
+como `{mapa: [[x,y], [x,y], ...]}` — uma coordenada JSON crua por tile,
+~11,4 bytes/tile, ZERO compressão. Medido numa conta real do usuário:
+46.837 tiles explorados = 532 KB.
+
+**Fix**: `shared/fog_codec.py` (novo, módulo puro sem estado — mesmo
+espírito de `shared/messages.py`/`constants.py`) — `encode_fog`/
+`decode_fog`. Área explorada é sempre um "borrão" contíguo (personagem
+anda, não teleporta), perfeito pra bitmap: 1 bit por tile dentro do
+bounding box do que foi explorado NAQUELE mapa (não do mapa inteiro —
+não depende de saber as dimensões reais do mapa, fica compacto mesmo
+cedo na exploração), comprimido com zlib e codificado em base64 pra
+caber no JSON. `decode_fog` aceita os DOIS formatos (lista = antigo,
+dict com `"bits"` = novo) por chave de mapa — migração transparente,
+sem precisar converter o banco em massa: personagem salvo antes do fix
+carrega normal, e vira formato novo no PRÓXIMO save.
+
+Pontos ligados (os 3 lugares que liam/escreviam o formato antigo):
+`client/save_sync_handlers.py` (`_collect_save_state` encoda,
+`_restore_save_state` decoda), `server/session.py::_build_save_merge`
+(decoda DB + cliente, faz union dos SETS — antes fazia union de listas
+cruas —, re-encoda pro banco).
+
+**Validado**: `tests/test_fog_codec.py` (7 testes) — roundtrip exato;
+mapa vazio não entra no resultado; decode aceita formato antigo E novo,
+decodificando igual pros mesmos dados; bitmap+zlib pelo menos 50x menor
+que lista de coordenadas pra área contígua; vários mapas independentes.
+`tests/test_session.py::TestBuildSaveMergeFog` (3 testes) — fog do
+cliente sozinho vira formato novo; fog ANTIGO no banco + fog novo do
+cliente fazem union correta (migração no meio do caminho); sem payload
+do cliente mantém o fog do servidor. Rodado contra o dado REAL da conta
+do usuário (`account_id=41`): 532.281 bytes → 1.176 bytes (**452x**
+menor), roundtrip decode→encode confirmado idêntico ao original. Suíte
+completa 239/239, rodada 3x.
+
+**Não validado**: sessão manual — explorar o mapa normalmente, deslogar,
+relogar e confirmar que a névoa já descoberta continua exatamente igual
+(nenhum tile "esquecido"); personagem com fog salvo no formato ANTIGO
+(antes deste fix) carrega e continua acumulando exploração sem erro.
+
+---
+
 ### ✅ RESOLVIDO — Hotbar não escurecia por mana/concentração insuficiente (feedback de testers, 06/07/2026)
 
 Reportado por testers: a skill deveria ficar escura quando não há recurso
