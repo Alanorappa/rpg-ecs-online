@@ -4454,10 +4454,12 @@ fora bloqueia; mesmo grupo dentro da zona continua bloqueando (exceção);
 duelo libera independente de estar dentro ou fora da zona. Suíte
 completa 225/225, rodada 3x.
 
-**Não validado**: sessão manual — dentro da zona, clique direito ataca
-direto (não abre mais o modal); skill contra o alvo dentro da zona
-completa normalmente (sem "Alvo amigável"); fora da zona ou em grupo,
-clique direito continua abrindo o modal normalmente (regressão).
+**Validado (18/07/2026)**: usuário testou em jogo — 2 players únicos
+dentro da zona se atacam; os 2 no mesmo grupo NÃO se atacam; e (com
+outros testers, via build `release_tools/build_client.ps1`) 2 GRUPOS
+diferentes dentro da zona se atacam entre si normalmente. Fecha a
+thread de Zona PvP (Fase F) inteira — arquitetura + causa raiz do
+resolver client-side + os 3 cenários de grupo.
 
 ---
 
@@ -4651,7 +4653,7 @@ barra de HP); ghost (`is_ghost`) desenhado semi-transparente (alpha ~120/255).
 | Migração do sistema de quests para server-autoritativo (QuestLog/progresso/entrega) | ✅ completo | `quest_logic.py` (lógica pura), `server/world_server.py::_process_quest_events`, hooks em `server_death_handler.py`/`spell_completion_processor.py`/`skill_processor.py`/`world_server.move_player`/`apply_consumable`/`update_player_equipment`, `server/session.py::_handle_quest_accept`/`_handle_quest_turn_in`, persistência `quests_json`, ver `PROBLEMAS_ARQUITETURA.md` |
 | Duelo (contexto PvP por convite, estilo WoW) | ✅ completo, validado em jogo | `server/duel_processor.py`, `client/duel_handlers.py` |
 | Party/Grupo + XP compartilhado (Fase E) | ✅ completo, validado em jogo | `server/party_processor.py`, `client/party_handlers.py` |
-| Zona PvP (Fase F — "solo=hostil, grupo=exceção") | ✅ completo, não validado em jogo | `server/pvp_zone_processor.py`, `client/pvp_zone_handlers.py` |
+| Zona PvP (Fase F — "solo=hostil, grupo=exceção") | ✅ completo, validado em jogo (solo, mesmo grupo, e grupo vs grupo) | `server/pvp_zone_processor.py`, `client/pvp_zone_handlers.py` |
 | Times/arenas (Fase G do roadmap) | 🔲 pendente | — |
 | Instâncias (dungeons/raids) | 🔲 pendente | `server/zone_manager.py` |
 | Client-side prediction de movimento | 🔲 pendente | `client/` |
