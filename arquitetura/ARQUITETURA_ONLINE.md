@@ -4809,6 +4809,16 @@ cru, só o nome do personagem precisa ser válido). Suíte completa
 inválido/duplicado mostra o erro certo; botão "Sortear" busca nome novo
 sem travar a UI).
 
+**Adendo (20/07/2026)**: 1ª letra do nome sempre maiúscula — jogador
+pode digitar tudo minúsculo. `shared/character_names.py::normalize_name`
+(único ponto de verdade) aplicado em 2 lugares: cliente, a cada tecla
+(`ui/char_creation_screen.py::_run_creation`, resto do nome não é
+mexido — só a 1ª letra); servidor, antes de validar/gravar
+(`_create_character_sync`) — defesa contra um cliente modificado que
+mande o nome cru. Validado: `tests/test_character_names.py` (+6 testes:
+`normalize_name` isolado + `_create_character_sync` grava capitalizado
+mesmo recebendo tudo minúsculo). Suíte completa 305/305, rodada 3x.
+
 ---
 
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata

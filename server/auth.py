@@ -255,7 +255,8 @@ def _create_character_sync(account_id: int, name: str,
     formato reaproveita shared/character_names.py (mesma regra que o
     gerador de sugestão usa) — único ponto de verdade pro que é um nome
     válido, cliente e servidor concordam sem duplicar a regex."""
-    from shared.character_names import is_valid_name
+    from shared.character_names import is_valid_name, normalize_name
+    name = normalize_name(name)
     if not is_valid_name(name):
         return "invalid_name_format"
     try:

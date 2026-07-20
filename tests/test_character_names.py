@@ -13,8 +13,26 @@ import unittest
 import server.auth as auth
 from shared.character_names import (
     is_valid_name, is_valid_name_char, generate_name_candidate,
-    NAME_MIN_LEN, NAME_MAX_LEN,
+    normalize_name, NAME_MIN_LEN, NAME_MAX_LEN,
 )
+
+
+class TestNormalizeName(unittest.TestCase):
+
+    def test_capitaliza_primeira_letra(self):
+        self.assertEqual(normalize_name("fulano"), "Fulano")
+
+    def test_ja_capitalizado_fica_igual(self):
+        self.assertEqual(normalize_name("Fulano"), "Fulano")
+
+    def test_nao_mexe_no_resto_do_nome(self):
+        self.assertEqual(normalize_name("fUlAno"), "FUlAno")
+
+    def test_string_vazia_fica_vazia(self):
+        self.assertEqual(normalize_name(""), "")
+
+    def test_acento_na_primeira_letra(self):
+        self.assertEqual(normalize_name("ágata"), "Ágata")
 
 
 class TestIsValidName(unittest.TestCase):
@@ -112,6 +130,17 @@ class TestCreateCharacterValidation(unittest.TestCase):
     def test_criacao_com_nome_valido_funciona(self):
         reason = auth._create_character_sync(self.acc_a, "Fulano", "guerreiro")
         self.assertEqual(reason, "ok")
+
+    def test_nome_minusculo_e_salvo_com_1a_letra_maiuscula(self):
+        """Defesa em profundidade — cliente já normaliza, mas um cliente
+        modificado que mande o nome cru minúsculo não deve escapar disso."""
+        reason = auth._create_character_sync(self.acc_a, "fulano", "guerreiro")
+        self.assertEqual(reason, "ok")
+        with auth._get_conn() as conn:
+            row = conn.execute(
+                "SELECT name FROM characters WHERE account_id=?", (self.acc_a,)
+            ).fetchone()
+        self.assertEqual(row["name"], "Fulano")
 
     def test_nome_com_espaco_rejeitado(self):
         reason = auth._create_character_sync(self.acc_a, "Fulano Silva", "guerreiro")

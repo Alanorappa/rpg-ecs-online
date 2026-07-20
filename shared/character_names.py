@@ -28,6 +28,15 @@ def is_valid_name_char(ch: str) -> bool:
     return bool(_NAME_CHAR_RE.fullmatch(ch))
 
 
+def normalize_name(name: str) -> str:
+    """1ª letra maiúscula, resto como veio — jogador pode digitar tudo
+    minúsculo sem se preocupar. Único ponto de verdade: cliente aplica
+    a cada tecla (ui/char_creation_screen.py) e o servidor aplica nesse
+    mesmo formato antes de gravar (server/auth.py), defesa contra um
+    cliente modificado que mande o nome cru."""
+    return name[:1].upper() + name[1:] if name else name
+
+
 def is_valid_name(name: str) -> bool:
     """Valida formato completo: 3-16 chars, só letras (com acento). NÃO
     valida unicidade — isso exige consulta ao banco (server/auth.py)."""

@@ -394,7 +394,7 @@ def _run_creation(screen, clock, sc: float, net=None) -> "dict | None":
     from shared.messages import MsgType as _MT_names
     from shared.character_names import (
         is_valid_name, is_valid_name_char, generate_name_candidate,
-        NAME_MIN_LEN, NAME_MAX_LEN,
+        normalize_name, NAME_MIN_LEN, NAME_MAX_LEN,
     )
 
     name_text        = ""
@@ -472,6 +472,9 @@ def _run_creation(screen, clock, sc: float, net=None) -> "dict | None":
                         name_text += event.unicode
                         name_user_edited = True
                         error_msg = ""
+                    # 1ª letra sempre maiúscula, digitada em qualquer caixa —
+                    # jogador pode digitar tudo minúsculo sem se preocupar.
+                    name_text = normalize_name(name_text)
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 name_active = name_rect.collidepoint(mx, my)
                 if reroll_rect.collidepoint(mx, my) and not suggest_pending:
