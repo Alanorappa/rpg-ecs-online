@@ -862,6 +862,81 @@ class TestRecarregarNaoConsomeEmDobro(unittest.TestCase):
         self.assertEqual(ammo.stack, 200 - 75)
 
 
+class TestQuestLogicIgnoraSlotVazioNoInventario(unittest.TestCase):
+    """Bug real relatado pelo usuário 20/07/2026: depois de recarregar a
+    aljava até esgotar a stack de flechas, o servidor travava TODO tick
+    (30x/s, pra sempre, até reiniciar) com 'AttributeError: NoneType object
+    has no attribute name' em quest_logic.py — sync_collect_progress
+    (chamado 1x/tick, em _process_quest_events, pra QUALQUER player com
+    quest ativa) itera inventory.items sem pular slots vazios (None).
+    Slot=None é o formato NORMAL de "item esgotado" nesta base (ver
+    server/spell_completion_processor.py::_server_recarregar,
+    client/inventory_handlers.py, engine/save_system.py — todos já
+    checam `is None`) — quest_logic.py era o único consumidor que não
+    checava, e como a exceção sobe até _tick() (não é só aquele player:
+    _collect_deltas inteiro aborta), TODO o mundo travava, não só quem
+    tinha o slot vazio — daí parecer "recarregar não funciona" (o
+    STATS_UPDATE da recarga fica pra sempre na fila, nunca é drenado)."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        self.eid = spawn_player(self.ws, "s1", 130, 374)
+
+    def test_sync_collect_progress_ignora_slot_none(self):
+        import engine.quest_logic as quest_logic
+        from engine.components import QuestLog, Inventory, Item
+
+        ql = QuestLog()
+        ql.active["wolf_fangs"] = [0]
+        item = Item("Presa de Lobo", "material", "")
+        item.stack = 2
+        inv = Inventory(items=[None, item, None])
+
+        changed = quest_logic.sync_collect_progress(ql, inv)
+
+        self.assertTrue(changed)
+        self.assertEqual(ql.active["wolf_fangs"][0], 2)
+
+    def test_complete_quest_ignora_slot_none_ao_remover_itens(self):
+        import engine.quest_logic as quest_logic
+        from engine.components import QuestLog, Inventory, Item
+
+        ql = QuestLog()
+        ql.active["wolf_fangs"] = [5]
+        item = Item("Presa de Lobo", "material", "")
+        item.stack = 5
+        real_inv = self.ws.world.get_component(self.eid, Inventory)
+        real_inv.items = [None, item]
+
+        reward = quest_logic.complete_quest(self.ws.world, self.eid, ql, "wolf_fangs")
+
+        self.assertIsNotNone(reward)
+        self.assertNotIn("wolf_fangs", ql.active)
+
+    def test_recarregar_ate_esgotar_stack_nao_trava_o_tick_com_quest_ativa(self):
+        """Reprodução fim-a-fim do bug real: recarrega até a stack de
+        flechas zerar (vira None na lista), depois roda o processamento
+        de quests do tick — não pode lançar (o `for peid in
+        self._player_eids` de _process_quest_events roda pra TODO
+        player com quest ativa, todo tick)."""
+        from engine.components import Equipment, Inventory, Item, QuestLog
+        equip = self.ws.world.get_component(self.eid, Equipment)
+        inv = self.ws.world.get_component(self.eid, Inventory)
+        quiver = Item("Aljava", "quiver", "offhand", arrow_count=0, max_arrows=75)
+        equip.slots["offhand"] = quiver
+        ammo = Item("Flecha", "ammo", "", max_stack=999)
+        ammo.stack = 75
+        inv.items.append(ammo)
+
+        ql = self.ws.world.get_component(self.eid, QuestLog)
+        ql.active["wolf_fangs"] = [0]
+
+        self.ws._server_recarregar(self.eid, self.eid, {})
+        self.assertIn(None, inv.items, "stack deveria esgotar e virar None na lista")
+
+        self.ws._process_quest_events()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 6. Punho no Queixo — skill de carga do Cavaleiro
 # ─────────────────────────────────────────────────────────────────────────────

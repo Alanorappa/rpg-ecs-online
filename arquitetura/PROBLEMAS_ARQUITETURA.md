@@ -4826,5 +4826,61 @@ no payload, recarga parcial quando a mochila tem menos que o necessário,
 
 **Não validado**: teste manual em jogo (comprar flechas, recarregar,
 confirmar consumo correto e mensagem de log).
+
+---
+
+### ✅ RESOLVIDO — Servidor travava TODO tick (pra sempre) depois de esgotar uma stack de item no inventário (feedback do usuário, 20/07/2026)
+
+Reportado logo após validar o fix acima: recarregar a aljava até
+esgotar as 200 flechas comprovadamente tirou a quantidade CERTA da
+mochila (75, não mais 150 — o fix anterior funcionou), mas o cliente
+"travou" e o terminal do servidor enchia com o mesmo traceback repetido
+a 30x/s, pra sempre:
+
+```
+AttributeError: 'NoneType' object has no attribute 'name'
+  File "engine/quest_logic.py", line 102, in sync_collect_progress
+    owned = sum(item.stack for item in inventory.items if item.name == obj.loot_item)
+```
+
+**Causa raiz**: quando uma stack de item chega a 0, o padrão desta base
+é deixar o slot como `None` na lista (preserva o índice/posição do
+inventário — ver `server/spell_completion_processor.py::
+_server_recarregar`, `client/inventory_handlers.py`,
+`engine/save_system.py`, todos já filtram `is None`).
+`engine/quest_logic.py` tinha 2 pontos que iteravam `inventory.items`
+sem esse filtro: `sync_collect_progress` (linha 102) e o loop de
+remoção de itens dentro de `complete_quest` (linha ~224). Assim que a
+flecha esgotada virou `None` na lista, `sync_collect_progress` —
+chamado 1x por tick em `_process_quest_events`, para TODO player
+conectado com QUALQUER quest ativa (não precisa ser a de coletar
+flechas) — lançava a exceção. Como ela sobe até `WorldServer._tick()`
+sem ser contida antes, `_collect_deltas()` aborta inteiro: NENHUM
+delta (STATS_UPDATE, ENTITY_MOVE, etc., de NINGUÉM) é calculado nem
+enviado naquele tick — e como nada limpa o slot `None`, o próximo tick
+falha exatamente igual, pra sempre, até reiniciar o servidor. Por isso
+pareceu "recarregar não funciona": a confirmação da recarga ficou presa
+na fila de STATS_UPDATE, nunca chegando a ser drenada — mas na
+verdade o mundo INTEIRO estava congelado para todos os players
+conectados, não só quem esgotou o item.
+
+**Fix**: `engine/quest_logic.py` — `sync_collect_progress` agora pula
+itens `None` na soma (`if item is not None and item.name == ...`); o
+loop de `complete_quest` avança o índice sem tocar no slot quando
+`item is None` em vez de acessar `.name` direto.
+
+Validado: `tests/test_server.py::
+TestQuestLogicIgnoraSlotVazioNoInventario` (3 testes — `None` no meio
+da lista não quebra `sync_collect_progress`, nem `complete_quest`, e a
+reprodução fim-a-fim: recarregar até esgotar a stack + rodar
+`_process_quest_events` com quest ativa não lança). Confirmado que os
+3 testes falham do jeito EXATO do bug reportado (mesmo
+`AttributeError`) na versão sem o fix, antes de aplicá-lo. Suíte
+completa 271/271, rodada 3x.
+
+**Não validado**: teste manual em jogo (recarregar até esgotar a
+stack, confirmar que o servidor não trava e a confirmação chega).
+
+---
    **(15b/D5) Fatiar `ui/systems.py`** — mecânico, zero risco de lógica;
    bom preenchimento de fim de sessão.

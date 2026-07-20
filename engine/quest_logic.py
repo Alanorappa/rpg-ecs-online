@@ -99,7 +99,8 @@ def sync_collect_progress(ql, inventory) -> bool:
         for i, obj in enumerate(qdef.objectives):
             if obj.type != "collect_item" or not obj.loot_item:
                 continue
-            owned = sum(item.stack for item in inventory.items if item.name == obj.loot_item)
+            owned = sum(item.stack for item in inventory.items
+                        if item is not None and item.name == obj.loot_item)
             new_prog = min(owned, obj.count)
             if prog[i] != new_prog:
                 prog[i] = new_prog
@@ -221,7 +222,9 @@ def complete_quest(world, player_eid: int, ql, qid: str) -> "QuestReward | None"
             i = 0
             while i < len(inv.items) and needed > 0:
                 item = inv.items[i]
-                if item.name == obj.loot_item:
+                if item is None:
+                    i += 1
+                elif item.name == obj.loot_item:
                     if item.stack <= needed:
                         needed -= item.stack
                         inv.items.pop(i)
