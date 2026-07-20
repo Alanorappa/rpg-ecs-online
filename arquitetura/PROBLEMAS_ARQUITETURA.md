@@ -4772,5 +4772,59 @@ crafting — terminar o padrão). Baixo risco, alto ganho de navegação.
 
 7. **(11/C2) `item_id` estável** — pequeno mas exige migração de saves;
    agrupar com qualquer sessão futura que já mexa em persistência.
+
+---
+
+### ✅ RESOLVIDO — Recarregar (aljava) consumia o DOBRO de flechas da mochila (feedback do usuário, 20/07/2026)
+
+Reportado: comprou 200 flechas, recarregou uma aljava com limite de 75
+flechas, a mochila perdeu 150 (exatamente o dobro do que a aljava
+recebeu) em vez de 75.
+
+**Causa raiz**: `ui/spell_system.py::_complete_cast`, ramo `visual_only`
+(modo online — cast preenche barra localmente, servidor aplica o efeito
+de verdade), despachava QUALQUER handler registrado em `_CAST_HANDLERS`
+achando seguro por um comentário antigo ("handlers são seguros: verificam
+target_cs antes de causar dano — online = None"). Essa suposição vale
+pras outras spells (alvo é um mob/player remoto, sem `CombatStats` local,
+handler sai cedo) mas NUNCA se aplicou a `_apply_recarregar`: é uma skill
+auto-alvo (`target_id == attacker_id`), então `target_cs` é sempre válido
+e o guard nunca dispara — o handler client-side rodava a mutação REAL
+(bag→aljava) mesmo no ramo "visual". A confirmação do servidor
+(`server/spell_completion_processor.py::_server_recarregar`) chegava
+depois e aplicava sua PRÓPRIA dedução independente em cima do estado já
+mutado localmente — dobrando a perda.
+
+**Fix**:
+- `ui/spell_system.py::_complete_cast` — `recarregar` entra num novo
+  conjunto `_SELF_TARGET_SERVER_ONLY`, excluído do despacho de handler no
+  ramo `visual_only` (mesmo tratamento que `_PROJ_SPELLS_LOCAL` já tinha
+  pra projéteis). Cliente só toca som/barra de cast; o resultado real vem
+  só da confirmação do servidor.
+- `server/spell_completion_processor.py::_server_recarregar` — passou a
+  mandar `ammo_new_stack` (valor ABSOLUTO pós-dedução) no
+  `queue_stats_update`, mesmo padrão já usado por `quiver_arrow_count`.
+- `client/network_handlers.py` — reconciliação trocou de `stack -=
+  ammo_taken` (delta, relativo) pra `stack = ammo_new_stack` (absoluto,
+  idempotente) — mesma classe de bug de outras correções desta sessão
+  (confirmação do servidor deve ser SET, nunca delta acumulado em cima de
+  estado que pode já ter mudado). Log "Aljava recarregada: X/Y" migrou
+  pro cliente nesse mesmo ponto (perdido quando o handler parou de rodar
+  local), com cuidado de aninhar SÓ dentro do `if _ammo_name_rec and
+  _ammo_taken_rec > 0:` — `"quiver_arrow_count"` também é mandado por um
+  path totalmente diferente (decremento por flecha disparada de Picada de
+  Escorpião/Flecha Reiterada/Tiro Repulsivo/Tiro Múltiplo), que não tem
+  `ammo_name`/`ammo_taken`; um log no nível errado spammaria a cada tiro.
+
+Validado: `tests/test_server.py::TestRecarregarNaoConsomeEmDobro` (4
+testes — deduz exatamente o necessário, `ammo_new_stack` absoluto correto
+no payload, recarga parcial quando a mochila tem menos que o necessário,
+2 chamadas seguidas não duplicam dedução) +
+`tests/test_client_ui.py::test_recarregar_visual_only_nao_mexe_em_bag_nem_aljava_online`
+(cliente não muda bag/aljava no ramo visual_only). Suíte completa
+268/268, rodada 3x.
+
+**Não validado**: teste manual em jogo (comprar flechas, recarregar,
+confirmar consumo correto e mensagem de log).
    **(15b/D5) Fatiar `ui/systems.py`** — mecânico, zero risco de lógica;
    bom preenchimento de fim de sessão.

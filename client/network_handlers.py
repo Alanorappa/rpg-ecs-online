@@ -1358,9 +1358,35 @@ class NetworkHandlers:
                             (it for it in _inv_rec.items
                              if it is not None and it.name == _ammo_name_rec), None)
                         if _ammo_item_rec is not None:
-                            _ammo_item_rec.stack -= _ammo_taken_rec
+                            # ABSOLUTO (ammo_new_stack), não "-= ammo_taken" —
+                            # idempotente, mesmo padrão de quiver_arrow_count
+                            # acima. O relativo era a causa real de "comprei
+                            # 200 flechas, aljava de 75, sumiu 150 da bag"
+                            # (bug 19/07/2026): _apply_recarregar já tinha
+                            # deduzido localmente ANTES desta confirmação
+                            # chegar (client/ui/spell_system.py, cast
+                            # visual_only) — "-=" em cima do que já tinha sido
+                            # deduzido duplicava o consumo. Esse fix client-
+                            # side (parar de prever localmente) já resolve
+                            # a causa raiz; isto aqui é defesa em profundidade
+                            # — segura mesmo se esta confirmação for
+                            # reprocessada por qualquer motivo.
+                            _ammo_item_rec.stack = payload.get(
+                                "ammo_new_stack", max(0, _ammo_item_rec.stack - _ammo_taken_rec))
                             if _ammo_item_rec.stack <= 0:
                                 _inv_rec.items.remove(_ammo_item_rec)
+                    # LOG só quando é reload de verdade (ammo_name/ammo_taken
+                    # presentes) — este MESMO payload shape ("quiver_arrow_
+                    # count") também é usado pra sincronizar o consumo de 1
+                    # flecha por tiro de Picada de Escorpião/Flecha Reiterada/
+                    # Tiro Repulsivo/Tiro Múltiplo (spell_completion_processor.
+                    # py:~1101), sem ammo_name/ammo_taken — logar aqui sem
+                    # esse gate spamaria "Aljava recarregada" a cada flechada.
+                    if _quiver_rec is not None:
+                        from ui.combat_log import LOG as _LOG_rec
+                        _LOG_rec.add(
+                            f"Aljava recarregada: {_quiver_rec.arrow_count}/{_quiver_rec.max_arrows}",
+                            (180, 220, 100))
 
             # Gold — hoje só usado pela recompensa de quest (_handle_quest_turn_in
             # já persiste certo, mas sem isso o cliente só via o valor novo no

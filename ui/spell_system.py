@@ -232,7 +232,19 @@ class SpellCastSystem(System):
                 self._capture_tiro_multiplo_dir(entity_id)
                 return
             _PROJ_SPELLS_LOCAL = {"bola_de_fogo", "flecha_reiterada", "picada_escorpiao", "tiro_repulsivo"}
-            if spell_cast.spell_id not in _PROJ_SPELLS_LOCAL:
+            # "Handlers são seguros: verificam target_cs antes de causar dano"
+            # (comentário acima) NÃO vale pra recarregar — é auto-alvo (sempre
+            # tem CombatStats válido, nunca None), então o guard que protege
+            # os outros handlers nunca dispara aqui. _apply_recarregar faz
+            # mutação REAL (bag→aljava), não é cosmético — rodar aqui E de
+            # novo quando a confirmação do servidor chega duplicava o
+            # consumo de flechas da bag (bug real relatado pelo usuário
+            # 19/07/2026: comprou 200, aljava de 75, consumiu 150 da bag —
+            # exatamente o dobro). O resultado real vem só do servidor
+            # (client/network_handlers.py, confirmação de queue_stats_update)
+            # — aqui só toca som/cast-bar, igual os PROJ_SPELLS_LOCAL acima.
+            _SELF_TARGET_SERVER_ONLY = {"recarregar"}
+            if spell_cast.spell_id not in _PROJ_SPELLS_LOCAL and spell_cast.spell_id not in _SELF_TARGET_SERVER_ONLY:
                 handler_name = self._CAST_HANDLERS.get(spell_cast.spell_id)
                 if handler_name:
                     handler = getattr(self, handler_name, None)

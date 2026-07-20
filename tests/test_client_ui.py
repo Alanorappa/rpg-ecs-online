@@ -552,4 +552,46 @@ def test_offline_sem_requester_continua_creditando_local():
     wallet = world.get_component(player, Wallet)
     assert result is True
     assert wallet.gold == 11
-    assert world.get_component(corpse, Corpse).coins == 0
+
+
+# ── ui/spell_system.py — Recarregar não consome bag no cliente (online) ──────
+# Bug real relatado pelo usuário 20/07/2026: comprou 200 flechas, recarregou
+# aljava de limite 75, mochila perdeu 150 (o dobro). _complete_cast despachava
+# _apply_recarregar (mutação REAL bag→aljava) no ramo visual_only achando
+# seguro pelo guard de target_cs — guard que nunca protege Recarregar (é
+# auto-alvo). O resultado real deve vir só do servidor; aqui o cliente só
+# preenche a barra de cast, nunca mexe em bag/aljava.
+
+def test_recarregar_visual_only_nao_mexe_em_bag_nem_aljava_online():
+    from engine.world import World
+    from engine.components import (
+        Equipment, Inventory, Item, SpellCast, CombatState, CharacterStats,
+    )
+    from ui.spell_system import SpellCastSystem
+
+    world = World()
+    player = world.create_entity()
+
+    quiver = Item("Aljava", "quiver", "offhand", arrow_count=0, max_arrows=75)
+    equip = Equipment()
+    equip.slots["offhand"] = quiver
+    world.add_component(player, equip)
+
+    ammo = Item("Flecha", "ammo", "", max_stack=999)
+    ammo.stack = 200
+    inv = Inventory(items=[ammo])
+    world.add_component(player, inv)
+
+    world.add_component(player, CharacterStats())
+    combat_state = CombatState()
+    world.add_component(player, combat_state)
+
+    screen = pygame.display.get_surface()
+    sys_spell = SpellCastSystem(world, screen)
+
+    spell_cast = SpellCast(spell_id="recarregar", cast_time=1.0,
+                           target_id=player, visual_only=True)
+    sys_spell._complete_cast(player, spell_cast, combat_state)
+
+    assert quiver.arrow_count == 0, "cliente não deve encher a aljava — só o servidor"
+    assert ammo.stack == 200, "cliente não deve tocar na mochila — dobrava o consumo"

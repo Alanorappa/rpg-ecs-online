@@ -1685,8 +1685,9 @@ class SpellCompletionMixin:
         if quiver.max_arrows == 0:
             quiver.max_arrows = 100
 
-        _ammo_name  = ""
-        _ammo_taken = 0
+        _ammo_name      = ""
+        _ammo_taken     = 0
+        _ammo_new_stack = 0
         for item in (inv.items if inv else []):
             if item is None:
                 continue
@@ -1699,8 +1700,9 @@ class SpellCompletionMixin:
             item.stack       -= take
             quiver.arrow_count = min(quiver.max_arrows, quiver.arrow_count + take)
             quiver.subtype   = item.name
-            _ammo_name  = item.name
-            _ammo_taken = take
+            _ammo_name      = item.name
+            _ammo_taken     = take
+            _ammo_new_stack = item.stack
             if item.stack <= 0:
                 inv.items[inv.items.index(item)] = None
             break  # só o primeiro tipo de munição disponível por uso (comportamento original)
@@ -1712,4 +1714,8 @@ class SpellCompletionMixin:
             "quiver_subtype":     quiver.subtype,
             "ammo_name":          _ammo_name,
             "ammo_taken":         _ammo_taken,
+            # Valor ABSOLUTO (não delta) — mesmo padrão de quiver_arrow_count
+            # acima. Client aplica direto (set, não -=): idempotente, seguro
+            # mesmo se esta confirmação chegar duplicada por qualquer motivo.
+            "ammo_new_stack":     _ammo_new_stack,
         })

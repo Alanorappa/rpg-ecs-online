@@ -781,6 +781,87 @@ class TestQuestItemInventorySync(unittest.TestCase):
         self.assertEqual(ql.active["wolf_fangs"][0], 3)
 
 
+class TestRecarregarNaoConsomeEmDobro(unittest.TestCase):
+    """Bug real relatado pelo usuário 20/07/2026: comprou 200 flechas,
+    recarregou uma aljava de limite 75 e a mochila perdeu 150 (o dobro do
+    que a aljava recebeu). Causa raiz: ui/spell_system.py::_complete_cast
+    despachava _apply_recarregar (mutação REAL bag→aljava) no cliente
+    achando que era seguro por causa do guard de target_cs — guard que
+    nunca se aplica a Recarregar (auto-alvo, sempre tem CombatStats) — e
+    a confirmação do servidor (_server_recarregar) aplicava sua PRÓPRIA
+    dedução por cima, dobrando a perda. Este teste cobre só o lado
+    servidor: uma chamada a _server_recarregar deve tirar da mochila
+    EXATAMENTE o que entrou na aljava, nunca o dobro."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        self.eid = spawn_player(self.ws, "s1", 130, 374)
+
+    def _equip_quiver_and_arrows(self, arrow_count: int, max_arrows: int,
+                                  bag_arrows: int):
+        from engine.components import Equipment, Inventory, Item
+        equip = self.ws.world.get_component(self.eid, Equipment)
+        inv = self.ws.world.get_component(self.eid, Inventory)
+
+        quiver = Item("Aljava", "quiver", "offhand",
+                       arrow_count=arrow_count, max_arrows=max_arrows)
+        equip.slots["offhand"] = quiver
+
+        ammo = Item("Flecha", "ammo", "", max_stack=999)
+        ammo.stack = bag_arrows
+        inv.items.append(ammo)
+        return quiver, ammo
+
+    def test_recarregar_tira_da_mochila_exatamente_o_que_entra_na_aljava(self):
+        quiver, ammo = self._equip_quiver_and_arrows(
+            arrow_count=0, max_arrows=75, bag_arrows=200)
+
+        self.ws._server_recarregar(self.eid, self.eid, {})
+
+        self.assertEqual(quiver.arrow_count, 75,
+                         "aljava deveria estar cheia (limite 75)")
+        self.assertEqual(ammo.stack, 200 - 75,
+                         "mochila deveria perder exatamente 75, não o dobro")
+
+    def test_recarregar_confirmacao_manda_ammo_new_stack_absoluto(self):
+        """ammo_new_stack é o valor ABSOLUTO pós-dedução (não delta) — o
+        cliente precisa dele pra reconciliar de forma idempotente (set,
+        não -=). Sem isso a correção reintroduz o bug original."""
+        self._equip_quiver_and_arrows(arrow_count=0, max_arrows=75,
+                                       bag_arrows=200)
+
+        self.ws._server_recarregar(self.eid, self.eid, {})
+
+        updates = self.ws.consume_stats_updates()
+        recarga = [u for u in updates if u.get("player_eid") == self.eid
+                   and "quiver_arrow_count" in u]
+        self.assertEqual(len(recarga), 1)
+        self.assertEqual(recarga[0]["ammo_new_stack"], 200 - 75)
+        self.assertEqual(recarga[0]["ammo_taken"], 75)
+
+    def test_recarregar_parcial_quando_mochila_tem_menos_que_o_necessario(self):
+        quiver, ammo = self._equip_quiver_and_arrows(
+            arrow_count=0, max_arrows=75, bag_arrows=30)
+
+        self.ws._server_recarregar(self.eid, self.eid, {})
+
+        self.assertEqual(quiver.arrow_count, 30)
+        self.assertEqual(ammo.stack, 0)
+
+    def test_recarregar_duas_chamadas_seguidas_nao_duplica_deducao(self):
+        """Chamar _server_recarregar 2x (ex: confirmação processada 2x por
+        engano) não deve tirar mais que o necessário pra encher a aljava —
+        a segunda chamada não tem mais o que fazer (aljava já cheia)."""
+        quiver, ammo = self._equip_quiver_and_arrows(
+            arrow_count=0, max_arrows=75, bag_arrows=200)
+
+        self.ws._server_recarregar(self.eid, self.eid, {})
+        self.ws._server_recarregar(self.eid, self.eid, {})
+
+        self.assertEqual(quiver.arrow_count, 75)
+        self.assertEqual(ammo.stack, 200 - 75)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 6. Punho no Queixo — skill de carga do Cavaleiro
 # ─────────────────────────────────────────────────────────────────────────────
