@@ -1495,13 +1495,28 @@ class TileRenderSystem(System):
         for _, tilemap_comp in self.world.get_entities_with(Tilemap):
             tile_size = tilemap_comp.tile_size
 
-            cam_x = int(camera_offset_x)
-            cam_y = int(camera_offset_y)
-
-            tile_ox = cam_x // tile_size
-            tile_oy = cam_y // tile_size
-            sub_x   = cam_x - tile_ox * tile_size
-            sub_y   = cam_y - tile_oy * tile_size
+            # tile_ox/tile_oy PRECISAM ser inteiros (índice de qual bloco de
+            # tiles está em cache — dx/dy abaixo compara contra o índice do
+            # frame anterior). sub_x/sub_y NÃO — ficam em ponto flutuante
+            # (derivados direto de camera_offset_x/y, sem truncar antes) e só
+            # são arredondados pelo blit() do pygame no fim da função, o
+            # MESMO ponto onde toda entidade (personagem, mob, etc) também é
+            # truncada — antes, truncar aqui ANTES do resto do frame fazia o
+            # fundo "saltar" em passos de pixel inteiro num instante
+            # diferente de quando as entidades truncavam, e a câmera
+            # suavizada (que muda a cada frame) deixava esse descompasso
+            # visível como "tremida" relativa fundo↔personagem. Bug real
+            # relatado pelo usuário 19/07/2026 — ver ARQUITETURA_ONLINE.md
+            # (o fix anterior, arredondar cam_x uma vez em game.py, resolveu
+            # a tremida mas trocou por "saltar de pixel em pixel" ao mover,
+            # porque forçava a câmera a só existir em posições de pixel
+            # NATIVO inteiro — bem mais grosseiro que 1 pixel de tela depois
+            # do zoom 1.5x-2.5x. Este fix é o correto: preserva o sub-pixel
+            # até o blit, sem forçar nenhum salto artificial).
+            tile_ox = int(camera_offset_x // tile_size)
+            tile_oy = int(camera_offset_y // tile_size)
+            sub_x   = camera_offset_x - tile_ox * tile_size
+            sub_y   = camera_offset_y - tile_oy * tile_size
 
             tiles_w = self.world_surf.get_width()  // tile_size + 2
             tiles_h = self.world_surf.get_height() // tile_size + 2
@@ -1735,8 +1750,12 @@ class TileRenderSystem(System):
         """
         from ui.tile_sprite_manager import TILE_SPRITES
         objects = []
-        cam_x = int(camera_offset_x)
-        cam_y = int(camera_offset_y)
+        # tile_ox/tile_oy: índice inteiro (limite do loop de tiles). scr_x/
+        # scr_y usam camera_offset_x/y em ponto flutuante direto (não um
+        # cam_x pré-truncado) — mesmo racional de TileRenderSystem.render()
+        # acima: objetos estáticos (árvore, arbusto) não podem truncar a
+        # câmera num instante diferente de onde as entidades truncam, senão
+        # "tremem" relativo ao personagem ao mover.
 
         for _, tilemap_comp in self.world.get_entities_with(Tilemap):
             tile_size = tilemap_comp.tile_size
@@ -1744,8 +1763,8 @@ class TileRenderSystem(System):
             map_h     = tilemap_comp.map_height_tiles
             map_w     = tilemap_comp.map_width_tiles
 
-            tile_ox = cam_x // tile_size
-            tile_oy = cam_y // tile_size
+            tile_ox = int(camera_offset_x // tile_size)
+            tile_oy = int(camera_offset_y // tile_size)
             tiles_w = self.world_surf.get_width()  // tile_size + 2
             tiles_h = self.world_surf.get_height() // tile_size + 2
 
@@ -1785,8 +1804,8 @@ class TileRenderSystem(System):
 
                     sort_y   = ry * tile_size + tile_size // 2
                     anchor_y = (ry + 1) * tile_size
-                    scr_x    = rx * tile_size - cam_x
-                    scr_y    = anchor_y - cam_y - total_h
+                    scr_x    = rx * tile_size - camera_offset_x
+                    scr_y    = anchor_y - camera_offset_y - total_h
 
                     objects.append({
                         "sort_y":   sort_y,
@@ -1804,8 +1823,9 @@ class TileRenderSystem(System):
     def render_static_objects(self, camera_offset_x: float, camera_offset_y: float) -> None:
         """Renderiza objetos com no_ysort=True diretamente no world_surf, abaixo de entidades."""
         from ui.tile_sprite_manager import TILE_SPRITES
-        cam_x = int(camera_offset_x)
-        cam_y = int(camera_offset_y)
+        # Mesmo racional de get_world_objects()/render() acima — tile_ox/oy
+        # inteiro só pra limite do loop, scr_x/scr_y ficam em ponto
+        # flutuante direto.
 
         # Fog: só objetos em tiles visíveis ou explorados
         _fog_visible  = None
@@ -1820,8 +1840,8 @@ class TileRenderSystem(System):
             obj_rows  = tilemap_comp.object_matrix
             map_h     = tilemap_comp.map_height_tiles
             map_w     = tilemap_comp.map_width_tiles
-            tile_ox   = cam_x // tile_size
-            tile_oy   = cam_y // tile_size
+            tile_ox   = int(camera_offset_x // tile_size)
+            tile_oy   = int(camera_offset_y // tile_size)
             tiles_w   = self.world_surf.get_width()  // tile_size + 2
             tiles_h   = self.world_surf.get_height() // tile_size + 2
 
@@ -1856,8 +1876,8 @@ class TileRenderSystem(System):
                         sprite_w = tile_size
 
                     anchor_y = (ry + 1) * tile_size
-                    scr_x    = rx * tile_size - cam_x
-                    scr_y    = anchor_y - cam_y - total_h
+                    scr_x    = rx * tile_size - camera_offset_x
+                    scr_y    = anchor_y - camera_offset_y - total_h
 
                     if sprite is not None:
                         self.world_surf.blit(sprite, (scr_x, scr_y))

@@ -1901,25 +1901,26 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             # cam_x/cam_y derivam das dimensões da world_surf — consistente com
             # _get_camera_offset() de qualquer sistema
             #
-            # Arredondado pra INTEIRO aqui, uma vez só, antes de propagar pra
-            # todo render(cam_x, cam_y) do frame (fundo E entidades/sprites
-            # recebem o MESMO valor já inteiro). CameraSystem (ui/systems.py)
-            # suaviza a posição da câmera com lerp — isso deixa camera_pos.x/y
-            # fracionário quase sempre, em trânsito contínuo. Antes, só
-            # TileRenderSystem arredondava esse valor (por conta própria, pra
-            # alinhar o cache de tiles) enquanto sprites/personagens eram
-            # blitados com o offset fracionário puro — o fundo avançava em
-            # saltos de pixel inteiro e os personagens deslizavam em fração
-            # de pixel, e o descompasso entre os dois é que aparecia como
-            # "tremida" (bug real relatado pelo usuário 19/07/2026, padrão
-            # conhecido de pixel-snapping em engine 2D — ver
-            # ARQUITETURA_ONLINE.md). Arredondar UMA VEZ aqui garante que tudo
-            # se move em lockstep, no mesmo pixel inteiro, sem perder a
-            # suavização do lerp (que continua acontecendo em ponto flutuante
-            # dentro do CameraSystem — só o valor usado pra DESENHAR é que
-            # agora é sempre o mesmo inteiro pra tudo).
-            cam_x = int((camera_pos.x - lw / 2)) if camera_pos else 0
-            cam_y = int((camera_pos.y - lh / 2)) if camera_pos else 0
+            # NÃO arredondar aqui — fica em ponto flutuante puro (CameraSystem
+            # suaviza a posição da câmera com lerp, então camera_pos.x/y é
+            # fracionário quase sempre, em trânsito contínuo). Cada consumidor
+            # (TileRenderSystem, entidades/sprites) só trunca no PRÓPRIO blit()
+            # final, todos a partir do MESMO valor fracionário — evita dois
+            # bugs já vistos: (1) truncar aqui uma vez só corrigia o
+            # descompasso fundo↔personagem ("tremida" quando parado), mas
+            # forçava a câmera a existir só em pixels NATIVOS inteiros — bem
+            # mais grosseiro que 1 pixel de TELA depois do zoom 1.5x-2.5x, e
+            # aparecia como "saltar de pixel em pixel" ao mover; (2) o bug
+            # original — só TileRenderSystem truncava (por conta própria),
+            # entidades ficavam com o float puro, descompasso entre os dois
+            # truncamentos = tremida relativa. Fix real (19/07/2026, ver
+            # ARQUITETURA_ONLINE.md): TileRenderSystem passou a preservar o
+            # sub-pixel também (só o ÍNDICE do bloco de tiles em cache precisa
+            # ser inteiro, não a posição de desenho) — com isso, deixar
+            # cam_x/cam_y fracionários aqui (como sempre foi pras entidades)
+            # volta a ser seguro pra tudo.
+            cam_x = (camera_pos.x - lw / 2) if camera_pos else 0
+            cam_y = (camera_pos.y - lh / 2) if camera_pos else 0
             self._cam_x, self._cam_y = cam_x, cam_y
 
             # ── Passe de mundo — renderiza em world_surf ──────────────────────

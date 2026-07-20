@@ -2387,6 +2387,47 @@ depois da troca do tick; câmera não deve mais "tremer" ao seguir o
 personagem; F11 duas vezes (ligar/desligar) não deve deixar
 `profile_frames` preso em `true` no próximo fechamento do jogo.
 
+**Follow-up (mesmo dia) — o fix da câmera (item 2) estava incompleto,
+trocou um sintoma por outro.** Usuário testou: a "tremida" com a câmera
+PARADA sumiu, mas agora, movendo o personagem, ele "salta de pixel em
+pixel" em vez de deslizar suave. Print do Gerenciador de Tarefas
+(Windows) mostrando ~22-38% CPU / ~22-28% GPU do processo do cliente —
+na mesma faixa da queixa original, então a troca do `tick_busy_loop`
+sozinha não bastou (a análise de causa continua válida — o
+`tick_busy_loop` era CPU claramente desperdiçado — mas o "piso" de
+CPU/GPU de uma pipeline `SCALED`+`vsync=1` renderizando/apresentando a
+60 FPS parece ser real e não totalmente eliminável sem trocar de
+arquitetura de apresentação, ex: FPS alvo menor ou renderização
+assíncrona como no artigo "A Better Pygame Mainloop" — mudança maior,
+não feita agora).
+
+Causa raiz do "saltar de pixel": arredondar `cam_x`/`cam_y` pra inteiro
+UMA VEZ (o fix original) forçava a câmera a só existir em posições de
+pixel NATIVO inteiro — com o zoom padrão em 1.5x-2.5x, cada passo de 1
+pixel nativo vira 1.5-2.5 pixels de TELA depois do
+`pygame.transform.scale()`, um salto bem mais grosseiro e perceptível
+que antes. A causa raiz de verdade não era "falta de arredondar" — era
+`TileRenderSystem.render()`/`get_world_objects()`/
+`render_static_objects()` arredondarem a câmera pra inteiro ANTES de
+calcular a posição de desenho (`sub_x`/`scr_x`), descartando a fração
+que deveria ter sido preservada. Fix correto: separar as duas coisas
+que estavam misturadas — `tile_ox`/`tile_oy` (ÍNDICE de qual bloco de
+tiles buscar no cache) precisa ser inteiro; a posição de DESENHO
+(`sub_x`/`scr_x`) não — fica em ponto flutuante, derivada direto de
+`camera_offset_x/y` (sem truncar antes), e só é arredondada pelo
+`blit()` do pygame no final, o MESMO ponto onde entidades/personagens
+sempre foram truncados. `game.py` voltou a passar `cam_x`/`cam_y` em
+ponto flutuante puro (revertendo o "arredonda uma vez" do fix
+anterior) — agora TODO consumidor (fundo, objetos estáticos como
+árvore/arbusto, entidades) trunca no mesmo lugar (blit final), a partir
+do mesmo valor fracionário, sem nenhum salto de pixel nativo artificial.
+
+Validado: `py_compile`; suíte completa 260/260, rodada 3x.
+
+**Não validado**: sessão manual — câmera parada continua sem tremer
+(regressão do fix anterior) E movendo o personagem desliza suave, sem
+saltar de pixel em pixel.
+
 ---
 
 ### 30. Execução da auditoria arquitetural + REMOÇÃO DO MODO OFFLINE (15/07/2026)
