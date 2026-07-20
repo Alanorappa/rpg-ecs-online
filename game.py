@@ -190,9 +190,11 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         # ARQUITETURA_ONLINE.md). SCALED troca pro SDL_Renderer acelerado por
         # hardware (caminho "flip model" no Windows/DXGI) — apresenta sem
         # cópia pelo compositor, o mesmo princípio que engines grandes usam
-        # (swap chain com present direto). `clock.tick_busy_loop(FPS)` (em
-        # run(), abaixo) continua fazendo o pacing de FPS — vsync aqui é só
-        # pra eliminar tearing, não pra travar o frame rate.
+        # (swap chain com present direto). flip() bloqueando até o vsync JÁ
+        # faz o pacing de FPS sozinho nesse caminho — `run()` usa
+        # `clock.tick(FPS)` (sleep-based), não mais `tick_busy_loop`, senão
+        # as duas técnicas de pacing competem e queimam CPU à toa
+        # (investigação 19/07/2026, ver ARQUITETURA_ONLINE.md).
         self._display = pygame.display.set_mode(
             (win_w, win_h), pygame.DOUBLEBUF | pygame.SCALED, vsync=1)
         self.screen   = pygame.Surface((win_w, win_h))
@@ -1330,7 +1332,16 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         # dt seria o tempo total de init (2-3s), zerando _loading_min_t no frame 1.
         self.clock.tick()
         while running:
-            dt = self.clock.tick_busy_loop(FPS) / 1000.0
+            # tick() (sleep-based via SDL_Delay), não tick_busy_loop() — o
+            # busy-loop mantém 1 core girando ativamente no tempo ocioso do
+            # frame só por precisão de timing, e com SCALED+vsync=1 (ver
+            # __init__) o flip() já bloqueia até o próximo refresh de forma
+            # consistente (era o próprio motivo da migração pra SCALED) —
+            # rodar as duas técnicas de pacing juntas é pagar o mesmo
+            # controle de FPS duas vezes. Discutido com o usuário 19/07/2026
+            # (consumo de CPU alto parado, sem cena pesada) — ver
+            # ARQUITETURA_ONLINE.md.
+            dt = self.clock.tick(FPS) / 1000.0
             _gc_counter += 1
             if _gc_counter >= FPS * 10:   # coleta a cada ~10s, entre frames
                 _gc.collect()
@@ -1441,8 +1452,13 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                             self._zoom_cache_dirty_timer = -1.0  # cancela debounce pendente de scroll
                     elif event.key == pygame.K_F11:
                         self._show_perf_overlay = not self._show_perf_overlay
-                        if self._show_perf_overlay:
-                            globals()["PROFILE_FRAMES"] = True
+                        # Simétrico com o overlay — antes só ligava (nunca
+                        # desligava), e _save_config() persiste PROFILE_FRAMES
+                        # no config.json ao fechar: um único F11 apertado em
+                        # qualquer sessão de dev ficava instrumentando pra
+                        # sempre (achado real 19/07/2026, ver
+                        # ARQUITETURA_ONLINE.md).
+                        globals()["PROFILE_FRAMES"] = self._show_perf_overlay
                     elif event.key == self._menu_keys.get("mapa", pygame.K_m):
                         already_open = self._map_overlay.is_open
                         self._close_all_modals()
@@ -1884,8 +1900,26 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
 
             # cam_x/cam_y derivam das dimensões da world_surf — consistente com
             # _get_camera_offset() de qualquer sistema
-            cam_x = (camera_pos.x - lw / 2) if camera_pos else 0
-            cam_y = (camera_pos.y - lh / 2) if camera_pos else 0
+            #
+            # Arredondado pra INTEIRO aqui, uma vez só, antes de propagar pra
+            # todo render(cam_x, cam_y) do frame (fundo E entidades/sprites
+            # recebem o MESMO valor já inteiro). CameraSystem (ui/systems.py)
+            # suaviza a posição da câmera com lerp — isso deixa camera_pos.x/y
+            # fracionário quase sempre, em trânsito contínuo. Antes, só
+            # TileRenderSystem arredondava esse valor (por conta própria, pra
+            # alinhar o cache de tiles) enquanto sprites/personagens eram
+            # blitados com o offset fracionário puro — o fundo avançava em
+            # saltos de pixel inteiro e os personagens deslizavam em fração
+            # de pixel, e o descompasso entre os dois é que aparecia como
+            # "tremida" (bug real relatado pelo usuário 19/07/2026, padrão
+            # conhecido de pixel-snapping em engine 2D — ver
+            # ARQUITETURA_ONLINE.md). Arredondar UMA VEZ aqui garante que tudo
+            # se move em lockstep, no mesmo pixel inteiro, sem perder a
+            # suavização do lerp (que continua acontecendo em ponto flutuante
+            # dentro do CameraSystem — só o valor usado pra DESENHAR é que
+            # agora é sempre o mesmo inteiro pra tudo).
+            cam_x = int((camera_pos.x - lw / 2)) if camera_pos else 0
+            cam_y = int((camera_pos.y - lh / 2)) if camera_pos else 0
             self._cam_x, self._cam_y = cam_x, cam_y
 
             # ── Passe de mundo — renderiza em world_surf ──────────────────────

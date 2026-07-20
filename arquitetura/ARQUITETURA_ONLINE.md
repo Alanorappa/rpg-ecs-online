@@ -2331,6 +2331,62 @@ picos ao dar zoom desaparece, e que o zoom ainda parece responsivo o
 suficiente com o atraso de 150ms antes de "commitar" visualmente (trade-
 off aceito: pequeno delay perceptível vs. rajada de travamento).
 
+**Adendo 6 (19/07/2026) — CPU/GPU alto parado + câmera "tremendo",
+mesmo sem cena pesada.** Usuário reportou consumo de >30% CPU / >20% GPU
+com cena quase sem animação (retângulos se movendo), e "tremida" visual
+ao seguir a câmera suavizada. Pesquisa na web (pygame docs, issue
+#3085 do repo oficial, artigo "A Better Pygame Mainloop") + leitura do
+`logs/client_prof.log` real do usuário confirmaram 3 causas
+independentes:
+
+1. **`clock.tick_busy_loop(FPS)` competindo com `vsync=1`**: a doc do
+   pygame confirma que `tick_busy_loop` gira em loop ativo (SDL_delay
+   busy-wait) só por precisão de timing — "usa muito CPU" por design.
+   Com `SCALED`+`vsync=1` já ativo (Adendo 3/4 acima), `flip()` já
+   bloqueia sozinho até o próximo refresh — rodar as duas técnicas de
+   pacing ao mesmo tempo paga o mesmo controle de FPS duas vezes.
+   **Fix**: `run()` trocou pra `clock.tick(FPS)` (sleep-based,
+   `game.py`) — vsync continua garantindo a suavidade.
+2. **Câmera "tremendo" — mismatch de pixel-snapping**: `TileRenderSystem`
+   já arredondava o offset da câmera pra inteiro (só pra si mesmo, pra
+   alinhar o cache de tiles), mas o offset usado pra posicionar
+   sprites/personagens continuava em ponto flutuante puro — o fundo
+   avança em saltos de pixel inteiro, os personagens deslizam em fração
+   de pixel, e o descompasso entre os dois é que aparecia como
+   "tremida" (classe de bug bem documentada em engines 2D com pixel
+   art — Godot, GameDev.net). A suavização em si (`CameraSystem`, lerp)
+   não era o problema. **Fix**: `cam_x`/`cam_y` agora são arredondados
+   pra inteiro UMA VEZ em `run()` (`game.py`, ponto único que alimenta
+   `system.render(cam_x, cam_y)` de todo mundo no frame) — fundo e
+   sprites recebem sempre o MESMO valor já inteiro, mantendo o efeito
+   de seguir suavemente (o lerp continua em float internamente) sem o
+   descompasso visual.
+3. **`profile_frames` preso em `true` no `config.json`**: `F11` só
+   LIGAVA a flag (nunca desligava) — ao fechar o jogo, `_save_config()`
+   persiste `profile_frames` no `config.json`, então um único F11
+   apertado em qualquer sessão de dev ficava instrumentando ~40-45
+   pontos por frame pra sempre, sem nenhum benefício. **Fix**: F11 agora
+   é simétrico (`PROFILE_FRAMES = self._show_perf_overlay`, liga E
+   desliga); `config.json` corrigido pra `false`.
+
+Descartado por ora (identificado, mas risco/benefício desfavorável):
+loop de envio de rede (`client/network.py::_send_loop`) faz polling a
+200Hz (`asyncio.sleep(0.005)`) — já é sleep-based (não busy-wait, custo
+real pequeno, comentário original já dizia "não queima CPU"); mudar
+exigiria trocar o tipo da fila (`queue.Queue` thread-safe → handoff
+pra `asyncio.Queue`), mais risco pra ganho marginal. `pygame.transform.
+scale()` por frame (zoom): já otimizado (pula quando os tamanhos
+batem, usa subsurface); custo inerente ao recurso de zoom, não vale a
+pena remover a feature por causa disso.
+
+Validado: `py_compile`; suíte completa 260/260 (sem cobertura client-side
+de render — usuário confirma visualmente).
+
+**Não validado**: sessão manual em jogo — CPU/GPU parado deve cair bem
+depois da troca do tick; câmera não deve mais "tremer" ao seguir o
+personagem; F11 duas vezes (ligar/desligar) não deve deixar
+`profile_frames` preso em `true` no próximo fechamento do jogo.
+
 ---
 
 ### 30. Execução da auditoria arquitetural + REMOÇÃO DO MODO OFFLINE (15/07/2026)

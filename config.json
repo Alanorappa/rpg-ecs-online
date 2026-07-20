@@ -5,9 +5,9 @@
   "net_user": "teste",
   "net_pass": "123456",
   "music_volume": 0.06842105263157895,
-  "sfx_volume": 0.09473684210526316,
-  "music_enabled": false,
-  "sfx_enabled": false,
+  "sfx_volume": 0.15966386554621848,
+  "music_enabled": true,
+  "sfx_enabled": true,
   "hotbar": {
     "slots": [
       null,
@@ -134,11 +134,11 @@
     "Aventureiro": {
       "hotbar": {
         "slots": [
-          "recarregar",
-          "cancao_ninar",
-          null,
-          null,
-          null,
+          "polimorfia",
+          "nova_congelante",
+          "bola_de_fogo",
+          "bloco_de_gelo",
+          "pirofagia",
           null,
           null,
           null,
@@ -160,7 +160,7 @@
       },
       "consumable_bar": {
         "slots": [
-          null,
+          "P\u00e3o Simples",
           null,
           null,
           null,
@@ -292,7 +292,7 @@
       },
       "consumable_bar": {
         "slots": [
-          "Odre Pequeno",
+          "Odre M\u00e9dio",
           "P\u00e3o Simples",
           null,
           null,
@@ -311,7 +311,7 @@
       "hotbar": {
         "slots": [
           "golpe_poderoso",
-          null,
+          "impacto",
           null,
           null,
           null,
@@ -336,7 +336,7 @@
       },
       "consumable_bar": {
         "slots": [
-          null,
+          "P\u00e3o Simples",
           null,
           null,
           null,
@@ -394,10 +394,54 @@
           98
         ]
       }
+    },
+    "Juuguerino": {
+      "hotbar": {
+        "slots": [
+          "golpe_poderoso",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          114,
+          116,
+          102,
+          113,
+          101
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          "P\u00e3o Simples",
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      }
     }
   },
   "debug_mode": true,
-  "profile_frames": true,
+  "profile_frames": false,
   "ui_scale": 1.25,
   "consumable_bar": {
     "slots": [
