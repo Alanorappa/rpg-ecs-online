@@ -4819,6 +4819,31 @@ mande o nome cru. Validado: `tests/test_character_names.py` (+6 testes:
 `normalize_name` isolado + `_create_character_sync` grava capitalizado
 mesmo recebendo tudo minúsculo). Suíte completa 305/305, rodada 3x.
 
+**Adendo 2 (20/07/2026) — bug real reportado pelo usuário (print)**:
+criar personagem com nome já usado (`CHARACTER_ERROR{reason:
+"name_taken"}`) fechava a tela de criação e voltava pra seleção de
+personagem, mostrando o erro cru ("Erro ao criar: name_taken") no
+lugar errado — usuário tinha que clicar em "Criar Personagem" nervo
+pra tentar de novo, perdendo classe selecionada e sugestão de nome.
+Causa: `run_online` mandava `CREATE_CHARACTER` só DEPOIS de
+`_run_creation` retornar (já fechada), então a resposta do servidor só
+podia ser tratada na tela de seleção. Fix: `_run_creation` agora manda
+`CREATE_CHARACTER` no clique de "Confirmar" e ESPERA a resposta
+internamente (mesmo padrão já usado pra `SUGGEST_NAME`) — botão vira
+"Criando..." (travado) enquanto aguarda; `CHARACTER_ERROR` mostra
+mensagem amigável (`_ERROR_MESSAGES`, por `reason`) abaixo da caixa de
+nome e mantém a tela aberta pra o jogador corrigir e tentar de novo sem
+perder o que já preencheu; só retorna (fecha a tela) em
+`CHARACTER_CREATED` de verdade. Ramo `pending_action == "creating"` do
+`run_online` (código morto agora) removido. Suíte completa 305/305,
+rodada 3x (mudança só no cliente, sem lógica nova testável isolada —
+`_run_creation` é um loop de evento pygame sem hooks pra unit test,
+mesma lacuna de cobertura que já existia antes desta mudança).
+
+**Não validado**: teste manual em jogo (nome duplicado mantém a tela de
+criação aberta com "Nome já escolhido, digite outro."; botão trava em
+"Criando..." até a resposta chegar).
+
 ---
 
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata

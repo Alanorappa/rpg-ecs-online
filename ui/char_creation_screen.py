@@ -215,7 +215,8 @@ def run_online(screen: pygame.Surface,
     confirm_del_idx = -1
     status          = ""               # mensagem de erro/info
     # "selecting": aguardando LOGIN_OK + WORLD_STATE após SELECT_CHARACTER
-    # "creating":  aguardando CHARACTER_CREATED após CREATE_CHARACTER
+    # (CREATE_CHARACTER é resolvido DENTRO de _run_creation agora — erro
+    # tipo "nome já usado" mantém a tela de criação aberta, não passa por aqui)
     pending_action  = ""
     pending_start   = 0.0
     game_buffer: list = []             # mensagens LOGIN_OK + WORLD_STATE para GameEngine
@@ -250,18 +251,6 @@ def run_online(screen: pygame.Surface,
                     game_buffer.clear()
                 else:
                     game_buffer.append((mt, payload, _seq, _ts))
-
-            elif pending_action == "creating":
-                # Aguardando confirmação de criação — volta à lista de seleção
-                if mt == _MT.CHARACTER_CREATED:
-                    new_char = payload.get("char")
-                    if new_char:
-                        chars.append(new_char)
-                    pending_action = ""
-                    status = ""
-                elif mt == _MT.CHARACTER_ERROR:
-                    status         = f"Erro ao criar: {payload.get('reason', 'desconhecido')}"
-                    pending_action = ""
 
             elif mt == _MT.DELETE_CHARACTER_OK:
                 chars           = [c for c in chars if c.get("id") != confirm_del_id]
@@ -330,12 +319,12 @@ def run_online(screen: pygame.Surface,
                     if create_r.collidepoint(mx, my):
                         result = _run_creation(screen, clock, sc, net=net)
                         if result is not None:
-                            net.send(_MT.CREATE_CHARACTER, {
-                                "name":     result["name"],
-                                "class_id": result["class_id"],
-                            })
-                            pending_action = "creating"
-                            pending_start  = time.time()
+                            # _run_creation já mandou CREATE_CHARACTER e esperou
+                            # CHARACTER_CREATED internamente (erro tipo "nome já
+                            # usado" mantém a tela de criação aberta com aviso —
+                            # não passa disso pra cá) — result é o char pronto.
+                            chars.append(result)
+                            status = ""
 
                 # Botão sair
                 quit_r = _quit_btn_rect(px, py, char_w, char_h, sc)
@@ -390,17 +379,35 @@ def _run_creation(screen, clock, sc: float, net=None) -> "dict | None":
     NAME_SUGGESTION — só o servidor sabe quais nomes já existem) e o botão
     "Sortear" pede uma nova ao servidor. Sem `net` (modo offline, sem
     banco compartilhado), a sugestão é gerada localmente e o botão
-    "Sortear" só gera outra local, sem round-trip de rede."""
+    "Sortear" só gera outra local, sem round-trip de rede.
+
+    No modo online, "Confirmar" manda CREATE_CHARACTER e ESPERA a
+    resposta do servidor AQUI DENTRO — se vier CHARACTER_ERROR (ex:
+    nome já usado), a tela de criação continua aberta com uma mensagem
+    abaixo da caixa de nome (não volta pra seleção de personagem, que
+    era o bug reportado: "name_taken" cru aparecendo na tela errada).
+    Só retorna quando o servidor confirma (CHARACTER_CREATED, com o
+    dict completo do personagem) ou o jogador clica Voltar/ESC."""
+    import time
     from shared.messages import MsgType as _MT_names
     from shared.character_names import (
         is_valid_name, is_valid_name_char, generate_name_candidate,
         normalize_name, NAME_MIN_LEN, NAME_MAX_LEN,
     )
 
+    _ERROR_MESSAGES = {
+        "invalid_name_format": f"Nome inválido — {NAME_MIN_LEN}-{NAME_MAX_LEN} letras, sem espaço/número/símbolo.",
+        "name_taken":          "Nome já escolhido, digite outro.",
+        "limit_reached":       "Limite de personagens atingido.",
+        "creation_failed":     "Erro ao criar personagem. Tente novamente.",
+    }
+
     name_text        = ""
     name_active      = False
     name_user_edited = False   # trava a auto-sugestão assim que o jogador digita
     suggest_pending  = False   # aguardando NAME_SUGGESTION do servidor
+    creating_pending = False   # aguardando CHARACTER_CREATED/CHARACTER_ERROR
+    creating_start   = 0.0
     error_msg        = ""
     selected_class   = "guerreiro"
     MAX_NAME         = NAME_MAX_LEN
@@ -453,6 +460,16 @@ def _run_creation(screen, clock, sc: float, net=None) -> "dict | None":
                     suggest_pending = False
                     if not name_user_edited:
                         name_text = payload.get("name", "")
+                elif mt == _MT_names.CHARACTER_CREATED:
+                    return payload.get("char")
+                elif mt == _MT_names.CHARACTER_ERROR:
+                    creating_pending = False
+                    error_msg = _ERROR_MESSAGES.get(
+                        payload.get("reason"), "Erro ao criar personagem.")
+
+            if creating_pending and time.time() - creating_start > 15.0:
+                creating_pending = False
+                error_msg = "Servidor não respondeu. Tente novamente."
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -484,11 +501,17 @@ def _run_creation(screen, clock, sc: float, net=None) -> "dict | None":
                 for idx, cls in enumerate(_CLASSES):
                     if not cls["locked"] and _card_rect(idx).collidepoint(mx, my):
                         selected_class = cls["id"]
-                if btn_confirm.collidepoint(mx, my):
+                if btn_confirm.collidepoint(mx, my) and not creating_pending:
                     candidate = name_text.strip()
                     if not is_valid_name(candidate):
                         error_msg = (f"Nome precisa ter {NAME_MIN_LEN}-{NAME_MAX_LEN} "
                                      "letras, sem espaço/número/símbolo.")
+                    elif net is not None:
+                        net.send(_MT_names.CREATE_CHARACTER, {
+                            "name": candidate, "class_id": selected_class})
+                        creating_pending = True
+                        creating_start   = time.time()
+                        error_msg        = ""
                     else:
                         return {"name": candidate, "class_id": selected_class}
                 if btn_back.collidepoint(mx, my):
@@ -565,14 +588,16 @@ def _run_creation(screen, clock, sc: float, net=None) -> "dict | None":
                 lock_s = font_xs.render("[em breve]", False, _LOCK_COL)
                 screen.blit(lock_s, (r.x + r.w // 2 - lock_s.get_width() // 2, r.y + int(138 * sc)))
 
-        for r, label, bg, bdr in [
-            (btn_back,    "Voltar",    _BTN_BG,  _BORDER),
-            (btn_confirm, "Confirmar", _BTN_BG,  _SEL_BDR),
+        confirm_label = "Criando..." if creating_pending else "Confirmar"
+        for r, label, bg, bdr, disabled in [
+            (btn_back,    "Voltar",      _BTN_BG,  _BORDER,  False),
+            (btn_confirm, confirm_label, _BTN_BG,  _SEL_BDR, creating_pending),
         ]:
-            hov = r.collidepoint(mx, my)
+            hov = r.collidepoint(mx, my) and not disabled
             pygame.draw.rect(screen, _BTN_HOV if hov else bg, r, border_radius=5)
             pygame.draw.rect(screen, bdr, r, 2, border_radius=5)
-            s = font_md.render(label, False, _BTN_TXT)
+            txt_c = _LOCK_TXT if disabled else _BTN_TXT
+            s = font_md.render(label, False, txt_c)
             screen.blit(s, s.get_rect(center=r.center))
 
         pygame.display.flip()
