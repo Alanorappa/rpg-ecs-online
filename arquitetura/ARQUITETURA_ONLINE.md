@@ -2488,6 +2488,20 @@ padrão. Suíte completa 263/263, rodada 3x.
 nenhuma suavização, o próximo passo é investigar se a posição do
 próprio personagem oscila quando parado (fora do escopo da câmera).
 
+**Validado (19/07/2026, mesmo dia)**: usuário confirmou — sem
+suavização, sem tremida nenhuma (parado E se movendo). Confirma que a
+causa raiz era mesmo o lerp de decaimento exponencial nunca assentando
+de verdade (a "cauda" residual descrita acima), não algo na posição do
+personagem. **Decisão final**: suavização de câmera fica desligada
+(`CameraSystem.SMOOTHING_ENABLED = False`) — coincide com a
+preferência original do usuário antes de tentarmos consertar o lerp
+("prefiro tirar o efeito"). Código do lerp/`SNAP_EPSILON` permanece no
+arquivo (não é dead code de verdade — é uma decisão de feature
+documentada, mesmo padrão de outros toggles do projeto), só não é mais
+usado por padrão. Fecha a thread inteira de tremida de câmera (3
+tentativas de fix + diagnóstico) e a de performance (Adendo 6) — ambas
+JOGO-VALIDADAS nesta sessão.
+
 ---
 
 ### 30. Execução da auditoria arquitetural + REMOÇÃO DO MODO OFFLINE (15/07/2026)

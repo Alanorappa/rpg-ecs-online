@@ -1445,13 +1445,15 @@ class CameraSystem(System):
     # EXATO no alvo em vez de continuar se aproximando pra sempre).
     SNAP_EPSILON = 0.05  # px — abaixo disso o resto nunca seria visível de qualquer forma
 
-    # Desligado temporariamente pra diagnóstico (19/07/2026, pedido do
-    # usuário — SNAP_EPSILON não resolveu a tremida ao parar): câmera gruda
-    # direto na posição do alvo, sem nenhuma suavização. Se a tremida SUMIR
-    # com isso, a causa é mesmo o lerp (ou algo dependente dele); se
-    # PERSISTIR mesmo assim, a causa é outra coisa (ex: a própria posição do
-    # personagem não "descansa" perfeitamente parada) — ver
-    # ARQUITETURA_ONLINE.md.
+    # Desligado — decisão final, não mais diagnóstico (19/07/2026).
+    # SNAP_EPSILON sozinho não eliminou a "tremida" ao parar; desligar a
+    # suavização inteira (câmera gruda direto na posição do alvo todo
+    # frame) confirmou que a causa era mesmo o lerp e resolveu de vez —
+    # usuário validou em jogo (sem suavização, sem tremida nenhuma) e
+    # preferiu manter assim (já era a preferência original dele, antes
+    # de tentarmos consertar o lerp). Código do lerp/SNAP_EPSILON fica
+    # como referência/caso algo precise dele no futuro, mas não é mais
+    # usado — ver ARQUITETURA_ONLINE.md.
     SMOOTHING_ENABLED = False
 
     def update(self, events: list = None, dt: float = 0) -> None:
