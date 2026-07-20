@@ -50,12 +50,13 @@ def is_valid_name(name: str) -> bool:
 _START = [
     "Ka", "Mor", "Thal", "Bra", "Dun", "Sil", "Ery", "Vor", "Ith", "Nal",
     "Fen", "Wren", "Ael", "Syl", "Dra", "Gor", "Lys", "Ban", "Rok", "Tir",
-    "Zan", "Quil", "Bry", "Hal", "Or", "Ys",
+    "Zan", "Quil", "Bry", "Hal", "Or", "Ys", "Ju", "Na", "Ara", "Vol", "Xa",
+    "Bal", "Mel", "Zun",
 ]
 _MID_CONSONANTS = ["m", "n", "s", "r", "l", "d", "t"]
 _SUFFIX = [
     "dor", "wyn", "ric", "as", "on", "ir", "eth", "ian", "ux", "yn",
-    "el", "ara", "in", "or", "ys",
+    "el", "ara", "in", "or", "ys", "go", "thor", "jin", "azar"
 ]
 
 _MID_CHANCE = 0.35   # chance de inserir uma consoante extra entre sílabas

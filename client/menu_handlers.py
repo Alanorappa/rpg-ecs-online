@@ -105,6 +105,7 @@ class MenuHandlers:
             ("Interface",           "submenu:interface"),
             ("Atalhos do teclado",  "open_hotbar_editor"),
             ("Voltar ao Spawn",     "unstuck"),
+            ("Deslogar",            "logout"),
             ("Quit",                "submenu:quit_confirm"),
         ]
         self._set_panel_scale(UI.MENU_MAIN_W, 60 + len(_BTNS) * 50 + 10)

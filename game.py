@@ -297,6 +297,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._show_pause        = False
         self._pause_submenu     = ""
         self._pending_quit      = False
+        self._pending_logout    = False  # "Deslogar" — volta pra seleção de personagem (main.py)
         self._sound_drag        = ""
         self._show_hotbar_editor = False
         self._hbe_drag_from: tuple | None = None  # ("panel", skill_id) | ("slot", idx)
@@ -1324,7 +1325,11 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         # arqueiro).
         self.screen.blit(surf, (4, 110))
 
-    def run(self):
+    def run(self) -> "str | None":
+        """Loop principal. Retorna "logout" (usuário clicou Deslogar — main.py
+        reconecta e volta pra seleção de personagem, mantendo o processo/pygame
+        vivos) ou None (saída normal — "Sair do jogo" ou fechar a janela;
+        main.py encerra o processo)."""
         _gc.disable()          # GC manual — evita pauses aleatórias no loop de jogo
         _gc_counter = 0
         running = True
@@ -2137,7 +2142,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                                                                  self._quest_dialog))
 
             # Menu de pausa (por cima de tudo)
-            if self._pending_quit:
+            if self._pending_quit or self._pending_logout:
                 running = False
             elif self._show_pause:
                 action = self._draw_pause_menu(events)
@@ -2145,6 +2150,10 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                     self._show_pause    = False
                     self._pause_submenu = ""
                     self._pending_quit  = True
+                elif action == "logout":
+                    self._show_pause     = False
+                    self._pause_submenu  = ""
+                    self._pending_logout = True
                 elif action == "resume":
                     self._show_pause    = False
                     self._pause_submenu = ""
@@ -2218,7 +2227,12 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                     self._prof_report()
 
         self._prof_log.close()
+        if self._pending_logout:
+            # NÃO chama pygame.quit() — main.py reconecta e reabre a tela de
+            # seleção de personagem no mesmo processo/janela.
+            return "logout"
         pygame.quit()
+        return None
 
     # ------------------------------------------------------------------
     # Transição de mapa (cavernas / retorno)

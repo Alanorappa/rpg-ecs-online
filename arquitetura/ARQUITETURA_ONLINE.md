@@ -4846,6 +4846,68 @@ criação aberta com "Nome já escolhido, digite outro."; botão trava em
 
 ---
 
+### §34.29 — Navegação entre telas: ESC na seleção volta ao login + botão "Deslogar" no jogo (20/07/2026)
+
+Pedido do usuário: (1) ESC na tela de seleção de personagem fechava o
+jogo inteiro — devia voltar pra tela de login (trocar de conta); (2)
+faltava um botão "Deslogar" (além de "Sair do jogo") pra voltar direto
+pra seleção de personagem sem fechar o jogo (trocar só de personagem,
+mesma conta).
+
+**Achado que evitou inventar protocolo novo**: `ui/char_creation_screen.py::
+run_online` já retornava `False` no ESC com a intenção documentada
+"usuário voltou ao login" — só que `main.py` nunca completou essa parte
+(comentário antigo: "Por ora apenas encerra"). E
+`client/network.py::NetworkClient` já tem reconexão + re-login
+automático embutido (guarda usuário/client_hash, reconecta com backoff,
+reenvia `LOGIN` sozinho) — o mecanismo que "Deslogar" precisa já existe
+e é testado em produção (usado hoje pra sobreviver a quedas de conexão).
+Decisão: **nem "Deslogar" nem "voltar ao login" preservam a sessão
+autoritativa no servidor** — os dois desconectam de verdade
+(`net.disconnect()`) e reconectam (uma conta nova via tela de login, ou
+a MESMA conta silenciosamente via `_connect_and_login` reaproveitando
+usuário/senha já em memória). Isso evita abrir uma frente de protocolo
+`LOGOUT` que preserva sessão (despawn gracioso, cancelar
+duelo/party/fila de arena ativos etc.) — zero mudança em
+`server/session.py`/`server/world_server.py`; o disconnect já aciona
+toda a limpeza que esses fluxos já tinham (`end_duels_of`/
+`end_parties_of`/`end_matches_of`, despawn) porque é o MESMO caminho de
+"caiu a conexão" que já existe.
+
+**`main.py`**: reescrito como laço de 2 níveis — `while True` (Etapa 1:
+login) contendo outro `while True` (Etapa 2/3: seleção ⇄ jogo).
+`_connect_and_login(host, port, user, password)` (novo helper) conecta
++ loga sem UI, reaproveitado tanto pelo fast-path `--user`/`--password`
+(só na 1ª volta — ESC depois mostra a tela de login de verdade) quanto
+pelo "Deslogar". Fluxo: ESC na seleção → `net.disconnect()` → volta ao
+topo do laço externo (tela de login). "Deslogar" (`action == "logout"`
+vindo de `GameEngine.run()`) → `net.disconnect()` + `_connect_and_login`
+com a mesma conta → reseta o display (`pygame.display.set_mode`) →
+volta ao topo do laço interno (seleção de personagem).
+
+**`game.py::GameEngine.run()`**: passou a **retornar** `"logout"` ou
+`None` em vez de sempre chamar `pygame.quit()` incondicionalmente —
+`self._pending_logout` (novo, paralelo a `_pending_quit`) para o loop
+principal sem derrubar o pygame quando é logout (main.py precisa dele
+vivo pra reabrir a seleção de personagem na mesma janela).
+
+**`client/menu_handlers.py`**: botão "Deslogar" novo no menu de pausa
+(`_draw_main_menu`, entre "Voltar ao Spawn" e "Quit") — ação direta
+(`"logout"`), sem confirmação (diferente de "Quit", que tem
+`quit_confirm`) — reversível/de baixo risco, só troca de personagem.
+
+**Validado**: `py_compile` de todos os arquivos tocados; suíte completa
+305/305, rodada 3x (mudança é de navegação entre telas/processo — sem
+lógica isolável em unit test; `tests/test_server_entrypoint.py::
+test_client_main_py_executa_como_script` continua cobrindo que
+`main.py --help` sobe sem quebrar import).
+
+**Não validado**: teste manual em jogo — ESC na seleção de personagem
+volta pra tela de login; "Deslogar" no menu de pausa volta pra seleção
+de personagem sem fechar o jogo, reconectando com a mesma conta.
+
+---
+
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
 
 ```
