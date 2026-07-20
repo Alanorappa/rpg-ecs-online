@@ -4920,6 +4920,34 @@ num mapa novo. Suíte completa 305/305, rodada 3x.
 
 ---
 
+### §34.30 — Versionamento do jogo: SemVer via git tag + número exibido na tela de login (20/07/2026)
+
+Decisão do usuário: cada commit relevante ganha uma versão. Descartada a
+ideia original (contador plano tipo `0.400 → 0.401`, sem distinguir fix
+de feature) a favor de **SemVer** (`MAJOR.MINOR.PATCH`) — PATCH sobe em
+correção, MINOR sobe em feature nova, MAJOR fica reservado pra mudança
+grande/quebra de compatibilidade.
+
+- `shared/constants.py::GAME_VERSION` (novo, `"0.4.0"`) — único ponto de
+  verdade, só cosmético. **Não confundir com `PROTOCOL_VERSION`** (linha
+  acima no mesmo arquivo) — esse trava compatibilidade real de
+  cliente/servidor; `GAME_VERSION` é só o número mostrado pro jogador.
+- `ui/login_screen.py` — mostra `vX.Y.Z` no canto inferior direito da
+  tela de login (única tela sempre vista 1x por sessão, antes de entrar
+  no jogo).
+- **Processo daqui pra frente**: a cada commit que justifique subir a
+  versão, atualizar `GAME_VERSION` E criar a tag git correspondente
+  (`git tag vX.Y.Z` no commit) — a tag é o registro de verdade (permite
+  `git log vA..vB` pra changelog e `git checkout vX.Y.Z` pra voltar num
+  ponto), o número na tela é só a vitrine.
+
+Baseline: `v0.4.0` = estado do repo até este ponto (inclui Fase G/Arena
+2x2, fixes de Recarregar/quest/None-slot, validação de nome de
+personagem, navegação ESC/Deslogar — tudo commitado antes desta
+entrada).
+
+---
+
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
 
 ```

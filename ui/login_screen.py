@@ -11,6 +11,7 @@ from __future__ import annotations
 import time
 import pygame
 from shared.messages import MsgType
+from shared.constants import GAME_VERSION
 
 _BG        = (6,  8, 14)
 _PANEL_BG  = (14, 16, 26)
@@ -290,5 +291,8 @@ def run(screen: pygame.Surface, host: str = "localhost", port: int = 8765):
             dots = "." * (int(time.time() * 2) % 4)
             spin = font_sm.render(f"Aguardando{dots}", False, _LABEL_COL)
             screen.blit(spin, spin.get_rect(centerx=W // 2, y=btn_y + 46))
+
+        ver_s = font_sm.render(f"v{GAME_VERSION}", False, _LABEL_COL)
+        screen.blit(ver_s, (W - ver_s.get_width() - 10, H - ver_s.get_height() - 8))
 
         pygame.display.flip()

@@ -48,6 +48,14 @@ SESSION_TTL_S       = 86_400     # 24h
 # ── Versão do protocolo ───────────────────────────────────────────────────────
 PROTOCOL_VERSION = 1             # incrementar ao quebrar compatibilidade
 
+# ── Versão do jogo (SemVer: MAJOR.MINOR.PATCH) ────────────────────────────────
+# Só cosmético (exibido na tela de login) — não confundir com PROTOCOL_VERSION
+# acima (esse sim trava compatibilidade cliente/servidor). Atualizar aqui e
+# criar a tag git correspondente (`git tag vX.Y.Z`) a cada commit relevante:
+# PATCH = correção, MINOR = feature nova, MAJOR = mudança grande/quebra de
+# compatibilidade (decisão do usuário, 20/07/2026 — ver ARQUITETURA_ONLINE.md).
+GAME_VERSION = "0.4.0"
+
 # ── Morte/respawn: fluxo de espírito (ghost) + cemitério ───────────────────────
 GHOST_GRAVEYARD_RADIUS_TILES = 5   # raio (tiles) do cemitério p/ revive automático
 GHOST_CORPSE_RADIUS_TILES    = 3   # raio (tiles) do corpo p/ prompt "Reviver agora?"
