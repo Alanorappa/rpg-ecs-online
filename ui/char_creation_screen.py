@@ -328,7 +328,7 @@ def run_online(screen: pygame.Surface,
                 if len(chars) < MAX_ONLINE_CHARS:
                     create_r = _create_btn_rect(px, py, char_w, char_h, slot_h, slot_pad, sc)
                     if create_r.collidepoint(mx, my):
-                        result = _run_creation(screen, clock, sc)
+                        result = _run_creation(screen, clock, sc, net=net)
                         if result is not None:
                             net.send(_MT.CREATE_CHARACTER, {
                                 "name":     result["name"],
@@ -382,12 +382,38 @@ def run_online(screen: pygame.Surface,
 
 # ── Tela de criação ──────────────────────────────────────────────────────────
 
-def _run_creation(screen, clock, sc: float) -> "dict | None":
-    """Tela de criação de personagem. Retorna dict ou None (voltar)."""
-    name_text      = ""
-    name_active    = False
-    selected_class = "guerreiro"
-    MAX_NAME       = 18
+def _run_creation(screen, clock, sc: float, net=None) -> "dict | None":
+    """Tela de criação de personagem. Retorna dict ou None (voltar).
+
+    `net`: se fornecido (modo online), a caixa de nome já vem preenchida
+    com uma sugestão verificada contra o banco (SUGGEST_NAME/
+    NAME_SUGGESTION — só o servidor sabe quais nomes já existem) e o botão
+    "Sortear" pede uma nova ao servidor. Sem `net` (modo offline, sem
+    banco compartilhado), a sugestão é gerada localmente e o botão
+    "Sortear" só gera outra local, sem round-trip de rede."""
+    from shared.messages import MsgType as _MT_names
+    from shared.character_names import (
+        is_valid_name, is_valid_name_char, generate_name_candidate,
+        NAME_MIN_LEN, NAME_MAX_LEN,
+    )
+
+    name_text        = ""
+    name_active      = False
+    name_user_edited = False   # trava a auto-sugestão assim que o jogador digita
+    suggest_pending  = False   # aguardando NAME_SUGGESTION do servidor
+    error_msg        = ""
+    selected_class   = "guerreiro"
+    MAX_NAME         = NAME_MAX_LEN
+
+    def _request_suggestion():
+        nonlocal suggest_pending, name_text
+        if net is not None:
+            net.send(_MT_names.SUGGEST_NAME, {})
+            suggest_pending = True
+        else:
+            name_text = generate_name_candidate()
+
+    _request_suggestion()
 
     font_lg = _font(int(34 * sc))
     font_md = _font(int(24 * sc))
@@ -414,11 +440,19 @@ def _run_creation(screen, clock, sc: float) -> "dict | None":
 
     btn_confirm = pygame.Rect(px + PW - btn_w - int(20 * sc), py + PH - btn_h - int(18 * sc), btn_w, btn_h)
     btn_back    = pygame.Rect(px + int(20 * sc),               py + PH - btn_h - int(18 * sc), btn_w, btn_h)
-    name_rect   = pygame.Rect(px + PW // 2 - int(180 * sc),   py + int(108 * sc), int(360 * sc), int(38 * sc))
+    name_rect   = pygame.Rect(px + PW // 2 - int(180 * sc) - int(50 * sc), py + int(108 * sc), int(360 * sc), int(38 * sc))
+    reroll_rect = pygame.Rect(name_rect.right + int(8 * sc), name_rect.y, int(84 * sc), name_rect.h)
 
     while True:
         clock.tick(60)
         mx, my = pygame.mouse.get_pos()
+
+        if net is not None:
+            for mt, payload, _seq, _ts in net.poll():
+                if mt == _MT_names.NAME_SUGGESTION:
+                    suggest_pending = False
+                    if not name_user_edited:
+                        name_text = payload.get("name", "")
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -429,18 +463,31 @@ def _run_creation(screen, clock, sc: float) -> "dict | None":
                 if name_active:
                     if event.key == pygame.K_BACKSPACE:
                         name_text = name_text[:-1]
+                        name_user_edited = True
+                        error_msg = ""
                     elif event.key == pygame.K_RETURN:
                         name_active = False
-                    elif len(name_text) < MAX_NAME and event.unicode.isprintable():
+                    elif (len(name_text) < MAX_NAME and event.unicode
+                          and is_valid_name_char(event.unicode)):
                         name_text += event.unicode
+                        name_user_edited = True
+                        error_msg = ""
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 name_active = name_rect.collidepoint(mx, my)
+                if reroll_rect.collidepoint(mx, my) and not suggest_pending:
+                    name_user_edited = False
+                    error_msg = ""
+                    _request_suggestion()
                 for idx, cls in enumerate(_CLASSES):
                     if not cls["locked"] and _card_rect(idx).collidepoint(mx, my):
                         selected_class = cls["id"]
                 if btn_confirm.collidepoint(mx, my):
-                    return {"name": name_text.strip() or "Aventureiro",
-                            "class_id": selected_class}
+                    candidate = name_text.strip()
+                    if not is_valid_name(candidate):
+                        error_msg = (f"Nome precisa ter {NAME_MIN_LEN}-{NAME_MAX_LEN} "
+                                     "letras, sem espaço/número/símbolo.")
+                    else:
+                        return {"name": candidate, "class_id": selected_class}
                 if btn_back.collidepoint(mx, my):
                     return None
 
@@ -459,11 +506,25 @@ def _run_creation(screen, clock, sc: float) -> "dict | None":
         pygame.draw.rect(screen, _INPUT_BG, name_rect, border_radius=4)
         pygame.draw.rect(screen, bdr_col,   name_rect, 2, border_radius=4)
         cursor   = "|" if name_active and pygame.time.get_ticks() % 1000 < 500 else ""
-        disp_txt = (name_text + cursor) if name_text else ("Aventureiro" if not name_active else cursor)
-        txt_col  = _TEXT_COL if name_text else _LOCK_TXT
+        if name_text:
+            disp_txt, txt_col = name_text + cursor, _TEXT_COL
+        elif suggest_pending:
+            disp_txt, txt_col = "Gerando nome...", _LOCK_TXT
+        else:
+            disp_txt, txt_col = cursor, _TEXT_COL
         txt_surf = font_md.render(disp_txt, False, txt_col)
         screen.blit(txt_surf, (name_rect.x + int(10 * sc),
                                name_rect.y + name_rect.h // 2 - txt_surf.get_height() // 2))
+
+        reroll_hov = reroll_rect.collidepoint(mx, my) and not suggest_pending
+        pygame.draw.rect(screen, _BTN_HOV if reroll_hov else _BTN_BG, reroll_rect, border_radius=4)
+        pygame.draw.rect(screen, _BORDER, reroll_rect, 2, border_radius=4)
+        reroll_s = font_sm.render("Sortear", False, _BTN_TXT)
+        screen.blit(reroll_s, reroll_s.get_rect(center=reroll_rect.center))
+
+        if error_msg:
+            err_s = font_xs.render(error_msg, False, _DEL_TXT)
+            screen.blit(err_s, (name_rect.x, name_rect.bottom + int(4 * sc)))
 
         lbl2 = font_sm.render("Escolha sua classe:", False, _TEXT_COL)
         screen.blit(lbl2, (px + PW // 2 - lbl2.get_width() // 2, cards_y - lbl2.get_height() - int(8 * sc)))

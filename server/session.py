@@ -1214,15 +1214,15 @@ class SessionManager:
         if session.entity_id != -1:
             await session.send(MsgType.CHARACTER_ERROR, {"reason": "already_has_character"})
             return
-        name     = str(payload.get("name",     "Aventureiro")).strip() or "Aventureiro"
+        name     = str(payload.get("name", "")).strip()
         class_id = str(payload.get("class_id", "guerreiro"))
         if class_id not in ("guerreiro", "mago", "arqueiro"):
             class_id = "guerreiro"
 
         from server.auth import create_character as _create_char, _get_conn as _gc
-        ok = await _create_char(session.account_id, name, class_id)
-        if not ok:
-            await session.send(MsgType.CHARACTER_ERROR, {"reason": "creation_failed"})
+        reason = await _create_char(session.account_id, name, class_id)
+        if reason != "ok":
+            await session.send(MsgType.CHARACTER_ERROR, {"reason": reason})
             return
 
         # Lê o personagem recém-criado (maior id da conta)
@@ -1242,6 +1242,18 @@ class SessionManager:
         # Envia apenas CHARACTER_CREATED com dados do personagem.
         # O cliente volta à lista de seleção; o spawn ocorre só ao clicar "Jogar".
         await session.send(MsgType.CHARACTER_CREATED, {"char": dict(char_data)})
+
+    async def _handle_suggest_name(self, session: Session,
+                                   payload: dict, ts: int = 0) -> None:
+        """Sugestão de nome pra caixa de criação de personagem (botão 🎲) —
+        precisa ir ao servidor porque só ele sabe quais nomes já existem no
+        banco (checagem de unicidade é global, ver server/auth.py::
+        _create_character_sync)."""
+        if not session.authenticated:
+            return
+        from server.auth import suggest_character_name as _suggest_name
+        name = await _suggest_name()
+        await session.send(MsgType.NAME_SUGGESTION, {"name": name})
 
     async def _handle_zone_change_req(self, session: Session, payload: dict, ts: int = 0) -> None:
         """Processa pedido de troca de mapa C→S. Servidor valida e executa; envia ZONE_CHANGE.
@@ -1585,6 +1597,7 @@ class SessionManager:
     _handlers = {
         MsgType.REGISTER:           _handle_register,
         MsgType.CREATE_CHARACTER:   _handle_create_character,
+        MsgType.SUGGEST_NAME:       _handle_suggest_name,
         MsgType.SELECT_CHARACTER:   _handle_select_character,
         MsgType.DELETE_CHARACTER:   _handle_delete_character,
         MsgType.LOGIN:        _handle_login,

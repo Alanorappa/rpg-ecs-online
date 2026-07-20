@@ -43,6 +43,21 @@ def make_session_manager(ws=None):
     return ws, mgr
 
 
+def _valid_char_name(username: str) -> str:
+    """Deriva um nome de personagem válido a partir do username de teste.
+    Usernames de teste têm underscore/número (ex: "user_ap_test") — desde
+    a validação de formato em server/auth.py::_create_character_sync
+    (feedback do usuário, 20/07/2026: nome só letras, 3-16 chars), esses
+    usernames crus não servem mais de NOME de personagem. Login continua
+    usando o username cru (conta); só o campo `name` do personagem
+    precisa passar em is_valid_name."""
+    from shared.character_names import NAME_MAX_LEN
+    letters = "".join(c for c in username if c.isalpha())
+    if len(letters) < 3:
+        letters = (letters + "Testchar")
+    return letters[:NAME_MAX_LEN]
+
+
 async def fake_login(mgr, session_id: str, username: str,
                      tile_x: int = 115, tile_y: int = 389,
                      class_id: str = "guerreiro") -> tuple:
@@ -60,7 +75,7 @@ async def fake_login(mgr, session_id: str, username: str,
     pw_hash = _hash("test123")
     _register_account_sync(username, pw_hash)   # no-op se já existe
     acc_id = _get_account_id_sync(username)
-    _create_character_sync(acc_id, username, class_id, tile_x, tile_y)
+    _create_character_sync(acc_id, _valid_char_name(username), class_id, tile_x, tile_y)
 
     fake_ws = FakeWS()
     session = await mgr.on_connect(fake_ws, session_id)
@@ -189,7 +204,7 @@ class TestLogin(unittest.IsolatedAsyncioTestCase):
         ph = _hash("test123")
         _register_account_sync("user_ap_test", ph)
         acc_id = _get_account_id_sync("user_ap_test")
-        _create_character_sync(acc_id, "user_ap_test", "guerreiro", 115, 389)
+        _create_character_sync(acc_id, _valid_char_name("user_ap_test"), "guerreiro", 115, 389)
 
         fake_ws = FakeWS()
         session = await self.mgr.on_connect(fake_ws, "s_ap")
@@ -233,7 +248,7 @@ class TestLogin(unittest.IsolatedAsyncioTestCase):
         ph = _hash("test123")
         _register_account_sync("user_fog_grande", ph)
         acc_id = _get_account_id_sync("user_fog_grande")
-        _create_character_sync(acc_id, "user_fog_grande", "guerreiro", 115, 389)
+        _create_character_sync(acc_id, _valid_char_name("user_fog_grande"), "guerreiro", 115, 389)
 
         # Simula fog_json inchado (como um personagem MUITO explorado teria).
         _fog_grande = "x" * 600_000

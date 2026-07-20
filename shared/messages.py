@@ -176,9 +176,12 @@ class MsgType(str, Enum):
     SELECT_CHARACTER   = "select_char"     # C→S  {char_id: int}
     CREATE_CHARACTER   = "create_character"# C→S  {name, class_id}
     CHARACTER_CREATED  = "char_created"    # S→C  {}  (precede LOGIN_OK)
-    CHARACTER_ERROR    = "char_error"      # S→C  {reason}
+    CHARACTER_ERROR    = "char_error"      # S→C  {reason} — reason: invalid_name_format |
+                                            #   name_taken | limit_reached | creation_failed | ...
     DELETE_CHARACTER   = "delete_char"     # C→S  {char_id: int}
     DELETE_CHARACTER_OK= "delete_char_ok"  # S→C  {}
+    SUGGEST_NAME       = "suggest_name"    # C→S  {}  pede um nome de fantasia sugerido
+    NAME_SUGGESTION    = "name_suggestion" # S→C  {name: str} já verificado único no banco
 
     # ── Sistema ───────────────────────────────────────────────────
     PING               = "ping"            # C→S  latência

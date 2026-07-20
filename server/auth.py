@@ -235,8 +235,10 @@ def _register_account_sync(username: str, password: str) -> bool:
 
 
 async def create_character(account_id: int, name: str,
-                           class_id: str = "guerreiro") -> bool:
-    """Cria personagem para a conta. Retorna True se sucesso."""
+                           class_id: str = "guerreiro") -> str:
+    """Cria personagem para a conta. Retorna "ok" ou um motivo de rejeição
+    ("invalid_name_format", "name_taken", "limit_reached", "creation_failed")
+    — ver _create_character_sync."""
     return await asyncio.get_running_loop().run_in_executor(
         None, _create_character_sync, account_id, name, class_id)
 
@@ -244,22 +246,66 @@ async def create_character(account_id: int, name: str,
 def _create_character_sync(account_id: int, name: str,
                            class_id: str = "guerreiro",
                            tile_x: int = RESPAWN_TILE[0],
-                           tile_y: int = RESPAWN_TILE[1]) -> bool:
+                           tile_y: int = RESPAWN_TILE[1]) -> str:
+    """Nome tem que ser único no banco INTEIRO (não só por conta) — nameplate/
+    chat/trade mostram o nome do personagem pra todo mundo, então dois
+    "Aventureiro" em contas diferentes colidem visualmente do mesmo jeito
+    que colidiriam na mesma conta. Checagem case-insensitive (LOWER) — senão
+    "Juugo" e "juugo" driblam a unicidade só trocando a caixa. Validação de
+    formato reaproveita shared/character_names.py (mesma regra que o
+    gerador de sugestão usa) — único ponto de verdade pro que é um nome
+    válido, cliente e servidor concordam sem duplicar a regex."""
+    from shared.character_names import is_valid_name
+    if not is_valid_name(name):
+        return "invalid_name_format"
     try:
         with _get_conn() as conn:
             count = conn.execute(
                 "SELECT COUNT(*) FROM characters WHERE account_id=?", (account_id,)
             ).fetchone()[0]
             if count >= 3:
-                return False  # limite de 3 personagens por conta
+                return "limit_reached"  # limite de 3 personagens por conta
+            taken = conn.execute(
+                "SELECT 1 FROM characters WHERE LOWER(name)=LOWER(?) LIMIT 1", (name,)
+            ).fetchone()
+            if taken:
+                return "name_taken"
             conn.execute(
                 "INSERT INTO characters (account_id, name, class_id, tile_x, tile_y)"
                 " VALUES (?,?,?,?,?)",
                 (account_id, name, class_id, tile_x, tile_y)
             )
-        return True
+        return "ok"
     except Exception:
-        return False
+        return "creation_failed"
+
+
+async def suggest_character_name() -> str:
+    """Gera um nome de fantasia (shared/character_names.py) e tenta até
+    _MAX_SUGGEST_ATTEMPTS vezes achar um que ainda não existe no banco.
+    Se todas colidirem (extremamente improvável — ver tamanho do pool de
+    sílabas), devolve o último candidato mesmo assim: pior caso, o jogador
+    vê CHARACTER_ERROR "name_taken" ao confirmar e digita outro nome —
+    igual já acontece hoje pra qualquer nome escolhido à mão."""
+    return await asyncio.get_running_loop().run_in_executor(
+        None, _suggest_character_name_sync)
+
+
+_MAX_SUGGEST_ATTEMPTS = 8
+
+
+def _suggest_character_name_sync() -> str:
+    from shared.character_names import generate_name_candidate
+    with _get_conn() as conn:
+        for _ in range(_MAX_SUGGEST_ATTEMPTS):
+            candidate = generate_name_candidate()
+            taken = conn.execute(
+                "SELECT 1 FROM characters WHERE LOWER(name)=LOWER(?) LIMIT 1",
+                (candidate,)
+            ).fetchone()
+            if not taken:
+                return candidate
+        return candidate
 
 
 async def delete_character(account_id: int, char_id: int) -> bool:

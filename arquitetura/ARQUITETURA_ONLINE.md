@@ -4754,6 +4754,63 @@ restaura tudo, banner/log de vitória-derrota aparece.
 
 ---
 
+### §34.28 — Validação de nome de personagem (formato + unicidade global) + gerador de nome sugerido (20/07/2026)
+
+Personagens de teste do próprio usuário acumularam vários "Aventureiro"/
+"Juugo" duplicados — não havia NENHUMA validação de nome no banco:
+`server/auth.py::_create_character_sync` fazia `INSERT` direto, e a
+caixa de texto do cliente (`ui/char_creation_screen.py::_run_creation`)
+aceitava qualquer unicode "printable" e defaultava pra literalmente
+`"Aventureiro"` quando vazia.
+
+**Regra nova**: 3-16 caracteres, só letras (com acento — jogo é PT-BR),
+sem espaço/número/símbolo — `shared/character_names.py::is_valid_name`
+(único ponto de verdade, reaproveitado por cliente E servidor, igual
+`fog_codec.py`/`messages.py` já fazem pra outras regras compartilhadas).
+Unicidade é **GLOBAL** (todas as contas, não só por conta) e
+**case-insensitive** (`LOWER(name)=LOWER(?)`) — nameplate/chat/trade
+mostram o nome pra todo mundo, então "Juugo" numa conta e "juugo" noutra
+colidiriam visualmente do mesmo jeito que colidiriam na mesma conta.
+Checagem é feita DENTRO da mesma transação do INSERT
+(`_create_character_sync`), nunca só no cliente. `create_character()`
+mudou de retornar `bool` pra retornar um motivo (`"ok"` |
+`"invalid_name_format"` | `"name_taken"` | `"limit_reached"` |
+`"creation_failed"`) — `server/session.py::_handle_create_character`
+repassa direto como `CHARACTER_ERROR.reason`.
+
+**Não migramos os nomes duplicados já existentes no banco** (não pedido,
+e adicionar uma constraint `UNIQUE` real quebraria com os duplicados
+já lá) — a regra vale só pra criações NOVAS a partir de agora.
+
+**Gerador de nome sugerido**: sílaba inicial + consoante opcional no
+meio (m/n/s/r/l/d/t, ~35% de chance) + sufixo (`shared/
+character_names.py::generate_name_candidate`) — sempre dentro do
+formato válido. Protocolo novo: `SUGGEST_NAME` (C→S, `{}`) /
+`NAME_SUGGESTION` (S→C, `{name}`) — precisa ir ao servidor porque só ele
+sabe quais nomes já existem (`server/auth.py::suggest_character_name`,
+até 8 tentativas até achar um livre). Cliente (`ui/char_creation_screen.py`)
+pede uma sugestão ao abrir a tela de criação e preenche a caixa
+automaticamente; botão "Sortear" pede outra a qualquer momento (trava
+enquanto uma sugestão já está a caminho). Modo offline (já removido
+deste branch, §30, mas as funções ainda existem) gera localmente sem
+round-trip — não tem banco compartilhado pra checar.
+
+**Validado**: `tests/test_character_names.py` (28 testes — formato,
+charset, unicidade global e case-insensitive, limite de 3 personagens,
+gerador sempre produz nome válido, sugestão nunca repete nome já
+existente, wiring fim-a-fim de `CREATE_CHARACTER`/`SUGGEST_NAME` via
+`SessionManager` com banco temporário isolado) + `tests/test_session.py`
+ajustado (`_valid_char_name` — usernames de teste como "user_ap_test"
+viraram nome de personagem inválido; login continua usando o username
+cru, só o nome do personagem precisa ser válido). Suíte completa
+299/299, rodada 3x.
+
+**Não validado**: teste manual em jogo (criar personagem com nome
+inválido/duplicado mostra o erro certo; botão "Sortear" busca nome novo
+sem travar a UI).
+
+---
+
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
 
 ```
@@ -4949,6 +5006,7 @@ barra de HP); ghost (`is_ghost`) desenhado semi-transparente (alpha ~120/255).
 | Arena 3x3, campos de batalha 5x5 (torres/bandeira/base), matchmaking solo real, ranking | 🔲 pendente | próximas levas da Fase G |
 | Instâncias de dungeon/raid PvE | 🔲 pendente | reaproveita o instanciamento genérico da Fase G (`_load_instance`/`_unload_instance`) |
 | Client-side prediction de movimento | 🔲 pendente | `client/` |
+| Validação de nome de personagem (formato + unicidade global) + gerador de nome sugerido | ✅ completo, não validado em jogo | `shared/character_names.py`, `server/auth.py`, `client/ui/char_creation_screen.py` |
 
 ---
 
