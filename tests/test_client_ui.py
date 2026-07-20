@@ -18,6 +18,53 @@ pygame.init()
 pygame.display.set_mode((320, 240))
 
 
+# ── ui/systems.py::CameraSystem — snap quando perto do alvo ──────────────────
+# Bug real relatado pelo usuário 19/07/2026: câmera "tremia" bem no instante
+# em que o personagem parava. Causa: lerp de decaimento exponencial nunca
+# chega EXATO no alvo — fica fazendo ajustes minúsculos decrescentes pra
+# sempre, e isso "vaza" como jitter visual (mais perceptível parado, sem
+# movimento maior mascarando). SNAP_EPSILON trava exato no alvo quando perto
+# o bastante, eliminando o resíduo interminável.
+
+def test_camera_trava_exato_no_alvo_quando_perto_o_bastante():
+    from engine.world import World
+    from engine.components import Camera, Position
+    from ui.systems import CameraSystem
+
+    world = World()
+    target = world.create_entity()
+    world.add_component(target, Position(x=100.0, y=100.0))
+    cam = world.create_entity()
+    world.add_component(cam, Camera(target_entity_id=target))
+    world.add_component(cam, Position(x=100.0 - CameraSystem.SNAP_EPSILON / 2, y=100.0))
+
+    sys_cam = CameraSystem(world)
+    sys_cam.update(dt=1 / 60)
+
+    cam_pos = world.get_component(cam, Position)
+    assert cam_pos.x == 100.0
+    assert cam_pos.y == 100.0
+
+
+def test_camera_continua_suavizando_quando_longe_do_alvo():
+    from engine.world import World
+    from engine.components import Camera, Position
+    from ui.systems import CameraSystem
+
+    world = World()
+    target = world.create_entity()
+    world.add_component(target, Position(x=100.0, y=0.0))
+    cam = world.create_entity()
+    world.add_component(cam, Camera(target_entity_id=target))
+    world.add_component(cam, Position(x=0.0, y=0.0))
+
+    sys_cam = CameraSystem(world)
+    sys_cam.update(dt=1 / 60)
+
+    cam_pos = world.get_component(cam, Position)
+    assert 0.0 < cam_pos.x < 100.0   # se aproximou, mas não saltou direto
+
+
 # ── ui/map_markers.py ────────────────────────────────────────────────────────
 
 def _make_marker_world():

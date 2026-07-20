@@ -1431,6 +1431,20 @@ class CameraSystem(System):
 
     LERP_SPEED = 8.0  # maior = mais rápido; ~8 é suave mas responsivo
 
+    # Decaimento exponencial (lerp) matematicamente NUNCA chega no alvo —
+    # só se aproxima cada vez menos a cada frame, pra sempre. Enquanto o
+    # personagem se move, isso não se nota (o alvo também está andando, a
+    # câmera persegue com uma defasagem ~constante). Mas quando o
+    # personagem PARA, a câmera continua fazendo ajustes MINÚSCULOS —
+    # decrescentes, nunca exatamente zero — frame após frame; combinado
+    # com o transform.scale() do zoom (1.5x-2.5x) amostrando essa posição
+    # ligeiramente diferente a cada frame, esse resíduo aparece como
+    # "tremida" bem no instante de parar (bug real relatado pelo usuário
+    # 19/07/2026 — ver ARQUITETURA_ONLINE.md; SNAP_EPSILON é o fix padrão
+    # de indústria pra câmera com lerp: ao chegar perto o bastante, trava
+    # EXATO no alvo em vez de continuar se aproximando pra sempre).
+    SNAP_EPSILON = 0.05  # px — abaixo disso o resto nunca seria visível de qualquer forma
+
     def update(self, events: list = None, dt: float = 0) -> None:
         for entity_id, camera_component, camera_position in self.world.get_entities_with(Camera, Position):
             target_entity_id = camera_component.target_entity_id
@@ -1438,9 +1452,15 @@ class CameraSystem(System):
             if target_entity_id != -1:
                 target_position = self.world.get_component(target_entity_id, Position)
                 if target_position:
-                    t = min(1.0, self.LERP_SPEED * dt)
-                    camera_position.x += (target_position.x - camera_position.x) * t
-                    camera_position.y += (target_position.y - camera_position.y) * t
+                    dx = target_position.x - camera_position.x
+                    dy = target_position.y - camera_position.y
+                    if abs(dx) < self.SNAP_EPSILON and abs(dy) < self.SNAP_EPSILON:
+                        camera_position.x = target_position.x
+                        camera_position.y = target_position.y
+                    else:
+                        t = min(1.0, self.LERP_SPEED * dt)
+                        camera_position.x += dx * t
+                        camera_position.y += dy * t
 
 class TileRenderSystem(System):
     def __init__(self, world: World, screen: pygame.Surface):

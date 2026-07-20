@@ -2428,6 +2428,41 @@ Validado: `py_compile`; suíte completa 260/260, rodada 3x.
 (regressão do fix anterior) E movendo o personagem desliza suave, sem
 saltar de pixel em pixel.
 
+**Follow-up (mesmo dia) — a tremida "ao mover" sumiu, mas voltou a
+tremer especificamente "quando o personagem para".** Usuário sugeriu
+ajustar o tempo de suavização (`LERP_SPEED`) — palpite parcialmente
+certo (mudar a velocidade muda o sintoma), mas a causa raiz é mais
+funda: `CameraSystem.update()` usa decaimento exponencial
+(`camera_position.x += (target.x - camera_position.x) * t`) — essa
+fórmula matematicamente NUNCA chega EXATO no alvo, só se aproxima cada
+vez menos, pra sempre. Enquanto o personagem anda, isso não se nota (a
+câmera persegue com uma defasagem ~constante, o alvo também está se
+movendo). Quando o personagem PARA, a câmera continua fazendo ajustes
+MINÚSCULOS, decrescentes mas nunca zero, frame após frame — e como o
+`transform.scale()` do zoom (1.5x-2.5x) amostra essa posição
+ligeiramente diferente a cada frame, esse resíduo infinitesimal
+aparece como tremor bem no instante de parar (mascarado durante o
+movimento por um deslocamento bem maior). Clássico problema de câmera
+com lerp em qualquer engine.
+
+**Fix (padrão de indústria — "snap quando perto o bastante")**:
+`CameraSystem.SNAP_EPSILON = 0.05` (px) — quando a distância restante
+até o alvo fica abaixo disso, a câmera TRAVA exata na posição do alvo
+em vez de continuar se aproximando pra sempre; acima do limiar,
+continua suavizando normalmente (`LERP_SPEED` inalterado). Elimina o
+resíduo interminável sem precisar mexer na velocidade de suavização —
+ajustar só `LERP_SPEED` (a sugestão original) teria mudado a DURAÇÃO
+da cauda residual, não eliminado ela.
+
+Validado: `tests/test_client_ui.py` (2 testes) — câmera trava exata no
+alvo quando a distância já está abaixo do epsilon; câmera continua
+suavizando normalmente (não salta direto) quando longe do alvo. Suíte
+completa 262/262, rodada 3x.
+
+**Não validado**: sessão manual — câmera parada não tremer mais, e
+personagem continuar deslizando suave ao mover (sem reintroduzir o
+salto de pixel do fix anterior).
+
 ---
 
 ### 30. Execução da auditoria arquitetural + REMOÇÃO DO MODO OFFLINE (15/07/2026)
