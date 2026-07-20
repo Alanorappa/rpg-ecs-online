@@ -2463,6 +2463,31 @@ completa 262/262, rodada 3x.
 personagem continuar deslizando suave ao mover (sem reintroduzir o
 salto de pixel do fix anterior).
 
+**Follow-up (mesmo dia) — SNAP_EPSILON não resolveu.** Usuário testou e
+a tremida ao parar persistiu mesmo com o snap. Pedido do usuário:
+desligar a suavização inteira, como passo de DIAGNÓSTICO — se a
+tremida sumir sem nenhuma suavização, a causa é mesmo o lerp (ou algo
+que só se manifesta através dele); se persistir mesmo assim, a causa é
+outra coisa (candidato mais provável: a própria posição do personagem
+não fica perfeitamente parada quando "parado" — ex. correção de
+posição do servidor, ruído de ponto flutuante na interpolação de
+tile — e nesse caso nenhum ajuste do lado da câmera resolveria).
+
+Fix temporário: `CameraSystem.SMOOTHING_ENABLED = False` — quando
+`False`, a câmera gruda direto na posição do alvo todo frame, sem lerp
+nenhum (flag de instância, fácil de religar depois setando `True` —
+não removi o código do lerp/SNAP_EPSILON, só desviei dele).
+
+Validado: `tests/test_client_ui.py` ganhou o teste do modo sem
+suavização (`test_camera_sem_suavizacao_gruda_direto_no_alvo`); os 2
+testes de lerp/snap anteriores passaram a ligar `SMOOTHING_ENABLED`
+explicitamente pra continuar cobrindo esse caminho, mesmo desligado por
+padrão. Suíte completa 263/263, rodada 3x.
+
+**Não validado**: sessão manual — se a tremida ainda aparecer mesmo SEM
+nenhuma suavização, o próximo passo é investigar se a posição do
+próprio personagem oscila quando parado (fora do escopo da câmera).
+
 ---
 
 ### 30. Execução da auditoria arquitetural + REMOÇÃO DO MODO OFFLINE (15/07/2026)

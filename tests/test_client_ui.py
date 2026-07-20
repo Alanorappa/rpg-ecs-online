@@ -24,7 +24,11 @@ pygame.display.set_mode((320, 240))
 # chega EXATO no alvo — fica fazendo ajustes minúsculos decrescentes pra
 # sempre, e isso "vaza" como jitter visual (mais perceptível parado, sem
 # movimento maior mascarando). SNAP_EPSILON trava exato no alvo quando perto
-# o bastante, eliminando o resíduo interminável.
+# o bastante, eliminando o resíduo interminável. `SMOOTHING_ENABLED = False`
+# por padrão desde o mesmo dia (diagnóstico: tremida persistiu mesmo com
+# SNAP_EPSILON — desligar a suavização inteira ajuda a isolar se a causa é
+# mesmo o lerp) — os 2 testes abaixo ligam explicitamente pra continuar
+# cobrindo a lógica de suavização, caso volte a ser usada.
 
 def test_camera_trava_exato_no_alvo_quando_perto_o_bastante():
     from engine.world import World
@@ -39,6 +43,7 @@ def test_camera_trava_exato_no_alvo_quando_perto_o_bastante():
     world.add_component(cam, Position(x=100.0 - CameraSystem.SNAP_EPSILON / 2, y=100.0))
 
     sys_cam = CameraSystem(world)
+    sys_cam.SMOOTHING_ENABLED = True
     sys_cam.update(dt=1 / 60)
 
     cam_pos = world.get_component(cam, Position)
@@ -47,6 +52,9 @@ def test_camera_trava_exato_no_alvo_quando_perto_o_bastante():
 
 
 def test_camera_continua_suavizando_quando_longe_do_alvo():
+    """SMOOTHING_ENABLED está False por padrão (diagnóstico 19/07/2026,
+    ver ARQUITETURA_ONLINE.md) — este teste liga explicitamente pra
+    continuar cobrindo o comportamento de lerp, caso volte a ser usado."""
     from engine.world import World
     from engine.components import Camera, Position
     from ui.systems import CameraSystem
@@ -59,10 +67,34 @@ def test_camera_continua_suavizando_quando_longe_do_alvo():
     world.add_component(cam, Position(x=0.0, y=0.0))
 
     sys_cam = CameraSystem(world)
+    sys_cam.SMOOTHING_ENABLED = True
     sys_cam.update(dt=1 / 60)
 
     cam_pos = world.get_component(cam, Position)
     assert 0.0 < cam_pos.x < 100.0   # se aproximou, mas não saltou direto
+
+
+def test_camera_sem_suavizacao_gruda_direto_no_alvo():
+    """Default atual (SMOOTHING_ENABLED=False) — sem lerp nenhum, a câmera
+    fica exatamente em cima do alvo todo frame, mesmo longe."""
+    from engine.world import World
+    from engine.components import Camera, Position
+    from ui.systems import CameraSystem
+
+    world = World()
+    target = world.create_entity()
+    world.add_component(target, Position(x=500.0, y=-30.0))
+    cam = world.create_entity()
+    world.add_component(cam, Camera(target_entity_id=target))
+    world.add_component(cam, Position(x=0.0, y=0.0))
+
+    sys_cam = CameraSystem(world)
+    assert sys_cam.SMOOTHING_ENABLED is False
+    sys_cam.update(dt=1 / 60)
+
+    cam_pos = world.get_component(cam, Position)
+    assert cam_pos.x == 500.0
+    assert cam_pos.y == -30.0
 
 
 # ── ui/map_markers.py ────────────────────────────────────────────────────────

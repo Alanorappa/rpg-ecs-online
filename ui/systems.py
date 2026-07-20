@@ -1445,6 +1445,15 @@ class CameraSystem(System):
     # EXATO no alvo em vez de continuar se aproximando pra sempre).
     SNAP_EPSILON = 0.05  # px — abaixo disso o resto nunca seria visível de qualquer forma
 
+    # Desligado temporariamente pra diagnóstico (19/07/2026, pedido do
+    # usuário — SNAP_EPSILON não resolveu a tremida ao parar): câmera gruda
+    # direto na posição do alvo, sem nenhuma suavização. Se a tremida SUMIR
+    # com isso, a causa é mesmo o lerp (ou algo dependente dele); se
+    # PERSISTIR mesmo assim, a causa é outra coisa (ex: a própria posição do
+    # personagem não "descansa" perfeitamente parada) — ver
+    # ARQUITETURA_ONLINE.md.
+    SMOOTHING_ENABLED = False
+
     def update(self, events: list = None, dt: float = 0) -> None:
         for entity_id, camera_component, camera_position in self.world.get_entities_with(Camera, Position):
             target_entity_id = camera_component.target_entity_id
@@ -1452,6 +1461,10 @@ class CameraSystem(System):
             if target_entity_id != -1:
                 target_position = self.world.get_component(target_entity_id, Position)
                 if target_position:
+                    if not self.SMOOTHING_ENABLED:
+                        camera_position.x = target_position.x
+                        camera_position.y = target_position.y
+                        continue
                     dx = target_position.x - camera_position.x
                     dy = target_position.y - camera_position.y
                     if abs(dx) < self.SNAP_EPSILON and abs(dy) < self.SNAP_EPSILON:
