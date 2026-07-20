@@ -130,6 +130,16 @@ class MsgType(str, Enum):
     PARTY_LEAVE         = "party_leave"         # C→S  {}
     PARTY_KICK          = "party_kick"          # C→S  {target_eid} — só líder
 
+    # Arena 2x2 (Fase G leva 1 — ver server/match_processor.py). Fila é por
+    # GRUPO (Party de exatamente 2), não por player solto; só o líder
+    # entra/sai da fila. "Time" não tem protocolo próprio — é o próprio
+    # grupo que entrou na fila junto.
+    ARENA_QUEUE_JOIN    = "arena_queue_join"    # C→S  {} — líder do grupo, grupo precisa ter exatamente 2 membros
+    ARENA_QUEUE_LEAVE   = "arena_queue_leave"   # C→S  {} — líder do grupo, sai da fila
+    ARENA_QUEUE_STATE   = "arena_queue_state"   # S→C  {in_queue: bool, reason?} — reason só quando um JOIN foi recusado (wrong_size|already_queued|in_match|no_party)
+    ARENA_MATCH_START   = "arena_match_start"   # S→C  {map_file, teammates:[eid], opponents:[eid]} — pra cada um dos 4, junto do ZONE_CHANGE pra instância
+    ARENA_MATCH_END     = "arena_match_end"     # S→C  {won: bool} — junto do ZONE_CHANGE de volta pro mapa/posição de antes
+
     CONSUMABLE_USE     = "consumable_use"    # C→S  uso de consumível (heal_instant, HoT, buffs futuros)
     GOLD_UPDATE        = "gold_update"       # C→S  gold mudou (loot de moedas) {gold: N}
     INV_SYNC           = "inv_sync"          # C→S  inventário mudou (loot de item) {inventory: [...]}

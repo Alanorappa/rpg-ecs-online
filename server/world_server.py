@@ -38,6 +38,7 @@ from server.trade_processor import TradeProcessorMixin
 from server.duel_processor import DuelProcessorMixin
 from server.party_processor import PartyProcessorMixin
 from server.pvp_zone_processor import PvpZoneProcessorMixin
+from server.match_processor import MatchProcessorMixin
 from debug.mob_combat_debug import MCL
 
 # move_player() faz snap instantâneo de tile (sem tween real) — esta janela é
@@ -143,7 +144,7 @@ class _MapBundle:
 
 class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootProcessorMixin,
                    SpellCompletionMixin, TradeProcessorMixin, DuelProcessorMixin, PartyProcessorMixin,
-                   PvpZoneProcessorMixin):
+                   PvpZoneProcessorMixin, MatchProcessorMixin):
 
     MAP_FILE = "maps/map_1.csv"   # mapa padrão carregado pelo servidor
 
@@ -260,6 +261,16 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # de pares/tick-check: é um predicado stateless (ver docstring do
         # mixin).
         self._pvp_zones_by_map: dict[str, list[dict]] = {}
+
+        # Arena 2x2 (Fase G leva 1, ver server/match_processor.py) — fila
+        # FIFO de party_ids + partidas ativas (instância privada por
+        # partida, time = componente Faction temporário no player).
+        self._arena_queue_2v2: list[int] = []
+        self._active_matches: dict[str, dict] = {}
+        self._player_match_id: dict[int, str] = {}
+        self._next_match_id: int = 1
+        self._arena_match_start_events_this_tick: list[dict] = []
+        self._arena_match_end_events_this_tick: list[dict] = []
 
         # Timer de ataque por jogador: session_id → segundos até próximo hit
         self._attack_timers: dict[str, float] = {}
@@ -426,18 +437,29 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         from engine.faction_system import register_pvp_context
         register_pvp_context(self._pvp_allowed_between)
 
-        # Golpe letal em duelo (estilo WoW): o golpe que mataria encerra o
-        # duelo com o perdedor a 1 HP — ninguém morre. Hook plugável no
-        # ponto único de dano (engine/core_systems.apply_damage_core);
-        # implementação em server/duel_processor.py.
+        # Golpe letal — hook plugável ÚNICO no ponto único de dano (engine/
+        # core_systems.apply_damage_core), composto (duelo OU arena, mesmo
+        # padrão do _pvp_allowed_between): duelo estilo WoW (golpe que
+        # mataria encerra o duelo com o perdedor a 1 HP) e arena (Fase G —
+        # golpe que mataria elimina o player da partida, 1 HP + imune, em
+        # vez de matar/virar fantasma). Ver _lethal_interceptor_composite.
         from engine.core_systems import register_lethal_interceptor
-        register_lethal_interceptor(self._duel_lethal_interceptor)
+        register_lethal_interceptor(self._lethal_interceptor_composite)
 
-    def _load_map_for(self, map_file: str) -> "_MapBundle":
+    def _load_map_for(self, map_file: str, instance_key: str = "") -> "_MapBundle":
         """
         Carrega um mapa e inicializa os sistemas headless para ele.
         Retorna um _MapBundle com os sistemas e dados deste mapa.
-        """
+
+        `instance_key` (Fase G — instâncias de arena/campo de batalha,
+        ver server/match_processor.py): quando fornecido, TODA a chave de
+        isolamento (bundle, MapLocation das entidades, map_filter dos
+        sistemas, pvp_zones_by_map) usa essa string sintética em vez do
+        `map_file` real — permite carregar o MESMO arquivo de mapa várias
+        vezes concorrentemente (uma instância por partida) sem colidir.
+        `map_file` continua sendo SEMPRE o caminho real (só ele é lido do
+        disco, e só ele é mandado pro cliente — ver _template_file_of).
+        Vazio (default) = comportamento de sempre, chave == map_file."""
         from engine.map_loader import load_map_csv
         from engine.entity_factory import create_tilemap
         from engine.world_systems import (SpawnZoneSystem, EnemyAISystem, EnemyAbilitySystem,
@@ -445,10 +467,12 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                              ProjectileSystem, register_services)
         from engine.components import MapLocation as _MLl
 
-        log.info(f"[WorldServer] carregando mapa: {map_file}")
+        key = instance_key or map_file
+        log.info(f"[WorldServer] carregando mapa: {map_file}" +
+                (f" (instância {key})" if instance_key else ""))
         terrain_matrix, object_matrix, spawn_points, terrain_visual = \
             load_map_csv(map_file)
-        self._pvp_zones_by_map[map_file] = spawn_points.get("pvp_zones", [])
+        self._pvp_zones_by_map[key] = spawn_points.get("pvp_zones", [])
 
         # Snapshot de entidades ANTES de criar as do mapa
         _eids_before = set(self.world._components.keys())
@@ -456,9 +480,9 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         tilemap_entity = create_tilemap(
             self.world, terrain_matrix, object_matrix, terrain_visual)
 
-        self._create_spawn_zones_for_map(spawn_points.get("spawn_zones", []), map_file)
+        self._create_spawn_zones_for_map(spawn_points.get("spawn_zones", []), key)
         self._create_training_dummies(spawn_points.get("training_dummies", []))
-        self._create_combat_npcs(spawn_points.get("combat_npcs", []), map_file)
+        self._create_combat_npcs(spawn_points.get("combat_npcs", []), key)
         self._create_npc_blockers(spawn_points)
 
         # Snapshot DEPOIS — todas as novas entidades ganham MapLocation
@@ -466,11 +490,11 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         for _new_eid in (_eids_after - _eids_before):
             if _new_eid not in self.world._components:
                 continue
-            self.world.add_component(_new_eid, _MLl(map_file))
+            self.world.add_component(_new_eid, _MLl(key))
 
         # Sistemas específicos deste mapa
         tile_validation = TileValidationSystem(self.world, tilemap_entity=tilemap_entity,
-                                               map_filter=map_file)
+                                               map_filter=key)
         pathfinding     = PathfindingSystem(self.world, tilemap_entity=tilemap_entity)
         combat          = CombatSystem(self.world, is_server=True,
                                        on_damage_dealt=self._log_mob_damage_hit)
@@ -496,12 +520,12 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         _sys_svc["emit_retaliation"] = _on_retaliation
 
         # P4: injeção direta de serviços por bundle — elimina dependência no global _svc.
-        enemy_ai_system = EnemyAISystem(self.world, map_filter=map_file,
+        enemy_ai_system = EnemyAISystem(self.world, map_filter=key,
                                         pathfinding=pathfinding, tile_validation=tile_validation)
-        enemy_ab_system = EnemyAbilitySystem(self.world, map_filter=map_file,
+        enemy_ab_system = EnemyAbilitySystem(self.world, map_filter=key,
                                              pathfinding=pathfinding)
 
-        _spawn_sys = SpawnZoneSystem(self.world, map_filter=map_file, pathfinding=pathfinding)
+        _spawn_sys = SpawnZoneSystem(self.world, map_filter=key, pathfinding=pathfinding)
         _spawn_sys.ACTIVATION_RADIUS = 999999
 
         systems = [
@@ -516,8 +540,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # Lê transições do mapa
         transitions = {}
         for t in spawn_points.get("transitions", []):
-            key = (int(t["x"]), int(t["y"]))
-            transitions[key] = {
+            tkey = (int(t["x"]), int(t["y"]))
+            transitions[tkey] = {
                 "target_map": t["target_map"],
                 "target_x":   int(t["target_x"]),
                 "target_y":   int(t["target_y"]),
@@ -534,6 +558,38 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         log.info(f"[WorldServer] mapa OK: {map_file} — {len(transitions)} transições")
         return bundle
+
+    def _load_instance(self, template_file: str, instance_key: str) -> "_MapBundle":
+        """Fase G — carrega uma cópia PRIVADA de `template_file` sob
+        `instance_key` (registra em self._map_bundles) e retorna o bundle.
+        Ver docstring de _load_map_for pro racional de instance_key."""
+        bundle = self._load_map_for(template_file, instance_key=instance_key)
+        self._map_bundles[instance_key] = bundle
+        return bundle
+
+    def _unload_instance(self, instance_key: str) -> None:
+        """Fase G — desfaz uma instância criada por _load_instance: remove
+        toda entidade com MapLocation(instance_key) (inclusive o tilemap),
+        libera o bundle e os dicts auxiliares chaveados por instance_key.
+        Chamar SÓ depois de já ter tirado os players de lá (match_processor
+        teleporta de volta ANTES de desalocar)."""
+        from engine.components import MapLocation as _MLu
+        _to_remove = [eid for eid, ml in self.world.get_entities_with(_MLu)
+                     if ml.map_file == instance_key]
+        for eid in _to_remove:
+            try:
+                self.world.remove_entity(eid)
+            except Exception:
+                pass
+        self._map_bundles.pop(instance_key, None)
+        self._pvp_zones_by_map.pop(instance_key, None)
+
+    def _template_file_of(self, map_or_instance_key: str) -> str:
+        """Fase G — 'de-para' pro cliente: instance_key sintética
+        (`f"{template}::{match_id}"`) → só a parte do template real (o
+        arquivo que o cliente de fato carrega). Chave normal (mapa aberto)
+        passa direto, sem separador."""
+        return map_or_instance_key.split("::", 1)[0]
 
     def _create_training_dummies(self, dummies_data: list) -> None:
         from engine.entity_factory import create_training_dummy as _ctd
@@ -1194,8 +1250,15 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         """Resolver de contexto PvP (registrado em _load_all_maps via
         engine/faction_system.register_pvp_context) — consultado SÓ quando
         a relação de facção é "amigavel" e ambos são players. Composto:
-        cada contexto novo (zona PvP, arena) entra como mais uma consulta
-        aqui. pvp_enabled é só kill-switch de emergência (ver classe)."""
+        cada contexto novo (zona PvP) entra como mais uma consulta aqui.
+        pvp_enabled é só kill-switch de emergência (ver classe).
+
+        Arena (Fase G) NÃO passa por aqui — times são resolvidos por
+        FACÇÃO (Faction("arena_time_a"/"arena_time_b") no player, ver
+        server/match_processor.py), então a relação já sai "hostil" (não
+        "amigavel") e can_engage() libera sem nunca consultar este
+        resolver — mesma ideia do comentário antigo "times/MOBA nem
+        passam por aqui"."""
         if not self.pvp_enabled:
             return False
         # Duelo aceito: par hostil somente um ao outro.
@@ -1204,6 +1267,16 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # Zona PvP (Fase F): ambos dentro da mesma zona, exceto mesmo grupo
         # (server/pvp_zone_processor.py).
         return self._pvp_zone_allows(attacker_id, target_id)
+
+    def _lethal_interceptor_composite(self, world, killer_eid: int, target_id: int) -> bool:
+        """Registrado em _load_all_maps via engine/core_systems.
+        register_lethal_interceptor — o slot é ÚNICO (não é uma lista
+        componível como _pvp_allowed_between), então a composição
+        duelo-ou-arena mora nesta função só. True = intercepta (alvo fica
+        em 1 HP em vez de morrer)."""
+        if self._duel_lethal_interceptor(world, killer_eid, target_id):
+            return True
+        return self._arena_lethal_interceptor(world, killer_eid, target_id)
 
     def set_player_target(self, session_id: str, target_eid: int) -> None:
         """Define o alvo de combate do jogador. target_eid=-1 para parar.
@@ -3183,6 +3256,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._process_loot_drops(dt)
         self._tick_trade_distance_check()
         self._tick_duel_distance_check()
+        self._tick_arena_queue()
 
         # Detecta novos mobs/NPCs de combate criados pelo SpawnZoneSystem
         # neste tick — gate é Combatant, não Enemy (Sistema de Facções,

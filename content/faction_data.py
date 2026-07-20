@@ -52,6 +52,14 @@ RELATIONSHIP: dict[tuple[str, str], str] = {
     ("bandidos", "guardas_vila"):           "hostil",
     ("bandidos", "vida_selvagem"):          "neutro",
     ("bandidos", "monstros_hostis"):        "neutro",
+
+    # Times de arena/campo de batalha (Fase G) — atribuídos via componente
+    # Faction no player SÓ durante uma partida (server/team_processor.py),
+    # sobrescrevendo PLAYER_FACTION. Hostil explícito (não só "cai no
+    # DEFAULT_RELATIONSHIP neutro") pra nameplate/HP bar mostrar vermelho
+    # (disposição hostil, ver §34.2) — can_engage já liberaria dano com
+    # "neutro" também, mas o feedback visual importa numa arena.
+    ("arena_time_a", "arena_time_b"):       "hostil",
 }
 
 DEFAULT_RELATIONSHIP = "neutro"

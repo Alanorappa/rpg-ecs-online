@@ -364,12 +364,15 @@ class Combatant:
 class Faction:
     """Facção de combate de um mob/NPC — resolve quem ataca quem via
     content/faction_data.py::get_relationship() (chamado através de
-    engine/faction_system.py, nunca direto). Player NÃO tem este
-    componente — a facção dele é a constante PLAYER_FACTION, resolvida
-    via PlayerControlled em engine/faction_system.py. Entidade sem
-    Faction (NPC estático, boneco de treino, blocker) é tratada como
-    "sem facção" (sentinela neutro) por engine/faction_system.py — nunca
-    quebra por ausência do componente."""
+    engine/faction_system.py, nunca direto). Player normalmente NÃO tem
+    este componente — a facção dele é a constante PLAYER_FACTION,
+    resolvida via PlayerControlled em engine/faction_system.py. Exceção:
+    server/team_processor.py anexa Faction("arena_time_a"/"arena_time_b")
+    a um player SÓ durante uma partida (Fase G) — sobrescreve
+    PLAYER_FACTION enquanto presente, removido ao sair/terminar a
+    partida. Entidade sem Faction (NPC estático, boneco de treino,
+    blocker) é tratada como "sem facção" (sentinela neutro) por
+    engine/faction_system.py — nunca quebra por ausência do componente."""
     faction_id: str = "monstros_hostis"
 
 @dataclass

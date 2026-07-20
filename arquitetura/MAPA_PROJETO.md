@@ -42,6 +42,8 @@
 | Party/Grupo — cliente | `client/party_handlers.py` | `PartyHandlers` — modal de convite, comando de chat `/convidar`, frame de grupo (nome+HP+líder) |
 | Zona PvP (Fase F) — servidor | `server/pvp_zone_processor.py` | `PvpZoneProcessorMixin` — `_in_pvp_zone`/`_pvp_zone_allows`, stateless (sem pares/tick-check), consultado por `_pvp_allowed_between` |
 | Zona PvP (Fase F) — cliente | `client/pvp_zone_handlers.py` | `PvpZoneHandlers` — indicador cosmético (log + banner "ZONA PVP"), geometria vem do mesmo `_entities.json` local (sem mensagem de rede nova) |
+| Arena 2x2 (Fase G leva 1) — servidor | `server/match_processor.py` | `MatchProcessorMixin` — fila FIFO de grupos, instanciamento privado por partida (`WorldServer._load_instance`/`_unload_instance`), time via `Faction`, elimina via interceptor de golpe letal composto |
+| Arena 2x2 (Fase G leva 1) — cliente | `client/arena_handlers.py` | `ArenaHandlers` — botão "Fila de Arena 2x2" no frame de grupo, avisos de fila/início/fim; troca de mapa reusa 100% `ZONE_CHANGE`/`_do_transition` (zero código novo de transição) |
 | Trade (player↔player) — estado de UI | `ui/ui_components.py` | `TradeUIState` (componente ECS no player) |
 | Chat (texto, 3 abas Local/Mundial/Combate) — cliente | `client/chat_handlers.py` | `ChatHandlers` — Enter abre campo, digita, Enter envia; abas, scrollbar, wrap de linha (500 entradas/aba) |
 | Chat — balão de fala acima da cabeça | `ui/chat_bubble.py` | `ChatBubbleManager`/`CHAT_BUBBLE` — rastreia Position ao vivo (diferente de `ui/floating_text.py`) |
@@ -98,6 +100,8 @@
 | Modal de interação com player (Negociar/Duelar/Seguir/Convidar p/ Grupo) | `client/trade_handlers.py` | `_player_popup_button_rects`/`_draw_trade_popup`/`_click_trade_popup` — aberto pelo clique direito em player amigável (`ui/systems.py`) |
 | Party/Grupo (convite/aceite/sair/expulsar/XP compartilhado) | `server/party_processor.py` + `client/party_handlers.py` | `PartyProcessorMixin` (server, N-ário) + comando de chat `/convidar` (`_try_handle_party_chat_command`) |
 | Zona PvP (retângulo por mapa, "solo=hostil, grupo=exceção") | `server/pvp_zone_processor.py` + `maps/<mapa>_entities.json::pvp_zones` | consultado por `_pvp_allowed_between`; geometria vem do mesmo `_entities.json` que `ambient_zones` já usa (`engine/map_loader.py::_merge_entities_json`) |
+| Instância privada por partida (arena/BG/dungeon futuro) | `server/world_server.py::_load_instance`/`_unload_instance`/`_template_file_of` | UM `WorldServer` só — chave sintética (`f"{template}::{id}"`) generaliza o `_map_bundles` que já isola multi-mapa; NUNCA outro processo/WorldServer (colide com globais module-level, ver ARQUITETURA_ONLINE.md §34.27) |
+| Time PvP temporário (arena) | `server/match_processor.py` | `Faction("arena_time_a"/"arena_time_b")` no player, sobrescreve `PLAYER_FACTION` — `can_engage` libera sem passar pelo contexto PvP (relação já sai hostil de verdade) |
 | Comando de chat novo (`/algo`) | `client/party_handlers.py::_try_handle_party_chat_command` | chamado por `client/chat_handlers.py::_send_chat_message` ANTES de mandar como texto normal — primeiro precedente de parsing de comando no chat |
 | Loot online — quem pode sacar, crédito de ouro/item | `server/loot_processor.py::request_loot` + `client/network_handlers.py::_handle_msg_loot_result` | servidor decide (dono OU mesmo grupo); cliente NUNCA credita no clique — manda `LOOT_REQUEST` (`ui/systems.py::LootSystem._online_loot_requester`) e só credita ao receber `LOOT_RESULT` — nunca reintroduzir crédito local direto do clique (duplicava ouro em grupo, §34.24) |
 | Dar time/facção a um player (MOBA) | `engine/components.py` | anexar `Faction(faction_id="time_x")` no player — sobrescreve o default `"jogadores"` (resolução componente-primeiro em `get_entity_faction`) |
@@ -219,6 +223,7 @@ rpg_ecs_online/
 │   ├── duel_processor.py            ← DuelProcessorMixin: duelo (contexto PvP, golpe letal → 1 HP)
 │   ├── party_processor.py           ← PartyProcessorMixin: grupo N-ário, convites, líder, XP compartilhado
 │   ├── pvp_zone_processor.py        ← PvpZoneProcessorMixin: zona PvP (Fase F), stateless, sem tick-check
+│   ├── match_processor.py           ← MatchProcessorMixin: Arena 2x2 (Fase G leva 1) — fila, instância, time por Facção
 │   └── server_death_handler.py      ← PendingDeath: XP (split por dano + grupo), loot, SpawnZone, despawn
 │
 ├── client/                          ← ONLINE-ONLY (cliente de rede — mixins de GameEngine)
@@ -228,7 +233,7 @@ rpg_ecs_online/
 │   │   habilidades_handlers.py, online_mode_handlers.py, hotbar_handlers.py,
 │   │   consumable_bar_handlers.py, hud_handlers.py, modal_stack_handlers.py,
 │   │   trade_handlers.py, duel_handlers.py, party_handlers.py, pvp_zone_handlers.py,
-│   │   chat_handlers.py, colors.py
+│   │   arena_handlers.py, chat_handlers.py, colors.py
 │
 ├── data/                            ← criada automaticamente
 │   └── game.db                      ← banco SQLite (contas + personagens)

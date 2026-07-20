@@ -4463,6 +4463,126 @@ resolver client-side + os 3 cenários de grupo.
 
 ---
 
+### §34.27 — Fase G leva 1: Arena 2x2 (instanciamento + time por Facção + fila FIFO, 19/07/2026)
+
+Antes de começar a Fase G ("Times/arenas") como planejada originalmente,
+o usuário reconsiderou a ordem: tudo até aqui (contexto PvP, duelo,
+Party, Zona PvP) vinha montando a base pra PvP ranqueado/instanciado
+(arenas 2x2/3x3, campos de batalha 5x5 MOBA e outros — captura de
+bandeira/base), e "Times" como proposto originalmente (criar time,
+entrar na fila, fila forma os times) é na verdade a ETAPA FINAL de
+integração, não o próximo passo. Ordem revisada e aprovada: (1)
+instanciamento, (2) time via Facção, (3) ciclo de vida de partida
+mínimo validado com o modo mais simples (Arena 2x2, só eliminação, sem
+objetivo), (4) fila básica. Torres/campos de batalha/matchmaking solo
+real ficam para próximas levas.
+
+**Achado-chave (evita reinventar/duplicar)**: a abordagem ingênua — um
+`WorldServer` inteiro por partida — quebraria, porque há 4 globais em
+nível de MÓDULO que um `WorldServer` registra uma vez no boot e nunca
+desregistra (`engine/world_systems.py::_svc`, `engine/faction_system.py::
+_pvp_context_resolver`, `engine/core_systems.py::_lethal_interceptor`,
+`engine/quest_events.py::_quest_system_ref`) — um segundo `WorldServer`
+no mesmo processo sobrescreveria os 3 primeiros silenciosamente
+(last-write-wins), vazando pathfinding/PvP/interceptor de morte entre
+partidas concorrentes. Fix: continuar com UM `WorldServer` só (como
+sempre foi) e generalizar o mecanismo que JÁ isola múltiplos mapas
+dentro dele — `_map_bundles`, `MapLocation`, `_pvp_zones_by_map` já são
+chaveados por uma STRING (nunca precisou ser literalmente um caminho de
+arquivo). `WorldServer._load_map_for` ganhou um parâmetro opcional
+`instance_key`: quando fornecido, toda a chave de isolamento usa essa
+string sintética (`f"{template}::{match_id}"`) em vez do `map_file`
+real — `template_file` continua sendo o único lido do disco e o único
+mandado pro cliente (`_template_file_of`, faz o "de-para"). `_load_instance`/
+`_unload_instance` (novos) são wrappers finos disso. `find_path()`/
+`get_tilemap()` (sem eid na assinatura) continuam cobertos só pela regra
+existente de `register_map_services_for` (CLAUDE.md) — não precisaram de
+mudança, já são chamados corretamente em todo entry point de player
+por convenção mandatória de longa data.
+
+**Time por Facção, não por contexto PvP**: diferente de duelo/zona
+(exceção "amigável + contexto libera"), arena atribui um componente
+`Faction("arena_time_a"/"arena_time_b")` ao player (sobrescreve
+`PLAYER_FACTION` enquanto a partida dura — `engine/components.py::
+Faction`, docstring atualizada) — a relação já sai "hostil" de verdade
+(`content/faction_data.py`, novo par explícito, embora "neutro"
+já bastasse pro `can_engage` liberar; hostil é só pra nameplate ficar
+vermelha) e `can_engage()` libera SEM NUNCA consultar o resolver de
+contexto PvP — zero mudança em `_pvp_allowed_between` pra isso (só um
+comentário explicando por quê). Confirma o que o comentário antigo
+"times/MOBA nem passam por aqui" já dizia desde a Fase 4.
+
+**"Time" não tem estado próprio nesta leva** — decisão de engenharia
+pra não criar abstração cedo demais: o time É o Party (grupo) que
+entrou na fila junto (exatamente 2 membros, decisão do usuário). Se uma
+leva futura precisar de time SEM grupo pré-formado (matchmaking solo
+real formando o time), aí sim vale a pena um `TeamProcessorMixin`
+próprio — até lá seria abstração sem uso real.
+
+**Eliminação, não morte de verdade**: reusa o MESMO hook de golpe letal
+que o duelo já usa (`engine.core_systems.register_lethal_interceptor`)
+— o slot é ÚNICO (não uma lista componível), então a composição
+duelo-ou-arena mora em `WorldServer._lethal_interceptor_composite`
+(novo), registrado uma vez só em `_load_all_maps` no lugar de
+`self._duel_lethal_interceptor` direto. Golpe que mataria: alvo fica em
+1 HP (mesmo valor hardcoded que `apply_damage_core` já usa pro duelo —
+não dá pra escolher outro) + `CombatState.is_immune=True` (não pode
+levar mais dano) em vez de morrer/virar fantasma. Time com todos os
+membros eliminados perde — desconexão em partida ativa conta como
+eliminação também (`end_matches_of`, chamado no disconnect ANTES do
+despawn, mesmo ponto de `end_duels_of`/`end_parties_of`).
+
+**Teleporte de entrada/saída reusa 100% o que já existia**:
+`WorldServer.transfer_player` (o mesmo usado por `ZONE_CHANGE_REQ` de
+transição de caverna) já faz tudo — atualiza `_player_maps`,
+`MapLocation`, `snap_to_tile`. O cliente reusa `ZONE_CHANGE` +
+`_do_transition` (o MESMO fluxo de transição de caverna) — carrega o
+mapa novo do zero, limpa entidades remotas, reposiciona. **Zero código
+novo no cliente pra troca de mapa** — `ARENA_MATCH_START`/`ARENA_MATCH_END`
+(novos, mandados junto do `ZONE_CHANGE`) são só informativos (contexto
+da partida/resultado), não fazem a troca de mapa sozinhos.
+
+**Conteúdo novo**: `maps/arena_2v2.csv` (20×20 tiles, borda de parede,
+interior piso de pedra — placeholder funcional, sem entities.json).
+Spawns de cada time são constantes em `server/match_processor.py`
+(YAGNI — só existe 1 template, não compensa um schema de "team spawn"
+genérico ainda).
+
+**Servidor**: `server/match_processor.py` (novo, `MatchProcessorMixin`)
+— fila FIFO de `party_id` (`_arena_queue_2v2`), pareamento por tick
+(`_tick_arena_queue`, mesmo padrão de `_tick_duel_distance_check`),
+`_create_match`/`_eliminate_player`/`_end_match`, interceptor de golpe
+letal, eventos por tick (`consume_arena_match_start/end_events`)
+consumidos pelo broadcast loop do `SessionManager`.
+
+**Protocolo**: `ARENA_QUEUE_JOIN`/`ARENA_QUEUE_LEAVE` (C→S, só líder de
+grupo de 2), `ARENA_QUEUE_STATE` (S→C), `ARENA_MATCH_START`/
+`ARENA_MATCH_END` (S→C, mandados junto do `ZONE_CHANGE`).
+
+**Cliente**: `client/arena_handlers.py` (novo, `ArenaHandlers`) — botão
+"Fila de Arena 2x2" logo abaixo do frame de grupo (só líder de grupo de
+2 vê), avisos de entrada na fila/início/fim de partida.
+
+**Validado**: `tests/test_arena.py` (17 testes) — fila FIFO pareia
+corretamente, só líder/só grupo de 2 entram; time ganha Facção oposta;
+`can_engage` libera entre times opostos e bloqueia mesmo time; golpe
+letal não mata de verdade (marca eliminado, imune); eliminar o time
+inteiro termina a partida e restaura Facção/mapa/posição de todos;
+desconexão em partida conta como eliminação; **2 partidas SIMULTÂNEAS
+da MESMA arena não vazam tile/pathfinding entre si** (prova direta do
+achado-chave); duelo e mundo aberto continuam funcionando com o
+interceptor composto. Suíte completa 260/260, rodada 3x. Testado também
+via script manual (fora da suíte) rodando o fluxo completo através de
+`apply_damage_core` de verdade (não só chamando os métodos internos
+diretamente).
+
+**Não validado**: sessão manual com 4 clientes reais (2 grupos de 2) —
+entrar na fila, partida formada automaticamente, teleporte visual pros
+dois lados, combate só contra o time adversário, fim de partida
+restaura tudo, banner/log de vitória-derrota aparece.
+
+---
+
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
 
 ```
@@ -4654,8 +4774,9 @@ barra de HP); ghost (`is_ghost`) desenhado semi-transparente (alpha ~120/255).
 | Duelo (contexto PvP por convite, estilo WoW) | ✅ completo, validado em jogo | `server/duel_processor.py`, `client/duel_handlers.py` |
 | Party/Grupo + XP compartilhado (Fase E) | ✅ completo, validado em jogo | `server/party_processor.py`, `client/party_handlers.py` |
 | Zona PvP (Fase F — "solo=hostil, grupo=exceção") | ✅ completo, validado em jogo (solo, mesmo grupo, e grupo vs grupo) | `server/pvp_zone_processor.py`, `client/pvp_zone_handlers.py` |
-| Times/arenas (Fase G do roadmap) | 🔲 pendente | — |
-| Instâncias (dungeons/raids) | 🔲 pendente | `server/zone_manager.py` |
+| Arena 2x2 + instanciamento (Fase G leva 1) | ✅ completo, não validado em jogo | `server/match_processor.py`, `client/arena_handlers.py` |
+| Arena 3x3, campos de batalha 5x5 (torres/bandeira/base), matchmaking solo real, ranking | 🔲 pendente | próximas levas da Fase G |
+| Instâncias de dungeon/raid PvE | 🔲 pendente | reaproveita o instanciamento genérico da Fase G (`_load_instance`/`_unload_instance`) |
 | Client-side prediction de movimento | 🔲 pendente | `client/` |
 
 ---

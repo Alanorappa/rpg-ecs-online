@@ -247,6 +247,11 @@ class SessionManager:
             # Grupo: mesma lógica — o PARTY_STATE pro resto do grupo sai
             # pelo broadcast loop do próximo tick (consume_party_state_events).
             self.world_server.end_parties_of(eid)
+            # Arena: desconectar em partida ativa conta como eliminação —
+            # o time do desconectado pode perder na hora (ver
+            # MatchProcessorMixin.end_matches_of). Precisa rodar ANTES do
+            # despawn (lê/muta componentes do eid).
+            self.world_server.end_matches_of(eid)
             for other in self._sessions.values():
                 other.known_eids.discard(eid)
             await self._broadcast_all(MsgType.ENTITY_DESPAWN, {"eid": eid})
@@ -1465,6 +1470,29 @@ class SessionManager:
         target_eid = int(payload.get("target_eid", -1))
         self.world_server.kick_from_party(leader_eid, target_eid)
 
+    # ── Arena 2x2 (Fase G leva 1, ver server/match_processor.py) ─────────────
+
+    async def _handle_arena_queue_join(self, session: Session, payload: dict, ts: int) -> None:
+        if not session.authenticated:
+            return
+        eid = self.world_server._player_eids.get(session.session_id)
+        if eid is None:
+            return
+        reason = self.world_server.request_arena_queue_join(eid)
+        await session.send(MsgType.ARENA_QUEUE_STATE, {
+            "in_queue": reason is None,
+            **({"reason": reason} if reason is not None else {}),
+        })
+
+    async def _handle_arena_queue_leave(self, session: Session, payload: dict, ts: int) -> None:
+        if not session.authenticated:
+            return
+        eid = self.world_server._player_eids.get(session.session_id)
+        if eid is None:
+            return
+        self.world_server.request_arena_queue_leave(eid)
+        await session.send(MsgType.ARENA_QUEUE_STATE, {"in_queue": False})
+
     async def _handle_trade_offer_item(self, session: Session, payload: dict, ts: int) -> None:
         if not session.authenticated:
             return
@@ -1603,6 +1631,8 @@ class SessionManager:
         MsgType.PARTY_DECLINE:       _handle_party_decline,
         MsgType.PARTY_LEAVE:         _handle_party_leave,
         MsgType.PARTY_KICK:          _handle_party_kick,
+        MsgType.ARENA_QUEUE_JOIN:    _handle_arena_queue_join,
+        MsgType.ARENA_QUEUE_LEAVE:   _handle_arena_queue_leave,
     }
 
     # ── AOI subscription — núcleo do sistema ─────────────────────────────────
@@ -1867,6 +1897,45 @@ class SessionManager:
                     _pty_sess = self._sessions.get(_pty_sid) if _pty_sid else None
                     if _pty_sess and _pty_sess.authenticated:
                         await _pty_sess.send(MsgType.PARTY_STATE, _pty_snap)
+
+            # Arena: partida criada neste tick (fila pareou 2 grupos) — cada
+            # um dos 4 players já foi teleportado pra instância
+            # (MatchProcessorMixin._create_match); aqui só avisa o cliente
+            # pra carregar o mapa (ZONE_CHANGE, mesmo fluxo de transição de
+            # caverna) + manda o contexto da partida (ARENA_MATCH_START).
+            for _am_start in self.world_server.consume_arena_match_start_events():
+                _am_sid  = self.world_server.get_session_id_for_player(_am_start["eid"])
+                _am_sess = self._sessions.get(_am_sid) if _am_sid else None
+                if not (_am_sess and _am_sess.authenticated):
+                    continue
+                await _am_sess.send(MsgType.ZONE_CHANGE, {
+                    "map_file": _am_start["map_file"],
+                    "target_x": _am_start["target_x"],
+                    "target_y": _am_start["target_y"],
+                })
+                _am_sess.known_eids.clear()
+                await _am_sess.send(MsgType.ARENA_MATCH_START, {
+                    "map_file":  _am_start["map_file"],
+                    "teammates": _am_start["teammates"],
+                    "opponents": _am_start["opponents"],
+                })
+
+            # Arena: partida encerrada neste tick (time eliminado ou
+            # desconexão) — cada um dos 4 players já foi teleportado de
+            # volta (MatchProcessorMixin._end_match); avisa o cliente pra
+            # voltar ao mapa/posição anterior + o resultado.
+            for _am_end in self.world_server.consume_arena_match_end_events():
+                _ame_sid  = self.world_server.get_session_id_for_player(_am_end["eid"])
+                _ame_sess = self._sessions.get(_ame_sid) if _ame_sid else None
+                if not (_ame_sess and _ame_sess.authenticated):
+                    continue
+                await _ame_sess.send(MsgType.ZONE_CHANGE, {
+                    "map_file": _am_end["map_file"],
+                    "target_x": _am_end["target_x"],
+                    "target_y": _am_end["target_y"],
+                })
+                _ame_sess.known_eids.clear()
+                await _ame_sess.send(MsgType.ARENA_MATCH_END, {"won": _am_end["won"]})
 
             # Eventos de som posicionais (aggro de mob, etc.) → broadcast AOI
             for _snd_ev in self.world_server.consume_sound_events():

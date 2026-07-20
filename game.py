@@ -61,6 +61,7 @@ from client.trade_handlers import TradeHandlers
 from client.duel_handlers import DuelHandlers
 from client.party_handlers import PartyHandlers
 from client.pvp_zone_handlers import PvpZoneHandlers
+from client.arena_handlers import ArenaHandlers
 from client.chat_handlers import ChatHandlers
 from client.colors import C_WHITE, C_YELLOW, C_GREEN, C_RED, C_GRAY, C_CYAN, C_ORANGE
 
@@ -98,7 +99,7 @@ def _merge_display_matrix(terrain: list[str], objects: list) -> list[str]:
     return result
 
 
-class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, InventoryHandlers, TooltipHandlers, DebugHandlers, MenuHandlers, HotbarEditorHandlers, HabilidadesHandlers, OnlineModeHandlers, HotbarHandlers, ConsumableBarHandlers, HudHandlers, DeathUIHandlers, ModalStackHandlers, TradeHandlers, DuelHandlers, PartyHandlers, PvpZoneHandlers, ChatHandlers):
+class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, InventoryHandlers, TooltipHandlers, DebugHandlers, MenuHandlers, HotbarEditorHandlers, HabilidadesHandlers, OnlineModeHandlers, HotbarHandlers, ConsumableBarHandlers, HudHandlers, DeathUIHandlers, ModalStackHandlers, TradeHandlers, DuelHandlers, PartyHandlers, PvpZoneHandlers, ArenaHandlers, ChatHandlers):
     def __init__(self, scale: float = 1.0, char_data: "dict | None" = None,
                  save_slot: int = 0,
                  net_user: str = "", net_pass: str = "",
@@ -1515,6 +1516,9 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                       and self._handle_party_click(event)):
                     pass
                 elif (event.type == pygame.MOUSEBUTTONDOWN
+                      and self._handle_arena_click(event)):
+                    pass
+                elif (event.type == pygame.MOUSEBUTTONDOWN
                       and self._handle_trade_click(event)):
                     pass
                 elif (event.type == pygame.MOUSEBUTTONDOWN
@@ -2028,6 +2032,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             self._draw_duel_ui()
             self._draw_party_frames()
             self._draw_party_invite_ui()
+            self._draw_arena_queue_button()
             self._draw_pvp_zone_banner()
             if self._show_talents:
                 self._talent_system.render()

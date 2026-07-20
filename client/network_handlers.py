@@ -90,6 +90,12 @@ class NetworkHandlers:
             self._handle_msg_party_invite_failed(payload)
         elif msg_type == MsgType.PARTY_STATE:
             self._handle_msg_party_state(payload)
+        elif msg_type == MsgType.ARENA_QUEUE_STATE:
+            self._handle_msg_arena_queue_state(payload)
+        elif msg_type == MsgType.ARENA_MATCH_START:
+            self._handle_msg_arena_match_start(payload)
+        elif msg_type == MsgType.ARENA_MATCH_END:
+            self._handle_msg_arena_match_end(payload)
         elif msg_type == MsgType.CHAT_MESSAGE:
             self._handle_msg_chat_message(payload)
 
