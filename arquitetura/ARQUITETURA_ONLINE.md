@@ -4906,6 +4906,18 @@ test_client_main_py_executa_como_script` continua cobrindo que
 volta pra tela de login; "Deslogar" no menu de pausa volta pra seleção
 de personagem sem fechar o jogo, reconectando com a mesma conta.
 
+**Adendo (20/07/2026) — bug real reportado pelo usuário**: depois de
+"Deslogar", a música/ambient da área continuavam tocando por cima da
+tela de seleção de personagem. Causa: "Sair do jogo" mata o `pygame`
+inteiro (`pygame.quit()`), o que já parava o mixer de graça — "Deslogar"
+deliberadamente NÃO chama `pygame.quit()` (precisa do mixer/display
+vivos pra reabrir a seleção na mesma janela), mas por isso também não
+para música/ambient sozinho. Fix: `GameEngine.run()` chama
+`SOUNDS.stop_music()`/`stop_ambient_stingers()`/`stop_ambient()` antes
+de retornar `"logout"` — mesmas 3 chamadas que `_load_ambient_zones` já
+faz ao trocar de mapa, só que aqui é ao SAIR do jogo em vez de entrar
+num mapa novo. Suíte completa 305/305, rodada 3x.
+
 ---
 
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata

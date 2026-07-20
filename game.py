@@ -2229,7 +2229,13 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._prof_log.close()
         if self._pending_logout:
             # NÃO chama pygame.quit() — main.py reconecta e reabre a tela de
-            # seleção de personagem no mesmo processo/janela.
+            # seleção de personagem no mesmo processo/janela — o mixer
+            # continua ativo, então música/ambient do mapa continuam
+            # tocando por cima da tela de seleção se não pararem aqui
+            # (bug real relatado pelo usuário 20/07/2026).
+            SOUNDS.stop_music()
+            SOUNDS.stop_ambient_stingers()
+            SOUNDS.stop_ambient()
             return "logout"
         pygame.quit()
         return None
