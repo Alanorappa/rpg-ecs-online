@@ -564,8 +564,13 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._zoom = self._zoom_min
 
     def _spawn_entities_from(self, spawn_points: dict):
-        # Modo online: enemies e spawn_zones são gerenciados exclusivamente pelo servidor.
-        # O cliente não cria mobs nem zonas de spawn — evita duplicação e conflito de estado.
+        # Modo online: enemies, spawn_zones e (Fase 1 de combate genérico,
+        # 21/07/2026) mercador/ferreiro/dador-de-missão/treinador são
+        # gerenciados exclusivamente pelo servidor — chegam pelo spawn de
+        # rede normal de mob (server/world_server.py::_create_service_npcs
+        # + client/remote_entity_handlers.py::_spawn_remote_mob), não mais
+        # criados localmente aqui. O cliente só continua criando essas 4
+        # entidades sozinho em modo OFFLINE (sem servidor pra sincronizar).
         _online = bool(getattr(self, "_net", None))
 
         if not _online:
@@ -589,23 +594,23 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                     faction=zd.get("faction", "monstros_hostis"),
                 )
 
-        for col, row, name, shop_id, lvl, prof in spawn_points.get("merchants", []):
-            create_merchant(self.world, col, row, name=name, shop_id=shop_id,
-                            level=lvl, profession=prof)
+            for col, row, name, shop_id, lvl, prof in spawn_points.get("merchants", []):
+                create_merchant(self.world, col, row, name=name, shop_id=shop_id,
+                                level=lvl, profession=prof)
 
-        for col, row, name, quest_ids, turn_in_ids, lvl, prof in spawn_points.get("quest_givers", []):
-            create_quest_giver(self.world, col, row, name=name,
-                               quest_ids=quest_ids, turn_in_ids=turn_in_ids,
+            for col, row, name, quest_ids, turn_in_ids, lvl, prof in spawn_points.get("quest_givers", []):
+                create_quest_giver(self.world, col, row, name=name,
+                                   quest_ids=quest_ids, turn_in_ids=turn_in_ids,
+                                   level=lvl, profession=prof)
+
+            for col, row, name, shop_id, lvl, prof in spawn_points.get("blacksmiths", []):
+                create_blacksmith(self.world, col, row, name=name,
+                                  shop_id=shop_id, level=lvl, profession=prof)
+
+            for col, row, name, class_id, quest_ids, turn_in_ids, lvl, prof in spawn_points.get("trainers", []):
+                create_trainer(self.world, col, row, name=name,
+                               class_id=class_id, quest_ids=quest_ids, turn_in_ids=turn_in_ids,
                                level=lvl, profession=prof)
-
-        for col, row, name, shop_id, lvl, prof in spawn_points.get("blacksmiths", []):
-            create_blacksmith(self.world, col, row, name=name,
-                              shop_id=shop_id, level=lvl, profession=prof)
-
-        for col, row, name, class_id, quest_ids, turn_in_ids, lvl, prof in spawn_points.get("trainers", []):
-            create_trainer(self.world, col, row, name=name,
-                           class_id=class_id, quest_ids=quest_ids, turn_in_ids=turn_in_ids,
-                           level=lvl, profession=prof)
 
     def _build_transition_tiles(self, spawn_points: dict):
         self.transition_tiles = {}

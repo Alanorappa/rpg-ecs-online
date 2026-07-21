@@ -47,9 +47,19 @@ RELATIONSHIP: dict[tuple[str, str], str] = {
     # Guardas da vila — protegem o player, nunca o atacam.
     ("guardas_vila", PLAYER_FACTION):       "amigavel",
 
+    # NPCs de serviço (mercador/treinador/ferreiro/dador-de-missão, Fase
+    # 1 de combate genérico 21/07/2026) — mesma disposição de guardas_vila
+    # (amigável ao player, hostil a monstro/bandido), mas facção própria
+    # pra não misturar semântica com "guarda de vila de verdade".
+    ("civis", PLAYER_FACTION):               "amigavel",
+    ("civis", "guardas_vila"):               "amigavel",
+    ("civis", "monstros_hostis"):            "hostil",
+    ("civis", "vida_selvagem"):              "neutro",
+
     # Bandidos — hostis ao player E aos guardas (motiva NPC-vs-NPC).
     ("bandidos", PLAYER_FACTION):           "hostil",
     ("bandidos", "guardas_vila"):           "hostil",
+    ("bandidos", "civis"):                  "hostil",
     ("bandidos", "vida_selvagem"):          "neutro",
     ("bandidos", "monstros_hostis"):        "neutro",
 

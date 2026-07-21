@@ -750,6 +750,39 @@ class RemoteEntityHandlers:
             from engine.components import TrainingDummy as _TDSpawn
             self.world.add_component(local_eid, _TDSpawn())
 
+        # NPC de serviço (mercador/ferreiro/treinador/dador-de-missão, Fase 1
+        # de combate genérico, 21/07/2026) — anexa o(s) mesmo(s) componente(s)
+        # de capacidade que o servidor tem, um por campo condicional presente
+        # no payload (ver server/world_server.py::_build_mob_spawn_payload).
+        # ShopSystem/TrainerSystem/QuestDialogSystem (ui/systems.py,
+        # ui/trainer_system.py, ui/quest_system.py) já são 100% agnósticas
+        # de como a entidade foi criada — só olham
+        # Position+Renderable+Merchant/Trainer/QuestGiver/Blacksmith — então
+        # loja/treino/missão passam a funcionar na entidade remota sem
+        # NENHUMA mudança nesses sistemas.
+        _profession = data.get("profession")
+        if _profession is not None:
+            from engine.components import NPC as _NPCSpawn
+            self.world.add_component(local_eid, _NPCSpawn(
+                name=_server_name or data.get("race", "NPC"),
+                level=data.get("level", 1), profession=_profession))
+        _shop_id = data.get("shop_id")
+        if _shop_id is not None:
+            from engine.components import Merchant as _MerchSpawn
+            self.world.add_component(local_eid, _MerchSpawn(shop_id=_shop_id))
+        if data.get("is_blacksmith"):
+            from engine.components import Blacksmith as _BlackSpawn
+            self.world.add_component(local_eid, _BlackSpawn(shop_id=_shop_id or "blacksmith"))
+        _class_id = data.get("class_id")
+        if _class_id is not None:
+            from engine.components import Trainer as _TrainSpawn
+            self.world.add_component(local_eid, _TrainSpawn(class_id=_class_id))
+        if data.get("quest_ids") is not None:
+            from engine.components import QuestGiver as _QGSpawn
+            self.world.add_component(local_eid, _QGSpawn(
+                quest_ids=tuple(data.get("quest_ids", [])),
+                turn_in_ids=tuple(data.get("turn_in_ids", []))))
+
         # Remove CombatStats: HP é autoritativo pelo servidor (RemoteEntityMeta.hp).
         # Remove AIControlled: mobs remotos são movidos por ENTITY_MOVE do servidor;
         # sem isso, EnemyAISystem local emite start_tile_movement competindo com o servidor,

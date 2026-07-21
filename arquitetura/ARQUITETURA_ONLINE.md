@@ -5318,6 +5318,119 @@ aparece.
 
 ---
 
+### §34.35 — NPCs de serviço (mercador/ferreiro/treinador/dador-de-missão) ganham HP + combate genérico — Fase 1 (21/07/2026)
+
+Pedido do usuário: "os NPCs de treinamento, comerciantes etc. estão só
+com o rótulo de level sem a barra de HP, o correto é também ter o HP...
+quero que todos os NPCs, tenham como default, o mesmo que foi feito
+para o Guarda Real, todos eles podem combater inimigos hostis... o
+treinador do guerreiro luta como guerreiro, o de mago como mago, o de
+arqueiro como arqueiro." Explicitamente combinado como **Fase 1**: só
+HP + combate GENÉRICO (auto-attack, mesma IA de qualquer mob) — uso das
+skills reais do jogador (Interceptar, Bola de Fogo, etc.) fica pra uma
+Fase 2 a discutir depois, porque essa IA de rotação de skill não existe
+em lugar nenhum do jogo hoje (nem o próprio Guarda Real faz isso).
+
+**Causa raiz do gap**: diferente do Guarda Real (100% servidor desde a
+Fase 4, `create_combat_npc`/`_build_combat_entity`), mercador/ferreiro/
+treinador/dador-de-missão eram **puramente client-side** — cada cliente
+lia o mesmo `{mapa}_entities.json` e criava a própria cópia
+independentemente (`game.py::_spawn_entities_from`), sem nenhuma
+mensagem de rede envolvida. O servidor só criava um bloqueador mínimo
+(`TileMovement`+`NPC()` vazio, `_create_npc_blockers`) na mesma posição,
+só pra `EnemyAISystem`/pathfinding não atravessar o NPC.
+
+**Redesenho — essas 4 viram entidades sincronizadas de verdade**:
+1. `content/mob_definitions.py` ganhou 3 moldes genéricos em
+   `MOB_TABLE` — "Guerreiro (NPC)" (`entity_class: "Warrior"`), "Arqueiro
+   (NPC)" (`"Hunter"`), "Mago (NPC)" (`"Mage"`, sem som — mesmo estado de
+   QUALQUER mob caster já existente no jogo, Vampiro/Dragão também usam
+   `_NO_SOUNDS`, não é uma lacuna nova). Achado que motivou moldes
+   registrados em vez de só passar `entity_class` solto:
+   `_build_combat_entity` (`engine/entity_factory.py`), quando a `race`
+   não está em `MOB_TABLE`, IGNORA o `entity_class` passado e força
+   "Guerreiro"/"Arqueiro" (nunca "Mago") baseado só em `is_ranged` — e
+   sem `mob_def`, `MobSounds` fica vazio. Só uma raça REGISTRADA dá
+   `entity_class` correto + som real.
+2. `engine/entity_factory.py::create_merchant/create_blacksmith/
+   create_quest_giver/create_trainer` passam a chamar
+   `_build_combat_entity` (mesma função que `create_combat_npc` usa)
+   ANTES de anexar o componente de capacidade de sempre
+   (`Merchant`/`Blacksmith`/`QuestGiver`/`Trainer`+`NPC`) —
+   `create_trainer` deriva a raça-molde do `class_id`
+   (`_service_npc_race_for_class`: guerreiro→"Guerreiro (NPC)",
+   mago→"Mago (NPC)", arqueiro→"Arqueiro (NPC)" — literalmente o pedido
+   do usuário); os outros 3 (sem classe inerente) usam
+   "Guerreiro (NPC)" como default. Facção nova `"civis"`
+   (`content/faction_data.py` — amigável a jogadores, hostil a
+   monstro/bandido, mesma relação de `guardas_vila`, mas semântica
+   própria pra não confundir "NPC de serviço" com "guarda de vila de
+   verdade").
+3. `server/world_server.py::_create_npc_blockers` virou
+   `_create_service_npcs` — em vez do bloqueador mínimo, chama essas
+   4 funções (agora combatentes) de verdade, lendo o MESMO formato
+   posicional de `{mapa}_entities.json` que `game.py` já desempacotava.
+   `MapLocation` é anexado automaticamente pelo snapshot antes/depois já
+   existente em `_load_map_for` (não precisa de código novo pra isso).
+4. `_build_mob_spawn_payload` ganhou campos condicionais — só aparecem
+   se o componente correspondente existir na entidade: `profession`
+   (qualquer `NPC`), `shop_id` (`Merchant`/`Blacksmith`), `is_blacksmith`
+   (flag separada, já que `Blacksmith` sempre coexiste com `Merchant` —
+   não dava pra usar um "kind" único exclusivo), `class_id` (`Trainer`),
+   `quest_ids`/`turn_in_ids` (`QuestGiver`) — `Trainer`+`QuestGiver`
+   também podem coexistir na MESMA entidade (treinador com quest), mais
+   um motivo pra flags independentes em vez de um enum. Mob normal/
+   Guarda Real continuam com payload idêntico a antes (nenhum desses
+   componentes existe neles).
+5. `client/remote_entity_handlers.py::_spawn_remote_mob` ganhou um bloco
+   final que anexa o componente de capacidade certo na entidade
+   reconstruída, um por campo condicional presente no payload — a MESMA
+   entidade remota (já com `Position`/`Renderable`/`RemoteEntityMeta`/
+   `Faction`) passa a também ter `Merchant`/`Trainer`/`QuestGiver`/
+   `Blacksmith`. Achado-chave que tornou isso seguro sem tocar em
+   NENHUMA UI: `ShopSystem`/`TrainerSystem`/`QuestDialogSystem`
+   (`ui/systems.py`, `ui/trainer_system.py`, `ui/quest_system.py`) já
+   são 100% agnósticas de como a entidade foi criada — só consultam
+   `Position, Renderable, <Componente de capacidade>`. Loja/treino/
+   missão continuam funcionando sem nenhuma mudança nesses 3 sistemas.
+6. `game.py::_spawn_entities_from` — os 4 loops de criação local
+   (merchants/quest_givers/blacksmiths/trainers) entraram pra dentro do
+   `if not _online:` que já existia pras outras entidades (enemies/
+   spawn_zones) — em modo online, essas 4 chegam pelo spawn de rede
+   normal de mob, não mais criadas localmente aqui.
+
+**Resultado**: mercador/ferreiro/treinador/dador-de-missão passam a ter
+barra de HP (reusa `_draw_mob_hp_bars`, já genérico por `RemoteEntityMeta`
+— zero código novo de render), brigar sozinhos com hostis que entrem no
+raio de detecção e voltar pro posto depois (mesma `EnemyAISystem`/leash
+que o Guarda Real já tem), e continuar abrindo loja/treino/diálogo de
+missão normalmente ao clicar.
+
+**Validado**: `tests/test_service_npcs.py` (13 testes novos — as 4
+funções produzem `Combatant`+`CombatStats`+`AIControlled`+
+`Faction("civis")` além do componente de capacidade certo; `create_trainer`
+com cada `class_id` produz o `entity_class`/`is_ranged` esperado;
+NPC de serviço bloqueia dano do player mas recebe dano de mob hostil
+normalmente — mesmo padrão de `tests/test_faction.py::
+TestCombatNpcArchetype` pro Guarda Real; payload de spawn inclui os
+campos condicionais certos só quando o componente existe; mob normal/
+Guarda Real continuam com payload idêntico a antes) +
+`tests/test_client_ui.py` (3 testes — `_spawn_remote_mob` anexa
+`NPC`+`Merchant`/`Trainer` conforme os campos do payload; mob normal
+sem esses campos não ganha nenhum componente extra, regressão). Suíte
+completa 377/377, rodada 3x.
+
+**Não validado**: sessão manual em jogo — barra de HP aparece sobre
+mercador/treinador/ferreiro, um deles briga com um mob hostil próximo e
+volta pro posto depois, loja/treino/diálogo de missão continuam abrindo
+normalmente ao clicar.
+
+**Fora de escopo desta fase (Fase 2, a discutir depois)**: uso das
+skills reais do jogador (Interceptar, Golpe Poderoso, magias, flechas
+via sistema de skill) e qualquer IA de rotação/decisão de skill.
+
+---
+
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
 
 ```

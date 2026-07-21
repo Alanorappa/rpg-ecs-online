@@ -249,6 +249,77 @@ MOB_TABLE: dict[str, dict] = {
             "emote_get_crit":   "mob_goblin_get_crit",
         },
     },
+    # ── NPCs de serviço (mercador/treinador/ferreiro/dador-de-missão) ─────
+    # Molde de combate genérico pra Fase 1 (21/07/2026, pedido do usuário)
+    # — HP + auto-attack igual a qualquer mob, SEM uso de skill real do
+    # jogador (isso fica pra uma Fase 2 a discutir depois). Reaproveita
+    # sons já existentes de Goblin/Goblin Guerreiro por categoria —
+    # "Mago (NPC)" fica sem som de auto-attack por ora, mesmo estado de
+    # QUALQUER mob caster já existente no jogo (Vampiro/Dragão também
+    # usam _NO_SOUNDS, não é uma lacuna nova desta leva).
+    "Guerreiro (NPC)": {
+        "race": "Humanoide", "entity_class": "Warrior", "is_ranged": False,
+        "color": (150, 150, 160),
+        "attributes": {
+            "health": 60, "armor": 10,
+            "attack_min": 4, "attack_max": 9, "attack_power": 2,
+            "move_speed_pct": 70, "attack_speed": 2.0,
+            "acerto": 90, "crit_chance": 10,
+        },
+        "abilities": [],
+        "loot": {},
+        "gold_chance": 0.0,
+        "xp_given_by_lvl": 16,
+        "sounds": {
+            "aggro":            "mob_goblin_aggro",
+            "death":            "mob_goblin_death",
+            "attack_melee":     "hit_normal",
+            "attack_ranged":    None,
+            "attack_magic":     None,
+            "crit":             "hit_crit",
+            "emote_attack":     "mob_goblin_emote_attack",
+            "emote_get_crit":   "mob_goblin_get_crit",
+        },
+    },
+    "Arqueiro (NPC)": {
+        "race": "Humanoide", "entity_class": "Hunter", "is_ranged": True,
+        "color": (150, 150, 160),
+        "attributes": {
+            "health": 45, "armor": 6,
+            "attack_min": 3, "attack_max": 6, "attack_power": 1,
+            "move_speed_pct": 75, "attack_speed": 2.4,
+            "acerto": 90, "crit_chance": 10,
+        },
+        "abilities": [],
+        "loot": {},
+        "gold_chance": 0.0,
+        "xp_given_by_lvl": 16,
+        "sounds": {
+            "aggro":            "mob_goblin_aggro",
+            "death":            "mob_goblin_death",
+            "attack_melee":     None,
+            "attack_ranged":    "mob_bow",
+            "attack_magic":     None,
+            "crit":             "mob_goblin_crit",
+            "emote_attack":     "mob_goblin_emote_attack",
+            "emote_get_crit":   "mob_goblin_get_crit",
+        },
+    },
+    "Mago (NPC)": {
+        "race": "Humanoide", "entity_class": "Mage", "is_ranged": True,
+        "color": (150, 150, 160),
+        "attributes": {
+            "health": 40, "armor": 4,
+            "attack_min": 4, "attack_max": 8, "attack_power": 2,
+            "move_speed_pct": 70, "attack_speed": 2.6,
+            "acerto": 90, "crit_chance": 10,
+        },
+        "abilities": [],
+        "loot": {},
+        "gold_chance": 0.0,
+        "xp_given_by_lvl": 16,
+        "sounds": _NO_SOUNDS,
+    },
     "Goblin Guerreiro": {
         "race": "Humanoide", "entity_class": "Warrior", "is_ranged": False,
         "color": (98, 158, 58),  # mesma cor do Goblin — mesma raça, outro estilo de combate

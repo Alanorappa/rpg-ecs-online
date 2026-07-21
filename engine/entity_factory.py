@@ -456,19 +456,39 @@ def create_combat_npc(world: World, tile_x: int, tile_y: int,
     return eid
 
 
+_SERVICE_NPC_FACTION = "civis"
+# Molde de combate default pra NPC de serviço sem classe inerente
+# (mercador/ferreiro/dador-de-missão) — mesmo raciocínio de "qualquer um
+# pode se defender" do Guarda Real. Treinador usa um molde por class_id
+# (ver _service_npc_race_for_class).
+_SERVICE_NPC_DEFAULT_RACE = "Guerreiro (NPC)"
+
+
+def _service_npc_race_for_class(class_id: str) -> str:
+    return {
+        "guerreiro": "Guerreiro (NPC)",
+        "mago":      "Mago (NPC)",
+        "arqueiro":  "Arqueiro (NPC)",
+    }.get(class_id, _SERVICE_NPC_DEFAULT_RACE)
+
+
 def create_merchant(world: World, tile_x: int, tile_y: int, shop_id: str = "general",
                     name: str = "Comerciante", level: int = 1,
                     profession: str = "Comerciante") -> int:
+    """NPC de serviço com combate genérico (Fase 1, 21/07/2026, pedido do
+    usuário) — HP real + auto-attack igual a qualquer mob (via
+    `_build_combat_entity`, mesma infra de `create_combat_npc`/Guarda
+    Real), facção `civis` (amigável ao player, hostil a monstro/bandido).
+    NÃO usa skills reais do jogador (Interceptar, etc.) — isso é uma Fase
+    2 a discutir depois."""
     from content.merchant_data import SHOPS
     shop = SHOPS.get(shop_id, SHOPS["general"])
     npc_name = name if name != "Comerciante" else shop.get("name", name)
-    x = tile_x * TILE_SIZE + TILE_SIZE / 2
-    y = tile_y * TILE_SIZE + TILE_SIZE / 2
+    eid = _build_combat_entity(
+        world, tile_x, tile_y, ENEMY_MELEE_ATTACK_RANGE, False, "normal",
+        _SERVICE_NPC_DEFAULT_RACE, "", level, _SERVICE_NPC_FACTION,
+        identity_name=npc_name)
     color = shop.get("color", (80, 200, 80))
-    eid = world.create_entity()
-    world.add_component(eid, Position(x=x, y=y, prev_x=x, prev_y=y))
-    world.add_component(eid, TileMovement(current_tile_x=tile_x, current_tile_y=tile_y,
-                                          target_tile_x=tile_x, target_tile_y=tile_y))
     world.add_component(eid, Renderable(color=color, width=PLAYER_SIZE, height=PLAYER_SIZE))
     world.add_component(eid, NPC(name=npc_name, level=level, profession=profession))
     world.add_component(eid, Merchant(shop_id=shop_id))
@@ -479,13 +499,12 @@ def create_quest_giver(world: World, tile_x: int, tile_y: int,
                        name: str = "Missiveiro", quest_ids: tuple = (),
                        turn_in_ids: tuple = (),
                        level: int = 1, profession: str = "Missiveiro") -> int:
-    """Cria um NPC dador de quests no mapa."""
-    x = tile_x * TILE_SIZE + TILE_SIZE / 2
-    y = tile_y * TILE_SIZE + TILE_SIZE / 2
-    eid = world.create_entity()
-    world.add_component(eid, Position(x=x, y=y, prev_x=x, prev_y=y))
-    world.add_component(eid, TileMovement(current_tile_x=tile_x, current_tile_y=tile_y,
-                                          target_tile_x=tile_x, target_tile_y=tile_y))
+    """NPC dador de quests com combate genérico (Fase 1 — ver
+    create_merchant docstring pro racional completo)."""
+    eid = _build_combat_entity(
+        world, tile_x, tile_y, ENEMY_MELEE_ATTACK_RANGE, False, "normal",
+        _SERVICE_NPC_DEFAULT_RACE, "", level, _SERVICE_NPC_FACTION,
+        identity_name=name)
     world.add_component(eid, Renderable(color=(200, 180, 60), width=PLAYER_SIZE, height=PLAYER_SIZE))
     world.add_component(eid, NPC(name=name, level=level, profession=profession))
     world.add_component(eid, QuestGiver(quest_ids=tuple(quest_ids),
@@ -496,17 +515,16 @@ def create_quest_giver(world: World, tile_x: int, tile_y: int,
 def create_blacksmith(world: World, tile_x: int, tile_y: int,
                       name: str = "Ferreiro", shop_id: str = "blacksmith",
                       level: int = 1, profession: str = "Ferreiro") -> int:
-    """Cria um NPC ferreiro com capacidade de loja, reciclagem e forja."""
+    """NPC ferreiro (loja + reciclagem/forja) com combate genérico (Fase
+    1 — ver create_merchant docstring pro racional completo)."""
     from content.merchant_data import SHOPS
     shop = SHOPS.get(shop_id, SHOPS.get("blacksmith", {}))
     npc_name = name if name != "Ferreiro" else shop.get("name", name)
-    x = tile_x * TILE_SIZE + TILE_SIZE / 2
-    y = tile_y * TILE_SIZE + TILE_SIZE / 2
+    eid = _build_combat_entity(
+        world, tile_x, tile_y, ENEMY_MELEE_ATTACK_RANGE, False, "normal",
+        _SERVICE_NPC_DEFAULT_RACE, "", level, _SERVICE_NPC_FACTION,
+        identity_name=npc_name)
     color = shop.get("color", (180, 120, 40))
-    eid = world.create_entity()
-    world.add_component(eid, Position(x=x, y=y, prev_x=x, prev_y=y))
-    world.add_component(eid, TileMovement(current_tile_x=tile_x, current_tile_y=tile_y,
-                                          target_tile_x=tile_x, target_tile_y=tile_y))
     world.add_component(eid, Renderable(color=color, width=PLAYER_SIZE, height=PLAYER_SIZE))
     world.add_component(eid, NPC(name=npc_name, level=level, profession=profession))
     world.add_component(eid, Merchant(shop_id=shop_id))
@@ -518,13 +536,14 @@ def create_trainer(world: World, tile_x: int, tile_y: int,
                    name: str = "Treinador", class_id: str = "guerreiro",
                    quest_ids: tuple = (), turn_in_ids: tuple = (),
                    level: int = 1, profession: str = "Treinador") -> int:
-    """Cria um NPC treinador de classe. Pode acumular QuestGiver opcionalmente."""
-    x = tile_x * TILE_SIZE + TILE_SIZE / 2
-    y = tile_y * TILE_SIZE + TILE_SIZE / 2
-    eid = world.create_entity()
-    world.add_component(eid, Position(x=x, y=y, prev_x=x, prev_y=y))
-    world.add_component(eid, TileMovement(current_tile_x=tile_x, current_tile_y=tile_y,
-                                          target_tile_x=tile_x, target_tile_y=tile_y))
+    """NPC treinador de classe, com combate genérico NA MESMA classe que
+    ensina (Fase 1, pedido do usuário: "o treinador do guerreiro luta
+    como guerreiro") — ver create_merchant docstring pro racional
+    completo. Pode acumular QuestGiver opcionalmente."""
+    race = _service_npc_race_for_class(class_id)
+    eid = _build_combat_entity(
+        world, tile_x, tile_y, ENEMY_MELEE_ATTACK_RANGE, False, "normal",
+        race, "", level, _SERVICE_NPC_FACTION, identity_name=name)
     world.add_component(eid, Renderable(color=(80, 140, 220), width=PLAYER_SIZE, height=PLAYER_SIZE))
     world.add_component(eid, NPC(name=name, level=level, profession=profession))
     world.add_component(eid, Trainer(class_id=class_id))

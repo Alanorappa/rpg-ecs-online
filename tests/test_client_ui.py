@@ -850,3 +850,52 @@ def test_nameplate_de_morto_fora_da_arena_continua_aparecendo():
     WORLD_LABELS._stack_offset.clear()
     fx._draw_remote_players(0.0, 0.0)
     assert WORLD_LABELS._pending != [], "fora da arena, nameplate de morto deve continuar visível"
+
+
+# ── client/remote_entity_handlers.py::_spawn_remote_mob — NPC de serviço
+# ganha componente de capacidade (Fase 1 de combate genérico, 21/07/2026)
+def test_spawn_remote_mob_de_mercador_anexa_npc_e_merchant():
+    from engine.components import NPC, Merchant
+    fx = _make_net_fixture()
+    fx._handle_msg_entity_spawn({
+        "eid": 99, "kind": "enemy", "tx": 5, "ty": 5,
+        "race": "Guerreiro (NPC)", "entity_class": "Warrior",
+        "hp": 60, "hp_max": 60, "level": 1, "faction": "civis",
+        "name": "Zeca", "profession": "Comerciante", "shop_id": "general",
+    })
+    local_eid = fx._remote_mobs[99]
+    npc = fx.world.get_component(local_eid, NPC)
+    assert npc is not None and npc.profession == "Comerciante"
+    merch = fx.world.get_component(local_eid, Merchant)
+    assert merch is not None and merch.shop_id == "general"
+
+
+def test_spawn_remote_mob_de_trainer_anexa_trainer_com_class_id():
+    from engine.components import Trainer
+    fx = _make_net_fixture()
+    fx._handle_msg_entity_spawn({
+        "eid": 98, "kind": "enemy", "tx": 5, "ty": 5,
+        "race": "Mago (NPC)", "entity_class": "Mage",
+        "hp": 40, "hp_max": 40, "level": 1, "faction": "civis",
+        "name": "Arcanista", "profession": "Treinador", "class_id": "mago",
+    })
+    local_eid = fx._remote_mobs[98]
+    trainer = fx.world.get_component(local_eid, Trainer)
+    assert trainer is not None and trainer.class_id == "mago"
+
+
+def test_spawn_remote_mob_normal_nao_ganha_componente_de_npc_servico():
+    """Regressão — mob comum (sem profession/shop_id/class_id no payload)
+    continua sem nenhum componente de capacidade, igual antes desta leva."""
+    from engine.components import NPC, Merchant, Trainer, QuestGiver
+    fx = _make_net_fixture()
+    fx._handle_msg_entity_spawn({
+        "eid": 97, "kind": "enemy", "tx": 5, "ty": 5,
+        "race": "Zumbi", "entity_class": "Warrior",
+        "hp": 30, "hp_max": 30, "level": 1, "faction": "monstros_hostis",
+    })
+    local_eid = fx._remote_mobs[97]
+    assert fx.world.get_component(local_eid, NPC) is None
+    assert fx.world.get_component(local_eid, Merchant) is None
+    assert fx.world.get_component(local_eid, Trainer) is None
+    assert fx.world.get_component(local_eid, QuestGiver) is None

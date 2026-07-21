@@ -495,7 +495,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._create_spawn_zones_for_map(spawn_points.get("spawn_zones", []), key)
         self._create_training_dummies(spawn_points.get("training_dummies", []))
         self._create_combat_npcs(spawn_points.get("combat_npcs", []), key)
-        self._create_npc_blockers(spawn_points)
+        self._create_service_npcs(spawn_points)
 
         # Snapshot DEPOIS — todas as novas entidades ganham MapLocation
         _eids_after = set(self.world._components.keys())
@@ -633,18 +633,39 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             )
             self.world.add_component(eid, _MLcnpc(map_file))
 
-    def _create_npc_blockers(self, spawn_points: dict) -> None:
-        """Cria entidades mínimas (TileMovement + NPC) para cada NPC do mapa.
-        Sem componentes client-side — só para EnemyAISystem._get_enemy_tiles() funcionar."""
-        from engine.components import TileMovement, NPC
-        for key in ("quest_givers", "merchants", "blacksmiths", "trainers"):
-            for entry in spawn_points.get(key, []):
-                tx, ty = entry[0], entry[1]
-                eid = self.world.create_entity()
-                self.world.add_component(eid, TileMovement(
-                    current_tile_x=tx, current_tile_y=ty,
-                    target_tile_x=tx, target_tile_y=ty))
-                self.world.add_component(eid, NPC())
+    def _create_service_npcs(self, spawn_points: dict) -> None:
+        """Cria mercador/ferreiro/dador-de-missão/treinador como NPCs de
+        COMBATE DE VERDADE (Fase 1, 21/07/2026, pedido do usuário) — antes
+        (`_create_npc_blockers`) só existia um bloqueador mínimo
+        (TileMovement+NPC vazio) aqui, só pra pathfinding de mob não
+        atravessar; a identidade de loja/treino/missão era 100%
+        client-side (cada cliente lia o mesmo `_entities.json` e criava a
+        própria cópia via `create_merchant`/etc., sem nenhum sync).
+
+        Agora o SERVIDOR é quem cria a entidade de verdade (mesmas
+        funções de `engine/entity_factory.py`, já com HP/IA de combate
+        via `_build_combat_entity` — mesma infra do Guarda Real) e ela
+        sincroniza pro cliente pelo pipeline normal de mob (`Combatant`,
+        ver `_build_mob_spawn_payload`/`_spawn_remote_mob`) — `game.py`
+        não cria mais essas 4 localmente em modo online (`_online` gate)."""
+        from engine.entity_factory import (
+            create_merchant as _csn_merchant, create_blacksmith as _csn_blacksmith,
+            create_quest_giver as _csn_qg, create_trainer as _csn_trainer,
+        )
+        for col, row, name, shop_id, lvl, prof in spawn_points.get("merchants", []):
+            _csn_merchant(self.world, col, row, name=name, shop_id=shop_id,
+                         level=lvl, profession=prof)
+        for col, row, name, quest_ids, turn_in_ids, lvl, prof in spawn_points.get("quest_givers", []):
+            _csn_qg(self.world, col, row, name=name,
+                   quest_ids=quest_ids, turn_in_ids=turn_in_ids,
+                   level=lvl, profession=prof)
+        for col, row, name, shop_id, lvl, prof in spawn_points.get("blacksmiths", []):
+            _csn_blacksmith(self.world, col, row, name=name,
+                           shop_id=shop_id, level=lvl, profession=prof)
+        for col, row, name, class_id, quest_ids, turn_in_ids, lvl, prof in spawn_points.get("trainers", []):
+            _csn_trainer(self.world, col, row, name=name,
+                        class_id=class_id, quest_ids=quest_ids, turn_in_ids=turn_in_ids,
+                        level=lvl, profession=prof)
 
     def _create_spawn_zones(self, zones_data: list) -> None:
         """Compat: cria SpawnZones sem MapLocation (usado antes do multi-map)."""
@@ -1329,7 +1350,9 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
     def _build_mob_spawn_payload(self, eid: int, tm) -> dict:
         from engine.components import (CombatStats, AIControlled, Renderable, SpawnZoneOwner,
-                                SpawnZone, EntityIdentity, TrainingDummy as _TDpay, Faction as _FacPay)
+                                SpawnZone, EntityIdentity, TrainingDummy as _TDpay, Faction as _FacPay,
+                                NPC as _NPCpay, Merchant as _Merchpay, Blacksmith as _Blackpay,
+                                Trainer as _Trainpay, QuestGiver as _QGpay)
         cs    = self.world.get_component(eid, CombatStats)
         ai    = self.world.get_component(eid, AIControlled)
         ren   = self.world.get_component(eid, Renderable)
@@ -1383,6 +1406,30 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # não tinha NENHUMA forma de saber que aquele mob remoto era um boneco.
         if self.world.get_component(eid, _TDpay) is not None:
             payload["is_dummy"] = True
+        # NPC de serviço (mercador/ferreiro/treinador/dador-de-missão, Fase 1
+        # de combate genérico, 21/07/2026) — campos condicionais, um por
+        # componente de capacidade presente na entidade. Mob normal/Guarda
+        # Real nunca têm esses componentes, então o payload deles fica
+        # idêntico a antes. Cliente usa esses campos pra anexar o MESMO
+        # componente de capacidade na entidade remota reconstruída
+        # (client/remote_entity_handlers.py::_spawn_remote_mob) — Trainer e
+        # QuestGiver podem coexistir na MESMA entidade (treinador com
+        # quest), por isso são flags independentes, não um "kind" único.
+        _npc = self.world.get_component(eid, _NPCpay)
+        if _npc is not None:
+            payload["profession"] = _npc.profession
+        _merch = self.world.get_component(eid, _Merchpay)
+        if _merch is not None:
+            payload["shop_id"] = _merch.shop_id
+        if self.world.get_component(eid, _Blackpay) is not None:
+            payload["is_blacksmith"] = True
+        _train = self.world.get_component(eid, _Trainpay)
+        if _train is not None:
+            payload["class_id"] = _train.class_id
+        _qg = self.world.get_component(eid, _QGpay)
+        if _qg is not None:
+            payload["quest_ids"]    = list(_qg.quest_ids)
+            payload["turn_in_ids"]  = list(_qg.turn_in_ids)
         # Se o mob já está em movimento no momento do spawn, inclui o destino.
         # O cliente inicia a animação imediatamente em vez de esperar o próximo evento.
         if tm.is_moving and (tm.target_tile_x != tm.current_tile_x or
