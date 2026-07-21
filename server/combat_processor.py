@@ -17,13 +17,23 @@ class CombatProcessorMixin:
         após EnemyAISystem rodar (EnemyAISystem chama deal_damage internamente).
         """
         from engine.world_systems import deal_damage
-        from engine.components import CombatState, CombatStats, TileMovement, Enemy, PendingDeath
+        from engine.components import CombatState, CombatStats, TileMovement, Enemy, PendingDeath, GhostState
         from engine.utils import chebyshev, is_action_locked
 
         # ── Player → Mob ───────────────────────────────────────────────────
         for session_id, player_eid in list(self._player_eids.items()):
             cs = self.world.get_component(player_eid, CombatState)
             if not cs or cs.target_entity_id == -1:
+                continue
+
+            # Corpo (morto) ou espírito: nunca ataca — mesmo que o cliente
+            # esteja com bug visual ou tente burlar can_act() mandando um
+            # AUTO_ATTACK novo depois de morrer (mesmo padrão de defesa já
+            # usado em skill_processor.py — a morte real limpa
+            # target_entity_id em _handle_player_death, mas um AUTO_ATTACK
+            # NOVO do cliente pode setar de novo antes do próximo tick).
+            gst = self.world.get_component(player_eid, GhostState)
+            if gst is not None and gst.is_dead:
                 continue
 
             # Espelha o gate offline (PlayerInputSystem usa can_act()): pressionar

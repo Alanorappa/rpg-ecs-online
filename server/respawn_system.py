@@ -180,8 +180,18 @@ class RespawnMixin:
         gst.graveyard_timer = 0.0
         gst.near_corpse = False
 
-        rx, ry = self.RESPAWN_TILE
         tm = self.world.get_component(player_eid, TileMovement)
+        # Morreu DENTRO de uma partida de Arena (20/07/2026, pedido do
+        # usuário): fica fantasma no PRÓPRIO tile, dentro da instância —
+        # não viaja pro cemitério do mapa principal (não pode reviver lá
+        # de qualquer jeito, ver server/session.py::_handle_revive_request
+        # — só sai de verdade ao clicar "Sair da Arena", que já revive).
+        # PvE normal continua indo pro cemitério como sempre.
+        _in_arena_match = player_eid in self._player_match_id
+        if _in_arena_match:
+            rx, ry = (tm.current_tile_x, tm.current_tile_y) if tm else self.RESPAWN_TILE
+        else:
+            rx, ry = self.RESPAWN_TILE
         old_tx, old_ty = (tm.current_tile_x, tm.current_tile_y) if tm else (rx, ry)
         # snap_to_tile: cancela tween em andamento + sincroniza pixels/Position.
         # O write manual antigo não resetava is_moving — player que morria no
@@ -193,12 +203,15 @@ class RespawnMixin:
         # Se player morreu num mapa não-principal (ex: cave), transfere o ghost pro
         # mapa principal antes de tudo. O cliente recebe ZONE_CHANGE junto com
         # GHOST_STATE via flag "zone_change_map" consumida em _send_ghost_state_updates.
+        # NUNCA faz isso dentro de uma partida de Arena — puxaria o fantasma
+        # pra fora da instância antes da hora (só _arena_leave_now deve mexer
+        # no mapa/posição de quem está numa partida).
         session_id   = self._player_eid_to_sid.get(player_eid)
         from engine.components import MapLocation as _MLrs
         _ml_rs      = self.world.get_component(player_eid, _MLrs)
         current_map  = _ml_rs.map_file if _ml_rs else self._map_file
         _zone_change = None
-        if current_map != self._map_file and session_id:
+        if current_map != self._map_file and session_id and not _in_arena_match:
             self.transfer_player(session_id, player_eid, self._map_file, rx, ry)
             _zone_change = self._map_file
 
@@ -256,6 +269,15 @@ class RespawnMixin:
         for peid in list(self._player_eids.values()):
             gst = self.world.get_component(peid, GhostState)
             if not gst or not gst.is_ghost:
+                continue
+            # Fantasma DENTRO de uma partida de Arena nunca revive por
+            # timer/proximidade (não pode reviver lá de jeito nenhum — ver
+            # server/session.py::_handle_revive_request) — pular evita o
+            # prompt fantasma "Reviver agora?" (o corpo está sempre "perto"
+            # do próprio fantasma dentro da instância) e qualquer cenário
+            # em que o tile da arena coincida com o raio do cemitério do
+            # mapa principal.
+            if peid in self._player_match_id:
                 continue
             tm = self.world.get_component(peid, TileMovement)
             if not tm:

@@ -1,8 +1,8 @@
 """
 tests/test_arena.py — Arena 2x2 (Fase G, leva 1): instanciamento privado
 por partida, time por Facção, fila FIFO de grupos, eliminação (golpe
-letal não mata de verdade). Ver server/match_processor.py e
-ARQUITETURA_ONLINE.md.
+letal mata de verdade — fantasma real, sem revive — ver §34.32
+ARQUITETURA_ONLINE.md, 20/07/2026). Ver server/match_processor.py.
 """
 import os, sys
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -14,7 +14,7 @@ import unittest
 from tests.helpers import make_world_server, spawn_player
 from engine.faction_system import can_engage
 from engine.core_systems import apply_damage_core
-from engine.components import CombatStats, CombatState, Faction, TileMovement
+from engine.components import CombatStats, CombatState, Faction, TileMovement, GhostState
 
 
 def _make_duo(ws, prefix: str, tile=(130, 374)):
@@ -112,28 +112,49 @@ class TestArenaMatch(unittest.TestCase):
         self.assertEqual(get_relationship("arena_time_a", "jogadores"), "neutro")
         self.assertTrue(can_engage(self.ws.world, self.team_a[0], bystander))
 
-    def test_golpe_letal_nao_mata_de_verdade_marca_eliminado(self):
+    def test_golpe_letal_mata_de_verdade_marca_eliminado_e_vira_fantasma(self):
+        """Revisado 20/07/2026 (pedido do usuário): eliminação na arena
+        agora é MORTE DE VERDADE — mesmo fluxo de PvE (GhostState, corpo,
+        "Liberar espírito"), não mais "1 HP + imune" congelado. O
+        interceptor de golpe letal da arena (_arena_lethal_interceptor)
+        virou só um ponto de NOTIFICAÇÃO — sempre retorna False, nunca
+        intercepta de verdade."""
         target = self.team_b[0]
-        cs = self.ws.world.get_component(target, CombatStats)
         outcome = apply_damage_core(self.ws.world, target, 999999, killer_eid=self.team_a[0])
-        self.assertEqual(outcome, "applied")
-        self.assertEqual(cs.current_hp, 1)
+        self.assertEqual(outcome, "killed")
         self.assertIn(target, self.ws._active_matches[self.match_id]["eliminated"])
-        cst = self.ws.world.get_component(target, CombatState)
-        self.assertTrue(cst.is_immune)
+        # simula o processamento de PendingDeath (ServerDeathHandler roda no tick)
+        self.ws._handle_player_death(target)
+        gst = self.ws.world.get_component(target, GhostState)
+        self.assertTrue(gst.is_dead)
+        self.assertFalse(gst.is_ghost)
         # partida NÃO acabou — só 1 dos 2 do time B foi eliminado
         self.assertIn(self.match_id, self.ws._active_matches)
 
-    def test_eliminado_nao_pode_mais_agir_nem_se_mover(self):
+    def test_morto_nao_pode_mais_atacar_mesmo_se_cliente_tentar_burlar(self):
         """Bug real relatado pelo usuário 20/07/2026: "continuam
-        controlando o personagem mesmo após perder" — is_immune sozinho
-        só bloqueia DANO (apply_damage_core), can_act()/can_move() olham
-        pra is_stunned, nunca is_immune."""
+        controlando o personagem mesmo após perder" + "ainda são alvos
+        atacáveis". current_hp<=0 (morte real) já bloqueia como ALVO em
+        qualquer lugar do jogo (combat_processor/spell_completion_processor,
+        comentário em server/respawn_system.py linha 8); aqui provamos
+        que TAMBÉM não consegue mais atacar — mesmo se o cliente tentar
+        burlar mandando um alvo novo depois de morto (GhostState.is_dead
+        bloqueia em combat_processor.py explicitamente, já que
+        CombatState.is_alive nunca é setado pelo servidor — só o cliente
+        mexe nele)."""
         target = self.team_b[0]
         apply_damage_core(self.ws.world, target, 999999, killer_eid=self.team_a[0])
+        self.ws._handle_player_death(target)
         cst = self.ws.world.get_component(target, CombatState)
-        self.assertFalse(cst.can_act())
-        self.assertFalse(cst.can_move())
+        self.assertEqual(cst.target_entity_id, -1)   # já limpo por _handle_player_death
+
+        # Simula um cliente "burlado" re-setando o alvo depois de morto
+        victim = self.team_a[1]
+        cst.target_entity_id = victim
+        victim_cs = self.ws.world.get_component(victim, CombatStats)
+        hp_before = victim_cs.current_hp
+        self.ws._process_player_attacks(1.0, {})
+        self.assertEqual(victim_cs.current_hp, hp_before)
 
     def test_eliminar_time_inteiro_decide_a_partida_mas_nao_restaura_ninguem_ainda(self):
         """Ciclo revisado 20/07/2026 (pedido do usuário — modal de fim de
@@ -152,18 +173,22 @@ class TestArenaMatch(unittest.TestCase):
             self.assertIsNotNone(self.ws.world.get_component(eid, Faction))
         self.assertEqual(self.ws.consume_arena_match_end_events(), [])
 
-    def test_time_inteiro_eliminado_congela_TODO_mundo_vencedores_inclusive(self):
-        """Bug real relatado pelo usuário 20/07/2026: "continuam
-        controlando o personagem mesmo após perder" — a versão anterior
-        só travava o time perdedor; a tela de resultado precisa travar os
-        4, senão o vencedor continua brigando enquanto o placar é
-        mostrado pros outros."""
+    def test_time_inteiro_eliminado_congela_o_vencedor_perdedor_ja_morreu_de_verdade(self):
+        """Revisado 20/07/2026: o time PERDEDOR já morreu de verdade
+        (fantasma real, não precisa de congelamento nenhum — current_hp<=0
+        já é suficiente). O time VENCEDOR, que continua vivo, precisa ser
+        congelado explicitamente pra tela de resultado — senão continuaria
+        brigando (contra quê? só teria bystanders fora da instância, mas o
+        princípio vale) enquanto o placar é mostrado pros 4."""
         for eid in self.team_b:
             apply_damage_core(self.ws.world, eid, 999999, killer_eid=self.team_a[0])
-        for eid in self.team_a + self.team_b:
+        for eid in self.team_a:   # vencedor — congelado explicitamente
             cst = self.ws.world.get_component(eid, CombatState)
             self.assertFalse(cst.can_act())
             self.assertFalse(cst.can_move())
+        for eid in self.team_b:   # perdedor — já morto de verdade
+            cs = self.ws.world.get_component(eid, CombatStats)
+            self.assertLessEqual(cs.current_hp, 0)
 
     def test_fim_de_partida_nao_limpa_stun_real_de_quem_nao_foi_eliminado(self):
         """Vencedor pode legitimamente estar stunado por um efeito de
@@ -364,6 +389,106 @@ class TestArenaDisconnectRestoreOrder(unittest.TestCase):
         save_data = ws.get_player_save_data(sid)
         self.assertEqual(save_data["map_id"], "maps/map_1.csv")
         self.assertEqual((save_data["tile_x"], save_data["tile_y"]), (140, 380))
+
+
+class TestArenaRealDeath(unittest.TestCase):
+    """Morte de verdade na arena (revisado 20/07/2026, pedido do usuário):
+    eliminado vira fantasma real (mesmo fluxo de PvE), mas não pode
+    reviver enquanto a partida durar — só ao sair (_arena_leave_now
+    revive automaticamente, mesmo padrão de _auto_revive_on_disconnect)."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        self.team_a = _make_duo(self.ws, "rda")
+        self.team_b = _make_duo(self.ws, "rdb")
+        self.match_id = _queue_and_pair(self.ws, self.team_a, self.team_b)
+
+    def _kill(self, target, killer):
+        apply_damage_core(self.ws.world, target, 999999, killer_eid=killer)
+        self.ws._handle_player_death(target)
+
+    def test_liberar_espirito_na_arena_fica_dentro_da_instancia(self):
+        """_handle_release_spirit normalmente transfere o fantasma pro
+        mapa principal (cemitério) quando a morte é fora dele — dentro da
+        arena isso puxaria o player pra fora da instância antes da hora.
+        Fix: fica no próprio tile, sem trocar de mapa."""
+        target = self.team_b[0]
+        self._kill(target, self.team_a[0])
+        tm_before = self.ws.world.get_component(target, TileMovement)
+        tx_before, ty_before = tm_before.current_tile_x, tm_before.current_tile_y
+        instance_key = self.ws._active_matches[self.match_id]["instance_key"]
+
+        self.ws._handle_release_spirit(target)
+
+        gst = self.ws.world.get_component(target, GhostState)
+        self.assertTrue(gst.is_ghost)
+        self.assertEqual(self.ws.get_entity_map(target), instance_key)
+        tm_after = self.ws.world.get_component(target, TileMovement)
+        self.assertEqual((tm_after.current_tile_x, tm_after.current_tile_y),
+                         (tx_before, ty_before))
+
+    def test_ghost_tick_nunca_avanca_pra_quem_esta_em_partida(self):
+        """Sem esse guard, o corpo (perto do próprio fantasma dentro da
+        instância) dispararia "near_corpse" — prompt fantasma "Reviver
+        agora?" que não leva a lugar nenhum (revive já é bloqueado)."""
+        target = self.team_b[0]
+        self._kill(target, self.team_a[0])
+        self.ws._handle_release_spirit(target)
+        gst = self.ws.world.get_component(target, GhostState)
+        self.ws._tick_ghost_states(dt=1.0)
+        self.assertFalse(gst.near_corpse)
+        self.assertEqual(gst.graveyard_timer, 0.0)
+
+    def test_revive_request_bloqueado_durante_partida_ativa(self):
+        import asyncio
+        from server.session import SessionManager, Session
+
+        target = self.team_b[0]
+        self._kill(target, self.team_a[0])
+        self.ws._handle_release_spirit(target)
+        gst = self.ws.world.get_component(target, GhostState)
+        self.assertTrue(gst.is_ghost)
+
+        mgr = SessionManager(self.ws)
+        sid = self.ws.get_session_id_for_player(target)
+        session = Session(None, sid)
+        session.authenticated = True
+
+        asyncio.run(mgr._handle_revive_request(session, {}, 0))
+
+        gst_after = self.ws.world.get_component(target, GhostState)
+        self.assertTrue(gst_after.is_ghost, "revive deveria ter sido recusado")
+        self.assertTrue(gst_after.is_dead)
+
+    def test_sair_da_arena_revive_quem_morreu_de_verdade(self):
+        """Único jeito de sair da morte durante a arena: sair da arena de
+        vez (forfeit/timeout) — _arena_leave_now reaproveita _revive_player
+        (mesmo padrão de _auto_revive_on_disconnect)."""
+        target = self.team_b[0]
+        self._kill(target, self.team_a[0])
+        self.ws._handle_release_spirit(target)
+
+        reason = self.ws.request_arena_forfeit(target)
+        self.assertIsNone(reason)
+
+        gst = self.ws.world.get_component(target, GhostState)
+        self.assertFalse(gst.is_dead)
+        self.assertFalse(gst.is_ghost)
+        cs = self.ws.world.get_component(target, CombatStats)
+        self.assertGreater(cs.current_hp, 0)
+        self.assertEqual(self.ws.get_entity_map(target), "maps/map_1.csv")
+
+    def test_sair_da_arena_sem_ter_morrido_nao_mexe_em_ghoststate(self):
+        """Forfeit voluntário de quem está vivo não deveria acionar o
+        caminho de revive (gst.is_dead é False o tempo todo)."""
+        alive = self.team_a[0]
+        gst_before = self.ws.world.get_component(alive, GhostState)
+        self.assertFalse(gst_before.is_dead)
+        reason = self.ws.request_arena_forfeit(alive)
+        self.assertIsNone(reason)
+        gst_after = self.ws.world.get_component(alive, GhostState)
+        self.assertFalse(gst_after.is_dead)
+        self.assertFalse(gst_after.is_ghost)
 
 
 class TestArenaMatchResult(unittest.TestCase):

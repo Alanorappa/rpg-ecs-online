@@ -1099,6 +1099,13 @@ class SessionManager:
         tm  = self.world_server.world.get_component(player_eid, TileMovement)
         if not gst or not tm or not gst.is_ghost:
             return
+        # Não pode reviver DENTRO de uma partida de Arena — morrer lá vira
+        # fantasma de verdade (mesmo fluxo de PvE), mas só sai da morte ao
+        # sair da arena de vez (client/arena_handlers.py "Sair da Arena" /
+        # ARENA_FORFEIT → MatchProcessorMixin._arena_leave_now já revive
+        # nesse momento). Pedido do usuário 20/07/2026.
+        if self.world_server._player_match_id.get(player_eid) is not None:
+            return
         # Revalida distância no momento do request — não confia na flag cacheada
         if (abs(tm.current_tile_x - gst.corpse_tx) > GHOST_CORPSE_RADIUS_TILES
                 or abs(tm.current_tile_y - gst.corpse_ty) > GHOST_CORPSE_RADIUS_TILES):

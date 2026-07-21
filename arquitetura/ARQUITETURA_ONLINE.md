@@ -5125,6 +5125,100 @@ ninguém clicar.
 
 ---
 
+### §34.33 — Eliminação na arena vira morte de verdade (fantasma real, sem revive) — §34.32 tinha resolvido só metade (20/07/2026)
+
+Depois de testar `v0.6.0`, o usuário reportou que o eliminado AINDA
+conseguia agir: "os players continuam controlando o personagem mesmo
+após perder morrer" — e um segundo problema, mais fundo: "ainda são
+alvos atacáveis, e eu consigo continuar usando skills deles". Pedido
+específico: o eliminado deveria morrer de VERDADE — mesmo fluxo de PvE
+(fica fantasma, aparece o modal "Liberar espírito") — só que sem poder
+reviver enquanto a partida durar.
+
+**Causa raiz dos dois problemas — a mesma**: is_immune (única coisa que
+§34.32 setava pro eliminado) só bloqueia DANO em `apply_damage_core`
+(`if cst and cst.is_immune: return "blocked_immune"`) — não impede
+SELECIONAR o eliminado como alvo nem CASTAR skill nele (o cast "acerta",
+consome cooldown/recurso, só o número de dano vira 0). is_stunned (que
+§34.32 ATÉ setava, mas só pro perdedor) bloqueia `can_act()`/`can_move()`
+— mas isso é sobre o PRÓPRIO eliminado agir, não sobre ser alvo. Nenhum
+dos dois resolve "não pode mais ser selecionado/atacado" — quem já
+resolve isso, em QUALQUER lugar do jogo, é `current_hp<=0` (comentário
+já existente em `server/respawn_system.py` linha 8: "current_hp==0 já
+bloqueia o corpo como alvo/atacante em todo combat_processor/
+spell_completion_processor"). Ou seja: a resposta certa pros DOIS
+problemas era deixar o golpe MATAR de verdade, não inventar mais um
+flag.
+
+**Redesenho**: `_arena_lethal_interceptor` (server/match_processor.py)
+passou de "intercepta e força 1 HP" pra um PONTO DE NOTIFICAÇÃO só —
+sempre retorna `False` (nunca intercepta), só chama `_eliminate_player`
+(que agora só marca o `eliminated` set + checa time-wipe, sem tocar em
+`is_immune`/`is_stunned`) antes de deixar `apply_damage_core` seguir o
+fluxo normal: `PendingDeath` → `ServerDeathHandler` →
+`RespawnMixin._handle_player_death` — o MESMO caminho de qualquer morte
+de PvE, sem nenhum código novo nesse trecho.
+
+**3 ajustes pontuais no fluxo de morte pra funcionar dentro de uma
+instância de arena** (nenhum deles muda o comportamento de PvE normal):
+1. `_handle_release_spirit` (respawn_system.py) normalmente transfere o
+   fantasma pro mapa principal (cemitério) quando a morte foi fora dele
+   — dentro da arena isso puxaria o player pra fora da instância antes
+   da hora. Fix: se `player_eid in self._player_match_id`, fica
+   fantasma no PRÓPRIO tile, sem trocar de mapa.
+2. `server/session.py::_handle_revive_request` ganhou um early-return:
+   `if self.world_server._player_match_id.get(player_eid) is not None:
+   return` — não pode reviver dentro da arena (pedido explícito do
+   usuário). `RELEASE_SPIRIT` continua liberado normalmente (o modal
+   "aparece", como pedido — só o REVIVE em si é bloqueado).
+3. `_tick_ghost_states` pula inteiramente quem está em `_player_match_id`
+   — sem isso o corpo (sempre "perto" do próprio fantasma dentro da
+   instância) disparava o prompt fantasma "Reviver agora?", que não
+   levaria a lugar nenhum já que o REVIVE_REQUEST é recusado (também
+   evita, por construção, qualquer cenário em que o tile da arena
+   coincida com o raio do cemitério do mapa principal).
+
+**Revive só ao SAIR da arena**: `_arena_leave_now` (chamado por
+`request_arena_forfeit`/`end_matches_of`/timeout — mesmos gatilhos de
+sempre) ganhou um passo novo: se `GhostState.is_dead`, chama
+`_revive_player(hp_frac=1.0, at_corpse=False)` na posição JÁ restaurada
+(mesmo critério do `_auto_revive_on_disconnect` existente: nunca revive
+"in place" perigoso — aqui "in place" já é o mapa/tile de origem,
+seguro por definição). Funciona independente de o player ter clicado
+"Liberar espírito" ou não — `_revive_player` só exige `GhostState`
+presente, não `is_ghost=True`.
+
+**Achado lateral (defesa em profundidade, não pedido explicitamente mas
+direto no escopo)**: `CombatState.is_alive` nunca é setado pelo
+SERVIDOR (só o cliente mexe nele, pra bloquear a própria UI/input local)
+— então `can_act()` sozinho NUNCA detecta morte do lado servidor.
+`skill_processor.py` já tinha proteção explícita contra isso
+(`GhostState.is_dead`, comentário: "mesmo que o cliente esteja com bug
+visual ou tente burlar can_act()") — `combat_processor.py`
+(`_process_player_attacks`, auto-attack) NÃO tinha o mesmo check.
+Adicionado o mesmo guard lá (mesmo padrão/comentário) — sem isso, um
+cliente modificado que reenviasse `AUTO_ATTACK` depois de morrer ainda
+conseguiria atacar de verdade no servidor.
+
+**Validado**: `tests/test_arena.py` (38 testes, +9 novos —
+`TestArenaRealDeath`: liberar espírito fica dentro da instância,
+ghost-tick nunca avança pra quem tá em partida, revive bloqueado via
+`SessionManager._handle_revive_request` de verdade (não só a condição),
+sair da arena revive quem morreu, forfeit de quem está vivo não mexe em
+GhostState; provas diretas de que um "cliente burlado" reenviando
+target/attack depois de morto não aplica dano de verdade). 3 testes
+antigos reescritos pro novo modelo (golpe letal agora retorna "killed",
+não "applied"; vencedor congelado explicitamente, perdedor já morto de
+verdade não precisa). Suíte completa 336/336, rodada 3x.
+
+**Não validado**: sessão manual com testers reais — eliminado morre de
+verdade (fica fantasma, corpo visível, modal "Liberar espírito"
+aparece); não reviver dentro da arena; não conseguir mais ser
+selecionado/atacado por skill; ao sair da arena, revive automaticamente
+na posição restaurada.
+
+---
+
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
 
 ```

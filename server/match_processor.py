@@ -187,26 +187,24 @@ class MatchProcessorMixin:
         match["damage_by_eid"][killer_eid] = match["damage_by_eid"].get(killer_eid, 0) + dmg
 
     def _eliminate_player(self, match_id: str, eid: int) -> None:
-        """Marca `eid` eliminado — não pode mais ser ferido (is_immune) NEM
-        agir/mover (is_stunned, sem stun_timer — CombatStateSystem só
-        limpa is_stunned se stun_timer>0, então fica travado até esta
-        classe mesma limpar em _arena_leave_now). Antes só is_immune era
-        setado: bloqueava dano mas can_act()/can_move() não olham pra ele
-        (só pra is_stunned), então o eliminado continuava atacando/andando
-        livremente — bug real relatado pelo usuário 20/07/2026
-        ("continuam controlando o personagem mesmo após perder"). Encerra
-        a partida (decide, não restaura ainda — ver _finish_match) se o
-        time inteiro dele já estiver eliminado."""
+        """Marca `eid` eliminado — não faz mais nada com HP/is_immune/
+        is_stunned aqui (revisado 20/07/2026): o golpe letal agora morre
+        DE VERDADE (ver _arena_lethal_interceptor, que só notifica e
+        deixa a morte acontecer) — o player vira fantasma de verdade
+        (mesmo fluxo de PvE: GhostState, corpo, "Liberar espírito"), e
+        current_hp<=0 já bloqueia ele como alvo/atacante em todo
+        combat_processor/spell_completion_processor (mesma regra de
+        qualquer morte). Isso resolve os dois problemas reportados pelo
+        usuário de uma vez: (1) "continuam controlando o personagem mesmo
+        após perder" — morto de verdade não pode agir; (2) "ainda são
+        alvos atacáveis" — current_hp<=0 já bloqueia isso em qualquer
+        lugar do jogo, sem precisar de lógica nova. Encerra a partida
+        (decide, não restaura ainda — ver _finish_match) se o time
+        inteiro dele já estiver eliminado."""
         match = self._active_matches.get(match_id)
         if match is None or eid in match["eliminated"]:
             return
         match["eliminated"].add(eid)
-        from engine.components import CombatState as _CSElim
-        cst = self.world.get_component(eid, _CSElim)
-        if cst:
-            cst.is_immune  = True
-            cst.is_stunned = True
-        match["arena_locked"].add(eid)
 
         team_key  = "team_a" if eid in match["team_a"] else "team_b"
         other_key = "team_b" if team_key == "team_a" else "team_a"
@@ -216,14 +214,17 @@ class MatchProcessorMixin:
     def _finish_match(self, match_id: str, winner_team_key: "str | None") -> None:
         """Partida DECIDIDA (time inteiro eliminado, ou esvaziado por
         forfeit/desconexão em _arena_leave_now) — NÃO restaura ninguém
-        ainda, diferente do antigo `_end_match` monolítico. Congela todo
-        mundo (is_immune+is_stunned, vencedores inclusive — ninguém briga
-        mais) e manda o placar (nome+dano+vitória de cada um dos 4) pra
-        cada cliente montar o modal de fim de partida (estilo WoW,
-        pedido do usuário 20/07/2026). Restauração de verdade só acontece
-        quando cada player clica "Sair da Arena" (ARENA_FORFEIT — mesmo
-        comando do desistir no meio da partida) ou pelo timeout
-        automático (_tick_arena_results_timeout) — ver _arena_leave_now.
+        ainda, diferente do antigo `_end_match` monolítico. Congela só
+        quem ainda está VIVO (is_immune+is_stunned — normalmente o time
+        vencedor; quem já morreu de verdade em combate já está
+        naturalmente "congelado" via GhostState/current_hp<=0, não
+        precisa de nada aqui) e manda o placar (nome+dano+vitória de cada
+        um dos 4) pra cada cliente montar o modal de fim de partida
+        (estilo WoW, pedido do usuário 20/07/2026). Restauração de
+        verdade (e revive de quem morreu) só acontece quando cada player
+        clica "Sair da Arena" (ARENA_FORFEIT — mesmo comando do desistir
+        no meio da partida) ou pelo timeout automático
+        (_tick_arena_results_timeout) — ver _arena_leave_now.
 
         `winner_team_key` = "team_a"/"team_b" (elimination normal) ou
         None (ninguém vence — ex: os dois times ficaram vazios)."""
@@ -233,17 +234,20 @@ class MatchProcessorMixin:
         import time as _time_fm
         match["decided"]    = True
         match["decided_at"] = _time_fm.time()
-        from engine.components import CombatState as _CSF, CharacterStats as _CharF
+        from engine.components import (CombatState as _CSF, CharacterStats as _CharF,
+                                       CombatStats as _CSTF)
         winner_members = set(match[winner_team_key]) if winner_team_key else set()
         match["winner_members"] = winner_members
         all_members = match["team_a"] + match["team_b"]
         results = []
         for eid in all_members:
-            cst = self.world.get_component(eid, _CSF)
-            if cst:
-                cst.is_immune  = True
-                cst.is_stunned = True
-            match["arena_locked"].add(eid)
+            cstats = self.world.get_component(eid, _CSTF)
+            if cstats and cstats.current_hp > 0:
+                cst = self.world.get_component(eid, _CSF)
+                if cst:
+                    cst.is_immune  = True
+                    cst.is_stunned = True
+                match["arena_locked"].add(eid)
             char = self.world.get_component(eid, _CharF)
             results.append({
                 "name":   char.name if char else "?",
@@ -289,6 +293,19 @@ class MatchProcessorMixin:
         sid = self.get_session_id_for_player(eid)
         if sid is not None:
             self.transfer_player(sid, eid, r_map, r_x, r_y)
+
+        # Quem morreu de verdade na arena (ver _eliminate_player, 20/07/2026)
+        # sai como fantasma pra sempre se não for revivido — não pode
+        # reviver DENTRO da arena (server/session.py::_handle_revive_request
+        # bloqueia), então revive aqui, na hora de sair de vez, já na
+        # posição restaurada acima (full HP — mesmo critério de
+        # _auto_revive_on_disconnect: nunca revive "in place" perigoso, e
+        # aqui "in place" já é o mapa/tile de origem, seguro por definição).
+        from engine.components import GhostState as _GSL
+        gst = self.world.get_component(eid, _GSL)
+        if gst and gst.is_dead:
+            self._revive_player(eid, hp_frac=1.0, at_corpse=False)
+
         try:
             self.world.remove_component(eid, _FactionL)
         except Exception:
@@ -356,13 +373,18 @@ class MatchProcessorMixin:
     def _arena_lethal_interceptor(self, world, killer_eid: int, target_id: int) -> bool:
         """Registrado via WorldServer._lethal_interceptor_composite (um
         registro só, composto com o de duelo — ver register_lethal_
-        interceptor). True = intercepta a morte (apply_damage_core deixa
-        o alvo em 1 HP em vez de matar)."""
+        interceptor). SEMPRE retorna False (nunca intercepta) — diferente
+        do duelo (que deixa o perdedor em 1 HP), a arena deixa o golpe
+        MATAR de verdade (revisado 20/07/2026, pedido do usuário: morte
+        real + fantasma, igual PvE, em vez de "1 HP + imune" congelado).
+        Só usa este hook como PONTO DE NOTIFICAÇÃO — roda exatamente no
+        instante do golpe que mataria, then apply_damage_core segue seu
+        fluxo normal (PendingDeath → ServerDeathHandler →
+        _handle_player_death)."""
         match_id = self._player_match_id.get(target_id)
-        if match_id is None:
-            return False
-        self._eliminate_player(match_id, target_id)
-        return True
+        if match_id is not None:
+            self._eliminate_player(match_id, target_id)
+        return False
 
     # ── Eventos por tick (broadcast loop do SessionManager) ─────────────────
 
