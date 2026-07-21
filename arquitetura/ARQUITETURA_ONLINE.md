@@ -5031,6 +5031,100 @@ partida.
 
 ---
 
+### §34.32 — Ciclo de partida vira 2 fases: eliminado continuava agindo + modal de fim de partida estilo WoW (20/07/2026)
+
+Dois pedidos do usuário após testar `v0.5.0`: (1) bug — "os players
+continuam controlando o personagem mesmo após perder morrer"; (2)
+feature — modal de fim de partida com nome/dano/vitória-derrota de cada
+personagem + botão "Sair da Arena" (equivalente ao do WoW).
+
+**Causa raiz do bug**: `_eliminate_player` só setava `is_immune=True`
+(bloqueia DANO em `apply_damage_core`) — mas `CombatState.can_act()`
+(gate de auto-attack/skill, `server/combat_processor.py`/
+`server/skill_processor.py`) e `can_move()` (gate client-side de
+movimento, `ui/systems.py`) só olham pra `is_stunned`, nunca pra
+`is_immune`. Fix: `_eliminate_player` agora seta os DOIS
+(`is_immune`+`is_stunned`, sem `stun_timer` — `CombatStateSystem._tick_
+stun_timer` só limpa `is_stunned` se `stun_timer>0`, então fica travado
+até este mixin mesmo limpar).
+
+**Isso expôs um problema maior ao implementar o modal**: o modal
+precisa congelar os 4 (vencedores inclusive — ninguém pode continuar
+brigando enquanto o placar é mostrado), mas limpar `is_stunned`
+incondicionalmente ao restaurar apagaria um stun REAL e coincidente
+(ex: Polimorfia ativa bem no instante em que a partida termina). Fix:
+`match["arena_locked"]` (novo, set de eids) rastreia QUEM teve
+`is_immune`/`is_stunned` setados POR ESTE MIXIN — só esses são limpos
+ao sair (`_arena_leave_now`); um `is_stunned` pré-existente e
+não-relacionado nunca é tocado.
+
+**Redesenho do ciclo de vida da partida** (o antigo `_end_match`
+monolítico — decide + restaura os 4 + descarrega a instância tudo de
+uma vez — não dava pra manter o placar visível):
+1. **ATIVA** — golpe letal elimina (`_eliminate_player`, como antes,
+   agora com `is_stunned` também).
+2. **DECIDIDA** (`_finish_match`, novo — substitui `_end_match`) — time
+   inteiro eliminado OU esvaziado por forfeit/desconexão. NÃO restaura
+   ninguém ainda: congela os 4 (`arena_locked`), calcula
+   nome+dano+vitória de cada um (`CharacterStats.name` +
+   `damage_by_eid`, novo — ver rastreador de dano abaixo) e manda
+   `ARENA_MATCH_RESULT` pros 4 montarem o modal. `match["decided"]` +
+   `match["decided_at"]` (timestamp) guardados pro timeout.
+3. **Cada player sai quando quiser** — `ARENA_FORFEIT` reaproveitado
+   (mesmo comando de desistir no meio da partida — depois de decidida
+   só teleporta de volta, não muda mais o resultado) → `_arena_leave_now`
+   restaura mapa/tile/Facção/is_immune/is_stunned SÓ DESSE eid e o
+   remove do roster do time.
+4. **Timeout automático** (`_tick_arena_results_timeout`, novo,
+   `ARENA_RESULT_AUTO_LEAVE_S = 15.0`) — força a saída de quem não
+   clicou nem desconectou, pra instância nunca ficar presa na memória
+   pra sempre.
+5. Quando o roster dos dois times esvazia (todo mundo já saiu), a
+   instância é descarregada de vez.
+
+**Rastreador de dano**: `engine/core_systems.py` ganhou
+`register_damage_tracker`/`_damage_tracker` — mesmo padrão plugável de
+`register_lethal_interceptor`, chamado dentro de `apply_damage_core`
+sempre que `dmg>0` é aplicado (`killer_eid != -1`), sem precisar que
+cada call site passe um callback manualmente (diferente do
+`on_damage_dealt` já existente, que é por-chamada). `WorldServer`
+registra `MatchProcessorMixin._track_arena_damage` no boot — acumula em
+`match["damage_by_eid"]`, no-op fora de qualquer partida.
+
+**Protocolo**: `ARENA_MATCH_RESULT` (S→C, novo,
+`{results:[{name,damage,won}]}`) — mandado uma vez quando a partida é
+DECIDIDA, pros 4 (não teleporta ninguém). `ARENA_MATCH_END` (já
+existia) continua disparando só quando cada player efetivamente SAI
+(clique/forfeit/desconexão/timeout), junto do `ZONE_CHANGE` de volta —
+papéis agora bem separados (antes os dois aconteciam juntos, no exato
+momento da decisão).
+
+**Cliente**: `client/arena_handlers.py` ganhou o modal (`ui/ui_sizes.py::
+ARENA_RESULT_W/H`) — título, banner "Vitória!"/"Derrota" (identifica a
+própria linha por `CharacterStats.name` do player local — nomes já são
+globalmente únicos, ver §34.28), lista nome+dano ordenada por dano
+decrescente, botão "Sair da Arena" que manda `ARENA_FORFEIT` (mesmo
+comando do `/forfeit`, zero handler novo no servidor pra isso). Modal é
+bloqueante (`_handle_arena_click` verifica `_arena_result` antes de
+qualquer outra coisa), fecha sozinho ao receber `ARENA_MATCH_END`
+(servidor já confirmou a saída).
+
+**Validado**: `tests/test_arena.py` (33 testes no total, 7 a mais que
+antes desta rodada — vários dos antigos reescritos pro ciclo de 2 fases:
+dano rastreado corretamente, `ARENA_MATCH_RESULT` com nome/dano/vitória
+dos 4, todo mundo congelado `can_act()==can_move()==False` inclusive
+vencedores logo após decisão, sair depois de decidida restaura só quem
+saiu, último a sair descarrega a instância, timeout automático força
+saída, timeout não dispara antes da hora, stun real não-relacionado
+nunca é apagado). Suíte completa 324/324, rodada 3x.
+
+**Não validado**: sessão manual com testers reais — eliminado não
+consegue mais agir/mover; modal aparece com placar correto ao fim da
+partida; "Sair da Arena" funciona; timeout de 15s força saída se
+ninguém clicar.
+
+---
+
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
 
 ```

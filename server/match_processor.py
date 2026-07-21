@@ -22,12 +22,22 @@ plugável como duelo/zona) — cada player ganha um componente Faction
 partida dura, sobrescrevendo a facção default "jogadores". can_engage()
 já libera dano nesse caso sem nenhuma mudança (relação != "amigavel").
 
-Eliminação (não morte de verdade): reusa o MESMO hook de golpe letal do
-duelo (engine.core_systems.register_lethal_interceptor, um registro só —
-ver WorldServer._lethal_interceptor_composite) — golpe que mataria deixa
-o alvo em 1 HP + CombatState.is_immune=True (não pode mais ser
-ferido/agir de forma útil) em vez de morrer/virar fantasma. Time com
-todos os membros eliminados perde; o outro vence.
+Ciclo de vida de uma partida (revisado 20/07/2026, feedback do usuário):
+1. ATIVA — golpe que mataria elimina (CombatState.is_immune=True +
+   is_stunned=True, não pode mais ser ferido NEM agir/mover — ver
+   _eliminate_player). Time com todos os membros eliminados: a partida é
+   DECIDIDA (_finish_match), NÃO restaurada ainda.
+2. DECIDIDA — os 4 ficam congelados (is_immune+is_stunned, vencedores
+   inclusive) parados na arena vendo o placar (nome/dano/vitória de cada
+   um, mandado uma vez via ARENA_MATCH_RESULT) — igual ao modal de fim
+   de partida do WoW. Cada player sai quando quiser clicando "Sair da
+   Arena" (manda ARENA_FORFEIT, mesmo comando de desistir no meio da
+   partida — nesta fase não muda o resultado, só teleporta de volta) ou
+   é forçado a sair após ARENA_RESULT_AUTO_LEAVE_S segundos
+   (_tick_arena_results_timeout, evita instância presa pra sempre se
+   ninguém clicar nem desconectar).
+3. ENCERRADA — quando o roster dos dois times esvazia (todo mundo já
+   saiu), a instância é descarregada de vez (_arena_leave_now).
 """
 from __future__ import annotations
 
@@ -35,6 +45,11 @@ ARENA_TEMPLATE_2V2 = "maps/arena_2v2.csv"
 # Spawns opostos dentro do mapa 20x20 (interior walkable = tiles 1..18).
 _SPAWN_TEAM_A = [(3, 9), (3, 10)]
 _SPAWN_TEAM_B = [(16, 9), (16, 10)]
+
+# Tempo máximo parado na tela de resultado antes de ser teleportado de
+# volta à força — evita que a instância fique presa na memória pra
+# sempre se um player não clicar "Sair da Arena" nem desconectar.
+ARENA_RESULT_AUTO_LEAVE_S = 15.0
 
 
 class MatchProcessorMixin:
@@ -82,6 +97,19 @@ class MatchProcessorMixin:
                 continue  # grupo se desfez enquanto esperava — descarta, segue tentando o resto
             self._create_match(list(party_a["members"]), list(party_b["members"]))
 
+    def _tick_arena_results_timeout(self) -> None:
+        """Partidas DECIDIDAS há mais de ARENA_RESULT_AUTO_LEAVE_S segundos
+        forçam a saída de quem ainda não clicou "Sair da Arena"."""
+        import time as _time_to
+        now = _time_to.time()
+        for match_id, match in list(self._active_matches.items()):
+            if not match.get("decided"):
+                continue
+            if now - match["decided_at"] < ARENA_RESULT_AUTO_LEAVE_S:
+                continue
+            for eid in list(match["team_a"] + match["team_b"]):
+                self._arena_leave_now(match_id, eid)
+
     # ── Ciclo de vida de partida ─────────────────────────────────────────────
 
     def _create_match(self, team_a_eids: list[int], team_b_eids: list[int]) -> None:
@@ -101,11 +129,16 @@ class MatchProcessorMixin:
             return_pos[eid] = (self.get_player_map(sid), tx, ty)
 
         self._active_matches[match_id] = {
-            "instance_key": instance_key,
-            "team_a":       list(team_a_eids),
-            "team_b":       list(team_b_eids),
-            "eliminated":   set(),
-            "return_pos":   return_pos,
+            "instance_key":    instance_key,
+            "team_a":          list(team_a_eids),
+            "team_b":          list(team_b_eids),
+            "eliminated":      set(),
+            "return_pos":      return_pos,
+            "damage_by_eid":   {eid: 0 for eid in team_a_eids + team_b_eids},
+            "arena_locked":    set(),   # eids com is_immune/is_stunned setados POR ESTE código
+            "decided":         False,
+            "decided_at":      0.0,
+            "winner_members":  set(),
         }
         for eid in team_a_eids + team_b_eids:
             self._player_match_id[eid] = match_id
@@ -139,10 +172,31 @@ class MatchProcessorMixin:
                 "opponents": team_b_eids if eid in team_a_eids else team_a_eids,
             })
 
+    def _track_arena_damage(self, killer_eid: int, target_id: int, dmg: int) -> None:
+        """Registrado via engine.core_systems.register_damage_tracker —
+        acumula dano causado por `killer_eid` na partida ativa (placar de
+        fim de partida). No-op fora de qualquer partida ou se o alvo não
+        for da mesma partida (nunca deveria acontecer — instância isolada
+        — mas defende contra o caso de dano vazando por engano)."""
+        match_id = self._player_match_id.get(killer_eid)
+        if match_id is None:
+            return
+        match = self._active_matches.get(match_id)
+        if match is None or target_id not in (match["team_a"] + match["team_b"]):
+            return
+        match["damage_by_eid"][killer_eid] = match["damage_by_eid"].get(killer_eid, 0) + dmg
+
     def _eliminate_player(self, match_id: str, eid: int) -> None:
-        """Marca `eid` eliminado (não pode mais ser ferido/agir de forma
-        útil — CombatState.is_immune). Encerra a partida se o time inteiro
-        dele já estiver eliminado."""
+        """Marca `eid` eliminado — não pode mais ser ferido (is_immune) NEM
+        agir/mover (is_stunned, sem stun_timer — CombatStateSystem só
+        limpa is_stunned se stun_timer>0, então fica travado até esta
+        classe mesma limpar em _arena_leave_now). Antes só is_immune era
+        setado: bloqueava dano mas can_act()/can_move() não olham pra ele
+        (só pra is_stunned), então o eliminado continuava atacando/andando
+        livremente — bug real relatado pelo usuário 20/07/2026
+        ("continuam controlando o personagem mesmo após perder"). Encerra
+        a partida (decide, não restaura ainda — ver _finish_match) se o
+        time inteiro dele já estiver eliminado."""
         match = self._active_matches.get(match_id)
         if match is None or eid in match["eliminated"]:
             return
@@ -150,49 +204,63 @@ class MatchProcessorMixin:
         from engine.components import CombatState as _CSElim
         cst = self.world.get_component(eid, _CSElim)
         if cst:
-            cst.is_immune = True
+            cst.is_immune  = True
+            cst.is_stunned = True
+        match["arena_locked"].add(eid)
 
         team_key  = "team_a" if eid in match["team_a"] else "team_b"
         other_key = "team_b" if team_key == "team_a" else "team_a"
         if all(m in match["eliminated"] for m in match[team_key]):
-            self._end_match(match_id, other_key)
+            self._finish_match(match_id, other_key)
 
-    def _end_match(self, match_id: str, winner_team_key: "str | None") -> None:
-        """`winner_team_key` = "team_a"/"team_b" (elimination normal) ou
+    def _finish_match(self, match_id: str, winner_team_key: "str | None") -> None:
+        """Partida DECIDIDA (time inteiro eliminado, ou esvaziado por
+        forfeit/desconexão em _arena_leave_now) — NÃO restaura ninguém
+        ainda, diferente do antigo `_end_match` monolítico. Congela todo
+        mundo (is_immune+is_stunned, vencedores inclusive — ninguém briga
+        mais) e manda o placar (nome+dano+vitória de cada um dos 4) pra
+        cada cliente montar o modal de fim de partida (estilo WoW,
+        pedido do usuário 20/07/2026). Restauração de verdade só acontece
+        quando cada player clica "Sair da Arena" (ARENA_FORFEIT — mesmo
+        comando do desistir no meio da partida) ou pelo timeout
+        automático (_tick_arena_results_timeout) — ver _arena_leave_now.
+
+        `winner_team_key` = "team_a"/"team_b" (elimination normal) ou
         None (ninguém vence — ex: os dois times ficaram vazios)."""
-        match = self._active_matches.pop(match_id, None)
-        if match is None:
+        match = self._active_matches.get(match_id)
+        if match is None or match["decided"]:
             return
-        from engine.components import Faction as _FactionE, CombatState as _CSE
+        import time as _time_fm
+        match["decided"]    = True
+        match["decided_at"] = _time_fm.time()
+        from engine.components import CombatState as _CSF, CharacterStats as _CharF
         winner_members = set(match[winner_team_key]) if winner_team_key else set()
-        for eid in match["team_a"] + match["team_b"]:
-            self._player_match_id.pop(eid, None)
-            try:
-                self.world.remove_component(eid, _FactionE)
-            except Exception:
-                pass
-            cst = self.world.get_component(eid, _CSE)
+        match["winner_members"] = winner_members
+        all_members = match["team_a"] + match["team_b"]
+        results = []
+        for eid in all_members:
+            cst = self.world.get_component(eid, _CSF)
             if cst:
-                cst.is_immune = False
-            r_map, r_x, r_y = match["return_pos"].get(eid, (self._map_file, 115, 389))
-            sid = self.get_session_id_for_player(eid)
-            if sid is not None:
-                self.transfer_player(sid, eid, r_map, r_x, r_y)
-            self._arena_match_end_events_this_tick.append({
-                "eid":      eid,
-                "won":      eid in winner_members,
-                "map_file": r_map, "target_x": r_x, "target_y": r_y,
+                cst.is_immune  = True
+                cst.is_stunned = True
+            match["arena_locked"].add(eid)
+            char = self.world.get_component(eid, _CharF)
+            results.append({
+                "name":   char.name if char else "?",
+                "damage": match["damage_by_eid"].get(eid, 0),
+                "won":    eid in winner_members,
             })
-        self._unload_instance(match["instance_key"])
+        for eid in all_members:
+            self._arena_match_result_events_this_tick.append({
+                "eid": eid, "results": results,
+            })
 
     def _arena_leave_now(self, match_id: str, eid: int) -> None:
-        """`eid` sai da partida IMEDIATAMENTE (desconexão ou /forfeit) —
-        diferente de `_eliminate_player` (golpe letal): ali o player fica
-        PARADO na arena, imune, só espectando até o time inteiro perder;
-        aqui ele é removido do roster do time (não só marcado eliminado) e
-        teleportado de volta na hora, porque ele está saindo de verdade
-        (desconectando OU desistindo) — não faz sentido ele continuar
-        contando como presente na instância.
+        """`eid` sai da partida IMEDIATAMENTE (desconexão, /forfeit, ou
+        clique em "Sair da Arena" depois de decidida) — restaura mapa/
+        tile/Facção na hora e remove `eid` do roster do time (não só do
+        set `eliminated`), porque ele está saindo de verdade — não faz
+        sentido continuar contando como presente na instância.
 
         Precisa rodar ANTES do save do disconnect
         (server/session.py::on_disconnect) — sem isso, `get_player_save_
@@ -209,7 +277,7 @@ class MatchProcessorMixin:
         volta").
 
         Remover do roster (não só do set `eliminated`) também evita que
-        `_end_match`, quando a partida terminar de verdade depois, tente
+        este método, quando chamado de novo pra outro membro, tente
         restaurar/notificar este `eid` de novo — o que poderia
         teleportá-lo pra fora de onde quer que ele esteja àquela altura
         (já numa fila nova, ou dentro de outra partida)."""
@@ -228,9 +296,19 @@ class MatchProcessorMixin:
         cst = self.world.get_component(eid, _CSL)
         if cst:
             cst.is_immune = False
+            # Só limpa is_stunned de quem ESTE mixin travou
+            # (arena_locked) — um forfeit voluntário ANTES de qualquer
+            # eliminação, ou o vencedor congelado em _finish_match, nunca
+            # tiveram is_stunned setado por golpe letal; um player pode
+            # legitimamente estar stunado por um efeito de combate real e
+            # não-relacionado nesse instante — limpar sem checar apagaria
+            # esse stun.
+            if eid in match["arena_locked"]:
+                cst.is_stunned = False
+        match["arena_locked"].discard(eid)
         self._player_match_id.pop(eid, None)
         self._arena_match_end_events_this_tick.append({
-            "eid": eid, "won": False,
+            "eid": eid, "won": eid in match["winner_members"],
             "map_file": r_map, "target_x": r_x, "target_y": r_y,
         })
 
@@ -238,24 +316,35 @@ class MatchProcessorMixin:
         other_key = "team_b" if team_key == "team_a" else "team_a"
         match[team_key]     = [m for m in match[team_key] if m != eid]
         match["eliminated"].discard(eid)
-        if not match[team_key]:
+
+        if not match["team_a"] and not match["team_b"]:
+            self._active_matches.pop(match_id, None)
+            self._unload_instance(match["instance_key"])
+            return
+
+        if not match["decided"] and not match[team_key]:
             winner = other_key if match[other_key] else None
-            self._end_match(match_id, winner)
+            self._finish_match(match_id, winner)
 
     def end_matches_of(self, eid: int) -> None:
-        """Desconexão em partida ativa = sair na hora (chamado ANTES de
-        despawn_player E antes do save — mesmo ponto de end_duels_of/
-        end_parties_of, ver server/session.py::on_disconnect)."""
+        """Desconexão em partida ativa OU na tela de resultado = sair na
+        hora (chamado ANTES de despawn_player E antes do save — mesmo
+        ponto de end_duels_of/end_parties_of, ver
+        server/session.py::on_disconnect)."""
         match_id = self._player_match_id.get(eid)
         if match_id is None:
             return
         self._arena_leave_now(match_id, eid)
 
     def request_arena_forfeit(self, eid: int) -> "str | None":
-        """Comando de chat /forfeit ou /ff — desiste da partida atual e
-        sai na hora, sem esperar o time inteiro ser eliminado. Retorna
-        None em sucesso, motivo em string se recusado (não está numa
-        partida)."""
+        """Comando de chat /forfeit ou /ff — também usado pelo botão
+        "Sair da Arena" do modal de fim de partida (client/
+        arena_handlers.py), já que os dois fazem exatamente a mesma
+        coisa do lado servidor: sair na hora. No meio da partida conta
+        como desistência (o time perde se isso esvaziar o roster); depois
+        de decidida, só teleporta de volta (o resultado já está fechado).
+        Retorna None em sucesso, motivo em string se recusado (não está
+        numa partida)."""
         match_id = self._player_match_id.get(eid)
         if match_id is None:
             return "not_in_match"
@@ -285,4 +374,9 @@ class MatchProcessorMixin:
     def consume_arena_match_end_events(self) -> list[dict]:
         result = list(self._arena_match_end_events_this_tick)
         self._arena_match_end_events_this_tick.clear()
+        return result
+
+    def consume_arena_match_result_events(self) -> list[dict]:
+        result = list(self._arena_match_result_events_this_tick)
+        self._arena_match_result_events_this_tick.clear()
         return result

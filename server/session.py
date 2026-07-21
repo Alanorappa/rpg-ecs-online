@@ -1953,10 +1953,11 @@ class SessionManager:
                     "opponents": _am_start["opponents"],
                 })
 
-            # Arena: partida encerrada neste tick (time eliminado ou
-            # desconexão) — cada um dos 4 players já foi teleportado de
-            # volta (MatchProcessorMixin._end_match); avisa o cliente pra
-            # voltar ao mapa/posição anterior + o resultado.
+            # Arena: player saiu da partida neste tick (/forfeit, botão
+            # "Sair da Arena", desconexão, ou timeout automático da tela
+            # de resultado — sempre via MatchProcessorMixin._arena_leave_
+            # now) — ele já foi teleportado de volta; avisa o cliente pra
+            # trocar de mapa/posição + o resultado (won).
             for _am_end in self.world_server.consume_arena_match_end_events():
                 _ame_sid  = self.world_server.get_session_id_for_player(_am_end["eid"])
                 _ame_sess = self._sessions.get(_ame_sid) if _ame_sid else None
@@ -1969,6 +1970,17 @@ class SessionManager:
                 })
                 _ame_sess.known_eids.clear()
                 await _ame_sess.send(MsgType.ARENA_MATCH_END, {"won": _am_end["won"]})
+
+            # Arena: partida DECIDIDA neste tick (time inteiro eliminado
+            # ou esvaziado) — NÃO teleporta ninguém ainda (isso só
+            # acontece quando cada um sai, ver bloco acima); só manda o
+            # placar pra montar o modal de fim de partida (estilo WoW).
+            for _am_res in self.world_server.consume_arena_match_result_events():
+                _amr_sid  = self.world_server.get_session_id_for_player(_am_res["eid"])
+                _amr_sess = self._sessions.get(_amr_sid) if _amr_sid else None
+                if not (_amr_sess and _amr_sess.authenticated):
+                    continue
+                await _amr_sess.send(MsgType.ARENA_MATCH_RESULT, {"results": _am_res["results"]})
 
             # Eventos de som posicionais (aggro de mob, etc.) → broadcast AOI
             for _snd_ev in self.world_server.consume_sound_events():

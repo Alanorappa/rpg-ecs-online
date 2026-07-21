@@ -32,6 +32,22 @@ def register_lethal_interceptor(fn) -> None:
     _lethal_interceptor = fn
 
 
+# ── Rastreador de dano (plugável) ────────────────────────────────────────────
+# Mesmo padrão do interceptor acima — o WorldServer registra no boot pra
+# acumular dano causado por player em partida de Arena (placar de fim de
+# partida, estilo WoW, ver server/match_processor.py::_track_arena_damage).
+# `fn(killer_eid, target_id, dmg) -> None` — chamado toda vez que dmg > 0 é
+# efetivamente aplicado (mesmo ponto de on_damage_dealt, mas SEM precisar que
+# cada call site de apply_damage_core passe o callback manualmente).
+_damage_tracker = None
+
+
+def register_damage_tracker(fn) -> None:
+    """Registra o rastreador de dano (server: no boot). `None` desregistra."""
+    global _damage_tracker
+    _damage_tracker = fn
+
+
 # ── apply_damage_core ─────────────────────────────────────────────────────────
 
 def apply_damage_core(world, target_id: int, dmg: int, *,
@@ -108,6 +124,8 @@ def apply_damage_core(world, target_id: int, dmg: int, *,
     if dmg > 0:
         if on_damage_dealt is not None and killer_eid != -1:
             on_damage_dealt(killer_eid, target_id, dmg)
+        if _damage_tracker is not None and killer_eid != -1:
+            _damage_tracker(killer_eid, target_id, dmg)
         sfx = world.get_component(target_id, StatusEffects)
         if sfx:
             if sfx.remove("polymorph") and on_cc_break:

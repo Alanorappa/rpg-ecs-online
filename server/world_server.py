@@ -271,6 +271,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._next_match_id: int = 1
         self._arena_match_start_events_this_tick: list[dict] = []
         self._arena_match_end_events_this_tick: list[dict] = []
+        self._arena_match_result_events_this_tick: list[dict] = []
 
         # Timer de ataque por jogador: session_id → segundos até próximo hit
         self._attack_timers: dict[str, float] = {}
@@ -445,6 +446,12 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # vez de matar/virar fantasma). Ver _lethal_interceptor_composite.
         from engine.core_systems import register_lethal_interceptor
         register_lethal_interceptor(self._lethal_interceptor_composite)
+
+        # Rastreador de dano — acumula dano causado por player em partida de
+        # Arena pro placar de fim de partida (MatchProcessorMixin._track_
+        # arena_damage é no-op fora de partida, checa _player_match_id).
+        from engine.core_systems import register_damage_tracker
+        register_damage_tracker(self._track_arena_damage)
 
     def _load_map_for(self, map_file: str, instance_key: str = "") -> "_MapBundle":
         """
@@ -3257,6 +3264,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._tick_trade_distance_check()
         self._tick_duel_distance_check()
         self._tick_arena_queue()
+        self._tick_arena_results_timeout()
 
         # Detecta novos mobs/NPCs de combate criados pelo SpawnZoneSystem
         # neste tick — gate é Combatant, não Enemy (Sistema de Facções,

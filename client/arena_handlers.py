@@ -6,11 +6,13 @@ Sem lógica de gameplay aqui: a troca de mapa pra dentro/fora da instância
 já reusa 100% o fluxo existente de ZONE_CHANGE (client/network_handlers.py::
 _handle_msg_zone_change → game.py::_do_transition, o mesmo usado por
 transição de caverna) — este mixin só cuida do botão "Fila de Arena 2x2"
-no frame de grupo e do feedback (log/aviso) de entrar na fila/começar/
-terminar a partida.
+no frame de grupo, do modal de fim de partida (placar + "Sair da Arena",
+estilo WoW — pedido do usuário 20/07/2026) e do feedback (log/aviso) de
+entrar na fila/começar/terminar a partida.
 """
 import pygame
 
+from ui.ui_sizes import UI
 from ui.sound_manager import SOUNDS
 
 
@@ -21,6 +23,12 @@ class ArenaHandlers:
     @property
     def _arena_in_queue(self) -> bool:
         return getattr(self, "_arena_in_queue_val", False)
+
+    @property
+    def _arena_result(self):
+        """None fora da tela de resultado; senão lista de
+        {"name","damage","won"} dos 4 players da partida decidida."""
+        return getattr(self, "_arena_result_val", None)
 
     @property
     def _arena_in_match(self) -> bool:
@@ -64,11 +72,20 @@ class ArenaHandlers:
         WARN.add("Partida de Arena 2x2 começou! Use /forfeit ou /ff pra desistir.")
 
     def _handle_msg_arena_match_end(self, payload: dict) -> None:
-        from ui.floating_text import WARN
         won = bool(payload.get("won", False))
         self._arena_in_match_val = False
         self._arena_opponents_server_val = set()
-        WARN.add("Vitória na Arena!" if won else "Derrota na Arena.")
+        # Fecha o modal de resultado (se estava aberto) — ARENA_MATCH_END
+        # só chega depois que o servidor já restaurou de verdade este
+        # player (clique em "Sair da Arena", /forfeit, ou timeout).
+        self._arena_result_val = None
+
+    def _handle_msg_arena_match_result(self, payload: dict) -> None:
+        """Partida decidida (time inteiro eliminado ou esvaziado) — abre
+        o modal de fim de partida (placar + "Sair da Arena"). NÃO
+        teleporta sozinho — isso só acontece quando o player sai de
+        verdade (ARENA_MATCH_END, acima)."""
+        self._arena_result_val = payload.get("results", [])
 
     # ── Envio ao servidor ──────────────────────────────────────────────────
 
@@ -140,6 +157,8 @@ class ArenaHandlers:
     def _handle_arena_click(self, event) -> bool:
         if event.type != pygame.MOUSEBUTTONDOWN or event.button != 1:
             return False
+        if self._arena_result is not None:
+            return self._handle_arena_result_click(event)
         rect = self._arena_queue_button_rect()
         if rect is None or not rect.collidepoint(event.pos):
             return False
@@ -148,4 +167,78 @@ class ArenaHandlers:
         else:
             self._send_arena_queue_join()
         SOUNDS.play_ui("button_click")
+        return True
+
+    # ── Modal de fim de partida (placar + "Sair da Arena", estilo WoW) ───────
+
+    def _arena_result_modal_rects(self):
+        SW, SH = self.screen.get_size()
+        w, h = self._u(UI.ARENA_RESULT_W), self._u(UI.ARENA_RESULT_H)
+        x0, y0 = (SW - w) // 2, (SH - h) // 2
+        panel_rect = pygame.Rect(x0, y0, w, h)
+        leave_rect = pygame.Rect(x0 + self._u(90), y0 + h - self._u(46),
+                                 self._u(200), self._u(34))
+        return panel_rect, leave_rect
+
+    def _draw_arena_result_modal(self) -> None:
+        results = self._arena_result
+        if results is None:
+            return
+        panel_rect, leave_rect = self._arena_result_modal_rects()
+        SW, SH = self.screen.get_size()
+        overlay = pygame.Surface((SW, SH), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 160))
+        self.screen.blit(overlay, (0, 0))
+        pygame.draw.rect(self.screen, (24, 20, 30), panel_rect, border_radius=8)
+        pygame.draw.rect(self.screen, (120, 100, 160), panel_rect, 2, border_radius=8)
+
+        title_s = self.font_md.render("Fim de Partida — Arena 2x2", False, (225, 210, 245))
+        self.screen.blit(title_s, (panel_rect.centerx - title_s.get_width() // 2,
+                                   panel_rect.y + self._u(14)))
+
+        from engine.components import CharacterStats as _CS_arres
+        my_cs   = self.world.get_component(self.player_entity, _CS_arres)
+        my_name = my_cs.name if my_cs else None
+        my_row  = next((r for r in results if r.get("name") == my_name), None)
+        if my_row is not None:
+            banner = "Vitória!" if my_row.get("won") else "Derrota"
+            banner_col = (120, 220, 120) if my_row.get("won") else (220, 110, 110)
+            banner_s = self.font_md.render(banner, False, banner_col)
+            self.screen.blit(banner_s, (panel_rect.centerx - banner_s.get_width() // 2,
+                                        panel_rect.y + self._u(42)))
+
+        header_y = panel_rect.y + self._u(78)
+        hdr_col  = (150, 140, 175)
+        self.screen.blit(self.font_xs.render("Jogador", False, hdr_col),
+                         (panel_rect.x + self._u(20), header_y))
+        self.screen.blit(self.font_xs.render("Dano", False, hdr_col),
+                         (panel_rect.x + self._u(220), header_y))
+
+        rows_sorted = sorted(results, key=lambda r: r.get("damage", 0), reverse=True)
+        row_h = self._u(28)
+        for i, r in enumerate(rows_sorted):
+            ry = header_y + self._u(20) + i * row_h
+            won = bool(r.get("won"))
+            col = (170, 230, 170) if won else (230, 170, 170)
+            name_s = self.font_sm.render(str(r.get("name", "?")), False, col)
+            dmg_s  = self.font_sm.render(str(r.get("damage", 0)), False, col)
+            self.screen.blit(name_s, (panel_rect.x + self._u(20), ry))
+            self.screen.blit(dmg_s,  (panel_rect.x + self._u(220), ry))
+
+        hov = leave_rect.collidepoint(pygame.mouse.get_pos())
+        pygame.draw.rect(self.screen, (75, 55, 100) if hov else (55, 40, 75),
+                         leave_rect, border_radius=5)
+        pygame.draw.rect(self.screen, (160, 130, 200), leave_rect, 1, border_radius=5)
+        btn_s = self.font_sm.render("Sair da Arena", False, (230, 220, 245))
+        self.screen.blit(btn_s, (leave_rect.centerx - btn_s.get_width() // 2,
+                                 leave_rect.centery - btn_s.get_height() // 2))
+
+    def _handle_arena_result_click(self, event) -> bool:
+        """True sempre (modal bloqueante — consome qualquer clique
+        enquanto a tela de resultado está aberta, mesmo padrão do
+        convite de duelo)."""
+        _, leave_rect = self._arena_result_modal_rects()
+        if leave_rect.collidepoint(event.pos):
+            self._send_arena_forfeit()
+            SOUNDS.play_ui("button_click")
         return True

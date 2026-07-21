@@ -139,7 +139,8 @@ class MsgType(str, Enum):
     ARENA_QUEUE_STATE   = "arena_queue_state"   # S→C  {in_queue: bool, reason?} — reason só quando um JOIN foi recusado (wrong_size|already_queued|in_match|no_party)
     ARENA_MATCH_START   = "arena_match_start"   # S→C  {map_file, teammates:[eid], opponents:[eid]} — pra cada um dos 4, junto do ZONE_CHANGE pra instância
     ARENA_MATCH_END     = "arena_match_end"     # S→C  {won: bool} — junto do ZONE_CHANGE de volta pro mapa/posição de antes
-    ARENA_FORFEIT       = "arena_forfeit"       # C→S  {} — comando de chat /forfeit ou /ff, desiste da partida atual
+    ARENA_FORFEIT       = "arena_forfeit"       # C→S  {} — comando de chat /forfeit ou /ff (ou botão "Sair da Arena"), sai na hora
+    ARENA_MATCH_RESULT  = "arena_match_result"  # S→C  {results:[{name,damage,won}]} — placar de fim de partida (modal, não teleporta sozinho)
 
     CONSUMABLE_USE     = "consumable_use"    # C→S  uso de consumível (heal_instant, HoT, buffs futuros)
     GOLD_UPDATE        = "gold_update"       # C→S  gold mudou (loot de moedas) {gold: N}

@@ -2089,6 +2089,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             self._draw_party_frames()
             self._draw_party_invite_ui()
             self._draw_arena_queue_button()
+            self._draw_arena_result_modal()
             self._draw_pvp_zone_banner()
             if self._show_talents:
                 self._talent_system.render()

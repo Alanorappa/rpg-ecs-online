@@ -124,27 +124,75 @@ class TestArenaMatch(unittest.TestCase):
         # partida NÃO acabou — só 1 dos 2 do time B foi eliminado
         self.assertIn(self.match_id, self.ws._active_matches)
 
-    def test_eliminar_time_inteiro_termina_partida_e_restaura_tudo(self):
+    def test_eliminado_nao_pode_mais_agir_nem_se_mover(self):
+        """Bug real relatado pelo usuário 20/07/2026: "continuam
+        controlando o personagem mesmo após perder" — is_immune sozinho
+        só bloqueia DANO (apply_damage_core), can_act()/can_move() olham
+        pra is_stunned, nunca is_immune."""
+        target = self.team_b[0]
+        apply_damage_core(self.ws.world, target, 999999, killer_eid=self.team_a[0])
+        cst = self.ws.world.get_component(target, CombatState)
+        self.assertFalse(cst.can_act())
+        self.assertFalse(cst.can_move())
+
+    def test_eliminar_time_inteiro_decide_a_partida_mas_nao_restaura_ninguem_ainda(self):
+        """Ciclo revisado 20/07/2026 (pedido do usuário — modal de fim de
+        partida estilo WoW): time inteiro eliminado DECIDE a partida
+        (congela todo mundo, monta o placar) mas NÃO teleporta/restaura
+        ninguém ainda — isso só acontece quando cada um clica "Sair da
+        Arena" (ver TestArenaMatchResult)."""
         for eid in self.team_b:
             apply_damage_core(self.ws.world, eid, 999999, killer_eid=self.team_a[0])
-        self.assertNotIn(self.match_id, self.ws._active_matches)
-        self.assertEqual(self.ws._player_match_id, {})
+        self.assertIn(self.match_id, self.ws._active_matches)
+        match = self.ws._active_matches[self.match_id]
+        self.assertTrue(match["decided"])
+        self.assertEqual(match["winner_members"], set(self.team_a))
+        # ninguém foi restaurado ainda — todos continuam na arena
         for eid in self.team_a + self.team_b:
-            self.assertIsNone(self.ws.world.get_component(eid, Faction))
-            self.assertEqual(self.ws.get_entity_map(eid), "maps/map_1.csv")
-            tm = self.ws.world.get_component(eid, TileMovement)
-            self.assertEqual((tm.current_tile_x, tm.current_tile_y), (130, 374))
-        events = self.ws.consume_arena_match_end_events()
-        won = {e["eid"]: e["won"] for e in events}
-        for eid in self.team_a:
-            self.assertTrue(won[eid])
-        for eid in self.team_b:
-            self.assertFalse(won[eid])
+            self.assertIsNotNone(self.ws.world.get_component(eid, Faction))
+        self.assertEqual(self.ws.consume_arena_match_end_events(), [])
 
-    def test_desconexao_em_partida_conta_como_eliminacao(self):
+    def test_time_inteiro_eliminado_congela_TODO_mundo_vencedores_inclusive(self):
+        """Bug real relatado pelo usuário 20/07/2026: "continuam
+        controlando o personagem mesmo após perder" — a versão anterior
+        só travava o time perdedor; a tela de resultado precisa travar os
+        4, senão o vencedor continua brigando enquanto o placar é
+        mostrado pros outros."""
+        for eid in self.team_b:
+            apply_damage_core(self.ws.world, eid, 999999, killer_eid=self.team_a[0])
+        for eid in self.team_a + self.team_b:
+            cst = self.ws.world.get_component(eid, CombatState)
+            self.assertFalse(cst.can_act())
+            self.assertFalse(cst.can_move())
+
+    def test_fim_de_partida_nao_limpa_stun_real_de_quem_nao_foi_eliminado(self):
+        """Vencedor pode legitimamente estar stunado por um efeito de
+        combate não-relacionado no instante exato em que a partida
+        termina — _finish_match só REAFIRMA is_stunned=True (já era),
+        não pode reescrever um stun_timer real."""
+        winner = self.team_a[0]
+        cst_winner = self.ws.world.get_component(winner, CombatState)
+        cst_winner.is_stunned = True
+        cst_winner.stun_timer = 3.0
+        for eid in self.team_b:
+            apply_damage_core(self.ws.world, eid, 999999, killer_eid=self.team_a[0])
+        self.assertTrue(cst_winner.is_stunned)
+        self.assertEqual(cst_winner.stun_timer, 3.0)
+
+    def test_desconexao_do_time_inteiro_decide_a_partida_sem_remover_o_outro_time(self):
         self.ws.end_matches_of(self.team_b[0])
         self.ws.end_matches_of(self.team_b[1])
-        self.assertNotIn(self.match_id, self.ws._active_matches)
+        # time B já saiu de verdade (desconectou) — time A só foi DECIDIDO
+        # (congelado, aguardando sair), a partida continua existindo
+        self.assertIn(self.match_id, self.ws._active_matches)
+        match = self.ws._active_matches[self.match_id]
+        self.assertTrue(match["decided"])
+        for eid in self.team_a:
+            self.assertIn(eid, self.ws._player_match_id)
+            cst = self.ws.world.get_component(eid, CombatState)
+            self.assertFalse(cst.can_act())
+        for eid in self.team_b:
+            self.assertNotIn(eid, self.ws._player_match_id)
 
 
 class TestArenaInstanceIsolation(unittest.TestCase):
@@ -199,12 +247,17 @@ class TestArenaInstanceIsolation(unittest.TestCase):
     def test_terminar_uma_partida_nao_afeta_a_outra(self):
         for eid in self.team_b1:
             apply_damage_core(self.ws.world, eid, 999999, killer_eid=self.team_a1[0])
-        self.assertNotIn(self.match_1, self.ws._active_matches)
+        self.assertTrue(self.ws._active_matches[self.match_1]["decided"])
+        self.assertFalse(self.ws._active_matches[self.match_2]["decided"])
         self.assertIn(self.match_2, self.ws._active_matches)
         ik2 = self.ws._active_matches[self.match_2]["instance_key"]
         self.assertIn(ik2, self.ws._map_bundles)
         for eid in self.team_a2 + self.team_b2:
             self.assertIn(eid, self.ws._player_match_id)
+        # match_1 só desaloca de vez quando os 4 saírem de verdade
+        for eid in self.team_a1 + self.team_b1:
+            self.ws.request_arena_forfeit(eid)
+        self.assertNotIn(self.match_1, self.ws._active_matches)
 
 
 class TestArenaForfeit(unittest.TestCase):
@@ -234,16 +287,40 @@ class TestArenaForfeit(unittest.TestCase):
         tm = self.ws.world.get_component(self.team_a[0], TileMovement)
         self.assertEqual((tm.current_tile_x, tm.current_tile_y), (130, 374))
 
-    def test_forfeit_de_todo_o_time_termina_a_partida_e_outro_time_vence(self):
+    def test_forfeit_voluntario_nao_limpa_stun_real_nao_relacionado(self):
+        """Forfeit nunca passou por _eliminate_player (não foi golpe
+        letal) — nunca setou is_stunned, então nunca deveria limpar um
+        stun real e coincidente."""
+        cst = self.ws.world.get_component(self.team_a[0], CombatState)
+        cst.is_stunned = True
+        cst.stun_timer = 3.0
+        self.ws.request_arena_forfeit(self.team_a[0])
+        self.assertTrue(cst.is_stunned)
+        self.assertEqual(cst.stun_timer, 3.0)
+
+    def test_forfeit_de_todo_o_time_decide_a_partida_time_b_congela_ate_sair(self):
         for eid in self.team_a:
             self.ws.request_arena_forfeit(eid)
-        self.assertNotIn(self.match_id, self.ws._active_matches)
+        # time A já saiu de verdade — recebeu o próprio ARENA_MATCH_END (derrota)
         events = {e["eid"]: e["won"] for e in self.ws.consume_arena_match_end_events()}
         for eid in self.team_a:
             self.assertFalse(events[eid])
+            self.assertIsNone(self.ws.world.get_component(eid, Faction))
+        # time B ainda não saiu — só foi DECIDIDO (congelado), continua na arena
+        self.assertIn(self.match_id, self.ws._active_matches)
+        self.assertTrue(self.ws._active_matches[self.match_id]["decided"])
         for eid in self.team_b:
-            self.assertTrue(events[eid])
-        for eid in self.team_a + self.team_b:
+            self.assertIsNotNone(self.ws.world.get_component(eid, Faction))
+            cst = self.ws.world.get_component(eid, CombatState)
+            self.assertFalse(cst.can_act())
+
+        # time B sai de verdade (clica "Sair da Arena" == mesmo /forfeit)
+        for eid in self.team_b:
+            self.ws.request_arena_forfeit(eid)
+        self.assertNotIn(self.match_id, self.ws._active_matches)
+        events_b = {e["eid"]: e["won"] for e in self.ws.consume_arena_match_end_events()}
+        for eid in self.team_b:
+            self.assertTrue(events_b[eid])
             self.assertIsNone(self.ws.world.get_component(eid, Faction))
 
     def test_forfeit_fora_de_partida_retorna_reason(self):
@@ -287,6 +364,103 @@ class TestArenaDisconnectRestoreOrder(unittest.TestCase):
         save_data = ws.get_player_save_data(sid)
         self.assertEqual(save_data["map_id"], "maps/map_1.csv")
         self.assertEqual((save_data["tile_x"], save_data["tile_y"]), (140, 380))
+
+
+class TestArenaMatchResult(unittest.TestCase):
+    """Modal de fim de partida (placar + "Sair da Arena", estilo WoW —
+    pedido do usuário 20/07/2026): dano rastreado por player durante a
+    partida, ARENA_MATCH_RESULT mandado uma vez na decisão, restauração
+    de verdade só quando cada um sai (ARENA_FORFEIT, reusado pelo botão)."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        self.team_a = _make_duo(self.ws, "mra")
+        self.team_b = _make_duo(self.ws, "mrb")
+        self.match_id = _queue_and_pair(self.ws, self.team_a, self.team_b)
+
+    def test_dano_e_rastreado_por_player_durante_a_partida(self):
+        apply_damage_core(self.ws.world, self.team_b[0], 50, killer_eid=self.team_a[0])
+        apply_damage_core(self.ws.world, self.team_b[1], 30, killer_eid=self.team_a[0])
+        apply_damage_core(self.ws.world, self.team_a[0], 10, killer_eid=self.team_b[0])
+        dmg = self.ws._active_matches[self.match_id]["damage_by_eid"]
+        self.assertEqual(dmg[self.team_a[0]], 80)
+        self.assertEqual(dmg[self.team_b[0]], 10)
+        self.assertEqual(dmg[self.team_a[1]], 0)
+
+    def test_dano_fora_de_qualquer_partida_nao_quebra_nada(self):
+        solo_a = spawn_player(self.ws, "mrsolo_a", 130, 374)
+        solo_b = spawn_player(self.ws, "mrsolo_b", 131, 374)
+        # sem killer_eid em partida — não deveria levantar exceção nem
+        # tocar em nenhum match ativo
+        apply_damage_core(self.ws.world, solo_b, 10, killer_eid=solo_a)
+        self.assertEqual(self.ws._active_matches[self.match_id]["damage_by_eid"][self.team_a[0]], 0)
+
+    def test_arena_match_result_manda_nome_dano_vitoria_dos_4(self):
+        apply_damage_core(self.ws.world, self.team_b[0], 999999, killer_eid=self.team_a[0])
+        apply_damage_core(self.ws.world, self.team_b[1], 40, killer_eid=self.team_a[1])
+        apply_damage_core(self.ws.world, self.team_b[1], 999999, killer_eid=self.team_a[1])
+
+        events = self.ws.consume_arena_match_result_events()
+        self.assertEqual(len(events), 4)   # 1 por player da partida
+        eids_notificados = {e["eid"] for e in events}
+        self.assertEqual(eids_notificados, set(self.team_a + self.team_b))
+
+        results = events[0]["results"]
+        self.assertEqual(len(results), 4)
+        by_name = {r["name"]: r for r in results}
+        from engine.components import CharacterStats
+        name_a0 = self.ws.world.get_component(self.team_a[0], CharacterStats).name
+        name_a1 = self.ws.world.get_component(self.team_a[1], CharacterStats).name
+        self.assertEqual(by_name[name_a0]["damage"], 999999)
+        self.assertEqual(by_name[name_a1]["damage"], 40 + 999999)
+        self.assertTrue(by_name[name_a0]["won"])
+        self.assertTrue(by_name[name_a1]["won"])
+        name_b0 = self.ws.world.get_component(self.team_b[0], CharacterStats).name
+        self.assertFalse(by_name[name_b0]["won"])
+
+    def test_sair_da_arena_depois_de_decidida_restaura_so_quem_saiu(self):
+        for eid in self.team_b:
+            apply_damage_core(self.ws.world, eid, 999999, killer_eid=self.team_a[0])
+        self.ws.consume_arena_match_result_events()
+
+        reason = self.ws.request_arena_forfeit(self.team_a[0])
+        self.assertIsNone(reason)
+        self.assertIsNone(self.ws.world.get_component(self.team_a[0], Faction))
+        cst_a0 = self.ws.world.get_component(self.team_a[0], CombatState)
+        self.assertTrue(cst_a0.can_act())
+        # o resto ainda está congelado, esperando sair
+        for eid in [self.team_a[1]] + list(self.team_b):
+            self.assertIsNotNone(self.ws.world.get_component(eid, Faction))
+        self.assertIn(self.match_id, self.ws._active_matches)
+
+    def test_ultimo_a_sair_desaloca_a_instancia(self):
+        for eid in self.team_b:
+            apply_damage_core(self.ws.world, eid, 999999, killer_eid=self.team_a[0])
+        instance_key = self.ws._active_matches[self.match_id]["instance_key"]
+        for eid in self.team_a + self.team_b:
+            self.ws.request_arena_forfeit(eid)
+        self.assertNotIn(self.match_id, self.ws._active_matches)
+        self.assertNotIn(instance_key, self.ws._map_bundles)
+
+    def test_timeout_automatico_forca_saida_de_quem_nao_clicou(self):
+        for eid in self.team_b:
+            apply_damage_core(self.ws.world, eid, 999999, killer_eid=self.team_a[0])
+        match = self.ws._active_matches[self.match_id]
+        import time as _time_test
+        match["decided_at"] = _time_test.time() - 9999.0   # já bem depois do timeout
+        self.ws._tick_arena_results_timeout()
+        self.assertNotIn(self.match_id, self.ws._active_matches)
+        for eid in self.team_a + self.team_b:
+            self.assertIsNone(self.ws.world.get_component(eid, Faction))
+            self.assertNotIn(eid, self.ws._player_match_id)
+
+    def test_timeout_nao_dispara_antes_da_hora(self):
+        for eid in self.team_b:
+            apply_damage_core(self.ws.world, eid, 999999, killer_eid=self.team_a[0])
+        self.ws._tick_arena_results_timeout()
+        self.assertIn(self.match_id, self.ws._active_matches)
+        for eid in self.team_a + self.team_b:
+            self.assertIsNotNone(self.ws.world.get_component(eid, Faction))
 
 
 class TestArenaRegressionOpenWorld(unittest.TestCase):
