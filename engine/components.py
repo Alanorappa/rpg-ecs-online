@@ -32,12 +32,24 @@ TIERS = ["normal", "elite", "rare", "boss"]
 class EntityIdentity:
     """Nome, raça, classe, nível e tier de qualquer entidade (jogador ou inimigo)."""
     def __init__(self, name: str, race: str, entity_class: str,
-                 level: int = 1, tier: str = "normal"):
+                 level: int = 1, tier: str = "normal", mob_key: str = ""):
         self.name         = name
         self.race         = race
         self.entity_class = entity_class
         self.level        = level
         self.tier         = tier          # "normal" | "elite" | "rare" | "boss"
+        # Chave EXATA de content/mob_definitions.py::MOB_TABLE usada na
+        # criação (ex: "Arqueiro (NPC)", "Goblin") — diferente de `race`
+        # acima, que guarda a categoria AMPLA (ex: "Humanoide", só
+        # informativa). Entidades sem SpawnZone (Guarda Real, boneco de
+        # treino, NPC de serviço) não tinham como o servidor recuperar essa
+        # chave específica pro payload de spawn (`_build_mob_spawn_payload`)
+        # — sem ela, o cliente reconstrói via `race` (a categoria ampla, que
+        # nunca bate com uma entrada de MOB_TABLE) e cai no fallback
+        # genérico, perdendo sons/entity_class corretos (bug real 21/07/2026:
+        # "Arqueiro (NPC)" virava melee/mudo no cliente mesmo sendo ranged
+        # de verdade no servidor).
+        self.mob_key      = mob_key
 
 # Nova Classe: Modifier
 # Representa um bônus ou penalidade a um atributo de combate.

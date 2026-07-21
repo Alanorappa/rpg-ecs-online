@@ -5485,6 +5485,66 @@ visual corretamente. Suíte completa 378/378, rodada 3x.
 Arqueiro (NPC) atira num mob hostil, som igual ao do jogador, só 1
 badge de nível por NPC de serviço.
 
+### §34.35.2 — Causa raiz de verdade do "arqueiro sem flecha/som errado": payload de spawn nunca mandava is_ranged/raça certa pra entidade sem SpawnZone (21/07/2026)
+
+Depois de reportar que a correção de §34.35.1 (item 2/3) "continua
+igual", o usuário descreveu o sintoma com mais detalhe: o treinador
+arqueiro mata o mob "instantaneamente" (esperado — é level 60 vs mob
+level baixo, não é bug), "sem disparar flecha e emite som de attack
+melee". Isso apontava pra algo mais fundo que só a config de som.
+
+**Diagnóstico direto** (script isolado com `make_world_server` + tick
+loop real): `AIControlled.is_ranged` do treinador fica `True` o tempo
+todo NO SERVIDOR (confirmado, dano/IA corretos) — o problema nunca foi
+o servidor. O `_build_mob_spawn_payload` (`server/world_server.py`),
+porém, mandava pro cliente `race: "Humanoide"` e `is_ranged: False`
+pra esse mesmo treinador — os dois ERRADOS.
+
+**Causa raiz**: `_build_mob_spawn_payload` só preenchia `race`/
+`is_ranged` de verdade a partir de `SpawnZoneOwner`/`SpawnZone` (mobs
+que nascem de zona no mapa). Pra qualquer entidade SEM SpawnZone
+(boneco de treino, Guarda Real, e agora NPC de serviço), caía no ramo
+`elif ident:`, que:
+- Nunca setava `is_ranged` — ficava preso no default `False` do topo
+  da função pra sempre. Guarda Real nunca expôs esse bug por ACASO ser
+  melee (`is_ranged=False` de verdade) — "Arqueiro (NPC)"/"Mago (NPC)"
+  são as primeiras entidades ranged sem SpawnZone a existir.
+- Mandava `ident.race`, que guarda a categoria AMPLA ("Humanoide",
+  "Fera", etc — só informativa) e NUNCA bate uma chave de
+  `MOB_TABLE`. O cliente reconstrói via `create_enemy(race=...)`
+  (`client/remote_entity_handlers.py::_spawn_remote_mob`) — sem
+  encontrar o `mob_def`, cai no fallback genérico de
+  `_build_combat_entity` (`entity_class = "Arqueiro" if is_ranged else
+  "Guerreiro"`, NUNCA "Mago", e SEM sons — `MobSounds` fica vazio).
+  Combinado com `is_ranged` sempre False vindo do payload, o cliente
+  reconstruía SEMPRE como "Guerreiro" melee mudo, não importa o que o
+  servidor decidisse de verdade.
+
+**Fix**:
+1. `EntityIdentity` (`engine/components.py`) ganhou um campo novo,
+   `mob_key` — a chave EXATA de `MOB_TABLE` usada na criação (ex:
+   "Arqueiro (NPC)"), diferente de `race` (categoria ampla). Setado em
+   `_build_combat_entity` (`engine/entity_factory.py`) a partir do
+   `race` já resolvido (antes dele virar a categoria ampla pro campo
+   `race` do componente).
+2. `_build_mob_spawn_payload`: `race = ident.mob_key or ident.race or
+   race` (prioriza a chave específica); `is_ranged` agora SEMPRE lido
+   de `AIControlled.is_ranged` da própria entidade (`ai` já era
+   buscado no topo da função, só nunca era usado pra isso) — fonte
+   única, nunca muda depois da criação, substitui completamente a
+   derivação frágil via SpawnZone/EntityIdentity que nunca cobria o
+   caso sem zona.
+
+**Validado**: `tests/test_service_npcs.py::
+test_payload_de_trainer_arqueiro_manda_race_e_is_ranged_corretos` —
+payload de um treinador arqueiro manda `race="Arqueiro (NPC)"`,
+`is_ranged=True`, `entity_class="Hunter"` (antes: "Humanoide"/False).
+Suíte completa 379/379, rodada 3x.
+
+**Não validado**: sessão manual — Arqueiro (NPC)/treinador de arqueiro
+atira flecha visual de verdade com o som certo ao brigar com um mob
+hostil (não mais melee/mudo).
+
 ---
 
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata

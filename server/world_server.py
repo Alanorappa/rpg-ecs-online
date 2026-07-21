@@ -1368,13 +1368,31 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 tier         = zone.enemy_tier
                 is_ranged    = (zone.enemy_type == "ranged")
         elif ident:
-            # Sem SpawnZone (ex: boneco de treino — entidade fixa, não nasce de
-            # zona) — usa a identidade própria da entidade em vez do fallback
-            # genérico acima. Sem isso, qualquer mob "solto" virava sempre
-            # "Humanoide"/"Warrior" pro cliente, ignorando seu EntityIdentity real.
-            race         = ident.race or race
+            # Sem SpawnZone (ex: boneco de treino, Guarda Real, NPC de
+            # serviço — entidades fixas, não nascem de zona) — usa a
+            # identidade própria da entidade em vez do fallback genérico
+            # acima. Sem isso, qualquer mob "solto" virava sempre
+            # "Humanoide"/"Warrior" pro cliente, ignorando seu EntityIdentity
+            # real. `mob_key` (chave EXATA de MOB_TABLE) tem prioridade sobre
+            # `race` (categoria ampla, ex: "Humanoide", nunca bate uma
+            # entrada de MOB_TABLE) — sem isso o cliente nunca reconstruía o
+            # mob_def de verdade (sons/entity_class corretos) pra qualquer
+            # entidade nesse ramo (bug real 21/07/2026: "Arqueiro (NPC)"
+            # virava melee/mudo no cliente apesar de ranged de verdade no
+            # servidor).
+            race         = ident.mob_key or ident.race or race
             entity_class = ident.entity_class or entity_class
             tier         = ident.tier or tier
+        # is_ranged: sempre prioriza o AIControlled DE VERDADE da própria
+        # entidade (fonte única, nunca muda depois da criação) em vez de
+        # derivar de SpawnZone/EntityIdentity — o ramo `elif ident` acima
+        # nunca setava is_ranged (ficava preso no default False do topo da
+        # função), então qualquer entidade ranged sem SpawnZone (Guarda Real
+        # não expõe esse bug por ser melee; "Arqueiro (NPC)"/"Mago (NPC)"
+        # são as primeiras ranged sem zona) mandava is_ranged=False pro
+        # cliente mesmo lutando à distância de verdade no servidor.
+        if ai is not None:
+            is_ranged = ai.is_ranged
         mob_level = ident.level if ident else (zone.level_min if szo and zone else 1)
         payload = {
             "eid":          eid, "kind":         "enemy",

@@ -389,6 +389,13 @@ def _build_combat_entity(world: World, tile_x: int, tile_y: int,
     world.add_component(enemy_entity, EntityIdentity(
         name=mob_display_name, race=mob_actual_race, entity_class=entity_class,
         level=level, tier=tier_label,
+        # `race` aqui (antes de virar mob_actual_race acima) é a chave EXATA
+        # de MOB_TABLE usada nesta criação — precisa sobreviver pro payload
+        # de spawn de entidades SEM SpawnZone (Guarda Real, NPC de serviço,
+        # boneco de treino), senão o cliente recebe só a categoria ampla
+        # (mob_actual_race) e nunca acha o mob_def de verdade pra reconstruir
+        # sons/entity_class corretos.
+        mob_key=race,
     ))
 
     # Habilidades especiais — lista explícita por mob em mob_definitions.py

@@ -127,6 +127,22 @@ class TestServiceNpcCombateGenerico(unittest.TestCase):
         self.assertEqual(payload["class_id"], "mago")
         self.assertNotIn("shop_id", payload)
 
+    def test_payload_de_trainer_arqueiro_manda_race_e_is_ranged_corretos(self):
+        """Bug real relatado pelo usuário 21/07/2026: treinador de arqueiro
+        lutava certo (com HP/dano corretos) no servidor, mas no cliente
+        virava melee/mudo — causa raiz era _build_mob_spawn_payload nunca
+        propagar is_ranged=True (ficava preso no default False, já que só
+        SpawnZoneOwner setava esse campo) nem a chave EXATA de MOB_TABLE
+        (mandava só EntityIdentity.race, a categoria AMPLA "Humanoide", que
+        nunca bate uma entrada de MOB_TABLE) — sem raça registrada, o
+        cliente caía no fallback genérico (sem som, sempre melee)."""
+        eid = create_trainer(self.ws.world, 146, 374, name="Andre", class_id="arqueiro")
+        tm = self.ws.world.get_component(eid, TileMovement)
+        payload = self.ws._build_mob_spawn_payload(eid, tm)
+        self.assertEqual(payload["race"], "Arqueiro (NPC)")
+        self.assertTrue(payload["is_ranged"])
+        self.assertEqual(payload["entity_class"], "Hunter")
+
     def test_payload_de_blacksmith_marca_is_blacksmith(self):
         eid = create_blacksmith(self.ws.world, 143, 374, name="Grum")
         tm = self.ws.world.get_component(eid, TileMovement)
