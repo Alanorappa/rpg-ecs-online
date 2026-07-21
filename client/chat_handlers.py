@@ -68,6 +68,11 @@ class ChatHandlers:
         if text and self._try_handle_party_chat_command(text):
             self._close_chat_input()
             return
+        # "/forfeit" ou "/ff" — desiste da partida de Arena atual (20/07/2026,
+        # ver client/arena_handlers.py::_try_handle_arena_chat_command).
+        if text and self._try_handle_arena_chat_command(text):
+            self._close_chat_input()
+            return
         if text and self._net:
             from shared.messages import MsgType
             channel = "local" if self._chat_tab == "local" else "world"

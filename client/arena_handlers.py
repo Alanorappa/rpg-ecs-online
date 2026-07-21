@@ -22,6 +22,23 @@ class ArenaHandlers:
     def _arena_in_queue(self) -> bool:
         return getattr(self, "_arena_in_queue_val", False)
 
+    @property
+    def _arena_in_match(self) -> bool:
+        return getattr(self, "_arena_in_match_val", False)
+
+    @property
+    def _arena_opponents_server(self) -> set:
+        """server_eids dos oponentes da partida ativa (vazio fora de
+        partida). Guardado como SERVER eid, não local — na hora de
+        ARENA_MATCH_START o oponente ainda pode nem ter sido spawnado
+        localmente (a troca de mapa/instância acontece junto), então
+        resolver pra local eid ali (como o duelo faz, via
+        self._remote_players) daria -1 sempre. A resolução acontece na
+        hora do check em game.py::_client_pvp_context, via
+        _local_eid_to_server_eid — nesse ponto o alvo já existe local
+        (você está tentando atacar ele)."""
+        return getattr(self, "_arena_opponents_server_val", set())
+
     # ── Handlers de rede (dispatch em client/network_handlers.py) ────────────
 
     def _handle_msg_arena_queue_state(self, payload: dict) -> None:
@@ -42,11 +59,15 @@ class ArenaHandlers:
     def _handle_msg_arena_match_start(self, payload: dict) -> None:
         from ui.floating_text import WARN
         self._arena_in_queue_val = False
-        WARN.add("Partida de Arena 2x2 começou!")
+        self._arena_in_match_val = True
+        self._arena_opponents_server_val = set(payload.get("opponents", []))
+        WARN.add("Partida de Arena 2x2 começou! Use /forfeit ou /ff pra desistir.")
 
     def _handle_msg_arena_match_end(self, payload: dict) -> None:
         from ui.floating_text import WARN
         won = bool(payload.get("won", False))
+        self._arena_in_match_val = False
+        self._arena_opponents_server_val = set()
         WARN.add("Vitória na Arena!" if won else "Derrota na Arena.")
 
     # ── Envio ao servidor ──────────────────────────────────────────────────
@@ -61,11 +82,37 @@ class ArenaHandlers:
             from shared.messages import MsgType
             self._net.send(MsgType.ARENA_QUEUE_LEAVE, {})
 
+    def _send_arena_forfeit(self) -> None:
+        if self._net:
+            from shared.messages import MsgType
+            self._net.send(MsgType.ARENA_FORFEIT, {})
+
+    # ── Comando de chat "/forfeit" ou "/ff" ──────────────────────────────────
+
+    def _try_handle_arena_chat_command(self, text: str) -> bool:
+        """Chamado por client/chat_handlers.py::_send_chat_message ANTES
+        de mandar como chat normal (mesmo padrão de
+        PartyHandlers._try_handle_party_chat_command). True = era o
+        comando (consumido), False = texto normal."""
+        if text.strip().lower() not in ("/forfeit", "/ff"):
+            return False
+        from ui.floating_text import WARN
+        if not self._arena_in_match:
+            WARN.add("Você não está em uma partida de Arena.")
+            return True
+        self._send_arena_forfeit()
+        return True
+
     # ── Botão "Fila de Arena 2x2" (logo abaixo do frame de grupo) ────────────
 
     def _arena_queue_button_rect(self):
         """None se não deve aparecer — só líder de um grupo com EXATAMENTE
-        2 membros vê o botão (mesma regra que o servidor valida)."""
+        2 membros vê o botão (mesma regra que o servidor valida). Também
+        some enquanto uma partida está rolando (bug real relatado pelo
+        usuário 20/07/2026: o botão "Entrar na fila 2x2" continuava
+        aparecendo dentro da própria arena)."""
+        if self._arena_in_match:
+            return None
         rows = self._party_frame_rects()
         if not rows:
             return None

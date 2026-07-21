@@ -476,9 +476,10 @@ def test_pvp_zone_sem_zonas_no_mapa_nunca_liga_flag():
 from client.duel_handlers import DuelHandlers
 from client.pvp_zone_handlers import PvpZoneHandlers
 from client.party_handlers import PartyHandlers
+from client.arena_handlers import ArenaHandlers
 
 
-class _PvpCtxFixture(DuelHandlers, PvpZoneHandlers, PartyHandlers):
+class _PvpCtxFixture(DuelHandlers, PvpZoneHandlers, PartyHandlers, ArenaHandlers):
     def __init__(self, world, player_entity, my_eid=1):
         self.world = world
         self.player_entity = player_entity
@@ -487,6 +488,8 @@ class _PvpCtxFixture(DuelHandlers, PvpZoneHandlers, PartyHandlers):
         self._duel_opponent_local_val = -1
         self._party_id_val = -1
         self._party_members_val = []
+        self._arena_in_match_val = False
+        self._arena_opponents_server_val = set()
 
 
 from game import GameEngine as _GE_pvp
@@ -536,6 +539,45 @@ def test_client_pvp_context_duelo_libera_independente_de_zona():
     fx.world.get_component(other, TileMovement).current_tile_y = 0
     fx._duel_opponent_local_val = other
     assert fx._client_pvp_context(fx.world, me, other) is True
+
+
+# Bug real relatado pelo usuário 20/07/2026: "não consegui atacar" dentro da
+# Arena 2x2 — o servidor libera dano via Faction (arena_time_a/b), mas o
+# CLIENTE nunca recebe Faction de outro player via ENTITY_SPAWN (só mob manda
+# "faction"), então o resolver PvP client-side nunca sabia que o oponente da
+# arena virou hostil — clique direito/SPACE/skill ficavam bloqueados mesmo
+# com o servidor pronto pra liberar o dano.
+
+def test_client_pvp_context_arena_libera_contra_oponente_da_partida():
+    fx, me, other = _make_pvp_ctx_world()
+    from engine.components import TileMovement
+    fx.world.get_component(other, TileMovement).current_tile_x = 0
+    fx.world.get_component(other, TileMovement).current_tile_y = 0
+    fx._arena_in_match_val = True
+    fx._arena_opponents_server_val = {99}   # server_eid do "other" (ver _make_pvp_ctx_world)
+    assert fx._client_pvp_context(fx.world, me, other) is True
+
+
+def test_client_pvp_context_arena_nao_libera_contra_quem_nao_e_oponente():
+    fx, me, other = _make_pvp_ctx_world()
+    from engine.components import TileMovement
+    # Fora da zona também, senão o check de zona por si só já liberaria
+    # (queremos isolar só o branch de arena aqui).
+    fx.world.get_component(other, TileMovement).current_tile_x = 0
+    fx.world.get_component(other, TileMovement).current_tile_y = 0
+    fx._arena_in_match_val = True
+    fx._arena_opponents_server_val = {12345}   # eid de outro player, não o "other"
+    assert fx._client_pvp_context(fx.world, me, other) is False
+
+
+def test_client_pvp_context_fora_de_partida_arena_nao_libera():
+    fx, me, other = _make_pvp_ctx_world()
+    from engine.components import TileMovement
+    fx.world.get_component(other, TileMovement).current_tile_x = 0
+    fx.world.get_component(other, TileMovement).current_tile_y = 0
+    fx._arena_in_match_val = False
+    fx._arena_opponents_server_val = {99}
+    assert fx._client_pvp_context(fx.world, me, other) is False
 
 
 def test_offline_sem_requester_continua_creditando_local():

@@ -185,13 +185,82 @@ class MatchProcessorMixin:
             })
         self._unload_instance(match["instance_key"])
 
+    def _arena_leave_now(self, match_id: str, eid: int) -> None:
+        """`eid` sai da partida IMEDIATAMENTE (desconexão ou /forfeit) —
+        diferente de `_eliminate_player` (golpe letal): ali o player fica
+        PARADO na arena, imune, só espectando até o time inteiro perder;
+        aqui ele é removido do roster do time (não só marcado eliminado) e
+        teleportado de volta na hora, porque ele está saindo de verdade
+        (desconectando OU desistindo) — não faz sentido ele continuar
+        contando como presente na instância.
+
+        Precisa rodar ANTES do save do disconnect
+        (server/session.py::on_disconnect) — sem isso, `get_player_save_
+        data` capturava o `map_id` sintético da instância da arena (só
+        existe em memória, nunca em disco) + o tile relativo ao spawn da
+        arena, persistindo os dois no banco. No próximo login,
+        `spawn_player` não reconhece mais aquele map_id (instância já
+        descarregada) e cai no mapa principal, mas MANTÉM o tile da
+        arena — o jogador aparecia num tile essencialmente aleatório do
+        mapa principal, e como só existem 4 tiles de spawn de arena,
+        vários jogadores que passaram pela mesma partida colidiam no
+        mesmo lugar (bug real relatado pelo usuário 20/07/2026: "reloguei
+        em algum lugar que não era a arena, com outros players em
+        volta").
+
+        Remover do roster (não só do set `eliminated`) também evita que
+        `_end_match`, quando a partida terminar de verdade depois, tente
+        restaurar/notificar este `eid` de novo — o que poderia
+        teleportá-lo pra fora de onde quer que ele esteja àquela altura
+        (já numa fila nova, ou dentro de outra partida)."""
+        match = self._active_matches.get(match_id)
+        if match is None:
+            return
+        from engine.components import Faction as _FactionL, CombatState as _CSL
+        r_map, r_x, r_y = match["return_pos"].get(eid, (self._map_file, 115, 389))
+        sid = self.get_session_id_for_player(eid)
+        if sid is not None:
+            self.transfer_player(sid, eid, r_map, r_x, r_y)
+        try:
+            self.world.remove_component(eid, _FactionL)
+        except Exception:
+            pass
+        cst = self.world.get_component(eid, _CSL)
+        if cst:
+            cst.is_immune = False
+        self._player_match_id.pop(eid, None)
+        self._arena_match_end_events_this_tick.append({
+            "eid": eid, "won": False,
+            "map_file": r_map, "target_x": r_x, "target_y": r_y,
+        })
+
+        team_key  = "team_a" if eid in match["team_a"] else "team_b"
+        other_key = "team_b" if team_key == "team_a" else "team_a"
+        match[team_key]     = [m for m in match[team_key] if m != eid]
+        match["eliminated"].discard(eid)
+        if not match[team_key]:
+            winner = other_key if match[other_key] else None
+            self._end_match(match_id, winner)
+
     def end_matches_of(self, eid: int) -> None:
-        """Desconexão em partida ativa = eliminação (chamado ANTES de
-        despawn_player — mesmo ponto de end_duels_of/end_parties_of)."""
+        """Desconexão em partida ativa = sair na hora (chamado ANTES de
+        despawn_player E antes do save — mesmo ponto de end_duels_of/
+        end_parties_of, ver server/session.py::on_disconnect)."""
         match_id = self._player_match_id.get(eid)
         if match_id is None:
             return
-        self._eliminate_player(match_id, eid)
+        self._arena_leave_now(match_id, eid)
+
+    def request_arena_forfeit(self, eid: int) -> "str | None":
+        """Comando de chat /forfeit ou /ff — desiste da partida atual e
+        sai na hora, sem esperar o time inteiro ser eliminado. Retorna
+        None em sucesso, motivo em string se recusado (não está numa
+        partida)."""
+        match_id = self._player_match_id.get(eid)
+        if match_id is None:
+            return "not_in_match"
+        self._arena_leave_now(match_id, eid)
+        return None
 
     # ── Interceptor de golpe letal ────────────────────────────────────────────
 

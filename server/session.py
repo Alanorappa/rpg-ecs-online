@@ -212,6 +212,14 @@ class SessionManager:
             # deixava o marcador de corpo órfão pra quem já o via no AOI
             # (ver RespawnMixin._auto_revive_on_disconnect).
             self.world_server._auto_revive_on_disconnect(session.entity_id)
+            # Arena: desconectar em partida ativa conta como eliminação e já
+            # restaura mapa/tile de origem (MatchProcessorMixin.end_matches_of)
+            # — tem que rodar ANTES do save logo abaixo. Sem isso, o save
+            # capturava o map_id sintético da instância da arena (só existe em
+            # memória) + o tile relativo ao spawn da arena, persistindo os
+            # dois no banco — próximo login caía no mapa principal só que com
+            # o tile da arena (bug real relatado pelo usuário 20/07/2026).
+            self.world_server.end_matches_of(session.entity_id)
             # Salva ANTES de remover a entidade do ECS
             if session.authenticated and session.char_data.get("id"):
                 from server.auth import save_character
@@ -247,11 +255,7 @@ class SessionManager:
             # Grupo: mesma lógica — o PARTY_STATE pro resto do grupo sai
             # pelo broadcast loop do próximo tick (consume_party_state_events).
             self.world_server.end_parties_of(eid)
-            # Arena: desconectar em partida ativa conta como eliminação —
-            # o time do desconectado pode perder na hora (ver
-            # MatchProcessorMixin.end_matches_of). Precisa rodar ANTES do
-            # despawn (lê/muta componentes do eid).
-            self.world_server.end_matches_of(eid)
+            # Arena já foi encerrada mais acima (antes do save) — ver comentário lá.
             for other in self._sessions.values():
                 other.known_eids.discard(eid)
             await self._broadcast_all(MsgType.ENTITY_DESPAWN, {"eid": eid})
@@ -1505,6 +1509,21 @@ class SessionManager:
         self.world_server.request_arena_queue_leave(eid)
         await session.send(MsgType.ARENA_QUEUE_STATE, {"in_queue": False})
 
+    async def _handle_arena_forfeit(self, session: Session, payload: dict, ts: int) -> None:
+        """Comando de chat /forfeit ou /ff (client/arena_handlers.py) —
+        desiste da partida atual, sai na hora. O ARENA_MATCH_END (won:False)
+        + ZONE_CHANGE de volta saem pelo broadcast loop do próximo tick
+        (consume_arena_match_end_events), igual fim de partida normal.
+        Cliente já só manda isso sabendo que está numa partida ativa
+        (_arena_in_match) — "not_in_match" aqui é só defesa contra cliente
+        dessincronizado/modificado, não precisa de resposta."""
+        if not session.authenticated:
+            return
+        eid = self.world_server._player_eids.get(session.session_id)
+        if eid is None:
+            return
+        self.world_server.request_arena_forfeit(eid)
+
     async def _handle_trade_offer_item(self, session: Session, payload: dict, ts: int) -> None:
         if not session.authenticated:
             return
@@ -1646,6 +1665,7 @@ class SessionManager:
         MsgType.PARTY_KICK:          _handle_party_kick,
         MsgType.ARENA_QUEUE_JOIN:    _handle_arena_queue_join,
         MsgType.ARENA_QUEUE_LEAVE:   _handle_arena_queue_leave,
+        MsgType.ARENA_FORFEIT:       _handle_arena_forfeit,
     }
 
     # ── AOI subscription — núcleo do sistema ─────────────────────────────────

@@ -207,6 +207,88 @@ class TestArenaInstanceIsolation(unittest.TestCase):
             self.assertIn(eid, self.ws._player_match_id)
 
 
+class TestArenaForfeit(unittest.TestCase):
+    """Comando de chat /forfeit ou /ff (feedback do usuário 20/07/2026:
+    precisa de um jeito de sair da arena sem esperar o time inteiro
+    perder)."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        self.team_a = _make_duo(self.ws, "fta")
+        self.team_b = _make_duo(self.ws, "ftb")
+        self.match_id = _queue_and_pair(self.ws, self.team_a, self.team_b)
+
+    def test_forfeit_de_um_membro_nao_termina_a_partida(self):
+        reason = self.ws.request_arena_forfeit(self.team_a[0])
+        self.assertIsNone(reason)
+        self.assertIn(self.match_id, self.ws._active_matches)
+        self.assertNotIn(self.team_a[0], self.ws._active_matches[self.match_id]["team_a"])
+        self.assertNotIn(self.team_a[0], self.ws._player_match_id)
+        # o outro membro do time A continua na partida normalmente
+        self.assertIn(self.team_a[1], self.ws._player_match_id)
+
+    def test_forfeit_restaura_mapa_posicao_e_faccao_na_hora(self):
+        self.ws.request_arena_forfeit(self.team_a[0])
+        self.assertIsNone(self.ws.world.get_component(self.team_a[0], Faction))
+        self.assertEqual(self.ws.get_entity_map(self.team_a[0]), "maps/map_1.csv")
+        tm = self.ws.world.get_component(self.team_a[0], TileMovement)
+        self.assertEqual((tm.current_tile_x, tm.current_tile_y), (130, 374))
+
+    def test_forfeit_de_todo_o_time_termina_a_partida_e_outro_time_vence(self):
+        for eid in self.team_a:
+            self.ws.request_arena_forfeit(eid)
+        self.assertNotIn(self.match_id, self.ws._active_matches)
+        events = {e["eid"]: e["won"] for e in self.ws.consume_arena_match_end_events()}
+        for eid in self.team_a:
+            self.assertFalse(events[eid])
+        for eid in self.team_b:
+            self.assertTrue(events[eid])
+        for eid in self.team_a + self.team_b:
+            self.assertIsNone(self.ws.world.get_component(eid, Faction))
+
+    def test_forfeit_fora_de_partida_retorna_reason(self):
+        solo = spawn_player(self.ws, "ftsolo", 130, 374)
+        self.assertEqual(self.ws.request_arena_forfeit(solo), "not_in_match")
+
+
+class TestArenaDisconnectRestoreOrder(unittest.TestCase):
+    """Bug real relatado pelo usuário 20/07/2026 (com print): "quando
+    reloguei apareci em algum lugar que não era a arena, mas os outros
+    players estavam a minha volta". Causa raiz: server/session.py::
+    on_disconnect salvava o personagem ANTES de end_matches_of rodar —
+    o save capturava o map_id sintético da instância da arena (só existe
+    em memória) + o tile relativo ao spawn da arena. No próximo login,
+    spawn_player não reconhecia mais aquele map_id (instância já
+    descarregada) e caía no mapa principal, mas MANTINHA o tile da
+    arena — o jogador aparecia num tile aleatório do mapa principal,
+    junto de qualquer outro que tivesse passado pela mesma partida (só 4
+    tiles de spawn possíveis). Aqui testamos a parte de WorldServer:
+    get_player_map/get_tile_pos/get_player_save_data têm que refletir o
+    mapa/tile de ORIGEM logo depois de end_matches_of, nunca a
+    instância."""
+
+    def test_end_matches_of_restaura_map_id_e_tile_antes_do_save(self):
+        ws = make_world_server()
+        team_a = _make_duo(ws, "orda", (140, 380))
+        team_b = _make_duo(ws, "ordb", (140, 380))
+        _queue_and_pair(ws, team_a, team_b)
+
+        eid = team_a[0]
+        sid = ws.get_session_id_for_player(eid)
+        # confirma que está DE VERDADE na instância antes de desconectar
+        # (senão o teste não prova nada)
+        self.assertTrue(ws.get_player_map(sid).startswith("maps/arena_2v2.csv::"))
+
+        ws.end_matches_of(eid)
+
+        self.assertEqual(ws.get_player_map(sid), "maps/map_1.csv")
+        tx, ty = ws.get_tile_pos(sid)
+        self.assertEqual((tx, ty), (140, 380))
+        save_data = ws.get_player_save_data(sid)
+        self.assertEqual(save_data["map_id"], "maps/map_1.csv")
+        self.assertEqual((save_data["tile_x"], save_data["tile_y"]), (140, 380))
+
+
 class TestArenaRegressionOpenWorld(unittest.TestCase):
     """O mundo aberto/duelo continuam funcionando normalmente depois de
     Fase G (nenhum reuso de global de interceptor/resolver colide)."""

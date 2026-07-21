@@ -4948,6 +4948,89 @@ entrada).
 
 ---
 
+### §34.31 — Fase G leva 1: 3 bugs reais achados no primeiro teste de verdade com testers (20/07/2026)
+
+Primeiro teste real da Arena 2x2 (build `v0.4.0` mandado aos testers) —
+3 problemas reportados de uma vez.
+
+**1. PvP não funcionava dentro da arena ("não consegui atacar")**. Causa
+raiz: hostilidade de arena é resolvida por Faction
+(`arena_time_a`/`arena_time_b`, ver §34.27) — o SERVIDOR libera dano
+correto via `can_engage()`. Mas o payload de `ENTITY_SPAWN` de PLAYER
+nunca manda o campo `faction` (só mob manda — `server/world_server.py`
+linhas ~613/663/1357 vs ~925/1243) — então o cliente nunca fica sabendo
+que o oponente virou hostil, e o resolver PvP client-side
+(`game.py::_client_pvp_context`, único ponto que decide clique
+direito/SPACE/skill ANTES de mandar pro servidor) só conhecia duelo e
+zona, nunca arena — a ação nunca saía do cliente, mesmo com o servidor
+pronto pra liberar. Fix: `client/arena_handlers.py` guarda
+`_arena_opponents_server` (server_eids dos oponentes, vindo de
+`ARENA_MATCH_START.opponents`) e `_client_pvp_context` ganhou um branch
+de arena — mesmo padrão do duelo (`_duel_opponent_local_eid`), mas
+resolvendo o server_eid do ALVO na hora do check (via
+`_local_eid_to_server_eid`), não author no momento do match_start —
+diferente do duelo, o oponente da arena pode ainda nem estar spawnado
+localmente quando `ARENA_MATCH_START` chega (a troca de instância
+acontece junto), então pré-resolver pra local eid ali sempre daria -1.
+
+**2. "Reloguei em algum lugar que não era a arena, com outros players em
+volta"** (com print). Causa raiz: `server/session.py::on_disconnect`
+salvava o personagem (`get_player_save_data` → `save_character`) ANTES
+de `end_matches_of` rodar — o save capturava o `map_id` SINTÉTICO da
+instância da arena (só existe em memória, nunca em disco, ver
+`_load_instance`) + o tile relativo ao spawn da arena (só 4 possíveis:
+`_SPAWN_TEAM_A`/`_SPAWN_TEAM_B`). No próximo login, `spawn_player` não
+reconhece mais aquele `map_id` (instância já descarregada — `if
+saved_map_id not in self._map_bundles: saved_map_id = self._map_file`)
+e cai no mapa principal, mas MANTÉM o tile da arena — o jogador
+aparecia num tile do mapa principal que não tem nada a ver com onde
+estava antes, e como só existem 4 tiles de spawn de arena, qualquer
+outro tester que tivesse passado pela mesma partida (ou qualquer
+partida — os specs são fixos, não por instância) colidia no mesmo
+lugar. Fix: `end_matches_of` movido pra ANTES do save em
+`on_disconnect`; `MatchProcessorMixin` ganhou `_arena_leave_now(match_id,
+eid)` — helper compartilhado que restaura mapa/tile/Facção NA HORA e
+remove o player do roster do time (não só do set `eliminated`), usado
+tanto por `end_matches_of` (desconexão) quanto pelo novo
+`request_arena_forfeit` (item 3) — remover do roster evita que
+`_end_match`, quando a partida terminar de verdade depois, tente
+restaurar/notificar esse `eid` de novo (o que podia teleportá-lo de
+volta de onde quer que ele esteja àquela altura — já numa fila nova ou
+outra partida).
+
+**3. Faltava um jeito de desistir da arena sem esperar o time inteiro
+perder** (pedido do usuário, não bug) — comando de chat `/forfeit` ou
+`/ff` (`shared/messages.py::ARENA_FORFEIT`, C→S `{}`) →
+`WorldServer.request_arena_forfeit(eid)` → `_arena_leave_now` (mesmo
+helper do item 2) → `ARENA_MATCH_END{won:False}` + `ZONE_CHANGE` de
+volta, igual fim de partida normal. Se o forfeit esvazia o time
+inteiro, a partida termina de verdade e o outro time vence
+(`_end_match`).
+
+**Bug menor achado junto**: botão "Fila de Arena 2x2" continuava
+aparecendo DENTRO da própria arena (`client/arena_handlers.py::
+_arena_queue_button_rect` não checava se o player já estava numa
+partida ativa). Fix: novo estado `_arena_in_match` (True em
+`ARENA_MATCH_START`, False em `ARENA_MATCH_END`), botão some enquanto
+`True`.
+
+**Validado**: `tests/test_arena.py` (+8 testes — forfeit de 1 membro não
+termina a partida, restaura mapa/posição/facção na hora, forfeit do
+time inteiro termina a partida e o outro vence, forfeit fora de partida
+recusa; ordem end_matches_of-antes-do-save provada diretamente:
+`get_player_map`/`get_tile_pos`/`get_player_save_data` refletem o
+mapa/tile de ORIGEM logo após `end_matches_of`, nunca a instância) +
+`tests/test_client_ui.py` (+3 testes do branch de arena em
+`_client_pvp_context`, isolando zona/duelo pra provar que é o branch de
+arena mesmo liberando/bloqueando). Suíte completa 313/313, rodada 3x.
+
+**Não validado**: nova sessão manual com testers reais — PvP
+funcionando dentro da arena, relogin após sair da arena cai no lugar
+certo, `/forfeit`/`/ff` funcionando, botão de fila sumindo dentro da
+partida.
+
+---
+
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
 
 ```

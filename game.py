@@ -982,14 +982,30 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
 
     def _client_pvp_context(self, world, a: int, b: int) -> bool:
         """Resolver ÚNICO registrado em engine.faction_system — composto
-        (duelo OU zona PvP), já que register_pvp_context só guarda UM slot.
-        Só decide UX local (clique direito ataca vs abre modal, validação
-        de skill antes de mandar pro servidor) — a decisão de dano
-        continua 100% autoritativa no servidor (WorldServer._pvp_allowed_
-        between), que já faz a mesma composição do lado dele."""
+        (duelo OU zona PvP OU arena), já que register_pvp_context só guarda
+        UM slot. Só decide UX local (clique direito ataca vs abre modal,
+        validação de skill antes de mandar pro servidor) — a decisão de
+        dano continua 100% autoritativa no servidor (WorldServer._pvp_
+        allowed_between/Faction), que já faz a mesma composição do lado
+        dele.
+
+        Arena É diferente de duelo/zona aqui: no servidor a hostilidade
+        vem de Faction (arena_time_a/b), NUNCA passa por este resolver —
+        mas o CLIENTE nunca recebe Faction de outro player via
+        ENTITY_SPAWN (só mob manda "faction"), então pro cliente os dois
+        continuam com a facção default "jogadores" = amigável, e clique
+        direito/SPACE/skill ficavam bloqueados mesmo com o servidor
+        liberando o dano (bug real relatado pelo usuário 20/07/2026: "não
+        consegui atacar" na arena). Fix: contexto explícito aqui, igual
+        duelo — ArenaHandlers._arena_opponents_server guarda os SERVER
+        eids dos oponentes da partida ativa."""
         if self._duel_opponent_local_eid != -1 and \
                 {a, b} == {self.player_entity, self._duel_opponent_local_eid}:
             return True
+        if self._arena_in_match and self._arena_opponents_server:
+            other = b if a == self.player_entity else (a if b == self.player_entity else -1)
+            if other != -1 and self._local_eid_to_server_eid(other) in self._arena_opponents_server:
+                return True
         if not self._pvp_zones:
             return False
         from engine.components import TileMovement as _TMzc
