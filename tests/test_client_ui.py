@@ -745,3 +745,108 @@ def test_medo_bloqueia_clique_de_chao():
 
     assert tm.current_tile_x == 5 and tm.current_tile_y == 5
     assert not tm.is_moving
+
+
+def test_stun_bloqueia_clique_de_chao():
+    """Bug real: "stun" já existia como StatusEffects de verdade (aplicado
+    por Interceptar/Punho no Queixo/knockback), mas nenhum gate de
+    movimento olhava pra ele — nem is_action_locked (antigo) nem, por
+    consequência, o roteamento de can_move pro clique de chão. Generalizado
+    via EFFECT_DEFS[*].blocks_move/blocks_act (content/status_effects_data.py)."""
+    from ui.systems import PlayerInputSystem
+
+    world, eid, tm, auto_move, sfx = _make_cc_move_fixture()
+    sfx.effects["stun"] = object()
+    sys_input = PlayerInputSystem(world, screen=None)
+    sys_input.update([], dt=0.1)
+
+    assert tm.current_tile_x == 5 and tm.current_tile_y == 5
+    assert not tm.is_moving
+
+
+# ── client/remote_entity_handlers.py::_draw_remote_players — hostilidade e
+# nameplate na Arena 2x2 (pedido do usuário 21/07/2026): oponente de arena
+# fica com barra/nome vermelhos igual duelo (nunca o próprio time), e
+# nameplate de quem morreu DENTRO da arena some até sair (reduz spam de
+# fantasma parado) — fora da arena, nameplate de morto continua aparecendo
+# normalmente (comportamento antigo preservado).
+def _make_remote_player_fixture(hp: int = 80):
+    from engine.world import World
+    from engine.components import Position, RemoteControlled
+    import client.remote_entity_handlers as reh_mod
+
+    class _Fixture(reh_mod.RemoteEntityHandlers):
+        def __init__(self, world):
+            self.world = world
+            from ui.fonts import make as _make_font
+            self.font_sm = _make_font(12)
+
+    world = World()
+    local_eid = world.create_entity()
+    world.add_component(local_eid, Position(x=100.0, y=100.0))
+    world.add_component(local_eid, RemoteControlled(
+        server_eid=42, name="Fulano", hp=hp, hp_max=100, level=5))
+    fx = _Fixture(world)
+    fx._remote_players = {42: local_eid}
+    return fx
+
+
+def _pending_text_colors():
+    from ui.world_labels import WORLD_LABELS
+    colors = set()
+    for _, _, surf, _ in WORLD_LABELS._pending:
+        for x in range(surf.get_width()):
+            for y in range(surf.get_height()):
+                a = surf.get_at((x, y))
+                if a.a > 0:
+                    colors.add((a.r, a.g, a.b))
+    return colors
+
+
+def test_arena_oponente_fica_hostil_igual_duelo():
+    from ui.world_labels import WORLD_LABELS
+    WORLD_LABELS._pending.clear()
+    WORLD_LABELS._stack_offset.clear()
+    fx = _make_remote_player_fixture()
+    fx._arena_in_match_val = True
+    fx._arena_opponents_server_val = {42}
+    fx._draw_remote_players(0.0, 0.0)
+    assert (255, 90, 90) in _pending_text_colors(), "oponente de arena deveria ficar vermelho"
+
+
+def test_arena_proprio_time_nao_fica_hostil():
+    from ui.world_labels import WORLD_LABELS
+    WORLD_LABELS._pending.clear()
+    WORLD_LABELS._stack_offset.clear()
+    fx = _make_remote_player_fixture()
+    fx._arena_in_match_val = True
+    fx._arena_opponents_server_val = set()   # 42 NÃO é oponente — é do próprio time
+    fx._draw_remote_players(0.0, 0.0)
+    colors = _pending_text_colors()
+    assert (255, 90, 90) not in colors, "companheiro de time não deve ficar hostil"
+    assert (255, 255, 200) in colors
+
+
+def test_arena_nameplate_some_ao_morrer_dentro_da_arena():
+    fx = _make_remote_player_fixture(hp=0)
+    fx._arena_in_match_val = True
+    fx._arena_opponents_server_val = set()
+    from ui.world_labels import WORLD_LABELS
+    WORLD_LABELS._pending.clear()
+    WORLD_LABELS._stack_offset.clear()
+    fx._draw_remote_players(0.0, 0.0)
+    assert WORLD_LABELS._pending == [], "nameplate de morto na arena deveria sumir"
+
+
+def test_nameplate_de_morto_fora_da_arena_continua_aparecendo():
+    """Fora da arena, o comportamento antigo (nameplate sempre visível,
+    mesmo morto) continua igual — a mudança é escopada só pra dentro da
+    partida."""
+    fx = _make_remote_player_fixture(hp=0)
+    fx._arena_in_match_val = False
+    fx._arena_opponents_server_val = set()
+    from ui.world_labels import WORLD_LABELS
+    WORLD_LABELS._pending.clear()
+    WORLD_LABELS._stack_offset.clear()
+    fx._draw_remote_players(0.0, 0.0)
+    assert WORLD_LABELS._pending != [], "fora da arena, nameplate de morto deve continuar visível"

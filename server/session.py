@@ -666,8 +666,14 @@ class SessionManager:
             return
         text    = str(payload.get("text", ""))[:200]
         channel = payload.get("channel", "local")
-        msg = {"sender": session.display_name, "text": text,
-               "channel": channel, "color": [220, 210, 150]}
+        # "eid" além de "sender": nome de personagem NÃO é único (duplicatas
+        # legadas, ver PROBLEMAS_ARQUITETURA.md) — sem o eid, o cliente só
+        # consegue posicionar o balão de fala comparando nomes, o que
+        # acertava o personagem ERRADO quando dois compartilhavam nome (bug
+        # real relatado pelo usuário, mesma classe do resultado de arena
+        # invertido).
+        msg = {"sender": session.display_name, "eid": session.entity_id,
+               "text": text, "channel": channel, "color": [220, 210, 150]}
         if channel == "world":
             await self._broadcast_all(MsgType.CHAT_MESSAGE, msg)
         else:

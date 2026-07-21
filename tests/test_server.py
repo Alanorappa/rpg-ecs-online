@@ -1352,6 +1352,67 @@ class TestRangedMobAbilities(unittest.TestCase):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# CC generalizado (blocks_move/blocks_act em EFFECT_DEFS) — feedback do
+# usuário 21/07/2026: "stun" já existia como StatusEffects de verdade, mas
+# nenhum gate de ação/movimento olhava pra ele (só CombatState.is_stunned
+# setado manualmente em 3 lugares sem relação com o efeito). Generalizado
+# via content/status_effects_data.py::EFFECT_DEFS, lido por
+# engine/utils.py::is_action_locked/is_movement_locked — um efeito de CC
+# novo só precisa marcar as flags lá, nunca mais caçar call site.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestCCGeneralizado(unittest.TestCase):
+
+    def setUp(self):
+        self.ws = make_world_server()
+        self.eid = spawn_player(self.ws, "cc1", 130, 374)
+
+    def _apply(self, effect_type: str, duration: float = 5.0):
+        from engine.core_systems import apply_effect
+        apply_effect(self.ws.world, self.eid, effect_type, duration)
+
+    def test_stun_bloqueia_acao_e_movimento(self):
+        """Antes desta correção, "stun" real (via StatusEffects) não
+        bloqueava NADA pro jogador — nem is_action_locked nem o anti-cheat
+        de movimento bruto olhavam pra ele."""
+        from engine.utils import is_action_locked, is_movement_locked
+        self._apply("stun")
+        self.assertTrue(is_action_locked(self.ws.world, self.eid))
+        self.assertTrue(is_movement_locked(self.ws.world, self.eid))
+
+    def test_root_bloqueia_so_movimento(self):
+        """Enraizado pode continuar agindo — só não pode se mover."""
+        from engine.utils import is_action_locked, is_movement_locked
+        self._apply("root")
+        self.assertFalse(is_action_locked(self.ws.world, self.eid))
+        self.assertTrue(is_movement_locked(self.ws.world, self.eid))
+
+    def test_slow_nao_bloqueia_nada(self):
+        """Lento é só redução de velocidade — não é um lock de controle."""
+        from engine.utils import is_action_locked, is_movement_locked
+        self._apply("slow")
+        self.assertFalse(is_action_locked(self.ws.world, self.eid))
+        self.assertFalse(is_movement_locked(self.ws.world, self.eid))
+
+    def test_fear_bloqueia_movimento_bruto_no_servidor(self):
+        """Bug real: medo (fear) não tinha NENHUM bloqueio server-side no
+        anti-cheat de movimento — um cliente que ignorasse is_action_locked
+        conseguia mandar MOVE normalmente enquanto amedrontado."""
+        self._apply("fear")
+        moved = self.ws.move_player("cc1", 131, 374)
+        self.assertFalse(moved, "MOVE deveria ser rejeitado sob medo")
+
+    def test_disoriented_nao_bloqueia_movimento_bruto_no_servidor(self):
+        """Continua de propósito FORA do anti-cheat bruto: o wander
+        aleatório de desorientado/polimorfia é decidido pelo cliente
+        (CombatStateSystem) e mandado como MOVE normal — bloquear aqui
+        quebraria esse wander (ver comentário em world_server.py)."""
+        self._apply("disoriented")
+        moved = self.ws.move_player("cc1", 131, 374)
+        self.assertTrue(moved, "MOVE de wander não deveria ser rejeitado")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Runner
 # ─────────────────────────────────────────────────────────────────────────────
 

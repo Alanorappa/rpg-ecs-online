@@ -5076,5 +5076,136 @@ medo em si mesmo ou receber de outro player, confirmar que clique de
 chão E perseguição de alvo ficam bloqueados, não só WASD).
 
 ---
+
+### ✅ RESOLVIDO — Balão de fala do chat aparecia sobre a cabeça do personagem ERRADO (feedback do usuário 21/07/2026)
+
+Pedido do usuário: "quando eu estava digitando ontem no personagem
+aventureiro, outro tester reportou que o balão do que eu escrevia
+aparecia sobre a cabeça do personagem dele, pois tinha o mesmo nome."
+Mesma classe do bug do resultado de arena invertido (§ acima) —
+identidade de entidade resolvida por NOME em vez de eid.
+
+**Causa raiz**: `CHAT_MESSAGE` (`server/session.py::_handle_chat`) nunca
+mandava o eid do remetente, só `sender: session.display_name`. O cliente
+(`client/network_handlers.py::_resolve_chat_sender_entity`) era forçado a
+resolver o balão de fala comparando `CharacterStats`/`RemoteControlled`
+`.name` contra esse nome — com dois personagens de mesmo nome na sessão
+(nomes legados não são únicos, ver seção acima), o primeiro iterado
+"ganhava" o balão do outro.
+
+**Fix**: `_handle_chat` agora inclui `"eid": session.entity_id` no
+payload (`_duel_chat_msg` do sistema, sender="Sistema", continua sem eid
+de propósito — não representa nenhuma entidade). Cliente resolve via
+`self._resolve_local_eid(sender_eid)` — mesmo choke-point já usado por
+trade/duelo/party — e só cai pro fallback por nome (`_logged_char_name`,
+o PRÓPRIO player) se não vier eid; o scan por `RemoteControlled.name`
+foi removido inteiramente (era o código exatamente buggy).
+
+**Validado**: `py_compile` limpo; suíte completa 352/352, rodada 3x (não
+foi adicionado teste automatizado dedicado pro chat bubble — validado
+via leitura de código e pelo fato de reusar `_resolve_local_eid`, já
+coberto por outros testes de rede).
+
+**Não validado**: teste manual em jogo com 2 personagens de nomes
+IGUAIS na mesma sessão, confirmar que o balão aparece só sobre quem
+realmente escreveu.
+
+---
+
+### ✅ RESOLVIDO — CC (stun) não bloqueava nada + generalização de blocks_move/blocks_act (feedback do usuário 21/07/2026)
+
+Pedido do usuário: "eu esqueci de citar o stun, mas isso deve contar
+para todos os efeitos do tipo cc, para que não precise hardcodar em
+cada efeito que ele impossibilita o jogador de controlar o personagem
+ou não."
+
+**Causa raiz**: "stun" já existia como `StatusEffects` de verdade
+(aplicado por Interceptar, Punho no Queixo, knockback — `ui/skill_handlers.py`,
+`server/spell_completion_processor.py`), mas **nenhum** gate de ação/
+movimento olhava pra ele — nem o antigo `is_action_locked` (só sleep/
+disoriented/polymorph/fear), nem `CombatState.is_stunned` (que só era
+setado manualmente em 3 lugares sem relação com esse efeito: freeze de
+fim de partida da arena, self-stun do Bloco de Gelo, replicação de
+player remoto). Um player atordoado de verdade não tinha NENHUMA
+restrição — nem cliente nem servidor.
+
+**Fix estrutural** (não só "adicionar stun à lista hardcodada" — o
+usuário pediu pra eliminar o hardcode): `content/status_effects_data.py::
+EffectDef` ganhou dois campos novos, `blocks_move`/`blocks_act` (default
+`False`), marcados por efeito: stun/sleep/fear/polymorph/disoriented =
+ambos `True`; root = só `blocks_move` (pode agir, não pode se mover);
+slow e todo o resto = nenhum (só debuff/DoT, não é lock de controle).
+`engine/utils.py::is_action_locked`/`is_movement_locked` (nova) leem
+essas flags via `StatusEffects.effects` em vez de comparar strings
+hardcodadas — um efeito de CC novo só precisa marcar as flags certas em
+`EFFECT_DEFS`, nunca mais caçar call site. `ui/systems.py` (cliente) e
+`server/skill_processor.py`/`combat_processor.py` (servidor) continuam
+chamando as mesmas funções, sem nenhuma mudança de código neles — ganham
+o fix de graça.
+
+`server/world_server.py::move_player` (anti-cheat de movimento bruto)
+tinha uma lista hardcodada separada (`sleep/stun/root`) que também não
+incluía "fear" — adicionado. Disoriented/polymorph continuam DE
+PROPÓSITO fora dessa lista específica (não generalizados pra
+`is_movement_locked` ali): o wander aleatório desses 2 efeitos é
+decidido pelo CLIENTE (`CombatStateSystem`) e mandado como MOVE normal —
+bloquear ali quebraria esse wander legítimo. Comentário deixado no
+código explicando a exceção.
+
+**Validado**: `tests/test_server.py::TestCCGeneralizado` (5 testes —
+stun bloqueia ação+movimento, root bloqueia só movimento, slow não
+bloqueia nada, fear bloqueia MOVE bruto no servidor, disoriented
+continua liberado no MOVE bruto de propósito) +
+`tests/test_client_ui.py::test_stun_bloqueia_clique_de_chao`. Suíte
+completa 352/352, rodada 3x.
+
+**Não validado**: teste manual em jogo (Interceptar/Punho no
+Queixo/knockback atordoando o próprio personagem, confirmar que
+teclado/clique/skills ficam bloqueados durante o stun).
+
+---
+
+### ✅ RESOLVIDO — Arena 2x2: nameplate não ficava hostil contra o time adversário + fantasma morto continuava "spamando" nameplate (feedback do usuário 21/07/2026)
+
+Pedido do usuário: "o ideal é a barra de HP e o nome dos
+adversários(nome plate), ficarem vermelhos para os adversários, assim
+como você fez no duelo [...] ao personagem morrer, o nameplate pode
+sumir, e só volta quando sair da arena."
+
+**Fix**: `client/remote_entity_handlers.py::_draw_remote_players` já
+tinha a cor hostil pronta pro duelo (`_duel_opponent_local_val`) — só
+faltava incluir a arena na mesma condição. Adicionado
+`_is_arena_opp = server_eid in self._arena_opponents_server_val`
+(`client/arena_handlers.py` já mantinha esse set desde a leva anterior,
+populado só com o TIME ADVERSÁRIO — nunca o próprio, ver `ARENA_MATCH_START`
+`"opponents"` em `server/match_processor.py::_create_match`) — `_is_hostile_rp
+= _is_duel_opp or _is_arena_opp` decide a cor, cobrindo os dois contextos
+com o mesmo código.
+
+Nameplate-some-ao-morrer: escopado só a `self._arena_in_match` — dentro
+da própria partida, se `RemoteControlled.hp <= 0` (sinal de morte já
+mantido em dia por `_handle_msg_entity_death`, que zera o hp na hora do
+óbito — não precisa de `GhostState`, que só existe pro player LOCAL),
+o loop pula o `WORLD_LABELS.add_icon`/`add_text` daquele player — sprite
+continua visível (já escurecido por `_handle_msg_entity_death`), só a
+HUD flutuante some. Como a arena é uma instância isolada (só os 4 da
+partida aparecem no AOI de cada um), não há risco de esconder o
+nameplate de um morto de OUTRO contexto por engano; fora da arena o
+comportamento antigo (nameplate sempre visível) continua idêntico.
+
+**Validado**: `tests/test_client_ui.py` — 4 testes novos
+(`test_arena_oponente_fica_hostil_igual_duelo`,
+`test_arena_proprio_time_nao_fica_hostil`,
+`test_arena_nameplate_some_ao_morrer_dentro_da_arena`,
+`test_nameplate_de_morto_fora_da_arena_continua_aparecendo`) — sobem
+`_draw_remote_players` isolado e inspecionam a fila do
+`WORLD_LABELS`/cor dos pixels renderizados. Suíte completa 352/352,
+rodada 3x.
+
+**Não validado**: teste manual em jogo com 4 clientes reais na arena
+(confirmar cor hostil só contra o time adversário, nameplate sumindo ao
+morrer e voltando só ao sair).
+
+---
    **(15b/D5) Fatiar `ui/systems.py`** — mecânico, zero risco de lógica;
    bom preenchimento de fim de sessão.

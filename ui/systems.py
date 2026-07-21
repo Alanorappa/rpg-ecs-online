@@ -516,14 +516,19 @@ class PlayerInputSystem(System):
                 can_move = True
                 can_act  = False
 
-            # Disoriented/Polymorph/Sleep: bloqueia input (CombatStateSystem força
-            # movimento aleatório em disoriented/polymorph; sleep fica imóvel até
-            # expirar ou ser quebrado por dano). is_action_locked centraliza os 3 —
-            # mesma checagem usada no gate de skills do servidor (skill_processor.py)
-            # e de auto-attack (combat_processor.py), pra não divergir.
-            from engine.utils import is_action_locked
-            if is_action_locked(self.world, entity_id):
+            # CC (stun/sleep/fear/polymorph/disoriented/root): bloqueia
+            # movimento e/ou ação conforme blocks_move/blocks_act de cada
+            # efeito (content/status_effects_data.py::EFFECT_DEFS — fonte
+            # única, ver engine/utils.py). is_action_locked/is_movement_locked
+            # são os mesmos choke-points usados no gate de skills do
+            # servidor (skill_processor.py) e de auto-attack
+            # (combat_processor.py), pra não divergir. Checados separado
+            # (não os dois juntos) porque root bloqueia só movimento,
+            # permitindo continuar agindo.
+            from engine.utils import is_action_locked, is_movement_locked
+            if is_movement_locked(self.world, entity_id):
                 can_move = False   # input bloqueado; CombatStateSystem move aleatoriamente
+            if is_action_locked(self.world, entity_id):
                 can_act  = False   # não pode usar skills nem ataques
 
             # Campo de chat focado: WASD é lido via pygame.key.get_pressed()

@@ -1353,18 +1353,35 @@ class RemoteEntityHandlers:
         _sprite_h = _TS_rp - 4   # mesma convenção de altura já usada aqui (W = H = TILE_SIZE-4)
 
         from ui.hud_bars import DISPOSITION_HP_COLORS as _DISP_rp, HP_COLOR as _HPC_rp
-        _duel_opp = getattr(self, "_duel_opponent_local_val", -1)
+        _duel_opp    = getattr(self, "_duel_opponent_local_val", -1)
+        _arena_match = getattr(self, "_arena_in_match_val", False)
+        _arena_opps  = getattr(self, "_arena_opponents_server_val", set())
         for server_eid, local_eid in self._remote_players.items():
             pos = self.world.get_component(local_eid, Position)
             rc  = self.world.get_component(local_eid, RemoteControlled)
             if not pos or not rc:
                 continue
+            # Dentro da própria partida de arena, esconde o nameplate de
+            # quem já morreu — reduz "spam" visual de fantasmas parados até
+            # saírem (pedido do usuário 21/07/2026). Corpo/sprite continua
+            # visível (já tingido por _handle_msg_entity_death), só a
+            # HUD flutuante some. rc.hp é o sinal de morte já mantido em
+            # dia pra players remotos (_handle_msg_entity_death zera na
+            # hora, revive/saída da arena restaura via STATS_UPDATE
+            # equivalente) — não precisa de GhostState aqui.
+            if _arena_match and rc.hp <= 0:
+                continue
             ratio = max(0.0, min(1.0, rc.hp / max(1, rc.hp_max)))
-            # Oponente de duelo: barra + nome vermelhos enquanto durar
-            # (client/duel_handlers.py mantém _duel_opponent_local_val).
-            _is_duel_opp = (local_eid == _duel_opp)
-            _hp_col_rp   = _DISP_rp["hostil"] if _is_duel_opp else _HPC_rp
-            _name_col_rp = (255, 90, 90) if _is_duel_opp else (255, 255, 200)
+            # Oponente de duelo OU do time adversário na arena: barra + nome
+            # vermelhos enquanto durar (client/duel_handlers.py mantém
+            # _duel_opponent_local_val; arena usa _arena_opponents_server_val
+            # — SÓ o outro time fica hostil, nunca o próprio, ver
+            # client/arena_handlers.py::_arena_opponents_server).
+            _is_duel_opp  = (local_eid == _duel_opp)
+            _is_arena_opp = server_eid in _arena_opps
+            _is_hostile_rp = _is_duel_opp or _is_arena_opp
+            _hp_col_rp   = _DISP_rp["hostil"] if _is_hostile_rp else _HPC_rp
+            _name_col_rp = (255, 90, 90) if _is_hostile_rp else (255, 255, 200)
             _hud_surf = _bph_rp(ratio, 0.0, 0.0, (0, 0, 0, 0), rc.level,
                                 self._player_level_font, hp_color=_hp_col_rp)
             _world_y_top = pos.y - _sprite_h / 2

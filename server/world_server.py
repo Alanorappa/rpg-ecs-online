@@ -1106,14 +1106,18 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             })
             return True
 
-        # CC totalmente imobilizante (sleep/stun/root) impede movimento — igual
-        # ao bloqueio de IA de mobs (systems.py EnemyAISystem). Disoriented/
-        # polymorph NÃO entram aqui: o wander aleatório é decidido pelo cliente
-        # (CombatStateSystem) e enviado como MOVE normal. Servidor nunca confia
+        # CC totalmente imobilizante (sleep/stun/root/fear) impede movimento —
+        # igual ao bloqueio de IA de mobs (systems.py EnemyAISystem). Fear
+        # entrou aqui 21/07/2026 (não tinha NENHUM bloqueio server-side —
+        # player amedrontado conseguia mandar MOVE normalmente, só o cliente
+        # respeitava is_action_locked por conta própria). Disoriented/
+        # polymorph continuam de FORA de propósito: o wander aleatório é
+        # decidido pelo cliente (CombatStateSystem) e enviado como MOVE
+        # normal — bloquear aqui quebraria esse wander. Servidor nunca confia
         # no cliente para não enviar MOVE durante CC totalmente imobilizante.
         from engine.components import StatusEffects as _SFXmv
         _sfx_mv = self.world.get_component(eid, _SFXmv)
-        if _sfx_mv and any(_sfx_mv.has(e) for e in ("sleep", "stun", "root")):
+        if _sfx_mv and any(_sfx_mv.has(e) for e in ("sleep", "stun", "root", "fear")):
             return False
 
         # Baseline anti-cheat: primeira vez que este player move desde o spawn

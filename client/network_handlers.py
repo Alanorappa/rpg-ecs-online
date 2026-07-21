@@ -2157,31 +2157,31 @@ class NetworkHandlers:
         target  = self._chat_world if channel == "world" else self._chat_local
         target.append((sender, text, color))
 
-        entity_id = self._resolve_chat_sender_entity(sender)
+        entity_id = self._resolve_chat_sender_entity(payload.get("eid", -1), sender)
         if entity_id != -1:
             from ui.chat_bubble import CHAT_BUBBLE
             CHAT_BUBBLE.add(entity_id, text)
 
-    def _resolve_chat_sender_entity(self, sender_name: str) -> int:
-        """Resolve o nome do remetente pro eid LOCAL (próprio player ou
-        player remoto) — usado só pra posicionar o balão de fala; se não
-        achar (mob/NPC não manda chat, ou remetente já desconectou), -1.
+    def _resolve_chat_sender_entity(self, sender_eid: int, sender_name: str) -> int:
+        """Resolve o remetente pro eid LOCAL (próprio player ou player
+        remoto) — usado só pra posicionar o balão de fala; se não achar
+        (mob/NPC não manda chat, remetente já desconectou, ou mensagem de
+        sistema sem eid), -1.
 
-        `sender` em CHAT_MESSAGE é `Session.display_name` (nome do
-        PERSONAGEM — ver server/session.py::Session.display_name/
-        _handle_chat). Bug real corrigido nesta rodada: o servidor mandava
-        `session.username` (login da conta) em vários lugares — chat,
-        nameplate (ENTITY_SPAWN/AOI_UPDATE de player) e trade — só
-        coincidia com o nome do personagem quando o jogador escolhia os
-        dois iguais. Agora tudo usa `display_name` de forma consistente,
-        então comparar com `_logged_char_name` (nome do PRÓPRIO
-        personagem, setado no login) é a checagem certa de novo, e
-        `RemoteControlled.name` (branch de player remoto abaixo) também
-        já vem como nome do personagem do outro lado."""
+        Prioriza `sender_eid` (server_eid mandado em CHAT_MESSAGE desde
+        21/07/2026) via `_resolve_local_eid` — o mesmo choke-point já usado
+        por trade/duelo/party. Bug real corrigido: nome de personagem NÃO é
+        único (duplicatas legadas — dois "Aventureiro" na mesma sessão),
+        então resolver só por nome fazia o balão de fala aparecer sobre a
+        cabeça do personagem ERRADO quando dois compartilhavam nome. O
+        fallback por nome fica só para mensagens antigas/sem eid (ex:
+        "Sistema" no anúncio de vitória de duelo, que não representa
+        nenhuma entidade — nesse caso o fallback também não encontra nada,
+        e está correto retornar -1)."""
+        if sender_eid != -1:
+            resolved = self._resolve_local_eid(sender_eid)
+            if resolved != -1:
+                return resolved
         if sender_name == getattr(self, "_logged_char_name", None):
             return self.player_entity
-        from engine.components import RemoteControlled as _RCchat
-        for eid, rc in self.world.get_entities_with(_RCchat):
-            if rc.name == sender_name:
-                return eid
         return -1

@@ -230,27 +230,58 @@ def is_target_alive(world, target_id: int) -> bool:
     return meta is not None and meta.hp > 0
 
 
+def _cc_blocks(world, entity_id: int, attr: str) -> bool:
+    """Lê `content/status_effects_data.py::EFFECT_DEFS[*].{blocks_move,
+    blocks_act}` — fonte única de "este efeito tira o controle do
+    jogador". Um efeito de CC novo só precisa marcar a flag certa lá; não
+    precisa tocar em `is_action_locked`/`is_movement_locked` nunca mais
+    (regra do usuário 21/07/2026, ver PROBLEMAS_ARQUITETURA.md — bug real:
+    "stun" já existia como StatusEffects de verdade, mas nenhum gate de
+    ação/movimento olhava pra ele antes desta função existir)."""
+    from engine.components import StatusEffects
+    from content.status_effects_data import EFFECT_DEFS
+    sfx = world.get_component(entity_id, StatusEffects)
+    if sfx is None:
+        return False
+    for effect_type in sfx.effects:
+        _def = EFFECT_DEFS.get(effect_type)
+        if _def is not None and getattr(_def, attr, False):
+            return True
+    return False
+
+
 def is_action_locked(world, entity_id: int) -> bool:
     """True se a entidade está impedida de iniciar uma ação (skill OU
-    auto-attack) por controle mental — sleep, disoriented, polymorph, fear.
+    auto-attack) por controle mental — todo efeito com `blocks_act=True`
+    em `EFFECT_DEFS` (hoje: stun, sleep, fear, polymorph, disoriented).
 
     Esses efeitos vivem em StatusEffects, não em CombatState — por isso
     `CombatState.can_act()` (is_alive/is_stunned/is_casting/is_camouflaged)
     NUNCA os cobre, e qualquer gate de ação precisa checar os dois
     separadamente: `not can_act() or is_action_locked(...)`. Sem isso, um
-    player adormecido/desorientado/polimorfizado/amedrontado consegue
-    continuar agindo em qualquer caminho que só olhe can_act() (bug real
-    encontrado: o auto-attack do servidor — server/combat_processor.py —
-    checava só can_act(), deixando passar essas CCs; só o cast de skills
-    checava). Único choke-point também usado por PlayerInputSystem
-    (ui/systems.py) pra bloquear can_move/can_act do jogador local — regra
-    do usuário (21/07/2026): CC isola QUALQUER ação por padrão, adicionar
-    um novo efeito aqui já cobre movimento E ações em todos os pontos que
-    consultam esta função, sem precisar caçar cada call site.
+    player sob uma dessas CCs consegue continuar agindo em qualquer
+    caminho que só olhe can_act() (bug real encontrado: o auto-attack do
+    servidor — server/combat_processor.py — checava só can_act(), deixando
+    passar essas CCs; só o cast de skills checava). Único choke-point
+    também usado por PlayerInputSystem (ui/systems.py) pra bloquear
+    can_act do jogador local.
     """
-    from engine.components import StatusEffects
-    sfx = world.get_component(entity_id, StatusEffects)
-    if sfx is None:
-        return False
-    return (sfx.has("sleep") or sfx.has("disoriented") or sfx.has("polymorph")
-            or sfx.has("fear"))
+    return _cc_blocks(world, entity_id, "blocks_act")
+
+
+def is_movement_locked(world, entity_id: int) -> bool:
+    """True se a entidade está impedida de se mover manualmente (WASD,
+    clique de chão, "Seguir", perseguição de alvo) — todo efeito com
+    `blocks_move=True` em `EFFECT_DEFS` (hoje: stun, sleep, fear,
+    polymorph, disoriented, root — root é o único que bloqueia SÓ
+    movimento, permitindo agir; os outros 5 bloqueiam os dois, ver
+    `is_action_locked`).
+
+    Irmã de `is_action_locked` — mesmo padrão, usada por
+    `PlayerInputSystem.update()` (ui/systems.py, cliente) e pelo
+    anti-cheat de pacote de movimento bruto (`server/world_server.py`),
+    pra bloquear QUALQUER movimento manual sob CC, não só teclado (bug
+    real corrigido 21/07/2026 — clique de chão/perseguição ignoravam
+    polimorfia/desorientado por completo).
+    """
+    return _cc_blocks(world, entity_id, "blocks_move")
