@@ -5091,8 +5091,9 @@ cada call site passe um callback manualmente (diferente do
 registra `MatchProcessorMixin._track_arena_damage` no boot — acumula em
 `match["damage_by_eid"]`, no-op fora de qualquer partida.
 
-**Protocolo**: `ARENA_MATCH_RESULT` (S→C, novo,
-`{results:[{name,damage,won}]}`) — mandado uma vez quando a partida é
+**Protocolo**: `ARENA_MATCH_RESULT` (S→C,
+`{results:[{eid,name,damage,won}]}` — campo `eid` adicionado
+21/07/2026, ver correção abaixo) — mandado uma vez quando a partida é
 DECIDIDA, pros 4 (não teleporta ninguém). `ARENA_MATCH_END` (já
 existia) continua disparando só quando cada player efetivamente SAI
 (clique/forfeit/desconexão/timeout), junto do `ZONE_CHANGE` de volta —
@@ -5101,13 +5102,14 @@ momento da decisão).
 
 **Cliente**: `client/arena_handlers.py` ganhou o modal (`ui/ui_sizes.py::
 ARENA_RESULT_W/H`) — título, banner "Vitória!"/"Derrota" (identifica a
-própria linha por `CharacterStats.name` do player local — nomes já são
-globalmente únicos, ver §34.28), lista nome+dano ordenada por dano
-decrescente, botão "Sair da Arena" que manda `ARENA_FORFEIT` (mesmo
-comando do `/forfeit`, zero handler novo no servidor pra isso). Modal é
-bloqueante (`_handle_arena_click` verifica `_arena_result` antes de
-qualquer outra coisa), fecha sozinho ao receber `ARENA_MATCH_END`
-(servidor já confirmou a saída).
+própria linha por `eid` do player local, `self._my_eid` — CORRIGIDO
+21/07/2026: usava `CharacterStats.name`, mas nomes NÃO são globalmente
+únicos — bug real, ver `PROBLEMAS_ARQUITETURA.md`), lista nome+dano
+ordenada por dano decrescente, botão "Sair da Arena" que manda
+`ARENA_FORFEIT` (mesmo comando do `/forfeit`, zero handler novo no
+servidor pra isso). Modal é bloqueante (`_handle_arena_click` verifica
+`_arena_result` antes de qualquer outra coisa), fecha sozinho ao
+receber `ARENA_MATCH_END` (servidor já confirmou a saída).
 
 **Validado**: `tests/test_arena.py` (33 testes no total, 7 a mais que
 antes desta rodada — vários dos antigos reescritos pro ciclo de 2 fases:

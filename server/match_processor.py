@@ -280,6 +280,7 @@ class MatchProcessorMixin:
                 match["arena_locked"].add(eid)
             char = self.world.get_component(eid, _CharF)
             results.append({
+                "eid":    eid,
                 "name":   char.name if char else "?",
                 "damage": match["damage_by_eid"].get(eid, 0),
                 "won":    eid in winner_members,

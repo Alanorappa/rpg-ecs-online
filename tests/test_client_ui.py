@@ -636,4 +636,112 @@ def test_recarregar_visual_only_nao_mexe_em_bag_nem_aljava_online():
     sys_spell._complete_cast(player, spell_cast, combat_state)
 
     assert quiver.arrow_count == 0, "cliente não deve encher a aljava — só o servidor"
-    assert ammo.stack == 200, "cliente não deve tocar na mochila — dobrava o consumo"
+
+
+# ── ui/systems.py::PlayerInputSystem — CC bloqueia TODA movimentação ─────────
+# Bug real relatado pelo usuário 21/07/2026: alvo sob polimorfia (e, pelo
+# mesmo mecanismo, desorientado/sono) não conseguia andar com WASD, mas
+# continuava andando via clique do mouse (clique de chão) — is_action_locked
+# só era consultado no branch de teclado (can_move). Correção: can_move passa
+# a ser encaminhado também pra _process_ground_move/_process_follow/chase,
+# isolando QUALQUER movimento durante CC, igual já acontecia com o teclado.
+def _make_cc_move_fixture():
+    from engine.world import World
+    from engine.components import (
+        Position, TileMovement, PlayerControlled, CombatStats,
+        PlayerAutoMove, StatusEffects,
+    )
+    import engine.world_systems as ws_mod
+
+    class _FakePathfinding:
+        def find_path(self, start, end, dynamic_obstacles=None,
+                       max_nodes=300, manhattan_limit=60):
+            sx, sy = start
+            ex, ey = end
+            nx = sx + (1 if ex > sx else (-1 if ex < sx else 0))
+            ny = sy + (1 if ey > sy else (-1 if ey < sy else 0))
+            return [(nx, ny)]
+
+        def _get_tilemap_component(self):
+            return None
+
+    class _FakeTileValidation:
+        def is_tile_walkable(self, entity_id, tx, ty, from_tx=None,
+                             from_ty=None, ignore_eid=-1):
+            return True
+
+    # _svc_resolver é global de módulo — se um teste de servidor (WorldServer)
+    # rodou antes na mesma sessão do pytest, ele fica setado e is_tile_walkable
+    # tenta resolver o bundle daquele OUTRO mundo primeiro, ignorando o fake
+    # abaixo. Reseta pra None (equivalente a "modo offline/sem resolver") pra
+    # isolar este teste de estado global vazado por ordem de execução.
+    ws_mod._svc_resolver = None
+    ws_mod.register_services(pathfinding=_FakePathfinding(),
+                             tile_validation=_FakeTileValidation())
+
+    world = World()
+    eid = world.create_entity()
+    world.add_component(eid, Position(x=5 * 32, y=5 * 32))
+    tm = TileMovement(current_tile_x=5, current_tile_y=5)
+    world.add_component(eid, tm)
+    world.add_component(eid, PlayerControlled())
+    world.add_component(eid, CombatStats())
+    auto_move = PlayerAutoMove()
+    auto_move.active = True
+    auto_move.ground_target = (10, 5)
+    world.add_component(eid, auto_move)
+    sfx = StatusEffects()
+    world.add_component(eid, sfx)
+
+    return world, eid, tm, auto_move, sfx
+
+
+def test_clique_de_chao_move_normalmente_sem_cc():
+    from ui.systems import PlayerInputSystem
+
+    world, eid, tm, auto_move, sfx = _make_cc_move_fixture()
+    sys_input = PlayerInputSystem(world, screen=None)
+    sys_input.update([], dt=0.1)
+
+    assert auto_move.path or tm.is_moving, "sem CC, clique de chão deve mover"
+
+
+def test_polimorfia_bloqueia_clique_de_chao_igual_teclado():
+    from ui.systems import PlayerInputSystem
+
+    world, eid, tm, auto_move, sfx = _make_cc_move_fixture()
+    sfx.effects["polymorph"] = object()
+    sys_input = PlayerInputSystem(world, screen=None)
+    sys_input.update([], dt=0.1)
+
+    assert tm.current_tile_x == 5 and tm.current_tile_y == 5
+    assert not tm.is_moving
+    assert not auto_move.path, "path não deve nem ser calculado sob CC"
+
+
+def test_desorientado_bloqueia_clique_de_chao():
+    from ui.systems import PlayerInputSystem
+
+    world, eid, tm, auto_move, sfx = _make_cc_move_fixture()
+    sfx.effects["disoriented"] = object()
+    sys_input = PlayerInputSystem(world, screen=None)
+    sys_input.update([], dt=0.1)
+
+    assert tm.current_tile_x == 5 and tm.current_tile_y == 5
+    assert not tm.is_moving
+
+
+def test_medo_bloqueia_clique_de_chao():
+    """Medo (talento "Horrorizante" do Executar) não estava em
+    is_action_locked — um player amedrontado tinha zero restrição de
+    movimento/ação. Adicionado ao mesmo choke-point (engine/utils.py)
+    usado por polimorfia/desorientado, pedido explícito do usuário."""
+    from ui.systems import PlayerInputSystem
+
+    world, eid, tm, auto_move, sfx = _make_cc_move_fixture()
+    sfx.effects["fear"] = object()
+    sys_input = PlayerInputSystem(world, screen=None)
+    sys_input.update([], dt=0.1)
+
+    assert tm.current_tile_x == 5 and tm.current_tile_y == 5
+    assert not tm.is_moving

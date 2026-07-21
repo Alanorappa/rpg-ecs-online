@@ -232,19 +232,25 @@ def is_target_alive(world, target_id: int) -> bool:
 
 def is_action_locked(world, entity_id: int) -> bool:
     """True se a entidade está impedida de iniciar uma ação (skill OU
-    auto-attack) por controle mental — sleep, disoriented, polymorph.
+    auto-attack) por controle mental — sleep, disoriented, polymorph, fear.
 
-    Esses 3 efeitos vivem em StatusEffects, não em CombatState — por isso
+    Esses efeitos vivem em StatusEffects, não em CombatState — por isso
     `CombatState.can_act()` (is_alive/is_stunned/is_casting/is_camouflaged)
     NUNCA os cobre, e qualquer gate de ação precisa checar os dois
     separadamente: `not can_act() or is_action_locked(...)`. Sem isso, um
-    player adormecido/desorientado/polimorfizado consegue continuar agindo
-    em qualquer caminho que só olhe can_act() (bug real encontrado: o
-    auto-attack do servidor — server/combat_processor.py — checava só
-    can_act(), deixando passar essas 3 CCs; só o cast de skills checava).
+    player adormecido/desorientado/polimorfizado/amedrontado consegue
+    continuar agindo em qualquer caminho que só olhe can_act() (bug real
+    encontrado: o auto-attack do servidor — server/combat_processor.py —
+    checava só can_act(), deixando passar essas CCs; só o cast de skills
+    checava). Único choke-point também usado por PlayerInputSystem
+    (ui/systems.py) pra bloquear can_move/can_act do jogador local — regra
+    do usuário (21/07/2026): CC isola QUALQUER ação por padrão, adicionar
+    um novo efeito aqui já cobre movimento E ações em todos os pontos que
+    consultam esta função, sem precisar caçar cada call site.
     """
     from engine.components import StatusEffects
     sfx = world.get_component(entity_id, StatusEffects)
     if sfx is None:
         return False
-    return sfx.has("sleep") or sfx.has("disoriented") or sfx.has("polymorph")
+    return (sfx.has("sleep") or sfx.has("disoriented") or sfx.has("polymorph")
+            or sfx.has("fear"))

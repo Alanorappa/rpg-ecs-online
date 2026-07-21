@@ -4984,5 +4984,97 @@ recursos gastos e cooldowns ativos, confirmar restauração completa dos
 dois lados).
 
 ---
+
+### ✅ RESOLVIDO — Arena 2x2: resultado da partida invertido (vitória/derrota trocadas) (feedback do usuário 21/07/2026)
+
+Pedido do usuário: "nos testes eu venci uma arena, mas em vez do
+resultado ser vitória para mim, apareceu derrota, e vitória para o
+perdedor."
+
+**Causa raiz**: `client/arena_handlers.py::_draw_arena_result_modal`
+identificava "minha linha" na lista `ARENA_MATCH_RESULT.results`
+comparando `CharacterStats.name` (`my_row = next(r for r in results if
+r.get("name") == my_name)`). `server/match_processor.py::_finish_match`
+monta cada linha só com `{"name", "damage", "won"}` — sem nenhum
+identificador estável por linha. Nome de personagem NÃO é único entre
+contas (confirmado via SQL direto em `data/game.db`: "Aventureiro" x3,
+"Juugo" x2, várias salvas no mesmo dia do teste do usuário) — com um
+nome duplicado entre os 4 da partida, o cliente pegava a linha do
+ADVERSÁRIO e mostrava o resultado trocado.
+
+**Fix**: `_finish_match` agora inclui `"eid": eid` em cada linha de
+`results`. `_draw_arena_result_modal` troca o match por nome para
+`r.get("eid") == self._my_eid` (`self._my_eid` — eid atribuído pelo
+servidor ao player local, já usado em outros pontos do cliente, ex.
+`client/network_handlers.py::_my_eid = payload.get("eid", -1)`). O
+outer broadcast (`server/session.py`, linha do `ARENA_MATCH_RESULT`)
+já mandava `results` sem alteração — o eid por linha passa direto, sem
+precisar tocar no envio.
+
+**Validado**: `tests/test_arena.py::test_arena_match_result_manda_nome_dano_vitoria_dos_4`
+estendido — cada linha carrega o `eid` correto, indexável por eid além
+de por nome. Suíte completa 342/342, rodada 3x.
+
+**Não validado**: teste manual em jogo com 2 personagens de nomes
+IGUAIS nos times opostos (reproduz o cenário exato do bug).
+
+---
+
+### ✅ RESOLVIDO — CC (polimorfia/desorientado/medo) bloqueava só teclado, não clique do mouse (feedback do usuário 21/07/2026)
+
+Pedido do usuário: "quando o alvo está sob efeito de polimorfia, ele
+não consegue andar pelo teclado, mas continua podendo andar pelos
+cliques do mouse, isso é um erro de arquitetura, pois quando há
+efeitos de cc no alvo, o correto é isolar qualquer ação (a não ser que
+eu dissesse 'tal ação pode ser feita'), e não somente o sistema de
+input do teclado. [...] não só no polimorf mas em outros efeitos como
+desorientado e fear."
+
+**Causa raiz**: `PlayerInputSystem.update()` (`ui/systems.py`) computa
+`can_move` uma vez por frame (dobrando `CombatState.can_move()` +
+ghost/morte + `is_action_locked()`), mas só consultava essa variável no
+branch de movimento por TECLADO (linha ~539). `_process_ground_move`
+(clique de chão), `_process_follow` ("Seguir") e os 3 pontos de
+perseguição via `_auto_move_step` (mago/melee dentro de `_process_target`,
+arqueiro dentro de `_process_archer_combat`) nunca recebiam `can_move`
+— corriam incondicionalmente contanto que `is_pursuing`/`ground_target`
+estivesse setado, ignorando qualquer CC.
+
+Segundo achado, mais amplo: `is_action_locked()` (`engine/utils.py`) —
+o choke-point já usado tanto no cliente quanto no servidor
+(`skill_processor.py`, `combat_processor.py`) para bloquear
+skill/auto-attack — só cobria `sleep`/`disoriented`/`polymorph`. "Medo"
+(fear, aplicado pelo talento "Horrorizante" do Executar via
+`ui/skill_handlers.py`) nunca tinha NENHUMA restrição de ação/movimento
+pro jogador (só mobs fogem de medo, em `EnemyAISystem` —
+`engine/world_systems.py`); um player amedrontado agia normalmente.
+
+**Fix**:
+1. `can_move` agora é passado como parâmetro por toda a cadeia de
+   chamadas: `update()` → `_process_target`/`_process_ground_move`/
+   `_process_follow` → `_process_archer_combat`. Cada ponto de
+   movimento (clique de chão, "Seguir", as 3 perseguições) só executa
+   se `can_move` for `True` — mesmo default "bloqueia por padrão" que
+   já regia o teclado.
+2. `is_action_locked()` ganhou `sfx.has("fear")` na condição — como é
+   o único choke-point consultado em todos os pontos de gate (cliente
+   E servidor), um efeito novo entra ali e propaga sozinho pra
+   movimento E ação, sem caçar call site por call site (é exatamente o
+   padrão que o usuário pediu para generalizar).
+
+**Validado**: `tests/test_client_ui.py` — 4 testes novos
+(`test_clique_de_chao_move_normalmente_sem_cc`,
+`test_polimorfia_bloqueia_clique_de_chao_igual_teclado`,
+`test_desorientado_bloqueia_clique_de_chao`,
+`test_medo_bloqueia_clique_de_chao`) instanciam `PlayerInputSystem`
+direto com serviços de pathfinding fake e provam que `StatusEffects`
+com polimorfia/desorientado/medo trava o clique de chão exatamente
+como já travava o teclado. Suíte completa 342/342, rodada 3x.
+
+**Não validado**: teste manual em jogo (aplicar polimorfia/desorientado/
+medo em si mesmo ou receber de outro player, confirmar que clique de
+chão E perseguição de alvo ficam bloqueados, não só WASD).
+
+---
    **(15b/D5) Fatiar `ui/systems.py`** — mecânico, zero risco de lógica;
    bom preenchimento de fim de sessão.

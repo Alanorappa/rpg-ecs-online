@@ -579,19 +579,19 @@ class PlayerInputSystem(System):
                 # Sempre chama _process_target para validação (limpa alvo morto/fora de visão)
                 self._process_target(
                     entity_id, position, tile_movement,
-                    combat_stats, combat_state, auto_move, can_act, dt
+                    combat_stats, combat_state, auto_move, can_act, can_move, dt
                 )
                 # Se não está perseguindo e há destino de chão, move para lá
                 if not combat_state.is_pursuing and _has_ground:
-                    self._process_ground_move(entity_id, position, tile_movement, auto_move, dt)
+                    self._process_ground_move(entity_id, position, tile_movement, auto_move, can_move, dt)
                 elif not combat_state.is_pursuing and _is_following:
-                    self._process_follow(entity_id, position, tile_movement, auto_move, dt)
+                    self._process_follow(entity_id, position, tile_movement, auto_move, can_move, dt)
             # --- "Seguir" player (modal de interação, 16/07/2026) ---
             elif _is_following:
-                self._process_follow(entity_id, position, tile_movement, auto_move, dt)
+                self._process_follow(entity_id, position, tile_movement, auto_move, can_move, dt)
             # --- Movimento de chão (sem alvo selecionado) ---
             elif _has_ground:
-                self._process_ground_move(entity_id, position, tile_movement, auto_move, dt)
+                self._process_ground_move(entity_id, position, tile_movement, auto_move, can_move, dt)
 
             # --- ESPAÇO: seleciona inimigo mais próximo, entra em combate e ataca ---
             for event in events:
@@ -604,7 +604,7 @@ class PlayerInputSystem(System):
     # ------------------------------------------------------------------
 
     def _process_target(self, entity_id, position, tile_movement,
-                        combat_stats, combat_state, auto_move, can_act, dt):
+                        combat_stats, combat_state, auto_move, can_act, can_move, dt):
         """Auto-move e auto-ataque em direção ao alvo selecionado."""
         target_id = combat_state.target_entity_id
 
@@ -694,7 +694,7 @@ class PlayerInputSystem(System):
         if is_archer and _archer_has_bow:
             self._process_archer_combat(
                 entity_id, position, tile_movement, combat_stats, combat_state,
-                auto_move, can_act, target_id, tgt_tile_x, tgt_tile_y, dt,
+                auto_move, can_act, can_move, target_id, tgt_tile_x, tgt_tile_y, dt,
                 _px_chase, _melee_chase_px, dist_attack=dist_attack)
         elif is_mage:
             pursuit_range = self._mage_attack_range(entity_id)
@@ -717,7 +717,7 @@ class PlayerInputSystem(System):
                 # Dentro do alcance de skill: para e aguarda cast manual
                 if auto_move:
                     auto_move.path.clear()
-            elif combat_state.is_pursuing and auto_move and not tile_movement.is_moving:
+            elif can_move and combat_state.is_pursuing and auto_move and not tile_movement.is_moving:
                 # Fora do alcance de skill: persegue até o alcance de skill
                 self._auto_move_step(
                     entity_id, position, tile_movement,
@@ -755,7 +755,7 @@ class PlayerInputSystem(System):
             if dist <= self.PLAYER_ATTACK_RANGE:
                 if auto_move:
                     auto_move.path.clear()
-            elif combat_state.is_pursuing and auto_move and not tile_movement.is_moving:
+            elif can_move and combat_state.is_pursuing and auto_move and not tile_movement.is_moving:
                 self._auto_move_step(
                     entity_id, position, tile_movement,
                     pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y, auto_move, dt,
@@ -793,7 +793,7 @@ class PlayerInputSystem(System):
 
     def _process_archer_combat(self, entity_id, position, tile_movement,
                                combat_stats, combat_state, auto_move,
-                               can_act, target_id, tgt_tile_x, tgt_tile_y, dt,
+                               can_act, can_move, target_id, tgt_tile_x, tgt_tile_y, dt,
                                px_chase: float = 0.0,
                                melee_chase_px: float = float("inf"),
                                dist_attack: int = -1):
@@ -900,7 +900,7 @@ class PlayerInputSystem(System):
                 combat_stats.attack_cooldown_timer = combat_stats.get_attack_cooldown()
                 combat_stats.arrow_pre_draw_ready  = True
                 enter_combat(combat_state)
-        elif combat_state.is_pursuing and auto_move and not tile_movement.is_moving:
+        elif can_move and combat_state.is_pursuing and auto_move and not tile_movement.is_moving:
             # Persegue o mob apenas quando is_pursuing=True — evita sobrescrever
             # ground_target (clique de chão com is_pursuing=False).
             auto_move.active = True
@@ -973,7 +973,7 @@ class PlayerInputSystem(System):
                 auto_move.path.clear()
                 auto_move.path_recalc_timer = 0.0
 
-    def _process_ground_move(self, entity_id, position, tile_movement, auto_move, dt):
+    def _process_ground_move(self, entity_id, position, tile_movement, auto_move, can_move, dt):
         """Move o jogador passo a passo até o tile de destino definido por clique esquerdo."""
         gt_x, gt_y = auto_move.ground_target
         pl_x = tile_movement.current_tile_x
@@ -984,6 +984,12 @@ class PlayerInputSystem(System):
             auto_move.ground_target = None
             auto_move.active = False
             auto_move.path.clear()
+            return
+
+        # CC (sono/desorientado/polimorfia/etc, ver is_action_locked/can_move
+        # em PlayerInputSystem.update()) bloqueia TODA movimento, não só
+        # teclado — clique de chão fica pausado (path preservado) até liberar.
+        if not can_move:
             return
 
         if tile_movement.is_moving:
@@ -1018,11 +1024,13 @@ class PlayerInputSystem(System):
                 auto_move.path.clear()
                 auto_move.path_recalc_timer = 0.0
 
-    def _process_follow(self, entity_id, position, tile_movement, auto_move, dt):
+    def _process_follow(self, entity_id, position, tile_movement, auto_move, can_move, dt):
         """"Seguir" (modal de interação com player, 16/07/2026): acompanha
         o player em follow_eid, parando adjacente — reutiliza o pathing de
         alvo MÓVEL da perseguição de combate (_auto_move_step lê o tile
         vivo do alvo a cada recalc), sem nenhum combate envolvido."""
+        if not can_move:
+            return
         from engine.components import RemoteControlled as _RCfl
         target_tm  = self.world.get_component(auto_move.follow_eid, TileMovement)
         target_vis = self.world.get_component(auto_move.follow_eid, Visible)

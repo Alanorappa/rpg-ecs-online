@@ -225,10 +225,12 @@ class ArenaHandlers:
         self.screen.blit(title_s, (panel_rect.centerx - title_s.get_width() // 2,
                                    panel_rect.y + self._u(14)))
 
-        from engine.components import CharacterStats as _CS_arres
-        my_cs   = self.world.get_component(self.player_entity, _CS_arres)
-        my_name = my_cs.name if my_cs else None
-        my_row  = next((r for r in results if r.get("name") == my_name), None)
+        # Identifica "minha linha" pelo eid do servidor (self._my_eid), não
+        # pelo nome — nomes de personagem NÃO são únicos entre contas
+        # (confirmado: duplicatas reais em data/game.db), então um match por
+        # nome podia pegar a linha do adversário e mostrar Derrota pra quem
+        # venceu (bug real reportado 21/07/2026).
+        my_row = next((r for r in results if r.get("eid") == self._my_eid), None)
         if my_row is not None:
             banner = "Vitória!" if my_row.get("won") else "Derrota"
             banner_col = (120, 220, 120) if my_row.get("won") else (220, 110, 110)

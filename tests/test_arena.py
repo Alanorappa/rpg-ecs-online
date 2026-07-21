@@ -543,6 +543,16 @@ class TestArenaMatchResult(unittest.TestCase):
         name_b0 = self.ws.world.get_component(self.team_b[0], CharacterStats).name
         self.assertFalse(by_name[name_b0]["won"])
 
+        # Cada linha carrega o eid de quem ela pertence — o cliente usa
+        # isso (não o nome) pra achar "minha linha" no modal de resultado,
+        # já que nomes de personagem podem se repetir entre contas (bug
+        # real: resultado invertido quando 2 personagens tinham o mesmo
+        # nome na mesma partida, ver PROBLEMAS_ARQUITETURA.md).
+        by_eid = {r["eid"]: r for r in results}
+        self.assertEqual(set(by_eid.keys()), set(self.team_a + self.team_b))
+        self.assertTrue(by_eid[self.team_a[0]]["won"])
+        self.assertFalse(by_eid[self.team_b[0]]["won"])
+
     def test_sair_da_arena_depois_de_decidida_restaura_so_quem_saiu(self):
         for eid in self.team_b:
             apply_damage_core(self.ws.world, eid, 999999, killer_eid=self.team_a[0])
