@@ -44,8 +44,21 @@ DEFAULTS = {
 
 def load() -> dict:
     if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, "r") as f:
-            data = json.load(f)
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            # Vazio/corrompido — acontece de verdade quando 2 clientes na
+            # MESMA pasta (2 testers no mesmo PC, cada um com sua própria
+            # janela) salvam quase ao mesmo tempo: o open(CONFIG_FILE, "w")
+            # de um processo trunca o arquivo pra 0 bytes um instante antes
+            # de escrever o JSON novo, e o outro processo lê exatamente
+            # nesse instante (bug real relatado pelo usuário 20/07/2026 —
+            # crash ao entrar na arena, JSONDecodeError "Expecting value").
+            # Nunca derruba o jogo por isso — save() (abaixo) também virou
+            # write atômico (tmp + os.replace) pra fechar a janela de
+            # corrida em vez de só tolerar o sintoma aqui.
+            data = {}
         return {**DEFAULTS, **data}
     # Primeiro run: materializa o arquivo com os defaults pro jogador
     # encontrar e editar (server_host/porta ficam visíveis ao lado do exe).
@@ -58,8 +71,17 @@ def load() -> dict:
 
 
 def save(data: dict) -> None:
-    """Salva `data` mesclando com as chaves já existentes no arquivo."""
+    """Salva `data` mesclando com as chaves já existentes no arquivo.
+
+    Write atômico (arquivo temporário + os.replace): um `open(CONFIG_FILE,
+    "w")` direto trunca o arquivo pra 0 bytes ANTES de escrever o JSON —
+    se outro processo (2 clientes na mesma pasta) ler nesse meio-tempo,
+    recebe conteúdo vazio. os.replace() troca o arquivo inteiro de uma vez
+    só (atômico no Windows e no POSIX) — quem ler antes ou depois sempre
+    vê um JSON completo, nunca um estado parcial."""
     existing = load()
     existing.update(data)
-    with open(CONFIG_FILE, "w") as f:
+    tmp_path = CONFIG_FILE + ".tmp"
+    with open(tmp_path, "w") as f:
         json.dump(existing, f, indent=2)
+    os.replace(tmp_path, CONFIG_FILE)
