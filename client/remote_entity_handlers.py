@@ -572,6 +572,16 @@ class RemoteEntityHandlers:
             else:
                 sfx.effects[etype].duration = dur
 
+        # Recalcula slow_mult/is_rooted/is_crowd_controlled a partir do
+        # StatusEffects atual — sem isso, um efeito removido acima (pop
+        # direto, fora do loop de StatusEffectSystem.update()) deixava
+        # esses 3 estados derivados PRESOS no último valor pra sempre
+        # (bug real relatado pelo usuário 20/07/2026: alvo de Polimorfia
+        # ficava permanentemente lento depois do efeito expirar). Ver
+        # engine/core_systems.py::sync_status_derived_state.
+        from engine.core_systems import sync_status_derived_state
+        sync_status_derived_state(self.world, self.player_entity, sfx)
+
     def _sync_mob_effects(self, mob_effects: dict) -> None:
         """Sincroniza efeitos de status em mobs remotos.
 
@@ -583,6 +593,8 @@ class RemoteEntityHandlers:
         from engine.components import StatusEffects, ActiveEffect
         from content.status_effects_data import EFFECT_DEFS as _EDEFS
 
+        from engine.core_systems import sync_status_derived_state
+
         # Limpa efeitos de mobs que o servidor não enviou neste tick
         _reported_server_eids = {int(k) for k in mob_effects}
         for srv_eid, local_eid in self._remote_mobs.items():
@@ -590,6 +602,10 @@ class RemoteEntityHandlers:
                 sfx = self.world.get_component(local_eid, StatusEffects)
                 if sfx and sfx.effects:
                     sfx.effects.clear()
+                    # Sem isso, slow_mult/is_rooted/is_crowd_controlled do
+                    # mob ficavam presos no último valor pra sempre — ver
+                    # comentário completo em _sync_player_effects acima.
+                    sync_status_derived_state(self.world, local_eid, sfx)
 
         for srv_eid_str, effects in mob_effects.items():
             srv_eid   = int(srv_eid_str)
@@ -632,6 +648,8 @@ class RemoteEntityHandlers:
                     )
                 else:
                     sfx.effects[etype].duration = dur
+
+            sync_status_derived_state(self.world, local_eid, sfx)
 
     def _sync_combat_target(self) -> None:
         """Envia AUTO_ATTACK ao servidor.

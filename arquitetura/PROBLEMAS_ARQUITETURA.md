@@ -4882,5 +4882,107 @@ completa 271/271, rodada 3x.
 stack, confirmar que o servidor não trava e a confirmação chega).
 
 ---
+
+### ✅ RESOLVIDO — Polimorfia: alvo ficava lento pra sempre depois do efeito expirar (feedback do usuário 20/07/2026)
+
+Reportado: "o alvo de polimorfia continua podendo andar com o
+personagem, porém anda em slow (correto, é o efeito), mas quando acaba
+o slow, o personagem continua no slow."
+
+**Causa raiz**: `slow_mult`/`is_rooted`/`is_crowd_controlled` são
+estados DERIVADOS de `StatusEffects.effects`, recalculados só dentro do
+próprio loop de `StatusEffectSystem.update()` — que começa com
+`if not sfx.effects: continue`. No modo online, `client/
+remote_entity_handlers.py::_sync_player_effects`/`_sync_mob_effects`
+sincronizam efeitos vindos do servidor fazendo `sfx.effects.pop()`/
+`.clear()` DIRETO, por fora desse loop. Quando um efeito (aqui,
+"polymorph") era removido assim e o dict ficava vazio, o guard do topo
+passava a pular a entidade PRA SEMPRE — o recálculo que zeraria
+`slow_mult` nunca mais rodava, porque nada além dele reabastecia
+`sfx.effects`. Mesma classe de bug já documentada e corrigida em 3
+pontos de leash de mob (`engine/world_systems.py`, ver histórico deste
+arquivo) — nunca tinha sido replicada pro sync de rede de efeitos de
+player.
+
+**Fix**: `engine/core_systems.py::sync_status_derived_state(world, eid,
+sfx)` (novo, extraído do corpo de `StatusEffectSystem.update()`) —
+único ponto de verdade pro cálculo de `slow_mult`/`debilitate_elapsed`/
+`is_rooted`/`is_crowd_controlled` a partir do `StatusEffects` atual,
+chamável de QUALQUER lugar (não só de dentro do loop principal).
+`client/remote_entity_handlers.py` passou a chamar essa função logo
+depois de cada `.pop()`/`.clear()` direto (`_sync_player_effects` e nos
+2 pontos de `_sync_mob_effects`).
+
+**Não validado**: teste manual em jogo (Polimorfia expira e o alvo
+volta à velocidade normal).
+
+---
+
+### ✅ RESOLVIDO — Pirofagia desorientava alvo amigável mesmo sem causar dano (feedback do usuário 20/07/2026)
+
+Reportado: "pirofagia está causando o efeito de desorientado quando o
+alvo (player) é amigável, só não causa dano, mas de qualquer forma é
+incorreto."
+
+**Causa raiz**: `ui/skill_handlers.py::_skill_pirofagia` (modo servidor,
+disparo imediato de cone) varre `get_entities_with(TileMovement,
+CombatStats)` DIRETO, sem nenhum filtro de facção — aplica dano via
+`_apply_magic_damage` → `apply_damage_core`, que corretamente bloqueia
+alvo amigável (`can_engage`, retorna `"blocked_friendly"`, dano não sai
+do lugar) — mas a linha seguinte, `apply_effect(self.world, eid,
+"disoriented", _dis_dur)`, roda INCONDICIONALMENTE pra qualquer entidade
+geometricamente dentro do cone, sem checar o resultado do dano nem
+`can_engage` de novo. Outras AoEs (ex: `_server_nova_congelante`, via
+`WorldServer._combat_targets`) já filtram os candidatos por
+`can_engage` ANTES de aplicar dano OU efeito — `_skill_pirofagia`
+reimplementava a varredura à mão e não reproduziu esse filtro.
+
+**Fix**: `_skill_pirofagia` passou a checar `can_engage(self.world,
+self.player_entity_id, eid)` pra CADA candidato, pulando (`continue`)
+antes de aplicar dano OU efeito se o alvo for amigável — mesmo gate,
+mesmo padrão de `_combat_targets`, só que inline (esta função não é um
+método de `WorldServer`, não tem acesso a `_combat_targets`).
+
+**Não validado**: teste manual em jogo (Pirofagia não desorienta
+jogador/NPC amigável dentro do cone).
+
+---
+
+### ✅ RESOLVIDO — Arena 2x2: recursos não eram restaurados ao entrar/sair da partida (feedback do usuário 20/07/2026)
+
+Pedido do usuário: "os personagens que entram na arena, precisam ter
+todos os recursos restaurados, HP, Mana, concentração, cooldowns de
+skills e quando saem da arena é a mesma coisa."
+
+**Fix**: `server/match_processor.py::_reset_combat_resources(eid)`
+(novo) — restaura `CombatStats.current_hp = max_hp`,
+`CharacterStats.mana = max_mana`, `concentration = max_concentration`,
+`reset_volatile()` (contadores de combo/carga diversos), e limpa TODAS
+as entradas de `_skill_last_used` daquele eid (cooldown AUTORITATIVO,
+checado em `skill_processor.py` — comentário lá mesmo: "impede spam
+mesmo que o cliente manipule current_cooldown local"). Chamado em
+`_create_match` (pra cada um dos 4, ao entrar) e em `_arena_leave_now`
+(ao sair de vez — depois do revive de quem morreu, ver §34.33
+ARQUITETURA_ONLINE.md, já que `_revive_player` restaura HP/mana mas não
+mexe em concentração/cooldown).
+
+`PlayerSkills.skills[i].current_cooldown` (valor de EXIBIÇÃO, ticado
+localmente pelo cliente, nunca sincronizado por rede — comentário em
+`server/skill_processor.py`) é responsabilidade do CLIENTE:
+`client/arena_handlers.py::_reset_local_arena_resources` espelha a
+mesma restauração (HP/mana/concentração/`gcd_timer`/`current_cooldown`/
+cargas) no player local, chamado nos mesmos 2 gatilhos
+(`ARENA_MATCH_START`/`ARENA_MATCH_END`) — feedback instantâneo sem
+esperar o próximo `STATS_UPDATE`.
+
+**Validado**: `tests/test_arena.py::TestArenaResourceReset` (2 testes —
+entrar e sair da arena restauram HP/mana/concentração/cooldown
+autoritativo). Suíte completa 338/338, rodada 3x.
+
+**Não validado**: teste manual em jogo (entrar/sair da arena com
+recursos gastos e cooldowns ativos, confirmar restauração completa dos
+dois lados).
+
+---
    **(15b/D5) Fatiar `ui/systems.py`** — mecânico, zero risco de lógica;
    bom preenchimento de fim de sessão.

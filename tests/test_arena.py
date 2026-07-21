@@ -14,7 +14,7 @@ import unittest
 from tests.helpers import make_world_server, spawn_player
 from engine.faction_system import can_engage
 from engine.core_systems import apply_damage_core
-from engine.components import CombatStats, CombatState, Faction, TileMovement, GhostState
+from engine.components import CombatStats, CombatState, Faction, TileMovement, GhostState, CharacterStats
 
 
 def _make_duo(ws, prefix: str, tile=(130, 374)):
@@ -586,6 +586,69 @@ class TestArenaMatchResult(unittest.TestCase):
         self.assertIn(self.match_id, self.ws._active_matches)
         for eid in self.team_a + self.team_b:
             self.assertIsNotNone(self.ws.world.get_component(eid, Faction))
+
+
+class TestArenaResourceReset(unittest.TestCase):
+    """Recursos restaurados ao entrar E ao sair da arena (pedido do
+    usuário 20/07/2026): "os personagens que entram na arena, precisam
+    ter todos os recursos restaurados, HP, Mana, concentração, cooldowns
+    de skills e quando saem da arena é a mesma coisa"."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+
+    def _damage_resources(self, eid):
+        from engine.components import PlayerSkills, Skill
+        cs = self.ws.world.get_component(eid, CombatStats)
+        cs.current_hp = 1
+        char = self.ws.world.get_component(eid, CharacterStats)
+        char.max_mana = 100
+        char.mana = 5
+        char.max_concentration = 50
+        char.concentration = 0
+        ps = self.ws.world.get_component(eid, PlayerSkills)
+        if ps is None:
+            ps = PlayerSkills()
+            self.ws.world.add_component(eid, ps)
+        sk = Skill("Teste", "desc", 10.0)
+        sk.current_cooldown = 8.0
+        ps.gcd_timer = 0.5
+        ps.skills[0] = sk
+        self.ws._skill_last_used[(eid, "teste_skill")] = 999999.0
+
+    def _assert_resources_restored(self, eid):
+        cs = self.ws.world.get_component(eid, CombatStats)
+        self.assertEqual(cs.current_hp, cs.max_hp)
+        char = self.ws.world.get_component(eid, CharacterStats)
+        self.assertEqual(char.mana, char.max_mana)
+        self.assertEqual(char.concentration, char.max_concentration)
+        # _skill_last_used é o cooldown AUTORITATIVO (server/skill_processor.py:
+        # "Impede spam mesmo que o cliente manipule current_cooldown local") —
+        # PlayerSkills.skills[i].current_cooldown é só exibição, ticado e
+        # resetado no CLIENTE (client/arena_handlers.py::
+        # _reset_local_arena_resources), não faz sentido testar aqui.
+        self.assertNotIn((eid, "teste_skill"), self.ws._skill_last_used)
+
+    def test_entrar_na_arena_restaura_recursos(self):
+        team_a = _make_duo(self.ws, "rra")
+        for eid in team_a:
+            self._damage_resources(eid)
+        team_b = _make_duo(self.ws, "rrb")
+        _queue_and_pair(self.ws, team_a, team_b)
+        for eid in team_a:
+            self._assert_resources_restored(eid)
+
+    def test_sair_da_arena_restaura_recursos(self):
+        team_a = _make_duo(self.ws, "rrc")
+        team_b = _make_duo(self.ws, "rrd")
+        _queue_and_pair(self.ws, team_a, team_b)
+        # danifica de novo DENTRO da partida (entrar já limpou uma vez)
+        for eid in team_a:
+            self._damage_resources(eid)
+        for eid in team_a:
+            self.ws.request_arena_forfeit(eid)
+        for eid in team_a:
+            self._assert_resources_restored(eid)
 
 
 class TestArenaRegressionOpenWorld(unittest.TestCase):

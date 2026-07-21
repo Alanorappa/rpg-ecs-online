@@ -211,6 +211,57 @@ def apply_effect(
     )
 
 
+def sync_status_derived_state(world, eid: int, sfx) -> None:
+    """Recalcula, a partir do StatusEffects ATUAL, os 3 estados derivados
+    que outros sistemas leem direto (nunca vasculham `sfx.effects` sozinhos):
+    `TileMovement.slow_mult`/`debilitate_elapsed`, `CombatState.is_rooted`,
+    `CombatStats.is_crowd_controlled`.
+
+    Extraído de StatusEffectSystem.update() (chamado de lá a cada tick,
+    depois de remover efeitos expirados) para poder ser chamado TAMBÉM fora
+    do loop principal — client/remote_entity_handlers.py::_sync_player_
+    effects/_sync_mob_effects fazem `sfx.effects.pop()`/`.clear()` DIRETO
+    (efeito que o servidor parou de reportar via STATS_UPDATE/mob_effects),
+    e sem recalcular aqui os 3 estados derivados ficavam PRESOS no último
+    valor pra sempre — `StatusEffectSystem.update()` nunca mais os tocava
+    porque seu guard `if not sfx.effects: continue` nunca roda de novo pra
+    uma entidade cujo dict já ficou (e continua) vazio. Bug real relatado
+    pelo usuário 20/07/2026: alvo de Polimorfia ficava permanentemente
+    lento (slow_mult preso em 0.5) depois do efeito expirar no servidor —
+    mesma classe de bug já resolvida em 3 pontos de leash de mob
+    (engine/world_systems.py, ver ARQUITETURA_ONLINE.md) mas nunca
+    replicada aqui."""
+    from engine.components import TileMovement, CombatState, CombatStats
+
+    tm = world.get_component(eid, TileMovement)
+    if tm:
+        slow = sfx.get("slow")
+        if slow:
+            tm.slow_mult = slow.magnitude if 0.0 < slow.magnitude < 1.0 else 0.5
+        elif sfx.has("disoriented") or sfx.has("polymorph"):
+            # Disoriented/polymorph: 50% da velocidade normal.
+            # Sem guard de CombatStats — aplica a qualquer entidade com
+            # TileMovement+StatusEffects (local, remota, com ou sem CombatStats).
+            tm.slow_mult = 0.5
+        else:
+            # Sem slow/disoriented/polymorph ativos: reseta para velocidade normal.
+            # Aplica a TODAS as entidades com TileMovement+StatusEffects — incluindo
+            # mobs remotos online. O slow agora é aplicado localmente via apply_effect
+            # (com duração real do servidor) e expira naturalmente por aqui.
+            tm.slow_mult          = 1.0
+            tm.debilitate_elapsed = 0.0
+
+    cst = world.get_component(eid, CombatState)
+    if cst:
+        cst.is_rooted = sfx.has("root")
+
+    cs_cc = world.get_component(eid, CombatStats)
+    if cs_cc:
+        _CC = ("stun", "sleep", "fear", "polymorph", "slow",
+               "disoriented", "root")
+        cs_cc.is_crowd_controlled = any(sfx.has(e) for e in _CC)
+
+
 # ── StatusEffectSystem ────────────────────────────────────────────────────────
 
 # DoT (dano por tick) cuja escola conta para resist_<escola> do skill level
@@ -244,10 +295,7 @@ class StatusEffectSystem:
     # ── Loop principal ─────────────────────────────────────────────────────
 
     def update(self, events=None, dt: float = 0) -> None:
-        from engine.components import (StatusEffects, TileMovement, CombatState,
-                                 CombatStats, Position, PlayerControlled,
-                                 PendingDeath)
-        from content.status_effects_data import EFFECT_DEFS
+        from engine.components import StatusEffects
 
         for eid, sfx in self.world.get_entities_with(StatusEffects):
             if not sfx.effects:
@@ -277,36 +325,7 @@ class StatusEffectSystem:
                     apply_effect(self.world, eid, expire_eff, expire_dur,
                                  magnitude=expire_mag)
 
-            # Sincroniza slow_mult no TileMovement
-            tm = self.world.get_component(eid, TileMovement)
-            if tm:
-                slow = sfx.get("slow")
-                if slow:
-                    tm.slow_mult = slow.magnitude if 0.0 < slow.magnitude < 1.0 else 0.5
-                elif sfx.has("disoriented") or sfx.has("polymorph"):
-                    # Disoriented/polymorph: 50% da velocidade normal.
-                    # Sem guard de CombatStats — aplica a qualquer entidade com
-                    # TileMovement+StatusEffects (local, remota, com ou sem CombatStats).
-                    tm.slow_mult = 0.5
-                else:
-                    # Sem slow/disoriented/polymorph ativos: reseta para velocidade normal.
-                    # Aplica a TODAS as entidades com TileMovement+StatusEffects — incluindo
-                    # mobs remotos online. O slow agora é aplicado localmente via apply_effect
-                    # (com duração real do servidor) e expira naturalmente por aqui.
-                    tm.slow_mult          = 1.0
-                    tm.debilitate_elapsed = 0.0
-
-            # Sincroniza is_rooted
-            cst = self.world.get_component(eid, CombatState)
-            if cst:
-                cst.is_rooted = sfx.has("root")
-
-            # Sincroniza is_crowd_controlled (lido por damage_calculator)
-            cs_cc = self.world.get_component(eid, CombatStats)
-            if cs_cc:
-                _CC = ("stun", "sleep", "fear", "polymorph", "slow",
-                       "disoriented", "root")
-                cs_cc.is_crowd_controlled = any(sfx.has(e) for e in _CC)
+            sync_status_derived_state(self.world, eid, sfx)
 
     # ── Tick de dano/cura ──────────────────────────────────────────────────
 

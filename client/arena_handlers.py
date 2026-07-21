@@ -69,6 +69,7 @@ class ArenaHandlers:
         self._arena_in_queue_val = False
         self._arena_in_match_val = True
         self._arena_opponents_server_val = set(payload.get("opponents", []))
+        self._reset_local_arena_resources()
         WARN.add("Partida de Arena 2x2 começou! Use /forfeit ou /ff pra desistir.")
 
     def _handle_msg_arena_match_end(self, payload: dict) -> None:
@@ -79,6 +80,34 @@ class ArenaHandlers:
         # só chega depois que o servidor já restaurou de verdade este
         # player (clique em "Sair da Arena", /forfeit, ou timeout).
         self._arena_result_val = None
+        self._reset_local_arena_resources()
+
+    def _reset_local_arena_resources(self) -> None:
+        """Espelha localmente (feedback instantâneo, sem esperar o
+        próximo STATS_UPDATE) a restauração de HP/mana/concentração/
+        cooldown que o servidor já fez de verdade — ao entrar E ao sair
+        da arena (WorldServer._reset_combat_resources, mesmo gatilho,
+        pedido do usuário 20/07/2026). Só mexe no player LOCAL — HP bar
+        de players remotos já é 100% server-driven (ENTITY_SPAWN/
+        STATS_UPDATE), não precisa de espelho aqui."""
+        from engine.components import CombatStats as _CST_ar, CharacterStats as _Char_ar, PlayerSkills as _PS_ar
+        cs = self.world.get_component(self.player_entity, _CST_ar)
+        if cs:
+            cs.current_hp = cs.max_hp
+        char = self.world.get_component(self.player_entity, _Char_ar)
+        if char:
+            char.mana          = char.max_mana
+            char.concentration = char.max_concentration
+        ps = self.world.get_component(self.player_entity, _PS_ar)
+        if ps:
+            ps.gcd_timer = 0.0
+            for sk in ps.skills:
+                if sk is None:
+                    continue
+                sk.current_cooldown = 0.0
+                if sk.max_charges > 0:
+                    sk.charges      = sk.max_charges
+                    sk.charge_timer = 0.0
 
     def _handle_msg_arena_match_result(self, payload: dict) -> None:
         """Partida decidida (time inteiro eliminado ou esvaziado) — abre

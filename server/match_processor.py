@@ -151,6 +151,7 @@ class MatchProcessorMixin:
             sx, sy = _SPAWN_TEAM_A[i % len(_SPAWN_TEAM_A)]
             self.transfer_player(sid, eid, instance_key, sx, sy)
             self.world.add_component(eid, _FactionM(faction_id="arena_time_a"))
+            self._reset_combat_resources(eid)
             spawn_pos[eid] = (sx, sy)
         for i, eid in enumerate(team_b_eids):
             sid = self.get_session_id_for_player(eid)
@@ -159,6 +160,7 @@ class MatchProcessorMixin:
             sx, sy = _SPAWN_TEAM_B[i % len(_SPAWN_TEAM_B)]
             self.transfer_player(sid, eid, instance_key, sx, sy)
             self.world.add_component(eid, _FactionM(faction_id="arena_time_b"))
+            self._reset_combat_resources(eid)
             spawn_pos[eid] = (sx, sy)
 
         _map_file = self._template_file_of(instance_key)
@@ -171,6 +173,34 @@ class MatchProcessorMixin:
                 "teammates": [e for e in (team_a_eids if eid in team_a_eids else team_b_eids) if e != eid],
                 "opponents": team_b_eids if eid in team_a_eids else team_a_eids,
             })
+
+    def _reset_combat_resources(self, eid: int) -> None:
+        """Restaura HP/Mana/Concentração cheios e limpa cooldown de TODAS
+        as skills — chamado ao ENTRAR na arena (_create_match) e ao SAIR
+        de vez (_arena_leave_now), pedido explícito do usuário
+        20/07/2026: "os personagens que entram na arena, precisam ter
+        todos os recursos restaurados... e quando saem da arena é a
+        mesma coisa" — ninguém começa a partida em desvantagem por ter
+        gastado recurso antes de entrar, e ninguém sai "quebrado" de
+        volta ao mundo aberto.
+
+        `_skill_last_used` (cooldown AUTORITATIVO, checado em
+        skill_processor.py) é limpo aqui; o valor de EXIBIÇÃO
+        (`Skill.current_cooldown`, ticado localmente pelo cliente,
+        nunca sincronizado por rede) é responsabilidade do cliente —
+        ver client/arena_handlers.py, mesmos gatilhos
+        (ARENA_MATCH_START/ARENA_MATCH_END)."""
+        from engine.components import CombatStats as _CSTres, CharacterStats as _CharRes
+        cs = self.world.get_component(eid, _CSTres)
+        if cs:
+            cs.current_hp = cs.max_hp
+        char = self.world.get_component(eid, _CharRes)
+        if char:
+            char.mana         = char.max_mana
+            char.concentration = char.max_concentration
+            char.reset_volatile()
+        for key in [k for k in self._skill_last_used if k[0] == eid]:
+            del self._skill_last_used[key]
 
     def _track_arena_damage(self, killer_eid: int, target_id: int, dmg: int) -> None:
         """Registrado via engine.core_systems.register_damage_tracker —
@@ -305,6 +335,12 @@ class MatchProcessorMixin:
         gst = self.world.get_component(eid, _GSL)
         if gst and gst.is_dead:
             self._revive_player(eid, hp_frac=1.0, at_corpse=False)
+
+        # Recursos cheios + cooldowns limpos ao sair, igual ao entrar (pedido
+        # do usuário 20/07/2026) — roda depois do revive acima (se aplicável)
+        # pra não ter conflito: _revive_player já restaura HP/mana/reset_
+        # volatile pra quem morreu, mas não mexe em concentração/cooldown.
+        self._reset_combat_resources(eid)
 
         try:
             self.world.remove_component(eid, _FactionL)

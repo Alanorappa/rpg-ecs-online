@@ -961,10 +961,20 @@ class SkillHandlers:
             cone  = self._piro_cone_tiles(tm_p.current_tile_x, tm_p.current_tile_y,
                                           dir_x, dir_y)
             hit   = 0
+            from engine.faction_system import can_engage as _can_engage_piro
             for eid, etm, ecs in self.world.get_entities_with(TileMovement, CombatStats):
                 if eid == self.player_entity_id:
                     continue  # não afeta o próprio caster
                 if ecs.current_hp <= 0:
+                    continue
+                # can_engage bloqueia alvo amigável — sem este check, o dano já
+                # saía zerado (apply_damage_core::blocked_friendly), mas o
+                # "disoriented" abaixo era aplicado incondicionalmente pra
+                # QUALQUER um no cone, amigável ou não (bug real relatado pelo
+                # usuário 20/07/2026). Mesmo gate que outras AoE já usam
+                # (server/world_server.py::_combat_targets, usado por
+                # _server_nova_congelante).
+                if not _can_engage_piro(self.world, self.player_entity_id, eid):
                     continue
                 if (etm.current_tile_x, etm.current_tile_y) in cone:
                     from content.skill_config import SKILL_CATALOG as _SC_piro
