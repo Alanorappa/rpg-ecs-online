@@ -884,6 +884,36 @@ def test_spawn_remote_mob_de_trainer_anexa_trainer_com_class_id():
     assert trainer is not None and trainer.class_id == "mago"
 
 
+def test_spawn_mob_projectile_com_alvo_sendo_mob_remoto():
+    """Bug real relatado pelo usuário 21/07/2026: NPC de serviço ranged
+    (ex: "Arqueiro (NPC)") atirando num mob hostil causava dano
+    corretamente, mas nenhuma flecha visual aparecia — _spawn_mob_projectile
+    só resolvia target_seid contra o player local ou players remotos,
+    nunca contra self._remote_mobs (onde mobs E NPCs remotos vivem),
+    então qualquer tiro mirando um NÃO-player caía no "else: return" e
+    era descartado."""
+    from engine.components import Projectile
+    fx = _make_net_fixture()
+    fx._remote_mob_projectiles = {}
+    fx._handle_msg_entity_spawn({
+        "eid": 50, "kind": "enemy", "tx": 5, "ty": 5,
+        "race": "Zumbi", "entity_class": "Warrior",
+        "hp": 30, "hp_max": 30, "level": 1, "faction": "monstros_hostis",
+    })
+    mob_local_eid = fx._remote_mobs[50]
+
+    fx._spawn_mob_projectile(777, {
+        "x": 100.0, "y": 100.0, "target_seid": 50,
+        "color": [200, 160, 60], "is_arrow": True,
+        "dir_x": 1.0, "dir_y": 0.0, "speed": 380.0,
+    })
+
+    assert 777 in fx._remote_mob_projectiles, "projétil deveria ser criado quando o alvo é um mob remoto"
+    proj_local_eid = fx._remote_mob_projectiles[777]
+    proj = fx.world.get_component(proj_local_eid, Projectile)
+    assert proj is not None and proj.target_id == mob_local_eid
+
+
 def test_spawn_remote_mob_normal_nao_ganha_componente_de_npc_servico():
     """Regressão — mob comum (sem profession/shop_id/class_id no payload)
     continua sem nenhum componente de capacidade, igual antes desta leva."""

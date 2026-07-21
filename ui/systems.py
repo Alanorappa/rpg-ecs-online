@@ -1427,8 +1427,19 @@ class RenderSystem(System):
             # passe em game.py) empilha ACIMA via o mesmo stack_key=eid em
             # WORLD_LABELS — nunca desenhado direto no world_surf (mesmo
             # motivo do nome do mob acima).
+            #
+            # Exclui quem tem RemoteEntityMeta (21/07/2026 — Fase 1 de
+            # combate genérico pra NPC de serviço): esses NPCs agora
+            # sincronizam pelo mesmo pipeline de mob e já ganham
+            # badge+nome+barra de HP via _draw_mob_hp_bars
+            # (client/remote_entity_handlers.py) — sem este filtro, o
+            # badge duplicava (um aqui sem HP, outro lá com HP), já que
+            # perderam CombatStats (removido na reconstrução remota) mas
+            # continuam com NPC.
+            from engine.components import RemoteEntityMeta as _REM_npc_badge
             _npc_id = self.world.get_component(entity_id, NPC)
-            if _npc_id is not None and not _draw_hp_bar:
+            _is_remote_synced = self.world.get_component(entity_id, _REM_npc_badge) is not None
+            if _npc_id is not None and not _draw_hp_bar and not _is_remote_synced:
                 _npc_top_world_y = position.y - renderable.height / 2
                 _npc_badge = build_npc_badge(_npc_id.level, self._level_font)
                 WORLD_LABELS.add_icon(position.x, _npc_top_world_y, _npc_badge,

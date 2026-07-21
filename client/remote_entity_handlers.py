@@ -842,13 +842,19 @@ class RemoteEntityHandlers:
         px = float(data.get("x", 0))
         py = float(data.get("y", 0))
 
-        # Alvo: servidor envia eid ECS do alvo. Se for o player local, usa player_entity.
-        # Para outros players, ignora por ora (sem entidade local mapeada aqui).
+        # Alvo: servidor envia eid ECS do alvo. Pode ser o player local, outro
+        # player remoto, OU um mob/NPC remoto (21/07/2026 — NPC de serviço
+        # ranged, ex: "Arqueiro (NPC)", atirando num mob hostil, ou um mob
+        # hostil atirando num NPC ranged; antes só player local/remoto eram
+        # resolvidos aqui, então esses tiros nunca ganhavam flecha visual —
+        # o dano já processava certo no servidor, só faltava o cosmético).
         target_seid = data.get("target_seid", -1)
         if target_seid == self._my_eid:
             target_local = self.player_entity
         elif target_seid in self._remote_players:
             target_local = self._remote_players[target_seid]
+        elif target_seid in self._remote_mobs:
+            target_local = self._remote_mobs[target_seid]
         else:
             return  # alvo não visível localmente
 

@@ -5429,6 +5429,62 @@ normalmente ao clicar.
 skills reais do jogador (Interceptar, Golpe Poderoso, magias, flechas
 via sistema de skill) e qualquer IA de rotação/decisão de skill.
 
+### §34.35.1 — 3 bugs achados no primeiro teste de verdade da Fase 1 (21/07/2026)
+
+Feedback do usuário depois de testar em jogo:
+
+1. **Badge de nível duplicado**: `ui/systems.py:1421-1439` tinha um
+   desenho de "nameplate de NPC" antigo (badge de nível + nome, sem HP)
+   que só se desativava quando a entidade tinha `CombatStats` LOCAL.
+   NPC de serviço agora perde `CombatStats` local na reconstrução remota
+   (`client/remote_entity_handlers.py::_spawn_remote_mob`, HP vira
+   autoritativo via `RemoteEntityMeta` — mesmo tratamento de qualquer
+   mob remoto) mas continua com `NPC`, então o guard antigo
+   (`not _draw_hp_bar`) passava a achar que "não tinha combate" e
+   desenhava o badge velho, AO MESMO TEMPO que o HUD novo
+   (`_draw_mob_hp_bars`) desenhava o dele. Fix: guard ganhou
+   `and not _is_remote_synced` (checa `RemoteEntityMeta`) — quem
+   sincroniza pelo pipeline de mob nunca mais passa por aqui.
+
+2. **Arqueiro (NPC) não lançava flecha visual contra mob hostil**: dano
+   acontecia certo (servidor processa tudo igual), mas nenhum projétil
+   aparecia. Causa raiz: `client/remote_entity_handlers.py::
+   _spawn_mob_projectile` só resolvia `target_seid` contra o player
+   local (`self._my_eid`) ou players remotos (`self._remote_players`) —
+   nunca contra `self._remote_mobs` (onde mobs E NPCs remotos vivem).
+   Um tiro mirando QUALQUER NÃO-player (mob hostil sendo alvo de um NPC
+   ranged, ou o inverso) caía no `else: return` e era descartado — bug
+   PRÉ-EXISTENTE, nunca antes exercitado porque não havia nenhum NPC
+   ranged de combate até esta leva (Guarda Real é melee). Fix: mais um
+   `elif target_seid in self._remote_mobs` antes do `return`.
+
+3. **Som de flecha errado**: "Arqueiro (NPC)" reusava
+   `attack_ranged: "mob_bow"` (mesmo som genérico de monstro do
+   Goblin/Elfo) — usuário pediu o mesmo som do arqueiro JOGADOR.
+   `SOUNDS.play_mob_sounds` (`ui/sound_manager.py:469-497`) não tem
+   nenhuma distinção NPC-vs-monstro — só toca o que estiver em
+   `MobSounds.attack_ranged`, tentando variantes `_1".."_4"` sozinho a
+   partir da base. Fix: trocado pra `"arrow_release"` (mesma base do
+   som real do arqueiro jogador, `arrow_release_1`/`_2`,
+   `client/remote_entity_handlers.py::_spawn_archer_auto_arrow`) — o
+   sistema de variantes já existente resolve sozinho, zero código novo.
+   `crit` também trocado de `"mob_goblin_crit"` pra `"hit_crit"` (mesmo
+   ajuste de "soar mais humano, menos monstro").
+
+Kite (recuo genérico de qualquer combatente `is_ranged=True` quando o
+alvo chega perto demais, `EnemyAISystem`) foi CONFIRMADO como
+comportamento correto/esperado pelo usuário, não é bug — mantido sem
+mudança.
+
+**Validado**: `tests/test_client_ui.py` — 1 teste novo
+(`test_spawn_mob_projectile_com_alvo_sendo_mob_remoto`) prova que um
+projétil mirando um mob remoto (não-player) agora cria a entidade
+visual corretamente. Suíte completa 378/378, rodada 3x.
+
+**Não validado**: sessão manual — flecha visual aparecendo quando
+Arqueiro (NPC) atira num mob hostil, som igual ao do jogador, só 1
+badge de nível por NPC de serviço.
+
 ---
 
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata

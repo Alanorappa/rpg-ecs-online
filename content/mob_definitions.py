@@ -294,13 +294,20 @@ MOB_TABLE: dict[str, dict] = {
         "loot": {},
         "gold_chance": 0.0,
         "xp_given_by_lvl": 16,
+        # attack_ranged usa o MESMO som de disparo do arqueiro jogador
+        # ("arrow_release_1"/"_2", client/remote_entity_handlers.py::
+        # _spawn_archer_auto_arrow) em vez do genérico "mob_bow" de
+        # monstro — pedido do usuário 21/07/2026: "som de flecha tem que
+        # seguir o mesmo do player". play_mob_sounds (ui/sound_manager.py)
+        # já tenta as variantes "_1".."_4" sozinho a partir da base
+        # "arrow_release", igual qualquer outro som daqui.
         "sounds": {
             "aggro":            "mob_goblin_aggro",
             "death":            "mob_goblin_death",
             "attack_melee":     None,
-            "attack_ranged":    "mob_bow",
+            "attack_ranged":    "arrow_release",
             "attack_magic":     None,
-            "crit":             "mob_goblin_crit",
+            "crit":             "hit_crit",
             "emote_attack":     "mob_goblin_emote_attack",
             "emote_get_crit":   "mob_goblin_get_crit",
         },
