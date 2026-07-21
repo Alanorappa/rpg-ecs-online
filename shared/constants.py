@@ -54,7 +54,7 @@ PROTOCOL_VERSION = 1             # incrementar ao quebrar compatibilidade
 # criar a tag git correspondente (`git tag vX.Y.Z`) a cada commit relevante:
 # PATCH = correção, MINOR = feature nova, MAJOR = mudança grande/quebra de
 # compatibilidade (decisão do usuário, 20/07/2026 — ver ARQUITETURA_ONLINE.md).
-GAME_VERSION = "0.7.3"
+GAME_VERSION = "0.8.0"
 
 # ── Morte/respawn: fluxo de espírito (ghost) + cemitério ───────────────────────
 GHOST_GRAVEYARD_RADIUS_TILES = 5   # raio (tiles) do cemitério p/ revive automático
@@ -73,6 +73,14 @@ TRADE_MAX_DIST_TILES = 5
 # (checado 1x/tick, mesmo padrão do trade). Maior que o do trade de propósito:
 # a luta precisa de espaço (kite de arqueiro/mago).
 DUEL_MAX_DIST_TILES = 20
+
+# ── Arena 2x2: aceite de partida + preparo ──────────────────────────────────
+# Janela pra aceitar a "partida encontrada" antes de simplesmente não entrar
+# (arena segue só com quem aceitou); preparo dentro da arena (ninguém pode
+# agir/mover) antes do combate liberar de verdade. Pedido do usuário
+# 21/07/2026 — ver server/match_processor.py.
+ARENA_ACCEPT_WINDOW_S = 10.0
+ARENA_COUNTDOWN_S     = 10.0
 
 # ── Party/Grupo ──────────────────────────────────────────────────────────────
 # Tamanho máximo do grupo (decisão do usuário 17/07/2026). Sem checagem de

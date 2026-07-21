@@ -1522,6 +1522,20 @@ class SessionManager:
         self.world_server.request_arena_queue_leave(eid)
         await session.send(MsgType.ARENA_QUEUE_STATE, {"in_queue": False})
 
+    async def _handle_arena_match_accept(self, session: Session, payload: dict, ts: int) -> None:
+        """Aceite da janela "Partida encontrada!" (client/arena_handlers.py)
+        — entra na arena na hora, sozinho, sem esperar o resto (ver
+        MatchProcessorMixin.request_arena_accept). Cliente já fecha o modal
+        localmente ao clicar; motivo de recusa (convite expirado/inexistente)
+        não precisa de resposta — não há mais nada útil a fazer client-side
+        além do que o timeout local já fez."""
+        if not session.authenticated:
+            return
+        eid = self.world_server._player_eids.get(session.session_id)
+        if eid is None:
+            return
+        self.world_server.request_arena_accept(eid)
+
     async def _handle_arena_forfeit(self, session: Session, payload: dict, ts: int) -> None:
         """Comando de chat /forfeit ou /ff (client/arena_handlers.py) —
         desiste da partida atual, sai na hora. O ARENA_MATCH_END (won:False)
@@ -1678,6 +1692,7 @@ class SessionManager:
         MsgType.PARTY_KICK:          _handle_party_kick,
         MsgType.ARENA_QUEUE_JOIN:    _handle_arena_queue_join,
         MsgType.ARENA_QUEUE_LEAVE:   _handle_arena_queue_leave,
+        MsgType.ARENA_MATCH_ACCEPT:  _handle_arena_match_accept,
         MsgType.ARENA_FORFEIT:       _handle_arena_forfeit,
     }
 
@@ -1944,11 +1959,27 @@ class SessionManager:
                     if _pty_sess and _pty_sess.authenticated:
                         await _pty_sess.send(MsgType.PARTY_STATE, _pty_snap)
 
-            # Arena: partida criada neste tick (fila pareou 2 grupos) — cada
-            # um dos 4 players já foi teleportado pra instância
-            # (MatchProcessorMixin._create_match); aqui só avisa o cliente
+            # Arena: fila pareou 2 grupos neste tick (MatchProcessorMixin.
+            # _propose_match) — NINGUÉM foi teleportado ainda, só avisa os
+            # 4 pra abrir a janela "Partida encontrada!" (aceite manual,
+            # ver ARENA_MATCH_ACCEPT/request_arena_accept).
+            for _amf in self.world_server.consume_arena_match_found_events():
+                _amf_sid  = self.world_server.get_session_id_for_player(_amf["eid"])
+                _amf_sess = self._sessions.get(_amf_sid) if _amf_sid else None
+                if not (_amf_sess and _amf_sess.authenticated):
+                    continue
+                await _amf_sess.send(MsgType.ARENA_MATCH_FOUND, {
+                    "teammates": _amf["teammates"],
+                    "opponents": _amf["opponents"],
+                })
+
+            # Arena: player aceitou a partida neste tick
+            # (MatchProcessorMixin.request_arena_accept) e já foi
+            # teleportado pra instância, sozinho — aqui só avisa o cliente
             # pra carregar o mapa (ZONE_CHANGE, mesmo fluxo de transição de
-            # caverna) + manda o contexto da partida (ARENA_MATCH_START).
+            # caverna) + manda o contexto da partida (ARENA_MATCH_START) +
+            # o tempo de preparo restante (ARENA_COUNTDOWN — contagem é DA
+            # PARTIDA, quem entra depois recebe remaining menor/zero).
             for _am_start in self.world_server.consume_arena_match_start_events():
                 _am_sid  = self.world_server.get_session_id_for_player(_am_start["eid"])
                 _am_sess = self._sessions.get(_am_sid) if _am_sid else None
@@ -1964,6 +1995,9 @@ class SessionManager:
                     "map_file":  _am_start["map_file"],
                     "teammates": _am_start["teammates"],
                     "opponents": _am_start["opponents"],
+                })
+                await _am_sess.send(MsgType.ARENA_COUNTDOWN, {
+                    "remaining": _am_start["countdown_remaining"],
                 })
 
             # Arena: player saiu da partida neste tick (/forfeit, botão

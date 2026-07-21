@@ -22,7 +22,19 @@ plugável como duelo/zona) — cada player ganha um componente Faction
 partida dura, sobrescrevendo a facção default "jogadores". can_engage()
 já libera dano nesse caso sem nenhuma mudança (relação != "amigavel").
 
-Ciclo de vida de uma partida (revisado 20/07/2026, feedback do usuário):
+Ciclo de vida de uma partida (revisado 21/07/2026, feedback do usuário —
+aceite de partida + preparo):
+0. PROPOSTA — fila pareia 2 grupos (_propose_match) mas NINGUÉM é
+   teleportado ainda: os 4 recebem ARENA_MATCH_FOUND e têm
+   ARENA_ACCEPT_WINDOW_S segundos pra mandar ARENA_MATCH_ACCEPT
+   (request_arena_accept). Quem aceita entra IMEDIATAMENTE (sozinho, não
+   espera o resto) — vira PREPARO pra esse player: CombatState.is_stunned
+   trava ação/movimento por ARENA_COUNTDOWN_S a partir do PRIMEIRO aceite
+   de QUALQUER um dos 4 (contagem é da PARTIDA, não por-jogador — quem
+   entra depois já vê o tempo restante menor/zerado). Quem não aceita a
+   tempo simplesmente não entra — _tick_arena_pending encerra a janela e,
+   se um time inteiro nunca apareceu, o outro vence por W.O.; times
+   desbalanceados (só 1 aceitou de um lado) são esperados e aceitos.
 1. ATIVA — golpe que mataria elimina (CombatState.is_immune=True +
    is_stunned=True, não pode mais ser ferido NEM agir/mover — ver
    _eliminate_player). Time com todos os membros eliminados: a partida é
@@ -40,6 +52,8 @@ Ciclo de vida de uma partida (revisado 20/07/2026, feedback do usuário):
    saiu), a instância é descarregada de vez (_arena_leave_now).
 """
 from __future__ import annotations
+
+from shared.constants import ARENA_ACCEPT_WINDOW_S, ARENA_COUNTDOWN_S
 
 ARENA_TEMPLATE_2V2 = "maps/arena_2v2.csv"
 # Spawns opostos dentro do mapa 20x20 (interior walkable = tiles 1..18).
@@ -95,7 +109,7 @@ class MatchProcessorMixin:
             party_b = self._parties.get(pid_b)
             if party_a is None or party_b is None:
                 continue  # grupo se desfez enquanto esperava — descarta, segue tentando o resto
-            self._create_match(list(party_a["members"]), list(party_b["members"]))
+            self._propose_match(list(party_a["members"]), list(party_b["members"]))
 
     def _tick_arena_results_timeout(self) -> None:
         """Partidas DECIDIDAS há mais de ARENA_RESULT_AUTO_LEAVE_S segundos
@@ -112,71 +126,157 @@ class MatchProcessorMixin:
 
     # ── Ciclo de vida de partida ─────────────────────────────────────────────
 
-    def _create_match(self, team_a_eids: list[int], team_b_eids: list[int]) -> None:
-        from engine.components import Faction as _FactionM
-
-        match_id     = f"arena2v2_{self._next_match_id}"
+    def _propose_match(self, team_a_eids: list[int], team_b_eids: list[int]) -> None:
+        """Fila pareou 2 grupos — NINGUÉM é teleportado ainda (revisado
+        21/07/2026, pedido do usuário). Cria o match_id já em
+        `_active_matches` com os rosters de verdade (`team_a`/`team_b`)
+        VAZIOS — eles só crescem conforme cada um aceita, ver
+        `request_arena_accept`. `invited_a`/`invited_b` guardam quem foi
+        chamado (bookkeeping imutável, usado só pra montar
+        teammates/opponents e pra decidir W.O. se um lado nunca aparecer).
+        Instância só é carregada no primeiro aceite (`instance_key=None`
+        aqui) — evita alocar mapa pra uma partida que ninguém topa jogar."""
+        match_id = f"arena2v2_{self._next_match_id}"
         self._next_match_id += 1
-        instance_key = f"{ARENA_TEMPLATE_2V2}::{match_id}"
-        self._load_instance(ARENA_TEMPLATE_2V2, instance_key)
-
-        return_pos: dict[int, tuple] = {}
-        for eid in team_a_eids + team_b_eids:
-            sid = self.get_session_id_for_player(eid)
-            if sid is None:
-                continue
-            tx, ty = self.get_tile_pos(sid)
-            return_pos[eid] = (self.get_player_map(sid), tx, ty)
+        import time as _time_pm
 
         self._active_matches[match_id] = {
-            "instance_key":    instance_key,
-            "team_a":          list(team_a_eids),
-            "team_b":          list(team_b_eids),
-            "eliminated":      set(),
-            "return_pos":      return_pos,
-            "damage_by_eid":   {eid: 0 for eid in team_a_eids + team_b_eids},
-            "arena_locked":    set(),   # eids com is_immune/is_stunned setados POR ESTE código
-            "decided":         False,
-            "decided_at":      0.0,
-            "winner_members":  set(),
+            "instance_key":      None,
+            "team_a":            [],
+            "team_b":            [],
+            "invited_a":         list(team_a_eids),
+            "invited_b":         list(team_b_eids),
+            "eliminated":        set(),
+            "return_pos":        {},
+            "damage_by_eid":     {},
+            "arena_locked":      set(),   # eids com is_immune/is_stunned setados POR _finish_match
+            "countdown_locked":  set(),   # eids com is_stunned setado PRA PREPARO (distinto de arena_locked)
+            "decided":           False,
+            "decided_at":        0.0,
+            "winner_members":    set(),
+            "accept_deadline":   _time_pm.time() + ARENA_ACCEPT_WINDOW_S,
+            "countdown_deadline": None,
+            "fight_started":     False,
+            "accept_swept":      False,
         }
         for eid in team_a_eids + team_b_eids:
-            self._player_match_id[eid] = match_id
-
-        spawn_pos: dict[int, tuple[int, int]] = {}
-        for i, eid in enumerate(team_a_eids):
-            sid = self.get_session_id_for_player(eid)
-            if sid is None:
-                continue
-            sx, sy = _SPAWN_TEAM_A[i % len(_SPAWN_TEAM_A)]
-            self.transfer_player(sid, eid, instance_key, sx, sy)
-            self.world.add_component(eid, _FactionM(faction_id="arena_time_a"))
-            self._reset_combat_resources(eid)
-            spawn_pos[eid] = (sx, sy)
-        for i, eid in enumerate(team_b_eids):
-            sid = self.get_session_id_for_player(eid)
-            if sid is None:
-                continue
-            sx, sy = _SPAWN_TEAM_B[i % len(_SPAWN_TEAM_B)]
-            self.transfer_player(sid, eid, instance_key, sx, sy)
-            self.world.add_component(eid, _FactionM(faction_id="arena_time_b"))
-            self._reset_combat_resources(eid)
-            spawn_pos[eid] = (sx, sy)
-
-        _map_file = self._template_file_of(instance_key)
+            self._pending_arena_invite[eid] = match_id
         for eid in team_a_eids + team_b_eids:
-            sx, sy = spawn_pos.get(eid, (0, 0))
-            self._arena_match_start_events_this_tick.append({
+            self._arena_match_found_events_this_tick.append({
                 "eid":       eid,
-                "map_file":  _map_file,
-                "target_x":  sx, "target_y": sy,
                 "teammates": [e for e in (team_a_eids if eid in team_a_eids else team_b_eids) if e != eid],
                 "opponents": team_b_eids if eid in team_a_eids else team_a_eids,
             })
 
+    def request_arena_accept(self, eid: int) -> "str | None":
+        """Aceita a partida encontrada (ARENA_MATCH_ACCEPT) — entra
+        IMEDIATAMENTE, sozinho, sem esperar o resto (mesmo estilo de
+        `request_arena_queue_join`/`request_arena_forfeit`: None = sucesso,
+        string = recusado). Primeiro aceite de QUALQUER um dos 4 carrega a
+        instância (lazy) e dispara a contagem de preparo
+        (`countdown_deadline`) pra PARTIDA inteira — quem entra depois só
+        recebe o tempo restante, nunca reinicia a contagem."""
+        import time as _time_ac
+        match_id = self._pending_arena_invite.get(eid)
+        if match_id is None:
+            return "no_pending_invite"
+        match = self._active_matches.get(match_id)
+        if match is None or match["decided"]:
+            self._pending_arena_invite.pop(eid, None)
+            return "expired"
+        if _time_ac.time() >= match["accept_deadline"]:
+            self._pending_arena_invite.pop(eid, None)
+            return "expired"
+        del self._pending_arena_invite[eid]
+
+        from engine.components import Faction as _FactionM, CombatState as _CSac
+        side       = "a" if eid in match["invited_a"] else "b"
+        other_side = "b" if side == "a" else "a"
+
+        if match["instance_key"] is None:
+            match["instance_key"] = f"{ARENA_TEMPLATE_2V2}::{match_id}"
+            self._load_instance(ARENA_TEMPLATE_2V2, match["instance_key"])
+
+        sid = self.get_session_id_for_player(eid)
+        if sid is None:
+            return "disconnected"
+        tx, ty = self.get_tile_pos(sid)
+        match["return_pos"][eid] = (self.get_player_map(sid), tx, ty)
+
+        spawn_list = _SPAWN_TEAM_A if side == "a" else _SPAWN_TEAM_B
+        idx        = len(match[f"team_{side}"])
+        sx, sy     = spawn_list[idx % len(spawn_list)]
+        self.transfer_player(sid, eid, match["instance_key"], sx, sy)
+        self.world.add_component(eid, _FactionM(faction_id=f"arena_time_{side}"))
+        self._reset_combat_resources(eid)
+        match[f"team_{side}"].append(eid)
+        match["damage_by_eid"][eid] = 0
+        self._player_match_id[eid] = match_id
+
+        if match["countdown_deadline"] is None:
+            match["countdown_deadline"] = _time_ac.time() + ARENA_COUNTDOWN_S
+        remaining = max(0.0, match["countdown_deadline"] - _time_ac.time())
+        cst = self.world.get_component(eid, _CSac)
+        if cst:
+            cst.is_stunned = True
+        match["countdown_locked"].add(eid)
+
+        _map_file = self._template_file_of(match["instance_key"])
+        self._arena_match_start_events_this_tick.append({
+            "eid":                 eid,
+            "map_file":            _map_file,
+            "target_x":            sx, "target_y": sy,
+            "teammates":           [e for e in match[f"invited_{side}"] if e != eid],
+            "opponents":           match[f"invited_{other_side}"],
+            "countdown_remaining": remaining,
+        })
+        return None
+
+    def _tick_arena_pending(self) -> None:
+        """Roda 1x por tick (mesmo padrão de `_tick_arena_queue`). Duas
+        varreduras independentes por partida ainda não decidida/em luta:
+        (a) janela de aceite vencida — quem não aceitou é descartado; se
+        um time inteiro nunca apareceu, o outro vence por W.O. (mesma
+        `_finish_match` de sempre); se nenhum dos 4 apareceu, a partida é
+        só descartada (instância nunca chegou a carregar). (b) contagem de
+        preparo vencida — libera quem ainda está travado pelo preparo
+        (`countdown_locked`), nunca mexe em quem já foi travado por outro
+        motivo (`arena_locked`, fim de partida)."""
+        import time as _time_tp
+        now = _time_tp.time()
+        from engine.components import CombatState as _CStp
+
+        for match_id, match in list(self._active_matches.items()):
+            if match["decided"] or match["fight_started"]:
+                continue
+
+            if not match["accept_swept"] and now >= match["accept_deadline"]:
+                match["accept_swept"] = True
+                for eid in match["invited_a"] + match["invited_b"]:
+                    self._pending_arena_invite.pop(eid, None)
+                if not match["team_a"] and not match["team_b"]:
+                    self._active_matches.pop(match_id, None)
+                    continue
+                elif not match["team_a"]:
+                    self._finish_match(match_id, "team_b")
+                    continue
+                elif not match["team_b"]:
+                    self._finish_match(match_id, "team_a")
+                    continue
+                # os dois times têm gente (só desbalanceado) — segue pro combate normalmente
+
+            cd = match["countdown_deadline"]
+            if cd is not None and now >= cd and not match["fight_started"]:
+                match["fight_started"] = True
+                for eid in match["countdown_locked"]:
+                    cst = self.world.get_component(eid, _CStp)
+                    if cst:
+                        cst.is_stunned = False
+                match["countdown_locked"].clear()
+
     def _reset_combat_resources(self, eid: int) -> None:
         """Restaura HP/Mana/Concentração cheios e limpa cooldown de TODAS
-        as skills — chamado ao ENTRAR na arena (_create_match) e ao SAIR
+        as skills — chamado ao ENTRAR na arena (request_arena_accept) e ao SAIR
         de vez (_arena_leave_now), pedido explícito do usuário
         20/07/2026: "os personagens que entram na arena, precisam ter
         todos os recursos restaurados... e quando saem da arena é a
@@ -350,16 +450,20 @@ class MatchProcessorMixin:
         cst = self.world.get_component(eid, _CSL)
         if cst:
             cst.is_immune = False
-            # Só limpa is_stunned de quem ESTE mixin travou
-            # (arena_locked) — um forfeit voluntário ANTES de qualquer
-            # eliminação, ou o vencedor congelado em _finish_match, nunca
-            # tiveram is_stunned setado por golpe letal; um player pode
-            # legitimamente estar stunado por um efeito de combate real e
-            # não-relacionado nesse instante — limpar sem checar apagaria
-            # esse stun.
-            if eid in match["arena_locked"]:
+            # Só limpa is_stunned de quem ESTE mixin travou (arena_locked =
+            # fim de partida, countdown_locked = preparo/aceite) — um
+            # forfeit voluntário ANTES de qualquer eliminação, ou o
+            # vencedor congelado em _finish_match, nunca tiveram is_stunned
+            # setado por golpe letal; um player pode legitimamente estar
+            # stunado por um efeito de combate real e não-relacionado nesse
+            # instante — limpar sem checar apagaria esse stun. Cobre
+            # também quem desiste NO MEIO do preparo (countdown_locked)
+            # antes da contagem acabar — sem isso ficaria travado pra
+            # sempre depois de voltar pro mapa aberto.
+            if eid in match["arena_locked"] or eid in match["countdown_locked"]:
                 cst.is_stunned = False
         match["arena_locked"].discard(eid)
+        match["countdown_locked"].discard(eid)
         self._player_match_id.pop(eid, None)
         self._arena_match_end_events_this_tick.append({
             "eid": eid, "won": eid in match["winner_members"],
@@ -424,6 +528,11 @@ class MatchProcessorMixin:
         return False
 
     # ── Eventos por tick (broadcast loop do SessionManager) ─────────────────
+
+    def consume_arena_match_found_events(self) -> list[dict]:
+        result = list(self._arena_match_found_events_this_tick)
+        self._arena_match_found_events_this_tick.clear()
+        return result
 
     def consume_arena_match_start_events(self) -> list[dict]:
         result = list(self._arena_match_start_events_this_tick)

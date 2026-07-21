@@ -92,6 +92,10 @@ class NetworkHandlers:
             self._handle_msg_party_state(payload)
         elif msg_type == MsgType.ARENA_QUEUE_STATE:
             self._handle_msg_arena_queue_state(payload)
+        elif msg_type == MsgType.ARENA_MATCH_FOUND:
+            self._handle_msg_arena_match_found(payload)
+        elif msg_type == MsgType.ARENA_COUNTDOWN:
+            self._handle_msg_arena_countdown(payload)
         elif msg_type == MsgType.ARENA_MATCH_START:
             self._handle_msg_arena_match_start(payload)
         elif msg_type == MsgType.ARENA_MATCH_END:

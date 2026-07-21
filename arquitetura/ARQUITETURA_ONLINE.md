@@ -5221,6 +5221,103 @@ na posição restaurada.
 
 ---
 
+### §34.34 — Fase G leva 1: aceite de partida + contagem regressiva de preparo (21/07/2026)
+
+Pedido do usuário: em vez de entrar direto na arena assim que a fila
+pareia, cada um dos 4 deveria ver uma janela "Partida encontrada!" com
+botão Aceitar (expira em 10s — quem não aceita simplesmente não entra);
+assim que pelo menos um dos 4 realmente entrar, uma contagem regressiva
+de 10s (da PARTIDA, não por-jogador — quem entra depois já vê o tempo
+restante) trava ação/movimento até liberar o combate.
+
+**Redesenho do ciclo de vida** (0 novo passo antes de ATIVA — ver
+docstring de `server/match_processor.py`): `_tick_arena_queue` não
+chama mais `_create_match` (removido) — chama `_propose_match`, que
+cria o `match_id` em `_active_matches` com `team_a`/`team_b` VAZIOS
+(`invited_a`/`invited_b` guardam quem foi chamado) e `instance_key=None`
+(mapa só carrega no primeiro aceite — evita alocar instância pra
+ninguém). Cada player manda `ARENA_MATCH_ACCEPT` (novo,
+`request_arena_accept`) e entra IMEDIATAMENTE, sozinho, sem esperar o
+resto — `team_a`/`team_b` crescem incrementalmente. Isso só foi seguro
+fazer porque a exploração confirmou que `_arena_leave_now` JÁ mutava
+esses rosters depois da criação e reavaliava a condição de vitória
+(`if not match[team_key]: ...`) — construir o roster aos poucos reusa
+exatamente esse mecanismo, zero mudança em `_eliminate_player`/
+`_finish_match`.
+
+**Preparo (`CombatState.is_stunned`)**: primeiro aceite de QUALQUER um
+dos 4 seta `match["countdown_deadline"] = now + ARENA_COUNTDOWN_S`
+(`shared/constants.py`); cada aceite calcula `remaining =
+countdown_deadline - now` e manda no próprio `ARENA_MATCH_START` (campo
+novo `countdown_remaining`) — quem entra depois só recebe o tempo
+restante, nunca reinicia. Cada entrante ganha `is_stunned=True` +
+entra num set próprio `countdown_locked` (distinto de `arena_locked`,
+usado só pelo freeze de FIM de partida — momentos diferentes do ciclo,
+não podem compartilhar o mesmo set sem um interferir na limpeza do
+outro). `_tick_arena_pending` (novo, chamado logo depois de
+`_tick_arena_results_timeout`) libera `is_stunned` de quem está em
+`countdown_locked` quando `countdown_deadline` vence, e nunca mexe em
+quem já foi travado por outro motivo. `_arena_leave_now` (forfeit no
+meio do preparo) também limpa `is_stunned` se o eid estiver em
+`countdown_locked` — sem isso, quem desistisse ANTES do preparo acabar
+ficaria travado pra sempre depois de voltar pro mapa aberto.
+
+**Janela de aceite vencida**: mesma `_tick_arena_pending`, segunda
+varredura — se `accept_deadline` (10s a partir da PROPOSTA, distinto de
+`countdown_deadline`) vence e ainda não foi varrida, quem não aceitou é
+descartado de `_pending_arena_invite`; se os dois times ficaram vazios
+(ninguém topou), a partida é só descartada (instância nunca chegou a
+carregar); se só um lado tem gente, o outro vence por W.O. (reusa
+`_finish_match` sem nenhuma mudança); se os dois têm gente (só
+desbalanceado — ex: só 1 de um lado aceitou), segue pro combate
+normalmente — times desbalanceados são esperados e aceitos pelo
+usuário nesse cenário.
+
+**Protocolo**: `ARENA_MATCH_FOUND` (S→C, `{teammates, opponents}` —
+pareou, aguardando aceite), `ARENA_MATCH_ACCEPT` (C→S, `{}`),
+`ARENA_COUNTDOWN` (S→C, `{remaining}` — mandado junto do
+`ARENA_MATCH_START` de cada entrante). `ARENA_MATCH_START` continua com
+o mesmo payload, só muda o GATILHO (por-player, no aceite, não mais em
+lote na criação).
+
+**Cliente**: `client/arena_handlers.py` ganhou a janela de aceite
+(`_draw_arena_accept_modal`, mesmo padrão do modal de resultado — painel
++ botão, mas fecha SOZINHO ao vencer um prazo local, sem round-trip;
+inspirado no único padrão de deadline já existente no cliente,
+`client/online_mode_handlers.py::_process_bdf_pending`) e o overlay de
+contagem (`_draw_arena_countdown_overlay`, número grande centralizado,
+puramente cosmético — quem trava de verdade é o servidor via
+`CombatState.is_stunned`, mesmo mecanismo já usado pelo freeze de fim
+de partida, zero replicação nova precisou ser escrita). Botão "Fila de
+Arena 2x2" também some durante a janela de aceite (mesmo padrão de
+`_arena_in_match`).
+
+**Validado**: `tests/test_arena.py::TestArenaAceiteContagem` (9 testes
+novos — pareamento não teleporta/atribui facção, gera 4 eventos
+`ARENA_MATCH_FOUND`, aceite teleporta só quem aceitou, `ARENA_MATCH_START`
+carrega `countdown_remaining` cheio no primeiro aceite e menor num
+aceite tardio, time cujo parceiro nunca aceita segue desbalanceado, time
+inteiro no-show perde por W.O., ninguém aceita descarta a partida, fim
+do preparo libera `can_act()`/`can_move()`). Helper compartilhado
+`_queue_and_pair` (usado por quase toda a suíte de arena já existente)
+atualizado pra aceitar automaticamente pelos 4 — preserva "entrada
+imediata" pros testes antigos sem reescrever cada um. 2 testes antigos
+ajustados: `test_fila_pareia_fifo_...` (checava `_player_match_id`
+direto após o pareamento — agora é `_pending_arena_invite`, já que
+`_player_match_id` só existe depois do aceite) e
+`test_forfeit_voluntario_nao_limpa_stun_real_nao_relacionado` (precisa
+simular o preparo já ter acabado antes de testar um stun REAL não
+relacionado, já que agora todo entrante nasce com `is_stunned=True` do
+próprio preparo). Suíte completa 361/361, rodada 3x.
+
+**Não validado**: sessão manual com 4 clientes reais — janela de aceite
+aparece pros 4, quem não aceita simplesmente não entra e a arena segue
+desbalanceada, contagem regressiva trava movimento/ação até zerar e é
+igual pra quem entra depois, W.O. automático quando um time inteiro não
+aparece.
+
+---
+
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
 
 ```

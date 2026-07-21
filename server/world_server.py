@@ -272,6 +272,11 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._arena_match_start_events_this_tick: list[dict] = []
         self._arena_match_end_events_this_tick: list[dict] = []
         self._arena_match_result_events_this_tick: list[dict] = []
+        # Aceite de partida (21/07/2026): eid → match_id enquanto aguarda
+        # aceite/expira — NÃO é o mesmo que _player_match_id (que só passa a
+        # existir pra um eid depois que ele de fato ACEITA e entra).
+        self._pending_arena_invite: dict[int, str] = {}
+        self._arena_match_found_events_this_tick: list[dict] = []
 
         # Timer de ataque por jogador: session_id → segundos até próximo hit
         self._attack_timers: dict[str, float] = {}
@@ -3268,6 +3273,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._tick_trade_distance_check()
         self._tick_duel_distance_check()
         self._tick_arena_queue()
+        self._tick_arena_pending()
         self._tick_arena_results_timeout()
 
         # Detecta novos mobs/NPCs de combate criados pelo SpawnZoneSystem

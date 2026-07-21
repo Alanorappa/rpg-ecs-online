@@ -26,10 +26,19 @@ def _make_duo(ws, prefix: str, tile=(130, 374)):
 
 
 def _queue_and_pair(ws, team_a, team_b):
+    """Pareia os 2 grupos E aceita pelos 4 na hora — preserva o
+    comportamento "entrada imediata" que a maioria dos testes deste
+    arquivo assume, sem precisar reescrever cada um pro fluxo de aceite
+    (ARENA_MATCH_FOUND/ARENA_MATCH_ACCEPT, 21/07/2026 — ver
+    TestArenaAceiteContagem pros testes que exercitam o aceite de
+    verdade)."""
     ws.request_arena_queue_join(team_a[0])
     ws.request_arena_queue_join(team_b[0])
     ws._tick_arena_queue()
-    return ws._player_match_id[team_a[0]]
+    match_id = ws._pending_arena_invite[team_a[0]]
+    for eid in team_a + team_b:
+        ws.request_arena_accept(eid)
+    return match_id
 
 
 class TestArenaQueue(unittest.TestCase):
@@ -69,12 +78,15 @@ class TestArenaQueue(unittest.TestCase):
         self.ws.request_arena_queue_join(team_b[0])
         self.ws.request_arena_queue_join(team_c[0])
         self.ws._tick_arena_queue()
-        # a+b pareados (partida criada), c continua sozinho na fila
+        # a+b pareados (partida PROPOSTA — ninguém entrou ainda), c
+        # continua sozinho na fila
         self.assertEqual(len(self.ws._active_matches), 1)
         self.assertEqual(len(self.ws._arena_queue_2v2), 1)
         for eid in team_a + team_b:
-            self.assertIn(eid, self.ws._player_match_id)
+            self.assertIn(eid, self.ws._pending_arena_invite)
+            self.assertNotIn(eid, self.ws._player_match_id)
         for eid in team_c:
+            self.assertNotIn(eid, self.ws._pending_arena_invite)
             self.assertNotIn(eid, self.ws._player_match_id)
 
 
@@ -315,7 +327,12 @@ class TestArenaForfeit(unittest.TestCase):
     def test_forfeit_voluntario_nao_limpa_stun_real_nao_relacionado(self):
         """Forfeit nunca passou por _eliminate_player (não foi golpe
         letal) — nunca setou is_stunned, então nunca deveria limpar um
-        stun real e coincidente."""
+        stun real e coincidente. Simula o preparo (countdown_locked) já
+        ter acabado — cenário realista de forfeit no MEIO da partida,
+        bem depois do combate ter liberado."""
+        match = self.ws._active_matches[self.match_id]
+        match["countdown_deadline"] = -1.0
+        self.ws._tick_arena_pending()
         cst = self.ws.world.get_component(self.team_a[0], CombatState)
         cst.is_stunned = True
         cst.stun_timer = 3.0
@@ -685,6 +702,125 @@ class TestArenaRegressionOpenWorld(unittest.TestCase):
         a = spawn_player(ws, "w1", 130, 374)
         b = spawn_player(ws, "w2", 131, 374)
         self.assertFalse(can_engage(ws.world, a, b))
+
+
+class TestArenaAceiteContagem(unittest.TestCase):
+    """Aceite de partida + contagem regressiva de preparo (feedback do
+    usuário 21/07/2026): fila pareia mas não teleporta ninguém — cada um
+    dos 4 precisa mandar ARENA_MATCH_ACCEPT (aqui: request_arena_accept)
+    dentro de ARENA_ACCEPT_WINDOW_S, senão simplesmente não entra. Preparo
+    de ARENA_COUNTDOWN_S começa no primeiro aceite de QUALQUER um dos 4 —
+    é da PARTIDA, não por-jogador."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        self.team_a = _make_duo(self.ws, "aca")
+        self.team_b = _make_duo(self.ws, "acb")
+        self.ws.request_arena_queue_join(self.team_a[0])
+        self.ws.request_arena_queue_join(self.team_b[0])
+        self.ws._tick_arena_queue()
+        self.match_id = self.ws._pending_arena_invite[self.team_a[0]]
+
+    def test_pareamento_sozinho_nao_teleporta_nem_atribui_faccao(self):
+        match = self.ws._active_matches[self.match_id]
+        self.assertEqual(match["team_a"], [])
+        self.assertEqual(match["team_b"], [])
+        self.assertIsNone(match["instance_key"])
+        for eid in self.team_a + self.team_b:
+            self.assertIsNone(self.ws.world.get_component(eid, Faction))
+            self.assertIn(eid, self.ws._pending_arena_invite)
+
+    def test_pareamento_gera_4_eventos_arena_match_found(self):
+        events = self.ws.consume_arena_match_found_events()
+        self.assertEqual(len(events), 4)
+        eids = {e["eid"] for e in events}
+        self.assertEqual(eids, set(self.team_a + self.team_b))
+        ev_a0 = next(e for e in events if e["eid"] == self.team_a[0])
+        self.assertEqual(set(ev_a0["teammates"]), {self.team_a[1]})
+        self.assertEqual(set(ev_a0["opponents"]), set(self.team_b))
+
+    def test_aceite_teleporta_so_esse_player_e_atribui_faccao(self):
+        reason = self.ws.request_arena_accept(self.team_a[0])
+        self.assertIsNone(reason)
+        match = self.ws._active_matches[self.match_id]
+        self.assertEqual(match["team_a"], [self.team_a[0]])
+        self.assertEqual(match["team_b"], [])
+        self.assertNotIn(self.team_a[0], self.ws._pending_arena_invite)
+        self.assertEqual(self.ws._player_match_id[self.team_a[0]], self.match_id)
+        faction = self.ws.world.get_component(self.team_a[0], Faction)
+        self.assertEqual(faction.faction_id, "arena_time_a")
+
+    def test_aceite_dispara_arena_match_start_com_countdown_cheio(self):
+        self.ws.request_arena_accept(self.team_a[0])
+        events = self.ws.consume_arena_match_start_events()
+        self.assertEqual(len(events), 1)
+        self.assertAlmostEqual(events[0]["countdown_remaining"], 10.0, delta=0.5)
+        cst = self.ws.world.get_component(self.team_a[0], CombatState)
+        self.assertFalse(cst.can_act())
+        self.assertFalse(cst.can_move())
+
+    def test_segundo_aceite_mais_tarde_recebe_countdown_menor(self):
+        """Contagem é DA PARTIDA — quem entra depois já vê o tempo restante
+        menor, nunca reinicia."""
+        self.ws.request_arena_accept(self.team_a[0])
+        self.ws.consume_arena_match_start_events()
+        match = self.ws._active_matches[self.match_id]
+        match["countdown_deadline"] -= 7.0   # simula 7s de partida já passados
+
+        self.ws.request_arena_accept(self.team_b[0])
+        events = self.ws.consume_arena_match_start_events()
+        self.assertEqual(len(events), 1)
+        self.assertAlmostEqual(events[0]["countdown_remaining"], 3.0, delta=0.5)
+
+    def test_time_cujo_parceiro_nunca_aceita_segue_so_com_quem_entrou(self):
+        self.ws.request_arena_accept(self.team_a[0])
+        self.ws.request_arena_accept(self.team_b[0])
+        self.ws.request_arena_accept(self.team_b[1])
+        # team_a[1] nunca aceita — vence o prazo
+        match = self.ws._active_matches[self.match_id]
+        match["accept_deadline"] = -1.0
+        self.ws._tick_arena_pending()
+
+        self.assertEqual(match["team_a"], [self.team_a[0]])
+        self.assertEqual(set(match["team_b"]), set(self.team_b))
+        self.assertNotIn(self.team_a[1], self.ws._pending_arena_invite)
+        self.assertFalse(match["decided"])   # os dois times têm gente — segue normal, só desbalanceado
+
+    def test_time_inteiro_no_show_perde_por_wo(self):
+        self.ws.request_arena_accept(self.team_a[0])
+        self.ws.request_arena_accept(self.team_a[1])
+        # ninguém do team_b aceita
+        match = self.ws._active_matches[self.match_id]
+        match["accept_deadline"] = -1.0
+        self.ws._tick_arena_pending()
+
+        self.assertTrue(match["decided"])
+        self.assertEqual(match["winner_members"], set(self.team_a))
+
+    def test_nenhum_dos_4_aceita_partida_e_descartada(self):
+        match = self.ws._active_matches[self.match_id]
+        match["accept_deadline"] = -1.0
+        self.ws._tick_arena_pending()
+        self.assertNotIn(self.match_id, self.ws._active_matches)
+        for eid in self.team_a + self.team_b:
+            self.assertNotIn(eid, self.ws._pending_arena_invite)
+
+    def test_fim_do_preparo_libera_acao_e_movimento(self):
+        self.ws.request_arena_accept(self.team_a[0])
+        self.ws.request_arena_accept(self.team_b[0])
+        match = self.ws._active_matches[self.match_id]
+        cst_a0 = self.ws.world.get_component(self.team_a[0], CombatState)
+        self.assertFalse(cst_a0.can_act())
+
+        match["countdown_deadline"] = -1.0
+        self.ws._tick_arena_pending()
+
+        self.assertTrue(match["fight_started"])
+        self.assertEqual(match["countdown_locked"], set())
+        self.assertTrue(cst_a0.can_act())
+        self.assertTrue(cst_a0.can_move())
+        cst_b0 = self.ws.world.get_component(self.team_b[0], CombatState)
+        self.assertTrue(cst_b0.can_act())
 
 
 if __name__ == "__main__":

@@ -6,9 +6,13 @@ Sem lógica de gameplay aqui: a troca de mapa pra dentro/fora da instância
 já reusa 100% o fluxo existente de ZONE_CHANGE (client/network_handlers.py::
 _handle_msg_zone_change → game.py::_do_transition, o mesmo usado por
 transição de caverna) — este mixin só cuida do botão "Fila de Arena 2x2"
-no frame de grupo, do modal de fim de partida (placar + "Sair da Arena",
-estilo WoW — pedido do usuário 20/07/2026) e do feedback (log/aviso) de
-entrar na fila/começar/terminar a partida.
+no frame de grupo, da janela de aceite "Partida encontrada!" + overlay de
+contagem regressiva de preparo (pedido do usuário 21/07/2026 — ver
+server/match_processor.py::_propose_match/request_arena_accept), do modal
+de fim de partida (placar + "Sair da Arena", estilo WoW — pedido do
+usuário 20/07/2026) e do feedback (log/aviso) de entrar na fila/começar/
+terminar a partida. O bloqueio de ação/movimento durante o preparo é
+100% servidor (CombatState.is_stunned) — o overlay aqui é só visual.
 """
 import pygame
 
@@ -33,6 +37,28 @@ class ArenaHandlers:
     @property
     def _arena_in_match(self) -> bool:
         return getattr(self, "_arena_in_match_val", False)
+
+    @property
+    def _arena_pending_match(self):
+        """None fora da janela de aceite; senão
+        {"teammates","opponents","deadline"} — deadline em `time.time()`
+        LOCAL (cliente fecha a janela sozinho ao vencer, sem precisar de
+        mensagem do servidor, que expira o convite por conta própria via
+        `accept_deadline`, ver server/match_processor.py::request_arena_accept)."""
+        return getattr(self, "_arena_pending_match_val", None)
+
+    @property
+    def _arena_countdown_remaining(self) -> "float | None":
+        """Segundos restantes de preparo (None = nenhuma contagem ativa).
+        Puramente cosmético — quem trava ação/movimento de verdade é o
+        servidor via CombatState.is_stunned (mesmo mecanismo do freeze de
+        fim de partida)."""
+        deadline = getattr(self, "_arena_countdown_deadline_val", None)
+        if deadline is None:
+            return None
+        import time as _time_acr
+        remaining = deadline - _time_acr.time()
+        return remaining if remaining > 0 else None
 
     @property
     def _arena_opponents_server(self) -> set:
@@ -64,9 +90,30 @@ class ArenaHandlers:
             }
             WARN.add(_msgs.get(reason, "Não foi possível entrar na fila de Arena."))
 
+    def _handle_msg_arena_match_found(self, payload: dict) -> None:
+        """Fila pareou — janela "Partida encontrada!" com botão Aceitar,
+        expira sozinha em ARENA_ACCEPT_WINDOW_S (shared/constants.py) sem
+        precisar de resposta do servidor (que também expira por conta
+        própria). A fila já terminou pro servidor neste momento (parou de
+        contar como "na fila") — zera o flag local, senão o botão
+        continuaria mostrando "Sair da Fila" durante a janela de aceite."""
+        import time as _time_amf
+        from shared.constants import ARENA_ACCEPT_WINDOW_S
+        self._arena_in_queue_val = False
+        self._arena_pending_match_val = {
+            "teammates": payload.get("teammates", []),
+            "opponents": payload.get("opponents", []),
+            "deadline":  _time_amf.time() + ARENA_ACCEPT_WINDOW_S,
+        }
+
+    def _handle_msg_arena_countdown(self, payload: dict) -> None:
+        import time as _time_acd
+        self._arena_countdown_deadline_val = _time_acd.time() + payload.get("remaining", 0.0)
+
     def _handle_msg_arena_match_start(self, payload: dict) -> None:
         from ui.floating_text import WARN
         self._arena_in_queue_val = False
+        self._arena_pending_match_val = None
         self._arena_in_match_val = True
         self._arena_opponents_server_val = set(payload.get("opponents", []))
         self._reset_local_arena_resources()
@@ -76,6 +123,7 @@ class ArenaHandlers:
         won = bool(payload.get("won", False))
         self._arena_in_match_val = False
         self._arena_opponents_server_val = set()
+        self._arena_countdown_deadline_val = None
         # Fecha o modal de resultado (se estava aberto) — ARENA_MATCH_END
         # só chega depois que o servidor já restaurou de verdade este
         # player (clique em "Sair da Arena", /forfeit, ou timeout).
@@ -133,6 +181,11 @@ class ArenaHandlers:
             from shared.messages import MsgType
             self._net.send(MsgType.ARENA_FORFEIT, {})
 
+    def _send_arena_accept(self) -> None:
+        if self._net:
+            from shared.messages import MsgType
+            self._net.send(MsgType.ARENA_MATCH_ACCEPT, {})
+
     # ── Comando de chat "/forfeit" ou "/ff" ──────────────────────────────────
 
     def _try_handle_arena_chat_command(self, text: str) -> bool:
@@ -157,7 +210,7 @@ class ArenaHandlers:
         some enquanto uma partida está rolando (bug real relatado pelo
         usuário 20/07/2026: o botão "Entrar na fila 2x2" continuava
         aparecendo dentro da própria arena)."""
-        if self._arena_in_match:
+        if self._arena_in_match or self._arena_pending_match is not None:
             return None
         rows = self._party_frame_rects()
         if not rows:
@@ -186,6 +239,8 @@ class ArenaHandlers:
     def _handle_arena_click(self, event) -> bool:
         if event.type != pygame.MOUSEBUTTONDOWN or event.button != 1:
             return False
+        if self._arena_pending_match is not None:
+            return self._handle_arena_accept_click(event)
         if self._arena_result is not None:
             return self._handle_arena_result_click(event)
         rect = self._arena_queue_button_rect()
@@ -273,3 +328,80 @@ class ArenaHandlers:
             self._send_arena_forfeit()
             SOUNDS.play_ui("button_click")
         return True
+
+    # ── Modal "Partida encontrada!" (aceite, 21/07/2026) ─────────────────────
+
+    def _arena_accept_modal_rects(self):
+        SW, SH = self.screen.get_size()
+        w, h = self._u(UI.ARENA_ACCEPT_W), self._u(UI.ARENA_ACCEPT_H)
+        x0, y0 = (SW - w) // 2, (SH - h) // 2
+        panel_rect  = pygame.Rect(x0, y0, w, h)
+        accept_rect = pygame.Rect(x0 + (w - self._u(160)) // 2, y0 + h - self._u(50),
+                                  self._u(160), self._u(34))
+        return panel_rect, accept_rect
+
+    def _draw_arena_accept_modal(self) -> None:
+        """Janela de aceite — fecha sozinha (`_arena_pending_match_val =
+        None`) ao vencer o prazo local, sem precisar de nenhuma mensagem
+        do servidor (que também expira o convite por conta própria)."""
+        pending = self._arena_pending_match
+        if pending is None:
+            return
+        import time as _time_dam
+        remaining = pending["deadline"] - _time_dam.time()
+        if remaining <= 0:
+            self._arena_pending_match_val = None
+            return
+
+        panel_rect, accept_rect = self._arena_accept_modal_rects()
+        SW, SH = self.screen.get_size()
+        overlay = pygame.Surface((SW, SH), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 160))
+        self.screen.blit(overlay, (0, 0))
+        pygame.draw.rect(self.screen, (24, 20, 30), panel_rect, border_radius=8)
+        pygame.draw.rect(self.screen, (120, 160, 100), panel_rect, 2, border_radius=8)
+
+        title_s = self.font_md.render("Partida encontrada!", False, (210, 235, 200))
+        self.screen.blit(title_s, (panel_rect.centerx - title_s.get_width() // 2,
+                                   panel_rect.y + self._u(16)))
+
+        sub_s = self.font_sm.render(f"Aceitar em {int(remaining) + 1}s",
+                                    False, (200, 200, 200))
+        self.screen.blit(sub_s, (panel_rect.centerx - sub_s.get_width() // 2,
+                                 panel_rect.y + self._u(56)))
+
+        hov = accept_rect.collidepoint(pygame.mouse.get_pos())
+        pygame.draw.rect(self.screen, (60, 100, 55) if hov else (45, 75, 42),
+                         accept_rect, border_radius=5)
+        pygame.draw.rect(self.screen, (130, 190, 120), accept_rect, 1, border_radius=5)
+        btn_s = self.font_sm.render("Aceitar", False, (220, 245, 210))
+        self.screen.blit(btn_s, (accept_rect.centerx - btn_s.get_width() // 2,
+                                 accept_rect.centery - btn_s.get_height() // 2))
+
+    def _handle_arena_accept_click(self, event) -> bool:
+        """True sempre (modal bloqueante, mesmo padrão do resultado de
+        fim de partida) — só o clique DENTRO do botão manda o aceite."""
+        _, accept_rect = self._arena_accept_modal_rects()
+        if accept_rect.collidepoint(event.pos):
+            self._send_arena_accept()
+            self._arena_pending_match_val = None
+            SOUNDS.play_ui("button_click")
+        return True
+
+    # ── Overlay de contagem regressiva de preparo (21/07/2026) ───────────────
+
+    def _draw_arena_countdown_overlay(self) -> None:
+        """Número grande no meio da tela enquanto o preparo dura —
+        puramente cosmético, o bloqueio de ação/movimento real já vem do
+        servidor via CombatState.is_stunned (mesmo mecanismo do freeze de
+        fim de partida)."""
+        remaining = self._arena_countdown_remaining
+        if remaining is None:
+            return
+        SW, SH = self.screen.get_size()
+        num_s = self.font_lg.render(str(int(remaining) + 1), False, (255, 230, 140))
+        self.screen.blit(num_s, (SW // 2 - num_s.get_width() // 2,
+                                 SH // 3 - num_s.get_height() // 2))
+        label_s = self.font_sm.render("Preparando...", False, (230, 220, 190))
+        self.screen.blit(label_s, (SW // 2 - label_s.get_width() // 2,
+                                   SH // 3 + num_s.get_height() // 2 + self._u(4)))

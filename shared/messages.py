@@ -137,10 +137,19 @@ class MsgType(str, Enum):
     ARENA_QUEUE_JOIN    = "arena_queue_join"    # C→S  {} — líder do grupo, grupo precisa ter exatamente 2 membros
     ARENA_QUEUE_LEAVE   = "arena_queue_leave"   # C→S  {} — líder do grupo, sai da fila
     ARENA_QUEUE_STATE   = "arena_queue_state"   # S→C  {in_queue: bool, reason?} — reason só quando um JOIN foi recusado (wrong_size|already_queued|in_match|no_party)
-    ARENA_MATCH_START   = "arena_match_start"   # S→C  {map_file, teammates:[eid], opponents:[eid]} — pra cada um dos 4, junto do ZONE_CHANGE pra instância
+    # Aceite de partida (21/07/2026, pedido do usuário): fila pareia mas não
+    # teleporta mais ninguém direto — cada um dos 4 recebe ARENA_MATCH_FOUND
+    # e tem ARENA_ACCEPT_WINDOW_S (shared/constants.py) pra mandar
+    # ARENA_MATCH_ACCEPT; quem não manda a tempo simplesmente não entra (a
+    # partida segue só com quem aceitou). ARENA_MATCH_START passa a disparar
+    # POR PLAYER, no momento do aceite dele — não mais em lote pros 4 juntos.
+    ARENA_MATCH_FOUND   = "arena_match_found"   # S→C  {teammates:[eid], opponents:[eid]} — partida pareada, aguardando aceite
+    ARENA_MATCH_ACCEPT  = "arena_match_accept"  # C→S  {} — aceita a partida encontrada, entra na arena
+    ARENA_COUNTDOWN     = "arena_countdown"     # S→C  {remaining: float} — segundos até o combate liberar (mandado junto do ARENA_MATCH_START de cada player que entra; contagem é DA PARTIDA — quem entra depois já recebe remaining menor/zero)
+    ARENA_MATCH_START   = "arena_match_start"   # S→C  {map_file, teammates:[eid], opponents:[eid]} — disparado no aceite de CADA player (não mais em lote), junto do ZONE_CHANGE pra instância
     ARENA_MATCH_END     = "arena_match_end"     # S→C  {won: bool} — junto do ZONE_CHANGE de volta pro mapa/posição de antes
     ARENA_FORFEIT       = "arena_forfeit"       # C→S  {} — comando de chat /forfeit ou /ff (ou botão "Sair da Arena"), sai na hora
-    ARENA_MATCH_RESULT  = "arena_match_result"  # S→C  {results:[{name,damage,won}]} — placar de fim de partida (modal, não teleporta sozinho)
+    ARENA_MATCH_RESULT  = "arena_match_result"  # S→C  {results:[{eid,name,damage,won}]} — placar de fim de partida (modal, não teleporta sozinho)
 
     CONSUMABLE_USE     = "consumable_use"    # C→S  uso de consumível (heal_instant, HoT, buffs futuros)
     GOLD_UPDATE        = "gold_update"       # C→S  gold mudou (loot de moedas) {gold: N}
