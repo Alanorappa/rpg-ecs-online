@@ -159,6 +159,21 @@ class TestServiceNpcCombateGenerico(unittest.TestCase):
         self.assertFalse(snd.emote_attack)
         self.assertFalse(snd.emote_get_crit)
 
+    def test_mago_npc_sons_espelham_bola_de_fogo_do_player(self):
+        """Feedback do usuário 21/07/2026: o impacto do mago caía no
+        fallback hit_normal (som de melee) porque os campos estavam
+        vazios. Agora espelha a Bola de Fogo do jogador — lançamento
+        (attack_magic, toca quando o projétil nasce) + impacto
+        (attack_impact, toca na chegada do golpe)."""
+        from engine.components import NpcSounds
+        eid = create_trainer(self.ws.world, 152, 374, name="Selene", class_id="mago")
+        snd = self.ws.world.get_component(eid, NpcSounds)
+        self.assertEqual(snd.attack_magic, "skill_bola_de_fogo_launch")
+        self.assertEqual(snd.attack_impact, "skill_bola_de_fogo_impact")
+        self.assertFalse(snd.aggro)
+        self.assertFalse(snd.death)
+        self.assertFalse(snd.emote_attack)
+
     def test_guerreiro_npc_sons_melee_generico_e_resto_silencioso(self):
         from engine.components import NpcSounds
         eid = create_merchant(self.ws.world, 151, 374, name="Zeca")

@@ -5695,6 +5695,39 @@ quando o treinador arqueiro atira; bola de fogo animada no lugar do
 círculo laranja pra caster Mage; goblin→player com o visual novo
 também (mesma rota de spawn).
 
+### §34.35.6 — Sons do Mago (NPC) espelham a Bola de Fogo do jogador (21/07/2026)
+
+Feedback do usuário: "o som do impacto da bola de fogo do mago está
+fazendo o som do auto attack melee, tem que arrumar para fazer o som
+dele sendo lançado e depois o impacto no mob".
+
+**Causa**: o Mago (NPC) estava com TODOS os campos de som vazios
+(decisão anterior "silencioso até a Fase 2") — com `attack_impact`
+vazio, `_play_nonplayer_attack_impact` retorna False e o caller cai no
+fallback `hit_normal` (som genérico de golpe melee). O lançamento
+também era mudo (`attack_magic` vazio).
+
+**Fix — SÓ DADOS** (a arquitetura data-driven de §34.35.3 pagou o
+investimento: zero código): `Mago (NPC)` em `MOB_TABLE` ganhou
+`attack_magic: "skill_bola_de_fogo_launch"` (toca quando o projétil
+NASCE, via o hook de disparo de `_spawn_mob_projectile` — evento
+attack_magic escolhido pra classe Mage) e `attack_impact:
+"skill_bola_de_fogo_impact"` (toca na chegada do golpe, via
+`_play_nonplayer_attack_impact`) — os MESMOS arquivos da Bola de Fogo
+do mago jogador (`skill_bola_de_fogo_launch_1.ogg`,
+`skill_bola_de_fogo_impact_1..4.ogg`; `play_mob_sounds` já tenta as
+variantes `_1..4` sozinho). Aggro/morte/emotes continuam vazios.
+
+**Validado**: `tests/test_service_npcs.py::
+test_mago_npc_sons_espelham_bola_de_fogo_do_player` (dados) +
+`tests/test_client_ui.py::
+test_som_de_lancamento_e_impacto_do_mago_npc_espelham_bola_de_fogo`
+(fluxo: launch no spawn do projétil, impact no golpe, sem hit_normal).
+Suíte completa 390/390, rodada 3x.
+
+**Não validado**: sessão manual — mago NPC brigando com mob toca launch
+ao disparar e impact ao acertar, sem som de melee.
+
 ---
 
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata

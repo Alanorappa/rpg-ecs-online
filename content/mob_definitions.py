@@ -260,7 +260,8 @@ MOB_TABLE: dict[str, dict] = {
     # "attack_impact", ver NpcSounds), exatamente os sons do arqueiro
     # jogador. Aggro/morte/emotes ficam VAZIOS de propósito (silêncio) —
     # o usuário preenche aqui depois com os arquivos que quiser.
-    # "Mago (NPC)" fica todo silencioso até a Fase 2 (cast de magia real).
+    # "Mago (NPC)" usa os sons da Bola de Fogo do mago jogador
+    # (lançamento + impacto) — cast de magia REAL fica pra Fase 2.
     "Guerreiro (NPC)": {
         "race": "Humanoide", "entity_class": "Warrior", "is_ranged": False,
         "color": (150, 150, 160),
@@ -315,7 +316,16 @@ MOB_TABLE: dict[str, dict] = {
         "loot": {},
         "gold_chance": 0.0,
         "xp_given_by_lvl": 16,
-        "sounds": _NO_SOUNDS,
+        # Espelha a Bola de Fogo do mago JOGADOR (pedido do usuário
+        # 21/07/2026 — sem isso o impacto caía no fallback hit_normal, som
+        # de melee): attack_magic toca quando o projétil NASCE (lançamento),
+        # attack_impact na chegada do golpe — mesmos arquivos
+        # skill_bola_de_fogo_launch/_impact do player. Aggro/morte/emotes
+        # continuam vazios (silêncio) de propósito.
+        "sounds": {
+            "attack_magic":  "skill_bola_de_fogo_launch",
+            "attack_impact": "skill_bola_de_fogo_impact",
+        },
     },
     "Goblin Guerreiro": {
         "race": "Humanoide", "entity_class": "Warrior", "is_ranged": False,

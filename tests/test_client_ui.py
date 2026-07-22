@@ -1045,6 +1045,43 @@ def test_som_de_disparo_toca_quando_projetil_de_npc_nasce():
         "disparo do NPC ranged deveria tocar o som de attack_ranged (arrow_release) ao nascer o projétil"
 
 
+def test_som_de_lancamento_e_impacto_do_mago_npc_espelham_bola_de_fogo():
+    """Feedback do usuário 21/07/2026: impacto do mago tocava hit_normal
+    (som de melee). Agora: lançamento (attack_magic =
+    skill_bola_de_fogo_launch) quando o projétil nasce + impacto
+    (attack_impact = skill_bola_de_fogo_impact) na chegada do golpe —
+    mesmos arquivos da Bola de Fogo do mago jogador."""
+    from ui.sound_manager import SOUNDS
+    fx = _make_net_fixture()
+    fx._remote_mob_projectiles = {}
+    fx._handle_msg_entity_spawn({
+        "eid": 80, "kind": "enemy", "tx": 5, "ty": 5,
+        "race": "Mago (NPC)", "entity_class": "Mage", "is_ranged": True,
+        "hp": 40, "hp_max": 40, "level": 1, "faction": "civis",
+        "name": "Selene", "profession": "Treinador",
+    })
+    fx._handle_msg_entity_spawn({
+        "eid": 81, "kind": "enemy", "tx": 7, "ty": 5,
+        "race": "Zumbi", "entity_class": "Warrior",
+        "hp": 30, "hp_max": 30, "level": 1, "faction": "monstros_hostis",
+    })
+    calls, original = _record_npc_sound_calls()
+    try:
+        fx._spawn_mob_projectile(803, {
+            "x": 160.0, "y": 160.0, "attacker_seid": 80, "target_seid": 81,
+            "color": [255, 80, 0], "is_arrow": False,
+            "dir_x": 1.0, "dir_y": 0.0, "speed": 380.0,
+        })
+        played_impact = fx._play_nonplayer_attack_impact(80, 100.0, 100.0, 0.0, 0.0)
+    finally:
+        SOUNDS.play_mob_sounds_at = original
+    assert ("attack_magic", "skill_bola_de_fogo_launch") in calls, \
+        "lançamento do mago NPC deveria tocar o som de launch da Bola de Fogo"
+    assert played_impact
+    assert ("attack_impact", "skill_bola_de_fogo_impact") in calls, \
+        "impacto do mago NPC deveria tocar o som de impact da Bola de Fogo (não hit_normal)"
+
+
 def test_atacante_melee_sem_config_cai_no_fallback_hit_normal():
     """Regressão: atacante não-player SEM som configurado (ex: Guarda Real,
     raça fora de MOB_TABLE) retorna False — o caller mantém o hit_normal
