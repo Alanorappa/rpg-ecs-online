@@ -251,14 +251,14 @@ class TestArenaInstanceIsolation(unittest.TestCase):
         ik1 = self.ws._active_matches[self.match_1]["instance_key"]
         ik2 = self.ws._active_matches[self.match_2]["instance_key"]
         self.assertNotEqual(ik1, ik2)
-        self.assertTrue(ik1.startswith("maps/arena_2v2.csv::"))
-        self.assertTrue(ik2.startswith("maps/arena_2v2.csv::"))
+        self.assertTrue(ik1.startswith("maps/arena_poco_negro.csv::"))
+        self.assertTrue(ik2.startswith("maps/arena_poco_negro.csv::"))
         self.assertIn(ik1, self.ws._map_bundles)
         self.assertIn(ik2, self.ws._map_bundles)
 
     def test_template_file_of_traduz_pro_arquivo_real(self):
         ik1 = self.ws._active_matches[self.match_1]["instance_key"]
-        self.assertEqual(self.ws._template_file_of(ik1), "maps/arena_2v2.csv")
+        self.assertEqual(self.ws._template_file_of(ik1), "maps/arena_poco_negro.csv")
 
     def test_can_engage_nao_vaza_entre_partidas(self):
         """Time A da partida 1 não deveria conseguir engajar ninguém da
@@ -272,14 +272,14 @@ class TestArenaInstanceIsolation(unittest.TestCase):
         bundle da PRÓPRIA instância do player, não o último carregado."""
         from engine.world_systems import is_tile_walkable
         self.ws.register_map_services_for(self.team_a1[0])
-        # (0,0) é canto de parede no arena_2v2.csv (borda inteira é "#")
+        # (0,0) é canto de parede no arena_poco_negro.csv (borda inteira é "#")
         self.assertFalse(is_tile_walkable(self.team_a1[0], 0, 0))
-        # (5,5) é chão aberto dentro do template 20x20
-        self.assertTrue(is_tile_walkable(self.team_a1[0], 5, 5))
+        # (13,13) é chão aberto dentro da arena circular central
+        self.assertTrue(is_tile_walkable(self.team_a1[0], 13, 13))
 
         self.ws.register_map_services_for(self.team_a2[0])
         self.assertFalse(is_tile_walkable(self.team_a2[0], 0, 0))
-        self.assertTrue(is_tile_walkable(self.team_a2[0], 5, 5))
+        self.assertTrue(is_tile_walkable(self.team_a2[0], 13, 13))
 
     def test_terminar_uma_partida_nao_afeta_a_outra(self):
         for eid in self.team_b1:
@@ -327,9 +327,9 @@ class TestArenaForfeit(unittest.TestCase):
     def test_forfeit_voluntario_nao_limpa_stun_real_nao_relacionado(self):
         """Forfeit nunca passou por _eliminate_player (não foi golpe
         letal) — nunca setou is_stunned, então nunca deveria limpar um
-        stun real e coincidente. Simula o preparo (countdown_locked) já
-        ter acabado — cenário realista de forfeit no MEIO da partida,
-        bem depois do combate ter liberado."""
+        stun real e coincidente. Simula o preparo (portão físico) já ter
+        acabado — cenário realista de forfeit no MEIO da partida, bem
+        depois do combate ter liberado."""
         match = self.ws._active_matches[self.match_id]
         match["countdown_deadline"] = -1.0
         self.ws._tick_arena_pending()
@@ -396,7 +396,7 @@ class TestArenaDisconnectRestoreOrder(unittest.TestCase):
         sid = ws.get_session_id_for_player(eid)
         # confirma que está DE VERDADE na instância antes de desconectar
         # (senão o teste não prova nada)
-        self.assertTrue(ws.get_player_map(sid).startswith("maps/arena_2v2.csv::"))
+        self.assertTrue(ws.get_player_map(sid).startswith("maps/arena_poco_negro.csv::"))
 
         ws.end_matches_of(eid)
 
@@ -761,9 +761,12 @@ class TestArenaAceiteContagem(unittest.TestCase):
         from shared.constants import ARENA_ACCEPT_WINDOW_S, ARENA_COUNTDOWN_S
         self.assertAlmostEqual(events[0]["countdown_remaining"],
                                ARENA_ACCEPT_WINDOW_S + ARENA_COUNTDOWN_S, delta=0.5)
+        # Revisado 22/07/2026 (pedido do usuário — modelo WoW): preparo NÃO
+        # trava mais ação/movimento, a contenção é o portão físico (sala de
+        # espera fechada, ver test_fim_do_preparo_abre_portao_fisico).
         cst = self.ws.world.get_component(self.team_a[0], CombatState)
-        self.assertFalse(cst.can_act())
-        self.assertFalse(cst.can_move())
+        self.assertTrue(cst.can_act())
+        self.assertTrue(cst.can_move())
 
     def test_segundo_aceite_mais_tarde_recebe_countdown_menor(self):
         """Contagem é DA PARTIDA (ancorada em propose_time) — quem entra
@@ -813,22 +816,48 @@ class TestArenaAceiteContagem(unittest.TestCase):
         for eid in self.team_a + self.team_b:
             self.assertNotIn(eid, self.ws._pending_arena_invite)
 
-    def test_fim_do_preparo_libera_acao_e_movimento(self):
+    def test_fim_do_preparo_abre_portao_fisico(self):
+        """Revisado 22/07/2026 (pedido do usuário — modelo WoW): em vez de
+        travar ação/movimento, o preparo contém cada time numa sala fechada
+        — o portão (ARENA_GATE_TILES) é sólido até o countdown vencer, e
+        abre sozinho (vira passável) pros dois lados ao mesmo tempo."""
+        from engine.world_systems import is_tile_walkable
+        from shared.constants import ARENA_GATE_TILES
         self.ws.request_arena_accept(self.team_a[0])
         self.ws.request_arena_accept(self.team_b[0])
         match = self.ws._active_matches[self.match_id]
-        cst_a0 = self.ws.world.get_component(self.team_a[0], CombatState)
-        self.assertFalse(cst_a0.can_act())
+
+        self.ws.register_map_services_for(self.team_a[0])
+        for gx, gy in ARENA_GATE_TILES:
+            self.assertFalse(is_tile_walkable(self.team_a[0], gx, gy))
 
         match["countdown_deadline"] = -1.0
         self.ws._tick_arena_pending()
 
         self.assertTrue(match["fight_started"])
-        self.assertEqual(match["countdown_locked"], set())
-        self.assertTrue(cst_a0.can_act())
-        self.assertTrue(cst_a0.can_move())
-        cst_b0 = self.ws.world.get_component(self.team_b[0], CombatState)
-        self.assertTrue(cst_b0.can_act())
+        for gx, gy in ARENA_GATE_TILES:
+            self.assertTrue(is_tile_walkable(self.team_a[0], gx, gy))
+
+        # Ambos os 2 que já tinham aceitado (só eles estão na instância)
+        # recebem o evento de portão aberto, uma vez cada.
+        gate_events = self.ws.consume_arena_gate_open_events()
+        self.assertEqual({e["eid"] for e in gate_events}, {self.team_a[0], self.team_b[0]})
+
+    def test_aceite_tardio_depois_do_portao_aberto_recebe_evento_na_hora(self):
+        """Quem aceita DEPOIS do portão já ter aberto pra essa instância
+        carrega o mapa do disco (portão sempre nasce fechado no CSV) — sem
+        o evento imediato, o cliente dele nunca saberia que já pode
+        atravessar."""
+        self.ws.request_arena_accept(self.team_a[0])
+        self.ws.request_arena_accept(self.team_b[0])
+        match = self.ws._active_matches[self.match_id]
+        match["countdown_deadline"] = -1.0
+        self.ws._tick_arena_pending()
+        self.ws.consume_arena_gate_open_events()   # drena os 2 do fim do preparo
+
+        self.ws.request_arena_accept(self.team_a[1])
+        gate_events = self.ws.consume_arena_gate_open_events()
+        self.assertEqual([e["eid"] for e in gate_events], [self.team_a[1]])
 
 
 if __name__ == "__main__":

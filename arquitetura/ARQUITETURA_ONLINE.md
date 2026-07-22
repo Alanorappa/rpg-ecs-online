@@ -5441,6 +5441,68 @@ membro some" reportado em §34.34 era na verdade este MESMO bug
 tarde/nunca ao segundo membro) — vale re-perguntar se o sintoma some
 depois deste fix.
 
+### §34.34.2 — Portão físico (WoW-style) no lugar do freeze de preparo (22/07/2026)
+
+Pedido do usuário: "a ainda coisa que não está funcionando como eu quero,
+é que os personagens estão podendo se mover antes da contagem acabar, e
+aproveitando isso, quero que no lugar de bloquear as ações dos
+personagens, a gente crie um local no mapa, que fique fechado até a
+contagem acabar, exatamente como no wow" — anexou `maps/arena_poco_negro.png`
+(27×35px, 1px=1tile), já usando as cores REAIS de autoria de tile do jogo
+(confirmado por leitura de pixel: `(200,200,200)`=piso, `(120,120,140)`=
+parede, `(255,0,0)`=portão, ainda inexistente em qualquer paleta).
+
+**Mudança de comportamento**: preparo deixa de travar ação/movimento
+(`CombatState.is_stunned`/`countdown_locked`, removidos de
+`request_arena_accept`/`_tick_arena_pending`/`_arena_leave_now`,
+`server/match_processor.py`) — cada time fica livre pra se mexer/usar
+skill DENTRO da própria sala de espera. Contenção passa a ser FÍSICA: 2
+salas de espera (topo/base do novo mapa) ligadas à arena circular central
+por 2 segmentos de portão sólido de 3 tiles (`ARENA_GATE_TILES`,
+`shared/constants.py` — fonte única compartilhada entre servidor e
+cliente), que abrem sozinhos quando `countdown_deadline` vence (mesmo
+instante em que `fight_started` vira `True`) — os 2 segmentos juntos, sem
+vantagem pra ninguém. A distância real entre as 2 salas (~25+ tiles,
+portão sólido no meio) já deixa qualquer skill de range fora de alcance
+antes do portão abrir, sem precisar de nenhuma outra trava.
+
+**Novo tile de portão**: `ARENA_GATE_TILE` (`engine/tileset.py`, char `"D"`
+em `TILE_PALETTE`/`TILE_MAPPING`) — sólido, `vision_height=0` (não bloqueia
+FOV, dá pra ver o time adversário pela "grade" antes do portão abrir).
+Abrir = trocar a REFERÊNCIA da célula por `STONE_FLOOR` (nunca mutar o
+`TileType` em si — é singleton reusado em toda instância de arena
+concorrente). `Tilemap.tile_matrix` é lido AO VIVO por
+`is_tile_walkable`/`find_path` (`engine/world_systems.py`) a cada chamada,
+sem cache pra invalidar, e cada instância de arena já tem seu próprio
+`_MapBundle`/`Tilemap` isolado (`_load_instance`) — trocar a célula nunca
+vaza pra outra partida rodando ao mesmo tempo.
+
+**Novo mapa**: `maps/arena_poco_negro.csv` (`ARENA_TEMPLATE_2V2`, trocou de
+`arena_2v2.csv`) — gerado 1:1 do PNG do usuário (sem tolerância de cor, os
+3 valores batem EXATO com a paleta). `_SPAWN_TEAM_A`/`_SPAWN_TEAM_B`
+(`server/match_processor.py`) movem pras salas de espera.
+
+**Protocolo**: `ARENA_GATE_OPEN` (S→C, `{}`) — mandado a cada um dos 4
+quando o portão abre (fim do preparo) OU no aceite de quem entra DEPOIS
+do portão já aberto (`request_arena_accept` enfileira o evento na hora
+pra esse caso — sem isso o cliente, que acabou de carregar o CSV do disco
+com o portão sempre fechado, nunca saberia que já pode atravessar). Novo
+buffer `_arena_gate_open_events_this_tick` (`server/world_server.py`) —
+**entrou no `has_pending` de `server/session.py` desde o commit** (mesma
+classe de bug do §34.34.1, corrigida de saída desta vez).
+
+**Validado**: `tests/test_arena.py` — portão sólido logo após aceitar,
+abre (vira passável) pros 2 lados ao mesmo tempo quando o countdown vence,
+aceite tardio (depois do portão já aberto) recebe o evento na hora;
+referências a `arena_2v2.csv`/coordenadas antigas atualizadas pro novo
+mapa. Suíte completa 393/393, rodada 3x.
+
+**Não validado**: sessão manual com 4 clientes reais — cada time se move/
+usa skill livremente na própria sala fechada mas não atravessa o portão;
+portão abre sozinho ao fim da contagem pros 2 lados ao mesmo tempo; quem
+aceita bem no fim (depois do portão já aberto pros outros) já entra
+vendo o portão aberto.
+
 ---
 
 ### §34.35 — NPCs de serviço (mercador/ferreiro/treinador/dador-de-missão) ganham HP + combate genérico — Fase 1 (21/07/2026)

@@ -1726,7 +1726,8 @@ class SessionManager:
                        or bool(self.world_server._arena_match_found_events_this_tick)
                        or bool(self.world_server._arena_match_start_events_this_tick)
                        or bool(self.world_server._arena_match_end_events_this_tick)
-                       or bool(self.world_server._arena_match_result_events_this_tick))
+                       or bool(self.world_server._arena_match_result_events_this_tick)
+                       or bool(self.world_server._arena_gate_open_events_this_tick))
         if not has_pending:
             return
         asyncio.create_task(self._dispatch_tick_deltas(deltas))
@@ -2014,6 +2015,18 @@ class SessionManager:
                 await _am_sess.send(MsgType.ARENA_COUNTDOWN, {
                     "remaining": _am_start["countdown_remaining"],
                 })
+
+            # Arena: portão físico da instância abriu (fim do preparo,
+            # MatchProcessorMixin._tick_arena_pending) OU este eid aceitou
+            # tarde, já com o portão aberto (request_arena_accept) — avisa
+            # o cliente pra trocar a célula do portão localmente (mesmo swap
+            # do servidor, ver ARENA_GATE_TILES em shared/constants.py).
+            for _ago in self.world_server.consume_arena_gate_open_events():
+                _ago_sid  = self.world_server.get_session_id_for_player(_ago["eid"])
+                _ago_sess = self._sessions.get(_ago_sid) if _ago_sid else None
+                if not (_ago_sess and _ago_sess.authenticated):
+                    continue
+                await _ago_sess.send(MsgType.ARENA_GATE_OPEN, {})
 
             # Arena: player saiu da partida neste tick (/forfeit, botão
             # "Sair da Arena", desconexão, ou timeout automático da tela

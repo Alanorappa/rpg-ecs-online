@@ -10,7 +10,8 @@ PartyProcessorMixin pro conceito de "grupo pré-formado" — um "time" nesta
 leva É o grupo (Party) que entrou na fila junto, sem estado de time
 próprio (ver ARQUITETURA_ONLINE.md, decisão da leva).
 
-"Instância" é uma cópia privada de maps/arena_2v2.csv carregada via
+"Instância" é uma cópia privada de ARENA_TEMPLATE_2V2 (maps/arena_poco_negro.csv)
+carregada via
 WorldServer._load_instance/_unload_instance (server/world_server.py) —
 UM WorldServer só, chave sintética por partida, nunca outro processo
 (ver docstring de _load_map_for pro racional — evita colisão dos globais
@@ -28,13 +29,17 @@ aceite de partida + preparo):
    teleportado ainda: os 4 recebem ARENA_MATCH_FOUND e têm
    ARENA_ACCEPT_WINDOW_S segundos pra mandar ARENA_MATCH_ACCEPT
    (request_arena_accept). Quem aceita entra IMEDIATAMENTE (sozinho, não
-   espera o resto) — vira PREPARO pra esse player: CombatState.is_stunned
-   trava ação/movimento por ARENA_COUNTDOWN_S a partir do PRIMEIRO aceite
-   de QUALQUER um dos 4 (contagem é da PARTIDA, não por-jogador — quem
-   entra depois já vê o tempo restante menor/zerado). Quem não aceita a
-   tempo simplesmente não entra — _tick_arena_pending encerra a janela e,
-   se um time inteiro nunca apareceu, o outro vence por W.O.; times
-   desbalanceados (só 1 aceitou de um lado) são esperados e aceitos.
+   espera o resto), livre pra se mover/agir dentro da própria sala de
+   espera — vira PREPARO: contenção é FÍSICA, não freeze de ação (revisado
+   22/07/2026, pedido do usuário — "em vez de bloquear as ações dos
+   personagens, criar um local no mapa que fique fechado", modelo WoW). O
+   portão (ARENA_GATE_TILES, shared/constants.py) fica sólido até
+   ARENA_COUNTDOWN_S depois do fim de ARENA_ACCEPT_WINDOW_S (contagem é da
+   PARTIDA, não por-jogador — quem entra depois já vê o portão abrir mais
+   cedo/já aberto). Quem não aceita a tempo simplesmente não entra —
+   _tick_arena_pending encerra a janela e, se um time inteiro nunca
+   apareceu, o outro vence por W.O.; times desbalanceados (só 1 aceitou de
+   um lado) são esperados e aceitos.
 1. ATIVA — golpe que mataria elimina (CombatState.is_immune=True +
    is_stunned=True, não pode mais ser ferido NEM agir/mover — ver
    _eliminate_player). Time com todos os membros eliminados: a partida é
@@ -53,12 +58,15 @@ aceite de partida + preparo):
 """
 from __future__ import annotations
 
-from shared.constants import ARENA_ACCEPT_WINDOW_S, ARENA_COUNTDOWN_S
+from shared.constants import ARENA_ACCEPT_WINDOW_S, ARENA_COUNTDOWN_S, ARENA_GATE_TILES
 
-ARENA_TEMPLATE_2V2 = "maps/arena_2v2.csv"
-# Spawns opostos dentro do mapa 20x20 (interior walkable = tiles 1..18).
-_SPAWN_TEAM_A = [(3, 9), (3, 10)]
-_SPAWN_TEAM_B = [(16, 9), (16, 10)]
+ARENA_TEMPLATE_2V2 = "maps/arena_poco_negro.csv"
+# Salas de espera opostas (topo/base) do mapa arena_poco_negro.csv — ligadas à
+# arena circular central por 2 portões físicos (ARENA_GATE_TILES,
+# shared/constants.py) que só abrem quando o preparo termina (22/07/2026,
+# revisão "portão físico" — ver docstring da classe).
+_SPAWN_TEAM_A = [(12, 2), (14, 2)]
+_SPAWN_TEAM_B = [(12, 32), (14, 32)]
 
 # Tempo máximo parado na tela de resultado antes de ser teleportado de
 # volta à força — evita que a instância fique presa na memória pra
@@ -160,7 +168,6 @@ class MatchProcessorMixin:
             "return_pos":        {},
             "damage_by_eid":     {},
             "arena_locked":      set(),   # eids com is_immune/is_stunned setados POR _finish_match
-            "countdown_locked":  set(),   # eids com is_stunned setado PRA PREPARO (distinto de arena_locked)
             "decided":           False,
             "decided_at":        0.0,
             "winner_members":    set(),
@@ -200,7 +207,7 @@ class MatchProcessorMixin:
             return "expired"
         del self._pending_arena_invite[eid]
 
-        from engine.components import Faction as _FactionM, CombatState as _CSac
+        from engine.components import Faction as _FactionM
         side       = "a" if eid in match["invited_a"] else "b"
         other_side = "b" if side == "a" else "a"
 
@@ -225,10 +232,6 @@ class MatchProcessorMixin:
         self._player_match_id[eid] = match_id
 
         remaining = max(0.0, match["countdown_deadline"] - _time_ac.time())
-        cst = self.world.get_component(eid, _CSac)
-        if cst:
-            cst.is_stunned = True
-        match["countdown_locked"].add(eid)
 
         _map_file = self._template_file_of(match["instance_key"])
         self._arena_match_start_events_this_tick.append({
@@ -239,6 +242,13 @@ class MatchProcessorMixin:
             "opponents":           match[f"invited_{other_side}"],
             "countdown_remaining": remaining,
         })
+        # Entrada tardia (depois do portão já ter aberto pra esta instância,
+        # ver _tick_arena_pending): o cliente acabou de carregar o CSV do
+        # disco (portão sempre nasce fechado) — sem isso ele nunca receberia
+        # o aviso pra abrir, já que o evento de abertura só é emitido UMA VEZ,
+        # no tick em que fight_started vira True.
+        if match["fight_started"]:
+            self._arena_gate_open_events_this_tick.append({"eid": eid})
         return None
 
     def _tick_arena_pending(self) -> None:
@@ -248,12 +258,14 @@ class MatchProcessorMixin:
         um time inteiro nunca apareceu, o outro vence por W.O. (mesma
         `_finish_match` de sempre); se nenhum dos 4 apareceu, a partida é
         só descartada (instância nunca chegou a carregar). (b) contagem de
-        preparo vencida — libera quem ainda está travado pelo preparo
-        (`countdown_locked`), nunca mexe em quem já foi travado por outro
-        motivo (`arena_locked`, fim de partida)."""
+        preparo vencida — abre o portão físico (`ARENA_GATE_TILES`) da
+        instância (revisado 22/07/2026 — antes liberava `is_stunned`; agora
+        a contenção é o portão, não freeze de ação/movimento) e avisa os 4
+        players da partida."""
         import time as _time_tp
         now = _time_tp.time()
-        from engine.components import CombatState as _CStp
+        from engine.components import Tilemap as _TMtp
+        from engine.tileset import STONE_FLOOR as _SFtp
 
         for match_id, match in list(self._active_matches.items()):
             if match["decided"] or match["fight_started"]:
@@ -277,11 +289,14 @@ class MatchProcessorMixin:
             cd = match["countdown_deadline"]
             if cd is not None and now >= cd and not match["fight_started"]:
                 match["fight_started"] = True
-                for eid in match["countdown_locked"]:
-                    cst = self.world.get_component(eid, _CStp)
-                    if cst:
-                        cst.is_stunned = False
-                match["countdown_locked"].clear()
+                bundle = self._map_bundles.get(match["instance_key"])
+                if bundle is not None:
+                    tilemap = self.world.get_component(bundle.tilemap_entity, _TMtp)
+                    if tilemap is not None:
+                        for gx, gy in ARENA_GATE_TILES:
+                            tilemap.tile_matrix[gy][gx] = _SFtp
+                for eid in match["team_a"] + match["team_b"]:
+                    self._arena_gate_open_events_this_tick.append({"eid": eid})
 
     def _reset_combat_resources(self, eid: int) -> None:
         """Restaura HP/Mana/Concentração cheios e limpa cooldown de TODAS
@@ -460,19 +475,17 @@ class MatchProcessorMixin:
         if cst:
             cst.is_immune = False
             # Só limpa is_stunned de quem ESTE mixin travou (arena_locked =
-            # fim de partida, countdown_locked = preparo/aceite) — um
-            # forfeit voluntário ANTES de qualquer eliminação, ou o
-            # vencedor congelado em _finish_match, nunca tiveram is_stunned
-            # setado por golpe letal; um player pode legitimamente estar
-            # stunado por um efeito de combate real e não-relacionado nesse
-            # instante — limpar sem checar apagaria esse stun. Cobre
-            # também quem desiste NO MEIO do preparo (countdown_locked)
-            # antes da contagem acabar — sem isso ficaria travado pra
-            # sempre depois de voltar pro mapa aberto.
-            if eid in match["arena_locked"] or eid in match["countdown_locked"]:
+            # fim de partida) — um forfeit voluntário ANTES de qualquer
+            # eliminação, ou o vencedor congelado em _finish_match, nunca
+            # tiveram is_stunned setado por golpe letal; um player pode
+            # legitimamente estar stunado por um efeito de combate real e
+            # não-relacionado nesse instante — limpar sem checar apagaria
+            # esse stun. Preparo (portão físico, revisado 22/07/2026) não
+            # seta is_stunned mais, então não precisa de checagem própria
+            # aqui.
+            if eid in match["arena_locked"]:
                 cst.is_stunned = False
         match["arena_locked"].discard(eid)
-        match["countdown_locked"].discard(eid)
         self._player_match_id.pop(eid, None)
         self._arena_match_end_events_this_tick.append({
             "eid": eid, "won": eid in match["winner_members"],
@@ -546,6 +559,11 @@ class MatchProcessorMixin:
     def consume_arena_match_start_events(self) -> list[dict]:
         result = list(self._arena_match_start_events_this_tick)
         self._arena_match_start_events_this_tick.clear()
+        return result
+
+    def consume_arena_gate_open_events(self) -> list[dict]:
+        result = list(self._arena_gate_open_events_this_tick)
+        self._arena_gate_open_events_this_tick.clear()
         return result
 
     def consume_arena_match_end_events(self) -> list[dict]:

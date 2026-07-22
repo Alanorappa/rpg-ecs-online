@@ -11,8 +11,11 @@ contagem regressiva de preparo (pedido do usuário 21/07/2026 — ver
 server/match_processor.py::_propose_match/request_arena_accept), do modal
 de fim de partida (placar + "Sair da Arena", estilo WoW — pedido do
 usuário 20/07/2026) e do feedback (log/aviso) de entrar na fila/começar/
-terminar a partida. O bloqueio de ação/movimento durante o preparo é
-100% servidor (CombatState.is_stunned) — o overlay aqui é só visual.
+terminar a partida. A contenção durante o preparo é FÍSICA (portão sólido
+em ARENA_GATE_TILES, shared/constants.py — revisado 22/07/2026, pedido do
+usuário: modelo WoW, sem freeze de ação/movimento) — este mixin só troca
+a célula do portão localmente ao receber ARENA_GATE_OPEN
+(_handle_msg_arena_gate_open), o overlay de contagem aqui é só visual.
 """
 import pygame
 
@@ -50,9 +53,9 @@ class ArenaHandlers:
     @property
     def _arena_countdown_remaining(self) -> "float | None":
         """Segundos restantes de preparo (None = nenhuma contagem ativa).
-        Puramente cosmético — quem trava ação/movimento de verdade é o
-        servidor via CombatState.is_stunned (mesmo mecanismo do freeze de
-        fim de partida)."""
+        Puramente cosmético — quem contém de verdade é o portão físico
+        (ARENA_GATE_TILES), aberto pelo servidor e espelhado aqui via
+        ARENA_GATE_OPEN (_handle_msg_arena_gate_open)."""
         deadline = getattr(self, "_arena_countdown_deadline_val", None)
         if deadline is None:
             return None
@@ -109,6 +112,22 @@ class ArenaHandlers:
     def _handle_msg_arena_countdown(self, payload: dict) -> None:
         import time as _time_acd
         self._arena_countdown_deadline_val = _time_acd.time() + payload.get("remaining", 0.0)
+
+    def _handle_msg_arena_gate_open(self, payload: dict) -> None:
+        """Portão físico da arena abriu (fim do preparo) — mesmo swap de
+        tile aplicado no servidor (server/match_processor.py::
+        _tick_arena_pending), pra este cliente parar de ver/colidir com o
+        portão fechado. Mandado a cada um dos 4, inclusive quem aceitar
+        DEPOIS do portão já ter aberto (ver request_arena_accept)."""
+        from engine.components import Tilemap
+        from engine.tileset import STONE_FLOOR
+        from shared.constants import ARENA_GATE_TILES
+        tilemap_comp = self.world.get_component(self.tilemap_entity, Tilemap)
+        if tilemap_comp is None:
+            return
+        for gx, gy in ARENA_GATE_TILES:
+            if 0 <= gy < len(tilemap_comp.tile_matrix) and 0 <= gx < len(tilemap_comp.tile_matrix[gy]):
+                tilemap_comp.tile_matrix[gy][gx] = STONE_FLOOR
 
     def _handle_msg_arena_match_start(self, payload: dict) -> None:
         from ui.floating_text import WARN

@@ -102,6 +102,8 @@ class NetworkHandlers:
             self._handle_msg_arena_match_end(payload)
         elif msg_type == MsgType.ARENA_MATCH_RESULT:
             self._handle_msg_arena_match_result(payload)
+        elif msg_type == MsgType.ARENA_GATE_OPEN:
+            self._handle_msg_arena_gate_open(payload)
         elif msg_type == MsgType.CHAT_MESSAGE:
             self._handle_msg_chat_message(payload)
 

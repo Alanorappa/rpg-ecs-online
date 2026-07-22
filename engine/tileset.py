@@ -76,6 +76,12 @@ TREE_TILE = TileType("Tree", (28, 72, 28), is_solid=True, vision_height=2,
                      )   # sprite = 32×64px   # Árvore (bloqueia visão)
 BUSH_TILE     = TileType("Bush",       ( 52, 108,  42), is_solid=True,  vision_height=1)  # Arbusto (médio)
 ROCK_TILE     = TileType("Rock",       (100,  90,  78), is_solid=True,  vision_height=0)  # Pedra / lápide (rasa)
+# Portão de arena (Fase G — preparo físico, WoW-style): sólido, mas vision_height=0
+# (não bloqueia FOV — dá pra ver o time adversário pela "grade" antes do portão
+# abrir). Aberto em runtime trocando a célula por STONE_FLOOR (ver ARENA_GATE_TILES
+# em shared/constants.py) — nunca mutar este TileType em si (singleton reusado em
+# toda instância de arena concorrente).
+ARENA_GATE_TILE = TileType("ArenaGate", (200,  50,  50), is_solid=True,  vision_height=0)
 
 # ── Paleta de cores para edição de mapas no Paint (PNG → CSV + JSON) ──────────
 #
@@ -134,6 +140,7 @@ TILE_PALETTE: dict[tuple, str] = {
     (  0, 100,   0): "t",   # Árvore
     (100, 200,  50): "b",   # Arbusto
     (200, 180, 160): "k",   # Pedra / lápide / rocha
+    (255,   0,   0): "D",   # Portão de arena (sólido, abre em runtime)
 }
 
 # ── Paleta de entidades — cor RGB → dados da entidade no JSON ─────────────────
@@ -253,6 +260,7 @@ TILE_MAPPING = {
     "c": CAVE_WALL,
     "m": MOUNTAIN_TILE,
     "W": WATER_TILE,
+    "D": ARENA_GATE_TILE,
     # Spawn chars (renderizam como floor subjacente)
     "P": STONE_FLOOR,   # Player spawn → piso de pedra (cidade)
     "N": STONE_FLOOR,   # Merchant spawn

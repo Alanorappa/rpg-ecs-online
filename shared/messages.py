@@ -150,6 +150,10 @@ class MsgType(str, Enum):
     ARENA_MATCH_END     = "arena_match_end"     # S→C  {won: bool} — junto do ZONE_CHANGE de volta pro mapa/posição de antes
     ARENA_FORFEIT       = "arena_forfeit"       # C→S  {} — comando de chat /forfeit ou /ff (ou botão "Sair da Arena"), sai na hora
     ARENA_MATCH_RESULT  = "arena_match_result"  # S→C  {results:[{eid,name,damage,won}]} — placar de fim de partida (modal, não teleporta sozinho)
+    # Portão físico de arena (22/07/2026, pedido do usuário — modelo WoW: em vez de
+    # travar ação/movimento no preparo, contém cada time numa sala fechada até o
+    # portão abrir). Coordenadas das células em ARENA_GATE_TILES (shared/constants.py).
+    ARENA_GATE_OPEN     = "arena_gate_open"     # S→C  {} — o(s) portão(ões) da arena abriu(ram) (fim do preparo); mandado a cada um dos 4, inclusive quem aceitar DEPOIS do portão já ter aberto
 
     CONSUMABLE_USE     = "consumable_use"    # C→S  uso de consumível (heal_instant, HoT, buffs futuros)
     GOLD_UPDATE        = "gold_update"       # C→S  gold mudou (loot de moedas) {gold: N}

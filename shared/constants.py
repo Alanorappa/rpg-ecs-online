@@ -54,7 +54,7 @@ PROTOCOL_VERSION = 1             # incrementar ao quebrar compatibilidade
 # criar a tag git correspondente (`git tag vX.Y.Z`) a cada commit relevante:
 # PATCH = correção, MINOR = feature nova, MAJOR = mudança grande/quebra de
 # compatibilidade (decisão do usuário, 20/07/2026 — ver ARQUITETURA_ONLINE.md).
-GAME_VERSION = "0.9.8"
+GAME_VERSION = "0.10.0"
 
 # ── Morte/respawn: fluxo de espírito (ghost) + cemitério ───────────────────────
 GHOST_GRAVEYARD_RADIUS_TILES = 5   # raio (tiles) do cemitério p/ revive automático
@@ -76,9 +76,11 @@ DUEL_MAX_DIST_TILES = 20
 
 # ── Arena 2x2: aceite de partida + preparo ──────────────────────────────────
 # Janela pra aceitar a "partida encontrada" antes de simplesmente não entrar
-# (arena segue só com quem aceitou); preparo dentro da arena (ninguém pode
-# agir/mover) antes do combate liberar de verdade. Pedido do usuário
-# 21/07/2026 — ver server/match_processor.py.
+# (arena segue só com quem aceitou); preparo dentro da arena (contido pelo
+# portão físico — ver ARENA_GATE_TILES abaixo — não mais por freeze de
+# ação/movimento, revisado 22/07/2026 a pedido do usuário) antes do combate
+# liberar de verdade. Pedido do usuário 21/07/2026 — ver
+# server/match_processor.py.
 #
 # Os dois tempos são ANCORADOS no momento em que a fila pareou (_propose_match)
 # — nunca no momento em que alguém aceita — pra somar SEMPRE
@@ -89,6 +91,19 @@ DUEL_MAX_DIST_TILES = 20
 # facilitar teste — aumentar em produção é só subir os 2 números.
 ARENA_ACCEPT_WINDOW_S = 15.0
 ARENA_COUNTDOWN_S     = 15.0
+
+# Portão físico de arena (22/07/2026, pedido do usuário: "em vez de bloquear
+# as ações dos personagens, criar um local no mapa que fique fechado até a
+# contagem acabar" — modelo WoW). Coordenadas (tx,ty) das células do portão
+# em maps/arena_poco_negro.csv — fonte única compartilhada entre servidor
+# (abre a célula trocando tile_matrix[y][x] por STONE_FLOOR ao fim do
+# preparo, server/match_processor.py) e cliente (mesmo swap local ao receber
+# ARENA_GATE_OPEN, client/arena_handlers.py). 2 segmentos de 3 tiles — um por
+# sala de espera (time A em cima, time B embaixo).
+ARENA_GATE_TILES: list[tuple[int, int]] = [
+    (12, 4), (13, 4), (14, 4),
+    (12, 30), (13, 30), (14, 30),
+]
 
 # ── Party/Grupo ──────────────────────────────────────────────────────────────
 # Tamanho máximo do grupo (decisão do usuário 17/07/2026). Sem checagem de

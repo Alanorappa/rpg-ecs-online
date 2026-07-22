@@ -277,6 +277,10 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # existir pra um eid depois que ele de fato ACEITA e entra).
         self._pending_arena_invite: dict[int, str] = {}
         self._arena_match_found_events_this_tick: list[dict] = []
+        # Portão físico de arena (22/07/2026): 1 entrada por eid quando o
+        # portão da instância abre (fim do preparo) ou quando alguém aceita
+        # tarde, já com o portão aberto — ver consume_arena_gate_open_events.
+        self._arena_gate_open_events_this_tick: list[dict] = []
 
         # Timer de ataque por jogador: session_id → segundos até próximo hit
         self._attack_timers: dict[str, float] = {}
