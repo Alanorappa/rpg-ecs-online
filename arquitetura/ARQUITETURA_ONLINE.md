@@ -5316,6 +5316,64 @@ desbalanceada, contagem regressiva trava movimento/ação até zerar e é
 igual pra quem entra depois, W.O. automático quando um time inteiro não
 aparece.
 
+**Validado parcialmente pelo usuário (21/07/2026)**: janela aparece pros
+4, quem não aceita não entra, W.O. automático — confirmados. Reportado
+como pendente: um bug aparente onde a janela de aceite do OUTRO membro
+do time sumia quando um aceitava, e o pedido de unificar os 2 tempos.
+
+### Revisão (21/07/2026) — janela de aceite + preparo somados em 30s ancorados no pareamento, configurável
+
+Pedido do usuário: "quando um dos membros clica em aceitar a arena,
+some a janela de aceitar do outro membro do time, isso quebra toda a
+lógica, a janela deve permanecer na tela e ambos os membros tem que
+poder aceitar... unindo os 2 tempos, será 30 segundos para iniciar a
+arena a partir do momento que a arena chamou, esse tempo deve estar em
+algum lugar configurável."
+
+**Investigação do bug "janela do outro some"**: `ARENA_MATCH_FOUND` e
+`ARENA_MATCH_START` (`server/session.py`) são mandados SEMPRE só pra
+sessão de quem gerou o evento (`_amf_sess`/`_am_sess`, resolvidos pelo
+eid específico) — nenhum broadcast pro time. `_arena_pending_match_val`
+(cliente) só é tocado em 4 pontos, todos dentro de
+`client/arena_handlers.py`, nenhum dependente de estado de outro
+jogador. **Não foi encontrada causa de código** pra um aceite fechar a
+janela do OUTRO membro — hipótese mais provável: a janela era de só
+10s (curta pra 2 testers coordenarem "clica agora"), e a do segundo
+membro pode ter expirado SOZINHA (fecha automaticamente ao chegar a 0,
+sem avisar o servidor) quase no mesmo instante do clique do primeiro,
+parecendo causa-efeito por coincidência. Não confirmado — pendente de
+retest com a janela maior (15s) abaixo; se persistir, precisa de mais
+detalhe (o personagem do outro chegou a ser teleportado, ou só a janela
+sumiu visualmente enquanto ele continuava fora da arena?).
+
+**Redesenho da contagem**: `ARENA_ACCEPT_WINDOW_S`/`ARENA_COUNTDOWN_S`
+(`shared/constants.py`) sobem de 10.0/10.0 pra **15.0/15.0** (30s
+total) — ambos independentemente configuráveis pra aumentar em
+produção. Mais importante: os dois prazos passam a ser ANCORADOS no
+momento em que `_propose_match` pareia a fila, nunca mais recalculados
+a partir de quando alguém aceita. Antes, `countdown_deadline` só era
+setado no PRIMEIRO aceite (`if match["countdown_deadline"] is None:
+... = now + ARENA_COUNTDOWN_S`) — o tempo total do chamado até o
+combate liberar variava conforme quando cada um entrava (podia ser só
+`ARENA_COUNTDOWN_S` se alguém aceitasse na hora). Agora
+`_propose_match` já grava `countdown_deadline = propose_time +
+ARENA_ACCEPT_WINDOW_S + ARENA_COUNTDOWN_S` (fixo); `request_arena_accept`
+só calcula `remaining` a partir desse valor já existente — satisfaz
+literalmente o pedido ("unindo os 2 tempos, 30 segundos a partir do
+momento que a arena chamou"), e "quem entra depois vê o tempo certo"
+passa a ser garantido por construção (mesmo timestamp fixo pra todo
+mundo, não um relativo a quando cada um entrou).
+
+**Validado**: `tests/test_arena.py::TestArenaAceiteContagem` (2 testes
+ajustados pro novo valor — `countdown_remaining` logo após o
+pareamento = `ARENA_ACCEPT_WINDOW_S + ARENA_COUNTDOWN_S`, não mais só
+`ARENA_COUNTDOWN_S`). Suíte completa 390/390, rodada 3x.
+
+**Não validado**: sessão manual com 4 clientes reais — os 2 membros de
+um time conseguem ver a janela e aceitar independentemente, sem a
+janela de um interferir na do outro; tempo total do chamado até o
+combate liberar é sempre 30s.
+
 ---
 
 ### §34.35 — NPCs de serviço (mercador/ferreiro/treinador/dador-de-missão) ganham HP + combate genérico — Fase 1 (21/07/2026)

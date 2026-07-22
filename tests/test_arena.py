@@ -751,17 +751,23 @@ class TestArenaAceiteContagem(unittest.TestCase):
         self.assertEqual(faction.faction_id, "arena_time_a")
 
     def test_aceite_dispara_arena_match_start_com_countdown_cheio(self):
+        """countdown_remaining logo após o pareamento = ACCEPT_WINDOW +
+        COUNTDOWN somados (ancorado em propose_time, revisado 21/07/2026 —
+        pedido do usuário: "unindo os 2 tempos, será 30 segundos pra
+        iniciar a arena a partir do momento que a arena chamou")."""
         self.ws.request_arena_accept(self.team_a[0])
         events = self.ws.consume_arena_match_start_events()
         self.assertEqual(len(events), 1)
-        self.assertAlmostEqual(events[0]["countdown_remaining"], 10.0, delta=0.5)
+        from shared.constants import ARENA_ACCEPT_WINDOW_S, ARENA_COUNTDOWN_S
+        self.assertAlmostEqual(events[0]["countdown_remaining"],
+                               ARENA_ACCEPT_WINDOW_S + ARENA_COUNTDOWN_S, delta=0.5)
         cst = self.ws.world.get_component(self.team_a[0], CombatState)
         self.assertFalse(cst.can_act())
         self.assertFalse(cst.can_move())
 
     def test_segundo_aceite_mais_tarde_recebe_countdown_menor(self):
-        """Contagem é DA PARTIDA — quem entra depois já vê o tempo restante
-        menor, nunca reinicia."""
+        """Contagem é DA PARTIDA (ancorada em propose_time) — quem entra
+        depois já vê o tempo restante menor, nunca reinicia."""
         self.ws.request_arena_accept(self.team_a[0])
         self.ws.consume_arena_match_start_events()
         match = self.ws._active_matches[self.match_id]
@@ -770,7 +776,9 @@ class TestArenaAceiteContagem(unittest.TestCase):
         self.ws.request_arena_accept(self.team_b[0])
         events = self.ws.consume_arena_match_start_events()
         self.assertEqual(len(events), 1)
-        self.assertAlmostEqual(events[0]["countdown_remaining"], 3.0, delta=0.5)
+        from shared.constants import ARENA_ACCEPT_WINDOW_S, ARENA_COUNTDOWN_S
+        self.assertAlmostEqual(events[0]["countdown_remaining"],
+                               ARENA_ACCEPT_WINDOW_S + ARENA_COUNTDOWN_S - 7.0, delta=0.5)
 
     def test_time_cujo_parceiro_nunca_aceita_segue_so_com_quem_entrou(self):
         self.ws.request_arena_accept(self.team_a[0])

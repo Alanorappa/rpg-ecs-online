@@ -135,10 +135,20 @@ class MatchProcessorMixin:
         chamado (bookkeeping imutável, usado só pra montar
         teammates/opponents e pra decidir W.O. se um lado nunca aparecer).
         Instância só é carregada no primeiro aceite (`instance_key=None`
-        aqui) — evita alocar mapa pra uma partida que ninguém topa jogar."""
+        aqui) — evita alocar mapa pra uma partida que ninguém topa jogar.
+
+        `accept_deadline`/`countdown_deadline` são ANCORADOS aqui, no
+        momento em que a fila pareou — NUNCA recalculados a partir de
+        quando alguém aceita (revisado 21/07/2026, pedido do usuário:
+        "unindo os 2 tempos, será 30 segundos pra iniciar a arena a
+        partir do momento que a arena chamou"). `countdown_deadline` já
+        nasce FIXO em propose_time + ACCEPT_WINDOW + COUNTDOWN — um
+        aceite tardio (ainda dentro do accept_deadline) só recebe um
+        `countdown_remaining` menor, nunca reinicia a contagem."""
         match_id = f"arena2v2_{self._next_match_id}"
         self._next_match_id += 1
         import time as _time_pm
+        _propose_now = _time_pm.time()
 
         self._active_matches[match_id] = {
             "instance_key":      None,
@@ -154,8 +164,8 @@ class MatchProcessorMixin:
             "decided":           False,
             "decided_at":        0.0,
             "winner_members":    set(),
-            "accept_deadline":   _time_pm.time() + ARENA_ACCEPT_WINDOW_S,
-            "countdown_deadline": None,
+            "accept_deadline":    _propose_now + ARENA_ACCEPT_WINDOW_S,
+            "countdown_deadline": _propose_now + ARENA_ACCEPT_WINDOW_S + ARENA_COUNTDOWN_S,
             "fight_started":     False,
             "accept_swept":      False,
         }
@@ -173,9 +183,10 @@ class MatchProcessorMixin:
         IMEDIATAMENTE, sozinho, sem esperar o resto (mesmo estilo de
         `request_arena_queue_join`/`request_arena_forfeit`: None = sucesso,
         string = recusado). Primeiro aceite de QUALQUER um dos 4 carrega a
-        instância (lazy) e dispara a contagem de preparo
-        (`countdown_deadline`) pra PARTIDA inteira — quem entra depois só
-        recebe o tempo restante, nunca reinicia a contagem."""
+        instância (lazy) — a contagem de preparo (`countdown_deadline`) já
+        nasceu FIXA em `_propose_match` (ancorada no momento em que a fila
+        pareou, não em quando alguém aceita); aqui só calcula quanto falta
+        pra ESTE entrante, nunca reinicia a contagem pra ninguém."""
         import time as _time_ac
         match_id = self._pending_arena_invite.get(eid)
         if match_id is None:
@@ -213,8 +224,6 @@ class MatchProcessorMixin:
         match["damage_by_eid"][eid] = 0
         self._player_match_id[eid] = match_id
 
-        if match["countdown_deadline"] is None:
-            match["countdown_deadline"] = _time_ac.time() + ARENA_COUNTDOWN_S
         remaining = max(0.0, match["countdown_deadline"] - _time_ac.time())
         cst = self.world.get_component(eid, _CSac)
         if cst:
