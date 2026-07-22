@@ -1727,7 +1727,18 @@ class SessionManager:
                        or bool(self.world_server._arena_match_start_events_this_tick)
                        or bool(self.world_server._arena_match_end_events_this_tick)
                        or bool(self.world_server._arena_match_result_events_this_tick)
-                       or bool(self.world_server._arena_gate_open_events_this_tick))
+                       or bool(self.world_server._arena_gate_open_events_this_tick)
+                       # Mesma classe de bug (22/07/2026, achada ao investigar "grupo só
+                       # atualiza o HUD quando alguém se move"): estes 4 buffers também são
+                       # consumidos aqui embaixo (consume_party_state_events/
+                       # consume_duel_end_events/consume_trade_cancellations/
+                       # consume_skill_position_corrections) mas nenhum entrava em `deltas`
+                       # nem tinha check próprio — sujeitos ao mesmo "preso até atividade
+                       # alheia" que já tinha acontecido com a arena.
+                       or bool(self.world_server._party_state_events_this_tick)
+                       or bool(self.world_server._duel_end_events_this_tick)
+                       or bool(self.world_server._trade_cancellations_this_tick)
+                       or bool(self.world_server._skill_position_corrections))
         if not has_pending:
             return
         asyncio.create_task(self._dispatch_tick_deltas(deltas))

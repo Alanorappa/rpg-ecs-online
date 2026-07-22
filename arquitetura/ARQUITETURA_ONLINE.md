@@ -5503,6 +5503,57 @@ portão abre sozinho ao fim da contagem pros 2 lados ao mesmo tempo; quem
 aceita bem no fim (depois do portão já aberto pros outros) já entra
 vendo o portão aberto.
 
+### §34.34.3 — Portão fica visualmente fechado até o jogador sair/voltar da tela; grupo idem no HUD (22/07/2026)
+
+Usuário testou §34.34.2 e reportou 2 sintomas: (1) o portão "funcionou
+muito bem" na colisão (dá pra atravessar assim que o countdown zera), mas
+o DESENHO continuava mostrando o portão fechado (vermelho) até o jogador
+andar pra fora da tela e voltar; (2) HUD de grupo (slots no canto
+superior esquerdo) só aparecia/atualizava quando algum player se movia
+depois de aceitar um convite — mesmo sintoma de "algo atualiza o mapa,
+mas não sei o quê", pedido explícito de nunca mais deixar uma atualização
+acontecer "de carona" numa ação sem relação direta (ver regra nova em
+`CLAUDE.md`, seção "Atualização coesa ao adicionar sistema novo").
+
+**Causa raiz 1 — cache de render de tile não invalidado**: `TileRenderSystem`
+(`ui/systems.py:1553-1691`) desenha em cima de uma `Surface` cacheada
+(`self._cache_surf`) indexada pela posição da CÂMERA (`tile_ox/tile_oy`),
+não pelo conteúdo do tile — só reconstrói (total ou parcialmente, via
+scroll) quando a câmera cruza fronteira de tile entre frames. Uma mutação
+direta de `Tilemap.tile_matrix` (como o swap do portão,
+`_handle_msg_arena_gate_open`) não passa por nenhum desses gatilhos, então
+o cache antigo continua sendo reblitado até o jogador andar o bastante
+pra forçar rebuild — "sair da tela e voltar" é exatamente isso. Fix:
+`_handle_msg_arena_gate_open` (`client/arena_handlers.py`) chama
+`self._tile_render_system.invalidate_cache()` logo após o swap — mesmo
+gatilho já usado por toda troca de mapa (`game.py`) e pelo God Mode
+(`ui/god_mode.py`), só nunca tinha sido propagado pra esta mutação nova.
+
+**Causa raiz 2 — MESMA classe de bug do §34.34.1, em 4 buffers a mais**:
+investigação encontrou que `has_pending` (`server/session.py::_on_tick`)
+também não olhava `_party_state_events_this_tick`
+(`server/party_processor.py`, populado por `respond_party_invite` —
+exatamente o sintoma reportado), nem `_duel_end_events_this_tick`
+(`server/duel_processor.py`), `_trade_cancellations_this_tick`
+(`server/trade_processor.py`), nem `_skill_position_corrections`
+(`server/world_server.py`, Interceptar etc.) — todos os 4 são consumidos
+em `_dispatch_tick_deltas` mas nenhum tinha entrada própria em
+`has_pending`, sujeitos ao mesmo "preso até atividade alheia" já corrigido
+pra arena. Corrigidos os 4 de uma vez (mesmo commit), não só o de grupo.
+
+**Validado**: `tests/test_session.py::TestPartyDispatchSemMovimento` (novo,
+mesmo padrão de `TestArenaDispatchSemMovimento` — chama
+`respond_party_invite` direto, nunca o `_tick()` inteiro) — confirmado por
+reversão controlada (`git stash`): falha sem o fix, passa com ele. Suíte
+completa 394/394, rodada 3x.
+
+**Não validado**: sessão manual — portão abre visualmente na hora (sem
+precisar sair/voltar da tela); HUD de grupo aparece/atualiza no instante
+do aceite, sem precisar de movimento. Duelo/trade/Interceptar (os outros 3
+buffers corrigidos) não foram especificamente re-testados manualmente
+neste ciclo — mesma causa raiz, mesma classe de fix, risco baixo, mas
+vale confirmar se o usuário notar algo parecido nesses fluxos.
+
 ---
 
 ### §34.35 — NPCs de serviço (mercador/ferreiro/treinador/dador-de-missão) ganham HP + combate genérico — Fase 1 (21/07/2026)

@@ -98,6 +98,38 @@ Atualizar os arquivos de arquitetura relevantes:
   NUNCA pegar "o primeiro" `Tilemap` do world — usar o bundle via
   `get_entity_map(eid)`.
 
+### Atualização coesa ao adicionar sistema novo (22/07/2026 — feedback recorrente do usuário)
+- **Nunca** deixar uma atualização acontecer "de carona" em outra ação sem
+  relação direta (ex: HUD de grupo só atualizava quando o player se movia;
+  tile de portão de arena só re-renderizava quando a câmera cruzava
+  fronteira de tile ao andar) — se a causa de uma atualização de tela/estado
+  não é a ação que a gerou, é sintoma desta classe de bug.
+- Toda vez que um sistema/evento/mensagem novo for adicionado, **enumerar
+  explicitamente** todos os componentes, sistemas, entidades e elementos de
+  UI afetados por ele e garantir que cada um propague na hora certa — não
+  assumir que "vai atualizar em algum tick futuro" é aceitável.
+- Casos já resolvidos, ambos a mesma causa raiz (dois lados diferentes do
+  cliente/servidor):
+  - **Servidor**: `SessionManager._on_tick`'s `has_pending`
+    (`server/session.py`) só despacha pacotes se algum buffer específico
+    tiver conteúdo — qualquer `_..._this_tick`/evento novo que não entrar
+    nessa lista fica PRESO até atividade alheia (movimento, combate, etc.)
+    destravar por acaso. Já aconteceu com arena (§34.34.1) E com grupo/
+    duelo/trade/correção de posição de skill (mesmo dia, mesmo padrão —
+    ver ARQUITETURA_ONLINE.md). Todo buffer novo consumido em
+    `_dispatch_tick_deltas` tem que entrar em `has_pending` no MESMO commit.
+  - **Cliente**: `TileRenderSystem` (`ui/systems.py`) desenha em cima de uma
+    Surface em cache indexada pela posição da CÂMERA, não pelo conteúdo do
+    tile — qualquer mutação direta de `Tilemap.tile_matrix` fora do fluxo
+    normal de troca de mapa precisa chamar
+    `GameEngine._tile_render_system.invalidate_cache()` explicitamente, ou
+    o visual só se autocorrige quando o jogador anda o bastante pra cruzar
+    fronteira de tile.
+- Se não estiver óbvio QUANDO uma atualização nova deve disparar (a cada
+  tick? só na ação que a causou? em resposta a outro evento?), **perguntar
+  ao usuário antes de implementar** em vez de adivinhar — mesma régua de
+  `feedback_ask_before_deciding` (memória).
+
 ### Protocolo
 - Todo pacote tem `type` (MsgType), `p` (payload), `seq` (int), `ts` (ms epoch)
 - Novos tipos de mensagem: adicionar em `MsgType` + documentar payload em `shared/messages.py`

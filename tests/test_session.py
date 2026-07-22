@@ -847,6 +847,46 @@ class TestArenaDispatchSemMovimento(unittest.IsolatedAsyncioTestCase):
             "de qualquer outra atividade no tick")
 
 
+class TestPartyDispatchSemMovimento(unittest.IsolatedAsyncioTestCase):
+    """Bug real relatado pelo usuário 22/07/2026: HUD de grupo (slots no
+    canto superior esquerdo) só atualizava quando algum player se movia
+    depois de aceitar um convite. Mesma classe de bug já corrigida pra
+    arena (§34.34.1/§34.34.2, ARQUITETURA_ONLINE.md) — `has_pending`
+    (server/session.py::_on_tick) não olhava `_party_state_events_this_tick`
+    (nem `_duel_end_events_this_tick`/`_trade_cancellations_this_tick`/
+    `_skill_position_corrections`, mesmo problema, mesmo fix)."""
+
+    async def asyncSetUp(self):
+        self.ws_server, self.mgr = make_session_manager()
+
+    async def test_party_state_chega_ao_aceitar_convite_sem_ninguem_se_mover(self):
+        sa, fw_a = await fake_login(self.mgr, "pdsm_a", "pdsmusera", 10, 10)
+        sb, fw_b = await fake_login(self.mgr, "pdsm_b", "pdsmuserb", 12, 10)
+
+        self.assertIsNone(self.ws_server.request_party_invite(sa.entity_id, sb.entity_id))
+        for fw in (fw_a, fw_b):
+            fw.sent.clear()
+
+        # Só o aceite, direto — NUNCA o _tick() inteiro (mesma razão do
+        # helper de arena: rodar o mundo todo pode mascarar o bug com
+        # atividade alheia de spawn zone/regen).
+        self.ws_server.respond_party_invite(sb.entity_id, accept=True)
+        for attr in ("_skill_results_this_tick", "_skill_effects_this_tick",
+                     "_pending_loot_notifications", "_pending_stats_updates",
+                     "_expired_corpses_this_tick", "_player_hp_broadcasts_this_tick",
+                     "_skill_levels_broadcasts_this_tick", "_quest_update_broadcasts_this_tick",
+                     "_pending_sound_events"):
+            getattr(self.ws_server, attr).clear()
+        self.mgr._on_tick(self.ws_server.tick_count, {})
+        await asyncio.sleep(0)
+
+        for fw in (fw_a, fw_b):
+            found = get_msgs_of_type(fw, MsgType.PARTY_STATE)
+            self.assertEqual(len(found), 1,
+                "PARTY_STATE deveria chegar no mesmo tick do aceite, sem "
+                "depender de qualquer outra atividade no tick")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Runner
 # ─────────────────────────────────────────────────────────────────────────────

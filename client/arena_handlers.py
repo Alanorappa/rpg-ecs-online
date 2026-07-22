@@ -118,7 +118,18 @@ class ArenaHandlers:
         tile aplicado no servidor (server/match_processor.py::
         _tick_arena_pending), pra este cliente parar de ver/colidir com o
         portão fechado. Mandado a cada um dos 4, inclusive quem aceitar
-        DEPOIS do portão já ter aberto (ver request_arena_accept)."""
+        DEPOIS do portão já ter aberto (ver request_arena_accept).
+
+        `TileRenderSystem` (ui/systems.py) desenha em cima de uma Surface
+        em cache indexada pela posição da CÂMERA, não pelo conteúdo do
+        tile — sem invalidar, o cache só se autocorrige quando o jogador
+        anda o bastante pra cruzar fronteira de tile (ex.: sair da tela e
+        voltar), nunca em reação a uma mutação direta de `tile_matrix`
+        como esta (bug real relatado pelo usuário 22/07/2026: portão
+        continuava visualmente fechado até isso acontecer, mesmo com a
+        colisão já liberada). `invalidate_cache()` força reconstrução no
+        próximo frame — mesmo gatilho já usado por toda troca de mapa
+        (game.py) e pelo God Mode (ui/god_mode.py)."""
         from engine.components import Tilemap
         from engine.tileset import STONE_FLOOR
         from shared.constants import ARENA_GATE_TILES
@@ -128,6 +139,7 @@ class ArenaHandlers:
         for gx, gy in ARENA_GATE_TILES:
             if 0 <= gy < len(tilemap_comp.tile_matrix) and 0 <= gx < len(tilemap_comp.tile_matrix[gy]):
                 tilemap_comp.tile_matrix[gy][gx] = STONE_FLOOR
+        self._tile_render_system.invalidate_cache()
 
     def _handle_msg_arena_match_start(self, payload: dict) -> None:
         from ui.floating_text import WARN
