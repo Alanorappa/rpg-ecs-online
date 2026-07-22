@@ -5644,6 +5644,57 @@ antigo). Suíte completa 386/386, rodada 3x.
 **Não validado**: sessão manual — treinador/mercador voltando pro posto
 exato depois de brigar com mob.
 
+### §34.35.5 — Projétil de mob/NPC ranged usa o MESMO visual do jogador (21/07/2026)
+
+Pedido do usuário ("pra finalizar esse tema"): projétil do NPC arqueiro
+e de mob ranged igual ao do arqueiro JOGADOR; idem pro projétil do
+mago.
+
+**Antes**: projétil de mob era uma entidade `Projectile` primitiva —
+flecha = linha reta de 4px de largura orientada pela direção FIXA do
+spawn, caster = círculo chapado de 4px; sem rastro, sem rotação por
+movimento, sem sprite. O jogador usa `PlayerProjectile`
+(`ui/spell_system.py::PlayerProjectileSystem`): flecha com rastro
+desbotado de 7 pontos + linha de 20px rotacionada pelo movimento real;
+Bola de Fogo é spritesheet animado (10 frames) rotacionado.
+
+**Fix (100% cliente)**: `_spawn_mob_projectile`
+(`client/remote_entity_handlers.py`) deixa de criar `Projectile` e cria
+um `PlayerProjectile` cosmético — mesmo precedente das flechas de
+espectador (`_spawn_bystander_projectile`), com um sentinela NOVO
+`target_server_id = -3` em `_on_hit`: totalmente SILENCIOSO (o -2 do
+espectador toca som de impacto; aqui os sons já são dirigidos por
+`NpcSounds` — disparo no nascimento do projétil, impacto no
+COMBAT_RESULT — tocar no projétil dobraria tudo). Mapeamento:
+- `is_arrow=True` → `spell_id="arrow"`, 700px/s, cor (101,67,33) —
+  IDÊNTICO à flecha do arqueiro jogador (rastro + rotação).
+- Atacante `Mage`/`Mago` (via `EntityIdentity` do espelho — nunca
+  `AIControlled`, removido do espelho) → `spell_id="bola_de_fogo"`,
+  300px/s — IDÊNTICO à Bola de Fogo do mago jogador (sprite animado; o
+  timer `_fireball_anim` já avança genericamente pra qualquer
+  PlayerProjectile com esse spell_id, zero mudança lá).
+- Caster não-mago (Warlock/Vampiro — projétil roxo) ou atacante fora do
+  AOI → `spell_id="npc_bolt"` (círculo mágico genérico do pipeline do
+  player, raio 6), mantendo cor/velocidade do servidor — preserva a
+  identidade visual roxa do Vampiro (decisão conservadora minha,
+  sinalizada ao usuário — mudar depois é trocar 1 branch).
+
+O projétil cosmético NÃO é registrado em `_remote_mob_projectiles` de
+propósito: ciclo de vida é do `PlayerProjectileSystem` (remove na
+colisão visual/fly-out) — registrar faria o despawn do servidor (que
+simula o próprio projétil a 380px/s) matar a bola de fogo (300px/s) no
+meio do voo.
+
+**Validado**: `tests/test_client_ui.py` (3 — flecha vira
+PlayerProjectile spell_id="arrow" 700px/s cor do player; Mago (NPC)
+vira "bola_de_fogo" 300px/s; caster não-mago vira "npc_bolt" mantendo
+cor/velocidade do servidor). Suíte completa 388/388, rodada 3x.
+
+**Não validado**: sessão manual — flecha com rastro igual à do player
+quando o treinador arqueiro atira; bola de fogo animada no lugar do
+círculo laranja pra caster Mage; goblin→player com o visual novo
+também (mesma rota de spawn).
+
 ---
 
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata

@@ -910,24 +910,53 @@ class RemoteEntityHandlers:
 
         color    = tuple(data.get("color",    (220, 160, 60)))
         is_arrow = bool(data.get("is_arrow",  True))
-        dir_x    = float(data.get("dir_x",    1.0))
-        dir_y    = float(data.get("dir_y",    0.0))
         speed    = float(data.get("speed",    380.0))
+
+        # Visual IGUAL ao do jogador (pedido do usuário 21/07/2026): em vez
+        # da entidade Projectile primitiva (linha/círculo de 4px, sem rastro),
+        # cria um PlayerProjectile — o MESMO pipeline visual do player
+        # (rastro desbotado + rotação por movimento na flecha; spritesheet
+        # animado na bola de fogo; círculo mágico genérico no resto).
+        # target_server_id = -3: cosmético TOTALMENTE silencioso (ver
+        # ui/spell_system.py::_on_hit) — os sons desses ataques são
+        # dirigidos por NpcSounds (disparo abaixo, impacto no
+        # COMBAT_RESULT), nunca pelo projétil.
+        from engine.components import PlayerProjectile as _PPmob, EntityIdentity as _EIProj
+        _atk_ident = None
+        _atk_mirror = self._remote_mobs.get(data.get("attacker_seid", -1))
+        if _atk_mirror is not None:
+            _atk_ident = self.world.get_component(_atk_mirror, _EIProj)
+        _atk_cls = _atk_ident.entity_class if _atk_ident else ""
+
+        _tgt_pos_proj = self.world.get_component(target_local, _PP)
+        _tlx = _tgt_pos_proj.x if _tgt_pos_proj else px
+        _tly = _tgt_pos_proj.y if _tgt_pos_proj else py
+
+        if is_arrow:
+            # Flecha idêntica à do arqueiro jogador (cor/velocidade/rastro).
+            _spell_id, _speed, _color, _dtype = "arrow", 700.0, (101, 67, 33), "physical"
+        elif _atk_cls in ("Mage", "Mago"):
+            # Bola de fogo idêntica à do mago jogador (sprite animado).
+            _spell_id, _speed, _color, _dtype = "bola_de_fogo", 300.0, (255, 120, 20), "magical"
+        else:
+            # Caster não-mago (ex: Warlock/Vampiro — projétil roxo) ou
+            # atacante fora do AOI local: círculo mágico genérico do
+            # pipeline do player, mantendo cor/velocidade do servidor.
+            _spell_id, _speed, _color, _dtype = "npc_bolt", speed, color, "magical"
 
         local_eid = self.world.create_entity()
         self.world.add_component(local_eid, _PP(x=px, y=py, prev_x=px, prev_y=py))
-        self.world.add_component(local_eid, _ProjC(
-            attacker_id  = -1,          # dano já processado no servidor
-            target_id    = target_local,
-            damage_type  = "physical",  # nunca dispara deal_damage (attacker=-1 → sem CombatStats)
-            speed        = speed,
-            color        = color,
-            is_arrow     = is_arrow,
-            dir_x        = dir_x,
-            dir_y        = dir_y,
+        self.world.add_component(local_eid, _PPmob(
+            spell_id=_spell_id, attacker_id=-1, target_id=target_local,
+            speed=_speed, dmg_weapon_pct=0.0, dmg_sp_coeff=0.0, color=_color,
+            damage_type=_dtype, guaranteed_hit=True,
+            target_last_x=_tlx, target_last_y=_tly, target_server_id=-3,
         ))
-        # Mapeia server_eid → local para que ENTITY_DESPAWN possa remover
-        self._remote_mob_projectiles[server_proj_eid] = local_eid
+        # NÃO registra em _remote_mob_projectiles de propósito: o ciclo de
+        # vida agora é do PlayerProjectileSystem (remove na colisão visual /
+        # fly-out), igual às flechas de espectador. Registrar faria o
+        # despawn do servidor (que simula o próprio projétil a 380px/s)
+        # matar a bola de fogo (300px/s) no meio do voo.
 
         # Som de DISPARO no momento em que o projétil nasce (21/07/2026) —
         # igual ao arqueiro jogador, que toca arrow_release quando a flecha

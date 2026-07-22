@@ -889,15 +889,21 @@ def test_spawn_remote_mob_de_trainer_anexa_trainer_com_class_id():
     assert trainer is not None and trainer.class_id == "mago"
 
 
+def _find_cosmetic_projectile(fx):
+    """Único PlayerProjectile cosmético (target_server_id=-3) no world."""
+    from engine.components import PlayerProjectile
+    projs = [pp for _, pp in fx.world.get_entities_with(PlayerProjectile)
+             if pp.target_server_id == -3]
+    return projs[0] if projs else None
+
+
 def test_spawn_mob_projectile_com_alvo_sendo_mob_remoto():
-    """Bug real relatado pelo usuário 21/07/2026: NPC de serviço ranged
-    (ex: "Arqueiro (NPC)") atirando num mob hostil causava dano
-    corretamente, mas nenhuma flecha visual aparecia — _spawn_mob_projectile
-    só resolvia target_seid contra o player local ou players remotos,
-    nunca contra self._remote_mobs (onde mobs E NPCs remotos vivem),
-    então qualquer tiro mirando um NÃO-player caía no "else: return" e
-    era descartado."""
-    from engine.components import Projectile
+    """Bug real relatado pelo usuário 21/07/2026: tiro de mob/NPC mirando
+    um NÃO-player era descartado (target_seid só resolvia player). Além do
+    fix de resolução, o projétil agora nasce como PlayerProjectile — o
+    MESMO visual do arqueiro jogador (rastro + rotação por movimento),
+    silencioso (target_server_id=-3; sons vêm de NpcSounds em outros
+    pontos), pedido do usuário 21/07/2026."""
     fx = _make_net_fixture()
     fx._remote_mob_projectiles = {}
     fx._handle_msg_entity_spawn({
@@ -913,10 +919,62 @@ def test_spawn_mob_projectile_com_alvo_sendo_mob_remoto():
         "dir_x": 1.0, "dir_y": 0.0, "speed": 380.0,
     })
 
-    assert 777 in fx._remote_mob_projectiles, "projétil deveria ser criado quando o alvo é um mob remoto"
-    proj_local_eid = fx._remote_mob_projectiles[777]
-    proj = fx.world.get_component(proj_local_eid, Projectile)
-    assert proj is not None and proj.target_id == mob_local_eid
+    proj = _find_cosmetic_projectile(fx)
+    assert proj is not None, "projétil deveria ser criado quando o alvo é um mob remoto"
+    assert proj.target_id == mob_local_eid
+    assert proj.spell_id == "arrow", "flecha de mob/NPC deve usar o visual da flecha do player"
+    assert proj.speed == 700.0
+    assert proj.color == (101, 67, 33)
+
+
+def test_projetil_de_mago_npc_usa_visual_de_bola_de_fogo():
+    """Caster Mage/Mago: projétil idêntico à Bola de Fogo do mago jogador
+    (spritesheet animado, keyed por spell_id="bola_de_fogo")."""
+    fx = _make_net_fixture()
+    fx._remote_mob_projectiles = {}
+    fx._handle_msg_entity_spawn({
+        "eid": 70, "kind": "enemy", "tx": 5, "ty": 5,
+        "race": "Mago (NPC)", "entity_class": "Mage", "is_ranged": True,
+        "hp": 40, "hp_max": 40, "level": 1, "faction": "civis",
+        "name": "Arcanista", "profession": "Treinador",
+    })
+    fx._handle_msg_entity_spawn({
+        "eid": 71, "kind": "enemy", "tx": 7, "ty": 5,
+        "race": "Zumbi", "entity_class": "Warrior",
+        "hp": 30, "hp_max": 30, "level": 1, "faction": "monstros_hostis",
+    })
+    fx._spawn_mob_projectile(801, {
+        "x": 160.0, "y": 160.0, "attacker_seid": 70, "target_seid": 71,
+        "color": [255, 80, 0], "is_arrow": False,
+        "dir_x": 1.0, "dir_y": 0.0, "speed": 380.0,
+    })
+    proj = _find_cosmetic_projectile(fx)
+    assert proj is not None
+    assert proj.spell_id == "bola_de_fogo"
+    assert proj.speed == 300.0
+
+
+def test_projetil_de_caster_nao_mago_mantem_cor_do_servidor():
+    """Warlock/atacante fora do AOI: círculo mágico genérico do pipeline
+    do player, mantendo cor/velocidade do servidor (identidade visual do
+    Vampiro roxo preservada)."""
+    fx = _make_net_fixture()
+    fx._remote_mob_projectiles = {}
+    fx._handle_msg_entity_spawn({
+        "eid": 72, "kind": "enemy", "tx": 7, "ty": 5,
+        "race": "Zumbi", "entity_class": "Warrior",
+        "hp": 30, "hp_max": 30, "level": 1, "faction": "monstros_hostis",
+    })
+    fx._spawn_mob_projectile(802, {
+        "x": 160.0, "y": 160.0, "attacker_seid": -1, "target_seid": 72,
+        "color": [160, 0, 220], "is_arrow": False,
+        "dir_x": 1.0, "dir_y": 0.0, "speed": 380.0,
+    })
+    proj = _find_cosmetic_projectile(fx)
+    assert proj is not None
+    assert proj.spell_id == "npc_bolt"
+    assert proj.color == (160, 0, 220)
+    assert proj.speed == 380.0
 
 
 def _record_npc_sound_calls():

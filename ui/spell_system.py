@@ -1270,6 +1270,15 @@ class PlayerProjectileSystem(System):
             else:
                 SOUNDS.play_random(["arrow_impact_1", "arrow_impact_2"], channel_group=(12, 13))
 
+        # target_server_id == -3: projétil cosmético TOTALMENTE silencioso —
+        # mob/NPC ranged (client/remote_entity_handlers.py::_spawn_mob_projectile,
+        # 21/07/2026). Nenhum som aqui de propósito: os sons desses ataques já
+        # são dirigidos por NpcSounds em outros pontos (disparo quando o
+        # projétil nasce, impacto na chegada do COMBAT_RESULT via
+        # _play_nonplayer_attack_impact) — tocar aqui também dobraria tudo.
+        if proj.target_server_id == -3:
+            return
+
         # target_server_id == -2: projétil cosmético (espectador) — apenas som, sem dano/HIT_CS
         if proj.target_server_id == -2:
             if proj.damage_type == "physical":
