@@ -6,15 +6,15 @@ Uso:
 
     SOUNDS.play("skill_interceptar")              # SFX pelo nome
     SOUNDS.play_random(["hit_1","hit_2","hit_3"]) # SFX aleatório da lista
-    SOUNDS.play_mob_sounds(comp, "aggro")         # Som de mob pelo componente MobSounds
+    SOUNDS.play_mob_sounds(comp, "aggro")         # Som de mob pelo componente NpcSounds
     SOUNDS.play_mob_sounds_at(comp, "death", sx, sy, lx, ly)  # Posicional (com atenuação)
     SOUNDS.play_ambient("map_surface")            # Loop de ambiente
     SOUNDS.set_context("cave")                    # Ativa eco dinâmico de caverna
     SOUNDS.update(dt)                             # Chamado a cada frame
 
-Sons de mob — única fonte de verdade: mob_definitions.py → componente MobSounds
+Sons de mob — única fonte de verdade: mob_definitions.py → componente NpcSounds
     Cada mob define suas chaves de som em mob_definitions.py["sounds"].
-    Acesso sempre via componente: SOUNDS.play_mob_sounds(mob_entity.MobSounds, evento)
+    Acesso sempre via componente: SOUNDS.play_mob_sounds(mob_entity.NpcSounds, evento)
     Para adicionar sons a um mob:
         1. Crie o .ogg em assets/sounds/sfx/   (ex: mob_orc_aggro.ogg)
         2. Adicione a chave em mob_definitions.py["sounds"]["aggro"] = "mob_orc_aggro"
@@ -267,7 +267,7 @@ class SoundManager:
     def play_mob_sounds_at(self, mob_sounds_comp, event: str,
                            sx: float, sy: float, lx: float, ly: float,
                            base: float = 1.0, dedup_key: str = "") -> None:
-        """Toca evento de mob (por componente MobSounds) com atenuação de distância.
+        """Toca evento de mob (por componente NpcSounds) com atenuação de distância.
 
         Usa o campo correto do componente — idêntico ao offline play_mob_sounds()
         mas com volume/pan calculados pela posição. Nada toca se fora do AOI.
@@ -431,7 +431,7 @@ class SoundManager:
 
     # ------------------------------------------------------------------
     # DEPRECATED — não usar em código novo
-    # Use play_mob_sounds(comp, event) que lê do componente MobSounds.
+    # Use play_mob_sounds(comp, event) que lê do componente NpcSounds.
     # Mantido apenas para compatibilidade com código legado eventual.
     # ------------------------------------------------------------------
     def play_mob_event(self, mob_name: str, event: str, volume: float = 1.0,
@@ -439,7 +439,7 @@ class SoundManager:
         """DEPRECATED. Usa convenção de nome para achar o som (quebrável).
 
         Prefira: SOUNDS.play_mob_sounds(mob_sounds_comp, event, volume)
-        que lê do componente MobSounds diretamente e é sempre correto.
+        que lê do componente NpcSounds diretamente e é sempre correto.
         """
         if dedup_race:
             key = (event, dedup_race.lower())
@@ -469,10 +469,10 @@ class SoundManager:
     def play_mob_sounds(self, mob_sounds_comp, event: str,
                         volume: float = 1.0, dedup_key: str = "",
                         pan: float = 0.0) -> None:
-        """Toca o som de um mob pelo componente MobSounds e o nome do evento.
+        """Toca o som de um mob pelo componente NpcSounds e o nome do evento.
 
         Args:
-            mob_sounds_comp: componente MobSounds da entidade (pode ser None).
+            mob_sounds_comp: componente NpcSounds da entidade (pode ser None).
             event:           "aggro", "death", "crit",
                              "attack_melee", "attack_ranged" ou "attack_magic".
             dedup_key:       Se não vazio, apenas 1 som desta (event, dedup_key)

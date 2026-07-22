@@ -1187,15 +1187,21 @@ class PendingDeath:
     killer_entity_id: int = -1
 
 
-class MobSounds:
-    """Sons explícitos de um mob. Cada campo é a chave base do arquivo OGG
-    (sem extensão). Variações _2/_3/_4 são tentadas automaticamente.
-    Campo vazio → sem som para aquele evento."""
+class NpcSounds:
+    """Sons explícitos de uma entidade de combate não-jogador (mob OU NPC
+    de serviço — renomeado de MobSounds em 21/07/2026, decisão do usuário:
+    "todo mob é um NPC, mas nem todo NPC é um mob"). Cada campo é a chave
+    base do arquivo OGG (sem extensão). Variações _2/_3/_4 são tentadas
+    automaticamente. Campo vazio → sem som para aquele evento.
+
+    Fonte única de dados: content/mob_definitions.py::MOB_TABLE["sounds"].
+    """
     def __init__(self,
                  aggro: str = "", death: str = "",
                  attack_melee: str = "", attack_ranged: str = "",
                  attack_magic: str = "", crit: str = "",
-                 emote_attack: str = "", emote_get_crit: str = ""):
+                 emote_attack: str = "", emote_get_crit: str = "",
+                 attack_impact: str = ""):
         self.aggro          = aggro
         self.death          = death
         self.attack_melee   = attack_melee
@@ -1204,6 +1210,12 @@ class MobSounds:
         self.crit           = crit
         self.emote_attack   = emote_attack
         self.emote_get_crit = emote_get_crit
+        # Som do PROJÉTIL/golpe deste atacante ACERTANDO o alvo (ex:
+        # "arrow_impact" do arqueiro NPC — mesmo som do arqueiro jogador).
+        # Novo em 21/07/2026: nenhum mob tinha som de impacto próprio; o
+        # combate com alvo mob tocava "hit_normal" fixo (ver
+        # client/remote_entity_handlers.py::_apply_combat_result).
+        self.attack_impact  = attack_impact
 
 
 class ConsumableBar:

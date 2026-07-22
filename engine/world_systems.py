@@ -36,7 +36,7 @@ from engine.components import Position, Renderable, PlayerControlled, Camera, Co
                        Projectile, Corpse, Inventory, EnemyTier, Equipment, Wallet, Merchant, \
                        CharacterStats, FogOfWar, Visible, ActiveEffect, StatusEffects, \
                        EnemyAbilities, EnemyAbilitySlot, EntityIdentity, \
-                       MobSounds, PendingDeath, XPReward, SpawnZoneOwner, SpawnZone, \
+                       NpcSounds, PendingDeath, XPReward, SpawnZoneOwner, SpawnZone, \
                        PlayerSkills, NPC, ActiveRegen, ConsumableBar, \
                        AoeTargeting, RemoteControlled, GhostState, MapLocation, Combatant
 from engine.world import World
@@ -754,7 +754,7 @@ class CombatSystem(System):
         if can_engage(self.world, attacker_id, target_id):
             _ai = self.world.get_component(target_id, AIControlled)
             if _ai and _ai.state == "IDLE":
-                _ms_hit = self.world.get_component(target_id, MobSounds)
+                _ms_hit = self.world.get_component(target_id, NpcSounds)
                 SOUNDS.play_mob_sounds(_ms_hit, "aggro", dedup_key=f"dmg_{target_id}")
                 _ai.state              = "AGGRO_DELAY"
                 _ai.aggro_delay        = 0.5   # mesmo comportamento do range aggro, mas mais curto
@@ -949,7 +949,7 @@ class CombatSystem(System):
             if target_is_player:
                 SOUNDS.play_emote_get_crit(is_player=True)
             else:
-                _ms_crit = self.world.get_component(target_id, MobSounds)
+                _ms_crit = self.world.get_component(target_id, NpcSounds)
                 SOUNDS.play_mob_sounds(_ms_crit, "crit")
                 SOUNDS.play_emote_get_crit(is_player=False, mob_sounds_comp=_ms_crit)
         if attacker_is_player and not is_ability:
@@ -1035,7 +1035,7 @@ class DeathHandlerSystem(System):
         for entity_id, pd in self.world.get_entities_with(PendingDeath):
             # Entidades que morrem são inimigos (jogador nunca recebe PendingDeath)
             ident     = self.world.get_component(entity_id, EntityIdentity)
-            _ms_death = self.world.get_component(entity_id, MobSounds)
+            _ms_death = self.world.get_component(entity_id, NpcSounds)
             SOUNDS.play_mob_sounds(_ms_death, "death", dedup_key=str(entity_id))
 
             xp_comp = self.world.get_component(entity_id, XPReward)
@@ -1974,7 +1974,7 @@ class EnemyAISystem(System):
                 enemy_combat_stats.spell_power > 0 or enemy_combat_stats.base_magical_damage > 0
             ) else "physical"
 
-            _ms_atk = self.world.get_component(enemy_id, MobSounds)
+            _ms_atk = self.world.get_component(enemy_id, NpcSounds)
             _caster_classes = {"Mage", "Mago", "Warlock", "Bruxo"}
             if ai_control.entity_class in _caster_classes:
                 _atk_event = "attack_magic"
@@ -2222,7 +2222,7 @@ class EnemyAISystem(System):
                     )
                 )
                 if _has_los:
-                    _ms_aggro = self.world.get_component(enemy_id, MobSounds)
+                    _ms_aggro = self.world.get_component(enemy_id, NpcSounds)
                     SOUNDS.play_mob_sounds(_ms_aggro, "aggro", dedup_key=str(enemy_id))
                     ai_control.state       = "AGGRO_DELAY"
                     ai_control.aggro_delay = 1.0

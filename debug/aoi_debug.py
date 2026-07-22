@@ -6,7 +6,7 @@ Log salvo em  logs/aoi_debug.log  (criado automaticamente).
 
 Investiga: mob causa dano real mas não existe localmente em _remote_mobs —
 sintoma observado: mob "invisível" + som de fallback (hit_normal do player)
-em vez do som MobSounds do mob (ex: "bite"/mordida).
+em vez do som NpcSounds do mob (ex: "bite"/mordida).
 
 ────────────────────────────────────────────────────────────
 Tipos de evento:

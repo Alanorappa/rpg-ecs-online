@@ -2968,7 +2968,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 _ident_ag = self.world.get_component(_eid_ag, _EIdent)
                 self._pending_sound_events.append({
                     "kind":     "mob_aggro",
-                    "mob_eid":  _eid_ag,                          # server eid → cliente busca MobSounds
+                    "mob_eid":  _eid_ag,                          # server eid → cliente busca NpcSounds
                     "mob_name": _ident_ag.name if _ident_ag else "",
                     "tx":       _tm_ag.current_tile_x,
                     "ty":       _tm_ag.current_tile_y,

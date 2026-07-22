@@ -22,7 +22,7 @@ from engine.components import (
     Equipment, Enemy, AIControlled, TileMovement, StatusEffects, Camera,
     SpellCast, Channeling, IceBlockEffect, FireShieldEffect, PirofagiaAiming,
     PlayerProjectile, AoeTargeting, PlayerSkills,
-    PendingDeath, PlayerAutoMove, MobSounds,
+    PendingDeath, PlayerAutoMove, NpcSounds,
 )
 from engine.tileset import TILE_SIZE
 from engine.utils import chebyshev
@@ -86,7 +86,7 @@ def _apply_magic_damage(attacker_id: int, target_id: int, dmg: int, world: World
     _ai = world.get_component(target_id, AIControlled)
     from engine.faction_system import can_engage as _can_engage_magic_local
     if _ai and _ai.state == "IDLE" and _can_engage_magic_local(world, attacker_id, target_id):
-        _ms = world.get_component(target_id, MobSounds)
+        _ms = world.get_component(target_id, NpcSounds)
         SOUNDS.play_mob_sounds(_ms, "aggro", dedup_key=f"dmg_{target_id}")
         _ai.state             = "AGGRO_DELAY"
         _ai.aggro_delay       = 0.5

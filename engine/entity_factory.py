@@ -7,7 +7,7 @@ from engine.components import Position, Renderable, PlayerControlled, Camera, Co
                        CharacterStats, PermanentStats, XPReward, EnemyTier, \
                        Corpse, Inventory, Equipment, PlayerSkills, Wallet, TalentTree, Merchant, \
                        SkillLevels, \
-                       SpawnZone, EntityIdentity, StatusEffects, ConsumableBar, MobSounds, FogOfWar, \
+                       SpawnZone, EntityIdentity, StatusEffects, ConsumableBar, NpcSounds, FogOfWar, \
                        EnemyAbilities, EnemyAbilitySlot, QuestLog, QuestGiver, NPC, Blacksmith, \
                        LearnedRecipes, Trainer, Faction, Combatant
 from ui.ui_components import UIState, ShopUIState, LootUIState, DragState, TradeUIState
@@ -372,7 +372,7 @@ def _build_combat_entity(world: World, tile_x: int, tile_y: int,
 
     # Sons específicos do mob (definidos em mob_definitions.py)
     _snd = mob_def.get("sounds", {}) if mob_def else {}
-    world.add_component(enemy_entity, MobSounds(
+    world.add_component(enemy_entity, NpcSounds(
         aggro          = _snd.get("aggro",          ""),
         death          = _snd.get("death",          ""),
         attack_melee   = _snd.get("attack_melee",   ""),
@@ -381,6 +381,7 @@ def _build_combat_entity(world: World, tile_x: int, tile_y: int,
         crit           = _snd.get("crit",           ""),
         emote_attack   = _snd.get("emote_attack",   ""),
         emote_get_crit = _snd.get("emote_get_crit", ""),
+        attack_impact  = _snd.get("attack_impact",  ""),
     ))
 
     tier_label      = tier.capitalize()
@@ -587,7 +588,7 @@ def create_training_dummy(world: World, tile_x: int, tile_y: int) -> int:
     ))
     world.add_component(eid, EnemyTier(tier="boss"))
     world.add_component(eid, StatusEffects())
-    world.add_component(eid, MobSounds())
+    world.add_component(eid, NpcSounds())
     world.add_component(eid, _TD())
 
     stats = CombatStats(

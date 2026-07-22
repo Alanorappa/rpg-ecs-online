@@ -973,7 +973,7 @@ class NetworkHandlers:
                     self._mob_ghost_pos[eid] = (_meta_d2.last_x, _meta_d2.last_y)
                 # Som de morte posicional antes de remover a entidade
                 try:
-                    from engine.components import Position as _PosD, MobSounds as _MSD
+                    from engine.components import Position as _PosD, NpcSounds as _MSD
                     _pos_d = self.world.get_component(local_eid, _PosD)
                     _snd_d = self.world.get_component(local_eid, _MSD)
                     if _pos_d:
@@ -1188,7 +1188,7 @@ class NetworkHandlers:
                 # Som de morte APENAS para kills reais (não para saída de AOI).
                 if _is_kill:
                     try:
-                        from engine.components import Position as _PosD2, MobSounds as _MSD2
+                        from engine.components import Position as _PosD2, NpcSounds as _MSD2
                         _pos_d2 = self.world.get_component(local_eid, _PosD2)
                         _snd_d2 = self.world.get_component(local_eid, _MSD2)
                         if _pos_d2:
@@ -1752,11 +1752,11 @@ class NetworkHandlers:
         _ev_sy = _ev_ty * _TS_snd + _TS_snd // 2
         _elx, _ely = self._player_world_pos()
         if _ev_kind == "mob_aggro":
-            # Usa MobSounds component se o mob estiver no AOI do cliente
+            # Usa NpcSounds component se o mob estiver no AOI do cliente
             _ev_local = self._remote_mobs.get(_ev_seid)
             _ev_snd   = None
             if _ev_local is not None:
-                from engine.components import MobSounds as _MSev
+                from engine.components import NpcSounds as _MSev
                 _ev_snd = self.world.get_component(_ev_local, _MSev)
             SOUNDS.play_mob_sounds_at(_ev_snd, "aggro",
                                       _ev_sx, _ev_sy, _elx, _ely, base=0.8,

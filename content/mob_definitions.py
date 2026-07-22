@@ -252,11 +252,15 @@ MOB_TABLE: dict[str, dict] = {
     # ── NPCs de serviço (mercador/treinador/ferreiro/dador-de-missão) ─────
     # Molde de combate genérico pra Fase 1 (21/07/2026, pedido do usuário)
     # — HP + auto-attack igual a qualquer mob, SEM uso de skill real do
-    # jogador (isso fica pra uma Fase 2 a discutir depois). Reaproveita
-    # sons já existentes de Goblin/Goblin Guerreiro por categoria —
-    # "Mago (NPC)" fica sem som de auto-attack por ora, mesmo estado de
-    # QUALQUER mob caster já existente no jogo (Vampiro/Dragão também
-    # usam _NO_SOUNDS, não é uma lacuna nova desta leva).
+    # jogador (isso fica pra uma Fase 2 a discutir depois).
+    #
+    # SONS (decisão do usuário 21/07/2026): elementos de combate espelham o
+    # PLAYER da classe, não um monstro — arqueiro dispara com
+    # "arrow_release" e acerta com "arrow_impact" (novo campo
+    # "attack_impact", ver NpcSounds), exatamente os sons do arqueiro
+    # jogador. Aggro/morte/emotes ficam VAZIOS de propósito (silêncio) —
+    # o usuário preenche aqui depois com os arquivos que quiser.
+    # "Mago (NPC)" fica todo silencioso até a Fase 2 (cast de magia real).
     "Guerreiro (NPC)": {
         "race": "Humanoide", "entity_class": "Warrior", "is_ranged": False,
         "color": (150, 150, 160),
@@ -270,15 +274,10 @@ MOB_TABLE: dict[str, dict] = {
         "loot": {},
         "gold_chance": 0.0,
         "xp_given_by_lvl": 16,
+        # attack_melee "hit_normal" = mesmo som genérico de golpe que o
+        # player melee ouve — no melee o som do golpe É o do impacto.
         "sounds": {
-            "aggro":            "mob_goblin_aggro",
-            "death":            "mob_goblin_death",
             "attack_melee":     "hit_normal",
-            "attack_ranged":    None,
-            "attack_magic":     None,
-            "crit":             "hit_crit",
-            "emote_attack":     "mob_goblin_emote_attack",
-            "emote_get_crit":   "mob_goblin_get_crit",
         },
     },
     "Arqueiro (NPC)": {
@@ -294,22 +293,13 @@ MOB_TABLE: dict[str, dict] = {
         "loot": {},
         "gold_chance": 0.0,
         "xp_given_by_lvl": 16,
-        # attack_ranged usa o MESMO som de disparo do arqueiro jogador
-        # ("arrow_release_1"/"_2", client/remote_entity_handlers.py::
-        # _spawn_archer_auto_arrow) em vez do genérico "mob_bow" de
-        # monstro — pedido do usuário 21/07/2026: "som de flecha tem que
-        # seguir o mesmo do player". play_mob_sounds (ui/sound_manager.py)
-        # já tenta as variantes "_1".."_4" sozinho a partir da base
-        # "arrow_release", igual qualquer outro som daqui.
+        # Espelha o arqueiro JOGADOR: "arrow_release" no disparo (tocado
+        # quando o projétil nasce) e "arrow_impact" no acerto — mesmas
+        # bases de som do auto-attack do player (variantes _1/_2 tentadas
+        # automaticamente pelo SoundManager).
         "sounds": {
-            "aggro":            "mob_goblin_aggro",
-            "death":            "mob_goblin_death",
-            "attack_melee":     None,
             "attack_ranged":    "arrow_release",
-            "attack_magic":     None,
-            "crit":             "hit_crit",
-            "emote_attack":     "mob_goblin_emote_attack",
-            "emote_get_crit":   "mob_goblin_get_crit",
+            "attack_impact":    "arrow_impact",
         },
     },
     "Mago (NPC)": {

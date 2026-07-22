@@ -387,6 +387,11 @@ class _NetHandlerFixture(_NH, _REH):
         self._mob_ghost_pos = {}
         self._pending_loot_redirect = {}
 
+    def _player_world_pos(self):
+        # Stub do mixin real (client/save_sync_handlers.py) — usado pelo som
+        # de disparo de projétil (_spawn_mob_projectile).
+        return (0.0, 0.0)
+
 
 def _make_net_fixture():
     from engine.world import World
@@ -912,6 +917,89 @@ def test_spawn_mob_projectile_com_alvo_sendo_mob_remoto():
     proj_local_eid = fx._remote_mob_projectiles[777]
     proj = fx.world.get_component(proj_local_eid, Projectile)
     assert proj is not None and proj.target_id == mob_local_eid
+
+
+def _record_npc_sound_calls():
+    """Monkeypatch de SOUNDS.play_mob_sounds_at que grava (evento, base_key)
+    de cada chamada — restaurar com o retorno (função original)."""
+    from ui.sound_manager import SOUNDS
+    calls = []
+    original = SOUNDS.play_mob_sounds_at
+
+    def recorder(comp, event, *a, **kw):
+        calls.append((event, getattr(comp, event, "") if comp else ""))
+
+    SOUNDS.play_mob_sounds_at = recorder
+    return calls, original
+
+
+def test_som_de_impacto_do_arqueiro_npc_e_arrow_impact():
+    """Decisão do usuário 21/07/2026 (escopo genérico): golpe de atacante
+    NÃO-player contra alvo mob toca o som do PRÓPRIO atacante — ranged usa
+    o campo novo attack_impact ("arrow_impact" no Arqueiro (NPC), mesmo som
+    do arqueiro jogador) em vez do hit_normal fixo de antes."""
+    from ui.sound_manager import SOUNDS
+    fx = _make_net_fixture()
+    fx._handle_msg_entity_spawn({
+        "eid": 60, "kind": "enemy", "tx": 5, "ty": 5,
+        "race": "Arqueiro (NPC)", "entity_class": "Hunter", "is_ranged": True,
+        "hp": 45, "hp_max": 45, "level": 1, "faction": "civis",
+        "name": "Andre", "profession": "Treinador", "class_id": "arqueiro",
+    })
+    calls, original = _record_npc_sound_calls()
+    try:
+        played = fx._play_nonplayer_attack_impact(60, 100.0, 100.0, 0.0, 0.0)
+    finally:
+        SOUNDS.play_mob_sounds_at = original
+    assert played, "atacante NPC ranged com attack_impact configurado deveria tocar som próprio"
+    assert ("attack_impact", "arrow_impact") in calls
+
+
+def test_som_de_disparo_toca_quando_projetil_de_npc_nasce():
+    """Som de disparo ("arrow_release") toca no momento em que o projétil
+    nasce — igual ao arqueiro jogador — quando o alvo NÃO é o player local
+    (mob→player mantém o comportamento antigo, som na chegada do
+    COMBAT_RESULT)."""
+    from ui.sound_manager import SOUNDS
+    fx = _make_net_fixture()
+    fx._remote_mob_projectiles = {}
+    fx._handle_msg_entity_spawn({
+        "eid": 61, "kind": "enemy", "tx": 5, "ty": 5,
+        "race": "Arqueiro (NPC)", "entity_class": "Hunter", "is_ranged": True,
+        "hp": 45, "hp_max": 45, "level": 1, "faction": "civis",
+        "name": "Andre", "profession": "Treinador",
+    })
+    fx._handle_msg_entity_spawn({
+        "eid": 62, "kind": "enemy", "tx": 7, "ty": 5,
+        "race": "Zumbi", "entity_class": "Warrior",
+        "hp": 30, "hp_max": 30, "level": 1, "faction": "monstros_hostis",
+    })
+    calls, original = _record_npc_sound_calls()
+    try:
+        fx._spawn_mob_projectile(800, {
+            "x": 160.0, "y": 160.0, "attacker_seid": 61, "target_seid": 62,
+            "color": [200, 160, 60], "is_arrow": True,
+            "dir_x": 1.0, "dir_y": 0.0, "speed": 380.0,
+        })
+    finally:
+        SOUNDS.play_mob_sounds_at = original
+    assert ("attack_ranged", "arrow_release") in calls, \
+        "disparo do NPC ranged deveria tocar o som de attack_ranged (arrow_release) ao nascer o projétil"
+
+
+def test_atacante_melee_sem_config_cai_no_fallback_hit_normal():
+    """Regressão: atacante não-player SEM som configurado (ex: Guarda Real,
+    raça fora de MOB_TABLE) retorna False — o caller mantém o hit_normal
+    genérico de antes, nada muda pra quem já funcionava."""
+    fx = _make_net_fixture()
+    fx._handle_msg_entity_spawn({
+        "eid": 63, "kind": "enemy", "tx": 5, "ty": 5,
+        "race": "Humanoide", "entity_class": "Warrior",
+        "hp": 100, "hp_max": 100, "level": 10, "faction": "guardas_vila",
+        "name": "Guarda Real",
+    })
+    played = fx._play_nonplayer_attack_impact(63, 100.0, 100.0, 0.0, 0.0)
+    assert not played, "sem som configurado deve cair no fallback antigo (hit_normal do caller)"
 
 
 def test_spawn_remote_mob_normal_nao_ganha_componente_de_npc_servico():

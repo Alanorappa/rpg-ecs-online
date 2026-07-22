@@ -2174,10 +2174,21 @@ class SessionManager:
 
         # ── Spawns novos (entidades criadas neste tick) ───────────────
         for sp in deltas.get("spawned", []):
-            # Projéteis de mob: sempre enviar ao dono do alvo, sem AOI check.
-            # São transientes — não entram em known_eids (sem despawn assimétrico).
+            # Projéteis de mob: entrega ao dono do alvo (sempre, sem AOI
+            # check — garante que quem está sendo atirado veja o projétil
+            # mesmo raspando a borda do raio) E a qualquer sessão com o
+            # projétil dentro do AOI + mesmo mapa (21/07/2026 — antes SÓ o
+            # alvo recebia; um NPC de serviço atirando num MOB nunca tinha
+            # sessão-alvo, então a flecha era invisível pra todo mundo;
+            # espectador também nunca via flecha mirando OUTRO player).
+            # in_aoi sem eid: projétil não tem MapLocation — o mapa é
+            # validado pelo mapa do ATACANTE. São transientes — não entram
+            # em known_eids (sem despawn assimétrico).
             if sp.get("kind") == "mob_projectile":
-                if sp.get("target_seid") == session.entity_id:
+                _proj_same_map = (self.world_server.get_entity_map(
+                    sp.get("attacker_seid", -1)) == _my_map)
+                if (sp.get("target_seid") == session.entity_id
+                        or (_proj_same_map and in_aoi(sp["tx"], sp["ty"]))):
                     result.setdefault("spawned", []).append(sp)
                 continue
             if sp["eid"] == session.entity_id:

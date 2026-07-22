@@ -143,6 +143,31 @@ class TestServiceNpcCombateGenerico(unittest.TestCase):
         self.assertTrue(payload["is_ranged"])
         self.assertEqual(payload["entity_class"], "Hunter")
 
+    def test_trainer_arqueiro_sons_espelham_o_player_e_resto_silencioso(self):
+        """Decisão do usuário 21/07/2026: elementos de combate do NPC
+        espelham o PLAYER da classe — disparo "arrow_release" e impacto
+        "arrow_impact" (campo novo attack_impact em NpcSounds, renomeado
+        de MobSounds na mesma leva); aggro/morte/emotes VAZIOS de
+        propósito (silêncio, usuário preenche depois na tabela)."""
+        from engine.components import NpcSounds
+        eid = create_trainer(self.ws.world, 150, 374, name="Andre", class_id="arqueiro")
+        snd = self.ws.world.get_component(eid, NpcSounds)
+        self.assertEqual(snd.attack_ranged, "arrow_release")
+        self.assertEqual(snd.attack_impact, "arrow_impact")
+        self.assertFalse(snd.aggro)
+        self.assertFalse(snd.death)
+        self.assertFalse(snd.emote_attack)
+        self.assertFalse(snd.emote_get_crit)
+
+    def test_guerreiro_npc_sons_melee_generico_e_resto_silencioso(self):
+        from engine.components import NpcSounds
+        eid = create_merchant(self.ws.world, 151, 374, name="Zeca")
+        snd = self.ws.world.get_component(eid, NpcSounds)
+        self.assertEqual(snd.attack_melee, "hit_normal")
+        self.assertFalse(snd.attack_impact)
+        self.assertFalse(snd.aggro)
+        self.assertFalse(snd.death)
+
     def test_payload_de_blacksmith_marca_is_blacksmith(self):
         eid = create_blacksmith(self.ws.world, 143, 374, name="Grum")
         tm = self.ws.world.get_component(eid, TileMovement)

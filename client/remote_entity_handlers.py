@@ -21,16 +21,16 @@ class RemoteEntityHandlers:
 
     def _play_attacker_mob_sound(self, server_attacker: int, _lx: float, _ly: float) -> bool:
         """Toca o som de ataque do MOB atacante (attack_melee/ranged/magic via
-        MobSounds), posicional com falloff pela distância.
+        NpcSounds), posicional com falloff pela distância.
 
-        Sons definidos em mob_definitions.py → componente MobSounds (fonte única).
+        Sons definidos em mob_definitions.py → componente NpcSounds (fonte única).
         Nenhum nome de mob ou som hardcoded aqui.
 
         Retorna True se o atacante é um mob (rastreado ou não localmente) —
         suprime o fallback hit_normal do caller, evitando som de espada errado.
         Retorna False apenas se o atacante é um player remoto (PvP).
         """
-        from engine.components import MobSounds as _MobSounds, AIControlled as _AICtrl
+        from engine.components import NpcSounds as _NpcSounds, AIControlled as _AICtrl
         _atk_mob_local = self._remote_mobs.get(server_attacker)
         if _atk_mob_local is None:
             # Mob fora do AOI local, attacker=-1 (origem não identificada no servidor)
@@ -40,7 +40,7 @@ class RemoteEntityHandlers:
         _atk_pos = self.world.get_component(_atk_mob_local, Position)
         if not _atk_pos:
             return True  # Mob existe no ECS mas sem posição — suprime hit_normal
-        _atk_snd = self.world.get_component(_atk_mob_local, _MobSounds)
+        _atk_snd = self.world.get_component(_atk_mob_local, _NpcSounds)
         _atk_ai  = self.world.get_component(_atk_mob_local, _AICtrl)
         if _atk_ai and _atk_ai.entity_class in ("Mage", "Mago", "Warlock", "Bruxo"):
             _atk_ev = "attack_magic"
@@ -50,6 +50,48 @@ class RemoteEntityHandlers:
             _atk_ev = "attack_melee"
         SOUNDS.play_mob_sounds_at(_atk_snd, _atk_ev, _atk_pos.x, _atk_pos.y, _lx, _ly,
                                   base=0.85, dedup_key=str(server_attacker))
+        return True
+
+    def _play_nonplayer_attack_impact(self, server_attacker: int, tgt_x: float,
+                                      tgt_y: float, _lx: float, _ly: float) -> bool:
+        """Som do golpe de um atacante NÃO-player acertando um alvo mob/NPC
+        (21/07/2026, decisão do usuário — escopo genérico): o combate com
+        alvo mob tocava "hit_normal" fixo pra QUALQUER atacante, sem nunca
+        consultar o NpcSounds do atacante — por isso o Arqueiro (NPC) soava
+        como espada mesmo com "arrow_release"/"arrow_impact" configurados.
+
+        Melee: o som do golpe É o do impacto → toca `attack_melee` do
+        atacante. Ranged/caster: o DISPARO já tocou quando o projétil
+        nasceu (_spawn_mob_projectile) → aqui toca só `attack_impact`
+        (campo novo em NpcSounds — ex: "arrow_impact" do Arqueiro (NPC),
+        mesmo som do arqueiro jogador).
+
+        Retorna True se tocou som dirigido pelo atacante (suprime o
+        hit_normal genérico do caller). False = caller mantém o fallback
+        antigo — cobre atacante player (hit_normal é o feedback DELE),
+        atacante fora do AOI local, e atacante sem som configurado
+        (Guarda Real/mobs _NO_SOUNDS continuam soando como hoje)."""
+        if server_attacker == self._my_eid or server_attacker in self._remote_players:
+            return False
+        _atk_local = self._remote_mobs.get(server_attacker)
+        if _atk_local is None:
+            return False
+        # EntityIdentity, não AIControlled: o espelho remoto NÃO tem
+        # AIControlled (removido em _spawn_remote_mob — servidor é
+        # autoritativo pra IA); a classe de combate que sobrevive no
+        # espelho é a de EntityIdentity (vinda do payload de spawn).
+        from engine.components import NpcSounds as _NpcSndImp, EntityIdentity as _EIImp
+        snd = self.world.get_component(_atk_local, _NpcSndImp)
+        ident = self.world.get_component(_atk_local, _EIImp)
+        if snd is None:
+            return False
+        _cls = ident.entity_class if ident else ""
+        _is_rangedish = _cls in ("Hunter", "Arqueiro", "Mage", "Mago", "Warlock", "Bruxo")
+        event = "attack_impact" if _is_rangedish else "attack_melee"
+        if not getattr(snd, event, ""):
+            return False
+        SOUNDS.play_mob_sounds_at(snd, event, tgt_x, tgt_y, _lx, _ly,
+                                  base=0.7, dedup_key=f"npcatk_{server_attacker}")
         return True
 
     def _resolve_archer_attack(self, cr: dict, server_attacker: int, source: str):
@@ -157,7 +199,7 @@ class RemoteEntityHandlers:
         col_regen = (100, 220, 100)
 
         _lx, _ly = self._player_world_pos()
-        from engine.components import MobSounds as _MobSounds, EntityIdentity as _EIdent
+        from engine.components import NpcSounds as _NpcSounds, EntityIdentity as _EIdent
 
         # DEBUG C15/C16: registra distância attacker/target → player local
         # vs AOI_RADIUS, pra achar sons/FLT vindos de fora da área visível.
@@ -230,7 +272,7 @@ class RemoteEntityHandlers:
                     _existing_slow.duration  = 6.0  # renova duração
                 else:
                     _sfx_cr.effects["slow"] = _AEcr("slow", 6.0, _slow_mag, 0.0)
-            _mob_snd = self.world.get_component(local_eid, _MobSounds)
+            _mob_snd = self.world.get_component(local_eid, _NpcSounds)
             pos = self.world.get_component(local_eid, Position)
 
             # Auto-attack do arqueiro é 100% server-driven: a flecha nasce aqui, ao
@@ -342,9 +384,17 @@ class RemoteEntityHandlers:
                                 "normal", target_id=local_eid)
                         if not _is_dot_hot:
                             if not is_ability:
-                                SOUNDS.play_random_at(["hit_normal_1", "hit_normal_2",
-                                                       "hit_normal_3", "hit_normal"],
-                                                      pos.x, pos.y, _lx, _ly, base=0.6)
+                                # Atacante não-player (NPC de serviço/mob):
+                                # som dirigido pelo NpcSounds DELE (melee
+                                # attack_melee, ranged attack_impact) —
+                                # fallback hit_normal só quando não tocou
+                                # nada (player atacante, sem config, fora
+                                # do AOI). Ver _play_nonplayer_attack_impact.
+                                if not self._play_nonplayer_attack_impact(
+                                        server_attacker, pos.x, pos.y, _lx, _ly):
+                                    SOUNDS.play_random_at(["hit_normal_1", "hit_normal_2",
+                                                           "hit_normal_3", "hit_normal"],
+                                                          pos.x, pos.y, _lx, _ly, base=0.6)
                             SOUNDS.play_mob_sounds_at(_mob_snd, "emote_attack",
                                                       pos.x, pos.y, _lx, _ly, base=0.6,
                                                       dedup_key=f"dmg_{server_target}")
@@ -433,7 +483,7 @@ class RemoteEntityHandlers:
                 # tiro_repulsivo) usam som de impacto de flecha, igual ao auto-attack
                 # e ao impacto contra mobs — não o genérico de melee. Se for um mob
                 # remoto, toca o som de ataque dele (attack_melee/ranged/magic via
-                # MobSounds). Caso contrário (PvP melee/magic), som genérico local.
+                # NpcSounds). Caso contrário (PvP melee/magic), som genérico local.
                 if not _is_dot_hot:
                     if cr.get("sid", "") in self._ARROW_SKILL_IDS:
                         SOUNDS.play_random(["arrow_impact_1", "arrow_impact_2"],
@@ -878,6 +928,28 @@ class RemoteEntityHandlers:
         ))
         # Mapeia server_eid → local para que ENTITY_DESPAWN possa remover
         self._remote_mob_projectiles[server_proj_eid] = local_eid
+
+        # Som de DISPARO no momento em que o projétil nasce (21/07/2026) —
+        # igual ao arqueiro jogador, que toca arrow_release quando a flecha
+        # dele nasce. Só quando o alvo NÃO é o player local: pra mob→player,
+        # o attack_ranged já toca na chegada do COMBAT_RESULT
+        # (_play_attacker_mob_sound) — tocar aqui também dobraria o som, e
+        # mudar o timing daquele fluxo mexeria no que já funciona.
+        if target_seid != self._my_eid:
+            # EntityIdentity (não AIControlled — removido do espelho remoto)
+            # decide o evento: caster → attack_magic, senão attack_ranged.
+            from engine.components import NpcSounds as _NpcSndFire, EntityIdentity as _EIFire
+            _atk_local_fire = self._remote_mobs.get(data.get("attacker_seid", -1))
+            if _atk_local_fire is not None:
+                _snd_fire   = self.world.get_component(_atk_local_fire, _NpcSndFire)
+                _ident_fire = self.world.get_component(_atk_local_fire, _EIFire)
+                _cls_fire = _ident_fire.entity_class if _ident_fire else ""
+                _ev_fire = ("attack_magic"
+                            if _cls_fire in ("Mage", "Mago", "Warlock", "Bruxo")
+                            else "attack_ranged")
+                _flx, _fly = self._player_world_pos()
+                SOUNDS.play_mob_sounds_at(_snd_fire, _ev_fire, px, py, _flx, _fly,
+                                          base=0.8, dedup_key=f"fire_{server_proj_eid}")
 
     def _move_remote_mob(self, server_eid: int, new_tx: int, new_ty: int,
                          from_tx: int | None = None, from_ty: int | None = None,

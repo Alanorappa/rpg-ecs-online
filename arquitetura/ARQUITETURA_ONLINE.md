@@ -5545,6 +5545,78 @@ Suíte completa 379/379, rodada 3x.
 atira flecha visual de verdade com o som certo ao brigar com um mob
 hostil (não mais melee/mudo).
 
+### §34.35.3 — As causas de verdade eram no CLIENTE: entrega da flecha + sons hardcodados; MobSounds vira NpcSounds (21/07/2026)
+
+Depois de §34.35.2, o usuário reportou que continuava tudo errado (som
+de goblin no aggro, impacto de melee, flecha invisível) e pediu
+explicitamente: elementos do treinador arqueiro devem espelhar o
+ARQUEIRO JOGADOR (flecha visual + "arrow_release" no disparo +
+"arrow_impact" no acerto), com um componente configurável pros sons —
+e que decisões de design passem por ele, não por defaults meus.
+
+**Diagnóstico definitivo** (script servidor + trace completo do pipeline
+de som do cliente): o SERVIDOR sempre esteve 100% certo — o treinador
+dispara projéteis de verdade (`is_arrow: True`), spawns de
+`mob_projectile` são emitidos, e eventos de combate NPC↔mob existem
+(`_pending_mob_attacks`, source="auto"). As 3 causas eram todas do lado
+cliente/entrega:
+
+1. **Flecha invisível — causa raiz REAL**: `server/session.py::
+   _build_update_for_session` só entregava spawns de `mob_projectile`
+   pra sessão de quem era O ALVO (`target_seid == session.entity_id`).
+   Alvo mob = nenhuma sessão recebe = flecha invisível pra todo mundo
+   (limitação pré-existente: espectador também nunca via flecha de mob
+   mirando OUTRO player). Fix: entrega ao dono do alvo OU a qualquer
+   sessão com o projétil dentro do AOI (mapa validado pelo mapa do
+   ATACANTE — projétil não tem MapLocation).
+2. **Som de impacto sempre melee**: o ramo "alvo mob" de
+   `_apply_combat_result` (client/remote_entity_handlers.py) tocava
+   `hit_normal` HARDCODED pra qualquer atacante — nunca consultava o
+   componente de sons do atacante (por isso configurar "arrow_release"
+   na tabela nunca teve efeito). Fix: novo helper
+   `_play_nonplayer_attack_impact` — atacante NÃO-player toca o
+   PRÓPRIO som (melee → `attack_melee` no acerto; ranged/caster →
+   `attack_impact`, campo NOVO, já que o disparo toca separado);
+   fallback `hit_normal` preservado pra atacante player (é o feedback
+   dele), atacante sem config (Guarda Real/feras `_NO_SOUNDS`) e
+   atacante fora do AOI — zero mudança pra quem já funcionava.
+   Detecção ranged/caster usa `EntityIdentity.entity_class` — NUNCA
+   `AIControlled`, que é REMOVIDO do espelho remoto na reconstrução.
+3. **Som de disparo**: agora toca no momento em que o projétil NASCE
+   (`_spawn_mob_projectile` — igual ao arqueiro jogador, que toca
+   arrow_release quando a flecha dele nasce), SÓ quando o alvo não é o
+   player local (mob→player mantém o fluxo antigo — attack_ranged na
+   chegada do COMBAT_RESULT via `_play_attacker_mob_sound` — pra não
+   dobrar o som nem mexer no que funciona).
+
+**Renomeação (decisão do usuário)**: `MobSounds` → `NpcSounds`
+("todo mob é um NPC, mas nem todo NPC é um mob") — rename mecânico em
+todos os arquivos, mesmo componente/campos, + campo novo
+`attack_impact`. Fonte de dados continua
+`content/mob_definitions.py::MOB_TABLE["sounds"]` (helpers
+`play_mob_sounds*` do SoundManager mantêm o nome — resolvem o evento
+via getattr, então `attack_impact` funcionou sem mudança neles).
+
+**Dados (decisões do usuário)**: Arqueiro (NPC) = só
+`attack_ranged: "arrow_release"` + `attack_impact: "arrow_impact"`
+(MESMOS sons do arqueiro jogador); Guerreiro (NPC) = só
+`attack_melee: "hit_normal"`; aggro/morte/emotes VAZIOS de propósito em
+todos (silêncio — usuário preenche depois na tabela); Mago (NPC) todo
+silencioso até a Fase 2. Escopo do fix de som: GENÉRICO (qualquer
+atacante não-player), decisão explícita.
+
+**Validado**: `tests/test_service_npcs.py` +2 (sons do arqueiro
+espelham player + resto silencioso; guerreiro melee genérico),
+`tests/test_client_ui.py` +3 (impacto do NPC ranged toca
+`attack_impact`="arrow_impact"; disparo toca `attack_ranged`=
+"arrow_release" quando o projétil nasce; atacante sem config cai no
+fallback hit_normal antigo — regressão). Suíte completa 384/384,
+rodada 3x.
+
+**Não validado**: sessão manual — flecha visível + arrow_release no
+disparo + arrow_impact no acerto quando o treinador arqueiro briga com
+um mob; nenhum som de goblin restante; goblin→player inalterado.
+
 ---
 
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata

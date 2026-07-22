@@ -30,7 +30,7 @@ from engine.components import Position, Renderable, PlayerControlled, Camera, Co
                        Projectile, Corpse, Inventory, EnemyTier, Equipment, Wallet, Merchant, \
                        CharacterStats, FogOfWar, Visible, ActiveEffect, StatusEffects, \
                        EnemyAbilities, EnemyAbilitySlot, EntityIdentity, \
-                       MobSounds, PendingDeath, XPReward, SpawnZoneOwner, SpawnZone, \
+                       NpcSounds, PendingDeath, XPReward, SpawnZoneOwner, SpawnZone, \
                        PlayerSkills, NPC, ActiveRegen, ConsumableBar, \
                        AoeTargeting, RemoteControlled, GhostState, MapLocation
 from engine.world import World
