@@ -742,6 +742,111 @@ class TestPartyLootSync(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(get_msgs_of_type(fw_a, MsgType.LOOT_RESULT)), 1)
 
 
+class TestArenaDispatchSemMovimento(unittest.IsolatedAsyncioTestCase):
+    """Bug real relatado pelo usuário 21/07/2026: "só chamou a arena
+    quando movi o personagem" + "cliquei em aceitar e ninguém entrou".
+    Causa raiz: `_on_tick`'s `has_pending` (server/session.py) decide se
+    vale a pena rodar `_dispatch_tick_deltas` olhando só `deltas` (que
+    nunca carrega nada de arena) + uma lista fixa de outros buffers —
+    os 4 buffers de evento de arena (`_arena_match_found/start/end/
+    result_events_this_tick`) nunca entravam nessa lista. Sem NENHUMA
+    outra atividade no tick (ninguém se movendo/atacando/etc.), o
+    early-return descartava o dispatch inteiro e o evento ficava PRESO
+    no buffer até alguém se mexer por qualquer outro motivo — o que
+    também explicava o aceite "não fazer nada" (ARENA_MATCH_START, que
+    carrega a confirmação do teleporte já feito no servidor, ficava
+    preso do mesmo jeito)."""
+
+    async def asyncSetUp(self):
+        self.ws_server, self.mgr = make_session_manager()
+
+    async def _make_duo(self, prefix: str, tile: tuple):
+        sa, fwa = await fake_login(self.mgr, f"{prefix}a", f"{prefix}usera", *tile)
+        sb, fwb = await fake_login(self.mgr, f"{prefix}b", f"{prefix}userb", *tile)
+        self.assertIsNone(self.ws_server.request_party_invite(sa.entity_id, sb.entity_id))
+        self.ws_server.respond_party_invite(sb.entity_id, accept=True)
+        return (sa, fwa), (sb, fwb)
+
+    _UNRELATED_BUFFERS = (
+        "_skill_results_this_tick", "_skill_effects_this_tick",
+        "_pending_loot_notifications", "_pending_stats_updates",
+        "_expired_corpses_this_tick", "_player_hp_broadcasts_this_tick",
+        "_skill_levels_broadcasts_this_tick", "_quest_update_broadcasts_this_tick",
+        "_pending_sound_events",
+    )
+
+    def _clear_unrelated_buffers(self):
+        """Zera tudo que `has_pending` (server/session.py::_on_tick) também
+        olha além de `deltas` — o mundo de teste roda em cima do banco real
+        (data/game.db, ver make_world_server/WorldServer()), então mobs/
+        regen/efeitos residuais de outras sessões de teste manual podem
+        deixar esses buffers não-vazios por motivo nenhum ligado à arena.
+        Zerar explicitamente garante que só a arena pode satisfazer
+        has_pending nestes testes — sem isso, o teste passa mesmo sem o fix
+        (falso positivo já observado e diagnosticado nesta mesma investigação)."""
+        for attr in self._UNRELATED_BUFFERS:
+            getattr(self.ws_server, attr).clear()
+
+    async def test_arena_match_found_chega_sem_ninguem_se_mover(self):
+        # Prefixos puramente alfabéticos e distintos entre si — _valid_char_name
+        # (tests/test_session.py) descarta dígitos ao derivar o nome do
+        # personagem a partir do username, então algo tipo "fg1"/"fg2" colide
+        # no MESMO nome "fg" depois do strip (bug do teste, não do servidor).
+        (a1, fw_a1), (a2, fw_a2) = await self._make_duo("krondor", (10, 10))
+        (b1, fw_b1), (b2, fw_b2) = await self._make_duo("zephyra", (12, 10))
+
+        self.assertIsNone(self.ws_server.request_arena_queue_join(a1.entity_id))
+        self.assertIsNone(self.ws_server.request_arena_queue_join(b1.entity_id))
+        for fw in (fw_a1, fw_a2, fw_b1, fw_b2):
+            fw.sent.clear()
+
+        # Chama só o pareamento de arena diretamente — NUNCA passa por
+        # `_tick()` completo. Rodar o tick inteiro aqui roda TAMBÉM
+        # SpawnZoneSystem/EnemyAISystem/regen/etc contra o mundo real
+        # (banco compartilhado com testes manuais), que enche `deltas`
+        # por acaso e mascara o bug (já provado via diagnóstico: `deltas`
+        # tinha "spawned"/"effects" mesmo sem NENHUMA atividade de arena,
+        # fazendo o teste passar igual com ou sem o fix). Chamando só
+        # `_tick_arena_queue()` + `_on_tick(tick, {})` isolamos exatamente
+        # o que o bug reportado testava: "nenhuma outra atividade no
+        # tick, só a arena tem algo pra dispachar".
+        self.ws_server._tick_arena_queue()
+        self._clear_unrelated_buffers()
+        self.mgr._on_tick(self.ws_server.tick_count, {})
+        await asyncio.sleep(0)   # processa o create_task do dispatch
+
+        for fw in (fw_a1, fw_a2, fw_b1, fw_b2):
+            found = get_msgs_of_type(fw, MsgType.ARENA_MATCH_FOUND)
+            self.assertEqual(len(found), 1,
+                "ARENA_MATCH_FOUND deveria chegar no mesmo tick do pareamento, "
+                "sem depender de qualquer outra atividade no tick")
+
+    async def test_arena_match_start_chega_ao_aceitar_sem_ninguem_se_mover(self):
+        (a1, fw_a1), (a2, fw_a2) = await self._make_duo("morvane", (10, 10))
+        (b1, fw_b1), (b2, fw_b2) = await self._make_duo("thalrix", (12, 10))
+
+        self.assertIsNone(self.ws_server.request_arena_queue_join(a1.entity_id))
+        self.assertIsNone(self.ws_server.request_arena_queue_join(b1.entity_id))
+        self.ws_server._tick_arena_queue()
+        self._clear_unrelated_buffers()
+        self.mgr._on_tick(self.ws_server.tick_count, {})
+        await asyncio.sleep(0)
+        fw_a1.sent.clear()
+
+        reason = self.ws_server.request_arena_accept(a1.entity_id)
+        self.assertIsNone(reason)
+        self._clear_unrelated_buffers()
+        self.mgr._on_tick(self.ws_server.tick_count, {})
+        await asyncio.sleep(0)
+
+        self.assertEqual(len(get_msgs_of_type(fw_a1, MsgType.ARENA_MATCH_START)), 1,
+            "ARENA_MATCH_START deveria chegar assim que aceita, sem depender de "
+            "qualquer outra atividade no tick")
+        self.assertEqual(len(get_msgs_of_type(fw_a1, MsgType.ZONE_CHANGE)), 1,
+            "ZONE_CHANGE (teleporte pra arena) deveria chegar junto, sem depender "
+            "de qualquer outra atividade no tick")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Runner
 # ─────────────────────────────────────────────────────────────────────────────

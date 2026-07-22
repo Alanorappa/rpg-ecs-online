@@ -1711,7 +1711,22 @@ class SessionManager:
                        or bool(self.world_server._player_hp_broadcasts_this_tick)
                        or bool(self.world_server._skill_levels_broadcasts_this_tick)
                        or bool(self.world_server._quest_update_broadcasts_this_tick)
-                       or bool(self.world_server._pending_sound_events))
+                       or bool(self.world_server._pending_sound_events)
+                       # Arena (21/07/2026, bug real relatado pelo usuário): nenhum
+                       # destes 4 buffers entra em `deltas` nem tinha check próprio
+                       # aqui — sem "atividade" normal (ex: ninguém se movendo) no
+                       # MESMO tick, o "return" acima descartava a checagem de
+                       # pendência inteira e o evento ficava parado no buffer até
+                       # ALGUÉM se mexer (o que finalmente fazia `deltas["moved"]`
+                       # não-vazio e destravava o dispatch) — sintoma exato: "só
+                       # chamou a arena quando movi o personagem", e pior, o
+                       # ARENA_MATCH_START do aceite (teleporte já confirmado no
+                       # servidor) ficava preso do mesmo jeito, então ninguém via
+                       # o ZONE_CHANGE mesmo clicando "Aceitar" a tempo.
+                       or bool(self.world_server._arena_match_found_events_this_tick)
+                       or bool(self.world_server._arena_match_start_events_this_tick)
+                       or bool(self.world_server._arena_match_end_events_this_tick)
+                       or bool(self.world_server._arena_match_result_events_this_tick))
         if not has_pending:
             return
         asyncio.create_task(self._dispatch_tick_deltas(deltas))

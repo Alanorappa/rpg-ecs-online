@@ -5374,6 +5374,73 @@ um time conseguem ver a janela e aceitar independentemente, sem a
 janela de um interferir na do outro; tempo total do chamado até o
 combate liberar é sempre 30s.
 
+### §34.34.1 — Causa raiz de verdade do "arena só chama quando alguém se mexe": `has_pending` (session.py) nunca olhava os buffers de evento de arena (22/07/2026)
+
+Depois da revisão acima, usuário testou de novo com servidor reiniciado
+e 4 contas reais (2 numa rede diferente) e reportou 3 sintomas juntos:
+"só chamou a arena quando movi o personagem, como se pra atualizar a
+fila o personagem precisasse se mover"; "cliquei em aceitar nas 4 telas
+e ninguém entrou"; "o botão de entrar na fila mostrou de novo" — ou
+seja, a fila pareava e o aceite era processado no servidor (teleporte
+já acontecia), mas os eventos nunca chegavam ao cliente a menos que
+ALGUMA OUTRA coisa acontecesse no mesmo tick.
+
+**Causa raiz**: `SessionManager._on_tick(tick_count, deltas)`
+(`server/session.py`) só chama `_dispatch_tick_deltas` (o que de fato
+serializa e manda os pacotes) se `has_pending` for `True` — um cheque
+manual que soma `any(deltas.values())` (o dict devolvido por
+`_collect_deltas()`, que NUNCA carrega nada de arena) mais uma lista
+fixa de outros buffers (`_skill_results_this_tick`,
+`_pending_loot_notifications`, `_pending_sound_events`, etc.). Os 4
+buffers de evento de arena (`_arena_match_found_events_this_tick`,
+`_arena_match_start_events_this_tick`, `_arena_match_end_events_this_tick`,
+`_arena_match_result_events_this_tick`, todos em `server/world_server.py`,
+populados por `server/match_processor.py`) nunca entravam nessa lista —
+são consumidos só DENTRO de `_dispatch_tick_deltas` via
+`consume_arena_match_*_events()`, então sem essa checagem eles não
+tinham NENHUMA influência sobre `has_pending`. Resultado: se nenhuma
+outra atividade acontecesse no mesmo tick (ninguém se movendo/
+atacando/etc — cenário realista quando 4 jogadores só estão parados
+esperando a fila), o early-return descartava o dispatch inteiro e o
+evento ficava PRESO no buffer até QUALQUER outra atividade não
+relacionada (ex: alguém andar) finalmente disparar `deltas["moved"]`
+não-vazio — o que também explica o aceite "não fazer nada"
+(`ARENA_MATCH_START`, que carrega a confirmação de um teleporte JÁ
+concluído no servidor, ficava preso do mesmo jeito) e o botão de fila
+reaparecendo (o cliente nunca recebeu o evento que deveria escondê-lo).
+
+**Fix**: `has_pending` em `_on_tick` ganhou os 4 buffers de arena na
+composição do OR. Nenhuma mudança de fluxo/protocolo — só fecha o
+buraco de gating.
+
+**Nota pra próximas features**: esta é uma CLASSE de bug — qualquer
+sistema novo que acumule seu próprio buffer `_..._this_tick` fora de
+`deltas` (em vez de estender `_collect_deltas()`) precisa ser
+adicionado manualmente a este `has_pending`, ou fica sujeito ao mesmo
+buraco (evento correto no servidor, preso até atividade alheia
+"empurrar" o dispatch).
+
+**Validado**: `tests/test_session.py::TestArenaDispatchSemMovimento` (2
+testes novos) — chama só `_tick_arena_queue()`/`request_arena_accept()`
+diretamente (nunca o `_tick()` inteiro, que rodaria
+SpawnZoneSystem/EnemyAISystem/regen contra o banco real de dev e
+mascararia o teste com atividade alheia — já observado um falso
+positivo assim durante a escrita do teste, corrigido isolando a chamada
+e zerando os outros buffers manualmente via `_clear_unrelated_buffers`)
+e confirma que `ARENA_MATCH_FOUND`/`ARENA_MATCH_START`+`ZONE_CHANGE`
+chegam mesmo com todo o resto do mundo silencioso. Confirmado por
+reversão controlada (`git stash` do fix): os 2 testes FALHAM sem o fix
+e PASSAM com ele. Suíte completa 392/392, rodada 3x.
+
+**Não validado**: sessão manual com 4 clientes reais, servidor
+reiniciado — fila pareia mesmo com todo mundo parado; aceite entra na
+arena imediatamente pros 4; botão de fila não reaparece incorretamente.
+Também pendente (não confirmado nem descartado): se o "janela do outro
+membro some" reportado em §34.34 era na verdade este MESMO bug
+(`ARENA_MATCH_START` do primeiro aceite ficando preso e só chegando
+tarde/nunca ao segundo membro) — vale re-perguntar se o sintoma some
+depois deste fix.
+
 ---
 
 ### §34.35 — NPCs de serviço (mercador/ferreiro/treinador/dador-de-missão) ganham HP + combate genérico — Fase 1 (21/07/2026)
