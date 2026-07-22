@@ -5617,6 +5617,33 @@ rodada 3x.
 disparo + arrow_impact no acerto quando o treinador arqueiro briga com
 um mob; nenhum som de goblin restante; goblin→player inalterado.
 
+### §34.35.4 — NPC de serviço volta pro TILE EXATO do spawn após o combate (21/07/2026)
+
+Feedback do usuário: "os npcs precisam voltar para o spawn deles após
+acabar o combate". Diagnóstico (script com trainer arqueiro kitando +
+mercador melee): o RETURNING já funcionava — o problema é que os 3
+pontos de "chegou em casa" do `EnemyAISystem` aceitam Manhattan ≤
+`proximity_threshold_tiles` (=1) do spawn. Mob errante, ninguém nota 1
+tile de folga; NPC de posto fixo fica visivelmente fora do lugar, e
+cada briga desloca de novo (deriva acumulada).
+
+**Fix**: threshold por entidade — novo helper
+`EnemyAISystem._settle_threshold_tiles(eid)`: tag `NPC` (NPC de
+serviço, Guarda Real) → 0 (tile EXATO); resto → 1 (inalterado). Os 3
+call sites (`> self.proximity_threshold_tiles`) trocados pelo helper —
+o pathing de RETURNING existente resolve o resto sozinho. Se o tile
+exato estiver ocupado (ex: player parado no posto), o NPC espera ao
+lado em RETURNING (repath com throttle já existente) e assenta quando
+liberar.
+
+**Validado**: `tests/test_service_npcs.py::TestServiceNpcVoltaProSpawnExato`
+(2 testes — NPC deslocado 3 tiles volta pro tile exato e assenta IDLE;
+mob comum a 1 tile do spawn NÃO se move, regressão do threshold
+antigo). Suíte completa 386/386, rodada 3x.
+
+**Não validado**: sessão manual — treinador/mercador voltando pro posto
+exato depois de brigar com mob.
+
 ---
 
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata

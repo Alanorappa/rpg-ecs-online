@@ -1398,6 +1398,21 @@ class EnemyAISystem(System):
         self._npc_combatants_cache: list = []
         self._all_combatants_cache: list = []
 
+    def _settle_threshold_tiles(self, eid: int) -> int:
+        """Distância (Manhattan, em tiles) do spawn em que a entidade é
+        considerada "em casa" ao terminar RETURNING. Mob comum aceita
+        proximity_threshold_tiles (1 — monstro errante, ninguém nota 1
+        tile de folga). Entidade com tag NPC (NPC de serviço, Guarda
+        Real) volta pro tile EXATO (threshold 0) — posto é fixo, e cada
+        combate terminando "1 tile fora" acumulava deslocamento visível
+        (bug real reportado pelo usuário 21/07/2026: "os npcs precisam
+        voltar para o spawn deles após acabar o combate"). Reusa o
+        pathing de RETURNING já existente — se o tile exato estiver
+        ocupado (ex: player parado no posto), o NPC espera ao lado em
+        RETURNING (repath com throttle) e assenta quando liberar."""
+        return 0 if self.world.get_component(eid, NPC) is not None \
+            else self.proximity_threshold_tiles
+
     @staticmethod
     def _has_line_of_sight(tilemap_comp, x0: int, y0: int, x1: int, y1: int) -> bool:
         """Bresenham: retorna True se não houver tile sólido entre (x0,y0) e (x1,y1)."""
@@ -1729,7 +1744,7 @@ class EnemyAISystem(System):
                 dist_to_initial_tiles = (abs(initial_tile_x - enemy_current_tile_x) +
                                           abs(initial_tile_y - enemy_current_tile_y))
 
-                if dist_to_initial_tiles > self.proximity_threshold_tiles:
+                if dist_to_initial_tiles > self._settle_threshold_tiles(enemy_id):
                     if _MCL and ai_control.state != "RETURNING":
                         _MCL.log("LOST_TGT", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
                                  prev=_dbg_prev_state, ret="RETURNING")
@@ -2357,7 +2372,7 @@ class EnemyAISystem(System):
                         _ix = int(initial_pos.x / TILE_SIZE)
                         _iy = int(initial_pos.y / TILE_SIZE)
                         _dist_init = abs(_ix - enemy_current_tile_x) + abs(_iy - enemy_current_tile_y)
-                        if _dist_init > self.proximity_threshold_tiles:
+                        if _dist_init > self._settle_threshold_tiles(enemy_id):
                             ai_control.state             = "RETURNING"
                             ai_control.target_eid         = -1
                             ai_control.path_recalc_timer  = 0.0
@@ -2383,7 +2398,7 @@ class EnemyAISystem(System):
 
                 dist_to_initial_tiles = abs(initial_tile_x - enemy_current_tile_x) + abs(initial_tile_y - enemy_current_tile_y)
 
-                if dist_to_initial_tiles > self.proximity_threshold_tiles:
+                if dist_to_initial_tiles > self._settle_threshold_tiles(enemy_id):
                     ai_control.state = "RETURNING"
                     if should_recalculate_path:
                         dynamic_obstacles_for_return = self._get_occupied_tiles(except_entity_id=enemy_id)

@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import unittest
 
-from tests.helpers import make_world_server, spawn_player
+from tests.helpers import make_world_server, spawn_player, run_ticks, set_entity_tile
 from engine.components import (
     Combatant, CombatStats, AIControlled, Faction, NPC, Merchant, Blacksmith,
     Trainer, QuestGiver, TileMovement, CombatState,
@@ -193,6 +193,42 @@ class TestServiceNpcCombateGenerico(unittest.TestCase):
         guard_tm = self.ws.world.get_component(guard, TileMovement)
         guard_payload = self.ws._build_mob_spawn_payload(guard, guard_tm)
         self.assertIn("profession", guard_payload)
+
+
+class TestServiceNpcVoltaProSpawnExato(unittest.TestCase):
+    """NPC de serviço (tag NPC) volta pro TILE EXATO do spawn depois do
+    combate (feedback do usuário 21/07/2026) — antes assentava a até
+    proximity_threshold_tiles (1) do spawn, igual mob comum, e cada briga
+    deslocava o posto. Mob comum mantém o threshold antigo (sem mudança).
+    Ver EnemyAISystem._settle_threshold_tiles."""
+
+    def setUp(self):
+        from engine.components import MapLocation
+        self.ws = make_world_server()
+        spawn_player(self.ws, "s1", 130, 374)
+        self.npc = create_merchant(self.ws.world, 150, 380, name="Zeca", level=60)
+        self.ws.world.add_component(self.npc, MapLocation(self.ws._map_file))
+
+    def test_npc_deslocado_volta_pro_tile_exato(self):
+        set_entity_tile(self.ws, self.npc, 152, 381)   # 3 tiles fora do posto
+        run_ticks(self.ws, 200)                        # ~10s de jogo
+        tm = self.ws.world.get_component(self.npc, TileMovement)
+        self.assertEqual((tm.current_tile_x, tm.current_tile_y), (150, 380),
+                         "NPC de serviço deveria voltar pro tile EXATO do spawn")
+        ai = self.ws.world.get_component(self.npc, AIControlled)
+        self.assertEqual(ai.state, "IDLE")
+
+    def test_mob_comum_mantem_threshold_antigo(self):
+        """Regressão: mob comum a 1 tile do spawn continua considerado 'em
+        casa' (threshold 1 inalterado) — a volta exata é só pra tag NPC."""
+        from engine.components import MapLocation
+        mob = create_enemy(self.ws.world, 160, 380, faction="monstros_hostis")
+        self.ws.world.add_component(mob, MapLocation(self.ws._map_file))
+        set_entity_tile(self.ws, mob, 161, 380)        # 1 tile fora
+        run_ticks(self.ws, 100)
+        tm = self.ws.world.get_component(mob, TileMovement)
+        self.assertEqual((tm.current_tile_x, tm.current_tile_y), (161, 380),
+                         "mob comum a 1 tile do spawn não deveria se mover (comportamento antigo)")
 
 
 if __name__ == "__main__":
