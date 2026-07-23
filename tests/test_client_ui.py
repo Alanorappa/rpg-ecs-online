@@ -585,6 +585,104 @@ def test_client_pvp_context_fora_de_partida_arena_nao_libera():
     assert fx._client_pvp_context(fx.world, me, other) is False
 
 
+# ── TAB/ESPAÇO precisam listar oponente de PvP como candidato (22/07/2026) ──
+# Bug real relatado pelo usuário: TAB nunca selecionava o oponente de duelo,
+# e ESPAÇO nunca conseguia iniciar auto-attack contra ele — ambos só
+# olhavam o componente Enemy (mobs), nunca RemoteControlled (outro
+# player). `_sync_combat_target` (client/remote_entity_handlers.py) já
+# suportava mandar AUTO_ATTACK pra um alvo RemoteControlled corretamente;
+# só nunca recebia um alvo remoto pra sincronizar.
+
+def test_tab_target_inclui_oponente_de_pvp_engajavel():
+    from engine.world import World
+    from engine.components import Position, Visible, RemoteControlled, CombatState, PlayerControlled
+    from engine.faction_system import register_pvp_context
+    from ui.systems import MouseTargetingSystem
+
+    world = World()
+    me = world.create_entity()
+    world.add_component(me, PlayerControlled())
+    world.add_component(me, Position(x=50, y=50))
+    world.add_component(me, CombatState())
+    other = world.create_entity()
+    world.add_component(other, Position(x=60, y=60))
+    world.add_component(other, Visible())
+    world.add_component(other, RemoteControlled(server_eid=99, hp=100))
+
+    register_pvp_context(lambda w, a, b: True)   # simula duelo/arena ativo
+    try:
+        screen = pygame.display.get_surface()
+        mts = MouseTargetingSystem(world, me, screen)
+        enemies = mts._visible_enemies_sorted(0, 0)
+        assert other in enemies
+    finally:
+        register_pvp_context(None)
+
+
+def test_tab_target_nao_inclui_player_remoto_fora_de_contexto_pvp():
+    """Sem duelo/arena/zona ativos, o resolver de contexto PvP não é
+    registrado (ou devolve False) — outro player continua amigável e não
+    deve aparecer no ciclo do TAB."""
+    from engine.world import World
+    from engine.components import Position, Visible, RemoteControlled, CombatState, PlayerControlled
+    from engine.faction_system import register_pvp_context
+    from ui.systems import MouseTargetingSystem
+
+    world = World()
+    me = world.create_entity()
+    world.add_component(me, PlayerControlled())
+    world.add_component(me, Position(x=50, y=50))
+    world.add_component(me, CombatState())
+    other = world.create_entity()
+    world.add_component(other, Position(x=60, y=60))
+    world.add_component(other, Visible())
+    world.add_component(other, RemoteControlled(server_eid=99, hp=100))
+
+    register_pvp_context(None)
+    screen = pygame.display.get_surface()
+    mts = MouseTargetingSystem(world, me, screen)
+    enemies = mts._visible_enemies_sorted(0, 0)
+    assert other not in enemies
+
+
+def test_space_engage_mira_oponente_de_pvp_engajavel():
+    from engine.world import World
+    from engine.components import (Position, TileMovement, Visible,
+                                   RemoteControlled, CombatState, CombatStats,
+                                   PlayerControlled)
+    from engine.faction_system import register_pvp_context
+    from ui.systems import PlayerInputSystem
+
+    world = World()
+    me = world.create_entity()
+    world.add_component(me, PlayerControlled())
+    world.add_component(me, TileMovement(current_tile_x=5, current_tile_y=5))
+    my_cs = CombatStats()
+    world.add_component(me, my_cs)
+    my_state = CombatState()
+    world.add_component(me, my_state)
+
+    other = world.create_entity()
+    # Longe o bastante (fora de PLAYER_ATTACK_RANGE) pra testar só a
+    # seleção/perseguição do alvo, sem cair no branch de ataque imediato
+    # (que dependeria de serviços globais registrados via register_services,
+    # fora de escopo deste teste).
+    world.add_component(other, Position(x=5 * 32, y=10 * 32))
+    world.add_component(other, TileMovement(current_tile_x=5, current_tile_y=10))
+    world.add_component(other, Visible())
+    world.add_component(other, RemoteControlled(server_eid=99, hp=100))
+
+    register_pvp_context(lambda w, a, b: True)
+    try:
+        screen = pygame.display.get_surface()
+        pis = PlayerInputSystem(world, screen)
+        pis._space_engage(me, world.get_component(me, TileMovement), my_cs, my_state, None)
+        assert my_state.target_entity_id == other
+        assert my_state.is_pursuing is True
+    finally:
+        register_pvp_context(None)
+
+
 def test_offline_sem_requester_continua_creditando_local():
     """Regressão: sem set_online_loot_requester (modo legado/offline), o
     fluxo antigo — creditar na hora do clique — continua intacto."""

@@ -261,7 +261,13 @@ class MouseTargetingSystem(System):
         return False
 
     def _visible_enemies_sorted(self, cam_x: float, cam_y: float) -> list[int]:
-        """Retorna IDs de inimigos vivos e visíveis na tela, ordenados por distância ao jogador."""
+        """Retorna IDs de inimigos vivos e visíveis na tela, ordenados por
+        distância ao jogador. Mobs (Enemy) sempre entram; players remotos
+        (RemoteControlled) só quando engajáveis AGORA (duelo/arena/zona
+        PvP) — mesmo gate de `can_engage`/`_client_pvp_context` já usado
+        pelo clique direito (`_remote_player_at_world_pos`). Bug real
+        relatado pelo usuário 22/07/2026: TAB nunca listava o oponente de
+        duelo como candidato, porque só olhava `Enemy`."""
         sw = self.world_surf.get_width()
         sh = self.world_surf.get_height()
         player_pos = self.world.get_component(self.player_entity_id,
@@ -277,6 +283,20 @@ class MouseTargetingSystem(System):
             if 0 <= sx <= sw and 0 <= sy <= sh:
                 dist = (pos.x - player_pos.x) ** 2 + (pos.y - player_pos.y) ** 2 if player_pos else 0
                 result.append((dist, eid))
+
+        from engine.components import RemoteControlled as _RCtab
+        from engine.faction_system import can_engage as _can_engage_tab
+        for eid, pos, _viz, _rc in self.world.get_entities_with(Position, Visible, _RCtab):
+            if eid == self.player_entity_id or _rc.hp <= 0:
+                continue
+            if not _can_engage_tab(self.world, self.player_entity_id, eid):
+                continue
+            sx = pos.x - cam_x
+            sy = pos.y - cam_y
+            if 0 <= sx <= sw and 0 <= sy <= sh:
+                dist = (pos.x - player_pos.x) ** 2 + (pos.y - player_pos.y) ** 2 if player_pos else 0
+                result.append((dist, eid))
+
         result.sort()
         return [eid for _, eid in result]
 
@@ -1101,7 +1121,13 @@ class PlayerInputSystem(System):
                 break
 
     def _space_engage(self, entity_id, tile_movement, combat_stats, combat_state, auto_move):
-        """ESPAÇO: seleciona inimigo mais próximo visível na tela, entra em combate e ataca."""
+        """ESPAÇO: seleciona inimigo mais próximo visível na tela, entra em combate e ataca.
+
+        Players remotos (RemoteControlled) entram na busca junto com mobs
+        (Enemy) — só quando engajáveis AGORA (duelo/arena/zona PvP, mesmo
+        `can_engage`/`_client_pvp_context` do clique). Bug real relatado
+        pelo usuário 22/07/2026: ESPAÇO nunca conseguia iniciar combate
+        contra um oponente de duelo, porque a busca só olhava Enemy."""
         pl_x = tile_movement.current_tile_x
         pl_y = tile_movement.current_tile_y
 
@@ -1127,6 +1153,20 @@ class PlayerInputSystem(System):
                 continue
             if _fog_vis_se is not None and \
                     (etm.current_tile_x, etm.current_tile_y) not in _fog_vis_se:
+                continue
+            dist = chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y)
+            if dist < best_dist:
+                best_dist = dist
+                best_eid  = eid
+
+        from engine.components import RemoteControlled as _RCspace
+        for eid, epos, etm, _viz, _rc in self.world.get_entities_with(
+                Position, TileMovement, Visible, _RCspace):
+            if eid == entity_id or _rc.hp <= 0:
+                continue
+            if not _can_engage_space(self.world, entity_id, eid):
+                continue
+            if not self._is_on_screen(epos):
                 continue
             dist = chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y)
             if dist < best_dist:

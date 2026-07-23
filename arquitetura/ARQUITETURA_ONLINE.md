@@ -5547,12 +5547,65 @@ mesmo padrão de `TestArenaDispatchSemMovimento` — chama
 reversão controlada (`git stash`): falha sem o fix, passa com ele. Suíte
 completa 394/394, rodada 3x.
 
-**Não validado**: sessão manual — portão abre visualmente na hora (sem
-precisar sair/voltar da tela); HUD de grupo aparece/atualiza no instante
-do aceite, sem precisar de movimento. Duelo/trade/Interceptar (os outros 3
-buffers corrigidos) não foram especificamente re-testados manualmente
-neste ciclo — mesma causa raiz, mesma classe de fix, risco baixo, mas
-vale confirmar se o usuário notar algo parecido nesses fluxos.
+**Validado pelo usuário (22/07/2026)**: arena confirmada — portão abre
+visualmente na hora certa, sem precisar sair/voltar da tela. Grupo/duelo
+também confirmados (HUD/estado atualiza no instante certo).
+
+**Não validado**: trade/Interceptar (os outros 2 buffers corrigidos) não
+foram especificamente re-testados manualmente neste ciclo — mesma causa
+raiz, mesma classe de fix, risco baixo.
+
+### §34.34.4 — TAB e ESPAÇO nunca listavam oponente de PvP como alvo (22/07/2026)
+
+Usuário testou duelo real e reportou: selecionar o oponente com TAB não
+funciona, iniciar auto-attack com ESPAÇO contra ele não funciona, e a
+skill "Punho no Queixo" (guerreiro) "não funciona" contra ele.
+
+**Causa raiz (TAB + ESPAÇO)**: `_visible_enemies_sorted`
+(`ui/systems.py`, usada por `_cycle_tab_target`/TAB) e `_space_engage`
+(`ui/systems.py`, ligado a `K_SPACE`) só iteravam entidades com o
+componente `Enemy` (mobs) — nunca `RemoteControlled` (proxy client-side
+de outro player). Diferente do clique direito
+(`_remote_player_at_world_pos`, já suportava PvP desde antes), essas
+duas vias de seleção simplesmente nunca listavam um oponente de duelo/
+arena/zona como candidato — `combat_state.target_entity_id` nunca virava
+o eid do oponente por esses dois caminhos.
+
+**Por que isso também quebrava skills** (não só auto-attack): a real
+sincronização de alvo com o servidor
+(`client/remote_entity_handlers.py::_sync_combat_target`, chamada TODO
+frame) já resolvia `RemoteControlled.server_eid` corretamente e mandava
+`AUTO_ATTACK` — o mecanismo em si estava certo, só nunca recebia um alvo
+remoto pra sincronizar via TAB/ESPAÇO. Já skills como Punho no Queixo
+dependem de `combat_state.target_entity_id` estar setado (via
+`_resolve_target`) para resolver o alvo antes de mandar `CAST_SKILL` — se
+o jogador só tentou TAB (nunca setou o alvo de verdade), a skill falhava
+com "Nenhum alvo" antes de qualquer coisa sair do cliente. Não foi
+encontrado bug adicional na skill em si: `_skill_punho_no_queixo`
+(`ui/skill_handlers.py`) já usa `_target_alive`/`_resolve_target`
+corretamente, e a execução real acontece só no SERVIDOR
+(`server/skill_processor.py`) — o `deal_damage` client-side dentro do
+handler nunca roda em modo online pra skills não-AoE (confirmado via
+`_use_skill_visual_only`), então a preocupação de "CombatStats ausente
+no cliente" ali é irrelevante na prática.
+
+**Fix**: `_visible_enemies_sorted` e `_space_engage` ganham um segundo
+loop sobre `RemoteControlled`, incluindo o eid só se
+`can_engage(world, player, eid)` retornar `True` (mesmo gate de
+`_client_pvp_context` já usado pelo clique — duelo/arena/zona, nunca
+players comuns fora de contexto PvP).
+
+**Validado**: `tests/test_client_ui.py` (3 testes novos) — TAB inclui
+oponente engajável e NÃO inclui player remoto fora de contexto PvP;
+ESPAÇO seleciona/persegue oponente engajável. Confirmado por reversão
+controlada (`git stash`): os 2 testes de "inclui" falham sem o fix e
+passam com ele. Suíte completa 397/397, rodada 3x.
+
+**Não validado**: sessão manual — TAB seleciona o oponente de duelo;
+ESPAÇO inicia auto-attack contra ele; Punho no Queixo funciona assim que
+o alvo está de fato selecionado (via TAB/ESPAÇO/clique) — vale re-testar
+especificamente isso, já que a hipótese é que a skill em si nunca teve
+bug, só nunca recebia um alvo válido.
 
 ---
 
