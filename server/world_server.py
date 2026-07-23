@@ -456,11 +456,13 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         from engine.core_systems import register_lethal_interceptor
         register_lethal_interceptor(self._lethal_interceptor_composite)
 
-        # Rastreador de dano — acumula dano causado por player em partida de
-        # Arena pro placar de fim de partida (MatchProcessorMixin._track_
-        # arena_damage é no-op fora de partida, checa _player_match_id).
+        # Rastreador de dano — slot ÚNICO (mesma composição de
+        # _lethal_interceptor_composite): placar de fim de partida de Arena
+        # (_track_arena_damage) + estatísticas acumuladas pro modal de
+        # estatísticas (Fase E, _track_cumulative_damage). Ver
+        # _damage_tracker_composite.
         from engine.core_systems import register_damage_tracker
-        register_damage_tracker(self._track_arena_damage)
+        register_damage_tracker(self._damage_tracker_composite)
 
     def _load_map_for(self, map_file: str, instance_key: str = "") -> "_MapBundle":
         """
@@ -949,6 +951,25 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         except Exception as _ql_err:
             log.warning(f"[World] aviso: QuestLog não criado — {_ql_err}")
 
+        # CharStatsTracker — estatísticas acumuladas pro modal de estatísticas
+        # (Fase E, 23/07/2026), server-autoritativo (mesma regra de SkillLevels/
+        # QuestLog acima).
+        try:
+            from engine.components import CharStatsTracker as _CST_trk
+            _cst_comp = _CST_trk()
+            _cst_raw  = char_data.get("char_stats_json") or "{}"
+            _cst_d    = _json.loads(_cst_raw) if isinstance(_cst_raw, str) else (_cst_raw or {})
+            for _f in ("pve_damage", "pvp_damage", "mobs_killed", "players_killed",
+                       "duel_wins", "duel_losses"):
+                if _f in _cst_d:
+                    setattr(_cst_comp, _f, int(_cst_d[_f]))
+            for _f in ("arena_wins", "arena_losses"):
+                for _mode, _v in (_cst_d.get(_f) or {}).items():
+                    getattr(_cst_comp, _f)[_mode] = int(_v)
+            self.world.add_component(eid, _cst_comp)
+        except Exception as _cst_err:
+            log.warning(f"[World] aviso: CharStatsTracker não criado — {_cst_err}")
+
         self._player_eids[session_id]    = eid
         self._player_eid_to_sid[eid]     = session_id   # reverse map
 
@@ -999,7 +1020,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         """Coleta estado ECS completo do jogador para persistência."""
         import json as _json
         from engine.components import (TileMovement, CombatStats, CharacterStats,
-                                 Wallet, PlayerSkills, SkillLevels, QuestLog)
+                                 Wallet, PlayerSkills, SkillLevels, QuestLog, CharStatsTracker)
         eid = self._player_eids.get(session_id)
         if eid is None:
             return {}
@@ -1010,6 +1031,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         ps   = self.world.get_component(eid, PlayerSkills)
         skl  = self.world.get_component(eid, SkillLevels)
         ql   = self.world.get_component(eid, QuestLog)
+        cst  = self.world.get_component(eid, CharStatsTracker)
 
         # Stats: level, xp, atributos base
         stats = {}
@@ -1050,6 +1072,17 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             quests = {"active": {q: list(p) for q, p in ql.active.items()},
                       "completed": list(ql.completed)}
 
+        # CharStatsTracker: sempre lido do componente vivo do servidor — nunca
+        # do cliente (mesma regra de skill_levels/quests acima).
+        char_stats = None
+        if cst:
+            char_stats = {
+                "pve_damage": cst.pve_damage, "pvp_damage": cst.pvp_damage,
+                "mobs_killed": cst.mobs_killed, "players_killed": cst.players_killed,
+                "duel_wins": cst.duel_wins, "duel_losses": cst.duel_losses,
+                "arena_wins": dict(cst.arena_wins), "arena_losses": dict(cst.arena_losses),
+            }
+
         return {
             "tile_x":       tm.current_tile_x if tm else 10,
             "tile_y":       tm.current_tile_y if tm else 10,
@@ -1060,6 +1093,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             "skills":       skills,
             "skill_levels": skill_levels,
             "quests":       quests,
+            "char_stats":   char_stats,
             "map_id":       self.get_player_map(session_id),
         }
 
@@ -1326,6 +1360,20 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         if self._duel_lethal_interceptor(world, killer_eid, target_id):
             return True
         return self._arena_lethal_interceptor(world, killer_eid, target_id)
+
+    def _damage_tracker_composite(self, killer_eid: int, target_id: int, dmg: int) -> None:
+        """Registrado em _load_all_maps via engine/core_systems.
+        register_damage_tracker — o slot é ÚNICO (mesmo padrão de
+        _lethal_interceptor_composite acima): placar de arena
+        (_track_arena_damage, no-op fora de partida) + estatísticas
+        acumuladas do personagem pro modal de estatísticas (Fase E,
+        23/07/2026)."""
+        self._track_arena_damage(killer_eid, target_id, dmg)
+        from engine.components import PlayerControlled as _PC_dmgtrk
+        from engine.utils import incr_char_stat
+        field = ("pvp_damage" if self.world.get_component(target_id, _PC_dmgtrk) is not None
+                 else "pve_damage")
+        incr_char_stat(self.world, killer_eid, field, dmg)
 
     def set_player_target(self, session_id: str, target_eid: int) -> None:
         """Define o alvo de combate do jogador. target_eid=-1 para parar.

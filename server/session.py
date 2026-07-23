@@ -197,6 +197,9 @@ class SessionManager:
             # quests: SEMPRE servidor — progresso/entrega é server-autoritativa,
             # mesma regra de skill_levels (ver quest_logic.py/PROBLEMAS_ARQUITETURA.md).
             "quests": srv_data.get("quests"),
+            # char_stats: SEMPRE servidor — estatísticas acumuladas pro modal
+            # de estatísticas (Fase E), mesma regra de quests/skill_levels.
+            "char_stats": srv_data.get("char_stats"),
             # map_id: SERVIDOR autoritativo — zona atual do player.
             "map_id": srv_data.get("map_id"),
         }
@@ -1142,6 +1145,33 @@ class SessionManager:
 
         self.world_server._revive_player(player_eid, hp_frac=GHOST_CORPSE_REVIVE_HP_FRAC, at_corpse=True)
 
+    async def _handle_char_stats_request(self, session: Session, payload: dict, ts: int) -> None:
+        """Jogador abriu o modal de estatísticas — snapshot sob demanda, lido
+        direto do componente vivo (CharStatsTracker), sem round-trip de banco
+        (mesma razão de não ser um canal contínuo tipo STATS_UPDATE: só muda
+        em eventos raros, não vale a pena empurrar a cada tick)."""
+        if not session.authenticated:
+            return
+        player_eid = self.world_server._player_eids.get(session.session_id)
+        if player_eid is None:
+            return
+        from engine.components import CharStatsTracker, QuestLog
+        cst = self.world_server.world.get_component(player_eid, CharStatsTracker)
+        ql  = self.world_server.world.get_component(player_eid, QuestLog)
+        if cst is None:
+            return
+        await session.send(MsgType.CHAR_STATS_DATA, {
+            "pve_damage":       cst.pve_damage,
+            "pvp_damage":       cst.pvp_damage,
+            "mobs_killed":      cst.mobs_killed,
+            "players_killed":   cst.players_killed,
+            "duel_wins":        cst.duel_wins,
+            "duel_losses":      cst.duel_losses,
+            "arena_wins":       dict(cst.arena_wins),
+            "arena_losses":     dict(cst.arena_losses),
+            "quests_completed": len(ql.completed) if ql else 0,
+        })
+
     # ── Helpers de spawn ─────────────────────────────────────────────────────
 
     async def _spawn_and_start(self, session: Session, char_data: dict) -> None:
@@ -1717,6 +1747,7 @@ class SessionManager:
         MsgType.ARENA_QUEUE_LEAVE:   _handle_arena_queue_leave,
         MsgType.ARENA_MATCH_ACCEPT:  _handle_arena_match_accept,
         MsgType.ARENA_FORFEIT:       _handle_arena_forfeit,
+        MsgType.CHAR_STATS_REQUEST:  _handle_char_stats_request,
     }
 
     # ── AOI subscription — núcleo do sistema ─────────────────────────────────

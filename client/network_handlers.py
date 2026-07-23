@@ -40,6 +40,8 @@ class NetworkHandlers:
             self._handle_msg_stats_update(payload)
         elif msg_type == MsgType.SKILL_LEVELS_UPDATE:
             self._handle_msg_skill_levels_update(payload)
+        elif msg_type == MsgType.CHAR_STATS_DATA:
+            self._char_stats_ui.set_data(payload)
         elif msg_type == MsgType.QUEST_UPDATE:
             self._handle_msg_quest_update(payload)
         elif msg_type == MsgType.PLAYER_DEATH:

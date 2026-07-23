@@ -165,6 +165,13 @@ class MsgType(str, Enum):
     SELL_REQUEST       = "sell_request"      # C→S  {item_name, item_value, stack_sold}
     SELL_RESULT        = "sell_result"       # S→C  {success, item_name, sell_price, new_gold} | {success:False, reason}
 
+    # ── Estatísticas do personagem (Fase E, 23/07/2026) ────────────
+    # Request/response sob demanda (não um canal contínuo tipo STATS_UPDATE):
+    # CharStatsTracker só muda em eventos raros (dano/kill/duelo/arena) e o
+    # modal só é aberto ocasionalmente — ver engine/components.py::CharStatsTracker.
+    CHAR_STATS_REQUEST = "char_stats_request"  # C→S  {} — abrir modal de estatísticas
+    CHAR_STATS_DATA    = "char_stats_data"     # S→C  privado, snapshot atual (ver CharStatsTracker)
+
     # ── Inventário / Loot ─────────────────────────────────────────
     INVENTORY_UPDATE   = "inv_update"      # S→C  item adicionado/removido/modificado
     LOOT_AVAILABLE     = "loot_available"  # S→C  corpo com loot apareceu no tile
@@ -291,6 +298,7 @@ C2S_REQUIRED: dict = {
     MsgType.PARTY_INVITE:       {"target_eid": _NUM},
     MsgType.PARTY_KICK:         {"target_eid": _NUM},
     MsgType.SAVE_STATE:         {},   # payload inteiro é dict validado a fundo no handler
+    MsgType.CHAR_STATS_REQUEST: {},
 }
 
 
@@ -788,6 +796,24 @@ def validate_c2s(msg_type: "MsgType", payload) -> "str | None":
 # Cliente calcula RTT = now() - client_ts
 # Cliente estima offset de relógio = server_ts - (client_ts + RTT/2)
 
+
+# ── C→S: CHAR_STATS_REQUEST ──────────────────────────────────────────────────
+# {} — jogador abriu o modal de estatísticas do personagem.
+
+# ── S→C: CHAR_STATS_DATA ──────────────────────────────────────────────────────
+# {
+#   "pve_damage":     int *
+#   "pvp_damage":     int *
+#   "mobs_killed":    int *
+#   "players_killed": int *
+#   "duel_wins":      int *
+#   "duel_losses":    int *
+#   "arena_wins":     dict *   {"1v1": int, "2v2": int, "3v3": int}
+#   "arena_losses":   dict *   {"1v1": int, "2v2": int, "3v3": int}
+#   "quests_completed": int *  deriva de len(QuestLog.completed), sem campo próprio
+# }
+# Enviado APENAS ao dono, em resposta a CHAR_STATS_REQUEST (ver
+# engine/components.py::CharStatsTracker — fonte única dos 8 primeiros campos).
 
 # ── Helpers de construção de payloads ────────────────────────────────────────
 # Funções factory para os payloads mais complexos.

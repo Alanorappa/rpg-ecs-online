@@ -65,6 +65,12 @@ class ServerDeathHandler:
             # Player morreu (PvP): usa _handle_player_death, NÃO o fluxo de mob
             # (que criaria corpse com loot, daria XP de mob e despawnaria a entidade).
             if self.world_server and eid in self.world_server._player_eids.values():
+                # CharStatsTracker.players_killed (Fase E) — só conta se o
+                # killer também for player (mob que mata player não credita
+                # "players_killed" pra ninguém).
+                if pd.killer_entity_id in self.world_server._player_eids.values():
+                    from engine.utils import incr_char_stat as _incr_cst_pk
+                    _incr_cst_pk(self.world, pd.killer_entity_id, "players_killed")
                 self.world_server._handle_player_death(eid)
                 try:
                     self.world.remove_component(eid, PendingDeath)
@@ -236,6 +242,13 @@ class ServerDeathHandler:
             if damage_log:
                 # damage_log é dict preservado em ordem de inserção (Python 3.7+)
                 first_attacker_eid = next(iter(damage_log))
+
+            # 3a2. CharStatsTracker.mobs_killed (Fase E, modal de estatísticas)
+            # — mesmo dono que loot/quest (first-attacker), incrementado uma
+            # vez por mob morto, independente de quantos players participaram.
+            if first_attacker_eid != -1:
+                from engine.utils import incr_char_stat as _incr_cst_mob
+                _incr_cst_mob(self.world, first_attacker_eid, "mobs_killed")
 
             # 3b. Evento de quest "kill" — first-attacker é o dono do
             # progresso (mesmo critério de dono do loot). Server-autoritativo

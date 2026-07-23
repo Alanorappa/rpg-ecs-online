@@ -80,7 +80,7 @@ class HotbarEditorHandlers:
         # ui/quest_system.py::_blit_scrollable).
         _MENU_ROWS = [("Inventário", "inventario"), ("Talentos", "talentos"),
                       ("Mapa", "mapa"), ("Diário de Quests", "diario"),
-                      ("Habilidades", "habilidades")]
+                      ("Habilidades", "habilidades"), ("Estatísticas", "estatisticas")]
         n_rows   = len(_MENU_ROWS) + NUM_SLOTS + _CB.NUM_SLOTS
         ppx, ppy = self._safe_panel_origin(UI.HOTBAR_EDITOR_W, UI.HOTBAR_EDITOR_MAX_H)
         ppx, ppy = ppx + UI.HOTBAR_EDITOR_OFFSET_X, ppy + UI.HOTBAR_EDITOR_OFFSET_Y

@@ -104,6 +104,14 @@ class DuelProcessorMixin:
         loser_eid = -1
         if winner_eid in eids:
             loser_eid = eids[0] if eids[1] == winner_eid else eids[1]
+
+        # CharStatsTracker.duel_wins/duel_losses (Fase E) — só em vitória
+        # decidida de verdade (reason=="win"), nunca em "distance"/
+        # "disconnect" (sem vencedor real, ninguém ganha/perde).
+        if reason == "win" and winner_eid != -1 and loser_eid != -1:
+            from engine.utils import incr_char_stat as _incr_cst_duel
+            _incr_cst_duel(self.world, winner_eid, "duel_wins")
+            _incr_cst_duel(self.world, loser_eid, "duel_losses")
         tx = ty = 0
         map_file = None
         if winner_eid != -1:

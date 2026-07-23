@@ -285,3 +285,30 @@ def is_movement_locked(world, entity_id: int) -> bool:
     polimorfia/desorientado por completo).
     """
     return _cc_blocks(world, entity_id, "blocks_move")
+
+
+def incr_char_stat(world, eid: int, field: str, amount: int = 1) -> None:
+    """Incrementa um campo escalar de `CharStatsTracker` (Fase E, modal de
+    estatísticas) — no-op silencioso se `eid` não tiver o componente (mob,
+    NPC, ou entidade sintética) ou não for um dos campos escalares
+    conhecidos. Fonte única — todo ponto de tracking (dano, kills, duelo)
+    chama isto em vez de buscar o componente na mão, pra nunca divergir do
+    schema de `CharStatsTracker` (engine/components.py)."""
+    from engine.components import CharStatsTracker
+    cst = world.get_component(eid, CharStatsTracker)
+    if cst is None or not hasattr(cst, field):
+        return
+    setattr(cst, field, getattr(cst, field) + amount)
+
+
+def incr_char_stat_mode(world, eid: int, field: str, mode: str, amount: int = 1) -> None:
+    """Irmã de `incr_char_stat` pros campos por-modo (`arena_wins`/
+    `arena_losses`, dict[mode_id → int]) — usa `setdefault` porque contas
+    antigas podem não ter um `mode_id` novo (ex: "3v3" adicionado depois)
+    no dict carregado do banco."""
+    from engine.components import CharStatsTracker
+    cst = world.get_component(eid, CharStatsTracker)
+    if cst is None or not hasattr(cst, field):
+        return
+    d = getattr(cst, field)
+    d[mode] = d.setdefault(mode, 0) + amount

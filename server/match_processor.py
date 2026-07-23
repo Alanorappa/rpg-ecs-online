@@ -414,6 +414,17 @@ class MatchProcessorMixin:
                 "eid": eid, "results": results,
             })
 
+        # CharStatsTracker.arena_wins/arena_losses (Fase E) — por modo.
+        # Hardcoded "2v2" por enquanto (único modo existente até a Fase H
+        # generalizar match_id/team_size por ARENA_MODES); ninguém ganha/
+        # perde se a partida terminou sem vencedor (winner_team_key=None,
+        # ex: os dois times esvaziaram por forfeit simultâneo).
+        if winner_team_key is not None:
+            from engine.utils import incr_char_stat_mode as _incr_cst_arena
+            for eid in all_members:
+                field = "arena_wins" if eid in winner_members else "arena_losses"
+                _incr_cst_arena(self.world, eid, field, "2v2")
+
     def _arena_leave_now(self, match_id: str, eid: int) -> None:
         """`eid` sai da partida IMEDIATAMENTE (desconexão, /forfeit, ou
         clique em "Sair da Arena" depois de decidida) — restaura mapa/

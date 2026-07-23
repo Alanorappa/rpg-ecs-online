@@ -1250,6 +1250,24 @@ class QuestLog:
         self.completed: set  = set()
 
 
+class CharStatsTracker:
+    """Estatísticas acumuladas do personagem pro modal de estatísticas
+    (Fase E, 23/07/2026) — server-autoritativo, mesma regra de SkillLevels/
+    QuestLog (só o servidor incrementa e persiste; cliente só exibe).
+    arena_wins/arena_losses são por modo (chave = "1v1"/"2v2"/"3v3", ver
+    Fase H) — usar `.setdefault(mode_id, 0)` ao incrementar, nunca assumir
+    que a chave já existe (contas antigas não tinham 3v3 no schema)."""
+    def __init__(self) -> None:
+        self.pve_damage:     int = 0
+        self.pvp_damage:     int = 0
+        self.mobs_killed:    int = 0
+        self.players_killed: int = 0
+        self.duel_wins:      int = 0
+        self.duel_losses:    int = 0
+        self.arena_wins:     dict = {"1v1": 0, "2v2": 0, "3v3": 0}
+        self.arena_losses:   dict = {"1v1": 0, "2v2": 0, "3v3": 0}
+
+
 # ---------------------------------------------------------------------------
 # Componentes de magia (classe Mago)
 # ---------------------------------------------------------------------------

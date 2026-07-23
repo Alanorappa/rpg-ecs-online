@@ -38,6 +38,7 @@ DEFAULTS = {
         "diario":      106,   # K_j
         "habilidades": 104,   # K_h  — painel de skills aprendidas
         "skill_level": 108,   # K_l  — painel de Skill Level (Tibia-like)
+        "estatisticas": 99,   # K_c  — modal de estatísticas do personagem (Fase E)
     },
 }
 

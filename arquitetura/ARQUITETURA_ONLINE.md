@@ -2596,6 +2596,8 @@ detalhes, validações e plano dos restantes estão TODOS lá (§11 e
 | S→C | `PARTY_STATE` | `{party_id, leader_eid, members:[{eid,name,class_id,level,hp,hp_max}]}` — a todos os membros a cada mudança; `party_id:-1, members:[]` individual pra quem saiu/foi expulso | ✅ |
 | C→S | `PARTY_LEAVE` | `{}` | ✅ |
 | C→S | `PARTY_KICK` | `{target_eid}` — só líder | ✅ |
+| C→S | `CHAR_STATS_REQUEST` | `{}` — abrir modal de estatísticas (Fase E, 23/07/2026) | ✅ |
+| S→C | `CHAR_STATS_DATA` | `{pve_damage, pvp_damage, mobs_killed, players_killed, duel_wins, duel_losses, arena_wins{}, arena_losses{}, quests_completed}` — só ao dono, sob demanda (não é push contínuo) | ✅ |
 
 ---
 
@@ -6492,6 +6494,90 @@ guerreiro, autoataca, sem poder castar) e contra player em duelo (mesmo
 comportamento, mais o bloqueio de movimento/skill visível no cliente);
 medir os 3s exatos; testar quebra por morte do taunter em cenário real
 (não só no teste automatizado).
+
+### §34.39 — Leva pós-playtest: Fase E — modal de estatísticas do
+personagem (23/07/2026)
+
+Novo componente ECS `CharStatsTracker` (`engine/components.py`), server-
+autoritativo, mesma regra de `SkillLevels`/`QuestLog`: `pve_damage`,
+`pvp_damage`, `mobs_killed`, `players_killed`, `duel_wins`, `duel_losses`,
+`arena_wins`/`arena_losses` (dict por modo — `{"1v1":0,"2v2":0,"3v3":0}`,
+"1v1"/"3v3" já existem no schema mesmo sem os modos existirem ainda, ver
+Fase H). Persistido em coluna nova `char_stats_json` (`server/auth.py::
+init_db()`, migração `ALTER TABLE` — mesmo padrão de `quests_json`/
+`skill_levels_json`); carregado/salvo em `server/world_server.py::
+spawn_player`/`get_player_save_data` e passado por `server/session.py::
+_build_save_merge` (server-autoritativo, nunca client-influenciado).
+
+**Hooks de tracking (nenhum lugar novo — todos já eram o ponto único de
+verdade certo para o evento correspondente)**:
+- **Dano PvE/PvP**: `register_damage_tracker` (`engine/core_systems.py`) é
+  um slot ÚNICO — antes só `MatchProcessorMixin._track_arena_damage`
+  (placar de fim de partida) estava registrado. Composto agora em
+  `WorldServer._damage_tracker_composite` (mesmo padrão de
+  `_lethal_interceptor_composite`, já existente pra duelo+arena): chama
+  `_track_arena_damage` E incrementa `pve_damage`/`pvp_damage` do
+  `killer_eid`, distinguindo os dois checando se o ALVO tem
+  `PlayerControlled` (= é player = PvP; senão = mob = PvE) — mais simples
+  que checar `Faction`/zona, e correto por construção (dano
+  jogador→jogador só acontece quando `can_engage` já liberou PvP por
+  algum contexto — duelo, arena, zona).
+- **Mobs mortos**: `server_death_handler.py`, incrementa `mobs_killed` do
+  `first_attacker_eid` (mesmo dono do loot/quest kill) quando resolvido.
+- **Players mortos (PvP de mundo aberto)**: `server_death_handler.py`,
+  bloco "Player morreu (PvP)" — incrementa `players_killed` do
+  `pd.killer_entity_id` SE o killer também for player. Só dispara pra
+  kills de verdade (zona PvP) — duelo e arena NUNCA chegam a
+  `PendingDeath` de player (golpe letal é interceptado, vira 1 HP + fim
+  de partida/duelo — ver `_lethal_interceptor_composite`), então não há
+  dupla-contagem com `duel_losses`/`arena_losses`.
+- **Duelos ganhos/perdidos**: `duel_processor.py::end_duel` — só quando
+  `reason=="win"` e há vencedor/perdedor de verdade (não em
+  `"distance"`/`"disconnect"`, onde ninguém ganha nem perde).
+- **Arenas ganhas/perdidas**: `match_processor.py::_finish_match` — por
+  enquanto hardcoded `"2v2"` (único modo que existe; Fase H generaliza
+  via `ARENA_MODES`/`match["mode_id"]`). Não credita nada se
+  `winner_team_key is None` (partida sem vencedor, ex: os dois times
+  esvaziaram por forfeit simultâneo).
+
+**Helpers únicos** `incr_char_stat`/`incr_char_stat_mode`
+(`engine/utils.py`, ao lado de `is_action_locked`/`is_movement_locked`) —
+no-op silencioso se a entidade não tiver `CharStatsTracker` (mob), fonte
+única pra nunca divergir do schema do componente.
+
+**Protocolo**: `CHAR_STATS_REQUEST` (C→S, `{}`) / `CHAR_STATS_DATA` (S→C,
+privado) — request/response SOB DEMANDA (`shared/messages.py`), não um
+canal contínuo tipo `STATS_UPDATE`: `CharStatsTracker` muda em eventos
+raros e o modal só abre ocasionalmente, não vale a pena empurrar a cada
+tick. Handler `server/session.py::_handle_char_stats_request` lê direto
+do componente vivo (sem round-trip de banco) + deriva `quests_completed`
+de `len(QuestLog.completed)` (sem campo próprio, já persistido em
+`quests_json`).
+
+**UI**: `ui/char_stats_ui.py` (`CharStatsUI`, novo, tecla **C** —
+`config.py::DEFAULTS["menu_keybinds"]["estatisticas"]`, rebindável no
+editor de atalhos — `client/hotbar_editor_handlers.py::_MENU_ROWS`) —
+painel read-only no padrão de `ui/skill_level_ui.py` (mais próximo por
+também não ter interação, diferente de `ui/talent_system.py`). Estado
+`self._data` começa `None` ("Carregando...") até `CHAR_STATS_DATA`
+chegar — `open()` dispara `CHAR_STATS_REQUEST` via
+`client/save_sync_handlers.py::_send_char_stats_request`.
+
+**Validado**: `tests/test_char_stats.py` (10 testes novos) — dano PvE
+incrementa `pve_damage` e não `pvp_damage` (e vice-versa); dano bloqueado
+por facção (`blocked_friendly`) não incrementa nada; mob morto credita
+`mobs_killed` do first-attacker; duelo com vencedor credita
+`duel_wins`/`duel_losses`, encerramento por distância não credita
+ninguém; kill de verdade em zona PvP credita `players_killed`; fim de
+partida de arena credita `arena_wins`/`arena_losses` por modo, sem
+vencedor não credita ninguém; `get_player_save_data` inclui `char_stats`
+com os valores corretos. Suíte completa 424/424, rodada 3x.
+
+**Não validado**: sessão manual — abrir o modal (tecla C), confirmar que
+os números batem com ações reais feitas em sessão (causar dano em mob e
+em player, matar mob, ganhar/perder duelo, ganhar/perder arena 2v2,
+completar quest) e que sobrevivem a um reload de personagem (logout/
+login).
 
 ### Arquiteturais (A) — débito técnico
 

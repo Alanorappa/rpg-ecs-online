@@ -35,6 +35,7 @@ from ui.icon_manager import ICONS
 from ui.sound_manager import SOUNDS
 from ui.ui_compare import draw_compare_panel
 from ui.talent_system import TalentSystem
+from ui.char_stats_ui import CharStatsUI
 from ui.skill_level_ui import SkillLevelUI
 from ui.ui_helpers import item_tooltip_lines, draw_stack_count, RARITY_COLORS as _ITEM_RARITY_COLORS, fill_surf
 from ui.map_overlay import MapOverlay
@@ -311,6 +312,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._hbe_expand_slots: bool = False
         self._show_habilidades: bool = False     # painel Habilidades (tecla H)
         self._show_skills: bool = False          # painel Skill Level (tecla L)
+        self._show_char_stats: bool = False      # modal de estatísticas (tecla C)
         self._hab_scroll: int = 0               # scroll do painel Habilidades
         self._ui_events:      list = []            # eventos do frame atual (para _draw_* sem parâmetro)
         self._orig_mouse_pos  = pygame.mouse.get_pos  # kept for compatibility
@@ -349,6 +351,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._init_systems()
         self._talent_system = TalentSystem(self.world, self.player_entity, self.screen)
         self._skill_level_ui = SkillLevelUI(self.world, self.player_entity, self.screen)
+        self._char_stats_ui = CharStatsUI(self.screen)
+        self._char_stats_ui.on_open = self._send_char_stats_request
         self._shop_system   = ShopSystem(self.world, self.player_entity, self.screen)
         self._quest_system  = QuestSystem(self.world, self.player_entity)
         set_quest_system(self._quest_system)
@@ -372,8 +376,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         # vivem fora de GameEngine — eles não têm acesso a self._u()/
         # self.font_* direto, então precisam de set_ui_scale() explícito
         # (ver ui_scale_mixin.py e arquitetura/PROBLEMAS_ARQUITETURA.md, IU3).
-        for _sys in (self._talent_system, self._skill_level_ui, self._shop_system, self._quest_system,
-                     self._quest_dialog, self._quest_journal,
+        for _sys in (self._talent_system, self._skill_level_ui, self._char_stats_ui, self._shop_system,
+                     self._quest_system, self._quest_dialog, self._quest_journal,
                      self._crafting_system, self._trainer_system):
             _sys.set_ui_scale(self._ui_scale)
         # Insere QuestSystem após xp_system (posição 13, depois do índice de xp_system)
@@ -1229,6 +1233,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._show_debug      = False
         self._show_habilidades = False
         self._show_skills     = False
+        self._show_char_stats = False
         # Cancela qualquer drag em andamento (habilidades/inventário/hotbar/
         # consumable bar) — fechar tudo inclui desistir de um drag pendente.
         # Antes da unificação em DragState, só o drag de habilidades era
@@ -1532,6 +1537,12 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                         self._close_all_modals()
                         if not already_open:
                             self._show_skills = True
+                    elif event.key == self._menu_keys.get("estatisticas", pygame.K_c):
+                        already_open = self._show_char_stats
+                        self._close_all_modals()
+                        if not already_open:
+                            self._show_char_stats = True
+                            self._char_stats_ui.open()
                     elif event.key in (pygame.K_EQUALS, pygame.K_KP_PLUS) and not self._god_mode.active:
                         new_zoom = min(self._zoom_max, round(self._zoom + self._zoom_step, 10))
                         if new_zoom != self._zoom:
@@ -1603,6 +1614,13 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 self._skill_level_ui.handle_events(events, panel)
                 if self._skill_level_ui.wants_close:
                     self._show_skills = False
+
+            # Modal de Estatísticas consome eventos quando aberto (read-only)
+            if self._show_char_stats:
+                panel = self._char_stats_ui._panel_rect()
+                self._char_stats_ui.handle_events(events, panel)
+                if self._char_stats_ui.wants_close:
+                    self._show_char_stats = False
 
             # UI de morte/espírito: consome cliques nos botões "Liberar espírito"/"Sim"
             self._update_death_ui(events, dt)
@@ -2102,6 +2120,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 self._talent_system.render()
             if self._show_skills:
                 self._skill_level_ui.render()
+            if self._show_char_stats:
+                self._char_stats_ui.render()
             if self._show_hotbar_editor:
                 self._draw_hotbar_editor(events)
             _drag_render = self._get_drag()
@@ -2570,6 +2590,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             self._talent_system.screen = new_screen
         if hasattr(self._skill_level_ui, "screen"):
             self._skill_level_ui.screen = new_screen
+        if hasattr(self._char_stats_ui, "screen"):
+            self._char_stats_ui.screen = new_screen
         if hasattr(self._shop_system, "screen"):
             self._shop_system.screen = new_screen
         if hasattr(self._quest_dialog, "screen"):

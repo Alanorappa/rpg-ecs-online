@@ -50,6 +50,7 @@ class UI:
     QUEST_JOURNAL_W, QUEST_JOURNAL_H   = 700, 520  # diário de quests (tecla J)
     TALENTS_W, TALENTS_H          = 800, 640   # árvore de talentos (tecla T)
     SKILL_LEVELS_W, SKILL_LEVELS_H = 700, 560  # painel de Skill Level (tecla L) — nível+xp do personagem + 11 trilhas, read-only
+    CHAR_STATS_W, CHAR_STATS_H    = 460, 560   # modal de estatísticas do personagem (tecla C), read-only
     TRADE_W, TRADE_H              = 440, 450   # janela de trade (player↔player) — bag própria + 2 colunas de oferta
     CHAT_W, CHAT_H                = 380, 220   # janela de chat (canto inferior esquerdo) — abas Local/Mundial/Combate
     # Modal de interação com player (clique direito em player amigável —
@@ -171,6 +172,12 @@ class UI:
     SKILL_LEVELS_BAR_H   = 22   # altura da barra — alta o bastante pro texto de xp ficar sobreposto, centrado
     SKILL_LEVELS_NAME_COL_W = 230  # largura reservada pro nome da skill antes da coluna "Lv X (+Y%)"
 
+    # ── Estatísticas do personagem (tecla C, Fase E) — geometria interna ────
+    # Arquivo: ui/char_stats_ui.py
+    CHAR_STATS_PAD      = 20   # respiro entre a borda do painel e o conteúdo
+    CHAR_STATS_HEADER_H = 56   # altura reservada pro título no topo
+    CHAR_STATS_ROW_H    = 34   # altura de cada linha nome+valor
+
     # ── Mapa-múndi (overlay, tecla M) ────────────────────────────────────────
     # Arquivo: map_overlay.py. Esse painel NÃO usa pixel fixo — o tamanho é
     # sempre uma PROPORÇÃO da tela atual (0.70 = 70% da largura/altura da
@@ -253,6 +260,8 @@ class UI:
     TALENTS_OFFSET_Y      = 0
     SKILL_LEVELS_OFFSET_X = 0
     SKILL_LEVELS_OFFSET_Y = 0
+    CHAR_STATS_OFFSET_X = 0
+    CHAR_STATS_OFFSET_Y = 0
     TRADE_OFFSET_X        = 0
     TRADE_OFFSET_Y        = 0
     CHAT_OFFSET_X         = 0

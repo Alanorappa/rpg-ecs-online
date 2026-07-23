@@ -224,6 +224,14 @@ class SaveSyncHandlers:
                 "available_points": tt.available_points,
             }})
 
+    def _send_char_stats_request(self) -> None:
+        """Pede o snapshot atual de CharStatsTracker ao abrir o modal de
+        estatísticas (Fase E) — sob demanda, não um push contínuo."""
+        if not self._net or not self._net.connected or self._my_eid == -1:
+            return
+        from shared.messages import MsgType as _MT_csr
+        self._net.send(_MT_csr.CHAR_STATS_REQUEST, {})
+
     def _send_hotbar_update(self) -> None:
         """Envia apenas a barra de ações ao servidor quando ela é alterada."""
         if not self._net or not self._net.connected or self._my_eid == -1:
