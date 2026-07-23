@@ -4460,10 +4460,18 @@ class SkillSystem(System, SkillHandlers):
                 if combat_state:
                     combat_state.is_casting = True
 
-        # Interceptar: executa animação de dash localmente (client-side prediction)
-        # O servidor confirma a posição final via ENTITY_MOVE; se coincidir, não interrompe.
-        if skill.skill_id == "interceptar" and _tile_move_sk and combat_state:
-            self._interceptar_dash_visual(combat_state, _tile_move_sk)
+        # Interceptar: NÃO prediz mais a animação de dash localmente (revisado
+        # 22/07/2026, pedido do usuário — bug real: alvo em movimento causava
+        # dessincronia client/server, personagem ficava em loop de "dash e
+        # volta" a cada rejeição do servidor). A animação só toca quando
+        # `_handle_msg_entity_move` recebe a correção confirmada do servidor
+        # (`is_dash=True`, `skill_rejected=False`) — mesmo mecanismo já usado
+        # pra qualquer deslocamento forçado por servidor (knockback etc.):
+        # como `player_tm.is_moving` continua `False` aqui (nada predito),
+        # esse handler cai no branch que INICIA a animação pela primeira vez,
+        # em vez de reconciliar uma predição local. Se o servidor rejeitar
+        # (`skill_rejected=True`), nenhuma animação chega a tocar — sem
+        # snap-back visível, porque nunca houve nada pra desfazer.
 
         # Fatiador de Corpos: seta timer local para a animação de channeling (hotbar overlay).
         # Ticks reais são processados no servidor; o cliente só usa o timer para o visual.
@@ -4491,53 +4499,6 @@ class SkillSystem(System, SkillHandlers):
             quest_fire("use_skill", skill_id=skill.skill_id, on_dummy=_on_dummy_vo)
 
         return True
-
-    def _interceptar_dash_visual(self, combat_state, tile_move) -> None:
-        """Anima o dash do Interceptar localmente, sem verificações de HP (servidor já validou).
-
-        Replica a MESMA validação de caminho do handler autoritativo
-        (_skill_interceptar/_dash_path_clear, skill_handlers.py) — sem isso, a
-        predição local tocava a animação mesmo com obstáculo entre o player e o
-        destino, e o servidor rejeitava depois (desync: cliente "no destino",
-        servidor na posição antiga — ataques seguintes falham por range).
-        O servidor continua autoritativo (correção via skill_rejected cobre
-        qualquer divergência restante); isto só evita o caso comum visível.
-        """
-        target_id = getattr(combat_state, "target_entity_id", -1)
-        if target_id == -1:
-            return
-        target_tm = self.world.get_component(target_id, TileMovement)
-        if not target_tm:
-            return
-        tx, ty = target_tm.current_tile_x, target_tm.current_tile_y
-        px, py = tile_move.current_tile_x, tile_move.current_tile_y
-        # Tile adjacente mais próximo do player
-        adj = [(tx + dx, ty + dy) for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1))]
-        walkable = [t for t in adj if is_tile_walkable(self.player_entity_id, t[0], t[1])]
-        if not walkable:
-            return
-        dest_x, dest_y = min(walkable, key=lambda t: abs(t[0] - px) + abs(t[1] - py))
-        if not self._dash_path_clear(px, py, dest_x, dest_y):
-            return
-        player_pos = self.world.get_component(self.player_entity_id, Position)
-        new_px = dest_x * TILE_SIZE + TILE_SIZE / 2
-        new_py = dest_y * TILE_SIZE + TILE_SIZE / 2
-        if isinstance(player_pos, Position):
-            tile_move.start_pixel_x = player_pos.x
-            tile_move.start_pixel_y = player_pos.y
-        tile_move.target_pixel_x = new_px
-        tile_move.target_pixel_y = new_py
-        tile_move.target_tile_x  = dest_x
-        tile_move.target_tile_y  = dest_y
-        tile_move.progress       = 0.0
-        tile_move.move_duration  = self.INTERCEPT_DURATION
-        tile_move.is_moving      = True
-        tile_move.is_dash        = True
-        auto = self.world.get_component(self.player_entity_id, PlayerAutoMove)
-        if auto:
-            auto.active        = False
-            auto.path          = []
-            auto.ground_target = None
 
     # ------------------------------------------------------------------
     def _resolve_target(self, combat_state: "CombatState", tile_move: "TileMovement",

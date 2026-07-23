@@ -6334,6 +6334,72 @@ de morto só com nome; zona PvP deixa barra/nome vermelhos; "Voltar ao
 Spawn" troca de mapa corretamente saindo de caverna; corpo não duplica
 mais ao morrer).
 
+### §34.37 — Leva pós-playtest: Fase B — filtro de aliado em AoE (Canção de
+Ninar + Brado Provocativo) e fim da predição local do Interceptar (22-23/07/2026)
+
+**B1 — Canção de Ninar e Brado Provocativo afetavam aliados**: mesma
+classe de bug já corrigida em Pirofagia (20/07/2026) — `apply_effect()`
+(`engine/core_systems.py`) não tem gate de facção, e as duas skills
+iteravam `CombatStats` no raio sem checar `can_engage` antes de aplicar
+`"sleep"`/`"enraged"`. Corrigido com o mesmo padrão de Pirofagia:
+`can_engage(self.world, self.player_entity_id, eid)` antes de cada
+`apply_effect`, em `ui/skill_handlers.py::_skill_cancao_ninar` e
+`_skill_brado_provocativo`. O Brado ainda não é um taunt de verdade (isso
+é a Fase D) — só parou de afetar aliados.
+
+**B2 — Interceptar em loop de dash contra alvo em movimento**: cliente
+prediz o dash otimisticamente no input (`_interceptar_dash_visual`,
+antiga, `ui/systems.py`) usando a posição LOCAL do alvo (possivelmente
+desatualizada); servidor resolve com a posição LIVE — divergência quase
+garantida com alvo em movimento, causando ou dash duplo corrigido em
+sequência, ou rejeição total com snap-back repetido (o "loop" relatado).
+Corrigido removendo a predição local inteira (`_interceptar_dash_visual`
+deletado, era o único call site) — a animação agora só toca quando a
+correção confirmada do servidor chega via `ENTITY_MOVE` (`is_dash=True`,
+`skill_rejected=False`), reaproveitando o MESMO mecanismo de
+reconciliação já usado por qualquer deslocamento forçado por servidor
+(knockback etc.): como `player_tm.is_moving` fica `False` sem predição
+prévia, o handler entra no branch que INICIA a animação do zero, em vez
+de reconciliar algo já em andamento. Rejeição não anima nada (nunca há o
+que desfazer). Único trade-off: perde o feel instantâneo de input local
+(delay de rede antes do dash aparecer) — exatamente a troca pedida pelo
+usuário.
+
+**Descoberta lateral — flakiness pré-existente em `tests/test_server.py`**:
+ao rodar a suíte completa 3x pra fechar esta fase, 3 testes diferentes
+falharam em rodadas separadas (`TestPlayerAttacksMob::
+test_player_attack_reduces_mob_hp`, `TestAutoAttackFlow::
+test_player_target_must_reach_server`, `TestPlayerAttacksMob::
+test_no_duplicate_despawn`) — nunca isolados, só na suíte completa.
+Investigação (revertendo a Fase B via `git stash` e rodando a baseline 3x
+limpa, depois restaurando e reproduzindo a falha) confirmou: não é
+regressão da Fase B (nenhuma delas toca auto-attack simples contra mob) —
+é fragilidade pré-existente. `TestPlayerAttacksMob`/`TestAutoAttackFlow`
+davam só 60 ticks (3s ≈ 1-2 tentativas de auto-attack) esperando "pelo
+menos 1 hit" — miss/dodge/parry é um resultado LEGÍTIMO do roll, então
+"0 hits em 1-2 tentativas" é raro mas não impossível. Como o módulo
+`random` do Python é GLOBAL e nunca resetado entre testes, adicionar
+QUALQUER teste novo em QUALQUER arquivo (não só os relacionados à Fase B)
+muda quantos números aleatórios foram consumidos antes de chegar nesses
+testes, deslocando o roll o bastante pra ocasionalmente cair numa
+sequência infeliz. **Corrigido** (fora do escopo original da Fase B, mas
+a mesma classe de fragilidade ameaçava invalidar o "suíte 3x limpa" de
+qualquer fase futura): os 8 `run_ticks(self.ws, 60)` dessas 2 classes
+viram `run_ticks(self.ws, 240)` (12s) — margem generosa de tentativas,
+sem prender os testes a um seed específico.
+
+**Validado**: `tests/test_combat.py::TestAoeSkillsAllyFilter` (2 testes
+novos, Canção de Ninar/Brado Provocativo não afetam aliado, só inimigo —
+confirmado por reversão controlada) e `tests/test_client_ui.py` (3 testes
+novos — método de predição removido não existe mais; correção confirmada
+do servidor anima do zero; rejeição não anima nada). Suíte completa
+406/406 (+5 testes novos, +1 pelo bump de tick count não alterar
+contagem), rodada 3x limpa (depois do fix de flakiness).
+
+**Não validado**: sessão manual — Interceptar contra alvo em movimento
+(sem loop) e parado (dash ainda funciona normalmente); Canção de Ninar em
+grupo misto (aliado dorme? não deveria).
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |

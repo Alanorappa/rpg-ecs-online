@@ -65,6 +65,18 @@ class TestSpawnAndAOI(unittest.TestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestPlayerAttacksMob(unittest.TestCase):
+    """22/07/2026: janela de combate bumped de 60→240 ticks (3s→12s) nesta
+    classe e em TestAutoAttackFlow — flakiness real descoberta rodando a
+    suíte completa repetidas vezes (diagnosticado ao investigar uma leva de
+    fixes não relacionada): 60 ticks só garante 1-2 tentativas de
+    auto-attack, e miss/dodge/parry é um resultado legítimo do roll —
+    "0 hits em 1-2 tentativas" é raro mas não impossível, e o estado GLOBAL
+    do módulo `random` (nunca resetado entre testes) muda a cada teste novo
+    adicionado em QUALQUER arquivo da suíte, então esta fragilidade podia
+    (e passou a) se manifestar por causa de testes completamente não
+    relacionados rodando antes destes na mesma sessão do pytest. Mais ticks
+    = mais tentativas = a chance de 0 hits fica desprezível, sem tornar os
+    testes deterministas reféns de um seed específico."""
 
     def setUp(self):
         self.ws = make_world_server()
@@ -79,7 +91,7 @@ class TestPlayerAttacksMob(unittest.TestCase):
 
         teleport_mob_to_player(self.ws, mob_eid, self.ws._player_eids["s1"])
         self.ws.set_player_target("s1", mob_eid)
-        run_ticks(self.ws, 60)   # 3s de combate (1-2 ataques)
+        run_ticks(self.ws, 240)   # 12s de combate — margem contra miss/dodge/parry (ver docstring da classe)
 
         hp_after, _ = get_mob_hp(self.ws, mob_eid)
         self.assertLess(hp_after, hp_before,
@@ -90,7 +102,7 @@ class TestPlayerAttacksMob(unittest.TestCase):
         mob_eid = first_mob(self.ws)
         teleport_mob_to_player(self.ws, mob_eid, self.ws._player_eids["s1"])
         self.ws.set_player_target("s1", mob_eid)
-        deltas = run_ticks(self.ws, 60)
+        deltas = run_ticks(self.ws, 240)
 
         player_hits = [c for c in deltas["combat"]
                        if c["attacker"] == self.ws._player_eids["s1"]]
@@ -102,7 +114,7 @@ class TestPlayerAttacksMob(unittest.TestCase):
         _, hp_max_before = get_mob_hp(self.ws, mob_eid)  # captura ANTES do combate
         teleport_mob_to_player(self.ws, mob_eid, self.ws._player_eids["s1"])
         self.ws.set_player_target("s1", mob_eid)
-        deltas = run_ticks(self.ws, 60)
+        deltas = run_ticks(self.ws, 240)
 
         for cr in deltas["combat"]:
             if cr.get("target") == mob_eid:
@@ -119,7 +131,7 @@ class TestPlayerAttacksMob(unittest.TestCase):
 
         teleport_mob_to_player(self.ws, mob_eid, self.ws._player_eids["s1"])
         self.ws.set_player_target("s1", mob_eid)
-        deltas = run_ticks(self.ws, 60)
+        deltas = run_ticks(self.ws, 240)
 
         self.assertIn(mob_eid, deltas["despawned"],
                       "ENTITY_DESPAWN não emitido após morte do mob")
@@ -133,7 +145,7 @@ class TestPlayerAttacksMob(unittest.TestCase):
 
         teleport_mob_to_player(self.ws, mob_eid, self.ws._player_eids["s1"])
         self.ws.set_player_target("s1", mob_eid)
-        run_ticks(self.ws, 60)
+        run_ticks(self.ws, 240)
 
         self.assertNotIn(mob_eid, self.ws._mob_eids,
                          "Mob ainda em _mob_eids após morte")
@@ -147,7 +159,7 @@ class TestPlayerAttacksMob(unittest.TestCase):
 
         teleport_mob_to_player(self.ws, mob_eid, self.ws._player_eids["s1"])
         self.ws.set_player_target("s1", mob_eid)
-        deltas = run_ticks(self.ws, 60)
+        deltas = run_ticks(self.ws, 240)
 
         from collections import Counter
         counts = Counter(deltas["despawned"])
@@ -398,13 +410,13 @@ class TestAutoAttackFlow(unittest.TestCase):
         # Zera timer de ataque para garantir disparo imediato (evita flakiness de estado global)
         self.ws._attack_timers["s1"] = 0.0
 
-        deltas = run_ticks(self.ws, 60)   # 3 segundos
+        deltas = run_ticks(self.ws, 240)   # 12s — margem contra miss/dodge/parry (ver docstring de TestPlayerAttacksMob)
 
         hp_after, _ = get_mob_hp(self.ws, mob_eid)
         player_hits = [c for c in deltas["combat"]
                        if c["attacker"] == self.ws._player_eids["s1"]]
         self.assertGreater(len(player_hits), 0,
-                           "Servidor não processou nenhum ataque em 3s com mob adjacente")
+                           "Servidor não processou nenhum ataque em 12s com mob adjacente")
         self.assertLess(hp_after, hp_before,
                         f"HP do mob não diminuiu: {hp_before} → {hp_after}")
 
@@ -417,10 +429,10 @@ class TestAutoAttackFlow(unittest.TestCase):
 
         teleport_mob_to_player(self.ws, mob_eid, self.ws._player_eids["s1"])
         self.ws.set_player_target("s1", mob_eid)
-        deltas = run_ticks(self.ws, 60)
+        deltas = run_ticks(self.ws, 240)
 
         self.assertIn(mob_eid, deltas["despawned"],
-                      "Mob com HP=1 não morreu após 3s")
+                      "Mob com HP=1 não morreu após 12s")
 
 
 class TestMultiplePlayers(unittest.TestCase):

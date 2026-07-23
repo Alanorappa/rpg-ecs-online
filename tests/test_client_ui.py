@@ -1242,3 +1242,68 @@ def test_spawn_remote_mob_normal_nao_ganha_componente_de_npc_servico():
     assert fx.world.get_component(local_eid, Merchant) is None
     assert fx.world.get_component(local_eid, Trainer) is None
     assert fx.world.get_component(local_eid, QuestGiver) is None
+
+
+# ── B2 (22/07/2026): Interceptar não prediz mais o dash localmente — a
+# animação só toca quando a correção confirmada do servidor chega via
+# ENTITY_MOVE (is_dash=True, skill_rejected=False). Bug real relatado pelo
+# usuário: alvo em movimento causava loop de "dash e volta" a cada rejeição
+# — a predição local nunca mais deveria existir, só a reconciliação.
+def test_interceptar_dash_visual_nao_existe_mais():
+    """Regressão contra reintrodução: SkillSystem não deve mais ter o método
+    de predição local de dash — só a animação disparada pela correção do
+    servidor (ver _handle_msg_entity_move)."""
+    from ui.systems import SkillSystem
+    assert not hasattr(SkillSystem, "_interceptar_dash_visual")
+
+
+def _make_entity_move_fixture():
+    from engine.world import World
+    from engine.components import Position, TileMovement
+    import client.network_handlers as nh_mod
+
+    class _Fixture(nh_mod.NetworkHandlers):
+        def __init__(self, world, player_entity, my_eid):
+            self.world = world
+            self.player_entity = player_entity
+            self._my_eid = my_eid
+            self._self_move_queue = []
+            self._net_last_tx = 0
+            self._net_last_ty = 0
+
+    world = World()
+    player = world.create_entity()
+    world.add_component(player, Position(x=5 * 32 + 16, y=5 * 32 + 16))
+    world.add_component(player, TileMovement(current_tile_x=5, current_tile_y=5))
+    fx = _Fixture(world, player, my_eid=1)
+    return fx, player
+
+
+def test_dash_confirmado_pelo_servidor_anima_do_zero_sem_predicao_local():
+    """Sem predição local (player_tm parado), a correção is_dash=True do
+    servidor deve INICIAR a animação — mesmo mecanismo já usado por
+    deslocamento forçado (knockback), sem precisar de nenhum caminho novo."""
+    from engine.components import TileMovement
+    fx, player = _make_entity_move_fixture()
+    fx._handle_msg_entity_move({
+        "eid": fx._my_eid, "tx": 7, "ty": 5, "from_tx": 5, "from_ty": 5,
+        "is_dash": True, "skill_rejected": False,
+    })
+    tm = fx.world.get_component(player, TileMovement)
+    assert tm.is_dash is True
+    assert tm.is_moving is True
+    assert (tm.target_tile_x, tm.target_tile_y) == (7, 5)
+
+
+def test_dash_rejeitado_pelo_servidor_nao_anima_nada():
+    """skill_rejected=True (path bloqueado/alvo fora de range no instante do
+    servidor) não deve iniciar nenhuma animação — sem predição local, não há
+    nada pra desfazer/snap-back."""
+    from engine.components import TileMovement
+    fx, player = _make_entity_move_fixture()
+    fx._handle_msg_entity_move({
+        "eid": fx._my_eid, "tx": 5, "ty": 5, "from_tx": 5, "from_ty": 5,
+        "is_dash": True, "skill_rejected": True,
+    })
+    tm = fx.world.get_component(player, TileMovement)
+    assert tm.is_moving is False

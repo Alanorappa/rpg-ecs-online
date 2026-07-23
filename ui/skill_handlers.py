@@ -598,11 +598,18 @@ class SkillHandlers:
         pl_x, pl_y = tile_move.current_tile_x, tile_move.current_tile_y
         taunted = 0
         from engine.components import AIControlled as _AIC_BP, CombatState as _CSt_BP
+        from engine.faction_system import can_engage as _can_engage_bp
         for eid, etm, ecs in self.world.get_entities_with(TileMovement, CombatStats):
             if eid == self.player_entity_id: continue
             if ecs.current_hp <= 0:
                 continue
             if chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y) > 3:
+                continue
+            # can_engage bloqueia alvo amigável — mesma classe de bug já
+            # corrigida em Pirofagia (20/07/2026) e Canção de Ninar
+            # (22/07/2026): sem este check, o provoke era aplicado
+            # incondicionalmente pra QUALQUER um no raio, amigável ou não.
+            if not _can_engage_bp(self.world, self.player_entity_id, eid):
                 continue
             apply_effect(self.world, eid, "enraged", 10.0)
             # Mob: força perseguição via AI
@@ -1329,11 +1336,18 @@ class SkillHandlers:
         # Aplica sono imediatamente a todos os inimigos no raio — itera
         # CombatStats (não Enemy/AIControlled) para incluir players em PvP,
         # igual ao padrão de _skill_impacto.
+        from engine.faction_system import can_engage as _can_engage_ninar
         targets = []
         for eid, etm, tgt_cs in self.world.get_entities_with(_TM, CombatStats):
             if eid == self.player_entity_id:
                 continue
             if tgt_cs.current_hp <= 0:
+                continue
+            # can_engage bloqueia alvo amigável — sem este check, "sleep"
+            # era aplicado incondicionalmente pra QUALQUER um no raio,
+            # amigável ou não (bug real relatado pelo usuário 22/07/2026,
+            # mesma classe já corrigida em Pirofagia 20/07/2026).
+            if not _can_engage_ninar(self.world, self.player_entity_id, eid):
                 continue
             if chebyshev(px, py, etm.current_tile_x, etm.current_tile_y) <= radius:
                 # Efeito de sono com on_expire_effect → slow

@@ -424,5 +424,58 @@ class TestPirofagiaServerCone(unittest.TestCase):
                          "Cone executado sem direção (modo cliente não deve causar dano no servidor)")
 
 
+class TestAoeSkillsAllyFilter(unittest.TestCase):
+    """B1 (22/07/2026, bug real relatado pelo usuário): Canção de Ninar e
+    Brado Provocativo aplicavam CC em QUALQUER entidade no raio, incluindo
+    aliados — mesma classe de bug já corrigida em Pirofagia (20/07/2026).
+    can_engage agora filtra os dois."""
+
+    def setUp(self):
+        from engine.components import CharacterStats
+        self.ws = make_world_server()
+        run_ticks(self.ws, 50)  # spawn mobs
+        self.caster = spawn_player(self.ws, "aoe_caster", 10, 10)
+        self.ally   = spawn_player(self.ws, "aoe_ally", 11, 10)
+        self.mob = first_mob(self.ws)
+        if not self.mob:
+            self.skipTest("Sem mobs")
+        set_entity_tile(self.ws, self.mob, 10, 11)
+        cs = self.ws.world.get_component(self.caster, CharacterStats)
+        cs.concentration = cs.max_concentration = 999
+        self.ws._skill_system.player_entity_id = self.caster
+        self.ws._skill_system._server_pending_spells = None
+
+    def test_cancao_ninar_nao_afeta_aliado_so_inimigo(self):
+        from engine.components import (Skill, StatusEffects, CombatStats,
+                                       CombatState, TileMovement)
+        skill = Skill("Canção de Ninar", "", 60.0)
+        skill.params = {"radius": 5, "sleep_duration": 8.0}
+        combat_stats = self.ws.world.get_component(self.caster, CombatStats)
+        combat_state = self.ws.world.get_component(self.caster, CombatState)
+        tile_move = self.ws.world.get_component(self.caster, TileMovement)
+
+        self.ws._skill_system._skill_cancao_ninar(skill, combat_stats, combat_state, tile_move)
+
+        ally_sfx = self.ws.world.get_component(self.ally, StatusEffects)
+        mob_sfx  = self.ws.world.get_component(self.mob, StatusEffects)
+        self.assertFalse(ally_sfx and ally_sfx.has("sleep"), "aliado não deveria dormir")
+        self.assertTrue(mob_sfx and mob_sfx.has("sleep"), "mob deveria dormir")
+
+    def test_brado_provocativo_nao_afeta_aliado_so_inimigo(self):
+        from engine.components import (Skill, StatusEffects, CombatStats,
+                                       CombatState, TileMovement)
+        skill = Skill("Brado Provocativo", "", 30.0)
+        combat_stats = self.ws.world.get_component(self.caster, CombatStats)
+        combat_state = self.ws.world.get_component(self.caster, CombatState)
+        tile_move = self.ws.world.get_component(self.caster, TileMovement)
+
+        self.ws._skill_system._skill_brado_provocativo(skill, combat_stats, combat_state, tile_move)
+
+        ally_sfx = self.ws.world.get_component(self.ally, StatusEffects)
+        mob_sfx  = self.ws.world.get_component(self.mob, StatusEffects)
+        self.assertFalse(ally_sfx and ally_sfx.has("enraged"), "aliado não deveria ser provocado")
+        self.assertTrue(mob_sfx and mob_sfx.has("enraged"), "mob deveria ser provocado")
+
+
 if __name__ == "__main__":
     unittest.main()
