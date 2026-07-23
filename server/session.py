@@ -1337,13 +1337,29 @@ class SessionManager:
         """
         if not session.authenticated or session.entity_id == -1:
             return
-        to_map   = str(payload.get("to_map", ""))
+        to_map   = str(payload.get("to_map", "")).replace("\\", "/")
         target_x = int(payload.get("target_x", 0))
         target_y = int(payload.get("target_y", 0))
 
-        # Única validação: mapa destino deve estar carregado (evita teletransporte arbitrário).
+        # Carrega sob demanda mapas que existem no disco mas nunca foram
+        # carregados como bundle standalone (23/07/2026, pedido do usuário
+        # — F12→aba Mapa listava TODO maps/*.csv, mas templates só
+        # instanciados por partida, ex. arena_poco_negro.csv, nunca tinham
+        # bundle próprio fora de uma partida real, então o teleporte de
+        # debug pra lá sempre falhava silenciosamente). Validação de
+        # caminho (prefixo "maps/", sem "..", extensão .csv) antes de
+        # tocar o disco — evita um to_map arbitrário forjado por um
+        # cliente malicioso escapando da pasta maps/.
         if to_map not in self.world_server._map_bundles:
-            return
+            import os as _os_zcr
+            if (not to_map.startswith("maps/") or ".." in to_map
+                    or not to_map.endswith(".csv") or not _os_zcr.path.exists(to_map)):
+                return
+            try:
+                self.world_server._map_bundles[to_map] = self.world_server._load_map_for(to_map)
+            except Exception as _e_zcr:
+                log.warning(f"[ZoneChangeReq] falha ao carregar mapa sob demanda {to_map}: {_e_zcr}")
+                return
 
         # Executa a troca de mapa no servidor
         self.world_server.transfer_player(

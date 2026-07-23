@@ -6917,11 +6917,31 @@ troca de verdade e manda `ZONE_CHANGE` com map_file/target_x/y
 corretos; mapa não carregado (arena fora de partida) é ignorado sem
 travar nem mandar nada. Suíte completa rodada 3x.
 
-**Não validado**: sessão manual — F12 → aba Mapa → teleportar pra uma
-caverna online, confirmar que o minimapa/mapa atual refletem a troca de
-verdade e que "Voltar ao Spawn" a partir de lá agora funciona (cenário
-que `TestUnstuck` já prova server-side, falta ver renderizado de
-verdade).
+**Validado pelo usuário** (mesmo dia): caverna + "Voltar ao Spawn"
+funcionando de verdade em sessão real. **Achado adicional**: teleporte
+pra `arena_poco_negro.csv` continuava falhando — intenção real do
+usuário era poder visitar a arena pra EDITAR o mapa (level design/QA),
+não jogar uma partida de verdade. Causa: o template da arena nunca é
+pré-carregado no boot (só via `_load_instance`, por partida) — a
+validação original de `_handle_zone_change_req` (`to_map not in
+_map_bundles`) recusava qualquer mapa nunca antes carregado, mesmo que
+existisse no disco.
+
+**Fix 2 (mesmo dia)**: `_handle_zone_change_req` (`server/session.py`)
+agora carrega sob demanda (`WorldServer._load_map_for`, bundle
+standalone, mesma função usada no boot pros mapas pré-carregados)
+qualquer `to_map` que exista de verdade em `maps/*.csv` mas ainda não
+tenha bundle — antes de tocar o disco, valida prefixo `"maps/"`, ausência
+de `".."` e extensão `.csv` (rede de segurança contra um `to_map`
+forjado por um cliente malicioso escapando da pasta `maps/`). Efeito:
+QUALQUER mapa listado na aba Mapa do debug (incluindo templates só-
+instância como a arena) agora é visitável sob demanda — o teleporte de
+debug deixa de depender de o mapa já estar carregado por acaso.
+
+**Validado**: `tests/test_session.py::TestZoneChangeReq` (+3 testes) —
+template de arena carrega sob demanda e teleporta de verdade; caminho
+fora de `maps/`/com `".."` é recusado sem tocar o disco; mapa inexistente
+é ignorado sem travar. Suíte completa rodada 3x.
 
 ### Arquiteturais (A) — débito técnico
 
