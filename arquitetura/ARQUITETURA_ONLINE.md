@@ -5601,11 +5601,10 @@ ESPAÇO seleciona/persegue oponente engajável. Confirmado por reversão
 controlada (`git stash`): os 2 testes de "inclui" falham sem o fix e
 passam com ele. Suíte completa 397/397, rodada 3x.
 
-**Não validado**: sessão manual — TAB seleciona o oponente de duelo;
-ESPAÇO inicia auto-attack contra ele; Punho no Queixo funciona assim que
-o alvo está de fato selecionado (via TAB/ESPAÇO/clique) — vale re-testar
-especificamente isso, já que a hipótese é que a skill em si nunca teve
-bug, só nunca recebia um alvo válido.
+**Validado pelo usuário (22/07/2026)**: TAB seleciona o oponente de
+duelo; ESPAÇO inicia combate contra ele; skills (Punho no Queixo
+incluso) funcionam contra alvo player — confirma a hipótese de que a
+skill em si nunca teve bug, só nunca recebia um alvo válido.
 
 ---
 
