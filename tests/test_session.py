@@ -666,6 +666,33 @@ class TestPlayerDeathEvent(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(gst_after.is_dead)
         self.assertFalse(gst_after.is_ghost)
 
+    async def test_marcador_sintetico_de_corpo_so_aparece_apos_liberar_espirito(self):
+        """Bug real relatado pelo usuário 22/07/2026: corpo duplicava ao
+        morrer (a entidade real já tingida de cadáver + o marcador
+        sintético `player_corpse`, entregue cedo demais pelo sweep de AOI)
+        e um dos dois sumia ao liberar o espírito. O marcador só deve
+        entrar no AOI de outra sessão DEPOIS que GhostState.is_ghost=True."""
+        victim, _fw_v = await fake_login(self.mgr, "corpse_v", "corpseuservit", 130, 374)
+        observer, fw_o = await fake_login(self.mgr, "corpse_o", "corpseuserobs", 130, 374)
+        victim_eid = victim.entity_id
+
+        self.ws_server._handle_player_death(victim_eid)
+        self.assertIn(victim_eid, self.ws_server._player_corpses)
+
+        update_before = self.mgr._build_update_for_session(observer, {}, 130, 374)
+        spawned_before = update_before.get("spawned", [])
+        self.assertFalse(
+            any(s.get("kind") == "player_corpse" for s in spawned_before),
+            "marcador sintético de corpo não deveria aparecer antes de liberar o espírito")
+
+        self.ws_server._handle_release_spirit(victim_eid)
+
+        update_after = self.mgr._build_update_for_session(observer, {}, 130, 374)
+        spawned_after = update_after.get("spawned", [])
+        self.assertTrue(
+            any(s.get("kind") == "player_corpse" for s in spawned_after),
+            "marcador sintético de corpo deveria aparecer depois de liberar o espírito")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 6. Loot em grupo — LOOT_UPDATE sincroniza quem não clicou
@@ -885,6 +912,45 @@ class TestPartyDispatchSemMovimento(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(found), 1,
                 "PARTY_STATE deveria chegar no mesmo tick do aceite, sem "
                 "depender de qualquer outra atividade no tick")
+
+
+class TestUnstuck(unittest.IsolatedAsyncioTestCase):
+    """Botão "Voltar ao Spawn" (bug real relatado pelo usuário 22/07/2026):
+    só mudava tile_x/tile_y pro spawn de map_1, nunca o mapa em si — quem
+    estava numa caverna ficava preso lá com a coordenada errada."""
+
+    async def asyncSetUp(self):
+        self.ws_server, self.mgr = make_session_manager()
+
+    async def test_unstuck_fora_do_mapa_principal_troca_de_mapa(self):
+        session, fw = await fake_login(self.mgr, "unstuck_a", "unstuckusera")
+        eid = session.entity_id
+        self.ws_server.transfer_player(session.session_id, eid,
+                                        "maps/map_cave_east.csv", 10, 10)
+        self.assertEqual(self.ws_server.get_player_map(session.session_id),
+                         "maps/map_cave_east.csv")
+        fw.sent.clear()
+
+        await self.mgr._handle_unstuck(session, {}, 0)
+
+        self.assertEqual(self.ws_server.get_player_map(session.session_id),
+                         self.ws_server._map_file)
+        zone_changes = get_msgs_of_type(fw, MsgType.ZONE_CHANGE)
+        self.assertEqual(len(zone_changes), 1,
+            "deveria mandar ZONE_CHANGE ao trocar de mapa pro spawn")
+        self.assertEqual(zone_changes[0]["map_file"], self.ws_server._map_file)
+
+    async def test_unstuck_ja_no_mapa_principal_nao_manda_zone_change(self):
+        session, fw = await fake_login(self.mgr, "unstuck_b", "unstuckuserb")
+        self.assertEqual(self.ws_server.get_player_map(session.session_id),
+                         self.ws_server._map_file)
+        fw.sent.clear()
+
+        await self.mgr._handle_unstuck(session, {}, 0)
+
+        self.assertEqual(len(get_msgs_of_type(fw, MsgType.ZONE_CHANGE)), 0,
+            "já estava no mapa principal — não deveria mandar ZONE_CHANGE")
+        self.assertEqual(len(get_msgs_of_type(fw, MsgType.ENTITY_MOVE)), 1)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

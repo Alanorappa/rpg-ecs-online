@@ -868,28 +868,49 @@ def test_stun_bloqueia_clique_de_chao():
 
 
 # ── client/remote_entity_handlers.py::_draw_remote_players — hostilidade e
-# nameplate na Arena 2x2 (pedido do usuário 21/07/2026): oponente de arena
-# fica com barra/nome vermelhos igual duelo (nunca o próprio time), e
-# nameplate de quem morreu DENTRO da arena some até sair (reduz spam de
-# fantasma parado) — fora da arena, nameplate de morto continua aparecendo
-# normalmente (comportamento antigo preservado).
+# nameplate (revisado 22/07/2026): hostilidade agora é decidida por
+# game.py::_client_pvp_context (duelo OU zona PvP OU arena, já exclui mesmo
+# grupo) em vez de checar duelo/arena manualmente — mesma fonte única usada
+# por clique/skill. Nameplate de morto (QUALQUER contexto, não só arena)
+# nunca mais some por completo: só a barra de HP/badge de nível somem, o
+# nome continua sempre visível (bug real relatado pelo usuário 22/07/2026).
 def _make_remote_player_fixture(hp: int = 80):
     from engine.world import World
-    from engine.components import Position, RemoteControlled
+    from engine.components import Position, RemoteControlled, TileMovement
     import client.remote_entity_handlers as reh_mod
+    from client.duel_handlers import DuelHandlers
+    from client.pvp_zone_handlers import PvpZoneHandlers
+    from client.party_handlers import PartyHandlers
+    from client.arena_handlers import ArenaHandlers
+    from game import GameEngine as _GE_rp
 
-    class _Fixture(reh_mod.RemoteEntityHandlers):
-        def __init__(self, world):
+    class _Fixture(reh_mod.RemoteEntityHandlers, DuelHandlers, PvpZoneHandlers,
+                   PartyHandlers, ArenaHandlers):
+        def __init__(self, world, player_entity):
             self.world = world
+            self.player_entity = player_entity
+            self._my_eid = 1
+            self._pvp_zones = []
+            self._duel_opponent_local_val = -1
+            self._party_id_val = -1
+            self._party_members_val = []
+            self._arena_in_match_val = False
+            self._arena_opponents_server_val = set()
             from ui.fonts import make as _make_font
             self.font_sm = _make_font(12)
 
+    _Fixture._client_pvp_context      = _GE_rp._client_pvp_context
+    _Fixture._local_eid_to_server_eid = _GE_rp._local_eid_to_server_eid
+
     world = World()
+    me = world.create_entity()
+    world.add_component(me, TileMovement(current_tile_x=0, current_tile_y=0))
     local_eid = world.create_entity()
     world.add_component(local_eid, Position(x=100.0, y=100.0))
+    world.add_component(local_eid, TileMovement(current_tile_x=0, current_tile_y=0))
     world.add_component(local_eid, RemoteControlled(
         server_eid=42, name="Fulano", hp=hp, hp_max=100, level=5))
-    fx = _Fixture(world)
+    fx = _Fixture(world, me)
     fx._remote_players = {42: local_eid}
     return fx
 
@@ -930,29 +951,40 @@ def test_arena_proprio_time_nao_fica_hostil():
     assert (255, 255, 200) in colors
 
 
-def test_arena_nameplate_some_ao_morrer_dentro_da_arena():
-    fx = _make_remote_player_fixture(hp=0)
-    fx._arena_in_match_val = True
-    fx._arena_opponents_server_val = set()
+def test_nameplate_de_morto_mostra_so_o_nome():
     from ui.world_labels import WORLD_LABELS
     WORLD_LABELS._pending.clear()
     WORLD_LABELS._stack_offset.clear()
-    fx._draw_remote_players(0.0, 0.0)
-    assert WORLD_LABELS._pending == [], "nameplate de morto na arena deveria sumir"
-
-
-def test_nameplate_de_morto_fora_da_arena_continua_aparecendo():
-    """Fora da arena, o comportamento antigo (nameplate sempre visível,
-    mesmo morto) continua igual — a mudança é escopada só pra dentro da
-    partida."""
     fx = _make_remote_player_fixture(hp=0)
-    fx._arena_in_match_val = False
-    fx._arena_opponents_server_val = set()
+    fx._draw_remote_players(0.0, 0.0)
+    assert len(WORLD_LABELS._pending) == 1, "morto: só o nome, sem barra de HP/badge de nível"
+
+
+def test_nameplate_de_vivo_mostra_barra_e_nome():
     from ui.world_labels import WORLD_LABELS
     WORLD_LABELS._pending.clear()
     WORLD_LABELS._stack_offset.clear()
+    fx = _make_remote_player_fixture(hp=80)
     fx._draw_remote_players(0.0, 0.0)
-    assert WORLD_LABELS._pending != [], "fora da arena, nameplate de morto deve continuar visível"
+    assert len(WORLD_LABELS._pending) == 2, "vivo: barra de HP + nome"
+
+
+def test_zona_pvp_deixa_hostil_sem_ser_duelo_arena():
+    """A7 (22/07/2026): dentro de zona PvP, sem ser duelo/arena/mesmo
+    grupo, o outro player também deve ficar vermelho — cobertura nova,
+    já que antes desta fase a função nem olhava zona PvP."""
+    from ui.world_labels import WORLD_LABELS
+    from engine.components import TileMovement
+    WORLD_LABELS._pending.clear()
+    WORLD_LABELS._stack_offset.clear()
+    fx = _make_remote_player_fixture()
+    fx._pvp_zones = [{"name": "Teste", "rect": (0, 0, 5, 5)}]
+    fx.world.get_component(fx.player_entity, TileMovement).current_tile_x = 2
+    fx.world.get_component(fx.player_entity, TileMovement).current_tile_y = 2
+    fx.world.get_component(fx._remote_players[42], TileMovement).current_tile_x = 2
+    fx.world.get_component(fx._remote_players[42], TileMovement).current_tile_y = 2
+    fx._draw_remote_players(0.0, 0.0)
+    assert (255, 90, 90) in _pending_text_colors(), "dentro da zona PvP deveria ficar vermelho"
 
 
 # ── client/remote_entity_handlers.py::_spawn_remote_mob — NPC de serviço

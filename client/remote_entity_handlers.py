@@ -31,6 +31,15 @@ class RemoteEntityHandlers:
         Retorna False apenas se o atacante é um player remoto (PvP).
         """
         from engine.components import NpcSounds as _NpcSounds, AIControlled as _AICtrl
+        # Eu sou o atacante (auto-attack melee contra outro player em PvP):
+        # nem _remote_mobs nem _remote_players contêm o meu próprio eid, então
+        # sem este guard a linha 39 avaliava True por omissão e suprimia o
+        # hit_normal/hit_crit do MEU golpe — bug real relatado pelo usuário
+        # 22/07/2026: som de auto-attack melee só tocava ao apanhar, nunca ao
+        # acertar outro player. Mesmo guard que _play_nonplayer_attack_impact
+        # já tem (linha 74).
+        if server_attacker == self._my_eid:
+            return False
         _atk_mob_local = self._remote_mobs.get(server_attacker)
         if _atk_mob_local is None:
             # Mob fora do AOI local, attacker=-1 (origem não identificada no servidor)
@@ -1493,40 +1502,58 @@ class RemoteEntityHandlers:
         _sprite_h = _TS_rp - 4   # mesma convenção de altura já usada aqui (W = H = TILE_SIZE-4)
 
         from ui.hud_bars import DISPOSITION_HP_COLORS as _DISP_rp, HP_COLOR as _HPC_rp
-        _duel_opp    = getattr(self, "_duel_opponent_local_val", -1)
-        _arena_match = getattr(self, "_arena_in_match_val", False)
-        _arena_opps  = getattr(self, "_arena_opponents_server_val", set())
         for server_eid, local_eid in self._remote_players.items():
             pos = self.world.get_component(local_eid, Position)
             rc  = self.world.get_component(local_eid, RemoteControlled)
             if not pos or not rc:
                 continue
-            # Dentro da própria partida de arena, esconde o nameplate de
-            # quem já morreu — reduz "spam" visual de fantasmas parados até
-            # saírem (pedido do usuário 21/07/2026). Corpo/sprite continua
-            # visível (já tingido por _handle_msg_entity_death), só a
-            # HUD flutuante some. rc.hp é o sinal de morte já mantido em
-            # dia pra players remotos (_handle_msg_entity_death zera na
-            # hora, revive/saída da arena restaura via STATS_UPDATE
-            # equivalente) — não precisa de GhostState aqui.
-            if _arena_match and rc.hp <= 0:
-                continue
-            ratio = max(0.0, min(1.0, rc.hp / max(1, rc.hp_max)))
-            # Oponente de duelo OU do time adversário na arena: barra + nome
-            # vermelhos enquanto durar (client/duel_handlers.py mantém
-            # _duel_opponent_local_val; arena usa _arena_opponents_server_val
-            # — SÓ o outro time fica hostil, nunca o próprio, ver
-            # client/arena_handlers.py::_arena_opponents_server).
-            _is_duel_opp  = (local_eid == _duel_opp)
-            _is_arena_opp = server_eid in _arena_opps
-            _is_hostile_rp = _is_duel_opp or _is_arena_opp
-            _hp_col_rp   = _DISP_rp["hostil"] if _is_hostile_rp else _HPC_rp
-            _name_col_rp = (255, 90, 90) if _is_hostile_rp else (255, 255, 200)
-            _hud_surf = _bph_rp(ratio, 0.0, 0.0, (0, 0, 0, 0), rc.level,
-                                self._player_level_font, hp_color=_hp_col_rp)
             _world_y_top = pos.y - _sprite_h / 2
-            _WL_rp.add_icon(pos.x, _world_y_top, _hud_surf,
-                            stack_key=local_eid, gap_before=_HGP_rp)
+            # Morto (qualquer contexto, não só arena — bug real relatado
+            # pelo usuário 22/07/2026: nameplate completo continuava
+            # aparecendo em corpo morto fora de arena) — só o NOME, sem
+            # barra de HP/badge de nível. rc.hp é o sinal de morte já
+            # mantido em dia pra players remotos
+            # (_handle_msg_entity_death zera na hora, revive/saída da
+            # arena restaura via STATS_UPDATE equivalente) — não precisa
+            # de GhostState aqui.
+            _is_dead_rp = rc.hp <= 0
+            _name_col_rp = (255, 255, 200)
+            if not _is_dead_rp:
+                # Hostilidade decidida por _client_pvp_context (duelo OU
+                # zona PvP OU arena, já exclui mesmo grupo —
+                # game.py:988-1033) em vez de checar duelo/arena manualmente
+                # aqui — fonte única com o que já decide clique/skill.
+                # Cobre também o pedido do usuário 22/07/2026 (barra/nome
+                # vermelhos em zona PvP, exceto mesmo grupo), que antes não
+                # era considerado nesta função.
+                _is_hostile_rp = self._client_pvp_context(self.world, self.player_entity, local_eid)
+                _hp_col_rp   = _DISP_rp["hostil"] if _is_hostile_rp else _HPC_rp
+                _name_col_rp = (255, 90, 90) if _is_hostile_rp else (255, 255, 200)
+                ratio = max(0.0, min(1.0, rc.hp / max(1, rc.hp_max)))
+                _hud_surf = _bph_rp(ratio, 0.0, 0.0, (0, 0, 0, 0), rc.level,
+                                    self._player_level_font, hp_color=_hp_col_rp)
+                _WL_rp.add_icon(pos.x, _world_y_top, _hud_surf,
+                                stack_key=local_eid, gap_before=_HGP_rp)
+
+                # Ícones de efeito de status (stun/sleep/etc) à direita da
+                # HUD — mesmo bloco já usado pra mobs remotos em
+                # _draw_mob_hp_bars, bug real relatado pelo usuário
+                # 22/07/2026: nunca tinha sido copiado pra players remotos.
+                from engine.components import StatusEffects as _SfxRp
+                from ui.hud_bars import effects_row_offset as _ero_rp
+                _sfx_rp = self.world.get_component(local_eid, _SfxRp)
+                _active_effects_rp = list(_sfx_rp.effects.values()) if _sfx_rp else []
+                if _active_effects_rp:
+                    from ui.systems import _build_effects_row as _ber_rp
+                    if not hasattr(self, '_mob_eff_font'):
+                        import pygame as _pg_rp
+                        self._mob_eff_font = _pg_rp.font.Font(None, 18)
+                    _row_rp = _ber_rp(_active_effects_rp, self._mob_eff_font)
+                    if _row_rp is not None:
+                        _xo_rp, _yo_rp = _ero_rp(_hud_surf)
+                        _WL_rp.add_icon_offset(pos.x, _world_y_top, _row_rp,
+                                              x_offset=_xo_rp, y_offset=_yo_rp,
+                                              halign="left", valign="center")
             # self.font_sm: MESMO objeto de fonte da janela de chat (ver
             # comentário irmão em _draw_mob_hp_bars acima).
             _WL_rp.add_text(pos.x, _world_y_top, rc.name, self.font_sm,

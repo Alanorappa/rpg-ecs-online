@@ -6253,6 +6253,87 @@ barra de HP); ghost (`is_ghost`) desenhado semi-transparente (alpha ~120/255).
 | C29 | ~~Em PvP, após C28: para o espectador (assassino), o corpo da vítima "caminha" visivelmente do local da morte até o tile de respawn (em vez de sumir e reaparecer); e a vítima continua recebendo dano de Flecha Reiterada (multi-hit) já em voo mesmo após respawnar com HP restaurado~~ → **RESOLVIDO** (2 partes): **(1)** A entrada de `_moved_this_tick` criada por `_handle_player_death` (C28, `from_tx/from_ty`=morte → `tx/ty`=respawn, tiles distantes) era processada por `_apply_remote_move` como um movimento normal — `start_tile_movement` anima o `TileMovement` do remoto entre os dois tiles ao longo de `move_duration`, produzindo a "caminhada" até o respawn. Corrigido: a entrada ganhou `"teleport": True`; `_handle_msg_aoi_update` propaga `m.get("teleport", False)` para `_apply_remote_move`, que agora (quando `teleport=True`) faz snap instantâneo de `Position`/`TileMovement` (sem animação, cancela fila de moves pendente). **(2)** `_handle_player_death` (`respawn_system.py`) só removia de `_pending_spell_completions`/`_spells_in_flight_queue` as entradas onde `player_eid` (CASTER) == vítima — flechas de Flecha Reiterada já em voo, lançadas pelo atacante CONTRA a vítima (`target_id == player_eid` da vítima), permaneciam na fila e `_apply_spell_on_projectile_hit` continuava aplicando os hits restantes ao alvo já respawnado. Corrigido: ambos os filtros agora também excluem entradas onde `target_id == player_eid` | `server/respawn_system.py::_handle_player_death`, `client/remote_entity_handlers.py::_apply_remote_move`, `client/network_handlers.py::_handle_msg_aoi_update` |
 | C30 | O respawn instantâneo (C28/C29) teleportava o player direto pro `RESPAWN_TILE` com HP restaurado — sem "seriedade": sem animação/corpo persistente, sem escolha do jogador. **RESOLVIDO**: substituído por um fluxo de espírito (ghost)/cemitério — ver seção "Fluxo de morte/espírito (ghost) + cemitério" abaixo. `_handle_player_death` agora só marca `GhostState.is_dead=True` e deixa o corpo (`current_hp==0`, `is_visible=True`) no local da morte; revive (full HP no cemitério ou 15% no corpo) é feito por `_revive_player` via `RELEASE_SPIRIT`/`REVIVE_REQUEST`/`_tick_ghost_states` | `server/respawn_system.py`, `components.py::GhostState`, `client/death_ui_handlers.py` |
 
+### §34.36 — Leva pós-playtest (22-23/07/2026): Fase A — 7 fixes isolados de baixo risco
+
+Depois de uma sessão grande de testes reais, usuário levantou 11 bugs +
+4 pedidos de feature. Plano de ação completo (8 fases, A-H) salvo e
+aprovado — ver `C:\Users\l4nce\.claude\plans\expressive-wondering-starlight.md`
+no momento da escrita (fases B em diante ainda pendentes). Fase A = os 7
+fixes mais isolados/baixo risco, todos testados e fechados juntos.
+
+**A1 — Chat travava movimento**: `PlayerInputSystem.update` (`ui/systems.py`)
+zerava `can_move` por completo com o chat focado — intenção original era só
+impedir WASD de mover o personagem enquanto digitava (movimento por
+teclado é `pygame.key.get_pressed()`, não `KEYDOWN`), mas a implementação
+também travava clique-pra-andar/auto-move/perseguição de combate.
+Corrigido: `_chat_blocks_keyboard_move` separado, só suprime o bloco de
+movimento manual por teclado; `can_move` fica intocado pro resto (auto-move,
+perseguição).
+
+**A2 — Som de auto-attack melee ausente ao acertar outro player**:
+`_play_attacker_mob_sound` (`client/remote_entity_handlers.py`, branch
+"Player remoto foi atacado") não tinha o guard "atacante sou eu mesmo" que
+sua irmã `_play_nonplayer_attack_impact` já tinha — quando
+`server_attacker == self._my_eid`, a função devolvia `True` por omissão
+(nem `_remote_mobs` nem `_remote_players` contêm o próprio eid),
+suprimindo `hit_normal`/`hit_crit` do PRÓPRIO golpe do jogador. Corrigido
+com o mesmo guard.
+
+**A3 — Ícones de status ausentes em players remotos**: dados já chegavam
+certos (`_sync_mob_effects` já resolve `RemoteControlled` como fallback),
+só faltava desenhar — `_draw_mob_hp_bars` tinha o bloco de ícones
+(`StatusEffects` + `_build_effects_row` + `add_icon_offset`),
+`_draw_remote_players` não. Copiado o bloco.
+
+**A4 — Nameplate completo em player morto**: única checagem de morte em
+`_draw_remote_players` era `if _arena_match and rc.hp <= 0: continue` — só
+dentro de Arena, e escondia TUDO (nome incluso). Corrigido: `rc.hp<=0` vale
+em qualquer contexto, mas agora só pula a barra de HP/badge de nível — o
+nome sempre desenha.
+
+**A7 — Barra/nome vermelhos em zona PvP**: `_draw_remote_players` só
+considerava duelo/arena pra decidir hostilidade — nunca zona PvP.
+Consolidado: troca o cálculo manual por
+`self._client_pvp_context(self.world, self.player_entity, local_eid)`
+(`game.py`, já cobre duelo OU zona PvP OU arena, já exclui mesmo grupo) —
+fonte única com o que já decide clique/skill, em vez de 2 lógicas
+paralelas que podiam divergir.
+
+**A5 — "Voltar ao Spawn" não trocava de mapa**: `_handle_unstuck`
+(`server/session.py`) só fazia `snap_to_tile` (tile/pixel) — nunca
+`MapLocation.map_file`/`_player_maps`, nunca `ZONE_CHANGE`. Quem estava
+numa caverna ficava preso lá na coordenada de spawn de `map_1`. Corrigido
+com o mesmo padrão de `respawn_system.py::_handle_release_spirit`: se o
+mapa atual ≠ mapa principal (e não está numa partida de Arena — mesmo
+guard de lá, nunca yankar alguém pra fora de uma instância), chama
+`transfer_player(...)` + manda `ZONE_CHANGE` + `known_eids.clear()`.
+
+**A6 — Corpo duplicava ao morrer / um sumia ao liberar espírito**: dois
+mecanismos de corpo coexistiam — a entidade real tingida de cadáver
+(`_handle_player_death`, já grava `_player_corpses[eid]` no INSTANTE da
+morte) e um sweep em `_build_update_for_session` (`server/session.py`,
+roda todo tick) que entregava o marcador sintético `player_corpse` sem
+checar `GhostState.is_ghost` — disparava já no 1º tick após a morte,
+criando um segundo corpo sobreposto. Ao liberar o espírito, a entidade
+real é despawnada — some ela, sobra só a sintética. Corrigido: o sweep só
+entrega o marcador quando `GhostState.is_ghost == True` (bate com o
+propósito original documentado no próprio código: "necessário pra um
+ghost ver o próprio corpo ao se aproximar").
+
+**Validado**: suíte completa 401/401 (7 testes novos: A5 ×2 em
+`tests/test_session.py::TestUnstuck`, A6 em
+`TestPlayerDeathEvent::test_marcador_sintetico_de_corpo_so_aparece_apos_liberar_espirito`
+— confirmado por reversão controlada, falha sem o fix/passa com ele; A3/
+A4/A7 em `tests/test_client_ui.py`, reescrevendo o fixture de
+`_draw_remote_players` pra incluir os mixins de PvP context), rodada 3x.
+
+**Não validado**: sessão manual — os 7 itens precisam de teste real por
+um tester (chat não trava mais movimento; auto-attack melee toca som
+contra player; ícones de stun/sleep aparecem em player remoto; nameplate
+de morto só com nome; zona PvP deixa barra/nome vermelhos; "Voltar ao
+Spawn" troca de mapa corretamente saindo de caverna; corpo não duplica
+mais ao morrer).
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |

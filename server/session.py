@@ -1038,9 +1038,32 @@ class SessionManager:
         from engine.components import TileMovement, Position, StatusEffects, AIControlled, CombatState
         from shared.constants import TILE_SIZE
 
+        # Se o player está num mapa não-principal (ex: caverna), troca pro
+        # mapa principal ANTES do snap — sem isso o tile_x/tile_y virava o
+        # spawn de map_1, mas o mapa carregado continuava sendo o antigo
+        # (bug real relatado pelo usuário 22/07/2026: personagem ficava
+        # preso na caverna, só com a coordenada errada). Mesmo padrão de
+        # respawn_system.py::_handle_release_spirit — nunca faz isso dentro
+        # de uma partida de Arena (yankaria o player pra fora da instância;
+        # só _arena_leave_now deve mexer no mapa/posição de quem está numa
+        # partida).
+        _in_arena_match_us = player_eid in self.world_server._player_match_id
+        from engine.components import MapLocation as _MLus
+        _ml_us = self.world_server.world.get_component(player_eid, _MLus)
+        current_map_us = _ml_us.map_file if _ml_us else self.world_server._map_file
+        if current_map_us != self.world_server._map_file and not _in_arena_match_us:
+            self.world_server.transfer_player(sid, player_eid, self.world_server._map_file, rx, ry)
+            await session.send(MsgType.ZONE_CHANGE, {
+                "map_file": self.world_server._map_file,
+                "target_x": rx, "target_y": ry,
+            })
+            session.known_eids.clear()
+
         # Teleporta no servidor — snap_to_tile cancela tween em andamento e
         # sincroniza pixels/Position (o write manual antigo não resetava
-        # is_moving nem os campos de pixel).
+        # is_moving nem os campos de pixel). transfer_player acima já fez
+        # o snap se trocou de mapa; chamar de novo aqui é idempotente e
+        # cobre o caso comum (já estava no mapa principal).
         from engine.utils import snap_to_tile as _snap_tp
         _snap_tp(self.world_server.world, player_eid, rx, ry, carry_prev=False)
 
@@ -2400,10 +2423,24 @@ class SessionManager:
         # já que o one-shot de _spawned_this_tick foi enviado quando o ghost
         # estava no cemitério (longe do local da morte).
         from server.respawn_system import PLAYER_CORPSE_EID_BASE as _PCEB
-        from engine.components import CharacterStats as _CharSweep
+        from engine.components import CharacterStats as _CharSweep, GhostState as _GSTsweep
         for _cpeid, _cpdata in list(getattr(self.world_server, "_player_corpses", {}).items()):
             _seid = _PCEB + _cpeid
             if _seid in session.known_eids:
+                continue
+            # Só entrega o marcador sintético de corpo DEPOIS que o espírito
+            # foi liberado (GhostState.is_ghost=True) — antes disso, a
+            # entidade REAL do player já está tingida de cadáver no mesmo
+            # tile (_handle_player_death), então entregar o marcador aqui
+            # criava um SEGUNDO corpo sobreposto, que só "sumia" (um dos
+            # dois) quando a entidade real era despawnada ao liberar o
+            # espírito (bug real relatado pelo usuário 22/07/2026: "corpo
+            # duplicado ao morrer, um dos corpos some ao liberar o
+            # espírito"). `_player_corpses[eid]` é gravado no INSTANTE da
+            # morte (respawn_system.py::_handle_player_death), bem antes
+            # do espírito ser liberado — daí a janela de duplicata.
+            _cgst = self.world_server.world.get_component(_cpeid, _GSTsweep)
+            if not (_cgst and _cgst.is_ghost):
                 continue
             if isinstance(_cpdata, tuple):
                 _ctx, _cty = _cpdata

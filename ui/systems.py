@@ -555,13 +555,17 @@ class PlayerInputSystem(System):
             # aqui embaixo, não pelos eventos KEYDOWN que o filtro de
             # systems_events já bloqueia com modal aberto — sem este check,
             # digitar "w"/"a"/"s"/"d" numa mensagem também moveria o player.
+            # Bloqueia SÓ a leitura de WASD como movimento manual (abaixo) —
+            # bug real relatado pelo usuário 22/07/2026: zerar `can_move`
+            # inteiro também travava clique-pra-andar/auto-move/perseguição
+            # de combate enquanto o chat estivesse só ABERTO (sem digitar
+            # nada), o que nunca foi a intenção original.
             from ui.ui_components import UIState as _UIStateInp
             _ui_inp = self.world.get_component(entity_id, _UIStateInp)
-            if _ui_inp is not None and _ui_inp.chat_active:
-                can_move = False
+            _chat_blocks_keyboard_move = _ui_inp is not None and _ui_inp.chat_active
 
             # --- Movimento por teclado ---
-            if can_move and not tile_movement.is_moving:
+            if can_move and not _chat_blocks_keyboard_move and not tile_movement.is_moving:
                 cur_x = tile_movement.current_tile_x
                 cur_y = tile_movement.current_tile_y
                 tgt_x, tgt_y = cur_x, cur_y
