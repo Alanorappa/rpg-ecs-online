@@ -60,6 +60,13 @@ class CharStatsUI(UIScaleMixin):
     def set_data(self, data: dict) -> None:
         self._data = data
 
+    def get_data(self) -> "dict | None":
+        """Último snapshot recebido (None se ainda não chegou nenhum) —
+        usado por outros painéis que precisam de um campo isolado (ex.:
+        placar de arena por modo no modal de fila de Arena, Fase H) sem
+        acoplar no atributo privado."""
+        return self._data
+
     def open(self) -> None:
         self._data = None   # mostra "Carregando..." até a resposta chegar
         if self.on_open:

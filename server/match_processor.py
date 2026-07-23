@@ -1,17 +1,21 @@
 """
 server/match_processor.py
-Mixin para WorldServer: Arena 2x2 (Fase G, leva 1) — fila FIFO de grupos
-pré-formados, criação/fim de partida numa instância privada.
+Mixin para WorldServer: Arena 1x1/2x2/3x3 (Fase G leva 1 + Fase H, ver
+ARENA_MODES abaixo) — fila FIFO por modo de grupos pré-formados (ou do
+próprio player, no modo solo 1x1), criação/fim de partida numa instância
+privada.
 
 Espelha o padrão de DuelProcessorMixin (estado como bookkeeping simples
 no WorldServer, API pública chamada pelos handlers de server/session.py,
 eventos por tick consumidos pelo broadcast loop) e reusa
-PartyProcessorMixin pro conceito de "grupo pré-formado" — um "time" nesta
-leva É o grupo (Party) que entrou na fila junto, sem estado de time
-próprio (ver ARQUITETURA_ONLINE.md, decisão da leva).
+PartyProcessorMixin pro conceito de "grupo pré-formado" — um "time" nos
+modos 2v2/3v3 É o grupo (Party) que entrou na fila junto, sem estado de
+time próprio (ver ARQUITETURA_ONLINE.md, decisão da leva). No modo 1v1
+("Duelo (Arena)", Fase H) não há grupo nenhum — o próprio eid do player É
+o "time de 1".
 
-"Instância" é uma cópia privada de ARENA_TEMPLATE_2V2 (maps/arena_poco_negro.csv)
-carregada via
+"Instância" é uma cópia privada de ARENA_TEMPLATE (maps/arena_poco_negro.csv,
+o MESMO arquivo pros 3 modos) carregada via
 WorldServer._load_instance/_unload_instance (server/world_server.py) —
 UM WorldServer só, chave sintética por partida, nunca outro processo
 (ver docstring de _load_map_for pro racional — evita colisão dos globais
@@ -60,13 +64,25 @@ from __future__ import annotations
 
 from shared.constants import ARENA_ACCEPT_WINDOW_S, ARENA_COUNTDOWN_S, ARENA_GATE_TILES
 
-ARENA_TEMPLATE_2V2 = "maps/arena_poco_negro.csv"
-# Salas de espera opostas (topo/base) do mapa arena_poco_negro.csv — ligadas à
-# arena circular central por 2 portões físicos (ARENA_GATE_TILES,
-# shared/constants.py) que só abrem quando o preparo termina (22/07/2026,
-# revisão "portão físico" — ver docstring da classe).
-_SPAWN_TEAM_A = [(12, 2), (14, 2)]
-_SPAWN_TEAM_B = [(12, 32), (14, 32)]
+ARENA_TEMPLATE = "maps/arena_poco_negro.csv"
+
+# Modos de arena (Fase H, 23/07/2026 — pedido do usuário: "Duelo" 1x1 e
+# Arena 3x3 além do 2x2 existente, com placar de vitórias/derrotas por
+# modo). Os 3 reusam o MESMO template/instância — as salas de espera
+# (topo/base do mapa, ligadas à arena circular central por 2 portões
+# físicos, ARENA_GATE_TILES em shared/constants.py) têm 5 tiles de
+# largura, cabem 1/2/3 spawns sem precisar de mapa novo. `team_size` só
+# define quantos players formam UM time pra fila aceitar um grupo — a
+# fila em si SEMPRE pareia 2 "times" prontos (_tick_arena_queue), não
+# importa o tamanho.
+ARENA_MODES: dict[str, dict] = {
+    "1v1": {"team_size": 1, "label": "Duelo (Arena)",
+            "spawns_a": [(13, 2)],                  "spawns_b": [(13, 32)]},
+    "2v2": {"team_size": 2, "label": "Arena 2x2",
+            "spawns_a": [(12, 2), (14, 2)],          "spawns_b": [(12, 32), (14, 32)]},
+    "3v3": {"team_size": 3, "label": "Arena 3x3",
+            "spawns_a": [(11, 2), (13, 2), (15, 2)], "spawns_b": [(11, 32), (13, 32), (15, 32)]},
+}
 
 # Tempo máximo parado na tela de resultado antes de ser teleportado de
 # volta à força — evita que a instância fique presa na memória pra
@@ -78,46 +94,80 @@ class MatchProcessorMixin:
 
     # ── Fila (grupos de exatamente 2) ────────────────────────────────────────
 
-    def request_arena_queue_join(self, requester_eid: int) -> "str | None":
+    def request_arena_queue_join(self, requester_eid: int, mode_id: str = "2v2") -> "str | None":
         """Só o líder do grupo pode enfileirar (mesma regra de
-        kick_from_party). None = entrou na fila. Reason str = recusado
-        (handler manda ARENA_QUEUE_STATE{in_queue:False, reason} só pro
-        requester)."""
+        kick_from_party) — EXCEÇÃO pro modo solo (`team_size==1`, "Duelo
+        (Arena)", Fase H 23/07/2026): não exige grupo pré-formado, o
+        próprio `requester_eid` já é o "time de 1". None = entrou na
+        fila. Reason str = recusado (handler manda ARENA_QUEUE_STATE
+        {in_queue:False, reason} só pro requester)."""
+        mode = ARENA_MODES.get(mode_id)
+        if mode is None:
+            return "invalid_mode"
+        if requester_eid in self._player_match_id:
+            return "in_match"
         party_id = self.get_party_id_of(requester_eid)
+        for q in self._arena_queues.values():
+            if requester_eid in q or party_id in q:
+                return "already_queued"
+
+        team_size = mode["team_size"]
+        if team_size == 1:
+            self._arena_queues[mode_id].append(requester_eid)
+            return None
+
         party = self._parties.get(party_id)
         if party is None:
             return "no_party"
         if party["leader_eid"] != requester_eid:
             return "not_leader"
-        if len(party["members"]) != 2:
+        if len(party["members"]) != team_size:
             return "wrong_size"
-        if party_id in self._arena_queue_2v2:
-            return "already_queued"
         for m_eid in party["members"]:
             if m_eid in self._player_match_id:
                 return "in_match"
-        self._arena_queue_2v2.append(party_id)
+        self._arena_queues[mode_id].append(party_id)
         return None
 
     def request_arena_queue_leave(self, requester_eid: int) -> bool:
-        """True = o grupo do requester estava na fila e saiu."""
+        """True = o time do requester (grupo OU o próprio eid, no modo
+        solo) estava em alguma fila e saiu."""
         party_id = self.get_party_id_of(requester_eid)
-        if party_id in self._arena_queue_2v2:
-            self._arena_queue_2v2.remove(party_id)
-            return True
+        for q in self._arena_queues.values():
+            if requester_eid in q:
+                q.remove(requester_eid)
+                return True
+            if party_id in q:
+                q.remove(party_id)
+                return True
         return False
 
+    def _arena_members_for_token(self, token: int, mode_id: str) -> "list[int] | None":
+        """Resolve um token de fila pro roster ATUAL de eids — token é o
+        próprio eid pro modo solo (`team_size==1`) ou um `party_id` pros
+        demais (ver `request_arena_queue_join`). Recarrega do estado VIVO
+        (não um snapshot congelado no momento do join): se o grupo se
+        desfez ou o player desconectou enquanto esperava, devolve `None`
+        (fila descarta e segue tentando o resto do FIFO, mesmo padrão de
+        antes da Fase H)."""
+        if ARENA_MODES[mode_id]["team_size"] == 1:
+            return [token] if token in self._player_eid_to_sid else None
+        party = self._parties.get(token)
+        return list(party["members"]) if party is not None else None
+
     def _tick_arena_queue(self) -> None:
-        """Pareamento FIFO puro — sem balanceamento/rank nesta leva. Roda
-        1x por tick (mesmo padrão de _tick_duel_distance_check)."""
-        while len(self._arena_queue_2v2) >= 2:
-            pid_a = self._arena_queue_2v2.pop(0)
-            pid_b = self._arena_queue_2v2.pop(0)
-            party_a = self._parties.get(pid_a)
-            party_b = self._parties.get(pid_b)
-            if party_a is None or party_b is None:
-                continue  # grupo se desfez enquanto esperava — descarta, segue tentando o resto
-            self._propose_match(list(party_a["members"]), list(party_b["members"]))
+        """Pareamento FIFO puro por modo — sem balanceamento/rank nesta
+        leva. Roda 1x por tick (mesmo padrão de
+        `_tick_duel_distance_check`)."""
+        for mode_id, queue in self._arena_queues.items():
+            while len(queue) >= 2:
+                token_a = queue.pop(0)
+                token_b = queue.pop(0)
+                members_a = self._arena_members_for_token(token_a, mode_id)
+                members_b = self._arena_members_for_token(token_b, mode_id)
+                if members_a is None or members_b is None:
+                    continue  # time se desfez/desconectou enquanto esperava — descarta, segue tentando o resto
+                self._propose_match(members_a, members_b, mode_id)
 
     def _tick_arena_results_timeout(self) -> None:
         """Partidas DECIDIDAS há mais de ARENA_RESULT_AUTO_LEAVE_S segundos
@@ -134,7 +184,8 @@ class MatchProcessorMixin:
 
     # ── Ciclo de vida de partida ─────────────────────────────────────────────
 
-    def _propose_match(self, team_a_eids: list[int], team_b_eids: list[int]) -> None:
+    def _propose_match(self, team_a_eids: list[int], team_b_eids: list[int],
+                       mode_id: str = "2v2") -> None:
         """Fila pareou 2 grupos — NINGUÉM é teleportado ainda (revisado
         21/07/2026, pedido do usuário). Cria o match_id já em
         `_active_matches` com os rosters de verdade (`team_a`/`team_b`)
@@ -153,12 +204,13 @@ class MatchProcessorMixin:
         nasce FIXO em propose_time + ACCEPT_WINDOW + COUNTDOWN — um
         aceite tardio (ainda dentro do accept_deadline) só recebe um
         `countdown_remaining` menor, nunca reinicia a contagem."""
-        match_id = f"arena2v2_{self._next_match_id}"
+        match_id = f"arena{mode_id}_{self._next_match_id}"
         self._next_match_id += 1
         import time as _time_pm
         _propose_now = _time_pm.time()
 
         self._active_matches[match_id] = {
+            "mode_id":           mode_id,
             "instance_key":      None,
             "team_a":            [],
             "team_b":            [],
@@ -181,6 +233,7 @@ class MatchProcessorMixin:
         for eid in team_a_eids + team_b_eids:
             self._arena_match_found_events_this_tick.append({
                 "eid":       eid,
+                "mode":      mode_id,
                 "teammates": [e for e in (team_a_eids if eid in team_a_eids else team_b_eids) if e != eid],
                 "opponents": team_b_eids if eid in team_a_eids else team_a_eids,
             })
@@ -212,8 +265,8 @@ class MatchProcessorMixin:
         other_side = "b" if side == "a" else "a"
 
         if match["instance_key"] is None:
-            match["instance_key"] = f"{ARENA_TEMPLATE_2V2}::{match_id}"
-            self._load_instance(ARENA_TEMPLATE_2V2, match["instance_key"])
+            match["instance_key"] = f"{ARENA_TEMPLATE}::{match_id}"
+            self._load_instance(ARENA_TEMPLATE, match["instance_key"])
 
         sid = self.get_session_id_for_player(eid)
         if sid is None:
@@ -221,7 +274,8 @@ class MatchProcessorMixin:
         tx, ty = self.get_tile_pos(sid)
         match["return_pos"][eid] = (self.get_player_map(sid), tx, ty)
 
-        spawn_list = _SPAWN_TEAM_A if side == "a" else _SPAWN_TEAM_B
+        mode_spawns = ARENA_MODES[match["mode_id"]]
+        spawn_list  = mode_spawns["spawns_a"] if side == "a" else mode_spawns["spawns_b"]
         idx        = len(match[f"team_{side}"])
         sx, sy     = spawn_list[idx % len(spawn_list)]
         self.transfer_player(sid, eid, match["instance_key"], sx, sy)
@@ -236,6 +290,7 @@ class MatchProcessorMixin:
         _map_file = self._template_file_of(match["instance_key"])
         self._arena_match_start_events_this_tick.append({
             "eid":                 eid,
+            "mode":                match["mode_id"],
             "map_file":            _map_file,
             "target_x":            sx, "target_y": sy,
             "teammates":           [e for e in match[f"invited_{side}"] if e != eid],
@@ -411,19 +466,20 @@ class MatchProcessorMixin:
             })
         for eid in all_members:
             self._arena_match_result_events_this_tick.append({
-                "eid": eid, "results": results,
+                "eid": eid, "mode": match.get("mode_id", "2v2"), "results": results,
             })
 
-        # CharStatsTracker.arena_wins/arena_losses (Fase E) — por modo.
-        # Hardcoded "2v2" por enquanto (único modo existente até a Fase H
-        # generalizar match_id/team_size por ARENA_MODES); ninguém ganha/
-        # perde se a partida terminou sem vencedor (winner_team_key=None,
-        # ex: os dois times esvaziaram por forfeit simultâneo).
+        # CharStatsTracker.arena_wins/arena_losses (Fase E, por modo — Fase
+        # H liga o modo real da partida em vez do "2v2" hardcoded de
+        # antes). Ninguém ganha/perde se a partida terminou sem vencedor
+        # (winner_team_key=None, ex: os dois times esvaziaram por forfeit
+        # simultâneo).
         if winner_team_key is not None:
             from engine.utils import incr_char_stat_mode as _incr_cst_arena
+            mode_id = match.get("mode_id", "2v2")
             for eid in all_members:
                 field = "arena_wins" if eid in winner_members else "arena_losses"
-                _incr_cst_arena(self.world, eid, field, "2v2")
+                _incr_cst_arena(self.world, eid, field, mode_id)
 
     def _arena_leave_now(self, match_id: str, eid: int) -> None:
         """`eid` sai da partida IMEDIATAMENTE (desconexão, /forfeit, ou

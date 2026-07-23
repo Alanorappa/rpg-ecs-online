@@ -1259,6 +1259,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._show_habilidades = False
         self._show_skills     = False
         self._show_char_stats = False
+        self._arena_modal_open_val = False
         # Cancela qualquer drag em andamento (habilidades/inventário/hotbar/
         # consumable bar) — fechar tudo inclui desistir de um drag pendente.
         # Antes da unificação em DragState, só o drag de habilidades era
@@ -2146,6 +2147,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             self._draw_party_frames()
             self._draw_party_invite_ui()
             self._draw_arena_queue_button()
+            self._draw_arena_queue_modal()
             self._draw_arena_countdown_overlay()
             self._draw_arena_accept_modal()
             self._draw_arena_result_modal()

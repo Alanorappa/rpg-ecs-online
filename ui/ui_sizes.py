@@ -60,6 +60,7 @@ class UI:
     TRADE_INVITE_W, TRADE_INVITE_H = 360, 150  # modal "Fulano quer negociar"
     ARENA_RESULT_W, ARENA_RESULT_H = 380, 290  # modal de fim de partida da Arena (placar + "Sair da Arena")
     ARENA_ACCEPT_W, ARENA_ACCEPT_H = 320, 170  # modal "Partida encontrada!" (aceite, 21/07/2026)
+    ARENA_QUEUE_MODAL_W, ARENA_QUEUE_MODAL_H = 360, 260  # modal unificado de fila (Fase H) — lista de modos
 
     # Menu de pausa (ESC) e seus submenus — cada um é um painel separado
     MENU_QUIT_CONFIRM_W, MENU_QUIT_CONFIRM_H = 320, 150   # "Tem certeza que deseja sair?"

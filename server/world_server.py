@@ -262,10 +262,13 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # mixin).
         self._pvp_zones_by_map: dict[str, list[dict]] = {}
 
-        # Arena 2x2 (Fase G leva 1, ver server/match_processor.py) — fila
-        # FIFO de party_ids + partidas ativas (instância privada por
-        # partida, time = componente Faction temporário no player).
-        self._arena_queue_2v2: list[int] = []
+        # Arena 1x1/2x2/3x3 (Fase G leva 1 + Fase H, ver
+        # server/match_processor.py::ARENA_MODES) — 1 fila FIFO por modo
+        # (party_ids nos modos de time, o próprio eid no modo solo 1x1) +
+        # partidas ativas (instância privada por partida, time = componente
+        # Faction temporário no player).
+        from server.match_processor import ARENA_MODES as _ARENA_MODES_INIT
+        self._arena_queues: dict[str, list] = {mid: [] for mid in _ARENA_MODES_INIT}
         self._active_matches: dict[str, dict] = {}
         self._player_match_id: dict[int, str] = {}
         self._next_match_id: int = 1

@@ -6696,6 +6696,98 @@ quebrar o mapeamento de clique do mouse; fechar e reabrir o jogo depois
 de restaurar a janela manualmente, confirmar que abre no tamanho
 restaurado (não maximizado de novo).
 
+### §34.42 — Leva pós-playtest: Fase H — Arena 1x1/3x3 + modal unificado
+de fila (23/07/2026, maior escopo da leva)
+
+Pedido do usuário: 2 modos novos de arena instanciada além do 2x2
+existente — "Duelo" (1x1, soloqueue) e Arena 3x3 (grupo de 3) — com um
+modal único de fila mostrando o placar de vitórias/derrotas por modo
+(Fase E) e estrutura extensível pra um futuro 4º modo ("Campos de
+Batalha", `next_implementations/battlefield_design.md` — fora de escopo
+desta leva).
+
+**`ARENA_MODES`** (`server/match_processor.py`, novo, generaliza o que
+antes era hardcoded `_SPAWN_TEAM_A`/`_SPAWN_TEAM_B` fixos em 2): dict
+`{mode_id: {team_size, label, spawns_a, spawns_b}}` pros 3 modos — todos
+reusam o MESMO template (`ARENA_TEMPLATE`, renomeado de
+`ARENA_TEMPLATE_2V2` — símbolo Python só usado dentro do próprio módulo,
+seguro renomear; nenhum teste referencia o NOME da constante, só o valor
+string `"maps/arena_poco_negro.csv"`) — confirmado por leitura direta do
+CSV que as 2 salas de espera (linhas 2 e 32) têm piso aberto nas colunas
+11-15, cabendo 1/2/3 spawns sem precisar de mapa novo.
+
+**Fila por modo, não mais uma única lista**: `_arena_queue_2v2: list`
+(WorldServer) virou `_arena_queues: dict[str, list]`, uma entrada por
+`ARENA_MODES`. Cada fila guarda "tokens" — `party_id` nos modos de time
+(2v2/3v3, igual antes) ou o PRÓPRIO `eid` do player no modo solo (1x1,
+`team_size==1`) — resolvidos pro roster atual de eids só na hora do
+pareamento (`_arena_members_for_token`, recarrega do estado VIVO, nunca
+um snapshot congelado no join). `_tick_arena_queue` pareia cada fila
+independentemente (sempre 2 tokens por vez — 2 "times" prontos, não
+importa o tamanho de cada um).
+
+**Exceção soloqueue (1x1)**: `request_arena_queue_join(eid, mode_id)`
+pula toda a validação de `Party` quando `team_size==1` — o próprio eid
+já É o "time de 1". Modos de time (2v2/3v3) continuam exigindo
+líder+tamanho exato (mesma regra de antes, agora parametrizada por
+`ARENA_MODES[mode_id]["team_size"]`). Um "já em fila" é checado
+contra TODAS as filas de uma vez (`for q in self._arena_queues.values()`)
+— um player/grupo não pode entrar em 2 modos ao mesmo tempo.
+
+**`match_id` ganha prefixo do modo** (`f"arena{mode_id}_{...}"` →
+`arena1v1_N`/`arena2v2_N`/`arena3v3_N`) — `match["mode_id"]` fica
+guardado no dict da partida desde `_propose_match`, consultado em
+`request_arena_accept` (spawn_list certo por modo) e `_finish_match`
+(credita `arena_wins`/`arena_losses` — Fase E — no MODO REAL da
+partida, não mais hardcoded `"2v2"`).
+
+**Protocolo**: `ARENA_QUEUE_JOIN` ganha `{mode}` (C→S); `ARENA_QUEUE_STATE`/
+`ARENA_MATCH_FOUND`/`ARENA_MATCH_START`/`ARENA_MATCH_RESULT` (S→C) todos
+ganham `mode`/`{mode}` — cliente usa isso pra rotular corretamente qual
+modo está em cada modal ("Fim de Partida — Arena 3x3", etc.), com
+default `"2v2"` nos handlers pra compatibilidade se algum payload antigo
+chegar sem o campo.
+
+**Cliente — modal unificado** (`client/arena_handlers.py`):
+`ARENA_MODE_LIST` (lista `[(mode_id, label), ...]`, não 3 botões
+hardcoded — um 4º modo futuro é 1 entrada nova, o modal itera a lista
+sem mudança de código) substitui o botão único "Fila de Arena 2x2"
+por um botão persistente **sempre visível** ("Fila de Arena"/"Sair da
+Fila" — antes só aparecia pro líder de um grupo de exatamente 2, mas
+1x1 é soloqueue e precisa existir pra QUALQUER player) que abre o modal.
+Cada linha do modal mostra o modo, o placar V/D (lido de
+`CharStatsUI.get_data()` — Fase E, refrescado com um `CHAR_STATS_REQUEST`
+ao abrir o modal) e um botão Entrar/Sair — `_arena_mode_eligible(mode_id)`
+faz a MESMA validação do servidor (grupo certo/líder) só pra feedback
+visual (desabilita o botão + mostra o motivo), nunca decide sozinho: o
+servidor sempre revalida em `request_arena_queue_join`.
+
+**Validado**: `tests/test_arena.py::TestArenaModesGeneralization` (9
+testes novos) — modo inválido recusado; 1x1 soloqueue sem grupo; 2
+solos pareiam com prefixo `arena1v1_` no match_id; aceite 1x1 libera
+`can_engage`/dano de verdade; já em fila 1x1 não pode entrar em 2x2;
+3x3 exige grupo de exatamente 3; 2 trios pareiam e spawnam 3 por lado;
+vitória credita `arena_wins` no modo certo (não no 2v2 por engano);
+filas de modos diferentes não interferem entre si. Os 50 testes PRÉ-Fase
+H do arquivo (2v2 implícito via default `mode_id="2v2"`) continuam
+passando SEM NENHUMA mudança — só 2 referências diretas a
+`_arena_queue_2v2` viraram `_arena_queues["2v2"]`.
+`tests/test_arena_client_ui.py` (17 testes novos, fixture leve sem
+GameEngine completo — mesmo padrão de `_PvpCtxFixture` em
+`test_client_ui.py`) — elegibilidade por modo (solo sempre elegível,
+grupo errado/não-líder recusado), `ARENA_MODE_LIST` na ordem certa,
+handlers de rede guardam o campo `mode` corretamente, clique
+Entrar/Sair/Fechar no modal se comporta certo (manda o payload certo,
+fecha o modal, ignora clique em botão inelegível). Suíte completa
+459/459, rodada 3x.
+
+**Não validado**: sessão manual — 2-6 jogadores reais testando os 3
+modos simultaneamente (inclusive filas concorrentes de modos
+diferentes), abrir o modal e conferir visualmente o placar/geometria
+das linhas, confirmar que o botão persistente aparece pra QUALQUER
+player (não só quem está em grupo) e que o texto de motivo (grupo
+errado/não-líder) aparece legível na linha certa.
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |

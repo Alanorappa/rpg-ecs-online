@@ -1560,10 +1560,11 @@ class SessionManager:
         eid = self.world_server._player_eids.get(session.session_id)
         if eid is None:
             return
-        reason = self.world_server.request_arena_queue_join(eid)
+        mode_id = payload.get("mode", "2v2")
+        reason  = self.world_server.request_arena_queue_join(eid, mode_id)
         await session.send(MsgType.ARENA_QUEUE_STATE, {
             "in_queue": reason is None,
-            **({"reason": reason} if reason is not None else {}),
+            **({"mode": mode_id} if reason is None else {"reason": reason}),
         })
 
     async def _handle_arena_queue_leave(self, session: Session, payload: dict, ts: int) -> None:

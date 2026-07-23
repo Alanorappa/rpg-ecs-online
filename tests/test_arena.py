@@ -1,8 +1,13 @@
 """
-tests/test_arena.py — Arena 2x2 (Fase G, leva 1): instanciamento privado
-por partida, time por Facção, fila FIFO de grupos, eliminação (golpe
-letal mata de verdade — fantasma real, sem revive — ver §34.32
-ARQUITETURA_ONLINE.md, 20/07/2026). Ver server/match_processor.py.
+tests/test_arena.py — Arena 1x1/2x2/3x3 (Fase G leva 1 + Fase H):
+instanciamento privado por partida, time por Facção, fila FIFO por modo
+(grupo pré-formado ou soloqueue no 1x1), eliminação (golpe letal mata de
+verdade — fantasma real, sem revive — ver §34.32 ARQUITETURA_ONLINE.md,
+20/07/2026). A maioria dos testes deste arquivo é pré-Fase H e exercita
+só o modo "2v2" (default de `request_arena_queue_join`) — não precisou
+de nenhuma mudança pra continuar passando; `TestArenaModesGeneralization`
+no fim do arquivo cobre especificamente 1x1 (soloqueue) e 3x3 (trio) e a
+validação de modo. Ver server/match_processor.py::ARENA_MODES.
 """
 import os, sys
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -23,6 +28,17 @@ def _make_duo(ws, prefix: str, tile=(130, 374)):
     ws.request_party_invite(a, b)
     ws.respond_party_invite(b, accept=True)
     return a, b
+
+
+def _make_trio(ws, prefix: str, tile=(130, 374)):
+    a = spawn_player(ws, f"{prefix}_a", *tile)
+    b = spawn_player(ws, f"{prefix}_b", *tile)
+    c = spawn_player(ws, f"{prefix}_c", *tile)
+    ws.request_party_invite(a, b)
+    ws.respond_party_invite(b, accept=True)
+    ws.request_party_invite(a, c)
+    ws.respond_party_invite(c, accept=True)
+    return a, b, c
 
 
 def _queue_and_pair(ws, team_a, team_b):
@@ -50,7 +66,7 @@ class TestArenaQueue(unittest.TestCase):
         a, b = _make_duo(self.ws, "g1")
         pid = self.ws.get_party_id_of(a)
         self.assertIsNone(self.ws.request_arena_queue_join(a))
-        self.assertIn(pid, self.ws._arena_queue_2v2)
+        self.assertIn(pid, self.ws._arena_queues["2v2"])
 
     def test_grupo_com_tamanho_diferente_de_2_e_recusado(self):
         solo = spawn_player(self.ws, "solo", 130, 374)
@@ -81,7 +97,7 @@ class TestArenaQueue(unittest.TestCase):
         # a+b pareados (partida PROPOSTA — ninguém entrou ainda), c
         # continua sozinho na fila
         self.assertEqual(len(self.ws._active_matches), 1)
-        self.assertEqual(len(self.ws._arena_queue_2v2), 1)
+        self.assertEqual(len(self.ws._arena_queues["2v2"]), 1)
         for eid in team_a + team_b:
             self.assertIn(eid, self.ws._pending_arena_invite)
             self.assertNotIn(eid, self.ws._player_match_id)
@@ -858,6 +874,105 @@ class TestArenaAceiteContagem(unittest.TestCase):
         self.ws.request_arena_accept(self.team_a[1])
         gate_events = self.ws.consume_arena_gate_open_events()
         self.assertEqual([e["eid"] for e in gate_events], [self.team_a[1]])
+
+
+class TestArenaModesGeneralization(unittest.TestCase):
+    """Fase H (23/07/2026, pedido do usuário): "Duelo" 1x1 (soloqueue) e
+    Arena 3x3 além do 2x2 existente — ver server/match_processor.py::
+    ARENA_MODES."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+
+    def test_modo_invalido_e_recusado(self):
+        solo = spawn_player(self.ws, "inv_solo", 130, 374)
+        self.assertEqual(self.ws.request_arena_queue_join(solo, "4v4"), "invalid_mode")
+
+    def test_1v1_e_soloqueue_sem_exigir_grupo(self):
+        solo = spawn_player(self.ws, "s1v1", 130, 374)
+        self.assertIsNone(self.ws.request_arena_queue_join(solo, "1v1"))
+        self.assertIn(solo, self.ws._arena_queues["1v1"])
+
+    def test_1v1_pareia_2_solos_e_usa_prefixo_de_modo_no_match_id(self):
+        a = spawn_player(self.ws, "duel_a", 130, 374)
+        b = spawn_player(self.ws, "duel_b", 132, 374)
+        self.assertIsNone(self.ws.request_arena_queue_join(a, "1v1"))
+        self.assertIsNone(self.ws.request_arena_queue_join(b, "1v1"))
+        self.ws._tick_arena_queue()
+        match_id = self.ws._pending_arena_invite[a]
+        self.assertTrue(match_id.startswith("arena1v1_"))
+        match = self.ws._active_matches[match_id]
+        self.assertEqual(match["mode_id"], "1v1")
+        self.assertEqual(set(match["invited_a"] + match["invited_b"]), {a, b})
+
+    def test_1v1_aceite_spawna_1_por_lado_e_libera_1v1_de_verdade(self):
+        a = spawn_player(self.ws, "duel_x", 130, 374)
+        b = spawn_player(self.ws, "duel_y", 132, 374)
+        self.ws.request_arena_queue_join(a, "1v1")
+        self.ws.request_arena_queue_join(b, "1v1")
+        self.ws._tick_arena_queue()
+        self.ws.request_arena_accept(a)
+        self.ws.request_arena_accept(b)
+        self.assertTrue(can_engage(self.ws.world, a, b))
+        outcome = apply_damage_core(self.ws.world, b, 50, killer_eid=a)
+        self.assertEqual(outcome, "applied")
+
+    def test_ja_em_fila_1v1_nao_pode_entrar_em_2v2(self):
+        solo = spawn_player(self.ws, "dup_solo", 130, 374)
+        self.assertIsNone(self.ws.request_arena_queue_join(solo, "1v1"))
+        self.assertEqual(self.ws.request_arena_queue_join(solo, "2v2"), "already_queued")
+
+    def test_3v3_exige_grupo_de_exatamente_3(self):
+        a, b = _make_duo(self.ws, "d3v3")
+        self.assertEqual(self.ws.request_arena_queue_join(a, "3v3"), "wrong_size")
+
+    def test_3v3_pareia_2_trios_e_spawna_3_por_lado(self):
+        team_a = _make_trio(self.ws, "t3a")
+        team_b = _make_trio(self.ws, "t3b")
+        self.assertIsNone(self.ws.request_arena_queue_join(team_a[0], "3v3"))
+        self.assertIsNone(self.ws.request_arena_queue_join(team_b[0], "3v3"))
+        self.ws._tick_arena_queue()
+        match_id = self.ws._pending_arena_invite[team_a[0]]
+        self.assertTrue(match_id.startswith("arena3v3_"))
+        for eid in team_a + team_b:
+            self.assertIsNone(self.ws.request_arena_accept(eid))
+        match = self.ws._active_matches[match_id]
+        self.assertEqual(set(match["team_a"]), set(team_a))
+        self.assertEqual(set(match["team_b"]), set(team_b))
+        for eid in team_a + team_b:
+            self.assertTrue(can_engage(self.ws.world, team_a[0], team_b[0]))
+
+    def test_vitoria_credita_arena_wins_no_modo_certo_nao_no_2v2(self):
+        from engine.components import CharStatsTracker
+        a = spawn_player(self.ws, "dw_a", 130, 374)
+        b = spawn_player(self.ws, "dw_b", 132, 374)
+        self.ws.request_arena_queue_join(a, "1v1")
+        self.ws.request_arena_queue_join(b, "1v1")
+        self.ws._tick_arena_queue()
+        self.ws.request_arena_accept(a)
+        self.ws.request_arena_accept(b)
+        apply_damage_core(self.ws.world, b, 999999, killer_eid=a)
+        cst_a = self.ws.world.get_component(a, CharStatsTracker)
+        cst_b = self.ws.world.get_component(b, CharStatsTracker)
+        self.assertEqual(cst_a.arena_wins["1v1"], 1)
+        self.assertEqual(cst_a.arena_wins["2v2"], 0)
+        self.assertEqual(cst_b.arena_losses["1v1"], 1)
+
+    def test_fila_de_modos_diferentes_nao_interfere_entre_si(self):
+        """2 solos na fila 1x1 e 1 duo na fila 2x2 ao mesmo tempo — o
+        pareamento de um modo não deveria consumir/pareiar tokens do
+        outro (bug potencial se _tick_arena_queue não isolasse por modo)."""
+        solo_a = spawn_player(self.ws, "mix_s1", 130, 374)
+        solo_b = spawn_player(self.ws, "mix_s2", 132, 374)
+        duo = _make_duo(self.ws, "mix_duo")
+        self.ws.request_arena_queue_join(solo_a, "1v1")
+        self.ws.request_arena_queue_join(solo_b, "1v1")
+        self.ws.request_arena_queue_join(duo[0], "2v2")
+        self.ws._tick_arena_queue()
+        self.assertEqual(len(self.ws._arena_queues["2v2"]), 1)  # duo sozinho, ninguém pareou com ele
+        self.assertEqual(len(self.ws._arena_queues["1v1"]), 0)
+        self.assertIn(solo_a, self.ws._pending_arena_invite)
+        self.assertNotIn(duo[0], self.ws._pending_arena_invite)
 
 
 if __name__ == "__main__":
