@@ -6788,6 +6788,89 @@ das linhas, confirmar que o botão persistente aparece pra QUALQUER
 player (não só quem está em grupo) e que o texto de motivo (grupo
 errado/não-líder) aparece legível na linha certa.
 
+### §34.43 — Leva pós-playtest: Fase C — FLT de dano duplicado (retomada
+e resolvida, 23/07/2026)
+
+Pausada em sessão anterior por falta de reprodução detalhada — usuário
+trouxe uma captura de tela (Escudo de Fogo, dano duplicado -16/-16 no
+MESMO instante, HP só descontado 1x) e, durante a investigação, relatou
+o MESMO sintoma em Calamidade Flamejante (skill sem nenhuma relação com
+a primeira) — a combinação das duas provou que a causa era SISTÊMICA,
+não de uma skill específica.
+
+**Causa raiz** (`server/combat_processor.py::_process_player_attacks`):
+dano de MOB→player é detectado por DIFERENÇA DE HP pós-tick
+(`mob_delta = (hp_before - sfx_dmg - pvp_dmg) - hp_now` — "qualquer perda
+de HP não explicada por DoT/PvP já rastreado é um golpe de mob não
+visto"), gerando seu PRÓPRIO `combat_this_tick` fantasma quando
+`mob_delta > 0`. Esse mecanismo existe desde o início do online (mob→
+player nunca teve um ponto de emissão direto, só esse diff). Dano
+PLAYER→PLAYER precisa se AUTO-EXCLUIR desse diff via
+`_pvp_damage_this_tick` (dict per-tick) — senão o mob_delta "descobre" o
+MESMO dano de novo e reporta como se fosse um golpe de mob não seguido,
+duplicando o evento de rede (1 real do call site + 1 fantasma do
+mob_delta, `attacker=-1` ou o último mob real que atacou aquele player).
+HP só é subtraído 1x (`apply_damage_core` roda 1x) — só o EVENTO duplica,
+por isso "FLT duplicado, dano recebido não" era exatamente o sintoma.
+
+4 call sites JÁ faziam esse auto-registro manualmente (`combat_processor.
+py::_process_pvp_attack`, `skill_processor.py`, `spell_completion_
+processor.py` ×2) — um padrão repetido "fácil de esquecer num call site
+novo", e foi exatamente isso que aconteceu 2 vezes:
+- **Escudo de Fogo** (`engine/world_systems.py::deal_damage`, retaliation):
+  `apply_damage_core(attacker_id, retaliation, killer_eid=target_id)` —
+  nunca registrava.
+- **Calamidade Flamejante** (`server/spell_completion_processor.py::
+  _server_apply_magic_damage(..., report=True)`, usado por
+  `_process_player_channeling`, tick de canalização): também nunca
+  registrava.
+
+**Fix — centralizado, não mais um call site a mais pra lembrar**:
+`WorldServer._damage_tracker_composite` (`server/world_server.py`) — o
+ÚNICO hook que roda pra QUALQUER dano com `killer_eid` válido (já usado
+desde a Fase E pro placar de arena + `CharStatsTracker`) — agora TAMBÉM
+registra em `_pvp_damage_this_tick[target_id]` sempre que **killer E
+target são ambos players** (PvP de verdade). Os 4 call sites que faziam
+isso à mão tiveram a linha removida (contariam 2x no dict senão). Guard
+crítico: **só quando o killer também é player** — dano de MOB contra
+player (auto-attack normal via `EnemyAISystem`, sem `combat_this_tick`
+próprio) depende INTEIRAMENTE do `mob_delta` pra ser detectado;
+registrar esse caso também zeraria o `combat_this_tick` de TODO ataque
+de mob (regressão coberta por teste dedicado, ver abaixo).
+
+**Diagnóstico ao vivo** (mesma metodologia já usada nesta leva): script
+de duelo real (attacker sem escudo vs wearer com Escudo de Fogo,
+`run_ticks` com captura de deltas) confirmou a dupla emissão ANTES do
+fix (`{'attacker': 63, 'target': 62, 'damage': 11, 'source': 'skill'}` +
+`{'attacker': -1, 'target': 62, 'damage': 11, 'source': 'auto'}`, mesmo
+tick, mesmo valor, mesmo `hp_after`) e a resolução DEPOIS (1 evento só).
+Mesma confirmação pra Calamidade Flamejante via `Channeling` simulado
+contra um player em duelo.
+
+**Validado**: `tests/test_flt_dedup.py` (3 testes novos) —
+`TestEscudoDeFogoNaoDuplicaFLT` (agrupa por assinatura `(target, damage,
+hp_after)` DENTRO de cada tick individual — não agregado, pra não
+confundir 2 procs legítimos em ticks diferentes com uma duplicata real;
+filtra ruído de mobs de fundo do `make_world_server()` corretamente),
+`TestCalamidadeFlamejanteNaoDuplicaFLT` (mesma verificação pro tick de
+canalização), `TestPvpDamageTrackingNaoQuebraMobDelta` (regressão
+determinística — chama `_process_player_attacks` direto com um
+`player_hp_snapshot` controlado, sem depender de IA/RNG de mob de
+verdade — confirma que dano de MOB genuíno continua sendo detectado via
+`mob_delta` normalmente). Também corrigido de passagem:
+`tests/test_session.py::test_player_corpse_stays_dead_until_revive`
+tinha só 5 ticks (0.25s) de margem pro mob acertar 1 golpe — flakiness
+pré-existente exposta por esta leva ter adicionado testes novos ANTES
+dele na ordem de execução (mesmo `random` global compartilhado entre
+todo o processo pytest, classe de bug já documentada nesta sessão pra
+Fase B) — bumped pra 240 ticks (12s), mesmo padrão já usado em
+`TestPlayerAttacksMob`/`TestAutoAttackFlow`. Suíte completa 462/462,
+rodada 3x.
+
+**Não validado**: sessão manual real com 2+ clientes — confirmar que o
+FLT de Escudo de Fogo e Calamidade Flamejante aparece só 1x cada agora
+(o cenário exato que o usuário reportou com captura de tela).
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |

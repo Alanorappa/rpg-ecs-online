@@ -647,7 +647,13 @@ class TestPlayerDeathEvent(unittest.IsolatedAsyncioTestCase):
         mob_cs.target_entity_id = player_eid
         self.ws_server._attack_timers[f"mob_{mob_eid}"] = 0.0
 
-        await self._run_ticks_async(5)
+        # 240 ticks (12s) — margem contra miss/dodge/parry do mob (só 5
+        # ticks/0.25s dava 1 tentativa só; random é global/compartilhado
+        # entre testes do processo inteiro — mesma classe de flakiness já
+        # documentada em TestPlayerAttacksMob/TestAutoAttackFlow,
+        # tests/test_combat.py — exposta aqui por reordenação de testes
+        # em runs completos da suíte, não por bug de verdade).
+        await self._run_ticks_async(240)
 
         pcs_after = self.ws_server.world.get_component(player_eid, CombatStats)
         gst_after = self.ws_server.world.get_component(player_eid, GhostState)

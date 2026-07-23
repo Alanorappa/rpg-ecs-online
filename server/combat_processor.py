@@ -514,10 +514,11 @@ class CombatProcessorMixin:
                     "rage":       _atk_char.rage,
                 })
 
-        # Rastreia dano PvP para subtrair de mob_delta (evita FLT duplo)
-        self._pvp_damage_this_tick[victim_eid] = (
-            self._pvp_damage_this_tick.get(victim_eid, 0) + damage
-        )
+        # Rastreio de _pvp_damage_this_tick (evita FLT duplo via mob_delta)
+        # agora é centralizado em WorldServer._damage_tracker_composite —
+        # deal_damage() acima já disparou apply_damage_core com killer_eid
+        # válido, que já registrou isso (Fase C, 23/07/2026). Manter o
+        # rastreio aqui TAMBÉM duplicaria a entrada no dict.
 
         # COMBAT_RESULT → AOI_UPDATE para ambos os clientes
         self._combat_this_tick.append({

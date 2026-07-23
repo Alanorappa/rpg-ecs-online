@@ -1370,13 +1370,44 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         _lethal_interceptor_composite acima): placar de arena
         (_track_arena_damage, no-op fora de partida) + estatísticas
         acumuladas do personagem pro modal de estatísticas (Fase E,
-        23/07/2026)."""
+        23/07/2026) + registro em _pvp_damage_this_tick (Fase C,
+        23/07/2026 — ver comentário em _pvp_damage_this_tick no __init__).
+
+        Fase C (FLT duplicado): dano PLAYER→PLAYER (killer E target são
+        players) que passa por apply_damage_core (killer_eid != -1, único
+        jeito deste hook disparar) precisa se excluir de
+        _pvp_damage_this_tick, senão `_process_player_attacks`
+        (server/combat_processor.py) o contabiliza DE NOVO como "dano de
+        mob não rastreado" (mob_delta), gerando um segundo combat_this_tick
+        pro MESMO golpe — 1 real (daqui ou do call site) + 1 fantasma
+        (mob_delta, attacker=-1/mob-errado). Bug real relatado pelo usuário
+        23/07/2026 em 2 skills SEM relação nenhuma entre si (retaliation do
+        Escudo de Fogo — killer=dono do escudo, target=quem atacou o dono;
+        tick de canalização de Calamidade Flamejante — killer=mago,
+        target=vítima), ambas PvP (killer sempre player nos dois casos) e
+        ambas SEM esse rastreio manual — prova que é um buraco SISTÊMICO
+        (qualquer call site novo que esqueça de rastrear cai nele), não um
+        bug específico de uma skill. Fix: centralizar aqui, no ÚNICO ponto
+        que roda pra qualquer dano com killer_eid válido — os 4 call sites
+        que faziam esse rastreio à mão (combat_processor.py::
+        _process_pvp_attack, skill_processor.py, spell_completion_processor.py
+        ×2) tiveram a linha removida, pra não contar 2x o mesmo dano no dict.
+
+        CUIDADO: só quando o KILLER também é player (PvP de verdade) — dano
+        de MOB contra player (auto-attack normal via EnemyAISystem, sem
+        nenhum combat_this_tick próprio) depende INTEIRAMENTE do mob_delta
+        pra ser detectado; excluir esse caso aqui também zeraria o
+        combat_this_tick de todo ataque de mob contra player."""
         self._track_arena_damage(killer_eid, target_id, dmg)
         from engine.components import PlayerControlled as _PC_dmgtrk
         from engine.utils import incr_char_stat
-        field = ("pvp_damage" if self.world.get_component(target_id, _PC_dmgtrk) is not None
-                 else "pve_damage")
+        _target_is_player = self.world.get_component(target_id, _PC_dmgtrk) is not None
+        _killer_is_player = self.world.get_component(killer_eid, _PC_dmgtrk) is not None
+        field = "pvp_damage" if _target_is_player else "pve_damage"
         incr_char_stat(self.world, killer_eid, field, dmg)
+        if _target_is_player and _killer_is_player and dmg > 0:
+            self._pvp_damage_this_tick[target_id] = (
+                self._pvp_damage_this_tick.get(target_id, 0) + dmg)
 
     def set_player_target(self, session_id: str, target_eid: int) -> None:
         """Define o alvo de combate do jogador. target_eid=-1 para parar.
