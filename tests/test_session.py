@@ -959,6 +959,49 @@ class TestUnstuck(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(get_msgs_of_type(fw, MsgType.ENTITY_MOVE)), 1)
 
 
+class TestZoneChangeReq(unittest.IsolatedAsyncioTestCase):
+    """ZONE_CHANGE_REQ (C→S) — usado por transições normais de mapa (ex.:
+    entrar numa caverna) E, desde 23/07/2026, pelo teleporte de mapa do
+    menu de debug (F12): antes chamava `_do_transition` client-side direto
+    (nunca avisava o servidor — bug real relatado pelo usuário: tela preta
+    + minimapa preso no mapa antigo, e "Voltar ao Spawn" via UNSTUCK não
+    via troca nenhuma pra desfazer, já que o servidor nunca tinha saído do
+    mapa original). Ver game.py (bloco de `_debug_teleport_map`)."""
+
+    async def asyncSetUp(self):
+        self.ws_server, self.mgr = make_session_manager()
+
+    async def test_mapa_valido_troca_de_mapa_e_manda_zone_change(self):
+        session, fw = await fake_login(self.mgr, "zcr_a", "zcruser_a")
+        fw.sent.clear()
+
+        await self.mgr._handle_zone_change_req(session, {
+            "to_map": "maps/map_cave_east.csv", "target_x": 10, "target_y": 10,
+        }, 0)
+
+        self.assertEqual(self.ws_server.get_player_map(session.session_id),
+                         "maps/map_cave_east.csv")
+        zone_changes = get_msgs_of_type(fw, MsgType.ZONE_CHANGE)
+        self.assertEqual(len(zone_changes), 1)
+        self.assertEqual(zone_changes[0]["map_file"], "maps/map_cave_east.csv")
+        self.assertEqual((zone_changes[0]["target_x"], zone_changes[0]["target_y"]), (10, 10))
+
+    async def test_mapa_nao_carregado_e_ignorado_sem_travar(self):
+        """Mapa/template não carregado como bundle standalone (ex.: arena,
+        que só existe como instância por partida) — nunca deveria
+        teleportar nem mandar ZONE_CHANGE, só ignorar silenciosamente."""
+        session, fw = await fake_login(self.mgr, "zcr_b", "zcruser_b")
+        original_map = self.ws_server.get_player_map(session.session_id)
+        fw.sent.clear()
+
+        await self.mgr._handle_zone_change_req(session, {
+            "to_map": "maps/arena_poco_negro.csv", "target_x": 13, "target_y": 13,
+        }, 0)
+
+        self.assertEqual(self.ws_server.get_player_map(session.session_id), original_map)
+        self.assertEqual(len(get_msgs_of_type(fw, MsgType.ZONE_CHANGE)), 0)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Runner
 # ─────────────────────────────────────────────────────────────────────────────

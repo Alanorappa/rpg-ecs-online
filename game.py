@@ -1888,10 +1888,29 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 tx, ty = self._map_overlay.pending_destination
                 self._map_overlay.pending_destination = None
                 if self._debug_teleport_map:
-                    # Debug: teleporte imediato, possivelmente trocando de mapa
+                    # Debug: teleporte de mapa (F12). Online, `_do_transition`
+                    # direto era só client-side (bug real relatado pelo
+                    # usuário 23/07/2026: tela preta + minimapa preso no mapa
+                    # antigo) — o SERVIDOR nunca ficava sabendo, então o
+                    # personagem continuava (autoritativamente) no mapa de
+                    # origem; qualquer ação subsequente que dependesse do
+                    # mapa real (ex.: "Voltar ao Spawn") não via troca
+                    # nenhuma pra desfazer. Mesmo caminho C→S de qualquer
+                    # transição normal (ZONE_CHANGE_REQ →
+                    # WorldServer.transfer_player → ZONE_CHANGE de volta,
+                    # que só ENTÃO chama _do_transition via
+                    # _handle_msg_zone_change) — sem isso, offline continua
+                    # usando o atalho direto (não há servidor pra rodar o
+                    # round-trip).
                     target = self._debug_teleport_map
                     self._debug_teleport_map = ""
-                    self._do_transition({"target_map": target, "target_x": tx, "target_y": ty})
+                    if self._net:
+                        from shared.messages import MsgType as _MT_dbgmap
+                        self._net.send(_MT_dbgmap.ZONE_CHANGE_REQ, {
+                            "to_map": target, "target_x": tx, "target_y": ty,
+                        })
+                    else:
+                        self._do_transition({"target_map": target, "target_x": tx, "target_y": ty})
                 else:
                     from engine.components import PlayerAutoMove
                     for _, auto in self.world.get_entities_with(PlayerAutoMove):

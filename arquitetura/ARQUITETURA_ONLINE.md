@@ -6871,6 +6871,58 @@ rodada 3x.
 FLT de Escudo de Fogo e Calamidade Flamejante aparece só 1x cada agora
 (o cenário exato que o usuário reportou com captura de tela).
 
+### §34.44 — Menu de debug (F12): teleporte de mapa era client-only online
+(23/07/2026)
+
+Usuário validou Escudo de Fogo/Calamidade Flamejante (§34.43) e, testando
+"Voltar ao Spawn" (A5, §34.36) via F12→aba Mapa→arena, viu tela preta e o
+minimapa preso mostrando o mapa da arena mesmo depois de clicar "Voltar
+ao Spawn". Investigação mostrou que **não era regressão do A5** — era
+uma ferramenta de debug nunca adaptada pro modo online.
+
+**Causa raiz**: `_debug_open_map`/bloco de `_debug_teleport_map` em
+`game.py` chamava `self._do_transition(...)` DIRETO — essa função troca
+`self._current_map_file`, recarrega o CSV local e limpa entidades
+LOCALMENTE, sem nunca avisar o servidor (é o mesmo código usado desde a
+era offline). Online, o servidor nunca soube da troca — `MapLocation.
+map_file` do player continuava no mapa de origem. Ao clicar "Voltar ao
+Spawn" logo depois, `_handle_unstuck` (A5) comparou o mapa AUTORITATIVO
+(inalterado) contra o mapa principal, viu que já "estavam iguais" e só
+fez um reposicionamento normal — nenhum `ZONE_CHANGE` foi necessário nem
+mandado, então o `_current_map_file` do cliente (só mexido pelo F12
+quebrado) nunca foi corrigido de volta. A5 em si nunca foi exercitado de
+verdade por esse teste — confirmado rodando `tests/test_session.py::
+TestUnstuck` (já existente, cobre exatamente esse cenário via
+`transfer_player` real) e passando 2/2.
+
+**Fix**: bloco de `_debug_teleport_map` (`game.py`) agora manda
+`ZONE_CHANGE_REQ` (C→S) quando `self._net` existe (modo online) — o
+MESMO caminho já usado por qualquer transição normal de mapa (entrar
+numa caverna): servidor valida (`to_map` precisa estar em
+`self.world_server._map_bundles`), executa `transfer_player` de
+verdade, e só manda `ZONE_CHANGE` de volta — que aí SIM aciona
+`_do_transition` no cliente (via `_handle_msg_zone_change`, já
+existente). Offline continua chamando `_do_transition` direto (não há
+servidor pra fazer o round-trip). Efeito colateral esperado e CORRETO:
+mapas que só existem como instância por partida (ex.:
+`arena_poco_negro.csv` fora de uma partida real) não estão em
+`_map_bundles` standalone — o pedido é silenciosamente ignorado (nunca
+deveria ser possível "noclipar" pra dentro do template da arena por
+fora do sistema de fila).
+
+**Validado**: `tests/test_session.py::TestZoneChangeReq` (2 testes
+novos — nenhum teste cobria `_handle_zone_change_req` antes, apesar de
+já ser usado hoje por transições reais de caverna) — mapa carregado
+troca de verdade e manda `ZONE_CHANGE` com map_file/target_x/y
+corretos; mapa não carregado (arena fora de partida) é ignorado sem
+travar nem mandar nada. Suíte completa rodada 3x.
+
+**Não validado**: sessão manual — F12 → aba Mapa → teleportar pra uma
+caverna online, confirmar que o minimapa/mapa atual refletem a troca de
+verdade e que "Voltar ao Spawn" a partir de lá agora funciona (cenário
+que `TestUnstuck` já prova server-side, falta ver renderizado de
+verdade).
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |
