@@ -196,8 +196,16 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         # `clock.tick(FPS)` (sleep-based), não mais `tick_busy_loop`, senão
         # as duas técnicas de pacing competem e queimam CPU à toa
         # (investigação 19/07/2026, ver ARQUITETURA_ONLINE.md).
+        # RESIZABLE (Fase G, 23/07/2026): habilita os botões nativos da
+        # janela (inclusive maximizar) — combinado com SCALED, é o par
+        # documentado do pygame-ce pra "resolução lógica fixa (win_w/win_h
+        # acima) + janela redimensionável": o próprio SDL recalcula a
+        # escala de apresentação (e a tradução de pygame.mouse.get_pos()
+        # pro espaço lógico) sozinho a cada resize — não precisa recriar
+        # `self.screen`/recalcular nada em código aqui. NUNCA tirar
+        # DOUBLEBUF|SCALED/vsync=1 desta chamada (ver comentário acima).
         self._display = pygame.display.set_mode(
-            (win_w, win_h), pygame.DOUBLEBUF | pygame.SCALED, vsync=1)
+            (win_w, win_h), pygame.DOUBLEBUF | pygame.SCALED | pygame.RESIZABLE, vsync=1)
         self.screen   = pygame.Surface((win_w, win_h))
         pygame.display.set_caption("RPG ECS")
         self.clock = pygame.time.Clock()
@@ -215,12 +223,29 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         DEBUG_MODE     = _cfg_data.get("debug_mode",     False)
         PROFILE_FRAMES = _cfg_data.get("profile_frames", False)
 
-        # Filtra eventos irrelevantes — reduz custo do pump no Windows
+        # Janela maximizada é o padrão (Fase G, pedido do usuário) — maximiza
+        # o CONTAINER da janela via a API Window do pygame-ce (não muda a
+        # resolução lógica passada em set_mode acima, só o tamanho da janela
+        # na tela — SCALED cuida do resto). Nunca deixar isso derrubar o
+        # boot do jogo se algo no driver/GPU não suportar.
+        self._window_mode_pref: str = _cfg_data.get("window_mode", "maximized")
+        if self._window_mode_pref == "maximized":
+            try:
+                pygame.Window.from_display_module().maximize()
+            except Exception as _win_max_err:
+                print(f"[GameEngine] aviso: falha ao maximizar janela — {_win_max_err}")
+
+        # Filtra eventos irrelevantes — reduz custo do pump no Windows.
+        # WINDOWMAXIMIZED/WINDOWRESTORED (Fase G): persistem a preferência
+        # de janela quando o jogador clica o botão nativo — não precisamos
+        # reagir a VIDEORESIZE (SCALED já recalcula a escala de apresentação
+        # sozinho, ver comentário no set_mode acima).
         pygame.event.set_allowed([
             pygame.QUIT,
             pygame.KEYDOWN, pygame.KEYUP,
             pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP,
             pygame.MOUSEWHEEL, pygame.MOUSEMOTION,
+            pygame.WINDOWMAXIMIZED, pygame.WINDOWRESTORED,
         ])
 
         self._ui_scale: float = _cfg_data.get("ui_scale", 1.0)
@@ -1457,6 +1482,12 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                     self._send_save_state()  # salva ao fechar
                     self._save_config()      # persiste layout da hotbar ao fechar
                     running = False
+                elif event.type == pygame.WINDOWMAXIMIZED:
+                    self._window_mode_pref = "maximized"
+                    self._save_config()
+                elif event.type == pygame.WINDOWRESTORED:
+                    self._window_mode_pref = "windowed"
+                    self._save_config()
                 elif _god_was_active:
                     pass   # god mode consumiu — ignora input do jogo
                 elif event.type == pygame.KEYDOWN:
@@ -2438,6 +2469,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             "debug_mode":     DEBUG_MODE,
             "profile_frames": PROFILE_FRAMES,
             "menu_keybinds":  self._menu_keys,
+            "window_mode":    self._window_mode_pref,
         }
         if self._logged_char_name:
             existing = _cfg.load()
@@ -2563,10 +2595,10 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         win_w         = int(1280 * scale)
         win_h         = int(720  * scale)
         self.screen   = pygame.Surface((win_w, win_h))
-        # SCALED + vsync=1: mesma razão do set_mode() em __init__ — ver
-        # comentário lá.
+        # SCALED + vsync=1 + RESIZABLE: mesma razão do set_mode() em
+        # __init__ — ver comentário lá.
         self._display = pygame.display.set_mode(
-            (win_w, win_h), pygame.DOUBLEBUF | pygame.SCALED, vsync=1)
+            (win_w, win_h), pygame.DOUBLEBUF | pygame.SCALED | pygame.RESIZABLE, vsync=1)
         self._rebuild_screen_refs(self.screen)
         # Atualiza Camera component para que offset_x/offset_y reflitam a nova resolução
         for _, cam, _ in self.world.get_entities_with(Camera, Position):

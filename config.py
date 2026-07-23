@@ -20,6 +20,13 @@ CONFIG_FILE = os.path.join(_config_dir(), "config.json")
 
 DEFAULTS = {
     "scale":         1.0,
+    # Fase G (23/07/2026, pedido do usuário): janela maximizada é o padrão —
+    # "windowed" só depois que o jogador restaurar manualmente e isso for
+    # persistido (ver game.py::_on_window_state_changed). Chave nova: quem
+    # já tinha config.json salvo (sem esta chave) recebe "maximized" pelo
+    # merge de config.load() (`{**DEFAULTS, **data}`) — vira o default de
+    # TODOS os jogadores, novos e existentes, como pedido.
+    "window_mode":   "maximized",
     "server_host":   "localhost",
     "server_port":   8765,
     "net_user":      "teste",

@@ -6628,6 +6628,74 @@ Suíte completa 430/430, rodada 3x.
 ordem visual e que minimizar/expandir funciona com o mouse de verdade
 (hit-test de coordenada de tela real, não só o Rect calculado no teste).
 
+### §34.41 — Leva pós-playtest: Fase G — janela maximizada por padrão
+(23/07/2026)
+
+Pedido do usuário: jogo abrir maximizado por padrão, usando o botão
+nativo de maximizar da janela (sem exclusive fullscreen). Ambiente
+confirmado no início da leva: `py -3.10` roda `pygame-ce 2.5.7` com
+`pygame.Window` disponível.
+
+**`pygame.RESIZABLE`** adicionado às 2 chamadas de `pygame.display.
+set_mode()` em `game.py` (`__init__` e `_apply_scale`, a que roda ao
+mudar a escala de UI no menu de configurações) — **preservando**
+`DOUBLEBUF | SCALED` + `vsync=1` (o comentário em `game.py` documenta o
+bug de vsync/flip já resolvido especificamente com essas flags,
+investigação com o usuário 14/07/2026 — qualquer mudança ali seria
+arriscada; `RESIZABLE` é só um flag A MAIS, não mexe nos outros).
+`SCALED` combinado com `RESIZABLE` é o par documentado do próprio
+pygame-ce pra "resolução lógica fixa (`win_w`/`win_h`, calculada de
+`1280×720×scale`) + janela redimensionável de verdade" — o SDL recalcula
+sozinho a escala de apresentação (e a tradução de `pygame.mouse.
+get_pos()` pro espaço lógico) a cada resize, sem nenhum código adicional
+aqui — **não precisou** de handler pra `VIDEORESIZE` nem recriar
+`self.screen` a cada resize (diferente do que o plano original cogitava
+como possivelmente necessário).
+
+**Maximizar por padrão**: `pygame.Window.from_display_module().
+maximize()`, chamado 1x no boot logo após o `set_mode()` inicial (maximiza
+o CONTAINER da janela sem mudar a resolução LÓGICA pedida a `set_mode` —
+`SCALED` cuida da apresentação) — condicional a `config.json::
+window_mode` (novo, `config.py::DEFAULTS["window_mode"]="maximized"`).
+Chave nova: `config.load()` mescla `{**DEFAULTS, **data}`, então
+jogadores com `config.json` já salvo (sem esta chave) recebem
+"maximized" pelo merge — vira o default de TODOS, novos e existentes,
+exatamente como pedido, sem precisar de migração explícita. Chamada
+envolta em `try/except` — nunca derruba o boot do jogo se falhar num
+driver/GPU específico.
+
+**Persistência da preferência do jogador**: `pygame.WINDOWMAXIMIZED`/
+`WINDOWRESTORED` adicionados ao `pygame.event.set_allowed()` (antes
+filtrados fora — teriam sido descartados silenciosamente sem isso) e
+tratados no loop principal de eventos (`game.py::run`, logo após o
+`QUIT`): clique no botão nativo de maximizar/restaurar atualiza
+`self._window_mode_pref` + `_save_config()` na hora — próximo boot já
+abre no estado que o jogador deixou (maximizado OU restaurado/
+"windowed"), não sempre forçado a maximizado.
+
+**Risco remanescente**: médio — a nota de vsync/flip no código é um
+aviso explícito de fragilidade já sofrida antes, e o comportamento real
+de resize/maximize do SDL não pode ser observado neste ambiente
+(headless, `SDL_VIDEODRIVER=dummy`). Verificação manual em Windows real
+é **obrigatória** antes de considerar esta fase encerrada de verdade.
+
+**Validado** (automatizado, o que dá pra testar sem janela real):
+`tests/test_config.py` (3 testes novos) — `DEFAULTS["window_mode"]`
+é `"maximized"`; `config.json` existente sem a chave recebe o default
+no merge; `window_mode="windowed"` salvo pelo jogador sobrevive a um
+load(). Smoke test manual (`SDL_VIDEODRIVER=dummy`) confirmou que
+`set_mode` com os 3 flags + `Window.from_display_module().maximize()`
+não lança exceção. Suíte completa 433/433, rodada 3x.
+
+**Não validado (requer Windows real, não headless)**: abrir o jogo e
+confirmar que inicia maximizado; clicar restaurar/maximizar nativo e
+medir se o delay de flip/vsync documentado nos comentários NÃO volta;
+redimensionar a janela livremente e confirmar que o conteúdo escala
+corretamente (letterboxing do SCALED) sem distorcer proporção nem
+quebrar o mapeamento de clique do mouse; fechar e reabrir o jogo depois
+de restaurar a janela manualmente, confirmar que abre no tamanho
+restaurado (não maximizado de novo).
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |

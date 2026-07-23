@@ -65,6 +65,28 @@ class TestConfigLoadSave(unittest.TestCase):
             # arquivo final sempre é JSON completo/válido — write atômico
             json.load(f)
 
+    def test_window_mode_default_e_maximized(self):
+        """Fase G (23/07/2026, pedido do usuário): janela maximizada é o
+        padrão pra TODOS os jogadores, novos e existentes."""
+        self.assertEqual(config.DEFAULTS["window_mode"], "maximized")
+        data = config.load()
+        self.assertEqual(data["window_mode"], "maximized")
+
+    def test_config_existente_sem_window_mode_recebe_o_default(self):
+        """Simula um config.json salvo ANTES desta chave existir (chave
+        ausente do arquivo em disco) — o merge de load() com DEFAULTS tem
+        que preencher 'maximized' mesmo assim, sem exigir migração manual."""
+        with open(config.CONFIG_FILE, "w") as f:
+            json.dump({"server_host": "1.2.3.4"}, f)
+        data = config.load()
+        self.assertEqual(data["window_mode"], "maximized")
+        self.assertEqual(data["server_host"], "1.2.3.4")
+
+    def test_window_mode_restaurado_pelo_jogador_e_persistido(self):
+        config.save({"window_mode": "windowed"})
+        data = config.load()
+        self.assertEqual(data["window_mode"], "windowed")
+
     def test_save_apos_arquivo_corrompido_recupera(self):
         """Mesmo se um load() anterior bateu num arquivo corrompido, o
         próximo save() ainda produz um config.json válido (não propaga
