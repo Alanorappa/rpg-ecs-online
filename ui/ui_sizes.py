@@ -141,7 +141,7 @@ class UI:
 
     # ── Quests — geometria interna ───────────────────────────────────────────
     # Arquivo: quest_system.py (3 classes: tracker no HUD, diálogo, diário)
-    QUEST_HUD_MAX_VISIBLE  = 3     # quantas quests aparecem ao mesmo tempo no tracker do HUD (contagem)
+    QUEST_HUD_MAX_VISIBLE  = 5     # quantas quests aparecem ao mesmo tempo no tracker do HUD (contagem)
     QUEST_HUD_MARGIN_RIGHT = 10    # distância do tracker até a borda direita da tela
     # (sem QUEST_HUD_MARGIN_TOP aqui: a distância até o topo é CALCULADA em
     # quest_system.py::QuestSystem.HUD_MARGIN_TOP a partir de

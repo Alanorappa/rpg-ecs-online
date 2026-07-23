@@ -6579,6 +6579,55 @@ em player, matar mob, ganhar/perder duelo, ganhar/perder arena 2v2,
 completar quest) e que sobrevivem a um reload de personagem (logout/
 login).
 
+### §34.40 — Leva pós-playtest: Fase F — quest tracker: minimizar +
+reordenar por progresso absoluto + limite 3→5 (23/07/2026)
+
+**Limite**: `UI.QUEST_HUD_MAX_VISIBLE` (`ui/ui_sizes.py`) `3` → `5` —
+única constante, `QuestSystem.MAX_HUD_QUESTS` já lia de lá.
+
+**Ordenação por progresso ABSOLUTO** (pedido do usuário, não
+proporcional): `QuestSystem._sorted_active_items(ql)`
+(`ui/quest_system.py`) — `sorted(ql.active.items(), key=lambda kv:
+sum(kv[1]), reverse=True)`. Uma quest de objetivo grande (`count=5`) mas
+"quase pronta" em valor absoluto (`4/5`) aparece antes de uma pequena
+(`count=3`) menos avançada em absoluto (`2/3`), mesmo a segunda tendo
+proporção maior (0.8 vs 0.67 seria o oposto se fosse por proporção) —
+exatamente o comportamento pedido. `render_hud`/`_build_hud_surf` usam a
+MESMA lista ordenada (calculada 1x por frame, fatiada em
+`MAX_HUD_QUESTS`) — sem isso, cache-key e conteúdo renderizado
+poderiam divergir da ordem.
+
+**Minimizar** (não havia nenhum precedente de painel colapsável no HUD —
+design novo): `QuestSystem._tracker_minimized: bool` (default `False`) +
+botão pequeno (`-`/`+`, 18×18px) no canto superior direito do tracker.
+Minimizado, `_build_hud_surf` desenha só o cabeçalho ("Quests (N)", N =
+`len(ql.active)` — TOTAL ativas, não só as mostradas) sem a lista.
+Estado é só de sessão (não persistido em `config.json`) — decisão de
+manter cirúrgico; se o usuário quiser sobreviver a reinício, é 1 chave
+nova em `config.py::DEFAULTS` + save/load, mesmo padrão já usado pra
+hotbar (`client/save_sync_handlers.py`).
+
+**Hit-test do botão**: o tracker é HUD permanente (sem `_show_x` de
+modal), então o clique é escutado incondicionalmente — `QuestSystem.
+handle_tracker_click(event)` chamado em `game.py`, no MESMO `elif` chain
+unconditional de `_handle_chat_click`/`_handle_duel_click` (linha ~1582).
+Geometria do botão só existe DEPOIS de `render_hud` desenhar (tamanho do
+painel varia com o conteúdo) — `QuestSystem._last_hud_rect` guarda o
+`Rect` do último frame desenhado, `None` quando não há quests ativas
+(handler devolve `False` sem quebrar).
+
+**Validado**: `tests/test_quest_tracker.py` (6 testes novos) —
+`MAX_HUD_QUESTS==5`; ordenação por soma absoluta (não proporção);
+6 quests ativas → só as 5 de maior soma aparecem (3 casos sem
+ambiguidade de empate testados); minimizado produz surf mais baixo que
+expandido; clique no botão alterna o estado, clique fora não; sem
+quests ativas, `_last_hud_rect` fica `None` e o clique não quebra.
+Suíte completa 430/430, rodada 3x.
+
+**Não validado**: sessão manual — abrir com 6+ quests ativas, confirmar
+ordem visual e que minimizar/expandir funciona com o mouse de verdade
+(hit-test de coordenada de tela real, não só o Rect calculado no teste).
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |

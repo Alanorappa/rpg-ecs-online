@@ -1578,6 +1578,9 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                       and self._handle_chat_click(event)):
                     pass
                 elif (event.type == pygame.MOUSEBUTTONDOWN
+                      and self._quest_system.handle_tracker_click(event)):
+                    pass
+                elif (event.type == pygame.MOUSEBUTTONDOWN
                       and self._show_inventory):
                     self._handle_inventory_click(event)
                 elif event.type == pygame.MOUSEBUTTONDOWN:

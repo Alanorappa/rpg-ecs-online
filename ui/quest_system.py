@@ -54,6 +54,11 @@ class QuestSystem(UIScaleMixin, System):
         self.player_entity = player_entity
         self._hud_cache_key:  "tuple | None"          = None
         self._hud_cache_surf: "pygame.Surface | None" = None
+        # Fase F (23/07/2026) — tracker minimizável (WoW-style) + geometria
+        # do último frame desenhado (só existe pra hit-test do botão de
+        # minimizar, já que o tamanho do painel varia com o conteúdo).
+        self._tracker_minimized: bool          = False
+        self._last_hud_rect:     "pygame.Rect | None" = None
         self._current_map: str = ""
         self._last_reach_tile: tuple = (-1, -1, "")  # (tx, ty, map) — evita disparo por frame
         # Online: servidor é o único produtor autoritativo de progresso (ver
@@ -143,66 +148,102 @@ class QuestSystem(UIScaleMixin, System):
 
     # ── HUD ─────────────────────────────────────────────────────────────────
 
+    def _sorted_active_items(self, ql) -> list:
+        """Fase F (23/07/2026, pedido do usuário) — ordena por progresso
+        ABSOLUTO somado (sum(prog), não proporcional): uma quest com poucos
+        objetivos quase completos não deve furar fila na frente de uma
+        quest grande já bem avançada em valor absoluto."""
+        return sorted(ql.active.items(), key=lambda kv: sum(kv[1]), reverse=True)
+
     def render_hud(self, screen: pygame.Surface) -> None:
         from engine.components import QuestLog
         ql = self.world.get_component(self.player_entity, QuestLog)
         if ql is None or not ql.active:
             self._hud_cache_key  = None
             self._hud_cache_surf = None
+            self._last_hud_rect  = None
             return
 
-        cache_key = tuple(
-            (qid, tuple(prog))
-            for qid, prog in list(ql.active.items())[:self.MAX_HUD_QUESTS]
-        )
+        sorted_items = self._sorted_active_items(ql)[:self.MAX_HUD_QUESTS]
+        cache_key = (self._tracker_minimized, len(ql.active),
+                     tuple((qid, tuple(prog)) for qid, prog in sorted_items))
         if cache_key != self._hud_cache_key:
             self._hud_cache_key  = cache_key
-            self._hud_cache_surf = self._build_hud_surf(ql)
+            self._hud_cache_surf = self._build_hud_surf(ql, sorted_items)
 
         if self._hud_cache_surf is None:
+            self._last_hud_rect = None
             return
 
-        sw = screen.get_width()
-        screen.blit(self._hud_cache_surf,
-                    (sw - self._u(self.HUD_MARGIN_RIGHT) - self._hud_cache_surf.get_width(),
-                     self._u(self.HUD_MARGIN_TOP)))
+        sw  = screen.get_width()
+        pos = (sw - self._u(self.HUD_MARGIN_RIGHT) - self._hud_cache_surf.get_width(),
+               self._u(self.HUD_MARGIN_TOP))
+        screen.blit(self._hud_cache_surf, pos)
+        # Geometria do frame atual — só existe pra hit-test do botão de
+        # minimizar (handle_tracker_click); tamanho varia com o conteúdo,
+        # por isso não dá pra fixar um Rect estático de antemão.
+        self._last_hud_rect = pygame.Rect(pos, self._hud_cache_surf.get_size())
 
-    def _build_hud_surf(self, ql) -> "pygame.Surface | None":
+    def handle_tracker_click(self, event) -> bool:
+        """Clique no botão minimizar/expandir do tracker (Fase F) —
+        chamado incondicionalmente pelo loop de eventos (game.py), já que
+        o tracker é HUD permanente, sem um `_show_x` de modal. True =
+        consumiu o clique (não repassar pra outros handlers)."""
+        if event.type != pygame.MOUSEBUTTONDOWN or event.button != 1:
+            return False
+        if self._last_hud_rect is None:
+            return False
+        btn = pygame.Rect(self._last_hud_rect.right - self._u(20), self._last_hud_rect.y,
+                          self._u(18), self._u(18))
+        if btn.collidepoint(event.pos):
+            self._tracker_minimized = not self._tracker_minimized
+            self._hud_cache_key = None  # força rebuild imediato
+            return True
+        return False
+
+    def _build_hud_surf(self, ql, sorted_items: list) -> "pygame.Surface | None":
         lines: list[tuple] = []
-        y = 0
-        shown = 0
-        for qid, prog in list(ql.active.items()):
-            if shown >= self.MAX_HUD_QUESTS:
-                break
-            qdef = QUESTS.get(qid)
-            if qdef is None:
-                continue
-            ts = self._font_title.render(qdef.title, False, self.COL_TITLE)
-            lines.append((ts, y))
-            y += self._u(20)
-            for i, obj in enumerate(qdef.objectives):
-                p = prog[i]
-                if p >= obj.count:
-                    color = self.COL_DONE
-                elif p > 0:
-                    color = self.COL_ACTIVE
-                else:
-                    color = self.COL_PROG
-                surf = self._font_obj.render(self._obj_label(obj, p), False, color)
-                lines.append((surf, y))
-                y += self._u(17)
-            y += self._u(5)
-            shown += 1
 
-        if not lines:
-            return None
+        header = self._font_title.render(f"Quests ({len(ql.active)})", False, self.COL_TITLE)
+        header_h = max(header.get_height(), self._u(18))
+        lines.append((header, 0))
+        y = header_h + self._u(4)
 
-        max_w   = max(s.get_width() for s, _ in lines)
+        if not self._tracker_minimized:
+            for qid, prog in sorted_items:
+                qdef = QUESTS.get(qid)
+                if qdef is None:
+                    continue
+                ts = self._font_title.render(qdef.title, False, self.COL_TITLE)
+                lines.append((ts, y))
+                y += self._u(20)
+                for i, obj in enumerate(qdef.objectives):
+                    p = prog[i]
+                    if p >= obj.count:
+                        color = self.COL_DONE
+                    elif p > 0:
+                        color = self.COL_ACTIVE
+                    else:
+                        color = self.COL_PROG
+                    surf = self._font_obj.render(self._obj_label(obj, p), False, color)
+                    lines.append((surf, y))
+                    y += self._u(17)
+                y += self._u(5)
+
+        btn_w   = self._u(22)   # espaço reservado pro botão minimizar/expandir
+        max_w   = max(s.get_width() for s, _ in lines) + btn_w
         total_h = y
         hud = pygame.Surface((max_w, total_h), pygame.SRCALPHA)
         hud.fill((0, 0, 0, 0))
         for surf, ypos in lines:
-            hud.blit(surf, (max_w - surf.get_width(), ypos))
+            hud.blit(surf, (max_w - btn_w - surf.get_width(), ypos))
+
+        btn_rect = pygame.Rect(max_w - self._u(18), 0, self._u(18), self._u(18))
+        pygame.draw.rect(hud, (60, 50, 30), btn_rect, border_radius=3)
+        glyph = "+" if self._tracker_minimized else "-"
+        gs = self._font_title.render(glyph, False, (230, 210, 150))
+        hud.blit(gs, gs.get_rect(center=btn_rect.center))
+
         return hud
 
     # ── Internos ─────────────────────────────────────────────────────────────
