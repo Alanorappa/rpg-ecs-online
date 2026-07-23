@@ -39,6 +39,16 @@ EFFECT_DEFS: dict[str, EffectDef] = {
     "slow":   EffectDef("Lento",        (100, 160, 220), False, 0.0),
     "polymorph":   EffectDef("Polimorfizado",  (160,  80, 200), False, 1.0, blocks_move=True, blocks_act=True),  # tick: regen HP
     "disoriented": EffectDef("Desorientado",   (200, 100, 255), False, 0.0, blocks_move=True, blocks_act=True),  # wander sem regen
+    # Taunt (Brado Provocativo, 23/07/2026, referência LoL — Rammus/Galio/
+    # Shen): NÃO usa blocks_move/blocks_act (ver ui/systems.py::
+    # PlayerInputSystem.update) — o alvo continua autoatacando o taunter via
+    # combat_state.is_pursuing (mecanismo genérico de auto-attack), então
+    # marcar blocks_act=True bloquearia esse auto-attack forçado também
+    # (combat_processor.py usa is_action_locked como early-exit). Bloqueio
+    # de movimento livre + skill é feito à mão (move_player rejeita MOVE,
+    # skill_processor rejeita CAST_SKILL do caster taunted) — só o gate
+    # genérico client-side (PlayerInputSystem) é especial-casado também.
+    "taunted": EffectDef("Provocado", (255, 60, 30), False, 0.0),
     # ── Debuffs de dano periódico (DoT) ─────────────────────────────────────
     "poison": EffectDef("Veneno",       ( 80, 200,  40), False, 1.0),
     "bleed":  EffectDef("Sangramento",  (200,  30,  30), False, 1.0),

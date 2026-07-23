@@ -551,6 +551,24 @@ class PlayerInputSystem(System):
             if is_action_locked(self.world, entity_id):
                 can_act  = False   # não pode usar skills nem ataques
 
+            # Taunt (Brado Provocativo — Fase D, 23/07/2026): NÃO usa o
+            # mecanismo genérico blocks_move/blocks_act de EFFECT_DEFS de
+            # propósito — um taunt precisa CONTINUAR autoatacando o taunter
+            # (via combat_state.target_entity_id/is_pursuing, mecanismo
+            # genérico de auto-attack em server/combat_processor.py), então
+            # marcar blocks_act=True bloquearia esse auto-attack forçado
+            # junto (combat_processor.py também usa is_action_locked como
+            # early-exit). Em vez disso, bloqueia só o INPUT livre do
+            # jogador aqui (movimento manual + iniciar outra skill) — o
+            # movimento FORÇADO em si é 100% conduzido pelo servidor
+            # (TauntMovementSystem, server/world_server.py) via
+            # ENTITY_MOVE normal, nunca por input local.
+            from engine.components import StatusEffects as _SfxTaunt
+            _sfx_taunt = self.world.get_component(entity_id, _SfxTaunt)
+            if _sfx_taunt is not None and _sfx_taunt.has("taunted"):
+                can_move = False
+                can_act  = False
+
             # Campo de chat focado: WASD é lido via pygame.key.get_pressed()
             # aqui embaixo, não pelos eventos KEYDOWN que o filtro de
             # systems_events já bloqueia com modal aberto — sem este check,

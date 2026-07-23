@@ -141,8 +141,8 @@ SKILL_CATALOG: dict[str, dict] = {
         "needs_target":     False,
         "class_id":         "guerreiro",
         "effects":          {"impact": {"sound": "skill_brado_provocativo"}},
-        "params": {"radius_tiles": 3, 
-                   "duration": 10.0},
+        "params": {"radius_tiles": 3,
+                   "duration": 3.0},
     },
     "punho_no_queixo": {
         "name":             "Punho no Queixo",

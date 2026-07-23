@@ -473,8 +473,8 @@ class TestAoeSkillsAllyFilter(unittest.TestCase):
 
         ally_sfx = self.ws.world.get_component(self.ally, StatusEffects)
         mob_sfx  = self.ws.world.get_component(self.mob, StatusEffects)
-        self.assertFalse(ally_sfx and ally_sfx.has("enraged"), "aliado não deveria ser provocado")
-        self.assertTrue(mob_sfx and mob_sfx.has("enraged"), "mob deveria ser provocado")
+        self.assertFalse(ally_sfx and ally_sfx.has("taunted"), "aliado não deveria ser provocado")
+        self.assertTrue(mob_sfx and mob_sfx.has("taunted"), "mob deveria ser provocado")
 
 
 if __name__ == "__main__":

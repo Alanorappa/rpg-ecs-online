@@ -53,6 +53,19 @@ class SkillProcessorMixin:
             from engine.utils import is_action_locked as _is_action_locked_skp
             if _is_action_locked_skp(self.world, player_eid):
                 continue
+            # Taunt (Brado Provocativo, Fase D 23/07/2026): bloqueio dedicado,
+            # fora de is_action_locked/blocks_act de propósito — ver
+            # content/status_effects_data.py::EFFECT_DEFS["taunted"] (marcar
+            # blocks_act=True bloquearia também o auto-attack FORÇADO contra
+            # o taunter, que usa o mesmo mecanismo genérico de
+            # combat_processor.py). Mesmo padrão de silent-continue de
+            # stun/sleep acima — cliente já reflete StatusEffects.has(
+            # "taunted") localmente via PlayerInputSystem, nunca deveria
+            # sequer tentar mandar CAST_SKILL nesse estado.
+            from engine.components import StatusEffects as _SfxSkp
+            _sfx_skp = self.world.get_component(player_eid, _SfxSkp)
+            if _sfx_skp is not None and _sfx_skp.has("taunted"):
+                continue
 
             # Constrói objeto Skill a partir do SKILL_CATALOG (servidor não tem PlayerSkills)
             # Tenta primeiro no PlayerSkills local se existir (ex: skills com estado de cargas)

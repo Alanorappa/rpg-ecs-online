@@ -2566,6 +2566,107 @@ class EnemyAISystem(System):
                 ai_control.path_recalc_timer = 0.0
 
 
+class TauntSystem(System):
+    """Movimento forçado do taunt (Brado Provocativo, Fase D 23/07/2026,
+    referência trazida pelo usuário — hard-CC de LoL, Rammus/Galio/Shen):
+    PLAYERS sob o efeito "taunted" (content/status_effects_data.py) não
+    controlam o próprio movimento — são conduzidos à força até o taunter
+    (1 passo de path por tick, reaproveitando PathfindingSystem/
+    start_tile_movement — mesmos primitivos de EnemyAISystem, não
+    reinventados aqui) e autoatacam quando adjacentes (seta
+    target_entity_id/is_pursuing — o mecanismo genérico de auto-attack em
+    server/combat_processor.py cuida do resto, sem código novo).
+
+    MOBS não precisam deste sistema: `_skill_brado_provocativo`
+    (ui/skill_handlers.py) já escreve `AIControlled.state="CHASING"` +
+    `target_eid=taunter` diretamente, e a RETENÇÃO de alvo já existente em
+    `EnemyAISystem` (qualquer mob em estado de combate MANTÉM o alvo
+    retido enquanto válido, ignorando reavaliação de `_select_target`) já
+    impede que outro atacante roube o alvo durante o taunt — sem precisar
+    de nenhum guard novo ali. Só o PLAYER precisa de um piloto automático
+    novo, porque não tem AIControlled/EnemyAISystem guiando ele.
+
+    "taunted" nunca marca `blocks_move`/`blocks_act` em EFFECT_DEFS de
+    propósito (ver comentário lá) — o bloqueio de input livre do jogador
+    (movimento/skill) é feito à mão em `PlayerInputSystem`/`move_player`/
+    `skill_processor.py`, exatamente pra não derrubar o auto-attack
+    FORÇADO que este sistema habilita via `is_pursuing`.
+    """
+
+    def __init__(self, world: World, map_filter: str = "",
+                 pathfinding=None, tile_validation=None,
+                 moved_this_tick: "list | None" = None):
+        self.world = world
+        self._map_filter = map_filter
+        self._pathfinding = pathfinding
+        self._tile_validation = tile_validation
+        # Referência viva à lista de deltas de movimento do WorldServer —
+        # appendar aqui muta o MESMO objeto que o resto do tick usa pro
+        # broadcast (players, diferente de mobs, precisam de um evento
+        # explícito de "moved" pra sincronizar com outros clientes).
+        self._moved_this_tick = moved_this_tick if moved_this_tick is not None else []
+
+    def update(self, events: list = None, dt: float = 0) -> None:
+        from engine.components import (StatusEffects, PlayerControlled, TileMovement,
+                                       Position, CombatState, CombatStats, MapLocation)
+        from engine.utils import chebyshev
+        from engine.stat_fns import enter_combat
+
+        for eid, sfx, tm, pos, cst, _pc in self.world.get_entities_with(
+                StatusEffects, TileMovement, Position, CombatState, PlayerControlled):
+            if self._map_filter:
+                ml = self.world.get_component(eid, MapLocation)
+                if ml is None or ml.map_file != self._map_filter:
+                    continue
+
+            taunt_fx = sfx.get("taunted")
+            if taunt_fx is None:
+                continue
+            taunter_eid = int(taunt_fx.magnitude)
+
+            taunter_cs = self.world.get_component(taunter_eid, CombatStats)
+            taunter_tm = self.world.get_component(taunter_eid, TileMovement)
+            if taunter_tm is None or taunter_cs is None or taunter_cs.current_hp <= 0:
+                # Taunter morreu/inválido nesse meio tempo — libera na hora,
+                # mesmo padrão de quebra de CC por invalidação de alvo já
+                # usado em apply_damage_core (polymorph/sleep quebram por
+                # dano; aqui quebra por o alvo forçado deixar de existir).
+                sfx.remove("taunted")
+                continue
+
+            dist = chebyshev(tm.current_tile_x, tm.current_tile_y,
+                             taunter_tm.current_tile_x, taunter_tm.current_tile_y)
+            if dist <= 1:
+                cst.target_entity_id = taunter_eid
+                cst.is_pursuing = True
+                enter_combat(cst)
+                continue
+
+            if tm.is_moving:
+                continue
+
+            path = None
+            if self._pathfinding is not None:
+                path = self._pathfinding.find_path(
+                    (tm.current_tile_x, tm.current_tile_y),
+                    (taunter_tm.current_tile_x, taunter_tm.current_tile_y))
+            if not path:
+                continue
+            nx, ny = path[0]
+            walkable = True
+            if self._tile_validation is not None:
+                walkable = self._tile_validation.is_tile_walkable(
+                    eid, nx, ny, tm.current_tile_x, tm.current_tile_y, ignore_eid=eid)
+            if not walkable:
+                continue
+            old_tx, old_ty = tm.current_tile_x, tm.current_tile_y
+            start_tile_movement(pos, tm, nx, ny)
+            self._moved_this_tick.append({
+                "eid": eid, "tx": nx, "ty": ny,
+                "from_tx": old_tx, "from_ty": old_ty,
+            })
+
+
 class TileMovementSystem(System):
     FOOTSTEP_INTERVAL = 0.20  # segundos mínimos entre passos
 

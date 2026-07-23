@@ -593,36 +593,42 @@ class SkillHandlers:
             LOG.add(f"Fatiador de Corpos: {hit} atingidos!", (255, 120, 60))
 
     def _skill_brado_provocativo(self, skill, _combat_stats, combat_state, tile_move):
-        """Cavaleiro — Brado Provocativo: provoca inimigos em raio 3, enlouquecendo-os por 10s."""
-        from engine.components import StatusEffects as _SE_BP2
+        """Cavaleiro — Brado Provocativo: taunt de verdade (Fase D,
+        23/07/2026, referência trazida pelo usuário — hard-CC de LoL,
+        Rammus/Galio/Shen). Alvos em raio 3 são forçados a andar até o
+        guerreiro e autoatacá-lo por 3s, sem poder usar habilidades.
+
+        PLAYERS: movimento forçado é pilotado por `TauntSystem`
+        (engine/world_systems.py, roda por bundle de mapa) — aqui só
+        aplica o efeito `"taunted"`, que carrega o eid do taunter em
+        `magnitude`. MOBS: força `AIControlled.state="CHASING"` na hora —
+        `TauntSystem` não pilota mobs (não precisa: a RETENÇÃO de alvo já
+        existente em `EnemyAISystem` mantém o mob preso no taunter
+        enquanto ele for válido, sem precisar de nenhum guard novo)."""
+        from engine.components import AIControlled as _AIC_BP
+        from engine.faction_system import can_engage as _can_engage_bp
+        _radius_bp   = skill.params.get("radius_tiles", 3)
+        _duration_bp = skill.params.get("duration", 3.0)
         pl_x, pl_y = tile_move.current_tile_x, tile_move.current_tile_y
         taunted = 0
-        from engine.components import AIControlled as _AIC_BP, CombatState as _CSt_BP
-        from engine.faction_system import can_engage as _can_engage_bp
         for eid, etm, ecs in self.world.get_entities_with(TileMovement, CombatStats):
             if eid == self.player_entity_id: continue
             if ecs.current_hp <= 0:
                 continue
-            if chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y) > 3:
+            if chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y) > _radius_bp:
                 continue
             # can_engage bloqueia alvo amigável — mesma classe de bug já
             # corrigida em Pirofagia (20/07/2026) e Canção de Ninar
-            # (22/07/2026): sem este check, o provoke era aplicado
+            # (22/07/2026): sem este check, o taunt seria aplicado
             # incondicionalmente pra QUALQUER um no raio, amigável ou não.
             if not _can_engage_bp(self.world, self.player_entity_id, eid):
                 continue
-            apply_effect(self.world, eid, "enraged", 10.0)
-            # Mob: força perseguição via AI
+            apply_effect(self.world, eid, "taunted", _duration_bp,
+                        magnitude=float(self.player_entity_id))
             _ai_bp = self.world.get_component(eid, _AIC_BP)
             if _ai_bp:
-                _ai_bp.state    = "CHASING"
+                _ai_bp.state      = "CHASING"
                 _ai_bp.target_eid = self.player_entity_id
-            # PvP player: força alvo + perseguição via CombatState
-            _cst_bp = self.world.get_component(eid, _CSt_BP)
-            if _cst_bp and _ai_bp is None:
-                _cst_bp.target_entity_id = self.player_entity_id
-                _cst_bp.is_pursuing      = True
-                enter_combat(_cst_bp)
             taunted += 1
         PROC.add("Brado!", (255, 100, 50))
         skill.current_cooldown = skill.cooldown

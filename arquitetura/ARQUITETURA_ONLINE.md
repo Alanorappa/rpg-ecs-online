@@ -6400,6 +6400,99 @@ contagem), rodada 3x limpa (depois do fix de flakiness).
 (sem loop) e parado (dash ainda funciona normalmente); Canção de Ninar em
 grupo misto (aliado dorme? não deveria).
 
+### §34.38 — Leva pós-playtest: Fase D — Brado Provocativo vira taunt de
+verdade (hard-CC, referência LoL) (23/07/2026)
+
+Item de maior risco/escopo da leva pós-playtest — implementado por
+último, isolado, com suíte própria (`tests/test_taunt.py`). Pedido do
+usuário, com referência trazida por ele mesmo: taunts hard-CC de LoL
+(Rammus/Galio/Shen) — o alvo é forçado a andar até o caster e
+autoatacá-lo, sem poder usar habilidades, por um tempo fixo (3s aqui).
+Nunca existiu nada parecido no jogo antes (grep confirmou zero menções a
+"taunt"/"forced_target"/CC-que-força-movimento).
+
+**Novo efeito `"taunted"`** (`content/status_effects_data.py::EFFECT_DEFS`):
+aplicado via o mesmo `apply_effect()` genérico de sleep/stun/etc,
+`magnitude` carrega o eid do taunter. Deliberadamente **não** marca
+`blocks_move`/`blocks_act` (os 2 flags genéricos que `is_movement_locked`/
+`is_action_locked` leem) — `is_action_locked` também é usado como
+early-exit do auto-attack SERVER-SIDE (`server/combat_processor.py`), e
+o taunt PRECISA que esse auto-attack continue disparando (forçado, contra
+o taunter) — marcar `blocks_act=True` bloquearia o próprio mecanismo que
+o taunt depende para funcionar. Os 3 bloqueios reais são feitos à mão,
+cada um no ponto certo:
+1. **Movimento livre do jogador**: `move_player` (`server/world_server.py`)
+   ganha `"taunted"` na mesma tupla hardcoded de CC totalmente
+   imobilizante (`sleep`/`stun`/`root`/`fear`) — qualquer MOVE
+   client-initiated é recusado.
+2. **Skill livre do jogador**: `server/skill_processor.py::
+   _process_skill_requests` ganha um check dedicado (`StatusEffects.has(
+   "taunted")` no CASTER) logo após o `is_action_locked` genérico —
+   silent-continue, mesmo padrão de sleep/stun.
+3. **Input local (cliente)**: `PlayerInputSystem.update` (`ui/systems.py`)
+   ganha um bloco dedicado (não o genérico `is_movement_locked`/
+   `is_action_locked`, pela mesma razão do item 1 acima) forçando
+   `can_move=False`/`can_act=False` localmente quando `StatusEffects.has(
+   "taunted")`.
+
+**`TauntSystem`** (novo, `engine/world_systems.py`, registrado por bundle
+de mapa em `server/world_server.py::_load_map_for`, mesmo padrão de
+`EnemyAISystem`): pilota o movimento forçado — **só de PLAYERS**. Mobs
+NÃO precisam: `_skill_brado_provocativo` já escreve
+`AIControlled.state="CHASING"`+`target_eid=taunter` diretamente, e a
+RETENÇÃO de alvo já existente em `EnemyAISystem` (mob em estado de
+combate mantém o alvo retido enquanto válido, ignorando reavaliação de
+`_select_target` — mecanismo pré-existente, não uma peça nova) já
+garante o "travado" sem precisar de nenhum guard novo ali — descoberta
+feita lendo o código antes de implementar uma trava redundante. Pra
+PLAYERS (sem `AIControlled`/`EnemyAISystem` guiando), `TauntSystem` a
+cada tick: se adjacente ao taunter (chebyshev ≤ 1), seta
+`target_entity_id`/`is_pursuing=True` (o auto-attack genérico de
+`combat_processor.py` cuida do resto, zero código novo pra isso); senão,
+avança 1 passo de path (reaproveita `PathfindingSystem.find_path` +
+`engine.utils.start_tile_movement` — os MESMOS primitivos que
+`EnemyAISystem` já usa pra mobs, não reinventados) e registra em
+`_moved_this_tick` (players precisam de delta explícito pra sincronizar
+com outros clientes; mobs não, têm snapshot próprio). Se o taunter
+morrer/ficar inválido no meio do efeito, `TauntSystem` remove
+`"taunted"` na hora (mesmo espírito da quebra de polymorph/sleep por
+dano em `apply_damage_core`, só que aqui por invalidação do alvo forçado).
+
+**`_skill_brado_provocativo`** (`ui/skill_handlers.py`): filtro de aliado
+via `can_engage` (parte da Fase B, ver §34.37) + agora lê
+`radius_tiles`/`duration` do `SKILL_CATALOG`
+(`content/skill_config.py::"brado_provocativo"`, `duration` corrigido de
+10.0 → 3.0 pra bater com o pedido) em vez de hardcodear — mesma regra já
+documentada no `CLAUDE.md` pra outras skills ("multiplicador vem SÓ do
+SKILL_CATALOG, NUNCA hardcodear no handler"). O antigo efeito `"enraged"`
+(+10%/+5% dano, um buff — não fazia sentido pra uma CC que o CASTER
+inflige no INIMIGO) foi removido, substituído por `"taunted"`.
+
+**Diagnóstico ao vivo antes de formalizar os testes** (mesma metodologia
+já usada nesta sessão pro bug de `has_pending`): rodar contra um mob e um
+duelo real revelou 2 problemas que eram do PRÓPRIO SCRIPT de
+diagnóstico, não do código — (1) 2 players sem contexto de PvP são
+"amigáveis" por padrão (`can_engage` bloqueava corretamente, não é bug);
+(2) coordenadas de teste escolhidas ao acaso caíam em área sólida do
+mapa (`find_path` retornando `None` corretamente). Corrigido o script
+(duelo real via `request_duel`/`respond_duel_invite`, coordenadas
+walkable) — aí sim confirmou o fluxo completo funcionando ponta a ponta.
+
+**Validado**: `tests/test_taunt.py` (8 testes novos — mob força CHASING+
+status, mob fora do raio não é afetado, player em duelo recebe
+`"taunted"` com magnitude certa, `move_player` recusa MOVE livre,
+`CAST_SKILL` recusa skill do taunted, `TauntSystem` conduz até adjacente
+e autoataca, expira após a duração, libera na hora se o taunter morre) —
+confirmado por reversão controlada (`TauntSystem` comentado da lista de
+sistemas do bundle): os 2 testes que dependem dele falham sem, passam
+com. Suíte completa 414/414, rodada 3x.
+
+**Não validado**: sessão manual — taunt real contra mob (anda até o
+guerreiro, autoataca, sem poder castar) e contra player em duelo (mesmo
+comportamento, mais o bloqueio de movimento/skill visível no cliente);
+medir os 3s exatos; testar quebra por morte do taunter em cenário real
+(não só no teste automatizado).
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |

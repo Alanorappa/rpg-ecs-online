@@ -480,7 +480,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         from engine.entity_factory import create_tilemap
         from engine.world_systems import (SpawnZoneSystem, EnemyAISystem, EnemyAbilitySystem,
                              TileValidationSystem, PathfindingSystem, CombatSystem,
-                             ProjectileSystem, register_services)
+                             ProjectileSystem, register_services, TauntSystem)
         from engine.components import MapLocation as _MLl
 
         key = instance_key or map_file
@@ -540,6 +540,9 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                                         pathfinding=pathfinding, tile_validation=tile_validation)
         enemy_ab_system = EnemyAbilitySystem(self.world, map_filter=key,
                                              pathfinding=pathfinding)
+        taunt_system = TauntSystem(self.world, map_filter=key,
+                                   pathfinding=pathfinding, tile_validation=tile_validation,
+                                   moved_this_tick=self._moved_this_tick)
 
         _spawn_sys = SpawnZoneSystem(self.world, map_filter=key, pathfinding=pathfinding)
         _spawn_sys.ACTIVATION_RADIUS = 999999
@@ -549,6 +552,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             _spawn_sys,       # 2. spawn de mobs — raio ilimitado
             enemy_ai_system,  # 3. IA: aggro, pathfinding, ataque
             enemy_ab_system,  # 4. habilidades especiais (DoT, debuffs) — filtrado por mapa
+            taunt_system,     # 5. movimento forçado de PLAYERS sob "taunted" (Brado Provocativo)
             # _ServerStatusEffectSystem, ProjectileSystem e TileMovementSystem removidos:
             # rodam GLOBALMENTE em _tick() após todos os bundles (self._global_*).
         ]
@@ -1145,9 +1149,13 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # decidido pelo cliente (CombatStateSystem) e enviado como MOVE
         # normal — bloquear aqui quebraria esse wander. Servidor nunca confia
         # no cliente para não enviar MOVE durante CC totalmente imobilizante.
+        # "taunted" (Brado Provocativo, Fase D 23/07/2026) entra nesta MESMA
+        # lista: o alvo taunted não controla o próprio movimento (é
+        # conduzido à força pelo TauntMovementSystem, abaixo) — um MOVE
+        # client-side durante o taunt é sempre recusado, igual sleep/stun.
         from engine.components import StatusEffects as _SFXmv
         _sfx_mv = self.world.get_component(eid, _SFXmv)
-        if _sfx_mv and any(_sfx_mv.has(e) for e in ("sleep", "stun", "root", "fear")):
+        if _sfx_mv and any(_sfx_mv.has(e) for e in ("sleep", "stun", "root", "fear", "taunted")):
             return False
 
         # Baseline anti-cheat: primeira vez que este player move desde o spawn
