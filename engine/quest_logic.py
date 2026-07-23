@@ -15,6 +15,18 @@ import random
 from content.quests_data import QUESTS, QUEST_ITEMS, ObjectiveDef, QuestReward
 
 
+def format_quest_text(text: str, player_name: str) -> str:
+    """Substitui `{player_name}` (único placeholder suportado, 23/07/2026 —
+    pedido do usuário) pelo nome do personagem em qualquer texto de quest
+    (description/completion — content/quests_data.py::QuestDef). Fonte
+    única — todo lugar que renderiza texto de quest chama isto em vez de
+    fazer `.replace()` na mão, pra um 2º placeholder futuro (se pedido)
+    só precisar entrar aqui."""
+    if not player_name:
+        return text
+    return text.replace("{player_name}", player_name)
+
+
 def _skill_already_learned(learned_skill_ids, skill_id: str) -> bool:
     if skill_id == "*":
         return bool(learned_skill_ids)

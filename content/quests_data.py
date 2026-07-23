@@ -66,7 +66,9 @@ class QuestReward(NamedTuple):
 
 class QuestDef(NamedTuple):
     title:       str
-    description: str
+    description: str             # aceita o placeholder {player_name} — vira o
+                                  # nome do personagem (engine/quest_logic.py::
+                                  # format_quest_text). Ex.: "Bem-vindo, {player_name}!"
     objectives:  tuple           # tuple[ObjectiveDef, ...]
     reward:      QuestReward
     auto_start:  bool  = False   # inicia automaticamente sem NPC
@@ -79,7 +81,8 @@ class QuestDef(NamedTuple):
                                   # classes (sem ícone/indicador, não aparece nem
                                   # como bloqueada). Cadeia de quests da classe: ligar
                                   # via requires=(quest_anterior,) / next_quest.
-    completion:  str   = ""      # texto do NPC ao receber a entrega (vazio = usa título)
+    completion:  str   = ""      # texto do NPC ao receber a entrega (vazio = usa
+                                  # título) — mesmo placeholder {player_name} aceito
 
 
 # ---------------------------------------------------------------------------
@@ -216,19 +219,8 @@ QUESTS: dict[str, QuestDef] = {
                    "por enquanto, pelo menos.",
     ),
 
-    # ── Habilidades ───────────────────────────────────────────────────────────
-    "warrior_trial": QuestDef(
-        title="Prova do Guerreiro",
-        description="Todo guerreiro precisa dominar suas habilidades em combate real. "
-                    "Use Golpe Poderoso 3 vezes em batalha.",
-        objectives=(
-            ObjectiveDef(type="use_skill", target="golpe_poderoso", count=3),
-        ),
-        reward=QuestReward(xp=80),
-        next_quest="executioner",
-        completion="Sua técnica está melhorando. Um golpe poderoso na hora certa decide batalhas. "
-                   "Mas você ainda tem muito a aprender...",
-    ),
+    # ── Quests Guerreiro ───────────────────────────────────────────────────────────
+
 
     "executioner": QuestDef(
         title="O Executor",
@@ -244,6 +236,27 @@ QUESTS: dict[str, QuestDef] = {
         completion="Cinco execuções. Frio, calculista, eficiente. "
                    "Você tem o que é preciso para ser um verdadeiro executor.",
     ),
+
+    # ── Quests Guerreiro ───────────────────────────────────────────────────────────
+
+    "bem_vindo!": QuestDef(
+        title="Bem-vindo",
+        description="Olá ? "
+                    "Bom vamos lá, não tenho tempo a perder, eu vou lhe conceder treinamento a uma "
+                    "habilidade sem custos para você iniciar. Após aprender a habilidade, treine em "
+                    "um desses bonecos de treino aqui na frente, vou ficar de olho",
+        objectives=(
+            ObjectiveDef(type="learn_skill", target="bola_de_fogo", count=1),
+            ObjectiveDef(type="use_skill", target="bola_de_fogo", count=5,
+                        params={"on_dummy": True}),
+        ),
+        reward=QuestReward(xp=20),
+        class_req="guerreiro",
+        completion="Pelo visto você tem jeito pra coisa, mas na próxima vez tente pausar um pouco "
+                   "entre os ataques, para não queimar o boneco de treino, você sabe quanto eles custam?",
+    ),    
+
+     # ── Quests Mago ───────────────────────────────────────────────────────────────
 
     "iniciacao_arcana": QuestDef(
         title="Iniciação Arcana",

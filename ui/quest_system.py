@@ -808,7 +808,11 @@ class QuestDialogSystem(UIScaleMixin, System):
         ts = self._font_lg.render(qdef.title, False, self.COL_TITLE)
         ops.append((ts, ry)); ry += self._u(32)
 
-        for line in self._wrap(qdef.description, W - PAD * 2, self._font_body):
+        from engine.components import CharacterStats as _CharQD
+        from engine.quest_logic import format_quest_text as _fmt_qd
+        _char_qd = self.world.get_component(self.player_entity, _CharQD)
+        description_txt = _fmt_qd(qdef.description, _char_qd.name if _char_qd else "")
+        for line in self._wrap(description_txt, W - PAD * 2, self._font_body):
             ops.append((self._font_body.render(line, False, self.COL_WHITE), ry))
             ry += self._u(25)
         ry += self._u(8)
@@ -873,7 +877,11 @@ class QuestDialogSystem(UIScaleMixin, System):
         sep_surf.fill(self.COL_BORDER)
         ops.append((sep_surf, ry)); ry += self._u(10)
 
+        from engine.components import CharacterStats as _CharQT
+        from engine.quest_logic import format_quest_text as _fmt_qt
+        _char_qt = self.world.get_component(self.player_entity, _CharQT)
         completion_text = getattr(qdef, "completion", "") or "Bom trabalho. Aqui esta sua recompensa."
+        completion_text = _fmt_qt(completion_text, _char_qt.name if _char_qt else "")
         for line in self._wrap(completion_text, max_w, self._font_body):
             s = self._font_body.render(line, False, self.COL_WHITE)
             ops.append((s, ry)); ry += s.get_height() + self._u(2)
@@ -1371,7 +1379,11 @@ class QuestJournalSystem(UIScaleMixin, System):
         dy += self._u(8)
 
         # Descrição
-        for line in self._wrap(qdef.description, max_w, self._font_body):
+        from engine.components import CharacterStats as _CharQJ
+        from engine.quest_logic import format_quest_text as _fmt_qj
+        _char_qj = self.world.get_component(self.player_entity, _CharQJ)
+        description_txt = _fmt_qj(qdef.description, _char_qj.name if _char_qj else "")
+        for line in self._wrap(description_txt, max_w, self._font_body):
             s = self._font_body.render(line, False, self.COL_WHITE)
             self.hud_surf.blit(s, (dx, dy))
             dy += s.get_height() + self._u(2)

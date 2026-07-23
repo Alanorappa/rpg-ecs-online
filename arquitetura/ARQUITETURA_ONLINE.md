@@ -6943,6 +6943,34 @@ template de arena carrega sob demanda e teleporta de verdade; caminho
 fora de `maps/`/com `".."` é recusado sem tocar o disco; mapa inexistente
 é ignorado sem travar. Suíte completa rodada 3x.
 
+### §34.45 — Placeholder `{player_name}` em texto de quest (23/07/2026)
+
+Pedido do usuário: poder usar o nome do personagem dentro do texto de
+`description`/`completion` de uma quest (`content/quests_data.py::
+QuestDef`), sem precisar de uma variável nova por texto.
+
+**Uso**: escrever `{player_name}` em qualquer `description`/`completion`
+de `QuestDef` — vira o nome do personagem automaticamente ao renderizar.
+Ex.: `description="Bem-vindo, {player_name}! Prove seu valor."`.
+
+**Implementação**: `engine/quest_logic.py::format_quest_text(text,
+player_name)` — função pura (`.replace("{player_name}", player_name)`,
+sem-op se `player_name` vazio, pra nunca sumir com a palavra
+silenciosamente se `CharacterStats` não estiver carregado) — fonte
+única, chamada nos 3 pontos que renderizam texto de quest em
+`ui/quest_system.py`: diálogo de aceite (`_render_detail`), diálogo de
+entrega (`_render_turnin`) e Diário de Quests (`QuestJournalSystem`).
+Cada um busca `CharacterStats.name` do próprio `self.player_entity`
+antes de formatar — sem estado novo, sem mudança de protocolo (o
+servidor já manda `title`/`description`/`completion` como texto puro,
+a substituição é 100% client-side no momento de desenhar).
+
+**Validado**: `tests/test_quest_logic.py` (4 testes novos) —
+substitui 1 ou várias ocorrências corretamente; texto sem o placeholder
+fica intacto; nome vazio preserva o placeholder original (não
+silenciosamente vira string vazia ilegível). Suíte completa 470/470,
+rodada 3x.
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |
