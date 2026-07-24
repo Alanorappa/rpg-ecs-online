@@ -15,6 +15,32 @@ import random
 from content.quests_data import QUESTS, QUEST_ITEMS, ObjectiveDef, QuestReward
 
 
+def normalize_reward_entry(entry) -> "tuple[str, int]":
+    """Normaliza uma entrada de QuestReward.items/choice (23/07/2026,
+    pedido do usuário) — aceita "item_key" (stack=1) ou ("item_key",
+    stack). Fonte única — servidor (concessão) e cliente (ícones/
+    tooltip) chamam isto em vez de checar `isinstance(entry, tuple)`
+    cada um por conta própria."""
+    if isinstance(entry, tuple):
+        return entry[0], entry[1]
+    return entry, 1
+
+
+def resolve_reward_item_factory(item_key: str):
+    """Resolve item_key (QuestReward.items/choice) pra fábrica de Item —
+    tenta content.item_table.ITEMS (catálogo principal, chave = id
+    interno, ex. "training_sword"/"hp_potion") primeiro, depois
+    QUEST_ITEMS (chave = nome de exibição, materiais de quest) como
+    fallback. None se não encontrado em nenhum dos dois — chamador
+    decide se ignora silenciosamente ou loga (servidor loga, ver
+    server/session.py::_handle_quest_turn_in)."""
+    from content.item_table import ITEMS as _ITEM_TABLE
+    factory = _ITEM_TABLE.get(item_key)
+    if factory is not None:
+        return factory
+    return QUEST_ITEMS.get(item_key)
+
+
 def format_quest_text(text: str, player_name: str) -> str:
     """Substitui `{player_name}` (único placeholder suportado, 23/07/2026 —
     pedido do usuário) pelo nome do personagem em qualquer texto de quest

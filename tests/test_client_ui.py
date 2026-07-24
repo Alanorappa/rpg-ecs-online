@@ -357,6 +357,37 @@ def test_loot_result_vazio_nao_manda_inv_sync():
     assert fx.loot_actions == []
 
 
+# ── INVENTORY_UPDATE — recompensa de item de quest (23/07/2026) ─────────────
+# Reusa _grant_items_to_inventory, o mesmo helper que LOOT_RESULT usa acima
+# (extraído dele nesta leva) — _handle_msg_inventory_update é só o ponto de
+# entrada novo (server/session.py::_handle_quest_turn_in manda essa msg).
+
+def test_inventory_update_credita_item_no_inventory_local():
+    fx = _make_loot_result_fixture()
+    from engine.components import Inventory
+    fx._handle_msg_inventory_update({
+        "items": [{"name": "Espada de treinamento", "stack": 1}],
+    })
+    inv = fx.world.get_component(fx.player_entity, Inventory)
+    assert any(it is not None and it.name == "Espada de treinamento" for it in inv.items)
+
+
+def test_inventory_update_com_stack_maior_que_1():
+    fx = _make_loot_result_fixture()
+    from engine.components import Inventory
+    fx._handle_msg_inventory_update({
+        "items": [{"name": "Poção de Mana", "stack": 3}],
+    })
+    inv = fx.world.get_component(fx.player_entity, Inventory)
+    item = next(it for it in inv.items if it is not None and it.name == "Poção de Mana")
+    assert item.stack == 3
+
+
+def test_inventory_update_vazio_nao_quebra():
+    fx = _make_loot_result_fixture()
+    fx._handle_msg_inventory_update({"items": []})  # não deve levantar exceção
+
+
 # ── client/network_handlers.py — spawn de player remoto propaga "level" ──────
 # Bug real relatado pelo usuário 18/07/2026: nameplate de player remoto só
 # atualizava o level quando o servidor reenviava HP (regen/dano), nunca no

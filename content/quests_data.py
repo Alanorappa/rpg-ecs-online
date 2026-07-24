@@ -60,8 +60,18 @@ class ObjectiveDef(NamedTuple):
 
 
 class QuestReward(NamedTuple):
-    xp:   int = 0
-    gold: int = 0
+    xp:     int   = 0
+    gold:   int   = 0
+    # Itens de recompensa (23/07/2026, pedido do usuário) — cada entrada
+    # aceita "item_key" (stack=1) ou ("item_key", stack). item_key é a
+    # CHAVE de content/item_table.py::ITEMS (ex.: "training_sword",
+    # "hp_potion", "mana_potion" — não o nome de exibição do item) — cai
+    # pra content/quests_data.py::QUEST_ITEMS (chave = nome de exibição)
+    # como fallback, ver engine/quest_logic.py::resolve_reward_item_factory.
+    items:  tuple = ()   # SEMPRE concedidos ao entregar a quest
+    choice: tuple = ()   # jogador escolhe 1 destes (mesmo formato de items) —
+                          # UI de escolha só aparece no diálogo de entrega
+                          # (ui/quest_system.py::QuestDialogSystem._render_turnin)
 
 
 class QuestDef(NamedTuple):
@@ -239,21 +249,22 @@ QUESTS: dict[str, QuestDef] = {
 
     # ── Quests Guerreiro ───────────────────────────────────────────────────────────
 
-    "bem_vindo!": QuestDef(
-        title="Bem-vindo",
-        description="Olá ? "
-                    "Bom vamos lá, não tenho tempo a perder, eu vou lhe conceder treinamento a uma "
-                    "habilidade sem custos para você iniciar. Após aprender a habilidade, treine em "
-                    "um desses bonecos de treino aqui na frente, vou ficar de olho",
+    "bem_vindo_guerreiro": QuestDef(
+        title="Bem-vindo!",
+        description="Seja bem-vendo {player_name}! Você já está bem grandinho, está na hora de conhecer " \
+                    "o mundo lá fora. Você fez uma boa escolha, guerreiros são necessparios para" \
+                    "manter os magos e os arqueiros livres para eliminar os oponentes. E aqui você" \
+                    "encontrará oponentes com frequência, muitas vezes precisará criar um grupo para" \
+                    "lidar com eles." \
+                    "Fale com seu treinador, ele se chama Avido Faseo, ele lhe fornecerá equipamento" \
+                    "e treinamento para iniciar sua jornada",
         objectives=(
-            ObjectiveDef(type="learn_skill", target="bola_de_fogo", count=1),
-            ObjectiveDef(type="use_skill", target="bola_de_fogo", count=5,
-                        params={"on_dummy": True}),
+            ObjectiveDef(type="talk_to_npc", target="Avido Faseo", count=1),
         ),
-        reward=QuestReward(xp=20),
-        class_req="guerreiro",
-        completion="Pelo visto você tem jeito pra coisa, mas na próxima vez tente pausar um pouco "
-                   "entre os ataques, para não queimar o boneco de treino, você sabe quanto eles custam?",
+        reward=QuestReward(xp=15, items=("training_sword",)),
+        class_req=  "guerreiro",
+        completion= "Bem-vindo ao lado cruel da vida, prepáre-se pois daqui pra frente a vida não será" \
+                    "um morango. Tome uma espada, com ela você fará seus primeiros movimentos",
     ),    
 
      # ── Quests Mago ───────────────────────────────────────────────────────────────
@@ -307,6 +318,7 @@ QUESTS: dict[str, QuestDef] = {
             ObjectiveDef(type="use_skill", target="golpe_poderoso", count=6,
                         params={"on_dummy": True}),
         ),
+        requires= ["bem_vindo"],
         reward=QuestReward(xp=80),
         class_req="guerreiro",
         completion="Sua escolha faz sentido, você provou seu valor. "

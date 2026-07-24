@@ -47,6 +47,9 @@ class UI:
     SHOP_QTY_MODAL_W, SHOP_QTY_MODAL_H = 460, 240  # mini-modal "quantidade" que abre por cima da loja
     LOOT_MODAL_W                  = 260        # janela de loot (clique direito em corpo) — altura é dinâmica (TITLE_H + nº de linhas)
     QUEST_DIALOG_W, QUEST_DIALOG_H     = 480, 400  # diálogo de aceitar/entregar quest (NPC com !/?)
+    # Recompensa de item no diálogo de entrega (23/07/2026, pedido do usuário)
+    QUEST_REWARD_ICON     = 36   # ícone quadrado de item de recompensa
+    QUEST_REWARD_ICON_GAP = 8    # espaço entre ícones da mesma linha
     QUEST_JOURNAL_W, QUEST_JOURNAL_H   = 700, 520  # diário de quests (tecla J)
     TALENTS_W, TALENTS_H          = 800, 640   # árvore de talentos (tecla T)
     SKILL_LEVELS_W, SKILL_LEVELS_H = 700, 560  # painel de Skill Level (tecla L) — nível+xp do personagem + 11 trilhas, read-only

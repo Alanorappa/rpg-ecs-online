@@ -78,7 +78,7 @@ class MsgType(str, Enum):
 
     # ── Quests ────────────────────────────────────────────────────
     QUEST_ACCEPT       = "quest_accept"    # C→S  aceitar quest no NPC {quest_id}
-    QUEST_TURN_IN      = "quest_turn_in"   # C→S  entregar quest no NPC {quest_id}
+    QUEST_TURN_IN      = "quest_turn_in"   # C→S  entregar quest no NPC {quest_id, npc_name, chosen_item?} — chosen_item só relevante se QuestReward.choice não-vazio (23/07/2026, recompensa de itens)
     QUEST_UPDATE       = "quest_update"    # S→C  snapshot active/completed (só pro dono, ver QuestLog)
 
     # ── Morte/respawn: fluxo de espírito (ghost) + cemitério ────────
@@ -177,7 +177,7 @@ class MsgType(str, Enum):
     CHAR_STATS_DATA    = "char_stats_data"     # S→C  privado, snapshot atual (ver CharStatsTracker)
 
     # ── Inventário / Loot ─────────────────────────────────────────
-    INVENTORY_UPDATE   = "inv_update"      # S→C  item adicionado/removido/modificado
+    INVENTORY_UPDATE   = "inv_update"      # S→C  {items: [{name, icon_key, item_type, rarity, value, slot, stack}, ...]} — item(ns) concedido(s) fora do fluxo normal de loot (23/07/2026: recompensa de item de quest, ver server/session.py::_handle_quest_turn_in). Cliente reconstrói e adiciona ao Inventory local, mesmo mecanismo de LOOT_RESULT.
     LOOT_AVAILABLE     = "loot_available"  # S→C  corpo com loot apareceu no tile
     LOOT_REQUEST       = "loot_request"    # C→S  player clicou no corpo para sacar
     LOOT_TAKE          = "loot_take"       # C→S  pegar item específico do corpo

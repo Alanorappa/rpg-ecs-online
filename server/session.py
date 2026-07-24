@@ -879,6 +879,30 @@ class SessionManager:
             quest_logic.apply_event(ql, "talk_to_npc", {"npc_name": npc_name})
         if not quest_logic.can_turn_in(ql, qid):
             return
+
+        # Recompensa de item com escolha (23/07/2026, pedido do usuário):
+        # valida ANTES de completar a quest — se o cliente mandar um
+        # chosen_item que não está no pool real (cliente adulterado/
+        # dessincronizado), recusa a entrega inteira (mesmo padrão de
+        # can_turn_in acima), nunca conceder um item fora do catálogo da
+        # quest silenciosamente.
+        from content.quests_data import QUESTS as _QUESTS_qt
+        qdef = _QUESTS_qt.get(qid)
+        if qdef is None:
+            return
+        chosen_item = str(payload.get("chosen_item", ""))
+        chosen_entry = None
+        if qdef.reward.choice:
+            for entry in qdef.reward.choice:
+                _key, _stack = quest_logic.normalize_reward_entry(entry)
+                if _key == chosen_item:
+                    chosen_entry = (_key, _stack)
+                    break
+            if chosen_entry is None:
+                log.warning(f"[QuestTurnIn] chosen_item invalido '{chosen_item}' "
+                           f"pra quest '{qid}' (player={eid}) — recusado")
+                return
+
         reward = quest_logic.complete_quest(self.world_server.world, eid, ql, qid)
         if reward is None:
             return
@@ -920,6 +944,30 @@ class SessionManager:
                     "player_eid": eid,
                     "gold":       wall.gold,
                 })
+
+        # Itens de recompensa (23/07/2026, pedido do usuário) — fixos
+        # (reward.items, sempre) + o escolhido (chosen_entry, já validado
+        # acima). Servidor não toca no Inventory ECS aqui — mesmo padrão
+        # de LOOT_RESULT (server/loot_processor.py::request_loot): o
+        # cliente é quem materializa o item na bag local a partir do
+        # payload, e o INV_SYNC periódico do cliente mantém o mirror do
+        # servidor atualizado depois.
+        reward_entries = list(qdef.reward.items) + ([chosen_entry] if chosen_entry else [])
+        if reward_entries:
+            from server.server_death_handler import _serialize_item
+            granted_dicts = []
+            for entry in reward_entries:
+                item_key, stack = quest_logic.normalize_reward_entry(entry)
+                factory = quest_logic.resolve_reward_item_factory(item_key)
+                if factory is None:
+                    log.warning(f"[QuestTurnIn] item_key '{item_key}' da quest '{qid}' "
+                               f"não existe em nenhum catálogo — ignorado")
+                    continue
+                item = factory()
+                item.stack = max(1, min(stack, item.max_stack))
+                granted_dicts.append(_serialize_item(item))
+            if granted_dicts:
+                await session.send(MsgType.INVENTORY_UPDATE, {"items": granted_dicts})
 
         # Persiste imediatamente (mesmo padrão de TALENT_UPDATE) — crash do
         # servidor não perde a entrega que já concedeu XP/gold/itens.

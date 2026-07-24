@@ -6971,6 +6971,95 @@ fica intacto; nome vazio preserva o placeholder original (não
 silenciosamente vira string vazia ilegível). Suíte completa 470/470,
 rodada 3x.
 
+### §34.46 — Recompensa de itens em quests: fixos + escolha (23/07/2026)
+
+Pedido do usuário: quests podem conceder itens (não só XP/gold), com
+suporte a "vários itens fixos" (com stack, ex.: 1 poção de vida + 2
+poções de mana) E um pool de "escolha 1 entre N" (ex.: espada/maça/
+machado) — os dois no MESMO diálogo de entrega já existente (sem modal
+novo), ícones com tooltip no hover, seleção realçada + resto esmaecido
+(igual skill em cooldown), "Concluir" só libera com a escolha feita.
+
+**Schema** (`content/quests_data.py::QuestReward`): dois campos novos,
+`items` (SEMPRE concedidos) e `choice` (escolhe 1). Cada entrada aceita
+`"item_key"` (stack=1) ou `("item_key", stack)`. `item_key` é a CHAVE de
+`content/item_table.py::ITEMS` (ex. `"training_sword"`, `"hp_potion"`,
+`"mana_potion"` — não o nome de exibição), com fallback pra
+`QUEST_ITEMS` (chave = nome de exibição, materiais de quest) via
+`engine/quest_logic.py::resolve_reward_item_factory`. Exemplo:
+```python
+reward=QuestReward(
+    xp=100, gold=20,
+    items=("hp_potion", ("mana_potion", 2)),
+    choice=("training_sword", "iron_mace", "apprentice_axe"),
+),
+```
+
+**Protocolo**: `QUEST_TURN_IN` ganha `chosen_item` (C→S, só relevante se
+`reward.choice` não-vazio). `INVENTORY_UPDATE` (S→C) — existia no
+protocolo desde sempre mas NUNCA tinha sido implementado (nem
+enviado nem havia handler client-side) — agora é usado pra empurrar
+item(ns) concedido(s) fora do fluxo normal de loot.
+
+**Servidor** (`server/session.py::_handle_quest_turn_in`): valida
+`chosen_item` contra o pool ANTES de completar a quest (recusa a
+entrega INTEIRA se o valor não bate com nenhuma entrada normalizada —
+cliente adulterado/dessincronizado nunca ganha um item fora do
+catálogo da quest). Servidor NÃO toca no Inventory ECS próprio pra
+conceder — mesmo padrão já usado por loot (`server/loot_processor.py::
+request_loot`): só resolve a fábrica, instancia o Item, serializa
+(`server/server_death_handler.py::_serialize_item`, reaproveitado) e
+manda via `INVENTORY_UPDATE` — o CLIENTE materializa na bag local, e o
+`INV_SYNC` periódico do cliente mantém o mirror do servidor atualizado
+depois. `item_key` que não resolve em nenhum catálogo (typo do autor de
+conteúdo) é só ignorado com um warning no log — não derruba a entrega
+inteira nem os outros itens válidos.
+
+**Cliente**: lógica de reconstrução+stack de item (antes só inline em
+`_handle_msg_loot_result`) foi extraída pra
+`NetworkHandlers._grant_items_to_inventory()` — fonte única, reusada
+por `LOOT_RESULT` (loot de corpse) e o novo `_handle_msg_inventory_update`
+(recompensa de quest).
+
+**UI** (`ui/quest_system.py::QuestDialogSystem._render_turnin`): faixa
+FIXA (não rolável) de ícones logo acima do botão Concluir — itens fixos
+primeiro (só tooltip, sem clique), depois "Escolha uma recompensa:" +
+ícones do pool (clicáveis, 1 selecionado por vez, mesmo padrão visual de
+skill ativa/inativa da hotbar). Tooltip reaproveita
+`ui/ui_helpers.py::item_tooltip_lines` + `ui/icon_manager.py::ICONS` —
+mesmo mecanismo de Inventário/Loja/Forja. `QuestDialogSystem` ganhou
+`pending_tooltip` (sem underscore) — mesmo padrão de bridging de
+LootSystem/ShopSystem/CraftingSystem (`game.py` copia pra
+`self._pending_tooltip` no fim do frame, só faltava esse 1 caso).
+Concluir fica esmaecido/sem-ação (não fecha o diálogo, não manda
+QUEST_TURN_IN) enquanto `reward.choice` não-vazio e nada foi
+selecionado ainda.
+
+**Bug real pego pelo próprio teste**: a primeira versão só registrava o
+rect de hit-test do ícone de escolha DENTRO do bloco `if hovered` — só
+"funcionava" em jogo de verdade por coincidência (render e clique leem
+`pygame.mouse.get_pos()` no mesmo frame), mas falhava em qualquer cenário
+onde os dois não coincidissem exatamente. `tests/test_quest_reward_ui.py`
+pegou isso na primeira rodada (rects vazios) antes de qualquer sessão
+manual — rect agora é sempre registrado, tooltip que fica condicional
+ao hover.
+
+**Validado**: `tests/test_quest_logic.py` (+5 testes — normalize/resolve),
+`tests/test_quest_turn_in.py` (8 testes novos — item fixo único, múltiplos
+com stack, escolha válida, fixos+escolha juntos, escolha inválida recusa
+tudo, escolha ausente quando obrigatória recusa, item_key com typo é
+ignorado sem derrubar o resto, sem itens não manda INVENTORY_UPDATE),
+`tests/test_client_ui.py` (+3 testes — `_grant_items_to_inventory`/
+`_handle_msg_inventory_update`), `tests/test_quest_reward_ui.py` (6
+testes novos — rects populados, clique seleciona, Concluir sem seleção
+não manda nada, Concluir com seleção manda `chosen_item` certo, sem pool
+de escolha manda direto, trocar de item re-seleciona). Suíte completa
+492/492, rodada 3x.
+
+**Não validado**: sessão manual — abrir o diálogo de uma quest com
+`items`+`choice` de verdade, conferir visualmente os ícones/tooltip/
+destaque de seleção, e confirmar que o item chega na bag após "Concluir".
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |

@@ -60,6 +60,8 @@ class NetworkHandlers:
             self._handle_msg_loot_result(payload)
         elif msg_type == MsgType.LOOT_UPDATE:
             self._handle_msg_loot_update(payload)
+        elif msg_type == MsgType.INVENTORY_UPDATE:
+            self._handle_msg_inventory_update(payload)
         elif msg_type == MsgType.BUY_RESULT:
             self._handle_msg_buy_result(payload)
         elif msg_type == MsgType.SELL_RESULT:
@@ -1766,6 +1768,76 @@ class NetworkHandlers:
                                       _ev_sx, _ev_sy, _elx, _ely, base=0.8,
                                       dedup_key=f"aggro_{_ev_seid}")
 
+    def _grant_items_to_inventory(self, items: list, log_verb: str = "Coletado") -> bool:
+        """Reconstrói e adiciona itens (dicts serializados por
+        server/server_death_handler.py::_serialize_item — {name, stack,
+        rarity, ...}) ao Inventory local. Fonte única usada por
+        LOOT_RESULT (loot de corpse) e INVENTORY_UPDATE (recompensa de
+        item de quest, 23/07/2026, ver server/session.py::
+        _handle_quest_turn_in) — antes só existia inline no handler de
+        loot. Retorna True se pelo menos 1 item foi de fato adicionado
+        (bag cheia não conta)."""
+        from engine.components import Inventory as _InvGr
+        from content.loot_tables import _T as _LootTableGr
+        from content.quests_data import QUEST_ITEMS as _QIGr
+        inv = self.world.get_component(self.player_entity, _InvGr)
+        if not inv:
+            return False
+        granted_any = False
+        for item_data in items:
+            item_name = item_data.get("name", "")
+            obj = None
+            for _key, factory in _LootTableGr.items():
+                try:
+                    candidate = factory()
+                except Exception:
+                    continue
+                if getattr(candidate, "name", "") == item_name:
+                    obj = candidate
+                    break
+            if obj is None:
+                _qi_factory = _QIGr.get(item_name)
+                if _qi_factory:
+                    try:
+                        obj = _qi_factory()
+                    except Exception:
+                        obj = None
+            if obj is None:
+                continue
+            obj.stack = item_data.get("stack", 1)
+            # Tenta empilhar em stack existente (mesma lógica de
+            # ui/systems.py::LootSystem._try_take_item)
+            stacked = False
+            if obj.max_stack > 1:
+                for existing in inv.items:
+                    if existing is not None and existing.name == obj.name \
+                            and existing.stack < existing.max_stack:
+                        existing.stack += obj.stack
+                        stacked = True
+                        break
+            if not stacked:
+                if len(inv.items) < inv.max_slots:
+                    inv.items.append(obj)
+                else:
+                    LOG.add("Inventario cheio!", (255, 160, 0))
+                    continue
+            granted_any = True
+            col = {"common": (200,200,200), "uncommon": (30,200,30),
+                  "rare": (80,140,255), "epic": (180,50,255),
+                  "legendary": (224,135,47), "mythic": (221,68,68)
+                  }.get(getattr(obj, "rarity", "common"), (200, 200, 200))
+            LOG.add(f"{log_verb}: {obj.name} ({getattr(obj, 'rarity', 'common')})", col)
+        return granted_any
+
+    def _handle_msg_inventory_update(self, payload: dict) -> None:
+        """Item(ns) concedido(s) fora do fluxo normal de loot — hoje só a
+        recompensa de item de quest (server/session.py::
+        _handle_quest_turn_in, 23/07/2026). Mesmo mecanismo de
+        reconstrução/stack de LOOT_RESULT, via _grant_items_to_inventory."""
+        items = payload.get("items", [])
+        if self._grant_items_to_inventory(items, log_verb="Recompensa"):
+            SOUNDS.play_ui("loot_item")
+
     def _handle_msg_loot_result(self, payload: dict) -> None:
         """Resposta ao LOOT_REQUEST (ui/systems.py::LootSystem, via
         _online_loot_requester — bug real relatado pelo usuário
@@ -1787,53 +1859,7 @@ class NetworkHandlers:
                 LOG.add(f"+{coins} moedas coletadas!", (255, 215, 0))
 
         if items:
-            from engine.components import Inventory as _InvLr
-            from content.loot_tables import _T as _LootTableLr
-            from content.quests_data import QUEST_ITEMS as _QILr
-            inv = self.world.get_component(self.player_entity, _InvLr)
-            if inv:
-                for item_data in items:
-                    item_name = item_data.get("name", "")
-                    obj = None
-                    for _key, factory in _LootTableLr.items():
-                        try:
-                            candidate = factory()
-                        except Exception:
-                            continue
-                        if getattr(candidate, "name", "") == item_name:
-                            obj = candidate
-                            break
-                    if obj is None:
-                        _qi_factory = _QILr.get(item_name)
-                        if _qi_factory:
-                            try:
-                                obj = _qi_factory()
-                            except Exception:
-                                obj = None
-                    if obj is None:
-                        continue
-                    obj.stack = item_data.get("stack", 1)
-                    # Tenta empilhar em stack existente (mesma lógica de
-                    # ui/systems.py::LootSystem._try_take_item)
-                    stacked = False
-                    if obj.max_stack > 1:
-                        for existing in inv.items:
-                            if existing is not None and existing.name == obj.name \
-                                    and existing.stack < existing.max_stack:
-                                existing.stack += obj.stack
-                                stacked = True
-                                break
-                    if not stacked:
-                        if len(inv.items) < inv.max_slots:
-                            inv.items.append(obj)
-                        else:
-                            LOG.add("Inventario cheio!", (255, 160, 0))
-                            continue
-                    col = {"common": (200,200,200), "uncommon": (30,200,30),
-                          "rare": (80,140,255), "epic": (180,50,255),
-                          "legendary": (224,135,47), "mythic": (221,68,68)
-                          }.get(getattr(obj, "rarity", "common"), (200, 200, 200))
-                    LOG.add(f"Coletado: {obj.name} ({getattr(obj, 'rarity', 'common')})", col)
+            self._grant_items_to_inventory(items)
 
         if coins == 0 and not items:
             # Resposta vazia pro que foi pedido especificamente (só ouro,

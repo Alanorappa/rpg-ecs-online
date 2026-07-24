@@ -2209,6 +2209,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
 
             # Quest dialog e diário: por cima de tudo
             self._quest_dialog.render()
+            if self._quest_dialog.pending_tooltip:
+                self._pending_tooltip = self._quest_dialog.pending_tooltip
             self._quest_journal.render()
 
             # Crafting (ferreiro): por cima de tudo

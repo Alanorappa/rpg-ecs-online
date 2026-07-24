@@ -467,6 +467,20 @@ class QuestDialogSystem(UIScaleMixin, System):
         self._complete_rect: "pygame.Rect | None"    = None
         self._close_rect:    "pygame.Rect | None"    = None
 
+        # Escolha de recompensa (23/07/2026, pedido do usuário) — só
+        # relevante quando QuestReward.choice não é vazio. Rects populados
+        # em _render_turnin, consumidos em handle_events; escolha em si
+        # reseta sempre que um diálogo de entrega NOVO abre (_open_dialog/
+        # clique na lista), pra nunca vazar a escolha de uma quest anterior.
+        self._reward_choice_rects: list = []   # [(rect, item_key), ...]
+        self._turnin_chosen_item: "str | None" = None
+
+        # Tooltip de item de recompensa (hover nos ícones) — mesmo padrão
+        # de LootSystem/ShopSystem/CraftingSystem (ui/systems.py): campo
+        # `pending_tooltip` (sem underscore) lido por GameEngine no fim do
+        # frame e copiado pra self._pending_tooltip (ver game.py).
+        self.pending_tooltip = None
+
         # Scroll (px) do bloco de texto rolável em "detail"/"turnin" — conteúdo
         # variável (descrição + objetivos + recompensa) pode ultrapassar a
         # altura fixa do painel; ver _render_detail/_render_turnin.
@@ -555,6 +569,7 @@ class QuestDialogSystem(UIScaleMixin, System):
                     if rect.collidepoint(mx, my):
                         self._dialog_selected_qid = qid
                         self._detail_scroll        = 0
+                        self._turnin_chosen_item   = None
                         self._dialog_state = "turnin" if self._qs.can_turn_in(qid) else "detail"
                         return
 
@@ -575,9 +590,25 @@ class QuestDialogSystem(UIScaleMixin, System):
                     return
 
             elif self._dialog_state == "turnin":
+                # Ícones de escolha de recompensa (23/07/2026, pedido do
+                # usuário) — clique seleciona 1 (nunca fecha o diálogo);
+                # checado ANTES do botão Concluir, que fica condicionado
+                # a essa escolha existir quando há pool de escolha.
+                for rect, item_key in self._reward_choice_rects:
+                    if rect.collidepoint(mx, my):
+                        self._turnin_chosen_item = item_key
+                        return
+
                 if self._complete_rect and self._complete_rect.collidepoint(mx, my):
+                    qdef = QUESTS.get(self._dialog_selected_qid)
+                    if qdef and qdef.reward.choice and self._turnin_chosen_item is None:
+                        # Sem seleção ainda — botão existe mas não faz nada
+                        # (feedback visual de "desabilitado" já é dado no
+                        # render, ver _render_turnin).
+                        return
                     saved_npc = self._dialog_npc_id
                     qid = self._dialog_selected_qid
+                    chosen = self._turnin_chosen_item or ""
                     self._close()
                     # Server-autoritativo: entrega local era do modo offline,
                     # removida deste branch (15/07/2026, item A2 §11).
@@ -588,6 +619,7 @@ class QuestDialogSystem(UIScaleMixin, System):
                         from shared.messages import MsgType as _MTqt
                         self._qs._net.send(_MTqt.QUEST_TURN_IN, {
                             "quest_id": qid, "npc_name": self._npc_name(saved_npc),
+                            "chosen_item": chosen,
                         })
                     return
 
@@ -849,8 +881,95 @@ class QuestDialogSystem(UIScaleMixin, System):
         self._accept_rect  = acc_r
         self._decline_rect = dec_r
 
+    def _reward_item_objects(self, entries: tuple) -> list:
+        """Normaliza e instancia os itens de QuestReward.items/choice pra
+        exibição (ícone/tooltip) — entradas que não resolvem (item_key
+        digitado errado no catálogo) são puladas silenciosamente aqui
+        (o servidor loga um warning na entrega de verdade, ver
+        server/session.py::_handle_quest_turn_in). Retorna [(item_key,
+        Item), ...]."""
+        from engine.quest_logic import normalize_reward_entry, resolve_reward_item_factory
+        out = []
+        for entry in entries:
+            item_key, stack = normalize_reward_entry(entry)
+            factory = resolve_reward_item_factory(item_key)
+            if factory is None:
+                continue
+            try:
+                item = factory()
+            except Exception:
+                continue
+            item.stack = max(1, min(stack, item.max_stack))
+            out.append((item_key, item))
+        return out
+
+    def _draw_reward_icon_row(self, items: list, top_y: int, panel_x0: int, panel_w: int,
+                              selectable: bool) -> None:
+        """Desenha 1 linha de ícones de item de recompensa — usado tanto
+        pros itens FIXOS (selectable=False, só tooltip no hover) quanto
+        pro pool de ESCOLHA (selectable=True, clique seleciona 1 — ver
+        handle_events). Ícones não-selecionados quando `selectable` E já
+        existe uma escolha feita ficam com aparência "inativa" (esmaecidos
+        + sem borda colorida), mesmo princípio visual de skill em
+        cooldown/bloqueada."""
+        from ui.icon_manager import ICONS
+        from ui.ui_helpers import item_tooltip_lines, RARITY_COLORS
+        from engine.components import CharacterStats as _CharRI
+        mx, my = pygame.mouse.get_pos()
+        icon_s = self._u(UI.QUEST_REWARD_ICON)
+        gap    = self._u(UI.QUEST_REWARD_ICON_GAP)
+        x = panel_x0 + self._u(self.PAD)
+        _char_ri = self.world.get_component(self.player_entity, _CharRI)
+        _viewer_cls = getattr(_char_ri, "class_id", None)
+
+        for item_key, item in items:
+            r = pygame.Rect(x, top_y, icon_s, icon_s)
+            hovered  = r.collidepoint(mx, my)
+            selected = selectable and self._turnin_chosen_item == item_key
+            inactive = (selectable and self._turnin_chosen_item is not None
+                       and not selected)
+
+            icon_surf = ICONS.get(ICONS.item_key(item), icon_s)
+            rar_col   = RARITY_COLORS.get(item.rarity, (200, 200, 200))
+            border_col = (255, 215, 60) if selected else (rar_col if hovered else self.COL_BORDER)
+
+            bg = pygame.Surface((icon_s, icon_s), pygame.SRCALPHA)
+            if icon_surf:
+                bg.blit(icon_surf, (0, 0))
+            else:
+                bg.fill((*rar_col, 255))
+            if inactive:
+                # Esmaece — mesmo princípio visual de skill em cooldown/
+                # bloqueada (overlay escuro semi-transparente por cima).
+                dim = pygame.Surface((icon_s, icon_s), pygame.SRCALPHA)
+                dim.fill((0, 0, 0, 150))
+                bg.blit(dim, (0, 0))
+            self.hud_surf.blit(bg, r.topleft)
+            pygame.draw.rect(self.hud_surf, border_col, r, 2 if selected else 1, border_radius=3)
+            if item.stack > 1:
+                st_s = self._font_sm.render(str(item.stack), False, (255, 255, 255))
+                self.hud_surf.blit(st_s, (r.right - st_s.get_width() - self._u(2),
+                                         r.bottom - st_s.get_height()))
+
+            # Rect de hit-test SEMPRE registrado (não só quando hovered) —
+            # bug real encontrado por teste: registrar só dentro do hover
+            # só "funcionava" em jogo de verdade por coincidência (render
+            # e clique lêem o mouse no mesmo frame), mas quebra em qualquer
+            # cenário onde os dois não coincidem exatamente (ex.: teste
+            # automatizado, ou o mouse mover 1px entre os dois reads).
+            if selectable:
+                self._reward_choice_rects.append((r, item_key))
+
+            if hovered:
+                lines = item_tooltip_lines(item, _viewer_cls)
+                self.pending_tooltip = (mx, my, item.name, lines, rar_col)
+
+            x += icon_s + gap
+
     def _render_turnin(self, x0: int, y0: int) -> None:
         self._complete_rect = None
+        self._reward_choice_rects = []
+        self.pending_tooltip = None
         qdef = QUESTS.get(self._dialog_selected_qid)
         if qdef is None:
             return
@@ -860,6 +979,21 @@ class QuestDialogSystem(UIScaleMixin, System):
         max_w    = W - PAD * 2
         mx, my   = pygame.mouse.get_pos()
         btn_y    = y0 + self._u(self.PANEL_H) - self._u(48)
+
+        # Itens de recompensa (23/07/2026, pedido do usuário) — fixos
+        # (items) sempre concedidos + pool de escolha (choice, jogador
+        # escolhe 1). Reservam uma faixa FIXA (não rolável) logo acima do
+        # botão Concluir — mesmo raciocínio de manter os botões de ação
+        # sempre visíveis/clicáveis independente do quanto a descrição
+        # role.
+        fixed_items  = self._reward_item_objects(qdef.reward.items)
+        choice_items = self._reward_item_objects(qdef.reward.choice)
+        icon_row_h = self._u(UI.QUEST_REWARD_ICON) + self._u(6)
+        reward_area_h = 0
+        if fixed_items:
+            reward_area_h += icon_row_h
+        if choice_items:
+            reward_area_h += self._u(18) + icon_row_h   # texto "Escolha..." + linha de ícones
 
         ops: list[tuple] = []   # (surf, rel_y) — ver _render_detail
         ry = 0
@@ -897,15 +1031,33 @@ class QuestDialogSystem(UIScaleMixin, System):
             ops.append((rew, ry)); ry += rew.get_height()
 
         view_top = y0 + self._u(52)
-        self._blit_scrollable(ops, x0, view_top, W, btn_y - self._u(10) - view_top)
+        reward_top = btn_y - self._u(10) - reward_area_h
+        self._blit_scrollable(ops, x0, view_top, W, reward_top - self._u(6) - view_top)
 
-        # Botão Concluir
+        # Ícones de recompensa — faixa fixa, sempre visível (não rola)
+        icon_y = reward_top
+        if fixed_items:
+            self._draw_reward_icon_row(fixed_items, icon_y, x0, W, selectable=False)
+            icon_y += icon_row_h
+        if choice_items:
+            choice_lbl = self._font_sm.render("Escolha uma recompensa:", False, (160, 140, 80))
+            self.hud_surf.blit(choice_lbl, (x0 + PAD, icon_y))
+            icon_y += self._u(18)
+            self._draw_reward_icon_row(choice_items, icon_y, x0, W, selectable=True)
+
+        # Botão Concluir — esmaecido/sem ação até escolher uma recompensa,
+        # se a quest tiver pool de escolha (ver handle_events).
+        needs_choice = bool(qdef.reward.choice) and self._turnin_chosen_item is None
         comp_r = pygame.Rect(x0 + self._u(self.PANEL_W) - PAD - self._u(180), btn_y, self._u(180), self._u(32))
-        hov    = comp_r.collidepoint(mx, my)
-        pygame.draw.rect(self.hud_surf, (60, 110, 60) if hov else (35, 65, 35),
-                         comp_r, border_radius=4)
+        hov    = comp_r.collidepoint(mx, my) and not needs_choice
+        if needs_choice:
+            bg_col = (40, 40, 40)
+        else:
+            bg_col = (60, 110, 60) if hov else (35, 65, 35)
+        pygame.draw.rect(self.hud_surf, bg_col, comp_r, border_radius=4)
         pygame.draw.rect(self.hud_surf, self.COL_BORDER, comp_r, 1, border_radius=4)
-        txt = self._font_body.render("Concluir", False, self.COL_WHITE)
+        txt_col = (120, 120, 120) if needs_choice else self.COL_WHITE
+        txt = self._font_body.render("Concluir", False, txt_col)
         self.hud_surf.blit(txt, (comp_r.centerx - txt.get_width() // 2,
                                comp_r.centery - txt.get_height() // 2))
         self._complete_rect = comp_r
@@ -938,9 +1090,10 @@ class QuestDialogSystem(UIScaleMixin, System):
                 LOG.add(f"{name}: Sem missoes para voce no momento.", self._qs.COL_PROG)
             return
 
-        self._dialog_npc_id = npc_id
-        self._list_rects    = {}
-        self._detail_scroll = 0
+        self._dialog_npc_id      = npc_id
+        self._list_rects         = {}
+        self._detail_scroll      = 0
+        self._turnin_chosen_item = None
 
         if len(total) == 1:
             qid = total[0]
@@ -959,6 +1112,8 @@ class QuestDialogSystem(UIScaleMixin, System):
         self._decline_rect        = None
         self._complete_rect       = None
         self._close_rect          = None
+        self._reward_choice_rects = []
+        self._turnin_chosen_item  = None
 
     # ── Consultas ao QuestLog ────────────────────────────────────────────────
 
