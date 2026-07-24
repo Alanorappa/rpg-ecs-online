@@ -1031,7 +1031,15 @@ class QuestDialogSystem(UIScaleMixin, System):
             ops.append((rew, ry)); ry += rew.get_height()
 
         view_top = y0 + self._u(52)
-        reward_top = btn_y - self._u(10) - reward_area_h
+        # Ícones ficam logo ABAIXO do conteúdo de verdade (texto curto — a
+        # maioria das quests — não deveria deixar um vão vazio até uma
+        # linha fixa lá embaixo, bug real reportado pelo usuário 24/07/2026
+        # com print). Só quando o conteúdo é LONGO o bastante pra colidir
+        # com a faixa de ícones é que ela fica presa perto do botão
+        # Concluir (nesse caso o texto rola por baixo, os ícones não).
+        max_reward_top = btn_y - self._u(10) - reward_area_h
+        content_end_y  = view_top + ry + self._u(6)
+        reward_top = max(view_top, min(content_end_y, max_reward_top))
         self._blit_scrollable(ops, x0, view_top, W, reward_top - self._u(6) - view_top)
 
         # Ícones de recompensa — faixa fixa, sempre visível (não rola)

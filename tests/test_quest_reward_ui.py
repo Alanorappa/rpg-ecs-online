@@ -120,6 +120,17 @@ class TestQuestRewardChoiceUI(unittest.TestCase):
         _click_at(dlg, r1.center)
         self.assertEqual(dlg._turnin_chosen_item, k1)
 
+    def test_icones_ficam_logo_apos_texto_curto_nao_colados_no_botao(self):
+        """Bug real reportado pelo usuário (print, 24/07/2026): pra uma
+        quest com descrição/completion curtos, a faixa de ícones ficava
+        presa perto do botão Concluir, com um vão vazio grande acima —
+        deveria ficar logo abaixo do texto de verdade."""
+        dlg = _make_dialog("qrui_g", QuestReward(xp=15, choice=("training_sword",)))
+        rect, _ = dlg._reward_choice_rects[0]
+        # Faixa presa ao fundo (comportamento ANTES do fix) ficaria a poucos
+        # px acima do botão — texto curto deveria deixar bem mais espaço.
+        self.assertLess(rect.y, dlg._complete_rect.y - 100)
+
 
 if __name__ == "__main__":
     unittest.main()

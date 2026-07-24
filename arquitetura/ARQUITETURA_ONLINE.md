@@ -7056,9 +7056,27 @@ não manda nada, Concluir com seleção manda `chosen_item` certo, sem pool
 de escolha manda direto, trocar de item re-seleciona). Suíte completa
 492/492, rodada 3x.
 
-**Não validado**: sessão manual — abrir o diálogo de uma quest com
-`items`+`choice` de verdade, conferir visualmente os ícones/tooltip/
-destaque de seleção, e confirmar que o item chega na bag após "Concluir".
+**Validado pelo usuário** (24/07/2026, print anexado): quest de teste
+funcionou de ponta a ponta (ícone fixo + escolha + item chegando na bag),
+com 1 ponto de melhoria visual reportado — ver Fix 2 abaixo.
+
+**Fix 2 — ícone de recompensa colado no botão Concluir com vão vazio
+acima (24/07/2026)**: `_render_turnin` calculava `reward_top` fixo, a
+partir do botão pra cima (`btn_y - self._u(10) - reward_area_h`),
+ignorando onde o texto rolável (título/descrição/texto de conclusão)
+realmente terminava. Pra quest com texto curto, isso deixava um vão vazio
+grande entre o fim do texto e a faixa de ícones — o usuário anexou print
+com retângulos indicando a posição real (baixa, colada no botão) vs. a
+desejada (mais alta, logo após o texto). Fix: calcular também
+`content_end_y` (fim real do conteúdo rolável) e usar
+`reward_top = max(view_top, min(content_end_y, max_reward_top))` — a
+faixa agora acompanha texto curto (fica logo abaixo) mas continua presa
+perto do botão pra texto longo que precisa de scroll (sem sobrepor
+conteúdo). Regressão coberta por
+`test_icones_ficam_logo_apos_texto_curto_nao_colados_no_botao`
+(`tests/test_quest_reward_ui.py`) — confirmado via `git stash` que o
+teste falha sem o fix (`rect.y=320` vs. exigido `<272`) e passa com ele.
+Suíte completa 493/493, rodada 3x.
 
 ### Arquiteturais (A) — débito técnico
 
