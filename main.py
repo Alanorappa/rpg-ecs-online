@@ -9,6 +9,44 @@ import sys
 if getattr(sys, "frozen", False):
     os.chdir(os.path.dirname(sys.executable))
 
+
+def _make_dpi_aware() -> None:
+    """Windows: um processo "DPI-unaware" (padrão sem manifesto) faz o
+    Windows aplicar bitmap-stretch de compatibilidade em CIMA da janela
+    inteira, desde o primeiro frame — inclusive a tela de login, antes de
+    qualquer set_mode/SCALED do jogo entrar em cena. Sintoma relatado
+    (24/07/2026): janela abre parecendo "tela cheia" (maior que o
+    pedido) com fontes borradas/esticadas — é exatamente esse
+    bitmap-stretch do Windows compensando o processo "mentir" que roda a
+    96 DPI. DEVE rodar ANTES de pygame.init()/qualquer set_mode.
+    Cascata de fallback (só tenta o próximo se o atual não existir/falhar
+    — nunca deixar isso derrubar o boot): Per-Monitor V2 (Win10 1703+) →
+    Per-Monitor (Win 8.1+) → System DPI Aware (Vista+, sempre disponível).
+    """
+    if sys.platform != "win32":
+        return
+    import ctypes
+    try:
+        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = ctypes.c_void_p(-4)
+        if ctypes.windll.user32.SetProcessDpiAwarenessContext(
+                DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2):
+            return
+    except (AttributeError, OSError):
+        pass
+    try:
+        PROCESS_PER_MONITOR_DPI_AWARE = 2
+        if ctypes.windll.shcore.SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE) == 0:
+            return
+    except (AttributeError, OSError):
+        pass
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except (AttributeError, OSError):
+        pass
+
+
+_make_dpi_aware()
+
 import pygame
 import config
 from game import GameEngine

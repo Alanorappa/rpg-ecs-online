@@ -7117,6 +7117,66 @@ entrega, marker do NPC que só dá vira `None` após aceitar, fallback de
 NPC único sem split continua funcionando). Confirmado via `git stash` que
 3 dos 4 testes falham sem o fix. Suíte completa rodada 3x.
 
+### §34.48 — Janela abre "tela cheia"/borrada + fontes esticadas/modal
+cortado em janela maximizada (24/07/2026, pesquisa aprofundada)
+
+Pedido do usuário: tela de login abre parecendo tela cheia (maior que o
+pedido, borrada); dentro do jogo, ao maximizar (Fase G, §34.44), fontes
+ficam esticadas/cortadas e alguns modais têm shape cortado — quer
+pixel-perfect em qualquer resolução, com o resize já tratado
+automaticamente (mesmo princípio do zoom in-game, que já é pixel-perfect
+hoje).
+
+**Pesquisa** (pygame-ce issues/docs + Microsoft docs, ver fontes abaixo):
+processo Windows sem manifesto de DPI awareness roda "DPI-unaware" — o
+SO aplica bitmap-stretch de COMPATIBILIDADE em cima da janela inteira
+pra compensar (ex.: monitor a 150% de escala → janela de 1280×720
+pedida é fisicamente desenhada/esticada como se fosse ~1920×1080),
+produzindo exatamente "parece tela cheia" + borrado — e isso já
+acontece na tela de login (`main.py`), ANTES de qualquer `SCALED`/lógica
+do jogo entrar em cena, porque é 100% um comportamento do Windows, não
+do pygame. Separadamente, `pygame.SCALED` (usado desde §34.44/vsync-fix
+de 14-19/07) faz scaling PIXEL-PERFEITO (múltiplo inteiro) em janela
+redimensionável normal, mas muda pra "stretch pra caber na menor
+dimensão" quando maximizado/fullscreen — comportamento não-configurável
+do próprio pygame-ce (issue #2611, sem flag pra forçar integer-only
+nesse caso). Confirmado também: `vsync=1` **não** exige mais `SCALED`/
+`OPENGL` desde pygame-ce 2.2.0 (mudou depois do vsync-fix documentado em
+14-19/07) — mas o profiling ORIGINAL deste projeto (`logs/
+client_prof.log`, mesma investigação) mediu o bug real (flip
+inconsistente 5-47ms) especificamente SEM `SCALED` nesta versão (2.5.7)
+— não dá pra confirmar sem reteste que tirar `SCALED` não reintroduziria
+aquilo, então o fix desta rodada NÃO mexe nesse flag (só na causa
+isolada e comprovada: DPI awareness do processo).
+
+**Fix (fase 1, aplicado)**: `main.py::_make_dpi_aware()` — chama
+`SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` (Win10 1703+) ANTES
+de `pygame.init()`/qualquer `set_mode`, com cascata de fallback (Per-
+Monitor → System DPI Aware) pra Windows mais antigo, cada nível só
+tentado se o anterior não existir/falhar — nunca derruba o boot. Isso
+impede o Windows de aplicar o bitmap-stretch de compatibilidade em
+QUALQUER janela do processo (login E jogo), o que também remove uma
+camada de distorção que se somava em cima do próprio scaling do
+`SCALED` durante maximização — deve reduzir bastante (talvez resolver
+por completo) o "esticado/cortado" relatado, já que o `SCALED` passa a
+calcular sua escala a partir do tamanho REAL da janela em vez de um
+tamanho já inflado pelo Windows.
+
+**Não validado ainda**: reteste manual do usuário em Windows real (login
++ janela maximizada) — se o "shape cortado" de modal específico
+persistir mesmo sem a distorção de DPI, é sinal de uma causa adicional
+separada (ex.: algum código de UI lendo o tamanho da JANELA real em vez
+de `self.screen` lógico) que precisa da resolução do monitor/% de escala
+do Windows do usuário pra diagnosticar — fase 2, não iniciada.
+
+**Fontes**: [pygame-ce #931 — fullscreen scaling incorreta em Windows
+high-DPI](https://github.com/pygame-community/pygame-ce/issues/931),
+[pygame-ce #2611 — SCALED não oferece flag de integer-only ao
+maximizar](https://github.com/pygame/pygame/issues/2611),
+[Microsoft — SetProcessDpiAwarenessContext](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setprocessdpiawarenesscontext),
+[pyga.me — display docs (vsync não exige mais SCALED/OPENGL desde
+2.2.0)](https://pyga.me/docs/ref/display.html).
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |
