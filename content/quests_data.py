@@ -36,6 +36,46 @@ Adicionar um tipo de objetivo NOVO (que não é só "item usado em alvo"):
        QuestSystem._obj_label() (quest_system.py).
     4. Disparar quest_events.fire(tipo, **dados) no sistema que detecta a
        ação (ex: ConsumableSystem, SkillSystem) — ver quest_events.py.
+
+Recompensas (QuestReward) — xp/gold são simples (int). Para ITENS:
+    items   tuple  Itens SEMPRE concedidos ao entregar a quest.
+    choice  tuple  Pool de itens — jogador escolhe exatamente 1 (aparece no
+                   mesmo diálogo de entrega, com o texto "Escolha uma
+                   recompensa:" e os ícones clicáveis; "Concluir" só libera
+                   depois de uma escolha).
+
+    Cada entrada de `items`/`choice` é:
+        "item_key"            stack = 1
+        ("item_key", stack)   stack customizado (é limitado ao max_stack do
+                               item; nunca precisa se preocupar em passar
+                               mais que o cabimento)
+
+    `item_key` é a CHAVE (não o nome de exibição) em um destes catálogos,
+    nessa ordem de busca:
+        1. content/item_table.py::ITEMS      (equipáveis/consumíveis normais,
+                                               ex.: "training_sword",
+                                               "hp_potion", "mana_potion")
+        2. content/quests_data.py::QUEST_ITEMS (materiais de quest logo
+                                               abaixo — usar a CHAVE do dict,
+                                               ex.: "Pelo de Urso")
+    Se o `item_key` não existir em nenhum dos dois, o item é silenciosamente
+    ignorado (log de warning no servidor) — o resto da recompensa (xp/gold/
+    outros itens) é concedido normalmente mesmo assim. Então: SEMPRE conferir
+    o nome exato da chave em item_table.py/QUEST_ITEMS antes de usar — um
+    typo não quebra a quest, só faz o item nunca chegar.
+
+    Exemplo — xp/gold + 2 itens fixos (1 com stack) + escolha entre 3:
+        reward=QuestReward(
+            xp=100, gold=20,
+            items=("hp_potion", ("mana_potion", 2)),
+            choice=("training_sword", "iron_mace", "apprentice_axe"),
+        )
+
+    Só itens fixos, sem escolha (não precisa de `choice` nenhum):
+        reward=QuestReward(xp=15, items=("training_sword",))
+
+    Detalhes de implementação (protocolo/servidor/UI) em
+    arquitetura/ARQUITETURA_ONLINE.md §34.46.
 """
 from __future__ import annotations
 from typing import NamedTuple

@@ -7078,6 +7078,45 @@ conteúdo). Regressão coberta por
 teste falha sem o fix (`rect.y=320` vs. exigido `<272`) e passa com ele.
 Suíte completa 493/493, rodada 3x.
 
+### §34.47 — Quest dada por 1 NPC, entregue em OUTRO (24/07/2026)
+
+Pedido do usuário: quest "bem_vindo_guerreiro" configurada com
+`quest_ids=("bem_vindo_guerreiro",)` em Caterina Alisarf (só dá) e
+`turn_in_ids=("bem_vindo_guerreiro",...)` em Avido Faseo (só recebe) —
+ao completar os objetivos, o indicador de "concluída" (ícone `?`/marker
+de mapa) aparecia sobre os DOIS NPCs, quando deveria só aparecer em
+Avido.
+
+**Causa raiz** (`engine/components.py::QuestGiver`): `turn_in_ids` vazio
+tem fallback documentado "= quest_ids" — pensado pra quests simples onde
+o mesmo NPC dá e recebe. Caterina tem `turn_in_ids=()`, então
+`QuestDialogSystem._get_completable_quests`/`_get_inprogress_quests`
+(`ui/quest_system.py`) caíam nesse fallback e usavam
+`giver.quest_ids = ("bem_vindo_guerreiro",)` como se ela TAMBÉM aceitasse
+a entrega — mesmo Avido já sendo configurado como o entregador de
+verdade. Como `marker_for()` e o menu "Quests" do diálogo dependem
+inteiramente dessas duas funções, e o servidor (`server/session.py::
+_handle_quest_turn_in`) nunca valida QUAL NPC está entregando (só
+`quest_id`/objetivos/`chosen_item`), o bug não era só visual — a entrega
+também teria sido aceita se o jogador clicasse "Concluir" no diálogo da
+Caterina.
+
+**Fix**: `QuestDialogSystem._turn_in_ids_for(giver)` (novo) — só usa o
+fallback `quest_ids` pra qids que NENHUM outro `QuestGiver` do mundo já
+reivindica explicitamente em `turn_in_ids` (`_quests_claimed_for_turn_in()`,
+varre todos os `QuestGiver`). `_get_completable_quests`/
+`_get_inprogress_quests` passaram a chamar esse helper em vez do fallback
+inline. Quests simples de 1 NPC só (ninguém mais reivindica) continuam
+funcionando exatamente igual — só quando existe um NPC de entrega
+explícito em outro lugar é que o NPC "só dá" para de aparecer como
+aceitando.
+
+**Validado**: `tests/test_quest_split_npc.py` (4 testes novos — em
+progresso só aparece no NPC de entrega, completável só aparece no NPC de
+entrega, marker do NPC que só dá vira `None` após aceitar, fallback de
+NPC único sem split continua funcionando). Confirmado via `git stash` que
+3 dos 4 testes falham sem o fix. Suíte completa rodada 3x.
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |

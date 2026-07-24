@@ -1175,6 +1175,32 @@ class QuestDialogSystem(UIScaleMixin, System):
                     result.append(qid)
         return result
 
+    def _quests_claimed_for_turn_in(self) -> set:
+        """Quest ids que algum QuestGiver do mundo reivindica EXPLICITAMENTE
+        em turn_in_ids (não-vazio). Usado por _turn_in_ids_for pra impedir
+        que o NPC que só DÁ uma quest (turn_in_ids vazio, cai no fallback
+        "= quest_ids") também apareça como aceitando a entrega quando um
+        NPC diferente já foi configurado como o entregador de verdade —
+        bug real (24/07/2026): "bem_vindo_guerreiro" é dada por Caterina
+        Alisarf (quest_ids) e entregue em Avido Faseo (turn_in_ids); sem
+        este filtro, Caterina também "aceitava" a entrega, porque
+        turn_in_ids vazio caía no fallback = seu próprio quest_ids."""
+        from engine.components import QuestGiver as _QG
+        claimed = set()
+        for _eid, other_giver in self.world.get_entities_with(_QG):
+            claimed.update(other_giver.turn_in_ids)
+        return claimed
+
+    def _turn_in_ids_for(self, giver) -> tuple:
+        """ids que ESTE giver aceita pra entrega — turn_in_ids explícito
+        se houver; senão (fallback pra quests simples de 1 NPC só)
+        quest_ids, excluindo qualquer qid já reivindicado por OUTRO NPC
+        (ver _quests_claimed_for_turn_in)."""
+        if giver.turn_in_ids:
+            return giver.turn_in_ids
+        claimed_elsewhere = self._quests_claimed_for_turn_in()
+        return tuple(qid for qid in giver.quest_ids if qid not in claimed_elsewhere)
+
     def _get_completable_quests(self, npc_id: int, pending_npc_name: str = "") -> list:
         """Quests que o NPC aceita para entrega e estão 100% concluídas.
 
@@ -1185,7 +1211,7 @@ class QuestDialogSystem(UIScaleMixin, System):
         giver = self.world.get_component(npc_id, _QG)
         if giver is None:
             return []
-        ids = giver.turn_in_ids if giver.turn_in_ids else giver.quest_ids
+        ids = self._turn_in_ids_for(giver)
         result = []
         for qid in ids:
             if self._qs.can_turn_in(qid):
@@ -1203,7 +1229,7 @@ class QuestDialogSystem(UIScaleMixin, System):
         giver = self.world.get_component(npc_id, _QG)
         if giver is None:
             return []
-        ids = giver.turn_in_ids if giver.turn_in_ids else giver.quest_ids
+        ids = self._turn_in_ids_for(giver)
         result = []
         for qid in ids:
             if self._qs.can_turn_in(qid):
