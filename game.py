@@ -2733,36 +2733,48 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._save_config()
 
     def _rebuild_screen_refs(self, new_screen: "pygame.Surface") -> None:
-        """Atualiza referências à surface de render em todos os subsistemas."""
-        # Sistemas ECS na lista principal
-        for sys in self.systems:
-            if hasattr(sys, "screen"):
-                sys.screen = new_screen
-        # Sistemas com refs diretas fora da lista
-        for attr in ("_skill_system", "_loot_system", "_projectile_system",
-                     "_render_system", "_tile_render_system"):
-            obj = getattr(self, attr, None)
-            if obj and hasattr(obj, "screen"):
+        """Atualiza referências à surface de render em todos os subsistemas
+        depois de um resize (`_apply_logical_size`/troca de modo de
+        janela) que substitui `self.screen` por um objeto Surface NOVO.
+
+        Bug real (24/07/2026, reportado pelo usuário: modal de loot
+        sumiu depois de trocar de modo de janela): sistemas que herdam de
+        `engine.world_systems.System` (LootSystem, ShopSystem,
+        QuestDialogSystem, QuestJournalSystem, TrainerSystem,
+        BlacksmithSystem/CraftingSystem...) só têm `world_surf`/
+        `hud_surf` — NUNCA um atributo `.screen` (ver docstring de
+        `System`). Esta função só setava `sys.screen`, um no-op
+        silencioso pra TODOS esses sistemas — `hud_surf` ficava
+        apontando pra a Surface ANTIGA (órfã, nunca mais desenhada na
+        tela) pro resto da sessão. `world_surf` escapa por acaso
+        (reatribuído todo frame por `_assign_world_surf`, sem depender
+        disso); `hud_surf` não tem esse refresh por frame em lugar
+        nenhum — só aqui. Ficou dormant porque a única forma de disparar
+        um resize ao vivo antes era o picker de escala (raramente usado
+        em sessão); virou visível assim que o modo de janela (§34.48/49)
+        trouxe resize ao vivo comum. Fix: atualizar `hud_surf` (e
+        `screen`, pros poucos que usam esse nome — TalentSystem/
+        CharStatsUI/SkillLevelUI/MapOverlay/Minimap, nenhum deles
+        `System` subclass) em qualquer sistema que tenha o atributo."""
+        def _refresh(obj) -> None:
+            if obj is None:
+                return
+            if hasattr(obj, "screen"):
                 obj.screen = new_screen
-        # Overlays e UI
+            if hasattr(obj, "hud_surf"):
+                obj.hud_surf = new_screen
+
+        for sys in self.systems:
+            _refresh(sys)
+        for attr in ("_skill_system", "_loot_system", "_projectile_system",
+                     "_render_system", "_tile_render_system",
+                     "_talent_system", "_skill_level_ui", "_char_stats_ui",
+                     "_shop_system", "_quest_dialog", "_quest_journal",
+                     "_blacksmith_system", "_crafting_system", "_trainer_system"):
+            _refresh(getattr(self, attr, None))
+        # Overlays e UI (MapOverlay/Minimap — não são System, só .screen)
         self._map_overlay.screen = new_screen
         self._minimap.screen     = new_screen
-        if hasattr(self._talent_system, "screen"):
-            self._talent_system.screen = new_screen
-        if hasattr(self._skill_level_ui, "screen"):
-            self._skill_level_ui.screen = new_screen
-        if hasattr(self._char_stats_ui, "screen"):
-            self._char_stats_ui.screen = new_screen
-        if hasattr(self._shop_system, "screen"):
-            self._shop_system.screen = new_screen
-        if hasattr(self._quest_dialog, "screen"):
-            self._quest_dialog.screen = new_screen
-        if hasattr(self._quest_journal, "screen"):
-            self._quest_journal.screen = new_screen
-        for attr in ("_blacksmith_system", "_crafting_system", "_trainer_system"):
-            obj = getattr(self, attr, None)
-            if obj and hasattr(obj, "screen"):
-                obj.screen = new_screen
         # God Mode
         if hasattr(self, "_god_mode") and hasattr(self._god_mode, "_screen"):
             self._god_mode._screen = new_screen

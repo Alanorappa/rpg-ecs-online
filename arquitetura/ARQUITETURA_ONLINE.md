@@ -7339,6 +7339,52 @@ janela ali, não substituir o picker que já existia.
 **Validado**: suíte completa rodada 3x (497/497). **Não validado**:
 reteste visual do toggle novo no jogo real.
 
+### §34.50 — Modal de loot (e outros) some depois de trocar modo de
+janela (24/07/2026)
+
+Pedido do usuário: "aconteceu algo com o modal de loot, não aparece na
+tela" — reportado logo depois de testar o toggle Tela cheia/Janela da
+§34.49.
+
+**Causa raiz**: `GameEngine._rebuild_screen_refs()` (chamada sempre que
+`self.screen` é substituído por um objeto `Surface` NOVO — todo resize
+via `_apply_logical_size`, incluindo o toggle de modo de janela) só
+setava `sys.screen = new_screen`. Mas sistemas que herdam de
+`engine.world_systems.System` — `LootSystem`, `ShopSystem`,
+`QuestDialogSystem`, `QuestJournalSystem`, `TrainerSystem`,
+`BlacksmithSystem`/`CraftingSystem` — **nunca têm um atributo
+`.screen`**, só `world_surf`/`hud_surf` (ver docstring de `System`).
+`hasattr(sys, "screen")` era `False` pra todos eles — `sys.screen =
+new_screen` era um no-op silencioso. `world_surf` escapa por acaso
+(`GameEngine._assign_world_surf()` reatribui todo frame, independente
+disso); `hud_surf` não tem esse refresh em NENHUM outro lugar — só
+dentro de `_rebuild_screen_refs`. Resultado: depois de QUALQUER resize
+ao vivo, `hud_surf` desses sistemas fica apontando pra a `Surface`
+ANTIGA (órfã, nunca mais desenhada na tela real) pelo resto da sessão —
+o modal continua sendo "desenhado", só que numa superfície que ninguém
+mais mostra.
+
+Bug **pré-existente** (a mesma falha já existia no antigo picker de
+escala/`_apply_scale`, usado desde antes desta leva) — ficou dormant
+porque trocar de escala ao vivo durante uma sessão real era raro. Virou
+visível na hora porque o modo de janela (§34.48/49) tornou resize ao
+vivo uma ação comum (o próprio toggle que acabou de ser entregue).
+
+**Fix**: `_rebuild_screen_refs()` reescrita com um helper `_refresh(obj)`
+que atualiza `.hud_surf` **e** `.screen` em qualquer sistema que tenha o
+atributo (a maioria dos afetados só tem `hud_surf`; `TalentSystem`/
+`CharStatsUI`/`SkillLevelUI`/`MapOverlay`/`Minimap` — não são `System`
+subclasses — só têm `.screen`, continuam funcionando igual).
+
+**Validado**: `tests/test_client_ui.py` — 2 testes novos com stubs que
+imitam os dois contratos (`_StubHudSurfSystem` só `hud_surf`,
+`_StubScreenOnlySystem` só `.screen`), chamando o método real
+(`GameEngine._rebuild_screen_refs`) via injeção de método num fixture
+leve (mesmo padrão de `_client_pvp_context`/`_local_eid_to_server_eid`
+já usado no arquivo). Confirmado via `git stash` que o teste de
+`hud_surf` falha sem o fix (`Surface(10x10)` continua no lugar de
+`Surface(20x20)`) e passa com ele. Suíte completa 499/499, rodada 3x.
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |

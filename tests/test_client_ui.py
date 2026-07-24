@@ -1338,3 +1338,77 @@ def test_dash_rejeitado_pelo_servidor_nao_anima_nada():
     })
     tm = fx.world.get_component(player, TileMovement)
     assert tm.is_moving is False
+
+
+# ── GameEngine._rebuild_screen_refs — hud_surf, não só .screen ──────────────
+# Bug real (24/07/2026, reportado pelo usuário): modal de loot sumiu da tela
+# depois de trocar o modo de janela (§34.48/49, que passou a recriar
+# self.screen com um objeto Surface NOVO). Sistemas que herdam de
+# engine.world_systems.System (LootSystem, ShopSystem, QuestDialogSystem,
+# QuestJournalSystem, TrainerSystem, BlacksmithSystem/CraftingSystem) só têm
+# world_surf/hud_surf — NUNCA um atributo .screen. _rebuild_screen_refs só
+# setava sys.screen, um no-op silencioso pra todos esses — hud_surf ficava
+# apontando pra a Surface antiga (órfã) pelo resto da sessão.
+
+class _StubHudSurfSystem:
+    """Imita LootSystem/ShopSystem/QuestDialogSystem/etc: só hud_surf/
+    world_surf, nunca .screen (mesmo contrato de engine.world_systems.System)."""
+    def __init__(self, surf):
+        self.hud_surf   = surf
+        self.world_surf = surf
+
+
+class _StubScreenOnlySystem:
+    """Imita TalentSystem/CharStatsUI/SkillLevelUI/MapOverlay/Minimap: só
+    .screen (não são System subclasses)."""
+    def __init__(self, surf):
+        self.screen = surf
+
+
+class _RebuildScreenRefsFixture:
+    def __init__(self, surf):
+        self.systems = []
+        self._loot_system       = _StubHudSurfSystem(surf)
+        self._shop_system       = _StubHudSurfSystem(surf)
+        self._quest_dialog      = _StubHudSurfSystem(surf)
+        self._quest_journal     = _StubHudSurfSystem(surf)
+        self._trainer_system    = _StubHudSurfSystem(surf)
+        self._crafting_system   = _StubHudSurfSystem(surf)
+        self._blacksmith_system = None
+        self._skill_system      = None
+        self._projectile_system = None
+        self._render_system     = None
+        self._tile_render_system = None
+        self._talent_system   = _StubScreenOnlySystem(surf)
+        self._skill_level_ui  = _StubScreenOnlySystem(surf)
+        self._char_stats_ui   = _StubScreenOnlySystem(surf)
+        self._map_overlay     = _StubScreenOnlySystem(surf)
+        self._minimap         = _StubScreenOnlySystem(surf)
+
+
+from game import GameEngine as _GE_rsr
+_RebuildScreenRefsFixture._rebuild_screen_refs = _GE_rsr._rebuild_screen_refs
+
+
+def test_rebuild_screen_refs_atualiza_hud_surf_de_sistemas_sem_screen():
+    old_surf = pygame.Surface((10, 10))
+    new_surf = pygame.Surface((20, 20))
+    fx = _RebuildScreenRefsFixture(old_surf)
+    fx._rebuild_screen_refs(new_surf)
+    assert fx._loot_system.hud_surf is new_surf
+    assert fx._shop_system.hud_surf is new_surf
+    assert fx._quest_dialog.hud_surf is new_surf
+    assert fx._quest_journal.hud_surf is new_surf
+    assert fx._trainer_system.hud_surf is new_surf
+    assert fx._crafting_system.hud_surf is new_surf
+
+
+def test_rebuild_screen_refs_continua_atualizando_quem_usa_screen():
+    old_surf = pygame.Surface((10, 10))
+    new_surf = pygame.Surface((20, 20))
+    fx = _RebuildScreenRefsFixture(old_surf)
+    fx._rebuild_screen_refs(new_surf)
+    assert fx._talent_system.screen is new_surf
+    assert fx._char_stats_ui.screen is new_surf
+    assert fx._map_overlay.screen is new_surf
+    assert fx._minimap.screen is new_surf
