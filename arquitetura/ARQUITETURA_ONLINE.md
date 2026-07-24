@@ -7257,9 +7257,10 @@ nativo de janela — só no boot (antes do loop rodar) ou em reação a um
 clique explícito de menu (mesmo padrão que `resolution:<scale>` sempre
 usou, agora generalizado).
 
-**Feature nova (pedido do usuário, na mesma mensagem do crash)**: menu
-"Janela" (Configurações > Janela, ao lado de "Resolution") com 3 modos
-EXPLÍCITOS, cada um só acionado por clique — nunca automático:
+**Feature nova (pedido do usuário, na mesma mensagem do crash — depois
+simplificada, ver addendum abaixo)**: menu "Janela" (Configurações >
+Janela, ao lado de "Resolution") com 3 modos EXPLÍCITOS, cada um só
+acionado por clique — nunca automático:
 - **"Janela"** — janela normal, resolução do slider de escala (Resolution:
   1280×720/1600×900/1920×1080), 3 botões nativos livres (clicar
   maximizar não crasha mais, só volta a ter a distorção de fonte da
@@ -7281,12 +7282,41 @@ boot por completo).
 transições de janela — nenhum teste já instanciava a classe inteira,
 mesma limitação anterior). Sequência de recriação de display (windowed →
 windowed_fullsize → fullscreen → windowed_fullsize → windowed) testada
-isoladamente 2x com o ciclo quit()+init() — sem crash. **Não validado**:
-reteste do usuário no jogo real (com todos os sistemas/rede rodando, não
-só um script isolado) — pedir pra testar os 3 modos individualmente
-antes de considerar fechado; segfault não é capturável por try/except
-Python, então qualquer resíduo de instabilidade não aparece como erro
-tratável, aparece como crash direto.
+isoladamente 2x com o ciclo quit()+init() — sem crash.
+
+**Addendum (24/07/2026, mesmo dia — simplificação pedida pelo usuário)**:
+testado no jogo real, sem crash — mas com a `Resolution` em 1920×1080
+(batendo com o monitor), o modo "Janela" (tamanho FIXO) ficava
+visualmente IDÊNTICO a "Tela cheia" (sem nenhuma borda visível),
+tornando os 3 modos redundantes/confusos. Pedido do usuário: reduzir pra
+só 2 modos (eliminar o "Janela" de tamanho fixo — ambos os que sobram já
+usam resolução lógica = tamanho real, então o slider de escala não fazia
+mais diferença nenhuma pra eles mesmo), apresentados como 1 TOGGLE de 2
+segmentos ("Modo:  Tela cheia | Janela") dentro do PRÓPRIO submenu
+"Resolution" — sem botão novo no menu principal — e "Janela" (=
+`windowed_fullsize`) como modo padrão.
+- `client/menu_handlers.py`: `_draw_window_mode_submenu`/
+  `_WINDOW_MODE_OPTIONS` removidos; `_BTNS` do menu principal perdeu a
+  entrada "Janela"; `_draw_resolution_submenu` perdeu o picker de escala
+  antigo (1x/1.25x/1.5x, `SCALE_OPTIONS`) e ganhou o toggle de 2
+  segmentos (`_WINDOW_MODES = [("Tela cheia","fullscreen"), ("Janela",
+  "windowed_fullsize")]`) no lugar — mesmo mecanismo de clique
+  (`window_mode:<mode>`), já existente em `game.py`.
+- `game.py`: nenhuma mudança de lógica — `_apply_window_mode`/
+  `_compute_and_set_window_mode` continuam suportando os 3 valores
+  internamente (`"windowed"` vira só um fallback de erro interno, não
+  mais alcançável pela UI); default de boot já era `"windowed_fullsize"`
+  desde a versão anterior, sem mudança.
+- `ui/settings_screen.py` (tela de resolução PRÉ-login, `SCALE_OPTIONS`)
+  **não foi tocada** — é uma tela separada, roda antes do `GameEngine`
+  existir (sem auto-detecção de tela ainda disponível ali); fora de
+  escopo deste pedido.
+
+**Validado**: usuário confirmou que o crash não voltou depois do fix
+principal. Suíte completa rodada 3x (497/497) depois da simplificação do
+menu. **Não validado**: reteste visual do toggle simplificado no jogo
+real (era só sobre o menu ter 3 modos confusos — a lógica de
+`window_mode:<mode>` em si já tinha sido exercitada e não mudou).
 
 ### Arquiteturais (A) — débito técnico
 
