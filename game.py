@@ -223,21 +223,29 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         DEBUG_MODE     = _cfg_data.get("debug_mode",     False)
         PROFILE_FRAMES = _cfg_data.get("profile_frames", False)
 
-        # Janela maximizada é o padrão (Fase G, pedido do usuário) — maximiza
-        # o CONTAINER da janela via a API Window do pygame-ce. Nunca deixar
-        # isso derrubar o boot do jogo se algo no driver/GPU não suportar.
-        self._window_mode_pref: str = _cfg_data.get("window_mode", "maximized")
+        # Modo de janela (Fase G, 23/07 — reformulado 24/07/2026 após crash
+        # real, ver _apply_window_mode()/comentário lá). "maximized" era o
+        # padrão antigo (chamava pygame.Window.maximize() nativo) — REMOVIDO:
+        # esse caminho (maximizar nativo + recriar o display em reação ao
+        # evento) deixava a janela num estado inconsistente (virava tela
+        # cheia de verdade, irreversível pela UI) e um set_mode() seguinte
+        # (troca de resolução no menu) segfaultava (pygame_parachute,
+        # crash.log real do usuário). Configs antigos com "maximized"
+        # migram pra "windowed_fullsize" (equivalente seguro: mesmo
+        # resultado visual — janela ocupando quase a tela toda — mas via
+        # set_mode() direto no boot, nunca via API nativa de maximizar nem
+        # em reação a evento de janela). Nunca deixar isso derrubar o boot
+        # se algo no driver/GPU não suportar.
+        self._window_mode_pref: str = _cfg_data.get("window_mode", "windowed_fullsize")
         if self._window_mode_pref == "maximized":
+            self._window_mode_pref = "windowed_fullsize"
+        if self._window_mode_pref in ("windowed_fullsize", "fullscreen"):
             try:
-                pygame.Window.from_display_module().maximize()
-                # pygame.event.pump() deixa o SDL processar o resize antes de
-                # ler o tamanho real da janela (ver _sync_logical_size_to_window
-                # logo abaixo — precisa do tamanho JÁ maximizado, não do
-                # win_w/win_h que acabamos de pedir no set_mode acima).
-                pygame.event.pump()
-                self._sync_logical_size_to_window()
-            except Exception as _win_max_err:
-                print(f"[GameEngine] aviso: falha ao maximizar janela — {_win_max_err}")
+                self._compute_and_set_window_mode(self._window_mode_pref)
+            except Exception as _win_mode_err:
+                print(f"[GameEngine] aviso: falha ao aplicar modo de janela "
+                      f"'{self._window_mode_pref}' — {_win_mode_err}")
+                self._window_mode_pref = "windowed"
 
         # Filtra eventos irrelevantes — reduz custo do pump no Windows.
         # WINDOWMAXIMIZED/WINDOWRESTORED (Fase G): persistem a preferência
@@ -1488,13 +1496,13 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                     self._save_config()      # persiste layout da hotbar ao fechar
                     running = False
                 elif event.type == pygame.WINDOWMAXIMIZED:
+                    # NUNCA chamar set_mode()/_apply_logical_size() aqui —
+                    # ver comentário no __init__ (§34.48 fase 2, crash real).
                     self._window_mode_pref = "maximized"
-                    pygame.event.pump()   # SDL processa o resize antes do read
-                    self._sync_logical_size_to_window()
                     self._save_config()
                 elif event.type == pygame.WINDOWRESTORED:
                     self._window_mode_pref = "windowed"
-                    self._apply_scale(self._scale)   # já chama _save_config()
+                    self._save_config()
                 elif _god_was_active:
                     pass   # god mode consumiu — ignora input do jogo
                 elif event.type == pygame.KEYDOWN:
@@ -2277,6 +2285,11 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                         self._net.send(_MT_us.UNSTUCK, {})
                 elif action and action.startswith("resolution:"):
                     self._apply_scale(float(action.split(":")[1]))
+                elif action and action.startswith("window_mode:"):
+                    try:
+                        self._apply_window_mode(action.split(":")[1])
+                    except Exception as _win_mode_err:
+                        print(f"[GameEngine] aviso: falha ao trocar modo de janela — {_win_mode_err}")
 
             # God Mode: por cima de tudo (grade + seleção + painel)
             self._god_mode.update(cam_x, cam_y, dt)
@@ -2618,19 +2631,37 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                     for i in range(min(len(saved_slots), _CB.NUM_SLOTS)):
                         cbar.slots[i] = saved_slots[i]
 
+    # ── Recria o display do zero (única forma segura de trocar set_mode) ───
+    def _recreate_display(self, win_w: int, win_h: int, flags: int) -> "pygame.Surface":
+        """pygame.display.quit()+init() ANTES de chamar set_mode() de novo
+        em cima de um display JÁ existente — chamar set_mode() direto uma
+        2ª vez (sem esse ciclo) SEGFAULTA nesta stack (pygame-ce 2.5.7 +
+        SDL 2.32.10): reproduzido isoladamente e é a mesma falha do
+        crash.log real do usuário (24/07/2026, pygame_parachute dentro de
+        set_mode()). main.py já usava esse ciclo (pygame.display.quit()/
+        init() antes de recriar a janela pra um GameEngine novo) — faltava
+        aplicar aqui, em QUALQUER troca de resolução/modo de janela em
+        tempo real (Resolution e Janela, os 2 submenus, e o boot quando
+        migra um window_mode salvo pra windowed_fullsize/fullscreen)."""
+        pygame.display.quit()
+        pygame.display.init()
+        display = pygame.display.set_mode((win_w, win_h), flags, vsync=1)
+        pygame.display.set_caption("RPG ECS")   # quit()/init() reseta o título
+        return display
+
     # ── Aplica nova resolução lógica (recria display+screen) ───────────────
     def _apply_logical_size(self, win_w: int, win_h: int) -> None:
         """Recria o display/self.screen numa resolução lógica EXATA (win_w,
         win_h) — núcleo comum de _apply_scale() (slider de escala) e
-        _sync_logical_size_to_window() (janela maximizada, §34.48). Chamado
-        também no boot, ANTES de self.world/subsistemas existirem — por
-        isso os passos que dependem deles (_rebuild_screen_refs, offset da
-        Camera) são condicionais a hasattr, não uma chamada incondicional."""
-        self.screen   = pygame.Surface((win_w, win_h))
+        _compute_and_set_window_mode() (submenu Janela, §34.48/§34.49).
+        Chamado também no boot, ANTES de self.world/subsistemas existirem —
+        por isso os passos que dependem deles (_rebuild_screen_refs, offset
+        da Camera) são condicionais a hasattr, não uma chamada incondicional."""
+        self.screen = pygame.Surface((win_w, win_h))
         # SCALED + vsync=1 + RESIZABLE: mesma razão do set_mode() em
         # __init__ — ver comentário lá.
-        self._display = pygame.display.set_mode(
-            (win_w, win_h), pygame.DOUBLEBUF | pygame.SCALED | pygame.RESIZABLE, vsync=1)
+        self._display = self._recreate_display(
+            win_w, win_h, pygame.DOUBLEBUF | pygame.SCALED | pygame.RESIZABLE)
         if hasattr(self, "world"):
             self._rebuild_screen_refs(self.screen)
             # Atualiza Camera component para que offset_x/offset_y reflitam a nova resolução
@@ -2640,29 +2671,66 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
 
     def _apply_scale(self, scale: float) -> None:
         self._scale = scale
+        self._window_mode_pref = "windowed"
         self._apply_logical_size(int(1280 * scale), int(720 * scale))
         self._save_config()
 
-    def _sync_logical_size_to_window(self) -> None:
-        """Janela maximizada (Fase G, §34.44) + causa raiz de §34.48: o
-        pygame.SCALED só faz scaling PIXEL-PERFEITO (múltiplo inteiro) em
-        janela redimensionável normal — ao maximizar, se a resolução LÓGICA
-        ficar fixa em 1280x720*scale enquanto a janela física vira o
-        tamanho do monitor, o fator de escala quase nunca é um número
-        inteiro (ex.: monitor 1920x1080 com barra de tarefas -> área útil
-        1920x1040 -> fator 1040/720=1.444...), e escala fracionária com
-        amostragem nearest-neighbor corrompe traços finos de fonte de
-        forma DEPENDENTE DE POSIÇÃO (mesma string legível numa linha do
-        chat e corrompida na de baixo — reportado pelo usuário 24/07/2026,
-        print). Fix: ao maximizar, a resolução lógica passa a ser
-        EXATAMENTE o tamanho real da janela — fator de escala do SCALED
-        sempre 1.0, zero distorção possível, independente de monitor/DPI/
-        posição da barra de tarefas. Ao restaurar (desmaximizar), volta pra
-        resolução do slider de escala — ver _apply_scale() no
-        WINDOWRESTORED (run(), loop de eventos)."""
-        real_w, real_h = pygame.display.get_window_size()
-        if (real_w, real_h) != self.screen.get_size():
-            self._apply_logical_size(real_w, real_h)
+    # ── Modo de janela (24/07/2026, pedido do usuário após crash real) ─────
+    # Causa raiz de §34.48: pygame.SCALED calcula 1 fator de escala uniforme
+    # (janela/lógico) — mantendo a resolução lógica fixa em 1280x720*scale
+    # enquanto a janela física vira o tamanho do monitor, esse fator quase
+    # nunca é um número inteiro (ex.: monitor 1920x1080 com barra de
+    # tarefas -> área útil 1920x1040 -> fator 1.444...), e escala
+    # fracionária com nearest-neighbor corrompe traços finos de fonte de
+    # forma DEPENDENTE DE POSIÇÃO (print do usuário, 24/07/2026). Fix:
+    # resolução lógica = tamanho real da janela/monitor -> fator sempre
+    # 1.0, zero distorção. MAS: a 1ª tentativa (fase 2) reagia ao evento
+    # nativo WINDOWMAXIMIZED — isso deixou a janela num estado inconsistente
+    # (virou tela cheia de verdade, irreversível pela UI) e um set_mode()
+    # seguinte (troca de resolução no menu) SEGFAULTOU (pygame_parachute,
+    # crash.log real do usuário). set_mode() NUNCA pode ser chamado em
+    # reação a um evento nativo de janela — só em boot ou clique explícito
+    # de menu (mesmo padrão seguro que resolution:<scale> já usava).
+    @staticmethod
+    def _desktop_size() -> tuple:
+        """Resolução do monitor primário, com fallback se a lista vier
+        vazia (nenhum monitor detectado pelo driver — não deve travar o
+        boot por causa disso)."""
+        sizes = pygame.display.get_desktop_sizes()
+        return sizes[0] if sizes else (1920, 1080)
+
+    def _compute_and_set_window_mode(self, mode: str) -> None:
+        """Núcleo de troca de modo — SEM salvar config (chamado no boot,
+        antes de self.world existir, e por _apply_window_mode/menu)."""
+        if mode == "fullscreen":
+            desktop_w, desktop_h = self._desktop_size()
+            self.screen   = pygame.Surface((desktop_w, desktop_h))
+            self._display = self._recreate_display(
+                desktop_w, desktop_h, pygame.DOUBLEBUF | pygame.SCALED | pygame.FULLSCREEN)
+            if hasattr(self, "world"):
+                self._rebuild_screen_refs(self.screen)
+                for _, cam, _ in self.world.get_entities_with(Camera, Position):
+                    cam.offset_x = desktop_w / 2
+                    cam.offset_y = desktop_h / 2
+        elif mode == "windowed_fullsize":
+            desktop_w, desktop_h = self._desktop_size()
+            # pygame não expõe a "área útil" do Windows (sem a barra de
+            # tarefas) — folga fixa suficiente pra barra de título E a
+            # barra de tarefas não ficarem fora da tela/cobertas (pedido:
+            # "não apagar a barra superior da janela").
+            self._apply_logical_size(max(320, desktop_w - 16), max(240, desktop_h - 80))
+        else:  # "windowed"
+            self._apply_logical_size(int(1280 * self._scale), int(720 * self._scale))
+
+    def _apply_window_mode(self, mode: str) -> None:
+        """Troca de modo de janela por clique explícito no menu Configurações
+        > Janela — "windowed" (janela normal, resolução do slider de
+        escala), "windowed_fullsize" (janela redimensionada pra caber quase
+        toda a tela, SEM maximizar de verdade — barra de título sempre
+        visível) ou "fullscreen" (tela cheia de verdade)."""
+        self._window_mode_pref = mode
+        self._compute_and_set_window_mode(mode)
+        self._save_config()
 
     def _rebuild_screen_refs(self, new_screen: "pygame.Surface") -> None:
         """Atualiza referências à surface de render em todos os subsistemas."""

@@ -7190,24 +7190,13 @@ documentação SDL (scaling de logical size é sempre uniforme/aspect-
 preserving) + evidência fotográfica do próprio usuário, não por
 reprodução visual própria.
 
-**Fix (fase 2, aplicado)**: `game.py::_sync_logical_size_to_window()`
-(novo) — ao maximizar (boot com `window_mode: maximized` E evento
-`WINDOWMAXIMIZED` em tempo real), a resolução LÓGICA passa a ser
-EXATAMENTE `pygame.display.get_window_size()` (tamanho real da janela
-maximizada), via `_apply_logical_size()` (novo, núcleo comum extraído de
-`_apply_scale()` — mesmo pipeline já usado pelo slider de escala,
-`_rebuild_screen_refs`/offset de `Camera` inclusos). Fator de escala do
-SCALED vira sempre `1.0` — zero distorção possível, independente de
-monitor/DPI/posição da barra de tarefas. Ao restaurar (`WINDOWRESTORED`),
-volta pra resolução do slider (`_apply_scale(self._scale)`).
-
-**Não validado**: reteste visual do usuário em Windows real — não foi
-possível confirmar com screenshot próprio (sandbox bloqueou criação de
-janela real, ver acima). Suíte automatizada não cobre `GameEngine` (não
-há teste que instancie a classe inteira) — validado apenas que, sob
-`SDL_VIDEODRIVER=dummy` (ambiente de CI), a nova lógica é um no-op seguro
-(`get_window_size()` não muda sob o driver dummy, então
-`_apply_logical_size` nunca é re-chamado à toa nos testes existentes).
+**Fix (fase 2, tentativa inicial — REVERTIDA, ver §34.49)**:
+`game.py::_sync_logical_size_to_window()` reagia ao evento nativo
+`WINDOWMAXIMIZED` recriando o display (`_apply_logical_size()`) com a
+resolução lógica = tamanho real da janela maximizada. **Causou um crash
+real** (segfault) reportado pelo usuário — ver §34.49 pra causa raiz
+completa (não era o evento em si, era `set_mode()` sendo chamado 2x sem
+o ciclo `pygame.display.quit()+init()` antes) e o fix definitivo.
 
 **Fontes**: [pygame-ce #931 — fullscreen scaling incorreta em Windows
 high-DPI](https://github.com/pygame-community/pygame-ce/issues/931),
@@ -7216,6 +7205,88 @@ maximizar](https://github.com/pygame/pygame/issues/2611),
 [Microsoft — SetProcessDpiAwarenessContext](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setprocessdpiawarenesscontext),
 [pyga.me — display docs (vsync não exige mais SCALED/OPENGL desde
 2.2.0)](https://pyga.me/docs/ref/display.html).
+
+### §34.49 — Crash real (segfault) ao trocar resolução + menu explícito
+de modo de janela (24/07/2026)
+
+**O que aconteceu**: usuário testou o fix da §34.48 fase 2. Clicou no
+botão nativo de maximizar da janela (entre minimizar e fechar) — o jogo
+foi pra tela cheia de verdade, sem decoração, e não havia como reverter
+pela UI. Fechou e reabriu o jogo — continuou em tela cheia (config
+salvo). Abriu o menu de resolução e trocou pra 1280×720 — o processo
+morreu com `Fatal Python error: pygame_parachute: (pygame parachute)
+Segmentation Fault`, stack apontando pra dentro de
+`_apply_logical_size` → `pygame.display.set_mode()`.
+
+**Causa raiz (confirmada por reprodução isolada, não só pelo crash.log)**:
+chamar `pygame.display.set_mode()` uma SEGUNDA vez em cima de um display
+já inicializado **segfaulta nesta stack** (pygame-ce 2.5.7 + SDL 2.32.10
++ driver/GPU desta máquina) — reproduzido com um script isolado que
+recria o display em sequência (windowed → maior → windowed de novo):
+crash consistente na 2ª chamada de `set_mode()`, mesmo SEM nunca ter
+passado por fullscreen ou pela API nativa de maximizar. Ou seja: **não
+era especificamente sobre reagir ao evento `WINDOWMAXIMIZED`** (a
+hipótese original da fase 2) — era `set_mode()` sendo chamado 2x sem o
+ciclo `pygame.display.quit()` + `pygame.display.init()` antes. Esse
+ciclo já era usado em `main.py` (linhas ~151-152, ao trocar da tela de
+seleção de personagem pra um `GameEngine` novo) — só nunca tinha sido
+aplicado dentro do próprio `GameEngine` (slider de escala/`_apply_scale`,
+que já existia ANTES desta sessão, sempre teve esse mesmo risco latente,
+só não tinha sido acionado na sequência exata que crasha).
+**Confirmado o fix**: adicionar `pygame.display.quit()`+`init()` antes de
+CADA `set_mode()` de recriação eliminou o crash — testado em sequência
+completa (windowed → windowed_fullsize → fullscreen → windowed_fullsize
+→ windowed) 2x seguidas, sem falha nenhuma.
+
+**Fix definitivo**: `game.py::_recreate_display(win_w, win_h, flags)`
+(novo, único ponto que chama `set_mode()` fora do boot) — SEMPRE
+`pygame.display.quit()` + `pygame.display.init()` antes de `set_mode()`,
+e reaplica `pygame.display.set_caption()` (esse ciclo reseta o título da
+janela pro padrão do SDL). `_apply_logical_size()` e o branch
+`"fullscreen"` de `_compute_and_set_window_mode()` passaram a usar esse
+helper. `main.py` ganhou o mesmo ciclo no fluxo de "Deslogar" (linha
+~176, `set_mode()` direto depois que `GameEngine.run()` pode ter deixado
+o display em QUALQUER modo, inclusive `FULLSCREEN`) — era o mesmo risco
+latente, só ainda não reportado.
+
+**Reação ao evento nativo `WINDOWMAXIMIZED`/`WINDOWRESTORED` REVERTIDA
+por completo** — nenhum dos dois mais chama `set_mode()`/recria o
+display; só registram `_window_mode_pref` (persistido, migrado no
+próximo boot). `set_mode()` NUNCA deve ser chamado em reação a um evento
+nativo de janela — só no boot (antes do loop rodar) ou em reação a um
+clique explícito de menu (mesmo padrão que `resolution:<scale>` sempre
+usou, agora generalizado).
+
+**Feature nova (pedido do usuário, na mesma mensagem do crash)**: menu
+"Janela" (Configurações > Janela, ao lado de "Resolution") com 3 modos
+EXPLÍCITOS, cada um só acionado por clique — nunca automático:
+- **"Janela"** — janela normal, resolução do slider de escala (Resolution:
+  1280×720/1600×900/1920×1080), 3 botões nativos livres (clicar
+  maximizar não crasha mais, só volta a ter a distorção de fonte da
+  §34.48 fase 1 até o jogador trocar de modo pelo menu).
+- **"Janela (tamanho da tela)"** — detecta a resolução do monitor
+  (`pygame.display.get_desktop_sizes()`), redimensiona a janela pra caber
+  quase toda a tela (folga de 16px de largura / 80px de altura — barra
+  de tarefas e barra de título sempre visíveis, NUNCA usa a API nativa
+  de maximizar), resolução lógica = tamanho real da janela → fator do
+  SCALED sempre 1.0, zero distorção.
+- **"Tela cheia"** — fullscreen de verdade (`pygame.FULLSCREEN`),
+  resolução lógica = resolução nativa do monitor → mesmo motivo, fator
+  sempre 1.0.
+`window_mode` salvo com valor antigo `"maximized"` migra automaticamente
+pra `"windowed_fullsize"` no boot (API nativa de maximizar removida do
+boot por completo).
+
+**Validado**: suíte completa 497/497, rodada 3x (não cobre `GameEngine`/
+transições de janela — nenhum teste já instanciava a classe inteira,
+mesma limitação anterior). Sequência de recriação de display (windowed →
+windowed_fullsize → fullscreen → windowed_fullsize → windowed) testada
+isoladamente 2x com o ciclo quit()+init() — sem crash. **Não validado**:
+reteste do usuário no jogo real (com todos os sistemas/rede rodando, não
+só um script isolado) — pedir pra testar os 3 modos individualmente
+antes de considerar fechado; segfault não é capturável por try/except
+Python, então qualquer resíduo de instabilidade não aparece como erro
+tratável, aparece como crash direto.
 
 ### Arquiteturais (A) — débito técnico
 

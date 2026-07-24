@@ -173,6 +173,14 @@ if __name__ == "__main__":
             # reconecta com a mesma conta antes de voltar à seleção.
             net.disconnect()
             net, char_list = _connect_and_login(host, port, net_user, net_pass)
+            # quit()+init() ANTES de set_mode() de novo — GameEngine pode
+            # ter deixado o display em qualquer modo (inclusive FULLSCREEN,
+            # ver game.py::_apply_window_mode/§34.48-49); chamar set_mode()
+            # direto em cima de um display já inicializado segfaulta nesta
+            # stack (pygame-ce 2.5.7 + SDL 2.32.10 — mesma causa do crash
+            # real reportado pelo usuário 24/07/2026, ver ARQUITETURA_ONLINE.md).
+            pygame.display.quit()
+            pygame.display.init()
             screen = pygame.display.set_mode((W, H))
             pygame.display.set_caption("RPG ECS [ONLINE]")
 

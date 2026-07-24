@@ -53,6 +53,8 @@ class MenuHandlers:
         """Dispatcher: redireciona para o submenu activo ou desenha o menu principal."""
         if self._pause_submenu == "resolution":
             return self._draw_resolution_submenu(events)
+        if self._pause_submenu == "window_mode":
+            return self._draw_window_mode_submenu(events)
         if self._pause_submenu == "sound":
             return self._draw_sound_submenu(events)
         if self._pause_submenu == "interface":
@@ -101,6 +103,7 @@ class MenuHandlers:
         _BTNS = [
             ("Resume",              "resume"),
             ("Resolution",          "submenu:resolution"),
+            ("Janela",              "submenu:window_mode"),
             ("Sound",               "submenu:sound"),
             ("Interface",           "submenu:interface"),
             ("Atalhos do teclado",  "open_hotbar_editor"),
@@ -160,6 +163,53 @@ class MenuHandlers:
             self.screen.blit(lbl, lbl.get_rect(center=rect.center))
             if hov and clicked and not is_sel:
                 return f"resolution:{val}"
+
+        # Botão Voltar
+        back = pygame.Rect(px + PW // 2 - self._u(80), py + PH - self._u(44), self._u(160), self._u(34))
+        hov  = back.collidepoint(mx, my)
+        self._mm_button(back, "Back", hov)
+        if hov and clicked:
+            self._pause_submenu = ""
+        return None
+
+    # ── Submenu Janela (24/07/2026, pedido do usuário) ─────────────────────
+    # 3 modos explícitos, cada um só acionado por clique aqui — NUNCA em
+    # reação ao botão nativo de maximizar da janela (ver GameEngine.
+    # _apply_window_mode / comentário no __init__ sobre o crash real que
+    # esse padrão já causou quando era automático).
+    _WINDOW_MODE_OPTIONS = [
+        ("Janela",                     "windowed"),
+        ("Janela (tamanho da tela)",   "windowed_fullsize"),
+        ("Tela cheia",                 "fullscreen"),
+    ]
+
+    def _draw_window_mode_submenu(self, events: list) -> "str | None":
+        self._set_panel_scale(UI.MENU_RESOLUTION_W, UI.MENU_RESOLUTION_H)
+        PW, PH = self._u(UI.MENU_RESOLUTION_W), self._u(UI.MENU_RESOLUTION_H)
+        self._mm_overlay()
+        px, py = self._mm_panel(PW, PH, (UI.MENU_RESOLUTION_OFFSET_X, UI.MENU_RESOLUTION_OFFSET_Y))
+
+        title = self.font_md.render("Janela", False, self._MM_TITLE_COL)
+        self.screen.blit(title, (px + PW // 2 - title.get_width() // 2, py + self._u(14)))
+
+        mx, my  = pygame.mouse.get_pos()
+        clicked = any(e.type == pygame.MOUSEBUTTONDOWN and e.button == 1 for e in events)
+        opt_w, opt_h = self._u(290), self._u(36)
+        ox = px + PW // 2 - opt_w // 2
+        for i, (label, mode) in enumerate(self._WINDOW_MODE_OPTIONS):
+            oy   = py + self._u(52) + i * (opt_h + self._u(8))
+            rect = pygame.Rect(ox, oy, opt_w, opt_h)
+            hov  = rect.collidepoint(mx, my)
+            is_sel = (mode == self._window_mode_pref)
+            bg_c = (55, 44, 22) if is_sel else (self._MM_BTN_HOV if hov else self._MM_BTN_NRM)
+            bdr  = (200, 160, 60) if (is_sel or hov) else self._MM_BORDER
+            bdr_w = 2 if is_sel else 1
+            pygame.draw.rect(self.screen, bg_c, rect, border_radius=4)
+            pygame.draw.rect(self.screen, bdr,  rect, bdr_w, border_radius=4)
+            lbl = self.font_md.render(label, False, (200, 160, 60) if is_sel else self._MM_BTN_TXT)
+            self.screen.blit(lbl, lbl.get_rect(center=rect.center))
+            if hov and clicked and not is_sel:
+                return f"window_mode:{mode}"
 
         # Botão Voltar
         back = pygame.Rect(px + PW // 2 - self._u(80), py + PH - self._u(44), self._u(160), self._u(34))
