@@ -224,14 +224,18 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         PROFILE_FRAMES = _cfg_data.get("profile_frames", False)
 
         # Janela maximizada é o padrão (Fase G, pedido do usuário) — maximiza
-        # o CONTAINER da janela via a API Window do pygame-ce (não muda a
-        # resolução lógica passada em set_mode acima, só o tamanho da janela
-        # na tela — SCALED cuida do resto). Nunca deixar isso derrubar o
-        # boot do jogo se algo no driver/GPU não suportar.
+        # o CONTAINER da janela via a API Window do pygame-ce. Nunca deixar
+        # isso derrubar o boot do jogo se algo no driver/GPU não suportar.
         self._window_mode_pref: str = _cfg_data.get("window_mode", "maximized")
         if self._window_mode_pref == "maximized":
             try:
                 pygame.Window.from_display_module().maximize()
+                # pygame.event.pump() deixa o SDL processar o resize antes de
+                # ler o tamanho real da janela (ver _sync_logical_size_to_window
+                # logo abaixo — precisa do tamanho JÁ maximizado, não do
+                # win_w/win_h que acabamos de pedir no set_mode acima).
+                pygame.event.pump()
+                self._sync_logical_size_to_window()
             except Exception as _win_max_err:
                 print(f"[GameEngine] aviso: falha ao maximizar janela — {_win_max_err}")
 
@@ -1485,10 +1489,12 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                     running = False
                 elif event.type == pygame.WINDOWMAXIMIZED:
                     self._window_mode_pref = "maximized"
+                    pygame.event.pump()   # SDL processa o resize antes do read
+                    self._sync_logical_size_to_window()
                     self._save_config()
                 elif event.type == pygame.WINDOWRESTORED:
                     self._window_mode_pref = "windowed"
-                    self._save_config()
+                    self._apply_scale(self._scale)   # já chama _save_config()
                 elif _god_was_active:
                     pass   # god mode consumiu — ignora input do jogo
                 elif event.type == pygame.KEYDOWN:
@@ -2612,22 +2618,51 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                     for i in range(min(len(saved_slots), _CB.NUM_SLOTS)):
                         cbar.slots[i] = saved_slots[i]
 
-    # ── Aplica nova escala de resolução ────────────────────────────────────
-    def _apply_scale(self, scale: float) -> None:
-        self._scale   = scale
-        win_w         = int(1280 * scale)
-        win_h         = int(720  * scale)
+    # ── Aplica nova resolução lógica (recria display+screen) ───────────────
+    def _apply_logical_size(self, win_w: int, win_h: int) -> None:
+        """Recria o display/self.screen numa resolução lógica EXATA (win_w,
+        win_h) — núcleo comum de _apply_scale() (slider de escala) e
+        _sync_logical_size_to_window() (janela maximizada, §34.48). Chamado
+        também no boot, ANTES de self.world/subsistemas existirem — por
+        isso os passos que dependem deles (_rebuild_screen_refs, offset da
+        Camera) são condicionais a hasattr, não uma chamada incondicional."""
         self.screen   = pygame.Surface((win_w, win_h))
         # SCALED + vsync=1 + RESIZABLE: mesma razão do set_mode() em
         # __init__ — ver comentário lá.
         self._display = pygame.display.set_mode(
             (win_w, win_h), pygame.DOUBLEBUF | pygame.SCALED | pygame.RESIZABLE, vsync=1)
-        self._rebuild_screen_refs(self.screen)
-        # Atualiza Camera component para que offset_x/offset_y reflitam a nova resolução
-        for _, cam, _ in self.world.get_entities_with(Camera, Position):
-            cam.offset_x = win_w / 2
-            cam.offset_y = win_h / 2
+        if hasattr(self, "world"):
+            self._rebuild_screen_refs(self.screen)
+            # Atualiza Camera component para que offset_x/offset_y reflitam a nova resolução
+            for _, cam, _ in self.world.get_entities_with(Camera, Position):
+                cam.offset_x = win_w / 2
+                cam.offset_y = win_h / 2
+
+    def _apply_scale(self, scale: float) -> None:
+        self._scale = scale
+        self._apply_logical_size(int(1280 * scale), int(720 * scale))
         self._save_config()
+
+    def _sync_logical_size_to_window(self) -> None:
+        """Janela maximizada (Fase G, §34.44) + causa raiz de §34.48: o
+        pygame.SCALED só faz scaling PIXEL-PERFEITO (múltiplo inteiro) em
+        janela redimensionável normal — ao maximizar, se a resolução LÓGICA
+        ficar fixa em 1280x720*scale enquanto a janela física vira o
+        tamanho do monitor, o fator de escala quase nunca é um número
+        inteiro (ex.: monitor 1920x1080 com barra de tarefas -> área útil
+        1920x1040 -> fator 1040/720=1.444...), e escala fracionária com
+        amostragem nearest-neighbor corrompe traços finos de fonte de
+        forma DEPENDENTE DE POSIÇÃO (mesma string legível numa linha do
+        chat e corrompida na de baixo — reportado pelo usuário 24/07/2026,
+        print). Fix: ao maximizar, a resolução lógica passa a ser
+        EXATAMENTE o tamanho real da janela — fator de escala do SCALED
+        sempre 1.0, zero distorção possível, independente de monitor/DPI/
+        posição da barra de tarefas. Ao restaurar (desmaximizar), volta pra
+        resolução do slider de escala — ver _apply_scale() no
+        WINDOWRESTORED (run(), loop de eventos)."""
+        real_w, real_h = pygame.display.get_window_size()
+        if (real_w, real_h) != self.screen.get_size():
+            self._apply_logical_size(real_w, real_h)
 
     def _rebuild_screen_refs(self, new_screen: "pygame.Surface") -> None:
         """Atualiza referências à surface de render em todos os subsistemas."""

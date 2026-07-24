@@ -7162,12 +7162,52 @@ por completo) o "esticado/cortado" relatado, já que o `SCALED` passa a
 calcular sua escala a partir do tamanho REAL da janela em vez de um
 tamanho já inflado pelo Windows.
 
-**Não validado ainda**: reteste manual do usuário em Windows real (login
-+ janela maximizada) — se o "shape cortado" de modal específico
-persistir mesmo sem a distorção de DPI, é sinal de uma causa adicional
-separada (ex.: algum código de UI lendo o tamanho da JANELA real em vez
-de `self.screen` lógico) que precisa da resolução do monitor/% de escala
-do Windows do usuário pra diagnosticar — fase 2, não iniciada.
+**Reteste do usuário (fase 1)**: DPI a 100% na máquina dele (confirmado
+via `GetDeviceCaps`/`Screen.PrimaryScreen`, resolução real 1920×1080,
+área útil 1920×1040 com barra de tarefas) — ou seja, a fase 1 não tinha
+como ajudar NESSA máquina especificamente (não havia bitmap-stretch de
+DPI pra remover), o que bate com o usuário reportar "não mudou muita
+coisa". Print novo mostrou o sintoma mais preciso: a MESMA string
+("Gorrtiel: teste") legível numa linha do chat e corrompida
+("Gorrticl: tcstc") na linha seguinte — corrupção de traço fino
+DEPENDENTE DE POSIÇÃO, não borrão uniforme.
+
+**Fase 2 — causa raiz real**: `pygame.SCALED` calcula 1 fator de escala
+UNIFORME (preserva aspect ratio, sem esticar X/Y diferente) = `min(
+janela_w/lógico_w, janela_h/lógico_h)`. Como a resolução lógica ficava
+fixa em `1280×720×scale` enquanto a janela maximizada virava o tamanho
+real do monitor, esse fator quase nunca é um número INTEIRO (nesta
+máquina: `1040/720 = 1.444...`). SDL usa amostragem nearest-neighbor por
+padrão — escala fracionária com nearest-neighbor duplica/descarta linhas
+de pixel de forma inconsistente conforme a posição (fenômeno conhecido
+de upscale de pixel art em razões não-inteiras), exatamente o padrão
+"legível aqui, corrompido ali" do print (traço fino do meio do 'e'
+sobrevive numa linha, some na de baixo, virando 'c'). Tentativa de
+verificação visual direta (screenshot real de tela via probe pygame)
+bloqueada pelo sandbox do ambiente (processo em background não conseguiu
+criar janela na desktop interativa) — diagnóstico fechado por
+documentação SDL (scaling de logical size é sempre uniforme/aspect-
+preserving) + evidência fotográfica do próprio usuário, não por
+reprodução visual própria.
+
+**Fix (fase 2, aplicado)**: `game.py::_sync_logical_size_to_window()`
+(novo) — ao maximizar (boot com `window_mode: maximized` E evento
+`WINDOWMAXIMIZED` em tempo real), a resolução LÓGICA passa a ser
+EXATAMENTE `pygame.display.get_window_size()` (tamanho real da janela
+maximizada), via `_apply_logical_size()` (novo, núcleo comum extraído de
+`_apply_scale()` — mesmo pipeline já usado pelo slider de escala,
+`_rebuild_screen_refs`/offset de `Camera` inclusos). Fator de escala do
+SCALED vira sempre `1.0` — zero distorção possível, independente de
+monitor/DPI/posição da barra de tarefas. Ao restaurar (`WINDOWRESTORED`),
+volta pra resolução do slider (`_apply_scale(self._scale)`).
+
+**Não validado**: reteste visual do usuário em Windows real — não foi
+possível confirmar com screenshot próprio (sandbox bloqueou criação de
+janela real, ver acima). Suíte automatizada não cobre `GameEngine` (não
+há teste que instancie a classe inteira) — validado apenas que, sob
+`SDL_VIDEODRIVER=dummy` (ambiente de CI), a nova lógica é um no-op seguro
+(`get_window_size()` não muda sob o driver dummy, então
+`_apply_logical_size` nunca é re-chamado à toa nos testes existentes).
 
 **Fontes**: [pygame-ce #931 — fullscreen scaling incorreta em Windows
 high-DPI](https://github.com/pygame-community/pygame-ce/issues/931),
