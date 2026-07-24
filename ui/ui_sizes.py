@@ -68,7 +68,7 @@ class UI:
     # Menu de pausa (ESC) e seus submenus — cada um é um painel separado
     MENU_QUIT_CONFIRM_W, MENU_QUIT_CONFIRM_H = 320, 150   # "Tem certeza que deseja sair?"
     MENU_MAIN_W                              = 260         # tela principal do menu — altura é dinâmica (depende do nº de botões)
-    MENU_RESOLUTION_W, MENU_RESOLUTION_H     = 360, 220   # submenu "Resolution" (1x/1.25x/1.5x)
+    MENU_RESOLUTION_W, MENU_RESOLUTION_H     = 360, 270   # submenu "Resolution" (1x/1.25x/1.5x + toggle Modo)
     MENU_INTERFACE_W, MENU_INTERFACE_H       = 340, 200   # submenu "Interface" (slider de Escala da UI)
     MENU_SOUND_W, MENU_SOUND_H               = 400, 230   # submenu "Sound" (volume música/efeitos)
 

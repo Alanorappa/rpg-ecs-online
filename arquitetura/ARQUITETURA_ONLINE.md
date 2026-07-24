@@ -7318,6 +7318,27 @@ menu. **Não validado**: reteste visual do toggle simplificado no jogo
 real (era só sobre o menu ter 3 modos confusos — a lógica de
 `window_mode:<mode>` em si já tinha sido exercitada e não mudou).
 
+**Addendum 2 (24/07/2026, mesmo dia — 2 correções do usuário)**: (1) o
+"toggle de 2 segmentos" acima (2 retângulos lado a lado) foi rejeitado —
+usuário pediu um toggle DE VERDADE (1 controle só, não "2 botões"); (2)
+o picker de escala (Resolution, 1x/1.25x/1.5x) tinha sido removido do
+submenu por engano — usuário só pediu pra ADICIONAR o toggle de modo de
+janela ali, não substituir o picker que já existia.
+- `client/menu_handlers.py::_draw_resolution_submenu`: picker de escala
+  restaurado (idêntico ao original, `SCALE_OPTIONS`, ação
+  `resolution:<val>`). Abaixo dele, nova linha "Modo:      Tela cheia/
+  Janela" com um toggle de verdade — 1 track (pílula arredondada) + 1
+  knob (círculo) que desliza pra esquerda (Tela cheia) ou direita
+  (Janela) conforme `_window_mode_pref`; clicar em qualquer parte da
+  faixa alterna pro modo OPOSTO (não precisa acertar um lado
+  específico) — mesma ação `window_mode:<mode>` de antes.
+- `ui/ui_sizes.py::MENU_RESOLUTION_H`: 220 → 270 (espaço extra pra a
+  linha do toggle, sem apertar o botão Voltar).
+- `game.py`: nenhuma mudança — mesma ação `window_mode:<mode>` de antes.
+
+**Validado**: suíte completa rodada 3x (497/497). **Não validado**:
+reteste visual do toggle novo no jogo real.
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |

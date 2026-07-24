@@ -136,16 +136,19 @@ class MenuHandlers:
     # FIXO) + um submenu "Janela" separado com 3 modos. Removido a pedido
     # do usuário: numa resolução que bate com o monitor, "janela de
     # tamanho fixo" e "tela cheia" ficavam visualmente idênticas (sem
-    # nenhuma borda visível) — redundante e confuso. Só sobram 2 modos,
-    # os dois com resolução lógica = tamanho real da janela/monitor (zero
-    # distorção do SCALED, ver §34.48/§34.49), apresentados como 1 toggle
-    # de 2 segmentos no MESMO submenu (sem botão novo no menu principal).
-    # "windowed" (tamanho fixo pelo scale antigo) continua existindo no
-    # código como fallback de erro — _compute_and_set_window_mode() — só
-    # não é mais alcançável por aqui.
-    _WINDOW_MODES = [("Tela cheia", "fullscreen"), ("Janela", "windowed_fullsize")]
-
+    # nenhuma borda visível) — redundante e confuso. Só sobram 2 modos
+    # de janela ("Tela cheia" e "Janela" = windowed_fullsize), os dois
+    # com resolução lógica = tamanho real da janela/monitor (zero
+    # distorção do SCALED, ver §34.48/§34.49). Pedido do usuário: manter
+    # o picker de escala (Resolution) que já existia, E colocar o toggle
+    # de modo de janela no MESMO submenu (sem botão novo no menu
+    # principal) — E que seja um toggle DE VERDADE (1 controle,
+    # track+knob, 1 clique alterna), não 2 botões lado a lado. "windowed"
+    # (tamanho fixo, sem auto-detecção) continua existindo no código como
+    # fallback de erro — _compute_and_set_window_mode() — só não é mais
+    # alcançável por aqui.
     def _draw_resolution_submenu(self, events: list) -> "str | None":
+        from ui.settings_screen import SCALE_OPTIONS
         self._set_panel_scale(UI.MENU_RESOLUTION_W, UI.MENU_RESOLUTION_H)
         PW, PH = self._u(UI.MENU_RESOLUTION_W), self._u(UI.MENU_RESOLUTION_H)
         self._mm_overlay()
@@ -157,28 +160,48 @@ class MenuHandlers:
         mx, my  = pygame.mouse.get_pos()
         clicked = any(e.type == pygame.MOUSEBUTTONDOWN and e.button == 1 for e in events)
 
-        lbl = self.font_sm.render("Modo:", False, (190, 175, 130))
-        seg_y = py + self._u(64)
-        self.screen.blit(lbl, (px + self._u(24), seg_y + self._u(6)))
-
-        seg_w, seg_h, gap = self._u(120), self._u(34), self._u(6)
-        seg_x0 = px + PW - self._u(24) - seg_w * 2 - gap
-        # "windowed" (legado, só via fallback de erro) conta como "Janela"
-        # pra fins de destaque — nunca fica sem nenhum segmento marcado.
-        cur_mode = "fullscreen" if self._window_mode_pref == "fullscreen" else "windowed_fullsize"
-        for i, (label, mode) in enumerate(self._WINDOW_MODES):
-            rect = pygame.Rect(seg_x0 + i * (seg_w + gap), seg_y, seg_w, seg_h)
+        # Picker de escala (1x/1.25x/1.5x) — igual sempre foi.
+        opt_w, opt_h = self._u(290), self._u(36)
+        ox = px + PW // 2 - opt_w // 2
+        for i, (label, val) in enumerate(SCALE_OPTIONS):
+            oy   = py + self._u(52) + i * (opt_h + self._u(8))
+            rect = pygame.Rect(ox, oy, opt_w, opt_h)
             hov  = rect.collidepoint(mx, my)
-            is_sel = (mode == cur_mode)
+            is_sel = abs(val - self._scale) < 0.01
             bg_c = (55, 44, 22) if is_sel else (self._MM_BTN_HOV if hov else self._MM_BTN_NRM)
             bdr  = (200, 160, 60) if (is_sel or hov) else self._MM_BORDER
             bdr_w = 2 if is_sel else 1
             pygame.draw.rect(self.screen, bg_c, rect, border_radius=4)
             pygame.draw.rect(self.screen, bdr,  rect, bdr_w, border_radius=4)
-            lbl2 = self.font_sm.render(label, False, (200, 160, 60) if is_sel else self._MM_BTN_TXT)
-            self.screen.blit(lbl2, lbl2.get_rect(center=rect.center))
+            lbl = self.font_md.render(label, False, (200, 160, 60) if is_sel else self._MM_BTN_TXT)
+            self.screen.blit(lbl, lbl.get_rect(center=rect.center))
             if hov and clicked and not is_sel:
-                return f"window_mode:{mode}"
+                return f"resolution:{val}"
+
+        # "Modo:      Tela cheia/Janela" — toggle de verdade (1 track +
+        # 1 knob que desliza, 1 clique alterna pro modo oposto).
+        mode_y = py + self._u(52) + len(SCALE_OPTIONS) * (opt_h + self._u(8)) + self._u(8)
+        lbl = self.font_sm.render("Modo:      Tela cheia/Janela", False, (190, 175, 130))
+        self.screen.blit(lbl, (px + self._u(24), mode_y + self._u(4)))
+
+        track_w, track_h = self._u(46), self._u(22)
+        track_rect = pygame.Rect(px + PW - self._u(24) - track_w, mode_y, track_w, track_h)
+        # "windowed" (fallback de erro legado) conta como "Janela" —
+        # nunca fica sem posição nenhuma pro knob.
+        is_fullscreen = (self._window_mode_pref == "fullscreen")
+        toggle_area = track_rect.inflate(self._u(10), self._u(10))
+        hov_toggle = toggle_area.collidepoint(mx, my)
+        track_bg = self._MM_BTN_HOV if hov_toggle else (55, 44, 22)
+        pygame.draw.rect(self.screen, track_bg, track_rect, border_radius=track_h // 2)
+        pygame.draw.rect(self.screen, (200, 160, 60) if hov_toggle else self._MM_BORDER,
+                         track_rect, 1, border_radius=track_h // 2)
+        knob_r  = (track_h - self._u(4)) // 2
+        knob_cx = (track_rect.left + knob_r + self._u(2) if is_fullscreen
+                   else track_rect.right - knob_r - self._u(2))
+        pygame.draw.circle(self.screen, (220, 190, 110), (knob_cx, track_rect.centery), knob_r)
+        if hov_toggle and clicked:
+            new_mode = "windowed_fullsize" if is_fullscreen else "fullscreen"
+            return f"window_mode:{new_mode}"
 
         # Botão Voltar
         back = pygame.Rect(px + PW // 2 - self._u(80), py + PH - self._u(44), self._u(160), self._u(34))
