@@ -775,6 +775,137 @@ class TestPartyLootSync(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(get_msgs_of_type(fw_a, MsgType.LOOT_RESULT)), 1)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 6b. Loot condicional de quest é resolvido POR JOGADOR (Fase L1, 25/07/2026)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestConditionalLootPerPlayer(unittest.IsolatedAsyncioTestCase):
+    """Bug real confirmado (usuário perguntou, investigação achou): antes,
+    o loot condicional de quest (ex.: Pelo de Urso) era decidido 1x na
+    morte do mob contra a QuestLog do first-attacker e ficava FIXO no
+    corpse — qualquer membro do MESMO GRUPO que saqueasse depois via
+    request_loot() (regra "free-for-all dentro do grupo") via/pegava o
+    item mesmo sem a quest. Fix: cada jogador tem seu próprio sorteio,
+    resolvido na hora que ELE interage com o corpse, cacheado — nunca
+    re-sorteado pro mesmo jogador."""
+
+    QID = "qcl_teste"
+
+    async def asyncSetUp(self):
+        self.ws_server, self.mgr = make_session_manager()
+        from content.quests_data import QUESTS, QuestDef, QuestReward, ObjectiveDef
+        QUESTS[self.QID] = QuestDef(
+            title="Teste", description="d",
+            objectives=(ObjectiveDef(type="collect_item", target="Urso",
+                                     loot_item="Pelo de Urso", count=1, loot_chance=1.0),),
+            reward=QuestReward(xp=1),
+        )
+
+    async def asyncTearDown(self):
+        from content.quests_data import QUESTS
+        QUESTS.pop(self.QID, None)
+
+    def _make_corpse(self, owner_eid: int, mob_name: str = "Urso") -> int:
+        cid = self.ws_server._next_corpse_id
+        self.ws_server._next_corpse_id += 1
+        self.ws_server._corpses[cid] = {
+            "tx": 130, "ty": 374, "owner_eid": owner_eid,
+            "items": [{"name": "Item Comum", "icon_key": "", "item_type": "material",
+                       "rarity": "common", "value": 1, "slot": "", "stack": 1}],
+            "coins": 0, "timer": 120.0, "map": self.ws_server._map_file,
+            "mob_name": mob_name, "mob_race": "Urso", "quest_rolls": {},
+        }
+        return cid
+
+    async def test_jogador_com_quest_recebe_item_condicional(self):
+        from engine.components import QuestLog
+        session, _ = await fake_login(self.mgr, "s1", "user_ql_a", 130, 374)
+        ql = self.ws_server.world.get_component(session.entity_id, QuestLog)
+        ql.active[self.QID] = [0]
+        cid = self._make_corpse(owner_eid=session.entity_id)
+        corpse = self.ws_server._corpses[cid]
+
+        extra = self.ws_server._resolve_conditional_loot_for(corpse, session.entity_id)
+        self.assertEqual(len(extra), 1)
+        self.assertEqual(extra[0]["name"], "Pelo de Urso")
+
+    async def test_jogador_sem_quest_nao_recebe_nada(self):
+        session, _ = await fake_login(self.mgr, "s1", "user_ql_b", 130, 374)
+        cid = self._make_corpse(owner_eid=session.entity_id)
+        corpse = self.ws_server._corpses[cid]
+
+        extra = self.ws_server._resolve_conditional_loot_for(corpse, session.entity_id)
+        self.assertEqual(extra, [])
+
+    async def test_dois_jogadores_do_mesmo_grupo_veem_coisas_diferentes(self):
+        """O cenário exato da dúvida do usuário: A (com a quest) e B (sem)
+        no MESMO grupo, saqueando o MESMO corpse — A deveria ver o item
+        condicional, B não, mesmo sendo o mesmo objeto de corpse."""
+        from engine.components import QuestLog
+        session_a, _ = await fake_login(self.mgr, "s1", "user_ql_c", 130, 374)
+        session_b, _ = await fake_login(self.mgr, "s2", "user_ql_d", 131, 374)
+        self.assertIsNone(self.ws_server.request_party_invite(
+            session_a.entity_id, session_b.entity_id))
+        self.ws_server.respond_party_invite(session_b.entity_id, accept=True)
+
+        ql_a = self.ws_server.world.get_component(session_a.entity_id, QuestLog)
+        ql_a.active[self.QID] = [0]
+        # session_b nunca aceitou a quest — QuestLog dela fica sem o objetivo.
+
+        cid = self._make_corpse(owner_eid=session_a.entity_id)
+        corpse = self.ws_server._corpses[cid]
+
+        extra_a = self.ws_server._resolve_conditional_loot_for(corpse, session_a.entity_id)
+        extra_b = self.ws_server._resolve_conditional_loot_for(corpse, session_b.entity_id)
+        self.assertEqual([it["name"] for it in extra_a], ["Pelo de Urso"])
+        self.assertEqual(extra_b, [])
+
+    async def test_reabrir_nao_re_sorteia_pro_mesmo_jogador(self):
+        """Uma vez decidido (mesmo se o resultado for [], sem a quest), o
+        MESMO jogador nunca recebe um sorteio novo pro mesmo corpse."""
+        session, _ = await fake_login(self.mgr, "s1", "user_ql_e", 130, 374)
+        from engine.components import QuestLog
+        ql = self.ws_server.world.get_component(session.entity_id, QuestLog)
+        ql.active[self.QID] = [0]
+        cid = self._make_corpse(owner_eid=session.entity_id)
+        corpse = self.ws_server._corpses[cid]
+
+        first  = self.ws_server._resolve_conditional_loot_for(corpse, session.entity_id)
+        # Remove a quest ANTES da 2a chamada — se re-sorteasse, o resultado
+        # mudaria (a quest não está mais ativa); como está cacheado, não muda.
+        del ql.active[self.QID]
+        second = self.ws_server._resolve_conditional_loot_for(corpse, session.entity_id)
+        self.assertEqual(first, second)
+        self.assertEqual([it["name"] for it in second], ["Pelo de Urso"])
+
+    async def test_take_all_credita_o_item_condicional_via_loot_request(self):
+        """Fluxo ponta a ponta: LOOT_REQUEST(take="all") do jogador com a
+        quest devolve o item comum E o condicional; retirar de novo (take
+        "item" pelo nome) não duplica."""
+        from shared.messages import encode
+        from engine.components import QuestLog
+        session, fw = await fake_login(self.mgr, "s1", "user_ql_f", 130, 374)
+        ql = self.ws_server.world.get_component(session.entity_id, QuestLog)
+        ql.active[self.QID] = [0]
+        cid = self._make_corpse(owner_eid=session.entity_id)
+
+        fw.sent.clear()
+        await self.mgr.on_message(session, encode(
+            MsgType.LOOT_REQUEST, {"corpse_id": cid, "take": "all"}))
+
+        results = get_msgs_of_type(fw, MsgType.LOOT_RESULT)
+        self.assertEqual(len(results), 1)
+        names = {it["name"] for it in results[0]["items"]}
+        self.assertEqual(names, {"Item Comum", "Pelo de Urso"})
+
+        # Corpse já vazio — pedir de novo não devolve nada (nem duplica).
+        fw.sent.clear()
+        await self.mgr.on_message(session, encode(
+            MsgType.LOOT_REQUEST, {"corpse_id": cid, "take": "all"}))
+        results2 = get_msgs_of_type(fw, MsgType.LOOT_RESULT)
+        self.assertEqual(results2[0]["items"], [])
+
+
 class TestArenaDispatchSemMovimento(unittest.IsolatedAsyncioTestCase):
     """Bug real relatado pelo usuário 21/07/2026: "só chamou a arena
     quando movi o personagem" + "cliquei em aceitar e ninguém entrou".

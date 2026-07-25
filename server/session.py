@@ -2003,16 +2003,25 @@ class SessionManager:
                 # o grupo (free-for-all — decisão do usuário 17/07/2026;
                 # request_loot() já autoriza qualquer membro do mesmo grupo
                 # do dono, isto aqui é só quem recebe o aviso/lista de itens).
+                # Loot condicional de quest (Fase L1, 25/07/2026) é resolvido
+                # POR DESTINATÁRIO aqui — cada um vê SÓ o seu próprio extra
+                # (se tiver a quest), nunca o de outro membro do grupo. Já
+                # era um loop por destinatário antes disso (bug de grupo
+                # nunca existiu neste ponto — só no request_loot(), que
+                # devolvia o mesmo item condicional fixo pra qualquer um).
                 _loot_recipients = self.world_server.get_party_members(owner_eid) or [owner_eid]
+                _loot_corpse_dict = self.world_server._corpses.get(corpse_id, {})
                 for _loot_eid in _loot_recipients:
                     _loot_sid = self.world_server.get_session_id_for_player(_loot_eid)
                     _loot_sess = self._sessions.get(_loot_sid) if _loot_sid else None
                     if _loot_sess and _loot_sess.authenticated:
+                        _personal_extra = self.world_server._resolve_conditional_loot_for(
+                            _loot_corpse_dict, _loot_eid)
                         await _loot_sess.send(MsgType.LOOT_AVAILABLE, {
                             "corpse_id": corpse_id,
                             "tx":        notif_tx,
                             "ty":        notif_ty,
-                            "items":     notif["items"],
+                            "items":     notif["items"] + _personal_extra,
                             "coins":     notif.get("coins", 0),
                         })
 

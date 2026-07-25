@@ -20,6 +20,35 @@ class LootProcessorMixin:
         self._expired_corpses_this_tick.clear()
         return result
 
+    def _resolve_conditional_loot_for(self, corpse: dict, player_eid: int) -> list:
+        """Resolve (1x, cacheado) o loot condicional de quest (ex.: Pelo de
+        Urso) PARA ESTE JOGADOR ESPECÍFICO — Fase L1, 25/07/2026, pedido do
+        usuário. Antes, esse loot era decidido 1x na morte do mob contra a
+        QuestLog do first-attacker e ficava FIXO no corpse — qualquer
+        membro do MESMO GRUPO que saqueasse depois via request_loot (regra
+        "free-for-all dentro do grupo") via/pegava o item mesmo sem a
+        quest. Agora: cada jogador que interage com o corpse (LOOT_AVAILABLE
+        pra ele, server/session.py, OU o fallback aqui em request_loot pra
+        quem entrou no grupo depois) tem seu PRÓPRIO sorteio, cacheado em
+        `corpse["quest_rolls"][player_eid]` — nunca re-sorteado pro MESMO
+        jogador depois (reabrir o modal não dá nova chance). Retorna a
+        lista (já serializada) do que esse jogador ganha — [] se ele não
+        tem a quest ou o sorteio de chance não favoreceu."""
+        quest_rolls = corpse.setdefault("quest_rolls", {})
+        if player_eid not in quest_rolls:
+            quest_rolls[player_eid] = []
+            mob_name = corpse.get("mob_name", "")
+            if mob_name:
+                from engine.components import QuestLog as _QL_loot
+                ql = self.world.get_component(player_eid, _QL_loot)
+                if ql is not None:
+                    import engine.quest_logic as _quest_logic_loot
+                    from server.server_death_handler import _serialize_item as _ser_loot
+                    extras = _quest_logic_loot.roll_conditional_loot(
+                        ql, mob_name, corpse.get("mob_race", ""))
+                    quest_rolls[player_eid] = [_ser_loot(it) for it in extras]
+        return quest_rolls[player_eid]
+
     def request_loot(self, session_id: str, corpse_id: int,
                      take: str = "all", item_name: str = "") -> dict | None:
         """
@@ -35,7 +64,10 @@ class LootProcessorMixin:
           - "item": só o PRIMEIRO item da lista atual com name==item_name
             (nome, não índice — índice cru quebraria se outro membro do
             grupo já tivesse tirado um item antes, deslocando a lista).
-          - "all" (default/compat): tudo, comportamento antigo.
+            Procura primeiro no pote comum (compartilhado), depois no
+            pessoal (condicional de quest, Fase L1) deste jogador.
+          - "all" (default/compat): tudo — comum + o que sobrar do
+            condicional pessoal deste jogador.
         Após sacar: reduz timer pra 15s — primeiro do grupo a lootar leva
         o que pediu, os outros recebem {items:[],coins:0} se pedirem a
         MESMA coisa depois (mesmo comportamento de "free for all" de
@@ -51,6 +83,12 @@ class LootProcessorMixin:
             if owner_pid == -1 or self.get_party_id_of(player_eid) != owner_pid:
                 return None  # não é o dono nem está no mesmo grupo — ignora
 
+        # Fallback: garante que este jogador já tem seu próprio sorteio
+        # condicional resolvido, mesmo se ele não estava no grupo/AOI na
+        # hora do LOOT_AVAILABLE original (server/session.py já resolve o
+        # caso comum lá; isto aqui só cobre quem chega depois).
+        personal_items = self._resolve_conditional_loot_for(corpse, player_eid)
+
         if take == "gold":
             coins = corpse.get("coins", 0)
             corpse["coins"] = 0
@@ -62,9 +100,16 @@ class LootProcessorMixin:
                 if it.get("name") == item_name:
                     items = [items_list.pop(i)]
                     break
+            if not items:
+                for i, it in enumerate(personal_items):
+                    if it.get("name") == item_name:
+                        items = [personal_items.pop(i)]
+                        break
             coins = 0
         else:
             items = corpse.pop("items", [])
+            items.extend(personal_items)
+            corpse["quest_rolls"][player_eid] = []   # já retirado — não reaparece
             coins = corpse.pop("coins", 0)
 
         corpse["timer"] = min(corpse["timer"], 15.0)  # reduz timer após saque
@@ -91,6 +136,12 @@ class LootProcessorMixin:
                 "coins":     loot_entry.get("coins", 0),
                 "timer":     120.0,
                 "map":       loot_entry.get("map"),
+                # Fase L1 (25/07/2026) — loot condicional de quest resolvido
+                # por jogador, não mais 1x na morte (ver
+                # _resolve_conditional_loot_for).
+                "mob_name":    loot_entry.get("mob_name", ""),
+                "mob_race":    loot_entry.get("mob_race", ""),
+                "quest_rolls": {},
             }
             self._pending_loot_notifications.append({
                 "corpse_id": corpse_id,

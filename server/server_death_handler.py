@@ -274,15 +274,18 @@ class ServerDeathHandler:
                 coins      = 0
 
             # 5a. Drop condicional de quest (collect_item, ex: Pelo de Urso) —
-            # mesma lógica de quest_system.py::get_conditional_loot, agora
-            # server-autoritativa contra o QuestLog real do first-attacker.
-            if first_attacker_eid != -1 and mob_name:
-                from engine.components import QuestLog as _QLdh
-                _ql_killer = self.world.get_component(first_attacker_eid, _QLdh)
-                if _ql_killer:
-                    import engine.quest_logic as _qlogic_dh
-                    loot_items.extend(
-                        _qlogic_dh.roll_conditional_loot(_ql_killer, mob_name, identity.race if identity else ""))
+            # REMOVIDO daqui (25/07/2026, Fase L1, pedido do usuário): rolar
+            # 1x na morte contra a QuestLog do first-attacker e gravar FIXO
+            # no corpse deixava o item visível/pegável por QUALQUER membro
+            # do MESMO GRUPO depois (request_loot permite "free-for-all
+            # dentro do grupo"), mesmo sem a quest — bug real confirmado
+            # (usuário perguntou, investigação achou). Resolvido agora POR
+            # JOGADOR em server/loot_processor.py::_resolve_conditional_loot_for
+            # (chamado na hora que a notificação LOOT_AVAILABLE é montada
+            # pra cada destinatário, server/session.py, e de novo como
+            # fallback em request_loot) — cacheado por (corpse, player_eid),
+            # nunca re-sorteado pro MESMO jogador. mob_name/mob_race
+            # (abaixo, no pending_loot.append) é o que essa função usa.
 
             # 5b. Reciclagem: flechas que acertaram este mob (contadas em
             # _server_apply_ranged_physical) voltam como loot pro matador, se ele
@@ -326,6 +329,11 @@ class ServerDeathHandler:
                     "tx":        mob_tx,
                     "ty":        mob_ty,
                     "map":       _ml_dh.map_file if _ml_dh else None,
+                    # Pra resolução de loot condicional de quest POR JOGADOR
+                    # (Fase L1) — ver server/loot_processor.py::
+                    # _resolve_conditional_loot_for.
+                    "mob_name":  mob_name,
+                    "mob_race":  identity.race if identity else "",
                 })
 
             # 6. Notifica SpawnZone — remove de active_entity_ids e agenda respawn

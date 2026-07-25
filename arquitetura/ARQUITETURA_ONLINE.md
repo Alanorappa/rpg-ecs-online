@@ -7496,6 +7496,57 @@ futuro que dependa de "personagem ainda não tem X" precisa do mesmo
 cuidado (usernames fixos + banco real = estado pode vazar entre
 corridas).
 
+**Fase L1 — Loot condicional de quest passa a ser resolvido por jogador**
+(retrofit de corpo de mob, base que a Fase M3 dos itens de mapa também
+usa).
+
+**Causa raiz confirmada** (usuário perguntou se isso tinha problema em
+grupo — investigação achou que sim): `roll_conditional_loot` (ex.: Pelo
+de Urso pra objetivo `collect_item`) rodava UMA VEZ na morte do mob,
+contra a `QuestLog` só do first-attacker (`server/server_death_handler.py`),
+e o resultado ficava GRAVADO FIXO dentro do corpse. Como
+`server/loot_processor.py::request_loot` já permite qualquer membro do
+MESMO GRUPO do dono saquear o mesmo corpse ("free-for-all dentro do
+grupo", decisão de 17/07/2026), um colega SEM a quest que saqueasse
+depois via/pegava o item que só deveria existir pra quem tinha a quest.
+
+**Fix**: o loot condicional passa a ser resolvido POR JOGADOR, na hora
+que CADA jogador interage com o corpse (nunca mais 1x na morte contra o
+first-attacker) — cacheado, nunca re-sorteado pro mesmo jogador (mesma
+decisão já confirmada com o usuário: reabrir o modal não dá nova
+chance).
+- `server/server_death_handler.py`: bloco de rolagem condicional na morte
+  REMOVIDO; `pending_loot.append(...)` ganha `mob_name`/`mob_race` (pra
+  a resolução por jogador saber contra qual mob checar depois).
+- `server/loot_processor.py`: `_process_loot_drops` grava `mob_name`/
+  `mob_race`/`quest_rolls: {}` no dict do corpse. `_resolve_conditional_loot_for(
+  corpse, player_eid)` (novo, método do mixin) resolve 1x — cacheado em
+  `corpse["quest_rolls"][player_eid]` — e nunca resolve de novo pro mesmo
+  jogador (mesmo se ele nunca chegou a retirar o item: fica esperando lá,
+  mas o SORTEIO em si não repete). `request_loot` usa essa função como
+  fallback (cobre quem entrou no grupo depois de já existir a
+  notificação) e mescla o resultado nos itens devolvidos (`take="all"`
+  soma comum+pessoal; `take="item"` procura no pote comum primeiro,
+  depois no pessoal).
+- `server/session.py`: o loop que já mandava `LOOT_AVAILABLE`
+  individualmente pra cada membro do grupo (`_loot_recipients`, já existia
+  desde 17/07 — NÃO era um broadcast único) agora chama
+  `_resolve_conditional_loot_for` PRA CADA destinatário e soma o resultado
+  só na mensagem DAQUELE destinatário — cada jogador vê exatamente o que
+  é seu, mesmo abrindo o MESMO corpse ao mesmo tempo que o colega.
+
+**Validado**: `tests/test_session.py::TestConditionalLootPerPlayer` (5
+testes novos — jogador com a quest recebe o item condicional, jogador
+sem a quest não recebe nada, dois jogadores do MESMO grupo veem coisas
+diferentes no MESMO corpse — o cenário exato da dúvida do usuário —,
+reabrir não re-sorteia pro mesmo jogador, fluxo ponta-a-ponta via
+`LOOT_REQUEST`/`LOOT_RESULT` credita item comum + condicional sem
+duplicar). Confirmado via `git stash` que os 5 falham sem o fix.
+`tests/test_session.py::TestPartyLootSync` (comportamento de itens
+comuns/gold em grupo, pré-existente) e `tests/test_party.py`/
+`tests/test_client_ui.py` continuam passando sem regressão. Suíte
+completa rodada 3x.
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |
