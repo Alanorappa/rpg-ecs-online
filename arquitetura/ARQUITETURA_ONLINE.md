@@ -7336,8 +7336,10 @@ janela ali, não substituir o picker que já existia.
   linha do toggle, sem apertar o botão Voltar).
 - `game.py`: nenhuma mudança — mesma ação `window_mode:<mode>` de antes.
 
-**Validado**: suíte completa rodada 3x (497/497). **Não validado**:
-reteste visual do toggle novo no jogo real.
+**Validado**: suíte completa rodada 3x (497/497). Reteste visual do
+toggle (faixa+bolinha) e do picker de escala restaurado confirmado pelo
+usuário em jogo real (24/07/2026) — inclusive o modo "Tela cheia", não
+testado explicitamente até então.
 
 ### §34.50 — Modal de loot (e outros) some depois de trocar modo de
 janela (24/07/2026)
@@ -7384,6 +7386,9 @@ leve (mesmo padrão de `_client_pvp_context`/`_local_eid_to_server_eid`
 já usado no arquivo). Confirmado via `git stash` que o teste de
 `hud_surf` falha sem o fix (`Surface(10x10)` continua no lugar de
 `Surface(20x20)`) e passa com ele. Suíte completa 499/499, rodada 3x.
+Usuário confirmou em jogo real (24/07/2026) que Loja, diálogo de quest,
+Treinador e Forja — mesma causa raiz, mesmo fix — também voltaram a
+aparecer normalmente depois de trocar de modo de janela.
 
 ### Arquiteturais (A) — débito técnico
 
