@@ -178,6 +178,7 @@ class MsgType(str, Enum):
 
     # ── Inventário / Loot ─────────────────────────────────────────
     INVENTORY_UPDATE   = "inv_update"      # S→C  {items: [{name, icon_key, item_type, rarity, value, slot, stack}, ...]} — item(ns) concedido(s) fora do fluxo normal de loot (23/07/2026: recompensa de item de quest, ver server/session.py::_handle_quest_turn_in). Cliente reconstrói e adiciona ao Inventory local, mesmo mecanismo de LOOT_RESULT.
+    SKILL_GRANTED      = "skill_granted"   # S→C  {skill_id: str, name: str} — skill concedida fora do fluxo normal de treinador (25/07/2026: recompensa de skill de quest, ver server/session.py::_handle_quest_turn_in). Diferente de INVENTORY_UPDATE: o servidor JÁ grava em PlayerSkills.learned_skill_ids na hora (skill tem gate de autorização server-side, is_skill_authorized — não dá pra confiar só no cliente materializar depois via sync). Esta mensagem só avisa o cliente pra materializar o mesmo localmente (hotbar).
     LOOT_AVAILABLE     = "loot_available"  # S→C  corpo com loot apareceu no tile
     LOOT_REQUEST       = "loot_request"    # C→S  player clicou no corpo para sacar
     LOOT_TAKE          = "loot_take"       # C→S  pegar item específico do corpo

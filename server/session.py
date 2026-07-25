@@ -969,6 +969,41 @@ class SessionManager:
             if granted_dicts:
                 await session.send(MsgType.INVENTORY_UPDATE, {"items": granted_dicts})
 
+        # Skill de recompensa (25/07/2026, pedido do usuário) — diferente de
+        # item: o servidor grava em PlayerSkills.learned_skill_ids NA HORA
+        # (skill tem gate de autorização server-side, is_skill_authorized(),
+        # que olha o learned_skill_ids do PRÓPRIO servidor — precisa ser
+        # real imediatamente, não só depender do cliente sincronizar
+        # depois, diferente do padrão de item acima). Classe errada é
+        # ignorada com warning, mesmo espírito de item_key inválido — não
+        # derruba o resto da entrega.
+        if qdef.reward.skill:
+            from content.skill_config import SKILL_CATALOG as _SC_qt
+            from engine.components import PlayerSkills as _PS_qt, CharacterStats as _CSchar_qt
+            _skill_id = qdef.reward.skill
+            _entry = _SC_qt.get(_skill_id)
+            _char_qt = self.world_server.world.get_component(eid, _CSchar_qt)
+            if _entry is None:
+                log.warning(f"[QuestTurnIn] skill '{_skill_id}' da quest '{qid}' "
+                           f"não existe em SKILL_CATALOG — ignorada")
+            elif _entry.get("class_id") and (not _char_qt or _char_qt.class_id != _entry["class_id"]):
+                log.warning(f"[QuestTurnIn] skill '{_skill_id}' da quest '{qid}' "
+                           f"é de outra classe ({_entry.get('class_id')}) — ignorada "
+                           f"(player={eid}, class={_char_qt.class_id if _char_qt else '?'})")
+            else:
+                _ps_qt = self.world_server.world.get_component(eid, _PS_qt)
+                if _ps_qt is not None and _skill_id not in _ps_qt.learned_skill_ids:
+                    _ps_qt.learned_skill_ids.add(_skill_id)
+                    _new_sk = _PS_qt._make_skill(_skill_id, _SC_qt)
+                    if _new_sk is not None:
+                        try:
+                            _idx = _ps_qt.skills.index(None)
+                            _ps_qt.skills[_idx] = _new_sk
+                        except ValueError:
+                            _ps_qt.skills.append(_new_sk)
+                    await session.send(MsgType.SKILL_GRANTED,
+                                       {"skill_id": _skill_id, "name": _entry.get("name", _skill_id)})
+
         # Persiste imediatamente (mesmo padrão de TALENT_UPDATE) — crash do
         # servidor não perde a entrega que já concedeu XP/gold/itens.
         from server.auth import save_character

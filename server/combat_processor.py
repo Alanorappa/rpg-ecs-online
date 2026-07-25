@@ -342,6 +342,19 @@ class CombatProcessorMixin:
                 "is_ranged": _is_ranged_p,
             })
 
+            # Evento de quest "auto_attack_hit" (Fase Q1, 25/07/2026) — só
+            # acerto de verdade (mesmo critério de _pnq_hit acima), nunca
+            # miss/dodge/parry/block. Cobre SÓ auto-attack — skill já tem
+            # seu próprio evento "use_skill" (skill_processor.py/
+            # spell_completion_processor.py), não misturar os dois.
+            if _pnq_hit:
+                from engine.components import EntityIdentity as _EI_aa
+                from engine.quest_events import fire as _qfire_aa
+                _ident_aa = self.world.get_component(target_eid, _EI_aa)
+                if _ident_aa:
+                    _qfire_aa("auto_attack_hit", player_eid=player_eid,
+                              name=_ident_aa.name, race=_ident_aa.race)
+
             if dead:
                 # deal_damage adicionou PendingDeath — ServerDeathHandler processa
                 # no mesmo tick (chamado após _process_player_attacks).

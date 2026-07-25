@@ -62,6 +62,8 @@ class NetworkHandlers:
             self._handle_msg_loot_update(payload)
         elif msg_type == MsgType.INVENTORY_UPDATE:
             self._handle_msg_inventory_update(payload)
+        elif msg_type == MsgType.SKILL_GRANTED:
+            self._handle_msg_skill_granted(payload)
         elif msg_type == MsgType.BUY_RESULT:
             self._handle_msg_buy_result(payload)
         elif msg_type == MsgType.SELL_RESULT:
@@ -1837,6 +1839,32 @@ class NetworkHandlers:
         items = payload.get("items", [])
         if self._grant_items_to_inventory(items, log_verb="Recompensa"):
             SOUNDS.play_ui("loot_item")
+
+    def _handle_msg_skill_granted(self, payload: dict) -> None:
+        """Skill concedida fora do fluxo normal de treinador — hoje só a
+        recompensa de skill de quest (server/session.py::
+        _handle_quest_turn_in, 25/07/2026). O servidor já gravou em
+        learned_skill_ids do lado dele antes de mandar esta mensagem — aqui
+        só materializa o mesmo localmente (mesma lógica de
+        ui/trainer_system.py::_do_learn, sem custo/checagem de nível, já
+        concedido pelo servidor)."""
+        from engine.components import PlayerSkills as _PS_sg
+        from content.skill_config import SKILL_CATALOG as _SC_sg
+        skill_id = payload.get("skill_id", "")
+        name     = payload.get("name", skill_id)
+        ps = self.world.get_component(self.player_entity, _PS_sg)
+        if not ps or skill_id in ps.learned_skill_ids:
+            return
+        ps.learned_skill_ids.add(skill_id)
+        new_sk = _PS_sg._make_skill(skill_id, _SC_sg)
+        if new_sk is not None:
+            try:
+                idx = ps.skills.index(None)
+                ps.skills[idx] = new_sk
+            except ValueError:
+                ps.skills.append(new_sk)
+        LOG.add(f"Aprendido: {name} (recompensa de quest)", (230, 210, 120))
+        SOUNDS.play_ui("loot_item")
 
     def _handle_msg_loot_result(self, payload: dict) -> None:
         """Resposta ao LOOT_REQUEST (ui/systems.py::LootSystem, via

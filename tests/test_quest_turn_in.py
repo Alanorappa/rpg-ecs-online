@@ -152,5 +152,115 @@ class TestQuestTurnInRewardItems(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(get_msgs_of_type(fw, MsgType.INVENTORY_UPDATE), [])
 
 
+class TestQuestTurnInRewardSkill(unittest.IsolatedAsyncioTestCase):
+    """QuestReward.skill (25/07/2026, pedido do usuário) — diferente de
+    item: servidor grava em PlayerSkills.learned_skill_ids NA HORA (gate
+    de autorização server-side, is_skill_authorized, precisa ser real
+    imediatamente)."""
+
+    def setUp(self):
+        self._added_qids: list = []
+
+    def tearDown(self):
+        for qid in self._added_qids:
+            QUESTS.pop(qid, None)
+
+    async def asyncSetUp(self):
+        self.ws, self.mgr = make_session_manager()
+
+    def _add_quest(self, qid: str, reward: QuestReward) -> None:
+        _make_ready_quest(qid, reward)
+        self._added_qids.append(qid)
+
+    # skills usadas nos testes desta classe — sempre removidas do estado
+    # inicial (ver _ready_session) pra garantir baseline determinístico.
+    _TEST_SKILL_IDS = ("golpe_poderoso", "bola_de_fogo")
+
+    async def _ready_session(self, qid: str, sid: str, username: str):
+        session, fw = await fake_login(self.mgr, sid, username, class_id="guerreiro")
+        ql = self.ws.world.get_component(session.entity_id, QuestLog)
+        ql.active[qid] = [1]
+
+        # data/game.db é um arquivo REAL, compartilhado entre execuções de
+        # teste (não efêmero) — um username reusado entre rodadas pode
+        # trazer skills já aprendidas/persistidas de uma corrida anterior.
+        # Sem este reset, test_skill_valida_da_classe_certa_e_concedida
+        # (que assume a skill AINDA não aprendida) fica dependente de
+        # nunca ter rodado antes pra aquele username — limpa explicitamente
+        # pra garantir baseline determinístico independente do histórico
+        # do banco.
+        from engine.components import PlayerSkills as _PS_reset
+        ps = self.ws.world.get_component(session.entity_id, _PS_reset)
+        if ps is not None:
+            for _sid_reset in self._TEST_SKILL_IDS:
+                ps.learned_skill_ids.discard(_sid_reset)
+            for _i, _sk in enumerate(ps.skills):
+                if _sk is not None and _sk.skill_id in self._TEST_SKILL_IDS:
+                    ps.skills[_i] = None
+
+        fw.sent.clear()
+        return session, fw, ql
+
+    async def test_skill_valida_da_classe_certa_e_concedida(self):
+        self._add_quest("qts_ok", QuestReward(xp=10, skill="golpe_poderoso"))
+        session, fw, ql = await self._ready_session("qts_ok", "qts_a", "qtsusera")
+
+        await self.mgr._handle_quest_turn_in(session, {"quest_id": "qts_ok"}, 0)
+
+        from engine.components import PlayerSkills
+        ps = self.ws.world.get_component(session.entity_id, PlayerSkills)
+        self.assertIn("golpe_poderoso", ps.learned_skill_ids)
+        self.assertTrue(any(sk and sk.skill_id == "golpe_poderoso" for sk in ps.skills))
+
+        granted = get_msgs_of_type(fw, MsgType.SKILL_GRANTED)
+        self.assertEqual(len(granted), 1)
+        self.assertEqual(granted[0]["skill_id"], "golpe_poderoso")
+        self.assertNotIn("qts_ok", ql.active)
+
+    async def test_skill_de_outra_classe_e_ignorada_sem_derrubar_o_resto(self):
+        """Quest de guerreiro com reward.skill de mago (classe errada) —
+        ignorada com warning, resto da entrega (xp, conclusão da quest)
+        segue normal."""
+        self._add_quest("qts_wrong_class", QuestReward(xp=15, skill="bola_de_fogo"))
+        session, fw, ql = await self._ready_session("qts_wrong_class", "qts_b", "qtsuserb")
+
+        await self.mgr._handle_quest_turn_in(session, {"quest_id": "qts_wrong_class"}, 0)
+
+        from engine.components import PlayerSkills
+        ps = self.ws.world.get_component(session.entity_id, PlayerSkills)
+        self.assertNotIn("bola_de_fogo", ps.learned_skill_ids)
+        self.assertEqual(get_msgs_of_type(fw, MsgType.SKILL_GRANTED), [])
+        self.assertNotIn("qts_wrong_class", ql.active)
+
+    async def test_skill_inexistente_no_catalogo_e_ignorada(self):
+        self._add_quest("qts_typo", QuestReward(xp=5, skill="isso_nao_existe"))
+        session, fw, ql = await self._ready_session("qts_typo", "qts_c", "qtsuserc")
+
+        await self.mgr._handle_quest_turn_in(session, {"quest_id": "qts_typo"}, 0)
+
+        self.assertEqual(get_msgs_of_type(fw, MsgType.SKILL_GRANTED), [])
+        self.assertNotIn("qts_typo", ql.active)
+
+    async def test_skill_ja_aprendida_nao_reenvia_nem_duplica_slot(self):
+        """Player que já tinha a skill (ex.: aprendida via treinador antes
+        de entregar a quest) não deveria duplicar o slot na hotbar nem
+        mandar SKILL_GRANTED de novo."""
+        self._add_quest("qts_already", QuestReward(skill="golpe_poderoso"))
+        session, fw, ql = await self._ready_session("qts_already", "qts_d", "qtsuserd")
+
+        from engine.components import PlayerSkills
+        from content.skill_config import SKILL_CATALOG
+        ps = self.ws.world.get_component(session.entity_id, PlayerSkills)
+        ps.learned_skill_ids.add("golpe_poderoso")
+        idx = ps.skills.index(None)
+        ps.skills[idx] = PlayerSkills._make_skill("golpe_poderoso", SKILL_CATALOG)
+
+        await self.mgr._handle_quest_turn_in(session, {"quest_id": "qts_already"}, 0)
+
+        self.assertEqual(get_msgs_of_type(fw, MsgType.SKILL_GRANTED), [])
+        self.assertEqual(
+            sum(1 for sk in ps.skills if sk and sk.skill_id == "golpe_poderoso"), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

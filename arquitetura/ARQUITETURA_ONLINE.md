@@ -7390,6 +7390,112 @@ Usuário confirmou em jogo real (24/07/2026) que Loja, diálogo de quest,
 Treinador e Forja — mesma causa raiz, mesmo fix — também voltaram a
 aparecer normalmente depois de trocar de modo de janela.
 
+### §34.51 — Quests novas (dano/skill) + itens interativos no mapa
+(25/07/2026, leva planejada — ver plano completo salvo em
+`C:\Users\l4nce\.claude\plans\expressive-wondering-starlight.md`)
+
+Pedido do usuário em 3 partes: objetivo de quest "causar dano por
+auto-attack num alvo específico", skill como recompensa de quest, e um
+sistema novo de itens interativos no mapa (planta/pergaminho/ferramenta
+saqueável, com trava de quest e possibilidade de conceder quest nova ao
+ser coletado). No meio da conversa, investigação confirmou um bug real
+já existente: loot condicional de quest (`roll_conditional_loot`) é
+decidido 1x na morte do mob (QuestLog do first-attacker) e fica FIXO no
+corpo — qualquer membro do MESMO GRUPO pode saquear depois e ver/pegar o
+item mesmo sem a quest. Plano de 7 fases (Q1→Q2→L1→M1→M2→M3→M4),
+executadas uma por vez com commit/versão/build próprios.
+
+**Fase Q1 — Objetivo "auto_attack_hit"**: conta ACERTOS de auto-attack
+(não dano acumulado, decisão do usuário — dano numérico fica pra depois
+se precisar) contra um alvo (nome/raça/`"*"`), sem contar hit de skill.
+
+- `content/quests_data.py`: novo tipo documentado no topo do arquivo.
+- `engine/quest_logic.py::match_objective`: novo bloco, cópia do padrão
+  de `"kill"` (target em nome/raça/`"*"`).
+- `ui/quest_system.py::_obj_label`: label "Acertar {alvo} com ataque
+  básico".
+- `server/combat_processor.py::_process_player_attacks`: logo após
+  `_combat_this_tick.append(...)` (mesmo ponto que já resolve `_outcome`
+  pro contador de Punho no Queixo), dispara `quest_events.fire(
+  "auto_attack_hit", player_eid=..., name=..., race=...)` só quando
+  `_pnq_hit` (mesmo critério já em produção: `_outcome not in ("miss",
+  "dodge", "parry", "block")`) — reaproveita o filtro existente em vez de
+  inventar um novo. Só PvE (`_process_player_attacks`), igual "kill" —
+  `_process_pvp_attack` não ganhou o mesmo gatilho (fora de escopo,
+  mesma convenção do "kill" que também nunca dispara em PvP).
+
+**Validado**: `tests/test_server.py::TestAutoAttackHitQuestEvent` (3
+testes novos — acerto soma 1, 3 acertos completam objetivo count=3, miss
+forçado via `cs.acerto=0.0` NÃO soma nada). Confirmado via `git stash`
+que 2 dos 3 testes falham sem o fix em `combat_processor.py`. Suíte
+completa rodada 3x.
+
+**Fase Q2 — Skill como recompensa de quest**: `QuestReward` ganha
+`skill: str = ""` (chave de `SKILL_CATALOG`, não nome de exibição — 1 só
+por quest, sem escolha entre skills por enquanto).
+
+- **Diferença de design vs. recompensa de item** (documentada no código):
+  aprender skill já tem um portão de autorização server-side
+  (`is_skill_authorized()`, `engine/world_systems.py`) que olha o
+  `PlayerSkills.learned_skill_ids` DO PRÓPRIO SERVIDOR — então, ao
+  contrário de item (servidor nunca toca o Inventory, só manda
+  `INVENTORY_UPDATE` e confia no `INV_SYNC` do cliente depois), a
+  recompensa de skill precisa que o SERVIDOR grave direto em
+  `ps.learned_skill_ids` (+ insira o objeto `Skill` via
+  `PlayerSkills._make_skill`, mesma função que
+  `ui/trainer_system.py::_do_learn` usa) NO MOMENTO da entrega — só
+  DEPOIS avisa o cliente pra ele materializar o mesmo localmente.
+- **Protocolo**: `SKILL_GRANTED` novo (S→C, `shared/messages.py`) —
+  `{"skill_id": str, "name": str}`.
+- **Servidor** (`server/session.py::_handle_quest_turn_in`): se
+  `qdef.reward.skill`, resolve em `SKILL_CATALOG`; classe do skill
+  diferente da classe do player → ignora com warning (mesmo espírito de
+  `item_key` inválido, não derruba o resto da entrega); já aprendida →
+  não duplica (nem manda `SKILL_GRANTED` de novo); senão grava em
+  `learned_skill_ids` + insere `Skill` num slot livre + manda
+  `SKILL_GRANTED`.
+- **Cliente** (`client/network_handlers.py::_handle_msg_skill_granted`):
+  mesma lógica de materialização de `_do_learn` (sem custo/nível, já
+  concedido pelo servidor).
+- **UI** (`ui/quest_system.py::QuestDialogSystem`): ícone da skill entra
+  na MESMA faixa de itens fixos do diálogo de entrega (não clicável, só
+  tooltip) — `_reward_skill_info()` resolve pra exibição,
+  `_reward_skill_tooltip_lines()` monta a prévia (nome/desc/cooldown/
+  custo de raiva) lendo `SKILL_CATALOG` DIRETO (diferente de
+  `client/tooltip_handlers.py::_skill_tooltip_lines()`, que exige um
+  objeto `Skill` "ao vivo" com estado de cooldown/proc — não serve pra
+  uma skill que o player ainda não tem), `_draw_reward_skill_icon()`
+  desenha o ícone (`skill_<id>`, mesma convenção da hotbar) e liga o
+  tooltip no hover — pedido explícito do usuário (25/07/2026).
+
+**Validado**: `tests/test_quest_turn_in.py::TestQuestTurnInRewardSkill`
+(4 testes — skill válida da classe certa concedida + `SKILL_GRANTED`
+mandado, classe errada ignorada sem derrubar o resto, chave inexistente
+no catálogo ignorada, já aprendida não duplica slot nem reenvia),
+`tests/test_client_ui.py` (+2 testes — `_handle_msg_skill_granted`
+adiciona a `learned_skill_ids`/hotbar, já aprendida não duplica slot),
+`tests/test_quest_reward_ui.py` (+4 testes — `_reward_skill_info`
+resolve/ignora chave inválida, `_render_turnin` com skill não quebra,
+tooltip aparece no hover e NÃO aparece fora do hover). Confirmado via
+`git stash` que 10 dos 12 testes novos falham sem a implementação. Suíte
+completa rodada 3x.
+
+**Achado de teste (não é bug de produto — cuidado pra testes futuros)**:
+`data/game.db` é um arquivo SQLite REAL e persistente entre execuções de
+teste (`server/auth.py::DB_PATH`), não efêmero — `test_quest_turn_in.py`
+rodado isolado passava 12/12, mas na suíte completa 2 dos testes de
+skill falhavam, porque o username reusado ("qtsusera"/"qtsuserd") já
+tinha a skill aprendida/persistida de uma corrida anterior (a lógica de
+"já aprendida, não duplica" que acabou de ser implementada tornou o
+teste sensível a isso — recompensa de ITEM nunca teve esse problema
+porque sempre re-concede, sem checar "já tem"). Fix: `_ready_session`
+(no teste) agora limpa explicitamente `learned_skill_ids`/slots das
+skills usadas no teste logo após o login, garantindo baseline
+determinístico independente do histórico do banco — qualquer teste
+futuro que dependa de "personagem ainda não tem X" precisa do mesmo
+cuidado (usernames fixos + banco real = estado pode vazar entre
+corridas).
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |

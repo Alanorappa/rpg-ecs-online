@@ -1187,6 +1187,89 @@ class TestPunhoNoQueixo(unittest.TestCase):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 6b. Objetivo de quest "auto_attack_hit" (Fase Q1, 25/07/2026)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestAutoAttackHitQuestEvent(unittest.TestCase):
+    """Acerto de auto-attack soma progresso em objetivo auto_attack_hit;
+    miss/dodge/parry/block NÃO somam; hit de SKILL não conta (só
+    auto-attack)."""
+
+    QID = "qauto_teste"
+
+    def setUp(self):
+        self.ws = make_world_server()
+        run_ticks(self.ws, 50)
+
+        from content.quests_data import QUESTS, QuestDef, QuestReward, ObjectiveDef
+        QUESTS[self.QID] = QuestDef(
+            title="Teste", description="d",
+            objectives=(ObjectiveDef(type="auto_attack_hit", target="*", count=3),),
+            reward=QuestReward(xp=1),
+        )
+
+    def tearDown(self):
+        from content.quests_data import QUESTS
+        QUESTS.pop(self.QID, None)
+
+    def _setup_player_and_mob(self):
+        from engine.components import CombatState, CombatStats, QuestLog
+        eid = spawn_player(self.ws, "s1", 130, 374, class_id="guerreiro")
+        ql = self.ws.world.get_component(eid, QuestLog)
+        ql.active[self.QID] = [0]
+
+        mob = first_mob(self.ws)
+        self.assertIsNotNone(mob, "Nenhum mob spawnado")
+        teleport_mob_to_player(self.ws, mob, eid)
+        mob_cs = self.ws.world.get_component(mob, CombatStats)
+        mob_cs.current_hp   = mob_cs.max_hp
+        mob_cs.dodge_rating = 0.0
+        mob_cs.parry_rating = 0.0
+
+        cst = self.ws.world.get_component(eid, CombatState)
+        cst.target_entity_id = mob
+        cst.is_pursuing       = True
+        return eid, mob, ql
+
+    def _attack_once(self, session_id: str, eid: int, mob: int):
+        from engine.components import CombatState, CombatStats, PendingDeath
+        cst = self.ws.world.get_component(eid, CombatState)
+        cst.target_entity_id = mob
+        self.ws.world.remove_component(mob, PendingDeath)
+        mob_cs = self.ws.world.get_component(mob, CombatStats)
+        mob_cs.current_hp = mob_cs.max_hp
+        self.ws._attack_timers[session_id] = 0.0
+        snap = {mob: mob_cs.current_hp}
+        self.ws._process_player_attacks(0.05, snap)
+        self.ws._process_quest_events()
+
+    def test_acerto_soma_progresso(self):
+        from engine.components import CombatStats
+        eid, mob, ql = self._setup_player_and_mob()
+        cs = self.ws.world.get_component(eid, CombatStats)
+        cs.acerto = 100.0   # garante hit, sem miss/dodge
+        self._attack_once("s1", eid, mob)
+        self.assertEqual(ql.active[self.QID][0], 1)
+
+    def test_tres_acertos_completam_objetivo_de_count_3(self):
+        from engine.components import CombatStats
+        eid, mob, ql = self._setup_player_and_mob()
+        cs = self.ws.world.get_component(eid, CombatStats)
+        cs.acerto = 100.0
+        for _ in range(3):
+            self._attack_once("s1", eid, mob)
+        self.assertEqual(ql.active[self.QID][0], 3)
+
+    def test_miss_nao_soma_progresso(self):
+        from engine.components import CombatStats
+        eid, mob, ql = self._setup_player_and_mob()
+        cs = self.ws.world.get_component(eid, CombatStats)
+        cs.acerto = 0.0   # força miss (sem esquiva/aparo — só erro do atacante)
+        self._attack_once("s1", eid, mob)
+        self.assertEqual(ql.active[self.QID][0], 0)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 7. Habilidades ranged de mobs — LOS + projétil
 # ─────────────────────────────────────────────────────────────────────────────
 

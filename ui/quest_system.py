@@ -374,6 +374,9 @@ class QuestSystem(UIScaleMixin, System):
         if obj.type == "kill":
             alvo = obj.target if obj.target != "*" else "inimigo"
             desc = f"Matar {alvo}"
+        elif obj.type == "auto_attack_hit":
+            alvo = obj.target if obj.target != "*" else "inimigo"
+            desc = f"Acertar {alvo} com ataque básico"
         elif obj.type == "collect_item":
             nome = obj.loot_item or obj.target
             desc = f"Coletar {nome}"
@@ -903,6 +906,63 @@ class QuestDialogSystem(UIScaleMixin, System):
             out.append((item_key, item))
         return out
 
+    def _reward_skill_info(self, skill_id: str) -> "tuple | None":
+        """Resolve QuestReward.skill em (skill_id, name) pra exibição —
+        None se a chave não existir em SKILL_CATALOG (mesmo espírito
+        silencioso de _reward_item_objects; servidor loga o warning na
+        entrega de verdade, ver server/session.py::_handle_quest_turn_in)."""
+        if not skill_id:
+            return None
+        from content.skill_config import SKILL_CATALOG
+        entry = SKILL_CATALOG.get(skill_id)
+        if entry is None:
+            return None
+        return skill_id, entry.get("name", skill_id)
+
+    def _reward_skill_tooltip_lines(self, skill_id: str) -> list:
+        """Linhas de tooltip pra prévia de skill de recompensa — lê direto
+        de SKILL_CATALOG (nome/desc/cooldown/custo). Diferente de
+        client/tooltip_handlers.py::_skill_tooltip_lines, que exige um
+        objeto Skill "ao vivo" com estado de cooldown/proc — não serve
+        pra uma skill que o player ainda nem tem."""
+        from content.skill_config import SKILL_CATALOG
+        entry = SKILL_CATALOG.get(skill_id, {})
+        lines = []
+        desc = entry.get("desc", "")
+        if desc:
+            for ln in self._wrap(desc, self._u(220), self._font_sm):
+                lines.append((ln, (200, 200, 200)))
+        cd = entry.get("cooldown", 0.0)
+        if cd:
+            lines.append((f"Recarga: {cd:.0f}s", (160, 160, 160)))
+        rage = entry.get("rage_cost", 0)
+        if rage:
+            lines.append((f"Custo: {rage} de raiva", (160, 160, 160)))
+        return lines
+
+    def _draw_reward_skill_icon(self, skill_id: str, name: str, top_y: int, x: int) -> None:
+        """Ícone da skill de recompensa — fixo, sem clique/seleção (skill
+        de recompensa não tem "escolha", só 1 por quest), só tooltip no
+        hover. Mesmo estilo visual de _draw_reward_icon_row; ícone
+        skill_<id> (ui/icon_manager.py), mesma convenção da hotbar."""
+        from ui.icon_manager import ICONS
+        mx, my = pygame.mouse.get_pos()
+        icon_s = self._u(UI.QUEST_REWARD_ICON)
+        r = pygame.Rect(x, top_y, icon_s, icon_s)
+        hovered = r.collidepoint(mx, my)
+        icon_surf = ICONS.get(f"skill_{skill_id}", icon_s)
+        bg = pygame.Surface((icon_s, icon_s), pygame.SRCALPHA)
+        if icon_surf:
+            bg.blit(icon_surf, (0, 0))
+        else:
+            bg.fill((80, 60, 120, 255))
+        self.hud_surf.blit(bg, r.topleft)
+        pygame.draw.rect(self.hud_surf, (180, 140, 230) if hovered else self.COL_BORDER,
+                         r, 1, border_radius=3)
+        if hovered:
+            lines = self._reward_skill_tooltip_lines(skill_id)
+            self.pending_tooltip = (mx, my, name, lines, (180, 140, 230))
+
     def _draw_reward_icon_row(self, items: list, top_y: int, panel_x0: int, panel_w: int,
                               selectable: bool) -> None:
         """Desenha 1 linha de ícones de item de recompensa — usado tanto
@@ -988,9 +1048,10 @@ class QuestDialogSystem(UIScaleMixin, System):
         # role.
         fixed_items  = self._reward_item_objects(qdef.reward.items)
         choice_items = self._reward_item_objects(qdef.reward.choice)
+        reward_skill = self._reward_skill_info(qdef.reward.skill)
         icon_row_h = self._u(UI.QUEST_REWARD_ICON) + self._u(6)
         reward_area_h = 0
-        if fixed_items:
+        if fixed_items or reward_skill:
             reward_area_h += icon_row_h
         if choice_items:
             reward_area_h += self._u(18) + icon_row_h   # texto "Escolha..." + linha de ícones
@@ -1044,8 +1105,14 @@ class QuestDialogSystem(UIScaleMixin, System):
 
         # Ícones de recompensa — faixa fixa, sempre visível (não rola)
         icon_y = reward_top
-        if fixed_items:
-            self._draw_reward_icon_row(fixed_items, icon_y, x0, W, selectable=False)
+        if fixed_items or reward_skill:
+            if fixed_items:
+                self._draw_reward_icon_row(fixed_items, icon_y, x0, W, selectable=False)
+            if reward_skill:
+                icon_s = self._u(UI.QUEST_REWARD_ICON)
+                gap    = self._u(UI.QUEST_REWARD_ICON_GAP)
+                _skill_x = x0 + self._u(self.PAD) + len(fixed_items) * (icon_s + gap)
+                self._draw_reward_skill_icon(reward_skill[0], reward_skill[1], icon_y, _skill_x)
             icon_y += icon_row_h
         if choice_items:
             choice_lbl = self._font_sm.render("Escolha uma recompensa:", False, (160, 140, 80))

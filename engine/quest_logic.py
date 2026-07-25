@@ -66,6 +66,8 @@ def match_objective(event_type: str, data: dict, obj: ObjectiveDef) -> bool:
     t = obj.target
     if obj.type == "kill":
         return t in ("*", data.get("name", ""), data.get("race", ""))
+    if obj.type == "auto_attack_hit":
+        return t in ("*", data.get("name", ""), data.get("race", ""))
     if obj.type == "collect_item":
         return data.get("item_name", "") == obj.loot_item
     if obj.type == "reach_tile":

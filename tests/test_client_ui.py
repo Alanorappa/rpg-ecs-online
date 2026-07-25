@@ -383,6 +383,46 @@ def test_inventory_update_com_stack_maior_que_1():
     assert item.stack == 3
 
 
+# ── SKILL_GRANTED — recompensa de skill de quest (25/07/2026) ───────────────
+# Servidor já gravou em learned_skill_ids do lado dele antes de mandar esta
+# msg (session.py::_handle_quest_turn_in) — o cliente só materializa o
+# mesmo localmente (mesma lógica de ui/trainer_system.py::_do_learn).
+
+def _make_skill_granted_fixture():
+    from engine.world import World
+    from engine.components import Wallet, Inventory, PlayerSkills
+
+    world = World()
+    player = world.create_entity()
+    world.add_component(player, Wallet(gold=0))
+    world.add_component(player, Inventory())
+    world.add_component(player, PlayerSkills())
+    return _LootResultFixture(world, player)
+
+
+def test_skill_granted_adiciona_a_learned_skill_ids_e_a_hotbar():
+    fx = _make_skill_granted_fixture()
+    from engine.components import PlayerSkills
+    fx._handle_msg_skill_granted({"skill_id": "golpe_poderoso", "name": "Golpe Poderoso"})
+    ps = fx.world.get_component(fx.player_entity, PlayerSkills)
+    assert "golpe_poderoso" in ps.learned_skill_ids
+    assert any(sk is not None and sk.skill_id == "golpe_poderoso" for sk in ps.skills)
+
+
+def test_skill_granted_ja_aprendida_nao_duplica_slot():
+    fx = _make_skill_granted_fixture()
+    from engine.components import PlayerSkills
+    ps = fx.world.get_component(fx.player_entity, PlayerSkills)
+    from content.skill_config import SKILL_CATALOG
+    idx = ps.skills.index(None)
+    ps.skills[idx] = PlayerSkills._make_skill("golpe_poderoso", SKILL_CATALOG)
+    ps.learned_skill_ids.add("golpe_poderoso")
+
+    fx._handle_msg_skill_granted({"skill_id": "golpe_poderoso", "name": "Golpe Poderoso"})
+
+    assert sum(1 for sk in ps.skills if sk is not None and sk.skill_id == "golpe_poderoso") == 1
+
+
 def test_inventory_update_vazio_nao_quebra():
     fx = _make_loot_result_fixture()
     fx._handle_msg_inventory_update({"items": []})  # não deve levantar exceção

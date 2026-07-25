@@ -6,6 +6,12 @@ Adicionar um item de quest: inserir uma lambda em QUEST_ITEMS.
 
 Tipos de objetivo (ObjectiveDef.type):
     kill              Matar N inimigos. target = nome | raça | "*" (qualquer)
+    auto_attack_hit   Acertar N ataques básicos (auto-attack) em target = nome |
+                      raça | "*". Conta ACERTOS (miss/dodge/parry/block não
+                      contam), não dano acumulado — não conta hit de SKILL
+                      (isso é "use_skill"). Só PvE (mob) por enquanto, mesmo
+                      escopo de "kill". Disparado em
+                      server/combat_processor.py::_process_player_attacks.
     collect_item      Coletar N de loot_item de target. Drop condicional via loot_chance.
     reach_tile        Chegar em location=(tx, ty) ou área (x0, y0, x1, y1).
     use_skill         Usar skill_id N vezes.
@@ -74,8 +80,16 @@ Recompensas (QuestReward) — xp/gold são simples (int). Para ITENS:
     Só itens fixos, sem escolha (não precisa de `choice` nenhum):
         reward=QuestReward(xp=15, items=("training_sword",))
 
+    Pra SKILL: `skill` (str) — chave de content/skill_config.py::
+    SKILL_CATALOG (ex.: "golpe_poderoso"), não o nome de exibição. Só 1
+    skill por quest (sem escolha entre skills, por enquanto). Se a
+    `class_id` do skill não bater com a do player, é ignorada com warning
+    — sempre conferir que a quest só é oferecida pra classe certa
+    (`QuestDef.class_req`) antes de dar skill de recompensa:
+        reward=QuestReward(xp=50, skill="golpe_poderoso")
+
     Detalhes de implementação (protocolo/servidor/UI) em
-    arquitetura/ARQUITETURA_ONLINE.md §34.46.
+    arquitetura/ARQUITETURA_ONLINE.md §34.46 (itens) e §34.51 (skill).
 """
 from __future__ import annotations
 from typing import NamedTuple
@@ -112,6 +126,15 @@ class QuestReward(NamedTuple):
     choice: tuple = ()   # jogador escolhe 1 destes (mesmo formato de items) —
                           # UI de escolha só aparece no diálogo de entrega
                           # (ui/quest_system.py::QuestDialogSystem._render_turnin)
+    # Skill de recompensa (25/07/2026, pedido do usuário) — chave de
+    # content/skill_config.py::SKILL_CATALOG (não o nome de exibição).
+    # Diferente de items: o SERVIDOR grava em PlayerSkills.learned_skill_ids
+    # na hora da entrega (skill tem gate de autorização server-side,
+    # is_skill_authorized — precisa ser real no servidor imediatamente, não
+    # só depender do cliente sincronizar depois). Se a classe do skill não
+    # bater com a do player, é ignorado com warning (mesmo padrão de
+    # item_key inválido) — resto da recompensa concedido normalmente.
+    skill: str = ""
 
 
 class QuestDef(NamedTuple):
@@ -291,21 +314,49 @@ QUESTS: dict[str, QuestDef] = {
 
     "bem_vindo_guerreiro": QuestDef(
         title="Bem-vindo!",
-        description="Seja bem-vendo {player_name}! Você já está bem grandinho, está na hora de conhecer " \
-                    "o mundo lá fora. Você fez uma boa escolha, guerreiros são necessparios para" \
-                    "manter os magos e os arqueiros livres para eliminar os oponentes. E aqui você" \
-                    "encontrará oponentes com frequência, muitas vezes precisará criar um grupo para" \
-                    "lidar com eles." \
-                    "Fale com seu treinador, ele se chama Avido Faseo, ele lhe fornecerá equipamento" \
-                    "e treinamento para iniciar sua jornada",
+        description="Bem-vindo, {player_name}. Chega de mamar nas tetas da vila — lá fora tem gente " \
+                    "morrendo por muito menos que um pedaço de pão, e o Império não vai mandar ninguém pra te proteger. " \
+                    "Guerreiro que se preza aprende rápido: os magos queimam à distância, os arqueiros furam de longe, " \
+                    "mas quem segura a linha e leva o corte primeiro é você. E vai precisar de companhia — sozinho, " \
+                    "essa terra come qualquer um vivo. Vá falar com Avido Faseo, ele é treinador dos que sobrevivem " \
+                    "ao primeiro ano. Ele te dá o que precisa pra começar.",
         objectives=(
             ObjectiveDef(type="talk_to_npc", target="Avido Faseo", count=1),
         ),
-        reward=QuestReward(xp=15, items=("training_sword",)),
+        reward=QuestReward( xp=15, 
+                            choice=("training_sword", "training_mace", "training_axe")),
         class_req=  "guerreiro",
-        completion= "Bem-vindo ao lado cruel da vida, prepáre-se pois daqui pra frente a vida não será" \
-                    "um morango. Tome uma espada, com ela você fará seus primeiros movimentos",
-    ),    
+        completion= "Bem-vindo ao lado cruel da vida, pirralho. Daqui pra frente esquece conforto — " \
+                    "aqui a gente sangra antes de aprender a sorrir. Escolha uma arma. " \
+                    "Com ela você vai dar seus primeiros golpes... e, se tiver sorte, " \
+                    "vai sobreviver o suficiente pra dar os segundos.",
+    ),
+
+    "prova_valor": QuestDef(
+        title="Prova de Valor",
+        description="Agora que já tem a arma na mão, escuta bem, porque eu não repito. "
+                    "No começo, tudo parece fácil — mas não se acostume. "
+                    "À medida que você evolui, os desafios crescem junto: o medo, o sangue, "
+                    "as mortes vão te consumindo aos poucos. Pra não desistir no meio do caminho, "
+                    "você vai precisar de foco — sem desviar o olhar. "
+                    "Antes de mais nada, precisa aprender a golpear direito. Vou te ensinar um golpe "
+                    "poderoso, dos que evoluem junto com você conforme fica mais forte. "
+                    "Aprenda-o e desfira algumas vezes no boneco de treino, ali na frente. "
+                    "Quero ver se essa arma não foi desperdício.",
+        objectives=(
+            ObjectiveDef(type="learn_skill", target="golpe_poderoso", count=1),
+            ObjectiveDef(type="use_skill", target="golpe_poderoso", count=6,
+                        params={"on_dummy": True}),
+        ),
+        requires= ["bem_vindo_guerreiro"],
+        reward=QuestReward(xp=80),
+        class_req="guerreiro",
+        completion= "Sua arma não foi desperdício, isso eu reconheço. "
+                    "O problema é que eu não sabia que você já batia tão forte — "
+                    "o boneco de treino ficou irreconhecível. "
+                    "Bom... pelo menos agora sei que não vou perder tempo com você.",
+    ),
+
 
      # ── Quests Mago ───────────────────────────────────────────────────────────────
 
@@ -335,30 +386,6 @@ QUESTS: dict[str, QuestDef] = {
             ObjectiveDef(type="use_skill", target="golpe_poderoso", count=6,
                         params={"on_dummy": True}),
         ),
-        reward=QuestReward(xp=80),
-        class_req="guerreiro",
-        completion="Sua escolha faz sentido, você provou seu valor. "
-                   "O problema é que eu não sabia que você era forte, o boneco de treino"
-                   "ficou todo desfigurado. Sniff...",
-    ),
-
-    "prova_valor": QuestDef(
-        title="Prova de Valor",
-        description="Então você escolheu ser um guerreiro. "
-                    "Preciso te contar uma coisa, no começo, será fácil, mas não se acostume "
-                    "A medida que você vai evoluindo, os desafios são maiores, "
-                    "o medo, o sangue, as mortes vão cada vez de consumindo, "
-                    "para você não desistir, terá que focar no seu objetivo, e não se desviar."
-                    "Além disso, você precisa aprender alguns golpes, irei te ensinar um golpe "
-                    "extremamente poderoso que conforme você evolui, esse golpe evluirá também."
-                    "Prove seu valor, vou lhe ensinar um golpe poderoso, assim que aprender"
-                    "desfira-o algumas vezes no boneco de treino aqui na frente.",
-        objectives=(
-            ObjectiveDef(type="learn_skill", target="golpe_poderoso", count=1),
-            ObjectiveDef(type="use_skill", target="golpe_poderoso", count=6,
-                        params={"on_dummy": True}),
-        ),
-        requires= ["bem_vindo"],
         reward=QuestReward(xp=80),
         class_req="guerreiro",
         completion="Sua escolha faz sentido, você provou seu valor. "

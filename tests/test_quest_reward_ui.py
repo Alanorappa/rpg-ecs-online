@@ -131,6 +131,42 @@ class TestQuestRewardChoiceUI(unittest.TestCase):
         # px acima do botão — texto curto deveria deixar bem mais espaço.
         self.assertLess(rect.y, dlg._complete_rect.y - 100)
 
+    def test_reward_skill_info_resolve_skill_valida_do_catalogo(self):
+        dlg = _make_dialog("qrui_h", QuestReward(xp=5, skill="golpe_poderoso"))
+        info = dlg._reward_skill_info("golpe_poderoso")
+        self.assertEqual(info, ("golpe_poderoso", "Golpe Poderoso"))
+
+    def test_reward_skill_info_ignora_chave_inexistente_no_catalogo(self):
+        dlg = _make_dialog("qrui_i", QuestReward(xp=5, skill="isso_nao_existe"))
+        self.assertIsNone(dlg._reward_skill_info("isso_nao_existe"))
+        self.assertIsNone(dlg._reward_skill_info(""))
+
+    def test_render_turnin_com_skill_nao_quebra_e_gera_tooltip_no_hover(self):
+        """_render_turnin renderiza a skill de recompensa junto dos itens
+        fixos, sem quebrar, e o ícone da skill mostra tooltip no hover
+        (pedido do usuário, 25/07/2026) igual item já faz."""
+        dlg = _make_dialog("qrui_j", QuestReward(xp=5, items=("hp_potion",), skill="golpe_poderoso"))
+        # _draw_reward_skill_icon testado direto (coordenadas conhecidas) —
+        # evita acoplar o teste ao layout exato de _render_turnin.
+        orig = pygame.mouse.get_pos
+        pygame.mouse.get_pos = lambda: (105, 105)
+        try:
+            dlg._draw_reward_skill_icon("golpe_poderoso", "Golpe Poderoso", 100, 100)
+        finally:
+            pygame.mouse.get_pos = orig
+        self.assertIsNotNone(dlg.pending_tooltip)
+        self.assertEqual(dlg.pending_tooltip[2], "Golpe Poderoso")
+
+    def test_draw_reward_skill_icon_sem_hover_nao_seta_tooltip(self):
+        dlg = _make_dialog("qrui_k", QuestReward(xp=5, skill="golpe_poderoso"))
+        orig = pygame.mouse.get_pos
+        pygame.mouse.get_pos = lambda: (9999, 9999)
+        try:
+            dlg._draw_reward_skill_icon("golpe_poderoso", "Golpe Poderoso", 100, 100)
+        finally:
+            pygame.mouse.get_pos = orig
+        self.assertIsNone(dlg.pending_tooltip)
+
 
 if __name__ == "__main__":
     unittest.main()
