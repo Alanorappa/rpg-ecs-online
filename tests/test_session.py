@@ -917,6 +917,7 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
     def test_create_harvestables_for_map_resolve_items_e_ignora_invalido(self):
         spawn_points = {"harvestables": [{
             "x": 50, "y": 60, "name": "Arbusto de Frutas", "coins": 3,
+            "color": [255, 255, 120],
             "items": ["training_sword", ("small_hp_potion", 3),
                       "item_key_que_nao_existe"],
         }]}
@@ -935,12 +936,26 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(corpse["ty"], 60)
         self.assertEqual(corpse["name"], "Arbusto de Frutas")
         self.assertEqual(corpse["coins"], 3)
+        self.assertEqual(corpse["color"], [255, 255, 120])
         names = [it["name"] for it in corpse["items"]]
         self.assertEqual(len(names), 2)  # item inválido foi ignorado
         self.assertIn("Espada de treinamento", names)
         potion = next(it for it in corpse["items"]
                      if it["name"] != "Espada de treinamento")
         self.assertEqual(potion["stack"], 3)
+
+    async def test_login_ja_dentro_do_aoi_envia_cor_customizada(self):
+        """color (Fase M1, placeholder até ter sprite de verdade) precisa
+        chegar íntegra no LOOT_AVAILABLE — é o que o cliente usa pra
+        desenhar a marca do harvestable diferente de um corpse comum."""
+        hid = self._make_harvestable(50, 50)
+        self.ws_server._corpses[hid]["color"] = [10, 200, 30]
+        session, fw = await fake_login(self.mgr, "s1", "user_hv_e", 50, 50)
+
+        loot_avail = get_msgs_of_type(fw, MsgType.LOOT_AVAILABLE)
+        matching = [m for m in loot_avail if m["corpse_id"] == hid]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0]["color"], [10, 200, 30])
 
     def test_merge_entities_json_parses_harvestables(self):
         import json, tempfile, os as _os
@@ -955,6 +970,7 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
         }
         data = {"harvestables": [{
             "x": 10, "y": 20, "name": "Planta", "coins": 5,
+            "color": [255, 255, 120],
             "items": ["training_sword", ["small_hp_potion", 2]],
         }]}
         fd, path = tempfile.mkstemp(suffix=".json")
@@ -971,6 +987,7 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(hv[0]["y"], 20)
         self.assertEqual(hv[0]["name"], "Planta")
         self.assertEqual(hv[0]["coins"], 5)
+        self.assertEqual(hv[0]["color"], (255, 255, 120))
         # Lista JSON vira tuple (normalize_reward_entry só reconhece tuple);
         # string crua permanece string.
         self.assertEqual(hv[0]["items"][0], "training_sword")
@@ -1068,8 +1085,11 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
 
         world_states = get_msgs_of_type(fw, MsgType.WORLD_STATE)
         self.assertEqual(len(world_states), 1)
+        # Filtra pelo hid do teste — o mapa real (map_1_entities.json)
+        # também tem um harvestable de teste na mesma tile (130,374),
+        # então pode haver mais de um "kind"=="harvestable" no AOI.
         spawned = [e for e in world_states[0]["entities"]
-                  if e.get("kind") == "harvestable"]
+                  if e.get("kind") == "harvestable" and e.get("corpse_id") == hid]
         self.assertEqual(len(spawned), 1)
         self.assertEqual(spawned[0]["corpse_id"], hid)
         self.assertEqual(spawned[0]["eid"], -hid)

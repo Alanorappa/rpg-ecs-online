@@ -1336,6 +1336,7 @@ class SessionManager:
                 "tx":        _hent["tx"], "ty": _hent["ty"],
                 "items":     list(_hcorpse.get("items", [])) + _hextra,
                 "coins":     _hcorpse.get("coins", 0),
+                "color":     _hcorpse.get("color"),
             })
 
         _nh, _nhm = self.world_server.get_player_hp(session.session_id)
@@ -1989,6 +1990,7 @@ class SessionManager:
                                 "tx":        _sp["tx"], "ty": _sp["ty"],
                                 "items":     list(_hcorpse.get("items", [])) + _hextra,
                                 "coins":     _hcorpse.get("coins", 0),
+                                "color":     _hcorpse.get("color"),
                             })
                     if not ok:
                         # send falhou DEPOIS de _build_update_for_session já ter

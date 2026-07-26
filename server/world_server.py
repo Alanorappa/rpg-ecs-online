@@ -717,6 +717,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 "timer": float("inf"), "map": map_key,
                 "mob_name": "", "mob_race": "", "quest_rolls": {},
                 "no_decay": True, "name": h.get("name", "Objeto"),
+                "color": h.get("color"),
             }
 
     def _create_spawn_zones(self, zones_data: list) -> None:

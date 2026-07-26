@@ -112,6 +112,16 @@
       "level": 8
     }
   ],
+  "harvestables": [
+    {
+      "x": 130,
+      "y": 374,
+      "name": "Arbusto de Teste (M1)",
+      "color": [255, 255, 120],
+      "items": ["training_sword", ["small_hp_potion", 3]],
+      "coins": 10
+    }
+  ],
   "transitions": [
     {
       "x": 13,

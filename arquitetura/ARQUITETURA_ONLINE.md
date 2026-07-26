@@ -7621,12 +7621,40 @@ de `no_decay` foi escrito com timer FINITO de propósito — com
 flag, escondendo o bug). Suíte completa (524 testes) rodada 3x, 0
 falhas.
 
+**Marca visual customizável (`Corpse.color`)**: pedido do usuário logo
+após a infra base — colocar um harvestable de teste real no mapa com uma
+cor chamativa/clara pra validar visualmente. `Corpse` (`engine/components.py`)
+ganhou `color: tuple | None = None` (placeholder até existir sprite de
+verdade); `create_corpse`/`ui/systems.py::LootSystem.render_world` usam
+`corpse.color` quando setado, senão mantêm a lógica antiga (cor por
+estado: ouro/loot/vazio) — corpse de mob morto nunca seta `color`, então
+comportamento antigo intacto pra eles. `color` (`[r,g,b]` no JSON do mapa)
+percorre: `map_loader.py::_merge_entities_json` → `_create_harvestables_for_map`
+(dict do corpse) → `LOOT_AVAILABLE` (nos dois pontos de envio, sweep de
+tick e login) → `client/network_handlers.py::_handle_msg_loot_available`
+→ `create_corpse(..., color=...)`. Harvestable de teste adicionado a
+`maps/map_1_entities.json` em (130, 374): "Arbusto de Teste (M1)", cor
+`[255, 255, 120]` (amarelo claro), itens `training_sword` +
+`small_hp_potion ×3`, 10 moedas.
+
+**Validado (color)**: 3 testes novos em `TestHarvestableM1` (resolução
+de `color` em `_create_harvestables_for_map`, parsing em
+`_merge_entities_json`, entrega íntegra no `LOOT_AVAILABLE` de login).
+Confirmado via `git stash` que os 3 falham sem a implementação. Suíte
+completa (525 testes) rodada 3x, 0 falhas.
+
+**Pedido do usuário, DEFERIDO para uma fase futura** (explicitamente
+"guarde isso para uma próxima fase"): trocar a definição por-posição de
+harvestable por uma definição de ZONA — centro + raio + quantidade,
+com itens spawnando em posições aleatórias dentro da área (mesmo padrão
+de `spawn_zones` de mob). Hoje cada harvestable ainda é 1 entrada
+`{x, y, ...}` fixa no JSON, sem zona/quantidade/aleatoriedade — igual
+`spawn_zones` era antes de existir esse recurso pra mob. Não implementado
+nesta sessão.
+
 **Não validado nesta sessão** (depende de teste manual do usuário, mesmo
 padrão de toda mudança visual/interativa nova): aparência do harvestable
-no mundo (sprite/ícone), clique direito abrindo o modal de loot num
-harvestable real colocado no mapa, comportamento com o mapa de produção
-real (nenhum harvestable de teste foi adicionado a `maps/map_1_entities.json`
-— isso é conteúdo/design do usuário, fora do escopo desta fase de infra).
+de teste no mundo, clique direito abrindo o modal de loot nele.
 
 ### Arquiteturais (A) — débito técnico
 

@@ -3731,7 +3731,10 @@ class LootSystem(UIScaleMixin, System):
         for entity_id, pos, corpse in all_corpses:
             draw_x = pos.x - camera_offset_x
             draw_y = pos.y - camera_offset_y
-            color = (180, 150, 30) if corpse.coins > 0 else ((120, 80, 40) if corpse.loot else (60, 40, 20))
+            if corpse.color:
+                color = corpse.color
+            else:
+                color = (180, 150, 30) if corpse.coins > 0 else ((120, 80, 40) if corpse.loot else (60, 40, 20))
             pygame.draw.ellipse(self.world_surf, color,
                                 (int(draw_x - 10), int(draw_y - 6), 20, 12))
             pygame.draw.ellipse(self.world_surf, (80, 55, 25),

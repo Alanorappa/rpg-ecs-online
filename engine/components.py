@@ -807,12 +807,16 @@ class Corpse:
     DECAY_TIME = 120.0         # fallback se não vier cooldown do mob
     LOOTED_DECAY_TIME = 30.0   # segundos restantes após todo o loot ser retirado
 
-    def __init__(self, loot: list = None, coins: int = 0, decay_time: float = None):
+    def __init__(self, loot: list = None, coins: int = 0, decay_time: float = None,
+                 color: tuple = None):
         self.loot: list   = loot if loot is not None else []
         self.coins: int   = coins
         self.timer: float = decay_time if decay_time is not None else self.DECAY_TIME
         self.looted: bool = False
         self.is_open: bool = False
+        # Cor customizada da marca no mundo (Fase M1, harvestable de mapa) —
+        # None = comportamento antigo (cor por estado: ouro/loot/vazio).
+        self.color: tuple = tuple(color) if color else None
 
 
 @dataclass

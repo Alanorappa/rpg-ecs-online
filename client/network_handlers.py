@@ -1756,8 +1756,10 @@ class NetworkHandlers:
         # Cria entidade Corpse no ECS local — LootSystem offline lê daqui
         px = tx * _TS + _TS // 2
         py = ty * _TS + _TS // 2
+        _color = payload.get("color")
         local_corpse_eid = create_corpse(self.world, px, py, loot_items, coins,
-                                         decay_time=120.0)
+                                         decay_time=120.0,
+                                         color=tuple(_color) if _color else None)
         # Guarda mapeamento corpse_id (servidor) → local ECS eid
         self._available_loot[corpse_id] = {
             "local_eid": local_corpse_eid, "tx": tx, "ty": ty
