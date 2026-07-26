@@ -7710,6 +7710,40 @@ que NÃO vira `_remote_players` e que a entidade real com `Harvestable`+
 (reproduziu o bug relatado: `assert 99 not in _remote_players` falhava
 de verdade). Suíte completa (530 testes) rodada 3x, 0 falhas.
 
+**2º bug real encontrado pelo usuário ao testar de novo (25/07/2026)**:
+com a caixa já descoberta (visível no mapa), clique direito "não fazia
+nada" — nem abria o loot, nem dava outro feedback. Causa: a tolerância
+de clique de corpse (`MouseTargetingSystem._corpse_at_world_pos` e
+`LootSystem._try_open_corpse`, `ui/systems.py`) era um retângulo FIXO
+pequeno (±14×±10px), calibrado pra elipse achatada de 20×12px que TODO
+corpse usava antes do harvestable ganhar sprite real. `pr_box1` (32×64,
+ancorado com a base no tile) sobe ~48px acima do centro da entidade —
+a maior parte da área VISUALMENTE clicável (o topo/meio do sprite,
+onde a maioria dos cliques naturalmente cai) ficava fora dessa
+tolerância antiga, então clicar ali não achava nenhum candidato.
+
+**Fix**: `ui/systems.py::_corpse_click_rect(world, entity_id, pos)`
+(função nova, nível de módulo, compartilhada pelas duas classes) —
+se o corpse tem `Renderable` com `sprite_id` setado, a área clicável
+vira o retângulo REAL do sprite (mesmo ancoramento de
+`RenderSystem.render()`: base do sprite = base do tile, largura/altura
+de `TILE_SPRITES.get_raw_sprite()`); senão mantém a tolerância antiga
+(±14×±10px) — corpse de mob morto nunca tem `Renderable`, então
+comportamento antigo 100% intacto pra eles. Usado tanto em
+`_corpse_at_world_pos` (decide se o clique é "loot" e não "andar até
+o tile") quanto em `_try_open_corpse` (escaneia candidatos pra abrir o
+modal).
+
+**Validado**: 3 testes novos em `tests/test_client_ui.py` — clique no
+TOPO visual do sprite alto (fora da tolerância antiga, dentro da altura
+real de 64px) abre o modal via `_try_open_corpse` E via
+`_corpse_at_world_pos`; corpse de mob morto (sem `Renderable`) NÃO
+fica clicável a essa mesma distância, provando que a tolerância antiga
+continua intacta pra ele. Confirmado via `git stash` que os 2 testes de
+harvestable falham sem o fix (o de mob morto passa mesmo sem o fix, de
+propósito — prova que é o comportamento ANTIGO, não algo que o fix
+introduziu). Suíte completa (533 testes) rodada 3x, 0 falhas.
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |

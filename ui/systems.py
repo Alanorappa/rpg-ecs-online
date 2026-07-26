@@ -194,6 +194,35 @@ def _get_ground_effect_sprite(effect_type: str) -> "pygame.Surface | None":
 
 
 
+def _corpse_click_rect(world, entity_id: int, pos) -> tuple[float, float, float, float]:
+    """Retorna (left, top, right, bottom) da área clicável de um corpse
+    (Fase M1, revisão 3, 25/07/2026 — bug real relatado pelo usuário:
+    "andei até a caixa, cliquei, nada aconteceu"). Antes, TANTO
+    `MouseTargetingSystem._corpse_at_world_pos` QUANTO
+    `LootSystem._try_open_corpse` usavam uma tolerância fixa pequena
+    (±14×±10px), calibrada pra elipse achatada de 20×12px — harvestable
+    com sprite real (ex: `pr_box1`, 32×64) tem a MAIORIA da área visível
+    fora dessa faixa (a elipse cobre só a base do tile; o sprite sobe
+    ~48px acima do centro), então clicar na parte de cima/meio do sprite
+    (o que a maioria dos cliques faz, visualmente) não acertava nada.
+    Fix: se o corpse tem `Renderable` com `sprite_id`, a área clicável
+    vira o retângulo do sprite de verdade (mesmo ancoramento de
+    `RenderSystem.render()` — base do sprite = base do tile); senão
+    mantém a tolerância antiga (corpse de mob morto, sem Renderable)."""
+    ren = world.get_component(entity_id, Renderable)
+    if ren is not None and ren.sprite_id:
+        from ui.tile_sprite_manager import TILE_SPRITES
+        sprite = TILE_SPRITES.get_raw_sprite(ren.sprite_id)
+        if sprite is not None:
+            sw, sh = sprite.get_size()
+            left  = pos.x - TILE_SIZE / 2
+            right = left + sw
+            bottom = pos.y + TILE_SIZE / 2
+            top    = bottom - sh
+            return left, top, right, bottom
+    return pos.x - 14, pos.y - 10, pos.x + 14, pos.y + 10
+
+
 class MouseTargetingSystem(System):
     """
     Detecta clique direito do mouse, identifica o inimigo clicado e define
@@ -255,8 +284,9 @@ class MouseTargetingSystem(System):
 
     def _corpse_at_world_pos(self, world_x: float, world_y: float) -> bool:
         """Retorna True se há um cadáver na posição mundo."""
-        for _, pos, _ in self.world.get_entities_with(Position, Corpse):
-            if abs(world_x - pos.x) <= 14 and abs(world_y - pos.y) <= 10:
+        for entity_id, pos, _ in self.world.get_entities_with(Position, Corpse):
+            left, top, right, bottom = _corpse_click_rect(self.world, entity_id, pos)
+            if left <= world_x <= right and top <= world_y <= bottom:
                 return True
         return False
 
@@ -3457,9 +3487,8 @@ class LootSystem(UIScaleMixin, System):
         # Coleta todos os cadáveres no alcance; prioriza os que ainda têm loot
         candidates = []
         for entity_id, pos, corpse in self.world.get_entities_with(Position, Corpse):
-            half_w, half_h = 10, 6
-            if (abs(world_x - pos.x) <= half_w + 4 and
-                    abs(world_y - pos.y) <= half_h + 4):
+            left, top, right, bottom = _corpse_click_rect(self.world, entity_id, pos)
+            if left <= world_x <= right and top <= world_y <= bottom:
                 has_loot = bool(corpse.loot) or corpse.coins > 0
                 candidates.append((entity_id, pos, corpse, has_loot))
 

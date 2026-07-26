@@ -210,6 +210,28 @@ def _make_loot_world():
     return world, player, corpse
 
 
+def _make_harvestable_loot_world():
+    """Mesmo esqueleto que _spawn_remote_harvestable monta no cliente
+    (Position+Renderable(sprite_id)+Corpse) — usado pra testar a área de
+    clique real do sprite, não a tolerância antiga calibrada pra elipse."""
+    from engine.world import World
+    from engine.components import (Wallet, Inventory, PlayerControlled,
+                                   Position, Renderable, Corpse)
+    from ui.ui_components import LootUIState
+    world = World()
+    player = world.create_entity()
+    world.add_component(player, PlayerControlled())
+    world.add_component(player, Wallet(gold=0))
+    world.add_component(player, Inventory())
+    world.add_component(player, LootUIState())
+    hv = world.create_entity()
+    world.add_component(hv, Position(x=100, y=100, prev_x=100, prev_y=100))
+    world.add_component(hv, Renderable(color=(120, 90, 60), width=32, height=32,
+                                       sprite_id="pr_box1"))
+    world.add_component(hv, Corpse(loot=[], coins=10))
+    return world, player, hv
+
+
 def _click_gold_row(loot_system, corpse_eid) -> bool:
     loot_system._open_modal(corpse_eid, 50, 50)
     modal = loot_system._modal_rect()
@@ -287,6 +309,56 @@ def test_online_loot_request_item_manda_take_item_com_nome():
 
     assert result is True
     assert sent == [(corpse, "item", item.name)]
+
+
+# ── Área de clique de harvestable com sprite alto (Fase M1, revisão 3) ───────
+# Bug real relatado pelo usuário 25/07/2026: "andei até a caixa, cliquei com
+# o direito, nada aconteceu". Causa: a tolerância de clique de corpse
+# (±14×±10px, em MouseTargetingSystem._corpse_at_world_pos e
+# LootSystem._try_open_corpse) era fixa, calibrada pra elipse achatada de
+# 20×12px — sprite real (ex: "pr_box1", 32×64, ancorado com a BASE no tile)
+# sobe ~48px acima do centro da entidade, e a maior parte dessa área visível
+# ficava fora da tolerância antiga. Fix: ui/systems.py::_corpse_click_rect
+# calcula a área clicável a partir do tamanho REAL do sprite quando a
+# entidade tem Renderable+sprite_id (harvestable) — corpse de mob morto
+# (sem Renderable) mantém a tolerância antiga, sem mudança de comportamento.
+
+def test_try_open_corpse_acerta_topo_do_sprite_alto():
+    """Clique no TOPO visual do sprite (fora da tolerância antiga de
+    ±10px, dentro da altura real de 64px) precisa abrir o modal."""
+    from ui.systems import LootSystem
+    world, player, hv = _make_harvestable_loot_world()
+    screen = pygame.display.get_surface()
+    loot = LootSystem(world, screen, player_entity=player)
+
+    # pos.y=100, sprite 64px alto ancorado na base (bottom=116, top=52) —
+    # y=60 está bem no topo visual, fora do ±10px antigo (90-110).
+    loot._try_open_corpse(100, 60)
+    assert loot.open_corpse_id == hv, \
+        "clique no topo do sprite alto deveria abrir o modal de loot"
+
+
+def test_corpse_at_world_pos_acerta_topo_do_sprite_alto():
+    """Mesmo cenário, mas pelo lado de MouseTargetingSystem (decide se
+    deixa o LootSystem tratar o clique em vez de andar até o tile)."""
+    from ui.systems import MouseTargetingSystem
+    world, player, hv = _make_harvestable_loot_world()
+    screen = pygame.display.get_surface()
+    targeting = MouseTargetingSystem(world, player, screen)
+    assert targeting._corpse_at_world_pos(100, 60) is True
+
+
+def test_try_open_corpse_mob_morto_mantem_tolerancia_antiga():
+    """Corpse de mob morto (sem Renderable) não deveria ficar clicável
+    numa área maior — comportamento antigo intacto."""
+    from ui.systems import LootSystem
+    world, player, corpse = _make_loot_world()
+    screen = pygame.display.get_surface()
+    loot = LootSystem(world, screen, player_entity=player)
+
+    loot._try_open_corpse(100, 60)   # mesma distância do teste acima
+    assert loot.open_corpse_id == -1, \
+        "corpse sem Renderable não deveria abrir a essa distância (tolerância antiga)"
 
 
 # ── client/network_handlers.py::_handle_msg_loot_result — INV_SYNC ───────────
