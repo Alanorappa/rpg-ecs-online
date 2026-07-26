@@ -9,7 +9,7 @@ from engine.components import Position, Renderable, PlayerControlled, Camera, Co
                        SkillLevels, \
                        SpawnZone, EntityIdentity, StatusEffects, ConsumableBar, NpcSounds, FogOfWar, \
                        EnemyAbilities, EnemyAbilitySlot, QuestLog, QuestGiver, NPC, Blacksmith, \
-                       LearnedRecipes, Trainer, Faction, Combatant
+                       LearnedRecipes, Trainer, Faction, Combatant, Harvestable
 from ui.ui_components import UIState, ShopUIState, LootUIState, DragState, TradeUIState
 from engine.tileset import TILE_MAPPING, OBJECT_MAPPING, TILE_SIZE, FLOOR_TILE, get_collision_offsets
 from content.mob_definitions import MOB_TABLE
@@ -611,13 +611,41 @@ def create_training_dummy(world: World, tile_x: int, tile_y: int) -> int:
 
 
 def create_corpse(world: World, x: float, y: float, loot: list, coins: int = 0,
-                  decay_time: float = None, color: tuple = None,
-                  sprite_id: str = "") -> int:
+                  decay_time: float = None) -> int:
     corpse_entity = world.create_entity()
     world.add_component(corpse_entity, Position(x=x, y=y, prev_x=x, prev_y=y))
-    world.add_component(corpse_entity, Corpse(loot=loot, coins=coins, decay_time=decay_time,
-                                              color=color, sprite_id=sprite_id))
+    world.add_component(corpse_entity, Corpse(loot=loot, coins=coins, decay_time=decay_time))
     return corpse_entity
+
+
+def create_harvestable_entity(world: World, tile_x: int, tile_y: int,
+                              corpse_id: int, sprite_id: str = "",
+                              name: str = "Objeto") -> int:
+    """Item de mapa saqueável (Fase M1, revisão 2, 25/07/2026) — entidade
+    real, parada, SEM combate/diálogo (nada de Combatant/AIControlled/
+    Faction) — só posição + aparência + o vínculo com o loot. Colisão e
+    Y-sort vêm de graça dos sistemas genéricos (TileValidationSystem via
+    TileMovement; RenderSystem via Position+Renderable), sem nenhum
+    código dedicado. `corpse_id` aponta pro dict em
+    WorldServer._corpses[corpse_id] — a fonte de verdade do loot em si
+    NUNCA morou aqui, continua lá (request_loot/LOOT_AVAILABLE
+    inalterados)."""
+    x = tile_x * TILE_SIZE + TILE_SIZE / 2
+    y = tile_y * TILE_SIZE + TILE_SIZE / 2
+    eid = world.create_entity()
+    world.add_component(eid, Position(x=x, y=y, prev_x=x, prev_y=y))
+    world.add_component(eid, TileMovement(
+        current_tile_x=tile_x, current_tile_y=tile_y,
+        target_tile_x=tile_x, target_tile_y=tile_y,
+        start_pixel_x=x, start_pixel_y=y,
+        target_pixel_x=x, target_pixel_y=y,
+        move_duration=1.0, speed=0.0,
+    ))
+    world.add_component(eid, Renderable(color=(120, 90, 60), width=32, height=32,
+                                        sprite_id=sprite_id))
+    world.add_component(eid, Harvestable(corpse_id=corpse_id))
+    world.add_component(eid, EntityIdentity(name=name, race="Objeto", entity_class=""))
+    return eid
 
 
 def create_spawn_zone(world: World,

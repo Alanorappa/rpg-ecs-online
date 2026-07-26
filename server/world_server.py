@@ -177,6 +177,12 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         # Eids de mobs gerenciados pelo servidor
         self._mob_eids: set[int] = set()
+        # Harvestable (Fase M1, revisão 2, 25/07/2026) — entidades reais,
+        # paradas, SEM Combatant (por isso um set PRÓPRIO, não misturado
+        # em _mob_eids — evita quebrar os ~12 outros usos de _mob_eids
+        # que assumem CombatStats/Combatant presentes). Loot em si
+        # continua em self._corpses (ver Harvestable.corpse_id).
+        self._harvestable_eids: set[int] = set()
 
         # DEBUG Bug2 (regen/desaparecimento no golpe final): current_hp de cada
         # mob ao FINAL do tick anterior (pós death-sweep) — usado em _tick()
@@ -683,18 +689,24 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
     def _create_harvestables_for_map(self, spawn_points: dict, map_key: str) -> None:
         """Cria itens de mapa saqueáveis (planta/pergaminho/ferramenta —
-        Fase M1, 25/07/2026, pedido do usuário) a partir de
-        spawn_points["harvestables"]. NÃO são entidades ECS — mesmo padrão
-        de corpse de mob morto (dict simples em self._corpses, mesmo id
-        space de self._next_corpse_id, nunca colide), só que
-        `owner_eid=-1` (público — qualquer jogador pode saquear, sem
-        checagem de dono/grupo, ver loot_processor.py::request_loot) e
-        `no_decay=True` (permanente até M2 trazer respawn de verdade — ver
-        loot_processor.py::_process_loot_drops). Formato de item idêntico
-        a QuestReward.items ("item_key" ou (item_key, stack)), resolvido
-        via engine.quest_logic (mesmas funções da recompensa de quest)."""
+        Fase M1, revisão 2, 25/07/2026) a partir de
+        spawn_points["harvestables"]. Loot em si continua em
+        self._corpses[hid] (dict simples, owner_eid=-1 público,
+        no_decay=True permanente até M2 trazer respawn — ver
+        loot_processor.py) — ISSO NÃO MUDOU. O que mudou: cada
+        harvestable agora TAMBÉM ganha uma entidade ECS real
+        (create_harvestable_entity — Position+TileMovement+Renderable+
+        Harvestable, sem Combatant/AIControlled) pra ganhar colisão real
+        (TileValidationSystem, automático via TileMovement) e Y-sort
+        real (RenderSystem, automático via Position+Renderable) — sem
+        isso, o jogador atravessava por cima e o desenho ficava sempre
+        atrás do player (bug relatado pelo usuário na 1a versão). Formato
+        de item idêntico a QuestReward.items ("item_key" ou (item_key,
+        stack)), resolvido via engine.quest_logic (mesmas funções da
+        recompensa de quest)."""
         import engine.quest_logic as _hq_logic
         from server.server_death_handler import _serialize_item as _hq_serialize
+        from engine.entity_factory import create_harvestable_entity
 
         for h in spawn_points.get("harvestables", []):
             hid = self._next_corpse_id
@@ -711,14 +723,18 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 item = factory()
                 item.stack = max(1, min(stack, item.max_stack))
                 granted.append(_hq_serialize(item))
+            name = h.get("name", "Objeto")
             self._corpses[hid] = {
                 "tx": h["x"], "ty": h["y"], "owner_eid": -1,
                 "items": granted, "coins": h.get("coins", 0),
                 "timer": float("inf"), "map": map_key,
                 "mob_name": "", "mob_race": "", "quest_rolls": {},
-                "no_decay": True, "name": h.get("name", "Objeto"),
-                "color": h.get("color"), "sprite_id": h.get("sprite", ""),
+                "no_decay": True, "name": name,
             }
+            eid = create_harvestable_entity(
+                self.world, h["x"], h["y"], corpse_id=hid,
+                sprite_id=h.get("sprite", ""), name=name)
+            self._harvestable_eids.add(eid)
 
     def _create_spawn_zones(self, zones_data: list) -> None:
         """Compat: cria SpawnZones sem MapLocation (usado antes do multi-map)."""
@@ -1473,9 +1489,10 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             cs.target_entity_id = target_eid
 
     def get_entity_spawn_data(self, eid: int) -> dict | None:
-        """Retorna payload completo de ENTITY_SPAWN para qualquer entidade (mob ou player)."""
+        """Retorna payload completo de ENTITY_SPAWN para qualquer entidade
+        (mob, harvestable ou player)."""
         from engine.components import TileMovement
-        if eid not in self._mob_eids:
+        if eid not in self._mob_eids and eid not in self._harvestable_eids:
             return None   # jogadores são gerenciados separadamente
         tm = self.world.get_component(eid, TileMovement)
         if not tm:
@@ -1483,6 +1500,25 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         return self._build_mob_spawn_payload(eid, tm)
 
     def _build_mob_spawn_payload(self, eid: int, tm) -> dict:
+        from engine.components import Harvestable as _HvBuild
+        _hv = self.world.get_component(eid, _HvBuild)
+        if _hv is not None:
+            # Harvestable (Fase M1, revisão 2) — payload SIMPLES, sem
+            # nenhum campo de combate (não é um mob). Loot em si mora em
+            # self._corpses[_hv.corpse_id], não aqui — este payload só dá
+            # posição/nome/sprite pro cliente renderizar; o conteúdo real
+            # chega via LOOT_AVAILABLE (ver _dispatch_tick_deltas/
+            # _spawn_and_start, inalterados).
+            from engine.components import Renderable as _RenHv
+            _corpse_hv = self._corpses.get(_hv.corpse_id, {})
+            _ren_hv    = self.world.get_component(eid, _RenHv)
+            return {
+                "eid": eid, "kind": "harvestable",
+                "tx": tm.current_tile_x, "ty": tm.current_tile_y,
+                "name": _corpse_hv.get("name", "Objeto"),
+                "sprite_id": _ren_hv.sprite_id if _ren_hv else "",
+                "corpse_id": _hv.corpse_id,
+            }
         from engine.components import (CombatStats, AIControlled, Renderable, SpawnZoneOwner,
                                 SpawnZone, EntityIdentity, TrainingDummy as _TDpay, Faction as _FacPay,
                                 NPC as _NPCpay, Merchant as _Merchpay, Blacksmith as _Blackpay,
@@ -1592,10 +1628,17 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
     def get_mobs_in_aoi(self, center_tx: int, center_ty: int, radius: int,
                         map_file: str = "") -> list[dict]:
-        """Retorna lista de mobs no AOI — para WORLD_STATE inicial."""
+        """Retorna lista de mobs + harvestables no AOI — para WORLD_STATE
+        inicial (login). Harvestable incluído aqui (Fase M1, revisão 2)
+        pelo MESMO motivo que mob estacionário já precisava: sem isso, um
+        player que loga JÁ DENTRO do AOI de um harvestable nunca o
+        descobre, porque o sweep de `_build_update_for_session` só roda
+        dentro de `_dispatch_tick_deltas`, que só dispara se `_on_tick`'s
+        `has_pending` achar atividade — se o mundo ficar ocioso logo após
+        o login, o harvestable parado nunca apareceria."""
         from engine.components import TileMovement, MapLocation as _ML_gmai
         result = []
-        for eid in self._mob_eids:
+        for eid in self._mob_eids | self._harvestable_eids:
             if map_file:
                 _ml = self.world.get_component(eid, _ML_gmai)
                 if _ml and _ml.map_file != map_file:
@@ -1607,32 +1650,6 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                abs(tm.current_tile_y - center_ty) <= radius:
                 payload = self._build_mob_spawn_payload(eid, tm)
                 result.append(payload)
-        return result
-
-    def get_harvestables_in_aoi(self, center_tx: int, center_ty: int, radius: int,
-                                map_file: str = "") -> list[dict]:
-        """Retorna lista de harvestables (Fase M1) no AOI — para WORLD_STATE
-        inicial (login). Sem isso, um player que já loga EM CIMA de um
-        harvestable nunca o descobre: o sweep de `_build_update_for_session`
-        só roda dentro de `_dispatch_tick_deltas`, que só é chamado quando
-        `_on_tick`'s `has_pending` acha atividade (ver comentário lá) — se o
-        mundo ficar ocioso logo após o login (sem o player se mover, sem
-        ninguém mais gerando delta), o harvestable parado nunca aparece.
-        Mesmo princípio de `get_mobs_in_aoi` (que já resolve isso pra mob
-        estacionário via `near_mobs` no WORLD_STATE)."""
-        result = []
-        for hid, hdata in self._corpses.items():
-            if hdata.get("owner_eid") != -1:
-                continue
-            if map_file and hdata.get("map") != map_file:
-                continue
-            if abs(hdata["tx"] - center_tx) <= radius and \
-               abs(hdata["ty"] - center_ty) <= radius:
-                result.append({
-                    "eid": -hid, "kind": "harvestable", "corpse_id": hid,
-                    "tx": hdata["tx"], "ty": hdata["ty"],
-                    "name": hdata.get("name", "Objeto"),
-                })
         return result
 
     def get_entity_id(self, session_id: str) -> int:

@@ -1266,6 +1266,7 @@ class RenderSystem(System):
         Objetos com sort_y menor são desenhados primeiro (ficam atrás de quem está
         mais ao sul na tela), criando o efeito de profundidade.
         """
+        from ui.tile_sprite_manager import TILE_SPRITES
         # Descobre qual entidade o jogador tem como alvo
         target_id = -1
         for _, cs, _ in self.world.get_entities_with(CombatState, PlayerControlled):
@@ -1377,7 +1378,20 @@ class RenderSystem(System):
                     renderable.width,
                     renderable.height
                 )
-                if _is_corpse_draw:
+                # Sprite do catálogo de objeto de mapa (Fase M1, revisão 2,
+                # 25/07/2026 — harvestable) tem prioridade sobre o retângulo
+                # colorido de sempre. Nunca coincide com corpo/espírito
+                # (harvestable não tem GhostState). Ancorado igual a
+                # qualquer objeto de mapa estático (base do sprite = base
+                # do tile) — mesma fórmula de TileRenderSystem.
+                _sprite_rnd = (TILE_SPRITES.get_raw_sprite(renderable.sprite_id)
+                              if renderable.sprite_id else None)
+                if _sprite_rnd:
+                    _sw_rnd, _sh_rnd = _sprite_rnd.get_size()
+                    _blit_x_rnd = draw_x - TILE_SIZE / 2
+                    _blit_y_rnd = draw_y + TILE_SIZE / 2 - _sh_rnd
+                    self.world_surf.blit(_sprite_rnd, (int(_blit_x_rnd), int(_blit_y_rnd)))
+                elif _is_corpse_draw:
                     # Corpo morto: dessatura pra cinza (pose "morto", sem barra de HP)
                     _gray = sum(renderable.color[:3]) // 3
                     pygame.draw.rect(self.world_surf, (_gray, _gray, _gray), rect)
@@ -3726,30 +3740,20 @@ class LootSystem(UIScaleMixin, System):
     # ------------------------------------------------------------------ #
     def render_world(self, camera_offset_x: float = 0, camera_offset_y: float = 0) -> None:
         """Desenha cadáveres no mundo: vazios primeiro (embaixo), com loot por cima."""
-        from ui.tile_sprite_manager import TILE_SPRITES
         all_corpses = list(self.world.get_entities_with(Position, Corpse))
         all_corpses.sort(key=lambda c: 0 if (not c[2].loot and c[2].coins <= 0) else 1)
         for entity_id, pos, corpse in all_corpses:
+            # Harvestable (Fase M1, revisão 2, 25/07/2026) TAMBÉM tem
+            # Renderable — já é desenhado, Y-sorted, por RenderSystem.
+            # render() (sprite do catálogo de objeto de mapa). Desenhar de
+            # novo aqui duplicava a marca (bug relatado pelo usuário: a
+            # elipse aparecia por cima da sprite) — corpse de mob morto
+            # nunca tem Renderable, comportamento antigo intacto pra eles.
+            if self.world.get_component(entity_id, Renderable) is not None:
+                continue
             draw_x = pos.x - camera_offset_x
             draw_y = pos.y - camera_offset_y
-            # Sprite customizado (Fase M1, harvestable de mapa) tem prioridade
-            # sobre a elipse — reaproveita o MESMO catálogo de sprites de
-            # objeto de mapa (engine/tileset.py, ex: "pr_box1"), não um ícone
-            # quadrado avulso. None se o id não existir (fallback abaixo).
-            # NOTA: ainda não passa pelo Y-sort de entidades (renderiza antes
-            # do _render_system, ver game.py) — sprite alto (ex: 32×64) pode
-            # ficar sempre atrás do player mesmo quando devia ficar na frente.
-            sprite = TILE_SPRITES.get_raw_sprite(corpse.sprite_id) if corpse.sprite_id else None
-            if sprite:
-                spr_w, spr_h = sprite.get_size()
-                blit_x = draw_x - TILE_SIZE / 2         # esquerda do tile (mesmo ancoramento de objeto de mapa)
-                blit_y = draw_y + TILE_SIZE / 2 - spr_h  # base do sprite = base do tile
-                self.world_surf.blit(sprite, (int(blit_x), int(blit_y)))
-                continue
-            if corpse.color:
-                color = corpse.color
-            else:
-                color = (180, 150, 30) if corpse.coins > 0 else ((120, 80, 40) if corpse.loot else (60, 40, 20))
+            color = (180, 150, 30) if corpse.coins > 0 else ((120, 80, 40) if corpse.loot else (60, 40, 20))
             pygame.draw.ellipse(self.world_surf, color,
                                 (int(draw_x - 10), int(draw_y - 6), 20, 12))
             pygame.draw.ellipse(self.world_surf, (80, 55, 25),

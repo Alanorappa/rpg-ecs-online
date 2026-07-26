@@ -1303,17 +1303,15 @@ class SessionManager:
                            "level": _s2char.level if _s2char else 1, "effects": []})
 
         _my_map_login = self.world_server.get_player_map(session.session_id)
+        # get_mobs_in_aoi já inclui harvestable (Fase M1, revisão 2 —
+        # entidade real, mesmo sweep genérico de mob estacionário) — sem
+        # isso, um player que loga já dentro do AOI de um item de mapa
+        # nunca o veria, pois o sweep de _build_update_for_session só
+        # roda dentro de _dispatch_tick_deltas, que exige has_pending.
         near_mobs    = self.world_server.get_mobs_in_aoi(
             tx, ty, AOI_RADIUS, map_file=_my_map_login,
         )
-        # Harvestables (Fase M1, 25/07/2026) — sem isso, um player que loga
-        # já dentro do AOI de um item de mapa nunca o vê, pois o sweep de
-        # _build_update_for_session só roda dentro de _dispatch_tick_deltas,
-        # que exige has_pending (ver get_harvestables_in_aoi).
-        near_harvestables = self.world_server.get_harvestables_in_aoi(
-            tx, ty, AOI_RADIUS, map_file=_my_map_login,
-        )
-        all_entities = near_players + near_mobs + near_harvestables
+        all_entities = near_players + near_mobs
         await session.send(MsgType.WORLD_STATE, {
             "tick": self.world_server.tick_count, "tx": tx, "ty": ty,
             "entities": all_entities,
@@ -1325,7 +1323,9 @@ class SessionManager:
         # jogador — mesmo follow-up de LOOT_AVAILABLE que o sweep de tick
         # manda (ver _dispatch_tick_deltas), só que disparado aqui pro caso
         # de login já-dentro-do-AOI.
-        for _hent in near_harvestables:
+        for _hent in near_mobs:
+            if _hent.get("kind") != "harvestable":
+                continue
             _hid = _hent["corpse_id"]
             _hcorpse = self.world_server._corpses.get(_hid)
             if not _hcorpse:
@@ -1336,8 +1336,6 @@ class SessionManager:
                 "tx":        _hent["tx"], "ty": _hent["ty"],
                 "items":     list(_hcorpse.get("items", [])) + _hextra,
                 "coins":     _hcorpse.get("coins", 0),
-                "color":     _hcorpse.get("color"),
-                "sprite":    _hcorpse.get("sprite_id", ""),
             })
 
         _nh, _nhm = self.world_server.get_player_hp(session.session_id)
@@ -1955,7 +1953,12 @@ class SessionManager:
             from engine.components import TileMovement as _TM_aoi
             _mob_positions: dict[int, tuple] = {}
             _mob_hash = _SpatialHash(cell_size=AOI_RADIUS + 1)
-            for _me in self.world_server._mob_eids:
+            # Harvestable (Fase M1, revisão 2) entra no MESMO índice de
+            # posições que mob estacionário — mesmo sweep genérico de
+            # _build_update_for_session descobre os dois, sem código
+            # dedicado (_harvestable_eids nunca tem Combatant, por isso é
+            # um set PRÓPRIO em vez de misturado em _mob_eids).
+            for _me in self.world_server._mob_eids | self.world_server._harvestable_eids:
                 _mt = self.world_server.world.get_component(_me, _TM_aoi)
                 if _mt:
                     _mob_positions[_me] = (_mt.current_tile_x, _mt.current_tile_y)
@@ -1991,8 +1994,6 @@ class SessionManager:
                                 "tx":        _sp["tx"], "ty": _sp["ty"],
                                 "items":     list(_hcorpse.get("items", [])) + _hextra,
                                 "coins":     _hcorpse.get("coins", 0),
-                                "color":     _hcorpse.get("color"),
-                                "sprite":    _hcorpse.get("sprite_id", ""),
                             })
                     if not ok:
                         # send falhou DEPOIS de _build_update_for_session já ter
@@ -2571,41 +2572,6 @@ class SessionManager:
                 if spawn_data:
                     result.setdefault("spawned", []).append(spawn_data)
                     session.known_eids.add(mob_eid)
-
-        # Sweep de itens de mapa saqueáveis (harvestables, Fase M1,
-        # 25/07/2026) — NÃO são entidades ECS (dict em
-        # self.world_server._corpses com owner_eid=-1, ver
-        # WorldServer._create_harvestables_for_map/loot_processor.py), então
-        # não entram no sweep de mob acima nem em get_entity_spawn_data.
-        # São permanentes (sem "moved"/despawn), então este é o ÚNICO jeito
-        # de um jogador descobrir um que já existia antes dele chegar perto
-        # — mesmo princípio do sweep de mob estacionário, só que iterando o
-        # dict de corpses público em vez de _mob_eids. O follow-up
-        # LOOT_AVAILABLE (conteúdo real) é mandado pelo chamador logo após
-        # o AOI_UPDATE, ver _dispatch_tick_deltas.
-        #
-        # "eid" do ENTITY_SPAWN é `-hid` (NEGATIVO) — mesma convenção de
-        # corpse de mob morto (`-corpse_id`, ver bloco de ENTITY_SPAWN de
-        # corpse acima): hid vem de self._next_corpse_id, um contador
-        # TOTALMENTE independente dos eids reais de player/mob (World.
-        # create_entity()) — um hid positivo poderia colidir por
-        # coincidência com um eid de player/mob de verdade. "corpse_id" no
-        # payload carrega o hid de verdade (positivo), usado por
-        # LOOT_AVAILABLE/LOOT_REQUEST (espaço de id separado, sem esse
-        # risco de colisão).
-        for hid, hdata in self.world_server._corpses.items():
-            if hdata.get("owner_eid") != -1 or -hid in session.known_eids:
-                continue
-            if hdata.get("map") != _my_map:
-                continue
-            if _in_aoi(cx, cy, hdata["tx"], hdata["ty"], r):
-                result.setdefault("spawned", []).append({
-                    "eid": -hid, "kind": "harvestable",
-                    "corpse_id": hid,
-                    "tx": hdata["tx"], "ty": hdata["ty"],
-                    "name": hdata.get("name", "Objeto"),
-                })
-                session.known_eids.add(-hid)
 
         for other_session in self._sessions.values():
             if not other_session.authenticated:

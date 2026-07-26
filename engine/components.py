@@ -329,6 +329,12 @@ class Renderable:
     color: tuple
     width: int
     height: int
+    # ID do catálogo de sprites de objeto de mapa (engine/tileset.py, ex:
+    # "pr_box1"), resolvido via ui.tile_sprite_manager.TILE_SPRITES.
+    # get_raw_sprite() — usado por RenderSystem.render() no lugar do
+    # retângulo colorido quando não-vazio (harvestable, Fase M1). "" =
+    # comportamento antigo (retângulo de renderable.color).
+    sprite_id: str = ""
 
 @dataclass
 class PlayerControlled:
@@ -807,25 +813,25 @@ class Corpse:
     DECAY_TIME = 120.0         # fallback se não vier cooldown do mob
     LOOTED_DECAY_TIME = 30.0   # segundos restantes após todo o loot ser retirado
 
-    def __init__(self, loot: list = None, coins: int = 0, decay_time: float = None,
-                 color: tuple = None, sprite_id: str = ""):
+    def __init__(self, loot: list = None, coins: int = 0, decay_time: float = None):
         self.loot: list   = loot if loot is not None else []
         self.coins: int   = coins
         self.timer: float = decay_time if decay_time is not None else self.DECAY_TIME
         self.looted: bool = False
         self.is_open: bool = False
-        # Cor customizada da marca no mundo (Fase M1, harvestable de mapa) —
-        # None = comportamento antigo (cor por estado: ouro/loot/vazio).
-        self.color: tuple = tuple(color) if color else None
-        # Sprite customizado da marca no mundo (Fase M1, revisado 25/07/2026 —
-        # 1a versão usava assets/icons/ como ícone quadrado; usuário apontou
-        # que o certo é reaproveitar o catálogo de SPRITES de objeto já
-        # existente em assets/tiles/ + engine/tileset.py). ID do catálogo
-        # (ex: "pr_box1", já registrado em OBJECT_SHEET_TILE_MAP/SHEET_TILE_MAP
-        # via engine/tileset.py) — resolvido por
-        # ui.tile_sprite_manager.TILE_SPRITES.get_raw_sprite(). "" = sem
-        # sprite, usa a elipse colorida (fallback).
-        self.sprite_id: str = sprite_id or ""
+
+
+@dataclass
+class Harvestable:
+    """Marca uma entidade (Fase M1, 25/07/2026, revisão 2 — item de mapa
+    saqueável como entidade real, não mais dict solto) como um objeto
+    de mapa lootável: posição + aparência (via Renderable.sprite_id) +
+    colisão (via TileMovement, automático em TileValidationSystem) — SEM
+    combate/diálogo. `corpse_id` liga a entidade ao dict em
+    WorldServer._corpses[corpse_id], que continua sendo a fonte de
+    verdade do loot (itens/moedas/quest_rolls) — só a descoberta/visual/
+    colisão mudou de dict-solto pra entidade ECS de verdade."""
+    corpse_id: int
 
 
 @dataclass

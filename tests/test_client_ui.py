@@ -457,6 +457,9 @@ class _NetHandlerFixture(_NH, _REH):
         self._pending_mob_despawn = {}
         self._mob_ghost_pos = {}
         self._pending_loot_redirect = {}
+        self._remote_harvestables = {}
+        self._available_loot = {}
+        self._remote_corpses = {}
 
     def _player_world_pos(self):
         # Stub do mixin real (client/save_sync_handlers.py) — usado pelo som
@@ -508,6 +511,72 @@ def test_aoi_update_spawned_propaga_level_do_player_remoto():
     local_eid = fx._remote_players[42]
     rc = fx.world.get_component(local_eid, RemoteControlled)
     assert rc.level == 4, "AOI_UPDATE (spawned) deveria propagar o level pro RemoteControlled"
+
+
+# ── Harvestable como entidade real (Fase M1, revisão 2, 25/07/2026) ──────────
+# Antes: harvestable era um dict solto em _corpses, sem colisão/Y-sort real,
+# e a marca visual (elipse OU sprite) duplicava com _draw_remote_corpses.
+# Agora: entidade ECS de verdade (Position+TileMovement+Renderable+
+# Harvestable+Corpse vazio), sincronizada como QUALQUER entidade estacionária
+# (mesma fábrica compartilhada do servidor, create_harvestable_entity).
+
+def test_spawn_remote_harvestable_cria_entidade_com_sprite_e_corpse_vazio():
+    from engine.components import Harvestable, Renderable, TileMovement, Corpse
+    fx = _make_net_fixture()
+    fx._spawn_remote_harvestable(77, {
+        "tx": 10, "ty": 20, "name": "Caixa", "sprite_id": "pr_box1", "corpse_id": 5,
+    })
+    local_eid = fx._remote_harvestables[77]
+    hv     = fx.world.get_component(local_eid, Harvestable)
+    ren    = fx.world.get_component(local_eid, Renderable)
+    tm     = fx.world.get_component(local_eid, TileMovement)
+    corpse = fx.world.get_component(local_eid, Corpse)
+    assert hv.corpse_id == 5
+    assert ren.sprite_id == "pr_box1"
+    assert tm.current_tile_x == 10 and tm.current_tile_y == 20
+    assert corpse is not None and corpse.loot == [] and corpse.coins == 0
+    assert fx._available_loot[5]["local_eid"] == local_eid
+
+
+def test_spawn_remote_harvestable_e_idempotente():
+    """Chegar duas vezes (ex: WORLD_STATE + ENTITY_SPAWN) não deveria
+    criar uma segunda entidade pro mesmo server_eid."""
+    fx = _make_net_fixture()
+    fx._spawn_remote_harvestable(77, {
+        "tx": 10, "ty": 20, "name": "Caixa", "sprite_id": "pr_box1", "corpse_id": 5,
+    })
+    first_local_eid = fx._remote_harvestables[77]
+    fx._spawn_remote_harvestable(77, {
+        "tx": 10, "ty": 20, "name": "Caixa", "sprite_id": "pr_box1", "corpse_id": 5,
+    })
+    assert fx._remote_harvestables[77] == first_local_eid
+
+
+def test_loot_available_de_harvestable_ja_conhecido_atualiza_no_lugar():
+    """Bug corrigido nesta revisão: harvestable já é uma entidade real
+    (criada em _spawn_remote_harvestable, via ENTITY_SPAWN/WORLD_STATE) —
+    LOOT_AVAILABLE não deve criar uma SEGUNDA entidade nem uma segunda
+    marca visual (o bug relatado pelo usuário: elipse aparecendo por cima
+    da sprite). Deve só atualizar o Corpse já anexado à MESMA entidade."""
+    from engine.components import Corpse
+    fx = _make_net_fixture()
+    fx._spawn_remote_harvestable(77, {
+        "tx": 10, "ty": 20, "name": "Caixa", "sprite_id": "pr_box1", "corpse_id": 5,
+    })
+    local_eid = fx._remote_harvestables[77]
+
+    fx._handle_msg_loot_available({
+        "corpse_id": 5, "tx": 10, "ty": 20, "coins": 10,
+        "items": [{"name": "Espada de treinamento", "stack": 1}],
+    })
+
+    all_corpses = list(fx.world.get_entities_with(Corpse))
+    assert len(all_corpses) == 1, "LOOT_AVAILABLE não deveria criar uma segunda entidade Corpse"
+    corpse = fx.world.get_component(local_eid, Corpse)
+    assert corpse.coins == 10
+    assert len(corpse.loot) == 1
+    assert corpse.loot[0].name == "Espada de treinamento"
+    assert fx._available_loot[5]["local_eid"] == local_eid
 
 
 # ── client/pvp_zone_handlers.py — indicador de Zona PvP (Fase F) ─────────────

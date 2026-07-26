@@ -245,11 +245,12 @@ class NetworkHandlers:
             eid  = ent.get("eid", -1)
             kind = ent.get("kind", "player")
             if kind == "harvestable":
-                # Fase M1 (25/07/2026) — no-op aqui de propósito, mesmo
-                # motivo de _handle_msg_entity_spawn: eid negativo cairia no
-                # branch "player" abaixo (sem esse check) e criaria um
-                # jogador remoto fantasma. Conteúdo real chega via
-                # LOOT_AVAILABLE, mandado pelo servidor logo em seguida.
+                # Fase M1, revisão 2 (25/07/2026) — entidade real (posição+
+                # aparência+loot, sem combate/diálogo). Conteúdo do loot em
+                # si chega em seguida via LOOT_AVAILABLE (server/session.py::
+                # _spawn_and_start), que só atualiza o Corpse já anexado
+                # aqui — ver _handle_msg_loot_available.
+                self._spawn_remote_harvestable(eid, ent)
                 continue
             if eid == -1 or eid == self._my_eid:
                 continue
@@ -269,19 +270,17 @@ class NetworkHandlers:
     def _handle_msg_entity_spawn(self, payload: dict) -> None:
         eid  = payload.get("eid", -1)
         kind = payload.get("kind", "player")
-        # Verifica corpse/harvestable ANTES do guard eid==-1 (os dois usam
+        # Verifica corpse ANTES do guard eid==-1 (corpse de mob morto usa
         # eid negativo — -1 inclusive — pra nunca colidir com eid real de
         # player/mob, ver server/session.py). Harvestable (Fase M1,
-        # 25/07/2026) é um no-op aqui de propósito: só dá posição/nome pra
-        # esta mensagem (usada só de olho gordo/debug — a entidade
-        # interativa de verdade é criada por _handle_msg_loot_available,
-        # que chega logo em seguida com o conteúdo real via LOOT_AVAILABLE,
-        # mesmo mecanismo de corpse de mob).
+        # revisão 2, 25/07/2026) é uma entidade REAL agora, eid positivo
+        # de verdade — cai no branch próprio abaixo, sem precisar do
+        # tratamento especial de eid negativo que os corpses precisam.
         if kind == "corpse":
             corpse_id = -eid
             self._remote_corpses[corpse_id] = (payload.get("tx", 0), payload.get("ty", 0))
         elif kind == "harvestable":
-            pass
+            self._spawn_remote_harvestable(eid, payload)
         elif eid == -1 or eid == self._my_eid:
             pass
         elif kind == "enemy":
@@ -1713,6 +1712,43 @@ class NetworkHandlers:
         ty        = payload.get("ty", 0)
         if corpse_id < 0:
             return
+        # Harvestable (Fase M1, revisão 2, 25/07/2026): a entidade JÁ
+        # existe (criada em _spawn_remote_harvestable, no ENTITY_SPAWN/
+        # WORLD_STATE que chegou antes) — só atualiza o Corpse vazio que
+        # ela já tem, em vez de criar uma SEGUNDA entidade (isso causaria
+        # a sprite E uma elipse duplicada, exatamente o bug relatado).
+        _existing_loot = self._available_loot.get(corpse_id)
+        if _existing_loot is not None:
+            from engine.components import Corpse as _CorpseUpd
+            _corpse_comp = self.world.get_component(_existing_loot["local_eid"], _CorpseUpd)
+            if _corpse_comp is not None:
+                loot_items = []
+                from content.quests_data import QUEST_ITEMS as _QI_upd
+                for item_data in payload.get("items", []):
+                    item_name = item_data.get("name", "")
+                    _matched = False
+                    for _key, factory in _T.items():
+                        try:
+                            candidate = factory()
+                        except Exception:
+                            continue
+                        if getattr(candidate, "name", "") == item_name:
+                            candidate.stack = item_data.get("stack", 1)
+                            loot_items.append(candidate)
+                            _matched = True
+                            break
+                    if not _matched:
+                        _qi_factory = _QI_upd.get(item_name)
+                        if _qi_factory:
+                            try:
+                                candidate = _qi_factory()
+                                candidate.stack = item_data.get("stack", 1)
+                                loot_items.append(candidate)
+                            except Exception:
+                                pass
+                _corpse_comp.loot  = loot_items
+                _corpse_comp.coins = coins
+            return
         # Se mob morreu commitado para o próximo tile, loot segue para lá.
         _redirect = self._pending_loot_redirect.pop((tx, ty), None)
         if _redirect:
@@ -1756,11 +1792,8 @@ class NetworkHandlers:
         # Cria entidade Corpse no ECS local — LootSystem offline lê daqui
         px = tx * _TS + _TS // 2
         py = ty * _TS + _TS // 2
-        _color = payload.get("color")
         local_corpse_eid = create_corpse(self.world, px, py, loot_items, coins,
-                                         decay_time=120.0,
-                                         color=tuple(_color) if _color else None,
-                                         sprite_id=payload.get("sprite", ""))
+                                         decay_time=120.0)
         # Guarda mapeamento corpse_id (servidor) → local ECS eid
         self._available_loot[corpse_id] = {
             "local_eid": local_corpse_eid, "tx": tx, "ty": ty

@@ -889,6 +889,34 @@ class RemoteEntityHandlers:
             if _tm_sp and _pos_sp:
                 _stm(_pos_sp, _tm_sp, mtx, mty)
 
+    def _spawn_remote_harvestable(self, server_eid: int, data: dict) -> None:
+        """Cria harvestable no ECS local (Fase M1, revisão 2, 25/07/2026) —
+        item de mapa saqueável real (posição+aparência+loot, SEM combate/
+        diálogo). Reaproveita `create_harvestable_entity` (engine/
+        entity_factory.py), a MESMA fábrica que o servidor usa — evita
+        duplicar a lógica de Position/TileMovement/Renderable/Harvestable
+        (mesmo padrão de `create_enemy` reaproveitado por `_spawn_remote_mob`
+        acima). Ganha um `Corpse` vazio pra já funcionar com
+        `LootSystem`/`MouseTargetingSystem` sem NENHUMA mudança lá (eles só
+        olham `Position`+`Corpse`) — `LOOT_AVAILABLE` preenche loot/coins
+        nele depois (`_handle_msg_loot_available`), sem criar uma segunda
+        entidade."""
+        if server_eid in self._remote_harvestables:
+            return
+        from engine.entity_factory import create_harvestable_entity
+        from engine.components import Corpse as _CorpseHv
+        corpse_id = data.get("corpse_id", -1)
+        local_eid = create_harvestable_entity(
+            self.world, data.get("tx", 0), data.get("ty", 0),
+            corpse_id=corpse_id, sprite_id=data.get("sprite_id", ""),
+            name=data.get("name", "Objeto"))
+        self.world.add_component(local_eid, _CorpseHv(loot=[], coins=0))
+        self._remote_harvestables[server_eid] = local_eid
+        self._available_loot[corpse_id] = {
+            "local_eid": local_eid,
+            "tx": data.get("tx", 0), "ty": data.get("ty", 0),
+        }
+
     def _spawn_mob_projectile(self, server_proj_eid: int, data: dict) -> None:
         """Cria entidade visual de projétil de mob para o cliente renderizar.
 
@@ -1431,8 +1459,15 @@ class RemoteEntityHandlers:
             loot_data = self._available_loot.get(corpse_id)
             if loot_data is not None:
                 # Lê estado real do Corpse ECS local (fonte da verdade após LOOT_AVAILABLE)
-                from engine.components import Corpse as _Corpse
+                from engine.components import Corpse as _Corpse, Renderable as _RenCorpseHv
                 local_eid  = loot_data.get("local_eid")
+                # Harvestable (Fase M1, revisão 2) TAMBÉM tem Renderable —
+                # já é desenhado, Y-sorted, por RenderSystem.render(). Não
+                # deveria nunca acabar em _remote_corpses (só populado pelo
+                # caminho de corpse de mob morto), mas o guard evita
+                # duplicar a marca se isso mudar no futuro.
+                if local_eid and self.world.get_component(local_eid, _RenCorpseHv) is not None:
+                    continue
                 corpse_comp = self.world.get_component(local_eid, _Corpse) if local_eid else None
                 if corpse_comp:
                     has_coins = corpse_comp.coins > 0

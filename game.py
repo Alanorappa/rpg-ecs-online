@@ -149,6 +149,11 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._fr_pending_target: dict[int, tuple[int, float, float]] = {}
         # Corpses do servidor: corpse_id → (tx, ty)  — apenas marcador visual
         self._remote_corpses: dict[int, tuple[int, int]] = {}
+        # Harvestable (Fase M1, revisão 2, 25/07/2026): entidade real do
+        # servidor (sem combate/diálogo) — server_eid → local_eid, dedup
+        # separado de _remote_mobs (harvestable nunca tem Combatant, não
+        # deve aparecer em loops que assumem mob de combate).
+        self._remote_harvestables: dict[int, int] = {}
         # Loot disponível para o player local: corpse_id → {items, tx, ty}
         self._available_loot: dict[int, dict] = {}
         # Projéteis com dano diferido: damage info aguardando projétil ser criado.

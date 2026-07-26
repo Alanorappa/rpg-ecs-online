@@ -117,7 +117,6 @@
       "x": 130,
       "y": 374,
       "name": "Caixa de Teste (M1)",
-      "color": [255, 255, 120],
       "sprite": "pr_box1",
       "items": ["training_sword", ["small_hp_potion", 3]],
       "coins": 10

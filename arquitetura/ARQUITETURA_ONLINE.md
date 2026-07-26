@@ -7547,178 +7547,144 @@ comuns/gold em grupo, pré-existente) e `tests/test_party.py`/
 `tests/test_client_ui.py` continuam passando sem regressão. Suíte
 completa rodada 3x.
 
-**Fase M1 — Item de mapa saqueável (base)**: planta/pergaminho/ferramenta
-que abre o MESMO modal de loot de corpse de mob, sem dono/grupo (público
-— qualquer jogador pode saquear), permanente (`no_decay`, sem expirar
-até a Fase M2 trazer respawn de verdade).
+**Fase M1 — Item de mapa saqueável**: planta/pergaminho/ferramenta que
+abre o MESMO modal de loot de corpse de mob, sem dono/grupo (público —
+qualquer jogador pode saquear), permanente (sem expirar até a Fase M2
+trazer respawn de verdade).
 
-- **Dados de mapa**: array novo `"harvestables"` em
-  `maps/map_X_entities.json` (mesmo padrão de `"quest_givers"` etc.),
-  parseado por `engine/map_loader.py::_merge_entities_json` — `items`
-  usa o MESMO formato de `QuestReward.items` (`"item_key"` ou
-  `["item_key", stack]`; listas do JSON viram `tuple` porque
-  `normalize_reward_entry` só reconhece tuple).
-- **Servidor** (`server/world_server.py::_create_harvestables_for_map`,
-  chamado de `_load_map_for` antes do snapshot de `MapLocation`): NÃO
-  são entidades ECS — reaproveita `self._corpses`/`self._next_corpse_id`
-  (mesmo id space de corpse de mob morto, nunca colide), distinguido por
-  `owner_eid=-1` (público, ignora dono/grupo em
-  `loot_processor.py::request_loot`) e `no_decay=True` (`_process_loot_drops`
-  pula o decay). Item inválido no catálogo é ignorado com warning, sem
-  derrubar o resto do harvestable (mesmo espírito de recompensa de quest).
-- **Descoberta pelo cliente** — DOIS mecanismos, não só um:
-  1. **Sweep de tick** (`server/session.py::_build_update_for_session`):
-     itera `self.world_server._corpses` public (`owner_eid=-1`) igual ao
-     sweep de mob estacionário, mas por fora dele (harvestable não é
-     ECS, não entra em `_mob_eids`/`get_entity_spawn_data`). `ENTITY_SPAWN`
-     usa `eid=-hid` (NEGATIVO — mesma convenção de corpse de mob morto,
-     pra nunca colidir com eid real de player/mob de `World.create_entity()`);
-     `"corpse_id"` no payload carrega o `hid` positivo de verdade. Só
-     roda dentro de `_dispatch_tick_deltas`, que só dispara se
-     `_on_tick`'s `has_pending` achar atividade no tick (normalmente o
-     próprio movimento do player já garante isso).
-  2. **WORLD_STATE de login** (`server/world_server.py::get_harvestables_in_aoi`
-     + `server/session.py::_spawn_and_start`) — **bug pego e corrigido
-     ANTES de escrever os testes**: um player que loga JÁ DENTRO do AOI
-     de um harvestable nunca seria coberto pelo sweep de tick sozinho,
-     porque `has_pending` exige atividade (ex.: o player se mover) —
-     se o mundo ficasse ocioso logo após o login, o harvestable nunca
-     aparecia. Fix: `get_harvestables_in_aoi` (mesmo princípio de
-     `get_mobs_in_aoi`, que já cobria mob estacionário) inclui
-     harvestables em AOI direto no payload de `WORLD_STATE`, e
-     `_spawn_and_start` manda o follow-up de `LOOT_AVAILABLE`
-     personalizado imediatamente (mesma lógica do sweep de tick,
-     chamada duas vezes agora — considerar extrair um helper compartilhado
-     se um 3º call site aparecer).
-  - Em ambos os casos, o `ENTITY_SPAWN`/entrada de `WORLD_STATE` só dá
-    posição/nome (usado pra debug/olho gordo) — o conteúdo real
-    (itens/coins) chega separadamente via `LOOT_AVAILABLE`, resolvido
-    PERSONALIZADO por jogador via `_resolve_conditional_loot_for` (Fase
-    L1) mesmo sem ter mob_name (harvestable não rola condicional de
-    quest ainda — isso é a Fase M3).
-  - `client/network_handlers.py`: `_handle_msg_entity_spawn` e
-    `_handle_msg_world_state` ganham um branch `kind == "harvestable"`
-    que é NO-OP de propósito — sem ele, o eid negativo cairia no branch
-    "player" e criaria um jogador remoto fantasma. A entidade interativa
-    de verdade nasce em `_handle_msg_loot_available` (já existente,
-    reaproveitado sem mudança — `corpse_id < 0` já rejeitava string mas
-    aceita qualquer inteiro ≥ 0, então reusar `_next_corpse_id` era
-    obrigatório: um id textual quebraria essa guarda com `TypeError`).
+**Histórico rápido** (mesmo dia, 25/07/2026, iterado 3x com o usuário
+até chegar no design certo): 1ª versão tratava harvestable como um dict
+solto em `self._corpses` (`owner_eid=-1`), sem colisão/Y-sort real — o
+jogador atravessava por cima e o desenho ficava sempre atrás do player.
+Depois ganhou `color` e um "sprite" via `assets/icons/`+`ICONS` (ícone
+quadrado, convenção errada — usuário apontou que devia reaproveitar o
+catálogo de SPRITES de objeto de mapa, `assets/tiles/`+`engine/tileset.py`).
+Ao testar essa correção, o usuário levantou o problema de fundo: o
+harvestable devia **ser** um objeto de mapa de verdade (colisão + Y-sort
+automáticos, como árvore/caixa/barril) OU um NPC de serviço sem
+combate/diálogo — a 2ª opção venceu por cobrir os dois casos ao mesmo
+tempo (decoração fixa E algo "solto" tipo NPC) com o menor risco. Design
+final abaixo — `color`/`icon_key` (das tentativas anteriores) foram
+removidos do `Corpse`, sem uso.
 
-**Validado**: `tests/test_session.py::TestHarvestableM1` (7 testes novos
-— `_create_harvestables_for_map` resolve itens válidos e ignora
-item_key inexistente com warning, `_merge_entities_json` converte lista
-JSON em tuple pro item empilhado, dois jogadores SEM grupo saqueiam
-harvestables públicos diferentes sem trava de dono, `no_decay` nunca
-expira mesmo com timer finito e centenas de ticks de decay, sweep de
-tick descobre harvestable quando o player anda pra perto, login JÁ
-DENTRO do AOI descobre via WORLD_STATE+LOOT_AVAILABLE sem precisar de
-nenhuma atividade extra, `_handle_msg_world_state` não cria jogador
-remoto fantasma a partir de uma entrada harvestable). Confirmado via
-`git stash` que os 7 falham sem a implementação correspondente (o teste
-de `no_decay` foi escrito com timer FINITO de propósito — com
-`float("inf")` a implementação real usa, o teste passaria mesmo sem a
-flag, escondendo o bug). Suíte completa (524 testes) rodada 3x, 0
-falhas.
+**Design final: harvestable é uma entidade ECS real, sem combate/diálogo**
 
-**Marca visual customizável (`Corpse.color`)**: pedido do usuário logo
-após a infra base — colocar um harvestable de teste real no mapa com uma
-cor chamativa/clara pra validar visualmente. `Corpse` (`engine/components.py`)
-ganhou `color: tuple | None = None` (placeholder até existir sprite de
-verdade); `create_corpse`/`ui/systems.py::LootSystem.render_world` usam
-`corpse.color` quando setado, senão mantêm a lógica antiga (cor por
-estado: ouro/loot/vazio) — corpse de mob morto nunca seta `color`, então
-comportamento antigo intacto pra eles. `color` (`[r,g,b]` no JSON do mapa)
-percorre: `map_loader.py::_merge_entities_json` → `_create_harvestables_for_map`
-(dict do corpse) → `LOOT_AVAILABLE` (nos dois pontos de envio, sweep de
-tick e login) → `client/network_handlers.py::_handle_msg_loot_available`
-→ `create_corpse(..., color=...)`. Harvestable de teste adicionado a
-`maps/map_1_entities.json` em (130, 374): "Arbusto de Teste (M1)", cor
-`[255, 255, 120]` (amarelo claro), itens `training_sword` +
-`small_hp_potion ×3`, 10 moedas.
+- **Componente `Harvestable`** (`engine/components.py`): só
+  `corpse_id: int` — liga a entidade ao dict em
+  `self._corpses[corpse_id]`, que continua sendo a fonte de verdade do
+  loot (itens/moedas/`quest_rolls`/`no_decay` — Fase L1 inalterada).
+- **`Renderable` ganha `sprite_id: str = ""`**: ID já catalogado em
+  `engine/tileset.py` (`OBJECT_SHEET_TILE_MAP`/`SHEET_TILE_MAP`, ex.:
+  `"pr_box1"` de `OBJECT_SHEET_FAMILIES["TX Props"]`). `RenderSystem.
+  render()` (`ui/systems.py`) usa `ui.tile_sprite_manager.TILE_SPRITES.
+  get_raw_sprite(sprite_id)` no lugar do retângulo colorido quando
+  setado — ancorado igual a qualquer objeto de mapa (base do sprite =
+  base do tile). `sprite_id=""` (default) preserva 100% o comportamento
+  antigo pra qualquer outra entidade.
+- **Fábrica** (`engine/entity_factory.py::create_harvestable_entity`):
+  `Position` + `TileMovement` PARADA (current==target, sem
+  Combatant/AIControlled/Faction) + `Renderable(sprite_id=...)` +
+  `Harvestable(corpse_id=...)`. Reaproveitada tanto pelo SERVIDOR
+  (`_create_harvestables_for_map`) quanto pelo CLIENTE
+  (`_spawn_remote_harvestable`, mesmo padrão de `create_enemy`
+  compartilhado por `_spawn_remote_mob`).
+- **Colisão automática, sem código dedicado**: `TileValidationSystem`
+  (`engine/world_systems.py`) já constrói seu cache de tiles ocupados
+  iterando QUALQUER entidade com `TileMovement` (não filtra por
+  `Combatant`) — uma entidade parada já bloqueia o tile pros outros
+  players de graça.
+- **Y-sort automático, sem código dedicado**: `RenderSystem.render()`
+  já Y-sorta QUALQUER entidade com `(Position, Renderable)` junto com
+  os objetos estáticos de mapa, na mesma lista ordenada por
+  `foot_y = position.y + renderable.height/2`.
+- **Descoberta/sync — reaproveita o sweep de mob, não duplica**:
+  `self._harvestable_eids: set[int]` (WorldServer) é um set PRÓPRIO,
+  separado de `_mob_eids` (que é filtrado por `Combatant` e usado por
+  ~12 outros pontos do código que assumem `CombatStats` presentes —
+  misturar quebraria isso). Só 2 pontos precisaram de 1 linha cada pra
+  incluir harvestable no MESMO mecanismo genérico:
+  - `server/session.py::_dispatch_tick_deltas`: o índice
+    `_mob_positions`/`_mob_hash` (usado pelo sweep estacionário de
+    `_build_update_for_session`) passa a iterar
+    `_mob_eids | _harvestable_eids`.
+  - `server/world_server.py::get_mobs_in_aoi` (usado pelo `WORLD_STATE`
+    de login): mesma troca, `_mob_eids | _harvestable_eids`.
+  - `get_entity_spawn_data`/`_build_mob_spawn_payload`: gate aceita
+    `eid in _mob_eids OR eid in _harvestable_eids`; `_build_mob_spawn_payload`
+    ganhou um branch bem no topo — se a entidade tem `Harvestable`,
+    retorna um payload SIMPLES (`kind:"harvestable"`, `eid` REAL agora
+    — não precisa mais do truque de eid negativo, já que é uma entidade
+    de verdade —, `tx`, `ty`, `name`, `sprite_id`, `corpse_id`) sem
+    passar pela lógica de combate/raça/tier.
+  - O follow-up de `LOOT_AVAILABLE` personalizado (`_resolve_conditional_loot_for`,
+    Fase L1) que já existia em `_dispatch_tick_deltas` e `_spawn_and_start`
+    **não precisou mudar** — ele já checava `kind=="harvestable"` +
+    lia `corpse_id` do payload, forma que se manteve idêntica.
+  - `get_harvestables_in_aoi` (função dedicada da versão anterior) foi
+    REMOVIDA — supersedida pelo `get_mobs_in_aoi` genérico acima.
+- **Cliente** (`client/remote_entity_handlers.py::_spawn_remote_harvestable`,
+  chamado por `_handle_msg_entity_spawn`/`_handle_msg_world_state`):
+  cria a entidade local via a MESMA fábrica compartilhada + um `Corpse`
+  vazio (`loot=[]`, `coins=0`) — isso é o que faz `LootSystem.
+  _try_open_corpse`/`MouseTargetingSystem._corpse_at_world_pos`
+  funcionarem SEM NENHUMA mudança (eles só olham `Position`+`Corpse`).
+  `_handle_msg_loot_available`: se o `corpse_id` já é conhecido (entidade
+  já existe, criada no spawn), ATUALIZA o `Corpse` já anexado em vez de
+  criar uma entidade nova (fluxo de corpse de mob morto, ainda
+  desconhecido nesse ponto, continua chamando `create_corpse` como
+  sempre).
+- **Fix da elipse duplicada** (o bug relatado pelo usuário: a marca de
+  loot aparecia por cima da sprite): `LootSystem.render_world` e
+  `client/remote_entity_handlers.py::_draw_remote_corpses` (dois
+  desenhos de corpse INDEPENDENTES, um deles nem tinha sido tocado nas
+  correções anteriores) ganharam um guard — pulam qualquer `Corpse` que
+  TAMBÉM tenha `Renderable` (harvestable já é desenhado, Y-sorted, pelo
+  `RenderSystem`). Corpse de mob morto nunca tem `Renderable`,
+  comportamento antigo 100% intacto pra eles.
+- **Caveat conhecido, não resolvido nesta fase**: sem Y-sort real
+  contra o próprio player local no sentido de "quem pisou na frente de
+  quem" ser recalculado quadro a quadro por profundidade dinâmica — o
+  Y-sort aqui é o MESMO que já vale pra mob/NPC (compara `foot_y`, não
+  há sistema de oclusão parcial). Suficiente pro pedido atual.
 
-**Validado (color)**: 3 testes novos em `TestHarvestableM1` (resolução
-de `color` em `_create_harvestables_for_map`, parsing em
-`_merge_entities_json`, entrega íntegra no `LOOT_AVAILABLE` de login).
-Confirmado via `git stash` que os 3 falham sem a implementação. Suíte
-completa (525 testes) rodada 3x, 0 falhas.
+**Pra customizar o sprite de um harvestable**: usar um ID já catalogado
+em `engine/tileset.py` (`OBJECT_SHEET_FAMILIES`, ex.: `"box1"`→`"pr_box1"`,
+`"chest"`→`"pr_chest"`, `"barrel"`→`"pr_barrel"`, `"bush1"`→`"pl_bush1"`)
+no campo `"sprite"` da entrada em `maps/map_X_entities.json`. Harvestable
+de teste (`maps/map_1_entities.json`, 130/374): "Caixa de Teste (M1)",
+`"sprite": "pr_box1"`, itens `training_sword` + `small_hp_potion ×3`,
+10 moedas — **validado pelo usuário em jogo real** (print confirmando
+loot batendo 100% com o JSON) antes da correção de sprite/colisão.
 
 **Pedido do usuário, DEFERIDO para uma fase futura** (explicitamente
 "guarde isso para uma próxima fase"): trocar a definição por-posição de
-harvestable por uma definição de ZONA — centro + raio + quantidade,
-com itens spawnando em posições aleatórias dentro da área (mesmo padrão
-de `spawn_zones` de mob). Hoje cada harvestable ainda é 1 entrada
-`{x, y, ...}` fixa no JSON, sem zona/quantidade/aleatoriedade — igual
-`spawn_zones` era antes de existir esse recurso pra mob. Não implementado
-nesta sessão.
+harvestable por uma definição de ZONA — centro + raio + quantidade, com
+itens spawnando em posições aleatórias dentro da área (mesmo padrão de
+`spawn_zones` de mob).
 
-**Validado pelo usuário em jogo real (25/07/2026)**: harvestable de teste
-apareceu na tile certa, clique direito abriu o loot, conteúdo batendo
-100% com o configurado no JSON (print anexado pelo usuário confirmando
-10 moedas + Espada de treinamento + Poção Pequena de Vida ×3).
+**Validado**: `tests/test_session.py::TestHarvestableM1` (9 testes —
+`_create_harvestables_for_map` cria a entidade real com
+`Harvestable`/`Renderable(sprite_id)`/`TileMovement` corretos e ignora
+item_key inexistente, `_merge_entities_json` converte lista JSON em
+tuple, colisão de verdade via `is_tile_walkable` antes/depois de criar o
+harvestable, dois jogadores sem grupo saqueiam harvestables públicos
+diferentes, `no_decay` nunca expira mesmo com timer finito, sweep de
+tick E login descobrem a entidade via o mecanismo genérico
+`_mob_eids | _harvestable_eids` sem duplicar lógica, `_handle_msg_world_state`
+chama `_spawn_remote_harvestable` — nunca cai no branch player/mob),
+`tests/test_client_ui.py` (+3 testes — `_spawn_remote_harvestable` cria
+a entidade com sprite+`Corpse` vazio e é idempotente pro mesmo
+server_eid, `LOOT_AVAILABLE` de harvestable já conhecido atualiza o
+`Corpse` no lugar em vez de criar uma segunda entidade — confirmado
+`len(get_entities_with(Corpse)) == 1`). Confirmado via `git stash` que
+os testes de plumbing falham sem a implementação (o de resolução do
+catálogo de sprite em si não depende do código novo, testa só a
+precondição). Suíte completa (529 testes) rodada 3x, 0 falhas.
 
-**Sprite customizado — 1a tentativa (`Corpse.icon_key`, SUPERSEDIDA no
-mesmo dia)**: usei `assets/icons/`+`ui/icon_manager.py::ICONS` (convenção
-de ícone quadrado de item/skill) pro sprite do harvestable. O usuário
-corrigiu na hora: isso não é um ícone, é uma SPRITE de objeto de mapa —
-o catálogo certo já existe em `assets/tiles/` + `engine/tileset.py`
-(`OBJECT_SHEET_FAMILIES`/`SPRITE_FAMILIES`, com colisão/tamanho/etc. já
-catalogados) e devia ser reaproveitado, não duplicado com um sistema
-novo. Ver correção abaixo — o texto desta entrada fica só como histórico
-de por que o nome do campo mudou de `icon_key`/`"icon"` pra `sprite_id`/
-`"sprite"` no mesmo commit-sequência.
-
-**Sprite customizado — versão corrigida (`Corpse.sprite_id`)**: `Corpse`
-ganhou `sprite_id: str = ""` — um ID já catalogado em
-`OBJECT_SHEET_TILE_MAP`/`SHEET_TILE_MAP` (`engine/tileset.py`, populado
-por `discover_object_sheet_tiles()`/`discover_sheet_tiles()` ao importar
-o módulo), MESMO catálogo usado pra árvore/caixa/grade/etc. como objeto
-de mapa normal. `render_world` (`ui/systems.py::LootSystem`) chama
-`ui.tile_sprite_manager.TILE_SPRITES.get_raw_sprite(corpse.sprite_id)`
-(extrai a sub-região do PNG do sheet, cacheada) — se existir, desenha o
-sprite no tamanho NATIVO (não redimensiona), ancorado como QUALQUER
-objeto de mapa (base do sprite = base do tile, esquerda do sprite =
-esquerda do tile — mesma fórmula de `TileRenderSystem`, linha ~1926-1929);
-senão cai no fallback antigo (elipse + `color`/estado). Mesmo percurso do
-`color`: JSON (`"sprite": "pr_box1"`) → `_merge_entities_json` →
-`_create_harvestables_for_map` → `LOOT_AVAILABLE` (os 2 pontos de envio)
-→ `_handle_msg_loot_available` → `create_corpse(sprite_id=...)`. Corpse
-de mob morto nunca seta `sprite_id`, comportamento antigo intacto.
-
-**Caveat conhecido, não resolvido**: `render_world` desenha ANTES do
-passe Y-sorted de entidades (`game.py`, `_loot_system.render_world` roda
-antes de `_render_system.render`) — um sprite alto (ex: `pr_box1` é
-32×64) sempre fica ATRÁS do player, mesmo quando o player está atrás
-dele na tela. Pré-existente (mesma ordem de render já valia pra elipse,
-só que uma elipse rasa de 12px quase nunca sobrepõe visualmente um
-personagem em pé) — só fica realmente visível com sprite alto. Não
-corrigido nesta sessão (exigiria integrar harvestable no mesmo Y-sort de
-`_render_system`/`get_world_objects`, fora do escopo do pedido).
-
-**Para o usuário customizar o sprite de um harvestable**: usar um ID já
-catalogado em `engine/tileset.py` (`OBJECT_SHEET_FAMILIES`, ex.: qualquer
-entrada de `"TX Props"` como `"chest"`→`"pr_chest"`, `"box1"`→`"pr_box1"`,
-`"barrel"`→`"pr_barrel"`, ou de `"TX Plant"` como `"bush1"`→`"pl_bush1"`)
-no campo `"sprite"` da entrada em `maps/map_X_entities.json`. Pra ADICIONAR
-um sprite novo ao catálogo (não usar um já existente), é uma entrada nova
-em `OBJECT_SHEET_FAMILIES`/`SPRITE_FAMILIES` (`engine/tileset.py`) — fora
-do escopo desta fase, mas o mecanismo já suporta. Harvestable de teste
-(`maps/map_1_entities.json`, 130/374) alterado pra `"sprite": "pr_box1"`
-(era só `color` antes) — nome do harvestable também ajustado pra "Caixa
-de Teste (M1)".
-
-**Validado (sprite_id)**: 4 testes novos em `TestHarvestableM1` (resolução
-de `sprite_id` em `_create_harvestables_for_map`, parsing `"sprite"` em
-`_merge_entities_json`, entrega íntegra no `LOOT_AVAILABLE` de login,
-`TILE_SPRITES.get_raw_sprite("pr_box1")` de fato resolve pro catálogo
-real com o tamanho esperado 32×64). Confirmado via `git stash` que os 3
-testes de plumbing falham sem a implementação (o 4o, de resolução do
-catálogo em si, não depende do código novo — testa só a precondição).
-Suíte completa (527 testes) rodada 3x, 0 falhas.
-
-**Não validado nesta sessão**: aparência do sprite `pr_box1` em jogo real
-(troca de nome/campo feita depois do último teste manual do usuário —
-precisa nova confirmação visual), nem o caveat de Y-sort acima.
+**Não validado nesta sessão**: aparência/colisão/Y-sort do harvestable
+com a arquitetura de entidade real em jogo (a validação visual anterior
+do usuário foi contra a versão de `Corpse.color`/`.sprite_id`, já
+substituída) — precisa de nova confirmação visual.
 
 ### Arquiteturais (A) — débito técnico
 

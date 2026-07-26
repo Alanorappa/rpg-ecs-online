@@ -907,23 +907,61 @@ class TestConditionalLootPerPlayer(unittest.IsolatedAsyncioTestCase):
 
 
 class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
-    """Item de mapa saqueável (Fase M1, 25/07/2026, pedido do usuário) —
-    planta/pergaminho/ferramenta que abre o mesmo modal de loot de corpse,
-    sem dono/grupo (público), permanente (no_decay) até M2 trazer respawn."""
+    """Item de mapa saqueável (Fase M1, revisão 2, 25/07/2026) — entidade
+    real (posição+aparência+loot, SEM combate/diálogo), colisão e Y-sort
+    automáticos via os mesmos sistemas genéricos que já servem NPC/mob
+    (TileValidationSystem/RenderSystem) — sem gravar nada no object_matrix
+    do mapa. Loot em si (self._corpses, público/no_decay/condicional por
+    jogador) não mudou — só a camada de descoberta/visual/colisão."""
 
     async def asyncSetUp(self):
         self.ws_server, self.mgr = make_session_manager()
 
+    def _make_harvestable(self, tx: int, ty: int, map_file: str = None,
+                          name: str = "Arbusto", sprite: str = "pr_box1",
+                          items: list = None) -> int:
+        """Cria o harvestable pelo caminho de produção real
+        (_create_harvestables_for_map) — devolve o corpse_id (hid).
+        Em produção, `_load_map_for` chama isso ANTES de um snapshot-diff
+        que tagueia MapLocation em toda entidade nova (ver
+        server/world_server.py::_load_map_for) — como o teste chama
+        _create_harvestables_for_map direto (sem passar por
+        _load_map_for), replica esse passo aqui, senão a entidade nunca
+        aparece no AOI (in_aoi exige MapLocation pra eid>=0)."""
+        map_key = map_file or self.ws_server._map_file
+        spawn_points = {"harvestables": [{
+            "x": tx, "y": ty, "name": name, "sprite": sprite,
+            "items": items if items is not None else ["training_sword"],
+            "coins": 0,
+        }]}
+        before_corpses = set(self.ws_server._corpses.keys())
+        before_hv_eids = set(self.ws_server._harvestable_eids)
+        self.ws_server._create_harvestables_for_map(spawn_points, map_key)
+        from engine.components import MapLocation as _MLhv
+        for _new_eid in set(self.ws_server._harvestable_eids) - before_hv_eids:
+            if self.ws_server.world.get_component(_new_eid, _MLhv) is None:
+                self.ws_server.world.add_component(_new_eid, _MLhv(map_key))
+        return (set(self.ws_server._corpses.keys()) - before_corpses).pop()
+
+    def _harvestable_eid_for(self, hid: int) -> int:
+        from engine.components import Harvestable
+        for eid in self.ws_server._harvestable_eids:
+            hv = self.ws_server.world.get_component(eid, Harvestable)
+            if hv and hv.corpse_id == hid:
+                return eid
+        raise AssertionError(f"nenhuma entidade harvestable achada pro corpse_id={hid}")
+
     def test_create_harvestables_for_map_resolve_items_e_ignora_invalido(self):
         spawn_points = {"harvestables": [{
             "x": 50, "y": 60, "name": "Arbusto de Frutas", "coins": 3,
-            "color": [255, 255, 120], "sprite": "pr_box1",
+            "sprite": "pr_box1",
             "items": ["training_sword", ("small_hp_potion", 3),
                       "item_key_que_nao_existe"],
         }]}
-        before = set(self.ws_server._corpses.keys())
+        before_corpses = set(self.ws_server._corpses.keys())
+        before_hv_eids = set(self.ws_server._harvestable_eids)
         self.ws_server._create_harvestables_for_map(spawn_points, "map_test")
-        new_ids = set(self.ws_server._corpses.keys()) - before
+        new_ids = set(self.ws_server._corpses.keys()) - before_corpses
         self.assertEqual(len(new_ids), 1)
         hid = new_ids.pop()
         corpse = self.ws_server._corpses[hid]
@@ -936,8 +974,8 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(corpse["ty"], 60)
         self.assertEqual(corpse["name"], "Arbusto de Frutas")
         self.assertEqual(corpse["coins"], 3)
-        self.assertEqual(corpse["color"], [255, 255, 120])
-        self.assertEqual(corpse["sprite_id"], "pr_box1")
+        self.assertNotIn("color", corpse)      # não existe mais (Renderable cuida disso)
+        self.assertNotIn("sprite_id", corpse)  # idem
         names = [it["name"] for it in corpse["items"]]
         self.assertEqual(len(names), 2)  # item inválido foi ignorado
         self.assertIn("Espada de treinamento", names)
@@ -945,31 +983,20 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
                      if it["name"] != "Espada de treinamento")
         self.assertEqual(potion["stack"], 3)
 
-    async def test_login_ja_dentro_do_aoi_envia_cor_customizada(self):
-        """color (fallback se não tiver sprite) precisa chegar íntegra no
-        LOOT_AVAILABLE — é o que o cliente usa pra desenhar a marca do
-        harvestable diferente de um corpse comum."""
-        hid = self._make_harvestable(50, 50)
-        self.ws_server._corpses[hid]["color"] = [10, 200, 30]
-        session, fw = await fake_login(self.mgr, "s1", "user_hv_e", 50, 50)
-
-        loot_avail = get_msgs_of_type(fw, MsgType.LOOT_AVAILABLE)
-        matching = [m for m in loot_avail if m["corpse_id"] == hid]
-        self.assertEqual(len(matching), 1)
-        self.assertEqual(matching[0]["color"], [10, 200, 30])
-
-    async def test_login_ja_dentro_do_aoi_envia_sprite_customizado(self):
-        """sprite (ID do catálogo de objeto de mapa, ex: "pr_box1") tem
-        prioridade sobre color no cliente — precisa chegar íntegro no
-        LOOT_AVAILABLE também."""
-        hid = self._make_harvestable(60, 60)
-        self.ws_server._corpses[hid]["sprite_id"] = "pr_box1"
-        session, fw = await fake_login(self.mgr, "s1", "user_hv_f", 60, 60)
-
-        loot_avail = get_msgs_of_type(fw, MsgType.LOOT_AVAILABLE)
-        matching = [m for m in loot_avail if m["corpse_id"] == hid]
-        self.assertEqual(len(matching), 1)
-        self.assertEqual(matching[0]["sprite"], "pr_box1")
+        # Entidade real criada junto (Fase M1, revisão 2)
+        new_hv_eids = set(self.ws_server._harvestable_eids) - before_hv_eids
+        self.assertEqual(len(new_hv_eids), 1)
+        hv_eid = new_hv_eids.pop()
+        from engine.components import Harvestable, Renderable, TileMovement, Position
+        hv  = self.ws_server.world.get_component(hv_eid, Harvestable)
+        ren = self.ws_server.world.get_component(hv_eid, Renderable)
+        tm  = self.ws_server.world.get_component(hv_eid, TileMovement)
+        pos = self.ws_server.world.get_component(hv_eid, Position)
+        self.assertEqual(hv.corpse_id, hid)
+        self.assertEqual(ren.sprite_id, "pr_box1")
+        self.assertEqual((tm.current_tile_x, tm.current_tile_y), (50, 60))
+        self.assertFalse(tm.is_moving)
+        self.assertIsNotNone(pos)
 
     def test_sprite_id_resolve_via_tile_sprites_catalog(self):
         """sprite_id precisa ser um ID já catalogado em engine/tileset.py
@@ -997,7 +1024,7 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
         }
         data = {"harvestables": [{
             "x": 10, "y": 20, "name": "Planta", "coins": 5,
-            "color": [255, 255, 120], "sprite": "pr_box1",
+            "sprite": "pr_box1",
             "items": ["training_sword", ["small_hp_potion", 2]],
         }]}
         fd, path = tempfile.mkstemp(suffix=".json")
@@ -1014,27 +1041,31 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(hv[0]["y"], 20)
         self.assertEqual(hv[0]["name"], "Planta")
         self.assertEqual(hv[0]["coins"], 5)
-        self.assertEqual(hv[0]["color"], (255, 255, 120))
         self.assertEqual(hv[0]["sprite"], "pr_box1")
+        self.assertNotIn("color", hv[0])
         # Lista JSON vira tuple (normalize_reward_entry só reconhece tuple);
         # string crua permanece string.
         self.assertEqual(hv[0]["items"][0], "training_sword")
         self.assertEqual(hv[0]["items"][1], ("small_hp_potion", 2))
         self.assertIsInstance(hv[0]["items"][1], tuple)
 
-    def _make_harvestable(self, tx: int, ty: int, map_file: str = None) -> int:
-        hid = self.ws_server._next_corpse_id
-        self.ws_server._next_corpse_id += 1
-        self.ws_server._corpses[hid] = {
-            "tx": tx, "ty": ty, "owner_eid": -1,
-            "items": [{"name": "Fruta Silvestre", "icon_key": "", "item_type": "material",
-                       "rarity": "common", "value": 1, "slot": "", "stack": 1}],
-            "coins": 0, "timer": float("inf"),
-            "map": map_file or self.ws_server._map_file,
-            "mob_name": "", "mob_race": "", "quest_rolls": {},
-            "no_decay": True, "name": "Arbusto",
-        }
-        return hid
+    async def test_harvestable_tem_colisao_real(self):
+        """Antes (dict solto em _corpses): jogador atravessava por cima.
+        Agora: TileMovement da entidade real é pego pelo cache de tiles
+        ocupados de TileValidationSystem (nenhum código dedicado — mesmo
+        mecanismo que já bloqueia tile de mob/NPC). Precisa ser async:
+        _tick() aciona _on_tick -> asyncio.create_task, que exige um
+        event loop rodando (só os testes async desta classe têm um)."""
+        from engine.world_systems import is_tile_walkable
+        from tests.helpers import spawn_player
+        player_eid = spawn_player(self.ws_server, "s1", 138, 380)
+        self.ws_server._tick(0.05)
+        # Antes de criar o harvestable, o tile precisa estar livre (senão
+        # o teste provaria só que o TERRENO já bloqueava, não a entidade).
+        self.assertTrue(is_tile_walkable(player_eid, 140, 380))
+        self._make_harvestable(140, 380)
+        self.ws_server._tick(0.05)
+        self.assertFalse(is_tile_walkable(player_eid, 140, 380))
 
     async def test_dois_jogadores_sem_grupo_looteiam_o_mesmo_harvestable(self):
         """Diferente de corpse de mob: harvestable é público — sem dono, sem
@@ -1049,7 +1080,7 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
             MsgType.LOOT_REQUEST, {"corpse_id": hid, "take": "all"}))
         results_a = get_msgs_of_type(fw_a, MsgType.LOOT_RESULT)
         self.assertEqual(len(results_a), 1)
-        self.assertEqual(results_a[0]["items"][0]["name"], "Fruta Silvestre")
+        self.assertEqual(results_a[0]["items"][0]["name"], "Espada de treinamento")
 
         # Segundo harvestable "irmão" pro jogador B saquear (o primeiro já
         # foi esvaziado pelo A) — confirma que B não precisa de grupo/dono
@@ -1060,7 +1091,7 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
             MsgType.LOOT_REQUEST, {"corpse_id": hid2, "take": "all"}))
         results_b = get_msgs_of_type(fw_b, MsgType.LOOT_RESULT)
         self.assertEqual(len(results_b), 1)
-        self.assertEqual(results_b[0]["items"][0]["name"], "Fruta Silvestre")
+        self.assertEqual(results_b[0]["items"][0]["name"], "Espada de treinamento")
 
     def test_no_decay_harvestable_nunca_expira(self):
         """timer finito de propósito (produção usa float("inf") redundante
@@ -1074,11 +1105,13 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
 
     async def test_sweep_de_tick_descobre_harvestable_ao_entrar_no_aoi(self):
         """Jogador loga LONGE do harvestable (fora do AOI), anda pra perto —
-        o sweep estacionário de _build_update_for_session deve achá-lo no
-        MESMO tick que o movimento do próprio player já dispara o dispatch
-        (has_pending por causa de deltas['moved'])."""
+        o sweep estacionário GENÉRICO de _build_update_for_session (que
+        agora também indexa _harvestable_eids, não só _mob_eids) deve
+        achá-lo no MESMO tick que o movimento do próprio player já dispara
+        o dispatch (has_pending por causa de deltas['moved'])."""
         session, fw = await fake_login(self.mgr, "s1", "user_hv_c", 0, 0)
         hid = self._make_harvestable(100, 100)
+        hv_eid = self._harvestable_eid_for(hid)
 
         fw.sent.clear()
         from engine.components import TileMovement as _TM_hv
@@ -1090,25 +1123,25 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
 
         aoi_updates = get_msgs_of_type(fw, MsgType.AOI_UPDATE)
         spawned = [s for u in aoi_updates for s in u.get("spawned", [])
-                  if s.get("kind") == "harvestable"]
+                  if s.get("kind") == "harvestable" and s.get("corpse_id") == hid]
         self.assertEqual(len(spawned), 1)
-        self.assertEqual(spawned[0]["corpse_id"], hid)
-        self.assertEqual(spawned[0]["eid"], -hid)
+        self.assertEqual(spawned[0]["eid"], hv_eid)   # eid REAL agora, não mais -hid
+        self.assertEqual(spawned[0]["sprite_id"], "pr_box1")
 
         loot_avail = get_msgs_of_type(fw, MsgType.LOOT_AVAILABLE)
         matching = [m for m in loot_avail if m["corpse_id"] == hid]
         self.assertEqual(len(matching), 1)
-        self.assertEqual(matching[0]["items"][0]["name"], "Fruta Silvestre")
+        self.assertEqual(matching[0]["items"][0]["name"], "Espada de treinamento")
 
     async def test_login_ja_dentro_do_aoi_descobre_harvestable_sem_precisar_de_atividade(self):
-        """Bug que corrigi ANTES de escrever este teste: um player que loga
-        já dentro do AOI de um harvestable parado não era coberto por
-        WORLD_STATE (só near_players/near_mobs) nem pelo sweep de tick (que
-        só roda se has_pending achar atividade) — se o mundo ficasse ocioso
-        logo após o login, o harvestable nunca aparecia. Fix:
-        get_harvestables_in_aoi() + follow-up LOOT_AVAILABLE dentro de
-        _spawn_and_start (server/session.py)."""
+        """Bug corrigido antes de M1 revisão 1: um player que loga já
+        dentro do AOI de um harvestable parado não era coberto por
+        WORLD_STATE nem pelo sweep de tick (que só roda se has_pending
+        achar atividade). Fix: get_mobs_in_aoi agora inclui
+        _harvestable_eids (mesma função de sempre, sem duplicar lógica) +
+        follow-up LOOT_AVAILABLE em _spawn_and_start (inalterado)."""
         hid = self._make_harvestable(130, 374)
+        hv_eid = self._harvestable_eid_for(hid)
         session, fw = await fake_login(self.mgr, "s1", "user_hv_d", 130, 374)
 
         world_states = get_msgs_of_type(fw, MsgType.WORLD_STATE)
@@ -1119,24 +1152,24 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
         spawned = [e for e in world_states[0]["entities"]
                   if e.get("kind") == "harvestable" and e.get("corpse_id") == hid]
         self.assertEqual(len(spawned), 1)
-        self.assertEqual(spawned[0]["corpse_id"], hid)
-        self.assertEqual(spawned[0]["eid"], -hid)
+        self.assertEqual(spawned[0]["eid"], hv_eid)
 
         loot_avail = get_msgs_of_type(fw, MsgType.LOOT_AVAILABLE)
         matching = [m for m in loot_avail if m["corpse_id"] == hid]
         self.assertEqual(len(matching), 1)
-        self.assertEqual(matching[0]["items"][0]["name"], "Fruta Silvestre")
+        self.assertEqual(matching[0]["items"][0]["name"], "Espada de treinamento")
 
-    async def test_world_state_com_harvestable_nao_vira_jogador_remoto_fantasma(self):
+    async def test_world_state_com_harvestable_chama_spawn_remote_harvestable(self):
         """Client-side: _handle_msg_world_state precisa reconhecer
-        kind=="harvestable" e pular (no-op), senão o eid negativo cai no
-        branch "else" (player) e cria um jogador remoto fantasma."""
+        kind=="harvestable" e chamar _spawn_remote_harvestable (entidade
+        real agora) — NUNCA cair no branch "player"/"enemy"."""
         import client.network_handlers as nh_mod
 
         class _FakeClient:
             _my_eid = 999
             _spawn_remote_mob_called = False
             _spawn_remote_player_called = False
+            _spawn_remote_harvestable_args = None
 
             def _spawn_remote_mob(self, eid, ent):
                 self._spawn_remote_mob_called = True
@@ -1144,14 +1177,18 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
             def _spawn_remote_player_entity(self, eid, data):
                 self._spawn_remote_player_called = True
 
+            def _spawn_remote_harvestable(self, eid, data):
+                self._spawn_remote_harvestable_args = (eid, data)
+
         fc = _FakeClient()
         payload = {"tick": 1, "tx": 0, "ty": 0, "entities": [
-            {"eid": -42, "kind": "harvestable", "corpse_id": 42, "tx": 5, "ty": 5,
-             "name": "Planta"},
+            {"eid": 42, "kind": "harvestable", "corpse_id": 7, "tx": 5, "ty": 5,
+             "name": "Planta", "sprite_id": "pr_box1"},
         ]}
         nh_mod.NetworkHandlers._handle_msg_world_state(fc, payload)
         self.assertFalse(fc._spawn_remote_player_called)
         self.assertFalse(fc._spawn_remote_mob_called)
+        self.assertEqual(fc._spawn_remote_harvestable_args, (42, payload["entities"][0]))
 
 
 class TestArenaDispatchSemMovimento(unittest.IsolatedAsyncioTestCase):
