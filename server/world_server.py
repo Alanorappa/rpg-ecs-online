@@ -505,6 +505,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._create_training_dummies(spawn_points.get("training_dummies", []))
         self._create_combat_npcs(spawn_points.get("combat_npcs", []), key)
         self._create_service_npcs(spawn_points)
+        self._create_harvestables_for_map(spawn_points, key)
 
         # Snapshot DEPOIS — todas as novas entidades ganham MapLocation
         _eids_after = set(self.world._components.keys())
@@ -679,6 +680,44 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             _csn_trainer(self.world, col, row, name=name,
                         class_id=class_id, quest_ids=quest_ids, turn_in_ids=turn_in_ids,
                         level=lvl, profession=prof)
+
+    def _create_harvestables_for_map(self, spawn_points: dict, map_key: str) -> None:
+        """Cria itens de mapa saqueáveis (planta/pergaminho/ferramenta —
+        Fase M1, 25/07/2026, pedido do usuário) a partir de
+        spawn_points["harvestables"]. NÃO são entidades ECS — mesmo padrão
+        de corpse de mob morto (dict simples em self._corpses, mesmo id
+        space de self._next_corpse_id, nunca colide), só que
+        `owner_eid=-1` (público — qualquer jogador pode saquear, sem
+        checagem de dono/grupo, ver loot_processor.py::request_loot) e
+        `no_decay=True` (permanente até M2 trazer respawn de verdade — ver
+        loot_processor.py::_process_loot_drops). Formato de item idêntico
+        a QuestReward.items ("item_key" ou (item_key, stack)), resolvido
+        via engine.quest_logic (mesmas funções da recompensa de quest)."""
+        import engine.quest_logic as _hq_logic
+        from server.server_death_handler import _serialize_item as _hq_serialize
+
+        for h in spawn_points.get("harvestables", []):
+            hid = self._next_corpse_id
+            self._next_corpse_id += 1
+            granted = []
+            for entry in h.get("items", []):
+                item_key, stack = _hq_logic.normalize_reward_entry(entry)
+                factory = _hq_logic.resolve_reward_item_factory(item_key)
+                if factory is None:
+                    log.warning(f"[Harvestable] item_key '{item_key}' de "
+                               f"'{h.get('name', hid)}' não existe em nenhum "
+                               f"catálogo — ignorado")
+                    continue
+                item = factory()
+                item.stack = max(1, min(stack, item.max_stack))
+                granted.append(_hq_serialize(item))
+            self._corpses[hid] = {
+                "tx": h["x"], "ty": h["y"], "owner_eid": -1,
+                "items": granted, "coins": h.get("coins", 0),
+                "timer": float("inf"), "map": map_key,
+                "mob_name": "", "mob_race": "", "quest_rolls": {},
+                "no_decay": True, "name": h.get("name", "Objeto"),
+            }
 
     def _create_spawn_zones(self, zones_data: list) -> None:
         """Compat: cria SpawnZones sem MapLocation (usado antes do multi-map)."""
@@ -1567,6 +1606,32 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                abs(tm.current_tile_y - center_ty) <= radius:
                 payload = self._build_mob_spawn_payload(eid, tm)
                 result.append(payload)
+        return result
+
+    def get_harvestables_in_aoi(self, center_tx: int, center_ty: int, radius: int,
+                                map_file: str = "") -> list[dict]:
+        """Retorna lista de harvestables (Fase M1) no AOI — para WORLD_STATE
+        inicial (login). Sem isso, um player que já loga EM CIMA de um
+        harvestable nunca o descobre: o sweep de `_build_update_for_session`
+        só roda dentro de `_dispatch_tick_deltas`, que só é chamado quando
+        `_on_tick`'s `has_pending` acha atividade (ver comentário lá) — se o
+        mundo ficar ocioso logo após o login (sem o player se mover, sem
+        ninguém mais gerando delta), o harvestable parado nunca aparece.
+        Mesmo princípio de `get_mobs_in_aoi` (que já resolve isso pra mob
+        estacionário via `near_mobs` no WORLD_STATE)."""
+        result = []
+        for hid, hdata in self._corpses.items():
+            if hdata.get("owner_eid") != -1:
+                continue
+            if map_file and hdata.get("map") != map_file:
+                continue
+            if abs(hdata["tx"] - center_tx) <= radius and \
+               abs(hdata["ty"] - center_ty) <= radius:
+                result.append({
+                    "eid": -hid, "kind": "harvestable", "corpse_id": hid,
+                    "tx": hdata["tx"], "ty": hdata["ty"],
+                    "name": hdata.get("name", "Objeto"),
+                })
         return result
 
     def get_entity_id(self, session_id: str) -> int:

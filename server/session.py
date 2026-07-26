@@ -1302,11 +1302,18 @@ class SessionManager:
                            "hp": _h, "hp_max": _hm,
                            "level": _s2char.level if _s2char else 1, "effects": []})
 
+        _my_map_login = self.world_server.get_player_map(session.session_id)
         near_mobs    = self.world_server.get_mobs_in_aoi(
-            tx, ty, AOI_RADIUS,
-            map_file=self.world_server.get_player_map(session.session_id),
+            tx, ty, AOI_RADIUS, map_file=_my_map_login,
         )
-        all_entities = near_players + near_mobs
+        # Harvestables (Fase M1, 25/07/2026) — sem isso, um player que loga
+        # já dentro do AOI de um item de mapa nunca o vê, pois o sweep de
+        # _build_update_for_session só roda dentro de _dispatch_tick_deltas,
+        # que exige has_pending (ver get_harvestables_in_aoi).
+        near_harvestables = self.world_server.get_harvestables_in_aoi(
+            tx, ty, AOI_RADIUS, map_file=_my_map_login,
+        )
+        all_entities = near_players + near_mobs + near_harvestables
         await session.send(MsgType.WORLD_STATE, {
             "tick": self.world_server.tick_count, "tx": tx, "ty": ty,
             "entities": all_entities,
@@ -1314,6 +1321,22 @@ class SessionManager:
         session.known_eids.add(eid)
         for ent in all_entities:
             session.known_eids.add(ent["eid"])
+        # Conteúdo real (itens/coins) do harvestable, personalizado por
+        # jogador — mesmo follow-up de LOOT_AVAILABLE que o sweep de tick
+        # manda (ver _dispatch_tick_deltas), só que disparado aqui pro caso
+        # de login já-dentro-do-AOI.
+        for _hent in near_harvestables:
+            _hid = _hent["corpse_id"]
+            _hcorpse = self.world_server._corpses.get(_hid)
+            if not _hcorpse:
+                continue
+            _hextra = self.world_server._resolve_conditional_loot_for(_hcorpse, eid)
+            await session.send(MsgType.LOOT_AVAILABLE, {
+                "corpse_id": _hid,
+                "tx":        _hent["tx"], "ty": _hent["ty"],
+                "items":     list(_hcorpse.get("items", [])) + _hextra,
+                "coins":     _hcorpse.get("coins", 0),
+            })
 
         _nh, _nhm = self.world_server.get_player_hp(session.session_id)
         await self._broadcast_aoi_except(session, MsgType.ENTITY_SPAWN, {
@@ -1944,6 +1967,29 @@ class SessionManager:
                                                         _mob_positions, _mob_hash)
                 if update:
                     ok = await session.send(MsgType.AOI_UPDATE, update)
+                    if ok:
+                        # Harvestable recém-descoberto (Fase M1, 25/07/2026)
+                        # — o ENTITY_SPAWN acima só dá posição/nome pra
+                        # renderizar; o conteúdo de verdade (itens/coins)
+                        # chega aqui, PERSONALIZADO por jogador (mesmo
+                        # helper do LOOT_AVAILABLE de corpse de mob — ver
+                        # _resolve_conditional_loot_for/§34.51 Fase L1),
+                        # pra ele já abrir o modal certo na hora.
+                        for _sp in update.get("spawned", []):
+                            if _sp.get("kind") != "harvestable":
+                                continue
+                            _hid = _sp["corpse_id"]   # positivo — id "de verdade", ver sweep acima
+                            _hcorpse = self.world_server._corpses.get(_hid)
+                            if not _hcorpse:
+                                continue
+                            _hextra = self.world_server._resolve_conditional_loot_for(
+                                _hcorpse, session.entity_id)
+                            await session.send(MsgType.LOOT_AVAILABLE, {
+                                "corpse_id": _hid,
+                                "tx":        _sp["tx"], "ty": _sp["ty"],
+                                "items":     list(_hcorpse.get("items", [])) + _hextra,
+                                "coins":     _hcorpse.get("coins", 0),
+                            })
                     if not ok:
                         # send falhou DEPOIS de _build_update_for_session já ter
                         # mutado known_eids (spawn/despawn) assumindo entrega —
@@ -2521,6 +2567,41 @@ class SessionManager:
                 if spawn_data:
                     result.setdefault("spawned", []).append(spawn_data)
                     session.known_eids.add(mob_eid)
+
+        # Sweep de itens de mapa saqueáveis (harvestables, Fase M1,
+        # 25/07/2026) — NÃO são entidades ECS (dict em
+        # self.world_server._corpses com owner_eid=-1, ver
+        # WorldServer._create_harvestables_for_map/loot_processor.py), então
+        # não entram no sweep de mob acima nem em get_entity_spawn_data.
+        # São permanentes (sem "moved"/despawn), então este é o ÚNICO jeito
+        # de um jogador descobrir um que já existia antes dele chegar perto
+        # — mesmo princípio do sweep de mob estacionário, só que iterando o
+        # dict de corpses público em vez de _mob_eids. O follow-up
+        # LOOT_AVAILABLE (conteúdo real) é mandado pelo chamador logo após
+        # o AOI_UPDATE, ver _dispatch_tick_deltas.
+        #
+        # "eid" do ENTITY_SPAWN é `-hid` (NEGATIVO) — mesma convenção de
+        # corpse de mob morto (`-corpse_id`, ver bloco de ENTITY_SPAWN de
+        # corpse acima): hid vem de self._next_corpse_id, um contador
+        # TOTALMENTE independente dos eids reais de player/mob (World.
+        # create_entity()) — um hid positivo poderia colidir por
+        # coincidência com um eid de player/mob de verdade. "corpse_id" no
+        # payload carrega o hid de verdade (positivo), usado por
+        # LOOT_AVAILABLE/LOOT_REQUEST (espaço de id separado, sem esse
+        # risco de colisão).
+        for hid, hdata in self.world_server._corpses.items():
+            if hdata.get("owner_eid") != -1 or -hid in session.known_eids:
+                continue
+            if hdata.get("map") != _my_map:
+                continue
+            if _in_aoi(cx, cy, hdata["tx"], hdata["ty"], r):
+                result.setdefault("spawned", []).append({
+                    "eid": -hid, "kind": "harvestable",
+                    "corpse_id": hid,
+                    "tx": hdata["tx"], "ty": hdata["ty"],
+                    "name": hdata.get("name", "Objeto"),
+                })
+                session.known_eids.add(-hid)
 
         for other_session in self._sessions.values():
             if not other_session.authenticated:

@@ -244,6 +244,13 @@ class NetworkHandlers:
         for ent in payload.get("entities", []):
             eid  = ent.get("eid", -1)
             kind = ent.get("kind", "player")
+            if kind == "harvestable":
+                # Fase M1 (25/07/2026) — no-op aqui de propósito, mesmo
+                # motivo de _handle_msg_entity_spawn: eid negativo cairia no
+                # branch "player" abaixo (sem esse check) e criaria um
+                # jogador remoto fantasma. Conteúdo real chega via
+                # LOOT_AVAILABLE, mandado pelo servidor logo em seguida.
+                continue
             if eid == -1 or eid == self._my_eid:
                 continue
             if kind == "enemy":
@@ -262,10 +269,19 @@ class NetworkHandlers:
     def _handle_msg_entity_spawn(self, payload: dict) -> None:
         eid  = payload.get("eid", -1)
         kind = payload.get("kind", "player")
-        # Verifica corpse ANTES do guard eid==-1 (corpse usa eid negativo, -1 inclusive)
+        # Verifica corpse/harvestable ANTES do guard eid==-1 (os dois usam
+        # eid negativo — -1 inclusive — pra nunca colidir com eid real de
+        # player/mob, ver server/session.py). Harvestable (Fase M1,
+        # 25/07/2026) é um no-op aqui de propósito: só dá posição/nome pra
+        # esta mensagem (usada só de olho gordo/debug — a entidade
+        # interativa de verdade é criada por _handle_msg_loot_available,
+        # que chega logo em seguida com o conteúdo real via LOOT_AVAILABLE,
+        # mesmo mecanismo de corpse de mob).
         if kind == "corpse":
             corpse_id = -eid
             self._remote_corpses[corpse_id] = (payload.get("tx", 0), payload.get("ty", 0))
+        elif kind == "harvestable":
+            pass
         elif eid == -1 or eid == self._my_eid:
             pass
         elif kind == "enemy":

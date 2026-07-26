@@ -312,6 +312,25 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
             for c in data["combat_npcs"]
         ]
 
+    if "harvestables" in data:
+        # Item interativo de mapa (planta/pergaminho/ferramenta — Fase M1,
+        # 25/07/2026, pedido do usuário) — abre o mesmo modal de loot de
+        # um corpo de inimigo (server/world_server.py::
+        # _create_harvestables_for_map). "items" usa o MESMO formato de
+        # QuestReward.items ("item_key" ou ["item_key", stack] no JSON) —
+        # listas viram tuple aqui porque JSON não tem tupla, e
+        # engine.quest_logic.normalize_reward_entry só reconhece tuple.
+        spawn_points["harvestables"] = [
+            {
+                "x":     hv["x"], "y": hv["y"],
+                "name":  hv.get("name", "Objeto"),
+                "items": [tuple(e) if isinstance(e, list) else e
+                          for e in hv.get("items", [])],
+                "coins": hv.get("coins", 0),
+            }
+            for hv in data["harvestables"]
+        ]
+
     if "transitions" in data:
         spawn_points["transitions"] = data["transitions"]
 

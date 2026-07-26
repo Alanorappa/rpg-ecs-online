@@ -78,7 +78,9 @@ class LootProcessorMixin:
             return None
         player_eid = self._player_eids.get(session_id, -1)
         owner_eid  = corpse["owner_eid"]
-        if player_eid != owner_eid:
+        # owner_eid == -1: harvestable de mapa (Fase M1) — público, sem
+        # dono, qualquer jogador pode saquear, sem checagem de grupo.
+        if owner_eid != -1 and player_eid != owner_eid:
             owner_pid = self.get_party_id_of(owner_eid)
             if owner_pid == -1 or self.get_party_id_of(player_eid) != owner_pid:
                 return None  # não é o dono nem está no mesmo grupo — ignora
@@ -156,9 +158,13 @@ class LootProcessorMixin:
                   f"items={len(loot_entry['items'])}  coins={loot_entry.get('coins', 0)}  "
                   f"tile=({loot_entry['tx']},{loot_entry['ty']})")
 
-        # Decay de corpses (timer baseado em tempo real via dt)
+        # Decay de corpses (timer baseado em tempo real via dt).
+        # no_decay=True (harvestable de mapa, Fase M1) nunca expira aqui —
+        # é permanente até M2 trazer respawn de verdade.
         for cid in list(self._corpses.keys()):
             c = self._corpses[cid]
+            if c.get("no_decay"):
+                continue
             c["timer"] -= dt
             if c["timer"] <= 0:
                 self._expired_corpses_this_tick.append(

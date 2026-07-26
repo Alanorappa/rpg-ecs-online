@@ -7547,6 +7547,87 @@ comuns/gold em grupo, pré-existente) e `tests/test_party.py`/
 `tests/test_client_ui.py` continuam passando sem regressão. Suíte
 completa rodada 3x.
 
+**Fase M1 — Item de mapa saqueável (base)**: planta/pergaminho/ferramenta
+que abre o MESMO modal de loot de corpse de mob, sem dono/grupo (público
+— qualquer jogador pode saquear), permanente (`no_decay`, sem expirar
+até a Fase M2 trazer respawn de verdade).
+
+- **Dados de mapa**: array novo `"harvestables"` em
+  `maps/map_X_entities.json` (mesmo padrão de `"quest_givers"` etc.),
+  parseado por `engine/map_loader.py::_merge_entities_json` — `items`
+  usa o MESMO formato de `QuestReward.items` (`"item_key"` ou
+  `["item_key", stack]`; listas do JSON viram `tuple` porque
+  `normalize_reward_entry` só reconhece tuple).
+- **Servidor** (`server/world_server.py::_create_harvestables_for_map`,
+  chamado de `_load_map_for` antes do snapshot de `MapLocation`): NÃO
+  são entidades ECS — reaproveita `self._corpses`/`self._next_corpse_id`
+  (mesmo id space de corpse de mob morto, nunca colide), distinguido por
+  `owner_eid=-1` (público, ignora dono/grupo em
+  `loot_processor.py::request_loot`) e `no_decay=True` (`_process_loot_drops`
+  pula o decay). Item inválido no catálogo é ignorado com warning, sem
+  derrubar o resto do harvestable (mesmo espírito de recompensa de quest).
+- **Descoberta pelo cliente** — DOIS mecanismos, não só um:
+  1. **Sweep de tick** (`server/session.py::_build_update_for_session`):
+     itera `self.world_server._corpses` public (`owner_eid=-1`) igual ao
+     sweep de mob estacionário, mas por fora dele (harvestable não é
+     ECS, não entra em `_mob_eids`/`get_entity_spawn_data`). `ENTITY_SPAWN`
+     usa `eid=-hid` (NEGATIVO — mesma convenção de corpse de mob morto,
+     pra nunca colidir com eid real de player/mob de `World.create_entity()`);
+     `"corpse_id"` no payload carrega o `hid` positivo de verdade. Só
+     roda dentro de `_dispatch_tick_deltas`, que só dispara se
+     `_on_tick`'s `has_pending` achar atividade no tick (normalmente o
+     próprio movimento do player já garante isso).
+  2. **WORLD_STATE de login** (`server/world_server.py::get_harvestables_in_aoi`
+     + `server/session.py::_spawn_and_start`) — **bug pego e corrigido
+     ANTES de escrever os testes**: um player que loga JÁ DENTRO do AOI
+     de um harvestable nunca seria coberto pelo sweep de tick sozinho,
+     porque `has_pending` exige atividade (ex.: o player se mover) —
+     se o mundo ficasse ocioso logo após o login, o harvestable nunca
+     aparecia. Fix: `get_harvestables_in_aoi` (mesmo princípio de
+     `get_mobs_in_aoi`, que já cobria mob estacionário) inclui
+     harvestables em AOI direto no payload de `WORLD_STATE`, e
+     `_spawn_and_start` manda o follow-up de `LOOT_AVAILABLE`
+     personalizado imediatamente (mesma lógica do sweep de tick,
+     chamada duas vezes agora — considerar extrair um helper compartilhado
+     se um 3º call site aparecer).
+  - Em ambos os casos, o `ENTITY_SPAWN`/entrada de `WORLD_STATE` só dá
+    posição/nome (usado pra debug/olho gordo) — o conteúdo real
+    (itens/coins) chega separadamente via `LOOT_AVAILABLE`, resolvido
+    PERSONALIZADO por jogador via `_resolve_conditional_loot_for` (Fase
+    L1) mesmo sem ter mob_name (harvestable não rola condicional de
+    quest ainda — isso é a Fase M3).
+  - `client/network_handlers.py`: `_handle_msg_entity_spawn` e
+    `_handle_msg_world_state` ganham um branch `kind == "harvestable"`
+    que é NO-OP de propósito — sem ele, o eid negativo cairia no branch
+    "player" e criaria um jogador remoto fantasma. A entidade interativa
+    de verdade nasce em `_handle_msg_loot_available` (já existente,
+    reaproveitado sem mudança — `corpse_id < 0` já rejeitava string mas
+    aceita qualquer inteiro ≥ 0, então reusar `_next_corpse_id` era
+    obrigatório: um id textual quebraria essa guarda com `TypeError`).
+
+**Validado**: `tests/test_session.py::TestHarvestableM1` (7 testes novos
+— `_create_harvestables_for_map` resolve itens válidos e ignora
+item_key inexistente com warning, `_merge_entities_json` converte lista
+JSON em tuple pro item empilhado, dois jogadores SEM grupo saqueiam
+harvestables públicos diferentes sem trava de dono, `no_decay` nunca
+expira mesmo com timer finito e centenas de ticks de decay, sweep de
+tick descobre harvestable quando o player anda pra perto, login JÁ
+DENTRO do AOI descobre via WORLD_STATE+LOOT_AVAILABLE sem precisar de
+nenhuma atividade extra, `_handle_msg_world_state` não cria jogador
+remoto fantasma a partir de uma entrada harvestable). Confirmado via
+`git stash` que os 7 falham sem a implementação correspondente (o teste
+de `no_decay` foi escrito com timer FINITO de propósito — com
+`float("inf")` a implementação real usa, o teste passaria mesmo sem a
+flag, escondendo o bug). Suíte completa (524 testes) rodada 3x, 0
+falhas.
+
+**Não validado nesta sessão** (depende de teste manual do usuário, mesmo
+padrão de toda mudança visual/interativa nova): aparência do harvestable
+no mundo (sprite/ícone), clique direito abrindo o modal de loot num
+harvestable real colocado no mapa, comportamento com o mapa de produção
+real (nenhum harvestable de teste foi adicionado a `maps/map_1_entities.json`
+— isso é conteúdo/design do usuário, fora do escopo desta fase de infra).
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |

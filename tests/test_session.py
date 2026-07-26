@@ -906,6 +906,206 @@ class TestConditionalLootPerPlayer(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(results2[0]["items"], [])
 
 
+class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
+    """Item de mapa saqueável (Fase M1, 25/07/2026, pedido do usuário) —
+    planta/pergaminho/ferramenta que abre o mesmo modal de loot de corpse,
+    sem dono/grupo (público), permanente (no_decay) até M2 trazer respawn."""
+
+    async def asyncSetUp(self):
+        self.ws_server, self.mgr = make_session_manager()
+
+    def test_create_harvestables_for_map_resolve_items_e_ignora_invalido(self):
+        spawn_points = {"harvestables": [{
+            "x": 50, "y": 60, "name": "Arbusto de Frutas", "coins": 3,
+            "items": ["training_sword", ("small_hp_potion", 3),
+                      "item_key_que_nao_existe"],
+        }]}
+        before = set(self.ws_server._corpses.keys())
+        self.ws_server._create_harvestables_for_map(spawn_points, "map_test")
+        new_ids = set(self.ws_server._corpses.keys()) - before
+        self.assertEqual(len(new_ids), 1)
+        hid = new_ids.pop()
+        corpse = self.ws_server._corpses[hid]
+
+        self.assertEqual(corpse["owner_eid"], -1)
+        self.assertTrue(corpse["no_decay"])
+        self.assertEqual(corpse["timer"], float("inf"))
+        self.assertEqual(corpse["map"], "map_test")
+        self.assertEqual(corpse["tx"], 50)
+        self.assertEqual(corpse["ty"], 60)
+        self.assertEqual(corpse["name"], "Arbusto de Frutas")
+        self.assertEqual(corpse["coins"], 3)
+        names = [it["name"] for it in corpse["items"]]
+        self.assertEqual(len(names), 2)  # item inválido foi ignorado
+        self.assertIn("Espada de treinamento", names)
+        potion = next(it for it in corpse["items"]
+                     if it["name"] != "Espada de treinamento")
+        self.assertEqual(potion["stack"], 3)
+
+    def test_merge_entities_json_parses_harvestables(self):
+        import json, tempfile, os as _os
+        from engine.map_loader import _merge_entities_json
+
+        spawn_points = {
+            "player": (0, 0), "enemies": [], "portals": [],
+            "merchants": [], "quest_givers": [], "blacksmiths": [],
+            "trainers": [], "spawn_zones": [], "transitions": [],
+            "ambient_zones": [], "pvp_zones": [], "default_ambient": "",
+            "training_dummies": [], "combat_npcs": [],
+        }
+        data = {"harvestables": [{
+            "x": 10, "y": 20, "name": "Planta", "coins": 5,
+            "items": ["training_sword", ["small_hp_potion", 2]],
+        }]}
+        fd, path = tempfile.mkstemp(suffix=".json")
+        try:
+            with _os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+            _merge_entities_json(path, spawn_points)
+        finally:
+            _os.remove(path)
+
+        hv = spawn_points["harvestables"]
+        self.assertEqual(len(hv), 1)
+        self.assertEqual(hv[0]["x"], 10)
+        self.assertEqual(hv[0]["y"], 20)
+        self.assertEqual(hv[0]["name"], "Planta")
+        self.assertEqual(hv[0]["coins"], 5)
+        # Lista JSON vira tuple (normalize_reward_entry só reconhece tuple);
+        # string crua permanece string.
+        self.assertEqual(hv[0]["items"][0], "training_sword")
+        self.assertEqual(hv[0]["items"][1], ("small_hp_potion", 2))
+        self.assertIsInstance(hv[0]["items"][1], tuple)
+
+    def _make_harvestable(self, tx: int, ty: int, map_file: str = None) -> int:
+        hid = self.ws_server._next_corpse_id
+        self.ws_server._next_corpse_id += 1
+        self.ws_server._corpses[hid] = {
+            "tx": tx, "ty": ty, "owner_eid": -1,
+            "items": [{"name": "Fruta Silvestre", "icon_key": "", "item_type": "material",
+                       "rarity": "common", "value": 1, "slot": "", "stack": 1}],
+            "coins": 0, "timer": float("inf"),
+            "map": map_file or self.ws_server._map_file,
+            "mob_name": "", "mob_race": "", "quest_rolls": {},
+            "no_decay": True, "name": "Arbusto",
+        }
+        return hid
+
+    async def test_dois_jogadores_sem_grupo_looteiam_o_mesmo_harvestable(self):
+        """Diferente de corpse de mob: harvestable é público — sem dono, sem
+        checagem de grupo. Dois jogadores NÃO relacionados podem sacar."""
+        from shared.messages import encode
+        session_a, fw_a = await fake_login(self.mgr, "s1", "user_hv_a", 130, 374)
+        session_b, fw_b = await fake_login(self.mgr, "s2", "user_hv_b", 200, 400)
+        hid = self._make_harvestable(130, 374)
+
+        fw_a.sent.clear()
+        await self.mgr.on_message(session_a, encode(
+            MsgType.LOOT_REQUEST, {"corpse_id": hid, "take": "all"}))
+        results_a = get_msgs_of_type(fw_a, MsgType.LOOT_RESULT)
+        self.assertEqual(len(results_a), 1)
+        self.assertEqual(results_a[0]["items"][0]["name"], "Fruta Silvestre")
+
+        # Segundo harvestable "irmão" pro jogador B saquear (o primeiro já
+        # foi esvaziado pelo A) — confirma que B não precisa de grupo/dono
+        # pra interagir com um harvestable público igual.
+        hid2 = self._make_harvestable(200, 400)
+        fw_b.sent.clear()
+        await self.mgr.on_message(session_b, encode(
+            MsgType.LOOT_REQUEST, {"corpse_id": hid2, "take": "all"}))
+        results_b = get_msgs_of_type(fw_b, MsgType.LOOT_RESULT)
+        self.assertEqual(len(results_b), 1)
+        self.assertEqual(results_b[0]["items"][0]["name"], "Fruta Silvestre")
+
+    def test_no_decay_harvestable_nunca_expira(self):
+        """timer finito de propósito (produção usa float("inf") redundante
+        com no_decay) — só assim o teste prova que é a FLAG no_decay que
+        impede o decay, não o timer infinito escondendo o bug."""
+        hid = self._make_harvestable(10, 10)
+        self.ws_server._corpses[hid]["timer"] = 1.0
+        for _ in range(500):
+            self.ws_server._process_loot_drops(dt=10.0)
+        self.assertIn(hid, self.ws_server._corpses)
+
+    async def test_sweep_de_tick_descobre_harvestable_ao_entrar_no_aoi(self):
+        """Jogador loga LONGE do harvestable (fora do AOI), anda pra perto —
+        o sweep estacionário de _build_update_for_session deve achá-lo no
+        MESMO tick que o movimento do próprio player já dispara o dispatch
+        (has_pending por causa de deltas['moved'])."""
+        session, fw = await fake_login(self.mgr, "s1", "user_hv_c", 0, 0)
+        hid = self._make_harvestable(100, 100)
+
+        fw.sent.clear()
+        from engine.components import TileMovement as _TM_hv
+        tm = self.ws_server.world.get_component(session.entity_id, _TM_hv)
+        tm.current_tile_x = 100; tm.current_tile_y = 101
+        tm.target_tile_x  = 100; tm.target_tile_y  = 101
+        self.ws_server._tick(0.05)  # deltas reais (from_tx/from_ty) + dispatch
+        await asyncio.sleep(0)  # deixa a task criada por _on_tick rodar
+
+        aoi_updates = get_msgs_of_type(fw, MsgType.AOI_UPDATE)
+        spawned = [s for u in aoi_updates for s in u.get("spawned", [])
+                  if s.get("kind") == "harvestable"]
+        self.assertEqual(len(spawned), 1)
+        self.assertEqual(spawned[0]["corpse_id"], hid)
+        self.assertEqual(spawned[0]["eid"], -hid)
+
+        loot_avail = get_msgs_of_type(fw, MsgType.LOOT_AVAILABLE)
+        matching = [m for m in loot_avail if m["corpse_id"] == hid]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0]["items"][0]["name"], "Fruta Silvestre")
+
+    async def test_login_ja_dentro_do_aoi_descobre_harvestable_sem_precisar_de_atividade(self):
+        """Bug que corrigi ANTES de escrever este teste: um player que loga
+        já dentro do AOI de um harvestable parado não era coberto por
+        WORLD_STATE (só near_players/near_mobs) nem pelo sweep de tick (que
+        só roda se has_pending achar atividade) — se o mundo ficasse ocioso
+        logo após o login, o harvestable nunca aparecia. Fix:
+        get_harvestables_in_aoi() + follow-up LOOT_AVAILABLE dentro de
+        _spawn_and_start (server/session.py)."""
+        hid = self._make_harvestable(130, 374)
+        session, fw = await fake_login(self.mgr, "s1", "user_hv_d", 130, 374)
+
+        world_states = get_msgs_of_type(fw, MsgType.WORLD_STATE)
+        self.assertEqual(len(world_states), 1)
+        spawned = [e for e in world_states[0]["entities"]
+                  if e.get("kind") == "harvestable"]
+        self.assertEqual(len(spawned), 1)
+        self.assertEqual(spawned[0]["corpse_id"], hid)
+        self.assertEqual(spawned[0]["eid"], -hid)
+
+        loot_avail = get_msgs_of_type(fw, MsgType.LOOT_AVAILABLE)
+        matching = [m for m in loot_avail if m["corpse_id"] == hid]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0]["items"][0]["name"], "Fruta Silvestre")
+
+    async def test_world_state_com_harvestable_nao_vira_jogador_remoto_fantasma(self):
+        """Client-side: _handle_msg_world_state precisa reconhecer
+        kind=="harvestable" e pular (no-op), senão o eid negativo cai no
+        branch "else" (player) e cria um jogador remoto fantasma."""
+        import client.network_handlers as nh_mod
+
+        class _FakeClient:
+            _my_eid = 999
+            _spawn_remote_mob_called = False
+            _spawn_remote_player_called = False
+
+            def _spawn_remote_mob(self, eid, ent):
+                self._spawn_remote_mob_called = True
+
+            def _spawn_remote_player_entity(self, eid, data):
+                self._spawn_remote_player_called = True
+
+        fc = _FakeClient()
+        payload = {"tick": 1, "tx": 0, "ty": 0, "entities": [
+            {"eid": -42, "kind": "harvestable", "corpse_id": 42, "tx": 5, "ty": 5,
+             "name": "Planta"},
+        ]}
+        nh_mod.NetworkHandlers._handle_msg_world_state(fc, payload)
+        self.assertFalse(fc._spawn_remote_player_called)
+        self.assertFalse(fc._spawn_remote_mob_called)
+
+
 class TestArenaDispatchSemMovimento(unittest.IsolatedAsyncioTestCase):
     """Bug real relatado pelo usuário 21/07/2026: "só chamou a arena
     quando movi o personagem" + "cliquei em aceitar e ninguém entrou".
