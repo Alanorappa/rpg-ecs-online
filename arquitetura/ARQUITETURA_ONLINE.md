@@ -7686,6 +7686,30 @@ com a arquitetura de entidade real em jogo (a validação visual anterior
 do usuário foi contra a versão de `Corpse.color`/`.sprite_id`, já
 substituída) — precisa de nova confirmação visual.
 
+**Bug real encontrado pelo usuário ao testar (25/07/2026)**: caixa
+apareceu no mapa, mas clique direito não abria loot nenhum. Causa:
+`client/network_handlers.py::_handle_msg_aoi_update` (que processa a
+lista `"spawned"` de `AOI_UPDATE` — o caminho de descoberta MAIS COMUM,
+quando o player anda até perto de algo já existente) tem seu PRÓPRIO
+dispatch de `kind`, **separado** de `_handle_msg_entity_spawn`/
+`_handle_msg_world_state` (que já tratavam `"harvestable"` certo desde
+o commit anterior) — 3 call sites com dispatch de `kind` duplicado, só
+2 foram corrigidos. Sem o branch aqui, o harvestable caía no loop de
+fallback "player" (`kind not in ("enemy", "mob_projectile")`) e virava
+um JOGADOR REMOTO FANTASMA — a entidade de verdade (com o `Corpse` que
+o clique direito precisa) nunca era criada, então `LootSystem.
+_try_open_corpse` nunca achava nada pra abrir. Fix: `kind == "harvestable"`
+entra no primeiro loop (ao lado de `enemy`/`mob_projectile`, chamando
+`_spawn_remote_harvestable`) e é excluído do loop de fallback.
+
+**Validado**: `tests/test_client_ui.py::
+test_aoi_update_spawned_harvestable_chama_spawn_remote_harvestable` —
+reproduz o cenário exato (harvestable via `AOI_UPDATE.spawned`, confirma
+que NÃO vira `_remote_players` e que a entidade real com `Harvestable`+
+`Corpse` é criada). Confirmado via `git stash` que falha sem o fix
+(reproduziu o bug relatado: `assert 99 not in _remote_players` falhava
+de verdade). Suíte completa (530 testes) rodada 3x, 0 falhas.
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |

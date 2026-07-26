@@ -513,6 +513,31 @@ def test_aoi_update_spawned_propaga_level_do_player_remoto():
     assert rc.level == 4, "AOI_UPDATE (spawned) deveria propagar o level pro RemoteControlled"
 
 
+def test_aoi_update_spawned_harvestable_chama_spawn_remote_harvestable():
+    """Bug real relatado pelo usuário 25/07/2026: clicou numa caixa de
+    harvestable no jogo e nenhum loot apareceu. Causa: _handle_msg_aoi_update
+    tem seu PRÓPRIO dispatch de "spawned", separado de
+    _handle_msg_entity_spawn/_handle_msg_world_state (que já tratavam
+    "harvestable" certo) — sem um branch aqui, a entidade caía no loop de
+    fallback "player" e virava um jogador remoto fantasma; a entidade de
+    verdade (com o Corpse que o clique direito precisa) nunca era criada.
+    Este é o caminho de descoberta MAIS COMUM (o player anda até perto)."""
+    from engine.components import Harvestable, Corpse
+    fx = _make_net_fixture()
+    fx._handle_msg_aoi_update({"spawned": [{
+        "eid": 99, "kind": "harvestable", "corpse_id": 3,
+        "tx": 8, "ty": 9, "name": "Caixa", "sprite_id": "pr_box1",
+    }]})
+    assert 99 not in fx._remote_players, \
+        "harvestable não deveria virar jogador remoto fantasma"
+    local_eid = fx._remote_harvestables[99]
+    hv = fx.world.get_component(local_eid, Harvestable)
+    corpse = fx.world.get_component(local_eid, Corpse)
+    assert hv.corpse_id == 3
+    assert corpse is not None
+    assert fx._available_loot[3]["local_eid"] == local_eid
+
+
 # ── Harvestable como entidade real (Fase M1, revisão 2, 25/07/2026) ──────────
 # Antes: harvestable era um dict solto em _corpses, sem colisão/Y-sort real,
 # e a marca visual (elipse OU sprite) duplicava com _draw_remote_corpses.

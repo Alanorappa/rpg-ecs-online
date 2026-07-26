@@ -1147,12 +1147,26 @@ class NetworkHandlers:
                     self._spawn_remote_mob(eid, sp)
                 elif kind == "mob_projectile":
                     self._spawn_mob_projectile(eid, sp)
+                elif kind == "harvestable":
+                    # Fase M1, revisão 2 (25/07/2026) — faltava aqui: este
+                    # loop (AOI_UPDATE "spawned", o caminho MAIS COMUM de
+                    # descoberta — o player anda até perto) tem seu PRÓPRIO
+                    # dispatch de kind, separado de _handle_msg_entity_spawn/
+                    # _handle_msg_world_state (que já tratavam harvestable
+                    # corretamente). Sem este branch, o harvestable caía no
+                    # loop de baixo (fallback "player") e virava um jogador
+                    # remoto fantasma — a entidade de verdade (com o Corpse
+                    # que o clique direito precisa) nunca era criada. Bug
+                    # real relatado pelo usuário: clicou na caixa, loot não
+                    # apareceu.
+                    self._spawn_remote_harvestable(eid, sp)
         for sp in payload.get("spawned", []):
             eid  = sp.get("eid", -1)
             kind = sp.get("kind", "player")
-            # Ignora enemy e mob_projectile (já processados acima) e o próprio player
+            # Ignora enemy/mob_projectile/harvestable (já processados acima)
+            # e o próprio player.
             if eid != -1 and eid != self._my_eid \
-                    and kind not in ("enemy", "mob_projectile"):
+                    and kind not in ("enemy", "mob_projectile", "harvestable"):
                 self._spawn_remote_player_entity(eid, {
                     "tx": sp.get("tx", 0), "ty": sp.get("ty", 0),
                     "name":     sp.get("name", "?"),
