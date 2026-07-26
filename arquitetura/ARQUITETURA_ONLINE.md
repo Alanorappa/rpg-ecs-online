@@ -7744,6 +7744,35 @@ harvestable falham sem o fix (o de mob morto passa mesmo sem o fix, de
 propósito — prova que é o comportamento ANTIGO, não algo que o fix
 introduziu). Suíte completa (533 testes) rodada 3x, 0 falhas.
 
+**3º bug real, achado PROATIVAMENTE (não relatado pelo usuário, mas
+plausível o suficiente pra corrigir junto — o teste do usuário depois
+funcionou via relogin antes de eu confirmar isso em jogo)**:
+`LootSystem._try_open_corpse` (`ui/systems.py`), quando o clique acontece
+de LONGE (>1 tile de distância — `dist > 1`), manda o player ANDAR até
+o próprio tile do corpse (`player_auto.ground_target = (c_tile_x,
+c_tile_y)`) antes de abrir o modal. Isso sempre funcionou pra corpse de
+mob morto (sem colisão — o tile é andável). Harvestable AGORA tem
+colisão real (`TileMovement`, Fase M1 revisão 2) — o PRÓPRIO tile do
+harvestable é SÓLIDO, então um clique de longe mandava o player pra um
+destino inalcançável: a fila de movimento nunca terminava, `dist` nunca
+descia pra `<=1`, e o modal nunca abria — sem nenhum erro visível,
+parecia só "não fez nada".
+
+**Fix**: em vez de mirar o próprio tile do corpse, mira o tile ADJACENTE
+mais próximo do player (mesmo padrão que `_walk_to_merchant`, linha
+~2546, já usa pra NPC sólido — 4 direções cardeais, escolhe a de menor
+distância Manhattan até o player). Corpse de mob morto ganha o mesmo
+comportamento (andar até do lado em vez de por cima) — mudança cosmética
+sem impacto real pra eles.
+
+**Validado**: `tests/test_client_ui.py::
+test_try_open_corpse_de_longe_anda_pro_tile_adjacente_nao_pro_proprio` —
+clique de longe (dist=3) num harvestable confirma que `ground_target`
+NUNCA é o próprio tile do harvestable, e É um dos tiles adjacentes mais
+próximos do player. Confirmado via `git stash` que falha sem o fix
+(reproduziu o bug: `ground_target == (3, 3)`, o próprio tile do
+harvestable). Suíte completa (534 testes) rodada 3x, 0 falhas.
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |

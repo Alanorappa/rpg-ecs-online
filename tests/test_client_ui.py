@@ -361,6 +361,36 @@ def test_try_open_corpse_mob_morto_mantem_tolerancia_antiga():
         "corpse sem Renderable não deveria abrir a essa distância (tolerância antiga)"
 
 
+def test_try_open_corpse_de_longe_anda_pro_tile_adjacente_nao_pro_proprio():
+    """Bug real relatado pelo usuário 25/07/2026 (3ª rodada): "cliquei em
+    vários pontos da caixa, não abriu". Causa: clicar de LONGE (>1 tile)
+    fazia o auto-move mirar o PRÓPRIO tile do corpse — pra harvestable
+    (que agora tem colisão real, TileMovement) esse tile é SÓLIDO, então
+    o player nunca conseguia chegar lá e a fila de movimento ficava presa
+    pra sempre, sem NUNCA abrir o modal. Fix: mirar o tile ADJACENTE mais
+    próximo do player (mesmo padrão de _walk_to_merchant)."""
+    from ui.systems import LootSystem
+    from engine.components import (TileMovement, PlayerAutoMove, CombatState)
+    world, player, hv = _make_harvestable_loot_world()
+    # harvestable em pos.x=100,y=100 -> tile (3,3). Player longe (tile (0,0),
+    # dist=3) — fora do alcance de abertura imediata (dist>1).
+    world.add_component(player, TileMovement(current_tile_x=0, current_tile_y=0,
+                                             target_tile_x=0, target_tile_y=0))
+    world.add_component(player, PlayerAutoMove())
+    world.add_component(player, CombatState())
+
+    screen = pygame.display.get_surface()
+    loot = LootSystem(world, screen, player_entity=player)
+    loot._try_open_corpse(100, 100)   # clique no centro do harvestable
+
+    auto = world.get_component(player, PlayerAutoMove)
+    assert auto.ground_target != (3, 3), \
+        "não deveria mirar o próprio tile do harvestable (sólido — nunca alcançável)"
+    # Tile adjacente mais próximo do player em (0,0): (2,3) ou (3,2).
+    assert auto.ground_target in [(2, 3), (3, 2)]
+    assert loot.open_corpse_id == -1   # não abriu ainda — só começou a andar
+
+
 # ── client/network_handlers.py::_handle_msg_loot_result — INV_SYNC ───────────
 # Bug real relatado pelo usuário 18/07/2026: progresso de quest "colete N
 # itens" parou de atualizar no HUD/diário (entrega ainda funcionava, só a

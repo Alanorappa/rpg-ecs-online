@@ -3521,7 +3521,21 @@ class LootSystem(UIScaleMixin, System):
                     p_cs.is_pursuing = False
                     break
                 if player_auto:
-                    player_auto.ground_target = (c_tile_x, c_tile_y)
+                    # Anda pro tile ADJACENTE mais próximo, não pro tile do
+                    # corpse em si (Fase M1, revisão 3, 25/07/2026 — bug
+                    # real relatado pelo usuário: cliques de longe na caixa
+                    # nunca abriam o loot). Corpse de mob morto não tem
+                    # colisão, então mirar o próprio tile sempre funcionou;
+                    # harvestable AGORA tem colisão real (TileMovement) —
+                    # o próprio tile é SÓLIDO, então o auto-move nunca
+                    # conseguia chegar lá e a fila de movimento ficava presa
+                    # pra sempre, sem abrir o modal. Mesmo padrão já usado
+                    # por _walk_to_merchant (linha ~2546) pra NPC sólido.
+                    adj = [(c_tile_x + dx, c_tile_y + dy)
+                          for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1))]
+                    ptx, pty = player_tm.current_tile_x, player_tm.current_tile_y
+                    target = min(adj, key=lambda t: abs(t[0]-ptx) + abs(t[1]-pty))
+                    player_auto.ground_target = target
                     player_auto.active = True
                     player_auto.path.clear()
                     player_auto.path_recalc_timer = 0.0
