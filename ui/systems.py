@@ -3726,16 +3726,25 @@ class LootSystem(UIScaleMixin, System):
     # ------------------------------------------------------------------ #
     def render_world(self, camera_offset_x: float = 0, camera_offset_y: float = 0) -> None:
         """Desenha cadáveres no mundo: vazios primeiro (embaixo), com loot por cima."""
+        from ui.tile_sprite_manager import TILE_SPRITES
         all_corpses = list(self.world.get_entities_with(Position, Corpse))
         all_corpses.sort(key=lambda c: 0 if (not c[2].loot and c[2].coins <= 0) else 1)
         for entity_id, pos, corpse in all_corpses:
             draw_x = pos.x - camera_offset_x
             draw_y = pos.y - camera_offset_y
             # Sprite customizado (Fase M1, harvestable de mapa) tem prioridade
-            # sobre a elipse — None se o arquivo não existir (fallback abaixo).
-            icon_surf = ICONS.get(corpse.icon_key, 28) if corpse.icon_key else None
-            if icon_surf:
-                self.world_surf.blit(icon_surf, (int(draw_x - 14), int(draw_y - 14)))
+            # sobre a elipse — reaproveita o MESMO catálogo de sprites de
+            # objeto de mapa (engine/tileset.py, ex: "pr_box1"), não um ícone
+            # quadrado avulso. None se o id não existir (fallback abaixo).
+            # NOTA: ainda não passa pelo Y-sort de entidades (renderiza antes
+            # do _render_system, ver game.py) — sprite alto (ex: 32×64) pode
+            # ficar sempre atrás do player mesmo quando devia ficar na frente.
+            sprite = TILE_SPRITES.get_raw_sprite(corpse.sprite_id) if corpse.sprite_id else None
+            if sprite:
+                spr_w, spr_h = sprite.get_size()
+                blit_x = draw_x - TILE_SIZE / 2         # esquerda do tile (mesmo ancoramento de objeto de mapa)
+                blit_y = draw_y + TILE_SIZE / 2 - spr_h  # base do sprite = base do tile
+                self.world_surf.blit(sprite, (int(blit_x), int(blit_y)))
                 continue
             if corpse.color:
                 color = corpse.color

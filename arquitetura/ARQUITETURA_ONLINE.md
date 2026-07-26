@@ -7657,37 +7657,68 @@ apareceu na tile certa, clique direito abriu o loot, conteúdo batendo
 100% com o configurado no JSON (print anexado pelo usuário confirmando
 10 moedas + Espada de treinamento + Poção Pequena de Vida ×3).
 
-**Sprite customizado (`Corpse.icon_key`)**: pergunta de acompanhamento
-do usuário — a marca no mundo usava a MESMA elipse "saco" de um corpse
-de mob morto, sem diferenciação visual real. `Corpse` ganhou
-`icon_key: str = ""` (nome do arquivo em `assets/icons/<icon_key>.png`,
-mesma convenção já usada por `ui/icon_manager.py::ICONS`/`item_key()`
-pros ícones de item). `render_world` tenta `ICONS.get(corpse.icon_key,
-28)` primeiro — se existir um PNG com esse nome, desenha o sprite (28×28,
-centralizado); senão cai no fallback antigo (elipse + `color`/estado).
-Mesmo percurso do `color`: JSON (`"icon": "..."`) → `_merge_entities_json`
-→ `_create_harvestables_for_map` → `LOOT_AVAILABLE` (os 2 pontos de envio)
-→ `_handle_msg_loot_available` → `create_corpse(icon_key=...)`. Corpse de
-mob morto nunca seta `icon_key`, comportamento antigo intacto.
+**Sprite customizado — 1a tentativa (`Corpse.icon_key`, SUPERSEDIDA no
+mesmo dia)**: usei `assets/icons/`+`ui/icon_manager.py::ICONS` (convenção
+de ícone quadrado de item/skill) pro sprite do harvestable. O usuário
+corrigiu na hora: isso não é um ícone, é uma SPRITE de objeto de mapa —
+o catálogo certo já existe em `assets/tiles/` + `engine/tileset.py`
+(`OBJECT_SHEET_FAMILIES`/`SPRITE_FAMILIES`, com colisão/tamanho/etc. já
+catalogados) e devia ser reaproveitado, não duplicado com um sistema
+novo. Ver correção abaixo — o texto desta entrada fica só como histórico
+de por que o nome do campo mudou de `icon_key`/`"icon"` pra `sprite_id`/
+`"sprite"` no mesmo commit-sequência.
 
-**Para o usuário customizar a imagem de um harvestable**: salvar um PNG
-em `assets/icons/` (qualquer tamanho, é escalado pra 28×28) e referenciar
-o NOME do arquivo sem `assets/icons/` nem `.png` no campo `"icon"` da
-entrada em `maps/map_X_entities.json` (ex.: arquivo
-`assets/icons/harvestable_arbusto.png` → `"icon": "harvestable_arbusto"`).
-Harvestable de teste (`maps/map_1_entities.json`, 130/374) ainda SEM
-`icon` — continua usando a elipse amarela (`color`) até o usuário
-fornecer um sprite de verdade.
+**Sprite customizado — versão corrigida (`Corpse.sprite_id`)**: `Corpse`
+ganhou `sprite_id: str = ""` — um ID já catalogado em
+`OBJECT_SHEET_TILE_MAP`/`SHEET_TILE_MAP` (`engine/tileset.py`, populado
+por `discover_object_sheet_tiles()`/`discover_sheet_tiles()` ao importar
+o módulo), MESMO catálogo usado pra árvore/caixa/grade/etc. como objeto
+de mapa normal. `render_world` (`ui/systems.py::LootSystem`) chama
+`ui.tile_sprite_manager.TILE_SPRITES.get_raw_sprite(corpse.sprite_id)`
+(extrai a sub-região do PNG do sheet, cacheada) — se existir, desenha o
+sprite no tamanho NATIVO (não redimensiona), ancorado como QUALQUER
+objeto de mapa (base do sprite = base do tile, esquerda do sprite =
+esquerda do tile — mesma fórmula de `TileRenderSystem`, linha ~1926-1929);
+senão cai no fallback antigo (elipse + `color`/estado). Mesmo percurso do
+`color`: JSON (`"sprite": "pr_box1"`) → `_merge_entities_json` →
+`_create_harvestables_for_map` → `LOOT_AVAILABLE` (os 2 pontos de envio)
+→ `_handle_msg_loot_available` → `create_corpse(sprite_id=...)`. Corpse
+de mob morto nunca seta `sprite_id`, comportamento antigo intacto.
 
-**Validado (icon)**: 3 testes novos em `TestHarvestableM1` (resolução de
-`icon_key` em `_create_harvestables_for_map`, parsing `"icon"` em
-`_merge_entities_json`, entrega íntegra no `LOOT_AVAILABLE` de login).
-Confirmado via `git stash` que os 3 falham sem a implementação. Suíte
-completa (526 testes) rodada 3x, 0 falhas.
+**Caveat conhecido, não resolvido**: `render_world` desenha ANTES do
+passe Y-sorted de entidades (`game.py`, `_loot_system.render_world` roda
+antes de `_render_system.render`) — um sprite alto (ex: `pr_box1` é
+32×64) sempre fica ATRÁS do player, mesmo quando o player está atrás
+dele na tela. Pré-existente (mesma ordem de render já valia pra elipse,
+só que uma elipse rasa de 12px quase nunca sobrepõe visualmente um
+personagem em pé) — só fica realmente visível com sprite alto. Não
+corrigido nesta sessão (exigiria integrar harvestable no mesmo Y-sort de
+`_render_system`/`get_world_objects`, fora do escopo do pedido).
 
-**Não validado nesta sessão**: aparência do sprite customizado em jogo
-(nenhum PNG de harvestable foi criado ainda — depende do usuário
-fornecer a arte).
+**Para o usuário customizar o sprite de um harvestable**: usar um ID já
+catalogado em `engine/tileset.py` (`OBJECT_SHEET_FAMILIES`, ex.: qualquer
+entrada de `"TX Props"` como `"chest"`→`"pr_chest"`, `"box1"`→`"pr_box1"`,
+`"barrel"`→`"pr_barrel"`, ou de `"TX Plant"` como `"bush1"`→`"pl_bush1"`)
+no campo `"sprite"` da entrada em `maps/map_X_entities.json`. Pra ADICIONAR
+um sprite novo ao catálogo (não usar um já existente), é uma entrada nova
+em `OBJECT_SHEET_FAMILIES`/`SPRITE_FAMILIES` (`engine/tileset.py`) — fora
+do escopo desta fase, mas o mecanismo já suporta. Harvestable de teste
+(`maps/map_1_entities.json`, 130/374) alterado pra `"sprite": "pr_box1"`
+(era só `color` antes) — nome do harvestable também ajustado pra "Caixa
+de Teste (M1)".
+
+**Validado (sprite_id)**: 4 testes novos em `TestHarvestableM1` (resolução
+de `sprite_id` em `_create_harvestables_for_map`, parsing `"sprite"` em
+`_merge_entities_json`, entrega íntegra no `LOOT_AVAILABLE` de login,
+`TILE_SPRITES.get_raw_sprite("pr_box1")` de fato resolve pro catálogo
+real com o tamanho esperado 32×64). Confirmado via `git stash` que os 3
+testes de plumbing falham sem a implementação (o 4o, de resolução do
+catálogo em si, não depende do código novo — testa só a precondição).
+Suíte completa (527 testes) rodada 3x, 0 falhas.
+
+**Não validado nesta sessão**: aparência do sprite `pr_box1` em jogo real
+(troca de nome/campo feita depois do último teste manual do usuário —
+precisa nova confirmação visual), nem o caveat de Y-sort acima.
 
 ### Arquiteturais (A) — débito técnico
 

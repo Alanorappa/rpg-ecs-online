@@ -330,9 +330,9 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
                 # Cor customizada da marca no mundo (fallback se não tiver
                 # sprite) — [r,g,b] do JSON, None se ausente.
                 "color": tuple(hv["color"]) if hv.get("color") else None,
-                # Nome do arquivo em assets/icons/<icon>.png (sem prefixo/
-                # extensão) — "" = sem sprite, usa a elipse colorida acima.
-                "icon": hv.get("icon", ""),
+                # ID do catálogo de sprites de objeto de mapa (engine/tileset.py,
+                # ex: "pr_box1") — "" = sem sprite, usa a elipse colorida acima.
+                "sprite": hv.get("sprite", ""),
             }
             for hv in data["harvestables"]
         ]

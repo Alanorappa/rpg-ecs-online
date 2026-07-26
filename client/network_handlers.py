@@ -1760,7 +1760,7 @@ class NetworkHandlers:
         local_corpse_eid = create_corpse(self.world, px, py, loot_items, coins,
                                          decay_time=120.0,
                                          color=tuple(_color) if _color else None,
-                                         icon_key=payload.get("icon", ""))
+                                         sprite_id=payload.get("sprite", ""))
         # Guarda mapeamento corpse_id (servidor) → local ECS eid
         self._available_loot[corpse_id] = {
             "local_eid": local_corpse_eid, "tx": tx, "ty": ty

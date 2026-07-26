@@ -917,7 +917,7 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
     def test_create_harvestables_for_map_resolve_items_e_ignora_invalido(self):
         spawn_points = {"harvestables": [{
             "x": 50, "y": 60, "name": "Arbusto de Frutas", "coins": 3,
-            "color": [255, 255, 120], "icon": "harvestable_arbusto",
+            "color": [255, 255, 120], "sprite": "pr_box1",
             "items": ["training_sword", ("small_hp_potion", 3),
                       "item_key_que_nao_existe"],
         }]}
@@ -937,7 +937,7 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(corpse["name"], "Arbusto de Frutas")
         self.assertEqual(corpse["coins"], 3)
         self.assertEqual(corpse["color"], [255, 255, 120])
-        self.assertEqual(corpse["icon_key"], "harvestable_arbusto")
+        self.assertEqual(corpse["sprite_id"], "pr_box1")
         names = [it["name"] for it in corpse["items"]]
         self.assertEqual(len(names), 2)  # item inválido foi ignorado
         self.assertIn("Espada de treinamento", names)
@@ -946,9 +946,9 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(potion["stack"], 3)
 
     async def test_login_ja_dentro_do_aoi_envia_cor_customizada(self):
-        """color (Fase M1, placeholder até ter sprite de verdade) precisa
-        chegar íntegra no LOOT_AVAILABLE — é o que o cliente usa pra
-        desenhar a marca do harvestable diferente de um corpse comum."""
+        """color (fallback se não tiver sprite) precisa chegar íntegra no
+        LOOT_AVAILABLE — é o que o cliente usa pra desenhar a marca do
+        harvestable diferente de um corpse comum."""
         hid = self._make_harvestable(50, 50)
         self.ws_server._corpses[hid]["color"] = [10, 200, 30]
         session, fw = await fake_login(self.mgr, "s1", "user_hv_e", 50, 50)
@@ -958,17 +958,31 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(matching), 1)
         self.assertEqual(matching[0]["color"], [10, 200, 30])
 
-    async def test_login_ja_dentro_do_aoi_envia_icon_customizado(self):
-        """icon (sprite real em assets/icons/) tem prioridade sobre color
-        no cliente — precisa chegar íntegro no LOOT_AVAILABLE também."""
+    async def test_login_ja_dentro_do_aoi_envia_sprite_customizado(self):
+        """sprite (ID do catálogo de objeto de mapa, ex: "pr_box1") tem
+        prioridade sobre color no cliente — precisa chegar íntegro no
+        LOOT_AVAILABLE também."""
         hid = self._make_harvestable(60, 60)
-        self.ws_server._corpses[hid]["icon_key"] = "harvestable_arbusto"
+        self.ws_server._corpses[hid]["sprite_id"] = "pr_box1"
         session, fw = await fake_login(self.mgr, "s1", "user_hv_f", 60, 60)
 
         loot_avail = get_msgs_of_type(fw, MsgType.LOOT_AVAILABLE)
         matching = [m for m in loot_avail if m["corpse_id"] == hid]
         self.assertEqual(len(matching), 1)
-        self.assertEqual(matching[0]["icon"], "harvestable_arbusto")
+        self.assertEqual(matching[0]["sprite"], "pr_box1")
+
+    def test_sprite_id_resolve_via_tile_sprites_catalog(self):
+        """sprite_id precisa ser um ID já catalogado em engine/tileset.py
+        (OBJECT_SHEET_TILE_MAP/SHEET_TILE_MAP) — TILE_SPRITES.get_raw_sprite
+        é o MESMO mecanismo usado pra sprites de objeto de mapa (árvore,
+        caixa etc.), reaproveitado aqui em vez de um ícone quadrado avulso."""
+        import pygame
+        if not pygame.display.get_surface():
+            pygame.display.set_mode((1, 1))
+        from ui.tile_sprite_manager import TILE_SPRITES
+        surf = TILE_SPRITES.get_raw_sprite("pr_box1")
+        self.assertIsNotNone(surf)
+        self.assertEqual(surf.get_size(), (32, 64))
 
     def test_merge_entities_json_parses_harvestables(self):
         import json, tempfile, os as _os
@@ -983,7 +997,7 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
         }
         data = {"harvestables": [{
             "x": 10, "y": 20, "name": "Planta", "coins": 5,
-            "color": [255, 255, 120], "icon": "harvestable_planta",
+            "color": [255, 255, 120], "sprite": "pr_box1",
             "items": ["training_sword", ["small_hp_potion", 2]],
         }]}
         fd, path = tempfile.mkstemp(suffix=".json")
@@ -1001,7 +1015,7 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(hv[0]["name"], "Planta")
         self.assertEqual(hv[0]["coins"], 5)
         self.assertEqual(hv[0]["color"], (255, 255, 120))
-        self.assertEqual(hv[0]["icon"], "harvestable_planta")
+        self.assertEqual(hv[0]["sprite"], "pr_box1")
         # Lista JSON vira tuple (normalize_reward_entry só reconhece tuple);
         # string crua permanece string.
         self.assertEqual(hv[0]["items"][0], "training_sword")
