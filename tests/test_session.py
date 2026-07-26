@@ -917,7 +917,7 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
     def test_create_harvestables_for_map_resolve_items_e_ignora_invalido(self):
         spawn_points = {"harvestables": [{
             "x": 50, "y": 60, "name": "Arbusto de Frutas", "coins": 3,
-            "color": [255, 255, 120],
+            "color": [255, 255, 120], "icon": "harvestable_arbusto",
             "items": ["training_sword", ("small_hp_potion", 3),
                       "item_key_que_nao_existe"],
         }]}
@@ -937,6 +937,7 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(corpse["name"], "Arbusto de Frutas")
         self.assertEqual(corpse["coins"], 3)
         self.assertEqual(corpse["color"], [255, 255, 120])
+        self.assertEqual(corpse["icon_key"], "harvestable_arbusto")
         names = [it["name"] for it in corpse["items"]]
         self.assertEqual(len(names), 2)  # item inválido foi ignorado
         self.assertIn("Espada de treinamento", names)
@@ -957,6 +958,18 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(matching), 1)
         self.assertEqual(matching[0]["color"], [10, 200, 30])
 
+    async def test_login_ja_dentro_do_aoi_envia_icon_customizado(self):
+        """icon (sprite real em assets/icons/) tem prioridade sobre color
+        no cliente — precisa chegar íntegro no LOOT_AVAILABLE também."""
+        hid = self._make_harvestable(60, 60)
+        self.ws_server._corpses[hid]["icon_key"] = "harvestable_arbusto"
+        session, fw = await fake_login(self.mgr, "s1", "user_hv_f", 60, 60)
+
+        loot_avail = get_msgs_of_type(fw, MsgType.LOOT_AVAILABLE)
+        matching = [m for m in loot_avail if m["corpse_id"] == hid]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0]["icon"], "harvestable_arbusto")
+
     def test_merge_entities_json_parses_harvestables(self):
         import json, tempfile, os as _os
         from engine.map_loader import _merge_entities_json
@@ -970,7 +983,7 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
         }
         data = {"harvestables": [{
             "x": 10, "y": 20, "name": "Planta", "coins": 5,
-            "color": [255, 255, 120],
+            "color": [255, 255, 120], "icon": "harvestable_planta",
             "items": ["training_sword", ["small_hp_potion", 2]],
         }]}
         fd, path = tempfile.mkstemp(suffix=".json")
@@ -988,6 +1001,7 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(hv[0]["name"], "Planta")
         self.assertEqual(hv[0]["coins"], 5)
         self.assertEqual(hv[0]["color"], (255, 255, 120))
+        self.assertEqual(hv[0]["icon"], "harvestable_planta")
         # Lista JSON vira tuple (normalize_reward_entry só reconhece tuple);
         # string crua permanece string.
         self.assertEqual(hv[0]["items"][0], "training_sword")

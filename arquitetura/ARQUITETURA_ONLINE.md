@@ -7652,9 +7652,42 @@ de `spawn_zones` de mob). Hoje cada harvestable ainda é 1 entrada
 `spawn_zones` era antes de existir esse recurso pra mob. Não implementado
 nesta sessão.
 
-**Não validado nesta sessão** (depende de teste manual do usuário, mesmo
-padrão de toda mudança visual/interativa nova): aparência do harvestable
-de teste no mundo, clique direito abrindo o modal de loot nele.
+**Validado pelo usuário em jogo real (25/07/2026)**: harvestable de teste
+apareceu na tile certa, clique direito abriu o loot, conteúdo batendo
+100% com o configurado no JSON (print anexado pelo usuário confirmando
+10 moedas + Espada de treinamento + Poção Pequena de Vida ×3).
+
+**Sprite customizado (`Corpse.icon_key`)**: pergunta de acompanhamento
+do usuário — a marca no mundo usava a MESMA elipse "saco" de um corpse
+de mob morto, sem diferenciação visual real. `Corpse` ganhou
+`icon_key: str = ""` (nome do arquivo em `assets/icons/<icon_key>.png`,
+mesma convenção já usada por `ui/icon_manager.py::ICONS`/`item_key()`
+pros ícones de item). `render_world` tenta `ICONS.get(corpse.icon_key,
+28)` primeiro — se existir um PNG com esse nome, desenha o sprite (28×28,
+centralizado); senão cai no fallback antigo (elipse + `color`/estado).
+Mesmo percurso do `color`: JSON (`"icon": "..."`) → `_merge_entities_json`
+→ `_create_harvestables_for_map` → `LOOT_AVAILABLE` (os 2 pontos de envio)
+→ `_handle_msg_loot_available` → `create_corpse(icon_key=...)`. Corpse de
+mob morto nunca seta `icon_key`, comportamento antigo intacto.
+
+**Para o usuário customizar a imagem de um harvestable**: salvar um PNG
+em `assets/icons/` (qualquer tamanho, é escalado pra 28×28) e referenciar
+o NOME do arquivo sem `assets/icons/` nem `.png` no campo `"icon"` da
+entrada em `maps/map_X_entities.json` (ex.: arquivo
+`assets/icons/harvestable_arbusto.png` → `"icon": "harvestable_arbusto"`).
+Harvestable de teste (`maps/map_1_entities.json`, 130/374) ainda SEM
+`icon` — continua usando a elipse amarela (`color`) até o usuário
+fornecer um sprite de verdade.
+
+**Validado (icon)**: 3 testes novos em `TestHarvestableM1` (resolução de
+`icon_key` em `_create_harvestables_for_map`, parsing `"icon"` em
+`_merge_entities_json`, entrega íntegra no `LOOT_AVAILABLE` de login).
+Confirmado via `git stash` que os 3 falham sem a implementação. Suíte
+completa (526 testes) rodada 3x, 0 falhas.
+
+**Não validado nesta sessão**: aparência do sprite customizado em jogo
+(nenhum PNG de harvestable foi criado ainda — depende do usuário
+fornecer a arte).
 
 ### Arquiteturais (A) — débito técnico
 

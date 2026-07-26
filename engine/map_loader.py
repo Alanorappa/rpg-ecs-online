@@ -327,9 +327,12 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
                 "items": [tuple(e) if isinstance(e, list) else e
                           for e in hv.get("items", [])],
                 "coins": hv.get("coins", 0),
-                # Cor customizada da marca no mundo (placeholder até ter
-                # sprite de verdade) — [r,g,b] do JSON, None se ausente.
+                # Cor customizada da marca no mundo (fallback se não tiver
+                # sprite) — [r,g,b] do JSON, None se ausente.
                 "color": tuple(hv["color"]) if hv.get("color") else None,
+                # Nome do arquivo em assets/icons/<icon>.png (sem prefixo/
+                # extensão) — "" = sem sprite, usa a elipse colorida acima.
+                "icon": hv.get("icon", ""),
             }
             for hv in data["harvestables"]
         ]

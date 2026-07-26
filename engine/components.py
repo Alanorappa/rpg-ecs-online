@@ -808,7 +808,7 @@ class Corpse:
     LOOTED_DECAY_TIME = 30.0   # segundos restantes após todo o loot ser retirado
 
     def __init__(self, loot: list = None, coins: int = 0, decay_time: float = None,
-                 color: tuple = None):
+                 color: tuple = None, icon_key: str = ""):
         self.loot: list   = loot if loot is not None else []
         self.coins: int   = coins
         self.timer: float = decay_time if decay_time is not None else self.DECAY_TIME
@@ -817,6 +817,10 @@ class Corpse:
         # Cor customizada da marca no mundo (Fase M1, harvestable de mapa) —
         # None = comportamento antigo (cor por estado: ouro/loot/vazio).
         self.color: tuple = tuple(color) if color else None
+        # Sprite customizado da marca no mundo (Fase M1) — nome do arquivo
+        # em assets/icons/<icon_key>.png (mesma convenção de ICONS.item_key,
+        # sem prefixo/extensão). "" = sem sprite, usa a elipse colorida.
+        self.icon_key: str = icon_key or ""
 
 
 @dataclass

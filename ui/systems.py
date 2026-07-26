@@ -3731,6 +3731,12 @@ class LootSystem(UIScaleMixin, System):
         for entity_id, pos, corpse in all_corpses:
             draw_x = pos.x - camera_offset_x
             draw_y = pos.y - camera_offset_y
+            # Sprite customizado (Fase M1, harvestable de mapa) tem prioridade
+            # sobre a elipse — None se o arquivo não existir (fallback abaixo).
+            icon_surf = ICONS.get(corpse.icon_key, 28) if corpse.icon_key else None
+            if icon_surf:
+                self.world_surf.blit(icon_surf, (int(draw_x - 14), int(draw_y - 14)))
+                continue
             if corpse.color:
                 color = corpse.color
             else:

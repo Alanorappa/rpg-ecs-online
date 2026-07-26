@@ -611,11 +611,12 @@ def create_training_dummy(world: World, tile_x: int, tile_y: int) -> int:
 
 
 def create_corpse(world: World, x: float, y: float, loot: list, coins: int = 0,
-                  decay_time: float = None, color: tuple = None) -> int:
+                  decay_time: float = None, color: tuple = None,
+                  icon_key: str = "") -> int:
     corpse_entity = world.create_entity()
     world.add_component(corpse_entity, Position(x=x, y=y, prev_x=x, prev_y=y))
     world.add_component(corpse_entity, Corpse(loot=loot, coins=coins, decay_time=decay_time,
-                                              color=color))
+                                              color=color, icon_key=icon_key))
     return corpse_entity
 
 
