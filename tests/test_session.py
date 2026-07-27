@@ -919,7 +919,8 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
 
     def _make_harvestable(self, tx: int, ty: int, map_file: str = None,
                           name: str = "Arbusto", sprite: str = "pr_box1",
-                          items: list = None) -> int:
+                          items: list = None, coins: int = 0,
+                          respawn_s: float = 0) -> int:
         """Cria o harvestable pelo caminho de produção real
         (_create_harvestables_for_map) — devolve o corpse_id (hid).
         Em produção, `_load_map_for` chama isso ANTES de um snapshot-diff
@@ -932,7 +933,7 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
         spawn_points = {"harvestables": [{
             "x": tx, "y": ty, "name": name, "sprite": sprite,
             "items": items if items is not None else ["training_sword"],
-            "coins": 0,
+            "coins": coins, "respawn_s": respawn_s,
         }]}
         before_corpses = set(self.ws_server._corpses.keys())
         before_hv_eids = set(self.ws_server._harvestable_eids)
@@ -1189,6 +1190,97 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(fc._spawn_remote_player_called)
         self.assertFalse(fc._spawn_remote_mob_called)
         self.assertEqual(fc._spawn_remote_harvestable_args, (42, payload["entities"][0]))
+
+
+class TestHarvestableRespawnM2(unittest.IsolatedAsyncioTestCase):
+    """Fase M2 (25/07/2026) — harvestable de posição fixa com
+    respawn_s > 0 reabastece sozinho depois de esvaziar POR COMPLETO
+    (itens E moedas), resetando também o loot condicional de quest
+    (quest_rolls) — decisões do usuário confirmadas via AskUserQuestion.
+    Harvestable sem respawn_s (M1 original) nunca reabastece."""
+
+    async def asyncSetUp(self):
+        self.ws_server, self.mgr = make_session_manager()
+
+    def _make_harvestable(self, tx: int, ty: int, map_file: str = None,
+                          name: str = "Arbusto", sprite: str = "pr_box1",
+                          items: list = None, coins: int = 0,
+                          respawn_s: float = 0) -> int:
+        map_key = map_file or self.ws_server._map_file
+        spawn_points = {"harvestables": [{
+            "x": tx, "y": ty, "name": name, "sprite": sprite,
+            "items": items if items is not None else ["training_sword"],
+            "coins": coins, "respawn_s": respawn_s,
+        }]}
+        before_corpses = set(self.ws_server._corpses.keys())
+        before_hv_eids = set(self.ws_server._harvestable_eids)
+        self.ws_server._create_harvestables_for_map(spawn_points, map_key)
+        from engine.components import MapLocation as _MLhv2
+        for _new_eid in set(self.ws_server._harvestable_eids) - before_hv_eids:
+            if self.ws_server.world.get_component(_new_eid, _MLhv2) is None:
+                self.ws_server.world.add_component(_new_eid, _MLhv2(map_key))
+        return (set(self.ws_server._corpses.keys()) - before_corpses).pop()
+
+    def test_respawn_s_zero_nunca_reabastece(self):
+        """Regressão do M1 original — sem respawn_s, esvaziar é definitivo."""
+        hid = self._make_harvestable(10, 10, coins=5, items=[])
+        corpse = self.ws_server._corpses[hid]
+        corpse["coins"] = 0  # esvazia manualmente (simula saque completo)
+        for _ in range(200):
+            self.ws_server._tick_harvestable_respawn(dt=10.0)
+        self.assertEqual(corpse["items"], [])
+        self.assertEqual(corpse["coins"], 0)
+
+    def test_saque_parcial_nao_conta_como_vazio(self):
+        """Gatilho do respawn: só conta quando o pote esvazia POR
+        COMPLETO — ainda ter moedas (mesmo sem itens) não inicia o timer."""
+        hid = self._make_harvestable(20, 20, coins=5, respawn_s=1.0)
+        corpse = self.ws_server._corpses[hid]
+        corpse["items"] = []   # itens já saqueados, mas moedas continuam
+        self.ws_server._tick_harvestable_respawn(dt=100.0)  # bem mais que respawn_s
+        self.assertEqual(corpse["coins"], 5)  # não deveria ter sido "reabastecido"
+        self.assertEqual(corpse["empty_timer"], 0.0)
+
+    def test_reabastece_depois_do_respawn_s_com_pote_totalmente_vazio(self):
+        hid = self._make_harvestable(30, 30, coins=7, items=["training_sword"],
+                                     respawn_s=5.0)
+        corpse = self.ws_server._corpses[hid]
+        corpse["items"] = []
+        corpse["coins"] = 0
+        corpse["quest_rolls"] = {999: [{"name": "item fantasma"}]}  # simula sorteio antigo
+
+        self.ws_server._tick_harvestable_respawn(dt=3.0)  # < respawn_s
+        self.assertEqual(corpse["coins"], 0)
+        self.assertEqual(corpse["items"], [])
+
+        self.ws_server._tick_harvestable_respawn(dt=3.0)  # total 6.0 >= 5.0
+        self.assertEqual(corpse["coins"], 7)
+        self.assertEqual(len(corpse["items"]), 1)
+        self.assertEqual(corpse["items"][0]["name"], "Espada de treinamento")
+        self.assertEqual(corpse["quest_rolls"], {}, "respawn deveria resetar quest_rolls também")
+
+    async def test_notifica_sessao_que_ja_conhece_ao_reabastecer(self):
+        """Sessão que já descobriu o harvestable recebe LOOT_AVAILABLE
+        de novo quando ele reabastece — sem precisar redescobrir."""
+        # Harvestable ANTES do login — assim WORLD_STATE já descobre a
+        # entidade no login (known_eids já inclui), garantindo que o
+        # único LOOT_AVAILABLE do refill vem do bloco novo (M2), não de
+        # uma descoberta "de primeira vez" competindo no mesmo tick.
+        hid = self._make_harvestable(130, 374, coins=9, items=[], respawn_s=2.0)
+        session, fw = await fake_login(self.mgr, "s1", "user_hv_resp", 130, 374)
+        corpse = self.ws_server._corpses[hid]
+        corpse["items"] = []
+        corpse["coins"] = 0
+
+        fw.sent.clear()
+        self.ws_server._tick_harvestable_respawn(dt=5.0)  # passa do respawn_s
+        self.mgr._on_tick(self.ws_server.tick_count, {})
+        await asyncio.sleep(0)
+
+        loot_avail = get_msgs_of_type(fw, MsgType.LOOT_AVAILABLE)
+        matching = [m for m in loot_avail if m["corpse_id"] == hid]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0]["coins"], 9)
 
 
 class TestArenaDispatchSemMovimento(unittest.IsolatedAsyncioTestCase):

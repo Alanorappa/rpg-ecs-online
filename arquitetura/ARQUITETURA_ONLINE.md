@@ -7826,6 +7826,58 @@ eid é sempre positivo — entidade real, nunca despachado como negativo)
 mexem nisso. Os outros `remove_entity` do arquivo são de player/mob/
 projétil remoto, sem relação com `Corpse`.
 
+**Fase M2 — Respawn (harvestable de posição fixa, 25/07/2026)**: depois
+que o usuário perguntou "como configurar trava de quest/respawn/
+quantidade numa área", alinhamos o design via `AskUserQuestion` antes de
+implementar (decisões abaixo, não perguntar de novo):
+- Gatilho do respawn: só conta quando o pote esvazia POR COMPLETO
+  (itens E moedas) — saque parcial não inicia o timer.
+- Respawn reseta TUDO: itens/moedas comuns E `quest_rolls` (Fase L1) —
+  todo mundo ganha uma chance nova, mesmo quem já tinha resolvido o
+  sorteio condicional antes do respawn.
+
+`server/world_server.py::_create_harvestables_for_map` agora guarda o
+TEMPLATE original (`_template_items`/`_template_coins`, antes de
+resolver via fábrica) + `respawn_s` (0/ausente = nunca reabastece,
+comportamento da Fase M1 intacto) + `empty_timer: 0.0` no dict do
+corpse. Resolução de item extraída pra
+`_resolve_harvestable_items(template_items, context_name)` (reaproveitada
+tanto na criação quanto no respawn, evita duplicar a lógica de fábrica).
+
+Novo `WorldServer._tick_harvestable_respawn(dt)`, chamado do MESMO
+lugar que já chama `_process_loot_drops(dt)` — NÃO virou uma `System`
+ECS nova (harvestable não precisa de iteração genérica tipo
+`AIControlled`, só bookkeeping de timer). Pra cada corpse com
+`respawn_s > 0` vazio por completo, incrementa `empty_timer`; ao passar
+de `respawn_s`, re-resolve os itens do template, zera `quest_rolls`,
+zera o timer, e enfileira em `self._pending_harvestable_refill`
+(mesmo padrão produtor/consumidor de `_pending_loot_notifications`/
+`consume_loot_notifications()` — `WorldServer` não tem acesso a
+`self._sessions`, só `SessionManager` tem).
+
+`SessionManager` ganha `consume_harvestable_refills()` (espelha
+`consume_loot_notifications`) + um bloco novo em `_dispatch_tick_deltas`
+(logo após o de corpse/loot) que manda `LOOT_AVAILABLE` personalizado
+(via `_resolve_conditional_loot_for`) pra quem já conhece a entidade,
+via `_sessions_in_aoi` — sem `ENTITY_SPAWN` novo, a entidade já existe e
+nunca foi despawnada. **`_on_tick`'s `has_pending` ganhou
+`_pending_harvestable_refill`** — mesma classe de bug já documentada
+nesta seção pra arena/grupo/duelo (buffer novo preso até atividade
+alheia destravar, se esquecido aqui).
+
+**Validado**: `tests/test_session.py::TestHarvestableRespawnM2` (4
+testes — sem `respawn_s` nunca reabastece mesmo após centenas de ticks,
+saque parcial não conta como vazio, reabastece só depois do
+`respawn_s` com `quest_rolls` resetado, sessão que já conhece a
+entidade recebe `LOOT_AVAILABLE` de novo ao reabastecer SEM nenhuma
+outra atividade no tick — prova que o fix de `has_pending` funciona).
+Confirmado via `git stash` que os 4 falham sem a implementação. Suíte
+completa (540 testes) rodada 3x, 0 falhas.
+
+**Não validado nesta sessão**: reabastecimento em jogo real (depende de
+um harvestable de teste com `respawn_s` configurado no mapa — nenhum
+foi adicionado ainda, é conteúdo/design do usuário).
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |

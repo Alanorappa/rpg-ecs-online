@@ -227,6 +227,11 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._next_corpse_id: int = 1
         # Notificações de loot pendentes (consumidas pelo SessionManager no dispatch)
         self._pending_loot_notifications: list[dict] = []
+        # Fase M2 (25/07/2026): harvestable de posição fixa reabastecido
+        # (respawn_s>0) — consumido pelo SessionManager (consume_
+        # harvestable_refills, mesmo padrão de consume_loot_notifications)
+        # pra mandar LOOT_AVAILABLE pra quem já conhece a entidade.
+        self._pending_harvestable_refill: list[dict] = []
         # Corpses que expiraram neste tick: list de {cid, tx, ty}
         self._expired_corpses_this_tick: list[dict] = []
 
@@ -704,37 +709,87 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         de item idêntico a QuestReward.items ("item_key" ou (item_key,
         stack)), resolvido via engine.quest_logic (mesmas funções da
         recompensa de quest)."""
-        import engine.quest_logic as _hq_logic
-        from server.server_death_handler import _serialize_item as _hq_serialize
         from engine.entity_factory import create_harvestable_entity
 
         for h in spawn_points.get("harvestables", []):
             hid = self._next_corpse_id
             self._next_corpse_id += 1
-            granted = []
-            for entry in h.get("items", []):
-                item_key, stack = _hq_logic.normalize_reward_entry(entry)
-                factory = _hq_logic.resolve_reward_item_factory(item_key)
-                if factory is None:
-                    log.warning(f"[Harvestable] item_key '{item_key}' de "
-                               f"'{h.get('name', hid)}' não existe em nenhum "
-                               f"catálogo — ignorado")
-                    continue
-                item = factory()
-                item.stack = max(1, min(stack, item.max_stack))
-                granted.append(_hq_serialize(item))
             name = h.get("name", "Objeto")
+            template_items = h.get("items", [])
+            template_coins = h.get("coins", 0)
+            granted = self._resolve_harvestable_items(template_items, name)
             self._corpses[hid] = {
                 "tx": h["x"], "ty": h["y"], "owner_eid": -1,
-                "items": granted, "coins": h.get("coins", 0),
+                "items": granted, "coins": template_coins,
                 "timer": float("inf"), "map": map_key,
                 "mob_name": "", "mob_race": "", "quest_rolls": {},
                 "no_decay": True, "name": name,
+                # Fase M2 (25/07/2026) — respawn_s=0/ausente = nunca
+                # reabastece (comportamento original da Fase M1). O
+                # template (item_key cru, não resolvido) é guardado à
+                # parte pra _tick_harvestable_respawn conseguir re-rolar
+                # os itens do zero ao reabastecer, sem duplicar a lógica
+                # de resolução de fábrica.
+                "respawn_s": float(h.get("respawn_s", 0)),
+                "empty_timer": 0.0,
+                "_template_items": template_items,
+                "_template_coins": template_coins,
             }
             eid = create_harvestable_entity(
                 self.world, h["x"], h["y"], corpse_id=hid,
                 sprite_id=h.get("sprite", ""), name=name)
             self._harvestable_eids.add(eid)
+
+    def _resolve_harvestable_items(self, template_items: list, context_name: str = "Objeto") -> list:
+        """Resolve uma lista de item_key (ou (item_key, stack)) em itens
+        serializados prontos pra `self._corpses[hid]["items"]` — extraído
+        de `_create_harvestables_for_map` pra ser reaproveitado por
+        `_tick_harvestable_respawn` (Fase M2) sem duplicar a resolução
+        de fábrica."""
+        import engine.quest_logic as _hq_logic
+        from server.server_death_handler import _serialize_item as _hq_serialize
+        granted = []
+        for entry in template_items:
+            item_key, stack = _hq_logic.normalize_reward_entry(entry)
+            factory = _hq_logic.resolve_reward_item_factory(item_key)
+            if factory is None:
+                log.warning(f"[Harvestable] item_key '{item_key}' de "
+                           f"'{context_name}' não existe em nenhum "
+                           f"catálogo — ignorado")
+                continue
+            item = factory()
+            item.stack = max(1, min(stack, item.max_stack))
+            granted.append(_hq_serialize(item))
+        return granted
+
+    def _tick_harvestable_respawn(self, dt: float) -> None:
+        """Fase M2 (25/07/2026): harvestable de posição fixa com
+        `respawn_s > 0` reabastece sozinho depois de esvaziar POR
+        COMPLETO (itens E moedas — decisão do usuário: saque parcial não
+        conta, só reseta o timer). Reset TOTAL ao reabastecer: comuns E
+        `quest_rolls` (decisão do usuário: todo mundo ganha uma chance
+        nova, mesmo quem já tinha resolvido o sorteio condicional antes).
+        A entidade NUNCA é removida — fica visível vazia até reabastecer
+        (bug corrigido antes desta fase, a pedido do usuário)."""
+        for hid, corpse in self._corpses.items():
+            respawn_s = corpse.get("respawn_s", 0)
+            if respawn_s <= 0:
+                continue
+            is_empty = not corpse.get("items") and corpse.get("coins", 0) <= 0
+            if not is_empty:
+                corpse["empty_timer"] = 0.0
+                continue
+            corpse["empty_timer"] = corpse.get("empty_timer", 0.0) + dt
+            if corpse["empty_timer"] >= respawn_s:
+                corpse["items"] = self._resolve_harvestable_items(
+                    corpse.get("_template_items", []), corpse.get("name", "Objeto"))
+                corpse["coins"] = corpse.get("_template_coins", 0)
+                corpse["quest_rolls"] = {}
+                corpse["empty_timer"] = 0.0
+                self._pending_harvestable_refill.append({
+                    "hid": hid, "tx": corpse["tx"], "ty": corpse["ty"],
+                    "map": corpse.get("map"),
+                })
 
     def _create_spawn_zones(self, zones_data: list) -> None:
         """Compat: cria SpawnZones sem MapLocation (usado antes do multi-map)."""
@@ -3512,6 +3567,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             log.info(f"[XP] player {_xp_peid} ganhou {_xp_amt} XP (mob {entry['mob_eid']})")
 
         self._process_loot_drops(dt)
+        self._tick_harvestable_respawn(dt)
         self._tick_trade_distance_check()
         self._tick_duel_distance_check()
         self._tick_arena_queue()

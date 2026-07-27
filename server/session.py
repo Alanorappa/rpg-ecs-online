@@ -1915,7 +1915,11 @@ class SessionManager:
                        or bool(self.world_server._party_state_events_this_tick)
                        or bool(self.world_server._duel_end_events_this_tick)
                        or bool(self.world_server._trade_cancellations_this_tick)
-                       or bool(self.world_server._skill_position_corrections))
+                       or bool(self.world_server._skill_position_corrections)
+                       # Fase M2 (25/07/2026) — mesma classe de bug: harvestable
+                       # reabastecido some no buffer até atividade alheia
+                       # destravar o dispatch, se não entrar aqui.
+                       or bool(self.world_server._pending_harvestable_refill))
         if not has_pending:
             return
         asyncio.create_task(self._dispatch_tick_deltas(deltas))
@@ -2075,6 +2079,26 @@ class SessionManager:
                             "items":     notif["items"] + _personal_extra,
                             "coins":     notif.get("coins", 0),
                         })
+
+            # Harvestable de posição fixa reabastecido (Fase M2, 25/07/2026)
+            # — manda LOOT_AVAILABLE personalizado pra quem já conhece a
+            # entidade (mesmo princípio do bloco de corpse/loot acima, só
+            # que sem ENTITY_SPAWN — a entidade já existe e é permanente,
+            # nunca foi despawnada).
+            for _refill in self.world_server.consume_harvestable_refills():
+                _rf_hid = _refill["hid"]
+                _rf_corpse = self.world_server._corpses.get(_rf_hid)
+                if not _rf_corpse:
+                    continue
+                for s in self._sessions_in_aoi(_refill["tx"], _refill["ty"], _refill.get("map")):
+                    _rf_extra = self.world_server._resolve_conditional_loot_for(
+                        _rf_corpse, s.entity_id)
+                    await s.send(MsgType.LOOT_AVAILABLE, {
+                        "corpse_id": _rf_hid,
+                        "tx":        _refill["tx"], "ty": _refill["ty"],
+                        "items":     list(_rf_corpse.get("items", [])) + _rf_extra,
+                        "coins":     _rf_corpse.get("coins", 0),
+                    })
 
             # HP broadcasts: player se curou com skill — outros players no AOI atualizam barra
             _hp_bcast = self.world_server.consume_player_hp_broadcasts()

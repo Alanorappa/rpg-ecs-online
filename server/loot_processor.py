@@ -20,6 +20,15 @@ class LootProcessorMixin:
         self._expired_corpses_this_tick.clear()
         return result
 
+    def consume_harvestable_refills(self) -> list[dict]:
+        """Retorna e limpa harvestables de posição fixa reabastecidos
+        neste tick (Fase M2, 25/07/2026): list de {hid, tx, ty, map} —
+        consumido pelo SessionManager pra mandar LOOT_AVAILABLE
+        personalizado pra quem já conhece a entidade."""
+        result = list(self._pending_harvestable_refill)
+        self._pending_harvestable_refill.clear()
+        return result
+
     def _resolve_conditional_loot_for(self, corpse: dict, player_eid: int) -> list:
         """Resolve (1x, cacheado) o loot condicional de quest (ex.: Pelo de
         Urso) PARA ESTE JOGADOR ESPECÍFICO — Fase L1, 25/07/2026, pedido do
