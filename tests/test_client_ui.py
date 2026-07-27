@@ -546,6 +546,51 @@ def test_loot_result_esvaziando_corpse_de_mob_morto_ainda_remove():
     assert 5 not in fx._available_loot
 
 
+# ── ENTITY_DESPAWN (eid negativo) nunca deveria remover harvestable ──────────
+# Bug real relatado pelo usuário 25/07/2026: mesmo com _sync_local_corpse_
+# after_take guardado (acima), a caixa continuava sumindo pra TODO MUNDO no
+# AOI ao esvaziar. Causa raiz de verdade: server/session.py::
+# _handle_loot_request manda um ENTITY_DESPAWN genérico (eid negativo) pra
+# QUALQUER corpse que fique realmente vazio — sem checar `no_decay` — e o
+# handler client-side desse caminho (_handle_msg_entity_despawn, eid<0)
+# nunca teve o guard de Renderable que os outros caminhos (_sync_local_
+# corpse_after_take, LootSystem.render_world, _draw_remote_corpses) já
+# tinham. Corrigido nos dois lados: servidor não manda mais esse despawn
+# pra harvestable, e o cliente ganha o MESMO guard aqui como segunda camada.
+
+def test_entity_despawn_eid_negativo_nao_remove_harvestable():
+    from engine.components import Position, Renderable, Corpse
+    fx = _make_loot_result_fixture()
+    hv = fx.world.create_entity()
+    fx.world.add_component(hv, Position(x=100, y=100, prev_x=100, prev_y=100))
+    fx.world.add_component(hv, Renderable(color=(120, 90, 60), width=32, height=32,
+                                          sprite_id="pr_box1"))
+    fx.world.add_component(hv, Corpse(loot=[], coins=0))
+    fx._available_loot[9] = {"local_eid": hv, "tx": 3, "ty": 3}
+
+    fx._handle_msg_entity_despawn({"eid": -9})
+
+    assert fx.world.get_component(hv, Corpse) is not None, \
+        "harvestable nunca deveria ser removido por um ENTITY_DESPAWN de eid negativo"
+    assert 9 in fx._available_loot
+
+
+def test_entity_despawn_eid_negativo_ainda_remove_corpse_de_mob_morto():
+    """Regressão: corpse de mob morto (sem Renderable) continua sumindo
+    normalmente ao receber ENTITY_DESPAWN de eid negativo."""
+    from engine.components import Position, Corpse
+    fx = _make_loot_result_fixture()
+    corpse = fx.world.create_entity()
+    fx.world.add_component(corpse, Position(x=100, y=100, prev_x=100, prev_y=100))
+    fx.world.add_component(corpse, Corpse(loot=[], coins=0))
+    fx._available_loot[7] = {"local_eid": corpse, "tx": 3, "ty": 3}
+
+    fx._handle_msg_entity_despawn({"eid": -7})
+
+    assert fx.world.get_component(corpse, Corpse) is None
+    assert 7 not in fx._available_loot
+
+
 # ── INVENTORY_UPDATE — recompensa de item de quest (23/07/2026) ─────────────
 # Reusa _grant_items_to_inventory, o mesmo helper que LOOT_RESULT usa acima
 # (extraído dele nesta leva) — _handle_msg_inventory_update é só o ponto de

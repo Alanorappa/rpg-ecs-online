@@ -1087,9 +1087,19 @@ class SessionManager:
             # o ouro (ou só um item) não deveria remover o resto do loot
             # da visão do resto do grupo (bug real relatado pelo usuário
             # 17/07/2026: corpo sumia com itens ainda dentro).
+            #
+            # Harvestable (no_decay=True) é PERMANENTE e tem seu próprio
+            # mecanismo de "fica visível vazio até reabastecer" (Fase M2,
+            # consume_harvestable_refills) — nunca deveria disparar ESTE
+            # despawn genérico (bug real relatado pelo usuário 25/07/2026:
+            # esvaziar a caixa a removia da tela de TODO MUNDO no AOI,
+            # inclusive quem nem tinha saqueado; ao reabastecer depois, o
+            # cliente não achava mais o local_eid em _available_loot e
+            # caía no fallback antigo de create_corpse, desenhando a
+            # elipse velha por cima do que deveria ser a caixa de novo).
             corpse_data = self.world_server._corpses.get(corpse_id, {})
             _still_has_loot = bool(corpse_data.get("items")) or corpse_data.get("coins", 0) > 0
-            if not _still_has_loot:
+            if not _still_has_loot and not corpse_data.get("no_decay"):
                 despawn_payload = {"eid": -corpse_id}
                 for s in self._sessions_in_aoi(corpse_data.get("tx", 0),
                                                corpse_data.get("ty", 0),

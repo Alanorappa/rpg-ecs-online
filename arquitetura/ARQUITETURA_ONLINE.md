@@ -8196,6 +8196,84 @@ diagnóstico ao vivo (prints temporários client+server, já removidos)
 confirmando a causa exata — mas o fix em si ainda não foi confirmado
 por ele em jogo real, aguardando novo teste.
 
+### §34.54 — Esvaziar harvestable disparava despawn genérico assimétrico
+entre clientes (25/07/2026)
+
+Depois do fix de §34.53, o usuário testou de novo e reportou 2 sintomas
+novos: (1) ao esvaziar a caixa, ela some da tela — inclusive de OUTROS
+jogadores no AOI, não só de quem saqueou; andar pra longe e voltar (sem
+relogar) não trazia de volta; só relogar restaurava; (2) depois de
+relogar, quando o item com `respawn_s` reabastecia, em vez da caixa
+aparecer de novo, aparecia a ELIPSE antiga.
+
+**Investigação**: reproduzi passo a passo via script (spawn remoto →
+LOOT_AVAILABLE → LOOT_RESULT → novo LOOT_AVAILABLE de reabastecimento)
+usando as funções REAIS do cliente — o fluxo "esperado" (guard de
+`Renderable` em `_sync_local_corpse_after_take`) se comportou
+CORRETAMENTE nessa simulação isolada, o que descartou aquele código
+como causa. Busquei então TODOS os pontos que mandam
+`MsgType.ENTITY_DESPAWN` no servidor (3 call sites) e achei o
+verdadeiro culpado: `server/session.py::_handle_loot_request` (dentro
+do handler de `LOOT_REQUEST`, não em `WorldServer.request_loot`) — o
+bloco "corpo só some pra AOI quando fica REALMENTE vazio" (adicionado
+17/07/2026 pra um bug de grupo — sacar só o ouro não devia remover o
+resto do loot da visão do grupo) manda um `ENTITY_DESPAWN` genérico
+(eid NEGATIVO, `-corpse_id`) pra **qualquer** corpse que zere itens E
+moedas — sem NUNCA checar se o corpse era um harvestable (`no_decay`)
+ou um corpse de mob morto de verdade. Esse código é anterior a
+harvestable virar entidade real (Fase M1) e nunca foi revisado depois.
+
+O cliente, no handler desse eid negativo (`_handle_msg_entity_despawn`,
+branch `eid < 0`), TAMBÉM nunca teve o guard de `Renderable` que os
+outros caminhos de remoção já tinham (`_sync_local_corpse_after_take`,
+`LootSystem.render_world`, `_draw_remote_corpses`) — removia a
+entidade E limpava `_available_loot[corpse_id]` incondicionalmente.
+
+Isso explica os dois sintomas: (1) qualquer jogador no AOI (não só quem
+saqueou) recebia esse despawn e removia a entidade local de verdade —
+por isso sumia "pra todo mundo" e não voltava andando perto (a
+entidade estava genuinamente apagada do ECS local, só um WORLD_STATE
+novo — via relog — recriava); (2) como `_available_loot[corpse_id]`
+também era limpo, quando o reabastecimento (`consume_harvestable_
+refills`) mandava um LOOT_AVAILABLE novo depois, `_handle_msg_loot_
+available` não achava mais a entrada e caía no fallback antigo de
+`create_corpse` — criando um Corpse SEM `Renderable`, desenhado como a
+elipse velha por `LootSystem.render_world` (que só pula a elipse se a
+entidade JÁ tiver `Renderable`).
+
+**Nota importante (mudança de design, mesma conversa)**: o usuário
+esclareceu que "sumir depois de lootear" NÃO é o problema em si — ele
+QUER isso como opção (estilo WoW: nó de coleta some ao ser saqueado e
+reaparece depois de um cooldown). O problema real relatado era só a
+ASSIMETRIA entre clientes (sumir pra um e não pra outro) — este fix
+resolve exatamente essa assimetria (o despawn agora é consistente:
+NUNCA dispara pra harvestable `no_decay=True`, e quando disparar no
+futuro via um parâmetro novo configurável, vai via o MESMO
+`_sessions_in_aoi` broadcast, visto por todo mundo ao mesmo tempo).
+Ver discussão de design (ainda em aberto) logo abaixo desta seção —
+não implementado ainda, aguardando decisões do usuário.
+
+**Fix**: `_handle_loot_request` só manda o despawn genérico se
+`corpse_data.get("no_decay")` for falso (mob corpse). `_handle_msg_
+entity_despawn`'s branch `eid<0` ganhou o MESMO guard de `Renderable`
+dos outros caminhos, como segunda camada de defesa (mesmo se algum
+broadcast futuro mandar despawn por engano pra um harvestable).
+
+**Validado**: `tests/test_session.py::
+TestHarvestableEmptyNaoDisparaDespawnGenerico` (2 testes) — harvestable
+esvaziado não dispara `ENTITY_DESPAWN`; corpse de mob morto (sem
+`no_decay`) continua disparando normalmente (regressão de 17/07/2026
+intacta). `tests/test_client_ui.py` (2 testes) — `ENTITY_DESPAWN` de
+eid negativo não remove harvestable (guard de `Renderable`); continua
+removendo corpse de mob morto normalmente. Confirmado via `git stash`
+(`server/session.py` + `client/network_handlers.py`, testes fora do
+stash) que 3 dos 4 falham genuinamente sem o fix (o 4º, a regressão de
+mob corpse, já passava antes — comportamento preexistente intacto, não
+precisa falhar). Suíte completa (562 testes) rodada 3x — mesmas 2
+falhas de sempre, sem relação (ver §34.52).
+
+**Não validado em jogo ainda**: aguardando novo teste do usuário.
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |

@@ -775,6 +775,65 @@ class TestPartyLootSync(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(get_msgs_of_type(fw_a, MsgType.LOOT_RESULT)), 1)
 
 
+class TestHarvestableEmptyNaoDisparaDespawnGenerico(unittest.IsolatedAsyncioTestCase):
+    """Bug real relatado pelo usuário 25/07/2026: esvaziar uma caixa de
+    harvestable removia a entidade da tela de QUALQUER jogador no AOI
+    (não só de quem saqueou). Causa: `_handle_loot_request` manda um
+    ENTITY_DESPAWN genérico (eid negativo) sempre que um corpse fica
+    REALMENTE vazio — comportamento certo pra corpse de mob morto
+    (deveria mesmo sumir), mas o código nunca checava se o corpse era
+    um harvestable (permanente, `no_decay=True`, com seu PRÓPRIO
+    mecanismo de "fica visível vazio até reabastecer" — Fase M2). Ao
+    reabastecer depois, o cliente já tinha perdido a entrada em
+    `_available_loot` (removida junto com o despawn indevido), caindo
+    no fallback antigo de `create_corpse` — desenhando a elipse velha
+    em cima do que deveria voltar a ser a caixa."""
+
+    async def asyncSetUp(self):
+        self.ws_server, self.mgr = make_session_manager()
+
+    def _make_corpse(self, owner_eid: int, no_decay: bool = False,
+                     coins: int = 10, items: list = None) -> int:
+        cid = self.ws_server._next_corpse_id
+        self.ws_server._next_corpse_id += 1
+        self.ws_server._corpses[cid] = {
+            "tx": 130, "ty": 374, "owner_eid": owner_eid,
+            "items": items or [], "coins": coins,
+            "timer": 120.0, "map": self.ws_server._map_file,
+            "no_decay": no_decay,
+        }
+        return cid
+
+    async def test_harvestable_esvaziado_nao_manda_entity_despawn(self):
+        from shared.messages import encode
+        session, fw = await fake_login(self.mgr, "s1", "user_hv_desp_a", 130, 374)
+        cid = self._make_corpse(owner_eid=-1, no_decay=True)
+
+        fw.sent.clear()
+        await self.mgr.on_message(session, encode(
+            MsgType.LOOT_REQUEST, {"corpse_id": cid, "take": "all"}))
+
+        despawns = get_msgs_of_type(fw, MsgType.ENTITY_DESPAWN)
+        self.assertEqual(despawns, [],
+                         "harvestable esvaziado nunca deveria disparar ENTITY_DESPAWN")
+
+    async def test_corpse_de_mob_esvaziado_continua_mandando_entity_despawn(self):
+        """Regressão: corpse de mob morto (sem no_decay) precisa
+        continuar sumindo da tela quando esvazia — comportamento de
+        17/07/2026 intacto."""
+        from shared.messages import encode
+        session, fw = await fake_login(self.mgr, "s1", "user_hv_desp_b", 130, 374)
+        cid = self._make_corpse(owner_eid=session.entity_id, no_decay=False)
+
+        fw.sent.clear()
+        await self.mgr.on_message(session, encode(
+            MsgType.LOOT_REQUEST, {"corpse_id": cid, "take": "all"}))
+
+        despawns = get_msgs_of_type(fw, MsgType.ENTITY_DESPAWN)
+        self.assertEqual(len(despawns), 1)
+        self.assertEqual(despawns[0]["eid"], -cid)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 6b. Loot condicional de quest é resolvido POR JOGADOR (Fase L1, 25/07/2026)
 # ─────────────────────────────────────────────────────────────────────────────

@@ -964,8 +964,24 @@ class NetworkHandlers:
     def _handle_msg_entity_despawn(self, payload: dict) -> None:
         eid = payload.get("eid", -1)
         if eid < 0:
-            # Corpse expirou ou foi saqueado — remove visual
+            # Corpse expirou ou foi saqueado — remove visual. Guard de
+            # defesa (25/07/2026, mesmo sinal já usado em
+            # _sync_local_corpse_after_take/LootSystem.render_world/
+            # _draw_remote_corpses): harvestable (permanente) TEM
+            # Renderable — nunca deveria ser removido aqui, mesmo se
+            # algum broadcast futuro mandar despawn por engano pra ele
+            # (a causa raiz de verdade — server/session.py::request_loot
+            # mandando despawn genérico pra QUALQUER corpse esvaziado,
+            # inclusive harvestable — já foi corrigida lá; este guard é
+            # só a segunda camada, mesmo princípio do resto do arquivo).
             corpse_id = -eid
+            loot_data = self._available_loot.get(corpse_id)
+            if loot_data:
+                from engine.components import Renderable as _RenDespawn
+                local_c_eid = loot_data.get("local_eid")
+                if local_c_eid is not None and \
+                        self.world.get_component(local_c_eid, _RenDespawn) is not None:
+                    return
             self._remote_corpses.pop(corpse_id, None)
             loot_data = self._available_loot.pop(corpse_id, None)
             if loot_data:
