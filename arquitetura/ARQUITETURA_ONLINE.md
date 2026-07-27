@@ -8064,6 +8064,63 @@ Zona de itens) planejada em
 `C:\Users\l4nce\.claude\plans\expressive-wondering-starlight.md` está
 encerrada.
 
+### §34.52 — Validação em jogo do M2: clique de longe podia mirar o
+adjacente ERRADO (sólido) e travar o loot pra sempre (25/07/2026)
+
+Usuário testou a Fase M2 configurando uma 2ª caixa de teste em
+`(111,383)` (`respawn_s: 10`) e reportou: não conseguia lootear de
+jeito nenhum, testou várias vezes, reiniciou o servidor, nada mudou.
+
+**Investigação**: servidor estava correto (`_corpses` tinha o item
+resolvido certinho — `bone_shield` existe em `item_table.py::ITEMS`,
+sprite `pr_box2` existe no catálogo `TX Props`, o tile `(111,383)` em
+si é caminhável). O bug estava no CLIENTE, no mesmo método já corrigido
+uma vez nesta sessão (`LootSystem._try_open_corpse`, `ui/systems.py`):
+o fix anterior (clique de longe mira o tile ADJACENTE mais próximo, não
+o próprio tile do corpse — corpse agora é sólido) escolhia o adjacente
+"geometricamente mais próximo do player" **sem checar se esse adjacente
+era caminhável**. A caixa de teste M1 (130,374) por sorte tem os 4
+vizinhos livres, então o bug nunca apareceu; a caixa M2 (111,383) tem
+uma parede colada bem ao lado — dependendo de onde o player estava
+parado, o adjacente "mais próximo" escolhido era justamente o sólido, e
+o auto-move mirava um tile pra sempre inalcançável, travando o loot
+pra sempre (mesma CLASSE de bug do fix anterior — tile-alvo sólido —
+só que desta vez no adjacente escolhido, não no próprio corpse).
+
+**Achado de bônus, NÃO corrigido nesta sessão** (fora de escopo do
+relato, mas documentado pra não esquecer): `_walk_to_merchant`
+(`ui/systems.py:2546`) tem a MESMA falha (escolhe o adjacente mais
+próximo do NPC sem checar walkability) — não foi tocado porque nenhum
+bug real foi relatado ali ainda; só entra na lista se o usuário topar
+mexer ou algum dia reportar o mesmo sintoma pra mercador/treinador.
+
+**Fix**: `_try_open_corpse` agora filtra os 4 candidatos adjacentes por
+`is_tile_walkable(player_entity, tx, ty)` ANTES de escolher o mais
+próximo — só cai nos 4 sem filtro se NENHUM dos 4 for caminhável (caso
+raro, comportamento antigo como fallback). Guard de `KeyError` cobre o
+caso de teste isolado sem `tile_validation` registrado em `_svc`
+(mesmo padrão já usado por outros testes que fixam serviços globais).
+
+**Validado**: `tests/test_client_ui.py::
+test_try_open_corpse_de_longe_pula_adjacente_mais_proximo_se_ele_for_
+solido` — registra um `tile_validation` fake que bloqueia só o
+adjacente que seria escolhido por padrão, confirma que o fix pula pro
+próximo candidato caminhável. Confirmado via `git stash` (só
+`ui/systems.py`, teste fora do stash) que falha genuinamente sem o
+fix. Suíte completa (554 testes) rodada 3x — 2 falhas SEM RELAÇÃO com
+esta mudança (`TestServiceResolverGuard::
+test_resolver_neutraliza_svc_no_mapa_errado`,
+`TestCCGeneralizado::test_disoriented_nao_bloqueia_movimento_bruto_no_
+servidor`): ambas assumem que o tile `(131,374)` é caminhável, mas o
+edit em andamento do usuário em `map_1_terrain.csv` (grade/cerca nova)
+tornou esse tile sólido — nenhuma relação com harvestable/loot,
+sinalizado ao usuário, aguardando ele estabilizar o terreno.
+
+**Não validado em jogo ainda**: o relato original do usuário motivou a
+investigação (caixa em `(111,383)` nunca abria o loot), mas o fix ainda
+não foi confirmado por ele em jogo real — aguardando teste após o
+build novo.
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |

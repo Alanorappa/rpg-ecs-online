@@ -3531,8 +3531,26 @@ class LootSystem(UIScaleMixin, System):
                     # conseguia chegar lá e a fila de movimento ficava presa
                     # pra sempre, sem abrir o modal. Mesmo padrão já usado
                     # por _walk_to_merchant (linha ~2546) pra NPC sólido.
+                    #
+                    # Fix 2 (25/07/2026, 2º bug real — caixa de teste M2 em
+                    # (111,383)): a escolha do adjacente "mais próximo" não
+                    # filtrava por walkability — se o adjacente geometricamente
+                    # mais perto do player fosse ele mesmo sólido (parede ao
+                    # lado da caixa), o auto-move mirava um tile inalcançável
+                    # e nunca chegava, travando o loot pra sempre (mesma
+                    # classe de bug do fix acima, só que no tile ADJACENTE em
+                    # vez do próprio). Filtra pra só walkable antes de
+                    # escolher o mais próximo; se os 4 estiverem bloqueados
+                    # (caso raro), cai no comportamento antigo (best-effort).
                     adj = [(c_tile_x + dx, c_tile_y + dy)
                           for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1))]
+                    try:
+                        walkable_adj = [t for t in adj
+                                       if is_tile_walkable(self.player_entity, t[0], t[1])]
+                    except KeyError:
+                        walkable_adj = []  # sem tile_validation registrado (teste isolado)
+                    if walkable_adj:
+                        adj = walkable_adj
                     ptx, pty = player_tm.current_tile_x, player_tm.current_tile_y
                     target = min(adj, key=lambda t: abs(t[0]-ptx) + abs(t[1]-pty))
                     player_auto.ground_target = target

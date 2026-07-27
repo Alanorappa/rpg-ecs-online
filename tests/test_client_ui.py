@@ -391,6 +391,48 @@ def test_try_open_corpse_de_longe_anda_pro_tile_adjacente_nao_pro_proprio():
     assert loot.open_corpse_id == -1   # não abriu ainda — só começou a andar
 
 
+def test_try_open_corpse_de_longe_pula_adjacente_mais_proximo_se_ele_for_solido():
+    """2º bug real do mesmo tipo (25/07/2026, caixa de teste M2 relatada pelo
+    usuário em (111,383)): a escolha do tile adjacente "mais próximo" não
+    filtrava por walkability — se o adjacente geometricamente mais perto do
+    PLAYER for ele mesmo sólido (ex.: parede colada na caixa), o auto-move
+    mirava um tile inalcançável e nunca chegava, travando o loot pra sempre
+    (mesma classe de bug do teste anterior, só que no tile ADJACENTE em vez
+    do próprio tile do corpse). Fix: filtra os 4 adjacentes por walkability
+    antes de escolher o mais próximo."""
+    import engine.world_systems as ws_mod
+    from ui.systems import LootSystem
+    from engine.components import (TileMovement, PlayerAutoMove, CombatState)
+    world, player, hv = _make_harvestable_loot_world()
+    # harvestable em pos.x=100,y=100 -> tile (3,3). Player em (0,0): sem
+    # bloqueio nenhum, o mais próximo (empate) seria (2,3) (primeiro da
+    # lista com distância mínima) — bloqueamos justamente esse.
+    world.add_component(player, TileMovement(current_tile_x=0, current_tile_y=0,
+                                             target_tile_x=0, target_tile_y=0))
+    world.add_component(player, PlayerAutoMove())
+    world.add_component(player, CombatState())
+
+    class _FakeTileValidationBlockNearest:
+        def is_tile_walkable(self, entity_id, tx, ty, from_tx=None,
+                             from_ty=None, ignore_eid=-1):
+            return (tx, ty) != (2, 3)   # só (2,3) é sólido
+
+    ws_mod._svc_resolver = None
+    ws_mod.register_services(tile_validation=_FakeTileValidationBlockNearest())
+    try:
+        screen = pygame.display.get_surface()
+        loot = LootSystem(world, screen, player_entity=player)
+        loot._try_open_corpse(100, 100)   # clique no centro do harvestable
+
+        auto = world.get_component(player, PlayerAutoMove)
+        assert auto.ground_target != (2, 3), \
+            "não deveria mirar o adjacente bloqueado, mesmo sendo o geometricamente mais próximo"
+        assert auto.ground_target == (3, 2), \
+            "deveria escolher o próximo adjacente walkable mais próximo"
+    finally:
+        ws_mod._svc.pop("tile_validation", None)
+
+
 # ── client/network_handlers.py::_handle_msg_loot_result — INV_SYNC ───────────
 # Bug real relatado pelo usuário 18/07/2026: progresso de quest "colete N
 # itens" parou de atualizar no HUD/diário (entrega ainda funcionava, só a
