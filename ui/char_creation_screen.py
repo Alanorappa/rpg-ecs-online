@@ -175,6 +175,51 @@ def run_creation(screen: pygame.Surface) -> "dict | None":
     return _run_creation(screen, clock, sc)
 
 
+def _drain_char_select_batch(msgs: list, pending_action: str, game_buffer: list,
+                             chars: list, confirm_del_id: int) -> tuple:
+    """Processa UMA leva de mensagens (`net.poll()`) recebida durante a tela
+    de seleção de personagem (`run_online`). Extraído em função pura pra
+    ser testável isoladamente.
+
+    Bug real corrigido aqui (25/07/2026, relatado pelo usuário: harvestable
+    perto do spawn nunca tinha loot disponível, mesmo aparecendo na tela):
+    a versão antiga dava `return True` NO MEIO do `for` assim que achava
+    WORLD_STATE, sem terminar de examinar o resto de `msgs` — mensagens que
+    vinham DEPOIS dele na MESMA leva (aqui, LOOT_AVAILABLE de um harvestable
+    perto o bastante do spawn pra já sair no snapshot de login — ver
+    server/session.py::_spawn_and_start) ficavam presas na lista local e
+    eram perdidas pra sempre quando a função retornava. Só acontecia quando
+    o harvestable estava perto o bastante do spawn pra já sair na leva do
+    login (por isso nunca apareceu com a caixa de teste antiga, longe do
+    spawn — ela só era descoberta bem depois, via sweep de tick, quando
+    esta tela já tinha fechado). Fix: processa a leva INTEIRA antes de
+    decidir voltar — WORLD_STATE só marca a intenção (`got_world_state`),
+    quem decide se entra no jogo é o CHAMADOR, depois do `for` terminar.
+
+    Retorna (pending_action, status_or_None, game_buffer, chars,
+             reset_confirm_del: bool, got_world_state: bool)."""
+    from shared.messages import MsgType as _MT
+    status = None
+    reset_confirm_del = False
+    got_world_state = False
+    for mt, payload, _seq, _ts in msgs:
+        if pending_action == "selecting":
+            if mt == _MT.WORLD_STATE:
+                game_buffer.append((mt, payload, _seq, _ts))
+                got_world_state = True
+            elif mt == _MT.CHARACTER_ERROR:
+                status = f"Erro: {payload.get('reason', 'desconhecido')}"
+                pending_action = ""
+                game_buffer.clear()
+                got_world_state = False
+            else:
+                game_buffer.append((mt, payload, _seq, _ts))
+        elif mt == _MT.DELETE_CHARACTER_OK:
+            chars = [c for c in chars if c.get("id") != confirm_del_id]
+            reset_confirm_del = True
+    return pending_action, status, game_buffer, chars, reset_confirm_del, got_world_state
+
+
 def run_online(screen: pygame.Surface,
                char_list: "list[dict]",
                net) -> bool:
@@ -236,26 +281,22 @@ def run_online(screen: pygame.Surface,
         mx, my = pygame.mouse.get_pos()
 
         # ── Poll de rede ──────────────────────────────────────────────────────
+        # Ver docstring de _drain_char_select_batch (bug real relatado pelo
+        # usuário 25/07/2026: harvestable perto do spawn nunca tinha loot
+        # disponível, mesmo aparecendo na tela).
         msgs = net.poll()
-        for mt, payload, _seq, _ts in msgs:
-            if pending_action == "selecting":
-                # Aguardando LOGIN_OK + WORLD_STATE para entrar no jogo
-                if mt == _MT.WORLD_STATE:
-                    game_buffer.append((mt, payload, _seq, _ts))
-                    for m in game_buffer:
-                        net.inbox.put(m)
-                    return True
-                elif mt == _MT.CHARACTER_ERROR:
-                    status         = f"Erro: {payload.get('reason', 'desconhecido')}"
-                    pending_action = ""
-                    game_buffer.clear()
-                else:
-                    game_buffer.append((mt, payload, _seq, _ts))
-
-            elif mt == _MT.DELETE_CHARACTER_OK:
-                chars           = [c for c in chars if c.get("id") != confirm_del_id]
-                confirm_del_id  = -1
-                confirm_del_idx = -1
+        pending_action, _new_status, game_buffer, chars, _reset_del, _got_ws = \
+            _drain_char_select_batch(msgs, pending_action, game_buffer,
+                                     chars, confirm_del_id)
+        if _new_status is not None:
+            status = _new_status
+        if _reset_del:
+            confirm_del_id  = -1
+            confirm_del_idx = -1
+        if _got_ws:
+            for m in game_buffer:
+                net.inbox.put(m)
+            return True
 
         if pending_action and time.time() - pending_start > 15.0:
             status         = "Servidor não respondeu. Tente novamente."

@@ -8116,10 +8116,85 @@ edit em andamento do usuário em `map_1_terrain.csv` (grade/cerca nova)
 tornou esse tile sólido — nenhuma relação com harvestable/loot,
 sinalizado ao usuário, aguardando ele estabilizar o terreno.
 
-**Não validado em jogo ainda**: o relato original do usuário motivou a
-investigação (caixa em `(111,383)` nunca abria o loot), mas o fix ainda
-não foi confirmado por ele em jogo real — aguardando teste após o
-build novo.
+**Atualização**: este fix era real (confirmado por teste + git stash),
+mas o usuário testou de novo e o sintoma ORIGINAL continuou — a causa
+raiz de verdade era outra, completamente diferente, documentada em
+§34.53 logo abaixo. Este fix continua válido e necessário (cobre um
+bug de verdade), só não era o culpado principal do relato.
+
+### §34.53 — Causa raiz de verdade do M2: tela de seleção de personagem
+descartava LOOT_AVAILABLE que chegasse colado no WORLD_STATE do login
+(25/07/2026)
+
+Depois do fix de §34.52, o usuário testou de novo (2 caixas perto do
+spawn, `(113,383)` e `(113,385)`) e o sintoma persistiu: caixa
+aparecia normal na tela, mas clicar — mesmo já adjacente/em cima —
+nunca abria o loot. Investigação em 3 etapas, cada uma eliminando uma
+camada:
+1. Servidor: dados/protocolo 100% corretos — simulado via `fake_login`
+   e confirmado que `WORLD_STATE`+`LOOT_AVAILABLE` chegam com os itens
+   certos.
+2. Prints de diagnóstico temporários (removidos depois) em
+   `ui/systems.py::_try_open_corpse` mostraram: clique acerta o
+   candidato certo, mas `corpse.loot=[]` SEMPRE, em toda tentativa —
+   ou seja, o `LOOT_AVAILABLE` nunca populava o `Corpse` local, apesar
+   da entidade renderizar normal (prova que `WORLD_STATE` chegou, só
+   o loot que não).
+3. Prints equivalentes no SERVIDOR (`server/session.py`, também
+   removidos depois) confirmaram que o servidor **manda** os 2
+   `LOOT_AVAILABLE` corretos, sem erro nenhum (`session.send()` já
+   loga falha de envio, e nenhuma apareceu).
+
+Com o envio confirmado e a recepção confirmada como nunca acontecendo,
+a suspeita virou "mensagem se perde ENTRE o socket e o handler do
+`GameEngine`" — e foi exatamente isso: `ui/char_creation_screen.py::
+run_online` (tela de seleção de personagem, que roda ANTES do
+`GameEngine` assumir) tem seu PRÓPRIO loop de `net.poll()`, drenando
+mensagens enquanto aguarda `WORLD_STATE` pra liberar a entrada no jogo.
+O código antigo, ao achar `WORLD_STATE` NO MEIO do `for` que itera a
+leva de mensagens recebida, dava `return True` IMEDIATAMENTE — sem
+terminar de examinar o RESTO da leva. Como o servidor manda
+`LOOT_AVAILABLE` (uma por harvestable dentro do AOI de login) logo
+"colado" no `WORLD_STATE`, na MESMA leva de `net.poll()`, essas
+mensagens ficavam presas na lista local `msgs` e eram perdidas pra
+sempre quando a função retornava — nunca chegavam a ser re-enfileiradas
+em `net.inbox` pro `GameEngine` processar depois.
+
+**Por que só apareceu agora**: só acontece quando o harvestable está
+perto o bastante do spawn pra JÁ entrar no snapshot de login
+(`get_mobs_in_aoi` dentro do raio de AOI). A caixa de teste ORIGINAL
+(M1, longe do spawn) nunca disparava esse caminho — ela só era
+descoberta bem depois, via sweep de tick, quando esta tela de seleção
+já tinha fechado há muito tempo (por isso "funcionou" da primeira vez,
+antes do usuário mover as caixas pra perto do spawn pra facilitar o
+teste).
+
+**Fix**: extraída a lógica de processamento da leva pra uma função
+pura nova, `_drain_char_select_batch(msgs, pending_action, game_buffer,
+chars, confirm_del_id)` — itera a leva INTEIRA sempre, `WORLD_STATE`
+só marca a INTENÇÃO (`got_world_state=True`); quem decide re-enfileirar
+e retornar é o CHAMADOR, depois que o `for` termina de examinar tudo.
+Extração feita especificamente pra tornar isso testável isoladamente
+(a tela inteira é um loop pygame interativo, não dá pra testar fim-a-
+fim sem simular clique/render — a lógica de mensageria em si, sim).
+
+**Validado**: `tests/test_client_ui.py` (4 testes novos) —
+`_drain_char_select_batch` preserva TODAS as mensagens que vierem
+depois do `WORLD_STATE` na mesma leva (o caso exato do bug: 2
+`LOOT_AVAILABLE` coladas); sem `WORLD_STATE` na leva não sinaliza
+pronto; `CHARACTER_ERROR` limpa o buffer e reseta `pending_action`
+(comportamento antigo preservado); `DELETE_CHARACTER_OK` remove do
+`chars` e sinaliza reset dos índices de confirmação. Confirmado via
+`git stash` (só `ui/char_creation_screen.py`, testes fora do stash)
+que os 4 falham genuinamente sem o fix (a função nem existia).
+Suíte completa (558 testes) rodada 3x — mesmas 2 falhas de sempre,
+sem relação (ver §34.52, terreno em edição do usuário).
+
+**Não validado em jogo ainda**: a investigação partiu diretamente do
+relato do usuário ("caixa aparece, clico, não abre nunca"), com
+diagnóstico ao vivo (prints temporários client+server, já removidos)
+confirmando a causa exata — mas o fix em si ainda não foi confirmado
+por ele em jogo real, aguardando novo teste.
 
 ### Arquiteturais (A) — débito técnico
 

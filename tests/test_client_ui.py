@@ -1759,3 +1759,79 @@ def test_rebuild_screen_refs_continua_atualizando_quem_usa_screen():
     assert fx._char_stats_ui.screen is new_surf
     assert fx._map_overlay.screen is new_surf
     assert fx._minimap.screen is new_surf
+
+
+# ── ui/char_creation_screen.py::_drain_char_select_batch ─────────────────────
+# Bug real relatado pelo usuário 25/07/2026: harvestable perto do spawn
+# (dentro do raio de AOI já no login) nunca tinha loot disponível — o Corpse
+# local ficava sempre vazio, mesmo a entidade aparecendo certinho na tela
+# (renderizava normal, mas clicar nunca abria o modal). Investigação
+# (com prints de diagnóstico temporários no cliente E no servidor, depois
+# removidos) confirmou: o servidor mandava WORLD_STATE seguido imediatamente
+# de LOOT_AVAILABLE (server/session.py::_spawn_and_start) pra cada
+# harvestable dentro do AOI de login — mas a tela de seleção de personagem
+# (run_online), ao achar WORLD_STATE na MESMA leva de net.poll(), dava
+# `return True` NO MEIO do for, sem terminar de examinar o resto da lista.
+# As LOOT_AVAILABLE que vinham logo depois na MESMA leva ficavam presas na
+# lista local e eram perdidas pra sempre. Só acontecia quando o harvestable
+# estava perto o bastante do spawn pra sair já no snapshot de login — a
+# caixa de teste original (longe do spawn) nunca pegava esse caminho,
+# só era descoberta depois via sweep de tick, quando esta tela já tinha
+# fechado.
+
+def test_drain_char_select_batch_preserva_mensagens_apos_world_state_na_mesma_leva():
+    from ui.char_creation_screen import _drain_char_select_batch
+    from shared.messages import MsgType
+    msgs = [
+        (MsgType.WORLD_STATE, {"entities": []}, 1, 0),
+        (MsgType.LOOT_AVAILABLE, {"corpse_id": 1, "items": ["x"]}, 2, 0),
+        (MsgType.LOOT_AVAILABLE, {"corpse_id": 2, "items": ["y"]}, 3, 0),
+    ]
+    pending_action, status, game_buffer, chars, reset_del, got_ws = \
+        _drain_char_select_batch(msgs, "selecting", [], [], -1)
+
+    assert got_ws is True
+    assert status is None
+    assert len(game_buffer) == 3, \
+        "as 2 LOOT_AVAILABLE que vieram depois do WORLD_STATE na mesma leva não podem ser descartadas"
+    assert game_buffer[0][0] == MsgType.WORLD_STATE
+    assert game_buffer[1][0] == MsgType.LOOT_AVAILABLE
+    assert game_buffer[1][1]["corpse_id"] == 1
+    assert game_buffer[2][0] == MsgType.LOOT_AVAILABLE
+    assert game_buffer[2][1]["corpse_id"] == 2
+
+
+def test_drain_char_select_batch_sem_world_state_nao_reporta_pronto():
+    from ui.char_creation_screen import _drain_char_select_batch
+    from shared.messages import MsgType
+    msgs = [(MsgType.LOOT_AVAILABLE, {"corpse_id": 1}, 1, 0)]
+    pending_action, status, game_buffer, chars, reset_del, got_ws = \
+        _drain_char_select_batch(msgs, "selecting", [], [], -1)
+    assert got_ws is False
+    assert game_buffer == [(MsgType.LOOT_AVAILABLE, {"corpse_id": 1}, 1, 0)]
+
+
+def test_drain_char_select_batch_character_error_limpa_buffer_e_reseta_pending():
+    from ui.char_creation_screen import _drain_char_select_batch
+    from shared.messages import MsgType
+    msgs = [
+        (MsgType.LOOT_AVAILABLE, {"corpse_id": 1}, 1, 0),   # já acumulado antes do erro
+        (MsgType.CHARACTER_ERROR, {"reason": "banido"}, 2, 0),
+    ]
+    pending_action, status, game_buffer, chars, reset_del, got_ws = \
+        _drain_char_select_batch(msgs, "selecting", [], [], -1)
+    assert pending_action == ""
+    assert status == "Erro: banido"
+    assert game_buffer == []
+    assert got_ws is False
+
+
+def test_drain_char_select_batch_delete_character_ok_remove_do_chars_e_sinaliza_reset():
+    from ui.char_creation_screen import _drain_char_select_batch
+    from shared.messages import MsgType
+    chars_in = [{"id": 5, "name": "A"}, {"id": 7, "name": "B"}]
+    msgs = [(MsgType.DELETE_CHARACTER_OK, {}, 1, 0)]
+    pending_action, status, game_buffer, chars, reset_del, got_ws = \
+        _drain_char_select_batch(msgs, "", [], chars_in, confirm_del_id=5)
+    assert reset_del is True
+    assert chars == [{"id": 7, "name": "B"}]
