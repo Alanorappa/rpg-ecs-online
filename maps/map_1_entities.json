@@ -1,4 +1,12 @@
 {
+  "_help_QUAL_ARRAY_USAR": [
+    "Quer que o item SUMA ao ser saqueado e reapareca em OUTRO lugar depois",
+    "de um tempo (estilo nó de coleta do WoW -- erva/minerio)? Use",
+    "harvestable_zones, mesmo que seja 1 no so (count=1). E o comportamento",
+    "certo pra isso, ja pronto, sem precisar mudar nada.",
+    "Quer um objeto de mapa FIXO que fica visivel vazio ate reabastecer NO",
+    "MESMO lugar (estilo bau/planta que recarrega)? Use harvestables."
+  ],
   "_help_harvestables": [
     "harvestables = item de mapa saqueavel de POSICAO FIXA (planta/",
     "pergaminho/ferramenta/bau). Some da tela? NAO -- fica visivel VAZIO",
