@@ -7941,6 +7941,42 @@ testes) rodada 3x, 0 falhas.
 um harvestable de teste com `requires_quest` configurado no mapa —
 nenhum foi adicionado ainda, é conteúdo/design do usuário).
 
+**Fase M4 — Item concede quest nova (25/07/2026)**: decisão confirmada
+via `AskUserQuestion` — vale pra QUALQUER origem do item (corpse de mob
+morto OU harvestable de mapa), mapa global simples, não escopado por
+tipo de fonte.
+
+Novo `content/quests_data.py::ITEM_GRANTS_QUEST: dict[str, str]` —
+chave é o NOME DE EXIBIÇÃO do item (não `item_key`; o ponto de gancho
+só tem o nome já serializado disponível ali, mesma convenção de
+`_resolve_conditional_loot_for`/tabelas de loot), valor é o `qid` de
+`QUESTS`. Vazio por padrão (comentado com um exemplo) — preenchimento é
+conteúdo/design do usuário.
+
+Gancho em `server/loot_processor.py::request_loot`, logo antes do
+`return {"items": items, "coins": coins}`: se `items` não está vazio,
+importa `ITEM_GRANTS_QUEST` e, se não vazio, resolve a `QuestLog` do
+`player_eid` e, pra cada item retirado nesta chamada cujo nome bate com
+uma chave do dict, chama `quest_logic.try_start(self.world, player_eid,
+ql, qid)`. Nenhuma checagem de "já ativa/completa" precisa ser feita
+aqui — `try_start` já retorna `False` sozinho nesses casos (mesmo
+princípio que faz retirada repetida do mesmo item nunca reiniciar/
+resetar progresso já em andamento).
+
+**Validado**: `tests/test_session.py::TestItemGrantsQuestM4` (4 testes)
+— saquear um item mapeado concede a quest; item não mapeado não concede
+nada; retirar o mesmo item de novo (2º corpse) não reinicia/reseta
+progresso já feito na quest; `owner_eid=-1` (harvestable de mapa,
+público) dispara o gancho igual a corpse de mob morto, confirmando que
+não é escopado por origem. Confirmado via `git stash` (arquivos-fonte
+do M4, mantendo o teste fora do stash) que os 4 falham genuinamente sem
+a implementação (erro de import de `ITEM_GRANTS_QUEST`, que ainda não
+existiria). Suíte completa (549 testes) rodada 3x, 0 falhas.
+
+**Não validado nesta sessão**: fluxo em jogo real (depende de um item
+de fato mapeado em `ITEM_GRANTS_QUEST` — dict vazio por padrão, é
+conteúdo/design do usuário preencher).
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |

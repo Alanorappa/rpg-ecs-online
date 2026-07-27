@@ -1412,6 +1412,94 @@ class TestHarvestableQuestGateM3(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.ws_server._harvestable_visible_to(hv_eid, 12345))
 
 
+class TestItemGrantsQuestM4(unittest.IsolatedAsyncioTestCase):
+    """Fase M4 (25/07/2026) — saquear um item mapeado em ITEM_GRANTS_QUEST
+    concede a quest correspondente ao jogador (ex.: achar um pergaminho
+    perdido). Vale pra QUALQUER origem do corpse (mob morto ou harvestable
+    de mapa), via server/loot_processor.py::request_loot."""
+
+    QID = "qgrant_teste"
+    ITEM_NAME = "Pergaminho de Teste"
+
+    async def asyncSetUp(self):
+        self.ws_server, self.mgr = make_session_manager()
+        from content.quests_data import QUESTS, QuestDef, QuestReward, ObjectiveDef, ITEM_GRANTS_QUEST
+        QUESTS[self.QID] = QuestDef(
+            title="Teste", description="d",
+            objectives=(ObjectiveDef(type="talk_to_npc", target="X", count=1),),
+            reward=QuestReward(xp=1),
+        )
+        ITEM_GRANTS_QUEST[self.ITEM_NAME] = self.QID
+
+    async def asyncTearDown(self):
+        from content.quests_data import QUESTS, ITEM_GRANTS_QUEST
+        QUESTS.pop(self.QID, None)
+        ITEM_GRANTS_QUEST.pop(self.ITEM_NAME, None)
+
+    def _make_corpse(self, owner_eid: int, extra_item_name: str | None) -> int:
+        cid = self.ws_server._next_corpse_id
+        self.ws_server._next_corpse_id += 1
+        items = [{"name": "Item Comum", "icon_key": "", "item_type": "material",
+                  "rarity": "common", "value": 1, "slot": "", "stack": 1}]
+        if extra_item_name:
+            items.append({"name": extra_item_name, "icon_key": "", "item_type": "material",
+                          "rarity": "common", "value": 1, "slot": "", "stack": 1})
+        self.ws_server._corpses[cid] = {
+            "tx": 130, "ty": 374, "owner_eid": owner_eid,
+            "items": items, "coins": 0, "timer": 120.0,
+            "map": self.ws_server._map_file,
+            "mob_name": "", "mob_race": "", "quest_rolls": {},
+        }
+        return cid
+
+    async def test_saquear_item_mapeado_concede_a_quest(self):
+        from engine.components import QuestLog
+        session, _ = await fake_login(self.mgr, "s1", "user_ig_a", 130, 374)
+        cid = self._make_corpse(owner_eid=session.entity_id, extra_item_name=self.ITEM_NAME)
+
+        ql = self.ws_server.world.get_component(session.entity_id, QuestLog)
+        self.assertNotIn(self.QID, ql.active)
+        result = self.ws_server.request_loot("s1", cid, take="all")
+        self.assertTrue(any(it["name"] == self.ITEM_NAME for it in result["items"]))
+        self.assertIn(self.QID, ql.active)
+
+    async def test_item_nao_mapeado_nao_concede_nada(self):
+        from engine.components import QuestLog
+        session, _ = await fake_login(self.mgr, "s1", "user_ig_b", 130, 374)
+        cid = self._make_corpse(owner_eid=session.entity_id, extra_item_name=None)
+
+        ql = self.ws_server.world.get_component(session.entity_id, QuestLog)
+        self.ws_server.request_loot("s1", cid, take="all")
+        self.assertNotIn(self.QID, ql.active)
+
+    async def test_saque_repetido_nao_re_tenta_iniciar(self):
+        """try_start já retorna False se a quest está ativa/completa —
+        confirma que uma 2a retirada do mesmo item (outro corpse) não
+        derruba nem duplica o progresso já em andamento."""
+        from engine.components import QuestLog
+        session, _ = await fake_login(self.mgr, "s1", "user_ig_c", 130, 374)
+        cid1 = self._make_corpse(owner_eid=session.entity_id, extra_item_name=self.ITEM_NAME)
+        self.ws_server.request_loot("s1", cid1, take="all")
+
+        ql = self.ws_server.world.get_component(session.entity_id, QuestLog)
+        ql.active[self.QID][0] = 1  # simula progresso real já feito
+
+        cid2 = self._make_corpse(owner_eid=session.entity_id, extra_item_name=self.ITEM_NAME)
+        self.ws_server.request_loot("s1", cid2, take="all")
+        self.assertEqual(ql.active[self.QID], [1])  # progresso intacto, não resetado
+
+    async def test_funciona_pra_harvestable_tambem_nao_so_mob(self):
+        """owner_eid=-1 (harvestable de mapa, público) também dispara o
+        gancho — decisão confirmada: vale pra QUALQUER origem do item."""
+        from engine.components import QuestLog
+        session, _ = await fake_login(self.mgr, "s1", "user_ig_d", 130, 374)
+        cid = self._make_corpse(owner_eid=-1, extra_item_name=self.ITEM_NAME)
+
+        ql = self.ws_server.world.get_component(session.entity_id, QuestLog)
+        self.ws_server.request_loot("s1", cid, take="all")
+        self.assertIn(self.QID, ql.active)
+
+
 class TestArenaDispatchSemMovimento(unittest.IsolatedAsyncioTestCase):
     """Bug real relatado pelo usuário 21/07/2026: "só chamou a arena
     quando movi o personagem" + "cliquei em aceitar e ninguém entrou".

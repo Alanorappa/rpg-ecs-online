@@ -90,6 +90,10 @@ Recompensas (QuestReward) — xp/gold são simples (int). Para ITENS:
 
     Detalhes de implementação (protocolo/servidor/UI) em
     arquitetura/ARQUITETURA_ONLINE.md §34.46 (itens) e §34.51 (skill).
+
+ITEM_GRANTS_QUEST (item de loot concede quest nova ao ser saqueado):
+    dict[nome_de_exibição_do_item, quest_id] — ver comentário junto ao dict,
+    logo abaixo de QUEST_ITEMS. Detalhes em §34.51 (Fase M4).
 """
 from __future__ import annotations
 from typing import NamedTuple
@@ -169,6 +173,24 @@ QUEST_ITEMS: dict[str, callable] = {
     "Cauda de Escorpião": lambda: Item("Cauda de Escorpião", "material", slot=None, rarity="common", value=3, max_stack=10),
     "Escama de Cobra":  lambda: Item("Escama de Cobra",  "material", slot=None, rarity="common", value=2, max_stack=10),
     "Osso de Goblin":   lambda: Item("Osso de Goblin",   "material", slot=None, rarity="common", value=2, max_stack=10),
+}
+
+
+# ---------------------------------------------------------------------------
+# Item concede quest nova ao ser saqueado (Fase M4, 25/07/2026 — pedido do
+# usuário: um item de loot pode "conceder" uma quest nova ao ser pego, ex.
+# achar um pergaminho perdido). Chave = NOME DE EXIBIÇÃO do item (não
+# item_key) — o gancho em server/loot_processor.py::request_loot só tem o
+# nome já serializado disponível ali, mesma convenção de
+# _resolve_conditional_loot_for/tabelas de loot. Vale pra QUALQUER origem do
+# item (corpse de mob morto OU harvestable de mapa), não só harvestable.
+# quest_logic.try_start() já ignora silenciosamente se a quest já está
+# ativa/completa ou o player não é elegível (nível/classe/pré-requisito) —
+# nenhuma checagem extra necessária aqui.
+# ---------------------------------------------------------------------------
+
+ITEM_GRANTS_QUEST: dict[str, str] = {
+    # "Pergaminho Perdido": "pergaminho_perdido",
 }
 
 
