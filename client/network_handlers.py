@@ -2034,6 +2034,20 @@ class NetworkHandlers:
                     break
         still_has_loot = bool(corpse_comp.loot) or corpse_comp.coins > 0
         if not still_has_loot:
+            # Harvestable (Fase M1, revisão 4, 25/07/2026) NUNCA deveria
+            # sumir da tela ao esvaziar — é permanente (no_decay=True no
+            # servidor), só o corpse de mob morto deveria desaparecer.
+            # Bug real relatado pelo usuário: looteou a caixa, ela sumiu
+            # SÓ pro personagem que looteou (o remove_entity abaixo é uma
+            # remoção LOCAL, por cliente) — outro personagem, que nunca
+            # chegou a esvaziar o pote comum pela própria conta, nunca
+            # passou por este código e continuava vendo a caixa
+            # normalmente. Detecta harvestable pelo mesmo sinal já usado
+            # em LootSystem.render_world/_draw_remote_corpses: tem
+            # Renderable (corpse de mob morto nunca tem).
+            from engine.components import Renderable as _RenSync
+            if self.world.get_component(local_eid, _RenSync) is not None:
+                return
             self._available_loot.pop(corpse_id, None)
             self._remote_corpses.pop(corpse_id, None)
             try:

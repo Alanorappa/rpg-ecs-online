@@ -459,6 +459,51 @@ def test_loot_result_vazio_nao_manda_inv_sync():
     assert fx.loot_actions == []
 
 
+# ── Harvestable nunca some ao esvaziar (Fase M1, revisão 4, 25/07/2026) ──────
+# Bug real relatado pelo usuário: looteou a caixa (personagem A) e ela sumiu
+# da TELA DELE — mas continuou visível pro personagem B, que nunca chegou a
+# esvaziar o pote comum pela própria conta. Causa: _sync_local_corpse_after_take
+# (chamado por _handle_msg_loot_result) remove a entidade LOCAL sempre que o
+# Corpse esvazia — comportamento certo pra corpse de mob morto (deveria
+# mesmo desaparecer), errado pra harvestable (permanente, no_decay=True no
+# servidor) — só o personagem que esvaziou o pote passa por esse código, por
+# isso o sumiço era assimétrico entre os dois clientes.
+
+def test_loot_result_esvaziando_harvestable_nao_remove_a_entidade():
+    from engine.components import Position, Renderable, Corpse
+    fx = _make_loot_result_fixture()
+    hv = fx.world.create_entity()
+    fx.world.add_component(hv, Position(x=100, y=100, prev_x=100, prev_y=100))
+    fx.world.add_component(hv, Renderable(color=(120, 90, 60), width=32, height=32,
+                                          sprite_id="pr_box1"))
+    fx.world.add_component(hv, Corpse(loot=[], coins=10))
+    fx._available_loot[9] = {"local_eid": hv, "tx": 3, "ty": 3}
+
+    fx._handle_msg_loot_result({"corpse_id": 9, "coins": 10, "items": []})
+
+    assert fx.world.get_component(hv, Corpse) is not None, \
+        "harvestable não deveria ser removido do ECS local ao esvaziar"
+    assert 9 in fx._available_loot, \
+        "harvestable esvaziado continua rastreado (pode ser reaberto, só sem loot)"
+
+
+def test_loot_result_esvaziando_corpse_de_mob_morto_ainda_remove():
+    """Comportamento antigo intacto: corpse de mob morto (sem Renderable)
+    continua sumindo ao esvaziar — só harvestable é a exceção."""
+    from engine.components import Position, Corpse
+    fx = _make_loot_result_fixture()
+    corpse = fx.world.create_entity()
+    fx.world.add_component(corpse, Position(x=100, y=100, prev_x=100, prev_y=100))
+    fx.world.add_component(corpse, Corpse(loot=[], coins=11))
+    fx._available_loot[5] = {"local_eid": corpse, "tx": 3, "ty": 3}
+
+    fx._handle_msg_loot_result({"corpse_id": 5, "coins": 11, "items": []})
+
+    assert fx.world.get_component(corpse, Corpse) is None, \
+        "corpse de mob morto deveria ser removido do ECS local ao esvaziar"
+    assert 5 not in fx._available_loot
+
+
 # ── INVENTORY_UPDATE — recompensa de item de quest (23/07/2026) ─────────────
 # Reusa _grant_items_to_inventory, o mesmo helper que LOOT_RESULT usa acima
 # (extraído dele nesta leva) — _handle_msg_inventory_update é só o ponto de

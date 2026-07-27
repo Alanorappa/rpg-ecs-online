@@ -7773,6 +7773,59 @@ próximos do player. Confirmado via `git stash` que falha sem o fix
 (reproduziu o bug: `ground_target == (3, 3)`, o próprio tile do
 harvestable). Suíte completa (534 testes) rodada 3x, 0 falhas.
 
+**4º bug real relatado pelo usuário (25/07/2026)**: looteou a caixa com
+o personagem A (Anarin) — pegou o loot, caixa "sumiu" da TELA DELE. Logou
+com outro personagem (B, Aventureiro), foi até o mesmo spot — a caixa
+ainda estava lá (visível), mas vazia (sem loot). Colocando os dois
+personagens perto do spot ao mesmo tempo: só B via a caixa; A não via
+mais nada ali. Causa: `client/network_handlers.py::
+_sync_local_corpse_after_take` (chamado por `_handle_msg_loot_result`,
+disparado só pra quem de fato manda um `LOOT_REQUEST`) remove a
+entidade LOCAL do `Corpse` sempre que ele esvazia — comportamento
+CERTO pra corpse de mob morto (deveria mesmo desaparecer depois de
+saqueado), errado pra harvestable (`no_decay=True` no servidor,
+permanente por design). Só quem realmente esvaziou o pote (A) passa por
+esse código — B, cujo próprio saque nunca chegou a pegar nada (o pote
+comum já estava vazio quando ele descobriu a caixa), nunca disparou
+`_handle_msg_loot_result`, então sua cópia local nunca foi removida —
+daí a assimetria entre os dois clientes.
+
+**Fix**: mesmo sinal já usado em `LootSystem.render_world`/
+`_draw_remote_corpses` — se a entidade tem `Renderable` (harvestable),
+`_sync_local_corpse_after_take` retorna sem remover nada quando o
+corpse esvazia (só limpa o loot mesmo, a entidade/sprite continua na
+tela, visível mas sem nada pra saquear). Corpse de mob morto (sem
+`Renderable`) continua desaparecendo normalmente.
+
+**Design SUGERIDO pelo usuário ao relatar o bug** (ainda não confirmado
+explicitamente, aplicado por ser a leitura mais natural do pedido):
+harvestable esvaziado não precisa sumir — pode continuar visível, só
+sem loot, até a Fase M2 trazer respawn de verdade (loot volta depois de
+um tempo). Loot de harvestable já era (antes deste fix) um POTE COMUM
+público (não "uma cópia por jogador") — uma vez que alguém pega os
+itens, acabou pra todo mundo até o respawn, mesmo princípio de
+free-for-all já usado em corpse de mob morto em grupo, só que sem
+exigir grupo (qualquer jogador pode saquear, `owner_eid=-1`) — esse
+comportamento de pote comum não mudou, só a visibilidade da caixa vazia.
+
+**Validado**: 2 testes novos em `tests/test_client_ui.py` — esvaziar um
+harvestable (via `_handle_msg_loot_result`) NÃO remove a entidade local
+nem tira do `_available_loot`; esvaziar um corpse de mob morto (sem
+`Renderable`) CONTINUA removendo normalmente (regressão intacta).
+Confirmado via `git stash` que o teste de harvestable falha sem o fix
+(o de mob morto passa mesmo sem o fix, de propósito — prova que é
+comportamento ANTIGO, não introduzido agora). Suíte completa (536
+testes) rodada 3x, 0 falhas.
+
+**Auditoria feita** (evitar mais rodadas de "achei outro"): busquei
+TODOS os `world.remove_entity(...)` em `client/*.py`/`ui/systems.py`
+que pudessem tocar um `Corpse` — só este e o de
+`_handle_msg_entity_despawn` (`eid < 0`, exclusivo de corpse de mob
+morto EXPIRADO server-side, nunca dispara pra harvestable porque seu
+eid é sempre positivo — entidade real, nunca despachado como negativo)
+mexem nisso. Os outros `remove_entity` do arquivo são de player/mob/
+projétil remoto, sem relação com `Corpse`.
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |
