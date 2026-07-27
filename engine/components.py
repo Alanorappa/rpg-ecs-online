@@ -832,6 +832,13 @@ class Harvestable:
     verdade do loot (itens/moedas/quest_rolls) — só a descoberta/visual/
     colisão mudou de dict-solto pra entidade ECS de verdade."""
     corpse_id: int
+    # Fase M3 (25/07/2026) — "" = sem trava, visível pra todo mundo.
+    # Setado = o SWEEP de descoberta (server/session.py::
+    # _build_update_for_session, get_mobs_in_aoi) filtra por sessão,
+    # comparando com QuestLog.active DO PLAYER daquela sessão — quem não
+    # tem a quest nunca recebe ENTITY_SPAWN/WORLD_STATE pra esta
+    # entidade (totalmente invisível, mesmo princípio de class_req).
+    requires_quest: str = ""
 
 
 @dataclass

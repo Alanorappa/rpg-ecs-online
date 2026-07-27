@@ -1309,7 +1309,7 @@ class SessionManager:
         # nunca o veria, pois o sweep de _build_update_for_session só
         # roda dentro de _dispatch_tick_deltas, que exige has_pending.
         near_mobs    = self.world_server.get_mobs_in_aoi(
-            tx, ty, AOI_RADIUS, map_file=_my_map_login,
+            tx, ty, AOI_RADIUS, map_file=_my_map_login, viewer_eid=eid,
         )
         all_entities = near_players + near_mobs
         await session.send(MsgType.WORLD_STATE, {
@@ -2592,6 +2592,13 @@ class SessionManager:
                 continue
             pos = mob_positions.get(mob_eid) if mob_positions else None
             if pos and in_aoi(pos[0], pos[1], mob_eid):
+                # Fase M3 (25/07/2026): harvestable com requires_quest
+                # fica de fora — nem entra em "spawned" nem em
+                # known_eids, então o PRÓPRIO sweep descobre sozinho no
+                # tick seguinte se o player aceitar a quest depois (sem
+                # precisar de código extra pra "revelar").
+                if not self.world_server._harvestable_visible_to(mob_eid, session.entity_id):
+                    continue
                 spawn_data = self.world_server.get_entity_spawn_data(mob_eid)
                 if spawn_data:
                     result.setdefault("spawned", []).append(spawn_data)

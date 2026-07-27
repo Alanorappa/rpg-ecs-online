@@ -7878,6 +7878,69 @@ completa (540 testes) rodada 3x, 0 falhas.
 um harvestable de teste com `respawn_s` configurado no mapa — nenhum
 foi adicionado ainda, é conteúdo/design do usuário).
 
+**Fase M3 — Trava de quest (25/07/2026)**: decisão confirmada via
+`AskUserQuestion` — item de mapa com `requires_quest` definido fica
+TOTALMENTE invisível (nem chega no AOI) pra quem não tem a quest ativa,
+mesmo princípio de `class_req`.
+
+`Harvestable` (`engine/components.py`) ganha `requires_quest: str = ""`;
+`create_harvestable_entity` (`engine/entity_factory.py`) ganha o parâmetro
+homônimo, threading até a construção do componente.
+`_create_harvestables_for_map` (`server/world_server.py`) passa
+`h.get("requires_quest", "")` do JSON de mapa.
+
+**Bug latente da Fase M2 achado de graça durante o M3**: `engine/
+map_loader.py::_merge_entities_json` nunca copiava `respawn_s` do JSON
+bruto pra dentro do dict que vira `spawn_points["harvestables"]` — a
+Fase M2 funcionava nos testes porque os testes montam `spawn_points`
+direto, sem passar por `map_loader.py`, mas um mapa real com
+`respawn_s` configurado teria esse campo silenciosamente descartado
+antes de chegar no servidor. Corrigido no mesmo commit: bloco de
+harvestables em `_merge_entities_json` agora copia `"respawn_s"` E
+`"requires_quest"`.
+
+**Mecanismo central**: novo `WorldServer._harvestable_visible_to(eid,
+viewer_eid) -> bool` — `True` pra qualquer entidade sem
+`Harvestable.requires_quest` (inclusive mobs, que não têm o componente);
+pra harvestable travado, confere `hv.requires_quest in ql.active` da
+`QuestLog` do `viewer_eid` (`viewer_eid=-1` = sem filtro, usado por
+call sites sem sessão em escopo, pra não quebrar chamadas existentes).
+
+Dois pontos de uso:
+- `get_mobs_in_aoi` (`server/world_server.py`) ganha parâmetro
+  `viewer_eid: int = -1`, filtra candidatos antes de incluir no
+  resultado — cobre o `WORLD_STATE` de login (`_spawn_and_start` em
+  `server/session.py` agora passa `viewer_eid=eid`, o próprio player
+  logando).
+- Sweep genérico de tick (`_build_update_for_session`, `server/
+  session.py`) — logo após o check de `in_aoi`, `continue` se
+  `_harvestable_visible_to` recusar, ANTES de adicionar em
+  `known_eids`. Isso é o que faz revelação automática funcionar: se o
+  player aceita a quest depois de logado, o eid nunca entrou em
+  `known_eids`, então o MESMO sweep genérico o descobre sozinho no
+  tick seguinte — zero código extra de "revelar".
+
+**Validado**: `tests/test_session.py::TestHarvestableQuestGateM3` (5
+testes) — harvestable sem trava visível pra qualquer viewer; login sem
+a quest não recebe nem no `WORLD_STATE` nem no sweep; login com a quest
+ativa vê e saqueia normal; aceitar a quest depois de logado revela no
+tick seguinte sem relogar; sweep de tick nunca revela pra quem não tem
+a quest. Confirmado via `git stash` (arquivos-fonte do M3, mantendo o
+teste fora do stash) que 4 dos 5 falham genuinamente sem a
+implementação. **`test_login_com_quest_ativa_ve_harvestable_com_trava`
+passa mesmo sem o fix** — mesma característica já documentada acima
+pra `no_decay`/`sem_trava`: esse teste só prova "quem TEM a quest não é
+bloqueado", propriedade que vale trivialmente mesmo SEM nenhuma trava
+(sem trava nenhuma, todo mundo vê, quem tem a quest incluso) — ele não
+tem poder de detectar a ausência do gate sozinho. Os outros 4 (em
+especial o de login SEM a quest, e o de sweep de tick) são quem
+realmente comprova que a trava existe e funciona. Suíte completa (545
+testes) rodada 3x, 0 falhas.
+
+**Não validado nesta sessão**: trava de quest em jogo real (depende de
+um harvestable de teste com `requires_quest` configurado no mapa —
+nenhum foi adicionado ainda, é conteúdo/design do usuário).
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |

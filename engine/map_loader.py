@@ -332,6 +332,13 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
                 # real (Fase M1, revisão 2). "" = sem sprite catalogado, cai
                 # no retângulo cinza padrão de Renderable.
                 "sprite": hv.get("sprite", ""),
+                # Fase M2 (25/07/2026): reabastece sozinho depois de
+                # esvaziar por completo. 0/ausente = nunca (M1 original).
+                "respawn_s": hv.get("respawn_s", 0),
+                # Fase M3 (25/07/2026): "" = sem trava, visível pra todo
+                # mundo. Setado = totalmente invisível pra quem não tem
+                # a quest ativa (mesmo princípio de class_req).
+                "requires_quest": hv.get("requires_quest", ""),
             }
             for hv in data["harvestables"]
         ]

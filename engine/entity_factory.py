@@ -620,7 +620,8 @@ def create_corpse(world: World, x: float, y: float, loot: list, coins: int = 0,
 
 def create_harvestable_entity(world: World, tile_x: int, tile_y: int,
                               corpse_id: int, sprite_id: str = "",
-                              name: str = "Objeto") -> int:
+                              name: str = "Objeto",
+                              requires_quest: str = "") -> int:
     """Item de mapa saqueável (Fase M1, revisão 2, 25/07/2026) — entidade
     real, parada, SEM combate/diálogo (nada de Combatant/AIControlled/
     Faction) — só posição + aparência + o vínculo com o loot. Colisão e
@@ -643,7 +644,8 @@ def create_harvestable_entity(world: World, tile_x: int, tile_y: int,
     ))
     world.add_component(eid, Renderable(color=(120, 90, 60), width=32, height=32,
                                         sprite_id=sprite_id))
-    world.add_component(eid, Harvestable(corpse_id=corpse_id))
+    world.add_component(eid, Harvestable(corpse_id=corpse_id,
+                                         requires_quest=requires_quest))
     world.add_component(eid, EntityIdentity(name=name, race="Objeto", entity_class=""))
     return eid
 

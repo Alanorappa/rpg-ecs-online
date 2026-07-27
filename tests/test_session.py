@@ -1283,6 +1283,135 @@ class TestHarvestableRespawnM2(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(matching[0]["coins"], 9)
 
 
+class TestHarvestableQuestGateM3(unittest.IsolatedAsyncioTestCase):
+    """Fase M3 (25/07/2026) — harvestable com `requires_quest` fica
+    TOTALMENTE invisível (nem no AOI) pra quem não tem a quest ativa,
+    tanto no login (WORLD_STATE) quanto no sweep de tick — decisão
+    confirmada com o usuário via AskUserQuestion."""
+
+    QID = "qgate_teste"
+
+    async def asyncSetUp(self):
+        self.ws_server, self.mgr = make_session_manager()
+        from content.quests_data import QUESTS, QuestDef, QuestReward, ObjectiveDef
+        QUESTS[self.QID] = QuestDef(
+            title="Teste", description="d",
+            objectives=(ObjectiveDef(type="talk_to_npc", target="X", count=1),),
+            reward=QuestReward(xp=1),
+        )
+
+    async def asyncTearDown(self):
+        from content.quests_data import QUESTS
+        QUESTS.pop(self.QID, None)
+
+    def _make_harvestable(self, tx: int, ty: int, map_file: str = None,
+                          requires_quest: str = "") -> int:
+        map_key = map_file or self.ws_server._map_file
+        spawn_points = {"harvestables": [{
+            "x": tx, "y": ty, "name": "Item com Trava", "sprite": "pr_box1",
+            "items": ["training_sword"], "coins": 0,
+            "requires_quest": requires_quest,
+        }]}
+        before_corpses = set(self.ws_server._corpses.keys())
+        before_hv_eids = set(self.ws_server._harvestable_eids)
+        self.ws_server._create_harvestables_for_map(spawn_points, map_key)
+        from engine.components import MapLocation as _MLhv3
+        for _new_eid in set(self.ws_server._harvestable_eids) - before_hv_eids:
+            if self.ws_server.world.get_component(_new_eid, _MLhv3) is None:
+                self.ws_server.world.add_component(_new_eid, _MLhv3(map_key))
+        return (set(self.ws_server._corpses.keys()) - before_corpses).pop()
+
+    async def test_login_sem_quest_nao_ve_harvestable_com_trava(self):
+        hid = self._make_harvestable(130, 374, requires_quest=self.QID)
+        session, fw = await fake_login(self.mgr, "s1", "user_qg_a", 130, 374)
+
+        world_states = get_msgs_of_type(fw, MsgType.WORLD_STATE)
+        spawned = [e for e in world_states[0]["entities"]
+                  if e.get("kind") == "harvestable" and e.get("corpse_id") == hid]
+        self.assertEqual(len(spawned), 0)
+        loot_avail = get_msgs_of_type(fw, MsgType.LOOT_AVAILABLE)
+        self.assertFalse(any(m["corpse_id"] == hid for m in loot_avail))
+
+    async def test_login_com_quest_ativa_ve_harvestable_com_trava(self):
+        from engine.components import QuestLog
+        hid = self._make_harvestable(130, 374, requires_quest=self.QID)
+        session, fw = await fake_login(self.mgr, "s1", "user_qg_b", 200, 400)
+        ql = self.ws_server.world.get_component(session.entity_id, QuestLog)
+        ql.active[self.QID] = [0]
+
+        # Anda até perto (dispara o sweep de tick, não o login).
+        from engine.components import TileMovement as _TMqg
+        tm = self.ws_server.world.get_component(session.entity_id, _TMqg)
+        tm.current_tile_x = 130; tm.current_tile_y = 375
+        tm.target_tile_x  = 130; tm.target_tile_y  = 375
+        fw.sent.clear()
+        self.ws_server._tick(0.05)
+        await asyncio.sleep(0)
+
+        aoi_updates = get_msgs_of_type(fw, MsgType.AOI_UPDATE)
+        spawned = [s for u in aoi_updates for s in u.get("spawned", [])
+                  if s.get("kind") == "harvestable" and s.get("corpse_id") == hid]
+        self.assertEqual(len(spawned), 1)
+
+    async def test_sweep_de_tick_nao_revela_harvestable_sem_quest(self):
+        hid = self._make_harvestable(100, 100, requires_quest=self.QID)
+        session, fw = await fake_login(self.mgr, "s1", "user_qg_c", 0, 0)
+
+        from engine.components import TileMovement as _TMqg2
+        tm = self.ws_server.world.get_component(session.entity_id, _TMqg2)
+        tm.current_tile_x = 100; tm.current_tile_y = 101
+        tm.target_tile_x  = 100; tm.target_tile_y  = 101
+        fw.sent.clear()
+        self.ws_server._tick(0.05)
+        await asyncio.sleep(0)
+
+        aoi_updates = get_msgs_of_type(fw, MsgType.AOI_UPDATE)
+        spawned = [s for u in aoi_updates for s in u.get("spawned", [])
+                  if s.get("kind") == "harvestable" and s.get("corpse_id") == hid]
+        self.assertEqual(len(spawned), 0)
+
+    async def test_aceitar_quest_depois_de_logar_revela_no_tick_seguinte(self):
+        """Sem relogar: o sweep descobre sozinho assim que a quest fica ativa."""
+        from engine.components import QuestLog, TileMovement as _TMqg3
+        hid = self._make_harvestable(100, 100, requires_quest=self.QID)
+        session, fw = await fake_login(self.mgr, "s1", "user_qg_d", 0, 0)
+        tm = self.ws_server.world.get_component(session.entity_id, _TMqg3)
+        tm.current_tile_x = 100; tm.current_tile_y = 101
+        tm.target_tile_x  = 100; tm.target_tile_y  = 101
+
+        fw.sent.clear()
+        self.ws_server._tick(0.05)  # ainda sem a quest — não descobre
+        await asyncio.sleep(0)
+        aoi_updates = get_msgs_of_type(fw, MsgType.AOI_UPDATE)
+        spawned = [s for u in aoi_updates for s in u.get("spawned", [])
+                  if s.get("kind") == "harvestable" and s.get("corpse_id") == hid]
+        self.assertEqual(len(spawned), 0)
+
+        ql = self.ws_server.world.get_component(session.entity_id, QuestLog)
+        ql.active[self.QID] = [0]
+        # precisa de "atividade" pra disparar o dispatch de novo — um
+        # segundo passo de movimento serve.
+        tm.current_tile_x = 100; tm.current_tile_y = 102
+        tm.target_tile_x  = 100; tm.target_tile_y  = 102
+        fw.sent.clear()
+        self.ws_server._tick(0.05)
+        await asyncio.sleep(0)
+        aoi_updates2 = get_msgs_of_type(fw, MsgType.AOI_UPDATE)
+        spawned2 = [s for u in aoi_updates2 for s in u.get("spawned", [])
+                   if s.get("kind") == "harvestable" and s.get("corpse_id") == hid]
+        self.assertEqual(len(spawned2), 1)
+
+    def test_harvestable_sem_trava_visivel_pra_qualquer_viewer(self):
+        """Regressão: harvestable sem requires_quest continua visível
+        (viewer_eid=-1 ou qualquer player) — comportamento M1/M2 intacto."""
+        hid = self._make_harvestable(50, 50, requires_quest="")
+        from engine.components import Harvestable
+        hv_eid = next(eid for eid in self.ws_server._harvestable_eids
+                     if self.ws_server.world.get_component(eid, Harvestable).corpse_id == hid)
+        self.assertTrue(self.ws_server._harvestable_visible_to(hv_eid, -1))
+        self.assertTrue(self.ws_server._harvestable_visible_to(hv_eid, 12345))
+
+
 class TestArenaDispatchSemMovimento(unittest.IsolatedAsyncioTestCase):
     """Bug real relatado pelo usuário 21/07/2026: "só chamou a arena
     quando movi o personagem" + "cliquei em aceitar e ninguém entrou".

@@ -737,7 +737,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             }
             eid = create_harvestable_entity(
                 self.world, h["x"], h["y"], corpse_id=hid,
-                sprite_id=h.get("sprite", ""), name=name)
+                sprite_id=h.get("sprite", ""), name=name,
+                requires_quest=h.get("requires_quest", ""))
             self._harvestable_eids.add(eid)
 
     def _resolve_harvestable_items(self, template_items: list, context_name: str = "Objeto") -> list:
@@ -1682,7 +1683,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         return payload
 
     def get_mobs_in_aoi(self, center_tx: int, center_ty: int, radius: int,
-                        map_file: str = "") -> list[dict]:
+                        map_file: str = "", viewer_eid: int = -1) -> list[dict]:
         """Retorna lista de mobs + harvestables no AOI — para WORLD_STATE
         inicial (login). Harvestable incluído aqui (Fase M1, revisão 2)
         pelo MESMO motivo que mob estacionário já precisava: sem isso, um
@@ -1690,7 +1691,12 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         descobre, porque o sweep de `_build_update_for_session` só roda
         dentro de `_dispatch_tick_deltas`, que só dispara se `_on_tick`'s
         `has_pending` achar atividade — se o mundo ficar ocioso logo após
-        o login, o harvestable parado nunca apareceria."""
+        o login, o harvestable parado nunca apareceria.
+
+        `viewer_eid` (Fase M3, 25/07/2026): se passado, harvestable com
+        `requires_quest` fica de fora do resultado pra quem não tem a
+        quest ativa — mesmo filtro aplicado no sweep de tick (ver
+        `_harvestable_visible_to`)."""
         from engine.components import TileMovement, MapLocation as _ML_gmai
         result = []
         for eid in self._mob_eids | self._harvestable_eids:
@@ -1698,6 +1704,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 _ml = self.world.get_component(eid, _ML_gmai)
                 if _ml and _ml.map_file != map_file:
                     continue
+            if not self._harvestable_visible_to(eid, viewer_eid):
+                continue
             tm = self.world.get_component(eid, TileMovement)
             if not tm:
                 continue
@@ -1706,6 +1714,23 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 payload = self._build_mob_spawn_payload(eid, tm)
                 result.append(payload)
         return result
+
+    def _harvestable_visible_to(self, eid: int, viewer_eid: int) -> bool:
+        """Fase M3 (25/07/2026): True pra qualquer entidade sem
+        `Harvestable.requires_quest` setado (mob normal, harvestable sem
+        trava) — quando setado, só é visível se `viewer_eid` tiver a
+        quest ATIVA (mesmo princípio de `class_req`: 100% invisível, não
+        só "sem poder saquear"). `viewer_eid=-1` (ex.: chamada sem
+        contexto de sessão) trata como "sem trava" pra não quebrar
+        call sites que não têm essa informação."""
+        from engine.components import Harvestable as _HvVis, QuestLog as _QLVis
+        hv = self.world.get_component(eid, _HvVis)
+        if hv is None or not hv.requires_quest:
+            return True
+        if viewer_eid < 0:
+            return True
+        ql = self.world.get_component(viewer_eid, _QLVis)
+        return bool(ql and hv.requires_quest in ql.active)
 
     def get_entity_id(self, session_id: str) -> int:
         return self._player_eids.get(session_id, -1)
