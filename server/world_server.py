@@ -183,6 +183,28 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # que assumem CombatStats/Combatant presentes). Loot em si
         # continua em self._corpses (ver Harvestable.corpse_id).
         self._harvestable_eids: set[int] = set()
+        # corpse_id → entity ID da entidade real correspondente (usado pra
+        # remover a entidade quando um nó de ZONA se esgota — Fase "Zona de
+        # itens", 25/07/2026; harvestable de posição fixa nunca é removido,
+        # então nunca precisa disso, mas fica preenchido igual por
+        # simplicidade/consistência).
+        self._harvestable_hid_to_eid: dict[int, int] = {}
+
+        # Zona de itens (25/07/2026, pedido do usuário — decisões
+        # confirmadas via AskUserQuestion): mistura de sub-tipos na mesma
+        # zona, 1 cooldown pra zona inteira, nó esgotado SOME e um novo
+        # nasce em posição ALEATÓRIA dentro do raio (diferente do
+        # harvestable de posição fixa, que fica visível vazio — mais
+        # parecido com nó de recurso "migrando" tipo SpawnZone de mob).
+        # zone_id → {x, y, radius, respawn_cooldown, requires_quest, map,
+        #            spawns: [{name, sprite, items, coins, count}, ...]}
+        self._harvestable_zones: dict[int, dict] = {}
+        # zone_id → {hid: subtype_index} — nós vivos desta zona agora
+        self._harvestable_zone_active: dict[int, dict] = {}
+        # zone_id → list [subtype_index, timer_restante] — um timer por
+        # slot vago (inicial ou reabertura após esgotar)
+        self._harvestable_zone_timers: dict[int, list] = {}
+        self._next_harvestable_zone_id: int = 1
 
         # DEBUG Bug2 (regen/desaparecimento no golpe final): current_hp de cada
         # mob ao FINAL do tick anterior (pós death-sweep) — usado em _tick()
@@ -517,6 +539,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._create_combat_npcs(spawn_points.get("combat_npcs", []), key)
         self._create_service_npcs(spawn_points)
         self._create_harvestables_for_map(spawn_points, key)
+        self._create_harvestable_zones_for_map(spawn_points.get("harvestable_zones", []), key)
 
         # Snapshot DEPOIS — todas as novas entidades ganham MapLocation
         _eids_after = set(self.world._components.keys())
@@ -740,6 +763,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 sprite_id=h.get("sprite", ""), name=name,
                 requires_quest=h.get("requires_quest", ""))
             self._harvestable_eids.add(eid)
+            self._harvestable_hid_to_eid[hid] = eid
 
     def _resolve_harvestable_items(self, template_items: list, context_name: str = "Objeto") -> list:
         """Resolve uma lista de item_key (ou (item_key, stack)) em itens
@@ -791,6 +815,168 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                     "hid": hid, "tx": corpse["tx"], "ty": corpse["ty"],
                     "map": corpse.get("map"),
                 })
+
+    def _create_harvestable_zones_for_map(self, zones_data: list, map_key: str) -> None:
+        """Zona de itens (25/07/2026) — a partir de
+        spawn_points["harvestable_zones"] (já processado por map_loader.py,
+        cada entrada com uma lista `spawns` de sub-tipos misturados, mesmo
+        padrão de `spawn_zones` de mob). Registra a zona (metadados +
+        templates dos sub-tipos) e enfileira um timer de preenchimento
+        inicial por slot (escalonado, evita spike de criação — mesmo
+        princípio do preenchimento inicial de `SpawnZoneSystem`). Os nós em
+        si só nascem em `_tick_harvestable_zones`, não aqui."""
+        for z in zones_data:
+            zone_id = self._next_harvestable_zone_id
+            self._next_harvestable_zone_id += 1
+            self._harvestable_zones[zone_id] = {
+                "x": z.get("x", 0), "y": z.get("y", 0),
+                "radius": z.get("radius", 10),
+                "respawn_cooldown": float(z.get("respawn_cooldown", 60.0)),
+                "requires_quest": z.get("requires_quest", ""),
+                "map": map_key,
+                "spawns": z.get("spawns", []),
+            }
+            self._harvestable_zone_active[zone_id] = {}
+            timers = []
+            for idx, sub in enumerate(z.get("spawns", [])):
+                for i in range(sub.get("count", 1)):
+                    timers.append([idx, i * 0.15 + random.uniform(0.0, 0.05)])
+            self._harvestable_zone_timers[zone_id] = timers
+
+    def _pick_harvestable_zone_tile(self, zone: dict, occupied: set):
+        """Tile (x, y) caminhável aleatório dentro do raio da zona, ou None
+        — adaptação de `SpawnZoneSystem._pick_tile` (mesma amostragem O(até
+        40 tentativas), agora resolvendo o tilemap do MAPA da zona via
+        `_map_bundles` em vez de depender de um `_svc` de sistema já
+        registrado (esta chamada acontece fora de qualquer System)."""
+        bundle = self._map_bundles.get(zone["map"])
+        tilemap_comp = bundle.pathfinding._get_tilemap_component() if bundle else None
+        rows = tilemap_comp.tile_matrix if tilemap_comp else None
+        map_h = len(rows) if rows else 0
+        map_w = len(rows[0]) if (rows and map_h) else 0
+        r = zone["radius"]
+        for _ in range(40):
+            tx = zone["x"] + random.randint(-r, r)
+            ty = zone["y"] + random.randint(-r, r)
+            if (tx, ty) in occupied:
+                continue
+            if rows is not None:
+                if not (0 <= tx < map_w and 0 <= ty < map_h):
+                    continue
+                if rows[ty][tx].is_solid:
+                    continue
+            return (tx, ty)
+        return None
+
+    def _spawn_harvestable_zone_node(self, zone_id: int, zone: dict,
+                                     subtype_idx: int, dest: tuple) -> int:
+        """Cria UM nó de zona (corpse + entidade real) do sub-tipo
+        `subtype_idx` em `dest` — mesmo esqueleto de
+        `_create_harvestables_for_map`, mas pra um nó só, e com `zone_id`
+        gravado no corpse (usado por `_tick_harvestable_zones` pra saber
+        que esgotar este corpse deve REMOVER a entidade, não reabastecer no
+        lugar como o harvestable de posição fixa)."""
+        from engine.entity_factory import create_harvestable_entity
+        from engine.components import MapLocation as _MLhz
+        tx, ty = dest
+        sub = zone["spawns"][subtype_idx]
+        hid = self._next_corpse_id
+        self._next_corpse_id += 1
+        name = sub.get("name", "Objeto")
+        template_items = sub.get("items", [])
+        template_coins = sub.get("coins", 0)
+        granted = self._resolve_harvestable_items(template_items, name)
+        self._corpses[hid] = {
+            "tx": tx, "ty": ty, "owner_eid": -1,
+            "items": granted, "coins": template_coins,
+            "timer": float("inf"), "map": zone["map"],
+            "mob_name": "", "mob_race": "", "quest_rolls": {},
+            "no_decay": True, "name": name,
+            "respawn_s": 0, "empty_timer": 0.0,
+            "_template_items": template_items, "_template_coins": template_coins,
+            "zone_id": zone_id,
+        }
+        eid = create_harvestable_entity(
+            self.world, tx, ty, corpse_id=hid,
+            sprite_id=sub.get("sprite", ""), name=name,
+            requires_quest=zone.get("requires_quest", ""))
+        # MapLocation manual (fora do diff antes/depois de _load_map_for,
+        # que só cobre entidades criadas na carga do mapa — mesmo padrão
+        # de SpawnZoneSystem._spawn_one pra mob criado em runtime).
+        self.world.add_component(eid, _MLhz(zone["map"]))
+        self._harvestable_eids.add(eid)
+        self._harvestable_hid_to_eid[hid] = eid
+        self._harvestable_zone_active.setdefault(zone_id, {})[hid] = subtype_idx
+        return hid
+
+    def _tick_harvestable_zones(self, dt: float) -> None:
+        """Zona de itens (25/07/2026) — chamado do MESMO lugar que já chama
+        `_process_loot_drops`/`_tick_harvestable_respawn` (nenhuma `System`
+        ECS nova, mesmo princípio de M2: só bookkeeping de timer). Pra cada
+        zona: (1) detecta nós ativos totalmente esgotados (itens E moedas)
+        e os REMOVE (diferente do harvestable de posição fixa — decisão do
+        usuário: nó de zona some, não fica visível vazio), reaproveitando o
+        pipeline genérico de despawn (`self._despawned_this_tick`, já
+        despachado como ENTITY_DESPAWN pra quem conhece o eid — nenhum
+        broadcast novo necessário); (2) decrementa timers de slots vagos e
+        spawna um nó novo em posição ALEATÓRIA dentro do raio ao zerar
+        (nascimento também não precisa de notificação dedicada — o sweep
+        genérico, que já cobre `_mob_eids | _harvestable_eids` desde a Fase
+        M1, descobre sozinho no próximo tick)."""
+        if not self._harvestable_zones:
+            return
+        from engine.components import TileMovement as _TMhz, MapLocation as _MLhz2
+        occupied_by_map: dict = {}
+
+        def _occupied_for(map_file):
+            if map_file not in occupied_by_map:
+                occ = set()
+                for occ_eid, tm in self.world.get_entities_with(_TMhz):
+                    ml = self.world.get_component(occ_eid, _MLhz2)
+                    if ml is None or ml.map_file != map_file:
+                        continue
+                    occ.add((tm.current_tile_x, tm.current_tile_y))
+                    if tm.is_moving:
+                        occ.add((tm.target_tile_x, tm.target_tile_y))
+                occupied_by_map[map_file] = occ
+            return occupied_by_map[map_file]
+
+        for zone_id, zone in self._harvestable_zones.items():
+            active = self._harvestable_zone_active.setdefault(zone_id, {})
+
+            exhausted = [hid for hid in active
+                        if hid not in self._corpses or
+                           (not self._corpses[hid].get("items")
+                            and self._corpses[hid].get("coins", 0) <= 0)]
+            for hid in exhausted:
+                subtype_idx = active.pop(hid)
+                eid = self._harvestable_hid_to_eid.pop(hid, None)
+                if eid is not None:
+                    self._harvestable_eids.discard(eid)
+                    try:
+                        self.world.remove_entity(eid)
+                    except Exception:
+                        pass
+                    self._despawned_this_tick.append({"eid": eid, "tx": None, "ty": None})
+                self._corpses.pop(hid, None)
+                self._harvestable_zone_timers.setdefault(zone_id, []).append(
+                    [subtype_idx, zone["respawn_cooldown"]])
+
+            timers = self._harvestable_zone_timers.get(zone_id, [])
+            still_waiting = []
+            for subtype_idx, t in timers:
+                t -= dt
+                if t <= 0:
+                    occ = _occupied_for(zone["map"])
+                    dest = self._pick_harvestable_zone_tile(zone, occ)
+                    if dest is None:
+                        still_waiting.append([subtype_idx, 2.0])  # reagenda em 2s
+                        continue
+                    occ.add(dest)  # reserva o tile imediatamente
+                    self._spawn_harvestable_zone_node(zone_id, zone, subtype_idx, dest)
+                else:
+                    still_waiting.append([subtype_idx, t])
+            self._harvestable_zone_timers[zone_id] = still_waiting
 
     def _create_spawn_zones(self, zones_data: list) -> None:
         """Compat: cria SpawnZones sem MapLocation (usado antes do multi-map)."""
@@ -3593,6 +3779,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         self._process_loot_drops(dt)
         self._tick_harvestable_respawn(dt)
+        self._tick_harvestable_zones(dt)
         self._tick_trade_distance_check()
         self._tick_duel_distance_check()
         self._tick_arena_queue()

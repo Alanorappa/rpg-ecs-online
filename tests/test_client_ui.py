@@ -596,10 +596,13 @@ class _NetHandlerFixture(_NH, _REH):
         self.player_entity = player_entity
         self._my_eid = -1
         self._remote_players = {}
+        self._remote_player_move_queues = {}
+        self._remote_step_timers = {}
         self._pvp_respawn_target = -1
         # Estado de mobs remotos — não usado por estes testes (só players),
         # mas _handle_msg_aoi_update/_sync_mob_effects leem incondicionalmente.
         self._remote_mobs = {}
+        self._remote_mob_projectiles = {}
         self._mob_move_queues = {}
         self._pending_mob_despawn = {}
         self._mob_ghost_pos = {}
@@ -749,6 +752,27 @@ def test_loot_available_de_harvestable_ja_conhecido_atualiza_no_lugar():
     assert len(corpse.loot) == 1
     assert corpse.loot[0].name == "Espada de treinamento"
     assert fx._available_loot[5]["local_eid"] == local_eid
+
+
+def test_entity_despawn_de_harvestable_remove_entidade_local_e_available_loot():
+    """Zona de itens (25/07/2026) — diferente do harvestable de posição
+    fixa (nunca despawna, só esvazia), um nó de ZONA some de verdade ao
+    esgotar, reaproveitando o mesmo ENTITY_DESPAWN genérico já usado pra
+    mob morto (eid >= 0). Sem tratar esse branch, a entidade local (com
+    Corpse/Renderable) ficaria pra sempre na tela, órfã do servidor."""
+    from engine.components import Harvestable
+    fx = _make_net_fixture()
+    fx._spawn_remote_harvestable(88, {
+        "tx": 10, "ty": 20, "name": "Cogumelo", "sprite_id": "pl_bush3", "corpse_id": 6,
+    })
+    local_eid = fx._remote_harvestables[88]
+
+    fx._handle_msg_entity_despawn({"eid": 88})
+
+    assert 88 not in fx._remote_harvestables
+    assert 6 not in fx._available_loot
+    assert fx.world.get_component(local_eid, Harvestable) is None, \
+        "entidade local do nó de zona deveria ser removida do ECS"
 
 
 # ── client/pvp_zone_handlers.py — indicador de Zona PvP (Fase F) ─────────────

@@ -7977,6 +7977,93 @@ existiria). Suíte completa (549 testes) rodada 3x, 0 falhas.
 de fato mapeado em `ITEM_GRANTS_QUEST` — dict vazio por padrão, é
 conteúdo/design do usuário preencher).
 
+**Fase "Zona de itens" (25/07/2026)**: última fase da leva planejada —
+decisões confirmadas via `AskUserQuestion`: (1) zona aceita MISTURA de
+sub-tipos (ex.: 3 Cogumelos + 2 Arbustos na mesma zona), mesmo padrão de
+`spawn_zones` de mob; (2) nó de zona esgotado SOME de verdade (ao
+contrário do harvestable de posição fixa, que fica visível vazio até
+reabastecer no mesmo lugar) e um novo nasce em posição ALEATÓRIA dentro
+do raio — o usuário escolheu isso de propósito em vez do meu padrão
+recomendado ("sempre no mesmo lugar"); (3) um cooldown só pra zona
+inteira, não por sub-tipo.
+
+Novo array `"harvestable_zones"` em `maps/map_N_entities.json`
+(`engine/map_loader.py::_merge_entities_json`) — cada zona guarda sua
+lista `spawns` de sub-tipos INTACTA (ao contrário de `spawn_zones`, que
+achata cada sub-tipo numa entrada separada — aqui cada zona precisa
+continuar como UMA unidade, pra sortear entre os sub-tipos ao repor um
+slot vago).
+
+Servidor (`server/world_server.py`) NÃO virou uma `System` ECS nova —
+mesmo princípio de M2 (bookkeeping de timer chamado de `_tick()`, ao
+lado de `_process_loot_drops`/`_tick_harvestable_respawn`), harvestable
+não precisa de iteração genérica por frame tipo `AIControlled`:
+- `_harvestable_zones: dict[zone_id, dict]` (metadados: centro, raio,
+  cooldown, `requires_quest` — 1 valor pra zona inteira, herdado por
+  QUALQUER nó nascido nela, reaproveitando `_harvestable_visible_to` do
+  M3 sem nenhuma mudança) + `_harvestable_zone_active: dict[zone_id,
+  dict[hid, subtype_idx]]` (nós vivos agora) + `_harvestable_zone_timers:
+  dict[zone_id, list[[subtype_idx, timer]]]` (1 timer por slot vago).
+- `_harvestable_hid_to_eid: dict[hid, eid]` — mapeamento novo (faltava;
+  harvestable de posição fixa nunca precisou remover a própria entidade,
+  então nunca precisou de um caminho hid→eid) usado só pra remover a
+  entidade certa quando um nó de zona se esgota.
+- `_create_harvestable_zones_for_map`: registra a zona + enfileira 1
+  timer por slot (escalonado, mesmo truque de preenchimento inicial de
+  `SpawnZoneSystem` — evita spike de criação). Nós em si só nascem no
+  primeiro `_tick_harvestable_zones`, não no carregamento do mapa.
+- `_tick_harvestable_zones(dt)`: (1) detecta nós ativos totalmente
+  esgotados (itens E moedas) e os REMOVE — `world.remove_entity` +
+  `self._despawned_this_tick.append(...)`, reaproveitando o pipeline
+  GENÉRICO de despawn já despachado como `ENTITY_DESPAWN` pra quem
+  conhece o eid (nenhum broadcast novo); (2) decrementa timers de slots
+  vagos e, ao zerar, chama `_pick_harvestable_zone_tile` (adaptação de
+  `SpawnZoneSystem._pick_tile` — mesma amostragem O(até 40 tentativas),
+  resolvendo o tilemap do MAPA da zona via `_map_bundles` em vez de um
+  `_svc` de sistema já registrado, porque esta chamada acontece FORA de
+  qualquer `System`) e spawna via `_spawn_harvestable_zone_node` (mesmo
+  esqueleto de `_create_harvestables_for_map`, mas pra um nó só,
+  gravando `zone_id` no corpse). Nascimento de nó novo também não
+  precisa de notificação dedicada — o sweep genérico (`_mob_eids |
+  _harvestable_eids`, já existente desde o M1) descobre sozinho no
+  próximo tick.
+
+Cliente (`client/network_handlers.py::_handle_msg_entity_despawn`):
+branch `eid >= 0` ganhou um passo novo — se o eid é um
+`_remote_harvestables` conhecido, remove a entidade local E limpa
+`_available_loot` (lido via `Harvestable.corpse_id` do componente local,
+já que o dict de loot é indexado por corpse_id, não por eid) — sem isso,
+o nó de zona ficaria pra sempre na tela do cliente, órfão do servidor
+(harvestable de posição fixa NUNCA passa por este caminho — nunca é
+despawnado, só esvazia).
+
+**Validado**: `tests/test_session.py::TestHarvestableZone` (5 testes) —
+registrar a zona já enfileira 1 timer por slot (3+2=5) sem spawnar nada
+ainda; um tick com `dt` grande spawna todos os 5 nós respeitando a
+mistura de sub-tipos (3 Cogumelo + 2 Arbusto); esgotar um nó remove a
+entidade E dispara o despawn genérico; nó reaparece só depois do
+cooldown, em posição NOVA (testado com `unittest.mock.patch` sobre
+`_pick_harvestable_zone_tile` — prova determinística de que o respawn
+chama uma amostragem FRESCA em vez de reusar `tx/ty` do nó removido,
+evitando um teste flaky baseado em probabilidade); `requires_quest` da
+zona é herdado por QUALQUER nó nascido nela. Mais
+`tests/test_client_ui.py::test_entity_despawn_de_harvestable_remove_
+entidade_local_e_available_loot` (1 teste) — despawn de harvestable
+remove a entidade local e limpa `_available_loot`. Confirmado via `git
+stash` (arquivos-fonte da zona: `client/network_handlers.py`,
+`engine/map_loader.py`, `server/world_server.py`, mantendo os testes
+fora do stash) que os 6 testes novos falham genuinamente sem a
+implementação. Suíte completa (555 testes) rodada 3x, 0 falhas.
+
+**Não validado nesta sessão**: fluxo em jogo real (nenhuma zona de
+teste foi adicionada ao mapa real ainda — `"harvestable_zones"` é
+conteúdo/design do usuário preencher, igual às fases anteriores).
+
+Com esta fase, a leva completa (Q1 → Q2 → L1 → M1 → M2 → M3 → M4 →
+Zona de itens) planejada em
+`C:\Users\l4nce\.claude\plans\expressive-wondering-starlight.md` está
+encerrada.
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |

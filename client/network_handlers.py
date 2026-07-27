@@ -977,6 +977,20 @@ class NetworkHandlers:
                         pass
         else:
             self._remove_remote_player_entity(eid)
+            # Remove nó de zona de item esgotado (Fase "Zona de itens",
+            # 25/07/2026) — diferente do harvestable de posição fixa (que
+            # nunca despawna, só esvazia), um nó de zona SOME de verdade ao
+            # esgotar, reaproveitando o mesmo ENTITY_DESPAWN genérico de mob.
+            local_hv_eid = self._remote_harvestables.pop(eid, None)
+            if local_hv_eid is not None:
+                from engine.components import Harvestable as _HVdespawn
+                hv = self.world.get_component(local_hv_eid, _HVdespawn)
+                if hv is not None:
+                    self._available_loot.pop(hv.corpse_id, None)
+                try:
+                    self.world.remove_entity(local_hv_eid)
+                except Exception:
+                    pass
             # Remove projétil de mob se era um projétil visual
             _proj_local = self._remote_mob_projectiles.pop(eid, None)
             if _proj_local is not None:

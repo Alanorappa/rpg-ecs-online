@@ -1500,6 +1500,136 @@ class TestItemGrantsQuestM4(unittest.IsolatedAsyncioTestCase):
         self.assertIn(self.QID, ql.active)
 
 
+class TestHarvestableZone(unittest.IsolatedAsyncioTestCase):
+    """Zona de itens (25/07/2026) — decisões confirmadas via
+    AskUserQuestion: mistura de sub-tipos na MESMA zona (mesmo padrão de
+    spawn_zones de mob); nó esgotado SOME de verdade (ao contrário do
+    harvestable de posição fixa, que fica visível vazio até reabastecer no
+    lugar); nó novo nasce em posição ALEATÓRIA dentro do raio (não sempre
+    no mesmo lugar); 1 cooldown só, pra zona inteira (não por sub-tipo).
+    (140, 380) confirmado majoritariamente caminhável num raio de 3 no
+    mapa real (3 de 49 tiles sólidos — checado à parte antes de escrever
+    o teste, mesmo cuidado do teste de colisão da Fase M1)."""
+
+    CENTER = (140, 380)
+    RADIUS = 3
+
+    async def asyncSetUp(self):
+        self.ws_server, self.mgr = make_session_manager()
+
+    def _make_zone(self, count_a: int = 3, count_b: int = 2,
+                   respawn_cooldown: float = 1.0, requires_quest: str = "") -> int:
+        zones_data = [{
+            "x": self.CENTER[0], "y": self.CENTER[1], "radius": self.RADIUS,
+            "respawn_cooldown": respawn_cooldown, "requires_quest": requires_quest,
+            "spawns": [
+                {"name": "Cogumelo", "sprite": "pl_bush3",
+                 "items": ["training_sword"], "coins": 0, "count": count_a},
+                {"name": "Arbusto", "sprite": "pl_bush1",
+                 "items": [], "coins": 5, "count": count_b},
+            ],
+        }]
+        before = set(self.ws_server._harvestable_zones.keys())
+        self.ws_server._create_harvestable_zones_for_map(zones_data, self.ws_server._map_file)
+        return (set(self.ws_server._harvestable_zones.keys()) - before).pop()
+
+    async def test_zona_enfileira_timers_iniciais_ao_registrar(self):
+        """Registrar a zona (equivalente ao carregamento do mapa) já
+        enfileira 1 timer por slot (3+2=5), mas ainda não spawna nada —
+        nascimento em si só acontece no primeiro tick."""
+        zid = self._make_zone(count_a=3, count_b=2)
+        zone = self.ws_server._harvestable_zones[zid]
+        self.assertEqual((zone["x"], zone["y"]), self.CENTER)
+        self.assertEqual(len(zone["spawns"]), 2)
+        self.assertEqual(len(self.ws_server._harvestable_zone_timers[zid]), 5)
+        self.assertEqual(self.ws_server._harvestable_zone_active[zid], {})
+
+    async def test_tick_spawna_todos_os_nos_ate_o_count_total_misturando_subtipos(self):
+        zid = self._make_zone(count_a=3, count_b=2)
+        self.ws_server._tick_harvestable_zones(1.0)  # dt grande zera todos os timers iniciais
+
+        active = self.ws_server._harvestable_zone_active[zid]
+        self.assertEqual(len(active), 5)
+        subtype_counts: dict = {}
+        for hid, idx in active.items():
+            subtype_counts[idx] = subtype_counts.get(idx, 0) + 1
+            self.assertIn(hid, self.ws_server._corpses)
+            eid = self.ws_server._harvestable_hid_to_eid.get(hid)
+            self.assertIsNotNone(eid)
+            self.assertIn(eid, self.ws_server._harvestable_eids)
+        self.assertEqual(subtype_counts, {0: 3, 1: 2})
+        names = {self.ws_server._corpses[hid]["name"] for hid in active}
+        self.assertEqual(names, {"Cogumelo", "Arbusto"})
+
+    async def test_esgotar_no_remove_entidade_e_dispara_despawn_generico(self):
+        """Diferente do harvestable de posição fixa: nó de zona esgotado é
+        REMOVIDO de verdade (world.remove_entity + ENTITY_DESPAWN genérico
+        via _despawned_this_tick), não fica visível vazio."""
+        zid = self._make_zone(count_a=1, count_b=0)
+        self.ws_server._tick_harvestable_zones(1.0)
+        hid = next(iter(self.ws_server._harvestable_zone_active[zid]))
+        eid = self.ws_server._harvestable_hid_to_eid[hid]
+
+        self.ws_server._corpses[hid]["items"] = []
+        self.ws_server._corpses[hid]["coins"] = 0
+        self.ws_server._despawned_this_tick.clear()
+        self.ws_server._tick_harvestable_zones(0.1)
+
+        self.assertNotIn(hid, self.ws_server._harvestable_zone_active[zid])
+        self.assertNotIn(hid, self.ws_server._corpses)
+        self.assertNotIn(hid, self.ws_server._harvestable_hid_to_eid)
+        self.assertNotIn(eid, self.ws_server._harvestable_eids)
+        self.assertTrue(any(d["eid"] == eid for d in self.ws_server._despawned_this_tick))
+
+    async def test_no_reaparece_apos_cooldown_em_posicao_nova_nao_fixa_na_antiga(self):
+        """Decisão confirmada (NÃO é o padrão recomendado por mim — o
+        usuário escolheu de propósito o oposto): reposicionamento em zona
+        sorteia uma posição NOVA dentro do raio, nunca reusa a posição do
+        nó esgotado. Mocka _pick_harvestable_zone_tile pra provar que o
+        respawn chama uma amostragem NOVA (em vez de reaproveitar
+        tx/ty do corpse removido, que seria o bug 'errado por acidente')."""
+        from unittest.mock import patch
+        zid = self._make_zone(count_a=1, count_b=0, respawn_cooldown=1.0)
+        self.ws_server._tick_harvestable_zones(1.0)
+        hid_old = next(iter(self.ws_server._harvestable_zone_active[zid]))
+        old_tile = (self.ws_server._corpses[hid_old]["tx"], self.ws_server._corpses[hid_old]["ty"])
+
+        self.ws_server._corpses[hid_old]["items"] = []
+        self.ws_server._corpses[hid_old]["coins"] = 0
+        self.ws_server._tick_harvestable_zones(0.1)  # detecta esgotado, enfileira timer
+        self.assertEqual(len(self.ws_server._harvestable_zone_active[zid]), 0)
+
+        forced_tile = (old_tile[0] + 1, old_tile[1] + 1)
+        with patch.object(self.ws_server, "_pick_harvestable_zone_tile",
+                          return_value=forced_tile) as mocked:
+            self.ws_server._tick_harvestable_zones(2.0)  # passa do cooldown
+        mocked.assert_called_once()
+
+        self.assertEqual(len(self.ws_server._harvestable_zone_active[zid]), 1)
+        hid_new = next(iter(self.ws_server._harvestable_zone_active[zid]))
+        self.assertNotEqual(hid_new, hid_old)
+        new_tile = (self.ws_server._corpses[hid_new]["tx"], self.ws_server._corpses[hid_new]["ty"])
+        self.assertEqual(new_tile, forced_tile)
+        self.assertNotEqual(new_tile, old_tile)
+
+    async def test_zona_com_requires_quest_aplica_pra_qualquer_no_nascido_nela(self):
+        """requires_quest é 1 valor SÓ pra zona inteira — todo nó nascido
+        nela (de qualquer sub-tipo) herda a mesma trava (Fase M3 reaproveitada
+        sem mudança nenhuma no mecanismo de visibilidade)."""
+        from engine.components import Harvestable
+        zid = self._make_zone(count_a=1, count_b=1, requires_quest="qz_teste")
+        self.ws_server._tick_harvestable_zones(1.0)
+        for hid in self.ws_server._harvestable_zone_active[zid]:
+            eid = self.ws_server._harvestable_hid_to_eid[hid]
+            hv = self.ws_server.world.get_component(eid, Harvestable)
+            self.assertEqual(hv.requires_quest, "qz_teste")
+            # viewer_eid=-1 (sem contexto de sessão) é tratado como "sem
+            # trava" por convenção (mesmo princípio já validado no M3) —
+            # só um viewer_eid real SEM a quest é bloqueado de verdade.
+            self.assertTrue(self.ws_server._harvestable_visible_to(eid, -1))
+            self.assertFalse(self.ws_server._harvestable_visible_to(eid, 99999))
+
+
 class TestArenaDispatchSemMovimento(unittest.IsolatedAsyncioTestCase):
     """Bug real relatado pelo usuário 21/07/2026: "só chamou a arena
     quando movi o personagem" + "cliquei em aceitar e ninguém entrou".

@@ -343,6 +343,35 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
             for hv in data["harvestables"]
         ]
 
+    if "harvestable_zones" in data:
+        # Zona de itens (mistura de sub-tipos, mesmo padrão de
+        # "spawn_zones" de mob) — nascimento/reposicionamento dos nós em
+        # si é responsabilidade de server/world_server.py::
+        # _tick_harvestable_zones (não achatamos aqui como "spawn_zones"
+        # porque cada zona precisa continuar como UMA unidade, com sua
+        # própria lista de sub-tipos, pra sortear entre eles ao repor um
+        # slot vago).
+        spawn_points["harvestable_zones"] = [
+            {
+                "x":                z["x"], "y": z["y"],
+                "radius":           z.get("radius", 10),
+                "respawn_cooldown": float(z.get("respawn_cooldown", 60.0)),
+                "requires_quest":   z.get("requires_quest", ""),
+                "spawns": [
+                    {
+                        "name":   sp.get("name", "Objeto"),
+                        "sprite": sp.get("sprite", ""),
+                        "items":  [tuple(e) if isinstance(e, list) else e
+                                  for e in sp.get("items", [])],
+                        "coins":  sp.get("coins", 0),
+                        "count":  sp.get("count", 1),
+                    }
+                    for sp in z.get("spawns", [])
+                ],
+            }
+            for z in data["harvestable_zones"]
+        ]
+
     if "transitions" in data:
         spawn_points["transitions"] = data["transitions"]
 
