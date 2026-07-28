@@ -152,6 +152,82 @@ class TestQuestTurnInRewardItems(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(get_msgs_of_type(fw, MsgType.INVENTORY_UPDATE), [])
 
 
+class TestQuestTurnInConsumesCollectItem(unittest.IsolatedAsyncioTestCase):
+    """collect_item objective — entrega da quest remove o item da bag DO
+    SERVIDOR (engine/quest_logic.py::complete_quest, já existia) E avisa
+    o cliente pra tirar o mesmo item da bag LOCAL (campo "removed" de
+    INVENTORY_UPDATE, 28/07/2026 — bug real relatado pelo usuário: item
+    entregue continuava "fantasma" na bag do cliente, já que antes NADA
+    avisava essa remoção — só itens CONCEDIDOS eram notificados)."""
+
+    def setUp(self):
+        self._added_qids: list = []
+
+    def tearDown(self):
+        for qid in self._added_qids:
+            QUESTS.pop(qid, None)
+
+    async def asyncSetUp(self):
+        self.ws, self.mgr = make_session_manager()
+
+    async def test_entrega_remove_do_inventory_do_servidor_e_manda_removed(self):
+        qid = "qti_collect"
+        QUESTS[qid] = QuestDef(
+            title="Quest de Teste", description="d",
+            objectives=(ObjectiveDef(type="collect_item", target="*",
+                                     loot_item="Presa de Lobo", count=2),),
+            reward=QuestReward(xp=5),
+        )
+        self._added_qids.append(qid)
+        session, fw = await fake_login(self.mgr, "qti_i", "qtiuseri")
+        ql = self.ws.world.get_component(session.entity_id, QuestLog)
+        ql.active[qid] = [2]   # objetivo já completo (2/2)
+
+        from engine.components import Inventory, Item
+        inv = self.ws.world.get_component(session.entity_id, Inventory)
+        item = Item("Presa de Lobo", "material", slot=None, max_stack=99)
+        item.stack = 2
+        inv.items.append(item)
+        fw.sent.clear()
+
+        await self.mgr._handle_quest_turn_in(session, {"quest_id": qid}, 0)
+
+        self.assertNotIn(item, inv.items)   # removido do Inventory do servidor
+        inv_updates = get_msgs_of_type(fw, MsgType.INVENTORY_UPDATE)
+        self.assertEqual(len(inv_updates), 1)
+        self.assertEqual(inv_updates[0]["items"], [])
+        self.assertEqual(inv_updates[0]["removed"],
+                         [{"name": "Presa de Lobo", "stack": 2}])
+
+    async def test_entrega_com_reward_item_junto_manda_os_dois_campos(self):
+        qid = "qti_collect_and_reward"
+        QUESTS[qid] = QuestDef(
+            title="Quest de Teste", description="d",
+            objectives=(ObjectiveDef(type="collect_item", target="*",
+                                     loot_item="Presa de Lobo", count=1),),
+            reward=QuestReward(items=("hp_potion",)),
+        )
+        self._added_qids.append(qid)
+        session, fw = await fake_login(self.mgr, "qti_j", "qtiuserj")
+        ql = self.ws.world.get_component(session.entity_id, QuestLog)
+        ql.active[qid] = [1]
+
+        from engine.components import Inventory, Item
+        inv = self.ws.world.get_component(session.entity_id, Inventory)
+        item = Item("Presa de Lobo", "material", slot=None, max_stack=99)
+        item.stack = 1
+        inv.items.append(item)
+        fw.sent.clear()
+
+        await self.mgr._handle_quest_turn_in(session, {"quest_id": qid}, 0)
+
+        inv_updates = get_msgs_of_type(fw, MsgType.INVENTORY_UPDATE)
+        self.assertEqual(len(inv_updates), 1)
+        self.assertEqual(inv_updates[0]["items"][0]["name"], "Poção de Vida")
+        self.assertEqual(inv_updates[0]["removed"],
+                         [{"name": "Presa de Lobo", "stack": 1}])
+
+
 class TestQuestTurnInRewardSkill(unittest.IsolatedAsyncioTestCase):
     """QuestReward.skill (25/07/2026, pedido do usuário) — diferente de
     item: servidor grava em PlayerSkills.learned_skill_ids NA HORA (gate

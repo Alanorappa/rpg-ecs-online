@@ -8565,8 +8565,114 @@ py`, `client/inventory_handlers.py`, `game.py`, testes fora do stash)
 que os 10 testes novos falham genuinamente sem os fixes. Suíte completa
 rodada 3x limpa — mesmas 2 falhas de sempre, sem relação (§34.52).
 
-**Não validado em jogo ainda**: usuário ainda não testou o modal
-corrigido em jogo real.
+**Validado em jogo** (rodada de teste seguinte, ver §34.59): reaproveitar
+o modal de NPC funcionou — cabeçalho, descrição/objetivo/recompensa,
+Aceitar/Recusar e fechar o inventário no gatilho, tudo confirmado.
+Restaram 3 bugs novos, não relacionados ao modal em si — ver §34.59.
+
+### §34.59 — 3 bugs do playtest do modal reaproveitado (item não some ao
+entregar, clique vazando pro minimap, Y-sort do harvestable, 28/07/2026)
+
+Usuário validou o modal do §34.58 (itens 1, 3-7 da lista de validação, e
+confirmou 9-10 do lote M1-M4/Zona) mas trouxe 3 bugs novos, cada um com
+causa raiz PRÓPRIA:
+
+**1. Item de quest entregue ao NPC não sumia da bag** ("Não consumiu o
+item, ele continua na bag mas não tem nenhuma ação nele"). Causa:
+`engine/quest_logic.py::complete_quest` sempre removeu o item de
+objetivos `collect_item` do Inventory — mas SÓ do Inventory do MUNDO DO
+SERVIDOR. O servidor nunca teve um canal pra avisar o CLIENTE dessa
+remoção — `INVENTORY_UPDATE` (S→C) só existia pra CONCEDER item
+(recompensa), nunca pra tirar um. Resultado: item removido no servidor,
+mas "fantasma" pra sempre na bag local do cliente (que nunca soube da
+remoção) — e como a quest já saiu de `ql.active`/entrou em
+`ql.completed`, `open_for_item` (§34.58) passa a recusar reabrir o
+modal nesse item, então o clique direito nele realmente não fazia mais
+nada (efeito colateral do bug, não um bug à parte). Fix:
+- `complete_quest` passa a retornar `(QuestReward, consumed)` em vez de
+  só `QuestReward` — `consumed` é `[{"name": str, "stack": int}, ...]`,
+  o que foi de fato removido (só objetivos `collect_item`).
+- `server/session.py::_handle_quest_turn_in` manda esse `consumed` no
+  MESMO `INVENTORY_UPDATE` que já manda os itens concedidos, campo novo
+  `"removed"` — reaproveita a mensagem existente em vez de criar um
+  `MsgType` novo (`shared/messages.py` documentado).
+- `client/network_handlers.py::_handle_msg_inventory_update` ganha
+  `_remove_items_from_inventory(removed)` — espelha a MESMA lógica de
+  redução/pop que `complete_quest` já usa no servidor, na bag local.
+- `ui/quest_system.py::QuestSystem._complete_quest` (caminho OFFLINE)
+  só precisou ajustar o unpack (`reward, _consumed = ...`) — o
+  `_consumed` é ignorado ali de propósito: offline, o Inventory mutado
+  JÁ é o do jogador local, não existe cliente separado pra avisar.
+
+**2. Clique direito no item de quest também movia o personagem pro
+tile clicado** ("clicando em outros lugares dentro do modal do
+inventário não acontece isso, então é um problema do item"). NÃO é bug
+do item — é um bloco de código em `game.py::run()` que roda ANTES do
+gating de modal: o clique no MINIMAP (`_minimap_click_consumed`,
+detectado cedo pra ter prioridade) só checava `not self._map_overlay.
+is_open`, nunca nenhum OUTRO modal (inventário, quest dialog, loja,
+etc.). `screen_to_tile()` só confirma que o clique caiu dentro do
+RETÂNGULO do minimap na tela — não sabe nem importa que um painel está
+desenhado por cima cobrindo aquele canto. Item específico só evidenciou
+o bug porque `_try_open_item_quest_dialog` fecha o inventário (`_show_
+inventory = False`) no mesmo gesto — sem NENHUM modal aberto ao fim do
+frame (nem inventário, nem, aparentemente, outro), o gating de
+`systems_events` mais abaixo (que já bloqueia esse tipo de vazamento
+pra QUALQUER modal) não pega esse bloco específico, que roda ANTES
+dele. Mesma classe de bug de "atualização não-coesa" já documentada no
+projeto (gating introduzido em um lugar nunca propagado pra outro
+código correlato). Fix: bloco do minimap passa a checar `not self.
+_any_modal_open()` (`client/modal_stack_handlers.py`, o mesmo ponto
+único de verdade já usado pelo gating de `systems_events` logo abaixo)
+em vez de só `_map_overlay.is_open`.
+
+**3. Harvestable com sprite desenhava por cima do personagem/mob/NPC
+no MESMO tile** ("o item fica sobre o personagem, e o personagem
+deveria ficar sobre o item quando ele não tem colisão... também para
+mobs e npcs"). Causa: `RenderSystem.render()` Y-sorta TUDO por
+`foot_y = position.y + renderable.height/2`. Harvestable
+(`create_harvestable_entity`) tem `Position.y` já no CENTRO do tile e
+`Renderable.height=32` (tile inteiro) — `foot_y` cai então na BASE do
+tile. Personagem/mob (sprite menor, ex. `PLAYER_SIZE=24`) no MESMO
+tile tem `foot_y` mais alto na tela mas NUMERICAMENTE MENOR (mais perto
+do centro do tile) — sorted ANTES do harvestable, logo desenhado por
+baixo dele. Objeto ESTÁTICO de mapa (árvore/arbusto) nunca teve esse
+problema porque usa outra convenção (`TileRenderSystem`: `sort_y =
+ry*tile_size + tile_size//2`, CENTRO do tile, não a base) — o
+harvestable copiou a fórmula de ANCORAGEM VISUAL dos objetos estáticos
+(correta) mas não a fórmula de ORDENAÇÃO (ficou com o `foot_y` genérico
+de entidade). Fix: entidade com `Renderable.sprite_id` setado (só
+harvestable, por ora) ordena pelo CENTRO do tile (`position.y` puro,
+já é exatamente isso por construção) em vez do `foot_y` genérico —
+outras entidades (sem `sprite_id`) não mudam de comportamento.
+
+**Validado**: `tests/test_quest_turn_in.py` (2 testes, classe
+`TestQuestTurnInConsumesCollectItem`) — entrega remove do Inventory do
+servidor E manda `removed` certo no `INVENTORY_UPDATE`; funciona junto
+com `reward.items` no mesmo envio. `tests/test_client_ui.py` (3 testes
+de `INVENTORY_UPDATE.removed` — remove item inteiro, reduz stack
+parcial, item não presente não quebra; 2 testes de `_any_modal_open()`
+confirmando que reconhece `quest_dialog` aberto via item mesmo com
+inventário já fechado — mesmo estado do bug 2, ingrediente do fix, já
+que o bloco em si é código inline no `run()` monolítico, não testável
+isolado; 1 teste de Y-sort confirmando que harvestable com sprite
+desenha ANTES do personagem no mesmo tile). `tests/test_server.py`
+(1 teste existente atualizado pro novo retorno em tupla de
+`complete_quest`). Confirmado via `git stash` (`engine/quest_logic.py`,
+`server/session.py`, `client/network_handlers.py`, `ui/quest_system.py`,
+`game.py`, `ui/systems.py`, `shared/messages.py`, testes fora do stash)
+que os 6 testes novos/atualizados falham genuinamente sem os fixes
+(inclusive um `ValueError: too many values to unpack` real ao tentar
+desempacotar `QuestReward` — NamedTuple com mais de 2 campos — como
+`(reward, consumed)` contra a versão antiga de `complete_quest`). Suíte
+completa (590 testes) rodada 3x limpa — mesmas 2 falhas de sempre, sem
+relação (§34.52).
+
+**Não validado em jogo ainda**: usuário ainda não testou os 3 fixes em
+jogo real. Bug 2 (minimap) em particular não tem teste automatizado do
+bloco em si (código inline em `game.py::run()`, não extraído em
+método) — só do ingrediente (`_any_modal_open()`); validação real
+depende do usuário confirmar em jogo.
 
 ### Arquiteturais (A) — débito técnico
 

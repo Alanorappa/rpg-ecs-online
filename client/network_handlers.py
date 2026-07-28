@@ -1952,10 +1952,49 @@ class NetworkHandlers:
         """Item(ns) concedido(s) fora do fluxo normal de loot — hoje só a
         recompensa de item de quest (server/session.py::
         _handle_quest_turn_in, 23/07/2026). Mesmo mecanismo de
-        reconstrução/stack de LOOT_RESULT, via _grant_items_to_inventory."""
+        reconstrução/stack de LOOT_RESULT, via _grant_items_to_inventory.
+
+        "removed" (28/07/2026, bug real relatado pelo usuário: item de
+        quest entregue ficava "fantasma" na bag) — itens que o servidor
+        JÁ removeu do Inventory DELE pra objetivos collect_item ao
+        entregar a quest (engine/quest_logic.py::complete_quest); aqui só
+        espelha a mesma remoção na bag LOCAL, senão o cliente nunca fica
+        sabendo e o item nunca some da tela."""
         items = payload.get("items", [])
         if self._grant_items_to_inventory(items, log_verb="Recompensa"):
             SOUNDS.play_ui("loot_item")
+        removed = payload.get("removed", [])
+        if removed:
+            self._remove_items_from_inventory(removed)
+
+    def _remove_items_from_inventory(self, removed: list) -> None:
+        """Espelha client-side a remoção que engine/quest_logic.py::
+        complete_quest já fez no Inventory do servidor ao entregar uma
+        quest — `removed` é [{"name": str, "stack": int}, ...] (stack =
+        quantidade a tirar, não a stack original do item). Mesma lógica
+        de redução/pop que complete_quest usa no lado servidor."""
+        from engine.components import Inventory as _InvRm
+        inv = self.world.get_component(self.player_entity, _InvRm)
+        if not inv:
+            return
+        for entry in removed:
+            name = entry.get("name", "")
+            needed = entry.get("stack", 0)
+            i = 0
+            while i < len(inv.items) and needed > 0:
+                item = inv.items[i]
+                if item is None:
+                    i += 1
+                elif item.name == name:
+                    if item.stack <= needed:
+                        needed -= item.stack
+                        inv.items.pop(i)
+                    else:
+                        item.stack -= needed
+                        needed = 0
+                        i += 1
+                else:
+                    i += 1
 
     def _handle_msg_skill_granted(self, payload: dict) -> None:
         """Skill concedida fora do fluxo normal de treinador — hoje só a

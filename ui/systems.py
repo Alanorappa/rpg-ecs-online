@@ -1337,7 +1337,21 @@ class RenderSystem(System):
                     ety = int(position.y / TILE_SIZE)
                     if (etx, ety) not in _fog_visible:
                         continue
-            foot_y = position.y + renderable.height / 2
+            # Harvestable (Renderable.sprite_id setado, Fase M1) usa Position.y
+            # já igual ao CENTRO do tile (create_harvestable_entity) e ocupa a
+            # altura inteira do tile (32px) — o foot_y genérico (position.y +
+            # height/2) então cai na BASE do tile, mais "pra frente" que o
+            # sort_y de objeto estático de mapa (ry*tile_size + tile_size//2,
+            # TileRenderSystem, também centro do tile) e que o foot_y de
+            # qualquer personagem/mob no MESMO tile (sprite menor que o tile —
+            # PLAYER_SIZE=24). Resultado: harvestable desenhava sempre por
+            # cima do personagem parado em cima dele (bug real relatado pelo
+            # usuário 28/07/2026 — "o item fica sobre o personagem, deveria
+            # ser o contrário"). Fix: harvestable ordena pelo CENTRO do tile
+            # (position.y puro, já é isso por construção), igual objeto
+            # estático — só o visual (branch de sprite_id logo abaixo, já
+            # ancorado na base do tile) continua ocupando o tile inteiro.
+            foot_y = position.y if renderable.sprite_id else position.y + renderable.height / 2
             drawables.append((foot_y, "entity", entity_id, position, renderable, combat_stats, _gst_rnd))
 
         # Tile-objetos (árvores, arbustos, pedras — objetos estáticos do mapa)

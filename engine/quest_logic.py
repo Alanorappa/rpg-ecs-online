@@ -245,24 +245,35 @@ def try_start(world, player_eid: int, ql, qid: str) -> bool:
     return True
 
 
-def complete_quest(world, player_eid: int, ql, qid: str) -> "QuestReward | None":
+def complete_quest(world, player_eid: int, ql, qid: str):
     """Marca `qid` como completa em `ql`, remove itens de quest do
     Inventory de `player_eid` e desbloqueia quests auto_start dependentes.
     NÃO concede XP/gold nem toca LOG/PROC/request_autosave — quem chama
     decide como aplicar a recompensa (servidor: canais já existentes
     server-autoritativos; cliente offline: direto em CharacterStats/Wallet).
-    Retorna a QuestReward (xp, gold) ou None se a quest não pôde ser
-    completada (não está ativa / não existe)."""
+
+    Retorna `(QuestReward, consumed)` — `consumed` é a lista de itens
+    REALMENTE removidos daqui, `[{"name": str, "stack": int}, ...]`
+    (stack = quantidade removida, não a stack original do item). O
+    CHAMADOR server-side (server/session.py::_handle_quest_turn_in)
+    precisa mandar essa lista pro cliente (INVENTORY_UPDATE, campo
+    "removed") — esta função só mexe no Inventory do MUNDO DO SERVIDOR;
+    sem avisar o cliente, o item ficava "fantasma" na bag local pra
+    sempre, já que o servidor só avisava itens CONCEDIDOS, nunca
+    consumidos (bug real relatado pelo usuário 28/07/2026 — quest
+    completada não tirava o item da bag). Retorna `(None, [])` se a
+    quest não pôde ser completada (não está ativa / não existe)."""
     if qid not in ql.active:
-        return None
+        return None, []
     qdef = QUESTS.get(qid)
     if qdef is None:
-        return None
+        return None, []
 
     del ql.active[qid]
     if not qdef.repeatable:
         ql.completed.add(qid)
 
+    consumed: list = []
     from engine.components import Inventory
     inv = world.get_component(player_eid, Inventory)
     if inv:
@@ -270,6 +281,7 @@ def complete_quest(world, player_eid: int, ql, qid: str) -> "QuestReward | None"
             if obj.type != "collect_item" or not obj.loot_item:
                 continue
             needed = obj.count
+            removed_amount = 0
             i = 0
             while i < len(inv.items) and needed > 0:
                 item = inv.items[i]
@@ -278,19 +290,23 @@ def complete_quest(world, player_eid: int, ql, qid: str) -> "QuestReward | None"
                 elif item.name == obj.loot_item:
                     if item.stack <= needed:
                         needed -= item.stack
+                        removed_amount += item.stack
                         inv.items.pop(i)
                     else:
                         item.stack -= needed
+                        removed_amount += needed
                         needed = 0
                         i += 1
                 else:
                     i += 1
+            if removed_amount > 0:
+                consumed.append({"name": obj.loot_item, "stack": removed_amount})
 
     for qid2, qdef2 in QUESTS.items():
         if qid2 not in ql.active and qid2 not in ql.completed and qdef2.auto_start:
             try_start(world, player_eid, ql, qid2)
 
-    return qdef.reward
+    return qdef.reward, consumed
 
 
 def roll_conditional_loot(ql, enemy_name: str, enemy_race: str) -> list:

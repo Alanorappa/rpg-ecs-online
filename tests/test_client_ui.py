@@ -701,6 +701,50 @@ def test_inventory_update_vazio_nao_quebra():
     fx._handle_msg_inventory_update({"items": []})  # não deve levantar exceção
 
 
+# ── INVENTORY_UPDATE — campo "removed" (28/07/2026, bug real relatado pelo
+# usuário: item de quest entregue continuava "fantasma" na bag local, já
+# que engine/quest_logic.py::complete_quest só removia do Inventory do
+# SERVIDOR, nunca avisava o cliente). server/session.py::
+# _handle_quest_turn_in manda "removed" na MESMA mensagem de "items".
+
+def test_inventory_update_removed_tira_item_inteiro_da_bag_local():
+    from engine.components import Inventory, Item
+    fx = _make_loot_result_fixture()
+    inv = fx.world.get_component(fx.player_entity, Inventory)
+    item = Item("Artefato Extremamente Misterioso", "material", slot=None, max_stack=1)
+    item.stack = 1
+    inv.items.append(item)
+
+    fx._handle_msg_inventory_update({
+        "items": [], "removed": [{"name": "Artefato Extremamente Misterioso", "stack": 1}],
+    })
+
+    assert all(it is None or it.name != "Artefato Extremamente Misterioso" for it in inv.items)
+
+
+def test_inventory_update_removed_reduz_stack_parcial():
+    from engine.components import Inventory, Item
+    fx = _make_loot_result_fixture()
+    inv = fx.world.get_component(fx.player_entity, Inventory)
+    item = Item("Presa de Lobo", "material", slot=None, max_stack=99)
+    item.stack = 5
+    inv.items.append(item)
+
+    fx._handle_msg_inventory_update({
+        "items": [], "removed": [{"name": "Presa de Lobo", "stack": 2}],
+    })
+
+    remaining = next(it for it in inv.items if it is not None and it.name == "Presa de Lobo")
+    assert remaining.stack == 3
+
+
+def test_inventory_update_removed_item_nao_presente_nao_quebra():
+    fx = _make_loot_result_fixture()
+    fx._handle_msg_inventory_update({
+        "items": [], "removed": [{"name": "Item Que Nao Esta Na Bag", "stack": 1}],
+    })  # não deve levantar exceção nem afetar nada
+
+
 # ── client/network_handlers.py — spawn de player remoto propaga "level" ──────
 # Bug real relatado pelo usuário 18/07/2026: nameplate de player remoto só
 # atualizava o level quando o servidor reenviava HP (regen/dano), nunca no
@@ -2162,3 +2206,127 @@ def test_try_open_item_quest_dialog_nao_abre_se_quest_ja_ativa_mantem_inventario
     finally:
         QUESTS.pop(qid, None)
         ITEM_GRANTS_QUEST.pop(item_name, None)
+
+
+# ── client/modal_stack_handlers.py::_any_modal_open — clique no minimap
+# vazava pro click-to-move (28/07/2026, bug real relatado pelo usuário:
+# clicar com o direito num item de quest na bag fazia o personagem andar
+# até o tile clicado). Causa raiz: o bloco de clique no minimap em
+# game.py::run() só checava `_map_overlay.is_open`, nunca nenhum OUTRO
+# modal — um clique que caísse dentro do retângulo do minimap na tela
+# vazava pro click-to-move mesmo com um painel [inventário, quest dialog,
+# etc.] desenhado por cima cobrindo aquele canto. Fix: o bloco passou a
+# usar `_any_modal_open()` (mesmo ponto único de verdade já usado pelo
+# gating de systems_events logo abaixo dele). Como esse bloco é código
+# inline dentro do run() monolítico (não extraído em método próprio), não
+# dá pra testar o bloco em si isoladamente — os testes abaixo cobrem o
+# INGREDIENTE do fix: `_any_modal_open()` reconhece quest_dialog aberto
+# via `open_for_item()` (sem NPC real) mesmo com o inventário já fechado,
+# que é exatamente o estado em que o bug se manifestava.
+
+class _StubClosable:
+    """Stub genérico pra sub-objetos referenciados por _modal_registry()
+    (self._loot_system, self._quest_dialog, ...) — qualquer atributo/
+    método de fechamento não definido explicitamente vira no-op, já que
+    _modal_registry() constrói a lista inteira eagerly (referencia TODOS
+    os close_fn na hora, mesmo os de modais fechados)."""
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+    def __getattr__(self, name):
+        return lambda *a, **k: None
+
+
+def _make_modal_stack_fixture(quest_dialog_open=False, show_inventory=False):
+    from client.modal_stack_handlers import ModalStackHandlers
+
+    class _Fixture(ModalStackHandlers):
+        def __init__(self):
+            self._mkb_rebind       = None
+            self._chat_active      = False
+            self._show_habilidades = False
+            self._map_overlay      = _StubClosable(is_open=False)
+            self._loot_system      = _StubClosable(open_corpse_id=-1)
+            self._crafting_system  = _StubClosable(is_open=False)
+            self._trainer_system   = _StubClosable(is_open=False)
+            self._quest_dialog     = _StubClosable(is_open=quest_dialog_open)
+            self._quest_journal    = _StubClosable(is_open=False)
+            self._shop_system      = _StubClosable(qty_modal_open=False, is_open=False)
+            self._trade_is_open    = False
+            self._show_hotbar_editor = False
+            self._show_debug       = False
+            self._show_talents     = False
+            self._show_skills      = False
+            self._show_inventory   = show_inventory
+            self._show_pause       = False
+
+        def __getattr__(self, name):
+            if name.startswith("_close_"):
+                return lambda *a, **k: None
+            raise AttributeError(name)
+
+    return _Fixture()
+
+
+def test_any_modal_open_false_com_tudo_fechado():
+    fx = _make_modal_stack_fixture()
+    assert fx._any_modal_open() is False
+
+
+def test_any_modal_open_true_com_quest_dialog_aberto_via_item_e_inventario_fechado():
+    """Mesmo estado do bug real: quest_dialog abre via open_for_item()
+    (sem NPC real) e o inventário já fechou junto — _any_modal_open()
+    precisa continuar True, senão o bloco de clique no minimap em
+    game.py volta a vazar pro click-to-move."""
+    fx = _make_modal_stack_fixture(quest_dialog_open=True, show_inventory=False)
+    assert fx._any_modal_open() is True
+    assert fx._topmost_open_modal() == "quest_dialog"
+
+
+# ── ui/systems.py::RenderSystem — Y-sort do harvestable com sprite
+# (28/07/2026, bug real relatado pelo usuário: "quando eu estou no mesmo
+# tile do item, o item fica sobre o personagem, e o personagem deveria
+# ficar sobre o item quando ele não tem colisão... não só personagem, mas
+# também para mobs e npcs"). Harvestable (create_harvestable_entity)
+# ocupa a altura CHEIA do tile (Renderable.height=32) com Position.y já
+# no CENTRO do tile — o foot_y genérico de qualquer entidade (position.y
+# + height/2) cai então na BASE do tile, sempre "na frente" (Y maior =
+# desenhado por último = por cima) de um personagem/mob/NPC no MESMO
+# tile (sprite menor que o tile, ex. PLAYER_SIZE=24). Objeto ESTÁTICO de
+# mapa (árvore/arbusto) usa sort_y = centro do tile (TileRenderSystem),
+# não a base — por isso nunca teve esse problema. Fix: entidade com
+# Renderable.sprite_id setado (só harvestable, por ora) ordena pelo
+# CENTRO do tile (position.y puro) em vez do foot_y genérico.
+
+def test_render_harvestable_com_sprite_nao_desenha_por_cima_do_personagem_no_mesmo_tile():
+    from engine.world import World
+    from engine.components import Position, Renderable
+    from ui.systems import RenderSystem
+
+    world = World()
+    # Mesmo tile (3,3) -> centro em (112, 112) — TILE_SIZE=32
+    harvestable = world.create_entity()
+    world.add_component(harvestable, Position(x=112, y=112, prev_x=112, prev_y=112))
+    world.add_component(harvestable, Renderable(color=(10, 20, 30), width=32, height=32,
+                                                sprite_id="sprite_de_teste_inexistente_xyz"))
+    player = world.create_entity()
+    world.add_component(player, Position(x=112, y=112, prev_x=112, prev_y=112))
+    world.add_component(player, Renderable(color=(40, 50, 60), width=24, height=24))
+
+    screen = pygame.display.get_surface()
+    rs = RenderSystem(world, screen)
+
+    draw_order = []
+    orig_rect = pygame.draw.rect
+    def _spy_rect(surface, color, rect, *a, **k):
+        draw_order.append(tuple(color[:3]))
+        return orig_rect(surface, color, rect, *a, **k)
+    pygame.draw.rect = _spy_rect
+    try:
+        rs.render(0, 0)
+    finally:
+        pygame.draw.rect = orig_rect
+
+    assert (10, 20, 30) in draw_order and (40, 50, 60) in draw_order
+    assert draw_order.index((40, 50, 60)) > draw_order.index((10, 20, 30)), \
+        "personagem (sprite menor) deveria desenhar DEPOIS (por cima) do harvestable no mesmo tile"

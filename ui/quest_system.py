@@ -319,7 +319,11 @@ class QuestSystem(UIScaleMixin, System):
         if qdef is None:
             return
 
-        reward = quest_logic.complete_quest(self.world, self.player_entity, ql, qid)
+        # _consumed ignorado aqui: offline, o Inventory mutado por
+        # complete_quest já É o do jogador local — não existe cliente
+        # separado pra avisar (diferente do caminho online, ver
+        # server/session.py::_handle_quest_turn_in).
+        reward, _consumed = quest_logic.complete_quest(self.world, self.player_entity, ql, qid)
         if reward is None:
             return
         self._hud_cache_key = None

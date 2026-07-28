@@ -920,10 +920,11 @@ class TestQuestLogicIgnoraSlotVazioNoInventario(unittest.TestCase):
         real_inv = self.ws.world.get_component(self.eid, Inventory)
         real_inv.items = [None, item]
 
-        reward = quest_logic.complete_quest(self.ws.world, self.eid, ql, "wolf_fangs")
+        reward, consumed = quest_logic.complete_quest(self.ws.world, self.eid, ql, "wolf_fangs")
 
         self.assertIsNotNone(reward)
         self.assertNotIn("wolf_fangs", ql.active)
+        self.assertEqual(consumed, [{"name": "Presa de Lobo", "stack": 5}])
 
     def test_recarregar_ate_esgotar_stack_nao_trava_o_tick_com_quest_ativa(self):
         """Reprodução fim-a-fim do bug real: recarrega até a stack de

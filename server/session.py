@@ -903,7 +903,7 @@ class SessionManager:
                            f"pra quest '{qid}' (player={eid}) — recusado")
                 return
 
-        reward = quest_logic.complete_quest(self.world_server.world, eid, ql, qid)
+        reward, consumed_items = quest_logic.complete_quest(self.world_server.world, eid, ql, qid)
         if reward is None:
             return
 
@@ -953,9 +953,9 @@ class SessionManager:
         # payload, e o INV_SYNC periódico do cliente mantém o mirror do
         # servidor atualizado depois.
         reward_entries = list(qdef.reward.items) + ([chosen_entry] if chosen_entry else [])
+        granted_dicts = []
         if reward_entries:
             from server.server_death_handler import _serialize_item
-            granted_dicts = []
             for entry in reward_entries:
                 item_key, stack = quest_logic.normalize_reward_entry(entry)
                 factory = quest_logic.resolve_reward_item_factory(item_key)
@@ -966,8 +966,19 @@ class SessionManager:
                 item = factory()
                 item.stack = max(1, min(stack, item.max_stack))
                 granted_dicts.append(_serialize_item(item))
-            if granted_dicts:
-                await session.send(MsgType.INVENTORY_UPDATE, {"items": granted_dicts})
+
+        # consumed_items (28/07/2026, pedido do usuário — bug real: item de
+        # quest entregue continuava "fantasma" na bag) — itens que
+        # complete_quest() removeu do Inventory DESTE SERVIDOR pra objetivos
+        # collect_item. O servidor nunca tocou na bag do CLIENTE (mesmo
+        # racional client-authoritative de request_loot) — sem mandar essa
+        # lista, o cliente nunca saberia que precisa tirar o item também.
+        # Reaproveita a MESMA mensagem de itens concedidos (campo novo
+        # "removed") em vez de criar um MsgType novo.
+        if granted_dicts or consumed_items:
+            await session.send(MsgType.INVENTORY_UPDATE, {
+                "items": granted_dicts, "removed": consumed_items,
+            })
 
         # Skill de recompensa (25/07/2026, pedido do usuário) — diferente de
         # item: o servidor grava em PlayerSkills.learned_skill_ids NA HORA

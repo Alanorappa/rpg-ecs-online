@@ -1751,8 +1751,20 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             # criada em LOOT_AVAILABLE). Não precisa de handler manual aqui.
 
             # Clique no minimap — detectado ANTES dos sistemas para consumir o evento
+            # (28/07/2026, bug real: personagem andava até o tile clicado ao
+            # clicar com o direito num item de quest na bag — causa raiz era
+            # este bloco, que só checava _map_overlay.is_open e nunca nenhum
+            # OUTRO modal. screen_to_tile() só confirma que o clique caiu
+            # dentro do RETÂNGULO do minimap na tela — não sabe/não importa
+            # se um painel [inventário, quest dialog, loja, etc.] está
+            # desenhado por cima cobrindo aquele mesmo canto da tela. Mesma
+            # classe de bug de "atualização não-coesa" já documentada no
+            # projeto: gating de modal introduzido pro bloco de systems_events
+            # logo abaixo nunca foi propagado pra este bloco, que roda ANTES
+            # dele. _any_modal_open() é o mesmo ponto único de verdade
+            # (client/modal_stack_handlers.py) usado pelo bloco de baixo.)
             _minimap_click_consumed = False
-            if not self._map_overlay.is_open:
+            if not self._any_modal_open():   # _modal_registry já inclui map_overlay
                 _player_tm_mm = self.world.get_component(self.player_entity, TileMovement)
                 if _player_tm_mm:
                     for _ev in events:
