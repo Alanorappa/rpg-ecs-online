@@ -8743,23 +8743,100 @@ corpo-a-corpo (só ranged) — desligar isso ao mover não impede o ataque
 melee de retomar sozinho quando o alvo volta a ficar adjacente; a
 distância é o único critério real pro servidor.
 
-**Fix**: bloco de movimento por teclado (`PlayerInputSystem.update()`,
-~linha 630) ganhou `combat_state.is_pursuing = False` — mesma
-semântica que o clique no chão já usava, agora espelhada no teclado.
-`target_entity_id`/combate continuam intocados; só o auto-move de
-perseguição (`_process_target`, guardado por `is_pursuing`) para de
-rodar.
+**Fix (1ª versão, ERRADA — ver §34.62 para a correção no mesmo dia)**:
+bloco de movimento por teclado (`PlayerInputSystem.update()`, ~linha
+630) ganhou `combat_state.is_pursuing = False` — mesma semântica que o
+clique no chão já usava, agora espelhada no teclado.
 
 **Validado**: `tests/test_client_ui.py` (2 testes) — WASD cancela
-`is_pursuing` mas mantém `target_entity_id` (alvo vivo/visível fora do
-alcance de ataque, sem tecla pressionada não mexe em nada — regressão).
-Confirmado via `git stash` (`ui/systems.py`, teste fora do stash) que o
-teste positivo falha genuinamente sem o fix. Suíte completa (592
+`is_pursuing` mas mantém `target_entity_id`. Suíte completa (592
 testes) rodada 3x limpa — mesmas 2 falhas de sempre, sem relação
 (§34.52).
 
-**Não validado em jogo ainda**: usuário ainda não testou o fix em jogo
-real.
+**Corrigido no mesmo dia — ver §34.62**: usuário testou e reportou que
+isso quebrava o combate inteiro (precisava reengajar manualmente
+sempre que o alvo voltava ao alcance) — a premissa "servidor nunca
+exige is_pursuing pra melee" estava certa, mas incompleta: havia uma
+peça do fluxo (`_sync_combat_target`, ver §34.62) que este parágrafo
+não tinha mapeado.
+
+### §34.62 — Correção do §34.61: `is_pursuing` NUNCA deve ser desligado
+por movimento manual — perseguição precisa de um sinal PRÓPRIO
+(28/07/2026)
+
+Usuário testou o fix do §34.61 e reportou: "o is_pursuing = False,
+porém também quebra o combate — se eu ando, quando o mob fica no meu
+alcance do personagem, ele não o ataca, eu preciso apertar a tecla
+espaço ou clicar com o direito novamente". Esclareceu a intenção real:
+"andar com o personagem não deve cancelar o auto attack, quando as
+condições do auto attack forem cumpridas, o personagem deve atacar —
+é o mesmo comportamento do arqueiro" (que já anda enquanto atira, sem
+nenhuma exceção de classe — inclusive um arqueiro com arma MELEE
+equipada, que ataca de perto igual guerreiro, se encaixa na mesma
+regra).
+
+**Causa raiz de verdade (não mapeada em §34.61)**: `is_pursuing` é lido
+em TRÊS lugares com sentidos diferentes, não só "está perseguindo":
+1. Chase — `_process_target`/`_process_archer_combat` só chamam
+   `_auto_move_step` (auto-walk de volta ao alvo) se `is_pursuing`.
+2. Gate de ataque RANGED — `server/combat_processor.py` exige
+   `is_pursuing=True` pra disparar (melee nunca exigiu, só distância).
+3. **Sincronização de rede** — `client/remote_entity_handlers.py::
+   _sync_combat_target()` roda TODO frame e manda `AUTO_ATTACK{tid:
+   local_target if is_pursuing else -1}` ao servidor (com 3 frames de
+   grace). Ou seja: `is_pursuing=False` no cliente vira, depois do
+   grace, um `AUTO_ATTACK{tid:-1}` de verdade — e
+   `server/session.py::_handle_auto_attack` chama
+   `WorldServer.set_player_target(session_id, -1)`, que LIMPA o
+   `target_entity_id` NO SERVIDOR por completo. Desligar `is_pursuing`
+   não é "só parar de perseguir localmente" — é literalmente
+   desengajar o combate no servidor, exigindo reengajar (Espaço/
+   clique) do zero. O clique no chão (`MouseTargetingSystem`) SEMPRE
+   teve esse mesmo problema (nunca foi testado nesse cenário exato
+   antes) — não é exclusivo do teclado.
+
+**Fix de verdade**: `is_pursuing` NUNCA é tocado por movimento manual
+(nem teclado nem clique no chão) — fica sempre como estava (ligado,
+enquanto o combate durar). Em vez disso, `_process_target`/
+`_process_archer_combat` ganharam um parâmetro novo, `suppress_chase:
+bool`, que bloqueia SÓ as chamadas de `_auto_move_step` — nunca o
+ataque, nunca `is_pursuing`, nunca `target_entity_id`. `PlayerInputSystem.
+update()` calcula `_manual_move_wanted` (teclado segurado OU destino de
+chão ativo OU "Seguir" pendente) uma vez por entidade e passa como
+`suppress_chase`. Ataque continua dependendo só de alcance+cooldown
+(melee) ou alcance+is_pursuing+aljava (ranged) — nada mudou aí, porque
+`is_pursuing` nunca desliga.
+
+**Mudanças**:
+- `ui/systems.py::PlayerInputSystem.update()` — bloco de teclado
+  reverte a mudança do §34.61 (não mexe mais em `is_pursuing`); novo
+  cálculo de `_manual_move_wanted`, passado como `suppress_chase` pra
+  `_process_target`. `_process_ground_move`/`_process_follow` deixam
+  de exigir `not combat_state.is_pursuing` pra rodar (antes disso NUNCA
+  rodariam mais, já que `is_pursuing` deixou de virar False) — rodam
+  sempre que há destino de chão/"Seguir" pendente, já que a disputa
+  pelo mesmo tick contra o chase é resolvida via `suppress_chase`.
+- `_process_target`/`_process_archer_combat` — parâmetro novo
+  `suppress_chase`, checado nas 3 chamadas de `_auto_move_step`
+  (guerreiro/mago adjacente-fallback, mago fora de alcance de skill,
+  arqueiro fora de `bow_range`).
+- `MouseTargetingSystem.update()` (clique no chão) — reverte
+  `is_pursuing = False` — `ground_target` sozinho já basta pra suprimir
+  o chase via `_manual_move_wanted`.
+
+**Validado**: `tests/test_client_ui.py` — reescritos os 2 testes do
+§34.61 (agora provam que `is_pursuing`/`target_entity_id` NUNCA mudam
+com WASD) + 2 testes novos direto em `_process_target` (`suppress_
+chase=True` não inicia `_auto_move_step`/movimento; `suppress_
+chase=False` continua perseguindo normalmente — regressão). Confirmado
+via `git stash` (`ui/systems.py`, testes fora do stash) que os 3 testes
+falham genuinamente contra a versão do §34.61 (um deles nem compilava —
+`TypeError: unexpected keyword argument 'suppress_chase'`, prova de que
+o parâmetro é novo de verdade). Suíte completa (593 testes) rodada 3x
+limpa — mesmas 2 falhas de sempre, sem relação (§34.52).
+
+**Não validado em jogo ainda**: usuário ainda não testou esta correção
+em jogo real.
 
 ### Arquiteturais (A) — débito técnico
 

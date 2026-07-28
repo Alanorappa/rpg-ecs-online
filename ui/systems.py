@@ -438,8 +438,14 @@ class MouseTargetingSystem(System):
                     if not self._corpse_at_world_pos(world_x, world_y):
                         tile_x = int(world_x / TILE_SIZE)
                         tile_y = int(world_y / TILE_SIZE)
-                        if player_cs:
-                            player_cs.is_pursuing = False  # para de perseguir, mantém alvo selecionado
+                        # NÃO mexe em is_pursuing (28/07/2026) — desligar
+                        # is_pursuing quebrava o combate inteiro (ranged
+                        # parava de disparar, e _sync_combat_target mandava
+                        # AUTO_ATTACK{tid:-1}, limpando o alvo NO SERVIDOR —
+                        # ver PlayerInputSystem.update()). ground_target
+                        # abaixo já basta pra suprimir a perseguição via
+                        # `_manual_move_wanted`/`suppress_chase`, mantendo
+                        # alvo e combate intactos.
                         if player_auto:
                             player_auto.ground_target = (tile_x, tile_y)
                             player_auto.active = True
@@ -628,28 +634,18 @@ class PlayerInputSystem(System):
                     tgt_y += 1
 
                 if tgt_x != cur_x or tgt_y != cur_y:
-                    # Teclado cancela auto-move (path/ground-target/Seguir) E a
-                    # PERSEGUIÇÃO (is_pursuing=False, mesma semântica do clique
-                    # no chão — MouseTargetingSystem.update() já faz isso há
-                    # muito tempo) — mantém o alvo selecionado e o combate
-                    # ativo, só para de "brigar" com o movimento manual
-                    # (pedido do usuário 28/07/2026: apertar WASD/andar não
-                    # devia ser sobrescrito pela perseguição puxando o
-                    # personagem de volta pro alvo). Se o alvo alcançar o
-                    # player de novo (adjacente), o ataque melee volta sozinho
-                    # — o servidor nunca exigiu is_pursuing pra golpe corpo-a-
-                    # corpo, só pra ranged (server/combat_processor.py); a
-                    # ÚNICA coisa que is_pursuing=False bloqueia aqui é o
-                    # auto-move de perseguição (_process_target logo abaixo).
-                    # ANTES (até 28/07/2026): teclado preservava is_pursuing
-                    # de propósito (pedido de 15/07/2026, generalizado de uma
-                    # exceção que só existia pro arqueiro/can_kite) — revisado
-                    # porque o usuário esclareceu que o problema real é a
-                    # perseguição brigando com o movimento, não o kite em si
-                    # (kite continua funcionando: mover não desativa combate/
-                    # alvo, só a perseguição ativa).
-                    if combat_state:
-                        combat_state.is_pursuing = False
+                    # Teclado cancela auto-move (path/ground-target/Seguir) mas
+                    # NÃO mexe em is_pursuing — is_pursuing controla se o
+                    # servidor permite ranged disparar E se o alvo continua
+                    # sincronizado no servidor (_sync_combat_target manda
+                    # AUTO_ATTACK{tid:-1} quando is_pursuing vira False,
+                    # limpando o alvo no servidor de vez — set_player_target).
+                    # Desligar is_pursuing aqui quebrava o combate inteiro
+                    # (bug real relatado pelo usuário 28/07/2026: precisava
+                    # apertar Espaço/clicar de novo pro ataque voltar). A
+                    # perseguição (auto-move de volta ao alvo) é suprimida à
+                    # parte, via `_manual_move_wanted` (ver bloco logo abaixo
+                    # e `_process_target`) — só isso muda com o teclado.
                     if auto_move:
                         auto_move.active = False
                         auto_move.path.clear()
@@ -663,6 +659,19 @@ class PlayerInputSystem(System):
             _aoe_targeting = self.world.get_component(entity_id, AoeTargeting)
             _has_ground = auto_move and auto_move.active and auto_move.ground_target
             _is_following = auto_move is not None and auto_move.follow_eid != -1
+            # Movimento manual (teclado segurado OU destino de chão OU
+            # "Seguir" pendente) — usado só pra SUPRIMIR o auto-move de
+            # PERSEGUIÇÃO dentro de _process_target (chase), nunca
+            # is_pursuing/target_entity_id (28/07/2026, ver comentário no
+            # bloco de teclado acima). Sem isso, _process_target sempre
+            # rodava primeiro e tentava puxar o personagem de volta pro
+            # alvo, brigando com qualquer movimento manual no mesmo tick.
+            _manual_move_wanted = bool(
+                keys[pygame.K_LEFT] or keys[pygame.K_a]
+                or keys[pygame.K_RIGHT] or keys[pygame.K_d]
+                or keys[pygame.K_UP] or keys[pygame.K_w]
+                or keys[pygame.K_DOWN] or keys[pygame.K_s]
+            ) or bool(_has_ground) or bool(_is_following)
             if combat_state and combat_state.target_entity_id != -1 and not _aoe_targeting:
                 # Perseguição de combate tem precedência sobre "Seguir"
                 if _is_following and combat_state.is_pursuing:
@@ -671,12 +680,17 @@ class PlayerInputSystem(System):
                 # Sempre chama _process_target para validação (limpa alvo morto/fora de visão)
                 self._process_target(
                     entity_id, position, tile_movement,
-                    combat_stats, combat_state, auto_move, can_act, can_move, dt
+                    combat_stats, combat_state, auto_move, can_act, can_move, dt,
+                    suppress_chase=_manual_move_wanted,
                 )
-                # Se não está perseguindo e há destino de chão, move para lá
-                if not combat_state.is_pursuing and _has_ground:
+                # Destino de chão/"Seguir" sempre processado quando presente —
+                # chase já se auto-suprime acima quando há movimento manual,
+                # então não há mais disputa pelo mesmo tick (antes exigia
+                # is_pursuing=False, o que quebrava o combate — ver comentário
+                # no bloco de teclado).
+                if _has_ground:
                     self._process_ground_move(entity_id, position, tile_movement, auto_move, can_move, dt)
-                elif not combat_state.is_pursuing and _is_following:
+                elif _is_following:
                     self._process_follow(entity_id, position, tile_movement, auto_move, can_move, dt)
             # --- "Seguir" player (modal de interação, 16/07/2026) ---
             elif _is_following:
@@ -696,8 +710,21 @@ class PlayerInputSystem(System):
     # ------------------------------------------------------------------
 
     def _process_target(self, entity_id, position, tile_movement,
-                        combat_stats, combat_state, auto_move, can_act, can_move, dt):
-        """Auto-move e auto-ataque em direção ao alvo selecionado."""
+                        combat_stats, combat_state, auto_move, can_act, can_move, dt,
+                        suppress_chase: bool = False):
+        """Auto-move e auto-ataque em direção ao alvo selecionado.
+
+        `suppress_chase` (28/07/2026, pedido do usuário): True quando o
+        jogador quer mover manualmente este tick (WASD segurado, destino
+        de chão ou "Seguir" pendente) — bloqueia SÓ as chamadas de
+        _auto_move_step abaixo (o auto-walk de perseguição de volta ao
+        alvo), nunca o ataque em si nem is_pursuing/target_entity_id.
+        Sem isso, mover manualmente brigava com a perseguição (que
+        rodava toda vez que o alvo saía do alcance) — e desligar
+        is_pursuing pra "resolver" isso quebrava o combate inteiro
+        (server/combat_processor.py exige is_pursuing pra RANGED
+        disparar, e _sync_combat_target manda AUTO_ATTACK{tid:-1} que
+        limpa o alvo NO SERVIDOR quando is_pursuing vira False)."""
         target_id = combat_state.target_entity_id
 
         target_pos = self.world.get_component(target_id, Position)
@@ -787,7 +814,8 @@ class PlayerInputSystem(System):
             self._process_archer_combat(
                 entity_id, position, tile_movement, combat_stats, combat_state,
                 auto_move, can_act, can_move, target_id, tgt_tile_x, tgt_tile_y, dt,
-                _px_chase, _melee_chase_px, dist_attack=dist_attack)
+                _px_chase, _melee_chase_px, dist_attack=dist_attack,
+                suppress_chase=suppress_chase)
         elif is_mage:
             pursuit_range = self._mage_attack_range(entity_id)
             if dist_attack <= self.PLAYER_ATTACK_RANGE:
@@ -809,7 +837,8 @@ class PlayerInputSystem(System):
                 # Dentro do alcance de skill: para e aguarda cast manual
                 if auto_move:
                     auto_move.path.clear()
-            elif can_move and combat_state.is_pursuing and auto_move and not tile_movement.is_moving:
+            elif (can_move and combat_state.is_pursuing and auto_move
+                    and not tile_movement.is_moving and not suppress_chase):
                 # Fora do alcance de skill: persegue até o alcance de skill
                 self._auto_move_step(
                     entity_id, position, tile_movement,
@@ -847,7 +876,8 @@ class PlayerInputSystem(System):
             if dist <= self.PLAYER_ATTACK_RANGE:
                 if auto_move:
                     auto_move.path.clear()
-            elif can_move and combat_state.is_pursuing and auto_move and not tile_movement.is_moving:
+            elif (can_move and combat_state.is_pursuing and auto_move
+                    and not tile_movement.is_moving and not suppress_chase):
                 self._auto_move_step(
                     entity_id, position, tile_movement,
                     pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y, auto_move, dt,
@@ -888,8 +918,15 @@ class PlayerInputSystem(System):
                                can_act, can_move, target_id, tgt_tile_x, tgt_tile_y, dt,
                                px_chase: float = 0.0,
                                melee_chase_px: float = float("inf"),
-                               dist_attack: int = -1):
-        """Auto-attack ranged do arqueiro: verifica arco+aljava e dispara flecha."""
+                               dist_attack: int = -1,
+                               suppress_chase: bool = False):
+        """Auto-attack ranged do arqueiro: verifica arco+aljava e dispara flecha.
+
+        `suppress_chase` (28/07/2026): bloqueia só o auto-move de
+        reposicionamento (persegue até ficar dentro de bow_range) quando
+        o jogador quer mover manualmente este tick — nunca o disparo em
+        si, que já não dependia de tile_movement.is_moving (por isso o
+        arqueiro sempre pôde atirar andando, dentro do alcance)."""
         pl_tile_x = tile_movement.current_tile_x
         pl_tile_y = tile_movement.current_tile_y
         dist = chebyshev(pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y)
@@ -992,9 +1029,10 @@ class PlayerInputSystem(System):
                 combat_stats.attack_cooldown_timer = combat_stats.get_attack_cooldown()
                 combat_stats.arrow_pre_draw_ready  = True
                 enter_combat(combat_state)
-        elif can_move and combat_state.is_pursuing and auto_move and not tile_movement.is_moving:
+        elif (can_move and combat_state.is_pursuing and auto_move
+                and not tile_movement.is_moving and not suppress_chase):
             # Persegue o mob apenas quando is_pursuing=True — evita sobrescrever
-            # ground_target (clique de chão com is_pursuing=False).
+            # ground_target/movimento manual (ver suppress_chase acima).
             auto_move.active = True
             self._auto_move_step(entity_id, position, tile_movement,
                                  pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y,
