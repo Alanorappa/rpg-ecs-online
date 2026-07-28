@@ -644,8 +644,19 @@ def create_harvestable_entity(world: World, tile_x: int, tile_y: int,
     ))
     world.add_component(eid, Renderable(color=(120, 90, 60), width=32, height=32,
                                         sprite_id=sprite_id))
+    # Colisão real do catálogo (25/07/2026, bug real relatado pelo usuário:
+    # "pl_vomito" é passável no catálogo, mas travava o tile de qualquer
+    # jeito) — TileMovement continua SEMPRE presente (discovery/AOI
+    # dependem dele pra posição), mas TileValidationSystem só trata o
+    # tile como ocupado se Harvestable.solid for True. Sem entrada no
+    # catálogo (sprite_id vazio ou id desconhecido) = default sólido,
+    # preserva o comportamento de antes desta fix.
+    from engine.tileset import OBJECT_MAPPING
+    _obj_tt = OBJECT_MAPPING.get(sprite_id) if sprite_id else None
+    solid = _obj_tt.is_solid if _obj_tt is not None else True
     world.add_component(eid, Harvestable(corpse_id=corpse_id,
-                                         requires_quest=requires_quest))
+                                         requires_quest=requires_quest,
+                                         solid=solid))
     world.add_component(eid, EntityIdentity(name=name, race="Objeto", entity_class=""))
     return eid
 

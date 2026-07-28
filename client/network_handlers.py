@@ -1239,6 +1239,27 @@ class NetworkHandlers:
             self._apply_combat_result(cr)
         _died_eids = set(payload.get("died_eids", []))
         for eid in payload.get("despawned", []):
+            # Harvestable com trava de quest que fechou de novo (Fase M3,
+            # bug real relatado pelo usuário 25/07/2026: completou a quest,
+            # o objeto devia sumir de novo e não sumia) OU nó de zona
+            # esgotado que chegou por este caminho em vez de ENTITY_DESPAWN
+            # avulso — mesmo cleanup dos outros pontos que tratam
+            # harvestable (_remote_harvestables/_available_loot), só que
+            # este "despawned" é o campo da PRÓPRIA AOI_UPDATE, não uma
+            # mensagem ENTITY_DESPAWN separada (_handle_msg_entity_despawn
+            # já tem o guard de Renderable pro seu próprio caminho — aqui
+            # o servidor já decidiu conscientemente que deve sumir, sem
+            # ambiguidade, então remove direto).
+            local_hv_eid = self._remote_harvestables.pop(eid, None)
+            if local_hv_eid is not None:
+                from engine.components import Harvestable as _HVaoi
+                hv = self.world.get_component(local_hv_eid, _HVaoi)
+                if hv is not None:
+                    self._available_loot.pop(hv.corpse_id, None)
+                try:
+                    self.world.remove_entity(local_hv_eid)
+                except Exception:
+                    pass
             self._remove_remote_player_entity(eid)
             self._remote_players.pop(eid, None)
             local_eid = self._remote_mobs.pop(eid, None)

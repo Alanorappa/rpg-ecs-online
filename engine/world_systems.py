@@ -347,17 +347,30 @@ class TileValidationSystem(System):
 
     def update(self, events: list = None, dt: float = 0) -> None:
         """Reconstrói o cache de tiles ocupados a cada frame."""
+        # Harvestable com colisão passável no catálogo do sprite (25/07/2026,
+        # bug real relatado pelo usuário — ver Harvestable.solid) nunca
+        # deveria travar o tile: pula do cache de ocupados, mesmo mantendo
+        # TileMovement (necessário pra posição/AOI). Import tardio evita
+        # dependência de Harvestable no topo do arquivo (componente raro
+        # aqui, mesmo padrão dos outros imports pontuais deste módulo).
+        from engine.components import Harvestable as _Hv_tv
         occupied = {}
         if self._map_filter:
             for entity_id, tm in self.world.get_entities_with(TileMovement):
                 ml = self.world.get_component(entity_id, MapLocation)
                 if ml is None or ml.map_file != self._map_filter:
                     continue
+                _hv_tv = self.world.get_component(entity_id, _Hv_tv)
+                if _hv_tv is not None and not _hv_tv.solid:
+                    continue
                 occupied[(tm.current_tile_x, tm.current_tile_y)] = entity_id
                 if tm.is_moving:
                     occupied[(tm.target_tile_x, tm.target_tile_y)] = entity_id
         else:
             for entity_id, tm in self.world.get_entities_with(TileMovement):
+                _hv_tv = self.world.get_component(entity_id, _Hv_tv)
+                if _hv_tv is not None and not _hv_tv.solid:
+                    continue
                 occupied[(tm.current_tile_x, tm.current_tile_y)] = entity_id
                 if tm.is_moving:
                     occupied[(tm.target_tile_x, tm.target_tile_y)] = entity_id

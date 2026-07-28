@@ -433,6 +433,45 @@ def test_try_open_corpse_de_longe_pula_adjacente_mais_proximo_se_ele_for_solido(
         ws_mod._svc.pop("tile_validation", None)
 
 
+# ── LootSystem.update — modal fecha sozinho ao esvaziar ──────────────────────
+# Bug real relatado pelo usuário 25/07/2026: depois do fix do despawn genérico
+# assimétrico (§34.54, harvestable não é mais removido ao esvaziar), o modal
+# de loot parou de fechar sozinho ao pegar tudo — "irritante". Causa: o
+# fechamento automático SÓ checava "componente Corpse sumiu" (entidade
+# removida), que era como a versão ANTIGA (bugada) esvaziava harvestable —
+# o fechamento nunca teve checagem própria de "esvaziou", só funcionava por
+# acidente via aquele bug agora corrigido.
+
+def test_loot_update_fecha_modal_sozinho_quando_corpse_esvazia():
+    from ui.systems import LootSystem
+    from engine.components import Corpse
+    world, player, hv = _make_harvestable_loot_world()
+    screen = pygame.display.get_surface()
+    loot = LootSystem(world, screen, player_entity=player)
+    loot.open_corpse_id = hv
+
+    corpse = world.get_component(hv, Corpse)
+    corpse.loot = []
+    corpse.coins = 0
+    loot.update([])
+
+    assert loot.open_corpse_id == -1, \
+        "modal deveria fechar sozinho quando o corpse aberto esvazia por completo"
+
+
+def test_loot_update_nao_fecha_modal_com_corpse_ainda_com_loot():
+    from ui.systems import LootSystem
+    world, player, hv = _make_harvestable_loot_world()
+    screen = pygame.display.get_surface()
+    loot = LootSystem(world, screen, player_entity=player)
+    loot.open_corpse_id = hv   # Corpse(loot=[], coins=10) — ainda tem ouro
+
+    loot.update([])
+
+    assert loot.open_corpse_id == hv, \
+        "modal não deveria fechar enquanto o corpse ainda tem loot/ouro"
+
+
 # ── client/network_handlers.py::_handle_msg_loot_result — INV_SYNC ───────────
 # Bug real relatado pelo usuário 18/07/2026: progresso de quest "colete N
 # itens" parou de atualizar no HUD/diário (entrega ainda funcionava, só a
@@ -773,6 +812,29 @@ def test_aoi_update_spawned_harvestable_chama_spawn_remote_harvestable():
     assert hv.corpse_id == 3
     assert corpse is not None
     assert fx._available_loot[3]["local_eid"] == local_eid
+
+
+def test_aoi_update_despawned_harvestable_remove_entidade_local_e_available_loot():
+    """Bug real relatado pelo usuário 25/07/2026: harvestable com trava de
+    quest (Fase M3) não sumia de novo ao completar a quest. Causa (lado
+    cliente): o campo "despawned" da PRÓPRIA AOI_UPDATE (diferente da
+    mensagem ENTITY_DESPAWN avulsa) nunca tratou harvestable — só
+    _remote_players/_remote_mobs. _remote_harvestables/_available_loot
+    ficavam órfãos pra sempre."""
+    from engine.components import Harvestable
+    fx = _make_net_fixture()
+    fx._handle_msg_aoi_update({"spawned": [{
+        "eid": 99, "kind": "harvestable", "corpse_id": 3,
+        "tx": 8, "ty": 9, "name": "Caixa", "sprite_id": "pr_box1",
+    }]})
+    local_eid = fx._remote_harvestables[99]
+
+    fx._handle_msg_aoi_update({"despawned": [99]})
+
+    assert 99 not in fx._remote_harvestables
+    assert 3 not in fx._available_loot
+    assert fx.world.get_component(local_eid, Harvestable) is None, \
+        "entidade local do harvestable deveria ser removida do ECS"
 
 
 # ── Harvestable como entidade real (Fase M1, revisão 2, 25/07/2026) ──────────

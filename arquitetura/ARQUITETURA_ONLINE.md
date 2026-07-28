@@ -8329,6 +8329,83 @@ script standalone (linhas geradas na ordem certa: raridade → tag →
 **Não validado em jogo ainda**: usuário ainda não testou saquear o
 Artefato/ver o tooltip/receber a quest em jogo real.
 
+### §34.56 — 3 bugs reais do primeiro teste completo da leva (M2/M3/Zona,
+25/07/2026)
+
+Usuário testou tudo (M2, Zona de itens, M3) numa rodada só e trouxe 3
+achados — cada um com causa raiz PRÓPRIA, não relacionados entre si:
+
+**1. Modal de loot parou de fechar sozinho ao esvaziar.** Efeito
+colateral do fix de §34.54: o fechamento automático (`LootSystem.
+update()`) só checava "componente `Corpse` sumiu" — que ERA verdade
+pra harvestable ANTES daquele fix (a entidade era removida por engano
+ao esvaziar, fechando o modal como acidente). Agora que harvestable
+persiste corretamente (por design), o modal nunca tinha ganho uma
+checagem própria de "esvaziou". Fix: `update()` agora fecha quando o
+`Corpse` sumiu OU quando `not loot and coins<=0` — cobre harvestable
+(persiste, mas fica vazio) e corpse de mob morto (ainda soma pela
+remoção) nos dois casos.
+
+**2. Colisão do harvestable ignorava a config real do catálogo do
+sprite.** Usuário usou `pl_vomito` (`OBJECT_MAPPING['pl_vomito'].
+is_solid == False` no catálogo — sprite decorativo, sem colisão) mas o
+harvestable travava o tile de qualquer jeito. Causa: `create_
+harvestable_entity` sempre adiciona `TileMovement` (necessário pra
+posição/AOI — nunca pode ser omitido) mas `TileValidationSystem`
+tratava QUALQUER `TileMovement` como ocupante do tile, sem exceção.
+Fix: `Harvestable` ganha campo `solid: bool` (calculado 1x na criação,
+via `OBJECT_MAPPING.get(sprite_id).is_solid`, default `True` se sprite
+vazio/desconhecido — preserva o comportamento anterior pra quem não
+tem entrada no catálogo); `TileValidationSystem.update()` pula do
+cache de ocupados qualquer harvestable com `solid=False`. `TileMovement`
+continua sempre presente — só a interpretação de "isso ocupa o tile"
+mudou.
+
+**3. Harvestable com trava de quest não sumia de novo ao completar a
+quest.** A trava do M3 (§34.51) só cobria "revelar" — o sweep de
+descoberta (`_build_update_for_session`) pula QUALQUER eid já em
+`session.known_eids` (linha do `if mob_eid in session.known_eids:
+continue`), então uma vez descoberto, o harvestable ficava visível PRA
+SEMPRE, mesmo depois da quest sair de `QuestLog.active` (completada/
+entregue). Fix, espelhando o padrão JÁ existente pra "Camuflagem"
+(bloco "Mudanças de visibilidade" que re-avalia `_can_see()` pra quem
+já é conhecido): novo sweep em `_build_update_for_session` — pra cada
+eid em `session.known_eids ∩ gated_harvestable_eids` (harvestable com
+`requires_quest` setado, pré-filtrado 1x por tick em `_dispatch_tick_
+deltas` pra manter o custo baixo), reavalia `_harvestable_visible_to`;
+se agora False, remove de `known_eids` e entra no `despawned` da
+PRÓPRIA `AOI_UPDATE`. Cliente ganhou o cleanup correspondente
+(`_handle_msg_aoi_update`'s despawned nunca tratava harvestable — só
+`_remote_players`/`_remote_mobs` — ficava órfão em `_remote_
+harvestables`/`_available_loot` pra sempre).
+
+**Validado**: `tests/test_session.py` (2 testes) — sprite passável no
+catálogo não trava o tile (regressão: sprite sólido continua travando,
+teste já existente); completar a quest esconde o harvestable de novo
+no tick seguinte (mesmo padrão de "atividade" que os outros testes de
+revelação usam). `tests/test_client_ui.py` (3 testes) — modal fecha
+sozinho ao esvaziar; modal NÃO fecha com loot restante (regressão);
+`AOI_UPDATE` despawned remove harvestable local e limpa
+`_available_loot`. Confirmado via `git stash` (`ui/systems.py`,
+`engine/components.py`, `engine/entity_factory.py`, `engine/world_
+systems.py`, `server/session.py`, `client/network_handlers.py`, testes
+fora do stash) que os 4 testes NOVOS falham genuinamente sem os fixes.
+Suíte completa (567 testes) rodada 3x — mesmas 2 falhas de sempre, sem
+relação (ver §34.52).
+
+**Item ainda em aberto, NÃO resolvido nesta leva**: usuário também
+relatou que a zona "Vômito" (`harvestable_zones`, count=10) está
+"floodando vários itens no mapa quando o respawn dá o cd" — não achei
+uma causa concreta revisando `_tick_harvestable_zones`/`_create_
+harvestable_zones_for_map` (a lógica de esgotar→enfileirar 1 timer de
+reposição→spawnar 1 substituto parece correta na leitura estática).
+Precisa de reprodução mais detalhada (ou o mesmo diagnóstico com print
+temporário usado em §34.53) antes de arriscar um fix às cegas — ver
+próxima entrada de conversa com o usuário.
+
+**Não validado em jogo ainda**: usuário ainda não testou os 3 fixes em
+jogo real.
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |

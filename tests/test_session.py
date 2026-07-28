@@ -1127,6 +1127,23 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
         self.ws_server._tick(0.05)
         self.assertFalse(is_tile_walkable(player_eid, 140, 380))
 
+    async def test_harvestable_com_sprite_passavel_no_catalogo_nao_trava_o_tile(self):
+        """Bug real relatado pelo usuário 25/07/2026: "pl_vomito" é
+        PASSÁVEL no catálogo (OBJECT_MAPPING['pl_vomito'].is_solid ==
+        False), mas travava o tile de qualquer jeito, porque
+        create_harvestable_entity sempre adicionava TileMovement sem
+        olhar a config real do sprite. Fix: Harvestable.solid vem do
+        catálogo; TileValidationSystem só marca o tile ocupado se solid."""
+        from engine.world_systems import is_tile_walkable
+        from tests.helpers import spawn_player
+        player_eid = spawn_player(self.ws_server, "s1", 138, 380)
+        self.ws_server._tick(0.05)
+        self.assertTrue(is_tile_walkable(player_eid, 140, 380))
+        self._make_harvestable(140, 380, sprite="pl_vomito")
+        self.ws_server._tick(0.05)
+        self.assertTrue(is_tile_walkable(player_eid, 140, 380),
+                        "sprite passável no catálogo não deveria travar o tile")
+
     async def test_dois_jogadores_sem_grupo_looteiam_o_mesmo_harvestable(self):
         """Diferente de corpse de mob: harvestable é público — sem dono, sem
         checagem de grupo. Dois jogadores NÃO relacionados podem sacar."""
@@ -1459,6 +1476,42 @@ class TestHarvestableQuestGateM3(unittest.IsolatedAsyncioTestCase):
         spawned2 = [s for u in aoi_updates2 for s in u.get("spawned", [])
                    if s.get("kind") == "harvestable" and s.get("corpse_id") == hid]
         self.assertEqual(len(spawned2), 1)
+
+    async def test_completar_quest_esconde_harvestable_de_novo(self):
+        """Bug real relatado pelo usuário 25/07/2026: completar/entregar a
+        quest não escondia o harvestable de novo — a trava só cobria
+        "revelar" (sweep pula tudo que já está em known_eids), nunca
+        "esconder de novo" depois de já conhecido."""
+        from engine.components import QuestLog, TileMovement as _TMqg5
+        hid = self._make_harvestable(100, 100, requires_quest=self.QID)
+        session, fw = await fake_login(self.mgr, "s1", "user_qg_e", 0, 0)
+        ql = self.ws_server.world.get_component(session.entity_id, QuestLog)
+        ql.active[self.QID] = [0]
+        tm = self.ws_server.world.get_component(session.entity_id, _TMqg5)
+        tm.current_tile_x = 100; tm.current_tile_y = 101
+        tm.target_tile_x  = 100; tm.target_tile_y  = 101
+
+        fw.sent.clear()
+        self.ws_server._tick(0.05)   # com a quest ativa — descobre
+        await asyncio.sleep(0)
+        aoi_updates = get_msgs_of_type(fw, MsgType.AOI_UPDATE)
+        spawned = [s for u in aoi_updates for s in u.get("spawned", [])
+                  if s.get("kind") == "harvestable" and s.get("corpse_id") == hid]
+        self.assertEqual(len(spawned), 1)
+        hv_eid = spawned[0]["eid"]
+
+        del ql.active[self.QID]   # completa/entrega a quest
+        # mesma "atividade" que os outros testes desta classe usam pra
+        # forçar o dispatch de novo — um segundo passo de movimento.
+        tm.current_tile_x = 100; tm.current_tile_y = 102
+        tm.target_tile_x  = 100; tm.target_tile_y  = 102
+        fw.sent.clear()
+        self.ws_server._tick(0.05)
+        await asyncio.sleep(0)
+        aoi_updates2 = get_msgs_of_type(fw, MsgType.AOI_UPDATE)
+        despawned2 = {eid for u in aoi_updates2 for eid in u.get("despawned", [])}
+        self.assertIn(hv_eid, despawned2,
+                      "harvestable deveria ser escondido de novo ao completar a quest")
 
     def test_harvestable_sem_trava_visivel_pra_qualquer_viewer(self):
         """Regressão: harvestable sem requires_quest continua visível

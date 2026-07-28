@@ -3403,7 +3403,18 @@ class LootSystem(UIScaleMixin, System):
 
         # Se o cadáver aberto foi removido, fecha o modal
         if self.open_corpse_id != -1:
-            if self.world.get_component(self.open_corpse_id, Corpse) is None:
+            _open_corpse_chk = self.world.get_component(self.open_corpse_id, Corpse)
+            # Fecha se a entidade sumiu OU se esvaziou por completo — antes
+            # (25/07/2026) isso "funcionava" só pra harvestable por
+            # ACIDENTE: o bug do despawn genérico removia a entidade ao
+            # esvaziar (corrigido em §34.54), e a checagem de "componente
+            # sumiu" fechava o modal como efeito colateral. Harvestable
+            # agora persiste corretamente ao esvaziar (por design — fica
+            # visível vazio), então precisa de checagem própria de "vazio"
+            # aqui, senão o modal nunca fecha sozinho (bug real relatado
+            # pelo usuário: "irritante").
+            if (_open_corpse_chk is None or
+                    (not _open_corpse_chk.loot and _open_corpse_chk.coins <= 0)):
                 self.open_corpse_id = -1
 
         # Verifica se o jogador chegou ao cadáver pendente

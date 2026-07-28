@@ -839,6 +839,16 @@ class Harvestable:
     # tem a quest nunca recebe ENTITY_SPAWN/WORLD_STATE pra esta
     # entidade (totalmente invisível, mesmo princípio de class_req).
     requires_quest: str = ""
+    # Colisão real vem do CATÁLOGO do sprite (engine/tileset.py::
+    # OBJECT_MAPPING[sprite_id].is_solid — bug real relatado pelo usuário
+    # 25/07/2026: "pl_vomito" é passável no catálogo mas travava o tile
+    # de qualquer jeito, porque create_harvestable_entity SEMPRE adicionava
+    # TileMovement sem olhar a config do sprite). Calculado 1x na criação
+    # (create_harvestable_entity) e consultado por
+    # TileValidationSystem.update() pra decidir se este tile entra no
+    # cache de ocupados. Default True (sólido) — preserva o comportamento
+    # de sprites sem entrada no catálogo ('' ou id desconhecido).
+    solid: bool = True
 
 
 @dataclass

@@ -1978,12 +1978,25 @@ class SessionManager:
                     _mob_positions[_me] = (_mt.current_tile_x, _mt.current_tile_y)
                     _mob_hash.insert(_me, _mt.current_tile_x, _mt.current_tile_y)
 
+            # Harvestable com requires_quest setado (Fase M3) — pré-filtrado
+            # 1x por tick pra alimentar o sweep de "trava fechou de novo"
+            # dentro de _build_update_for_session (ver docstring lá). Restrito
+            # só aos gated (não todo _harvestable_eids) pra manter o custo do
+            # sweep-por-sessão baixo.
+            from engine.components import Harvestable as _Hv_gated
+            _gated_harvestable_eids: set = {
+                _hv_eid for _hv_eid in self.world_server._harvestable_eids
+                if (_hv_comp := self.world_server.world.get_component(_hv_eid, _Hv_gated))
+                and _hv_comp.requires_quest
+            }
+
             for session in list(self._sessions.values()):
                 if not session.authenticated:
                     continue
                 tx, ty = self.world_server.get_tile_pos(session.session_id)
                 update = self._build_update_for_session(session, deltas, tx, ty,
-                                                        _mob_positions, _mob_hash)
+                                                        _mob_positions, _mob_hash,
+                                                        _gated_harvestable_eids)
                 if update:
                     ok = await session.send(MsgType.AOI_UPDATE, update)
                     if ok:
@@ -2358,7 +2371,8 @@ class SessionManager:
     def _build_update_for_session(self, session: Session,
                                    deltas: dict, cx: int, cy: int,
                                    mob_positions: dict | None = None,
-                                   mob_hash: "_SpatialHash | None" = None) -> dict:
+                                   mob_hash: "_SpatialHash | None" = None,
+                                   gated_harvestable_eids: "set | None" = None) -> dict:
         """
         Constrói AOI_UPDATE para uma sessão específica, com subscription tracking:
         - Entidade entra no AOI → ENTITY_SPAWN + adiciona a known_eids
@@ -2613,6 +2627,23 @@ class SessionManager:
                 if spawn_data:
                     result.setdefault("spawned", []).append(spawn_data)
                     session.known_eids.add(mob_eid)
+
+        # Sweep: harvestable com trava de quest JÁ conhecido, mas a trava
+        # FECHOU de novo (quest completada/entregue, saiu de QuestLog.active)
+        # — bug real relatado pelo usuário 25/07/2026: completou a quest, o
+        # harvestable devia sumir de novo e não sumia. O sweep ACIMA só
+        # cobre "revelar" (entidade ainda fora de known_eids); esconder de
+        # novo depois de já ter sido descoberta nunca tinha um passo
+        # dedicado, porque esse sweep pula tudo que já está em known_eids
+        # (linha ~2602). gated_harvestable_eids (pré-filtrado 1x por tick em
+        # _dispatch_tick_deltas — só harvestable com requires_quest setado,
+        # não TODO harvestable) mantém o custo restrito a quem realmente
+        # pode precisar reavaliar.
+        if gated_harvestable_eids:
+            for _gh_eid in (session.known_eids & gated_harvestable_eids):
+                if not self.world_server._harvestable_visible_to(_gh_eid, session.entity_id):
+                    session.known_eids.discard(_gh_eid)
+                    result.setdefault("despawned", []).append(_gh_eid)
 
         for other_session in self._sessions.values():
             if not other_session.authenticated:
