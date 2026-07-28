@@ -1212,6 +1212,116 @@ def test_space_engage_mira_oponente_de_pvp_engajavel():
         register_pvp_context(None)
 
 
+# ── ui/systems.py::PlayerInputSystem — WASD cancela perseguição, mantém
+# alvo e combate (28/07/2026, pedido do usuário: a perseguição "brigava"
+# com o movimento manual — teclado antes preservava is_pursuing de
+# propósito; clique de chão já cancelava, ver MouseTargetingSystem).
+# Servidor nunca exigiu is_pursuing pra golpe corpo-a-corpo (só pra
+# ranged, server/combat_processor.py) — is_pursuing=False só desliga o
+# auto-move de perseguição local (_process_target), nunca o combate em
+# si; se o alvo alcançar o player, o ataque melee volta a acontecer
+# sozinho (guiado só por distância, não por is_pursuing).
+
+class _FakeKeys:
+    """Substitui pygame.key.get_pressed() nos testes — indexável por
+    constante de tecla (pygame.K_*), todas False exceto as informadas."""
+    def __init__(self, pressed: set):
+        self._pressed = pressed
+
+    def __getitem__(self, key):
+        return key in self._pressed
+
+
+def _make_wasd_pursuit_fixture():
+    from engine.world import World
+    from engine.components import (Position, TileMovement, PlayerControlled,
+                                   CombatStats, CombatState, PlayerAutoMove, Visible)
+    import engine.world_systems as ws_mod
+
+    class _FakeTileValidation:
+        def is_tile_walkable(self, entity_id, tx, ty, from_tx=None,
+                             from_ty=None, ignore_eid=-1):
+            return True
+
+    class _FakePathfinding:
+        def find_path(self, start, end, dynamic_obstacles=None,
+                       max_nodes=300, manhattan_limit=60):
+            sx, sy = start
+            ex, ey = end
+            nx = sx + (1 if ex > sx else (-1 if ex < sx else 0))
+            ny = sy + (1 if ey > sy else (-1 if ey < sy else 0))
+            return [(nx, ny)]
+
+        def _get_tilemap_component(self):
+            return None
+
+    ws_mod._svc_resolver = None
+    ws_mod.register_services(tile_validation=_FakeTileValidation(),
+                             pathfinding=_FakePathfinding())
+
+    world = World()
+    eid = world.create_entity()
+    world.add_component(eid, Position(x=5 * 32, y=5 * 32))
+    tm = TileMovement(current_tile_x=5, current_tile_y=5)
+    world.add_component(eid, tm)
+    world.add_component(eid, PlayerControlled())
+    world.add_component(eid, CombatStats())
+    cs = CombatState()
+    world.add_component(eid, cs)
+    world.add_component(eid, PlayerAutoMove())
+
+    # Alvo vivo e visível, LONGE (fora de PLAYER_ATTACK_RANGE) — passa nas
+    # validações de _process_target (alvo morto/fora de visão) sem cair no
+    # branch de ataque nem exigir pathfinding real (dist > range só faria
+    # a perseguição chamar _auto_move_step, que este teste quer provar que
+    # NÃO roda mais quando is_pursuing=False).
+    target = world.create_entity()
+    world.add_component(target, Position(x=5 * 32, y=20 * 32))
+    world.add_component(target, TileMovement(current_tile_x=5, current_tile_y=20))
+    world.add_component(target, CombatStats())
+    world.add_component(target, Visible())
+    cs.target_entity_id = target
+    cs.is_pursuing = True
+
+    return world, eid, tm, cs, target
+
+
+def test_wasd_cancela_perseguicao_mas_mantem_alvo_e_combate():
+    from ui.systems import PlayerInputSystem
+
+    world, eid, tm, cs, target = _make_wasd_pursuit_fixture()
+    sys_input = PlayerInputSystem(world, screen=None)
+
+    orig_get_pressed = pygame.key.get_pressed
+    pygame.key.get_pressed = lambda: _FakeKeys({pygame.K_d})
+    try:
+        sys_input.update([], dt=0.1)
+    finally:
+        pygame.key.get_pressed = orig_get_pressed
+
+    assert cs.is_pursuing is False, "WASD deveria cancelar a perseguição"
+    assert cs.target_entity_id == target, "alvo deve continuar selecionado (combate mantido)"
+
+
+def test_sem_teclado_pressionado_perseguicao_continua_ligada():
+    """Regressão: sem nenhuma tecla de movimento, is_pursuing não deve
+    ser mexido (só o próprio movimento cancela a perseguição)."""
+    from ui.systems import PlayerInputSystem
+
+    world, eid, tm, cs, target = _make_wasd_pursuit_fixture()
+    sys_input = PlayerInputSystem(world, screen=None)
+
+    orig_get_pressed = pygame.key.get_pressed
+    pygame.key.get_pressed = lambda: _FakeKeys(set())
+    try:
+        sys_input.update([], dt=0.1)
+    finally:
+        pygame.key.get_pressed = orig_get_pressed
+
+    assert cs.is_pursuing is True
+    assert cs.target_entity_id == target
+
+
 def test_offline_sem_requester_continua_creditando_local():
     """Regressão: sem set_online_loot_requester (modo legado/offline), o
     fluxo antigo — creditar na hora do clique — continua intacto."""

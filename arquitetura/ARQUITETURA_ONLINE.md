@@ -8410,8 +8410,9 @@ com uma sprite "fantasma" que nunca sumia mesmo com o nó já reposto no
 servidor — cada CD subsequente somaria mais uma sprite por cima,
 explicando o "flood". Não tratar como definitivo se o sintoma voltar.
 
-**Não validado em jogo ainda**: usuário ainda não testou os 3 fixes em
-jogo real.
+**Validado em jogo**: usuário confirmou os 3 fixes (modal fecha
+sozinho, colisão respeita o catálogo, trava de quest esconde de novo
+ao completar).
 
 ### §34.57 — Fase M4 revisada: item concede quest vira decisão do jogador
 (popup de aceitar/recusar), não automático (25/07/2026)
@@ -8668,11 +8669,97 @@ desempacotar `QuestReward` — NamedTuple com mais de 2 campos — como
 completa (590 testes) rodada 3x limpa — mesmas 2 falhas de sempre, sem
 relação (§34.52).
 
-**Não validado em jogo ainda**: usuário ainda não testou os 3 fixes em
-jogo real. Bug 2 (minimap) em particular não tem teste automatizado do
-bloco em si (código inline em `game.py::run()`, não extraído em
-método) — só do ingrediente (`_any_modal_open()`); validação real
-depende do usuário confirmar em jogo.
+**Validado em jogo**: usuário confirmou os 3 fixes (item consumido ao
+entregar, clique no item não move mais o personagem, harvestable não
+desenha mais por cima de personagem/mob/NPC no mesmo tile).
+
+### §34.60 — Zona "Vômito": items da JSON como string solta em vez de
+lista (28/07/2026)
+
+Usuário adicionou `"Vômito de Zumbi"` em `QUEST_ITEMS` e configurou
+como loot da zona "Vômito" (`harvestable_zones`) — servidor devolveu um
+warning por CARACTERE (`item_key 'V' de 'Vômito' não existe...`,
+`item_key 'ô' de 'Vômito'...`, etc.). Causa: `maps/map_1_entities.json`
+tinha `"items": "Vômito de Zumbi"` (string solta) em vez de `"items":
+["Vômito de Zumbi"]` (lista) — `_resolve_harvestable_items` (`server/
+world_server.py:768`) faz `for entry in template_items:`, e iterar uma
+STRING em Python itera caractere por caractere. Não é bug de código,
+é erro de dado — corrigido só o JSON (envolver em lista).
+
+Aproveitado pra esclarecer uma dúvida do usuário: cogitou migrar
+`QUEST_ITEMS` pra dentro de `item_table.py` (catálogo único físico) ou
+"corrigir" harvestable/harvestable_zones pra também olhar
+`QUEST_ITEMS`. Nenhuma das duas é necessária — `resolve_reward_item_
+factory()` (`engine/quest_logic.py`), usado por QUALQUER resolução de
+`item_key` (recompensa de quest, harvestable de posição fixa,
+harvestable de zona — `_resolve_harvestable_items` chama essa MESMA
+função), já busca em `item_table.py::ITEMS` primeiro e cai pra
+`QUEST_ITEMS` como fallback, sempre, em todo lugar — os dois dicts já
+são um catálogo lógico único do ponto de vista de quem consome; a
+separação em arquivos é só organizacional. Recomendado manter como
+está.
+
+**Validado em jogo**: usuário confirmou que a zona "Vômito" gera
+"Vômito de Zumbi" corretamente após o fix do JSON. `"Vômito de Zumbi"`
+em `QUEST_ITEMS`/a zona "Vômito" no mapa eram só um teste do usuário —
+a pedido dele, não commitados (`content/quests_data.py`/`maps/
+map_1_entities.json` continuam fora do commit desta seção, só o
+aprendizado documentado aqui).
+
+### §34.61 — Perseguição de combate "brigava" com movimento manual
+(28/07/2026)
+
+Usuário relatou: em combate melee (guerreiro), o personagem persegue o
+alvo automaticamente — mas isso sobrescrevia QUALQUER tentativa de
+movimento manual (WASD), fazendo o personagem "brigar" com o input do
+jogador e voltar sozinho pro alvo. Pedido: apertar Espaço/skill não-AoE
+deve persegue de verdade (já funcionava); mover manualmente (WASD ou
+clique no chão) deve DESLIGAR a perseguição sem perder o alvo
+selecionado nem sair de combate — se o mob alcançar o player de novo, o
+ataque volta a acontecer sozinho.
+
+**Investigação**: clique no chão (`MouseTargetingSystem.update()`,
+`ui/systems.py`) já fazia exatamente isso — `combat_state.is_pursuing
+= False` ao clicar num tile vazio, mantendo `target_entity_id`. WASD
+(`PlayerInputSystem.update()`) fazia o oposto DE PROPÓSITO: um
+comentário datado de 15/07/2026 documentava que o teclado preservava
+`is_pursuing` de propósito, generalizado de uma exceção que antes só
+existia pro arqueiro (`can_kite`) — motivo: sem isso, guerreiro perdia
+o auto-attack ao se mover, tinha que re-clicar o alvo.
+
+Perguntado ao usuário se essa mudança devia valer só pra melee
+(preservando o kite do arqueiro, que depende de `is_pursuing=True`
+continuar ligado — servidor exige isso pra ranged de verdade disparar,
+`server/combat_processor.py`) ou pra todas as classes. Resposta:
+nenhuma das duas opções apresentadas capturava a intenção — o usuário
+não está pedindo pra mudar/quebrar o kite do arqueiro (que já funciona
+do jeito que ele quer, "andar enquanto ataca"), só quer que a
+PERSEGUIÇÃO (auto-move puxando o personagem de volta pro alvo) pare de
+brigar com o movimento manual, pra QUALQUER classe (inclusive arqueiro
+com arma melee equipada, que ataca de perto igual guerreiro). Uma vez
+que `is_pursuing=False` só desliga o auto-move de perseguição local
+(`_process_target`) — o servidor NUNCA exigiu `is_pursuing` pra golpe
+corpo-a-corpo (só ranged) — desligar isso ao mover não impede o ataque
+melee de retomar sozinho quando o alvo volta a ficar adjacente; a
+distância é o único critério real pro servidor.
+
+**Fix**: bloco de movimento por teclado (`PlayerInputSystem.update()`,
+~linha 630) ganhou `combat_state.is_pursuing = False` — mesma
+semântica que o clique no chão já usava, agora espelhada no teclado.
+`target_entity_id`/combate continuam intocados; só o auto-move de
+perseguição (`_process_target`, guardado por `is_pursuing`) para de
+rodar.
+
+**Validado**: `tests/test_client_ui.py` (2 testes) — WASD cancela
+`is_pursuing` mas mantém `target_entity_id` (alvo vivo/visível fora do
+alcance de ataque, sem tecla pressionada não mexe em nada — regressão).
+Confirmado via `git stash` (`ui/systems.py`, teste fora do stash) que o
+teste positivo falha genuinamente sem o fix. Suíte completa (592
+testes) rodada 3x limpa — mesmas 2 falhas de sempre, sem relação
+(§34.52).
+
+**Não validado em jogo ainda**: usuário ainda não testou o fix em jogo
+real.
 
 ### Arquiteturais (A) — débito técnico
 

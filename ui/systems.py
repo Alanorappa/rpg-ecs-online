@@ -628,13 +628,28 @@ class PlayerInputSystem(System):
                     tgt_y += 1
 
                 if tgt_x != cur_x or tgt_y != cur_y:
-                    # Teclado cancela auto-move (path/ground-target/Seguir) mas
-                    # NUNCA a perseguição/auto-attack — só deselecionar o alvo
-                    # (TAB, clique vazio, alvo morto/fora de visão) para de fato
-                    # parar de atacar. Antes só o arqueiro (ex-flag can_kite)
-                    # tinha essa garantia; generalizado pra todas as classes
-                    # (pedido do usuário 15/07/2026: guerreiro perdia o
-                    # auto-attack ao se mover, tinha que re-clicar o alvo).
+                    # Teclado cancela auto-move (path/ground-target/Seguir) E a
+                    # PERSEGUIÇÃO (is_pursuing=False, mesma semântica do clique
+                    # no chão — MouseTargetingSystem.update() já faz isso há
+                    # muito tempo) — mantém o alvo selecionado e o combate
+                    # ativo, só para de "brigar" com o movimento manual
+                    # (pedido do usuário 28/07/2026: apertar WASD/andar não
+                    # devia ser sobrescrito pela perseguição puxando o
+                    # personagem de volta pro alvo). Se o alvo alcançar o
+                    # player de novo (adjacente), o ataque melee volta sozinho
+                    # — o servidor nunca exigiu is_pursuing pra golpe corpo-a-
+                    # corpo, só pra ranged (server/combat_processor.py); a
+                    # ÚNICA coisa que is_pursuing=False bloqueia aqui é o
+                    # auto-move de perseguição (_process_target logo abaixo).
+                    # ANTES (até 28/07/2026): teclado preservava is_pursuing
+                    # de propósito (pedido de 15/07/2026, generalizado de uma
+                    # exceção que só existia pro arqueiro/can_kite) — revisado
+                    # porque o usuário esclareceu que o problema real é a
+                    # perseguição brigando com o movimento, não o kite em si
+                    # (kite continua funcionando: mover não desativa combate/
+                    # alvo, só a perseguição ativa).
+                    if combat_state:
+                        combat_state.is_pursuing = False
                     if auto_move:
                         auto_move.active = False
                         auto_move.path.clear()
