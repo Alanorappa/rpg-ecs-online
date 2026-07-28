@@ -54,7 +54,7 @@ PROTOCOL_VERSION = 1             # incrementar ao quebrar compatibilidade
 # criar a tag git correspondente (`git tag vX.Y.Z`) a cada commit relevante:
 # PATCH = correção, MINOR = feature nova, MAJOR = mudança grande/quebra de
 # compatibilidade (decisão do usuário, 20/07/2026 — ver ARQUITETURA_ONLINE.md).
-GAME_VERSION = "0.26.1"
+GAME_VERSION = "0.27.0"
 
 # ── Morte/respawn: fluxo de espírito (ghost) + cemitério ───────────────────────
 GHOST_GRAVEYARD_RADIUS_TILES = 5   # raio (tiles) do cemitério p/ revive automático

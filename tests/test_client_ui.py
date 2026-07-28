@@ -1942,3 +1942,138 @@ def test_drain_char_select_batch_delete_character_ok_remove_do_chars_e_sinaliza_
         _drain_char_select_batch(msgs, "", [], chars_in, confirm_del_id=5)
     assert reset_del is True
     assert chars == [{"id": 7, "name": "B"}]
+
+
+# ── client/inventory_handlers.py — popup de aceitar/recusar item-quest ──────
+# Feature nova (25/07/2026, pedido do usuário): clique direito num item
+# registrado em ITEM_GRANTS_QUEST abre um popup de aceitar/recusar em vez de
+# equipar/consumir direto. Recusar não descarta o item (reabre no próximo
+# clique); aceitar manda QUEST_ACCEPT (mesmo caminho do diálogo de NPC).
+
+from client.inventory_handlers import InventoryHandlers as _InvH
+
+
+class _ItemQuestPromptFixture(_InvH):
+    def __init__(self, world, player_entity):
+        self.world = world
+        self.player_entity = player_entity
+        self._net = None
+        self.screen = pygame.display.get_surface()
+
+    def _u(self, px):
+        return px
+
+
+def _make_item_quest_prompt_fixture():
+    from engine.world import World
+    from engine.components import QuestLog
+    world = World()
+    player = world.create_entity()
+    world.add_component(player, QuestLog())
+    return _ItemQuestPromptFixture(world, player)
+
+
+def _make_test_quest_item(qid="qz_item_teste", item_name="Item de Quest de Teste"):
+    """Registra uma quest+item de teste em QUESTS/ITEM_GRANTS_QUEST (limpo
+    pelo chamador via try/finally) e retorna um Item com esse nome."""
+    from content.quests_data import QUESTS, ITEM_GRANTS_QUEST, QuestDef, QuestReward, ObjectiveDef
+    from engine.components import Item
+    QUESTS[qid] = QuestDef(
+        title="Quest de Teste", description="d",
+        objectives=(ObjectiveDef(type="collect_item", target="*",
+                                 loot_item=item_name, count=1),),
+        reward=QuestReward(xp=1),
+    )
+    ITEM_GRANTS_QUEST[item_name] = qid
+    item = Item(item_name, "material", slot=None, max_stack=1)
+    return item, qid
+
+
+def test_try_open_item_quest_prompt_abre_pra_item_registrado_sem_quest_ativa():
+    from content.quests_data import QUESTS, ITEM_GRANTS_QUEST
+    item, qid = _make_test_quest_item()
+    try:
+        fx = _make_item_quest_prompt_fixture()
+        opened = fx._try_open_item_quest_prompt(item)
+        assert opened is True
+        assert fx._item_quest_prompt == (item.name, qid, "Quest de Teste")
+    finally:
+        QUESTS.pop(qid, None)
+        ITEM_GRANTS_QUEST.pop(item.name, None)
+
+
+def test_try_open_item_quest_prompt_nao_abre_se_quest_ja_ativa():
+    from content.quests_data import QUESTS, ITEM_GRANTS_QUEST
+    from engine.components import QuestLog
+    item, qid = _make_test_quest_item(qid="qz_item_teste2", item_name="Item de Quest de Teste 2")
+    try:
+        fx = _make_item_quest_prompt_fixture()
+        ql = fx.world.get_component(fx.player_entity, QuestLog)
+        ql.active[qid] = [0]
+        assert fx._try_open_item_quest_prompt(item) is False
+        assert fx._item_quest_prompt is None
+    finally:
+        QUESTS.pop(qid, None)
+        ITEM_GRANTS_QUEST.pop(item.name, None)
+
+
+def test_try_open_item_quest_prompt_nao_abre_se_quest_ja_completa():
+    from content.quests_data import QUESTS, ITEM_GRANTS_QUEST
+    from engine.components import QuestLog
+    item, qid = _make_test_quest_item(qid="qz_item_teste3", item_name="Item de Quest de Teste 3")
+    try:
+        fx = _make_item_quest_prompt_fixture()
+        ql = fx.world.get_component(fx.player_entity, QuestLog)
+        ql.completed.add(qid)
+        assert fx._try_open_item_quest_prompt(item) is False
+        assert fx._item_quest_prompt is None
+    finally:
+        QUESTS.pop(qid, None)
+        ITEM_GRANTS_QUEST.pop(item.name, None)
+
+
+def test_try_open_item_quest_prompt_nao_abre_pra_item_nao_registrado():
+    from engine.components import Item
+    fx = _make_item_quest_prompt_fixture()
+    item = Item("Item Qualquer", "material", slot=None, max_stack=1)
+    assert fx._try_open_item_quest_prompt(item) is False
+    assert fx._item_quest_prompt is None
+
+
+def test_handle_item_quest_prompt_click_aceitar_manda_quest_accept_e_fecha():
+    from content.quests_data import QUESTS, ITEM_GRANTS_QUEST
+    from shared.messages import MsgType
+    item, qid = _make_test_quest_item(qid="qz_item_teste4", item_name="Item de Quest de Teste 4")
+    try:
+        fx = _make_item_quest_prompt_fixture()
+        sent = []
+        fx._net = type("_FakeNet", (), {"send": lambda self, mt, p: sent.append((mt, p))})()
+        fx._try_open_item_quest_prompt(item)
+        _, accept_r, _decline_r = fx._item_quest_prompt_button_rects()
+        ev = pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=accept_r.center, button=1)
+        consumed = fx._handle_item_quest_prompt_click(ev)
+        assert consumed is True
+        assert sent == [(MsgType.QUEST_ACCEPT, {"quest_id": qid})]
+        assert fx._item_quest_prompt is None
+    finally:
+        QUESTS.pop(qid, None)
+        ITEM_GRANTS_QUEST.pop(item.name, None)
+
+
+def test_handle_item_quest_prompt_click_recusar_so_fecha_sem_mandar_nada():
+    from content.quests_data import QUESTS, ITEM_GRANTS_QUEST
+    item, qid = _make_test_quest_item(qid="qz_item_teste5", item_name="Item de Quest de Teste 5")
+    try:
+        fx = _make_item_quest_prompt_fixture()
+        sent = []
+        fx._net = type("_FakeNet", (), {"send": lambda self, mt, p: sent.append((mt, p))})()
+        fx._try_open_item_quest_prompt(item)
+        _, _accept_r, decline_r = fx._item_quest_prompt_button_rects()
+        ev = pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=decline_r.center, button=1)
+        consumed = fx._handle_item_quest_prompt_click(ev)
+        assert consumed is True
+        assert sent == []
+        assert fx._item_quest_prompt is None
+    finally:
+        QUESTS.pop(qid, None)
+        ITEM_GRANTS_QUEST.pop(item.name, None)

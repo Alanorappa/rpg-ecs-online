@@ -1525,10 +1525,14 @@ class TestHarvestableQuestGateM3(unittest.IsolatedAsyncioTestCase):
 
 
 class TestItemGrantsQuestM4(unittest.IsolatedAsyncioTestCase):
-    """Fase M4 (25/07/2026) — saquear um item mapeado em ITEM_GRANTS_QUEST
-    concede a quest correspondente ao jogador (ex.: achar um pergaminho
-    perdido). Vale pra QUALQUER origem do corpse (mob morto ou harvestable
-    de mapa), via server/loot_processor.py::request_loot."""
+    """Fase M4 (25/07/2026, REVISADA no mesmo dia — usuário pediu fluxo de
+    decisão em vez de automático): item mapeado em ITEM_GRANTS_QUEST NÃO
+    inicia a quest sozinho ao ser saqueado — fica só na bag. Quem inicia é
+    o QUEST_ACCEPT (o MESMO que o diálogo de NPC já manda), disparado pelo
+    popup de aceitar/recusar no clique direito do item
+    (client/inventory_handlers.py::_try_open_item_quest_prompt).
+    ITEM_GRANTS_QUEST virou METADADO client-side (tag do tooltip + gatilho
+    do popup) — request_loot não consulta mais."""
 
     QID = "qgrant_teste"
     ITEM_NAME = "Pergaminho de Teste"
@@ -1538,7 +1542,8 @@ class TestItemGrantsQuestM4(unittest.IsolatedAsyncioTestCase):
         from content.quests_data import QUESTS, QuestDef, QuestReward, ObjectiveDef, ITEM_GRANTS_QUEST
         QUESTS[self.QID] = QuestDef(
             title="Teste", description="d",
-            objectives=(ObjectiveDef(type="talk_to_npc", target="X", count=1),),
+            objectives=(ObjectiveDef(type="collect_item", target="*",
+                                     loot_item=self.ITEM_NAME, count=1),),
             reward=QuestReward(xp=1),
         )
         ITEM_GRANTS_QUEST[self.ITEM_NAME] = self.QID
@@ -1564,52 +1569,60 @@ class TestItemGrantsQuestM4(unittest.IsolatedAsyncioTestCase):
         }
         return cid
 
-    async def test_saquear_item_mapeado_concede_a_quest(self):
+    async def test_saquear_item_mapeado_nao_inicia_a_quest_sozinho(self):
         from engine.components import QuestLog
         session, _ = await fake_login(self.mgr, "s1", "user_ig_a", 130, 374)
         cid = self._make_corpse(owner_eid=session.entity_id, extra_item_name=self.ITEM_NAME)
 
         ql = self.ws_server.world.get_component(session.entity_id, QuestLog)
-        self.assertNotIn(self.QID, ql.active)
         result = self.ws_server.request_loot("s1", cid, take="all")
         self.assertTrue(any(it["name"] == self.ITEM_NAME for it in result["items"]))
-        self.assertIn(self.QID, ql.active)
+        self.assertNotIn(self.QID, ql.active)
+        self.assertNotIn(self.QID, ql.completed)
+
+    async def test_quest_accept_apos_lootear_inicia_com_objetivo_ja_completo(self):
+        """Simula o fluxo real: loota (item vai pra bag), DEPOIS aceita via
+        QUEST_ACCEPT (mesmo caminho do popup client-side). O objetivo
+        collect_item já nasce completo — o item já está na bag, não faz
+        sentido exigir um pickup NOVO (ver quest_logic.py::try_start)."""
+        from engine.components import QuestLog, Inventory, Item
+        import engine.quest_logic as quest_logic
+        session, _ = await fake_login(self.mgr, "s1", "user_ig_b", 130, 374)
+        cid = self._make_corpse(owner_eid=session.entity_id, extra_item_name=self.ITEM_NAME)
+        self.ws_server.request_loot("s1", cid, take="all")
+        # request_loot NÃO toca a Inventory do servidor (loot online é
+        # client-authoritative pro item em si — só o Wallet é servidor puro
+        # aqui) — simula o INV_SYNC que o cliente manda logo depois de
+        # aplicar o LOOT_RESULT localmente.
+        inv = self.ws_server.world.get_component(session.entity_id, Inventory)
+        inv.items.append(Item(self.ITEM_NAME, "material", slot=None, max_stack=1))
+
+        ql = self.ws_server.world.get_component(session.entity_id, QuestLog)
+        started = quest_logic.try_start(self.ws_server.world, session.entity_id, ql, self.QID)
+        self.assertTrue(started)
+        self.assertEqual(ql.active[self.QID], [1])   # já completo — item já na bag
 
     async def test_item_nao_mapeado_nao_concede_nada(self):
         from engine.components import QuestLog
-        session, _ = await fake_login(self.mgr, "s1", "user_ig_b", 130, 374)
+        session, _ = await fake_login(self.mgr, "s1", "user_ig_c", 130, 374)
         cid = self._make_corpse(owner_eid=session.entity_id, extra_item_name=None)
 
         ql = self.ws_server.world.get_component(session.entity_id, QuestLog)
         self.ws_server.request_loot("s1", cid, take="all")
         self.assertNotIn(self.QID, ql.active)
 
-    async def test_saque_repetido_nao_re_tenta_iniciar(self):
-        """try_start já retorna False se a quest está ativa/completa —
-        confirma que uma 2a retirada do mesmo item (outro corpse) não
-        derruba nem duplica o progresso já em andamento."""
-        from engine.components import QuestLog
-        session, _ = await fake_login(self.mgr, "s1", "user_ig_c", 130, 374)
-        cid1 = self._make_corpse(owner_eid=session.entity_id, extra_item_name=self.ITEM_NAME)
-        self.ws_server.request_loot("s1", cid1, take="all")
-
-        ql = self.ws_server.world.get_component(session.entity_id, QuestLog)
-        ql.active[self.QID][0] = 1  # simula progresso real já feito
-
-        cid2 = self._make_corpse(owner_eid=session.entity_id, extra_item_name=self.ITEM_NAME)
-        self.ws_server.request_loot("s1", cid2, take="all")
-        self.assertEqual(ql.active[self.QID], [1])  # progresso intacto, não resetado
-
     async def test_funciona_pra_harvestable_tambem_nao_so_mob(self):
-        """owner_eid=-1 (harvestable de mapa, público) também dispara o
-        gancho — decisão confirmada: vale pra QUALQUER origem do item."""
+        """owner_eid=-1 (harvestable de mapa, público) também deixa o item
+        na bag sem iniciar nada — decisão confirmada: vale pra QUALQUER
+        origem do item, o comportamento (ou ausência dele aqui) é o mesmo."""
         from engine.components import QuestLog
         session, _ = await fake_login(self.mgr, "s1", "user_ig_d", 130, 374)
         cid = self._make_corpse(owner_eid=-1, extra_item_name=self.ITEM_NAME)
 
         ql = self.ws_server.world.get_component(session.entity_id, QuestLog)
-        self.ws_server.request_loot("s1", cid, take="all")
-        self.assertIn(self.QID, ql.active)
+        result = self.ws_server.request_loot("s1", cid, take="all")
+        self.assertTrue(any(it["name"] == self.ITEM_NAME for it in result["items"]))
+        self.assertNotIn(self.QID, ql.active)
 
 
 class TestHarvestableZone(unittest.IsolatedAsyncioTestCase):

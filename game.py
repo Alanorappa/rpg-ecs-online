@@ -1620,6 +1620,9 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                       and self._handle_party_click(event)):
                     pass
                 elif (event.type == pygame.MOUSEBUTTONDOWN
+                      and self._handle_item_quest_prompt_click(event)):
+                    pass
+                elif (event.type == pygame.MOUSEBUTTONDOWN
                       and self._handle_arena_click(event)):
                     pass
                 elif (event.type == pygame.MOUSEBUTTONDOWN
@@ -2184,6 +2187,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             self._draw_duel_ui()
             self._draw_party_frames()
             self._draw_party_invite_ui()
+            self._draw_item_quest_prompt_ui()
             self._draw_arena_queue_button()
             self._draw_arena_queue_modal()
             self._draw_arena_countdown_overlay()

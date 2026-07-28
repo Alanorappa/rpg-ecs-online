@@ -8406,6 +8406,93 @@ próxima entrada de conversa com o usuário.
 **Não validado em jogo ainda**: usuário ainda não testou os 3 fixes em
 jogo real.
 
+### §34.57 — Fase M4 revisada: item concede quest vira decisão do jogador
+(popup de aceitar/recusar), não automático (25/07/2026)
+
+Usuário testou o M4 (Artefato Extremamente Misterioso) e pediu uma
+mudança de design: em vez de a quest iniciar automaticamente ao
+lootear (comportamento original do M4, §34.51), quis o padrão WoW-like
+de "item de quest inerte": item vai pra bag ao ser saqueado, sem
+efeito nenhum; clique direito nele abre um popup "Aceitar a quest
+'X'?" com botões Aceitar/Recusar; recusar não descarta o item (fica na
+bag, popup reabre no próximo clique direito); aceitar de fato inicia a
+quest; quest completada consome o item ao entregar pro NPC (like
+qualquer quest com objetivo `collect_item`); a quest vira requisito de
+uma cadeia futura (`requires=` já resolve isso, nada novo aqui).
+
+**Decisões confirmadas via `AskUserQuestion`**: popup reabre em TODO
+clique direito enquanto a quest não for aceita (não só na primeira
+vez); entrega continua via `turn_in_ids` no NPC do mapa (mecanismo já
+existente, sem campo novo em `QuestDef`).
+
+**Descoberta que reduziu o escopo**: `complete_quest` (`engine/
+quest_logic.py`) já remove automaticamente itens de objetivos
+`collect_item` cujo `loot_item` bate com o nome do item — a "entrega
+consome o item" já existia, só a quest de teste usava `talk_to_npc`
+em vez de `collect_item`. Trocado o objetivo de `"artefato_
+misterioso"` pra `collect_item(loot_item="Artefato Extremamente
+Misterioso")`.
+
+**`QUEST_ACCEPT` já serve sem mudança nenhuma**: `server/session.py::
+_handle_quest_accept` (usado hoje pelo diálogo de NPC) não exige
+proximidade de NPC — só `quest_id` — então o popup do item manda a
+MESMA mensagem, sem endpoint novo.
+
+**Mudanças**:
+- `server/loot_processor.py::request_loot` — REMOVIDO o gancho que
+  chamava `try_start` automaticamente ao saquear (era o comportamento
+  original do M4). `ITEM_GRANTS_QUEST` (`content/quests_data.py`)
+  virou METADADO puro, consultado só no CLIENTE (tag do tooltip, já
+  existia — e agora também o gatilho do popup).
+- `client/inventory_handlers.py` — novo bloco "Item concede quest":
+  `_try_open_item_quest_prompt(item)` (checa `ITEM_GRANTS_QUEST` +
+  `QuestLog.active`/`.completed` do player; abre o popup só se a quest
+  ainda não foi resolvida), `_item_quest_prompt_button_rects()`/
+  `_draw_item_quest_prompt_ui()`/`_handle_item_quest_prompt_click()`
+  espelhando EXATAMENTE o padrão já existente de convite de grupo
+  (`client/party_handlers.py::_draw_party_invite_ui`/
+  `_handle_party_click`) — mesmo layout, mesma mecânica de modal
+  bloqueante. Clique direito num item na bag agora checa isso
+  PRIMEIRO, antes de trade/consumir/equipar.
+- `game.py` — wire-up: `_handle_item_quest_prompt_click` entra na
+  MESMA cadeia de handlers bloqueantes de clique (logo após grupo),
+  `_draw_item_quest_prompt_ui()` entra no mesmo bloco de desenho dos
+  outros modais (após o convite de grupo).
+- `engine/quest_logic.py::try_start` — novo pré-check pra objetivo
+  `collect_item`: se o jogador ACEITA a quest depois de já ter o item
+  na bag (o caso normal aqui — saqueou primeiro, decidiu aceitar
+  depois), o objetivo nasce PRÉ-COMPLETO contando o que já está na
+  Inventory (`min(count, quantidade_na_bag)`) — sem isso o objetivo
+  nunca fecharia, já que o evento `"collect_item"` só dispara em
+  pickups NOVOS (`quest_events.py`), não em itens já possuídos.
+  Mesmo princípio que `reach_level`/`learn_skill` já usavam.
+
+**Validado**: `tests/test_quest_logic.py` (3 testes) — `try_start`
+pré-completa `collect_item` quando o item já está na bag; nasce
+zerado sem o item; respeita `count > 1` (progresso parcial, não
+estoura). `tests/test_client_ui.py` (6 testes) — popup abre pra item
+registrado sem quest ativa/completa; não abre com quest já ativa; não
+abre com quest já completa; não abre pra item não registrado; aceitar
+manda `QUEST_ACCEPT` com o `quest_id` certo e fecha o popup; recusar
+só fecha, sem mandar nada. `tests/test_session.py::
+TestItemGrantsQuestM4` (reescrita, 4 testes) — saquear NÃO inicia a
+quest sozinho (inverte o teste original do M4); `QUEST_ACCEPT`
+(simulado via `try_start` direto) inicia com o objetivo já completo
+(item simulado na Inventory via um "INV_SYNC" manual — `request_loot`
+nunca tocou a Inventory do servidor, é client-authoritative pro item
+em si, só o Wallet é servidor puro); item não mapeado não concede
+nada; harvestable (owner_eid=-1) se comporta igual mob corpse (item
+vai pra bag, quest não inicia sozinha). Confirmado via `git stash`
+(`engine/quest_logic.py`, `server/loot_processor.py`, `client/
+inventory_handlers.py`, `game.py`, testes fora do stash) que os 11
+testes novos falham genuinamente sem os fixes (o `test_funciona_pra_
+harvestable_tambem_nao_so_mob`/regressão do M4 original também mudou
+de comportamento esperado, incluído na contagem). Suíte completa (576
+testes) rodada 3x — mesmas 2 falhas de sempre, sem relação (§34.52).
+
+**Não validado em jogo ainda**: usuário ainda não testou o popup em
+jogo real.
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |

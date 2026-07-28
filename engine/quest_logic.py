@@ -211,7 +211,7 @@ def try_start(world, player_eid: int, ql, qid: str) -> bool:
     if not all(r in ql.completed for r in qdef.requires):
         return False
 
-    from engine.components import CharacterStats, PlayerSkills
+    from engine.components import CharacterStats, PlayerSkills, Inventory
     char = world.get_component(player_eid, CharacterStats)
     plvl = char.level if char else 1
     if qdef.level_req > 0 and plvl < qdef.level_req:
@@ -221,6 +221,7 @@ def try_start(world, player_eid: int, ql, qid: str) -> bool:
 
     ps = world.get_component(player_eid, PlayerSkills)
     learned = ps.learned_skill_ids if ps else set()
+    inv = world.get_component(player_eid, Inventory)
 
     prog = []
     for obj in qdef.objectives:
@@ -228,6 +229,16 @@ def try_start(world, player_eid: int, ql, qid: str) -> bool:
             prog.append(obj.count)
         elif obj.type == "learn_skill" and _skill_already_learned(learned, obj.target):
             prog.append(obj.count)
+        elif obj.type == "collect_item" and obj.loot_item and inv is not None:
+            # Item de quest que o jogador CONCEDE a si mesmo ao aceitar (ex.:
+            # M4 — saqueou o item, decidiu aceitar a quest DEPOIS via popup,
+            # ui/inventory_handlers.py) já está na bag ANTES de ql.active
+            # existir — o evento "collect_item" só dispara em pickups NOVOS
+            # (ver quest_events.py), então sem este pré-check o objetivo
+            # nunca fecharia pra quem já tinha o item na hora de aceitar.
+            _held = sum(it.stack for it in inv.items
+                       if it is not None and it.name == obj.loot_item)
+            prog.append(min(obj.count, _held))
         else:
             prog.append(0)
     ql.active[qid] = prog

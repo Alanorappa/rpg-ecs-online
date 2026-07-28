@@ -189,16 +189,28 @@ QUEST_ITEMS: dict[str, callable] = {
 
 
 # ---------------------------------------------------------------------------
-# Item concede quest nova ao ser saqueado (Fase M4, 25/07/2026 — pedido do
-# usuário: um item de loot pode "conceder" uma quest nova ao ser pego, ex.
-# achar um pergaminho perdido). Chave = NOME DE EXIBIÇÃO do item (não
-# item_key) — o gancho em server/loot_processor.py::request_loot só tem o
-# nome já serializado disponível ali, mesma convenção de
-# _resolve_conditional_loot_for/tabelas de loot. Vale pra QUALQUER origem do
-# item (corpse de mob morto OU harvestable de mapa), não só harvestable.
-# quest_logic.try_start() já ignora silenciosamente se a quest já está
-# ativa/completa ou o player não é elegível (nível/classe/pré-requisito) —
-# nenhuma checagem extra necessária aqui.
+# Item de loot que PODE conceder uma quest nova (Fase M4, 25/07/2026;
+# REVISADA no mesmo dia — usuário pediu fluxo de decisão em vez de
+# automático). Chave = NOME DE EXIBIÇÃO do item (não item_key).
+#
+# Vale pra QUALQUER origem do item (corpse de mob morto OU harvestable de
+# mapa) — mas NÃO inicia a quest sozinho ao ser saqueado. É consultado só
+# no CLIENTE, como metadado puro:
+#   1. Tag "Este item inicia uma quest" no tooltip (ui/ui_helpers.py::
+#      item_tooltip_lines).
+#   2. Gatilho do popup de aceitar/recusar ao clicar direito no item na
+#      bag (client/inventory_handlers.py::_try_open_item_quest_prompt) —
+#      item fica inerte na bag até o jogador decidir; recusar não
+#      descarta nada, só fecha o popup (reaparece no próximo clique
+#      direito). Aceitar manda QUEST_ACCEPT (o MESMO que o diálogo de NPC
+#      já usa) — server/session.py::_handle_quest_accept não exige
+#      proximidade de NPC, só quest_id, então funciona igual vindo daqui.
+#
+# Objetivo típico da quest concedida: `collect_item` com `loot_item` igual
+# ao NOME deste item — como o item já está na bag no momento de aceitar
+# (não foi coletado DEPOIS), quest_logic.py::try_start pré-completa esse
+# objetivo automaticamente (senão nunca fecharia, já que o evento
+# "collect_item" só dispara em pickups NOVOS).
 # ---------------------------------------------------------------------------
 
 ITEM_GRANTS_QUEST: dict[str, str] = {
@@ -511,18 +523,23 @@ QUESTS: dict[str, QuestDef] = {
 
     # ── Teste (Fase M4 — item concede quest, 25/07/2026) ────────────────────
     # Quest de VALIDAÇÃO simples, sem compromisso com o conteúdo final —
-    # concedida ao saquear "Artefato Extremamente Misterioso" (ver
-    # ITEM_GRANTS_QUEST acima). Objetivo genérico (falar com qualquer
-    # mercador) só pra confirmar o fluxo fim-a-fim sem exigir NPC/turn-in
-    # novo no mapa — trocar por algo definitivo quando o conteúdo real for
-    # decidido.
+    # oferecida ao saquear "Artefato Extremamente Misterioso" (ver
+    # ITEM_GRANTS_QUEST acima), aceita via popup no clique direito do item
+    # (client/inventory_handlers.py). Objetivo collect_item com o PRÓPRIO
+    # artefato como loot_item: como o item já está na bag no momento de
+    # aceitar (não foi "coletado" DEPOIS), quest_logic.py::try_start já
+    # nasce esse objetivo completo (ver comentário lá) — falta só entregar
+    # a algum NPC. Entrega via turn_in_ids no NPC escolhido no mapa (mesmo
+    # mecanismo de qualquer outra quest) — usuário decide qual NPC recebe,
+    # ainda não configurado.
     "artefato_misterioso": QuestDef(
         title="O Artefato Misterioso",
         description="Você encontrou algo estranho — um artefato que não "
                     "parece ter vindo daqui. Talvez valha a pena perguntar "
                     "a alguém que já viu muita coisa esquisita por aí.",
         objectives=(
-            ObjectiveDef(type="talk_to_npc", target="*", count=1),
+            ObjectiveDef(type="collect_item", target="*",
+                        loot_item="Artefato Extremamente Misterioso", count=1),
         ),
         reward=QuestReward(xp=10),
     ),

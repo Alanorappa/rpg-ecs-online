@@ -131,22 +131,15 @@ class LootProcessorMixin:
             if wallet:
                 wallet.gold += coins
 
-        # Fase M4 (25/07/2026) — item saqueado pode conceder quest nova (ex.:
-        # achar um pergaminho perdido). Vale pra QUALQUER origem do corpse
-        # (mob morto ou harvestable de mapa). try_start já ignora sozinho se
-        # a quest não é elegível/já ativa/completa — nada extra a checar aqui.
-        if items:
-            from content.quests_data import ITEM_GRANTS_QUEST
-            if ITEM_GRANTS_QUEST:
-                from engine.components import QuestLog as _QL_grant
-                import engine.quest_logic as _quest_logic_grant
-                ql = self.world.get_component(player_eid, _QL_grant)
-                if ql is not None:
-                    for it in items:
-                        qid = ITEM_GRANTS_QUEST.get(it.get("name", ""))
-                        if qid:
-                            _quest_logic_grant.try_start(self.world, player_eid, ql, qid)
-
+        # Fase M4 (25/07/2026, REVISADA 25/07/2026 — usuário pediu fluxo de
+        # decisão): item saqueado que concede quest NÃO inicia mais
+        # automaticamente aqui — fica só na bag até o jogador clicar direito
+        # nele e escolher "Aceitar" (client/inventory_handlers.py::
+        # _try_open_item_quest_prompt), que manda o MESMO QUEST_ACCEPT que o
+        # diálogo de NPC usa (server/session.py::_handle_quest_accept).
+        # ITEM_GRANTS_QUEST (content/quests_data.py) continua existindo,
+        # agora só como METADADO consultado pelo cliente (tag do tooltip +
+        # gatilho do popup) — não é mais lido aqui.
         return {"items": items, "coins": coins}
 
     def _process_loot_drops(self, dt: float) -> None:
