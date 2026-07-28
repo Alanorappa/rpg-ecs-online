@@ -131,11 +131,13 @@ class LootProcessorMixin:
             if wallet:
                 wallet.gold += coins
 
-        # Fase M4 (25/07/2026, REVISADA 25/07/2026 — usuário pediu fluxo de
-        # decisão): item saqueado que concede quest NÃO inicia mais
+        # Fase M4 (25/07/2026, REVISADA 25/07/2026 duas vezes — usuário
+        # pediu fluxo de decisão, depois pediu que o modal fosse o MESMO
+        # do NPC): item saqueado que concede quest NÃO inicia mais
         # automaticamente aqui — fica só na bag até o jogador clicar direito
-        # nele e escolher "Aceitar" (client/inventory_handlers.py::
-        # _try_open_item_quest_prompt), que manda o MESMO QUEST_ACCEPT que o
+        # nele e escolher "Aceitar" no modal de quest (ui/quest_system.py::
+        # QuestDialogSystem.open_for_item, via client/inventory_handlers.py::
+        # _try_open_item_quest_dialog), que manda o MESMO QUEST_ACCEPT que o
         # diálogo de NPC usa (server/session.py::_handle_quest_accept).
         # ITEM_GRANTS_QUEST (content/quests_data.py) continua existindo,
         # agora só como METADADO consultado pelo cliente (tag do tooltip +

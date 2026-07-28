@@ -489,6 +489,16 @@ class QuestDialogSystem(UIScaleMixin, System):
         # altura fixa do painel; ver _render_detail/_render_turnin.
         self._detail_scroll: int = 0
 
+        # Diálogo aberto a partir de um item (clique direito na bag), sem
+        # NPC real por trás (25/07/2026, pedido do usuário: reaproveitar o
+        # MESMO modal do NPC em vez de um popup novo — client/
+        # inventory_handlers.py::_try_open_item_quest_dialog). Quando
+        # setado, render()/handle_events() pulam qualquer lógica
+        # NPC-dependente (QuestGiver/NPC component, talk_to_npc, distância
+        # pra auto-fechar) — ver open_for_item().
+        self._item_source:       bool = False
+        self._item_source_label: str  = ""
+
     @property
     def is_open(self) -> bool:
         return self._dialog_npc_id != -1
@@ -583,8 +593,13 @@ class QuestDialogSystem(UIScaleMixin, System):
                     # removido deste branch (15/07/2026, item A2 §11).
                     if self._qs._net:
                         from shared.messages import MsgType as _MTqa
+                        # Fonte "item" não tem NPC real — manda npc_name=""
+                        # pra não disparar talk_to_npc de um NPC inexistente
+                        # (server/session.py::_handle_quest_accept só aplica
+                        # o evento se npc_name vier preenchido).
+                        _npc_nm = "" if self._item_source else self._npc_name(self._dialog_npc_id)
                         self._qs._net.send(_MTqa.QUEST_ACCEPT, {
-                            "quest_id": qid, "npc_name": self._npc_name(self._dialog_npc_id),
+                            "quest_id": qid, "npc_name": _npc_nm,
                         })
                     self._close()
                     return
@@ -717,12 +732,20 @@ class QuestDialogSystem(UIScaleMixin, System):
             return
         from engine.components import QuestGiver as _QG, NPC as _NPC
 
-        giver = self.world.get_component(self._dialog_npc_id, _QG)
-        if giver is None:
-            self._close()
-            return
-        _npc_comp = self.world.get_component(self._dialog_npc_id, _NPC)
-        npc_name  = _npc_comp.name if _npc_comp else "NPC"
+        giver = None
+        if self._item_source:
+            # Sem NPC real por trás (aberto via item na bag) — cabeçalho usa
+            # o nome do item; estado sempre "detail" (open_for_item nunca
+            # entra em "list"), então _render_list(giver) nunca é chamado
+            # com giver=None aqui.
+            npc_name = self._item_source_label or "Missao"
+        else:
+            giver = self.world.get_component(self._dialog_npc_id, _QG)
+            if giver is None:
+                self._close()
+                return
+            _npc_comp = self.world.get_component(self._dialog_npc_id, _NPC)
+            npc_name  = _npc_comp.name if _npc_comp else "NPC"
 
         SW, SH = self.hud_surf.get_size()
         self.hud_surf.blit(fill_surf((SW, SH), (0, 0, 0, 160)), (0, 0))
@@ -1178,10 +1201,36 @@ class QuestDialogSystem(UIScaleMixin, System):
             self._dialog_state        = "list"
             self._dialog_selected_qid = ""
 
+    def open_for_item(self, qid: str, label: str = "") -> bool:
+        """Abre o modal direto no estado 'detail' pra uma quest concedida
+        por item (clique direito na bag) — MESMO diálogo do NPC, sem NPC
+        real por trás (25/07/2026, pedido do usuário). `label` é o nome do
+        item, usado como cabeçalho no lugar do nome de NPC. Retorna False
+        (não abre nada) se a quest não existe ou já está ativa/completa —
+        mesmo critério de elegibilidade que _open_dialog já aplica pra
+        NPC, só que checado aqui direto (sem lista, vai reto pro detail)."""
+        if QUESTS.get(qid) is None:
+            return False
+        from engine.components import QuestLog as _QL_item
+        ql = self.world.get_component(self.player_entity, _QL_item)
+        if ql is not None and (qid in ql.active or qid in ql.completed):
+            return False
+        self._dialog_npc_id       = -2   # sentinel: sem NPC real
+        self._item_source         = True
+        self._item_source_label   = label
+        self._dialog_selected_qid = qid
+        self._dialog_state        = "detail"
+        self._list_rects          = {}
+        self._detail_scroll       = 0
+        self._turnin_chosen_item  = None
+        return True
+
     def _close(self) -> None:
         self._dialog_npc_id       = -1
         self._dialog_state        = ""
         self._dialog_selected_qid = ""
+        self._item_source         = False
+        self._item_source_label   = ""
         self._list_rects          = {}
         self._accept_rect         = None
         self._decline_rect        = None

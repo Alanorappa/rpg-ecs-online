@@ -8393,15 +8393,22 @@ fora do stash) que os 4 testes NOVOS falham genuinamente sem os fixes.
 Suíte completa (567 testes) rodada 3x — mesmas 2 falhas de sempre, sem
 relação (ver §34.52).
 
-**Item ainda em aberto, NÃO resolvido nesta leva**: usuário também
-relatou que a zona "Vômito" (`harvestable_zones`, count=10) está
-"floodando vários itens no mapa quando o respawn dá o cd" — não achei
-uma causa concreta revisando `_tick_harvestable_zones`/`_create_
-harvestable_zones_for_map` (a lógica de esgotar→enfileirar 1 timer de
-reposição→spawnar 1 substituto parece correta na leitura estática).
-Precisa de reprodução mais detalhada (ou o mesmo diagnóstico com print
-temporário usado em §34.53) antes de arriscar um fix às cegas — ver
-próxima entrada de conversa com o usuário.
+**Item que ficou em aberto nesta leva, CONFIRMADO RESOLVIDO depois**:
+usuário também relatou que a zona "Vômito" (`harvestable_zones`,
+count=10) estava "floodando vários itens no mapa quando o respawn dá o
+cd" — não foi achada uma causa concreta revisando `_tick_harvestable_
+zones`/`_create_harvestable_zones_for_map` nesta leva (a lógica de
+esgotar→enfileirar 1 timer de reposição→spawnar 1 substituto parecia
+correta na leitura estática). Usuário confirmou depois (mesma rodada de
+teste do §34.57) que o flood já não acontece mais. Causa raiz NUNCA
+confirmada de forma isolada (sem reprodução dedicada) — hipótese mais
+provável é efeito colateral do guard `not corpse_data.get("no_decay")`
+no broadcast genérico de `ENTITY_DESPAWN` de corpse vazio (§34.54,
+corrigido ANTES desta leva): se um nó de zona esgotado ainda disparasse
+esse broadcast genérico de forma inconsistente, o cliente podia ficar
+com uma sprite "fantasma" que nunca sumia mesmo com o nó já reposto no
+servidor — cada CD subsequente somaria mais uma sprite por cima,
+explicando o "flood". Não tratar como definitivo se o sintoma voltar.
 
 **Não validado em jogo ainda**: usuário ainda não testou os 3 fixes em
 jogo real.
@@ -8492,6 +8499,74 @@ testes) rodada 3x — mesmas 2 falhas de sempre, sem relação (§34.52).
 
 **Não validado em jogo ainda**: usuário ainda não testou o popup em
 jogo real.
+
+### §34.58 — Correção do §34.57: popup custom vira reaproveitamento do
+MESMO modal de quest do NPC (25/07/2026)
+
+Usuário testou o popup do §34.57 em jogo real e REJEITOU a abordagem:
+o popup custom (espelhando o convite de grupo) era um modal NOVO que
+não existia antes — pedido explícito: "o correto é a estrutura da
+quest seguir o padrão das outras, a única diferença é em vez de pegar
+com um NPC, vc pega clicando com o direito no item". Ou seja, o clique
+direito no item deve abrir o MESMO `QuestDialogSystem` (`ui/quest_
+system.py`) que o diálogo de NPC já usa — mesmo layout, mesmos botões
+Aceitar/Recusar, mesma renderização de descrição/objetivos/recompensa.
+Como ao clicar direito o inventário está aberto, o pedido incluiu
+fechar o inventário no mesmo gesto que abre o modal de quest.
+
+**Por que não dava pra reaproveitar `QuestDialogSystem` sem mudança
+nenhuma**: o sistema inteiro é construído em cima de um NPC real —
+`is_open` é `self._dialog_npc_id != -1`; `render()` busca o componente
+`QuestGiver` do NPC e SE FECHA SOZINHO se não achar (`giver is None:
+self._close()`); o cabeçalho do painel mostra `NPC.name`; o clique de
+Aceitar manda `QUEST_ACCEPT` com `npc_name=self._npc_name(dialog_npc_
+id)` (dispara `talk_to_npc` no servidor). Não existe NPC nenhum no
+fluxo de item.
+
+**Fix — `open_for_item()` novo em `QuestDialogSystem`**: abre o modal
+direto no estado `"detail"` (pula `"list"` — item sempre tem 1 quest
+só) usando um eid sentinela (`-2`, nunca bate com nenhuma entidade real
+— `world.get_component` com eid inexistente já retorna `None` de forma
+seguro, confirmado em `engine/world.py::get_component`) e uma flag nova
+`self._item_source: bool`. Mesma checagem de elegibilidade que o popup
+antigo fazia (quest existe, não está ativa/completa). `render()` ganhou
+um branch: se `_item_source`, pula o lookup de `QuestGiver`/`NPC` e usa
+o NOME DO ITEM como cabeçalho (sem isso o `giver is None` fecharia o
+modal no PRIMEIRO frame, já que não há NPC nenhum). O clique de Aceitar
+manda `npc_name=""` quando `_item_source` (em vez do nome do NPC) —
+sem isso, `_npc_name(-2)` cairia no fallback `"NPC"` e disparia
+`talk_to_npc` pra um NPC fictício chamado "NPC" no servidor, efeito
+colateral indesejado. `_close()` reseta as duas flags novas.
+
+**`client/inventory_handlers.py`**: `_try_open_item_quest_prompt` (todo
+o bloco do popup — property, botões, draw, click handler) REMOVIDO,
+substituído por `_try_open_item_quest_dialog(item)`: consulta `ITEM_
+GRANTS_QUEST`, chama `self._quest_dialog.open_for_item(qid, item.
+name)`; se abriu, fecha o inventário (`_show_inventory = False`,
+`_selected_inv_idx = -1`) — pedido explícito do usuário, já que o
+inventário estava aberto quando o clique aconteceu.
+
+**`game.py`**: removida a entrada de `_handle_item_quest_prompt_click`
+na cadeia de handlers de clique bloqueante e a chamada de `_draw_item_
+quest_prompt_ui()` no bloco de desenho — não existe mais um modal
+próprio pra desenhar/clicar, o `QuestDialogSystem` já é desenhado/trata
+eventos no lugar de sempre (mesmo código que atende o NPC).
+
+**Validado**: `tests/test_client_ui.py` (10 testes) — `open_for_item`
+abre em `"detail"` sem NPC real; não abre com quest já ativa/completa;
+não abre com `qid` inexistente; `render()` não se autofecha (regressão
+do bug que este fix corrige — sem o branch `_item_source`, o `giver is
+None` fecharia sozinho); Aceitar manda `QUEST_ACCEPT` com `npc_
+name=""`; Recusar só fecha, sem mandar nada; `_try_open_item_quest_
+dialog` abre o modal E fecha o inventário; não abre pra item não
+registrado (inventário intocado); não abre com quest já ativa
+(inventário intocado). Confirmado via `git stash` (`ui/quest_system.
+py`, `client/inventory_handlers.py`, `game.py`, testes fora do stash)
+que os 10 testes novos falham genuinamente sem os fixes. Suíte completa
+rodada 3x limpa — mesmas 2 falhas de sempre, sem relação (§34.52).
+
+**Não validado em jogo ainda**: usuário ainda não testou o modal
+corrigido em jogo real.
 
 ### Arquiteturais (A) — débito técnico
 

@@ -198,10 +198,11 @@ QUEST_ITEMS: dict[str, callable] = {
 # no CLIENTE, como metadado puro:
 #   1. Tag "Este item inicia uma quest" no tooltip (ui/ui_helpers.py::
 #      item_tooltip_lines).
-#   2. Gatilho do popup de aceitar/recusar ao clicar direito no item na
-#      bag (client/inventory_handlers.py::_try_open_item_quest_prompt) —
-#      item fica inerte na bag até o jogador decidir; recusar não
-#      descarta nada, só fecha o popup (reaparece no próximo clique
+#   2. Gatilho do MESMO modal de diálogo de quest do NPC (ui/quest_system.
+#      py::QuestDialogSystem.open_for_item) ao clicar direito no item na
+#      bag (client/inventory_handlers.py::_try_open_item_quest_dialog) —
+#      item fica inerte na bag até o jogador decidir; recusar/fechar não
+#      descarta nada, só fecha o modal (reaparece no próximo clique
 #      direito). Aceitar manda QUEST_ACCEPT (o MESMO que o diálogo de NPC
 #      já usa) — server/session.py::_handle_quest_accept não exige
 #      proximidade de NPC, só quest_id, então funciona igual vindo daqui.

@@ -49,94 +49,36 @@ class InventoryHandlers:
         return x0 + UI.INVENTORY_OFFSET_X, y0 + UI.INVENTORY_OFFSET_Y
 
     # ------------------------------------------------------------------ #
-    #  Item concede quest (25/07/2026, pedido do usuário) — clique
-    #  direito num item registrado em content/quests_data.py::
-    #  ITEM_GRANTS_QUEST abre um popup de aceitar/recusar (espelha
-    #  client/party_handlers.py::_draw_party_invite_ui/_handle_party_
-    #  click — mesmo padrão visual/bloqueante). Recusar NÃO descarta o
-    #  item: continua na bag, próximo clique direito mostra o popup de
-    #  novo, até aceitar (ou o jogador deletar o item manualmente).
-    #  Aceitar manda o MESMO QUEST_ACCEPT que o diálogo de NPC já usa
-    #  (server/session.py::_handle_quest_accept não exige proximidade de
-    #  NPC — só quest_id — funciona igual vindo daqui). Uma vez a quest
-    #  ativa/completa, o clique direito volta ao fluxo normal (equipar/
-    #  consumir/oferecer em troca).
+    #  Item concede quest (25/07/2026, pedido do usuário; REVISADO no
+    #  mesmo dia — usuário rejeitou o popup custom, pediu reaproveitar o
+    #  MESMO modal de quest do NPC) — clique direito num item registrado
+    #  em content/quests_data.py::ITEM_GRANTS_QUEST abre o
+    #  QuestDialogSystem (ui/quest_system.py) direto no estado "detail",
+    #  igual à quest de um NPC, só que sem NPC real por trás
+    #  (QuestDialogSystem.open_for_item). Fecha o inventário (o jogador
+    #  clicou direito com a bag aberta). Recusar/fechar o modal NÃO
+    #  descarta o item: continua na bag, próximo clique direito reabre o
+    #  mesmo diálogo, até aceitar (ou o jogador deletar o item
+    #  manualmente). Aceitar manda o MESMO QUEST_ACCEPT que o diálogo de
+    #  NPC já usa. Uma vez a quest ativa/completa, o clique direito volta
+    #  ao fluxo normal (equipar/consumir/oferecer em troca).
     # ------------------------------------------------------------------ #
 
-    @property
-    def _item_quest_prompt(self):
-        return getattr(self, "_item_quest_prompt_val", None)   # (item_name, qid, title) | None
-
-    def _try_open_item_quest_prompt(self, item) -> bool:
+    def _try_open_item_quest_dialog(self, item) -> bool:
         """True = item concede quest ainda não aceita/completada — abriu
-        o popup, clique direito NÃO deve equipar/consumir desta vez.
-        False = item normal (ou quest já resolvida) — segue o fluxo de
+        o modal de quest (QuestDialogSystem) e fechou o inventário,
+        clique direito NÃO deve equipar/consumir desta vez. False = item
+        normal (ou quest já resolvida/qid inexistente) — segue o fluxo de
         sempre."""
-        from content.quests_data import ITEM_GRANTS_QUEST, QUESTS
+        from content.quests_data import ITEM_GRANTS_QUEST
         qid = ITEM_GRANTS_QUEST.get(item.name)
         if not qid:
             return False
-        qdef = QUESTS.get(qid)
-        if qdef is None:
-            return False
-        from engine.components import QuestLog
-        ql = self.world.get_component(self.player_entity, QuestLog)
-        if ql is not None and (qid in ql.active or qid in ql.completed):
+        if not self._quest_dialog.open_for_item(qid, item.name):
             return False   # já aceita/completa — item vira item normal
-        self._item_quest_prompt_val = (item.name, qid, qdef.title)
-        return True
-
-    def _item_quest_prompt_button_rects(self):
-        SW, SH = self.screen.get_size()
-        w, h = self._u(UI.TRADE_INVITE_W), self._u(UI.TRADE_INVITE_H)
-        x0, y0 = (SW - w) // 2, (SH - h) // 2
-        btn_w = (w - self._u(30)) // 2
-        accept_r  = pygame.Rect(x0 + self._u(10), y0 + h - self._u(48), btn_w, self._u(36))
-        decline_r = pygame.Rect(x0 + w - btn_w - self._u(10), y0 + h - self._u(48), btn_w, self._u(36))
-        return pygame.Rect(x0, y0, w, h), accept_r, decline_r
-
-    def _draw_item_quest_prompt_ui(self) -> None:
-        if self._item_quest_prompt is None:
-            return
-        _item_name, _qid, title = self._item_quest_prompt
-        rect, accept_r, decline_r = self._item_quest_prompt_button_rects()
-        SW, SH = self.screen.get_size()
-        overlay = pygame.Surface((SW, SH), pygame.SRCALPHA)
-        overlay.fill((0, 0, 0, 140))
-        self.screen.blit(overlay, (0, 0))
-        pygame.draw.rect(self.screen, (24, 26, 20), rect, border_radius=8)
-        pygame.draw.rect(self.screen, (150, 160, 90), rect, 2, border_radius=8)
-        msg = f"Aceitar a quest '{title}'?"
-        msg_s = self.font_md.render(msg, False, (225, 230, 200))
-        self.screen.blit(msg_s, (rect.x + (rect.w - msg_s.get_width()) // 2,
-                                 rect.y + self._u(30)))
-        pygame.draw.rect(self.screen, (50, 90, 50), accept_r, border_radius=5)
-        pygame.draw.rect(self.screen, (90, 50, 50), decline_r, border_radius=5)
-        a_s = self.font_sm.render("Aceitar", False, (220, 240, 220))
-        d_s = self.font_sm.render("Recusar", False, (240, 220, 220))
-        self.screen.blit(a_s, (accept_r.centerx - a_s.get_width() // 2,
-                               accept_r.centery - a_s.get_height() // 2))
-        self.screen.blit(d_s, (decline_r.centerx - d_s.get_width() // 2,
-                               decline_r.centery - d_s.get_height() // 2))
-
-    def _handle_item_quest_prompt_click(self, event) -> bool:
-        """True = clique consumido (modal aberto e bloqueante)."""
-        if event.type != pygame.MOUSEBUTTONDOWN or event.button != 1:
-            return False
-        if self._item_quest_prompt is None:
-            return False
-        _item_name, qid, _title = self._item_quest_prompt
-        _, accept_r, decline_r = self._item_quest_prompt_button_rects()
-        mx, my = event.pos
-        if accept_r.collidepoint(mx, my):
-            if self._net:
-                from shared.messages import MsgType
-                self._net.send(MsgType.QUEST_ACCEPT, {"quest_id": qid})
-            self._item_quest_prompt_val = None
-            SOUNDS.play_ui("button_click")
-        elif decline_r.collidepoint(mx, my):
-            self._item_quest_prompt_val = None   # item continua na bag
-            SOUNDS.play_ui("button_click")
+        self._show_inventory   = False
+        self._selected_inv_idx = -1
+        SOUNDS.play_ui("button_click")
         return True
 
     # ------------------------------------------------------------------ #
@@ -263,8 +205,8 @@ class InventoryHandlers:
                         _trade_ui = self._get_trade_ui()
                         if _trade_ui is not None and _trade_ui.is_open:
                             self._offer_trade_item(i)
-                        elif self._try_open_item_quest_prompt(item):
-                            pass   # popup de aceitar/recusar consumiu o clique
+                        elif self._try_open_item_quest_dialog(item):
+                            pass   # modal de quest consumiu o clique
                         elif getattr(item, "consumable", None):
                             self._use_consumable(item, i, inv)
                         else:
