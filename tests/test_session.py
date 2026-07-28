@@ -1575,6 +1575,15 @@ class TestHarvestableZone(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         self.ws_server, self.mgr = make_session_manager()
+        # Isola de qualquer harvestable_zone real já presente no mapa
+        # carregado (ex.: conteúdo que o usuário for adicionando em
+        # map_1_entities.json) — sem isso, testes que checam contagem/
+        # chamada exata (ex. mocked.assert_called_once()) ficam frágeis a
+        # mudança de conteúdo do mapa real, que não tem nada a ver com a
+        # lógica sendo testada aqui.
+        self.ws_server._harvestable_zones.clear()
+        self.ws_server._harvestable_zone_active.clear()
+        self.ws_server._harvestable_zone_timers.clear()
 
     def _make_zone(self, count_a: int = 3, count_b: int = 2,
                    respawn_cooldown: float = 1.0, requires_quest: str = "") -> int:

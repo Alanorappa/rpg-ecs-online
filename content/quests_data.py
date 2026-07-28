@@ -173,6 +173,18 @@ QUEST_ITEMS: dict[str, callable] = {
     "Cauda de Escorpião": lambda: Item("Cauda de Escorpião", "material", slot=None, rarity="common", value=3, max_stack=10),
     "Escama de Cobra":  lambda: Item("Escama de Cobra",  "material", slot=None, rarity="common", value=2, max_stack=10),
     "Osso de Goblin":   lambda: Item("Osso de Goblin",   "material", slot=None, rarity="common", value=2, max_stack=10),
+
+    # Itens que CONCEDEM quest ao serem saqueados (Fase M4) — sem função de
+    # combate/equipamento, só "material" + description como texto de sabor
+    # entre aspas. A tag "Este item inicia uma quest" no tooltip é
+    # AUTOMÁTICA (ui/ui_helpers.py::item_tooltip_lines, detecta via
+    # ITEM_GRANTS_QUEST logo abaixo) — não precisa escrever isso na
+    # description, só o texto de sabor mesmo.
+    "Artefato Extremamente Misterioso": lambda: Item(
+        "Artefato Extremamente Misterioso", "material", slot=None,
+        rarity="rare", value=0, max_stack=1,
+        description="\"Um artefato estranho, cheira mal e parece ter uma "
+                    "tecnologia avançada, mas nenhum botão funciona.\""),
 }
 
 
@@ -190,7 +202,7 @@ QUEST_ITEMS: dict[str, callable] = {
 # ---------------------------------------------------------------------------
 
 ITEM_GRANTS_QUEST: dict[str, str] = {
-    # "Pergaminho Perdido": "pergaminho_perdido",
+    "Artefato Extremamente Misterioso": "artefato_misterioso",
 }
 
 
@@ -495,5 +507,23 @@ QUESTS: dict[str, QuestDef] = {
             ObjectiveDef(type="equip_item", target="weapon", count=1),
         ),
         reward=QuestReward(xp=60),
+    ),
+
+    # ── Teste (Fase M4 — item concede quest, 25/07/2026) ────────────────────
+    # Quest de VALIDAÇÃO simples, sem compromisso com o conteúdo final —
+    # concedida ao saquear "Artefato Extremamente Misterioso" (ver
+    # ITEM_GRANTS_QUEST acima). Objetivo genérico (falar com qualquer
+    # mercador) só pra confirmar o fluxo fim-a-fim sem exigir NPC/turn-in
+    # novo no mapa — trocar por algo definitivo quando o conteúdo real for
+    # decidido.
+    "artefato_misterioso": QuestDef(
+        title="O Artefato Misterioso",
+        description="Você encontrou algo estranho — um artefato que não "
+                    "parece ter vindo daqui. Talvez valha a pena perguntar "
+                    "a alguém que já viu muita coisa esquisita por aí.",
+        objectives=(
+            ObjectiveDef(type="talk_to_npc", target="*", count=1),
+        ),
+        reward=QuestReward(xp=10),
     ),
 }

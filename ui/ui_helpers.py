@@ -108,6 +108,16 @@ def item_tooltip_lines(item, viewer_class_id: str | None = None):
     rar_col = RARITY_COLORS.get(item.rarity, (200, 200, 200))
     lines.append((f"Raridade: {item.rarity.capitalize()}", rar_col))
 
+    # Item que concede quest ao ser saqueado (Fase M4, 25/07/2026, pedido do
+    # usuário) — tag automática, detectada via ITEM_GRANTS_QUEST (fonte
+    # única, mesma usada pelo gancho real em server/loot_processor.py::
+    # request_loot) em vez de exigir escrever isso à mão na description de
+    # cada item — evita o item dizer "inicia quest" e o mapa esquecer de
+    # registrar (ou vice-versa).
+    from content.quests_data import ITEM_GRANTS_QUEST as _IGQ_tt
+    if item.name in _IGQ_tt:
+        lines.append(("Este item inicia uma quest", (255, 215, 100)))
+
     consumable = getattr(item, "consumable", None)
 
     if consumable:

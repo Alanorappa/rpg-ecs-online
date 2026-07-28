@@ -8274,6 +8274,61 @@ falhas de sempre, sem relação (ver §34.52).
 
 **Não validado em jogo ainda**: aguardando novo teste do usuário.
 
+### §34.55 — Tag automática "Este item inicia uma quest" + primeiro item
+de teste do M4 (25/07/2026)
+
+Usuário pediu ajuda pra validar o M4 (item concede quest — ver §34.51):
+queria um item genérico ("Pergaminho da Verdade", "Carta para Alfelio",
+"Artefato Extremamente Misterioso" foram os exemplos dados) com nome +
+uma tag "Este item inicia uma quest" + descrição de sabor entre aspas
+no tooltip.
+
+`Item` (`engine/components.py`) já tinha um campo `description` livre,
+mas nada usava pra exibir a tag "inicia quest" — teria que ser escrita
+à mão na `description` de cada item, arriscando ficar desatualizada se
+o item saísse do `ITEM_GRANTS_QUEST` depois (ou vice-versa, esquecer de
+marcar um item que já concede quest).
+
+**Fix**: `ui/ui_helpers.py::item_tooltip_lines` agora checa
+`item.name in ITEM_GRANTS_QUEST` (import local, mesmo padrão de
+imports tardios do arquivo) logo após a linha de raridade — mesma
+FONTE ÚNICA que o gancho real em `loot_processor.py::request_loot` usa,
+sem duplicar a informação em dois lugares. `description` continua livre
+pro texto de sabor (aspas incluídas no próprio texto, já que o campo
+não formata nada sozinho).
+
+Criado o primeiro item de teste real: `"Artefato Extremamente
+Misterioso"` (`QUEST_ITEMS`, `item_type="material"`, `rarity="rare"`,
+com a description exata que o usuário pediu) + uma quest de
+VALIDAÇÃO simples (`"artefato_misterioso"`, objetivo genérico "falar
+com qualquer mercador" — não exige NPC/turn-in novo no mapa, sem
+compromisso com conteúdo final) + a entrada em `ITEM_GRANTS_QUEST`
+ligando os dois.
+
+**Bug de teste achado de graça**: `TestHarvestableZone` (Fase Zona de
+itens, §34.51) ficou frágil ao conteúdo REAL do mapa assim que o
+usuário adicionou sua primeira `harvestable_zones` de verdade
+(`map_1_entities.json`, zona "Vômito") — `asyncSetUp` carrega o mapa
+real via `make_session_manager()`, então a zona real passou a conviver
+com a zona sintética de cada teste, quebrando
+`test_no_reaparece_apos_cooldown_em_posicao_nova_nao_fixa_na_antiga`
+(`mocked.assert_called_once()` via de repente 3 chamadas — a zona real
+TAMBÉM tinha slot vago pra preencher). Fix: `asyncSetUp` agora limpa
+`_harvestable_zones`/`_harvestable_zone_active`/`_harvestable_zone_
+timers` logo após carregar o mapa, isolando os testes de qualquer
+conteúdo real que o mapa venha a ter — mesmo princípio que os outros
+testes desta classe já aplicavam sem perceber (contagens/asserts
+implicitamente assumiam "mapa sem harvestable_zones", verdade só até
+agora).
+
+**Validado**: suíte completa (562 testes) rodada 3x, 0 falhas
+relacionadas (mesmas 2 de sempre, ver §34.52). Tooltip verificado via
+script standalone (linhas geradas na ordem certa: raridade → tag →
+... → description entre aspas).
+
+**Não validado em jogo ainda**: usuário ainda não testou saquear o
+Artefato/ver o tooltip/receber a quest em jogo real.
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |
