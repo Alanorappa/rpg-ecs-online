@@ -88,46 +88,63 @@ class HotbarHandlers:
             return False
         return tt.allocated.get(talent_id, 0) < min_pts
 
-    def _handle_hotbar_click(self, event):
-        """Aciona habilidade ao clicar com botão esquerdo em slot da hotbar."""
+    def _handle_hotbar_click(self, event) -> bool:
+        """Aciona habilidade ao clicar com botão esquerdo em slot da hotbar.
+
+        Retorna True se o clique caiu em cima de um slot (mesmo que a
+        skill não tenha disparado de verdade — cooldown, talento
+        bloqueado, shift+click de drag) — usado por game.py pra impedir
+        que o MESMO clique também chegue no MouseTargetingSystem (bug
+        real relatado pelo usuário 29/07/2026: clicar num slot da
+        hotbar/consumíveis desselecionava o alvo em combate, porque o
+        clique esquerdo "vazava" pro mundo e virava o clique-esquerdo-
+        no-chão que desseleciona — mesma classe de bug do vazamento do
+        minimap/loot já corrigido antes, ver §34.59/§34.6x)."""
         self._set_hotbar_row_scale()
-        # Shift+click → drag de remoção, não usa skill
-        if pygame.key.get_mods() & pygame.KMOD_SHIFT:
-            return
+        # Shift+click → drag de remoção, não usa skill — ainda assim
+        # CONSOME o clique (o slot foi clicado, só não fez nada de
+        # combate) se estiver mesmo em cima de um slot.
+        mx, my = event.pos
+        shift_drag = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
         from engine.components import PlayerSkills
         player_skills = self.world.get_component(self.player_entity, PlayerSkills)
         if not player_skills:
-            return
+            return False
         occupied = [(i, s) for i, s in enumerate(player_skills.skills) if s is not None]
         if not occupied:
-            return
+            return False
         n_occ   = len(occupied)
         total_w = n_occ * self._HB_W + (n_occ - 1) * self._HB_PAD
         x0      = self.screen.get_width()  // 2 - total_w // 2
         y0      = self.screen.get_height() - self._HB_H - self._u(10)
-        mx, my  = event.pos
         for j, (i, skill) in enumerate(occupied):
             sx = x0 + j * (self._HB_W + self._HB_PAD)
             if pygame.Rect(sx, y0, self._HB_W, self._HB_H).collidepoint(mx, my):
+                if shift_drag:
+                    return True
                 # Talento removido → skill bloqueada
                 if skill.skill_id and self._is_talent_locked(skill.skill_id):
                     skill.fail_flash_timer = 0.2
-                    break
+                    return True
                 if not self._skill_system._use_skill(i, skill):
                     skill.fail_flash_timer = 0.2
-                break
+                return True
+        return False
 
-    def _handle_consumable_bar_click(self, event) -> None:
-        """Usa consumível ao clicar com botão esquerdo em slot da barra de consumíveis."""
+    def _handle_consumable_bar_click(self, event) -> bool:
+        """Usa consumível ao clicar com botão esquerdo em slot da barra
+        de consumíveis. Retorna True se o clique caiu em cima de um
+        slot (mesmo em cooldown global) — ver docstring de
+        _handle_hotbar_click."""
         self._set_hotbar_row_scale()
         from engine.components import ConsumableBar as _CB, PlayerSkills as _PS
         cbar = self.world.get_component(self.player_entity, _CB)
         if not cbar:
-            return
+            return False
 
         cons_occ = [(i, cbar.slots[i]) for i in range(_CB.NUM_SLOTS) if cbar.slots[i]]
         if not cons_occ:
-            return
+            return False
 
         ps           = self.world.get_component(self.player_entity, _PS)
         n_skills_occ = sum(1 for s in ps.skills if s) if ps else 0
@@ -144,7 +161,8 @@ class HotbarHandlers:
                         if isinstance(sys, ConsumableSystem):
                             sys._use_consumable(self.player_entity, item_name, cbar)
                             break
-                break
+                return True
+        return False
 
     # rage_cost e proc_attr são agora lidos diretamente do objeto Skill (via skill_config.py)
 

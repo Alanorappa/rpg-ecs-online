@@ -9038,6 +9038,101 @@ de sempre, sem relação (§34.52).
 **Validado em jogo pelo usuário**: "Testado e validado." — confirmado
 antes da suíte rodar (mesmo processo do §34.63-§34.65).
 
+### §34.67 — Clique num harvestable atravessava modal aberto (29/07/2026)
+
+Usuário relatou: com algum modal aberto (ex: inventário), clicar em cima
+de um harvestable no mundo fazia o personagem andar até ele, como se o
+harvestable estivesse acima do modal na ordem de camadas. Também
+perguntou diretamente se existe algum parâmetro configurável de
+prioridade de camadas de UI, ou se é tudo hardcodado.
+
+**Resposta à pergunta de arquitetura**: não existe um parâmetro único
+configurável — a prioridade é convencional, espalhada em 3 lugares que
+precisam ser mantidos em sincronia manualmente: (1) a ordem da cadeia
+`elif` de despacho por evento em `game.py::run()`; (2) a lista de
+prioridade declarada em `_modal_registry()`
+(`client/modal_stack_handlers.py`, usada por `_topmost_open_modal()` —
+mesma função que decide qual modal fechar com ESC); (3) exceções pontuais
+por sistema que recebem eventos BRUTOS (não filtrados por
+`_top_modal`) por motivo legítimo (ex: `LootSystem` precisa dos cliques
+brutos pro seu PRÓPRIO modal de loot; a hotbar precisa de cliques em
+coordenadas de tela). Nada impede estruturalmente que uma exceção nova
+"esqueça" de checar `_top_modal` — é a mesma classe de bug do clique do
+minimapa vazando (§34.59), agora reincidindo no `LootSystem`.
+
+**Causa raiz**: em `game.py::run()`, o loop que decide se cada `system`
+recebe `events` (brutos, sem filtro de modal) ou `systems_events`
+(filtrados) tratava `LootSystem` como uma exceção incondicional:
+`ev = events if system is self._loot_system else systems_events`. Com
+QUALQUER modal aberto que não fosse o de loot (ex: inventário),
+`LootSystem` ainda recebia o clique bruto, e sua lógica de "clicou num
+harvestable no mundo → anda até ele" disparava por cima do modal.
+
+**Fix**: `ev = events if (system is self._loot_system and _top_modal in
+(None, "loot")) else systems_events` — `LootSystem` só recebe eventos
+brutos quando NENHUM modal está aberto, ou quando o próprio modal de
+loot é o que está aberto (preserva o clique legítimo dentro do modal de
+loot).
+
+**Validado**: 2 testes novos em `tests/test_client_ui.py` cobrindo
+`_topmost_open_modal()` com/sem loot aberto — rotulados explicitamente
+como testes de "ingrediente" (o comentário no teste documenta que eles
+passam mesmo sem o fix de `game.py`, já que testam só o retorno de
+`_topmost_open_modal()`, não o loop de despacho de eventos em si, que é
+código inline não testável diretamente). Confirmado em jogo pelo
+usuário.
+
+### §34.68 — Clique na barra de ações desselecionava o alvo de combate
+(29/07/2026)
+
+Usuário relatou: atacando um alvo, clicar em algum botão da barra de
+ações (hotbar) desselecionava o alvo e parava o ataque. Pedido:
+interagir com a UI não deve interferir no combate.
+
+**Causa raiz**: mesma classe de bug do §34.67 (evento vazando pra um
+sistema que não deveria recebê-lo), só que na direção oposta — aqui o
+problema não era `LootSystem` receber demais, era `MouseTargetingSystem`
+receber um clique que JÁ tinha sido tratado pela hotbar.
+`_handle_hotbar_click`/`_handle_consumable_bar_click` (`client/
+hotbar_handlers.py`) eram chamados a partir de coordenadas de TELA (não
+filtrados por `_top_modal`, correto — a hotbar não é um modal), mas não
+sinalizavam de volta pra `game.py::run()` se o clique tinha de fato
+acertado um slot. Sem esse sinal, quando NENHUM modal estava aberto o
+mesmo clique de `MOUSEBUTTONDOWN` seguia adiante pra
+`systems_events` e chegava também em `MouseTargetingSystem`, que
+interpretava como "clique em chão vazio → desselecionar alvo".
+
+**Fix**: `_handle_hotbar_click`/`_handle_consumable_bar_click` passam a
+retornar `bool` — `True` sempre que o clique caiu em cima de um slot
+(mesmo que a skill não tenha disparado de verdade por cooldown, talento
+bloqueado ou shift+drag — o que importa é ter "consumido" o clique, não
+se a ação teve efeito). `game.py::run()` declara `_hotbar_click_consumed
+= False` antes do loop de eventos, captura o retorno das duas chamadas,
+e adiciona `or _hotbar_click_consumed` à mesma cadeia de flags
+(`_minimap_click_consumed`, `_right_click_consumed`, etc.) que já
+suprime o `MOUSEBUTTONDOWN` de `systems_events` quando algum clique já
+foi consumido no frame — mesmo padrão usado pra minimapa (§34.59).
+
+**Validado**: 5 testes novos em `tests/test_client_ui.py` — clique fora
+dos slots retorna `False` (hotbar e barra de consumíveis); clique em
+cima de um slot aciona a skill/consumível E retorna `True`; clique em
+slot com skill bloqueada por talento (`golpe_debilitante`, exige o
+talento `cav_golpe_debilitante` alocado — testado com uma `TalentTree`
+real com 0 pontos) retorna `True` sem disparar a skill; clique em
+consumível durante cooldown global retorna `True` sem consumir de
+verdade. Confirmado via `git stash` (`game.py`, `client/
+hotbar_handlers.py` fora do stash, testes dentro) que os 5 falham
+genuinamente sem o fix. Confirmado em jogo pelo usuário.
+
+**Suíte completa (608 testes) 3x limpa pros §34.67/§34.68** — as
+mesmas 2 falhas de sempre nesta sessão (`test_resolver_neutraliza_svc_
+no_mapa_errado`, `test_disoriented_nao_bloqueia_movimento_bruto_no_
+servidor`), confirmadas via `git stash` dos 3 arquivos de mapa
+(`map_1_terrain.csv`/`map_1_objects.csv`/`map_1_entities.json`, em
+edição concorrente pelo usuário) como causadas por terreno não-andável
+em (131,374) perto do spawn de teste — sem relação com os fixes desta
+sessão (ver §34.52).
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |

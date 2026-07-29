@@ -1536,6 +1536,15 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                                              getattr(self, "_cam_x", 0),
                                              getattr(self, "_cam_y", 0))
 
+            # Clique esquerdo consumido pela hotbar/barra de consumíveis
+            # neste frame (29/07/2026, bug real relatado pelo usuário:
+            # clicar num slot desselecionava o alvo em combate — o
+            # clique "vazava" pro MouseTargetingSystem mais abaixo, que
+            # interpretava como clique-esquerdo-no-chão e desselecionava.
+            # Setado dentro do loop de eventos, lido no bloco de
+            # systems_events logo depois — mesmo padrão dos
+            # `_right_click_consumed` de outros sistemas).
+            _hotbar_click_consumed = False
             for event in events:
                 if event.type == pygame.QUIT:
                     self._send_save_state()  # salva ao fechar
@@ -1679,8 +1688,10 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                     if self._show_debug:
                         self._handle_debug_click(event)
                     elif event.button == 1 and not self._show_hotbar_editor:
-                        self._handle_hotbar_click(event)
-                        self._handle_consumable_bar_click(event)
+                        _hit_hotbar = self._handle_hotbar_click(event)
+                        _hit_consumable = self._handle_consumable_bar_click(event)
+                        if _hit_hotbar or _hit_consumable:
+                            _hotbar_click_consumed = True
                 elif event.type == pygame.MOUSEWHEEL and self._show_debug:
                     if self._debug_tab == "itens" and self._debug_item_catalog:
                         max_sc = max(0, len(self._debug_item_catalog) - 8)
@@ -1848,10 +1859,16 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                     or self._crafting_system._right_click_consumed
                     or self._trainer_system._right_click_consumed
                     or self._shop_system._right_click_consumed
-                    or self._quest_dialog._right_click_consumed):
-                # Nenhum modal aberto ainda, mas um right-click já foi consumido
-                # neste frame pra resolver prioridade entre NPCs adjacentes (ou
-                # pelo minimap) — bloqueia só esse clique, não é um modal de fato.
+                    or self._quest_dialog._right_click_consumed
+                    or _hotbar_click_consumed):
+                # Nenhum modal aberto ainda, mas um clique já foi consumido
+                # neste frame pra resolver prioridade entre NPCs adjacentes,
+                # pelo minimap, ou pela hotbar/barra de consumíveis
+                # (_hotbar_click_consumed, 29/07/2026 — bug real: clicar num
+                # slot desselecionava o alvo em combate, porque o clique
+                # esquerdo vazava pro MouseTargetingSystem, que o via como
+                # clique-no-chão-desseleciona) — bloqueia só esse clique,
+                # não é um modal de fato.
                 systems_events = [e for e in events
                                   if not (e.type == pygame.MOUSEBUTTONDOWN
                                           and e.button in (1, 3))]
@@ -1861,8 +1878,25 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             _ps_before = self.world.get_component(self.player_entity, PlayerSkills)
             _learned_count_before  = len(_ps_before.learned_skill_ids) if _ps_before else 0
             for system in self.systems:
-                # LootSystem sempre recebe eventos brutos (precisa detectar cliques no modal)
-                ev = events if system is self._loot_system else systems_events
+                # LootSystem recebe eventos BRUTOS só quando é seguro: seu
+                # PRÓPRIO modal está aberto (precisa detectar clique dentro
+                # dele) OU nenhum modal está aberto (clique direito pode
+                # abrir um cadáver novo). Com QUALQUER outro modal aberto
+                # (inventário, diálogo de quest, loja...), recebia raw
+                # events INCONDICIONALMENTE antes — clicar num harvestable
+                # (ou qualquer cadáver) por baixo de outro modal chegava
+                # em _try_open_corpse() e mandava o personagem ANDAR até
+                # lá, vazando input do mesmo jeito que o clique no minimap
+                # já vazava antes de §34.59 (bug real relatado pelo usuário
+                # 29/07/2026 — "como se o harvestable estivesse acima do
+                # modal na ordem de camadas"). _top_modal já é o mesmo
+                # ponto único de verdade (_topmost_open_modal(),
+                # client/modal_stack_handlers.py) — "loot" é o nome do
+                # próprio modal desta system no registro de prioridade.
+                if system is self._loot_system:
+                    ev = events if _top_modal in (None, "loot") else systems_events
+                else:
+                    ev = systems_events
                 if PROFILE_FRAMES:
                     _ts = _time.perf_counter()
                     system.update(ev, dt)

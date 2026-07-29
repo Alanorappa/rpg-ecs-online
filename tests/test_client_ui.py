@@ -2451,7 +2451,8 @@ class _StubClosable:
         return lambda *a, **k: None
 
 
-def _make_modal_stack_fixture(quest_dialog_open=False, show_inventory=False):
+def _make_modal_stack_fixture(quest_dialog_open=False, show_inventory=False,
+                              loot_open=False):
     from client.modal_stack_handlers import ModalStackHandlers
 
     class _Fixture(ModalStackHandlers):
@@ -2460,7 +2461,7 @@ def _make_modal_stack_fixture(quest_dialog_open=False, show_inventory=False):
             self._chat_active      = False
             self._show_habilidades = False
             self._map_overlay      = _StubClosable(is_open=False)
-            self._loot_system      = _StubClosable(open_corpse_id=-1)
+            self._loot_system      = _StubClosable(open_corpse_id=(1 if loot_open else -1))
             self._crafting_system  = _StubClosable(is_open=False)
             self._trainer_system   = _StubClosable(is_open=False)
             self._quest_dialog     = _StubClosable(is_open=quest_dialog_open)
@@ -2495,6 +2496,33 @@ def test_any_modal_open_true_com_quest_dialog_aberto_via_item_e_inventario_fecha
     fx = _make_modal_stack_fixture(quest_dialog_open=True, show_inventory=False)
     assert fx._any_modal_open() is True
     assert fx._topmost_open_modal() == "quest_dialog"
+
+
+# ── game.py — LootSystem recebe eventos BRUTOS incondicionalmente,
+# vazando clique-pra-andar (29/07/2026, bug real relatado pelo usuário:
+# clicar num harvestable por baixo de OUTRO modal aberto — ex.
+# inventário — fazia o personagem andar até lá, "como se o harvestable
+# estivesse acima do modal na ordem de camadas"). Mesma classe de bug do
+# vazamento do minimap (§34.59) — LootSystem._try_open_corpse() só deve
+# rodar com raw events quando o modal TOPO é "loot" (o dela mesma) ou
+# nenhum modal está aberto; com qualquer OUTRO modal no topo, deve cair
+# pros systems_events já filtrados (como qualquer outra system). Como o
+# bloco em si é código inline em game.py::run() (não extraído em
+# método), os testes abaixo cobrem só o INGREDIENTE
+# (_topmost_open_modal() distingue "loot" de outro modal corretamente).
+
+def test_topmost_open_modal_retorna_loot_quando_so_o_loot_esta_aberto():
+    fx = _make_modal_stack_fixture(loot_open=True)
+    assert fx._topmost_open_modal() == "loot"
+
+
+def test_topmost_open_modal_nao_retorna_loot_com_inventario_aberto_e_loot_fechado():
+    """Ingrediente do fix: com o loot FECHADO e outro modal (inventário)
+    aberto, _topmost_open_modal() precisa retornar "inventory" (não
+    "loot", não None) — é essa distinção que faz o bloco de game.py
+    parar de dar raw events pro LootSystem nesse estado."""
+    fx = _make_modal_stack_fixture(loot_open=False, show_inventory=True)
+    assert fx._topmost_open_modal() == "inventory"
 
 
 # ── ui/systems.py::RenderSystem — Y-sort do harvestable com sprite
@@ -2624,6 +2652,167 @@ def _with_desktop_size(size, fn):
         return fn()
     finally:
         pygame.display.get_desktop_sizes = orig
+
+
+# ── client/hotbar_handlers.py::_handle_hotbar_click/_handle_consumable_
+# bar_click — agora retornam True quando o clique caiu num slot (mesmo
+# sem a skill/consumível disparar de verdade — cooldown, talento
+# bloqueado) — 29/07/2026, bug real relatado pelo usuário: clicar num
+# slot da hotbar/barra de consumíveis desselecionava o alvo em combate.
+# Causa: o clique esquerdo "vazava" pro MouseTargetingSystem mais
+# abaixo no mesmo frame (que não sabia que o clique já tinha sido usado
+# pela hotbar), e como nenhum inimigo existe na posição-de-mundo
+# (calculada a partir de coordenadas de TELA de um clique de UI), caía
+# no branch de "clique esquerdo no chão" — que desseleciona o alvo.
+# game.py agora usa o retorno pra impedir que o MESMO clique chegue no
+# MouseTargetingSystem (mesma classe de bug do vazamento do minimap/
+# loot já corrigidos antes).
+
+def _make_hotbar_click_fixture(skill_id="skill_teste_generico"):
+    from engine.world import World
+    from engine.components import Position, PlayerSkills, Skill, CombatState, CombatStats
+    from client.hotbar_handlers import HotbarHandlers
+
+    world = World()
+    player = world.create_entity()
+    world.add_component(player, Position(x=0, y=0))
+    ps = PlayerSkills()
+    sk = Skill("Skill de Teste", "desc", cooldown=1.0)
+    sk.skill_id = skill_id
+    ps.skills[0] = sk
+    world.add_component(player, ps)
+    world.add_component(player, CombatState())
+    world.add_component(player, CombatStats())
+
+    class _FakeSkillSystem:
+        def __init__(self):
+            self.used = []
+
+        def _use_skill(self, idx, skill):
+            self.used.append((idx, skill.skill_id))
+            return True   # skill disparou com sucesso
+
+    class _Fixture(HotbarHandlers):
+        def __init__(self):
+            self.world          = world
+            self.player_entity  = player
+            self.screen         = pygame.display.get_surface()
+            self.systems        = []
+            self._skill_system  = _FakeSkillSystem()
+
+        def _u(self, px):
+            return px
+
+        def _set_panel_scale(self, *a, **k):
+            pass
+
+    return _Fixture()
+
+
+def _slot0_center(fx) -> tuple:
+    """Centro do rect do slot 0 — mesma geometria de _handle_hotbar_click
+    (1 skill ocupada: n_occ=1)."""
+    total_w = fx._HB_W
+    x0 = fx.screen.get_width() // 2 - total_w // 2
+    y0 = fx.screen.get_height() - fx._HB_H - fx._u(10)
+    return x0 + fx._HB_W // 2, y0 + fx._HB_H // 2
+
+
+def test_handle_hotbar_click_fora_dos_slots_retorna_false():
+    fx = _make_hotbar_click_fixture()
+    ev = pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=(0, 0))
+    assert fx._handle_hotbar_click(ev) is False
+    assert fx._skill_system.used == []
+
+
+def test_handle_hotbar_click_em_cima_do_slot_aciona_skill_e_retorna_true():
+    fx = _make_hotbar_click_fixture()
+    pos = _slot0_center(fx)
+    ev = pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=pos)
+    consumed = fx._handle_hotbar_click(ev)
+    assert consumed is True
+    assert fx._skill_system.used == [(0, "skill_teste_generico")]
+
+
+def test_handle_hotbar_click_talento_bloqueado_retorna_true_sem_usar_skill():
+    """golpe_debilitante exige o talento cav_golpe_debilitante alocado
+    (_TALENT_SKILL_REQS) — _is_talent_locked "falha aberto" sem TalentTree
+    nenhuma (assume não bloqueado), então o teste precisa de uma TalentTree
+    de verdade com 0 pontos alocados no talento certo pra reproduzir o
+    bloqueio. O clique ainda CONSOME (retorna True) mesmo bloqueado — é
+    isso que impede o vazamento pro mundo."""
+    from engine.components import TalentTree
+    fx = _make_hotbar_click_fixture(skill_id="golpe_debilitante")
+    fx.world.add_component(fx.player_entity, TalentTree())
+    pos = _slot0_center(fx)
+    ev = pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=pos)
+    consumed = fx._handle_hotbar_click(ev)
+    assert consumed is True
+    assert fx._skill_system.used == [], "skill bloqueada por talento não deveria disparar"
+
+
+def test_handle_consumable_bar_click_fora_retorna_false():
+    from engine.world import World
+    from engine.components import ConsumableBar
+    from client.hotbar_handlers import HotbarHandlers
+
+    world = World()
+    player = world.create_entity()
+    cbar = ConsumableBar()
+    world.add_component(player, cbar)
+
+    class _Fixture(HotbarHandlers):
+        def __init__(self):
+            self.world         = world
+            self.player_entity = player
+            self.screen        = pygame.display.get_surface()
+            self.systems       = []
+
+        def _u(self, px):
+            return px
+
+        def _set_panel_scale(self, *a, **k):
+            pass
+
+    fx = _Fixture()
+    ev = pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=(0, 0))
+    assert fx._handle_consumable_bar_click(ev) is False
+
+
+def test_handle_consumable_bar_click_em_cima_do_slot_retorna_true_mesmo_em_gcd():
+    """Mesmo em cooldown global (não usa o consumível de verdade), o
+    clique em cima do slot ainda CONSOME (retorna True) — é isso que
+    impede o vazamento pro mundo."""
+    from engine.world import World
+    from engine.components import ConsumableBar
+    from client.hotbar_handlers import HotbarHandlers
+
+    world = World()
+    player = world.create_entity()
+    cbar = ConsumableBar()
+    cbar.slots[0] = "Poção de Vida"
+    cbar.global_cooldown = 1.0   # em GCD — não deve impedir o "consumo" do clique
+    world.add_component(player, cbar)
+
+    class _Fixture(HotbarHandlers):
+        def __init__(self):
+            self.world         = world
+            self.player_entity = player
+            self.screen        = pygame.display.get_surface()
+            self.systems       = []
+
+        def _u(self, px):
+            return px
+
+        def _set_panel_scale(self, *a, **k):
+            pass
+
+    fx = _Fixture()
+    x0 = fx.screen.get_width() // 2 + 20
+    y0 = fx.screen.get_height() - fx._HB_H - fx._u(10)
+    pos = (x0 + fx._HB_W // 2, y0 + fx._HB_H // 2)
+    ev = pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=pos)
+    assert fx._handle_consumable_bar_click(ev) is True
 
 
 def test_compute_window_geometry_fullscreen_usa_resolucao_do_desktop():
