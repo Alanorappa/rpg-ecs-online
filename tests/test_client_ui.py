@@ -2544,3 +2544,64 @@ def test_render_harvestable_com_sprite_nao_desenha_por_cima_do_personagem_no_mes
     assert (10, 20, 30) in draw_order and (40, 50, 60) in draw_order
     assert draw_order.index((40, 50, 60)) > draw_order.index((10, 20, 30)), \
         "personagem (sprite menor) deveria desenhar DEPOIS (por cima) do harvestable no mesmo tile"
+
+
+# ── ui/ui_helpers.py::draw_stack_count — "1" é redundante, não mostra;
+# número sem prefixo "x"; outline preto pra legibilidade (28/07/2026,
+# pedido do usuário). Fonte única usada por inventário, barra de
+# consumíveis, trade e crafting — um fix aqui cobre todos os lugares.
+
+class _FakeStackFont:
+    def __init__(self):
+        self.rendered = []
+
+    def render(self, text, aa, color):
+        self.rendered.append((text, color))
+        return pygame.Surface((10, 10), pygame.SRCALPHA)
+
+
+class _SpySurf:
+    """Fake surf com só o método que draw_stack_count usa (.blit) —
+    pygame.Surface real não permite monkeypatch de .blit (atributo
+    read-only, objeto C)."""
+    def __init__(self):
+        self.blits = []
+
+    def blit(self, *a, **k):
+        self.blits.append(a)
+
+
+def test_draw_stack_count_nao_desenha_com_stack_1_mesmo_stackavel():
+    from ui.ui_helpers import draw_stack_count
+    from engine.components import Item
+    item = Item("Poção de Vida", "consumable", slot=None, max_stack=10)
+    item.stack = 1
+    font = _FakeStackFont()
+    surf = _SpySurf()
+    draw_stack_count(surf, item, pygame.Rect(0, 0, 32, 32), font)
+    assert surf.blits == []
+    assert font.rendered == [], "stack=1 não deveria nem renderizar o texto"
+
+
+def test_draw_stack_count_nao_desenha_se_nao_stackavel():
+    from ui.ui_helpers import draw_stack_count
+    from engine.components import Item
+    item = Item("Espada de Treinamento", "weapon", slot="mainhand", max_stack=1)
+    item.stack = 1
+    font = _FakeStackFont()
+    surf = _SpySurf()
+    draw_stack_count(surf, item, pygame.Rect(0, 0, 32, 32), font)
+    assert surf.blits == []
+
+
+def test_draw_stack_count_desenha_numero_sem_x_com_outline_a_partir_de_2():
+    from ui.ui_helpers import draw_stack_count
+    from engine.components import Item
+    item = Item("Poção de Vida", "consumable", slot=None, max_stack=10)
+    item.stack = 3
+    font = _FakeStackFont()
+    surf = _SpySurf()
+    draw_stack_count(surf, item, pygame.Rect(0, 0, 32, 32), font)
+    texts = {t for t, _c in font.rendered}
+    assert texts == {"3"}, "texto deve ser só o número, sem prefixo 'x'"
+    assert len(surf.blits) == 9, "8 blits de outline preto + 1 do número branco"

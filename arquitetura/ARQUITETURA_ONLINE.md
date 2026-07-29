@@ -8906,6 +8906,45 @@ suíte rodar, a pedido explícito do usuário (suíte é demorada; ele quis
 validar manualmente primeiro e só autorizar a rodada de testes depois
 de confirmar em jogo real — mudança de processo pro resto da sessão).
 
+### §34.64 — Contador de stack: esconde em "1", sem prefixo "x", outline
+preto (28/07/2026)
+
+Pedido simples do usuário: itens empilháveis com só 1 unidade não
+precisam mostrar contador nenhum (só a partir de 2 de verdade
+empilhadas); quando mostra, sem o prefixo "x" (só o número); e com
+outline preto pra ficar legível sobre qualquer fundo.
+
+**Fix**: `ui/ui_helpers.py::draw_stack_count` — fonte ÚNICA já
+reaproveitada por inventário (`client/inventory_handlers.py`), barra de
+consumíveis (`client/consumable_bar_handlers.py`), trade (`client/
+trade_handlers.py`) e crafting (`ui/crafting_system.py`), então um fix
+aqui cobriu todos os lugares de uma vez, sem precisar tocar nos
+call-sites. Mudanças:
+- Early-return novo: `if stack <= 1: return` (além do `max_stack <= 1`
+  que já existia) — antes só checava se o item ERA stackável, não
+  quantas unidades tinha AGORA, então um item stackável com só 1
+  unidade mostrava "x1" à toa.
+- Texto vira `str(stack)` em vez de `f"x{stack}"`.
+- A "sombra" antiga (1 blit deslocado 1px, só cobria 1 canto) virou
+  outline de verdade — texto preto desenhado nas 8 direções ao redor
+  do texto branco.
+
+**Validado**: `tests/test_client_ui.py` (3 testes) — stack=1 não
+desenha nada (nem chama `font.render`); item não-stackável (`max_stack
+=1`) continua sem desenhar nada (regressão); stack=3 desenha só "3"
+(sem "x") com 9 blits (8 de outline + 1 do número). `pygame.Surface`
+real não permite monkeypatch de `.blit` (atributo read-only, objeto
+C) — os testes usam um `_SpySurf` fake com só o método necessário em
+vez de espiar uma Surface de verdade. Confirmado via `git stash`
+(`ui/ui_helpers.py`, testes fora do stash) que 2 dos 3 testes falham
+genuinamente sem o fix (o terceiro, item não-stackável, já era
+regressão do comportamento antigo — continua passando dos dois lados,
+como esperado). Suíte completa (598 testes) rodada 3x limpa — mesmas 2
+falhas de sempre, sem relação (§34.52).
+
+**Validado em jogo pelo usuário**: "Funcionou." — confirmado antes da
+suíte rodar (mesmo processo do §34.63).
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |

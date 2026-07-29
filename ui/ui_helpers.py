@@ -62,23 +62,33 @@ def wrap_text(text: str, font, max_px: int) -> list:
 
 
 def draw_stack_count(surf, item, rect, font) -> None:
-    """Desenha 'xN' no canto inferior direito do ícone para itens stackáveis.
+    """Desenha o número da stack (sem prefixo 'x') no canto inferior
+    direito do ícone para itens stackáveis com 2+ unidades atuais.
 
-    Chame após blit do ícone. Não faz nada se max_stack == 1.
+    Chame após blit do ícone. Não desenha nada se max_stack == 1 (item
+    não-stackável) nem se stack <= 1 (28/07/2026, pedido do usuário —
+    "1" é redundante, todo item já tem pelo menos 1; só mostra a partir
+    de 2 de verdade empilhadas).
     """
     import pygame
     max_stack = getattr(item, "max_stack", 1)
     if max_stack <= 1:
         return
     stack = getattr(item, "stack", 1)
-    text  = f"x{stack}"
-    # Sombra para legibilidade sobre qualquer cor de fundo
-    shadow = font.render(text, False, (0, 0, 0))
-    label  = font.render(text, False, (255, 255, 255))
+    if stack <= 1:
+        return
+    text  = str(stack)
+    label   = font.render(text, False, (255, 255, 255))
+    outline = font.render(text, False, (0, 0, 0))
     x = rect.right  - label.get_width()  - 2
     y = rect.bottom - label.get_height() - 1
-    surf.blit(shadow, (x + 1, y + 1))
-    surf.blit(label,  (x, y))
+    # Outline preto nas 8 direções — legível sobre qualquer cor de fundo
+    # (antes era só 1 sombra deslocada num canto, cobria só 1 lado).
+    for dx, dy in ((-1, -1), (0, -1), (1, -1),
+                   (-1,  0),          (1,  0),
+                   (-1,  1), (0,  1), (1,  1)):
+        surf.blit(outline, (x + dx, y + dy))
+    surf.blit(label, (x, y))
 
 
 # Atributos guardados como fração 0..1 no Modifier (ex: crit_rating=0.06) —
