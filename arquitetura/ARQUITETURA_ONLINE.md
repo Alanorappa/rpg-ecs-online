@@ -8835,8 +8835,76 @@ falham genuinamente contra a versão do §34.61 (um deles nem compilava —
 o parâmetro é novo de verdade). Suíte completa (593 testes) rodada 3x
 limpa — mesmas 2 falhas de sempre, sem relação (§34.52).
 
-**Não validado em jogo ainda**: usuário ainda não testou esta correção
-em jogo real.
+**Corrigido no mesmo dia — ver §34.63**: usuário testou e reportou que
+a perseguição voltava assim que soltava as teclas (o `suppress_chase`
+era TRANSIENTE — só True enquanto a tecla estava fisicamente
+pressionada NAQUELE frame — e o padrão real de movimento em jogo de
+grade é toque curto por tile, não segurar continuamente). Esclareceu
+que a intenção nunca foi "suprimir enquanto anda", e sim "desligar de
+vez até eu reengajar de propósito".
+
+### §34.63 — Correção do §34.62: perseguição precisa ficar desligada
+até reengajamento de propósito, não só "enquanto anda" (28/07/2026)
+
+Usuário testou o §34.62 e reportou: "ele voltou a perseguir o alvo
+mesmo quando eu ando" — pediu pra eu explicar exatamente o que mudei
+antes de tentar de novo (não adivinhar uma 3ª vez) e perguntar quando
+precisasse de ajuda em vez de ficar em loop. Perguntei se ele segurava
+a tecla continuamente ou tocava por tile; a resposta reformulou o
+pedido por completo: **não quer que soltar as teclas reative a
+perseguição sozinha** — quer que ela fique desligada até um
+reengajamento de propósito (clique direito no alvo, Espaço, ou skill),
+mesmo com o alvo parado ao alcance (nesse caso o auto-attack dispara
+normalmente, só não persegue).
+
+**Causa do §34.62 não bastar**: `suppress_chase` era um parâmetro
+TRANSIENTE, recalculado do zero a cada tick a partir do estado
+INSTANTÂNEO do teclado (`keys[...]`). Num jogo de movimento em grade,
+o padrão comum é toque curto por tile (não segurar) — no intervalo
+entre um toque e o próximo, `suppress_chase` voltava a `False`
+imediatamente, reativando a perseguição por 1 tick a cada gap. Testado
+e confirmado que segurar a tecla sem soltar TAMBÉM não bastava pro que
+o usuário queria — porque nunca foi sobre segurar/soltar, e sim sobre
+"desligar até eu decidir religar".
+
+**Fix de verdade**: `suppress_chase` (parâmetro transiente) vira
+`CombatState.chase_suppressed` (`engine/components.py`) — campo bool
+STICKY, 100% client-side (nunca lido no servidor/rede, ao contrário de
+`is_pursuing`). Movimento manual (WASD ou clique no chão) liga
+`chase_suppressed = True` e ele PERMANECE True até um reengajamento de
+propósito. Todo ponto que já setava `is_pursuing = True` (a real fonte
+de verdade de "o jogador quer atacar este alvo") ganhou, na MESMA
+linha, `chase_suppressed = False` — 8 lugares ao todo: clique direito
+no alvo (`MouseTargetingSystem`), Espaço offline (`PlayerInputSystem.
+_space_engage`) e online (`client/save_sync_handlers.py::
+_space_engage_online`), skill instantânea e CAST_SKILL online
+(`PlayerInputSystem`, 2 pontos), skill offline pós-cast
+(`PlayerInputSystem`), Bola de Fogo (`ui/skill_handlers.py`) e
+conclusão de cast (`ui/spell_system.py`). `_process_target`/
+`_process_archer_combat` passam a ler `combat_state.chase_suppressed`
+direto (não é mais parâmetro passado) nas 3 chamadas de
+`_auto_move_step` — nunca o ataque em si, que continua disparando só
+por alcance+cooldown (melee) ou alcance+is_pursuing+aljava (ranged),
+sem nenhuma mudança nessa parte.
+
+**Validado**: `tests/test_client_ui.py` (5 testes) — WASD liga
+`chase_suppressed` sem tocar `is_pursuing`/alvo; `chase_suppressed`
+continua `True` mesmo depois de soltar as teclas (o teste central desta
+correção); `_process_target` com `chase_suppressed=True` não inicia
+`_auto_move_step`; sem ele, persegue normalmente (regressão); Espaço
+reengaja e zera `chase_suppressed` mesmo tendo sido ligado antes.
+Confirmado via `git stash` (`engine/components.py`, `ui/systems.py`,
+`ui/skill_handlers.py`, `ui/spell_system.py`, `client/
+save_sync_handlers.py`, testes fora do stash) que os 4 testes novos
+falham genuinamente contra a versão do §34.62 (um com
+`AttributeError: chase_suppressed` — prova de que o campo é novo de
+verdade). Suíte completa (595 testes) rodada 3x limpa — mesmas 2
+falhas de sempre, sem relação (§34.52).
+
+**Validado em jogo pelo usuário**: "Funcionou." — confirmado antes da
+suíte rodar, a pedido explícito do usuário (suíte é demorada; ele quis
+validar manualmente primeiro e só autorizar a rodada de testes depois
+de confirmar em jogo real — mudança de processo pro resto da sessão).
 
 ### Arquiteturais (A) — débito técnico
 

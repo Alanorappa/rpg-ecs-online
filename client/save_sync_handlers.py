@@ -507,6 +507,7 @@ class SaveSyncHandlers:
             return
         cs_p.target_entity_id = best_local
         cs_p.is_pursuing = True
+        cs_p.chase_suppressed = False   # reengajamento reativa a perseguição
         if auto:
             auto.ground_target = None
             auto.path.clear()

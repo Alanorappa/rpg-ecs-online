@@ -493,6 +493,17 @@ class CombatState:
         self.is_camouflaged: bool = False  # True = Camuflagem ativa; bloqueia can_act() (atacar/usar skill)
         self.target_entity_id: int = -1 # Alvo atual selecionado
         self.is_pursuing: bool = False  # True = persegue o alvo (direito/skill/espaço). False = só selecionado
+        # True = movimento manual (WASD/clique de chão) desligou o auto-walk
+        # de perseguição — combate/alvo/is_pursuing continuam intactos, só
+        # PlayerInputSystem._process_target/_process_archer_combat param de
+        # chamar _auto_move_step (ui/systems.py). Fica True até o jogador
+        # reengajar de propósito (clique direito no alvo, Espaço ou skill) —
+        # NUNCA reativa sozinho ao soltar as teclas (pedido explícito do
+        # usuário 28/07/2026 — diferente de suprimir só "enquanto anda").
+        # PURAMENTE client-side (nunca lido no servidor) — is_pursuing
+        # continua sendo a ÚNICA fonte pro servidor/rede (nunca mexer nele
+        # por movimento, ver ARQUITETURA_ONLINE.md §34.62).
+        self.chase_suppressed: bool = False
         self._just_entered_combat: bool = False  # sinaliza transição para CombatStateSystem disparar procs
         self.combat_timer: float = 0.0  # Conta regressiva para sair do combate
         self.stun_timer:   float = 0.0  # Contador de atordoamento (zerado em CombatStateSystem)

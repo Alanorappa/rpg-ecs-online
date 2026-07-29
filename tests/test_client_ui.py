@@ -1213,24 +1213,34 @@ def test_space_engage_mira_oponente_de_pvp_engajavel():
 
 
 # ── ui/systems.py::PlayerInputSystem — movimento manual (WASD/clique de
-# chão) suprime SÓ o auto-move de perseguição, nunca is_pursuing/alvo
-# (28/07/2026, pedido do usuário — REVISADO no mesmo dia: a 1ª versão
-# deste fix desligava is_pursuing ao mover manualmente, o que quebrava o
-# combate inteiro — server/combat_processor.py exige is_pursuing=True
-# pra RANGED disparar, e client/remote_entity_handlers.py::
-# _sync_combat_target manda AUTO_ATTACK{tid:-1} sempre que is_pursuing
-# vira False, o que limpa o alvo NO SERVIDOR de vez
-# (WorldServer.set_player_target) — o jogador precisava apertar Espaço/
-# clicar de novo pro ataque voltar, quando a intenção era só parar de
-# "brigar" com o movimento, não desengajar. Fix corrigido: is_pursuing
-# NUNCA é tocado por movimento manual — só o parâmetro novo
-# `suppress_chase` de `_process_target`/`_process_archer_combat`
-# bloqueia as chamadas de `_auto_move_step` (auto-walk de volta ao
-# alvo) enquanto o jogador segura uma tecla de movimento ou tem um
-# destino de chão/"Seguir" pendente. Ataque continua disparando sempre
-# que as condições (alcance+cooldown) forem satisfeitas, igual ao
-# arqueiro já fazia (ele nunca dependeu de tile_movement.is_moving pra
-# atirar).
+# chão) desliga a perseguição de forma STICKY, nunca is_pursuing/alvo
+# (28/07/2026, pedido do usuário — REVISADO 2x no mesmo dia).
+#
+# 1ª versão: desligava is_pursuing ao mover — quebrava o combate inteiro
+# (server/combat_processor.py exige is_pursuing=True pra RANGED disparar,
+# e client/remote_entity_handlers.py::_sync_combat_target manda
+# AUTO_ATTACK{tid:-1} sempre que is_pursuing vira False, limpando o alvo
+# NO SERVIDOR de vez — WorldServer.set_player_target).
+#
+# 2ª versão: parâmetro `suppress_chase` TRANSIENTE (só True enquanto a
+# tecla estava fisicamente pressionada naquele frame) — usuário testou e
+# reportou que a perseguição voltava assim que soltava as teclas entre
+# um passo e outro (padrão comum de jogo em grade: toque curto por
+# tile). Esclareceu a intenção real: mover deve desligar a perseguição
+# de vez, e ela só deve VOLTAR num reengajamento de propósito (clique
+# direito no alvo, Espaço ou skill) — nunca sozinha ao parar de andar.
+#
+# Fix de verdade: `CombatState.chase_suppressed` (engine/components.py)
+# — bool STICKY, client-side puro (nunca lido no servidor/rede).
+# Movimento manual (WASD ou clique de chão) seta True. TODO ponto que já
+# seta is_pursuing=True (clique direito no alvo, Espaço, início/fim de
+# skill ofensiva — 8 lugares ao todo, ui/systems.py + skill_handlers.py +
+# spell_system.py + save_sync_handlers.py) agora TAMBÉM zera
+# chase_suppressed=False junto. `_process_target`/`_process_archer_combat`
+# leem `combat_state.chase_suppressed` direto (não é mais parâmetro) pra
+# bloquear só as chamadas de `_auto_move_step` — nunca o ataque em si,
+# que continua disparando sempre que alcance+cooldown forem satisfeitos
+# (igual arqueiro sempre fez, nunca dependeu de tile_movement.is_moving).
 
 class _FakeKeys:
     """Substitui pygame.key.get_pressed() nos testes — indexável por
@@ -1296,9 +1306,9 @@ def _make_wasd_pursuit_fixture():
     return world, eid, tm, cs, target
 
 
-def test_wasd_segurado_nao_mexe_em_is_pursuing_nem_alvo():
-    """WASD segurado NUNCA deve tocar is_pursuing/target_entity_id —
-    só a versão antiga (errada) do fix fazia isso."""
+def test_wasd_liga_chase_suppressed_sem_mexer_em_is_pursuing_nem_alvo():
+    """WASD nunca deve tocar is_pursuing/target_entity_id — só liga
+    chase_suppressed (persistente)."""
     from ui.systems import PlayerInputSystem
 
     world, eid, tm, cs, target = _make_wasd_pursuit_fixture()
@@ -1313,33 +1323,60 @@ def test_wasd_segurado_nao_mexe_em_is_pursuing_nem_alvo():
 
     assert cs.is_pursuing is True, "movimento manual nunca deve desligar is_pursuing"
     assert cs.target_entity_id == target, "alvo deve continuar selecionado (combate mantido)"
+    assert cs.chase_suppressed is True, "movimento manual deve ligar chase_suppressed"
 
 
-def test_process_target_suprime_auto_move_step_com_suppress_chase():
-    """Núcleo do fix: suppress_chase=True bloqueia só o auto-move de
-    perseguição (_auto_move_step, via find_path) — is_pursuing e o alvo
-    nunca são tocados, e nenhum movimento de perseguição é iniciado."""
+def test_chase_suppressed_continua_true_depois_de_soltar_as_teclas():
+    """Núcleo do fix (2ª revisão): chase_suppressed é STICKY — soltar as
+    teclas de movimento NÃO reativa a perseguição sozinha (pedido
+    explícito do usuário: só reativa com reengajamento de propósito)."""
+    from ui.systems import PlayerInputSystem
+
+    world, eid, tm, cs, target = _make_wasd_pursuit_fixture()
+    sys_input = PlayerInputSystem(world, screen=None)
+
+    orig_get_pressed = pygame.key.get_pressed
+    try:
+        pygame.key.get_pressed = lambda: _FakeKeys({pygame.K_d})
+        sys_input.update([], dt=0.1)   # liga chase_suppressed
+        tm.is_moving = False           # simula o passo tendo terminado
+
+        pygame.key.get_pressed = lambda: _FakeKeys(set())   # solta a tecla
+        sys_input.update([], dt=0.1)
+    finally:
+        pygame.key.get_pressed = orig_get_pressed
+
+    assert cs.chase_suppressed is True, \
+        "soltar as teclas não deveria reativar a perseguição sozinha"
+    assert not tm.is_moving, \
+        "sem chase_suppressed=False, nenhum auto-move de perseguição deveria iniciar"
+
+
+def test_process_target_suprime_auto_move_step_com_chase_suppressed():
+    """chase_suppressed=True bloqueia só o auto-move de perseguição
+    (_auto_move_step, via find_path) — is_pursuing e o alvo nunca são
+    tocados, e nenhum movimento de perseguição é iniciado."""
     from ui.systems import PlayerInputSystem
     from engine.components import Position, PlayerAutoMove, CombatStats
 
     world, eid, tm, cs, target = _make_wasd_pursuit_fixture()
+    cs.chase_suppressed = True
     sys_input = PlayerInputSystem(world, screen=None)
     position = world.get_component(eid, Position)
     combat_stats = world.get_component(eid, CombatStats)
     auto_move = world.get_component(eid, PlayerAutoMove)
 
     sys_input._process_target(eid, position, tm, combat_stats, cs, auto_move,
-                              can_act=True, can_move=True, dt=0.1,
-                              suppress_chase=True)
+                              can_act=True, can_move=True, dt=0.1)
 
     assert cs.is_pursuing is True
     assert cs.target_entity_id == target
     assert not tm.is_moving, "perseguição suprimida não deveria iniciar movimento"
 
 
-def test_process_target_persegue_normalmente_sem_suppress_chase():
-    """Regressão: sem suppress_chase (comportamento de sempre), alvo
-    fora de alcance dispara o auto-move de perseguição normalmente."""
+def test_process_target_persegue_normalmente_sem_chase_suppressed():
+    """Regressão: com chase_suppressed=False (comportamento de sempre),
+    alvo fora de alcance dispara o auto-move de perseguição normalmente."""
     from ui.systems import PlayerInputSystem
     from engine.components import Position, PlayerAutoMove, CombatStats
 
@@ -1350,10 +1387,43 @@ def test_process_target_persegue_normalmente_sem_suppress_chase():
     auto_move = world.get_component(eid, PlayerAutoMove)
 
     sys_input._process_target(eid, position, tm, combat_stats, cs, auto_move,
-                              can_act=True, can_move=True, dt=0.1,
-                              suppress_chase=False)
+                              can_act=True, can_move=True, dt=0.1)
 
-    assert tm.is_moving, "sem suppress_chase, perseguição deveria iniciar movimento (alvo fora de alcance)"
+    assert tm.is_moving, "sem chase_suppressed, perseguição deveria iniciar movimento (alvo fora de alcance)"
+
+
+def test_reengajar_com_espaco_reativa_chase_suppressed_false():
+    """Reengajamento de propósito (Espaço) zera chase_suppressed, mesmo
+    que o movimento manual tenha ligado antes."""
+    from ui.systems import PlayerInputSystem
+    from engine.components import (Position, PlayerAutoMove, CombatStats,
+                                   Enemy, AIControlled, Visible)
+
+    world, eid, tm, cs, target = _make_wasd_pursuit_fixture()
+    cs.chase_suppressed = True   # simula ter andado manualmente antes
+    sys_input = PlayerInputSystem(world, screen=None)
+    combat_stats = world.get_component(eid, CombatStats)
+    auto_move = world.get_component(eid, PlayerAutoMove)
+
+    # _space_engage seleciona o inimigo mais próximo entre entidades
+    # (Position, Enemy, AIControlled, TileMovement, CombatStats, Visible)
+    # — `target` (criado por _make_wasd_pursuit_fixture) não tem Enemy/
+    # AIControlled, então um mob novo, mais simples, é criado aqui.
+    # Fora de PLAYER_ATTACK_RANGE (1 tile) — evita o branch de ataque
+    # imediato (exigiria o serviço 'combat' registrado, fora de escopo).
+    from engine.components import TileMovement as _TM_sp
+    mob = world.create_entity()
+    world.add_component(mob, Position(x=5 * 32, y=10 * 32))
+    world.add_component(mob, Enemy())
+    world.add_component(mob, AIControlled())
+    world.add_component(mob, _TM_sp(current_tile_x=5, current_tile_y=10))
+    world.add_component(mob, CombatStats())
+    world.add_component(mob, Visible())
+
+    sys_input._space_engage(eid, tm, combat_stats, cs, auto_move)
+
+    assert cs.target_entity_id == mob
+    assert cs.chase_suppressed is False
 
 
 def test_offline_sem_requester_continua_creditando_local():

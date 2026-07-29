@@ -284,6 +284,7 @@ class SpellCastSystem(System):
             from engine.stat_fns import enter_combat as _ec
             _ec(combat_state)
             combat_state.is_pursuing = True
+            combat_state.chase_suppressed = False   # reengajamento reativa a perseguição
 
         # Dispatch por spell_id — data-driven, sem if/elif
         handler_name = self._CAST_HANDLERS.get(spell_cast.spell_id)
