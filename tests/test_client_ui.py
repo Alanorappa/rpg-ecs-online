@@ -1639,6 +1639,7 @@ def _make_remote_player_fixture(hp: int = 80):
             self._party_members_val = []
             self._arena_in_match_val = False
             self._arena_opponents_server_val = set()
+            self._nameplate_mode = 0
             from ui.fonts import make as _make_font
             self.font_sm = _make_font(12)
 
@@ -1710,6 +1711,36 @@ def test_nameplate_de_vivo_mostra_barra_e_nome():
     fx = _make_remote_player_fixture(hp=80)
     fx._draw_remote_players(0.0, 0.0)
     assert len(WORLD_LABELS._pending) == 2, "vivo: barra de HP + nome"
+
+
+def test_nameplate_mode_1_player_remoto_mostra_so_o_nome():
+    """Shift+V modo 1 (29/07/2026): "a única coisa que permanecerá será
+    o nome" — vale pra player remoto igual mob/NPC."""
+    from ui.world_labels import WORLD_LABELS
+    WORLD_LABELS._pending.clear()
+    WORLD_LABELS._stack_offset.clear()
+    fx = _make_remote_player_fixture(hp=80)
+    fx._nameplate_mode = 1
+    fx._draw_remote_players(0.0, 0.0)
+    assert len(WORLD_LABELS._pending) == 1, "modo 1: só o nome, sem badge/barra"
+
+
+def test_nameplate_mode_2_player_remoto_mostra_barra_simples_sem_png():
+    """Shift+V modo 2: nome + barra de HP "gerada pelo jogo" — ainda 2
+    elementos (bar+nome) igual modo 0, mas a Surface da barra tem que vir
+    de build_simple_hp_bar (sem PNG/badge), não de build_mob_hud."""
+    from ui.world_labels import WORLD_LABELS
+    WORLD_LABELS._pending.clear()
+    WORLD_LABELS._stack_offset.clear()
+    fx = _make_remote_player_fixture(hp=80)
+    fx._nameplate_mode = 2
+    fx._draw_remote_players(0.0, 0.0)
+    assert len(WORLD_LABELS._pending) == 2, "modo 2: barra simples + nome"
+    from ui.hud_bars import M_SIZE, P_SIZE, SCALE
+    _icon_size = WORLD_LABELS._pending[0][2].get_size()
+    _png_sizes = {(M_SIZE[0] * SCALE, M_SIZE[1] * SCALE), (P_SIZE[0] * SCALE, P_SIZE[1] * SCALE)}
+    assert _icon_size not in _png_sizes, \
+        "modo 2 não deveria usar o tamanho nativo de nenhum asset PNG (build_mob_hud/build_player_hud)"
 
 
 def test_zona_pvp_deixa_hostil_sem_ser_duelo_arena():
@@ -2572,6 +2603,80 @@ def test_render_harvestable_com_sprite_nao_desenha_por_cima_do_personagem_no_mes
     assert (10, 20, 30) in draw_order and (40, 50, 60) in draw_order
     assert draw_order.index((40, 50, 60)) > draw_order.index((10, 20, 30)), \
         "personagem (sprite menor) deveria desenhar DEPOIS (por cima) do harvestable no mesmo tile"
+
+
+# ── Shift+V: ciclo de 3 níveis de detalhe do nameplate (29/07/2026,
+# pedido do usuário) — 0=completo (padrão), 1=só nome, 2=nome+barra de
+# HP simples (build_simple_hp_bar, sem PNG/badge/efeitos). Cobre o HUD
+# do próprio player (RenderSystem.render) e o badge de mob local; mob/
+# player remoto ficam em test_nameplate_mode_*_player_remoto_* acima e
+# em client/remote_entity_handlers.py.
+
+def _make_nameplate_render_fixture():
+    from engine.world import World
+    from engine.components import (Position, Renderable, CombatStats,
+                                   PlayerControlled, CharacterStats, EntityIdentity)
+    from ui.systems import RenderSystem
+
+    world = World()
+    player = world.create_entity()
+    world.add_component(player, Position(x=100, y=100, prev_x=100, prev_y=100))
+    world.add_component(player, Renderable(color=(40, 50, 60), width=24, height=24))
+    world.add_component(player, PlayerControlled())
+    p_cs = CombatStats()
+    p_cs.max_hp = 100
+    p_cs.current_hp = 80
+    world.add_component(player, p_cs)
+    p_char = CharacterStats(name="Herói", class_id="guerreiro")
+    p_char.level = 3
+    world.add_component(player, p_char)
+
+    mob = world.create_entity()
+    world.add_component(mob, Position(x=300, y=100, prev_x=300, prev_y=100))
+    world.add_component(mob, Renderable(color=(90, 10, 10), width=24, height=24))
+    m_cs = CombatStats()
+    m_cs.max_hp = 50
+    m_cs.current_hp = 50
+    world.add_component(mob, m_cs)
+    world.add_component(mob, EntityIdentity(name="Lobo", race="Animal",
+                                            entity_class="mob", level=2))
+
+    screen = pygame.display.get_surface()
+    rs = RenderSystem(world, screen)
+    return rs
+
+
+def test_render_system_nameplate_mode_0_desenha_badge_e_nome_pro_player_e_mob():
+    from ui.world_labels import WORLD_LABELS
+    WORLD_LABELS._pending.clear()
+    WORLD_LABELS._stack_offset.clear()
+    rs = _make_nameplate_render_fixture()
+    rs.render(0, 0, nameplate_mode=0)
+    # 2 elementos por entidade (badge/barra PNG + nome) x 2 entidades = 4
+    assert len(WORLD_LABELS._pending) == 4
+
+
+def test_render_system_nameplate_mode_1_mostra_so_nome():
+    from ui.world_labels import WORLD_LABELS
+    WORLD_LABELS._pending.clear()
+    WORLD_LABELS._stack_offset.clear()
+    rs = _make_nameplate_render_fixture()
+    rs.render(0, 0, nameplate_mode=1)
+    assert len(WORLD_LABELS._pending) == 2, "modo 1: só o nome de cada entidade, nada mais"
+
+
+def test_render_system_nameplate_mode_2_mostra_barra_simples_sem_asset_png():
+    from ui.world_labels import WORLD_LABELS
+    from ui.hud_bars import P_SIZE, M_SIZE, SCALE
+    WORLD_LABELS._pending.clear()
+    WORLD_LABELS._stack_offset.clear()
+    rs = _make_nameplate_render_fixture()
+    rs.render(0, 0, nameplate_mode=2)
+    assert len(WORLD_LABELS._pending) == 4, "modo 2: barra simples + nome por entidade"
+    _icon_sizes = {WORLD_LABELS._pending[0][2].get_size(), WORLD_LABELS._pending[2][2].get_size()}
+    _png_sizes = {(P_SIZE[0] * SCALE, P_SIZE[1] * SCALE), (M_SIZE[0] * SCALE, M_SIZE[1] * SCALE)}
+    assert not (_icon_sizes & _png_sizes), \
+        "modo 2 não deveria usar o tamanho nativo dos assets PNG (build_player_hud/build_mob_hud)"
 
 
 # ── ui/ui_helpers.py::draw_stack_count — "1" é redundante, não mostra;

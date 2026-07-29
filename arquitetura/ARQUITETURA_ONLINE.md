@@ -9133,6 +9133,91 @@ edição concorrente pelo usuário) como causadas por terreno não-andável
 em (131,374) perto do spawn de teste — sem relação com os fixes desta
 sessão (ver §34.52).
 
+### §34.69 — Sistema de nameplates: player remoto igual mob/NPC + ciclo
+Shift+V de detalhe (29/07/2026)
+
+Pedido do usuário, 4 partes: (1) nameplate de player remoto igual ao de
+mob/NPC; (2) Shift+V desliga a visualização de nameplates de todo mundo
+(player/mob/NPC), só o nome permanece; (3) Shift+V de novo mostra nome +
+barra de vida "gerada pelo jogo" (sem a sprite PNG); (4) Shift+V de novo
+volta ao completo (sprite/nameplate+nome, como é hoje).
+
+**Decisões tomadas com o usuário antes de implementar** (perguntas
+feitas via AskUserQuestion, mesma régua de `feedback_ask_before_
+deciding`):
+- Havia um asset novo, não integrado ainda, `assets/hud/
+  namePlate_remotePlayer.png`/`.ase` (64×13, badge+barra estilo mob) —
+  encontrado durante a investigação. Perguntado ao usuário se era pra
+  usar esse asset: resposta foi **não**, reusar o `mob_hud_bar.png`
+  existente (mesmo asset/função já usada por mob/NPC,
+  `build_mob_hud()`). O asset novo continua no repo, não integrado —
+  se for pra outra finalidade, tratar como pedido separado.
+- "Barra de vida gerada pelo jogo" (item 3) = retângulo simples
+  desenhado via `pygame.draw.rect` (cor por disposição, sem nenhum PNG
+  de fundo/badge), SEM número de nível.
+- O ciclo do Shift+V afeta TODO nameplate acima de sprite, inclusive o
+  do PRÓPRIO personagem (não só terceiros).
+
+**Item 1 — player remoto usa estilo de mob/NPC**: `client/
+remote_entity_handlers.py::_draw_remote_players` trocou `build_player_
+hud` (asset `player_hud_bar.png`, com as linhas de XP/recurso sempre
+vazias pro player remoto — ele não expõe esse dado) por `build_mob_hud`
+(asset `mob_hud_bar.png`, só badge+barra de HP — mesma função já usada
+por mob local/remoto e badge de NPC). `build_player_hud` fica reservado
+só pro HUD do PRÓPRIO player (`ui/systems.py::RenderSystem.render`, que
+tem XP/recurso de verdade pra mostrar).
+
+**Itens 2-4 — ciclo Shift+V (3 estados)**: novo campo `GameEngine.
+_nameplate_mode: int` (`game.py`, default `0`, NÃO persistido em
+config.json — reseta a cada sessão nova, mesmo espírito de outros
+toggles de visualização como `_show_perf_overlay`). Tecla nova no loop
+de eventos (`game.py`, ao lado do F10/F11): `pygame.K_v` + `KMOD_SHIFT`
+→ `self._nameplate_mode = (self._nameplate_mode + 1) % 3`.
+
+- **Modo 0** (completo, padrão): comportamento de sempre — badge/barra
+  PNG + nome + ícones de efeito ativo.
+- **Modo 1** (só nome): nenhum ícone/badge/barra/efeito é enfileirado
+  em `WORLD_LABELS` — só o texto do nome.
+- **Modo 2** (nome + barra simples): novo `ui/hud_bars.py::
+  build_simple_hp_bar(hp_ratio, color)` — `pygame.Surface` pura via
+  `pygame.draw.rect` (fundo escuro + preenchimento proporcional ao HP +
+  borda preta), sem nenhum asset PNG, sem badge/número de nível, sem
+  fila de efeitos.
+
+Gate aplicado em 3 lugares (mesmo campo `self._nameplate_mode`, lido
+direto por já ser mixin/parâmetro — nenhum estado duplicado):
+- `ui/systems.py::RenderSystem.render(..., nameplate_mode=...)` — HUD
+  do próprio player, badge de mob local/offline, badge de NPC (NPC sem
+  `CombatStats` colapsa modos 1 e 2 no mesmo resultado — não tem HP pra
+  desenhar barra nenhuma).
+- `client/remote_entity_handlers.py::_draw_mob_hp_bars` — mob remoto
+  (cor de disposição hostil/neutro/amigável preservada na barra simples
+  do modo 2).
+- `client/remote_entity_handlers.py::_draw_remote_players` — player
+  remoto (idem, cor de hostilidade PvP preservada). Morto continua
+  colapsando pra só-nome em QUALQUER modo (regra já existente,
+  inalterada).
+
+Em todos os 3 lugares, a fila de ícones de efeito de status (stun/
+sleep/etc) só é montada no modo 0 — nos modos 1/2 o usuário pediu
+explicitamente "a única coisa que permanecerá será o nome" / "somente o
+nome e a barra de vida", exclusivo por definição.
+
+**Validado**: 5 testes novos em `tests/test_client_ui.py` —
+`RenderSystem.render()` com `nameplate_mode=0/1/2` (conta quantos
+elementos vão pra `WORLD_LABELS._pending` por entidade: 2 no modo 0/2,
+1 no modo 1; modo 2 confirma que a Surface do ícone NÃO bate com o
+tamanho nativo de nenhum asset PNG, `P_SIZE`/`M_SIZE` × `SCALE`) +
+2 testes equivalentes pra `_draw_remote_players`. Confirmado via `git
+stash` (`game.py`, `ui/systems.py`, `ui/hud_bars.py`, `client/
+remote_entity_handlers.py` fora do stash, testes dentro) que os 5
+falham genuinamente sem o fix. Suíte completa (613 testes) 3x limpa —
+as mesmas 2 falhas de sempre nesta sessão, sem relação (terreno em
+edição do usuário, ver §34.52/§34.68).
+
+**Validado em jogo pelo usuário**: "1. Validado; 2. Validado. Testei, e
+ficou exatamente como eu queria."
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |

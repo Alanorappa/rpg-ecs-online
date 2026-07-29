@@ -264,6 +264,24 @@ def build_mob_hud(hp_ratio: float, level: int, level_font,
 _NPC_BADGE_W = 12
 
 
+def build_simple_hp_bar(hp_ratio: float, color: tuple = HP_COLOR,
+                        width: int = 40, height: int = 6) -> "pygame.Surface":
+    """Barra de HP minimalista SEM nenhum asset PNG — modo 2 do ciclo de
+    nameplate (Shift+V, pedido do usuário 29/07/2026: "nome e a barra de
+    vida gerada pelo jogo, sem a sprite PNG"). Puro pygame.draw.rect
+    (fundo escuro + preenchimento por hp_ratio + borda preta) — sem
+    badge/número de nível (o usuário pediu só nome+barra neste modo).
+    Nada cacheado: diferente de build_mob_hud/build_player_hud não tem
+    render de fonte pra evitar recalcular."""
+    surf = pygame.Surface((width, height), pygame.SRCALPHA)
+    pygame.draw.rect(surf, (30, 30, 30), (0, 0, width, height))
+    fw = max(0, min(width - 2, int((width - 2) * max(0.0, min(1.0, hp_ratio)))))
+    if fw > 0:
+        pygame.draw.rect(surf, color, (1, 1, fw, height - 2))
+    pygame.draw.rect(surf, (0, 0, 0), (0, 0, width, height), 1)
+    return surf
+
+
 def build_npc_badge(level: int, level_font) -> "pygame.Surface":
     """Nameplate de NPC não-combatente (vendedor/quest-giver/ferreiro/
     treinador): só o badge de nível (círculo + número), SEM barra de HP —

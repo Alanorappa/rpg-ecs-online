@@ -1382,9 +1382,11 @@ class RemoteEntityHandlers:
             # ver ARQUITETURA_ONLINE.md 23.9).
             _world_y_top = pos.y - W / 2
             if hp_max > 0:
-                from ui.hud_bars import build_mob_hud as _bmh_hb, HUD_GAP_PX as _HGP_hb, effects_row_offset as _ero_hb
+                from ui.hud_bars import (build_mob_hud as _bmh_hb, build_simple_hp_bar as _bshb_hb,
+                                        HUD_GAP_PX as _HGP_hb, effects_row_offset as _ero_hb)
                 from ui.world_labels import WORLD_LABELS as _WL_hb
                 ratio = max(0.0, hp / hp_max)
+                _nm_mode_hb = self._nameplate_mode
 
                 from engine.components import EntityIdentity as _EIdHb
                 _mob_id_hb = self.world.get_component(local_eid, _EIdHb)
@@ -1407,10 +1409,6 @@ class RemoteEntityHandlers:
                            if _fac_hb is not None else "hostil")
                 _hp_color_hb = _DISPCOL_hb.get(_tier_hb, _DISPCOL_hb["hostil"])
 
-                _hud_surf = _bmh_hb(ratio, _level_hb, self._mob_level_font, hp_color=_hp_color_hb)
-                _WL_hb.add_icon(pos.x, _world_y_top, _hud_surf,
-                                stack_key=local_eid, gap_before=_HGP_hb)
-
                 # Nome — mesmo padrão do RenderSystem offline (ui/systems.py),
                 # espelhado aqui porque mob remoto não passa por aquele loop
                 # (renderizado à parte, ver _spawn_remote_mob).
@@ -1421,26 +1419,44 @@ class RemoteEntityHandlers:
                 # o atributo direto (em vez de cachear numa instância
                 # própria) mantém sincronia automática se _ui_scale mudar
                 # (self.font_sm é recriado por _reload_ui_fonts()).
+                #
+                # nameplate_mode (Shift+V, pedido do usuário 29/07/2026):
+                # 0=badge+barra PNG+nome+efeitos, 2=nome+barra simples sem
+                # PNG/badge/efeitos, 1=só nome. Mesmo ciclo de
+                # ui/systems.py::RenderSystem.render — fonte única do
+                # estado é self._nameplate_mode (GameEngine).
+                _hud_surf = None
+                if _nm_mode_hb == 0:
+                    _hud_surf = _bmh_hb(ratio, _level_hb, self._mob_level_font, hp_color=_hp_color_hb)
+                elif _nm_mode_hb == 2:
+                    _hud_surf = _bshb_hb(ratio, color=_hp_color_hb)
+                if _hud_surf is not None:
+                    _WL_hb.add_icon(pos.x, _world_y_top, _hud_surf,
+                                    stack_key=local_eid, gap_before=_HGP_hb)
                 if _mob_id_hb is not None:
                     _WL_hb.add_text(pos.x, _world_y_top,
                                     _mob_id_hb.name, self.font_sm, (220, 200, 180),
-                                    stack_key=local_eid, gap_before=2)
+                                    stack_key=local_eid,
+                                    gap_before=(2 if _hud_surf is not None else None))
 
-                # Ícones de efeito à DIREITA da HUD (pedido do usuário 11/07/2026)
-                from engine.components import StatusEffects as _SfxDraw
-                _sfx = self.world.get_component(local_eid, _SfxDraw)
-                _active_effects = list(_sfx.effects.values()) if _sfx else []
-                if _active_effects:
-                    from ui.systems import _build_effects_row as _ber_hb
-                    if not hasattr(self, '_mob_eff_font'):
-                        import pygame as _pg
-                        self._mob_eff_font = _pg.font.Font(None, 18)
-                    _row = _ber_hb(_active_effects, self._mob_eff_font)
-                    if _row is not None:
-                        _xo, _yo = _ero_hb(_hud_surf)
-                        _WL_hb.add_icon_offset(pos.x, _world_y_top, _row,
-                                              x_offset=_xo, y_offset=_yo,
-                                              halign="left", valign="center")
+                # Ícones de efeito à DIREITA da HUD (pedido do usuário
+                # 11/07/2026) — só no modo completo, mesmo critério de
+                # ui/systems.py.
+                if _nm_mode_hb == 0 and _hud_surf is not None:
+                    from engine.components import StatusEffects as _SfxDraw
+                    _sfx = self.world.get_component(local_eid, _SfxDraw)
+                    _active_effects = list(_sfx.effects.values()) if _sfx else []
+                    if _active_effects:
+                        from ui.systems import _build_effects_row as _ber_hb
+                        if not hasattr(self, '_mob_eff_font'):
+                            import pygame as _pg
+                            self._mob_eff_font = _pg.font.Font(None, 18)
+                        _row = _ber_hb(_active_effects, self._mob_eff_font)
+                        if _row is not None:
+                            _xo, _yo = _ero_hb(_hud_surf)
+                            _WL_hb.add_icon_offset(pos.x, _world_y_top, _row,
+                                                  x_offset=_xo, y_offset=_yo,
+                                                  halign="left", valign="center")
 
     def _draw_remote_corpses(self, cam_x: float, cam_y: float) -> None:
         """Desenha corpos de mobs mortos recebidos do servidor.
@@ -1517,16 +1533,21 @@ class RemoteEntityHandlers:
         ui/hud_bars.py) inteira em WORLD_LABELS (screen-space) — nunca
         mais divididos entre espaço de mundo e espaço de tela (causava um
         bug real: número "flutuando" fora da caixinha, ver
-        ARQUITETURA_ONLINE.md 23.9). XP/recurso não existem aqui (player
-        remoto não expõe esse dado pro cliente, só o dono vê o próprio) —
-        as duas linhas ficam vazias (só o "trilho" do asset aparece, sem
-        preenchimento).
+        ARQUITETURA_ONLINE.md 23.9).
+
+        Usa build_mob_hud (badge+barra de HP só, mesmo asset/estilo de
+        mob/NPC) em vez de build_player_hud — pedido do usuário
+        29/07/2026: "nameplate dos players remotos sejam iguais aos dos
+        NPCs/MOBs". build_player_hud (com XP/recurso sempre vazios, já
+        que player remoto não expõe esse dado) ficou reservado só pro
+        HUD do PRÓPRIO player (ui/systems.py::RenderSystem.render).
         """
         if not self._remote_players:
             return
         from engine.components import Position, RemoteControlled
         from ui.world_labels import WORLD_LABELS as _WL_rp
-        from ui.hud_bars import build_player_hud as _bph_rp, HUD_GAP_PX as _HGP_rp
+        from ui.hud_bars import (build_mob_hud as _bph_rp, build_simple_hp_bar as _bshb_rp,
+                                HUD_GAP_PX as _HGP_rp)
 
         if not hasattr(self, '_player_level_font'):
             from ui.fonts import make as _make_name_rp2
@@ -1553,6 +1574,8 @@ class RemoteEntityHandlers:
             # de GhostState aqui.
             _is_dead_rp = rc.hp <= 0
             _name_col_rp = (255, 255, 200)
+            _hud_surf = None
+            _nm_mode_rp = self._nameplate_mode
             if not _is_dead_rp:
                 # Hostilidade decidida por _client_pvp_context (duelo OU
                 # zona PvP OU arena, já exclui mesmo grupo —
@@ -1565,31 +1588,42 @@ class RemoteEntityHandlers:
                 _hp_col_rp   = _DISP_rp["hostil"] if _is_hostile_rp else _HPC_rp
                 _name_col_rp = (255, 90, 90) if _is_hostile_rp else (255, 255, 200)
                 ratio = max(0.0, min(1.0, rc.hp / max(1, rc.hp_max)))
-                _hud_surf = _bph_rp(ratio, 0.0, 0.0, (0, 0, 0, 0), rc.level,
-                                    self._player_level_font, hp_color=_hp_col_rp)
-                _WL_rp.add_icon(pos.x, _world_y_top, _hud_surf,
-                                stack_key=local_eid, gap_before=_HGP_rp)
+                # nameplate_mode (Shift+V, pedido do usuário 29/07/2026):
+                # 0=badge+barra PNG+nome+efeitos, 2=nome+barra simples sem
+                # PNG/badge/efeitos, 1=só nome. Mesmo ciclo de
+                # ui/systems.py::RenderSystem.render/_draw_mob_hp_bars —
+                # fonte única do estado é self._nameplate_mode (GameEngine).
+                if _nm_mode_rp == 0:
+                    _hud_surf = _bph_rp(ratio, rc.level, self._player_level_font, hp_color=_hp_col_rp)
+                elif _nm_mode_rp == 2:
+                    _hud_surf = _bshb_rp(ratio, color=_hp_col_rp)
+                if _hud_surf is not None:
+                    _WL_rp.add_icon(pos.x, _world_y_top, _hud_surf,
+                                    stack_key=local_eid, gap_before=_HGP_rp)
 
                 # Ícones de efeito de status (stun/sleep/etc) à direita da
                 # HUD — mesmo bloco já usado pra mobs remotos em
                 # _draw_mob_hp_bars, bug real relatado pelo usuário
                 # 22/07/2026: nunca tinha sido copiado pra players remotos.
-                from engine.components import StatusEffects as _SfxRp
-                from ui.hud_bars import effects_row_offset as _ero_rp
-                _sfx_rp = self.world.get_component(local_eid, _SfxRp)
-                _active_effects_rp = list(_sfx_rp.effects.values()) if _sfx_rp else []
-                if _active_effects_rp:
-                    from ui.systems import _build_effects_row as _ber_rp
-                    if not hasattr(self, '_mob_eff_font'):
-                        import pygame as _pg_rp
-                        self._mob_eff_font = _pg_rp.font.Font(None, 18)
-                    _row_rp = _ber_rp(_active_effects_rp, self._mob_eff_font)
-                    if _row_rp is not None:
-                        _xo_rp, _yo_rp = _ero_rp(_hud_surf)
-                        _WL_rp.add_icon_offset(pos.x, _world_y_top, _row_rp,
-                                              x_offset=_xo_rp, y_offset=_yo_rp,
-                                              halign="left", valign="center")
+                # Só no modo completo, mesmo critério de ui/systems.py.
+                if _nm_mode_rp == 0 and _hud_surf is not None:
+                    from engine.components import StatusEffects as _SfxRp
+                    from ui.hud_bars import effects_row_offset as _ero_rp
+                    _sfx_rp = self.world.get_component(local_eid, _SfxRp)
+                    _active_effects_rp = list(_sfx_rp.effects.values()) if _sfx_rp else []
+                    if _active_effects_rp:
+                        from ui.systems import _build_effects_row as _ber_rp
+                        if not hasattr(self, '_mob_eff_font'):
+                            import pygame as _pg_rp
+                            self._mob_eff_font = _pg_rp.font.Font(None, 18)
+                        _row_rp = _ber_rp(_active_effects_rp, self._mob_eff_font)
+                        if _row_rp is not None:
+                            _xo_rp, _yo_rp = _ero_rp(_hud_surf)
+                            _WL_rp.add_icon_offset(pos.x, _world_y_top, _row_rp,
+                                                  x_offset=_xo_rp, y_offset=_yo_rp,
+                                                  halign="left", valign="center")
             # self.font_sm: MESMO objeto de fonte da janela de chat (ver
             # comentário irmão em _draw_mob_hp_bars acima).
             _WL_rp.add_text(pos.x, _world_y_top, rc.name, self.font_sm,
-                            _name_col_rp, stack_key=local_eid, gap_before=2)
+                            _name_col_rp, stack_key=local_eid,
+                            gap_before=(2 if _hud_surf is not None else None))

@@ -600,6 +600,18 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._show_perf_overlay: bool = False
         self._perf_font = None                     # lazy-loaded em _draw_perf_overlay
 
+        # Nível de detalhe dos nameplates (Shift+V, cíclico 3 estados —
+        # pedido do usuário 29/07/2026): 0=completo (sprite/badge PNG+HP+
+        # nome+efeitos, padrão), 1=só nome, 2=nome+barra de HP simples
+        # (retângulo desenhado pelo jogo, sem PNG/badge/efeitos). Vale pra
+        # QUALQUER nameplate acima de sprite — próprio player, players
+        # remotos, mobs e NPCs (RenderSystem.render() e client/
+        # remote_entity_handlers.py::_draw_mob_hp_bars/_draw_remote_players
+        # leem este campo direto via self., não é persistido em
+        # config.json — reseta pro padrão a cada sessão nova, mesmo
+        # espírito de outros toggles de visualização como _show_perf_overlay.
+        self._nameplate_mode: int = 0
+
     def _load_map_and_entities(self):
         map_file = MAP_FILES[0]
         self._current_map_file = map_file
@@ -1591,6 +1603,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                         # sempre (achado real 19/07/2026, ver
                         # ARQUITETURA_ONLINE.md).
                         globals()["PROFILE_FRAMES"] = self._show_perf_overlay
+                    elif event.key == pygame.K_v and (event.mod & pygame.KMOD_SHIFT):
+                        self._nameplate_mode = (self._nameplate_mode + 1) % 3
                     elif event.key == self._menu_keys.get("mapa", pygame.K_m):
                         already_open = self._map_overlay.is_open
                         self._close_all_modals()
@@ -2149,7 +2163,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             DASH_TRAIL.render(self._zoom_surf, cam_x, cam_y)
             _world_objs = self._tile_render_system.get_world_objects(cam_x, cam_y)
             self._draw_remote_corpses(cam_x, cam_y)
-            self._render_system.render(cam_x, cam_y, world_objects=_world_objs)
+            self._render_system.render(cam_x, cam_y, world_objects=_world_objs,
+                                       nameplate_mode=self._nameplate_mode)
             self._shop_system.render_world(cam_x, cam_y)
             self._quest_dialog.render_world(cam_x, cam_y, self._zoom)
             self._crafting_system.render_world(cam_x, cam_y)

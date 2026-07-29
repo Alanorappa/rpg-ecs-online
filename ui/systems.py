@@ -12,8 +12,8 @@ from ui.fonts import make as _font
 from ui.ui_scale_mixin import UIScaleMixin
 from ui.ui_sizes import UI
 from ui.world_labels import WORLD_LABELS
-from ui.hud_bars import (build_player_hud, build_mob_hud, build_npc_badge, RESOURCE_COLORS,
-                       HUD_GAP_PX, effects_row_offset)
+from ui.hud_bars import (build_player_hud, build_mob_hud, build_npc_badge, build_simple_hp_bar,
+                       RESOURCE_COLORS, HUD_GAP_PX, effects_row_offset)
 
 # Re-exporta apply_effect de core_systems para compatibilidade com todo o código
 # que já faz `from systems import apply_effect`.
@@ -1338,13 +1338,21 @@ class RenderSystem(System):
         self._name_font = font
 
     def render(self, camera_offset_x: float = 0, camera_offset_y: float = 0,
-               world_objects: list = None) -> None:
+               world_objects: list = None, nameplate_mode: int = 0) -> None:
         """
         Renderiza entidades e tile-objetos (árvores, pedras, etc.) em Y-sort.
 
         world_objects — lista retornada por TileRenderSystem.get_world_objects().
         Objetos com sort_y menor são desenhados primeiro (ficam atrás de quem está
         mais ao sul na tela), criando o efeito de profundidade.
+
+        nameplate_mode — ciclo Shift+V (game.py::self._nameplate_mode,
+        pedido do usuário 29/07/2026): 0=completo (badge/barra PNG+nome+
+        efeitos, padrão), 1=só nome, 2=nome+barra de HP simples
+        (build_simple_hp_bar, sem PNG/badge/efeitos). Vale pro HUD do
+        próprio player, de mob local e de badge de NPC — mob/player
+        remotos leem o mesmo campo direto em
+        client/remote_entity_handlers.py.
         """
         from ui.tile_sprite_manager import TILE_SPRITES
         # Descobre qual entidade o jogador tem como alvo
@@ -1538,55 +1546,88 @@ class RenderSystem(System):
                 if _is_local_player:
                     _char_id = self.world.get_component(entity_id, CharacterStats)
                     if _char_id is not None:
-                        _xp_ratio = _char_id.current_xp / max(1, _char_id.xp_to_next_level)
-                        if _char_id.class_id == "mago":
-                            _res_ratio = _char_id.mana / max(1, _char_id.max_mana)
-                        elif _char_id.class_id == "arqueiro":
-                            _res_ratio = _char_id.concentration / max(1, _char_id.max_concentration)
+                        if nameplate_mode == 0:
+                            _xp_ratio = _char_id.current_xp / max(1, _char_id.xp_to_next_level)
+                            if _char_id.class_id == "mago":
+                                _res_ratio = _char_id.mana / max(1, _char_id.max_mana)
+                            elif _char_id.class_id == "arqueiro":
+                                _res_ratio = _char_id.concentration / max(1, _char_id.max_concentration)
+                            else:
+                                _res_ratio = _char_id.rage / max(1, _char_id.max_rage)
+                            _res_color = RESOURCE_COLORS.get(_char_id.class_id, (150, 150, 150))
+                            _hud_surf = build_player_hud(ratio, _xp_ratio, _res_ratio, _res_color,
+                                                         _char_id.level, self._level_font)
+                            WORLD_LABELS.add_icon(position.x, _hud_top_world_y, _hud_surf,
+                                                  stack_key=entity_id, gap_before=HUD_GAP_PX)
+                            WORLD_LABELS.add_text(
+                                position.x, _hud_top_world_y,
+                                _char_id.name, self._name_font, (255, 255, 200),
+                                stack_key=entity_id, gap_before=2)
+                        elif nameplate_mode == 2:
+                            _hud_surf = build_simple_hp_bar(ratio)
+                            WORLD_LABELS.add_icon(position.x, _hud_top_world_y, _hud_surf,
+                                                  stack_key=entity_id, gap_before=HUD_GAP_PX)
+                            WORLD_LABELS.add_text(
+                                position.x, _hud_top_world_y,
+                                _char_id.name, self._name_font, (255, 255, 200),
+                                stack_key=entity_id, gap_before=2)
                         else:
-                            _res_ratio = _char_id.rage / max(1, _char_id.max_rage)
-                        _res_color = RESOURCE_COLORS.get(_char_id.class_id, (150, 150, 150))
-                        _hud_surf = build_player_hud(ratio, _xp_ratio, _res_ratio, _res_color,
-                                                     _char_id.level, self._level_font)
-                        WORLD_LABELS.add_icon(position.x, _hud_top_world_y, _hud_surf,
-                                              stack_key=entity_id, gap_before=HUD_GAP_PX)
-                        WORLD_LABELS.add_text(
-                            position.x, _hud_top_world_y,
-                            _char_id.name, self._name_font, (255, 255, 200),
-                            stack_key=entity_id, gap_before=2)
+                            WORLD_LABELS.add_text(
+                                position.x, _hud_top_world_y,
+                                _char_id.name, self._name_font, (255, 255, 200),
+                                stack_key=entity_id)
                 else:
                     # Mob local/offline — mob remoto usa
                     # client/remote_entity_handlers.py::_draw_mob_hp_bars.
                     _mob_id = self.world.get_component(entity_id, EntityIdentity)
                     if _mob_id is not None:
-                        _hud_surf = build_mob_hud(ratio, _mob_id.level, self._level_font)
-                        WORLD_LABELS.add_icon(position.x, _hud_top_world_y, _hud_surf,
-                                              stack_key=entity_id, gap_before=HUD_GAP_PX)
-                        WORLD_LABELS.add_text(
-                            position.x, _hud_top_world_y,
-                            _mob_id.name, self._name_font, (220, 200, 180),
-                            stack_key=entity_id, gap_before=2)
+                        if nameplate_mode == 0:
+                            _hud_surf = build_mob_hud(ratio, _mob_id.level, self._level_font)
+                            WORLD_LABELS.add_icon(position.x, _hud_top_world_y, _hud_surf,
+                                                  stack_key=entity_id, gap_before=HUD_GAP_PX)
+                            WORLD_LABELS.add_text(
+                                position.x, _hud_top_world_y,
+                                _mob_id.name, self._name_font, (220, 200, 180),
+                                stack_key=entity_id, gap_before=2)
+                        elif nameplate_mode == 2:
+                            _hud_surf = build_simple_hp_bar(ratio)
+                            WORLD_LABELS.add_icon(position.x, _hud_top_world_y, _hud_surf,
+                                                  stack_key=entity_id, gap_before=HUD_GAP_PX)
+                            WORLD_LABELS.add_text(
+                                position.x, _hud_top_world_y,
+                                _mob_id.name, self._name_font, (220, 200, 180),
+                                stack_key=entity_id, gap_before=2)
+                        else:
+                            WORLD_LABELS.add_text(
+                                position.x, _hud_top_world_y,
+                                _mob_id.name, self._name_font, (220, 200, 180),
+                                stack_key=entity_id)
 
-                _sfx = self.world.get_component(entity_id, StatusEffects)
-                _cst = self.world.get_component(entity_id, CombatState)
+                # Ícones de efeito (stun/etc): só no modo completo — modos
+                # 1/2 mostram só o que o usuário pediu explicitamente
+                # ("a única coisa que permanecerá será o nome" / "somente
+                # o nome e a barra de vida").
+                if nameplate_mode == 0 and _hud_surf is not None:
+                    _sfx = self.world.get_component(entity_id, StatusEffects)
+                    _cst = self.world.get_component(entity_id, CombatState)
 
-                # Reúne efeitos ativos
-                _active_effects = list(_sfx.effects.values()) if _sfx else []
-                if _cst and _cst.is_stunned and _cst.stun_timer > 0:
-                    if not (_sfx and _sfx.has("stun")):
-                        _stun_timer_val = _cst.stun_timer
-                        class _FakeEff:
-                            effect_type = "stun"
-                            duration    = _stun_timer_val
-                        _active_effects.append(_FakeEff())
+                    # Reúne efeitos ativos
+                    _active_effects = list(_sfx.effects.values()) if _sfx else []
+                    if _cst and _cst.is_stunned and _cst.stun_timer > 0:
+                        if not (_sfx and _sfx.has("stun")):
+                            _stun_timer_val = _cst.stun_timer
+                            class _FakeEff:
+                                effect_type = "stun"
+                                duration    = _stun_timer_val
+                            _active_effects.append(_FakeEff())
 
-                if _active_effects and _hud_surf is not None:
-                    _row = _build_effects_row(_active_effects, self._effect_dur_font)
-                    if _row is not None:
-                        _xo, _yo = effects_row_offset(_hud_surf)
-                        WORLD_LABELS.add_icon_offset(
-                            position.x, _hud_top_world_y, _row,
-                            x_offset=_xo, y_offset=_yo, halign="left", valign="center")
+                    if _active_effects:
+                        _row = _build_effects_row(_active_effects, self._effect_dur_font)
+                        if _row is not None:
+                            _xo, _yo = effects_row_offset(_hud_surf)
+                            WORLD_LABELS.add_icon_offset(
+                                position.x, _hud_top_world_y, _row,
+                                x_offset=_xo, y_offset=_yo, halign="left", valign="center")
 
             # ── Nameplate de NPC (mercador/treinador/quest giver/ferreiro...) ──
             # Badge de nível + nome — mesma linguagem visual do nameplate
@@ -1611,13 +1652,22 @@ class RenderSystem(System):
             _is_remote_synced = self.world.get_component(entity_id, _REM_npc_badge) is not None
             if _npc_id is not None and not _draw_hp_bar and not _is_remote_synced:
                 _npc_top_world_y = position.y - renderable.height / 2
-                _npc_badge = build_npc_badge(_npc_id.level, self._level_font)
-                WORLD_LABELS.add_icon(position.x, _npc_top_world_y, _npc_badge,
-                                      stack_key=entity_id, gap_before=HUD_GAP_PX)
-                WORLD_LABELS.add_text(
-                    position.x, _npc_top_world_y,
-                    _npc_id.name, self._name_font, (220, 220, 180),
-                    stack_key=entity_id, gap_before=2)
+                # Modos 1 e 2 colapsam no mesmo resultado pra NPC: sem
+                # CombatStats não há barra de HP pra desenhar no modo 2
+                # (a barra do modo 2 é justamente a de vida) — só nome.
+                if nameplate_mode == 0:
+                    _npc_badge = build_npc_badge(_npc_id.level, self._level_font)
+                    WORLD_LABELS.add_icon(position.x, _npc_top_world_y, _npc_badge,
+                                          stack_key=entity_id, gap_before=HUD_GAP_PX)
+                    WORLD_LABELS.add_text(
+                        position.x, _npc_top_world_y,
+                        _npc_id.name, self._name_font, (220, 220, 180),
+                        stack_key=entity_id, gap_before=2)
+                else:
+                    WORLD_LABELS.add_text(
+                        position.x, _npc_top_world_y,
+                        _npc_id.name, self._name_font, (220, 220, 180),
+                        stack_key=entity_id)
 
 class CameraSystem(System):
     def __init__(self, world: World):
