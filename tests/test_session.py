@@ -833,6 +833,52 @@ class TestHarvestableEmptyNaoDisparaDespawnGenerico(unittest.IsolatedAsyncioTest
         self.assertEqual(len(despawns), 1)
         self.assertEqual(despawns[0]["eid"], -cid)
 
+    async def test_corpse_com_item_pessoal_pendente_nao_manda_despawn_ao_esvaziar_pote_comum(self):
+        """Bug real relatado pelo usuário 28/07/2026: arqueiro com o
+        talento Reciclagem recebe flecha no pote COMUM do corpse; com a
+        quest "Veneno Mortal" ativa, o mesmo corpse (aranha) também tem
+        "Veneno de Aranha" no pote PESSOAL (quest_rolls, resolvido por
+        jogador — Fase L1). Saquear só a flecha esvaziava o pote comum
+        e `_still_has_loot` (que só olhava items/coins) declarava o
+        corpo "vazio" — despawn genérico removia a entidade da AOI de
+        todo mundo com o item da quest ainda intocado no pote pessoal,
+        nunca mais lootável."""
+        from shared.messages import encode
+        session, fw = await fake_login(self.mgr, "s1", "user_hv_desp_e", 130, 374)
+        cid = self._make_corpse(owner_eid=session.entity_id, no_decay=False,
+                                coins=0, items=[{"name": "Flecha", "stack": 3}])
+        # Simula o pote pessoal já resolvido (LOOT_AVAILABLE original) —
+        # request_loot() não re-sorteia pra quem já está em quest_rolls.
+        self.ws_server._corpses[cid]["quest_rolls"] = {
+            session.entity_id: [{"name": "Veneno de Aranha", "stack": 1}],
+        }
+
+        fw.sent.clear()
+        await self.mgr.on_message(session, encode(
+            MsgType.LOOT_REQUEST,
+            {"corpse_id": cid, "take": "item", "item_name": "Flecha"}))
+
+        despawns = get_msgs_of_type(fw, MsgType.ENTITY_DESPAWN)
+        self.assertEqual(despawns, [],
+                         "corpo com item pessoal de quest pendente não deveria sumir")
+
+    async def test_corpse_sem_item_pessoal_pendente_manda_despawn_ao_esvaziar_pote_comum(self):
+        """Regressão: sem nada pendente em quest_rolls, esvaziar o pote
+        comum continua disparando o despawn normalmente."""
+        from shared.messages import encode
+        session, fw = await fake_login(self.mgr, "s1", "user_hv_desp_f", 130, 374)
+        cid = self._make_corpse(owner_eid=session.entity_id, no_decay=False,
+                                coins=0, items=[{"name": "Flecha", "stack": 3}])
+
+        fw.sent.clear()
+        await self.mgr.on_message(session, encode(
+            MsgType.LOOT_REQUEST,
+            {"corpse_id": cid, "take": "item", "item_name": "Flecha"}))
+
+        despawns = get_msgs_of_type(fw, MsgType.ENTITY_DESPAWN)
+        self.assertEqual(len(despawns), 1)
+        self.assertEqual(despawns[0]["eid"], -cid)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 6b. Loot condicional de quest é resolvido POR JOGADOR (Fase L1, 25/07/2026)

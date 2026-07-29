@@ -8945,6 +8945,47 @@ falhas de sempre, sem relação (§34.52).
 **Validado em jogo pelo usuário**: "Funcionou." — confirmado antes da
 suíte rodar (mesmo processo do §34.63).
 
+### §34.65 — Corpo sumia com item de quest pendente no pote pessoal
+(28/07/2026)
+
+Usuário relatou (com pedido explícito de investigar e reportar ANTES
+de mexer no código): com a quest "Veneno Mortal" ativa, matar uma
+aranha com o arqueiro (talento Reciclagem — 80% de chance de recuperar
+flechas, que entram no loot) e saquear só as flechas fazia o modal de
+loot fechar sozinho e o corpo sumir — o "Veneno de Aranha" (item da
+quest) nunca chegava a ser saqueado.
+
+**Causa raiz**: o corpo guarda dois potes de loot separados —
+`items` (comum, compartilhado por todo mundo) e `quest_rolls`
+(pessoal, por jogador — Fase L1, `_resolve_conditional_loot_for`,
+25/07/2026). `server/session.py::_handle_loot_request`'s checagem de
+"o corpo ficou REALMENTE vazio, pode sumir da AOI de todo mundo"
+(`_still_has_loot`) só olhava `items`/`coins` — nunca `quest_rolls`.
+Saquear só a flecha (pote comum) esvaziava `items`; `_still_has_loot`
+virava `False` mesmo com o Veneno de Aranha ainda intocado no pote
+pessoal do jogador; o despawn genérico (`ENTITY_DESPAWN`, mesmo
+mecanismo do bug de 17/07 e 25/07 documentados nesta seção antes)
+disparava e removia a entidade da AOI de todo mundo — o item da quest
+nunca mais ficava acessível.
+
+**Fix**: `_still_has_loot` passa a checar também
+`any(corpse_data.get("quest_rolls", {}).values())` — corpo só é
+declarado "realmente vazio" se pote comum, moedas E o pote pessoal de
+TODOS os jogadores estiverem vazios.
+
+**Validado**: `tests/test_session.py::
+TestHarvestableEmptyNaoDisparaDespawnGenerico` (2 testes novos) —
+corpo com item pessoal pendente em `quest_rolls` não manda
+`ENTITY_DESPAWN` ao saquear só o item do pote comum (reproduz o bug
+relatado, reproduzido genuinamente via `git stash`); sem nada em
+`quest_rolls`, o despawn continua disparando normalmente
+(regressão, comportamento de 17/07 intacto). Suíte completa (600
+testes) rodada 3x limpa — mesmas 2 falhas de sempre, sem relação
+(§34.52).
+
+**Validado em jogo pelo usuário**: "Validado." — confirmado antes da
+suíte rodar (mesmo processo do §34.63/§34.64).
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |

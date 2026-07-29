@@ -1108,8 +1108,22 @@ class SessionManager:
             # cliente não achava mais o local_eid em _available_loot e
             # caía no fallback antigo de create_corpse, desenhando a
             # elipse velha por cima do que deveria ser a caixa de novo).
+            #
+            # quest_rolls (Fase L1, resolução condicional por jogador —
+            # server/loot_processor.py::_resolve_conditional_loot_for) é
+            # um pote SEPARADO do comum ("items") — nunca entrava nesta
+            # checagem (bug real relatado pelo usuário 28/07/2026: matar
+            # aranha com "Veneno Mortal" ativa + Reciclagem do arqueiro
+            # dando flecha no loot comum — sacar só a flecha esvaziava
+            # "items", o corpo era declarado vazio e sumia da AOI de
+            # todo mundo com o Veneno de Aranha ainda intocado no pote
+            # pessoal, nunca mais lootável). Precisa checar se ALGUM
+            # jogador ainda tem item pessoal pendente antes de declarar
+            # o corpo realmente vazio.
             corpse_data = self.world_server._corpses.get(corpse_id, {})
-            _still_has_loot = bool(corpse_data.get("items")) or corpse_data.get("coins", 0) > 0
+            _still_has_loot = (bool(corpse_data.get("items"))
+                              or corpse_data.get("coins", 0) > 0
+                              or any(corpse_data.get("quest_rolls", {}).values()))
             if not _still_has_loot and not corpse_data.get("no_decay"):
                 despawn_payload = {"eid": -corpse_id}
                 for s in self._sessions_in_aoi(corpse_data.get("tx", 0),
