@@ -2605,3 +2605,51 @@ def test_draw_stack_count_desenha_numero_sem_x_com_outline_a_partir_de_2():
     texts = {t for t, _c in font.rendered}
     assert texts == {"3"}, "texto deve ser só o número, sem prefixo 'x'"
     assert len(surf.blits) == 9, "8 blits de outline preto + 1 do número branco"
+
+
+# ── game.py::compute_window_geometry — fonte única de tamanho/flags de
+# janela a partir do window_mode salvo, usada por GameEngine (troca em
+# tempo real) E por main.py (login/seleção de personagem, 28/07/2026 —
+# bug real: main.py sempre abria essas 2 telas numa janela de tamanho
+# FIXO baseado só em `scale`, ignorando window_mode por completo — com
+# scale=1.5 (1920x1080, resolução comum de monitor Full HD), a janela
+# cobria a tela inteira sem nenhuma flag de fullscreen, visualmente
+# indistinguível de tela cheia de verdade, mesmo com window_mode salvo
+# como "windowed_fullsize").
+
+def _with_desktop_size(size, fn):
+    orig = pygame.display.get_desktop_sizes
+    pygame.display.get_desktop_sizes = lambda: [size]
+    try:
+        return fn()
+    finally:
+        pygame.display.get_desktop_sizes = orig
+
+
+def test_compute_window_geometry_fullscreen_usa_resolucao_do_desktop():
+    from game import compute_window_geometry
+    w, h, flags = _with_desktop_size(
+        (1920, 1080), lambda: compute_window_geometry("fullscreen", 1.0))
+    assert (w, h) == (1920, 1080)
+    assert flags & pygame.FULLSCREEN
+
+
+def test_compute_window_geometry_windowed_fullsize_usa_desktop_com_folga():
+    from game import compute_window_geometry
+    w, h, flags = _with_desktop_size(
+        (1920, 1080), lambda: compute_window_geometry("windowed_fullsize", 1.0))
+    assert (w, h) == (1920 - 16, 1080 - 80)
+    assert not (flags & pygame.FULLSCREEN)
+    assert flags & pygame.RESIZABLE
+
+
+def test_compute_window_geometry_windowed_ignora_tamanho_do_monitor():
+    """Núcleo da regressão: 'windowed' usa só 1280*scale/720*scale,
+    NUNCA a resolução do monitor — antes desta fix, main.py achava que
+    esse era o ÚNICO comportamento existente (daí o bug: login/seleção
+    nunca aplicavam windowed_fullsize/fullscreen)."""
+    from game import compute_window_geometry
+    w, h, flags = _with_desktop_size(
+        (3840, 2160), lambda: compute_window_geometry("windowed", 1.0))
+    assert (w, h) == (1280, 720)
+    assert not (flags & pygame.FULLSCREEN)

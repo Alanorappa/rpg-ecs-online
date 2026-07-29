@@ -8986,6 +8986,58 @@ testes) rodada 3x limpa — mesmas 2 falhas de sempre, sem relação
 **Validado em jogo pelo usuário**: "Validado." — confirmado antes da
 suíte rodar (mesmo processo do §34.63/§34.64).
 
+### §34.66 — Login/seleção de personagem ignoravam `window_mode` salvo
+(28/07/2026)
+
+Usuário relatou (2ª tentativa — já tinha reportado antes sem correção):
+mesmo com o modo de janela configurado, a tela de login e a de seleção
+de personagem sempre abriam em tela cheia.
+
+**Investigação**: pedi confirmação antes de mexer, já que o menu só
+tem um toggle "Tela cheia/Janela" (decisão de 24/07/2026) onde "Janela"
+na verdade é `"windowed_fullsize"` (janela quase do tamanho do
+monitor, sem maximizar de verdade) — descartei isso como causa depois
+que o usuário esclareceu que o PRÓPRIO JOGO já respeita o modo
+corretamente; só as 2 telas de pré-jogo (`main.py`) não.
+
+**Causa raiz**: `main.py` nunca aplicava `window_mode` nenhum — os 2
+pontos que chamam `pygame.display.set_mode()` (boot inicial e
+reconexão após "Deslogar") sempre usavam um tamanho FIXO derivado só
+de `scale` (`int(1280*scale)`, `int(720*scale)`), sem nenhuma flag de
+tela cheia/redimensionável consciente do `window_mode` salvo. Com
+`scale=1.5` (1920×1080 — resolução comum de monitor Full HD), a janela
+cobria a tela inteira SEM nenhuma flag de fullscreen — visualmente
+indistinguível de tela cheia de verdade — mesmo com `window_mode`
+salvo como `"windowed_fullsize"`. Só o `GameEngine` (depois de entrar
+no jogo) lê e aplica `window_mode` de verdade
+(`_compute_and_set_window_mode`).
+
+**Fix**: extraída a lógica de "calcular (width, height, flags) de
+janela a partir do `window_mode`" pra uma função nova, `game.py::
+compute_window_geometry(mode, scale)` — fonte única, chamada tanto por
+`GameEngine._compute_and_set_window_mode()` (refatorado pra usá-la,
+comportamento idêntico de antes, só sem duplicar o cálculo) quanto por
+`main.py`, que agora lê `window_mode` do config (com a mesma migração
+de `"maximized"` legado que `GameEngine` já fazia) e aplica a MESMA
+geometria nos 2 pontos de `set_mode()`. `ui/login_screen.py`/`ui/
+char_creation_screen.py` já liam `screen.get_size()` dinamicamente
+(nenhuma mudança necessária ali) — só precisavam receber uma `Surface`
+do tamanho certo.
+
+**Validado**: `tests/test_client_ui.py` (3 testes) —
+`compute_window_geometry("fullscreen", ...)` usa a resolução do
+desktop + flag `FULLSCREEN`; `"windowed_fullsize"` usa desktop menos a
+folga de 16×80px + `RESIZABLE` (sem `FULLSCREEN`); `"windowed"`
+ignora completamente o tamanho do monitor (usa só `scale`) mesmo com o
+desktop mockado bem maior — o núcleo da regressão. Confirmado via `git
+stash` (`game.py`, `main.py`, testes fora do stash) que os 3 testes
+falham genuinamente sem o fix (`ImportError` — a função não existia
+antes). Suíte completa (603 testes) rodada 3x limpa — mesmas 2 falhas
+de sempre, sem relação (§34.52).
+
+**Validado em jogo pelo usuário**: "Testado e validado." — confirmado
+antes da suíte rodar (mesmo processo do §34.63-§34.65).
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |

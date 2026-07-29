@@ -49,7 +49,7 @@ _make_dpi_aware()
 
 import pygame
 import config
-from game import GameEngine
+from game import GameEngine, compute_window_geometry
 
 
 def _parse_args():
@@ -108,9 +108,21 @@ if __name__ == "__main__":
         cfg["server_port"] = args.port
         config.save({"server_port": args.port})
 
-    W = int(1280 * scale)
-    H = int(720  * scale)
-    screen = pygame.display.set_mode((W, H))
+    # Login/seleção de personagem precisam abrir no MESMO window_mode
+    # salvo que o jogo já usa (GameEngine._compute_and_set_window_mode)
+    # — antes, essas 2 telas sempre abriam numa janela de tamanho fixo
+    # (1280*scale, 720*scale), ignorando window_mode por completo (bug
+    # real relatado pelo usuário 28/07/2026: com scale=1.5 == 1920x1080,
+    # batendo com a resolução comum de monitor Full HD, a janela cobria
+    # a tela inteira sem NENHUMA flag de fullscreen — visualmente
+    # indistinguível de tela cheia de verdade, mesmo com window_mode
+    # salvo como "windowed_fullsize"). "maximized" (config legado) migra
+    # pra "windowed_fullsize", mesmo tratamento de game.py::GameEngine.
+    window_mode = cfg.get("window_mode", "windowed_fullsize")
+    if window_mode == "maximized":
+        window_mode = "windowed_fullsize"
+    W, H, win_flags = compute_window_geometry(window_mode, scale)
+    screen = pygame.display.set_mode((W, H), win_flags, vsync=1)
     pygame.display.set_caption("RPG ECS [ONLINE]")
 
     host = cfg.get("server_host", "localhost")
@@ -181,7 +193,7 @@ if __name__ == "__main__":
             # real reportado pelo usuário 24/07/2026, ver ARQUITETURA_ONLINE.md).
             pygame.display.quit()
             pygame.display.init()
-            screen = pygame.display.set_mode((W, H))
+            screen = pygame.display.set_mode((W, H), win_flags, vsync=1)
             pygame.display.set_caption("RPG ECS [ONLINE]")
 
         if back_to_login:

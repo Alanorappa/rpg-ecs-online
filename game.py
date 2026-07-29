@@ -100,6 +100,47 @@ def _merge_display_matrix(terrain: list[str], objects: list) -> list[str]:
     return result
 
 
+def _desktop_size() -> tuple:
+    """Resolução do monitor primário, com fallback se a lista vier vazia
+    (nenhum monitor detectado pelo driver — não deve travar o boot por
+    causa disso)."""
+    sizes = pygame.display.get_desktop_sizes()
+    return sizes[0] if sizes else (1920, 1080)
+
+
+def compute_window_geometry(mode: str, scale: float) -> tuple:
+    """Calcula (width, height, flags) de janela a partir do window_mode
+    salvo ("fullscreen" | "windowed_fullsize" | "windowed") — fonte
+    única usada tanto por GameEngine._compute_and_set_window_mode()
+    (troca em tempo real, já dentro do jogo) quanto por main.py (telas
+    de login/seleção de personagem, que rodam ANTES de existir uma
+    instância de GameEngine).
+
+    Sem isso, main.py sempre abria login/seleção numa janela de tamanho
+    fixo (1280*scale, 720*scale), ignorando window_mode por completo —
+    bug real relatado pelo usuário 28/07/2026: com scale=1.5 (janela de
+    1920×1080, batendo com a resolução comum de monitor Full HD), a
+    janela cobria a tela inteira sem NENHUMA flag de fullscreen —
+    visualmente indistinguível de tela cheia de verdade — mesmo com
+    window_mode salvo como "windowed_fullsize" (que já funcionava
+    corretamente dentro do jogo, só não era aplicado nessas 2 telas
+    anteriores)."""
+    if mode == "fullscreen":
+        w, h = _desktop_size()
+        return w, h, pygame.DOUBLEBUF | pygame.SCALED | pygame.FULLSCREEN
+    elif mode == "windowed_fullsize":
+        desktop_w, desktop_h = _desktop_size()
+        # pygame não expõe a "área útil" do Windows (sem a barra de
+        # tarefas) — folga fixa suficiente pra barra de título E a barra
+        # de tarefas não ficarem fora da tela/cobertas (pedido: "não
+        # apagar a barra superior da janela").
+        w, h = max(320, desktop_w - 16), max(240, desktop_h - 80)
+        return w, h, pygame.DOUBLEBUF | pygame.SCALED | pygame.RESIZABLE
+    else:  # "windowed"
+        return (int(1280 * scale), int(720 * scale),
+                pygame.DOUBLEBUF | pygame.SCALED | pygame.RESIZABLE)
+
+
 class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, InventoryHandlers, TooltipHandlers, DebugHandlers, MenuHandlers, HotbarEditorHandlers, HabilidadesHandlers, OnlineModeHandlers, HotbarHandlers, ConsumableBarHandlers, HudHandlers, DeathUIHandlers, ModalStackHandlers, TradeHandlers, DuelHandlers, PartyHandlers, PvpZoneHandlers, ArenaHandlers, ChatHandlers):
     def __init__(self, scale: float = 1.0, char_data: "dict | None" = None,
                  save_slot: int = 0,
@@ -2708,36 +2749,20 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
     # crash.log real do usuário). set_mode() NUNCA pode ser chamado em
     # reação a um evento nativo de janela — só em boot ou clique explícito
     # de menu (mesmo padrão seguro que resolution:<scale> já usava).
-    @staticmethod
-    def _desktop_size() -> tuple:
-        """Resolução do monitor primário, com fallback se a lista vier
-        vazia (nenhum monitor detectado pelo driver — não deve travar o
-        boot por causa disso)."""
-        sizes = pygame.display.get_desktop_sizes()
-        return sizes[0] if sizes else (1920, 1080)
-
     def _compute_and_set_window_mode(self, mode: str) -> None:
         """Núcleo de troca de modo — SEM salvar config (chamado no boot,
         antes de self.world existir, e por _apply_window_mode/menu)."""
+        w, h, flags = compute_window_geometry(mode, self._scale)
         if mode == "fullscreen":
-            desktop_w, desktop_h = self._desktop_size()
-            self.screen   = pygame.Surface((desktop_w, desktop_h))
-            self._display = self._recreate_display(
-                desktop_w, desktop_h, pygame.DOUBLEBUF | pygame.SCALED | pygame.FULLSCREEN)
+            self.screen   = pygame.Surface((w, h))
+            self._display = self._recreate_display(w, h, flags)
             if hasattr(self, "world"):
                 self._rebuild_screen_refs(self.screen)
                 for _, cam, _ in self.world.get_entities_with(Camera, Position):
-                    cam.offset_x = desktop_w / 2
-                    cam.offset_y = desktop_h / 2
-        elif mode == "windowed_fullsize":
-            desktop_w, desktop_h = self._desktop_size()
-            # pygame não expõe a "área útil" do Windows (sem a barra de
-            # tarefas) — folga fixa suficiente pra barra de título E a
-            # barra de tarefas não ficarem fora da tela/cobertas (pedido:
-            # "não apagar a barra superior da janela").
-            self._apply_logical_size(max(320, desktop_w - 16), max(240, desktop_h - 80))
-        else:  # "windowed"
-            self._apply_logical_size(int(1280 * self._scale), int(720 * self._scale))
+                    cam.offset_x = w / 2
+                    cam.offset_y = h / 2
+        else:  # "windowed_fullsize" ou "windowed"
+            self._apply_logical_size(w, h)
 
     def _apply_window_mode(self, mode: str) -> None:
         """Troca de modo de janela por clique explícito no menu Configurações
