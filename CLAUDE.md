@@ -85,6 +85,11 @@ Atualizar os arquivos de arquitetura relevantes:
   `SessionManager._sessions_in_aoi(tx, ty, map_file, origin_eid=...)` —
   NUNCA iterar `self._sessions` com check de distância à mão (classe de bug:
   vazamento cross-map + ignora visibilidade de camuflado + métrica errada).
+  Visão compartilhada de time (instanciado — arena/battlefield/dungeon,
+  30/07/2026) já é embutida em `_sessions_in_aoi` E em
+  `_build_update_for_session` via `SessionManager._ally_vision_centers`
+  (recomputado 1x/tick, `_compute_ally_vision_centers()`) — chamadas novas
+  não precisam reimplementar isso.
 - **Player pode usar a skill?** → `world_systems.is_skill_authorized()`
   (classe + talento + learned) — gate autoritativo chamado pelo
   skill_processor; toda forma nova de adquirir skill entra ALI. Fixtures de

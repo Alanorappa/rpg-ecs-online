@@ -14,7 +14,8 @@ import asyncio
 import time
 
 from shared.messages import MsgType, encode, decode
-from shared.constants import AOI_RADIUS, AOI_EXIT_BUFFER, PROTOCOL_VERSION, TICK_RATE
+from shared.constants import (AOI_RADIUS, AOI_EXIT_BUFFER, PROTOCOL_VERSION, TICK_RATE,
+                               ALLY_VISION_RADIUS_PLAYER, ALLY_VISION_RADIUS_MINION)
 from engine.utils import in_aoi as _in_aoi, SpatialHash as _SpatialHash
 
 
@@ -103,6 +104,12 @@ class SessionManager:
         self.world_server = world_server
         self._sessions:   dict[str, Session] = {}
         self._eid_to_sid: dict[int, str]     = {}
+        # Visão compartilhada de time (instanciado — arena/battlefield/dungeon).
+        # Recomputado 1x/tick em _dispatch_tick_deltas, ANTES de qualquer AOI.
+        # player_eid -> [(tx, ty, radius), ...] de cada ALIADO (outro player,
+        # torre ou minion com a mesma Faction + mesma instância). Vazio pra
+        # quem não está num contexto de time (custo ~zero, caso comum).
+        self._ally_vision_centers: dict[int, list[tuple[int, int, int]]] = {}
         self.world_server.register_on_tick(self._on_tick)
 
     # ── Ciclo de vida ─────────────────────────────────────────────────────────
@@ -1959,9 +1966,80 @@ class SessionManager:
             return
         asyncio.create_task(self._dispatch_tick_deltas(deltas))
 
+    def _compute_ally_vision_centers(self) -> dict[int, list[tuple[int, int, int]]]:
+        """Visão compartilhada de time (SÓ conteúdo instanciado — arena hoje,
+        battlefield/dungeon no futuro; NUNCA grupo de mundo aberto).
+
+        Gate: Faction EXPLÍCITA no player (world.get_component direto — NUNCA
+        get_entity_faction/resolver, que tem fallback pro default de mundo
+        aberto e vazaria visão pra todo mundo). Players comuns não têm
+        Faction nenhuma; só ganham ao entrar num contexto de time (mesmo
+        padrão que server/match_processor.py já usa pra arena).
+
+        Retorna {player_eid: [(tx, ty, radius), ...]} com a posição+raio de
+        cada ALIADO (outro player, torre ou minion com a MESMA Faction +
+        MESMA instância/map_file) — nunca a própria posição. Raio por tipo:
+        ALLY_VISION_RADIUS_PLAYER/TOWER/MINION (pedido do usuário, torre e
+        minion enxergam diferente de um player). Vazio (custo ~zero) fora de
+        contexto de time — não toca em _mob_eids se nenhum player tiver
+        Faction.
+        """
+        from engine.components import Faction as _FactionAVC, TileMovement as _TMAvc, Tower as _TowerAVC
+
+        buckets: dict[tuple[str, str], list[tuple[int, int, int, int]]] = {}
+
+        for s in self._sessions.values():
+            if not s.authenticated or s.entity_id < 0:
+                continue
+            fac = self.world_server.world.get_component(s.entity_id, _FactionAVC)
+            if fac is None:
+                continue
+            tm = self.world_server.world.get_component(s.entity_id, _TMAvc)
+            if tm is None:
+                continue
+            map_file = self.world_server.get_player_map(s.session_id)
+            buckets.setdefault((map_file, fac.faction_id), []).append(
+                (s.entity_id, tm.current_tile_x, tm.current_tile_y, ALLY_VISION_RADIUS_PLAYER))
+
+        if not buckets:
+            return {}
+
+        for m_eid in self.world_server._mob_eids:
+            fac = self.world_server.world.get_component(m_eid, _FactionAVC)
+            if fac is None:
+                continue
+            map_file = self.world_server.get_entity_map(m_eid)
+            key = (map_file, fac.faction_id)
+            if key not in buckets:
+                continue
+            tm = self.world_server.world.get_component(m_eid, _TMAvc)
+            if tm is None:
+                continue
+            # Torre: raio PRÓPRIO por tipo (content/tower_definitions.py::
+            # TOWER_TABLE["vision_radius_tiles"], gravado no componente
+            # Tower na criação) — não uma constante global única, pedido
+            # explícito do usuário (30/07/2026) pra poder ajustar por tipo
+            # de torre. ALLY_VISION_RADIUS_TOWER só entra como default de
+            # criação (engine/entity_factory.py::create_tower), nunca lido
+            # aqui de novo.
+            _tower_comp = self.world_server.world.get_component(m_eid, _TowerAVC)
+            radius = (_tower_comp.vision_radius_tiles if _tower_comp is not None
+                      else ALLY_VISION_RADIUS_MINION)
+            buckets[key].append((m_eid, tm.current_tile_x, tm.current_tile_y, radius))
+
+        result: dict[int, list[tuple[int, int, int]]] = {}
+        for members in buckets.values():
+            if len(members) < 2:
+                continue
+            for eid_i, _, _, _ in members:
+                result[eid_i] = [(tx, ty, radius) for eid_j, tx, ty, radius in members if eid_j != eid_i]
+        return result
+
     async def _dispatch_tick_deltas(self, deltas: dict) -> None:
         """Distribui deltas para cada cliente respeitando known_eids (AOI subscription)."""
         try:
+            self._ally_vision_centers = self._compute_ally_vision_centers()
+
             # Resultados de skills ANTES do AOI_UPDATE.
             # _sessions_in_aoi: mesmo mapa do caster + visibilidade (caster
             # camuflado não vaza eventos pra quem não o vê; o dono sempre recebe).
@@ -2021,7 +2099,8 @@ class SessionManager:
                 tx, ty = self.world_server.get_tile_pos(session.session_id)
                 update = self._build_update_for_session(session, deltas, tx, ty,
                                                         _mob_positions, _mob_hash,
-                                                        _gated_harvestable_eids)
+                                                        _gated_harvestable_eids,
+                                                        ally_centers=self._ally_vision_centers.get(session.entity_id))
                 if update:
                     ok = await session.send(MsgType.AOI_UPDATE, update)
                     if ok:
@@ -2397,12 +2476,20 @@ class SessionManager:
                                    deltas: dict, cx: int, cy: int,
                                    mob_positions: dict | None = None,
                                    mob_hash: "_SpatialHash | None" = None,
-                                   gated_harvestable_eids: "set | None" = None) -> dict:
+                                   gated_harvestable_eids: "set | None" = None,
+                                   ally_centers: "list[tuple[int,int,int]] | None" = None) -> dict:
         """
         Constrói AOI_UPDATE para uma sessão específica, com subscription tracking:
         - Entidade entra no AOI → ENTITY_SPAWN + adiciona a known_eids
         - Entidade sai do AOI  → ENTITY_DESPAWN + remove de known_eids
         - Entidade em AOI conhecida → ENTITY_MOVE
+
+        ally_centers: visão compartilhada de time (SessionManager.
+        _compute_ally_vision_centers, instanciado — arena/battlefield/
+        dungeon). Cada tupla (tx, ty, raio) é um centro EXTRA de AOI, além
+        da posição própria (cx, cy) — a entidade entra se estiver dentro de
+        QUALQUER um dos centros. Recalculado do zero todo tick a partir do
+        estado atual, então nunca fica "preso" a um aliado que já saiu.
         """
         r      = AOI_RADIUS
         r_exit = AOI_RADIUS + AOI_EXIT_BUFFER
@@ -2413,12 +2500,18 @@ class SessionManager:
 
         from engine.components import MapLocation as _ML_aoi
 
+        _centers      = [(cx, cy, r)] + list(ally_centers or ())
+        _centers_exit = [(cx, cy, r_exit)] + [(ax, ay, ar + AOI_EXIT_BUFFER)
+                                               for ax, ay, ar in (ally_centers or ())]
+
         def in_aoi(tx: int, ty: int, eid: int = -1) -> bool:
             # Métrica canônica: Chebyshev (utils.in_aoi) — mesma dos broadcasts
             # diretos (_sessions_in_aoi) e do spawn inicial (WORLD_STATE).
             # Antes era círculo Euclidiano só aqui: entidades nos "cantos" do
             # quadrado entravam por um critério e não pelo outro.
-            if not _in_aoi(cx, cy, tx, ty, r):
+            # "Qualquer centro" (posição própria OU visão de aliado) cobre —
+            # ver docstring de ally_centers acima.
+            if not any(_in_aoi(ccx, ccy, tx, ty, crad) for ccx, ccy, crad in _centers):
                 return False
             # MapLocation é a fonte única de verdade para entity→mapa (P3).
             # Entidade SEM MapLocation é excluída — toda entidade networked deve ter um.
@@ -2436,7 +2529,7 @@ class SessionManager:
             # fronteira — nunca ficava visível tempo suficiente pro cliente
             # renderizar de forma estável. Entrada continua usando in_aoi()
             # (raio normal) — só a permanência usa o raio com buffer.
-            if not _in_aoi(cx, cy, tx, ty, r_exit):
+            if not any(_in_aoi(ccx, ccy, tx, ty, crad) for ccx, ccy, crad in _centers_exit):
                 return False
             if eid >= 0:
                 _ml = self.world_server.world.get_component(eid, _ML_aoi)
@@ -2633,7 +2726,16 @@ class SessionManager:
         # Cobre mobs estacionários e players que entraram em range sem se mover.
         # SpatialHash filtra candidatos para O(mobs_no_AOI) por sessão em vez de O(M).
         if mob_hash is not None:
-            _candidates = mob_hash.nearby(cx, cy, r)
+            # União dos candidatos de CADA centro (posição própria + visão de
+            # aliados) — um mob perto de um teammate mas longe de cx,cy não
+            # pode ficar de fora só porque a consulta usou o raio errado.
+            # max(r, ...) garante que a busca no hash nunca é mais estreita
+            # que o maior raio possível entre os centros; o filtro exato
+            # (centro certo + raio certo) continua sendo feito por in_aoi().
+            _max_r = max((crad for _, _, crad in _centers), default=r)
+            _candidates: set = set()
+            for ccx, ccy, _ in _centers:
+                _candidates |= mob_hash.nearby(ccx, ccy, _max_r)
         else:
             _candidates = mob_positions.keys() if mob_positions else ()
         for mob_eid in _candidates:
@@ -2751,6 +2853,15 @@ class SessionManager:
                 })
                 session.known_eids.add(_seid)
 
+        # Visão compartilhada de time (30/07/2026): cliente revela a névoa
+        # (minimap + LOS) ao redor de cada aliado, exatamente como a própria
+        # posição — servidor decide QUEM/RAIO, cliente só desenha (mesmo
+        # princípio de "client nunca calcula gameplay"). Só inclui quando
+        # não-vazio pra não gerar AOI_UPDATE todo tick fora de contexto de
+        # time (custo ~zero no caso comum, mundo aberto).
+        if ally_centers:
+            result["ally_vision_centers"] = [[ax, ay, ar] for ax, ay, ar in ally_centers]
+
         return result
 
     # ── Player deaths — enviados diretamente, não via AOI_UPDATE ─────────────
@@ -2862,6 +2973,11 @@ class SessionManager:
         - Métrica: Chebyshev via utils.in_aoi (canônica do projeto) — antes
           os broadcasts usavam círculo Euclidiano, divergindo do spawn
           inicial (WORLD_STATE) que já era Chebyshev.
+        - Visão compartilhada de time (instanciado): uma sessão também
+          recebe o evento se ele estiver dentro do raio de um ALIADO dela
+          (self._ally_vision_centers, recomputado 1x/tick) — cobre chat de
+          proximidade, sons e skills de teammates fora do próprio AOI, sem
+          exceção (pedido do usuário: chat também viaja pela visão do time).
         """
         result = []
         for s in list(self._sessions.values()):
@@ -2871,7 +2987,8 @@ class SessionManager:
                     and self.world_server.get_player_map(s.session_id) != map_file):
                 continue
             sx, sy = self.world_server.get_tile_pos(s.session_id)
-            if not _in_aoi(tx, ty, sx, sy, AOI_RADIUS):
+            _centers = [(sx, sy, AOI_RADIUS)] + self._ally_vision_centers.get(s.entity_id, [])
+            if not any(_in_aoi(tx, ty, ccx, ccy, crad) for ccx, ccy, crad in _centers):
                 continue
             if (origin_eid >= 0 and s.entity_id != origin_eid
                     and not _can_see(self.world_server.world, s.entity_id, origin_eid)):

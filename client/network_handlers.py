@@ -1157,6 +1157,20 @@ class NetworkHandlers:
             self._apply_remote_move(eid, payload.get("tx", 0), payload.get("ty", 0))
 
     def _handle_msg_aoi_update(self, payload: dict) -> None:
+        # Visão compartilhada de time (30/07/2026) — servidor manda
+        # ally_vision_centers SÓ quando não-vazio (custo zero fora de
+        # contexto de time); ausência não significa "ficou vazio agora",
+        # só "nada mudou o suficiente pra mandar" — FogSystem já lida com
+        # isso lendo o valor mais recente a cada tick, não precisa de um
+        # "clear" explícito aqui (self-heals na troca de mapa, ver
+        # FogOfWar.switch_map).
+        avc = payload.get("ally_vision_centers")
+        if avc is not None:
+            from engine.components import FogOfWar as _FogAVC
+            fog = self.world.get_component(self.player_entity, _FogAVC)
+            if fog is not None:
+                fog.ally_centers = [tuple(c) for c in avc]
+
         # spawned ANTES de moved: entidades que entram no AOI e já se movem no
         # MESMO tick (ex: mob voltando a perseguir, knockback empurrando algo
         # de volta ao range) precisam existir no ECS local antes de receber o

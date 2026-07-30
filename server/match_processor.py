@@ -77,11 +77,11 @@ ARENA_TEMPLATE = "maps/arena_poco_negro.csv"
 # importa o tamanho.
 ARENA_MODES: dict[str, dict] = {
     "1v1": {"team_size": 1, "label": "Duelo (Arena)",
-            "spawns_a": [(13, 2)],                  "spawns_b": [(13, 32)]},
+            "spawns_a": [(21, 2)],                  "spawns_b": [(21, 44)]},
     "2v2": {"team_size": 2, "label": "Arena 2x2",
-            "spawns_a": [(12, 2), (14, 2)],          "spawns_b": [(12, 32), (14, 32)]},
+            "spawns_a": [(20, 2), (22, 2)],          "spawns_b": [(20, 44), (22, 44)]},
     "3v3": {"team_size": 3, "label": "Arena 3x3",
-            "spawns_a": [(11, 2), (13, 2), (15, 2)], "spawns_b": [(11, 32), (13, 32), (15, 32)]},
+            "spawns_a": [(18, 2), (20, 2), (22, 2)], "spawns_b": [(18, 44), (20, 44), (22, 44)]},
 }
 
 # Tempo máximo parado na tela de resultado antes de ser teleportado de

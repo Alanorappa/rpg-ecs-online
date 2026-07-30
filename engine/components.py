@@ -463,6 +463,12 @@ class FogOfWar:
         self.explored:        set   = set()           # aponta para _explored_maps[mapa_atual]
         self._last_tile:      tuple = (-1, -1)
         self._current_map:    str   = ""
+        # Visão compartilhada de time (30/07/2026) — lista (tx,ty,radius) de
+        # cada aliado (player/torre/minion), recebida do servidor via
+        # AOI_UPDATE.ally_vision_centers (SessionManager._ally_vision_centers,
+        # já filtrado por instância/facção no servidor — cliente só desenha).
+        self.ally_centers:      list  = []
+        self._last_ally_centers: tuple = ()
 
     def switch_map(self, map_file: str) -> None:
         """Troca o contexto de exploração para o mapa dado. Cria o set se não existir."""
@@ -472,6 +478,11 @@ class FogOfWar:
         self.explored     = self._explored_maps[map_file]
         self.visible      = set()
         self._last_tile   = (-1, -1)
+        # Centros de aliado do mapa/instância ANTERIOR não fazem sentido nas
+        # coordenadas do mapa novo — descarta (o próximo AOI_UPDATE reenvia
+        # os corretos, se houver).
+        self.ally_centers        = []
+        self._last_ally_centers  = ()
 
 
 class CombatState:
@@ -886,17 +897,23 @@ class Tower:
                  respawnable: bool = False, respawn_s: float = 0.0,
                  regen_enabled: bool = False,
                  xp_reward: int = 0, gold_min: int = 0, gold_max: int = 0,
-                 spawn_tile_x: int = 0, spawn_tile_y: int = 0):
-        self.tower_key          = tower_key
-        self.attack_range_tiles = attack_range_tiles
-        self.respawnable        = respawnable
-        self.respawn_s          = respawn_s
-        self.regen_enabled      = regen_enabled
-        self.xp_reward          = xp_reward
-        self.gold_min           = gold_min
-        self.gold_max           = gold_max
-        self.spawn_tile_x       = spawn_tile_x
-        self.spawn_tile_y       = spawn_tile_y
+                 spawn_tile_x: int = 0, spawn_tile_y: int = 0,
+                 vision_radius_tiles: int = 18):
+        self.tower_key           = tower_key
+        self.attack_range_tiles  = attack_range_tiles
+        self.respawnable         = respawnable
+        self.respawn_s           = respawn_s
+        self.regen_enabled       = regen_enabled
+        self.xp_reward           = xp_reward
+        self.gold_min            = gold_min
+        self.gold_max            = gold_max
+        self.spawn_tile_x        = spawn_tile_x
+        self.spawn_tile_y        = spawn_tile_y
+        # Raio de visão compartilhada de time (30/07/2026, dado por TIPO em
+        # content/tower_definitions.py::TOWER_TABLE — não uma constante
+        # global única) — ver server/session.py::
+        # SessionManager._compute_ally_vision_centers.
+        self.vision_radius_tiles = vision_radius_tiles
         # Runtime — alvo fixo (sticky) até morrer/sair do alcance/perder
         # LOS (nunca reavaliado "o mais próximo" a cada tick, fidelidade
         # ao real de LoL — ver TowerSystem). -1 = sem alvo.

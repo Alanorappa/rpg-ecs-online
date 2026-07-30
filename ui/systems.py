@@ -2198,9 +2198,17 @@ class FogSystem(System):
             fog = f
             px, py = tile_move.current_tile_x, tile_move.current_tile_y
 
-            # Recomputa LOS apenas quando o jogador muda de tile
-            if (px, py) != fog._last_tile:
-                fog._last_tile = (px, py)
+            # Recomputa quando o jogador muda de tile OU quando os centros de
+            # visão de time mudam (torre/minion/teammate aliado se move) —
+            # visão compartilhada de time (30/07/2026): torres/minions/
+            # teammates aliados também "exploram" a névoa, com shadowcasting
+            # PRÓPRIO a partir da posição deles (não da do jogador) — é assim
+            # que uma torre do outro lado de um pilar revela área que o
+            # próprio jogador não enxergaria em linha reta.
+            _ally_key = tuple(fog.ally_centers)
+            if (px, py) != fog._last_tile or _ally_key != fog._last_ally_centers:
+                fog._last_tile         = (px, py)
+                fog._last_ally_centers = _ally_key
 
                 # LOS (shadowcasting, raio pequeno) — controla quais entidades são visíveis
                 fog.visible = compute_fov(px, py, fog.radius, is_blocking)
@@ -2214,6 +2222,11 @@ class FogSystem(System):
                             ex, ey = px + dx, py + dy
                             if 0 <= ex < map_w and 0 <= ey < map_h:
                                 fog.explored.add((ex, ey))
+
+                for ax, ay, ar in fog.ally_centers:
+                    _ally_fov = compute_fov(ax, ay, ar, is_blocking)
+                    fog.visible |= _ally_fov
+                    fog.explored |= _ally_fov
             break  # apenas um FogOfWar no jogo (jogador)
 
         if fog is None:

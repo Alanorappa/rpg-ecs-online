@@ -31,6 +31,15 @@ laranja, "Arqueiro" = flecha marrom. Zero asset novo.
 
 attack_range_tiles: alcance de detecção/ataque da torre, em tiles.
 
+vision_radius_tiles: raio de VISÃO COMPARTILHADA que a torre concede ao
+time (30/07/2026, pedido do usuário — pediu explicitamente pra poder
+ajustar por tipo de torre, em vez de uma constante global única) —
+DIFERENTE de attack_range_tiles (esse é só pra decidir quem a torre
+ataca). Lido por server/session.py::SessionManager.
+_compute_ally_vision_centers() direto do componente `Tower`
+(engine/entity_factory.py::create_tower grava aqui na criação). Default
+(se omitido) é shared/constants.py::ALLY_VISION_RADIUS_TOWER.
+
 xp_reward/gold_min/gold_max: recompensa FLAT ao destruir a torre —
 usada diretamente por server/server_death_handler.py, nunca cai no
 fallback de MOB_TABLE/EnemyTier (torre não está cadastrada lá).
@@ -51,8 +60,11 @@ TOWER_TABLE: dict[str, dict] = {
         "color": (120, 120, 130),
         "is_ranged": True,
         "attributes": {
-            "health": 4000, "armor": 20,
-            "attack_min": 15, "attack_max": 25, "attack_power": 10,
+            "health": 4000, 
+            "armor": 20,
+            "attack_min": 15, 
+            "attack_max": 25, 
+            "attack_power": 10,
             # move_speed_pct: torre nunca se move de verdade (TileMovement.
             # speed sempre 0.0 no servidor, create_tower) — só existe aqui
             # pra satisfazer o acesso `attrs["move_speed_pct"]` (bracket,
@@ -64,8 +76,10 @@ TOWER_TABLE: dict[str, dict] = {
             "acerto": 95, "crit_chance": 5,
         },
         "attack_range_tiles": 7,
+        "vision_radius_tiles": 10,
         "xp_reward": 250,
-        "gold_min": 20, "gold_max": 40,
+        "gold_min": 20, 
+        "gold_max": 40,
         # Mesmos arquivos REAIS já usados por "Mago (NPC)" (mob_
         # definitions.py) pra espelhar a Bola de Fogo do mago jogador —
         # nunca inventar nome de asset novo sem conferir se o .ogg existe
@@ -84,15 +98,21 @@ TOWER_TABLE: dict[str, dict] = {
         "color": (120, 120, 130),
         "is_ranged": True,
         "attributes": {
-            "health": 3500, "armor": 15,
-            "attack_min": 12, "attack_max": 20, "attack_power": 8,
+            "health": 3500, 
+            "armor": 15,
+            "attack_min": 12, 
+            "attack_max": 20, 
+            "attack_power": 8,
             "move_speed_pct": 1,   # ver comentário na torre_de_fogo acima
             "attack_speed": 1.4,
-            "acerto": 95, "crit_chance": 10,
+            "acerto": 95, 
+            "crit_chance": 10,
         },
         "attack_range_tiles": 7,
+        "vision_radius_tiles": 10,
         "xp_reward": 220,
-        "gold_min": 18, "gold_max": 36,
+        "gold_min": 18, 
+        "gold_max": 36,
         # Mesmos arquivos REAIS já usados por "Arqueiro (NPC)" — ver
         # comentário acima sobre nunca inventar nome de asset.
         "sounds": {

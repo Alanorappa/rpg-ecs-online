@@ -28,6 +28,16 @@ FOG_RADIUS         = 15          # deve coincidir com AOI_RADIUS
 # Ver arquitetura/PROBLEMAS_ARQUITETURA.md.
 AOI_EXIT_BUFFER    = 3
 
+# Visão compartilhada de time (SÓ conteúdo instanciado — arena hoje,
+# battlefield/dungeon no futuro; NUNCA grupo de mundo aberto — gate é
+# Faction explícita no player, ver server/session.py::
+# SessionManager._compute_ally_vision_centers). Pedido do usuário
+# 30/07/2026: cada aliado (player/torre/minion) contribui um raio
+# próprio de visão pro time, não o mesmo AOI_RADIUS pra todos.
+ALLY_VISION_RADIUS_PLAYER = AOI_RADIUS   # 15 — mesmo raio de sempre
+ALLY_VISION_RADIUS_TOWER  = 18
+ALLY_VISION_RADIUS_MINION = 8
+
 # Centro do cemitério — spawn padrão de personagem novo E respawn pós-morte.
 # Fonte única: server/respawn_system.py e server/auth.py importam daqui em vez
 # de hardcoded — mover o cemitério só exige mudar este valor.
@@ -54,7 +64,7 @@ PROTOCOL_VERSION = 1             # incrementar ao quebrar compatibilidade
 # criar a tag git correspondente (`git tag vX.Y.Z`) a cada commit relevante:
 # PATCH = correção, MINOR = feature nova, MAJOR = mudança grande/quebra de
 # compatibilidade (decisão do usuário, 20/07/2026 — ver ARQUITETURA_ONLINE.md).
-GAME_VERSION = "0.29.1"
+GAME_VERSION = "0.30.0"
 
 # ── Morte/respawn: fluxo de espírito (ghost) + cemitério ───────────────────────
 GHOST_GRAVEYARD_RADIUS_TILES = 5   # raio (tiles) do cemitério p/ revive automático
@@ -101,8 +111,10 @@ ARENA_COUNTDOWN_S     = 15.0
 # ARENA_GATE_OPEN, client/arena_handlers.py). 2 segmentos de 3 tiles — um por
 # sala de espera (time A em cima, time B embaixo).
 ARENA_GATE_TILES: list[tuple[int, int]] = [
-    (12, 4), (13, 4), (14, 4),
-    (12, 30), (13, 30), (14, 30),
+    (17, 4), (18, 4), (19, 4), (20, 4), (21, 4), (22, 4), (23, 4),
+    (24, 4), (25, 4), (26, 4), (27, 4), (28, 4), (29, 4),
+    (17, 41), (18, 41), (19, 41), (20, 41), (21, 41), (22, 41), (23, 41),
+    (24, 41), (25, 41), (26, 41), (27, 41), (28, 41), (29, 41),
 ]
 
 # ── Party/Grupo ──────────────────────────────────────────────────────────────

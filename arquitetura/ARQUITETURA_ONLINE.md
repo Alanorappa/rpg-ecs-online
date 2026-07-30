@@ -9422,6 +9422,185 @@ comportamento condicional restante pra cobrir). Validado visualmente
 pelo usuário em jogo antes da suíte rodar. Suíte completa (636 testes)
 3x limpa.
 
+### §34.72 — Visão compartilhada de time (instanciado) (30/07/2026)
+
+Pedido do usuário: dar "time" aos NPCs (pra campo de batalha estilo
+MOBA) e compartilhar visão entre membros de um time — players, torres e
+minions (NPCs) — nesse campo de batalha, generalizando pra arena (já
+existe) e futuramente battlefield/dungeon. Decisões confirmadas com o
+usuário via `AskUserQuestion`:
+
+- **"Time" = `Faction` reaproveitada exatamente como já existe** — sem
+  conceito novo de `team_id`. "Times pros NPCs" não exigiu NENHUM código
+  novo: dar time a um NPC/minion já era só anexar
+  `Faction(faction_id="arena_time_a")` nele (mesmo padrão que a torre já
+  usa, §34.70). O trabalho real desta feature foi a visão compartilhada.
+- **Escopo: SÓ conteúdo instanciado** (arena hoje; battlefield/dungeon
+  futuro) — NUNCA grupo/party de mundo aberto. Gate: `Faction` EXPLÍCITA
+  no player (`world.get_component` direto, nunca
+  `get_entity_faction`/resolver — que tem fallback pro default de mundo
+  aberto e vazaria visão pra todo mundo). Players de mundo aberto normais
+  nunca têm `Faction`.
+- **Raio de contribuição de visão por tipo de entidade** (pedido
+  explícito do usuário, `shared/constants.py`):
+  `ALLY_VISION_RADIUS_PLAYER=15` (= `AOI_RADIUS`),
+  `ALLY_VISION_RADIUS_TOWER=18`, `ALLY_VISION_RADIUS_MINION=8`.
+- **Chat de proximidade também viaja pela visão de time** (pedido
+  explícito) — `_sessions_in_aoi` (usado por chat, skill, som, broadcast
+  direto) respeita visão de time sempre, sem parâmetro de exceção.
+
+**Mecanismo** (`server/session.py::SessionManager`):
+
+1. `_compute_ally_vision_centers()` roda 1x/tick, no topo de
+   `_dispatch_tick_deltas` (ANTES de qualquer AOI), e guarda em
+   `self._ally_vision_centers: dict[player_eid, list[(tx,ty,radius)]]`.
+   Agrupa players com `Faction` explícita em buckets
+   `(map_file, faction_id)` (via `WorldServer.get_player_map` — NÃO
+   `_player_match_id`, que é bookkeeping específico da arena e não
+   generaliza pro battlefield/dungeon futuro); se nenhum player tiver
+   Faction, retorna `{}` sem tocar em `_mob_eids` (custo ~zero fora de
+   contexto de time). Depois faz UMA passada em `_mob_eids` — só mobs
+   cujo `(map_file, faction_id)` já bate um bucket existente entram,
+   com raio de torre ou minion conforme tenham o componente `Tower`.
+   Cada membro do bucket vira centro extra pros outros (nunca pra si
+   mesmo).
+2. `_build_update_for_session` ganha `ally_centers` opcional — os
+   closures `in_aoi`/`in_aoi_exit` (antes single-center) passam a
+   checar "qualquer centro" (posição própria + centros de aliados,
+   cada um com seu próprio raio). O pré-filtro do `SpatialHash`
+   (`mob_hash.nearby`) vira união dos candidatos de CADA centro (usando
+   o maior raio possível na query) antes do check exato por centro.
+3. `_sessions_in_aoi` ganha a MESMA generalização, mas 100% internamente
+   — nenhum dos ~12 call-sites (skill/som/chat/corpse) muda de
+   assinatura; o loop só passa a montar `[(sx,sy,AOI_RADIUS)] + aliados`
+   por sessão candidata.
+
+`_can_see()` (gate de invisibilidade/Camuflagem) continua checado POR
+ENTIDADE no ponto de inclusão — união de centros não bypassa
+invisibilidade, nenhuma mudança precisou entrar ali. `known_eids` não
+precisou de mudança de schema: os centros são recalculados do ZERO todo
+tick a partir do estado atual (Faction+posição), então "aliado A sai do
+range mas aliado B ainda cobre" resolve sozinho sem cache por origem.
+
+**Gap pré-existente encontrado (não desta feature, fora de escopo
+consertar agora)**: o bloco `deltas["spawned"]` em
+`_build_update_for_session` nunca chamou `_can_see` (só `in_aoi`) — um
+player recém-logado entra em `known_eids` de quem já está por perto NO
+MESMO tick do login, camuflado ou não. Só importa numa janela estreita
+(entidade nova aparecendo já invisível no mesmo tick que alguém a
+descobre) — documentado em `tests/test_session.py::
+TestAllyVisionSharing.test_camuflagem_ainda_bloqueia_mesmo_visivel_via_aliado`
+(o teste evita a janela pra validar a propriedade real desta feature).
+
+Testes: `tests/test_session.py::TestAllyVisionSharing` (10 testes) —
+mundo aberto sem Faction custa zero, teammate estende visão além do
+próprio AOI, torre/minion contribuem raio 18/8 (não 15), times
+inimigos/instâncias diferentes sem visão cruzada, `_sessions_in_aoi`
+inclui via visão de time, Camuflagem ainda bloqueia, `known_eids` não
+oscila quando um aliado sai mas outro cobre, Faction removida some no
+tick seguinte. Verificado com `git stash` (8/10 falham genuinamente sem
+a implementação — os 2 restantes são só-negativos, que também "passam"
+sem a feature já que a ausência da feature IMPLICA a ausência do vazamento
+que eles checam).
+
+#### §34.72.1 — Correção de escopo: névoa (fog-of-war/minimap) também precisa ser compartilhada (30/07/2026, mesmo dia)
+
+Validação em jogo do usuário revelou que a entrega acima (só sync de
+ENTIDADES via AOI) não bastava: "eu quero que as torres e minions do
+time explorem a fog, ou seja, da mesma forma que eu vejo a minha. É
+idêntico ao LoL" — ward/torre/minion também precisa acender a névoa do
+MINIMAPA (`FogOfWar.explored`) e o LOS de renderização
+(`FogOfWar.visible`), não só entregar as entidades brutas por AOI. Erro
+de escopo meu: o campo de visão (`FogOfWar`/`FogSystem`,
+`ui/systems.py`) é 100% CLIENT-side e nunca fez parte do desenho inicial
+— só considerei o sync de entidades (servidor→cliente), não a
+exploração de mapa (puramente visual, client-side).
+
+**Mecanismo**: `SessionManager._ally_vision_centers[player_eid]`
+(já calculado pra AOI) é enviado ao PRÓPRIO dono, dentro do
+`AOI_UPDATE`, como `"ally_vision_centers": [[tx,ty,radius], ...]` — só
+quando não-vazio (mesmo princípio de custo zero fora de contexto de
+time; servidor decide QUEM/RAIO, cliente só desenha, igual todo o resto
+do projeto). Cliente (`client/network_handlers.py::
+_handle_msg_aoi_update`) grava isso em `FogOfWar.ally_centers` (campo
+novo). `FogSystem.update()` (`ui/systems.py`) passa a:
+- Recomputar quando o player muda de tile **OU** quando
+  `fog.ally_centers` muda (torre parada não muda nunca; minion/teammate
+  se movendo, sim) — antes só recomputava no movimento do PRÓPRIO
+  player.
+- Rodar `compute_fov(ax, ay, ar, is_blocking)` (mesmo shadowcasting já
+  usado pro player, `ui/fov.py`) a partir da posição de CADA aliado
+  (não da do player) e unir o resultado em `fog.visible` E
+  `fog.explored` — é o shadowcast PRÓPRIO do aliado que revela área que
+  o player não enxergaria em linha reta (ex: atrás de um pilar/parede
+  que bloqueia LOS a partir da posição do player, mas não da torre).
+- `FogOfWar.switch_map()` descarta `ally_centers` do mapa anterior
+  (coordenadas de outro mapa não fazem sentido no novo — resolve
+  sozinho na próxima AOI_UPDATE do mapa novo).
+
+**Simplificação aceita conscientemente**: se o servidor OMITE o campo
+(ally_centers ficou vazio), o cliente NÃO recebe um "clear" explícito —
+`fog.ally_centers` fica com o último valor conhecido até a próxima
+mudança de mapa (`switch_map`, que sempre acontece ao entrar/sair de
+arena/instância). Staleness prática é ~zero: dentro da MESMA partida os
+aliados não "somem" de verdade enquanto você permanece; ao fim da
+partida todo mundo é transferido de mapa, o que já limpa tudo. Não
+vale a complexidade de rastrear "mudou de vazio pra vazio" só pra esse
+caso.
+
+Testes: `tests/test_fog_ally_vision.py` (6 testes) — servidor inclui/
+omite `ally_vision_centers` conforme haja aliado; torre aliada do outro
+lado de uma parede revela tile que o player não veria sozinho (`visible`
+E `explored`); sem aliado, parede bloqueia normalmente (regressão);
+recomputa quando só o aliado se move (player parado); `switch_map`
+descarta centros do mapa anterior. Verificado com `git stash` (5/6
+falham genuinamente sem a implementação — o 6º é só-negativo/regressão).
+
+#### §34.72.2 — Raio de visão da torre vira dado por TIPO, não constante global (30/07/2026, mesmo dia)
+
+Usuário foi testar em jogo (ajustar o raio pra validar) e não achou
+nenhum parâmetro em `content/tower_definitions.py` — o raio
+(`ALLY_VISION_RADIUS_TOWER=18`) tinha ficado como constante GLOBAL única
+em `shared/constants.py`, aplicada igual pra QUALQUER torre,
+inconsistente com o padrão já usado por `attack_range_tiles` (esse sim
+por tipo, na tabela). Corrigido: `TOWER_TABLE[tipo]["vision_radius_tiles"]`
+(novo campo, `content/tower_definitions.py`) → `Tower.vision_radius_tiles`
+(novo campo no componente, gravado por `create_tower` na criação,
+default = `ALLY_VISION_RADIUS_TOWER` se a definição omitir) →
+`_compute_ally_vision_centers` agora lê `Tower.vision_radius_tiles` do
+componente, nunca mais a constante direto (a constante só sobra como
+DEFAULT de criação). `ALLY_VISION_RADIUS_MINION` continua constante
+global única (minion/NPC não tem tabela por-tipo equivalente hoje) —
+mesma assimetria sinalizada ao usuário, não mudada sem confirmação.
+
+Teste: `tests/test_session.py::TestAllyVisionSharing::
+test_raio_de_visao_da_torre_vem_do_dado_por_tipo_nao_de_constante_global`
+— cria torre com override pontual de `vision_radius_tiles=5` e confirma
+que um mob a 10 tiles (dentro do default 18, fora do override 5) NÃO
+aparece. Verificado com edição temporária (não `git stash`, já que todo
+o trabalho desta sessão ainda está uncommitted — stashar o arquivo
+inteiro reverteria a feature toda, não só este refinamento) revertendo
+só a linha do cálculo de raio pra ler a constante direto: o teste falha
+genuinamente nesse cenário (mob aparece), confirmando que o dado da
+tabela é o que realmente importa agora.
+
+#### §34.72.3 — `ARENA_GATE_TILES` desatualizado após o usuário aumentar o mapa da arena (30/07/2026, mesmo dia)
+
+Usuário aumentou `maps/arena_poco_negro.csv` (mapa maior) e ajustou os
+spawns de `ARENA_MODES["spawns_a"/"spawns_b"]` (`server/match_processor.py`)
+pra nascer dentro do portão novo, mas `ARENA_GATE_TILES`
+(`shared/constants.py`) — fonte única compartilhada servidor/cliente pra
+saber QUAIS tiles são o portão físico (§34.34-ish, revisão 22/07/2026) —
+continuava com as coordenadas do mapa ANTIGO: `(12-14, 4)`/`(12-14, 30)`.
+No mapa novo, essas células são parede comum (`#`) permanente — nunca
+fazem parte do mecanismo de abrir/fechar — e o portão de VERDADE (tile
+`D`, achado varrendo o CSV) está em `(17-29, 4)`/`(17-29, 41)` (13 tiles
+de largura cada lado, não mais 3). Bug real, não só de teste: o portão
+nunca teria aberto/fechado direito em produção com a constante velha —
+achado ao investigar `tests/test_arena.py::TestArenaAceiteContagem::
+test_fim_do_preparo_abre_portao_fisico` falhando após o resize do mapa.
+Corrigido atualizando `ARENA_GATE_TILES` pras 26 coordenadas reais.
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |

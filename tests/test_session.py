@@ -2077,6 +2077,274 @@ class TestZoneChangeReq(unittest.IsolatedAsyncioTestCase):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Visão compartilhada de time (30/07/2026, pedido do usuário)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestAllyVisionSharing(unittest.IsolatedAsyncioTestCase):
+    """SÓ conteúdo instanciado (arena hoje, battlefield/dungeon no futuro)
+    — gate: Faction EXPLÍCITA no player (mundo aberto normal nunca tem).
+    Reaproveita Faction como já existe, zero conceito novo de time.
+    Raios por tipo de aliado: player=ALLY_VISION_RADIUS_PLAYER (15, igual
+    AOI_RADIUS), torre=ALLY_VISION_RADIUS_TOWER (18), minion/NPC=
+    ALLY_VISION_RADIUS_MINION (8) — pedido explícito do usuário."""
+
+    async def asyncSetUp(self):
+        self.ws_server, self.mgr = make_session_manager()
+
+    async def _run_ticks_async(self, n: int):
+        for _ in range(n):
+            self.ws_server._tick(0.05)
+            await asyncio.sleep(0)
+
+    async def test_mundo_aberto_sem_faction_nao_gera_centro_de_aliado(self):
+        """Players sem Faction (mundo aberto normal) nunca geram centro de
+        visão de time — custo ~zero fora de contexto de time (regressão:
+        visão compartilhada NUNCA deve vazar pro grupo/mundo aberto)."""
+        await fake_login(self.mgr, "s1", "avs_open_a", 115, 389)
+        await fake_login(self.mgr, "s2", "avs_open_b", 117, 389)
+        self.assertEqual(self.mgr._compute_ally_vision_centers(), {})
+
+    async def test_teammate_estende_visao_alem_do_proprio_aoi(self):
+        """A está longe de um mob M (fora do próprio AOI), mas o teammate B
+        (mesma Faction, mesmo mapa) está perto de M — M deve entrar no
+        known_eids de A via a visão de B (raio de player = 15 tiles)."""
+        from engine.components import Faction, MapLocation
+        from engine.entity_factory import create_enemy
+
+        session_a, fw_a = await fake_login(self.mgr, "s1", "avs_a", 10, 10)
+        session_b, fw_b = await fake_login(self.mgr, "s2", "avs_b", 100, 100)
+        self.ws_server.world.add_component(session_a.entity_id, Faction(faction_id="time_a"))
+        self.ws_server.world.add_component(session_b.entity_id, Faction(faction_id="time_a"))
+
+        map_file = self.ws_server.get_player_map(session_a.session_id)
+        mob_eid = create_enemy(self.ws_server.world, 103, 100, race="Lobo")
+        self.ws_server.world.add_component(mob_eid, MapLocation(map_file))
+
+        await self._run_ticks_async(3)
+        self.assertIn(mob_eid, session_a.known_eids,
+                      "mob perto do teammate B deveria aparecer pra A via visão de time")
+
+    async def test_torre_aliada_contribui_seu_proprio_raio_configurado(self):
+        """Torre aliada contribui o raio CONFIGURADO em content/tower_
+        definitions.py::TOWER_TABLE["torre_de_fogo"]["vision_radius_tiles"]
+        (por-tipo, ajustável pelo usuário — §34.72.2) — não um valor
+        hardcoded aqui. Mob posicionado a (raio-1) tiles da torre, e A bem
+        longe de ambos (só a torre poderia revelar o mob)."""
+        from engine.components import Faction, MapLocation
+        from engine.entity_factory import create_enemy, create_tower
+        from content.tower_definitions import TOWER_TABLE
+
+        radius = TOWER_TABLE["torre_de_fogo"]["vision_radius_tiles"]
+
+        session_a, _ = await fake_login(self.mgr, "s1", "avs_tw_a", 10, 10)
+        self.ws_server.world.add_component(session_a.entity_id, Faction(faction_id="time_a"))
+        map_file = self.ws_server.get_player_map(session_a.session_id)
+
+        tower_eid = create_tower(self.ws_server.world, 200, 200, "torre_de_fogo",
+                                 faction_id="time_a")
+        self.ws_server.world.add_component(tower_eid, MapLocation(map_file))
+
+        mob_eid = create_enemy(self.ws_server.world, 200, 200 + radius - 1, race="Lobo")
+        self.ws_server.world.add_component(mob_eid, MapLocation(map_file))
+
+        await self._run_ticks_async(3)
+        self.assertIn(mob_eid, session_a.known_eids,
+                      "mob dentro do raio configurado da torre aliada deveria ter aparecido pra A")
+
+    async def test_raio_de_visao_da_torre_vem_do_dado_por_tipo_nao_de_constante_global(self):
+        """Pedido do usuário (30/07/2026): o raio de visão compartilhada
+        precisa ser ajustável POR TIPO de torre (content/tower_
+        definitions.py::TOWER_TABLE["vision_radius_tiles"]), não uma
+        constante global fixa — `_compute_ally_vision_centers` deve ler
+        `Tower.vision_radius_tiles` (gravado por create_tower a partir da
+        definição), não ALLY_VISION_RADIUS_TOWER direto."""
+        from engine.components import Faction, MapLocation, Tower as _TowerComp
+        from engine.entity_factory import create_enemy, create_tower
+
+        session_a, _ = await fake_login(self.mgr, "s1", "avs_twr_a", 10, 10)
+        self.ws_server.world.add_component(session_a.entity_id, Faction(faction_id="time_a"))
+        map_file = self.ws_server.get_player_map(session_a.session_id)
+
+        tower_eid = create_tower(self.ws_server.world, 100, 100, "torre_de_fogo",
+                                 faction_id="time_a")
+        self.ws_server.world.add_component(tower_eid, MapLocation(map_file))
+        # Override pontual (simula uma torre de tipo/config diferente do
+        # default 18) — se o código lesse a constante em vez do componente,
+        # este override não teria efeito nenhum.
+        self.ws_server.world.get_component(tower_eid, _TowerComp).vision_radius_tiles = 5
+
+        mob_eid = create_enemy(self.ws_server.world, 100, 110, race="Lobo")  # 10 tiles da torre
+        self.ws_server.world.add_component(mob_eid, MapLocation(map_file))
+
+        await self._run_ticks_async(3)
+        self.assertNotIn(mob_eid, session_a.known_eids,
+                         "com vision_radius_tiles=5 na torre, mob a 10 tiles não deveria aparecer")
+
+    async def test_minion_aliado_contribui_raio_8_nao_15(self):
+        """Minion/NPC aliado (ALLY_VISION_RADIUS_MINION=8) enxerga MENOS
+        longe que um player aliado (15) — mob a 10 tiles do minion NÃO
+        deveria aparecer (10 > 8, mesmo estando dentro de 15)."""
+        from engine.components import Faction, MapLocation
+        from engine.entity_factory import create_enemy, create_combat_npc
+
+        session_a, _ = await fake_login(self.mgr, "s1", "avs_mn_a", 10, 10)
+        self.ws_server.world.add_component(session_a.entity_id, Faction(faction_id="time_a"))
+        map_file = self.ws_server.get_player_map(session_a.session_id)
+
+        minion_eid = create_combat_npc(self.ws_server.world, 100, 100, "time_a")
+        self.ws_server.world.add_component(minion_eid, MapLocation(map_file))
+
+        mob_eid = create_enemy(self.ws_server.world, 100, 110, race="Lobo")  # 10 tiles do minion
+        self.ws_server.world.add_component(mob_eid, MapLocation(map_file))
+
+        await self._run_ticks_async(3)
+        self.assertNotIn(mob_eid, session_a.known_eids,
+                         "mob a 10 tiles do minion aliado (raio 8) não deveria ter aparecido pra A")
+
+    async def test_times_inimigos_mesma_instancia_sem_visao_cruzada(self):
+        """Time inimigo na MESMA instância não concede visão — bucket
+        separado por (map_file, faction_id)."""
+        from engine.components import Faction
+
+        session_a, _ = await fake_login(self.mgr, "s1", "avs_enemy_a", 10, 10)
+        session_c, _ = await fake_login(self.mgr, "s2", "avs_enemy_c", 100, 100)
+        self.ws_server.world.add_component(session_a.entity_id, Faction(faction_id="time_a"))
+        self.ws_server.world.add_component(session_c.entity_id, Faction(faction_id="time_b"))
+
+        centers = self.mgr._compute_ally_vision_centers()
+        self.assertNotIn(session_a.entity_id, centers,
+                         "time_a sozinho (sem aliado de time_a) não deveria ter centros")
+        c_positions = [(tx, ty) for tx, ty, _ in centers.get(session_c.entity_id, [])]
+        self.assertNotIn((100, 100), c_positions)
+
+    async def test_mesma_faccao_instancias_diferentes_sem_visao_cruzada(self):
+        """Mesma Faction, mas instâncias/mapas diferentes (ex: 2 partidas de
+        arena distintas reaproveitando o mesmo id de time) — sem visão
+        cruzada, já que o bucket inclui o map_file."""
+        from engine.components import Faction
+
+        session_a, _ = await fake_login(self.mgr, "s1", "avs_inst_a", 10, 10)
+        session_b, _ = await fake_login(self.mgr, "s2", "avs_inst_b", 100, 100)
+        self.ws_server.world.add_component(session_a.entity_id, Faction(faction_id="time_a"))
+        self.ws_server.world.add_component(session_b.entity_id, Faction(faction_id="time_a"))
+        # Simula B numa instância DIFERENTE (mesmo template/faction_id, outro match).
+        self.ws_server._player_maps[session_b.session_id] = "maps/arena_poco_negro.csv::99"
+
+        centers = self.mgr._compute_ally_vision_centers()
+        self.assertEqual(centers.get(session_a.entity_id, []), [],
+                         "aliado em instância diferente não deveria contribuir centro de visão")
+
+    async def test_sessions_in_aoi_inclui_via_visao_de_time(self):
+        """Broadcast direto (skill/som/chat de proximidade) perto de um
+        teammate, fora do próprio AOI de A, ainda deve alcançar a sessão de
+        A — pedido do usuário: chat de proximidade também viaja pela visão
+        de time, sem exceção/flag."""
+        from engine.components import Faction
+
+        session_a, _ = await fake_login(self.mgr, "s1", "avs_bc_a", 10, 10)
+        session_b, _ = await fake_login(self.mgr, "s2", "avs_bc_b", 100, 100)
+        self.ws_server.world.add_component(session_a.entity_id, Faction(faction_id="time_a"))
+        self.ws_server.world.add_component(session_b.entity_id, Faction(faction_id="time_a"))
+
+        self.mgr._ally_vision_centers = self.mgr._compute_ally_vision_centers()
+        map_file = self.ws_server.get_player_map(session_a.session_id)
+        result = self.mgr._sessions_in_aoi(101, 100, map_file)   # evento a 1 tile de B
+        result_sids = {s.session_id for s in result}
+        self.assertIn(session_a.session_id, result_sids,
+                     "A deveria receber broadcast perto do teammate B via visão de time")
+
+    async def test_camuflagem_ainda_bloqueia_mesmo_visivel_via_aliado(self):
+        """Player inimigo camuflado (Camuflagem, is_visible=False) perto de
+        um teammate continua invisível pra A — visão de time não bypassa
+        _can_see (checado por entidade, no ponto de inclusão, independente
+        de qual centro cobriria a posição).
+
+        Deixa 1 tick "assentar" o login de D ANTES de camuflar/estabelecer
+        o time — nessa janela D só fica conhecido de B (perto o bastante
+        do próprio AOI dele), nunca de A (longe, sem visão de time ainda).
+        Só DEPOIS camufla D e atacha Faction em A/B — a única forma de A
+        vir a descobrir D dali em diante é o sweep de "outros players"
+        (roda todo tick, sem depender de delta), que checa _can_see.
+        Camuflar ANTES desse tick de assentamento esbarra num gap
+        PRÉ-EXISTENTE e não relacionado a esta feature: o bloco de
+        `deltas["spawned"]` em _build_update_for_session não chama
+        _can_see (só checa in_aoi) — um player recém-logado entra em
+        known_eids de quem já está por perto NO MESMO tick do login,
+        camuflado ou não. Fora de escopo consertar aqui."""
+        from engine.components import Faction, CombatState
+
+        session_a, _ = await fake_login(self.mgr, "s1", "avs_cam_a", 10, 10)
+        session_b, _ = await fake_login(self.mgr, "s2", "avs_cam_b", 100, 100)
+        session_d, _ = await fake_login(self.mgr, "s3", "avs_cam_d", 103, 100)
+
+        await self._run_ticks_async(2)   # assenta o spawn de D (só B o conhece)
+        self.assertNotIn(session_d.entity_id, session_a.known_eids,
+                         "setup: A não deveria conhecer D ainda (sem visão de time)")
+
+        cst = self.ws_server.world.get_component(session_d.entity_id, CombatState)
+        cst.is_visible = False
+        self.ws_server.world.add_component(session_a.entity_id, Faction(faction_id="time_a"))
+        self.ws_server.world.add_component(session_b.entity_id, Faction(faction_id="time_a"))
+
+        await self._run_ticks_async(3)
+        self.assertNotIn(session_d.entity_id, session_a.known_eids,
+                         "player camuflado não deveria aparecer pra A mesmo via visão de B")
+
+    async def test_known_eids_nao_oscila_quando_um_aliado_sai_mas_outro_cobre(self):
+        """Aliado B some do range mas aliado C ainda cobre M — M não deve
+        despawnar (os centros são recalculados do zero todo tick a partir
+        do estado ATUAL, nenhum center é 'lembrado' de tick anterior)."""
+        from engine.components import Faction, MapLocation, TileMovement
+        from engine.entity_factory import create_enemy
+
+        session_a, _ = await fake_login(self.mgr, "s1", "avs_osc_a", 10, 10)
+        session_b, _ = await fake_login(self.mgr, "s2", "avs_osc_b", 100, 100)
+        session_c, _ = await fake_login(self.mgr, "s3", "avs_osc_c", 100, 100)
+        for sid in (session_a, session_b, session_c):
+            self.ws_server.world.add_component(sid.entity_id, Faction(faction_id="time_a"))
+        map_file = self.ws_server.get_player_map(session_a.session_id)
+
+        mob_eid = create_enemy(self.ws_server.world, 103, 100, race="Lobo")
+        self.ws_server.world.add_component(mob_eid, MapLocation(map_file))
+
+        await self._run_ticks_async(3)
+        self.assertIn(mob_eid, session_a.known_eids, "setup: mob deveria ter aparecido pra A")
+
+        # B se afasta pra bem longe (sai de qualquer cobertura) — C continua perto do mob.
+        from tests.helpers import set_entity_tile
+        set_entity_tile(self.ws_server, session_b.entity_id, 500, 500)
+        self.ws_server._moved_this_tick.append({
+            "eid": session_b.entity_id, "tx": 500, "ty": 500,
+            "from_tx": 100, "from_ty": 100,
+        })
+        await self._run_ticks_async(3)
+
+        self.assertIn(mob_eid, session_a.known_eids,
+                     "mob não deveria despawnar: C ainda cobre, mesmo com B fora de range")
+
+    async def test_faction_removida_no_fim_da_partida_remove_visao_no_proximo_tick(self):
+        """Faction removida (fim de partida, mesmo padrão de
+        match_processor.py) — aliado deixa de contribuir centro de visão
+        no tick seguinte, sem entrada 'presa' de uma partida encerrada."""
+        from engine.components import Faction
+
+        session_a, _ = await fake_login(self.mgr, "s1", "avs_end_a", 10, 10)
+        session_b, _ = await fake_login(self.mgr, "s2", "avs_end_b", 100, 100)
+        fac_a = Faction(faction_id="time_a")
+        fac_b = Faction(faction_id="time_a")
+        self.ws_server.world.add_component(session_a.entity_id, fac_a)
+        self.ws_server.world.add_component(session_b.entity_id, fac_b)
+
+        centers_before = self.mgr._compute_ally_vision_centers()
+        self.assertIn(session_a.entity_id, centers_before)
+
+        self.ws_server.world.remove_component(session_b.entity_id, Faction)
+        centers_after = self.mgr._compute_ally_vision_centers()
+        self.assertNotIn(session_a.entity_id, centers_after,
+                         "aliado sem Faction (partida encerrada) não deveria mais contribuir visão")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Runner
 # ─────────────────────────────────────────────────────────────────────────────
 

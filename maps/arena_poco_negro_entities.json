@@ -21,10 +21,20 @@
   ],
   "combat_npcs": [
     {
-      "x": 14, "y": 11,
-      "faction": "monstros_hostis",
+      "x": 25, "y": 19,
+      "faction": "arena_time_a",
       "name": "Minion",
-      "profession": "Monstro",
+      "profession": "Minion",
+      "race": "Humanoide",
+      "entity_class": "Warrior",
+      "level": 60,
+      "is_ranged": false
+    },
+    {
+      "x": 24, "y": 19,
+      "faction": "arena_time_b",
+      "name": "Minion",
+      "profession": "Minion",
       "race": "Humanoide",
       "entity_class": "Warrior",
       "level": 60,

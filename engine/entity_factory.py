@@ -644,6 +644,7 @@ def create_tower(world: World, tile_x: int, tile_y: int, tower_key: str,
     sabor de ataque/recompensa). `faction_id`/`respawnable`/
     `respawn_s`/`regen_enabled`/`level` são parâmetros de INSTÂNCIA
     (por colocação no mapa) — não vêm de `TOWER_TABLE`."""
+    from shared.constants import ALLY_VISION_RADIUS_TOWER
     tdef = TOWER_TABLE[tower_key]
     x = tile_x * TILE_SIZE + TILE_SIZE / 2
     y = tile_y * TILE_SIZE + TILE_SIZE / 2
@@ -719,6 +720,7 @@ def create_tower(world: World, tile_x: int, tile_y: int, tower_key: str,
         xp_reward=tdef["xp_reward"],
         gold_min=tdef["gold_min"], gold_max=tdef["gold_max"],
         spawn_tile_x=tile_x, spawn_tile_y=tile_y,
+        vision_radius_tiles=tdef.get("vision_radius_tiles", ALLY_VISION_RADIUS_TOWER),
     ))
     return eid
 

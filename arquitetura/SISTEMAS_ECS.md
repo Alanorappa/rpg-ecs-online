@@ -98,6 +98,25 @@ aggro-switch pra defender aliado atacado no alcance), ataque via
 +120%, nunca contra mob), regen opcional. Ver `engine/components.py::
 Tower` e `ARQUITETURA_ONLINE.md` §34.70 pro design completo.
 
+### Visão compartilhada de time (30/07/2026) — `server/session.py`
+
+Não é um `System` ECS — vive dentro do pipeline de AOI do
+`SessionManager`. `_compute_ally_vision_centers()` roda 1x/tick, no
+topo de `_dispatch_tick_deltas`, ANTES de `_build_update_for_session`/
+`_sessions_in_aoi`: agrupa players com `Faction` EXPLÍCITA (SÓ conteúdo
+instanciado — arena/battlefield/dungeon, nunca mundo aberto/party) por
+`(map_file, faction_id)`, soma torres/minions com a mesma Faction+mapa,
+e guarda em `self._ally_vision_centers: dict[player_eid,
+list[(tx,ty,radius)]]`. `_build_update_for_session` (via parâmetro
+`ally_centers`) e `_sessions_in_aoi` passam a checar "qualquer centro"
+(posição própria + centros de aliados) em vez de um único centro.
+
+O MESMO dado é reenviado ao dono via `AOI_UPDATE.ally_vision_centers`
+pra alimentar `FogSystem` (`ui/systems.py`, client-side) — aliado também
+"explora" a névoa do minimapa e o LOS de renderização com shadowcasting
+PRÓPRIO (`ui/fov.py::compute_fov`), a partir da posição dele, não da do
+player. Ver `ARQUITETURA_ONLINE.md` §34.72/§34.72.1 pro design completo.
+
 ### Arquitetura de StatusEffectSystem
 
 ```
