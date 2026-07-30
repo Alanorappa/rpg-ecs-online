@@ -31,6 +31,27 @@
     "                  pra quem nao tem a quest ATIVA -- mesmo principio",
     "                  de class_req de NPC. '' = visivel pra todo mundo."
   ],
+  "_help_towers": [
+    "towers = torre estatica com faccao (29/07/2026) -- ataca a distancia",
+    "quem entra no alcance, recebe dano de volta, pode respawnar e/ou",
+    "regenerar vida. Campos por entrada:",
+    "  x, y            (int, obrigatorio) tile.",
+    "  tower_key       (str, obrigatorio) chave em content/tower_",
+    "                  definitions.py::TOWER_TABLE (tipo/atributos/sabor",
+    "                  de ataque/recompensa -- ex 'torre_de_fogo',",
+    "                  'torre_de_flechas').",
+    "  faction         (str) time da torre, content/faction_data.py.",
+    "                  Default 'monstros_hostis'.",
+    "  level           (int) nivel da torre. Default 1.",
+    "  respawnable     (bool) se True, volta sozinha no MESMO tile depois",
+    "                  de respawn_s segundos. Default False (some pra",
+    "                  sempre ao morrer).",
+    "  respawn_s       (float) segundos ate respawnar. So importa se",
+    "                  respawnable=True.",
+    "  regen_enabled   (bool) se True, regenera vida fora de combate",
+    "                  (mesma formula/intervalo do regen de mob).",
+    "                  Default False."
+  ],
   "_help_harvestable_zones": [
     "harvestable_zones = zona que gera N nos dentro de um raio, MISTURANDO",
     "sub-tipos (ex: 3 Cogumelo + 2 Arbusto na MESMA zona). Diferente de",
@@ -89,6 +110,15 @@
                     "first_equip"]
     },
     {
+      "x": 112,
+      "y": 390,
+      "name": "Caterina Alisarf",
+      "level": 60,
+      "profession": "Anfitriã",
+      "quest_ids": ["bem_vindo_guerreiro"],
+      "turn_in_ids": ["artefato_misterioso"]
+    },
+    {
       "x": 16,
       "y": 319,
       "name": "Ferdinando Grisold",
@@ -96,7 +126,7 @@
       "profession": "Camponês",
       "quest_ids": ["atividade_suspeita", "report_coveiro"],
       "turn_in_ids": ["atividade_suspeita"]
-    },
+    },    
     {
       "x": 127,
       "y": 361,
@@ -109,18 +139,18 @@
   ],
   "trainers": [
     {
-      "x": 117,
-      "y": 390,
+      "x": 115,
+      "y": 393,
       "name": "Avido Faseo",
       "class_id": "guerreiro",
       "level": 60,
       "profession": "Guerreiro Veterano",
-      "quest_ids": ["prova_valor", "first_blood", "merchant_greeting"],
-      "turn_in_ids": ["prova_valor", "first_blood", "merchant_greeting"]
+      "quest_ids": ["prova_valor", "first_blood", "merchant_greeting", "primeiros_golpes"],
+      "turn_in_ids": ["bem_vindo_guerreiro","prova_valor", "first_blood", "merchant_greeting", "primeiros_golpes"]
     },
     {
       "x": 119,
-      "y": 390,
+      "y": 393,
       "name": "Selene Vail",
       "class_id": "mago",
       "level": 60,
@@ -129,8 +159,8 @@
       "turn_in_ids": ["iniciacao_arcana"]
     },
     {
-      "x": 121,
-      "y": 390,
+      "x": 123,
+      "y": 393,
       "name": "Andre Von Han'Duch",
       "class_id": "arqueiro",
       "level": 60,
@@ -142,11 +172,7 @@
   "training_dummies": [
     { "x": 120, "y": 387 },
     { "x": 120, "y": 388 },
-    { "x": 121, "y": 388 },
-    { "x": 122, "y": 388 },
-    { "x": 122, "y": 387 },
-    { "x": 122, "y": 386 },
-    { "x": 121, "y": 386 }
+    { "x": 120, "y": 389 }
   ],
   "combat_npcs": [
     {
@@ -164,14 +190,58 @@
       "level": 8
     }
   ],
+  "towers": [
+    {
+      "x": 100, "y": 383,
+      "tower_key": "torre_de_fogo",
+      "faction": "monstros_hostis",
+      "level": 5,
+      "respawnable": true,
+      "respawn_s": 45,
+      "regen_enabled": true
+    },
+    {
+      "x": 100, "y": 393,
+      "tower_key": "torre_de_flechas",
+      "faction": "monstros_hostis",
+      "level": 5,
+      "respawnable": false,
+      "regen_enabled": false
+    }
+  ],
   "harvestables": [
     {
-      "x": 130,
-      "y": 374,
+      "x": 113,
+      "y": 383,
       "name": "Caixa de Teste (M1)",
       "sprite": "pr_box1",
       "items": ["training_sword", ["small_hp_potion", 3]],
       "coins": 10
+    },
+    {
+      "x": 113,
+      "y": 385,
+      "name": "Caixa de Teste (M2)",
+      "sprite": "pr_box2",
+      "items": ["Artefato Misterioso"],
+      "respawn_s": 10
+    }
+  ],
+  "harvestable_zones": [
+    {
+      "x": 129,
+      "y": 381,
+      "radius": 6,
+      "respawn_cooldown": 30,
+      "requires_quest": "bem_vindo_guerreiro",
+      "spawns": [
+        {
+          "name": "Vômito",
+          "sprite": "pl_vomito",
+          "items": ["Vômito de Zumbi"],
+          "count": 10
+        }
+      ]
     }
   ],
   "transitions": [
@@ -241,6 +311,21 @@
         { "type": "melee",   "tier": "normal", "count": 5 },
         { "type": "ranged",  "tier": "normal", "count": 4 },
         { "type": "melee",   "tier": "elite",  "count": 2 }
+      ]
+    },
+    {
+      "x": 25,
+      "y": 316,
+      "radius": 30,
+      "respawn_cooldown": 60,
+      "faction": "vida_selvagem",
+      "level_min": 3,
+      "level_max": 5,
+      "race": "Aranha",
+      "class": "Warrior",
+      "spawns": [
+        { "type": "melee", "tier": "normal", "count": 10 },
+        { "type": "melee", "tier": "elite",  "count": 1 }
       ]
     },
     {
