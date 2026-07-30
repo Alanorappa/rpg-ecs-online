@@ -206,6 +206,15 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._harvestable_zone_timers: dict[int, list] = {}
         self._next_harvestable_zone_id: int = 1
 
+        # Torre (29/07/2026, pedido do usuário) — respawn exato (NUNCA via
+        # SpawnZone, que sempre sorteia um tile aleatório dentro de um
+        # raio — errado pra uma estrutura que precisa nascer sempre no
+        # MESMO tile). Chave = (map_file, spawn_tile_x, spawn_tile_y),
+        # única por torre colocada no mapa. Valor: {tower_key, faction_id,
+        # regen_enabled, respawn_s, level, timer}. Ver register_tower_
+        # respawn()/_tick_tower_respawns().
+        self._tower_respawn_timers: dict[tuple, dict] = {}
+
         # DEBUG Bug2 (regen/desaparecimento no golpe final): current_hp de cada
         # mob ao FINAL do tick anterior (pós death-sweep) — usado em _tick()
         # para detectar mutações de current_hp ocorridas ENTRE ticks (handlers
@@ -348,11 +357,19 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # Sistemas globais: rodam UMA vez por tick, após todos os bundles.
         # Se ficassem dentro de cada bundle (sem map_filter) rodariam N×/tick
         # (N = número de mapas carregados), causando timers/movimento N× rápidos.
-        from engine.world_systems import TileMovementSystem as _TMS, ProjectileSystem as _ProjSys
+        from engine.world_systems import TileMovementSystem as _TMS, ProjectileSystem as _ProjSys, TowerSystem as _TowerSys
         self._global_tms           = _TMS(self.world)
         self._global_proj_sys      = _ProjSys(self.world, screen=None)
         self._global_sfx_sys       = _ServerStatusEffectSystem.build(self.world, self)
         self._status_effect_system = self._global_sfx_sys  # alias de compat
+        # Torre (29/07/2026) — sweep global, não por-bundle (torre não
+        # precisa de map_filter — mesmo princípio de _tick_harvestable_
+        # respawn/_tick_harvestable_zones, um sweep só filtrando por
+        # MapLocation internamente onde precisa). get_tilemap_for_map
+        # injeta a resolução de bundle→tilemap (só o WorldServer conhece
+        # _map_bundles — engine/world_systems.py é headless/compartilhado).
+        self._tower_system = _TowerSys(
+            self.world, get_tilemap_for_map=self._get_tilemap_for_map_file)
 
         from server.server_death_handler import ServerDeathHandler
         self._death_handler = ServerDeathHandler(self.world, world_server=self)
@@ -540,6 +557,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._create_service_npcs(spawn_points)
         self._create_harvestables_for_map(spawn_points, key)
         self._create_harvestable_zones_for_map(spawn_points.get("harvestable_zones", []), key)
+        self._create_towers(spawn_points.get("towers", []), key)
 
         # Snapshot DEPOIS — todas as novas entidades ganham MapLocation
         _eids_after = set(self.world._components.keys())
@@ -842,6 +860,88 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 for i in range(sub.get("count", 1)):
                     timers.append([idx, i * 0.15 + random.uniform(0.0, 0.05)])
             self._harvestable_zone_timers[zone_id] = timers
+
+    def _get_tilemap_for_map_file(self, map_file: str):
+        """Resolve o tilemap do MAPA pedido via `_map_bundles` — injetado
+        no `TowerSystem` (`engine/world_systems.py`) como callback, já
+        que aquele módulo é headless/compartilhado e não conhece
+        `_map_bundles` (server-only). Mesmo princípio de
+        `_pick_harvestable_zone_tile` abaixo."""
+        bundle = self._map_bundles.get(map_file)
+        return bundle.pathfinding._get_tilemap_component() if bundle else None
+
+    def _create_towers(self, towers_data: list, map_file: str) -> None:
+        """Cria torres estáticas (29/07/2026, pedido do usuário) a partir
+        de `{mapa}_entities.json::towers` — mesmo padrão de
+        `_create_combat_npcs`, mas via `create_tower()` (sem
+        `AIControlled` — ver docstring de `engine/components.py::Tower`).
+        Sincroniza pro cliente pelo MESMO pipeline genérico de mob
+        (`Combatant`+`TileMovement` → `_mob_eids`, ver sweep de
+        registro em `_tick()`) — nenhum protocolo novo."""
+        from engine.entity_factory import create_tower
+        for t in towers_data:
+            create_tower(
+                self.world, t["x"], t["y"], t["tower_key"],
+                faction_id=t.get("faction", "monstros_hostis"),
+                respawnable=t.get("respawnable", False),
+                respawn_s=float(t.get("respawn_s", 0)),
+                regen_enabled=t.get("regen_enabled", False),
+                level=t.get("level", 1),
+            )
+            # MapLocation é anexado automaticamente pelo diff antes/depois
+            # de entidades em _load_map_for (mesmo mecanismo de
+            # _create_combat_npcs) — nenhuma linha extra necessária aqui.
+
+    def register_tower_respawn(self, tower, faction_id: str, map_file: str, level: int) -> None:
+        """Chamado por `ServerDeathHandler.update()` quando uma entidade
+        com componente `Tower` morre, ANTES de ser removida do world —
+        único momento em que dá pra capturar `faction_id`/`level` (o
+        componente `Tower` em si não guarda esses dois, eles vivem em
+        `Faction`/`EntityIdentity`). Se `tower.respawnable`, agenda um
+        timer exato (NUNCA via SpawnZone — ver comentário do dict no
+        __init__) pra recriar a MESMA torre no MESMO tile depois de
+        `tower.respawn_s`."""
+        if not tower.respawnable:
+            return
+        key = (map_file, tower.spawn_tile_x, tower.spawn_tile_y)
+        self._tower_respawn_timers[key] = {
+            "tower_key":     tower.tower_key,
+            "faction_id":    faction_id,
+            "regen_enabled": tower.regen_enabled,
+            "respawn_s":     tower.respawn_s,
+            "level":         level,
+            "timer":         0.0,
+        }
+
+    def _tick_tower_respawns(self, dt: float) -> None:
+        """Decrementa os timers de `_tower_respawn_timers` e recria a
+        torre (entidade NOVA, não reaproveita o eid morto — mesmo
+        princípio do harvestable de zona, `_tick_harvestable_zones`)
+        exatamente no tile original ao completar. `MapLocation` precisa
+        ser anexado manualmente aqui (diferente de `_create_towers`,
+        chamado durante `_load_map_for` — o diff antes/depois de
+        entidades só cobre a CARGA do mapa, não criação em runtime;
+        mesmo detalhe já resolvido em `_spawn_harvestable_zone_node`)."""
+        if not self._tower_respawn_timers:
+            return
+        from engine.entity_factory import create_tower
+        from engine.components import MapLocation as _MLtw
+        done_keys = []
+        for key, info in self._tower_respawn_timers.items():
+            info["timer"] += dt
+            if info["timer"] < info["respawn_s"]:
+                continue
+            map_file, tx, ty = key
+            eid = create_tower(
+                self.world, tx, ty, info["tower_key"],
+                faction_id=info["faction_id"],
+                respawnable=True, respawn_s=info["respawn_s"],
+                regen_enabled=info["regen_enabled"], level=info["level"],
+            )
+            self.world.add_component(eid, _MLtw(map_file))
+            done_keys.append(key)
+        for key in done_keys:
+            del self._tower_respawn_timers[key]
 
     def _pick_harvestable_zone_tile(self, zone: dict, occupied: set):
         """Tile (x, y) caminhável aleatório dentro do raio da zona, ou None
@@ -1764,7 +1864,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         from engine.components import (CombatStats, AIControlled, Renderable, SpawnZoneOwner,
                                 SpawnZone, EntityIdentity, TrainingDummy as _TDpay, Faction as _FacPay,
                                 NPC as _NPCpay, Merchant as _Merchpay, Blacksmith as _Blackpay,
-                                Trainer as _Trainpay, QuestGiver as _QGpay)
+                                Trainer as _Trainpay, QuestGiver as _QGpay, Tower as _TowerPay)
         cs    = self.world.get_component(eid, CombatStats)
         ai    = self.world.get_component(eid, AIControlled)
         ren   = self.world.get_component(eid, Renderable)
@@ -1805,6 +1905,15 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # cliente mesmo lutando à distância de verdade no servidor.
         if ai is not None:
             is_ranged = ai.is_ranged
+        elif self.world.get_component(eid, _TowerPay) is not None:
+            # Torre (29/07/2026) não tem AIControlled — sempre ataca à
+            # distância, então is_ranged é sempre True. Sem isso, o
+            # payload sempre mandava is_ranged=False (preso no default
+            # do topo da função, igual o bug de "Arqueiro (NPC)"
+            # documentado acima) — cliente escolhia som/animação de
+            # melee pra torre de flechas/fogo (bug real relatado pelo
+            # usuário: "audio da flecha emitindo som de attack melee").
+            is_ranged = True
         mob_level = ident.level if ident else (zone.level_min if szo and zone else 1)
         payload = {
             "eid":          eid, "kind":         "enemy",
@@ -3780,6 +3889,13 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._process_loot_drops(dt)
         self._tick_harvestable_respawn(dt)
         self._tick_harvestable_zones(dt)
+        self._tick_tower_respawns(dt)
+        # Torre (29/07/2026): combat_this_tick já está populado com os
+        # eventos de dano DESTE tick (auto-attack/skill processados
+        # acima) — precisa disso pro aggro-switch (troca de alvo pra
+        # defender aliado atacado no alcance). Chamado ANTES do clear
+        # de combat_this_tick no fim do tick (ver _tick()).
+        self._tower_system.update(dt, combat_this_tick=self._combat_this_tick)
         self._tick_trade_distance_check()
         self._tick_duel_distance_check()
         self._tick_arena_queue()

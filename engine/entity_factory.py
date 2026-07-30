@@ -9,11 +9,12 @@ from engine.components import Position, Renderable, PlayerControlled, Camera, Co
                        SkillLevels, \
                        SpawnZone, EntityIdentity, StatusEffects, ConsumableBar, NpcSounds, FogOfWar, \
                        EnemyAbilities, EnemyAbilitySlot, QuestLog, QuestGiver, NPC, Blacksmith, \
-                       LearnedRecipes, Trainer, Faction, Combatant, Harvestable
+                       LearnedRecipes, Trainer, Faction, Combatant, Harvestable, Tower
 from ui.ui_components import UIState, ShopUIState, LootUIState, DragState, TradeUIState
 from engine.tileset import TILE_MAPPING, OBJECT_MAPPING, TILE_SIZE, FLOOR_TILE, get_collision_offsets
 from content.mob_definitions import MOB_TABLE
 from content.enemy_abilities_data import ABILITY_DEFS
+from content.tower_definitions import TOWER_TABLE
 
 # --- Configurações para as entidades ---
 PLAYER_COLOR = (255, 0, 0)
@@ -238,8 +239,25 @@ def _build_combat_entity(world: World, tile_x: int, tile_y: int,
     # atributos próprios (attributes/abilities/loot/xp_given_by_lvl, ver
     # mob_definitions.py); mobs sem entrada (ex: "Elemental", definidos só na
     # SpawnZone do mapa) caem no template genérico por is_ranged (bloco else).
+    #
+    # TOWER_TABLE (29/07/2026) entra no MESMO lookup como fallback: esta
+    # função só é chamada aqui pelo CLIENTE reconstruindo o espelho de
+    # uma Torre remota (`_spawn_remote_mob`, via `create_enemy` — o
+    # servidor cria a torre de verdade por `create_tower`, que NUNCA
+    # passa por aqui). `race` chega como o `mob_key` da torre (ex:
+    # "torre_de_fogo", via EntityIdentity.mob_key → payload de spawn) —
+    # sem este fallback, `mob_def` ficava sempre None (torre não está em
+    # MOB_TABLE de propósito, ver content/tower_definitions.py) e o
+    # cliente caía no template genérico 100% errado: `entity_class`
+    # virava sempre "Arqueiro"/"Guerreiro" (nunca "Mago" de verdade) e
+    # `NpcSounds` ficava TOTALMENTE vazio (mob_def=None → sounds={}) —
+    # bug real relatado pelo usuário: torre de fogo sem NENHUM som, torre
+    # de flechas com som errado. TOWER_TABLE tem o MESMO formato de
+    # MOB_TABLE de propósito (attributes/entity_class/color/is_ranged/
+    # sounds), então o resto desta função funciona sem nenhuma mudança
+    # adicional.
     race = _resolve_mob_race_variant(race, is_ranged)
-    mob_def = MOB_TABLE.get(race)
+    mob_def = MOB_TABLE.get(race) or TOWER_TABLE.get(race)
     attrs   = mob_def.get("attributes") if mob_def else None
     if mob_def:
         base_color = mob_def["color"]
@@ -606,6 +624,101 @@ def create_training_dummy(world: World, tile_x: int, tile_y: int) -> int:
     world.add_component(eid, EntityIdentity(
         name="Boneco de treino", race="Mecânico", entity_class="Guerreiro",
         level=99, tier="Boss",
+    ))
+    return eid
+
+
+def create_tower(world: World, tile_x: int, tile_y: int, tower_key: str,
+                 faction_id: str, respawnable: bool = False,
+                 respawn_s: float = 0.0, regen_enabled: bool = False,
+                 level: int = 1) -> int:
+    """Cria uma torre estática (29/07/2026, pedido do usuário) — mesmo
+    espírito de `create_training_dummy` (construção MANUAL, sem passar
+    por `_build_combat_entity`, que é acoplado ao formato de dict do
+    MOB_TABLE — torre agora tem tabela própria, `content/tower_
+    definitions.py::TOWER_TABLE`). Sem `AIControlled`/`EnemyAISystem`
+    de propósito — a lógica de alvo/ataque é toda do `TowerSystem`
+    (`engine/world_systems.py`), que lê o componente `Tower` direto.
+
+    `tower_key` referencia `TOWER_TABLE` (tipo/aparência/atributos/
+    sabor de ataque/recompensa). `faction_id`/`respawnable`/
+    `respawn_s`/`regen_enabled`/`level` são parâmetros de INSTÂNCIA
+    (por colocação no mapa) — não vêm de `TOWER_TABLE`."""
+    tdef = TOWER_TABLE[tower_key]
+    x = tile_x * TILE_SIZE + TILE_SIZE / 2
+    y = tile_y * TILE_SIZE + TILE_SIZE / 2
+    size = ENEMY_TIER_CONFIGS.get(tdef["tier"], ENEMY_TIER_CONFIGS["normal"])["size"]
+
+    eid = world.create_entity()
+    world.add_component(eid, Position(x=x, y=y, prev_x=x, prev_y=y))
+    world.add_component(eid, Renderable(color=tdef.get("color", (120, 120, 130)), width=size, height=size))
+    world.add_component(eid, Collider(width=size, height=size))
+    world.add_component(eid, Combatant())
+    world.add_component(eid, Faction(faction_id=faction_id))
+    world.add_component(eid, TileMovement(
+        current_tile_x=tile_x, current_tile_y=tile_y,
+        target_tile_x=tile_x,  target_tile_y=tile_y,
+        start_pixel_x=x,  start_pixel_y=y,
+        target_pixel_x=x, target_pixel_y=y,
+        move_duration=1.0, speed=0.0,   # torre nunca se move
+    ))
+    world.add_component(eid, EnemyTier(tier=tdef["tier"]))
+
+    attrs = tdef["attributes"]
+    entity_class = tdef["entity_class"]
+    stats = CombatStats(
+        base_stamina         = attrs["health"],
+        base_armor           = attrs.get("armor", 0) * 10,
+        base_attack_power    = attrs.get("attack_power", 0),
+        base_physical_damage = attrs.get("attack_min", 1),
+        base_attack_interval = attrs.get("attack_speed", 3.0),
+        base_crit_rating     = attrs.get("crit_chance", 5) / 100.0,
+    )
+    stats.base_physical_damage_max = attrs.get("attack_max", stats.base_physical_damage)
+    stats.base_acerto = float(attrs.get("acerto", 95))
+    # Torre "mágica" (entity_class Mago/Mage/Warlock/Bruxo) causa dano
+    # magical em vez de physical — mesmo critério de mob (ver
+    # _build_combat_entity acima).
+    if entity_class in _MAGIC_CASTER_CLASSES:
+        stats.base_spell_power    = attrs.get("attack_power", 0)
+        attack_min = attrs.get("attack_min", 1)
+        attack_max = attrs.get("attack_max", attack_min)
+        stats.base_magical_damage = (attack_min + attack_max) / 2.0
+    stats._recalculate_effective_stats()
+    stats.current_hp = stats.max_hp
+    world.add_component(eid, stats)
+
+    world.add_component(eid, EntityIdentity(
+        name=tdef.get("display_name", tower_key), race=tdef["race"],
+        entity_class=entity_class, level=level, tier=tdef["tier"],
+        mob_key=tower_key,
+    ))
+    world.add_component(eid, StatusEffects())
+    _snd = tdef.get("sounds", {})
+    world.add_component(eid, NpcSounds(
+        aggro=_snd.get("aggro", ""), death=_snd.get("death", ""),
+        attack_melee=_snd.get("attack_melee", ""),
+        attack_ranged=_snd.get("attack_ranged", ""),
+        attack_magic=_snd.get("attack_magic", ""),
+        crit=_snd.get("crit", ""),
+        emote_attack=_snd.get("emote_attack", ""),
+        emote_get_crit=_snd.get("emote_get_crit", ""),
+        attack_impact=_snd.get("attack_impact", ""),
+    ))
+    # XPReward: componente já existe (mob offline o usa), mas é MORTO no
+    # servidor pra mob comum (server_death_handler.py lê MOB_TABLE/tier).
+    # Pra Tower é o INVERSO: server_death_handler.py checa o componente
+    # `Tower` PRIMEIRO e usa xp_reward/gold_min/gold_max direto, nunca
+    # cai no lookup por nome — ver hook lá.
+    world.add_component(eid, XPReward(amount=tdef["xp_reward"]))
+    world.add_component(eid, Tower(
+        tower_key=tower_key,
+        attack_range_tiles=tdef["attack_range_tiles"],
+        respawnable=respawnable, respawn_s=respawn_s,
+        regen_enabled=regen_enabled,
+        xp_reward=tdef["xp_reward"],
+        gold_min=tdef["gold_min"], gold_max=tdef["gold_max"],
+        spawn_tile_x=tile_x, spawn_tile_y=tile_y,
     ))
     return eid
 

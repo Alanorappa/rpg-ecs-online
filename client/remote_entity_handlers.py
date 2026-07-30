@@ -30,7 +30,7 @@ class RemoteEntityHandlers:
         suprime o fallback hit_normal do caller, evitando som de espada errado.
         Retorna False apenas se o atacante é um player remoto (PvP).
         """
-        from engine.components import NpcSounds as _NpcSounds, AIControlled as _AICtrl
+        from engine.components import NpcSounds as _NpcSounds, EntityIdentity as _EIAtkSnd
         # Eu sou o atacante (auto-attack melee contra outro player em PvP):
         # nem _remote_mobs nem _remote_players contêm o meu próprio eid, então
         # sem este guard a linha 39 avaliava True por omissão e suprimia o
@@ -50,11 +50,33 @@ class RemoteEntityHandlers:
         if not _atk_pos:
             return True  # Mob existe no ECS mas sem posição — suprime hit_normal
         _atk_snd = self.world.get_component(_atk_mob_local, _NpcSounds)
-        _atk_ai  = self.world.get_component(_atk_mob_local, _AICtrl)
-        if _atk_ai and _atk_ai.entity_class in ("Mage", "Mago", "Warlock", "Bruxo"):
-            _atk_ev = "attack_magic"
-        elif _atk_ai and _atk_ai.is_ranged:
-            _atk_ev = "attack_ranged"
+        # EntityIdentity, não AIControlled (29/07/2026, bug real/crônico
+        # relatado pelo usuário testando torre — mas afeta QUALQUER mob
+        # remoto ranged/mágico, não só torre): o espelho remoto NUNCA tem
+        # AIControlled (removido de propósito em _spawn_remote_mob —
+        # servidor é autoritativo pra IA, ver comentário em
+        # _play_nonplayer_attack_impact, função irmã que já fazia certo).
+        # `if _atk_ai and ...` nunca era True (sempre None) — todo ataque
+        # de mob remoto contra o player caía sempre no "attack_melee",
+        # mesmo vindo de flecha/magia.
+        _atk_ident = self.world.get_component(_atk_mob_local, _EIAtkSnd)
+        _atk_cls   = _atk_ident.entity_class if _atk_ident else ""
+        # Ranged/caster: este método toca no momento em que o GOLPE CHEGA
+        # (COMBAT_RESULT/dano no player, não no nascimento do projétil) —
+        # por isso precisa do som de IMPACTO ("arrow_impact"/"skill_bola_
+        # de_fogo_impact"), não do de lançamento ("attack_ranged"/
+        # "attack_magic", tocado à parte quando o projétil nasce, ver
+        # _spawn_mob_projectile). Bug real relatado pelo usuário 29/07/2026
+        # (torre de flecha): tocava o som de LANÇAMENTO no momento do
+        # IMPACTO — mesma distinção que _play_nonplayer_attack_impact
+        # (função irmã, mob-vs-mob) já fazia certo. Fallback pro nome de
+        # lançamento se o mob não tiver attack_impact configurado
+        # (mob antigo sem esse campo — nunca quebra silêncio total).
+        _impact_snd = getattr(_atk_snd, "attack_impact", "") if _atk_snd else ""
+        if _atk_cls in ("Mage", "Mago", "Warlock", "Bruxo"):
+            _atk_ev = "attack_impact" if _impact_snd else "attack_magic"
+        elif _atk_cls in ("Hunter", "Arqueiro"):
+            _atk_ev = "attack_impact" if _impact_snd else "attack_ranged"
         else:
             _atk_ev = "attack_melee"
         SOUNDS.play_mob_sounds_at(_atk_snd, _atk_ev, _atk_pos.x, _atk_pos.y, _lx, _ly,
@@ -997,25 +1019,27 @@ class RemoteEntityHandlers:
 
         # Som de DISPARO no momento em que o projétil nasce (21/07/2026) —
         # igual ao arqueiro jogador, que toca arrow_release quando a flecha
-        # dele nasce. Só quando o alvo NÃO é o player local: pra mob→player,
-        # o attack_ranged já toca na chegada do COMBAT_RESULT
-        # (_play_attacker_mob_sound) — tocar aqui também dobraria o som, e
-        # mudar o timing daquele fluxo mexeria no que já funciona.
-        if target_seid != self._my_eid:
-            # EntityIdentity (não AIControlled — removido do espelho remoto)
-            # decide o evento: caster → attack_magic, senão attack_ranged.
-            from engine.components import NpcSounds as _NpcSndFire, EntityIdentity as _EIFire
-            _atk_local_fire = self._remote_mobs.get(data.get("attacker_seid", -1))
-            if _atk_local_fire is not None:
-                _snd_fire   = self.world.get_component(_atk_local_fire, _NpcSndFire)
-                _ident_fire = self.world.get_component(_atk_local_fire, _EIFire)
-                _cls_fire = _ident_fire.entity_class if _ident_fire else ""
-                _ev_fire = ("attack_magic"
-                            if _cls_fire in ("Mage", "Mago", "Warlock", "Bruxo")
-                            else "attack_ranged")
-                _flx, _fly = self._player_world_pos()
-                SOUNDS.play_mob_sounds_at(_snd_fire, _ev_fire, px, py, _flx, _fly,
-                                          base=0.8, dedup_key=f"fire_{server_proj_eid}")
+        # dele nasce. SEMPRE toca, mesmo quando o alvo É o player local
+        # (29/07/2026, bug real relatado pelo usuário — torre de flecha:
+        # antes disso era pulado de propósito "pra não dobrar o som",
+        # assumindo que _play_attacker_mob_sound tocava a MESMA coisa na
+        # chegada do golpe — errado, aquela função tocava o som de
+        # LANÇAMENTO no momento do IMPACTO, nunca o de disparo de
+        # verdade. Agora que _play_attacker_mob_sound toca attack_impact
+        # (evento DIFERENTE) na chegada, não existe mais risco de som
+        # duplicado — lançamento aqui, impacto lá, sem sobreposição.
+        from engine.components import NpcSounds as _NpcSndFire, EntityIdentity as _EIFire
+        _atk_local_fire = self._remote_mobs.get(data.get("attacker_seid", -1))
+        if _atk_local_fire is not None:
+            _snd_fire   = self.world.get_component(_atk_local_fire, _NpcSndFire)
+            _ident_fire = self.world.get_component(_atk_local_fire, _EIFire)
+            _cls_fire = _ident_fire.entity_class if _ident_fire else ""
+            _ev_fire = ("attack_magic"
+                        if _cls_fire in ("Mage", "Mago", "Warlock", "Bruxo")
+                        else "attack_ranged")
+            _flx, _fly = self._player_world_pos()
+            SOUNDS.play_mob_sounds_at(_snd_fire, _ev_fire, px, py, _flx, _fly,
+                                      base=0.8, dedup_key=f"fire_{server_proj_eid}")
 
     def _move_remote_mob(self, server_eid: int, new_tx: int, new_ty: int,
                          from_tx: int | None = None, from_ty: int | None = None,

@@ -148,11 +148,16 @@ def first_mob(ws) -> int | None:
     map_1_entities.json::combat_npcs, Sistema de Facções Fase 4: sua
     facção normalmente é amigável ao player, então `deal_damage` contra
     ele é bloqueado por `apply_damage_core`'s `can_engage()` — testes que
-    esperam dano/morte precisam de um mob de verdade, `Enemy`-tagged)."""
-    from engine.components import TrainingDummy, NPC
+    esperam dano/morte precisam de um mob de verdade, `Enemy`-tagged.
+    Pula também Tower (29/07/2026, map_1_entities.json::towers): entra
+    em `_mob_eids` pelo mesmo gate `Combatant`, mas não anda/persegue
+    (sem `AIControlled`) — mesma classe de "Combatant que não é um mob
+    de combate normal" de TrainingDummy/NPC acima."""
+    from engine.components import TrainingDummy, NPC, Tower
     for eid in ws._mob_eids:
         if (ws.world.get_component(eid, TrainingDummy) is None
-                and ws.world.get_component(eid, NPC) is None):
+                and ws.world.get_component(eid, NPC) is None
+                and ws.world.get_component(eid, Tower) is None):
             return eid
     return None
 

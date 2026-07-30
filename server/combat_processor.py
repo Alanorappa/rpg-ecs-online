@@ -370,7 +370,7 @@ class CombatProcessorMixin:
 
         # Pré-constrói reverse map {player_eid → mob_atacante} UMA VEZ (O(mobs)),
         # em vez de O(mobs×players_danificados) no loop abaixo.
-        from engine.components import AIControlled as _AIAtk, PendingDeath as _PD
+        from engine.components import AIControlled as _AIAtk, PendingDeath as _PD, Tower as _TowerAtk
         _mob_attacker_of: dict[int, int] = {}
         for _mb in self._mob_eids:
             _ai_r = self.world.get_component(_mb, _AIAtk)
@@ -380,6 +380,22 @@ class CombatProcessorMixin:
                 if not hasattr(self, "_last_mob_attacker"):
                     self._last_mob_attacker = {}
                 self._last_mob_attacker[_ai_r.target_eid] = _mb
+                continue
+            # Torre (29/07/2026): não tem AIControlled (ver engine/
+            # components.py::Tower), então ficava INVISÍVEL a este reverse
+            # map — dano de torre em player sempre resolvia attacker=-1
+            # (ou pior, caía no fallback _last_mob_attacker e herdava o
+            # atacante ERRADO de um mob real anterior), quebrando a
+            # atribuição de som/log de combate (bug real relatado pelo
+            # usuário: torre de flecha tocava som de attack_melee — na
+            # verdade estava tocando o som do ÚLTIMO mob real que bateu
+            # no player, não o da torre).
+            _tw_r = self.world.get_component(_mb, _TowerAtk)
+            if _tw_r and _tw_r.current_target_eid != -1:
+                _mob_attacker_of[_tw_r.current_target_eid] = _mb
+                if not hasattr(self, "_last_mob_attacker"):
+                    self._last_mob_attacker = {}
+                self._last_mob_attacker[_tw_r.current_target_eid] = _mb
 
         # Consome avoidances (parry/dodge/miss) de mob→player coletadas em CombatSystem.
         from engine.world_systems import _svc as _svc_cp

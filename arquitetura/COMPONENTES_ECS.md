@@ -215,6 +215,7 @@ Esses atributos existem na classe `Skill.__init__` (`fail_flash_timer` está lá
 | `SpawnZoneOwner(zone_entity_id)` | liga mob à sua zona | |
 | `Corpse(loot[], coins, timer, looted, is_open)` | cadáver com drop | Offline only — servidor usa `_corpses` dict |
 | `EntityIdentity(name, race, entity_class, level, tier)` | identidade completa do mob | lido por DeathHandlerSystem e QuestSystem |
+| `Tower(tower_key, attack_range_tiles, respawnable, respawn_s, regen_enabled, xp_reward, gold_min/max, spawn_tile_x/y, current_target_eid, dmg_ramp_stacks/timer, attack_cd)` | torre estática com facção (29/07/2026) | `content/tower_definitions.py::TOWER_TABLE` (tabela própria, separada de MOB_TABLE). SEM `AIControlled` de propósito — lógica de alvo/ataque é toda de `engine/world_systems.py::TowerSystem`. `spawn_tile_x/y` = tile FIXO de respawn (nunca aleatório, diferente de SpawnZone). Ver ARQUITETURA_ONLINE.md §34.70 |
 
 ### SpawnZone — atributo runtime online
 

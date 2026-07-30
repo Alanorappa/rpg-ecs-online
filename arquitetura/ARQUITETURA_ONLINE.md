@@ -9218,6 +9218,184 @@ edição do usuário, ver §34.52/§34.68).
 **Validado em jogo pelo usuário**: "1. Validado; 2. Validado. Testei, e
 ficou exatamente como eu queria."
 
+### §34.70 — Sistema de Torres: estrutura estática com facção, ataque à
+distância, alvo sticky com fidelidade ao LoL, respawn exato e XP/ouro
+próprios (29/07/2026)
+
+Pedido do usuário: nova entidade — **torre** — estática, com facção/
+time, dano à distância a quem entra no alcance, recebe dano de volta,
+usável tanto no mundo aberto quanto num campo de batalha estilo MOBA
+(Arena 2x2 já existente reaproveitada pra isso, `Faction("arena_time_a"/
+"arena_time_b")`). Parâmetros: respawnável + tempo de respawn, regenera
+vida ou não, tipo de ataque (mágico/flecha), XP e ouro ao morrer.
+Pesquisei mecânica de torre em League of Legends antes de implementar
+(fonte real de "torre com facção que ataca quem entra no alcance") —
+plano completo discutido e aprovado com o usuário antes de codificar.
+
+**Modelo de dados** — `content/tower_definitions.py` (NOVO,
+`TOWER_TABLE`): tabela própria, SEPARADA de `MOB_TABLE` (decisão do
+usuário — torre não é um "mob"), mesmo formato de `attributes`
+(health/armor/attack_min-max/attack_power/attack_speed/acerto/
+crit_chance). 2 tipos de exemplo: `torre_de_fogo` (entity_class="Mago")
+e `torre_de_flechas` (entity_class="Arqueiro") — sabor de projétil
+reaproveita `PROJECTILE_BY_CLASS` (mob_definitions.py) de graça.
+
+**Componente `Tower`** (`engine/components.py`) + **`create_tower()`**
+(`engine/entity_factory.py`, construção MANUAL como
+`create_training_dummy` — SEM `AIControlled`/`EnemyAISystem` de
+propósito, a state machine de mob não serve pra algo 100% imóvel e
+criava risco de bug). Campos: `tower_key`, `attack_range_tiles`,
+`respawnable`, `respawn_s`, `regen_enabled`, `xp_reward`, `gold_min/
+max`, `spawn_tile_x/y` (respawn EXATO), e runtime: `current_target_eid`
+(sticky), `dmg_ramp_stacks`/`dmg_ramp_timer` (ramp vs player), `attack_cd`.
+
+**`TowerSystem`** (NOVO — `engine/world_systems.py`) — targeting com
+fidelidade real ao LoL (pesquisado e confirmado com o usuário):
+1. **Prioridade absoluta**: mob/NPC hostil mais próximo no alcance
+   SEMPRE antes de player (nunca escolhe player enquanto houver mob).
+2. **Alvo sticky**: fixa no alvo até morrer/sair do alcance/perder LOS
+   — NUNCA reavalia "o mais próximo" a cada tick (evita flicker).
+3. **Aggro-switch**: player inimigo que dana um player ALIADO da torre
+   dentro do alcance vira alvo IMEDIATO (override do sticky) — varre
+   `_combat_this_tick` (entries `source in ("auto","skill")`) procurando
+   esse padrão. Sem NPC no alcance, mira o player inimigo mais próximo.
+4. **Ramp de dano**: confirmado na pesquisa que a mecânica real do LoL
+   só vale contra CAMPEÃO — +40%/acerto até +120% (3 estocadas), NUNCA
+   contra mob/NPC, reseta 3s sem bater em player, contador é DA TORRE
+   (sobrevive a troca de alvo). Aplicado via novo campo
+   `Projectile.dmg_multiplier` (default 1.0), lido por
+   `ProjectileSystem.update()` e repassado a `deal_damage(multiplier=)`.
+
+Sistema NÃO registrado em nenhum `self.systems`/`_systems` por-mapa
+(mesmo princípio de `_tick_harvestable_respawn` — sweep global, filtra
+`MapLocation` internamente) — `WorldServer` instancia 1x e chama
+`update(dt, combat_this_tick=...)` manualmente a cada tick.
+
+**Respawn exato** — NUNCA via `SpawnZone` (confirmado: `_pick_tile`
+sempre sorteia tile aleatório no raio, errado pra estrutura fixa). Novo
+`WorldServer._tower_respawn_timers` (chave `(map_file, tile_x, tile_y)`)
++ `register_tower_respawn()` (chamado por `ServerDeathHandler` antes de
+remover a entidade, captura `Faction`/`EntityIdentity.level`) +
+`_tick_tower_respawns()` — recria via `create_tower()` no MESMO tile.
+
+**XP/ouro próprios** — `server/server_death_handler.py` ganhou um
+desvio ANTES do lookup por nome/tier: se a entidade tem componente
+`Tower`, usa `xp_reward`/`gold_min-max` direto, pula `MOB_TABLE`/
+`roll_mob_coins` inteiramente (torre nunca cadastrada lá, de propósito).
+
+**Dados de mapa** — `"towers"` (NOVO array em `{mapa}_entities.json`,
+`engine/map_loader.py`), consumido por `WorldServer._create_towers()`.
+2 torres de teste em `map_1_entities.json` (perto do spawn) + 1 torre
+por time em `maps/arena_poco_negro_entities.json` (NOVO arquivo, torre
+`arena_time_a`/`arena_time_b` — o mesmo mecanismo de facção que a Arena
+2x2 já atribui aos players automaticamente ao aceitar a fila cobre a
+torre sem nenhum código novo) + 1 NPC de combate "Minion"
+(`faction="monstros_hostis"`) pra testar o aggro-switch com um alvo
+sticky de mob real disponível.
+
+**Cliente — zero protocolo novo**: torre sincroniza pelo MESMO pipeline
+genérico de mob (`Combatant`+`TileMovement` → `_mob_eids` →
+`ENTITY_SPAWN`) e o projétil pelo sweep genérico já existente de
+`Position+Projectile` (`kind="mob_projectile"`, `server/world_server.py`
+~linha 3944) — nenhuma mensagem nova.
+
+**Testado**: `tests/test_towers.py` (NOVO, 14 testes) — prioridade,
+sticky, aggro-switch, ramp (sobe/cap/reset), regen, respawn exato,
+XP/ouro próprios, sync como "enemy". Corrigido efeito colateral real:
+`tests/helpers.py::first_mob()` não excluía `Tower` — testes não
+relacionados a torre passaram a pegar torre em vez de mob de verdade
+(torre entra em `_mob_eids` pelo mesmo gate `Combatant`, sem
+`AIControlled`/`NPC`) — corrigido junto.
+
+**Validado em jogo pelo usuário**: torres hostis e amigáveis, respawn,
+regen, XP/ouro, targeting mob>player, aggro-switch (com Minion de
+teste), ramp de dano (números exatos 42→54→66→66..., batendo com a
+fórmula), arena com times reais.
+
+### §34.70.1 — 6 bugs reais achados no primeiro playtest completo da
+Fase de Torres (29/07/2026)
+
+**1. Ramp "não funcionava"**: falso alarme — o dano real subia
+corretamente (confirmado por debug log dedicado, `TowerSystem._attack`
+→ `debug/mob_combat_debug.py` MCL, ativável via `RPG_DEBUG_MOB_COMBAT=1`)
+e o usuário depois confirmou com números exatos em teste controlado
+(42, 54, 66, 66, 66, 66 — bate com `30_base × {1.4, 1.8, 2.2, 2.2...}`).
+O que o usuário via antes era só a fase já estabilizada no cap (3
+estocadas), sem ter capturado a subida inicial.
+
+**2. Causa raiz REAL do som (chave de destravamento pra tudo abaixo)**:
+o CLIENTE reconstrói qualquer entidade remota "enemy" via
+`create_enemy()` → `MOB_TABLE.get(race)`. Como torre tem tabela PRÓPRIA
+(`TOWER_TABLE`, decisão do usuário), o cliente NUNCA achava a definição
+— caía no template genérico 100% errado: `entity_class` virava sempre
+"Arqueiro"/"Guerreiro" (nunca "Mago" de verdade, mesmo pra torre de
+fogo) e `NpcSounds` ficava TOTALMENTE vazio (`mob_def=None`). Fix:
+`engine/entity_factory.py::_build_combat_entity` — lookup agora é
+`MOB_TABLE.get(race) or TOWER_TABLE.get(race)` (`TOWER_TABLE` ganhou
+`color`/`is_ranged`/`move_speed_pct` só pra satisfazer os acessos
+obrigatórios dessa função). Isso TAMBÉM corrigia sozinho o visual do
+projétil (ver #3) — os dois bugs eram o MESMO bug.
+
+**3. "Círculo laranja" em vez do sprite da bola de fogo**: eu tinha
+investigado errado e afirmado que não existia visual melhor no jogo —
+o usuário testou com a Selene Vail e provou que existia
+(`client/remote_entity_handlers.py::_spawn_mob_projectile`, sweep
+genérico de `Position+Projectile` → cria um `PlayerProjectile` local
+com `spell_id="bola_de_fogo"` se `entity_class` do atacante for
+Mago/Mage). Resolvido pelo MESMO fix do item #2 (`entity_class`
+correto → `_spawn_mob_projectile` já escolhe o visual certo sozinho).
+
+**4. Nomes de som fictícios**: `TOWER_TABLE` original tinha
+`"fireball_cast"`/`"fireball_impact"`/`"bow_shot"`/`"tower_destroyed"`
+— nomes inventados sem checar `assets/sounds/sfx/`, nenhum existia de
+verdade (por isso "nenhum som" na magia). Trocados pelos MESMOS
+arquivos reais já usados por "Mago (NPC)"/"Arqueiro (NPC)"
+(`skill_bola_de_fogo_launch/_impact`, `arrow_release`/`arrow_impact`).
+
+**5. Log de combate/som atribuindo a torre errado**: `_mob_attacker_of`
+(`server/combat_processor.py`, reverse-map "quem atacou este player")
+só reconhecia atacante com `AIControlled` — torre nunca aparecia,
+resolvendo `attacker=-1` ou (pior) herdando do cache
+`_last_mob_attacker` o atacante ERRADO de um mob real anterior. Fix:
+mesmo loop agora também registra `Tower.current_target_eid`. Também
+corrigido: `is_ranged` sempre `False` no `ENTITY_SPAWN` da torre
+(`_build_mob_spawn_payload`, `server/world_server.py` — sem
+`AIControlled`, nunca setava `True`).
+
+**6. Som de lançamento tocando no momento do IMPACTO**: bug crônico já
+visto antes nesta sessão (nameplate/hotbar), agora numa 3ª forma —
+`_play_attacker_mob_sound` (`client/remote_entity_handlers.py`, toca na
+CHEGADA do golpe no player) usava as chaves de LANÇAMENTO
+("attack_ranged"/"attack_magic") em vez de "attack_impact", porque
+checava `AIControlled` do espelho remoto — que NUNCA existe (removido
+de propósito em `_spawn_remote_mob`, servidor é autoritativo pra IA).
+Trocado pra `EntityIdentity.entity_class` (mesmo padrão que a função
+irmã `_play_nonplayer_attack_impact`, mob-vs-mob, já fazia certo) +
+prioriza `attack_impact` quando configurado. Consequência em cascata: o
+som de LANÇAMENTO de verdade também nunca tocava mirando o player local
+(`_spawn_mob_projectile` pulava de propósito, assumindo — errado — que
+o impacto já cobria isso) — agora toca sempre, sem duplicar (launch e
+impact usam chaves DIFERENTES). Afeta qualquer mob/NPC ranged ou
+mágico atacando o player, não só torre.
+
+**7. Aggro-switch sem candidato pra testar na arena**: `arena_time_a`/
+`arena_time_b` nunca tinham relação declarada com nenhuma facção de
+mob (`content/faction_data.py`), caindo em "neutro" por padrão —
+`TowerSystem` só aceita `is_hostile()` (exige tier "hostil"), então a
+torre de arena nunca via NENHUM mob como candidato válido. Adicionado
+`("arena_time_a"/"arena_time_b", "monstros_hostis"): "hostil"` (minion
+neutro, hostil aos dois times por igual — mesmo princípio de minion do
+LoL) + NPC de combate "Minion" de teste na arena.
+
+**Validado em jogo pelo usuário**: som (lançamento+impacto, torre de
+fogo e de flechas), visual (sprite da bola de fogo), aggro-switch com
+Minion real na arena — "funcionou perfeitamente".
+
+Suíte completa (636 testes) 3x limpa — as mesmas 2 falhas de sempre
+nesta sessão, sem relação (terreno em edição do usuário, ver §34.52).
+Vários testes novos por fix, todos confirmados via `git stash` que
+falham genuinamente sem a correção correspondente.
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |

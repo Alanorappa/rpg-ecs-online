@@ -17,6 +17,7 @@ Intencional NÃO fazer aqui:
   - Qualquer import de Pygame
 """
 from __future__ import annotations
+import random
 from server.log import log
 
 
@@ -109,6 +110,17 @@ class ServerDeathHandler:
                 mob_tx, mob_ty = tm.current_tile_x, tm.current_tile_y
             mob_map = self.world_server.get_entity_map(eid) if self.world_server else None
 
+            # Torre (29/07/2026, pedido do usuário): tabela própria
+            # (content/tower_definitions.py::TOWER_TABLE), SEPARADA de
+            # MOB_TABLE — XP/ouro vêm direto do componente `Tower`
+            # (xp_reward/gold_min/gold_max), NUNCA do lookup por nome/
+            # tier abaixo (passos 2 e 5). `_tower_dh` checado aqui (usado
+            # já no passo 2, XP) — o registro de respawn em si acontece
+            # mais abaixo, depois de `identity` ser lido (precisa do
+            # level pra recriar a torre igual).
+            from engine.components import Tower as _TowerDH
+            _tower_dh = self.world.get_component(eid, _TowerDH)
+
             # 2. XP proporcional por dano causado — base por level do mob ×
             # xp_given_by_lvl (mob_definitions.py), modificado pelo
             # multiplicador de tier. Mobs sem cadastro (ex: "Elemental")
@@ -121,7 +133,11 @@ class ServerDeathHandler:
             from engine.entity_factory import ENEMY_TIER_CONFIGS
             identity = self.world.get_component(eid, EntityIdentity)
             mob_def  = MOB_TABLE.get(identity.name) if identity else None
-            if mob_def and "xp_given_by_lvl" in mob_def:
+            if _tower_dh is not None:
+                # Torre: XP flat da própria definição — nunca cai no
+                # lookup por nome/tier (torre não está em MOB_TABLE).
+                base_xp = _tower_dh.xp_reward
+            elif mob_def and "xp_given_by_lvl" in mob_def:
                 mob_level  = identity.level if identity else 1
                 tier_mult  = ENEMY_TIER_CONFIGS.get(tier, ENEMY_TIER_CONFIGS["normal"])["xp"]
                 base_xp    = int(mob_level * mob_def["xp_given_by_lvl"] * tier_mult)
@@ -265,13 +281,21 @@ class ServerDeathHandler:
             # (identity já buscado no passo 2, pro cálculo de XP por level)
             mob_name = identity.name if identity else ""
 
-            try:
-                from content.loot_tables import roll_mob_loot, roll_mob_coins as _roll_mob_coins
-                loot_items = roll_mob_loot(mob_name, tier) if mob_name else []
-                coins      = _roll_mob_coins(mob_name, tier) if (mob_name and tier) else 0
-            except Exception:
+            if _tower_dh is not None:
+                # Torre: ouro flat da própria definição, sem item de
+                # loot — pula roll_mob_loot/roll_mob_coins inteiramente
+                # (torre não está em MOB_TABLE).
                 loot_items = []
-                coins      = 0
+                coins = (random.randint(_tower_dh.gold_min, _tower_dh.gold_max)
+                        if _tower_dh.gold_max > 0 else 0)
+            else:
+                try:
+                    from content.loot_tables import roll_mob_loot, roll_mob_coins as _roll_mob_coins
+                    loot_items = roll_mob_loot(mob_name, tier) if mob_name else []
+                    coins      = _roll_mob_coins(mob_name, tier) if (mob_name and tier) else 0
+                except Exception:
+                    loot_items = []
+                    coins      = 0
 
             # 5a. Drop condicional de quest (collect_item, ex: Pelo de Urso) —
             # REMOVIDO daqui (25/07/2026, Fase L1, pedido do usuário): rolar
@@ -347,6 +371,18 @@ class ServerDeathHandler:
                 if zone is not None:
                     zone.active_entity_ids.discard(eid)
                     zone.respawn_timers.append(zone.respawn_cooldown)
+
+            # 6b. Torre respawnável: agenda respawn exato no MESMO tile
+            # (NUNCA via SpawnZone, que sorteia tile aleatório — ver
+            # WorldServer.register_tower_respawn). Precisa de Faction/
+            # EntityIdentity.level, só capturáveis AGORA (antes do
+            # remove_entity mais abaixo).
+            if _tower_dh is not None and self.world_server:
+                from engine.components import Faction as _FactionDH
+                _fac_dh = self.world.get_component(eid, _FactionDH)
+                self.world_server.register_tower_respawn(
+                    _tower_dh, _fac_dh.faction_id if _fac_dh else "monstros_hostis",
+                    mob_map, identity.level if identity else 1)
 
             # 7. Agenda despawn para o WorldServer emitir ENTITY_DESPAWN
             if not any(d["eid"] == eid for d in self.pending_despawns):

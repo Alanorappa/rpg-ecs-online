@@ -70,6 +70,16 @@ RELATIONSHIP: dict[tuple[str, str], str] = {
     # (disposição hostil, ver §34.2) — can_engage já liberaria dano com
     # "neutro" também, mas o feedback visual importa numa arena.
     ("arena_time_a", "arena_time_b"):       "hostil",
+
+    # Minions/mobs neutros dentro de uma arena (Sistema de Torres,
+    # 29/07/2026) — SEM isso, "monstros_hostis" ficava "neutro" com
+    # arena_time_a/b (par nunca declarado, cai no DEFAULT_RELATIONSHIP) e
+    # a torre de arena NUNCA os via como candidato válido (TowerSystem só
+    # aceita `is_hostile()`, que exige o tier "hostil" — "neutro" não
+    # basta). Ambos os times compartilham o mesmo inimigo neutro (mesmo
+    # princípio de minion do LoL: hostil aos dois lados por igual).
+    ("arena_time_a", "monstros_hostis"):    "hostil",
+    ("arena_time_b", "monstros_hostis"):    "hostil",
 }
 
 DEFAULT_RELATIONSHIP = "neutro"

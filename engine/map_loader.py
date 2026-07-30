@@ -109,6 +109,7 @@ def load_map_csv(filepath: str) -> tuple[list[str], list[str], dict, list | None
         "default_ambient":   "",
         "training_dummies":  [],
         "combat_npcs":       [],
+        "towers":            [],
     }
 
     json_path = base + "_entities.json"
@@ -310,6 +311,29 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
                 "is_ranged":    c.get("is_ranged", False),
             }
             for c in data["combat_npcs"]
+        ]
+
+    if "towers" in data:
+        # Torre estática com facção (29/07/2026, pedido do usuário) —
+        # mesmo padrão de "combat_npcs" (entidade real, sincronizada
+        # pelo servidor), mas via create_tower() (server/world_server.py::
+        # _create_towers). "tower_key" referencia content/tower_
+        # definitions.py::TOWER_TABLE (tipo/atributos/sabor de ataque/
+        # recompensa) — "faction"/"respawnable"/"respawn_s"/
+        # "regen_enabled"/"level" são parâmetros de INSTÂNCIA (mesma
+        # torre pode respawnar no mundo aberto e não respawnar numa
+        # arena, por exemplo).
+        spawn_points["towers"] = [
+            {
+                "x":              tw["x"], "y": tw["y"],
+                "tower_key":      tw["tower_key"],
+                "faction":        tw.get("faction", "monstros_hostis"),
+                "level":          tw.get("level", 1),
+                "respawnable":    tw.get("respawnable", False),
+                "respawn_s":      tw.get("respawn_s", 0),
+                "regen_enabled":  tw.get("regen_enabled", False),
+            }
+            for tw in data["towers"]
         ]
 
     if "harvestables" in data:

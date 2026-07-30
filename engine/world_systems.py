@@ -38,7 +38,7 @@ from engine.components import Position, Renderable, PlayerControlled, Camera, Co
                        EnemyAbilities, EnemyAbilitySlot, EntityIdentity, \
                        NpcSounds, PendingDeath, XPReward, SpawnZoneOwner, SpawnZone, \
                        PlayerSkills, NPC, ActiveRegen, ConsumableBar, \
-                       AoeTargeting, RemoteControlled, GhostState, MapLocation, Combatant
+                       AoeTargeting, RemoteControlled, GhostState, MapLocation, Combatant, Tower
 from engine.world import World
 from engine.tileset import TILE_SIZE, OBJECT_MAPPING
 from engine.utils import chebyshev, start_tile_movement
@@ -52,7 +52,7 @@ from content.enemy_abilities_data import ABILITY_DEFS
 import engine.quest_events as quest_events
 from engine.quest_events import fire as quest_fire
 from engine.stat_fns import add_modifier, remove_modifier, add_timed_modifier, enter_combat
-from engine.faction_system import is_hostile, can_engage
+from engine.faction_system import is_hostile, can_engage, get_relationship_between
 
 
 # ── Registro de serviços ─────────────────────────────────────────────────────
@@ -1324,10 +1324,12 @@ class ProjectileSystem(System):
                         _mob_nm_p = _atk_ident_p.name if _atk_ident_p else "Inimigo"
                         LOG.add(f"{_mob_nm_p} usou {_defn_p.name}!", (220, 80, 180))
                 else:
-                    # Projétil de ataque: aplica dano usando stats do atacante
+                    # Projétil de ataque: aplica dano usando stats do atacante.
+                    # dmg_multiplier default 1.0 (sem efeito) — só Tower
+                    # (ramp de dano vs player) seta != 1.0.
                     deal_damage(
                         proj.attacker_id, proj.target_id,
-                        proj.damage_type
+                        proj.damage_type, multiplier=proj.dmg_multiplier
                     )
                 to_remove.append(proj_id)
             else:
@@ -1359,6 +1361,254 @@ class ProjectileSystem(System):
                 pygame.draw.line(self.world_surf, color, (x1, y1), (x2, y2), 4)
             else:
                 pygame.draw.circle(self.world_surf, color, (draw_x, draw_y), 4)
+
+
+class TowerSystem:
+    """Torre estática com facção (29/07/2026, pedido do usuário) — ataca
+    à distância quem entra no alcance, com fidelidade à mecânica real de
+    torre do LoL (pesquisada e confirmada com o usuário antes de
+    implementar):
+
+    - Prioriza SEMPRE o mob/NPC hostil mais próximo dentro do alcance
+      (nunca escolhe player enquanto houver mob no alcance).
+    - Alvo STICKY: fixa nesse alvo até ele morrer, sair do alcance, ou
+      perder LOS — NUNCA reavalia "o mais próximo" a cada tick (evita
+      "flicker" de alvo com 2+ inimigos no range).
+    - "Aggro switch": se um player INIMIGO (dentro do alcance da torre)
+      causa dano a um player ALIADO da torre, a torre troca o alvo
+      IMEDIATAMENTE pro atacante — override do alvo sticky. Sem NPC no
+      alcance, mira o player inimigo mais próximo.
+    - Ramp de dano: +40%/acerto até +120% (3 estocadas) SÓ contra
+      player (nunca contra mob/NPC — confirmado na pesquisa: mecânica
+      real do LoL só vale pra campeão). Reseta 3s após o último acerto
+      em player; o contador é DA TORRE (sobrevive a troca de alvo).
+
+    Sem AIControlled/EnemyAISystem de propósito (mesma decisão do
+    TrainingDummy, ver docstring de engine/components.py::Tower) — a
+    state machine de mob (CHASING/RETURNING/kite/leash) não serve pra
+    algo 100% imóvel.
+
+    NÃO é registrado em nenhum `self.systems`/`_systems` por-mapa (torre
+    não precisa de `map_filter` por bundle, mesmo princípio de
+    `WorldServer._tick_harvestable_respawn`/`_tick_harvestable_zones` —
+    um sweep global só, filtrando por `MapLocation` internamente onde
+    precisa) — `WorldServer` instancia UMA vez e chama
+    `update(dt, combat_this_tick=...)` manualmente a cada tick, mesmo
+    padrão de `ServerCombatStateSystem`."""
+
+    RAMP_RESET_S    = 3.0    # segundos sem acertar player até resetar o ramp
+    RAMP_PER_STACK  = 0.40   # +40% de dano por estocada
+    RAMP_MAX_STACKS = 3      # cap 3 estocadas = +120% (mesmo valor real do LoL)
+    REGEN_INTERVAL_S = 5.0   # mesmo intervalo do HP5 de player/boneco de treino
+
+    def __init__(self, world: World, get_tilemap_for_map=None):
+        self.world = world
+        # callable(map_file) -> TilemapComponent|None — injetado pelo
+        # WorldServer (só ele sabe resolver o bundle/tilemap de cada
+        # mapa via _map_bundles; este módulo é headless/compartilhado e
+        # não deve conhecer essa estrutura server-only).
+        self._get_tilemap_for_map = get_tilemap_for_map
+
+    def _map_of(self, eid: int) -> str:
+        ml = self.world.get_component(eid, MapLocation)
+        return ml.map_file if ml else ""
+
+    def _in_range_los(self, tower: Tower, tower_pos: Position,
+                      cand_pos: Position, tilemap_comp) -> bool:
+        tx0, ty0 = int(tower_pos.x // TILE_SIZE), int(tower_pos.y // TILE_SIZE)
+        tx1, ty1 = int(cand_pos.x // TILE_SIZE), int(cand_pos.y // TILE_SIZE)
+        if chebyshev(tx0, ty0, tx1, ty1) > tower.attack_range_tiles:
+            return False
+        if tilemap_comp is not None and not EnemyAISystem._has_line_of_sight(
+                tilemap_comp, tx0, ty0, tx1, ty1):
+            return False
+        return True
+
+    def _target_still_valid(self, tower: Tower, tower_pos: Position,
+                            map_file: str, tilemap_comp) -> bool:
+        tgt = tower.current_target_eid
+        tgt_cs = self.world.get_component(tgt, CombatStats)
+        if not tgt_cs or tgt_cs.current_hp <= 0:
+            return False
+        tgt_pos = self.world.get_component(tgt, Position)
+        if not tgt_pos:
+            return False
+        if map_file:
+            tgt_ml = self.world.get_component(tgt, MapLocation)
+            if not tgt_ml or tgt_ml.map_file != map_file:
+                return False
+        return self._in_range_los(tower, tower_pos, tgt_pos, tilemap_comp)
+
+    def _check_aggro_switch(self, tower_eid: int, tower: Tower, tower_pos: Position,
+                            map_file: str, tilemap_comp, combat_this_tick: list) -> None:
+        """Player inimigo que dana um player ALIADO da torre, dentro do
+        alcance dela, vira alvo IMEDIATO — override do sticky target
+        (mesma mecânica real do LoL, só existe pra proteger "campeão",
+        nunca minion — daí o filtro duplo PlayerControlled nos dois
+        lados). `combat_this_tick` é a mesma lista que já alimenta
+        combat log/HP5 no servidor (server/world_server.py) — entradas
+        com source in ("auto","skill") têm attacker/target reais."""
+        for ev in combat_this_tick:
+            if ev.get("source") not in ("auto", "skill"):
+                continue
+            attacker = ev.get("attacker", -1)
+            target   = ev.get("target", -1)
+            if attacker == -1 or target == -1:
+                continue
+            if self.world.get_component(target, PlayerControlled) is None:
+                continue
+            if self.world.get_component(attacker, PlayerControlled) is None:
+                continue
+            if get_relationship_between(self.world, target, tower_eid) != "amigavel":
+                continue
+            if not is_hostile(self.world, tower_eid, attacker):
+                continue
+            atk_pos = self.world.get_component(attacker, Position)
+            if not atk_pos:
+                continue
+            if map_file:
+                atk_ml = self.world.get_component(attacker, MapLocation)
+                if not atk_ml or atk_ml.map_file != map_file:
+                    continue
+            if not self._in_range_los(tower, tower_pos, atk_pos, tilemap_comp):
+                continue
+            tower.current_target_eid = attacker
+            return
+
+    def _acquire_target(self, tower_eid: int, tower: Tower, tower_pos: Position,
+                        map_file: str, tilemap_comp) -> int:
+        """Mob/NPC hostil mais próximo no alcance tem prioridade absoluta
+        sobre player — nunca escolhe player enquanto houver mob no
+        alcance (pedido explícito do usuário, fidelidade ao real do
+        LoL: minion sempre antes de campeão)."""
+        best_npc_eid, best_npc_dist = -1, float("inf")
+        best_ply_eid, best_ply_dist = -1, float("inf")
+
+        for c_eid, c_pos, c_cs, _c_tm in self.world.get_entities_with(
+                Position, CombatStats, TileMovement):
+            if c_eid == tower_eid or c_cs.current_hp <= 0:
+                continue
+            if map_file:
+                c_ml = self.world.get_component(c_eid, MapLocation)
+                if not c_ml or c_ml.map_file != map_file:
+                    continue
+            if not is_hostile(self.world, tower_eid, c_eid):
+                continue
+            c_cst = self.world.get_component(c_eid, CombatState)
+            if c_cst is not None and not c_cst.is_visible:
+                continue
+            if not self._in_range_los(tower, tower_pos, c_pos, tilemap_comp):
+                continue
+            dist = math.sqrt((c_pos.x - tower_pos.x) ** 2 + (c_pos.y - tower_pos.y) ** 2)
+            if self.world.get_component(c_eid, PlayerControlled) is not None:
+                if dist < best_ply_dist:
+                    best_ply_dist, best_ply_eid = dist, c_eid
+            elif (self.world.get_component(c_eid, AIControlled) is not None
+                  or self.world.get_component(c_eid, NPC) is not None):
+                if dist < best_npc_dist:
+                    best_npc_dist, best_npc_eid = dist, c_eid
+
+        return best_npc_eid if best_npc_eid != -1 else best_ply_eid
+
+    def _attack(self, tower_eid: int, tower: Tower, cs: CombatStats) -> None:
+        target = tower.current_target_eid
+        target_cs = self.world.get_component(target, CombatStats)
+        attacker_pos = self.world.get_component(tower_eid, Position)
+        target_pos = self.world.get_component(target, Position)
+        if not target_cs or not attacker_pos or not target_pos:
+            tower.current_target_eid = -1
+            return
+
+        is_player_target = self.world.get_component(target, PlayerControlled) is not None
+        dmg_mult = 1.0
+        if is_player_target:
+            # Ramp de dano SÓ contra player (mecânica real do LoL,
+            # confirmada na pesquisa — NUNCA contra mob/NPC).
+            tower.dmg_ramp_stacks = min(self.RAMP_MAX_STACKS, tower.dmg_ramp_stacks + 1)
+            tower.dmg_ramp_timer = 0.0
+            dmg_mult = 1.0 + self.RAMP_PER_STACK * tower.dmg_ramp_stacks
+
+        # Mesmo critério de EnemyAISystem (damage_type_to_use, linha
+        # ~2003) pra decidir physical/magical — nunca hardcoded aqui.
+        damage_type = "magical" if (cs.spell_power > 0 or cs.base_magical_damage > 0) else "physical"
+
+        from content.mob_definitions import PROJECTILE_BY_CLASS as _PBC
+        ident = self.world.get_component(tower_eid, EntityIdentity)
+        entity_class = ident.entity_class if ident else ""
+        proj_data = _PBC.get(entity_class, _PBC["_default"])
+
+        dx = target_pos.x - attacker_pos.x
+        dy = target_pos.y - attacker_pos.y
+        dist = math.sqrt(dx * dx + dy * dy)
+        dir_x, dir_y = (dx / dist, dy / dist) if dist > 0 else (1.0, 0.0)
+
+        proj_eid = self.world.create_entity()
+        self.world.add_component(proj_eid, Position(
+            x=attacker_pos.x, y=attacker_pos.y,
+            prev_x=attacker_pos.x, prev_y=attacker_pos.y))
+        self.world.add_component(proj_eid, Projectile(
+            attacker_id=tower_eid, target_id=target, damage_type=damage_type,
+            speed=380.0, color=proj_data["color"], is_arrow=proj_data["is_arrow"],
+            dir_x=dir_x, dir_y=dir_y, dmg_multiplier=dmg_mult,
+        ))
+        tower.attack_cd = cs.get_attack_cooldown()
+
+        # Debug (29/07/2026, pedido do usuário — ramp de dano "não
+        # funcionando"): reaproveita o logger já existente de combate de
+        # mob (RPG_DEBUG_MOB_COMBAT=1 → debug/logs/mob_combat.log) em vez
+        # de inventar um mecanismo novo. Mostra stacks/multiplicador
+        # ANTES de armadura/crit/roll de arma — números finais na tela
+        # variam por causa dessas 3 coisas em cima disso, então o valor
+        # bruto de HP no cliente nunca vai bater exatamente com
+        # `dmg_mult`, só a PROPORÇÃO entre estocadas.
+        if _MCL is not None:
+            _MCL.log("ATK_FIRE", tower_eid, ident.name if ident else "Torre",
+                     "Construcao", entity_class,
+                     target=target, is_player_target=is_player_target,
+                     ramp_stacks=tower.dmg_ramp_stacks, dmg_mult=round(dmg_mult, 2))
+
+    def update(self, dt: float, combat_this_tick: list = None) -> None:
+        for tower_eid, tower, tower_pos, cs in list(self.world.get_entities_with(
+                Tower, Position, CombatStats)):
+            if cs.current_hp <= 0:
+                continue
+
+            if tower.attack_cd > 0:
+                tower.attack_cd -= dt
+            if tower.dmg_ramp_stacks > 0:
+                tower.dmg_ramp_timer += dt
+                if tower.dmg_ramp_timer >= self.RAMP_RESET_S:
+                    tower.dmg_ramp_stacks = 0
+                    tower.dmg_ramp_timer = 0.0
+
+            map_file = self._map_of(tower_eid)
+            tilemap_comp = (self._get_tilemap_for_map(map_file)
+                           if (self._get_tilemap_for_map and map_file) else None)
+
+            if combat_this_tick:
+                self._check_aggro_switch(tower_eid, tower, tower_pos, map_file,
+                                         tilemap_comp, combat_this_tick)
+
+            if (tower.current_target_eid != -1
+                    and not self._target_still_valid(tower, tower_pos, map_file, tilemap_comp)):
+                tower.current_target_eid = -1
+
+            if tower.current_target_eid == -1:
+                tower.current_target_eid = self._acquire_target(
+                    tower_eid, tower, tower_pos, map_file, tilemap_comp)
+
+            # Regen: reaproveita CombatStats.hp5 (mesma fórmula do regen
+            # de mob fora de combate) — só "fora de combate" (sem alvo
+            # ativo este tick), só se Tower.regen_enabled.
+            if tower.regen_enabled and tower.current_target_eid == -1 and cs.current_hp < cs.max_hp:
+                tower.regen_timer += dt
+                if tower.regen_timer >= self.REGEN_INTERVAL_S:
+                    tower.regen_timer -= self.REGEN_INTERVAL_S
+                    regen_amt = max(1, int(cs.max_hp * cs.hp5))
+                    cs.current_hp = min(cs.max_hp, cs.current_hp + regen_amt)
+
+            if tower.current_target_eid != -1 and tower.attack_cd <= 0:
+                self._attack(tower_eid, tower, cs)
 
 
 # Modificação no EnemyAISystem para integrar o CombatSystem

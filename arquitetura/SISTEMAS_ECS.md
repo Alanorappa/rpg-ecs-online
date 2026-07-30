@@ -81,6 +81,23 @@ Instanciados em `_load_map()`, executados por `_systems.update(dt)` a cada tick:
 | 5 | **StatusEffectSystem** (headless) | Ticks de DoT (poison, bleed, burn); expiração; slow_mult; PendingDeath por DoT | Subclasse de `core_systems.StatusEffectSystem`; `_emit_damage` → `_combat_this_tick` |
 | 6 | **TileMovementSystem** (headless) | Avança `progress → current_tile` | Sem render, sem som de passos |
 
+### TowerSystem (Sistema de Torres, 29/07/2026)
+
+NÃO está na lista `_systems` por-mapa acima (torre não precisa de
+`map_filter` por bundle — mesmo princípio de `_tick_harvestable_
+respawn`/`_tick_harvestable_zones`, um sweep global só, filtrando por
+`MapLocation` internamente onde precisa). `WorldServer` instancia UMA
+vez (`self._tower_system`, junto dos outros sistemas globais) e chama
+`update(dt, combat_this_tick=self._combat_this_tick)` manualmente a
+cada tick, mesmo padrão de `ServerCombatStateSystem`.
+
+Responsabilidade: targeting (prioridade mob>player, alvo sticky,
+aggro-switch pra defender aliado atacado no alcance), ataque via
+`Projectile` (reaproveita `ProjectileSystem`/sweep genérico de
+`kind="mob_projectile"`), ramp de dano contra player (+40%/acerto até
++120%, nunca contra mob), regen opcional. Ver `engine/components.py::
+Tower` e `ARQUITETURA_ONLINE.md` §34.70 pro design completo.
+
 ### Arquitetura de StatusEffectSystem
 
 ```

@@ -1,0 +1,34 @@
+{
+  "towers": [
+    {
+      "x": 13, "y": 10,
+      "tower_key": "torre_de_fogo",
+      "faction": "arena_time_a",
+      "level": 5,
+      "respawnable": true,
+      "respawn_s": 30,
+      "regen_enabled": true
+    },
+    {
+      "x": 13, "y": 24,
+      "tower_key": "torre_de_flechas",
+      "faction": "arena_time_b",
+      "level": 5,
+      "respawnable": true,
+      "respawn_s": 30,
+      "regen_enabled": true
+    }
+  ],
+  "combat_npcs": [
+    {
+      "x": 14, "y": 11,
+      "faction": "monstros_hostis",
+      "name": "Minion",
+      "profession": "Monstro",
+      "race": "Humanoide",
+      "entity_class": "Warrior",
+      "level": 60,
+      "is_ranged": false
+    }
+  ]
+}

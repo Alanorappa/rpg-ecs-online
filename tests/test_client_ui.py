@@ -1986,6 +1986,166 @@ def test_som_de_lancamento_e_impacto_do_mago_npc_espelham_bola_de_fogo():
         "impacto do mago NPC deveria tocar o som de impact da Bola de Fogo (não hit_normal)"
 
 
+# ── Torre (29/07/2026) — mesmo mecanismo de "Mago (NPC)"/"Arqueiro (NPC)"
+# acima, mas exercitando o bug real encontrado: `race` de uma torre
+# ("torre_de_fogo"/"torre_de_flechas") só existe em content/tower_
+# definitions.py::TOWER_TABLE, NUNCA em MOB_TABLE — sem o merge de
+# fallback em engine/entity_factory.py::_build_combat_entity
+# (`MOB_TABLE.get(race) or TOWER_TABLE.get(race)`), o cliente reconstruía
+# a torre com `entity_class` genérico ERRADO (sempre "Arqueiro", nunca
+# "Mago" de verdade) e `NpcSounds` TOTALMENTE vazio (mob_def=None) —
+# visual sempre caía no círculo genérico "npc_bolt" e nenhum som tocava
+# pra torre de fogo (arrow ainda "funcionava" por coincidência, já que o
+# fallback genérico ranged também é "Arqueiro").
+
+def test_projetil_de_torre_de_fogo_usa_visual_de_bola_de_fogo():
+    fx = _make_net_fixture()
+    fx._remote_mob_projectiles = {}
+    fx._handle_msg_entity_spawn({
+        "eid": 90, "kind": "enemy", "tx": 5, "ty": 5,
+        "race": "torre_de_fogo", "entity_class": "Mago", "is_ranged": True,
+        "hp": 4000, "hp_max": 4000, "level": 5, "faction": "monstros_hostis",
+        "name": "Torre de Fogo",
+    })
+    fx._handle_msg_entity_spawn({
+        "eid": 91, "kind": "player", "tx": 6, "ty": 5,
+        "name": "Fulano", "class_id": "guerreiro", "hp": 100, "hp_max": 100, "level": 1,
+    })
+    fx._spawn_mob_projectile(900, {
+        "x": 160.0, "y": 160.0, "attacker_seid": 90, "target_seid": fx._my_eid,
+        "color": [255, 80, 0], "is_arrow": False,
+        "dir_x": 1.0, "dir_y": 0.0, "speed": 380.0,
+    })
+    proj = _find_cosmetic_projectile(fx)
+    assert proj is not None
+    assert proj.spell_id == "bola_de_fogo", \
+        "projétil da torre de fogo deveria usar o sprite animado, não o círculo genérico"
+
+
+def test_torre_de_fogo_tem_entity_class_mago_reconstruida_no_cliente():
+    """Núcleo do bug: sem o fallback TOWER_TABLE, entity_class virava
+    sempre 'Arqueiro' (template genérico) — nunca 'Mago' de verdade."""
+    from engine.components import EntityIdentity
+    fx = _make_net_fixture()
+    fx._handle_msg_entity_spawn({
+        "eid": 92, "kind": "enemy", "tx": 5, "ty": 5,
+        "race": "torre_de_fogo", "entity_class": "Mago", "is_ranged": True,
+        "hp": 4000, "hp_max": 4000, "level": 5, "faction": "monstros_hostis",
+        "name": "Torre de Fogo",
+    })
+    local_eid = fx._remote_mobs[92]
+    ident = fx.world.get_component(local_eid, EntityIdentity)
+    assert ident.entity_class == "Mago"
+
+
+def test_som_de_lancamento_e_impacto_da_torre_de_fogo_espelham_bola_de_fogo():
+    """Bug real relatado pelo usuário: torre de fogo não emitia NENHUM
+    som — NpcSounds ficava vazio porque 'torre_de_fogo' nunca era
+    encontrada em MOB_TABLE."""
+    from ui.sound_manager import SOUNDS
+    fx = _make_net_fixture()
+    fx._remote_mob_projectiles = {}
+    fx._handle_msg_entity_spawn({
+        "eid": 93, "kind": "enemy", "tx": 5, "ty": 5,
+        "race": "torre_de_fogo", "entity_class": "Mago", "is_ranged": True,
+        "hp": 4000, "hp_max": 4000, "level": 5, "faction": "monstros_hostis",
+        "name": "Torre de Fogo",
+    })
+    fx._handle_msg_entity_spawn({
+        "eid": 94, "kind": "enemy", "tx": 7, "ty": 5,
+        "race": "Zumbi", "entity_class": "Warrior",
+        "hp": 30, "hp_max": 30, "level": 1, "faction": "monstros_hostis",
+    })
+    calls, original = _record_npc_sound_calls()
+    try:
+        fx._spawn_mob_projectile(901, {
+            "x": 160.0, "y": 160.0, "attacker_seid": 93, "target_seid": 94,
+            "color": [255, 80, 0], "is_arrow": False,
+            "dir_x": 1.0, "dir_y": 0.0, "speed": 380.0,
+        })
+        played_impact = fx._play_nonplayer_attack_impact(93, 100.0, 100.0, 0.0, 0.0)
+    finally:
+        SOUNDS.play_mob_sounds_at = original
+    assert ("attack_magic", "skill_bola_de_fogo_launch") in calls, \
+        "lançamento da torre de fogo deveria tocar o som de launch da Bola de Fogo"
+    assert played_impact
+    assert ("attack_impact", "skill_bola_de_fogo_impact") in calls, \
+        "impacto da torre de fogo deveria tocar o som de impact da Bola de Fogo (não silêncio)"
+
+
+def test_som_de_disparo_da_torre_de_flechas_e_arrow_release():
+    from ui.sound_manager import SOUNDS
+    fx = _make_net_fixture()
+    fx._remote_mob_projectiles = {}
+    fx._handle_msg_entity_spawn({
+        "eid": 95, "kind": "enemy", "tx": 5, "ty": 5,
+        "race": "torre_de_flechas", "entity_class": "Arqueiro", "is_ranged": True,
+        "hp": 3500, "hp_max": 3500, "level": 5, "faction": "monstros_hostis",
+        "name": "Torre de Flechas",
+    })
+    fx._handle_msg_entity_spawn({
+        "eid": 96, "kind": "enemy", "tx": 7, "ty": 5,
+        "race": "Zumbi", "entity_class": "Warrior",
+        "hp": 30, "hp_max": 30, "level": 1, "faction": "monstros_hostis",
+    })
+    calls, original = _record_npc_sound_calls()
+    try:
+        fx._spawn_mob_projectile(902, {
+            "x": 160.0, "y": 160.0, "attacker_seid": 95, "target_seid": 96,
+            "color": [200, 160, 60], "is_arrow": True,
+            "dir_x": 1.0, "dir_y": 0.0, "speed": 380.0,
+        })
+    finally:
+        SOUNDS.play_mob_sounds_at = original
+    assert ("attack_ranged", "arrow_release") in calls, \
+        "disparo da torre de flechas deveria tocar arrow_release, nao ficar em silencio/melee"
+
+
+def test_disparo_da_torre_de_flechas_toca_mesmo_mirando_o_player_local():
+    """Bug real relatado pelo usuário 29/07/2026: quando o alvo do
+    projétil É o player local, o som de LANÇAMENTO nunca tocava (pulado
+    de propósito, assumindo que _play_attacker_mob_sound tocaria o mesmo
+    som na chegada — errado, ver teste abaixo). Sem esse disparo, o
+    jogador só ouvia o som ERRADO na hora do impacto e nada no
+    lançamento."""
+    from ui.sound_manager import SOUNDS
+    fx = _make_net_fixture()
+    fx._remote_mob_projectiles = {}
+    fx._handle_msg_entity_spawn({
+        "eid": 97, "kind": "enemy", "tx": 5, "ty": 5,
+        "race": "torre_de_flechas", "entity_class": "Arqueiro", "is_ranged": True,
+        "hp": 3500, "hp_max": 3500, "level": 5, "faction": "monstros_hostis",
+        "name": "Torre de Flechas",
+    })
+    calls, original = _record_npc_sound_calls()
+    try:
+        fx._spawn_mob_projectile(903, {
+            "x": 160.0, "y": 160.0, "attacker_seid": 97, "target_seid": fx._my_eid,
+            "color": [200, 160, 60], "is_arrow": True,
+            "dir_x": 1.0, "dir_y": 0.0, "speed": 380.0,
+        })
+    finally:
+        SOUNDS.play_mob_sounds_at = original
+    assert ("attack_ranged", "arrow_release") in calls, \
+        "lançamento deveria tocar mesmo quando o alvo é o próprio player"
+
+
+def test_impacto_no_player_toca_attack_impact_nao_o_som_de_lancamento():
+    """Núcleo do bug relatado pelo usuário 29/07/2026: a torre de flecha
+    tocava o som de LANÇAMENTO (arrow_release) no momento do IMPACTO —
+    _play_attacker_mob_sound (chamado na chegada do COMBAT_RESULT) usava
+    'attack_ranged'/'attack_magic' (chaves de lançamento) em vez de
+    'attack_impact', diferente da função irmã _play_nonplayer_attack_
+    impact (mob-vs-mob), que sempre fez isso certo."""
+    fx, server_attacker = _make_attacker_sound_fixture("Arqueiro", attack_impact="arrow_impact")
+    import client.remote_entity_handlers as reh_mod
+    calls = _spy_play_mob_sounds_at(reh_mod)
+    handled = fx._play_attacker_mob_sound(server_attacker, 0.0, 0.0)
+    assert handled is True
+    assert calls == ["attack_impact"], \
+        "impacto no player deveria tocar attack_impact, nunca o som de lançamento (attack_ranged)"
+
+
 def test_atacante_melee_sem_config_cai_no_fallback_hit_normal():
     """Regressão: atacante não-player SEM som configurado (ex: Guarda Real,
     raça fora de MOB_TABLE) retorna False — o caller mantém o hit_normal
@@ -2935,6 +3095,75 @@ def test_compute_window_geometry_windowed_fullsize_usa_desktop_com_folga():
     assert (w, h) == (1920 - 16, 1080 - 80)
     assert not (flags & pygame.FULLSCREEN)
     assert flags & pygame.RESIZABLE
+
+
+# ── _play_attacker_mob_sound: escolha de som por EntityIdentity, não
+# AIControlled (29/07/2026) — o espelho remoto de um mob/torre NUNCA tem
+# AIControlled (removido de propósito em _spawn_remote_mob, servidor é
+# autoritativo pra IA), então o código antigo (`if _atk_ai and ...`)
+# nunca era True e todo ataque de mob/torre remoto contra o player caía
+# sempre em "attack_melee" — bug crônico relatado pelo usuário testando
+# torre de flechas (som de melee em vez de flecha), mas que afeta
+# QUALQUER mob remoto ranged/mágico atacando o player, não só torre.
+
+def _make_attacker_sound_fixture(entity_class: str, attack_impact: str = ""):
+    from engine.world import World
+    from engine.components import Position, NpcSounds, EntityIdentity
+    import client.remote_entity_handlers as reh_mod
+
+    class _Fixture(reh_mod.RemoteEntityHandlers):
+        def __init__(self, world):
+            self.world = world
+            self._my_eid = 1
+            self._remote_players = {}
+
+    world = World()
+    attacker_eid = world.create_entity()
+    world.add_component(attacker_eid, Position(x=50.0, y=50.0))
+    world.add_component(attacker_eid, NpcSounds(
+        attack_melee="bite", attack_ranged="bow_shot", attack_magic="fireball_cast",
+        attack_impact=attack_impact))
+    world.add_component(attacker_eid, EntityIdentity(
+        name="Torre de Teste", race="Construcao", entity_class=entity_class))
+
+    fx = _Fixture(world)
+    fx._remote_mobs = {99: attacker_eid}
+    return fx, 99
+
+
+def _spy_play_mob_sounds_at(monkeypatch_module):
+    calls = []
+    def _spy(comp, event, *a, **k):
+        calls.append(event)
+    monkeypatch_module.SOUNDS.play_mob_sounds_at = _spy
+    return calls
+
+
+def test_som_de_ataque_arqueiro_remoto_usa_attack_ranged_nao_melee():
+    import client.remote_entity_handlers as reh_mod
+    fx, server_attacker = _make_attacker_sound_fixture("Arqueiro")
+    calls = _spy_play_mob_sounds_at(reh_mod)
+    handled = fx._play_attacker_mob_sound(server_attacker, 0.0, 0.0)
+    assert handled is True
+    assert calls == ["attack_ranged"], "atacante Arqueiro/Hunter deveria tocar attack_ranged, nunca attack_melee"
+
+
+def test_som_de_ataque_mago_remoto_usa_attack_magic_nao_melee():
+    import client.remote_entity_handlers as reh_mod
+    fx, server_attacker = _make_attacker_sound_fixture("Mago")
+    calls = _spy_play_mob_sounds_at(reh_mod)
+    handled = fx._play_attacker_mob_sound(server_attacker, 0.0, 0.0)
+    assert handled is True
+    assert calls == ["attack_magic"], "atacante Mago/Warlock deveria tocar attack_magic, nunca attack_melee"
+
+
+def test_som_de_ataque_melee_de_verdade_continua_attack_melee():
+    import client.remote_entity_handlers as reh_mod
+    fx, server_attacker = _make_attacker_sound_fixture("Guerreiro")
+    calls = _spy_play_mob_sounds_at(reh_mod)
+    handled = fx._play_attacker_mob_sound(server_attacker, 0.0, 0.0)
+    assert handled is True
+    assert calls == ["attack_melee"]
 
 
 def test_compute_window_geometry_windowed_ignora_tamanho_do_monitor():

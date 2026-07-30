@@ -699,6 +699,11 @@ class Projectile:
     dir_x: float = 0.0            # direção normalizada X (para flecha)
     dir_y: float = 0.0            # direção normalizada Y (para flecha)
     ability_id: str = ""          # se preenchido: apply_effect ao acertar (não deal_damage)
+    # Multiplicador de dano aplicado ao acertar (default 1.0 = sem mudança
+    # de comportamento) — usado pelo ramp de dano de Tower contra player
+    # (engine/world_systems.py::TowerSystem, +40%/acerto até +120%, só
+    # contra player — nunca setado por mob comum).
+    dmg_multiplier: float = 1.0
 
 
 class Item:
@@ -860,6 +865,50 @@ class Harvestable:
     # cache de ocupados. Default True (sólido) — preserva o comportamento
     # de sprites sem entrada no catálogo ('' ou id desconhecido).
     solid: bool = True
+
+
+class Tower:
+    """Torre estática com facção (29/07/2026, pedido do usuário) —
+    ataca à distância quem entra no alcance, recebe dano de volta, pode
+    ser respawnável e/ou regenerar vida. Entidade construída SEM
+    `AIControlled`/`EnemyAISystem` de propósito (mesma decisão do
+    `TrainingDummy`): a state machine de mob (CHASING/RETURNING/kite/
+    leash) não serve pra algo 100% imóvel — a lógica própria de alvo/
+    ataque vive em `engine/world_systems.py::TowerSystem`, que lê este
+    componente direto. `tower_key` referencia `content/tower_
+    definitions.py::TOWER_TABLE` (usado pelo respawn pra recriar a
+    mesma torre do zero). `spawn_tile_x/y` é o tile FIXO de respawn —
+    NUNCA aleatório (diferente de SpawnZone, que sempre sorteia dentro
+    de um raio — errado pra uma estrutura que precisa nascer sempre no
+    mesmo lugar)."""
+
+    def __init__(self, tower_key: str, attack_range_tiles: int,
+                 respawnable: bool = False, respawn_s: float = 0.0,
+                 regen_enabled: bool = False,
+                 xp_reward: int = 0, gold_min: int = 0, gold_max: int = 0,
+                 spawn_tile_x: int = 0, spawn_tile_y: int = 0):
+        self.tower_key          = tower_key
+        self.attack_range_tiles = attack_range_tiles
+        self.respawnable        = respawnable
+        self.respawn_s          = respawn_s
+        self.regen_enabled      = regen_enabled
+        self.xp_reward          = xp_reward
+        self.gold_min           = gold_min
+        self.gold_max           = gold_max
+        self.spawn_tile_x       = spawn_tile_x
+        self.spawn_tile_y       = spawn_tile_y
+        # Runtime — alvo fixo (sticky) até morrer/sair do alcance/perder
+        # LOS (nunca reavaliado "o mais próximo" a cada tick, fidelidade
+        # ao real de LoL — ver TowerSystem). -1 = sem alvo.
+        self.current_target_eid: int = -1
+        # Ramp de dano contra PLAYER (real do LoL: +40%/acerto até 3
+        # estocadas = +120%, NUNCA contra NPC/mob; reseta 3s após o
+        # último acerto em player; sobrevive a troca de alvo — é da
+        # TORRE, não por par torre-alvo).
+        self.dmg_ramp_stacks: int   = 0
+        self.dmg_ramp_timer: float  = 0.0
+        self.attack_cd: float       = 0.0
+        self.regen_timer: float     = 0.0
 
 
 @dataclass

@@ -108,6 +108,9 @@
 | Criar mob de combate hostil ("clássico") | `engine/entity_factory.py` | `create_enemy()` (tag `Enemy`) |
 | Criar NPC de combate (guarda, etc — facção tipicamente amigável) | `engine/entity_factory.py` | `create_combat_npc()` (tag `NPC`) — ambos compartilham `_build_combat_entity()` |
 | Adicionar NPC de combate a um mapa (conteúdo real) | `maps/{mapa}_entities.json` | chave `"combat_npcs"` (lista de `{x,y,faction,name,profession,...}`) — lido por `engine/map_loader.py` + `server/world_server.py::_create_combat_npcs()` |
+| Criar/modificar tipo de torre (Sistema de Torres, 29/07/2026) | `content/tower_definitions.py` | `TOWER_TABLE` (tabela própria, SEPARADA de MOB_TABLE — XP/ouro/atributos próprios) |
+| Torre estática com facção — entidade + IA de alvo/ataque | `engine/entity_factory.py::create_tower()` + `engine/world_systems.py::TowerSystem` | sem `AIControlled`; targeting sticky/aggro-switch/ramp — ver `ARQUITETURA_ONLINE.md` §34.70 |
+| Adicionar torre a um mapa (conteúdo real) | `maps/{mapa}_entities.json` | chave `"towers"` (lista de `{x,y,tower_key,faction,level,respawnable,respawn_s,regen_enabled}`) — lido por `engine/map_loader.py` + `server/world_server.py::_create_towers()` |
 
 ---
 
