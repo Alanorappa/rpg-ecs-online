@@ -9396,6 +9396,32 @@ nesta sessão, sem relação (terreno em edição do usuário, ver §34.52).
 Vários testes novos por fix, todos confirmados via `git stash` que
 falham genuinamente sem a correção correspondente.
 
+### §34.71 — Zoom padrão vira 200% + remove indicador fixo de zoom (29/07/2026)
+
+Pedido do usuário: zoom abrir em 200% (em vez de 150%, o mínimo
+permitido) e tirar o texto "zoom X%" do canto superior esquerdo da
+tela.
+
+`GameEngine.__init__` ganhou `self._zoom_default: float = 2.0` (dentro
+do range já existente `_zoom_min=1.5`/`_zoom_max=2.5`) — os 2 pontos
+que antes inicializavam com `self._zoom_min` (`self._zoom` em
+`_load_map_and_entities`/pós-spawn, e `_zoom_pending` no `__init__`)
+passam a usar `_zoom_default`. `_zoom_min`/`_zoom_max` continuam
+intactos como limites do scroll/+−, nenhuma mudança de comportamento
+aí.
+
+Indicador removido (`client/hud_handlers.py::_draw_hud`): a condição
+`if self._zoom != 1.0` nunca foi falsa na prática, já que o zoom mínimo
+permitido é 1.5 — o texto aparecia sempre, não era um indicador
+condicional de verdade.
+
+Mudança pequena e de baixo risco (constante + remoção de bloco morto,
+sem lógica nova) — sem teste dedicado (nenhuma infraestrutura de teste
+pra `GameEngine`/`_draw_hud` existia pra reaproveitar, e não há
+comportamento condicional restante pra cobrir). Validado visualmente
+pelo usuário em jogo antes da suíte rodar. Suíte completa (636 testes)
+3x limpa.
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |

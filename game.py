@@ -353,9 +353,10 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._cam_x = 0.0
         self._cam_y = 0.0
         # _zoom → Camera.zoom component (via property)
-        self._zoom_min:  float = 1.5
-        self._zoom_max:  float = 2.5
-        self._zoom_step: float = 0.25
+        self._zoom_min:     float = 1.5
+        self._zoom_max:     float = 2.5
+        self._zoom_step:    float = 0.25
+        self._zoom_default: float = 2.0   # 200% — pedido do usuário 29/07/2026
         # Debounce do zoom via scroll do mouse — cada "clique" da roda mudava
         # self._zoom NA HORA, e o bloco "Zoom surf: dimensiona a world_surf"
         # (run(), mais abaixo) recalcula lw/lh a partir de self._zoom TODO
@@ -372,7 +373,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         # por clique — reconstrói 1x em vez de N. -1.0 = nada pendente.
         self._ZOOM_DEBOUNCE_S = 0.15
         self._zoom_cache_dirty_timer: float = -1.0
-        self._zoom_pending: float = self._zoom_min
+        self._zoom_pending: float = self._zoom_default
         self._zoom_surf: "pygame.Surface | None" = None
         self._zoom_surf_sz: tuple = (0, 0)
         self._pending_tooltip       = None  # (mx, my, title, lines) – render no fim do frame
@@ -660,7 +661,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self.camera_entity = create_camera(
             self.world, self.player_entity, self.screen.get_width(), self.screen.get_height()
         )
-        self._zoom = self._zoom_min
+        self._zoom = self._zoom_default
 
     def _spawn_entities_from(self, spawn_points: dict):
         # Modo online: enemies, spawn_zones e (Fase 1 de combate genérico,

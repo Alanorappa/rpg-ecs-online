@@ -26,12 +26,6 @@ class HudHandlers:
         if not combat_stats:
             return
 
-        # --- Indicador de zoom (canto superior esquerdo, só quando ≠ 100%) ---
-        if self._zoom != 1.0:
-            z_pct  = int(round(self._zoom * 100))
-            z_surf = self.font_xs.render(f"zoom {z_pct}%", False, C_YELLOW)
-            self.screen.blit(z_surf, (self._u(10), self._u(10)))
-
         # --- Zona atual + coordenadas (canto superior direito) ---
         import os
         map_name = os.path.splitext(os.path.basename(self._current_map_file))[0].replace("_", " ").title()
