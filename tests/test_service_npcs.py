@@ -220,7 +220,13 @@ class TestServiceNpcVoltaProSpawnExato(unittest.TestCase):
     def setUp(self):
         from engine.components import MapLocation
         self.ws = make_world_server()
-        spawn_player(self.ws, "s1", 130, 374)
+        # Player perto o bastante do posto (dentro de SLEEP_RADIUS_TILES=20,
+        # engine/world_systems.py — 05/08/2026, Achado 5): um NPC/mob IDLE
+        # fora desse raio de todo player não é mais processado, então não se
+        # autocorrige sozinho — mesma regra pra qualquer entidade IDLE, não
+        # só combate. (130,374) media 20-31 tiles dos pontos usados abaixo,
+        # na borda/fora do raio; (145,378) fica bem dentro pra tudo aqui.
+        spawn_player(self.ws, "s1", 145, 378)
         self.npc = create_merchant(self.ws.world, 150, 380, name="Zeca", level=60)
         self.ws.world.add_component(self.npc, MapLocation(self.ws._map_file))
 

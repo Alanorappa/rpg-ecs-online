@@ -109,57 +109,67 @@ def _make_ammo(name, rarity, value, max_stack: int = 1000,
 _RAW_ITEMS = {
 
     # ================================================================ WEAPONS (sem armor_class)
-    "bone_sword": lambda: Item(
-        "Espada de Osso", "weapon", "mainhand",
+    "training_sword": lambda: Item(
+        "Espada de treinamento", "weapon", "mainhand",
         modifiers=[], rarity="common", value=10,
-        damage_min=3, damage_max=8, attack_speed=1.6, subtype="Sword"),
+        damage_min=1, damage_max=2, attack_speed=2.1, subtype="Sword"),
+
+    "training_mace": lambda: Item(
+        "Maça de treinamento", "weapon", "mainhand",
+        modifiers=[], rarity="common", value=10,
+        damage_min=1, damage_max=2, attack_speed=2.1, subtype="Mace"),
+
+    "training_axe": lambda: Item(
+        "Machado de treinamento", "weapon", "mainhand",
+        modifiers=[], rarity="common", value=10,
+        damage_min=1, damage_max=2, attack_speed=2.1, subtype="Axe"),          
 
     "cracked_club": lambda: Item(
         "Clava Rachada", "weapon", "mainhand",
-        modifiers=[Modifier("stamina", 1)], rarity="common", value=7,
-        damage_min=2, damage_max=7, attack_speed=1.8, subtype="Club"),
+        modifiers=[], rarity="common", value=7,
+        damage_min=2, damage_max=3, attack_speed=2.2, subtype="Club"),
 
     "wood_wand": lambda: Item(
         "Varinha de Madeira", "weapon", "mainhand",
-        modifiers=[Modifier("spell_power", 6)], rarity="common", value=10,
-        damage_min=4, damage_max=9, attack_speed=1.4, subtype="Wand"),
+        modifiers=[], rarity="common", value=10,
+        damage_min=1, damage_max=3, attack_speed=2.1, subtype="Wand"),
 
     "bone_shield": lambda: Item(
         "Escudo de Osso", "shield", "offhand",
-        modifiers=[Modifier("armor", 5), Modifier("stamina", 1)],
+        modifiers=[Modifier("armor", 5)],
         rarity="common", value=8),
 
     "iron_sword": lambda: Item(
         "Espada de Ferro", "weapon", "mainhand",
-        modifiers=[Modifier("attack_power", 3)], rarity="uncommon", value=35,
-        damage_min=8, damage_max=16, attack_speed=1.4, subtype="Sword"),
+        modifiers=[Modifier("crit_rating", 0.01)], rarity="uncommon", value=35,
+        damage_min=2, damage_max=5, attack_speed=1.9, subtype="Sword"),
 
     "iron_mace": lambda: Item(
         "Maça de Ferro", "weapon", "mainhand",
-        modifiers=[Modifier("stamina", 3)], rarity="uncommon", value=30,
-        damage_min=7, damage_max=15, attack_speed=1.7, subtype="Mace"),
+        modifiers=[Modifier("strength", 1)], rarity="uncommon", value=30,
+        damage_min=1, damage_max=5, attack_speed=2.1, subtype="Mace"),
 
     "apprentice_axe": lambda: Item(
         "Machadão do Aprendiz", "weapon", "mainhand",
-        modifiers=[Modifier("attack_power", 5)], rarity="uncommon", value=45,
-        damage_min=14, damage_max=26, attack_speed=2.6, two_handed=True, subtype="Axe"),
+        modifiers=[Modifier("crit_rating", 0.01)], rarity="uncommon", value=45,
+        damage_min=1, damage_max=6, attack_speed=2.6, two_handed=True, subtype="Axe"),
 
     # ── Bows (arqueiro) ───────────────────────────────────────────────────────
     "short_bow": lambda: Item(
         "Arco Curto", "weapon", "mainhand",
-        modifiers=[Modifier("crit_rating", 0.01)],
+        modifiers=[],
         rarity="common", value=20,
-        damage_min=5, damage_max=22, attack_speed=1.8, subtype="Bow", cast_range=7),
+        damage_min=5, damage_max=25, attack_speed=2.1, subtype="Bow", cast_range=7),
 
     "hunter_bow": lambda: Item(
         "Arco do Caçador", "weapon", "mainhand",
-        modifiers=[Modifier("crit_rating", 0.01), Modifier("attack_power", 4)],
+        modifiers=[Modifier("crit_rating", 0.01)],
         rarity="uncommon", value=38,
-        damage_min=8, damage_max=30, attack_speed=2.0, subtype="Bow", cast_range=8),
+        damage_min=6, damage_max=31, attack_speed=2.0, subtype="Bow", cast_range=8),
 
     "elven_bow": lambda: Item(
         "Arco Élfico", "weapon", "mainhand",
-        modifiers=[Modifier("crit_rating", 0.06), Modifier("attack_power", 6), Modifier("agility", 2)],
+        modifiers=[Modifier("agility", 1), Modifier("crit_rating", 0.01), Modifier("attack_power", 3)],
         rarity="rare", value=95,
         damage_min=12, damage_max=42, attack_speed=1.6, subtype="Bow", cast_range=9),
 
@@ -173,6 +183,17 @@ _RAW_ITEMS = {
         "Aljava Reforçada", "quiver", "offhand",
         modifiers=[Modifier("crit_rating", 0.01)], rarity="uncommon", value=25,
         arrow_count=100, max_arrows=100, subtype="Flecha"),
+
+    # Aljava de instância (01/08/2026, pedido do usuário — loja da
+    # battleground de teste): capacidade bem alta (não literalmente
+    # "infinita", só o suficiente pra nunca esvaziar numa partida) pra
+    # gerenciar munição não atrapalhar o PvP dentro da instância. Vendida
+    # SÓ no `content/merchant_data.py::SHOPS["instance_shop"]` — não
+    # aparece em nenhuma loja do mundo aberto.
+    "battleground_quiver": lambda: Item(
+        "Aljava de Batalha", "quiver", "offhand",
+        modifiers=[Modifier("crit_rating", 0.02)], rarity="rare", value=30,
+        arrow_count=999, max_arrows=999, subtype="Flecha"),
 
     # ── Ammo ──────────────────────────────────────────────────────────────────
     "arrow": lambda: Item(

@@ -311,21 +311,27 @@ class TestMobMovement(unittest.TestCase):
 
     def test_mob_moves_toward_player(self):
         """EnemyAISystem: mob dentro do aggro range (<=5 tiles) deve perseguir player."""
-        from engine.components import TileMovement
         from engine.utils import chebyshev
         mob_eid = first_mob(self.ws)
         player_eid = self.ws._player_eids["s1"]
+
+        # Teleporta o MOB pra perto do player (área de spawn, aberta) em vez
+        # de mover o player pra posição NATIVA do mob — depender da
+        # geometria de onde o mob nasceu não é seguro: `first_mob()` pode
+        # devolver mobs diferentes dependendo da ordem/quantidade de testes
+        # rodados antes (random global do Python não é resetado por teste),
+        # e um mob perto de parede quebra a checagem de linha de visão
+        # mesmo com tudo mais (hostilidade, distância, HP) correto — bug
+        # real 05/08/2026, mob que nasceu perto de obstáculo travava em
+        # IDLE pra sempre apesar do player estar a 3 tiles. `teleport_mob_
+        # to_player` já realinha InitialPosition e reseta o AI pra IDLE.
+        # offset_y (não offset_x): (131,374) — 1 tile a LESTE do spawn de
+        # teste (130,374) em map_1 — é sólido e bloqueia LOS; sul é aberto
+        # (confirmado: (130,377) não-sólido, LOS livre).
+        teleport_mob_to_player(self.ws, mob_eid, player_eid, offset_x=0, offset_y=3)
+        from engine.components import TileMovement
         ptm    = self.ws.world.get_component(player_eid, TileMovement)
         mob_tm = self.ws.world.get_component(mob_eid, TileMovement)
-
-        # Usa posição real do mob; player a 3 tiles — sincroniza Position também
-        nat_x = mob_tm.current_tile_x;  nat_y = mob_tm.current_tile_y
-        set_entity_tile(self.ws, player_eid, nat_x + 3, nat_y)
-        # Reseta AI para IDLE
-        from engine.components import AIControlled
-        ai = self.ws.world.get_component(mob_eid, AIControlled)
-        if ai:
-            ai.state = "IDLE";  ai.path = [];  ai.aggroed_by_damage = False
 
         dist_before = chebyshev(mob_tm.current_tile_x, mob_tm.current_tile_y,
                                 ptm.current_tile_x,    ptm.current_tile_y)
@@ -1495,7 +1501,7 @@ class TestCCGeneralizado(unittest.TestCase):
         anti-cheat de movimento — um cliente que ignorasse is_action_locked
         conseguia mandar MOVE normalmente enquanto amedrontado."""
         self._apply("fear")
-        moved = self.ws.move_player("cc1", 131, 374)
+        moved = self.ws.move_player("cc1", 129, 374)
         self.assertFalse(moved, "MOVE deveria ser rejeitado sob medo")
 
     def test_disoriented_nao_bloqueia_movimento_bruto_no_servidor(self):
@@ -1504,8 +1510,87 @@ class TestCCGeneralizado(unittest.TestCase):
         (CombatStateSystem) e mandado como MOVE normal — bloquear aqui
         quebraria esse wander (ver comentário em world_server.py)."""
         self._apply("disoriented")
-        moved = self.ws.move_player("cc1", 131, 374)
+        moved = self.ws.move_player("cc1", 129, 374)
         self.assertTrue(moved, "MOVE de wander não deveria ser rejeitado")
+
+
+class TestTickPerfProfiler(unittest.TestCase):
+    """Profiler por-seção do tick (04/08/2026, pedido do usuário — travadas
+    percebidas em jogo, ping >600ms na HUD, "consegue colocar um
+    monitoramento que grave no log pra avaliar quanto cada sistema está
+    consumindo"). `WorldServer._perf_mark` é o chokepoint único: grava em
+    `_perf_accum` (média periódica, já existia) E `_perf_tick_now`
+    (snapshot SÓ do tick atual, novo — usado pra apontar o CULPADO de um
+    pico específico, não só a média diluída num relatório de ~10s). Ver
+    ARQUITETURA_ONLINE.md §34.74.29."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+
+    def test_perf_mark_grava_em_ambos_os_dicts(self):
+        import time
+        t0 = time.perf_counter()
+        time.sleep(0.01)
+        self.ws._perf_mark("teste_label", t0)
+        self.assertIn("teste_label", self.ws._perf_accum)
+        self.assertIn("teste_label", self.ws._perf_tick_now)
+        self.assertGreaterEqual(self.ws._perf_accum["teste_label"], 0.01)
+        self.assertGreaterEqual(self.ws._perf_tick_now["teste_label"], 0.01)
+
+    def test_perf_tick_now_reseta_a_cada_tick_mas_perf_accum_acumula(self):
+        """`_perf_tick_now` é o snapshot do tick ATUAL — precisa esvaziar
+        no início de CADA `_tick()`, senão o breakdown de um tick lento
+        mostraria tempo de ticks ANTERIORES também (ex: 2 ticks lentos
+        seguidos pareceriam UM tick de 2x a duração). `_perf_accum` é o
+        oposto: precisa continuar somando entre ticks (só zera no
+        relatório periódico, `_PERF_REPORT_TICKS`). Usa um sleep
+        conhecido (0.15s) num sistema real pra medir com precisão — sem
+        isso, o ruído normal de timing (~ms) não provaria nada."""
+        import time
+        orig_update = self.ws._minion_system.update
+
+        def _slow_update(*a, **k):
+            time.sleep(0.15)
+            return orig_update(*a, **k)
+
+        self.ws._minion_system.update = _slow_update
+        self.ws._tick(0.05)
+        self.ws._tick(0.05)
+        # Se _perf_tick_now NÃO resetasse, o 2º tick teria ~0.30s
+        # acumulado (2× o sleep); resetando de verdade, cada tick
+        # individual fica perto de 0.15s (1× o sleep).
+        self.assertLess(self.ws._perf_tick_now["minion_system"], 0.25,
+                        "_perf_tick_now parece acumulado entre ticks, não resetado "
+                        f"(valor={self.ws._perf_tick_now['minion_system']:.3f}s, "
+                        "esperado ~0.15s de 1 tick só)")
+        # _perf_accum, ao contrário, CRESCE (é cumulativo) — depois de 2
+        # ticks com sleep de 0.15s cada, deveria ter pelo menos ~0.30s.
+        self.assertGreaterEqual(self.ws._perf_accum["minion_system"], 0.25,
+                                "_perf_accum deveria acumular os 2 ticks (~0.30s), "
+                                f"não só o último (valor="
+                                f"{self.ws._perf_accum['minion_system']:.3f}s)")
+
+    def test_tick_lento_grava_breakdown_por_secao_no_log(self):
+        """Trava real do usuário: sistema específico consumindo 100+ms
+        num tick só. Simula travando `MinionSystem.update` de propósito e
+        confirma que a linha "tick lento" no arquivo de perf aponta esse
+        sistema como o principal consumidor do pico — não só o total."""
+        import time
+        orig_update = self.ws._minion_system.update
+
+        def _slow_update(*a, **k):
+            time.sleep(0.15)
+            return orig_update(*a, **k)
+
+        self.ws._minion_system.update = _slow_update
+        self.ws._tick(0.05)
+        self.ws._perf_log.flush()
+        with open(self.ws._perf_log.name, encoding="utf-8") as f:
+            content = f.read()
+        slow_lines = [l for l in content.splitlines() if "tick lento" in l]
+        self.assertTrue(slow_lines, "deveria ter gravado uma linha de tick lento")
+        self.assertIn("minion_system=", slow_lines[-1],
+                      "breakdown deveria apontar minion_system como consumidor no pico")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

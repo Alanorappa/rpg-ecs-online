@@ -39,6 +39,7 @@ from server.duel_processor import DuelProcessorMixin
 from server.party_processor import PartyProcessorMixin
 from server.pvp_zone_processor import PvpZoneProcessorMixin
 from server.match_processor import MatchProcessorMixin
+from server.bg_queue_processor import BgQueueProcessorMixin
 from debug.mob_combat_debug import MCL
 
 # move_player() faz snap instantâneo de tile (sem tween real) — esta janela é
@@ -130,7 +131,8 @@ class _ServerStatusEffectSystem:
 class _MapBundle:
     """Sistemas e dados de UM mapa no mundo compartilhado."""
     __slots__ = ("map_file", "tilemap_entity", "systems", "ai_systems",
-                 "transitions", "tile_validation", "pathfinding")
+                 "transitions", "tile_validation", "pathfinding",
+                 "proximity_systems")
 
     def __init__(self):
         self.map_file        = ""
@@ -140,11 +142,18 @@ class _MapBundle:
         self.transitions     = {}   # (tx,ty) -> {target_map, target_x, target_y}
         self.tile_validation = None
         self.pathfinding     = None
+        # Subconjunto de systems que aceita o índice canônico de players
+        # por tick (05/08/2026 — ver `players_by_map` em `_tick()`) — cada
+        # um fazia seu PRÓPRIO scan de `get_entities_with(...
+        # PlayerControlled...)`, alguns por MOB (EnemyAISystem, o mais
+        # caro), nunca compartilhando. Mesmo padrão de `ai_systems` (set
+        # de instâncias construído em `_load_map_for`).
+        self.proximity_systems = set()
 
 
 class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootProcessorMixin,
                    SpellCompletionMixin, TradeProcessorMixin, DuelProcessorMixin, PartyProcessorMixin,
-                   PvpZoneProcessorMixin, MatchProcessorMixin):
+                   PvpZoneProcessorMixin, MatchProcessorMixin, BgQueueProcessorMixin):
 
     MAP_FILE = "maps/map_1.csv"   # mapa padrão carregado pelo servidor
 
@@ -214,6 +223,26 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # regen_enabled, respawn_s, level, timer}. Ver register_tower_
         # respawn()/_tick_tower_respawns().
         self._tower_respawn_timers: dict[tuple, dict] = {}
+
+        # Minion de lane estilo MOBA (30/07/2026, pedido do usuário).
+        # _minion_lanes: map_file -> lista de configs de lane (registradas
+        # em _create_minion_lanes, chamado de _load_map_for). Só CONFIG —
+        # não cria minion na hora. _minion_wave_timers: (map_file,faction,
+        # lane_id) -> segundos acumulados; a CHAVE PRESENTE = lane ATIVA (só
+        # existe depois que _activate_minion_lanes é chamado — combate de
+        # arena de verdade liberado, match_processor.py::_tick_arena_pending
+        # — nunca durante o preparo). Ver _tick_minion_waves().
+        self._minion_lanes: dict[str, list[dict]] = {}
+        self._minion_wave_timers: dict[tuple, float] = {}
+        # Fila de spawn escalonado da wave (01/08/2026, bug real relatado
+        # pelo usuário no primeiro playtest de verdade num mapa MOBA: os 7
+        # minions nascendo no MESMO tick, empilhados nos offsets de
+        # _MINION_WAVE_OFFSETS, travavam uns aos outros — cada um via os
+        # outros como dynamic_obstacle antes de ter espaço pra se afastar).
+        # _tick_minion_waves só ENFILEIRA aqui (rota já calculada); quem
+        # cria a entidade de fato é _tick_minion_spawn_queue, um por vez,
+        # a cada MINION_SPAWN_STAGGER_S.
+        self._minion_spawn_queue: list[dict] = []
 
         # DEBUG Bug2 (regen/desaparecimento no golpe final): current_hp de cada
         # mob ao FINAL do tick anterior (pós death-sweep) — usado em _tick()
@@ -327,6 +356,22 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # tarde, já com o portão aberto — ver consume_arena_gate_open_events.
         self._arena_gate_open_events_this_tick: list[dict] = []
 
+        # Fila REAL de matchmaking da BG estilo MOBA (04/08/2026, ver
+        # server/bg_queue_processor.py) — fila ÚNICA (sem chave por modo,
+        # diferente da Arena: token = ("solo", eid) ou ("party", party_id),
+        # a fila decide o tamanho do time sozinha) + partidas ativas
+        # (instância privada POR PARTIDA, `template::match_id`).
+        self._bg_queue: list[tuple] = []
+        self._bg_active_matches: dict[str, dict] = {}
+        self._player_bg_match_id: dict[int, str] = {}
+        self._next_bg_match_id: int = 1
+        self._pending_bg_invite: dict[int, str] = {}
+        self._bg_match_found_events_this_tick: list[dict] = []
+        self._bg_match_start_events_this_tick: list[dict] = []
+        self._bg_gate_open_events_this_tick: list[dict] = []
+        self._bg_match_leave_events_this_tick: list[dict] = []
+        self._bg_match_result_events_this_tick: list[tuple] = []
+
         # Timer de ataque por jogador: session_id → segundos até próximo hit
         self._attack_timers: dict[str, float] = {}
 
@@ -370,6 +415,16 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # _map_bundles — engine/world_systems.py é headless/compartilhado).
         self._tower_system = _TowerSys(
             self.world, get_tilemap_for_map=self._get_tilemap_for_map_file)
+
+        # Minion de lane estilo MOBA (30/07/2026, pedido do usuário) — mesmo
+        # princípio de Torre acima (sweep global, não por-bundle). Precisa
+        # TAMBÉM de get_pathfinding_for_map (Torre nunca se move; minion
+        # sim, repathing tile-a-tile ao perseguir/retornar/desviar de
+        # obstáculo — ver _walk_toward, engine/world_systems.py).
+        from engine.world_systems import MinionSystem as _MinionSys
+        self._minion_system = _MinionSys(
+            self.world, get_tilemap_for_map=self._get_tilemap_for_map_file,
+            get_pathfinding_for_map=self._get_pathfinding_for_map_file)
 
         from server.server_death_handler import ServerDeathHandler
         self._death_handler = ServerDeathHandler(self.world, world_server=self)
@@ -428,13 +483,59 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # ── Profiler de tick ─────────────────────────────────────────────────
         # Acumula tempo por seção; resumo impresso a cada _PERF_REPORT_TICKS ticks.
         self._perf_accum:       dict[str, float] = {}
+        # Breakdown SÓ do tick atual (04/08/2026, pedido do usuário — ver
+        # ARQUITETURA_ONLINE.md §34.74.29: precisa saber qual sistema causou
+        # UM pico específico de latência, não só a média diluída num
+        # relatório de ~10s. Resetado no início de CADA tick por _tick();
+        # `_perf_mark` grava em `_perf_accum` (média) E aqui (pico) ao mesmo
+        # tempo — chokepoint único, nunca duplicar a leitura de perf_counter
+        # por seção nova.
+        self._perf_tick_now:    dict[str, float] = {}
         self._perf_count:       int = 0
         self._perf_map_active:  dict[str, int]   = {}  # map → ticks com ≥1 player
         self._perf_peak_maps:   int = 0                # pico de mapas simultâneos ativos
         self._perf_cpu_sum:     float = 0.0            # soma de % CPU por tick
         self._perf_cpu_peak:    float = 0.0            # pico de % CPU no período
+        # RSS (memória residente) — instrumentação 05/08/2026 pra investigar
+        # picos isolados de 75-190ms concentrados SÓ em ai_bundles/bnd:map_1,
+        # crescendo com a duração da sessão mesmo com players/mobs estáveis
+        # (log real analisado com o usuário). Hipótese: acúmulo de memória
+        # (garbage cíclico, já que `gc.disable()` em main.py só coleta via
+        # `_gc_srv.collect()` manual a cada ~10s em run()) causando pausa de
+        # alocador/SO bem no meio do trabalho mais pesado do tick. RSS
+        # amostrado 1x/tick (barato, só um syscall), reportado no resumo
+        # periódico pra ver se cresce de forma anormal entre relatórios.
+        self._perf_rss_sum:     float = 0.0            # soma de RSS (bytes) por tick
+        self._perf_rss_peak:    float = 0.0            # pico de RSS (bytes) no período
+        # Contador de mobs "ativos" (CHASING/ATTACKING/AGGRO_DELAY) —
+        # instrumentação 05/08/2026 pra confirmar a hipótese de que o custo
+        # crescente de sys:EnemyAISystem ao longo de uma MESMA sessão (RSS
+        # estável, população de mob estável) vem de mobs progressivamente
+        # saindo do caminho barato (IDLE/sleep-check) e entrando no caminho
+        # caro (leash/tiles de ataque candidatos/orçamento de pathfinding)
+        # conforme agroam, não de vazamento. Contado de graça no loop que já
+        # existe (snapshot de estado pré-update) — nunca um scan novo.
+        self._perf_active_mobs_sum:  float = 0.0
+        self._perf_active_mobs_peak: int   = 0
+        self._perf_active_now:       int   = 0
+        # Mobs que sobraram do pré-filtro do Achado 5 (§34.74.40) por tick
+        # — soma de `EnemyAISystem._last_active_mob_count` de todos os
+        # bundles ativos. Diferente de `_perf_active_mobs_sum` acima (que
+        # só conta mob em CHASING/ATTACKING/AGGRO_DELAY): este conta TODO
+        # mob que passou pro corpo do loop, incluindo os IDLE que só
+        # acordaram por estar no raio.
+        self._perf_ai_active_mobs_sum:  float = 0.0
+        self._perf_ai_active_mobs_peak: int   = 0
         self._PERF_REPORT_TICKS = 300          # ~10s a 30 ticks/s
         self._PERF_BUDGET_MS    = 1000.0 / 30  # 33.3ms por tick
+        # Threshold pra imprimir o BREAKDOWN por seção na linha de "tick
+        # lento" (04/08/2026, pedido do usuário — travadas percebidas em
+        # jogo, ping >600ms na HUD). Bem acima de _PERF_BUDGET_MS de
+        # propósito: qualquer tick real sob carga passa um pouco de
+        # 33.3ms (isso sozinho não é o "freeze" que o usuário sente) — o
+        # breakdown só vale a pena pra picos de verdade, senão o arquivo
+        # de log vira ruído a cada tick um pouco mais pesado.
+        self._PERF_BREAKDOWN_MS = 100.0
         # psutil: medição de CPU do processo. cpu_percent(interval=None) acumula desde
         # a última chamada — primeiro call inicializa o baseline, por isso chamamos aqui.
         try:
@@ -558,6 +659,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._create_harvestables_for_map(spawn_points, key)
         self._create_harvestable_zones_for_map(spawn_points.get("harvestable_zones", []), key)
         self._create_towers(spawn_points.get("towers", []), key)
+        self._create_minion_lanes(spawn_points.get("minion_lanes", []), key)
 
         # Snapshot DEPOIS — todas as novas entidades ganham MapLocation
         _eids_after = set(self.world._components.keys())
@@ -629,7 +731,14 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         bundle.map_file        = map_file
         bundle.tilemap_entity  = tilemap_entity
         bundle.systems         = systems
-        bundle.ai_systems      = {enemy_ai_system, enemy_ab_system}
+        # tile_validation entra aqui também (04/08/2026, pedido do usuário —
+        # "não tem como pular se não precisa?"): seu cache (_occupied) só é
+        # consultado por pathfinding/AI (EnemyAISystem/TauntSystem), que já
+        # ficam fora do ar sem player neste mapa — sem gate aqui ele
+        # reconstruía um cache global (get_entities_with(TileMovement) de
+        # TODO o mundo) que ninguém lia, todo tick, em mapa vazio.
+        bundle.ai_systems      = {enemy_ai_system, enemy_ab_system, tile_validation}
+        bundle.proximity_systems = {enemy_ai_system, enemy_ab_system, _spawn_sys}
         bundle.transitions     = transitions
         bundle.tile_validation = tile_validation
         bundle.pathfinding     = pathfinding
@@ -870,6 +979,30 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         bundle = self._map_bundles.get(map_file)
         return bundle.pathfinding._get_tilemap_component() if bundle else None
 
+    def _get_pathfinding_for_map_file(self, map_file: str):
+        """Resolve o `PathfindingSystem` do MAPA pedido via `_map_bundles`
+        — injetado no `MinionSystem` (engine/world_systems.py) como
+        callback, mesmo princípio de `_get_tilemap_for_map_file` acima
+        (Torre não precisa disso — nunca se move; minion sim, pra
+        repathing tile-a-tile ao perseguir/retornar)."""
+        bundle = self._map_bundles.get(map_file)
+        return bundle.pathfinding if bundle else None
+
+    def _get_tower_tiles_for_map(self, map_file: str) -> set:
+        """Tiles ocupados por torres VIVAS no mapa/instância — usado como
+        `dynamic_obstacles` no cálculo de rota de minion (01/08/2026, ver
+        comentário em `_tick_minion_waves`). Torre morta some do world
+        (respawn é entidade NOVA, `_tick_tower_respawns`), então já sai
+        sozinha do resultado sem checagem extra de HP aqui."""
+        from engine.components import Tower as _TwrTiles, Position as _PosTiles, \
+            MapLocation as _MLTiles
+        tiles: set = set()
+        for eid, _twr, pos, ml in self.world.get_entities_with(_TwrTiles, _PosTiles, _MLTiles):
+            if ml.map_file != map_file:
+                continue
+            tiles.add((int(pos.x // TILE_SIZE), int(pos.y // TILE_SIZE)))
+        return tiles
+
     def _create_towers(self, towers_data: list, map_file: str) -> None:
         """Cria torres estáticas (29/07/2026, pedido do usuário) a partir
         de `{mapa}_entities.json::towers` — mesmo padrão de
@@ -887,10 +1020,53 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 respawn_s=float(t.get("respawn_s", 0)),
                 regen_enabled=t.get("regen_enabled", False),
                 level=t.get("level", 1),
+                is_nexus=t.get("is_nexus", False),
             )
             # MapLocation é anexado automaticamente pelo diff antes/depois
             # de entidades em _load_map_for (mesmo mecanismo de
             # _create_combat_npcs) — nenhuma linha extra necessária aqui.
+
+    def _create_minion_lanes(self, lanes_data: list, map_file: str) -> None:
+        """Registra as lanes de `{mapa}_entities.json::minion_lanes` — só
+        CONFIG (spawn/alvo/intervalo/facção/lane_id), não cria nenhum
+        minion agora. Ativação (início da contagem de wave) é separada,
+        depois que o combate libera de verdade (`_activate_minion_lanes`,
+        chamado por `match_processor.py::_tick_arena_pending` no mesmo
+        momento em que o portão físico abre — nunca durante o preparo)."""
+        if lanes_data:
+            self._minion_lanes[map_file] = list(lanes_data)
+
+    # Ordem de disparo das lanes por GRUPO (03/08/2026, pedido do usuário,
+    # ao revisar o fix de travamento/keepalive-timeout de _tick_minion_waves
+    # abaixo): top dos 2 times juntos, DEPOIS bot dos 2 times, DEPOIS mid dos
+    # 2 times — nunca um time isolado (senão o outro time daquela MESMA lane
+    # ganharia alguns segundos de vantagem de timing, injusto). Cada grupo
+    # atrasa `_LANE_GROUP_STAGGER_S` a mais que o anterior — espalha o custo
+    # (mesmo já reduzido pelo cache de rota por lane) em vez de tudo disparar
+    # no MESMO tick pra sempre (era o caso antes: todas as lanes começavam
+    # com o MESMO timer 0.0, então SEMPRE coincidiam, toda wave).
+    _LANE_GROUP_ORDER: tuple = ("top", "bot", "mid")
+    _LANE_GROUP_STAGGER_S: float = 1.5
+
+    def _activate_minion_lanes(self, map_file: str) -> None:
+        """Inicia o timer de wave de cada lane registrada pra este
+        mapa/instância — chamado 1x quando o combate libera de verdade.
+        Chave = (map_file, faction, lane_id) — lane_id distingue rotas do
+        MESMO time no MESMO mapa (top/mid/bot), senão colidiriam na mesma
+        chave e só a primeira jamais dispararia. Timer inicial NEGATIVO
+        (não 0.0) pro grupo da lane — ver `_LANE_GROUP_ORDER`/
+        `_LANE_GROUP_STAGGER_S` — atrasa o 1º disparo desse grupo, e o
+        atraso se PROPAGA pra sempre (o `elapsed - wave_interval_s` do
+        reset em `_tick_minion_waves` carrega o resto adiante), sem
+        precisar tocar na lógica de disparo em si."""
+        for lane in self._minion_lanes.get(map_file, []):
+            key = (map_file, lane["faction"], lane.get("lane_id", "default"))
+            if key not in self._minion_wave_timers:
+                try:
+                    _group_idx = self._LANE_GROUP_ORDER.index(lane.get("lane_id", "default"))
+                except ValueError:
+                    _group_idx = 0
+                self._minion_wave_timers[key] = -(_group_idx * self._LANE_GROUP_STAGGER_S)
 
     def register_tower_respawn(self, tower, faction_id: str, map_file: str, level: int) -> None:
         """Chamado por `ServerDeathHandler.update()` quando uma entidade
@@ -942,6 +1118,200 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             done_keys.append(key)
         for key in done_keys:
             del self._tower_respawn_timers[key]
+
+    # Composição fixa de uma wave (30/07/2026, pedido do usuário; reduzida
+    # 04/08/2026, mesmo pedido — 7→4 por lane, 42→24 minions simultâneos
+    # com as 6 lanes ativas, pra baixar a carga de combate quando 2 waves
+    # se cruzam no meio da lane): 1 melee + 2 à distância + 1 à distância
+    # tier raro. Offsets evitam empilhar os minions no MESMO tile ao
+    # nascer (não é posição real de formação, só um espalhamento pequeno
+    # ao redor do spawn_tile).
+    _MINION_WAVE_COMPOSITION = (
+        ("minion_melee", 1), ("minion_ranged", 2), ("minion_ranged_raro", 1),
+    )
+    _MINION_WAVE_OFFSETS = (
+        (0, 0), (1, 0), (-1, 0), (0, 1), (1, 1), (-1, 1), (0, 2),
+    )
+    # Atraso entre a criação de cada minion da MESMA wave (01/08/2026,
+    # pedido do usuário — ver _minion_spawn_queue/_tick_minion_spawn_queue).
+    MINION_SPAWN_STAGGER_S = 0.5
+
+    def _compute_team_avg_level(self, map_file: str, faction_id: str, default_level: int = 1) -> int:
+        """Level médio (arredondado) dos players REAIS do time `faction_id`
+        presentes em `map_file` agora — recalculado a CADA wave (pedido do
+        usuário, 30/07/2026), não fixado 1x no início do combate. Sem
+        nenhum player do time na instância (ex: lane ainda sem ninguém
+        perto, ou fallback de teste), usa `default_level` (o valor
+        estático da própria lane). Generaliza pra battlefield/dungeon
+        futuro de propósito — não depende de bookkeeping específico da
+        arena (`_player_match_id`/`match['team_a']`), só de
+        `Faction`+`MapLocation`+`CharacterStats` já anexados ao player."""
+        from engine.components import Faction as _FacAvg, CharacterStats as _CSAvg, \
+            MapLocation as _MLAvg, PlayerControlled as _PCAvg
+        levels = []
+        for eid, _pc, fac, ml, char in self.world.get_entities_with(
+                _PCAvg, _FacAvg, _MLAvg, _CSAvg):
+            if ml.map_file != map_file or fac.faction_id != faction_id:
+                continue
+            levels.append(char.level)
+        if not levels:
+            return default_level
+        return round(sum(levels) / len(levels))
+
+    def _tick_minion_waves(self, dt: float) -> None:
+        """Pra cada lane ATIVA (chave em `_minion_wave_timers` — só
+        existe depois de `_activate_minion_lanes`), acumula `dt`; ao
+        passar de `wave_interval_s`, CALCULA a rota dos minions da leva
+        (composição fixa acima) e ENFILEIRA a criação de cada um em
+        `_minion_spawn_queue` (quem cria de fato é
+        `_tick_minion_spawn_queue`, escalonado por `MINION_SPAWN_STAGGER_S`
+        — bug real relatado pelo usuário, 01/08/2026: os 7 nascendo no
+        MESMO tick, mesmo com offsets de posição, travavam uns aos
+        outros — MinionSystem via os vizinhos recém-nascidos como
+        dynamic_obstacle antes de terem espaço pra sair do aglomerado).
+        DIFERENTE do respawn de torre (`_tick_tower_respawns`, 1 morte→1
+        timer→1 respawn no MESMO tile): aqui é um timer POR LANE,
+        incondicional (dispara sozinho no relógio, não em resposta a
+        morte) — minion morto NÃO agenda respawn individual, só a
+        próxima wave programada cria minions novos."""
+        if not self._minion_wave_timers:
+            return
+        for key, elapsed in list(self._minion_wave_timers.items()):
+            map_file, faction, lane_id = key
+            lane = next((l for l in self._minion_lanes.get(map_file, [])
+                        if l["faction"] == faction
+                        and l.get("lane_id", "default") == lane_id), None)
+            if lane is None:
+                del self._minion_wave_timers[key]
+                continue
+            elapsed += dt
+            wave_interval_s = float(lane.get("wave_interval_s", 45.0))
+            if elapsed < wave_interval_s:
+                self._minion_wave_timers[key] = elapsed
+                continue
+            self._minion_wave_timers[key] = elapsed - wave_interval_s
+
+            pathfinding = self._get_pathfinding_for_map_file(map_file)
+            if pathfinding is None:
+                continue
+            # Level médio do time, recalculado a CADA wave (pedido do
+            # usuário, 30/07/2026) — nunca o valor estático da lane
+            # quando há player de verdade pra medir.
+            wave_level = self._compute_team_avg_level(
+                map_file, faction, default_level=lane.get("level", 1))
+            sx, sy = lane["spawn_tile"]
+            waypoints = lane["target_tile"]  # sempre lista de (x,y), ver map_loader.py
+            # Torres como obstáculo da ROTA (01/08/2026, bug real relatado
+            # pelo usuário: minion travava "atrás da torre" sem NUNCA
+            # desviar). Raiz: a rota é calculada 1x aqui, sem saber onde
+            # as torres estão — se o A* (livre, só olhando terreno) cruza
+            # o tile exato de uma torre, o minion recebe esse tile como
+            # PRÓXIMO PASSO da rota em ADVANCING; `_walk_toward` só pede
+            # ao pathfinder "chegar no PRÓXIMO tile" (distância 1) — sem
+            # espaço nenhum pra desviar quando esse único tile está
+            # ocupado (torre nunca sai do lugar, então nunca destrava
+            # sozinho). Corrigido na ORIGEM: passa as torres do mapa como
+            # `dynamic_obstacles` pro cálculo da rota, então ela nunca
+            # atravessa o tile de uma torre pra começo de conversa — perto
+            # de uma torre (pra brigar de verdade) continua funcionando
+            # normal via FIGHTING (que persegue por chebyshev, nunca tenta
+            # pisar no tile exato do alvo, ver _walk_toward na FIGHTING).
+            tower_tiles = self._get_tower_tiles_for_map(map_file)
+            # tile_validation do MESMO bundle do pathfinding acima — usado só
+            # pra validar os offsets de spawn abaixo (03/08/2026, bug real:
+            # 2 dos 7 offsets de _MINION_WAVE_OFFSETS caem em parede em
+            # lanes com base "estreita" tipo top/bot — mid nunca pegava
+            # porque o spawn ali tem mais espaço livre ao redor). Nunca
+            # `None` se `pathfinding` também não é (mesmo bundle).
+            _bundle_mw = self._map_bundles.get(map_file)
+            tile_validation = _bundle_mw.tile_validation if _bundle_mw else None
+
+            # 1 find_path por PERNA, calculado UMA VEZ POR LANE (não por
+            # minion) — pedido do usuário, 30/07/2026: lane com curva
+            # (top/bot) precisa de waypoints intermediários; mid (reta) usa
+            # só 1, que vira o comportamento de sempre. `manhattan_limit=
+            # None`: o default (60) rejeitaria silenciosamente uma perna
+            # longa num mapa MOBA de verdade. `max_nodes=4000` (03/08/2026,
+            # bug real relatado pelo usuário — "só testei a rota do mid,
+            # quero liberar todas"): o default (300, engine/world_systems.py)
+            # é MUITO baixo pras lanes com curva (top/bot) deste mapa
+            # 100×100 — cada perna precisa de ~450-590 nós explorados; mid é
+            # reta e cabia em ~100-270, por isso era a ÚNICA que sempre
+            # funcionava. Falha vira log (nunca mais silenciosa).
+            #
+            # CACHE POR LANE (03/08/2026, mesmo pedido — travamento real: os
+            # 7 minions de uma wave têm offsets de ±1-2 tiles só, TODOS
+            # convergindo pro MESMO destino pelos MESMOS waypoints — calcular
+            # o A* individualmente pra cada um (até 7×2=14 buscas por lane,
+            # 84 por wave com as 6 lanes disparando no mesmo tick) era
+            # trabalho redundante síncrono suficiente pra travar o loop do
+            # asyncio por tempo maior que o timeout de keepalive ping da lib
+            # `websockets` — conexão caía sozinha achando que o servidor
+            # sumiu. Agora só 1 rota "tronco" por lane (a partir do tile
+            # PURO da lane, sem offset); cada minion prepende só o próprio
+            # tile de nascimento (com offset) na frente do tronco — visual
+            # idêntico (offsets são pequenos), 1/7 do custo total.
+            lane_route_tail: list = []
+            leg_start = (sx, sy)
+            route_ok = True
+            for wp in waypoints:
+                leg_path = pathfinding.find_path(
+                    leg_start, wp, dynamic_obstacles=tower_tiles,
+                    manhattan_limit=None, max_nodes=4000)
+                if not leg_path:
+                    route_ok = False
+                    break
+                lane_route_tail.extend(leg_path)
+                leg_start = wp
+            if not route_ok:
+                log.warning(
+                    f"[MinionWave] rota falhou: {map_file} {faction}/{lane_id} "
+                    f"perna {leg_start}->{wp} sem caminho (max_nodes=4000)")
+                continue
+
+            offset_idx = 0
+            for minion_key, count in self._MINION_WAVE_COMPOSITION:
+                for _ in range(count):
+                    dx, dy = self._MINION_WAVE_OFFSETS[offset_idx % len(self._MINION_WAVE_OFFSETS)]
+                    offset_idx += 1
+                    spawn_x, spawn_y = sx + dx, sy + dy
+                    # Offset cai em parede (base estreita) → volta pro tile
+                    # PURO da lane (sempre validado por construção, é onde
+                    # o minion nasceria sem offset nenhum) em vez de deixar
+                    # o minion nascer preso dentro de uma parede.
+                    if (tile_validation is not None
+                            and not tile_validation.is_tile_walkable(-1, spawn_x, spawn_y)):
+                        spawn_x, spawn_y = sx, sy
+                    route = [(spawn_x, spawn_y)] + lane_route_tail
+                    self._minion_spawn_queue.append({
+                        "map_file": map_file, "faction": faction,
+                        "minion_key": minion_key, "level": wave_level,
+                        "spawn_x": spawn_x, "spawn_y": spawn_y, "route": route,
+                        "delay": (offset_idx - 1) * self.MINION_SPAWN_STAGGER_S,
+                    })
+
+    def _tick_minion_spawn_queue(self, dt: float) -> None:
+        """Drena `_minion_spawn_queue` (populada por `_tick_minion_waves`)
+        um minion por vez — cada entrada só vira entidade de verdade
+        quando seu `delay` zera, dando `MINION_SPAWN_STAGGER_S` de
+        intervalo real entre nascimentos da MESMA wave (rota já foi
+        calculada em `_tick_minion_waves`, aqui só materializa)."""
+        if not self._minion_spawn_queue:
+            return
+        from engine.entity_factory import create_minion
+        from engine.components import MapLocation as _MLmnq
+        still_pending = []
+        for entry in self._minion_spawn_queue:
+            entry["delay"] -= dt
+            if entry["delay"] > 0:
+                still_pending.append(entry)
+                continue
+            eid = create_minion(
+                self.world, entry["spawn_x"], entry["spawn_y"], entry["minion_key"],
+                faction_id=entry["faction"], route=entry["route"], level=entry["level"],
+            )
+            self.world.add_component(eid, _MLmnq(entry["map_file"]))
+        self._minion_spawn_queue = still_pending
 
     def _pick_harvestable_zone_tile(self, zone: dict, occupied: set):
         """Tile (x, y) caminhável aleatório dentro do raio da zona, ou None
@@ -1361,7 +1731,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             _cst_raw  = char_data.get("char_stats_json") or "{}"
             _cst_d    = _json.loads(_cst_raw) if isinstance(_cst_raw, str) else (_cst_raw or {})
             for _f in ("pve_damage", "pvp_damage", "mobs_killed", "players_killed",
-                       "duel_wins", "duel_losses"):
+                       "duel_wins", "duel_losses", "deaths", "minions_killed"):
                 if _f in _cst_d:
                     setattr(_cst_comp, _f, int(_cst_d[_f]))
             for _f in ("arena_wins", "arena_losses"):
@@ -1482,6 +1852,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 "mobs_killed": cst.mobs_killed, "players_killed": cst.players_killed,
                 "duel_wins": cst.duel_wins, "duel_losses": cst.duel_losses,
                 "arena_wins": dict(cst.arena_wins), "arena_losses": dict(cst.arena_losses),
+                "deaths": cst.deaths, "minions_killed": cst.minions_killed,
             }
 
         return {
@@ -1864,7 +2235,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         from engine.components import (CombatStats, AIControlled, Renderable, SpawnZoneOwner,
                                 SpawnZone, EntityIdentity, TrainingDummy as _TDpay, Faction as _FacPay,
                                 NPC as _NPCpay, Merchant as _Merchpay, Blacksmith as _Blackpay,
-                                Trainer as _Trainpay, QuestGiver as _QGpay, Tower as _TowerPay)
+                                Trainer as _Trainpay, QuestGiver as _QGpay, Tower as _TowerPay,
+                                Minion as _MinionPay)
         cs    = self.world.get_component(eid, CombatStats)
         ai    = self.world.get_component(eid, AIControlled)
         ren   = self.world.get_component(eid, Renderable)
@@ -1914,6 +2286,16 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             # melee pra torre de flechas/fogo (bug real relatado pelo
             # usuário: "audio da flecha emitindo som de attack melee").
             is_ranged = True
+        else:
+            _minion_c = self.world.get_component(eid, _MinionPay)
+            if _minion_c is not None:
+                # Minion (30/07/2026) também não tem AIControlled (mesma
+                # decisão de Torre — MinionSystem próprio) — deriva
+                # is_ranged do próprio alcance de ataque do tipo, igual
+                # MinionSystem já faz internamente (attack_range_tiles>1).
+                # Sem isso, minion arqueiro tocava som/animação de melee
+                # no cliente remoto (mesma classe de bug da Torre acima).
+                is_ranged = _minion_c.attack_range_tiles > 1
         mob_level = ident.level if ident else (zone.level_min if szo and zone else 1)
         payload = {
             "eid":          eid, "kind":         "enemy",
@@ -2232,7 +2614,17 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         inv_count = len(last_inventory) if last_inventory is not None else 0
         # Soma itens pendentes desta sessão ainda não confirmados por SAVE_STATE
         pending = self._pending_inv.get(session_id, 0)
-        if inv_count + pending + 1 > 24:  # max_slots default = 24
+        # max_slots REAL do Inventory vivo (01/08/2026, bug latente achado ao
+        # montar a loja de instância — inv de 6 slots, ver server/
+        # instance_progression.py) — antes era um "24" hardcoded aqui,
+        # dessincronizado do `inv.max_slots` que o passo 6 abaixo já respeita
+        # de verdade; com inventário menor que 24 (instância), essa checagem
+        # deixava passar uma compra que o passo 6 depois descartava
+        # silenciosamente (`break` ao bater o teto real), cobrando o gold
+        # sem entregar o item.
+        inv_for_slots = self.world.get_component(eid, Inventory)
+        max_slots = inv_for_slots.max_slots if inv_for_slots is not None else 24
+        if inv_count + pending + 1 > max_slots:
             return {"success": False, "reason": "inventory_full"}
 
         # 4. Aplica a compra — gold deduzido server-side
@@ -3036,6 +3428,13 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
           concentration  float  (mago)
           proj_incoming/proj_caster/proj_target  notificação de projétil
           applied_effects/effect_durations       efeitos aplicados (PvP)
+          level       int  OVERRIDE direto de level (01/08/2026) — cliente
+                      aplica direto em CharacterStats.level, SEM passar por
+                      process_levelups (que deriva level a partir de XP
+                      ganho). Só pra quem muda level SEM XP — hoje só
+                      server/instance_progression.py (progressão
+                      normalizada de instância). Level-up normal continua
+                      via `xp`/`xp_gained` (client re-deriva sozinho).
         """
         if "player_eid" not in entry:
             raise ValueError(f"queue_stats_update sem player_eid: {entry!r}")
@@ -3400,7 +3799,27 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 _gc_ticks += 1
                 if _gc_ticks >= _GC_EVERY:
                     _gc_ticks = 0
+                    # Log da coleta manual (05/08/2026) — correlacionar tick#
+                    # e duração do collect() com os picos isolados de
+                    # 75-190ms vistos em ai_bundles/bnd:map_1. Coleta roda
+                    # estritamente FORA de _tick() (helper _perf_mark não
+                    # alcança aqui), então nunca aparece dentro do breakdown
+                    # de um tick — mas se a duração dela for grande, o PRÓXIMO
+                    # tick começa atrasado (next_tick já avançou antes desta
+                    # chamada), o que pode aparecer como tick lento sem
+                    # nenhum sistema específico pesando no breakdown.
+                    _t0_gc = time.perf_counter()
                     _gc_srv.collect()   # coleta manual entre ticks, nunca durante
+                    _gc_dt_ms = (time.perf_counter() - _t0_gc) * 1000.0
+                    if self._perf_proc is not None:
+                        try:
+                            _rss_gc_mb = self._perf_proc.memory_info().rss / (1024 * 1024)
+                        except Exception:
+                            _rss_gc_mb = -1.0
+                    else:
+                        _rss_gc_mb = -1.0
+                    print(f"[PERF] gc.collect() tick#{self.tick_count} dur={_gc_dt_ms:.1f}ms "
+                          f"rss_pos={_rss_gc_mb:.1f}MB", file=self._perf_log)
             else:
                 # Dorme até o próximo tick — elimina busy-spin com sleep(0).
                 # Threshold 1ms: abaixo disso yield simples para não overshooting.
@@ -3411,9 +3830,23 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                     await asyncio.sleep(0)
         self._perf_log.close()
 
+    def _perf_mark(self, label: str, t0: float) -> None:
+        """Registra o tempo gasto desde `t0` sob `label` — acumulado em
+        `_perf_accum` (média periódica, `_PERF_REPORT_TICKS`) E em
+        `_perf_tick_now` (breakdown SÓ do tick atual, usado pelo aviso de
+        "tick lento" — ver `_tick`). Chokepoint único de profiling
+        (04/08/2026, pedido do usuário, §34.74.29): toda seção nova que
+        precisar de medição usa ISTO, nunca duplica a leitura de
+        `perf_counter()`/escrita nos 2 dicts na mão."""
+        import time as _t_mark
+        elapsed = _t_mark.perf_counter() - t0
+        self._perf_accum[label]    = self._perf_accum.get(label, 0.0) + elapsed
+        self._perf_tick_now[label] = self._perf_tick_now.get(label, 0.0) + elapsed
+
     def _tick(self, dt: float) -> None:
         import time as _time_tick
         _t_tick_start = _time_tick.perf_counter()
+        self._perf_tick_now = {}
         self.tick_count += 1
         # CPU % do processo neste tick (não-bloqueante: acumula desde a chamada anterior).
         if self._perf_proc is not None:
@@ -3422,6 +3855,10 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 self._perf_cpu_sum  += _cpu_now
                 if _cpu_now > self._perf_cpu_peak:
                     self._perf_cpu_peak = _cpu_now
+                _rss_now = self._perf_proc.memory_info().rss
+                self._perf_rss_sum  += _rss_now
+                if _rss_now > self._perf_rss_peak:
+                    self._perf_rss_peak = _rss_now
             except Exception:
                 pass
 
@@ -3472,10 +3909,17 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         # Snapshot de estados de mob antes do AI update (para detectar aggro)
         from engine.components import AIControlled as _AIC
+        _active_now = 0
         for _eid_sn in self._mob_eids:
             _ai_sn = self.world.get_component(_eid_sn, _AIC)
             if _ai_sn:
                 self._mob_states_prev[_eid_sn] = _ai_sn.state
+                if _ai_sn.state in ("CHASING", "ATTACKING", "AGGRO_DELAY"):
+                    _active_now += 1
+        self._perf_active_now      =  _active_now
+        self._perf_active_mobs_sum += _active_now
+        if _active_now > self._perf_active_mobs_peak:
+            self._perf_active_mobs_peak = _active_now
 
         # Roda sistemas offline reais por bundle de mapa.
         # P4: serviços já injetados diretamente nos sistemas em _load_map_for()
@@ -3488,6 +3932,47 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             self._perf_map_active[_m] = self._perf_map_active.get(_m, 0) + 1
         if len(_maps_com_player) > self._perf_peak_maps:
             self._perf_peak_maps = len(_maps_com_player)
+
+        # Índice canônico de players por mapa, 1x por tick (05/08/2026,
+        # pedido do usuário — "ai_bundles/map_1 custam ~7-8ms mesmo com só
+        # eu jogando, isso não vai piorar com mais players?"). Antes,
+        # EnemyAISystem (sleep-check de CADA mob IDLE + _select_target) e,
+        # em menor grau, EnemyAbilitySystem/SpawnZoneSystem, faziam seu
+        # PRÓPRIO `get_entities_with(...PlayerControlled...)` — o pior caso
+        # (sleep-check) rodava esse scan por MOB, todo tick (~190x no mapa
+        # aberto). Mesmo padrão já validado nesta sessão pra
+        # `_combat_spatial_hash` (§34.74.30): 1 scan aqui, todo sistema de
+        # proximidade consome — nunca reimplementa. `players_by_map=None`
+        # nos `update()` de cada sistema cai no scan de sempre (compat com
+        # teste que chama `.update()` direto, mesmo padrão de
+        # `spatial_hash=None` do Tower/MinionSystem).
+        from engine.components import PlayerControlled as _PCbm, MapLocation as _MLbm, Position as _Posbm
+        _players_by_map: dict = {}
+        for _pbm_eid, _pbm_pos, _pbm_tm, _pbm_pc, _pbm_cs in self.world.get_entities_with(
+                _Posbm, TileMovement, _PCbm, CombatStats):
+            _pbm_ml = self.world.get_component(_pbm_eid, _MLbm)
+            _pbm_map = _pbm_ml.map_file if _pbm_ml else ""
+            _players_by_map.setdefault(_pbm_map, []).append((_pbm_eid, _pbm_pos, _pbm_tm, _pbm_cs))
+
+        # Índice canônico de MOBS por mapa, 1x por tick (05/08/2026, achado
+        # secundário do §34.74.38, mesmo padrão do índice de players acima):
+        # `EnemyAISystem.update()` buscava `get_entities_with(...)` SEM
+        # filtro de mapa — os ~190 mobs do MUNDO TODO (3 mapas), descartando
+        # os de outro bundle 1 a 1 dentro do próprio loop principal. Com 2+
+        # mapas ativos ao mesmo tempo, cada bundle repetia esse scan global
+        # inteiro. `mobs_by_map=None` no `update()` cai no scan de sempre
+        # (compat com teste que chama `.update()` direto).
+        from engine.components import (AIControlled as _AICbm,
+                                        InitialPosition as _IPbm,
+                                        DetectionRadius as _DRbm)
+        _mobs_by_map: dict = {}
+        for _mbm_eid, _mbm_pos, _mbm_ai, _mbm_ip, _mbm_dr, _mbm_tm, _mbm_cs in self.world.get_entities_with(
+                _Posbm, _AICbm, _IPbm, _DRbm, TileMovement, CombatStats):
+            _mbm_ml = self.world.get_component(_mbm_eid, _MLbm)
+            _mbm_map = _mbm_ml.map_file if _mbm_ml else ""
+            _mobs_by_map.setdefault(_mbm_map, []).append(
+                (_mbm_eid, _mbm_pos, _mbm_ai, _mbm_ip, _mbm_dr, _mbm_tm, _mbm_cs))
+
         _t0p = _time_tick.perf_counter()
         for _bnd_key, _bnd in self._map_bundles.items():
             _has_player = _bnd_key in _maps_com_player
@@ -3495,17 +3980,37 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             for system in _bnd.systems:
                 if not _has_player and system in _bnd.ai_systems:
                     continue  # sem player neste mapa: pula AI (mobs ficam parados)
-                system.update(dt=dt)
+                # Sub-timer por sistema (05/08/2026) — "bnd:map_1"/"ai_bundles"
+                # já mostravam O QUANTO custava, mas não QUAL sistema dentro do
+                # bundle (tile_validation/spawn/AI/ability/taunt) — necessário
+                # pra achar a origem real dos picos de 75-190ms vistos com 1-2
+                # players, já que gc.collect() roda fora de _tick() (não pode
+                # ser bucket errado) — o tempo é gasto de verdade aqui dentro.
+                _t0sys = _time_tick.perf_counter()
+                if system in _bnd.proximity_systems:
+                    system.update(dt=dt, players_by_map=_players_by_map, mobs_by_map=_mobs_by_map,
+                                  tick_count=self.tick_count)
+                else:
+                    system.update(dt=dt)
+                self._perf_mark(f"sys:{type(system).__name__}", _t0sys)
+                # Contador de mobs que sobraram do filtro do Achado 5
+                # (05/08/2026) — só EnemyAISystem tem este atributo (hasattr
+                # evita import de EnemyAISystem aqui só pra um isinstance).
+                _lac = getattr(system, "_last_active_mob_count", None)
+                if _lac is not None:
+                    self._perf_ai_active_mobs_sum += _lac
+                    if _lac > self._perf_ai_active_mobs_peak:
+                        self._perf_ai_active_mobs_peak = _lac
             _bnd_label = "bnd:" + _bnd_key.split("/")[-1].replace(".csv", "")
-            self._perf_accum[_bnd_label] = self._perf_accum.get(_bnd_label, 0.0) + (_time_tick.perf_counter() - _t0bnd)
-        self._perf_accum["ai_bundles"] = self._perf_accum.get("ai_bundles", 0.0) + (_time_tick.perf_counter() - _t0p)
+            self._perf_mark(_bnd_label, _t0bnd)
+        self._perf_mark("ai_bundles", _t0p)
 
         # Sistemas globais: rodam UMA vez por tick, após todos os bundles de IA.
         _t0p = _time_tick.perf_counter()
         self._global_tms.update(dt=dt)       # movement: progress → current_tile
         self._global_sfx_sys.update(dt=dt)   # status effects: DoT/HoT timers
         self._global_proj_sys.update(dt=dt)  # projéteis de mobs: posição + hit
-        self._perf_accum["global_systems"] = self._perf_accum.get("global_systems", 0.0) + (_time_tick.perf_counter() - _t0p)
+        self._perf_mark("global_systems", _t0p)
 
         # Detecta mobs que aggraram neste tick (IDLE → CHASING/ATTACKING)
         from engine.components import EntityIdentity as _EIdent
@@ -3735,12 +4240,12 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # (se ordem fosse invertida, auto-attack poderia matar o mob antes da skill checar HP)
         _t0p = _time_tick.perf_counter()
         self._process_skill_requests()
-        self._perf_accum["skill_requests"] = self._perf_accum.get("skill_requests", 0.0) + (_time_tick.perf_counter() - _t0p)
+        self._perf_mark("skill_requests", _t0p)
 
         # Conclusão de spells com cast_time (Bola de Fogo, Nova Congelante, etc.)
         _t0p = _time_tick.perf_counter()
         self._process_spell_cast_completions(dt)
-        self._perf_accum["spell_completions"] = self._perf_accum.get("spell_completions", 0.0) + (_time_tick.perf_counter() - _t0p)
+        self._perf_mark("spell_completions", _t0p)
         # Pousos de knockback (stun/feedback de colisão atrasados até a tween acabar)
         self._process_knockback_landings(dt)
         # Expira projéteis em voo que nunca receberam PROJECTILE_HIT_CS
@@ -3795,7 +4300,9 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                             })
 
         # Player→mob: usa deal_damage() offline; Mob→player: detectado por variação de HP
+        _t0p = _time_tick.perf_counter()
         self._process_player_attacks(dt, player_hp_snap)
+        self._perf_mark("player_attacks", _t0p)
 
         # Sweep: mobs com HP <= 0 sem PendingDeath (DoT, outros caminhos fora de deal_damage)
         from engine.components import Enemy as _Enemy, CombatStats as _CS2, PendingDeath as _PD
@@ -3806,6 +4313,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 self.world.add_component(eid, _PD(killer_entity_id=-1))
 
         # Processa mortes (PendingDeath) — XP, SpawnZone, despawn, remove_entity
+        _t0p = _time_tick.perf_counter()
         self._death_handler.update()
         for entry in self._death_handler.consume_despawns():
             eid = entry["eid"]
@@ -3815,10 +4323,26 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             if not any(d["eid"] == eid for d in self._despawned_this_tick):
                 self._despawned_this_tick.append(entry)
         for entry in self._death_handler.consume_xp():
-            self.queue_stats_update(entry)
-            # Aplica XP no ECS do servidor para manter level/xp sincronizados no save
             _xp_peid = entry["player_eid"]
             _xp_amt  = entry["xp"]
+            # XP de instância (01/08/2026) usa curva/mecânica PRÓPRIA
+            # (level cap 15, +3 pontos de talento por level — ver
+            # server/instance_progression.py) — NUNCA o resto deste bloco
+            # (process_levelups real usa a curva ERRADA; o save-to-DB mais
+            # abaixo salvaria o estado RESETADO da instância como se fosse
+            # o personagem real, mesma classe do incidente de disconnect
+            # já documentado em §34.74.2/ARQUITETURA_ONLINE.md).
+            # grant_instance_xp já cuida do próprio push pro cliente
+            # (`level` direto via _push_stats_update, não "xp_gained").
+            from server.instance_progression import (
+                is_in_normalized_progression as _is_norm_xp,
+                grant_instance_xp as _grant_ixp,
+            )
+            if _is_norm_xp(self, _xp_peid):
+                _grant_ixp(self, _xp_peid, _xp_amt)
+                continue
+            self.queue_stats_update(entry)
+            # Aplica XP no ECS do servidor para manter level/xp sincronizados no save
             from engine.components import CharacterStats as _CharXP, CombatStats as _CsXP, PermanentStats as _PermXP
             _char_xp = self.world.get_component(_xp_peid, _CharXP)
             _cs_xp   = self.world.get_component(_xp_peid, _CsXP)
@@ -3858,50 +4382,139 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                         "hp_max":        _cs_xp.max_hp,
                         "talent_points": _tt_lv.available_points if _tt_lv else 0,
                     })
-                    log.info(f"[LevelUp] player {_xp_peid} → nivel {_char_xp.level} "
+                    # DEBUG, não INFO (05/08/2026 — mesmo motivo de [XP]/[Death]
+                    # abaixo, ver server_death_handler.py) — level-up de
+                    # instância é frequente (XP por proximidade, waves
+                    # contínuas), log síncrono por evento contribuía pro
+                    # travamento real observado numa troca de lane da BG.
+                    log.debug(f"[LevelUp] player {_xp_peid} → nivel {_char_xp.level} "
                           f"hp={_cs_xp.current_hp}/{_cs_xp.max_hp} "
                           f"talentos={_tt_lv.available_points if _tt_lv else '?'}")
-            # Salva XP/level imediatamente após cada kill — crash do servidor não perde progresso
+            # Salva XP/level imediatamente após cada kill — crash do servidor
+            # não perde progresso. Via SessionManager._persist_character
+            # (server/session.py) — único chokepoint de save do projeto
+            # (02/08/2026, ver ARQUITETURA_ONLINE.md §34.74.15): esta chamada
+            # já era segura (o branch is_in_normalized_progression acima faz
+            # `continue` antes de chegar aqui), mas unificada no mesmo guard
+            # que todo outro save do jogo usa — nenhum ponto de persistência
+            # deve montar get_player_save_data/_build_save_merge/
+            # save_character na mão nunca mais, pra essa classe de bug
+            # (esquecer o guard de instância em um call site novo) não poder
+            # se repetir.
             _sid_xp = self._player_eid_to_sid.get(_xp_peid, "")
             if _sid_xp and _char_xp and _cs_xp:
                 import asyncio as _asyncio_xp
-                from server.auth import save_character as _save_xp
                 _mgr = getattr(self, "_session_manager", None)
                 if _mgr:
                     _sess_xp = _mgr._sessions.get(_sid_xp)
-                    if _sess_xp and _sess_xp.char_data.get("id"):
-                        srv_data_xp = self.get_player_save_data(_sid_xp)
-                        if srv_data_xp:
-                            merged_xp = _mgr._build_save_merge(
-                                srv_data_xp, _sess_xp.last_client_payload)
-                            # Sobrescreve talentos com dados autoritativos do servidor ECS.
-                            # last_client_payload ainda tem available_points antigo (notificação
-                            # de level-up ainda não chegou ao cliente), então usar ECS evita
-                            # salvar 0 pontos quando deveria salvar 1+.
-                            from engine.components import TalentTree as _TTxp_save
-                            _tt_xp = self.world.get_component(_xp_peid, _TTxp_save)
-                            if _tt_xp and isinstance(merged_xp.get("talents"), dict):
-                                merged_xp["talents"]["available_points"] = _tt_xp.available_points
-                                merged_xp["talents"]["allocated"]        = dict(_tt_xp.allocated)
-                            _asyncio_xp.ensure_future(_save_xp(_sess_xp.char_data["id"], merged_xp))
-            log.info(f"[XP] player {_xp_peid} ganhou {_xp_amt} XP (mob {entry['mob_eid']})")
+                    if _sess_xp:
+                        # Sobrescreve talentos com dados autoritativos do servidor ECS.
+                        # last_client_payload ainda tem available_points antigo (notificação
+                        # de level-up ainda não chegou ao cliente), então usar ECS evita
+                        # salvar 0 pontos quando deveria salvar 1+.
+                        from engine.components import TalentTree as _TTxp_save
+                        _tt_xp = self.world.get_component(_xp_peid, _TTxp_save)
 
+                        def _patch_talents_xp(merged_xp, _tt=_tt_xp):
+                            if _tt is not None and isinstance(merged_xp.get("talents"), dict):
+                                merged_xp["talents"]["available_points"] = _tt.available_points
+                                merged_xp["talents"]["allocated"]        = dict(_tt.allocated)
+
+                        _asyncio_xp.ensure_future(_mgr._persist_character(
+                            _sess_xp, context="kill_xp", patch_fn=_patch_talents_xp))
+            # DEBUG, não INFO — 1 linha por ENTRADA de XP, e uma morte de
+            # minion por proximidade gera 1 entrada POR PLAYER perto (ver
+            # comentário de [LevelUp] acima).
+            log.debug(f"[XP] player {_xp_peid} ganhou {_xp_amt} XP (mob {entry['mob_eid']})")
+        self._perf_mark("death_handling", _t0p)
+
+        _t0p = _time_tick.perf_counter()
         self._process_loot_drops(dt)
+        self._perf_mark("loot_drops", _t0p)
+
+        _t0p = _time_tick.perf_counter()
         self._tick_harvestable_respawn(dt)
         self._tick_harvestable_zones(dt)
         self._tick_tower_respawns(dt)
+        self._perf_mark("harvestable_tower_respawns", _t0p)
+
+        # Índice espacial de entidades combatentes (04/08/2026, pedido do
+        # usuário — log de perf mostrou tower_system/minion_system como
+        # os maiores consumidores com a BG ativa): torre/minion sem alvo
+        # faziam uma varredura GLOBAL de TODAS as entidades do jogo só
+        # pra achar "tem hostil por perto?" — com uma wave de BG ativa
+        # (dezenas de minions × centenas de entidades no mundo todo),
+        # isso virava milhares de iterações por tick. Construído 1x aqui
+        # (O(entidades), não O(buscadores×entidades)) e REAPROVEITADO
+        # pelos 2 sistemas abaixo — mesmo índice, mesmo shape de
+        # candidato que os dois já procuravam (Position+CombatStats+
+        # TileMovement). Mesma técnica (`engine.utils.SpatialHash`) já
+        # usada por `server/session.py` pro filtro de AOI de sessão —
+        # nunca reimplementar, só reaproveitar (ver `_combat_candidates_
+        # near`, `engine/world_systems.py`). cell_size=9: cobre o maior
+        # alcance real (torre attack_range_tiles=8) com span pequeno.
+        from engine.components import Position as _PosCH, MapLocation as _MLCH
+        from engine.utils import SpatialHash as _SpatialHashCH
+        _t0p = _time_tick.perf_counter()
+        _combat_spatial_hash: dict = {}
+        for _ceid, _cpos, _ccs, _ctm in self.world.get_entities_with(
+                _PosCH, CombatStats, TileMovement):
+            if _ccs.current_hp <= 0:
+                continue
+            _cml = self.world.get_component(_ceid, _MLCH)
+            _cmap = _cml.map_file if _cml else ""
+            # Só TowerSystem/MinionSystem consultam esta hash, e só existe
+            # Tower/Minion em instância de Battleground (04/08/2026, pedido
+            # do usuário) — mapa aberto (sem lane registrada em
+            # _minion_lanes) nunca é procurado, então nem entra na hash.
+            if _cmap not in self._minion_lanes:
+                continue
+            _chash = _combat_spatial_hash.get(_cmap)
+            if _chash is None:
+                _chash = _SpatialHashCH(cell_size=9)
+                _combat_spatial_hash[_cmap] = _chash
+            _chash.insert(_ceid, _ctm.current_tile_x, _ctm.current_tile_y)
+        self._perf_mark("combat_spatial_hash_build", _t0p)
+
         # Torre (29/07/2026): combat_this_tick já está populado com os
         # eventos de dano DESTE tick (auto-attack/skill processados
         # acima) — precisa disso pro aggro-switch (troca de alvo pra
         # defender aliado atacado no alcance). Chamado ANTES do clear
         # de combat_this_tick no fim do tick (ver _tick()).
-        self._tower_system.update(dt, combat_this_tick=self._combat_this_tick)
+        _t0p = _time_tick.perf_counter()
+        self._tower_system.update(dt, combat_this_tick=self._combat_this_tick,
+                                  spatial_hash=_combat_spatial_hash)
+        self._perf_mark("tower_system", _t0p)
+        # Minion (03/08/2026): mesmo combat_this_tick, pra aggro por dano
+        # de torre + espalhamento em área (MinionSystem._check_tower_aggro).
+        _t0p = _time_tick.perf_counter()
+        self._minion_system.update(dt, combat_this_tick=self._combat_this_tick,
+                                   spatial_hash=_combat_spatial_hash)
+        self._perf_mark("minion_system", _t0p)
+        _t0p = _time_tick.perf_counter()
+        self._tick_minion_waves(dt)
+        self._perf_mark("minion_waves", _t0p)
+        _t0p = _time_tick.perf_counter()
+        self._tick_minion_spawn_queue(dt)
+        self._perf_mark("minion_spawn_queue", _t0p)
+
+        _t0p = _time_tick.perf_counter()
         self._tick_trade_distance_check()
         self._tick_duel_distance_check()
         self._tick_arena_queue()
         self._tick_arena_pending()
         self._tick_arena_results_timeout()
+        self._perf_mark("trade_duel_arena_ticks", _t0p)
 
+        _t0p = _time_tick.perf_counter()
+        self._tick_bg_queue()
+        self._tick_bg_pending()
+        self._tick_bg_respawns()
+        self._tick_bg_kda_hud()
+        self._tick_bg_results_timeout()
+        self._perf_mark("bg_queue_ticks", _t0p)
+
+        _t0p = _time_tick.perf_counter()
         # Detecta novos mobs/NPCs de combate criados pelo SpawnZoneSystem
         # neste tick — gate é Combatant, não Enemy (Sistema de Facções,
         # Fase 4): Enemy sozinho implicaria "hostil ao player", que não é
@@ -3980,11 +4593,12 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 _hp_cs3 = self.world.get_component(_hp_eid3, CombatStats)
                 if _hp_cs3:
                     self._mob_hp_prev[_hp_eid3] = _hp_cs3.current_hp
+        self._perf_mark("post_tick_bookkeeping", _t0p)
 
         # Limpa deltas de erro do try/except se necessário
         _t0p = _time_tick.perf_counter()
         deltas = self._collect_deltas()
-        self._perf_accum["aoi_collect"] = self._perf_accum.get("aoi_collect", 0.0) + (_time_tick.perf_counter() - _t0p)
+        self._perf_mark("aoi_collect", _t0p)
         self._store_snapshot()
 
         for cb in self._on_tick_callbacks:
@@ -3995,10 +4609,20 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._perf_accum["TOTAL"] = self._perf_accum.get("TOTAL", 0.0) + _tick_ms / 1000.0
         self._perf_count += 1
         if _tick_ms > self._PERF_BUDGET_MS:
+            _extra = ""
+            if _tick_ms > self._PERF_BREAKDOWN_MS:
+                # Breakdown SÓ deste tick (não a média periódica) — top 8
+                # seções que mais pesaram no PICO específico, pra
+                # correlacionar "travada" percebida com o sistema
+                # responsável (pedido do usuário, §34.74.29).
+                _top = sorted(self._perf_tick_now.items(), key=lambda kv: -kv[1])[:8]
+                _outros = max(0.0, _tick_ms / 1000.0 - sum(self._perf_tick_now.values()))
+                _top_str = " | ".join(f"{k}={v*1000:.1f}ms" for k, v in _top)
+                _extra = f" | TOP: {_top_str} | outros={_outros*1000:.1f}ms"
             # print de propósito: escreve no ARQUIVO de perf (não no console/log)
             print(f"[PERF] tick lento: {_tick_ms:.1f}ms (budget={self._PERF_BUDGET_MS:.0f}ms) "
                   f"tick#{self.tick_count} players={len(self._player_eids)} "
-                  f"mobs={len(self._mob_eids)}", file=self._perf_log)
+                  f"mobs={len(self._mob_eids)} ativos={self._perf_active_now}{_extra}", file=self._perf_log)
         if self._perf_count >= self._PERF_REPORT_TICKS:
             n = self._perf_count
             total_avg = self._perf_accum.get("TOTAL", 0.0) / n * 1000
@@ -4008,11 +4632,20 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 _cur_players_by_map[_sm] = _cur_players_by_map.get(_sm, 0) + 1
             _cpu_avg  = self._perf_cpu_sum  / n if n else 0.0
             _cpu_peak = self._perf_cpu_peak
+            _rss_avg_mb  = (self._perf_rss_sum / n / (1024 * 1024)) if n else 0.0
+            _rss_peak_mb = self._perf_rss_peak / (1024 * 1024)
+            _active_avg  = (self._perf_active_mobs_sum / n) if n else 0.0
+            _active_peak = self._perf_active_mobs_peak
+            _ai_active_avg  = (self._perf_ai_active_mobs_sum / n) if n else 0.0
+            _ai_active_peak = self._perf_ai_active_mobs_peak
             _f = self._perf_log
             # print de propósito: escreve no ARQUIVO de perf (não no console/log)
             print(f"\n[PERF SRV] {n} ticks | avg={total_avg:.2f}ms/tick | budget={self._PERF_BUDGET_MS:.0f}ms"
                   f" | players={len(self._player_eids)} | maps_ativos_peak={self._perf_peak_maps}/{_n_maps_total}"
-                  f" | cpu_proc avg={_cpu_avg:.1f}% peak={_cpu_peak:.1f}%", file=_f)
+                  f" | cpu_proc avg={_cpu_avg:.1f}% peak={_cpu_peak:.1f}%"
+                  f" | rss avg={_rss_avg_mb:.1f}MB peak={_rss_peak_mb:.1f}MB"
+                  f" | mobs_ativos avg={_active_avg:.1f} peak={_active_peak}"
+                  f" | mobs_no_filtro_ai avg={_ai_active_avg:.1f} peak={_ai_active_peak}", file=_f)
             _rows = sorted(
                 ((k, v) for k, v in self._perf_accum.items() if k != "TOTAL"),
                 key=lambda x: -x[1]
@@ -4036,6 +4669,12 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             self._perf_peak_maps  = 0
             self._perf_cpu_sum    = 0.0
             self._perf_cpu_peak   = 0.0
+            self._perf_rss_sum    = 0.0
+            self._perf_rss_peak   = 0.0
+            self._perf_active_mobs_sum  = 0.0
+            self._perf_active_mobs_peak = 0
+            self._perf_ai_active_mobs_sum  = 0.0
+            self._perf_ai_active_mobs_peak = 0
 
     def _remote_mobs_reverse_srv(self, mob_eid: int) -> int:
         """Retorna o eid canônico de um mob para envio ao cliente.

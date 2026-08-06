@@ -88,4 +88,29 @@ SHOPS = {
             {"factory": lambda: __import__("content.crafting_data", fromlist=["RECIPE_ITEMS"]).RECIPE_ITEMS["espada_runica"](),    "price": 1200},
         ],
     },
+
+    # Loja de instância (01/08/2026, pedido do usuário) — vendedor colocado
+    # em cada base do battleground de teste (maps/moba_battleground_
+    # entities.json::merchants), lista curada de content/instance_shop.py::
+    # INSTANCE_SHOP_ITEM_IDS (subconjunto do catálogo real, não item novo).
+    # Preços iniciais — ajustável, mesmo padrão do resto deste arquivo.
+    "instance_shop": {
+        "name": "Vendedor de Instância",
+        "color": (200, 170, 60),
+        "stock": [
+            {"factory": _I["iron_sword"],       "price": 55},
+            {"factory": _I["iron_mace"],        "price": 50},
+            {"factory": _I["hunter_bow"],       "price": 60},
+            {"factory": _I["arcane_wand"],      "price": 55},
+            {"factory": _I["iron_shield"],      "price": 60},
+            {"factory": _I["battleground_quiver"], "price": 20},
+            {"factory": _I["iron_breastplate"], "price": 20},
+            {"factory": _I["leather_vest"],     "price": 20},
+            {"factory": _I["tattered_robe"],    "price": 15},
+            {"factory": _I["ring_power"],       "price": 70},
+            {"factory": _I["simple_amulet"],    "price": 48},
+            {"factory": _I["hp_potion"],        "price": 25},
+            {"factory": _I["mana_potion"],      "price": 15},
+        ],
+    },
 }

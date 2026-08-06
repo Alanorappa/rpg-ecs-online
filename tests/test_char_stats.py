@@ -78,6 +78,71 @@ class TestMobKillTracking(unittest.TestCase):
         self.assertEqual(cst.mobs_killed, 1)
 
 
+class TestPlayerDeathTracking(unittest.TestCase):
+    """CharStatsTracker.deaths (02/08/2026, pedido do usuário — HUD de
+    Kills/Deaths/Farm do battleground de teste) — incrementado em
+    RespawnMixin._handle_player_death, qualquer morte de verdade."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        self.p1 = spawn_player(self.ws, "cst_death1", 130, 374, class_id="guerreiro")
+
+    def test_morte_de_verdade_incrementa_deaths(self):
+        cst = self.ws.world.get_component(self.p1, CharStatsTracker)
+        self.assertEqual(cst.deaths, 0)
+        self.ws._handle_player_death(self.p1)
+        self.assertEqual(cst.deaths, 1)
+        # Segunda morte (ex.: revive e morre de novo) continua incrementando.
+        from engine.components import GhostState as _GS_reset
+        gst = self.ws.world.get_component(self.p1, _GS_reset)
+        gst.is_dead = False
+        self.ws._handle_player_death(self.p1)
+        self.assertEqual(cst.deaths, 2)
+
+
+class TestMinionFarmTracking(unittest.TestCase):
+    """CharStatsTracker.minions_killed ("farm", 02/08/2026, pedido do
+    usuário) — golpe FINAL (killer_eid), não first-attacker (diferente de
+    mobs_killed)."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        self.p1 = spawn_player(self.ws, "cst_farm1", 10, 10, class_id="guerreiro")
+        self.p2 = spawn_player(self.ws, "cst_farm2", 11, 10, class_id="guerreiro")
+
+    def _spawn_minion(self):
+        from engine.entity_factory import create_minion
+        from engine.components import MapLocation
+        eid = create_minion(self.ws.world, 10, 11, "minion_melee",
+                            faction_id="monstros_hostis", route=[(10, 11)])
+        self.ws.world.add_component(eid, MapLocation(self.ws._map_file))
+        return eid
+
+    def test_golpe_final_credita_farm_do_killer(self):
+        cst1 = self.ws.world.get_component(self.p1, CharStatsTracker)
+        eid = self._spawn_minion()
+        cs = self.ws.world.get_component(eid, CombatStats)
+        cs.current_hp = 0
+        self.ws.world.add_component(eid, PendingDeath(killer_entity_id=self.p1))
+        self.ws._death_handler.update()
+        self.assertEqual(cst1.minions_killed, 1)
+
+    def test_first_attacker_diferente_do_killer_nao_ganha_farm(self):
+        """damage_log tem os dois (p2 bateu primeiro), mas quem DEU O GOLPE
+        FINAL foi p1 — farm vai só pra p1, mobs_killed (first-attacker) iria
+        pra p2 (comportamento diferente de propósito, ver docstring)."""
+        cst1 = self.ws.world.get_component(self.p1, CharStatsTracker)
+        cst2 = self.ws.world.get_component(self.p2, CharStatsTracker)
+        eid = self._spawn_minion()
+        cs = self.ws.world.get_component(eid, CombatStats)
+        cs.current_hp = 0
+        self.ws.world.add_component(eid, PendingDeath(killer_entity_id=self.p1))
+        self.ws._mob_damage_log[eid] = {self.p2: 50, self.p1: 10}  # p2 bateu primeiro/mais
+        self.ws._death_handler.update()
+        self.assertEqual(cst1.minions_killed, 1, "killer (golpe final) deveria ganhar farm")
+        self.assertEqual(cst2.minions_killed, 0, "first-attacker sozinho não ganha farm")
+
+
 class TestDuelTracking(unittest.TestCase):
     """duel_wins/duel_losses incrementados em DuelProcessorMixin.end_duel
     (server/duel_processor.py) só em vitória de verdade (reason='win')."""

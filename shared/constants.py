@@ -72,6 +72,15 @@ GHOST_CORPSE_RADIUS_TILES    = 3   # raio (tiles) do corpo p/ prompt "Reviver ag
 GHOST_GRAVEYARD_REVIVE_S     = 45.0  # segundos contínuos no cemitério p/ revive full HP
 GHOST_CORPSE_REVIVE_HP_FRAC  = 0.15  # fração de HP ao reviver no corpo
 
+# Battleground de teste (server/debug_battleground.py, 02/08/2026, pedido
+# do usuário): respawn AUTOMÁTICO na base do time, sem "Liberar espírito"/
+# caminhada de fantasma nem prompt "Reviver agora?" — estilo MOBA
+# (LoL/Dota). Client usa o MESMO valor pra mostrar a contagem regressiva
+# no modal de morte (client/death_ui_handlers.py), sem precisar de
+# mensagem nova — o timer real (que decide QUANDO o respawn de verdade
+# acontece) é só server-side (debug_battleground.py::_state["respawn_timers"]).
+DEBUG_BG_RESPAWN_S = 15.0
+
 # ── Trade (player↔player) ──────────────────────────────────────────────────────
 # Distância máxima (chebyshev) entre os dois players pra abrir/manter um trade.
 # Checada 1x/tick — estourar cancela a sessão (reason="distance").

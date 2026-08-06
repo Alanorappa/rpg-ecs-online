@@ -512,3 +512,30 @@ INITIAL_SKILLS_BY_CLASS: dict[str, list] = {
     "mago":      [],
     "arqueiro":  [],
 }
+
+# ---------------------------------------------------------------------------
+# Progressão normalizada de instância (31/07/2026 — futuro modo Battlefield,
+# ver server/instance_progression.py) — ordem FIXA de desbloque automático de
+# 1 skill por level de instância (1-15), independente do gate normal de
+# treinador (SKILL_LEVEL_REQUIREMENTS/SKILL_COSTS) e de talento
+# (_TALENT_SKILL_REQS em engine/world_systems.py). Mistura skills de
+# treinador e skills desbloqueadas por talento no mundo aberto — dentro da
+# instância elas são concedidas direto, sem custo/talento. Índice i = skill
+# concedida ao alcançar o level (i+1). Listas mais curtas que 15 são normais
+# (a classe simplesmente não ganha skill nova nos levels finais).
+INSTANCE_SKILL_UNLOCK_ORDER: dict[str, list] = {
+    "guerreiro": [
+        "golpe_poderoso", "impacto", "brado_provocativo", "golpe_debilitante",
+        "punho_no_queixo", "interceptar", "fatiador_de_corpos",
+        "vitoria_iminente", "executar",
+    ],
+    "mago": [
+        "bola_de_fogo", "polimorfia", "escudo_fogo", "nova_congelante",
+        "calcinar", "bloco_de_gelo", "pirofagia", "calamidade_flamejante",
+    ],
+    "arqueiro": [
+        "recarregar", "picada_escorpiao", "cancao_ninar", "tiro_multiplo",
+        "so_um_gole", "camuflagem", "tiro_repulsivo", "flecha_reiterada",
+        "cancao_inspiracao",
+    ],
+}

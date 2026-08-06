@@ -48,18 +48,49 @@ def is_valid_name(name: str) -> bool:
 # ── Gerador de nomes (sílabas + consoante opcional no meio) ─────────────────
 
 _START = [
+# originais
     "Ka", "Mor", "Thal", "Bra", "Dun", "Sil", "Ery", "Vor", "Ith", "Nal",
-    "Fen", "Wren", "Ael", "Syl", "Dra", "Gor", "Lys", "Ban", "Rok", "Tir",
+    "Fen", "Ren", "Ael", "Syl", "Dra", "Gor", "Lys", "Ban", "Rok", "Tir",
     "Zan", "Quil", "Bry", "Hal", "Or", "Ys", "Ju", "Na", "Ara", "Vol", "Xa",
-    "Bal", "Mel", "Zun",
+    "Bal", "Mel", "Zun", "A", "El", "Bai", "Leo", "Ana", "Ir", "Mai", "Jai",
+
+    # sons duros / guerreiros (humanos, imperiais)
+    "Grim", "Karn", "Vald", "Rurik", "Bres", "Cael", "Dorn", "Aeg", "Corv",
+    "Wren", "Marth", "Aldr", "Rhaen", "Osric", "Bram", "Gareth", "Edd",
+
+    # sons ásperos / gunturais (orcs, anões, brutos)
+    "Grosh", "Uzg", "Thrak", "Bulg", "Krug", "Mog", "Durn", "Grak", "Uld",
+    "Broth", "Karg", "Ogh", "Rukk", "Bok",
+
+    # sons fluidos / élficos, arcanos
+    "Ael", "Thal", "Ily", "Faen", "Sael", "Ery", "Naith", "Quel", "Vael",
+    "Ithil", "Aer", "Sil", "Nym", "Fael", "Ysel",
+
+    # sons sombrios / necromantes, corrupção
+    "Vhal", "Ner", "Mors", "Skal", "Vex", "Thren", "Nyx", "Vael", "Skor",
+    "Dhar", "Grav", "Ashk", "Vor", "Mal", "Ith",
 ]
-_MID_CONSONANTS = ["m", "n", "s", "r", "l", "d", "t"]
+_MID_CONSONANTS = ["m", "n", "s", "r", "l", "d", "t", "k", "g", "v", "th", "z"]
 _SUFFIX = [
+    # originais
     "dor", "wyn", "ric", "as", "on", "ir", "eth", "ian", "ux", "yn",
-    "el", "ara", "in", "or", "ys", "go", "thor", "jin", "azar"
+    "el", "ara", "in", "or", "ys", "go", "thor", "jin", "azar", "tiel",
+    "quim", "kim", "kir", "kith",
+
+    # nobreza / imperiais
+    "wyn", "mund", "gard", "helm", "waine", "ford", "ton", "vane",
+
+    # guturais / orcs-anões
+    "gash", "nak", "dum", "brok", "zug", "grum", "durak", "kosh",
+
+    # élficos / arcanos
+    "iel", "wen", "reth", "lyth", "naris", "wyth", "aris", "iell",
+
+    # sombrios / necromantes
+    "gul", "morth", "vash", "kresh", "dread", "vrak", "sythe", "grim",
 ]
 
-_MID_CHANCE = 0.35   # chance de inserir uma consoante extra entre sílabas
+_MID_CHANCE = 0.15   # chance de inserir uma consoante extra entre sílabas
 _MAX_ATTEMPTS = 20   # tentativas até achar um candidato dentro do tamanho
 
 
@@ -77,4 +108,4 @@ def generate_name_candidate(rng: "random.Random | None" = None) -> str:
         name = raw[0].upper() + raw[1:].lower()
         if is_valid_name(name):
             return name
-    return "Aventureiro"  # nunca deveria chegar aqui — combinações cabem no limite
+    return ""  

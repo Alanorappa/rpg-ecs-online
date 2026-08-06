@@ -344,6 +344,10 @@ class MatchProcessorMixin:
             cd = match["countdown_deadline"]
             if cd is not None and now >= cd and not match["fight_started"]:
                 match["fight_started"] = True
+                # Minion (30/07/2026): mesmo momento em que o portão físico
+                # abre — combate liberado de verdade, nunca durante o
+                # preparo (ver WorldServer._activate_minion_lanes).
+                self._activate_minion_lanes(match["instance_key"])
                 bundle = self._map_bundles.get(match["instance_key"])
                 if bundle is not None:
                     tilemap = self.world.get_component(bundle.tilemap_entity, _TMtp)

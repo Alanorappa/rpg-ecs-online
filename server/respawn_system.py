@@ -54,6 +54,13 @@ class RespawnMixin:
         """Player morreu: corpo fica no local da morte, espírito ainda não liberado."""
         from engine.components import CombatState, TileMovement, GhostState, CharacterStats
 
+        # CharStatsTracker.deaths (02/08/2026, pedido do usuário — HUD de
+        # Kills/Deaths/Farm do battleground de teste) — qualquer morte de
+        # verdade, qualquer contexto (não só a instância); incr_char_stat
+        # já é no-op seguro se o entity não tiver o componente.
+        from engine.utils import incr_char_stat as _incr_deaths
+        _incr_deaths(self.world, player_eid, "deaths")
+
         # Limpa efeitos ativos (DoT/HoT) do player — B8
         from engine.components import StatusEffects as _SFX, ActiveRegen as _AR
         sfx = self.world.get_component(player_eid, _SFX)

@@ -223,6 +223,32 @@ class HudHandlers:
         # --- Barra de cast / canalização (centro inferior da tela) ---
         self._draw_cast_bar(char_stats)
 
+    def _draw_bg_kda_hud(self) -> None:
+        """HUD permanente de topo-centro durante o battleground de teste
+        (02/08/2026, pedido do usuário) — "Kills: N | Deaths: N | Farm: N |
+        Gold: N", Gold = acumulado da partida (sem contar o inicial).
+        Gated em InstanceInventoryUIState.active (mesma flag "estou na BG"
+        já usada pra hotbar/consumable bar/death UI); valores vêm prontos
+        via STATS_UPDATE (match_kills/deaths/farm/gold, ver
+        client/network_handlers.py::_handle_msg_stats_update)."""
+        from ui.ui_components import InstanceInventoryUIState as _IIUSHud
+        iius = self.world.get_component(self.player_entity, _IIUSHud)
+        if iius is None or not iius.active:
+            return
+        txt = (f"Kills: {iius.match_kills} | Deaths: {iius.match_deaths} | "
+               f"Farm: {iius.match_farm} | Gold: {iius.match_gold}")
+        surf = self.font_sm.render(txt, False, (230, 220, 200))
+        sw, _ = self.screen.get_size()
+        x = (sw - surf.get_width()) // 2
+        y = self._u(10)
+        pad_x, pad_y = self._u(10), self._u(4)
+        bg_rect = pygame.Rect(x - pad_x, y - pad_y,
+                              surf.get_width() + pad_x * 2, surf.get_height() + pad_y * 2)
+        bg = pygame.Surface(bg_rect.size, pygame.SRCALPHA)
+        bg.fill((0, 0, 0, 140))
+        self.screen.blit(bg, bg_rect.topleft)
+        self.screen.blit(surf, (x, y))
+
     def _draw_cast_bar(self, char_stats: "CharacterStats | None") -> None:
         """Barra de cast/canalização — exibida no centro inferior da tela."""
         sw, sh = self.screen.get_size()

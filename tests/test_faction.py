@@ -61,6 +61,15 @@ class TestGetRelationship(unittest.TestCase):
         self.assertEqual(get_relationship("faccao_inventada_no_teste", PLAYER_FACTION),
                          DEFAULT_RELATIONSHIP)
 
+    def test_vendedor_de_instancia_e_amigavel_aos_dois_times(self):
+        """Bug real relatado pelo usuário (01/08/2026): NPC "Vendedor de
+        Instância" (facção "civis") aparecia neutro (atacável sem querer via
+        clique) contra arena_time_a/b — par nunca declarado antes deste fix,
+        caía no DEFAULT_RELATIONSHIP "neutro" (can_engage só bloqueia
+        "amigavel"). Ver content/faction_data.py."""
+        self.assertEqual(get_relationship("civis", "arena_time_a"), "amigavel")
+        self.assertEqual(get_relationship("civis", "arena_time_b"), "amigavel")
+
 
 class TestFactionSystemHelpers(unittest.TestCase):
 

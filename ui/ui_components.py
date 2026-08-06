@@ -36,6 +36,35 @@ class LootUIState:
         self.open_corpse_id: int = -1   # -1 = fechado
 
 
+class InstanceInventoryUIState:
+    """True enquanto o player está em progressão normalizada de instância
+    (01/08/2026, ver server/instance_progression.py) — flag "estou no
+    battleground de teste" reaproveitado por qualquer sistema de UI que
+    precise se comportar diferente lá dentro (ex.:
+    client/death_ui_handlers.py::_render_death_modal, respawn automático
+    na base em vez do fluxo normal de "Liberar espírito", 02/08/2026).
+    Setado pelo campo `in_instance` de STATS_UPDATE (client/
+    network_handlers.py::_handle_msg_stats_update) — nunca client-local,
+    sempre eco do que o servidor decidiu ao entrar/sair de
+    enter_/exit_normalized_progression. (Chegou a controlar um painel
+    dedicado de 6 slots — removido em 02/08/2026, pedido do usuário: a
+    bag normal já mostra certo o inventário da instância, o painel extra
+    só atrapalhava.)"""
+    def __init__(self):
+        self.active: bool = False
+        # HUD ao vivo de Kills/Deaths/Farm/Gold da partida (02/08/2026,
+        # pedido do usuário) — reaproveita esta MESMA flag "estou na BG" em
+        # vez de um componente novo. Resetados pra 0 na transição
+        # active=False->True (nova entrada); atualizados por delta absoluto
+        # vindo do STATS_UPDATE (match_kills/match_deaths/match_farm/
+        # match_gold — servidor já manda pronto, ver
+        # server/debug_battleground.py::_tick_kda_hud).
+        self.match_kills:  int = 0
+        self.match_deaths: int = 0
+        self.match_farm:   int = 0
+        self.match_gold:   int = 0
+
+
 class DragState:
     """Drag-and-drop de item/skill entre painéis (hotbar, consumable bar,
     habilidades, inventário). NÃO cobre sliders (volume) nem o reorder

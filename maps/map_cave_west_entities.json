@@ -12,6 +12,78 @@
       "target_y": 316
     }
   ],
+"harvestable_zones": [
+    {
+      "x": 70,
+      "y": 57,
+      "radius": 1,
+      "respawn_cooldown": 360,
+      "spawns": [
+        {
+          "name": "Pá",
+          "sprite": "pr_pa",
+          "items": ["Pá"],
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 70,
+      "y": 57,
+      "radius": 1,
+      "respawn_cooldown": 360,
+      "spawns": [
+        {
+          "name": "Picareta",
+          "sprite": "pr_picareta",
+          "items": ["Picareta"],
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 70,
+      "y": 57,
+      "radius": 1,
+      "respawn_cooldown": 360,
+      "spawns": [
+        {
+          "name": "Mochila de mineração",
+          "sprite": "pr_mochila",
+          "items": ["Mochila de mineração"],
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 70,
+      "y": 57,
+      "radius": 1,
+      "respawn_cooldown": 360,
+      "spawns": [
+        {
+          "name": "Lampião",
+          "sprite": "pr_lampiao",
+          "items": ["Lampião"],
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 70,
+      "y": 57,
+      "radius": 1,
+      "respawn_cooldown": 360,
+      "spawns": [
+        {
+          "name": "Cantil",
+          "sprite": "pr_cantil",
+          "items": ["Cantil"],
+          "count": 1
+        }
+      ]
+    }        
+  ],  
   "spawn_zones": [
     {
       "x": 24,

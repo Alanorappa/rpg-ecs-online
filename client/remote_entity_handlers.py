@@ -203,6 +203,24 @@ class RemoteEntityHandlers:
             SOUNDS.play_random_at(["arrow_release_1", "arrow_release_2"],
                                   _ppos.x, _ppos.y, _lx, _ly, base=0.5)
 
+    def _bg_silence_nonplayer_combat_fx(self, server_attacker: int, server_target: int) -> bool:
+        """True se este hit deve ficar sem som/FLT — pedido do usuário
+        (03/08/2026): "muito spam de dano e sons de batalha dos minions"
+        na BG estilo MOBA. Só suprime combate onde NENHUM dos dois lados
+        é um player de verdade (minion×minion, minion×torre, torre×minion)
+        — qualquer lado sendo player (inclusive minion batendo NO player)
+        mantém o feedback normal. Só vale DENTRO da BG (`InstanceInventoryUIState.
+        active`) — resto do jogo (mundo aberto, Arena real) intocado."""
+        from ui.ui_components import InstanceInventoryUIState as _IIUSFx
+        _iius_fx = self.world.get_component(self.player_entity, _IIUSFx)
+        if _iius_fx is None or not _iius_fx.active:
+            return False
+        _atk_is_player = (server_attacker == self._my_eid
+                          or server_attacker in self._remote_players)
+        _tgt_is_player = (server_target == self._my_eid
+                          or server_target in self._remote_players)
+        return not (_atk_is_player or _tgt_is_player)
+
     def _apply_combat_result(self, cr: dict) -> None:
         """Aplica resultado de combate do servidor: HP + texto flutuante + sons.
 
@@ -266,6 +284,7 @@ class RemoteEntityHandlers:
             if _fb:
                 FLT.add(str(damage), _fb[0], _fb[1], (255, 220, 0), "normal")
         if local_eid is not None:
+            _bg_silent = self._bg_silence_nonplayer_combat_fx(server_attacker, server_target)
             # Determina se é ataque de flecha ANTES do HP update para poder diferir
             _sid_cr = cr.get("sid", "")
             _is_archer_arrow, _attacker_local_remote, _is_self_archer_attacker = \
@@ -396,7 +415,7 @@ class RemoteEntityHandlers:
                             SOUNDS.play_mob_sounds_at(_mob_snd, "emote_attack",
                                                       pos.x, pos.y, _lx, _ly, base=0.6,
                                                       dedup_key=f"dmg_{server_target}")
-                else:
+                elif not _bg_silent:
                     if is_crit:
                         color = (255, 220, 50) if is_ability else (255, 255, 255)
                         FLT.add(str(damage), pos.x, pos.y, color,
@@ -446,7 +465,7 @@ class RemoteEntityHandlers:
                         "damage":     0,
                         "is_ability": is_ability,
                     }, _n_arrows)
-                else:
+                elif not _bg_silent:
                     _col_av = (255, 220, 0) if is_ability else (220, 220, 220)
                     txt_av  = _AVOID_LABELS.get(outcome, "Errou!")
                     FLT.add(txt_av, pos.x, pos.y, _col_av, "small", target_id=local_eid)
@@ -1028,18 +1047,24 @@ class RemoteEntityHandlers:
         # verdade. Agora que _play_attacker_mob_sound toca attack_impact
         # (evento DIFERENTE) na chegada, não existe mais risco de som
         # duplicado — lançamento aqui, impacto lá, sem sobreposição.
-        from engine.components import NpcSounds as _NpcSndFire, EntityIdentity as _EIFire
-        _atk_local_fire = self._remote_mobs.get(data.get("attacker_seid", -1))
-        if _atk_local_fire is not None:
-            _snd_fire   = self.world.get_component(_atk_local_fire, _NpcSndFire)
-            _ident_fire = self.world.get_component(_atk_local_fire, _EIFire)
-            _cls_fire = _ident_fire.entity_class if _ident_fire else ""
-            _ev_fire = ("attack_magic"
-                        if _cls_fire in ("Mage", "Mago", "Warlock", "Bruxo")
-                        else "attack_ranged")
-            _flx, _fly = self._player_world_pos()
-            SOUNDS.play_mob_sounds_at(_snd_fire, _ev_fire, px, py, _flx, _fly,
-                                      base=0.8, dedup_key=f"fire_{server_proj_eid}")
+        # Silencia disparo mob→mob dentro da BG (03/08/2026, pedido do
+        # usuário — spam de batalha entre minions/torres): atacante aqui é
+        # SEMPRE um mob (projétil de mob), então só falta checar se o alvo
+        # também não é player — mesmo helper de _apply_combat_result.
+        if not self._bg_silence_nonplayer_combat_fx(
+                data.get("attacker_seid", -1), target_seid):
+            from engine.components import NpcSounds as _NpcSndFire, EntityIdentity as _EIFire
+            _atk_local_fire = self._remote_mobs.get(data.get("attacker_seid", -1))
+            if _atk_local_fire is not None:
+                _snd_fire   = self.world.get_component(_atk_local_fire, _NpcSndFire)
+                _ident_fire = self.world.get_component(_atk_local_fire, _EIFire)
+                _cls_fire = _ident_fire.entity_class if _ident_fire else ""
+                _ev_fire = ("attack_magic"
+                            if _cls_fire in ("Mage", "Mago", "Warlock", "Bruxo")
+                            else "attack_ranged")
+                _flx, _fly = self._player_world_pos()
+                SOUNDS.play_mob_sounds_at(_snd_fire, _ev_fire, px, py, _flx, _fly,
+                                          base=0.8, dedup_key=f"fire_{server_proj_eid}")
 
     def _move_remote_mob(self, server_eid: int, new_tx: int, new_ty: int,
                          from_tx: int | None = None, from_ty: int | None = None,
@@ -1425,12 +1450,26 @@ class RemoteEntityHandlers:
                 # Faction real do servidor foi anexada em _spawn_remote_mob
                 # via create_enemy(faction=...). Pedido do usuário
                 # 15/07/2026, depois de testar o Lobo neutro pela 1ª vez.
-                from engine.components import Faction as _FacHb
-                from content.faction_data import get_relationship as _getrel_hb, PLAYER_FACTION as _PF_hb
+                #
+                # get_relationship_between (01/08/2026, corrigido — antes
+                # comparava contra PLAYER_FACTION hardcoded, ignorando
+                # qualquer Faction real que o PRÓPRIO player local tivesse
+                # dentro de uma instância/time — RELATIONSHIP tem entrada
+                # explícita hostil pra ("arena_time_a","arena_time_b"), mas
+                # nunca era consultada porque o 2º lado da comparação
+                # estava sempre errado; aliado de time saía sempre
+                # amarelo/neutro em vez de verde). `get_relationship_between`
+                # resolve os DOIS lados via `get_entity_faction`, que já
+                # prioriza um `Faction` real anexado ao player local se
+                # presente (client/arena_handlers.py::
+                # _handle_msg_arena_countdown anexa; client/
+                # network_handlers.py::_handle_msg_zone_change remove) —
+                # mesmo helper único que o resto do client/engine já usa
+                # pra hostilidade (engine/faction_system.py), sem
+                # reimplementar a lógica aqui.
+                from engine.faction_system import get_relationship_between as _getrelb_hb
                 from ui.hud_bars import DISPOSITION_HP_COLORS as _DISPCOL_hb
-                _fac_hb = self.world.get_component(local_eid, _FacHb)
-                _tier_hb = (_getrel_hb(_fac_hb.faction_id, _PF_hb)
-                           if _fac_hb is not None else "hostil")
+                _tier_hb = _getrelb_hb(self.world, local_eid, self.player_entity)
                 _hp_color_hb = _DISPCOL_hb.get(_tier_hb, _DISPCOL_hb["hostil"])
 
                 # Nome — mesmo padrão do RenderSystem offline (ui/systems.py),

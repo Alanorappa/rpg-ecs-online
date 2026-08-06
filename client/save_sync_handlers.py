@@ -482,8 +482,13 @@ class SaveSyncHandlers:
         return (_p.x, _p.y) if _p else (0.0, 0.0)
 
     def _space_engage_online(self) -> None:
-        """ESPAÇO: seleciona o mob remoto mais próximo e inicia perseguição (como offline)."""
+        """ESPAÇO: seleciona o mob remoto HOSTIL mais próximo e inicia
+        perseguição (como offline). `is_hostile` (01/08/2026, bug real
+        relatado pelo usuário) — antes iterava `self._remote_mobs` inteiro
+        sem NENHUM filtro de facção, então podia selecionar/perseguir um
+        minion/torre do PRÓPRIO time dentro de uma instância."""
         from engine.components import TileMovement, CombatState, PlayerAutoMove
+        from engine.faction_system import is_hostile as _is_hostile_sp
         tm   = self.world.get_component(self.player_entity, TileMovement)
         cs_p = self.world.get_component(self.player_entity, CombatState)
         auto = self.world.get_component(self.player_entity, PlayerAutoMove)
@@ -495,6 +500,8 @@ class SaveSyncHandlers:
         for server_eid, local_eid in self._remote_mobs.items():
             _meta_am = self._meta_from_local(local_eid)
             if _meta_am is None or _meta_am.hp <= 0:
+                continue
+            if not _is_hostile_sp(self.world, self.player_entity, local_eid):
                 continue
             mob_tm = self.world.get_component(local_eid, TileMovement)
             if not mob_tm:

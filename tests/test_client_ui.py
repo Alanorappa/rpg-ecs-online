@@ -433,6 +433,48 @@ def test_try_open_corpse_de_longe_pula_adjacente_mais_proximo_se_ele_for_solido(
         ws_mod._svc.pop("tile_validation", None)
 
 
+def test_try_open_corpse_nao_compete_com_alvo_vivo_no_mesmo_tile():
+    """Bug real relatado pelo usuário (03/08/2026): clique direito num
+    inimigo em cima de um corpo com loot fazia o personagem CAMINHAR PRO
+    LOOT em vez de atacar — LootSystem._try_open_corpse rodava sem checar
+    se havia um alvo vivo ali, e até cancelava o CombatState.
+    target_entity_id que MouseTargetingSystem já tinha setado no MESMO
+    clique. Prioridade pedida pelo usuário: alvo (NPC/Player/Mob) sempre
+    antes de loot."""
+    from ui.systems import LootSystem
+    from engine.components import (TileMovement, PlayerAutoMove, CombatState,
+                                   Enemy, Visible, CombatStats, Renderable, Position)
+    world, player, corpse = _make_loot_world()
+    world.add_component(player, TileMovement(current_tile_x=2, current_tile_y=3,
+                                             target_tile_x=2, target_tile_y=3))
+    world.add_component(player, PlayerAutoMove())
+    cs_state = CombatState()
+    cs_state.target_entity_id = 999  # já setado por MouseTargetingSystem neste MESMO clique
+    cs_state.is_pursuing = True
+    world.add_component(player, cs_state)
+
+    enemy = world.create_entity()
+    world.add_component(enemy, Position(x=100, y=100))
+    world.add_component(enemy, Renderable(color=(200, 0, 0), width=32, height=32))
+    world.add_component(enemy, Enemy())
+    world.add_component(enemy, Visible())
+    world.add_component(enemy, TileMovement(current_tile_x=3, current_tile_y=3,
+                                            target_tile_x=3, target_tile_y=3))
+    world.add_component(enemy, CombatStats())
+
+    screen = pygame.display.get_surface()
+    loot = LootSystem(world, screen, player_entity=player)
+    loot._try_open_corpse(100, 100)   # clique no centro do corpo/inimigo (mesmo tile)
+
+    assert loot.open_corpse_id == -1, "não deveria abrir o modal de loot"
+    assert loot.pending_loot_corpse_id == -1, "não deveria começar a andar pro corpo"
+    auto = world.get_component(player, PlayerAutoMove)
+    assert auto.ground_target is None, "não deveria mirar movimento pro corpo"
+    cs_after = world.get_component(player, CombatState)
+    assert cs_after.target_entity_id == 999, "não deveria cancelar o alvo já selecionado"
+    assert cs_after.is_pursuing is True
+
+
 # ── LootSystem.update — modal fecha sozinho ao esvaziar ──────────────────────
 # Bug real relatado pelo usuário 25/07/2026: depois do fix do despawn genérico
 # assimétrico (§34.54, harvestable não é mais removido ao esvaziar), o modal
@@ -1011,9 +1053,10 @@ from client.duel_handlers import DuelHandlers
 from client.pvp_zone_handlers import PvpZoneHandlers
 from client.party_handlers import PartyHandlers
 from client.arena_handlers import ArenaHandlers
+from client.bg_queue_handlers import BgQueueHandlers
 
 
-class _PvpCtxFixture(DuelHandlers, PvpZoneHandlers, PartyHandlers, ArenaHandlers):
+class _PvpCtxFixture(DuelHandlers, PvpZoneHandlers, PartyHandlers, ArenaHandlers, BgQueueHandlers):
     def __init__(self, world, player_entity, my_eid=1):
         self.world = world
         self.player_entity = player_entity
@@ -1625,10 +1668,11 @@ def _make_remote_player_fixture(hp: int = 80):
     from client.pvp_zone_handlers import PvpZoneHandlers
     from client.party_handlers import PartyHandlers
     from client.arena_handlers import ArenaHandlers
+    from client.bg_queue_handlers import BgQueueHandlers
     from game import GameEngine as _GE_rp
 
     class _Fixture(reh_mod.RemoteEntityHandlers, DuelHandlers, PvpZoneHandlers,
-                   PartyHandlers, ArenaHandlers):
+                   PartyHandlers, ArenaHandlers, BgQueueHandlers):
         def __init__(self, world, player_entity):
             self.world = world
             self.player_entity = player_entity
@@ -1639,6 +1683,8 @@ def _make_remote_player_fixture(hp: int = 80):
             self._party_members_val = []
             self._arena_in_match_val = False
             self._arena_opponents_server_val = set()
+            self._bg_in_match_val = False
+            self._bg_opponents_server_val = set()
             self._nameplate_mode = 0
             from ui.fonts import make as _make_font
             self.font_sm = _make_font(12)
@@ -3164,6 +3210,119 @@ def test_som_de_ataque_melee_de_verdade_continua_attack_melee():
     handled = fx._play_attacker_mob_sound(server_attacker, 0.0, 0.0)
     assert handled is True
     assert calls == ["attack_melee"]
+
+
+
+# ── _apply_combat_result: silencia FLT/som de combate SEM player em
+# nenhum dos dois lados, DENTRO da BG estilo MOBA (03/08/2026, pedido do
+# usuário — "muito spam de dano e sons de batalha dos minions"). Torre
+# entra no mesmo balde de "não-player" (torre×minion também some);
+# qualquer lado sendo player (inclusive minion batendo NO player) mantém
+# o feedback normal; fora da BG nada muda.
+
+def _make_combat_result_fixture(in_bg: bool):
+    from engine.world import World
+    from engine.components import (Position, NpcSounds, EntityIdentity,
+                             PlayerControlled, RemoteEntityMeta)
+    from ui.ui_components import InstanceInventoryUIState
+    import client.remote_entity_handlers as reh_mod
+    from client.save_sync_handlers import SaveSyncHandlers
+
+    class _NoopPnq:
+        def _increment_pnq_counter(self, *a, **k):
+            pass
+
+    class _Fixture(reh_mod.RemoteEntityHandlers, SaveSyncHandlers):
+        def __init__(self, world, player_entity):
+            self.world = world
+            self.player_entity = player_entity
+            self._my_eid = 1
+            self._remote_players = {}
+            self._remote_mobs = {}
+            self._mob_ghost_pos = {}
+            self._player_input_system = _NoopPnq()
+
+    world = World()
+    player_eid = world.create_entity()
+    world.add_component(player_eid, Position(x=0.0, y=0.0))
+    world.add_component(player_eid, PlayerControlled())
+    iius = InstanceInventoryUIState()
+    iius.active = in_bg
+    world.add_component(player_eid, iius)
+
+    attacker_eid = world.create_entity()
+    world.add_component(attacker_eid, Position(x=10.0, y=10.0))
+    world.add_component(attacker_eid, NpcSounds(attack_melee="minion_hit"))
+    world.add_component(attacker_eid, EntityIdentity(
+        name="Minion A", race="Minion", entity_class="Guerreiro"))
+
+    target_eid = world.create_entity()
+    world.add_component(target_eid, Position(x=12.0, y=12.0))
+    world.add_component(target_eid, NpcSounds())
+    world.add_component(target_eid, EntityIdentity(
+        name="Minion B", race="Minion", entity_class="Guerreiro"))
+    world.add_component(target_eid, RemoteEntityMeta(server_eid=20, hp=100, hp_max=100))
+
+    fx = _Fixture(world, player_eid)
+    fx._remote_mobs = {10: attacker_eid, 20: target_eid}
+    return fx
+
+
+def _spy_flt_and_sounds(reh_mod_module):
+    from ui.floating_text import FLT as _FLT_spy
+    calls = {"flt": 0, "sound": 0}
+    _FLT_spy.add = lambda *a, **k: calls.__setitem__("flt", calls["flt"] + 1)
+    reh_mod_module.SOUNDS.play_mob_sounds_at = lambda *a, **k: calls.__setitem__("sound", calls["sound"] + 1)
+    reh_mod_module.SOUNDS.play_random_at = lambda *a, **k: calls.__setitem__("sound", calls["sound"] + 1)
+    reh_mod_module.SOUNDS.play_emote_at = lambda *a, **k: calls.__setitem__("sound", calls["sound"] + 1)
+    return calls
+
+
+def test_bg_silencia_flt_e_som_minion_vs_minion():
+    import client.remote_entity_handlers as reh_mod
+    fx = _make_combat_result_fixture(in_bg=True)
+    calls = _spy_flt_and_sounds(reh_mod)
+    fx._apply_combat_result({"attacker": 10, "target": 20, "damage": 15,
+                             "outcome": "hit", "hp_after": 85, "source": "auto"})
+    assert calls == {"flt": 0, "sound": 0}, \
+        "minion vs minion na BG não deveria gerar FLT nem som"
+
+
+def test_bg_mantem_flt_e_som_player_vs_minion():
+    import client.remote_entity_handlers as reh_mod
+    fx = _make_combat_result_fixture(in_bg=True)
+    fx._my_eid = 10  # atacante É o player local
+    calls = _spy_flt_and_sounds(reh_mod)
+    fx._apply_combat_result({"attacker": 10, "target": 20, "damage": 15,
+                             "outcome": "hit", "hp_after": 85, "source": "auto"})
+    assert calls["flt"] > 0, "player atacando minion deveria continuar mostrando FLT"
+
+
+def test_bg_mantem_flt_e_som_minion_vs_player():
+    """Correção do usuário no mesmo pedido: "quando o minion bate no
+    player, pode emitir o som e o FLT" — minion atacando o PLAYER (não o
+    contrário) também não deveria ser silenciado."""
+    import client.remote_entity_handlers as reh_mod
+    from engine.components import CombatStats, CombatState
+    fx = _make_combat_result_fixture(in_bg=True)
+    _cs = CombatStats()
+    _cs.current_hp, _cs.max_hp = 100, 100
+    fx.world.add_component(fx.player_entity, _cs)
+    fx.world.add_component(fx.player_entity, CombatState())
+    fx._my_eid = 20  # alvo É o player local
+    calls = _spy_flt_and_sounds(reh_mod)
+    fx._apply_combat_result({"attacker": 10, "target": 20, "damage": 15,
+                             "outcome": "hit", "hp_after": 85, "source": "auto"})
+    assert calls["flt"] > 0, "minion batendo no player não deveria ser silenciado"
+
+
+def test_fora_da_bg_minion_vs_minion_continua_com_flt_e_som():
+    import client.remote_entity_handlers as reh_mod
+    fx = _make_combat_result_fixture(in_bg=False)
+    calls = _spy_flt_and_sounds(reh_mod)
+    fx._apply_combat_result({"attacker": 10, "target": 20, "damage": 15,
+                             "outcome": "hit", "hp_after": 85, "source": "auto"})
+    assert calls["flt"] > 0, "fora da BG, minion vs minion não deveria ser afetado"
 
 
 def test_compute_window_geometry_windowed_ignora_tamanho_do_monitor():

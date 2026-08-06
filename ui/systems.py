@@ -223,6 +223,44 @@ def _corpse_click_rect(world, entity_id: int, pos) -> tuple[float, float, float,
     return pos.x - 14, pos.y - 10, pos.x + 14, pos.y + 10
 
 
+def _live_target_at_world_pos(world: World, player_entity_id: int,
+                              world_x: float, world_y: float) -> bool:
+    """True se há um inimigo vivo OU player remoto vivo na posição mundo
+    (mesmas bounding boxes de MouseTargetingSystem._enemy_at_world_pos/
+    _remote_player_at_world_pos, duplicadas aqui em vez de acopladas —
+    LootSystem e MouseTargetingSystem são Systems independentes no mesmo
+    frame, sem referência uma à outra).
+
+    Usado por LootSystem pra NUNCA competir pelo clique quando um alvo
+    (NPC/Player/Mob) ocupa o mesmo tile de um cadáver — bug real relatado
+    pelo usuário (03/08/2026): clique direito num inimigo em cima de um
+    corpo com loot fazia o personagem CAMINHAR PRO LOOT em vez de atacar
+    (LootSystem._try_open_corpse rodava sem checar se havia um alvo vivo
+    ali, e até cancelava o CombatState.target_entity_id que
+    MouseTargetingSystem já tinha setado no MESMO evento). Prioridade de
+    clique pedida pelo usuário: alvo (NPC/Player/Mob) sempre antes de
+    loot."""
+    for entity_id, pos, renderable, _, _, etm in world.get_entities_with(
+            Position, Renderable, Enemy, Visible, TileMovement):
+        hw = renderable.width / 2
+        hh = renderable.height / 2
+        if (pos.x - hw <= world_x <= pos.x + hw and
+                pos.y - hh <= world_y <= pos.y + hh):
+            cs = world.get_component(entity_id, CombatStats)
+            if not cs or cs.current_hp > 0:
+                return True
+    for entity_id, pos, renderable, _, rc in world.get_entities_with(
+            Position, Renderable, Visible, RemoteControlled):
+        if entity_id == player_entity_id or rc.hp <= 0:
+            continue
+        hw = renderable.width / 2
+        hh = renderable.height / 2
+        if (pos.x - hw <= world_x <= pos.x + hw and
+                pos.y - hh <= world_y <= pos.y + hh):
+            return True
+    return False
+
+
 class MouseTargetingSystem(System):
     """
     Detecta clique direito do mouse, identifica o inimigo clicado e define
@@ -292,20 +330,39 @@ class MouseTargetingSystem(System):
 
     def _visible_enemies_sorted(self, cam_x: float, cam_y: float) -> list[int]:
         """Retorna IDs de inimigos vivos e visíveis na tela, ordenados por
-        distância ao jogador. Mobs (Enemy) sempre entram; players remotos
-        (RemoteControlled) só quando engajáveis AGORA (duelo/arena/zona
-        PvP) — mesmo gate de `can_engage`/`_client_pvp_context` já usado
-        pelo clique direito (`_remote_player_at_world_pos`). Bug real
-        relatado pelo usuário 22/07/2026: TAB nunca listava o oponente de
-        duelo como candidato, porque só olhava `Enemy`."""
+        distância ao jogador.
+
+        Mobs/torres/minions (`Enemy`) só entram se HOSTIS de verdade
+        (`is_hostile`, não `can_engage` — este último também libera
+        "neutro", e o pedido do usuário é TAB/SPACE só pra hostil de
+        verdade; alvo neutro/aliado só por clique do mouse, 01/08/2026).
+        Antes disso a volta de `Enemy` (torres/minions/NPCs aliados
+        também carregam esse componente do lado do cliente, `create_enemy`
+        genérico) não filtrava hostilidade NENHUMA — bug real relatado
+        pelo usuário: TAB podia ciclar pra um minion/torre do PRÓPRIO
+        time.
+
+        Players remotos (`RemoteControlled`) continuam usando
+        `can_engage` (não `is_hostile`) DE PROPÓSITO — permissão de PvP
+        entre players é CONTEXTUAL (duelo/arena/zona), não uma tier fixa
+        de facção; um oponente de duelo normalmente está na MESMA facção
+        default ("jogadores" = amigavel), só o contexto plugável libera o
+        engajamento (`_pvp_context_resolver`, engine/faction_system.py) —
+        trocar pra `is_hostile` aqui quebraria TAB durante duelo/arena
+        (nunca resolveria hostil por tier de facção). `can_engage` já
+        bloqueia "amigavel" (aliado de verdade), que é o que o pedido do
+        usuário pede pra players também."""
         sw = self.world_surf.get_width()
         sh = self.world_surf.get_height()
         player_pos = self.world.get_component(self.player_entity_id,
                                               __import__("engine.components", fromlist=["Position"]).Position)
+        from engine.faction_system import is_hostile as _is_hostile_tab
         result = []
         for eid, pos, _, _ in self.world.get_entities_with(Position, Enemy, Visible):
             cs = self.world.get_component(eid, CombatStats)
             if cs and cs.current_hp <= 0:
+                continue
+            if not _is_hostile_tab(self.world, self.player_entity_id, eid):
                 continue
             # Verifica se está dentro dos limites da tela
             sx = pos.x - cam_x
@@ -3622,6 +3679,13 @@ class LootSystem(UIScaleMixin, System):
         world_x = mx * scale + cam_x
         world_y = my * scale + cam_y
 
+        # Prioridade de clique (pedido do usuário, 03/08/2026): um alvo
+        # vivo (NPC/Player/Mob) no MESMO tile de um cadáver sempre vence —
+        # nunca anda pro loot nem cancela o combate que MouseTargetingSystem
+        # já decidiu pra este MESMO clique (ver _live_target_at_world_pos).
+        if _live_target_at_world_pos(self.world, self.player_entity, world_x, world_y):
+            return
+
         # Coleta todos os cadáveres no alcance; prioriza os que ainda têm loot
         candidates = []
         for entity_id, pos, corpse in self.world.get_entities_with(Position, Corpse):
@@ -4777,7 +4841,21 @@ class SkillSystem(System, SkillHandlers):
                     _rc_tgt = self.world.get_component(current, _RCtgt)
                     if _rc_tgt is not None and _rc_tgt.hp > 0:
                         return current
-        # Auto-seleciona o inimigo em range com menor HP (desempate por distância) — B6
+        # Auto-seleciona o inimigo HOSTIL em range com menor HP (desempate
+        # por distância) — B6. `is_hostile` (01/08/2026, bug real relatado
+        # pelo usuário: "as teclas de atalho das habilidades ainda
+        # selecionam um player aliado") — as 3 buscas abaixo não filtravam
+        # hostilidade NENHUMA (torres/minions/players aliados também
+        # carregam `Enemy` do lado do cliente); o `can_engage` que o
+        # chamador roda DEPOIS (ui/systems.py, "Alvo amigável") só barra o
+        # CAST em si — os efeitos colaterais desta função (target_entity_id
+        # setado, is_pursuing=True, enter_combat) já tinham acontecido
+        # ANTES desse gate, então o personagem entrava em perseguição
+        # visível contra o aliado mesmo com o dano bloqueado. Mesmo padrão
+        # de fix já aplicado em TAB/SPACE (ui/systems.py::
+        # _visible_enemies_sorted, client/save_sync_handlers.py::
+        # _space_engage_online).
+        from engine.faction_system import is_hostile as _is_hostile_resolve
         px, py    = tile_move.current_tile_x, tile_move.current_tile_y
         best_id   = -1
         best_dist = float("inf")
@@ -4787,6 +4865,8 @@ class SkillSystem(System, SkillHandlers):
             if ecs.current_hp <= 0:
                 continue
             if not self._is_on_screen(epos):
+                continue
+            if not _is_hostile_resolve(self.world, self.player_entity_id, eid):
                 continue
             d = chebyshev(px, py, etm.current_tile_x, etm.current_tile_y)
             if _max_range > 0 and d > _max_range:
@@ -4804,14 +4884,26 @@ class SkillSystem(System, SkillHandlers):
                     continue
                 if not self._is_on_screen(epos):
                     continue
+                if not _is_hostile_resolve(self.world, self.player_entity_id, eid):
+                    continue
                 d = chebyshev(px, py, etm.current_tile_x, etm.current_tile_y)
                 if _max_range > 0 and d > _max_range:
                     continue
                 if d < best_dist:
                     best_dist = d
                     best_id   = eid
-        # PvP: também considera players remotos (RemoteControlled) como alvos válidos
+        # PvP: também considera players remotos (RemoteControlled) como
+        # alvos válidos — `can_engage` aqui, DE PROPÓSITO, não `is_hostile`
+        # (mesma razão do TAB, _visible_enemies_sorted acima): permissão de
+        # PvP entre players é CONTEXTUAL (duelo/arena/zona,
+        # `_pvp_context_resolver`), um oponente de duelo normalmente está
+        # na MESMA facção default ("jogadores" = amigavel), só o contexto
+        # libera — `is_hostile` aqui quebraria auto-mirar o oponente
+        # durante um duelo (nunca resolveria hostil por tier de facção
+        # fixo). `can_engage` já bloqueia aliado de verdade (facção
+        # amigavel sem contexto de PvP).
         if best_id == -1:
+            from engine.faction_system import can_engage as _can_engage_resolve
             _rc_cls = __import__("engine.components", fromlist=["RemoteControlled"]).RemoteControlled
             for eid, epos, _rc_auto, etm in self.world.get_entities_with(Position, _rc_cls, TileMovement):
                 if eid == self.player_entity_id:
@@ -4821,6 +4913,8 @@ class SkillSystem(System, SkillHandlers):
                 if not self.world.get_component(eid, Visible):
                     continue
                 if not self._is_on_screen(epos):
+                    continue
+                if not _can_engage_resolve(self.world, self.player_entity_id, eid):
                     continue
                 d = chebyshev(px, py, etm.current_tile_x, etm.current_tile_y)
                 if _max_range > 0 and d > _max_range:

@@ -120,6 +120,64 @@ class SessionManager:
         log.info(f"[Session] +connect {session_id}  total={len(self._sessions)}")
         return session
 
+    async def _persist_character(self, session: "Session", context: str = "",
+                                 patch_fn=None) -> "dict | None":
+        """Único ponto de persistência real (DB) de personagem — todo
+        caminho que grava no banco (SAVE_STATE, TALENT_UPDATE, entrega de
+        quest, autosave periódico, disconnect) DEVE passar por aqui em vez
+        de montar get_player_save_data/_build_save_merge/save_character
+        manualmente. Retorna o dict `merged` persistido, ou None se pulou
+        (sem sessão válida, sem srv_data, ou dentro da instância).
+
+        INCIDENTE REAL (02/08/2026, relatado pelo usuário — personagem
+        "totalmente desconfigurado", talentos/skills reais sumidos):
+        `is_in_normalized_progression` (server/instance_progression.py) —
+        NUNCA persiste enquanto o player está dentro de uma instância de
+        progressão normalizada (battleground de teste). O overlay da
+        instância (level 1, talentos maxados/skills parciais/inventário de
+        6 slots/gold=INSTANCE_STARTING_GOLD) é 100% temporário/descartável
+        por design (decisão #4, `exit_normalized_progression` restaura o
+        real) — mas ANTES desta correção só o disconnect verificava isso
+        (`on_disconnect` chama `exit_normalized_progression` antes de
+        salvar). Os outros 4 pontos de save espalhados pelo código NUNCA
+        checavam: SAVE_STATE automático do cliente (disparado a cada troca
+        de mapa E logo após qualquer inv_snapshot/equip_snapshot de
+        STATS_UPDATE — ou seja, ao ENTRAR ou SAIR do battleground),
+        TALENT_UPDATE, entrega de quest, e o autosave de 5 em 5 minutos —
+        qualquer um bastava pra sobrescrever o personagem real no banco
+        com o piso de nível 1 da instância. Mesma classe de bug do
+        incidente de disconnect já documentado em §34.74.1/§34.74.2, só
+        que sem exigir crash/disconnect — bastava ficar tempo normal
+        dentro da instância. Ver ARQUITETURA_ONLINE.md §34.74.15.
+
+        `patch_fn` (opcional) — chamado com o dict `merged` logo antes de
+        persistir, pra caller que precisa sobrescrever 1-2 campos com
+        dado ao vivo mais recente do que `session.last_client_payload`
+        (ex.: kill-XP em world_server.py, que sobrescreve talentos com o
+        TalentTree ATUAL do ECS — o cliente ainda não recebeu a
+        notificação de level-up nesse exato instante, então o cache
+        ficaria com available_points desatualizado). Muta `merged` in
+        place, sem retorno."""
+        if not session.authenticated or not session.char_data.get("id"):
+            return None
+        from server.instance_progression import is_in_normalized_progression as _is_norm_persist
+        if _is_norm_persist(self.world_server, session.entity_id):
+            return None
+        from server.auth import save_character
+        srv_data = self.world_server.get_player_save_data(session.session_id)
+        if not srv_data:
+            return None
+        _live_eq = self.world_server.get_player_equipment_data(session.session_id)
+        merged = self._build_save_merge(srv_data, session.last_client_payload, _live_eq)
+        if patch_fn is not None:
+            patch_fn(merged)
+        try:
+            await save_character(session.char_data["id"], merged)
+            return merged
+        except Exception as e:
+            log.error(f"[Session] ERRO ao persistir {session.username!r} ({context}): {e}")
+            return None
+
     @staticmethod
     def _build_save_merge(srv_data: dict, client_payload: dict,
                           live_equipment: dict | None = None) -> dict:
@@ -230,20 +288,35 @@ class SessionManager:
             # dois no banco — próximo login caía no mapa principal só que com
             # o tile da arena (bug real relatado pelo usuário 20/07/2026).
             self.world_server.end_matches_of(session.entity_id)
+            # Fila REAL de BG (04/08/2026): mesmo motivo do end_matches_of
+            # acima — sai da progressão normalizada e restaura Faction/
+            # posição ANTES do save (server/bg_queue_processor.py::
+            # end_bg_matches_of → request_bg_leave já chama
+            # exit_normalized_progression sozinho).
+            self.world_server.end_bg_matches_of(session.entity_id)
+            # Battleground de teste (debug): mesmo motivo do end_matches_of
+            # acima — sai da progressão normalizada (restaura level/talento/
+            # skill/gold/itens reais) ANTES do save, senão o disconnect
+            # persiste o estado NORMALIZADO (ex.: level 1) como se fosse o
+            # personagem real. Incidente real, 01/08/2026 (level 23 perdido
+            # sem esse hook) — ver server/debug_battleground.py::on_disconnect,
+            # ARQUITETURA_ONLINE.md §34.74.1. Defesa em profundidade: mesmo
+            # que um futuro processador de Battlefield esqueça de tratar
+            # disconnect, este check genérico ainda restaura o estado real.
+            from server import debug_battleground as _dbg_bg
+            _dbg_bg.on_disconnect(self.world_server, session.entity_id)
+            from server.instance_progression import (
+                is_in_normalized_progression as _is_norm_prog,
+                exit_normalized_progression as _exit_norm_prog,
+            )
+            if _is_norm_prog(self.world_server, session.entity_id):
+                _exit_norm_prog(self.world_server, session.entity_id)
             # Salva ANTES de remover a entidade do ECS
-            if session.authenticated and session.char_data.get("id"):
-                from server.auth import save_character
-                srv_data = self.world_server.get_player_save_data(session_id)
-                if srv_data:
-                    _live_eq = self.world_server.get_player_equipment_data(session_id)
-                    merged = self._build_save_merge(srv_data, session.last_client_payload, _live_eq)
-                    try:
-                        await save_character(session.char_data["id"], merged)
-                        log.info(f"[Session] saved {session.username!r}  "
-                              f"tile=({merged['tile_x']},{merged['tile_y']})  "
-                              f"hp={merged['hp']}  gold={merged['stats'].get('gold', 0)}")
-                    except Exception as e:
-                        log.error(f"[Session] ERRO ao salvar {session.username!r}: {e}")
+            merged = await self._persist_character(session, context="disconnect")
+            if merged:
+                log.info(f"[Session] saved {session.username!r}  "
+                      f"tile=({merged['tile_x']},{merged['tile_y']})  "
+                      f"hp={merged['hp']}  gold={merged['stats'].get('gold', 0)}")
             self._eid_to_sid.pop(session.entity_id, None)
             eid = session.entity_id
             # Cancela trade ativa (se houver) ANTES de despawnar — avisa o
@@ -597,10 +670,11 @@ class SessionManager:
         self.world_server.apply_consumable(session.session_id, payload)
 
     async def _handle_save_state(self, session: Session, payload: dict, ts: int) -> None:
-        """Recebe estado completo do cliente e persiste no banco."""
+        """Recebe estado completo do cliente e persiste no banco (via
+        `_persist_character` — no-op enquanto o player está dentro de uma
+        instância de progressão normalizada, ver docstring lá)."""
         if not session.authenticated or not session.char_data.get("id"):
             return
-        from server.auth import save_character
         # Sanitiza talentos no próprio payload ANTES de cachear/usar no merge —
         # tanto session.last_client_payload (usado em saves futuros, ex:
         # disconnect) quanto o merge desta chamada precisam da versão
@@ -625,9 +699,6 @@ class SessionManager:
         session.last_client_payload = payload   # cache para o save no disconnect
         # Inventário foi salvo — zera contador de compras pendentes
         self.world_server.confirm_inventory_save(session.session_id)
-        srv_data = self.world_server.get_player_save_data(session.session_id)
-        _live_eq = self.world_server.get_player_equipment_data(session.session_id)
-        merged   = self._build_save_merge(srv_data, payload, _live_eq)
 
         # Wallet.gold NÃO é sobrescrito aqui — é server-autoritativo via process_shop_buy/sell,
         # request_loot e GOLD_UPDATE (já validado/limitado, ver _handle_gold_update). SAVE_STATE
@@ -666,16 +737,48 @@ class SessionManager:
         # cliente (com cap de 10.000) — vestígio de quando equipamento não tinha
         # modelagem server-side; root cause removido junto da causa (ver
         # arquitetura/PROBLEMAS_ARQUITETURA.md).
-        try:
-            await save_character(session.char_data["id"], merged)
-        except Exception as e:
-            log.error(f"[Session] ERRO save_state {session.username!r}: {e}")
+        await self._persist_character(session, context="save_state")
 
     async def _handle_chat(self, session: Session, payload: dict, ts: int) -> None:
         if not session.authenticated:
             return
         text    = str(payload.get("text", ""))[:200]
         channel = payload.get("channel", "local")
+
+        # Gancho de debug (01/08/2026) — testa mapa/rotas do futuro modo
+        # Battlefield sem fila/matchmaking. Ver server/debug_battleground.py.
+        # Intercepta ANTES de virar chat de verdade; resposta só pro remetente.
+        if text.strip().lower().startswith("/testbg"):
+            from server import debug_battleground
+            args = text.strip().split()[1:]
+            reply, zone_change, countdown = debug_battleground.handle_command(
+                self.world_server, session, session.entity_id, args)
+            if zone_change:
+                # Flush do STATS_UPDATE (Inventory/Equipment/CharacterStats
+                # reais restaurados por enter_/exit_normalized_progression)
+                # ANTES do ZONE_CHANGE — ver docstring de _flush_stats_updates.
+                # zone_change aqui é enviado IMEDIATAMENTE (fora do dispatch
+                # batched por-tick), então sem este flush antecipado o
+                # cliente processava a troca de mapa (autosave no fim de
+                # _do_transition) com o Inventory ainda "de instância".
+                await self._flush_stats_updates()
+                await session.send(MsgType.ZONE_CHANGE, zone_change)
+                session.known_eids.clear()
+            if countdown is not None:
+                # Reaproveita o overlay cosmético de contagem da Arena
+                # (client/arena_handlers.py::_draw_arena_countdown_overlay)
+                # — só depende de _arena_countdown_deadline_val, sem gate
+                # de "está numa partida de arena". Pedido do usuário,
+                # 01/08/2026: sem isso não dá pra saber quando o portão
+                # abre pra ir explorar o mapa. `countdown` já vem no
+                # formato exato do payload ({"remaining","my_faction"} —
+                # ver debug_battleground.handle_command).
+                await session.send(MsgType.ARENA_COUNTDOWN, countdown)
+            await session.send(MsgType.CHAT_MESSAGE, {
+                "sender": "Sistema", "eid": -1, "text": reply,
+                "channel": "local", "color": [255, 200, 80],
+            })
+            return
         # "eid" além de "sender": nome de personagem NÃO é único (duplicatas
         # legadas, ver PROBLEMAS_ARQUITETURA.md) — sem o eid, o cliente só
         # consegue posicionar o balão de fala comparando nomes, o que
@@ -812,18 +915,13 @@ class SessionManager:
         _checked = self.world_server.validate_talent_allocation(session.session_id, talents)
         if not _checked:
             return
-        # Atualiza cache e persiste só os talentos no DB
+        # Atualiza cache e persiste só os talentos no DB (via
+        # _persist_character — no-op enquanto o player está dentro de uma
+        # instância de progressão normalizada, ver docstring lá).
         if session.last_client_payload is None:
             session.last_client_payload = {}
         session.last_client_payload["talents"] = _checked
-        from server.auth import save_character
-        srv_data = self.world_server.get_player_save_data(session.session_id)
-        _live_eq = self.world_server.get_player_equipment_data(session.session_id)
-        merged   = self._build_save_merge(srv_data, session.last_client_payload, _live_eq)
-        try:
-            await save_character(session.char_data["id"], merged)
-        except Exception as e:
-            log.error(f"[TalentUpdate] ERRO ao salvar: {e}")
+        await self._persist_character(session, context="talent_update")
 
     async def _handle_quest_accept(self, session: Session, payload: dict, ts: int) -> None:
         """Aceita quest a partir do diálogo de NPC — valida pré-requisitos/
@@ -915,27 +1013,44 @@ class SessionManager:
             return
 
         if reward.xp > 0:
-            from engine.components import CharacterStats, CombatStats, PermanentStats, TalentTree
-            char = self.world_server.world.get_component(eid, CharacterStats)
-            cs   = self.world_server.world.get_component(eid, CombatStats)
-            perm = self.world_server.world.get_component(eid, PermanentStats)
-            if char and cs:
-                self.world_server.queue_stats_update({
-                    "player_eid": eid, "xp": reward.xp,
-                })
-                level_before = char.level
-                char.current_xp += reward.xp
-                from engine.stats_system import process_levelups
-                process_levelups(self.world_server.world, eid, char, cs, perm)
-                if char.level > level_before:
-                    cs.current_hp = cs.max_hp
-                    tt = self.world_server.world.get_component(eid, TalentTree)
+            # XP de instância (02/08/2026) usa curva/mecânica PRÓPRIA (level
+            # cap 15, +3 pontos de talento por level) — mesmo desvio já
+            # aplicado em world_server.py pro XP de kill de mob/minion/torre
+            # (consume_xp()). Gap real achado nesta sessão: recompensa de
+            # XP de QUEST ainda caía direto no process_levelups REAL, sem
+            # checar is_in_normalized_progression — sem esse desvio, o
+            # process_levelups real usaria a curva ERRADA e o save-to-DB
+            # (nenhum aqui, mas process_levelups mexe em char/cs "de
+            # verdade") escreveria estado da instância como se fosse o
+            # personagem real.
+            from server.instance_progression import (
+                is_in_normalized_progression as _is_norm_quest,
+                grant_instance_xp as _grant_ixp_quest,
+            )
+            if _is_norm_quest(self.world_server, eid):
+                _grant_ixp_quest(self.world_server, eid, reward.xp)
+            else:
+                from engine.components import CharacterStats, CombatStats, PermanentStats, TalentTree
+                char = self.world_server.world.get_component(eid, CharacterStats)
+                cs   = self.world_server.world.get_component(eid, CombatStats)
+                perm = self.world_server.world.get_component(eid, PermanentStats)
+                if char and cs:
                     self.world_server.queue_stats_update({
-                        "player_eid":    eid,
-                        "hp":            cs.current_hp,
-                        "hp_max":        cs.max_hp,
-                        "talent_points": tt.available_points if tt else 0,
+                        "player_eid": eid, "xp": reward.xp,
                     })
+                    level_before = char.level
+                    char.current_xp += reward.xp
+                    from engine.stats_system import process_levelups
+                    process_levelups(self.world_server.world, eid, char, cs, perm)
+                    if char.level > level_before:
+                        cs.current_hp = cs.max_hp
+                        tt = self.world_server.world.get_component(eid, TalentTree)
+                        self.world_server.queue_stats_update({
+                            "player_eid":    eid,
+                            "hp":            cs.current_hp,
+                            "hp_max":        cs.max_hp,
+                            "talent_points": tt.available_points if tt else 0,
+                        })
 
         if reward.gold > 0:
             from engine.components import Wallet
@@ -1023,15 +1138,10 @@ class SessionManager:
                                        {"skill_id": _skill_id, "name": _entry.get("name", _skill_id)})
 
         # Persiste imediatamente (mesmo padrão de TALENT_UPDATE) — crash do
-        # servidor não perde a entrega que já concedeu XP/gold/itens.
-        from server.auth import save_character
-        srv_data = self.world_server.get_player_save_data(session.session_id)
-        _live_eq = self.world_server.get_player_equipment_data(session.session_id)
-        merged   = self._build_save_merge(srv_data, session.last_client_payload, _live_eq)
-        try:
-            await save_character(session.char_data["id"], merged)
-        except Exception as e:
-            log.error(f"[QuestTurnIn] ERRO ao salvar: {e}")
+        # servidor não perde a entrega que já concedeu XP/gold/itens. Via
+        # _persist_character — no-op enquanto o player está dentro de uma
+        # instância de progressão normalizada, ver docstring lá.
+        await self._persist_character(session, context="quest_turn_in")
 
         await session.send(MsgType.QUEST_UPDATE, {
             "active":        {q: list(p) for q, p in ql.active.items()},
@@ -1040,7 +1150,22 @@ class SessionManager:
         })
 
     async def _handle_hotbar_update(self, session: Session, payload: dict, ts: int) -> None:
-        """Atualiza cache da barra de ações — persistido no próximo save completo."""
+        """Atualiza cache da barra de ações (persistido no próximo save
+        completo) E o `PlayerSkills` AO VIVO do ECS (05/08/2026, bug real
+        relatado pelo usuário: reordenar a hotbar pouco antes de entrar na
+        BG não tinha efeito nenhum — `enter_normalized_progression`
+        consultava o `PlayerSkills` ao vivo pra achar o slot real de cada
+        skill, mas esse componente só era carregado do banco no login e
+        NUNCA era tocado por este handler, só o cache de save. Resultado:
+        qualquer edição de hotbar feita DURANTE a sessão (sem relogar)
+        ficava invisível pro resto do servidor até o próximo save/login —
+        inclusive pro snapshot que `exit_normalized_progression` restaura
+        ao sair da BG, que devolvia esse layout desatualizado por cima do
+        real). Único ponto de verdade agora: aplica no componente ao vivo
+        (reordena — NUNCA concede skill nova por aqui, só
+        `learned_skill_ids` já existente; sem essa checagem um cliente
+        malicioso podia mandar um skill_id que não tem aprendido e ganhar
+        a skill de graça)."""
         if not session.authenticated:
             return
         if session.last_client_payload is None:
@@ -1052,6 +1177,22 @@ class SessionManager:
             if isinstance(existing, dict):
                 existing["hotbar"] = skills
             session.last_client_payload["skills"] = existing
+
+            eid = self.world_server._player_eids.get(session.session_id)
+            if eid is not None:
+                from engine.components import PlayerSkills as _PSHbu
+                from content.skill_config import SKILL_CATALOG as _SCHbu
+                ps = self.world_server.world.get_component(eid, _PSHbu)
+                if ps is not None:
+                    for i, sid in enumerate(skills):
+                        if i >= len(ps.skills):
+                            break
+                        if sid and sid not in ps.learned_skill_ids:
+                            continue  # nunca concede skill nova por este canal
+                        cur = ps.skills[i]
+                        if sid and cur is not None and cur.skill_id == sid:
+                            continue  # slot não mudou — preserva estado ao vivo
+                        ps.skills[i] = _PSHbu._make_skill(sid, _SCHbu) if sid else None
         # Consumíveis são UI local — só precisam estar no próximo SAVE_STATE
 
     async def _handle_loot_request(self, session: Session, payload: dict, ts: int) -> None:
@@ -1769,6 +1910,52 @@ class SessionManager:
             return
         self.world_server.request_arena_forfeit(eid)
 
+    # ── Fila REAL de BG estilo MOBA (04/08/2026, ver server/bg_queue_processor.py) ─
+
+    async def _handle_bg_queue_join(self, session: Session, payload: dict, ts: int) -> None:
+        if not session.authenticated:
+            return
+        eid = self.world_server._player_eids.get(session.session_id)
+        if eid is None:
+            return
+        reason = self.world_server.request_bg_queue_join(eid)
+        await session.send(MsgType.BG_QUEUE_STATE, {
+            "in_queue": reason is None,
+            **({} if reason is None else {"reason": reason}),
+        })
+
+    async def _handle_bg_queue_leave(self, session: Session, payload: dict, ts: int) -> None:
+        if not session.authenticated:
+            return
+        eid = self.world_server._player_eids.get(session.session_id)
+        if eid is None:
+            return
+        self.world_server.request_bg_queue_leave(eid)
+        await session.send(MsgType.BG_QUEUE_STATE, {"in_queue": False})
+
+    async def _handle_bg_match_accept(self, session: Session, payload: dict, ts: int) -> None:
+        """Aceite da janela "Partida encontrada!" — entra na instância na
+        hora, sozinho, sem esperar o resto do time (ver
+        BgQueueProcessorMixin.request_bg_accept)."""
+        if not session.authenticated:
+            return
+        eid = self.world_server._player_eids.get(session.session_id)
+        if eid is None:
+            return
+        self.world_server.request_bg_accept(eid)
+
+    async def _handle_bg_match_leave(self, session: Session, payload: dict, ts: int) -> None:
+        """Desiste no meio da luta OU sai da tela de resultado ("Voltar")
+        — mesma ação nos 2 casos (ver BgQueueProcessorMixin.
+        request_bg_leave). ZONE_CHANGE de volta sai pelo broadcast loop
+        do próximo tick (consume_bg_match_leave_events)."""
+        if not session.authenticated:
+            return
+        eid = self.world_server._player_eids.get(session.session_id)
+        if eid is None:
+            return
+        self.world_server.request_bg_leave(eid)
+
     async def _handle_trade_offer_item(self, session: Session, payload: dict, ts: int) -> None:
         if not session.authenticated:
             return
@@ -1912,6 +2099,10 @@ class SessionManager:
         MsgType.ARENA_QUEUE_LEAVE:   _handle_arena_queue_leave,
         MsgType.ARENA_MATCH_ACCEPT:  _handle_arena_match_accept,
         MsgType.ARENA_FORFEIT:       _handle_arena_forfeit,
+        MsgType.BG_QUEUE_JOIN:       _handle_bg_queue_join,
+        MsgType.BG_QUEUE_LEAVE:      _handle_bg_queue_leave,
+        MsgType.BG_MATCH_ACCEPT:     _handle_bg_match_accept,
+        MsgType.BG_MATCH_LEAVE:      _handle_bg_match_leave,
         MsgType.CHAR_STATS_REQUEST:  _handle_char_stats_request,
     }
 
@@ -1920,6 +2111,7 @@ class SessionManager:
     def _on_tick(self, tick_count: int, deltas: dict) -> None:
         if tick_count % (TICK_RATE * 300) == 0 and tick_count > 0:  # autosave a cada 5 min
             asyncio.create_task(self._autosave_all())
+        from server import debug_battleground as _dbg_bg_tick
         # Dispatch sempre que há conteúdo — inclui skill_results que não entram em deltas
         has_pending = (any(deltas.values())
                        or bool(self.world_server._skill_results_this_tick)
@@ -1961,7 +2153,29 @@ class SessionManager:
                        # Fase M2 (25/07/2026) — mesma classe de bug: harvestable
                        # reabastecido some no buffer até atividade alheia
                        # destravar o dispatch, se não entrar aqui.
-                       or bool(self.world_server._pending_harvestable_refill))
+                       or bool(self.world_server._pending_harvestable_refill)
+                       # Battleground de teste (debug, 01/08/2026) — mesma
+                       # classe de bug: sem entrar aqui, o aviso de portão
+                       # aberto ficava preso até atividade alheia destravar
+                       # o dispatch (ver drain_gate_open_notifications acima).
+                       or bool(_dbg_bg_tick._state["pending_gate_open_eids"])
+                       # Battleground de teste: Nexus derrubado (placar) e
+                       # timeout de saída forçada (02/08/2026) — MESMA
+                       # classe de bug, mesmo buffer novo esquecido aqui =
+                       # aviso preso até atividade alheia destravar.
+                       or bool(_dbg_bg_tick._state["pending_match_result"])
+                       or bool(_dbg_bg_tick._state["pending_forced_leave_notify"])
+                       # Fila REAL de BG (04/08/2026) — MESMA classe de bug:
+                       # os 6 buffers próprios do ciclo de vida da fila
+                       # real (server/bg_queue_processor.py) nunca entram
+                       # em `deltas`, então precisam estar aqui igual aos
+                       # da Arena/debug acima, ou ficam presos até
+                       # atividade alheia destravar o dispatch.
+                       or bool(self.world_server._bg_match_found_events_this_tick)
+                       or bool(self.world_server._bg_match_start_events_this_tick)
+                       or bool(self.world_server._bg_gate_open_events_this_tick)
+                       or bool(self.world_server._bg_match_leave_events_this_tick)
+                       or bool(self.world_server._bg_match_result_events_this_tick))
         if not has_pending:
             return
         asyncio.create_task(self._dispatch_tick_deltas(deltas))
@@ -2034,6 +2248,30 @@ class SessionManager:
             for eid_i, _, _, _ in members:
                 result[eid_i] = [(tx, ty, radius) for eid_j, tx, ty, radius in members if eid_j != eid_i]
         return result
+
+    async def _flush_stats_updates(self) -> None:
+        """Drena e envia TODOS os STATS_UPDATE pendentes (`WorldServer.
+        consume_stats_updates`) — chamado tanto pelo dispatch normal por-tick
+        (`_dispatch_tick_deltas`) quanto ANTES de um ZONE_CHANGE imediato
+        (`_handle_chat`, comando `/testbg`) que não passa pelo dispatch
+        batched. Sem o flush antecipado no segundo caso, o cliente processa
+        a troca de mapa (`_do_transition`, que dispara autosave no fim) ANTES
+        do STATS_UPDATE com o Inventory/Equipment/CharacterStats reais
+        restaurados chegar — o autosave prematuro salva a bag/atributos
+        ainda "de instância" por cima do save real (bug real, 03/08/2026:
+        "perco os itens da bag ao sair da BG" — a bag vazia da instância
+        persistia no banco porque `exit_normalized_progression` já tinha
+        rodado no servidor, então o guard de `_persist_character` não
+        bloqueava mais esse autosave prematuro)."""
+        for xp_entry in self.world_server.consume_stats_updates():
+            sid = self.world_server.get_session_id_for_player(xp_entry["player_eid"])
+            if sid:
+                session = self._sessions.get(sid)
+                if session and session.authenticated:
+                    _payload = dict(xp_entry)
+                    _payload["eid"]       = _payload.pop("player_eid")
+                    _payload["xp_gained"] = _payload.pop("xp", 0)
+                    await session.send(MsgType.STATS_UPDATE, _payload)
 
     async def _dispatch_tick_deltas(self, deltas: dict) -> None:
         """Distribui deltas para cada cliente respeitando known_eids (AOI subscription)."""
@@ -2153,15 +2391,7 @@ class SessionManager:
             # Forwarding total: qualquer campo do produtor chega ao cliente
             # (que lê com .get() e defaults) — campo novo não precisa de
             # espelho manual aqui.
-            for xp_entry in self.world_server.consume_stats_updates():
-                sid = self.world_server.get_session_id_for_player(xp_entry["player_eid"])
-                if sid:
-                    session = self._sessions.get(sid)
-                    if session and session.authenticated:
-                        _payload = dict(xp_entry)
-                        _payload["eid"]       = _payload.pop("player_eid")
-                        _payload["xp_gained"] = _payload.pop("xp", 0)
-                        await session.send(MsgType.STATS_UPDATE, _payload)
+            await self._flush_stats_updates()
 
             # Notificações de corpse/loot
             for notif in self.world_server.consume_loot_notifications():
@@ -2404,6 +2634,24 @@ class SessionManager:
                     continue
                 await _ago_sess.send(MsgType.ARENA_GATE_OPEN, {})
 
+            # Battleground de teste (debug, 01/08/2026): mesmo aviso de
+            # portão aberto acima, mas com `gate_tiles` explícito (tiles
+            # DIFERENTES de ARENA_GATE_TILES — ver client/arena_handlers.py::
+            # _handle_msg_arena_gate_open) — sem isso o cliente nunca sabia
+            # que o portão tinha aberto de verdade (bug real relatado pelo
+            # usuário: "fez a contagem mas não abriu o gate").
+            from server import debug_battleground as _dbg_bg
+            from server.bg_queue_processor import BG_QUEUE_GATE_TILES
+            if _dbg_bg._state["pending_gate_open_eids"]:
+                _dbg_gate_tiles = [list(t) for tiles in _dbg_bg.DEBUG_BG_GATE_TILES.values()
+                                   for t in tiles]
+                for _dbg_eid in _dbg_bg.drain_gate_open_notifications():
+                    _dbg_sid  = self.world_server.get_session_id_for_player(_dbg_eid)
+                    _dbg_sess = self._sessions.get(_dbg_sid) if _dbg_sid else None
+                    if not (_dbg_sess and _dbg_sess.authenticated):
+                        continue
+                    await _dbg_sess.send(MsgType.ARENA_GATE_OPEN, {"gate_tiles": _dbg_gate_tiles})
+
             # Arena: player saiu da partida neste tick (/forfeit, botão
             # "Sair da Arena", desconexão, ou timeout automático da tela
             # de resultado — sempre via MatchProcessorMixin._arena_leave_
@@ -2432,6 +2680,97 @@ class SessionManager:
                 if not (_amr_sess and _amr_sess.authenticated):
                     continue
                 await _amr_sess.send(MsgType.ARENA_MATCH_RESULT, {"results": _am_res["results"]})
+
+            # Battleground de teste (debug, 02/08/2026): Nexus derrubado —
+            # placar final dos dois times (não teleporta ninguém ainda,
+            # mesma forma de ARENA_MATCH_RESULT acima).
+            for _bg_eid, _bg_payload in _dbg_bg.drain_match_result_notifications():
+                _bgr_sid  = self.world_server.get_session_id_for_player(_bg_eid)
+                _bgr_sess = self._sessions.get(_bgr_sid) if _bgr_sid else None
+                if not (_bgr_sess and _bgr_sess.authenticated):
+                    continue
+                await _bgr_sess.send(MsgType.BG_MATCH_RESULT, _bg_payload)
+
+            # Battleground de teste: timeout de 15s da tela de resultado
+            # forçou _leave() de quem não clicou "Voltar" — já foi
+            # teleportado de volta (transfer_player, dentro de _leave);
+            # só falta avisar via ZONE_CHANGE, mesma forma do bloco
+            # ARENA_MATCH_END acima (saída manual via botão/"/testbg leave"
+            # já manda ZONE_CHANGE pelo caminho normal de chat, sem
+            # precisar deste bloco).
+            for _bgf_eid, _bgf_zone in _dbg_bg.drain_forced_leave_notify():
+                _bgf_sid  = self.world_server.get_session_id_for_player(_bgf_eid)
+                _bgf_sess = self._sessions.get(_bgf_sid) if _bgf_sid else None
+                if not (_bgf_sess and _bgf_sess.authenticated):
+                    continue
+                await _bgf_sess.send(MsgType.ZONE_CHANGE, _bgf_zone)
+                _bgf_sess.known_eids.clear()
+
+            # Fila REAL de BG (04/08/2026, server/bg_queue_processor.py) —
+            # mesmo padrão 1-pra-1 do bloco Arena acima, só que pros 6
+            # eventos próprios do ciclo de vida da fila real (não mais o
+            # estado único compartilhado de debug_battleground.py).
+            for _bqf in self.world_server.consume_bg_match_found_events():
+                _bqf_sid  = self.world_server.get_session_id_for_player(_bqf["eid"])
+                _bqf_sess = self._sessions.get(_bqf_sid) if _bqf_sid else None
+                if not (_bqf_sess and _bqf_sess.authenticated):
+                    continue
+                await _bqf_sess.send(MsgType.BG_MATCH_FOUND, {
+                    "team_size": _bqf["team_size"],
+                    "teammates": _bqf["teammates"],
+                    "opponents": _bqf["opponents"],
+                })
+
+            for _bqs in self.world_server.consume_bg_match_start_events():
+                _bqs_sid  = self.world_server.get_session_id_for_player(_bqs["eid"])
+                _bqs_sess = self._sessions.get(_bqs_sid) if _bqs_sid else None
+                if not (_bqs_sess and _bqs_sess.authenticated):
+                    continue
+                await _bqs_sess.send(MsgType.ZONE_CHANGE, {
+                    "map_file": _bqs["map_file"],
+                    "target_x": _bqs["target_x"],
+                    "target_y": _bqs["target_y"],
+                })
+                _bqs_sess.known_eids.clear()
+                await _bqs_sess.send(MsgType.BG_MATCH_START, {
+                    "map_file":  _bqs["map_file"],
+                    "team_size": _bqs["team_size"],
+                    "teammates": _bqs["teammates"],
+                    "opponents": _bqs["opponents"],
+                })
+                await _bqs_sess.send(MsgType.ARENA_COUNTDOWN, {
+                    "remaining":  _bqs["countdown_remaining"],
+                    "my_faction": _bqs["my_faction"],
+                })
+
+            if self.world_server._bg_gate_open_events_this_tick:
+                _bq_gate_tiles = [list(t) for tiles in BG_QUEUE_GATE_TILES.values()
+                                  for t in tiles]
+                for _bqg in self.world_server.consume_bg_gate_open_events():
+                    _bqg_sid  = self.world_server.get_session_id_for_player(_bqg["eid"])
+                    _bqg_sess = self._sessions.get(_bqg_sid) if _bqg_sid else None
+                    if not (_bqg_sess and _bqg_sess.authenticated):
+                        continue
+                    await _bqg_sess.send(MsgType.ARENA_GATE_OPEN, {"gate_tiles": _bq_gate_tiles})
+
+            for _bql in self.world_server.consume_bg_match_leave_events():
+                _bql_sid  = self.world_server.get_session_id_for_player(_bql["eid"])
+                _bql_sess = self._sessions.get(_bql_sid) if _bql_sid else None
+                if not (_bql_sess and _bql_sess.authenticated):
+                    continue
+                await _bql_sess.send(MsgType.ZONE_CHANGE, {
+                    "map_file": _bql["map_file"],
+                    "target_x": _bql["target_x"],
+                    "target_y": _bql["target_y"],
+                })
+                _bql_sess.known_eids.clear()
+
+            for _bqr_eid, _bqr_payload in self.world_server.consume_bg_match_result_events():
+                _bqr_sid  = self.world_server.get_session_id_for_player(_bqr_eid)
+                _bqr_sess = self._sessions.get(_bqr_sid) if _bqr_sid else None
+                if not (_bqr_sess and _bqr_sess.authenticated):
+                    continue
+                await _bqr_sess.send(MsgType.BG_MATCH_RESULT, _bqr_payload)
 
             # Eventos de som posicionais (aggro de mob, etc.) → broadcast AOI
             for _snd_ev in self.world_server.consume_sound_events():
@@ -2867,21 +3206,15 @@ class SessionManager:
     # ── Player deaths — enviados diretamente, não via AOI_UPDATE ─────────────
 
     async def _autosave_all(self) -> None:
-        from server.auth import save_character
+        """Autosave periódico (a cada 5 min, ver `_on_tick`) — via
+        `_persist_character`, que pula sozinho qualquer sessão dentro de
+        uma instância de progressão normalizada (ver docstring lá).
+        ANTES desta correção (02/08/2026) este era um dos 4 pontos de
+        save que nunca verificava — o incidente real que motivou o fix."""
         saved = 0
         for session in list(self._sessions.values()):
-            if not session.authenticated or not session.char_data.get("id"):
-                continue
-            srv_data = self.world_server.get_player_save_data(session.session_id)
-            if not srv_data:
-                continue
-            _live_eq = self.world_server.get_player_equipment_data(session.session_id)
-            merged = self._build_save_merge(srv_data, session.last_client_payload, _live_eq)
-            try:
-                await save_character(session.char_data["id"], merged)
+            if await self._persist_character(session, context="autosave"):
                 saved += 1
-            except Exception as e:
-                log.error(f"[Session] ERRO autosave {session.username!r}: {e}")
         if saved:
             log.info(f"[Session] autosave  players={saved}  tick={self.world_server.tick_count}")
 

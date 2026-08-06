@@ -2,7 +2,6 @@
 """
 Sistemas de progressão do personagem:
   - XPSystem          : concede XP ao jogador após kills e dispara level-up
-  - DeathRespawnSystem     : mecânica roguelike — acumula stats na morte e respawna
 """
 from __future__ import annotations
 from engine.world import World
@@ -519,75 +518,3 @@ class XPSystem(System):
 
         self.death_handler.pending_xp.clear()
         request_autosave()
-
-
-# ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
-# DeathRespawnSystem
-# ---------------------------------------------------------------------------
-
-class DeathRespawnSystem(System):
-    """
-    Mecânica roguelike: quando o jogador morre (hp <= 0),
-      1. Acumula os atributos atuais em PermanentStats
-      2. Reseta CharacterStats para os valores iniciais
-      3. Recalcula CombatStats (agora mais forte pelos permanentes)
-      4. Restaura HP cheio e sinaliza ao GameEngine para trocar de mapa
-    """
-
-    INITIAL_STATS = dict(strength=1, intelligence=1, agility=1, vitality=3, defense=2)
-
-    def __init__(self, world: World):
-        self.world = world
-        self.pending_respawn: "dict | None" = None  # lido e consumido pelo GameEngine
-        self.online_mode: bool = False  # True → respawn server-autoritativo, sistema não dispara
-
-    def update(self, events: list = None, dt: float = 0) -> None:
-        if self.online_mode:
-            return
-        for entity_id, combat_stats, char_stats, _ in \
-                self.world.get_entities_with(CombatStats, CharacterStats, PlayerControlled):
-            if combat_stats.current_hp > 0:
-                continue
-            self._respawn(entity_id, combat_stats, char_stats)
-
-    def _respawn(self, entity_id: int, combat_stats: CombatStats,
-                 char_stats: CharacterStats) -> None:
-        perm = self.world.get_component(entity_id, PermanentStats)
-
-        # Nenhum reset de level, atributos ou talentos — apenas restaura HP + voláteis de combate
-        char_stats.reset_volatile()
-        apply_char_stats_to_combat(char_stats, combat_stats, perm)
-        combat_stats.current_hp = combat_stats.max_hp
-        combat_stats.attack_cooldown_timer = 0.0
-
-        # 4. Sinaliza ao GameEngine para carregar mapa principal e teleportar ao cemitério
-        self.pending_respawn = {
-            "target_map": char_stats.spawn_map,
-            "target_x":   char_stats.spawn_tile_x,
-            "target_y":   char_stats.spawn_tile_y,
-        }
-
-        # 5. Limpa efeitos de estado ativos
-        sfx = self.world.get_component(entity_id, StatusEffects)
-        if sfx:
-            sfx.effects.clear()
-        tm_player = self.world.get_component(entity_id, TileMovement)
-        if tm_player:
-            tm_player.slow_mult = 1.0
-            tm_player.debilitate_elapsed = 0.0
-
-        # 6. Limpa estado de combate
-        cs = self.world.get_component(entity_id, CombatState)
-        if cs:
-            cs.target_entity_id = -1
-            cs.in_combat = False
-            cs.is_pursuing = False
-        am = self.world.get_component(entity_id, PlayerAutoMove)
-        if am:
-            am.active = False
-            am.path.clear()
-
-        perm_str = f"FOR+{perm.strength} VIT+{perm.vitality} DEF+{perm.defense}" if perm else ""
-        LOG.add(f"Renasceu no nivel 1. Bônus permanentes: {perm_str}", (200, 100, 220))
-        LOG.add(f"HP maximo agora: {combat_stats.max_hp}", (200, 100, 220))

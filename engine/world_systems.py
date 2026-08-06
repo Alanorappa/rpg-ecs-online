@@ -38,10 +38,10 @@ from engine.components import Position, Renderable, PlayerControlled, Camera, Co
                        EnemyAbilities, EnemyAbilitySlot, EntityIdentity, \
                        NpcSounds, PendingDeath, XPReward, SpawnZoneOwner, SpawnZone, \
                        PlayerSkills, NPC, ActiveRegen, ConsumableBar, \
-                       AoeTargeting, RemoteControlled, GhostState, MapLocation, Combatant, Tower
+                       AoeTargeting, RemoteControlled, GhostState, MapLocation, Combatant, Tower, Minion
 from engine.world import World
 from engine.tileset import TILE_SIZE, OBJECT_MAPPING
-from engine.utils import chebyshev, start_tile_movement
+from engine.utils import chebyshev, start_tile_movement, is_action_locked, is_movement_locked, SpatialHash
 from engine.damage_calculator import resolve_attack_outcome, calculate_base_damage
 from ui.combat_log import LOG
 from engine.fx import FLT, PROC, WARN, SOUNDS, DASH_TRAIL
@@ -999,7 +999,8 @@ class CombatSystem(System):
     def _handle_death(self, dead_entity_id: int, killer_entity_id: int) -> bool:
         """Diferencia morte de jogador vs inimigo.
 
-        Jogador: fica no world; DeathRespawnSystem detecta hp<=0 e respawna.
+        Jogador: fica no world; servidor detecta hp<=0 e processa ghost/
+        respawn (server/respawn_system.py, autoritativo).
         Inimigo: adiciona PendingDeath — DeathHandlerSystem processa no mesmo frame.
         """
         is_player = self.world.get_component(dead_entity_id, PlayerControlled) is not None
@@ -1363,6 +1364,151 @@ class ProjectileSystem(System):
                 pygame.draw.circle(self.world_surf, color, (draw_x, draw_y), 4)
 
 
+def _spawn_attack_projectile(world: World, attacker_eid: int, target_eid: int,
+                             damage_type: str, dmg_multiplier: float = 1.0,
+                             speed: float = 380.0) -> None:
+    """Spawna um `Projectile` com o sabor visual da CLASSE do atacante
+    (`PROJECTILE_BY_CLASS`, content/mob_definitions.py — "Mago" = bola
+    de fogo laranja, "Arqueiro" = flecha marrom). Extraído de
+    `TowerSystem._attack` (30/07/2026) quando `MinionSystem` virou o
+    2º consumidor real da mesma lógica — duplicar pela 2ª vez deixou de
+    valer a pena. Usado por qualquer atacante ranged sem player
+    (torre/minion); auto-attack ranged de PLAYER continua no caminho
+    próprio dele (skill/spell system), não mexido aqui."""
+    attacker_pos = world.get_component(attacker_eid, Position)
+    target_pos   = world.get_component(target_eid, Position)
+    if not attacker_pos or not target_pos:
+        return
+
+    from content.mob_definitions import PROJECTILE_BY_CLASS as _PBC
+    ident = world.get_component(attacker_eid, EntityIdentity)
+    entity_class = ident.entity_class if ident else ""
+    proj_data = _PBC.get(entity_class, _PBC["_default"])
+
+    dx = target_pos.x - attacker_pos.x
+    dy = target_pos.y - attacker_pos.y
+    dist = math.sqrt(dx * dx + dy * dy)
+    dir_x, dir_y = (dx / dist, dy / dist) if dist > 0 else (1.0, 0.0)
+
+    proj_eid = world.create_entity()
+    world.add_component(proj_eid, Position(
+        x=attacker_pos.x, y=attacker_pos.y,
+        prev_x=attacker_pos.x, prev_y=attacker_pos.y))
+    world.add_component(proj_eid, Projectile(
+        attacker_id=attacker_eid, target_id=target_eid, damage_type=damage_type,
+        speed=speed, color=proj_data["color"], is_arrow=proj_data["is_arrow"],
+        dir_x=dir_x, dir_y=dir_y, dmg_multiplier=dmg_multiplier,
+    ))
+
+
+def _combat_candidates_near(world: World, spatial_hash: "dict[str, SpatialHash] | None",
+                            map_file: str, tx: int, ty: int, radius: int):
+    """Candidatos a alvo perto de `(tx, ty)` — chokepoint único usado por
+    `TowerSystem._acquire_target`/`MinionSystem._acquire_target`
+    (04/08/2026, pedido do usuário: torre/minion sem alvo faziam uma
+    varredura GLOBAL de todas as entidades do jogo TODO tick — com uma
+    wave de BG ativa, isso vira milhares de iterações/tick só pra achar
+    "tem alguém perto?"). `spatial_hash` (dict map_file→SpatialHash,
+    construído 1x por tick em `WorldServer._tick`, MESMO índice
+    reaproveitado pelos 2 sistemas — mesmo padrão já usado pro AOI de
+    sessão, `server/session.py::SpatialHash`) devolve só quem está nas
+    células vizinhas ao raio — o chamador ainda filtra por hostilidade/
+    LOS/visibilidade depois, igual sempre fez.
+
+    Fallback pro sweep completo se `spatial_hash` for `None` (testes
+    headless que criam TowerSystem/MinionSystem direto, sem WorldServer
+    real por trás) — nunca quebra quem já usa estes sistemas sem injetar
+    o índice."""
+    if spatial_hash is not None:
+        _hash = spatial_hash.get(map_file)
+        if _hash is not None:
+            return _hash.nearby(tx, ty, radius)
+        return ()
+    return (eid for eid, _, _, _ in world.get_entities_with(Position, CombatStats, TileMovement))
+
+
+def _players_on_map(world: World, players_by_map: "dict | None", map_filter: str) -> list:
+    """Lista de `(eid, Position, TileMovement, CombatStats)` de players no
+    mapa `map_filter` — chokepoint único usado por `EnemyAISystem`/
+    `EnemyAbilitySystem`/`SpawnZoneSystem` (05/08/2026, pedido do
+    usuário: "ai_bundles/map_1 custa ~7-8ms mesmo com só eu jogando, não
+    vai piorar com mais players?"). Antes, cada um fazia seu PRÓPRIO
+    `get_entities_with(...PlayerControlled...)` — o pior caso
+    (`EnemyAISystem`, sleep-check) rodava esse scan por MOB, todo tick.
+
+    `players_by_map` (dict map_file→lista, construído 1x por tick em
+    `WorldServer._tick`, MESMO índice pra todo mundo) — mesmo padrão já
+    usado pra `_combat_spatial_hash`/`_combat_candidates_near`
+    (§34.74.30): 1 scan real por tick, todo sistema de proximidade
+    consome, nunca reimplementa. `map_filter=""` (sem filtro — teste/
+    offline) devolve TODOS os players de TODOS os mapas juntos, mesma
+    semântica de sempre.
+
+    Fallback pro scan direto se `players_by_map` for `None` (teste que
+    cria o sistema e chama `.update()` sem esse parâmetro) — nunca quebra
+    quem já usa estes sistemas sem injetar o índice. Não filtra HP/estado
+    aqui de propósito — cada chamador decide o que precisa (alguns
+    ignoram player morto, outros não), igual sempre fez."""
+    if players_by_map is not None:
+        if not map_filter:
+            _all: list = []
+            for _lst in players_by_map.values():
+                _all.extend(_lst)
+            return _all
+        return players_by_map.get(map_filter, [])
+    result = []
+    for p_eid, p_pos, p_tm, _p_pc, p_cs in world.get_entities_with(
+            Position, TileMovement, PlayerControlled, CombatStats):
+        if map_filter:
+            p_ml = world.get_component(p_eid, MapLocation)
+            if not p_ml or p_ml.map_file != map_filter:
+                continue
+        result.append((p_eid, p_pos, p_tm, p_cs))
+    return result
+
+
+def _mobs_on_map(world: World, mobs_by_map: "dict | None", map_filter: str) -> list:
+    """Lista de `(eid, Position, AIControlled, InitialPosition,
+    DetectionRadius, TileMovement, CombatStats)` de mobs no mapa
+    `map_filter` — mesmo padrão de `_players_on_map` (05/08/2026, achado
+    secundário do §34.74.38: `EnemyAISystem.update()` buscava
+    `get_entities_with(...)` SEM filtro de mapa — o mundo TODO (~190
+    mobs em 3 mapas), descartando os de outro mapa 1 a 1 via
+    `get_component(MapLocation)` + comparação, dentro do próprio loop
+    principal. Com só 1 bundle ativo isso já paga esse custo sozinho;
+    com 2+ mapas ativos simultaneamente (múltiplos players em mapas
+    diferentes), cada bundle repetia o MESMO scan global de ~190 — o
+    mesmo padrão de scan redundante já corrigido pra players em
+    `_players_on_map`).
+
+    `mobs_by_map` (dict map_file→lista, construído 1x por tick em
+    `WorldServer._tick`) — 1 scan real por tick, todo bundle ativo
+    consome sua fatia, nunca reimplementa. Fallback pro scan direto +
+    filtro por entidade se `mobs_by_map` for `None` (teste que chama
+    `.update()` sem esse parâmetro) — comportamento idêntico ao de
+    antes, só mais lento. Não filtra HP aqui de propósito (mob morto
+    ainda precisa ser visto por quem decide o que fazer com ele) —
+    mesma responsabilidade de sempre do chamador."""
+    if mobs_by_map is not None:
+        if not map_filter:
+            _all: list = []
+            for _lst in mobs_by_map.values():
+                _all.extend(_lst)
+            return _all
+        return mobs_by_map.get(map_filter, [])
+    result = []
+    for eid, pos, ai_control, initial_pos, detect_radius, tile_movement, cs in world.get_entities_with(
+            Position, AIControlled, InitialPosition, DetectionRadius, TileMovement, CombatStats):
+        if map_filter:
+            ml = world.get_component(eid, MapLocation)
+            if not ml or ml.map_file != map_filter:
+                continue
+        result.append((eid, pos, ai_control, initial_pos, detect_radius, tile_movement, cs))
+    return result
+
+
+
+
 class TowerSystem:
     """Torre estática com facção (29/07/2026, pedido do usuário) — ataca
     à distância quem entra no alcance, com fidelidade à mecânica real de
@@ -1476,17 +1622,32 @@ class TowerSystem:
             return
 
     def _acquire_target(self, tower_eid: int, tower: Tower, tower_pos: Position,
-                        map_file: str, tilemap_comp) -> int:
+                        map_file: str, tilemap_comp,
+                        spatial_hash: "dict[str, SpatialHash] | None" = None) -> int:
         """Mob/NPC hostil mais próximo no alcance tem prioridade absoluta
         sobre player — nunca escolhe player enquanto houver mob no
         alcance (pedido explícito do usuário, fidelidade ao real do
-        LoL: minion sempre antes de campeão)."""
+        LoL: minion sempre antes de campeão).
+
+        `spatial_hash` (04/08/2026, ver `_combat_candidates_near`) limita
+        os candidatos aos próximos de `tower_pos` em vez de varrer TODAS
+        as entidades do jogo — torre sem alvo fazia essa varredura só
+        pra descobrir "não tem ninguém por perto"."""
         best_npc_eid, best_npc_dist = -1, float("inf")
         best_ply_eid, best_ply_dist = -1, float("inf")
 
-        for c_eid, c_pos, c_cs, _c_tm in self.world.get_entities_with(
-                Position, CombatStats, TileMovement):
-            if c_eid == tower_eid or c_cs.current_hp <= 0:
+        tx0 = int(tower_pos.x // TILE_SIZE)
+        ty0 = int(tower_pos.y // TILE_SIZE)
+        candidates = _combat_candidates_near(self.world, spatial_hash, map_file,
+                                             tx0, ty0, tower.attack_range_tiles)
+        for c_eid in candidates:
+            if c_eid == tower_eid:
+                continue
+            c_cs = self.world.get_component(c_eid, CombatStats)
+            if not c_cs or c_cs.current_hp <= 0:
+                continue
+            c_pos = self.world.get_component(c_eid, Position)
+            if not c_pos:
                 continue
             if map_file:
                 c_ml = self.world.get_component(c_eid, MapLocation)
@@ -1503,8 +1664,16 @@ class TowerSystem:
             if self.world.get_component(c_eid, PlayerControlled) is not None:
                 if dist < best_ply_dist:
                     best_ply_dist, best_ply_eid = dist, c_eid
-            elif (self.world.get_component(c_eid, AIControlled) is not None
-                  or self.world.get_component(c_eid, NPC) is not None):
+            else:
+                # Qualquer hostil que NÃO seja player entra no bucket de
+                # prioridade (mob comum via AIControlled/NPC, OU Minion —
+                # que não tem nenhum dos dois, tem seu próprio
+                # MinionSystem/create_minion, 01/08/2026). Antes era um
+                # `elif AIControlled or NPC`: Minion passava em TODOS os
+                # checks acima (hostil/visível/alcance/LOS) mas não batia
+                # nem essa condição nem PlayerControlled, então nunca
+                # entrava em nenhum bucket — bug real relatado pelo
+                # usuário ("torres não atacam os minions do time oposto").
                 if dist < best_npc_dist:
                     best_npc_dist, best_npc_eid = dist, c_eid
 
@@ -1532,25 +1701,8 @@ class TowerSystem:
         # ~2003) pra decidir physical/magical — nunca hardcoded aqui.
         damage_type = "magical" if (cs.spell_power > 0 or cs.base_magical_damage > 0) else "physical"
 
-        from content.mob_definitions import PROJECTILE_BY_CLASS as _PBC
-        ident = self.world.get_component(tower_eid, EntityIdentity)
-        entity_class = ident.entity_class if ident else ""
-        proj_data = _PBC.get(entity_class, _PBC["_default"])
-
-        dx = target_pos.x - attacker_pos.x
-        dy = target_pos.y - attacker_pos.y
-        dist = math.sqrt(dx * dx + dy * dy)
-        dir_x, dir_y = (dx / dist, dy / dist) if dist > 0 else (1.0, 0.0)
-
-        proj_eid = self.world.create_entity()
-        self.world.add_component(proj_eid, Position(
-            x=attacker_pos.x, y=attacker_pos.y,
-            prev_x=attacker_pos.x, prev_y=attacker_pos.y))
-        self.world.add_component(proj_eid, Projectile(
-            attacker_id=tower_eid, target_id=target, damage_type=damage_type,
-            speed=380.0, color=proj_data["color"], is_arrow=proj_data["is_arrow"],
-            dir_x=dir_x, dir_y=dir_y, dmg_multiplier=dmg_mult,
-        ))
+        _spawn_attack_projectile(self.world, tower_eid, target, damage_type,
+                                 dmg_multiplier=dmg_mult)
         tower.attack_cd = cs.get_attack_cooldown()
 
         # Debug (29/07/2026, pedido do usuário — ramp de dano "não
@@ -1562,16 +1714,27 @@ class TowerSystem:
         # bruto de HP no cliente nunca vai bater exatamente com
         # `dmg_mult`, só a PROPORÇÃO entre estocadas.
         if _MCL is not None:
+            ident = self.world.get_component(tower_eid, EntityIdentity)
+            entity_class = ident.entity_class if ident else ""
             _MCL.log("ATK_FIRE", tower_eid, ident.name if ident else "Torre",
                      "Construcao", entity_class,
                      target=target, is_player_target=is_player_target,
                      ramp_stacks=tower.dmg_ramp_stacks, dmg_mult=round(dmg_mult, 2))
 
-    def update(self, dt: float, combat_this_tick: list = None) -> None:
+    def update(self, dt: float, combat_this_tick: list = None,
+              spatial_hash: "dict[str, SpatialHash] | None" = None) -> None:
         for tower_eid, tower, tower_pos, cs in list(self.world.get_entities_with(
                 Tower, Position, CombatStats)):
             if cs.current_hp <= 0:
                 continue
+
+            # SEM gate de CC de propósito (03/08/2026, decisão do usuário
+            # ao revisar o fix de CC em minion/torre): torre é ESTRUTURA,
+            # não "ser vivo" — stun/sleep/fear/polymorph/disoriented/root
+            # não fazem sentido nela, só dano deveria afetá-la. Diferente
+            # de MinionSystem (minion É afetado, ver bloco equivalente
+            # acima) — NÃO adicionar `is_action_locked`/`is_movement_
+            # locked` aqui de novo sem confirmar com o usuário.
 
             if tower.attack_cd > 0:
                 tower.attack_cd -= dt
@@ -1595,7 +1758,7 @@ class TowerSystem:
 
             if tower.current_target_eid == -1:
                 tower.current_target_eid = self._acquire_target(
-                    tower_eid, tower, tower_pos, map_file, tilemap_comp)
+                    tower_eid, tower, tower_pos, map_file, tilemap_comp, spatial_hash)
 
             # Regen: reaproveita CombatStats.hp5 (mesma fórmula do regen
             # de mob fora de combate) — só "fora de combate" (sem alvo
@@ -1609,6 +1772,476 @@ class TowerSystem:
 
             if tower.current_target_eid != -1 and tower.attack_cd <= 0:
                 self._attack(tower_eid, tower, cs)
+
+
+class MinionSystem:
+    """NPC de lane estilo MOBA (30/07/2026, pedido do usuário) — anda
+    rumo à base inimiga CONSUMINDO `Minion.route` (o polyline completo
+    pré-calculado no spawn da wave, `WorldServer._tick_minion_waves`)
+    tile a tile de verdade, enfrenta qualquer hostil (torre/NPC/player)
+    que entrar no raio de aggro, e ao perder o alvo retoma o mesmo ponto
+    da rota de onde já está (nunca backtrack).
+
+    Consumo DIRETO do `route` (04/08/2026, 2ª revisão do mesmo dia —
+    §34.74.28 em ARQUITETURA_ONLINE.md): uma tentativa anterior mirava
+    `route[-1]` (só o destino final) direto via `_walk_toward`, que faz
+    A* LIVRE de longa distância a partir da posição atual — bug real
+    confirmado por simulação: em mapas com "gargalo" (só 1 passagem
+    livre cruzando uma selva/rio central, como esta BG), o caminho
+    geometricamente mais curto de QUALQUER ponto até QUALQUER destino
+    distante atravessa esse gargalo, então TODAS as lanes (mesmo com o
+    polyline por-lane calculado certo no spawn) convergiam pro mesmo
+    ponto — "os minions não estão indo pra sua rota, todos estão indo
+    pro mid". Consumir `route` tile a tile (`_advance_along_route`)
+    evita isso por construção: o passo rotineiro é só uma checagem de
+    tile adjacente (ZERO pathfinding), e só cai pra busca LOCAL
+    (`_walk_toward`, orçada) quando bloqueado OU fisicamente fora da
+    rota (ex: voltando de perseguir alvo) — mirando um ponto so ALGUNS
+    tiles à frente NA PRÓPRIA rota, nunca o destino final direto, então
+    nunca redescobre o atalho global pelo meio.
+
+    Sem `AIControlled`/`EnemyAISystem` de propósito (mesma decisão de
+    `TowerSystem`, ver docstring de `engine/components.py::Minion`) —
+    o compartilhado só sabe voltar pro spawn fixo e ficar parado pra
+    sempre, não serve pro contrato "avançar continuamente pela lane".
+
+    NÃO é registrado em nenhum `_systems` por-mapa — mesmo princípio de
+    `TowerSystem`/`_tick_harvestable_respawn`: sweep global único,
+    filtrando por `MapLocation` internamente onde precisa.
+    `WorldServer` instancia UMA vez e chama `update(dt)` manualmente a
+    cada tick."""
+
+    PATH_RECALC_INTERVAL = 0.8  # segundos — mesmo valor de EnemyAISystem
+    # Orçamento de chamadas A* por TICK (04/08/2026, mesmo padrão já
+    # usado por EnemyAISystem.MAX_PATHFINDS_PER_FRAME/_find_path_budgeted
+    # pro mesmo problema — várias entidades recalculando path no mesmo
+    # tick bloqueia o event loop síncrono do servidor). Diferente de
+    # EnemyAISystem (mobs comuns, poucos simultâneos), uma wave de
+    # minions pode ter dezenas de entidades ativas ao mesmo tempo —
+    # valor pedido pelo usuário. Quem estoura o orçamento só tenta de
+    # novo no PRÓXIMO tick (sem penalidade extra, ver _walk_toward).
+    MAX_PATHFINDS_PER_FRAME = 15
+    # Lookahead (tiles) usado SÓ quando `_advance_along_route` precisa de
+    # um desvio local (bloqueio real ou minion fisicamente fora da rota
+    # após combate) — mira um ponto ALGUNS tiles à frente NA PRÓPRIA
+    # rota, nunca o destino final (04/08/2026, §34.74.28 — mirar o
+    # destino final direto foi a causa do bug "todos os minions indo pro
+    # mid", ver docstring da classe). Mesma ordem de grandeza do antigo
+    # checkpoint (5 tiles), só que agora é reativo (só quando bloqueado),
+    # não uma re-mira periódica incondicional.
+    ROUTE_LOOKAHEAD_TILES = 6
+    # Aggro por dano de torre + espalhamento em área (03/08/2026, pedido
+    # do usuário: "quando a torre ataca um minion, ele agra na torre e os
+    # minions em torno também agram") — raio (tiles) em volta do minion
+    # ATINGIDO em que outros minions ALIADOS dele (mesma facção, hostis à
+    # torre) também trocam de alvo pra torre. Valor tunável — sem pedido
+    # de número exato do usuário, usa a mesma ordem de grandeza do
+    # aggro_range_tiles típico de minion.
+    TOWER_AGGRO_SPREAD_RADIUS_TILES = 6
+
+    def __init__(self, world: World, get_tilemap_for_map=None, get_pathfinding_for_map=None):
+        self.world = world
+        # callable(map_file) -> TilemapComponent|None — mesmo padrão de
+        # TowerSystem (injetado pelo WorldServer, que é quem conhece
+        # _map_bundles; este módulo é headless/compartilhado).
+        self._get_tilemap_for_map = get_tilemap_for_map
+        # callable(map_file) -> PathfindingSystem|None — NOVO em relação
+        # a Torre (que nunca se move): usado por _walk_toward pra
+        # recalcular caminho tile-a-tile no bundle do MAPA CORRETO
+        # (nunca o _svc global — mesma guarda de "NUNCA pegar o primeiro
+        # Tilemap do world", CLAUDE.md).
+        self._get_pathfinding_for_map = get_pathfinding_for_map
+        # dict por map_file (04/08/2026, pedido do usuário — partidas de BG
+        # concorrentes roubavam orçamento umas das outras com um único int
+        # global): resetado a cada update(), cada instância ganha seu
+        # próprio MAX_PATHFINDS_PER_FRAME, criado sob demanda em
+        # _walk_toward (nunca precisa saber os mapas ativos de antemão).
+        self._pathfind_budget: dict = {}
+
+    def _map_of(self, eid: int) -> str:
+        ml = self.world.get_component(eid, MapLocation)
+        return ml.map_file if ml else ""
+
+    def _tilemap_for(self, map_file: str):
+        return (self._get_tilemap_for_map(map_file)
+                if (self._get_tilemap_for_map and map_file) else None)
+
+    def _pathfinding_for(self, map_file: str):
+        return (self._get_pathfinding_for_map(map_file)
+                if (self._get_pathfinding_for_map and map_file) else None)
+
+    def _get_occupied_tiles(self, map_file: str, except_entity_id: int) -> set:
+        """Tiles ocupados por OUTRAS entidades no MESMO mapa/instância —
+        passado como `dynamic_obstacles` pro pathfinder (pedido do
+        usuário, 30/07/2026: minions ficavam travados uns nos outros,
+        martelando repath contra um tile ocupado sem NUNCA desviar).
+        Mesmo padrão de `EnemyAISystem._get_occupied_tiles`, só que
+        parametrizado por `map_file` (Minion não tem um `_map_filter`
+        fixo por instância — é um sweep global, um `map_file` diferente
+        por chamada)."""
+        occupied: set = set()
+        for entity_id, tm_occ in self.world.get_entities_with(TileMovement):
+            if entity_id == except_entity_id:
+                continue
+            ml_occ = self.world.get_component(entity_id, MapLocation)
+            if ml_occ is None or ml_occ.map_file != map_file:
+                continue
+            if not tm_occ.is_moving:
+                occupied.add((tm_occ.current_tile_x, tm_occ.current_tile_y))
+            else:
+                occupied.add((tm_occ.target_tile_x, tm_occ.target_tile_y))
+        return occupied
+
+    def _in_range_los(self, minion_pos: Position, cand_pos: Position,
+                      range_tiles: int, tilemap_comp) -> bool:
+        tx0, ty0 = int(minion_pos.x // TILE_SIZE), int(minion_pos.y // TILE_SIZE)
+        tx1, ty1 = int(cand_pos.x // TILE_SIZE), int(cand_pos.y // TILE_SIZE)
+        if chebyshev(tx0, ty0, tx1, ty1) > range_tiles:
+            return False
+        if tilemap_comp is not None and not EnemyAISystem._has_line_of_sight(
+                tilemap_comp, tx0, ty0, tx1, ty1):
+            return False
+        return True
+
+    def _target_still_valid(self, minion: Minion, minion_pos: Position,
+                            map_file: str, tilemap_comp) -> bool:
+        tgt = minion.current_target_eid
+        tgt_cs = self.world.get_component(tgt, CombatStats)
+        if not tgt_cs or tgt_cs.current_hp <= 0:
+            return False
+        tgt_pos = self.world.get_component(tgt, Position)
+        if not tgt_pos:
+            return False
+        if map_file:
+            tgt_ml = self.world.get_component(tgt, MapLocation)
+            if not tgt_ml or tgt_ml.map_file != map_file:
+                return False
+        tgt_cst = self.world.get_component(tgt, CombatState)
+        if tgt_cst is not None and not tgt_cst.is_visible:
+            return False
+        # Alvo Torre (03/08/2026, aggro por dano — _check_tower_aggro):
+        # usa o MAIOR entre o aggro_range passivo do minion e o
+        # attack_range da própria torre. Sem isso, uma torre que acabou
+        # de acertar o minion de LONGE (attack_range de torre é tipicamente
+        # bem maior que o aggro_range passivo de minion) invalidava o
+        # alvo forçado no MESMO tick em que foi setado — o minion nunca
+        # chegava a perseguir de verdade.
+        tgt_tower = self.world.get_component(tgt, Tower)
+        range_tiles = (max(minion.aggro_range_tiles, tgt_tower.attack_range_tiles)
+                      if tgt_tower is not None else minion.aggro_range_tiles)
+        return self._in_range_los(minion_pos, tgt_pos, range_tiles, tilemap_comp)
+
+    def _acquire_target(self, minion_eid: int, minion: Minion, minion_pos: Position,
+                        map_file: str, tilemap_comp,
+                        spatial_hash: "dict[str, SpatialHash] | None" = None) -> int:
+        """Hostil mais próximo dentro do alcance de aggro — SEM a
+        prioridade mob>player que Torre tem (não pedida aqui): qualquer
+        torre/NPC/player hostil conta igual, pega só o mais perto.
+
+        `spatial_hash` (04/08/2026, ver `_combat_candidates_near`) limita
+        os candidatos aos próximos de `minion_pos` — chamado TODO tick
+        por TODO minion em ADVANCING (sem alvo), então uma varredura
+        global aqui é o pior caso possível de custo (minions × total de
+        entidades do jogo); com o índice, vira minions × candidatos
+        realmente perto."""
+        best_eid, best_dist = -1, float("inf")
+        tx0 = int(minion_pos.x // TILE_SIZE)
+        ty0 = int(minion_pos.y // TILE_SIZE)
+        candidates = _combat_candidates_near(self.world, spatial_hash, map_file,
+                                             tx0, ty0, minion.aggro_range_tiles)
+        for c_eid in candidates:
+            if c_eid == minion_eid:
+                continue
+            c_cs = self.world.get_component(c_eid, CombatStats)
+            if not c_cs or c_cs.current_hp <= 0:
+                continue
+            c_pos = self.world.get_component(c_eid, Position)
+            if not c_pos:
+                continue
+            if map_file:
+                c_ml = self.world.get_component(c_eid, MapLocation)
+                if not c_ml or c_ml.map_file != map_file:
+                    continue
+            if not is_hostile(self.world, minion_eid, c_eid):
+                continue
+            c_cst = self.world.get_component(c_eid, CombatState)
+            if c_cst is not None and not c_cst.is_visible:
+                continue
+            if not self._in_range_los(minion_pos, c_pos, minion.aggro_range_tiles, tilemap_comp):
+                continue
+            dist = math.sqrt((c_pos.x - minion_pos.x) ** 2 + (c_pos.y - minion_pos.y) ** 2)
+            if dist < best_dist:
+                best_dist, best_eid = dist, c_eid
+        return best_eid
+
+    def _attack(self, minion_eid: int, minion: Minion, cs: CombatStats, is_ranged: bool) -> None:
+        target = minion.current_target_eid
+        target_cs = self.world.get_component(target, CombatStats)
+        if not target_cs:
+            minion.current_target_eid = -1
+            return
+        damage_type = "magical" if (cs.spell_power > 0 or cs.base_magical_damage > 0) else "physical"
+        if is_ranged:
+            _spawn_attack_projectile(self.world, minion_eid, target, damage_type)
+        else:
+            deal_damage(minion_eid, target, damage_type)
+        minion.attack_cd = cs.get_attack_cooldown()
+
+    def _walk_toward(self, minion_eid: int, minion: Minion, pos: Position,
+                     tm: TileMovement, dest_x: int, dest_y: int, map_file: str,
+                     dt: float) -> None:
+        """Anda 1 tile por vez rumo a `(dest_x, dest_y)` — usado só pra
+        desvios LOCAIS e curtos: em ADVANCING, um ponto até
+        `ROUTE_LOOKAHEAD_TILES` à frente na própria rota (nunca o destino
+        final direto, ver `_advance_along_route`/docstring da classe —
+        mirar longe daqui foi a causa do bug "todos os minions indo pro
+        mid", §34.74.28); em FIGHTING, a posição do alvo (sempre dentro
+        do raio de aggro). Mantém `minion.current_path` (A*, recalculado
+        via `_pathfinding_for(map_file)` — bundle do MAPA CORRETO, nunca
+        `_svc` global) e SÓ usa `path_recalc_timer` como BACKOFF de uma
+        falha pro MESMO destino — nunca pra atrasar a primeira tentativa
+        dele. SEM isso, `start_tile_movement` trataria qualquer distância
+        como 1 tile só (a duração da animação é calculada pra 1 tile),
+        virando um "salto" instantâneo pra destinos distantes.
+
+        `minion.path_dest` distingue "destino NOVO" (recalcula NA HORA)
+        de "mesmo destino de antes, tentativa anterior falhou" (só aí
+        espera o backoff) — bug real reportado pelo usuário: sem essa
+        distinção, `current_path` vazio por ter acabado de ser consumido
+        num destino NOVO também esperava o backoff inteiro (0.8s) antes
+        de sair andando de novo, produzindo "anda 1 tile, para ~0.8s,
+        repete" em TODO tile da rota, não só quando o pathfind falha de
+        verdade.
+
+        `MAX_PATHFINDS_PER_FRAME` (orçamento por tick, resetado em
+        `update()`) protege contra o caso em que VÁRIOS minions precisam
+        recalcular no MESMO tick (ex: vários bloqueados ao mesmo tempo)
+        — quem estoura o orçamento só tenta de novo no próximo tick, sem
+        consumir o backoff."""
+        if tm.is_moving:
+            return
+        cur = (tm.current_tile_x, tm.current_tile_y)
+        dest = (dest_x, dest_y)
+        if cur == dest:
+            return
+
+        if minion.path_dest != dest:
+            minion.path_dest = dest
+            minion.current_path = []
+            minion.path_recalc_timer = 0.0
+
+        if not minion.current_path:
+            if minion.path_recalc_timer > 0:
+                minion.path_recalc_timer -= dt
+                return  # backoff de uma falha recente pro MESMO destino
+            _budget = self._pathfind_budget.get(map_file, self.MAX_PATHFINDS_PER_FRAME)
+            if _budget <= 0:
+                return  # orçamento do tick esgotado — tenta de novo no próximo
+            self._pathfind_budget[map_file] = _budget - 1
+            pf = self._pathfinding_for(map_file)
+            path = None
+            if pf is not None:
+                # dynamic_obstacles (30/07/2026, pedido do usuário): sem
+                # isso, minions ficavam travados uns nos outros — cada um
+                # martelava repath contra um tile ocupado sem NUNCA
+                # desviar (mesmo mecanismo que EnemyAISystem já usa pros
+                # mobs comuns, só que escopado por map_file em vez de um
+                # _map_filter fixo de instância). `dest` é excluído do
+                # bloqueio de propósito: o A* rejeita um DESTINO ocupado
+                # inteiro (nenhum caminho, nem parcial) — isso quebrava
+                # perseguir um alvo em combate (o próprio tile do alvo
+                # sempre "ocupado" por ele). Não é problema achar caminho
+                # "através" do destino: a chegada de verdade é decidida
+                # por distância/raio no chamador (attack_range_tiles pro
+                # alvo; ADVANCING exige tile exato), não por pisar nele.
+                occupied = self._get_occupied_tiles(map_file, minion_eid)
+                occupied.discard(dest)
+                # Limites DEFAULT do A* (manhattan_limit=60, max_nodes=300)
+                # — `dest` aqui é sempre um alvo LOCAL (lookahead de
+                # ROUTE_LOOKAHEAD_TILES ou um hostil dentro do raio de
+                # aggro), nunca um destino distante — usar limites amplos
+                # aqui foi justamente o que causou o A* "descobrir" o
+                # atalho global pelo meio do mapa (§34.74.28).
+                path = pf.find_path(cur, dest, dynamic_obstacles=occupied)
+            minion.current_path = list(path) if path else []
+            minion.path_recalc_timer = self.PATH_RECALC_INTERVAL
+            if not minion.current_path:
+                return  # sem caminho encontrado — tenta de novo só após o backoff
+
+        nxt_x, nxt_y = minion.current_path[0]
+        if not is_tile_walkable(minion_eid, nxt_x, nxt_y, cur[0], cur[1]):
+            minion.current_path = []  # tenta de novo (respeitando o backoff) no próximo tick
+            return
+        start_tile_movement(pos, tm, nxt_x, nxt_y)
+        minion.current_path.pop(0)
+
+    def _advance_along_route(self, minion_eid: int, minion: Minion, pos: Position,
+                             tm: TileMovement, map_file: str, dt: float) -> None:
+        """Consome `minion.route` tile a tile — caso comum é SÓ uma
+        checagem de tile adjacente (`is_tile_walkable`), ZERO pathfinding
+        (04/08/2026, §34.74.28 — ver docstring da classe pro porquê de
+        mirar o destino final direto via A* livre ser um bug, não uma
+        otimização). Só cai pro desvio LOCAL (`_walk_toward`, orçado)
+        quando:
+        - o próximo tile da rota está bloqueado (`is_tile_walkable`
+          falha) — mesmo caso de sempre (player parado no caminho etc);
+        - OU o minion está fisicamente NÃO-adjacente ao próximo tile da
+          rota (ex: acabou de sair de FIGHTING depois de perseguir um
+          alvo pra longe da rota) — um `start_tile_movement` direto
+          assumiria 1 tile de distância e "saltaria".
+        Em ambos os casos, mira um ponto até `ROUTE_LOOKAHEAD_TILES` à
+        FRENTE NA PRÓPRIA ROTA (nunca o destino final) — dá espaço real
+        pro A* desviar/reconectar sem nunca sair procurando o caminho
+        mais curto do mapa inteiro (o que redescobriria o atalho global,
+        §34.74.28)."""
+        if tm.is_moving:
+            return
+        cur = (tm.current_tile_x, tm.current_tile_y)
+        nxt_x, nxt_y = minion.route[minion.route_idx + 1]
+        if (chebyshev(cur[0], cur[1], nxt_x, nxt_y) <= 1
+                and is_tile_walkable(minion_eid, nxt_x, nxt_y, cur[0], cur[1])):
+            start_tile_movement(pos, tm, nxt_x, nxt_y)
+            minion.route_idx += 1
+            return
+        lookahead_idx = min(minion.route_idx + self.ROUTE_LOOKAHEAD_TILES,
+                            len(minion.route) - 1)
+        lx, ly = minion.route[lookahead_idx]
+        self._walk_toward(minion_eid, minion, pos, tm, lx, ly, map_file, dt)
+        if cur == (lx, ly):
+            minion.route_idx = lookahead_idx
+
+    def _check_tower_aggro(self, combat_this_tick: list) -> None:
+        """Torre que dana um minion vira alvo IMEDIATO dele (override do
+        estado atual, mesmo espírito do aggro-switch de `TowerSystem` pra
+        proteger player) — e minions ALIADOS do atingido, dentro de
+        `TOWER_AGGRO_SPREAD_RADIUS_TILES` e ainda ADVANCING (não puxa
+        quem já está brigando com outra coisa, pra não abandonar duelo
+        por dano de raspão num aliado distante), também trocam pra torre.
+        `combat_this_tick` é a MESMA lista que já alimenta o aggro-switch
+        de Torre (server/world_server.py — populada pelo
+        ProjectileSystem/combat processors ao resolver o hit)."""
+        from engine.components import Faction
+        for ev in combat_this_tick:
+            attacker = ev.get("attacker", -1)
+            target   = ev.get("target", -1)
+            if attacker == -1 or target == -1:
+                continue
+            tower = self.world.get_component(attacker, Tower)
+            hit_minion = self.world.get_component(target, Minion)
+            if tower is None or hit_minion is None:
+                continue
+            if not is_hostile(self.world, target, attacker):
+                continue
+            hit_pos = self.world.get_component(target, Position)
+            hit_cs  = self.world.get_component(target, CombatStats)
+            if not hit_pos or not hit_cs or hit_cs.current_hp <= 0:
+                continue
+            hit_minion.current_target_eid = attacker
+            hit_minion.state              = "FIGHTING"
+            hit_minion.current_path       = []
+
+            map_file = self._map_of(target)
+            hit_fac = self.world.get_component(target, Faction)
+            for ally_eid, ally_minion, ally_pos, ally_cs in self.world.get_entities_with(
+                    Minion, Position, CombatStats):
+                if ally_eid == target or ally_cs.current_hp <= 0:
+                    continue
+                if ally_minion.state != "ADVANCING":
+                    continue
+                if map_file:
+                    ally_ml = self.world.get_component(ally_eid, MapLocation)
+                    if not ally_ml or ally_ml.map_file != map_file:
+                        continue
+                ally_fac = self.world.get_component(ally_eid, Faction)
+                if not hit_fac or not ally_fac or ally_fac.faction_id != hit_fac.faction_id:
+                    continue
+                if chebyshev(int(hit_pos.x // TILE_SIZE), int(hit_pos.y // TILE_SIZE),
+                            int(ally_pos.x // TILE_SIZE), int(ally_pos.y // TILE_SIZE)) \
+                        > self.TOWER_AGGRO_SPREAD_RADIUS_TILES:
+                    continue
+                ally_minion.current_target_eid = attacker
+                ally_minion.state              = "FIGHTING"
+                ally_minion.current_path       = []
+
+    def update(self, dt: float, combat_this_tick: list = None,
+              spatial_hash: "dict[str, SpatialHash] | None" = None) -> None:
+        self._pathfind_budget = {}  # por map_file, criado sob demanda em _walk_toward
+        if combat_this_tick:
+            self._check_tower_aggro(combat_this_tick)
+        for minion_eid, minion, minion_pos, cs, tm in list(self.world.get_entities_with(
+                Minion, Position, CombatStats, TileMovement)):
+            if cs.current_hp <= 0:
+                continue
+
+            # CC (03/08/2026, bug real: "os efeitos, slow, sleep etc, não
+            # estão funcionando na instância") — MinionSystem/TowerSystem
+            # não usam AIControlled/EnemyAISystem de propósito (ver
+            # docstrings das classes), então nunca passavam pelo bloco de
+            # stun/sleep/fear/polymorph/disoriented/root que EnemyAISystem
+            # aplica pra mobs normais. `is_action_locked` cobre os 5
+            # primeiros (mesmo choke-point único já usado por
+            # combat_processor.py/skill_processor.py/PlayerInputSystem);
+            # `is_movement_locked` cobre o mesmo conjunto + root (só
+            # bloqueia andar, ainda pode atacar se já estiver no alcance).
+            if is_action_locked(self.world, minion_eid):
+                continue  # atordoado/dormindo/medo/polimorfizado/desorientado: nem anda nem ataca
+            _minion_rooted = is_movement_locked(self.world, minion_eid)
+
+            if minion.attack_cd > 0:
+                minion.attack_cd -= dt
+
+            map_file = self._map_of(minion_eid)
+            tilemap_comp = self._tilemap_for(map_file)
+            is_ranged = minion.attack_range_tiles > 1
+
+            if minion.state == "FIGHTING":
+                if not self._target_still_valid(minion, minion_pos, map_file, tilemap_comp):
+                    minion.current_target_eid = -1
+                    # ADVANCING direto (01/08/2026, pedido do usuário — "esquecer os
+                    # checkpoints"): ao perder o alvo, o minion NÃO volta pra trás —
+                    # retoma rumo ao mesmo destino final de sempre (`route[-1]`, ver
+                    # branch ADVANCING abaixo) a partir de onde já está fisicamente.
+                    # O estado "RETURNING" (backtrack) foi removido de propósito —
+                    # reversão da decisão original de 30/07/2026 (ver histórico do
+                    # docstring da classe).
+                    minion.state = "ADVANCING"
+                else:
+                    tgt_pos = self.world.get_component(minion.current_target_eid, Position)
+                    tx0 = int(minion_pos.x // TILE_SIZE)
+                    ty0 = int(minion_pos.y // TILE_SIZE)
+                    tx1 = int(tgt_pos.x // TILE_SIZE)
+                    ty1 = int(tgt_pos.y // TILE_SIZE)
+                    if chebyshev(tx0, ty0, tx1, ty1) <= minion.attack_range_tiles:
+                        if minion.attack_cd <= 0:
+                            self._attack(minion_eid, minion, cs, is_ranged)
+                    elif not _minion_rooted:
+                        # Dentro do raio de aggro mas fora do de ataque —
+                        # persegue (vale pra melee E ranged: melee com
+                        # aggro=6/attack=1 rotineiramente detecta um
+                        # hostil antes de estar adjacente).
+                        self._walk_toward(minion_eid, minion, minion_pos, tm, tx1, ty1, map_file, dt)
+                continue  # FIGHTING não avança no mesmo tick
+
+            # ADVANCING: procura hostil no raio de aggro.
+            candidate = self._acquire_target(minion_eid, minion, minion_pos, map_file,
+                                             tilemap_comp, spatial_hash)
+            if candidate != -1:
+                minion.current_target_eid = candidate
+                minion.state = "FIGHTING"
+                minion.current_path = []  # descarta path de lane — combate usa o seu próprio
+                continue
+
+            # ADVANCING: consome o polyline `route` tile a tile (ver
+            # docstring da classe/§34.74.28 — mirar o destino final direto
+            # foi a causa do bug "todos os minions indo pro mid"). Usado
+            # tanto pro avanço normal quanto pra retomada após perder o
+            # alvo (mesma rota de sempre, só continua de onde já está).
+            if (minion.route and minion.route_idx < len(minion.route) - 1
+                    and not _minion_rooted):
+                self._advance_along_route(minion_eid, minion, minion_pos, tm, map_file, dt)
+            # Fim da rota (chegou na base inimiga): nenhum estado terminal
+            # especial — a estrutura/guarda inimiga vira alvo natural assim
+            # que entra no próprio raio de aggro.
 
 
 # Modificação no EnemyAISystem para integrar o CombatSystem
@@ -1626,7 +2259,14 @@ class EnemyAISystem(System):
     # leash limita); aggro por DANO também não (revidada em qualquer
     # distância, ver blocos aggroed_by_damage).
     AGGRO_RADIUS_TILES   = 5
-    SLEEP_RADIUS_TILES   = 40  # além desta distância (Chebyshev), a AI é completamente suspensa
+    # 05/08/2026: teste do usuário — reduzido de 40 pra 20 pra confirmar a
+    # hipótese de que o ganho pequeno do Achado 5 vem de zonas de spawn
+    # próximas umas das outras (cluster ao sul de map_1, y=340-490, raios
+    # 35-38 tiles) mantendo muitos mobs "no raio" mesmo com o filtro
+    # funcionando certo. MUDANÇA DE COMPORTAMENTO (não é só perf): mobs
+    # passam a "acordar" mais perto do player. Reverter pra 40 se não for
+    # o resultado desejado.
+    SLEEP_RADIUS_TILES   = 20  # além desta distância (Chebyshev), a AI é completamente suspensa
     MAX_LEASH_RADIUS     = 20  # tiles: mob retorna ao spawn se afastar mais do que isso (aggro normal)
     MAX_LEASH_RADIUS_DMG = 25  # tiles: raio maior quando aggroed por dano (evita reset por 1 hit + recuo)
     MAX_PATHFINDS_PER_FRAME = 10  # limite de chamadas A* por frame (evita travamento com muitos inimigos)
@@ -1641,6 +2281,19 @@ class EnemyAISystem(System):
     _DBG_ATK_RACES: set[str] = set()  # vazio = debug desativado
     # Intervalo mínimo entre logs por mob (segundos) — evita spam no console
     _DBG_ATK_INTERVAL = 2.0
+
+    # Fase 2 de escala (05/08/2026, pedido do usuário — custo ainda dobra
+    # com 2 players mesmo depois do Achado 5, ~4-6ms→~7-9ms, trabalho
+    # genuíno crescendo com o nº de "bolhas" de player, não desperdício).
+    # Intervalo (em ticks, TICK_RATE=30) entre reavaliações de um mob
+    # IDLE ainda procurando alvo (nunca achou ninguém) — só se aplica
+    # nesse caso; CHASING/ATTACKING/AGGRO_DELAY/KITING/RETURNING/
+    # BLOCKED_BY_PLAYER NUNCA são throttlados (trabalho pendente real,
+    # sempre full-rate). Boss nunca throttla de propósito (sempre
+    # snappy); os demais usam o atraso máximo aceito pelo usuário antes
+    # do 1º aggro — imperceptível já que `aggro_delay` (1s) já existe
+    # DEPOIS disso. Ver `_active_mobs_this_tick`.
+    _THROTTLE_INTERVAL_BY_TIER = {"boss": 1, "elite": 3, "rare": 6, "normal": 12}
 
     def __init__(self, world: World, map_filter: str = "",
                  pathfinding=None, tile_validation=None):
@@ -1660,6 +2313,7 @@ class EnemyAISystem(System):
         # seguro caso _select_target seja chamado antes do 1º update().
         self._npc_combatants_cache: list = []
         self._all_combatants_cache: list = []
+        self._last_active_mob_count: int = 0  # ver _active_mobs_this_tick
 
     def _settle_threshold_tiles(self, eid: int) -> int:
         """Distância (Manhattan, em tiles) do spawn em que a entidade é
@@ -1717,6 +2371,24 @@ class EnemyAISystem(System):
             else:
                 occupied_tiles.add((tile_move_comp.target_tile_x, tile_move_comp.target_tile_y))
         return occupied_tiles
+
+    @staticmethod
+    def _tile_of(tile_movement: "TileMovement") -> tuple[int, int]:
+        """Tile que uma entidade ocupa AGORA — MESMO critério de
+        `_get_occupied_tiles` (linha acima): tile atual se parada, tile de
+        destino se em movimento. Usado (05/08/2026, achado real: pico de
+        162ms correlacionado com vários mobs perdendo o alvo no mesmo tick)
+        pra excluir a própria entidade de `all_occupied_tiles` (já
+        computado 1x por tick em `update()`) sem precisar rechamar
+        `_get_occupied_tiles(except_entity_id=...)` — que reescaneava o
+        MUNDO TODO (`get_entities_with(TileMovement)` sem filtro de mapa,
+        mesma classe de bug do achado da query global) toda vez que UM mob
+        precisava recalcular caminho de RETURNING/leash/kite. Com vários
+        mobs recalculando no mesmo tick (ex: leva de leash simultâneo),
+        isso multiplicava o rescan global por mob — a causa real do pico."""
+        if tile_movement.is_moving:
+            return (tile_movement.target_tile_x, tile_movement.target_tile_y)
+        return (tile_movement.current_tile_x, tile_movement.current_tile_y)
 
     def _get_tilemap(self):
         """Retorna tilemap do bundle injetado, ou global como fallback (offline)."""
@@ -1777,8 +2449,16 @@ class EnemyAISystem(System):
         mob_ml  = self.world.get_component(mob_eid, MapLocation)
         mob_map = mob_ml.map_file if mob_ml else ""
 
-        for p_eid, p_pos, p_tm, _, p_cs in self.world.get_entities_with(
-                Position, TileMovement, PlayerControlled, CombatStats):
+        # Candidatos players — do cache montado 1x por tick em update()
+        # (05/08/2026, ver `_players_on_map`), NUNCA mais re-escaneado por
+        # mob/chamada (era um `get_entities_with` GLOBAL por CHAMADA de
+        # `_select_target`, e `_select_target` roda 1x por mob acordado,
+        # por tick). Filtro por `mob_map` preservado igual — o cache já
+        # vem restrito a `self._map_filter`, mas em sistema sem filtro
+        # (`map_filter=""`, ex.: testes multi-mapa isolados) o cache tem
+        # players de TODOS os mapas, então o filtro por mob continua
+        # necessário pra não misturar mapas dentro do mesmo sistema.
+        for p_eid, p_pos, p_tm, p_cs in getattr(self, "_players_this_map_cache", None) or []:
             if mob_map:
                 p_ml = self.world.get_component(p_eid, MapLocation)
                 if not p_ml or p_ml.map_file != mob_map:
@@ -1856,7 +2536,132 @@ class EnemyAISystem(System):
 
         return (best_eid, best_pos, best_tm, best_cs, best_cst)
 
-    def update(self, events: list = None, dt: float = 0) -> None:
+    def _any_candidate_in_range(self, mob_eid: int, mob_pos: "Position") -> bool:
+        """Pré-filtro barato pra `_select_target()` (05/08/2026 — achado real:
+        mundo aberto com 190 mobs espalhados por 11 zonas de spawn (algumas a
+        400+ tiles de distância umas das outras, ver map_1_entities.json), e
+        `_select_target()` rodava pra TODO mob IDLE sem alvo, TODO tick,
+        mesmo mobs que nunca estiveram perto de nenhum player — o sleep-check
+        de `update()` (SLEEP_RADIUS_TILES=40) só roda DEPOIS do `continue` do
+        branch "sem alvo válido", nunca alcançado por um mob que já não tinha
+        alvo. Resultado: `mobs_ativos=0` no log de perf, mas
+        `sys:EnemyAISystem` custando 8-16ms mesmo assim.
+
+        Esta função só faz matemática de posição (sem `is_hostile()`/
+        `get_component(CombatState)` — os dois lookups mais caros por
+        candidato) usando o MESMO raio que `_select_target()` usa de verdade
+        (`AGGRO_RADIUS_TILES`, não o `SLEEP_RADIUS_TILES` de 40 — não dá pra
+        usar um raio maior aqui, senão o pré-filtro deixaria passar mob que
+        `_select_target` nunca aceitaria, mudando o resultado). Prova: se
+        NINGUÉM (hostil ou não, player ou NPC) está dentro desse raio, uma
+        chamada de verdade a `_select_target()` SEMPRE devolveria -1 (seu
+        `best_dist` nunca aceita nada além dele) — pular a chamada nesse caso
+        é matematicamente idêntico a chamar e receber -1, nunca uma
+        aproximação. Cobre o candidato NPC/combatente também (não só
+        player) — senão quebraria guarda-vs-bandido brigando sem nenhum
+        player por perto (Sistema de Facções, Fase 5)."""
+        _cap_px = self.AGGRO_RADIUS_TILES * TILE_SIZE + 0.01
+        for _p_eid, _p_pos, _p_tm, _p_cs in getattr(self, "_players_this_map_cache", None) or []:
+            if math.sqrt((_p_pos.x - mob_pos.x) ** 2 + (_p_pos.y - mob_pos.y) ** 2) < _cap_px:
+                return True
+        _searcher_is_npc = self.world.get_component(mob_eid, NPC) is not None
+        _other_candidates = (self._all_combatants_cache if _searcher_is_npc
+                            else self._npc_combatants_cache)
+        for _c_eid, _c_pos, _c_tm, _c_cs in _other_candidates:
+            if _c_eid == mob_eid:
+                continue
+            if math.sqrt((_c_pos.x - mob_pos.x) ** 2 + (_c_pos.y - mob_pos.y) ** 2) < _cap_px:
+                return True
+        return False
+
+    def _active_mobs_this_tick(self, mobs_by_map: "dict | None", tick_count: int = 0) -> list:
+        """Subconjunto de `_mobs_on_map()`: só os mobs que valem a pena
+        passar pelo corpo pesado do loop principal de `update()` este tick
+        — mobs NÃO-IDLE (têm trabalho pendente: perseguindo, atacando,
+        voltando pro spawn) sempre entram; mobs IDLE só entram se dentro de
+        `SLEEP_RADIUS_TILES` de algum player OU se `_any_candidate_in_range`
+        acha um candidato (player OU NPC/combatente) dentro do raio real de
+        aquisição.
+
+        05/08/2026, observação do usuário: mesmo depois dos achados 1-4, o
+        sistema ainda ITERAVA todo mob do mapa (~130 em map_1) todo tick —
+        o sleep-check dentro do loop (mais abaixo) já descartava os
+        distantes, mas só DEPOIS de cada um já ter passado por checagem de
+        morto, retenção, etc. Este método aplica o MESMO critério ANTES do
+        loop — resultado idêntico, só sem pagar o corpo inteiro pra
+        descobrir que devia ser ignorado.
+
+        Precisa do candidato NPC/combatente (não só distância a player)
+        pelo MESMO motivo de `_any_candidate_in_range`: o sleep-check
+        original só "funcionava" pra combate mob-vs-NPC longe de todo
+        player porque `_select_target`/retenção RODAVAM ANTES dele no
+        código antigo, e a distância usada pelo sleep-check era na
+        verdade "distância ao alvo JÁ ADQUIRIDO" (não literalmente
+        "distância a um player") — um guarda adjacente virava o alvo, e
+        a distância de 1 tile até ELE mantinha o mob acordado mesmo com o
+        player a 100+ tiles. Um pré-filtro que olhasse SÓ pra
+        `_players_this_map_cache` quebraria esse caso (regressão real
+        pega por `tests/test_faction.py::TestMultiTargetCombat` — mob e
+        guarda adjacentes, sem player por perto, propositalmente).
+
+        Não usa `SpatialHash` (grid) de propósito: com poucos players (1-4
+        de costume) e poucos NPCs de combate por mapa, comparar cada mob
+        contra essas listas pequenas já é barato — o ganho vem de fazer
+        essa comparação ANTES do resto da lógica pesada, não durante.
+
+        Fase 2 (05/08/2026): mob IDLE ELEGÍVEL (no raio) ainda passa por
+        um segundo crivo — throttle por tier (`_THROTTLE_INTERVAL_BY_TIER`)
+        — antes de entrar de fato na lista. `tick_count` vem de
+        `WorldServer._tick()`, mesmo padrão de injeção de `players_by_map`/
+        `mobs_by_map`. Ver docstring de `AIControlled._ai_throttle_last_check`."""
+        all_mobs = _mobs_on_map(self.world, mobs_by_map, self._map_filter)
+        if not self._players_this_map_cache:
+            self._last_active_mob_count = len(all_mobs)
+            return all_mobs
+        result = []
+        for entry in all_mobs:
+            eid, pos, ai_control = entry[0], entry[1], entry[2]
+            if ai_control.state != "IDLE":
+                result.append(entry)
+                continue
+            tm = entry[5]
+            _min_cheb = None
+            for _, _, _p_tm, _ in self._players_this_map_cache:
+                _d = max(abs(_p_tm.current_tile_x - tm.current_tile_x),
+                          abs(_p_tm.current_tile_y - tm.current_tile_y))
+                if _min_cheb is None or _d < _min_cheb:
+                    _min_cheb = _d
+                if _min_cheb == 0:
+                    break
+            _eligible = (_min_cheb is not None and _min_cheb <= self.SLEEP_RADIUS_TILES) \
+                        or self._any_candidate_in_range(eid, pos)
+            if not _eligible:
+                continue
+            # Throttle por tier (Fase 2) — só chega aqui mob IDLE elegível.
+            # `_ai_throttle_last_check == -1` (nunca checado) sempre passa:
+            # mob recém-elegível reage imediatamente, nunca espera o
+            # intervalo do tier no primeiro contato.
+            _tier_comp = self.world.get_component(eid, EnemyTier)
+            _interval = self._THROTTLE_INTERVAL_BY_TIER.get(
+                _tier_comp.tier if _tier_comp else "normal",
+                self._THROTTLE_INTERVAL_BY_TIER["normal"])
+            if ai_control._ai_throttle_last_check != -1 and \
+                    tick_count - ai_control._ai_throttle_last_check < _interval:
+                continue  # não é a vez deste mob ainda
+            ai_control._ai_throttle_last_check = tick_count
+            result.append(entry)
+        # Instrumentação (05/08/2026): quantos mobs sobraram depois do
+        # filtro este tick — lido por `WorldServer._tick()` pro perf log,
+        # pra confirmar/descartar a hipótese de que o ganho pequeno do
+        # Achado 5 vem de zonas de spawn densas/próximas mantendo muitos
+        # mobs "no raio" mesmo com o filtro funcionando certo.
+        self._last_active_mob_count = len(result)
+        return result
+
+    def update(self, events: list = None, dt: float = 0,
+              players_by_map: "dict | None" = None,
+              mobs_by_map: "dict | None" = None,
+              tick_count: int = 0) -> None:
         self._pathfind_budget = self.MAX_PATHFINDS_PER_FRAME
 
         # Caches de "outros combatentes" pra _select_target (Sistema de
@@ -1885,18 +2690,17 @@ class EnemyAISystem(System):
             if _same_map(eid)
         ]
 
+        # Players deste mapa — índice canônico (05/08/2026, ver
+        # `_players_on_map`/`WorldServer._tick`), consumido aqui, no
+        # sleep-check (abaixo) e em `_select_target` (via
+        # `self._players_this_map_cache`) — nenhum dos 3 escaneia sozinho
+        # mais.
+        self._players_this_map_cache = _players_on_map(self.world, players_by_map, self._map_filter)
+
         # Verifica se existe ao menos um player NESTE mapa — sem isso, todos os
         # mobs do bundle ficam ociosos. Não checa current_hp: player morto/ghost
         # ainda precisa que os mobs voltem ao spawn (RETURNING).
-        any_player_exists = False
-        for _ap_eid, _, _, _, _ in self.world.get_entities_with(
-                Position, TileMovement, PlayerControlled, CombatStats):
-            if self._map_filter:
-                _ap_ml = self.world.get_component(_ap_eid, MapLocation)
-                if not _ap_ml or _ap_ml.map_file != self._map_filter:
-                    continue
-            any_player_exists = True
-            break
+        any_player_exists = bool(self._players_this_map_cache)
 
         if not any_player_exists:
             for _idle_eid, ai_control, tile_movement, combat_stats in self.world.get_entities_with(
@@ -1915,18 +2719,18 @@ class EnemyAISystem(System):
 
         all_occupied_tiles = self._get_occupied_tiles()
 
+        # Mobs deste mapa que valem a pena processar este tick (05/08/2026,
+        # observação do usuário: mesmo com o índice de mapa do §34.74.38, o
+        # loop ainda passava pelo corpo pesado pra TODO mob do mapa antes de
+        # descobrir, no sleep-check, que ele devia ser ignorado). Ver
+        # docstring de `_active_mobs_this_tick` — mesmo raio/critério do
+        # sleep-check de sempre, só aplicado ANTES do loop, não durante.
         for enemy_id, enemy_pos, ai_control, initial_pos, detect_radius, tile_movement, enemy_combat_stats in \
-            self.world.get_entities_with(Position, AIControlled, InitialPosition, DetectionRadius, TileMovement, CombatStats):
+                self._active_mobs_this_tick(mobs_by_map, tick_count):
 
             # Inimigo morto? Pula!
             if enemy_combat_stats.current_hp <= 0:
                 continue
-
-            # Filtra por mapa (multi-map): pula entidades que não são deste bundle
-            if self._map_filter:
-                _ml = self.world.get_component(enemy_id, MapLocation)
-                if _ml is None or _ml.map_file != self._map_filter:
-                    continue
 
             enemy_current_tile_x = tile_movement.current_tile_x
             enemy_current_tile_y = tile_movement.current_tile_y
@@ -1943,10 +2747,6 @@ class EnemyAISystem(System):
                 _dbg_name = _dbg_race = _dbg_cls = ""
                 _dbg_prev_state = ""
 
-            # --- Seleciona alvo para este mob (N-player support) ---
-            target_eid, player_position_comp, player_tile_move_comp, player_combat_stats, _target_cst = \
-                self._select_target(enemy_id)
-
             # RETENÇÃO do alvo engajado — modelo WoW de threat table: uma vez
             # em combate com alguém, o mob MANTÉM esse alvo enquanto ele for
             # válido (vivo, visível, atacável via can_engage), independente
@@ -1961,8 +2761,23 @@ class EnemyAISystem(System):
             # evade/reset" do WoW. Antes: a retenção exigia
             # aggroed_by_damage=True, e a revidada do neutro dependia (por
             # acidente) do loop de players sem filtro em _select_target.
+            #
+            # Reordenado ANTES de `_select_target` (05/08/2026, pedido do
+            # usuário — "ai_bundles caro, vai piorar com mais players/mobs
+            # em combate?"): a validação abaixo é EXATAMENTE a mesma de
+            # sempre, só que agora roda PRIMEIRO — se o alvo retido ainda
+            # for válido, usa ele direto e PULA `_select_target` (2 scans:
+            # players do mapa + outros combatentes). Antes ela rodava
+            # incondicionalmente, mesmo pra um mob já brigando com alvo
+            # bom, e o resultado era jogado fora aqui — no caso comum
+            # (mob já engajado), a maioria das chamadas eram desperdiçadas.
+            # Resultado final idêntico, só a ORDEM muda.
             _in_combat_state = ai_control.state in (
                 "AGGRO_DELAY", "CHASING", "ATTACKING", "KITING", "BLOCKED_BY_PLAYER")
+            target_eid = -1
+            player_position_comp = player_tile_move_comp = None
+            player_combat_stats  = _target_cst = None
+            _retained = False
             if ai_control.target_eid != -1 and (ai_control.aggroed_by_damage or _in_combat_state):
                 _fx_pos = self.world.get_component(ai_control.target_eid, Position)
                 _fx_tm  = self.world.get_component(ai_control.target_eid, TileMovement)
@@ -1980,6 +2795,19 @@ class EnemyAISystem(System):
                         player_tile_move_comp = _fx_tm
                         player_combat_stats  = _fx_cs
                         _target_cst          = _fx_cst
+                        _retained = True
+
+            # --- Seleciona alvo para este mob (N-player support) — só se a
+            # retenção acima não resolveu (sem alvo, ou alvo ficou inválido).
+            # Pré-filtro barato (05/08/2026, ver docstring de
+            # `_any_candidate_in_range`) evita a chamada cara de
+            # `_select_target` (is_hostile/CombatState por candidato) quando
+            # NADA está dentro do raio real de aquisição — resultado idêntico
+            # (target_eid já inicializado como -1 acima) ao de chamar e
+            # receber -1.
+            if not _retained and self._any_candidate_in_range(enemy_id, enemy_pos):
+                target_eid, player_position_comp, player_tile_move_comp, player_combat_stats, _target_cst = \
+                    self._select_target(enemy_id)
 
             # Sem alvo válido → grace period antes de ir pro IDLE
             # Evita ciclo IDLE → AGGRO_DELAY (1s) por perda momentânea de alvo (1-2 ticks)
@@ -2020,7 +2848,10 @@ class EnemyAISystem(System):
                     # (com muitos mobs retornando ao mesmo tempo, isso saturava o
                     # orçamento de pathfinding e causava movimento "desorientado").
                     if ai_control.path_recalc_timer <= 0:
-                        dynamic_obstacles_for_return = self._get_occupied_tiles(except_entity_id=enemy_id)
+                        # Reaproveita `all_occupied_tiles` (já computado 1x por
+                        # tick) em vez de rescanear o mundo todo por mob — ver
+                        # docstring de `_tile_of` (05/08/2026).
+                        dynamic_obstacles_for_return = all_occupied_tiles - {self._tile_of(tile_movement)}
                         ai_control.path = self._find_path_budgeted(
                             current_enemy_tile, (initial_tile_x, initial_tile_y),
                             dynamic_obstacles=dynamic_obstacles_for_return)
@@ -2173,13 +3004,13 @@ class EnemyAISystem(System):
                 abs(player_current_tile_y - enemy_current_tile_y)
             )
             if ai_control.state == "IDLE":
-                # Verifica players do mesmo mapa — acorda se qualquer um estiver próximo
+                # Verifica players do mesmo mapa — acorda se qualquer um
+                # estiver próximo. Do cache montado 1x por tick em
+                # update() (05/08/2026) — antes era um `get_entities_with`
+                # GLOBAL por MOB IDLE (a maioria dos ~190 do mapa aberto),
+                # todo tick — o maior custo medido de EnemyAISystem.
                 _min_cheb = chebyshev_dist_to_player
-                for _p_eid_slp, _ptm, _ in self.world.get_entities_with(TileMovement, PlayerControlled):
-                    if self._map_filter:
-                        _p_ml_slp = self.world.get_component(_p_eid_slp, MapLocation)
-                        if not _p_ml_slp or _p_ml_slp.map_file != self._map_filter:
-                            continue
+                for _p_eid_slp, _p_pos_slp, _ptm, _p_cs_slp in self._players_this_map_cache:
                     _d = max(abs(_ptm.current_tile_x - enemy_current_tile_x),
                              abs(_ptm.current_tile_y - enemy_current_tile_y))
                     if _d < _min_cheb:
@@ -2664,7 +3495,8 @@ class EnemyAISystem(System):
                 if dist_to_initial_tiles > self._settle_threshold_tiles(enemy_id):
                     ai_control.state = "RETURNING"
                     if should_recalculate_path:
-                        dynamic_obstacles_for_return = self._get_occupied_tiles(except_entity_id=enemy_id)
+                        # Reaproveita `all_occupied_tiles` — ver `_tile_of` (05/08/2026).
+                        dynamic_obstacles_for_return = all_occupied_tiles - {self._tile_of(tile_movement)}
 
                         ai_control.path = self._find_path_budgeted(
                             current_enemy_tile,
@@ -2801,7 +3633,9 @@ class EnemyAISystem(System):
             candidates.sort(reverse=True)
 
             ai_control.path = None
-            dynamic_obs = self._get_occupied_tiles(except_entity_id=enemy_id)
+            # Reaproveita `all_occupied_tiles` (já recebido como parâmetro
+            # deste método) — ver `_tile_of` (05/08/2026).
+            dynamic_obs = all_occupied_tiles - {self._tile_of(tile_movement)}
             for _, tx, ty in candidates[:4]:  # tenta os 4 melhores
                 path = self._find_path_budgeted(current_tile, (tx, ty),
                                                 dynamic_obstacles=dynamic_obs)
@@ -3107,15 +3941,20 @@ class EnemyAbilitySystem(System):
             return self._pathfinding._get_tilemap_component()
         return get_tilemap()
 
-    def update(self, events: list = None, dt: float = 0) -> None:
-        # Constrói mapa eid→tile de players vivos NO MESMO MAPA que os mobs deste bundle
+    def update(self, events: list = None, dt: float = 0,
+              players_by_map: "dict | None" = None,
+              mobs_by_map: "dict | None" = None,
+              tick_count: int = 0) -> None:
+        # mobs_by_map/tick_count: aceitos só por uniformidade de dispatch
+        # (mesmo grupo `proximity_systems` de EnemyAISystem, que injeta os
+        # mesmos parâmetros em todo mundo) — este sistema não itera mob por
+        # conta própria (usa cooldowns/slots já resolvidos por outros
+        # lugares), não precisa deles ainda.
+        # Mapa eid→tile de players vivos NO MESMO MAPA que os mobs deste
+        # bundle — do índice canônico (05/08/2026, ver `_players_on_map`),
+        # não escaneia mais sozinho.
         player_tiles: dict[int, tuple[int, int]] = {}
-        for p_eid, p_tm, _, p_cs in self.world.get_entities_with(
-                TileMovement, PlayerControlled, CombatStats):
-            if self._map_filter:
-                p_ml = self.world.get_component(p_eid, MapLocation)
-                if p_ml is None or p_ml.map_file != self._map_filter:
-                    continue
+        for p_eid, _p_pos, p_tm, p_cs in _players_on_map(self.world, players_by_map, self._map_filter):
             if p_cs.current_hp > 0:
                 player_tiles[p_eid] = (p_tm.current_tile_x, p_tm.current_tile_y)
 
@@ -3304,33 +4143,49 @@ class SpawnZoneSystem(System):
             return self._pathfinding._get_tilemap_component()
         return get_tilemap()
 
-    def update(self, events=None, dt: float = 0) -> None:
-        # Posição do player do mesmo mapa para culling de zonas distantes
+    def update(self, events=None, dt: float = 0,
+              players_by_map: "dict | None" = None,
+              mobs_by_map: "dict | None" = None,
+              tick_count: int = 0) -> None:
+        # mobs_by_map/tick_count: aceitos só por uniformidade de dispatch
+        # (mesmo grupo `proximity_systems` de EnemyAISystem) — spawn de
+        # zona não itera mobs existentes por conta própria, não precisa
+        # deles ainda.
+        # Posição do player do mesmo mapa pra culling de zonas distantes —
+        # do índice canônico (05/08/2026, ver `_players_on_map`), não
+        # escaneia mais sozinho.
         player_tx, player_ty = 0, 0
-        for _sz_peid, ptm, _ in self.world.get_entities_with(TileMovement, PlayerControlled):
-            if self._map_filter:
-                _sz_pml = self.world.get_component(_sz_peid, MapLocation)
-                if _sz_pml is None or _sz_pml.map_file != self._map_filter:
-                    continue
+        for _sz_peid, _sz_pos, ptm, _sz_cs in _players_on_map(self.world, players_by_map, self._map_filter):
             player_tx = ptm.current_tile_x
             player_ty = ptm.current_tile_y
             break
 
-        # Tiles ocupados (evita spawnar em cima de outra entidade) — filtrado por mapa.
-        occupied: set = set()
-        if self._map_filter:
-            for _occ_eid, tm in self.world.get_entities_with(TileMovement):
-                _ml_occ = self.world.get_component(_occ_eid, MapLocation)
-                if _ml_occ is None or _ml_occ.map_file != self._map_filter:
-                    continue
-                occupied.add((tm.current_tile_x, tm.current_tile_y))
-                if tm.is_moving:
-                    occupied.add((tm.target_tile_x, tm.target_tile_y))
-        else:
-            for _, tm in self.world.get_entities_with(TileMovement):
-                occupied.add((tm.current_tile_x, tm.current_tile_y))
-                if tm.is_moving:
-                    occupied.add((tm.target_tile_x, tm.target_tile_y))
+        # Tiles ocupados (evita spawnar em cima de outra entidade) — construído
+        # SOB DEMANDA (04/08/2026, pedido do usuário: "não tem como pular se
+        # já respawnou tudo?"). Só é lido dentro de _pick_tile, chamado SÓ
+        # quando um timer de respawn realmente zera este tick — na maioria
+        # dos ticks (zonas já cheias, nada morrendo) nenhum spawn acontece,
+        # então o scan global de TileMovement (todo o mundo) nunca roda.
+        _occupied_cache: list = [None]  # None = ainda não construído neste tick
+
+        def _get_occupied() -> set:
+            if _occupied_cache[0] is None:
+                occ: set = set()
+                if self._map_filter:
+                    for _occ_eid, tm in self.world.get_entities_with(TileMovement):
+                        _ml_occ = self.world.get_component(_occ_eid, MapLocation)
+                        if _ml_occ is None or _ml_occ.map_file != self._map_filter:
+                            continue
+                        occ.add((tm.current_tile_x, tm.current_tile_y))
+                        if tm.is_moving:
+                            occ.add((tm.target_tile_x, tm.target_tile_y))
+                else:
+                    for _, tm in self.world.get_entities_with(TileMovement):
+                        occ.add((tm.current_tile_x, tm.current_tile_y))
+                        if tm.is_moving:
+                            occ.add((tm.target_tile_x, tm.target_tile_y))
+                _occupied_cache[0] = occ
+            return _occupied_cache[0]
 
         # Tilemap correto para este bundle (via injeção direta, P4).
         tilemap_comp = self._get_tilemap()
@@ -3373,12 +4228,12 @@ class SpawnZoneSystem(System):
             for t in zone.respawn_timers:
                 t -= dt
                 if t <= 0:
-                    dest = self._pick_tile(zone, tilemap_comp, occupied)
+                    dest = self._pick_tile(zone, tilemap_comp, _get_occupied())
                     if dest is None:
                         still_waiting.append(2.0)  # reagenda em 2s
                         continue
                     dx, dy = dest
-                    occupied.add((dx, dy))  # reserva o tile imediatamente
+                    _get_occupied().add((dx, dy))  # reserva o tile imediatamente
                     self._spawn_queue.append((zone_eid, zone, dx, dy))
                     zone._pending_spawns = getattr(zone, "_pending_spawns", 0) + 1
                 else:

@@ -73,6 +73,12 @@ class ChatHandlers:
         if text and self._try_handle_arena_chat_command(text):
             self._close_chat_input()
             return
+        # "/bgqueue" — abre o modal unificado de fila (04/08/2026, mesma
+        # ação do atalho F1 — ver client/bg_queue_handlers.py::
+        # _try_handle_bg_chat_command).
+        if text and self._try_handle_bg_chat_command(text):
+            self._close_chat_input()
+            return
         if text and self._net:
             from shared.messages import MsgType
             channel = "local" if self._chat_tab == "local" else "world"

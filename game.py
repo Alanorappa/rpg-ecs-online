@@ -20,7 +20,7 @@ from ui.systems import (
     StatusEffectSystem, EnemyAbilitySystem,
     register_services,
 )
-from engine.stats_system import XPSystem, DeathRespawnSystem
+from engine.stats_system import XPSystem
 from ui.quest_system import QuestSystem, QuestDialogSystem, QuestJournalSystem
 from engine.quest_events import set_quest_system
 from engine.entity_factory import create_player, create_camera, create_enemy, create_tilemap, create_merchant, create_spawn_zone, create_quest_giver, create_blacksmith, create_trainer
@@ -63,6 +63,8 @@ from client.duel_handlers import DuelHandlers
 from client.party_handlers import PartyHandlers
 from client.pvp_zone_handlers import PvpZoneHandlers
 from client.arena_handlers import ArenaHandlers
+from client.battleground_handlers import BattlegroundHandlers
+from client.bg_queue_handlers import BgQueueHandlers
 from client.chat_handlers import ChatHandlers
 from client.colors import C_WHITE, C_YELLOW, C_GREEN, C_RED, C_GRAY, C_CYAN, C_ORANGE
 
@@ -141,7 +143,7 @@ def compute_window_geometry(mode: str, scale: float) -> tuple:
                 pygame.DOUBLEBUF | pygame.SCALED | pygame.RESIZABLE)
 
 
-class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, InventoryHandlers, TooltipHandlers, DebugHandlers, MenuHandlers, HotbarEditorHandlers, HabilidadesHandlers, OnlineModeHandlers, HotbarHandlers, ConsumableBarHandlers, HudHandlers, DeathUIHandlers, ModalStackHandlers, TradeHandlers, DuelHandlers, PartyHandlers, PvpZoneHandlers, ArenaHandlers, ChatHandlers):
+class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, InventoryHandlers, TooltipHandlers, DebugHandlers, MenuHandlers, HotbarEditorHandlers, HabilidadesHandlers, OnlineModeHandlers, HotbarHandlers, ConsumableBarHandlers, HudHandlers, DeathUIHandlers, ModalStackHandlers, TradeHandlers, DuelHandlers, PartyHandlers, PvpZoneHandlers, ArenaHandlers, BattlegroundHandlers, BgQueueHandlers, ChatHandlers):
     def __init__(self, scale: float = 1.0, char_data: "dict | None" = None,
                  save_slot: int = 0,
                  net_user: str = "", net_pass: str = "",
@@ -791,7 +793,6 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         projectile_system     = ProjectileSystem(self.world, self.screen)
         render_system         = RenderSystem(self.world, self.screen)
         tile_render_system    = TileRenderSystem(self.world, self.screen)
-        death_respawn_system  = DeathRespawnSystem(self.world)
         self._death_handler          = death_handler
         self._xp_system              = xp_system
         self._skill_system           = skill_system
@@ -799,7 +800,6 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._projectile_system      = projectile_system
         self._render_system          = render_system
         self._tile_render_system     = tile_render_system
-        self._death_respawn_system   = death_respawn_system
         # Nameplate de NPC/mob local usa o MESMO objeto de fonte da janela
         # de chat (pedido do usuário 17/07/2026) — ver
         # ui/systems.py::RenderSystem.set_name_font.
@@ -852,7 +852,6 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             self._pirofagia_system,                                                   # 15
             self._mana_system,                                                        # 15
             death_handler,                                                            # 15
-            death_respawn_system,                                                     # 16
             self._consumable_system,                                                  # 20
             self._combat_state_sys,                                                   # 21
             StatusEffectSystem(self.world),                                           # 22
@@ -914,7 +913,6 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         (PlayerInputSystem,     CombatStateSystem,    "Timers de combate atualizados após input"),
         (EnemyAISystem,         CombatStateSystem,    "Timers de combate atualizados após AI"),
         (DeathHandlerSystem,    XPSystem,             "XPSystem lê pending_xp de DeathHandler"),
-        (XPSystem,              DeathRespawnSystem,   "Player respawn ocorre após XP distribuído"),
         (CombatStateSystem,     TileMovementSystem,   "Movimento interpolado após estados atualizados"),
         (TileMovementSystem,    FogSystem,            "Fog lê posição de tile após movimento"),
         (FogSystem,             CameraSystem,         "Câmera segue posições após movimento"),
@@ -1110,6 +1108,14 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         if self._arena_in_match and self._arena_opponents_server:
             other = b if a == self.player_entity else (a if b == self.player_entity else -1)
             if other != -1 and self._local_eid_to_server_eid(other) in self._arena_opponents_server:
+                return True
+        # Fila REAL de Battleground (04/08/2026) — mesmo racional exato
+        # da Arena acima, ver client/bg_queue_handlers.py::
+        # _bg_opponents_server (estado separado, sistema server-side
+        # independente — server/bg_queue_processor.py).
+        if self._bg_in_match and self._bg_opponents_server:
+            other = b if a == self.player_entity else (a if b == self.player_entity else -1)
+            if other != -1 and self._local_eid_to_server_eid(other) in self._bg_opponents_server:
                 return True
         if not self._pvp_zones:
             return False
@@ -1588,6 +1594,14 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                         self._handle_trade_gold_key(event)
                     elif self._show_hotbar_editor:
                         pass   # editor de hotbar aberto: bloqueia atalhos de menu
+                    elif event.key == pygame.K_F1:
+                        # Fila de Arena/Battleground (04/08/2026, pedido do
+                        # usuário — substitui o antigo botão "Fila de Arena"
+                        # do HUD, removido): mesma ação do comando de chat
+                        # "/bgqueue" (client/bg_queue_handlers.py::
+                        # _open_bg_queue_modal) — abre o modal unificado,
+                        # nunca entra direto.
+                        self._open_bg_queue_modal()
                     elif event.key == pygame.K_F10:
                         self._close_all_modals()
                         self._god_mode.toggle()
@@ -1686,6 +1700,12 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                     pass
                 elif (event.type == pygame.MOUSEBUTTONDOWN
                       and self._handle_arena_click(event)):
+                    pass
+                elif (event.type == pygame.MOUSEBUTTONDOWN
+                      and self._handle_bg_queue_click(event)):
+                    pass
+                elif (event.type == pygame.MOUSEBUTTONDOWN
+                      and self._handle_bg_click(event)):
                     pass
                 elif (event.type == pygame.MOUSEBUTTONDOWN
                       and self._handle_trade_click(event)):
@@ -2052,11 +2072,6 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 if _auto is None or _auto.ground_target is None:
                     self._map_overlay._dest_marker = None
 
-            # --- Respawn de morte: troca de mapa antes de qualquer outra coisa ---
-            if self._death_respawn_system.pending_respawn:
-                self._do_transition(self._death_respawn_system.pending_respawn)
-                self._death_respawn_system.pending_respawn = None
-
             # --- Detecção de transição (cavernas / portais) ---
             if self._transition_cooldown > 0:
                 self._transition_cooldown -= dt
@@ -2240,6 +2255,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             if PROFILE_FRAMES:
                 _ts = _time.perf_counter()
             self._draw_hud()
+            self._draw_bg_kda_hud()
             self._render_death_ui()
             if PROFILE_FRAMES:
                 self._prof_record("hud:draw_hud", _time.perf_counter() - _ts)
@@ -2287,11 +2303,12 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             self._draw_duel_ui()
             self._draw_party_frames()
             self._draw_party_invite_ui()
-            self._draw_arena_queue_button()
             self._draw_arena_queue_modal()
             self._draw_arena_countdown_overlay()
             self._draw_arena_accept_modal()
             self._draw_arena_result_modal()
+            self._draw_bg_accept_modal()
+            self._draw_bg_result_modal()
             self._draw_pvp_zone_banner()
             if self._show_talents:
                 self._talent_system.render()
@@ -2621,21 +2638,42 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             "menu_keybinds":  self._menu_keys,
             "window_mode":    self._window_mode_pref,
         }
+        # Dentro da BG, PlayerSkills/ConsumableBar guardam o estado
+        # TEMPORÁRIO da instância (04/08/2026, bug real relatado pelo
+        # usuário: "a barra de ações fica desconfigurada depois que sai da
+        # BG" / "a bag também está sofrendo alterações"). `_save_config()` é
+        # chamada de 17 pontos diferentes (autosave periódico, fechar o
+        # jogo, editor de hotbar, comprar consumível...) — nenhum checava
+        # isso, então um autosave (ou fechar o jogo) NO MEIO de uma partida
+        # gravava o layout temporário por cima do real em config.json PRA
+        # SEMPRE. Mesma classe de bug já corrigida no servidor (§34.74.15,
+        # `_persist_character`), nunca coberta no cliente. Chokepoint
+        # único: em vez de um guard em cada um dos 17 call sites, só
+        # PRESERVA o que já estava salvo enquanto
+        # `InstanceInventoryUIState.active` (eco de `in_instance` do
+        # servidor) — resto do config (volume/scale/etc) salva normal.
+        _in_bg_instance = False
+        if hasattr(self, "player_entity"):
+            from ui.ui_components import InstanceInventoryUIState as _IIUSCfg
+            _iius_cfg = self.world.get_component(self.player_entity, _IIUSCfg)
+            _in_bg_instance = _iius_cfg is not None and _iius_cfg.active
+
         if self._logged_char_name:
             existing = _cfg.load()
             chars = existing.get("characters", {})
-            chars[self._logged_char_name] = {
-                "hotbar":         self._hotbar_to_dict(),
-                "consumable_bar": self._consumable_bar_to_dict(),
-            }
+            if not _in_bg_instance:
+                chars[self._logged_char_name] = {
+                    "hotbar":         self._hotbar_to_dict(),
+                    "consumable_bar": self._consumable_bar_to_dict(),
+                }
             data["characters"] = chars
-        else:
+        elif not _in_bg_instance:
             data["hotbar"]         = self._hotbar_to_dict()
             data["consumable_bar"] = self._consumable_bar_to_dict()
         _cfg.save(data)
         self._load_menu_keys()
         # Sincroniza barra de ações com o servidor (só hotbar, não o state completo)
-        if self._logged_char_name:
+        if self._logged_char_name and not _in_bg_instance:
             self._send_hotbar_update()
 
     def _hotbar_to_dict(self) -> dict:

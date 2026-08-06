@@ -29,15 +29,14 @@
 | 18 | **CorpseSystem** | systems.py | Decay de cadáveres (timer); remove entidade ao expirar | Não |
 | 19 | **SpawnZoneSystem** | systems.py | Gerencia contagem de spawns ativos por zona | Não |
 | 20 | **XPSystem** | stats_system.py | Consome `pending_xp`, aplica level-up | Não |
-| 21 | **DeathRespawnSystem** | stats_system.py | Respawn do jogador; restaura HP | Não |
-| 22 | **ConsumableSystem** | systems.py | Processa ActiveRegen (efeito de consumíveis) | Não |
-| 23 | **CombatStateSystem** | systems.py | Timers de combate (stun, in_combat); procs ao entrar em combate | Não |
-| 24 | **StatusEffectSystem** | systems.py | Decrementar duração; aplicar ticks (poison, burn, regen…); morte por DoT | Não |
-| 25 | **TileMovementSystem** | systems.py | Interpolação de movimento; atualiza elevation; som de passos | Não |
-| 26 | **FogSystem** | systems.py | Shadowcasting (8 octantes); atualiza Visible tags | Não |
-| 27 | **CameraSystem** | systems.py | Suaviza câmera em direção ao player | Não |
-| 28 | **TileRenderSystem** | systems.py | Cache de tiles (terrain + objects); render com ysort | Não |
-| 29 | **RenderSystem** | systems.py | Ysort de entidades + objetos; HP bars; highlight de alvo | Não |
+| 21 | **ConsumableSystem** | systems.py | Processa ActiveRegen (efeito de consumíveis) | Não |
+| 22 | **CombatStateSystem** | systems.py | Timers de combate (stun, in_combat); procs ao entrar em combate | Não |
+| 23 | **StatusEffectSystem** | systems.py | Decrementar duração; aplicar ticks (poison, burn, regen…); morte por DoT | Não |
+| 24 | **TileMovementSystem** | systems.py | Interpolação de movimento; atualiza elevation; som de passos | Não |
+| 25 | **FogSystem** | systems.py | Shadowcasting (8 octantes); atualiza Visible tags | Não |
+| 26 | **CameraSystem** | systems.py | Suaviza câmera em direção ao player | Não |
+| 27 | **TileRenderSystem** | systems.py | Cache de tiles (terrain + objects); render com ysort | Não |
+| 28 | **RenderSystem** | systems.py | Ysort de entidades + objetos; HP bars; highlight de alvo | Não |
 
 ### Sistemas fora da lista principal (chamados explicitamente em `game.py`)
 
@@ -97,6 +96,77 @@ aggro-switch pra defender aliado atacado no alcance), ataque via
 `kind="mob_projectile"`), ramp de dano contra player (+40%/acerto até
 +120%, nunca contra mob), regen opcional. Ver `engine/components.py::
 Tower` e `ARQUITETURA_ONLINE.md` §34.70 pro design completo.
+
+### MinionSystem (Sistema de Minions, 30/07/2026)
+
+Mesmo princípio de `TowerSystem` — NÃO está na lista `_systems`
+por-mapa (sweep global, filtrando por `MapLocation` internamente).
+`WorldServer` instancia UMA vez (`self._minion_system`) e chama
+`update(dt)` manualmente a cada tick. DIFERENTE de Torre: minion
+recebe TAMBÉM `get_pathfinding_for_map` (Torre nunca se move) — usado
+por `_walk_toward` pra repathing tile-a-tile real (A*, throttlado,
+mesmo padrão de `AIControlled.path`/`EnemyAISystem`) sempre que o
+destino pode estar a vários tiles de distância (perseguir alvo, ou
+retomar `route` após ser puxado pra fora dela em combate).
+
+Máquina de estado própria: `ADVANCING` (seguindo `Minion.route`,
+pré-calculada uma vez no spawn da wave, mirando sempre o próximo
+checkpoint — `route_idx//5*5+5` — à frente pra dar espaço real ao A*)
+↔ `FIGHTING` (hostil dentro do raio de aggro). SEM estado de retorno
+(02/08/2026, pedido do usuário — "esquecer os checkpoints", reverte a
+decisão original de 30/07/2026 de voltar pro ÚLTIMO checkpoint antes
+de retomar): ao perder/matar o alvo, volta direto pra `ADVANCING` e
+segue em frente a partir de onde já está — nunca há backtrack. Ataque
+melee via `deal_damage` direto; ranged via `_spawn_attack_projectile`
+(helper compartilhado com `TowerSystem`, extraído quando Minion virou
+o 2º consumidor real).
+
+Waves: `WorldServer._minion_wave_timers` (timer POR LANE, incondicional
+— dispara sozinho no relógio, sempre em lote fixo via `_MINION_WAVE_
+COMPOSITION`, 1 melee + 2 ranged + 1 ranged raro desde 04/08/2026 —
+§34.74.27, reduzido de 7 pra 4/wave pra baixar a carga de combate quando
+waves de times opostos se cruzam) + `_tick_minion_waves`, ativado por
+`_activate_minion_lanes` no momento em que o combate da arena libera de
+verdade (portão abre). ADVANCING CONSOME `route` tile a tile via
+`route_idx` (`MinionSystem._advance_along_route`, §34.74.28 — mirar
+`route[-1]` direto via A* livre foi tentado e revertido no mesmo dia:
+redescobre o atalho mais curto do mapa a partir de qualquer posição,
+convergindo TODAS as lanes pro mesmo ponto num mapa com gargalo
+central), caso comum sem pathfinding nenhum, desvio local orçado em
+`MinionSystem.MAX_PATHFINDS_PER_FRAME=15` A*/tick mirando um lookahead
+de `ROUTE_LOOKAHEAD_TILES=6` na própria rota. Ver
+`engine/components.py::Minion` e `ARQUITETURA_ONLINE.md` §34.73/
+§34.74.26/§34.74.27/§34.74.28 pro design completo.
+
+**Spawn escalonado da wave** (01/08/2026, §34.74.3 — bug real de
+playtest: os 7 minions nascendo no mesmo tick travavam uns nos outros).
+`_tick_minion_waves` só CALCULA a rota e enfileira em
+`WorldServer._minion_spawn_queue`; `_tick_minion_spawn_queue(dt)`
+(chamada logo depois no tick principal) drena a fila e cria a entidade
+de fato, 1 por vez, a cada `WorldServer.MINION_SPAWN_STAGGER_S` (0.5s).
+
+### Progressão Normalizada de Instância (31/07/2026) — `server/instance_progression.py`
+
+Não é um `System` ECS com `update(dt)` — é um mecanismo de
+entrada/saída (mesmo espírito de `_reset_combat_resources` da Arena,
+`match_processor.py`), chamado 1x na entrada e 1x na saída de uma
+instância, não a cada tick. `enter_normalized_progression(ws, eid)`
+congela o estado real (level/atributos brutos/talento/skills/gold/
+itens) num `InstanceProgressionSnapshot` e sobrescreve os componentes
+vivos com valores de instância (level 1, talento zerado na MESMA
+árvore real, 1ª skill de `INSTANCE_SKILL_UNLOCK_ORDER` já concedida,
+gold 0, inventário de 6 slots vazio); `exit_normalized_progression(ws,
+eid)` restaura tudo, idempotente. `grant_instance_xp(ws, eid, amount)`
+processa level-ups de instância (cap 15, +3 pontos de talento por
+level) — é um seam, ainda não chamado por nenhum sistema de XP real.
+
+**INERTE nesta fase**: nenhum processador de jogo chama essas funções
+ainda — o modo Battlefield em si (fila, times, mapa) é trabalho futuro
+separado. Toggle por modo (`progression_mode`) documentado na
+docstring do módulo. Ver `ARQUITETURA_ONLINE.md` §34.74 pro design
+completo, incluindo 2 bugs reais achados durante a implementação
+(atributos brutos que não resetavam sozinhos; skills talento-gated que
+não autorizavam via `learned_skill_ids` só).
 
 ### Visão compartilhada de time (30/07/2026) — `server/session.py`
 

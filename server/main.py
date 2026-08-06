@@ -84,7 +84,25 @@ async def main(host: str, port: int) -> None:
         ping_interval=20,      # keepalive
         ping_timeout=60,
     ):
-        await world.run()      # loop de ticks — roda indefinidamente
+        try:
+            await world.run()  # loop de ticks — roda indefinidamente
+        except KeyboardInterrupt:
+            # Sem isso, Ctrl+C matava o processo sem salvar NINGUÉM
+            # conectado (05/08/2026, bug real relatado pelo usuário: "a
+            # penúltima vez que eu tinha logado, havia salvo a config...
+            # agora... as habilidades não estavam na mesma configuração" —
+            # tudo desde o último autosave/5min se perdia, não só a
+            # hotbar). O `except KeyboardInterrupt` original só existia lá
+            # embaixo, em `__main__`, DEPOIS do `asyncio.run()` já ter
+            # fechado o loop — tarde demais pra rodar mais async. Captura
+            # AQUI, ainda dentro do loop vivo, e reaproveita o MESMO
+            # chokepoint do autosave periódico (`SessionManager.
+            # _autosave_all` — já pula sozinho quem estiver dentro de uma
+            # BG, via `_persist_character`/`is_in_normalized_progression`,
+            # nenhuma lógica nova de guard precisa entrar aqui).
+            log.info("[Server] Ctrl+C recebido — salvando players conectados antes de encerrar...")
+            await mgr._autosave_all()
+            raise
 
 
 if __name__ == "__main__":

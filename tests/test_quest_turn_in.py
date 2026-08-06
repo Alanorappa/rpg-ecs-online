@@ -338,5 +338,45 @@ class TestQuestTurnInRewardSkill(unittest.IsolatedAsyncioTestCase):
             sum(1 for sk in ps.skills if sk and sk.skill_id == "golpe_poderoso"), 1)
 
 
+class TestQuestTurnInInstanceXp(unittest.IsolatedAsyncioTestCase):
+    """Gap real achado nesta sessão (02/08/2026): recompensa de XP de
+    quest caía direto no `process_levelups` REAL, sem checar
+    `is_in_normalized_progression` — mesmo desvio que `world_server.py::
+    consume_xp()` já aplica pra XP de kill de mob/minion/torre, mas nunca
+    tinha sido estendido pra recompensa de quest."""
+
+    def setUp(self):
+        self._added_qids: list = []
+
+    def tearDown(self):
+        for qid in self._added_qids:
+            QUESTS.pop(qid, None)
+
+    async def asyncSetUp(self):
+        self.ws, self.mgr = make_session_manager()
+
+    def _add_quest(self, qid: str, reward: QuestReward) -> None:
+        _make_ready_quest(qid, reward)
+        self._added_qids.append(qid)
+
+    async def test_xp_de_quest_dentro_da_instancia_usa_curva_de_instancia(self):
+        from server.instance_progression import enter_normalized_progression
+        from engine.components import CharacterStats
+
+        self._add_quest("qti_inst", QuestReward(xp=10_000_000))
+        session, fw = await fake_login(self.mgr, "qti_inst_sid", "qtiinstuser")
+        ql = self.ws.world.get_component(session.entity_id, QuestLog)
+        ql.active["qti_inst"] = [1]
+        enter_normalized_progression(self.ws, session.entity_id)
+        char = self.ws.world.get_component(session.entity_id, CharacterStats)
+        self.assertEqual(char.level, 1)  # pré-condição: acabou de entrar
+
+        await self.mgr._handle_quest_turn_in(session, {"quest_id": "qti_inst"}, 0)
+
+        from server.instance_progression import INSTANCE_LEVEL_CAP
+        self.assertEqual(char.level, INSTANCE_LEVEL_CAP,
+                         "XP de quest deveria ter usado a curva/cap de instância")
+
+
 if __name__ == "__main__":
     unittest.main()

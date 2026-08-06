@@ -144,6 +144,13 @@ class LootProcessorMixin:
         # gatilho do popup) — não é mais lido aqui.
         return {"items": items, "coins": coins}
 
+    # Corpse de minion (sem loot nenhum, por design — ver
+    # server_death_handler.py) some rápido: só confirma a morte
+    # visualmente, estilo MOBA (LoL/Dota) — nunca fica ali pra "lootear"
+    # (pedido do usuário, 03/08/2026: mortes de lane floodavam o mapa
+    # com o timer de mob normal, 120s).
+    MINION_CORPSE_TIMER_S = 4.0
+
     def _process_loot_drops(self, dt: float) -> None:
         """Registra corpses de mobs mortos e faz decay dos existentes."""
         # Processa loot dos mobs mortos — registra corpse e agenda notificações
@@ -151,13 +158,15 @@ class LootProcessorMixin:
             owner_eid  = loot_entry["owner_eid"]
             corpse_id  = self._next_corpse_id
             self._next_corpse_id += 1
+            _timer = (self.MINION_CORPSE_TIMER_S if loot_entry.get("is_minion")
+                     else 120.0)
             self._corpses[corpse_id] = {
                 "tx":        loot_entry["tx"],
                 "ty":        loot_entry["ty"],
                 "owner_eid": owner_eid,
                 "items":     loot_entry["items"],
                 "coins":     loot_entry.get("coins", 0),
-                "timer":     120.0,
+                "timer":     _timer,
                 "map":       loot_entry.get("map"),
                 # Fase L1 (25/07/2026) — loot condicional de quest resolvido
                 # por jogador, não mais 1x na morte (ver
@@ -175,7 +184,10 @@ class LootProcessorMixin:
                 "coins":     loot_entry.get("coins", 0),
                 "map":       loot_entry.get("map"),
             })
-            log.info(f"[Loot] corpse_id={corpse_id}  owner={owner_eid}  "
+            # DEBUG, não INFO (05/08/2026 — mesma causa de "travamento"
+            # relatado pelo usuário numa troca de lane da BG: log síncrono
+            # por morte, ver server_death_handler.py::update).
+            log.debug(f"[Loot] corpse_id={corpse_id}  owner={owner_eid}  "
                   f"items={len(loot_entry['items'])}  coins={loot_entry.get('coins', 0)}  "
                   f"tile=({loot_entry['tx']},{loot_entry['ty']})")
 

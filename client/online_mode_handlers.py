@@ -20,7 +20,6 @@ class OnlineModeHandlers:
     def _connect_online(self) -> None:
         """Inicia conexão com o servidor. Se net_client já foi passado no __init__,
         apenas ativa o online_mode (login + spawn já foram feitos pelo login_screen)."""
-        self._death_respawn_system.online_mode = True
         if self._net is not None:
             # Já conectado via login_screen — LOGIN_OK + WORLD_STATE estão na fila
             return

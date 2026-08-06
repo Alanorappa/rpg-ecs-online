@@ -53,8 +53,10 @@ class ArenaHandlers:
 
     @property
     def _arena_modal_open(self) -> bool:
-        """Modal unificado de fila (Fase H) — aberto pelo botão persistente
-        "Fila de Arena"/"Sair da Fila" (_arena_queue_button_rect)."""
+        """Modal unificado de fila (Fase H, + linha de Battleground desde
+        04/08/2026) — aberto via F1 ou comando de chat "/bgqueue" (ver
+        client/bg_queue_handlers.py::_open_bg_queue_modal; botão fixo do
+        HUD removido a pedido do usuário)."""
         return getattr(self, "_arena_modal_open_val", False)
 
     @property
@@ -147,13 +149,38 @@ class ArenaHandlers:
     def _handle_msg_arena_countdown(self, payload: dict) -> None:
         import time as _time_acd
         self._arena_countdown_deadline_val = _time_acd.time() + payload.get("remaining", 0.0)
+        # "my_faction" (01/08/2026, opcional — só o battleground de teste
+        # manda por enquanto, ver server/debug_battleground.py): anexa um
+        # Faction de verdade no PRÓPRIO player local, mesma coisa que o
+        # servidor já faz do lado dele. Sem isso, TUDO que depende de
+        # `engine/faction_system.py::get_relationship_between`/
+        # `is_hostile`/`can_engage` pro player local (cor de barra de HP
+        # de mob/torre/minion, filtro hostil de TAB/SPACE) só conseguia
+        # comparar contra o PLAYER_FACTION genérico ("jogadores"), nunca
+        # contra o time de verdade — `get_entity_faction` prioriza
+        # `Faction` real se presente (engine/faction_system.py:59-61),
+        # então isso corrige TODOS esses pontos de uma vez, sem precisar
+        # de uma variável especial em cada um. Removido em
+        # _handle_msg_zone_change (qualquer troca de mapa encerra o
+        # contexto de time atual).
+        if "my_faction" in payload:
+            from engine.components import Faction as _FacCd
+            self.world.add_component(self.player_entity, _FacCd(payload["my_faction"]))
 
     def _handle_msg_arena_gate_open(self, payload: dict) -> None:
-        """Portão físico da arena abriu (fim do preparo) — mesmo swap de
-        tile aplicado no servidor (server/match_processor.py::
+        """Portão físico abriu (fim do preparo) — mesmo swap de tile
+        aplicado no servidor (server/match_processor.py::
         _tick_arena_pending), pra este cliente parar de ver/colidir com o
         portão fechado. Mandado a cada um dos 4, inclusive quem aceitar
         DEPOIS do portão já ter aberto (ver request_arena_accept).
+
+        `payload.get("gate_tiles")` (01/08/2026, pedido do usuário —
+        battleground de teste tinha esse MESMO problema visual, mas com
+        tiles DIFERENTES de ARENA_GATE_TILES): lista opcional
+        `[[x,y],...]` — quando presente, usa ESSES tiles em vez do
+        hardcoded `ARENA_GATE_TILES` (que só serve pro mapa da Arena de
+        verdade). Ausente (payload `{}`, como a Arena sempre manda) =
+        comportamento de sempre, sem mudança nenhuma pro fluxo real.
 
         `TileRenderSystem` (ui/systems.py) desenha em cima de uma Surface
         em cache indexada pela posição da CÂMERA, não pelo conteúdo do
@@ -167,11 +194,16 @@ class ArenaHandlers:
         (game.py) e pelo God Mode (ui/god_mode.py)."""
         from engine.components import Tilemap
         from engine.tileset import STONE_FLOOR
-        from shared.constants import ARENA_GATE_TILES
         tilemap_comp = self.world.get_component(self.tilemap_entity, Tilemap)
         if tilemap_comp is None:
             return
-        for gx, gy in ARENA_GATE_TILES:
+        gate_tiles_payload = payload.get("gate_tiles")
+        if gate_tiles_payload:
+            gate_tiles = [(int(gx), int(gy)) for gx, gy in gate_tiles_payload]
+        else:
+            from shared.constants import ARENA_GATE_TILES
+            gate_tiles = ARENA_GATE_TILES
+        for gx, gy in gate_tiles:
             if 0 <= gy < len(tilemap_comp.tile_matrix) and 0 <= gx < len(tilemap_comp.tile_matrix[gy]):
                 tilemap_comp.tile_matrix[gy][gx] = STONE_FLOOR
         self._tile_render_system.invalidate_cache()
@@ -271,40 +303,12 @@ class ArenaHandlers:
         self._send_arena_forfeit()
         return True
 
-    # ── Botão "Fila de Arena" (sempre visível — Fase H, 23/07/2026) ──────────
-    # Antes só aparecia pro líder de um grupo de exatamente 2 (regra fixa do
-    # 2x2); agora o modo "Duelo (Arena)" (1x1) é soloqueue, então o botão
-    # precisa existir pra QUALQUER player — a elegibilidade por modo (grupo
-    # certo/líder) é decidida linha a linha dentro do modal
-    # (_arena_mode_eligible), não mais no botão em si.
-
-    def _arena_queue_button_rect(self):
-        """None se não deve aparecer — só some enquanto uma partida está
-        rolando ou a janela de aceite está aberta (bug real relatado pelo
-        usuário 20/07/2026: o botão de fila continuava aparecendo dentro
-        da própria arena). Ancorado onde o frame de grupo terminaria —
-        ou no topo do próprio slot, se o player não estiver em grupo
-        nenhum (agora comum, já que 1v1 é soloqueue)."""
-        if self._arena_in_match or self._arena_pending_match is not None:
-            return None
-        w, h = self._u(self._FRAME_W), self._u(24)
-        x0   = self._u(self._FRAME_X0)
-        rows = self._party_frame_rects()
-        y0   = (rows[-1][1].bottom + self._u(6)) if rows else self._u(self._FRAME_Y0)
-        return pygame.Rect(x0, y0, w, h)
-
-    def _draw_arena_queue_button(self) -> None:
-        rect = self._arena_queue_button_rect()
-        if rect is None:
-            return
-        in_queue = self._arena_in_queue_mode is not None
-        label = "Sair da Fila" if in_queue else "Fila de Arena"
-        bg    = (90, 50, 50) if in_queue else (40, 70, 40)
-        pygame.draw.rect(self.screen, bg, rect, border_radius=4)
-        pygame.draw.rect(self.screen, (140, 140, 140), rect, 1, border_radius=4)
-        s = self.font_xs.render(label, False, (230, 230, 230))
-        self.screen.blit(s, (rect.centerx - s.get_width() // 2,
-                             rect.centery - s.get_height() // 2))
+    # ── Abertura do modal (F1 ou "/bgqueue", 04/08/2026) ──────────────────────
+    # O botão "Fila de Arena" fixo no HUD foi removido (pedido do usuário) —
+    # o modal agora só abre via atalho de teclado (game.py::K_F1) ou comando
+    # de chat (client/bg_queue_handlers.py::_try_handle_bg_chat_command),
+    # ambos chamando _open_bg_queue_modal() (mesma ação nos 2 casos, e é a
+    # MESMA que o botão antigo fazia ao clicar).
 
     def _handle_arena_click(self, event) -> bool:
         if event.type != pygame.MOUSEBUTTONDOWN or event.button != 1:
@@ -315,19 +319,7 @@ class ArenaHandlers:
             return self._handle_arena_result_click(event)
         if self._arena_modal_open:
             return self._handle_arena_modal_click(event)
-        rect = self._arena_queue_button_rect()
-        if rect is None or not rect.collidepoint(event.pos):
-            return False
-        if self._arena_in_queue_mode is not None:
-            self._send_arena_queue_leave()
-        else:
-            self._arena_modal_open_val = True
-            # Refresca o placar de vitórias/derrotas por modo (Fase E) antes
-            # de mostrar — pode estar desatualizado/nunca ter sido pedido
-            # nesta sessão.
-            self._send_char_stats_request()
-        SOUNDS.play_ui("button_click")
-        return True
+        return False
 
     # ── Modal unificado de fila (Fase H, 23/07/2026) ─────────────────────────
     # Lista os modos de ARENA_MODE_LIST — nunca 3 botões hardcoded, pra um 4º
@@ -365,12 +357,23 @@ class ArenaHandlers:
                                    self._u(86), self._u(26))
             rows.append((mode_id, label, row_rect, btn_rect))
             ry += row_h
-        return panel, close_rect, rows
+        # Battleground estilo MOBA (04/08/2026, pedido do usuário) — linha
+        # extra no MESMO modal, separada das de cima (sem "modo"/tamanho
+        # fixo: a fila decide sozinha, 1x1 até 5x5, sozinho ou com grupo já
+        # formado). client/bg_queue_handlers.py cuida do estado/envio; esta
+        # classe só desenha, mesmo container que ARENA_MODE_LIST já usa.
+        ry += self._u(6)  # respiro antes da linha de BG
+        bg_row_rect = pygame.Rect(panel.x + self._u(14), ry,
+                                  panel.w - self._u(28), row_h - self._u(8))
+        bg_btn_rect = pygame.Rect(bg_row_rect.right - self._u(96),
+                                  bg_row_rect.y + (bg_row_rect.h - self._u(26)) // 2,
+                                  self._u(86), self._u(26))
+        return panel, close_rect, rows, bg_row_rect, bg_btn_rect
 
     def _draw_arena_queue_modal(self) -> None:
         if not self._arena_modal_open:
             return
-        panel, close_rect, rows = self._arena_modal_rects()
+        panel, close_rect, rows, bg_row_rect, bg_btn_rect = self._arena_modal_rects()
         SW, SH = self.screen.get_size()
         overlay = pygame.Surface((SW, SH), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 160))
@@ -428,11 +431,38 @@ class ArenaHandlers:
                 reason_s = self.font_xs.render(reason, False, (175, 125, 125))
                 self.screen.blit(reason_s, (row_rect.x + self._u(10), row_rect.bottom - self._u(15)))
 
+        # Linha de Battleground (04/08/2026) — sem V/D por modo (a fila
+        # não tem "modo" fixo) nem checagem de elegibilidade (sozinho ou
+        # com grupo já formado, QUALQUER tamanho até PARTY_MAX_SIZE=5,
+        # sempre elegível — a fila decide o tamanho do time sozinha).
+        pygame.draw.rect(self.screen, (28, 34, 30), bg_row_rect, border_radius=5)
+        pygame.draw.rect(self.screen, (80, 100, 85), bg_row_rect, 1, border_radius=5)
+        bg_name_s = self.font_sm.render("Battleground (MOBA)", False, (220, 235, 222))
+        self.screen.blit(bg_name_s, (bg_row_rect.x + self._u(10), bg_row_rect.y + self._u(4)))
+        bg_desc_s = self.font_xs.render("Sozinho ou com grupo — 1x1 até 5x5",
+                                        False, (170, 180, 170))
+        self.screen.blit(bg_desc_s, (bg_row_rect.x + self._u(10), bg_row_rect.y + self._u(26)))
+        bg_label, bg_bg = ("Sair", (90, 50, 50)) if self._bg_in_queue else ("Entrar", (40, 70, 40))
+        hov_bg = bg_btn_rect.collidepoint(mx, my)
+        draw_bg_bg = tuple(min(255, c + 18) for c in bg_bg) if hov_bg else bg_bg
+        pygame.draw.rect(self.screen, draw_bg_bg, bg_btn_rect, border_radius=4)
+        pygame.draw.rect(self.screen, (140, 140, 140), bg_btn_rect, 1, border_radius=4)
+        bg_bs = self.font_xs.render(bg_label, False, (230, 230, 230))
+        self.screen.blit(bg_bs, bg_bs.get_rect(center=bg_btn_rect.center))
+
     def _handle_arena_modal_click(self, event) -> bool:
         """True sempre (modal bloqueante enquanto aberto, mesmo padrão dos
         outros modais de arena)."""
-        panel, close_rect, rows = self._arena_modal_rects()
+        panel, close_rect, rows, bg_row_rect, bg_btn_rect = self._arena_modal_rects()
         if close_rect.collidepoint(event.pos):
+            self._arena_modal_open_val = False
+            SOUNDS.play_ui("button_click")
+            return True
+        if bg_btn_rect.collidepoint(event.pos):
+            if self._bg_in_queue:
+                self._send_bg_queue_leave()
+            else:
+                self._send_bg_queue_join()
             self._arena_modal_open_val = False
             SOUNDS.play_ui("button_click")
             return True

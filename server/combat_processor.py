@@ -356,9 +356,13 @@ class CombatProcessorMixin:
                               name=_ident_aa.name, race=_ident_aa.race)
 
             if dead:
-                # deal_damage adicionou PendingDeath — ServerDeathHandler processa
-                # no mesmo tick (chamado após _process_player_attacks).
-                # Apenas limpa alvo e timer de ataque; remoção fica com o handler.
+                # deal_damage (melee) adiciona PendingDeath sozinho;
+                # _server_apply_ranged_physical (ranged) também já adiciona
+                # com o killer certo, no fim da própria função (ver
+                # spell_completion_processor.py) — nenhum dos dois precisa
+                # de ajuda aqui. ServerDeathHandler processa no mesmo tick
+                # (chamado após _process_player_attacks). Apenas limpa alvo
+                # e timer de ataque; remoção fica com o handler.
                 cs.target_entity_id = -1
                 self._attack_timers.pop(session_id, None)
 
@@ -370,7 +374,8 @@ class CombatProcessorMixin:
 
         # Pré-constrói reverse map {player_eid → mob_atacante} UMA VEZ (O(mobs)),
         # em vez de O(mobs×players_danificados) no loop abaixo.
-        from engine.components import AIControlled as _AIAtk, PendingDeath as _PD, Tower as _TowerAtk
+        from engine.components import (AIControlled as _AIAtk, PendingDeath as _PD,
+                                       Tower as _TowerAtk, Minion as _MinionAtk)
         _mob_attacker_of: dict[int, int] = {}
         for _mb in self._mob_eids:
             _ai_r = self.world.get_component(_mb, _AIAtk)
@@ -396,6 +401,17 @@ class CombatProcessorMixin:
                 if not hasattr(self, "_last_mob_attacker"):
                     self._last_mob_attacker = {}
                 self._last_mob_attacker[_tw_r.current_target_eid] = _mb
+                continue
+            # Minion (30/07/2026): mesma razão de Torre — sem AIControlled,
+            # invisível a este reverse map sem este bloco (mesma classe de
+            # bug: atribuição errada/perdida de attacker em ataque de
+            # minion contra player).
+            _mn_r = self.world.get_component(_mb, _MinionAtk)
+            if _mn_r and _mn_r.current_target_eid != -1:
+                _mob_attacker_of[_mn_r.current_target_eid] = _mb
+                if not hasattr(self, "_last_mob_attacker"):
+                    self._last_mob_attacker = {}
+                self._last_mob_attacker[_mn_r.current_target_eid] = _mb
 
         # Consome avoidances (parry/dodge/miss) de mob→player coletadas em CombatSystem.
         from engine.world_systems import _svc as _svc_cp

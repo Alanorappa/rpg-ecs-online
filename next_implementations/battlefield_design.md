@@ -31,6 +31,18 @@ Foram considerados 3 modelos:
 
 **Motivo da escolha:** o Modelo 1 reaproveita 100% dos sistemas já existentes (classes, itens, XP, skills) e todo o balanceamento é resolvido em cima da fila e de mecânicas *dentro* da partida, sem exigir arquitetura nova de state paralelo.
 
+> **⚠️ SUPERADO (31/07/2026):** a escolha acima ("Modelo 1: leva tudo do
+> personagem principal") foi revertida pelo usuário. A decisão nova é o
+> **Modelo 2/3** que este documento descartava — reset total: level 1 na
+> instância (cap 15), talento/skill/gold/itens viram um overlay 100%
+> temporário, descartado ao sair. O "state paralelo" que este documento
+> evitava foi implementado — ver `server/instance_progression.py` e a
+> entrada de decisão em `arquitetura/ARQUITETURA_ONLINE.md` (Progressão
+> Normalizada de Instância). O resto deste documento (fila/brackets,
+> Honra, jungle boss, itens exclusivos de instância, quests) segue válido
+> como referência futura — só o mecanismo de level/itens/talento da
+> instância mudou.
+
 ---
 
 ## 3. Matchmaking / Fila

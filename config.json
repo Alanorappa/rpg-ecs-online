@@ -1,12 +1,13 @@
 {
   "scale": 1.5,
+  "window_mode": "maximized",
   "server_host": "localhost",
   "server_port": 8765,
   "net_user": "teste",
   "net_pass": "123456",
-  "music_volume": 0.06842105263157895,
-  "sfx_volume": 0.15966386554621848,
-  "music_enabled": true,
+  "music_volume": 0.03361344537815126,
+  "sfx_volume": 0.05042016806722689,
+  "music_enabled": false,
   "sfx_enabled": true,
   "hotbar": {
     "slots": [
@@ -40,21 +41,22 @@
     "mapa": 109,
     "diario": 106,
     "habilidades": 104,
-    "skill_level": 108
+    "skill_level": 108,
+    "estatisticas": 99
   },
   "characters": {
     "teste": {
       "hotbar": {
         "slots": [
           "golpe_poderoso",
-          "impacto",
-          "vitoria_iminente",
-          "brado_provocativo",
-          "executar",
-          "interceptar",
-          "punho_no_queixo",
           "golpe_debilitante",
+          "brado_provocativo",
+          "punho_no_queixo",
           "fatiador_de_corpos",
+          null,
+          null,
+          null,
+          null,
           null
         ],
         "keybinds": [
@@ -72,8 +74,8 @@
       },
       "consumable_bar": {
         "slots": [
-          "Po\u00e7\u00e3o de Vida",
-          "Ensopado Revigorante",
+          null,
+          null,
           null,
           null,
           null
@@ -134,11 +136,11 @@
     "Aventureiro": {
       "hotbar": {
         "slots": [
-          "polimorfia",
+          "pirofagia",
           "nova_congelante",
           "bola_de_fogo",
           "bloco_de_gelo",
-          "pirofagia",
+          "polimorfia",
           null,
           null,
           null,
@@ -222,13 +224,13 @@
     "jungo": {
       "hotbar": {
         "slots": [
-          "recarregar",
-          "cancao_ninar",
           "picada_escorpiao",
           "flecha_reiterada",
-          "tiro_repulsivo",
-          "camuflagem",
+          "cancao_ninar",
           "tiro_multiplo",
+          "camuflagem",
+          "recarregar",
+          "tiro_repulsivo",
           "so_um_gole",
           "cancao_inspiracao",
           null
@@ -239,17 +241,17 @@
           51,
           52,
           53,
-          54,
-          55,
-          56,
-          57,
-          48
+          114,
+          116,
+          102,
+          103,
+          113
         ]
       },
       "consumable_bar": {
         "slots": [
-          "Ensopado Revigorante",
-          "Po\u00e7\u00e3o de Vida",
+          null,
+          null,
           null,
           null,
           null
@@ -310,8 +312,8 @@
     "Juugo": {
       "hotbar": {
         "slots": [
-          "golpe_poderoso",
-          "impacto",
+          null,
+          null,
           null,
           null,
           null,
@@ -425,6 +427,314 @@
       "consumable_bar": {
         "slots": [
           "P\u00e3o Simples",
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      }
+    },
+    "Nalthor": {
+      "hotbar": {
+        "slots": [
+          "brado_provocativo",
+          "golpe_poderoso",
+          "impacto",
+          "punho_no_queixo",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          48
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      }
+    },
+    "Gorrtiel": {
+      "hotbar": {
+        "slots": [
+          "golpe_poderoso",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          48
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      }
+    },
+    "Anarin": {
+      "hotbar": {
+        "slots": [
+          "golpe_poderoso",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          48
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      }
+    },
+    "Thalvrak": {
+      "hotbar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          48
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      }
+    },
+    "Krugir": {
+      "hotbar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          48
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      }
+    },
+    "Thaliell": {
+      "hotbar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          48
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      }
+    },
+    "Dornyn": {
+      "hotbar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          48
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          null,
           null,
           null,
           null,

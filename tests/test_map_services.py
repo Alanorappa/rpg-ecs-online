@@ -4,7 +4,7 @@ PROBLEMAS_ARQUITETURA.md §11): is_tile_walkable de módulo resolve o bundle
 do mapa da PRÓPRIA entidade mesmo com _svc apontando pro mapa errado.
 
 Reproduz a classe de bug real: cave_west é 80×60 — um tile de map_1 como
-(131,374) fica FORA DOS LIMITES da caverna. Com _svc sabotado pra caverna
+(129,374) fica FORA DOS LIMITES da caverna. Com _svc sabotado pra caverna
 (simulando register_map_services_for esquecido), o resolver ainda valida
 contra map_1.
 """
@@ -30,14 +30,14 @@ class TestServiceResolverGuard(unittest.TestCase):
                                pathfinding=bundle.pathfinding)
 
     def test_resolver_neutraliza_svc_no_mapa_errado(self):
-        self.assertTrue(wsys.is_tile_walkable(self.p, 131, 374),
+        self.assertTrue(wsys.is_tile_walkable(self.p, 129, 374),
                         "resolver deveria validar contra map_1 (walkable)")
 
     def test_sem_resolver_reproduz_o_bug(self):
         saved = wsys._svc_resolver
         wsys.register_service_resolver(None)
         try:
-            self.assertFalse(wsys.is_tile_walkable(self.p, 131, 374),
+            self.assertFalse(wsys.is_tile_walkable(self.p, 129, 374),
                              "sem resolver deveria falhar (fora dos limites da caverna)")
         finally:
             wsys.register_service_resolver(saved)

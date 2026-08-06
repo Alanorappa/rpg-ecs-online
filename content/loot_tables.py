@@ -27,7 +27,6 @@ from content.item_table import ITEMS as _T
 # ---------------------------------------------------------------------------
 LOOT_TABLES: dict = {
     ("melee", "normal"): [
-        (_T["bone_sword"],       0.01),
         (_T["cracked_club"],     0.01),
         (_T["bone_shield"],      0.01),
         (_T["iron_coif"],        0.03),
@@ -61,6 +60,7 @@ LOOT_TABLES: dict = {
     ("ranged", "elite"): [
         (_T["arcane_wand"],      0.01),
         (_T["hunter_bow"],       0.01),
+        (_T["elven_bow"],        0.01),
         (_T["silk_hood"],        0.03),
         (_T["silk_robe"],        0.03),
         (_T["silk_shoulders"],   0.02),

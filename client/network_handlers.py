@@ -110,6 +110,14 @@ class NetworkHandlers:
             self._handle_msg_arena_match_result(payload)
         elif msg_type == MsgType.ARENA_GATE_OPEN:
             self._handle_msg_arena_gate_open(payload)
+        elif msg_type == MsgType.BG_MATCH_RESULT:
+            self._handle_msg_bg_match_result(payload)
+        elif msg_type == MsgType.BG_QUEUE_STATE:
+            self._handle_msg_bg_queue_state(payload)
+        elif msg_type == MsgType.BG_MATCH_FOUND:
+            self._handle_msg_bg_match_found(payload)
+        elif msg_type == MsgType.BG_MATCH_START:
+            self._handle_msg_bg_match_start(payload)
         elif msg_type == MsgType.CHAT_MESSAGE:
             self._handle_msg_chat_message(payload)
 
@@ -1582,6 +1590,259 @@ class NetworkHandlers:
                 _tt_s = self.world.get_component(self.player_entity, _TTsync)
                 if _tt_s:
                     _tt_s.available_points = int(_srv_tp)
+            # "talent_allocated" (02/08/2026, pedido do usuário — pontos de
+            # talento pareciam acumular mesmo sendo usados): substituição
+            # COMPLETA da alocação (não merge) — sem isso, o TalentTree
+            # LOCAL nunca soube que entrou/saiu da instância, e o painel de
+            # talentos mostrava/mutava a árvore REAL (pré-instância)
+            # enquanto o servidor validava contra a árvore da instância
+            # (vazia) — mesmo espírito de inv_snapshot/equip_snapshot
+            # acima. Só emitido por instance_progression.py::
+            # enter_/exit_normalized_progression.
+            if "talent_allocated" in payload:
+                from engine.components import TalentTree as _TTAlloc
+                _tt_alloc = self.world.get_component(self.player_entity, _TTAlloc)
+                if _tt_alloc is not None:
+                    _tt_alloc.allocated = dict(payload["talent_allocated"])
+            # "level" (01/08/2026, bug real relatado pelo usuário: level
+            # do player não aparecia 1 no client depois de entrar na
+            # progressão normalizada de instância). DIFERENTE do level-up
+            # por XP acima (que deriva o level localmente via
+            # process_levelups a partir de xp_gained) — este é um
+            # OVERRIDE direto e autoritativo do servidor (usado por
+            # server/instance_progression.py, que muda `level` sem
+            # nenhuma XP "ganha" pra re-derivar) — aplica direto, sem
+            # passar por process_levelups.
+            _srv_level = payload.get("level")
+            if _srv_level is not None:
+                from engine.components import CharacterStats as _CSLvl
+                _char_lvl = self.world.get_component(self.player_entity, _CSLvl)
+                if _char_lvl:
+                    _char_lvl.level = int(_srv_level)
+            # Atributos brutos (02/08/2026, bug real relatado pelo usuário:
+            # "comprei um item e o HP ficou 140/380" — 380 era o max_hp
+            # REAL, fora da instância). Só emitido por
+            # server/instance_progression.py::_push_stats_update (enter/
+            # exit/level-up de instância) — mesmo espírito do
+            # talent_allocated acima, mas pros 5 atributos que ALIMENTAM
+            # o recálculo de CombatStats. Sem isso, CharacterStats LOCAL
+            # nunca sabia do reset pro piso da instância — `hp`/`hp_max`
+            # (aplicados acima) só sobrescreviam o RESULTADO uma vez; o
+            # PRÓXIMO recálculo local (qualquer add_modifier/
+            # remove_modifier — client/inventory_handlers.py::_equip_item,
+            # chamado pelo auto-equip da compra de instância, é um desses
+            # gatilhos) recomeça de `CombatStats.base_stamina`, que só
+            # `apply_char_stats_to_combat` sabe reconstruir a partir de
+            # CharacterStats/PermanentStats — sem os atributos certos
+            # aqui, esse recálculo trazia de volta o max_hp REAL.
+            if "vitality" in payload:
+                from engine.components import (CharacterStats as _CSAttr,
+                                        PermanentStats as _PermAttr)
+                from engine.stats_system import apply_char_stats_to_combat as _apply_cstc, \
+                    sync_attack_interval as _sync_ai
+                _char_attr = self.world.get_component(self.player_entity, _CSAttr)
+                if _char_attr is not None:
+                    _char_attr.strength     = payload.get("strength", _char_attr.strength)
+                    _char_attr.intelligence = payload.get("intelligence", _char_attr.intelligence)
+                    _char_attr.agility      = payload.get("agility", _char_attr.agility)
+                    _char_attr.vitality     = payload["vitality"]
+                    _char_attr.defense      = payload.get("defense", _char_attr.defense)
+                    if cs is not None:
+                        # PermanentStats (bônus legado roguelike — ver
+                        # docstring de InstanceProgressionSnapshot): o
+                        # SERVIDOR zera a própria cópia ao entrar na
+                        # instância (enter_normalized_progression), mas a
+                        # cópia LOCAL do cliente nunca era avisada — um
+                        # personagem estabelecido com bônus legado real
+                        # (>0) vazava de volta pro recálculo aqui,
+                        # somando em cima do atributo já normalizado
+                        # (bug real, 03/08/2026: "comprei o Arco do
+                        # Caçador e o HP foi pra 160, mas o item não dá
+                        # atributo de vida nenhum" — não era o item, era
+                        # o PermanentStats real vazando no recálculo
+                        # disparado pelo equip). `InstanceInventoryUIState.
+                        # active` é a MESMA flag "estou na instância" —
+                        # usa o valor deste payload se vier explícito
+                        # (enter/exit sempre mandam), senão o estado atual
+                        # (level-up de instância não manda `in_instance`,
+                        # mas o player continua lá dentro).
+                        from ui.ui_components import InstanceInventoryUIState as _IIUSAttr
+                        _iius_attr = self.world.get_component(self.player_entity, _IIUSAttr)
+                        _in_instance_now = payload.get("in_instance")
+                        if _in_instance_now is None and _iius_attr is not None:
+                            _in_instance_now = _iius_attr.active
+                        _perm_attr = (None if _in_instance_now
+                                     else self.world.get_component(self.player_entity, _PermAttr))
+                        _apply_cstc(_char_attr, cs, _perm_attr)
+                        from engine.components import Equipment as _EqAttr
+                        _sync_ai(cs, self.world.get_component(self.player_entity, _EqAttr))
+            # Sync de Inventory/Equipment de instância (01/08/2026, pedido
+            # do usuário — painel HUD dedicado de inventário de instância).
+            # Só emitido por server/instance_progression.py::
+            # enter_/exit_normalized_progression, nos 2 momentos em que o
+            # servidor troca esses componentes de verdade (add_component) —
+            # sem isso, a bag local do cliente nunca sabia da troca e um
+            # item comprado dentro da instância era anexado ao Inventory
+            # REAL (errado), às vezes silenciosamente descartado se a bag
+            # real já estivesse cheia. Substituição COMPLETA (replace, não
+            # merge incremental) — mesmo espírito de TRADE_STATE, nunca
+            # otimista. Reconstrução via self._item_from_data (mesmo
+            # formato de BUY_RESULT/TRADE_STATE).
+            if "inv_snapshot" in payload:
+                from engine.components import Inventory as _InvSync
+                _inv_sync = self.world.get_component(self.player_entity, _InvSync)
+                if _inv_sync is not None:
+                    _inv_sync.items = [self._item_from_data(d) for d in payload["inv_snapshot"]]
+                    _inv_sync.max_slots = int(payload.get("inv_max_slots", _inv_sync.max_slots))
+            if "equip_snapshot" in payload:
+                from engine.components import Equipment as _EqSync
+                _eq_sync = self.world.get_component(self.player_entity, _EqSync)
+                if _eq_sync is not None:
+                    _eq_sync.slots = {
+                        slot: (self._item_from_data(d) if d else None)
+                        for slot, d in payload["equip_snapshot"].items()
+                    }
+                    # Bug real relatado pelo usuário (03/08/2026, "jungo"):
+                    # comprar o Arco do Caçador (só crit_rating) fazia o HP
+                    # saltar de 140 pra 160 — o print das Estatísticas
+                    # mostrava "+20" de HP/Estamina "de Itens" com a bag de
+                    # equipamento TOTALMENTE VAZIA, antes mesmo de comprar
+                    # qualquer coisa. Causa raiz: trocar `Equipment.slots`
+                    # aqui (armadura/arma REAIS → vazio, ao entrar na
+                    # instância) nunca limpava os modifiers `source=
+                    # "equipment"` correspondentes em `CombatStats.
+                    # modifiers` — essas duas listas são independentes
+                    # (Equipment é só "o que está no slot", CombatStats.
+                    # modifiers é quem realmente alimenta o recálculo). Os
+                    # modifiers REAIS (armadura da cabeça/peito/botas do
+                    # personagem antes de entrar) continuavam lá, invisíveis
+                    # até o PRÓXIMO recalculate_effective_stats (disparado
+                    # por QUALQUER add_modifier/remove_modifier — equipar o
+                    # arco novo, mesmo sem ele mesmo dar HP) reaplicar TUDO
+                    # de novo, com o "hp_max" explícito do payload já
+                    # sobrescrito por cima do valor errado. Fix: espelha
+                    # exatamente o que o SERVIDOR já faz em WorldServer.
+                    # _apply_equipment_modifiers — reconstrói os modifiers
+                    # `source="equipment"` do zero, a partir do Equipment
+                    # que ACABOU de ser trocado (vazio na instância, cheio
+                    # fora dela).
+                    if cs is not None:
+                        from engine.components import Modifier as _ModEqSync
+                        cs.modifiers = [m for m in cs.modifiers if m.source != "equipment"]
+                        for _it_eq in _eq_sync.slots.values():
+                            if _it_eq is None:
+                                continue
+                            for _mod_eq in _it_eq.modifiers:
+                                cs.modifiers.append(_ModEqSync(
+                                    _mod_eq.attribute, _mod_eq.value, _mod_eq.type,
+                                    source="equipment"))
+                        cs._recalculate_effective_stats()
+            # skills_hotbar/learned_skill_ids (02/08/2026, pedido do usuário
+            # — a barra de ações continuava mostrando as skills REAIS
+            # dentro da instância, em vez de ir liberando conforme o
+            # personagem sobe de level lá dentro). Reconstrução via
+            # PlayerSkills._make_skill(skill_id, SKILL_CATALOG) — skill é
+            # dado ESTÁTICO compartilhado, não precisa de payload rico
+            # (diferente de item, que é dinâmico).
+            #
+            # Reconciliação POR SLOT, não substituição completa (03/08/2026,
+            # bug real: "o cooldown das skills não aparece logo depois de
+            # usar, só depois de apertar o atalho de novo"). Este payload
+            # chega a cada level-up de instância (`_process_instance_
+            # levelup`/`_push_stats_update`) — e level-up acontece a cada
+            # poucos segundos na BG (XP por proximidade de minion morto).
+            # Substituir o objeto `Skill` inteiro reseta `current_cooldown`/
+            # `charges`/`charge_timer`/`_server_pending`/`fail_flash_timer`
+            # pra 0 — o cooldown real (mandado pelo SKILL_RESULT da própria
+            # skill) fica visualmente "limpo" até a PRÓXIMA mensagem
+            # atualizar de novo (ex.: a rejeição do 2º uso). Slot cujo
+            # `skill_id` não mudou mantém o objeto Skill JÁ EXISTENTE (com
+            # seu estado ao vivo); só slots que realmente mudaram de skill
+            # (nova liberada, ou vazio↔ocupado) ganham um Skill novo.
+            if "skills_hotbar" in payload:
+                from content.skill_config import SKILL_CATALOG as _SCHb
+                _ps_hb = self.world.get_component(self.player_entity, PlayerSkills)
+                if _ps_hb is not None:
+                    _new_hotbar = []
+                    for _i_hb, sid in enumerate(payload["skills_hotbar"]):
+                        _cur_sk = _ps_hb.skills[_i_hb] if _i_hb < len(_ps_hb.skills) else None
+                        if sid and _cur_sk is not None and _cur_sk.skill_id == sid:
+                            _new_hotbar.append(_cur_sk)
+                        else:
+                            _new_hotbar.append(PlayerSkills._make_skill(sid, _SCHb) if sid else None)
+                    _ps_hb.skills = _new_hotbar
+            if "learned_skill_ids" in payload:
+                _ps_learned = self.world.get_component(self.player_entity, PlayerSkills)
+                if _ps_learned is not None:
+                    _ps_learned.learned_skill_ids = set(payload["learned_skill_ids"])
+            if "inv_snapshot" in payload or "equip_snapshot" in payload:
+                # Causa raiz real do bug "não consigo comprar na loja de
+                # instância" (02/08/2026, relatado pelo usuário): o servidor
+                # valida espaço de inventário em BUY_REQUEST usando
+                # `session.last_client_payload["inventory"]` (server/
+                # session.py::_handle_buy_request) — o último SAVE_STATE que
+                # o cliente mandou, NÃO o Inventory ao vivo. Sem mandar um
+                # SAVE_STATE logo após o swap acima, esse cache no servidor
+                # continuava com a contagem da bag REAL (ex.: 18 itens),
+                # enquanto `Inventory.max_slots` ao vivo já virou 6 — toda
+                # compra caía em "inventory_full" (`inv_count(18) + 1 >
+                # max_slots(6)`) mesmo com a bag da instância vazia. Mesmo
+                # problema na saída (max_slots volta a ser grande, mas o
+                # cache ainda reflete os 6 slots da instância — inofensivo
+                # nesse sentido, mas mandar aqui também mantém tudo
+                # consistente nos dois sentidos).
+                self._send_save_state()
+            if "in_instance" in payload:
+                from ui.ui_components import InstanceInventoryUIState as _IIUS
+                _iius = self.world.get_component(self.player_entity, _IIUS)
+                if _iius is not None:
+                    _new_active = bool(payload["in_instance"])
+                    # Barra de consumíveis (02/08/2026, pedido do usuário —
+                    # não deveria mostrar os consumíveis de fora da
+                    # instância) — ConsumableBar é 100% client-local (nunca
+                    # existiu no servidor, config pessoal salva em
+                    # config.json), então o snapshot/troca é feito aqui
+                    # mesmo, gatilhado pela MESMA transição de in_instance
+                    # que já troca Inventory/Equipment/TalentTree no
+                    # servidor. Guarda em self._real_consumable_bar_slots
+                    # (só existe durante a instância).
+                    from engine.components import ConsumableBar as _CBInst
+                    _cb_inst = self.world.get_component(self.player_entity, _CBInst)
+                    if _cb_inst is not None:
+                        if _new_active and not _iius.active:
+                            self._real_consumable_bar_slots = list(_cb_inst.slots)
+                            _cb_inst.slots = [None] * len(_cb_inst.slots)
+                        elif not _new_active and _iius.active:
+                            _real_slots = getattr(self, "_real_consumable_bar_slots", None)
+                            if _real_slots is not None:
+                                _cb_inst.slots = _real_slots
+                            self._real_consumable_bar_slots = None
+                    # HUD de Kills/Deaths/Farm/Gold (02/08/2026) — zera na
+                    # entrada nova (False->True); os valores da partida
+                    # anterior não têm por que sobreviver a uma reentrada.
+                    if _new_active and not _iius.active:
+                        _iius.match_kills = 0
+                        _iius.match_deaths = 0
+                        _iius.match_farm = 0
+                        _iius.match_gold = 0
+                    _iius.active = _new_active
+            if "match_kills" in payload or "match_deaths" in payload \
+               or "match_farm" in payload or "match_gold" in payload:
+                # Push ao vivo, dirty-check já feito no servidor
+                # (debug_battleground.py::_tick_kda_hud) — valores absolutos,
+                # não delta (servidor já calculou o delta contra o snapshot
+                # de entrada).
+                from ui.ui_components import InstanceInventoryUIState as _IIUSKda
+                _iius_kda = self.world.get_component(self.player_entity, _IIUSKda)
+                if _iius_kda is not None:
+                    if "match_kills" in payload:
+                        _iius_kda.match_kills = payload["match_kills"]
+                    if "match_deaths" in payload:
+                        _iius_kda.match_deaths = payload["match_deaths"]
+                    if "match_farm" in payload:
+                        _iius_kda.match_farm = payload["match_farm"]
+                    if "match_gold" in payload:
+                        _iius_kda.match_gold = payload["match_gold"]
             if "hp" in payload and "heal_amount" not in payload and cs:
                 cs.current_hp = payload["hp"]
                 if payload.get("hp_max", 0) > 0:
@@ -1725,6 +1986,24 @@ class NetworkHandlers:
             combat_state.target_entity_id = -1
             combat_state.is_pursuing      = False
             combat_state.is_alive         = True
+
+        # Cancela movimento automático pendente (02/08/2026, bug real
+        # relatado pelo usuário: reviver dentro do battleground de teste
+        # fazia o personagem "andar sozinho" de volta pro tile onde
+        # morreu) — se o player estava perseguindo/seguindo/andando até um
+        # ground_target quando morreu, PlayerAutoMove nunca era limpo (só
+        # TileMovement/GhostState/CombatState acima), então o path/
+        # ground_target ANTIGO (perto de onde morreu) sobrevivia ao
+        # teleporte de revive e retomava assim que o movimento voltava a
+        # ser permitido. Mesmo padrão já usado ao aplicar CC (root/stun/
+        # polymorph/disoriented, ver applied_effects acima).
+        from engine.components import PlayerAutoMove as _PAMRev
+        am = self.world.get_component(self.player_entity, _PAMRev)
+        if am:
+            am.active      = False
+            am.path.clear()
+            am.ground_target = None
+            am.follow_eid   = -1
         self._net_last_target = -1
         self._death_timer = 0.0
 
@@ -2189,6 +2468,62 @@ class NetworkHandlers:
                     if not stacked and len(inv_br.items) < inv_br.max_slots:
                         item_br.stack = qty_br
                         inv_br.items.append(item_br)
+                        # Auto-equipar na loja de instância (02/08/2026, pedido
+                        # do usuário: "a ideia era os itens já valerem como
+                        # equipados no momento que eu compro" — os 6 slots
+                        # dedicados foram removidos por causa disso, a bag
+                        # normal já basta). Só tenta se o item for
+                        # equipável (tem slot de verdade, não consumível/
+                        # material) — reaproveita self._equip_item
+                        # (InventoryHandlers), que já valida classe/level/
+                        # arma; se rejeitar, o item simplesmente fica na bag
+                        # (mesmo fallback gracioso de uma compra fora da
+                        # instância).
+                        from ui.ui_components import InstanceInventoryUIState as _IIUSBuy
+                        _iius_buy = self.world.get_component(self.player_entity, _IIUSBuy)
+                        if (_iius_buy is not None and _iius_buy.active
+                                and getattr(item_br, "slot", "")):
+                            # Preserva a FRAÇÃO de HP através do equip
+                            # (03/08/2026, pedido do usuário: "se o
+                            # personagem está 100% de hp, quando ele
+                            # equipa um item precisa continuar com 100%
+                            # de hp, ele não sofreu nenhum dano") —
+                            # _equip_item → add_modifier → recalculate_
+                            # combat_stats SÓ preserva o HP ABSOLUTO
+                            # (comportamento padrão de buff/debuff em
+                            # qualquer RPG: current_hp não muda, então a
+                            # % cai se max_hp subir) — comprar item na
+                            # loja de instância não é dano nem cura, é
+                            # normalização de equipamento; o jogador não
+                            # deveria "perder" % de vida por isso.
+                            from engine.components import CombatStats as _CSBuyHp
+                            _cs_buy = self.world.get_component(self.player_entity, _CSBuyHp)
+                            _hp_frac_buy = (_cs_buy.current_hp / _cs_buy.max_hp
+                                           if _cs_buy and _cs_buy.max_hp > 0 else 1.0)
+                            self._equip_item(item_br)
+                            if _cs_buy is not None:
+                                _cs_buy.current_hp = min(
+                                    _cs_buy.max_hp, round(_hp_frac_buy * _cs_buy.max_hp))
+                    # Auto-adiciona à barra de consumíveis na loja de
+                    # instância (02/08/2026, pedido do usuário: "os
+                    # consumíveis deveria aparecer só quando o player
+                    # comprasse... então deveria ir para a barra de ações
+                    # de consumíveis automaticamente"). Roda pra
+                    # stacked OU não (item já existia na bag = ainda
+                    # precisa aparecer na barra se ainda não estiver lá).
+                    # Só o PRIMEIRO slot livre — não sobrescreve nada que
+                    # o jogador já tenha colocado manualmente.
+                    if getattr(item_br, "item_type", "") == "consumable":
+                        from ui.ui_components import InstanceInventoryUIState as _IIUSCons
+                        _iius_cons = self.world.get_component(self.player_entity, _IIUSCons)
+                        if _iius_cons is not None and _iius_cons.active:
+                            from engine.components import ConsumableBar as _CBBuy
+                            _cb_buy = self.world.get_component(self.player_entity, _CBBuy)
+                            if _cb_buy is not None and item_br.name not in _cb_buy.slots:
+                                for _i_cb in range(len(_cb_buy.slots)):
+                                    if _cb_buy.slots[_i_cb] is None:
+                                        _cb_buy.slots[_i_cb] = item_br.name
+                                        break
             from ui.combat_log import LOG as _LOG_BR
             price = payload.get("price", 0)
             name  = item_data.get("name", "item")
@@ -2265,6 +2600,26 @@ class NetworkHandlers:
         map_file = payload.get("map_file", "")
         target_x = int(payload.get("target_x", 0))
         target_y = int(payload.get("target_y", 0))
+        # Qualquer troca de mapa encerra o contexto de "time atual" (01/08/2026)
+        # — remove o Faction real anexado por _handle_msg_arena_countdown
+        # (client/arena_handlers.py) — sem isso, sair de uma instância
+        # (arena/battleground) e voltar pro mundo aberto continuava
+        # resolvendo hostilidade/cor de barra como se ainda estivesse no
+        # time antigo. Reanexado de novo por ARENA_COUNTDOWN se entrar em
+        # outra instância na sequência.
+        from engine.components import Faction as _FacZc
+        self.world.remove_component(self.player_entity, _FacZc)
+        # Battleground de teste (02/08/2026): ZONE_CHANGE é o único sinal de
+        # "saí da BG" (manual "/testbg leave" OU timeout automático de 15s
+        # forçando saída) — fecha o modal de resultado se estiver aberto.
+        self._bg_result_val = None
+        # Fila REAL de Battleground (04/08/2026) — mesmo racional: sem
+        # BG_MATCH_END dedicado (a fila real reaproveita ZONE_CHANGE puro
+        # pra sair, ver server/bg_queue_processor.py::request_bg_leave),
+        # então ZONE_CHANGE é o único sinal de "saí da partida" — limpa o
+        # contexto de PvP local (client/bg_queue_handlers.py).
+        self._bg_in_match_val         = False
+        self._bg_opponents_server_val = set()
         if map_file:
             self._do_transition({
                 "target_map": map_file,

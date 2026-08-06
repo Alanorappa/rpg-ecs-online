@@ -44,6 +44,7 @@
 | Zona PvP (Fase F) — cliente | `client/pvp_zone_handlers.py` | `PvpZoneHandlers` — indicador cosmético (log + banner "ZONA PVP"), geometria vem do mesmo `_entities.json` local (sem mensagem de rede nova) |
 | Arena 2x2 (Fase G leva 1) — servidor | `server/match_processor.py` | `MatchProcessorMixin` — fila FIFO de grupos, instanciamento privado por partida (`WorldServer._load_instance`/`_unload_instance`), time via `Faction`, elimina via interceptor de golpe letal composto |
 | Arena 2x2 (Fase G leva 1) — cliente | `client/arena_handlers.py` | `ArenaHandlers` — botão "Fila de Arena 2x2" no frame de grupo, avisos de fila/início/fim; troca de mapa reusa 100% `ZONE_CHANGE`/`_do_transition` (zero código novo de transição) |
+| Battleground de teste (Nexus/placar) — cliente | `client/battleground_handlers.py` | `BattlegroundHandlers` (02/08/2026) — modal de fim de partida (`BG_MATCH_RESULT`, placar dos 2 times), botão "Voltar" manda `/testbg leave` via chat; fechado por `ZONE_CHANGE` (manual ou timeout de 15s). HUD ao vivo de K/D/Farm/Gold em `client/hud_handlers.py::_draw_bg_kda_hud`. Ver ARQUITETURA_ONLINE.md §34.74.14 |
 | Trade (player↔player) — estado de UI | `ui/ui_components.py` | `TradeUIState` (componente ECS no player) |
 | Chat (texto, 3 abas Local/Mundial/Combate) — cliente | `client/chat_handlers.py` | `ChatHandlers` — Enter abre campo, digita, Enter envia; abas, scrollbar, wrap de linha (500 entradas/aba) |
 | Chat — balão de fala acima da cabeça | `ui/chat_bubble.py` | `ChatBubbleManager`/`CHAT_BUBBLE` — rastreia Position ao vivo (diferente de `ui/floating_text.py`) |
@@ -109,8 +110,16 @@
 | Criar NPC de combate (guarda, etc — facção tipicamente amigável) | `engine/entity_factory.py` | `create_combat_npc()` (tag `NPC`) — ambos compartilham `_build_combat_entity()` |
 | Adicionar NPC de combate a um mapa (conteúdo real) | `maps/{mapa}_entities.json` | chave `"combat_npcs"` (lista de `{x,y,faction,name,profession,...}`) — lido por `engine/map_loader.py` + `server/world_server.py::_create_combat_npcs()` |
 | Criar/modificar tipo de torre (Sistema de Torres, 29/07/2026) | `content/tower_definitions.py` | `TOWER_TABLE` (tabela própria, SEPARADA de MOB_TABLE — XP/ouro/atributos próprios) |
+| Criar/modificar tipo de minion (Sistema de Minions, 30/07/2026) | `content/minion_definitions.py` | `MINION_TABLE` (tabela própria, SEPARADA de MOB_TABLE — igual Torre) — `entity_factory.create_minion()`, lógica em `engine/world_systems.py::MinionSystem` |
+| Adicionar lane de minion a um mapa (spawn/base inimiga/intervalo de wave) | `maps/{mapa}_entities.json` | chave `"minion_lanes"` (lista de `{faction,spawn_tile,target_tile,wave_interval_s,level}`) — lido por `engine/map_loader.py` + registrado em `server/world_server.py::_create_minion_lanes()`; ativado por `_activate_minion_lanes()` quando o combate libera (`match_processor.py`) |
 | Torre estática com facção — entidade + IA de alvo/ataque | `engine/entity_factory.py::create_tower()` + `engine/world_systems.py::TowerSystem` | sem `AIControlled`; targeting sticky/aggro-switch/ramp — ver `ARQUITETURA_ONLINE.md` §34.70 |
 | Adicionar torre a um mapa (conteúdo real) | `maps/{mapa}_entities.json` | chave `"towers"` (lista de `{x,y,tower_key,faction,level,respawnable,respawn_s,regen_enabled}`) — lido por `engine/map_loader.py` + `server/world_server.py::_create_towers()` |
+| Progressão normalizada de instância (base pro futuro modo Battlefield, 31/07/2026) | `server/instance_progression.py` | `enter_/exit_normalized_progression()`, `is_in_normalized_progression()`, `grant_instance_xp()` (chamado de verdade desde 01/08/2026, ver §34.74.6), `grant_instance_gold()` — ver `ARQUITETURA_ONLINE.md` §34.74 |
+| Tabela de skill unlock por level de instância / itens da loja de instância | `content/skill_config.py` / `content/instance_shop.py` | `INSTANCE_SKILL_UNLOCK_ORDER` / `INSTANCE_SHOP_ITEM_IDS` (conectado à loja real desde 01/08/2026, `content/merchant_data.py::SHOPS["instance_shop"]`) |
+| Mapa de teste MOBA (rotas/torres/progressão normalizada, 01/08/2026) | `maps/moba_battleground.csv` + `_entities.json` | 100×100, 20 torres, 6 lanes de minion (top/mid/bot por time, `lane_id`), 2 vendedores (`shop_id: "instance_shop"`) — gerado de `maps/moba_battleground.png` via `tools/png_to_map.py` |
+| Gancho de debug pra testar o mapa MOBA sem fila/matchmaking real | `server/debug_battleground.py` | comando de chat `/testbg a\|b\|leave`, interceptado em `server/session.py::_handle_chat` — infra DESCARTÁVEL, zero acoplamento com Arena, ver `ARQUITETURA_ONLINE.md` §34.74.1 |
+| Fila REAL de matchmaking da BG estilo MOBA (04/08/2026) — servidor | `server/bg_queue_processor.py` | `BgQueueProcessorMixin` — fila única sem modo (token `("solo",eid)`/`("party",party_id)`), `_tick_bg_queue`/`_bg_try_pack` (maior partida simétrica possível, 1x1-5x5), instância privada por partida, Nexus derrubado termina, respawn automático + HUD de KDA por partida — ver `ARQUITETURA_ONLINE.md` §34.74.31 |
+| Fila REAL de BG — cliente (modal, aceite, comando `/bgqueue`/F1) | `client/bg_queue_handlers.py` | estado de fila/aceite + `_open_bg_queue_modal()` (chamado por `game.py::K_F1` e pelo comando de chat); a LINHA "Battleground" dentro do modal unificado é desenhada em `client/arena_handlers.py::_draw_arena_queue_modal` |
 
 ---
 
@@ -227,6 +236,7 @@ rpg_ecs_online/
 │   ├── party_processor.py           ← PartyProcessorMixin: grupo N-ário, convites, líder, XP compartilhado
 │   ├── pvp_zone_processor.py        ← PvpZoneProcessorMixin: zona PvP (Fase F), stateless, sem tick-check
 │   ├── match_processor.py           ← MatchProcessorMixin: Arena 2x2 (Fase G leva 1) — fila, instância, time por Facção
+│   ├── bg_queue_processor.py        ← BgQueueProcessorMixin: fila REAL da BG (04/08/2026) — sem modo, maior partida simétrica possível
 │   └── server_death_handler.py      ← PendingDeath: XP (split por dano + grupo), loot, SpawnZone, despawn
 │
 ├── client/                          ← ONLINE-ONLY (cliente de rede — mixins de GameEngine)
@@ -236,7 +246,8 @@ rpg_ecs_online/
 │   │   habilidades_handlers.py, online_mode_handlers.py, hotbar_handlers.py,
 │   │   consumable_bar_handlers.py, hud_handlers.py, modal_stack_handlers.py,
 │   │   trade_handlers.py, duel_handlers.py, party_handlers.py, pvp_zone_handlers.py,
-│   │   arena_handlers.py, chat_handlers.py, colors.py
+│   │   arena_handlers.py, battleground_handlers.py, bg_queue_handlers.py,
+│   │   chat_handlers.py, colors.py
 │
 ├── data/                            ← criada automaticamente
 │   └── game.db                      ← banco SQLite (contas + personagens)

@@ -9601,6 +9601,3076 @@ achado ao investigar `tests/test_arena.py::TestArenaAceiteContagem::
 test_fim_do_preparo_abre_portao_fisico` falhando após o resize do mapa.
 Corrigido atualizando `ARENA_GATE_TILES` pras 26 coordenadas reais.
 
+### §34.73 — Sistema de Minions: lane creeps estilo MOBA (30/07/2026)
+
+Pedido do usuário: NPCs que nascem na base do time em waves (3 melee +
+3 à distância + 1 à distância tier raro), andam por um caminho até a
+base inimiga com checkpoints a cada 5 tiles, enfrentam qualquer hostil
+(torre/NPC/player) que entrar no raio de aggro, e ao perder o alvo
+voltam pro ÚLTIMO CHECKPOINT (não pra base) antes de retomar o caminho.
+XP compartilhado; moeda deixada pra outro momento (pedido explícito).
+
+Decisões confirmadas com o usuário via `AskUserQuestion` (não perguntar
+de novo):
+
+- **Sistema de IA PRÓPRIO** (`MinionSystem`, `engine/world_systems.py`)
+  — sem `AIControlled`/`EnemyAISystem` compartilhado, que só sabe voltar
+  pro spawn fixo e ficar parado pra sempre depois (não suporta
+  "checkpoint + retomar avanço"). Mesma decisão já tomada pra Torre
+  (§34.70) — zero risco de regressão nos mobs/NPCs do mundo aberto.
+- **XP flui pelo mesmo pipeline que Torre já usa** (hook em
+  `server/server_death_handler.py`, ANTES do fallback de `MOB_TABLE`) —
+  mas com tabela PRÓPRIA (`content/minion_definitions.py::MINION_TABLE`),
+  já que a construção da entidade também é própria (não passa por
+  `_build_combat_entity`).
+- **Split de XP** reaproveita o mecanismo de GRUPO que já existe
+  (`PARTY_XP_SHARE_RADIUS_TILES=15`, `server/party_processor.py::
+  _party_members_in_range`) — times de arena (2v2/3v3) já são grupo de
+  verdade (fila exige estar em grupo do tamanho do time), então morte
+  de minion cair no mesmo `pending_xp`/pipeline de Torre/mob já
+  compartilha automaticamente, ZERO código novo de split.
+- **Intervalo de wave CONFIGURÁVEL por lane** (campo `wave_interval_s`
+  no JSON do mapa, mesmo padrão de `respawn_s` da Torre — não constante
+  global), default 45s.
+- **Moeda/gold fora de escopo** — `coins=0, loot_items=[]` fixo (mesmo
+  padrão de Torre quando não configurada).
+
+**Modelo de dados** — `content/minion_definitions.py::MINION_TABLE`:
+3 tipos (`minion_melee`/`minion_ranged`/`minion_ranged_raro`, esse
+último com `tier="rare"` — já existe em `ENEMY_TIER_CONFIGS`, hp×3/
+dmg×2/xp×4). Campo NOVO em relação a `TOWER_TABLE`:
+`aggro_range_tiles` (raio de PERCEPÇÃO, separado de
+`attack_range_tiles`/alcance de ataque — Torre usa o mesmo valor pros
+dois papéis, minion precisa perceber de mais longe do que ataca,
+mesma distinção que `AGGRO_RADIUS_TILES` vs `attack_range_tiles` já
+fazem no `EnemyAISystem`, só que por TIPO em vez de constante global —
+mesma filosofia da correção §34.72.2).
+
+**Componente `Minion`** (`engine/components.py`): `route` (path
+COMPLETO base→base, calculado 1x via pathfinding no spawn da wave) +
+`route_idx` (ÚNICA fonte de verdade de progresso — "checkpoint" é
+DERIVADO, `route_idx // 5 * 5`, não uma lista separada autorada à
+mão — nenhum conceito de waypoint/checkpoint existia no codebase antes
+disso) + `current_path`/`path_recalc_timer` (caminho tile-a-tile CURTO,
+recalculado via A* real sempre que o minion precisa andar até um
+destino que pode estar a VÁRIOS tiles — perseguir alvo, voltar pro
+checkpoint, ou retomar `route` depois de ter sido puxado pra fora dela
+em combate — sem isso, `start_tile_movement` trataria qualquer
+distância como 1 tile só, virando um "salto" instantâneo pra destinos
+distantes; bug real pego em teste manual ANTES do commit, corrigido
+adicionando repathing tipo `AIControlled.path`/`EnemyAISystem`).
+
+**`MinionSystem.update()`** por minion a cada tick: máquina de estado
+própria `ADVANCING`/`FIGHTING`/`RETURNING`. Aggro/alvo usa `is_hostile`
+(mesmo resolver de Faction que Torre já usa — zero dado novo, times
+`arena_time_a`/`arena_time_b` já hostis entre si) SEM a nuance de
+"mob > player" que Torre tem (não pedida aqui — pega só o hostil mais
+próximo, seja torre/NPC/player). Ataque melee = `deal_damage` direto;
+ranged = `Projectile` via `_spawn_attack_projectile` (helper NOVO,
+extraído de `TowerSystem._attack` — MinionSystem virou o 2º consumidor
+real da mesma lógica de spawn de projétil, duplicar pela 2ª vez deixou
+de valer a pena).
+
+**Wave spawning** (`WorldServer`): `_minion_lanes` (config por mapa,
+registrada em `_create_minion_lanes` durante `_load_map_for`, mesmo
+padrão de `_create_towers`) + `_minion_wave_timers` (chave presente =
+lane ATIVA). DIFERENTE do respawn de Torre (`_tick_tower_respawns`, 1
+morte→1 timer→1 respawn no MESMO tile): minion é timer POR LANE,
+incondicional (dispara sozinho no relógio, sempre em LOTE de 7) — morto
+NÃO agenda respawn individual, só a próxima wave programada cria
+minions novos. **Trigger de ativação**: `_activate_minion_lanes`,
+chamado por `server/match_processor.py::_tick_arena_pending` no EXATO
+momento em que `fight_started=True` (portão físico abre) — nunca
+durante o preparo.
+
+**Dados de mapa** — `maps/{mapa}_entities.json::"minion_lanes"` (novo
+array, `engine/map_loader.py`): `faction`/`spawn_tile`/`target_tile`/
+`wave_interval_s`/`level` por lane.
+
+**2 bugs da MESMA classe já corrigida pra Torre, re-encontrados e
+corrigidos proativamente** (Torre não tem `AIControlled`, então
+qualquer código que assume "mob = tem AIControlled" fica cego pra
+Torre — e agora também pra Minion):
+- `_build_mob_spawn_payload` (`server/world_server.py`) sempre mandava
+  `is_ranged=False` pra minion (preso no default, já que não tem
+  `AIControlled` nem é sempre-ranged como Torre) — cliente escolheria
+  som/animação de melee pra minion ranged. Corrigido com branch
+  `elif Minion: is_ranged = attack_range_tiles > 1`.
+- `_mob_attacker_of` (`server/combat_processor.py`, reverse-map pra
+  atribuição de combat log/som quando mob ataca player) só reconhecia
+  `AIControlled`/`Tower` — dano de minion em player perdia o atacante
+  certo (caía em `-1` ou herdava o `_last_mob_attacker` errado).
+  Corrigido com o mesmo branch que Torre já tinha, agora pra `Minion.
+  current_target_eid`.
+
+Testes: `tests/test_minions.py` (15 testes) — avanço ao longo da rota,
+engajamento de hostil no raio de aggro, dano melee direto, projétil
+ranged com sabor de classe correto, nunca ataca aliado, volta pro
+ÚLTIMO CHECKPOINT (não pro spawn) ao perder o alvo (sondagem tick-a-
+tick, não contagem fixa — o tempo de ida-e-volta depende da distância
+real), retoma avanço depois de voltar, composição exata da wave (3/3/1),
+rota calculada via pathfinding real, intervalo configurável por lane,
+lane inativa nunca spawna, XP flat da própria definição, sem ouro/loot,
+`is_ranged` correto por tipo, sync via pipeline genérico com Faction
+correta. Verificado com `git stash -u` (todos os 15 falham genuinamente
+sem a implementação — erro de import na coleta).
+
+#### §34.73.1 — 2 bugs reais de movimento achados no playtest do usuário (30/07/2026, mesmo dia)
+
+**1) Lane da arena nunca foi criada de verdade**: implementei todo o
+mecanismo (dado/sistema/wave/hook), mas esqueci de adicionar o array
+`"minion_lanes"` no `maps/arena_poco_negro_entities.json` real — sem
+isso, `_create_minion_lanes` nunca registrava nada e nenhuma wave
+nascia. Corrigido com 2 lanes (`arena_time_a`/`arena_time_b`, coluna 23,
+espelhadas, `wave_interval_s=45`). Validado com script de integração
+completo (fila → aceite → força fim do preparo → roda ticks → confirma
+14 minions com a composição certa).
+
+**2) Minion "andava 1 tile, parava ~0,8s, repetia"**: bug real no
+throttle de `MinionSystem._walk_toward` — o backoff de retry de
+pathfind (`PATH_RECALC_INTERVAL=0.8s`, existe pra não martelar
+`find_path` todo tick quando o MESMO destino falha repetido) estava
+sendo aplicado também na PRIMEIRA tentativa de cada tile novo da rota
+(`current_path` vazio por ter acabado de ser consumido com sucesso
+parecia idêntico, pro código, a "vazio por ter falhado"). Corrigido
+adicionando `Minion.path_dest` — só entra em backoff quando o destino
+é o MESMO de uma tentativa anterior que falhou; destino novo tenta na
+hora. Confirmado via trace tick-a-tick (script de diagnóstico): antes
+do fix, ~16 ticks (0,8s) parado entre CADA tile; depois, 1 tick (o
+natural, entre "chegou" e "emitiu o próximo passo"). Teste de
+regressão: `test_minion_nao_faz_pausa_artificial_entre_tiles_da_rota`
+(sonda ociosidade tick-a-tick, falha se qualquer intervalo > 2 ticks).
+
+Nota técnica à parte (não um bug de produção, mas achado durante o
+diagnóstico): rodar `tests/test_minions.py` depois de `tests/
+test_towers.py` (que usa `WorldServer` real) travava a suíte inteira —
+`engine.world_systems._svc_resolver` (global, setado por
+`register_service_resolver` no `WorldServer.__init__`) ficava apontando
+pro `WorldServer` antigo (mapa real 300x603), e um eid reaproveitado no
+`World()` headless pequeno de `test_minions.py` resolvia o bundle
+ERRADO em `is_tile_walkable`. Corrigido no teste (`_make_world_with_
+services()` chama `register_service_resolver(None)` antes de montar o
+World headless) — não é uma mudança de código de produção.
+
+#### §34.73.2 — Refinamentos de playtest: lanes múltiplas, pileup de minion, level/XP dinâmicos (30/07/2026, mesmo dia)
+
+Usuário validou a arena (com ressalva: vai validar melhor num mapa MOBA
+de verdade) e trouxe 4 pontos:
+
+1. **Múltiplas lanes por time (top/mid/bot)**: `"minion_lanes"` já
+   aceitava várias entradas por mapa, mas `_minion_wave_timers` era
+   chaveado só por `(map_file, faction)` — 2 lanes do MESMO time
+   colidiam na mesma chave, e só a primeira jamais disparava. Corrigido
+   com campo NOVO `lane_id` (JSON, default `"default"` — mapa com 1
+   lane por time, como a arena hoje, não precisa declarar nada) e chave
+   `(map_file, faction, lane_id)` em `_activate_minion_lanes`/
+   `_tick_minion_waves`.
+2. **Minions travando uns nos outros**: tinham pathfinding (A*) desde o
+   início, mas eu nunca passava as posições ocupadas por OUTROS minions
+   pro pathfinder (`dynamic_obstacles`) — cada um martelava repath
+   contra um tile ocupado sem NUNCA desviar, mesma classe de bug que
+   `EnemyAISystem` já resolve pros mobs comuns (`_get_occupied_tiles`).
+   Adicionado `MinionSystem._get_occupied_tiles(map_file, except_eid)`
+   (mesmo princípio, parametrizado por mapa) passado como
+   `dynamic_obstacles` em `_walk_toward`. Detalhe importante: o próprio
+   `dest` (tile-alvo do pathing — seja o alvo de combate ou o
+   checkpoint) é excluído do bloqueio, porque A* rejeita um DESTINO
+   ocupado inteiro (nem acha caminho parcial) — isso quebrava perseguir
+   um alvo (o tile dele sempre "ocupado" por ele mesmo) e voltar pro
+   checkpoint quando outro minion já estava nele. Chegada de verdade
+   continua decidida por distância no chamador (attack_range_tiles/
+   `CHECKPOINT_ARRIVAL_RADIUS`), não por pisar no tile exato — ver
+   próximo item.
+   - Complementar: **checkpoint virou ÁREA** (`CHECKPOINT_ARRIVAL_
+     RADIUS=2` tiles, pedido do usuário — sugestão dele mesmo), não
+     mais um tile único exato — vários minions voltando pro MESMO
+     checkpoint disputavam o único tile exato e travavam uns nos
+     outros (quem chegava primeiro ocupava, o resto nunca "pisava"
+     nele). Chegar a até 2 tiles já conta como "voltou"; `route_idx`
+     é ajustado pro índice do checkpoint ao "chegar" (mesmo sem estar
+     exatamente nele) — sem descontinuidade ao retomar `ADVANCING`.
+3. **Level do minion = média do time**: `WorldServer.
+   _compute_team_avg_level(map_file, faction_id)` (NOVO) — mesma
+   Faction EXPLÍCITA + `get_entity_map` já usados em visão de time
+   (generaliza pra battlefield/dungeon futuro, não depende de
+   `_player_match_id`/bookkeeping específico da arena). Recalculado a
+   CADA wave (`_tick_minion_waves`), não fixado 1x — acompanha quem
+   subiu de level durante a partida. Sem player do time na instância,
+   cai no `level` estático da lane (fallback).
+4. **XP escala com level**: já que o level virou dinâmico, `server_
+   death_handler.py`'s hook de minion mudou de `base_xp = xp_reward`
+   pra `base_xp = xp_reward × identity.level` (mesmo `EntityIdentity.
+   level` gravado por `create_minion`, fonte única, nunca duplicado
+   num campo próprio do componente `Minion`).
+
+Testes novos: `tests/test_minions.py` — 2 lanes do mesmo time disparam
+independente (`lane_id`), level = média exata do time (4+8)/2=6,
+fallback estático sem player do time, XP = `xp_reward×level` exato.
+Suíte completa 3x limpa (só as 2 falhas pré-existentes conhecidas).
+
+#### §34.73.3 — Lane com curva: `target_tile` vira lista de waypoints (30/07/2026, mesmo dia)
+
+Usuário percebeu que uma lane hoje só tinha 2 pontos (spawn/target) —
+suficiente pra uma reta (lane "mid"), mas top/bot de um mapa MOBA de
+verdade fazem curva, precisando de waypoint(s) intermediário(s) antes
+da base inimiga. Proposta do usuário, confirmada: `target_tile` aceita
+ou um par único `[x,y]` (formato de sempre, reta) OU uma lista de
+waypoints `[[x,y],[x,y],...]` — o minion passa por cada um em ordem,
+o ÚLTIMO da lista é a base de verdade.
+
+Encaixou sem tocar em `Minion`/`MinionSystem`: `route` já era só uma
+lista PLANA de tiles, então "chegou de 1 pathfind só" ou "de N pernas
+emendadas" é indistinguível pra quem consome (route_idx/checkpoint
+continuam idênticos). Só 2 pontos mudaram:
+- `engine/map_loader.py`: normaliza os 2 formatos JSON aceitos pra
+  SEMPRE virar lista de tuplas internamente (`target_tile` nunca mais
+  é um par solto depois do parse — quem consome nunca precisa saber
+  qual formato foi usado no JSON).
+- `server/world_server.py::_tick_minion_waves`: em vez de 1
+  `find_path(spawn, target)`, encadeia 1 `find_path` por PERNA
+  (spawn→wp1→wp2→...→última) e concatena tudo num `route` só. Se
+  QUALQUER perna falhar (bloqueada/inalcançável), o minion inteiro
+  daquela wave é pulado (mesmo comportamento de sempre pra falha de
+  pathfind) — não spawna com rota parcial.
+
+Ajuste proativo junto: `manhattan_limit=None` explícito nas pernas de
+lane (o default de `find_path`, 60 tiles, rejeitaria silenciosamente
+uma perna longa num mapa MOBA de verdade — limitação latente mesmo
+antes desta mudança, com 1 perna só).
+
+Testes novos: `tests/test_minions.py` — lane com 2 waypoints produz
+rota que passa pelo intermediário ANTES do final (índice comparado);
+`engine.map_loader._merge_entities_json` normaliza os 2 formatos
+(par único → lista de 1; lista de waypoints → preservada, como
+tuplas) — testado direto contra o parser real, não só o helper de
+teste. Suíte completa 3x limpa (675 testes, só as 2 falhas conhecidas).
+
+### §34.74 — Progressão Normalizada de Instância: base pro futuro modo Battlefield (31/07/2026)
+
+Discussão levantada pelo usuário (não implementação direta): campos de
+batalha estilo MOBA precisam de balanceamento — dois personagens de
+levels/equipamentos reais muito diferentes não podem entrar na mesma
+partida competitiva. Pesquisa feita (LoL/Dota/HotS/WoW) confirmou que
+"nível que reseta a cada partida, sem afetar o personagem persistente"
+é padrão comum (champion level do LoL, hero level do Dota) — mas o
+modelo do usuário é um HÍBRIDO próprio: reset total (como LoL/Dota) +
+progressão de talento reaproveitando a MESMA árvore real da classe
+(demonstração de talentos ainda não desbloqueados no mundo aberto),
+combinado com skill unlock automático por level (V1: 1 fixa por level,
+escolha do jogador estilo LoL fica pra depois) e loja de instância com
+itens reais curados. Nenhuma das 3 referências pesquisadas tem esse
+formato exato.
+
+**Existia doc anterior conflitante**: `next_implementations/
+battlefield_design.md`, §2, já tinha decidido o OPOSTO ("Modelo 1: leva
+tudo do personagem principal" — mantém level/itens/talentos reais,
+balanceia via bracket de matchmaking + buffs temporários). Essa decisão
+foi **superada** por esta (usuário confirmado via pergunta direta) — o
+doc tem uma nota de addendum na §2 apontando pra cá; o resto do doc
+(fila/brackets, moeda Honra, jungle boss, itens exclusivos, quests)
+segue válido como referência futura, fora do escopo desta entrega.
+
+**Escopo desta entrega** (confirmado com o usuário): SÓ o mecanismo de
+progressão normalizada em si (level/talento/skill/gold/itens da
+instância + snapshot/restore + toggle por modo). Fila/matchmaking/moeda
+de instância ficam pra depois. Fica **inerte** — nenhum processador de
+jogo chama os hooks ainda, porque o processador do Battlefield em si
+(fila, times, mapa) é trabalho futuro separado.
+
+**Decisões fechadas com o usuário:**
+1. Talento de instância reaproveita a MESMA árvore/build real da classe
+   (`content/talent_data.py::TALENTS`) — funciona de verdade dentro da
+   instância, 100% descartado ao sair, nunca converte em nada
+   permanente.
+2. Tabela nova por classe de "level de instância → skill" (V1: 1 fixa
+   por level, sem escolha — `content/skill_config.py::
+   INSTANCE_SKILL_UNLOCK_ORDER`).
+3. Loja de instância reaproveita itens REAIS de `content/item_table.py`,
+   lista curada menor (`content/instance_shop.py::
+   INSTANCE_SHOP_ITEM_IDS`, 13 itens).
+4. Overlay 100% temporário — restaura o estado real persistente
+   inteiro ao sair, sem exceção.
+5. Level cap da instância = 15.
+6. Só se aplica ao futuro modo Battlefield — Arena continua exatamente
+   como está hoje (`_reset_combat_resources` inalterado).
+7. Retrátil/opt-in por modo de jogo — toggle `progression_mode`.
+8. Level 1 já concede a 1ª skill (não começa sem nenhuma ativa).
+9. XP além do cap é descartado, sem banking.
+10. Hotbar/keybinds de instância resetam vazios e auto-preenchem
+    (não herdam o layout real do jogador).
+
+**Lacuna real achada durante a implementação (não estava no plano
+original)**: resetar só `CharacterStats.level/current_xp` não bastava —
+os atributos brutos (`strength/intelligence/agility/vitality/defense`,
+que crescem a cada level REAL via `CLASS_LEVEL_GAINS`,
+`engine/stats_system.py`) alimentam `CombatStats` via
+`apply_char_stats_to_combat(char, cs, perm)` independente do `level`.
+Sem resetá-los junto, um personagem de level alto manteria os
+atributos reais dentro da instância e a normalização não faria efeito
+nenhum. Confirmado com o usuário — `InstanceProgressionSnapshot` ganhou
+os 5 campos extras, reset vai pro piso de `CLASS_BASE_STATS[class_id]`
+(nível 1), crescimento durante a instância usa a MESMA
+`CLASS_LEVEL_GAINS` (mesma proporção do jogo real, só que 1x por level
+de instância em vez de 1x por level real). `PermanentStats` (bônus
+permanente roguelike de morte) NÃO entra no reset — mecânica morta,
+personagem não reseta level ao morrer há tempos (confirmado pelo
+usuário).
+
+**Segundo bug real achado antes de escrever os testes**: metade das
+entradas de `INSTANCE_SKILL_UNLOCK_ORDER` são skills desbloqueadas por
+TALENTO no jogo real (ex.: `punho_no_queixo`, `escudo_fogo`) —
+`world_systems.is_skill_authorized()` pra essas ignora
+`PlayerSkills.learned_skill_ids` completamente, só olha
+`TalentTree.allocated`. Conceder a skill só via `learned_skill_ids`
+nunca autorizaria de verdade. Corrigido em `_grant_instance_skill()`
+(`server/instance_progression.py`): também bumpa
+`tt.allocated[tid]` pro mínimo exigido, mesma correção que
+`tests/helpers.py::authorize_skill()` já fazia pra fixtures de teste.
+
+**Implementação:**
+- `engine/components.py::InstanceProgressionSnapshot` (dataclass nova)
+  — guarda o estado real (nível/xp/atributos brutos escalares +
+  referências de `TalentTree`/`PlayerSkills`/`Wallet`/`Inventory`/
+  `Equipment`) enquanto o player está na instância. Presença do
+  componente É o flag "está em progressão normalizada".
+- `server/instance_progression.py` (módulo novo) —
+  `enter_normalized_progression(ws, eid)` / `exit_normalized_progression
+  (ws, eid)` (idempotente) / `is_in_normalized_progression(ws, eid)` /
+  `grant_instance_xp(ws, eid, amount)` (seam pro futuro XP de
+  minion/jungle/kill — não chamado por nada ainda). `ws` é qualquer
+  objeto com `.world` + `._apply_talent_modifiers(eid, allocated)` +
+  `._apply_equipment_modifiers(eid)` (na prática, sempre `WorldServer`)
+  — reaproveita esses 2 métodos já existentes (login/EQUIP_SYNC/
+  TALENT_UPDATE) em vez de reimplementar a aplicação de modifiers de
+  talento/equipamento em `CombatStats`.
+- Toggle por modo: `mode_cfg.get("progression_mode", "real")` — default
+  `"real"` sempre que ausente. `ARENA_MODES` (`server/match_processor.py`)
+  não ganhou a chave — Arena fica inerte por padrão, não por um branch
+  que alguém possa esquecer de excluir. Um futuro processador de
+  Battlefield deve chamar `enter_normalized_progression` logo após
+  `transfer_player`+entrada no time/Faction (mesmo ponto que
+  `request_arena_accept` já faz pra Arena) e
+  `exit_normalized_progression` incondicionalmente no ponto único de
+  saída por-jogador (equivalente a `_arena_leave_now`) — ver docstring
+  do módulo pros 2 pontos de integração exatos.
+
+Testes novos: `tests/test_instance_progression.py` (13 testes) —
+round-trip completo (entra/sai restaura EXATAMENTE, mesma identidade de
+objeto onde aplicável, inclusive com estado real não-trivial pré-setado
+pra provar que não é um no-op level1→level1), level-up até o cap sem
+overflow (+3 pontos de talento por level, não o +1 real), XP além do
+cap descartado, todas as skills da ordem concedidas até o cap,
+`is_skill_authorized` funcionando contra os componentes trocados sem
+NENHUMA mudança na função em si (incluindo o caso talento-gated,
+regressão do bug achado acima), simetria de modifier de talento
+(aloca ponto → `parry_rating` reflete o efeito → sai → reverte
+exatamente), idempotência de saída sem entrada, validação de dados
+(todo id de `INSTANCE_SKILL_UNLOCK_ORDER`/`INSTANCE_SHOP_ITEM_IDS`
+existe no catálogo real e é da classe certa). Suíte completa 3x limpa
+(688 testes, só as 2 falhas pré-existentes conhecidas).
+
+#### §34.74.1 — Mapa de teste + gancho de debug (01/08/2026)
+
+Usuário desenhou `maps/moba_battleground.png` (100×100, cores do
+mapping já existente do jogo) pra validar rotas de minion + torres +
+progressão normalizada, sem esperar o modo Battlefield de verdade
+(fila/matchmaking) ser construído. Convertido via `tools/png_to_map.py`
+(já existente, não precisou de mudança) → `maps/moba_battleground.csv` +
+`maps/moba_battleground_entities.json` (20 torres, 6 lanes de minion
+com `lane_id` top/mid/bot por time — sem isso todas as 3 lanes do MESMO
+time compartilhariam 1 timer só, ver §34.73.2).
+
+**Falso alarme investigado e descartado**: primeiro teste de
+pathfinding (A* real, `PathfindingSystem`) deu `None` nas 3 lanes —
+suspeita inicial (errada) foi cobertura de árvore (`t`, `is_solid=True`,
+quase metade do mapa) bloqueando passagem. Causa real: o teste rodou
+com os portões FECHADOS (`D`, `ARENA_GATE_TILE`, sólido até abrir) —
+spawn/alvo de cada lane ficam num bolsão de 25 tiles isolado atrás do
+próprio portão do time, então SEM abrir o portão nenhuma rota é
+alcançável mesmo (comportamento correto/esperado antes do combate
+liberar). Reteste com portões abertos manualmente: as 3 lanes acham
+caminho limpo (~85-90 tiles). As lanes de grama que o usuário desenhou
+(8 tiles de largura, com waypoint extra no top/bot pra contornar as
+áreas de árvore) sempre estiveram corretas — erro de diagnóstico meu,
+não do mapa.
+
+**Gancho de debug** (`server/debug_battleground.py`, NOVO — infra de
+teste descartável, zero acoplamento com Arena): comando de chat
+`/testbg a|b|leave`, interceptado em `SessionManager._handle_chat`
+(`server/session.py`) ANTES de virar mensagem de chat de verdade.
+`/testbg a`/`b` carrega uma instância COMPARTILHADA (1 por processo de
+servidor, não 1 por jogador) via `_load_instance`, atribui `Faction`,
+teleporta pro bolsão do time, e chama
+`enter_normalized_progression(ws, eid)` (§34.74) — testa os dois
+sistemas junto, como pedido. Portão (tiles `D` locais a este módulo,
+`DEBUG_BG_GATE_TILES` — NÃO generaliza `ARENA_GATE_TILES` da Arena,
+separação deliberada) abre sozinho 15s depois do primeiro player
+entrar, só então chama `_activate_minion_lanes` (mesma regra da Arena:
+nunca antes do portão abrir, senão minion nasceria durante o preparo).
+`/testbg leave` chama `exit_normalized_progression`, remove `Faction`,
+restaura posição real; descarrega a instância quando os dois times
+ficam vazios.
+
+Limitação cosmética conhecida e aceita (feature de teste, não
+produção): cliente não recebe evento de "portão abriu" —
+`ARENA_GATE_OPEN` é hardcoded pra `ARENA_GATE_TILES`
+(`client/arena_handlers.py`), não genérico — então o cliente pode
+continuar renderizando a célula do portão como fechada mesmo depois de
+aberta de verdade no servidor (movimento/pathfinding de minion não são
+afetados, só o visual até trocar de mapa/relogar).
+
+Validado via smoke test manual (não entra na suíte automatizada —
+feature de debug, descartável): `/testbg a` reseta level real→1,
+atribui Faction, teleporta pra instância; portão força-aberto +
+`_activate_minion_lanes` sem exceção; `/testbg leave` restaura level
+real exatamente, remove Faction, volta pro mapa original.
+
+#### §34.74.2 — INCIDENTE REAL: personagem de teste perdeu level 23→1 (01/08/2026)
+
+Usuário testou `/testbg a` em jogo real — cliente caiu com
+`FileNotFoundError` em `load_map_csv` (`engine/map_loader.py`) tentando
+abrir literalmente `maps/moba_battleground.csv::debugtest` como nome de
+arquivo. Ao reconectar, o personagem "Juugo" (level real 23) apareceu
+como level 1 **permanentemente** — sem recuperação possível (checado
+`git log -- data/game.db`: último commit é de 15/07/2026 com Juugo em
+level 4, 17 dias de progresso não commitado entre esse commit e o
+level 23 real — muito longe pra recuperar via git).
+
+**Causa raiz #1 (crash do cliente)**: `_enter()` (`server/
+debug_battleground.py`) mandava `DEBUG_BG_INSTANCE_KEY` (a chave
+sintética `"maps/moba_battleground.csv::debugtest"`) como `map_file` do
+`ZONE_CHANGE` — mas o cliente SEMPRE carrega só o TEMPLATE puro do
+disco (`load_map_csv` não entende `"::"`); a instance_key é conceito
+100% server-side (diferencia bundles/`MapLocation`/AOI). Confirmado o
+padrão correto em `match_processor.py:290`
+(`_map_file = self._template_file_of(match["instance_key"])` — Arena
+já fazia esse "de-para" antes de montar `ARENA_MATCH_START`, eu
+esqueci de replicar). Corrigido: `zone_change["map_file"]` agora usa
+`DEBUG_BG_TEMPLATE` (o path puro), nunca `DEBUG_BG_INSTANCE_KEY`.
+
+**Causa raiz #2 (perda de dado — a séria)**: o cliente caiu ANTES do
+jogador rodar `/testbg leave`, então `exit_normalized_progression`
+nunca rodou. O disconnect handler
+(`server/session.py::SessionManager.on_disconnect`) salva o personagem
+com o que quer que esteja anexado ao entity NAQUELE momento — como o
+entity ainda estava com os componentes da progressão NORMALIZADA
+(level 1, `TalentTree`/`PlayerSkills`/`Wallet`/`Inventory`/`Equipment`
+vazios), isso foi gravado no banco como se fosse o personagem real.
+**Esse bug não era específico do `/testbg`** — é uma lacuna genérica de
+qualquer chamador de `enter_normalized_progression` que não tenha um
+hook de disconnect: exatamente a mesma classe de bug que Arena já tinha
+resolvido pra si mesma (`end_matches_of` chamado ANTES do save em
+`on_disconnect`, comentário already existente ali: "sem isso... próximo
+login caía... bug real relatado pelo usuário 20/07/2026" — mesmíssimo
+padrão, dessa vez descoberto por um incidente de verdade em vez de
+revisão de código).
+
+**Correção (2 camadas, defesa em profundidade)**:
+1. `server/debug_battleground.py::on_disconnect(ws, eid)` — nova função,
+   chamada incondicionalmente do disconnect handler ANTES do save;
+   restaura progressão real + remove `Faction` + limpa bookkeeping do
+   módulo (`_state["members"]`/`_state["return_pos"]`) + descarrega a
+   instância se ficar vazia. Mesmo formato de `_leave()`.
+2. `server/session.py::on_disconnect` — logo após `end_matches_of`
+   (mesmo ponto, mesmo motivo), chama `debug_battleground.on_disconnect`
+   E, adicionalmente, um check GENÉRICO
+   (`is_in_normalized_progression`/`exit_normalized_progression` direto
+   de `server/instance_progression.py`) — protege qualquer FUTURO
+   chamador de progressão normalizada (ex.: o processador real do
+   Battlefield) mesmo que esqueça de implementar seu próprio hook de
+   disconnect. Regra nova pro projeto: **todo caller de
+   `enter_normalized_progression` precisa de um hook de disconnect
+   ANTES do save, não só entrada/saída manual** — a defesa genérica em
+   `on_disconnect` cobre isso por padrão, mas cada processador ainda
+   deve limpar seu PRÓPRIO bookkeeping (Faction/membership/instância)
+   como `debug_battleground.on_disconnect` faz.
+
+Validado via smoke test manual: personagem real level 23 → entra na
+instância (level 1) → simula disconnect SEM `/testbg leave` →
+`on_disconnect` restaura level 23 exatamente, remove `Faction`, zera
+bookkeeping — incidente não se repete. Suíte completa 3x limpa (688
+testes, só as 2 falhas pré-existentes conhecidas) depois da mudança em
+`session.py::on_disconnect`.
+
+**Lição pro histórico**: `data/game.db` não é commitado com frequência
+(17 dias de progresso perdidos entre commits) — fora do escopo deste
+incidente, mas vale considerar algum backup/snapshot periódico do banco
+se personagens de teste real (não só de dev) começarem a acumular
+progresso importante.
+
+**Recuperação parcial**: o personagem afetado era "jungo" (não "Juugo",
+outro personagem diferente — confundi os dois inicialmente). Achado no
+commit `3b5921b` (15/07/2026) com level 22 + inventário/equipamento/
+talentos/skills/quests completos — restaurado no `data/game.db` ao vivo
+(backup do estado corrompido guardado antes da escrita), preservando
+`char_stats_json` atual (coluna nova desde 15/07, não afetada pelo
+incidente). Progresso entre 15/07 e o incidente (se houve) continua
+perdido — recuperação chega perto do level 23 relatado, não é 100%.
+
+#### §34.74.3 — 2 ajustes de playtest no battleground de teste (01/08/2026)
+
+Primeiro playtest de verdade do usuário no mapa MOBA, depois dos
+incidentes acima corrigidos:
+
+1. **Sem contagem visível do portão** — sem saber quando abre, não dava
+   pra explorar o mapa esperando a wave de minion. Reaproveitado o
+   overlay cosmético que a Arena já tem
+   (`client/arena_handlers.py::_draw_arena_countdown_overlay`, só
+   depende de `_arena_countdown_deadline_val`, sem gate de "está numa
+   partida de arena") — `debug_battleground.handle_command` agora
+   retorna uma 3ª posição (`countdown_remaining`), `session.py::
+   _handle_chat` manda `ARENA_COUNTDOWN {remaining}` antes da resposta
+   de chat. Contagem é DO PORTÃO (não por-jogador — quem entra depois
+   do 1º vê o tempo já menor, mesmo espírito da Arena real).
+
+2. **Minions da wave travando uns nos outros ao nascer** — os 7
+   minions de `_tick_minion_waves` nasciam todos no MESMO tick
+   (mesmo com os offsets de posição de `_MINION_WAVE_OFFSETS`
+   espalhando os tiles) — `MinionSystem` via os vizinhos recém-nascidos
+   como `dynamic_obstacle` antes de terem espaço pra sair do
+   aglomerado, travando. Pedido do usuário: escalonar o nascimento em
+   0.5s entre um minion e outro da mesma wave. Implementado como fila:
+   `_tick_minion_waves` agora só CALCULA a rota dos 7 e enfileira em
+   `self._minion_spawn_queue` (novo dict de estado no `WorldServer`,
+   junto de `_minion_lanes`/`_minion_wave_timers`) com um `delay`
+   crescente (`(offset_idx-1) * MINION_SPAWN_STAGGER_S`); nova função
+   `_tick_minion_spawn_queue(dt)` (chamada logo depois de
+   `_tick_minion_waves` no tick principal) drena a fila e só aí chama
+   `create_minion` de fato, um por vez, conforme cada `delay` zera.
+   `MINION_SPAWN_STAGGER_S = 0.5` — constante de classe em
+   `WorldServer`, junto de `_MINION_WAVE_COMPOSITION`/
+   `_MINION_WAVE_OFFSETS`.
+
+   Testes de `tests/test_minions.py::TestMinionWaveSpawning` precisaram
+   de 2 ajustes pra continuar válidos com o spawn escalonado: (a)
+   `wave_interval_s` de teste subiu de 1.0s pra 6.0s (com stagger de até
+   3.0s pro 7º minion, um intervalo de 1.0s fazia a 2ª wave disparar
+   ANTES da 1ª terminar de nascer — waves se sobrepunham, quebrando as
+   asserções de composição exata); (b) `run_ticks` de 30→200 (tempo
+   suficiente pra fila de spawn esvaziar). Teste novo dedicado,
+   `test_minions_da_wave_nascem_escalonados_nao_todos_no_mesmo_tick`,
+   confirma que a contagem de minions cresce aos poucos ao longo dos
+   ticks (não pula de 0→7 num tick só). Suíte completa 3x limpa (689
+   testes, só as 2 falhas pré-existentes conhecidas).
+
+#### §34.74.4 — Portão não abria pro cliente + minion travado atrás de torre (01/08/2026, mesmo dia)
+
+Segundo round de playtest do usuário no battleground de teste: (1)
+contagem chegou a 0 mas o portão não abriu — não dava pra explorar; (2)
+minions travados atrás de uma torre, "um deles tem caminho pra andar
+mas não desvia".
+
+**Bug 1 — minion travado, raiz real era rota cruzando torre**: a rota
+de cada minion é calculada 1x em `_tick_minion_waves` (A* livre, só
+terreno — sem saber onde as torres estão). Se o caminho reto cruza o
+tile exato de uma torre, esse tile vira o PRÓXIMO PASSO da rota em
+ADVANCING — e `_walk_toward` só pede ao pathfinder "chegar no PRÓXIMO
+tile" (distância 1): sem espaço nenhum pra desviar quando esse único
+tile está permanentemente ocupado (torre nunca sai do lugar → nunca
+destrava sozinho). Corrigido na ORIGEM: `WorldServer.
+_get_tower_tiles_for_map(map_file)` (novo) coleta os tiles de toda
+torre viva no mapa/instância e entra como `dynamic_obstacles` nas
+chamadas de `pathfinding.find_path` dentro de `_tick_minion_waves` — a
+rota nunca mais atravessa o tile exato de uma torre. Perto de uma
+torre pra brigar de verdade continua funcionando normal (FIGHTING
+persegue por chebyshev, nunca tenta pisar no tile exato do alvo).
+Teste novo com prova de regressão (revertido manualmente, confirmado
+que falha sem o fix, restaurado):
+`test_rota_da_wave_desvia_de_torre_no_caminho_reto`.
+
+**Bug 2 — portão nunca avisava o cliente**: já era uma limitação
+conhecida/documentada (§34.74.3) que virou bug de verdade no playtest.
+`debug_battleground._tick` só trocava o `tile_matrix` do SERVIDOR — sem
+enviar nada ao cliente, que continuava renderizando a célula fechada
+pra sempre. Corrigido generalizando `ARENA_GATE_OPEN`
+(`client/arena_handlers.py::_handle_msg_arena_gate_open`): aceita
+`payload["gate_tiles"]` opcional (lista `[[x,y],...]`) — se presente,
+usa esses tiles em vez do `ARENA_GATE_TILES` hardcoded; ausente (Arena
+real, que manda `{}`) = comportamento de sempre, sem mudança. Servidor
+ganhou o MESMO padrão de buffer-por-tick que a Arena já usa:
+`debug_battleground._state["pending_gate_open_eids"]` (populado no
+`_tick` quando o portão abre) +
+`drain_gate_open_notifications()` (consumida em `server/session.py`,
+mesmo ponto de `consume_arena_gate_open_events`) — **e** entrou no
+`has_pending` de `SessionManager._on_tick` (regra do CLAUDE.md: todo
+buffer novo consumido no dispatch tem que entrar em `has_pending` no
+MESMO commit, senão fica preso até atividade alheia destravar —
+exatamente a classe de bug que já aconteceu com Arena/grupo/duelo
+antes). Validado via smoke test manual: portão abre →
+`pending_gate_open_eids` populado → drenado → `gate_tiles` correto no
+payload (18 tiles, os 2 segmentos em L dos 2 times).
+
+**INCIDENTE — 2º `git checkout --` sem `git status` na mesma sessão**:
+durante a investigação, testei o fix da torre revertendo temporariamente
+com `sed` pra confirmar que o teste novo falha sem o fix (técnica
+correta) — mas pra desfazer o `sed` rodei `git checkout --
+server/world_server.py` sem checar `git status` antes. Isso não desfez
+só o `sed`: reverteu o arquivo INTEIRO pro último commit
+(`ba8d6de`, "Sistema de Torres v0.29.0", 29/07/2026) — apagando TODA a
+integração do Sistema de Minions em `WorldServer` (que nunca foi
+commitada: `_minion_lanes`, `_minion_wave_timers`, `_tick_minion_waves`,
+`_create_minion_lanes`, `_activate_minion_lanes`,
+`_get_pathfinding_for_map_file`, `_compute_team_avg_level`,
+instanciação de `MinionSystem`, ramo de `is_ranged` de Minion em
+`_build_mob_spawn_payload`) MAIS as 3 mudanças de hoje (spawn
+escalonado, obstáculo de torre, chamadas no tick principal). Mesmo erro
+já cometido uma vez antes nesta sessão (§ anterior, arquivo
+`engine/world_systems.py`) — reconstruído de memória de novo, desta vez
+com um oráculo melhor: rodar a suíte de testes imediatamente revela
+EXATAMENTE o que falta (`AttributeError: 'WorldServer' object has no
+attribute '_minion_lanes'`, etc.), guiando a reconstrução método por
+método em vez de depender só de memória solta. Suíte completa 3x limpa
+(690 testes, só as 2 falhas pré-existentes) confirma reconstrução
+completa e correta. **Lição reforçada**: `git checkout --` NUNCA sem
+`git status` antes, mesmo pra "desfazer só uma mudança pequena" — o
+comando não sabe diferenciar "minha mudança de teste" de "todo o
+trabalho não commitado do arquivo".
+
+#### §34.74.5 — Terceiro round de playtest: 5 bugs corrigidos (01/08/2026, mesmo dia)
+
+Usuário testou de novo depois dos fixes de portão/torre/spawn escalonado
+e reportou mais 5 problemas reais (2 específicos do battleground de
+teste, 3 gerais do jogo):
+
+1. **Level do player não aparecia 1 no client** — `enter_/
+   exit_normalized_progression` mutava `CharacterStats.level` só no
+   servidor; não existia NENHUM canal que empurrasse `level` pro dono
+   mid-session (`queue_stats_update`/`STATS_UPDATE` não tinha esse
+   campo no schema; o único S→C que carregava `level` — dirty-check de
+   HP pra nameplate remoto — exclui explicitamente o próprio dono). O
+   level-up normal (por XP) nunca precisou disso porque o CLIENTE
+   re-deriva o level sozinho a partir de `xp_gained`
+   (`process_levelups` roda IGUAL dos dois lados) — mas aqui não há XP
+   nenhum "ganho", é um OVERRIDE direto. Corrigido: `level` novo no
+   schema de `queue_stats_update` (`server/world_server.py`), client
+   aplica direto em `CharacterStats.level` sem passar por
+   `process_levelups` (`client/network_handlers.py::
+   _handle_msg_stats_update`), e `server/instance_progression.py`
+   ganhou `_push_stats_update()` (chamado no fim de `enter_`/
+   `exit_normalized_progression`) mandando `level`+`hp`/`hp_max`
+   (já recalculados pelos `_apply_talent_modifiers`/
+   `_apply_equipment_modifiers` que já rodavam)+`gold`+`talent_points`.
+   **Gap conhecido, não coberto**: hotbar/skills completas, alocação de
+   talento completa, conteúdo de inventário/equipamento — sem
+   mecanismo de push em massa pra isso (só aparece certo no próximo
+   login). Testes novos: `tests/test_instance_progression.py::
+   TestInstanceProgressionClientSync`.
+
+2. **Minions travavam quando um player ALIADO parava no caminho** —
+   mesma classe de bug já corrigida pra torre (§34.74.4), mas essa não
+   dava pra resolver excluindo da ROTA (torre nunca se move, mas um
+   player pode parar em QUALQUER tile a qualquer momento — não dá pra
+   prever no cálculo da rota, feito 1x no spawn da wave). Raiz: em
+   ADVANCING, o destino de movimento era sempre o PRÓXIMO TILE da rota
+   (distância 1) — `_walk_toward` exclui o destino de
+   `dynamic_obstacles` (senão o A* rejeitaria o destino inteiro), mas
+   com destino a 1 tile de distância não sobra espaço NENHUM pra
+   desviar; se esse único tile fica ocupado, o passo de execução
+   (`is_tile_walkable`) rejeita pra sempre. Corrigido: ADVANCING agora
+   mira o PRÓXIMO CHECKPOINT (até 5 tiles à frente, múltiplo de 5),
+   dando ao A* espaço real pra contornar — mesmo padrão que RETURNING
+   já usava (chegada por ÁREA, `CHECKPOINT_ARRIVAL_RADIUS`). Sutileza
+   achada em teste: chegada por ÁREA só vale pra checkpoint
+   INTERMEDIÁRIO — no ÚLTIMO tile da rota (base inimiga) exige chegada
+   EXATA (raio 0), senão `route_idx` pula pra `len(route)-1` (trava a
+   condição de movimento) enquanto o minion ainda está fisicamente 1-2
+   tiles longe, parando pra sempre sem nunca terminar a rota de
+   verdade. Teste novo com prova de regressão (2 achados durante a
+   escrita do teste: sem `MapLocation` no bloqueador ele fica invisível
+   pro pathfinder; sem chamar `TileValidationSystem.update()` no loop
+   de teste o cache de ocupação nunca é reconstruído e o bloqueio nunca
+   é aplicado de verdade — os dois corrigidos no próprio teste antes de
+   confirmar a regressão): `test_minion_contorna_player_aliado_parado_
+   no_caminho`.
+
+3. **Torres não atacavam minions do time oposto** — `TowerSystem.
+   _acquire_target` classificava candidatos em 2 buckets
+   (`PlayerControlled` / `AIControlled`-ou-`NPC`) — `Minion` não tem
+   NENHum dos dois (`MinionSystem` próprio, sem `AIControlled`, mesma
+   decisão de `Tower`), então passava em TODOS os checks de
+   hostilidade/alcance/LOS mas nunca entrava em bucket nenhum, nunca
+   virando alvo. Corrigido: bucket "não-player" virou o `else` default
+   (qualquer hostil que não seja `PlayerControlled`), cobrindo Minion
+   de graça. Teste novo: `test_torre_ataca_minion_hostil_no_alcance`
+   (`tests/test_towers.py`).
+
+4. **Barra de HP de mob/torre/minion não ficava verde pro time aliado**
+   — `client/remote_entity_handlers.py::_draw_mob_hp_bars` sempre
+   comparava a facção do mob contra o `PLAYER_FACTION` genérico
+   hardcoded, NUNCA contra o time real do jogador dentro de uma
+   instância — `RELATIONSHIP` já tinha entrada explícita hostil pra
+   `("arena_time_a","arena_time_b")` (adicionada de propósito pra isso,
+   ver §34.70), mas nunca era consultada porque o 2º lado da comparação
+   sempre estava errado. Corrigido na raiz, não com uma variável
+   especial: `client/arena_handlers.py::_handle_msg_arena_countdown`
+   (que já recebe `my_faction` no payload, ver item §34.74.4) agora
+   ANEXA um `Faction` de verdade no player LOCAL (mesma coisa que o
+   servidor já faz do lado dele) — `get_entity_faction` (`engine/
+   faction_system.py`) já prioriza um `Faction` real se presente, então
+   isso corrige `is_hostile`/`can_engage`/`get_relationship_between`
+   pro player local de UMA VEZ, sem precisar de gambiarra em cada
+   ponto que precisa saber "sou aliado ou hostil disso" (barra de HP,
+   TAB/SPACE — item 5 abaixo). Removido em `client/network_handlers.py::
+   _handle_msg_zone_change` (qualquer troca de mapa encerra o contexto
+   de time). `_draw_mob_hp_bars` passou a usar `get_relationship_between`
+   direto, igual o resto do código já faz, em vez de reimplementar a
+   comparação.
+
+5. **TAB/SPACE podiam selecionar aliado** (pedido explicitamente como
+   problema GERAL, não só do battleground) — `ui/systems.py::
+   _visible_enemies_sorted`'s loop de `Enemy` (mobs/torres/minions
+   remotos são TODOS tagueados `Enemy` do lado do cliente,
+   `create_enemy` genérico) não filtrava hostilidade NENHUMA; `client/
+   save_sync_handlers.py::_space_engage_online` (SPACE online, o path
+   que realmente roda em jogo — não o `_space_engage` offline, que já
+   filtrava) iterava `self._remote_mobs` inteiro sem filtro nenhum
+   também. Corrigidos os dois com `is_hostile` (não `can_engage` — esse
+   também libera "neutro", e o pedido é hostil de verdade). O loop de
+   `RemoteControlled` (players remotos) dentro de `_visible_enemies_
+   sorted` foi DELIBERADAMENTE mantido em `can_engage` — permissão de
+   PvP entre players é CONTEXTUAL (duelo/arena/zona,
+   `_pvp_context_resolver`), um oponente de duelo normalmente está na
+   MESMA facção default ("jogadores" = amigavel por padrão), só o
+   contexto libera o engajamento; trocar pra `is_hostile` ali quebraria
+   TAB durante duelo (nunca resolveria hostil por tier de facção fixo).
+
+Suíte completa 3x limpa (694 testes, só as 2 falhas pré-existentes
+conhecidas) depois dos 5 fixes.
+
+#### §34.74.6 — Economia de instância: loja, ouro por kill, XP só de player (01/08/2026, mesmo dia)
+
+Últimos 3 pedidos do usuário na mesma rodada de playtest, decisões de
+design fechadas via `AskUserQuestion` antes de implementar (não
+perguntar de novo):
+
+- **Moeda**: reaproveita `Wallet.gold` (já isolado/resetado pelo
+  overlay de progressão normalizada — decisão do usuário, "reaproveitar
+  gold isolado" em vez de criar campo "Honra" separado). `INSTANCE_
+  STARTING_GOLD` subiu de 0 pra **150** (`server/instance_progression.py`).
+- **UI do inventário de 6 slots**: NENHUMA UI nova — decisão do usuário
+  foi reaproveitar a bag normal do jogo (tecla B), que já renderiza
+  qualquer `Inventory` anexado; como a instância já troca pra um
+  `Inventory(max_slots=6)` (§34.74, decisão #6 original), a bag mostra
+  6 slots automaticamente sem nenhum código de UI novo.
+
+**Loja de instância** — vendedor reaproveitando 100% a infraestrutura
+de merchant já existente (`content/merchant_data.py::SHOPS`,
+`engine/map_loader.py::"merchants"`, `WorldServer.process_shop_buy`/
+`process_shop_sell`):
+- `SHOPS["instance_shop"]` novo (`content/merchant_data.py`) — estoque
+  = os 13 ids de `content/instance_shop.py::INSTANCE_SHOP_ITEM_IDS`
+  (já existia, nunca tinha sido conectado a nada), preços iniciais
+  hand-picked (ajustável).
+- 2 vendedores adicionados em `maps/moba_battleground_entities.json::
+  merchants` (um por base, `shop_id: "instance_shop"`).
+- **Venda de volta**: `process_shop_sell` já é genérico (qualquer item
+  no `Inventory`, não restrito por `shop_id`/posição) — zero código
+  novo precisou pra "o jogador pode vender os itens desse inventário
+  de novo".
+- **Bug latente achado e corrigido nesse processo**: `process_shop_buy`
+  validava espaço no inventário contra um **"24" hardcoded** (linha do
+  passo 3), dessincronizado do `inv.max_slots` REAL que o passo 6 (grava
+  o item) já respeitava de verdade — com um inventário de 6 slots
+  (instância), isso deixava passar uma compra que o passo 6 depois
+  descartava em silêncio (`break` ao bater o teto real de 6), cobrando
+  o gold sem entregar o item. Corrigido: passo 3 agora lê
+  `inv.max_slots` do `Inventory` vivo, igual o passo 6 já fazia.
+
+**Ouro por kill, só pro killer** — pedido explícito: "só quando dá o
+dano que MATA", nunca compartilhado/proporcional (diferente de XP).
+Usa `PendingDeath.killer_entity_id` (golpe final), **nunca**
+`first_attacker_eid` (quem bateu primeiro — é o dono do LOOT/quest,
+conceito diferente, já existia). Novo:
+- `Minion` ganhou `gold_min`/`gold_max` (componente + `MINION_TABLE`,
+  espelhando o que `Tower` já tinha) — `create_minion` passa adiante.
+- `server/instance_progression.py::grant_instance_gold(ws, eid, amount)`
+  — soma em `Wallet.gold` + push de `STATS_UPDATE`; no-op fora de
+  progressão normalizada.
+- `INSTANCE_PLAYER_KILL_GOLD = 50` (constante, matar PLAYER inimigo —
+  não tem uma tabela de definição própria como minion/torre).
+- Hook novo em `server/server_death_handler.py`: se `killer_eid` é
+  player E está em progressão normalizada, concede gold_min/max do que
+  morreu (torre/minion) ou `INSTANCE_PLAYER_KILL_GOLD` (player) — SEM
+  tocar no `coins`/loot do mundo aberto, que continua exatamente igual
+  (torre real, Arena, etc.).
+
+**XP só entre players (decisão #8 do usuário)** — 2 gaps reais achados
+e corrigidos:
+1. `damage_log.items()` (proporção de XP por dano) nunca filtrava
+   ATACANTE por ser player — minion/torre não ganhavam XP visível
+   (sem `CharacterStats`), mas o dano deles ainda ENTRAVA no
+   denominador da proporção, diluindo o que os players recebiam (mob
+   50% morto por minion + 50% por player dava só METADE do XP pro
+   player). Corrigido: filtra `damage_log` pra só `p_eid` que é
+   player de verdade (`self.world_server._player_eids.values()`) ANTES
+   de somar `total_damage` — o player passa a receber o XP CHEIO.
+   Fallback "killer leva tudo" (sem damage_log) ganhou o MESMO filtro
+   (senão um minion que dá o golpe final sem nenhum player ter batido
+   virava "player_eid" da entrada de XP). Teste com prova de
+   regressão (revertido, confirmado que falha sem o fix, restaurado):
+   `test_dano_de_minion_nao_dilui_xp_do_player`.
+2. **XP de instância agora É concedido de verdade em combate** (antes,
+   `grant_instance_xp` era só um seam nunca chamado) — `server/
+   world_server.py`'s loop de consumo de `consume_xp()` agora checa
+   `is_in_normalized_progression(self, player_eid)` PRIMEIRO: se
+   verdadeiro, desvia inteiro pro `grant_instance_xp` (curva/cap/taxa
+   de instância) e `continue`, pulando TODO o resto do bloco real —
+   isso é deliberado e crítico: o resto do bloco (`process_levelups`
+   real, re-aplicação de talento, e principalmente o **save-to-DB
+   "crash não perde progresso"**) NUNCA pode rodar pra um player em
+   progressão normalizada, senão salvaria o estado RESETADO da
+   instância como se fosse o personagem real — mesma classe do
+   incidente de disconnect já documentado em §34.74.2.
+
+Testes novos: `tests/test_minions.py::TestMinionDeathXpGold::
+test_gold_de_instancia_vai_pro_killer_dentro_da_progressao_normalizada`/
+`test_dano_de_minion_nao_dilui_xp_do_player`. Suíte completa 3x limpa
+(696 testes, só as 2 falhas pré-existentes conhecidas).
+
+#### §34.74.7 — Quarto round de playtest: alvo aliado via hotkey, vendedor neutro, anel inequipável, arqueiro sem munição (01/08/2026, mesmo dia)
+
+4 fixes pontuais a partir de novo feedback do usuário testando `/testbg`:
+
+1. **Teclas de atalho de habilidade selecionavam aliado como alvo** — TAB/
+   ESPAÇO já filtravam hostilidade (§34.34.4), mas `ui/systems.py::
+   _resolve_target` (usado pelas hotkeys 1-7 quando nenhum alvo está
+   selecionado) tinha 3 loops de candidato próprios, nenhum filtrado.
+   Corrigido: `is_hostile` nos 2 loops de mob (`Enemy`/AIControlled — tier
+   estrito, mesmo padrão de `_visible_enemies_sorted`), `can_engage` no
+   loop de `RemoteControlled` (permissão de PvP é CONTEXTUAL — duelo/arena
+   — não tier de facção fixo; `is_hostile` ali quebraria auto-mirar um
+   oponente de duelo de verdade). Testes:
+   `tests/test_resolve_target_hostility.py` (prova diferencial: revertido,
+   confirmado que falha, restaurado).
+2. **Vendedor de instância "neutro"** (atacável sem querer via clique) —
+   `civis` (facção dos NPCs de serviço) x `arena_time_a`/`arena_time_b`
+   nunca tinha entrada em `RELATIONSHIP`, caía em `DEFAULT_RELATIONSHIP`
+   ("neutro" — `can_engage` só bloqueia "amigavel"). Corrigido:
+   `content/faction_data.py` ganhou os 2 pares como "amigavel". Teste:
+   `tests/test_faction.py::TestGetRelationship::
+   test_vendedor_de_instancia_e_amigavel_aos_dois_times`.
+3. **Anel comprado não equipava** — causa raiz era `steel_ring`
+   (`level_requirement=12`) na lista curada da loja de instância; instância
+   começa no level 1 (§34.74, decisão #5), então o item ficava
+   permanentemente inequipável até o jogador subir de level DENTRO da
+   instância. Trocado por `ring_power` (`level_requirement=1`) em
+   `content/instance_shop.py` + `content/merchant_data.py::
+   SHOPS["instance_shop"]`.
+4. **Arqueiro sem munição vendável** — usuário perguntou diretamente se
+   era melhor vender flechas soltas ou uma aljava com capacidade "infinita"
+   pra não deixar gestão de munição atrapalhar o PvP da instância.
+   Recomendado e implementado: `battleground_quiver` (novo item,
+   `content/item_table.py`, 999 flechas — não literalmente infinito, só o
+   suficiente pra nunca esvaziar numa partida), exclusivo desta loja
+   (substituiu `basic_quiver` em `INSTANCE_SHOP_ITEM_IDS`).
+
+#### §34.74.8 — Sync de Inventory/Equipment de instância + painel HUD dedicado (reverte a decisão de UI do §34.74.6) (01/08/2026, mesmo dia)
+
+Investigando mais a fundo o "anel comprado não equipava" do item 3 acima:
+mesmo com o `level_requirement` corrigido, o usuário reportou que os itens
+REAIS do personagem continuavam aparecendo na bag durante a instância
+("não sei o que vale"), e um item comprado às vezes nem aparecia. Causa
+raiz mais profunda, já documentada como gap conhecido em
+`instance_progression.py::_push_stats_update` (§34.74.2/§34.25): o
+servidor troca `Inventory`/`Equipment` do player (`add_component`) ao
+entrar/sair da instância, mas o CLIENTE nunca ficava sabendo — sua cópia
+local desses componentes nunca mudava. Resultado: a bag do cliente
+continuava mostrando os itens REAIS, e um item comprado dentro da
+instância era `.append()`-ado (BUY_RESULT, `client/network_handlers.py`)
+no `Inventory` LOCAL ERRADO (o real, não o da instância) — se a bag real
+já estivesse cheia, o item comprado nem aparecia visualmente.
+
+**Pedido do usuário, reversão explícita do §34.74.6**: em vez de continuar
+reaproveitando a bag normal (tecla I/B), criar um painel HUD NOVO e
+dedicado — 6 slots, canto inferior direito, sempre visível durante a
+instância — e fazer a compra ir direto pra esse inventário, com a janela
+do comerciante também mostrando esse inventário no lugar do normal.
+
+**Decisão de design**: em vez de uma estrutura de dados paralela (estilo
+`TradeUIState`), o fix troca o `Inventory`/`Equipment` REAIS do cliente
+pelo conteúdo da instância — a MESMA troca que o servidor já faz. Como
+`ShopSystem` (loja), `client/inventory_handlers.py` (bag/equipar) e o
+painel novo já leem esses componentes ao vivo do `player_entity` sem
+cache próprio, a troca corrige TUDO automaticamente — `ShopSystem` não
+precisou de nenhuma mudança pra satisfazer "loja mostra o inventário da
+instância".
+
+- **Canal de sync**: 4 campos novos no payload de STATS_UPDATE (S→C,
+  `shared/messages.py`), emitidos só por
+  `instance_progression.py::enter_/exit_normalized_progression` (via
+  `_push_stats_update` estendido): `in_instance` (bool), `inv_snapshot`
+  (lista de item dicts, formato de `BUY_RESULT`, serializado via
+  `WorldServer._item_data_from_obj`), `inv_max_slots`, `equip_snapshot`
+  (dict slot→item dict|None). Reaproveita o canal `queue_stats_update`
+  já 100% conectado no dispatch por-tick — **sem** criar buffer novo (evita
+  a classe de bug de `has_pending` esquecido, ver regra no CLAUDE.md do
+  projeto).
+- **Cliente**: `client/network_handlers.py::_handle_msg_stats_update`
+  aplica os 3 campos de inventário como substituição COMPLETA (não merge
+  incremental — mesmo espírito de TRADE_STATE) via `self._item_from_data`
+  (já usado por BUY_RESULT/TRADE_STATE); `in_instance` liga/desliga
+  `InstanceInventoryUIState.active` (componente novo,
+  `ui/ui_components.py`, anexado ao player em
+  `engine/entity_factory.py::create_player`).
+- **Painel HUD novo**: `client/instance_inventory_panel.py`
+  (`InstanceInventoryPanelHandlers`, mixin de `GameEngine` — mesmo padrão
+  de `ConsumableBarHandlers`). Renderiza 6 slots ancorados no canto
+  inferior direito (só quando `InstanceInventoryUIState.active`), lendo o
+  MESMO `Inventory`/`Equipment` que a bag normal (não uma segunda cópia).
+  Clique direito num slot ocupado chama `self._equip_item(item)`
+  (`client/inventory_handlers.py`, já validava classe/arma/level — zero
+  lógica de equipar duplicada).
+
+Testes: `tests/test_instance_progression.py::
+TestInstanceProgressionInventorySync` (3 testes, prova diferencial:
+`inv_snapshot`/`equip_snapshot`/`in_instance` corretos nos dois sentidos,
+item real nunca vaza no snapshot de entrada). Suíte completa 3x limpa (706
+testes, só as 2 falhas pré-existentes conhecidas — `test_map_services.py::
+TestServiceResolverGuard`, `test_server.py::TestCCGeneralizado`, sem
+relação com este trabalho).
+
+#### §34.74.9 — Minion esquece o checkpoint: ao perder o alvo, segue direto em vez de voltar pra trás (02/08/2026)
+
+Pedido do usuário, quinto round de playtest do battleground de teste:
+reverte a decisão original de §34.73 (30/07/2026) de o minion voltar pro
+ÚLTIMO CHECKPOINT (`route_idx//5*5`, atrás da posição atual) antes de
+retomar o avanço ao perder o alvo. Comportamento observado em jogo: o
+minion literalmente "voltava pra trás" (backtrack visível) sempre que
+terminava um combate, antes de seguir de novo — o usuário quer que ele
+apenas continue andando pra FRENTE a partir de onde já está, atacando
+qualquer hostil que entrar no raio de aggro pelo caminho (o branch
+`ADVANCING` já fazia exatamente isso, só faltava não mais desviar pra
+`RETURNING` primeiro).
+
+Fix: `engine/world_systems.py::MinionSystem.update()` — ao perder o alvo
+(`FIGHTING` → alvo inválido), transita direto pra `state = "ADVANCING"`
+em vez de `"RETURNING"`. O estado `"RETURNING"` (e o branch inteiro que o
+processava — backtrack até a ÁREA do checkpoint antes de retomar) foi
+**removido** do `MinionSystem`, junto com `Minion.last_checkpoint_idx()`
+(ficou sem nenhum chamador). `Minion.state` agora só tem 2 valores:
+`ADVANCING`/`FIGHTING`. O conceito de "checkpoint" (múltiplos de 5 de
+`route_idx`) continua existindo só como MIRA intermediária do A* dentro
+do próprio `ADVANCING` (dar espaço real pro pathfinding contornar um
+obstáculo temporário) — não é mais um destino que o minion "volta" pra
+trás pra alcançar.
+
+**Nota**: este `RETURNING` é interno de `Minion.state` — não confundir
+com `AIControlled.state == "RETURNING"` (evasão/leash de mob comum via
+`EnemyAISystem`), que continua existindo normalmente e não foi tocado.
+
+Testes: `tests/test_minions.py::TestMinionSystemTargeting::
+test_ao_perder_alvo_minion_segue_direto_sem_voltar_ao_checkpoint`/
+`test_apos_perder_alvo_minion_continua_avancando_ate_a_base` (reescritos
+— as versões antigas testavam explicitamente o backtrack que foi
+removido; prova diferencial: revertido, confirmado que falha, restaurado).
+Suíte de minions completa (27 testes) verde.
+
+#### §34.74.10 — XP de minion vira compartilhado por proximidade (não por dano) dentro da instância (02/08/2026)
+
+Pedido do usuário, mesmo round de playtest: "a xp não é para ser
+necessário bater no mob, se o mob morrer perto dos players, tem que ser
+dividido entre os players, sem necessidade de dar um hit sequer nos
+minions" — modelo estilo LoL (creep XP é compartilhado com qualquer
+campeão aliado dentro do raio, mesmo sem ter batido; só o GOLD de
+last-hit exige o golpe de verdade). Diferente do XP de mob comum
+(zumbi/lobo/bandido no mundo aberto), que continua 100% proporcional por
+`damage_log` — este novo comportamento é EXCLUSIVO de `Minion` (lane
+creep, só existe dentro de progressão normalizada de instância).
+
+Fix: `server/server_death_handler.py`, bloco de cálculo de XP — nova
+checagem ANTES do `damage_log` proporcional: se a entidade morta é
+`Minion` E existe pelo menos 1 player em progressão normalizada dentro de
+`PARTY_XP_SHARE_RADIUS_TILES` (`shared/constants.py`, mesmo raio já usado
+pro split de XP de grupo) da posição de morte, TODOS esses players
+recebem uma fatia igual de `base_xp` (`max(1, base_xp // len(nearby))`),
+e o caminho `damage_log`/fallback-killer é pulado inteiro pra essa morte.
+Sem NENHUM player em progressão normalizada por perto, cai no
+`damage_log` normal (fallback seguro — minion fora de instância nunca
+deveria existir de verdade, mas não quebra se acontecer).
+
+Novo helper reaproveitável: `server/instance_progression.py::
+players_in_normalized_progression_near(ws, tx, ty, map_file, radius)` —
+mesmo padrão de `PartyProcessorMixin._party_members_in_range`,
+generalizado pra QUALQUER player em instância (não só grupo). O bloco
+"2c. Party" existente (redistribuição por grupo) continua rodando depois
+e funciona igual sobre essas entradas — se os players próximos também
+forem do mesmo grupo, a fatia é redistribuída de novo por ele (composição
+segura, sem conflito).
+
+**Gold continua exigindo golpe final de verdade** (`killer_eid`, ver
+§34.74.6) — não foi tocado por este fix; usuário testou e reportou que
+matar um minion pessoalmente não estava dando gold. Investigação não
+achou defeito no código (mecanismo unitário testado e confirmado
+funcionando via simulação isolada) — suspeita principal é o processo do
+servidor rodando código desatualizado (mesmo processo de dev ligado desde
+antes dessas mudanças serem escritas nesta sessão); mesma suspeita pro
+bug relatado de "compra na loja de instância não funciona" (§34.74.7-.8
+mudaram justamente o catálogo dessa loja). Reiniciar o servidor antes de
+investigar mais fundo.
+
+Testes: `tests/test_minions.py::TestMinionDeathXpGold::
+test_xp_de_minion_e_por_proximidade_sem_precisar_bater`/
+`test_xp_de_minion_por_proximidade_e_dividido_entre_players_perto` (prova
+diferencial: revertido, confirmado que falha, restaurado).
+
+#### §34.74.11 — Causa raiz real de "não consigo comprar na loja de instância" + respawn automático na base (02/08/2026)
+
+**Compra na loja de instância (bug real, não resolvido nas 2 tentativas
+anteriores)**: usuário reportou que o painel "sua bag" dentro da loja
+aparecia vazio e a compra continuava não fazendo nada. Investigação a
+fundo achou a causa raiz de verdade: `server/session.py::
+_handle_buy_request` valida espaço de inventário contra
+`session.last_client_payload.get("inventory")` — o último SAVE_STATE que
+o CLIENTE mandou — **não** contra o `Inventory` ao vivo. O swap de
+instância (§34.74.8) troca `Inventory.max_slots` pra 6 no ato, mas o
+cliente só manda um SAVE_STATE novo em pontos específicos (compra,
+equipar, etc.) — nada disparava um IMEDIATAMENTE após aplicar
+`inv_snapshot`. Resultado: `session.last_client_payload["inventory"]`
+continuava com a contagem da bag REAL (ex.: 18 itens) enquanto
+`max_slots` ao vivo já era 6 — toda compra caía em `inventory_full`
+(`18 + 1 > 6`) na origem, mesmo com a bag da instância genuinamente
+vazia (o painel vazio na loja não era o SINTOMA do bug, era a prova de
+que o swap client-side funcionava — a causa real estava no cache
+server-side desatualizado).
+
+Fix: `client/network_handlers.py::_handle_msg_stats_update` chama
+`self._send_save_state()` assim que aplica `inv_snapshot`/
+`equip_snapshot` — garante que `session.last_client_payload` aprende o
+tamanho/conteúdo novo da bag imediatamente, nos dois sentidos (entrada E
+saída da instância). Teste: `tests/test_client_instance_sync.py` (prova
+diferencial: revertido, confirmado que falha, restaurado).
+
+**Respawn automático na base (pedido do usuário)**: dentro do
+battleground de teste, morrer agora NÃO passa pelo fluxo normal de
+"Liberar espírito"/caminhada de fantasma/prompt "Reviver agora?" (esse
+fluxo continua 100% intacto pro resto do jogo — PvE normal, Arena) — em
+vez disso, `server/debug_battleground.py::_process_respawns` (novo,
+chamado a cada tick pelo hook já existente) detecta `GhostState.is_dead`
+de um membro, inicia uma contagem de `DEBUG_BG_RESPAWN_S = 15.0`
+(`shared/constants.py`) e, ao zerar, teleporta pro spawn do TIME
+(`Faction`) via `snap_to_tile` + reaproveita `WorldServer._revive_player`
+(mesma rotina de HP/mana/limpeza de corpse/broadcast `PLAYER_REVIVE` do
+revive manual — nenhuma lógica de revive duplicada). Cliente:
+`client/death_ui_handlers.py::_render_death_modal` detecta
+`InstanceInventoryUIState.active` (MESMO flag do painel de inventário de
+instância, §34.74.8 — reuso deliberado, sem mensagem nova) e mostra
+"Respawn na base em Xs" em vez do botão "Liberar espírito" — a contagem
+usa `self._death_timer`, já acumulado localmente desde a morte, mesma
+base de tempo que o servidor usa, sem precisar sincronizar nada novo.
+Edge case coberto: sair via `/testbg leave` com o timer ainda contando
+limpa `_state["respawn_timers"]` (senão tentaria `snap_to_tile` de volta
+pro battleground depois do jogador já estar em outro mapa).
+
+Testes: `tests/test_debug_battleground_respawn.py` (5 testes: inicia
+timer, respawna time A, respawna time B, não respawna antes da hora,
+sair morto limpa timer pendente — prova diferencial no caso principal).
+
+#### §34.74.12 — Sexto round de playtest: causa raiz real de 4 bugs (compra, HP, talentos, ouro duplicado) + remoção do painel de 6 slots (02/08/2026)
+
+Round de feedback mais profundo depois do §34.74.11 — usuário reportou que
+os problemas continuavam mesmo após aquele fix. Investigação achou causas
+raiz DIFERENTES e mais específicas pra cada um:
+
+1. **Compra na loja de instância ainda não funcionava** — o fix do
+   §34.74.11 (SAVE_STATE imediato após `inv_snapshot`) estava correto, mas
+   o usuário testou antes do deploy pegar efeito. Nenhuma mudança nova
+   aqui — reconfirmado pelos testes de `tests/test_client_instance_sync.py`.
+
+2. **HP máximo não sincronizava (mostrava o valor REAL, ex. 390, em vez
+   do piso de level 1)** — causa raiz: `PermanentStats` (bônus permanente
+   de uma mecânica roguelike de morte, JÁ DESATIVADA — nada incrementa
+   mais) nunca era trocado por um zerado durante a instância.
+   `apply_char_stats_to_combat` (chamada por `_apply_talent_modifiers`
+   dentro de `enter_/exit_normalized_progression`) SEMPRE soma
+   `PermanentStats` em cima de `CharacterStats` — para um personagem
+   estabelecido com bônus LEGADO (salvo de antes da mecânica ser
+   desativada), isso vazava pro cálculo "normalizado". Fix:
+   `InstanceProgressionSnapshot` ganhou `real_permanent_stats` — mesmo
+   swap-e-restaura já aplicado a Wallet/Inventory/Equipment/TalentTree/
+   PlayerSkills, agora também a `PermanentStats` (zerado durante a
+   instância, restaurado exatamente ao sair). Verificado empiricamente:
+   personagem com `perm.vitality=25` tinha `max_hp=620` real → `140` ao
+   entrar (piso de level 1 puro) → `620` de novo ao sair. Testes:
+   `tests/test_instance_progression.py::TestInstanceProgressionPermanentStatsSwap`.
+
+3. **Pontos de talento pareciam acumular mesmo sendo usados** (18 pontos
+   no level 6 da instância, deveria ser bem menos) — causa raiz: gap JÁ
+   DOCUMENTADO em `_push_stats_update` ("alocação de talento completa
+   NÃO coberto aqui") nunca tinha sido fechado. O `TalentTree` LOCAL do
+   cliente nunca era trocado/resetado ao entrar na instância — só o
+   `available_points` (escalar) sincronizava via `talent_points`; o
+   `allocated{}` (dict) continuava sendo a alocação REAL, pré-instância,
+   enquanto o SERVIDOR validava contra a árvore da instância (vazia).
+   Cliente parecia "ganhar pontos de volta" porque `ui/talent_system.py::
+   apply_talent_effects()` reembolsa tudo quando `chosen_build` diverge
+   do esperado — mas a raiz mesmo era o desalinhamento de árvores
+   inteiras, não um bug nesse reembolso específico. Fix: `talent_allocated`
+   novo no payload de STATS_UPDATE (mesmo padrão de `inv_snapshot`),
+   substituição COMPLETA (não merge) do `TalentTree.allocated` local.
+   Testes: `tests/test_instance_progression.py::
+   TestInstanceProgressionTalentSync`, `tests/test_client_instance_sync.py::
+   TestInstanceTalentAllocatedSync`.
+
+4. **Painel dedicado de 6 slots (§34.74.8) removido** — pedido do
+   usuário, reversão explícita: "a ideia era os itens já valerem como
+   equipados no momento que eu compro... pode remover os 6 slots da UI
+   pois não está servindo de nada". `client/instance_inventory_panel.py`
+   deletado, mixin removido de `game.py`; `ui.ui_components.
+   InstanceInventoryUIState` MANTIDO (reaproveitado como flag genérica
+   "estou no battleground de teste" — já usado pelo respawn automático do
+   §34.74.11). Em troca: **compra de item equipável dentro da instância
+   agora equipa direto** — `client/network_handlers.py::
+   _handle_msg_buy_result` chama `self._equip_item(item)` logo após
+   adicionar à bag, se `InstanceInventoryUIState.active` e o item tiver
+   `slot` válido; `_equip_item` já valida classe/level (mesma lógica de
+   sempre) — se rejeitar, o item simplesmente fica na bag (fallback
+   gracioso, igual compra fora da instância). Testes:
+   `tests/test_client_instance_sync.py::TestInstanceShopBuyAutoEquip`.
+
+5. **Ouro de torre duplicava dentro da instância** — usuário reportou "só
+   ganhei ouro lootando, não na hora da morte"; investigação achou o
+   OPOSTO como bug real: `server_death_handler.py` concede ouro de
+   instância instantâneo (§34.74.6, `grant_instance_gold`) E TAMBÉM
+   sempre colocava `coins` no corpse da torre (loot normal — Torre nunca
+   tinha essa parte suprimida, diferente de Minion, que já zera coins de
+   propósito). O killer podia ganhar o MESMO ouro duas vezes; a percepção
+   "só funciona lootando" provavelmente veio do ouro instantâneo passar
+   despercebido (sem feedback visual — o HUD só atualiza o número, sem
+   floating text) enquanto lootear é bem mais óbvio. Fix: `coins` do
+   corpse vira 0 quando `grant_instance_gold` já rodou pra esse kill
+   (flag `_instance_gold_ja_concedido`, calculada no mesmo bloco). Testes:
+   `tests/test_towers.py::test_ouro_de_instancia_nao_duplica_com_coins_do_corpse`.
+
+6. **Gap adicional achado e corrigido de propósito (não reportado
+   diretamente, mas mesma classe de bug)**: recompensa de XP de QUEST
+   (`server/session.py::_handle_quest_turn_in`) nunca checava
+   `is_in_normalized_progression` antes de chamar `process_levelups`
+   REAL — mesmo desvio que XP de kill de mob/minion/torre já tinha
+   (`world_server.py::consume_xp()`), mas nunca estendido pra quest. Fix:
+   mesmo padrão, desvia pra `grant_instance_xp` quando o player está em
+   progressão normalizada. Teste: `tests/test_quest_turn_in.py::
+   TestQuestTurnInInstanceXp` (XP de 10 milhões cai exatamente no cap 15
+   da instância, não na curva real).
+
+Todos os 6 itens acima têm prova diferencial (revertido, confirmado que
+falha, restaurado). Suíte completa 3x limpa (723 testes, só as 2 falhas
+pré-existentes conhecidas, sem relação com este trabalho).
+
+#### §34.74.13 — Barra de ações e barra de consumíveis vazavam conteúdo REAL dentro da instância (02/08/2026)
+
+Sétimo round de playtest: usuário reportou que a barra de ações (hotbar de
+skills) continuava mostrando TODAS as skills do personagem real, e a
+barra de consumíveis continuava mostrando os consumíveis reais — ambas
+deveriam começar vazias na instância e se preencher sozinhas (skills
+conforme sobe de level; consumíveis quando comprados no vendedor).
+
+**Skills (hotbar)** — mesma classe de gap já fechada pra Inventory/
+Equipment/TalentTree (§34.74.8/.12): `PlayerSkills` do CLIENTE nunca era
+trocado/sincronizado ao entrar/sair da instância — o servidor já swapava
+sua própria cópia corretamente (`enter_normalized_progression`), mas o
+cliente nunca ficava sabendo. Fix: `skills_hotbar` (lista ordenada de
+`skill_id`, um por slot da hotbar) + `learned_skill_ids` novos no payload
+de STATS_UPDATE (`server/instance_progression.py::_push_stats_update`,
+novo parâmetro `ps`), emitidos nos 3 pontos que já tocam `PlayerSkills`
+(entrada, saída, e cada level-up de instância via
+`_process_instance_levelup` — sem isso, a skill nova desbloqueada num
+level-up nunca apareceria na hotbar). Diferente de item/equipamento,
+skill é dado ESTÁTICO compartilhado (`content/skill_config.py::
+SKILL_CATALOG`, cliente e servidor têm os dois) — só precisa mandar os
+IDs; cliente reconstrói via `PlayerSkills._make_skill(skill_id,
+SKILL_CATALOG)`, sem payload rico. Testes:
+`tests/test_instance_progression.py::
+TestInstanceProgressionSkillsHotbarSync`, `tests/test_client_instance_sync.py::
+TestInstanceSkillsHotbarClientApply`.
+
+**Consumíveis** — causa diferente: `ConsumableBar` (`engine/components.py`)
+é 100% CLIENT-LOCAL — nunca existiu no servidor, é config pessoal do
+jogador (nomes de item por slot, persistida em `config.json`). Não dá
+pra seguir o padrão de swap server-side aqui. Fix: o próprio cliente
+(`client/network_handlers.py::_handle_msg_stats_update`) faz o
+snapshot/limpeza/restauração, gatilhado pela MESMA transição do campo
+`in_instance` que já troca os outros componentes — guarda os slots reais
+em `self._real_consumable_bar_slots` ao entrar (limpando a barra pra
+`[None]*5`), restaura ao sair. **Auto-preenchimento ao comprar**: pedido
+explícito do usuário — comprar um consumível na loja de instância agora
+adiciona o nome do item automaticamente no primeiro slot livre da barra
+(`_handle_msg_buy_result`, gate `item_type == "consumable"` +
+`InstanceInventoryUIState.active`; não duplica se o nome já estiver em
+algum slot). Testes: `tests/test_client_instance_sync.py::
+TestInstanceConsumableBarSwap`, `TestInstanceBuyConsumableAutoAddsToBar`.
+
+Todos os itens têm prova diferencial. Suíte completa 3x limpa (733
+testes, só as 2 falhas pré-existentes conhecidas).
+
+#### §34.74.14 — Nexus (fim de partida), placar final e HUD ao vivo de Kills/Deaths/Farm/Gold (02/08/2026)
+
+Oitavo round de playtest: pedido do usuário pra fechar o "loop" de uma
+partida MOBA de verdade — derrubar a torre principal (base) de um time
+termina a partida na hora, com placar final dos dois times e um HUD
+permanente durante a partida mostrando `Kills: N | Deaths: N | Farm: N |
+Gold: N`. Reaproveita ao MÁXIMO a FORMA de 2 fases que a Arena já usa
+(`server/match_processor.py::_finish_match`/`_arena_leave_now`) sem
+nenhum acoplamento de código — `debug_battleground.py` continua "zero
+acoplamento com Arena".
+
+**`Tower.is_nexus`** (`engine/components.py`, repassado por
+`entity_factory.create_tower`/`map_loader.py`/`world_server.py::
+_create_towers`) — flag por-torre; as 2 torres-base de
+`maps/moba_battleground_entities.json` (`(2,97)` time A / `(97,2)` time
+B) têm `"is_nexus": true`. `server/server_death_handler.py`, no bloco de
+morte de Torre, lê a `Faction` da torre MORTA (antes dela ser removida)
+e chama `debug_battleground.notify_nexus_destroyed(world_server,
+faction_da_torre, killer_eid)` só se `is_nexus` — no-op total se não
+houver partida de teste carregada com esse time (Arena de verdade nunca
+seta `is_nexus`, então nunca aciona nada aqui).
+
+**Estatísticas por delta, não contador novo por-partida** — `dano`,
+`kills` e `mortes` já existiam como campos VITALÍCIOS de
+`CharStatsTracker` (incrementados no único chokepoint de dano/morte de
+player, `_damage_tracker_composite`/`RespawnMixin._handle_player_death`)
+— faltavam só 2 campos vitalícios novos: `CharStatsTracker.deaths` (
+qualquer morte de verdade, qualquer contexto) e `CharStatsTracker.
+minions_killed` ("farm", convenção MOBA — crédito do GOLPE FINAL/
+`killer_eid`, diferente de `mobs_killed` que credita `first_attacker_eid`
+= dono do loot/quest). `debug_battleground._enter()` tira um SNAPSHOT
+desses 4 campos (`kills/deaths/farm/damage`) no momento do `/testbg a|b`
+— qualquer estatística "desta partida" daí em diante é sempre
+`valor_atual - snapshot`, sem precisar inventar um contador zerável.
+Gold não precisa de snapshot: já é `wallet.gold - INSTANCE_STARTING_GOLD`
+(a Wallet já foi resetada por `enter_normalized_progression`).
+
+**Fim de partida — 2 fases, mesma forma da Arena**:
+`notify_nexus_destroyed` (fase "decidida") monta o placar completo dos
+DOIS times (confirmado com o usuário via pergunta — tabela cheia, não só
+o próprio player) e popula `_state["pending_match_result"]` — NÃO
+teleporta ninguém ainda. `_tick_bg_results_timeout` (fase "terminada",
+chamada 1x por tick) força `_leave()` (já teleporta) de quem não saiu
+manualmente em `DEBUG_BG_RESULT_AUTO_LEAVE_S = 15.0` segundos (mesmo
+valor da Arena, constante LOCAL — não importa `ARENA_RESULT_AUTO_LEAVE_S`
+de propósito). Botão "Voltar" do cliente sai ANTES do timeout mandando
+`CHAT_SEND {"text": "/testbg leave"}` — reaproveita o comando de chat já
+100% funcional, zero protocolo novo pra esse caminho.
+
+**Mensagem nova**: `MsgType.BG_MATCH_RESULT` (S→C, `shared/messages.py`)
+— `{"winner_faction", "players": [{eid,name,team,kills,deaths,farm,gold,
+damage,won}, ...]}`. Nenhuma outra mensagem nova — a saída forçada por
+timeout reaproveita `ZONE_CHANGE` normal. `server/session.py` drena os 2
+buffers novos (`drain_match_result_notifications`/
+`drain_forced_leave_notify`, mesmo padrão de
+`drain_gate_open_notifications`) 1x por tick — **`has_pending`
+estendido com os 2 buffers na mesma linha** (classe de bug já
+documentada 2x neste arquivo, §34.34.1 e o par grupo/duelo/trade —
+qualquer buffer novo esquecido aqui fica preso até atividade alheia
+destravar o dispatch).
+
+**HUD ao vivo** — `_tick_kda_hud` (1x por tick) calcula os 4 deltas e só
+enfileira `STATS_UPDATE` (`ws.queue_stats_update`, canal já 100%
+conectado — zero buffer novo) quando algum valor muda de verdade
+(dirty-check, cache em `_state["last_kda_sent"]`) — mesmo espírito de
+`WorldServer._sync_player_hp_dirty`. Cliente aplica os 4 campos
+(`match_kills/match_deaths/match_farm/match_gold`) em
+`InstanceInventoryUIState` (mesmo componente reaproveitado como flag
+"estou na BG" desde §34.74.8 — reset pra 0 na transição `active` False→
+True) via `client/network_handlers.py::_handle_msg_stats_update`, e
+`client/hud_handlers.py::_draw_bg_kda_hud` desenha
+`"Kills: N | Deaths: N | Farm: N | Gold: N"` no topo-centro, gated em
+`InstanceInventoryUIState.active`.
+
+**Cliente — novo mixin `client/battleground_handlers.py`**
+(`BattlegroundHandlers`, adicionado à composição de `GameEngine` em
+`game.py`) — modal de resultado (`_draw_bg_result_modal`, MESMO layout
+visual do modal de fim de partida da Arena mas com colunas extras
+K/D/Farm/Gold/Dano e os dois times agrupados, vencedor primeiro),
+identificação de "minha linha" por `eid` (nunca por nome — mesmo
+racional de §34.20/nameplate remoto, nomes colidem entre contas).
+`_handle_msg_bg_match_result` abre o modal; `_handle_msg_zone_change`
+(`client/network_handlers.py`) fecha (`self._bg_result_val = None`) —
+ZONE_CHANGE é o ÚNICO sinal de "saí da BG" nesse design, tanto pra saída
+manual quanto pro timeout forçado.
+
+**Testes**: `tests/test_towers.py::TestNexusTowerEndsMatch` (torre
+`is_nexus` derrubada dispara `notify_nexus_destroyed` corretamente; torre
+comum não dispara — prova negativa), `tests/
+test_debug_battleground_match.py` (placar reflete delta certo,
+idempotência, no-op sem partida ativa, timeout força saída, dirty-check
+do HUD só emite quando muda), `tests/test_session.py::
+TestBattlegroundDispatchSemMovimento` (BG_MATCH_RESULT/ZONE_CHANGE
+forçado chegam no MESMO tick sem depender de atividade alheia — mesmo
+padrão de `TestArenaDispatchSemMovimento`/`TestPartyDispatchSemMovimento`),
+`tests/test_char_stats.py::TestPlayerDeathTracking`/
+`TestMinionFarmTracking`. Todos os hooks novos com prova diferencial.
+Validado manualmente pelo usuário em jogo antes da suíte completa (ver
+memória de convenção de projeto). Suíte completa 3x limpa (só as 2
+falhas pré-existentes conhecidas).
+
+#### §34.74.15 — INCIDENTE CRÍTICO: personagem real corrompido pelo battleground de teste (02/08/2026)
+
+**Sintoma relatado pelo usuário**: personagem "jungo" (Arqueiro) com
+talentos e skills reais já salvos apareceu "totalmente desconfigurado"
+depois de usar `/testbg`. Investigação profunda (pedida explicitamente
+pelo usuário, incluindo auditoria de todo `server/session.py`) achou a
+causa raiz real — muito mais grave que qualquer bug de UI: **o banco de
+dados estava sendo sobrescrito com o estado RESETADO da instância como
+se fosse o personagem real**, permanentemente.
+
+**Causa raiz**: `is_in_normalized_progression` (guard que evita persistir
+enquanto o player está dentro da instância) só era checado em **1 dos 6**
+pontos do código que gravam no banco (`on_disconnect`, que já chamava
+`exit_normalized_progression` antes de salvar — ver §34.74.1/.2). Os
+outros 5 pontos — todos pré-existentes, escritos MUITO antes do sistema
+de instância existir, e nunca atualizados quando ele foi introduzido —
+nunca verificavam:
+1. **`_handle_save_state`** (SAVE_STATE) — o mais grave: o CLIENTE manda
+   SAVE_STATE automaticamente a cada troca de mapa (`game.py::
+   _do_transition`) E logo depois de qualquer `inv_snapshot`/
+   `equip_snapshot` no STATS_UPDATE (`client/network_handlers.py`,
+   fix de §34.74.11) — ou seja, o cliente literalmente dispara um
+   SAVE_STATE sozinho ao ENTRAR e ao SAIR do battleground. Cada um
+   desses persistia o overlay da instância (level 1, talentos/skills/
+   inventário/gold resetados) direto no banco.
+2. **`_handle_talent_update`** (TALENT_UPDATE).
+3. **Entrega de quest** (`_handle_quest_turn_in`).
+4. **`_autosave_all`** (autosave periódico, a cada 5 minutos — qualquer
+   sessão conectada, sem exceção).
+5. O kill-XP save de `world_server.py` (~linha 4138) já tinha o guard
+   certo desde a implementação original de progressão normalizada
+   (`continue` no branch `is_in_normalized_progression`) — mesmo padrão
+   que devia ter sido generalizado, mas ficou isolado. Unificado também
+   (mesmo dia, pedido do usuário) pra passar pelo MESMO chokepoint —
+   `_persist_character` ganhou um parâmetro opcional `patch_fn` (aplica
+   um patch no dict `merged` logo antes de salvar) só pra preservar o
+   comportamento especial que esse call site já tinha (sobrescrever
+   talentos com o `TalentTree` AO VIVO do ECS, porque
+   `last_client_payload` pode estar com `available_points` desatualizado
+   bem no instante de um level-up). Sem isso ainda sobraria 1 save fora
+   do chokepoint único — seguro hoje (guard próprio), mas um lugar a mais
+   pra alguém remover o guard sem perceber no futuro.
+
+Ou seja: bastava um `/testbg a` seguido de QUALQUER um desses 4 gatilhos
+(o mais comum: o próprio SAVE_STATE automático da troca de mapa pro
+battleground) pra sobrescrever level/talentos/skills/inventário/gold
+reais no banco — sem precisar de crash nem disconnect. Prova diferencial
+capturou o payload exato que seria persistido: `{'stats': {'level': 1,
+..., 'gold': 150}, ...}` — o piso da instância, gravado como se fosse a
+conta real.
+
+**Fix — chokepoint único**: `SessionManager._persist_character(session,
+context)` (`server/session.py`) — TODO ponto que grava no banco agora
+passa por aqui (nunca mais monta `get_player_save_data`/
+`_build_save_merge`/`save_character` na mão). Retorna `None` sem tocar o
+banco se `is_in_normalized_progression` for True. Os 5 pontos acima
+foram refatorados pra usar esse helper — mesma filosofia de "único ponto
+de verdade" já documentada em CLAUDE.md pra outras classes de bug deste
+projeto (`has_pending`, `apply_damage_core`, etc.): a causa raiz do
+incidente não foi "esquecer 1 lugar", foi **não existir 1 lugar só pra
+esquecer** — a introdução do sistema de instância adicionou um invariante
+novo ("nunca persistir dentro dela") sem migrar os pontos de persistência
+JÁ EXISTENTES pra reconhecê-lo. Esse é o padrão a seguir daqui pra frente
+pra qualquer feature nova que precise de estado "sandboxed"/descartável:
+o guard entra no ÚNICO ponto que grava, nunca em cada call site.
+
+**Pesquisa externa** (pedida pelo usuário): o padrão confirma a
+abordagem — dar a todo dado efêmero/instanciado um identificador de
+contexto claro (aqui, `InstanceProgressionSnapshot`/
+`is_in_normalized_progression`) e tratar escrita "server-autoritativa"
+como single source of truth que SEMPRE checa esse contexto antes de
+gravar, em vez de confiar que cada gatilho de save individual vai
+lembrar de checar sozinho.
+
+**Testes**: `tests/test_instance_persist_guard.py` — prova que
+`_persist_character` (chamado direto e através de `_autosave_all`/
+`_handle_save_state`/`_handle_talent_update`) nunca chama
+`save_character` (mockado) enquanto o player está na instância, e volta
+a salvar normalmente depois que ele sai; `patch_fn` aplica quando persiste
+fora da instância e nunca roda quando o guard barra; kill-XP real
+(`create_enemy` + `PendingDeath` + tick, mesmo padrão de
+`tests/test_towers.py`) aciona `_persist_character(context="kill_xp",
+patch_fn=...)` de verdade. Prova diferencial: guard revertido →
+`save_character` capturado sendo chamado com o payload `level=1/gold=150`
+da instância → guard restaurado → todos passam. Chamada do kill-XP
+removida → teste de wiring falha → restaurada → passa.
+
+**Correções relacionadas, mesmo round de feedback do usuário** (todas
+com prova diferencial):
+- Talentos de instância agora vêm PRÉ-ALOCADOS no máximo desde
+  `enter_normalized_progression` (não existe mais "gerenciar pontos"
+  dentro da instância) — elimina de vez a classe de bug de
+  `_apply_talent_modifiers` nunca sendo reaplicado quando uma skill
+  talento-gated era concedida por level-up (stat do talento — ex.: HP —
+  nunca entrava em CombatStats). `INSTANCE_TALENT_POINTS_PER_LEVEL`
+  removida (não sobra ponto pra dar).
+- HP agora cura 100% ao entrar, a cada level-up de instância, e ao sair
+  — antes só `max_hp` mudava (o real, ex. 300/340, era só CLAMPADO
+  contra o novo teto, nunca curado; level-up dentro da BG só subia
+  `max_hp` sem tocar `current_hp`, diferente do jogo real
+  — `engine/stats_system.py::process_levelups` já cura ao subir de
+  nível há muito tempo).
+- `PlayerAutoMove` (client/network_handlers.py::
+  _handle_msg_player_revive) nunca era limpo ao reviver — se o player
+  estava perseguindo/seguindo/andando até um alvo no chão quando morreu,
+  o path/ground_target ANTIGO (perto de onde morreu) sobrevivia ao
+  teleporte de revive (base do time, no caso da BG) e retomava sozinho
+  assim que o movimento voltava a ser permitido — sintoma relatado:
+  "anda sozinho até o ponto onde morreu". Mesmo padrão de limpeza já
+  usado ao aplicar CC (root/stun/polymorph/disoriented).
+
+Testes: `tests/test_instance_progression.py::TestInstanceProgressionTalentAutoMax/HpHeal`,
+`tests/test_client_player_revive.py`. Suíte completa 3x limpa.
+
+#### §34.74.16 — Sexta rodada de playtest: prioridade de clique, corpse de minion, Reciclagem e aggro de torre (03/08/2026)
+
+Round de feedback com 6 itens; 4 corrigidos, 1 investigado sem regressão
+real encontrada, 1 pendente de reprodução mais precisa do usuário.
+
+**1. Prioridade de clique — alvo sempre em cima de loot no mesmo tile.**
+Bug real: clique direito num inimigo que estava no MESMO tile de um
+cadáver com loot fazia o personagem CAMINHAR PRO LOOT em vez de atacar,
+e nem selecionava o alvo. Causa raiz: `LootSystem.update()`
+(`ui/systems.py`) e `MouseTargetingSystem.update()` são dois `System`s
+INDEPENDENTES que processam o MESMO evento de clique — `LootSystem.
+_try_open_corpse` rodava incondicionalmente (sem checar se havia um
+alvo vivo ali) e até CANCELAVA `CombatState.target_entity_id` que
+`MouseTargetingSystem` já tinha setado no mesmo clique. Fix: novo helper
+`_live_target_at_world_pos()` (mesma bounding-box de `_enemy_at_world_pos`/
+`_remote_player_at_world_pos`, duplicada de propósito — Systems
+independentes, sem referência um ao outro) — `_try_open_corpse` retorna
+cedo se houver um alvo vivo (NPC/Player/Mob) na posição clicada. Teste:
+`tests/test_client_ui.py::test_try_open_corpse_nao_compete_com_alvo_vivo_no_mesmo_tile`.
+
+**2. Torre "dropando gold" — investigado, SEM regressão real
+encontrada.** Escrevi um teste novo de kill RANGED de torre (Arqueiro,
+cobertura que só existia pra melee) dentro da instância — passou sem
+nenhuma mudança de código, confirmando que `_server_apply_ranged_physical`
+já seta `PendingDeath` com o killer certo (spell_completion_processor.py,
+fim da função) e a supressão de coins do corpse já funciona pra ranged
+igual a melee. Usuário não conseguiu detalhar como matou a torre —
+mantido em aberto; se reaparecer, é outro caminho de kill (skill
+específica, DoT, multi-hit) não coberto ainda. Teste:
+`tests/test_towers.py::test_ranged_kill_de_torre_nao_droppa_gold_no_corpse_dentro_da_instancia`.
+
+**3. Corpse de minion — timer curto (4s), não mais 120s.** Minion nunca
+tem loot (items/coins sempre vazios, por design — "moeda fora de
+escopo") — usar o MESMO timer de mob normal (120s, pensado pra dar
+tempo de lootear) só acumulava corpses vazios sem função nenhuma, e o
+volume de mortes numa lane MOBA "floodava" o mapa rápido. Confirmado
+com o usuário: ~4s, só confirmação visual de morte (estilo LoL/Dota).
+`LootProcessorMixin.MINION_CORPSE_TIMER_S` (`server/loot_processor.py`)
+— `server_death_handler.py` marca `"is_minion"` no `pending_loot.append`,
+`_process_loot_drops` escolhe o timer por essa flag. Teste:
+`tests/test_towers.py::test_corpse_de_minion_usa_timer_curto_nao_o_de_mob_normal`.
+
+**4. Reciclagem dentro da instância vai direto pra bag.** Confirmado com
+o usuário: flecha recuperada (talento Reciclagem) não deveria mais
+precisar que o player lootasse o corpse manualmente dentro da BG — vai
+direto pro `Inventory` do killer (empilha se já tiver o mesmo tipo de
+munição; cai no fallback antigo — corpse — se a bag estiver cheia).
+Fora da instância, comportamento 100% inalterado. `server/
+server_death_handler.py`, bloco "5b. Reciclagem". Testes: `tests/
+test_instance_progression.py::TestInstanceReciclagemGoesToBag`.
+
+**5. Aggro por dano de torre + espalhamento em área pra minions.**
+Pedido do usuário: "quando a torre ataca um minion, ele agra na torre e
+os minions em torno também agrem". `MinionSystem._check_tower_aggro`
+(`engine/world_systems.py`) — reaproveita a MESMA lista `combat_this_tick`
+que já alimenta o aggro-switch de `TowerSystem` (nenhum mecanismo
+novo): torre que dana um minion vira alvo IMEDIATO dele (override do
+estado atual); minions ALIADOS (mesma facção) do atingido, dentro de
+`TOWER_AGGRO_SPREAD_RADIUS_TILES` (6 tiles, valor tunável — sem número
+exato pedido pelo usuário) e ainda `ADVANCING` (não puxa quem já está
+brigando com outra coisa — evita abandonar duelo por dano de raspão num
+aliado distante), também trocam pra torre. `WorldServer._tick` agora
+passa `combat_this_tick` pro `MinionSystem.update()` também (antes só
+`TowerSystem` recebia). Bug lateral achado ao testar: `_target_still_valid`
+usava só `minion.aggro_range_tiles` (raio PASSIVO de detecção) — uma
+torre que acabou de acertar o minion de LONGE (attack_range de torre
+tipicamente bem maior que aggro_range passivo de minion) invalidava o
+alvo forçado no MESMO tick em que era setado. Fix: quando o alvo é uma
+Torre, usa `max(minion.aggro_range_tiles, tower.attack_range_tiles)`.
+Testes: `tests/test_minions.py::TestMinionTowerAggro` (5 casos: aggro
+direto, espalhamento em área, fora do raio não agra, minion do mesmo
+time da torre não agra, minion já engajado não é puxado).
+
+**6. HP máximo "puxava" o valor real ao recalcular (ex.: ao comprar um
+item) — RESOLVIDO.** Reprodução mais precisa do usuário: "entrei na BG,
+HP 140/140 — comprei um item e o HP ficou 140/380" (380 = max_hp REAL,
+fora da instância). Causa raiz real (bem mais profunda que um race de
+rede): `CombatStats.max_hp`/`base_stamina` no CLIENTE são recalculados
+DO ZERO (`stat_fns.recalculate_combat_stats`, chamado por QUALQUER
+`add_modifier`/`remove_modifier`) a partir de `CharacterStats` +
+`PermanentStats`, via `apply_char_stats_to_combat`. `_push_stats_update`
+(server/instance_progression.py) só mandava o RESULTADO (`hp`/`hp_max`)
+pro cliente, nunca os atributos brutos (`strength/intelligence/agility/
+vitality/defense`) que ALIMENTAM esse recálculo — o `CharacterStats`
+LOCAL nunca sabia que tinha entrado na instância, guardava a vitalidade
+REAL pra sempre. Qualquer gatilho de recálculo local (equipar um item
+comprado — `client/inventory_handlers.py::_equip_item`, que chama
+`add_modifier` por cada modifier do item — é um desses gatilhos)
+recomeçava do `base_stamina` ERRADO (derivado da vitalidade real) e
+trazia o max_hp real de volta. Mesma classe de bug do `talent_allocated`/
+`skills_hotbar` já corrigidos nesta sessão, só que pros 5 atributos
+brutos, e mais perigosa: TODOS os outros `base_*` (armor, attack_power,
+crit, dodge, parry, acerto, hp5/mp5...) tinham o MESMO problema —
+qualquer stat de combate, não só HP, ficava incorreto no cliente após
+qualquer equip/buff dentro da instância (quebra de propósito do sistema
+inteiro: "todo mundo normalizado pro mesmo piso").
+
+Fix: `_push_stats_update` agora sempre inclui os 5 atributos brutos no
+payload de STATS_UPDATE (enter/exit/level-up de instância, os 3 pontos
+que já chamam essa função). Cliente (`_handle_msg_stats_update`) aplica
+em `CharacterStats` e re-roda `apply_char_stats_to_combat` +
+`sync_attack_interval` localmente — MESMA função pura que o servidor
+usa, então qualquer recálculo futuro (equip/unequip) já parte da
+baseline certa. `hp`/`hp_max` explícitos continuam tendo a palavra final
+(aplicados depois, no mesmo payload). Teste (prova diferencial, incluindo
+um falso positivo pego e corrigido no caminho — item sem `modifiers`
+não dispara `add_modifier`/recálculo nenhum, mascarando a prova):
+`tests/test_client_instance_sync.py::TestInstanceAttributeSyncSurvivesRecompute`.
+
+#### §34.74.17 — Follow-up do item 6: PermanentStats vazando + HP não acompanhava equip (03/08/2026, mesmo dia)
+
+Usuário testou o fix do item 6 e achou 2 problemas novos no mesmo
+mecanismo, ambos com o Arqueiro "jungo":
+
+**1. "Comprei o Arco do Caçador e o HP foi pra 160, mas o item não dá
+atributo de vida nenhum" (o item só tem `crit_rating`).** Causa raiz:
+`PermanentStats` (bônus legado da mecânica roguelike desativada — ver
+docstring de `InstanceProgressionSnapshot`) é zerado pelo SERVIDOR ao
+entrar na instância (`ws.world.add_component(eid, PermanentStats())`
+fresh), mas a cópia LOCAL do cliente nunca era avisada disso. O fix do
+item 6 (§34.74.16) chama `apply_char_stats_to_combat(char, cs, perm)`
+localmente — usando o `PermanentStats` LOCAL, que pra um personagem
+ESTABELECIDO com bônus legado real (>0 — "jungo" é um desses) somava
+esse bônus em cima do atributo já normalizado, toda vez que qualquer
+equip disparava o recálculo. Fix: `InstanceInventoryUIState.active`
+(mesma flag "estou na BG") decide se o recálculo usa `PermanentStats`
+real ou `None` (zero) — usa o `in_instance` do PRÓPRIO payload se vier
+explícito (enter/exit sempre mandam), senão o estado atual da flag
+(level-up de instância não manda `in_instance`, mas o player continua
+lá dentro).
+
+**2. "current_hp deve acompanhar o max_hp — se o personagem está 100%
+de hp, equipar um item precisa continuar 100%, ele não sofreu dano
+nenhum."** `stat_fns.recalculate_combat_stats` (compartilhado,
+propositalmente) só preserva o HP ABSOLUTO ao recalcular (comportamento
+padrão de buff/debuff em qualquer RPG — current_hp não muda, a %
+cai se max_hp subir) — decisão de NÃO mexer nessa função compartilhada
+(afetaria buff/equip no jogo INTEIRO, fora do escopo do pedido). Fix
+escopado só no auto-equip da COMPRA de instância
+(`client/network_handlers.py::_handle_msg_buy_result`): captura a
+FRAÇÃO de HP antes de `_equip_item`, reaplica a mesma fração contra o
+`max_hp` novo depois — comprar/equipar não é dano nem cura, é
+normalização de equipamento.
+
+Testes: `tests/test_client_instance_sync.py::
+TestInstanceAttributeSyncSurvivesRecompute::
+test_max_hp_nao_vaza_bonus_legado_de_permanent_stats_ao_recalcular`,
+`TestInstanceShopBuyAutoEquip::test_auto_equip_preserva_fracao_de_hp_*`
+(2 casos: 100% e fração parcial). Ambos com prova diferencial.
+
+#### §34.74.18 — Remoção do `DeathRespawnSystem` (mecânica roguelike abandonada, 03/08/2026)
+
+Usuário pediu pra investigar e eliminar código antigo da mecânica
+"roguelike" (morrer acumula stats em `PermanentStats`, reseta
+`CharacterStats`, respawna com HP cheio trocando de mapa) — ideia
+abandonada quando o projeto migrou pro modelo online autoritativo.
+
+Investigação confirmou `DeathRespawnSystem` (`engine/stats_system.py`)
+100% inerte no branch online: `client/online_mode_handlers.py::
+_connect_online()` seta `online_mode=True` incondicionalmente, e a
+primeira linha de `DeathRespawnSystem.update()` era `if self.online_mode:
+return`. Nenhum teste referenciava a classe. Morte de player online é
+tratada inteiramente pelo servidor (`server/respawn_system.py`,
+autoritativo — ghost/respawn já documentado na seção de Sistemas do
+Servidor).
+
+Removido:
+- `engine/stats_system.py`: classe `DeathRespawnSystem` inteira + menção
+  no docstring do módulo.
+- `game.py`: import, instanciação, `self._death_respawn_system`, entrada
+  na lista `self.systems`, entrada em `_SYSTEM_ORDER_CONSTRAINTS`, e o
+  bloco de `pending_respawn` no loop principal.
+- `client/online_mode_handlers.py`: `self._death_respawn_system.online_mode
+  = True` em `_connect_online()`.
+- `arquitetura/SISTEMAS_ECS.md`: linha da tabela de sistemas (renumerado
+  20→28 do que vinha depois).
+- Docstring de `_handle_death()` (`engine/world_systems.py`) corrigida
+  (mencionava `DeathRespawnSystem` num comentário, não código morto —
+  agora referencia o fluxo real de ghost/respawn do servidor).
+
+Verificado com `python -m py_compile` em cada arquivo tocado + suíte
+completa (`pytest tests/ -q`), sem regressão.
+
+**Não removido, decisão do usuário:** `PermanentStats` (componente que a
+mecânica escrevia) — hoje é só leitura legada, nada mais produz valores
+novos nele, mas personagens ESTABELECIDOS (ex.: "jungo") podem ter
+valores reais >0 salvos no banco. Perguntado ao usuário se queria
+remover o componente inteiro também (apagaria esse bônus de personagens
+existentes) — resposta: **deixar como está** (read-only, sem produtor,
+zero risco a mais do que já existe hoje).
+
+#### §34.74.19 — INCIDENTE CRÍTICO: bag perdida ao sair da BG (03/08/2026)
+
+Usuário relatou: "estou perdendo os itens da bag quando saio da BG,
+parece que o jogo está persistindo a bag vazia da instância para fora
+da instância, isso é grave" — mesma classe de risco do incidente
+§34.74.15 (corrupção de progressão real), desta vez no Inventory.
+
+**Causa raiz** — race de ORDEM DE MENSAGENS entre dois canais de rede
+diferentes: o ZONE_CHANGE de `/testbg leave` era mandado IMEDIATAMENTE
+dentro de `SessionManager._handle_chat` (`await session.send(...)`,
+síncrono, fora do tick), enquanto o STATS_UPDATE com o
+Inventory/Equipment/CharacterStats REAIS — restaurados por
+`exit_normalized_progression` via `WorldServer.queue_stats_update` — só
+é despachado no PRÓXIMO tick (`_dispatch_tick_deltas` drena
+`_pending_stats_updates`). O cliente recebia o ZONE_CHANGE primeiro,
+processava `_do_transition` (game.py) — que dispara `self._autosave()`
+no fim — com o Inventory LOCAL ainda "de instância" (vazio/6 slots),
+porque o STATS_UPDATE corretivo ainda não tinha chegado. Como
+`exit_normalized_progression` já tinha rodado no SERVIDOR antes do
+ZONE_CHANGE ser enviado, `is_in_normalized_progression` já era False
+quando esse SAVE_STATE prematuro chegava — o guard de `_persist_character`
+(§34.74.15) não bloqueava mais, e a bag vazia era gravada no banco por
+cima da real.
+
+Confirmado que o caminho de saída FORÇADA por timeout (`_tick_bg_results_
+timeout`) já era seguro por acidente — o ZONE_CHANGE dela passa pelo
+MESMO `_dispatch_tick_deltas` que drena os STATS_UPDATE, na ordem certa
+(stats antes de zone). Só o `/testbg leave` MANUAL (chat síncrono) tinha
+o problema.
+
+**Fix**: `SessionManager._flush_stats_updates()` (novo método, extrai a
+lógica que já existia inline em `_dispatch_tick_deltas`) chamado
+explicitamente ANTES do `await session.send(MsgType.ZONE_CHANGE, ...)`
+no branch `/testbg` de `_handle_chat` — garante que a restauração real
+sempre chega ao cliente antes da troca de mapa, nos dois sentidos
+(entrar e sair). Mesma classe de bug já documentada neste projeto sob
+"atualização coesa" (CLAUDE.md) — ordem de despacho de dois canais que
+parecem independentes mas têm uma dependência causal implícita.
+
+Teste: `tests/test_bg_leave_message_order.py` (novo arquivo) — login real
+via `fake_login`, item real e distinto na bag antes de entrar, `/testbg
+a` → `/testbg leave` via `mgr.on_message`, verifica ORDEM das mensagens
+capturadas (`STATS_UPDATE` com `inv_snapshot` chega ANTES do
+`ZONE_CHANGE`) e que a bag restaurada tem o item real. Prova diferencial
+confirmada (revertido o flush antecipado → teste falha, `inv_snapshot`
+nem chega a ser enviado antes do ZONE_CHANGE).
+
+#### §34.74.20 — Torre ainda dropava ouro físico quando o golpe final era de um minion (03/08/2026)
+
+Usuário relatou (com print, personagem "jungo" dentro do `/testbg`):
+torre morta ainda dropava um coin físico no corpse, mesmo dentro da
+progressão normalizada (onde o design é ouro SEMPRE automático — ver
+§34.70/34.74.16). Investigação inicial (repro de auto-attack melee E
+ranged reais, via `WorldServer._process_player_attacks`) não reproduziu
+— ambos creditavam o ouro corretamente e suprimiam o coin do corpse.
+
+**Causa raiz real**: `MinionSystem` também chama `deal_damage`
+(`engine/world_systems.py:1806`) quando um minion aliado ataca uma
+torre — se o GOLPE FINAL vier do minion (cenário normal de lane MOBA:
+player + minions batendo juntos), `PendingDeath.killer_entity_id` fica
+com o eid do MINION, não de um player. O gate antigo em
+`server_death_handler.py` (`killer_eid in _player_eids_now`) falhava
+por completo nesse caso: nem creditava ouro automático (killer não é
+player) NEM suprimia os coins físicos do corpse
+(`_instance_gold_ja_concedido` nunca virava `True`) — a torre voltava a
+dropar ouro físico normal, exatamente como no print.
+
+**Fix**: novo `_gold_recipient_eid` — usa `killer_eid` se ele for um
+player de verdade; senão, cai pro PRIMEIRO player que bateu
+(`damage_log`, já filtrado só-players nesta função, mesma fonte que
+`first_attacker_eid`/dono do loot usa mais abaixo). Se NENHUM player
+bateu (minion mata sozinho, sem nenhum player por perto), o fallback
+fica `-1` e o comportamento antigo (coins físicos normais) se mantém —
+correto, ninguém pra creditar.
+
+Teste: `tests/test_towers.py::TestTowerDeathXpGoldRespawn::
+test_torre_morta_por_golpe_final_de_minion_credita_ouro_ao_player` —
+player bate na torre, MINION dá o golpe final (`PendingDeath(killer_
+entity_id=minion_eid)` + `damage_log` com os dois), confirma que o ouro
+vai pro player e o corpse fica com `coins=0`. Prova diferencial
+confirmada (revertido o fallback → reproduz exatamente o bug do
+usuário: `coins=20` no corpse, gold do player intocado).
+
+#### §34.74.21 — HUD de Gold da BG ficava negativo ao comprar item (03/08/2026)
+
+Usuário relatou: "compra de itens faz o contador de gold da HUD ficar
+negativo, não é necessário descontar o gold usado". O HUD ao vivo
+(§34.74.14) calculava `gold` como `wallet.gold - INSTANCE_STARTING_GOLD`
+— um valor NET (líquido), que caía abaixo de 0 assim que o player
+gastasse na loja de instância mais do que tinha ganho até ali. Pedido
+explícito: gold da HUD/placar final deve ser só o GANHO (kill/loot),
+gasto não desconta.
+
+**Fix**: novo acumulador monotônico `_state["gold_earned"]`/
+`_state["last_wallet_gold"]` (`server/debug_battleground.py`) — função
+`_sample_gold_earned(ws, eid)` amostra `wallet.gold` 1x por tick e soma
+SÓ deltas POSITIVOS no acumulado; um delta negativo (compra) só
+atualiza o baseline (`last_wallet_gold`), nunca subtrai do total
+mostrado. Inicializado em `_enter()` (zerado, baseline =
+`INSTANCE_STARTING_GOLD`, já aplicado por `enter_normalized_
+progression`), limpo em `_leave()`. Usado tanto por `_tick_kda_hud`
+(HUD ao vivo) quanto por `notify_nexus_destroyed` (placar final,
+reamostra na hora — o Nexus cai ANTES do gold do próprio kill ser
+creditado no mesmo tick em `server_death_handler.py`, então sem essa
+reamostra o placar final perderia esse último delta).
+
+Teste: `tests/test_debug_battleground_match.py::
+test_gold_ganho_nao_diminui_quando_player_gasta_na_loja` — ganha 100,
+gasta 80 (delta negativo), confirma que o valor mostrado continua 100
+(não cai pra 20); ganha mais 30, confirma 130. Prova diferencial
+confirmada (removido o guard `if delta > 0` → reproduz exatamente o bug
+do usuário: valor cai de 100 pra 20 após a compra).
+
+Todos os itens 1-6 (+ follow-up) com prova diferencial. Suíte completa
+3x limpa.
+
+#### §34.74.22 — CORREÇÃO do diagnóstico §34.74.17: causa real do "HP 140→160 ao comprar item sem atributo de vida" (03/08/2026)
+
+Usuário reportou de novo (com 2 prints das Estatísticas do personagem,
+antes/depois de comprar o Arco do Caçador) exatamente o mesmo sintoma do
+§34.74.17, mesmo após o fix daquele item e um restart real do servidor.
+Investigação profunda (múltiplos repros com `SessionManager` real,
+`BUY_REQUEST`/`BUY_RESULT` reais, e por fim os dados REAIS de "jungo"
+lidos direto de `data/game.db`) não reproduziu via a teoria do
+§34.74.17 — o que levou a uma descoberta importante:
+
+**`PermanentStats` nunca é persistido no banco** — não existe coluna
+`permanent_stats_json` (ou equivalente) na tabela `characters`
+(confirmado via `PRAGMA table_info`). Toda entidade nasce com
+`PermanentStats()` fresh (zerado) em `entity_factory.py`/`WorldServer.
+spawn_player` — não há NENHUM mecanismo pra carregar um valor >0 do
+banco. Ou seja: a premissa do §34.74.17 ("personagem estabelecido com
+bônus legado real, jungo é um desses") está **errada** — esse bônus não
+pode existir pra nenhum personagem persistido, então o gate de
+`_perm_attr` daquele fix, embora inofensivo, não tinha como ser a causa
+real (o vazamento sempre foi zero × qualquer coisa = zero).
+
+**Causa raiz real, achada pelo print do usuário**: o painel de
+Estatísticas mostrava "HP: 120 Base +20 Itens" e "Estamina: 140 Base +20
+Itens" com a mochila de equipamento **totalmente vazia** — ANTES de
+comprar qualquer coisa. Isso apontou pra `CombatStats.modifiers` (não
+`PermanentStats`). `equip_snapshot` (mandado por `enter_/exit_
+normalized_progression`, aplicado em `client/network_handlers.py::
+_handle_msg_stats_update`) só trocava `Equipment.slots` — nunca limpava
+os `Modifier(source="equipment")` correspondentes já presentes em
+`CombatStats.modifiers`, adicionados no LOGIN por `_restore_save_state`
+(`client/save_sync_handlers.py:354-365`, que existe desde sempre e
+chama `add_modifier` pra cada item REAL equipado). `Equipment.slots` e
+`CombatStats.modifiers` são listas **independentes** — esvaziar uma não
+esvazia a outra. Pra "jungo" (armadura real de cabeça/peito/botas):
+armor +9, crit_rating +2%, stamina +2 (=+20 HP, `_FLAT_SCALE["stamina"]
+=10.0`) ficavam silenciosamente presos em `cs.modifiers`, mascarados
+pelo `hp`/`hp_max` explícito do mesmo payload de entrada — só ficavam
+visíveis no próximo `recalculate_effective_stats()` (disparado por
+QUALQUER `add_modifier`/`remove_modifier`, ex.: equipar o Arco do
+Caçador — que só tem `crit_rating`, nada de vida) reaplicar TUDO de
+novo, incluindo os 3 modifiers reais órfãos.
+
+**Fix**: `_handle_msg_stats_update`'s bloco de `equip_snapshot`
+(`client/network_handlers.py`) agora espelha exatamente o que o
+SERVIDOR já faz em `WorldServer._apply_equipment_modifiers` — limpa
+`cs.modifiers` de tudo com `source="equipment"` e reconstrói do zero a
+partir do `Equipment` que ACABOU de ser trocado (vazio ao entrar na
+instância, real ao sair) — nunca deixa a lista de modifiers dessincronizar
+do conteúdo real do Equipment.
+
+Teste: `tests/test_client_instance_sync.py::
+TestInstanceAttributeSyncSurvivesRecompute::
+test_max_hp_nao_vaza_modifier_de_equipamento_real_ao_entrar_na_instancia`
+— equipa um peito com modifier real de stamina, processa ENTRY com
+`equip_snapshot` vazio, confirma `cs.modifiers` sem sobra de
+`source="equipment"` e `max_hp` no piso certo; equipa um item só com
+`crit_rating` e confirma que `max_hp` não muda. Prova diferencial
+confirmada — sem o fix, reproduz o EXATO delta do usuário (140→160,
++20) usando os dados reais de "jungo".
+
+#### §34.74.23 — Cooldown de skill não aparecia + CC (slow/sleep/stun/root) sem efeito em minion/torre, dentro da BG (03/08/2026)
+
+Usuário relatou dois bugs no mesmo playtest, ambos só dentro do
+`/testbg`. Investigado via agent de pesquisa dedicado + verificação
+manual antes de mexer no código.
+
+**Bug A — cooldown de skill só aparecia depois de apertar o atalho de
+novo.** Causa raiz: `skills_hotbar` (payload de STATS_UPDATE) chega a
+CADA level-up de instância — e level-up é muito frequente na BG (XP por
+proximidade de qualquer minion morto, waves contínuas). `client/
+network_handlers.py::_handle_msg_stats_update` reconstruía a barra
+INTEIRA (`PlayerSkills._make_skill` pra cada slot) toda vez que esse
+payload chegava — um `Skill` novo sempre nasce com `current_cooldown=0.0`,
+`charges=0`, `charge_timer=0.0`. Um cooldown real que o SKILL_RESULT
+tinha acabado de mandar segundos antes ficava visualmente limpo até a
+PRÓXIMA mensagem (ex.: a rejeição de um 2º uso) reaplicar o valor certo
+de novo — exatamente o sintoma relatado. Confirmado em log real do
+servidor: CD registrado de 90s (`tiro_multiplo`), cliente mostrando
+pronto ~30s depois.
+
+Fix: reconciliação POR SLOT em vez de substituição completa —
+`client/network_handlers.py` (bloco `skills_hotbar`) mantém o objeto
+`Skill` JÁ EXISTENTE quando o `skill_id` do slot não mudou (preserva
+`current_cooldown`/`charges`/`charge_timer`/`_server_pending`/
+`fail_flash_timer` ao vivo); só cria um `Skill` novo pra slot que
+realmente mudou de conteúdo (nova skill liberada, ou vazio↔ocupado).
+
+Teste: `tests/test_client_instance_sync.py::
+TestInstanceSkillsHotbarClientApply::
+test_skill_no_mesmo_slot_preserva_cooldown_ao_vivo`. Prova diferencial
+confirmada.
+
+**Bug B — slow/sleep/stun/root sem efeito em minion.** Causa raiz:
+`MinionSystem` não usa `AIControlled`/`EnemyAISystem` DE PROPÓSITO (ver
+docstring da classe, `engine/world_systems.py`) — só que isso também
+significa que nunca passava pelo bloco de CC (stun/sleep/fear/
+polymorph/disoriented/root) que `EnemyAISystem` aplica pra mob normal.
+`MinionSystem._attack` disparava incondicionalmente, sem checar
+`StatusEffects` nenhuma. Investigação também confirmou que
+**movimento** sob stun/sleep já tinha proteção pré-existente e
+GENÉRICA em `TileMovementSystem.update()` (cancela `is_moving` de
+qualquer entidade com esses 2 efeitos ativos, independente de quem
+iniciou o passo) — o gap real e novo era especificamente ATACAR (e
+mover sob **root**, que `TileMovementSystem` não cobre — só stun/sleep).
+
+Fix: `MinionSystem.update` (`engine/world_systems.py`) ganha o mesmo
+choke-point único já documentado em `engine/utils.py` —
+`is_action_locked` (stun/sleep/fear/polymorph/disoriented — já usado
+por `combat_processor.py`/`skill_processor.py`/`PlayerInputSystem`)
+barra COMPLETAMENTE o tick (nem anda nem ataca); `is_movement_locked`
+(mesmo conjunto + root) barra só o `_walk_toward`, deixando o ataque
+acontecer se o alvo já estiver no alcance.
+
+**Torre NÃO ganhou o mesmo gate — decisão do usuário (03/08/2026, ao
+revisar o fix): "a torre não é um ser vivo, é uma estrutura, não deve
+sofrer nenhum efeito só dano"**. `TowerSystem.update` foi tentado com o
+mesmo `is_action_locked` no primeiro rascunho deste fix e foi
+DESFEITO — torre continua imune a stun/sleep/fear/polymorph/
+disoriented/root de propósito, só HP a afeta. Comentário explícito no
+código pra não reintroduzir o gate sem confirmar de novo.
+
+Testes: `tests/test_minions.py::TestMinionCrowdControl` — stun/sleep
+bloqueiam ataque de minion, root bloqueia perseguição mas não ataque em
+alcance (todos com prova diferencial); `test_torre_atordoada_continua_
+atacando` confirma o OPOSTO pra torre (CC não impede o ataque —
+estrutura, não "ser vivo").
+
+**Não mexido, achados incidentais da investigação (fora do escopo dos
+2 bugs relatados):** `_skill_impacto` (`ui/skill_handlers.py`) não
+filtra `can_engage` — pode acertar aliados na BG, diferente de Brado
+Provocativo/Canção de Ninar que já filtram; `sleep` quebra com QUALQUER
+dano (`apply_damage_core`), tornando sleep em área quase inútil numa
+troca de lane contínua — decisão de design, não bug, não mexido sem
+perguntar; `taunted` não força alvo em minion/torre (não tem
+`blocks_act`/`blocks_move`, é um mecanismo à parte de forçar
+targeting, nunca implementado pra NPC/minion/torre).
+
+#### §34.74.24 — Silencia FLT/som de combate sem player, dentro da BG estilo MOBA (03/08/2026)
+
+Usuário relatou spam de dano/som de batalha entre minions na BG. Pedido:
+dentro do `/testbg` (só lá — resto do jogo intocado), combate onde
+NENHUM dos dois lados é um player de verdade (minion×minion,
+minion×torre, torre×minion) fica sem número de dano flutuante e sem
+som; qualquer lado sendo player mantém o feedback normal — inclusive
+quando é o MINION que bate NO player (correção do usuário no mesmo
+pedido, pra não silenciar esse caso por engano).
+
+Todo combate entre duas entidades que o player só está VENDO (não as
+suas próprias) chega por um único caminho — `combat[]` dentro de
+`AOI_UPDATE` → `client/remote_entity_handlers.py::_apply_combat_result`
+(mesma função usada pro combate do próprio player, `server_attacker`/
+`server_target` genéricos). Novo helper `_bg_silence_nonplayer_combat_fx
+(server_attacker, server_target)`: `False` fora da BG (`Instance
+InventoryUIState.active`) ou se qualquer um dos dois lados resolve pra
+player (`== self._my_eid` ou `in self._remote_players`); `True` só
+quando os dois são não-player. Aplicado nos 2 lugares que geram FLT/som
+de golpe entre entidades vistas: o branch "mob foi atacado" de
+`_apply_combat_result` (crit, normal, e miss/dodge/parry/block/evade) e
+o som de DISPARO de projétil de mob (`_spawn_mob_projectile` — atacante
+aqui é sempre mob, só falta checar o alvo).
+
+Teste: `tests/test_client_ui.py` — 4 casos (`bg_silencia_flt_e_som_
+minion_vs_minion`, `bg_mantem_flt_e_som_player_vs_minion`, `bg_mantem_
+flt_e_som_minion_vs_player`, `fora_da_bg_minion_vs_minion_continua_com_
+flt_e_som`). Prova diferencial confirmada.
+
+**Fora do escopo, achados incidentais não mexidos:** som de MORTE de
+minion (`ENTITY_DESPAWN`/despawn em `AOI_UPDATE`) não tem informação de
+quem matou disponível no payload — não dá pra distinguir "minion morto
+por outro minion" (deveria silenciar) de "minion morto pelo player"
+(deveria continuar, é o kill DO player) sem plumbing novo; som de
+"aggro" de mob (`SOUND_EVENT` kind=`mob_aggro`) também não carrega
+alvo, só o mob que aggrou — um gate por-BG aí silenciaria até um minion
+aggrando NO player. Nenhum dos dois foi pedido explicitamente — avisar
+se continuarem incomodando.
+
+#### §34.74.25 — Lanes top/bot da BG nunca spawnavam minion (só mid funcionava) (03/08/2026)
+
+Usuário só tinha testado a lane mid ("é reta, então é simples") e pediu
+pra liberar as outras. As 6 lanes (top/mid/bot × 2 times) JÁ estavam
+100% definidas em `maps/moba_battleground_entities.json` e JÁ eram
+ativadas (`_activate_minion_lanes` não filtra por lane) — não era um
+flag faltando, eram 3 bugs reais silenciosos:
+
+**1. `max_nodes=300` (default do pathfinder,
+`engine/world_systems.py::PathfindingSystem.find_path`) baixo demais
+pras lanes com curva.** `server/world_server.py::_tick_minion_waves`
+calcula 1 `find_path` por PERNA (spawn→waypoint→...→base). Mid é uma
+reta direta (1 perna só, ~100-270 nós explorados); top/bot têm 2
+pernas cada, contornando bordas do mapa 100×100 — cada perna precisa
+de ~450-590 nós. A falha (`route_ok=False`) só dava `continue`, sem
+NENHUM log — 0 minions, parecia "a lane não existe". Fix: `max_nodes
+=4000` no `find_path` (`server/world_server.py`, dentro do loop de
+`_tick_minion_waves`) + log de falha (`log.warning`, nunca mais
+silencioso).
+
+**2. `target_tile` da lane mid do time B caía EXATAMENTE no tile do
+Nexus do time A** (`maps/moba_battleground_entities.json` — Nexus A em
+`[4,95]` `is_nexus:true`, B-mid `target_tile` também `[4,95]`).
+Torres entram como `dynamic_obstacles` do cálculo de rota
+(`_get_tower_tiles_for_map`) — alvo inalcançável por definição,
+independente do budget de busca (confirmado: mesma rota com a torre
+removida resolve em 90 nós). O Nexus A foi movido de `(2,97)` pra
+`(4,95)` em algum momento sem atualizar o alvo da lane B-mid junto.
+Fix: `target_tile` de B-mid voltou pra `[2, 97]` (a posição antiga do
+Nexus — walkable, sem colisão com nada, mesma ordem de grandeza de
+distância que as outras pernas).
+
+**3. 3 dos 7 `_MINION_WAVE_OFFSETS` caem em parede em lanes de base
+"estreita"** (A-top offset `(-1,0)`→`(1,93)`; A-bot offsets `(0,1)`/
+`(0,2)`→`(6,98)`/`(6,99)`) — minion nascia visualmente preso dentro de
+uma parede (mid tem espaço de sobra ao redor do spawn, por isso nunca
+pegava). Fix: `_tick_minion_waves` agora valida o tile do offset via
+`tile_validation.is_tile_walkable` — se cair em parede, volta pro tile
+PURO da lane (`spawn_tile`, sempre andável por construção) em vez de
+nascer preso.
+
+Todos os 3 só ficam visíveis no mapa REAL da BG (100×100) — os testes
+existentes de `TestMinionWaveSpawning` usam distâncias sintéticas
+curtas (mapa `map_1.csv`, poucos tiles), nunca cruzaram o limiar de
+nenhum dos 3 bugs.
+
+Teste: `tests/test_minions.py::TestMinionWaveSpawning::
+test_todas_as_lanes_reais_da_bg_produzem_rota_valida` — carrega o mapa
+E o `moba_battleground_entities.json` REAIS (não dado sintético), abre
+os portões dos 2 times (mesma mutação de tile que `_tick_gate` faz de
+verdade — sem isso as bases são ilhas isoladas de ~25 tiles, sem
+conexão nenhuma com o resto do mapa), ativa as 6 lanes, roda 1 wave e
+confirma: 42 minions no total (6 lanes × 7) e NENHUM nasceu dentro de
+parede. Prova diferencial confirmada nos 3 bugs independentemente
+(cada um revertido isoladamente reproduz o sintoma exato).
+
+#### §34.74.26 — Freeze/reconexão ao spawnar todas as lanes juntas: pathfinding bloqueando o event loop (04/08/2026)
+
+Depois do fix de §34.74.25 (todas as 6 lanes liberadas), usuário reportou em
+playtest: minions travados, player se movendo mas "nada acontecendo", depois
+minions tomando dano parado sem inimigo por perto, tela de "reconectando",
+travamento de novo. Log do servidor confirmou a causa:
+`ConnectionClosedError(Close(code=1011, reason='keepalive ping timeout'))`
+repetido — o watchdog interno da lib `websockets` fechando a conexão porque
+o event loop não respondeu a tempo a um ping. `WorldServer._tick` é `def`
+síncrono, não `async def`: qualquer trabalho de CPU longo dentro dele
+bloqueia TODO I/O de rede (recv/send/ping) de TODOS os clients pela duração
+do bloqueio — não é problema de rede/banda, é o event loop preso.
+
+Causa raiz: as 6 lanes calculavam pathfinding A* **por minion** (7 minions
+× 6 lanes = 42 chamadas de `find_path`, `max_nodes=4000` cada, ver
+§34.74.25) e, por só existir 1 timer por lane sem nenhum escalonamento,
+todas as 6 disparavam no mesmo tick — 42 buscas A* síncronas empilhadas no
+mesmo `_tick`, tempo suficiente pra estourar o timeout de keepalive.
+
+Usuário perguntou sobre "o poder dos vetores" (flow-field) como técnica
+pra grande quantidade de inimigos se movendo — validado como técnica real
+mas de escopo maior (rota compartilhada por CAMPO em vez de por entidade,
+útil se o número de minions crescer muito); adotado como fix somente SE os
+2 fixes abaixo não bastarem. Aprovado pelo usuário: implementar os 2 fixes
+menores primeiro.
+
+**Fix 1 — 1 rota por LANE, não por minion** (`server/world_server.py::
+_tick_minion_waves`): os 7 minions de uma wave têm o MESMO destino/
+waypoints e nascem a ±1-2 tiles um do outro — o cálculo de rota
+(`for wp in waypoints: pathfinding.find_path(...)`) saiu de dentro do loop
+por minion e passou a rodar 1x por lane, a partir do tile CANÔNICO da lane
+(`spawn_tile`, sem offset), guardado em `lane_route_tail`. Cada minion só
+faz o resto do trabalho que É individual (checar se o tile com offset cai
+em parede, via `tile_validation.is_tile_walkable`) e monta sua rota final
+como `[(spawn_x, spawn_y)] + lane_route_tail` — reduz ~7x as chamadas de
+`find_path` por wave (42 → 6), resultado visual idêntico (mesmo trajeto).
+
+**Fix 2 — Lanes escalonadas por GRUPO (top → bot → mid), 1.5s entre
+grupos** (`server/world_server.py::_activate_minion_lanes`): pedido
+explícito do usuário foi "não desbalancear os times" — por isso o
+escalonamento é por TIPO de lane com os 2 times JUNTOS no mesmo grupo
+(nunca 1 time saindo na frente do outro na mesma lane). Novo
+`_LANE_GROUP_ORDER = ("top", "bot", "mid")` e `_LANE_GROUP_STAGGER_S = 1.5`
+— o timer inicial de cada lane (`_minion_wave_timers[key]`) começa em
+`-(group_index * 1.5)` em vez de `0.0`; como o resto da lógica só faz
+`elapsed += dt` e compara contra `wave_interval_s`, o delta negativo
+atrasa o primeiro disparo (e, por carregar o resto adiante, todos os
+seguintes) sem tocar em nenhuma lógica de consumo de trigger. 1.5s foi
+avaliado suficiente (grupos somados: 3s de latência total top→mid), ainda
+mais combinado com o Fix 1 reduzindo o trabalho de CADA grupo.
+
+**Bug de dado encontrado durante a validação** (não relacionado aos 2
+fixes acima, achado pelo teste de rota real): usuário moveu o Nexus do
+time B de `(97,2)` pra `(95,4)` durante a sessão — coincidiu exatamente
+com o `target_tile` hardcoded da lane A-mid (`[95,4]`), reproduzindo o
+MESMO bug de §34.74.25-2 (torre bloqueando o próprio alvo da lane) do
+outro lado. Fix: `target_tile` de A-mid voltou pra `[97, 2]` (posição
+antiga do Nexus B, walkable e alcançável — confirmado por script antes de
+aplicar).
+
+Testes (`tests/test_minions.py::TestMinionWaveSpawning`):
+- `test_wave_calcula_1_rota_por_lane_nao_por_minion` — 2 lanes do mesmo
+  grupo (`lane_id="top"`, times diferentes), chama
+  `_tick_minion_waves(6.5)` DIRETO (não `run_ticks`, pra isolar de outros
+  sistemas que também chamam `find_path` no mapa padrão populado por
+  `make_world_server()`) — confirma `len(calls) <= 2` (1 por lane) e 14
+  minions enfileirados. Prova diferencial: reintroduzida uma chamada
+  redundante de `find_path` por minion → teste falhou com 16 chamadas →
+  revertido → passa de novo.
+- `test_grupos_de_lane_disparam_escalonados_nao_no_mesmo_tick` — mapa e
+  gates reais da BG, `wave_interval_s=6.0` uniforme, roda 6.1s — confirma
+  que só os minions do grupo "top" existem nesse instante (rota termina
+  em `(94,3)`/`(3,94)`), bot/mid ainda não dispararam. Prova diferencial
+  confirmada (falha com o stagger desligado).
+- `test_2_lanes_do_mesmo_time_disparam_independente_lane_id` e
+  `test_todas_as_lanes_reais_da_bg_produzem_rota_valida` (de §34.74.25)
+  tiveram a janela de ticks recalculada pra contabilizar o atraso novo de
+  +1.5s/+3.0s por grupo.
+
+Suíte completa (`pytest tests/ -q`): 795 passed. Pendente: validação
+manual do usuário em playtest real pra confirmar que o freeze/reconexão
+não ocorre mais com as 6 lanes ativas simultaneamente.
+
+#### §34.74.27 — Freeze/reconexão VOLTOU a acontecer mesmo com §34.74.26: causa real era MOVIMENTO, não spawn (04/08/2026)
+
+Usuário testou os 2 fixes de §34.74.26 (rota compartilhada por lane +
+lanes escalonadas) e reportou: "aconteceu exatamente a mesma coisa" —
+mesmo log de `ConnectionClosedError(..., reason='keepalive ping
+timeout')`, mesma sessão travando. Hipótese do usuário: "provavelmente o
+server calcula o path a cada tick."
+
+Correta em espírito. §34.74.26 só resolveu o burst do SPAWN da wave — a
+fonte real e CONTÍNUA (durante toda a travessia da lane, não só no
+nascimento) era `MinionSystem._walk_toward` (`engine/world_systems.py`):
+ADVANCING mirava um "checkpoint" recalculado a cada 5 tiles de `route`
+(mecanismo introduzido em 01/08/2026 pra contornar bloqueio temporário,
+ver §34.72). Como o DESTINO mudava a cada checkpoint, `_walk_toward`
+recalculava A* toda vez que um chegava (não só quando bloqueado) — e como
+os 7 minions de uma wave nascem juntos e andam na MESMA velocidade, seus
+checkpoints tendiam a SINCRONIZAR: periodicamente, um monte deles batia o
+checkpoint no mesmo tick e todos recalculavam A* juntos, ~a cada 0.8s,
+durante toda a lane — o mesmo mecanismo de bloqueio do event loop de
+§34.74.26, só que repetido sem fim em vez de só no spawn.
+
+Usuário pediu a simplificação direto (não só o fix pontual): "esquecer a
+ideia do checkpoint a cada 5 tiles, pois não tem necessidade, os minions
+vão ter só as coordenadas do 'target_tile', e só aqueles que precisarem
+vão recalcular a rota" + budget de 15 chamadas de A* por tick.
+
+**Fix 1 — ADVANCING mira SEMPRE `route[-1]` (destino final fixo), nunca
+mais um checkpoint intermediário.** `_walk_toward` já tinha a lógica
+certa pra isso: só recalcula A* quando `current_path` está vazio E
+(`path_dest` mudou OU o path anterior foi TOTALMENTE consumido) — com
+destino fixo, isso vira "recalcula 1x no início, anda o resto de graça, só
+recalcula de novo se um passo for REJEITADO por bloqueio real"
+(`is_tile_walkable` falhar zera `current_path` e força novo cálculo, ver
+linha 1883). Ou seja: **"só quem precisa recalcula" já era o
+comportamento nativo de `_walk_toward`** — o bug era o checkpoint mudando
+o destino artificialmente a cada 5 tiles, forçando recálculo mesmo sem
+bloqueio nenhum. Removido `Minion.route_idx` (só existia pra essa conta)
+e `MinionSystem.CHECKPOINT_ARRIVAL_RADIUS` (idem).
+
+**Fix 2 — orçamento de 15 chamadas de `find_path` por tick**
+(`MinionSystem.MAX_PATHFINDS_PER_FRAME = 15`, `_pathfind_budget` resetado
+no topo de `update()`), mesmo padrão já usado por `EnemyAISystem.
+MAX_PATHFINDS_PER_FRAME`/`_find_path_budgeted` pro mesmo problema —
+protege o caso em que VÁRIOS minions ainda precisam recalcular no MESMO
+tick (ex: wave inteira acabou de nascer, ou vários batem em obstáculo ao
+mesmo tempo). Quem estoura o orçamento só tenta de novo no PRÓXIMO tick,
+sem consumir `path_recalc_timer` (não é tratado como falha).
+
+**Efeito colateral necessário**: como `dest` agora pode ser o
+`target_tile` da lane INTEIRA (até ~95 tiles de distância, não mais um
+checkpoint de até 5), `_walk_toward` passou a chamar `find_path` com
+`manhattan_limit=None, max_nodes=4000` (mesmo budget do cálculo de rota
+de wave, §34.74.25) — os limites default (`manhattan_limit=60`)
+rejeitariam a busca de cara pra qualquer lane longa.
+
+Teste (`tests/test_minions.py::TestMinionSystemTargeting::
+test_walk_toward_respeita_orcamento_de_pathfind_por_tick`): 20 minions
+todos precisando de path na primeira chamada de `update()` — confirma no
+máximo 15 chamadas de `find_path` nesse tick e que ao menos 1 minion fica
+sem path calculado (adiado). Prova diferencial confirmada (desligando o
+guard de orçamento, o teste falha com 20 chamadas). Os 3 testes que
+dependiam de `route_idx` (`test_ao_perder_alvo_minion_segue_direto_sem_
+voltar_ao_checkpoint`, `test_apos_perder_alvo_minion_continua_avancando_
+ate_a_base`) foram reescritos pra usar a posição física do minion
+(`TileMovement`) em vez do índice removido — mesmo comportamento
+verificado, mecanismo novo.
+
+Suíte completa: 797 passed, 1 failed (`test_session.py::TestAOIUpdate::
+test_mob_despawn_sent_to_both_players` — não relacionado a Minion/
+pathfinding, passou 3x isolado, falha só sob carga da suíte completa;
+timing-sensitive pré-existente, não introduzido por este fix).
+
+Usuário testou de novo e o freeze VOLTOU a acontecer — dessa vez a
+correlação temporal no log era outra: uma rajada de ~15 mortes de minion
+em ~8s (2 waves de times opostos se cruzando no meio da lane, todas as
+mortes num raio pequeno de tiles) imediatamente antes da queda de
+conexão. Ou seja, a fonte AGORA é volume de PROCESSAMENTO DE COMBATE
+(ataques/mortes/loot/XP simultâneos de várias lanes colidindo), não mais
+pathfinding. Solução pedida pelo usuário: reduzir a composição da wave —
+`WorldServer._MINION_WAVE_COMPOSITION` foi de `3 melee + 3 ranged + 1
+raro` (7/wave) pra `1 melee + 2 ranged + 1 raro` (4/wave) — com as 6
+lanes ativas, o pico simultâneo de minions cai de 42 pra 24. Todos os
+testes que contavam minions por wave (`test_wave_spawna_composicao_
+exata_1_2_1` — renomeado de `..._3_3_1` —, `test_minions_da_wave_nascem_
+escalonados_...`, `test_wave_intervalo_configuravel_...`,
+`test_2_lanes_do_mesmo_time_disparam_...`, `test_todas_as_lanes_reais_
+da_bg_produzem_rota_valida`, `test_wave_calcula_1_rota_por_lane_nao_por_
+minion`) foram recalculados pra 4/wave.
+
+**Achado incidental durante o ajuste**: `test_xp_do_minion_escala_com_o_
+level` (`TestMinionDeathXpGold`) começou a falhar — não por nada relacionado
+a pathfinding/composição, mas porque o usuário já tinha ajustado
+`content/minion_definitions.py::MINION_TABLE["minion_melee"]["xp_reward"]`
+(balanceamento, edição concorrente) pra um valor onde `xp_reward × level
+do teste (3) = 135 > CharacterStats.BASE_XP (100)` — o teste comparava
+`current_xp` CRU contra o total esperado, mas um level-up no meio
+CONSOME o threshold de `current_xp` (`stats_system.py::_apply_levelups`),
+deixando só o excedente (35, não 135) — a asserção quebrava mesmo com o
+cálculo de XP correto, só por cruzar um threshold de level. Fix: teste
+agora reconstrói "XP total ganho" somando o que foi consumido em cada
+level-up (`CharacterStats.xp_for_level(level)` por nível cruzado) + o
+`current_xp` final, tornando-o imune a futuras mudanças de balanceamento
+de `xp_reward` (classe de bug igual à do target_tile colidindo com torre
+— dado de conteúdo/mapa editado pelo usuário em paralelo invalidando uma
+suposição implícita de um teste).
+
+#### §34.74.28 — CORREÇÃO do §34.74.27: minions de TODAS as lanes convergiam pro mid (04/08/2026)
+
+Usuário testou §34.74.27 (ADVANCING mirando `route[-1]` fixo) e reportou
+2 problemas: o freeze ainda ocorria (rajada de mortes de minion, ver nota
+já registrada em §34.74.27), E "os minions não estão indo pra sua rota,
+todos estão indo pro mid" — mesmo com as coordenadas dos waypoints de
+top/bot corretas no JSON (intermediário `[5,5]`→`[92,5]` pro top,
+`[94,94]`→`[94,7]` pro bot).
+
+**Diagnóstico por simulação** (não só leitura de código — rodado contra
+o mapa/JSON REAIS): o cálculo da rota no spawn da wave (`_tick_minion_
+waves`) está correto — cada lane termina no tile certo, contornando a
+selva central pela borda como desenhado. O bug é em MOVIMENTO: §34.74.27
+fez ADVANCING mirar `route[-1]` (só o destino final) direto via
+`_walk_toward`, que roda A* **livre e de longa distância** a partir da
+posição FÍSICA atual do minion. Este mapa da BG tem um "gargalo" —
+selva/rio central com só 1 passagem livre (o corredor do mid) ligando os
+2 lados, com uma faixa aberta contornando toda a BORDA (onde top/bot
+foram desenhados pra andar). Um A* livre, buscando o caminho
+objetivamente mais curto entre QUALQUER ponto do mapa e um destino
+distante, quase sempre atravessa essa única passagem central — então
+TODAS as lanes, mesmo com o polyline por-lane calculado certo no spawn,
+convergiam fisicamente pro mesmo ponto ao ANDAR (confirmado por
+simulação: minions de top/mid/bot, dos 2 times, todos fisicamente num
+cluster em `(41-59, 39-61)` — bem no meio do mapa — após 20s de
+caminhada real).
+
+**Fix**: `Minion.route_idx` volta a existir (não mais como índice de
+"checkpoint a cada 5", e sim como progresso REAL no polyline) e
+`MinionSystem._advance_along_route` (novo) consome `route` tile a tile
+de verdade:
+- Caso normal: só checa se `route[route_idx+1]` está adjacente e
+  andável (`is_tile_walkable`) — **zero pathfinding**, mais barato até
+  que o design anterior a §34.74.27.
+- Só cai pro desvio LOCAL (`_walk_toward`, já orçado em
+  `MAX_PATHFINDS_PER_FRAME=15`) quando bloqueado de verdade OU o minion
+  está fisicamente NÃO-adjacente ao próximo tile da rota (ex: voltando
+  de perseguir um alvo em FIGHTING) — e mesmo aí, mira um ponto só
+  `ROUTE_LOOKAHEAD_TILES=6` à FRENTE NA PRÓPRIA ROTA, nunca o destino
+  final — nunca dá ao A* raio de busca suficiente pra redescobrir o
+  atalho global pelo meio do mapa.
+- `_walk_toward` voltou aos limites DEFAULT do A* (`manhattan_limit=60,
+  max_nodes=300`, revertido do `None`/`4000` de §34.74.27) — `dest`
+  agora é sempre local (lookahead de 6 tiles ou um alvo em combate
+  dentro do raio de aggro), nunca precisa de busca de longo alcance.
+
+Teste novo (`tests/test_minions.py::TestMinionWaveSpawning::
+test_minion_fisicamente_segue_a_propria_rota_nao_atalho_pelo_meio`):
+mapa/entities REAIS da BG, roda a wave completa + 20s de caminhada real,
+confirma que cada minion fica a no máximo 15 tiles (chebyshev) de ALGUM
+tile do próprio `route` — pega exatamente o sintoma "convergiu pro
+centro do mapa". Prova diferencial: reintroduzido o mecanismo exato de
+§34.74.27 (mirar `route[-1]` direto + limites amplos no `find_path`) →
+teste falha reproduzindo o sintoma quase idêntico ao achado manual
+(minion a 42 tiles da própria rota, `pos=(46,50)`) → revertido, passa de
+novo. `test_walk_toward_respeita_orcamento_de_pathfind_por_tick`
+também precisou ser redesenhado: o caso comum não chama mais
+`find_path` nenhum (fast-path sem pathfinding), então o teste agora
+força `route_idx` adiantado artificialmente (simula "fora da rota") pra
+exercitar de verdade o orçamento de 15/tick.
+
+Suíte completa: 799 passed (limpa, sem os flakes pré-existentes desta
+vez). Pendente: usuário testar em jogo com a composição atual (4/wave,
+§34.74.27) — se o freeze não voltar, reverter a composição pra 3+3+1
+(7/wave) por último, já que a causa raiz de pathfinding foi endereçada
+independentemente da contagem de minions.
+
+#### §34.74.29 — Breakdown por-sistema no profiler de tick, pra achar a origem de travadas pontuais (04/08/2026)
+
+Usuário confirmou que §34.74.28 corrigiu o roteamento das lanes (cada
+wave foi pra sua própria lane), mas ainda sentiu travadas ocasionais em
+playtest, com o indicador de ping da HUD passando de 600ms. Pediu um
+monitoramento gravado em log pra avaliar quanto cada sistema consome/
+impacta a latência.
+
+**Achado**: já existia um profiler de tick bem construído
+(`WorldServer.__init__`, campos `_perf_accum`/`_perf_count`/
+`_perf_cpu_sum`/etc., gravando em `logs/server_perf.log`) — com relatório
+periódico a cada `_PERF_REPORT_TICKS=300` ticks (~10s) mostrando ms/tick
+médio por seção, e uma linha `[PERF] tick lento` sempre que um tick
+individual passa de `_PERF_BUDGET_MS=33.3ms` (1 tick a 30/s). Só que 2
+lacunas: (1) o profiler só cobria ~6 seções (`ai_bundles`, bundles por
+mapa, `global_systems`, `skill_requests`, `spell_completions`,
+`aoi_collect`) — boa parte do corpo de `_tick` (combate direto, morte,
+loot, torre, **minion**, trade/duelo/arena) não tinha NENHUMA medição;
+(2) a linha de "tick lento" só mostrava o total em ms, nunca QUAL seção
+causou aquele pico específico — só dava pra saber via a média do
+relatório de 10s inteiro, que dilui um pico raro e pode nem apontar o
+sistema certo se o pico foi atípico.
+
+**Fix**:
+- `WorldServer._perf_mark(label, t0)` (novo, chokepoint único) — grava o
+  tempo decorrido em `_perf_accum` (média periódica, como antes) E em
+  `_perf_tick_now` (novo dict, resetado no INÍCIO de cada `_tick()` —
+  snapshot só do tick atual). Os 6 pontos de medição existentes foram
+  retrofitados pra usar `_perf_mark` em vez de escrever nos 2 dicts na
+  mão.
+- **Cobertura nova** (mesmo padrão `_t0p = perf_counter(); <chamada>;
+  self._perf_mark("label", _t0p)`): `player_attacks`, `death_handling`
+  (do `_death_handler.update()` até o fim do loop de XP/level-up),
+  `loot_drops`, `harvestable_tower_respawns` (respawn de harvestable +
+  zonas + torre agrupados), `tower_system`, **`minion_system`**,
+  **`minion_waves`**, **`minion_spawn_queue`** (as 3 seções mais
+  suspeitas dado todo o histórico desta sessão), `trade_duel_arena_ticks`
+  (trade/duelo/fila e pendências de arena agrupados), e
+  `post_tick_bookkeeping` (detecção de mob novo/movimento/projétil pro
+  broadcast).
+- **Breakdown no pico**: `_PERF_BREAKDOWN_MS=100.0` (bem acima do budget
+  de 33.3ms de propósito — um tick real sob carga passa um pouco do
+  budget o tempo todo, isso sozinho não é "travada"; o breakdown só vale
+  a pena pra picos de verdade). Quando um tick passa desse threshold, a
+  linha `[PERF] tick lento` ganha um sufixo `| TOP: <label>=<ms> | ... |
+  outros=<ms>` com as até 8 seções que mais pesaram NAQUELE tick
+  específico (de `_perf_tick_now`, não a média) — dá pra correlacionar
+  direto "travada às 21:47:03" → "minion_system=580ms".
+
+Testes (`tests/test_server.py::TestTickPerfProfiler`, novo): `_perf_mark`
+grava nos 2 dicts; `_perf_tick_now` reseta a cada tick enquanto
+`_perf_accum` continua somando (prova diferencial com sleep conhecido de
+0.15s num sistema real — 2 ticks seguidos ficam ~0.30s acumulados em
+`_perf_accum` mas cada `_perf_tick_now` individual fica ~0.15s, nunca
+0.30s; desligando o reset de propósito, o teste falha com ~0.30s no
+`_perf_tick_now`, confirmando que ele pegaria a regressão); linha de
+tick lento aponta corretamente o sistema tornado lento de propósito
+(`MinionSystem.update` com sleep injetado) como o principal consumidor
+do pico.
+
+Suíte completa: 802 passed. Pendente: usuário rodar em playtest real e
+mandar os trechos de `logs/server_perf.log` em torno de uma travada
+percebida — o breakdown deve apontar exatamente qual sistema (ou
+confirmar que NENHUM tick individual do servidor está estourando 100ms,
+apontando a causa pra outro lugar: rede, cliente, ou o próprio SO).
+
+#### §34.74.30 — Log de perf real apontou tower_system/minion_system: varredura global de alvo virou índice espacial (04/08/2026)
+
+Usuário mandou `logs/server_perf.log` de um playtest real na BG. Análise
+confirmou: `minion_waves`/`minion_spawn_queue` (spawn de wave,
+pathfinding de rota — §34.74.26-28) ficaram em ~0.00-0.02ms, validando
+os fixes anteriores. O custo migrou pra outro lugar: assim que a BG
+ficava ativa e o número de minions crescia, `tower_system` (~1.5ms →
+até 11ms, 51.8% do tick) e `minion_system` (~0.01ms → até 13.9ms, 41.3%
+do tick) dominavam. A MÉDIA do tick passou de 33ms em várias janelas de
+10s (não só picos isolados — sobrecarga sustentada por segundos
+seguidos, batendo com "senti umas travadas"), com picos de até 124ms.
+
+**Causa**: `TowerSystem._acquire_target`/`MinionSystem._acquire_target`
+faziam uma varredura **global** de TODAS as entidades combatentes do
+jogo (`Position+CombatStats+TileMovement`, sem filtro espacial) — torre
+só quando perde o alvo (sticky), mas minion em ADVANCING faz isso TODO
+TICK enquanto não tiver alvo. Com dezenas de minions de BG × centenas de
+entidades no mundo todo, isso virava milhares de iterações/tick.
+
+Usuário propôs a solução direto: "os minions tem um range de aggro, não
+seria viável só varrer o que está dentro dessa área, e pular se já tiver
+alvo?" — confirmado: "pular se já tem alvo" **já era** o comportamento
+(torre é sticky; minion só varre em ADVANCING, nunca em FIGHTING). A
+parte real da lacuna era "só varrer a área". Pesquisa confirmou ser a
+técnica padrão da indústria (spatial hashing/grid pra broad-phase —
+[Sparse Spatial Hash Grids](https://metafunctor.com/post/2025-11-11-sparse-spatial-hash/),
+[Collision Detection and Spatial Indexes](https://kortham.net/posts/collision-detect-and-spatial-indexes/)),
+e o projeto já tinha essa peça pronta: `engine.utils.SpatialHash`, já
+usado por `server/session.py` pro filtro de AOI de sessão.
+
+**Fix**:
+- `engine/world_systems.py::_combat_candidates_near` (novo, chokepoint
+  único) — dado um `spatial_hash: dict[map_file, SpatialHash] | None`,
+  devolve só os candidatos nas células vizinhas ao raio pedido; sem
+  hash (`None`), cai no sweep completo de sempre (fallback pra testes
+  headless que criam `TowerSystem`/`MinionSystem` direto, sem
+  `WorldServer` real).
+- `TowerSystem._acquire_target`/`MinionSystem._acquire_target`: trocam
+  `world.get_entities_with(Position, CombatStats, TileMovement)` por
+  `_combat_candidates_near(...)` — os MESMOS filtros de sempre (hp>0,
+  hostil, visível, LOS) continuam aplicados, só que num conjunto bem
+  menor.
+- `WorldServer._tick`: constrói `_combat_spatial_hash` (dict `map_file`
+  → `SpatialHash`, `cell_size=9` — cobre o maior alcance real, torre
+  `attack_range_tiles=8`) **1x por tick**, O(entidades) — REUTILIZADO
+  por `TowerSystem.update`/`MinionSystem.update` via novo parâmetro
+  `spatial_hash=...` (mesmo padrão de `combat_this_tick`, já passado
+  fresco a cada tick). 1 índice só serve os 2 sistemas — mesmo shape de
+  candidato que os dois já procuravam.
+
+Testes (`tests/test_towers.py::TestTowerTargeting::
+test_acquire_target_com_spatial_hash_nao_varre_todas_as_entidades`,
+`tests/test_minions.py::TestMinionSystemTargeting::
+test_acquire_target_com_spatial_hash_nao_varre_todas_as_entidades`): 1
+hostil dentro do alcance + 30 bem longe — confirma que o alvo certo
+ainda é achado E que `world.get_entities_with` (sweep completo) nunca é
+chamado quando o índice é fornecido (espiona a chamada). Prova
+diferencial: desligando o uso do hash (`if False and spatial_hash...`),
+o teste falha detectando a chamada do sweep completo — revertido, passa
+de novo.
+
+Suíte completa: 804 passed. Verificação manual (script, mapa/entities
+reais da BG): sem player, com `wave_interval_s=6.0` artificialmente
+rápido (10x mais agressivo que o padrão de produção, 45s — só pra testar
+rápido) por 150s simulados, `tower_system` caiu de ~9-11ms (log real)
+pra ~1.0ms — confirma a melhora. `minion_system` ainda apareceu alto
+(~12ms) NESSE teste específico, mas com 273 minions concorrentes vivos
+(vs os ~50-60 de BG que o log real tinha) — população ~5-10x maior só
+por causa do wave_interval artificialmente agressivo do teste, não
+prova de que o fix não funcionou (o custo restante é O(minions) da
+própria iteração externa de `MinionSystem.update`, inevitável e
+independente da varredura de alvo que foi corrigida). Comparação justa
+precisa de um playtest real (wave_interval de produção) — pendente:
+usuário testar de novo e mandar um log de perf fresco pra confirmar a
+melhora com população realista de minions.
+
+#### §34.74.31 — Fila REAL de matchmaking da BG estilo MOBA (04/08/2026)
+
+Usuário pediu o equivalente à fila de Arena (`server/match_processor.py`)
+pra BG, com 3 diferenças centrais em relação a ela: (1) fila ÚNICA, sem
+escolher modo — solo ou grupo já formado, a fila decide o TAMANHO do
+time sozinha; (2) NUNCA assimétrico, 1x1 até 5x5; (3) "maior partida
+possível agora" — antes de fechar 1x1 com 2 solos, tenta ver se dá pra
+fechar algo maior com quem já está esperando.
+
+**Arquitetura** (novo `server/bg_queue_processor.py`, `BgQueueProcessorMixin`,
+mixado em `WorldServer` junto de `MatchProcessorMixin`): espelha a FORMA
+da Arena (fila → propõe → aceite → countdown → portão → luta → Nexus
+derrubado → sai), reaproveitando ao máximo peças já prontas:
+- `PartyProcessorMixin` pro conceito de "grupo pré-formado" — igual
+  Arena, um grupo INTEIRO vira 1 "time" (nunca dividido entre os 2
+  lados). `PARTY_MAX_SIZE=5` já bate exatamente com "até 5x5".
+- `WorldServer._load_instance`/`_unload_instance`, chave POR PARTIDA
+  (`f"{template}::{match_id}"`, igual Arena) — múltiplas partidas da
+  fila real coexistem, cada uma isolada, diferente da instância ÚNICA
+  compartilhada de `server/debug_battleground.py` (`/testbg`, mantido
+  INTOCADO — os dois sistemas coexistem, `/testbg` continua servindo
+  debug solo rápido sem precisar de 2+ clientes).
+- Geometria do mapa (spawn/portão) IMPORTADA de `debug_battleground.py`
+  (`DEBUG_BG_TEMPLATE`/`DEBUG_BG_SPAWN`/`DEBUG_BG_GATE_TILES` — mesmo
+  mapa físico pros 2 sistemas, reaproveitar evita 2 listas de tile
+  podendo divergir).
+- `server/instance_progression.py::enter_/exit_normalized_progression`
+  — **primeira vez que um processador de jogo de verdade chama isso**
+  (até aqui só "/testbg" ativava o módulo, documentado como INERTE).
+- Fim de partida por NEXUS destruído (não eliminação de time — MOBA,
+  respawn automático, não Arena) + HUD de KDA ao vivo — mesmo padrão de
+  `debug_battleground.py`, mas por PARTIDA em vez de 1 estado global.
+
+**Algoritmo de matchmaking** (`_tick_bg_queue`/`_bg_try_pack`): token =
+`("solo", eid)` ou `("party", party_id)` — nunca ambíguo (diferente de
+usar o int cru, que poderia colidir entre um eid e um party_id de
+contadores independentes). A cada tick, tenta `team_size` de 5 até 1:
+bin-packing guloso (preenche o lado A, depois o B, só aceita tokens que
+cabem no `team_size` tentado) — só COMITA se os 2 lados fecharem
+EXATAMENTE o mesmo tamanho (nunca assimétrico, mesmo que o empacotamento
+guloso não seja o teoricamente ótimo — nesse caso só demora mais um
+tick pra fechar). Depois de formar uma partida, tenta formar MAIS na
+MESMA passada (recursivo) — 10 solos esperando viram 1 partida 5x5, não
+5 partidas 1x1.
+
+**Correção necessária, achada no caminho**: `debug_battleground.py::
+notify_nexus_destroyed` supunha que só existia UMA instância do mapa
+MOBA por vez — com partidas reais da fila coexistindo (mesmas strings de
+facção "arena_time_a/b" em CADA instância), uma torre caindo numa
+partida da fila ficaria ambígua com a instância de debug se as duas
+estivessem carregadas. Fix: `notify_nexus_destroyed` ganhou um parâmetro
+`tower_map_file` — só reage se bater com a PRÓPRIA instância
+(`DEBUG_BG_INSTANCE_KEY`). `server/server_death_handler.py`'s hook (torre
+`is_nexus` morta) agora notifica os DOIS sistemas
+(`debug_battleground.notify_nexus_destroyed` E `WorldServer.
+notify_bg_queue_nexus_destroyed`), cada um decidindo sozinho pelo
+map_file se a torre é dele.
+
+**Protocolo** (`shared/messages.py`): `BG_QUEUE_JOIN/LEAVE/STATE`,
+`BG_MATCH_FOUND`, `BG_MATCH_ACCEPT`, `BG_MATCH_START`, `BG_MATCH_LEAVE`
+— só o necessário; reaproveita `ARENA_COUNTDOWN`/`ARENA_GATE_OPEN`
+(já generalizados pra debug_battleground.py) e `BG_MATCH_RESULT` (já
+existia, criado junto do placar de Nexus de `/testbg`) em vez de
+duplicar um protocolo BG_* paralelo pra essas 3.
+
+**Cliente** (novo `client/bg_queue_handlers.py`): estado de fila (sem
+"modo"), modal de aceite PRÓPRIO (`_draw_bg_accept_modal` — payload
+diferente do de Arena, `team_size` variável em vez de `mode` fixo, por
+isso não reaproveita o modal de aceite da Arena). A linha "Battleground
+(MOBA)" dentro do MODAL UNIFICADO de fila é desenhada por
+`client/arena_handlers.py::_draw_arena_queue_modal` (mesmo container que
+já lista Arena 1v1/2v2/3v3 — extensão pontual, elegibilidade sempre
+`True`, sem checagem de "grupo do tamanho exato" que as linhas de Arena
+têm). `game.py::_client_pvp_context` ganhou um bloco a mais (`_bg_in_match`/
+`_bg_opponents_server`, mesmo racional exato do bloco de Arena — cliente
+nunca recebe `Faction` de outro player via `ENTITY_SPAWN`, só mob manda
+"faction", então precisa de uma lista explícita de oponentes pra
+liberar clique-direito/SPACE/skill). O modal de RESULTADO (Nexus
+derrubado) já existia pronto (`client/battleground_handlers.py`,
+`BG_MATCH_RESULT` já genérico) — só `_send_bg_leave` ganhou um branch
+(`_bg_in_match` real → `BG_MATCH_LEAVE`; senão → `/testbg leave`, de
+sempre).
+
+**Abertura do modal** (pedido do usuário — substitui o botão "Fila de
+Arena" fixo do HUD, REMOVIDO): tecla **F1** (`game.py`) ou comando de
+chat **"/bgqueue"** (`client/chat_handlers.py`, mesmo padrão de
+interceptação de `/convidar`/`/forfeit`) — os dois chamam a MESMA
+`_open_bg_queue_modal()` (toggle: fecha se já aberto; não abre se já em
+partida/aguardando aceite, de Arena OU de BG).
+
+Testes: `tests/test_bg_queue.py` (33 casos — fila join/leave, algoritmo
+de empacotamento incluindo mistura grupo+solo e "nunca assimétrico" com
+prova diferencial, ciclo de vida completo, Nexus/roteamento por
+instância, saída/timeout/desconexão) + `tests/test_bg_queue_client_ui.py`
+(19 casos — estado de fila, modal de aceite, linha no modal unificado,
+abertura via F1/comando, com prova diferencial no gate "não abre se já
+ocupado"). Suíte completa: 856 passed.
+
+#### §34.74.32 — Mapa vazio custava CPU todo tick + orçamento de pathfind compartilhado entre partidas concorrentes (04/08/2026)
+
+Usuário testou a fila de BG real (§34.74.31) com 2 contas e pediu análise
+do `logs/server_perf.log`. Primeiro achado (`tower_system`/`minion_system`
+subindo de 1→2 players) levou a uma investigação maior a pedido do
+usuário: "quero uma solução definitiva... nem que envolva trabalho grande
+e complexo", incluindo pesquisa de arquitetura de servidor de jogo em
+produção (tick rate de MOBA, scheduler de pathfinding, sharding por
+partida — ver fontes na resposta original, não citadas aqui).
+
+**Achado principal do usuário, confirmado por código**: mapas SEM NENHUM
+player conectado (`bnd:map_cave_west`/`bnd:map_cave_east` no profiler)
+continuavam custando ~1-2.5ms/tick cada, com `[ativo 0/300 ticks, 0p
+agora]`. Diagnóstico inicial (culpar `EnemyAISystem`/`EnemyAbilitySystem`)
+estava ERRADO — esses dois já são pulados sem player via
+`_MapBundle.ai_systems` (`server/world_server.py::_tick`, linha ~3864:
+`if not _has_player and system in _bnd.ai_systems: continue`). Os vilões
+reais, fora desse gate:
+
+1. **`TileValidationSystem.update()`** (`engine/world_systems.py`) — 1
+   instância por bundle, reconstruía seu cache `_occupied` via scan
+   GLOBAL de `get_entities_with(TileMovement)` (todo o mundo, ~190+
+   entidades) todo tick, incondicional — mas esse cache só é consultado
+   por pathfinding/AI, que já ficam fora do ar sem player. Fix: entra no
+   MESMO `ai_systems` que já pulava EnemyAISystem/EnemyAbilitySystem
+   (`bundle.ai_systems = {enemy_ai_system, enemy_ab_system,
+   tile_validation}`).
+2. **`SpawnZoneSystem.update()`** (`ACTIVATION_RADIUS=999999` forçado na
+   criação do bundle — zonas nunca são puladas por distância) fazia o
+   MESMO scan global de `TileMovement`, redundante com o de cima,
+   incondicional — mas só é LIDO dentro de `_pick_tile()`, chamado SÓ
+   quando um timer de respawn realmente zera. Pergunta do usuário ("já
+   respawnou tudo, por que rodar de novo?") levou ao fix real: o scan
+   virou preguiçoso (`_get_occupied()`, fechamento local com cache
+   `_occupied_cache`) — só constrói se algum spawn for de fato necessário
+   este tick (zona cheia, sem timer pendente → zero scan). Timer/detecção
+   de morte continuam rodando todo tick, normalmente (baratos, listas
+   pequenas por zona) — respawn nunca para de funcionar sem player.
+3. **`combat_spatial_hash`** (`server/world_server.py::_tick`) hasheava
+   TODO combatente de TODO mapa, mas só `TowerSystem`/`MinionSystem`
+   consultam essa hash, e Tower/Minion só existem em instância de
+   Battleground. Fix: só insere entidade cujo `map_file` está em
+   `self._minion_lanes` (mesmo sinal que `_create_minion_lanes` já grava
+   pra mapas com lane registrada — nunca reimplementado, só reaproveitado).
+4. **`MinionSystem.MAX_PATHFINDS_PER_FRAME`** era um orçamento ÚNICO
+   compartilhado por TODAS as partidas de BG concorrentes — uma partida
+   podia esgotar o orçamento de pathfind de outra partida ativa ao mesmo
+   tempo (achado ao investigar um cluster de ~24 ticks lentos seguidos no
+   log — 2 lanes de facções opostas disparando wave no mesmo instante).
+   Fix: `_pathfind_budget` vira `dict[map_file, int]`, criado sob demanda
+   dentro de `_walk_toward` (nunca precisa saber os mapas ativos de
+   antemão) — cada instância de BG tem seu próprio orçamento.
+
+**Confirmado por código, não é exponencial por jogador**: `
+_activate_minion_lanes` ativa as 6 lanes/20 torres do template
+INDEPENDENTE de `team_size` — uma partida 1x1 custa o MESMO que uma 5x5.
+O risco real de escala é NÚMERO DE PARTIDAS CONCORRENTES (item 3/4
+acima), não o tamanho de cada partida.
+
+Testes: `tests/test_idle_map_perf.py` (7 casos, prova diferencial em
+CADA um dos 4 itens acima — `DIFFERENTIAL-PROOF-TEMP` revertido e
+confirmado que falha antes de restaurar): TileValidationSystem não roda
+em mapa sem player (mas roda normal em mapa com player), SpawnZoneSystem
+não escaneia quando a zona já está cheia (mas escaneia quando um timer
+vence), combat_spatial_hash não insere entidade de mapa sem lane
+registrada (mas insere quando tem), orçamento de pathfind de uma partida
+não é roubado por outra partida em mapa diferente. Suíte completa: 863
+passed (3x limpa).
+
+#### §34.74.33 — INCIDENTE: hotbar/consumíveis corrompidos pra sempre por autosave/fechar o jogo dentro da BG (04/08/2026)
+
+Usuário relatou, testando a fila real de BG: "a barra de ações do
+personagem fica totalmente desconfigurada depois que o personagem sai da
+BG, e a bag também está sofrendo alterações... seja por qualquer motivo,
+fechar o jogo enquanto está na BG ou qualquer outra coisa" — mesma
+gravidade dos incidentes §34.74.15 (progressão real sobrescrita no
+banco)/§34.74.19 (bag perdida por race de mensagens), mas os DOIS já
+tinham sido corrigidos e o guard deles (`is_in_normalized_progression`)
+continuava funcionando — o servidor nunca escreveu dado de instância no
+banco desta vez.
+
+**Causa raiz real (client-side, nunca coberta pelos fixes anteriores)**:
+`game.py::_save_config()` — chamada de **17 pontos diferentes** do
+cliente (autosave periódico, fechar o jogo, editor de hotbar, comprar
+consumível, etc.) — serializa `PlayerSkills.skills`/`ConsumableBar.slots`
+AO VIVO pra `config.json` (`_hotbar_to_dict()`/`_consumable_bar_to_dict()`)
+sem checar se o player está dentro da BG. Enquanto dentro, esses
+componentes guardam o estado TEMPORÁRIO da instância (poucas skills,
+ordem sequencial; consumíveis trocados, ver §34.74.13). Um autosave (ou
+fechar o jogo) nesse meio tempo — bem provável numa partida que dura
+minutos — grava esse estado temporário PERMANENTEMENTE em `config.json`,
+por cima do layout real. Na próxima vez que a hotbar é reconstruída
+(`_apply_hotbar_config`, só roda no login), ela usa esse `config.json`
+corrompido: parece "esqueceu skill"/"desconfigurou" — a conta real no
+banco nunca foi tocada, só a preferência local do jogador.
+
+**Fix — chokepoint único** (mesma filosofia de §34.74.15, agora no
+cliente): `_save_config()` ganha 1 guard — enquanto
+`InstanceInventoryUIState.active` (flag já existente, eco de
+`in_instance` do servidor), PRESERVA o que já estava salvo em
+`config.json` pra hotbar/consumable_bar (não grava, não manda
+`HOTBAR_UPDATE`) — resto do config (volume/scale/menu_keybinds/etc)
+continua salvando normal. 1 guard cobre os 17 call sites de uma vez, sem
+precisar tocar em nenhum deles.
+
+**Pedido novo, mesmo round**: "a config de atalhos do player deve
+permanecer dentro da BG — se uma skill está no slot 3 e for a primeira a
+ser desbloqueada, ela deve aparecer no slot 3." `server/
+instance_progression.py::_grant_instance_skill` sempre usava "primeiro
+slot vazio", ignorando o slot que a skill ocupa na hotbar REAL. Fix:
+`_real_slot_by_skill_id(real_ps)` monta um mapa skill_id→índice a partir
+da hotbar real do player (já disponível no servidor, sincronizada via
+`HOTBAR_UPDATE` — `config.json` é 100% client-local, não precisa virar
+protocolo novo) — `_grant_instance_skill` usa esse slot preferido quando
+livre, cai pro "primeiro vazio" (comportamento original) se a skill nunca
+foi colocada numa hotbar real. Os 2 call sites (`enter_normalized_
+progression`, `_process_instance_levelup`) passam o mapa.
+
+Testes: `tests/test_hotbar_bg_leak.py` (5 casos, prova diferencial nos 2
+fixes): `_save_config()` preserva hotbar/consumable_bar reais na BG (mas
+grava normal fora dela, e outras settings tipo `scale` continuam
+salvando mesmo dentro); skill concedida na instância nasce no MESMO slot
+da hotbar real (mas cai no primeiro vazio se nunca teve slot real).
+Suíte completa: 868 passed (3x limpa).
+
+#### §34.74.34 — CORREÇÃO do §34.74.33: causa raiz real do "slot preferido não funcionou" — `PlayerSkills` do servidor ficava congelado desde o login (05/08/2026)
+
+Usuário testou o fix de §34.74.33 e reportou que não funcionou: moveu a
+skill "Recarregar" pra tecla R pouco antes de entrar na BG, ela nasceu na
+tecla 1 dentro da instância; ao SAIR, a hotbar ficou "toda bagunçada"; ao
+relogar, todas as skills apareceram mas fora da ordem configurada antes
+de entrar.
+
+**Causa raiz real**: `server/session.py::_handle_hotbar_update` — chamado
+toda vez que o cliente edita a hotbar — só atualizava
+`session.last_client_payload` (cache pro PRÓXIMO save completo). Nunca
+escrevia no `PlayerSkills` AO VIVO do ECS. Esse componente ao vivo só é
+populado uma vez, no login (`spawn_player`) — qualquer edição de hotbar
+feita DURANTE a sessão (sem relogar) ficava invisível pro resto do
+servidor. Dois consumidores dependiam desse componente pensando que
+refletia o estado atual, e os dois quebravam:
+1. `_real_slot_by_skill_id` (§34.74.33) consultava esse `PlayerSkills`
+   pra achar o slot real de cada skill — lia o layout de ANTES da edição
+   do usuário (do login), nunca a edição recente. "Recarregar" não
+   aparecia lá no slot certo → caía no fallback "primeiro slot vazio".
+2. `enter_normalized_progression` snapshota esse MESMO `PlayerSkills`
+   como "o real" pra restaurar depois — `exit_normalized_progression`
+   devolvia esse layout desatualizado (não o da instância, mas também
+   não o que o usuário tinha configurado) por cima do que o cliente
+   realmente tinha na hora de entrar. Como `PlayerSkills.keybinds` do
+   CLIENTE nunca é tocado pela sincronização de instância (só `.skills`
+   muda), o resultado visual é layout/tecla dessincronizados — "tudo
+   bagunçado". E como o fix de §34.74.33 agora deixa `_save_config()`
+   gravar normal assim que sai da BG, esse layout desatualizado (não mais
+   o da instância, mas ainda errado) acabava sendo persistido em
+   `config.json` de verdade na próxima chance — daí "reloguei e não ficou
+   como configurei antes de entrar" (nada foi perdido de verdade — as
+   skills aprendidas continuam completas no banco — só a ORDEM ficou
+   errada).
+
+**Fix — único ponto de verdade**: `_handle_hotbar_update` agora TAMBÉM
+aplica a mudança no `PlayerSkills` AO VIVO (além do cache de save, que
+continua existindo — não removido). Reconstrói via `PlayerSkills.
+_make_skill` só o slot que realmente mudou de conteúdo (mesmo espírito
+da reconciliação por-slot do cliente, §34.74.23 — preserva o objeto
+existente se o `skill_id` do slot não mudou). **Guard de segurança**:
+NUNCA concede skill nova por este canal — só reordena um `skill_id` que
+já está em `learned_skill_ids`; um slot pedindo um skill_id não aprendido
+é ignorado (sem isso, um cliente malicioso podia mandar
+`HOTBAR_UPDATE{skills:["skill_que_não_tem"]}` e ganhar a skill de graça).
+Como o componente "ao vivo" tocado é sempre o QUE ESTIVER ATUALMENTE
+anexado ao eid (o real fora da BG, o `new_ps` temporário da instância
+dentro dela — trocados por `enter_/exit_normalized_progression`), editar
+a hotbar DENTRO da BG naturalmente só mexe na cópia da instância, nunca
+vaza pro real — nenhum guard extra de instância precisou ser adicionado
+aqui.
+
+Testes: `tests/test_hotbar_bg_leak.py::TestHotbarUpdateAppliesLive` (3
+casos novos, prova diferencial em cada um — incluindo o guard de
+segurança revertido, confirmado que concede a skill não aprendida antes
+de restaurar): reordenar via `HOTBAR_UPDATE` reflete no `PlayerSkills` ao
+vivo na hora (sem precisar relogar); não concede skill não aprendida;
+ponta a ponta — edita a hotbar por mensagem de rede e SÓ DEPOIS entra na
+BG, skill de instância nasce no slot recém-configurado. Suíte completa:
+871 passed (3x limpa).
+
+#### §34.74.35 — Travamento real numa troca de lane: log.info() síncrono por morte/XP/loot (05/08/2026)
+
+Usuário reportou travamentos num playtest da BG. Log de perf confirmou:
+cluster de ~15 ticks lentos seguidos em `moba_battleground::debugtest`
+(tick#11540-11693), picos de **111ms/177ms/141ms/124ms** (budget 33ms),
+com `death_handling`/`loot_drops` dominando o TOP breakdown — todo o
+resto do tick (ai_bundles, minion_system, tower_system,
+combat_spatial_hash_build) continuava barato nos MESMOS ticks, então não
+era nada relacionado às otimizações anteriores desta sessão (§34.74.32).
+
+**Causa raiz**: 4 chamadas `log.info()` SÍNCRONAS dentro do loop de
+processamento de morte — `server_death_handler.py::update` (`[Death]`,
+1x por morte), `world_server.py` (`[XP]`, 1x por ENTRADA de xp — XP de
+minion por proximidade gera uma entrada POR PLAYER perto, então uma
+morte pode virar várias linhas; `[LevelUp]`, 1x por level-up), e
+`loot_processor.py::_process_loot_drops` (`[Loot]`, 1x por corpse).
+`server/log.py` manda cada `log.info()` pra 2 handlers síncronos
+(console `StreamHandler` + arquivo `RotatingFileHandler`) — escrita de
+console no Windows é lenta por natureza (pior ainda se a janela do
+terminal tiver foco/seleção de texto, que pausa o processo até soltar).
+Um choque de lane com várias mortes quase simultâneas virava dezenas de
+chamadas de I/O síncrono na MESMA tick, bloqueando o tick de verdade.
+Investigado e descartado como causa: o save-por-kill de XP
+(`_persist_character` via `asyncio.ensure_future`) já é assíncrono de
+verdade (thread separada via `run_in_executor`, `server/auth.py::
+save_character`), não bloqueia o tick.
+
+**Fix**: as 4 chamadas rebaixadas de `log.info` pra `log.debug` — morte/
+XP/level-up/loot são eventos de ALTA frequência numa BG com minions
+(diferente de login/disconnect, que continuam `info` — baixa frequência,
+vale a pena sempre ver). Com `RPG_LOG_LEVEL` no default (INFO), essas
+linhas nem chegam nos handlers — custo ~zero. Continuam disponíveis
+ligando `RPG_LOG_LEVEL=DEBUG`.
+
+Teste: `tests/test_death_log_perf.py` — mata um mob real (`PendingDeath`
++ `damage_log` + 1 tick real) e espiona `logging.Logger.info`/`.debug`:
+nenhuma linha `[Death]`/`[XP]`/`[LevelUp]`/`[Loot]` sai em INFO, mas
+`[Death]` continua saindo em DEBUG (garante que a informação não sumiu,
+só desceu de nível). Prova diferencial confirmada (revertido `[Death]`
+pra `log.info`, teste falha, restaurado). Suíte completa: 873 passed (3x
+limpa).
+
+#### §34.74.36 — INCIDENTE: desligar o servidor (Ctrl+C) perdia progresso de TODO MUNDO conectado, sem salvar nada (05/08/2026)
+
+Usuário relatou: configurou a hotbar numa sessão, confirmou que salvou —
+mas na sessão seguinte a configuração não estava lá. Suspeitou do
+desligamento do servidor no meio.
+
+**Causa raiz confirmada**: `server/main.py` não tinha NENHUM tratamento
+de shutdown gracioso — grep por `signal`/`SIGTERM`/`atexit` em `server/`
+não achou nada. `Ctrl+C` levanta `KeyboardInterrupt`, capturado só no
+`if __name__ == "__main__":`, DEPOIS que `asyncio.run()` já fechou o
+loop de eventos — tarde demais pra rodar qualquer save assíncrono. O
+processo simplesmente morria. Resultado: **tudo que mudou desde o
+último autosave (5 em 5 minutos) ou desde a última ação que dispara save
+se perdia por completo** ao desligar — não só hotbar, qualquer estado de
+QUALQUER player conectado (inventário, ouro, quest, posição).
+
+**Fix**: `server/main.py::main()` — `except KeyboardInterrupt` movido pra
+DENTRO do `async with websockets.serve(...)` (ainda com o loop vivo),
+envolvendo o `await world.run()`. Ao capturar, chama `await mgr.
+_autosave_all()` — o MESMO chokepoint do autosave periódico
+(`server/session.py`, já usa `_persist_character`, que já pula sozinho
+quem estiver dentro de progressão normalizada de BG — nenhum guard novo
+precisou entrar aqui) — antes de deixar a exceção propagar (`raise`) pro
+tratamento externo de sempre.
+
+Teste: `tests/test_graceful_shutdown.py` — `WorldServer.run` trocado por
+um fake que levanta `KeyboardInterrupt` na hora, `SessionManager.
+_autosave_all` espionado, chama `main()` de verdade (porta 0 — SO escolhe
+uma livre) e confirma que `_autosave_all` roda exatamente 1x antes da
+exceção propagar. Prova diferencial confirmada (except trocado pra
+`RuntimeError`, nunca bate com `KeyboardInterrupt`, teste falha,
+restaurado). Suíte completa: 874 passed (3x limpa).
+
+#### §34.74.37 — Estratégia de escala: índice de players por tick + elimina scan redundante de alvo (05/08/2026)
+
+Usuário notou (log real, só ele jogando) `ai_bundles`/`bnd:map_1`
+consistentemente em ~7-8ms/tick (70% do tick) e perguntou se isso
+pioraria com mais players. Isso puxou uma discussão maior sobre
+estratégia de escala (não documentada em detalhe aqui, ver histórico da
+conversa) — como MMOs/MOBAs reais (WoW/LoL/Tibia) resolvem esse
+problema: particionamento espacial como camada ÚNICA (nunca patch por
+sistema), LOD por distância/prioridade, isolamento de partida por
+processo (LoL/Dota: cada partida = processo isolado, nunca 1 servidor
+grande aguentando N partidas), por que a IA de mob TEM que rodar no
+servidor (cliente não é confiável — abriria brecha de trapaça, mesma
+regra de sempre deste projeto: "servidor valida tudo"), e por que
+paralelizar dentro de 1 tick em Python esbarra no GIL (threading comum
+não ajuda CPU-bound; `multiprocessing` contorna mas exige reprojetar
+estado compartilhado; Python 3.14 free-threading é real e oficialmente
+suportado agora, mas exige migrar de versão + auditar dependências C —
+fica pra depois). Desta discussão, decidiu-se implementar AGORA só os 2
+achados **sem trade-off** (ganho puro, comportamento idêntico); uma
+fila de prioridade/throttle (ideia do usuário, ganha mais mas troca
+responsividade) fica **FASE 2**, ainda não implementada.
+
+**Achado 1 — scan de alvo redundante**: `EnemyAISystem.update()`
+(`engine/world_systems.py`) chamava `_select_target()` (2 scans: players
+do mapa + outros combatentes) INCONDICIONALMENTE pra todo mob acordado
+— mesmo um já `ATTACKING`/`CHASING` com alvo retido e válido. A
+retenção só sobrescrevia o resultado DEPOIS, jogando o scan fora. Fix:
+reordenado — a validação de retenção (mesma lógica de sempre) roda
+PRIMEIRO; `_select_target` só é chamado quando ela falha (sem alvo, ou
+alvo virou inválido). Resultado idêntico, zero mudança de
+comportamento, só ORDEM.
+
+**Achado 2 — scan de players sem cache, por mob**: sleep-check (mob
+IDLE decidindo se continua dormindo) e `_select_target` faziam
+`get_entities_with(...PlayerControlled...)` por MOB, todo tick, sem
+cache — o sleep-check sozinho já rodava esse scan pra CADA um dos ~190
+mobs do mapa aberto. `EnemyAbilitySystem`/`SpawnZoneSystem` faziam scans
+parecidos (mais baratos — 1x por bundle, não por mob — mas cada um
+reimplementava). Fix: índice canônico `players_by_map` (dict
+map_file→lista de `(eid, Position, TileMovement, CombatStats)`),
+construído 1x por tick em `WorldServer._tick()` (mesmo padrão já
+validado nesta sessão pra `_combat_spatial_hash`, §34.74.30), injetado
+via novo parâmetro `players_by_map=None` no `update()` dos 3 sistemas —
+helper único `_players_on_map()` (`engine/world_systems.py`) resolve do
+índice se fornecido, cai no scan de sempre se `None` (compat com
+qualquer teste que já chama `.update()` direto sem esse argumento,
+mesmo padrão de `spatial_hash=None` do Tower/MinionSystem).
+`_MapBundle.proximity_systems` (novo set, mesmo padrão de
+`ai_systems`) marca quais sistemas do bundle recebem o índice.
+
+Testes: `tests/test_enemy_ai_perf.py` (3 casos, prova diferencial em
+cada um): mob com alvo retido não rechama `_select_target` (mas volta a
+chamar se o alvo morre); um "fantasma" (entidade real, SEM
+`PlayerControlled` — nunca apareceria num scan de verdade) presente só
+no índice injetado é adquirido como alvo, provando que o sistema
+consome o índice em vez de escanear sozinho. Suíte completa: 877 passed
+(3x limpa).
+
+**Fase 2 (NÃO implementada, registrada como próximo passo)**: fila de
+prioridade/throttle pra mobs IDLE que ainda estão PROCURANDO alvo (sem
+retenção) — reavaliar a cada N ticks em vez de todo tick, priorizado
+por tier (boss/elite/raro/normal) com "aging" pra nunca deixar um mob
+starvado. Decisão pendente do usuário: tamanho de N (folga de
+responsividade aceitável). Mob em combate ativo NUNCA deveria ser
+afetado por esse throttle (sempre full-rate) — só a busca "ainda não
+achei ninguém" é candidata a atraso.
+
+#### §34.74.38 — Instrumentação de perf (RSS/GC/sub-sistema/mobs ativos) + Achado 3: `_select_target` rodava pra mob isolado a centenas de tiles de qualquer player (05/08/2026)
+
+Continuação de §34.74.37. Usuário testou com 1 depois 2 players e pediu
+análise do `server_perf.log` de novo — `ai_bundles`/`bnd:map_1` continuava
+em 7-16ms mesmo depois do fix anterior. Descartar hipóteses antes de mexer
+em código (pedido explícito do usuário, mesma régua de
+`feedback_validate_before_suite_and_no_loop_guessing`):
+
+- **Instrumentação adicionada em `server/world_server.py`** (nenhuma
+  muda comportamento, só mede): RSS do processo por tick (`psutil`, já
+  usado pra CPU%) reportado no resumo periódico (`rss avg=/peak=`);
+  duração + tick# de cada `gc.collect()` manual (`run()`) logado em
+  `server_perf.log`; sub-timer por sistema dentro do bundle
+  (`sys:EnemyAISystem`, `sys:SpawnZoneSystem` etc. — reusa
+  `_perf_mark`, nunca duplica leitura de `perf_counter()`); contador de
+  mobs em `CHASING`/`ATTACKING`/`AGGRO_DELAY` por tick
+  (`mobs_ativos avg=/peak=`, no resumo periódico E na linha "tick
+  lento").
+- **Hipótese GC/memória: descartada** — RSS fica estável (~55-62MB,
+  platô), `gc.collect()` roda em ticks fixos (múltiplos de 300) que
+  nunca coincidem com os ticks dos picos isolados de 75-190ms.
+- **Hipótese "mobs acumulando em combate": descartada pelos próprios
+  dados** — `mobs_ativos avg=0.0 peak=0` durante janelas inteiras com
+  `sys:EnemyAISystem` custando 8-16ms. Ninguém em combate, custo alto
+  mesmo assim.
+- **Achado 3 (causa real)**: usuário observou que os ~190 mobs do mundo
+  estão espalhados por várias zonas de spawn — confirmado lendo
+  `maps/map_1_entities.json` (`spawn_zones`): 11 zonas em map_1 somando
+  124 mobs, zonas a 400+ tiles de distância umas das outras (`y=40` até
+  `y=490`). `EnemyAISystem.update()` chama `_select_target()`
+  (`engine/world_systems.py`) pra TODO mob sem alvo retido,
+  incondicionalmente — o sleep-check existente (`SLEEP_RADIUS_TILES=40`,
+  linha ~2792) só roda DEPOIS do branch "sem alvo válido" já ter dado
+  `continue` (linha ~2698), então NUNCA é alcançado por um mob que
+  já não tinha alvo (o caso comum de um mob isolado, longe de
+  qualquer player). Resultado: `_select_target` (2 scans + `is_hostile`/
+  `CombatState` por candidato) roda todo tick pra praticamente todo mob
+  IDLE do mapa, mesmo os isolados a centenas de tiles.
+- **Fix**: `EnemyAISystem._any_candidate_in_range(mob_eid, mob_pos)`
+  (`engine/world_systems.py`) — pré-filtro só de matemática de posição
+  (sem `is_hostile()`/`get_component(CombatState)`, os 2 lookups mais
+  caros por candidato), usando o MESMO raio que `_select_target` já usa
+  de verdade (`AGGRO_RADIUS_TILES`, não `SLEEP_RADIUS_TILES` — usar um
+  raio maior mudaria o resultado). Prova de segurança: `_select_target`
+  nunca aceita candidato além desse raio (seu `best_dist` é inicializado
+  com ele), então se NINGUÉM (player ou NPC/combatente — cobre os dois
+  loops) está dentro dele, a chamada de verdade sempre devolveria -1;
+  pular é matematicamente idêntico, nunca uma aproximação. Chamado em
+  `update()` como `if not _retained and self._any_candidate_in_range(...)`.
+- Testes: `tests/test_enemy_ai_perf.py::TestSelectTargetSkippedWhenNoCandidateInRange`
+  (2 casos, prova diferencial): mob isolado a 5000 tiles não chama
+  `_select_target`; player entrando no raio real de aquisição ainda
+  chama e adquire normalmente (prova que o pré-filtro não quebra
+  aquisição legítima). Setup usa `utils.snap_to_tile()` (nunca escrita
+  direta de `current_tile_x/y`) — necessário porque o pré-filtro
+  depende de `Position` (pixel) estar sincronizado com `TileMovement`,
+  o que expôs o mesmo problema em 2 testes PRÉ-EXISTENTES de
+  §34.74.37 (moviam só `TileMovement`, nunca importava antes porque
+  nem retenção nem a chamada incondicional de `_select_target`
+  dependiam de `Position` real) — corrigidos junto. Suíte completa: 879
+  passed (3x limpa).
+- **Iteração global filtrada por mapa (corrigida no mesmo dia, depois de
+  medir o resíduo)**: usuário testou de novo e perguntou por que
+  `ai_bundles` ainda ficava >6ms em alguns momentos mesmo depois do
+  Achado 3 — log confirmou que não era mais chamada desperdiçada
+  (`mobs_ativos=0` mas custo ainda presente), e sim o PISO de iterar a
+  população inteira todo tick. Causa: `EnemyAISystem.update()` usava
+  `get_entities_with(Position, AIControlled, InitialPosition,
+  DetectionRadius, TileMovement, CombatStats)` SEM filtro de mapa na
+  query — itera TODOS os mobs do MUNDO (todos os 3 mapas), descartando
+  os de outro mapa 1 a 1 via `get_component(MapLocation)` + comparação,
+  dentro do próprio loop principal. Com múltiplos mapas ativos ao mesmo
+  tempo, cada bundle repetia esse scan global inteiro (mesma classe de
+  bug já corrigida pra players em §34.74.37, agora pra mobs). Fix:
+  índice canônico `mobs_by_map` (dict map_file→lista de `(eid, Position,
+  AIControlled, InitialPosition, DetectionRadius, TileMovement,
+  CombatStats)`), construído 1x por tick em `WorldServer._tick()`
+  (mesmo bloco que já constrói `_players_by_map`), consumido via helper
+  `_mobs_on_map()` (`engine/world_systems.py`, mesmo padrão de
+  `_players_on_map`) — cai no scan de sempre se `mobs_by_map=None`
+  (compat com teste que chama `.update()` direto). `EnemyAbilitySystem`/
+  `SpawnZoneSystem` ganharam o parâmetro `mobs_by_map=None` só por
+  uniformidade de dispatch (mesmo grupo `proximity_systems`, chamado com
+  os 2 índices igual em todo mundo) — nenhum dos dois usa o índice de
+  mobs ainda, não iteram mob por conta própria.
+  Teste: `tests/test_enemy_ai_perf.py::TestMobsByMapIndexIsActuallyUsed`
+  — mob "fantasma" SEM `InitialPosition`/`DetectionRadius` (2 dos 6
+  componentes exigidos pelo scan real — nunca apareceria nele) presente
+  só no índice injetado precisa ser processado e adquirir o player como
+  alvo; prova diferencial confirmada (índice desligado → alvo continua
+  -1). Suíte completa: 880 passed (3x limpa).
+
+#### §34.74.39 — `_get_occupied_tiles` reaproveitado (Camada 1) + fragilidade de teste corrigida (05/08/2026)
+
+Usuário testou de novo (log real) e perguntou por que `ai_bundles` ainda
+picava >100ms em alguns ticks isolados (ex: tick#3910, 221ms — coincidindo
+com queda de 191→180 mobs, leva de leash/perda de alvo simultânea).
+
+**Causa**: `EnemyAISystem._get_occupied_tiles()` (`engine/world_systems.py`)
+faz `get_entities_with(TileMovement)` SEM filtro de mapa — escaneia TODAS
+as entidades com `TileMovement` do MUNDO TODO, descartando por mapa depois.
+Chamada 1x por tick no topo de `update()` (`all_occupied_tiles`), mas
+TAMBÉM re-chamada **por mob**, em 3 branches (RETURNING×2, kite) toda vez
+que aquele mob precisa recalcular caminho. Com vários mobs perdendo o alvo
+no mesmo tick, cada um pagava um rescan global inteiro.
+
+Usuário sugeriu também restringir a busca a uma área local (ex: 15x15 ao
+redor do mob) via `SpatialHash` (`engine/utils.py:63`, já usado em outros
+lugares) — ideia validada mas adiada (Camada 2, troca correção rara por
+performance, NÃO implementada — decisão pendente).
+
+**Fix (Camada 1, zero trade-off)**: as 3 chamadas por-mob passam a
+reaproveitar `all_occupied_tiles` (já computado 1x por tick), subtraindo
+só o próprio tile do mob via novo helper `EnemyAISystem._tile_of()`
+(mesmo critério de exclusão que `except_entity_id` fazia antes). Resultado
+idêntico — nunca mais rescan global por mob.
+Teste: `tests/test_enemy_ai_perf.py::TestReturningReusesOccupiedTilesInsteadOfRescanning`
+— mob isolado forçado a recalcular retorno; spy em `_get_occupied_tiles`
+confirma 1 chamada total (só a do topo), prova diferencial confirmada.
+
+**Regressão descoberta durante validação — NÃO era bug do fix acima**:
+suíte completa passou a falhar em `test_server.py::TestMobMovement::
+test_mob_moves_toward_player` (determinístico, mesmo teste nas 2
+tentativas). Investigação por trace (6 rounds, instrumentação temporária
+removida depois): `_select_target()` encontrava o player corretamente
+(hostil, vivo, dentro do raio), `target_eid` era persistido — mas a
+transição `IDLE→AGGRO_DELAY` (`engine/world_systems.py` ~linha 3244) tem
+um segundo gate, linha de visão (`_has_line_of_sight`), que bloqueava a
+transição. Causa raiz: o teste usava `first_mob()` (primeiro mob hostil
+que aparecer) + offset fixo de +3 tiles em X a partir da posição NATIVA
+do mob — e o `random` global do Python não é resetado por teste, então
+`first_mob()` pode devolver mobs diferentes dependendo de quantos testes
+(e quantas chamadas a `random`) rodaram antes no mesmo processo. Um mob
+cuja posição nativa tinha parede 3 tiles a leste quebrava o teste mesmo
+com tudo mais (hostilidade/HP/distância) correto — bug pré-existente,
+só nunca exposto porque a ordem de execução nunca tinha empurrado
+`first_mob()` pra esse mob específico antes.
+
+Também descoberto no processo: o próprio tile de spawn de teste de
+`TestMobMovement` (130,374 em map_1) tem uma parede 1 tile a LESTE
+(131,374, sólido) — bloqueando LOS pra qualquer offset_x positivo nesse
+spawn especificamente.
+
+**Fix do teste**: `test_mob_moves_toward_player` agora teleporta o MOB
+pra perto do player (`tests/helpers.py::teleport_mob_to_player`, offset_y
+em vez de offset_x — sul é aberto e com LOS livre nesse spawn) em vez de
+mover o player pra posição nativa do mob. `teleport_mob_to_player` ganhou
+parâmetro novo `offset_y: int = 0` (default preserva comportamento de
+todo chamador existente). Decisão do usuário: corrigir só este teste
+específico agora — resetar `random.seed()` por teste (fix sistêmico pra
+essa CLASSE de fragilidade, qualquer teste futuro pode reordenar RNG e
+expor outro caso parecido) fica registrado como possível trabalho futuro,
+não decidido ainda.
+
+Suíte completa: 881 passed (limpa, mesma ordem que antes expunha a falha).
+
+#### §34.74.40 — Achado 5: mob IDLE longe de todo player continuava iterado (mesmo depois do §34.74.38/39) (05/08/2026)
+
+Usuário perguntou (com uma meta explícita: IA de mob/NPC deveria cair pra
+~1ms, picos ~2ms) se, mesmo parado numa área específica de um mapa
+gigante, o sistema ainda calculava IA do mapa inteiro todo tick. Resposta:
+sim — os achados 1-4 (§34.74.37/38/39) reduziram o CUSTO por mob distante
+(pulava a parte cara), mas o mob continuava sendo ITERADO: passava por
+checagem de morto, retenção, pré-filtro, etc., antes do sleep-check
+(`SLEEP_RADIUS_TILES=40`, dentro do loop) finalmente descartar ele. Pra
+~130 mobs em map_1, isso é ~130 iterações completas todo tick mesmo com
+só uns 10-20 perto do player.
+
+Usuário também propôs jitter no `aggro_delay` (hoje fixo em 1.0s — só o
+`path_recalc_timer` pós-CHASING já tinha jitter) pra espalhar pathfind de
+agros em massa — registrado como possível ajuste complementar, MENOS
+urgente depois deste fix (menos mobs simultâneos = menos agro em massa).
+Também sugeriu investigar o algoritmo em si — decidido reprofilar DEPOIS
+deste fix, com dado real, em vez de adivinhar.
+
+**Fix**: `EnemyAISystem._active_mobs_this_tick()` (`engine/world_systems.py`,
+método novo, chamado no lugar de `_mobs_on_map` direto no loop principal)
+— filtra ANTES do loop: mob NÃO-IDLE sempre entra (tem trabalho
+pendente — leash/retorno); mob IDLE só entra se dentro de
+`SLEEP_RADIUS_TILES` de algum player OU se `_any_candidate_in_range`
+(mesmo pré-filtro do Achado 3, já cobre NPC/combatente) acha candidato
+dentro do raio real de aquisição. Resultado idêntico ao sleep-check de
+sempre — só aplicado ANTES do corpo pesado, não durante.
+**NÃO usa `SpatialHash`** — descartado de propósito na discussão: com
+poucos players (1-4), comparar cada mob contra a lista inteira de
+players já é barato; o ganho vem de fazer isso ANTES do resto da lógica,
+não de acelerar a comparação em si.
+
+**Regressão real encontrada e corrigida durante a validação**: a
+primeira versão só verificava distância a PLAYERS, quebrando 3 testes de
+`tests/test_faction.py::TestMultiTargetCombat` (mob-vs-NPC longe de todo
+player, propositalmente — Sistema de Facções Fase 5). Causa: no código
+ANTES deste fix, o sleep-check "funcionava" pra esse caso só porque
+`_select_target`/retenção rodavam ANTES dele, e a variável de distância
+usada pelo sleep-check (`chebyshev_dist_to_player`, nome enganoso) na
+verdade media distância ao ALVO JÁ ADQUIRIDO (podia ser um NPC) — nunca
+literalmente "distância a um player". Um pré-filtro que olhasse só pra
+`players_this_map_cache` quebra esse caso escondido. Fix: adicionado o
+mesmo `_any_candidate_in_range` (cobre NPC/combatente) como segunda
+condição pro mob IDLE entrar na lista.
+
+Teste: `tests/test_enemy_ai_perf.py::TestIdleMobFarFromPlayerNeverEntersMainLoop`
+— verifica DIRETO a lista devolvida por `_active_mobs_this_tick` (não
+conta chamadas de função auxiliar — `_any_candidate_in_range` é usada
+tanto pelo pré-filtro quanto pelo corpo do loop, contar chamadas não
+distingue "filtrado antes" de "entrou e foi rejeitado dentro"). Mob IDLE
+isolado (sem player nem NPC por perto) não aparece na lista; mob CHASING
+isolado continua aparecendo (trabalho pendente). Prova diferencial
+confirmada (fix desligado → todos os ~130 mobs aparecem, incluindo o
+isolado). Suíte completa: 883 passed (3x limpa, incluindo os 3 testes de
+`TestMultiTargetCombat` que quebraram e foram corrigidos).
+
+#### §34.74.41 — `SLEEP_RADIUS_TILES` 40→20 (teste do usuário) + Fase 2: throttle de reavaliação por tier (05/08/2026)
+
+Usuário testou o Achado 5 com 1 player e o ganho foi menor que o
+esperado (`sys:EnemyAISystem` só caiu de ~4.2-5.4ms pra ~3.8-4.2ms) —
+hipótese: zonas de spawn próximas/densas (cluster ao sul de map_1,
+y=340-490, raios 35-38 tiles) mantêm muitos mobs "no raio" mesmo com o
+filtro funcionando certo. Usuário propôs testar `SLEEP_RADIUS_TILES`
+(`EnemyAISystem`) reduzido de 40 pra **20** — **mudança de
+comportamento real, não só perf** (mob passa a "acordar" mais perto do
+player). Validado pelo usuário em teste manual antes de seguir.
+
+**Regressão real encontrada e corrigida**: `tests/test_service_npcs.py::
+TestServiceNpcVoltaProSpawnExato::test_npc_deslocado_volta_pro_tile_exato`
+quebrou — NPC deslocado (IDLE, nunca esteve em combate) a 22 tiles do
+player não se autocorrigia mais (achado 5 não processa mob IDLE fora do
+raio, sem exceção pra "correção de posição sem combate"). Fix: aproximar
+o player do NPC no teste (`spawn_player` movido pra dentro de 20 tiles),
+não reverter o raio — comportamento aceito pelo usuário como esperado.
+
+**Usuário perguntou se um mob NÃO-IDLE (RETURNING/CHASING) fica de fora
+do raio depois de perder o alvo perto do player**: resposta confirmada
+pelo código — não, mob não-IDLE SEMPRE entra no filtro do Achado 5,
+independente de distância (linha `if ai_control.state != "IDLE": ...
+continue`) — o fluxo real de combate→retorno nunca passa por um estado
+IDLE-mas-ainda-longe (vai direto de CHASING/ATTACKING pra RETURNING, só
+vira IDLE de novo quando já está perto de casa). O raio só afeta mob que
+NUNCA teve trabalho pendente.
+
+**Usuário testou com 2 players**: custo dobrou de verdade (`sys:
+EnemyAISystem` ~4-6ms→~7-9ms, tick médio ~9-14ms→~16-20ms,
+`mobs_no_filtro_ai` — contador novo — de ~12-18 pra ~14-18 em janelas
+comparáveis). Confirmado: não é mais desperdício (já eliminado nos
+achados 1-5), é trabalho genuíno — cada player cria sua própria "bolha"
+de raio, mais players = mais bolhas = mais mobs "acordados"
+simultaneamente. Decisão: avançar pra Fase 2 (registrada desde
+§34.74.37) — throttle de reavaliação, trocando um pouco de
+responsividade por economia real.
+
+**Fase 2 implementada** (plano em Plan Mode, aprovado pelo usuário):
+- **Escopo**: só mob `state == "IDLE"` é candidato a throttle — mob
+  procurando alvo, ainda não achou ninguém. `CHASING`/`ATTACKING`/
+  `AGGRO_DELAY`/`KITING`/`RETURNING`/`BLOCKED_BY_PLAYER` NUNCA são
+  throttlados (trabalho pendente real, sempre full-rate).
+- **Prioridade por tier**: reaproveita `EnemyTier` (`engine/
+  components.py`, já atribuído a todo mob/NPC de combate via
+  `create_enemy`/`create_combat_npc` → `_build_combat_entity`) — não
+  criou conceito novo de prioridade.
+- **Intervalos** (`EnemyAISystem._THROTTLE_INTERVAL_BY_TIER`, ticks
+  entre reavaliações, TICK_RATE=30, perfil "Recomendado" escolhido pelo
+  usuário entre 3 opções apresentadas): boss=1 (nunca throttla), elite=3
+  (~100ms), rare=6 (~200ms), normal=12 (~400ms). Atraso máximo pra um
+  mob IDLE notar um player pela primeira vez — imperceptível já que
+  `aggro_delay` (1s) já existe DEPOIS disso.
+- **Mecanismo — "último tick checado", não fila/round-robin**: novo
+  campo `AIControlled._ai_throttle_last_check: int = -1` (default -1 =
+  nunca checado). Regra: mob elegível só entra na lista se `tick_count -
+  _ai_throttle_last_check >= intervalo_do_tier`; ao entrar, atualiza o
+  campo. Com -1 como default, a PRIMEIRA vez que um mob fica elegível
+  ele SEMPRE entra imediatamente — descartou `(tick_count + eid) %
+  intervalo` de propósito (um mob recém-elegível podia esperar até
+  `intervalo` ticks pro primeiro check, quebrando testes curtos como
+  `test_faction.py::TestMultiTargetCombat` que rodam só 3 ticks, e
+  atrasando a reação real de um mob que acabou de entrar no raio).
+- Aplicado dentro de `EnemyAISystem._active_mobs_this_tick()` (mesmo
+  ponto do Achado 5) — `tick_count` injetado via novo parâmetro em
+  `update()`, mesmo padrão de `players_by_map`/`mobs_by_map`
+  (`WorldServer._tick()` repassa `self.tick_count`).
+  `EnemyAbilitySystem`/`SpawnZoneSystem` ganharam o parâmetro só por
+  uniformidade de dispatch (aceitam e ignoram).
+
+Testes: `tests/test_enemy_ai_perf.py::TestThrottleOfIdleMobReevaluation`
+(5 casos) — mob recém-elegível entra no 1º tick; não entra de novo antes
+do intervalo; entra de novo exatamente quando o intervalo completa; boss
+nunca throttla; mob não-IDLE nunca é afetado mesmo com
+`_ai_throttle_last_check` recente. Prova diferencial confirmada (throttle
+desligado → mob reaparece antes do intervalo, teste que verifica ausência
+falha). Suíte completa: 888 passed (3x limpa, incluindo o fix do teste de
+NPC de serviço).
+
 ### Arquiteturais (A) — débito técnico
 
 | ID | Problema | Impacto | Localização |

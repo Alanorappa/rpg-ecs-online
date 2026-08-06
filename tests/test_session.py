@@ -1955,6 +1955,92 @@ class TestPartyDispatchSemMovimento(unittest.IsolatedAsyncioTestCase):
                 "depender de qualquer outra atividade no tick")
 
 
+class TestBattlegroundDispatchSemMovimento(unittest.IsolatedAsyncioTestCase):
+    """Nexus derrubado (02/08/2026, pedido do usuário) — MESMA classe de
+    bug já corrigida pra arena/party: `has_pending` (server/session.py::
+    _on_tick) precisa olhar `_dbg_bg_tick._state["pending_match_result"]`
+    e `["pending_forced_leave_notify"]` (server/debug_battleground.py),
+    senão o placar/retorno forçado ficam presos no buffer até atividade
+    alheia (movimento de outro player, etc.) destravar o dispatch."""
+
+    async def asyncSetUp(self):
+        self.ws_server, self.mgr = make_session_manager()
+
+    def _clear_unrelated_buffers(self):
+        for attr in ("_skill_results_this_tick", "_skill_effects_this_tick",
+                     "_pending_loot_notifications", "_pending_stats_updates",
+                     "_expired_corpses_this_tick", "_player_hp_broadcasts_this_tick",
+                     "_skill_levels_broadcasts_this_tick", "_quest_update_broadcasts_this_tick",
+                     "_pending_sound_events", "_arena_match_found_events_this_tick",
+                     "_arena_match_start_events_this_tick", "_arena_match_end_events_this_tick",
+                     "_arena_match_result_events_this_tick", "_arena_gate_open_events_this_tick",
+                     "_party_state_events_this_tick", "_duel_end_events_this_tick",
+                     "_trade_cancellations_this_tick", "_skill_position_corrections"):
+            getattr(self.ws_server, attr).clear()
+        from server import debug_battleground as _dbg
+        _dbg._state["pending_gate_open_eids"] = []
+
+    async def test_bg_match_result_chega_sem_ninguem_se_mover(self):
+        from engine.components import Faction
+        from server import debug_battleground as bg
+        sa, fw_a = await fake_login(self.mgr, "bgdsm_a", "bgdsmusera", 10, 10)
+        bg._state["members"] = {sa.entity_id}
+        bg._state["stat_snapshots"] = {sa.entity_id: {"kills": 0, "deaths": 0, "farm": 0, "damage": 0}}
+        bg._state["match_decided"] = False
+        bg._state["result_deadline"] = None
+        bg._state["pending_match_result"] = []
+        self.ws_server.world.add_component(sa.entity_id, Faction("arena_time_a"))
+        fw_a.sent.clear()
+        try:
+            bg.notify_nexus_destroyed(self.ws_server, bg.DEBUG_BG_INSTANCE_KEY,
+                                      "arena_time_b", sa.entity_id)
+            self._clear_unrelated_buffers()
+            self.mgr._on_tick(self.ws_server.tick_count, {})
+            await asyncio.sleep(0)
+
+            found = get_msgs_of_type(fw_a, MsgType.BG_MATCH_RESULT)
+            self.assertEqual(len(found), 1,
+                "BG_MATCH_RESULT deveria chegar no mesmo tick do nexus derrubado, "
+                "sem depender de qualquer outra atividade no tick")
+        finally:
+            bg._state["members"] = set()
+            bg._state["stat_snapshots"] = {}
+            bg._state["match_decided"] = False
+            bg._state["result_deadline"] = None
+            bg._state["pending_match_result"] = []
+
+    async def test_forced_leave_zone_change_chega_sem_ninguem_se_mover(self):
+        import time
+        from engine.components import Faction
+        from server import debug_battleground as bg
+        sa, fw_a = await fake_login(self.mgr, "bgdsm_b", "bgdsmuserb", 10, 10)
+        bg._state["members"] = {sa.entity_id}
+        bg._state["return_pos"] = {sa.entity_id: (self.ws_server.MAP_FILE, 50, 50)}
+        bg._state["stat_snapshots"] = {sa.entity_id: {"kills": 0, "deaths": 0, "farm": 0, "damage": 0}}
+        bg._state["match_decided"] = True
+        bg._state["result_deadline"] = time.time() - 1
+        bg._state["pending_forced_leave_notify"] = []
+        self.ws_server.world.add_component(sa.entity_id, Faction("arena_time_a"))
+        fw_a.sent.clear()
+        try:
+            bg._tick_bg_results_timeout(self.ws_server)
+            self._clear_unrelated_buffers()
+            self.mgr._on_tick(self.ws_server.tick_count, {})
+            await asyncio.sleep(0)
+
+            found = get_msgs_of_type(fw_a, MsgType.ZONE_CHANGE)
+            self.assertEqual(len(found), 1,
+                "ZONE_CHANGE do timeout forçado deveria chegar no mesmo tick, "
+                "sem depender de qualquer outra atividade no tick")
+        finally:
+            bg._state["members"] = set()
+            bg._state["return_pos"] = {}
+            bg._state["stat_snapshots"] = {}
+            bg._state["match_decided"] = False
+            bg._state["result_deadline"] = None
+            bg._state["pending_forced_leave_notify"] = []
+
+
 class TestUnstuck(unittest.IsolatedAsyncioTestCase):
     """Botão "Voltar ao Spawn" (bug real relatado pelo usuário 22/07/2026):
     só mudava tile_x/tile_y pro spawn de map_1, nunca o mapa em si — quem

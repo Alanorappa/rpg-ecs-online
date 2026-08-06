@@ -73,6 +73,14 @@ def authorize_skill(ws, eid: int, sid: str) -> None:
             tt.allocated[tid] = max(tt.allocated.get(tid, 0), min_pts)
 
 
+def enter_instance_progression(ws, eid: int) -> None:
+    """Coloca `eid` em progressão normalizada de instância (espelha o
+    formato de authorize_skill() acima) — atalho de setup pra
+    tests/test_instance_progression.py."""
+    from server.instance_progression import enter_normalized_progression
+    enter_normalized_progression(ws, eid)
+
+
 def run_ticks(ws, n: int, dt: float = 0.05) -> dict:
     """Roda N ticks e retorna todos os deltas acumulados."""
     accumulated = {
@@ -112,7 +120,7 @@ def set_entity_tile(ws, eid: int, tx: int, ty: int) -> None:
         pos.prev_x = pos.x;     pos.prev_y = pos.y
 
 
-def teleport_mob_to_player(ws, mob_eid: int, player_eid: int, offset_x: int = 1):
+def teleport_mob_to_player(ws, mob_eid: int, player_eid: int, offset_x: int = 1, offset_y: int = 0):
     """Move mob para o tile adjacente ao player, sincroniza Position e reseta AI.
 
     Também realinha InitialPosition (âncora do leash) pro tile novo — sem
@@ -121,12 +129,18 @@ def teleport_mob_to_player(ws, mob_eid: int, player_eid: int, offset_x: int = 1)
     (ver ARQUITETURA_ONLINE.md, Decisão 20: mob em RETURNING é imune a
     dano/aggro). Testes que quiserem exercitar leash/RETURNING de propósito
     devem mover o mob SEM essa realinhagem (ou setar InitialPosition manualmente
-    de volta pra longe, depois de chamar este helper)."""
+    de volta pra longe, depois de chamar este helper).
+
+    `offset_y` (05/08/2026, bug real): nem toda direção a partir do spawn do
+    player tem linha de visão livre — ex: (131,374) em map_1 é sólido, bem
+    ao lado do spawn de teste (130,374) na direção +x. Testes que dependem
+    de LOS (aggro por proximidade, não só por dano) devem escolher um eixo
+    livre em vez de assumir que `offset_x` sempre funciona."""
     from engine.components import TileMovement, AIControlled, InitialPosition
     from engine.tileset import TILE_SIZE as _TS_tp
     ptm = ws.world.get_component(player_eid, TileMovement)
     if ptm:
-        _tx, _ty = ptm.current_tile_x + offset_x, ptm.current_tile_y
+        _tx, _ty = ptm.current_tile_x + offset_x, ptm.current_tile_y + offset_y
         set_entity_tile(ws, mob_eid, _tx, _ty)
         ip = ws.world.get_component(mob_eid, InitialPosition)
         if ip:

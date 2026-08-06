@@ -98,8 +98,15 @@ class ServerDeathHandler:
 
             killer_eid = pd.killer_entity_id
 
-            # 1. Log
-            log.info(f"[Death] mob {eid} morto por {killer_eid}")
+            # 1. Log — DEBUG, não INFO (05/08/2026, causa real de "travamento"
+            # relatado pelo usuário numa troca de lane da BG): morte de
+            # mob/minion é evento de ALTA frequência, e log.info() escreve
+            # SÍNCRONO em 2 handlers (console + arquivo, server/log.py) —
+            # várias mortes quase simultâneas (choque de lane) viravam
+            # dezenas de ms de I/O bloqueando o tick real. Com
+            # RPG_LOG_LEVEL default (INFO), debug() nem chega nos handlers —
+            # ainda disponível ligando RPG_LOG_LEVEL=DEBUG.
+            log.debug(f"[Death] mob {eid} morto por {killer_eid}")
 
             # Posição/mapa do mob — precisa vir ANTES do bloco de XP (usado
             # pelo split de XP compartilhado de grupo, passo 2c abaixo) e
@@ -120,6 +127,36 @@ class ServerDeathHandler:
             # level pra recriar a torre igual).
             from engine.components import Tower as _TowerDH
             _tower_dh = self.world.get_component(eid, _TowerDH)
+            # Nexus (02/08/2026, pedido do usuário; generalizado 04/08/2026
+            # pra fila real — server/bg_queue_processor.py): torre marcada
+            # como is_nexus derrubada termina a partida — lê a Faction E o
+            # mapa/instância da torre MORTA aqui (entidade ainda intacta;
+            # só é removida no fim deste loop) e notifica os DOIS
+            # sistemas que podem ter uma partida rodando nesse mapa
+            # (debug_battleground.py — instância única de teste — e
+            # bg_queue_processor.py — N partidas reais, cada uma na
+            # própria instância); cada um decide sozinho, pelo map_file,
+            # se a torre é DELE (no-op se não — Arena de verdade nunca
+            # usa is_nexus, então nunca aciona nada aqui).
+            if _tower_dh is not None and _tower_dh.is_nexus and self.world_server:
+                from engine.components import Faction as _FactionDH
+                _tower_fac_dh = self.world.get_component(eid, _FactionDH)
+                if _tower_fac_dh is not None:
+                    _tower_map_dh = self.world_server.get_entity_map(eid)
+                    from server.debug_battleground import notify_nexus_destroyed
+                    notify_nexus_destroyed(self.world_server, _tower_map_dh,
+                                           _tower_fac_dh.faction_id, killer_eid)
+                    self.world_server.notify_bg_queue_nexus_destroyed(
+                        _tower_map_dh, _tower_fac_dh.faction_id, killer_eid)
+            # Minion (30/07/2026, pedido do usuário) — mesmo motivo de
+            # Tower: tabela própria (content/minion_definitions.py::
+            # MINION_TABLE), XP direto do componente `Minion` × level
+            # (nunca cai no lookup por nome/MOB_TABLE). Minion morto NÃO
+            # agenda respawn individual (diferente de Tower) — só a
+            # próxima wave programada (WorldServer._tick_minion_waves)
+            # cria minions novos, então não há um passo 6-equivalente aqui.
+            from engine.components import Minion as _MinionDH
+            _minion_dh = self.world.get_component(eid, _MinionDH)
 
             # 2. XP proporcional por dano causado — base por level do mob ×
             # xp_given_by_lvl (mob_definitions.py), modificado pelo
@@ -137,6 +174,17 @@ class ServerDeathHandler:
                 # Torre: XP flat da própria definição — nunca cai no
                 # lookup por nome/tier (torre não está em MOB_TABLE).
                 base_xp = _tower_dh.xp_reward
+            elif _minion_dh is not None:
+                # Minion: xp_reward da própria definição ESCALA com o
+                # level do minion (pedido do usuário, 30/07/2026 — level
+                # do minion virou a média do time, recalculada a cada
+                # wave, então XP acompanha: minion mais forte também vale
+                # mais). `identity.level` é o mesmo level gravado em
+                # create_minion (WorldServer._compute_team_avg_level) —
+                # nunca cai no fallback de MOB_TABLE/tier (minion não
+                # está cadastrado lá).
+                minion_level = identity.level if identity else 1
+                base_xp = _minion_dh.xp_reward * minion_level
             elif mob_def and "xp_given_by_lvl" in mob_def:
                 mob_level  = identity.level if identity else 1
                 tier_mult  = ENEMY_TIER_CONFIGS.get(tier, ENEMY_TIER_CONFIGS["normal"])["xp"]
@@ -148,25 +196,123 @@ class ServerDeathHandler:
             if self.world_server:
                 damage_log = self.world_server.get_damage_log(eid)
 
-            _xp_entries_start = len(self.pending_xp)
-            if damage_log:
-                total_damage = sum(damage_log.values())
-                for p_eid, dmg in damage_log.items():
-                    proportion = dmg / total_damage
-                    xp_earned  = max(1, int(base_xp * proportion))
-                    self.pending_xp.append({
-                        "player_eid": p_eid,
-                        "xp":         xp_earned,
-                        "mob_eid":    eid,
-                    })
+            # Filtra pra só ATACANTES PLAYER contarem pro XP (pedido do
+            # usuário, 01/08/2026: "a experiência deve ser compartilhada
+            # somente entre players, os minions não devem receber xp").
+            # Minion/torre já não ganhavam XP DE VERDADE (sem
+            # CharacterStats, ver create_minion/create_tower — o
+            # STATS_UPDATE resultante era descartado em silêncio por
+            # falta de sessão) — mas ANTES deste filtro, o dano deles
+            # ainda diluía proporcionalmente o que os players recebiam
+            # (entrava no `total_damage` do denominador). Filtra ANTES de
+            # somar, não depois — assim um mob 50% morto por minion +
+            # 50% por player dá o XP CHEIO (não só metade) pro player.
+            if self.world_server:
+                _player_eids_now = set(self.world_server._player_eids.values())
+                damage_log = {p: d for p, d in damage_log.items() if p in _player_eids_now}
             else:
-                # Fallback: killer leva tudo
-                if killer_eid != -1:
-                    self.pending_xp.append({
-                        "player_eid": killer_eid,
-                        "xp":         base_xp,
-                        "mob_eid":    eid,
-                    })
+                _player_eids_now = set()
+
+            _xp_entries_start = len(self.pending_xp)
+            # Minion: XP por PROXIMIDADE, não por dano (02/08/2026, pedido
+            # do usuário — "a xp não é para ser necessário bater no mob,
+            # se o mob morrer perto dos players, tem que ser dividido
+            # entre os players, sem necessidade de dar um hit sequer nos
+            # minions", estilo LoL: creep XP é compartilhado com QUALQUER
+            # aliado próximo, mesmo que não tenha batido — só o GOLD exige
+            # golpe final de verdade, ver bloco abaixo). Só se houver
+            # alguém em progressão normalizada por perto — sem isso cai no
+            # damage_log normal abaixo (minion fora de instância nunca
+            # deveria existir de verdade, mas mantém o fallback seguro).
+            _minion_xp_by_proximity = False
+            if _minion_dh is not None and self.world_server:
+                from shared.constants import PARTY_XP_SHARE_RADIUS_TILES as _MXPR
+                from server.instance_progression import players_in_normalized_progression_near as _players_near
+                _nearby = _players_near(self.world_server, mob_tx, mob_ty, mob_map, _MXPR)
+                if _nearby:
+                    _minion_xp_by_proximity = True
+                    _share = max(1, base_xp // len(_nearby))
+                    for _p_eid in _nearby:
+                        self.pending_xp.append({
+                            "player_eid": _p_eid,
+                            "xp":         _share,
+                            "mob_eid":    eid,
+                        })
+            if not _minion_xp_by_proximity:
+                if damage_log:
+                    total_damage = sum(damage_log.values())
+                    for p_eid, dmg in damage_log.items():
+                        proportion = dmg / total_damage
+                        xp_earned  = max(1, int(base_xp * proportion))
+                        self.pending_xp.append({
+                            "player_eid": p_eid,
+                            "xp":         xp_earned,
+                            "mob_eid":    eid,
+                        })
+                else:
+                    # Fallback: killer leva tudo — só se o killer for player
+                    # de verdade (mesmo filtro acima; sem isso um minion/torre
+                    # que dá o golpe final, sem NENHUM player ter batido no
+                    # mob, virava "player_eid" da entrada de XP).
+                    if killer_eid != -1 and killer_eid in _player_eids_now:
+                        self.pending_xp.append({
+                            "player_eid": killer_eid,
+                            "xp":         base_xp,
+                            "mob_eid":    eid,
+                        })
+
+            # Ouro de INSTÂNCIA por kill (01/08/2026, pedido do usuário:
+            # "quando um oponente morre deve ir automaticamente pro
+            # inventário do player que o matou... só quando dá o dano que
+            # MATA"). SEMPRE `killer_eid` (golpe final) QUANDO ele for um
+            # player de verdade — e só se estiver em progressão
+            # normalizada (`is_in_normalized_progression`), senão não faz
+            # nada (kills no mundo aberto/Arena continuam só no
+            # coins/loot normal).
+            # `_gold_recipient_eid` (03/08/2026, bug real relatado pelo
+            # usuário — "jungo", torre morta pelo golpe final de um MINION
+            # aliado): quando o `killer_eid` NÃO é um player (torre/mob
+            # morto pelo golpe final de um minion — MinionSystem também
+            # chama `deal_damage`/PendingDeath), o gate `killer_eid in
+            # _player_eids_now` falhava por completo — nem creditava ouro
+            # (killer não é player) NEM suprimia o coin físico do corpse
+            # (`_instance_gold_ja_concedido` nunca virava True), fazendo a
+            # torre voltar a dropar ouro físico dentro da instância.
+            # Fallback: primeiro PLAYER que bateu (`damage_log` já
+            # filtrado só-players acima, mesma fonte de `first_attacker_
+            # eid` mais abaixo) — se NENHUM player bateu (minion mata
+            # sozinho), `_gold_recipient_eid` fica -1 e o comportamento
+            # antigo (coins físicos normais) se mantém, correto.
+            # `_instance_gold_ja_concedido`: usado no passo 5 (loot/coins do
+            # corpse) pra NÃO duplicar ouro de torre — torre sempre cai no
+            # roll_mob_loot/coins normal (é "estrutura", não tem tabela
+            # própria de loot condicional), então sem essa flag o killer
+            # ganhava o gold de instância AQUI *e* de novo ao lootear o
+            # corpse (coins normais de torre nunca eram suprimidos).
+            _instance_gold_ja_concedido = False
+            if self.world_server:
+                _gold_recipient_eid = (killer_eid if killer_eid in _player_eids_now
+                                       else (next(iter(damage_log)) if damage_log else -1))
+                if _gold_recipient_eid != -1:
+                    from server.instance_progression import (
+                        is_in_normalized_progression as _is_norm_dh,
+                        grant_instance_gold as _grant_gold_dh,
+                        INSTANCE_PLAYER_KILL_GOLD as _PKG_dh,
+                    )
+                    if _is_norm_dh(self.world_server, _gold_recipient_eid):
+                        if _tower_dh is not None:
+                            _gold_amt = (random.randint(_tower_dh.gold_min, _tower_dh.gold_max)
+                                        if _tower_dh.gold_max > 0 else 0)
+                        elif _minion_dh is not None:
+                            _gold_amt = (random.randint(_minion_dh.gold_min, _minion_dh.gold_max)
+                                        if _minion_dh.gold_max > 0 else 0)
+                        elif eid in _player_eids_now:
+                            _gold_amt = _PKG_dh
+                        else:
+                            _gold_amt = 0
+                        if _gold_amt > 0:
+                            _grant_gold_dh(self.world_server, _gold_recipient_eid, _gold_amt)
+                        _instance_gold_ja_concedido = True
 
             # 2c. Party: XP compartilhado (decisão do usuário 17/07/2026,
             # ver ARQUITETURA_ONLINE.md §34.19). As fatias proporcionais por
@@ -284,10 +430,30 @@ class ServerDeathHandler:
             if _tower_dh is not None:
                 # Torre: ouro flat da própria definição, sem item de
                 # loot — pula roll_mob_loot/roll_mob_coins inteiramente
-                # (torre não está em MOB_TABLE).
+                # (torre não está em MOB_TABLE). Se o gold de INSTÂNCIA já
+                # foi concedido de graça acima (passo 2b), NÃO duplica
+                # aqui via coins do corpse (02/08/2026, bug real: killer
+                # ganhava o mesmo ouro duas vezes — instantâneo + lootando
+                # o corpse — o usuário só reparou a metade "tive que
+                # lootear", sem perceber que também já tinha ganho na hora).
                 loot_items = []
-                coins = (random.randint(_tower_dh.gold_min, _tower_dh.gold_max)
-                        if _tower_dh.gold_max > 0 else 0)
+                coins = (0 if _instance_gold_ja_concedido else
+                         (random.randint(_tower_dh.gold_min, _tower_dh.gold_max)
+                          if _tower_dh.gold_max > 0 else 0))
+            elif _minion_dh is not None:
+                # Minion: moeda fora de escopo por enquanto (pedido
+                # explícito do usuário, 30/07/2026 — "moeda pra outro
+                # momento") — zero ouro/loot, sem lookup em MOB_TABLE.
+                loot_items = []
+                coins = 0
+                # CharStatsTracker.minions_killed ("farm", 02/08/2026,
+                # pedido do usuário) — golpe FINAL (killer_eid), convenção
+                # MOBA de "CS" — diferente de mobs_killed acima, que usa
+                # first_attacker_eid (dono do loot/quest, não
+                # necessariamente quem bateu o golpe final).
+                if killer_eid != -1 and killer_eid in _player_eids_now:
+                    from engine.utils import incr_char_stat as _incr_farm
+                    _incr_farm(self.world, killer_eid, "minions_killed")
             else:
                 try:
                     from content.loot_tables import roll_mob_loot, roll_mob_coins as _roll_mob_coins
@@ -334,7 +500,31 @@ class ServerDeathHandler:
                         max_stack=1000,
                     )
                     _ret.stack = _recovered
-                    loot_items.append(_ret)
+                    # Dentro da instância (03/08/2026, pedido do usuário):
+                    # Reciclagem vai DIRETO pra bag do killer, sem precisar
+                    # lootear o corpse — battleground de teste é rápido
+                    # demais pra gerenciar loot manual de cada minion morto.
+                    # Fora da instância, comportamento inalterado (cai no
+                    # corpse como qualquer outro item).
+                    _went_to_bag = False
+                    if self.world_server:
+                        from server.instance_progression import (
+                            is_in_normalized_progression as _is_norm_recycle)
+                        if _is_norm_recycle(self.world_server, first_attacker_eid):
+                            from engine.components import Inventory as _InvDh
+                            _inv_r = self.world.get_component(first_attacker_eid, _InvDh)
+                            if _inv_r is not None:
+                                _existing_ammo = next(
+                                    (it for it in _inv_r.items
+                                     if it is not None and it.name == _ret.name), None)
+                                if _existing_ammo is not None:
+                                    _existing_ammo.stack += _recovered
+                                    _went_to_bag = True
+                                elif len(_inv_r.items) < _inv_r.max_slots:
+                                    _inv_r.items.append(_ret)
+                                    _went_to_bag = True
+                    if not _went_to_bag:
+                        loot_items.append(_ret)
 
             # Sempre registra o corpse (visual) — só inclui itens se houve drop.
             # Sem essa entrada, o world_server nunca cria o body e o cliente
@@ -358,6 +548,14 @@ class ServerDeathHandler:
                     # _resolve_conditional_loot_for.
                     "mob_name":  mob_name,
                     "mob_race":  identity.race if identity else "",
+                    # Minion nunca tem loot (items/coins sempre vazios, ver
+                    # passo 5 abaixo) — corpse dele é só confirmação visual
+                    # de morte, não um objeto pra lootear. Timer curto
+                    # dedicado (server/loot_processor.py::_process_loot_drops)
+                    # em vez do padrão de mob normal (120s) — pedido do
+                    # usuário (03/08/2026): volume de mortes numa lane
+                    # "floodava" o mapa de corpses vazios por 2 minutos.
+                    "is_minion": _minion_dh is not None,
                 })
 
             # 6. Notifica SpawnZone — remove de active_entity_ids e agenda respawn

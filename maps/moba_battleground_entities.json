@@ -1,0 +1,38 @@
+{
+  "towers": [
+    { "x": 4,  "y": 95, "tower_key": "torre_de_fogo",    "faction": "arena_time_a", "level": 5, "respawnable": false, "respawn_s": 30, "regen_enabled": false, "is_nexus": true },
+    { "x": 3,  "y": 88, "tower_key": "torre_de_flechas", "faction": "arena_time_a", "level": 5, "respawnable": false, "respawn_s": 30, "regen_enabled": false },
+    { "x": 11, "y": 88, "tower_key": "torre_de_fogo",    "faction": "arena_time_a", "level": 5, "respawnable": false, "respawn_s": 30, "regen_enabled": false },
+    { "x": 11, "y": 96, "tower_key": "torre_de_flechas", "faction": "arena_time_a", "level": 5, "respawnable": false, "respawn_s": 30, "regen_enabled": false },
+    { "x": 5,  "y": 63, "tower_key": "torre_de_fogo",    "faction": "arena_time_a", "level": 5, "respawnable": false, "respawn_s": 30, "regen_enabled": false },
+    { "x": 24, "y": 75, "tower_key": "torre_de_flechas", "faction": "arena_time_a", "level": 5, "respawnable": false, "respawn_s": 30, "regen_enabled": false },
+    { "x": 36, "y": 94, "tower_key": "torre_de_fogo",    "faction": "arena_time_a", "level": 5, "respawnable": false, "respawn_s": 30, "regen_enabled": false },
+    { "x": 5,  "y": 23, "tower_key": "torre_de_flechas", "faction": "arena_time_a", "level": 5, "respawnable": false, "respawn_s": 30, "regen_enabled": false },
+    { "x": 41, "y": 58, "tower_key": "torre_de_fogo",    "faction": "arena_time_a", "level": 5, "respawnable": false, "respawn_s": 30, "regen_enabled": false },
+    { "x": 76, "y": 94, "tower_key": "torre_de_flechas", "faction": "arena_time_a", "level": 5, "respawnable": false, "respawn_s": 30, "regen_enabled": false },
+
+    { "x": 95, "y": 4,  "tower_key": "torre_de_fogo",    "faction": "arena_time_b", "level": 5, "respawnable": false, "respawn_s": 30, "regen_enabled": false, "is_nexus": true },
+    { "x": 88, "y": 3,  "tower_key": "torre_de_flechas", "faction": "arena_time_b", "level": 5, "respawnable": false, "respawn_s": 30, "regen_enabled": false },
+    { "x": 88, "y": 11, "tower_key": "torre_de_fogo",    "faction": "arena_time_b", "level": 5, "respawnable": false, "respawn_s": 30, "regen_enabled": false },
+    { "x": 96, "y": 11, "tower_key": "torre_de_flechas", "faction": "arena_time_b", "level": 5, "respawnable": false, "respawn_s": 30, "regen_enabled": false },
+    { "x": 63, "y": 5,  "tower_key": "torre_de_fogo",    "faction": "arena_time_b", "level": 5, "respawnable": false, "respawn_s": 30, "regen_enabled": false },
+    { "x": 76, "y": 23, "tower_key": "torre_de_flechas", "faction": "arena_time_b", "level": 5, "respawnable": false, "respawn_s": 30, "regen_enabled": false },
+    { "x": 94, "y": 36, "tower_key": "torre_de_fogo",    "faction": "arena_time_b", "level": 5, "respawnable": false, "respawn_s": 30, "regen_enabled": false },
+    { "x": 23, "y": 5,  "tower_key": "torre_de_flechas", "faction": "arena_time_b", "level": 5, "respawnable": false, "respawn_s": 30, "regen_enabled": false },
+    { "x": 59, "y": 40, "tower_key": "torre_de_fogo",    "faction": "arena_time_b", "level": 5, "respawnable": false, "respawn_s": 30, "regen_enabled": false },
+    { "x": 94, "y": 76, "tower_key": "torre_de_flechas", "faction": "arena_time_b", "level": 5, "respawnable": false, "respawn_s": 30, "regen_enabled": false }
+  ],
+  "minion_lanes": [
+    { "faction": "arena_time_a", "lane_id": "top", "spawn_tile": [3, 93], "target_tile": [[5, 5], [92, 5]],   "wave_interval_s": 45, "level": 2 },
+    { "faction": "arena_time_a", "lane_id": "mid", "spawn_tile": [6, 93], "target_tile": [97, 2],              "wave_interval_s": 45, "level": 2 },
+    { "faction": "arena_time_a", "lane_id": "bot", "spawn_tile": [6, 96], "target_tile": [[94, 94], [94, 7]],  "wave_interval_s": 45, "level": 2 },
+
+    { "faction": "arena_time_b", "lane_id": "top", "spawn_tile": [93, 2], "target_tile": [[6, 6], [3, 94]],    "wave_interval_s": 45, "level": 2 },
+    { "faction": "arena_time_b", "lane_id": "mid", "spawn_tile": [94, 5], "target_tile": [2, 97],               "wave_interval_s": 45, "level": 2 },
+    { "faction": "arena_time_b", "lane_id": "bot", "spawn_tile": [97, 6], "target_tile": [[92, 92], [5, 96]],  "wave_interval_s": 45, "level": 2 }
+  ],
+  "merchants": [
+    { "x": 4, "y": 98, "name": "Vendedor", "shop_id": "instance_shop" },
+    { "x": 95, "y": 1, "name": "Vendedor", "shop_id": "instance_shop" }
+  ]
+}

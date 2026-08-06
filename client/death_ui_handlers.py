@@ -63,6 +63,18 @@ class DeathUIHandlers:
 
     # ------------------------------------------------------------------
     def _render_death_modal(self) -> None:
+        # Battleground de teste (02/08/2026, pedido do usuário: respawn
+        # automático na base, sem "Liberar espírito") — reaproveita o MESMO
+        # flag que já liga o painel HUD de inventário de instância
+        # (InstanceInventoryUIState.active, eco do campo in_instance de
+        # STATS_UPDATE) pra saber "estou no battleground de teste" sem
+        # precisar de outro campo/mensagem novo.
+        from ui.ui_components import InstanceInventoryUIState as _IIUSDeath
+        _iius_death = self.world.get_component(self.player_entity, _IIUSDeath)
+        if _iius_death is not None and _iius_death.active:
+            self._render_death_modal_battleground()
+            return
+
         surf = self.screen
         SW, SH = surf.get_size()
         mx, my = pygame.mouse.get_pos()
@@ -87,6 +99,37 @@ class DeathUIHandlers:
         surf.blit(label_s, (btn_r.centerx - label_s.get_width() // 2,
                              btn_r.centery - label_s.get_height() // 2))
         self._death_release_btn = btn_r
+
+    # ------------------------------------------------------------------
+    def _render_death_modal_battleground(self) -> None:
+        """Variante do modal de morte pro battleground de teste — respawn
+        AUTOMÁTICO na base do time após DEBUG_BG_RESPAWN_S segundos (servidor
+        já cuida disso de verdade, ver server/debug_battleground.py::
+        _process_respawns), então não há botão "Liberar espírito" aqui, só
+        a contagem regressiva. `self._death_timer` (já acumulado por
+        _update_death_ui desde que gst.is_dead virou True) é a MESMA base
+        de tempo que o servidor usa — nenhuma mensagem nova precisa
+        sincronizar isso."""
+        from shared.constants import DEBUG_BG_RESPAWN_S
+        surf = self.screen
+        SW, SH = surf.get_size()
+
+        panel_w, panel_h = 360, 160
+        px = (SW - panel_w) // 2
+        py = (SH - panel_h) // 2
+
+        panel_r = pygame.Rect(px, py, panel_w, panel_h)
+        pygame.draw.rect(surf, (20, 10, 10), panel_r, border_radius=6)
+        pygame.draw.rect(surf, (140, 30, 30), panel_r, 2, border_radius=6)
+
+        title_s = self.font_md.render("Você morreu", False, C_RED)
+        surf.blit(title_s, (px + (panel_w - title_s.get_width()) // 2, py + 24))
+
+        remaining = max(0, int(DEBUG_BG_RESPAWN_S - self._death_timer + 0.999))
+        info_s = self.font_sm.render(f"Respawn na base em {remaining}s", False, C_YELLOW)
+        surf.blit(info_s, (px + (panel_w - info_s.get_width()) // 2, py + 92))
+
+        self._death_release_btn = None  # sem botão — respawn é automático
 
     # ------------------------------------------------------------------
     def _render_ghost_hud(self, gst: GhostState) -> None:

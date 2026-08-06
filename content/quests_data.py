@@ -167,12 +167,18 @@ class QuestDef(NamedTuple):
 # ---------------------------------------------------------------------------
 
 QUEST_ITEMS: dict[str, callable] = {
-    "Pelo de Urso":     lambda: Item("Pelo de Urso",     "material", slot=None, rarity="common", value=3, max_stack=10),
-    "Presa de Lobo":    lambda: Item("Presa de Lobo",    "material", slot=None, rarity="common", value=2, max_stack=10),
-    "Veneno de Aranha": lambda: Item("Veneno de Aranha", "material", slot=None, rarity="common", value=4, max_stack=10),
-    "Cauda de Escorpião": lambda: Item("Cauda de Escorpião", "material", slot=None, rarity="common", value=3, max_stack=10),
-    "Escama de Cobra":  lambda: Item("Escama de Cobra",  "material", slot=None, rarity="common", value=2, max_stack=10),
-    "Osso de Goblin":   lambda: Item("Osso de Goblin",   "material", slot=None, rarity="common", value=2, max_stack=10),
+    "Pelo de Urso":         lambda: Item("Pelo de Urso",        "material",     slot=None, rarity="common", value=3,    max_stack=10),
+    "Presa de Lobo":        lambda: Item("Presa de Lobo",       "material",     slot=None, rarity="common", value=2,    max_stack=10),
+    "Veneno de Aranha":     lambda: Item("Veneno de Aranha",    "material",     slot=None, rarity="common", value=4,    max_stack=10),
+    "Cauda de Escorpião":   lambda: Item("Cauda de Escorpião",  "material",     slot=None, rarity="common", value=3,    max_stack=10),
+    "Escama de Cobra":      lambda: Item("Escama de Cobra",     "material",     slot=None, rarity="common", value=2,    max_stack=10),
+    "Osso de Goblin":       lambda: Item("Osso de Goblin",      "material",     slot=None, rarity="common", value=2,    max_stack=10),
+    "Vômito de Zumbi":      lambda: Item("Vômito de Zumbi",     "material",     slot=None, rarity="common", value=0,    max_stack=10),
+    "Pá":                   lambda: Item("Pá",                  "ferramenta",   slot=None, rarity="common", value=15,   max_stack=1),
+    "Picareta":             lambda: Item("Picareta",            "ferramenta",   slot=None, rarity="common", value=15,   max_stack=1),
+    "Mochila de mineração": lambda: Item("Mochila de mineração","ferramenta",   slot=None, rarity="common", value=15,   max_stack=1),
+    "Lampião":              lambda: Item("Lampião",             "ferramenta",   slot=None, rarity="common", value=15,   max_stack=1),
+    "Cantil":               lambda: Item("Cantil",              "ferramenta",   slot=None, rarity="common", value=15,   max_stack=1),
 
     # Itens que CONCEDEM quest ao serem saqueados (Fase M4) — sem função de
     # combate/equipamento, só "material" + description como texto de sabor
@@ -180,8 +186,8 @@ QUEST_ITEMS: dict[str, callable] = {
     # AUTOMÁTICA (ui/ui_helpers.py::item_tooltip_lines, detecta via
     # ITEM_GRANTS_QUEST logo abaixo) — não precisa escrever isso na
     # description, só o texto de sabor mesmo.
-    "Artefato Extremamente Misterioso": lambda: Item(
-        "Artefato Extremamente Misterioso", "material", slot=None,
+    "Artefato Misterioso": lambda: Item(
+        "Artefato Misterioso", "material", slot=None,
         rarity="rare", value=0, max_stack=1,
         description="\"Um artefato estranho, cheira mal e parece ter uma "
                     "tecnologia avançada, mas nenhum botão funciona.\""),
@@ -355,7 +361,7 @@ QUESTS: dict[str, QuestDef] = {
         level_req=3,
         completion="Cinco execuções. Frio, calculista, eficiente. "
                    "Você tem o que é preciso para ser um verdadeiro executor.",
-    ),
+    ),    
 
     # ── Quests Guerreiro ───────────────────────────────────────────────────────────
 
@@ -370,7 +376,7 @@ QUESTS: dict[str, QuestDef] = {
         objectives=(
             ObjectiveDef(type="talk_to_npc", target="Avido Faseo", count=1),
         ),
-        reward=QuestReward( xp=15, 
+        reward=QuestReward( xp=10, 
                             choice=("training_sword", "training_mace", "training_axe")),
         class_req=  "guerreiro",
         completion= "Bem-vindo ao lado cruel da vida, pirralho. Daqui pra frente esquece conforto — " \
@@ -379,24 +385,42 @@ QUESTS: dict[str, QuestDef] = {
                     "vai sobreviver o suficiente pra dar os segundos.",
     ),
 
-    "prova_valor": QuestDef(
-        title="Prova de Valor",
-        description="Agora que já tem a arma na mão, escuta bem, porque eu não repito. "
+    "primeiros_golpes": QuestDef(
+        title="Primeiros Golpes",
+        description="Agora que já empunha uma arma, escuta bem, porque eu não repito. "
                     "No começo, tudo parece fácil — mas não se acostume. "
                     "À medida que você evolui, os desafios crescem junto: o medo, o sangue, "
                     "as mortes vão te consumindo aos poucos. Pra não desistir no meio do caminho, "
                     "você vai precisar de foco — sem desviar o olhar. "
-                    "Antes de mais nada, precisa aprender a golpear direito. Vou te ensinar um golpe "
-                    "poderoso, dos que evoluem junto com você conforme fica mais forte. "
-                    "Aprenda-o e desfira algumas vezes no boneco de treino, ali na frente. "
-                    "Quero ver se essa arma não foi desperdício.",
+                    "Mas antes de qualquer coisa: eu não ensino golpe nenhum pra quem nem sabe "
+                    "segurar essa arma direito. Vai até o boneco ali na frente e desfira uns "
+                    "golpes básicos. Quero ver se seu braço aguenta o peso do aço.",
         objectives=(
-            ObjectiveDef(type="learn_skill", target="golpe_poderoso", count=1),
-            ObjectiveDef(type="use_skill", target="golpe_poderoso", count=6,
+            ObjectiveDef(type="auto_attack_hit", target="*", count=6),
+        ),
+        reward=QuestReward( xp=15, 
+                            skill="golpe_poderoso"),
+        class_req=  "guerreiro",
+        requires=("bem_vindo_guerreiro",),
+        completion= "Não foi elegante, mas serviu. Seu braço já não treme tanto quanto antes. "
+                    "Acho que está na hora de te ensinar algo de verdade: preste atenção, "
+                    "porque não vou repetir o movimento duas vezes. Isso aqui é o Golpe "
+                    "Poderoso — um golpe que evolui junto com você, conforme fica mais forte. "
+                    "Guarde bem essa lição.",
+    ),    
+
+    "prova_valor": QuestDef(
+        title="Prova de Valor",
+        description="Agora que já conhece o Golpe Poderoso, quero ver ele em ação. "
+                    "Vai até o boneco e desfira-o algumas vezes. Dessa vez eu vou estar "
+                    "olhando de verdade. Quero ver se essa arma foi um bom investimento, "
+                    "ou se eu devia ter dado ela pra outro recruta.",
+        objectives=(
+            ObjectiveDef(type="use_skill", target="golpe_poderoso", count=3,
                         params={"on_dummy": True}),
         ),
-        requires= ["bem_vindo_guerreiro"],
-        reward=QuestReward(xp=80),
+        requires= ["primeiros_golpes"],
+        reward=QuestReward(xp=25),
         class_req="guerreiro",
         completion= "Sua arma não foi desperdício, isso eu reconheço. "
                     "O problema é que eu não sabia que você já batia tão forte — "
@@ -542,6 +566,6 @@ QUESTS: dict[str, QuestDef] = {
             ObjectiveDef(type="collect_item", target="*",
                         loot_item="Artefato Extremamente Misterioso", count=1),
         ),
-        reward=QuestReward(xp=10),
+        reward=QuestReward(xp=15),
     ),
 }

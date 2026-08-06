@@ -9,12 +9,16 @@ from engine.components import Position, Renderable, PlayerControlled, Camera, Co
                        SkillLevels, \
                        SpawnZone, EntityIdentity, StatusEffects, ConsumableBar, NpcSounds, FogOfWar, \
                        EnemyAbilities, EnemyAbilitySlot, QuestLog, QuestGiver, NPC, Blacksmith, \
-                       LearnedRecipes, Trainer, Faction, Combatant, Harvestable, Tower
-from ui.ui_components import UIState, ShopUIState, LootUIState, DragState, TradeUIState
+                       LearnedRecipes, Trainer, Faction, Combatant, Harvestable, Tower, Minion
+from ui.ui_components import (
+    UIState, ShopUIState, LootUIState, DragState, TradeUIState,
+    InstanceInventoryUIState,
+)
 from engine.tileset import TILE_MAPPING, OBJECT_MAPPING, TILE_SIZE, FLOOR_TILE, get_collision_offsets
 from content.mob_definitions import MOB_TABLE
 from content.enemy_abilities_data import ABILITY_DEFS
 from content.tower_definitions import TOWER_TABLE
+from content.minion_definitions import MINION_TABLE
 
 # --- Configurações para as entidades ---
 PLAYER_COLOR = (255, 0, 0)
@@ -170,6 +174,7 @@ def create_player(world: World, tile_x: int, tile_y: int,
     world.add_component(player_entity, LootUIState())
     world.add_component(player_entity, DragState())
     world.add_component(player_entity, TradeUIState())
+    world.add_component(player_entity, InstanceInventoryUIState())
     world.add_component(player_entity, EntityIdentity(
         name="Aventureiro", race="Humano", entity_class="Guerreiro",
         level=1, tier="normal",
@@ -257,7 +262,13 @@ def _build_combat_entity(world: World, tile_x: int, tile_y: int,
     # sounds), então o resto desta função funciona sem nenhuma mudança
     # adicional.
     race = _resolve_mob_race_variant(race, is_ranged)
-    mob_def = MOB_TABLE.get(race) or TOWER_TABLE.get(race)
+    # Minion (30/07/2026) tem tabela própria pelo mesmo motivo de Tower
+    # (server-side não usa _build_combat_entity pra criar minion — ver
+    # entity_factory.py::create_minion) — mas o CLIENTE reconstrói o
+    # espelho remoto de QUALQUER "enemy"-kind por aqui, então precisa do
+    # mesmo fallback em cadeia que já existe pra torre, senão minion cai
+    # no genérico (mesma classe de bug: som/visual errado, §34.70.1).
+    mob_def = MOB_TABLE.get(race) or TOWER_TABLE.get(race) or MINION_TABLE.get(race)
     attrs   = mob_def.get("attributes") if mob_def else None
     if mob_def:
         base_color = mob_def["color"]
@@ -631,7 +642,7 @@ def create_training_dummy(world: World, tile_x: int, tile_y: int) -> int:
 def create_tower(world: World, tile_x: int, tile_y: int, tower_key: str,
                  faction_id: str, respawnable: bool = False,
                  respawn_s: float = 0.0, regen_enabled: bool = False,
-                 level: int = 1) -> int:
+                 level: int = 1, is_nexus: bool = False) -> int:
     """Cria uma torre estática (29/07/2026, pedido do usuário) — mesmo
     espírito de `create_training_dummy` (construção MANUAL, sem passar
     por `_build_combat_entity`, que é acoplado ao formato de dict do
@@ -721,6 +732,98 @@ def create_tower(world: World, tile_x: int, tile_y: int, tower_key: str,
         gold_min=tdef["gold_min"], gold_max=tdef["gold_max"],
         spawn_tile_x=tile_x, spawn_tile_y=tile_y,
         vision_radius_tiles=tdef.get("vision_radius_tiles", ALLY_VISION_RADIUS_TOWER),
+        is_nexus=is_nexus,
+    ))
+    return eid
+
+
+def create_minion(world: World, tile_x: int, tile_y: int, minion_key: str,
+                  faction_id: str, route: list, level: int = 1) -> int:
+    """Cria um minion de lane estilo MOBA (30/07/2026, pedido do usuário)
+    — mesmo espírito de `create_tower` (construção MANUAL, sem passar
+    por `_build_combat_entity` — que sempre anexa `AIControlled`, e um
+    minion é pilotado pelo `MinionSystem` próprio, não pelo
+    `EnemyAISystem` compartilhado). DIFERENTE de `create_tower`:
+    `TileMovement.speed` é REAL (minion anda de verdade) e não há
+    parâmetros de respawn (minion morto não respawna individualmente —
+    só a próxima wave agendada cria minions novos, ver
+    `WorldServer._tick_minion_waves`).
+
+    `minion_key` referencia `MINION_TABLE` (tipo/aparência/atributos/
+    sabor de ataque/recompensa). `faction_id`/`route`/`level` são
+    parâmetros de INSTÂNCIA (por wave) — não vêm de `MINION_TABLE`."""
+    mdef = MINION_TABLE[minion_key]
+    x = tile_x * TILE_SIZE + TILE_SIZE / 2
+    y = tile_y * TILE_SIZE + TILE_SIZE / 2
+    size = ENEMY_TIER_CONFIGS.get(mdef["tier"], ENEMY_TIER_CONFIGS["normal"])["size"]
+
+    eid = world.create_entity()
+    world.add_component(eid, Position(x=x, y=y, prev_x=x, prev_y=y))
+    world.add_component(eid, Renderable(color=mdef.get("color", (150, 60, 60)), width=size, height=size))
+    world.add_component(eid, Collider(width=size, height=size))
+    world.add_component(eid, Combatant())
+    world.add_component(eid, Faction(faction_id=faction_id))
+
+    attrs = mdef["attributes"]
+    # Velocidade REAL (diferente de Torre, que força speed=0.0) — mesma
+    # fórmula de _build_combat_entity: ENEMY_SPEED * move_speed_pct/100.
+    move_speed = ENEMY_SPEED * (attrs.get("move_speed_pct", 100) / 100.0)
+    world.add_component(eid, TileMovement(
+        current_tile_x=tile_x, current_tile_y=tile_y,
+        target_tile_x=tile_x,  target_tile_y=tile_y,
+        start_pixel_x=x,  start_pixel_y=y,
+        target_pixel_x=x, target_pixel_y=y,
+        move_duration=1.0, speed=move_speed,
+    ))
+    world.add_component(eid, EnemyTier(tier=mdef["tier"]))
+
+    entity_class = mdef["entity_class"]
+    stats = CombatStats(
+        base_stamina         = attrs["health"],
+        base_armor           = attrs.get("armor", 0) * 10,
+        base_attack_power    = attrs.get("attack_power", 0),
+        base_physical_damage = attrs.get("attack_min", 1),
+        base_attack_interval = attrs.get("attack_speed", 3.0),
+        base_crit_rating     = attrs.get("crit_chance", 5) / 100.0,
+    )
+    stats.base_physical_damage_max = attrs.get("attack_max", stats.base_physical_damage)
+    stats.base_acerto = float(attrs.get("acerto", 95))
+    if entity_class in _MAGIC_CASTER_CLASSES:
+        stats.base_spell_power    = attrs.get("attack_power", 0)
+        attack_min = attrs.get("attack_min", 1)
+        attack_max = attrs.get("attack_max", attack_min)
+        stats.base_magical_damage = (attack_min + attack_max) / 2.0
+    stats._recalculate_effective_stats()
+    stats.current_hp = stats.max_hp
+    world.add_component(eid, stats)
+
+    world.add_component(eid, EntityIdentity(
+        name=mdef.get("display_name", minion_key), race=mdef["race"],
+        entity_class=entity_class, level=level, tier=mdef["tier"],
+        mob_key=minion_key,
+    ))
+    world.add_component(eid, StatusEffects())
+    _snd = mdef.get("sounds", {})
+    world.add_component(eid, NpcSounds(
+        aggro=_snd.get("aggro", ""), death=_snd.get("death", ""),
+        attack_melee=_snd.get("attack_melee", ""),
+        attack_ranged=_snd.get("attack_ranged", ""),
+        attack_magic=_snd.get("attack_magic", ""),
+        crit=_snd.get("crit", ""),
+        emote_attack=_snd.get("emote_attack", ""),
+        emote_get_crit=_snd.get("emote_get_crit", ""),
+        attack_impact=_snd.get("attack_impact", ""),
+    ))
+    # XPReward: mesmo padrão de Tower — server_death_handler.py checa o
+    # componente `Minion` PRIMEIRO e usa xp_reward direto, nunca cai no
+    # lookup por nome/MOB_TABLE — ver hook lá.
+    world.add_component(eid, XPReward(amount=mdef["xp_reward"]))
+    world.add_component(eid, Minion(
+        minion_key=minion_key, route=route,
+        aggro_range_tiles=mdef["aggro_range_tiles"],
+        attack_range_tiles=mdef["attack_range_tiles"],
+        xp_reward=mdef["xp_reward"],
+        gold_min=mdef.get("gold_min", 0), gold_max=mdef.get("gold_max", 0),
     ))
     return eid
 

@@ -110,6 +110,7 @@ def load_map_csv(filepath: str) -> tuple[list[str], list[str], dict, list | None
         "training_dummies":  [],
         "combat_npcs":       [],
         "towers":            [],
+        "minion_lanes":      [],
     }
 
     json_path = base + "_entities.json"
@@ -332,8 +333,51 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
                 "respawnable":    tw.get("respawnable", False),
                 "respawn_s":      tw.get("respawn_s", 0),
                 "regen_enabled":  tw.get("regen_enabled", False),
+                # Nexus (02/08/2026, pedido do usuário — battleground de
+                # teste): destruir a torre principal termina a partida,
+                # ver server/server_death_handler.py.
+                "is_nexus":       tw.get("is_nexus", False),
             }
             for tw in data["towers"]
+        ]
+
+    if "minion_lanes" in data:
+        # Lane de minion estilo MOBA (30/07/2026, pedido do usuário) —
+        # mesmo padrão de "towers": "faction"/"spawn_tile"/"target_tile"/
+        # "wave_interval_s"/"level" são parâmetros de INSTÂNCIA (a lane
+        # em si, não o TIPO de minion — esse vem de content/minion_
+        # definitions.py::MINION_TABLE). Registrado (não criado na hora)
+        # por server/world_server.py::_create_minion_lanes — a criação
+        # real dos minions é periódica, via _tick_minion_waves.
+        # "lane_id" (30/07/2026, pedido do usuário — múltiplas rotas por
+        # time, ex: top/mid/bot): distingue lanes da MESMA facção — sem
+        # isso, 2 lanes do mesmo time colidiriam na mesma chave de wave
+        # timer (server/world_server.py::_minion_wave_timers) e só a
+        # primeira jamais dispararia. Default "default" — mapa com só
+        # 1 lane por time (como a arena hoje) não precisa declarar nada.
+        # "level" (config estática) só é usado como FALLBACK quando não
+        # há player nenhum do time na instância pra calcular a média —
+        # ver WorldServer._compute_team_avg_level.
+        # "target_tile" (30/07/2026, pedido do usuário — lanes com curva,
+        # ex: top/bot que não são retas) aceita 2 formatos: um par único
+        # `[x,y]` (mid, reta — pathfind direto do spawn até lá) OU uma
+        # LISTA de waypoints `[[x,y],[x,y],...]` (o minion passa por cada
+        # um em ordem antes do último = base inimiga de verdade).
+        # Normalizado AQUI pra sempre virar uma lista de tuplas — quem
+        # consome (`WorldServer._tick_minion_waves`) nunca precisa saber
+        # qual dos 2 formatos foi usado no JSON.
+        spawn_points["minion_lanes"] = [
+            {
+                "faction":         ml.get("faction", "monstros_hostis"),
+                "lane_id":         ml.get("lane_id", "default"),
+                "spawn_tile":      tuple(ml["spawn_tile"]),
+                "target_tile":     ([tuple(_wp) for _wp in ml["target_tile"]]
+                                    if ml["target_tile"] and isinstance(ml["target_tile"][0], (list, tuple))
+                                    else [tuple(ml["target_tile"])]),
+                "wave_interval_s": ml.get("wave_interval_s", 45.0),
+                "level":           ml.get("level", 1),
+            }
+            for ml in data["minion_lanes"]
         ]
 
     if "harvestables" in data:

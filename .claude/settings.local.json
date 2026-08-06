@@ -98,7 +98,12 @@
       "Bash(git mv *)",
       "Bash(git restore *)",
       "Bash(py -3.10 -m pytest -q)",
-      "WebFetch(domain:trinitycore.atlassian.net)"
+      "WebFetch(domain:trinitycore.atlassian.net)",
+      "Bash(py -3.10 -m py_compile server/world_server.py server/pvp_zone_processor.py engine/map_loader.py)",
+      "Bash(py -3.10 -c \"import json; json.load\\(open\\('maps/map_1_entities.json', encoding='utf-8'\\)\\); print\\('JSON OK'\\)\")",
+      "Bash(py -3.10 -m py_compile client/arena_handlers.py client/network_handlers.py ui/ui_sizes.py)",
+      "Bash(git commit *)",
+      "Bash(git tag *)"
     ]
   }
 }

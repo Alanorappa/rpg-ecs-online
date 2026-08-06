@@ -80,6 +80,16 @@ RELATIONSHIP: dict[tuple[str, str], str] = {
     # princípio de minion do LoL: hostil aos dois lados por igual).
     ("arena_time_a", "monstros_hostis"):    "hostil",
     ("arena_time_b", "monstros_hostis"):    "hostil",
+
+    # Vendedor de instância (01/08/2026, loja da battleground de teste) —
+    # mesmo problema de "monstros_hostis" acima: sem isso, "civis" (a
+    # facção do NPC de serviço) ficava "neutro" com arena_time_a/b (par
+    # nunca declarado, cai no DEFAULT_RELATIONSHIP) — bug real relatado
+    # pelo usuário: vendedor aparecia neutro (atacável sem querer via
+    # clique) em vez de amigável de verdade. `can_engage` só bloqueia
+    # "amigavel" — "neutro" deixa passar dano.
+    ("civis", "arena_time_a"):               "amigavel",
+    ("civis", "arena_time_b"):               "amigavel",
 }
 
 DEFAULT_RELATIONSHIP = "neutro"

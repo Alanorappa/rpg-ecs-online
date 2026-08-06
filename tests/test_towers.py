@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tests.helpers import make_world_server, spawn_player, run_ticks
 
 from engine.world import World
-from engine.entity_factory import create_tower, create_enemy, create_player, create_tilemap
+from engine.entity_factory import create_tower, create_enemy, create_player, create_tilemap, create_minion
 from engine.components import Tower, CombatStats, Faction, MapLocation, PendingDeath
 from engine.world_systems import (TowerSystem, ProjectileSystem, register_services,
                         CombatSystem, PathfindingSystem, TileValidationSystem)
@@ -68,11 +68,38 @@ class TestTowerTargeting(unittest.TestCase):
         self.assertEqual(tower.current_target_eid, mob_eid,
                          "torre deveria priorizar o mob, nunca o player, enquanto ele estiver no alcance")
 
+    def test_torre_ataca_minion_hostil_no_alcance(self):
+        """Bug real relatado pelo usuário no playtest do battleground MOBA
+        (01/08/2026): torre nunca atacava minion do time oposto. Raiz:
+        `_acquire_target` classificava candidatos em 2 buckets (player /
+        AIControlled-ou-NPC) — Minion não tem NENHUM dos dois componentes
+        (MinionSystem próprio, sem AIControlled), então passava em todos
+        os checks de hostilidade/alcance mas nunca entrava em bucket
+        nenhum, nunca virando alvo. Corrigido: bucket "não-player" vira o
+        default (qualquer hostil que não seja PlayerControlled)."""
+        RELATIONSHIP[("arena_time_a", "arena_time_b")] = "hostil"
+        tower_eid = create_tower(self.world, 10, 10, "torre_de_fogo", faction_id="arena_time_a")
+        minion_eid = create_minion(self.world, 12, 10, "minion_melee",
+                                   faction_id="arena_time_b", route=[(12, 10)])
+        minion_cs = self.world.get_component(minion_eid, CombatStats)
+        hp_before = minion_cs.current_hp
+
+        for _ in range(200):
+            self.ts.update(1 / 30)
+            self.proj_sys.update(dt=1 / 30)
+
+        self.assertLess(minion_cs.current_hp, hp_before, "torre deveria ter danificado o minion")
+
     def test_alvo_sticky_nao_reavalia_a_cada_tick(self):
         """2 mobs no alcance — a torre deve manter o PRIMEIRO alvo mesmo se
         um segundo mob ficar mais próximo depois."""
         tower_eid = create_tower(self.world, 10, 10, "torre_de_fogo", faction_id="guardas_vila")
-        mob_far_eid = create_enemy(self.world, 15, 10, race="Lobo", faction="monstros_hostis")
+        # x=13 (não 15): attack_range_tiles de torre_de_fogo foi ajustado
+        # pelo usuário pra 4 (content/tower_definitions.py) — distância 5
+        # ficava fora de alcance, mob nunca virava alvo (falha pré-existente
+        # não relacionada às mudanças de 01/08/2026, achada ao investigar
+        # outro bug — teste só precisava acompanhar o balanceamento).
+        mob_far_eid = create_enemy(self.world, 13, 10, race="Lobo", faction="monstros_hostis")
         self.ts.update(1 / 30)
         tower = self.world.get_component(tower_eid, Tower)
         self.assertEqual(tower.current_target_eid, mob_far_eid)
@@ -156,6 +183,46 @@ class TestTowerTargeting(unittest.TestCase):
             self.ts.update(1 / 30)
         self.assertGreater(cs.current_hp, 1, "regen_enabled=True deveria regenerar fora de combate")
 
+    def test_acquire_target_com_spatial_hash_nao_varre_todas_as_entidades(self):
+        """04/08/2026, pedido do usuário (log de perf mostrou tower_system
+        como um dos maiores consumidores de tick com a BG ativa): torre
+        sem alvo varria TODAS as entidades do jogo só pra achar "tem
+        hostil por perto?" — `spatial_hash` (`engine.utils.SpatialHash`,
+        mesma técnica já usada pro AOI de sessão) limita aos candidatos
+        realmente próximos. Aqui: 1 hostil DENTRO do alcance + 30 hostis
+        FORA do alcance (bem longe) — confirma que a torre ainda acha o
+        certo, e que `world.get_entities_with` (o sweep completo) NUNCA
+        é chamado quando o índice espacial é fornecido."""
+        from engine.components import Position, TileMovement
+        from engine.utils import SpatialHash
+        tower_eid = create_tower(self.world, 10, 10, "torre_de_fogo", faction_id="guardas_vila")
+        close_eid = create_enemy(self.world, 12, 10, race="Lobo", faction="monstros_hostis")
+        for i in range(30):
+            create_enemy(self.world, 10 + 50 + i, 10, race="Lobo", faction="monstros_hostis")
+
+        spatial_hash = {"": SpatialHash(cell_size=9)}
+        for eid, pos, cs, tm in self.world.get_entities_with(Position, CombatStats, TileMovement):
+            if cs.current_hp > 0:
+                spatial_hash[""].insert(eid, tm.current_tile_x, tm.current_tile_y)
+
+        calls = []
+        real_get_entities_with = self.world.get_entities_with
+
+        def _spy_get_entities_with(*a, **k):
+            calls.append(a)
+            return real_get_entities_with(*a, **k)
+
+        self.world.get_entities_with = _spy_get_entities_with
+        self.ts.update(1 / 30, spatial_hash=spatial_hash)
+
+        tower = self.world.get_component(tower_eid, Tower)
+        self.assertEqual(tower.current_target_eid, close_eid,
+                         "torre deveria ter achado o hostil dentro do alcance mesmo com o índice espacial")
+        _sweep_calls = [c for c in calls if c and c[0] in (Position,)]
+        self.assertEqual(len(_sweep_calls), 0,
+                         "_acquire_target não deveria ter feito o sweep completo "
+                         "(world.get_entities_with) com spatial_hash fornecido")
+
 
 class TestTowerDeathXpGoldRespawn(unittest.TestCase):
     """Ciclo de vida completo (morte → XP/ouro → respawn) via WorldServer
@@ -186,6 +253,157 @@ class TestTowerDeathXpGoldRespawn(unittest.TestCase):
         self.assertGreaterEqual(loot["coins"], 20)
         self.assertLessEqual(loot["coins"], 40)
         self.assertEqual(loot["items"], [], "torre não deveria dropar item, só ouro")
+
+    def test_ouro_de_instancia_nao_duplica_com_coins_do_corpse(self):
+        """Bug real relatado pelo usuário (02/08/2026): dentro da
+        progressão normalizada, matar uma torre concedia ouro instantâneo
+        (server/instance_progression.py::grant_instance_gold) E TAMBÉM
+        colocava coins no corpse (loot normal, nunca suprimido antes) —
+        o killer podia ganhar o MESMO ouro duas vezes. Corrigido: coins do
+        corpse vira 0 quando o ouro de instância já foi concedido."""
+        from server.instance_progression import enter_normalized_progression
+        from engine.components import Wallet
+        enter_normalized_progression(self.ws, self.player_eid)
+        wallet = self.ws.world.get_component(self.player_eid, Wallet)
+        gold_antes = wallet.gold
+
+        tower_eid = create_tower(self.ws.world, 15, 10, "torre_de_fogo",
+                                 faction_id="monstros_hostis")
+        self.ws.world.add_component(tower_eid, MapLocation("maps/map_1.csv"))
+        run_ticks(self.ws, 1)
+        self._kill_tower(tower_eid)
+        run_ticks(self.ws, 1)
+
+        self.assertGreater(wallet.gold, gold_antes,
+                           "gold de instância deveria ter subido pro killer")
+        loot = self.ws._corpses.get(max(self.ws._corpses.keys()))
+        self.assertIsNotNone(loot)
+        self.assertEqual(loot["coins"], 0,
+                         "corpse não deveria ter coins — já concedido instantaneamente")
+
+    def test_ranged_kill_de_torre_nao_droppa_gold_no_corpse_dentro_da_instancia(self):
+        """Cobertura nova (03/08/2026 — usuário relatou "torre dropou gold"
+        com o Arqueiro "jungo", investigação NÃO reproduziu regressão real
+        no auto-attack ranged: _server_apply_ranged_physical
+        (spell_completion_processor.py) já seta PendingDeath com o killer
+        certo no fim da própria função, então o gate `killer_eid != -1`
+        (server_death_handler.py) e a supressão de coins já funcionavam.
+        Esta classe só tinha cobertura de MELEE (guerreiro) até agora —
+        este teste fecha o gap pra RANGED, confirmando que continua
+        correto. Se o bug do usuário reaparecer, é OUTRO caminho de kill
+        (skill/DoT/multi-hit) — ver ARQUITETURA_ONLINE.md."""
+        from server.instance_progression import enter_normalized_progression
+        from engine.components import Wallet, Equipment, Item, CombatState
+        # (50,50)/(53,50): corredor com linha de visão livre no map_1 real
+        # (confirmado via EnemyAISystem._has_line_of_sight) — a área usada
+        # pelo resto desta classe ((10,10) etc.) tem obstáculos que
+        # bloqueiam LOS a distância >1, o que só importa pra ranged
+        # (melee nunca checa LOS).
+        arqueiro_eid = spawn_player(self.ws, "s_arq", 50, 50, class_id="arqueiro")
+        enter_normalized_progression(self.ws, arqueiro_eid)
+        wallet = self.ws.world.get_component(arqueiro_eid, Wallet)
+        gold_antes = wallet.gold
+
+        bow    = Item("Arco Teste", "weapon", "mainhand", subtype="Bow", cast_range=12)
+        quiver = Item("Aljava Teste", "quiver", "offhand", arrow_count=50, max_arrows=50)
+        equip = self.ws.world.get_component(arqueiro_eid, Equipment)
+        equip.slots["mainhand"] = bow
+        equip.slots["offhand"]  = quiver
+
+        tower_eid = create_tower(self.ws.world, 53, 50, "torre_de_fogo",
+                                 faction_id="monstros_hostis")
+        self.ws.world.add_component(tower_eid, MapLocation(self.ws.MAP_FILE))
+        run_ticks(self.ws, 1)
+
+        tower_cs = self.ws.world.get_component(tower_eid, CombatStats)
+        tower_cs.current_hp   = 1
+        tower_cs.dodge_rating = 0.0
+        tower_cs.parry_rating = 0.0
+        arq_cs = self.ws.world.get_component(arqueiro_eid, CombatStats)
+        arq_cs.acerto = 100.0
+
+        cs_state = self.ws.world.get_component(arqueiro_eid, CombatState)
+        cs_state.target_entity_id = tower_eid
+        cs_state.is_pursuing      = True
+        sid = self.ws.get_session_id_for_player(arqueiro_eid)
+        self.ws._attack_timers[sid] = 0.0
+        # player_hp_snapshot é o HP do ATACANTE (detecta contra-ataque
+        # mob→player no mesmo tick, ver docstring de _process_player_attacks)
+        # — nunca o hp do ALVO.
+        self.ws._process_player_attacks(0.05, {arqueiro_eid: arq_cs.current_hp})
+        run_ticks(self.ws, 1)
+
+        self.assertGreater(wallet.gold, gold_antes,
+                           "gold de instância deveria ter subido pro killer ranged")
+        loot = self.ws._corpses.get(max(self.ws._corpses.keys()))
+        self.assertIsNotNone(loot)
+        self.assertEqual(loot["coins"], 0,
+                         "corpse não deveria ter coins — ouro de instância já concedido")
+
+    def test_torre_morta_por_golpe_final_de_minion_credita_ouro_ao_player(self):
+        """Bug real relatado pelo usuário (03/08/2026, "jungo"): torre
+        atacada por um player + um minion aliado, mas o GOLPE FINAL veio
+        do minion (MinionSystem também chama deal_damage/PendingDeath,
+        ver engine/world_systems.py:1806) — `killer_eid` virava o eid do
+        MINION, não de um player, então o gate antigo (`killer_eid in
+        _player_eids_now`) falhava por completo: nem creditava ouro
+        automático (killer não é player) NEM suprimia os coins físicos do
+        corpse (`_instance_gold_ja_concedido` nunca virava True) — a
+        torre voltava a dropar ouro físico dentro da instância, exatamente
+        como no print do usuário. Fix: fallback pro primeiro PLAYER que
+        bateu (`damage_log` já filtrado só-players)."""
+        from server.instance_progression import enter_normalized_progression
+        from engine.components import Wallet
+        enter_normalized_progression(self.ws, self.player_eid)
+        wallet = self.ws.world.get_component(self.player_eid, Wallet)
+        gold_antes = wallet.gold
+
+        tower_eid = create_tower(self.ws.world, 20, 10, "torre_de_fogo",
+                                 faction_id="monstros_hostis")
+        self.ws.world.add_component(tower_eid, MapLocation(self.ws.MAP_FILE))
+        minion_eid = create_minion(self.ws.world, 21, 10, "minion_melee",
+                                   faction_id="jogadores", route=[(21, 10)])
+        self.ws.world.add_component(minion_eid, MapLocation(self.ws.MAP_FILE))
+        run_ticks(self.ws, 1)
+
+        tower_cs = self.ws.world.get_component(tower_eid, CombatStats)
+        tower_cs.current_hp = 0
+        # Golpe final é do MINION, não do player — mas o player TAMBÉM
+        # bateu antes (entra no damage_log, é quem deveria ser creditado).
+        self.ws.world.add_component(tower_eid, PendingDeath(killer_entity_id=minion_eid))
+        self.ws._mob_damage_log[tower_eid] = {self.player_eid: 500, minion_eid: 999}
+        run_ticks(self.ws, 1)
+
+        self.assertGreater(wallet.gold, gold_antes,
+                           "gold de instância deveria ter subido pro player que bateu, "
+                           "mesmo o golpe final sendo de um minion aliado")
+        loot = self.ws._corpses.get(max(self.ws._corpses.keys()))
+        self.assertIsNotNone(loot)
+        self.assertEqual(loot["coins"], 0,
+                         "corpse não deveria ter coins — ouro de instância já concedido "
+                         "ao player, mesmo com killer_eid sendo um minion")
+
+    def test_corpse_de_minion_usa_timer_curto_nao_o_de_mob_normal(self):
+        """Pedido do usuário (03/08/2026): corpo de minion (sem loot,
+        sempre 0 moedas/0 itens) floodava o mapa usando o mesmo timer de
+        120s de um mob normal — volume de mortes numa lane MOBA acumula
+        rápido. Fix: timer curto dedicado (LootProcessorMixin.
+        MINION_CORPSE_TIMER_S, 4s), só pra minion."""
+        from engine.entity_factory import create_minion
+        minion_eid = create_minion(self.ws.world, 20, 10, "minion_melee",
+                                   faction_id="monstros_hostis", route=[(20, 10)])
+        self.ws.world.add_component(minion_eid, MapLocation(self.ws.MAP_FILE))
+        run_ticks(self.ws, 1)
+        cs = self.ws.world.get_component(minion_eid, CombatStats)
+        cs.current_hp = 0
+        self.ws.world.add_component(minion_eid, PendingDeath(killer_entity_id=self.player_eid))
+        self.ws._mob_damage_log[minion_eid] = {self.player_eid: 999}
+        run_ticks(self.ws, 1)
+
+        loot = self.ws._corpses.get(max(self.ws._corpses.keys()))
+        self.assertIsNotNone(loot)
+        self.assertAlmostEqual(loot["timer"], self.ws.MINION_CORPSE_TIMER_S, delta=0.5)
+        self.assertLess(loot["timer"], 120.0)
 
     def test_torre_respawnavel_volta_no_mesmo_tile_com_hp_cheio(self):
         tower_eid = create_tower(self.ws.world, 12, 10, "torre_de_flechas",
@@ -284,6 +502,81 @@ class TestTowerDeathXpGoldRespawn(unittest.TestCase):
         self.assertTrue(attacks, "deveria ter gerado uma entrada de combate pro player")
         self.assertTrue(any(a["attacker"] == tower_eid for a in attacks),
                         "torre deveria aparecer como atacante, nunca -1 ou outro mob")
+
+
+class TestNexusTowerEndsMatch(unittest.TestCase):
+    """Tower.is_nexus (02/08/2026, pedido do usuário) — torre derrubada com
+    is_nexus=True dispara notify_nexus_destroyed via server_death_handler.py
+    (server/server_death_handler.py:130-135), que termina a partida de teste
+    carregada em server/debug_battleground.py (idempotente/no-op se não
+    houver partida de teste ativa — Arena de verdade nunca usa is_nexus)."""
+
+    def setUp(self):
+        from server import debug_battleground as bg
+        self.bg = bg
+        self.ws = make_world_server()
+        self.p_a = spawn_player(self.ws, "nexus_a", 10, 10, class_id="guerreiro")
+        self.p_b = spawn_player(self.ws, "nexus_b", 12, 10, class_id="guerreiro")
+        self.ws.world.add_component(self.p_a, Faction("arena_time_a"))
+        self.ws.world.add_component(self.p_b, Faction("arena_time_b"))
+        bg._state["members"] = {self.p_a, self.p_b}
+        bg._state["stat_snapshots"] = {
+            self.p_a: {"kills": 0, "deaths": 0, "farm": 0, "damage": 0},
+            self.p_b: {"kills": 0, "deaths": 0, "farm": 0, "damage": 0},
+        }
+        bg._state["match_decided"]         = False
+        bg._state["result_deadline"]       = None
+        bg._state["pending_match_result"]  = []
+
+    def tearDown(self):
+        self.bg._state["members"]            = set()
+        self.bg._state["stat_snapshots"]     = {}
+        self.bg._state["match_decided"]      = False
+        self.bg._state["result_deadline"]    = None
+        self.bg._state["pending_match_result"] = []
+
+    def _kill_nexus(self, faction_id: str, killer_eid: int):
+        tower_eid = create_tower(self.ws.world, 20, 10, "torre_de_fogo",
+                                 faction_id=faction_id, is_nexus=True)
+        # MapLocation precisa ser a instância REAL de debug (04/08/2026 —
+        # notify_nexus_destroyed passou a checar `tower_map_file` pra não
+        # confundir com partidas da fila real, ver server/bg_queue_
+        # processor.py) — uma torre no mapa aberto nunca deveria disparar
+        # o fim de uma partida de teste.
+        self.ws.world.add_component(tower_eid, MapLocation(self.bg.DEBUG_BG_INSTANCE_KEY))
+        run_ticks(self.ws, 1)
+        cs = self.ws.world.get_component(tower_eid, CombatStats)
+        cs.current_hp = 0
+        self.ws.world.add_component(tower_eid, PendingDeath(killer_entity_id=killer_eid))
+        self.ws._mob_damage_log[tower_eid] = {killer_eid: 999}
+        run_ticks(self.ws, 1)
+        return tower_eid
+
+    def test_derrubar_nexus_do_time_b_declara_time_a_vencedor(self):
+        self._kill_nexus("arena_time_b", self.p_a)
+        self.assertTrue(self.bg._state["match_decided"])
+        self.assertEqual(len(self.bg._state["pending_match_result"]), 2)
+        _, payload = self.bg._state["pending_match_result"][0]
+        self.assertEqual(payload["winner_faction"], "arena_time_a")
+        by_eid = {p["eid"]: p for p in payload["players"]}
+        self.assertTrue(by_eid[self.p_a]["won"])
+        self.assertFalse(by_eid[self.p_b]["won"])
+
+    def test_torre_normal_nao_termina_partida(self):
+        """Prova de que só is_nexus=True dispara o fim de partida — torre
+        comum (respawnável, sem is_nexus) derrubada não deve afetar
+        match_decided."""
+        tower_eid = create_tower(self.ws.world, 21, 10, "torre_de_flechas",
+                                 faction_id="arena_time_b")
+        self.ws.world.add_component(tower_eid, MapLocation(self.ws.MAP_FILE))
+        run_ticks(self.ws, 1)
+        cs = self.ws.world.get_component(tower_eid, CombatStats)
+        cs.current_hp = 0
+        self.ws.world.add_component(tower_eid, PendingDeath(killer_entity_id=self.p_a))
+        self.ws._mob_damage_log[tower_eid] = {self.p_a: 999}
+        run_ticks(self.ws, 1)
+        self.assertFalse(self.bg._state["match_decided"],
+                         "torre sem is_nexus nunca deveria terminar a partida")
 
 
 if __name__ == "__main__":

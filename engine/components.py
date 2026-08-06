@@ -417,6 +417,13 @@ class AIControlled:
     target_eid: int = -1  # eid do alvo atual (multiplayer: cada mob tem o seu)
     target_lost_timer: float = 0.0  # grace period antes de ir pro IDLE quando perde alvo
     regen_timer: float = 0.0  # acumulador do regen fora de combate (3s/tick, ver WorldServer._tick)
+    # Fase 2 de escala (05/08/2026, EnemyAISystem._active_mobs_this_tick):
+    # último tick_count em que este mob IDLE foi reavaliado (procurando
+    # alvo). -1 = nunca — garante que um mob recém-elegível é SEMPRE
+    # incluído no primeiro tick em que entra no raio, nunca espera o
+    # intervalo do tier. Só se aplica a mob IDLE; CHASING/ATTACKING/
+    # RETURNING/etc. nunca são throttlados, nunca leem este campo.
+    _ai_throttle_last_check: int = -1
 
 @dataclass
 class InitialPosition:
@@ -898,7 +905,7 @@ class Tower:
                  regen_enabled: bool = False,
                  xp_reward: int = 0, gold_min: int = 0, gold_max: int = 0,
                  spawn_tile_x: int = 0, spawn_tile_y: int = 0,
-                 vision_radius_tiles: int = 18):
+                 vision_radius_tiles: int = 18, is_nexus: bool = False):
         self.tower_key           = tower_key
         self.attack_range_tiles  = attack_range_tiles
         self.respawnable         = respawnable
@@ -909,6 +916,12 @@ class Tower:
         self.gold_max            = gold_max
         self.spawn_tile_x        = spawn_tile_x
         self.spawn_tile_y        = spawn_tile_y
+        # Nexus (02/08/2026, pedido do usuário — battleground de teste):
+        # destruir uma torre com is_nexus=True termina a partida (ver
+        # server/server_death_handler.py + server/debug_battleground.py::
+        # notify_nexus_destroyed). Parâmetro de INSTÂNCIA (por colocação
+        # no mapa), igual faction_id/respawnable — não vem de TOWER_TABLE.
+        self.is_nexus             = is_nexus
         # Raio de visão compartilhada de time (30/07/2026, dado por TIPO em
         # content/tower_definitions.py::TOWER_TABLE — não uma constante
         # global única) — ver server/session.py::
@@ -926,6 +939,86 @@ class Tower:
         self.dmg_ramp_timer: float  = 0.0
         self.attack_cd: float       = 0.0
         self.regen_timer: float     = 0.0
+
+
+class Minion:
+    """NPC de lane estilo MOBA (30/07/2026, pedido do usuário) — nasce na
+    base do time e anda até a base inimiga enfrentando quem entrar no
+    alcance de aggro. Ao perder o alvo, segue DIRETO rumo ao próximo
+    checkpoint à frente (02/08/2026, pedido do usuário — "esquecer os
+    checkpoints": reverte a decisão original de 30/07/2026 de voltar pro
+    ÚLTIMO checkpoint antes de retomar; agora nunca há backtrack, o minion
+    já está sempre "avançando" a partir de onde perdeu o alvo).
+    `content/minion_definitions.py::MINION_TABLE` referencia o TIPO
+    (atributos/visual/sabor de ataque/recompensa); `route`/facção/nível
+    vêm da wave (`WorldServer._tick_minion_waves`).
+
+    Construído SEM `AIControlled`/`EnemyAISystem` de propósito (mesma
+    decisão de `Tower`, ver docstring acima) — o `EnemyAISystem`
+    compartilhado só sabe voltar pro SPAWN FIXO e depois fica parado pra
+    sempre; minion precisa continuar avançando rumo à base inimiga —
+    comportamento fundamentalmente diferente, por isso `MinionSystem`
+    (engine/world_systems.py) próprio, que lê este componente direto.
+
+    `route`: caminho COMPLETO (lista de tiles) calculado 1x via
+    pathfinding no momento do spawn, do tile de nascimento até o tile-
+    alvo (base inimiga) da lane — CONSUMIDO tile a tile de verdade
+    (`route_idx` = progresso, ver `MinionSystem._advance_along_route`),
+    nunca só o destino final: mirar `route[-1]` direto via A* livre
+    (tentativa de 04/08/2026, revertida no mesmo dia — §34.74.28) faz o
+    minion redescobrir o caminho geometricamente mais curto do mapa a
+    partir de QUALQUER ponto, que em mapas com "gargalo" (só 1 passagem
+    livre numa selva/rio central, como esta BG) SEMPRE atravessa esse
+    gargalo — todas as lanes convergindo pro mesmo ponto (bug real: "os
+    minions não estão indo pra sua rota, todos estão indo pro mid"),
+    mesmo com o polyline por-lane calculado CORRETO no spawn. Seguir
+    `route` tile a tile evita isso por construção (só desvia local,
+    nunca redescobre atalho global) e é mais barato (0 pathfind no caso
+    comum, só checagem de tile)."""
+
+    def __init__(self, minion_key: str, route: list,
+                 aggro_range_tiles: int, attack_range_tiles: int,
+                 xp_reward: int, gold_min: int = 0, gold_max: int = 0):
+        self.minion_key          = minion_key
+        self.route: list         = route
+        self.route_idx: int      = 0
+        self.aggro_range_tiles   = aggro_range_tiles
+        self.attack_range_tiles  = attack_range_tiles
+        self.xp_reward           = xp_reward
+        # Ouro de INSTÂNCIA (01/08/2026) — só concedido via
+        # server/instance_progression.py::grant_instance_gold(), pro
+        # killer_eid, e só se ele estiver em progressão normalizada.
+        # Nunca cai no coins/loot do mundo aberto (esse continua 0 fixo
+        # pra minion, ver server/server_death_handler.py).
+        self.gold_min             = gold_min
+        self.gold_max             = gold_max
+        # Runtime — máquina de estado própria (ver MinionSystem):
+        # ADVANCING (andando rumo à base inimiga) | FIGHTING (trocando
+        # golpe com um hostil no alcance). Sem estado de retorno — ao
+        # perder/matar o alvo volta direto pra ADVANCING (02/08/2026).
+        self.state: str          = "ADVANCING"
+        self.current_target_eid: int = -1
+        self.attack_cd: float    = 0.0
+        # Caminho tile-a-tile CURTO (A*, recalculado periodicamente) até o
+        # destino atual (checkpoint/próximo tile de `route`/alvo em
+        # combate) — diferente de `route` (a lane INTEIRA, fixa desde o
+        # spawn). Necessário porque perseguir um alvo pode empurrar o
+        # minion PRA FORA de `route`; sem repath real aqui, retomar
+        # "andar até X" de um tile arbitrário viraria um salto instantâneo
+        # (start_tile_movement assume sempre 1 tile de distância). Mesmo
+        # padrão de AIControlled.path/path_recalc_timer (EnemyAISystem).
+        self.current_path: list  = []
+        self.path_recalc_timer: float = 0.0
+        # Destino (tile) do `current_path` atual — usado só pra distinguir
+        # "destino NOVO desde a última chamada" (recalcula NA HORA, sem
+        # esperar o backoff) de "mesmo destino de antes, tentativa anterior
+        # falhou" (aí sim espera path_recalc_timer antes de tentar de novo).
+        # Sem essa distinção, `current_path` vazio por QUALQUER motivo
+        # (inclusive só ter acabado de ser consumido, destino novo) forçava
+        # esperar o backoff inteiro (0.8s) antes de sequer TENTAR o
+        # próximo tile — bug real reportado pelo usuário: minion "anda um
+        # tile, para, repete" (pausa de ~0.8s entre CADA tile da rota).
+        self.path_dest: "tuple | None" = None
 
 
 @dataclass
@@ -1158,6 +1251,62 @@ class TalentTree:
         self._unlocked_skill_ids: set = set()  # handlers de skills desbloqueadas
 
 
+@dataclass
+class InstanceProgressionSnapshot:
+    """Guarda o estado REAL persistente de progressão de um player enquanto
+    ele está dentro de uma instância de progressão normalizada (31/07/2026 —
+    futuro modo Battlefield, ver server/instance_progression.py). Presença
+    deste componente no entity É o flag "está em progressão normalizada"
+    (`is_in_normalized_progression` só faz `world.has_component`).
+
+    Os campos escalares (`real_level`/`real_current_xp`/
+    `real_xp_to_next_level` + os 5 atributos brutos `real_strength/
+    real_intelligence/real_agility/real_vitality/real_defense`) são copiados
+    de CharacterStats porque só esses campos de progressão são sobrescritos —
+    o resto de CharacterStats (mana, concentração, campos de combate)
+    continua fluindo normalmente durante a instância, não faz parte deste
+    snapshot. Os atributos brutos entram aqui porque `CLASS_LEVEL_GAINS`
+    (engine/stats_system.py) os incrementa a cada level REAL — sem resetá-los
+    junto com `level`, um personagem de level alto manteria os atributos
+    reais dentro da instância e a normalização não faria efeito nenhum
+    (`apply_char_stats_to_combat` deriva CombatStats a partir deles). Reset
+    vai pro piso de `CLASS_BASE_STATS[class_id]` (nível 1) — ver
+    server/instance_progression.py.
+
+    `PermanentStats` (bônus permanente roguelike de morte) TAMBÉM entra no
+    swap (`real_permanent_stats`, 02/08/2026) — reversão da nota anterior
+    ("mecânica morta, não entra aqui"): "morta" só queria dizer que nada
+    incrementa esses campos mais, não que valores LEGADOS de personagens
+    antigos (de quando a mecânica esteve ativa) são zero. `apply_char_
+    stats_to_combat` sempre soma `PermanentStats` em cima de CharacterStats
+    (mesma função, chamada no login E por `_apply_talent_modifiers` dentro
+    da instância) — sem trocar por um `PermanentStats()` zerado durante a
+    instância, bônus legados vazavam pro cálculo de HP/atributos
+    "normalizados" (bug real: HP máximo de instância batendo com o valor
+    REAL do personagem, não com o piso de level 1).
+
+    Os 6 componentes restantes (`real_talent_tree`/`real_player_skills`/
+    `real_wallet`/`real_inventory`/`real_equipment`/`real_permanent_stats`)
+    são guardados POR REFERÊNCIA ao objeto original — enter_normalized_progression() desanexa
+    o objeto real do entity e anexa um novo/vazio no lugar;
+    exit_normalized_progression() reanexa exatamente estes objetos, sem
+    reconstrução campo-a-campo."""
+    real_level: int
+    real_current_xp: int
+    real_xp_to_next_level: int
+    real_strength: int
+    real_intelligence: int
+    real_agility: int
+    real_vitality: int
+    real_defense: int
+    real_talent_tree: "TalentTree"
+    real_player_skills: "PlayerSkills"
+    real_wallet: "Wallet"
+    real_inventory: "Inventory"
+    real_equipment: "Equipment"
+    real_permanent_stats: "PermanentStats"
+
+
 SKILL_IDS = ("machado", "espada", "maca", "arco", "baculo", "escudo",
              "defesa", "resist_fogo", "resist_gelo", "resist_natureza", "magic")
 MAX_SKILL_LEVEL = 200
@@ -1379,6 +1528,17 @@ class CharStatsTracker:
         self.duel_losses:    int = 0
         self.arena_wins:     dict = {"1v1": 0, "2v2": 0, "3v3": 0}
         self.arena_losses:   dict = {"1v1": 0, "2v2": 0, "3v3": 0}
+        # Novos (02/08/2026, pedido do usuário — HUD de Kills/Deaths/Farm
+        # do battleground de teste): vitalícios como o resto desta classe,
+        # não exclusivos da instância — snapshot no início de uma partida
+        # + delta no fim/durante é o que vira "estatística da partida"
+        # (ver server/debug_battleground.py).
+        self.deaths:         int = 0  # qualquer morte de verdade, qualquer contexto
+        # "farm" (convenção MOBA) — SÓ minion, golpe final (killer_eid) —
+        # diferente de mobs_killed, que mistura mob/minion/torre e usa
+        # first_attacker_eid (dono do loot, não necessariamente quem bateu
+        # o golpe final).
+        self.minions_killed: int = 0
 
 
 # ---------------------------------------------------------------------------

@@ -19,6 +19,22 @@
       "regen_enabled": true
     }
   ],
+  "minion_lanes": [
+    {
+      "faction": "arena_time_a",
+      "spawn_tile": [23, 6],
+      "target_tile": [23, 39],
+      "wave_interval_s": 45,
+      "level": 2
+    },
+    {
+      "faction": "arena_time_b",
+      "spawn_tile": [23, 39],
+      "target_tile": [23, 6],
+      "wave_interval_s": 45,
+      "level": 2
+    }
+  ],
   "combat_npcs": [
     {
       "x": 25, "y": 19,
@@ -27,7 +43,7 @@
       "profession": "Minion",
       "race": "Humanoide",
       "entity_class": "Warrior",
-      "level": 60,
+      "level": 2,
       "is_ranged": false
     },
     {
@@ -37,7 +53,7 @@
       "profession": "Minion",
       "race": "Humanoide",
       "entity_class": "Warrior",
-      "level": 60,
+      "level": 2,
       "is_ranged": false
     }
   ]

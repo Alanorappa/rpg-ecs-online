@@ -159,6 +159,31 @@ class MsgType(str, Enum):
     # portão abrir). Coordenadas das células em ARENA_GATE_TILES (shared/constants.py).
     ARENA_GATE_OPEN     = "arena_gate_open"     # S→C  {} — o(s) portão(ões) da arena abriu(ram) (fim do preparo); mandado a cada um dos 4, inclusive quem aceitar DEPOIS do portão já ter aberto
 
+    # Battleground de teste (debug, 02/08/2026) — Nexus derrubado termina a
+    # partida (server/debug_battleground.py::notify_nexus_destroyed). Só
+    # ESTA mensagem é nova; o retorno ao mundo real reaproveita ZONE_CHANGE
+    # existente (manual via "/testbg leave" — botão "Voltar" ou timeout
+    # automático de 15s, ver DEBUG_BG_RESULT_AUTO_LEAVE_S).
+    BG_MATCH_RESULT     = "bg_match_result"     # S→C  {winner_faction: "arena_time_a"|"arena_time_b", players:[{eid,name,team:"a"|"b",kills,deaths,farm,gold,damage,won}]} — placar final dos DOIS times, não teleporta sozinho — reaproveitada pela fila REAL abaixo
+
+    # Fila REAL de matchmaking da BG estilo MOBA (04/08/2026, pedido do
+    # usuário — server/bg_queue_processor.py). Sem parâmetro de modo: o
+    # player entra sozinho ou com um grupo já formado (PartyProcessorMixin)
+    # e a fila decide o TAMANHO do time (1x1 até 5x5, NUNCA assimétrico)
+    # com base em quem está esperando — diferente da Arena, que exige
+    # escolher o modo antes. Reaproveita ARENA_COUNTDOWN/ARENA_GATE_OPEN
+    # (payloads já generalizados pro battleground de teste, mesmo
+    # overlay/portão cosmético) e BG_MATCH_RESULT (acima) pro fim de
+    # partida — só o ciclo fila→aceite→início→saída precisa de mensagens
+    # novas, espelhando ARENA_QUEUE_*/ARENA_MATCH_*/ARENA_FORFEIT 1 pra 1.
+    BG_QUEUE_JOIN   = "bg_queue_join"    # C→S  {} — sozinho, ou líder de um grupo (grupo INTEIRO vira 1 time, nunca dividido)
+    BG_QUEUE_LEAVE  = "bg_queue_leave"   # C→S  {} — sai da fila
+    BG_QUEUE_STATE  = "bg_queue_state"   # S→C  {in_queue: bool, reason?: str} — reason só quando um JOIN foi recusado (not_leader|wrong_size|already_queued|in_match|no_party)
+    BG_MATCH_FOUND  = "bg_match_found"   # S→C  {team_size, teammates:[eid], opponents:[eid]} — fila formou 2 times do mesmo tamanho, aguardando aceite (mesma janela ARENA_ACCEPT_WINDOW_S)
+    BG_MATCH_ACCEPT = "bg_match_accept"  # C→S  {} — aceita a partida encontrada, entra na instância
+    BG_MATCH_START  = "bg_match_start"   # S→C  {map_file, target_x, target_y, team_size, teammates:[eid], opponents:[eid]} — disparado no aceite de CADA player, junto do ZONE_CHANGE; ARENA_COUNTDOWN sai logo em seguida
+    BG_MATCH_LEAVE  = "bg_match_leave"   # C→S  {} — desiste no meio da luta OU sai da tela de resultado ("Voltar") — mesma ação dos 2 casos, ver server/bg_queue_processor.py::request_bg_leave
+
     CONSUMABLE_USE     = "consumable_use"    # C→S  uso de consumível (heal_instant, HoT, buffs futuros)
     GOLD_UPDATE        = "gold_update"       # C→S  gold mudou (loot de moedas) {gold: N}
     INV_SYNC           = "inv_sync"          # C→S  inventário mudou (loot de item) {inventory: [...]}
@@ -480,8 +505,48 @@ def validate_c2s(msg_type: "MsgType", payload) -> "str | None":
 #   "conc":  int         (Arqueiro — concentration)
 #   "xp":    int
 #   "xp_next":int
+#   "level":         int              override direto de level, sem passar
+#                                     por process_levelups (só
+#                                     server/instance_progression.py)
+#   "in_instance":   bool             (01/08/2026) True ao entrar em
+#                                     progressão normalizada de instância,
+#                                     False ao sair — cliente liga/desliga
+#                                     InstanceInventoryUIState.active (flag
+#                                     "estou no battleground de teste",
+#                                     usado pelo respawn automático de
+#                                     death_ui_handlers.py)
+#   "inv_snapshot":  list[dict]       (01/08/2026) substitui Inventory.items
+#                                     inteiro — item dicts no mesmo formato
+#                                     de BUY_RESULT/TRADE_STATE
+#   "inv_max_slots": int              substitui Inventory.max_slots
+#   "equip_snapshot":dict[str,dict|None]  substitui Equipment.slots inteiro
+#   "talent_allocated":dict[str,int]  (02/08/2026) substitui
+#                                     TalentTree.allocated inteiro — sem
+#                                     isso, o cliente continuava mostrando/
+#                                     mutando a alocação REAL (pré-
+#                                     instância) enquanto o servidor
+#                                     validava contra a árvore da instância
+#   "skills_hotbar": list[str|None]   (02/08/2026) substitui PlayerSkills.
+#                                     skills inteiro — 1 skill_id (ou None)
+#                                     por slot da hotbar; cliente reconstrói
+#                                     via PlayerSkills._make_skill(sid,
+#                                     SKILL_CATALOG) — skill é dado estático
+#                                     compartilhado, não precisa de payload
+#                                     rico como item
+#   "learned_skill_ids":list[str]     (02/08/2026) substitui PlayerSkills.
+#                                     learned_skill_ids inteiro
 # }
-# Servidor envia apenas os campos que mudaram. Cliente faz merge.
+# Servidor envia apenas os campos que mudaram. Cliente faz merge (exceto
+# inv_snapshot/equip_snapshot/talent_allocated/skills_hotbar/
+# learned_skill_ids, que são substituição COMPLETA, não merge incremental
+# — mesmo espírito de TRADE_STATE). Esses campos de instância só são
+# emitidos por server/instance_progression.py::
+# enter_/exit_normalized_progression (+ level-up de instância, pros 2
+# últimos), fechando gaps de sync client-side de Inventory/Equipment/
+# TalentTree/PlayerSkills quando esses componentes são trocados no
+# servidor (ver arquitetura/ARQUITETURA_ONLINE.md). ConsumableBar é
+# client-local (nunca existiu no servidor) — swap/restauração é feito
+# direto no cliente, gatilhado pelo campo "in_instance" acima.
 
 
 # ── S→C: SKILL_LEVELS_UPDATE ─────────────────────────────────────────────────
