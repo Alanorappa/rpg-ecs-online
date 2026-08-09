@@ -5802,4 +5802,37 @@ diferencial feita, código morto reintroduzido temporariamente, confirmado
 que o teste pegava a regressão, revertido). `tests/test_flt_dedup.py::
 TestCalamidadeFlamejanteNaoDuplicaFLT` (já existia, valida que a
 assinatura do construtor de `Channeling` não mudou) continua passando
+
+## Doc — SISTEMAS_ECS.md/COMPONENTES_ECS.md descrevem comportamento de modo offline já removido — 08/08/2026
+
+Achado durante a reorganização de `ARQUITETURA_ONLINE.md` (split em
+atual + histórico). `tests/test_calamidade_channel_config.py:19` já
+registra explicitamente que "este branch não tem mais modo offline"
+(confirma o item A2 §11 e a decisão de produto — só existe versão
+online hoje). Vários trechos de `SISTEMAS_ECS.md`/`COMPONENTES_ECS.md`,
+porém, ainda descrevem um branch `self._net is None` ("modo offline")
+como se fosse um caminho de execução vivo e alternativo, quando na
+verdade é código morto (removido, não só renomeado):
+
+- `SISTEMAS_ECS.md:26` — tabela da PirofagiaSystem: "**Offline:** calcula
+  dano localmente" como se ainda fosse um modo selecionável.
+- `SISTEMAS_ECS.md:258` — ManaSystem "só prediz esse regen quando
+  offline (`self._net` não setado)".
+- `SISTEMAS_ECS.md:268/300` — `quest_logic` "usada pelo cliente (caminho
+  offline) E pelo servidor (caminho online, autoritativo)".
+- `COMPONENTES_ECS.md:217` — `Corpse(...)`: "Offline only — servidor usa
+  `_corpses` dict".
+- `COMPONENTES_ECS.md:239` — `SOUNDS.play_mob_sounds(...)`: "offline, sem
+  atenuação".
+
+**Não corrigido agora** (decisão do usuário, 08/08/2026, durante a
+mesma sessão da reorganização de docs) — misturaria "reorganizar
+arquivo" com "validar comportamento de código linha a linha", que são
+tarefas de natureza diferente. Fica registrado aqui pra quando alguém
+for mexer nesses trechos: antes de aceitar a frase do doc como
+verdade, confirmar contra o código atual se o `self._net is None`
+citado ainda corresponde a um caminho alcançável (provavelmente não —
+mesmo padrão já confirmado morto em `ChannelingSystem._apply_tick`,
+acima) ou se é só estado transitório de "ainda não conectou ao
+servidor" (tela de login), não uma "versão offline" de fato.
 sem alteração. Suíte completa: 933/933 (930 + 3 novos), limpa.

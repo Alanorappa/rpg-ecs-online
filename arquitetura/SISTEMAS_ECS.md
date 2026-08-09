@@ -1,7 +1,7 @@
 # Sistemas ECS — Referência Completa
 
 > Todos os sistemas do jogo, em ordem de execução, com responsabilidades e dependências.
-> Última atualização: 2026-06-15 (`_apply_final_damage` gate de dano servidor; `_target_alive` helper PvP em `SkillHandlers`)
+> Última atualização: 2026-07-08 (sistema de trade player↔player)
 
 ---
 
@@ -65,7 +65,7 @@
 
 ### Loop de ticks — `server/world_server.py`
 
-O servidor roda a **30 ticks/s** (33ms por tick). Ver `ARQUITETURA_ONLINE.md → Fluxo de tick` para a ordem completa.
+O servidor roda a **30 ticks/s** (33ms por tick). Ver `ARQUITETURA ONLINE.md → Fluxo de tick` para a ordem completa.
 
 ### Sistemas na lista `_systems` do servidor
 
@@ -95,7 +95,7 @@ aggro-switch pra defender aliado atacado no alcance), ataque via
 `Projectile` (reaproveita `ProjectileSystem`/sweep genérico de
 `kind="mob_projectile"`), ramp de dano contra player (+40%/acerto até
 +120%, nunca contra mob), regen opcional. Ver `engine/components.py::
-Tower` e `ARQUITETURA_ONLINE.md` §34.70 pro design completo.
+Tower` e `historico/ARQUITETURA ONLINE HISTORICO.md` §34.70 pro design completo.
 
 ### MinionSystem (Sistema de Minions, 30/07/2026)
 
@@ -135,7 +135,7 @@ convergindo TODAS as lanes pro mesmo ponto num mapa com gargalo
 central), caso comum sem pathfinding nenhum, desvio local orçado em
 `MinionSystem.MAX_PATHFINDS_PER_FRAME=15` A*/tick mirando um lookahead
 de `ROUTE_LOOKAHEAD_TILES=6` na própria rota. Ver
-`engine/components.py::Minion` e `ARQUITETURA_ONLINE.md` §34.73/
+`engine/components.py::Minion` e `historico/ARQUITETURA ONLINE HISTORICO.md` §34.73/
 §34.74.26/§34.74.27/§34.74.28 pro design completo.
 
 **Spawn escalonado da wave** (01/08/2026, §34.74.3 — bug real de
@@ -163,7 +163,7 @@ level) — é um seam, ainda não chamado por nenhum sistema de XP real.
 **INERTE nesta fase**: nenhum processador de jogo chama essas funções
 ainda — o modo Battlefield em si (fila, times, mapa) é trabalho futuro
 separado. Toggle por modo (`progression_mode`) documentado na
-docstring do módulo. Ver `ARQUITETURA_ONLINE.md` §34.74 pro design
+docstring do módulo. Ver `historico/ARQUITETURA ONLINE HISTORICO.md` §34.74 pro design
 completo, incluindo 2 bugs reais achados durante a implementação
 (atributos brutos que não resetavam sozinhos; skills talento-gated que
 não autorizavam via `learned_skill_ids` só).
@@ -185,7 +185,7 @@ O MESMO dado é reenviado ao dono via `AOI_UPDATE.ally_vision_centers`
 pra alimentar `FogSystem` (`ui/systems.py`, client-side) — aliado também
 "explora" a névoa do minimapa e o LOS de renderização com shadowcasting
 PRÓPRIO (`ui/fov.py::compute_fov`), a partir da posição dele, não da do
-player. Ver `ARQUITETURA_ONLINE.md` §34.72/§34.72.1 pro design completo.
+player. Ver `historico/ARQUITETURA ONLINE HISTORICO.md` §34.72/§34.72.1 pro design completo.
 
 ### Arquitetura de StatusEffectSystem
 
@@ -381,7 +381,7 @@ Processa entidades com `PendingDeath` a cada tick:
 
 ### RespawnMixin — fluxo de morte/espírito (ghost) + cemitério (C30)
 
-`server/respawn_system.py` — mixin de `WorldServer`. Ver `ARQUITETURA_ONLINE.md →
+`server/respawn_system.py` — mixin de `WorldServer`. Ver `ARQUITETURA ONLINE.md →
 Fluxo de morte/espírito (ghost) + cemitério` para o fluxo completo.
 
 - `_tick_respawn_immunity()` — chamado em `_tick`; decrementa
@@ -410,7 +410,7 @@ Fluxo de morte/espírito (ghost) + cemitério` para o fluxo completo.
 
 ### TradeProcessorMixin — trade player↔player (08/07/2026)
 
-`server/trade_processor.py` — mixin de `WorldServer`. Ver `ARQUITETURA_ONLINE.md
+`server/trade_processor.py` — mixin de `WorldServer`. Ver `historico/ARQUITETURA ONLINE HISTORICO.md
 → decisão 16` para o fluxo completo (protocolo, custódia, distância).
 
 - `TradeSession` (não-ECS, mesmo nível de `_corpses`/`_mob_damage_log`):

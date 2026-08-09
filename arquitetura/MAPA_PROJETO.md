@@ -1,10 +1,12 @@
 # Mapa do Projeto — RPG ECS Online
 
 > Guia rápido para localizar qualquer parte do projeto.
-> Branch: **online** — versão multiplayer em desenvolvimento paralelo ao `master`.
-> Última atualização: 2026-06-27
+> Branch: **online** — só existe versão multiplayer hoje (decisão de produto,
+> ver `VISAO_PRODUTO.md`); `master` é histórico do protótipo single-player
+> original, não é desenvolvimento paralelo ativo.
+> Última atualização: 2026-08-07
 
-> **ATENÇÃO:** Ler `arquitetura/ARQUITETURA_ONLINE.md` antes de qualquer trabalho neste branch.
+> **ATENÇÃO:** Ler `arquitetura/ARQUITETURA ONLINE.md` antes de qualquer trabalho neste branch.
 
 ---
 
@@ -44,7 +46,7 @@
 | Zona PvP (Fase F) — cliente | `client/pvp_zone_handlers.py` | `PvpZoneHandlers` — indicador cosmético (log + banner "ZONA PVP"), geometria vem do mesmo `_entities.json` local (sem mensagem de rede nova) |
 | Arena 2x2 (Fase G leva 1) — servidor | `server/match_processor.py` | `MatchProcessorMixin` — fila FIFO de grupos, instanciamento privado por partida (`WorldServer._load_instance`/`_unload_instance`), time via `Faction`, elimina via interceptor de golpe letal composto |
 | Arena 2x2 (Fase G leva 1) — cliente | `client/arena_handlers.py` | `ArenaHandlers` — botão "Fila de Arena 2x2" no frame de grupo, avisos de fila/início/fim; troca de mapa reusa 100% `ZONE_CHANGE`/`_do_transition` (zero código novo de transição) |
-| Battleground de teste (Nexus/placar) — cliente | `client/battleground_handlers.py` | `BattlegroundHandlers` (02/08/2026) — modal de fim de partida (`BG_MATCH_RESULT`, placar dos 2 times), botão "Voltar" manda `/testbg leave` via chat; fechado por `ZONE_CHANGE` (manual ou timeout de 15s). HUD ao vivo de K/D/Farm/Gold em `client/hud_handlers.py::_draw_bg_kda_hud`. Ver ARQUITETURA_ONLINE.md §34.74.14 |
+| Battleground de teste (Nexus/placar) — cliente | `client/battleground_handlers.py` | `BattlegroundHandlers` (02/08/2026) — modal de fim de partida (`BG_MATCH_RESULT`, placar dos 2 times), botão "Voltar" manda `/testbg leave` via chat; fechado por `ZONE_CHANGE` (manual ou timeout de 15s). HUD ao vivo de K/D/Farm/Gold em `client/hud_handlers.py::_draw_bg_kda_hud`. Ver `historico/ARQUITETURA ONLINE HISTORICO.md` §34.74.14 |
 | Trade (player↔player) — estado de UI | `ui/ui_components.py` | `TradeUIState` (componente ECS no player) |
 | Chat (texto, 3 abas Local/Mundial/Combate) — cliente | `client/chat_handlers.py` | `ChatHandlers` — Enter abre campo, digita, Enter envia; abas, scrollbar, wrap de linha (500 entradas/aba) |
 | Chat — balão de fala acima da cabeça | `ui/chat_bubble.py` | `ChatBubbleManager`/`CHAT_BUBBLE` — rastreia Position ao vivo (diferente de `ui/floating_text.py`) |
@@ -101,7 +103,7 @@
 | Modal de interação com player (Negociar/Duelar/Seguir/Convidar p/ Grupo) | `client/trade_handlers.py` | `_player_popup_button_rects`/`_draw_trade_popup`/`_click_trade_popup` — aberto pelo clique direito em player amigável (`ui/systems.py`) |
 | Party/Grupo (convite/aceite/sair/expulsar/XP compartilhado) | `server/party_processor.py` + `client/party_handlers.py` | `PartyProcessorMixin` (server, N-ário) + comando de chat `/convidar` (`_try_handle_party_chat_command`) |
 | Zona PvP (retângulo por mapa, "solo=hostil, grupo=exceção") | `server/pvp_zone_processor.py` + `maps/<mapa>_entities.json::pvp_zones` | consultado por `_pvp_allowed_between`; geometria vem do mesmo `_entities.json` que `ambient_zones` já usa (`engine/map_loader.py::_merge_entities_json`) |
-| Instância privada por partida (arena/BG/dungeon futuro) | `server/world_server.py::_load_instance`/`_unload_instance`/`_template_file_of` | UM `WorldServer` só — chave sintética (`f"{template}::{id}"`) generaliza o `_map_bundles` que já isola multi-mapa; NUNCA outro processo/WorldServer (colide com globais module-level, ver ARQUITETURA_ONLINE.md §34.27) |
+| Instância privada por partida (arena/BG/dungeon futuro) | `server/world_server.py::_load_instance`/`_unload_instance`/`_template_file_of` | UM `WorldServer` só — chave sintética (`f"{template}::{id}"`) generaliza o `_map_bundles` que já isola multi-mapa; NUNCA outro processo/WorldServer (colide com globais module-level, ver `historico/ARQUITETURA ONLINE HISTORICO.md` §34.27) |
 | Time PvP temporário (arena) | `server/match_processor.py` | `Faction("arena_time_a"/"arena_time_b")` no player, sobrescreve `PLAYER_FACTION` — `can_engage` libera sem passar pelo contexto PvP (relação já sai hostil de verdade) |
 | Comando de chat novo (`/algo`) | `client/party_handlers.py::_try_handle_party_chat_command` | chamado por `client/chat_handlers.py::_send_chat_message` ANTES de mandar como texto normal — primeiro precedente de parsing de comando no chat |
 | Loot online — quem pode sacar, crédito de ouro/item | `server/loot_processor.py::request_loot` + `client/network_handlers.py::_handle_msg_loot_result` | servidor decide (dono OU mesmo grupo); cliente NUNCA credita no clique — manda `LOOT_REQUEST` (`ui/systems.py::LootSystem._online_loot_requester`) e só credita ao receber `LOOT_RESULT` — nunca reintroduzir crédito local direto do clique (duplicava ouro em grupo, §34.24) |
@@ -112,13 +114,13 @@
 | Criar/modificar tipo de torre (Sistema de Torres, 29/07/2026) | `content/tower_definitions.py` | `TOWER_TABLE` (tabela própria, SEPARADA de MOB_TABLE — XP/ouro/atributos próprios) |
 | Criar/modificar tipo de minion (Sistema de Minions, 30/07/2026) | `content/minion_definitions.py` | `MINION_TABLE` (tabela própria, SEPARADA de MOB_TABLE — igual Torre) — `entity_factory.create_minion()`, lógica em `engine/world_systems.py::MinionSystem` |
 | Adicionar lane de minion a um mapa (spawn/base inimiga/intervalo de wave) | `maps/{mapa}_entities.json` | chave `"minion_lanes"` (lista de `{faction,spawn_tile,target_tile,wave_interval_s,level}`) — lido por `engine/map_loader.py` + registrado em `server/world_server.py::_create_minion_lanes()`; ativado por `_activate_minion_lanes()` quando o combate libera (`match_processor.py`) |
-| Torre estática com facção — entidade + IA de alvo/ataque | `engine/entity_factory.py::create_tower()` + `engine/world_systems.py::TowerSystem` | sem `AIControlled`; targeting sticky/aggro-switch/ramp — ver `ARQUITETURA_ONLINE.md` §34.70 |
+| Torre estática com facção — entidade + IA de alvo/ataque | `engine/entity_factory.py::create_tower()` + `engine/world_systems.py::TowerSystem` | sem `AIControlled`; targeting sticky/aggro-switch/ramp — ver `historico/ARQUITETURA ONLINE HISTORICO.md` §34.70 |
 | Adicionar torre a um mapa (conteúdo real) | `maps/{mapa}_entities.json` | chave `"towers"` (lista de `{x,y,tower_key,faction,level,respawnable,respawn_s,regen_enabled}`) — lido por `engine/map_loader.py` + `server/world_server.py::_create_towers()` |
-| Progressão normalizada de instância (base pro futuro modo Battlefield, 31/07/2026) | `server/instance_progression.py` | `enter_/exit_normalized_progression()`, `is_in_normalized_progression()`, `grant_instance_xp()` (chamado de verdade desde 01/08/2026, ver §34.74.6), `grant_instance_gold()` — ver `ARQUITETURA_ONLINE.md` §34.74 |
+| Progressão normalizada de instância (base pro futuro modo Battlefield, 31/07/2026) | `server/instance_progression.py` | `enter_/exit_normalized_progression()`, `is_in_normalized_progression()`, `grant_instance_xp()` (chamado de verdade desde 01/08/2026, ver §34.74.6), `grant_instance_gold()` — ver `historico/ARQUITETURA ONLINE HISTORICO.md` §34.74 |
 | Tabela de skill unlock por level de instância / itens da loja de instância | `content/skill_config.py` / `content/instance_shop.py` | `INSTANCE_SKILL_UNLOCK_ORDER` / `INSTANCE_SHOP_ITEM_IDS` (conectado à loja real desde 01/08/2026, `content/merchant_data.py::SHOPS["instance_shop"]`) |
 | Mapa de teste MOBA (rotas/torres/progressão normalizada, 01/08/2026) | `maps/moba_battleground.csv` + `_entities.json` | 100×100, 20 torres, 6 lanes de minion (top/mid/bot por time, `lane_id`), 2 vendedores (`shop_id: "instance_shop"`) — gerado de `maps/moba_battleground.png` via `tools/png_to_map.py` |
-| Gancho de debug pra testar o mapa MOBA sem fila/matchmaking real | `server/debug_battleground.py` | comando de chat `/testbg a\|b\|leave`, interceptado em `server/session.py::_handle_chat` — infra DESCARTÁVEL, zero acoplamento com Arena, ver `ARQUITETURA_ONLINE.md` §34.74.1 |
-| Fila REAL de matchmaking da BG estilo MOBA (04/08/2026) — servidor | `server/bg_queue_processor.py` | `BgQueueProcessorMixin` — fila única sem modo (token `("solo",eid)`/`("party",party_id)`), `_tick_bg_queue`/`_bg_try_pack` (maior partida simétrica possível, 1x1-5x5), instância privada por partida, Nexus derrubado termina, respawn automático + HUD de KDA por partida — ver `ARQUITETURA_ONLINE.md` §34.74.31 |
+| Gancho de debug pra testar o mapa MOBA sem fila/matchmaking real | `server/debug_battleground.py` | comando de chat `/testbg a\|b\|leave`, interceptado em `server/session.py::_handle_chat` — infra DESCARTÁVEL, zero acoplamento com Arena, ver `historico/ARQUITETURA ONLINE HISTORICO.md` §34.74.1 |
+| Fila REAL de matchmaking da BG estilo MOBA (04/08/2026) — servidor | `server/bg_queue_processor.py` | `BgQueueProcessorMixin` — fila única sem modo (token `("solo",eid)`/`("party",party_id)`), `_tick_bg_queue`/`_bg_try_pack` (maior partida simétrica possível, 1x1-5x5), instância privada por partida, Nexus derrubado termina, respawn automático + HUD de KDA por partida — ver `historico/ARQUITETURA ONLINE HISTORICO.md` §34.74.31 |
 | Fila REAL de BG — cliente (modal, aceite, comando `/bgqueue`/F1) | `client/bg_queue_handlers.py` | estado de fila/aceite + `_open_bg_queue_modal()` (chamado por `game.py::K_F1` e pelo comando de chat); a LINHA "Battleground" dentro do modal unificado é desenhada em `client/arena_handlers.py::_draw_arena_queue_modal` |
 
 ---
@@ -133,7 +135,7 @@
 > (direto ou transitivo); `ui/` = client-only mesmo quando o arquivo em si
 > não importa pygame (ex.: `combat_log.py`, `skill_handlers.py`, `fov.py` —
 > só `ui/systems.py`/`game.py` os carregam, servidor nunca). Ver
-> `ARQUITETURA_ONLINE.md` (Decisão 19) pro registro completo da migração
+> `historico/ARQUITETURA ONLINE HISTORICO.md` (Decisão 19) pro registro completo da migração
 > (mapeamento arquivo-a-arquivo, casos especiais de `__import__` dinâmico, e
 > o motivo do nome `release_tools/` em vez de `packaging/`).
 >
@@ -286,12 +288,13 @@ rpg_ecs_online/
 │
 └── arquitetura/                     ← documentação
     ├── MAPA_PROJETO.md              ← este arquivo
-    ├── ARQUITETURA_ONLINE.md        ← decisões, protocolo, fluxo de tick, problemas
+    ├── ARQUITETURA ONLINE.md        ← decisões, protocolo, fluxo de tick (versão enxuta, 08/08/2026)
     ├── SISTEMAS_ECS.md              ← sistemas offline (referência) + sistemas do servidor
     ├── COMPONENTES_ECS.md           ← componentes ECS
     ├── DADOS_JOGO.md                ← conteúdo do jogo
     ├── PROBLEMAS_ARQUITETURA.md     ← débito técnico
-    └── CODE_REVIEW.md, DOCUMENTACAO.md, talent_map.md  ← docs soltos, movidos pra cá (09/07/2026)
+    ├── historico/                   ← log datado de decisões/incidentes + docs arquivados (consultar sob demanda)
+    └── CODE_REVIEW.md, talent_map.md  ← docs soltos, movidos pra cá (09/07/2026)
 ```
 
 ### Arquivos-chave do branch online (vs. master)
@@ -344,7 +347,7 @@ shared/constants.py       → constantes sincronizadas
 client/network.py         → transporte assíncrono transparente ao game loop
 ```
 
-**Regra:** `server/` nunca importa Pygame para display/input (SDL dummy é workaround para sistemas herdados — ver A1 em ARQUITETURA_ONLINE.md). `client/` nunca executa lógica de jogo (só renderiza estado recebido).
+**Regra:** `server/` nunca importa Pygame para display/input (SDL dummy é workaround para sistemas herdados — ver A1 em `historico/ARQUITETURA ONLINE HISTORICO.md`). `client/` nunca executa lógica de jogo (só renderiza estado recebido).
 
 ---
 
@@ -376,4 +379,4 @@ nova, ver "Atributo de combate novo" no `CLAUDE.md` (par `base_X`/`X`
 1. `shared/messages.py` → adicionar em `MsgType` + documentar payload na docstring
 2. `server/session.py` → handler `async def _handle_*` + entrada em `_handlers`
 3. `client/network_handlers.py` → adicionar branch no dispatcher `_handle_net_message` + método `_handle_msg_<tipo>` (mixin `NetworkHandlers`, herdado por `GameEngine`)
-4. `ARQUITETURA_ONLINE.md` → atualizar tabela de mensagens
+4. `ARQUITETURA ONLINE.md` → atualizar tabela de mensagens
