@@ -13,6 +13,7 @@ saves/
 
 # Debug logs (gerados por mob_combat_debug.py)
 logs/
+crash.log
 
 # Config local
 config.json
