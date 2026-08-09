@@ -49,6 +49,7 @@ from content.status_effects_data import EFFECT_DEFS
 from content.loot_tables import roll_loot, roll_mob_loot, roll_coins, roll_mob_coins
 from engine.entity_factory import create_corpse, create_enemy
 from content.enemy_abilities_data import ABILITY_DEFS
+from content.mob_definitions import RESPAWN_TIMERS as _SHARED_RESPAWN_TIMERS
 import engine.quest_events as quest_events
 from engine.quest_events import fire as quest_fire
 from engine.stat_fns import add_modifier, remove_modifier, add_timed_modifier, enter_combat
@@ -128,11 +129,15 @@ def get_mainhand_weapon(world, entity_id: int):
 
 
 # ── Autorização de skill ──────────────────────────────────────────────────────
-# Lookup reverso skill_id → (talent_id, min_points) derivado de talent_data —
-# fonte única (systems.py re-exporta como _TALENT_SKILL_REQ_SYS pro gate de UI).
+# Lookup reverso skill_id → (talent_id, talent_name, min_points) derivado de
+# talent_data — fonte única (achado 06 do benchmark arquitetural,
+# PROBLEMAS_ARQUITETURA.md §12/§13: era gerado duas vezes independentemente,
+# aqui e em client/hotbar_handlers.py, com shapes diferentes — hotbar_handlers
+# agora importa daqui). systems.py re-exporta como _TALENT_SKILL_REQ_SYS pro
+# gate de UI.
 from content.talent_data import TALENTS as _TT_DATA_WS
-_TALENT_SKILL_REQS: dict[str, tuple[str, int]] = {
-    td["unlocks_skill"]: (tid, td.get("unlock_at", 1))
+_TALENT_SKILL_REQS: dict[str, tuple[str, str, int]] = {
+    td["unlocks_skill"]: (tid, td["name"], td.get("unlock_at", 1))
     for tid, td in _TT_DATA_WS.items()
     if td.get("unlocks_skill")
 }
@@ -169,7 +174,7 @@ def is_skill_authorized(world, entity_id: int, sid: str) -> "tuple[bool, str]":
     # Skill desbloqueada por talento: exige pontos suficientes no TalentTree
     _treq = _TALENT_SKILL_REQS.get(sid)
     if _treq is not None:
-        tid, min_pts = _treq
+        tid, _tname, min_pts = _treq
         tt = world.get_component(entity_id, TalentTree)
         if tt is None or tt.allocated.get(tid, 0) < min_pts:
             return False, "Requer talento"
@@ -1027,12 +1032,9 @@ class DeathHandlerSystem(System):
     XPSystem e MobRespawnSystem leem as filas DESTA classe, não de CombatSystem.
     """
 
-    RESPAWN_TIMERS = {
-        "normal": 180.0,
-        "elite":  300.0,
-        "rare":   3600.0,
-        "boss":   18000.0,
-    }
+    # Fonte única em content/mob_definitions.py (achado 06 do benchmark
+    # arquitetural, PROBLEMAS_ARQUITETURA.md §12/§13).
+    RESPAWN_TIMERS = _SHARED_RESPAWN_TIMERS
 
     def __init__(self, world: World):
         self.world = world
@@ -1839,6 +1841,21 @@ class MinionSystem:
     # aggro_range_tiles típico de minion.
     TOWER_AGGRO_SPREAD_RADIUS_TILES = 6
 
+    # Fase 4 de escala (06/08/2026, mesmo achado da Fase 3 mas em
+    # MinionSystem/FIGHTING - ver arquitetura/ARQUITETURA_ONLINE.md
+    # Sec.34.74.43): destino passado pra `_walk_toward` era a tile ATUAL
+    # do alvo, recalculada fresh todo tick - `_walk_toward` reseta
+    # current_path/path_recalc_timer IMEDIATO toda vez que o destino
+    # muda, ignorando o backoff normal quase todo tick com o alvo em
+    # movimento. Intervalo minimo (ticks, TICK_RATE=30) entre trocas de
+    # destino por mudanca de tile do alvo em FIGHTING. Constante PROPRIA
+    # (nao referencia EnemyAISystem._CHASE_RECALC_MIN_TICKS_BY_TIER de
+    # proposito - sistemas independentes, ver docstring da classe; mesmos
+    # valores por ora, mas tuning de um nao deve afetar o outro de
+    # carona). boss/elite nunca throttlam (minion raramente e boss/elite,
+    # mas cobre o caso).
+    _TARGET_RECALC_MIN_TICKS_BY_TIER = {"boss": 1, "elite": 1, "rare": 2, "normal": 4}
+
     def __init__(self, world: World, get_tilemap_for_map=None, get_pathfinding_for_map=None):
         self.world = world
         # callable(map_file) -> TilemapComponent|None — mesmo padrão de
@@ -2164,7 +2181,8 @@ class MinionSystem:
                 ally_minion.current_path       = []
 
     def update(self, dt: float, combat_this_tick: list = None,
-              spatial_hash: "dict[str, SpatialHash] | None" = None) -> None:
+              spatial_hash: "dict[str, SpatialHash] | None" = None,
+              tick_count: int = 0) -> None:
         self._pathfind_budget = {}  # por map_file, criado sob demanda em _walk_toward
         if combat_this_tick:
             self._check_tower_aggro(combat_this_tick)
@@ -2219,7 +2237,42 @@ class MinionSystem:
                         # persegue (vale pra melee E ranged: melee com
                         # aggro=6/attack=1 rotineiramente detecta um
                         # hostil antes de estar adjacente).
-                        self._walk_toward(minion_eid, minion, minion_pos, tm, tx1, ty1, map_file, dt)
+                        # Fase 4 (06/08/2026, ver docstring de
+                        # _TARGET_RECALC_MIN_TICKS_BY_TIER): (tx1,ty1) é a
+                        # tile ATUAL do alvo, recalculada fresh todo tick —
+                        # passar direto pra _walk_toward faria ele resetar
+                        # current_path/path_recalc_timer IMEDIATO toda vez
+                        # que o alvo muda de tile (ignora o backoff normal
+                        # quase todo tick com alvo em movimento). Se ainda
+                        # não é a vez do tier, reusa minion.path_dest (o
+                        # destino de antes) — _walk_toward vê "destino
+                        # igual", não reseta nada, só continua andando o
+                        # path existente. _walk_toward em si não muda.
+                        _new_dest = (tx1, ty1)
+                        _walk_dest = _new_dest
+                        if _new_dest != minion.path_dest:
+                            _tier_comp = self.world.get_component(minion_eid, EnemyTier)
+                            _min_ticks = self._TARGET_RECALC_MIN_TICKS_BY_TIER.get(
+                                _tier_comp.tier if _tier_comp else "normal",
+                                self._TARGET_RECALC_MIN_TICKS_BY_TIER["normal"])
+                            # `minion.path_dest is None` força _due=True mesmo
+                            # com _target_recalc_last_tick já carimbado (achado
+                            # real: _walk_toward tem seu próprio early-return
+                            # `if tm.is_moving: return`, ANTES de setar
+                            # path_dest — se o carimbo abaixo acontecesse
+                            # enquanto o minion ainda estava em movimento,
+                            # path_dest continuava None e o próximo tick
+                            # throttlado tentava reusar None, crashando em
+                            # `_walk_dest[0]`).
+                            _due = (minion.path_dest is None or
+                                    minion._target_recalc_last_tick == -1 or
+                                    tick_count - minion._target_recalc_last_tick >= _min_ticks)
+                            if not _due:
+                                _walk_dest = minion.path_dest
+                        if _walk_dest == _new_dest:
+                            minion._target_recalc_last_tick = tick_count
+                        self._walk_toward(minion_eid, minion, minion_pos, tm,
+                                          _walk_dest[0], _walk_dest[1], map_file, dt)
                 continue  # FIGHTING não avança no mesmo tick
 
             # ADVANCING: procura hostil no raio de aggro.
@@ -2294,6 +2347,22 @@ class EnemyAISystem(System):
     # do 1º aggro — imperceptível já que `aggro_delay` (1s) já existe
     # DEPOIS disso. Ver `_active_mobs_this_tick`.
     _THROTTLE_INTERVAL_BY_TIER = {"boss": 1, "elite": 3, "rare": 6, "normal": 12}
+
+    # Fase 3 de escala (06/08/2026, pesquisa de escala de combate denso —
+    # ver arquitetura/ARQUITETURA_ONLINE.md §34.74.42). Intervalo mínimo
+    # (ticks, TICK_RATE=30) entre recálculos de path FORÇADOS só pelo
+    # alvo ter mudado de tile (`last_known_player_tile != player_tile_now`
+    # em should_recalculate_path) — com alvo em movimento esse gatilho
+    # ignorava o cooldown normal de 0.8s (`path_recalc_interval`) quase
+    # todo tick. Os outros 3 gatilhos de should_recalculate_path (path
+    # None/vazio/is_blocked) continuam imediatos, nunca usam esta tabela.
+    # Valores mais agressivos que _THROTTLE_INTERVAL_BY_TIER (mob já em
+    # combate ativo, responsividade pesa mais que pra busca ociosa) —
+    # boss/elite nunca throttlam (poucos por mapa, resposta sempre
+    # nítida); mob perseguido continua andando pelo path já calculado
+    # entre recálculos, path fica no máximo ~130ms desatualizado (tier
+    # normal), autocorrigido no próximo recálculo permitido.
+    _CHASE_RECALC_MIN_TICKS_BY_TIER = {"boss": 1, "elite": 1, "rare": 2, "normal": 4}
 
     def __init__(self, world: World, map_filter: str = "",
                  pathfinding=None, tile_validation=None):
@@ -3270,12 +3339,27 @@ class EnemyAISystem(System):
                 continue
 
             player_tile_now = (player_current_tile_x, player_current_tile_y)
+            # Fase 3 (06/08/2026, ver docstring de _CHASE_RECALC_MIN_TICKS_BY_TIER):
+            # "alvo mudou de tile" só força recálculo se já passou o intervalo
+            # mínimo do tier deste mob — os outros 3 gatilhos abaixo continuam
+            # imediatos (recuperação de erro/bloqueio, nunca throttlados).
+            _tile_changed = ai_control.last_known_player_tile != player_tile_now
+            if _tile_changed:
+                _chase_tier_comp = self.world.get_component(enemy_id, EnemyTier)
+                _chase_min_ticks = self._CHASE_RECALC_MIN_TICKS_BY_TIER.get(
+                    _chase_tier_comp.tier if _chase_tier_comp else "normal",
+                    self._CHASE_RECALC_MIN_TICKS_BY_TIER["normal"])
+                _chase_recalc_due = (
+                    ai_control._chase_recalc_last_tick == -1 or
+                    tick_count - ai_control._chase_recalc_last_tick >= _chase_min_ticks)
+            else:
+                _chase_recalc_due = False
             should_recalculate_path = (
                 ai_control.path is None or
                 not ai_control.path or
                 ai_control.path_recalc_timer <= 0 or
                 ai_control.is_blocked or
-                ai_control.last_known_player_tile != player_tile_now
+                (_tile_changed and _chase_recalc_due)
             )
 
             # --- Perseguição do Jogador ---
@@ -3434,7 +3518,11 @@ class EnemyAISystem(System):
                     else:
                         ai_control.path_recalc_timer = self.path_recalc_interval
                     ai_control.last_known_player_tile = player_tile_now
-                
+                    # Fase 3 (06/08/2026) — stamp de "acabou de replanejar",
+                    # independente de qual dos 4 gatilhos disparou. Só isso
+                    # alimenta o throttle acima (nunca lido por outro código).
+                    ai_control._chase_recalc_last_tick = tick_count
+
                 if ai_control.path and not ai_control.is_blocked:
                     if not tile_movement.is_moving:
                         next_tile_on_path_x, next_tile_on_path_y = ai_control.path[0]

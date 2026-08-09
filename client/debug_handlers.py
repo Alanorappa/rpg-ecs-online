@@ -4,14 +4,24 @@ nível, adicionar ouro/itens e trocar de mapa, incluindo o roteamento
 de cliques e o desenho do modal e de cada aba (Nivel/Itens/Ouro/Mapa).
 Separado de game.py para manter GameEngine conciso. Esta classe NÃO
 deve ser instanciada diretamente — ela é herdada por GameEngine, que
-fornece self.world, self._my_eid, self.screen e os demais atributos
-referenciados aqui.
+fornece self.world, self._my_eid, self._net, self.is_gm, self.screen e
+os demais atributos referenciados aqui.
+
+Nível/Ouro/Itens (07/08/2026) são pedidos ao servidor via GM_LEVELUP/
+GM_ADD_GOLD/GM_ADD_ITEM (shared/messages.py) — server-autoritativo,
+só tem efeito se a conta for GM (server/auth.py::is_gm, concedida via
+server/grant_gm.py). Antes mutavam só o ECS local do cliente, sem
+nenhum round-trip: o nível/talento "concedido" nunca existia pro
+servidor, e a autorização real de skill (is_skill_authorized) recusava
+tudo — F12 não servia pra testar nada que dependesse de nível/talento
+online. Aba Mapa não mudou — já usa ZONE_CHANGE_REQ, validado pelo
+servidor desde antes.
 """
 import pygame
 from ui.ui_helpers import fill_surf
 
 from ui.combat_log import LOG
-from engine.components import CharacterStats, CombatStats, Inventory, PermanentStats, TileMovement, Wallet
+from engine.components import CharacterStats, Inventory, TileMovement, Wallet
 from ui.ui_sizes import UI
 
 # Nomes amigáveis opcionais — mapas sem entrada aqui usam o nome do arquivo
@@ -27,20 +37,15 @@ class DebugHandlers:
     # ------------------------------------------------------------------
 
     def _debug_levelup(self, n: int) -> None:
-        """Sobe n níveis instantaneamente, concedendo 1 ponto de talento por nível."""
-        from engine.stats_system import process_levelups
-        from engine.components import TalentTree
-        cs   = self.world.get_component(self.player_entity, CharacterStats)
-        comb = self.world.get_component(self.player_entity, CombatStats)
-        perm = self.world.get_component(self.player_entity, PermanentStats)
-        tt   = self.world.get_component(self.player_entity, TalentTree)
-        if not cs or not comb:
+        """Pede N level-ups ao servidor (GM_LEVELUP) — servidor é quem
+        aplica de verdade (process_levelups) e sincroniza via STATS_UPDATE;
+        sem isso o nível/talento só existia no cliente e a autorização
+        server-side de skill (is_skill_authorized) recusava tudo."""
+        if not self._net:
             return
-        # Força XP suficiente para n level-ups e processa via função centralizada
-        for _ in range(n):
-            cs.current_xp = cs.xp_to_next_level
-            process_levelups(self.world, self.player_entity, cs, comb, perm)
-        LOG.add(f"[DEBUG] Nivel {cs.level} — {tt.available_points if tt else 0} pontos de talento.", (120, 200, 255))
+        from shared.messages import MsgType
+        self._net.send(MsgType.GM_LEVELUP, {"levels": n})
+        LOG.add(f"[DEBUG] Pedido de +{n} nivel(is) enviado ao servidor.", (120, 200, 255))
 
     def _handle_debug_click(self, event) -> None:
         px, py = self._safe_panel_origin(UI.DEBUG_W, UI.DEBUG_H)
@@ -96,21 +101,24 @@ class DebugHandlers:
                     return
 
     def _debug_add_gold(self, amount: int) -> None:
-        wallet = self.world.get_component(self.player_entity, Wallet)
-        if wallet:
-            wallet.gold += amount
-            LOG.add(f"[DEBUG] +{amount}g adicionado. Total: {wallet.gold}g", (120, 200, 255))
+        """Pede ouro ao servidor (GM_ADD_GOLD) — mesma razão de
+        _debug_levelup, servidor é quem muta o Wallet autoritativo."""
+        if not self._net:
+            return
+        from shared.messages import MsgType
+        self._net.send(MsgType.GM_ADD_GOLD, {"amount": amount})
+        LOG.add(f"[DEBUG] Pedido de +{amount}g enviado ao servidor.", (120, 200, 255))
 
     def _debug_add_item(self, factory) -> None:
-        inv = self.world.get_component(self.player_entity, Inventory)
-        if not inv:
+        """Pede item ao servidor (GM_ADD_ITEM, por nome — servidor resolve
+        contra o mesmo catálogo usado aqui pra listar). Servidor confirma
+        via INVENTORY_UPDATE (mesmo canal de recompensa de item de quest)."""
+        if not self._net:
             return
-        if len(inv.items) >= inv.max_slots:
-            LOG.add("[DEBUG] Mochila cheia!", (220, 100, 50))
-            return
-        item = factory()
-        inv.items.append(item)
-        LOG.add(f"[DEBUG] {item.name} adicionado a mochila.", (120, 200, 255))
+        item_name = factory().name
+        from shared.messages import MsgType
+        self._net.send(MsgType.GM_ADD_ITEM, {"item_name": item_name})
+        LOG.add(f"[DEBUG] Pedido de '{item_name}' enviado ao servidor.", (120, 200, 255))
 
     def _debug_open_map(self, map_file: str) -> None:
         """Carrega map_file no overlay e abre para o jogador clicar o destino de teleporte."""

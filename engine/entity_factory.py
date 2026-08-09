@@ -15,7 +15,7 @@ from ui.ui_components import (
     InstanceInventoryUIState,
 )
 from engine.tileset import TILE_MAPPING, OBJECT_MAPPING, TILE_SIZE, FLOOR_TILE, get_collision_offsets
-from content.mob_definitions import MOB_TABLE
+from content.mob_definitions import MOB_TABLE, ENEMY_TIER_CONFIGS
 from content.enemy_abilities_data import ABILITY_DEFS
 from content.tower_definitions import TOWER_TABLE
 from content.minion_definitions import MINION_TABLE
@@ -39,14 +39,9 @@ ENEMY_MELEE_ATTACK_RANGE = 1 # Nova constante para inimigos corpo a corpo
 # armadura do alvo) em vez de "physical".
 _MAGIC_CASTER_CLASSES = {"Mage", "Mago", "Warlock", "Bruxo"}
 
-# --- Configurações de tier de inimigos ---
-# Cada tier define: multiplicador de HP, dano, XP; tamanho; cor (melee, ranged)
-ENEMY_TIER_CONFIGS = {
-    "normal": {"hp": 1.0, "dmg": 1.0, "xp": 1,  "size": 24, "col_melee": (0, 0, 255),     "col_ranged": (0, 0, 200)},
-    "elite":  {"hp": 2.0, "dmg": 1.5, "xp": 2,  "size": 28, "col_melee": (140, 140, 255),  "col_ranged": (100, 100, 220)},
-    "rare":   {"hp": 3.0, "dmg": 2.0, "xp": 4,  "size": 30, "col_melee": (255, 165, 0),    "col_ranged": (220, 130, 0)},
-    "boss":   {"hp": 5.0, "dmg": 3.0, "xp": 10, "size": 40, "col_melee": (180, 0, 180),    "col_ranged": (140, 0, 140)},
-}
+# ENEMY_TIER_CONFIGS agora vive em content/mob_definitions.py (achado 06 do
+# benchmark arquitetural, PROBLEMAS_ARQUITETURA.md §12/§13 — dado de
+# balanceamento, não lógica; importado acima).
 
 
 def create_tilemap(world: World, terrain_matrix: list, object_matrix: list,

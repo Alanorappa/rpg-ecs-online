@@ -690,7 +690,7 @@ OBJECT_SHEET_FAMILIES: list[dict] = [
              ("artmister",       32,  320, 32,  32,           "full"),
              ("pa",              64,  320, 32,  64,           "base"),
              ("lampiao",         96,  320, 32,  32,           "base"),
-             ("lampiao",         96,  320, 32,  32,           "base"),
+           #  ("lampiao",         96,  320, 32,  32,           "base"),
 
          ],
      },
@@ -804,8 +804,8 @@ OBJECT_SHEET_FAMILIES: list[dict] = [
                  ("p2",    928,  672,  32,  32,              "full"),
                  ("p1",    992,  672,  32,  32,              "full"),
                  #CARROT
-                 ("cr1",   864,  704,  32,  32,             "full"),
-                 ("cr1",   928,  704,  32,  32,             "full"),
+                 ("cr3",   864,  704,  32,  32,             "full"),
+                 ("cr2",   928,  704,  32,  32,             "full"),
                  ("cr1",   992,  704,  32,  32,             "full"),
                  #GRASSBLADE
                  ("gb1",   768,  864,  32,  32,               None),
@@ -844,7 +844,7 @@ OBJECT_SHEET_FAMILIES: list[dict] = [
                  ("fl18",  896,  992,  32,  32,               None),
                  ("fl19",  928,  992,  32,  32,               None),
                  ("fl20",  960,  992,  32,  32,               None),
-                 ("fl19",  992,  992,  32,  32,               None),
+                 ("fl21",  992,  992,  32,  32,               None),
              ]
     
          },
@@ -940,8 +940,8 @@ OBJECT_SHEET_FAMILIES: list[dict] = [
             ("face_C6",   32, 256,  32,  64,  "full", 0,  0),
             ("face_C7",   64, 256,  32,  64,  "full", 0,  0),
             ("face_C8",  128, 256,  32,  64,  "full", 0,  0),
-            ("face_C8",  160, 256,  32,  64,  "full", 0,  0),
-            ("face_C9",  384, 320,  32,  64,  "full", 0,  0),
+            ("face_C9",  160, 256,  32,  64,  "full", 0,  0),
+            ("face_C10",  384, 320,  32,  64,  "full", 0,  0),
             ("open_C1",  416, 320,  32,  64,    None, 0,  0),
             ("face_C10", 448, 320,  32,  64,  "full", 0,  0),
             ("face_C11", 384, 192,  32,  64,  "full", 0,  0),
@@ -1023,85 +1023,13 @@ def _unpack_override(value, default_vision_height: int) -> tuple:
     return value, default_vision_height
 
 
-def discover_camouflage_variants() -> list[str]:
-    """Sufixos de variantes de disfarce da Camuflagem disponíveis em assets/sprites/.
-
-    Cada variante precisa do par camuflagem_idle{suf}.png + camuflagem_run{suf}.png.
-    Variante base = sufixo "" (camuflagem_idle.png/camuflagem_run.png); variantes
-    extras seguem _2, _3, _4... Descoberta dinâmica: só checa arquivos no disco,
-    sem pygame — adicionar uma nova variante não exige mudança de código.
-    """
-    import os
-    from paths import resource_path
-
-    if hasattr(discover_camouflage_variants, "_cache"):
-        return discover_camouflage_variants._cache
-
-    variants: list[str] = []
-    base_dir = resource_path(os.path.join("assets", "sprites"))
-    n = 1
-    suf = ""
-    while True:
-        idle_path = os.path.join(base_dir, f"camuflagem_idle{suf}.png")
-        run_path  = os.path.join(base_dir, f"camuflagem_run{suf}.png")
-        if os.path.exists(idle_path) and os.path.exists(run_path):
-            variants.append(suf)
-            n += 1
-            suf = f"_{n}"
-        else:
-            break
-
-    discover_camouflage_variants._cache = variants
-    return variants
-
-
-_CAMOUFLAGE_FRAME_MS = 65  # duração de cada frame da animação de correr (-15% de velocidade vs 55ms)
-
-
-def get_camouflage_disguise_frame(variant_suffix: str, moving: bool, anim_time_ms: int):
-    """Retorna o Surface do frame atual do disfarce de Camuflagem.
-
-    moving=False → frame único de camuflagem_idle{suf}.png (32×32).
-    moving=True  → frame cíclico de camuflagem_run{suf}.png (sheet 32×H, N frames
-                   lado a lado), avançando 1 frame a cada _CAMOUFLAGE_FRAME_MS.
-    Usa cache interno por (kind, variante). Retorna None se o arquivo não existir.
-    """
-    import pygame
-    import os
-    from paths import resource_path
-
-    if not hasattr(get_camouflage_disguise_frame, "_cache"):
-        get_camouflage_disguise_frame._cache = {}
-    cache = get_camouflage_disguise_frame._cache
-
-    kind = "run" if moving else "idle"
-    key  = (kind, variant_suffix)
-    if key not in cache:
-        fname      = f"camuflagem_{kind}{variant_suffix}.png"
-        sheet_path = resource_path(os.path.join("assets", "sprites", fname))
-        frames: list = []
-        if os.path.exists(sheet_path):
-            try:
-                sheet = pygame.image.load(sheet_path).convert_alpha()
-                if moving:
-                    frame_w = TILE_SIZE  # frames sempre 1 tile de largura
-                    frame_h = sheet.get_height()
-                    for i in range(sheet.get_width() // frame_w):
-                        frames.append(sheet.subsurface(
-                            pygame.Rect(i * frame_w, 0, frame_w, frame_h)).copy())
-                else:
-                    frames.append(sheet)
-            except Exception:
-                frames = []
-        cache[key] = frames
-
-    frames = cache[key]
-    if not frames:
-        return None
-    if not moving:
-        return frames[0]
-    idx = (anim_time_ms // _CAMOUFLAGE_FRAME_MS) % len(frames)
-    return frames[idx]
+# Sprites de disfarce de Camuflagem saíram daqui pra
+# engine/entity_disguise.py (07/08/2026, achado do usuário — isso é
+# lógica de SKILL de personagem, não dado de tile/mapa, e forçava o
+# servidor a importar este módulo inteiro só por causa delas). Módulo
+# final genérico (discover_sprite_variants/get_animated_disguise_frame/
+# get_active_appearance_override), não hardcoded pra Camuflagem — ver
+# PROBLEMAS_ARQUITETURA.md §12/§13.
 
 
 def discover_object_sheet_tiles() -> None:

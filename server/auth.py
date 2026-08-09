@@ -56,6 +56,10 @@ def _get_conn() -> sqlite3.Connection:
             conn.execute("ALTER TABLE accounts ADD COLUMN salt TEXT DEFAULT NULL")
         except Exception:
             pass  # coluna já existe (ou tabela ainda não existe — init_db cria com ela)
+        try:
+            conn.execute("ALTER TABLE accounts ADD COLUMN is_gm INTEGER NOT NULL DEFAULT 0")
+        except Exception:
+            pass  # coluna já existe (ou tabela ainda não existe — init_db cria com ela)
     return conn
 
 
@@ -79,6 +83,7 @@ def init_db() -> None:
             username    TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
             salt        TEXT DEFAULT NULL,
+            is_gm       INTEGER NOT NULL DEFAULT 0,
             created_at  INTEGER DEFAULT (strftime('%s','now'))
         );
 
@@ -113,6 +118,13 @@ def init_db() -> None:
             # conta legada (hash antigo, sem salt) — upgrade transparente no
             # próximo login bem-sucedido (ver _authenticate_sync).
             conn.execute("ALTER TABLE accounts ADD COLUMN salt TEXT DEFAULT NULL")
+        except Exception:
+            pass  # coluna já existe
+        try:
+            # Flag de GM (07/08/2026) — concedida só via server/grant_gm.py
+            # (CLI direto no banco, sem UI/endpoint de rede), mesmo padrão
+            # do "account set gmlevel" do AzerothCore.
+            conn.execute("ALTER TABLE accounts ADD COLUMN is_gm INTEGER NOT NULL DEFAULT 0")
         except Exception:
             pass  # coluna já existe
         try:
@@ -175,7 +187,7 @@ def _authenticate_sync(username: str, password: str) -> "dict | None":
     import hmac
     with _get_conn() as conn:
         row = conn.execute(
-            "SELECT id, password_hash, salt FROM accounts WHERE username=?",
+            "SELECT id, password_hash, salt, is_gm FROM accounts WHERE username=?",
             (username,)
         ).fetchone()
         if not row:
@@ -215,6 +227,7 @@ def _authenticate_sync(username: str, password: str) -> "dict | None":
         return {
             "account_id":  row["id"],
             "characters":  [dict(c) for c in chars],
+            "is_gm":       bool(row["is_gm"]),
         }
 
 

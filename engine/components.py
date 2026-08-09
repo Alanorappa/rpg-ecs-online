@@ -3,32 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
-# ---------------------------------------------------------------------------
-# Identidade de entidade — raças, classes e tiers disponíveis
-# ---------------------------------------------------------------------------
-
-RACES = [
-    "Humano", "Elfo", "Orc", "Anão",          # Humanoides civilizados
-    "Humanoide",                                # Genérico bípede
-    "Fera",                                     # Animais selvagens
-    "Elemental",                                # Criaturas de fogo/água/terra/ar
-    "Mecânico",                                 # Autômatos e construtos
-    "Vampiro", "Zumbi", "Espírito",            # Mortos-vivos e espectrais
-    "Goblin", "Troll", "Demônio", "Dragão",   # Criaturas fantásticas
-    "Planta",                                   # Flora hostil
-]
-
-CLASSES = [
-    "Guerreiro",   # melee tanque, alta armadura
-    "Assassino",   # melee rápido, burst de dano
-    "Arqueiro",    # ranged físico
-    "Mago",        # ranged mágico, AoE
-    "Bruxo",       # ranged mágico, DoT / debuffs
-]
-
-TIERS = ["normal", "elite", "rare", "boss"]
-
-
 class EntityIdentity:
     """Nome, raça, classe, nível e tier de qualquer entidade (jogador ou inimigo)."""
     def __init__(self, name: str, race: str, entity_class: str,
@@ -424,6 +398,15 @@ class AIControlled:
     # intervalo do tier. Só se aplica a mob IDLE; CHASING/ATTACKING/
     # RETURNING/etc. nunca são throttlados, nunca leem este campo.
     _ai_throttle_last_check: int = -1
+    # Fase 3 de escala (06/08/2026, EnemyAISystem.update() — bloco de
+    # perseguição): último tick_count em que o path foi realmente
+    # recalculado (por qualquer motivo). -1 = nunca. Usado SÓ pra
+    # throttlar o gatilho "alvo mudou de tile" de should_recalculate_path
+    # (a versão "toda mudança de tile força recálculo imediato" ignorava
+    # o cooldown normal de 0.8s quase o tempo todo com alvo em
+    # movimento) — os outros 3 gatilhos (path None/vazio/is_blocked)
+    # continuam imediatos, nunca leem este campo.
+    _chase_recalc_last_tick: int = -1
 
 @dataclass
 class InitialPosition:
@@ -1019,6 +1002,13 @@ class Minion:
         # próximo tile — bug real reportado pelo usuário: minion "anda um
         # tile, para, repete" (pausa de ~0.8s entre CADA tile da rota).
         self.path_dest: "tuple | None" = None
+        # Fase 4 de escala (06/08/2026, MinionSystem.update() - branch
+        # FIGHTING): ultimo tick_count em que o destino passado pra
+        # `_walk_toward` foi de fato o alvo mudando de tile - throttla
+        # SO isso (mesmo padrao de EnemyAISystem._chase_recalc_last_tick,
+        # ver ARQUITETURA_ONLINE.md Sec.34.74.43). -1 = nunca - primeira
+        # vez sempre passa. Nunca lido/escrito fora dessa checagem.
+        self._target_recalc_last_tick: int = -1
 
 
 @dataclass
@@ -1577,6 +1567,13 @@ class Channeling:
         self.slow_pct       = slow_pct       # % de lerdeza aplicada nos alvos
         self.dmg_weapon_pct = dmg_weapon_pct
         self.dmg_sp_coeff   = dmg_sp_coeff
+        # Timers de tick do servidor (server/spell_completion_processor.py::
+        # _process_player_channeling) — antes grudados por fora via
+        # getattr/hasattr porque o __init__ não os declarava; mesmo
+        # comportamento (tick_timer começa cheio, mana_timer começa zerado),
+        # só declarado onde deveria estar.
+        self.tick_timer     = tick_interval
+        self.mana_timer     = 0.0
 
 
 class PirofagiaAiming:

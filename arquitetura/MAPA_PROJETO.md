@@ -140,6 +140,15 @@
 > `server/`/`client/`/`shared/` (já existiam, não mudaram de lugar) continuam
 > sendo a separação PRINCIPAL e mais importante do projeto — as pastas novas
 > abaixo só organizam o que antes vivia solto na raiz.
+>
+> **Exceção real, não documentada até 06/08/2026** — `server/world_server.py:478`
+> importa `from ui.systems import SkillSystem` DE PROPÓSITO: o servidor reusa
+> a mesma classe de UI do cliente como motor autoritativo de skill, despachando
+> por `getattr(self._skill_system, f"_skill_{sid}")`
+> (`server/skill_processor.py:314`). É o item B3 de `PROBLEMAS_ARQUITETURA.md`
+> §11 (nunca resolvido) e a causa raiz confirmada de pelo menos 1 bug real
+> (Punho no Queixo vs. minion, ver `PROBLEMAS_ARQUITETURA.md` §12). A frase
+> "servidor nunca importa `ui/`" abaixo estava errada — corrigida aqui.
 
 ```
 rpg_ecs_online/
@@ -183,6 +192,18 @@ rpg_ecs_online/
 │   │                                  no-op no servidor, cliente vincula via bind_client_fx()
 │   ├── map_loader.py               ← carrega .csv de mapa em Tilemap
 │   ├── tileset.py                  ← Tile/Tilemap, is_solid, etc.
+│   ├── entity_disguise.py          ← NOVO (07/08/2026): mecanismo GENÉRICO de aparência-
+│   │                                  sobreposta-temporária de entidade — sprite parametrizado
+│   │                                  por `base_name` (nenhuma skill hardcoded no código) +
+│   │                                  get_active_appearance_override() resolve qual override
+│   │                                  está ativo via tabela `_APPEARANCE_SOURCES` (1 função
+│   │                                  checadora por fonte — Camuflagem/Polimorfia hoje, nova
+│   │                                  fonte = 1 função + 1 linha, nunca um novo branch em
+│   │                                  ui/systems.py). Sem componente novo nem sincronização de
+│   │                                  rede nova — lê o estado que cada efeito já mantém
+│   │                                  (CombatStats.camouflage_*/StatusEffects), já sincronizado
+│   │                                  por outro caminho. Passou por 4 tentativas até acertar —
+│   │                                  ver PROBLEMAS_ARQUITETURA.md
 │   └── faction_system.py           ← can_engage()/is_hostile()/get_relationship_between()
 │
 ├── ui/                              ← ONLINE-ONLY na prática: client-only mesmo
@@ -336,9 +357,20 @@ client/network.py         → transporte assíncrono transparente ao game loop
 4. Se for desbloqueada por talento → `content/talent_data.py` → `unlocks_skill`
 5. Testar no servidor: handler é chamado via `_process_skill_requests`
 
-### Adicionar nova stat ao PLAYER_STAT_SYNC
-1. `shared/constants.py` → inserir em `COMBAT_SYNC_STATS` `{chave_cliente: base_attr_cs}`
-2. Nenhuma outra mudança necessária — `sync_player_combat_stats` e `_apply_stat_overrides` são genéricos
+### Adicionar nova stat de combate (COMBAT_SYNC_STATS/PLAYER_STAT_SYNC — MECANISMO MORTO, não usar)
+**Corrigido 06/08/2026 — este fluxo descrevia um sistema que não existe mais.**
+`COMBAT_SYNC_STATS` foi removido do código (zero ocorrência em `.py`,
+só sobrevivia em texto de doc); `MsgType.PLAYER_STAT_SYNC` está
+marcado obsoleto em `shared/messages.py` (handler no-op) — o servidor
+confiava nesses valores vindos do cliente sem validar contra
+equipamento/talentos reais (ver `PROBLEMAS_ARQUITETURA.md`, Tier A/F).
+O que existe hoje: servidor deriva `CombatStats` sozinho via
+`WorldServer._apply_equipment_modifiers`/`_apply_talent_modifiers`
+(fonte real de qualquer stat de combate nova); cliente recalcula os
+SEUS por conta própria com o mesmo `stat_fns.recalculate_combat_stats`
+local, sem sincronizar por rede. Pra adicionar uma stat de combate
+nova, ver "Atributo de combate novo" no `CLAUDE.md` (par `base_X`/`X`
++ `stat_fns._MODIFIABLE_ATTRS`).
 
 ### Adicionar novo tipo de mensagem
 1. `shared/messages.py` → adicionar em `MsgType` + documentar payload na docstring

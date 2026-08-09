@@ -3,8 +3,9 @@ mob_definitions.py — Tabela central de mobs do jogo.
 
 Cada entrada define raça, classe, cor visual, atributos, habilidades, loot,
 xp por level e sons. Tudo aqui é a baseline de LEVEL 1 / TIER "normal" — os
-multiplicadores de tier (ENEMY_TIER_CONFIGS) e o scaling por level (ambos em
-entity_factory.py::create_enemy) são aplicados POR CIMA destes valores.
+multiplicadores de tier (ENEMY_TIER_CONFIGS, definida logo abaixo) e o
+scaling por level (aplicado em entity_factory.py::create_enemy) são
+aplicados POR CIMA destes valores.
 
 attributes (todos os campos são opcionais; fallback se omitido):
   health         — HP máximo (vira CombatStats.base_stamina, 1:1).
@@ -100,6 +101,28 @@ PROJECTILE_BY_CLASS: dict[str, dict] = {
     "Arqueiro": {"color": (120,  80,  40), "is_arrow": True},
     # Padrão para classes não listadas:
     "_default": {"color": (200, 200,  50), "is_arrow": False},
+}
+
+# Multiplicadores de tier: HP/dano/xp/tamanho/cor por cima da baseline de
+# cada mob (achado 06 do benchmark arquitetural, PROBLEMAS_ARQUITETURA.md
+# §12/§13 — vivia em engine/entity_factory.py, fora de content/, junto da
+# lógica que a consome em vez de perto do resto do dado de balanceamento).
+ENEMY_TIER_CONFIGS: dict[str, dict] = {
+    "normal": {"hp": 1.0, "dmg": 1.0, "xp": 1,  "size": 24, "col_melee": (0, 0, 255),     "col_ranged": (0, 0, 200)},
+    "elite":  {"hp": 2.0, "dmg": 1.5, "xp": 2,  "size": 28, "col_melee": (140, 140, 255),  "col_ranged": (100, 100, 220)},
+    "rare":   {"hp": 3.0, "dmg": 2.0, "xp": 4,  "size": 30, "col_melee": (255, 165, 0),    "col_ranged": (220, 130, 0)},
+    "boss":   {"hp": 5.0, "dmg": 3.0, "xp": 10, "size": 40, "col_melee": (180, 0, 180),    "col_ranged": (140, 0, 140)},
+}
+
+# Tempo de respawn tradicional (segundos) por tier — mesma razão de estar
+# aqui e não em engine/world_systems.py::DeathHandlerSystem (achado 06 do
+# benchmark, PROBLEMAS_ARQUITETURA.md §12/§13): dado de balanceamento, não
+# lógica de sistema.
+RESPAWN_TIMERS: dict[str, float] = {
+    "normal": 180.0,
+    "elite":  300.0,
+    "rare":   3600.0,
+    "boss":   18000.0,
 }
 
 MOB_TABLE: dict[str, dict] = {

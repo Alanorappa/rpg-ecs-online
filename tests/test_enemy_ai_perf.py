@@ -24,7 +24,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pygame
 pygame.init()
 
-from tests.helpers import make_world_server, spawn_player, run_ticks, first_mob
+from tests.helpers import (make_world_server, spawn_player, run_ticks, first_mob,
+                           teleport_mob_to_player, set_entity_tile)
 from engine.world_systems import EnemyAISystem
 from engine.components import AIControlled, CombatStats, Position, TileMovement, MapLocation
 from engine.utils import snap_to_tile
@@ -495,6 +496,135 @@ class TestThrottleOfIdleMobReevaluation(unittest.TestCase):
         self.assertTrue(self._is_active(501))
         self.assertTrue(self._is_active(502))
         self.assertTrue(self._is_active(503))
+
+
+class TestThrottleOfChaseRecalcOnTargetMove(unittest.TestCase):
+    """Fase 3 (06/08/2026): dentro do bloco de perseguição, o gatilho "alvo
+    mudou de tile" de should_recalculate_path (busca de tile de ataque —
+    loop O((attack_range+1)²) — mais chamada A* via _find_path_budgeted)
+    disparava recálculo IMEDIATO toda vez que o alvo mudava de tile,
+    ignorando o cooldown normal de path_recalc_timer (0.8s) quase todo
+    tick enquanto o alvo está em movimento. Com muitos mobs perseguindo
+    simultaneamente (cenário de PC — vários minions convergindo pro mesmo
+    player), isso rodava TODO tick pra cada um, não 1x a cada 800ms como o
+    timer normal sugere. `_CHASE_RECALC_MIN_TICKS_BY_TIER` limita a
+    FREQUÊNCIA desse gatilho específico por tier; os outros 3 gatilhos de
+    should_recalculate_path (path None/vazio/is_blocked) continuam
+    imediatos, nunca throttlados — cobertos no 3º teste abaixo."""
+
+    def setUp(self):
+        from engine.components import EnemyTier, DetectionRadius
+        self.ws = make_world_server()
+        self.player_eid = spawn_player(self.ws, "p1", 10, 10, class_id="guerreiro")
+        run_ticks(self.ws, 60)
+        self.mob_eid = first_mob(self.ws)
+        self.assertIsNotNone(self.mob_eid, "precisa de um mob hostil real pro teste")
+        self.enemy_ai_system = _find_enemy_ai_system(self.ws, MAP_A)
+
+        # Mob CHASING, 5 tiles do player (fora do attack_range_tiles=1) —
+        # precisa passar pelo bloco de recálculo de path, não pela branch
+        # ATTACKING (que dá `continue` antes de chegar lá). is_ranged=False
+        # força chase melee determinístico (sem kiting, outro branch com
+        # `continue` próprio que também bypassaria o bloco sob teste).
+        # teleport_mob_to_player realinha InitialPosition (âncora do leash)
+        # pro tile novo — sem isso o leash dispararia e sobrescreveria o
+        # CHASING setado abaixo.
+        teleport_mob_to_player(self.ws, self.mob_eid, self.player_eid, offset_x=5)
+        ai = self.ws.world.get_component(self.mob_eid, AIControlled)
+        ai.state = "CHASING"
+        ai.target_eid = self.player_eid
+        ai.aggroed_by_damage = True
+        ai.is_ranged = False
+        ai.attack_range_tiles = 1
+        ai.last_known_player_tile = (-1, -1)
+        ai._chase_recalc_last_tick = -1
+
+        # DetectionRadius bem generoso (achado real de depuração: com o
+        # valor padrão do mob, "desistir de perseguir" — dist_to_player >
+        # detect_radius, engine/world_systems.py ~linha 3494 — disparava
+        # sozinho no meio do teste, já que este teste afasta o player
+        # deliberadamente pra nunca entrar em attack_range; isso reseta
+        # state/aggroed_by_damage pra IDLE por um motivo TOTALMENTE
+        # alheio ao throttle sob teste). Content real nunca afasta o
+        # alvo tão rápido sem o mob também se mover — aqui o mob fica
+        # parado de propósito (ver _replan_ticks), então o raio precisa
+        # ser generoso pra isolar só o mecanismo sendo provado.
+        dr = self.ws.world.get_component(self.mob_eid, DetectionRadius)
+        if dr:
+            dr.radius = 2000.0
+
+        tier = self.ws.world.get_component(self.mob_eid, EnemyTier)
+        if tier is None:
+            tier = EnemyTier()
+            self.ws.world.add_component(self.mob_eid, tier)
+        tier.tier = "normal"
+        self.interval = self.enemy_ai_system._CHASE_RECALC_MIN_TICKS_BY_TIER["normal"]
+
+        self.player_tm = self.ws.world.get_component(self.player_eid, TileMovement)
+        self.mob_tm = self.ws.world.get_component(self.mob_eid, TileMovement)
+
+    def _replan_ticks(self, n: int) -> list:
+        """Chama update() direto n vezes, teleportando o alvo (player) pra
+        um tile novo ANTES de cada uma — garante last_known_player_tile !=
+        player_tile_now TODO tick (o gatilho sob teste). Entre chamadas,
+        neutraliza qualquer efeito colateral do "andar 1 passo" da chamada
+        anterior (path consumido, is_blocked, path_recalc_timer, is_moving)
+        — o CONTEÚDO do path é irrelevante pro que está sendo provado aqui
+        (só a FREQUÊNCIA do recálculo), então não depende de pathfinding
+        real ter sucesso. Devolve os tick_count em que _chase_recalc_last_tick
+        realmente mudou (o corpo pesado de recálculo rodou de verdade)."""
+        ai = self.ws.world.get_component(self.mob_eid, AIControlled)
+        replans = []
+        base_x = self.player_tm.current_tile_x
+        for i in range(n):
+            set_entity_tile(self.ws, self.player_eid, base_x - i - 1, self.player_tm.current_tile_y)
+            ai.path = [(9999, 9999)]
+            ai.is_blocked = False
+            ai.path_recalc_timer = 999.0
+            self.mob_tm.is_moving = False
+            before = ai._chase_recalc_last_tick
+            self.enemy_ai_system.update(dt=0.05, tick_count=1000 + i)
+            if ai._chase_recalc_last_tick != before:
+                replans.append(1000 + i)
+        return replans
+
+    def test_normal_throttla_recalculo_por_mudanca_de_tile(self):
+        replans = self._replan_ticks(self.interval * 2 + 1)
+        self.assertGreaterEqual(len(replans), 2,
+            "precisa ver pelo menos 2 replans nesta janela pra provar o gap")
+        gaps = [b - a for a, b in zip(replans, replans[1:])]
+        for gap in gaps:
+            self.assertGreaterEqual(gap, self.interval,
+                f"mob normal (intervalo={self.interval}) não deveria replanejar "
+                f"de novo antes do intervalo completo (gap real={gap})")
+
+    def test_boss_nunca_throttla_recalculo(self):
+        from engine.components import EnemyTier
+        tier = self.ws.world.get_component(self.mob_eid, EnemyTier)
+        tier.tier = "boss"
+        replans = self._replan_ticks(5)
+        self.assertEqual(len(replans), 5,
+            "boss (intervalo=1) deveria replanejar TODO tick, nunca throttlado")
+
+    def test_path_vazio_ignora_throttle_de_mudanca_de_tile(self):
+        ai = self.ws.world.get_component(self.mob_eid, AIControlled)
+        ai.path = [(9999, 9999)]
+        ai.is_blocked = False
+        ai.path_recalc_timer = 999.0
+        self.mob_tm.is_moving = False
+        self.enemy_ai_system.update(dt=0.05, tick_count=2000)
+        ai._chase_recalc_last_tick = 2000  # "acabou de replanejar agora mesmo"
+        ai.path = []  # esgotado — gatilho SEMPRE imediato, nunca lê a tabela de tier
+        ai.is_blocked = False
+        ai.path_recalc_timer = 999.0
+        self.mob_tm.is_moving = False
+        # Alvo permanece NO MESMO tile (sem novo set_entity_tile) — só o
+        # path vazio deve bastar pra forçar o recálculo.
+        self.enemy_ai_system.update(dt=0.05, tick_count=2001)
+        self.assertEqual(ai._chase_recalc_last_tick, 2001,
+            "path vazio deveria forçar recálculo imediato mesmo dentro da janela "
+            "de throttle — o gatilho de mudança de tile nem chega a ser avaliado "
+            "aqui (alvo não mudou de tile), então só path vazio explica o recálculo")
 
 
 if __name__ == "__main__":

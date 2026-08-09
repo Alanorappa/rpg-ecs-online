@@ -32,7 +32,7 @@ from engine.components import Position, Renderable, PlayerControlled, Camera, Co
                        EnemyAbilities, EnemyAbilitySlot, EntityIdentity, \
                        NpcSounds, PendingDeath, XPReward, SpawnZoneOwner, SpawnZone, \
                        PlayerSkills, NPC, ActiveRegen, ConsumableBar, \
-                       AoeTargeting, RemoteControlled, GhostState, MapLocation
+                       AoeTargeting, RemoteControlled, GhostState, MapLocation, Minion
 from engine.world import World
 from engine.tileset import TILE_SIZE, OBJECT_MAPPING
 from engine.utils import chebyshev, start_tile_movement
@@ -48,6 +48,7 @@ from content.loot_tables import roll_loot, roll_mob_loot, roll_coins
 from engine.entity_factory import create_corpse, create_enemy
 from content.enemy_abilities_data import ABILITY_DEFS
 from content.merchant_data import SHOPS
+from content.item_table import RARITY_COLORS as _SHARED_RARITY_COLORS
 import engine.quest_events as quest_events
 from engine.quest_events import fire as quest_fire
 from engine.stat_fns import add_modifier, remove_modifier, add_timed_modifier, enter_combat
@@ -540,18 +541,15 @@ class PlayerInputSystem(System):
         return True
 
     def _add_rage(self, entity_id: int, amount: int) -> None:
-        """Adiciona raiva ao jogador, respeitando o limite máximo.
-
-        Online: no-op — o servidor é o único produtor de rage (ganho por
+        """No-op — o servidor é o único produtor de rage (ganho por
         auto-attack em combat_processor.py, decay em ServerCombatStateSystem)
-        e empurra todo valor novo via STATS_UPDATE. Gerar aqui também criava
-        dois relógios independentes: a hotbar acendia com rage local que o
-        servidor não tinha e o CAST_SKILL voltava "Raiva insuficiente"."""
-        if self._net is not None:
-            return
-        cs = self.world.get_component(entity_id, CharacterStats)
-        if cs:
-            cs.rage = min(cs.max_rage, cs.rage + amount)
+        e empurra todo valor novo via STATS_UPDATE. Gerar rage aqui também
+        criava dois relógios independentes: a hotbar acendia com rage local
+        que o servidor não tinha e o CAST_SKILL voltava "Raiva insuficiente".
+        Mantido como método (não removido) porque os call sites já esperam
+        chamar `self._add_rage(entity_id, N)` — `CharacterStats.rage` local
+        é só display, alimentado por STATS_UPDATE."""
+        return
 
     def _increment_pnq_counter(self, entity_id: int, hit_landed: bool = True) -> None:
         """Incrementa contador de Punho no Queixo. A cada 3 golpes efetivos adiciona 1 carga.
@@ -1503,33 +1501,39 @@ class RenderSystem(System):
             draw_y = position.y - camera_offset_y
 
             _sfx_rnd = self.world.get_component(entity_id, StatusEffects)
-            _polymorphed = _sfx_rnd is not None and _sfx_rnd.has("polymorph")
 
-            # ── Camuflagem: desenha sprite animado idle/run do disfarce ────────
-            # Gate por camouflage_timer (não pela string de camouflage_object —
-            # a variante base tem sufixo "", que seria falsy numa checagem direta).
-            _cam_active = bool(combat_stats and getattr(combat_stats, "camouflage_timer", 0.0) > 0)
-            if _cam_active:
-                from engine.tileset import get_camouflage_disguise_frame
-                _cam_tm     = self.world.get_component(entity_id, TileMovement)
-                _cam_moving = bool(_cam_tm and _cam_tm.is_moving)
-                _cam_suffix = getattr(combat_stats, "camouflage_object", "") or ""
-                _cam_sprite = get_camouflage_disguise_frame(
-                    _cam_suffix, _cam_moving, pygame.time.get_ticks())
-                if _cam_sprite:
-                    _sw = _cam_sprite.get_width()
-                    _sh = _cam_sprite.get_height()
+            # ── Override de aparência (Camuflagem/Polimorfia/futuro) ───────────
+            # Resolução genérica — ver engine/entity_disguise.py
+            # (get_active_appearance_override + tabela _APPEARANCE_SOURCES).
+            # Nenhuma skill é hardcoded aqui; adicionar uma fonte nova de troca
+            # de aparência não toca nesta função.
+            from engine.entity_disguise import (get_active_appearance_override,
+                                                get_animated_disguise_frame)
+            _appearance = get_active_appearance_override(self.world, entity_id)
+            if _appearance is not None:
+                _sprite_base, _ap_variant = _appearance
+                _ap_tm     = self.world.get_component(entity_id, TileMovement)
+                _ap_moving = bool(_ap_tm and _ap_tm.is_moving)
+                _ap_frame  = get_animated_disguise_frame(
+                    _sprite_base, _ap_variant, _ap_moving, pygame.time.get_ticks())
+                if _ap_frame:
+                    _sw = _ap_frame.get_width()
+                    _sh = _ap_frame.get_height()
                     # Alinha o fundo do sprite ao pé da entidade
                     _blit_x = int(draw_x - _sw / 2)
                     _blit_y = int(draw_y + 12 - _sh)  # +12 = offset do pé do jogador
-                    self.world_surf.blit(_cam_sprite, (_blit_x, _blit_y))
+                    self.world_surf.blit(_ap_frame, (_blit_x, _blit_y))
+                elif _sprite_base == "polimorfia":
+                    # Placeholder TEMPORÁRIO enquanto não existe
+                    # polimorfia_idle.png/polimorfia_run.png de verdade — some
+                    # sozinho assim que o asset existir (get_animated_disguise_frame
+                    # passa a retornar o frame real em vez de None). Não é um
+                    # branch por skill permanente, é cobertura de asset faltando.
+                    _cx = int(draw_x)
+                    _cy = int(draw_y)
+                    pygame.draw.circle(self.world_surf, (160, 80, 200), (_cx, _cy), 14)
+                    pygame.draw.circle(self.world_surf, (220, 180, 255), (_cx, _cy), 14, 2)
                 rect = pygame.Rect(int(draw_x - 16), int(draw_y - 16), 32, 32)
-            elif _polymorphed:
-                _cx = int(draw_x)
-                _cy = int(draw_y)
-                pygame.draw.circle(self.world_surf, (160, 80, 200), (_cx, _cy), 14)
-                pygame.draw.circle(self.world_surf, (220, 180, 255), (_cx, _cy), 14, 2)
-                rect = pygame.Rect(_cx - 14, _cy - 14, 28, 28)
             else:
                 rect = pygame.Rect(
                     int(draw_x - renderable.width / 2),
@@ -2327,7 +2331,10 @@ class ShopSystem(UIScaleMixin, System):
     - Clique direito no NPC → abre painel de loja.
     - Painel esquerdo: itens à venda (clique direito = comprar).
     - Painel direito: mochila do jogador (clique direito = vender).
-    - Botão [↩ Desfazer] reverte a última transação.
+    - Botão [↩ Desfazer] fica sempre renderizado desabilitado (histórico de
+      transação nunca é populado — servidor é autoritativo). Já era assim
+      antes desta limpeza (07/08/2026, Fase 2); mantido intacto — remoção
+      da UI é decisão de produto, não decidida aqui. Ver PROBLEMAS_ARQUITETURA.md.
     """
 
     _FONT_BASES = {"_font_sm": 22, "_font_md": 30, "_font_lg": 38}
@@ -2345,14 +2352,10 @@ class ShopSystem(UIScaleMixin, System):
     SELL_RATIO    = 0.4
     MAX_HISTORY   = 20
 
-    _RARITY_COLORS = {
-        "common":    (200, 200, 200),
-        "uncommon":  ( 30, 200,  30),
-        "rare":      ( 80, 140, 255),
-        "epic":      (180,  50, 255),
-        "legendary": (224, 135,  47),
-        "mythic":    (221,  68,  68),
-    }
+    # Fonte única em content/item_table.py (achado 06 do benchmark
+    # arquitetural, PROBLEMAS_ARQUITETURA.md §12/§13 — estava duplicado
+    # literalmente aqui e mais abaixo neste mesmo arquivo).
+    _RARITY_COLORS = _SHARED_RARITY_COLORS
 
     def __init__(self, world: World, player_entity: int, screen):
         super().__init__()
@@ -2502,113 +2505,33 @@ class ShopSystem(UIScaleMixin, System):
         return max(1, int(item.value * self.SELL_RATIO))
 
     def _buy(self, entry: dict, shop_id: str = "") -> None:
-        """Compra 1 unidade. Online: envia BUY_REQUEST ao servidor (autoritativo).
-        Offline: aplica localmente como antes."""
-        if self._net and shop_id:
-            # Online: servidor valida e responde com BUY_RESULT
-            from shared.messages import MsgType as _MTShop
-            _wallet_buy = self.world.get_component(self.player_entity, Wallet)
-            preview = entry["factory"]()
-            self._net.send(_MTShop.BUY_REQUEST, {
-                "shop_id":     shop_id,
-                "item_name":   preview.name,
-                "quantity":    1,
-                "current_gold": _wallet_buy.gold if _wallet_buy else 0,
-            })
-            return  # UI atualizada quando BUY_RESULT chegar
-
-        # Offline: lógica local (sem rede)
-        inv    = self.world.get_component(self.player_entity, Inventory)
-        wallet = self.world.get_component(self.player_entity, Wallet)
-        if not inv or not wallet:
+        """Compra 1 unidade. Envia BUY_REQUEST ao servidor (autoritativo) —
+        UI atualizada quando BUY_RESULT chegar."""
+        if not self._net or not shop_id:
             return
-        price = entry["price"]
-        if wallet.gold < price:
-            return
-
+        from shared.messages import MsgType as _MTShop
+        _wallet_buy = self.world.get_component(self.player_entity, Wallet)
         preview = entry["factory"]()
-        if getattr(preview, "max_stack", 1) > 1:
-            for existing in inv.items:
-                if existing is None:
-                    continue
-                if existing.name == preview.name and existing.stack < existing.max_stack:
-                    wallet.gold -= price
-                    existing.stack += 1
-                    self.transaction_history.append({"type": "buy", "item": existing, "price": price})
-                    if len(self.transaction_history) > self.MAX_HISTORY:
-                        self.transaction_history.pop(0)
-                    return
-
-        if len(inv.items) >= inv.max_slots:
-            LOG.add("Inventario cheio!", (255, 160, 0))
-            return
-        item = entry["factory"]()
-        wallet.gold -= price
-        inv.items.append(item)
-        self.transaction_history.append({"type": "buy", "item": item, "price": price})
-        if len(self.transaction_history) > self.MAX_HISTORY:
-            self.transaction_history.pop(0)
+        self._net.send(_MTShop.BUY_REQUEST, {
+            "shop_id":     shop_id,
+            "item_name":   preview.name,
+            "quantity":    1,
+            "current_gold": _wallet_buy.gold if _wallet_buy else 0,
+        })
 
     def _buy_qty(self, entry: dict, qty: int, shop_id: str = "") -> None:
-        """Compra qty unidades de um item stackável. Online: envia BUY_REQUEST."""
-        if self._net and shop_id:
-            from shared.messages import MsgType as _MTShop
-            _wallet_qty = self.world.get_component(self.player_entity, Wallet)
-            preview = entry["factory"]()
-            self._net.send(_MTShop.BUY_REQUEST, {
-                "shop_id":     shop_id,
-                "item_name":   preview.name,
-                "quantity":    qty,
-                "current_gold": _wallet_qty.gold if _wallet_qty else 0,
-            })
+        """Compra qty unidades de um item stackável. Envia BUY_REQUEST."""
+        if not self._net or not shop_id:
             return
-
-        inv    = self.world.get_component(self.player_entity, Inventory)
-        wallet = self.world.get_component(self.player_entity, Wallet)
-        if not inv or not wallet or qty <= 0:
-            return
-        price     = entry["price"]
-        total_cost = price * qty
-        if wallet.gold < total_cost:
-            qty        = wallet.gold // price
-            total_cost = price * qty
-        if qty <= 0:
-            return
-
-        preview   = entry["factory"]()
-        remaining = qty
-
-        # Preenche stacks existentes primeiro
-        if getattr(preview, "max_stack", 1) > 1:
-            for existing in inv.items:
-                if existing is None or remaining <= 0:
-                    continue
-                if existing.name == preview.name and existing.stack < existing.max_stack:
-                    can_add = min(remaining, existing.max_stack - existing.stack)
-                    existing.stack += can_add
-                    remaining      -= can_add
-
-        # Cria novos slots para o restante
-        while remaining > 0:
-            if len(inv.items) >= inv.max_slots:
-                break
-            new_item       = entry["factory"]()
-            take           = min(remaining, new_item.max_stack)
-            new_item.stack = take
-            inv.items.append(new_item)
-            remaining -= take
-
-        actually_bought = qty - remaining
-        wallet.gold    -= price * actually_bought
-        if actually_bought > 0:
-            _item_ref = next((it for it in inv.items
-                              if it is not None and it.name == preview.name), preview)
-            self.transaction_history.append({
-                "type": "buy", "item": _item_ref,
-                "price": price * actually_bought,
-            })
-            if len(self.transaction_history) > self.MAX_HISTORY:
-                self.transaction_history.pop(0)
+        from shared.messages import MsgType as _MTShop
+        _wallet_qty = self.world.get_component(self.player_entity, Wallet)
+        preview = entry["factory"]()
+        self._net.send(_MTShop.BUY_REQUEST, {
+            "shop_id":     shop_id,
+            "item_name":   preview.name,
+            "quantity":    qty,
+            "current_gold": _wallet_qty.gold if _wallet_qty else 0,
+        })
 
     def _open_qty_modal(self, entry: dict, shop_id: str = "") -> None:
         """Abre o modal de seleção de quantidade para um item stackável."""
@@ -2648,62 +2571,26 @@ class ShopSystem(UIScaleMixin, System):
         self._qty_modal = None
 
     def _sell(self, item_idx: int) -> None:
+        """Envia SELL_REQUEST. Remove item imediatamente (feedback visual), mas
+        NÃO altera gold — gold é atualizado quando SELL_RESULT chegar (servidor
+        é autoritativo), mesmo padrão de _buy/_buy_qty."""
         inv    = self.world.get_component(self.player_entity, Inventory)
         wallet = self.world.get_component(self.player_entity, Wallet)
-        if not inv or not wallet or item_idx >= len(inv.items):
+        if not inv or not wallet or item_idx >= len(inv.items) or not self._net:
             return
-        item     = inv.items[item_idx]
-        sell_val = self._sell_price(item)
-
-        if self._net:
-            # Online: remove item imediatamente (feedback visual), mas NÃO altera gold.
-            # Gold é atualizado quando SELL_RESULT chegar (servidor é autoritativo).
-            # Padrão igual ao buy online que também não altera gold antes da confirmação.
-            from shared.messages import MsgType as _MTS
-            self._net.send(_MTS.SELL_REQUEST, {
-                "item_name":    item.name,
-                "item_value":   getattr(item, "value", 0),
-                "stack_sold":   1,
-                "current_gold": wallet.gold,
-            })
-            item.stack -= 1
-            if item.stack <= 0:
-                inv.items.pop(item_idx)
-            if self._bag_scroll > 0 and self._bag_scroll >= len(inv.items):
-                self._bag_scroll = max(0, len(inv.items) - 1)
-            return  # gold atualizado via SELL_RESULT
-
-        # Offline: aplica tudo localmente
-        wallet.gold += sell_val
+        item = inv.items[item_idx]
+        from shared.messages import MsgType as _MTS
+        self._net.send(_MTS.SELL_REQUEST, {
+            "item_name":    item.name,
+            "item_value":   getattr(item, "value", 0),
+            "stack_sold":   1,
+            "current_gold": wallet.gold,
+        })
         item.stack -= 1
         if item.stack <= 0:
             inv.items.pop(item_idx)
-        self.transaction_history.append({"type": "sell", "item": item, "sell_value": sell_val})
-        if len(self.transaction_history) > self.MAX_HISTORY:
-            self.transaction_history.pop(0)
-        # Ajusta scroll se necessário
-        inv_len = len(inv.items)
-        if self._bag_scroll > 0 and self._bag_scroll >= inv_len:
-            self._bag_scroll = max(0, inv_len - 1)
-
-    def _undo(self) -> None:
-        if not self.transaction_history:
-            return
-        inv    = self.world.get_component(self.player_entity, Inventory)
-        wallet = self.world.get_component(self.player_entity, Wallet)
-        if not inv or not wallet:
-            return
-        tx = self.transaction_history.pop()
-        if tx["type"] == "buy":
-            for i, it in enumerate(inv.items):
-                if it is tx["item"]:
-                    inv.items.pop(i)
-                    wallet.gold += tx["price"]
-                    break
-        elif tx["type"] == "sell":
-            if len(inv.items) < inv.max_slots:
-                inv.items.append(tx["item"])
-                wallet.gold = max(0, wallet.gold - tx["sell_value"])
+        if self._bag_scroll > 0 and self._bag_scroll >= len(inv.items):
+            self._bag_scroll = max(0, len(inv.items) - 1)
 
     def _close(self) -> None:
         self.open_merchant_id     = -1
@@ -2789,12 +2676,6 @@ class ShopSystem(UIScaleMixin, System):
             close_r = pygame.Rect(x0 + self._u(self.PANEL_W) - self._u(40), y0 + self._u(6), self._u(34), self._u(34))
             if event.button == 1 and close_r.collidepoint(mx, my):
                 self._close()
-                return
-
-            # Botão desfazer (desabilitado online — servidor já processou a transação)
-            undo_r = pygame.Rect(x0 + gap, y0 + self._u(54), self._u(145), self._u(32))
-            if event.button == 1 and undo_r.collidepoint(mx, my) and not self._net:
-                self._undo()
                 return
 
             mods = pygame.key.get_mods()
@@ -3279,7 +3160,6 @@ class ConsumableSystem(System):
         to_remove = []
         for eid, regen in self.world.get_entities_with(ActiveRegen):
             cs     = self.world.get_component(eid, CombatStats)
-            pos_c  = self.world.get_component(eid, Position)
             if not cs:
                 to_remove.append(eid)
                 continue
@@ -3288,15 +3168,9 @@ class ConsumableSystem(System):
             if regen.tick_timer <= 0:
                 regen.tick_timer += regen.interval
                 regen.ticks_remaining -= 1
-                # Offline: aplica HP localmente e exibe FLT.
-                # Online: servidor aplica e envia STATS_UPDATE autoritativo.
-                # Nao alterar HP local no online — evita desync e "correcao" visual ao tomar dano.
-                if not self._net:
-                    healed = min(regen.heal_per_tick, cs.max_hp - cs.current_hp)
-                    cs.current_hp = min(cs.max_hp, cs.current_hp + regen.heal_per_tick)
-                    if pos_c and healed > 0:
-                        FLT.add(f"+{healed}", pos_c.x, pos_c.y - 16,
-                                (80, 220, 120), "small", eid)
+                # Servidor aplica e envia STATS_UPDATE autoritativo — não
+                # alterar HP local aqui, ou desync e "correção" visual ao
+                # tomar dano.
                 if regen.ticks_remaining <= 0:
                     to_remove.append(eid)
 
@@ -3308,7 +3182,6 @@ class ConsumableSystem(System):
         _mana_remove = []
         for eid, mregen in self.world.get_entities_with(_AMR):
             char_r = self.world.get_component(eid, _CHSr)
-            pos_r  = self.world.get_component(eid, Position)
             if not char_r or char_r.max_mana <= 0:
                 _mana_remove.append(eid)
                 continue
@@ -3317,12 +3190,7 @@ class ConsumableSystem(System):
             if mregen.tick_timer <= 0:
                 mregen.tick_timer += mregen.interval
                 mregen.ticks_remaining -= 1
-                if not self._net:
-                    restored = min(mregen.mana_per_tick, char_r.max_mana - char_r.mana)
-                    char_r.mana = min(char_r.max_mana, char_r.mana + mregen.mana_per_tick)
-                    if pos_r and restored > 0:
-                        FLT.add(f"+{restored} MP", pos_r.x, pos_r.y - 16,
-                                (100, 180, 255), "small", eid)
+                # Servidor aplica e envia STATS_UPDATE — não alterar mana local aqui.
                 if mregen.ticks_remaining <= 0:
                     _mana_remove.append(eid)
 
@@ -3330,9 +3198,8 @@ class ConsumableSystem(System):
             self.world.remove_component(eid, _AMR)
 
     def _use_consumable(self, entity_id: int, item_name: str, cbar) -> None:
-        inv   = self.world.get_component(entity_id, Inventory)
-        cs    = self.world.get_component(entity_id, CombatStats)
-        pos_c = self.world.get_component(entity_id, Position)
+        inv = self.world.get_component(entity_id, Inventory)
+        cs  = self.world.get_component(entity_id, CombatStats)
         if not inv or not cs:
             return
 
@@ -3373,76 +3240,33 @@ class ConsumableSystem(System):
         heal_instant  = cons.get("heal_instant", 0)
         mana_restore  = cons.get("mana_restore", 0)
 
-        if self._net:
-            # Online: SÓ manda o pedido — nada é mutado aqui (nem HP/mana,
-            # nem HoT, nem o item). O servidor é quem decide se aceita, e só
-            # ao confirmar (STATS_UPDATE com item_name+consumable_ok, ver
-            # network_handlers.py) o item é removido e os efeitos aplicados.
-            # Sem isso, um consumível bloqueado no SERVIDOR (drift natural
-            # entre os dois lados — ex: HP5 regen que o cliente ainda não
-            # viu) era perdido em silêncio: cliente já tinha curado local e
-            # consumido o item antes de saber que nada aconteceu de verdade.
-            if cbar is not None:
-                cbar.global_cooldown = ConsumableBar.GCD_DURATION
-            self.pending_item_name = item_name
-            from shared.messages import MsgType as _MTC
-            _hot = {"heal_per_tick": heal_per_tick, "interval": interval, "ticks": ticks} \
-                   if heal_per_tick > 0 and ticks > 0 else None
-            _mana_hot = {"mana_per_tick": mana_per_tick, "interval": interval, "ticks": ticks} \
-                        if mana_per_tick > 0 and ticks > 0 else None
-            self._net.send(_MTC.CONSUMABLE_USE, {
-                "item_name":    item_name,
-                "heal_instant": heal_instant,
-                "mana_restore": mana_restore,
-                "hot":          _hot,
-                "mana_hot":     _mana_hot,
-                "ooc_only":     cons.get("ooc_only", False),
-                "buffs":        [],
-            })
+        if not self._net:
             return
-
-        # Offline: aplica tudo localmente, sem espera.
-        if heal_instant > 0:
-            healed = min(heal_instant, cs.max_hp - cs.current_hp)
-            cs.current_hp = min(cs.max_hp, cs.current_hp + heal_instant)
-            if pos_c and healed > 0:
-                FLT.add(f"+{healed}", pos_c.x, pos_c.y - 16,
-                        (80, 220, 120), "small", entity_id)
-
-        if mana_restore > 0 and _char_u and _char_u.max_mana > 0:
-            restored = min(mana_restore, _char_u.max_mana - _char_u.mana)
-            _char_u.mana = min(_char_u.max_mana, _char_u.mana + mana_restore)
-            if pos_c and restored > 0:
-                FLT.add(f"+{restored} MP", pos_c.x, pos_c.y - 16,
-                        (100, 180, 255), "small", entity_id)
-
-        if heal_per_tick > 0 and ticks > 0:
-            self.world.add_component(entity_id, ActiveRegen(
-                heal_per_tick=heal_per_tick,
-                interval=interval,
-                ticks_total=ticks,
-            ))
-
-        from engine.components import ActiveManaRegen as _AMRu
-        if mana_per_tick > 0 and ticks > 0 and _char_u and _char_u.max_mana > 0:
-            try:
-                self.world.remove_component(entity_id, _AMRu)
-            except Exception:
-                pass
-            self.world.add_component(entity_id, _AMRu(
-                mana_per_tick=mana_per_tick,
-                interval=interval,
-                ticks_total=ticks,
-            ))
-
-        item.stack -= 1
-        if item.stack <= 0:
-            inv.items.remove(item)
-
+        # SÓ manda o pedido — nada é mutado aqui (nem HP/mana, nem HoT, nem
+        # o item). O servidor é quem decide se aceita, e só ao confirmar
+        # (STATS_UPDATE com item_name+consumable_ok, ver network_handlers.py)
+        # o item é removido e os efeitos aplicados. Sem isso, um consumível
+        # bloqueado no SERVIDOR (drift natural entre os dois lados — ex: HP5
+        # regen que o cliente ainda não viu) era perdido em silêncio: cliente
+        # já tinha curado local e consumido o item antes de saber que nada
+        # aconteceu de verdade.
         if cbar is not None:
             cbar.global_cooldown = ConsumableBar.GCD_DURATION
-
-        quest_fire("use_consumable", item_name=item.name)
+        self.pending_item_name = item_name
+        from shared.messages import MsgType as _MTC
+        _hot = {"heal_per_tick": heal_per_tick, "interval": interval, "ticks": ticks} \
+               if heal_per_tick > 0 and ticks > 0 else None
+        _mana_hot = {"mana_per_tick": mana_per_tick, "interval": interval, "ticks": ticks} \
+                    if mana_per_tick > 0 and ticks > 0 else None
+        self._net.send(_MTC.CONSUMABLE_USE, {
+            "item_name":    item_name,
+            "heal_instant": heal_instant,
+            "mana_restore": mana_restore,
+            "hot":          _hot,
+            "mana_hot":     _mana_hot,
+            "ooc_only":     cons.get("ooc_only", False),
+            "buffs":        [],
+        })
 
     def _finalize_consumable(self, entity_id: int, item_name: str) -> None:
         """Chamado por network_handlers.py ao chegar consumable_ok do servidor
@@ -3506,14 +3330,9 @@ class LootSystem(UIScaleMixin, System):
     BORDER_COLOR = (140, 100, 60)
     HOVER_COLOR  = (60, 45, 20)
 
-    RARITY_COLORS = {
-        "common":    (200, 200, 200),
-        "uncommon":  ( 30, 200,  30),
-        "rare":      ( 80, 140, 255),
-        "epic":      (180,  50, 255),
-        "legendary": (224, 135,  47),
-        "mythic":    (221,  68,  68),
-    }
+    # Fonte única em content/item_table.py (achado 06 do benchmark
+    # arquitetural, PROBLEMAS_ARQUITETURA.md §12/§13).
+    RARITY_COLORS = _SHARED_RARITY_COLORS
 
     def __init__(self, world: World, screen: pygame.Surface, player_entity: int = -1):
         super().__init__()
@@ -4188,9 +4007,6 @@ class SkillSystem(System, SkillHandlers):
         self.player_entity_id = player_entity_id
         self.world_surf = screen
         self.hud_surf   = screen
-        # Em modo online o servidor é autoritativo: cliente só aplica feedback visual.
-        # Injetado por game.py após _connect_online(). False = comportamento offline normal.
-        self._server_authoritative: bool = False
         self._net = None  # NetworkClient — injetado por game.py para enviar CAST_SKILL
 
     def _is_on_screen(self, pos: "Position") -> bool:
@@ -4285,102 +4101,15 @@ class SkillSystem(System, SkillHandlers):
 
     # ------------------------------------------------------------------
     def _use_skill(self, _idx: int, skill) -> bool:
-        """Tenta usar a skill. Retorna True se executou, False se falhou."""
-        # Em modo online, o servidor calcula dano e efeitos.
-        # O cliente executa apenas cooldown/GCD/som e envia CAST_SKILL.
-        if self._server_authoritative:
-            return self._use_skill_visual_only(_idx, skill)
+        """Tenta usar a skill. Retorna True se executou, False se falhou.
 
-        # Talent lock check (offline também)
-        if skill.skill_id and skill.skill_id in _TALENT_SKILL_REQ_SYS:
-            _tl_tid_off, _tl_min_off = _TALENT_SKILL_REQ_SYS[skill.skill_id]
-            from engine.components import TalentTree as _TTLockOff
-            _tt_lk_off = self.world.get_component(self.player_entity_id, _TTLockOff)
-            if _tt_lk_off is not None and _tt_lk_off.allocated.get(_tl_tid_off, 0) < _tl_min_off:
-                WARN.add("Requer talento")
-                return False
-
-        combat_state = self.world.get_component(self.player_entity_id, CombatState)
-        if combat_state and not combat_state.can_act():
-            return False
-        # Sleep/disoriented/polymorph: can_act() não cobre (StatusEffects, não
-        # CombatState) — igual ao bloqueio de PlayerInputSystem para movimento/ações.
-        from engine.utils import is_action_locked
-        if is_action_locked(self.world, self.player_entity_id):
-            return False
-
-        player_skills = self.world.get_component(self.player_entity_id, PlayerSkills)
-
-        # Bloqueia qualquer skill se o GCD ainda não zerou
-        if player_skills and player_skills.gcd_timer > 0:
-            return False
-
-        # Bloqueia qualquer skill enquanto Fatiador de Corpos está em channel
-        char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
-        if char_stats and char_stats.fatiador_timer > 0:
-            return False
-
-        combat_stats = self.world.get_component(self.player_entity_id, CombatStats)
-        tile_move    = self.world.get_component(self.player_entity_id, TileMovement)
-        if not combat_stats or not tile_move:
-            return False
-
-        # Skills ofensivas: selecionam alvo e iniciam combate.
-        # is_pursuing só é setado para skills INSTANTÂNEAS — skills com cast_time
-        # aguardam o cast completar para não aggrar o mob prematuramente.
-        if getattr(skill, "offensive", True):
-            self._resolve_target(combat_state, tile_move)
-            if isinstance(combat_state, CombatState):
-                has_cast = getattr(skill, "cast_time", 0.0) > 0
-                enter_combat(combat_state)
-                if not has_cast:
-                    combat_state.is_pursuing = True
-                    combat_state.chase_suppressed = False   # reengajamento reativa a perseguição
-
-        if not skill.is_ready():
-            if skill.current_cooldown > 0:
-                WARN.add(f"Em recarga ({skill.current_cooldown:.1f}s)")
-            elif skill.max_charges > 0:
-                WARN.add("Sem cargas")
-            return False
-
-        # Todas as skills são despachadas por skill_id — catálogo como fonte única
-        if skill.skill_id:
-            handler_fn = getattr(self, f"_skill_{skill.skill_id}", None)
-            if handler_fn:
-                success = handler_fn(skill, combat_stats, combat_state, tile_move)
-                if success:
-                    has_cast = getattr(skill, "cast_time", 0.0) > 0
-                    is_aoe   = getattr(skill, "needs_aoe_target", False)
-                    # Só bloqueia movimento se o SpellCast criado for interruptível.
-                    # Casts não-interruptíveis (Calcinar, Recarregar+Prático) permitem mover.
-                    if has_cast and isinstance(combat_state, CombatState):
-                        from engine.components import SpellCast as _SpellCast
-                        _sc = self.world.get_component(self.player_entity_id, _SpellCast)
-                        if _sc is None or _sc.interruptible:
-                            combat_state.is_casting = True
-                    if skill.sound_name and not has_cast and not is_aoe:
-                        SOUNDS.play_skill(skill.sound_name)
-                    if player_skills:
-                        player_skills.gcd_timer = PlayerSkills.GCD_DURATION
-                    # Skills instantâneas (sem cast_time) já causaram dano de forma
-                    # síncrona dentro de handler_fn (ex: deal_damage chamado ali) —
-                    # contar a quest aqui é seguro. Skills com cast (ex: Bola de Fogo)
-                    # só causam dano depois (projétil/PROJECTILE), então a contagem
-                    # acontece em PlayerProjectileSystem._on_hit, após o dano efetivo
-                    # (não aqui, no momento de ativar a skill).
-                    if not has_cast:
-                        from engine.components import TrainingDummy as _TDsk_off
-                        _qf_target_off = getattr(combat_state, "target_entity_id", -1)
-                        _on_dummy_off = (_qf_target_off != -1
-                                        and self.world.get_component(_qf_target_off, _TDsk_off) is not None)
-                        quest_fire("use_skill", skill_id=skill.skill_id, on_dummy=_on_dummy_off)
-                return bool(success)
-            else:
-                LOG.add(f"{skill.name}: sem implementacao para '{skill.skill_id}'.", (180, 60, 60))
-            return False
-
-        return False
+        Servidor calcula dano e efeitos; cliente executa apenas
+        cooldown/GCD/som e envia CAST_SKILL — ver `_use_skill_visual_only`.
+        `_skill_<id>` (métodos desta classe, definidos abaixo) permanecem a
+        fonte única do efeito de cada skill: reusados pelo servidor via
+        `getattr` em `server/skill_processor.py` (débito B3 conhecido,
+        ver PROBLEMAS_ARQUITETURA.md) — não fazem parte deste caminho."""
+        return self._use_skill_visual_only(_idx, skill)
 
     # ------------------------------------------------------------------
     def _use_skill_visual_only(self, _idx: int, skill) -> bool:
@@ -4405,7 +4134,7 @@ class SkillSystem(System, SkillHandlers):
 
         # 0. Talent lock: skill requer talento que não está alocado
         if skill.skill_id and skill.skill_id in _TALENT_SKILL_REQ_SYS:
-            _tl_tid, _tl_min = _TALENT_SKILL_REQ_SYS[skill.skill_id]
+            _tl_tid, _tl_name, _tl_min = _TALENT_SKILL_REQ_SYS[skill.skill_id]
             from engine.components import TalentTree as _TTLock
             _tt_lk = self.world.get_component(self.player_entity_id, _TTLock)
             if _tt_lk is not None and _tt_lk.allocated.get(_tl_tid, 0) < _tl_min:
@@ -4862,6 +4591,33 @@ class SkillSystem(System, SkillHandlers):
         best_hp   = float("inf")
         for eid, epos, _, _, etm, ecs, _ in self.world.get_entities_with(
                 Position, Enemy, AIControlled, TileMovement, CombatStats, Visible):
+            if ecs.current_hp <= 0:
+                continue
+            if not self._is_on_screen(epos):
+                continue
+            if not _is_hostile_resolve(self.world, self.player_entity_id, eid):
+                continue
+            d = chebyshev(px, py, etm.current_tile_x, etm.current_tile_y)
+            if _max_range > 0 and d > _max_range:
+                continue
+            if ecs.current_hp < best_hp or (ecs.current_hp == best_hp and d < best_dist):
+                best_dist = d
+                best_hp   = ecs.current_hp
+                best_id   = eid
+        # Fase 8 (06/08/2026, bug real de playtest — ver ARQUITETURA_ONLINE.md
+        # §34.74.48): minion (MOBA lane creep) nunca tem Enemy/AIControlled de
+        # propósito — MinionSystem próprio, não EnemyAISystem (mesma decisão de
+        # Torre, ver docstring de engine/components.py::Minion). Sem este loop
+        # paralelo, quando o alvo explícito de uma skill morre (comum — minion
+        # tem TTK baixo) e o auto-fallback tenta escolher o próximo hostil mais
+        # perto, minion nunca era candidato — mesmo vivo e adjacente. Roda tanto
+        # no cliente (predição) quanto no SERVIDOR (SkillSystem é compartilhado,
+        # ver server/world_server.py:479/server/skill_processor.py:314) — é lá
+        # que o bug realmente importava (skill falhava silenciosamente do lado
+        # autoritativo mesmo com o cliente parecendo ok). Mesma lógica de
+        # melhor-candidato do loop de Enemy acima, combinada no mesmo best_id.
+        for eid, epos, _, etm, ecs, _ in self.world.get_entities_with(
+                Position, Minion, TileMovement, CombatStats, Visible):
             if ecs.current_hp <= 0:
                 continue
             if not self._is_on_screen(epos):

@@ -7,6 +7,7 @@ Sistemas visuais (FLT, LOG, PROC, sons) ficam nas subclasses de cada lado.
 Exporta:
   apply_effect()              — aplica/atualiza status effect numa entidade
   apply_damage_core()         — núcleo ÚNICO de aplicação final de dano em HP
+  build_channeling_from_skill() — dono único da tradução SKILL_CATALOG → Channeling
   register_lethal_interceptor() — hook de golpe letal (duelo estilo WoW)
   StatusEffectSystem          — processa ciclo de vida de status effects (ticks, expiração)
   BaseCombatStateSystem       — núcleo headless: timers de combate, rage, HP5, concentração
@@ -208,6 +209,30 @@ def apply_effect(
         on_expire_effect=on_expire_effect,
         on_expire_duration=on_expire_duration,
         on_expire_magnitude=on_expire_magnitude,
+    )
+
+
+def build_channeling_from_skill(skill, target_x: float, target_y: float) -> "Channeling":
+    """Constrói um `Channeling` a partir de `skill.params`/`skill.channel_duration`
+    (SKILL_CATALOG) — dono único da tradução catálogo → componente vivo.
+    Antes desta função, servidor (`ui/skill_handlers.py`) e cliente
+    (`ui/spell_system.py::AoeTargetingSystem`) construíam `Channeling(...)`
+    cada um com os mesmos 6 números duplicados como literais Python; skill
+    de canalização nova só precisa preencher `params` no catálogo, nunca
+    mais tocar em código pra isso."""
+    from engine.components import Channeling
+    p = skill.params
+    return Channeling(
+        spell_id       = skill.skill_id,
+        duration       = skill.channel_duration,
+        tick_interval  = p.get("tick_interval",  1.0),
+        mana_per_tick  = p.get("mana_per_tick",  0),
+        target_x       = target_x,
+        target_y       = target_y,
+        radius_tiles   = p.get("radius_tiles",   1.0),
+        slow_pct       = p.get("slow_pct",       0.0),
+        dmg_weapon_pct = p.get("dmg_weapon_pct", 0.15),
+        dmg_sp_coeff   = p.get("dmg_sp_coeff",   1.0),
     )
 
 

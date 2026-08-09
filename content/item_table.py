@@ -32,6 +32,20 @@ from __future__ import annotations
 from engine.components import Item, Modifier
 
 
+# Cor de exibição por raridade — fonte única (achado 06 do benchmark
+# arquitetural, PROBLEMAS_ARQUITETURA.md §12/§13: estava duplicado
+# literalmente 2x dentro de ui/systems.py, cada classe com sua própria
+# cópia idêntica). ui/ importa daqui em vez de reimplementar.
+RARITY_COLORS: dict = {
+    "common":    (200, 200, 200),
+    "uncommon":  ( 30, 200,  30),
+    "rare":      ( 80, 140, 255),
+    "epic":      (180,  50, 255),
+    "legendary": (224, 135,  47),
+    "mythic":    (221,  68,  68),
+}
+
+
 # ---------------------------------------------------------------------------
 # Helpers de factory (migrados de merchant_data.py — _make_item ganhou
 # armor_class, que faltava lá: toda armadura vendida em loja tinha

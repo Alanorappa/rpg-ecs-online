@@ -60,10 +60,38 @@ class TestConfigLoadSave(unittest.TestCase):
 
     def test_save_nao_deixa_arquivo_temporario_para_tras(self):
         config.save({"scale": 3.0})
-        self.assertFalse(os.path.exists(config.CONFIG_FILE + ".tmp"))
+        leftover_tmp = [f for f in os.listdir(self._tmp_dir) if f.endswith(".tmp")]
+        self.assertEqual(leftover_tmp, [])
         with open(config.CONFIG_FILE) as f:
             # arquivo final sempre é JSON completo/válido — write atômico
             json.load(f)
+
+    def test_tmp_path_e_unico_por_processo_nao_colide_entre_2_saves(self):
+        """Bug real 07/08/2026: 2 clientes na mesma pasta salvando quase ao
+        mesmo tempo colidiam no MESMO nome de arquivo temporário
+        (config.json.tmp fixo) — um processo podia achar o .tmp do outro
+        já aberto ao tentar os.replace(), PermissionError sem tratamento,
+        crash. Simula 2 "processos" (PIDs diferentes) chamando save() —
+        os caminhos .tmp não podem ser iguais."""
+        import unittest.mock as mock
+        with mock.patch("os.getpid", return_value=111):
+            tmp_a = f"{config.CONFIG_FILE}.{os.getpid()}.tmp"
+        with mock.patch("os.getpid", return_value=222):
+            tmp_b = f"{config.CONFIG_FILE}.{os.getpid()}.tmp"
+        self.assertNotEqual(tmp_a, tmp_b)
+
+    def test_save_nao_derruba_o_jogo_se_replace_falhar(self):
+        """Prova diferencial do crash relatado: mesmo se os.replace()
+        falhar (arquivo temporário sumiu, outro processo segurando o
+        destino etc.), save() não pode propagar a exceção pra cima —
+        autosave falhar é aceitável, crashar o jogo durante alocação de
+        talento não é."""
+        import unittest.mock as mock
+        with mock.patch("os.replace", side_effect=PermissionError(5, "Acesso negado")):
+            try:
+                config.save({"scale": 5.0})
+            except PermissionError:
+                self.fail("save() propagou PermissionError — deveria ter engolido")
 
     def test_window_mode_default_e_maximized(self):
         """Fase G (23/07/2026, pedido do usuário): janela maximizada é o

@@ -47,6 +47,7 @@ class Session:
         self.char_data     = {}
         self.authenticated = False
         self.account_id    = -1    # preenchido no login; usado para criar personagem
+        self.is_gm         = False  # preenchido no login (server/auth.py::is_gm da conta)
         self._seq          = 0
         self.known_eids: set[int] = set()   # entidades que este cliente conhece
         # Último payload SAVE_STATE recebido do cliente (inventory/equipment/talents/skills/gold)
@@ -168,7 +169,12 @@ class SessionManager:
         if not srv_data:
             return None
         _live_eq = self.world_server.get_player_equipment_data(session.session_id)
-        merged = self._build_save_merge(srv_data, session.last_client_payload, _live_eq)
+        _live_hotbar = self.world_server.get_player_hotbar_data(session.session_id)
+        _live_talents = self.world_server.get_player_talent_data(session.session_id)
+        _live_inv = self.world_server.get_player_inventory_data(session.session_id)
+        merged = self._build_save_merge(srv_data, session.last_client_payload,
+                                        _live_eq, _live_hotbar, _live_talents,
+                                        _live_inv)
         if patch_fn is not None:
             patch_fn(merged)
         try:
@@ -180,7 +186,10 @@ class SessionManager:
 
     @staticmethod
     def _build_save_merge(srv_data: dict, client_payload: dict,
-                          live_equipment: dict | None = None) -> dict:
+                          live_equipment: dict | None = None,
+                          live_hotbar: list | None = None,
+                          live_talents: dict | None = None,
+                          live_inventory: "list | None" = None) -> dict:
         """
         Constrói o dict merged para save_character.
         Regras de autoridade:
@@ -192,7 +201,40 @@ class SessionManager:
           arquitetura/PROBLEMAS_ARQUITETURA.md, vulnerabilidade de gold absoluto).
         - max_hp: SERVIDOR autoritativo (CombatStats.max_hp já inclui bônus de equipamento
           validado, ver Tier B — _reconstruct_item). Mesma razão acima.
-        - inventory, talents: cliente se disponível, None = não sobrescreve DB
+        - inventory: SERVIDOR autoritativo quando `live_inventory` é
+          fornecido — Fase 0 do roteiro de saneamento (07/08/2026, ver
+          PROBLEMAS_ARQUITETURA.md §12/§13), QUARTA ocorrência do mesmo
+          padrão de bug (equipamento/hotbar/talentos acima): `inventory`
+          nunca teve fallback ao vivo, só `client_p.get("inventory")` —
+          o mesmo overlay de instância que contamina equipment/talents
+          também troca o `Inventory` real por um de 6 slots, e nenhum
+          handler (`_handle_save_state`/`_handle_inventory_update`) tinha
+          guard contra cachear isso. `live_inventory`
+          (WorldServer.get_player_inventory_data, lido do Inventory ao
+          vivo — sempre o real, mesma garantia de `live_equipment`) usa
+          `is not None` em vez de truthy: uma bag genuinamente vazia
+          (`[]`) é um estado real válido, não "indisponível" — tratar
+          `[]` como falsy cairia de novo no cache stale exatamente pro
+          caso de um personagem sem itens.
+        - talents: SERVIDOR autoritativo quando `live_talents` é
+          fornecido — TERCEIRA ocorrência do mesmo padrão de bug nesta
+          sessão (equipamento acima, skills["hotbar"] abaixo): bug real
+          (06/08/2026) — `enter_normalized_progression`
+          (instance_progression.py) troca o TalentTree por um overlay
+          com TODO talento do build no MÁXIMO (decisão de design da
+          instância de progressão normalizada); qualquer TALENT_UPDATE
+          OU SAVE_STATE mandado enquanto o player está DENTRO da
+          instância cacheia esse overlay maxado em
+          `client_payload["talents"]` (diferente de hotbar,
+          `_collect_save_state` NÃO omite "talents" de propósito) — nada
+          limpa esse cache quando `exit_normalized_progression` restaura
+          o TalentTree real, então o próximo save persistia os talentos
+          maxados no banco (personagem saía da BG com todos os pontos
+          aplicados). `live_talents` (WorldServer.get_player_talent_data,
+          lido do TalentTree ao vivo na hora do save — sempre o real,
+          já que `_persist_character` recusa persistir dentro da
+          instância) elimina a dependência desse cache. Ver
+          ARQUITETURA_ONLINE.md §34.74.49.
         - equipment: SERVIDOR autoritativo quando `live_equipment` é fornecido — bug real
           (11/07/2026): aljava sempre voltava cheia no relogin porque `client_payload["equipment"]`
           é só um cache (`session.last_client_payload`) do último EQUIP_SYNC/SAVE_STATE que o
@@ -203,7 +245,40 @@ class SessionManager:
           (WorldServer.get_player_equipment_data, chamado na hora do save) é o Equipment ATUAL
           do ECS — sempre correto, elimina a janela de staleness. client_p["equipment"] só
           sobra como fallback se o entity já não existir mais (ex: corrida rara no disconnect).
-        - skills: cliente se disponível, fallback srv_data
+        - skills["learned"]: SERVIDOR autoritativo (srv_data, sempre
+          ao vivo) — Fase 0 do roteiro de saneamento (07/08/2026, ver
+          PROBLEMAS_ARQUITETURA.md §12/§13): antes o cache do cliente
+          vencia quando truthy, o MESMO subcampo que ficou de fora
+          quando `hotbar` (abaixo) foi corrigido — vetor real:
+          desconectar dentro da instância restaura o `PlayerSkills`
+          real no ECS (`exit_normalized_progression`), mas
+          `_persist_character` roda em seguida sem passar por
+          `_handle_save_state`/`sync_player_skills` — o cache antigo
+          (possivelmente contaminado pelo overlay da instância) nunca
+          era corrigido antes do save. `srv_data.get("skills")` já é
+          sempre ao vivo (`get_player_save_data` lê `ps.learned_skill_ids`
+          na hora) — fora da instância, `sync_player_skills` já aplicou
+          o que o cliente reportou ANTES de `_persist_character` rodar
+          (mesmo handler, `_handle_save_state`), então preferir srv_data
+          nunca perde uma skill aprendida de verdade. `client_p["skills"]`
+          só sobra como fallback se srv_data não tiver o campo (sem
+          PlayerSkills, caso degenerado).
+        - skills["hotbar"]: SERVIDOR autoritativo quando `live_hotbar` é
+          fornecido — MESMA classe de bug do equipamento acima, mesmo fix:
+          `client_payload["skills"]` nunca tinha "hotbar" (o cliente manda
+          de propósito só "learned", ver client/save_sync_handlers.py::
+          _collect_save_state — layout é tratado como "UI local"), e
+          `_handle_hotbar_update` só atualiza o CACHE da sessão, nunca
+          persiste sozinho — qualquer SAVE_STATE subsequente (inclusive um
+          disparado sem o usuário perceber, ex.: ao entrar/sair de
+          battleground, ver instance_progression.py) reconstruía
+          `session.last_client_payload` inteiro a partir de um payload sem
+          "hotbar", apagando o que `_handle_hotbar_update` tinha posto lá
+          — bug real: hotbar embaralhada só no PRÓXIMO login (a hotbar AO
+          VIVO nunca quebrava, só o valor gravado no banco). `live_hotbar`
+          (WorldServer.get_player_hotbar_data, lido do PlayerSkills ao
+          vivo na hora do save) elimina a dependência desse cache pra esse
+          subcampo. Ver ARQUITETURA_ONLINE.md §34.74.47.
         - quests: SEMPRE servidor (mesma regra de skill_levels — progresso/entrega de
           quest é server-autoritativo, ver quest_logic.py/PROBLEMAS_ARQUITETURA.md)
         - stats base (level, xp, attrs): servidor
@@ -213,10 +288,20 @@ class SessionManager:
         # gold e max_hp já vêm corretos de get_player_save_data (Wallet/CombatStats vivos) —
         # dict(srv_stats) preserva os dois sem precisar (e sem dever) olhar o payload do cliente.
         merged_stats = dict(srv_stats)
-        # Usa client_skills apenas se tiver "learned" não-vazia; {"learned":[]} é falsy
-        # para evitar que um save com lista vazia sobrescreva skills válidas no DB.
+        # Fase 0 (07/08/2026) — srv_data["skills"] (sempre ao vivo, ver
+        # docstring acima) vence por padrão; client_p só serve de
+        # fallback pro caso degenerado de srv_data não ter o campo.
         _cs_raw = client_p.get("skills") if client_p else None
         client_skills = _cs_raw if (_cs_raw and _cs_raw.get("learned")) else None
+        _srv_skills = srv_data.get("skills") or None
+        _final_skills = _srv_skills if _srv_skills else client_skills
+        # Fase 7 (06/08/2026) — "hotbar" sempre do ECS ao vivo quando
+        # disponível, nunca do cache do cliente (ver docstring acima e
+        # ARQUITETURA_ONLINE.md §34.74.47). Incondicional quando presente,
+        # mesmo espírito de `live_equipment` abaixo.
+        if live_hotbar:
+            _final_skills = dict(_final_skills) if _final_skills else {}
+            _final_skills["hotbar"] = live_hotbar
 
         # Fog: union de tiles explorados (servidor DB + cliente atual).
         # O cliente sempre envia o conjunto completo (recebeu o fog do servidor
@@ -250,10 +335,10 @@ class SessionManager:
             "hp":        min(srv_data.get("hp", 100), merged_stats.get("max_hp", 9999)),
             "mp":        srv_data.get("mp", 100),
             "stats":     merged_stats,
-            "inventory": client_p.get("inventory") if client_p else None,
+            "inventory": live_inventory if live_inventory is not None else (client_p.get("inventory") if client_p else None),
             "equipment": live_equipment if live_equipment else (client_p.get("equipment") if client_p else None),
-            "talents":   client_p.get("talents")   if client_p else None,
-            "skills":    client_skills if client_skills else (srv_data.get("skills") or None),
+            "talents":   live_talents if live_talents else (client_p.get("talents") if client_p else None),
+            "skills":    _final_skills,
             "fog":       merged_fog if merged_fog else None,
             # skill_levels: SEMPRE servidor — progressão por uso é
             # server-autoritativa, cliente nunca influencia (ver
@@ -411,6 +496,7 @@ class SessionManager:
         # Armazena dados básicos (sem spawnar ainda — escolha de personagem vem depois)
         session.username      = username
         session.account_id    = char_data.get("account_id", -1)
+        session.is_gm         = bool(char_data.get("is_gm", False))
         session.authenticated = True
 
         chars = char_data.get("characters", [])
@@ -427,6 +513,16 @@ class SessionManager:
         tx = int(payload.get("tx", 0))
         ty = int(payload.get("ty", 0))
         accepted = self.world_server.move_player(session.session_id, tx, ty)
+        # Diagnóstico do rollback do Interceptar (06/08/2026, ver
+        # ARQUITETURA_ONLINE.md §34.74.50) — MOVE normal processado no
+        # mesmo tick/janela que um CAST_SKILL de dash é candidato a
+        # colidir com a correção de posição do dash (ver comentário em
+        # skill_processor.py sobre "corrida entre MOVE e CAST_SKILL").
+        # Só grava quando RPG_DEBUG_INTERCEPTAR está ligado (no-op
+        # normalmente).
+        from debug.interceptar_debug import INTERCEPTAR_DBG as _IDBG_mv
+        _IDBG_mv.log("MOVE_REQUEST", tick=self.world_server.tick_count,
+                     player_eid=session.entity_id, tx=tx, ty=ty, accepted=accepted)
         if accepted:
             # _broadcast_aoi_except (não _broadcast_aoi_from_session): o próprio
             # remetente NÃO deve receber de volta o próprio move confirmado — ele
@@ -657,6 +753,98 @@ class SessionManager:
             session.session_id, shop_id, item_name, quantity, last_inv,
             current_gold=int(current_gold) if current_gold is not None else None)
         await session.send(MsgType.BUY_RESULT, result)
+
+    # ── GM (menu de debug F12) — só `session.is_gm` tem efeito ────────────
+    # Mesmo padrão de bypass negado silenciosamente já usado em
+    # skill_processor.py pra taunt/stun: sem is_gm, a mensagem é ignorada,
+    # sem resposta e sem log de erro — não confirma nem nega pro cliente
+    # (não dá pinga de informação a uma tentativa não-autorizada).
+
+    async def _handle_gm_levelup(self, session: Session, payload: dict, ts: int) -> None:
+        if not session.authenticated or not session.is_gm:
+            return
+        eid = session.entity_id
+        levels = max(1, min(200, int(payload.get("levels", 1))))
+        from engine.components import CharacterStats, CombatStats, PermanentStats, TalentTree
+        from engine.stats_system import process_levelups
+        char = self.world_server.world.get_component(eid, CharacterStats)
+        cs   = self.world_server.world.get_component(eid, CombatStats)
+        perm = self.world_server.world.get_component(eid, PermanentStats)
+        if not char or not cs:
+            return
+        for _ in range(levels):
+            char.current_xp = char.xp_to_next_level
+            process_levelups(self.world_server.world, eid, char, cs, perm)
+        cs.current_hp = cs.max_hp
+        tt = self.world_server.world.get_component(eid, TalentTree)
+        self.world_server.queue_stats_update({
+            "player_eid":    eid,
+            "xp":            char.current_xp,
+            "level":         char.level,
+            "hp":            cs.current_hp,
+            "hp_max":        cs.max_hp,
+            "talent_points": tt.available_points if tt else 0,
+        })
+        log.info(f"[GM] {session.username!r} usou GM_LEVELUP levels={levels} "
+                 f"-> nivel {char.level}")
+
+    async def _handle_gm_add_gold(self, session: Session, payload: dict, ts: int) -> None:
+        if not session.authenticated or not session.is_gm:
+            return
+        eid = session.entity_id
+        amount = max(0, min(1_000_000, int(payload.get("amount", 0))))
+        if amount == 0:
+            return
+        from engine.components import Wallet
+        wallet = self.world_server.world.get_component(eid, Wallet)
+        if not wallet:
+            return
+        wallet.gold += amount
+        self.world_server.queue_stats_update({"player_eid": eid, "gold": wallet.gold})
+        log.info(f"[GM] {session.username!r} usou GM_ADD_GOLD amount={amount} "
+                 f"-> gold={wallet.gold}")
+
+    async def _handle_gm_add_item(self, session: Session, payload: dict, ts: int) -> None:
+        if not session.authenticated or not session.is_gm:
+            return
+        eid = session.entity_id
+        item_name = str(payload.get("item_name", ""))
+        if not item_name:
+            return
+        from engine.components import Inventory
+        inv = self.world_server.world.get_component(eid, Inventory)
+        if not inv:
+            return
+        # Mesmo catálogo que client/debug_handlers.py::_get_debug_item_catalog
+        # usa pra listar itens no F12 (content.loot_tables._T + SHOPS),
+        # casado por nome de exibição — não é um id estável, mas é o mesmo
+        # contrato que o resto do menu de debug já usa.
+        from content.loot_tables import _T
+        from content.merchant_data import SHOPS
+        factory = None
+        for f in _T.values():
+            if f().name == item_name:
+                factory = f
+                break
+        if factory is None:
+            for shop in SHOPS.values():
+                for entry in shop["stock"]:
+                    if entry["factory"]().name == item_name:
+                        factory = entry["factory"]
+                        break
+                if factory:
+                    break
+        if factory is None:
+            return
+        if len(inv.items) >= inv.max_slots:
+            return
+        item = factory()
+        inv.items.append(item)
+        from server.server_death_handler import _serialize_item
+        await session.send(MsgType.INVENTORY_UPDATE, {
+            "items": [_serialize_item(item)], "removed": [],
+        })
+        log.info(f"[GM] {session.username!r} usou GM_ADD_ITEM item_name={item_name!r}")
 
     async def _handle_consumable_use(self, session: Session, payload: dict, ts: int) -> None:
         """Processa uso de consumível — aplica efeitos autoritativamente no servidor.
@@ -1463,6 +1651,7 @@ class SessionManager:
             "server_ts": int(time.time() * 1000),
             "hp":        srv_hp,
             "hp_max":    srv_hp_max,
+            "is_gm":     session.is_gm,
         })
 
         near_players = self.world_server.get_players_in_aoi(session.session_id, AOI_RADIUS)
@@ -2067,6 +2256,9 @@ class SessionManager:
         MsgType.CONSUMABLE_USE:    _handle_consumable_use,
         MsgType.BUY_REQUEST:     _handle_buy_request,
         MsgType.SELL_REQUEST:      _handle_sell_request,
+        MsgType.GM_LEVELUP:        _handle_gm_levelup,
+        MsgType.GM_ADD_GOLD:       _handle_gm_add_gold,
+        MsgType.GM_ADD_ITEM:       _handle_gm_add_item,
         MsgType.PLAYER_HP_SYNC:    _handle_player_hp_sync,
         MsgType.EQUIP_SYNC:        _handle_equip_sync,
         MsgType.GOLD_UPDATE:       _handle_gold_update,

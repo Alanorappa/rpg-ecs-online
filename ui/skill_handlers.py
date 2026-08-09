@@ -749,19 +749,9 @@ class SkillHandlers:
             aoe_y = getattr(tile_move, "_server_aoe_y", 0.0)
             if aoe_x == 0.0 and aoe_y == 0.0:
                 return False  # coordenadas não enviadas
-            from engine.components import Channeling as _Chan
-            self.world.add_component(self.player_entity_id, _Chan(
-                spell_id       = "calamidade_flamejante",
-                duration       = 5.0,
-                tick_interval  = 1.0,
-                mana_per_tick  = 10,
-                target_x       = aoe_x,
-                target_y       = aoe_y,
-                radius_tiles   = 3.0,
-                slow_pct       = 0.75,
-                dmg_weapon_pct = 0.15,
-                dmg_sp_coeff   = 1.0,
-            ))
+            from engine.core_systems import build_channeling_from_skill
+            self.world.add_component(self.player_entity_id,
+                build_channeling_from_skill(skill, aoe_x, aoe_y))
             if combat_state:
                 from engine.stat_fns import enter_combat as _ec_cf
                 _ec_cf(combat_state)
@@ -774,9 +764,9 @@ class SkillHandlers:
 
         self._cancel_pursuit_for_targeting()
         self.world.add_component(self.player_entity_id, AoeTargeting(
-            spell_id         = "calamidade_flamejante",
-            radius_tiles     = 3.0,
-            cast_range_tiles = 8.0,
+            spell_id         = skill.skill_id,
+            radius_tiles     = skill.params.get("radius_tiles", 1.0),
+            cast_range_tiles = float(skill.cast_range),
         ))
         LOG.add("Clique para posicionar Calamidade Flamejante.", (255, 200, 80))
         return True
@@ -1149,7 +1139,7 @@ class SkillHandlers:
         perdem o alvo."""
         from engine.components import CharacterStats, CombatStats as _CS, TileMovement as _TM
         from engine.components import AIControlled, Enemy, CombatState as _CSt, StatusEffects as _SFX_cam
-        from engine.tileset import discover_camouflage_variants
+        from engine.entity_disguise import discover_sprite_variants
         char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
         cs         = self.world.get_component(self.player_entity_id, _CS)
 
@@ -1168,7 +1158,7 @@ class SkillHandlers:
         # os pares camuflagem_idle{suf}/camuflagem_run{suf} existentes em
         # assets/sprites/ — descoberta dinâmica, sem precisar editar código
         # ao adicionar uma nova variante).
-        _variants     = discover_camouflage_variants()
+        _variants     = discover_sprite_variants("camuflagem")
         chosen_object = random.choice(_variants) if _variants else ""
 
         # Reduz velocidade de movimento

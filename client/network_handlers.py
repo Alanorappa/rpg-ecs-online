@@ -142,6 +142,7 @@ class NetworkHandlers:
         self._remote_player_move_queues.clear()
         self._remote_step_timers.clear()
         self._my_eid = payload.get("eid", -1)
+        self.is_gm   = bool(payload.get("is_gm", False))
         char = payload.get("char", {})
         tx   = int(char.get("tile_x", 10))
         ty   = int(char.get("tile_y", 10))
@@ -410,7 +411,7 @@ class NetworkHandlers:
             from engine.components import (CombatStats as _CSCam, CombatState as _CStCam,
                                     TileMovement as _TMCam, StatusEffects as _SFXCam)
             from content.skill_config import SKILL_CATALOG as _SCCam
-            from engine.tileset import discover_camouflage_variants as _disc_cam
+            from engine.entity_disguise import discover_sprite_variants as _disc_cam
             _params_cam = _SCCam.get("camuflagem", {}).get("params", {})
             _dur_cam    = _params_cam.get("duration",  5.0)
             _spd_cam    = _params_cam.get("speed_pct", 0.60)
@@ -419,7 +420,7 @@ class NetworkHandlers:
             _tm_cam     = self.world.get_component(self.player_entity, _TMCam)
             if _cs_cam:
                 _cs_cam.camouflage_timer  = _dur_cam
-                _variants_cam = _disc_cam()
+                _variants_cam = _disc_cam("camuflagem")
                 _cs_cam.camouflage_object = _rand_cam.choice(_variants_cam) if _variants_cam else ""
             if _cst_cam:
                 _cst_cam.is_visible    = False
@@ -1060,10 +1061,13 @@ class NetworkHandlers:
             is_dash_corr   = payload.get("is_dash", False)
             player_tm = self.world.get_component(self.player_entity, TileMovement)
             if player_tm:
+                from debug.interceptar_debug import INTERCEPTAR_DBG as _IDBG_cli
                 # Se cliente já está dashando para o mesmo tile (prediction correta), não interrompe
                 if (getattr(player_tm, "is_dash", False) and
                         player_tm.target_tile_x == real_tx and
                         player_tm.target_tile_y == real_ty):
+                    _IDBG_cli.log("DASH_KEEP", real_tx=real_tx, real_ty=real_ty,
+                                  is_dash_corr=is_dash_corr, skill_rejected=skill_rejected)
                     pass  # animação em curso bate com posição do servidor — mantém
                 elif is_dash_corr and not skill_rejected:
                     _corr_duration = payload.get("duration")
@@ -1073,6 +1077,8 @@ class NetworkHandlers:
                         # fila/dash em curso (servidor já decidiu tudo, cliente só
                         # interpola a tween confirmada, sem enfileirar passo a passo
                         # nem prever o resultado de um empurrão em si mesmo).
+                        _IDBG_cli.log("DASH_FORCED", real_tx=real_tx, real_ty=real_ty,
+                                      duration=_corr_duration)
                         self._self_move_queue.clear()
                         from engine.utils import start_tile_movement
                         from engine.components import Position as _PosSelfDash
@@ -1087,10 +1093,14 @@ class NetworkHandlers:
                     # Sem duration explícito (ex: Interceptar) — comportamento
                     # existente: anima em sequência se já tiver dash em curso.
                     if player_tm.is_moving:
+                        _IDBG_cli.log("DASH_START", real_tx=real_tx, real_ty=real_ty,
+                                      queued=True)
                         if (not self._self_move_queue
                                 or self._self_move_queue[-1] != (real_tx, real_ty)):
                             self._self_move_queue.append((real_tx, real_ty))
                     else:
+                        _IDBG_cli.log("DASH_START", real_tx=real_tx, real_ty=real_ty,
+                                      queued=False)
                         from engine.utils import start_tile_movement
                         from engine.components import Position as _PosSelfDash
                         _ppos_sd = self.world.get_component(self.player_entity, _PosSelfDash)
@@ -1124,6 +1134,11 @@ class NetworkHandlers:
                     from engine.utils import chebyshev as _chb_corr
                     _corr_gap = _chb_corr(player_tm.current_tile_x, player_tm.current_tile_y,
                                           real_tx, real_ty)
+                    _IDBG_cli.log("DESYNC_CORR", real_tx=real_tx, real_ty=real_ty,
+                                  cur_tx=player_tm.current_tile_x, cur_ty=player_tm.current_tile_y,
+                                  was_dashing=_was_dashing, is_moving=player_tm.is_moving,
+                                  gap=_corr_gap, skill_rejected=skill_rejected,
+                                  will_cancel=(_was_dashing or not player_tm.is_moving or _corr_gap > 1))
                     if _was_dashing or not player_tm.is_moving or _corr_gap > 1:
                         # Cancela animação de dash em andamento (predição local que o
                         # servidor não confirmou) OU, se o player está parado, é seguro

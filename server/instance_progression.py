@@ -4,11 +4,13 @@ base pro futuro modo "Battlefield" — ver arquitetura/ARQUITETURA_ONLINE.md
 pra decisão completa e next_implementations/battlefield_design.md, §2,
 "Modelo 1: leva tudo do personagem principal" — SUPERADO por esta decisão).
 
-INERTE nesta fase: nenhum processador de jogo chama
-enter_/exit_normalized_progression ainda — o modo Battlefield em si (fila,
-times, mapa) é trabalho futuro separado. Este módulo só entrega o
-mecanismo de reset/overlay, pronto e testado, pra um futuro processador
-plugar nos 2 pontos de integração abaixo.
+ATIVO desde 04-05/08/2026 (corrigido 06/08/2026 — este docstring dizia
+"INERTE" e ficou desatualizado por um mês; ver PROBLEMAS_ARQUITETURA.md
+§12): `server/bg_queue_processor.py` chama enter_/exit_normalized_progression
+de verdade na fila real de battleground. Os 2 pontos de integração abaixo
+documentam o padrão geral (útil pra um futuro modo Battlefield/dungeon
+adicional), mas não é mais teórico — é o caminho real de todo player que
+entra numa partida de BG hoje.
 
 Toggle por modo (retrátil, pedido do usuário): qualquer dict de config de
 modo (ex.: um futuro BATTLEFIELD_MODES, espelhando ARENA_MODES em
@@ -106,7 +108,8 @@ def _real_slot_by_skill_id(real_ps: "PlayerSkills | None") -> dict[str, int]:
 
 
 def _grant_instance_skill(ps: PlayerSkills, sid: str,
-                          real_slot_by_sid: "dict[str, int] | None" = None) -> None:
+                          real_slot_by_sid: "dict[str, int] | None" = None,
+                          reserved_slots: "set[int] | None" = None) -> None:
     """Concede `sid` (learned_skill_ids + slot da hotbar) — idempotente,
     não faz nada se já concedida.
 
@@ -116,6 +119,23 @@ def _grant_instance_skill(ps: PlayerSkills, sid: str,
     instância — cai pro primeiro slot vazio se a skill nunca foi colocada
     numa hotbar real (decisão #10 original) ou se o slot preferido já foi
     ocupado por outra skill concedida antes.
+
+    `reserved_slots` (06/08/2026, bug real de playtest — ver
+    ARQUITETURA_ONLINE.md §34.74.50): conjunto de TODOS os slots que
+    alguma skill da hotbar real ocupa (`set(real_slot_by_sid.values())`),
+    conhecido por inteiro desde a entrada na instância — mesmo pra
+    skills que ainda não desbloquearam. `INSTANCE_SKILL_UNLOCK_ORDER` é
+    uma ordem FIXA por classe, independente da hotbar real do player —
+    sem este parâmetro, uma skill "de preenchimento" (sem slot
+    preferido, ou cujo preferido já foi ocupado) que desbloqueia CEDO
+    podia roubar greedy o slot que uma skill REAL só vai reivindicar
+    DEPOIS (ex.: Interceptar, level 6) — quando essa skill tardia
+    finalmente desbloqueava, o slot dela já tinha sido tomado, e ela
+    caía em outro lugar (bug real: hotbar da instância não batia com a
+    real mesmo pra skills configuradas). Fallback agora faz 2 passadas:
+    primeiro só slots FORA de `reserved_slots` (nunca rouba o lugar de
+    uma skill real ainda não revelada); só usa um slot reservado como
+    último recurso, se não sobrar nenhum outro (mais skills que slots).
 
     Skills desbloqueadas por TALENTO no jogo real (ex.: punho_no_queixo,
     escudo_fogo) já autorizam de graça, sem precisar bumpar nada aqui: a
@@ -135,6 +155,13 @@ def _grant_instance_skill(ps: PlayerSkills, sid: str,
     if preferred is not None and preferred < len(ps.skills) and ps.skills[preferred] is None:
         ps.skills[preferred] = PlayerSkills._make_skill(sid, SKILL_CATALOG)
         return
+    _reserved = reserved_slots or set()
+    for i, slot in enumerate(ps.skills):
+        if slot is None and i not in _reserved:
+            ps.skills[i] = PlayerSkills._make_skill(sid, SKILL_CATALOG)
+            return
+    # Último recurso: nenhum slot livre "não-reservado" sobrou (mais
+    # skills reveladas até agora do que slots fora da hotbar real).
     for i, slot in enumerate(ps.skills):
         if slot is None:
             ps.skills[i] = PlayerSkills._make_skill(sid, SKILL_CATALOG)
@@ -214,7 +241,8 @@ def enter_normalized_progression(ws, eid: int) -> None:
     new_ps = PlayerSkills()
     unlock_order = INSTANCE_SKILL_UNLOCK_ORDER.get(char.class_id, [])
     if unlock_order:
-        _grant_instance_skill(new_ps, unlock_order[0], _real_slot_by_skill_id(ps))
+        _real_slots = _real_slot_by_skill_id(ps)
+        _grant_instance_skill(new_ps, unlock_order[0], _real_slots, set(_real_slots.values()))
     ws.world.add_component(eid, new_ps)
 
     ws.world.add_component(eid, Wallet(gold=INSTANCE_STARTING_GOLD))
@@ -411,6 +439,7 @@ def _process_instance_levelup(ws, eid: int) -> None:
 
     snap = ws.world.get_component(eid, InstanceProgressionSnapshot)
     real_slot_by_sid = _real_slot_by_skill_id(snap.real_player_skills if snap else None)
+    reserved_slots = set(real_slot_by_sid.values())
     unlock_order = INSTANCE_SKILL_UNLOCK_ORDER.get(char.class_id, [])
     gains = CLASS_LEVEL_GAINS.get(char.class_id, {})
     leveled = False
@@ -425,7 +454,7 @@ def _process_instance_levelup(ws, eid: int) -> None:
         char.vitality     += gains.get("vitality", 0)
         char.defense      += gains.get("defense", 0)
         if char.level - 1 < len(unlock_order):
-            _grant_instance_skill(ps, unlock_order[char.level - 1], real_slot_by_sid)
+            _grant_instance_skill(ps, unlock_order[char.level - 1], real_slot_by_sid, reserved_slots)
         leveled = True
 
     if char.level >= INSTANCE_LEVEL_CAP:

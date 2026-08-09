@@ -160,6 +160,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._net_pass    = net_pass
         self._net         = net_client  # usa cliente existente se fornecido
         self._my_eid      = -1       # entity_id atribuído pelo servidor
+        self.is_gm        = False    # setado por LOGIN_OK — gate real do F12 (server/auth.py::is_gm)
         # Outros jogadores: server_eid → local_eid (entidade ECS real)
         self._remote_players: dict[int, int] = {}
         # Mobs do servidor: server_eid → local_eid (cache O(1) para lookup invertido)
@@ -543,8 +544,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._connect_online()
         # Passa referência de rede ao PirofagiaSystem para modo online
         self._pirofagia_system._net = self._net
-        # Modo online: SkillSystem delega dano ao servidor; só aplica feedback visual
-        self._skill_system._server_authoritative = True
+        # SkillSystem delega dano ao servidor; só aplica feedback visual
         self._skill_system._net = self._net
         # Validação client-side agora usa RemoteEntityMeta via world — sem refs extras necessárias
         # TalentSystem: envia só os talentos ao servidor na alocação/desalocação
@@ -1685,7 +1685,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                             self._zoom = new_zoom
                             self._tile_render_system.invalidate_cache()
                             self._zoom_cache_dirty_timer = -1.0  # cancela debounce pendente de scroll
-                    elif event.key == pygame.K_F12 and DEBUG_MODE:
+                    elif event.key == pygame.K_F12 and DEBUG_MODE and self.is_gm:
                         already_open = self._show_debug
                         self._close_all_modals()
                         if not already_open:
@@ -2029,20 +2029,15 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 tx, ty = self._map_overlay.pending_destination
                 self._map_overlay.pending_destination = None
                 if self._debug_teleport_map:
-                    # Debug: teleporte de mapa (F12). Online, `_do_transition`
-                    # direto era só client-side (bug real relatado pelo
-                    # usuário 23/07/2026: tela preta + minimapa preso no mapa
-                    # antigo) — o SERVIDOR nunca ficava sabendo, então o
-                    # personagem continuava (autoritativamente) no mapa de
-                    # origem; qualquer ação subsequente que dependesse do
-                    # mapa real (ex.: "Voltar ao Spawn") não via troca
-                    # nenhuma pra desfazer. Mesmo caminho C→S de qualquer
-                    # transição normal (ZONE_CHANGE_REQ →
-                    # WorldServer.transfer_player → ZONE_CHANGE de volta,
-                    # que só ENTÃO chama _do_transition via
-                    # _handle_msg_zone_change) — sem isso, offline continua
-                    # usando o atalho direto (não há servidor pra rodar o
-                    # round-trip).
+                    # Debug: teleporte de mapa (F12). `_do_transition` direto
+                    # seria só client-side (bug real relatado pelo usuário
+                    # 23/07/2026: tela preta + minimapa preso no mapa antigo)
+                    # — o SERVIDOR nunca ficava sabendo, então o personagem
+                    # continuava (autoritativamente) no mapa de origem. Mesmo
+                    # caminho C→S de qualquer transição normal
+                    # (ZONE_CHANGE_REQ → WorldServer.transfer_player →
+                    # ZONE_CHANGE de volta, que só ENTÃO chama
+                    # _do_transition via _handle_msg_zone_change).
                     target = self._debug_teleport_map
                     self._debug_teleport_map = ""
                     if self._net:
@@ -2050,8 +2045,6 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                         self._net.send(_MT_dbgmap.ZONE_CHANGE_REQ, {
                             "to_map": target, "target_x": tx, "target_y": ty,
                         })
-                    else:
-                        self._do_transition({"target_map": target, "target_x": tx, "target_y": ty})
                 else:
                     from engine.components import PlayerAutoMove
                     for _, auto in self.world.get_entities_with(PlayerAutoMove):
@@ -2079,18 +2072,15 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 player_tm = self.world.get_component(self.player_entity, TileMovement)
                 if player_tm and not player_tm.is_moving:
                     key = (player_tm.current_tile_x, player_tm.current_tile_y)
-                    if key in self.transition_tiles:
-                        if self._net:
-                            from shared.messages import MsgType as _MTzc
-                            trans = self.transition_tiles[key]
-                            self._net.send(_MTzc.ZONE_CHANGE_REQ, {
-                                "to_map":   trans["target_map"],
-                                "target_x": trans["target_x"],
-                                "target_y": trans["target_y"],
-                            })
-                            self._transition_cooldown = 2.0
-                        else:
-                            self._do_transition(self.transition_tiles[key])
+                    if key in self.transition_tiles and self._net:
+                        from shared.messages import MsgType as _MTzc
+                        trans = self.transition_tiles[key]
+                        self._net.send(_MTzc.ZONE_CHANGE_REQ, {
+                            "to_map":   trans["target_map"],
+                            "target_x": trans["target_x"],
+                            "target_y": trans["target_y"],
+                        })
+                        self._transition_cooldown = 2.0
 
             if self._map_title_timer > 0:
                 self._map_title_timer -= dt
@@ -2366,7 +2356,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 self._flush_skill_tooltip()
 
             # Modal de debug (F12): por cima de tudo exceto mapa
-            if self._show_debug and DEBUG_MODE:
+            if self._show_debug and DEBUG_MODE and self.is_gm:
                 self._draw_debug_modal()
 
             # Mapa por cima de tudo

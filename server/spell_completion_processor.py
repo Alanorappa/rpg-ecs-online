@@ -508,7 +508,7 @@ class SpellCompletionMixin:
             # Deduz mana por tick
             char = self.world.get_component(player_eid, _CHS)
             if char and ch.mana_per_tick > 0:
-                ch.mana_timer = getattr(ch, "mana_timer", 0.0) + dt
+                ch.mana_timer += dt
                 if ch.mana_timer >= ch.tick_interval:
                     ch.mana_timer -= ch.tick_interval
                     char.mana = max(0, char.mana - ch.mana_per_tick)
@@ -517,8 +517,6 @@ class SpellCompletionMixin:
                         continue
 
             # Tick de dano
-            if not hasattr(ch, "tick_timer"):
-                ch.tick_timer = ch.tick_interval
             ch.tick_timer -= dt
             if ch.tick_timer <= 0:
                 ch.tick_timer += ch.tick_interval
@@ -1636,8 +1634,8 @@ class SpellCompletionMixin:
         tm  = self.world.get_component(player_eid, TileMovement)
 
         try:
-            from engine.tileset import discover_camouflage_variants
-            _variants = discover_camouflage_variants()
+            from engine.entity_disguise import discover_sprite_variants
+            _variants = discover_sprite_variants("camuflagem")
             chosen = _rand.choice(_variants) if _variants else ""
         except Exception:
             chosen = ""

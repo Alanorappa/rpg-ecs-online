@@ -194,6 +194,17 @@ class MsgType(str, Enum):
     SELL_REQUEST       = "sell_request"      # C→S  {item_name, item_value, stack_sold}
     SELL_RESULT        = "sell_result"       # S→C  {success, item_name, sell_price, new_gold} | {success:False, reason}
 
+    # ── GM (menu de debug F12, 07/08/2026) ──────────────────────────
+    # Só a conta com is_gm=True (server/grant_gm.py, sem UI/endpoint pra
+    # conceder) tem efeito — sem is_gm, servidor ignora silenciosamente
+    # (mesmo padrão de bypass negado usado em skill_processor.py pra
+    # taunt/stun). Sem S→C dedicado: resposta chega por STATS_UPDATE
+    # (level/xp/talent_points/gold) e INVENTORY_UPDATE, os mesmos canais
+    # que já existem pra qualquer outra mutação legítima.
+    GM_LEVELUP         = "gm_levelup"        # C→S  {levels: int}
+    GM_ADD_GOLD        = "gm_add_gold"       # C→S  {amount: int}
+    GM_ADD_ITEM        = "gm_add_item"       # C→S  {item_name: str}
+
     # ── Estatísticas do personagem (Fase E, 23/07/2026) ────────────
     # Request/response sob demanda (não um canal contínuo tipo STATS_UPDATE):
     # CharStatsTracker só muda em eventos raros (dano/kill/duelo/arena) e o
@@ -312,6 +323,9 @@ C2S_REQUIRED: dict = {
     MsgType.HOTBAR_UPDATE:      {"skills": list},
     MsgType.BUY_REQUEST:        {"shop_id": str, "item_name": str},
     MsgType.SELL_REQUEST:       {"item_name": str},
+    MsgType.GM_LEVELUP:         {"levels": _NUM},
+    MsgType.GM_ADD_GOLD:        {"amount": _NUM},
+    MsgType.GM_ADD_ITEM:        {"item_name": str},
     MsgType.QUEST_ACCEPT:       {"quest_id": str},
     MsgType.QUEST_TURN_IN:      {"quest_id": str},
     MsgType.CHAT_SEND:          {"text": str},
@@ -376,6 +390,8 @@ def validate_c2s(msg_type: "MsgType", payload) -> "str | None":
 #   "eid":       int     (entity_id do player nesta sessão)
 #   "char":      dict    (CharSnapshot — veja abaixo)
 #   "server_ts": int     (timestamp do servidor para sincronizar relógio)
+#   "hp"/"hp_max": int   (HP real do servidor no spawn)
+#   "is_gm":     bool    (conta é GM — server/auth.py, concedida via server/grant_gm.py — gate real do menu F12, ver GM_LEVELUP/GM_ADD_GOLD/GM_ADD_ITEM)
 # }
 
 # ── S→C: LOGIN_ERROR ──────────────────────────────────────────────────────────

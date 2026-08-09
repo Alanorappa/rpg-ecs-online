@@ -1223,5 +1223,109 @@ class TestMinionDeathXpGold(unittest.TestCase):
         self.assertEqual(data["faction"], "arena_time_a")
 
 
+class TestThrottleOfMinionFightingRecalcOnTargetMove(unittest.TestCase):
+    """Fase 4 (06/08/2026, mesmo achado da Fase 3 mas em MinionSystem/
+    FIGHTING): o destino passado pra `_walk_toward` era a tile ATUAL do
+    alvo, recalculada fresh todo tick — `_walk_toward` descarta
+    current_path/path_recalc_timer IMEDIATO toda vez que o destino muda,
+    ignorando o backoff normal (0.8s) quase todo tick com o alvo em
+    movimento. Com uma wave inteira FIGHTING alvos em movimento ao mesmo
+    tempo (cenário de PC), isso dispara scan de occupied_tiles + A* todo
+    tick que qualquer alvo muda de tile. _TARGET_RECALC_MIN_TICKS_BY_TIER
+    limita a frequência que o destino é de fato atualizado."""
+
+    def setUp(self):
+        self.world, self.pf = _make_world_with_services()
+        self.ms = MinionSystem(self.world, get_tilemap_for_map=lambda mf: None,
+                               get_pathfinding_for_map=lambda mf: self.pf)
+        RELATIONSHIP[("time_a", "time_b")] = "hostil"
+        RELATIONSHIP[("time_b", "time_a")] = "hostil"
+
+        # Minion parado em (5,5), FIGHTING um alvo hostil a 3 tiles —
+        # dentro do aggro_range_tiles=4 de minion_melee (nunca perde o
+        # alvo por _target_still_valid), fora do attack_range_tiles=1
+        # (precisa passar pela perseguição, não pelo branch de ataque).
+        route = [(5, 5), (5, 30)]
+        self.minion_eid = create_minion(self.world, 5, 5, "minion_melee",
+                                        faction_id="time_a", route=route)
+        self.world.add_component(self.minion_eid, MapLocation(_MAP))
+
+        self.target_eid = create_enemy(self.world, 5, 8, race="Lobo", faction="time_b")
+        self.world.add_component(self.target_eid, MapLocation(_MAP))
+        self.target_pos = self.world.get_component(self.target_eid, Position)
+        self.target_tm = self.world.get_component(self.target_eid, TileMovement)
+
+        m = self.world.get_component(self.minion_eid, Minion)
+        m.state = "FIGHTING"
+        m.current_target_eid = self.target_eid
+        m.path_dest = None
+        m._target_recalc_last_tick = -1
+
+        from engine.components import EnemyTier
+        tier = self.world.get_component(self.minion_eid, EnemyTier)
+        self.assertIsNotNone(tier, "create_minion deveria atribuir EnemyTier")
+        tier.tier = "normal"
+        self.interval = MinionSystem._TARGET_RECALC_MIN_TICKS_BY_TIER["normal"]
+
+    def _move_target(self, tx: int, ty: int) -> None:
+        from engine.tileset import TILE_SIZE
+        self.target_tm.current_tile_x = self.target_tm.target_tile_x = tx
+        self.target_tm.current_tile_y = self.target_tm.target_tile_y = ty
+        self.target_tm.is_moving = False
+        self.target_pos.x = tx * TILE_SIZE + TILE_SIZE // 2
+        self.target_pos.y = ty * TILE_SIZE + TILE_SIZE // 2
+
+    def _replan_ticks(self, n: int) -> list:
+        """Chama update() n vezes, movendo o alvo pra uma tile NOVA (nunca
+        repetida dentro da janela, `x = 1 + i % 9`, `y = 8` — chebyshev
+        3-4 do minion parado em (5,5): dentro do aggro_range=4, fora do
+        attack_range=1) ANTES de cada uma. Precisa ser sempre distinta da
+        anterior — um padrão que alterna entre só 2 tiles pode "voltar"
+        pro MESMO destino que `minion.path_dest` ficou congelado (throttle
+        ainda não permitiu atualizar), fazendo o código enxergar como "sem
+        mudança" e produzir um falso replan (achado real escrevendo este
+        teste). Nunca sai do raio de aggro (senão o minion perde o alvo e
+        volta pra ADVANCING, mesma armadilha do detect_radius da Fase 3).
+        Devolve os tick_count em que _target_recalc_last_tick mudou."""
+        m = self.world.get_component(self.minion_eid, Minion)
+        replans = []
+        for i in range(n):
+            self._move_target(1 + (i % 9), 8)
+            before = m._target_recalc_last_tick
+            self.ms.update(dt=0.05, tick_count=1000 + i)
+            if m._target_recalc_last_tick != before:
+                replans.append(1000 + i)
+        return replans
+
+    def test_normal_throttla_recalculo_por_mudanca_de_tile(self):
+        replans = self._replan_ticks(self.interval * 2 + 1)
+        self.assertGreaterEqual(len(replans), 2,
+            "precisa ver pelo menos 2 replans nesta janela pra provar o gap")
+        gaps = [b - a for a, b in zip(replans, replans[1:])]
+        for gap in gaps:
+            self.assertGreaterEqual(gap, self.interval,
+                f"minion normal (intervalo={self.interval}) não deveria trocar "
+                f"de destino antes do intervalo completo (gap real={gap})")
+
+    def test_boss_nunca_throttla_recalculo(self):
+        from engine.components import EnemyTier
+        tier = self.world.get_component(self.minion_eid, EnemyTier)
+        tier.tier = "boss"
+        replans = self._replan_ticks(5)
+        self.assertEqual(len(replans), 5,
+            "boss (intervalo=1) deveria trocar de destino TODO tick, nunca throttlado")
+
+    def test_alvo_parado_nao_precisa_de_throttle(self):
+        # Alvo no MESMO tile sempre — path_dest nunca muda de verdade,
+        # então não há "troca de destino" pra throttlar: _walk_dest ==
+        # _new_dest em todo tick, _target_recalc_last_tick acompanha.
+        m = self.world.get_component(self.minion_eid, Minion)
+        self._move_target(5, 8)
+        for i in range(3):
+            self.ms.update(dt=0.05, tick_count=2000 + i)
+        self.assertEqual(m._target_recalc_last_tick, 2002,
+            "alvo parado não precisa de throttle — destino já é sempre o mesmo")
+
+
 if __name__ == "__main__":
     unittest.main()

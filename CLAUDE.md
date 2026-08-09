@@ -8,13 +8,27 @@
 ## Workflow obrigatório
 
 ### Início de qualquer sessão
-1. Ler `arquitetura/ARQUITETURA_ONLINE.md` — decisões, protocolo, estado de implementação
-2. Ler `arquitetura/MAPA_PROJETO.md` — localização de tudo (online + herdado)
-3. Ler `arquitetura/SISTEMAS_ECS.md` — sistemas offline (referência) + sistemas do servidor
-4. Ler `arquitetura/COMPONENTES_ECS.md` — componentes disponíveis
-5. Usar esses arquivos como referência ANTES de ler código-fonte
+1. Ler `arquitetura/VISAO_PRODUTO.md` — o que o jogo quer ser, prioridade
+   de modalidades, horizonte de escala, decisões de rumo (06/08/2026,
+   documento vivo — leitura obrigatória ANTES de julgar se uma mudança
+   arquitetural vale o esforço agora)
+2. Ler `arquitetura/ARQUITETURA_ONLINE.md` — decisões, protocolo, estado de implementação
+3. Ler `arquitetura/MAPA_PROJETO.md` — localização de tudo (online + herdado)
+4. Ler `arquitetura/SISTEMAS_ECS.md` — sistemas offline (referência) + sistemas do servidor
+5. Ler `arquitetura/COMPONENTES_ECS.md` — componentes disponíveis
+6. Usar esses arquivos como referência ANTES de ler código-fonte
 
 **Regra:** Se a resposta está nos arquivos de arquitetura, não varrer o codebase.
+**Contrapartida desta regra (06/08/2026):** ela só funciona se os arquivos
+estiverem certos. Auditoria de 06/08/2026 achou 4 casos de doc dizendo o
+OPOSTO do código real (`gold` documentado como "cliente autoritativo"
+quando é servidor; `MAPA_PROJETO.md` afirmando "servidor nunca importa
+`ui/`" quando importa de propósito; `instance_progression.py` ainda
+descrito como "inerte" um mês depois de entrar em produção via fila de
+BG; fluxo de "nova stat" ensinando um mecanismo removido do código). Se
+algo que você lê num arquivo de arquitetura conflita com o que o código
+realmente faz, **o código vence, sempre** — e o doc errado é ele mesmo
+um problema a registrar (`PROBLEMAS_ARQUITETURA.md`), não só a ignorar.
 
 ### Após qualquer mudança
 Atualizar os arquivos de arquitetura relevantes:
@@ -25,6 +39,127 @@ Atualizar os arquivos de arquitetura relevantes:
 - Novo arquivo online → `MAPA_PROJETO.md` (tabela "Onde encontrar o quê — Online")
 - Novo componente ECS → `COMPONENTES_ECS.md`
 - Problema arquitetural → `PROBLEMAS_ARQUITETURA.md`
+- **Isso vale NO MESMO commit/sessão da mudança, nunca "depois que sobrar
+  tempo"** (06/08/2026 — `PROBLEMAS_ARQUITETURA.md` ficou 16 dias sem
+  entrada nova enquanto pelo menos 4 bugs da mesma família catalogada em
+  §11/A4 aconteciam de verdade; nenhum foi cruzado de volta com a
+  auditoria que já os previa). Um débito documentado e nunca revisitado
+  vale tanto quanto um débito nunca documentado.
+
+---
+
+## Disciplina de qualidade (06/08/2026 — resposta a bugs recorrentes e a uma auditoria que se repetiu sozinha)
+
+### Antes de agir sobre QUALQUER pedido — implementação OU correção (06/08/2026, decisão explícita do usuário)
+- **Nunca tratar o primeiro achado "relacionado" ao sintoma/pedido como
+  se fosse a causa raiz ou a única forma de implementar.** Antes de
+  escrever qualquer código, mapear explicitamente QUAIS sistemas/
+  componentes ECS a mudança toca e o efeito colateral em cada um —
+  histórico real desta sessão: mais de uma correção "isolada" não
+  resolveu o problema relatado, e num caso o mecanismo real só foi
+  achado numa camada totalmente diferente da que o fix inicial mexeu
+  (ver `PROBLEMAS_ARQUITETURA.md` §12, "Lesson" da investigação do PNQ).
+- **Se um pedido do usuário (ou o caminho mais rápido de implementar
+  algo) conflita com a arquitetura ECS** — acoplamento novo, estado
+  global fora do ECS, lógica duplicada em vez de reusar um ponto único
+  de verdade, componente virando "deus" com responsabilidade que não é
+  dele, etc. — **NUNCA decidir sozinho, nem para casos que pareçam
+  pequenos.** Parar, explicar o conflito, sugerir uma alternativa que
+  respeita a arquitetura, e esperar a decisão do usuário antes de agir.
+  Sem exceção por tamanho — decisão explícita do usuário, 06/08/2026
+  ("nunca decido sozinho — sempre pergunto").
+- **Testes: sem política automática fixa.** Nível de teste (nenhum,
+  manual em playtest, automatizado) é decidido junto, por mudança, não
+  presumido — decisão explícita do usuário, 06/08/2026.
+- Ler `arquitetura/VISAO_PRODUTO.md` antes de julgar se uma refatoração
+  arquitetural vale o esforço agora — a ordem de trabalho decidida é
+  VISÃO primeiro, débito técnico depois (a arquitetura serve a visão do
+  produto, não o contrário).
+- **PESQUISAR/DESENHAR ANTES DE CODAR — pra QUALQUER correção ou
+  implementação, sem exceção de tamanho.** Decisão explícita do
+  usuário, 07/08/2026, depois de um incidente com 3 tentativas
+  seguidas erradas no mesmo arquivo (`engine/tileset.py` →
+  `engine/camouflage.py` → parametrização escrita direto no código, SEM
+  pesquisa nova — só reciclando o benchmark geral de Veloren feito
+  antes, não uma checagem específica pra ESTA decisão) — a 3ª tentativa
+  aconteceu MESMO DEPOIS de eu já ter escrito a versão anterior desta
+  regra, o que prova que "já pesquisei algo parecido antes" não é a
+  mesma coisa que pesquisar a decisão específica em jogo. Fluxo
+  obrigatório antes de tocar em qualquer arquivo de código:
+  1. Mapear o problema arquiteturalmente — que sistema/categoria isso
+     é de verdade, não só o sintoma imediato.
+  2. Consultar as referências de verdade (Veloren/AzerothCore, ou
+     pesquisa nova via WebSearch/WebFetch se o caso for específico e
+     não coberto pelo benchmark já feito — nunca assumir que uma
+     pesquisa ANTERIOR sobre um tópico mais amplo já cobre uma decisão
+     nova e específica).
+  3. Verificar se já existe um ponto único de verdade no PRÓPRIO
+     projeto que já resolve isso (`fx.py`, `ui/effect_animator.py`,
+     `ui/icon_manager.py`, `ui/sound_manager.py` são o padrão certo pra
+     "1 módulo por CATEGORIA de asset/efeito, usado por QUALQUER skill
+     que precisar" — nunca 1 arquivo por skill, nunca hardcode do nome
+     da skill dentro da função quando o mecanismo é genérico).
+  4. Propor o desenho pro usuário e ESPERAR aprovação antes de
+     escrever/editar qualquer arquivo — mesmo que a mudança pareça
+     pequena ou óbvia.
+  Caso registrado (revertido depois de 3 idas e vindas):
+  `arquitetura/PROBLEMAS_ARQUITETURA.md` §12/§13.
+
+Contexto que gerou esta seção: uma auditoria arquitetural ampla já
+existia (`PROBLEMAS_ARQUITETURA.md` §11, 15/07/2026) e já tinha nomeado
+corretamente a causa raiz de bugs que se repetiram três semanas depois
+(autoridade híbrida na persistência = item A4; servidor despachando
+skill via `getattr` numa classe de UI do cliente = item B3). Os fixes
+pontuais aconteceram, mas ninguém cruzou o bug novo com o item já
+catalogado — cada um foi tratado como incidente isolado. Isso é o
+padrão a quebrar, não só os bugs individuais.
+
+- **Antes de investigar qualquer bug, checar `PROBLEMAS_ARQUITETURA.md`
+  (seções numeradas + §11) pelo sintoma.** Se bater com um item marcado
+  "MITIGADO" (não "RESOLVIDO"), o fix de verdade é terminar aquele item
+  — não outro patch pontual em cima do sintoma novo. Um item "mitigado"
+  que gera um 4º/5º incidente da mesma família é sinal de que a
+  mitigação nunca foi suficiente; dizer isso ao usuário explicitamente
+  em vez de tratar como bug novo.
+- **"Corrigido" exige reproduzir o sintoma que foi relatado, não só um
+  cenário sintético plausível.** Um teste automatizado que você mesmo
+  escreve prova que O SEU cenário passa — não que o bug relatado sumiu.
+  Antes de declarar algo corrigido: (a) reproduza o cenário exato
+  descrito (mesma sequência, mesma configuração), ou (b) diga
+  explicitamente que não foi possível confirmar contra o caso real e
+  que falta dado adicional (log, replay, resposta a uma pergunta
+  direta) — nunca generalize de "meu teste sintético passou" pra
+  "corrigido". Rodar a suíte inteira (900+ testes) não é prova de nada
+  além de "não quebrei outra coisa que já era testada".
+- **Campo novo persistido a partir de `session.last_client_payload`
+  (autoridade híbrida)**: antes de aceitar esse padrão pra um campo
+  novo, checar se ele é afetado por QUALQUER overlay/estado temporário
+  (progressão normalizada de instância, ou qualquer mecanismo parecido
+  futuro) — `server/instance_progression.py` troca `TalentTree`/
+  `PlayerSkills`/`Wallet`/`Inventory`/`Equipment`/`PermanentStats`. Se
+  for, o campo nasce com um `live_X` lido do ECS ao vivo desde o
+  commit inicial (mesmo padrão de `get_player_equipment_data`/
+  `get_player_hotbar_data`/`get_player_talent_data`) — não como reação
+  a um bug relatado depois. Auditoria de 06/08/2026 achou 5 campos
+  afetados; só 3 tinham esse fallback.
+- **Proibido estado mutável ad-hoc fora do ECS.** Nunca anexar
+  cache/estado via `hasattr(func, "_x")`/atributo de função, nem dict
+  mutável no CORPO de uma classe (é atributo de classe, compartilhado
+  entre todas as instâncias — armadilha clássica do Python, não estado
+  por-instância). Padrão certo já existe no projeto e é pra ser
+  copiado, não reinventado: dict/lista de MÓDULO com nome visível +
+  `global` explícito na função que muta (`core_systems.
+  register_lethal_interceptor`, `faction_system.register_pvp_context`,
+  o `_svc` já documentado acima), ou — se for cache de recurso
+  (sprite/superfície) com necessidade real de limite — um dict de
+  módulo com teto explícito e `clear()` documentado
+  (`ui/floating_text.py::_outline_cache` é o exemplo a seguir).
+- **Antes de escrever qualquer lógica nova, verificar se um dos "Pontos
+  únicos de verdade" acima já cobre o caso** — a lista existe
+  precisamente pra evitar reimplementação local. Se a lógica que você
+  está prestes a escrever se parece com algo que já devia ter um dono
+  único (dano, teleporte, autorização de skill, broadcast), procurar
+  o dono antes de escrever um novo caminho paralelo.
 
 ---
 
@@ -94,6 +229,19 @@ Atualizar os arquivos de arquitetura relevantes:
   (classe + talento + learned) — gate autoritativo chamado pelo
   skill_processor; toda forma nova de adquirir skill entra ALI. Fixtures de
   teste usam `tests.helpers.authorize_skill()`.
+- **Troca de aparência temporária de entidade** (disfarce, transformação,
+  futura poção de metamorfose, etc.) → `engine/entity_disguise.py::
+  get_active_appearance_override()` + tabela `_APPEARANCE_SOURCES` — 1
+  função checadora por fonte (lê o estado que a fonte já mantém, sem
+  componente novo nem sync de rede novo), nunca um `if/elif` novo no
+  render loop. `discover_sprite_variants(base_name)`/
+  `get_animated_disguise_frame(base_name, ...)` são genéricas, parametrizadas
+  por `base_name` — NUNCA hardcodear o nome de uma skill dentro dessas
+  funções (classe de bug: 3 tentativas erradas em sequência até acertar,
+  ver PROBLEMAS_ARQUITETURA.md §12/§13 — inclusive DEPOIS da regra
+  "pesquisar antes de codar" já existir, o que prova que reciclar
+  pesquisa de um tópico mais amplo não substitui pesquisar a decisão
+  específica em jogo).
 - **Entry point server-side novo que executa handler compartilhado em nome
   de um player** (skill/spell/projectile/channeling) →
   `WorldServer.register_map_services_for(player_eid)` ANTES do handler —
@@ -184,3 +332,9 @@ python main.py
 ```
 
 Conta de teste criada automaticamente: `usuario=teste  senha=123456`
+
+Testar algo que depende de nível/talento/gold/item: conceder GM
+(`python -m server.grant_gm <username>`) + `"debug_mode": true` em
+`config.json` — abre F12 com nível/ouro/itens server-autoritativos de
+verdade (não é mais mutação só local). Ver `ARQUITETURA_ONLINE.md`
+§34.74.54.

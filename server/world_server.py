@@ -478,7 +478,6 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         from ui.systems import SkillSystem
         self._skill_system = SkillSystem(self.world, player_entity_id=-1)
         # Servidor usa melee range com lag tolerance (1 + MELEE_LAG_TOLERANCE tiles)
-        self._skill_system._server_authoritative = True
 
         # ── Profiler de tick ─────────────────────────────────────────────────
         # Acumula tempo por seção; resumo impresso a cada _PERF_REPORT_TICKS ticks.
@@ -536,6 +535,23 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # breakdown só vale a pena pra picos de verdade, senão o arquivo
         # de log vira ruído a cada tick um pouco mais pesado.
         self._PERF_BREAKDOWN_MS = 100.0
+        # Fase 5 de escala (06/08/2026, ver ARQUITETURA_ONLINE.md
+        # Sec.34.74.44) - streak de ticks CONSECUTIVOS acima do budget.
+        # Diferente de "tick lento" (incidente isolado, ja logado acima):
+        # isso detecta sobrecarga SUSTENTADA - estado em que o loop de
+        # run() nunca cai no branch que faz `await asyncio.sleep()`
+        # (nenhum yield pro event loop, WebSocket para de responder).
+        # So observabilidade - nao muda comportamento/timing nenhum.
+        self._perf_overbudget_streak: int = 0
+        self._perf_degraded: bool = False
+        self._PERF_DEGRADED_STREAK_THRESHOLD = 10  # ~0.33s a 30 ticks/s
+        # Estado do gc.collect() manual periódico - movido de local de
+        # run() pra campo de instância (Fase 5, 06/08/2026) porque cada
+        # iteração do loop virou uma chamada própria de
+        # _run_tick_or_sleep() (extraído pra ser testável isoladamente),
+        # sem estado de loop sobrevivendo entre chamadas.
+        self._gc_ticks_since_collect = 0
+        self._GC_EVERY_TICKS = TICK_RATE * 10  # coleta manual a cada ~10s
         # psutil: medição de CPU do processo. cpu_percent(interval=None) acumula desde
         # a última chamada — primeiro call inicializa o baseline, por isso chamamos aqui.
         try:
@@ -3106,6 +3122,17 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             _reject("no_stats")
             return
 
+        # Fase 6 (06/08/2026, bug real de playtest — ver
+        # ARQUITETURA_ONLINE.md): não existia gate de morte pro lado da
+        # CURA, só pro dano (apply_damage_core::"blocked_dead",
+        # engine/core_systems.py). Mesmo invariante (current_hp<=0),
+        # checado ANTES de qualquer outro bloqueio, mesma posição
+        # relativa de apply_damage_core. Sem isso, poção usada no
+        # instante da morte era consumida (item perdido) sem curar nada.
+        if cs.current_hp <= 0:
+            _reject("dead")
+            return
+
         if payload.get("ooc_only", False) and cstate and cstate.in_combat:
             _reject("in_combat")
             return
@@ -3711,6 +3738,85 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         return {slot: self._item_data_from_obj(item)
                 for slot, item in eq_comp.slots.items() if item is not None}
 
+    def get_player_hotbar_data(self, session_id: str) -> list:
+        """Serializa a hotbar ATUAL (`PlayerSkills.skills`, ao vivo) pra
+        persistência — Fase 7 (06/08/2026, ver ARQUITETURA_ONLINE.md
+        §34.74.47), mesmo padrão de `get_player_equipment_data` (mesmo
+        bug de fundo já corrigido uma vez pro equipamento: cache do
+        cliente em `session.last_client_payload` fica stale sempre que o
+        servidor muda o estado sem o cliente reenviar um SAVE_STATE
+        completo — `_handle_hotbar_update` já aplica reordenação DIRETO
+        neste componente, então ele é sempre a fonte correta na hora do
+        save, nunca o cache)."""
+        from engine.components import PlayerSkills as _PSHb
+        eid = self._player_eids.get(session_id)
+        if eid is None:
+            return []
+        ps = self.world.get_component(eid, _PSHb)
+        if ps is None:
+            return []
+        return [sk.skill_id if sk else None for sk in ps.skills]
+
+    def get_player_talent_data(self, session_id: str) -> "dict | None":
+        """Serializa o TalentTree ATUAL (ao vivo) pra persistência — Fase
+        9 (06/08/2026, ver ARQUITETURA_ONLINE.md §34.74.49), TERCEIRA
+        ocorrência do mesmo padrão nesta sessão (equipamento, hotbar
+        Fase 7): `session.last_client_payload["talents"]` é um cache que
+        fica stale quando o servidor muda o TalentTree por baixo dele —
+        aqui especificamente, `enter_normalized_progression`
+        (server/instance_progression.py) troca o componente por um
+        overlay com TODO talento do build no MÁXIMO (decisão de design
+        da instância); qualquer TALENT_UPDATE ou SAVE_STATE mandado
+        ENQUANTO dentro cacheia esse overlay maxado — nada limpa o cache
+        quando `exit_normalized_progression` restaura o TalentTree real,
+        então esse cache poluído persistia no próximo save (bug real:
+        personagem saía da BG com TODOS os talentos aplicados). Como
+        `_persist_character` já recusa persistir com o player dentro da
+        instância, o TalentTree vivo no momento em que ESTA função roda
+        é sempre o real, nunca o overlay."""
+        from engine.components import TalentTree as _TTHb
+        eid = self._player_eids.get(session_id)
+        if eid is None:
+            return None
+        tt = self.world.get_component(eid, _TTHb)
+        if tt is None:
+            return None
+        return {
+            "chosen_build":      tt.chosen_build,
+            "allocated":         dict(tt.allocated),
+            "available_points":  tt.available_points,
+        }
+
+    def get_player_inventory_data(self, session_id: str) -> "list | None":
+        """Serializa o Inventory ATUAL (ao vivo) do player pra persistência
+        — Fase 0 do roteiro de saneamento (07/08/2026, ver
+        PROBLEMAS_ARQUITETURA.md §12/§13), QUARTA ocorrência do mesmo
+        padrão nesta sessão (equipamento, hotbar, talentos): `_build_save_merge`
+        usava `session.last_client_payload["inventory"]` sem nenhum
+        fallback ao vivo — quando `enter_normalized_progression` troca o
+        `Inventory` real por um overlay de 6 slots da instância (e
+        `_handle_save_state`/`_handle_inventory_update` cacheiam esse
+        overlay sem guard nenhum), o cache ficava contaminado e nada o
+        corrigia depois de `exit_normalized_progression` restaurar o
+        real — vetor confirmado: SAVE_STATE mandado durante a instância.
+
+        Como `_persist_character` já recusa persistir com o player dentro
+        da instância (`is_in_normalized_progression`), o `Inventory` vivo
+        no momento em que ESTA função roda é sempre o real — mesma
+        garantia de `get_player_equipment_data`. `sync_player_inventory`
+        já mantém esse componente espelhado a partir do INV_SYNC do
+        cliente (loot/compra/venda já validados pelo servidor antes de
+        chegar aqui), então ler ao vivo não perde nada que o cache tinha
+        de legítimo."""
+        from engine.components import Inventory as _InvHb
+        eid = self._player_eids.get(session_id)
+        if eid is None:
+            return None
+        inv = self.world.get_component(eid, _InvHb)
+        if inv is None:
+            return None
+        return [self._item_data_from_obj(it) for it in inv.items]
+
     # request_loot → LootProcessorMixin
 
     # ── Alvo de combate unificado (ECS pattern: combatente = entidade com CombatStats) ──
@@ -3768,67 +3874,87 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._on_tick_callbacks.append(callback)
 
     async def run(self) -> None:
-        import gc as _gc_srv
         self.running = True
         log.info(f"[WorldServer] zona='{self.zone_id}' @ {TICK_RATE} ticks/s")
-
-        next_tick  = time.perf_counter()
-        _gc_ticks  = 0
-        _GC_EVERY  = TICK_RATE * 10   # coleta manual a cada ~10s (evita pauses do GC automático)
+        next_tick = time.perf_counter()
         while self.running:
-            now = time.perf_counter()
-            if now >= next_tick:
-                try:
-                    self._tick(TICK_INTERVAL)
-                except Exception as e:
-                    import traceback
-                    log.error(f"[WorldServer] ERRO no tick {self.tick_count}: {e}")
-                    traceback.print_exc()
-                    # Limpa deltas pendentes para não propagar estado corrompido
-                    self._moved_this_tick.clear()
-                    self._spawned_this_tick.clear()
-                    self._despawned_this_tick.clear()
-                    self._combat_this_tick.clear()
-                    self._player_deaths_this_tick.clear()
-                    self._entity_deaths_this_tick.clear()
-                    self._player_revives_this_tick.clear()
-                    self._ghost_state_updates_this_tick.clear()
-                next_tick += TICK_INTERVAL
-                if time.perf_counter() - next_tick > TICK_INTERVAL:
-                    next_tick = time.perf_counter()
-                _gc_ticks += 1
-                if _gc_ticks >= _GC_EVERY:
-                    _gc_ticks = 0
-                    # Log da coleta manual (05/08/2026) — correlacionar tick#
-                    # e duração do collect() com os picos isolados de
-                    # 75-190ms vistos em ai_bundles/bnd:map_1. Coleta roda
-                    # estritamente FORA de _tick() (helper _perf_mark não
-                    # alcança aqui), então nunca aparece dentro do breakdown
-                    # de um tick — mas se a duração dela for grande, o PRÓXIMO
-                    # tick começa atrasado (next_tick já avançou antes desta
-                    # chamada), o que pode aparecer como tick lento sem
-                    # nenhum sistema específico pesando no breakdown.
-                    _t0_gc = time.perf_counter()
-                    _gc_srv.collect()   # coleta manual entre ticks, nunca durante
-                    _gc_dt_ms = (time.perf_counter() - _t0_gc) * 1000.0
-                    if self._perf_proc is not None:
-                        try:
-                            _rss_gc_mb = self._perf_proc.memory_info().rss / (1024 * 1024)
-                        except Exception:
-                            _rss_gc_mb = -1.0
-                    else:
-                        _rss_gc_mb = -1.0
-                    print(f"[PERF] gc.collect() tick#{self.tick_count} dur={_gc_dt_ms:.1f}ms "
-                          f"rss_pos={_rss_gc_mb:.1f}MB", file=self._perf_log)
-            else:
-                # Dorme até o próximo tick — elimina busy-spin com sleep(0).
-                # Threshold 1ms: abaixo disso yield simples para não overshooting.
-                _sleep = next_tick - time.perf_counter()
-                if _sleep > 0.001:
-                    await asyncio.sleep(_sleep)
-                else:
-                    await asyncio.sleep(0)
+            next_tick = await self._run_tick_or_sleep(next_tick)
         self._perf_log.close()
+
+    async def _run_tick_or_sleep(self, next_tick: float) -> float:
+        """Uma iteração do loop principal — extraído de `run()` (Fase 5,
+        06/08/2026, ver ARQUITETURA_ONLINE.md §34.74.44) pra ser testável
+        isoladamente (`while self.running` direto não dá, roda pra
+        sempre). Roda `_tick()` se já passou do horário, senão dorme até
+        o próximo. Devolve o `next_tick` atualizado.
+
+        `await asyncio.sleep(0)` INCONDICIONAL no fim do branch de tick
+        (achado real: antes só existia no branch `else`) — sem isso, se
+        `_tick()` demorar consistentemente mais que `TICK_INTERVAL`
+        (sobrecarga SUSTENTADA, não um pico isolado), este branch é
+        sempre verdadeiro e o loop NUNCA cai no `else`, ou seja, nunca
+        devolve controle ao event loop do asyncio — nenhuma mensagem de
+        WebSocket é processada, nenhuma conexão nova é aceita. O processo
+        continua vivo, mas pra quem está conectado o servidor trava (hang
+        de rede — a causa real mais provável de "crashar com muitos
+        players", não falta de orçamento de CPU em si)."""
+        import gc as _gc_srv
+        now = time.perf_counter()
+        if now >= next_tick:
+            try:
+                self._tick(TICK_INTERVAL)
+            except Exception as e:
+                import traceback
+                log.error(f"[WorldServer] ERRO no tick {self.tick_count}: {e}")
+                traceback.print_exc()
+                # Limpa deltas pendentes para não propagar estado corrompido
+                self._moved_this_tick.clear()
+                self._spawned_this_tick.clear()
+                self._despawned_this_tick.clear()
+                self._combat_this_tick.clear()
+                self._player_deaths_this_tick.clear()
+                self._entity_deaths_this_tick.clear()
+                self._player_revives_this_tick.clear()
+                self._ghost_state_updates_this_tick.clear()
+            next_tick += TICK_INTERVAL
+            if time.perf_counter() - next_tick > TICK_INTERVAL:
+                next_tick = time.perf_counter()
+            self._gc_ticks_since_collect += 1
+            if self._gc_ticks_since_collect >= self._GC_EVERY_TICKS:
+                self._gc_ticks_since_collect = 0
+                # Log da coleta manual (05/08/2026) — correlacionar tick#
+                # e duração do collect() com os picos isolados de
+                # 75-190ms vistos em ai_bundles/bnd:map_1. Coleta roda
+                # estritamente FORA de _tick() (helper _perf_mark não
+                # alcança aqui), então nunca aparece dentro do breakdown
+                # de um tick — mas se a duração dela for grande, o PRÓXIMO
+                # tick começa atrasado (next_tick já avançou antes desta
+                # chamada), o que pode aparecer como tick lento sem
+                # nenhum sistema específico pesando no breakdown.
+                _t0_gc = time.perf_counter()
+                _gc_srv.collect()   # coleta manual entre ticks, nunca durante
+                _gc_dt_ms = (time.perf_counter() - _t0_gc) * 1000.0
+                if self._perf_proc is not None:
+                    try:
+                        _rss_gc_mb = self._perf_proc.memory_info().rss / (1024 * 1024)
+                    except Exception:
+                        _rss_gc_mb = -1.0
+                else:
+                    _rss_gc_mb = -1.0
+                print(f"[PERF] gc.collect() tick#{self.tick_count} dur={_gc_dt_ms:.1f}ms "
+                      f"rss_pos={_rss_gc_mb:.1f}MB", file=self._perf_log)
+            # Fase 5 (06/08/2026) — ver docstring acima: garante o yield
+            # mesmo quando o tick está consistentemente atrasado.
+            await asyncio.sleep(0)
+        else:
+            # Dorme até o próximo tick — elimina busy-spin com sleep(0).
+            # Threshold 1ms: abaixo disso yield simples para não overshooting.
+            _sleep = next_tick - time.perf_counter()
+            if _sleep > 0.001:
+                await asyncio.sleep(_sleep)
+            else:
+                await asyncio.sleep(0)
+        return next_tick
 
     def _perf_mark(self, label: str, t0: float) -> None:
         """Registra o tempo gasto desde `t0` sob `label` — acumulado em
@@ -3842,6 +3968,33 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         elapsed = _t_mark.perf_counter() - t0
         self._perf_accum[label]    = self._perf_accum.get(label, 0.0) + elapsed
         self._perf_tick_now[label] = self._perf_tick_now.get(label, 0.0) + elapsed
+
+    def _update_overbudget_streak(self, tick_ms: float) -> None:
+        """Detecta sobrecarga SUSTENTADA — diferente de "tick lento"
+        (incidente isolado, já logado em `_tick`), isto conta ticks
+        CONSECUTIVOS acima do budget (Fase 5, 06/08/2026, ver
+        ARQUITETURA_ONLINE.md §34.74.44). Ao cruzar
+        `_PERF_DEGRADED_STREAK_THRESHOLD`, loga uma vez "entrando em
+        estado degradado"; ao voltar pro budget com a flag ligada, loga
+        "recuperou" com a duração do episódio. Só observabilidade —
+        nenhuma mudança de comportamento/timing do tick em si (ver
+        `_run_tick_or_sleep` pro fix real de sobrecarga sustentada:
+        garantir yield pro asyncio)."""
+        if tick_ms > self._PERF_BUDGET_MS:
+            self._perf_overbudget_streak += 1
+            if (not self._perf_degraded
+                    and self._perf_overbudget_streak >= self._PERF_DEGRADED_STREAK_THRESHOLD):
+                self._perf_degraded = True
+                print(f"[PERF] SERVIDOR DEGRADADO: {self._perf_overbudget_streak} ticks "
+                      f"consecutivos acima do budget (tick#{self.tick_count})",
+                      file=self._perf_log)
+        else:
+            if self._perf_degraded:
+                print(f"[PERF] servidor recuperou (ficou degradado por "
+                      f"{self._perf_overbudget_streak} ticks, tick#{self.tick_count})",
+                      file=self._perf_log)
+                self._perf_degraded = False
+            self._perf_overbudget_streak = 0
 
     def _tick(self, dt: float) -> None:
         import time as _time_tick
@@ -4133,6 +4286,16 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             if not _rcst:
                 _regen_remove.append(_regen_eid)
                 continue
+            # Fase 6 (06/08/2026) — pausa o HoT em quem já morreu (não
+            # consome tick_timer/ticks_remaining) em vez de curar o
+            # "corpo": _handle_player_death já remove ActiveRegen, mas
+            # roda DEPOIS deste loop no mesmo tick em que a morte
+            # acontece — sem este guard, o HoT aplicava 1 tick de cura
+            # nessa janela, current_hp>0 fazia qualquer mob aceitar o
+            # corpo como alvo válido (bug real de playtest). Pausar (não
+            # remover) preserva os ticks restantes se o player reviver.
+            if _rcst.current_hp <= 0:
+                continue
             _regen.tick_timer -= dt
             if _regen.tick_timer <= 0:
                 _regen.tick_timer += _regen.interval
@@ -4167,6 +4330,11 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             _cs_mr   = self.world.get_component(_mregen_eid, CombatStats)
             if not _char_mr or _char_mr.max_mana <= 0:
                 _mregen_remove.append(_mregen_eid)
+                continue
+            # Fase 6 (06/08/2026) — mesmo guard do ActiveRegen (HP) acima,
+            # por consistência (mana regen num corpo morto é o mesmo tipo
+            # de inconsistência, mesmo não sendo o bug relatado).
+            if _cs_mr is not None and _cs_mr.current_hp <= 0:
                 continue
             _mregen.tick_timer -= dt
             if _mregen.tick_timer <= 0:
@@ -4489,7 +4657,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # de torre + espalhamento em área (MinionSystem._check_tower_aggro).
         _t0p = _time_tick.perf_counter()
         self._minion_system.update(dt, combat_this_tick=self._combat_this_tick,
-                                   spatial_hash=_combat_spatial_hash)
+                                   spatial_hash=_combat_spatial_hash,
+                                   tick_count=self.tick_count)
         self._perf_mark("minion_system", _t0p)
         _t0p = _time_tick.perf_counter()
         self._tick_minion_waves(dt)
@@ -4608,6 +4777,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         _tick_ms = (_time_tick.perf_counter() - _t_tick_start) * 1000.0
         self._perf_accum["TOTAL"] = self._perf_accum.get("TOTAL", 0.0) + _tick_ms / 1000.0
         self._perf_count += 1
+        self._update_overbudget_streak(_tick_ms)
         if _tick_ms > self._PERF_BUDGET_MS:
             _extra = ""
             if _tick_ms > self._PERF_BREAKDOWN_MS:

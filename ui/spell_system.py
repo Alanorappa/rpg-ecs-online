@@ -1684,7 +1684,17 @@ class PlayerProjectileSystem(System):
 # ---------------------------------------------------------------------------
 
 class ChannelingSystem(System):
-    """Processa ticks de dano durante canalização (Calamidade Flamejante)."""
+    """Cliente: acompanha uma canalização em andamento (Calamidade Flamejante)
+    — prediz gasto de mana por tick (feedback de UI, servidor é quem
+    realmente deduz), cancela por movimento/duração, desenha o círculo de
+    área. NÃO aplica dano — isso é responsabilidade exclusiva do servidor
+    (`server/spell_completion_processor.py::_process_player_channeling`).
+    Um laço de dano local existia aqui antes (07/08/2026, removido) mas
+    nunca executava de verdade: a query `Position/Enemy/CombatStats` não
+    casa com mob online (representado só via `RemoteEntityMeta`/
+    `RemoteControlled`, ver CLAUDE.md) e este branch não tem mais modo
+    offline (`game.py::_connect_online()` é incondicional) — código morto
+    sem nenhum caminho vivo, não uma predição intencional."""
 
     def __init__(self, world: World, screen: pygame.Surface):
         self.world  = world
@@ -1728,7 +1738,6 @@ class ChannelingSystem(System):
                     interrupted.append(entity_id)
                     continue
                 char_stats.mana -= tick_mana
-                self._apply_tick(entity_id, channeling)
 
             if channeling.elapsed >= channeling.duration:
                 to_finish.append(entity_id)
@@ -1753,39 +1762,6 @@ class ChannelingSystem(System):
                 self.world.remove_component(entity_id, Channeling)
             SOUNDS.fadeout_skills(800)   # fadeout 0.8s ao finalizar naturalmente
             LOG.add("Calamidade Flamejante terminou.", (255, 160, 60))
-
-    def _apply_tick(self, entity_id: int, ch: Channeling) -> None:
-        base_dmg  = _spell_damage(entity_id, self.world, ch.dmg_weapon_pct, ch.dmg_sp_coeff)
-        attacker_cs = self.world.get_component(entity_id, CombatStats)
-        radius_px = ch.radius_tiles * TILE_SIZE
-        hit_any = False
-        for eid, epos, _, ecs in self.world.get_entities_with(
-                Position, Enemy, CombatStats):
-            if ecs.current_hp <= 0:
-                continue
-            dx = epos.x - ch.target_x
-            dy = epos.y - ch.target_y
-            if math.sqrt(dx * dx + dy * dy) > radius_px:
-                continue
-            tick_dmg = base_dmg
-            if attacker_cs:
-                _pyr = getattr(attacker_cs, "pyromania_bonus", 0.0)
-                if _pyr > 0:
-                    tick_dmg = int(tick_dmg * (1.0 + _pyr))
-            if attacker_cs and getattr(attacker_cs, "crematoria_enabled", False):
-                if ecs.max_hp > 0 and ecs.current_hp / ecs.max_hp < 0.20:
-                    tick_dmg = int(tick_dmg * 1.25)
-            if attacker_cs and getattr(attacker_cs, "thermal_shock_enabled", False):
-                _t_sfx = self.world.get_component(eid, StatusEffects)
-                if _t_sfx and _t_sfx.has("root"):
-                    tick_dmg = int(tick_dmg * 2.0)
-            _apply_magic_damage(entity_id, eid, tick_dmg, self.world)
-            hit_any = True
-            if ch.slow_pct > 0:
-                from ui.systems import apply_effect
-                apply_effect(self.world, eid, "slow", 2.0, max(0.05, 1.0 - ch.slow_pct))
-        if hit_any:
-            SOUNDS.play_spell("calamidade_flamejante", "impact")
 
     def render(self, cam_x: float = 0, cam_y: float = 0) -> None:
         for entity_id, ch, _ in self.world.get_entities_with(Channeling, PlayerControlled):
@@ -1978,42 +1954,36 @@ class AoeTargetingSystem(System):
         combat_state = self.world.get_component(self.player_entity, CombatState)
         char_stats   = self.world.get_component(self.player_entity, CharacterStats)
 
-        if aoe.spell_id == "calamidade_flamejante":
-            if char_stats and char_stats.mana < 10:
-                WARN.add("Mana insuficiente")
-                return
+        ps    = self.world.get_component(self.player_entity, PlayerSkills)
+        skill = ps.skill_by_id(aoe.spell_id) if ps else None
+        if skill is None or not skill.is_channeled:
+            return
 
-            # Online: envia CAST_SKILL com coordenadas do alvo antes de criar Channeling local.
-            # dir_x/dir_y são reaproveitados para as coordenadas world (servidor lê como aoe_x/y).
-            if self._net:
-                from shared.messages import MsgType as _MT_cf
-                _cs_cf = self.world.get_component(self.player_entity, CombatStats)
-                self._net.send(_MT_cf.CAST_SKILL, {
-                    "sid":   "calamidade_flamejante",
-                    "tid":   -1,
-                    "dir_x": world_x,
-                    "dir_y": world_y,
-                    "rage":  0,
-                    "mana":  getattr(char_stats, "mana", 0) if char_stats else 0,
-                })
+        if char_stats and char_stats.mana < skill.mana_cost:
+            WARN.add("Mana insuficiente")
+            return
 
-            self.world.add_component(self.player_entity, Channeling(
-                spell_id      = "calamidade_flamejante",
-                duration      = 5.0,
-                tick_interval = 1.0,
-                mana_per_tick = 10,
-                target_x      = world_x,
-                target_y      = world_y,
-                radius_tiles  = 3.0,
-                slow_pct      = 0.75,
-                dmg_weapon_pct = 0.15,
-                dmg_sp_coeff   = 1.0,
-            ))
-            if combat_state:
-                combat_state.is_casting = True
-                enter_combat(combat_state)
-            SOUNDS.play_skill("skill_calamidade_flamejante")
-            LOG.add("Calamidade Flamejante — canalizando!", (255, 160, 60))
+        # Online: envia CAST_SKILL com coordenadas do alvo antes de criar Channeling local.
+        # dir_x/dir_y são reaproveitados para as coordenadas world (servidor lê como aoe_x/y).
+        if self._net:
+            from shared.messages import MsgType as _MT_cf
+            self._net.send(_MT_cf.CAST_SKILL, {
+                "sid":   skill.skill_id,
+                "tid":   -1,
+                "dir_x": world_x,
+                "dir_y": world_y,
+                "rage":  0,
+                "mana":  getattr(char_stats, "mana", 0) if char_stats else 0,
+            })
+
+        from engine.core_systems import build_channeling_from_skill
+        self.world.add_component(self.player_entity,
+            build_channeling_from_skill(skill, world_x, world_y))
+        if combat_state:
+            combat_state.is_casting = True
+            enter_combat(combat_state)
+        SOUNDS.play_skill(skill.sound_name)
+        LOG.add(f"{skill.name} — canalizando!", (255, 160, 60))
 
     def render(self, cam_x: float = 0, cam_y: float = 0) -> None:
         """Desenha o círculo de mira AOE na posição do mouse."""
@@ -2163,46 +2133,21 @@ class PirofagiaSystem(System):
         dir_x = math.cos(angle)
         dir_y = math.sin(angle)
 
-        # ── Modo online: delega ao servidor, aplica apenas feedback local ──────
-        if self._net:
-            from shared.messages import MsgType as _MT2
-            from engine.components import CharacterStats as _CSfc
-            _char_fc = self.world.get_component(entity_id, _CSfc)
-            self._net.send(_MT2.CAST_SKILL, {
-                "sid":   "pirofagia",
-                "tid":   -1,
-                "dir_x": dir_x,
-                "dir_y": dir_y,
-                "rage":  getattr(_char_fc, "rage", 0),
-                "mana":  getattr(_char_fc, "mana", 0),
-            })
-            # Feedback visual/sonoro imediato — servidor confirma dano via SKILL_RESULT
-            SOUNDS.play_skill("skill_pirofagia")
+        # Delega ao servidor; aplica apenas feedback local.
+        if not self._net:
             return
-
-        from engine.components import Enemy
-        from ui.systems import apply_effect
-        cone = self._cone_tiles(tm.current_tile_x, tm.current_tile_y, angle)
-        hit = 0
-        for eid, etm, ecs in self.world.get_entities_with(TileMovement, CombatStats):
-            if ecs.current_hp <= 0:
-                continue
-            if not self.world.get_component(eid, Enemy):
-                continue
-            if (etm.current_tile_x, etm.current_tile_y) in cone:
-                from content.skill_config import SKILL_CATALOG as _SC_piro2
-                _piro2d = _SC_piro2.get("pirofagia", {})
-                _piro2p = _piro2d.get("params", {})
-                _dis2   = _piro2d.get("effect_durations", {}).get("disoriented", 3.0)
-                dmg = max(1, _piro2p.get("base_dmg", 150) + int(cs.spell_power * _piro2p.get("sp_coeff", 1.50)))
-                _apply_magic_damage(entity_id, eid, dmg, self.world)
-                apply_effect(self.world, eid, "disoriented", _dis2)
-                hit += 1
-        if hit > 0:
-            LOG.add(f"Pirofagia! {hit} alvo(s) atingido(s).", (255, 100, 30))
-        else:
-            LOG.add("Pirofagia — nenhum alvo no cone.", (255, 100, 30))
-
+        from shared.messages import MsgType as _MT2
+        from engine.components import CharacterStats as _CSfc
+        _char_fc = self.world.get_component(entity_id, _CSfc)
+        self._net.send(_MT2.CAST_SKILL, {
+            "sid":   "pirofagia",
+            "tid":   -1,
+            "dir_x": dir_x,
+            "dir_y": dir_y,
+            "rage":  getattr(_char_fc, "rage", 0),
+            "mana":  getattr(_char_fc, "mana", 0),
+        })
+        # Feedback visual/sonoro imediato — servidor confirma dano via SKILL_RESULT
         SOUNDS.play_skill("skill_pirofagia")
 
     # ── Render ───────────────────────────────────────────────────────────────

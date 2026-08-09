@@ -67,7 +67,7 @@ def authorize_skill(ws, eid: int, sid: str) -> None:
         ps.learned_skill_ids.add(sid)
     req = _TALENT_SKILL_REQS.get(sid)
     if req is not None:
-        tid, min_pts = req
+        tid, _tname, min_pts = req
         tt = ws.world.get_component(eid, TalentTree)
         if tt is not None:
             tt.allocated[tid] = max(tt.allocated.get(tid, 0), min_pts)

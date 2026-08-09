@@ -86,10 +86,29 @@ def save(data: dict) -> None:
     se outro processo (2 clientes na mesma pasta) ler nesse meio-tempo,
     recebe conteúdo vazio. os.replace() troca o arquivo inteiro de uma vez
     só (atômico no Windows e no POSIX) — quem ler antes ou depois sempre
-    vê um JSON completo, nunca um estado parcial."""
+    vê um JSON completo, nunca um estado parcial.
+
+    tmp_path é único POR PROCESSO (PID) — bug real 07/08/2026: o nome fixo
+    antigo (`config.json.tmp`) colidia entre 2 clientes na mesma pasta
+    salvando quase ao mesmo tempo (o cenário que este write atômico já
+    existia pra cobrir) — um processo reabria/sobrescrevia o .tmp do
+    outro, e o os.replace() do primeiro achava o arquivo já aberto pelo
+    segundo, PermissionError (WinError 5) SEM tratamento, crashando o
+    jogo — pior que o bug original (que só dava leitura vazia tolerada).
+    Nome único elimina a colisão entre processos; o try/except cobre
+    qualquer falha residual (antivírus/backup segurando o arquivo por um
+    instante) — autosave falhar silenciosamente é aceitável, derrubar o
+    jogo durante alocação de talento não é."""
     existing = load()
     existing.update(data)
-    tmp_path = CONFIG_FILE + ".tmp"
-    with open(tmp_path, "w") as f:
-        json.dump(existing, f, indent=2)
-    os.replace(tmp_path, CONFIG_FILE)
+    tmp_path = f"{CONFIG_FILE}.{os.getpid()}.tmp"
+    try:
+        with open(tmp_path, "w") as f:
+            json.dump(existing, f, indent=2)
+        os.replace(tmp_path, CONFIG_FILE)
+    except OSError as e:
+        print(f"[WARN] config.save() falhou (tentativa seguinte corrige): {e!r}")
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass

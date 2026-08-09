@@ -5208,4 +5208,598 @@ morrer e voltando só ao sair).
 
 ---
    **(15b/D5) Fatiar `ui/systems.py`** — mecânico, zero risco de lógica;
-   bom preenchimento de fim de sessão.
+
+---
+
+## 12. AUDITORIA ARQUITETURAL AMPLA — 06/08/2026 (revalidação da §11 + achados novos)
+
+Pedido explícito do usuário depois de um cluster de bugs recorrentes na BG
+(hotbar/talentos vazando da instância, PNQ vs minion) + 1 hack de cache
+achado por ele mesmo em `tileset.py`: "acha como um engenheiro ou
+arquiteto desse projeto, e garanta a qualidade dele acima de tudo". Não é
+mais 1 arquivo — é revalidação da §11 (15/07/2026) inteira + varredura
+nova. Relatório completo (todos os achados abaixo, com trecho de código e
+evidência) publicado como artifact HTML nesta sessão; aqui vai o resumo
+factual pra ficar no repo.
+
+**Achado-chave: os itens A4 e B3 da §11 (nunca resolvidos, só
+"mitigados") são hoje causa raiz CONFIRMADA de bugs reais desta mesma
+sessão** — a auditoria de julho já tinha previsto exatamente isso. Ver
+`§34.74.47/.49/.50` (ARQUITETURA_ONLINE.md) pros 3 vazamentos de
+equipment/hotbar/talents já corrigidos, e a investigação do PNQ-vs-minion
+(mesma sessão) pro mecanismo do B3 (servidor despachando skill via
+`getattr` numa classe de UI do cliente).
+
+### 🔴 CRÍTICO — 2 novas ocorrências do padrão A4, ainda não corrigidas
+
+- **`inventory`** (`server/session.py:301`) — `client_p.get("inventory")
+  if client_p else None`, SEM fallback `live_X` (diferente de
+  `equipment`/`talents`, já corrigidos). Mesma vulnerabilidade: SAVE_STATE
+  mandado dentro da BG cacheia o inventário temporário de 6 slots, nada
+  invalida o cache na saída.
+- **`skills.learned`** (`server/session.py:258-260`) — subcampo ESQUECIDO
+  dentro de `skills`, que só teve o subcampo `hotbar` corrigido
+  (linha 265-267). Cliente ainda vence sobre `srv_data.get("skills")`
+  (que já é live) quando truthy. Vetor de ataque real e concreto:
+  **desconectar dentro da instância** — `on_disconnect`
+  (linha 356-363) chama `exit_normalized_progression` e, na sequência
+  IMEDIATA, `_persist_character`, sem round-trip pro cliente reenviar
+  SAVE_STATE corrigido. Resultado: queda de conexão na BG apaga skills
+  reais aprendidas, gravando o `learned_skill_ids` reduzido da instância.
+- **Fix**: mesmo padrão já usado 3× nesta sessão — `WorldServer.
+  get_player_inventory_data(session_id)` e uso incondicional de
+  `srv_data.get("skills")`/um `live_learned` equivalente em
+  `_build_save_merge`. Não implementado ainda — fica pra próxima sessão,
+  prioridade alta (bug real, ainda não relatado pelo usuário).
+
+### 🔴 REGRA DO CLAUDE.md VIOLADA — knockback do Tiro Repulsivo
+
+`ui/spell_system.py::_apply_knockback` (linhas 1234-1235) escreve
+`tgt_tm.current_tile_x/y` DIRETO, sem passar por `utils.snap_to_tile()`
+— contradiz a regra textual do CLAUDE.md ("NUNCA escrever
+current_tile_x/y direto"). Call site real (não é código morto): todo
+acerto de Tiro Repulsivo enfileira via `_pending_knockbacks`
+(linha 1477-1478). Servidor já tem versão autoritativa independente em
+`server/spell_completion_processor.py::_server_tiro_repulsivo`. Não
+confirmado se já causa sintoma visível (pode estar mascarado pela
+correção autoritativa chegando depois, mesmo mecanismo sob investigação
+pro rollback do Interceptar) — mas é violação de regra confirmada.
+
+### 🟡 DOCUMENTAÇÃO DIZENDO O OPOSTO DO CÓDIGO REAL (4 casos)
+
+- `COMPONENTES_ECS.md:171` — diz `gold` é "cliente autoritativo via
+  `_build_save_merge`". Falso: `gold` nem aparece nesse dict; é lido
+  live do `Wallet` em `get_player_save_data` (`world_server.py:1840`,
+  já correto — o único campo da família A4 que escapou por acidente).
+- `MAPA_PROJETO.md:188` — afirma "servidor nunca importa `ui/`". Falso:
+  `server/world_server.py:478` faz `from ui.systems import SkillSystem`
+  de propósito (é o próprio mecanismo do item B3 acima).
+- `instance_progression.py:7` (docstring) + `COMPONENTES_ECS.md:174` —
+  dizem "INERTE, nenhum processador chama ainda". Falso desde
+  04-05/08/2026: `server/bg_queue_processor.py` chama
+  `enter_/exit_normalized_progression` de verdade na fila real de BG.
+- `MAPA_PROJETO.md:339-341` — ensina a adicionar stat via
+  `shared/constants.py::COMBAT_SYNC_STATS`, mecanismo REMOVIDO do
+  código (`MsgType.PLAYER_STAT_SYNC` obsoleto, handler no-op, zero
+  ocorrência de `COMBAT_SYNC_STATS` em `.py`).
+
+**Por que isso importa mais que um bug comum**: o próprio CLAUDE.md
+manda confiar nos docs de arquitetura ANTES de vasculhar o código-fonte
+("se a resposta está nos arquivos de arquitetura, não varrer o
+codebase"). Doc errado não é neutro — ativamente desinforma qualquer
+sessão futura (inclusive esta).
+
+**Este próprio arquivo é outro caso**: 16 dias sem entrada nova
+(21/07 → 06/08), apesar de pelo menos 4 bugs da família A4 terem
+acontecido de verdade nesse intervalo — nenhum foi cruzado de volta com
+a auditoria que já os previa.
+
+### 🟢 Estado ad-hoc fora do ECS — achado do usuário + varredura completa
+
+Confirmado que o cache via `hasattr(func, "_cache")` que o usuário achou
+em `engine/tileset.py` (`get_camouflage_disguise_frame`, linha 1073) NÃO
+é um padrão espalhado — é isolado a essa função + uma vizinha
+(`discover_camouflage_variants`, linha 1037). Achado adicional da mesma
+família: `ui/quest_system.py:712` — `_fallback_marker_cache: dict = {}`
+como atributo de CLASSE (armadilha clássica Python, dict compartilhado
+entre todas as instâncias, não por instância). Resto do "estado global"
+do projeto segue um padrão de casa saudável e já documentado (`global`
+explícito + função de registro — `core_systems.register_lethal_
+interceptor`, `faction_system.register_pvp_context`, o próprio `_svc`)
+— não é praga sistêmica, não precisa de refatoração em massa.
+
+### 🟢 Dado disperso fora de `content/` (6 achados, baixo risco)
+
+`RARITY_COLORS` duplicado literalmente 2× em `ui/systems.py`
+(linhas 2348, 3509); `ENEMY_TIER_CONFIGS` (`entity_factory.py:44-49`) e
+`RESPAWN_TIMERS` (`world_systems.py:1030-1035`) são tabelas de
+balanceamento vivendo dentro de arquivos de lógica; `RACES`/`CLASSES`
+(`components.py:10-27`) são conteúdo dentro do arquivo de definição de
+componente ECS; `_TALENT_SKILL_REQS` derivado 2× independentemente com
+shapes diferentes (`world_systems.py:134-137` vs
+`hotbar_handlers.py:25-28`); nomes de campo de item hardcoded 2× no
+mesmo arquivo em `save_sync_handlers.py` (serialize linha 31-34,
+deserialize linha 84-86) — campo novo direto em `Item` exige lembrar as
+duas listas.
+
+### 🟡 Em aberto — cliente resolvendo combate real contra mob (não é veredito)
+
+`ui/spell_system.py:1097-1150,1405-1447` — dano/crit de flecha contra
+MOB (tem `CombatStats` espelhado no cliente) é decidido localmente sem
+desvio pro servidor, diferente do caminho contra player remoto (que já
+usa `pending_arrow_impacts` corretamente). Pode ser predição deliberada
+ou resquício do modo offline (item A2) nunca podado pro combate contra
+mob — não decidido aqui, fica como pergunta pro usuário antes de mexer.
+
+### Revalidação da §11 (itens grandes, nenhum resolvido na raiz)
+
+| Item | Status hoje | Nota |
+|------|-------------|------|
+| A2 — dual-mode `if self._net` | ✅ Fase 2 fechada (11 de 13 pontos reais + 1 achado bônus) | 2 pontos restantes (dentro de `_use_skill_visual_only`) fundidos na Fase 3 |
+| A4 — autoridade híbrida | mitigado (sanitização), raiz intocada | causa dos 5 vazamentos confirmados nesta sessão |
+| B2 — handlers de spell duplicados | intocado | é onde mora o achado do knockback acima |
+| B3 — `getattr` dispatch reusando UI no servidor | intocado | causa raiz confirmada do bug PNQ-vs-minion |
+
+### Prioridade recomendada
+
+1. `inventory`/`skills.learned` (risco baixo, fix mecânico já provado 3×) — próxima sessão.
+2. Correção de texto nos 4 docs errados — sem risco, qualquer momento.
+3. Knockback → `snap_to_tile()` — decidir junto com o item 6/B2 (handler headless único) ou como correção pontual isolada.
+4. Dado disperso (6 achados) — mecânico, agrupar numa sessão de faxina.
+5. A2/A4/B2/B3 — cada um é sessão dedicada, como a §11 já recomendava. Não tentar "big bang".
+6. Combate de flecha vs. mob local — aguardando decisão do usuário.
+
+---
+
+## 13. ROTEIRO DE SANEAMENTO ARQUITETURAL — em execução desde 07/08/2026
+
+Usuário decidiu explicitamente: sistemas modulares/escaláveis ANTES de
+qualquer trabalho de conteúdo (arte/lore/mapa/quest) — ver
+`arquitetura/VISAO_PRODUTO.md`. Roteiro completo de 8 fases (Fase 0 a
+7, fundindo §11 e §12) aprovado em
+`C:\Users\l4nce\.claude\plans\expressive-wondering-starlight.md`.
+Execução sem reaprovação por fase (decisão do usuário) — progresso
+registrado aqui a cada fase fechada.
+
+### ✅ Fase 0 — 2 bugs A4 confirmados fechados (07/08/2026)
+
+`inventory` e `skills["learned"]` (item da "Prioridade recomendada" §12
+acima) corrigidos com o mesmo padrão `live_X` já usado 3× nesta sessão
+(equipment/hotbar/talents). Detalhe técnico completo:
+`ARQUITETURA_ONLINE.md` §34.74.51. Suíte completa 918 passed (2x limpa
+consecutiva no momento deste registro, 3ª rodada em andamento).
+
+**Próxima**: Fase 1 (faxina mecânica de baixo risco — cache ad-hoc,
+dado disperso) → Fase 2 (A2, matar dual-mode) → Fase 3 (B2+B3,
+handler headless único de skill) → Fase 4 (A4, inversão completa da
+autoridade de persistência) → Fase 5 (A1, componentes-deus,
+oportunista) → Fase 6 (B1, pipeline declarativa) → Fase 7
+(pré-lançamento: TLS/argon2/item_id).
+
+### ⏸ PAUSADO (07/08/2026) — benchmark contra arquiteturas de referência antes de retomar
+
+Decisão do usuário: difícil julgar sozinho "isso está certo
+arquiteturalmente" sem parâmetro externo. 19 sistemas do projeto
+comparados contra Veloren (ECS real, forma) e AzerothCore (emulador de
+servidor WoW, conteúdo — quest/instância/talento), um por vez, com
+prova/citação real. Detalhe completo:
+`arquitetura/BENCHMARK_ARQUITETURA.md`. Resultado: maioria dos sistemas
+VALIDADA (nenhuma mudança); alguns achados reais:
+
+### 🆕 B6 — Fila/lifecycle de partida duplicados entre Arena e Battleground
+
+Achado NOVO (não estava em §11 nem §12) — `server/match_processor.py`
+e `server/bg_queue_processor.py` compartilham só a camada de baixo
+(`WorldServer._load_instance`/`_unload_instance`), mas cada um
+reimplementa DO ZERO a fila/entrada/saída de partida — métodos
+espelhados (`request_arena_queue_join`/`request_bg_queue_join`,
+`_arena_leave_now`/`request_bg_leave`, etc.). AzerothCore resolve isso
+com uma classe base `Battleground` compartilhada (fila/pontuação/
+lifecycle 1 vez só; cada arena específica só adiciona a mecânica
+própria). **Melhor**: uma base compartilhada tipo
+`InstancedMatchMixin` (fila genérica, entrada/saída genérica), cada
+modo definindo só o que acontece DENTRO da partida. 100% backend — não
+muda a experiência de fila do jogador.
+
+### Reforços de itens já catalogados (não são achados novos, mas mudam prioridade/desenho)
+
+- **B2/B3** (§11): a causa raiz tem uma forma concreta de resolução —
+  componente de estado único com fases (Buildup/Charge/Action/Recover,
+  modelo Veloren `CharacterState`), não só "1 handler por skill num
+  dict". Muda o DESENHO da Fase 3 do roteiro — discutir com o usuário
+  antes de reescrever, não decidir sozinho (é redesenho, não só
+  prioridade).
+- **A1** (§11): flags de talento nomeados em `CombatStats` têm
+  alternativa provada externamente — modificador genérico via efeito
+  de "aprender spell" (modelo AzerothCore `SPELL_EFFECT_LEARN_SPELL`),
+  em vez de um flag booleano bespoke por talento.
+- **C2** (§11): identidade de item por nome (não ID estável) —
+  confirmado como padrão errado por comparação direta
+  (`item_template.entry` do AzerothCore). Argumento pra subir de
+  prioridade (estava na Fase 7, baixa prioridade).
+
+### Perguntas de produto levantadas (não são débito técnico — aguardando resposta em `VISAO_PRODUTO.md`)
+
+Multi-spec de talento (✅ respondido — 3 builds salvas, 1 ativa),
+quests diárias/repetíveis, modo de loot de grupo selecionável,
+reputação de facção acumulável. Nenhuma decidida sozinha.
+
+**Retomada do roteiro (07/08/2026)**: usuário decidiu não implementar
+as 4 perguntas de produto agora (escopo controlado — ver
+`VISAO_PRODUTO.md`) e autorizou continuar o roteiro. Sequência
+revisada, retomando da Fase 1 (Fase 0 já fechada):
+
+✅ Fase 1 — faxina mecânica de baixo risco (cache ad-hoc, dado
+disperso) — fechada.
+✅ Fase 2 — A2, matar dual-mode — fechada (11 de 13 pontos reais + 1
+achado bônus; 2 restantes fundidos na Fase 3, ver seção acima).
+✅ Fase 3, piloto (07/08/2026) — ver seção "✅ Fase 3 — piloto" abaixo.
+✅ Sistema de GM server-autoritativo (07/08/2026, fora do roteiro em si
+— destravou a validação manual do piloto acima) — `ARQUITETURA_ONLINE.md`
+§34.74.54. F12 (nível/ouro/itens) só mutava ECS local do cliente,
+servidor nunca sabia, autorização real sempre recusava — inviabilizava
+qualquer playtest online que dependesse de nível/talento. `accounts.is_gm`
++ `GM_LEVELUP`/`GM_ADD_GOLD`/`GM_ADD_ITEM` (mesmo molde de `BUY_REQUEST`,
+reaproveita os caminhos autoritativos já usados por recompensa de quest/
+loja). Concessão só via `python -m server.grant_gm <username>` (CLI, sem
+UI/endpoint — AzerothCore como referência).
+▶ Próximo passo real do Fase 3: generalizar pra `fatiador_de_corpos`
+(3 implementações de tick hoje) e depois pras skills de cone/projétil
+restantes — **ainda não desenhado**, pesquisar/perguntar antes de mexer,
+mesma régua desta sessão inteira.
+Fase 3 (redesenho completo, referência original, mantido como norte) —
+em vez de só
+`SKILL_HANDLERS: dict[str, callable]`, avaliar componente de estado
+único com fases (Buildup/Charge/Action/Recover, achado A.1 do
+benchmark) — decisão de desenho tomada durante a execução da fase, não
+antes (backend, sem afetar jogador — dentro da régua já combinada de
+"pode decidir sozinho quando não muda experiência").
+→ **Fase 3.5 (NOVA)** — unificar fila/lifecycle de partida entre
+Arena e Battleground (achado B6) — mesma área de código da Fase 3,
+por isso encaixada logo depois.
+→ Fase 4 (A4, inversão de persistência) → Fase 5 (A1, componentes-deus
+— reforçado pelo achado A.2) → Fase 6 (B1, pipeline declarativa) →
+Fase 7 (pré-lançamento — C2 com prioridade reforçada pelo achado
+B.2-B.4, TLS/argon2).
+
+### ✅ Fase 1 — Faxina mecânica de baixo risco (07/08/2026)
+
+Todos os 7 itens do plano fechados:
+
+- `engine/tileset.py` — as 2 funções com `hasattr(func, "_cache")`
+  viram dict/variável de módulo (`global`), padrão já usado em
+  `ui/floating_text.py::_outline_cache`.
+- `ui/quest_system.py` — `_fallback_marker_cache` sai do corpo da
+  classe (atributo compartilhado por acidente entre instâncias) pra
+  `__init__`, atributo de instância de verdade.
+- `RARITY_COLORS` — duplicado 2x em `ui/systems.py`, agora fonte única
+  em `content/item_table.py`, as 2 classes referenciam.
+- `ENEMY_TIER_CONFIGS`/`RESPAWN_TIMERS` — saíram de
+  `engine/entity_factory.py`/`engine/world_systems.py` (lógica) pra
+  `content/mob_definitions.py` (dado), mesmo padrão do resto do
+  catálogo de mob.
+- `RACES`/`CLASSES`/`TIERS` — **plano original previa mover pra
+  `content/`; achado real foi diferente**: as 3 listas em
+  `engine/components.py` não eram usadas em NENHUM outro lugar do
+  codebase (confirmado por grep completo) — código morto, não dado
+  disperso. Deletadas, não movidas (CLAUDE.md: "se tem certeza que
+  está sem uso, pode deletar").
+- `_TALENT_SKILL_REQS` — gerado independentemente em
+  `engine/world_systems.py` (2-tupla) e `client/hotbar_handlers.py`
+  (3-tupla) — unificado na versão mais rica (3-tupla, com nome do
+  talento) em `world_systems.py`; `hotbar_handlers.py` importa de lá.
+  2 call sites em `ui/systems.py` precisaram ajustar o unpacking pra
+  3 elementos.
+- `client/save_sync_handlers.py` — nomes de campo de Item duplicados
+  entre serialize/deserialize viraram `_ITEM_STAT_FIELDS` (constante
+  única). **Achado incidental durante a unificação: as duas listas já
+  tinham divergido de verdade** — `damage_min`/`damage_max` existem em
+  `Item` e estavam no loop de deserialize, mas FALTAVAM no de
+  serialize — bug real, silencioso: qualquer arma reconstruída pelo
+  caminho de fallback `_item_from_data` (comprada em loja/forjada, não
+  bate com `loot_tables._T`) perdia o dano depois de um save/load.
+  Corrigido como parte da unificação. `icon_key` (nunca foi atributo
+  real de `Item`, sempre `None`) removido por ser morto.
+
+**Testes**: `tests/test_item_serialize_roundtrip.py` (novo, 3 testes,
+cobre o bug do dano de arma com prova diferencial — fix desligado,
+teste falhou exatamente como o bug real falharia, religado). Demais
+itens são refatoração mecânica sem lógica nova — verificados por
+import/smoke-test direto + suíte completa.
+
+### 🆕 Achado do usuário (07/08/2026) — código de skill dentro do módulo de tile de mapa
+
+Usuário pediu explicitamente uma auditoria mais profunda de
+`engine/tileset.py` (além dos 2 caches já corrigidos) e apontou:
+`discover_camouflage_variants()`/`get_camouflage_disguise_frame()` (a
+skill Camuflagem do Arqueiro) não tinham NADA a ver com o resto do
+arquivo — `tileset.py` é sobre tile/mapa/colisão, não sobre skill de
+personagem. Efeito colateral real: `server/spell_completion_processor.py`
+importava `engine.tileset` INTEIRO (incluindo `OBJECT_SHEET_FAMILIES` e
+centenas de linhas de catálogo de spritesheet de mapa que o servidor
+não usa) só pra chamar essa função. Acoplamento sem propósito entre
+sistema de tile e skill de furtividade.
+
+**Lição sobre o próprio processo de auditoria**: minha varredura
+anterior desse arquivo (mesma sessão, pedido do usuário) olhou
+correção linha a linha (achou 4 IDs de sprite duplicados, corrigidos
+manualmente pelo usuário) mas nunca voltou um passo pra perguntar "esse
+código pertence a este arquivo?" — auditoria de correção local não é
+o mesmo que auditoria de coesão de módulo; as duas são necessárias.
+
+**Fix (1ª tentativa, ERRADA)**: extraído pra `engine/camouflage.py` —
+nome da SKILL, não da categoria. Usuário apontou na hora: nem Veloren
+nem AzerothCore fazem "1 arquivo por skill" — Veloren é o oposto (1
+`CharacterState` único + sistemas genéricos por TIPO de efeito). Eu
+tinha acabado de escrever esse exato achado no benchmark (A.1) e violei
+o próprio princípio duas mensagens depois — corrigir "código no lugar
+errado" criando um NOVO arquivo nomeado pelo sintoma é a MESMA classe
+de erro raiz do B2/B3 (skill sem abstração compartilhada), só que em
+miniatura.
+
+**Fix (2ª tentativa, PARCIAL)**: renomeado pra `engine/entity_disguise.py`
+— escopado pela CATEGORIA ("sprite de disfarce/troca de aparência
+temporária de entidade"), mesmo padrão de `ui/effect_animator.py`
+(ícones de efeito de status — categoria, não 1 efeito específico). Só
+o NOME do arquivo mudou — o código de dentro continuava 100% hardcoded
+pra "camuflagem" (`f"camuflagem_idle{{suf}}.png"` etc.), então uma skill
+futura ainda não conseguiria reusar nada, só copiar/colar trocando a
+string. Usuário apontou isso na hora: renomear o arquivo não resolve
+se o código de dentro só serve pra uma skill.
+
+**Fix (3ª tentativa, REVERTIDA)**: tentei parametrizar (`base_name`
+como argumento em vez de hardcoded) — mas escrevi isso DIRETO no
+código, sem pesquisa nova, só reciclando o benchmark geral de Veloren
+já feito antes (não uma checagem específica pra ESTA decisão). Usuário
+barrou na hora: "você já está mexendo no código antes de decidir como
+será a arquitetura? antes de buscar na web referências????" —
+revertido pra `entity_disguise.py` (2ª tentativa) enquanto pesquisa
+de verdade não acontece.
+
+**Fix (4ª tentativa, FINAL — pesquisa de verdade primeiro)**: pesquisa
+real via WebSearch/WebFetch, desta vez sobre a decisão ESPECÍFICA (não
+reciclando o benchmark geral): AzerothCore/WoW resolve troca de
+aparência (poção, skill em si mesmo, skill em alvo, zona) por UM
+mecanismo genérico (`Unit::SetDisplayId`) + prioridade entre
+transformações ativas — Wowpedia confirma que a Blizzard CONSOLIDOU
+isso no patch 6.0.2 depois de ter implementações fragmentadas por
+spell (mesma classe de erro das tentativas 1-3 aqui). Usuário perguntou
+explicitamente se o mecanismo se aplica a poções/skills-em-alvo (não só
+Camuflagem self-cast) e se o sistema devia controlar só "qual aparência"
+ou também o código de animação — confirmado (Polimorfia já transforma
+o ALVO, não o caster) e confirmada a separação: mecanismo de
+renderização genérico (camada 1) + resolução de "qual está ativo"
+(camada 2), sem misturar as duas.
+
+Mapeamento completo ANTES de codar (pedido explícito do usuário —
+"analisar nosso projeto pra não deixar nenhum gap"): achado que
+Camuflagem tem 2 pontos de concessão (servidor autoritativo em
+`ui/skill_handlers.py::_skill_camuflagem` + réplica local do cliente em
+`client/network_handlers.py`) e 2 de expiração (`engine/world_systems.py`
+client-only + `server/world_server.py` server-only, deliberadamente
+separados); Polimorfia usa só `StatusEffects`/"polymorph" genérico
+(`server/spell_completion_processor.py::_server_polimorfia`), sem ponto
+dedicado — JÁ sincroniza pelo caminho normal.
+
+Esse mapeamento mudou o desenho pra MELHOR (mais simples que a versão
+aprovada antes da pesquisa): em vez de um componente `AppearanceOverride`
+NOVO e sincronizado por rede (que exigiria mudança de protocolo +
+replicar os 4 pontos de concessão/expiração pra manter em sincronia —
+estado duplicado do que já existe), a solução final é uma FUNÇÃO
+resolvedora (`get_active_appearance_override`) que só LÊ o estado que
+cada efeito já mantém (`CombatStats.camouflage_timer/camouflage_object`,
+`StatusEffects.has("polymorph")`) — zero componente novo, zero mudança
+de protocolo. Tabela `_APPEARANCE_SOURCES` (sprite_base → função
+checadora) substitui o `if _cam_active: ... elif _polymorphed: ...` de
+`ui/systems.py` — fonte nova de troca de aparência = 1 função pequena +
+1 linha na tabela, nunca um novo branch.
+
+`discover_sprite_variants(base_name)`/`get_animated_disguise_frame(base_name,
+...)` finalmente parametrizadas de verdade (não hardcoded pra
+"camuflagem"). Polimorfia ganha suporte a sprite animado de verdade
+(hoje só o círculo placeholder — vira fallback TEMPORÁRIO só até o
+asset `polimorfia_idle.png`/`polimorfia_run.png` existir, marcado
+explicitamente no código pra não virar branch permanente por skill).
+
+**2 achados colaterais durante o mapeamento, NÃO corrigidos agora
+(fora do escopo aprovado, registrar e não decidir sozinho)**:
+- `server/spell_completion_processor.py::_server_camuflagem` (linha
+  1626) parece ser CÓDIGO MORTO — Camuflagem tem `cast_time: 0.0`
+  (`content/skill_config.py`), então nunca entra em
+  `_pending_spell_completions` (mecanismo exclusivo de spells COM cast
+  time, ver docstring do módulo) — o dispatch em `_dispatch["camuflagem"]`
+  nunca deveria disparar na prática. Não confirmado 100%, não deletado.
+- Cliente (`client/network_handlers.py`) sorteia sua PRÓPRIA variante
+  de Camuflagem localmente (`_rand_cam.choice(...)`) em vez de usar a
+  que o SERVIDOR já escolheu e mandou — desalinhamento cosmético
+  possível (jogador vê um disfarce, servidor internamente "pensa" que é
+  outro) — sem impacto de gameplay (campo é só visual), mas inconsistente.
+
+**Testes**: `tests/test_entity_disguise.py` (novo, 9 testes) — cobre
+genericidade real (base_name arbitrário funciona, cache não vaza entre
+bases) e o resolver (Camuflagem/Polimorfia isoladas, expiração,
+entidade sem componentes não quebra, ordem determinística quando ambas
+coincidem). Prova diferencial: guard de `camouflage_timer > 0`
+temporariamente removido, confirmado que os 2 testes certos falham
+exatamente como o bug faria, religado. Suíte completa rodada a cada
+tentativa (4x total, uma por versão + revert).
+
+**Regra final em CLAUDE.md** (reforçada depois da 3ª tentativa —
+ver "Pontos únicos de verdade", nova entrada "Troca de aparência
+temporária de entidade"): pesquisar/desenhar ANTES de codar pra
+QUALQUER correção, mapear o projeto pra não deixar gap, nunca reciclar
+pesquisa de um tópico mais amplo como se cobrisse a decisão específica.
+
+### ✅ Fase 2 — A2, matar dual-mode `if self._net` (07/08/2026)
+
+**Escopo real ficou bem menor que a estimativa do roteiro.** A
+estimativa original ("47 ocorrências em 5 arquivos") contava qualquer
+`self._net` em condicional, sem distinguir 2 padrões bem diferentes.
+Mapeamento completo (agente Explore, todo o repo) achou 65 ocorrências
+em 16 arquivos, classificadas em:
+
+- **Categoria A — dual-mode de verdade** (implementação offline
+  duplicada, mutando estado local como se não houvesse servidor): só
+  **13 ocorrências, 3 arquivos** — `ui/systems.py` (10: `_add_rage`,
+  compra/venda/desfazer de loja, regen de HP/mana por tick, uso de
+  consumível, e 2 pontos dentro de `_use_skill_visual_only`),
+  `ui/spell_system.py` (1: Pirofagia), `game.py` (2: transição de mapa
+  via F12 debug e cave/portal normal). `engine/world_systems.py` e
+  `ui/quest_system.py` — citados no roteiro original — não tinham
+  NENHUM branch real (já limpos antes ou nunca tiveram).
+- **Categoria B — guarda de conexão** (`if not self._net: return` antes
+  de mandar mensagem, sem lógica offline alternativa — proteção contra
+  `self._net` ainda `None` na janela antes de conectar, não sobra de
+  modo offline): **51 ocorrências, 14 arquivos**, quase todo
+  `client/*_handlers.py` (trade/duelo/grupo/arena/BG — recursos que só
+  existem online, o guard nunca teve "modo offline" pra remover). Fora
+  de escopo, intocado.
+
+**Fechado (Categoria A, 12 de 13 pontos)**:
+- `ui/systems.py`: `_add_rage` virou no-op puro (comentário atualizado,
+  já era no-op condicional); `_buy`/`_buy_qty`/`_sell` perderam o bloco
+  `# Offline: aplica tudo localmente`; botão "Desfazer" da loja
+  (`_undo()` + handler de clique) removido — já era visualmente inerte
+  online antes desta limpeza (histórico de transação nunca populado),
+  render do botão mantido intocado de propósito (matar a lógica morta
+  não é a mesma decisão que tirar um botão da UI — isso é decisão de
+  produto, registrado, não decidido aqui); ticks de `ActiveRegen`/
+  `ActiveManaRegen` pararam de mutar HP/mana local; `_use_consumable`
+  perdeu o bloco de aplicação local.
+- `ui/systems.py::_use_skill` — corpo inteiro (98 linhas: talent lock,
+  GCD, dispatch por `_skill_<id>`) já era 100% morto (`_server_authoritative`
+  sempre `True` neste branch) — virou wrapper de 1 linha pra
+  `_use_skill_visual_only`. A flag `_server_authoritative` em si também
+  foi removida (3 arquivos: `ui/systems.py`, `game.py`,
+  `server/world_server.py`) por nunca mais variar. **Os métodos
+  `_skill_<id>` (definidos como métodos separados da classe, não fazem
+  parte do corpo deletado) continuam intactos** — são a fonte que o
+  servidor reusa via `getattr` em `skill_processor.py` (débito B3
+  conhecido, não é escopo desta fase).
+- `ui/spell_system.py::_fire_cone` (Pirofagia) — mesmo padrão, bloco de
+  dano-em-cone-local removido.
+- `game.py` — os 2 branches de transição de mapa perderam o fallback
+  `_do_transition(...)` direto (bypass do round-trip servidor).
+
+**Deferido pra Fase 3, não Fase 2** — `ui/systems.py::_use_skill_visual_only`
+(~400 linhas, a função que roda de verdade hoje): ao ler por completo,
+não é um `if online: X else: offline: Y` limpo como os outros 12 pontos
+— é UMA função com ~6 pontos onde `_is_online` liga/desliga um pedaço
+(resolução de alvo, criação de `SpellCast` visual, envio de
+`CAST_SKILL`, timer do Fatiador de Corpos), só 1 desses pontos
+(linha ~4379, resolução de alvo) tem um `else:` com lógica offline
+alternativa de verdade — os outros 5 não têm alternativa, só pulam o
+passo. É exatamente o código que o roteiro já tinha marcado como
+"cuidado especial — é o que o servidor reusa, não remover às cegas" —
+decisão tomada com o usuário: fica pro Fase 3 (redesenho, não limpeza
+mecânica), que já vai reescrever essa função do zero via máquina de
+fases (achado A.1 do benchmark, Veloren `CharacterState`).
+
+**Contexto do usuário sobre a causa raiz da bagunça** (07/08/2026):
+o projeto começou offline (RPG simples single-player) e foi convertido
+pra online depois — os `if self._net/else` são resíduo dessa conversão
+colada em cima do código antigo, não um desenho deliberado. Direção
+explícita pro Fase 3: qualquer sistema de UI (aqui e em outros lugares
+citados pelo usuário — Pirofagia, canalização, projétil) deve seguir
+separação estrita: **UI só mostra estado (cooldown, cargas etc.),
+nunca calcula**; jogador aperta botão → UI chama sistema → sistema
+processa (server-authoritative sempre) → UI só exibe o resultado.
+Pesquisar essa separação (Veloren + referência geral de arquitetura de
+jogo) antes de desenhar o Fase 3, não só reciclar o achado A.1 já
+registrado.
+
+**Regressão achada no playtest manual (não é desta fase — vazou da
+Fase 1)**: `ui/quest_system.py` — ao mover `_fallback_marker_cache` do
+corpo da classe pro `__init__` (item da Fase 1, ver acima), fui posto
+na classe ERRADA (`QuestSystem.__init__`, linha 51) em vez de
+`QuestDialogSystem.__init__` (linha 458), que é quem de fato usa
+(`_fallback_marker_surf`/`render_world`, linha ~717) —
+`AttributeError` ao clicar em qualquer NPC com marcador de quest sem
+ícone customizado. Suíte automatizada (930 testes) nunca pegou porque
+nenhum teste exercita esse caminho de render — só apareceu no playtest
+manual do usuário, exatamente a razão de ter pedido validação manual
+antes de fechar a fase (ver CLAUDE.md, "'Corrigido' exige reproduzir o
+sintoma"). Corrigido (movido pra `QuestDialogSystem.__init__`),
+reproduzido o crash exato fora da suíte e confirmado que sumiu, suíte
+completa re-rodada limpa (930/930), depois confirmado pelo usuário em
+playtest real.
+
+**Testes**: suíte completa, 3 rodadas ao longo da fase (930/930 cada
+vez, limpa) + playtest manual do usuário confirmando loja/consumíveis/
+Pirofagia/transição de mapa/F12 debug funcionando.
+
+### ✅ Fase 3 — piloto: `build_channeling_from_skill` (Calamidade Flamejante, 07/08/2026)
+
+Pesquisa feita antes de desenhar (obrigatória, ver regra acima): Veloren
+(`CharacterState`/`CharacterBehavior`, fases Buildup/Charge/Action/Recover,
+servidor autoritativo, cliente só lê estado sincronizado — l33l33.com +
+DeepWiki) + levantamento completo das 26 skills do catálogo (agente
+Explore) confirmou que o eixo real de generalização é **quando o efeito
+resolve** (na hora / após timer de cast / após ator que confirma hit
+depois — projétil, já funciona certo / repetindo em ticks — canalização),
+não "tem cast_time". Plano formal salvo em
+`C:\Users\l4nce\.claude\plans\expressive-wondering-starlight.md`,
+aprovado pelo usuário antes de codar (EnterPlanMode/ExitPlanMode).
+
+**Achado corrigido 2x durante o próprio desenho** (registrar o processo,
+não só o resultado): 1ª leitura minha concluiu que
+`ChannelingSystem._apply_tick` (cliente, `ui/spell_system.py`) aplicando
+dano local via `_apply_magic_damage` seria uma falha de autoridade ATIVA
+(cliente decidindo dano sozinho, potencial exploit). Verificação contra
+o padrão já documentado (`RemoteEntityMeta`/`RemoteControlled` — mob
+online nunca tem `Enemy`+`CombatStats` local) mostrou que a query nunca
+casa em jogo online real — é código morto, não brecha. Uma 2ª leitura
+(via Plan agent, sem o contexto completo desta sessão) levantou a
+hipótese OPOSTA — que seria lógica viva pro "modo offline" (single-player
+sem servidor) e por isso devia ser preservada atrás de um gate novo.
+Também verificada e descartada: `game.py::_connect_online()` (linha 543)
+não tem nenhum branch condicional, roda sempre; comentário já existente
+na própria função (linha 530-533) confirma que o modo offline foi
+removido dali faz tempo (item A2 §11); nenhum teste referencia
+`ChannelingSystem`/`_apply_tick`. Conclusão final, com as 2 hipóteses já
+descartadas: código morto de verdade, sem uso vivo em NENHUM modo —
+deletado (não guardado atrás de gate novo).
+
+**Mudanças** (arquivos, ver plano pra detalhe linha-a-linha):
+- `content/skill_config.py` — `calamidade_flamejante` ganha `params`
+  (padrão já usado por 15+ skills) — os 6 números que viviam duplicados
+  como literais em `ui/skill_handlers.py` E `ui/spell_system.py` saem do
+  código.
+- `engine/core_systems.py` — `build_channeling_from_skill(skill, x, y)`,
+  fonte única da tradução catálogo → componente `Channeling` vivo.
+- `ui/skill_handlers.py` / `ui/spell_system.py::AoeTargetingSystem` —
+  os 2 pontos que construíam `Channeling(...)` na mão agora chamam a
+  fábrica; `_start_channel` também parou de checar
+  `if spell_id == "calamidade_flamejante"` (string hardcoded) e passou a
+  checar `skill.is_channeled` (campo genérico já existente no catálogo,
+  já lido, **nunca tinha nenhum consumidor** — achado morto por
+  coincidência) — qualquer canalização futura já flui por aqui sem
+  tocar neste arquivo de novo.
+- `ui/spell_system.py::ChannelingSystem._apply_tick` — método inteiro
+  removido (era só o laço de dano morto). Resto da classe (predição de
+  mana pra UI, cancelamento por movimento, `render()` do círculo) —
+  intacto, é responsabilidade legítima de cliente.
+- `engine/components.py::Channeling` — `tick_timer`/`mana_timer` viram
+  campos reais do `__init__` (antes o servidor grudava por fora via
+  `getattr`/`hasattr`, mesma forma de onda, só declarada onde deveria).
+- `server/spell_completion_processor.py::_process_player_channeling` —
+  acesso direto aos 2 campos agora que são reais, sem mudança de
+  comportamento.
+
+**Prova de que generaliza** (não desenhado ainda, só demonstrado):
+`fatiador_de_corpos` hoje não usa `Channeling` — 2 floats soltos em
+`CharacterStats`, decrementados com aritmética copiada 3x (offline+
+visual-online em `ui/systems.py`, autoritativo em `server/world_server.py`).
+Migrar depois = dar a ela um `Channeling` construído pela MESMA fábrica
+(alvo = tile do próprio caster, sem etapa de mira) e colapsar as 3
+cópias na mesma trilha de tick que este piloto introduz.
+
+**Testes**: `tests/test_calamidade_channel_config.py` (novo, 3 testes —
+valores do `Channeling` batem com o catálogo, prova diferencial mudando
+o catálogo, e prova de que `ChannelingSystem` não aplica mais dano local
+nem em um cenário sintético onde a query antiga teria casado — prova
+diferencial feita, código morto reintroduzido temporariamente, confirmado
+que o teste pegava a regressão, revertido). `tests/test_flt_dedup.py::
+TestCalamidadeFlamejanteNaoDuplicaFLT` (já existia, valida que a
+assinatura do construtor de `Channeling` não mudou) continua passando
+sem alteração. Suíte completa: 933/933 (930 + 3 novos), limpa.

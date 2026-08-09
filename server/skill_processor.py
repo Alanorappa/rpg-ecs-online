@@ -379,6 +379,10 @@ class SkillProcessorMixin:
                             "ty":         _new_ty,
                             "is_dash":    _move_is_dash,
                         })
+                        if sid in _MOVEMENT_PREDICTED_SKILLS:
+                            from debug.interceptar_debug import INTERCEPTAR_DBG as _IDBG
+                            _IDBG.log("DASH_OK", tick=self.tick_count, player_eid=player_eid,
+                                      tx=_new_tx, ty=_new_ty, is_dash=_move_is_dash)
                         tile_move.current_tile_x = _new_tx
                         tile_move.current_tile_y = _new_ty
                 except Exception as e:
@@ -547,6 +551,10 @@ class SkillProcessorMixin:
                         "ty": tile_move.current_tile_y,
                         "rejected": True,
                     })
+                    from debug.interceptar_debug import INTERCEPTAR_DBG as _IDBG
+                    _IDBG.log("DASH_REJECTED", tick=self.tick_count, player_eid=player_eid,
+                              tx=tile_move.current_tile_x, ty=tile_move.current_tile_y,
+                              reason=_fail_reason)
 
             # Sincroniza rage/mana/hp do player após a skill
             from engine.components import CharacterStats as _CShr

@@ -62,7 +62,8 @@ class RespawnMixin:
         _incr_deaths(self.world, player_eid, "deaths")
 
         # Limpa efeitos ativos (DoT/HoT) do player — B8
-        from engine.components import StatusEffects as _SFX, ActiveRegen as _AR
+        from engine.components import StatusEffects as _SFX, ActiveRegen as _AR, \
+            ActiveManaRegen as _AMR
         sfx = self.world.get_component(player_eid, _SFX)
         if sfx:
             sfx.effects.clear()
@@ -76,6 +77,13 @@ class RespawnMixin:
                 tm_resp.slow_mult = 1.0
         try:
             self.world.remove_component(player_eid, _AR)
+        except Exception:
+            pass
+        # Fase 6 (06/08/2026) — espelha a remoção de ActiveRegen acima
+        # pro HoT de mana (assimetria pequena, mesma limpeza que já
+        # existia só pro HP).
+        try:
+            self.world.remove_component(player_eid, _AMR)
         except Exception:
             pass
 

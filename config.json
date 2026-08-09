@@ -1,6 +1,6 @@
 {
   "scale": 1.5,
-  "window_mode": "maximized",
+  "window_mode": "windowed_fullsize",
   "server_host": "localhost",
   "server_port": 8765,
   "net_user": "teste",
@@ -224,15 +224,15 @@
     "jungo": {
       "hotbar": {
         "slots": [
-          "picada_escorpiao",
-          "flecha_reiterada",
-          "cancao_ninar",
-          "tiro_multiplo",
-          "camuflagem",
-          "recarregar",
           "tiro_repulsivo",
-          "so_um_gole",
+          "picada_escorpiao",
           "cancao_inspiracao",
+          "camuflagem",
+          null,
+          "so_um_gole",
+          "recarregar",
+          "tiro_multiplo",
+          "cancao_ninar",
           null
         ],
         "keybinds": [
@@ -444,11 +444,11 @@
     "Nalthor": {
       "hotbar": {
         "slots": [
-          "brado_provocativo",
           "golpe_poderoso",
           "impacto",
-          "punho_no_queixo",
+          "vitoria_iminente",
           null,
+          "fatiador_de_corpos",
           null,
           null,
           null,
@@ -461,11 +461,11 @@
           51,
           52,
           53,
-          54,
-          55,
-          56,
-          57,
-          48
+          114,
+          116,
+          102,
+          103,
+          113
         ]
       },
       "consumable_bar": {
@@ -708,7 +708,95 @@
     "Dornyn": {
       "hotbar": {
         "slots": [
+          "golpe_poderoso",
           null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          48
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      }
+    },
+    "Aldrin": {
+      "hotbar": {
+        "slots": [
+          "bola_de_fogo",
+          "calamidade_flamejante",
+          "pirofagia",
+          "calcinar",
+          "escudo_fogo",
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          48
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      }
+    },
+    "Corvgard": {
+      "hotbar": {
+        "slots": [
+          "golpe_poderoso",
           null,
           null,
           null,

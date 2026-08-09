@@ -207,6 +207,14 @@ SKILL_CATALOG: dict[str, dict] = {
         "needs_aoe_target": True,
         "class_id":         "mago",
         "school":           "fogo",
+        "params": {
+            "tick_interval":  1.0,
+            "mana_per_tick":  10,
+            "radius_tiles":   3.0,
+            "slow_pct":       0.75,
+            "dmg_weapon_pct": 0.15,
+            "dmg_sp_coeff":   1.0,
+        },
     },
     "nova_congelante": {
         "name":             "Nova Congelante",

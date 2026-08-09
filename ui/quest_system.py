@@ -474,6 +474,16 @@ class QuestDialogSystem(UIScaleMixin, System):
         self._complete_rect: "pygame.Rect | None"    = None
         self._close_rect:    "pygame.Rect | None"    = None
 
+        # Cache de superfícies de marcador-fallback, por (cor, símbolo) — era
+        # atributo do CORPO da classe (compartilhado por acidente entre
+        # instâncias, achado 04 do benchmark, PROBLEMAS_ARQUITETURA.md
+        # §12/§13); por-instância, correto. (Corrigido 07/08/2026: a limpeza
+        # anterior tinha posto isso em QuestSystem.__init__ por engano —
+        # _fallback_marker_surf/render_world são de QuestDialogSystem, uma
+        # classe diferente; suíte automatizada não pegou porque nenhum teste
+        # exercitava esse caminho de render, só apareceu no playtest manual.)
+        self._fallback_marker_cache: dict = {}
+
         # Escolha de recompensa (23/07/2026, pedido do usuário) — só
         # relevante quando QuestReward.choice não é vazio. Rects populados
         # em _render_turnin, consumidos em handle_events; escolha em si
@@ -708,8 +718,6 @@ class QuestDialogSystem(UIScaleMixin, System):
             if icon is None:
                 icon = self._fallback_marker_surf(color, symbol)
             WORLD_LABELS.add_icon(pos.x, pos.y - rend.height / 2, icon, stack_key=eid)
-
-    _fallback_marker_cache: dict = {}
 
     def _fallback_marker_surf(self, color: tuple, symbol: str) -> "pygame.Surface":
         """Círculo + glifo pra quando o arquivo map_quest_*.png ainda não

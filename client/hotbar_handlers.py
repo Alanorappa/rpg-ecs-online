@@ -20,13 +20,10 @@ from ui.systems import ConsumableSystem
 from ui.ui_sizes import UI
 
 # Lookup reverso: skill_id → (talent_id, talent_name, min_points_to_unlock)
-# Gerado dinamicamente a partir de talent_data.TALENTS.
-from content.talent_data import TALENTS as _TT_DATA
-_TALENT_SKILL_REQS: dict[str, tuple[str, str, int]] = {
-    td["unlocks_skill"]: (tid, td["name"], td.get("unlock_at", 1))
-    for tid, td in _TT_DATA.items()
-    if td.get("unlocks_skill")
-}
+# Fonte única em engine/world_systems.py (achado 06 do benchmark
+# arquitetural, PROBLEMAS_ARQUITETURA.md §12/§13 — era gerado aqui e lá
+# independentemente, com shapes diferentes).
+from engine.world_systems import _TALENT_SKILL_REQS
 
 
 class HotbarHandlers:

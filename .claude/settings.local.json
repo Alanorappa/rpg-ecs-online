@@ -103,7 +103,13 @@
       "Bash(py -3.10 -c \"import json; json.load\\(open\\('maps/map_1_entities.json', encoding='utf-8'\\)\\); print\\('JSON OK'\\)\")",
       "Bash(py -3.10 -m py_compile client/arena_handlers.py client/network_handlers.py ui/ui_sizes.py)",
       "Bash(git commit *)",
-      "Bash(git tag *)"
+      "Bash(git tag *)",
+      "WebFetch(domain:deepwiki.com)",
+      "WebFetch(domain:repost.aws)",
+      "WebFetch(domain:www.scs.stanford.edu)",
+      "WebFetch(domain:www.gamedeveloper.com)",
+      "WebFetch(domain:www.riotgames.com)",
+      "WebFetch(domain:highscalability.com)"
     ]
   }
 }

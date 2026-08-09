@@ -8,6 +8,22 @@ self._my_eid, self._net e os demais atributos referenciados aqui.
 """
 from engine.components import PlayerSkills
 
+# Campos de Item que só passam direto (sem tratamento especial) entre
+# serialize/deserialize — fonte única (achado 06 do benchmark arquitetural,
+# PROBLEMAS_ARQUITETURA.md §12/§13: as duas listas viviam hardcoded
+# separadamente neste mesmo arquivo e já tinham divergido de verdade —
+# "damage_min"/"damage_max" existem em Item, estavam no loop de
+# deserialize mas FALTAVAM no de serialize, perdendo silenciosamente o
+# dano de arma de qualquer item reconstruído pelo caminho de fallback
+# `_item_from_data`, ex: arma comprada em loja/forjada). "icon_key"
+# removido — nunca foi atributo real de `Item`, só ficava sempre `None`.
+_ITEM_STAT_FIELDS: tuple = (
+    "attack_power", "armor", "spell_power", "stamina",
+    "two_handed", "cast_range", "attack_speed",
+    "damage_min", "damage_max",
+    "item_level", "level_requirement", "description",
+)
+
 
 class SaveSyncHandlers:
     # ── Save de estado do personagem ─────────────────────────────────────────
@@ -28,10 +44,8 @@ class SaveSyncHandlers:
         # todo check `subtype == "Bow"` passa a falhar, disparando "Precisa
         # de um arco equipado" mesmo com o arco genuinamente equipado (bug
         # real reportado por testers). Ver PROBLEMAS_ARQUITETURA.md.
-        for attr in ("icon_key","item_type","slot","rarity","value",
-                     "attack_power","armor","spell_power","stamina",
-                     "two_handed","cast_range","attack_speed","subtype",
-                     "item_level","level_requirement","description"):
+        for attr in (("item_type", "slot", "rarity", "value", "subtype")
+                     + _ITEM_STAT_FIELDS):
             v = getattr(item, attr, None)
             if v is not None:
                 d[attr] = v
@@ -81,9 +95,7 @@ class SaveSyncHandlers:
             max_arrows  = int(d.get("max_arrows",  0)),
             subtype     = d.get("subtype", ""),
         )
-        for f in ("attack_power", "armor", "spell_power", "stamina",
-                  "two_handed", "attack_speed", "damage_min", "damage_max",
-                  "cast_range", "item_level", "level_requirement", "description"):
+        for f in _ITEM_STAT_FIELDS:
             if f in d:
                 setattr(item, f, d[f])
         # Restaura stack salvo (default 1 para itens não empilháveis)
