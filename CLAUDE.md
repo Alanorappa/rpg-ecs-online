@@ -1,7 +1,6 @@
 # Instruções para Claude — RPG ECS Online
 
-> Branch: **online** — versão multiplayer em desenvolvimento paralelo.
-> Versão offline (single-player) está em `rpg_ecs/` (branch `master`). Não confundir.
+> Versão multiplayer — não existe mais versão offline separada.
 
 ---
 
@@ -12,9 +11,9 @@
    de modalidades, horizonte de escala, decisões de rumo (06/08/2026,
    documento vivo — leitura obrigatória ANTES de julgar se uma mudança
    arquitetural vale o esforço agora)
-2. Ler `arquitetura/ARQUITETURA_ONLINE.md` — decisões, protocolo, estado de implementação
+2. Ler `arquitetura/ARQUITETURA ONLINE.md` — decisões, protocolo, estado de implementação
 3. Ler `arquitetura/MAPA_PROJETO.md` — localização de tudo (online + herdado)
-4. Ler `arquitetura/SISTEMAS_ECS.md` — sistemas offline (referência) + sistemas do servidor
+4. Ler `arquitetura/SISTEMAS_ECS.md` — sistemas base do cliente (ECS) + sistemas do servidor
 5. Ler `arquitetura/COMPONENTES_ECS.md` — componentes disponíveis
 6. Usar esses arquivos como referência ANTES de ler código-fonte
 
@@ -32,13 +31,22 @@ um problema a registrar (`PROBLEMAS_ARQUITETURA.md`), não só a ignorar.
 
 ### Após qualquer mudança
 Atualizar os arquivos de arquitetura relevantes:
-- Nova mensagem no protocolo → `ARQUITETURA_ONLINE.md` (tabela de mensagens) + `shared/messages.py`
-- Nova decisão arquitetural → `ARQUITETURA_ONLINE.md` (seção de decisões)
-- Mudança de status de implementação → `ARQUITETURA_ONLINE.md` (tabela de estado)
+- Nova mensagem no protocolo → `ARQUITETURA ONLINE.md` (tabela de mensagens) + `shared/messages.py`
+- Nova decisão arquitetural → `ARQUITETURA ONLINE.md` (seção de decisões)
+- Mudança de status de implementação → `ARQUITETURA ONLINE.md` (tabela de estado)
 - Novo sistema no servidor → `SISTEMAS_ECS.md` (seção "Sistemas do Servidor")
 - Novo arquivo online → `MAPA_PROJETO.md` (tabela "Onde encontrar o quê — Online")
 - Novo componente ECS → `COMPONENTES_ECS.md`
 - Problema arquitetural → `PROBLEMAS_ARQUITETURA.md`
+- **Regra nova a partir daqui: separar regra de histórico.** Ao registrar
+  uma regra nova neste arquivo, escrever a regra em forma crua e atemporal
+  (sem data, sem narrativa do incidente) e colocar o contexto completo
+  (data, sintoma, tentativas erradas) em `PROBLEMAS_ARQUITETURA.md`,
+  referenciado por ponteiro (`ver §N`). O objetivo é este arquivo continuar
+  enxuto e sempre atual pra releitura a cada sessão — a história detalhada
+  já tem endereço certo. Entradas datadas já existentes neste arquivo
+  continuam válidas como estão; consolidá-las é decisão a ser tomada com o
+  usuário, não automática.
 - **Isso vale NO MESMO commit/sessão da mudança, nunca "depois que sobrar
   tempo"** (06/08/2026 — `PROBLEMAS_ARQUITETURA.md` ficou 16 dias sem
   entrada nova enquanto pelo menos 4 bugs da mesma família catalogada em
@@ -68,9 +76,20 @@ Atualizar os arquivos de arquitetura relevantes:
   respeita a arquitetura, e esperar a decisão do usuário antes de agir.
   Sem exceção por tamanho — decisão explícita do usuário, 06/08/2026
   ("nunca decido sozinho — sempre pergunto").
-- **Testes: sem política automática fixa.** Nível de teste (nenhum,
-  manual em playtest, automatizado) é decidido junto, por mudança, não
-  presumido — decisão explícita do usuário, 06/08/2026.
+- **Testes: sem política automática fixa, EXCETO os "pontos únicos de
+  verdade" catalogados abaixo** (`apply_damage_core`, `is_skill_authorized`,
+  `_sessions_in_aoi`, etc.) — essas funções concentram risco em cascata por
+  definição (é por isso que viraram ponto único), então mudanças nelas
+  exigem teste automatizado sempre. Fora desse catálogo, nível de teste
+  (nenhum, manual em playtest, automatizado) é decidido junto, por
+  mudança, não presumido — decisão explícita do usuário, 06/08/2026.
+- **Explicar mudanças em linguagem simples.** Ao final de qualquer
+  implementação ou correção, resumir em português sem jargão técnico o
+  que mudou, por que, e quais partes do jogo isso pode afetar — o usuário
+  não tem profundo conhecimento de arquitetura de software e depende
+  desse resumo pra decidir se aprova. Se o resumo exigir mais de 3 frases
+  técnicas complexas pra fazer sentido, é sinal de que a mudança era
+  grande demais pra não ter sido discutida em mais detalhe antes.
 - Ler `arquitetura/VISAO_PRODUTO.md` antes de julgar se uma refatoração
   arquitetural vale o esforço agora — a ordem de trabalho decidida é
   VISÃO primeiro, débito técnico depois (a arquitetura serve a visão do
@@ -164,16 +183,13 @@ padrão a quebrar, não só os bugs individuais.
 ---
 
 ## Contexto do projeto
-
-### Versão offline (branch master — referência, não modificar)
-- RPG Tibia/WoW-style, Python 3.9 + Pygame 2.x
-- ECS puro: `world.py` (registry), `components.py` (dados), `systems.py` (lógica)
+- RPG Tibia/WoW-style, ECS puro: `world.py` (registry), `components.py` (dados),
+  `systems.py` (lógica)
+- Stack: Python 3.10, `pygame-ce>=2.4.0` (`requirements_server.txt`)
 - Personagens: Guerreiro (Cavaleiro), Mago (Piromania), Arqueiro (Bardo)
-- TILE_SIZE = 32px, tela 1280×720, 60 FPS
-
-### Versão online (este branch)
+- TILE_SIZE = 32px, tela 1280×720, cliente renderiza a 60 FPS
 - Servidor: Python asyncio + WebSocket, **sem Pygame**, 30 ticks/s
-- Cliente: Pygame (evolução do `game.py` offline) + `client/network.py`
+- Cliente: Pygame + `client/network.py`
 - Banco: SQLite (dev) → PostgreSQL (prod)
 - Protocolo: JSON via WebSocket (→ MessagePack antes do lançamento)
 
@@ -185,6 +201,20 @@ padrão a quebrar, não só os bugs individuais.
 - `server/` **nunca importa Pygame** — código de servidor deve rodar headless
 - `client/` **nunca calcula gameplay** — apenas renderiza estado recebido do servidor
 - `shared/` **sem estado** — só constantes e funções puras de serialização
+
+### Isolamento e modularidade (ECS) — convenção geral, não ligada a um incidente específico
+- Um System nunca chama outro System diretamente (`outro_sistema.fazer_algo()`);
+  comunicação entre sistemas acontece via componentes (estado compartilhado) ou
+  eventos/mensagens. Se dois sistemas parecem precisar "conversar" direto, é sinal de
+  que falta um componente ou evento intermediário — não de que a chamada direta é a
+  solução mais simples.
+- Nenhuma classe deve acumular responsabilidade de mais de um domínio (ex: uma entidade
+  ou handler que mistura lógica de rede, física e IA na mesma classe). É a mesma
+  disciplina de "`server/` nunca importa Pygame" e "`client/` nunca calcula gameplay",
+  só que aplicada DENTRO de cada lado, não só na fronteira entre eles.
+- Prefira composição a herança: se resolver um caso novo exige criar uma subclasse pra
+  um comportamento específico, isso é sinal de que falta um Component novo, não uma
+  classe nova.
 
 ### Pontos únicos de verdade (03/07/2026 — usar SEMPRE, nunca reimplementar)
 - **Sistema de gameplay novo** → `world_systems.py` (headless, ZERO pygame no
@@ -269,8 +299,9 @@ padrão a quebrar, não só os bugs individuais.
     nessa lista fica PRESO até atividade alheia (movimento, combate, etc.)
     destravar por acaso. Já aconteceu com arena (§34.34.1) E com grupo/
     duelo/trade/correção de posição de skill (mesmo dia, mesmo padrão —
-    ver ARQUITETURA_ONLINE.md). Todo buffer novo consumido em
-    `_dispatch_tick_deltas` tem que entrar em `has_pending` no MESMO commit.
+    ver `historico/ARQUITETURA ONLINE HISTORICO.md`). Todo buffer novo
+    consumido em `_dispatch_tick_deltas` tem que entrar em `has_pending`
+    no MESMO commit.
   - **Cliente**: `TileRenderSystem` (`ui/systems.py`) desenha em cima de uma
     Surface em cache indexada pela posição da CÂMERA, não pelo conteúdo do
     tile — qualquer mutação direta de `Tilemap.tile_matrix` fora do fluxo
@@ -282,6 +313,34 @@ padrão a quebrar, não só os bugs individuais.
   tick? só na ação que a causou? em resposta a outro evento?), **perguntar
   ao usuário antes de implementar** em vez de adivinhar — mesma régua de
   `feedback_ask_before_deciding` (memória).
+
+### Performance e concorrência — convenção geral, não ligada a um incidente específico
+- **Componentes são dados, não lógica.** Um Component não pode ter métodos com lógica
+  de negócio, imports pesados nem side-effects — só campos. Lógica encontrada dentro de
+  um Component pertence a um System.
+- **Nem todo System roda todo tick.** Ao registrar um System novo, definir
+  explicitamente sua frequência: tick de gameplay (movimento/colisão/combate) acompanha
+  o loop principal (30Hz); IA/pathfinding deve rodar em frequência reduzida ou
+  orientado a evento (recalcular rota só quando o alvo se move o suficiente ou o
+  caminho é bloqueado, nunca todo tick pra toda entidade); entidades fora do AOI de
+  qualquer player entram em modo "adormecido" (sem IA/física detalhada).
+- **Algoritmo antes de micro-otimização.** Busca por proximidade e pathfinding usam
+  estrutura espacial (grid/quadtree), nunca varredura linear sobre todas as entidades.
+  Antes de propor qualquer otimização, medir com profiling (`cProfile`/`py-spy`) —
+  nunca otimizar "no escuro" com base em suposição de onde está o gargalo.
+- **O event loop asyncio do servidor é single-thread — CPU pesada bloqueia tudo.**
+  Diferente de GIL/threading: uma função síncrona pesada (ex: A* sobre 10000+ tiles)
+  dentro de uma coroutine trava o loop inteiro até terminar — nenhum outro pacote de
+  rede, nenhum outro player, nenhuma outra atualização processa nesse intervalo.
+  Throttling de IA e AOI reduzem a FREQUÊNCIA das chamadas pesadas, mas não impedem que
+  UMA chamada pesada trave tudo enquanto roda — isso é uma causa provável (ainda não
+  confirmada por profiling) dos spikes de travamento já observados mesmo com throttling
+  e AOI implementados.
+- **Sistemas identificados como pesados** (pathfinding A*, IA em lote) devem rodar via
+  `loop.run_in_executor()` com `ProcessPoolExecutor` (contorna o GIL de verdade, roda em
+  processo separado) — nunca direto dentro da coroutine do tick principal. Antes de
+  implementar essa mudança, confirmar com profiling que o gargalo medido é mesmo esse
+  sistema, não assumir.
 
 ### Protocolo
 - Todo pacote tem `type` (MsgType), `p` (payload), `seq` (int), `ts` (ms epoch)
@@ -310,7 +369,7 @@ padrão a quebrar, não só os bugs individuais.
 - Isso só importa no **cliente** — no servidor todo player (local ou remoto) tem `CombatStats`
   completo, porque o servidor é autoritativo pra todo mundo.
 
-### Regras herdadas do offline (ainda válidas no cliente)
+### Regras de skills/talentos/stats (válidas no cliente)
 - Skills → `SKILL_CATALOG` em `skill_config.py` (fonte única)
 - Talentos → `talent_data.py`, efeitos em `talent_system.apply_talent_effects()`
 - `stat_fns.py` para mutações de stats
@@ -327,7 +386,7 @@ pip install -r requirements_server.txt
 # Iniciar servidor (cria banco e conta de teste automaticamente)
 python server/main.py
 
-# Em outro terminal: iniciar cliente (ainda usa game.py offline)
+# Em outro terminal: iniciar cliente
 python main.py
 ```
 
@@ -336,5 +395,5 @@ Conta de teste criada automaticamente: `usuario=teste  senha=123456`
 Testar algo que depende de nível/talento/gold/item: conceder GM
 (`python -m server.grant_gm <username>`) + `"debug_mode": true` em
 `config.json` — abre F12 com nível/ouro/itens server-autoritativos de
-verdade (não é mais mutação só local). Ver `ARQUITETURA_ONLINE.md`
-§34.74.54.
+verdade (não é mais mutação só local). Ver
+`historico/ARQUITETURA ONLINE HISTORICO.md` §34.74.54.
