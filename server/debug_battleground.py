@@ -63,13 +63,30 @@ DEBUG_BG_RESULT_AUTO_LEAVE_S = 15.0
 # não-sólidos (piso de pedra) na geração real do mapa.
 DEBUG_BG_SPAWN: dict[str, tuple] = {"a": (3, 96), "b": (96, 3)}
 
-# Espelha exatamente os tiles "D" (Portão de arena) gerados por
-# tools/png_to_map.py a partir de maps/moba_battleground.png — formato L
-# (2 segmentos por time), um por canto-base.
-DEBUG_BG_GATE_TILES: dict[str, list[tuple]] = {
-    "a": [(x, 93) for x in range(2, 7)] + [(6, y) for y in range(94, 98)],
-    "b": [(93, y) for y in range(2, 7)] + [(x, 6) for x in range(94, 98)],
-}
+def _discover_gate_tiles(template_path: str, spawn_points: dict) -> "dict[str, list[tuple]]":
+    """Varre o terrain.csv do template e acha os tiles de portão
+    (ARENA_GATE_TILE, char 'D') em RUNTIME — nunca hardcoded, pra
+    sobreviver a qualquer nova versão do mapa sem precisar atualizar
+    coordenada à mão de novo (bug real, 16/08/2026: uma versão antiga
+    hardcoded travou na posição do portão de um mapa anterior — quando o
+    mapa foi regenerado com arte nova, o portão nunca abria de verdade e
+    minion nunca encontrava rota pra sair da base, pra sempre). Agrupado
+    por time via tile MAIS PERTO (Chebyshev) do spawn daquele time —
+    agrupamento é só organizacional, os consumidores (`_tick_gate`/
+    `_im_open_gate_if_ready`) abrem tudo junto de qualquer forma."""
+    from engine.map_loader import load_map_csv
+    terrain_matrix, _, _, _ = load_map_csv(template_path)
+    gate_cells = [(x, y) for y, row in enumerate(terrain_matrix)
+                  for x, ch in enumerate(row) if ch == "D"]
+    result: dict[str, list[tuple]] = {side: [] for side in spawn_points}
+    for gx, gy in gate_cells:
+        nearest = min(spawn_points, key=lambda side: max(
+            abs(gx - spawn_points[side][0]), abs(gy - spawn_points[side][1])))
+        result[nearest].append((gx, gy))
+    return result
+
+
+DEBUG_BG_GATE_TILES: dict[str, list[tuple]] = _discover_gate_tiles(DEBUG_BG_TEMPLATE, DEBUG_BG_SPAWN)
 
 _state = {
     "loaded":        False,
