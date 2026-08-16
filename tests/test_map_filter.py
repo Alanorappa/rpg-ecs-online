@@ -84,6 +84,31 @@ class TestTileValidationMapFilter(unittest.TestCase):
         self.assertIn((6, 6), sys._occupied)
         self.assertIn((7, 7), sys._occupied)
 
+    def test_indice_canonico_bate_com_scan_direto(self):
+        """Fase 4.7 (12/08/2026, ver PROBLEMAS_ARQUITETURA.md §34/§35,
+        item #1 do ranking) — `tile_movement_by_map` injetado precisa
+        produzir o MESMO `_occupied` que o scan direto (fallback)."""
+        w, e_a, e_b, e_no = _world_with_entities()
+        tm_a = w.get_component(e_a, TileMovement)
+
+        sys_scan = TileValidationSystem(w, map_filter=MAP_A)
+        sys_scan.update()
+
+        sys_idx = TileValidationSystem(w, map_filter=MAP_A)
+        sys_idx.update(tile_movement_by_map={MAP_A: [(e_a, tm_a)]})
+
+        self.assertEqual(sys_scan._occupied, sys_idx._occupied)
+        self.assertIn((5, 5), sys_idx._occupied)
+
+    def test_indice_nao_vaza_entidade_de_outro_mapa(self):
+        w, e_a, e_b, e_no = _world_with_entities()
+        tm_a = w.get_component(e_a, TileMovement)
+        tm_b = w.get_component(e_b, TileMovement)
+        sys = TileValidationSystem(w, map_filter=MAP_A)
+        sys.update(tile_movement_by_map={MAP_A: [(e_a, tm_a)], MAP_B: [(e_b, tm_b)]})
+        self.assertIn((5, 5), sys._occupied)
+        self.assertNotIn((6, 6), sys._occupied, "entidade do mapa B vazou pro cache do mapa A")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # P1 — EnemyAISystem._get_occupied_tiles
@@ -130,6 +155,20 @@ class TestEnemyAIOccupiedTiles(unittest.TestCase):
         occupied = sys._get_occupied_tiles()
         self.assertNotIn((5, 5), occupied, "current_tile não deveria ser bloqueador durante movimento")
         self.assertIn((8, 8), occupied,    "target_tile deveria ser o bloqueador")
+
+    def test_indice_canonico_bate_com_scan_direto(self):
+        """Fase 4.7 (12/08/2026, ver PROBLEMAS_ARQUITETURA.md §34/§35,
+        item #2 do ranking) — `tile_movement_by_map` injetado precisa
+        produzir o MESMO resultado que o scan direto (fallback)."""
+        w, e_a, e_b, e_no = _world_with_entities()
+        tm_a = w.get_component(e_a, TileMovement)
+        sys = EnemyAISystem(w, map_filter=MAP_A)
+
+        via_scan = sys._get_occupied_tiles()
+        via_indice = sys._get_occupied_tiles(tile_movement_by_map={MAP_A: [(e_a, tm_a)]})
+
+        self.assertEqual(via_scan, via_indice)
+        self.assertIn((5, 5), via_indice)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -309,6 +309,15 @@ class SkillProcessorMixin:
             _combat_svc_reset = getattr(_sys_reset, "_svc", {}).get("combat")
             if _combat_svc_reset:
                 _combat_svc_reset.last_outcome = "hit"
+            # Mesmo motivo, por-alvo: LAST_DAMAGE_OUTCOMES (engine/core_systems.py)
+            # é populado por apply_damage_core a cada chamada — sem limpar antes
+            # desta resolução, uma entrada de um alvo atingido por OUTRA skill/
+            # request mais cedo no mesmo tick vazaria pro relatório deste cast se
+            # esse mesmo eid aparecer em hp_snapshot sem ter sido tocado agora
+            # (10/08/2026, ver PROBLEMAS_ARQUITETURA.md §14 — outcome por alvo em
+            # AOE, referências Veloren/AzerothCore).
+            from engine.core_systems import LAST_DAMAGE_OUTCOMES as _last_dmg_outcomes
+            _last_dmg_outcomes.clear()
 
             # Chama o handler diretamente (mesmo mecanismo do SkillSystem offline)
             handler_fn = getattr(self._skill_system, f"_skill_{sid}", None)
@@ -397,6 +406,12 @@ class SkillProcessorMixin:
             import engine.world_systems as _sys
             _combat_svc = getattr(_sys, "_svc", {}).get("combat")
             _skill_outcome = getattr(_combat_svc, "last_outcome", "hit")
+            # LAST_DAMAGE_OUTCOMES: outcome REAL por alvo (populado por
+            # apply_damage_core a cada chamada) — diferente de _skill_outcome
+            # acima, que é 1 valor só compartilhado pro cast inteiro (correto
+            # só pro caso físico de alvo único, ver PROBLEMAS_ARQUITETURA.md
+            # §14). Usado abaixo pra imune/evadiu por alvo em AOE.
+            from engine.core_systems import LAST_DAMAGE_OUTCOMES as _last_dmg_outcomes
 
             results_targets = []
             for mob_eid, hp_before in hp_snapshot.items():
@@ -408,6 +423,18 @@ class SkillProcessorMixin:
                 hp_real  = cs.current_hp               # pode ser negativo se matou
                 hp_after = max(0, hp_real)             # para display da barra
                 damage   = max(0, hp_before - hp_real) # dano real (inclui overkill)
+
+                # Outcome deste alvo específico: blocked_immune/blocked_evade
+                # (apply_damage_core, por alvo, sempre confiável) tem
+                # prioridade sobre _skill_outcome (compartilhado, só correto
+                # pro alvo físico único already coberto por resolve_attack_outcome).
+                _core_outcome  = _last_dmg_outcomes.get(mob_eid)
+                if _core_outcome == "blocked_immune":
+                    _this_outcome = "immune"
+                elif _core_outcome == "blocked_evade":
+                    _this_outcome = "evade"
+                else:
+                    _this_outcome = _skill_outcome
 
                 # Efeitos aplicados por esta skill neste mob
                 _sfx_post  = self.world.get_component(mob_eid, _comp.StatusEffects)
@@ -429,9 +456,14 @@ class SkillProcessorMixin:
                     return r
 
                 if damage > 0:
-                    results_targets.append(_make_result(_skill_outcome))
-                elif mob_eid == tid and _skill_outcome in ("miss", "dodge", "parry", "block"):
-                    results_targets.append(_make_result(_skill_outcome))
+                    results_targets.append(_make_result(_this_outcome))
+                elif mob_eid == tid and _this_outcome in ("miss", "dodge", "parry", "block"):
+                    results_targets.append(_make_result(_this_outcome))
+                elif _this_outcome in ("immune", "evade"):
+                    # Sinal por-alvo real (apply_damage_core) — vale pra
+                    # QUALQUER alvo da AOE, não só o tid explícito do cast
+                    # (ex: cone da Pirofagia, achado real 10/08/2026).
+                    results_targets.append(_make_result(_this_outcome))
                 elif _applied and mob_eid == tid:
                     results_targets.append(_make_result("hit"))
 

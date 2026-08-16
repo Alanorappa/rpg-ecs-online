@@ -98,6 +98,27 @@ def run_ticks(ws, n: int, dt: float = 0.05) -> dict:
     async def _run():
         for _ in range(n):
             ws._tick(dt)
+            await asyncio.sleep(0)   # deixa a task de despacho do tick rodar
+        # Opção (c) de serialização de despacho (12/08/2026, ver
+        # PROBLEMAS_ARQUITETURA.md §44) pode encadear +1 despacho quando
+        # ticks se acumulam enquanto outro ainda está em andamento — sem
+        # tempo real entre ticks aqui (chamadas síncronas back-to-back),
+        # isso pode empilhar mais de 1 rodada. Sem drenar até o fim, a
+        # última task pendente nunca chegaria a rodar (este `asyncio.run`
+        # descarta qualquer task não concluída ao encerrar o loop) — e,
+        # como `SessionManager._dispatch_in_flight` é estado persistente
+        # no objeto (não por chamada), uma task descartada aqui travava
+        # TODO despacho futuro do mesmo SessionManager, mesmo fora deste
+        # helper (achado real: 4 testes de test_session.py quebravam por
+        # isso ao reusar o mesmo self.mgr depois de um aquecimento via
+        # run_ticks).
+        pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        _drain_budget = n + 10
+        while pending and _drain_budget > 0:
+            await asyncio.sleep(0)
+            pending = [t for t in asyncio.all_tasks()
+                      if t is not asyncio.current_task() and not t.done()]
+            _drain_budget -= 1
 
     asyncio.run(_run())
     ws._collect_deltas = orig

@@ -163,17 +163,23 @@ class RemoteEntityHandlers:
 
     def _spawn_archer_auto_arrow(self, attacker_eid, is_self_attacker: bool,
                                   target_local_eid: int, target_pos, _lx: float, _ly: float,
-                                  color: tuple = (101, 67, 33)) -> None:
+                                  color: tuple = (101, 67, 33)) -> "int | None":
         """Cria a flecha visual (PlayerProjectile) do auto-attack do arqueiro e
         toca os sons de saque/disparo (cheios para o player local, posicionais
-        com falloff para arqueiro remoto)."""
+        com falloff para arqueiro remoto). Retorna o eid LOCAL da flecha
+        criada (ou None se não criou) — chamador usa isso pra prender o
+        resultado do servidor DIRETO nesta flecha específica via
+        `PlayerProjectile.deferred_result`, em vez de uma fila compartilhada
+        por alvo (ver PROBLEMAS_ARQUITETURA.md §44 — fila por alvo entregava
+        o resultado errado quando 2+ flechas convergiam pro mesmo alvo fora
+        da ordem em que foram disparadas)."""
         import random as _rand_arrow
         from engine.components import PlayerProjectile as _PParrow
         if attacker_eid is None:
-            return
+            return None
         _ppos = self.world.get_component(attacker_eid, Position)
         if _ppos is None:
-            return
+            return None
         _arrow_id = self.world.create_entity()
         self.world.add_component(_arrow_id, Position(
             x=_ppos.x, y=_ppos.y, prev_x=_ppos.x, prev_y=_ppos.y))
@@ -202,6 +208,7 @@ class RemoteEntityHandlers:
                                       _ppos.x, _ppos.y, _lx, _ly, base=0.5)
             SOUNDS.play_random_at(["arrow_release_1", "arrow_release_2"],
                                   _ppos.x, _ppos.y, _lx, _ly, base=0.5)
+        return _arrow_id
 
     def _bg_silence_nonplayer_combat_fx(self, server_attacker: int, server_target: int) -> bool:
         """True se este hit deve ficar sem som/FLT — pedido do usuário
@@ -297,9 +304,21 @@ class RemoteEntityHandlers:
                                  outcome=outcome, damage=damage, hp_after=hp_after,
                                  is_self=_is_self_archer_attacker)
 
-            # HP: atualização imediata apenas para ataques não-projéteis.
-            # Flechas diferem para o momento de colisão (deferred_hp_updates em _on_hit).
-            if hp_after >= 0 and not _is_archer_arrow:
+            # HP: SEMPRE imediato, inclusive pra flecha (12-13/08/2026, ver
+            # PROBLEMAS_ARQUITETURA.md §44) — só o FLT/som de impacto (e a
+            # decisão de desviar em caso de erro) ficam diferidos pro momento
+            # da colisão visual, nunca o HP em si. Antes, uma flecha em voo
+            # aplicava um `hp_after` "congelado" no instante em que o
+            # servidor resolveu AQUELE golpe — se outro ataque (magia,
+            # corpo-a-corpo, outra flecha) acertasse o MESMO alvo enquanto
+            # ela ainda estava voando e aplicasse o HP dele na hora, a
+            # flecha, ao chegar depois, sobrescrevia com o valor antigo,
+            # apagando o progresso do ataque mais novo — sintoma exato
+            # relatado ("a barra volta"). Confirmado contra a referência do
+            # projeto (Veloren): lá o HealthChangeEvent nunca espera nenhum
+            # evento visual local, sincroniza sempre pelo canal normal de
+            # estado assim que o servidor confirma.
+            if hp_after >= 0:
                 from engine.components import RemoteEntityMeta as _REM_cr
                 _meta_cr = self.world.get_component(local_eid, _REM_cr)
                 if _meta_cr:
@@ -330,8 +349,9 @@ class RemoteEntityHandlers:
             # nasce só no is_completion). Evita a corrida em que o servidor mata o
             # mob antes do timer client zerar e a flecha nunca chega a existir —
             # o golpe fatal ficava "invisível" (sem flecha, sem FLT, sem HP update).
+            _arrow_id = None
             if source == "auto" and _is_archer_arrow and pos is not None:
-                self._spawn_archer_auto_arrow(_attacker_local_remote, _is_self_archer_attacker,
+                _arrow_id = self._spawn_archer_auto_arrow(_attacker_local_remote, _is_self_archer_attacker,
                                               local_eid, pos, _lx, _ly)
                 # Desconto REAL da aljava local acontece só AQUI agora — mesmo
                 # evento que cria a flecha visual, nunca antecipado (ver
@@ -354,14 +374,20 @@ class RemoteEntityHandlers:
                     if _qv_arrow is not None and getattr(_qv_arrow, "item_type", "") == "quiver":
                         _qv_arrow.arrow_count = max(0, _qv_arrow.arrow_count - 1)
 
-            def _queue_arrow_event(eid: int, entry: dict, n: int = 1) -> None:
-                """Armazena evento(s) de flecha: FLT + som diferido para _on_hit."""
-                lst = self._player_proj_system.pending_arrow_impacts.setdefault(eid, [])
-                for _ in range(n):
-                    lst.append(dict(entry))
-
-            if _is_archer_arrow and local_eid is not None:
-                _n_arrows = 1  # cada flecha tem seu próprio evento (online: 1 por PROJECTILE_HIT_CS)
+            def _set_arrow_result(entry: dict) -> None:
+                """Prende o resultado do servidor DIRETO na flecha específica
+                que acabou de nascer (`PlayerProjectile.deferred_result`) —
+                nunca numa fila compartilhada por ALVO. Uma fila por alvo
+                entrega o resultado errado quando 2+ flechas (de atacantes
+                diferentes, ou do mesmo atacante em distâncias diferentes)
+                convergem pro mesmo alvo fora da ordem em que foram
+                disparadas — bug real, ver PROBLEMAS_ARQUITETURA.md §44."""
+                if _arrow_id is None:
+                    return
+                from engine.components import PlayerProjectile as _PParrowSet
+                _pp_set = self.world.get_component(_arrow_id, _PParrowSet)
+                if _pp_set is not None:
+                    _pp_set.deferred_result = entry
 
             if pos and damage > 0:
                 # LOG: jogador local causou dano (imediato — confirmação do servidor)
@@ -374,26 +400,14 @@ class RemoteEntityHandlers:
                         self._player_input_system._increment_pnq_counter(
                             self.player_entity, hit_landed=True)
                 if _is_archer_arrow and local_eid is not None:
-                    # FLT e som de impacto diferidos — exibidos em _on_hit na colisão visual.
-                    # Primeira entrada carrega server_eid/hp_after para atualizar barra de HP
-                    # no momento do impacto. Entradas extras (multi-flecha) sem esses campos.
-                    _per_dmg = damage // _n_arrows if _n_arrows > 1 else damage
-                    _meta_ar = self._meta_from_local(local_eid)
-                    _hp_mx_now = _meta_ar.hp_max if _meta_ar else hp_after
-                    _queue_arrow_event(local_eid, {
+                    # FLT e som de impacto diferidos — exibidos em _on_hit na colisão
+                    # visual. HP já foi aplicado ACIMA, na hora — nunca carregado
+                    # aqui (ver comentário no bloco de HP logo acima).
+                    _set_arrow_result({
                         "outcome":    outcome,
-                        "damage":     _per_dmg,
+                        "damage":     damage,
                         "is_ability": is_ability,
-                        "server_eid": server_target,
-                        "hp_after":   hp_after,
-                        "hp_max":     _hp_mx_now,
-                    }, 1)
-                    if _n_arrows > 1:
-                        _queue_arrow_event(local_eid, {
-                            "outcome":    outcome,
-                            "damage":     _per_dmg,
-                            "is_ability": is_ability,
-                        }, _n_arrows - 1)
+                    })
                     # Cache: server_eid → (local_eid, pos) para is_completion usar
                     # mesmo que o mob despawne antes da mensagem de is_completion chegar.
                     if _sid_cr == "flecha_reiterada":
@@ -448,23 +462,24 @@ class RemoteEntityHandlers:
                             SOUNDS.play_mob_sounds_at(_mob_snd, "emote_attack",
                                                       pos.x, pos.y, _lx, _ly, base=0.6,
                                                       dedup_key=f"dmg_{server_target}")
-            elif pos and damage == 0 and outcome in ("miss", "dodge", "parry", "block", "evade"):
+            elif pos and damage == 0 and outcome in ("miss", "dodge", "parry", "block", "evade", "immune"):
                 _AVOID_LABELS = {
-                    "miss":  "Errou!",
-                    "dodge": "Desviou!",
-                    "parry": "Aparou!",
-                    "block": "Bloqueou!",
+                    "miss":   "Errou!",
+                    "dodge":  "Desviou!",
+                    "parry":  "Aparou!",
+                    "block":  "Bloqueou!",
                     # Modo evasão (RETURNING) — outcome vindo de
                     # _server_apply_ranged_physical (ver ARQUITETURA_ONLINE.md).
-                    "evade": "Evadiu!",
+                    "evade":  "Evadiu!",
+                    "immune": "Imune",
                 }
                 if _is_archer_arrow and local_eid is not None:
                     # Texto de esquiva/erro também diferido para colisão visual
-                    _queue_arrow_event(local_eid, {
+                    _set_arrow_result({
                         "outcome":    outcome,
                         "damage":     0,
                         "is_ability": is_ability,
-                    }, _n_arrows)
+                    })
                 elif not _bg_silent:
                     _col_av = (255, 220, 0) if is_ability else (220, 220, 220)
                     txt_av  = _AVOID_LABELS.get(outcome, "Errou!")
@@ -493,19 +508,23 @@ class RemoteEntityHandlers:
             # aqui e o dano/som ficam diferidos para o impacto em _on_hit — inclusive
             # quando erra/desvia (outcome miss/dodge/parry/block, damage=0), igual ao
             # comportamento contra mobs: a flecha voa e erra, sem som de impacto.
-            if not is_regen and (damage > 0 or outcome in ("miss", "dodge", "parry", "block")):
+            if not is_regen and (damage > 0 or outcome in ("miss", "dodge", "parry", "block", "immune")):
                 _is_arrow_pl, _atk_eid_pl, _is_self_atk_pl = \
                     self._resolve_archer_attack(cr, server_attacker, source)
                 if _is_arrow_pl and source == "auto":
                     player_pos = self.world.get_component(self.player_entity, Position)
                     if player_pos:
-                        self._spawn_archer_auto_arrow(_atk_eid_pl, _is_self_atk_pl,
-                                                       self.player_entity, player_pos, _lx, _ly)
-                        self._player_proj_system.pending_arrow_impacts.setdefault(
-                            self.player_entity, []).append({
-                                "outcome": outcome, "damage": damage,
-                                "is_ability": is_ability, "is_player_target": True,
-                            })
+                        _arrow_id_pl = self._spawn_archer_auto_arrow(
+                            _atk_eid_pl, _is_self_atk_pl,
+                            self.player_entity, player_pos, _lx, _ly)
+                        if _arrow_id_pl is not None:
+                            from engine.components import PlayerProjectile as _PParrowPl
+                            _pp_pl = self.world.get_component(_arrow_id_pl, _PParrowPl)
+                            if _pp_pl is not None:
+                                _pp_pl.deferred_result = {
+                                    "outcome": outcome, "damage": damage,
+                                    "is_ability": is_ability, "is_player_target": True,
+                                }
                         if damage > 0 and not _is_dot_hot:
                             from ui.combat_log import LOG as _LOG_arrow_pl
                             _suffix_arrow_pl = " (crítico)" if is_crit else ""
@@ -546,13 +565,14 @@ class RemoteEntityHandlers:
                             # Só auto-attack toca hit_normal; som de skill chega via SKILL_EFFECT
                             SOUNDS.play_random(["hit_normal_1","hit_normal_2",
                                                 "hit_normal_3","hit_normal"], 0.7)
-            elif damage == 0 and outcome in ("miss", "dodge", "parry", "block"):
+            elif damage == 0 and outcome in ("miss", "dodge", "parry", "block", "immune"):
                 # Mob atacou o player mas foi evitado — mostra feedback visual/sonoro
                 _AVOID_PLR = {
-                    "miss":  ("Errou!",    (220, 220, 100)),
-                    "dodge": ("Desviou!",  (100, 210, 230)),
-                    "parry": ("Aparou!",   (100, 150, 230)),
-                    "block": ("Bloqueou!", (100, 150, 230)),
+                    "miss":   ("Errou!",    (220, 220, 100)),
+                    "dodge":  ("Desviou!",  (100, 210, 230)),
+                    "parry":  ("Aparou!",   (100, 150, 230)),
+                    "block":  ("Bloqueou!", (100, 150, 230)),
+                    "immune": ("Imune",     (200, 200, 200)),
                 }
                 _txt_av, _col_av = _AVOID_PLR.get(outcome, ("Errou!", (220, 220, 100)))
                 player_pos = self.world.get_component(self.player_entity, Position)
@@ -577,17 +597,20 @@ class RemoteEntityHandlers:
             # nasce aqui; dano/som ficam diferidos para o impacto em _on_hit — inclusive
             # quando erra/desvia (outcome miss/dodge/parry/block, damage=0), igual ao
             # comportamento contra mobs: a flecha voa e erra, sem som de impacto.
-            if not is_regen and pos and (damage > 0 or outcome in ("miss", "dodge", "parry", "block")):
+            if not is_regen and pos and (damage > 0 or outcome in ("miss", "dodge", "parry", "block", "immune")):
                 _is_arrow_rp, _atk_eid_rp, _is_self_atk_rp = \
                     self._resolve_archer_attack(cr, server_attacker, source)
                 if _is_arrow_rp and source == "auto":
-                    self._spawn_archer_auto_arrow(_atk_eid_rp, _is_self_atk_rp,
-                                                   local_eid, pos, _lx, _ly)
-                    self._player_proj_system.pending_arrow_impacts.setdefault(
-                        local_eid, []).append({
-                            "outcome": outcome, "damage": damage,
-                            "is_ability": is_ability, "is_player_target": True,
-                        })
+                    _arrow_id_rp = self._spawn_archer_auto_arrow(
+                        _atk_eid_rp, _is_self_atk_rp, local_eid, pos, _lx, _ly)
+                    if _arrow_id_rp is not None:
+                        from engine.components import PlayerProjectile as _PParrowRp
+                        _pp_rp = self.world.get_component(_arrow_id_rp, _PParrowRp)
+                        if _pp_rp is not None:
+                            _pp_rp.deferred_result = {
+                                "outcome": outcome, "damage": damage,
+                                "is_ability": is_ability, "is_player_target": True,
+                            }
                     return
             if is_regen:
                 healed = abs(damage)
@@ -611,12 +634,13 @@ class RemoteEntityHandlers:
                             SOUNDS.play_random_at(["hit_normal_1","hit_normal_2",
                                                    "hit_normal_3","hit_normal"],
                                                   pos.x, pos.y, _lx, _ly, base=0.6)
-            elif damage == 0 and pos and outcome in ("miss", "dodge", "parry", "block"):
+            elif damage == 0 and pos and outcome in ("miss", "dodge", "parry", "block", "immune"):
                 _AVOID_RP = {
-                    "miss":  ("Errou!",    (220, 220, 100)),
-                    "dodge": ("Desviou!",  (100, 210, 230)),
-                    "parry": ("Aparou!",   (100, 150, 230)),
-                    "block": ("Bloqueou!", (100, 150, 230)),
+                    "miss":   ("Errou!",    (220, 220, 100)),
+                    "dodge":  ("Desviou!",  (100, 210, 230)),
+                    "parry":  ("Aparou!",   (100, 150, 230)),
+                    "block":  ("Bloqueou!", (100, 150, 230)),
+                    "immune": ("Imune",     (200, 200, 200)),
                 }
                 _txt_rp, _col_rp = _AVOID_RP.get(outcome, ("Errou!", (220, 220, 100)))
                 FLT.add(_txt_rp, pos.x, pos.y, _col_rp, "small", target_id=local_eid)
@@ -826,10 +850,15 @@ class RemoteEntityHandlers:
         )
         # Aplica cor do servidor
         server_color = data.get("color")
-        if server_color:
-            ren = self.world.get_component(local_eid, Renderable)
-            if ren:
-                ren.color = tuple(server_color)
+        ren = self.world.get_component(local_eid, Renderable)
+        if server_color and ren:
+            ren.color = tuple(server_color)
+        # sprite_id (12/08/2026, torre) — mesmo campo/padrão que o cliente
+        # já lê pra harvestable (ver _handle_msg_loot_available/
+        # sprite_id no corpse) — "" mantém o retângulo colorido de sempre.
+        server_sprite_id = data.get("sprite_id")
+        if server_sprite_id and ren:
+            ren.sprite_id = server_sprite_id
 
         # Nome próprio do servidor (ex: "Boneco de treino") — create_enemy()
         # deriva o nome exibido a partir da raça por padrão (mob_display_name
@@ -1404,10 +1433,12 @@ class RemoteEntityHandlers:
 
     def _draw_mob_hp_bars(self, cam_x: float, cam_y: float) -> None:
         """Desenha barras de HP dos mobs remotos com dados autoritativos do servidor."""
-        from engine.components import Position, FogOfWar as _FogComp, RemoteEntityMeta as _REM_hb
+        from engine.components import (Position, FogOfWar as _FogComp,
+                                       RemoteEntityMeta as _REM_hb, Renderable as _RenHb)
         if not self._remote_mobs:
             return
         from engine.tileset import TILE_SIZE as _TS
+        from ui.tile_sprite_manager import TILE_SPRITES as _TS_hb
         W = _TS - 4
         zoom_surf = self._zoom_surf
         _fog_vis = None
@@ -1429,7 +1460,19 @@ class RemoteEntityHandlers:
             # nunca mais divididos entre espaço de mundo e espaço de tela
             # (causava um bug real: número "flutuando" fora da caixinha,
             # ver ARQUITETURA_ONLINE.md 23.9).
-            _world_y_top = pos.y - W / 2
+            # Sprite real (torre, 12/08/2026, bug real relatado pelo
+            # usuário) é bem mais alto que W (retângulo antigo) — mesma
+            # correção já aplicada em ui/systems.py::RenderSystem.render
+            # pro mob LOCAL/offline, espelhada aqui pro mob REMOTO (torre
+            # dentro da BG é sempre remota do ponto de vista do player
+            # local, passa só por esta função, nunca pela outra).
+            _ren_hb = self.world.get_component(local_eid, _RenHb)
+            if _ren_hb and _ren_hb.sprite_id:
+                _spr_hb = _TS_hb.get_raw_sprite(_ren_hb.sprite_id)
+                _spr_h_hb = _spr_hb.get_height() if _spr_hb else W
+                _world_y_top = pos.y + _TS / 2 - _spr_h_hb
+            else:
+                _world_y_top = pos.y - W / 2
             if hp_max > 0:
                 from ui.hud_bars import (build_mob_hud as _bmh_hb, build_simple_hp_bar as _bshb_hb,
                                         HUD_GAP_PX as _HGP_hb, effects_row_offset as _ero_hb)

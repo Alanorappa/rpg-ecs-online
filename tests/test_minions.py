@@ -59,6 +59,102 @@ def _make_world_with_services():
     return w, pf
 
 
+class TestMinionReservationTable(unittest.TestCase):
+    """Fase 4.7 (12/08/2026, ver PROBLEMAS_ARQUITETURA.md §34/§35, item
+    #3 do ranking de consumo acumulado) — `_get_occupied_tiles` trocou
+    de fresh-scan do mundo inteiro (1x POR MINION) por uma "reservation
+    table" mutável (técnica real de cooperative pathfinding, pesquisada
+    antes de aplicar) semeada do índice canônico, mas precisa preservar
+    o frescor INTRA-tick: minion processado depois no loop de
+    `MinionSystem.update()` precisa ver a reserva de um minion
+    processado antes, no MESMO tick — senão reintroduz o "martelando
+    repath contra tile ocupado" que motivou este mecanismo em 30/07/2026
+    (ver §34.73.2 do histórico). Regressão pedida explicitamente pelo
+    usuário antes de aprovar a mudança."""
+
+    def setUp(self):
+        self.world, self.pf = _make_world_with_services()
+        self.ms = MinionSystem(self.world, get_tilemap_for_map=lambda mf: None,
+                               get_pathfinding_for_map=lambda mf: self.pf)
+
+    def test_indice_canonico_bate_com_scan_direto(self):
+        a = create_minion(self.world, 5, 5, "minion_melee", faction_id="time_a", route=[(5, 5)])
+        self.world.add_component(a, MapLocation(_MAP))
+        b = create_minion(self.world, 6, 5, "minion_melee", faction_id="time_a", route=[(6, 5)])
+        self.world.add_component(b, MapLocation(_MAP))
+
+        self.ms._tile_movement_by_map = None
+        self.ms._working_occupied_by_map = {}
+        via_scan = self.ms._get_occupied_tiles(_MAP, except_entity_id=a)
+
+        tm_a = self.world.get_component(a, TileMovement)
+        tm_b = self.world.get_component(b, TileMovement)
+        self.ms._tile_movement_by_map = {_MAP: [(a, tm_a), (b, tm_b)]}
+        self.ms._working_occupied_by_map = {}
+        via_indice = self.ms._get_occupied_tiles(_MAP, except_entity_id=a)
+
+        self.assertEqual(via_scan, via_indice,
+                         "resultado do índice deveria ser IDÊNTICO ao scan direto")
+        self.assertIn((6, 5), via_indice, "minion b deveria ocupar seu próprio tile")
+
+    def test_minion_processado_depois_no_loop_ve_reserva_do_anterior_no_mesmo_tick(self):
+        """O teste central desta correção: A e B no MESMO tick, A
+        processado primeiro reserva um tile — B, processado logo depois,
+        TEM que ver essa reserva (não um snapshot congelado do início do
+        tick), senão os 2 poderiam mirar o mesmo tile ao mesmo tempo."""
+        a = create_minion(self.world, 5, 5, "minion_melee", faction_id="time_a", route=[(5, 5)])
+        self.world.add_component(a, MapLocation(_MAP))
+        b = create_minion(self.world, 5, 5, "minion_melee", faction_id="time_a", route=[(5, 5)])
+        self.world.add_component(b, MapLocation(_MAP))
+
+        tm_a = self.world.get_component(a, TileMovement)
+        tm_b = self.world.get_component(b, TileMovement)
+        self.ms._tile_movement_by_map = {_MAP: [(a, tm_a), (b, tm_b)]}
+        self.ms._working_occupied_by_map = {}
+
+        occ_before = self.ms._get_occupied_tiles(_MAP, except_entity_id=b)
+        self.assertNotIn((7, 5), occ_before, "antes da reserva, (7,5) não deveria estar bloqueado")
+
+        # A "decide" se mover pra (7,5) neste tick (mesmo que start_tile_movement
+        # + _reserve_tile fazem juntos em _walk_toward/_advance_along_route).
+        self.ms._reserve_tile(_MAP, a, 7, 5)
+
+        occ_after = self.ms._get_occupied_tiles(_MAP, except_entity_id=b)
+        self.assertIn((7, 5), occ_after,
+                      "minion processado DEPOIS no loop deveria ver a reserva do anterior, "
+                      "no MESMO tick — sem isso, reintroduz o bug de 30/07/2026")
+
+    def test_working_occupied_semeado_uma_vez_so_por_mapa(self):
+        """Confirma que a semente (a partir do índice canônico) só
+        acontece na 1ª consulta de cada mapa — chamadas seguintes reusam
+        a MESMA cópia mutável (não resemeia, perdendo reservas já
+        feitas)."""
+        a = create_minion(self.world, 5, 5, "minion_melee", faction_id="time_a", route=[(5, 5)])
+        self.world.add_component(a, MapLocation(_MAP))
+        tm_a = self.world.get_component(a, TileMovement)
+        self.ms._tile_movement_by_map = {_MAP: [(a, tm_a)]}
+        self.ms._working_occupied_by_map = {}
+
+        self.ms._get_occupied_tiles(_MAP, except_entity_id=-1)  # semeia
+        self.ms._reserve_tile(_MAP, a, 9, 9)
+        working_ref = self.ms._working_occupied_by_map[_MAP]
+        self.ms._get_occupied_tiles(_MAP, except_entity_id=-1)  # NÃO deveria resemear
+        self.assertIs(self.ms._working_occupied_by_map[_MAP], working_ref,
+                      "segunda consulta ao mesmo mapa não deveria reconstruir a reserva")
+        self.assertIn((9, 9), self.ms._working_occupied_by_map[_MAP])
+
+    def test_update_reseta_reserva_a_cada_tick(self):
+        """`_working_occupied_by_map` precisa esvaziar no início de CADA
+        `update()` — senão uma reserva de um tick anterior (minion que já
+        se moveu de novo) ficaria bloqueando pra sempre."""
+        a = create_minion(self.world, 5, 5, "minion_melee", faction_id="time_a", route=[(5, 5)])
+        self.world.add_component(a, MapLocation(_MAP))
+        self.ms._working_occupied_by_map = {_MAP: {(9, 9): a}}
+        self.ms.update(0.05, tile_movement_by_map=None)
+        self.assertEqual(self.ms._working_occupied_by_map, {},
+                         "update() deveria resetar a reserva no início de cada tick")
+
+
 class TestMinionSystemTargeting(unittest.TestCase):
     """MinionSystem isolado — advance/aggro/fight/return-to-checkpoint,
     ataque melee/ranged. Não cobre wave spawning/XP (WorldServer real,
@@ -736,6 +832,13 @@ class TestMinionWaveSpawning(unittest.TestCase):
                          "mapa real deveria ter as 6 lanes (top/mid/bot x 2 times)")
         for lane in self.ws._minion_lanes[key]:
             lane["wave_interval_s"] = 12.0  # só acelera o teste
+            # first_wave_delay_s do JSON real (13/08/2026) é um atraso
+            # ABSOLUTO em segundos, independente de wave_interval_s — sem
+            # zerar aqui, o mutation acima não aceleraria a 1ª wave (ficaria
+            # travada nos 15/16.5/18s reais do mapa), quebrando a janela de
+            # ticks abaixo. None cai no fallback _LANE_GROUP_STAGGER_S, que
+            # É o mecanismo que este teste quer exercitar.
+            lane["first_wave_delay_s"] = None
 
         self.ws._activate_minion_lanes(key)
         # 400 ticks = 20.0s. As 6 lanes NÃO disparam mais no mesmo tick
@@ -792,6 +895,7 @@ class TestMinionWaveSpawning(unittest.TestCase):
                 tm_route.tile_matrix[gy][gx] = STONE_FLOOR
         for lane in self.ws._minion_lanes[key]:
             lane["wave_interval_s"] = 6.0
+            lane["first_wave_delay_s"] = None  # ver comentário equivalente acima
         self.ws._activate_minion_lanes(key)
         run_ticks(self.ws, 200)  # 10.0s — todos os 3 grupos disparam e materializam
         run_ticks(self.ws, 400)  # +20.0s de caminhada real
@@ -872,6 +976,7 @@ class TestMinionWaveSpawning(unittest.TestCase):
                 tm.tile_matrix[gy][gx] = STONE_FLOOR
         for lane in self.ws._minion_lanes[key]:
             lane["wave_interval_s"] = 6.0
+            lane["first_wave_delay_s"] = None  # ver comentário equivalente acima
 
         self.ws._activate_minion_lanes(key)
         # Destinos das 2 lanes "top" (dos 2 times) — lidos do JSON real em
@@ -945,6 +1050,52 @@ class TestMinionWaveSpawning(unittest.TestCase):
         minions = [self.ws.world.get_component(eid, Minion)
                   for eid, _ in self.ws.world.get_entities_with(Minion)]
         self.assertEqual(len(minions), 4, "só a lane com intervalo curto deveria ter spawnado")
+
+    def test_first_wave_delay_s_controla_1a_wave_independente_do_intervalo(self):
+        """Pedido do usuário (13/08/2026): atraso da 1ª wave configurável
+        por lane, INDEPENDENTE de wave_interval_s (que só passa a valer a
+        partir da 2ª wave) — ex: 1ª wave de "top" aos 3.0s, "bot" aos
+        4.5s, mas as duas com wave_interval_s=10.0 daí em diante. A
+        diferença de 1.5s entre as duas se propaga pra SEMPRE (2ª wave de
+        "top" aos 13.0s, "bot" aos 14.5s — mesmo gap)."""
+        lane_top = self._lane(faction="arena_time_a", spawn=(130, 374),
+                              target=(130, 390), interval=10.0)
+        lane_top["lane_id"] = "top"
+        lane_top["first_wave_delay_s"] = 3.0
+        lane_bot = self._lane(faction="arena_time_a", spawn=(132, 374),
+                              target=(132, 390), interval=10.0)
+        lane_bot["lane_id"] = "bot"
+        lane_bot["first_wave_delay_s"] = 4.5
+        self.ws._minion_lanes[self.ws._map_file] = [lane_top, lane_bot]
+        self.ws._activate_minion_lanes(self.ws._map_file)
+
+        # Chama _tick_minion_waves DIRETO com dt precisos (mesmo padrão de
+        # test_wave_calcula_1_rota_por_lane_nao_por_minion) — evita ruído
+        # de granularidade de tick e isola só a função sob teste.
+        self.ws._tick_minion_waves(2.9)
+        self.assertEqual(len(self.ws._minion_spawn_queue), 0,
+            "nenhuma lane deveria ter disparado antes do próprio first_wave_delay_s")
+
+        self.ws._tick_minion_waves(0.2)  # total 3.1s — passa do delay de "top" (3.0s)
+        self.assertEqual(len(self.ws._minion_spawn_queue), 4,
+            "'top' deveria ter disparado exatamente no first_wave_delay_s dela (3.0s), "
+            "não em wave_interval_s (10.0s)")
+        self.ws._minion_spawn_queue.clear()
+
+        self.ws._tick_minion_waves(1.5)  # total 4.6s — passa do delay de "bot" (4.5s)
+        self.assertEqual(len(self.ws._minion_spawn_queue), 4,
+            "'bot' deveria ter disparado exatamente no first_wave_delay_s dela (4.5s)")
+        self.ws._minion_spawn_queue.clear()
+
+        # 2ª wave de "top": 1ª foi aos 3.0s + wave_interval_s (10.0s) = 13.0s.
+        # Já passamos 4.6s — faltam 8.4s pra completar os 10.0s de intervalo.
+        self.ws._tick_minion_waves(8.3)
+        self.assertEqual(len(self.ws._minion_spawn_queue), 0,
+            "2ª wave de 'top' não deveria disparar antes de completar wave_interval_s")
+        self.ws._tick_minion_waves(0.2)  # total 13.1s — passa dos 13.0s
+        self.assertEqual(len(self.ws._minion_spawn_queue), 4,
+            "2ª wave de 'top' deveria disparar em first_wave_delay_s + wave_interval_s "
+            "(3.0 + 10.0 = 13.0s) — o atraso inicial se propaga pras waves seguintes")
 
     def test_2_lanes_do_mesmo_time_disparam_independente_lane_id(self):
         """Pedido do usuário (30/07/2026): separar rotas por lane

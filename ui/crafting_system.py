@@ -84,6 +84,12 @@ class BlacksmithSystem(UIScaleMixin, System):
         self._shop_system   = shop_system
         self._quest_dialog  = quest_dialog
         self._quest_system  = quest_system
+        # Débito A4 (11/08/2026, ver PROBLEMAS_ARQUITETURA.md) — envia
+        # CRAFT_REQUEST/RECYCLE_REQUEST ao servidor em vez de mutar ouro/
+        # mochila só localmente. Injetado pelo GameEngine (game.py), None
+        # = modo sem rede (nunca deveria acontecer em produção, mas evita
+        # crash se algo chamar antes da conexão).
+        self._net = None
 
         SW, SH = screen.get_size()
 
@@ -99,13 +105,13 @@ class BlacksmithSystem(UIScaleMixin, System):
         # --- Estado: Recycle ---
         self._rec_item     = None   # Item no slot de reciclagem
         self._rec_bag_idx  = -1     # índice original na bag
+        self._rec_pending  = False  # RECYCLE_REQUEST enviado, aguardando servidor
         self._bag_scroll_r = 0
 
         # --- Estado: Forge ---
         self._frg_selected = None   # recipe_id selecionado na lista
         self._frg_data     = None   # RECIPES[recipe_id]
-        self._frg_result   = None   # Item resultado após forjado
-        self._frg_complete = False  # Forjou — resultado pode ser lootado
+        self._frg_pending  = False  # CRAFT_REQUEST enviado, aguardando servidor
         self._frg_list_scroll = 0   # scroll da lista de receitas
         self._bag_scroll_f = 0
 
@@ -186,47 +192,15 @@ class BlacksmithSystem(UIScaleMixin, System):
     def _wallet(self):
         return self.world.get_component(self.player_entity, Wallet)
 
-    def _count_mat_in_bag(self, mat_name: str) -> int:
+    def _count_mat_in_bag(self, mat_id: str) -> int:
+        """`mat_id` (débito C2, 10/08/2026) — chave de MATERIALS
+        (ex.: "fragmento_ferro"), a mesma que RECIPES[...]["materials"]
+        já usa; era nome de exibição antes, exigindo instanciar a
+        factory só pra comparar."""
         inv = self._inv()
         if not inv:
             return 0
-        return sum(it.stack for it in inv.items if it.name == mat_name)
-
-    def _remove_mat_from_bag(self, mat_name: str, qty: int) -> bool:
-        """Remove qty unidades do material. Retorna True se ok."""
-        inv = self._inv()
-        if not inv:
-            return False
-        remaining = qty
-        to_remove = []
-        for i, it in enumerate(inv.items):
-            if it.name != mat_name:
-                continue
-            take = min(remaining, it.stack)
-            it.stack -= take
-            remaining -= take
-            if it.stack <= 0:
-                to_remove.append(i)
-            if remaining == 0:
-                break
-        for i in reversed(to_remove):
-            inv.items.pop(i)
-        return remaining == 0
-
-    def _add_to_bag(self, item) -> bool:
-        """Adiciona item à bag. Retorna True se coube."""
-        inv = self._inv()
-        if not inv:
-            return False
-        if item.max_stack > 1:
-            for ex in inv.items:
-                if ex.name == item.name and ex.stack < ex.max_stack:
-                    ex.stack += item.stack
-                    return True
-        if len(inv.items) < inv.max_slots:
-            inv.items.append(item)
-            return True
-        return False
+        return sum(it.stack for it in inv.items if it is not None and it.item_id == mat_id)
 
     # ------------------------------------------------------------------
     # update()
@@ -392,12 +366,12 @@ class BlacksmithSystem(UIScaleMixin, System):
     def _reset_recycle(self):
         self._rec_item    = None
         self._rec_bag_idx = -1
+        self._rec_pending = False
 
     def _reset_forge(self):
         self._frg_selected = None
         self._frg_data     = None
-        self._frg_result   = None
-        self._frg_complete = False
+        self._frg_pending  = False
 
     def _do_negociar(self):
         if not self._shop_system:
@@ -406,7 +380,12 @@ class BlacksmithSystem(UIScaleMixin, System):
         self._state = self.STATE_CLOSED
 
     def _do_recycle(self):
-        if self._rec_item is None:
+        """Manda RECYCLE_REQUEST — débito A4 (11/08/2026, ver
+        PROBLEMAS_ARQUITETURA.md). Servidor confere tipo/ouro reais no
+        item da posição indicada e é quem desconta+credita de verdade;
+        aqui só valida localmente pra feedback imediato (mesmo padrão de
+        _equip_item: UX otimista, autoridade real no servidor)."""
+        if self._rec_item is None or self._rec_pending:
             return
         wallet = self._wallet()
         cost   = RARITY_RECYCLE_COST.get(self._rec_item.rarity, 250)
@@ -417,23 +396,21 @@ class BlacksmithSystem(UIScaleMixin, System):
         if not mats:
             LOG.add("Este item nao pode ser reciclado.", (200, 80, 80))
             return
-        wallet.gold -= cost
-        item_name = self._rec_item.name
-        # Materiais vão direto para a bag
-        for mat_id, qty in mats:
-            factory = MATERIALS.get(mat_id)
-            if not factory:
-                continue
-            mat_item       = factory()
-            mat_item.stack = qty
-            if not self._add_to_bag(mat_item):
-                LOG.add(f"Bag cheia! {mat_item.name} perdido.", _COL_RED)
-        # Limpa o slot e reseta
-        self._reset_recycle()
-        LOG.add(f"Reciclado: {item_name} (-{cost}g)", _COL_GOLD)
+        if not self._net:
+            return
+        from shared.messages import MsgType as _MTRec
+        self._rec_pending = True
+        self._net.send(_MTRec.RECYCLE_REQUEST, {"inv_index": self._rec_bag_idx})
 
     def _do_forge(self):
-        if not self._frg_data or self._frg_complete:
+        """Manda CRAFT_REQUEST — débito A4 (11/08/2026, ver
+        PROBLEMAS_ARQUITETURA.md). Servidor lê a receita do próprio
+        catálogo e confere ouro/material reais no Inventory ao vivo antes
+        de aplicar; aqui só valida localmente pra feedback imediato
+        (mesmo padrão de _equip_item). Resultado cai direto na mochila —
+        1 clique, sem passo de "coletar" (simplificação deliberada,
+        decisão do usuário, mesmo padrão de BUY_REQUEST/BUY_RESULT)."""
+        if not self._frg_data or self._frg_pending:
             return
         wallet = self._wallet()
         rarity = self._frg_data.get("result_rarity", "common")
@@ -441,22 +418,15 @@ class BlacksmithSystem(UIScaleMixin, System):
         if not wallet or wallet.gold < cost:
             LOG.add("Ouro insuficiente para forjar.", (200, 80, 80))
             return
-        # Verificar materiais
-        for mat_name, qty in self._frg_data["materials"]:
-            mat_item = MATERIALS.get(mat_name)
-            expected = mat_item().name if mat_item else mat_name
-            if self._count_mat_in_bag(expected) < qty:
+        for mat_id, qty in self._frg_data["materials"]:
+            if self._count_mat_in_bag(mat_id) < qty:
                 LOG.add("Materiais insuficientes.", (200, 80, 80))
                 return
-        # Tudo ok → consumir materiais e gold
-        wallet.gold -= cost
-        for mat_name, qty in self._frg_data["materials"]:
-            mat_item = MATERIALS.get(mat_name)
-            expected = mat_item().name if mat_item else mat_name
-            self._remove_mat_from_bag(expected, qty)
-        self._frg_result   = self._frg_data["result_factory"]()
-        self._frg_complete = True
-        LOG.add(f"Forjado: {self._frg_result.name} (-{cost}g)", _COL_GOLD)
+        if not self._net:
+            return
+        from shared.messages import MsgType as _MTCraft
+        self._frg_pending = True
+        self._net.send(_MTCraft.CRAFT_REQUEST, {"recipe_id": self._frg_selected})
 
     def _do_delete_bag_item(self, idx: int):
         inv = self._inv()
@@ -475,25 +445,15 @@ class BlacksmithSystem(UIScaleMixin, System):
         # Seleção de receita na lista
         for recipe_id, r in self._frg_list_rs:
             if r.collidepoint(mx, my):
-                if not self._frg_complete:
+                if not self._frg_pending:
                     self._frg_selected = recipe_id
                     self._frg_data     = RECIPES.get(recipe_id)
-                    self._frg_result   = None
                 return
 
-        # Botão Forjar
+        # Botão Forjar — resultado cai direto na mochila via CRAFT_RESULT
+        # (débito A4, 11/08/2026), sem passo de "coletar" separado.
         if self._frg_btn_r and self._frg_btn_r.collidepoint(mx, my):
             self._do_forge()
-            return
-
-        # Clicar no slot de resultado: loota para bag
-        if self._frg_complete and self._frg_result_r and self._frg_result_r.collidepoint(mx, my):
-            if self._add_to_bag(self._frg_result):
-                LOG.add(f"Lootado: {self._frg_result.name}", _COL_WHITE)
-                self._frg_result   = None
-                self._frg_complete = False
-            else:
-                LOG.add("Bag cheia!", _COL_RED)
             return
 
     def _handle_bag_rclick(self, mx: int, my: int, mode: str):
@@ -510,7 +470,10 @@ class BlacksmithSystem(UIScaleMixin, System):
                 break
             item = inv.items[real_idx]
             # Modo Reciclar: envia equipamento para slot de reciclagem
-            if mode == "recycle":
+            # (bloqueado com RECYCLE_REQUEST pendente — trocar o item
+            # selecionado nesse meio-tempo dessincronizaria a posição que
+            # o servidor já está processando, débito A4 11/08/2026).
+            if mode == "recycle" and not self._rec_pending:
                 if item.item_type in ("weapon", "armor", "shield", "jewelry"):
                     if self._rec_item is not None:
                         # Devolve item anterior para a bag
@@ -735,6 +698,7 @@ class BlacksmithSystem(UIScaleMixin, System):
 
         # Botão Reciclar
         can_recycle = (self._rec_item is not None
+                       and not self._rec_pending
                        and bool(get_recycle_materials(self._rec_item))
                        and self._wallet() is not None
                        and self._wallet().gold >= RARITY_RECYCLE_COST.get(self._rec_item.rarity, 0))
@@ -836,7 +800,7 @@ class BlacksmithSystem(UIScaleMixin, System):
             if i < len(mat_list):
                 mat_id, req_qty = mat_list[i]
                 mat_item = MATERIALS.get(mat_id, lambda: None)()
-                have = self._count_mat_in_bag(mat_item.name) if mat_item else 0
+                have = self._count_mat_in_bag(mat_id) if mat_item else 0
                 sufficient = have >= req_qty
                 if mat_item:
                     mat_item.stack = req_qty
@@ -857,13 +821,12 @@ class BlacksmithSystem(UIScaleMixin, System):
         cur += self._u(18)
 
         res_r = pygame.Rect(x0 + self._u(_PAD), cur, self._u(_ITEM_SLOT), self._u(_ITEM_SLOT))
-        if self._frg_data and not self._frg_complete:
+        if self._frg_data:
             preview = self._frg_data["result_factory"]()
             self._draw_slot(res_r, preview, overlay=True, mx=mx, my=my)
-        elif self._frg_complete and self._frg_result:
-            self._draw_slot(res_r, self._frg_result, overlay=False, mx=mx, my=my)
-            hint = self._font_sm.render("Clicar para pegar", False, _COL_GREY)
-            self.hud_surf.blit(hint, (res_r.right + self._u(6), res_r.y + self._u(6)))
+            if self._frg_pending:
+                hint = self._font_sm.render("Forjando...", False, _COL_GREY)
+                self.hud_surf.blit(hint, (res_r.right + self._u(6), res_r.y + self._u(6)))
         else:
             self._draw_slot(res_r, None, overlay=False)
         self._frg_result_r = res_r
@@ -884,14 +847,12 @@ class BlacksmithSystem(UIScaleMixin, System):
         # ── Botão Forjar ──────────────────────────────────────────────────
         can_forge = (
             self._frg_data is not None
-            and not self._frg_complete
+            and not self._frg_pending
             and self._wallet() is not None
             and self._wallet().gold >= RARITY_FORGE_COST.get(
                 self._frg_data.get("result_rarity", "common"), 0)
             and all(
-                self._count_mat_in_bag(
-                    (MATERIALS[mid]() if mid in MATERIALS else type('X', (), {'name': mid})()).name
-                ) >= qty
+                self._count_mat_in_bag(mid) >= qty
                 for mid, qty in mat_list
             )
         )

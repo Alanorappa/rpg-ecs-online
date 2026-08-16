@@ -41,6 +41,38 @@ def bresenham_ray(dx: int, dy: int, steps: int) -> list[tuple[int, int]]:
     return result
 
 
+def bresenham_line_tiles(x0: int, y0: int, x1: int, y1: int) -> list[tuple[int, int]]:
+    """Segmento Bresenham entre 2 pontos fixos — retorna os tiles do
+    PRIMEIRO PASSO após (x0,y0) até (x1,y1) INCLUSIVE (início excluído,
+    fim incluído).
+
+    Semântica de endpoint DIFERENTE de `_has_los`/`_dash_path_clear`
+    (`engine/skill_handlers.py`) — aquelas excluem os 2 extremos (servem
+    pra "tiro limpo": nem a origem nem o alvo bloqueiam o próprio tiro).
+    Esta função inclui o tile FINAL de propósito (13/08/2026,
+    `server/world_server.py::_has_tile_los`) — um alvo parado EM CIMA de
+    um tile que bloqueia visão (ex: base de bush) precisa contar como
+    escondido, não só obstáculos "no meio do caminho".
+    """
+    dx = abs(x1 - x0)
+    dy = abs(y1 - y0)
+    sx = 1 if x1 > x0 else -1
+    sy = 1 if y1 > y0 else -1
+    err = dx - dy
+    cx, cy = x0, y0
+    tiles: list[tuple[int, int]] = []
+    while not (cx == x1 and cy == y1):
+        e2 = err * 2
+        if e2 > -dy:
+            err -= dy
+            cx += sx
+        if e2 < dx:
+            err += dx
+            cy += sy
+        tiles.append((cx, cy))
+    return tiles
+
+
 def chebyshev(ax: int, ay: int, bx: int, by: int) -> int:
     """Distância de Chebyshev (máximo entre delta-x e delta-y).
 

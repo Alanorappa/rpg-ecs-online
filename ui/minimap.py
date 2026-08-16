@@ -169,6 +169,107 @@ class Minimap(UIScaleMixin):
         pygame.draw.rect(self.screen, self.BORDER_COL,
                          (fx - 1, fy - 1, sz + 2, sz + 2), 1)
 
+    def render_fullmap(
+        self,
+        explored:    set,
+        visible:     set,
+        dots:        "list[tuple[int, int, tuple, int]]",
+    ) -> None:
+        """Modo alternativo pra dentro de instância estilo MOBA (13/08/2026,
+        pedido do usuário) — mostra o MAPA INTEIRO encolhido pra caber no
+        frame (sem seguir o player, sem centralizar em ninguém), em vez da
+        janela de RADIUS tiles ao redor do player do `render()` normal.
+        Névoa de guerra continua valendo (`explored`/`visible` — inclusive
+        visão compartilhada de time, já embutida nesses 2 sets pelo
+        servidor, ver `_ally_vision_centers`), só a MOLDURA que muda.
+
+        `dots`: lista pré-resolvida pelo CHAMADOR (game.py) de
+        `(tile_x, tile_y, color, radius)` — minion/torre/player já
+        filtrados por visibilidade e coloridos por time. Minimap fica
+        genérico (só desenha), igual já era pra `markers`/`enemy_tiles`
+        no `render()` normal — não sabe o que é Faction/Minion/Tower."""
+        cols = self._map_overlay._cols
+        rows = self._map_overlay._rows
+        if cols == 0 or rows == 0:
+            return
+        if _NUMPY_OK and self._map_arr is None:
+            self._load_map_arr()
+        if not _NUMPY_OK and self._map_overlay._base_surf is None:
+            return
+
+        cache_key = ("fullmap", len(explored), len(visible))
+        if self._cached_surf is None or cache_key != self._cache_key:
+            self._cached_surf = self._rebuild_fullmap(cols, rows, explored, visible)
+            self._cache_key = cache_key
+
+        sw, _ = self.screen.get_size()
+        sz = self._u(self.SIZE)
+        fx = sw - sz - self._u(self.MARGIN_RIGHT)
+        fy = self._u(self.MARGIN_TOP)
+        self.screen.blit(self._cached_surf, (fx, fy))
+
+        # Mesma geometria de encolhimento usada no rebuild — precisa bater
+        # exatamente pra os pontos caírem em cima do terreno certo.
+        scale = min(sz / cols, sz / rows)
+        content_w = max(1, int(cols * scale))
+        content_h = max(1, int(rows * scale))
+        ox = fx + (sz - content_w) // 2
+        oy = fy + (sz - content_h) // 2
+
+        for tile_x, tile_y, color, radius in dots:
+            sx = ox + int(tile_x * scale)
+            sy = oy + int(tile_y * scale)
+            pygame.draw.circle(self.screen, color, (sx, sy), radius)
+
+        pygame.draw.rect(self.screen, self.BORDER_COL,
+                         (fx - 1, fy - 1, sz + 2, sz + 2), 1)
+
+    def _rebuild_fullmap(self, cols: int, rows: int,
+                         explored: set, visible: set) -> pygame.Surface:
+        """Aplica névoa no mapa INTEIRO (sem recorte de janela — diferente
+        de `_rebuild_numpy`, que faz isso só na janela de RADIUS tiles) e
+        encolhe pro tamanho do frame via `pygame.transform.smoothscale`
+        (C-level, evita downsample manual tile-a-tile em Python)."""
+        sz = self._u(self.SIZE)
+        if _NUMPY_OK and self._map_arr is not None:
+            arr = self._map_arr.copy()
+            fog = np.full((cols, rows), 2, dtype=np.uint8)
+            if explored:
+                exp = np.array(list(explored), dtype=np.int32)
+                m = (exp[:, 0] >= 0) & (exp[:, 0] < cols) & (exp[:, 1] >= 0) & (exp[:, 1] < rows)
+                exp = exp[m]
+                if len(exp):
+                    fog[exp[:, 0], exp[:, 1]] = 1
+            if visible:
+                vis = np.array(list(visible), dtype=np.int32)
+                m = (vis[:, 0] >= 0) & (vis[:, 0] < cols) & (vis[:, 1] >= 0) & (vis[:, 1] < rows)
+                vis = vis[m]
+                if len(vis):
+                    fog[vis[:, 0], vis[:, 1]] = 0
+            arr[fog == 2] = 0
+            dark = fog == 1
+            arr[dark] = (arr[dark].astype(np.uint16) * 45 // 100).astype(np.uint8)
+            content = pygame.surfarray.make_surface(arr)
+        else:
+            content = self._map_overlay._base_surf.copy()
+            for tx in range(cols):
+                for ty in range(rows):
+                    if (tx, ty) not in explored:
+                        content.set_at((tx, ty), (0, 0, 0))
+                    elif (tx, ty) not in visible:
+                        r, g, b, *_ = content.get_at((tx, ty))
+                        content.set_at((tx, ty), (r * 45 // 100, g * 45 // 100, b * 45 // 100))
+
+        scale = min(sz / cols, sz / rows)
+        content_w = max(1, int(cols * scale))
+        content_h = max(1, int(rows * scale))
+        scaled = pygame.transform.smoothscale(content, (content_w, content_h))
+
+        frame = pygame.Surface((sz, sz))
+        frame.fill((0, 0, 0))
+        frame.blit(scaled, ((sz - content_w) // 2, (sz - content_h) // 2))
+        return frame
+
     def get_rect(self) -> "pygame.Rect":
         """Retorna o rect de tela do minimap (mesmo cálculo usado em render)."""
         sw, _ = self.screen.get_size()
@@ -199,6 +300,35 @@ class Minimap(UIScaleMixin):
         dtx = rx // tp - self.RADIUS
         dty = ry // tp - self.RADIUS
         return (player_tx + dtx, player_ty + dty)
+
+    def screen_to_tile_fullmap(self, mx: int, my: int) -> "tuple[int, int] | None":
+        """Equivalente de `screen_to_tile` pro modo tela-cheia da BG
+        (`render_fullmap`) — geometria BEM diferente (sem RADIUS, sem
+        centralizar no player, escala derivada de cols/rows do mapa
+        inteiro) — bug real relatado pelo usuário (13/08/2026): clicar
+        no minimapa da BG parou de mover o personagem porque o clique
+        continuava passando pelo `screen_to_tile` normal, que faz a
+        conta errada pra este modo. Chamador (`game.py`) decide qual
+        dos dois chamar, mesmo critério (`InstanceInventoryUIState.
+        active`) que já decide entre `render`/`render_fullmap`."""
+        rect = self.get_rect()
+        if not rect.collidepoint(mx, my):
+            return None
+        cols = self._map_overlay._cols
+        rows = self._map_overlay._rows
+        if cols == 0 or rows == 0:
+            return None
+        sz = rect.width
+        scale = min(sz / cols, sz / rows)
+        content_w = max(1, int(cols * scale))
+        content_h = max(1, int(rows * scale))
+        ox = rect.x + (sz - content_w) // 2
+        oy = rect.y + (sz - content_h) // 2
+        rx = mx - ox
+        ry = my - oy
+        if not (0 <= rx < content_w and 0 <= ry < content_h):
+            return None
+        return (int(rx / scale), int(ry / scale))
 
     # ── Rebuild do cache ─────────────────────────────────────────────────────
 

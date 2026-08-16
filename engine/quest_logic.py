@@ -30,9 +30,10 @@ def resolve_reward_item_factory(item_key: str):
     """Resolve item_key (QuestReward.items/choice) pra fábrica de Item —
     tenta content.item_table.ITEMS (catálogo principal, chave = id
     interno, ex. "training_sword"/"hp_potion") primeiro, depois
-    QUEST_ITEMS (chave = nome de exibição, materiais de quest) como
-    fallback. None se não encontrado em nenhum dos dois — chamador
-    decide se ignora silenciosamente ou loga (servidor loga, ver
+    QUEST_ITEMS (chave = id interno também, ex. "pelo_urso" — normalizado
+    10/08/2026, débito C2, era nome de exibição antes) como fallback. None
+    se não encontrado em nenhum dos dois — chamador decide se ignora
+    silenciosamente ou loga (servidor loga, ver
     server/session.py::_handle_quest_turn_in)."""
     from content.item_table import ITEMS as _ITEM_TABLE
     factory = _ITEM_TABLE.get(item_key)
@@ -69,7 +70,9 @@ def match_objective(event_type: str, data: dict, obj: ObjectiveDef) -> bool:
     if obj.type == "auto_attack_hit":
         return t in ("*", data.get("name", ""), data.get("race", ""))
     if obj.type == "collect_item":
-        return data.get("item_name", "") == obj.loot_item
+        # "item_id" (não "item_name") desde a normalização de QUEST_ITEMS
+        # (débito C2, 10/08/2026) — obj.loot_item já é item_id.
+        return data.get("item_id", "") == obj.loot_item
     if obj.type == "reach_tile":
         loc = obj.location
         if not loc:
@@ -91,13 +94,13 @@ def match_objective(event_type: str, data: dict, obj: ObjectiveDef) -> bool:
     if obj.type == "learn_skill":
         return t in ("*", data.get("skill_id", ""))
     if obj.type == "use_consumable":
-        return t in ("*", data.get("item_name", ""))
+        return t in ("*", data.get("item_id", ""))
     if obj.type == "reach_level":
         return data.get("level", 0) >= obj.count
     if obj.type == "talk_to_npc":
         return t in ("*", data.get("npc_name", ""))
     if obj.type == "equip_item":
-        return t in ("*", data.get("item_name", ""), data.get("item_type", ""))
+        return t in ("*", data.get("item_id", ""), data.get("item_type", ""))
     if obj.type == "use_item_on_target":
         if data.get("item_name", "") != obj.params.get("item_name", ""):
             return False
@@ -140,7 +143,7 @@ def sync_collect_progress(ql, inventory) -> bool:
             if obj.type != "collect_item" or not obj.loot_item:
                 continue
             owned = sum(item.stack for item in inventory.items
-                        if item is not None and item.name == obj.loot_item)
+                        if item is not None and item.item_id == obj.loot_item)
             new_prog = min(owned, obj.count)
             if prog[i] != new_prog:
                 prog[i] = new_prog
@@ -237,7 +240,7 @@ def try_start(world, player_eid: int, ql, qid: str) -> bool:
             # (ver quest_events.py), então sem este pré-check o objetivo
             # nunca fecharia pra quem já tinha o item na hora de aceitar.
             _held = sum(it.stack for it in inv.items
-                       if it is not None and it.name == obj.loot_item)
+                       if it is not None and it.item_id == obj.loot_item)
             prog.append(min(obj.count, _held))
         else:
             prog.append(0)
@@ -287,7 +290,7 @@ def complete_quest(world, player_eid: int, ql, qid: str):
                 item = inv.items[i]
                 if item is None:
                     i += 1
-                elif item.name == obj.loot_item:
+                elif item.item_id == obj.loot_item:
                     if item.stack <= needed:
                         needed -= item.stack
                         removed_amount += item.stack
@@ -300,7 +303,11 @@ def complete_quest(world, player_eid: int, ql, qid: str):
                 else:
                     i += 1
             if removed_amount > 0:
-                consumed.append({"name": obj.loot_item, "stack": removed_amount})
+                # "item_id" (não "name") — obj.loot_item já é item_id desde
+                # a normalização de QUEST_ITEMS (débito C2, 10/08/2026); o
+                # consumidor (client/network_handlers.py, INVENTORY_UPDATE
+                # "removed") casa por item_id agora, não mais por nome.
+                consumed.append({"item_id": obj.loot_item, "stack": removed_amount})
 
     for qid2, qdef2 in QUESTS.items():
         if qid2 not in ql.active and qid2 not in ql.completed and qdef2.auto_start:

@@ -173,7 +173,7 @@ def test_send_arena_queue_join_manda_o_modo_no_payload():
 def test_clique_entrar_manda_join_e_fecha_o_modal():
     fx = _ArenaFixture(my_eid=1)
     fx._arena_modal_open_val = True
-    panel, close_rect, rows, bg_row_rect, bg_btn_rect = fx._arena_modal_rects()
+    panel, close_rect, rows, bg_rows = fx._arena_modal_rects()
     _, _, _, btn_rect = next(r for r in rows if r[0] == "1v1")
     event = pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=btn_rect.center)
     consumed = fx._handle_arena_modal_click(event)
@@ -185,7 +185,7 @@ def test_clique_entrar_manda_join_e_fecha_o_modal():
 def test_clique_entrar_em_modo_inelegivel_nao_manda_nada():
     fx = _ArenaFixture(my_eid=1)   # sem grupo — 2v2 inelegível
     fx._arena_modal_open_val = True
-    panel, close_rect, rows, bg_row_rect, bg_btn_rect = fx._arena_modal_rects()
+    panel, close_rect, rows, bg_rows = fx._arena_modal_rects()
     _, _, _, btn_rect = next(r for r in rows if r[0] == "2v2")
     event = pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=btn_rect.center)
     fx._handle_arena_modal_click(event)
@@ -197,7 +197,7 @@ def test_clique_entrar_em_modo_inelegivel_nao_manda_nada():
 def test_clique_no_x_fecha_sem_mandar_nada():
     fx = _ArenaFixture()
     fx._arena_modal_open_val = True
-    panel, close_rect, rows, bg_row_rect, bg_btn_rect = fx._arena_modal_rects()
+    panel, close_rect, rows, bg_rows = fx._arena_modal_rects()
     event = pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=close_rect.center)
     consumed = fx._handle_arena_modal_click(event)
     assert consumed is True
@@ -209,7 +209,7 @@ def test_clique_sair_quando_ja_na_fila_manda_leave():
     fx = _ArenaFixture(my_eid=1)
     fx._arena_in_queue_mode_val = "1v1"
     fx._arena_modal_open_val = True
-    panel, close_rect, rows, bg_row_rect, bg_btn_rect = fx._arena_modal_rects()
+    panel, close_rect, rows, bg_rows = fx._arena_modal_rects()
     _, _, _, btn_rect = next(r for r in rows if r[0] == "1v1")
     event = pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=btn_rect.center)
     fx._handle_arena_modal_click(event)

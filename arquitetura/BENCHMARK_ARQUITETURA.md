@@ -64,7 +64,7 @@
 - [x] D.4 Facções
 
 **Cluster E — Infraestrutura** (avaliar depois se vale entrar)
-- [ ] E.1 AOI/rede/sessão
+- [x] E.1 AOI/rede/sessão — reaberto 12/08/2026 sob demanda (bug real de HP), achado arquitetural confirmado, ver seção própria abaixo
 - [ ] E.2 Save/persistência
 - [ ] E.3 NPCs de suporte
 - [ ] E.4 Loot
@@ -662,6 +662,121 @@ nas duas referências pra esse escopo.
 - Quer sistema de reputação por facção (acumulável, afeta loja/acesso)
   além da hostilidade atual? Também só registro, não é decisão
   urgente.
+
+---
+
+## E.1 — AOI/rede/sessão (12/08/2026, aberto sob demanda — bug real de HP "voltando" durante combate)
+
+> Cluster E tinha ficado de fora da rodada original (ver Síntese final
+> abaixo, "E ficou de fora por baixo valor comparativo"). Reaberto aqui
+> especificamente porque um bug real (usuário: HP de mob/torre "volta"
+> durante combate ativo — ver `PROBLEMAS_ARQUITETURA.md` §44) apontou
+> pra uma suspeita concreta de arquitetura (despacho de rede por tick
+> sem serialização), não só um sintoma pontual — mesmo critério de
+> "vira item de investigação de arquitetura" já usado nos outros
+> clusters.
+
+### Referências (fontes: DeepWiki `veloren/veloren` — página raiz +
+`2.1-network-protocol`; WebSearch sobre a crate `veloren_network`
+[docs.veloren.net/veloren_network, veloren.gitlab.io/veloren/
+veloren_network_protocol]; DeepWiki `azerothcore/azerothcore-wotlk` —
+página raiz + `6-network-and-communication` + `4-world-update-cycle`)
+
+- **Veloren**: sincronização de componente usa dirty-tracking por
+  componente (sistema "Sentinel", `UpdateTrackers` — bitset de
+  entidades modificadas por tipo de componente). Um sistema único,
+  `entity_sync::Sys`, roda DENTRO do loop de tick da ECS (não numa
+  task assíncrona solta) — itera regiões, filtra por
+  `RegionSubscription` (relevância espacial) e monta os pacotes
+  (`EntityPackage`/`CompSyncPackage`) daquele tick especificamente,
+  ANTES do tick seguinte começar. A entrega em si usa a crate própria
+  `veloren-network`, que expõe `Stream`s "reliable, ordered" (mensagens
+  dentro do MESMO stream chegam garantidamente na ordem que foram
+  enviadas) sobre TCP/QUIC/UDP/MPSC — a ordem nunca é responsabilidade
+  de quem consome, é garantia do transporte.
+- **AzerothCore**: a documentação disponível (DeepWiki, 3 páginas
+  consultadas) confirma que existe um "coração" único do tick
+  (`World::Update`) e que pacotes são roteados por filtro
+  (`MapSessionFilter` processa dentro de `Map::Update`,
+  `WorldSessionFilter` dentro de `World::UpdateSessions`), mas **não
+  documenta explicitamente** (nas páginas fornecidas) se um
+  `Map::Update` de um tick pode rodar concorrente com o de outro tick,
+  nem o mecanismo exato de prevenção de pacote desatualizado. Não
+  encontrei uma fonte primária suficiente pra afirmar isso com certeza
+  — registrado como GAP de pesquisa, não inventado. Não usar essa parte
+  como fonte confirmada; usar só Veloren pra este ponto específico
+  (que é, aliás, a referência de FORMA designada no topo deste
+  documento — combina com o tipo de pergunta).
+
+### Nosso projeto
+
+`server/session.py::_on_tick` (linha ~2374) monta `deltas` uma vez por
+tick e despacha via `asyncio.create_task(self._dispatch_tick_deltas(deltas))`
+(linha ~2444) — **sem `await`, sem fila/trava entre ticks sucessivos**.
+`_dispatch_tick_deltas` (async, ~90+ linhas, itera todas as sessões e
+faz `await session.send(...)` por sessão) pode ainda estar no meio da
+iteração quando o PRÓXIMO tick (30/s) já criou outra task concorrente
+pro MESMO trabalho. `session.send()` (linha ~81-96) só serializa a
+ESCRITA no socket via `_send_lock` (nunca dois `send()` corrompendo o
+mesmo pacote) — não serializa ORDEM LÓGICA entre ticks diferentes.
+`seq` (atribuído dentro de `send()`, na hora do envio) mede ordem de
+ENVIO, não ordem de TICK — se a task do tick mais velho ganhar a trava
+depois da task do tick mais novo, o dado velho sai com `seq` MAIOR,
+mascarando que é mais antigo.
+
+### Comparação
+
+| Aspecto | Veloren | Nosso projeto |
+|---|---|---|
+| Onde a sincronização por tick roda | Sistema síncrono dentro do loop da ECS (`entity_sync::Sys`) — tick N sempre termina de montar/mandar antes do tick N+1 começar | Task assíncrona solta (`asyncio.create_task`, sem `await`) — tick N+1 pode começar a despachar ANTES do tick N terminar |
+| Garantia de ordem na entrega | Delegada ao transporte (`Stream` "reliable, ordered" da própria crate) | Delegada ao WebSocket (TCP — também ordenado), MAS a ordem de ENVIO do servidor já pode estar errada antes de chegar no transporte |
+| Sinal usado pra descartar dado velho | Não precisa — a arquitetura impede o dado velho de ser montado/enviado fora de ordem, por construção | Não existe hoje nenhum campo confiável pra isso (`seq` mede envio, não tick) |
+
+### Achados
+
+1. **Achado arquitetural real, não um bug isolado**: o despacho de
+   rede por tick deste projeto permite exatamente a classe de
+   inconsistência que a arquitetura de referência (Veloren) evita por
+   CONSTRUÇÃO — não deixando duas montagens/envios de tick concorrerem
+   entre si, nunca precisando de um mecanismo de "descarte de dado
+   velho" no cliente porque o servidor nunca produz essa situação.
+2. **Duas correções possíveis, tamanho/risco bem diferentes**:
+   - **(a) Alinhar com a referência (raiz)**: serializar
+     `_dispatch_tick_deltas` — garantir que o despacho de um tick
+     termine (ou pelo menos que a MONTAGEM/leitura de estado dele fique
+     protegida) antes do próximo começar. Mexe no núcleo do pipeline
+     de rede, usado por praticamente toda mensagem do jogo — maior
+     superfície de risco, mas é a correção que bate com a arquitetura
+     de referência de verdade.
+   - **(b) Mitigar no sintoma (cliente)**: cliente passa a descartar
+     atualização de HP mais velha que a última aplicada, usando um
+     número de TICK (não `seq`) que o servidor precisa passar a
+     mandar. Aditivo, isolado, não mexe no despacho — mas é uma
+     correção de sintoma, não fecha o gap arquitetural que Veloren
+     evita.
+3. Decisão de qual caminho (ou os dois) tomar fica com o usuário — ver
+   discussão em `PROBLEMAS_ARQUITETURA.md` §44, não decidida aqui
+   sozinho (mudança de arquitetura de rede não é decisão unilateral,
+   ver regra do projeto).
+4. **Implementado — opção (c), meio-termo entre (a) e (b)**: usuário
+   pediu comparação de custo/coesão/eficiência entre as duas opções
+   acima; desenhei uma terceira (coalescência de despacho — no máximo 1
+   `_dispatch_tick_deltas` em andamento por vez, tick que chega no meio
+   do caminho tem seu `deltas` MESCLADO no acumulador em vez de
+   descartado ou despachado em paralelo, saindo inteiro assim que a
+   vaga abre). Fecha o gap pra TODO tipo de dado do pipeline (mais
+   coeso que (b), que só resolveria HP) sem exigir que o loop de tick
+   trave esperando envio de rede (menos arriscado que (a) pura).
+   Usuário aprovou o desenho e a implementação (`server/session.py`
+   `_dispatch_in_flight`/`_pending_merged_deltas`/`_merge_deltas_into`/
+   `_run_dispatch`). Ver `PROBLEMAS_ARQUITETURA.md` §44 pro detalhe de
+   implementação/testes/suíte completa (926 testes, sem regressão).
+
+**Veredito**: achado arquitetural real — entrou em
+`PROBLEMAS_ARQUITETURA.md` (§44) como causa raiz confirmada do bug de
+HP relatado pelo usuário, e a opção (c) já foi implementada e testada.
+Cluster E.1 fica marcado como resolvido (❗ achado real, fix aplicado),
+não mais em aberto.
 
 ---
 

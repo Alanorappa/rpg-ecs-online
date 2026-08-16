@@ -10,14 +10,14 @@ A fila é drenada frame/tick a frame/tick — eventos nunca acumulam.
 
 Tipos de evento:
     kill                {"name": str, "race": str, "tier": str}
-    collect_item        {"item_name": str}
+    collect_item        {"item_id": str}
     reach_tile          {"tx": int, "ty": int, "map": str}   # map = arquivo do mapa atual
     use_skill           {"skill_id": str, "on_dummy": bool}  # on_dummy = alvo tinha TrainingDummy
-    use_consumable      {"item_name": str}
+    use_consumable      {"item_id": str}
     reach_level         {"level": int}
     talk_to_npc         {"npc_name": str}
-    equip_item          {"item_name": str, "item_type": str}
-    use_item_on_target  {"item_name": str, "target_name": str, "target_race": str}
+    equip_item          {"item_id": str, "item_type": str}
+    use_item_on_target  {"item_name": str, "target_name": str, "target_race": str}  # não migrado p/ item_id (débito C2) — feature sem chamador real (nenhum quest_events.fire("use_item_on_target",...) no código)
     learn_skill         {"skill_id": str}   # disparado ao aprender no treinador (trainer_system.py)
 """
 from __future__ import annotations

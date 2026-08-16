@@ -14,6 +14,18 @@ from tests.helpers import make_world_server, spawn_player, set_entity_tile
 from shared.constants import PARTY_MAX_SIZE
 
 
+def _loot_dict(item_id: str, stack: int = 1) -> dict:
+    """Monta um dict de item de corpse a partir do catálogo real (mesmo
+    formato de server/server_death_handler.py::_serialize_item) — débito
+    A4 (11/08/2026): request_loot() agora reconstrói via item_id contra o
+    catálogo real (WorldServer._reconstruct_item) antes de creditar no
+    Inventory ao vivo, então um dict fake tipo {"name": "Poção"} sem
+    item_id de catálogo válido não é mais suficiente pra simular loot."""
+    from content.item_table import ITEMS as _TestItems
+    from server.server_death_handler import _serialize_item
+    return _serialize_item(_TestItems[item_id]())
+
+
 class TestPartyLifecycle(unittest.TestCase):
 
     def setUp(self):
@@ -234,7 +246,7 @@ class TestPartyLootFreeForAll(unittest.TestCase):
         self.ws._next_corpse_id += 1
         self.ws._corpses[cid] = {
             "tx": 130, "ty": 374, "owner_eid": owner_eid,
-            "items": [{"name": "Item Teste"}], "coins": 10,
+            "items": [_loot_dict("hp_potion")], "coins": 10,
             "timer": 120.0, "map": self.ws._map_file,
         }
         return cid
@@ -303,7 +315,7 @@ class TestLootGranular(unittest.TestCase):
         return cid
 
     def test_take_gold_nao_leva_itens_junto(self):
-        cid = self._make_corpse([{"name": "Poção"}], coins=10)
+        cid = self._make_corpse([_loot_dict("hp_potion")], coins=10)
 
         result = self.ws.request_loot("s1", cid, take="gold")
 
@@ -314,9 +326,9 @@ class TestLootGranular(unittest.TestCase):
                          "item nao deveria ter sido removido junto do ouro")
 
     def test_take_item_nao_leva_ouro_junto(self):
-        cid = self._make_corpse([{"name": "Poção"}], coins=10)
+        cid = self._make_corpse([_loot_dict("hp_potion")], coins=10)
 
-        result = self.ws.request_loot("s1", cid, take="item", item_name="Poção")
+        result = self.ws.request_loot("s1", cid, take="item", item_id="hp_potion")
 
         self.assertEqual(len(result["items"]), 1)
         self.assertEqual(result["coins"], 0)
@@ -325,20 +337,20 @@ class TestLootGranular(unittest.TestCase):
         self.assertEqual(self.ws._corpses[cid]["coins"], 10,
                          "ouro nao deveria ter sido tocado")
 
-    def test_take_item_remove_so_o_item_pedido_por_nome(self):
-        cid = self._make_corpse([{"name": "Poção"}, {"name": "Espada"}], coins=0)
+    def test_take_item_remove_so_o_item_pedido_por_item_id(self):
+        cid = self._make_corpse([_loot_dict("hp_potion"), _loot_dict("iron_sword")], coins=0)
 
-        result = self.ws.request_loot("s1", cid, take="item", item_name="Espada")
+        result = self.ws.request_loot("s1", cid, take="item", item_id="iron_sword")
 
-        self.assertEqual([i["name"] for i in result["items"]], ["Espada"])
-        remaining = [i["name"] for i in self.ws._corpses[cid]["items"]]
-        self.assertEqual(remaining, ["Poção"], "só o item pedido deveria sair")
+        self.assertEqual([i["item_id"] for i in result["items"]], ["iron_sword"])
+        remaining = [i["item_id"] for i in self.ws._corpses[cid]["items"]]
+        self.assertEqual(remaining, ["hp_potion"], "só o item pedido deveria sair")
 
-    def test_take_item_nome_ja_pego_retorna_vazio(self):
-        cid = self._make_corpse([{"name": "Poção"}], coins=0)
-        self.ws.request_loot("s1", cid, take="item", item_name="Poção")
+    def test_take_item_ja_pego_retorna_vazio(self):
+        cid = self._make_corpse([_loot_dict("hp_potion")], coins=0)
+        self.ws.request_loot("s1", cid, take="item", item_id="hp_potion")
 
-        result = self.ws.request_loot("s1", cid, take="item", item_name="Poção")
+        result = self.ws.request_loot("s1", cid, take="item", item_id="hp_potion")
 
         self.assertEqual(result["items"], [], "item ja retirado nao deveria sair de novo")
 

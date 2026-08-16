@@ -58,29 +58,80 @@ class LootProcessorMixin:
                     quest_rolls[player_eid] = [_ser_loot(it) for it in extras]
         return quest_rolls[player_eid]
 
+    def _grant_loot_items_to_inventory(self, player_eid: int, item_dicts: list) -> "tuple[list, list]":
+        """Tenta adicionar cada item (dict serializado, já vindo do
+        catálogo — corpse é populado só por lógica server-side) ao
+        Inventory AO VIVO do jogador — débito A4 (11/08/2026, ver
+        PROBLEMAS_ARQUITETURA.md). Empilha em item existente quando
+        possível (tudo ou nada por item — nunca estoura o max_stack
+        deixando o resto perdido), senão precisa de 1 slot livre.
+
+        Retorna (concedidos, não_concedidos) — cada um é a MESMA
+        referência de dict recebida em `item_dicts` (comparável por
+        identidade). Os NÃO concedidos nunca são tocados aqui — é
+        responsabilidade do CHAMADOR não removê-los do corpse (decisão
+        do usuário: sem espaço, o item simplesmente continua lootável
+        depois, nunca é perdido). Dado inválido (`_reconstruct_item`
+        não resolve — não deveria acontecer, corpse só tem itens do
+        próprio catálogo) também conta como NÃO concedido, nunca
+        descartado em silêncio — perder um dict por dado ruim seria a
+        mesma classe de bug que estamos fechando aqui."""
+        from engine.components import Inventory as _InvLoot
+        inv = self.world.get_component(player_eid, _InvLoot)
+        if inv is None:
+            return [], list(item_dicts)
+        granted, not_granted = [], []
+        for item_d in item_dicts:
+            candidate = self._reconstruct_item(item_d)
+            if candidate is None:
+                not_granted.append(item_d)
+                continue
+            existing = None
+            if candidate.max_stack > 1:
+                existing = next((it for it in inv.items
+                                 if it is not None and it.item_id == candidate.item_id
+                                 and it.stack < it.max_stack), None)
+            if existing is not None and (existing.max_stack - existing.stack) >= candidate.stack:
+                existing.stack += candidate.stack
+                granted.append(item_d)
+            elif existing is None and len(inv.items) < inv.max_slots:
+                inv.items.append(candidate)
+                granted.append(item_d)
+            else:
+                not_granted.append(item_d)
+        return granted, not_granted
+
     def request_loot(self, session_id: str, corpse_id: int,
-                     take: str = "all", item_name: str = "") -> dict | None:
+                     take: str = "all", item_id: str = "") -> dict | None:
         """
         Retorna {items, coins} do corpse se o player for o dono OU membro do
         MESMO grupo do dono (free-for-all dentro do grupo — decisão do
-        usuário 17/07/2026), None caso contrário.
+        usuário 17/07/2026), None caso contrário. `items` retornado é
+        exatamente o que foi CONCEDIDO na mochila ao vivo do servidor
+        (débito A4, 11/08/2026) — nunca mais um "o que o cliente
+        materializa por conta própria depois".
 
-        `take` decide o que sai do corpse nesta chamada (granular desde
-        17/07/2026 — bug real relatado pelo usuário: sacar só o ouro
-        também levava junto os itens que sobravam, corpo sumia com loot
-        ainda dentro):
+        `take` decide o que TENTA sair do corpse nesta chamada (granular
+        desde 17/07/2026 — bug real relatado pelo usuário: sacar só o
+        ouro também levava junto os itens que sobravam, corpo sumia com
+        loot ainda dentro):
           - "gold": só as moedas, itens intocados.
-          - "item": só o PRIMEIRO item da lista atual com name==item_name
-            (nome, não índice — índice cru quebraria se outro membro do
-            grupo já tivesse tirado um item antes, deslocando a lista).
-            Procura primeiro no pote comum (compartilhado), depois no
-            pessoal (condicional de quest, Fase L1) deste jogador.
+          - "item": só o PRIMEIRO item da lista atual com item_id
+            batendo (débito A4 — nome de exibição não distingue itens
+            diferentes com o mesmo nome; item_id como identidade é
+            padrão desde a migração C2). Procura primeiro no pote comum
+            (compartilhado), depois no pessoal (condicional de quest,
+            Fase L1) deste jogador.
           - "all" (default/compat): tudo — comum + o que sobrar do
             condicional pessoal deste jogador.
-        Após sacar: reduz timer pra 15s — primeiro do grupo a lootar leva
-        o que pediu, os outros recebem {items:[],coins:0} se pedirem a
-        MESMA coisa depois (mesmo comportamento de "free for all" de
-        qualquer MMO). Fora do dono/grupo: None silenciosamente.
+        Item que não CABE na mochila (débito A4, decisão do usuário:
+        isso não é comportamento de loot, é só "não tira do corpse o que
+        não coube") continua no corpse — não é perdido, nem precisa de
+        lógica nova de expiração: o timer normal do corpse já cobre.
+        Após sacar algo: reduz timer pra 15s — primeiro do grupo a
+        lootar leva o que pediu, os outros recebem {items:[],coins:0} se
+        pedirem a MESMA coisa depois (mesmo comportamento de "free for
+        all" de qualquer MMO). Fora do dono/grupo: None silenciosamente.
         """
         corpse = self._corpses.get(corpse_id)
         if not corpse:
@@ -100,27 +151,40 @@ class LootProcessorMixin:
         # caso comum lá; isto aqui só cobre quem chega depois).
         personal_items = self._resolve_conditional_loot_for(corpse, player_eid)
 
+        # no_space: True só quando existia um item CANDIDATO de verdade mas
+        # ele não coube na mochila — distingue de "não tinha mais nada pra
+        # pegar" (outro membro do grupo já levou), os dois casos que ANTES
+        # colapsavam no mesmo items=[]/coins=0 (débito A4, 11/08/2026).
+        # Servidor (session.py) usa isso pra decidir a mensagem certa no
+        # cliente ("mochila cheia" vs "já foi saqueado").
+        no_space = False
         if take == "gold":
             coins = corpse.get("coins", 0)
             corpse["coins"] = 0
-            items = []
+            granted = []
         elif take == "item":
             items_list = corpse.get("items", [])
-            items = []
-            for i, it in enumerate(items_list):
-                if it.get("name") == item_name:
-                    items = [items_list.pop(i)]
-                    break
-            if not items:
-                for i, it in enumerate(personal_items):
-                    if it.get("name") == item_name:
-                        items = [personal_items.pop(i)]
-                        break
+            candidate_d = next((it for it in items_list if it.get("item_id") == item_id), None)
+            _from_personal = False
+            if candidate_d is None:
+                candidate_d = next((it for it in personal_items if it.get("item_id") == item_id), None)
+                _from_personal = True
+            if candidate_d is None:
+                granted = []
+            else:
+                granted, _ = self._grant_loot_items_to_inventory(player_eid, [candidate_d])
+                if granted:
+                    (personal_items if _from_personal else items_list).remove(candidate_d)
+                else:
+                    no_space = True
             coins = 0
         else:
-            items = corpse.pop("items", [])
-            items.extend(personal_items)
-            corpse["quest_rolls"][player_eid] = []   # já retirado — não reaparece
+            candidates = list(corpse.get("items", [])) + list(personal_items)
+            granted, not_granted = self._grant_loot_items_to_inventory(player_eid, candidates)
+            no_space = bool(not_granted)
+            _kept_ids = {id(d) for d in not_granted}
+            corpse["items"] = [d for d in corpse.get("items", []) if id(d) in _kept_ids]
+            corpse["quest_rolls"][player_eid] = [d for d in personal_items if id(d) in _kept_ids]
             coins = corpse.pop("coins", 0)
 
         corpse["timer"] = min(corpse["timer"], 15.0)  # reduz timer após saque
@@ -142,7 +206,7 @@ class LootProcessorMixin:
         # ITEM_GRANTS_QUEST (content/quests_data.py) continua existindo,
         # agora só como METADADO consultado pelo cliente (tag do tooltip +
         # gatilho do popup) — não é mais lido aqui.
-        return {"items": items, "coins": coins}
+        return {"items": granted, "coins": coins, "no_space": no_space}
 
     # Corpse de minion (sem loot nenhum, por design — ver
     # server_death_handler.py) some rápido: só confirma a morte

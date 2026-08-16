@@ -178,8 +178,6 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._pending_loot_redirect: dict[tuple[int, int], tuple[int, int]] = {}
         # Timers de passo para players remotos (server_eid → tempo restante)
         self._remote_step_timers:  dict[int, float]         = {}
-        # Snapshot de equipamento para detecção de mudanças e envio de EQUIP_SYNC
-        self._equip_snapshot: dict = {}
         self._mob_move_queues:         dict[int, list] = {}  # server_eid → [(tx,ty,is_dash)...]
         self._remote_player_move_queues: dict[int, list] = {}  # server_eid → [(tx,ty,is_dash)]
         # Correções de posição "is_dash" do próprio player (ex: vítima de knockback)
@@ -341,6 +339,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._selected_inv_idx = -1
         self._trade_gold_focus: bool = False   # campo de gold da janela de trade tem foco?
         self._trade_gold_text:  str  = ""      # texto digitado enquanto focado
+        self._trade_qty_modal: "dict | None" = None  # modal de fatiar stack (11/08/2026)
         self._chat_text:    str = ""           # texto digitado enquanto o chat está focado
         self._chat_tab:     str = "local"      # aba ativa: "local" | "world" | "combat"
         from collections import deque as _deque_chat
@@ -559,6 +558,10 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._quest_system._net = self._net
         # ShopSystem: envia BUY_REQUEST ao servidor (gold/inventário server-autoritativos)
         self._shop_system._net = self._net
+        # BlacksmithSystem: envia CRAFT_REQUEST/RECYCLE_REQUEST ao servidor
+        # (débito A4, 11/08/2026 — antes forjar/reciclar era 100% local,
+        # servidor nunca descontava ouro/material de verdade)
+        self._crafting_system._net = self._net
         # LootSystem: envia só a consequência da ação (gold ou inventário), não o state completo
         self._loot_system._on_loot_collected = self._on_loot_action
         # LootSystem: clicar em ouro/item manda LOOT_REQUEST em vez de
@@ -1454,6 +1457,69 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         # arqueiro).
         self.screen.blit(surf, (4, 110))
 
+    # Cores por time do minimapa em tela cheia da BG (13/08/2026, pedido do
+    # usuário) — mesma convenção de faction_id já usada em todo o resto do
+    # código de BG/arena (server/bg_queue_processor.py, match_processor.py).
+    _BG_MINIMAP_TEAM_COLORS = {
+        "arena_time_a": (70, 140, 255),   # azul
+        "arena_time_b": (220, 60, 60),    # vermelho
+    }
+
+    def _collect_bg_minimap_dots(self, visible_tiles: set) -> "list[tuple[int, int, tuple, int]]":
+        """Monta os pontos do minimapa em tela cheia da BG — minion/torre
+        como ponto pequeno, player como círculo um pouco maior, coloridos
+        por Faction (time A azul, time B vermelho, inclusive o PRÓPRIO
+        player — pedido explícito do usuário, não destaque especial pra
+        "eu"). `ui/minimap.py::Minimap` fica genérico (só desenha o que
+        recebe) — toda leitura de ECS/Faction/mob_key mora aqui, mesma
+        separação de responsabilidade que `markers`/`enemy_tiles` já
+        tinham pro minimap normal.
+
+        Respeita névoa de guerra (`visible_tiles`) pra tudo — inclusive
+        minion/torre do PRÓPRIO time (a visão compartilhada de time já
+        deixa esses tiles em `visible_tiles` de qualquer forma, ver
+        `server/session.py::_compute_ally_vision_centers`) — EXCETO o
+        player local, sempre visível pra si mesmo."""
+        from engine.components import (Faction, EntityIdentity, RemoteEntityMeta,
+                                       RemoteControlled, TileMovement)
+        from content.minion_definitions import MINION_TABLE
+        from content.tower_definitions import TOWER_TABLE
+        dots: "list[tuple[int, int, tuple, int]]" = []
+
+        for eid, fac, tm, ident, _meta in self.world.get_entities_with(
+                Faction, TileMovement, EntityIdentity, RemoteEntityMeta):
+            color = self._BG_MINIMAP_TEAM_COLORS.get(fac.faction_id)
+            if color is None:
+                continue
+            if (tm.current_tile_x, tm.current_tile_y) not in visible_tiles:
+                continue
+            # Raio por tipo (13/08/2026, pedido do usuário — minion do
+            # mesmo tamanho que torre confundia os dois): minion quase 1px
+            # (bem menor), torre um pouco maior, player (abaixo) maior
+            # ainda — hierarquia visual clara de relance.
+            if ident.mob_key in MINION_TABLE:
+                dots.append((tm.current_tile_x, tm.current_tile_y, color, 1))
+            elif ident.mob_key in TOWER_TABLE:
+                dots.append((tm.current_tile_x, tm.current_tile_y, color, 2))
+
+        for eid, fac, tm, _rc in self.world.get_entities_with(
+                Faction, TileMovement, RemoteControlled):
+            color = self._BG_MINIMAP_TEAM_COLORS.get(fac.faction_id)
+            if color is None:
+                continue
+            if (tm.current_tile_x, tm.current_tile_y) not in visible_tiles:
+                continue
+            dots.append((tm.current_tile_x, tm.current_tile_y, color, 3))
+
+        own_fac = self.world.get_component(self.player_entity, Faction)
+        own_tm  = self.world.get_component(self.player_entity, TileMovement)
+        if own_fac is not None and own_tm is not None:
+            own_color = self._BG_MINIMAP_TEAM_COLORS.get(
+                own_fac.faction_id, self._minimap.PLAYER_COL)
+            dots.append((own_tm.current_tile_x, own_tm.current_tile_y, own_color, 3))
+
+        return dots
+
     def run(self) -> "str | None":
         """Loop principal. Retorna "logout" (usuário clicou Deslogar — main.py
         reconecta e volta pra seleção de personagem, mantendo o processo/pygame
@@ -1824,6 +1890,13 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             if self._shop_system.is_open:
                 self._shop_system.handle_events(events)
 
+            # Modal de quantidade do trade (fatiar stack, 11/08/2026) — full-pass
+            # sobre TODOS os eventos do frame (não só o elif single-event chain),
+            # pra suportar arrastar o slider (MOUSEMOTION com botão preso), mesmo
+            # padrão de ShopSystem._qty_modal/_handle_qty_modal_event.
+            if self._trade_qty_modal is not None:
+                self._handle_trade_qty_modal_events(events)
+
             # Quest dialog recebe eventos (possivelmente filtrados)
             self._quest_dialog.update(
                 _strip_open_click(_craft_ev, self._quest_dialog.is_open), dt)
@@ -1856,11 +1929,24 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 if _player_tm_mm:
                     for _ev in events:
                         if _ev.type == pygame.MOUSEBUTTONDOWN and _ev.button == 3:
-                            _mm_tile = self._minimap.screen_to_tile(
-                                _ev.pos[0], _ev.pos[1],
-                                _player_tm_mm.current_tile_x,
-                                _player_tm_mm.current_tile_y,
-                            )
+                            # Modo tela-cheia da BG usa geometria BEM diferente
+                            # do radar normal (sem RADIUS/centralizar no
+                            # player) — bug real relatado pelo usuário
+                            # (13/08/2026): clique parou de mover o
+                            # personagem porque continuava passando pelo
+                            # conversor do modo radar, que faz a conta errada
+                            # aqui. Mesmo flag que decide render/render_fullmap.
+                            from ui.ui_components import InstanceInventoryUIState as _IIUSmmClick
+                            _iius_click = self.world.get_component(self.player_entity, _IIUSmmClick)
+                            if _iius_click is not None and _iius_click.active:
+                                _mm_tile = self._minimap.screen_to_tile_fullmap(
+                                    _ev.pos[0], _ev.pos[1])
+                            else:
+                                _mm_tile = self._minimap.screen_to_tile(
+                                    _ev.pos[0], _ev.pos[1],
+                                    _player_tm_mm.current_tile_x,
+                                    _player_tm_mm.current_tile_y,
+                                )
                             if _mm_tile is not None:
                                 from engine.components import PlayerAutoMove
                                 for _, _auto in self.world.get_entities_with(PlayerAutoMove):
@@ -1954,15 +2040,6 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                     })
                 self._player_proj_system.pending_proj_hits.clear()
 
-            # HP updates diferidos de flechas: aplica quando projétil colide (não no COMBAT_RESULT)
-            if self._player_proj_system.deferred_hp_updates:
-                for _srv_u, _hp_u, _mx_u in self._player_proj_system.deferred_hp_updates:
-                    _meta_u = self._meta(_srv_u)
-                    if _meta_u:
-                        _meta_u.hp     = _hp_u
-                        _meta_u.hp_max = _mx_u if _mx_u >= 0 else _meta_u.hp_max
-                self._player_proj_system.deferred_hp_updates.clear()
-
             # Channeling interrompido: notifica servidor para parar os ticks de dano
             if self._net and self._channeling_system.interrupted_channelings:
                 from shared.messages import MsgType as _MT_ch
@@ -2007,14 +2084,6 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             _learned_count_after = len(_ps_after.learned_skill_ids) if _ps_after else 0
             if _learned_count_after > _learned_count_before:
                 self._send_hotbar_update()  # hotbar pode ter mudado com nova skill
-
-            # Detecta mudanças de equipamento (equip/unequip de qualquer fonte, incluindo
-            # loot direto) e sincroniza com servidor para manter validação server-side correta
-            # (bow+quiver para auto-attack/skills do arqueiro, etc.).
-            _new_equip = self._get_equip_snapshot()
-            if _new_equip != self._equip_snapshot:
-                self._send_equip_sync()
-                self._equip_snapshot = _new_equip
 
             # Se shop ou loot acabaram de abrir, fechar os outros modais
             if (not _shop_was_open_before and self._shop_system.is_open) or \
@@ -2265,20 +2334,28 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 _fog_mm      = self.world.get_component(self.player_entity, FogOfWar)
                 _player_tm_m = self.world.get_component(self.player_entity, TileMovement)
                 if _fog_mm and _player_tm_m:
-                    _enemy_tiles = [
-                        (etm.current_tile_x, etm.current_tile_y)
-                        for _, _, _, etm in self.world.get_entities_with(Enemy, Visible, TileMovement)
-                        if (etm.current_tile_x, etm.current_tile_y) in _fog_mm.visible
-                    ]
-                    from ui.map_markers import collect_markers
-                    self._minimap.render(
-                        _player_tm_m.current_tile_x,
-                        _player_tm_m.current_tile_y,
-                        _fog_mm.explored,
-                        _fog_mm.visible,
-                        _enemy_tiles,
-                        collect_markers(self.world, self.player_entity, self._quest_dialog),
-                    )
+                    from ui.ui_components import InstanceInventoryUIState as _IIUSmm
+                    _iius_mm = self.world.get_component(self.player_entity, _IIUSmm)
+                    if _iius_mm is not None and _iius_mm.active:
+                        self._minimap.render_fullmap(
+                            _fog_mm.explored, _fog_mm.visible,
+                            self._collect_bg_minimap_dots(_fog_mm.visible),
+                        )
+                    else:
+                        _enemy_tiles = [
+                            (etm.current_tile_x, etm.current_tile_y)
+                            for _, _, _, etm in self.world.get_entities_with(Enemy, Visible, TileMovement)
+                            if (etm.current_tile_x, etm.current_tile_y) in _fog_mm.visible
+                        ]
+                        from ui.map_markers import collect_markers
+                        self._minimap.render(
+                            _player_tm_m.current_tile_x,
+                            _player_tm_m.current_tile_y,
+                            _fog_mm.explored,
+                            _fog_mm.visible,
+                            _enemy_tiles,
+                            collect_markers(self.world, self.player_entity, self._quest_dialog),
+                        )
                 # HUD de quests — abaixo do minimap
                 self._quest_system.render_hud(self.screen)
             if PROFILE_FRAMES:
@@ -2764,8 +2841,22 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 # novos personagens começam com a barra vazia.
                 if not new_character:
                     saved_slots = cb_data.get("slots", [])
+                    import content.item_table as _ItemTableCbLoad
                     for i in range(min(len(saved_slots), _CB.NUM_SLOTS)):
-                        cbar.slots[i] = saved_slots[i]
+                        _raw = saved_slots[i]
+                        # Migração C2 (10/08/2026): configs salvos antes
+                        # dessa data guardam o NOME de exibição do item
+                        # nesse slot, não o item_id. Se não bate com
+                        # nenhum item_id conhecido, tenta achar pelo nome
+                        # (legado) e converte pro item_id de uma vez —
+                        # próximo _save_config já grava o formato novo.
+                        if _raw and _raw not in _ItemTableCbLoad.ITEMS:
+                            _legacy = next(
+                                (k for k, f in _ItemTableCbLoad.ITEMS.items()
+                                 if f().name == _raw), None)
+                            if _legacy is not None:
+                                _raw = _legacy
+                        cbar.slots[i] = _raw
 
     # ── Recria o display do zero (única forma segura de trocar set_mode) ───
     def _recreate_display(self, win_w: int, win_h: int, flags: int) -> "pygame.Surface":

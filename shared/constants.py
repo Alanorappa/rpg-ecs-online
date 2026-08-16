@@ -38,6 +38,13 @@ ALLY_VISION_RADIUS_PLAYER = AOI_RADIUS   # 15 — mesmo raio de sempre
 ALLY_VISION_RADIUS_TOWER  = 18
 ALLY_VISION_RADIUS_MINION = 8
 
+# Bush "atacar revela" (13/08/2026, §55, estilo LoL — atacar/usar skill
+# de dentro de uma bush revela o atacante por um tempo, mesmo que ele
+# continue fisicamente dentro dela). Valor fiel à referência (LoL usa
+# 2s); alcance da revelação é o AOI normal (decisão explícita do
+# usuário — sem raio próprio menor, diferente do LoL).
+BUSH_REVEAL_DURATION_S = 2.0
+
 # Centro do cemitério — spawn padrão de personagem novo E respawn pós-morte.
 # Fonte única: server/respawn_system.py e server/auth.py importam daqui em vez
 # de hardcoded — mover o cemitério só exige mudar este valor.
@@ -64,7 +71,7 @@ PROTOCOL_VERSION = 1             # incrementar ao quebrar compatibilidade
 # criar a tag git correspondente (`git tag vX.Y.Z`) a cada commit relevante:
 # PATCH = correção, MINOR = feature nova, MAJOR = mudança grande/quebra de
 # compatibilidade (decisão do usuário, 20/07/2026 — ver ARQUITETURA_ONLINE.md).
-GAME_VERSION = "0.30.0"
+GAME_VERSION = "0.31.0"
 
 # ── Morte/respawn: fluxo de espírito (ghost) + cemitério ───────────────────────
 GHOST_GRAVEYARD_RADIUS_TILES = 5   # raio (tiles) do cemitério p/ revive automático

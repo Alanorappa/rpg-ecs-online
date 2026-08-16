@@ -170,8 +170,20 @@ class TradeProcessorMixin:
         self._player_trade[target_eid] = trade_id
         return requester_eid, trade_id
 
-    def add_trade_item(self, player_eid: int, inv_index: int) -> str | None:
-        """None = ok. Reason str = rejeitado (sem side effect)."""
+    def add_trade_item(self, player_eid: int, inv_index: int,
+                       quantity: int = None) -> str | None:
+        """None = ok. Reason str = rejeitado (sem side effect).
+
+        `quantity` (11/08/2026, pedido do usuário — fatiar stack no trade,
+        mesmo padrão já usado em BUY_REQUEST): se None ou >= item.stack,
+        oferece o item INTEIRO (comportamento original). Senão, fatia —
+        decrementa `quantity` do item de origem (que continua na
+        Inventory) e oferece uma CÓPIA nova com `stack=quantity`. A cópia
+        vem do catálogo real via `_item_factory_by_id` (nunca duplica o
+        objeto do cliente direto — mesmo princípio de `_reconstruct_item`,
+        nunca confiar em stats que não vieram do catálogo); item sem
+        item_id de catálogo (save legado/corrompido) não pode ser
+        fatiado com segurança e cai no comportamento de oferecer tudo."""
         session = self._trade_sessions.get(self._player_trade.get(player_eid, -1))
         if session is None:
             return "invalid"
@@ -182,8 +194,21 @@ class TradeProcessorMixin:
         inv = self.world.get_component(player_eid, _TradeInv)
         if not inv or not (0 <= inv_index < len(inv.items)):
             return "invalid"
-        item = inv.items.pop(inv_index)
-        offer.append(item)
+        item = inv.items[inv_index]
+        qty = int(quantity) if quantity is not None else item.stack
+        if qty >= item.stack or item.max_stack <= 1 or not item.item_id:
+            inv.items.pop(inv_index)
+            offer.append(item)
+        else:
+            qty = max(1, qty)
+            sliced = self._item_factory_by_id(item.item_id)
+            if sliced is None:
+                inv.items.pop(inv_index)
+                offer.append(item)
+            else:
+                sliced.stack = qty
+                item.stack -= qty
+                offer.append(sliced)
         session.reset_confirms()
         return None
 

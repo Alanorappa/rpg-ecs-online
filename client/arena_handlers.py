@@ -21,6 +21,7 @@ import pygame
 
 from ui.ui_sizes import UI
 from ui.sound_manager import SOUNDS
+from client.bg_queue_handlers import BG_MODE_LIST, BG_MODE_LABELS
 
 # Modos de arena (Fase H, 23/07/2026 — pedido do usuário: "Duelo" 1x1 e
 # Arena 3x3 além do 2x2 existente) — LISTA, não 3 botões hardcoded: um 4º
@@ -357,23 +358,27 @@ class ArenaHandlers:
                                    self._u(86), self._u(26))
             rows.append((mode_id, label, row_rect, btn_rect))
             ry += row_h
-        # Battleground estilo MOBA (04/08/2026, pedido do usuário) — linha
-        # extra no MESMO modal, separada das de cima (sem "modo"/tamanho
-        # fixo: a fila decide sozinha, 1x1 até 5x5, sozinho ou com grupo já
-        # formado). client/bg_queue_handlers.py cuida do estado/envio; esta
-        # classe só desenha, mesmo container que ARENA_MODE_LIST já usa.
-        ry += self._u(6)  # respiro antes da linha de BG
-        bg_row_rect = pygame.Rect(panel.x + self._u(14), ry,
-                                  panel.w - self._u(28), row_h - self._u(8))
-        bg_btn_rect = pygame.Rect(bg_row_rect.right - self._u(96),
-                                  bg_row_rect.y + (bg_row_rect.h - self._u(26)) // 2,
-                                  self._u(86), self._u(26))
-        return panel, close_rect, rows, bg_row_rect, bg_btn_rect
+        # Battleground estilo MOBA (04/08/2026, pedido do usuário —
+        # revisado 10/08/2026: 3 linhas de tamanho fixo, mesmo padrão de
+        # ARENA_MODE_LIST acima, não mais 1 linha sem escolha de modo).
+        # client/bg_queue_handlers.py cuida do estado/envio; esta classe
+        # só desenha, mesmo container que ARENA_MODE_LIST já usa.
+        ry += self._u(6)  # respiro antes das linhas de BG
+        bg_rows = []
+        for mode_id, label in BG_MODE_LIST:
+            row_rect = pygame.Rect(panel.x + self._u(14), ry,
+                                   panel.w - self._u(28), row_h - self._u(8))
+            btn_rect = pygame.Rect(row_rect.right - self._u(96),
+                                   row_rect.y + (row_rect.h - self._u(26)) // 2,
+                                   self._u(86), self._u(26))
+            bg_rows.append((mode_id, label, row_rect, btn_rect))
+            ry += row_h
+        return panel, close_rect, rows, bg_rows
 
     def _draw_arena_queue_modal(self) -> None:
         if not self._arena_modal_open:
             return
-        panel, close_rect, rows, bg_row_rect, bg_btn_rect = self._arena_modal_rects()
+        panel, close_rect, rows, bg_rows = self._arena_modal_rects()
         SW, SH = self.screen.get_size()
         overlay = pygame.Surface((SW, SH), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 160))
@@ -431,40 +436,58 @@ class ArenaHandlers:
                 reason_s = self.font_xs.render(reason, False, (175, 125, 125))
                 self.screen.blit(reason_s, (row_rect.x + self._u(10), row_rect.bottom - self._u(15)))
 
-        # Linha de Battleground (04/08/2026) — sem V/D por modo (a fila
-        # não tem "modo" fixo) nem checagem de elegibilidade (sozinho ou
-        # com grupo já formado, QUALQUER tamanho até PARTY_MAX_SIZE=5,
-        # sempre elegível — a fila decide o tamanho do time sozinha).
-        pygame.draw.rect(self.screen, (28, 34, 30), bg_row_rect, border_radius=5)
-        pygame.draw.rect(self.screen, (80, 100, 85), bg_row_rect, 1, border_radius=5)
-        bg_name_s = self.font_sm.render("Battleground (MOBA)", False, (220, 235, 222))
-        self.screen.blit(bg_name_s, (bg_row_rect.x + self._u(10), bg_row_rect.y + self._u(4)))
-        bg_desc_s = self.font_xs.render("Sozinho ou com grupo — 1x1 até 5x5",
-                                        False, (170, 180, 170))
-        self.screen.blit(bg_desc_s, (bg_row_rect.x + self._u(10), bg_row_rect.y + self._u(26)))
-        bg_label, bg_bg = ("Sair", (90, 50, 50)) if self._bg_in_queue else ("Entrar", (40, 70, 40))
-        hov_bg = bg_btn_rect.collidepoint(mx, my)
-        draw_bg_bg = tuple(min(255, c + 18) for c in bg_bg) if hov_bg else bg_bg
-        pygame.draw.rect(self.screen, draw_bg_bg, bg_btn_rect, border_radius=4)
-        pygame.draw.rect(self.screen, (140, 140, 140), bg_btn_rect, 1, border_radius=4)
-        bg_bs = self.font_xs.render(bg_label, False, (230, 230, 230))
-        self.screen.blit(bg_bs, bg_bs.get_rect(center=bg_btn_rect.center))
+        # Linhas de Battleground (04/08/2026, revisado 10/08/2026 — 3
+        # tamanhos fixos, mesmo padrão de ARENA_MODE_LIST acima em vez de
+        # 1 linha sem escolha de modo). Sem V/D por modo ainda (BG não
+        # tem placar por bracket como a Arena — fora de escopo aqui).
+        for mode_id, label, row_rect, btn_rect in bg_rows:
+            pygame.draw.rect(self.screen, (28, 34, 30), row_rect, border_radius=5)
+            pygame.draw.rect(self.screen, (80, 100, 85), row_rect, 1, border_radius=5)
+
+            name_s = self.font_sm.render(label, False, (220, 235, 222))
+            self.screen.blit(name_s, (row_rect.x + self._u(10), row_rect.y + self._u(4)))
+
+            in_this_mode = (self._bg_in_queue_mode == mode_id)
+            eligible, reason = self._bg_mode_eligible(mode_id)
+            can_click = in_this_mode or (eligible and self._bg_in_queue_mode is None)
+            if in_this_mode:
+                btn_label, btn_bg = "Sair", (90, 50, 50)
+            else:
+                btn_label, btn_bg = "Entrar", (40, 70, 40) if can_click else (48, 44, 40)
+            hov_btn = can_click and btn_rect.collidepoint(mx, my)
+            draw_bg = tuple(min(255, c + 18) for c in btn_bg) if hov_btn else btn_bg
+            pygame.draw.rect(self.screen, draw_bg, btn_rect, border_radius=4)
+            pygame.draw.rect(self.screen, (140, 140, 140), btn_rect, 1, border_radius=4)
+            txt_col = (230, 230, 230) if can_click else (140, 130, 130)
+            bs = self.font_xs.render(btn_label, False, txt_col)
+            self.screen.blit(bs, bs.get_rect(center=btn_rect.center))
+
+            if not eligible and not in_this_mode:
+                reason_s = self.font_xs.render(reason, False, (175, 155, 125))
+                self.screen.blit(reason_s, (row_rect.x + self._u(10), row_rect.bottom - self._u(15)))
 
     def _handle_arena_modal_click(self, event) -> bool:
         """True sempre (modal bloqueante enquanto aberto, mesmo padrão dos
         outros modais de arena)."""
-        panel, close_rect, rows, bg_row_rect, bg_btn_rect = self._arena_modal_rects()
+        panel, close_rect, rows, bg_rows = self._arena_modal_rects()
         if close_rect.collidepoint(event.pos):
             self._arena_modal_open_val = False
             SOUNDS.play_ui("button_click")
             return True
-        if bg_btn_rect.collidepoint(event.pos):
-            if self._bg_in_queue:
+        for mode_id, label, row_rect, btn_rect in bg_rows:
+            if not btn_rect.collidepoint(event.pos):
+                continue
+            in_this_mode = (self._bg_in_queue_mode == mode_id)
+            if in_this_mode:
                 self._send_bg_queue_leave()
-            else:
-                self._send_bg_queue_join()
-            self._arena_modal_open_val = False
-            SOUNDS.play_ui("button_click")
+                self._arena_modal_open_val = False
+                SOUNDS.play_ui("button_click")
+            elif self._bg_in_queue_mode is None:
+                eligible, _ = self._bg_mode_eligible(mode_id)
+                if eligible:
+                    self._send_bg_queue_join(mode_id)
+                    self._arena_modal_open_val = False
+                    SOUNDS.play_ui("button_click")
             return True
         for mode_id, label, row_rect, btn_rect in rows:
             if not btn_rect.collidepoint(event.pos):

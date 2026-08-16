@@ -78,10 +78,10 @@ class _BgFixture(ArenaHandlers, BgQueueHandlers):
 
 # ── Handlers de rede — estado local ───────────────────────────────────────
 
-def test_queue_state_marca_in_queue():
+def test_queue_state_marca_in_queue_com_modo():
     fx = _BgFixture()
-    fx._handle_msg_bg_queue_state({"in_queue": True})
-    assert fx._bg_in_queue is True
+    fx._handle_msg_bg_queue_state({"in_queue": True, "mode": "2v2"})
+    assert fx._bg_in_queue_mode == "2v2"
 
 
 def test_queue_state_recusado_mostra_aviso_e_nao_marca(monkeypatch):
@@ -90,17 +90,18 @@ def test_queue_state_recusado_mostra_aviso_e_nao_marca(monkeypatch):
     import ui.floating_text as ft
     monkeypatch.setattr(ft.WARN, "add", lambda msg: warned.append(msg))
     fx._handle_msg_bg_queue_state({"in_queue": False, "reason": "not_leader"})
-    assert fx._bg_in_queue is False
+    assert fx._bg_in_queue_mode is None
     assert warned
 
 
 def test_match_found_fecha_modal_zera_fila_guarda_pending():
     fx = _BgFixture()
     fx._arena_modal_open_val = True
-    fx._bg_in_queue_val = True
-    fx._handle_msg_bg_match_found({"team_size": 3, "teammates": [2, 3], "opponents": [9, 10, 11]})
-    assert fx._bg_in_queue is False
+    fx._bg_in_queue_mode_val = "3v3"
+    fx._handle_msg_bg_match_found({"mode": "3v3", "team_size": 3, "teammates": [2, 3], "opponents": [9, 10, 11]})
+    assert fx._bg_in_queue_mode is None
     assert fx._arena_modal_open is False
+    assert fx._bg_pending_match["mode"] == "3v3"
     assert fx._bg_pending_match["team_size"] == 3
     assert fx._bg_pending_match["opponents"] == [9, 10, 11]
 
@@ -116,10 +117,10 @@ def test_match_start_limpa_pending_marca_in_match_guarda_oponentes():
 
 # ── Envio ao servidor ──────────────────────────────────────────────────────
 
-def test_send_bg_queue_join_sem_payload_de_modo():
+def test_send_bg_queue_join_com_modo():
     fx = _BgFixture()
-    fx._send_bg_queue_join()
-    assert fx._net.sent == [("bg_queue_join", {})]
+    fx._send_bg_queue_join("3v3")
+    assert fx._net.sent == [("bg_queue_join", {"mode": "3v3"})]
 
 
 def test_send_bg_queue_leave():
@@ -136,23 +137,25 @@ def test_send_bg_match_accept():
 
 # ── Linha de Battleground dentro do modal unificado ───────────────────────
 
-def test_clique_entrar_na_linha_de_bg_manda_join_e_fecha_modal():
+def test_clique_entrar_na_linha_de_bg_manda_join_com_modo_e_fecha_modal():
     fx = _BgFixture()
     fx._arena_modal_open_val = True
-    panel, close_rect, rows, bg_row_rect, bg_btn_rect = fx._arena_modal_rects()
-    event = pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=bg_btn_rect.center)
+    panel, close_rect, rows, bg_rows = fx._arena_modal_rects()
+    _, _, _, btn_rect = next(r for r in bg_rows if r[0] == "2v2")
+    event = pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=btn_rect.center)
     consumed = fx._handle_arena_modal_click(event)
     assert consumed is True
     assert fx._arena_modal_open is False
-    assert fx._net.sent == [("bg_queue_join", {})]
+    assert fx._net.sent == [("bg_queue_join", {"mode": "2v2"})]
 
 
 def test_clique_sair_na_linha_de_bg_manda_leave():
     fx = _BgFixture()
-    fx._bg_in_queue_val = True
+    fx._bg_in_queue_mode_val = "2v2"
     fx._arena_modal_open_val = True
-    panel, close_rect, rows, bg_row_rect, bg_btn_rect = fx._arena_modal_rects()
-    event = pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=bg_btn_rect.center)
+    panel, close_rect, rows, bg_rows = fx._arena_modal_rects()
+    _, _, _, btn_rect = next(r for r in bg_rows if r[0] == "2v2")
+    event = pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=btn_rect.center)
     fx._handle_arena_modal_click(event)
     assert fx._net.sent == [("bg_queue_leave", {})]
 
@@ -160,11 +163,21 @@ def test_clique_sair_na_linha_de_bg_manda_leave():
 def test_linha_de_bg_nao_interfere_no_clique_das_linhas_de_arena():
     fx = _BgFixture(my_eid=1)
     fx._arena_modal_open_val = True
-    panel, close_rect, rows, bg_row_rect, bg_btn_rect = fx._arena_modal_rects()
+    panel, close_rect, rows, bg_rows = fx._arena_modal_rects()
     _, _, _, btn_rect = next(r for r in rows if r[0] == "1v1")
     event = pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=btn_rect.center)
     fx._handle_arena_modal_click(event)
     assert fx._net.sent == [("arena_queue_join", {"mode": "1v1"})]
+
+
+def test_linha_de_arena_nao_interfere_no_clique_das_linhas_de_bg():
+    fx = _BgFixture(my_eid=1)
+    fx._arena_modal_open_val = True
+    panel, close_rect, rows, bg_rows = fx._arena_modal_rects()
+    _, _, _, btn_rect = next(r for r in bg_rows if r[0] == "5v5")
+    event = pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=btn_rect.center)
+    fx._handle_arena_modal_click(event)
+    assert fx._net.sent == [("bg_queue_join", {"mode": "5v5"})]
 
 
 # ── Modal de aceite ("Partida encontrada!") ───────────────────────────────

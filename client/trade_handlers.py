@@ -75,17 +75,124 @@ class TradeHandlers:
         from shared.messages import MsgType
         self._net.send(MsgType.PARTY_INVITE, {"target_eid": rc.server_eid})
 
-    def _offer_trade_item(self, inv_index: int) -> None:
+    def _offer_trade_item(self, inv_index: int, quantity: int = 1) -> None:
+        """`quantity` (11/08/2026, pedido do usuário — mesmo padrão de
+        BUY_REQUEST): clique direito simples oferece 1 unidade; o modal
+        de quantidade (Shift+clique direito num item empilhável, ver
+        `_open_trade_qty_modal`) manda a quantidade escolhida."""
         if not self._net:
             return
         from shared.messages import MsgType
-        self._net.send(MsgType.TRADE_OFFER_ITEM, {"inv_index": inv_index})
+        self._net.send(MsgType.TRADE_OFFER_ITEM,
+                       {"inv_index": inv_index, "quantity": quantity})
+
+    def _open_trade_qty_modal(self, inv_index: int, item) -> None:
+        """Abre o modal de quantidade pra fatiar um item empilhável antes
+        de ofertar — mesmo padrão visual de ShopSystem._qty_modal
+        (pedido explícito do usuário: "o mesmo que já temos na compra de
+        itens stackáveis"). `max_qty` é só o que o jogador TEM agora
+        (diferente da loja, aqui não há limite de ouro)."""
+        self._trade_qty_modal = {
+            "inv_index": inv_index,
+            "item":      item,
+            "max_qty":   max(1, item.stack),
+            "qty":       1,
+            "text":      "1",
+            "dragging":  False,
+        }
+
+    def _close_trade_qty_modal(self) -> None:
+        self._trade_qty_modal = None
+
+    def _handle_trade_qty_modal_events(self, events: list) -> None:
+        """Processa TODOS os eventos do frame enquanto o modal de
+        quantidade do trade está aberto — precisa da lista completa (não
+        só do elif single-event dispatch de `_handle_trade_click`) pra
+        suportar arrastar o slider (MOUSEMOTION com botão preso), mesmo
+        padrão de `ui/systems.py::ShopSystem._handle_qty_modal_event`."""
+        m = self._trade_qty_modal
+        if m is None:
+            return
+        for event in events:
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    self._close_trade_qty_modal()
+                    return
+                elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                    self._offer_trade_item(m["inv_index"], m["qty"])
+                    self._close_trade_qty_modal()
+                    return
+                elif event.key == pygame.K_BACKSPACE:
+                    m["text"] = m["text"][:-1] or "0"
+                    try:
+                        m["qty"] = max(1, min(int(m["text"]), m["max_qty"]))
+                    except ValueError:
+                        m["qty"] = 1
+                elif event.unicode.isdigit():
+                    new_text = (m["text"] if m["text"] != "0" else "") + event.unicode
+                    if len(new_text) <= 6:
+                        m["text"] = new_text
+                        try:
+                            m["qty"] = max(1, min(int(new_text), m["max_qty"]))
+                        except ValueError:
+                            pass
+                continue
+
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                mx0, my0, mw, mh = self._trade_qty_modal_rect()
+                sl_x  = mx0 + self._u(20)
+                sl_y  = my0 + self._u(130)
+                sl_w  = mw - self._u(40)
+                sl_r  = pygame.Rect(sl_x, sl_y - self._u(10), sl_w, self._u(20))
+                mx, my = event.pos
+                if sl_r.collidepoint(mx, my):
+                    ratio     = max(0.0, min(1.0, (mx - sl_x) / sl_w))
+                    m["qty"]  = max(1, round(ratio * m["max_qty"]))
+                    m["text"] = str(m["qty"])
+                    m["dragging"] = True
+                    continue
+                btn_cancel = pygame.Rect(mx0 + self._u(20),       my0 + mh - self._u(54), self._u(190), self._u(38))
+                btn_ok     = pygame.Rect(mx0 + mw - self._u(210), my0 + mh - self._u(54), self._u(190), self._u(38))
+                if btn_cancel.collidepoint(mx, my):
+                    self._close_trade_qty_modal()
+                    return
+                if btn_ok.collidepoint(mx, my):
+                    self._offer_trade_item(m["inv_index"], m["qty"])
+                    self._close_trade_qty_modal()
+                    return
+                if not pygame.Rect(mx0, my0, mw, mh).collidepoint(mx, my):
+                    self._close_trade_qty_modal()
+                    return
+                continue
+
+            if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                m["dragging"] = False
+                continue
+
+            if event.type == pygame.MOUSEMOTION and m.get("dragging"):
+                mx0, my0, mw, mh = self._trade_qty_modal_rect()
+                sl_x, sl_w = mx0 + self._u(20), mw - self._u(40)
+                ratio     = max(0.0, min(1.0, (event.pos[0] - sl_x) / sl_w))
+                m["qty"]  = max(1, round(ratio * m["max_qty"]))
+                m["text"] = str(m["qty"])
 
     def _withdraw_trade_item(self, offer_slot: int) -> None:
         if not self._net:
             return
         from shared.messages import MsgType
         self._net.send(MsgType.TRADE_WITHDRAW_ITEM, {"offer_slot": offer_slot})
+
+    def _trade_qty_modal_rect(self) -> "tuple[int, int, int, int]":
+        """(mx0, my0, mw, mh) do modal de quantidade — geometria única
+        compartilhada entre handler e render (mesmo painel de
+        UI.SHOP_QTY_MODAL_* reaproveitado, pedido do usuário: "o mesmo
+        que já temos na compra")."""
+        self._set_panel_scale(UI.SHOP_QTY_MODAL_W, UI.SHOP_QTY_MODAL_H)
+        SW, SH = self.screen.get_size()
+        mw, mh = self._u(UI.SHOP_QTY_MODAL_W), self._u(UI.SHOP_QTY_MODAL_H)
+        mx0 = (SW - mw) // 2 + UI.SHOP_QTY_MODAL_OFFSET_X
+        my0 = (SH - mh) // 2 + UI.SHOP_QTY_MODAL_OFFSET_Y
+        return mx0, my0, mw, mh
 
     def _confirm_trade_gold(self) -> None:
         if not self._net:
@@ -145,6 +252,13 @@ class TradeHandlers:
         """Retorna True se o clique foi consumido por alguma UI de trade."""
         if event.type != pygame.MOUSEBUTTONDOWN or event.button not in (1, 3):
             return False
+        if self._trade_qty_modal is not None:
+            # Consumido — o processamento real acontece no full-pass
+            # `_handle_trade_qty_modal_events` (chamado 1x/frame em
+            # game.py com a lista INTEIRA de eventos, precisa dela pra
+            # MOUSEMOTION de arrastar o slider). Aqui só bloqueia o
+            # clique de vazar pra janela de trade por baixo do modal.
+            return True
         tui = self._get_trade_ui()
         if tui is None:
             return False
@@ -319,9 +433,19 @@ class TradeHandlers:
             from engine.components import Inventory as _InvTC
             inv = self.world.get_component(self.player_entity, _InvTC)
             if inv is not None:
+                mods  = pygame.key.get_mods()
+                shift = bool(mods & pygame.KMOD_SHIFT)
                 for i, r in enumerate(L["bag"]):
                     if r.collidepoint(mx, my) and i < len(inv.items):
-                        self._offer_trade_item(i)
+                        item = inv.items[i]
+                        # Shift+clique num empilhável abre o modal de
+                        # quantidade (mesmo padrão da loja); clique
+                        # simples oferece 1 unidade — decisão do usuário
+                        # 11/08/2026 (igualar ao padrão de BUY_REQUEST).
+                        if shift and getattr(item, "max_stack", 1) > 1:
+                            self._open_trade_qty_modal(i, item)
+                        else:
+                            self._offer_trade_item(i, quantity=1)
                         return True
             for i, r in enumerate(L["my_items"]):
                 if r.collidepoint(mx, my) and i < len(tui.my_offer):
@@ -343,6 +467,8 @@ class TradeHandlers:
             self._draw_trade_popup(tui)
         if tui.is_open:
             self._draw_trade_window(tui)
+            if self._trade_qty_modal is not None:
+                self._draw_trade_qty_modal()
 
     # Modal de interação com player (clique direito em player amigável —
     # substituiu o shift+clique/"Trade", decisão do usuário 16/07/2026).
@@ -456,8 +582,13 @@ class TradeHandlers:
         mx, my = pygame.mouse.get_pos()
         for i, r in enumerate(L["bag"]):
             item = inv.items[i] if inv and i < len(inv.items) else None
-            self._draw_item_slot(r, item, r.collidepoint(mx, my),
-                                 "Clique direito p/ ofertar" if item else "")
+            if item and getattr(item, "max_stack", 1) > 1 and item.stack > 1:
+                hint = "Direito: 1  |  Shift+direito: escolher qtd"
+            elif item:
+                hint = "Clique direito p/ ofertar"
+            else:
+                hint = ""
+            self._draw_item_slot(r, item, r.collidepoint(mx, my), hint)
 
         # ── Coluna "minha oferta": gold editável + 5 slots ──
         focused = getattr(self, "_trade_gold_focus", False)
@@ -491,6 +622,80 @@ class TradeHandlers:
         c_s = self.font_sm.render("Cancelar", False, (240, 220, 220))
         self.screen.blit(n_s, (L["negociar"].centerx - n_s.get_width() // 2, L["negociar"].centery - n_s.get_height() // 2))
         self.screen.blit(c_s, (L["cancelar"].centerx - c_s.get_width() // 2, L["cancelar"].centery - c_s.get_height() // 2))
+
+    def _draw_trade_qty_modal(self) -> None:
+        """Renderiza o modal de seleção de quantidade (fatiar stack antes
+        de ofertar) — mesmo layout visual de ShopSystem._render_qty_modal
+        (pedido do usuário), sem a linha de preço (trade não tem custo)."""
+        m = self._trade_qty_modal
+        mx0, my0, mw, mh = self._trade_qty_modal_rect()
+        SW, SH = self.screen.get_size()
+
+        overlay = pygame.Surface((SW, SH), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 130))
+        self.screen.blit(overlay, (0, 0))
+
+        panel = pygame.Surface((mw, mh), pygame.SRCALPHA)
+        panel.fill((18, 14, 8, 245))
+        self.screen.blit(panel, (mx0, my0))
+        pygame.draw.rect(self.screen, (180, 140, 70), (mx0, my0, mw, mh), 2, border_radius=6)
+
+        item = m["item"]
+        title_s = self.font_md.render(item.name, False, (255, 220, 100))
+        self.screen.blit(title_s, (mx0 + mw // 2 - title_s.get_width() // 2, my0 + self._u(12)))
+
+        info_s = self.font_sm.render(f"Você tem {item.stack}", False, (200, 190, 170))
+        self.screen.blit(info_s, (mx0 + mw // 2 - info_s.get_width() // 2, my0 + self._u(42)))
+
+        # ── Slider ────────────────────────────────────────────────────────
+        sl_x  = mx0 + self._u(20)
+        sl_y  = my0 + self._u(130)
+        sl_w  = mw - self._u(40)
+        ratio = (m["qty"] - 1) / max(1, m["max_qty"] - 1) if m["max_qty"] > 1 else 0.0
+        handle_x = sl_x + int(ratio * sl_w)
+
+        pygame.draw.rect(self.screen, (50, 40, 25), (sl_x, sl_y - self._u(3), sl_w, self._u(6)), border_radius=3)
+        pygame.draw.rect(self.screen, (160, 120, 50), (sl_x, sl_y - self._u(3), int(ratio * sl_w), self._u(6)), border_radius=3)
+        pygame.draw.circle(self.screen, (220, 180, 80), (handle_x, sl_y), self._u(10))
+        pygame.draw.circle(self.screen, (255, 220, 120), (handle_x, sl_y), self._u(10), 2)
+
+        self.screen.blit(self.font_sm.render("1", False, (130, 110, 70)),
+                         (sl_x, sl_y + self._u(14)))
+        max_s = self.font_sm.render(str(m["max_qty"]), False, (130, 110, 70))
+        self.screen.blit(max_s, (sl_x + sl_w - max_s.get_width(), sl_y + self._u(14)))
+
+        # ── Campo de texto ───────────────────────────────────────────────
+        qty_s = self.font_lg.render(str(m["qty"]), False, (255, 255, 255))
+        txt_x = mx0 + mw // 2 - qty_s.get_width() // 2
+        self.screen.blit(qty_s, (txt_x, my0 + self._u(76)))
+        if (pygame.time.get_ticks() // 500) % 2 == 0:
+            cx = txt_x + qty_s.get_width() + 2
+            pygame.draw.line(self.screen, (200, 200, 200),
+                             (cx, my0 + self._u(78)), (cx, my0 + self._u(78) + qty_s.get_height() - 4), 2)
+
+        # ── Botões ───────────────────────────────────────────────────────
+        btn_cancel = pygame.Rect(mx0 + self._u(20),       my0 + mh - self._u(54), self._u(190), self._u(38))
+        btn_ok     = pygame.Rect(mx0 + mw - self._u(210), my0 + mh - self._u(54), self._u(190), self._u(38))
+        mmx, mmy   = pygame.mouse.get_pos()
+
+        for btn, label, ok in ((btn_cancel, "Cancelar", False), (btn_ok, f"Ofertar {m['qty']}", True)):
+            hov = btn.collidepoint(mmx, mmy)
+            if ok:
+                col_bg  = (40, 100, 40) if hov else (30, 75, 30)
+                col_brd = (100, 220, 100)
+                col_txt = (150, 255, 150)
+            else:
+                col_bg  = (70, 40, 30) if hov else (50, 28, 20)
+                col_brd = (180, 100, 60)
+                col_txt = (220, 160, 100)
+            pygame.draw.rect(self.screen, col_bg,  btn, border_radius=4)
+            pygame.draw.rect(self.screen, col_brd, btn, 1, border_radius=4)
+            lbl_s = self.font_sm.render(label, False, col_txt)
+            self.screen.blit(lbl_s, (btn.centerx - lbl_s.get_width() // 2,
+                                     btn.centery - lbl_s.get_height() // 2))
+
+        esc_s = self.font_sm.render("ESC cancela  |  ENTER confirma", False, (80, 70, 50))
+        self.screen.blit(esc_s, (mx0 + mw // 2 - esc_s.get_width() // 2, my0 + mh - self._u(14)))
 
     def _draw_confirmed_overlay(self, gold_rect, item_rects: list) -> None:
         """Layer verde semi-transparente sobre a coluna de oferta confirmada."""

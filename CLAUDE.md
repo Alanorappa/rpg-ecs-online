@@ -179,6 +179,15 @@ padrão a quebrar, não só os bugs individuais.
   está prestes a escrever se parece com algo que já devia ter um dono
   único (dano, teleporte, autorização de skill, broadcast), procurar
   o dono antes de escrever um novo caminho paralelo.
+- **Análise de terceiro sobre o próprio código do projeto (outra IA,
+  documento externo, benchmark trazido pelo usuário) é verificada
+  contra o código ATUAL antes de aceitar qualquer recomendação dela**
+  — mesma régua de "antes de recomendar a partir de memória, verificar
+  estado atual", só que a fonte é externa à conversa em vez de memória
+  própria. Uma análise que só viu uma AMOSTRA de saída (log, print,
+  screenshot) nunca viu o código de verdade por trás — recomendações
+  dela podem estar redundantes (algo já implementado) ou erradas sobre
+  onde o problema realmente mora. Ver `PROBLEMAS_ARQUITETURA.md` §23.
 
 ---
 
@@ -308,7 +317,18 @@ padrão a quebrar, não só os bugs individuais.
     normal de troca de mapa precisa chamar
     `GameEngine._tile_render_system.invalidate_cache()` explicitamente, ou
     o visual só se autocorrige quando o jogador anda o bastante pra cruzar
-    fronteira de tile.
+    fronteira de tile. **Mesma classe, achada de novo em 13/08/2026**: o
+    overlay de FOG (`render_fog()`, cache irmão do de terreno) tinha o
+    MESMO problema — só reconstruía por câmera, nunca por
+    `FogOfWar.visible`/`explored` terem mudado sozinhos (visível perto de
+    bush pequena, cuja sombra muda rápido demais pra câmera acompanhar).
+    Corrigido com `FogOfWar.version` (contador no COMPONENTE, incrementado
+    por `FogSystem` sempre que recalcula) lido por `TileRenderSystem` a
+    cada frame — nunca chamar `FogSystem` → `TileRenderSystem` direto
+    (violaria "System nunca chama System"); qualquer cache futuro dessa
+    MESMA classe (indexado por câmera/posição em vez do dado que ele
+    representa) deve seguir esse padrão de contador-no-componente, não
+    reinventar. Ver `PROBLEMAS_ARQUITETURA.md` §53.
 - Se não estiver óbvio QUANDO uma atualização nova deve disparar (a cada
   tick? só na ação que a causou? em resposta a outro evento?), **perguntar
   ao usuário antes de implementar** em vez de adivinhar — mesma régua de
@@ -341,6 +361,28 @@ padrão a quebrar, não só os bugs individuais.
   processo separado) — nunca direto dentro da coroutine do tick principal. Antes de
   implementar essa mudança, confirmar com profiling que o gargalo medido é mesmo esse
   sistema, não assumir.
+- **Estrutura de dados em caminho quente (por-tick, por-entidade, por-alvo de AOE):
+  preferir a ferramenta mais leve que resolve o problema** — dict/tuple/set com tipos
+  primitivos, não uma classe/dataclass nova instanciada por evento/alvo. Registro
+  plugável de estado (mesmo padrão de `_svc`/`_damage_tracker`/`_lethal_interceptor`
+  em `engine/core_systems.py`) é dict de módulo, não uma lista de objetos. Ver
+  `PROBLEMAS_ARQUITETURA.md` §14 pro contexto (débito de performance identificado,
+  ainda não medido por profiling — não é motivo pra bloquear feature nova, é critério
+  de escolha quando a estrutura de dados é decisão aberta).
+- **Observabilidade vem antes de otimização.** Nenhuma mudança de estrutura de
+  dados (numpy, dict mais leve, etc.), periodicidade de sistema, ou algoritmo é
+  decidida "porque parece pesado" — precisa de dado de profiling/log apontando a
+  causa raiz ESPECÍFICA primeiro (qual sistema, em qual tick, com que frequência).
+  Média por bloco de ticks esconde picos isolados e pode indicar o sistema errado;
+  antes de confiar num log de performance pra decidir onde otimizar, confirmar que
+  ele tem granularidade suficiente (breakdown por tick, não só média; percentil,
+  não só média; sistema específico, não categoria ampla). Ver
+  `PROBLEMAS_ARQUITETURA.md` §23.
+- **numpy (ou qualquer estrutura vetorizada) só depois que profiling confirmar
+  volume/formato que justifique** — vale pra muitos valores numéricos homogêneos
+  com operação vetorizada de verdade (ex.: distância de centenas de mobs de uma
+  vez); pra componentes ECS pequenos/heterogêneos (a maioria deste projeto) é
+  overhead sem ganho. Não é ferramenta padrão, é ferramenta de caso específico.
 
 ### Protocolo
 - Todo pacote tem `type` (MsgType), `p` (payload), `seq` (int), `ts` (ms epoch)

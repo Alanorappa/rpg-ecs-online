@@ -58,12 +58,29 @@ TOWER_TABLE: dict[str, dict] = {
         # MOB_TABLE). Sem eles, o lookup quebra (KeyError) OU cai no
         # fallback genérico.
         "color": (120, 120, 130),
+        # sprite_id (12/08/2026, pedido do usuário): tile "gcn_19" (`engine/
+        # tileset.py`, seção "TX Grades2", prefixo "gcn" + sufixo "19") —
+        # mesmo catálogo de sprite de objeto de mapa que harvestable já usa
+        # via Renderable.sprite_id (ui/systems.py::RenderSystem.render()),
+        # nunca reimplementar um mecanismo de sprite novo pra torre.
+        "sprite_id": "gcn_19",
+        # projectile_origin_offset (12/08/2026, pedido do usuário — "de
+        # qual parte do sprite surge os projéteis"): pedido em pixel
+        # LOCAL do sprite (x=31,y=56, origem top-left) — convertido aqui
+        # pra deslocamento em pixels a partir da Position da torre
+        # (formato que `_spawn_attack_projectile` consome direto), MESMA
+        # âncora de base que o RenderSystem usa pra desenhar o sprite
+        # (`ui/systems.py::RenderSystem.render`, branch `_sprite_rnd`):
+        #   offset_x = local_x - TILE_SIZE/2      = 31 - 16 = 15
+        #   offset_y = local_y - sprite_h + TILE_SIZE/2 = 56 - 128 + 16 = -56
+        # (sprite_h=128 é a altura de "gcn_19" — se o sprite mudar, refazer a conta).
+        "projectile_origin_offset": (15.0, -56.0),
         "is_ranged": True,
         "attributes": {
-            "health": 250, 
+            "health": 2500,
             "armor": 20,
-            "attack_min": 15, 
-            "attack_max": 25, 
+            "attack_min": 15,
+            "attack_max": 25,
             "attack_power": 1,
             # move_speed_pct: torre nunca se move de verdade (TileMovement.
             # speed sempre 0.0 no servidor, create_tower) — só existe aqui
@@ -73,7 +90,8 @@ TOWER_TABLE: dict[str, dict] = {
             # Nunca 0 (viraria divisão por zero em move_duration).
             "move_speed_pct": 1,
             "attack_speed": 1.8,
-            "acerto": 95, "crit_chance": 5,
+            "acerto": 100, 
+            "crit_chance": 5,
         },
         "attack_range_tiles": 8,
         "vision_radius_tiles": 8,
@@ -96,21 +114,25 @@ TOWER_TABLE: dict[str, dict] = {
         "race": "Construcao",
         "tier": "elite",
         "color": (120, 120, 130),
+        # sprite_id/projectile_origin_offset: ver comentário na torre_de_fogo
+        # acima — mesmo sprite, mesma conta.
+        "sprite_id": "gcn_19",
+        "projectile_origin_offset": (15.0, -56.0),
         "is_ranged": True,
         "attributes": {
-            "health": 250, 
+            "health": 2500,
             "armor": 15,
             "attack_min": 15, 
             "attack_max": 20, 
             "attack_power": 1,
             "move_speed_pct": 1,   # ver comentário na torre_de_fogo acima
             "attack_speed": 1.8,
-            "acerto": 95, 
+            "acerto": 100, 
             "crit_chance": 10,
         },
         "attack_range_tiles": 8,
         "vision_radius_tiles": 8,
-        "xp_reward": 220,
+        "xp_reward": 250,
         "gold_min": 18, 
         "gold_max": 36,
         # Mesmos arquivos REAIS já usados por "Arqueiro (NPC)" — ver

@@ -15,6 +15,20 @@ from tests.helpers import make_world_server, spawn_player, run_ticks, first_mob,
 from shared.messages import MsgType
 
 
+def _loot_dict(item_id: str, stack: int = 1) -> dict:
+    """Monta um dict de item de corpse a partir do catálogo real (mesmo
+    formato de server/server_death_handler.py::_serialize_item) — débito
+    A4 (11/08/2026): request_loot() agora reconstrói via item_id contra o
+    catálogo real (WorldServer._reconstruct_item) antes de creditar no
+    Inventory ao vivo, então dicts fake tipo {"name": "Flecha"} sem
+    item_id de catálogo válido não bastam mais pra simular loot."""
+    from content.item_table import ITEMS as _TestItemsSess
+    from server.server_death_handler import _serialize_item as _ser_sess
+    d = _ser_sess(_TestItemsSess[item_id]())
+    d["stack"] = stack
+    return d
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # FakeSession: captura mensagens sem WebSocket
 # ─────────────────────────────────────────────────────────────────────────────
@@ -743,7 +757,7 @@ class TestPartyLootSync(unittest.IsolatedAsyncioTestCase):
                          "B deveria receber LOOT_UPDATE quando A sacou o ouro do corpse compartilhado")
         self.assertEqual(updates[0]["corpse_id"], cid)
         self.assertEqual(updates[0]["coins_taken"], 11)
-        self.assertEqual(updates[0]["item_names_taken"], [])
+        self.assertEqual(updates[0]["item_ids_taken"], [])
 
     async def test_loot_update_nao_volta_pro_proprio_requester(self):
         from shared.messages import encode
@@ -846,17 +860,22 @@ class TestHarvestableEmptyNaoDisparaDespawnGenerico(unittest.IsolatedAsyncioTest
         from shared.messages import encode
         session, fw = await fake_login(self.mgr, "s1", "user_hv_desp_e", 130, 374)
         cid = self._make_corpse(owner_eid=session.entity_id, no_decay=False,
-                                coins=0, items=[{"name": "Flecha", "stack": 3}])
+                                coins=0, items=[_loot_dict("arrow", stack=3)])
         # Simula o pote pessoal já resolvido (LOOT_AVAILABLE original) —
         # request_loot() não re-sorteia pra quem já está em quest_rolls.
+        # item_id fictício ("quest_veneno_de_aranha") de propósito — não
+        # existe em catálogo real, mas isso é OK aqui: o teste verifica
+        # só que o corpo NÃO despawna (ainda tem pendência pessoal), sem
+        # depender de conceder esse item de verdade no Inventory.
         self.ws_server._corpses[cid]["quest_rolls"] = {
-            session.entity_id: [{"name": "Veneno de Aranha", "stack": 1}],
+            session.entity_id: [{"item_id": "quest_veneno_de_aranha",
+                                 "name": "Veneno de Aranha", "stack": 1}],
         }
 
         fw.sent.clear()
         await self.mgr.on_message(session, encode(
             MsgType.LOOT_REQUEST,
-            {"corpse_id": cid, "take": "item", "item_name": "Flecha"}))
+            {"corpse_id": cid, "take": "item", "item_id": "arrow"}))
 
         despawns = get_msgs_of_type(fw, MsgType.ENTITY_DESPAWN)
         self.assertEqual(despawns, [],
@@ -868,12 +887,12 @@ class TestHarvestableEmptyNaoDisparaDespawnGenerico(unittest.IsolatedAsyncioTest
         from shared.messages import encode
         session, fw = await fake_login(self.mgr, "s1", "user_hv_desp_f", 130, 374)
         cid = self._make_corpse(owner_eid=session.entity_id, no_decay=False,
-                                coins=0, items=[{"name": "Flecha", "stack": 3}])
+                                coins=0, items=[_loot_dict("arrow", stack=3)])
 
         fw.sent.clear()
         await self.mgr.on_message(session, encode(
             MsgType.LOOT_REQUEST,
-            {"corpse_id": cid, "take": "item", "item_name": "Flecha"}))
+            {"corpse_id": cid, "take": "item", "item_id": "arrow"}))
 
         despawns = get_msgs_of_type(fw, MsgType.ENTITY_DESPAWN)
         self.assertEqual(len(despawns), 1)
@@ -902,7 +921,7 @@ class TestConditionalLootPerPlayer(unittest.IsolatedAsyncioTestCase):
         QUESTS[self.QID] = QuestDef(
             title="Teste", description="d",
             objectives=(ObjectiveDef(type="collect_item", target="Urso",
-                                     loot_item="Pelo de Urso", count=1, loot_chance=1.0),),
+                                     loot_item="pelo_urso", count=1, loot_chance=1.0),),
             reward=QuestReward(xp=1),
         )
 
@@ -915,8 +934,7 @@ class TestConditionalLootPerPlayer(unittest.IsolatedAsyncioTestCase):
         self.ws_server._next_corpse_id += 1
         self.ws_server._corpses[cid] = {
             "tx": 130, "ty": 374, "owner_eid": owner_eid,
-            "items": [{"name": "Item Comum", "icon_key": "", "item_type": "material",
-                       "rarity": "common", "value": 1, "slot": "", "stack": 1}],
+            "items": [_loot_dict("hp_potion")],
             "coins": 0, "timer": 120.0, "map": self.ws_server._map_file,
             "mob_name": mob_name, "mob_race": "Urso", "quest_rolls": {},
         }
@@ -1001,7 +1019,7 @@ class TestConditionalLootPerPlayer(unittest.IsolatedAsyncioTestCase):
         results = get_msgs_of_type(fw, MsgType.LOOT_RESULT)
         self.assertEqual(len(results), 1)
         names = {it["name"] for it in results[0]["items"]}
-        self.assertEqual(names, {"Item Comum", "Pelo de Urso"})
+        self.assertEqual(names, {"Poção de Vida", "Pelo de Urso"})
 
         # Corpse já vazio — pedir de novo não devolve nada (nem duplica).
         fw.sent.clear()
@@ -1641,7 +1659,8 @@ class TestItemGrantsQuestM4(unittest.IsolatedAsyncioTestCase):
         # aqui) — simula o INV_SYNC que o cliente manda logo depois de
         # aplicar o LOOT_RESULT localmente.
         inv = self.ws_server.world.get_component(session.entity_id, Inventory)
-        inv.items.append(Item(self.ITEM_NAME, "material", slot=None, max_stack=1))
+        inv.items.append(Item(self.ITEM_NAME, "material", slot=None, max_stack=1,
+                              item_id=self.ITEM_NAME))
 
         ql = self.ws_server.world.get_component(session.entity_id, QuestLog)
         started = quest_logic.try_start(self.ws_server.world, session.entity_id, ql, self.QID)
@@ -2039,6 +2058,186 @@ class TestBattlegroundDispatchSemMovimento(unittest.IsolatedAsyncioTestCase):
             bg._state["match_decided"] = False
             bg._state["result_deadline"] = None
             bg._state["pending_forced_leave_notify"] = []
+
+
+class TestDispatchSerializacaoDeTicks(unittest.IsolatedAsyncioTestCase):
+    """Opção (c) do §44 (PROBLEMAS_ARQUITETURA.md) — coalescência de
+    despacho por tick. Antes, `_on_tick` disparava
+    `asyncio.create_task(_dispatch_tick_deltas(deltas))` sem trava nem
+    fila entre ticks sucessivos: a task do tick N podia ainda estar no
+    meio da iteração de sessões quando a task do tick N+1 começava, e
+    nada garantia qual terminava de ENVIAR primeiro — se a mais velha
+    vencesse a corrida de envio, um HP mais alto (desatualizado) chegava
+    DEPOIS de um mais baixo (atual), lido pelo cliente como "a cura
+    sozinha" (sintoma relatado pelo usuário). `_dispatch_in_flight`/
+    `_pending_merged_deltas` garantem no máximo 1 despacho em andamento
+    por vez; um tick que chega no meio do caminho tem seu `deltas`
+    MESCLADO no acumulador (nunca descartado nem despachado em
+    paralelo) e sai inteiro no próximo despacho livre, preservando a
+    ordem cronológica.
+
+    Substitui `_dispatch_tick_deltas` por um fake direto na instância —
+    testa só a MECÂNICA de serialização/mesclagem, isolada do pipeline
+    gigante de AOI/inventário/etc. que `_dispatch_tick_deltas` de
+    verdade consome (já coberto pelos outros testes desta classe de
+    arquivo, ex. TestArenaDispatchSemMovimento)."""
+
+    async def asyncSetUp(self):
+        self.ws_server, self.mgr = make_session_manager()
+
+    async def test_tick_unico_ainda_despacha_normalmente(self):
+        """Sem concorrência nenhuma, o comportamento de sempre: 1 tick
+        com deltas -> 1 despacho, com o MESMO conteúdo (sem regressão
+        pro caso comum)."""
+        from unittest.mock import AsyncMock
+        received = []
+        self.mgr._dispatch_tick_deltas = AsyncMock(side_effect=lambda d: received.append(d))
+
+        deltas1 = {"combat": ["hit1"]}
+        self.mgr._on_tick(1, deltas1)
+        await asyncio.sleep(0)
+
+        self.mgr._dispatch_tick_deltas.assert_awaited_once()
+        self.assertEqual(received, [deltas1])
+        self.assertFalse(self.mgr._dispatch_in_flight,
+            "despacho concluído deveria destravar _dispatch_in_flight")
+
+    async def test_tick_que_chega_com_despacho_anterior_em_andamento_e_mesclado(self):
+        """2 ticks 'concorrentes' (o 2º chega ANTES do 1º terminar de
+        despachar) — nunca deveriam gerar 2 tasks competindo nem
+        descartar o 2º: ele entra no acumulador e sai INTEIRO, mesclado,
+        assim que o 1º despacho libera a vaga (sem esperar o próximo
+        tick real)."""
+        gate = asyncio.Event()
+        received = []
+        async def _fake_dispatch(deltas):
+            received.append(dict(deltas))
+            if len(received) == 1:
+                await gate.wait()  # segura o 1º despacho "em andamento"
+        self.mgr._dispatch_tick_deltas = _fake_dispatch
+
+        self.mgr._on_tick(1, {"combat": ["tick1_hit"]})
+        await asyncio.sleep(0)  # começa o 1º despacho, trava no gate
+        self.assertTrue(self.mgr._dispatch_in_flight)
+
+        # 2º tick chega ENQUANTO o 1º ainda está em andamento.
+        deltas2 = {"combat": ["tick2_hit"]}
+        self.mgr._on_tick(2, deltas2)
+        await asyncio.sleep(0)
+        self.assertEqual(len(received), 1,
+            "2º tick não deveria abrir um despacho paralelo")
+        self.assertEqual(self.mgr._pending_merged_deltas, deltas2,
+            "2º tick deveria ter sido acumulado, não descartado")
+
+        gate.set()  # libera o 1º despacho
+        await asyncio.sleep(0)  # 1º despacho termina, encadeia o 2º
+        await asyncio.sleep(0)  # 2º despacho (encadeado) roda
+
+        self.assertEqual(len(received), 2,
+            "2º tick deveria despachar assim que a vaga abre, sem esperar tick novo")
+        self.assertEqual(received[1]["combat"], ["tick2_hit"])
+        self.assertFalse(self.mgr._dispatch_in_flight)
+        self.assertIsNone(self.mgr._pending_merged_deltas)
+
+    async def test_ticks_acumulados_durante_1_despacho_concatenam_evento_em_ordem(self):
+        """3 ticks: o 1º está em despacho, o 2º e o 3º chegam durante —
+        os dois se mesclam num só acumulador (o 3º NUNCA sobrescreve o
+        2º), e a lista de evento concatenada preserva a ordem
+        cronológica (2º antes do 3º)."""
+        gate = asyncio.Event()
+        received = []
+        async def _fake_dispatch(deltas):
+            received.append(dict(deltas))
+            if len(received) == 1:
+                await gate.wait()
+        self.mgr._dispatch_tick_deltas = _fake_dispatch
+
+        self.mgr._on_tick(1, {"combat": ["t1"]})
+        await asyncio.sleep(0)
+        self.mgr._on_tick(2, {"combat": ["t2"]})
+        await asyncio.sleep(0)
+        self.mgr._on_tick(3, {"combat": ["t3"]})
+        await asyncio.sleep(0)
+
+        gate.set()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        self.assertEqual(len(received), 2)
+        self.assertEqual(received[1]["combat"], ["t2", "t3"],
+            "eventos dos ticks acumulados deveriam concatenar em ordem cronológica")
+
+    async def test_despawned_pos_faz_uniao_e_effects_pega_sempre_o_mais_novo(self):
+        """As outras 2 regras de mesclagem além de concatenar listas de
+        evento (ver `_merge_deltas_into`): `despawned_pos` é união de
+        dict (cada eid despawna só 1 vez, sem conflito esperado);
+        `effects`/`mob_effects` são FOTOS do estado atual lidas ao vivo
+        do ECS (não uma lista de eventos) — mesclar tem que SUBSTITUIR
+        pela mais nova, nunca concatenar (concatenar duplicaria/
+        desatualizaria)."""
+        # Precisa de 3 ticks pra exercitar `_merge_deltas_into` de verdade:
+        # o 1º dispara o despacho (some em received[0], nunca acumula); o
+        # 2º chega durante o despacho e vira `_pending_merged_deltas`
+        # DIRETO (nada acumulado ainda pra mesclar com); só o 3º, chegando
+        # ENQUANTO o 2º já está acumulado, de fato passa por
+        # `_merge_deltas_into` — é a união/substituição entre 2º e 3º que
+        # este teste verifica.
+        gate = asyncio.Event()
+        received = []
+        async def _fake_dispatch(deltas):
+            received.append(dict(deltas))
+            if len(received) == 1:
+                await gate.wait()
+        self.mgr._dispatch_tick_deltas = _fake_dispatch
+
+        self.mgr._on_tick(1, {"combat": ["t1"]})
+        await asyncio.sleep(0)
+        self.mgr._on_tick(2, {"combat": ["t2"], "despawned_pos": {10: (1, 1)},
+                              "effects": {"velha": True}})
+        await asyncio.sleep(0)
+        self.mgr._on_tick(3, {"combat": ["t3"], "despawned_pos": {20: (2, 2)},
+                              "effects": {"nova": True}})
+        await asyncio.sleep(0)
+
+        gate.set()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        self.assertEqual(received[1]["despawned_pos"], {10: (1, 1), 20: (2, 2)},
+            "despawned_pos deveria unir o 2º e o 3º tick, não sobrescrever")
+        self.assertEqual(received[1]["effects"], {"nova": True},
+            "effects deveria pegar sempre a foto mais nova, nunca concatenar")
+
+    async def test_excecao_no_despacho_nao_trava_dispatch_in_flight_pra_sempre(self):
+        """Se `_dispatch_tick_deltas` lançar (bug futuro, payload
+        inesperado, etc.), `_dispatch_in_flight` TEM que voltar a False
+        — senão nenhum despacho roda NUNCA MAIS depois disso, o que
+        seria pior que o bug original (silenciaria o jogo inteiro, não
+        só um HP errado). Chama `_run_dispatch` direto (é o wrapper que
+        carrega essa garantia via try/finally), simulando o estado que
+        `_on_tick` já deixaria setado antes de criar a task."""
+        calls = []
+        async def _fake_dispatch_raises(deltas):
+            calls.append(deltas)
+            raise RuntimeError("erro simulado no despacho")
+        self.mgr._dispatch_tick_deltas = _fake_dispatch_raises
+        self.mgr._dispatch_in_flight = True
+
+        with self.assertRaises(RuntimeError):
+            await self.mgr._run_dispatch({"combat": ["boom"]})
+
+        self.assertFalse(self.mgr._dispatch_in_flight,
+            "exceção no despacho deixou _dispatch_in_flight travado em True")
+
+        # Próximo tick deveria conseguir despachar normalmente depois do erro.
+        async def _fake_dispatch_ok(deltas):
+            calls.append(deltas)
+        self.mgr._dispatch_tick_deltas = _fake_dispatch_ok
+        self.mgr._on_tick(2, {"combat": ["depois_do_erro"]})
+        await asyncio.sleep(0)
+
+        self.assertEqual(len(calls), 2)
+        self.assertFalse(self.mgr._dispatch_in_flight)
 
 
 class TestUnstuck(unittest.IsolatedAsyncioTestCase):

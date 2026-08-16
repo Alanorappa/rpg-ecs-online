@@ -22,7 +22,7 @@
         {
           "name": "Pá",
           "sprite": "pr_pa",
-          "items": ["Pá"],
+          "items": ["pa"],
           "count": 1
         }
       ]
@@ -36,7 +36,7 @@
         {
           "name": "Picareta",
           "sprite": "pr_picareta",
-          "items": ["Picareta"],
+          "items": ["picareta"],
           "count": 1
         }
       ]
@@ -50,7 +50,7 @@
         {
           "name": "Mochila de mineração",
           "sprite": "pr_mochila",
-          "items": ["Mochila de mineração"],
+          "items": ["mochila_mineracao"],
           "count": 1
         }
       ]
@@ -64,7 +64,7 @@
         {
           "name": "Lampião",
           "sprite": "pr_lampiao",
-          "items": ["Lampião"],
+          "items": ["lampiao"],
           "count": 1
         }
       ]
@@ -78,7 +78,7 @@
         {
           "name": "Cantil",
           "sprite": "pr_cantil",
-          "items": ["Cantil"],
+          "items": ["cantil"],
           "count": 1
         }
       ]

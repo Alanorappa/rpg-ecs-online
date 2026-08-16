@@ -45,3 +45,15 @@ if not log.handlers:
 
     log.setLevel(os.environ.get("RPG_LOG_LEVEL", "INFO").upper())
     log.propagate = False
+
+    # Logger nativo do asyncio (avisos de callback lento — "Executing
+    # <Task ...> took X.XXX seconds", disparado por
+    # `loop.slow_callback_duration`, ver server/main.py) — sem handler
+    # plugado nele antes disso, esses avisos ficavam mudos (Fase 4.5,
+    # 11/08/2026, ver PROBLEMAS_ARQUITETURA.md §27). Reusa o MESMO
+    # RotatingFileHandler acima em vez de abrir arquivo novo.
+    _asyncio_log = logging.getLogger("asyncio")
+    if not _asyncio_log.handlers:
+        _asyncio_log.addHandler(_file)
+        _asyncio_log.setLevel("WARNING")
+        _asyncio_log.propagate = False

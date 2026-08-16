@@ -633,6 +633,56 @@ class TestRegressionBugs(unittest.TestCase):
         self.assertFalse(ai_after.aggroed_by_damage,
             "aggroed_by_damage não foi limpo após player morrer")
 
+    def test_mob_sem_caminho_perto_do_spawn_nao_cura_instantaneo(self):
+        """Bug real relatado pelo usuário (12/08/2026): "ataquei o mob, a
+        barra de HP desceu e depois voltou" — um dos 3 pontos em que
+        EnemyAISystem leva o mob de volta pra IDLE ainda fazia
+        `current_hp = max_hp` DIRETO no componente, sem passar por
+        nenhum canal de broadcast (mesma causa raiz já corrigida no
+        ponto IRMÃO — Decisão 20.1, 09/07/2026, ver historico/
+        ARQUITETURA ONLINE HISTORICO.md — só que este 2º ponto ficou
+        pra trás). Cenário: mob CHASING sem caminho disponível
+        (`ai_control.path=None`), player sai do raio de detecção mas o
+        mob continua perto do próprio spawn (não passa por RETURNING,
+        vai direto pra IDLE)."""
+        eid = spawn_player(self.ws, "s1", 130, 374)
+        run_ticks(self.ws, 40)
+        mob = first_mob(self.ws)
+        if not mob:
+            self.skipTest("Sem mobs")
+
+        from engine.components import AIControlled, CombatStats, TileMovement
+        mob_ai = self.ws.world.get_component(mob, AIControlled)
+        mob_cs = self.ws.world.get_component(mob, CombatStats)
+        mob_tm = self.ws.world.get_component(mob, TileMovement)
+        if not mob_ai or not mob_cs or not mob_tm:
+            self.skipTest("Mob sem componentes necessários")
+
+        # Mob já tomou dano (simula "ataquei e a vida desceu")
+        mob_cs.current_hp = max(1, mob_cs.max_hp // 2)
+        hp_apos_dano = mob_cs.current_hp
+
+        mob_ai.target_eid         = eid
+        mob_ai.aggroed_by_damage  = True
+        mob_ai.state              = "CHASING"
+        mob_ai.path               = None
+        mob_ai.is_blocked         = False
+        mob_ai.path_recalc_timer  = 999.0  # não devido — preserva path=None
+
+        # Player some do raio de detecção do mob, mas o mob continua
+        # perto do próprio spawn (settle_threshold=1 tile pra mob comum).
+        ptm = self.ws.world.get_component(eid, TileMovement)
+        ptm.current_tile_x = mob_tm.current_tile_x + 200
+        ptm.current_tile_y = mob_tm.current_tile_y + 200
+
+        run_ticks(self.ws, 3)
+
+        self.assertEqual(mob_ai.state, "IDLE",
+            "mob deveria ter desistido e ido pra IDLE (perto do próprio spawn)")
+        self.assertEqual(mob_cs.current_hp, hp_apos_dano,
+            "HP não deveria curar instantaneamente ao entrar em IDLE — "
+            "regen gradual (1%/3s) cuida disso com sync correto pro cliente")
+
     def test_level_up_inclui_level_no_broadcast_de_hp_para_observadores(self):
         """Bug real relatado pelo usuário 17/07/2026: nameplate de player
         remoto travava no level de LOGIN pra sempre, nunca refletia
@@ -763,7 +813,7 @@ class TestQuestItemInventorySync(unittest.TestCase):
         self.eid = spawn_player(self.ws, "s1", 130, 374)
 
     def test_lookup_item_value_reconhece_item_de_quest(self):
-        self.assertIsNotNone(self.ws._lookup_item_value("Presa de Lobo"),
+        self.assertIsNotNone(self.ws._lookup_item_value("presa_lobo"),
                              "QUEST_ITEMS deveria estar no cache de valores (_build_item_caches)")
 
     def test_reconstruct_item_monta_item_de_quest_pelo_catalogo(self):
@@ -906,7 +956,7 @@ class TestQuestLogicIgnoraSlotVazioNoInventario(unittest.TestCase):
 
         ql = QuestLog()
         ql.active["wolf_fangs"] = [0]
-        item = Item("Presa de Lobo", "material", "")
+        item = Item("Presa de Lobo", "material", "", item_id="presa_lobo")
         item.stack = 2
         inv = Inventory(items=[None, item, None])
 
@@ -921,7 +971,7 @@ class TestQuestLogicIgnoraSlotVazioNoInventario(unittest.TestCase):
 
         ql = QuestLog()
         ql.active["wolf_fangs"] = [5]
-        item = Item("Presa de Lobo", "material", "")
+        item = Item("Presa de Lobo", "material", "", item_id="presa_lobo")
         item.stack = 5
         real_inv = self.ws.world.get_component(self.eid, Inventory)
         real_inv.items = [None, item]
@@ -930,7 +980,7 @@ class TestQuestLogicIgnoraSlotVazioNoInventario(unittest.TestCase):
 
         self.assertIsNotNone(reward)
         self.assertNotIn("wolf_fangs", ql.active)
-        self.assertEqual(consumed, [{"name": "Presa de Lobo", "stack": 5}])
+        self.assertEqual(consumed, [{"item_id": "presa_lobo", "stack": 5}])
 
     def test_recarregar_ate_esgotar_stack_nao_trava_o_tick_com_quest_ativa(self):
         """Reprodução fim-a-fim do bug real: recarrega até a stack de
@@ -954,6 +1004,57 @@ class TestQuestLogicIgnoraSlotVazioNoInventario(unittest.TestCase):
         self.assertIn(None, inv.items, "stack deveria esgotar e virar None na lista")
 
         self.ws._process_quest_events()
+
+
+class TestInventoryDataSerializationIgnoraSlotVazio(unittest.TestCase):
+    """Bug real relatado pelo usuário 11/08/2026: logar, recarregar a
+    aljava até esgotar a stack de flechas (Inventory.items ganha um None
+    no slot — formato normal, ver TestQuestLogicIgnoraSlotVazioNoInventario
+    acima) e depois desconectar derrubava _persist_character inteiro
+    ('NoneType' object has no attribute 'name', get_player_inventory_data
+    → _item_data_from_obj(None)). Mesma classe de bug já corrigida em
+    quest_logic.py (14/07) — get_player_inventory_data e o snapshot de
+    entrada de instância (server/instance_progression.py) eram dois
+    consumidores que também não checavam `is None`. Ver
+    PROBLEMAS_ARQUITETURA.md."""
+
+    def setUp(self):
+        self.ws  = make_world_server()
+        self.eid = spawn_player(self.ws, "s1", 130, 374)
+
+    def _esgotar_aljava(self):
+        from engine.components import Equipment, Inventory, Item
+        equip = self.ws.world.get_component(self.eid, Equipment)
+        inv   = self.ws.world.get_component(self.eid, Inventory)
+        quiver = Item("Aljava", "quiver", "offhand", arrow_count=0, max_arrows=75)
+        equip.slots["offhand"] = quiver
+        ammo = Item("Flecha", "ammo", "", max_stack=999, item_id="arrow")
+        ammo.stack = 75
+        inv.items.append(ammo)
+        self.ws._server_recarregar(self.eid, self.eid, {})
+        self.assertIn(None, inv.items, "pré-condição: slot precisa esgotar (virar None)")
+
+    def test_get_player_inventory_data_nao_quebra_com_slot_vazio(self):
+        self._esgotar_aljava()
+        data = self.ws.get_player_inventory_data("s1")
+        self.assertIsNotNone(data)
+        self.assertTrue(all(d is not None for d in data))
+
+    def test_instance_progression_snapshot_nao_quebra_com_slot_vazio(self):
+        self._esgotar_aljava()
+        from server.instance_progression import _push_stats_update
+        from engine.components import CharacterStats, TalentTree, Inventory, Equipment
+
+        char  = self.ws.world.get_component(self.eid, CharacterStats)
+        tt    = self.ws.world.get_component(self.eid, TalentTree)
+        inv   = self.ws.world.get_component(self.eid, Inventory)
+        equip = self.ws.world.get_component(self.eid, Equipment)
+
+        _push_stats_update(self.ws, self.eid, char, tt, inv=inv, equip=equip)
+
+        updates = self.ws.consume_stats_updates()
+        entry = next(u for u in updates if u.get("player_eid") == self.eid)
+        self.assertTrue(all(d is not None for d in entry.get("inv_snapshot", [])))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1518,34 +1619,40 @@ class TestTickPerfProfiler(unittest.TestCase):
     """Profiler por-seção do tick (04/08/2026, pedido do usuário — travadas
     percebidas em jogo, ping >600ms na HUD, "consegue colocar um
     monitoramento que grave no log pra avaliar quanto cada sistema está
-    consumindo"). `WorldServer._perf_mark` é o chokepoint único: grava em
-    `_perf_accum` (média periódica, já existia) E `_perf_tick_now`
-    (snapshot SÓ do tick atual, novo — usado pra apontar o CULPADO de um
-    pico específico, não só a média diluída num relatório de ~10s). Ver
-    ARQUITETURA_ONLINE.md §34.74.29."""
+    consumindo"). Reescrito na Fase 4.7 (12/08/2026, ver
+    PROBLEMAS_ARQUITETURA.md §30, pedido explícito do usuário): a lista
+    flat antiga misturava soma-de-pai com soma-de-filho na mesma linha,
+    sem indicar hierarquia. `WorldServer._perf_push`/`_perf_pop` (pilha
+    real, chaveada por CAMINHO completo — tupla) substituem o antigo
+    `_perf_mark` (dict flat por nome solto). Ver testes dedicados em
+    tests/test_perf_log_improvements.py pra cobertura mais completa da
+    árvore/percentis/caminho crítico; os testes aqui cobrem só o
+    contrato básico de push/pop e o breakdown de tick lento."""
 
     def setUp(self):
         self.ws = make_world_server()
 
-    def test_perf_mark_grava_em_ambos_os_dicts(self):
+    def test_perf_push_pop_grava_no_caminho(self):
         import time
-        t0 = time.perf_counter()
+        self.ws._perf_push("teste_label")
         time.sleep(0.01)
-        self.ws._perf_mark("teste_label", t0)
-        self.assertIn("teste_label", self.ws._perf_accum)
-        self.assertIn("teste_label", self.ws._perf_tick_now)
-        self.assertGreaterEqual(self.ws._perf_accum["teste_label"], 0.01)
-        self.assertGreaterEqual(self.ws._perf_tick_now["teste_label"], 0.01)
+        self.ws._perf_pop()
+        _path = ("teste_label",)
+        self.assertIn(_path, self.ws._perf_tree_accum)
+        self.assertIn(_path, self.ws._perf_tree_tick_now)
+        self.assertGreaterEqual(self.ws._perf_tree_accum[_path], 0.01)
+        self.assertGreaterEqual(self.ws._perf_tree_tick_now[_path], 0.01)
 
-    def test_perf_tick_now_reseta_a_cada_tick_mas_perf_accum_acumula(self):
-        """`_perf_tick_now` é o snapshot do tick ATUAL — precisa esvaziar
-        no início de CADA `_tick()`, senão o breakdown de um tick lento
-        mostraria tempo de ticks ANTERIORES também (ex: 2 ticks lentos
-        seguidos pareceriam UM tick de 2x a duração). `_perf_accum` é o
-        oposto: precisa continuar somando entre ticks (só zera no
-        relatório periódico, `_PERF_REPORT_TICKS`). Usa um sleep
-        conhecido (0.15s) num sistema real pra medir com precisão — sem
-        isso, o ruído normal de timing (~ms) não provaria nada."""
+    def test_perf_tree_tick_now_reseta_a_cada_tick_mas_tree_accum_acumula(self):
+        """`_perf_tree_tick_now` é o snapshot do tick ATUAL — precisa
+        esvaziar no início de CADA `_tick()`, senão o breakdown de um
+        tick lento mostraria tempo de ticks ANTERIORES também (ex: 2
+        ticks lentos seguidos pareceriam UM tick de 2x a duração).
+        `_perf_tree_accum` é o oposto: precisa continuar somando entre
+        ticks (só zera no relatório periódico, `_PERF_REPORT_TICKS`).
+        Usa um sleep conhecido (0.15s) num sistema real pra medir com
+        precisão — sem isso, o ruído normal de timing (~ms) não
+        provaria nada."""
         import time
         orig_update = self.ws._minion_system.update
 
@@ -1556,25 +1663,27 @@ class TestTickPerfProfiler(unittest.TestCase):
         self.ws._minion_system.update = _slow_update
         self.ws._tick(0.05)
         self.ws._tick(0.05)
-        # Se _perf_tick_now NÃO resetasse, o 2º tick teria ~0.30s
+        _path = ("minion_system",)
+        # Se _perf_tree_tick_now NÃO resetasse, o 2º tick teria ~0.30s
         # acumulado (2× o sleep); resetando de verdade, cada tick
         # individual fica perto de 0.15s (1× o sleep).
-        self.assertLess(self.ws._perf_tick_now["minion_system"], 0.25,
-                        "_perf_tick_now parece acumulado entre ticks, não resetado "
-                        f"(valor={self.ws._perf_tick_now['minion_system']:.3f}s, "
+        self.assertLess(self.ws._perf_tree_tick_now[_path], 0.25,
+                        "_perf_tree_tick_now parece acumulado entre ticks, não resetado "
+                        f"(valor={self.ws._perf_tree_tick_now[_path]:.3f}s, "
                         "esperado ~0.15s de 1 tick só)")
-        # _perf_accum, ao contrário, CRESCE (é cumulativo) — depois de 2
-        # ticks com sleep de 0.15s cada, deveria ter pelo menos ~0.30s.
-        self.assertGreaterEqual(self.ws._perf_accum["minion_system"], 0.25,
-                                "_perf_accum deveria acumular os 2 ticks (~0.30s), "
+        # _perf_tree_accum, ao contrário, CRESCE (é cumulativo) — depois
+        # de 2 ticks com sleep de 0.15s cada, deveria ter pelo menos ~0.30s.
+        self.assertGreaterEqual(self.ws._perf_tree_accum[_path], 0.25,
+                                "_perf_tree_accum deveria acumular os 2 ticks (~0.30s), "
                                 f"não só o último (valor="
-                                f"{self.ws._perf_accum['minion_system']:.3f}s)")
+                                f"{self.ws._perf_tree_accum[_path]:.3f}s)")
 
-    def test_tick_lento_grava_breakdown_por_secao_no_log(self):
+    def test_tick_lento_grava_caminho_critico_no_log(self):
         """Trava real do usuário: sistema específico consumindo 100+ms
         num tick só. Simula travando `MinionSystem.update` de propósito e
         confirma que a linha "tick lento" no arquivo de perf aponta esse
-        sistema como o principal consumidor do pico — não só o total."""
+        sistema como o principal consumidor do pico, via o caminho
+        crítico (Fase 4.7) — não mais uma lista top-8 flat."""
         import time
         orig_update = self.ws._minion_system.update
 
@@ -1589,8 +1698,8 @@ class TestTickPerfProfiler(unittest.TestCase):
             content = f.read()
         slow_lines = [l for l in content.splitlines() if "tick lento" in l]
         self.assertTrue(slow_lines, "deveria ter gravado uma linha de tick lento")
-        self.assertIn("minion_system=", slow_lines[-1],
-                      "breakdown deveria apontar minion_system como consumidor no pico")
+        self.assertIn("minion_system(", slow_lines[-1],
+                      "caminho crítico deveria apontar minion_system como consumidor no pico")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

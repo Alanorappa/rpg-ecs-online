@@ -32,6 +32,9 @@ _XP_BY_TIER: dict[str, int] = {
 def _serialize_item(item) -> dict:
     """Extrai apenas campos serializáveis de um Item ECS (sem objetos Pygame)."""
     return {
+        # item_id (débito C2, 10/08/2026) — identidade estável, ver
+        # engine/components.py::Item e server/world_server.py::_item_data_from_obj.
+        "item_id":   getattr(item, "item_id",   ""),
         "name":      getattr(item, "name",      ""),
         "icon_key":  getattr(item, "icon_key",  ""),
         "item_type": getattr(item, "item_type", ""),
@@ -158,6 +161,18 @@ class ServerDeathHandler:
             from engine.components import Minion as _MinionDH
             _minion_dh = self.world.get_component(eid, _MinionDH)
 
+            # Monstro de jungle estilo MOBA (13/08/2026, pedido do usuário)
+            # — tabela própria (content/jungle_definitions.py::
+            # JUNGLE_MOB_TABLE/JUNGLE_BOSS_TABLE), XP/ouro vêm do
+            # componente `JungleMob` (xp_reward/gold_min/gold_max), nunca
+            # do lookup por nome/tier. Normal (`is_boss=False`) segue a
+            # MESMA regra de proximidade que Minion já usa (passos 2/5
+            # abaixo, `or`-clause nova nas condições); boss tem ramo
+            # PRÓPRIO mais abaixo (XP/ouro time-restrito + buff), que roda
+            # em vez do genérico.
+            from engine.components import JungleMob as _JungleDH
+            _jungle_dh = self.world.get_component(eid, _JungleDH)
+
             # 2. XP proporcional por dano causado — base por level do mob ×
             # xp_given_by_lvl (mob_definitions.py), modificado pelo
             # multiplicador de tier. Mobs sem cadastro (ex: "Elemental")
@@ -185,6 +200,12 @@ class ServerDeathHandler:
                 # está cadastrado lá).
                 minion_level = identity.level if identity else 1
                 base_xp = _minion_dh.xp_reward * minion_level
+            elif _jungle_dh is not None and not _jungle_dh.is_boss:
+                # Jungle normal: XP flat da própria definição (sem escala
+                # por level — camp de jungle não muda de força com o
+                # nível médio do time, diferente de minion de lane).
+                # Boss NÃO cai aqui — tem ramo próprio mais abaixo.
+                base_xp = _jungle_dh.xp_reward
             elif mob_def and "xp_given_by_lvl" in mob_def:
                 mob_level  = identity.level if identity else 1
                 tier_mult  = ENEMY_TIER_CONFIGS.get(tier, ENEMY_TIER_CONFIGS["normal"])["xp"]
@@ -224,8 +245,14 @@ class ServerDeathHandler:
             # alguém em progressão normalizada por perto — sem isso cai no
             # damage_log normal abaixo (minion fora de instância nunca
             # deveria existir de verdade, mas mantém o fallback seguro).
+            # Jungle normal entra na MESMA proximidade que minion já usa
+            # (sem filtro de time — "mesmo padrão dos minions", pedido do
+            # usuário). Boss NUNCA entra aqui (`_is_jungle_boss` abaixo) —
+            # tem ramo próprio, time-restrito, mais adiante.
+            _is_jungle_boss = _jungle_dh is not None and _jungle_dh.is_boss
+            _jungle_normal_dh = _jungle_dh is not None and not _jungle_dh.is_boss
             _minion_xp_by_proximity = False
-            if _minion_dh is not None and self.world_server:
+            if (_minion_dh is not None or _jungle_normal_dh) and self.world_server:
                 from shared.constants import PARTY_XP_SHARE_RADIUS_TILES as _MXPR
                 from server.instance_progression import players_in_normalized_progression_near as _players_near
                 _nearby = _players_near(self.world_server, mob_tx, mob_ty, mob_map, _MXPR)
@@ -238,7 +265,7 @@ class ServerDeathHandler:
                             "xp":         _share,
                             "mob_eid":    eid,
                         })
-            if not _minion_xp_by_proximity:
+            if not _minion_xp_by_proximity and not _is_jungle_boss:
                 if damage_log:
                     total_damage = sum(damage_log.values())
                     for p_eid, dmg in damage_log.items():
@@ -260,6 +287,54 @@ class ServerDeathHandler:
                             "xp":         base_xp,
                             "mob_eid":    eid,
                         })
+
+            # Jungle BOSS (13/08/2026, pedido do usuário) — ramo PRÓPRIO,
+            # diferente de minion/jungle normal: XP E ouro divididos só
+            # entre jogadores PRÓXIMOS do MESMO TIME de quem deu o golpe
+            # final (não qualquer jogador perto, como minion/jungle normal
+            # fazem) — e o time INTEIRO (jogadores + minions vivos agora)
+            # ganha um buff temporário. `_killer_team_eid`: mesmo fallback
+            # já usado por `_gold_recipient_eid` mais abaixo (golpe final
+            # pode não ter sido de um player — minion/torre também matam).
+            if _is_jungle_boss and self.world_server:
+                _killer_team_eid = (killer_eid if killer_eid in _player_eids_now
+                                    else (next(iter(damage_log)) if damage_log else -1))
+                if _killer_team_eid != -1:
+                    from engine.components import Faction as _FacJB
+                    _killer_fac = self.world.get_component(_killer_team_eid, _FacJB)
+                    if _killer_fac is not None:
+                        from shared.constants import PARTY_XP_SHARE_RADIUS_TILES as _JBXPR
+                        from server.instance_progression import (
+                            players_in_normalized_progression_near as _players_near_jb,
+                            grant_instance_gold as _grant_gold_jb,
+                        )
+                        _nearby_all_jb = _players_near_jb(self.world_server, mob_tx, mob_ty, mob_map, _JBXPR)
+                        _nearby_team_jb = [
+                            p for p in _nearby_all_jb
+                            if (self.world.get_component(p, _FacJB) or _FacJB("")).faction_id
+                              == _killer_fac.faction_id
+                        ]
+                        if _nearby_team_jb:
+                            _xp_share_jb = max(1, _jungle_dh.xp_reward // len(_nearby_team_jb))
+                            _gold_total_jb = (random.randint(_jungle_dh.gold_min, _jungle_dh.gold_max)
+                                             if _jungle_dh.gold_max > 0 else 0)
+                            _gold_share_jb = max(1, _gold_total_jb // len(_nearby_team_jb)) if _gold_total_jb > 0 else 0
+                            for _p_jb in _nearby_team_jb:
+                                self.pending_xp.append({
+                                    "player_eid": _p_jb, "xp": _xp_share_jb, "mob_eid": eid,
+                                })
+                                if _gold_share_jb > 0:
+                                    _grant_gold_jb(self.world_server, _p_jb, _gold_share_jb)
+                        # Buff pro time INTEIRO (jogadores + minions vivos
+                        # agora) — não só quem está perto, diferente do
+                        # XP/ouro acima. `eid` (não mob_tx/mob_ty — posição
+                        # de MORTE, pode estar longe do camp) pra derivar a
+                        # MESMA chave de ciclo que o respawn usa (posição
+                        # de ORIGEM, via InitialPosition). Ver
+                        # WorldServer._grant_jungle_boss_buff.
+                        self.world_server._grant_jungle_boss_buff(
+                            eid, _killer_fac.faction_id, mob_map,
+                            identity.mob_key if identity else "")
 
             # Ouro de INSTÂNCIA por kill (01/08/2026, pedido do usuário:
             # "quando um oponente morre deve ir automaticamente pro
@@ -306,6 +381,17 @@ class ServerDeathHandler:
                         elif _minion_dh is not None:
                             _gold_amt = (random.randint(_minion_dh.gold_min, _minion_dh.gold_max)
                                         if _minion_dh.gold_max > 0 else 0)
+                        elif _jungle_normal_dh:
+                            # Jungle normal: gold só pro golpe final, mesmo
+                            # padrão de minion (pedido do usuário). Boss NÃO
+                            # cai aqui — `_is_jungle_boss` deixa `_gold_amt`
+                            # em 0 por este caminho de propósito (ele ainda
+                            # suprime o gold físico do corpse via
+                            # `_instance_gold_ja_concedido` abaixo), o gold
+                            # de verdade do boss é concedido pelo ramo
+                            # próprio, time-restrito, mais adiante.
+                            _gold_amt = (random.randint(_jungle_dh.gold_min, _jungle_dh.gold_max)
+                                        if _jungle_dh.gold_max > 0 else 0)
                         elif eid in _player_eids_now:
                             _gold_amt = _PKG_dh
                         else:
@@ -481,7 +567,7 @@ class ServerDeathHandler:
             # _server_apply_ranged_physical) voltam como loot pro matador, se ele
             # tiver o talento. Mesma fórmula do offline (systems.py): 50-100% das
             # flechas recebidas, mínimo 1.
-            from engine.components import CombatStats as _CSdh, Equipment as _EqDh, Item as _ItemDh
+            from engine.components import CombatStats as _CSdh, Equipment as _EqDh
             _dead_cs = self.world.get_component(eid, _CSdh)
             if _dead_cs and _dead_cs.arrows_received > 0 and first_attacker_eid != -1:
                 _killer_cs = self.world.get_component(first_attacker_eid, _CSdh)
@@ -492,13 +578,20 @@ class ServerDeathHandler:
                     _equip_r   = self.world.get_component(first_attacker_eid, _EqDh)
                     _quiver_r  = _equip_r.slots.get("offhand") if _equip_r else None
                     _atype     = getattr(_quiver_r, "subtype", "") or "Flecha"
-                    _ret = _ItemDh(
-                        name=_atype, item_type="ammo", slot="",
-                        rarity="common", value=1,
-                        damage_min=getattr(_quiver_r, "damage_min", 0),
-                        damage_max=getattr(_quiver_r, "damage_max", 0),
-                        max_stack=1000,
-                    )
+                    # Resolve pelo CATÁLOGO (item_id real) em vez de montar
+                    # o Item à mão (12/08/2026, ver PROBLEMAS_ARQUITETURA.md
+                    # §39 — achado investigando bug real do talento
+                    # Reciclagem): item sem `item_id` nunca era reconhecido
+                    # de volta pelo cliente, que reconstrói loot recebido
+                    # combinando por NOME — "não aparece no loot" quando o
+                    # nome não batia com nada do catálogo, "Já foi
+                    # saqueado" quando batia (cliente resolvia um item_id
+                    # DIFERENTE do que o servidor tinha guardado, a busca
+                    # por id no corpse nunca encontrava). Fallback pra
+                    # "Flecha" (item base, sempre existe no catálogo) se o
+                    # subtype da aljava não bater com nenhum item real.
+                    from content.item_table import resolve_item_by_name as _resolve_arrow_dh
+                    _ret = _resolve_arrow_dh(_atype) or _resolve_arrow_dh("Flecha")
                     _ret.stack = _recovered
                     # Dentro da instância (03/08/2026, pedido do usuário):
                     # Reciclagem vai DIRETO pra bag do killer, sem precisar
@@ -581,6 +674,14 @@ class ServerDeathHandler:
                 self.world_server.register_tower_respawn(
                     _tower_dh, _fac_dh.faction_id if _fac_dh else "monstros_hostis",
                     mob_map, identity.level if identity else 1)
+
+            # 6c. Jungle mob/boss: agenda respawn exato no MESMO camp
+            # (mesmo espírito de 6b — WorldServer.register_jungle_camp_
+            # respawn captura posição/facção/level/is_boss/respawn_s
+            # ANTES do remove_entity mais abaixo, via InitialPosition/
+            # Faction/EntityIdentity/o próprio JungleMob).
+            if _jungle_dh is not None and self.world_server:
+                self.world_server.register_jungle_camp_respawn(eid)
 
             # 7. Agenda despawn para o WorldServer emitir ENTITY_DESPAWN
             if not any(d["eid"] == eid for d in self.pending_despawns):

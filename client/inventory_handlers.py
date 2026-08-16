@@ -92,6 +92,13 @@ class InventoryHandlers:
         if not (inv and equip and combat_stats):
             return
 
+        # Posição ANTES de qualquer mutação local — débito A4, é o que vai
+        # pro servidor no lugar do item em si (ver _send_equip_item).
+        try:
+            _inv_index = inv.items.index(item)
+        except ValueError:
+            return
+
         target_slot = item.slot
         if target_slot not in equip.slots:
             return
@@ -99,7 +106,7 @@ class InventoryHandlers:
         char = self.world.get_component(self.player_entity, CharacterStats)
 
         # Restrição de armor_class por classe do personagem — feedback
-        # imediato; servidor valida de novo em update_player_equipment
+        # imediato; servidor valida de novo em equip_item_from_inventory
         # (autoritativo, fonte única de verdade — este check aqui é só UX).
         if getattr(item, "armor_class", "") and item.item_type == "armor":
             from engine.stats_system import CLASS_ARMOR_ALLOWED
@@ -152,7 +159,7 @@ class InventoryHandlers:
             combat_stats.base_attack_interval = item.attack_speed
         for mod in item.modifiers:
             add_modifier(combat_stats, mod)
-        self._send_equip_sync()
+        self._send_equip_item(_inv_index)
 
     def _unequip_slot(self, slot_name: str):
         inv          = self.world.get_component(self.player_entity, Inventory)
@@ -173,7 +180,7 @@ class InventoryHandlers:
             remove_modifier(combat_stats, mod)
         equip.slots[slot_name] = None
         inv.items.append(item)
-        self._send_equip_sync()
+        self._send_unequip_item(slot_name)
 
     def _handle_inventory_click(self, event):
         if event.button not in (1, 3):
@@ -201,6 +208,17 @@ class InventoryHandlers:
                 r = pygame.Rect(gx + col * step, body_y + row * step,
                                 self._u(self._INV_SLOT), self._u(self._INV_SLOT))
                 if r.collidepoint(mx, my):
+                    if item is None:
+                        # Slot esgotado (ex: aljava consumiu a última stack
+                        # de flechas) — formato normal de Inventory.items,
+                        # sem ação de clique (não tem o que equipar/usar/
+                        # ofertar). Sem este guard, clique direito crashava
+                        # (_try_open_item_quest_dialog/_equip_item acessando
+                        # .name/.slot de None — bug real 11/08/2026, ver
+                        # PROBLEMAS_ARQUITETURA.md).
+                        if event.button == 1:
+                            self._selected_inv_idx = -1
+                        return
                     if event.button == 3:
                         _trade_ui = self._get_trade_ui()
                         if _trade_ui is not None and _trade_ui.is_open:
@@ -240,7 +258,7 @@ class InventoryHandlers:
         if getattr(self, "_net", None) and self._consumable_system:
             cbar = self.world.get_component(self.player_entity, _CB)
             self._consumable_system._use_consumable(
-                self.player_entity, item.name, cbar
+                self.player_entity, item.item_id, cbar
             )
             return
 
@@ -493,7 +511,7 @@ class InventoryHandlers:
                         if _clicked_inv and r.collidepoint(mx, my):
                             _drag_inv.kind    = "consumable"
                             _drag_inv.source  = "inventory"
-                            _drag_inv.payload = item.name
+                            _drag_inv.payload = item.item_id
                             _drag_inv.active  = True
                     else:
                         lines.append((f"{del_hint}Clique dir. p/ equipar | Shift p/ comparar", (140, 140, 140)))

@@ -19,23 +19,70 @@ from shared.constants import (AOI_RADIUS, AOI_EXIT_BUFFER, PROTOCOL_VERSION, TIC
 from engine.utils import in_aoi as _in_aoi, SpatialHash as _SpatialHash
 
 
-def _can_see(world, viewer_eid: int, target_eid: int) -> bool:
+def _can_see(world_server, viewer_eid: int, target_eid: int,
+             ally_centers: "list[tuple[int, int, int]] | None" = None) -> bool:
     """Regra centralizada de visibilidade servidor.
 
     - Sem CombatState → visível a todos.
-    - is_visible=True  → visível a todos.
+    - is_visible=True  → visível a todos (mas ainda sujeito ao gate de bush abaixo).
     - is_visible=False + viewer ghost + target ghost → visível (espírito vê espírito).
     - is_visible=False qualquer outro caso → invisível.
+    - Bush (MOBA, 13/08/2026, ver PROBLEMAS_ARQUITETURA.md) — independente
+      de is_visible (não é global, é por PAR viewer/alvo): alvo dentro de
+      um bush só é visível pra quem tem presença física (própria ou de
+      time) DENTRO do MESMO bush, mesmo que esteja dentro do raio normal
+      de visão (AOI) do viewer.
+    - Linha de visão de terreno (13/08/2026, §54, universal desde §57) —
+      roda pra QUALQUER par de entidades, mundo aberto E BG/instância:
+      parede/árvore/pedra/bush no meio escondem, e o próprio tile do alvo
+      conta (parado em cima de uma bush = escondido, mesmo sem obstáculo
+      "no meio"). Sólido nunca é isento. Reaproveita a mesma malha
+      (`vision_height`) que já bloqueia visão no cliente — ver
+      `server/tile_los_processor.py`.
+    - Visão de TIME vira união de fontes independentes (16/08/2026, §58,
+      estilo LoL — "se um aliado vê, o time inteiro vê"): `ally_centers`
+      (mesma lista que `SessionManager._compute_ally_vision_centers()`
+      calcula 1x por tick — posição+raio de cada aliado, player/torre/
+      minion) é repassado pro raycast de terreno — se o PRÓPRIO viewer
+      não enxerga mas ALGUM aliado enxerga (dentro do raio próprio dele),
+      o alvo conta como visível pro time inteiro. `None`/vazio = só a
+      visão própria do viewer (comportamento sem contexto de time).
+    - Torre/minion do PRÓPRIO time (13/08/2026, §58) — sempre visível
+      pro time, independente de LOS (padrão comum de MOBA: você sempre
+      vê suas próprias estruturas/tropas). Só bypassa pra Faction
+      EXPLÍCITA igual (nunca mundo aberto); torre/minion ADVERSÁRIO
+      continua sujeito à regra normal de LOS acima.
     """
+    world = world_server.world
     from engine.components import CombatState, GhostState
     cst = world.get_component(target_eid, CombatState)
-    if cst is None or cst.is_visible:
-        return True
-    viewer_gst = world.get_component(viewer_eid, GhostState)
-    if viewer_gst is None or not viewer_gst.is_ghost:
+    if cst is not None and not cst.is_visible:
+        viewer_gst = world.get_component(viewer_eid, GhostState)
+        if viewer_gst is None or not viewer_gst.is_ghost:
+            return False
+        target_gst = world.get_component(target_eid, GhostState)
+        if target_gst is None or not target_gst.is_ghost:
+            return False
+
+    from engine.components import Tower, Minion, Faction
+    if (world.get_component(target_eid, Tower) is not None
+            or world.get_component(target_eid, Minion) is not None):
+        target_fac = world.get_component(target_eid, Faction)
+        viewer_fac = world.get_component(viewer_eid, Faction)
+        if (target_fac is not None and viewer_fac is not None
+                and target_fac.faction_id == viewer_fac.faction_id):
+            return True
+
+    target_zone = world_server._get_bush_zone(target_eid)
+    if target_zone is not None:
+        viewer_zone = world_server._get_bush_zone(viewer_eid)
+        if viewer_zone != target_zone and not world_server._team_sees_bush_zone(viewer_eid, target_zone):
+            return False
+
+    if not world_server._has_tile_los(viewer_eid, target_eid, ally_centers=ally_centers):
         return False
-    target_gst = world.get_component(target_eid, GhostState)
-    return target_gst is not None and target_gst.is_ghost
+
+    return True
 
 
 class Session:
@@ -111,6 +158,24 @@ class SessionManager:
         # torre ou minion com a mesma Faction + mesma instância). Vazio pra
         # quem não está num contexto de time (custo ~zero, caso comum).
         self._ally_vision_centers: dict[int, list[tuple[int, int, int]]] = {}
+        # Serialização do despacho por tick (12/08/2026, ver
+        # PROBLEMAS_ARQUITETURA.md §44 / BENCHMARK_ARQUITETURA.md §E.1) —
+        # bug real relatado pelo usuário: HP de mob/torre "voltava" durante
+        # combate ativo. Causa raiz: `_dispatch_tick_deltas` era disparado
+        # via `asyncio.create_task` sem `await` e sem fila entre ticks —
+        # a task do tick MAIS NOVO podia terminar de enviar ANTES da task
+        # do tick mais VELHO (que ainda estava no meio da iteração de
+        # sessões), fazendo o dado velho chegar por último no cliente e
+        # parecer uma cura. `_dispatch_in_flight`/`_pending_merged_deltas`
+        # garantem no máximo 1 despacho em andamento por vez — um tick que
+        # chega enquanto o anterior ainda despacha tem seu `deltas`
+        # MESCLADO (nunca descartado — `_collect_deltas()` limpa os
+        # buffers de origem todo tick incondicionalmente, então pular sem
+        # mesclar perderia golpes/spawns pra sempre) no acumulador, enviado
+        # inteiro no próximo despacho livre — ver `_on_tick`/
+        # `_merge_deltas_into`/`_run_dispatch`.
+        self._dispatch_in_flight: bool = False
+        self._pending_merged_deltas: "dict | None" = None
         self.world_server.register_on_tick(self._on_tick)
 
     # ── Ciclo de vida ─────────────────────────────────────────────────────────
@@ -172,9 +237,10 @@ class SessionManager:
         _live_hotbar = self.world_server.get_player_hotbar_data(session.session_id)
         _live_talents = self.world_server.get_player_talent_data(session.session_id)
         _live_inv = self.world_server.get_player_inventory_data(session.session_id)
+        _live_recipes = self.world_server.get_player_learned_recipes_data(session.session_id)
         merged = self._build_save_merge(srv_data, session.last_client_payload,
                                         _live_eq, _live_hotbar, _live_talents,
-                                        _live_inv)
+                                        _live_inv, _live_recipes)
         if patch_fn is not None:
             patch_fn(merged)
         try:
@@ -189,7 +255,8 @@ class SessionManager:
                           live_equipment: dict | None = None,
                           live_hotbar: list | None = None,
                           live_talents: dict | None = None,
-                          live_inventory: "list | None" = None) -> dict:
+                          live_inventory: "list | None" = None,
+                          live_learned_recipes: "list | None" = None) -> dict:
         """
         Constrói o dict merged para save_character.
         Regras de autoridade:
@@ -281,6 +348,12 @@ class SessionManager:
           subcampo. Ver ARQUITETURA_ONLINE.md §34.74.47.
         - quests: SEMPRE servidor (mesma regra de skill_levels — progresso/entrega de
           quest é server-autoritativo, ver quest_logic.py/PROBLEMAS_ARQUITETURA.md)
+        - learned_recipes: SERVIDOR autoritativo quando `live_learned_recipes`
+          é fornecido — débito A4 (11/08/2026, ver PROBLEMAS_ARQUITETURA.md).
+          `apply_consumable` já muta `LearnedRecipes` ao vivo direto ao
+          aceitar um pergaminho; `live_learned_recipes` (WorldServer.
+          get_player_learned_recipes_data) garante que o save reflete
+          isso sem depender de nenhum cache de payload do cliente.
         - stats base (level, xp, attrs): servidor
         """
         client_p  = client_payload
@@ -347,6 +420,8 @@ class SessionManager:
             # quests: SEMPRE servidor — progresso/entrega é server-autoritativa,
             # mesma regra de skill_levels (ver quest_logic.py/PROBLEMAS_ARQUITETURA.md).
             "quests": srv_data.get("quests"),
+            "learned_recipes": (live_learned_recipes if live_learned_recipes is not None
+                               else (client_p.get("learned_recipes") if client_p else None)),
             # char_stats: SEMPRE servidor — estatísticas acumuladas pro modal
             # de estatísticas (Fase E), mesma regra de quests/skill_levels.
             "char_stats": srv_data.get("char_stats"),
@@ -727,12 +802,14 @@ class SessionManager:
         if not session.authenticated:
             return
         item_name    = str(payload.get("item_name", ""))
+        item_id      = str(payload.get("item_id", ""))
         item_value   = int(payload.get("item_value", 0))
         stack_sold   = max(1, int(payload.get("stack_sold", 1)))
         current_gold = payload.get("current_gold")
         result = self.world_server.process_shop_sell(
             session.session_id, item_name, item_value, stack_sold,
-            current_gold=int(current_gold) if current_gold is not None else None)
+            current_gold=int(current_gold) if current_gold is not None else None,
+            item_id=item_id)
         await session.send(MsgType.SELL_RESULT, result)
 
     async def _handle_buy_request(self, session: Session, payload: dict, ts: int) -> None:
@@ -746,13 +823,37 @@ class SessionManager:
             return
         shop_id   = str(payload.get("shop_id", ""))
         item_name = str(payload.get("item_name", ""))
+        item_id   = str(payload.get("item_id", ""))
         quantity  = max(1, int(payload.get("quantity", 1)))
         last_inv     = session.last_client_payload.get("inventory") if session.last_client_payload else None
         current_gold = payload.get("current_gold")
         result = self.world_server.process_shop_buy(
             session.session_id, shop_id, item_name, quantity, last_inv,
-            current_gold=int(current_gold) if current_gold is not None else None)
+            current_gold=int(current_gold) if current_gold is not None else None,
+            item_id=item_id)
         await session.send(MsgType.BUY_RESULT, result)
+
+    async def _handle_craft_request(self, session: Session, payload: dict, ts: int) -> None:
+        """Processa forja em ferreiro — débito A4 (11/08/2026, ver
+        PROBLEMAS_ARQUITETURA.md). Servidor lê a receita do próprio
+        catálogo e confere ouro/material no Inventory ao vivo — cliente
+        só manda qual receita quer forjar."""
+        if not session.authenticated:
+            return
+        recipe_id = str(payload.get("recipe_id", ""))
+        result = self.world_server.craft_item(session.session_id, recipe_id)
+        await session.send(MsgType.CRAFT_RESULT, result)
+
+    async def _handle_recycle_request(self, session: Session, payload: dict, ts: int) -> None:
+        """Processa reciclagem em ferreiro — débito A4 (11/08/2026),
+        contraparte de `_handle_craft_request`. `inv_index` identifica a
+        posição, o servidor lê o item real da posição no Inventory ao
+        vivo (mesmo padrão de EQUIP_ITEM)."""
+        if not session.authenticated:
+            return
+        inv_index = int(payload.get("inv_index", -1))
+        result = self.world_server.recycle_item(session.session_id, inv_index)
+        await session.send(MsgType.RECYCLE_RESULT, result)
 
     # ── GM (menu de debug F12) — só `session.is_gm` tem efeito ────────────
     # Mesmo padrão de bypass negado silenciosamente já usado em
@@ -809,36 +910,25 @@ class SessionManager:
             return
         eid = session.entity_id
         item_name = str(payload.get("item_name", ""))
-        if not item_name:
+        item_id   = str(payload.get("item_id", ""))
+        if not item_name and not item_id:
             return
         from engine.components import Inventory
         inv = self.world_server.world.get_component(eid, Inventory)
         if not inv:
             return
-        # Mesmo catálogo que client/debug_handlers.py::_get_debug_item_catalog
-        # usa pra listar itens no F12 (content.loot_tables._T + SHOPS),
-        # casado por nome de exibição — não é um id estável, mas é o mesmo
-        # contrato que o resto do menu de debug já usa.
-        from content.loot_tables import _T
-        from content.merchant_data import SHOPS
-        factory = None
-        for f in _T.values():
-            if f().name == item_name:
-                factory = f
-                break
-        if factory is None:
-            for shop in SHOPS.values():
-                for entry in shop["stock"]:
-                    if entry["factory"]().name == item_name:
-                        factory = entry["factory"]
-                        break
-                if factory:
-                    break
-        if factory is None:
+        # Reusa o mesmo ponto único de reconstrução por catálogo que
+        # _reconstruct_item já usa (débito C2, 10/08/2026) — antes
+        # duplicava a varredura de loot_tables._T/SHOPS aqui mesmo,
+        # casando só por nome; agora item_id primeiro (O(1)), nome como
+        # fallback (client/debug_handlers.py::_get_debug_item_catalog
+        # ainda não migrado pra mandar item_id, então segue usando nome).
+        item = (self.world_server._item_factory_by_id(item_id) if item_id
+               else self.world_server._item_factory_by_name(item_name))
+        if item is None:
             return
         if len(inv.items) >= inv.max_slots:
             return
-        item = factory()
         inv.items.append(item)
         from server.server_death_handler import _serialize_item
         await session.send(MsgType.INVENTORY_UPDATE, {
@@ -849,7 +939,7 @@ class SessionManager:
     async def _handle_consumable_use(self, session: Session, payload: dict, ts: int) -> None:
         """Processa uso de consumível — aplica efeitos autoritativamente no servidor.
 
-        Payload: {item_name, heal_instant, hot:{heal_per_tick,interval,ticks},
+        Payload: {item_id, heal_instant, hot:{heal_per_tick,interval,ticks},
                   ooc_only, buffs:[]}
         Extensível: novos efeitos adicionados em 'buffs' sem mudar o handler.
         """
@@ -993,24 +1083,41 @@ class SessionManager:
         clientes antigos não quebrarem ao enviá-la."""
         return
 
-    async def _handle_equip_sync(self, session: Session, payload: dict, ts: int) -> None:
-        """Atualiza o componente Equipment do servidor quando o player equipa/desequipa."""
+    async def _handle_equip_item(self, session: Session, payload: dict, ts: int) -> None:
+        """Equipa o item na posição `inv_index` do Inventory ao vivo do
+        servidor — débito A4 (10-11/08/2026, ver PROBLEMAS_ARQUITETURA.md).
+        Substitui o antigo _handle_equip_sync (estado completo por payload)."""
         if not session.authenticated:
             return
-        equipment = payload.get("equipment")
-        if not isinstance(equipment, dict):
+        inv_index = int(payload.get("inv_index", -1))
+        rejected = self.world_server.equip_item_from_inventory(session.session_id, inv_index)
+        if rejected:
+            await session.send(MsgType.EQUIP_REJECTED, rejected)
+        self._cache_equipment_and_inventory(session)
+
+    async def _handle_unequip_item(self, session: Session, payload: dict, ts: int) -> None:
+        """Desequipa o slot `slot` no Equipment ao vivo do servidor — débito
+        A4, contraparte de _handle_equip_item."""
+        if not session.authenticated:
             return
-        rejected = self.world_server.update_player_equipment(session.session_id, equipment)
-        for _rej in rejected:
-            await session.send(MsgType.EQUIP_REJECTED, _rej)
-        # Persiste no cache de save o estado REAL pós-validação (não o payload
-        # cru do cliente) — senão um slot rejeitado (classe/level) ainda seria
-        # salvo no disconnect via _build_save_merge, mesmo nunca tendo sido
-        # aplicado ao Equipment ao vivo do servidor.
+        slot = str(payload.get("slot", ""))
+        self.world_server.unequip_item_slot(session.session_id, slot)
+        self._cache_equipment_and_inventory(session)
+
+    def _cache_equipment_and_inventory(self, session: Session) -> None:
+        """Persiste no cache de save o Equipment/Inventory REAIS pós-mutação
+        — senão um slot rejeitado (classe/level) ainda seria salvo no
+        disconnect via _build_save_merge, mesmo nunca tendo sido aplicado ao
+        vivo. Chamada por _handle_equip_item/_handle_unequip_item, que agora
+        mexem nos dois componentes atomicamente (equip/unequip move o item
+        entre Inventory e Equipment no mesmo passo — fecha o gap de INV_SYNC
+        nunca disparado nessas ações, ver PROBLEMAS_ARQUITETURA.md §20)."""
         if session.last_client_payload is None:
             session.last_client_payload = {}
         session.last_client_payload["equipment"] = \
             self.world_server.get_player_equipment_data(session.session_id)
+        session.last_client_payload["inventory"] = \
+            self.world_server.get_player_inventory_data(session.session_id)
 
     # Maior recompensa de gold de missão conhecida hoje (quests_data.py) é 25 —
     # 500 é generoso pra cobrir conteúdo futuro sem permitir "setar" gold arbitrário.
@@ -1395,15 +1502,38 @@ class SessionManager:
         corpse_id = int(payload.get("corpse_id", -1))
         if corpse_id < 0:
             return
-        take      = payload.get("take", "all")
-        item_name = payload.get("item_name", "")
-        loot = self.world_server.request_loot(session.session_id, corpse_id, take, item_name)
+        take    = payload.get("take", "all")
+        item_id = payload.get("item_id", "")
+        loot = self.world_server.request_loot(session.session_id, corpse_id, take, item_id)
         if loot is not None:
-            await session.send(MsgType.LOOT_RESULT, {
+            _loot_result_payload = {
                 "corpse_id": corpse_id,
                 "items":     loot["items"],
                 "coins":     loot["coins"],
-            })
+            }
+            if loot.get("no_space"):
+                _loot_result_payload["reason"] = "inventory_full"
+            await session.send(MsgType.LOOT_RESULT, _loot_result_payload)
+            # Progresso de quest collect_item — débito A4 (11/08/2026, ver
+            # PROBLEMAS_ARQUITETURA.md): antes disso morava só em
+            # _handle_inventory_update (INV_SYNC), que era o único jeito do
+            # servidor saber que a mochila mudou. Saque agora já muta o
+            # Inventory AO VIVO direto aqui (request_loot), então precisa do
+            # MESMO gatilho, movido pra onde a mutação realmente acontece —
+            # nunca dependente de o cliente mandar INV_SYNC depois.
+            if loot["items"]:
+                from engine.components import QuestLog as _QLloot, Inventory as _InvQuestLoot
+                import engine.quest_logic as _qlogic_loot
+                _loot_eid = self.world_server.get_entity_id(session.session_id)
+                _ql_loot  = self.world_server.world.get_component(_loot_eid, _QLloot) \
+                           if _loot_eid != -1 else None
+                if _ql_loot and _ql_loot.active:
+                    _inv_loot = self.world_server.world.get_component(_loot_eid, _InvQuestLoot)
+                    if _qlogic_loot.sync_collect_progress(_ql_loot, _inv_loot):
+                        await session.send(MsgType.QUEST_UPDATE, {
+                            "active":    {q: list(p) for q, p in _ql_loot.active.items()},
+                            "completed": list(_ql_loot.completed),
+                        })
             # Avisa o RESTO do grupo (todos que também receberam este
             # corpse via LOOT_AVAILABLE, exceto quem acabou de sacar) que
             # algo saiu — sem isso cada um só descobre a mudança quando
@@ -1419,9 +1549,9 @@ class SessionManager:
                 _loot_owner_eid = self.world_server._corpses.get(corpse_id, {}).get("owner_eid", -1)
                 _party_eids = self.world_server.get_party_members(_loot_owner_eid)
                 _update_payload = {
-                    "corpse_id":        corpse_id,
-                    "coins_taken":      loot["coins"],
-                    "item_names_taken": [it.get("name", "") for it in loot["items"]],
+                    "corpse_id":      corpse_id,
+                    "coins_taken":    loot["coins"],
+                    "item_ids_taken": [it.get("item_id", "") for it in loot["items"]],
                 }
                 for _p_eid in _party_eids:
                     if _p_eid == _requester_eid:
@@ -2107,10 +2237,11 @@ class SessionManager:
         eid = self.world_server._player_eids.get(session.session_id)
         if eid is None:
             return
-        reason = self.world_server.request_bg_queue_join(eid)
+        mode_id = payload.get("mode", "5v5")
+        reason  = self.world_server.request_bg_queue_join(eid, mode_id)
         await session.send(MsgType.BG_QUEUE_STATE, {
             "in_queue": reason is None,
-            **({} if reason is None else {"reason": reason}),
+            **({"mode": mode_id} if reason is None else {"reason": reason}),
         })
 
     async def _handle_bg_queue_leave(self, session: Session, payload: dict, ts: int) -> None:
@@ -2155,7 +2286,9 @@ class SessionManager:
         if trade_id is None:
             return
         inv_index = int(payload.get("inv_index", -1))
-        if self.world_server.add_trade_item(player_eid, inv_index) is None:
+        _qty_raw = payload.get("quantity")
+        quantity = int(_qty_raw) if _qty_raw is not None else None
+        if self.world_server.add_trade_item(player_eid, inv_index, quantity) is None:
             await self._broadcast_trade_state(trade_id)
 
     async def _handle_trade_withdraw_item(self, session: Session, payload: dict, ts: int) -> None:
@@ -2256,11 +2389,14 @@ class SessionManager:
         MsgType.CONSUMABLE_USE:    _handle_consumable_use,
         MsgType.BUY_REQUEST:     _handle_buy_request,
         MsgType.SELL_REQUEST:      _handle_sell_request,
+        MsgType.CRAFT_REQUEST:      _handle_craft_request,
+        MsgType.RECYCLE_REQUEST:    _handle_recycle_request,
         MsgType.GM_LEVELUP:        _handle_gm_levelup,
         MsgType.GM_ADD_GOLD:       _handle_gm_add_gold,
         MsgType.GM_ADD_ITEM:       _handle_gm_add_item,
         MsgType.PLAYER_HP_SYNC:    _handle_player_hp_sync,
-        MsgType.EQUIP_SYNC:        _handle_equip_sync,
+        MsgType.EQUIP_ITEM:        _handle_equip_item,
+        MsgType.UNEQUIP_ITEM:      _handle_unequip_item,
         MsgType.GOLD_UPDATE:       _handle_gold_update,
         MsgType.INV_SYNC:  _handle_inventory_update,
         MsgType.TALENT_UPDATE:     _handle_talent_update,
@@ -2370,7 +2506,75 @@ class SessionManager:
                        or bool(self.world_server._bg_match_result_events_this_tick))
         if not has_pending:
             return
-        asyncio.create_task(self._dispatch_tick_deltas(deltas))
+        # Mescla SEMPRE (nunca substitui) — se um despacho anterior ainda
+        # está em andamento, este `deltas` se soma ao que já estava
+        # acumulado esperando a próxima vaga (ver __init__ pro porquê).
+        if self._pending_merged_deltas is None:
+            self._pending_merged_deltas = deltas
+        else:
+            self._merge_deltas_into(self._pending_merged_deltas, deltas)
+        if self._dispatch_in_flight:
+            return   # já tem 1 despacho rodando — este tick só ficou acumulado
+        merged = self._pending_merged_deltas
+        self._pending_merged_deltas = None
+        self._dispatch_in_flight = True
+        asyncio.create_task(self._run_dispatch(merged))
+
+    # Campos de `deltas` que são EVENTOS (lista, ordem importa, nunca
+    # substituir — concatenar preserva a ordem cronológica entre os ticks
+    # mesclados, que é justamente o que fecha a classe de bug do §44).
+    _DELTA_EVENT_LIST_KEYS = (
+        "moved", "spawned", "despawned", "combat", "player_deaths",
+        "entity_deaths", "player_revives", "ghost_states", "visibility_changed",
+    )
+
+    @staticmethod
+    def _merge_deltas_into(acc: dict, new: dict) -> None:
+        """Mescla `new` (deltas de 1 tick) dentro de `acc` (acumulador de
+        1+ ticks ainda não despachados) — chamado sempre que um tick
+        termina com um despacho anterior ainda em andamento.
+
+        3 regras, por tipo de campo (ver `_collect_deltas` em
+        world_server.py pra origem de cada um):
+        - Listas de EVENTO (`_DELTA_EVENT_LIST_KEYS`) — concatena
+          preservando ordem (acc primeiro, new depois — new é sempre
+          cronologicamente mais recente).
+        - `despawned_pos` (dict eid→(tx,ty)) — união; sem conflito
+          esperado (um eid só despawna 1 vez).
+        - `effects`/`mob_effects` — são FOTOS do estado ATUAL (lidas ao
+          vivo do ECS a cada `_collect_deltas`, não uma lista de
+          eventos) — a de `new` sempre substitui a de `acc` inteira,
+          nunca concatena (concatenar duplicaria/desatualizaria)."""
+        for key in SessionManager._DELTA_EVENT_LIST_KEYS:
+            if key in new:
+                acc[key] = acc.get(key, []) + new[key]
+        if "despawned_pos" in new:
+            merged_pos = dict(acc.get("despawned_pos", {}))
+            merged_pos.update(new["despawned_pos"])
+            acc["despawned_pos"] = merged_pos
+        for key in ("effects", "mob_effects"):
+            if key in new:
+                acc[key] = new[key]
+
+    async def _run_dispatch(self, deltas: dict) -> None:
+        """Wrapper de `_dispatch_tick_deltas` — garante, em QUALQUER
+        caminho de saída (sucesso ou erro), que `_dispatch_in_flight`
+        seja destravado e que qualquer `deltas` acumulado ENQUANTO este
+        despacho rodava seja disparado imediatamente em seguida (não
+        espera o próximo tick, minimiza atraso extra). Sem o `finally`
+        aqui, um erro deixaria `_dispatch_in_flight` travado em True pra
+        sempre — pior que o bug original, pararia TODO despacho futuro
+        (`_dispatch_tick_deltas` já engole exceção internamente hoje,
+        mas este wrapper protege mesmo se isso mudar)."""
+        try:
+            await self._dispatch_tick_deltas(deltas)
+        finally:
+            self._dispatch_in_flight = False
+            if self._pending_merged_deltas is not None:
+                next_deltas = self._pending_merged_deltas
+                self._pending_merged_deltas = None
+                self._dispatch_in_flight = True
+                asyncio.create_task(self._run_dispatch(next_deltas))
 
     def _compute_ally_vision_centers(self) -> dict[int, list[tuple[int, int, int]]]:
         """Visão compartilhada de time (SÓ conteúdo instanciado — arena hoje,
@@ -3021,6 +3225,10 @@ class SessionManager:
         da posição própria (cx, cy) — a entidade entra se estiver dentro de
         QUALQUER um dos centros. Recalculado do zero todo tick a partir do
         estado atual, então nunca fica "preso" a um aliado que já saiu.
+        MESMA lista também repassada pra todo _can_see() abaixo (§58) —
+        além de estender o raio de CANDIDATURA, agora também estende a
+        LINHA DE VISÃO: se o viewer não enxerga mas um aliado (dentro do
+        próprio raio dele) enxerga, o alvo conta como visível pro time.
         """
         r      = AOI_RADIUS
         r_exit = AOI_RADIUS + AOI_EXIT_BUFFER
@@ -3079,7 +3287,7 @@ class SessionManager:
             in_old = in_aoi(m["from_tx"], m["from_ty"], eid)
 
             if eid in session.known_eids:
-                if not _can_see(self.world_server.world, session.entity_id, eid):
+                if not _can_see(self.world_server, session.entity_id, eid, ally_centers=ally_centers):
                     # Entidade ficou invisível (ex: ghost liberado sem despawn explícito)
                     aoi_exits.append(eid)
                     session.known_eids.discard(eid)
@@ -3091,6 +3299,24 @@ class SessionManager:
             else:
                 if in_new:
                     aoi_entries.append(eid)     # entrou no AOI pela primeira vez (raio normal)
+
+        # ── Revalida a PRÓPRIA visão quando EU me movo (13/08/2026, §56) ──
+        # O loop acima só reage a "o ALVO se moveu" — cobre o outro lado
+        # continuar vendo quem se moveu, mas nunca o inverso: minha visão de
+        # quem eu JÁ conhecia pode mudar por causa da MINHA PRÓPRIA posição
+        # (bush, §54/55 — primeira regra cuja resposta depende de onde o
+        # VIEWER está, não só do alvo — toda visibilidade anterior era
+        # simétrica por distância ou já tinha gatilho próprio, ver bloco
+        # "visibility_changed" abaixo). Sem isso, sair de uma bush não
+        # invalidava quem ficou "conhecido" de dentro dela — só "destravava"
+        # quando o player andava de novo (novo delta de "moved" acidental).
+        # Iterado DEPOIS do loop acima pra não duplicar quem já foi removido
+        # por lá (já não está mais em known_eids nesse ponto).
+        if any(m["eid"] == session.entity_id for m in deltas.get("moved", [])):
+            for eid in list(session.known_eids):
+                if not _can_see(self.world_server, session.entity_id, eid, ally_centers=ally_centers):
+                    aoi_exits.append(eid)
+                    session.known_eids.discard(eid)
 
         # ── Mudanças de visibilidade (ex: Camuflagem) ──────────────────
         # Sem isso, um player que camufla parado nunca some pros outros: o
@@ -3105,7 +3331,7 @@ class SessionManager:
                 if not vis_tm:
                     continue
                 vis_in_aoi  = in_aoi(vis_tm.current_tile_x, vis_tm.current_tile_y, eid)
-                vis_can_see = _can_see(self.world_server.world, session.entity_id, eid)
+                vis_can_see = _can_see(self.world_server, session.entity_id, eid, ally_centers=ally_centers)
                 if eid in session.known_eids:
                     if not vis_can_see:
                         aoi_exits.append(eid)
@@ -3115,7 +3341,7 @@ class SessionManager:
 
         # ── Novas entidades no AOI (via move) ─────────────────────────
         for eid in aoi_entries:
-            if not _can_see(self.world_server.world, session.entity_id, eid):
+            if not _can_see(self.world_server, session.entity_id, eid, ally_centers=ally_centers):
                 continue
             spawn_data = self.world_server.get_entity_spawn_data(eid)
             if spawn_data:
@@ -3254,8 +3480,16 @@ class SessionManager:
         if mob_effects:      result["mob_effects"] = mob_effects
 
         # Sweep: entidades em AOI não conhecidas (não detectadas via movimento).
-        # Cobre mobs estacionários e players que entraram em range sem se mover.
-        # SpatialHash filtra candidatos para O(mobs_no_AOI) por sessão em vez de O(M).
+        # Cobre mobs/torres/minions/harvestable estacionários. SpatialHash
+        # filtra candidatos para O(mobs_no_AOI) por sessão em vez de O(M).
+        # (13/08/2026, §58 — investigado incluir player aqui também, pra
+        # cobrir "aliado revela bush pra outro player do time" sem depender
+        # de "moved". Descartado: `for other_session in self._sessions...`,
+        # mais abaixo nesta mesma função, já faz exatamente isso — varredura
+        # completa de TODOS os players conectados, todo tick, já com
+        # `_can_see`. Confirmado com teste (revert-to-confirm pegou um bug
+        # de setup no próprio teste, não uma lacuna real) — duplicar aqui
+        # seria escanear player 2x à toa.)
         if mob_hash is not None:
             # União dos candidatos de CADA centro (posição própria + visão de
             # aliados) — um mob perto de um teammate mas longe de cx,cy não
@@ -3280,6 +3514,15 @@ class SessionManager:
                 # tick seguinte se o player aceitar a quest depois (sem
                 # precisar de código extra pra "revelar").
                 if not self.world_server._harvestable_visible_to(mob_eid, session.entity_id):
+                    continue
+                # §58 — esta varredura nunca checava _can_see (achado
+                # investigando bug relatado pelo usuário): qualquer
+                # mob/torre/minion em AOI virava "conhecido" só por
+                # distância, furando bush/parede/Camuflagem por completo.
+                # Torre/minion do PRÓPRIO time continua sempre visível
+                # (bypassa aqui dentro, ver _can_see) — só quem não deveria
+                # mesmo ser visto passa a ficar de fora de verdade.
+                if not _can_see(self.world_server, session.entity_id, mob_eid, ally_centers=ally_centers):
                     continue
                 spawn_data = self.world_server.get_entity_spawn_data(mob_eid)
                 if spawn_data:
@@ -3311,7 +3554,7 @@ class SessionManager:
                 continue
             if other_eid in final_despawned:
                 continue  # despawned neste tick — não re-spawnar no mesmo frame
-            if not _can_see(self.world_server.world, session.entity_id, other_eid):
+            if not _can_see(self.world_server, session.entity_id, other_eid, ally_centers=ally_centers):
                 continue
             ox, oy = self.world_server.get_tile_pos(other_session.session_id)
             if in_aoi(ox, oy, other_eid):
@@ -3512,11 +3755,12 @@ class SessionManager:
                     and self.world_server.get_player_map(s.session_id) != map_file):
                 continue
             sx, sy = self.world_server.get_tile_pos(s.session_id)
-            _centers = [(sx, sy, AOI_RADIUS)] + self._ally_vision_centers.get(s.entity_id, [])
+            _ally_ctrs = self._ally_vision_centers.get(s.entity_id, [])
+            _centers = [(sx, sy, AOI_RADIUS)] + _ally_ctrs
             if not any(_in_aoi(tx, ty, ccx, ccy, crad) for ccx, ccy, crad in _centers):
                 continue
             if (origin_eid >= 0 and s.entity_id != origin_eid
-                    and not _can_see(self.world_server.world, s.entity_id, origin_eid)):
+                    and not _can_see(self.world_server, s.entity_id, origin_eid, ally_centers=_ally_ctrs)):
                 continue
             result.append(s)
         return result

@@ -34,8 +34,9 @@ de Battlefield deve chamar:
 com `.world` (o World do ECS) + `._apply_talent_modifiers(eid, allocated)`
 + `._apply_equipment_modifiers(eid)` — na prática, sempre uma instância de
 WorldServer (server/world_server.py). Reaproveita esses dois métodos (já
-usados por login/EQUIP_SYNC/TALENT_UPDATE) em vez de reimplementar a
-aplicação de modifiers de talento/equipamento em CombatStats.
+usados por login/EQUIP_ITEM/UNEQUIP_ITEM/TALENT_UPDATE) em vez de
+reimplementar a aplicação de modifiers de talento/equipamento em
+CombatStats.
 """
 from __future__ import annotations
 
@@ -322,7 +323,8 @@ def exit_normalized_progression(ws, eid: int) -> None:
 
 def _push_stats_update(ws, eid: int, char: CharacterStats, tt: TalentTree, *,
                         in_instance: bool = None, inv: Inventory = None,
-                        equip: Equipment = None, ps: PlayerSkills = None) -> None:
+                        equip: Equipment = None, ps: PlayerSkills = None,
+                        xp_gained: int = 0, leveled_up: bool = False) -> None:
     """Empurra STATS_UPDATE privado pro dono com o que mudou ao
     entrar/sair da progressão normalizada — sem isso, o client nunca
     fica sabendo (bug real relatado pelo usuário, 01/08/2026: "o level
@@ -381,12 +383,32 @@ def _push_stats_update(ws, eid: int, char: CharacterStats, tt: TalentTree, *,
     existente pra isso — ver pesquisa em ARQUITETURA_ONLINE.md): hotbar/
     skills aprendidas completas. O client só aprende essas de verdade na
     próxima vez que logar (spawn_player já lê tudo do banco corretamente
-    — a instância nunca escreve no banco)."""
+    — a instância nunca escreve no banco).
+
+    `current_xp`/`xp_to_next_level` (13/08/2026, pedido do usuário — "a
+    barra de xp está mostrando a xp de fora da instância"): mesmo gap
+    dos atributos brutos acima, só que pra XP — sem mandar aqui, a
+    barra do cliente nunca sabia que a instância zerou/mudou a XP dele,
+    ficava presa no último valor REAL sincronizado. Valor FINAL (nunca
+    delta) — igual todo o resto desta função.
+
+    `xp_gained`/`leveled_up` (13/08/2026, mesmo pedido — feedback
+    visual/sonoro de XP e level-up DENTRO da instância): campos
+    separados de `current_xp` de propósito, com nome `instance_*` no
+    payload — nunca reaproveitar o campo `xp`/`xp_gained` que
+    `queue_stats_update`/`_flush_stats_updates` já usam pro XP REAL
+    (dispara `process_levelups` local no cliente com a curva/cap do
+    MUNDO REAL, errados aqui). `xp_gained` aqui é só pra mostrar texto
+    flutuante "+N XP"; `leveled_up` só pra tocar o som — a fonte de
+    verdade do level/XP em si continua sendo `level`/`current_xp`
+    acima."""
     cs = ws.world.get_component(eid, CombatStats)
     wallet = ws.world.get_component(eid, Wallet)
     entry = {
         "player_eid": eid,
         "level": char.level,
+        "current_xp":       char.current_xp,
+        "xp_to_next_level": char.xp_to_next_level,
         "talent_points": tt.available_points,
         "talent_allocated": dict(tt.allocated),
         "strength":     char.strength,
@@ -395,6 +417,10 @@ def _push_stats_update(ws, eid: int, char: CharacterStats, tt: TalentTree, *,
         "vitality":     char.vitality,
         "defense":      char.defense,
     }
+    if xp_gained > 0:
+        entry["instance_xp_gained"] = xp_gained
+    if leveled_up:
+        entry["instance_leveled_up"] = True
     if cs is not None:
         entry["hp"] = cs.current_hp
         entry["hp_max"] = cs.max_hp
@@ -403,7 +429,13 @@ def _push_stats_update(ws, eid: int, char: CharacterStats, tt: TalentTree, *,
     if in_instance is not None:
         entry["in_instance"] = in_instance
     if inv is not None:
-        entry["inv_snapshot"] = [ws._item_data_from_obj(it) for it in inv.items]
+        # Filtra None — slot esgotado (ex: aljava consumiu a última
+        # stack de flechas, ver server/spell_completion_processor.py::
+        # _server_recarregar) é formato normal de Inventory.items, mas
+        # _item_data_from_obj não tolera None (bug real 11/08/2026, ver
+        # PROBLEMAS_ARQUITETURA.md — mesmo padrão do equip_snapshot logo
+        # abaixo, que já filtra corretamente).
+        entry["inv_snapshot"] = [ws._item_data_from_obj(it) for it in inv.items if it is not None]
         entry["inv_max_slots"] = inv.max_slots
     if equip is not None:
         entry["equip_snapshot"] = {
@@ -422,7 +454,7 @@ def _push_stats_update(ws, eid: int, char: CharacterStats, tt: TalentTree, *,
     ws.queue_stats_update(entry)
 
 
-def _process_instance_levelup(ws, eid: int) -> None:
+def _process_instance_levelup(ws, eid: int) -> bool:
     """Processa level-ups de instância pendentes (chamado por
     grant_instance_xp). Mesma forma de engine/stats_system.py::
     process_levelups, mas com curva/cap próprias (level cap 15) — não
@@ -430,12 +462,17 @@ def _process_instance_levelup(ws, eid: int) -> None:
     personagem. Talento NÃO ganha pontos por level (02/08/2026, redesign
     — já vem pré-alocado no máximo desde `enter_normalized_progression`,
     ver docstring lá); só resta decidir QUANDO cada skill da
-    INSTANCE_SKILL_UNLOCK_ORDER aparece."""
+    INSTANCE_SKILL_UNLOCK_ORDER aparece.
+
+    Retorna se rolou level-up (13/08/2026) — quem chama (`grant_instance_xp`)
+    decide o único `_push_stats_update` do grant inteiro, incluindo esse
+    flag; esta função não empurra mais sozinha (evita 2 STATS_UPDATE
+    separados pro mesmo ganho de XP)."""
     char = ws.world.get_component(eid, CharacterStats)
     tt   = ws.world.get_component(eid, TalentTree)
     ps   = ws.world.get_component(eid, PlayerSkills)
     if char is None or tt is None or ps is None:
-        return
+        return False
 
     snap = ws.world.get_component(eid, InstanceProgressionSnapshot)
     real_slot_by_sid = _real_slot_by_skill_id(snap.real_player_skills if snap else None)
@@ -471,14 +508,22 @@ def _process_instance_levelup(ws, eid: int) -> None:
             # subir o current_hp junto com o max_hp, só sobe max_hp") —
             # mesmo comportamento de engine/stats_system.py::
             # process_levelups (`cs.current_hp = cs.max_hp`) no jogo real,
-            # que este módulo nunca replicava.
-            cs.current_hp = cs.max_hp
-        # Sem isso o dono nunca fica sabendo que subiu de level DENTRO da
-        # instância (mesmo gap que enter_/exit_normalized_progression já
-        # tinham antes do fix de 01/08/2026 — ver _push_stats_update).
-        # ps aqui também garante que a NOVA skill desbloqueada neste level
-        # (_grant_instance_skill acima) chegue na barra de ações do cliente.
-        _push_stats_update(ws, eid, char, tt, ps=ps)
+            # que este módulo nunca replicava. SÓ se já estiver vivo
+            # (12/08/2026, bug real relatado pelo usuário) — XP de
+            # proximidade continua chegando pra quem está morto esperando
+            # o respawn da BG (grant_instance_xp não tem, e não deve ter,
+            # guard de morte — XP de lane em espera é comportamento normal
+            # de MOBA); sem este guard, um level-up nessa janela curava o
+            # "corpo" pro máximo sem tirar GhostState.is_dead/cancelar o
+            # timer de respawn, e como TODO check de alvo válido do jogo
+            # (EnemyAISystem/MinionSystem/torres) olha só current_hp<=0,
+            # o corpo virava alvo atacável de novo pra qualquer mob/minion.
+            # A cura de verdade ao reviver já é feita por _revive_player
+            # (respawn_system.py), chamado pelo timer de respawn — não é
+            # responsabilidade deste código.
+            if cs.current_hp > 0:
+                cs.current_hp = cs.max_hp
+    return leveled
 
 
 def grant_instance_xp(ws, eid: int, amount: int) -> None:
@@ -486,14 +531,23 @@ def grant_instance_xp(ws, eid: int, amount: int) -> None:
     da progressão normalizada — chamado por `server/world_server.py` no
     lugar do XP real quando o destinatário `is_in_normalized_progression`,
     01/08/2026). No-op se o entity não estiver em progressão normalizada,
-    se já estiver no cap, ou se `amount` não for positivo."""
+    se já estiver no cap, ou se `amount` não for positivo.
+
+    Empurra STATS_UPDATE em TODO ganho (13/08/2026 — antes só empurrava
+    quando rolava level-up; ganho sem level-up ficava invisível pro
+    cliente, barra de XP não "andava" a cada kill como no mundo real)."""
     if amount <= 0 or not is_in_normalized_progression(ws, eid):
         return
     char = ws.world.get_component(eid, CharacterStats)
+    tt   = ws.world.get_component(eid, TalentTree)
+    ps   = ws.world.get_component(eid, PlayerSkills)
     if char is None or char.level >= INSTANCE_LEVEL_CAP:
         return
     char.current_xp += amount
-    _process_instance_levelup(ws, eid)
+    leveled = _process_instance_levelup(ws, eid)
+    if tt is not None:
+        _push_stats_update(ws, eid, char, tt, ps=ps,
+                           xp_gained=amount, leveled_up=leveled)
 
 
 def grant_instance_gold(ws, eid: int, amount: int) -> None:
@@ -504,11 +558,19 @@ def grant_instance_gold(ws, eid: int, amount: int) -> None:
     `first_attacker_eid`/dono de loot, que é "quem bateu primeiro").
     No-op se o entity não estiver em progressão normalizada ou `amount`
     não for positivo. Empurra STATS_UPDATE pro dono ver o gold subir na
-    hora (mesmo canal que compra/venda de loja já usa)."""
+    hora (mesmo canal que compra/venda de loja já usa).
+
+    `instance_gold_gained` (13/08/2026, pedido do usuário — "como o loot
+    é automático, ficaria mais legal ter um feedback visual do gold
+    subindo") — campo separado do `gold` (valor final, já existia),
+    só pra mostrar texto flutuante "+Ng"; nome `instance_*` de propósito
+    (só esta função manda, nunca colide com nenhum outro fluxo de gold
+    do mundo real)."""
     if amount <= 0 or not is_in_normalized_progression(ws, eid):
         return
     wallet = ws.world.get_component(eid, Wallet)
     if wallet is None:
         return
     wallet.gold += amount
-    ws.queue_stats_update({"player_eid": eid, "gold": wallet.gold})
+    ws.queue_stats_update({"player_eid": eid, "gold": wallet.gold,
+                           "instance_gold_gained": amount})

@@ -63,6 +63,7 @@ aceite de partida + preparo):
 from __future__ import annotations
 
 from shared.constants import ARENA_ACCEPT_WINDOW_S, ARENA_COUNTDOWN_S, ARENA_GATE_TILES
+from server.instanced_match_processor import InstancedMatchMixin
 
 ARENA_TEMPLATE = "maps/arena_poco_negro.csv"
 
@@ -90,7 +91,7 @@ ARENA_MODES: dict[str, dict] = {
 ARENA_RESULT_AUTO_LEAVE_S = 15.0
 
 
-class MatchProcessorMixin:
+class MatchProcessorMixin(InstancedMatchMixin):
 
     # ── Fila (grupos de exatamente 2) ────────────────────────────────────────
 
@@ -172,15 +173,9 @@ class MatchProcessorMixin:
     def _tick_arena_results_timeout(self) -> None:
         """Partidas DECIDIDAS há mais de ARENA_RESULT_AUTO_LEAVE_S segundos
         forçam a saída de quem ainda não clicou "Sair da Arena"."""
-        import time as _time_to
-        now = _time_to.time()
-        for match_id, match in list(self._active_matches.items()):
-            if not match.get("decided"):
-                continue
-            if now - match["decided_at"] < ARENA_RESULT_AUTO_LEAVE_S:
-                continue
-            for eid in list(match["team_a"] + match["team_b"]):
-                self._arena_leave_now(match_id, eid)
+        self._im_results_timeout(
+            self._active_matches, ARENA_RESULT_AUTO_LEAVE_S,
+            lambda match_id, eid: self._arena_leave_now(match_id, eid))
 
     # ── Ciclo de vida de partida ─────────────────────────────────────────────
 
@@ -319,17 +314,12 @@ class MatchProcessorMixin:
         players da partida."""
         import time as _time_tp
         now = _time_tp.time()
-        from engine.components import Tilemap as _TMtp
-        from engine.tileset import STONE_FLOOR as _SFtp
 
         for match_id, match in list(self._active_matches.items()):
             if match["decided"] or match["fight_started"]:
                 continue
 
-            if not match["accept_swept"] and now >= match["accept_deadline"]:
-                match["accept_swept"] = True
-                for eid in match["invited_a"] + match["invited_b"]:
-                    self._pending_arena_invite.pop(eid, None)
+            if self._im_sweep_accept_deadline(match, self._pending_arena_invite, now):
                 if not match["team_a"] and not match["team_b"]:
                     self._active_matches.pop(match_id, None)
                     continue
@@ -341,21 +331,12 @@ class MatchProcessorMixin:
                     continue
                 # os dois times têm gente (só desbalanceado) — segue pro combate normalmente
 
-            cd = match["countdown_deadline"]
-            if cd is not None and now >= cd and not match["fight_started"]:
-                match["fight_started"] = True
-                # Minion (30/07/2026): mesmo momento em que o portão físico
-                # abre — combate liberado de verdade, nunca durante o
-                # preparo (ver WorldServer._activate_minion_lanes).
-                self._activate_minion_lanes(match["instance_key"])
-                bundle = self._map_bundles.get(match["instance_key"])
-                if bundle is not None:
-                    tilemap = self.world.get_component(bundle.tilemap_entity, _TMtp)
-                    if tilemap is not None:
-                        for gx, gy in ARENA_GATE_TILES:
-                            tilemap.tile_matrix[gy][gx] = _SFtp
-                for eid in match["team_a"] + match["team_b"]:
-                    self._arena_gate_open_events_this_tick.append({"eid": eid})
+            # Minion (30/07/2026): mesmo momento em que o portão físico abre —
+            # combate liberado de verdade, nunca durante o preparo (ver
+            # WorldServer._activate_minion_lanes, chamado dentro do helper).
+            self._im_open_gate_if_ready(
+                match, now, ARENA_GATE_TILES,
+                lambda eid: self._arena_gate_open_events_this_tick.append({"eid": eid}))
 
     def _reset_combat_resources(self, eid: int) -> None:
         """Restaura HP/Mana/Concentração cheios e limpa cooldown de TODAS

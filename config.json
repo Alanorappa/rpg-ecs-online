@@ -48,11 +48,11 @@
     "teste": {
       "hotbar": {
         "slots": [
-          "golpe_poderoso",
           "golpe_debilitante",
           "brado_provocativo",
           "punho_no_queixo",
           "fatiador_de_corpos",
+          "golpe_poderoso",
           null,
           null,
           null,
@@ -162,8 +162,8 @@
       },
       "consumable_bar": {
         "slots": [
-          "P\u00e3o Simples",
-          null,
+          "simple_bread",
+          "hearty_stew",
           null,
           null,
           null
@@ -224,13 +224,13 @@
     "jungo": {
       "hotbar": {
         "slots": [
-          "tiro_repulsivo",
+          "flecha_reiterada",
           "picada_escorpiao",
-          "cancao_inspiracao",
-          "camuflagem",
-          null,
           "so_um_gole",
+          "cancao_inspiracao",
+          "tiro_repulsivo",
           "recarregar",
+          "camuflagem",
           "tiro_multiplo",
           "cancao_ninar",
           null
@@ -250,7 +250,7 @@
       },
       "consumable_bar": {
         "slots": [
-          null,
+          "small_hp_potion",
           null,
           null,
           null,
@@ -778,7 +778,7 @@
       },
       "consumable_bar": {
         "slots": [
-          null,
+          "roasted_meat",
           null,
           null,
           null,
@@ -797,12 +797,12 @@
       "hotbar": {
         "slots": [
           "golpe_poderoso",
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
+          "golpe_debilitante",
+          "fatiador_de_corpos",
+          "impacto",
+          "vitoria_iminente",
+          "interceptar",
+          "executar",
           null,
           null,
           null
@@ -813,11 +813,11 @@
           51,
           52,
           53,
-          54,
-          55,
-          56,
-          57,
-          48
+          101,
+          114,
+          116,
+          102,
+          103
         ]
       },
       "consumable_bar": {

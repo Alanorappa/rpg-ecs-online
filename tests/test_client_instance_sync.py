@@ -536,6 +536,7 @@ class TestInstanceBuyConsumableAutoAddsToBar(unittest.TestCase):
         return {
             "success": True, "quantity": 1, "new_gold": 125, "price": 25,
             "item": {
+                "item_id": "hp_potion",
                 "name": "Poção de Vida", "item_type": "consumable", "slot": "",
                 "rarity": "common", "value": 25, "consumable": {"heal_instant": 120},
                 "max_stack": 20, "stack": 1,
@@ -545,13 +546,13 @@ class TestInstanceBuyConsumableAutoAddsToBar(unittest.TestCase):
     def test_comprar_pocao_vai_pro_primeiro_slot_livre(self):
         self.client._handle_msg_buy_result(self._buy_potion_payload())
         cb = self.world.get_component(self.eid, ConsumableBar)
-        self.assertEqual(cb.slots[0], "Poção de Vida")
+        self.assertEqual(cb.slots[0], "hp_potion")
 
     def test_comprar_de_novo_nao_duplica_slot(self):
         self.client._handle_msg_buy_result(self._buy_potion_payload())
         self.client._handle_msg_buy_result(self._buy_potion_payload())
         cb = self.world.get_component(self.eid, ConsumableBar)
-        self.assertEqual(cb.slots.count("Poção de Vida"), 1)
+        self.assertEqual(cb.slots.count("hp_potion"), 1)
 
     def test_fora_da_instancia_nao_auto_adiciona(self):
         from ui.ui_components import InstanceInventoryUIState

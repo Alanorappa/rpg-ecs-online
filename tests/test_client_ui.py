@@ -254,7 +254,7 @@ def test_online_loot_request_nao_credita_localmente():
     loot = LootSystem(world, screen, player_entity=player)
 
     sent = []
-    loot.set_online_loot_requester(lambda local_eid, take, item_name: sent.append((local_eid, take, item_name)))
+    loot.set_online_loot_requester(lambda local_eid, take, item_id: sent.append((local_eid, take, item_id)))
     result = _click_gold_row(loot, corpse)
 
     wallet = world.get_component(player, Wallet)
@@ -273,7 +273,7 @@ def test_online_loot_request_nao_duplica_pedido_em_voo():
     loot = LootSystem(world, screen, player_entity=player)
 
     sent = []
-    loot.set_online_loot_requester(lambda local_eid, take, item_name: sent.append((local_eid, take, item_name)))
+    loot.set_online_loot_requester(lambda local_eid, take, item_id: sent.append((local_eid, take, item_id)))
     _click_gold_row(loot, corpse)
     _click_gold_row(loot, corpse)   # 2º clique antes do LOOT_RESULT responder
 
@@ -281,10 +281,12 @@ def test_online_loot_request_nao_duplica_pedido_em_voo():
         "clique duplicado enquanto o request está em voo não deveria reenviar"
 
 
-def test_online_loot_request_item_manda_take_item_com_nome():
-    """Clicar num item (não no ouro) manda take='item' + item_name — não
-    'all' (senão o request levaria o ouro junto, bug real relatado pelo
-    usuário 17/07/2026: sacar parcial não deveria afetar o resto)."""
+def test_online_loot_request_item_manda_take_item_com_item_id():
+    """Clicar num item (não no ouro) manda take='item' + item_id (débito
+    A4, 11/08/2026 — era item_name; nome de exibição não distingue itens
+    diferentes com o mesmo nome) — não 'all' (senão o request levaria o
+    ouro junto, bug real relatado pelo usuário 17/07/2026: sacar parcial
+    não deveria afetar o resto)."""
     from ui.systems import LootSystem
     from content.item_table import ITEMS
     from engine.entity_factory import create_corpse
@@ -304,11 +306,11 @@ def test_online_loot_request_item_manda_take_item_com_nome():
     screen = pygame.display.get_surface()
     loot = LootSystem(world, screen, player_entity=player)
     sent = []
-    loot.set_online_loot_requester(lambda local_eid, take, item_name: sent.append((local_eid, take, item_name)))
+    loot.set_online_loot_requester(lambda local_eid, take, item_id: sent.append((local_eid, take, item_id)))
     result = _click_row(loot, corpse, 1)   # linha 1 = 1º item (linha 0 é o ouro)
 
     assert result is True
-    assert sent == [(corpse, "item", item.name)]
+    assert sent == [(corpse, "item", item.item_id)]
 
 
 # ── Área de clique de harvestable com sprite alto (Fase M1, revisão 3) ───────
@@ -514,15 +516,17 @@ def test_loot_update_nao_fecha_modal_com_corpse_ainda_com_loot():
         "modal não deveria fechar enquanto o corpse ainda tem loot/ouro"
 
 
-# ── client/network_handlers.py::_handle_msg_loot_result — INV_SYNC ───────────
-# Bug real relatado pelo usuário 18/07/2026: progresso de quest "colete N
-# itens" parou de atualizar no HUD/diário (entrega ainda funcionava, só a
-# EXIBIÇÃO travava). Causa raiz: a reescrita do loot granular/free-for-all
-# (17/07/2026) passou a creditar itens direto em _handle_msg_loot_result,
-# mas esqueceu de mandar INV_SYNC pro servidor depois — sem isso, o
-# Inventory ECS do SERVIDOR nunca sabe do item novo, e
-# sync_collect_progress (server/session.py::_handle_inventory_update)
-# nunca roda. Mesmo padrão que _on_recarregar_changed já usava certo.
+# ── client/network_handlers.py::_handle_msg_loot_result — sem INV_SYNC ───────
+# Histórico: bug real relatado pelo usuário 18/07/2026 (progresso de quest
+# "colete N itens" parou de atualizar) foi corrigido na época mandando
+# INV_SYNC depois de creditar item de loot, pra servidor saber do Inventory
+# novo e rodar sync_collect_progress. Débito A4 (11/08/2026, ver
+# PROBLEMAS_ARQUITETURA.md): saque virou autoritativo no servidor —
+# request_loot() já bota o item direto no Inventory AO VIVO do servidor
+# ANTES de responder LOOT_RESULT, então o INV_SYNC não faz mais falta —
+# removido, e sync_collect_progress se moveu pra dentro de
+# server/session.py::_handle_loot_request (roda no MESMO fluxo que muta o
+# Inventory, não mais como efeito colateral de um pacote separado).
 
 from client.network_handlers import NetworkHandlers as _NH_loot
 
@@ -555,21 +559,23 @@ def _make_loot_result_fixture():
     return _LootResultFixture(world, player)
 
 
-def test_loot_result_com_item_manda_inv_sync():
+def test_loot_result_com_item_nunca_manda_inv_sync():
+    """`items` em LOOT_RESULT já é exatamente o que o servidor concedeu no
+    Inventory ao vivo dele (débito A4) — creditar a cópia local nunca
+    deveria disparar INV_SYNC de volta."""
     fx = _make_loot_result_fixture()
     fx._handle_msg_loot_result({
         "corpse_id": 1, "coins": 0,
-        "items": [{"name": "Pelo de Urso", "stack": 1}],
+        "items": [{"item_id": "hp_potion", "name": "Poção de Vida", "stack": 1}],
     })
-    assert fx.loot_actions == ["item"], \
-        "creditar item deveria disparar INV_SYNC (_on_loot_action) pro servidor saber do Inventory novo"
+    assert fx.loot_actions == [], \
+        "loot server-autoritativo não deveria mandar INV_SYNC nunca mais"
     assert fx.save_state_calls == 1
 
 
 def test_loot_result_so_ouro_nao_manda_inv_sync():
     """Ouro já é server-authoritative (request_loot credita o Wallet do
-    servidor direto) — não precisa de INV_SYNC, só itens passam pela
-    Inventory local sem o servidor saber."""
+    servidor direto) — nunca precisou de INV_SYNC."""
     fx = _make_loot_result_fixture()
     fx._handle_msg_loot_result({"corpse_id": 1, "coins": 11, "items": []})
     assert fx.loot_actions == []
@@ -862,6 +868,104 @@ def test_world_state_propaga_level_do_player_remoto():
     assert rc.level == 9, "WORLD_STATE deveria propagar o level pro RemoteControlled"
 
 
+# ── STATS_UPDATE — XP/gold de instância (13/08/2026, ver
+# PROBLEMAS_ARQUITETURA.md) — bug real relatado pelo usuário: barra de XP
+# dentro da BG mostrava a XP de fora da instância (current_xp/
+# xp_to_next_level nunca eram mandados). Junto: texto flutuante de XP
+# ganho, som de level-up e texto flutuante de gold ganho, todos exclusivos
+# da instância (nomes "instance_*" no payload, nunca reaproveitando o
+# canal "xp_gained" do XP real).
+
+def _make_stats_update_fixture():
+    from engine.world import World
+    from engine.components import CharacterStats, CombatStats, Position
+    world = World()
+    player = world.create_entity()
+    char = CharacterStats(class_id="guerreiro")
+    char.level = 1
+    char.current_xp = 999
+    char.xp_to_next_level = 1000
+    world.add_component(player, char)
+    world.add_component(player, CombatStats())
+    world.add_component(player, Position(x=10.0, y=10.0))
+    fx = _NetHandlerFixture(world, player)
+    fx._my_eid = 1
+    return fx
+
+
+def test_stats_update_sobrescreve_current_xp_sem_somar():
+    from engine.components import CharacterStats
+    fx = _make_stats_update_fixture()
+    fx._handle_msg_stats_update({
+        "eid": 1, "level": 1, "current_xp": 0, "xp_to_next_level": 500,
+    })
+    char = fx.world.get_component(fx.player_entity, CharacterStats)
+    assert char.current_xp == 0, \
+        "current_xp deveria ser SOBRESCRITO (valor final do servidor), nunca somado"
+    assert char.xp_to_next_level == 500
+
+
+def test_stats_update_instance_xp_gained_mostra_flt_sem_alterar_current_xp():
+    from engine.components import CharacterStats
+    from ui.floating_text import FLT
+    fx = _make_stats_update_fixture()
+    flt_calls = []
+    FLT.add = lambda *a, **k: flt_calls.append(a)
+
+    fx._handle_msg_stats_update({
+        "eid": 1, "level": 3, "current_xp": 30, "xp_to_next_level": 400,
+        "instance_xp_gained": 30,
+    })
+    char = fx.world.get_component(fx.player_entity, CharacterStats)
+    assert char.current_xp == 30, \
+        "current_xp deveria vir do valor final (current_xp), não somar instance_xp_gained"
+    assert any("30" in str(c[0]) and "XP" in str(c[0]) for c in flt_calls), \
+        "deveria mostrar texto flutuante '+30 XP'"
+
+
+def test_stats_update_instance_leveled_up_toca_som_de_levelup():
+    import client.network_handlers as nh_mod
+    fx = _make_stats_update_fixture()
+    sound_calls = []
+    nh_mod.SOUNDS.play_ui = lambda *a, **k: sound_calls.append(a)
+
+    fx._handle_msg_stats_update({
+        "eid": 1, "level": 2, "current_xp": 10, "xp_to_next_level": 300,
+        "instance_leveled_up": True,
+    })
+    assert ("levelup",) in sound_calls, \
+        "instance_leveled_up deveria tocar o mesmo som de level-up do mundo real"
+
+
+def test_stats_update_sem_instance_leveled_up_nao_toca_som():
+    import client.network_handlers as nh_mod
+    fx = _make_stats_update_fixture()
+    sound_calls = []
+    nh_mod.SOUNDS.play_ui = lambda *a, **k: sound_calls.append(a)
+
+    fx._handle_msg_stats_update({
+        "eid": 1, "level": 1, "current_xp": 5, "xp_to_next_level": 500,
+        "instance_xp_gained": 5,
+    })
+    assert not sound_calls, "sem level-up, não deveria tocar som nenhum"
+
+
+def test_stats_update_instance_gold_gained_mostra_flt_dourado():
+    from ui.floating_text import FLT
+    fx = _make_stats_update_fixture()
+    flt_calls = []
+    FLT.add = lambda *a, **k: flt_calls.append((a, k))
+
+    fx._handle_msg_stats_update({
+        "eid": 1, "level": 1, "current_xp": 0, "xp_to_next_level": 500,
+        "gold": 170, "instance_gold_gained": 20,
+    })
+    matches = [c for c in flt_calls if "20" in str(c[0][0]) and "g" in str(c[0][0])]
+    assert matches, "deveria mostrar texto flutuante '+20g'"
+    assert matches[0][0][3] == (255, 215, 0), \
+        "cor deveria ser a mesma dourada padrão já usada pra ouro no resto do jogo"
+
+
 def test_aoi_update_spawned_propaga_level_do_player_remoto():
     from engine.components import RemoteControlled
     fx = _make_net_fixture()
@@ -987,6 +1091,32 @@ def test_loot_available_de_harvestable_ja_conhecido_atualiza_no_lugar():
     assert len(corpse.loot) == 1
     assert corpse.loot[0].name == "Espada de treinamento"
     assert fx._available_loot[5]["local_eid"] == local_eid
+
+
+def test_loot_available_resolve_item_por_item_id_quando_nome_nao_bate_no_catalogo():
+    """Fase 4.7 (12/08/2026, ver PROBLEMAS_ARQUITETURA.md §39) — bug real
+    relatado pelo usuário: flecha da Reciclagem (item construído no
+    servidor sem item_id, nome vindo do subtype da aljava equipada) às
+    vezes "não aparecia no loot" — reconstrução ANTIGA combinava só por
+    NOME, então um nome que não batesse com nenhuma factory do catálogo
+    fazia o item sumir silenciosamente da lista. Simula exatamente esse
+    cenário: item_id real ("arrow") + nome que NÃO existe em nenhum
+    catálogo — precisa reconstruir mesmo assim, via item_id."""
+    from engine.components import Corpse
+    fx = _make_net_fixture()
+
+    fx._handle_msg_loot_available({
+        "corpse_id": 42, "tx": 10, "ty": 20, "coins": 0,
+        "items": [{"item_id": "arrow", "name": "Nome Que Não Existe No Catálogo",
+                  "stack": 5, "item_type": "ammo"}],
+    })
+
+    local_eid = fx._available_loot[42]["local_eid"]
+    corpse = fx.world.get_component(local_eid, Corpse)
+    assert len(corpse.loot) == 1, \
+        "item com item_id real deveria reconstruir mesmo com nome não-catalogado"
+    assert corpse.loot[0].item_id == "arrow"
+    assert corpse.loot[0].stack == 5
 
 
 def test_entity_despawn_de_harvestable_remove_entidade_local_e_available_loot():
@@ -1215,6 +1345,43 @@ def test_tab_target_nao_inclui_player_remoto_fora_de_contexto_pvp():
     mts = MouseTargetingSystem(world, me, screen)
     enemies = mts._visible_enemies_sorted(0, 0)
     assert other not in enemies
+
+
+def test_clique_seleciona_torre_pelo_2o_tile_do_sprite_nao_so_pelo_retangulo_antigo():
+    """Bug real relatado pelo usuário (12/08/2026): clique de seleção só
+    acertava o retângulo pequeno antigo (`Renderable.width/height`,
+    ~40px), não a área visual real do sprite da torre (64×128px, 2 tiles
+    de largura). `_enemy_at_world_pos` agora usa a caixa do sprite real
+    quando `sprite_id` está setado — mesma âncora de base do
+    `RenderSystem` (`ui/systems.py::RenderSystem.render`, branch
+    `_sprite_rnd`)."""
+    from engine.world import World
+    from engine.components import Position, Renderable, Enemy, Visible, TileMovement, CombatStats
+    from engine.tileset import TILE_SIZE as _TS_click_test
+    from ui.systems import MouseTargetingSystem
+
+    world = World()
+    me = world.create_entity()
+    world.add_component(me, Position(x=0, y=0))
+
+    tower = world.create_entity()
+    tpx, tpy = 5 * _TS_click_test + _TS_click_test // 2, 5 * _TS_click_test + _TS_click_test // 2
+    world.add_component(tower, Position(x=tpx, y=tpy))
+    world.add_component(tower, Renderable(color=(120, 120, 130), width=40, height=40, sprite_id="gcn_19"))
+    world.add_component(tower, Enemy())
+    world.add_component(tower, Visible())
+    world.add_component(tower, TileMovement(current_tile_x=5, current_tile_y=5))
+    world.add_component(tower, CombatStats(base_stamina=100))
+
+    screen = pygame.display.get_surface()
+    mts = MouseTargetingSystem(world, me, screen)
+
+    # Ponto dentro do RETÂNGULO antigo (sempre deveria funcionar).
+    assert mts._enemy_at_world_pos(tpx, tpy) == tower
+    # Ponto no 2º tile do sprite (leste, ~48px à direita) — fora do
+    # retângulo antigo de 40px, mas dentro da área visual real do sprite.
+    assert mts._enemy_at_world_pos(tpx + 48, tpy) == tower, \
+        "clique no 2º tile do sprite deveria selecionar a torre"
 
 
 def test_space_engage_mira_oponente_de_pvp_engajavel():
@@ -2147,6 +2314,35 @@ def test_som_de_disparo_da_torre_de_flechas_e_arrow_release():
         "disparo da torre de flechas deveria tocar arrow_release, nao ficar em silencio/melee"
 
 
+def test_espelho_remoto_de_torre_bloqueia_o_segundo_tile_pro_player_local():
+    """Bug real relatado pelo usuário (12/08/2026): sprite novo da torre
+    (gcn_19, 2 tiles de largura) tinha colisão real batendo só com 1
+    tile no SERVIDOR — mas o espelho remoto que o CLIENTE reconstrói
+    (`_spawn_remote_mob`, torre vira `Enemy` genérico, NUNCA ganha o
+    componente `Tower`) também precisa saber disso, senão o player
+    prediz localmente andar por cima do 2º tile e leva um snap de
+    correção do servidor (bug visual "elástico"). `entity_footprint_
+    tiles()` detecta torre via `EntityIdentity.mob_key` (não via
+    `Tower`, que o espelho do cliente nunca tem) — este teste prova que
+    o payload real de spawn (com `sprite_id`, que `_build_mob_spawn_
+    payload` já manda pro cliente) resulta no 2º tile bloqueado também
+    do lado do cliente, não só do servidor (ver testes irmãos em
+    tests/test_towers.py::TestTowerFootprint)."""
+    from ui.systems import PlayerInputSystem
+    fx = _make_net_fixture()
+    fx._handle_msg_entity_spawn({
+        "eid": 98, "kind": "enemy", "tx": 5, "ty": 5,
+        "race": "torre_de_fogo", "entity_class": "Mago", "is_ranged": True,
+        "hp": 4000, "hp_max": 4000, "level": 5, "faction": "monstros_hostis",
+        "name": "Torre de Fogo", "sprite_id": "gcn_19",
+    })
+    pis = PlayerInputSystem(fx.world)
+    occupied = pis._get_enemy_tiles()
+    assert (5, 5) in occupied, "tile âncora da torre já bloqueava antes"
+    assert (6, 5) in occupied, \
+        "2º tile do sprite (leste) deveria bloquear pro player local também"
+
+
 def test_disparo_da_torre_de_flechas_toca_mesmo_mirando_o_player_local():
     """Bug real relatado pelo usuário 29/07/2026: quando o alvo do
     projétil É o player local, o som de LANÇAMENTO nunca tocava (pulado
@@ -2705,6 +2901,14 @@ def _make_modal_stack_fixture(quest_dialog_open=False, show_inventory=False,
             self._quest_journal    = _StubClosable(is_open=False)
             self._shop_system      = _StubClosable(qty_modal_open=False, is_open=False)
             self._trade_is_open    = False
+            self._trade_qty_modal  = None   # modal de fatiar stack no trade (11/08/2026)
+            # Modais de PvP (10/08/2026 — antes ausentes do registro, ESC
+            # não fechava nenhum deles, achado real do usuário).
+            self._arena_pending_match = None
+            self._bg_pending_match    = None
+            self._arena_result        = None
+            self._bg_result           = None
+            self._arena_modal_open    = False
             self._show_hotbar_editor = False
             self._show_debug       = False
             self._show_talents     = False
@@ -2760,6 +2964,34 @@ def test_topmost_open_modal_nao_retorna_loot_com_inventario_aberto_e_loot_fechad
     parar de dar raw events pro LootSystem nesse estado."""
     fx = _make_modal_stack_fixture(loot_open=False, show_inventory=True)
     assert fx._topmost_open_modal() == "inventory"
+
+
+# ── Modais de PvP no registro (10/08/2026, bug real relatado pelo
+# usuário: ESC não fechava o modal de fila de Arena/BG — nenhum dos 5
+# modais de PvP estava em _modal_registry(), então nunca eram
+# encontrados por _close_top_modal()). Prova diferencial: cada modal
+# reconhecido por _topmost_open_modal() E fechado por _close_top_modal()
+# sem levantar exceção (mesmo padrão de closer com efeito colateral real
+# já usado por "trade", ver _close_arena_result/_close_bg_result).
+
+def test_arena_queue_modal_e_reconhecido_e_fechado_pelo_esc():
+    fx = _make_modal_stack_fixture()
+    fx._arena_modal_open = True
+    assert fx._topmost_open_modal() == "arena_queue"
+    assert fx._close_top_modal() is True
+
+
+def test_arena_accept_modal_e_reconhecido_e_fechado_pelo_esc():
+    fx = _make_modal_stack_fixture()
+    fx._arena_pending_match = {"mode": "2v2"}
+    assert fx._topmost_open_modal() == "arena_accept"
+    assert fx._close_top_modal() is True
+
+
+def test_bg_result_modal_e_reconhecido_pelo_esc():
+    fx = _make_modal_stack_fixture()
+    fx._bg_result = {"winner_faction": "arena_time_a", "players": []}
+    assert fx._topmost_open_modal() == "bg_result"
 
 
 # ── ui/systems.py::RenderSystem — Y-sort do harvestable com sprite
@@ -3335,3 +3567,359 @@ def test_compute_window_geometry_windowed_ignora_tamanho_do_monitor():
         (3840, 2160), lambda: compute_window_geometry("windowed", 1.0))
     assert (w, h) == (1280, 720)
     assert not (flags & pygame.FULLSCREEN)
+
+
+# ── Flecha carrega o PRÓPRIO resultado do servidor, nunca uma fila por alvo,
+# e o HP nunca fica preso esperando o impacto visual (12-13/08/2026, ver
+# PROBLEMAS_ARQUITETURA.md §44) — bug real relatado pelo usuário: HP de
+# torre/mob "voltava" durante combate ativo, com magnitude variável.
+#
+# 2 causas encontradas e corrigidas em sequência:
+# 1) `pending_arrow_impacts` era uma fila FIFO por ALVO; quando 2+ flechas
+#    convergiam pro mesmo alvo, qualquer flecha que chegasse visualmente
+#    primeiro consumia o item da FRENTE da fila, sem checar se era dela
+#    mesma. Fix: cada flecha (`PlayerProjectile`) prende seu próprio
+#    resultado em `deferred_result` no momento em que nasce.
+# 2) Mesmo com (1) corrigido, o HP em si ainda só era aplicado quando a
+#    flecha chegava visualmente (podia levar vários frames, dependendo da
+#    distância) — se OUTRO ataque (magia, corpo-a-corpo, outra flecha já
+#    corrigida) acertasse o MESMO alvo e aplicasse o HP dele na hora
+#    ENQUANTO a primeira flecha ainda voava, o HP mais novo ficava
+#    sobrescrito pelo `hp_after` desatualizado da flecha ao ela finalmente
+#    chegar. Fix: HP aplicado sempre na confirmação do servidor, igual
+#    magia/corpo-a-corpo — só FLT/som continuam esperando o impacto visual.
+
+def _make_archer_projectile_fixture():
+    """Player local arqueiro + 1 mob/torre alvo com RemoteEntityMeta —
+    setup mínimo pra exercitar `_apply_combat_result` no caminho de
+    auto-attack de flecha (`_resolve_archer_attack` exige CharacterStats.
+    class_id=='arqueiro' no player local)."""
+    from engine.world import World
+    from engine.components import (Position, NpcSounds, EntityIdentity,
+                             PlayerControlled, RemoteEntityMeta, CharacterStats,
+                             PlayerProjectile)
+    from ui.ui_components import InstanceInventoryUIState
+    import client.remote_entity_handlers as reh_mod
+    from client.save_sync_handlers import SaveSyncHandlers
+
+    class _NoopPnq:
+        def _increment_pnq_counter(self, *a, **k):
+            pass
+
+    class _Fixture(reh_mod.RemoteEntityHandlers, SaveSyncHandlers):
+        def __init__(self, world, player_entity):
+            self.world = world
+            self.player_entity = player_entity
+            self._my_eid = 1
+            self._remote_players = {}
+            self._remote_mobs = {}
+            self._mob_ghost_pos = {}
+            self._fr_pending_target = {}
+            self._player_input_system = _NoopPnq()
+
+    world = World()
+    player_eid = world.create_entity()
+    world.add_component(player_eid, Position(x=0.0, y=0.0))
+    world.add_component(player_eid, PlayerControlled())
+    world.add_component(player_eid, CharacterStats(class_id="arqueiro"))
+    world.add_component(player_eid, InstanceInventoryUIState())
+
+    target_eid = world.create_entity()
+    world.add_component(target_eid, Position(x=12.0, y=12.0))
+    world.add_component(target_eid, NpcSounds())
+    world.add_component(target_eid, EntityIdentity(
+        name="Torre de Fogo", race="Construcao", entity_class=""))
+    world.add_component(target_eid, RemoteEntityMeta(server_eid=50, hp=1000, hp_max=1000))
+
+    fx = _Fixture(world, player_eid)
+    fx._remote_mobs = {50: target_eid}
+    return fx, target_eid
+
+
+def _spawned_arrows(world):
+    from engine.components import PlayerProjectile
+    return [(eid, pp) for eid, pp in world.get_entities_with(PlayerProjectile)]
+
+
+def test_flecha_carrega_o_proprio_resultado_nunca_fila_por_alvo():
+    """2 golpes de flecha confirmados em sequência contra o MESMO alvo devem
+    produzir 2 flechas, CADA UMA com seu próprio outcome/damage — nunca uma
+    fila genérica onde a ordem de CONSUMO pode se misturar. `deferred_result`
+    não carrega mais hp_after (HP é aplicado na hora, não na flecha)."""
+    import client.remote_entity_handlers as reh_mod
+    fx, target_eid = _make_archer_projectile_fixture()
+    calls = _spy_flt_and_sounds(reh_mod)
+
+    fx._apply_combat_result({"attacker": 1, "target": 50, "damage": 20,
+                             "outcome": "hit", "hp_after": 980, "source": "auto",
+                             "is_ranged": True})
+    fx._apply_combat_result({"attacker": 1, "target": 50, "damage": 30,
+                             "outcome": "hit", "hp_after": 950, "source": "auto",
+                             "is_ranged": True})
+
+    arrows = _spawned_arrows(fx.world)
+    assert len(arrows) == 2, "cada golpe deveria nascer com sua própria flecha"
+    damages = sorted(pp.deferred_result["damage"] for _, pp in arrows)
+    assert damages == [20, 30], \
+        "cada flecha deveria carregar o damage DELA, não um valor genérico"
+    assert all("hp_after" not in pp.deferred_result for _, pp in arrows), \
+        "HP não deveria mais viajar preso na flecha — é aplicado na hora"
+
+    from engine.components import RemoteEntityMeta
+    meta = fx.world.get_component(target_eid, RemoteEntityMeta)
+    assert meta.hp == 950, \
+        "HP deveria já refletir o 2º golpe IMEDIATAMENTE, sem esperar nenhuma flecha chegar"
+
+
+def test_hp_de_flecha_atrasada_nao_sobrescreve_dano_mais_novo_de_outra_fonte():
+    """Diferencial do 2º achado (sessão 13/08/2026): uma flecha ainda em voo
+    não pode, ao chegar visualmente, reverter um HP mais novo aplicado por
+    OUTRO ataque (magia/corpo-a-corpo/outra flecha já corrigida) enquanto ela
+    ainda estava no ar. Antes desta correção, `_on_hit` aplicava o hp_after
+    "congelado" no instante em que o SERVIDOR resolveu aquele golpe
+    específico — desatualizado se algo mais acertou o alvo depois."""
+    import client.remote_entity_handlers as reh_mod
+    import ui.spell_system as ss_mod
+    from engine.components import RemoteEntityMeta, PlayerProjectile
+    fx, target_eid = _make_archer_projectile_fixture()
+    _spy_flt_and_sounds(reh_mod)
+    ss_mod.SOUNDS.play_random_at   = lambda *a, **k: None
+    ss_mod.SOUNDS.play_spell_at    = lambda *a, **k: None
+    ss_mod.SOUNDS.play_spell       = lambda *a, **k: None
+    ss_mod.SOUNDS.play_random      = lambda *a, **k: None
+
+    # 1º golpe: flecha do player, confirmado — hp 1000 -> 980. A flecha
+    # nasce e vai ficar "voando" (só chamamos _on_hit dela mais tarde).
+    fx._apply_combat_result({"attacker": 1, "target": 50, "damage": 20,
+                             "outcome": "hit", "hp_after": 980, "source": "auto",
+                             "is_ranged": True})
+    arrows = _spawned_arrows(fx.world)
+    assert len(arrows) == 1
+    arrow_eid, _ = arrows[0]
+
+    # ENQUANTO a flecha ainda voa: outro ataque (atacante 2, não-arqueiro —
+    # ex: minion batendo corpo-a-corpo) acerta o MESMO alvo e aplica na
+    # hora — hp 980 -> 900. Mais novo, deveria "vencer".
+    fx._apply_combat_result({"attacker": 2, "target": 50, "damage": 80,
+                             "outcome": "hit", "hp_after": 900, "source": "auto",
+                             "is_ranged": False})
+
+    meta = fx.world.get_component(target_eid, RemoteEntityMeta)
+    assert meta.hp == 900, "dano mais novo de outra fonte deveria já estar aplicado"
+
+    # SÓ AGORA a flecha do 1º golpe chega visualmente (ex: atacante longe).
+    proj_sys = ss_mod.PlayerProjectileSystem(fx.world, pygame.Surface((10, 10)),
+                                             player_entity=fx.player_entity)
+    proj = fx.world.get_component(arrow_eid, PlayerProjectile)
+    proj_sys._on_hit(proj, 12.0, 12.0)
+
+    assert meta.hp == 900, (
+        "flecha atrasada não pode reverter o HP mais novo aplicado por outro "
+        "ataque enquanto ela ainda estava voando — HP nunca deveria ter sido "
+        "tocado por _on_hit, só FLT/som")
+
+
+# ── Minimapa em tela cheia da BG (13/08/2026, pedido do usuário) — mostra o
+# mapa INTEIRO (sem seguir/centralizar no player) com minion/torre/player
+# coloridos por time, só dentro da instância. Ver ui/minimap.py::
+# render_fullmap + game.py::_collect_bg_minimap_dots.
+
+class _FakeMapOverlayMM:
+    def __init__(self, cols, rows, bg_color=(40, 60, 40)):
+        self._cols = cols
+        self._rows = rows
+        self._base_surf = pygame.Surface((cols, rows))
+        self._base_surf.fill(bg_color)
+
+
+def _make_minimap_fixture(cols=10, rows=10):
+    from ui.minimap import Minimap
+    # Surface OFFSCREEN própria (não a tela real de 320x240 já criada no
+    # topo do arquivo) — o frame do minimap (SIZE=220 + MARGIN_TOP=68)
+    # não cabe nessa tela pequena, e usar uma independente evita mexer no
+    # display global compartilhado com o resto da suíte.
+    screen = pygame.Surface((400, 400))
+    overlay = _FakeMapOverlayMM(cols, rows)
+    mm = Minimap(screen, overlay)
+    return mm, screen
+
+
+def test_render_fullmap_desenha_ponto_na_posicao_certa_do_tile():
+    mm, screen = _make_minimap_fixture(cols=10, rows=10)
+    all_tiles = {(x, y) for x in range(10) for y in range(10)}
+    mm.render_fullmap(all_tiles, all_tiles, [(5, 5, (255, 0, 0), 2)])
+
+    rect = mm.get_rect()
+    scale = min(rect.width / 10, rect.height / 10)
+    sx = rect.x + int(5 * scale)
+    sy = rect.y + int(5 * scale)
+    px = screen.get_at((sx, sy))
+    assert (px.r, px.g, px.b) == (255, 0, 0), \
+        f"esperava vermelho puro no centro do ponto, achou {(px.r, px.g, px.b)}"
+
+
+def test_render_fullmap_nao_precisa_de_player_tx_ty_pra_nao_quebrar():
+    """Diferencial do modo normal: nunca deveria exigir/usar posição do
+    player pra centralizar — mapa fica fixo mesmo com dots em cantos
+    opostos do mapa."""
+    mm, screen = _make_minimap_fixture(cols=10, rows=10)
+    all_tiles = {(x, y) for x in range(10) for y in range(10)}
+    mm.render_fullmap(all_tiles, all_tiles, [(0, 0, (0, 200, 0), 2), (9, 9, (0, 0, 200), 2)])
+    rect = mm.get_rect()
+    scale = min(rect.width / 10, rect.height / 10)
+    px0 = screen.get_at((rect.x, rect.y))
+    px9 = screen.get_at((rect.x + int(9 * scale), rect.y + int(9 * scale)))
+    assert (px0.r, px0.g, px0.b) == (0, 200, 0)
+    assert (px9.r, px9.g, px9.b) == (0, 0, 200)
+
+
+def test_render_fullmap_tile_nao_explorado_fica_preto():
+    mm, screen = _make_minimap_fixture(cols=10, rows=10)
+    mm.render_fullmap(explored=set(), visible=set(), dots=[])
+    rect = mm.get_rect()
+    px = screen.get_at((rect.x + 5, rect.y + 5))
+    assert (px.r, px.g, px.b) == (0, 0, 0), "tile nunca explorado deveria ficar preto"
+
+
+# ── GameEngine._collect_bg_minimap_dots ──────────────────────────────────────
+
+from game import GameEngine as _GE_mm
+
+
+class _MinimapDotsFixture:
+    _BG_MINIMAP_TEAM_COLORS = _GE_mm._BG_MINIMAP_TEAM_COLORS
+    _collect_bg_minimap_dots = _GE_mm._collect_bg_minimap_dots
+
+    def __init__(self, world, player_entity, minimap):
+        self.world = world
+        self.player_entity = player_entity
+        self._minimap = minimap
+
+
+def _make_dots_world():
+    from engine.world import World
+    from engine.components import Faction, TileMovement, EntityIdentity, RemoteEntityMeta, RemoteControlled
+    from ui.minimap import Minimap
+    world = World()
+
+    player = world.create_entity()
+    world.add_component(player, Faction(faction_id="arena_time_a"))
+    world.add_component(player, TileMovement(current_tile_x=1, current_tile_y=1))
+
+    minion_a = world.create_entity()
+    world.add_component(minion_a, Faction(faction_id="arena_time_a"))
+    world.add_component(minion_a, TileMovement(current_tile_x=2, current_tile_y=2))
+    world.add_component(minion_a, EntityIdentity(name="Minion", race="Humanoide", entity_class="", mob_key="minion_melee"))
+    world.add_component(minion_a, RemoteEntityMeta(server_eid=10, hp=50, hp_max=50))
+
+    minion_b = world.create_entity()
+    world.add_component(minion_b, Faction(faction_id="arena_time_b"))
+    world.add_component(minion_b, TileMovement(current_tile_x=3, current_tile_y=3))
+    world.add_component(minion_b, EntityIdentity(name="Minion", race="Humanoide", entity_class="", mob_key="minion_ranged"))
+    world.add_component(minion_b, RemoteEntityMeta(server_eid=11, hp=30, hp_max=30))
+
+    tower_a = world.create_entity()
+    world.add_component(tower_a, Faction(faction_id="arena_time_a"))
+    world.add_component(tower_a, TileMovement(current_tile_x=4, current_tile_y=4))
+    world.add_component(tower_a, EntityIdentity(name="Torre", race="Construcao", entity_class="", mob_key="torre_de_fogo"))
+    world.add_component(tower_a, RemoteEntityMeta(server_eid=12, hp=2000, hp_max=2000))
+
+    remote_player_b = world.create_entity()
+    world.add_component(remote_player_b, Faction(faction_id="arena_time_b"))
+    world.add_component(remote_player_b, TileMovement(current_tile_x=5, current_tile_y=5))
+    world.add_component(remote_player_b, RemoteControlled(server_eid=20, name="Inimigo"))
+
+    # Fora de visão — não deveria aparecer nos dots.
+    minion_a_hidden = world.create_entity()
+    world.add_component(minion_a_hidden, Faction(faction_id="arena_time_a"))
+    world.add_component(minion_a_hidden, TileMovement(current_tile_x=8, current_tile_y=8))
+    world.add_component(minion_a_hidden, EntityIdentity(name="Minion", race="Humanoide", entity_class="", mob_key="minion_melee"))
+    world.add_component(minion_a_hidden, RemoteEntityMeta(server_eid=13, hp=50, hp_max=50))
+
+    mm, _ = _make_minimap_fixture()
+    fx = _MinimapDotsFixture(world, player, mm)
+    visible_tiles = {(2, 2), (3, 3), (4, 4), (5, 5), (1, 1)}  # NÃO inclui (8,8)
+    return fx, visible_tiles
+
+
+def test_collect_bg_minimap_dots_cores_por_time():
+    fx, visible_tiles = _make_dots_world()
+    dots = fx._collect_bg_minimap_dots(visible_tiles)
+    by_pos = {(x, y): color for x, y, color, _r in dots}
+    assert by_pos[(2, 2)] == fx._BG_MINIMAP_TEAM_COLORS["arena_time_a"], "minion do time A deveria ser azul"
+    assert by_pos[(3, 3)] == fx._BG_MINIMAP_TEAM_COLORS["arena_time_b"], "minion do time B deveria ser vermelho"
+    assert by_pos[(4, 4)] == fx._BG_MINIMAP_TEAM_COLORS["arena_time_a"], "torre do time A deveria ser azul"
+    assert by_pos[(5, 5)] == fx._BG_MINIMAP_TEAM_COLORS["arena_time_b"], "player remoto do time B deveria ser vermelho"
+
+
+def test_collect_bg_minimap_dots_ignora_fora_da_visibilidade():
+    fx, visible_tiles = _make_dots_world()
+    dots = fx._collect_bg_minimap_dots(visible_tiles)
+    positions = {(x, y) for x, y, _c, _r in dots}
+    assert (8, 8) not in positions, "minion fora de visible_tiles não deveria aparecer"
+
+
+def test_collect_bg_minimap_dots_sempre_inclui_o_proprio_player():
+    fx, visible_tiles = _make_dots_world()
+    # Tira o tile do player de visible_tiles de propósito — mesmo assim
+    # ele tem que aparecer (sempre visível pra si mesmo).
+    visible_tiles_sem_proprio = visible_tiles - {(1, 1)}
+    dots = fx._collect_bg_minimap_dots(visible_tiles_sem_proprio)
+    positions = {(x, y) for x, y, _c, _r in dots}
+    assert (1, 1) in positions, "o próprio player deveria sempre aparecer, mesmo sem estar em visible_tiles"
+
+
+def test_collect_bg_minimap_dots_raio_por_tipo():
+    """Pedido do usuário (13/08/2026): minion do mesmo tamanho que torre
+    confundia os dois — minion tem que ser bem menor (quase 1px), torre
+    um pouco maior, player maior ainda."""
+    fx, visible_tiles = _make_dots_world()
+    dots = fx._collect_bg_minimap_dots(visible_tiles)
+    by_pos = {(x, y): radius for x, y, _c, radius in dots}
+    r_minion = by_pos[(2, 2)]
+    r_tower  = by_pos[(4, 4)]
+    r_player = by_pos[(5, 5)]
+    assert r_minion == 1, "minion deveria ser quase 1px"
+    assert r_minion < r_tower < r_player, \
+        f"esperava minion({r_minion}) < torre({r_tower}) < player({r_player})"
+
+
+# ── screen_to_tile_fullmap — clique no minimapa da BG (13/08/2026, bug real
+# relatado pelo usuário: "não consigo mais clicar no minimapa pra andar" —
+# o clique continuava passando pelo conversor do modo radar normal, que faz
+# a conta errada nesta geometria diferente).
+
+def test_screen_to_tile_fullmap_converte_clique_pro_tile_certo():
+    mm, _screen = _make_minimap_fixture(cols=10, rows=10)
+    rect = mm.get_rect()
+    scale = min(rect.width / 10, rect.height / 10)
+    # Clica bem no meio do tile (5,5) — soma meio tile pra não cair
+    # exatamente na borda entre dois tiles.
+    click_x = rect.x + int(5 * scale) + int(scale / 2)
+    click_y = rect.y + int(5 * scale) + int(scale / 2)
+    tile = mm.screen_to_tile_fullmap(click_x, click_y)
+    assert tile == (5, 5), f"esperava (5, 5), achou {tile}"
+
+
+def test_screen_to_tile_fullmap_fora_do_frame_retorna_none():
+    mm, _screen = _make_minimap_fixture(cols=10, rows=10)
+    assert mm.screen_to_tile_fullmap(0, 0) is None, \
+        "clique bem no canto da tela (fora do frame do minimap) deveria retornar None"
+
+
+def test_screen_to_tile_fullmap_nao_usa_geometria_do_modo_radar():
+    """Diferencial direto do bug relatado: screen_to_tile (modo radar)
+    e screen_to_tile_fullmap (modo BG) têm que dar resultados DIFERENTES
+    pro MESMO clique — se estivessem usando a mesma conta, o bug não
+    teria acontecido (ou não estaria corrigido)."""
+    mm, _screen = _make_minimap_fixture(cols=10, rows=10)
+    rect = mm.get_rect()
+    # Um clique fixo qualquer dentro do frame.
+    click_x = rect.x + 30
+    click_y = rect.y + 40
+    tile_radar   = mm.screen_to_tile(click_x, click_y, player_tx=50, player_ty=50)
+    tile_fullmap = mm.screen_to_tile_fullmap(click_x, click_y)
+    assert tile_radar != tile_fullmap, (
+        "os 2 modos usam geometria diferente (radar centraliza no player e "
+        "usa RADIUS fixo; fullmap escala cols/rows inteiros) — resultado "
+        "pro mesmo clique não deveria bater")

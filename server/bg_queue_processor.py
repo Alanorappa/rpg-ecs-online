@@ -2,10 +2,21 @@
 server/bg_queue_processor.py
 Mixin para WorldServer: fila REAL de matchmaking pro battleground estilo
 MOBA (04/08/2026, pedido do usuário — "vamos criar o sistema de fila,
-equivalente ao que já existe na arena"), sem escolha explícita de modo:
-o player entra sozinho ou com um grupo já formado (PartyProcessorMixin,
-até PARTY_MAX_SIZE=5) e a fila decide o tamanho do time (1x1 até 5x5,
-NUNCA assimétrico) com base em quem está esperando.
+equivalente ao que já existe na arena"). O player entra sozinho ou com
+um grupo já formado (PartyProcessorMixin, até o tamanho do modo) numa
+das 3 filas de TAMANHO FIXO (BG_MODES abaixo — 2v2/3v3/5v5, mesmo
+padrão de ARENA_MODES).
+
+Revisado 10/08/2026 (achado real do usuário): a versão original era 1
+fila ÚNICA sem escolha de modo, onde `_tick_bg_queue` tentava formar a
+MAIOR partida simétrica possível a cada tick — mas sem nenhuma janela de
+espera, 2 solos na fila já fechavam 1v1 no tick seguinte (33ms depois),
+nunca dando chance de uma partida maior se formar. Migrar pra filas
+fixas por tamanho (jogador escolhe, como a Arena já faz) resolve o
+problema na raiz — não tem mais "qual tamanho formar", então não precisa
+de timer de espera artificial (a "waiting room" que o WoW usa no
+Escaramuça serve pra balancear papel/MMR dentro do bracket já fixo,
+problema que não existe aqui ainda, sem sistema de papel/rating).
 
 Espelha a FORMA de `server/match_processor.py` (fila → propõe → aceite →
 countdown → portão → luta → decidida → sai), reaproveitando:
@@ -26,15 +37,14 @@ countdown → portão → luta → decidida → sai), reaproveitando:
   validado em debug_battleground.py, mas por PARTIDA (não 1 estado
   global compartilhado — múltiplas partidas da fila podem coexistir).
 
-Diferença de algoritmo pra `_tick_arena_queue` (FIFO puro, 2 tokens
-prontos do MESMO tamanho): aqui a fila é ÚNICA (sem chave por modo) e
-`_tick_bg_queue` tenta formar a MAIOR partida simétrica possível a cada
-tick com quem está esperando — grupo nunca é dividido entre os 2 lados;
-o resto de um time pode ser preenchido por outro grupo do mesmo tamanho
-OU por vários tokens menores somando o tamanho certo (bin-packing guloso
-— nunca comita um pareamento que não feche EXATAMENTE dos 2 lados, então
-nunca produz partida assimétrica, mesmo que o empacotamento guloso não
-seja o teoricamente ótimo).
+Algoritmo de pareamento por fila (`_bg_try_pack`) é bin-packing guloso —
+grupo nunca é dividido entre os 2 lados; o resto de um time pode ser
+preenchido por outro grupo do mesmo tamanho OU por vários tokens menores
+somando o tamanho certo — nunca comita um pareamento que não feche
+EXATAMENTE dos 2 lados, então nunca produz partida assimétrica, mesmo
+que o empacotamento guloso não seja o teoricamente ótimo. Mesma lógica
+de antes da revisão, só que agora escopada a UM tamanho fixo por fila em
+vez de tentar os 5 tamanhos numa fila só.
 """
 from __future__ import annotations
 
@@ -45,8 +55,19 @@ from server.debug_battleground import (
     DEBUG_BG_GATE_TILES as BG_QUEUE_GATE_TILES,
     DEBUG_BG_RESULT_AUTO_LEAVE_S as BG_QUEUE_RESULT_AUTO_LEAVE_S,
 )
+from server.instanced_match_processor import InstancedMatchMixin
 
-BG_QUEUE_TEAM_SIZE_MAX = PARTY_MAX_SIZE  # até 5x5 — mesmo teto do grupo
+# Modos de fila da BG (10/08/2026, achado real do usuário — mesmo padrão
+# de server/match_processor.py::ARENA_MODES) — 3 tamanhos fixos, não os
+# 5 possíveis (PARTY_MAX_SIZE): menos filas fragmentando quem espera,
+# mesma simetria que a Arena já usa (1v1/2v2/3v3). Adicionar um 4º
+# tamanho no futuro é só 1 entrada nova aqui — `_tick_bg_queue`/
+# `request_bg_queue_join`/etc. iteram BG_MODES, nunca hardcoded.
+BG_MODES: dict[str, dict] = {
+    "2v2": {"team_size": 2, "label": "Battleground 2x2"},
+    "3v3": {"team_size": 3, "label": "Battleground 3x3"},
+    "5v5": {"team_size": 5, "label": "Battleground 5x5"},
+}
 
 # Offsets de spawn (mesmo espírito de WorldServer._MINION_WAVE_OFFSETS)
 # pra até 5 membros de um time não nascerem todos empilhados no MESMO
@@ -55,26 +76,38 @@ BG_QUEUE_TEAM_SIZE_MAX = PARTY_MAX_SIZE  # até 5x5 — mesmo teto do grupo
 # regra dos minions).
 _BG_QUEUE_SPAWN_OFFSETS = ((0, 0), (1, 0), (-1, 0), (0, 1), (-1, 1))
 
+# Achatado 1x no import do módulo (não a cada tick) — critério de
+# performance em caminho quente (CLAUDE.md, "Performance e concorrência").
+_BG_QUEUE_GATE_TILES_FLAT = [t for tiles in BG_QUEUE_GATE_TILES.values() for t in tiles]
 
-class BgQueueProcessorMixin:
 
-    # ── Fila (token = ("solo", eid) ou ("party", party_id)) ──────────────────
+class BgQueueProcessorMixin(InstancedMatchMixin):
 
-    def request_bg_queue_join(self, requester_eid: int) -> "str | None":
-        """None = entrou na fila. Reason str = recusado (handler manda
-        BG_QUEUE_STATE {in_queue:False, reason} só pro requester). Sem
-        parâmetro de modo/tamanho — a fila decide sozinha (ver
-        `_tick_bg_queue`). Solo entra livre; em grupo, só o líder pode
-        enfileirar (mesma regra de `kick_from_party`/arena), e o grupo
-        INTEIRO vira um token só — nunca dividido entre os 2 lados."""
+    # ── Fila (token = ("solo", eid) ou ("party", party_id), 1 por modo) ──────
+
+    def request_bg_queue_join(self, requester_eid: int, mode_id: str = "5v5") -> "str | None":
+        """None = entrou na fila do modo pedido. Reason str = recusado
+        (handler manda BG_QUEUE_STATE {in_queue:False, reason} só pro
+        requester). Solo entra livre; em grupo, só o líder pode
+        enfileirar (mesma regra de `kick_from_party`/arena). Grupo MENOR
+        que o time do modo é aceito (preenchido por outros tokens da
+        MESMA fila, ver `_bg_try_pack`) — só maior que o time é recusado.
+        Um requester só pode estar em UMA fila de modo por vez (checa
+        TODAS antes de aceitar, mesmo padrão de `request_arena_queue_join`)."""
+        mode = BG_MODES.get(mode_id)
+        if mode is None:
+            return "invalid_mode"
         if requester_eid in self._player_bg_match_id:
             return "in_match"
         party_id = self.get_party_id_of(requester_eid)
+        team_size = mode["team_size"]
+
         if party_id == -1:
             token = ("solo", requester_eid)
-            if token in self._bg_queue:
-                return "already_queued"
-            self._bg_queue.append(token)
+            for q in self._bg_queues.values():
+                if token in q:
+                    return "already_queued"
+            self._bg_queues[mode_id].append(token)
             return None
 
         party = self._parties.get(party_id)
@@ -82,25 +115,28 @@ class BgQueueProcessorMixin:
             return "no_party"
         if party["leader_eid"] != requester_eid:
             return "not_leader"
-        if len(party["members"]) > BG_QUEUE_TEAM_SIZE_MAX:
-            return "wrong_size"  # nunca deveria acontecer — PARTY_MAX_SIZE já é o teto
+        if len(party["members"]) > team_size:
+            return "wrong_size"
         for m_eid in party["members"]:
             if m_eid in self._player_bg_match_id:
                 return "in_match"
         token = ("party", party_id)
-        if token in self._bg_queue:
-            return "already_queued"
-        self._bg_queue.append(token)
+        for q in self._bg_queues.values():
+            if token in q:
+                return "already_queued"
+        self._bg_queues[mode_id].append(token)
         return None
 
     def request_bg_queue_leave(self, requester_eid: int) -> bool:
-        """True = o token do requester (solo ou grupo) estava na fila e saiu."""
+        """True = o token do requester (solo ou grupo) estava em alguma
+        fila de modo e saiu."""
         party_id = self.get_party_id_of(requester_eid)
-        for token in list(self._bg_queue):
-            kind, val = token
-            if (kind == "solo" and val == requester_eid) or (kind == "party" and val == party_id):
-                self._bg_queue.remove(token)
-                return True
+        for q in self._bg_queues.values():
+            for token in list(q):
+                kind, val = token
+                if (kind == "solo" and val == requester_eid) or (kind == "party" and val == party_id):
+                    q.remove(token)
+                    return True
         return False
 
     def _bg_members_for_token(self, token: tuple) -> "list[int] | None":
@@ -114,22 +150,23 @@ class BgQueueProcessorMixin:
         party = self._parties.get(val)
         return list(party["members"]) if party is not None else None
 
-    def _bg_try_pack(self, team_size: int) -> "tuple[list, list] | None":
-        """Tenta empacotar 2 lados de tamanho EXATO `team_size` a partir
-        da fila atual, respeitando a ordem FIFO (quem entrou primeiro tem
-        prioridade de entrar num time). Bin-packing guloso: preenche o
-        lado A primeiro, depois o B; um token grande demais pro tamanho
-        pedido é ignorado NESTA tentativa (pode caber num `team_size`
-        maior, tentado antes por `_tick_bg_queue`). Só devolve algo
-        quando os DOIS lados fecham EXATAMENTE — nunca uma partida
-        assimétrica, mesmo que o empacotamento guloso não seja o
-        teoricamente ótimo (pode deixar tokens combináveis de fora numa
-        tentativa e formar mesmo assim no próximo tick, quando mais gente
-        tiver entrado)."""
+    def _bg_try_pack(self, mode_id: str) -> "tuple[list, list] | None":
+        """Tenta empacotar 2 lados de tamanho EXATO `team_size` do modo a
+        partir da fila DESSE modo, respeitando a ordem FIFO (quem entrou
+        primeiro tem prioridade de entrar num time). Bin-packing guloso:
+        preenche o lado A primeiro, depois o B; um token grande demais
+        pro tamanho do modo é ignorado (não deveria acontecer — `join` já
+        valida no ato de entrar, mas o grupo pode ter crescido depois).
+        Só devolve algo quando os DOIS lados fecham EXATAMENTE — nunca
+        uma partida assimétrica, mesmo que o empacotamento guloso não
+        seja o teoricamente ótimo (pode deixar tokens combináveis de fora
+        numa tentativa e formar mesmo assim no próximo tick, quando mais
+        gente tiver entrado)."""
+        team_size = BG_MODES[mode_id]["team_size"]
         side_a: list = []
         side_b: list = []
         sum_a = sum_b = 0
-        for token in self._bg_queue:
+        for token in self._bg_queues[mode_id]:
             members = self._bg_members_for_token(token)
             if members is None:
                 continue
@@ -147,59 +184,55 @@ class BgQueueProcessorMixin:
         return None
 
     def _tick_bg_queue(self) -> None:
-        """Roda 1x por tick (mesmo padrão de `_tick_arena_queue`). Limpa
-        tokens de grupo/player que desapareceram, depois tenta formar a
-        MAIOR partida simétrica possível (5x5 até 1x1) com quem sobrou —
-        só cai pra um tamanho menor se não der pra fechar um maior.
-        Recursivo: depois de formar uma partida, tenta formar MAIS com o
-        que restou na mesma passada (ex: 10 solos esperando podem virar
-        um 5x5 imediatamente, não só 1x1 de cada vez)."""
-        for token in list(self._bg_queue):
-            if self._bg_members_for_token(token) is None:
-                self._bg_queue.remove(token)
+        """Roda 1x por tick (mesmo padrão de `_tick_arena_queue`). Pra
+        CADA modo (2v2/3v3/5v5, filas independentes desde 10/08/2026 —
+        achado real do usuário, ver docstring do módulo): limpa tokens
+        que desapareceram, depois forma o máximo de partidas possível
+        dessa fila (loop — 10 solos esperando no 5v5 podem virar 2
+        partidas na mesma passada, não só 1)."""
+        for mode_id, queue in self._bg_queues.items():
+            for token in list(queue):
+                if self._bg_members_for_token(token) is None:
+                    queue.remove(token)
 
-        for team_size in range(BG_QUEUE_TEAM_SIZE_MAX, 0, -1):
-            packed = self._bg_try_pack(team_size)
-            if packed is None:
-                continue
-            side_a_tokens, side_b_tokens = packed
-            team_a_eids = [eid for t in side_a_tokens for eid in self._bg_members_for_token(t)]
-            team_b_eids = [eid for t in side_b_tokens for eid in self._bg_members_for_token(t)]
-            for t in side_a_tokens + side_b_tokens:
-                self._bg_queue.remove(t)
-            self._propose_bg_match(team_a_eids, team_b_eids)
-            self._tick_bg_queue()  # tenta formar mais partidas com o que sobrou
-            return
+        for mode_id, queue in self._bg_queues.items():
+            while True:
+                packed = self._bg_try_pack(mode_id)
+                if packed is None:
+                    break
+                side_a_tokens, side_b_tokens = packed
+                team_a_eids = [eid for t in side_a_tokens for eid in self._bg_members_for_token(t)]
+                team_b_eids = [eid for t in side_b_tokens for eid in self._bg_members_for_token(t)]
+                for t in side_a_tokens + side_b_tokens:
+                    queue.remove(t)
+                self._propose_bg_match(team_a_eids, team_b_eids, mode_id)
 
     def _tick_bg_results_timeout(self) -> None:
         """Partidas DECIDIDAS há mais de BG_QUEUE_RESULT_AUTO_LEAVE_S
         segundos forçam a saída de quem ainda não clicou "Voltar" —
         mesmo padrão de `_tick_arena_results_timeout`."""
-        import time as _time_bqt
-        now = _time_bqt.time()
-        for match_id, match in list(self._bg_active_matches.items()):
-            if not match.get("decided"):
-                continue
-            if now - match["decided_at"] < BG_QUEUE_RESULT_AUTO_LEAVE_S:
-                continue
-            for eid in list(match["team_a"] + match["team_b"]):
-                self.request_bg_leave(eid)
+        self._im_results_timeout(
+            self._bg_active_matches, BG_QUEUE_RESULT_AUTO_LEAVE_S,
+            lambda match_id, eid: self.request_bg_leave(eid))
 
     # ── Ciclo de vida de partida ─────────────────────────────────────────────
 
-    def _propose_bg_match(self, team_a_eids: list[int], team_b_eids: list[int]) -> None:
-        """Fila empacotou 2 lados do MESMO tamanho — ninguém é
-        teleportado ainda (mesmo modelo de `_propose_match`): os
-        convidados recebem BG_MATCH_FOUND e têm ARENA_ACCEPT_WINDOW_S
-        pra mandar BG_MATCH_ACCEPT. `team_size` vem do tamanho real dos
-        times formados (não escolhido pelo player) — usado só pro
-        cliente saber o rótulo/quantos spawns esperar."""
+    def _propose_bg_match(self, team_a_eids: list[int], team_b_eids: list[int],
+                          mode_id: str) -> None:
+        """Fila (do modo `mode_id`) empacotou 2 lados do MESMO tamanho —
+        ninguém é teleportado ainda (mesmo modelo de `_propose_match`):
+        os convidados recebem BG_MATCH_FOUND e têm ARENA_ACCEPT_WINDOW_S
+        pra mandar BG_MATCH_ACCEPT. `mode_id` (10/08/2026 — antes o
+        tamanho vinha só de `len(team_a_eids)`, sem saber de QUAL fila;
+        agora fixo por escolha do player, ver BG_MODES) usado pro cliente
+        saber o rótulo/estado do botão certo no modal."""
         match_id = f"bg_{self._next_bg_match_id}"
         self._next_bg_match_id += 1
         import time as _time_pbg
         _propose_now = _time_pbg.time()
 
         self._bg_active_matches[match_id] = {
+            "mode_id":            mode_id,
             "team_size":          len(team_a_eids),
             "instance_key":       None,
             "team_a":             [],
@@ -226,6 +259,7 @@ class BgQueueProcessorMixin:
         for eid in team_a_eids + team_b_eids:
             self._bg_match_found_events_this_tick.append({
                 "eid":       eid,
+                "mode":      mode_id,
                 "team_size": len(team_a_eids),
                 "teammates": [e for e in (team_a_eids if eid in team_a_eids else team_b_eids) if e != eid],
                 "opponents": team_b_eids if eid in team_a_eids else team_a_eids,
@@ -301,6 +335,7 @@ class BgQueueProcessorMixin:
         remaining = max(0.0, match["countdown_deadline"] - _time_ba.time())
         self._bg_match_start_events_this_tick.append({
             "eid":                 eid,
+            "mode":                match.get("mode_id", "5v5"),
             "map_file":            BG_QUEUE_TEMPLATE,
             "target_x":            spawn_x, "target_y": spawn_y,
             "team_size":           match["team_size"],
@@ -330,17 +365,12 @@ class BgQueueProcessorMixin:
         debug_battleground.py::_tick_gate, só que por PARTIDA."""
         import time as _time_tbp
         now = _time_tbp.time()
-        from engine.components import Tilemap as _TMbp
-        from engine.tileset import STONE_FLOOR as _SFbp
 
         for match_id, match in list(self._bg_active_matches.items()):
             if match["decided"] or match["fight_started"]:
                 continue
 
-            if not match["accept_swept"] and now >= match["accept_deadline"]:
-                match["accept_swept"] = True
-                for eid in match["invited_a"] + match["invited_b"]:
-                    self._pending_bg_invite.pop(eid, None)
+            if self._im_sweep_accept_deadline(match, self._pending_bg_invite, now):
                 if not match["team_a"] and not match["team_b"]:
                     self._bg_active_matches.pop(match_id, None)
                     continue
@@ -352,19 +382,9 @@ class BgQueueProcessorMixin:
                     continue
                 # os dois lados têm gente (só desbalanceado) — segue pro combate normalmente
 
-            cd = match["countdown_deadline"]
-            if cd is not None and now >= cd and not match["fight_started"]:
-                match["fight_started"] = True
-                self._activate_minion_lanes(match["instance_key"])
-                bundle = self._map_bundles.get(match["instance_key"])
-                if bundle is not None:
-                    tilemap = self.world.get_component(bundle.tilemap_entity, _TMbp)
-                    if tilemap is not None:
-                        for tiles in BG_QUEUE_GATE_TILES.values():
-                            for gx, gy in tiles:
-                                tilemap.tile_matrix[gy][gx] = _SFbp
-                for eid in match["team_a"] + match["team_b"]:
-                    self._bg_gate_open_events_this_tick.append({"eid": eid})
+            self._im_open_gate_if_ready(
+                match, now, _BG_QUEUE_GATE_TILES_FLAT,
+                lambda eid: self._bg_gate_open_events_this_tick.append({"eid": eid}))
 
     def request_bg_leave(self, eid: int) -> "str | None":
         """`eid` sai da partida DE VERDADE — no meio da luta (desistência,
@@ -480,7 +500,8 @@ class BgQueueProcessorMixin:
         match["decided"]        = True
         match["decided_at"]     = _time_nex.time()
         match["winner_faction"] = winner_faction
-        result_payload = {"winner_faction": winner_faction, "players": players}
+        result_payload = {"winner_faction": winner_faction, "players": players,
+                          "mode": match.get("mode_id", "5v5")}
         for m_eid in match["team_a"] + match["team_b"]:
             self._bg_match_result_events_this_tick.append((m_eid, result_payload))
 

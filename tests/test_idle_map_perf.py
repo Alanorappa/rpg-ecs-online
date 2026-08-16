@@ -172,12 +172,25 @@ class TestCombatSpatialHashScopedToBgMaps(unittest.TestCase):
     def setUp(self):
         self.ws = make_world_server()
 
+    # cell_size da combat_spatial_hash real (server/world_server.py,
+    # `_SpatialHashCH(cell_size=9)`) — discriminador pra distinguir ELA
+    # de qualquer outro uso de `SpatialHash` no processo. Ficou
+    # necessário na Fase 4.6 (12/08/2026, ver PROBLEMAS_ARQUITETURA.md
+    # §29): `EnemyAISystem._active_mobs_this_tick` passou a usar a MESMA
+    # classe (célula = SLEEP_RADIUS_TILES = 20) pro pré-filtro de IA —
+    # legítimo em mapa aberto (o cenário que este teste monta de
+    # propósito), então um monkey-patch cego em `SpatialHash.insert`
+    # conta as duas coisas juntas e quebra a suposição original
+    # ("mapa aberto sem lane nunca insere na hash de COMBATE").
+    _COMBAT_HASH_CELL_SIZE = 9
+
     def _count_hash_inserts(self) -> dict:
         from engine.utils import SpatialHash
         orig_insert = SpatialHash.insert
         calls = {"n": 0}
         def counted(self_hash, *a, **kw):
-            calls["n"] += 1
+            if getattr(self_hash, "_cs", None) == self._COMBAT_HASH_CELL_SIZE:
+                calls["n"] += 1
             return orig_insert(self_hash, *a, **kw)
         SpatialHash.insert = counted
         self.addCleanup(setattr, SpatialHash, "insert", orig_insert)

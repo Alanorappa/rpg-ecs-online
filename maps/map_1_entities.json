@@ -223,7 +223,7 @@
       "y": 385,
       "name": "Caixa de Teste (M2)",
       "sprite": "pr_box2",
-      "items": ["Artefato Misterioso"],
+      "items": ["artefato_misterioso"],
       "respawn_s": 10
     }
   ],
@@ -238,7 +238,7 @@
         {
           "name": "Vômito",
           "sprite": "pl_vomito",
-          "items": ["Vômito de Zumbi"],
+          "items": ["vomito_zumbi"],
           "count": 10
         }
       ]

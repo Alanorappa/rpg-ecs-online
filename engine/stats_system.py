@@ -10,11 +10,10 @@ from engine.components import (
     PlayerControlled, PlayerAutoMove, TileMovement, Position, StatusEffects,
     SkillLevels, SKILL_IDS, MAX_SKILL_LEVEL,
 )
-from ui.systems import System
+from engine.world_systems import System
 from engine.tileset import TILE_SIZE
 from ui.combat_log import LOG
-from ui.floating_text import FLT
-from ui.sound_manager import SOUNDS
+from engine.fx import FLT, SOUNDS
 from engine.save_system import request_autosave
 
 
@@ -56,7 +55,7 @@ def is_weapon_allowed_for_class(item, class_id: str) -> bool:
     """Restrição de arma/offhand por classe — equivalente de CLASS_ARMOR_ALLOWED
     pra arma (mainhand) e escudo/aljava (offhand). Único ponto de verdade:
     client (`_equip_item`, feedback imediato) e servidor
-    (`update_player_equipment`, autoritativo) chamam esta função — nunca
+    (`equip_item_from_inventory`, autoritativo) chamam esta função — nunca
     reimplementar a checagem em outro lugar.
 
     Regras (decisão do usuário, 07/07/2026):

@@ -1,9 +1,21 @@
 """
-skill_handlers.py — Mixin com todos os handlers de habilidades do jogador.
+engine/skill_handlers.py — Mixin com todos os handlers de habilidades do
+jogador (débito B3, PROBLEMAS_ARQUITETURA.md, fechado 08/08/2026: este
+arquivo morava em `ui/skill_handlers.py`, mas seu CONTEÚDO sempre foi
+pygame-free — nenhum import, nenhuma referência de tela. Só a localização
+estava errada; o servidor importava `ui.systems.SkillSystem` só pra
+herdar esta mixin, e isso arrastava pygame junto (`ui/systems.py` importa
+pygame no topo), exigindo o workaround `SDL_VIDEODRIVER=dummy`. Mesmo
+padrão já usado em `engine/world_systems.py`/`engine/core_systems.py`:
+lógica de gameplay compartilhada mora em `engine/`, nunca em `ui/`/`server/`
+— confirmado como o padrão certo pela própria arquitetura do Veloren
+(crate `common`, compartilhado entre client/server, nunca o inverso).
 
-Separado de systems.py para manter SkillSystem conciso. Esta classe NÃO deve
-ser instanciada diretamente — ela é herdada por SkillSystem, que fornece
-self.world e self.player_entity_id.
+Esta classe NÃO deve ser instanciada diretamente — é herdada por
+`ui.systems.SkillSystem` (cliente, fornece `self.world`/
+`self.player_entity_id`/`self.world_surf`/`self.hud_surf`/`self._net`)
+ou por `HeadlessSkillHandler` (abaixo, servidor — mesmos atributos,
+zero pygame).
 
 Para adicionar uma nova skill base:
   def _skill_<skill_id>(self, skill, combat_stats, combat_state, tile_move): ...
@@ -102,6 +114,184 @@ class SkillHandlers:
     # Alias melee para backward compat
     def _melee_ok(self, player_pos, target_pos) -> bool:
         return self._range_ok(player_pos, target_pos, self.MELEE_RANGE_PX)
+
+    def _is_on_screen(self, pos: "Position") -> bool:
+        """Retorna True se a entidade está dentro dos limites da câmera atual.
+
+        `self.world_surf is None` → sempre True (servidor/HeadlessSkillHandler
+        não tem tela; filtro de visibilidade não se aplica). Movido de
+        ui/systems.py::SkillSystem pra cá (débito B3, 10/08/2026) — vivia
+        duplicado na classe concreta, não na mixin, então `HeadlessSkillHandler`
+        (que não herda de SkillSystem) não tinha acesso — quebrava
+        `_resolve_target` (abaixo) em QUALQUER skill que dependesse do
+        fallback de auto-seleção de alvo no servidor."""
+        if self.world_surf is None or pos is None:
+            return True
+        sw = self.world_surf.get_width()
+        sh = self.world_surf.get_height()
+        from engine.components import Camera as _CameraLOS
+        for _, _, cam_pos in self.world.get_entities_with(_CameraLOS, Position):
+            cam_x = cam_pos.x - sw / 2
+            cam_y = cam_pos.y - sh / 2
+            sx = pos.x - cam_x
+            sy = pos.y - cam_y
+            return 0 <= sx <= sw and 0 <= sy <= sh
+        return True
+
+    def _resolve_target(self, combat_state: "CombatState", tile_move: "TileMovement",
+                        _max_range: int = 1) -> int:
+        """
+        Retorna o target_entity_id válido do combat_state.
+        Se não houver alvo selecionado (ou alvo morto), seleciona o inimigo mais próximo
+        (igual ao comportamento da tecla Espaço) e entra em combate automaticamente.
+
+        Movido de ui/systems.py::SkillSystem pra cá (débito B3, 10/08/2026) —
+        mesma razão de _is_on_screen acima. Usado por praticamente toda skill
+        com alvo (11 call sites neste arquivo) — sem ele em HeadlessSkillHandler,
+        TODA skill que o chama quebrava no servidor com AttributeError (achado
+        pela suíte completa, não por análise estática — só 1 dos 11 casos tinha
+        teste cobrindo o dispatch server-side real via _process_skill_requests).
+        """
+        if combat_state is None or tile_move is None:
+            return -1
+        current = combat_state.target_entity_id
+        if current != -1:
+            # Alvo já selecionado também precisa estar dentro de _max_range —
+            # sem isso, um target_entity_id setado a partir do "tid" que o
+            # CLIENTE manda em CAST_SKILL (server/skill_processor.py) deixava
+            # QUALQUER skill acertar QUALQUER entidade do mapa, porque esse
+            # check só rodava no fallback de auto-seleção abaixo, nunca pro
+            # alvo já setado (ver arquitetura/PROBLEMAS_ARQUITETURA.md,
+            # vulnerabilidade de range/LOS de skill). Fora de range cai pro
+            # mesmo fallback de auto-seleção usado quando o alvo está morto.
+            _cur_tm = self.world.get_component(current, TileMovement)
+            _in_range = (_max_range <= 0 or (_cur_tm is not None and chebyshev(
+                tile_move.current_tile_x, tile_move.current_tile_y,
+                _cur_tm.current_tile_x,   _cur_tm.current_tile_y) <= _max_range))
+            if _in_range:
+                cs = self.world.get_component(current, CombatStats)
+                if cs and cs.current_hp > 0:
+                    return current
+                # Alvo é player remoto (RemoteControlled): sem CombatStats local,
+                # valida via rc.hp (sincronizado pelo servidor via SKILL_RESULT/STATS_UPDATE).
+                if cs is None:
+                    from engine.components import RemoteControlled as _RCtgt
+                    _rc_tgt = self.world.get_component(current, _RCtgt)
+                    if _rc_tgt is not None and _rc_tgt.hp > 0:
+                        return current
+        # Auto-seleciona o inimigo HOSTIL em range com menor HP (desempate
+        # por distância) — B6. `is_hostile` (01/08/2026, bug real relatado
+        # pelo usuário: "as teclas de atalho das habilidades ainda
+        # selecionam um player aliado") — as 3 buscas abaixo não filtravam
+        # hostilidade NENHUMA (torres/minions/players aliados também
+        # carregam `Enemy` do lado do cliente); o `can_engage` que o
+        # chamador roda DEPOIS (ui/systems.py, "Alvo amigável") só barra o
+        # CAST em si — os efeitos colaterais desta função (target_entity_id
+        # setado, is_pursuing=True, enter_combat) já tinham acontecido
+        # ANTES desse gate, então o personagem entrava em perseguição
+        # visível contra o aliado mesmo com o dano bloqueado. Mesmo padrão
+        # de fix já aplicado em TAB/SPACE (ui/systems.py::
+        # _visible_enemies_sorted, client/save_sync_handlers.py::
+        # _space_engage_online).
+        from engine.faction_system import is_hostile as _is_hostile_resolve
+        from engine.components import Visible as _VisibleR, Minion as _MinionR
+        px, py    = tile_move.current_tile_x, tile_move.current_tile_y
+        best_id   = -1
+        best_dist = float("inf")
+        best_hp   = float("inf")
+        for eid, epos, _, _, etm, ecs, _ in self.world.get_entities_with(
+                Position, Enemy, AIControlled, TileMovement, CombatStats, _VisibleR):
+            if ecs.current_hp <= 0:
+                continue
+            if not self._is_on_screen(epos):
+                continue
+            if not _is_hostile_resolve(self.world, self.player_entity_id, eid):
+                continue
+            d = chebyshev(px, py, etm.current_tile_x, etm.current_tile_y)
+            if _max_range > 0 and d > _max_range:
+                continue
+            if ecs.current_hp < best_hp or (ecs.current_hp == best_hp and d < best_dist):
+                best_dist = d
+                best_hp   = ecs.current_hp
+                best_id   = eid
+        # Fase 8 (06/08/2026, bug real de playtest — ver ARQUITETURA_ONLINE.md
+        # §34.74.48): minion (MOBA lane creep) nunca tem Enemy/AIControlled de
+        # propósito — MinionSystem próprio, não EnemyAISystem (mesma decisão de
+        # Torre, ver docstring de engine/components.py::Minion). Sem este loop
+        # paralelo, quando o alvo explícito de uma skill morre (comum — minion
+        # tem TTK baixo) e o auto-fallback tenta escolher o próximo hostil mais
+        # perto, minion nunca era candidato — mesmo vivo e adjacente. Roda tanto
+        # no cliente (predição) quanto no SERVIDOR — é lá que o bug realmente
+        # importava (skill falhava silenciosamente do lado autoritativo mesmo
+        # com o cliente parecendo ok). Mesma lógica de melhor-candidato do loop
+        # de Enemy acima, combinada no mesmo best_id.
+        for eid, epos, _, etm, ecs, _ in self.world.get_entities_with(
+                Position, _MinionR, TileMovement, CombatStats, _VisibleR):
+            if ecs.current_hp <= 0:
+                continue
+            if not self._is_on_screen(epos):
+                continue
+            if not _is_hostile_resolve(self.world, self.player_entity_id, eid):
+                continue
+            d = chebyshev(px, py, etm.current_tile_x, etm.current_tile_y)
+            if _max_range > 0 and d > _max_range:
+                continue
+            if ecs.current_hp < best_hp or (ecs.current_hp == best_hp and d < best_dist):
+                best_dist = d
+                best_hp   = ecs.current_hp
+                best_id   = eid
+        # Online mobs don't have CombatStats — fall back to closest visible enemy
+        if best_id == -1:
+            for eid, epos, _, etm in self.world.get_entities_with(Position, Enemy, TileMovement):
+                if self.world.get_component(eid, CombatStats):
+                    continue  # already handled above
+                if not self.world.get_component(eid, _VisibleR):
+                    continue
+                if not self._is_on_screen(epos):
+                    continue
+                if not _is_hostile_resolve(self.world, self.player_entity_id, eid):
+                    continue
+                d = chebyshev(px, py, etm.current_tile_x, etm.current_tile_y)
+                if _max_range > 0 and d > _max_range:
+                    continue
+                if d < best_dist:
+                    best_dist = d
+                    best_id   = eid
+        # PvP: também considera players remotos (RemoteControlled) como
+        # alvos válidos — `can_engage` aqui, DE PROPÓSITO, não `is_hostile`
+        # (mesma razão do TAB, _visible_enemies_sorted acima): permissão de
+        # PvP entre players é CONTEXTUAL (duelo/arena/zona,
+        # `_pvp_context_resolver`), um oponente de duelo normalmente está
+        # na MESMA facção default ("jogadores" = amigavel), só o contexto
+        # libera — `is_hostile` aqui quebraria auto-mirar o oponente
+        # durante um duelo (nunca resolveria hostil por tier de facção
+        # fixo). `can_engage` já bloqueia aliado de verdade (facção
+        # amigavel sem contexto de PvP).
+        if best_id == -1:
+            from engine.faction_system import can_engage as _can_engage_resolve
+            from engine.components import RemoteControlled as _rc_cls
+            for eid, epos, _rc_auto, etm in self.world.get_entities_with(Position, _rc_cls, TileMovement):
+                if eid == self.player_entity_id:
+                    continue  # não auto-seleciona a si mesmo
+                if _rc_auto.hp <= 0:
+                    continue  # player morto (corpo) — não é alvo válido
+                if not self.world.get_component(eid, _VisibleR):
+                    continue
+                if not self._is_on_screen(epos):
+                    continue
+                if not _can_engage_resolve(self.world, self.player_entity_id, eid):
+                    continue
+                d = chebyshev(px, py, etm.current_tile_x, etm.current_tile_y)
+                if _max_range > 0 and d > _max_range:
+                    continue
+                if d < best_dist:
+                    best_dist = d
+                    best_id   = eid
+        if best_id != -1:
+            combat_state.target_entity_id = best_id
+            combat_state.is_pursuing      = True
+            enter_combat(combat_state)
+        return best_id
 
     # ==================================================================
     # Utilitários internos
@@ -554,13 +744,39 @@ class SkillHandlers:
         return True
 
     def _skill_fatiador_de_corpos(self, skill, _combat_stats, combat_state, tile_move):
-        """Cavaleiro — Fatiador de Corpos: spin AoE com parâmetros vindos de skill.params."""
+        """Cavaleiro — Fatiador de Corpos: spin AoE com parâmetros vindos de skill.params.
+
+        Imune a controle (stun/sleep/fear/root/polymorph/disoriented/slow)
+        durante o canal — inclusive serve pra ESCAPAR desses efeitos (dispel
+        genérico na ativação, mesmo padrão que Camuflagem já usa pra DoT):
+        pedido explícito do usuário (07/08/2026), característica que faltava
+        desde a criação da skill. NÃO cobre dano (usuário confirmou: "a única
+        coisa que ele não é imune é a dano"). A imunidade é o próprio status
+        effect "cc_immune" (apply_effect, engine/core_systems.py) — expira
+        sozinha via StatusEffectSystem, mesma infra de qualquer outro efeito,
+        nenhum flag bespoke pra ligar/desligar manualmente."""
         char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
         if not char_stats:
             return False
         p = skill.params
         char_stats.fatiador_timer = p.get("duration",       5.0)
         char_stats.fatiador_tick  = p.get("tick_interval",  1.0)
+        apply_effect(self.world, self.player_entity_id, "cc_immune",
+                    duration=p.get("duration", 5.0))
+        # Dispel dinâmico do que já está ativo: qualquer efeito que a nova
+        # imunidade cobriria (mesmo critério de engine/core_systems.py::
+        # apply_effect — nunca listar nomes na mão aqui).
+        from content.status_effects_data import EFFECT_DEFS as _EFF_DEFS_fat
+        sfx = self.world.get_component(self.player_entity_id, StatusEffects)
+        if sfx:
+            _removed_any = False
+            for _eff_type, _eff_defn in _EFF_DEFS_fat.items():
+                if _eff_type == "slow" or _eff_defn.blocks_move or _eff_defn.blocks_act:
+                    if sfx.remove(_eff_type):
+                        _removed_any = True
+            if _removed_any:
+                from engine.core_systems import sync_status_derived_state
+                sync_status_derived_state(self.world, self.player_entity_id, sfx)
         self._fatiador_aoe_tick(skill, tile_move)
         skill.current_cooldown = skill.cooldown
         if combat_state:
@@ -957,7 +1173,11 @@ class SkillHandlers:
             char_stats.mana -= skill.mana_cost
             skill.current_cooldown = skill.cooldown
 
-            from ui.spell_system import _apply_magic_damage
+            # apply_magic_damage_shared: engine/core_systems.py, não
+            # ui.spell_system — evita arrastar pygame pro servidor neste
+            # branch (débito B3/CRÍTICO B, 10/08/2026; a função em si é a
+            # mesma, só mudou de módulo).
+            from engine.core_systems import apply_magic_damage_shared as _apply_magic_damage
             pos_p = self.world.get_component(self.player_entity_id, Position)
             tm_p  = tile_move
             if not pos_p or not tm_p or not combat_stats:
@@ -1526,7 +1746,7 @@ class SkillHandlers:
             return False
 
         # Se aljava está cheia do mesmo tipo, não há nada a fazer
-        same_type = (quiver.subtype == first_arrow.name and
+        same_type = (quiver.subtype == first_arrow.item_id and
                      quiver.arrow_count >= quiver.max_arrows)
         if same_type:
             self._warn("Aljava já está cheia.")
@@ -1557,3 +1777,28 @@ class SkillHandlers:
         ))
         LOG.add(f"Recarregando: {first_arrow.name}...", (200, 160, 80))
         return True
+
+
+class HeadlessSkillHandler(SkillHandlers):
+    """Instância server-side de `SkillHandlers` — zero pygame, zero tela.
+    Substitui `ui.systems.SkillSystem` em `server/world_server.py` (débito
+    B3 fechado 08/08/2026): antes o servidor importava a classe cliente só
+    pra herdar esta mixin, o que arrastava pygame junto e exigia
+    `SDL_VIDEODRIVER=dummy`. Não herda de `engine.world_systems.System`
+    de propósito — essa base só existe pra dar `update()`/`render()`
+    no-op e anotações de tipo pra `world_surf`/`hud_surf` (nunca
+    verificada via `isinstance` em lugar nenhum do projeto), nada que
+    este uso precise; herdar só adicionaria acoplamento sem função."""
+
+    def __init__(self, world, player_entity_id: int = -1):
+        self.world             = world
+        self.player_entity_id  = player_entity_id
+        self.world_surf        = None
+        self.hud_surf          = None
+        self._net               = None
+        # Atributos que o dispatch do servidor injeta por tick/request —
+        # mesmo contrato que ui.systems.SkillSystem já tinha (server/
+        # skill_processor.py/spell_completion_processor.py leem/escrevem
+        # estes campos via getattr/atributo direto, não construtor).
+        self._server_pending_spells      = None
+        self._server_visibility_changed  = None

@@ -108,6 +108,7 @@ def init_db() -> None:
             skill_levels_json TEXT DEFAULT '{}',
             quests_json    TEXT DEFAULT '{}',
             char_stats_json TEXT DEFAULT '{}',
+            learned_recipes_json TEXT DEFAULT '[]',
             last_save   INTEGER DEFAULT (strftime('%s','now'))
         );
         """)
@@ -141,6 +142,14 @@ def init_db() -> None:
             pass  # coluna já existe
         try:
             conn.execute("ALTER TABLE characters ADD COLUMN char_stats_json TEXT DEFAULT '{}'")
+        except Exception:
+            pass  # coluna já existe
+        try:
+            # Receitas de crafting aprendidas por pergaminho — débito A4
+            # (11/08/2026, ver PROBLEMAS_ARQUITETURA.md). Nunca existia
+            # coluna pra isso no sistema online (só o save-slot offline
+            # antigo, já morto, persistia isso).
+            conn.execute("ALTER TABLE characters ADD COLUMN learned_recipes_json TEXT DEFAULT '[]'")
         except Exception:
             pass  # coluna já existe
     log.info(f"[Auth] banco inicializado: {DB_PATH}")
@@ -387,7 +396,8 @@ def _save_character_sync(char_id: int, data: dict) -> None:
                      ("talents",   "talents_json"),
                      ("fog",       "fog_json"),
                      ("skill_levels", "skill_levels_json"),
-                     ("quests",    "quests_json")):
+                     ("quests",    "quests_json"),
+                     ("learned_recipes", "learned_recipes_json")):
         v = data.get(key)
         if v is not None:
             cols.append(col)

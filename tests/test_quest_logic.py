@@ -58,7 +58,9 @@ def test_resolve_chave_do_catalogo_principal():
 
 
 def test_resolve_chave_de_quest_items_como_fallback():
-    factory = resolve_reward_item_factory("Pelo de Urso")
+    """QUEST_ITEMS é chaveado por item_id desde o débito C2 (10/08/2026,
+    ver PROBLEMAS_ARQUITETURA.md §20) — era nome de exibição antes."""
+    factory = resolve_reward_item_factory("pelo_urso")
     assert factory is not None
     item = factory()
     assert item.name == "Pelo de Urso"
@@ -75,7 +77,11 @@ def test_resolve_chave_inexistente_retorna_none():
 # em pickups NOVOS) nunca chegaria a fechar o objetivo — try_start precisa
 # checar a Inventory na hora de iniciar.
 
-def _make_try_start_world(item_name: str = "", stack: int = 1):
+def _make_try_start_world(item_id: str = "", stack: int = 1):
+    """`item_id` (débito C2, 10-11/08/2026, ver PROBLEMAS_ARQUITETURA.md
+    §20): try_start() casa o pré-check de collect_item por item_id, não
+    por nome de exibição — o Item construído aqui precisa do MESMO
+    item_id usado em `loot_item` nas QUESTS de teste abaixo."""
     from engine.world import World
     from engine.components import QuestLog, Inventory, Item
     world = World()
@@ -83,8 +89,9 @@ def _make_try_start_world(item_name: str = "", stack: int = 1):
     ql = QuestLog()
     world.add_component(player, ql)
     inv = Inventory()
-    if item_name:
-        _it = Item(item_name, "material", slot=None, max_stack=10)
+    if item_id:
+        _it = Item("Item de Teste", "material", slot=None, max_stack=10,
+                   item_id=item_id)
         _it.stack = stack
         inv.items.append(_it)
     world.add_component(player, inv)
@@ -98,11 +105,11 @@ def test_try_start_collect_item_ja_na_bag_nasce_completo():
     QUESTS[qid] = QuestDef(
         title="Teste", description="d",
         objectives=(ObjectiveDef(type="collect_item", target="*",
-                                 loot_item="Relíquia de Teste", count=1),),
+                                 loot_item="reliquia_teste", count=1),),
         reward=QuestReward(xp=1),
     )
     try:
-        world, player, ql = _make_try_start_world("Relíquia de Teste")
+        world, player, ql = _make_try_start_world("reliquia_teste")
         started = try_start(world, player, ql, qid)
         assert started is True
         assert ql.active[qid] == [1]
@@ -117,7 +124,7 @@ def test_try_start_collect_item_sem_o_item_nasce_zerado():
     QUESTS[qid] = QuestDef(
         title="Teste", description="d",
         objectives=(ObjectiveDef(type="collect_item", target="*",
-                                 loot_item="Relíquia de Teste", count=1),),
+                                 loot_item="reliquia_teste", count=1),),
         reward=QuestReward(xp=1),
     )
     try:
@@ -136,11 +143,11 @@ def test_try_start_collect_item_respeita_count_maior_que_1():
     QUESTS[qid] = QuestDef(
         title="Teste", description="d",
         objectives=(ObjectiveDef(type="collect_item", target="*",
-                                 loot_item="Relíquia de Teste", count=3),),
+                                 loot_item="reliquia_teste", count=3),),
         reward=QuestReward(xp=1),
     )
     try:
-        world, player, ql = _make_try_start_world("Relíquia de Teste", stack=2)
+        world, player, ql = _make_try_start_world("reliquia_teste", stack=2)
         started = try_start(world, player, ql, qid)
         assert started is True
         assert ql.active[qid] == [2]   # tem 2, precisa de 3 — parcial, não estoura

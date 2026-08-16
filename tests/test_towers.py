@@ -13,7 +13,7 @@ from tests.helpers import make_world_server, spawn_player, run_ticks
 
 from engine.world import World
 from engine.entity_factory import create_tower, create_enemy, create_player, create_tilemap, create_minion
-from engine.components import Tower, CombatStats, Faction, MapLocation, PendingDeath
+from engine.components import Tower, CombatStats, Faction, MapLocation, PendingDeath, Position, Projectile
 from engine.world_systems import (TowerSystem, ProjectileSystem, register_services,
                         CombatSystem, PathfindingSystem, TileValidationSystem)
 from content.faction_data import RELATIONSHIP
@@ -502,6 +502,228 @@ class TestTowerDeathXpGoldRespawn(unittest.TestCase):
         self.assertTrue(attacks, "deveria ter gerado uma entrada de combate pro player")
         self.assertTrue(any(a["attacker"] == tower_eid for a in attacks),
                         "torre deveria aparecer como atacante, nunca -1 ou outro mob")
+
+
+class TestTowerKnockbackImmune(unittest.TestCase):
+    """Bug real relatado pelo usuário (12/08/2026): Tiro Repulsivo tirava a
+    torre do lugar. Torre é estrutura ("não é um ser vivo"), mesma
+    convenção já usada pra CC (stun/root/etc — ver PROBLEMAS_ARQUITETURA.md)
+    agora estendida a knockback/stun de impacto, que era o único efeito
+    que ainda não tinha guard nenhum de "torre não sofre isso"."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        # Corredor aberto de verdade no mapa real (row 389), longe do
+        # spawn (10,10) — ali o terreno real é sólido, útil só pros testes
+        # que já bypassam colisão manualmente (ex: _kill_tower). Precisamos
+        # de um trecho ANDÁVEL de propósito, senão o empurrão nunca sai do
+        # lugar mesmo sem o guard (parede barra no primeiro passo, mascara
+        # o teste — já aconteceu ao escrever este teste).
+        self.player_eid = spawn_player(self.ws, "s1", 115, 389, class_id="arqueiro")
+
+    def test_tiro_repulsivo_nao_move_a_torre(self):
+        from engine.components import (CombatStats, CombatState, CharacterStats,
+                                        Equipment, Item, TileMovement, MapLocation)
+        from tests.helpers import authorize_skill, run_ticks
+
+        tower_eid = create_tower(self.ws.world, 117, 389, "torre_de_fogo",
+                                 faction_id="monstros_hostis")
+        self.ws.world.add_component(tower_eid, MapLocation("maps/map_1.csv"))
+        run_ticks(self.ws, 1)
+
+        # Afasta qualquer mob real do mapa que porventura esteja no
+        # caminho do empurrão (117..123, y=389) — sem isso o teste passa
+        # mesmo sem o guard, só porque um mob bloqueou o 1º passo (não
+        # prova nada sobre a torre).
+        for other_eid, tm in list(self.ws.world.get_entities_with(TileMovement)):
+            if other_eid in (self.player_eid, tower_eid):
+                continue
+            if tm.current_tile_y == 389 and 117 <= tm.current_tile_x <= 123:
+                tm.current_tile_x = tm.target_tile_x = 5
+                tm.current_tile_y = tm.target_tile_y = 5
+
+        authorize_skill(self.ws, self.player_eid, "tiro_repulsivo")
+
+        bow    = Item("Arco Teste", "weapon", "mainhand", subtype="Bow", cast_range=8)
+        quiver = Item("Aljava Teste", "quiver", "offhand", arrow_count=50, max_arrows=50)
+        equip = self.ws.world.get_component(self.player_eid, Equipment)
+        equip.slots["mainhand"] = bow
+        equip.slots["offhand"]  = quiver
+
+        char = self.ws.world.get_component(self.player_eid, CharacterStats)
+        char.concentration = 200
+        char.max_concentration = 200
+
+        pcs = self.ws.world.get_component(self.player_eid, CombatStats)
+        pcs.acerto = 100.0
+
+        tower_tm = self.ws.world.get_component(tower_eid, TileMovement)
+        tx_antes, ty_antes = tower_tm.current_tile_x, tower_tm.current_tile_y
+        tower_cs = self.ws.world.get_component(tower_eid, CombatStats)
+        hp_antes = tower_cs.current_hp
+
+        cst = self.ws.world.get_component(self.player_eid, CombatState)
+        cst.target_entity_id = tower_eid
+
+        self.ws.queue_skill("s1", "tiro_repulsivo", tower_eid, 0.0, 0.0, 0)
+        run_ticks(self.ws, 1)
+        run_ticks(self.ws, 60)  # cobre o cast_time (~2.5s com dt=0.05)
+
+        self.assertTrue(self.ws._spells_in_flight_queue,
+                        "flecha de Tiro Repulsivo deveria estar em voo após o cast")
+        self.ws._apply_spell_on_projectile_hit(self.player_eid, "tiro_repulsivo", tower_eid)
+
+        self.assertLess(tower_cs.current_hp, hp_antes,
+                        "torre deveria ter tomado dano normal do Tiro Repulsivo")
+        self.assertEqual((tower_tm.current_tile_x, tower_tm.current_tile_y), (tx_antes, ty_antes),
+                         "torre nunca deveria ser empurrada por knockback")
+        self.assertFalse(tower_tm.is_moving, "torre nunca deveria entrar em animação de movimento")
+
+
+class TestTowerFootprint(unittest.TestCase):
+    """Bug real relatado pelo usuário (12/08/2026): o sprite novo da torre
+    (`gcn_19`, 64×128px = 2 tiles de largura na base — `engine/tileset.py`)
+    tinha colisão de jogo batendo só com o tile único de sempre, não com
+    o 2º tile que o sprite visualmente ocupa. Usuário pediu ocupação REAL
+    de 2 tiles (escolha explícita entre isso e manter 1 tile aceitando o
+    "vazamento" visual — ver plano aprovado / PROBLEMAS_ARQUITETURA.md
+    §42). `entity_footprint_tiles()` (engine/world_systems.py) deriva a
+    pegada do PRÓPRIO catálogo de sprite (`get_collision_offsets`),
+    nenhum campo novo pra manter em sincronia com o visual."""
+
+    def setUp(self):
+        self.world = World()
+        terrain = ["." * 30 for _ in range(30)]
+        objects = [["."] * 30 for _ in range(30)]
+        tm_eid = create_tilemap(self.world, terrain, objects, None)
+        self.tv = TileValidationSystem(self.world, tilemap_entity=tm_eid)
+
+    def test_torre_bloqueia_o_segundo_tile_do_sprite_para_player(self):
+        create_tower(self.world, 10, 10, "torre_de_fogo", faction_id="monstros_hostis")
+        player_eid = create_player(self.world, 5, 5)
+        self.tv.update()
+
+        self.assertFalse(self.tv.is_tile_walkable(player_eid, 10, 10),
+                         "tile âncora da torre já bloqueava antes — regressão se isso mudou")
+        self.assertFalse(self.tv.is_tile_walkable(player_eid, 11, 10),
+                         "2º tile do sprite (leste) deveria bloquear também — é o bug relatado")
+        self.assertTrue(self.tv.is_tile_walkable(player_eid, 12, 10),
+                        "tile fora da pegada da torre deveria continuar andável normalmente")
+
+    def test_entidade_comum_continua_ocupando_so_1_tile(self):
+        """Regressão: mob/player comuns (sem sprite de torre) nunca devem
+        passar a bloquear um 2º tile — a mudança é exclusiva de torre."""
+        mob_eid = create_enemy(self.world, 8, 8, race="Lobo", faction="monstros_hostis")
+        player_eid = create_player(self.world, 5, 5)
+        self.tv.update()
+
+        self.assertFalse(self.tv.is_tile_walkable(player_eid, 8, 8))
+        self.assertTrue(self.tv.is_tile_walkable(player_eid, 9, 8),
+                        "mob comum nunca deveria bloquear um tile vizinho ao próprio")
+
+    def test_enemy_ai_e_minion_system_evitam_o_segundo_tile_da_torre(self):
+        from engine.world_systems import EnemyAISystem, MinionSystem
+        create_tower(self.world, 10, 10, "torre_de_fogo", faction_id="monstros_hostis")
+
+        ai_sys = EnemyAISystem(self.world)
+        ai_sys._map_filter = ""
+        occ = ai_sys._get_occupied_tiles()
+        self.assertIn((10, 10), occ)
+        self.assertIn((11, 10), occ, "EnemyAISystem deveria tratar o 2º tile da torre como ocupado")
+
+        minion_sys = MinionSystem(self.world)
+        minion_sys._map_filter = ""
+        minion_occ = minion_sys._get_occupied_tiles("", except_entity_id=-1)
+        self.assertIn((11, 10), minion_occ,
+                      "MinionSystem (reservation table) deveria evitar o 2º tile da torre também")
+
+    def test_placements_de_torre_nos_mapas_reais_nao_colidem_com_terreno_solido(self):
+        """Trava permanente: qualquer torre real (`maps/*_entities.json`)
+        precisa ter seu 2º tile (leste) dentro do mapa e não-sólido —
+        senão a torre nasceria com metade da colisão em cima de parede."""
+        import json
+        from engine.map_loader import load_map_csv
+        from engine.components import Tilemap as _TilemapCheck
+        map_files = ["map_1", "arena_poco_negro", "moba_battleground"]
+        checked = 0
+        for name in map_files:
+            entities_path = f"maps/{name}_entities.json"
+            try:
+                with open(entities_path, encoding="utf-8") as f:
+                    data = json.load(f)
+            except FileNotFoundError:
+                continue
+            towers = data.get("towers", [])
+            if not towers:
+                continue
+            terrain, objects, _spawns, visual = load_map_csv(f"maps/{name}.csv")
+            _w = World()
+            tm_eid = create_tilemap(_w, terrain, objects, visual)
+            tile_matrix = _w.get_component(tm_eid, _TilemapCheck).tile_matrix
+            for t in towers:
+                x, y = t["x"], t["y"]
+                nx = x + 1
+                self.assertTrue(0 <= y < len(tile_matrix) and 0 <= nx < len(tile_matrix[y]),
+                                f"{name}: torre em ({x},{y}) tem 2º tile fora do mapa")
+                self.assertFalse(tile_matrix[y][nx].is_solid,
+                                 f"{name}: torre em ({x},{y}) tem 2º tile ({nx},{y}) sólido")
+                checked += 1
+        self.assertGreater(checked, 0, "nenhuma torre real foi checada — teste não está cobrindo nada")
+
+
+class TestTowerProjectileOriginOffset(unittest.TestCase):
+    """`Tower.projectile_origin_offset` (12/08/2026, pedido do usuário —
+    "de qual parte do sprite surge os projéteis"). Sem valor em
+    TOWER_TABLE, o default é (0,0) — nasce do centro, como sempre; as 2
+    torres reais (12/08/2026) têm valor configurado (pixel local do
+    sprite x=31,y=56 convertido pra offset de Position, ver comentário
+    em content/tower_definitions.py) pra nascer de um ponto específico
+    do sprite, não do centro."""
+
+    def test_sem_valor_em_tower_table_o_default_do_componente_e_zero(self):
+        """Regressão: o CONSTRUTOR de Tower (não a tabela de conteúdo)
+        precisa continuar defaultando pra (0,0) — testa direto no
+        componente, não via create_tower('torre_de_fogo'), porque as
+        torres reais já têm valor configurado (ver docstring da classe)."""
+        tower = Tower(tower_key="hipotetica", attack_range_tiles=5)
+        self.assertEqual(tower.projectile_origin_offset, (0.0, 0.0))
+
+    def test_torres_reais_tem_offset_configurado_batendo_com_pixel_31_56_do_sprite(self):
+        """Prova que o valor em TOWER_TABLE (15.0,-56.0) corresponde de
+        verdade ao pixel (31,56) do sprite "gcn_19" (top-left, 64×128px)
+        — mesma âncora de base que o RenderSystem usa pra desenhar."""
+        from engine.tileset import TILE_SIZE as _TS_off
+        world = World()
+        for key in ("torre_de_fogo", "torre_de_flechas"):
+            tower_eid = create_tower(world, 10, 10, key, faction_id="monstros_hostis")
+            tower = world.get_component(tower_eid, Tower)
+            pos = world.get_component(tower_eid, Position)
+            sprite_h = 128  # altura real de gcn_19
+            left_x = pos.x - _TS_off / 2
+            top_y  = pos.y + _TS_off / 2 - sprite_h
+            spawn_x = pos.x + tower.projectile_origin_offset[0]
+            spawn_y = pos.y + tower.projectile_origin_offset[1]
+            self.assertEqual((spawn_x - left_x, spawn_y - top_y), (31.0, 56.0),
+                             f"{key}: offset deveria corresponder ao pixel (31,56) do sprite")
+
+    def test_offset_desloca_o_nascimento_do_projetil_sem_desviar_a_mira(self):
+        from engine.world_systems import _spawn_attack_projectile
+        world = World()
+        tower_eid = create_tower(world, 10, 10, "torre_de_fogo", faction_id="monstros_hostis")
+        mob_eid = create_enemy(world, 12, 10, race="Lobo", faction="monstros_hostis")
+        tower_pos = world.get_component(tower_eid, Position)
+
+        _spawn_attack_projectile(world, tower_eid, mob_eid, "physical",
+                                 origin_offset=(5.0, -40.0))
+
+        proj_eid, proj_pos, proj = next(iter(world.get_entities_with(Position, Projectile)))
+        self.assertEqual(proj_pos.x, tower_pos.x + 5.0)
+        self.assertEqual(proj_pos.y, tower_pos.y - 40.0)
+        # Mira continua calculada a partir da Position REAL da torre, não
+        # do ponto deslocado — senão o offset desviaria o tiro.
+        self.assertGreater(proj.dir_x, 0.0, "mira deveria continuar apontando pro mob (leste)")
+        self.assertAlmostEqual(proj.dir_y, 0.0, places=5,
+                               msg="offset vertical não deveria desviar a mira (mob está na mesma linha)")
 
 
 class TestNexusTowerEndsMatch(unittest.TestCase):

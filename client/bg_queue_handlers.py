@@ -3,15 +3,22 @@ client/bg_queue_handlers.py — Mixin do GameEngine: lado cliente da fila
 REAL de matchmaking da BG estilo MOBA (04/08/2026, pedido do usuário —
 server/bg_queue_processor.py).
 
+Revisado 10/08/2026 (achado real do usuário — fila sem escolha de
+tamanho colapsava sempre pro menor par disponível): 3 filas de tamanho
+FIXO (BG_MODE_LIST abaixo — 2v2/3v3/5v5), mesmo padrão de
+client/arena_handlers.py::ARENA_MODE_LIST.
+
 Sem lógica de gameplay aqui, mesmo espírito de client/arena_handlers.py:
 troca de mapa reusa 100% ZONE_CHANGE existente; este mixin cuida só do
-estado de fila (entrar/sair, sem escolher tamanho — a fila decide), da
+estado de fila (entrar/sair, agora COM escolha de modo/tamanho), da
 janela de aceite "Partida encontrada!" (modal PRÓPRIO — formato de
-payload diferente do de Arena, sem "mode", com `team_size` variável) e
-do feedback de início de partida. A entrada/linha "Battleground" dentro
-do modal unificado de fila é desenhada por client/arena_handlers.py
-(_draw_arena_queue_modal, mesmo container — só o BOTÃO/estado é deste
-mixin). O modal de RESULTADO (Nexus derrubado) já existe pronto em
+payload diferente do de Arena: `team_size` vem do tamanho real do modo,
+`mode` já bate 1 pra 1 com `team_size` desde a revisão) e do feedback de
+início de partida. As linhas de Battleground dentro do modal unificado
+de fila são desenhadas por client/arena_handlers.py
+(_draw_arena_queue_modal, mesmo container e mesmo padrão de linha por
+modo que ARENA_MODE_LIST já usa — só o ESTADO/ENVIO é deste mixin). O
+modal de RESULTADO (Nexus derrubado) já existe pronto em
 client/battleground_handlers.py (BG_MATCH_RESULT, reaproveitado tal
 qual — não recriado aqui).
 """
@@ -20,22 +27,37 @@ import pygame
 from ui.ui_sizes import UI
 from ui.sound_manager import SOUNDS
 
+# Modos de fila da BG (10/08/2026 — mesmo padrão de ARENA_MODE_LIST em
+# client/arena_handlers.py e BG_MODES em server/bg_queue_processor.py).
+# LISTA, não 3 botões hardcoded — 1 entrada nova aqui cobre um modo
+# futuro sem redesenhar o modal.
+BG_MODE_LIST = [
+    ("2v2", "Battleground 2x2"),
+    ("3v3", "Battleground 3x3"),
+    ("5v5", "Battleground 5x5"),
+]
+BG_MODE_LABELS    = dict(BG_MODE_LIST)
+BG_MODE_TEAM_SIZE = {"2v2": 2, "3v3": 3, "5v5": 5}
+
 
 class BgQueueHandlers:
 
     # ── Estado (lazy — GameEngine não precisa de __init__ extra) ─────────────
 
     @property
-    def _bg_in_queue(self) -> bool:
-        return getattr(self, "_bg_in_queue_val", False)
+    def _bg_in_queue_mode(self) -> "str | None":
+        """None fora de qualquer fila; senão o mode_id da fila atual (só
+        se pode estar em UMA fila de modo por vez, ver server/
+        bg_queue_processor.py::request_bg_queue_join)."""
+        return getattr(self, "_bg_in_queue_mode_val", None)
 
     @property
     def _bg_pending_match(self):
-        """None fora da janela de aceite; senão {"team_size","teammates",
-        "opponents","deadline"} — deadline em `time.time()` LOCAL (mesmo
-        padrão de ArenaHandlers._arena_pending_match: fecha sozinho ao
-        vencer, sem esperar mensagem do servidor, que também expira o
-        convite por conta própria)."""
+        """None fora da janela de aceite; senão {"mode","team_size",
+        "teammates","opponents","deadline"} — deadline em `time.time()`
+        LOCAL (mesmo padrão de ArenaHandlers._arena_pending_match: fecha
+        sozinho ao vencer, sem esperar mensagem do servidor, que também
+        expira o convite por conta própria)."""
         return getattr(self, "_bg_pending_match_val", None)
 
     @property
@@ -56,15 +78,16 @@ class BgQueueHandlers:
 
     def _handle_msg_bg_queue_state(self, payload: dict) -> None:
         in_queue = bool(payload.get("in_queue", False))
-        self._bg_in_queue_val = in_queue
+        self._bg_in_queue_mode_val = payload.get("mode") if in_queue else None
         reason = payload.get("reason")
         if not in_queue and reason:
             from ui.floating_text import WARN
             _msgs = {
+                "invalid_mode":   "Modo de fila inválido.",
                 "no_party":       "Precisa estar em um grupo pra entrar com o grupo (ou saia dele pra entrar sozinho).",
-                "not_leader":     "Só o líder do grupo pode entrar na fila.",
-                "wrong_size":     "Grupo grande demais pra fila da Battleground.",
-                "already_queued": "Você já está na fila da Battleground.",
+                "not_leader":     "Só o líder do grupo pode enfileirar.",
+                "wrong_size":     "Grupo grande demais pra esse tamanho de Battleground.",
+                "already_queued": "Você já está em uma fila de Battleground.",
                 "in_match":       "Alguém do grupo já está em uma partida.",
             }
             WARN.add(_msgs.get(reason, "Não foi possível entrar na fila da Battleground."))
@@ -72,10 +95,11 @@ class BgQueueHandlers:
     def _handle_msg_bg_match_found(self, payload: dict) -> None:
         import time as _time_bmf
         from shared.constants import ARENA_ACCEPT_WINDOW_S
-        self._bg_in_queue_val      = False
+        self._bg_in_queue_mode_val = None
         self._arena_modal_open_val = False
         self._bg_pending_match_val = {
-            "team_size": payload.get("team_size", 1),
+            "mode":      payload.get("mode", "5v5"),
+            "team_size": payload.get("team_size", 5),
             "teammates": payload.get("teammates", []),
             "opponents": payload.get("opponents", []),
             "deadline":  _time_bmf.time() + ARENA_ACCEPT_WINDOW_S,
@@ -92,10 +116,10 @@ class BgQueueHandlers:
 
     # ── Envio ao servidor ──────────────────────────────────────────────────
 
-    def _send_bg_queue_join(self) -> None:
+    def _send_bg_queue_join(self, mode_id: str) -> None:
         if self._net:
             from shared.messages import MsgType
-            self._net.send(MsgType.BG_QUEUE_JOIN, {})
+            self._net.send(MsgType.BG_QUEUE_JOIN, {"mode": mode_id})
 
     def _send_bg_queue_leave(self) -> None:
         if self._net:
@@ -115,7 +139,7 @@ class BgQueueHandlers:
         PartyHandlers._try_handle_party_chat_command). True = era o
         comando (consumido), False = texto normal. Mesma ação do atalho
         F1 (game.py) — abre o modal unificado de fila, nunca entra
-        direto: o player ainda escolhe "Entrar" lá dentro."""
+        direto: o player ainda escolhe o modo lá dentro."""
         if text.strip().lower() != "/bgqueue":
             return False
         self._open_bg_queue_modal()
@@ -124,8 +148,9 @@ class BgQueueHandlers:
     def _open_bg_queue_modal(self) -> None:
         """Mesma ação do clique no antigo botão "Fila de Arena" (agora
         removido) — abre o modal unificado (client/arena_handlers.py::
-        _draw_arena_queue_modal), que já lista Arena 1v1/2v2/3v3 + a
-        linha nova de Battleground. Toggle: fecha se já estiver aberto."""
+        _draw_arena_queue_modal), que já lista Arena 1v1/2v2/3v3 + as
+        linhas de Battleground 2v2/3v3/5v5. Toggle: fecha se já estiver
+        aberto."""
         if self._arena_pending_match is not None or self._arena_in_match \
                 or self._bg_pending_match is not None or self._bg_in_match:
             return  # já ocupado — não faz sentido abrir a fila
@@ -134,6 +159,23 @@ class BgQueueHandlers:
         if not already_open:
             self._arena_modal_open_val = True
             self._send_char_stats_request()
+
+    # ── Elegibilidade de modo (feedback visual — servidor SEMPRE revalida) ───
+
+    def _bg_mode_eligible(self, mode_id: str) -> "tuple[bool, str]":
+        """(elegível, motivo_se_não) — mesma validação que o servidor faz
+        em request_bg_queue_join, checada aqui só pra feedback visual (o
+        servidor SEMPRE revalida; nunca confiar só nisto). Diferente da
+        Arena: grupo MENOR que o time do modo é elegível (preenchido por
+        outros na fila), só maior que o time é recusado."""
+        team_size = BG_MODE_TEAM_SIZE[mode_id]
+        if self._party_leader_eid == -1:
+            return True, ""  # sozinho, sem grupo — sempre elegível
+        if self._party_leader_eid != self._my_eid:
+            return False, "Só o líder do grupo pode enfileirar"
+        if len(self._party_members) > team_size:
+            return False, f"Grupo grande demais (máx. {team_size})"
+        return True, ""
 
     # ── Modal "Partida encontrada!" (aceite) ──────────────────────────────
 
@@ -148,8 +190,9 @@ class BgQueueHandlers:
 
     def _draw_bg_accept_modal(self) -> None:
         """Espelha ArenaHandlers._draw_arena_accept_modal — payload
-        diferente (team_size variável em vez de mode fixo), por isso um
-        modal próprio em vez de reaproveitar o da Arena."""
+        diferente (team_size/mode do bracket fixo escolhido pelo
+        player), por isso um modal próprio em vez de reaproveitar o da
+        Arena."""
         pending = self._bg_pending_match
         if pending is None:
             return

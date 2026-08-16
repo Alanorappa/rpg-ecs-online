@@ -18,6 +18,16 @@ class SpellCompletionMixin:
     # Resultado de crit do último _server_apply_magic_damage com roll_crit=True.
     # Resetado antes de cada handler; lido pela coleta de resultados.
     _last_magic_is_crit: bool = False
+    # eids bloqueados por imunidade nesta resolução de spell (07/08/2026) —
+    # SET, não bool: Nova Congelante/spells em área acertam vários alvos, um
+    # bool só lembraria do último. Reatribuído (nunca mutado in-place como
+    # atributo de classe — ver CLAUDE.md, "proibido estado mutável ad-hoc")
+    # nos mesmos 2 pontos que já resetam _last_magic_is_crit/
+    # _proj_spell_result antes de cada resolução. Lido pela coleta de
+    # resultados pra mandar outcome="immune" em vez de ficar mudo (antes:
+    # bloqueio virava False solto, indistinguível de "alvo já morto"/
+    # "amigável", cliente nunca sabia).
+    _magic_blocked_immune_eids: "set | None" = None
 
     def _process_knockback_landings(self, dt: float) -> None:
         """Aplica stun + feedback de colisão só quando a tween de empurrão
@@ -188,6 +198,7 @@ class SpellCompletionMixin:
                         f"mobs_tracked={len(self._mob_eids)}")
                 if fn:
                     self._last_magic_is_crit = False
+                    self._magic_blocked_immune_eids = set()
                     try:
                         fn(player_eid, target_id, entry)
                     except Exception as _err:
@@ -210,11 +221,12 @@ class SpellCompletionMixin:
                 _sfx2    = self.world.get_component(mob_eid, _SFX)
                 eff_now  = set(_sfx2.effects.keys()) if _sfx2 else set()
                 applied  = list(eff_now - sfx_before.get(mob_eid, set()))
-                if damage > 0 or applied:
+                _blocked = mob_eid in (self._magic_blocked_immune_eids or ())
+                if damage > 0 or applied or _blocked:
                     _res = {
                         "eid":             mob_eid,
                         "damage":          damage,
-                        "outcome":         "crit" if self._last_magic_is_crit else "hit",
+                        "outcome":         "immune" if _blocked else ("crit" if self._last_magic_is_crit else "hit"),
                         "hp_after":        hp_after,
                         "applied_effects": applied,
                     }
@@ -386,6 +398,7 @@ class SpellCompletionMixin:
         self.register_map_services_for(player_eid)
 
         self._proj_spell_result = {"is_crit": False, "lapso_proc": None}
+        self._magic_blocked_immune_eids = set()
         try:
             fn(player_eid, target_id, entry["entry"])
         except Exception as _err:
@@ -409,11 +422,12 @@ class SpellCompletionMixin:
             _sfx2    = self.world.get_component(mob_eid, _SFX)
             eff_now  = set(_sfx2.effects.keys()) if _sfx2 else set()
             applied  = list(eff_now - sfx_before.get(mob_eid, set()))
-            if damage > 0 or applied:
+            _blocked = mob_eid in (self._magic_blocked_immune_eids or ())
+            if damage > 0 or applied or _blocked:
                 _res2 = {
                     "eid":             mob_eid,
                     "damage":          damage,
-                    "outcome":         "crit" if _proj_is_crit else "hit",
+                    "outcome":         "immune" if _blocked else ("crit" if _proj_is_crit else "hit"),
                     "hp_after":        hp_after,
                     "applied_effects": applied,
                 }
@@ -601,10 +615,17 @@ class SpellCompletionMixin:
         ai = self.world.get_component(target_id, AIControlled)
         return bool(ai and ai.state == "RETURNING")
 
-    def _apply_final_damage(self, target_id: int, dmg: int, attacker_id: int = -1) -> bool:
+    def _apply_final_damage(self, target_id: int, dmg: int, attacker_id: int = -1) -> str:
         """Aplica dmg ao HP de target_id verificando todas as guardas.
 
-        Retorna False se bloqueado (HP já zerado, is_immune, etc.).
+        Retorna o outcome de core_systems.apply_damage_core direto:
+        "applied"|"killed"|"blocked_dead"|"blocked_immune"|"blocked_evade"|
+        "blocked_friendly" (07/08/2026: era bool antes — colapsava tudo que
+        não fosse "aplicado" em False, então "bloqueado por imunidade"
+        chegava ao cliente idêntico a "alvo já morto"/"amigável": nenhum
+        feedback nenhuma vez. Chamador que só precisa saber se aplicou pode
+        checar `in ("applied", "killed")`, mesmo teste que antes era o
+        retorno).
         HP pode ficar negativo: overkill preservado para cálculo de dano real.
 
         Delegate de core_systems.apply_damage_core — núcleo COMPARTILHADO com
@@ -624,8 +645,7 @@ class SpellCompletionMixin:
         from engine.core_systems import apply_damage_core
         return apply_damage_core(self.world, target_id, dmg,
                                  killer_eid=attacker_id, add_pending_death=False,
-                                 on_damage_dealt=self._log_mob_damage_hit
-                                 ) in ("applied", "killed")
+                                 on_damage_dealt=self._log_mob_damage_hit)
 
     # ── Dano de magia server-side ────────────────────────────────────────────
 
@@ -697,7 +717,21 @@ class SpellCompletionMixin:
             grant_resist_skill_xp(self.world, target_id, school)
 
         hp_before = target_cs.current_hp
-        if not self._apply_final_damage(target_id, dmg, attacker_id):
+        _final_outcome = self._apply_final_damage(target_id, dmg, attacker_id)
+        # Side-channel pro chamador (mesmo padrão de self._proj_spell_result/
+        # _last_magic_is_crit) — 07/08/2026: antes um bloqueio por imunidade
+        # virava um simples "False" aqui, indistinguível de alvo já morto/
+        # amigável, e NENHUM feedback chegava ao cliente (nem FLT "Imune").
+        _blocked_immune = (_final_outcome == "blocked_immune")
+        if _blocked_immune and self._magic_blocked_immune_eids is not None:
+            self._magic_blocked_immune_eids.add(target_id)
+        if _final_outcome not in ("applied", "killed"):
+            if report and _blocked_immune:
+                self._combat_this_tick.append({
+                    "attacker": attacker_id, "target": target_id, "damage": 0,
+                    "outcome": "immune", "hp_after": max(0, target_cs.current_hp),
+                    "source": "skill",
+                })
             return False
         hp_after = max(0, target_cs.current_hp)
         damage   = max(0, hp_before - target_cs.current_hp)
@@ -1139,7 +1173,14 @@ class SpellCompletionMixin:
             if _fdp > 0 and random.random() < _fdp:
                 dmg = int(dmg * 1.50)
 
-        if not self._apply_final_damage(target_id, dmg, player_eid):
+        _final_outcome = self._apply_final_damage(target_id, dmg, player_eid)
+        if _final_outcome not in ("applied", "killed"):
+            # "immune" cobre blocked_immune/blocked_evade/blocked_friendly/
+            # blocked_dead — já era assim antes desta correção (07/08/2026:
+            # só passou a checar a string real em vez de qualquer bloqueio
+            # virar bool False), preciso o bastante pro caso real (arco
+            # quase nunca acerta um alvo já morto ou amigável a essa altura,
+            # os checks de LOS/vivo/facção já rodaram antes).
             return False, "immune", 0
 
         # Reciclagem: conta flechas acertadas neste alvo (auto-attack + skills
@@ -1248,6 +1289,17 @@ class SpellCompletionMixin:
             # por Tiro Repulsivo — dano já bloqueado, knockback também.
             return
 
+        # Torre é estrutura, não "ser vivo" — nunca sofre efeito, só dano
+        # (12/08/2026, bug real relatado pelo usuário: Tiro Repulsivo tirava
+        # a torre do lugar. Mesma convenção já usada pra CC — ver
+        # arquitetura/PROBLEMAS_ARQUITETURA.md — agora estendida a
+        # knockback/stun de impacto, que até então era o único efeito que
+        # não passava por nenhum guard de "torre não sofre isso"). Dano já
+        # foi aplicado acima; só o empurrão+stun de colisão são pulados.
+        from engine.components import Tower as _TowerKb
+        if self.world.get_component(target_id, _TowerKb) is not None:
+            return
+
         t_tm = self.world.get_component(target_id, TileMovement)
         if not t_tm:
             return
@@ -1301,13 +1353,15 @@ class SpellCompletionMixin:
         # seguro aqui: nada move DENTRO da resolução do knockback (o loop
         # abaixo só muda o current_tile do PRÓPRIO alvo, que nunca entra no
         # índice). Item (9)/B5 da auditoria — PROBLEMAS_ARQUITETURA.md §11.
+        from engine.world_systems import entity_footprint_tiles as _footprint_kb
         _occ_kb: dict = {}
         for other_eid in list(self._mob_eids) + list(self._player_eids.values()):
             if other_eid == target_id:
                 continue
             o_tm = self.world.get_component(other_eid, TileMovement)
             if o_tm:
-                _occ_kb.setdefault((o_tm.current_tile_x, o_tm.current_tile_y), []).append(other_eid)
+                for _fx_kb, _fy_kb in _footprint_kb(self.world, other_eid, o_tm):
+                    _occ_kb.setdefault((_fx_kb, _fy_kb), []).append(other_eid)
 
         def _entity_at_tile(tx, ty, exclude_eid=None):
             """Outra criatura (mob ou player) ocupando o tile — exclui o próprio alvo."""
@@ -1682,6 +1736,7 @@ class SpellCompletionMixin:
         if quiver.max_arrows == 0:
             quiver.max_arrows = 100
 
+        _ammo_id        = ""
         _ammo_name      = ""
         _ammo_taken     = 0
         _ammo_new_stack = 0
@@ -1696,7 +1751,8 @@ class SpellCompletionMixin:
             take = min(needed, item.stack)
             item.stack       -= take
             quiver.arrow_count = min(quiver.max_arrows, quiver.arrow_count + take)
-            quiver.subtype   = item.name
+            quiver.subtype   = item.item_id
+            _ammo_id        = item.item_id
             _ammo_name      = item.name
             _ammo_taken     = take
             _ammo_new_stack = item.stack
@@ -1709,6 +1765,7 @@ class SpellCompletionMixin:
             "quiver_arrow_count": quiver.arrow_count,
             "quiver_max_arrows":  quiver.max_arrows,
             "quiver_subtype":     quiver.subtype,
+            "ammo_id":            _ammo_id,
             "ammo_name":          _ammo_name,
             "ammo_taken":         _ammo_taken,
             # Valor ABSOLUTO (não delta) — mesmo padrão de quiver_arrow_count

@@ -18,11 +18,16 @@ import time
 import random
 from collections import deque
 
-# Pygame headless — servidor não tem display mas os sistemas usam pygame internamente
+# `import pygame`/`pygame.init()` removidos daqui (08/08/2026, fecha
+# débito B3): só existiam por causa de `ui.systems.SkillSystem`, que o
+# servidor importava só pra herdar a mixin de skills — ela morou sempre
+# em `engine/skill_handlers.py` de conteúdo (nunca precisou de pygame),
+# só a localização do arquivo estava errada. Servidor não importa mais
+# nada de `ui/`. Os `setdefault` abaixo ficam como rede de segurança
+# barata (não sobrescreve se o operador já setou algo explicitamente)
+# contra qualquer import futuro que volte a arrastar pygame sem querer.
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-import pygame
-pygame.init()
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -38,6 +43,8 @@ from server.trade_processor import TradeProcessorMixin
 from server.duel_processor import DuelProcessorMixin
 from server.party_processor import PartyProcessorMixin
 from server.pvp_zone_processor import PvpZoneProcessorMixin
+from server.bush_zone_processor import BushZoneProcessorMixin
+from server.tile_los_processor import TileLosProcessorMixin
 from server.match_processor import MatchProcessorMixin
 from server.bg_queue_processor import BgQueueProcessorMixin
 from debug.mob_combat_debug import MCL
@@ -153,7 +160,8 @@ class _MapBundle:
 
 class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootProcessorMixin,
                    SpellCompletionMixin, TradeProcessorMixin, DuelProcessorMixin, PartyProcessorMixin,
-                   PvpZoneProcessorMixin, MatchProcessorMixin, BgQueueProcessorMixin):
+                   PvpZoneProcessorMixin, MatchProcessorMixin, BgQueueProcessorMixin,
+                   BushZoneProcessorMixin, TileLosProcessorMixin):
 
     MAP_FILE = "maps/map_1.csv"   # mapa padrão carregado pelo servidor
 
@@ -223,6 +231,21 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # regen_enabled, respawn_s, level, timer}. Ver register_tower_
         # respawn()/_tick_tower_respawns().
         self._tower_respawn_timers: dict[tuple, dict] = {}
+
+        # Monstro de jungle estilo MOBA (13/08/2026, pedido do usuário) —
+        # respawn exato, mesmo espírito de _tower_respawn_timers. Chave =
+        # (map_file, spawn_tile_x, spawn_tile_y). Valor: {mob_key,
+        # faction_id, is_boss, level, respawn_s, timer}. Ver
+        # register_jungle_camp_respawn()/_tick_jungle_camp_respawns().
+        self._jungle_camp_respawn_timers: dict[tuple, dict] = {}
+        # Próximo índice do ciclo de buff do boss (JUNGLE_BOSS_TABLE
+        # [...]["buff_cycle"]) — SEPARADO do timer acima de propósito:
+        # precisa sobreviver ao respawn (o timer é descartado a cada
+        # ciclo), incrementado só no momento do ABATE
+        # (server_death_handler.py), nunca no respawn. Trava no ÚLTIMO
+        # índice da lista ao esgotar (decisão do usuário — repete o
+        # último buff pra sempre). Mesma chave de _jungle_camp_respawn_timers.
+        self._jungle_boss_cycle_index: dict[tuple, int] = {}
 
         # Minion de lane estilo MOBA (30/07/2026, pedido do usuário).
         # _minion_lanes: map_file -> lista de configs de lane (registradas
@@ -333,6 +356,19 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # mixin).
         self._pvp_zones_by_map: dict[str, list[dict]] = {}
 
+        # Bush stealth estilo MOBA (13/08/2026, ver PROBLEMAS_ARQUITETURA.md)
+        # — mesmo padrão de _pvp_zones_by_map: lista de {"name","rect"} por
+        # mapa, populada por _load_map_for. `_bush_zone_cache` é o único
+        # estado com tick (dict de módulo/instância, nome visível — mesmo
+        # padrão já aprovado de `_damage_tracker`/`_lethal_interceptor`):
+        # guarda a zona de bush de cada eid no tick ANTERIOR, só pra saber
+        # QUANDO disparar o sweep de limpar alvo travado (ver
+        # `_tick_bush_target_clear`) — a visibilidade em si
+        # (`_get_bush_zone`/`_can_see`) nunca usa esse cache, é sempre
+        # recomputada na hora.
+        self._bush_zones_by_map: dict[str, list[dict]] = {}
+        self._bush_zone_cache: dict[int, int] = {}
+
         # Arena 1x1/2x2/3x3 (Fase G leva 1 + Fase H, ver
         # server/match_processor.py::ARENA_MODES) — 1 fila FIFO por modo
         # (party_ids nos modos de time, o próprio eid no modo solo 1x1) +
@@ -357,11 +393,17 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._arena_gate_open_events_this_tick: list[dict] = []
 
         # Fila REAL de matchmaking da BG estilo MOBA (04/08/2026, ver
-        # server/bg_queue_processor.py) — fila ÚNICA (sem chave por modo,
-        # diferente da Arena: token = ("solo", eid) ou ("party", party_id),
-        # a fila decide o tamanho do time sozinha) + partidas ativas
+        # server/bg_queue_processor.py) — 1 fila FIFO por modo de tamanho
+        # (2v2/3v3/5v5, mesmo padrão de _arena_queues acima, revisado
+        # 10/08/2026: fila única sem escolha de tamanho colapsava sempre
+        # pro menor par disponível, sem chance de formar partida maior —
+        # achado real do usuário) — token = ("solo", eid) ou ("party",
+        # party_id), grupo menor que o time é preenchido por outros
+        # tokens da MESMA fila (mesma flexibilidade de antes, só que
+        # agora escopada por tamanho escolhido) + partidas ativas
         # (instância privada POR PARTIDA, `template::match_id`).
-        self._bg_queue: list[tuple] = []
+        from server.bg_queue_processor import BG_MODES as _BG_MODES_INIT
+        self._bg_queues: dict[str, list] = {mid: [] for mid in _BG_MODES_INIT}
         self._bg_active_matches: dict[str, dict] = {}
         self._player_bg_match_id: dict[int, str] = {}
         self._next_bg_match_id: int = 1
@@ -432,12 +474,18 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         from engine.core_systems import ServerCombatStateSystem
         self._combat_state_sys = ServerCombatStateSystem(self.world)
 
-        # Cache de valor por nome de item: {item_name: value} — evita instanciar
+        # Cache de valor por item_id: {item_id: value} — evita instanciar
         # factories no hot path de venda (A5). Populado em _build_item_caches().
+        # Chave é item_id desde 10/08/2026 (débito C2, era nome de exibição).
         self._item_value_cache: dict[str, int] = {}
-        # Cache de itens de loja: {shop_id: {item_name: {entry, item_data}}}
+        # Cache de itens de loja: {shop_id: {item_id: {entry, item_data}}}
         # Pré-compila item_data para evitar factory() duplicado em compras (A6).
         self._shop_item_cache: dict[str, dict] = {}
+        # Espelhos por NOME de exibição — só pra reconstrução de saves
+        # ANTIGOS sem item_id salvo (_reconstruct_item, fallback de
+        # migração automática) — nunca usados por protocolo/lógica nova.
+        self._item_value_cache_by_name: dict[str, int] = {}
+        self._shop_item_cache_by_name: dict[str, dict] = {}
         self._build_item_caches()
 
         # Cooldown server-side: {(player_eid, sid) → unix_time do último uso}
@@ -473,23 +521,53 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # Projéteis de mobs conhecidos (para detectar novos e removidos a cada tick)
         self._known_projectile_eids: set[int] = set()
 
-        # SkillSystem instanciado AQUI mas NÃO adicionado a self._systems
-        # (chamado manualmente em _process_skill_requests)
-        from ui.systems import SkillSystem
-        self._skill_system = SkillSystem(self.world, player_entity_id=-1)
+        # HeadlessSkillHandler instanciado AQUI mas NÃO adicionado a
+        # self._systems (chamado manualmente em _process_skill_requests) —
+        # 08/08/2026: era `ui.systems.SkillSystem` (débito B3, fechado —
+        # ver engine/skill_handlers.py), servidor não importa mais nada de
+        # ui/ pra isso.
+        from engine.skill_handlers import HeadlessSkillHandler
+        self._skill_system = HeadlessSkillHandler(self.world, player_entity_id=-1)
         # Servidor usa melee range com lag tolerance (1 + MELEE_LAG_TOLERANCE tiles)
 
         # ── Profiler de tick ─────────────────────────────────────────────────
-        # Acumula tempo por seção; resumo impresso a cada _PERF_REPORT_TICKS ticks.
-        self._perf_accum:       dict[str, float] = {}
-        # Breakdown SÓ do tick atual (04/08/2026, pedido do usuário — ver
-        # ARQUITETURA_ONLINE.md §34.74.29: precisa saber qual sistema causou
-        # UM pico específico de latência, não só a média diluída num
-        # relatório de ~10s. Resetado no início de CADA tick por _tick();
-        # `_perf_mark` grava em `_perf_accum` (média) E aqui (pico) ao mesmo
-        # tempo — chokepoint único, nunca duplicar a leitura de perf_counter
-        # por seção nova.
-        self._perf_tick_now:    dict[str, float] = {}
+        # Fase 4.7 (12/08/2026, ver PROBLEMAS_ARQUITETURA.md §30, pedido
+        # explícito do usuário): antes, `_perf_mark(label, t0)` jogava tudo
+        # num dict FLAT por nome — "ai_bundles" (soma de todos os mapas),
+        # "bnd:map_1" (soma de 1 mapa) e "sys:EnemyAISystem" (soma de 1
+        # sistema, TODOS os mapas juntos) apareciam como linhas irmãs na
+        # mesma lista ranqueada, sem indicar que uma continha a outra —
+        # confuso pra achar a "raiz do consumo" de verdade. `_perf_push`/
+        # `_perf_pop` (chokepoint novo, substitui `_perf_mark`) mantêm uma
+        # PILHA real (`_perf_stack`) e chaveiam tudo pelo CAMINHO completo
+        # (tupla de rótulos da raiz até a folha) — corrige de brinde outro
+        # problema: `sys:EnemyAISystem` de mapas DIFERENTES não fica mais
+        # somado num único número (cada mapa vira um nó próprio da árvore).
+        self._perf_stack:        list = []
+        self._perf_span_t0:      list = []
+        # Acumulado por CAMINHO completo dentro da janela de
+        # _PERF_REPORT_TICKS — equivalente ao antigo `_perf_accum`, chaveado
+        # por tupla em vez de nome solto.
+        self._perf_tree_accum:   dict = {}
+        # Amostra POR TICK de cada caminho, pra p95/p99 no relatório
+        # periódico — equivalente ao antigo `_perf_samples`.
+        self._perf_tree_samples: dict = {}
+        # Breakdown SÓ do tick atual, chaveado por caminho — equivalente ao
+        # antigo `_perf_tick_now`. Resetado no início de CADA tick.
+        self._perf_tree_tick_now: dict = {}
+        # Offset (segundos desde o início do tick) de quando cada caminho
+        # COMEÇOU a rodar neste tick — usado só pelo dump de trace
+        # (`_dump_perf_trace`) pra gravar `ts` real em vez de sempre 0,
+        # permitindo que o viewer (chrome://tracing/ui.perfetto.dev) aninhe
+        # visualmente por CONTER o timestamp, sem lógica de árvore no JSON.
+        self._perf_tree_tick_start_offset: dict = {}
+        self._perf_tick_t_start: float = 0.0
+        # Total acumulado do tick inteiro (equivalente ao antigo
+        # `_perf_accum["TOTAL"]`) — mantido à parte da árvore (não tem
+        # caminho próprio; usado só como o relógio de verdade do tick, pra
+        # achar o "não instrumentado").
+        self._perf_total_accum:   float = 0.0
+        self._perf_total_samples: list  = []
         self._perf_count:       int = 0
         self._perf_map_active:  dict[str, int]   = {}  # map → ticks com ≥1 player
         self._perf_peak_maps:   int = 0                # pico de mapas simultâneos ativos
@@ -527,14 +605,21 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._perf_ai_active_mobs_peak: int   = 0
         self._PERF_REPORT_TICKS = 300          # ~10s a 30 ticks/s
         self._PERF_BUDGET_MS    = 1000.0 / 30  # 33.3ms por tick
-        # Threshold pra imprimir o BREAKDOWN por seção na linha de "tick
-        # lento" (04/08/2026, pedido do usuário — travadas percebidas em
-        # jogo, ping >600ms na HUD). Bem acima de _PERF_BUDGET_MS de
-        # propósito: qualquer tick real sob carga passa um pouco de
-        # 33.3ms (isso sozinho não é o "freeze" que o usuário sente) — o
-        # breakdown só vale a pena pra picos de verdade, senão o arquivo
-        # de log vira ruído a cada tick um pouco mais pesado.
-        self._PERF_BREAKDOWN_MS = 100.0
+        # Breakdown por seção agora sai em TODO tick acima do budget
+        # (Fase 4.5, 11/08/2026, decisão do usuário — ver
+        # PROBLEMAS_ARQUITETURA.md §27, revertendo o corte em 100ms de
+        # 04/08/2026 que existia só pra evitar ruído). O dado já era
+        # calculado de graça pra qualquer tick (`_perf_pop` grava em
+        # `_perf_tree_tick_now` sempre) — só a IMPRESSÃO estava sendo
+        # escondida; sem custo extra real, e mais detalhe disponível pro
+        # pico "ainda não confirmado por profiling" que o CLAUDE.md já
+        # cita como debito em aberto.
+        # Threshold pra despejar um trace completo (formato Chrome
+        # Trace/Perfetto) do tick — só ticks GENUINAMENTE ruins, bem
+        # acima do budget (não todo tick "um pouco lento", que já sai
+        # com o TOP: acima). Mantém no máximo 5 arquivos (ver
+        # `_dump_perf_trace`).
+        self._PERF_TRACE_DUMP_MS = 300.0
         # Fase 5 de escala (06/08/2026, ver ARQUITETURA_ONLINE.md
         # Sec.34.74.44) - streak de ticks CONSECUTIVOS acima do budget.
         # Diferente de "tick lento" (incidente isolado, ja logado acima):
@@ -661,6 +746,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         terrain_matrix, object_matrix, spawn_points, terrain_visual = \
             load_map_csv(map_file)
         self._pvp_zones_by_map[key] = spawn_points.get("pvp_zones", [])
+        self._bush_zones_by_map[key] = spawn_points.get("bush_zones", [])
 
         # Snapshot de entidades ANTES de criar as do mapa
         _eids_before = set(self.world._components.keys())
@@ -675,6 +761,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._create_harvestables_for_map(spawn_points, key)
         self._create_harvestable_zones_for_map(spawn_points.get("harvestable_zones", []), key)
         self._create_towers(spawn_points.get("towers", []), key)
+        self._create_jungle_camps(spawn_points.get("jungle_mobs", []), is_boss=False, map_file=key)
+        self._create_jungle_camps(spawn_points.get("jungle_bosses", []), is_boss=True, map_file=key)
         self._create_minion_lanes(spawn_points.get("minion_lanes", []), key)
 
         # Snapshot DEPOIS — todas as novas entidades ganham MapLocation
@@ -712,8 +800,16 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         _sys_svc["emit_retaliation"] = _on_retaliation
 
         # P4: injeção direta de serviços por bundle — elimina dependência no global _svc.
+        # `perf_push=self._perf_push, perf_pop=self._perf_pop` (Fase 4.5,
+        # 12/08/2026, atualizado Fase 4.7 — ver PROBLEMAS_ARQUITETURA.md
+        # §28/§30) — mesmo chokepoint único do profiler de tick, injetado
+        # aqui pra medir o pré-filtro (`_active_mobs_this_tick`) separado
+        # do resto do loop por-mob, agora aninhado de verdade sob
+        # "sys:EnemyAISystem" (a pilha em WorldServer já está aberta
+        # quando `system.update()` roda).
         enemy_ai_system = EnemyAISystem(self.world, map_filter=key,
-                                        pathfinding=pathfinding, tile_validation=tile_validation)
+                                        pathfinding=pathfinding, tile_validation=tile_validation,
+                                        perf_push=self._perf_push, perf_pop=self._perf_pop)
         enemy_ab_system = EnemyAbilitySystem(self.world, map_filter=key,
                                              pathfinding=pathfinding)
         taunt_system = TauntSystem(self.world, map_filter=key,
@@ -754,7 +850,11 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # reconstruía um cache global (get_entities_with(TileMovement) de
         # TODO o mundo) que ninguém lia, todo tick, em mapa vazio.
         bundle.ai_systems      = {enemy_ai_system, enemy_ab_system, tile_validation}
-        bundle.proximity_systems = {enemy_ai_system, enemy_ab_system, _spawn_sys}
+        # tile_validation também entra em proximity_systems (Fase 4.7,
+        # 12/08/2026, ver PROBLEMAS_ARQUITETURA.md §34/§35, itens #1/#2 do
+        # ranking) — passa a receber `tile_movement_by_map` no dispatch
+        # comum em vez de escanear o mundo inteiro sozinho.
+        bundle.proximity_systems = {enemy_ai_system, enemy_ab_system, _spawn_sys, tile_validation}
         bundle.transitions     = transitions
         bundle.tile_validation = tile_validation
         bundle.pathfinding     = pathfinding
@@ -786,6 +886,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 pass
         self._map_bundles.pop(instance_key, None)
         self._pvp_zones_by_map.pop(instance_key, None)
+        self._bush_zones_by_map.pop(instance_key, None)
 
     def _template_file_of(self, map_or_instance_key: str) -> str:
         """Fase G — 'de-para' pro cliente: instance_key sintética
@@ -1042,6 +1143,47 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             # de entidades em _load_map_for (mesmo mecanismo de
             # _create_combat_npcs) — nenhuma linha extra necessária aqui.
 
+    def _create_jungle_camps(self, camps_data: list, is_boss: bool, map_file: str) -> None:
+        """Cria monstro(s) de jungle estilo MOBA (13/08/2026, pedido do
+        usuário) a partir de `{mapa}_entities.json::jungle_mobs`/
+        `jungle_bosses` — via `create_enemy()` (dá `AIControlled`/aggro/
+        chase/leash de graça, mesmo comportamento de mob hostil comum),
+        com `JungleMob` anexado por cima pra marcar a regra de
+        recompensa PRÓPRIA (proximidade, ver server_death_handler.py) —
+        nunca a de `XPReward`/MOB_TABLE genérica, por isso removida logo
+        em seguida. Reaproveitado também pelo respawn individual
+        (`_tick_jungle_camp_respawns`), por isso `map_file` é sempre
+        explícito (nunca confia no diff automático de `_load_map_for`,
+        que só cobre a criação inicial do mapa)."""
+        from engine.entity_factory import create_enemy
+        from engine.components import JungleMob, XPReward, MapLocation as _MLjc
+        from content.jungle_definitions import JUNGLE_MOB_TABLE as _JMT, JUNGLE_BOSS_TABLE as _JBT
+        tbl = _JBT if is_boss else _JMT
+        for c in camps_data:
+            mob_key = c["mob_key"]
+            mdef = tbl.get(mob_key)
+            if mdef is None:
+                log.warning(f"[Jungle] mob_key '{mob_key}' não cadastrado em "
+                           f"{'JUNGLE_BOSS_TABLE' if is_boss else 'JUNGLE_MOB_TABLE'}, pulando")
+                continue
+            eid = create_enemy(
+                self.world, c["x"], c["y"],
+                race=mob_key, faction=c.get("faction", "monstros_hostis"),
+                level=c.get("level", 1),
+            )
+            try:
+                self.world.remove_component(eid, XPReward)
+            except Exception:
+                pass
+            self.world.add_component(eid, JungleMob(
+                is_boss=is_boss,
+                xp_reward=mdef["xp_reward"],
+                gold_min=mdef["gold_min"],
+                gold_max=mdef["gold_max"],
+                respawn_s=float(c.get("respawn_s", 300.0 if is_boss else 90.0)),
+            ))
+            self.world.add_component(eid, _MLjc(map_file))
+
     def _create_minion_lanes(self, lanes_data: list, map_file: str) -> None:
         """Registra as lanes de `{mapa}_entities.json::minion_lanes` — só
         CONFIG (spawn/alvo/intervalo/facção/lane_id), não cria nenhum
@@ -1069,20 +1211,38 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         mapa/instância — chamado 1x quando o combate libera de verdade.
         Chave = (map_file, faction, lane_id) — lane_id distingue rotas do
         MESMO time no MESMO mapa (top/mid/bot), senão colidiriam na mesma
-        chave e só a primeira jamais dispararia. Timer inicial NEGATIVO
-        (não 0.0) pro grupo da lane — ver `_LANE_GROUP_ORDER`/
-        `_LANE_GROUP_STAGGER_S` — atrasa o 1º disparo desse grupo, e o
+        chave e só a primeira jamais dispararia.
+
+        Timer inicial (guardado em `_minion_wave_timers[key]`) nunca é o
+        atraso real em segundos — `_tick_minion_waves` dispara a wave
+        quando esse valor SOBE até alcançar `wave_interval_s`, então o
+        atraso real de fato é `wave_interval_s - valor_inicial`. Esse
         atraso se PROPAGA pra sempre (o `elapsed - wave_interval_s` do
         reset em `_tick_minion_waves` carrega o resto adiante), sem
-        precisar tocar na lógica de disparo em si."""
+        precisar tocar na lógica de disparo em si — então a diferença
+        entre lanes fixada aqui vale o jogo inteiro, não só a 1ª wave.
+
+        2 fontes pro valor inicial, nessa ordem de prioridade:
+        1. `first_wave_delay_s` explícito na lane (13/08/2026, pedido do
+           usuário — atraso real da 1ª wave, direto em segundos, mesma
+           unidade que o resto do JSON): `wave_interval_s -
+           first_wave_delay_s`.
+        2. Fallback antigo (mapas sem o campo novo, ex:
+           `arena_poco_negro_entities.json`) — `_LANE_GROUP_ORDER`/
+           `_LANE_GROUP_STAGGER_S`, mesmo comportamento de sempre."""
         for lane in self._minion_lanes.get(map_file, []):
             key = (map_file, lane["faction"], lane.get("lane_id", "default"))
             if key not in self._minion_wave_timers:
-                try:
-                    _group_idx = self._LANE_GROUP_ORDER.index(lane.get("lane_id", "default"))
-                except ValueError:
-                    _group_idx = 0
-                self._minion_wave_timers[key] = -(_group_idx * self._LANE_GROUP_STAGGER_S)
+                _wave_interval_s = float(lane.get("wave_interval_s", 45.0))
+                _first_delay = lane.get("first_wave_delay_s")
+                if _first_delay is not None:
+                    self._minion_wave_timers[key] = _wave_interval_s - float(_first_delay)
+                else:
+                    try:
+                        _group_idx = self._LANE_GROUP_ORDER.index(lane.get("lane_id", "default"))
+                    except ValueError:
+                        _group_idx = 0
+                    self._minion_wave_timers[key] = -(_group_idx * self._LANE_GROUP_STAGGER_S)
 
     def register_tower_respawn(self, tower, faction_id: str, map_file: str, level: int) -> None:
         """Chamado por `ServerDeathHandler.update()` quando uma entidade
@@ -1134,6 +1294,115 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             done_keys.append(key)
         for key in done_keys:
             del self._tower_respawn_timers[key]
+
+    def register_jungle_camp_respawn(self, eid: int) -> None:
+        """Chamado por `ServerDeathHandler.update()` quando uma entidade
+        com componente `JungleMob` morre, ANTES de ser removida do world
+        — mesmo espírito de `register_tower_respawn`. `is_boss`/
+        `respawn_s` vêm do próprio `JungleMob` (parâmetro de instância
+        gravado na criação, ver `_create_jungle_camps`). Posição de
+        origem vem de `InitialPosition` (leash-home que `create_enemy()`
+        já grava na criação — nunca a posição de MORTE, que pode estar
+        longe do camp se ele perseguiu alguém antes de morrer)."""
+        from engine.components import (InitialPosition as _IPjc, Faction as _Facjc,
+                                       EntityIdentity as _EIjc, JungleMob as _JMjc)
+        jm = self.world.get_component(eid, _JMjc)
+        ip = self.world.get_component(eid, _IPjc)
+        if jm is None or ip is None:
+            return
+        fac = self.world.get_component(eid, _Facjc)
+        identity = self.world.get_component(eid, _EIjc)
+        map_file = self.get_entity_map(eid)
+        if map_file is None:
+            return
+        tx, ty = int(ip.x // TILE_SIZE), int(ip.y // TILE_SIZE)
+        key = (map_file, tx, ty)
+        self._jungle_camp_respawn_timers[key] = {
+            "mob_key":     identity.mob_key if identity else "",
+            "faction_id":  fac.faction_id if fac else "monstros_hostis",
+            "is_boss":     jm.is_boss,
+            "level":       identity.level if identity else 1,
+            "respawn_s":   jm.respawn_s,
+            "timer":       0.0,
+        }
+
+    def _tick_jungle_camp_respawns(self, dt: float) -> None:
+        """Decrementa os timers de `_jungle_camp_respawn_timers` e recria
+        o camp (entidade NOVA — mesmo princípio de `_tick_tower_respawns`)
+        exatamente no tile original ao completar, via
+        `_create_jungle_camps` (que já cuida de `JungleMob`/`MapLocation`)."""
+        if not self._jungle_camp_respawn_timers:
+            return
+        done_keys = []
+        for key, info in self._jungle_camp_respawn_timers.items():
+            info["timer"] += dt
+            if info["timer"] < info["respawn_s"]:
+                continue
+            map_file, tx, ty = key
+            self._create_jungle_camps(
+                [{"x": tx, "y": ty, "mob_key": info["mob_key"],
+                  "faction": info["faction_id"], "level": info["level"],
+                  "respawn_s": info["respawn_s"]}],
+                is_boss=info["is_boss"], map_file=map_file,
+            )
+            done_keys.append(key)
+        for key in done_keys:
+            del self._jungle_camp_respawn_timers[key]
+
+    def _grant_jungle_boss_buff(self, boss_eid: int, faction_id: str, map_file: str,
+                                mob_key: str) -> None:
+        """Boss de jungle abatido (13/08/2026, pedido do usuário): concede
+        o PRÓXIMO buff do ciclo (`JUNGLE_BOSS_TABLE[mob_key]["buff_cycle"]`)
+        pra todo jogador E minion VIVO agora com `Faction.faction_id ==
+        faction_id` no MESMO mapa (mesma varredura de `SessionManager.
+        _compute_ally_vision_centers`, mas por presença simples, não
+        raio/vision). Torres NUNCA participam (estrutura, não "time" no
+        sentido de combatente — mesma exceção de sempre). Índice do ciclo
+        é por CAMP (chave = posição de ORIGEM do boss, via
+        InitialPosition — mesma chave de `register_jungle_camp_respawn`),
+        trava no ÚLTIMO buff da lista ao esgotar (decisão do usuário)."""
+        from content.jungle_definitions import JUNGLE_BOSS_TABLE as _JBTb
+        bdef = _JBTb.get(mob_key)
+        if bdef is None:
+            return
+        buff_cycle = bdef.get("buff_cycle", [])
+        if not buff_cycle:
+            return
+        from engine.components import InitialPosition as _IPjb
+        ip = self.world.get_component(boss_eid, _IPjb)
+        if ip is None:
+            return
+        key = (map_file, int(ip.x // TILE_SIZE), int(ip.y // TILE_SIZE))
+        idx = self._jungle_boss_cycle_index.get(key, 0)
+        buff = buff_cycle[min(idx, len(buff_cycle) - 1)]
+        self._jungle_boss_cycle_index[key] = idx + 1
+
+        from engine.components import Faction as _FacJBB, CombatStats as _CSJBB, Minion as _MinJBB, Modifier
+        from engine.stat_fns import add_timed_modifier
+        targets = list(self._player_eids.values()) + [
+            m_eid for m_eid in self._mob_eids
+            if self.world.get_component(m_eid, _MinJBB) is not None
+        ]
+        for t_eid in targets:
+            fac = self.world.get_component(t_eid, _FacJBB)
+            if fac is None or fac.faction_id != faction_id:
+                continue
+            if self.get_entity_map(t_eid) != map_file:
+                continue
+            cs = self.world.get_component(t_eid, _CSJBB)
+            if cs is None:
+                continue
+            # label inclui o índice do ciclo (não só a posição do camp) —
+            # se o boss for morto de novo ANTES do buff anterior expirar
+            # (respawn_s < duration, tuning incomum mas possível), o buff
+            # NOVO (que pode ter atributo diferente do anterior, ver
+            # buff_cycle) empilha como instância PRÓPRIA em vez de só
+            # "renovar o timer" do antigo e silenciosamente manter o
+            # atributo errado (add_timed_modifier só atualiza o timer
+            # quando o label já existe, nunca troca o Modifier em si).
+            for mod_def in buff["modifiers"]:
+                mod = Modifier(mod_def["attribute"], mod_def["value"], mod_def["type"], source="buff")
+                add_timed_modifier(cs, mod, buff["duration"], label=f"jungle_boss_{key}_{idx}")
 
     # Composição fixa de uma wave (30/07/2026, pedido do usuário; reduzida
     # 04/08/2026, mesmo pedido — 7→4 por lane, 42→24 minions simultâneos
@@ -1395,6 +1664,44 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._harvestable_zone_active.setdefault(zone_id, {})[hid] = subtype_idx
         return hid
 
+    def _tick_bush_target_clear(self) -> None:
+        """Bush stealth estilo MOBA (13/08/2026, ver PROBLEMAS_ARQUITETURA.md)
+        — a visibilidade em si (`_get_bush_zone`/`_can_see`) já se
+        autocorrige via AOI normal (entrar/sair de bush sempre exige mover,
+        então já cai no sweep de `moved` de `server/session.py`). O que
+        NÃO se autocorrige é um `target_entity_id`/`current_target_eid` já
+        travado ANTES da entrada no bush — mesmo motivo já documentado na
+        Camuflagem (`engine/skill_handlers.py::_skill_camuflagem`):
+        `is_visible`/bush sozinho só bloqueia mira NOVA, não limpa uma
+        trava já existente. Detecta TRANSIÇÃO de zona (via
+        `self._bush_zone_cache`, snapshot do tick anterior) e só faz a
+        varredura pesada (quem mirava essa entidade) nesse instante, não
+        every tick pra todo mundo. Torres nunca entram (sem `TileMovement`
+        que muda de tile — mesma exceção de sempre)."""
+        if not self._bush_zones_by_map:
+            return
+        from engine.components import TileMovement as _TMbz, CombatState as _CStbz, Minion as _Minbz
+        from server.session import _can_see as _can_see_bz
+
+        current: dict[int, int] = {}
+        for eid, tm in self.world.get_entities_with(_TMbz):
+            zone = self._get_bush_zone(eid)
+            if zone is not None:
+                current[eid] = zone
+
+        changed = {eid for eid, z in current.items()
+                  if self._bush_zone_cache.get(eid) != z}
+        if changed:
+            for _eid, cst in self.world.get_entities_with(_CStbz):
+                if cst.target_entity_id in changed and not _can_see_bz(self, _eid, cst.target_entity_id):
+                    cst.target_entity_id = -1
+            for _eid, minion in self.world.get_entities_with(_Minbz):
+                if minion.current_target_eid in changed and not _can_see_bz(self, _eid, minion.current_target_eid):
+                    minion.current_target_eid = -1
+                    minion.state = "ADVANCING"
+
+        self._bush_zone_cache = current
+
     def _tick_harvestable_zones(self, dt: float) -> None:
         """Zona de itens (25/07/2026) — chamado do MESMO lugar que já chama
         `_process_loot_drops`/`_tick_harvestable_respawn` (nenhuma `System`
@@ -1412,6 +1719,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         if not self._harvestable_zones:
             return
         from engine.components import TileMovement as _TMhz, MapLocation as _MLhz2
+        from engine.world_systems import entity_footprint_tiles as _footprint_hz
         occupied_by_map: dict = {}
 
         def _occupied_for(map_file):
@@ -1421,7 +1729,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                     ml = self.world.get_component(occ_eid, _MLhz2)
                     if ml is None or ml.map_file != map_file:
                         continue
-                    occ.add((tm.current_tile_x, tm.current_tile_y))
+                    occ.update(_footprint_hz(self.world, occ_eid, tm))
                     if tm.is_moving:
                         occ.add((tm.target_tile_x, tm.target_tile_y))
                 occupied_by_map[map_file] = occ
@@ -1737,6 +2045,22 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             self.world.add_component(eid, _ql_comp)
         except Exception as _ql_err:
             log.warning(f"[World] aviso: QuestLog não criado — {_ql_err}")
+
+        # LearnedRecipes — receitas de crafting aprendidas por pergaminho,
+        # server-autoritativo (débito A4, 11/08/2026, ver
+        # PROBLEMAS_ARQUITETURA.md) — nunca existia neste spawn_player
+        # antes (só o entity_factory.create_player do CLIENTE tinha),
+        # então nenhum player real online conseguia aprender receita.
+        try:
+            from engine.components import LearnedRecipes as _LR_spawn
+            _lr_comp = _LR_spawn()
+            _lr_raw  = char_data.get("learned_recipes_json") or "[]"
+            _lr_d    = _json.loads(_lr_raw) if isinstance(_lr_raw, str) else (_lr_raw or [])
+            if isinstance(_lr_d, list):
+                _lr_comp.known = list(_lr_d)
+            self.world.add_component(eid, _lr_comp)
+        except Exception as _lr_err:
+            log.warning(f"[World] aviso: LearnedRecipes não criado — {_lr_err}")
 
         # CharStatsTracker — estatísticas acumuladas pro modal de estatísticas
         # (Fase E, 23/07/2026), server-autoritativo (mesma regra de SkillLevels/
@@ -2320,6 +2644,10 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             "race":         race, "entity_class": entity_class,
             "tier":         tier, "is_ranged":    is_ranged,
             "color":        list(ren.color) if ren else [150, 60, 60],
+            # sprite_id (12/08/2026, torre) — mesmo campo que o harvestable já
+            # manda (branch acima) — "" = cliente cai no retângulo colorido de
+            # sempre (mob comum não define isso em MOB_TABLE hoje).
+            "sprite_id":    ren.sprite_id if ren else "",
             "hp":           cs.current_hp if cs else 50,
             "hp_max":       cs.max_hp     if cs else 50,
             "level":        mob_level,
@@ -2571,8 +2899,9 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         deriva esses valores ele mesmo a partir dos modifiers reais de cada
         item, exatamente como já faz para talentos (apply_talent_effects_to_player).
 
-        Chamar sempre que o Equipment mudar (spawn, EQUIP_SYNC). Modifiers de
-        talento/buff (source != "equipment") nunca são tocados aqui."""
+        Chamar sempre que o Equipment mudar (spawn, EQUIP_ITEM/UNEQUIP_ITEM).
+        Modifiers de talento/buff (source != "equipment") nunca são tocados
+        aqui."""
         from engine.components import CombatStats as _CSEq, Equipment as _EqEq, Modifier as _ModEq
         cs    = self.world.get_component(eid, _CSEq)
         equip = self.world.get_component(eid, _EqEq)
@@ -2589,13 +2918,17 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
     def process_shop_buy(self, session_id: str, shop_id: str,
                          item_name: str, quantity: int,
                          last_inventory: list | None = None,
-                         current_gold: int | None = None) -> dict:
+                         current_gold: int | None = None,
+                         item_id: str = "") -> dict:
         """Processa compra em loja — autoritativo no servidor.
 
         Valida: shop_id existe no catálogo, item está no estoque,
         gold suficiente, espaço no inventário.
         Retorna dict {success, reason, item_data, new_gold}.
-        """
+
+        `item_id` (débito C2, 10/08/2026) — identificação primária, O(1);
+        `item_name` cai pro cache legado por nome (`_shop_item_cache_by_name`)
+        só quando `item_id` vem vazio (cliente antigo/não migrado ainda)."""
         from engine.components import Wallet, Inventory
 
         eid = self._player_eids.get(session_id)
@@ -2603,10 +2936,15 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             return {"success": False, "reason": "not_logged_in"}
 
         # 1. Valida catálogo — usa cache pré-construído (sem instanciar factories)
-        shop_idx = self._shop_item_cache.get(shop_id)
+        if item_id:
+            shop_idx = self._shop_item_cache.get(shop_id)
+            cache_key = item_id
+        else:
+            shop_idx = self._shop_item_cache_by_name.get(shop_id)
+            cache_key = item_name
         if shop_idx is None:
             return {"success": False, "reason": "invalid_shop"}
-        cached = shop_idx.get(item_name)
+        cached = shop_idx.get(cache_key)
         if not cached:
             return {"success": False, "reason": "item_not_in_stock"}
 
@@ -2663,10 +3001,11 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             max_stack = getattr(preview, "max_stack", 1)
             remaining = qty
             if max_stack > 1:
+                _preview_id = getattr(preview, "item_id", "")
                 for existing in inv.items:
                     if existing is None or remaining <= 0:
                         continue
-                    if existing.name == item_name and existing.stack < existing.max_stack:
+                    if existing.item_id == _preview_id and existing.stack < existing.max_stack:
                         can_add = min(remaining, existing.max_stack - existing.stack)
                         existing.stack += can_add
                         remaining -= can_add
@@ -2696,15 +3035,35 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
     def process_shop_sell(self, session_id: str, item_name: str,
                           client_value: int, stack_sold: int = 1,
-                          current_gold: int | None = None) -> dict:
+                          current_gold: int | None = None,
+                          item_id: str = "") -> dict:
         """Processa venda ao mercador — autoritativo no servidor.
 
         Calcula sell_price a partir do catálogo (loot_tables → merchant_data).
         Se o item não estiver no catálogo usa client_value com cap de 500g para
         evitar exploits.  Gold adicionado server-side na Wallet ECS.
         Retorna {success, item_name, sell_price, new_gold}.
-        """
-        from engine.components import Wallet
+
+        `item_id` (débito C2, 10/08/2026) — lookup primário; `item_name`
+        cai pro cache legado por nome só quando `item_id` vem vazio.
+
+        Remove o item vendido do Inventory AO VIVO do servidor (12/08/2026,
+        bug real relatado pelo usuário) — antes só a Wallet era mutada
+        aqui, nunca o Inventory; `process_shop_buy` (logo acima) já fazia
+        o equivalente pro lado da compra ("sem isso o item só aparece
+        nessa cópia após o próximo SAVE_STATE"), venda nunca ganhou o
+        mesmo passo. Sem isso, o Inventory vivo do servidor nunca refletia
+        a venda: `_build_save_merge` persiste `live_inventory` (Fase 0,
+        07/08/2026) por cima do que o cliente reportava, então o item
+        "vendido" voltava no próximo login — e pior, `inv_index` de
+        EQUIP_ITEM (posicional contra esse MESMO Inventory vivo, ver
+        `equip_item_from_inventory`) ficava dessincronizado da posição que
+        o cliente via, equipando/rejeitando o item errado até relogar.
+        Não bloqueia a venda se o item não for encontrado ao vivo (mesmo
+        espírito conservador de `client_value` acima) — só não remove
+        nada nesse caso, preservando o comportamento anterior pra quem já
+        depende de vender sempre suceder."""
+        from engine.components import Wallet, Inventory
         eid = self._player_eids.get(session_id)
         if eid is None:
             return {"success": False, "reason": "not_logged_in"}
@@ -2717,13 +3076,36 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             wallet.gold = int(current_gold)
 
         # Tenta encontrar o item no catálogo para validar value
-        canonical_value = self._lookup_item_value(item_name)
+        canonical_value = (self._lookup_item_value(item_id) if item_id
+                           else self._item_value_cache_by_name.get(item_name))
         if canonical_value is None:
             # Desconhecido: usa valor informado pelo cliente com teto conservador
             canonical_value = min(int(client_value), 500)
 
         sell_price = max(1, int(canonical_value * self._SELL_RATIO)) * max(1, stack_sold)
         wallet.gold += sell_price
+
+        # Remove do Inventory vivo — mesmo padrão de craft_item (decrementa
+        # stack, remove o slot só quando zera). item_id primeiro (C2),
+        # nome como fallback (item sem item_id — save antigo).
+        inv = self.world.get_component(eid, Inventory)
+        if inv is not None:
+            remaining = max(1, stack_sold)
+            to_remove = []
+            for i, it in enumerate(inv.items):
+                if it is None or remaining <= 0:
+                    continue
+                matches = (it.item_id == item_id) if item_id else (it.name == item_name)
+                if not matches:
+                    continue
+                take = min(remaining, it.stack)
+                it.stack -= take
+                remaining -= take
+                if it.stack <= 0:
+                    to_remove.append(i)
+            for i in reversed(to_remove):
+                inv.items.pop(i)
+
         return {
             "success":    True,
             "item_name":  item_name,
@@ -2731,11 +3113,174 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             "new_gold":   wallet.gold,
         }
 
+    def craft_item(self, session_id: str, recipe_id: str) -> dict:
+        """Processa forja em ferreiro — autoritativo no servidor. Débito A4
+        (11/08/2026, ver PROBLEMAS_ARQUITETURA.md) — antes, `ui/
+        crafting_system.py::_do_forge` mutava só a cópia LOCAL do cliente
+        (mochila e ouro), sem mandar nada pro servidor; o servidor nunca
+        descontava ouro/material de verdade, então o valor "gasto" voltava
+        sozinho no próximo relog (item craftado de graça).
+
+        Lê `RECIPES[recipe_id]` do próprio catálogo (nunca confia em custo/
+        material/resultado vindo do cliente — só o `recipe_id` em si), e
+        confere ouro + materiais no Inventory AO VIVO antes de aplicar
+        qualquer coisa. Retorna {success, reason, item, new_gold}."""
+        from engine.components import Wallet, Inventory
+        from content.crafting_data import RECIPES, RARITY_FORGE_COST
+
+        eid = self._player_eids.get(session_id)
+        if eid is None:
+            return {"success": False, "reason": "not_logged_in"}
+        recipe = RECIPES.get(recipe_id)
+        if recipe is None:
+            return {"success": False, "reason": "invalid_recipe"}
+
+        wallet = self.world.get_component(eid, Wallet)
+        inv    = self.world.get_component(eid, Inventory)
+        if not wallet or not inv:
+            return {"success": False, "reason": "not_logged_in"}
+
+        cost = RARITY_FORGE_COST.get(recipe.get("result_rarity", "common"), 250)
+        if wallet.gold < cost:
+            return {"success": False, "reason": "insufficient_gold",
+                    "required": cost, "available": wallet.gold}
+
+        materials = recipe.get("materials", [])
+        for mat_id, qty in materials:
+            have = sum(it.stack for it in inv.items if it is not None and it.item_id == mat_id)
+            if have < qty:
+                return {"success": False, "reason": "insufficient_materials"}
+
+        # Espaço: o resultado empilha se já houver um igual com espaço na
+        # stack, senão precisa de 1 slot livre — só checa slot livre se for
+        # realmente precisar de um (mesmo racional de process_shop_buy).
+        result_preview = recipe["result_factory"]()
+        _can_stack = result_preview.max_stack > 1 and any(
+            it is not None and it.item_id == result_preview.item_id
+            and it.stack < it.max_stack for it in inv.items)
+        if not _can_stack and len(inv.items) >= inv.max_slots:
+            return {"success": False, "reason": "inventory_full"}
+
+        # Tudo ok — aplica: desconta ouro e materiais, credita o resultado.
+        wallet.gold -= cost
+        for mat_id, qty in materials:
+            remaining = qty
+            to_remove = []
+            for i, it in enumerate(inv.items):
+                if it is None or it.item_id != mat_id or remaining <= 0:
+                    continue
+                take = min(remaining, it.stack)
+                it.stack -= take
+                remaining -= take
+                if it.stack <= 0:
+                    to_remove.append(i)
+            for i in reversed(to_remove):
+                inv.items.pop(i)
+
+        result = recipe["result_factory"]()
+        if result.max_stack > 1:
+            existing = next((it for it in inv.items
+                             if it is not None and it.item_id == result.item_id
+                             and it.stack < it.max_stack), None)
+            if existing is not None:
+                existing.stack += 1
+                result = existing
+            else:
+                inv.items.append(result)
+        else:
+            inv.items.append(result)
+
+        return {
+            "success":           True,
+            "item":              self._item_data_from_obj(result),
+            "new_gold":          wallet.gold,
+            # Bug real relatado pelo usuário (11/08/2026): sem isso, a
+            # cópia LOCAL do cliente nunca ficava sabendo quais materiais
+            # foram consumidos — o resultado craftado aparecia, mas os
+            # materiais só somiam da bag no próximo relog (quando o
+            # cliente recarregava o Inventory real do servidor do zero).
+            # Mesmo formato de INVENTORY_UPDATE "removed"
+            # (client/network_handlers.py::_remove_items_from_inventory).
+            "materials_consumed": [{"item_id": mat_id, "stack": qty}
+                                   for mat_id, qty in materials],
+        }
+
+    def recycle_item(self, session_id: str, inv_index: int) -> dict:
+        """Processa reciclagem em ferreiro — autoritativo no servidor,
+        contraparte de `craft_item` (débito A4, 11/08/2026). `inv_index`
+        (não o item em si, mesmo padrão de `equip_item_from_inventory`) —
+        servidor lê o item real na posição indicada do Inventory AO VIVO,
+        nunca confia em item/raridade/tipo mandado pelo cliente.
+
+        Retorna {success, reason, materials, new_gold}."""
+        from engine.components import Wallet, Inventory
+        from content.crafting_data import RARITY_RECYCLE_COST, get_recycle_materials
+
+        eid = self._player_eids.get(session_id)
+        if eid is None:
+            return {"success": False, "reason": "not_logged_in"}
+        wallet = self.world.get_component(eid, Wallet)
+        inv    = self.world.get_component(eid, Inventory)
+        if not wallet or not inv:
+            return {"success": False, "reason": "not_logged_in"}
+        if inv_index < 0 or inv_index >= len(inv.items):
+            return {"success": False, "reason": "invalid_item"}
+        item = inv.items[inv_index]
+        if item is None:
+            return {"success": False, "reason": "invalid_item"}
+
+        mats = get_recycle_materials(item)
+        if not mats:
+            return {"success": False, "reason": "not_recyclable"}
+        cost = RARITY_RECYCLE_COST.get(item.rarity, 250)
+        if wallet.gold < cost:
+            return {"success": False, "reason": "insufficient_gold",
+                    "required": cost, "available": wallet.gold}
+
+        # Aplica: remove o item, desconta ouro, credita materiais (empilha
+        # em stack existente quando possível, senão novo slot — perde
+        # silenciosamente o excedente se a mochila encher no meio, mesmo
+        # comportamento já aceito no cliente antes desta migração).
+        wallet.gold -= cost
+        inv.items.remove(item)
+        from content.crafting_data import MATERIALS
+        granted: list[dict] = []
+        for mat_id, qty in mats:
+            factory = MATERIALS.get(mat_id)
+            if not factory:
+                continue
+            remaining = qty
+            existing = next((it for it in inv.items
+                             if it is not None and it.item_id == mat_id
+                             and it.stack < it.max_stack), None)
+            if existing is not None:
+                can_add = min(remaining, existing.max_stack - existing.stack)
+                existing.stack += can_add
+                remaining -= can_add
+                if can_add > 0:
+                    granted.append(self._item_data_from_obj(existing))
+            if remaining > 0 and len(inv.items) < inv.max_slots:
+                mat_item = factory()
+                mat_item.stack = remaining
+                inv.items.append(mat_item)
+                granted.append(self._item_data_from_obj(mat_item))
+
+        return {
+            "success":   True,
+            "materials": granted,
+            "new_gold":  wallet.gold,
+        }
+
     @staticmethod
     def _item_data_from_obj(obj) -> dict:
         """Serializa um item ECS para o dict que o cliente espera no BUY_RESULT
-        (e, via get_player_equipment_data, pro cache de save de EQUIP_SYNC)."""
+        (e, via get_player_equipment_data, pro cache de save de equipamento)."""
         data = {
+            # item_id (débito C2, 10/08/2026) — identidade ESTÁVEL, sempre
+            # primeiro campo por convenção (mesmo lugar de destaque que
+            # "name" já tinha). "" pra item reconstruído sem catálogo
+            # (fallback inerte de _reconstruct_item) — nunca ausente.
+            "item_id":   getattr(obj, "item_id", ""),
             "name":      obj.name,
             "item_type": getattr(obj, "item_type", ""),
             "slot":      getattr(obj, "slot", ""),
@@ -2767,64 +3312,108 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         """Constrói _item_value_cache e _shop_item_cache na inicialização.
 
         Instancia cada factory UMA VEZ (startup) em vez de a cada venda/compra.
-        _item_value_cache: {nome → valor} para validação de venda (A5).
-        _shop_item_cache:  {shop_id → {nome → {entry, item_data}}} para compras (A6).
+        Chaveados por `item_id` desde 10/08/2026 (débito C2) — antes eram
+        chaveados por NOME de exibição, exigindo casar por igualdade de
+        string em vários catálogos; item_id é a identidade estável de
+        verdade (renomear um item no catálogo não quebra mais nada aqui).
+        `_item_value_cache_by_name`/`_shop_item_cache_by_name` (mantidos em
+        paralelo) são só pra RECONSTRUÇÃO de saves antigos sem item_id
+        salvo — nunca usados por protocolo/lógica nova, ver
+        `_reconstruct_item`.
+        _item_value_cache: {item_id → valor} para validação de venda (A5).
+        _shop_item_cache:  {shop_id → {item_id → {entry, item_data}}} pra compras (A6).
         """
-        # loot_tables._T: {key: factory_fn} — valores são callables diretamente
+        self._item_value_cache_by_name.clear()
+        self._shop_item_cache_by_name.clear()
+
+        # item_table.ITEMS (loot_tables._T é o mesmo dict reexportado)
         try:
-            from content.loot_tables import _T as _LT
-            for _f in _LT.values():
+            from content.item_table import ITEMS as _IT
+            for _key, _f in _IT.items():
                 if callable(_f):
                     try:
                         _o = _f()
+                        self._item_value_cache[_key] = int(getattr(_o, "value", 0))
                         _n = getattr(_o, "name", None)
                         if _n:
-                            self._item_value_cache[_n] = int(getattr(_o, "value", 0))
+                            self._item_value_cache_by_name[_n] = self._item_value_cache[_key]
                     except Exception:
                         pass
         except ImportError:
             pass
 
-        # merchant_data → _shop_item_cache + _item_value_cache
+        # merchant_data → _shop_item_cache + _item_value_cache (indexado
+        # pelo item_id do item construído, não mais por chave/índice de
+        # `stock` — a factory já carrega item_id certo desde a origem).
         try:
             from content.merchant_data import SHOPS
             for _sid, _shop in SHOPS.items():
                 _idx: dict[str, dict] = {}
+                _idx_by_name: dict[str, dict] = {}
                 for _e in _shop.get("stock", []):
                     _f = _e.get("factory")
                     if callable(_f):
                         try:
                             _o = _f()
+                            _iid = getattr(_o, "item_id", "")
+                            _val = int(getattr(_o, "value", 0))
+                            _entry_data = {"entry": _e, "item_data": self._item_data_from_obj(_o)}
+                            if _iid:
+                                self._item_value_cache[_iid] = _val
+                                _idx[_iid] = _entry_data
                             _n = getattr(_o, "name", None)
                             if _n:
-                                self._item_value_cache[_n] = int(getattr(_o, "value", 0))
-                                _idx[_n] = {
-                                    "entry":     _e,
-                                    "item_data": self._item_data_from_obj(_o),
-                                }
+                                self._item_value_cache_by_name[_n] = _val
+                                _idx_by_name[_n] = _entry_data
                         except Exception:
                             pass
                 self._shop_item_cache[_sid] = _idx
+                self._shop_item_cache_by_name[_sid] = _idx_by_name
         except ImportError:
             pass
 
-        # crafting_data.RECIPES → _item_value_cache — SEM isso, todo item
-        # FORJADO (Espada Afiada etc.) ficava fora do cache: process_shop_sell
-        # caía no branch "desconhecido → client_value com teto de 500" (valor
-        # de venda errado/manipulável) e sanitize_inventory_payload (item A4,
-        # seção 11) descartaria item craftado legítimo como se fosse forjado
-        # por cliente malicioso. _reconstruct_item sempre cobriu os 3
-        # catálogos — o cache é que tinha ficado só com 2.
+        # crafting_data.MATERIALS + RECIPES (resultado craftado) + RECIPE_ITEMS
+        # (pergaminho da receita) → _item_value_cache. SEM isso, item
+        # FORJADO/material ficava fora do cache: process_shop_sell caía no
+        # branch "desconhecido → client_value com teto de 500" (valor de
+        # venda errado/manipulável) e sanitize_inventory_payload (item A4)
+        # descartaria item craftado legítimo como se fosse forjado por
+        # cliente malicioso.
         try:
-            from content.crafting_data import RECIPES
+            from content.crafting_data import MATERIALS, RECIPES, RECIPE_ITEMS
+            for _key, _f in MATERIALS.items():
+                if callable(_f):
+                    try:
+                        _o = _f()
+                        self._item_value_cache.setdefault(_key, int(getattr(_o, "value", 0)))
+                        _n = getattr(_o, "name", None)
+                        if _n:
+                            self._item_value_cache_by_name.setdefault(_n, int(getattr(_o, "value", 0)))
+                    except Exception:
+                        pass
             for _rec in RECIPES.values():
                 _f = _rec.get("result_factory")
                 if callable(_f):
                     try:
                         _o = _f()
+                        _iid = getattr(_o, "item_id", "")
+                        _val = int(getattr(_o, "value", 0))
+                        if _iid:
+                            self._item_value_cache.setdefault(_iid, _val)
                         _n = getattr(_o, "name", None)
-                        if _n and _n not in self._item_value_cache:
-                            self._item_value_cache[_n] = int(getattr(_o, "value", 0))
+                        if _n:
+                            self._item_value_cache_by_name.setdefault(_n, _val)
+                    except Exception:
+                        pass
+            for _key, _f in RECIPE_ITEMS.items():
+                if callable(_f):
+                    try:
+                        _o = _f()
+                        _iid = getattr(_o, "item_id", "") or f"recipe_{_key}"
+                        self._item_value_cache.setdefault(_iid, int(getattr(_o, "value", 0)))
+                        _n = getattr(_o, "name", None)
+                        if _n:
+                            self._item_value_cache_by_name.setdefault(_n, int(getattr(_o, "value", 0)))
                     except Exception:
                         pass
         except ImportError:
@@ -2841,32 +3430,117 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # sync_collect_progress nunca via nada pra contar.
         try:
             from content.quests_data import QUEST_ITEMS
-            for _f in QUEST_ITEMS.values():
+            for _key, _f in QUEST_ITEMS.items():
                 if callable(_f):
                     try:
                         _o = _f()
+                        self._item_value_cache.setdefault(_key, int(getattr(_o, "value", 0)))
                         _n = getattr(_o, "name", None)
-                        if _n and _n not in self._item_value_cache:
-                            self._item_value_cache[_n] = int(getattr(_o, "value", 0))
+                        if _n:
+                            self._item_value_cache_by_name.setdefault(_n, int(getattr(_o, "value", 0)))
                     except Exception:
                         pass
         except ImportError:
             pass
         log.info(f"[WorldServer] caches: {len(self._item_value_cache)} itens, "
               f"{sum(len(v) for v in self._shop_item_cache.values())} entradas de loja")
+        self._check_item_name_collisions()
 
-    def _lookup_item_value(self, item_name: str) -> int | None:
-        """Retorna o valor base de um item a partir do cache pré-construído.
-        None se não encontrado (foi removido do catálogo após startup)."""
-        return self._item_value_cache.get(item_name)
+    @staticmethod
+    def _check_item_name_collisions() -> None:
+        """Trava de integridade de conteúdo (11/08/2026, pedido do usuário:
+        "nomes iguais de itens devem ser evitados, colocar uma trava para
+        que isso não possa acontecer"). Dois item_ids DIFERENTES com o
+        MESMO nome de exibição são um problema real, não cosmético: os
+        caches `*_by_name` acima usam `setdefault`, então o 2º item
+        cadastrado com um nome já visto fica SILENCIOSAMENTE invisível
+        pra reconstrução de saves antigos sem item_id (`_reconstruct_item`
+        fallback por nome) — colisão detectada e recusada aqui ANTES
+        disso incomodar alguém em produção, nunca como patch pontual
+        depois. Decisão do usuário (11/08/2026, ver PROBLEMAS_ARQUITETURA.md):
+        recusa o boot do servidor — não é só log.
+
+        Varre os mesmos catálogos-base de `_build_item_caches` (lojas
+        reusam as MESMAS factories de item_table.ITEMS, nunca item novo —
+        confirmado em content/merchant_data.py — então não precisam de
+        varredura própria aqui)."""
+        from collections import defaultdict
+        _by_name: dict[str, set] = defaultdict(set)
+
+        def _scan(catalog_label: str, factories) -> None:
+            for _f in factories:
+                if not callable(_f):
+                    continue
+                try:
+                    _o = _f()
+                except Exception:
+                    continue
+                _n = getattr(_o, "name", "")
+                _iid = getattr(_o, "item_id", "")
+                if _n and _iid:
+                    _by_name[_n].add(_iid)
+
+        try:
+            from content.item_table import ITEMS as _CkIT
+            _scan("item_table.ITEMS", _CkIT.values())
+        except ImportError:
+            pass
+        try:
+            from content.crafting_data import MATERIALS as _CkMat, RECIPES as _CkRec, RECIPE_ITEMS as _CkRI
+            _scan("crafting_data.MATERIALS", _CkMat.values())
+            _scan("crafting_data.RECIPES", (r.get("result_factory") for r in _CkRec.values()))
+            _scan("crafting_data.RECIPE_ITEMS", _CkRI.values())
+        except ImportError:
+            pass
+        try:
+            from content.quests_data import QUEST_ITEMS as _CkQI
+            _scan("quests_data.QUEST_ITEMS", _CkQI.values())
+        except ImportError:
+            pass
+
+        collisions = {n: ids for n, ids in _by_name.items() if len(ids) > 1}
+        if collisions:
+            for _n, _ids in collisions.items():
+                log.error(f"[WorldServer] Nome de item duplicado: '{_n}' usado "
+                         f"por item_ids diferentes {sorted(_ids)} — corrija o "
+                         f"catálogo (nomes de exibição precisam ser únicos).")
+            raise RuntimeError(
+                f"Integridade de conteúdo violada: {len(collisions)} nome(s) "
+                f"de item duplicado(s) entre item_ids diferentes — ver log "
+                f"acima. Servidor não pode iniciar até corrigir o catálogo.")
+
+    def _lookup_item_value(self, item_id: str) -> int | None:
+        """Retorna o valor base de um item a partir do cache pré-construído
+        (chave = item_id, débito C2). None se não encontrado (removido do
+        catálogo após startup, ou item_id desconhecido/forjado)."""
+        return self._item_value_cache.get(item_id)
+
+    @staticmethod
+    def _item_factory_by_id(item_id: str):
+        """Wrapper fino — implementação real virou `content.item_table.
+        resolve_item_by_id` (Fase 4.7, 12/08/2026, ver
+        PROBLEMAS_ARQUITETURA.md §39: precisa ser importável pelo
+        CLIENTE também, não só pelo servidor). Mantido aqui só pra não
+        quebrar os call sites existentes (`self._item_factory_by_id`/
+        `WorldServer._item_factory_by_id` em vários arquivos e testes)."""
+        from content.item_table import resolve_item_by_id
+        return resolve_item_by_id(item_id)
+
+    @staticmethod
+    def _item_factory_by_name(name: str):
+        """Wrapper fino — ver `_item_factory_by_id` acima; implementação
+        real é `content.item_table.resolve_item_by_name`."""
+        from content.item_table import resolve_item_by_name
+        return resolve_item_by_name(name)
 
     def _reconstruct_item(self, d: dict):
         """Reconstrói um Item a partir de dict serializado (inventory_json / INV_SYNC).
 
-        Tenta casar pelo nome em QUALQUER catálogo autoritativo do servidor —
-        loot (`loot_tables._T`), loja (`merchant_data.SHOPS`), forja
-        (`crafting_data.RECIPES[*]["result_factory"]`) e itens de quest
-        (`quests_data.QUEST_ITEMS`) — e usa os stats REAIS do catálogo,
+        Casa por `item_id` (débito C2, 10/08/2026 — identidade estável,
+        O(1) por catálogo, ver `_item_factory_by_id`) quando presente no
+        payload; cai pra varredura por NOME (`_item_factory_by_name`, o
+        mecanismo antigo, preservado) só quando `item_id` está ausente —
+        save salvo ANTES desta migração. Usa os stats REAIS do catálogo,
         ignorando `modifiers`/`attack_power`/etc. que o cliente mandou no
         payload. Só os campos puramente de bookkeeping (contagem de
         flecha/stack) vêm do cliente, nunca dano/armadura/atributo.
@@ -2883,10 +3557,9 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         Necessário pra que handlers de skill validem o Inventory real do
         jogador no servidor (ex: Recarregar verificando munição "ammo" na bag).
         """
-        if not d or not d.get("name"):
+        if not d or not (d.get("item_id") or d.get("name")):
             return None
         from engine.components import Item as _Item
-        name = d.get("name", "")
 
         def _apply_client_bookkeeping(candidate):
             """Campos que o cliente PODE reportar com segurança — nunca dano/
@@ -2909,65 +3582,33 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 candidate.stack = max(1, min(int(d["stack"]), _cap_st))
             return candidate
 
-        # 1) Catálogo de loot
-        from content.loot_tables import _T
-        for _key, factory in _T.items():
-            try:
-                candidate = factory()
-            except Exception:
-                continue
-            if getattr(candidate, "name", "") == name:
+        item_id = d.get("item_id", "")
+        if item_id:
+            candidate = self._item_factory_by_id(item_id)
+            if candidate is not None:
+                return _apply_client_bookkeeping(candidate)
+            # item_id presente mas desconhecido de TODO catálogo — nunca cai
+            # pro fallback por nome (defeitaria o propósito de item_id ser
+            # a identidade confiável); segue direto pro inerte abaixo.
+        else:
+            candidate = self._item_factory_by_name(d.get("name", ""))
+            if candidate is not None:
                 return _apply_client_bookkeeping(candidate)
 
-        # 2) Catálogo de loja — todo item comprado de um merchant
-        from content.merchant_data import SHOPS
-        for _shop in SHOPS.values():
-            for _entry in _shop.get("stock", []):
-                try:
-                    candidate = _entry["factory"]()
-                except Exception:
-                    continue
-                if getattr(candidate, "name", "") == name:
-                    return _apply_client_bookkeeping(candidate)
-
-        # 3) Catálogo de forja — resultado de receita (Espada Afiada, etc.)
-        from content.crafting_data import RECIPES
-        for _recipe in RECIPES.values():
-            _factory = _recipe.get("result_factory")
-            if not _factory:
-                continue
-            try:
-                candidate = _factory()
-            except Exception:
-                continue
-            if getattr(candidate, "name", "") == name:
-                return _apply_client_bookkeeping(candidate)
-
-        # 4) Catálogo de itens de quest (Presa de Lobo, Pelo de Urso, etc.) —
-        # só existem em quests_data.QUEST_ITEMS, nunca em loot_tables._T
-        # (drop condicional a quest ativa, ver engine/quest_logic.py). Faltava
-        # aqui — bug real 19/07/2026, ver docstring de sanitize_inventory_payload.
-        from content.quests_data import QUEST_ITEMS
-        for _factory in QUEST_ITEMS.values():
-            try:
-                candidate = _factory()
-            except Exception:
-                continue
-            if getattr(candidate, "name", "") == name:
-                return _apply_client_bookkeeping(candidate)
-
-        # Fallback: nome não bate com NENHUM catálogo conhecido (loot/loja/
-        # forja/quest) — todo item de gameplay real vem de um desses, então isso
-        # só acontece pra nome inválido/inventado. Por segurança, NUNCA
-        # aplica modifiers/dano/atributo vindos do payload aqui — só os
-        # campos puramente descritivos (nome, tipo, raridade, valor de
-        # venda, consumível) e os mesmos campos de bookkeeping seguros de
-        # cima. O item existe (não quebra render/inventário), mas é
-        # mecanicamente inerte — não dá NENHUM bônus de combate, mesmo que o
-        # payload peça (ver arquitetura/PROBLEMAS_ARQUITETURA.md,
-        # vulnerabilidade de forja de stats de equipamento).
+        # Fallback: item_id/nome não bate com NENHUM catálogo conhecido
+        # (loot/loja/forja/quest) — todo item de gameplay real vem de um
+        # desses, então isso só acontece pra id/nome inválido/inventado.
+        # Por segurança, NUNCA aplica modifiers/dano/atributo vindos do
+        # payload aqui — só os campos puramente descritivos (nome, tipo,
+        # raridade, valor de venda, consumível) e os mesmos campos de
+        # bookkeeping seguros de cima. O item existe (não quebra render/
+        # inventário), mas é mecanicamente inerte — não dá NENHUM bônus de
+        # combate, mesmo que o payload peça (ver
+        # arquitetura/PROBLEMAS_ARQUITETURA.md, vulnerabilidade de forja de
+        # stats de equipamento). item_id fica "" (não herda o id
+        # pedido/forjado — nunca finge ser um item de catálogo real).
         item = _Item(
-            name        = d["name"],
+            name        = d.get("name", ""),
             item_type   = d.get("item_type", ""),
             slot        = d.get("slot", ""),
             rarity      = d.get("rarity", "common"),
@@ -3030,7 +3671,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             # persistir isso eterniza lixo forjado no banco. Detecção: o
             # fallback é o único caminho que preserva o item_type cru do
             # payload sem match de nome — re-checa contra o catálogo.
-            if obj is None or self._lookup_item_value(getattr(obj, "name", "")) is None:
+            if obj is None or self._lookup_item_value(getattr(obj, "item_id", "")) is None:
                 continue
             data = self._item_data_from_obj(obj)
             if data:
@@ -3090,7 +3731,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         (ActiveManaRegen). Estrutura extensível via campo 'buffs'.
 
         SEMPRE responde ao CONSUMABLE_USE (aceito OU rejeitado) via
-        queue_stats_update com `item_name` — o cliente NÃO consome o item
+        queue_stats_update com `item_id` — o cliente NÃO consome o item
         localmente até essa confirmação chegar (ver ConsumableSystem/
         network_handlers.py). Antes, um bloqueio aqui (ex: HP já cheio no
         SERVIDOR, mesmo que o cliente ache que não está — drift natural
@@ -3107,13 +3748,13 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         cs     = self.world.get_component(eid, CombatStats)
         cstate = self.world.get_component(eid, CombatState)
         char   = self.world.get_component(eid, CharacterStats)
-        item_name = payload.get("item_name", "")
+        item_id = payload.get("item_id", "")
 
         def _reject(reason: str) -> None:
-            if item_name:
+            if item_id:
                 self.queue_stats_update({
                     "player_eid":          eid,
-                    "item_name":           item_name,
+                    "item_id":             item_id,
                     "consumable_rejected": True,
                     "reason":              reason,
                 })
@@ -3148,21 +3789,64 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             _reject("mana_full")
             return
 
+        # Pergaminho de receita (débito A4, 11/08/2026 — bug real: o
+        # scroll era consumido mas a receita nunca era aprendida online,
+        # `apply_consumable` nunca olhava pra `LearnedRecipes`. Ver
+        # PROBLEMAS_ARQUITETURA.md). Resolve o item_id de VOLTA pro
+        # catálogo (nunca confia em recipe_id vindo do cliente) — só um
+        # pergaminho de verdade tem `consumable={"learn_recipe": ...}`.
+        _learned_recipe_id = ""
+        if item_id:
+            _scroll = self._item_factory_by_id(item_id)
+            _recipe_effect = getattr(_scroll, "consumable", None) if _scroll else None
+            if isinstance(_recipe_effect, dict) and _recipe_effect.get("learn_recipe"):
+                from engine.components import LearnedRecipes as _LR_cons
+                from engine.stat_fns import learn_recipe as _learn_recipe_fn
+                _lr = self.world.get_component(eid, _LR_cons)
+                _candidate_recipe_id = _recipe_effect["learn_recipe"]
+                if _lr is not None and _learn_recipe_fn(_lr, _candidate_recipe_id):
+                    _learned_recipe_id = _candidate_recipe_id
+
+        # Decrementa o item de verdade no Inventory AO VIVO do servidor —
+        # débito A4 (11/08/2026, bug real relatado pelo usuário: pergaminho
+        # de receita reaparecia na bag a cada relog). Antes, só o cliente
+        # tirava o item da SUA cópia (`_finalize_consumable`) — o servidor
+        # nunca ficava sabendo, então qualquer save persistia o item como
+        # se nunca tivesse sido usado (mesma classe de duplicação já
+        # fechada pra equipar/forjar). Mesmo critério de identificação do
+        # cliente (`ConsumableSystem._use_consumable`): primeiro item da
+        # bag com esse item_id e stack > 0.
+        if item_id:
+            from engine.components import Inventory as _InvCons
+            _inv_cons = self.world.get_component(eid, _InvCons)
+            if _inv_cons is not None:
+                _item_cons = next((it for it in _inv_cons.items
+                                   if it is not None and it.item_id == item_id and it.stack > 0), None)
+                if _item_cons is not None:
+                    _item_cons.stack -= 1
+                    if _item_cons.stack <= 0:
+                        _inv_cons.items.remove(_item_cons)
+
         # Aceito — confirma ANTES de aplicar os efeitos: só agora o cliente
         # pode remover o item do Inventory local com segurança (o servidor
-        # já garantiu que vai aplicar algo de verdade).
-        if item_name:
-            self.queue_stats_update({
+        # já garantiu que vai aplicar algo de verdade). `learned_recipe`
+        # vai na MESMA confirmação (não precisa mensagem separada) — só
+        # presente quando a receita era realmente nova.
+        if item_id:
+            _confirm = {
                 "player_eid":    eid,
-                "item_name":     item_name,
+                "item_id":       item_id,
                 "consumable_ok": True,
-            })
+            }
+            if _learned_recipe_id:
+                _confirm["learned_recipe"] = _learned_recipe_id
+            self.queue_stats_update(_confirm)
 
         # Evento de quest "use_consumable" — uso aceito (passou pelos blocks
         # acima). Server-autoritativo — ver quest_logic.py/PROBLEMAS_ARQUITETURA.md.
-        if item_name:
+        if item_id:
             from engine.quest_events import fire as _qfire_cons
-            _qfire_cons("use_consumable", player_eid=eid, item_name=item_name)
+            _qfire_cons("use_consumable", player_eid=eid, item_id=item_id)
 
         # 1. Cura instantânea de HP
         heal_instant = int(payload.get("heal_instant", 0))
@@ -3644,73 +4328,114 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 mod = Modifier(eff["attribute"], eff["value"] * points, eff["type"], source="talent")
                 add_modifier(cs, mod)
 
-    def update_player_equipment(self, session_id: str, equipment: dict) -> list[dict]:
-        """Reconstrói o componente Equipment do player a partir do payload EQUIP_SYNC.
+    def equip_item_from_inventory(self, session_id: str, inv_index: int) -> "dict | None":
+        """Move o item na posição `inv_index` do Inventory AO VIVO do servidor
+        pro slot de equipamento correspondente (`item.slot`) — débito A4
+        (10-11/08/2026, ver PROBLEMAS_ARQUITETURA.md), substitui o antigo
+        `update_player_equipment` de estado completo.
 
-        Chamado toda vez que o cliente equipa ou desequipa um item. Garante que
-        validações server-side (quiver para auto-attack, bow para skills de flecha)
-        usem o estado real do equipamento, não o estado congelado do login.
+        NUNCA confia em item mandado pelo cliente — só na posição; o item de
+        verdade é lido do Inventory real do servidor (mesma garantia que
+        `_reconstruct_item` já dava por item_id, agora também por posse: um
+        EQUIP_ITEM forjado pra uma posição vazia/inválida é ignorado, não
+        "resgatado" por nenhum dado extra no payload). Espelha exatamente a
+        UX já provada em client/inventory_handlers.py::_equip_item: item
+        antigo do slot (se houver) volta pro FIM do Inventory, arma de duas
+        mãos desequipa offhand primeiro.
 
-        Valida por slot, ANTES de aplicar: armor_class contra
-        stats_system.CLASS_ARMOR_ALLOWED[classe] (antes só existia no cliente,
-        client/inventory_handlers.py::_equip_item — um cliente malicioso podia
-        equipar qualquer material em qualquer classe) e level_requirement
-        contra CharacterStats.level. Slot que falha mantém o item anterior
-        (nunca aplica o candidato) e entra na lista de retorno — o caller
-        (server/session.py::_handle_equip_sync) manda EQUIP_REJECTED por
-        rejeição pro cliente reverter a UI otimista e avisar o jogador.
-
-        Retorna [{"slot":, "item_name":, "reason": "class"|"level"}, ...].
+        Retorna None em sucesso (ou no-op silencioso — posição vazia/slot
+        bloqueado, mesmo comportamento do cliente hoje). Retorna dict de
+        rejeição {"slot", "item_name", "reason"} se bloqueado por
+        classe/level/offhand travado — o caller (server/session.py::
+        _handle_equip_item) manda EQUIP_REJECTED pra essa rejeição.
         """
-        from engine.components import Equipment as _EqUpd, CharacterStats as _CSEquip
+        from engine.components import Equipment as _EqUpd, Inventory as _InvUpd, CharacterStats as _CSEquip
         eid = self._player_eids.get(session_id)
         if eid is None:
-            return []
+            return None
+        inv = self.world.get_component(eid, _InvUpd)
         eq_comp = self.world.get_component(eid, _EqUpd)
-        if eq_comp is None:
-            eq_comp = _EqUpd()
-            self.world.add_component(eid, eq_comp)
+        if inv is None or eq_comp is None:
+            return None
+        if inv_index < 0 or inv_index >= len(inv.items):
+            return None
+        item = inv.items[inv_index]
+        if item is None:
+            return None
+        target_slot = item.slot
+        if target_slot not in eq_comp.slots:
+            return None
+
         char = self.world.get_component(eid, _CSEquip)
-        # Snapshot ANTES de sobrescrever — só dispara evento de quest pra item
-        # que de fato passou a estar equipado agora (evita re-disparo a cada
-        # EQUIP_SYNC redundante, ex: reconectar com o mesmo equipamento).
-        _old_slot_names = {slot: (item.name if item else None) for slot, item in eq_comp.slots.items()}
         from engine.stats_system import CLASS_ARMOR_ALLOWED as _CAA_equip
         from engine.stats_system import is_weapon_allowed_for_class as _is_weapon_allowed_equip
-        rejected: list[dict] = []
-        for slot, item_d in equipment.items():
-            if slot not in eq_comp.slots or not isinstance(item_d, dict):
-                continue
-            item_d.setdefault("slot", slot)
-            candidate = self._reconstruct_item(item_d)
-            if candidate is None:
-                continue
-            if char is not None:
-                _mat = getattr(candidate, "armor_class", "")
-                if (candidate.item_type == "armor" and _mat
-                        and _mat not in _CAA_equip.get(char.class_id, frozenset())):
-                    rejected.append({"slot": slot, "item_name": candidate.name, "reason": "class"})
-                    continue
-                if (candidate.item_type in ("weapon", "shield", "quiver")
-                        and not _is_weapon_allowed_equip(candidate, char.class_id)):
-                    rejected.append({"slot": slot, "item_name": candidate.name, "reason": "class"})
-                    continue
-                if char.level < getattr(candidate, "level_requirement", 1):
-                    rejected.append({"slot": slot, "item_name": candidate.name, "reason": "level"})
-                    continue
-            eq_comp.slots[slot] = candidate
-        # Slots ausentes no payload → desequipado
-        for slot in list(eq_comp.slots.keys()):
-            if slot not in equipment:
-                eq_comp.slots[slot] = None
+        if char is not None:
+            _mat = getattr(item, "armor_class", "")
+            if (item.item_type == "armor" and _mat
+                    and _mat not in _CAA_equip.get(char.class_id, frozenset())):
+                return {"slot": target_slot, "item_name": item.name, "reason": "class"}
+            if (item.item_type in ("weapon", "shield", "quiver")
+                    and not _is_weapon_allowed_equip(item, char.class_id)):
+                return {"slot": target_slot, "item_name": item.name, "reason": "class"}
+            if char.level < getattr(item, "level_requirement", 1):
+                return {"slot": target_slot, "item_name": item.name, "reason": "level"}
 
-        # Evento de quest "equip_item" — só pra slots que mudaram de item.
-        # Server-autoritativo — ver quest_logic.py/PROBLEMAS_ARQUITETURA.md.
+        # Arma de duas mãos → desequipa offhand primeiro (mesma UX do cliente).
+        if getattr(item, "two_handed", False) and target_slot == "mainhand":
+            old_oh = eq_comp.slots.get("offhand")
+            if old_oh:
+                eq_comp.slots["offhand"] = None
+                inv.items.append(old_oh)
+
+        # Defesa em profundidade — cliente legítimo nem chega a mandar
+        # EQUIP_ITEM nesse caso (client/inventory_handlers.py::_equip_item),
+        # mas um EQUIP_ITEM forjado pro offhand com mão dupla já equipada
+        # precisa ser recusado aqui também.
+        if target_slot == "offhand" and eq_comp.is_offhand_locked():
+            return {"slot": target_slot, "item_name": item.name, "reason": "offhand_locked"}
+
+        old_item = eq_comp.slots.get(target_slot)
+        inv.items.remove(item)
+        eq_comp.slots[target_slot] = item
+        if old_item is not None:
+            inv.items.append(old_item)
+
+        # Evento de quest "equip_item" — server-autoritativo, ver
+        # quest_logic.py/PROBLEMAS_ARQUITETURA.md.
         from engine.quest_events import fire as _qfire_equip
-        for slot, item in eq_comp.slots.items():
-            if item and item.name != _old_slot_names.get(slot):
-                _qfire_equip("equip_item", player_eid=eid,
-                             item_name=item.name, item_type=item.item_type)
+        _qfire_equip("equip_item", player_eid=eid,
+                     item_id=item.item_id, item_type=item.item_type)
+        self._finalize_equipment_change(eid, eq_comp)
+        return None
+
+    def unequip_item_slot(self, session_id: str, slot: str) -> None:
+        """Move o item equipado em `slot` de volta pro FIM do Inventory ao
+        vivo do servidor — débito A4, contraparte de `equip_item_from_inventory`.
+
+        No-op silencioso se o slot já está vazio ou a mochila está cheia
+        (mesmo guard/comportamento do cliente hoje, client/
+        inventory_handlers.py::_unequip_slot — sem aviso nesses casos)."""
+        from engine.components import Equipment as _EqUneq, Inventory as _InvUneq
+        eid = self._player_eids.get(session_id)
+        if eid is None:
+            return
+        inv = self.world.get_component(eid, _InvUneq)
+        eq_comp = self.world.get_component(eid, _EqUneq)
+        if inv is None or eq_comp is None:
+            return
+        item = eq_comp.slots.get(slot)
+        if item is None:
+            return
+        if len(inv.items) >= inv.max_slots:
+            return
+        eq_comp.slots[slot] = None
+        inv.items.append(item)
+        self._finalize_equipment_change(eid, eq_comp)
+
+    def _finalize_equipment_change(self, eid: int, eq_comp) -> None:
+        """Recalcula stats derivados de equipamento após qualquer mutação —
+        ponto único chamado por `equip_item_from_inventory`/`unequip_item_slot`
+        (extraído do antigo `update_player_equipment`, mesma lógica)."""
         # Deriva attack_power/crit_rating/armor/spell_power/etc. dos itens REAIS
         # agora equipados (ver _apply_equipment_modifiers) — nunca confia em
         # nenhum valor calculado pelo cliente para isso.
@@ -3721,13 +4446,12 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         cs = self.world.get_component(eid, _CSUpd)
         if cs:
             _sai(cs, eq_comp)
-        return rejected
 
     def get_player_equipment_data(self, session_id: str) -> dict:
         """Serializa o Equipment ATUAL (pós-validação) do player pra cache de
-        save — usado por _handle_equip_sync pra nunca persistir um slot que
-        update_player_equipment rejeitou (classe/level), mesmo que o cliente
-        tenha mandado no payload de EQUIP_SYNC."""
+        save — usado por _handle_equip_item/_handle_unequip_item pra nunca
+        persistir um slot que equip_item_from_inventory rejeitou (classe/
+        level), mesmo que o cliente tenha mandado EQUIP_ITEM pra ele."""
         from engine.components import Equipment as _EqData
         eid = self._player_eids.get(session_id)
         if eid is None:
@@ -3756,6 +4480,22 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         if ps is None:
             return []
         return [sk.skill_id if sk else None for sk in ps.skills]
+
+    def get_player_learned_recipes_data(self, session_id: str) -> "list | None":
+        """Serializa `LearnedRecipes.known` ATUAL (ao vivo) pra
+        persistência — débito A4 (11/08/2026, ver PROBLEMAS_ARQUITETURA.md),
+        mesmo padrão de `get_player_hotbar_data`/`get_player_talent_data`.
+        `apply_consumable` já muta este componente diretamente ao aceitar
+        um pergaminho de receita, então o componente ao vivo é sempre a
+        fonte correta na hora do save."""
+        from engine.components import LearnedRecipes as _LRHb
+        eid = self._player_eids.get(session_id)
+        if eid is None:
+            return None
+        lr = self.world.get_component(eid, _LRHb)
+        if lr is None:
+            return None
+        return list(lr.known)
 
     def get_player_talent_data(self, session_id: str) -> "dict | None":
         """Serializa o TalentTree ATUAL (ao vivo) pra persistência — Fase
@@ -3815,7 +4555,13 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         inv = self.world.get_component(eid, _InvHb)
         if inv is None:
             return None
-        return [self._item_data_from_obj(it) for it in inv.items]
+        # Filtra None — Inventory geral nunca deveria ter slots vazios
+        # (convenção é sempre compactar via remove/append/pop, não deixar
+        # buraco), mas um None escapando aqui derrubava o processo inteiro
+        # no disconnect (bug real 11/08/2026, ver PROBLEMAS_ARQUITETURA.md)
+        # — defesa em profundidade, não confia só no ponto que gera o None
+        # nunca mais acontecer.
+        return [self._item_data_from_obj(it) for it in inv.items if it is not None]
 
     # request_loot → LootProcessorMixin
 
@@ -3956,18 +4702,102 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 await asyncio.sleep(0)
         return next_tick
 
-    def _perf_mark(self, label: str, t0: float) -> None:
-        """Registra o tempo gasto desde `t0` sob `label` — acumulado em
-        `_perf_accum` (média periódica, `_PERF_REPORT_TICKS`) E em
-        `_perf_tick_now` (breakdown SÓ do tick atual, usado pelo aviso de
-        "tick lento" — ver `_tick`). Chokepoint único de profiling
-        (04/08/2026, pedido do usuário, §34.74.29): toda seção nova que
-        precisar de medição usa ISTO, nunca duplica a leitura de
-        `perf_counter()`/escrita nos 2 dicts na mão."""
-        import time as _t_mark
-        elapsed = _t_mark.perf_counter() - t0
-        self._perf_accum[label]    = self._perf_accum.get(label, 0.0) + elapsed
-        self._perf_tick_now[label] = self._perf_tick_now.get(label, 0.0) + elapsed
+    def _perf_push(self, label: str) -> None:
+        """Abre uma seção de medição aninhada — chokepoint único de
+        profiling (substitui `_perf_mark`, Fase 4.7, 12/08/2026, ver
+        PROBLEMAS_ARQUITETURA.md §30). Empilha o rótulo e o timestamp de
+        início; `_perf_pop()` fecha e grava o tempo sob o CAMINHO completo
+        (rótulos da raiz até aqui), não só o nome solto — é isso que dá
+        hierarquia real (pai/filho de verdade) em vez de lista flat. Toda
+        seção nova que precisar de medição usa ISTO, sempre em par com
+        `_perf_pop()` (LIFO) — nunca ler `perf_counter()`/escrever nos
+        dicts na mão."""
+        import time as _t_push
+        self._perf_stack.append(label)
+        self._perf_span_t0.append(_t_push.perf_counter())
+
+    def _perf_pop(self) -> None:
+        """Fecha a seção aberta pelo `_perf_push` mais recente (LIFO) —
+        grava em `_perf_tree_accum` (média periódica), `_perf_tree_tick_now`
+        (breakdown SÓ do tick atual, usado pelo aviso de "tick lento" — ver
+        `_tick`) e `_perf_tree_samples` (amostra por tick, p95/p99), todos
+        chaveados pelo CAMINHO completo (tupla), não pelo nome solto."""
+        import time as _t_pop
+        _path = tuple(self._perf_stack)
+        _t0   = self._perf_span_t0.pop()
+        self._perf_stack.pop()
+        _elapsed = _t_pop.perf_counter() - _t0
+        self._perf_tree_accum[_path]    = self._perf_tree_accum.get(_path, 0.0) + _elapsed
+        self._perf_tree_tick_now[_path] = self._perf_tree_tick_now.get(_path, 0.0) + _elapsed
+        self._perf_tree_samples.setdefault(_path, []).append(_elapsed)
+        self._perf_tree_tick_start_offset[_path] = _t0 - self._perf_tick_t_start
+
+    def _perf_critical_path(self, tick_ms: float):
+        """"Raiz do consumo" (Fase 4.7, 12/08/2026, pedido explícito do
+        usuário — PROBLEMAS_ARQUITETURA.md §30): desce a árvore do tick
+        ATUAL sempre pelo FILHO mais caro, até achar uma folha (caminho
+        sem sub-marks registrados). É o caminho que explica pra onde foi
+        o tempo, passo a passo, sem precisar interpretar uma lista flat
+        misturando somas de níveis diferentes. Retorna (string pronta pro
+        log, tupla do 1º hop) — o 2º valor deixa o chamador saber qual
+        ramo de nível 0 já foi coberto, pra não repetir na lista de
+        "outros ramos"."""
+        _chain: list = []
+        _parent_path: tuple = ()
+        _parent_ms = tick_ms
+        _first_hop = None
+        while True:
+            _children = [p for p in self._perf_tree_tick_now
+                        if len(p) == len(_parent_path) + 1 and p[:len(_parent_path)] == _parent_path]
+            if not _children:
+                break
+            _best = max(_children, key=lambda p: self._perf_tree_tick_now[p])
+            _best_ms = self._perf_tree_tick_now[_best] * 1000.0
+            _pct = (_best_ms / _parent_ms * 100.0) if _parent_ms > 1e-9 else 0.0
+            _chain.append(f"{_best[-1]}({_best_ms:.1f}ms,{_pct:.0f}%)")
+            if _first_hop is None:
+                _first_hop = _best
+            _parent_path = _best
+            _parent_ms = _best_ms
+        if not _chain:
+            return "(nada instrumentado)", None
+        return " -> ".join(_chain), _first_hop
+
+    def _render_perf_tree(self, f, n: int, parent_path: tuple, depth: int,
+                          cur_players_by_map: dict) -> None:
+        """Imprime recursivamente o resumo periódico como árvore indentada
+        (Fase 4.7, 12/08/2026, ver PROBLEMAS_ARQUITETURA.md §30) — cada
+        nó mostra % do PAI real (não do total do tick), filhos indentados
+        embaixo do pai. Substitui a lista flat ranqueada antiga, que
+        misturava soma-de-pai com soma-de-filho na mesma linha."""
+        _children = sorted(
+            (p for p in self._perf_tree_accum if len(p) == depth + 1 and p[:depth] == parent_path),
+            key=lambda p: -self._perf_tree_accum[p])
+        _parent_acc = self._perf_total_accum if depth == 0 else self._perf_tree_accum.get(parent_path, 0.0)
+        for _path in _children:
+            _acc = self._perf_tree_accum[_path]
+            _avg = _acc / n * 1000
+            _pct = (_acc / max(_parent_acc, 1e-9)) * 100
+            _samples = sorted(self._perf_tree_samples.get(_path, []))
+            if _samples:
+                _p95 = _samples[min(len(_samples) - 1, int(0.95 * (len(_samples) - 1)))] * 1000
+                _p99 = _samples[min(len(_samples) - 1, int(0.99 * (len(_samples) - 1)))] * 1000
+            else:
+                _p95 = _p99 = 0.0
+            _indent = "  " * (depth + 1)
+            _label  = _path[-1]
+            _bonus  = ""
+            for _bk in self._map_bundles:
+                _bshort = "bnd:" + _bk.split("/")[-1].replace(".csv", "")
+                if _label == _bshort:
+                    _active_t = self._perf_map_active.get(_bk, 0)
+                    _cur_p    = cur_players_by_map.get(_bk, 0)
+                    _bonus = f"  [ativo {_active_t}/{n} ticks, {_cur_p}p agora]"
+                    break
+            _w = max(4, 22 - 2 * depth)
+            print(f"{_indent}{_label:<{_w}} avg={_avg:>7.3f}ms  p95={_p95:>7.3f}ms  p99={_p99:>7.3f}ms  "
+                 f"{_pct:>5.1f}%{_bonus}", file=f)
+            self._render_perf_tree(f, n, _path, depth + 1, cur_players_by_map)
 
     def _update_overbudget_streak(self, tick_ms: float) -> None:
         """Detecta sobrecarga SUSTENTADA — diferente de "tick lento"
@@ -3996,10 +4826,75 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 self._perf_degraded = False
             self._perf_overbudget_streak = 0
 
+    def _dump_perf_trace(self, tick_ms: float) -> None:
+        """Despeja um trace do tick ATUAL em formato Chrome Trace/Perfetto
+        (`logs/perf_trace_tick<N>.json`, abre em ui.perfetto.dev —
+        chrome://tracing está sendo descontinuado pelo próprio Google em
+        favor do Perfetto, que ainda lê este mesmo JSON) — Fase 4.5
+        (11/08/2026, ver PROBLEMAS_ARQUITETURA.md §27). Sob DEMANDA, não
+        contínuo (decisão do usuário): só ticks realmente ruins
+        (`_PERF_TRACE_DUMP_MS`, bem acima do budget) disparam um dump —
+        gravar TODO tick geraria um arquivo gigante rodando por horas sem
+        necessidade real.
+
+        Fase 4.7 (12/08/2026, ver PROBLEMAS_ARQUITETURA.md §30): antes,
+        todo evento nascia em `ts=0` com um `tid` ÚNICO por rótulo — o
+        viewer renderizava tudo como barras PARALELAS soltas, sem
+        aninhamento nenhum (mesmo defeito que a lista flat do log texto
+        tinha). Agora usa o offset REAL de início de cada seção
+        (`_perf_tree_tick_start_offset`, gravado por `_perf_pop()`) e
+        coloca TUDO na mesma "thread" (`tid=0` — é single-thread mesmo,
+        um tick roda tudo sequencial/aninhado dentro do mesmo loop): o
+        viewer aninha visualmente por CONTER o timestamp, sem precisar de
+        nenhuma lógica de árvore no JSON."""
+        import os as _os_trace, json as _json_trace, glob as _glob_trace
+        events = []
+        for _path, _dur in self._perf_tree_tick_now.items():
+            _ts_off = self._perf_tree_tick_start_offset.get(_path, 0.0)
+            events.append({
+                "name": _path[-1], "cat": "perf", "ph": "X",
+                "ts": max(0, round(_ts_off * 1_000_000)),   # microssegundos, offset real
+                "dur": max(1, round(_dur * 1_000_000)),
+                "pid": 1, "tid": 0,
+            })
+        events.append({
+            "name": "TOTAL", "cat": "perf", "ph": "X",
+            "ts": 0, "dur": max(1, round(tick_ms * 1000)),
+            "pid": 1, "tid": 0,
+        })
+        events.sort(key=lambda e: e["ts"])
+
+        _log_dir = _os_trace.path.dirname(self._perf_log.name)
+        _path = _os_trace.path.join(_log_dir, f"perf_trace_tick{self.tick_count}.json")
+        try:
+            with open(_path, "w", encoding="utf-8") as _f_trace:
+                _json_trace.dump({"traceEvents": events}, _f_trace)
+        except Exception:
+            return  # observabilidade nunca pode derrubar o tick por causa dela
+
+        _existing = sorted(_glob_trace.glob(_os_trace.path.join(_log_dir, "perf_trace_tick*.json")),
+                           key=_os_trace.path.getmtime, reverse=True)
+        for _old in _existing[5:]:
+            try:
+                _os_trace.remove(_old)
+            except OSError:
+                pass
+
     def _tick(self, dt: float) -> None:
         import time as _time_tick
         _t_tick_start = _time_tick.perf_counter()
-        self._perf_tick_now = {}
+        # Reset defensivo da PILHA inteira, não só do breakdown (Fase 4.7,
+        # 12/08/2026): se uma exceção no meio de um tick anterior pulou
+        # algum `_perf_pop()` pareado, a pilha ficaria "suja" e todo mark
+        # subsequente herdaria um prefixo de caminho errado pra sempre.
+        # Resetar aqui limita o dano a "perdeu a medição de 1 tick", nunca
+        # corrompe permanente — mesmo padrão defensivo do guard de tick
+        # regressivo no pré-filtro do EnemyAISystem (Fase 4.6).
+        self._perf_stack   = []
+        self._perf_span_t0 = []
+        self._perf_tree_tick_now = {}
+        self._perf_tree_tick_start_offset = {}
+        self._perf_tick_t_start = _t_tick_start
         self.tick_count += 1
         # CPU % do processo neste tick (não-bloqueante: acumula desde a chamada anterior).
         if self._perf_proc is not None:
@@ -4051,6 +4946,12 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         #   Usar target em vez de current elimina o lag estrutural de 1 animação:
         #   o servidor emite o evento quando o movimento COMEÇA (target muda),
         #   não quando conclui (current muda). Cliente e servidor animam em paralelo.
+        # Fase 4.7 (12/08/2026, "fecha o buraco" — ver PROBLEMAS_ARQUITETURA.md
+        # §31/§32): este bloco (2 loops O(mobs)/O(players) + o loop de
+        # detecção de aggro logo abaixo) rodava fora de qualquer mark —
+        # somava pro "não instrumentado" do relatório sem nenhuma pista de
+        # onde estava.
+        self._perf_push("pre_tick_snapshots")
         pre_mob_target:  dict[int, tuple[int, int]] = {}
         player_hp_snap:  dict[int, int]             = {}
         for eid, tm in self.world.get_entities_with(TileMovement):
@@ -4073,6 +4974,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._perf_active_mobs_sum += _active_now
         if _active_now > self._perf_active_mobs_peak:
             self._perf_active_mobs_peak = _active_now
+        self._perf_pop()
 
         # Roda sistemas offline reais por bundle de mapa.
         # P4: serviços já injetados diretamente nos sistemas em _load_map_for()
@@ -4099,37 +5001,84 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # nos `update()` de cada sistema cai no scan de sempre (compat com
         # teste que chama `.update()` direto, mesmo padrão de
         # `spatial_hash=None` do Tower/MinionSystem).
-        from engine.components import PlayerControlled as _PCbm, MapLocation as _MLbm, Position as _Posbm
+        # 4 índices canônicos por mapa (players/mobs/combatentes/
+        # tile-movement) — construídos numa ÚNICA passada pelo ECS (Fase
+        # 4.7, 12/08/2026, ver PROBLEMAS_ARQUITETURA.md §32/§34/§36).
+        # Histórico: cada índice nasceu como correção separada de um
+        # sistema fazendo seu PRÓPRIO `get_entities_with(...)` sem filtro
+        # de mapa, repetido 1x por bundle por tick (players: 05/08/2026,
+        # achado do usuário — "ai_bundles/map_1 custa ~7-8ms mesmo com só
+        # eu jogando"; mobs: mesmo dia, §34.74.38; combatentes: §31, pico
+        # real de 152.7ms; tile-movement: §34/§35, itens #1/#2 do
+        # ranking). Cada índice virou seu PRÓPRIO `get_entities_with()`
+        # — 4 passadas separadas pelo ECS, cada uma refazendo o lookup de
+        # `MapLocation` da MESMA entidade quando ela aparece em mais de
+        # um índice (ex: um player aparece em `_players_by_map` E em
+        # `_tile_movement_by_map`).
+        #
+        # `_tile_movement_by_map` sozinho já é o pior caso dos 4: pede só
+        # `TileMovement` (nenhum outro filtro pra restringir), então o
+        # "conjunto menos comum" que `World.get_entities_with` escolhe
+        # pra iterar (ver `engine/world.py`) é o índice de TileMovement
+        # inteiro — TODAS as entidades que se movem (players+mobs+
+        # minions+NPCs). Os outros 3 são SUBCONJUNTOS desse mesmo
+        # universo (player=tag extra, mob=tag extra, combatente=tag
+        # extra) — pesquisado (EnTT, o ECS sparse-set mais usado em jogos
+        # C++ reais, tem uma feature inteira — "groups" — dedicada a
+        # exatamente este problema: várias views sobrepostas do MESMO
+        # conjunto de entidades, caras quando feitas como queries
+        # separadas). A técnica deles reordena o armazenamento fisicamente
+        # (não cabe no nosso ECS baseado em dict); o equivalente do
+        # tamanho certo aqui é o mesmo já usado no resto do projeto: 1
+        # passada manual pela base mais ampla (`TileMovement`) + checagem
+        # de presença de componente (O(1), dict `in`) pra decidir se essa
+        # entidade também entra em cada um dos 3 índices mais restritos —
+        # 1 `get_entities_with()` só, 1 lookup de `MapLocation` por
+        # entidade, não 4.
+        self._perf_push("index_build")
+        from engine.components import (PlayerControlled as _PCbm, MapLocation as _MLbm,
+                                        Position as _Posbm, AIControlled as _AICbm,
+                                        InitialPosition as _IPbm, DetectionRadius as _DRbm,
+                                        Combatant as _Cbtbm, NPC as _NPCbm)
         _players_by_map: dict = {}
-        for _pbm_eid, _pbm_pos, _pbm_tm, _pbm_pc, _pbm_cs in self.world.get_entities_with(
-                _Posbm, TileMovement, _PCbm, CombatStats):
-            _pbm_ml = self.world.get_component(_pbm_eid, _MLbm)
-            _pbm_map = _pbm_ml.map_file if _pbm_ml else ""
-            _players_by_map.setdefault(_pbm_map, []).append((_pbm_eid, _pbm_pos, _pbm_tm, _pbm_cs))
-
-        # Índice canônico de MOBS por mapa, 1x por tick (05/08/2026, achado
-        # secundário do §34.74.38, mesmo padrão do índice de players acima):
-        # `EnemyAISystem.update()` buscava `get_entities_with(...)` SEM
-        # filtro de mapa — os ~190 mobs do MUNDO TODO (3 mapas), descartando
-        # os de outro bundle 1 a 1 dentro do próprio loop principal. Com 2+
-        # mapas ativos ao mesmo tempo, cada bundle repetia esse scan global
-        # inteiro. `mobs_by_map=None` no `update()` cai no scan de sempre
-        # (compat com teste que chama `.update()` direto).
-        from engine.components import (AIControlled as _AICbm,
-                                        InitialPosition as _IPbm,
-                                        DetectionRadius as _DRbm)
         _mobs_by_map: dict = {}
-        for _mbm_eid, _mbm_pos, _mbm_ai, _mbm_ip, _mbm_dr, _mbm_tm, _mbm_cs in self.world.get_entities_with(
-                _Posbm, _AICbm, _IPbm, _DRbm, TileMovement, CombatStats):
-            _mbm_ml = self.world.get_component(_mbm_eid, _MLbm)
-            _mbm_map = _mbm_ml.map_file if _mbm_ml else ""
-            _mobs_by_map.setdefault(_mbm_map, []).append(
-                (_mbm_eid, _mbm_pos, _mbm_ai, _mbm_ip, _mbm_dr, _mbm_tm, _mbm_cs))
+        _combatants_by_map: dict = {}
+        _tile_movement_by_map: dict = {}
+        for _tvm_eid, _tvm_tm in self.world.get_entities_with(TileMovement):
+            _tvm_ml = self.world.get_component(_tvm_eid, _MLbm)
+            _tvm_map = _tvm_ml.map_file if _tvm_ml else ""
+            _tile_movement_by_map.setdefault(_tvm_map, []).append((_tvm_eid, _tvm_tm))
 
-        _t0p = _time_tick.perf_counter()
+            # Os 3 índices abaixo sempre exigiam Position+CombatStats
+            # (via `get_entities_with`) — sem os 2, a entidade NUNCA
+            # apareceria em nenhum deles, mesmo padrão preservado aqui.
+            _tvm_pos = self.world.get_component(_tvm_eid, _Posbm)
+            _tvm_cs  = self.world.get_component(_tvm_eid, CombatStats)
+            if _tvm_pos is None or _tvm_cs is None:
+                continue
+
+            if self.world.get_component(_tvm_eid, _PCbm) is not None:
+                _players_by_map.setdefault(_tvm_map, []).append(
+                    (_tvm_eid, _tvm_pos, _tvm_tm, _tvm_cs))
+
+            _tvm_ai = self.world.get_component(_tvm_eid, _AICbm)
+            _tvm_ip = self.world.get_component(_tvm_eid, _IPbm)
+            _tvm_dr = self.world.get_component(_tvm_eid, _DRbm)
+            if _tvm_ai is not None and _tvm_ip is not None and _tvm_dr is not None:
+                _mobs_by_map.setdefault(_tvm_map, []).append(
+                    (_tvm_eid, _tvm_pos, _tvm_ai, _tvm_ip, _tvm_dr, _tvm_tm, _tvm_cs))
+
+            if self.world.get_component(_tvm_eid, _Cbtbm) is not None:
+                _tvm_is_npc = self.world.get_component(_tvm_eid, _NPCbm) is not None
+                _combatants_by_map.setdefault(_tvm_map, []).append(
+                    (_tvm_eid, _tvm_pos, _tvm_tm, _tvm_cs, _tvm_is_npc))
+        self._perf_pop()
+
+        self._perf_push("ai_bundles")
         for _bnd_key, _bnd in self._map_bundles.items():
             _has_player = _bnd_key in _maps_com_player
-            _t0bnd = _time_tick.perf_counter()
+            _bnd_label = "bnd:" + _bnd_key.split("/")[-1].replace(".csv", "")
+            self._perf_push(_bnd_label)
             for system in _bnd.systems:
                 if not _has_player and system in _bnd.ai_systems:
                     continue  # sem player neste mapa: pula AI (mobs ficam parados)
@@ -4139,13 +5088,15 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 # pra achar a origem real dos picos de 75-190ms vistos com 1-2
                 # players, já que gc.collect() roda fora de _tick() (não pode
                 # ser bucket errado) — o tempo é gasto de verdade aqui dentro.
-                _t0sys = _time_tick.perf_counter()
+                self._perf_push(f"sys:{type(system).__name__}")
                 if system in _bnd.proximity_systems:
                     system.update(dt=dt, players_by_map=_players_by_map, mobs_by_map=_mobs_by_map,
+                                  combatants_by_map=_combatants_by_map,
+                                  tile_movement_by_map=_tile_movement_by_map,
                                   tick_count=self.tick_count)
                 else:
                     system.update(dt=dt)
-                self._perf_mark(f"sys:{type(system).__name__}", _t0sys)
+                self._perf_pop()
                 # Contador de mobs que sobraram do filtro do Achado 5
                 # (05/08/2026) — só EnemyAISystem tem este atributo (hasattr
                 # evita import de EnemyAISystem aqui só pra um isinstance).
@@ -4154,16 +5105,33 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                     self._perf_ai_active_mobs_sum += _lac
                     if _lac > self._perf_ai_active_mobs_peak:
                         self._perf_ai_active_mobs_peak = _lac
-            _bnd_label = "bnd:" + _bnd_key.split("/")[-1].replace(".csv", "")
-            self._perf_mark(_bnd_label, _t0bnd)
-        self._perf_mark("ai_bundles", _t0p)
+            self._perf_pop()
+        self._perf_pop()
 
         # Sistemas globais: rodam UMA vez por tick, após todos os bundles de IA.
-        _t0p = _time_tick.perf_counter()
+        # Sub-marks (Fase 4.7, 12/08/2026, ver PROBLEMAS_ARQUITETURA.md §38
+        # — investigação do #2 do ranking) — "global_systems" era 1 mark só
+        # pros 3, sem saber qual dos 3 pesava de verdade.
+        self._perf_push("global_systems")
+        self._perf_push("global_systems:tile_movement")
         self._global_tms.update(dt=dt)       # movement: progress → current_tile
+        self._perf_pop()
+        self._perf_push("global_systems:status_effects")
         self._global_sfx_sys.update(dt=dt)   # status effects: DoT/HoT timers
+        self._perf_pop()
+        self._perf_push("global_systems:projectiles")
         self._global_proj_sys.update(dt=dt)  # projéteis de mobs: posição + hit
-        self._perf_mark("global_systems", _t0p)
+        self._perf_pop()
+        self._perf_pop()
+
+        # Fase 4.7 ("fecha o buraco", 12/08/2026, ver PROBLEMAS_ARQUITETURA.md
+        # §32) — bloco grande sem mark próprio até aqui: detecção de aggro
+        # (som), CombatStateSystem headless (hp5/mana/rage/procs), regen de
+        # boneco de treino, regen de mob fora de combate, ActiveRegen (HoT
+        # de player), ActiveManaRegen, timer de Camuflagem, FireShieldEffect,
+        # channeling — vários loops O(mobs)/O(players) que caíam inteiros no
+        # "não instrumentado" do relatório.
+        self._perf_push("regen_and_status_ticks")
 
         # Detecta mobs que aggraram neste tick (IDLE → CHASING/ATTACKING)
         from engine.components import EntityIdentity as _EIdent
@@ -4403,17 +5371,22 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         # ── Channeling de players (Calamidade Flamejante) ────────────────────
         self._process_player_channeling(dt)
+        self._perf_pop()
 
         # Skills ANTES do auto-attack: skill dispara em mob vivo, depois auto-attack
         # (se ordem fosse invertida, auto-attack poderia matar o mob antes da skill checar HP)
-        _t0p = _time_tick.perf_counter()
+        self._perf_push("skill_requests")
         self._process_skill_requests()
-        self._perf_mark("skill_requests", _t0p)
+        self._perf_pop()
 
         # Conclusão de spells com cast_time (Bola de Fogo, Nova Congelante, etc.)
-        _t0p = _time_tick.perf_counter()
+        self._perf_push("spell_completions")
         self._process_spell_cast_completions(dt)
-        self._perf_mark("spell_completions", _t0p)
+        self._perf_pop()
+        # Fase 4.7 ("fecha o buraco", 12/08/2026, ver PROBLEMAS_ARQUITETURA.md
+        # §32) — knockback/projéteis expirados/bloco de gelo/tick do Fatiador
+        # de Corpos ficavam soltos entre spell_completions e player_attacks.
+        self._perf_push("skill_followup_ticks")
         # Pousos de knockback (stun/feedback de colisão atrasados até a tween acabar)
         self._process_knockback_landings(dt)
         # Expira projéteis em voo que nunca receberam PROJECTILE_HIT_CS
@@ -4432,13 +5405,16 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 continue
             _fat_char.fatiador_timer = max(0.0, _fat_char.fatiador_timer - dt)
             _fat_char.fatiador_tick  = max(0.0, _fat_char.fatiador_tick  - dt)
+            # Imunidade (StatusEffects "cc_immune") expira sozinha via
+            # _process_status_effects (StatusEffectSystem) — nada pra
+            # desligar manualmente aqui.
             if _fat_char.fatiador_tick <= 0 and _fat_char.fatiador_timer > 0:
-                _fat_char.fatiador_tick = 1.0
                 _fat_tm = self.world.get_component(_fat_peid, _FatTM)
                 _fat_ps = self.world.get_component(_fat_peid, _FatPS)
                 _fat_sk = _fat_ps.skill_by_id("fatiador_de_corpos") if _fat_ps else None
                 if _fat_sk is None:
                     _fat_sk = _FatPS._make_skill("fatiador_de_corpos", _FatCat)
+                _fat_char.fatiador_tick = _fat_sk.params.get("tick_interval", 1.0) if _fat_sk else 1.0
                 if _fat_tm and _fat_sk:
                     _fat_hp_snap: dict[int, int] = {}
                     for _fat_meid in self._mob_eids:
@@ -4466,13 +5442,18 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                                 "hp_after": max(0, _fat_mcs2.current_hp),
                                 "source":   "skill",
                             })
+        self._perf_pop()
 
         # Player→mob: usa deal_damage() offline; Mob→player: detectado por variação de HP
-        _t0p = _time_tick.perf_counter()
+        self._perf_push("player_attacks")
         self._process_player_attacks(dt, player_hp_snap)
-        self._perf_mark("player_attacks", _t0p)
+        self._perf_pop()
 
         # Sweep: mobs com HP <= 0 sem PendingDeath (DoT, outros caminhos fora de deal_damage)
+        # — Fase 4.7 ("fecha o buraco", 12/08/2026): mark de death_handling
+        # subiu pra cobrir este sweep também (mesma fase conceitual: "achar
+        # e processar quem morreu"), não ficava mais solto sem mark.
+        self._perf_push("death_handling")
         from engine.components import Enemy as _Enemy, CombatStats as _CS2, PendingDeath as _PD
         for eid in list(self._mob_eids):
             _cs = self.world.get_component(eid, _CS2)
@@ -4481,7 +5462,6 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 self.world.add_component(eid, _PD(killer_entity_id=-1))
 
         # Processa mortes (PendingDeath) — XP, SpawnZone, despawn, remove_entity
-        _t0p = _time_tick.perf_counter()
         self._death_handler.update()
         for entry in self._death_handler.consume_despawns():
             eid = entry["eid"]
@@ -4536,8 +5516,15 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                     except Exception as _lv_err:
                         log.warning(f"[LevelUp] aviso ao re-aplicar talentos: {_lv_err}")
 
-                    # Garante HP cheio após qualquer recálculo acima
-                    _cs_xp.current_hp = _cs_xp.max_hp
+                    # Garante HP cheio após qualquer recálculo acima — SÓ se já
+                    # estiver vivo (12/08/2026, mesmo fix e mesmo motivo do
+                    # espelho em instance_progression.py::_process_instance_
+                    # levelup: XP de kill pode chegar pra um player já morto
+                    # aguardando respawn; sem este guard, o level-up curava o
+                    # "corpo" e qualquer mob/minion voltava a mirar nele, já
+                    # que target-acquisition só olha current_hp<=0).
+                    if _cs_xp.current_hp > 0:
+                        _cs_xp.current_hp = _cs_xp.max_hp
                     # Não é necessário broadcast manual aqui: _sync_player_hp_dirty()
                     # detecta a mudança de HP/max_hp automaticamente no fim do tick
                     # e a propaga via _player_hp_broadcasts_this_tick → STATS_UPDATE AOI.
@@ -4594,17 +5581,22 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             # minion por proximidade gera 1 entrada POR PLAYER perto (ver
             # comentário de [LevelUp] acima).
             log.debug(f"[XP] player {_xp_peid} ganhou {_xp_amt} XP (mob {entry['mob_eid']})")
-        self._perf_mark("death_handling", _t0p)
+        self._perf_pop()
 
-        _t0p = _time_tick.perf_counter()
+        self._perf_push("loot_drops")
         self._process_loot_drops(dt)
-        self._perf_mark("loot_drops", _t0p)
+        self._perf_pop()
 
-        _t0p = _time_tick.perf_counter()
+        self._perf_push("harvestable_tower_respawns")
         self._tick_harvestable_respawn(dt)
         self._tick_harvestable_zones(dt)
         self._tick_tower_respawns(dt)
-        self._perf_mark("harvestable_tower_respawns", _t0p)
+        self._tick_jungle_camp_respawns(dt)
+        self._perf_pop()
+
+        self._perf_push("bush_target_clear")
+        self._tick_bush_target_clear()
+        self._perf_pop()
 
         # Índice espacial de entidades combatentes (04/08/2026, pedido do
         # usuário — log de perf mostrou tower_system/minion_system como
@@ -4623,7 +5615,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # alcance real (torre attack_range_tiles=8) com span pequeno.
         from engine.components import Position as _PosCH, MapLocation as _MLCH
         from engine.utils import SpatialHash as _SpatialHashCH
-        _t0p = _time_tick.perf_counter()
+        self._perf_push("combat_spatial_hash_build")
         _combat_spatial_hash: dict = {}
         for _ceid, _cpos, _ccs, _ctm in self.world.get_entities_with(
                 _PosCH, CombatStats, TileMovement):
@@ -4642,48 +5634,58 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 _chash = _SpatialHashCH(cell_size=9)
                 _combat_spatial_hash[_cmap] = _chash
             _chash.insert(_ceid, _ctm.current_tile_x, _ctm.current_tile_y)
-        self._perf_mark("combat_spatial_hash_build", _t0p)
+        self._perf_pop()
 
         # Torre (29/07/2026): combat_this_tick já está populado com os
         # eventos de dano DESTE tick (auto-attack/skill processados
         # acima) — precisa disso pro aggro-switch (troca de alvo pra
         # defender aliado atacado no alcance). Chamado ANTES do clear
         # de combat_this_tick no fim do tick (ver _tick()).
-        _t0p = _time_tick.perf_counter()
+        self._perf_push("tower_system")
         self._tower_system.update(dt, combat_this_tick=self._combat_this_tick,
                                   spatial_hash=_combat_spatial_hash)
-        self._perf_mark("tower_system", _t0p)
+        self._perf_pop()
         # Minion (03/08/2026): mesmo combat_this_tick, pra aggro por dano
         # de torre + espalhamento em área (MinionSystem._check_tower_aggro).
-        _t0p = _time_tick.perf_counter()
+        self._perf_push("minion_system")
         self._minion_system.update(dt, combat_this_tick=self._combat_this_tick,
                                    spatial_hash=_combat_spatial_hash,
-                                   tick_count=self.tick_count)
-        self._perf_mark("minion_system", _t0p)
-        _t0p = _time_tick.perf_counter()
+                                   tick_count=self.tick_count,
+                                   tile_movement_by_map=_tile_movement_by_map)
+        self._perf_pop()
+        self._perf_push("minion_waves")
         self._tick_minion_waves(dt)
-        self._perf_mark("minion_waves", _t0p)
-        _t0p = _time_tick.perf_counter()
+        self._perf_pop()
+        self._perf_push("minion_spawn_queue")
         self._tick_minion_spawn_queue(dt)
-        self._perf_mark("minion_spawn_queue", _t0p)
+        self._perf_pop()
 
-        _t0p = _time_tick.perf_counter()
+        self._perf_push("trade_duel_arena_ticks")
         self._tick_trade_distance_check()
         self._tick_duel_distance_check()
-        self._tick_arena_queue()
-        self._tick_arena_pending()
-        self._tick_arena_results_timeout()
-        self._perf_mark("trade_duel_arena_ticks", _t0p)
+        # Pareamento de fila + varreduras de deadline/timeout só comparam
+        # relógio (time.time()) ou tentam parear tokens — nenhuma depende de
+        # precisão de frame. Rodar a 30Hz era desperdício (pedido do usuário,
+        # 10/08/2026); 1x/s é imperceptível (partidas levam >>1s pra formar/
+        # decidir de qualquer jeito) e usa o padrão já existente no projeto
+        # pra throttle por contador (_GC_EVERY_TICKS) — aqui via módulo do
+        # tick_count em vez de contador dedicado, mesmo efeito, sem estado novo.
+        if self.tick_count % TICK_RATE == 0:
+            self._tick_arena_queue()
+            self._tick_arena_pending()
+            self._tick_arena_results_timeout()
+        self._perf_pop()
 
-        _t0p = _time_tick.perf_counter()
-        self._tick_bg_queue()
-        self._tick_bg_pending()
+        self._perf_push("bg_queue_ticks")
+        if self.tick_count % TICK_RATE == 0:
+            self._tick_bg_queue()
+            self._tick_bg_pending()
+            self._tick_bg_results_timeout()
         self._tick_bg_respawns()
         self._tick_bg_kda_hud()
-        self._tick_bg_results_timeout()
-        self._perf_mark("bg_queue_ticks", _t0p)
+        self._perf_pop()
 
-        _t0p = _time_tick.perf_counter()
+        self._perf_push("post_tick_bookkeeping")
         # Detecta novos mobs/NPCs de combate criados pelo SpawnZoneSystem
         # neste tick — gate é Combatant, não Enemy (Sistema de Facções,
         # Fase 4): Enemy sozinho implicaria "hostil ao player", que não é
@@ -4762,40 +5764,63 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 _hp_cs3 = self.world.get_component(_hp_eid3, CombatStats)
                 if _hp_cs3:
                     self._mob_hp_prev[_hp_eid3] = _hp_cs3.current_hp
-        self._perf_mark("post_tick_bookkeeping", _t0p)
+        self._perf_pop()
 
         # Limpa deltas de erro do try/except se necessário
-        _t0p = _time_tick.perf_counter()
+        self._perf_push("aoi_collect")
         deltas = self._collect_deltas()
-        self._perf_mark("aoi_collect", _t0p)
+        self._perf_pop()
+        self._perf_push("store_snapshot")
         self._store_snapshot()
+        self._perf_pop()
 
+        # Fase 4.7 ("fecha o buraco", 12/08/2026, ver PROBLEMAS_ARQUITETURA.md
+        # §32) — este loop despacha o broadcast real pros clientes (produção
+        # regista `SessionManager._on_tick` aqui via `register_on_tick`,
+        # ver server/session.py); em testes/scripts sem SessionManager fica
+        # vazio (custo zero), mas em produção é onde o encode/enfileiramento
+        # de pacote pra CADA sessão realmente acontece — nunca teve mark.
+        self._perf_push("on_tick_callbacks")
         for cb in self._on_tick_callbacks:
             cb(self.tick_count, deltas)
+        self._perf_pop()
 
         # ── Relatório de performance do tick ─────────────────────────────────
         _tick_ms = (_time_tick.perf_counter() - _t_tick_start) * 1000.0
-        self._perf_accum["TOTAL"] = self._perf_accum.get("TOTAL", 0.0) + _tick_ms / 1000.0
+        self._perf_total_accum += _tick_ms / 1000.0
+        self._perf_total_samples.append(_tick_ms / 1000.0)
         self._perf_count += 1
         self._update_overbudget_streak(_tick_ms)
         if _tick_ms > self._PERF_BUDGET_MS:
-            _extra = ""
-            if _tick_ms > self._PERF_BREAKDOWN_MS:
-                # Breakdown SÓ deste tick (não a média periódica) — top 8
-                # seções que mais pesaram no PICO específico, pra
-                # correlacionar "travada" percebida com o sistema
-                # responsável (pedido do usuário, §34.74.29).
-                _top = sorted(self._perf_tick_now.items(), key=lambda kv: -kv[1])[:8]
-                _outros = max(0.0, _tick_ms / 1000.0 - sum(self._perf_tick_now.values()))
-                _top_str = " | ".join(f"{k}={v*1000:.1f}ms" for k, v in _top)
-                _extra = f" | TOP: {_top_str} | outros={_outros*1000:.1f}ms"
+            # "Caminho crítico" (Fase 4.7, 12/08/2026, ver
+            # PROBLEMAS_ARQUITETURA.md §30, pedido explícito do usuário:
+            # "pra mim não importa os resumos, queria ver a raiz do
+            # consumo") — desce a árvore DESTE tick sempre pelo FILHO mais
+            # caro até achar uma folha, em vez da lista top-8 flat antiga
+            # que misturava soma-de-pai com soma-de-filho na mesma linha.
+            # Sai em TODO tick acima do budget desde a Fase 4.5
+            # (11/08/2026) — o dado já é calculado de graça.
+            _chain_str, _chain_root = self._perf_critical_path(_tick_ms)
+            _top_level = sorted(
+                (p for p in self._perf_tree_tick_now if len(p) == 1),
+                key=lambda p: -self._perf_tree_tick_now[p])
+            _siblings = [p for p in _top_level if p != _chain_root][:5]
+            _sib_str = " | ".join(
+                f"{p[0]}={self._perf_tree_tick_now[p]*1000:.1f}ms" for p in _siblings)
+            _nao_instr = max(0.0, _tick_ms / 1000.0 - sum(
+                self._perf_tree_tick_now[p] for p in _top_level))
+            _extra = (f" | caminho critico: {_chain_str}"
+                      f" | outros ramos: {_sib_str}"
+                      f" | nao_instrumentado={_nao_instr*1000:.1f}ms")
             # print de propósito: escreve no ARQUIVO de perf (não no console/log)
             print(f"[PERF] tick lento: {_tick_ms:.1f}ms (budget={self._PERF_BUDGET_MS:.0f}ms) "
                   f"tick#{self.tick_count} players={len(self._player_eids)} "
                   f"mobs={len(self._mob_eids)} ativos={self._perf_active_now}{_extra}", file=self._perf_log)
+            if _tick_ms > self._PERF_TRACE_DUMP_MS:
+                self._dump_perf_trace(_tick_ms)
         if self._perf_count >= self._PERF_REPORT_TICKS:
             n = self._perf_count
-            total_avg = self._perf_accum.get("TOTAL", 0.0) / n * 1000
+            total_avg = self._perf_total_accum / n * 1000
             _n_maps_total  = len(self._map_bundles)
             _cur_players_by_map: dict[str, int] = {}
             for _sm in self._player_maps.values():
@@ -4816,24 +5841,19 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                   f" | rss avg={_rss_avg_mb:.1f}MB peak={_rss_peak_mb:.1f}MB"
                   f" | mobs_ativos avg={_active_avg:.1f} peak={_active_peak}"
                   f" | mobs_no_filtro_ai avg={_ai_active_avg:.1f} peak={_ai_active_peak}", file=_f)
-            _rows = sorted(
-                ((k, v) for k, v in self._perf_accum.items() if k != "TOTAL"),
-                key=lambda x: -x[1]
-            )
-            for _lbl, _acc in _rows:
-                _avg = _acc / n * 1000
-                _pct = (_acc / max(self._perf_accum.get("TOTAL", 1), 1e-9)) * 100
-                # Para bundles de mapa, mostra ticks ativos e players atuais
-                _extra = ""
-                for _bk in self._map_bundles:
-                    _bshort = "bnd:" + _bk.split("/")[-1].replace(".csv", "")
-                    if _lbl == _bshort:
-                        _active_t = self._perf_map_active.get(_bk, 0)
-                        _cur_p    = _cur_players_by_map.get(_bk, 0)
-                        _extra = f"  [ativo {_active_t}/{n} ticks, {_cur_p}p agora]"
-                        break
-                print(f"  {_lbl:<22} avg={_avg:>7.3f}ms  {_pct:>5.1f}%{_extra}", file=_f)
-            self._perf_accum    = {}
+            # Árvore de verdade (Fase 4.7, 12/08/2026) — cada nó mostra %
+            # do PAI real (não do total), filho aninhado embaixo do pai por
+            # indentação — não mais uma lista flat misturando níveis.
+            self._render_perf_tree(_f, n, (), 0, _cur_players_by_map)
+            _top_level_acc = sum(v for p, v in self._perf_tree_accum.items() if len(p) == 1)
+            _nao_instr_acc = max(0.0, self._perf_total_accum - _top_level_acc)
+            _pct_ni = (_nao_instr_acc / max(self._perf_total_accum, 1e-9)) * 100
+            print(f"  {'(nao instrumentado)':<22} ~avg={_nao_instr_acc/n*1000:>7.3f}ms/tick  "
+                  f"({_pct_ni:>5.1f}% do total)", file=_f)
+            self._perf_tree_accum    = {}
+            self._perf_tree_samples  = {}
+            self._perf_total_accum   = 0.0
+            self._perf_total_samples = []
             self._perf_count    = 0
             self._perf_map_active = {}
             self._perf_peak_maps  = 0
@@ -4909,12 +5929,33 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         return result
 
     def _collect_deltas(self) -> dict:
+        # Sub-marks (Fase 4.7, 12/08/2026, ver PROBLEMAS_ARQUITETURA.md
+        # §30) — motivado por um pico real (tick#11503, aoi_collect sozinho
+        # custou 394ms com só 1 player online): antes, "aoi_collect" era
+        # uma folha sem breakdown nenhum por dentro, então mesmo com a
+        # árvore hierárquica não dava pra saber QUAL parte pesou. Isso
+        # nasce como pai automaticamente (o call site em `_tick()` já abre
+        # `self._perf_push("aoi_collect")` antes de chamar este método).
+        import time as _t_cd, gc as _gc_cd
+        _t0_cd = _t_cd.perf_counter()
+        _gc_before = _gc_cd.get_count()
+
         # Detecta qualquer mudança de HP/max_hp de players antes de montar os deltas.
         # Deve rodar aqui (depois de todos os sistemas do tick) para capturar toda
         # fonte de mudança: skills, DoT, level-up, consumíveis, respawn, etc.
+        self._perf_push("_sync_player_hp_dirty")
         self._sync_player_hp_dirty()
+        self._perf_pop()
+
+        self._perf_push("_sync_player_skill_levels_dirty")
         self._sync_player_skill_levels_dirty()
+        self._perf_pop()
+
+        self._perf_push("_process_quest_events")
         self._process_quest_events()
+        self._perf_pop()
+
+        self._perf_push("_build_deltas_dict")
 
         # despawned: lista de eids (ints) para compatibilidade
         # despawned_pos: dict eid→(tx,ty) para AOI check de mobs mortos fora de known_eids
@@ -4966,6 +6007,23 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._ghost_state_updates_this_tick.clear()
         self._sfx_damage_players.clear()
         self._visibility_changed_this_tick.clear()
+        self._perf_pop()
+
+        # Diagnóstico do pico ambiental (Fase 4.7, 12/08/2026 — tick#11503
+        # real: aoi_collect sozinho custou 394ms com só 1 player, sem
+        # nenhum sub-passo acima explicando algoritmicamente esse valor).
+        # `gc.disable()` roda em server/main.py — se `gc_count` mudar
+        # mesmo assim, uma coleta automática disparou APESAR do disable
+        # nominal (evidência real, não suposição); se NÃO mudar e o
+        # elapsed ainda for grande, aponta pra fora do processo (SO/
+        # paginação/scheduler), não pro nosso código.
+        _elapsed_cd = (_t_cd.perf_counter() - _t0_cd) * 1000.0
+        if _elapsed_cd > 50.0:
+            _gc_after = _gc_cd.get_count()
+            print(f"[PERF] _collect_deltas anomalo: {_elapsed_cd:.1f}ms | "
+                  f"gc.isenabled()={_gc_cd.isenabled()} | "
+                  f"gc_count antes={_gc_before} depois={_gc_after}",
+                  file=self._perf_log)
         return deltas
 
     def _store_snapshot(self) -> None:

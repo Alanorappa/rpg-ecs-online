@@ -39,64 +39,12 @@ def _spell_damage(attacker_id: int, world: World,
     return _spell_damage_fn(world, attacker_id, dmg_weapon_pct, sp_coeff)
 
 
-def _apply_magic_damage(attacker_id: int, target_id: int, dmg: int, world: World,
-                        is_crit: bool = False) -> bool:
-    """Aplica dano mágico ao alvo (cliente/offline). Retorna True se morreu.
-
-    Guards + escrita de HP + quebra de CC + PendingDeath delegados a
-    core_systems.apply_damage_core — MESMO núcleo do servidor
-    (_apply_final_damage) e do melee (deal_damage). Aqui fica só o que é
-    do cliente: FLT, som de aggro, enter_combat, estado de IA.
-    """
-    from engine.core_systems import apply_damage_core
-
-    pos = world.get_component(target_id, Position)
-
-    def _on_cc_break(kind: str) -> None:
-        if not pos:
-            return
-        if kind == "polymorph":
-            FLT.add("Polimorfia quebrada!", pos.x, pos.y, (160, 80, 200),
-                    "small", target_id=target_id)
-        elif kind == "sleep":
-            FLT.add("Acordou!", pos.x, pos.y, (200, 200, 100), "small",
-                    target_id=target_id)
-
-    result = apply_damage_core(world, target_id, dmg,
-                               killer_eid=attacker_id,
-                               on_cc_break=_on_cc_break)
-    if result == "blocked_evade":
-        # Modo evasão: diferente de blocked_immune (silencioso), aqui
-        # queremos feedback visível — é o pedido explícito do usuário.
-        if pos:
-            FLT.add("Evadiu!", pos.x, pos.y, (150, 150, 150), "small", target_id=target_id)
-        return False
-    if result in ("blocked_dead", "blocked_immune"):
-        return False
-
-    if pos:
-        if is_crit:
-            FLT.add(f"{dmg}", pos.x, pos.y, (255, 180, 80), target_id=target_id, is_crit=True)
-        else:
-            FLT.add(f"-{dmg}", pos.x, pos.y, (180, 100, 255), size="normal", target_id=target_id)
-    attacker_cs = world.get_component(attacker_id, CombatState)
-    if attacker_cs:
-        enter_combat(attacker_cs)
-    # Aggro por dano mágico — usa AGGRO_DELAY (alinhado com servidor)
-    _ai = world.get_component(target_id, AIControlled)
-    from engine.faction_system import can_engage as _can_engage_magic_local
-    if _ai and _ai.state == "IDLE" and _can_engage_magic_local(world, attacker_id, target_id):
-        _ms = world.get_component(target_id, NpcSounds)
-        SOUNDS.play_mob_sounds(_ms, "aggro", dedup_key=f"dmg_{target_id}")
-        _ai.state             = "AGGRO_DELAY"
-        _ai.aggro_delay       = 0.5
-        _ai.aggroed_by_damage = True
-        # Quem bateu vira o alvo — espelha o bloco melee de deal_damage
-        # (ver comentário lá): aquisição é filtrada por hostilidade+raio,
-        # então sem isto um mob neutro atacado nunca recebia alvo.
-        _ai.target_eid        = attacker_id
-        _ai.path_recalc_timer = 0.0
-    return result == "killed"
+# _apply_magic_damage: extraído para engine/core_systems.py::apply_magic_damage_shared
+# (débito B3/CRÍTICO B, 10/08/2026 — a função sempre foi pygame-free, só morava
+# num módulo que importa pygame no topo, arrastando o servidor junto quando
+# handlers server-side precisavam dela, ex: engine/skill_handlers.py::
+# _skill_pirofagia). Alias mantido aqui pra não tocar os 3 call sites locais.
+from engine.core_systems import apply_magic_damage_shared as _apply_magic_damage
 
 
 # ---------------------------------------------------------------------------
@@ -776,28 +724,37 @@ class SpellCastSystem(System):
         if not _first:
             LOG.add("Não há flechas disponíveis para recarregar.", (220, 80, 80))
             return
-        _selected = _first.name
+        _selected = _first.item_id
 
         # Troca de tipo: devolve flechas antigas à bag antes de recarregar
         old_type = quiver.subtype
         if old_type and old_type != _selected and quiver.arrow_count > 0:
             returned = quiver.arrow_count
             for it in inv.items:
-                if it is not None and it.name == old_type and it.stack < it.max_stack:
+                if it is not None and it.item_id == old_type and it.stack < it.max_stack:
                     give = min(returned, it.max_stack - it.stack)
                     it.stack += give
                     returned -= give
                     if returned <= 0:
                         break
             if returned > 0 and len(inv.items) < inv.max_slots:
-                from engine.components import Item as _Item
-                _ret = _Item(
-                    name=old_type, item_type="ammo", slot="",
-                    rarity="common", value=1,
-                    damage_min=quiver.damage_min,
-                    damage_max=quiver.damage_max,
-                    max_stack=1000,
-                )
+                import content.item_table as _ItemTableRec
+                _old_factory = _ItemTableRec.ITEMS.get(old_type)
+                if _old_factory:
+                    _ret = _old_factory()
+                else:
+                    # old_type não bate com nenhum item_id conhecido
+                    # (aljava de save antigo, pré-migração) — fallback
+                    # inerte, mesmo padrão de server/world_server.py::
+                    # _reconstruct_item pra item_id desconhecido.
+                    from engine.components import Item as _Item
+                    _ret = _Item(
+                        name=old_type, item_type="ammo", slot="",
+                        rarity="common", value=1,
+                        damage_min=quiver.damage_min,
+                        damage_max=quiver.damage_max,
+                        max_stack=1000,
+                    )
                 _ret.stack = returned
                 inv.items.append(_ret)
             quiver.arrow_count = 0
@@ -812,7 +769,7 @@ class SpellCastSystem(System):
             return
 
         arrow_stacks = [(i, it) for i, it in enumerate(inv.items)
-                        if it is not None and it.item_type == "ammo" and it.name == _selected]
+                        if it is not None and it.item_type == "ammo" and it.item_id == _selected]
         total_avail = sum(it.stack for _, it in arrow_stacks)
 
 
@@ -844,7 +801,7 @@ class SpellCastSystem(System):
             loaded_arrow = arrow_stacks[0][1]
             quiver.damage_min = loaded_arrow.damage_min
             quiver.damage_max = loaded_arrow.damage_max
-            quiver.subtype    = loaded_arrow.name   # identifica o tipo na aljava
+            quiver.subtype    = loaded_arrow.item_id   # identifica o tipo na aljava
             bonus_str = (f" (+{quiver.damage_min}–{quiver.damage_max} dmg)"
                      if quiver.damage_max > 0 else "")
         LOG.add(f"Aljava recarregada: {quiver.arrow_count}/{quiver.max_arrows}{bonus_str}", (180, 220, 100))
@@ -950,12 +907,19 @@ class PlayerProjectileSystem(System):
         self._pending_knockbacks: list[tuple[int, int, float]] = []
         # Hits de projéteis em mobs online — game.py envia PROJECTILE_HIT_CS ao servidor
         self.pending_proj_hits: list[dict] = []
-        # Outcomes pré-calculados — lidos em _on_hit para tocar som correto.
-        # Lista por target (local_eid) para suportar múltiplas flechas (flecha_reiterada).
-        self.pending_arrow_impacts: dict[int, list] = {}
-        # HP updates diferidos: aplicados em game.py após cada projétil colidir.
-        # Tupla (server_eid, hp_after, hp_max) — hp_max=-1 significa "preservar atual".
-        self.deferred_hp_updates: list[tuple[int, int, int]] = []
+        # Outcome/dano do auto-attack de flecha (mob/torre, player local ou
+        # remoto) não fica mais numa fila por ALVO aqui — cada flecha carrega
+        # o PRÓPRIO resultado em `PlayerProjectile.deferred_result` (engine/
+        # components.py), prendido no momento em que ela nasce (client/
+        # remote_entity_handlers.py::_spawn_archer_auto_arrow). Fila por alvo
+        # entregava o resultado errado quando 2+ flechas convergiam pro mesmo
+        # alvo fora da ordem em que foram disparadas (bug real, ver
+        # PROBLEMAS_ARQUITETURA.md §44). HP em si NUNCA fica nesse resultado
+        # diferido — é aplicado direto na confirmação do servidor, igual
+        # magia/corpo-a-corpo (mesmo §44, correção seguinte: aplicar o HP só
+        # no impacto visual da flecha podia sobrescrever com um valor
+        # desatualizado um HP mais novo aplicado por OUTRO ataque enquanto
+        # ela ainda voava).
         # Animação da Bola de Fogo
         self._fireball_frames: "list[pygame.Surface] | None" = None
         self._fireball_anim:   dict[int, float] = {}   # proj_id → elapsed
@@ -1069,11 +1033,14 @@ class PlayerProjectileSystem(System):
             # (ver ARQUITETURA_ONLINE.md), um tiro bloqueado já chega como
             # outcome="miss" pelo canal normal — deixar cair no bloco de
             # resolução de outcome logo abaixo dá o redirecionamento visual
-            # correto (flecha desvia, "Errou!", consome pending_arrow_impacts
-            # direito) em vez de destruir o projétil aqui silenciosamente
-            # (bug real: "some sem dano nem projétil aparecer" — o destroy
-            # cedo demais nunca dava baixa em pending_arrow_impacts, e uma
-            # flecha seguinte no mesmo alvo aplicava o outcome errado/velho).
+            # correto (flecha desvia, "Errou!", consome o deferred_result
+            # certo, preso nesta MESMA flecha) em vez de destruir o projétil
+            # aqui silenciosamente (bug real antigo: "some sem dano nem
+            # projétil aparecer" — o destroy cedo demais nunca liberava o
+            # evento pendente, então uma flecha seguinte no mesmo alvo
+            # aplicava o outcome errado/velho — problema estrutural da fila
+            # por alvo que existia antes, eliminado ao prender o resultado
+            # na própria flecha em vez de numa fila compartilhada).
             # Mantido para skills com projétil de verdade (Bola de Fogo etc.)
             # — alvo pode se esconder atrás de parede DURANTE o voo, cenário
             # que o outcome já resolvido no lançamento não cobre.
@@ -1106,12 +1073,12 @@ class PlayerProjectileSystem(System):
                         if target_cs is None or attacker_cs is None:
                             # Online: mob/player remoto sem CombatStats (ou atacante é
                             # player remoto sem CombatStats local) — usa outcome
-                            # pré-computado pelo servidor (pending_arrow_impacts).
+                            # pré-computado pelo servidor, prendido nesta MESMA flecha
+                            # (PlayerProjectile.deferred_result — nunca uma fila
+                            # compartilhada por alvo, ver PROBLEMAS_ARQUITETURA.md §44).
                             # Se ainda não chegou, assume "hit" para não travar o projétil.
-                            _pend_upd = self.pending_arrow_impacts.get(proj.target_id)
-                            if _pend_upd:
-                                _e = _pend_upd[0]
-                                outcome = _e["outcome"] if isinstance(_e, dict) else _e
+                            if proj.deferred_result:
+                                outcome = proj.deferred_result.get("outcome", "hit")
                             else:
                                 outcome = "hit"
                         else:
@@ -1133,13 +1100,9 @@ class PlayerProjectileSystem(System):
                                 proj.miss_end_x = proj_pos.x
                                 proj.miss_end_y = proj_pos.y
                             proj.is_miss = True
-                            # Online: consome o evento pendente (não haverá _on_hit)
-                            if target_cs is None or attacker_cs is None:
-                                _pend_miss = self.pending_arrow_impacts.get(proj.target_id)
-                                if _pend_miss:
-                                    _pend_miss.pop(0)
-                                    if not _pend_miss:
-                                        del self.pending_arrow_impacts[proj.target_id]
+                            # deferred_result (se houver) fica preso na flecha — ela
+                            # ainda vai passar por _on_hit ao chegar no ponto de
+                            # desvio, que consome o resultado normalmente.
                             _avoid_txt = {"miss": "Errou!", "dodge": "Desviou!", "parry": "Aparou!"}
                             # Auto-attack: branco; skill: amarelo
                             _is_ability_miss = getattr(proj, "is_ability", False)
@@ -1312,19 +1275,17 @@ class PlayerProjectileSystem(System):
 
                 # Online com guaranteed_hit: flecha cosmética de multi-hit (ex: flecha_reiterada arrow 2+).
                 # Dano já foi tratado pelo PROJECTILE_HIT_CS da primeira flecha.
-                # Não consome pending_arrow_impacts (evita consumir evento de auto-attack).
+                # Nunca tem deferred_result (nasce sem ele) — só som.
                 if target_cs is None and proj.guaranteed_hit:
                     _play_arrow_impact_sound()
                     return
 
-                # Consome evento pré-armazenado pelo COMBAT_RESULT (dict com outcome/damage/is_ability).
-                _pending = self.pending_arrow_impacts.get(proj.target_id)
-                if _pending:
-                    _entry = _pending.pop(0)
-                    if not _pending:
-                        del self.pending_arrow_impacts[proj.target_id]
-                else:
-                    _entry = None
+                # Resultado pré-armazenado NESTA flecha pelo COMBAT_RESULT (dict com
+                # outcome/damage/is_ability) — client/remote_entity_handlers.py grava
+                # direto em PlayerProjectile.deferred_result no momento em que a
+                # flecha nasce, nunca numa fila compartilhada por alvo (ver
+                # PROBLEMAS_ARQUITETURA.md §44).
+                _entry = proj.deferred_result
 
                 # Online sem entry: auto-attack chegou antes do COMBAT_RESULT — só som.
                 if _entry is None and target_cs is None:
@@ -1375,12 +1336,12 @@ class PlayerProjectileSystem(System):
                             FLT.add(_txt_oh, _tpos_oh.x, _tpos_oh.y,
                                     _col_oh, "small", target_id=proj.target_id)
 
-                    # HP diferido: atualiza RemoteEntityMeta.hp no frame do impacto (não no COMBAT_RESULT)
-                    _srv_eid_oh = _entry.get("server_eid", -1) if isinstance(_entry, dict) else -1
-                    _hp_aft_oh  = _entry.get("hp_after",  -1)  if isinstance(_entry, dict) else -1
-                    _hp_mx_oh   = _entry.get("hp_max",    -1)  if isinstance(_entry, dict) else -1
-                    if _srv_eid_oh != -1 and _hp_aft_oh >= 0:
-                        self.deferred_hp_updates.append((_srv_eid_oh, _hp_aft_oh, _hp_mx_oh))
+                    # HP não é mais diferido pro impacto visual (12-13/08/2026,
+                    # ver PROBLEMAS_ARQUITETURA.md §44) — já foi aplicado direto
+                    # em RemoteEntityMeta.hp assim que o servidor confirmou
+                    # (client/remote_entity_handlers.py::_apply_combat_result),
+                    # igual magia/corpo-a-corpo. Só FLT/som ficam presos ao
+                    # momento em que a flecha chega.
 
                     # Som de impacto de flecha
                     if _out_oh in ("hit", "crit", "block"):

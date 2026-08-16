@@ -43,7 +43,7 @@ from ui.floating_text import FLT, PROC, WARN
 from ui.icon_manager import ICONS
 from ui.ui_helpers import item_tooltip_lines, fill_surf
 from content.status_effects_data import EFFECT_DEFS
-from ui.fov import compute_fov
+from engine.fov import compute_fov, local_vision_blob
 from content.loot_tables import roll_loot, roll_mob_loot, roll_coins
 from engine.entity_factory import create_corpse, create_enemy
 from content.enemy_abilities_data import ABILITY_DEFS
@@ -283,6 +283,7 @@ class MouseTargetingSystem(System):
 
     def _enemy_at_world_pos(self, world_x: float, world_y: float) -> int:
         """Retorna o entity_id do inimigo vivo e visível na posição mundo, ou -1."""
+        from ui.tile_sprite_manager import TILE_SPRITES as _TS_click
         _fog_vis = None
         for _, _fw in self.world.get_entities_with(FogOfWar):
             _fog_vis = _fw.visible
@@ -292,10 +293,25 @@ class MouseTargetingSystem(System):
             if _fog_vis is not None and \
                     (etm.current_tile_x, etm.current_tile_y) not in _fog_vis:
                 continue
-            hw = renderable.width / 2
-            hh = renderable.height / 2
-            if (pos.x - hw <= world_x <= pos.x + hw and
-                    pos.y - hh <= world_y <= pos.y + hh):
+            # Sprite real (torre, 12/08/2026, bug real relatado pelo
+            # usuário) é maior que o retângulo antigo — clique precisa
+            # acertar a área VISUAL de verdade, não só o quadrado pequeno
+            # de sempre. Mesma âncora de base do RenderSystem
+            # (`ui/systems.py::RenderSystem.render`, branch `_sprite_rnd`).
+            _spr_click = (_TS_click.get_raw_sprite(renderable.sprite_id)
+                         if renderable.sprite_id else None)
+            if _spr_click:
+                _sw_click, _sh_click = _spr_click.get_size()
+                left   = pos.x - TILE_SIZE / 2
+                right  = left + _sw_click
+                bottom = pos.y + TILE_SIZE / 2
+                top    = bottom - _sh_click
+            else:
+                hw = renderable.width / 2
+                hh = renderable.height / 2
+                left, right = pos.x - hw, pos.x + hw
+                top, bottom = pos.y - hh, pos.y + hh
+            if left <= world_x <= right and top <= world_y <= bottom:
                 cs = self.world.get_component(entity_id, CombatStats)
                 if not cs or cs.current_hp > 0:
                     return entity_id
@@ -588,17 +604,18 @@ class PlayerInputSystem(System):
 
     def _get_enemy_tiles(self) -> set:
         """Retorna tiles ocupados por inimigos, NPCs e jogadores remotos (obstáculos dinâmicos)."""
+        from engine.world_systems import entity_footprint_tiles as _footprint_ui
         occupied = set()
-        for _, tm, _ in self.world.get_entities_with(TileMovement, Enemy):
-            occupied.add((tm.current_tile_x, tm.current_tile_y))
+        for eid, tm, _ in self.world.get_entities_with(TileMovement, Enemy):
+            occupied.update(_footprint_ui(self.world, eid, tm))
             if tm.is_moving:
                 occupied.add((tm.target_tile_x, tm.target_tile_y))
-        for _, tm, _ in self.world.get_entities_with(TileMovement, NPC):
-            occupied.add((tm.current_tile_x, tm.current_tile_y))
+        for eid, tm, _ in self.world.get_entities_with(TileMovement, NPC):
+            occupied.update(_footprint_ui(self.world, eid, tm))
             if tm.is_moving:
                 occupied.add((tm.target_tile_x, tm.target_tile_y))
-        for _, tm, _ in self.world.get_entities_with(TileMovement, RemoteControlled):
-            occupied.add((tm.current_tile_x, tm.current_tile_y))
+        for eid, tm, _ in self.world.get_entities_with(TileMovement, RemoteControlled):
+            occupied.update(_footprint_ui(self.world, eid, tm))
             if tm.is_moving:
                 occupied.add((tm.target_tile_x, tm.target_tile_y))
         return occupied
@@ -1554,6 +1571,12 @@ class RenderSystem(System):
                     _blit_x_rnd = draw_x - TILE_SIZE / 2
                     _blit_y_rnd = draw_y + TILE_SIZE / 2 - _sh_rnd
                     self.world_surf.blit(_sprite_rnd, (int(_blit_x_rnd), int(_blit_y_rnd)))
+                    # Traçado de seleção (mais abaixo) precisa envolver o
+                    # sprite de VERDADE, não o retângulo antigo — sem isso
+                    # o contorno amarelo ficava pequeno/deslocado num
+                    # sprite grande (12/08/2026, bug real relatado pelo
+                    # usuário, torre).
+                    rect = pygame.Rect(int(_blit_x_rnd), int(_blit_y_rnd), _sw_rnd, _sh_rnd)
                 elif _is_corpse_draw:
                     # Corpo morto: dessatura pra cinza (pose "morto", sem barra de HP)
                     _gray = sum(renderable.color[:3]) // 3
@@ -1601,7 +1624,20 @@ class RenderSystem(System):
             if _draw_hp_bar:
                 ratio = max(0.0, min(1.0, combat_stats.current_hp / combat_stats.max_hp))
                 _is_local_player = self.world.get_component(entity_id, PlayerControlled) is not None
-                _hud_top_world_y = position.y - renderable.height / 2
+                # Sprite real (torre, 12/08/2026, bug real relatado pelo
+                # usuário) é bem mais alto que o renderable.height antigo
+                # (retângulo/tier) — ancorar pela altura antiga deixava a
+                # barra de HP no meio/base do sprite em vez do topo. Mesma
+                # âncora de base que o RenderSystem já usa pra desenhar o
+                # sprite (`position.y + TILE_SIZE/2 - sprite_height`, ver
+                # branch `_sprite_rnd` do loop de desenho abaixo) — só sobe
+                # até o TOPO do sprite em vez do rodapé.
+                if renderable.sprite_id:
+                    _spr_hud = TILE_SPRITES.get_raw_sprite(renderable.sprite_id)
+                    _spr_h_hud = _spr_hud.get_height() if _spr_hud else renderable.height
+                    _hud_top_world_y = position.y + TILE_SIZE / 2 - _spr_h_hud
+                else:
+                    _hud_top_world_y = position.y - renderable.height / 2
                 _hud_surf = None
 
                 if _is_local_player:
@@ -1817,10 +1853,14 @@ class TileRenderSystem(System):
             s = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
             s.fill((0, 0, 0, alpha))
             self._fog_fade_surfs.append(s)
-        # Cache do overlay de fog — reconstrói apenas quando o tile de origem muda
+        # Cache do overlay de fog — reconstrói quando o tile de origem da
+        # câmera muda OU quando FogOfWar.version muda (13/08/2026 — sem
+        # isso, o overlay ficava "preso" perto de bush pequena: a visão
+        # mudava mais rápido do que a câmera cruzava fronteira de tile).
         self._fog_overlay_surf: "pygame.Surface | None" = None
         self._fog_cache_tile_ox: int = -99999
         self._fog_cache_tile_oy: int = -99999
+        self._fog_cache_version: int = -1
         self._pending_fog_blit = None
 
     def invalidate_cache(self) -> None:
@@ -1829,6 +1869,7 @@ class TileRenderSystem(System):
         self._cache_tile_y      = -99999
         self._fog_cache_tile_ox = -99999
         self._fog_cache_tile_oy = -99999
+        self._fog_cache_version = -1
         self._tile_sprites.invalidate()
 
     def render(self, camera_offset_x: float = 0, camera_offset_y: float = 0) -> None:
@@ -2000,6 +2041,7 @@ class TileRenderSystem(System):
 
         if (tile_ox != self._fog_cache_tile_ox
                 or tile_oy != self._fog_cache_tile_oy
+                or fog_comp.version != self._fog_cache_version
                 or self._fog_overlay_surf is None):
 
             surf_w = tiles_w * tile_size
@@ -2080,6 +2122,7 @@ class TileRenderSystem(System):
 
             self._fog_cache_tile_ox = tile_ox
             self._fog_cache_tile_oy = tile_oy
+            self._fog_cache_version = fog_comp.version
 
         self.world_surf.blit(self._fog_overlay_surf, (-sub_x, -sub_y))
 
@@ -2254,6 +2297,29 @@ class FogSystem(System):
                 return True
             return rows[y][x].vision_height >= 2
 
+        def is_solid(x: int, y: int) -> bool:
+            if not (0 <= x < map_w and 0 <= y < map_h):
+                return True
+            return rows[y][x].is_solid
+
+        def _is_blocking_from(ox: int, oy: int):
+            # Bush/copa de árvore bloqueiam de fora-pra-dentro, nunca de
+            # dentro-pra-fora (13/08/2026, ver PROBLEMAS_ARQUITETURA.md) —
+            # se o observador está em cima de um tile bloqueante andável,
+            # o blob conectado que o contém vira transparente SÓ pro FOV
+            # calculado a partir dessa origem; outra bush separada continua
+            # bloqueando normal. `is_solid` impede o blob de vazar pra
+            # dentro de parede/pedra/tronco encostados na bush.
+            blob = local_vision_blob(ox, oy, is_blocking, is_solid)
+            if not blob:
+                return is_blocking
+
+            def _blocking(x: int, y: int) -> bool:
+                if (x, y) in blob:
+                    return False
+                return is_blocking(x, y)
+            return _blocking
+
         fog = None
         for _, f, tile_move in self.world.get_entities_with(FogOfWar, TileMovement):
             fog = f
@@ -2272,7 +2338,7 @@ class FogSystem(System):
                 fog._last_ally_centers = _ally_key
 
                 # LOS (shadowcasting, raio pequeno) — controla quais entidades são visíveis
-                fog.visible = compute_fov(px, py, fog.radius, is_blocking)
+                fog.visible = compute_fov(px, py, fog.radius, _is_blocking_from(px, py))
 
                 # Exploração (círculo largo) — descobre tiles para o mapa/tela sem LOS
                 er = fog.explore_radius
@@ -2285,9 +2351,11 @@ class FogSystem(System):
                                 fog.explored.add((ex, ey))
 
                 for ax, ay, ar in fog.ally_centers:
-                    _ally_fov = compute_fov(ax, ay, ar, is_blocking)
+                    _ally_fov = compute_fov(ax, ay, ar, _is_blocking_from(ax, ay))
                     fog.visible |= _ally_fov
                     fog.explored |= _ally_fov
+
+                fog.version += 1
             break  # apenas um FogOfWar no jogo (jogador)
 
         if fog is None:
@@ -2515,6 +2583,7 @@ class ShopSystem(UIScaleMixin, System):
         self._net.send(_MTShop.BUY_REQUEST, {
             "shop_id":     shop_id,
             "item_name":   preview.name,
+            "item_id":     getattr(preview, "item_id", ""),
             "quantity":    1,
             "current_gold": _wallet_buy.gold if _wallet_buy else 0,
         })
@@ -2529,6 +2598,7 @@ class ShopSystem(UIScaleMixin, System):
         self._net.send(_MTShop.BUY_REQUEST, {
             "shop_id":     shop_id,
             "item_name":   preview.name,
+            "item_id":     getattr(preview, "item_id", ""),
             "quantity":    qty,
             "current_gold": _wallet_qty.gold if _wallet_qty else 0,
         })
@@ -2546,7 +2616,7 @@ class ShopSystem(UIScaleMixin, System):
         existing_cap = sum(
             (it.max_stack - it.stack)
             for it in inv.items
-            if it is not None and it.name == preview.name and it.stack < it.max_stack
+            if it is not None and it.item_id == preview.item_id and it.stack < it.max_stack
         )
         free_slots  = inv.max_slots - len(inv.items)
         max_by_inv  = existing_cap + free_slots * preview.max_stack
@@ -2582,6 +2652,7 @@ class ShopSystem(UIScaleMixin, System):
         from shared.messages import MsgType as _MTS
         self._net.send(_MTS.SELL_REQUEST, {
             "item_name":    item.name,
+            "item_id":      getattr(item, "item_id", ""),
             "item_value":   getattr(item, "value", 0),
             "stack_sold":   1,
             "current_gold": wallet.gold,
@@ -3124,7 +3195,7 @@ class ConsumableSystem(System):
     uso de consumíveis seja comunicado ao servidor via CONSUMABLE_USE.
     O servidor é autoritativo — cura/mana/HoT e a remoção do item da bag
     só se aplicam no cliente APÓS a confirmação (STATS_UPDATE com
-    `item_name`+`consumable_ok`, ver client/network_handlers.py). Sem
+    `item_id`+`consumable_ok`, ver client/network_handlers.py). Sem
     isso, um consumível bloqueado no servidor (ex: HP já cheio lá, mesmo
     que o cliente ache que não está) era perdido em silêncio: cliente já
     tinha curado localmente e consumido o item antes de saber que o
@@ -3137,7 +3208,7 @@ class ConsumableSystem(System):
         self._net  = None   # injetado pelo GameEngine no modo online
         # Item aguardando confirmação do servidor (online) — resolvido por
         # network_handlers.py._handle_msg_stats_update ao chegar a resposta.
-        self.pending_item_name: str = ""
+        self.pending_item_id: str = ""
 
     def update(self, events=None, dt: float = 0) -> None:
         # ── Barra de consumíveis: cooldown + keybinds ─────────────────────
@@ -3151,9 +3222,9 @@ class ConsumableSystem(System):
                         continue
                     for slot_i, kb in enumerate(cbar.keybinds):
                         if ev.key == kb:
-                            item_name = cbar.slots[slot_i]
-                            if item_name and cbar.global_cooldown <= 0:
-                                self._use_consumable(eid, item_name, cbar)
+                            item_id = cbar.slots[slot_i]
+                            if item_id and cbar.global_cooldown <= 0:
+                                self._use_consumable(eid, item_id, cbar)
                             break
 
         # ── ActiveRegen: ticks de regeneração de HP ───────────────────────
@@ -3197,14 +3268,14 @@ class ConsumableSystem(System):
         for eid in _mana_remove:
             self.world.remove_component(eid, _AMR)
 
-    def _use_consumable(self, entity_id: int, item_name: str, cbar) -> None:
+    def _use_consumable(self, entity_id: int, item_id: str, cbar) -> None:
         inv = self.world.get_component(entity_id, Inventory)
         cs  = self.world.get_component(entity_id, CombatStats)
         if not inv or not cs:
             return
 
         item = next((it for it in inv.items
-                     if it.name == item_name and it.consumable), None)
+                     if it is not None and it.item_id == item_id and it.consumable), None)
         if not item:
             return
 
@@ -3244,7 +3315,7 @@ class ConsumableSystem(System):
             return
         # SÓ manda o pedido — nada é mutado aqui (nem HP/mana, nem HoT, nem
         # o item). O servidor é quem decide se aceita, e só ao confirmar
-        # (STATS_UPDATE com item_name+consumable_ok, ver network_handlers.py)
+        # (STATS_UPDATE com item_id+consumable_ok, ver network_handlers.py)
         # o item é removido e os efeitos aplicados. Sem isso, um consumível
         # bloqueado no SERVIDOR (drift natural entre os dois lados — ex: HP5
         # regen que o cliente ainda não viu) era perdido em silêncio: cliente
@@ -3252,14 +3323,14 @@ class ConsumableSystem(System):
         # aconteceu de verdade.
         if cbar is not None:
             cbar.global_cooldown = ConsumableBar.GCD_DURATION
-        self.pending_item_name = item_name
+        self.pending_item_id = item_id
         from shared.messages import MsgType as _MTC
         _hot = {"heal_per_tick": heal_per_tick, "interval": interval, "ticks": ticks} \
                if heal_per_tick > 0 and ticks > 0 else None
         _mana_hot = {"mana_per_tick": mana_per_tick, "interval": interval, "ticks": ticks} \
                     if mana_per_tick > 0 and ticks > 0 else None
         self._net.send(_MTC.CONSUMABLE_USE, {
-            "item_name":    item_name,
+            "item_id":      item_id,
             "heal_instant": heal_instant,
             "mana_restore": mana_restore,
             "hot":          _hot,
@@ -3268,7 +3339,7 @@ class ConsumableSystem(System):
             "buffs":        [],
         })
 
-    def _finalize_consumable(self, entity_id: int, item_name: str) -> None:
+    def _finalize_consumable(self, entity_id: int, item_id: str) -> None:
         """Chamado por network_handlers.py ao chegar consumable_ok do servidor
         — SÓ AGORA remove 1 unidade do item da bag local (online). Aplica os
         HoTs locais (ActiveRegen/ActiveManaRegen) — a cura/mana instantânea já
@@ -3278,7 +3349,7 @@ class ConsumableSystem(System):
         if not inv:
             return
         item = next((it for it in inv.items
-                     if it.name == item_name and it.consumable), None)
+                     if it is not None and it.item_id == item_id and it.consumable), None)
         if not item:
             return
         cons = item.consumable
@@ -3302,7 +3373,7 @@ class ConsumableSystem(System):
         item.stack -= 1
         if item.stack <= 0:
             inv.items.remove(item)
-        quest_fire("use_consumable", item_name=item_name)
+        quest_fire("use_consumable", item_id=item_id)
 
 
 class LootSystem(UIScaleMixin, System):
@@ -3367,23 +3438,25 @@ class LootSystem(UIScaleMixin, System):
         self._send_loot_request_for_local_corpse — ver docstring dela."""
         self._online_loot_requester = fn
 
-    def _try_send_online_loot_request(self, take: str, item_name: str = "") -> bool:
+    def _try_send_online_loot_request(self, take: str, item_id: str = "") -> bool:
         """True = modo online, request enfileirado (ou já em voo pra este
         corpse) — chamador deve consumir o clique sem creditar nada
         localmente. False = modo offline (sem requester setado), segue o
         fluxo local de sempre.
 
-        `take`: "gold" ou "item" (com `item_name`) — granular desde
-        17/07/2026, sacar só o ouro não deveria levar junto o resto do
-        loot. Um request em voo bloqueia OUTROS cliques no MESMO corpse
-        (não por linha) — próximo clique só depois do LOOT_RESULT
-        responder, evita spam de request duplicado."""
+        `take`: "gold" ou "item" (com `item_id` — débito A4, 11/08/2026,
+        era `item_name` antes; nome de exibição não distingue itens
+        diferentes com o mesmo nome) — granular desde 17/07/2026, sacar
+        só o ouro não deveria levar junto o resto do loot. Um request em
+        voo bloqueia OUTROS cliques no MESMO corpse (não por linha) —
+        próximo clique só depois do LOOT_RESULT responder, evita spam de
+        request duplicado."""
         if self._online_loot_requester is None:
             return False
         corpse_id = self.open_corpse_id
         if corpse_id not in self._online_loot_pending:
             self._online_loot_pending.add(corpse_id)
-            self._online_loot_requester(corpse_id, take, item_name)
+            self._online_loot_requester(corpse_id, take, item_id)
         return True
 
     @property
@@ -3650,7 +3723,7 @@ class LootSystem(UIScaleMixin, System):
         for i, item in enumerate(corpse.loot):
             if virtual_row >= self._scroll_offset and screen_row < self.MAX_ROWS:
                 if self._row_rect(modal, screen_row).collidepoint(mx, my):
-                    if self._try_send_online_loot_request("item", item.name):
+                    if self._try_send_online_loot_request("item", item.item_id):
                         return True
                     for _, inv, _ in self.world.get_entities_with(Inventory, PlayerControlled):
                         # Tenta empilhar em stack existente
@@ -3659,7 +3732,7 @@ class LootSystem(UIScaleMixin, System):
                             for existing in inv.items:
                                 if existing is None:
                                     continue
-                                if existing.name == item.name and existing.stack < existing.max_stack:
+                                if existing.item_id == item.item_id and existing.stack < existing.max_stack:
                                     existing.stack += item.stack
                                     stacked = True
                                     break
@@ -3674,7 +3747,7 @@ class LootSystem(UIScaleMixin, System):
                         col = self.RARITY_COLORS.get(item.rarity, (200, 200, 200))
                         LOG.add(f"Coletado: {item.name} ({item.rarity})", col)
                         SOUNDS.play_ui("loot_item")
-                        quest_fire("collect_item", item_name=item.name)
+                        quest_fire("collect_item", item_id=item.item_id)
                         if self._on_loot_collected:
                             self._on_loot_collected("item")
                         # Corrige scroll se necessário
@@ -3714,7 +3787,7 @@ class LootSystem(UIScaleMixin, System):
                     # outro membro do grupo já pegou (mesma classe de bug
                     # do ouro duplicado). Cai pro inventário (LOOT_RESULT),
                     # não equipa direto — trade-off aceitável por segurança.
-                    if self._try_send_online_loot_request("item", item.name):
+                    if self._try_send_online_loot_request("item", item.item_id):
                         return True
                     equip        = None
                     inv          = None
@@ -3795,7 +3868,7 @@ class LootSystem(UIScaleMixin, System):
                     col = self.RARITY_COLORS.get(item.rarity, (200, 200, 200))
                     LOG.add(f"Equipado: {item.name} ({item.rarity})", col)
                     SOUNDS.play_ui("equip_item")
-                    quest_fire("equip_item", item_name=item.name, item_type=item.item_type)
+                    quest_fire("equip_item", item_id=item.item_id, item_type=item.item_type)
                     total = (1 if corpse.coins > 0 else 0) + len(corpse.loot)
                     self._scroll_offset = min(self._scroll_offset, max(0, total - self.MAX_ROWS))
                     self._check_auto_close(corpse)
@@ -3989,7 +4062,7 @@ class LootSystem(UIScaleMixin, System):
 # ---------------------------------------------------------------------------
 # SkillSystem
 # ---------------------------------------------------------------------------
-from ui.skill_handlers import SkillHandlers
+from engine.skill_handlers import SkillHandlers
 
 class SkillSystem(System, SkillHandlers):
     """Gerencia habilidades ativas do jogador (teclas 1-7, incluindo talentos).
@@ -4009,18 +4082,9 @@ class SkillSystem(System, SkillHandlers):
         self.hud_surf   = screen
         self._net = None  # NetworkClient — injetado por game.py para enviar CAST_SKILL
 
-    def _is_on_screen(self, pos: "Position") -> bool:
-        if self.world_surf is None or pos is None:
-            return True
-        sw = self.world_surf.get_width()
-        sh = self.world_surf.get_height()
-        for _, _, cam_pos in self.world.get_entities_with(Camera, Position):
-            cam_x = cam_pos.x - sw / 2
-            cam_y = cam_pos.y - sh / 2
-            sx = pos.x - cam_x
-            sy = pos.y - cam_y
-            return 0 <= sx <= sw and 0 <= sy <= sh
-        return True
+    # _is_on_screen: movido para engine/skill_handlers.py::SkillHandlers
+    # (débito B3, 10/08/2026) — SkillSystem herda de lá agora. Ver docstring
+    # do método na nova localização.
 
     def update(self, events: list = None, dt: float = 0) -> None:
         player_skills = self.world.get_component(self.player_entity_id, PlayerSkills)
@@ -4041,20 +4105,25 @@ class SkillSystem(System, SkillHandlers):
                     skill.charges = 0
                     LOG.add(f"{skill.name}: carga expirou!", (200, 100, 50))
 
-        # Fatiador de Corpos: tick de dano AoE a cada 1s durante 5s
+        # Fatiador de Corpos: só o TIMER conta aqui (drives a barra de
+        # canalização na hotbar, client/hotbar_handlers.py) — dano é
+        # exclusivamente servidor (server/world_server.py, mesmo tick loop).
+        # Chamar _fatiador_aoe_tick aqui já foi removido (07/08/2026): sem
+        # nenhum guard de self._net, mas inofensivo online porque mob remoto
+        # não tem CombatStats local (mesmo motivo do achado da Canalização,
+        # ver PROBLEMAS_ARQUITETURA.md §13) — nunca deveria ter existido.
         char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
         if char_stats and char_stats.fatiador_timer > 0:
             char_stats.fatiador_timer = max(0.0, char_stats.fatiador_timer - dt)
             char_stats.fatiador_tick  = max(0.0, char_stats.fatiador_tick  - dt)
             if char_stats.fatiador_tick <= 0 and char_stats.fatiador_timer > 0:
-                char_stats.fatiador_tick = 1.0
-                tile_move = self.world.get_component(self.player_entity_id, TileMovement)
-                ps = self.world.get_component(self.player_entity_id, PlayerSkills)
-                skill_obj = ps.skill_by_id("fatiador_de_corpos") if ps else None
-                if tile_move:
-                    self._fatiador_aoe_tick(skill_obj, tile_move)
+                _fat_skill = player_skills.skill_by_id("fatiador_de_corpos")
+                _fat_interval = _fat_skill.params.get("tick_interval", 1.0) if _fat_skill else 1.0
+                char_stats.fatiador_tick = _fat_interval
             if char_stats.fatiador_timer <= 0:
                 LOG.add("Fatiador de Corpos terminou.", (200, 160, 100))
+                # Imunidade (StatusEffects "cc_immune") expira sozinha via
+                # StatusEffectSystem — nada pra desligar manualmente aqui.
 
         if not events:
             return
@@ -4105,27 +4174,32 @@ class SkillSystem(System, SkillHandlers):
 
         Servidor calcula dano e efeitos; cliente executa apenas
         cooldown/GCD/som e envia CAST_SKILL — ver `_use_skill_visual_only`.
-        `_skill_<id>` (métodos desta classe, definidos abaixo) permanecem a
-        fonte única do efeito de cada skill: reusados pelo servidor via
-        `getattr` em `server/skill_processor.py` (débito B3 conhecido,
-        ver PROBLEMAS_ARQUITETURA.md) — não fazem parte deste caminho."""
+        `_skill_<id>` (mixin `SkillHandlers`, `engine/skill_handlers.py`)
+        permanecem a fonte única do efeito de cada skill: reusados pelo
+        servidor via `HeadlessSkillHandler` (débito B3, fechado 10/08/2026)
+        — não fazem parte deste caminho, que é só feedback local/predição."""
         return self._use_skill_visual_only(_idx, skill)
 
     # ------------------------------------------------------------------
     def _use_skill_visual_only(self, _idx: int, skill) -> bool:
-        """Modo online: replica as verificações do offline ANTES do visual.
+        """Replica client-side as verificações que o servidor vai fazer de
+        verdade (autoritativo), pra dar feedback local imediato (som,
+        flash de botão, "aguardando confirmação") sem esperar round-trip
+        de rede — nunca aplica dano/efeito, só manda CAST_SKILL e espera
+        SKILL_RESULT confirmar.
 
-        O offline faz em _use_skill():
-          1. can_act() check
-          2. GCD check
-          3. skill.is_ready() check
-          4. Para ofensivas: _resolve_target → se -1, retorna False
-          5. enter_combat + is_pursuing
-          6. Chama handler → handler verifica rage/mana/range e retorna False se falhar
-          7. Só então: cooldown, GCD, som
+        1. can_act()/is_action_locked() check
+        2. GCD check
+        3. skill.is_ready() check (cooldown/cargas)
+        4. Para ofensivas: resolve alvo (local) + enter_combat/is_pursuing + range check
+        5. Rage/mana/HP threshold (feedback local — servidor valida de novo)
+        6. Marca _server_pending (bloqueia reuso até SKILL_RESULT confirmar)
+        7. Envia CAST_SKILL
 
-        Online não tem o handler local, então replicamos as verificações que dependem
-        de estado local disponível no cliente.
+        Modo offline não existe mais (servidor é sempre o único caminho de
+        gameplay, ver `PROBLEMAS_ARQUITETURA.md` §13) — removido daqui
+        10/08/2026 (mecânico, `self._net` é sempre não-None neste ponto,
+        setado em `game.py` antes do loop principal permitir qualquer input).
         """
         combat_state  = self.world.get_component(self.player_entity_id, CombatState)
         player_skills = self.world.get_component(self.player_entity_id, PlayerSkills)
@@ -4166,11 +4240,9 @@ class SkillSystem(System, SkillHandlers):
         _has_cast     = getattr(skill, "cast_time", 0.0) > 0
         _is_aoe       = getattr(skill, "needs_aoe_target", False)
 
-        _is_online = self._net is not None
-
         # Skills AOE (Calamidade Flamejante): chama o handler diretamente para mostrar
         # a mira antes do clique — CAST_SKILL é enviado pelo AoeTargetingSystem ao clicar.
-        if _is_aoe and _is_online and skill.skill_id:
+        if _is_aoe and skill.skill_id:
             _aoe_handler = getattr(self, f"_skill_{skill.skill_id}", None)
             if _aoe_handler:
                 _cs_aoe   = self.world.get_component(self.player_entity_id,
@@ -4189,109 +4261,105 @@ class SkillSystem(System, SkillHandlers):
         # 4. Para ofensivas: resolve alvo + inicia chase + verifica range
         _needs_target = getattr(skill, "needs_target", True)
         if _is_offensive and combat_state and _tile_move_sk:
-            if _is_online:
-                _target_local = combat_state.target_entity_id
-                if _needs_target:
-                    # Limpa target inválido: removido do mundo OU fora da visão (fog/parede)
-                    if _target_local != -1:
-                        _stale_pos = self.world.get_component(_target_local,
-                                         __import__("engine.components", fromlist=["Position"]).Position)
-                        _stale_vis = self.world.get_component(_target_local,
-                                         __import__("engine.components", fromlist=["Visible"]).Visible)
-                        # Alvo morto (mob com HP<=0 ou player remoto cujo corpo
-                        # ficou no chão): não é mais alvo válido — limpa igual
-                        # entidade removida, evita tocar som/iniciar cast num corpo.
-                        _stale_cs = self.world.get_component(_target_local,
-                                         __import__("engine.components", fromlist=["CombatStats"]).CombatStats)
-                        _stale_rc = self.world.get_component(_target_local,
-                                         __import__("engine.components", fromlist=["RemoteControlled"]).RemoteControlled)
-                        _is_dead_target = (
-                            (_stale_cs is not None and _stale_cs.current_hp <= 0) or
-                            (_stale_rc is not None and _stale_rc.hp <= 0)
-                        )
-                        if _stale_pos is None or _stale_vis is None or _is_dead_target:
-                            _target_local = -1
-                            combat_state.target_entity_id = -1
-                    if _target_local == -1:
-                        # Auto-select: mesmo comportamento do offline — B6
-                        _params_pre = getattr(skill, "params", {}) or {}
-                        _auto_range = _params_pre.get("max_range") or getattr(skill, "cast_range", 6)
-                        _target_local = self._resolve_target(
-                            combat_state, _tile_move_sk, _max_range=_auto_range)
-                    if _target_local == -1:
-                        WARN.add("Nenhum alvo")
-                        return False
-
-                    # Alvo amigável: recusa AQUI, antes de tocar som/entrar em
-                    # perseguição. Servidor também recusa (server/
-                    # skill_processor.py — CAST_SKILL contra alvo amigável),
-                    # mas sem este gate client-side o arco "tensiona" (som
-                    # toca), o personagem entra em combate e persegue o alvo
-                    # pra sempre — o SKILL_RESULT failed que volta do
-                    # servidor não completava o cast, então nada limpava
-                    # is_pursuing (bug real relatado pelo usuário 17/07/2026,
-                    # arqueiro travado tentando alcançar o Guarda Real).
-                    from engine.faction_system import can_engage as _can_engage_skill
-                    if not _can_engage_skill(self.world, self.player_entity_id, _target_local):
-                        WARN.add("Alvo amigável")
-                        return False
-
-                # enter_combat + is_pursuing ANTES do range check (igual offline _use_skill:5307-5313)
-                # Garante que pressionar skill inicia o chase/auto-attack mesmo fora de alcance.
-                # is_pursuing=True para todas as ofensivas — cast-time skills bloqueiam
-                # auto-attack via is_casting=True em can_act() durante o cast.
-                from engine.stat_fns import enter_combat as _ec_pre
-                _ec_pre(combat_state)
-                combat_state.is_pursuing = True
-                combat_state.chase_suppressed = False   # reengajamento reativa a perseguição
-
-                # Range check — apenas para skills que exigem alvo explícito
-                if _needs_target and _target_local != -1:
-                    _params          = getattr(skill, "params", {}) or {}
-                    # Mago usa cast_range no catálogo; guerreiro/arqueiro usam params.max_range
-                    _max_range_tiles = _params.get("max_range") or getattr(skill, "cast_range", 0)
-                    # cast_range=0 significa melee (sem range explícito no catálogo);
-                    # usa 1 tile para o check online — equivale a MELEE_RANGE_PX (1t + tolerance)
-                    if _max_range_tiles == 0:
-                        _max_range_tiles = 1
-                    _min_range_tiles = _params.get("min_range", 0)
-                    _tol = SkillHandlers.RANGE_TOLERANCE_PX
-                    _max_px = _max_range_tiles * TILE_SIZE + _tol
-                    _min_px = max(0.0, _min_range_tiles * TILE_SIZE - _tol) if _min_range_tiles > 0 else 0.0
-                    _pl_pos  = self.world.get_component(self.player_entity_id,
-                                                         __import__("engine.components", fromlist=["Position"]).Position)
-                    _tgt_pos = self.world.get_component(_target_local,
-                                                         __import__("engine.components", fromlist=["Position"]).Position)
-                    if _pl_pos and _tgt_pos:
-                        _dx_r = _pl_pos.x - _tgt_pos.x
-                        _dy_r = _pl_pos.y - _tgt_pos.y
-                        _d_sq = _dx_r*_dx_r + _dy_r*_dy_r
-                        if _d_sq > _max_px * _max_px:
-                            WARN.add("Fora de alcance")
-                            return False
-                        if _min_px > 0 and _d_sq < _min_px * _min_px:
-                            WARN.add("Alvo muito próximo")
-                            return False
-                        # LOS check para skills com projétil: bloqueia se há parede no caminho.
-                        # Evita deduzir mana/cooldown quando o projétil seria destruído na parede.
-                        _skill_has_proj = getattr(skill, "skill_id", "") in {"bola_de_fogo"}
-                        if _skill_has_proj:
-                            _tmap_los = get_tilemap()
-                            if _tmap_los:
-                                _ptx_los = int(_pl_pos.x / TILE_SIZE)
-                                _pty_los = int(_pl_pos.y / TILE_SIZE)
-                                _ttx_los = int(_tgt_pos.x / TILE_SIZE)
-                                _tty_los = int(_tgt_pos.y / TILE_SIZE)
-                                if not EnemyAISystem._has_line_of_sight(
-                                        _tmap_los, _ptx_los, _pty_los, _ttx_los, _tty_los):
-                                    WARN.add("Há obstáculos no caminho")
-                                    return False
-            else:
-                # Offline: _resolve_target auto-seleciona e verifica CombatStats
-                _target = self._resolve_target(combat_state, _tile_move_sk)
-                if _target == -1 and _needs_target:
+            _target_local = combat_state.target_entity_id
+            if _needs_target:
+                # Limpa target inválido: removido do mundo OU fora da visão (fog/parede)
+                if _target_local != -1:
+                    _stale_pos = self.world.get_component(_target_local,
+                                     __import__("engine.components", fromlist=["Position"]).Position)
+                    _stale_vis = self.world.get_component(_target_local,
+                                     __import__("engine.components", fromlist=["Visible"]).Visible)
+                    # Alvo morto (mob com HP<=0 ou player remoto cujo corpo
+                    # ficou no chão): não é mais alvo válido — limpa igual
+                    # entidade removida, evita tocar som/iniciar cast num corpo.
+                    _stale_cs = self.world.get_component(_target_local,
+                                     __import__("engine.components", fromlist=["CombatStats"]).CombatStats)
+                    _stale_rc = self.world.get_component(_target_local,
+                                     __import__("engine.components", fromlist=["RemoteControlled"]).RemoteControlled)
+                    _is_dead_target = (
+                        (_stale_cs is not None and _stale_cs.current_hp <= 0) or
+                        (_stale_rc is not None and _stale_rc.hp <= 0)
+                    )
+                    if _stale_pos is None or _stale_vis is None or _is_dead_target:
+                        _target_local = -1
+                        combat_state.target_entity_id = -1
+                if _target_local == -1:
+                    # Auto-select: mesmo comportamento de _resolve_target — B6
+                    _params_pre = getattr(skill, "params", {}) or {}
+                    _auto_range = _params_pre.get("max_range") or getattr(skill, "cast_range", 6)
+                    _target_local = self._resolve_target(
+                        combat_state, _tile_move_sk, _max_range=_auto_range)
+                if _target_local == -1:
                     WARN.add("Nenhum alvo")
                     return False
+
+                # Alvo amigável: recusa AQUI, antes de tocar som/entrar em
+                # perseguição. Servidor também recusa (server/
+                # skill_processor.py — CAST_SKILL contra alvo amigável),
+                # mas sem este gate client-side o arco "tensiona" (som
+                # toca), o personagem entra em combate e persegue o alvo
+                # pra sempre — o SKILL_RESULT failed que volta do
+                # servidor não completava o cast, então nada limpava
+                # is_pursuing (bug real relatado pelo usuário 17/07/2026,
+                # arqueiro travado tentando alcançar o Guarda Real).
+                from engine.faction_system import can_engage as _can_engage_skill
+                if not _can_engage_skill(self.world, self.player_entity_id, _target_local):
+                    WARN.add("Alvo amigável")
+                    return False
+
+            # enter_combat + is_pursuing ANTES do range check.
+            # Garante que pressionar skill inicia o chase/auto-attack mesmo fora de alcance.
+            # is_pursuing=True para todas as ofensivas — cast-time skills bloqueiam
+            # auto-attack via is_casting=True em can_act() durante o cast.
+            from engine.stat_fns import enter_combat as _ec_pre
+            _ec_pre(combat_state)
+            combat_state.is_pursuing = True
+            combat_state.chase_suppressed = False   # reengajamento reativa a perseguição
+
+            # Range check — apenas para skills que exigem alvo explícito
+            if _needs_target and _target_local != -1:
+                _params          = getattr(skill, "params", {}) or {}
+                # Mago usa cast_range no catálogo; guerreiro/arqueiro usam params.max_range
+                _max_range_tiles = _params.get("max_range") or getattr(skill, "cast_range", 0)
+                # cast_range=0 significa melee (sem range explícito no catálogo);
+                # usa 1 tile para o check — equivale a MELEE_RANGE_PX (1t + tolerance)
+                if _max_range_tiles == 0:
+                    _max_range_tiles = 1
+                _min_range_tiles = _params.get("min_range", 0)
+                _tol = SkillHandlers.RANGE_TOLERANCE_PX
+                _max_px = _max_range_tiles * TILE_SIZE + _tol
+                _min_px = max(0.0, _min_range_tiles * TILE_SIZE - _tol) if _min_range_tiles > 0 else 0.0
+                _pl_pos  = self.world.get_component(self.player_entity_id,
+                                                     __import__("engine.components", fromlist=["Position"]).Position)
+                _tgt_pos = self.world.get_component(_target_local,
+                                                     __import__("engine.components", fromlist=["Position"]).Position)
+                if _pl_pos and _tgt_pos:
+                    _dx_r = _pl_pos.x - _tgt_pos.x
+                    _dy_r = _pl_pos.y - _tgt_pos.y
+                    _d_sq = _dx_r*_dx_r + _dy_r*_dy_r
+                    if _d_sq > _max_px * _max_px:
+                        WARN.add("Fora de alcance")
+                        return False
+                    if _min_px > 0 and _d_sq < _min_px * _min_px:
+                        WARN.add("Alvo muito próximo")
+                        return False
+                    # LOS check para skills com projétil: bloqueia se há parede no caminho.
+                    # Evita deduzir mana/cooldown quando o projétil seria destruído na parede.
+                    # Campo de catálogo (não hardcode de skill_id) — qualquer skill nova
+                    # com projétil visual só precisa marcar has_projectile=True (10/08/2026).
+                    from content.skill_config import SKILL_CATALOG as _SC_proj
+                    _skill_has_proj = _SC_proj.get(skill.skill_id, {}).get("has_projectile", False)
+                    if _skill_has_proj:
+                        _tmap_los = get_tilemap()
+                        if _tmap_los:
+                            _ptx_los = int(_pl_pos.x / TILE_SIZE)
+                            _pty_los = int(_pl_pos.y / TILE_SIZE)
+                            _ttx_los = int(_tgt_pos.x / TILE_SIZE)
+                            _tty_los = int(_tgt_pos.y / TILE_SIZE)
+                            if not EnemyAISystem._has_line_of_sight(
+                                    _tmap_los, _ptx_los, _pty_los, _ttx_los, _tty_los):
+                                WARN.add("Há obstáculos no caminho")
+                                return False
 
         # 5. Rage/mana/HP threshold — verifica com awareness de proc (igual offline)
         _rage_cost = 0
@@ -4351,7 +4419,7 @@ class SkillSystem(System, SkillHandlers):
                     WARN.add(f"Concentração insuficiente ({int(getattr(_char, 'concentration', 0))}/{_conc_cost})")
                     return False
         # HP threshold (ex: Executar exige alvo <30% HP) — verifica no cliente via RemoteEntityMeta
-        if not (_is_procced and _proc_ignores_cost) and _is_online and combat_state:
+        if not (_is_procced and _proc_ignores_cost) and combat_state:
             _params_sk   = getattr(skill, "params", {}) or {}
             _hp_threshold = _params_sk.get("hp_threshold", 0.0) if isinstance(_params_sk, dict) else 0.0
             if _hp_threshold > 0:
@@ -4363,24 +4431,13 @@ class SkillSystem(System, SkillHandlers):
                         WARN.add(f"Alvo precisa ter <{int(_hp_threshold * 100)}% HP")
                         return False
 
-        # 6. Aplica efeitos locais
-        if _is_online:
-            # Online: não aplica GCD nem cooldown — espera confirmação do servidor.
-            # Mostra flash de "botão pressionado" (igual ao de falha por recursos).
-            # GCD + cooldown + som são aplicados em SKILL_RESULT quando confirmado.
-            skill.fail_flash_timer          = 0.15   # flash escuro rápido = "registrado"
-            skill._server_pending           = True   # bloqueia reuso até confirmação
-            skill._server_pending_timeout   = 0.40   # fallback: libera após 400ms (dentro do GCD 0.8s)
-        else:
-            # Offline: aplica tudo imediatamente (sem servidor para confirmar).
-            # Sincroniza cooldown em TODOS os slots com a mesma skill_id (Bug 4).
-            for _sk_sync in player_skills.skills:
-                if _sk_sync and _sk_sync.skill_id == skill.skill_id:
-                    _sk_sync.current_cooldown = skill.cooldown
-            if player_skills:
-                player_skills.gcd_timer = PlayerSkills.GCD_DURATION
-            if skill.sound_name and not _has_cast:
-                SOUNDS.play_skill(skill.sound_name)
+        # 6. Aplica efeitos locais — não aplica GCD nem cooldown — espera
+        # confirmação do servidor. Mostra flash de "botão pressionado" (igual
+        # ao de falha por recursos). GCD + cooldown + som são aplicados em
+        # SKILL_RESULT quando confirmado.
+        skill.fail_flash_timer          = 0.15   # flash escuro rápido = "registrado"
+        skill._server_pending           = True   # bloqueia reuso até confirmação
+        skill._server_pending_timeout   = 0.40   # fallback: libera após 400ms (dentro do GCD 0.8s)
         # Para skills baseadas em cargas: consome localmente (igual ao handler offline)
         # Servidor também consume a sua cópia; cargas são regrantadas via morte de mob.
         if skill.max_charges > 0 and skill.charges > 0:
@@ -4398,14 +4455,8 @@ class SkillSystem(System, SkillHandlers):
         _mana_pre  = getattr(_cs,   "mana",  0) if _cs   else 0
         # (dedução acontece no servidor via sync_player_resources + handler)
 
-        # 7. enter_combat + is_pursuing — já feito no passo 4 para online ofensivas.
-        # Para não-ofensivas ou offline, aplica aqui.
-        if _is_offensive and combat_state and not _is_online:
-            from engine.stat_fns import enter_combat as _ec_sk
-            _ec_sk(combat_state)
-            if not _has_cast:
-                combat_state.is_pursuing = True
-                combat_state.chase_suppressed = False   # reengajamento reativa a perseguição
+        # 7. enter_combat + is_pursuing — já feito no passo 4, para ofensivas
+        # (não-ofensivas nunca entram em combate por aqui).
 
         # Envia CAST_SKILL com rage/mana PRÉ-dedução para o servidor validar corretamente
         if self._net:
@@ -4463,7 +4514,7 @@ class SkillSystem(System, SkillHandlers):
 
         # Spells com cast_time: cria SpellCast visual_only para exibir a barra de cast.
         # Servidor processa o efeito real; cliente remove o SpellCast ao encher sem disparar.
-        if _has_cast and _is_online:
+        if _has_cast:
             from engine.components import SpellCast as _SCVis
             from content.skill_config import SKILL_CATALOG as _SC_int
             _sc_tid    = getattr(combat_state, "target_entity_id", -1) if combat_state else -1
@@ -4511,7 +4562,7 @@ class SkillSystem(System, SkillHandlers):
         # Fatiador de Corpos: seta timer local para a animação de channeling (hotbar overlay).
         # Ticks reais são processados no servidor; o cliente só usa o timer para o visual.
         # _fatiador_aoe_tick local não causa dano (mobs online não têm CombatStats).
-        if skill.skill_id == "fatiador_de_corpos" and _is_online and _char:
+        if skill.skill_id == "fatiador_de_corpos" and _char:
             _fat_p = getattr(skill, "params", {}) or {}
             _char.fatiador_timer = _fat_p.get("duration",      5.0)
             _char.fatiador_tick  = _fat_p.get("tick_interval", 1.0)
@@ -4535,154 +4586,9 @@ class SkillSystem(System, SkillHandlers):
 
         return True
 
-    # ------------------------------------------------------------------
-    def _resolve_target(self, combat_state: "CombatState", tile_move: "TileMovement",
-                        _max_range: int = 1) -> int:
-        """
-        Retorna o target_entity_id válido do combat_state.
-        Se não houver alvo selecionado (ou alvo morto), seleciona o inimigo mais próximo
-        (igual ao comportamento da tecla Espaço) e entra em combate automaticamente.
-        """
-        if combat_state is None or tile_move is None:
-            return -1
-        current = combat_state.target_entity_id
-        if current != -1:
-            # Alvo já selecionado também precisa estar dentro de _max_range —
-            # sem isso, um target_entity_id setado a partir do "tid" que o
-            # CLIENTE manda em CAST_SKILL (server/skill_processor.py) deixava
-            # QUALQUER skill acertar QUALQUER entidade do mapa, porque esse
-            # check só rodava no fallback de auto-seleção abaixo, nunca pro
-            # alvo já setado (ver arquitetura/PROBLEMAS_ARQUITETURA.md,
-            # vulnerabilidade de range/LOS de skill). Fora de range cai pro
-            # mesmo fallback de auto-seleção usado quando o alvo está morto.
-            _cur_tm = self.world.get_component(current, TileMovement)
-            _in_range = (_max_range <= 0 or (_cur_tm is not None and chebyshev(
-                tile_move.current_tile_x, tile_move.current_tile_y,
-                _cur_tm.current_tile_x,   _cur_tm.current_tile_y) <= _max_range))
-            if _in_range:
-                cs = self.world.get_component(current, CombatStats)
-                if cs and cs.current_hp > 0:
-                    return current
-                # Alvo é player remoto (RemoteControlled): sem CombatStats local,
-                # valida via rc.hp (sincronizado pelo servidor via SKILL_RESULT/STATS_UPDATE).
-                if cs is None:
-                    from engine.components import RemoteControlled as _RCtgt
-                    _rc_tgt = self.world.get_component(current, _RCtgt)
-                    if _rc_tgt is not None and _rc_tgt.hp > 0:
-                        return current
-        # Auto-seleciona o inimigo HOSTIL em range com menor HP (desempate
-        # por distância) — B6. `is_hostile` (01/08/2026, bug real relatado
-        # pelo usuário: "as teclas de atalho das habilidades ainda
-        # selecionam um player aliado") — as 3 buscas abaixo não filtravam
-        # hostilidade NENHUMA (torres/minions/players aliados também
-        # carregam `Enemy` do lado do cliente); o `can_engage` que o
-        # chamador roda DEPOIS (ui/systems.py, "Alvo amigável") só barra o
-        # CAST em si — os efeitos colaterais desta função (target_entity_id
-        # setado, is_pursuing=True, enter_combat) já tinham acontecido
-        # ANTES desse gate, então o personagem entrava em perseguição
-        # visível contra o aliado mesmo com o dano bloqueado. Mesmo padrão
-        # de fix já aplicado em TAB/SPACE (ui/systems.py::
-        # _visible_enemies_sorted, client/save_sync_handlers.py::
-        # _space_engage_online).
-        from engine.faction_system import is_hostile as _is_hostile_resolve
-        px, py    = tile_move.current_tile_x, tile_move.current_tile_y
-        best_id   = -1
-        best_dist = float("inf")
-        best_hp   = float("inf")
-        for eid, epos, _, _, etm, ecs, _ in self.world.get_entities_with(
-                Position, Enemy, AIControlled, TileMovement, CombatStats, Visible):
-            if ecs.current_hp <= 0:
-                continue
-            if not self._is_on_screen(epos):
-                continue
-            if not _is_hostile_resolve(self.world, self.player_entity_id, eid):
-                continue
-            d = chebyshev(px, py, etm.current_tile_x, etm.current_tile_y)
-            if _max_range > 0 and d > _max_range:
-                continue
-            if ecs.current_hp < best_hp or (ecs.current_hp == best_hp and d < best_dist):
-                best_dist = d
-                best_hp   = ecs.current_hp
-                best_id   = eid
-        # Fase 8 (06/08/2026, bug real de playtest — ver ARQUITETURA_ONLINE.md
-        # §34.74.48): minion (MOBA lane creep) nunca tem Enemy/AIControlled de
-        # propósito — MinionSystem próprio, não EnemyAISystem (mesma decisão de
-        # Torre, ver docstring de engine/components.py::Minion). Sem este loop
-        # paralelo, quando o alvo explícito de uma skill morre (comum — minion
-        # tem TTK baixo) e o auto-fallback tenta escolher o próximo hostil mais
-        # perto, minion nunca era candidato — mesmo vivo e adjacente. Roda tanto
-        # no cliente (predição) quanto no SERVIDOR (SkillSystem é compartilhado,
-        # ver server/world_server.py:479/server/skill_processor.py:314) — é lá
-        # que o bug realmente importava (skill falhava silenciosamente do lado
-        # autoritativo mesmo com o cliente parecendo ok). Mesma lógica de
-        # melhor-candidato do loop de Enemy acima, combinada no mesmo best_id.
-        for eid, epos, _, etm, ecs, _ in self.world.get_entities_with(
-                Position, Minion, TileMovement, CombatStats, Visible):
-            if ecs.current_hp <= 0:
-                continue
-            if not self._is_on_screen(epos):
-                continue
-            if not _is_hostile_resolve(self.world, self.player_entity_id, eid):
-                continue
-            d = chebyshev(px, py, etm.current_tile_x, etm.current_tile_y)
-            if _max_range > 0 and d > _max_range:
-                continue
-            if ecs.current_hp < best_hp or (ecs.current_hp == best_hp and d < best_dist):
-                best_dist = d
-                best_hp   = ecs.current_hp
-                best_id   = eid
-        # Online mobs don't have CombatStats — fall back to closest visible enemy
-        if best_id == -1:
-            for eid, epos, _, etm in self.world.get_entities_with(Position, Enemy, TileMovement):
-                if self.world.get_component(eid, CombatStats):
-                    continue  # already handled above
-                if not self.world.get_component(eid, Visible):
-                    continue
-                if not self._is_on_screen(epos):
-                    continue
-                if not _is_hostile_resolve(self.world, self.player_entity_id, eid):
-                    continue
-                d = chebyshev(px, py, etm.current_tile_x, etm.current_tile_y)
-                if _max_range > 0 and d > _max_range:
-                    continue
-                if d < best_dist:
-                    best_dist = d
-                    best_id   = eid
-        # PvP: também considera players remotos (RemoteControlled) como
-        # alvos válidos — `can_engage` aqui, DE PROPÓSITO, não `is_hostile`
-        # (mesma razão do TAB, _visible_enemies_sorted acima): permissão de
-        # PvP entre players é CONTEXTUAL (duelo/arena/zona,
-        # `_pvp_context_resolver`), um oponente de duelo normalmente está
-        # na MESMA facção default ("jogadores" = amigavel), só o contexto
-        # libera — `is_hostile` aqui quebraria auto-mirar o oponente
-        # durante um duelo (nunca resolveria hostil por tier de facção
-        # fixo). `can_engage` já bloqueia aliado de verdade (facção
-        # amigavel sem contexto de PvP).
-        if best_id == -1:
-            from engine.faction_system import can_engage as _can_engage_resolve
-            _rc_cls = __import__("engine.components", fromlist=["RemoteControlled"]).RemoteControlled
-            for eid, epos, _rc_auto, etm in self.world.get_entities_with(Position, _rc_cls, TileMovement):
-                if eid == self.player_entity_id:
-                    continue  # não auto-seleciona a si mesmo
-                if _rc_auto.hp <= 0:
-                    continue  # player morto (corpo) — não é alvo válido
-                if not self.world.get_component(eid, Visible):
-                    continue
-                if not self._is_on_screen(epos):
-                    continue
-                if not _can_engage_resolve(self.world, self.player_entity_id, eid):
-                    continue
-                d = chebyshev(px, py, etm.current_tile_x, etm.current_tile_y)
-                if _max_range > 0 and d > _max_range:
-                    continue
-                if d < best_dist:
-                    best_dist = d
-                    best_id   = eid
-        if best_id != -1:
-            combat_state.target_entity_id = best_id
-            combat_state.is_pursuing      = True
-            enter_combat(combat_state)
-        return best_id
+    # _resolve_target: movido para engine/skill_handlers.py::SkillHandlers
+    # (débito B3, 10/08/2026) — SkillSystem herda de lá agora. Ver docstring
+    # do método na nova localização.
 
     # Todos os handlers (_skill_* e _talent_*) estão em skill_handlers.py via SkillHandlers.
 

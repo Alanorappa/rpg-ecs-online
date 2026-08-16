@@ -109,7 +109,14 @@
       "WebFetch(domain:www.scs.stanford.edu)",
       "WebFetch(domain:www.gamedeveloper.com)",
       "WebFetch(domain:www.riotgames.com)",
-      "WebFetch(domain:highscalability.com)"
+      "WebFetch(domain:highscalability.com)",
+      "Bash(python -m py_compile server/world_server.py)",
+      "WebFetch(domain:gitlab.com)",
+      "WebFetch(domain:www.azerothcore.org)",
+      "WebFetch(domain:book.veloren.net)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:docs.veloren.net)",
+      "WebFetch(domain:veloren.net)"
     ]
   }
 }

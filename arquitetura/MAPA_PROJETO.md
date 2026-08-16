@@ -44,6 +44,7 @@
 | Party/Grupo — cliente | `client/party_handlers.py` | `PartyHandlers` — modal de convite, comando de chat `/convidar`, frame de grupo (nome+HP+líder) |
 | Zona PvP (Fase F) — servidor | `server/pvp_zone_processor.py` | `PvpZoneProcessorMixin` — `_in_pvp_zone`/`_pvp_zone_allows`, stateless (sem pares/tick-check), consultado por `_pvp_allowed_between` |
 | Zona PvP (Fase F) — cliente | `client/pvp_zone_handlers.py` | `PvpZoneHandlers` — indicador cosmético (log + banner "ZONA PVP"), geometria vem do mesmo `_entities.json` local (sem mensagem de rede nova) |
+| Stealth de bush estilo MOBA — servidor | `server/bush_zone_processor.py` | `BushZoneProcessorMixin` — `_get_bush_zone`/`_team_sees_bush_zone`, stateless (sem cache), consultado por `server/session.py::_can_see` |
 | Arena 2x2 (Fase G leva 1) — servidor | `server/match_processor.py` | `MatchProcessorMixin` — fila FIFO de grupos, instanciamento privado por partida (`WorldServer._load_instance`/`_unload_instance`), time via `Faction`, elimina via interceptor de golpe letal composto |
 | Arena 2x2 (Fase G leva 1) — cliente | `client/arena_handlers.py` | `ArenaHandlers` — botão "Fila de Arena 2x2" no frame de grupo, avisos de fila/início/fim; troca de mapa reusa 100% `ZONE_CHANGE`/`_do_transition` (zero código novo de transição) |
 | Battleground de teste (Nexus/placar) — cliente | `client/battleground_handlers.py` | `BattlegroundHandlers` (02/08/2026) — modal de fim de partida (`BG_MATCH_RESULT`, placar dos 2 times), botão "Voltar" manda `/testbg leave` via chat; fechado por `ZONE_CHANGE` (manual ou timeout de 15s). HUD ao vivo de K/D/Farm/Gold em `client/hud_handlers.py::_draw_bg_kda_hud`. Ver `historico/ARQUITETURA ONLINE HISTORICO.md` §34.74.14 |
@@ -67,9 +68,9 @@
 | Quero… | Arquivo | Seção |
 |--------|---------|-------|
 | Criar/modificar uma skill | `content/skill_config.py` | `SKILL_CATALOG` |
-| Implementar handler de skill do guerreiro | `ui/skill_handlers.py` | `_skill_<id>` |
-| Range check de skill (pixel-based) | `ui/skill_handlers.py` | `MELEE_RANGE_PX`, `_range_ok()`, `_melee_ok()` |
-| Implementar skill do mago | `ui/skill_handlers.py` + `ui/spell_system.py` | `_skill_*` + `_complete_cast` |
+| Implementar handler de skill do guerreiro | `engine/skill_handlers.py` | `_skill_<id>` |
+| Range check de skill (pixel-based) | `engine/skill_handlers.py` | `MELEE_RANGE_PX`, `_range_ok()`, `_melee_ok()` |
+| Implementar skill do mago | `engine/skill_handlers.py` + `ui/spell_system.py` | `_skill_*` + `_complete_cast` |
 | Fórmula de dano + is_ability miss bypass | `engine/damage_calculator.py` | `resolve_attack_outcome(is_ability=)` |
 | Funções de stat (modifier, combat) | `engine/stat_fns.py` | `add_modifier`, `enter_combat`, etc. |
 | Stats base por classe / attack interval | `engine/stats_system.py` | `CLASS_BASE_STATS`, `sync_attack_interval()` |
@@ -103,6 +104,7 @@
 | Modal de interação com player (Negociar/Duelar/Seguir/Convidar p/ Grupo) | `client/trade_handlers.py` | `_player_popup_button_rects`/`_draw_trade_popup`/`_click_trade_popup` — aberto pelo clique direito em player amigável (`ui/systems.py`) |
 | Party/Grupo (convite/aceite/sair/expulsar/XP compartilhado) | `server/party_processor.py` + `client/party_handlers.py` | `PartyProcessorMixin` (server, N-ário) + comando de chat `/convidar` (`_try_handle_party_chat_command`) |
 | Zona PvP (retângulo por mapa, "solo=hostil, grupo=exceção") | `server/pvp_zone_processor.py` + `maps/<mapa>_entities.json::pvp_zones` | consultado por `_pvp_allowed_between`; geometria vem do mesmo `_entities.json` que `ambient_zones` já usa (`engine/map_loader.py::_merge_entities_json`) |
+| Bush estilo MOBA (retângulo por mapa, oculta quem não tem presença própria/de time dentro) | `server/bush_zone_processor.py` + `maps/<mapa>_entities.json::bush_zones` | consultado por `server/session.py::_can_see`; alvo travado é limpo por `WorldServer._tick_bush_target_clear` |
 | Instância privada por partida (arena/BG/dungeon futuro) | `server/world_server.py::_load_instance`/`_unload_instance`/`_template_file_of` | UM `WorldServer` só — chave sintética (`f"{template}::{id}"`) generaliza o `_map_bundles` que já isola multi-mapa; NUNCA outro processo/WorldServer (colide com globais module-level, ver `historico/ARQUITETURA ONLINE HISTORICO.md` §34.27) |
 | Time PvP temporário (arena) | `server/match_processor.py` | `Faction("arena_time_a"/"arena_time_b")` no player, sobrescreve `PLAYER_FACTION` — `can_engage` libera sem passar pelo contexto PvP (relação já sai hostil de verdade) |
 | Comando de chat novo (`/algo`) | `client/party_handlers.py::_try_handle_party_chat_command` | chamado por `client/chat_handlers.py::_send_chat_message` ANTES de mandar como texto normal — primeiro precedente de parsing de comando no chat |
@@ -113,15 +115,16 @@
 | Adicionar NPC de combate a um mapa (conteúdo real) | `maps/{mapa}_entities.json` | chave `"combat_npcs"` (lista de `{x,y,faction,name,profession,...}`) — lido por `engine/map_loader.py` + `server/world_server.py::_create_combat_npcs()` |
 | Criar/modificar tipo de torre (Sistema de Torres, 29/07/2026) | `content/tower_definitions.py` | `TOWER_TABLE` (tabela própria, SEPARADA de MOB_TABLE — XP/ouro/atributos próprios) |
 | Criar/modificar tipo de minion (Sistema de Minions, 30/07/2026) | `content/minion_definitions.py` | `MINION_TABLE` (tabela própria, SEPARADA de MOB_TABLE — igual Torre) — `entity_factory.create_minion()`, lógica em `engine/world_systems.py::MinionSystem` |
-| Adicionar lane de minion a um mapa (spawn/base inimiga/intervalo de wave) | `maps/{mapa}_entities.json` | chave `"minion_lanes"` (lista de `{faction,spawn_tile,target_tile,wave_interval_s,level}`) — lido por `engine/map_loader.py` + registrado em `server/world_server.py::_create_minion_lanes()`; ativado por `_activate_minion_lanes()` quando o combate libera (`match_processor.py`) |
+| Criar/modificar tipo de monstro de jungle (normal ou boss, 13/08/2026) | `content/jungle_definitions.py` | `JUNGLE_MOB_TABLE`/`JUNGLE_BOSS_TABLE` (tabelas próprias, mesmo formato de MOB_TABLE) — `create_enemy()` (SEM factory nova, entra na cadeia de fallback de `_build_combat_entity`), reward/respawn/buff em `server/world_server.py::_create_jungle_camps`/`_tick_jungle_camp_respawns`/`_grant_jungle_boss_buff` + `server/server_death_handler.py` |
+| Adicionar lane de minion a um mapa (spawn/base inimiga/intervalo de wave) | `maps/{mapa}_entities.json` | chave `"minion_lanes"` (lista de `{faction,spawn_tile,target_tile,wave_interval_s,level,first_wave_delay_s}`) — lido por `engine/map_loader.py` + registrado em `server/world_server.py::_create_minion_lanes()`; ativado por `_activate_minion_lanes()` quando o combate libera (`match_processor.py`). `first_wave_delay_s` (opcional, 13/08/2026) — atraso real em segundos da 1ª wave dessa lane, INDEPENDENTE de `wave_interval_s` (que só vale a partir da 2ª wave); omitir cai no fallback antigo (`_LANE_GROUP_STAGGER_S`/`_LANE_GROUP_ORDER`, 1.5s por grupo top/bot/mid) |
 | Torre estática com facção — entidade + IA de alvo/ataque | `engine/entity_factory.py::create_tower()` + `engine/world_systems.py::TowerSystem` | sem `AIControlled`; targeting sticky/aggro-switch/ramp — ver `historico/ARQUITETURA ONLINE HISTORICO.md` §34.70 |
 | Adicionar torre a um mapa (conteúdo real) | `maps/{mapa}_entities.json` | chave `"towers"` (lista de `{x,y,tower_key,faction,level,respawnable,respawn_s,regen_enabled}`) — lido por `engine/map_loader.py` + `server/world_server.py::_create_towers()` |
 | Progressão normalizada de instância (base pro futuro modo Battlefield, 31/07/2026) | `server/instance_progression.py` | `enter_/exit_normalized_progression()`, `is_in_normalized_progression()`, `grant_instance_xp()` (chamado de verdade desde 01/08/2026, ver §34.74.6), `grant_instance_gold()` — ver `historico/ARQUITETURA ONLINE HISTORICO.md` §34.74 |
 | Tabela de skill unlock por level de instância / itens da loja de instância | `content/skill_config.py` / `content/instance_shop.py` | `INSTANCE_SKILL_UNLOCK_ORDER` / `INSTANCE_SHOP_ITEM_IDS` (conectado à loja real desde 01/08/2026, `content/merchant_data.py::SHOPS["instance_shop"]`) |
 | Mapa de teste MOBA (rotas/torres/progressão normalizada, 01/08/2026) | `maps/moba_battleground.csv` + `_entities.json` | 100×100, 20 torres, 6 lanes de minion (top/mid/bot por time, `lane_id`), 2 vendedores (`shop_id: "instance_shop"`) — gerado de `maps/moba_battleground.png` via `tools/png_to_map.py` |
 | Gancho de debug pra testar o mapa MOBA sem fila/matchmaking real | `server/debug_battleground.py` | comando de chat `/testbg a\|b\|leave`, interceptado em `server/session.py::_handle_chat` — infra DESCARTÁVEL, zero acoplamento com Arena, ver `historico/ARQUITETURA ONLINE HISTORICO.md` §34.74.1 |
-| Fila REAL de matchmaking da BG estilo MOBA (04/08/2026) — servidor | `server/bg_queue_processor.py` | `BgQueueProcessorMixin` — fila única sem modo (token `("solo",eid)`/`("party",party_id)`), `_tick_bg_queue`/`_bg_try_pack` (maior partida simétrica possível, 1x1-5x5), instância privada por partida, Nexus derrubado termina, respawn automático + HUD de KDA por partida — ver `historico/ARQUITETURA ONLINE HISTORICO.md` §34.74.31 |
-| Fila REAL de BG — cliente (modal, aceite, comando `/bgqueue`/F1) | `client/bg_queue_handlers.py` | estado de fila/aceite + `_open_bg_queue_modal()` (chamado por `game.py::K_F1` e pelo comando de chat); a LINHA "Battleground" dentro do modal unificado é desenhada em `client/arena_handlers.py::_draw_arena_queue_modal` |
+| Fila REAL de matchmaking da BG estilo MOBA (04/08/2026, revisado 10/08/2026 — ver `PROBLEMAS_ARQUITETURA.md` §18) — servidor | `server/bg_queue_processor.py` | `BgQueueProcessorMixin` — 3 filas de TAMANHO FIXO por modo (`BG_MODES`: 2v2/3v3/5v5, mesmo padrão de `ARENA_MODES`; token `("solo",eid)`/`("party",party_id)` por fila), `_tick_bg_queue`/`_bg_try_pack` (bin-packing guloso dentro da fila do modo, nunca assimétrico), instância privada por partida, Nexus derrubado termina, respawn automático + HUD de KDA por partida — ver `historico/ARQUITETURA ONLINE HISTORICO.md` §34.74.31 |
+| Fila REAL de BG — cliente (modal com 3 linhas de tamanho, aceite, comando `/bgqueue`/F1) | `client/bg_queue_handlers.py` | `BG_MODE_LIST` (mesmo padrão de `ARENA_MODE_LIST`) + estado de fila/aceite por modo + `_open_bg_queue_modal()` (chamado por `game.py::K_F1` e pelo comando de chat); as 3 LINHAS de Battleground dentro do modal unificado são desenhadas em `client/arena_handlers.py::_draw_arena_queue_modal` (mesmo código que já desenha as linhas de Arena, generalizado) |
 
 ---
 
@@ -133,9 +136,9 @@
 > pelo grafo de imports real, não só "impora pygame?"): **quem carrega esse
 > módulo em produção** — `content/`/`engine/` = usado pelo servidor headless
 > (direto ou transitivo); `ui/` = client-only mesmo quando o arquivo em si
-> não importa pygame (ex.: `combat_log.py`, `skill_handlers.py`, `fov.py` —
-> só `ui/systems.py`/`game.py` os carregam, servidor nunca). Ver
-> `historico/ARQUITETURA ONLINE HISTORICO.md` (Decisão 19) pro registro completo da migração
+> não importa pygame (ex.: `combat_log.py`, `fov.py` — só `ui/systems.py`/
+> `game.py` os carregam, servidor nunca). Ver `historico/ARQUITETURA ONLINE
+> HISTORICO.md` (Decisão 19) pro registro completo da migração
 > (mapeamento arquivo-a-arquivo, casos especiais de `__import__` dinâmico, e
 > o motivo do nome `release_tools/` em vez de `packaging/`).
 >
@@ -143,14 +146,15 @@
 > sendo a separação PRINCIPAL e mais importante do projeto — as pastas novas
 > abaixo só organizam o que antes vivia solto na raiz.
 >
-> **Exceção real, não documentada até 06/08/2026** — `server/world_server.py:478`
-> importa `from ui.systems import SkillSystem` DE PROPÓSITO: o servidor reusa
-> a mesma classe de UI do cliente como motor autoritativo de skill, despachando
-> por `getattr(self._skill_system, f"_skill_{sid}")`
-> (`server/skill_processor.py:314`). É o item B3 de `PROBLEMAS_ARQUITETURA.md`
-> §11 (nunca resolvido) e a causa raiz confirmada de pelo menos 1 bug real
-> (Punho no Queixo vs. minion, ver `PROBLEMAS_ARQUITETURA.md` §12). A frase
-> "servidor nunca importa `ui/`" abaixo estava errada — corrigida aqui.
+> **Exceção corrigida em 10/08/2026** — `server/world_server.py` importava
+> `from ui.systems import SkillSystem` DE PROPÓSITO (item B3 de
+> `PROBLEMAS_ARQUITETURA.md` §11, causa raiz confirmada de pelo menos 1 bug
+> real — Punho no Queixo vs. minion, ver `PROBLEMAS_ARQUITETURA.md` §12).
+> Fechado de vez: a mixin `SkillHandlers` (todos os `_skill_*`/`_talent_*`)
+> mora agora em `engine/skill_handlers.py`; o servidor instancia
+> `HeadlessSkillHandler` (mesma mixin, zero pygame) em vez de `ui.systems.
+> SkillSystem`. A frase "servidor nunca importa `ui/`" abaixo volta a ser
+> verdadeira.
 
 ```
 rpg_ecs_online/
@@ -184,6 +188,9 @@ rpg_ecs_online/
 │   ├── world_systems.py            ← 14 sistemas ECS de gameplay (EnemyAI,
 │   │                                  Combat, TileMovement, TileValidation...)
 │   ├── stat_fns.py                 ← add_modifier/enter_combat/etc.
+│   ├── skill_handlers.py           ← relocado de ui/ 10/08/2026 (B3): mixin SkillHandlers
+│   │                                  (todos os _skill_*/_talent_*) + HeadlessSkillHandler
+│   │                                  (instância server-side, zero pygame)
 │   ├── stats_system.py             ← CLASS_BASE_STATS, Skill Level (xp/bônus)
 │   ├── damage_calculator.py        ← fórmulas de dano, resolve_attack_outcome
 │   ├── quest_logic.py              ← apply_event/try_start/complete_quest
@@ -210,8 +217,8 @@ rpg_ecs_online/
 │
 ├── ui/                              ← ONLINE-ONLY na prática: client-only mesmo
 │   │                                  quando headless-clean (servidor nunca importa)
-│   ├── systems.py                   ← sistemas ECS de UI/render (re-exporta world_systems)
-│   ├── skill_handlers.py           ← handler de skill do lado do CLIENTE (botão/predição)
+│   ├── systems.py                   ← sistemas ECS de UI/render (re-exporta world_systems);
+│   │                                  SkillSystem herda a mixin de engine/skill_handlers.py
 │   ├── spell_system.py             ← SpellCastSystem client-side (cast bar)
 │   ├── combat_log.py               ← CombatLog/LOG — histórico da aba "Combate" do chat
 │   ├── chat_bubble.py               ← balão de fala acima da cabeça
@@ -258,6 +265,7 @@ rpg_ecs_online/
 │   ├── duel_processor.py            ← DuelProcessorMixin: duelo (contexto PvP, golpe letal → 1 HP)
 │   ├── party_processor.py           ← PartyProcessorMixin: grupo N-ário, convites, líder, XP compartilhado
 │   ├── pvp_zone_processor.py        ← PvpZoneProcessorMixin: zona PvP (Fase F), stateless, sem tick-check
+│   ├── bush_zone_processor.py       ← BushZoneProcessorMixin: stealth de bush estilo MOBA, stateless, sem tick-check
 │   ├── match_processor.py           ← MatchProcessorMixin: Arena 2x2 (Fase G leva 1) — fila, instância, time por Facção
 │   ├── bg_queue_processor.py        ← BgQueueProcessorMixin: fila REAL da BG (04/08/2026) — sem modo, maior partida simétrica possível
 │   └── server_death_handler.py      ← PendingDeath: XP (split por dano + grupo), loot, SpawnZone, despawn
@@ -329,7 +337,7 @@ rpg_ecs_online/
 | `engine/core_systems.py` | NOVO (COMPARTILHADO) | `apply_effect()` + `StatusEffectSystem` base sem Pygame; importado por cliente e servidor |
 | `game.py` | MODIFICADO | `_use_skill_visual_only` + init/loop/render; rede, entidades remotas, save/sync, inventário, tooltips, modal de debug, menu de pausa, editor de hotbar, painel de habilidades, modo online, hotbar de habilidades, barra de consumíveis e HUD principal+cast bar agora vêm de `NetworkHandlers`/`RemoteEntityHandlers`/`SaveSyncHandlers`/`InventoryHandlers`/`TooltipHandlers`/`DebugHandlers`/`MenuHandlers`/`HotbarEditorHandlers`/`HabilidadesHandlers`/`OnlineModeHandlers`/`HotbarHandlers`/`ConsumableBarHandlers`/`HudHandlers` (ver `client/network_handlers.py`, `client/remote_entity_handlers.py`, `client/save_sync_handlers.py`, `client/inventory_handlers.py`, `client/tooltip_handlers.py`, `client/debug_handlers.py`, `client/menu_handlers.py`, `client/hotbar_editor_handlers.py`, `client/habilidades_handlers.py`, `client/online_mode_handlers.py`, `client/hotbar_handlers.py`, `client/consumable_bar_handlers.py`, `client/hud_handlers.py`); cores do HUD vêm de `client/colors.py` |
 | `ui/systems.py` | MODIFICADO | Re-exporta `apply_effect` de `core_systems`; `StatusEffectSystem` subclasse com FLT |
-| `ui/skill_handlers.py` | MODIFICADO | `MELEE_RANGE_PX`, `_range_ok()`, pixel-based range |
+| `engine/skill_handlers.py` | MODIFICADO (relocado de `ui/` 10/08/2026, ver B3) | `MELEE_RANGE_PX`, `_range_ok()`, pixel-based range |
 | `engine/damage_calculator.py` | MODIFICADO | `is_ability` flag no `resolve_attack_outcome` |
 | `ui/sound_manager.py` | MODIFICADO | `play_mob_sounds_at()`, `volume_at()`, `play_skill_at()` |
 | `engine/components.py` | MODIFICADO | `Skill._server_pending`, `PlayerSkills.GCD_DURATION=0.8` |
@@ -355,7 +363,7 @@ client/network.py         → transporte assíncrono transparente ao game loop
 
 ### Adicionar nova skill
 1. `content/skill_config.py` → entrada em `SKILL_CATALOG` com `params: {}`
-2. `ui/skill_handlers.py` → `def _skill_<id>(self, skill, combat_stats, combat_state, tile_move)`
+2. `engine/skill_handlers.py` → `def _skill_<id>(self, skill, combat_stats, combat_state, tile_move)`
 3. Se tiver cast time → `ui/spell_system.py` → registrar em `SpellCastSystem._CAST_HANDLERS`
 4. Se for desbloqueada por talento → `content/talent_data.py` → `unlocks_skill`
 5. Testar no servidor: handler é chamado via `_process_skill_requests`

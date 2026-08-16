@@ -452,6 +452,14 @@ class FogOfWar:
         self._explored_maps:  dict  = {}              # {map_file: set()} — explorado por mapa
         self.explored:        set   = set()           # aponta para _explored_maps[mapa_atual]
         self._last_tile:      tuple = (-1, -1)
+        # Incrementado toda vez que `visible`/`explored` são recalculados
+        # (13/08/2026) — permite que TileRenderSystem.render_fog() invalide
+        # seu cache de desenho sem FogSystem chamar outro System direto
+        # (proibido pela arquitetura ECS do projeto); comunicação via
+        # componente. Sem isso, o overlay de fog só reconstruía quando a
+        # câmera cruzava fronteira de tile, ficando visualmente "preso"
+        # perto de bush pequena (visão muda rápido em poucos passos).
+        self.version:          int   = 0
         self._current_map:    str   = ""
         # Visão compartilhada de time (30/07/2026) — lista (tx,ty,radius) de
         # cada aliado (player/torre/minion), recebida do servidor via
@@ -508,6 +516,16 @@ class CombatState:
         self._just_entered_combat: bool = False  # sinaliza transição para CombatStateSystem disparar procs
         self.combat_timer: float = 0.0  # Conta regressiva para sair do combate
         self.stun_timer:   float = 0.0  # Contador de atordoamento (zerado em CombatStateSystem)
+        # Bush "atacar revela" (13/08/2026, §55, estilo LoL — "using
+        # targeted attacks and abilities reveals you") — setado em
+        # apply_damage_core() quando esta entidade é o killer_eid de um
+        # golpe; decrementado em BaseCombatStateSystem._tick_bush_reveal_
+        # timer(). Enquanto > 0, server/tile_los_processor.py::_has_tile_
+        # los() ignora bloqueio de bush/copa (nunca de sólido) pra essa
+        # entidade — só player tem CombatState (minion não), então isso
+        # já escopa "só player que ataca revela a si mesmo" sem checagem
+        # extra.
+        self.bush_reveal_timer: float = 0.0
         self.respawn_immunity_ticks: int = 0  # >0 = invisível para mobs (pós-respawn); decrementado pelo servidor
 
     def can_act(self) -> bool:
@@ -724,7 +742,17 @@ class Item:
                  cast_range: int = 0,
                  item_level: int = 1,
                  level_requirement: int = 1,
-                 description: str = ""):
+                 description: str = "",
+                 item_id: str = ""):
+        # Identidade ESTÁVEL do item (débito C2, PROBLEMAS_ARQUITETURA.md,
+        # resolvido 10/08/2026) — a chave interna do catálogo
+        # (content/item_table.py::ITEMS, ex: "iron_sword"), nunca muda
+        # mesmo se `name` (exibição) for renomeado. Fonte única de
+        # identidade pra reconstrução/serialização/empilhamento — `name` é
+        # só exibição a partir de agora. "" = item sem catálogo (ex:
+        # fallback de save antigo/corrompido, nunca deveria acontecer com
+        # item novo — mesmo princípio de EFFECT_DEFS.get() retornando None).
+        self.item_id = item_id
         self.name = name
         self.item_type = item_type  # "weapon", "armor", "shield", "jewelry", "consumable", "quiver", "ammo"
         self.slot = slot            # "mainhand", "offhand", "head", "chest", etc.
@@ -755,7 +783,7 @@ class Item:
         # Alcance ranged (item_type=="weapon", subtype=="Bow"): tiles de alcance
         self.cast_range: int = cast_range    # 0 = não ranged
         # Nível do item (exibição, escala com raridade) e nível mínimo do
-        # personagem pra equipar (validado em update_player_equipment no
+        # personagem pra equipar (validado em equip_item_from_inventory no
         # servidor — ver server/world_server.py). Descrição é opcional,
         # texto livre de lore (ex.: item lendário com história própria).
         self.item_level:        int = item_level
@@ -888,7 +916,8 @@ class Tower:
                  regen_enabled: bool = False,
                  xp_reward: int = 0, gold_min: int = 0, gold_max: int = 0,
                  spawn_tile_x: int = 0, spawn_tile_y: int = 0,
-                 vision_radius_tiles: int = 18, is_nexus: bool = False):
+                 vision_radius_tiles: int = 18, is_nexus: bool = False,
+                 projectile_origin_offset: tuple = (0.0, 0.0)):
         self.tower_key           = tower_key
         self.attack_range_tiles  = attack_range_tiles
         self.respawnable         = respawnable
@@ -899,6 +928,13 @@ class Tower:
         self.gold_max            = gold_max
         self.spawn_tile_x        = spawn_tile_x
         self.spawn_tile_y        = spawn_tile_y
+        # De qual parte do sprite os projéteis nascem (12/08/2026, pedido
+        # do usuário) — deslocamento em PIXELS a partir do centro da
+        # torre (Position), somado direto em `_spawn_attack_projectile`.
+        # Por TIPO em TOWER_TABLE (não instância — mesmo padrão de
+        # `vision_radius_tiles`). Default (0,0) = comportamento de sempre
+        # (nasce do centro/Position, igual antes deste campo existir).
+        self.projectile_origin_offset = projectile_origin_offset
         # Nexus (02/08/2026, pedido do usuário — battleground de teste):
         # destruir uma torre com is_nexus=True termina a partida (ver
         # server/server_death_handler.py + server/debug_battleground.py::
@@ -1009,6 +1045,27 @@ class Minion:
         # ver ARQUITETURA_ONLINE.md Sec.34.74.43). -1 = nunca - primeira
         # vez sempre passa. Nunca lido/escrito fora dessa checagem.
         self._target_recalc_last_tick: int = -1
+
+
+@dataclass
+class JungleMob:
+    """Marca uma entidade criada por `create_enemy()` (via `JUNGLE_MOB_TABLE`/
+    `JUNGLE_BOSS_TABLE`) como camp de jungle estilo MOBA (13/08/2026, pedido
+    do usuário) — reward de XP/gold segue regra PRÓPRIA em
+    `server/server_death_handler.py` (proximidade, não dano; time-restrito
+    pra boss), nunca a genérica de `MOB_TABLE` (`XPReward`, removido ao
+    criar) nem a de `Minion`. `is_boss=True` também dispara o ciclo de buff
+    de time em `WorldServer._grant_jungle_boss_buff` ao morrer — ver
+    PROBLEMAS_ARQUITETURA.md."""
+    is_boss:   bool  = False
+    xp_reward: int   = 0
+    gold_min:  int   = 0
+    gold_max:  int   = 0
+    # Parâmetro de INSTÂNCIA (vem do <mapa>_entities.json, não da tabela
+    # de conteúdo) — guardado aqui pra sobreviver até a morte, quando
+    # WorldServer.register_jungle_camp_respawn precisa dele sem ter que
+    # re-consultar o mapa.
+    respawn_s: float = 90.0
 
 
 @dataclass
@@ -1626,7 +1683,8 @@ class PlayerProjectile:
     on_hit_effect:    str   = ""     # ID do efeito (ex: "slow", "burn", "stun")
     on_hit_duration:  float = 0.0    # duração do efeito em segundos
     on_hit_magnitude: float = 0.0    # magnitude (ex: 0.3 = 30% slow)
-    deferred_result:  dict  = None   # damage/outcome do servidor — exibido ao colidir (online)
+    deferred_result:  dict  = None   # outcome/damage do servidor — SÓ FLT/som ao colidir (online);
+                                      # HP nunca fica aqui, aplicado direto na confirmação (§44)
     target_last_x:    float = 0.0    # última pos X conhecida do alvo (voa até aqui se despawnar)
     target_last_y:    float = 0.0    # última pos Y conhecida do alvo
     target_server_id: int   = -1     # server eid do alvo — enviado em PROJECTILE_HIT_CS

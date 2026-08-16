@@ -49,6 +49,23 @@ def register_damage_tracker(fn) -> None:
     _damage_tracker = fn
 
 
+# ── Outcome por alvo (por-tick) ───────────────────────────────────────────────
+# Débito de "outcome compartilhado numa AOE" (PROBLEMAS_ARQUITETURA.md, item
+# sobre Pirofagia/§14, 10/08/2026) — referências (Veloren Outcome::HealthChange
+# com target: Uid; AzerothCore TargetInfo por alvo em m_UniqueTargetInfo)
+# confirmaram: cada alvo atingido carrega o PRÓPRIO outcome, nunca 1 valor só
+# compartilhado pro cast/tick inteiro (era o caso de `CombatSystem.last_outcome`
+# em engine/world_systems.py, usado só pro auto-attack físico de alvo único).
+# dict simples (int → str), NÃO objeto por evento — critério de performance em
+# caminho quente (CLAUDE.md, "Performance e concorrência").
+# Lifecycle: apply_damage_core grava aqui a cada chamada (automático, nenhum
+# call site precisa lembrar); o CHAMADOR que vai LER (ex: server/
+# skill_processor.py, antes de montar o relatório de uma skill) limpa o dict
+# ANTES de disparar a resolução daquele lote — mesmo ponto/mesmo motivo que já
+# resetava `last_outcome = "hit"` antes de cada handler.
+LAST_DAMAGE_OUTCOMES: dict[int, str] = {}
+
+
 # ── apply_damage_core ─────────────────────────────────────────────────────────
 
 def apply_damage_core(world, target_id: int, dmg: int, *,
@@ -95,19 +112,24 @@ def apply_damage_core(world, target_id: int, dmg: int, *,
     feedback visual, broadcast de rede.
     """
     from engine.components import CombatStats, CombatState, StatusEffects, PendingDeath, AIControlled
+
+    def _finish(outcome: str) -> str:
+        LAST_DAMAGE_OUTCOMES[target_id] = outcome
+        return outcome
+
     cs = world.get_component(target_id, CombatStats)
     if not cs or cs.current_hp <= 0:
-        return "blocked_dead"
+        return _finish("blocked_dead")
     cst = world.get_component(target_id, CombatState)
     if cst and cst.is_immune:
-        return "blocked_immune"
+        return _finish("blocked_immune")
     ai = world.get_component(target_id, AIControlled)
     if ai and ai.state == "RETURNING":
         # Modo evasão (estilo WoW): mob voltando pro spawn é imune a
         # dano/aggro até chegar — rede de segurança final aqui; o feedback
         # visual ("Evadiu!") e o bloqueio de re-aggro ficam por conta de
         # cada chamador (ver EnemyAISystem/CombatSystem.deal_damage).
-        return "blocked_evade"
+        return _finish("blocked_evade")
     if killer_eid != -1:
         # Facção "amigavel" nunca pode ser alvo de dano — rede de segurança
         # final (mesmo padrão do blocked_evade acima), trazida da Fase 5 do
@@ -118,7 +140,7 @@ def apply_damage_core(world, target_id: int, dmg: int, *,
         # de efeitos secundários (knockback/DoT) por chamador fica pra Fase 5.
         from engine.faction_system import can_engage
         if not can_engage(world, killer_eid, target_id):
-            return "blocked_friendly"
+            return _finish("blocked_friendly")
 
     cs.current_hp -= dmg  # overkill preservado por contrato
 
@@ -127,6 +149,15 @@ def apply_damage_core(world, target_id: int, dmg: int, *,
             on_damage_dealt(killer_eid, target_id, dmg)
         if _damage_tracker is not None and killer_eid != -1:
             _damage_tracker(killer_eid, target_id, dmg)
+        if killer_eid != -1:
+            # Bush "atacar revela" (13/08/2026, §55, estilo LoL) — só
+            # player tem CombatState (minion não, create_minion nunca
+            # anexa), então isso já escopa "só player revela a si mesmo
+            # ao atacar" sem checagem extra de tipo de entidade.
+            from shared.constants import BUSH_REVEAL_DURATION_S
+            killer_cst = world.get_component(killer_eid, CombatState)
+            if killer_cst is not None:
+                killer_cst.bush_reveal_timer = BUSH_REVEAL_DURATION_S
         sfx = world.get_component(target_id, StatusEffects)
         if sfx:
             if sfx.remove("polymorph") and on_cc_break:
@@ -147,11 +178,89 @@ def apply_damage_core(world, target_id: int, dmg: int, *,
         if (killer_eid != -1 and _lethal_interceptor is not None
                 and _lethal_interceptor(world, killer_eid, target_id)):
             cs.current_hp = 1
-            return "applied"
+            return _finish("applied")
         if add_pending_death and not world.get_component(target_id, PendingDeath):
             world.add_component(target_id, PendingDeath(killer_entity_id=killer_eid))
-        return "killed"
-    return "applied"
+        return _finish("killed")
+    return _finish("applied")
+
+
+# ── apply_magic_damage_shared ─────────────────────────────────────────────────
+
+def apply_magic_damage_shared(attacker_id: int, target_id: int, dmg: int, world,
+                              is_crit: bool = False) -> bool:
+    """Aplica dano mágico a um alvo fora do fluxo de spell_completion_processor
+    (cliente offline E qualquer handler de skill que precise resolver dano
+    mágico inline, ex: cone de Pirofagia). Retorna True se matou.
+
+    Extraído de ui/spell_system.py::_apply_magic_damage (débito B3/CRÍTICO B,
+    PROBLEMAS_ARQUITETURA.md — 10/08/2026): a função em si sempre foi
+    pygame-free (só delegava a apply_damage_core + FLT/SOUNDS pra feedback),
+    mas morava em ui/spell_system.py, que importa pygame no topo — qualquer
+    chamador server-side (engine/skill_handlers.py::_skill_pirofagia, modo
+    servidor) arrastava pygame pro processo do servidor só por causa do
+    import, mesmo lógica 100% headless. Usa FLT/SOUNDS via engine.fx (façade
+    no-op no servidor) em vez de ui.floating_text/ui.sound_manager direto —
+    mesmo padrão já usado no guard de cc_immune acima.
+
+    Guards + escrita de HP + quebra de CC + PendingDeath delegados a
+    apply_damage_core — MESMO núcleo do servidor (_server_apply_magic_damage)
+    e do melee (deal_damage). Aqui fica só o que é do CALLER por convenção:
+    FLT, som de aggro, enter_combat, estado de IA.
+    """
+    from engine.components import Position, CombatState, AIControlled, NpcSounds
+    from engine.fx import FLT, SOUNDS
+    from engine.stat_fns import enter_combat
+
+    pos = world.get_component(target_id, Position)
+
+    def _on_cc_break(kind: str) -> None:
+        if not pos:
+            return
+        if kind == "polymorph":
+            FLT.add("Polimorfia quebrada!", pos.x, pos.y, (160, 80, 200),
+                    "small", target_id=target_id)
+        elif kind == "sleep":
+            FLT.add("Acordou!", pos.x, pos.y, (200, 200, 100), "small",
+                    target_id=target_id)
+
+    result = apply_damage_core(world, target_id, dmg,
+                               killer_eid=attacker_id,
+                               on_cc_break=_on_cc_break)
+    if result == "blocked_evade":
+        if pos:
+            FLT.add("Evadiu!", pos.x, pos.y, (150, 150, 150), "small", target_id=target_id)
+        return False
+    if result == "blocked_immune":
+        if pos:
+            FLT.add("Imune", pos.x, pos.y, (200, 200, 200), "small", target_id=target_id)
+        return False
+    if result == "blocked_dead":
+        return False
+
+    if pos:
+        if is_crit:
+            FLT.add(f"{dmg}", pos.x, pos.y, (255, 180, 80), target_id=target_id, is_crit=True)
+        else:
+            FLT.add(f"-{dmg}", pos.x, pos.y, (180, 100, 255), size="normal", target_id=target_id)
+    attacker_cs = world.get_component(attacker_id, CombatState)
+    if attacker_cs:
+        enter_combat(attacker_cs)
+    # Aggro por dano mágico — usa AGGRO_DELAY (alinhado com servidor)
+    _ai = world.get_component(target_id, AIControlled)
+    from engine.faction_system import can_engage as _can_engage_magic_shared
+    if _ai and _ai.state == "IDLE" and _can_engage_magic_shared(world, attacker_id, target_id):
+        _ms = world.get_component(target_id, NpcSounds)
+        SOUNDS.play_mob_sounds(_ms, "aggro", dedup_key=f"dmg_{target_id}")
+        _ai.state             = "AGGRO_DELAY"
+        _ai.aggro_delay       = 0.5
+        _ai.aggroed_by_damage = True
+        # Quem bateu vira o alvo — espelha o bloco melee de deal_damage
+        # (ver comentário lá): aquisição é filtrada por hostilidade+raio,
+        # então sem isto um mob neutro atacado nunca recebia alvo.
+        _ai.target_eid        = attacker_id
+        _ai.path_recalc_timer = 0.0
+    return result == "killed"
 
 
 # ── apply_effect ──────────────────────────────────────────────────────────────
@@ -187,6 +296,30 @@ def apply_effect(
     if effect_type == "polymorph":
         from engine.components import TrainingDummy as _TDcheck
         if world.get_component(entity_id, _TDcheck) is not None:
+            return
+
+    # Imunidade a controle (Fatiador de Corpos, 07/08/2026) — guard genérico
+    # e DINÂMICO: bloqueia qualquer efeito que tire o controle do jogador
+    # (blocks_move/blocks_act em EFFECT_DEFS — stun/sleep/fear/root/
+    # polymorph/disoriented, cobre efeito NOVO automaticamente, sem precisar
+    # listar nomes) + "slow" explicitamente (não usa blocks_move/act, é só
+    # redução de velocidade, mas é mobilidade igual). NÃO cobre dano (DoT
+    # continua passando) nem "taunted" (não é bloqueio de controle no nosso
+    # modelo, ver comentário no catálogo) — mesma separação do AzerothCore
+    # (SPELL_AURA_MECHANIC_IMMUNITY_MASK ≠ imunidade a dano).
+    # A imunidade em si é UM STATUS EFFECT (StatusEffects.has("cc_immune")),
+    # não um flag bespoke — qualquer skill futura que quiser o mesmo efeito
+    # só chama apply_effect(world, eid, "cc_immune", duration=X); esta
+    # função nem precisa saber que existe.
+    if effect_type == "slow" or defn.blocks_move or defn.blocks_act:
+        _sfx_cc_check = world.get_component(entity_id, StatusEffects)
+        if _sfx_cc_check and _sfx_cc_check.has("cc_immune"):
+            from engine.fx import FLT as _FLTimm
+            from engine.components import Position as _PosImm
+            _pos_imm = world.get_component(entity_id, _PosImm)
+            if _pos_imm:
+                _FLTimm.add("Imune", _pos_imm.x, _pos_imm.y, (200, 200, 200),
+                           "small", target_id=entity_id)
             return
 
     sfx = world.get_component(entity_id, StatusEffects)
@@ -476,6 +609,17 @@ class BaseCombatStateSystem:
                 cs.combat_timer = 0.0
 
     @staticmethod
+    def _tick_bush_reveal_timer(cs, dt: float) -> None:
+        """Bush "atacar revela" (13/08/2026, §55) — decrementa até 0,
+        nunca negativo. `_has_tile_los` (servidor) trata `>0` como
+        isenção de bloqueio de bush/copa (nunca de sólido) pra esta
+        entidade."""
+        if cs.bush_reveal_timer > 0:
+            cs.bush_reveal_timer -= dt
+            if cs.bush_reveal_timer < 0:
+                cs.bush_reveal_timer = 0.0
+
+    @staticmethod
     def _tick_stun_timer(cs, dt: float) -> None:
         if cs.is_stunned and cs.stun_timer > 0:
             cs.stun_timer -= dt
@@ -668,6 +812,7 @@ class ServerCombatStateSystem(BaseCombatStateSystem):
 
             self._tick_combat_timer(cs, dt)
             self._tick_stun_timer(cs, dt)
+            self._tick_bush_reveal_timer(cs, dt)
             rage_result = self._tick_rage_decay(cs, char, dt)
             if rage_result:
                 self.rage_events.append({

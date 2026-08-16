@@ -150,13 +150,13 @@ class HotbarHandlers:
         y0           = self.screen.get_height() - self._HB_H - self._u(10)
         mx, my       = event.pos
 
-        for j, (i, item_name) in enumerate(cons_occ):
+        for j, (i, item_id) in enumerate(cons_occ):
             sx = x0 + j * (self._HB_W + self._HB_PAD)
             if pygame.Rect(sx, y0, self._HB_W, self._HB_H).collidepoint(mx, my):
                 if cbar.global_cooldown <= 0:
                     for sys in self.systems:
                         if isinstance(sys, ConsumableSystem):
-                            sys._use_consumable(self.player_entity, item_name, cbar)
+                            sys._use_consumable(self.player_entity, item_id, cbar)
                             break
                 return True
         return False
@@ -169,12 +169,15 @@ class HotbarHandlers:
         cs = self.world.get_component(self.player_entity, _CS_V)
         if not cs or cs.max_hp <= 0:
             return
-        ratio = cs.current_hp / cs.max_hp
+        ratio = max(0.0, cs.current_hp / cs.max_hp)
         if ratio >= 0.30:
             return
         # Pulso senoidal: 0.0 → 1.0 → 0.0, ~1 ciclo/s
         pulse = (math.sin(pygame.time.get_ticks() * 0.005) + 1.0) * 0.5
         # Intensifica quanto mais baixo o HP: 0% HP → alpha máx 190; 30% → 0
+        # ratio já clampado em 0 acima — overkill (current_hp negativo,
+        # preservado de propósito em apply_damage_core) não pode empurrar
+        # intensity/alpha além do teto de 0% HP.
         intensity = 1.0 - (ratio / 0.30)
         alpha = int(pulse * intensity * 190)
         if alpha <= 0:
@@ -227,6 +230,8 @@ class HotbarHandlers:
 
         # Channeling de Fatiador de Corpos — bloqueia visualmente todas as skills
         channeling = _char is not None and _char.fatiador_timer > 0
+        _fatiador_sk = player_skills.skill_by_id("fatiador_de_corpos") if channeling else None
+        _fatiador_duration = _fatiador_sk.params.get("duration", 5.0) if _fatiador_sk else 5.0
 
         # === Drag da hotbar (reordenar / Shift+drag para remover) ===
         from content.skill_config import NUM_SLOTS as _NS_HB
@@ -469,7 +474,7 @@ class HotbarHandlers:
 
             # --- Overlay de channeling (Fatiador de Corpos) ---
             if channeling and getattr(skill, "skill_id", None) != "fatiador_de_corpos":
-                ch_ratio = _char.fatiador_timer / 5.0
+                ch_ratio = _char.fatiador_timer / _fatiador_duration
                 ov_h = int(self._HB_H * ch_ratio)
                 self.screen.blit(fill_surf((self._HB_W, self._HB_H), (80, 0, 0, 180)),
                                  (sx, y0), area=pygame.Rect(0, 0, self._HB_W, ov_h))

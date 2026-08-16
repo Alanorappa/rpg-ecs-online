@@ -29,6 +29,20 @@ class TileType:
     #   (0, 16, 32, 48) → sólido dos 16px abaixo do topo até o final
     collision_rect: tuple | str | None = None
 
+    # vision_rect — pegada (em tiles, mesmo formato/semântica de
+    # collision_rect: None/"full"/(x,y,w,h)) usada SÓ pra decidir quais
+    # tiles ficam com `vision_height` alto quando o objeto bloqueia visão
+    # (`get_vision_offsets`) — INDEPENDENTE de collision_rect (13/08/2026,
+    # pedido do usuário). Existe porque as duas pegadas legitimamente
+    # DIVERGEM: bush precisa bloquear visão na largura do sprite inteiro
+    # sem virar sólida (collision_rect fica None, andável); árvore
+    # precisa manter só o tronco sólido (collision_rect estreito
+    # existente, intocado) mas bloquear visão na copa inteira. `None`
+    # (default) = só o tile-âncora, mesmo comportamento de
+    # collision_rect=None. Nunca deriva is_solid (ao contrário de
+    # collision_rect via _resolve_collision) — puramente sobre visão.
+    vision_rect: tuple | str | None = None
+
     # ── Altura visual (para Fog of War) ───────────────────────────────────────
     # Determina se o elemento bloqueia a linha de visão do jogador no FOV.
     #
@@ -310,26 +324,35 @@ def _read_png_size(path: str) -> tuple[int, int]:
     return 32, 32
 
 
-def get_collision_offsets(tile: TileType) -> list[tuple[int, int]]:
-    """
-    Retorna lista de (dx, dy) em tiles relativos ao tile base que devem ser sólidos.
-    (0, 0) = tile base (sempre incluído se is_solid=True).
-    dy negativo = tile acima do base; dx positivo = tile à direita.
+def _rect_to_tile_offsets(rect: "tuple | str | None", sprite_px_w: int,
+                          sprite_px_h: int) -> list[tuple[int, int]]:
+    """Geometria compartilhada entre `get_collision_offsets` e
+    `get_vision_offsets` (13/08/2026) — converte um rect no MESMO
+    formato de `collision_rect` (None/"full"/(x,y,w,h)) em offsets de
+    tile relativos ao tile base. Extraído pra não duplicar a mesma
+    matemática nas 2 pegadas (colisão e visão), que agora podem
+    divergir (bush/árvore precisam de pegadas diferentes pra cada uma —
+    ver `TileType.vision_rect`).
 
-    Baseado em tile.collision_rect:
-      None   → só o tile base [(0, 0)]
-      "full" → sprite inteiro calculado com sprite_px_w / sprite_px_h
-      (x, y, w, h) → retângulo em sprite-space pixels, (0,0) = canto sup-esq do PNG
-    """
-    rect = tile.collision_rect
+    `"base_row"` (13/08/2026, pedido do usuário — §51) é um sentinel
+    NOVO, só pra pegada de VISÃO: largura inteira do sprite, só a
+    fileira de baixo (32px) — diferente do `"base"` já usado em
+    `collision_rect`/`_resolve_collision`, que ignora a largura e conta
+    só o tile-âncora. Existe pra bush: contar o sprite inteiro (`"full"`)
+    inflava a pegada com a "metade de cima" do desenho, fazendo bushes
+    com espaço de grama visível entre si se fundirem num blob só —
+    `"base_row"` deixa só a base (onde o tufo realmente encosta no
+    chão) contar pra adjacência."""
     if rect is None:
         return [(0, 0)]
 
-    sprite_h = tile.sprite_px_h if tile.sprite_px_h > 0 else TILE_SIZE
-    sprite_w = tile.sprite_px_w if tile.sprite_px_w > 0 else TILE_SIZE
+    sprite_h = sprite_px_h if sprite_px_h > 0 else TILE_SIZE
+    sprite_w = sprite_px_w if sprite_px_w > 0 else TILE_SIZE
 
     if rect == "full":
         rx, ry, rw, rh = 0, 0, sprite_w, sprite_h
+    elif rect == "base_row":
+        rx, ry, rw, rh = 0, sprite_h - TILE_SIZE, sprite_w, TILE_SIZE
     else:
         rx, ry, rw, rh = rect
 
@@ -347,6 +370,32 @@ def get_collision_offsets(tile: TileType) -> list[tuple[int, int]]:
         for dy in range(dy_min, dy_max + 1)
         for dx in range(dx_min, dx_max + 1)
     ] or [(0, 0)]
+
+
+def get_collision_offsets(tile: TileType) -> list[tuple[int, int]]:
+    """
+    Retorna lista de (dx, dy) em tiles relativos ao tile base que devem ser sólidos.
+    (0, 0) = tile base (sempre incluído se is_solid=True).
+    dy negativo = tile acima do base; dx positivo = tile à direita.
+
+    Baseado em tile.collision_rect:
+      None   → só o tile base [(0, 0)]
+      "full" → sprite inteiro calculado com sprite_px_w / sprite_px_h
+      (x, y, w, h) → retângulo em sprite-space pixels, (0,0) = canto sup-esq do PNG
+    """
+    return _rect_to_tile_offsets(tile.collision_rect, tile.sprite_px_w, tile.sprite_px_h)
+
+
+def get_vision_offsets(tile: TileType) -> list[tuple[int, int]]:
+    """
+    Mesma ideia de `get_collision_offsets`, mas pra bloqueio de VISÃO
+    (13/08/2026) — baseado em `tile.vision_rect`, independente de
+    `collision_rect`/`is_solid`. `None` (default) → só o tile-âncora.
+    Usado por `engine.entity_factory.create_tilemap` pra decidir quais
+    tiles ao redor do objeto ganham `vision_height` alto, mesmo que o
+    objeto continue andável (bush) ou tenha uma pegada de COLISÃO menor
+    que a de visão (árvore — tronco sólido, copa bloqueia visão)."""
+    return _rect_to_tile_offsets(tile.vision_rect, tile.sprite_px_w, tile.sprite_px_h)
 
 
 def _discover_sprite_objects(
@@ -450,6 +499,16 @@ SHEET_FAMILIES: list[dict] = [
         "color":               (58, 100, 48),
         "underlying_terrain":  "G",
     },
+    {
+        "file":                "TX Tileset Terrain",
+        "prefix":              "ter",
+        "tile_w":              32,
+        "tile_h":              32,
+        "is_solid":            False,
+        "label":               "Chão",
+        "color":               (58, 100, 48),
+        "underlying_terrain":  "G",
+    },    
         {
         "file":                "TX Tileset Woodfloor",
         "prefix":              "twf",
@@ -638,7 +697,8 @@ OBJECT_SHEET_FAMILIES: list[dict] = [
              ("15",           0, 192,  32,  96,           "base"),
              ("16",          32, 192,  32,  96,           "base"),
              ("17",          64, 192,  32,  96,           "full"),
-             ("18",          96, 192,  32,  96,           "full"),                                                    
+             ("18",          96, 192,  32,  96,           "full"),
+             ("19",         160, 160,  64, 128,  (0, 96, 64, 32)),                                                    
 
          ]
     },    
@@ -678,13 +738,16 @@ OBJECT_SHEET_FAMILIES: list[dict] = [
              ("statue",         416,   0,  96,  96, (32, 64, 32, 32)),
              ("lighting",       448,  96,  32,  64,           "base"),
              ("pit",            416, 352,  64,  64,           "full"),
-             ("bigrock",          0, 416,  64,  64,           "full"),
+             # Pedras grandes (bigrock/rock3-6) ganharam bloqueio de visão em
+             # 13/08/2026, mesma decisão de árvore/bush acima — rock1/rock2
+             # (baixas, já sem colisão) ficam intocadas.
+             ("bigrock",          0, 416,  64,  64,           "full", 0, False, 1, "full", 2),
              ("rock1",            0, 480,  32,  32,             None),
              ("rock2",           32, 480,  32,  32,             None),
-             ("rock3",           64, 480,  32,  32,           "full"),
-             ("rock4",           96, 480,  32,  32,           "full"),
-             ("rock5",          128, 480,  32,  32,           "full"),
-             ("rock6",          160, 480,  32,  32,           "full"),
+             ("rock3",           64, 480,  32,  32,           "full", 0, False, 1, "full", 2),
+             ("rock4",           96, 480,  32,  32,           "full", 0, False, 1, "full", 2),
+             ("rock5",          128, 480,  32,  32,           "full", 0, False, 1, "full", 2),
+             ("rock6",          160, 480,  32,  32,           "full", 0, False, 1, "full", 2),
              ("closedoor",        0,  96,  96,  64,           "full"),
              ("opendoor",         0,  160, 96,  64,             None),
              ("artmister",       32,  320, 32,  32,           "full"),
@@ -740,44 +803,58 @@ OBJECT_SHEET_FAMILIES: list[dict] = [
              "color":  (96, 99, 21),
              "underlying_terrain": "G",
              "tiles": [
-                 # (id,      sx,   sy,  w,   h,   collision_rect)  
+                 # (id, sx, sy, w, h, collision_rect, piso, transpassavel, sort, vision_rect, vision_h)
+                 # Árvore/bush ganharam bloqueio de visão em 13/08/2026
+                 # (pedido do usuário — antes NENHUM objeto decorativo
+                 # bloqueava LOS, só parede) — vision_rect="full" cobre o
+                 # sprite visual inteiro, INDEPENDENTE de collision_rect
+                 # (árvore mantém o tronco estreito sólido de sempre; bush
+                 # continua sem colisão nenhuma, andável). Ver
+                 # PROBLEMAS_ARQUITETURA.md.
                  #TREES
-                 ("t1",       0,  64,  96, 128,   ( 32,  96, 32,32)),
-                 ("t2",      96,  32,  96, 160,   ( 32, 128, 32,32)),
-                 ("t3",     192,  32, 128, 160,   ( 32, 128, 32,32)),
-                 ("t4",     320,   0, 128, 192,   ( 32, 160, 32,32)),
-                 ("t5",     448,   0, 128, 192,   ( 32, 160, 32,32)),
-                 ("t6",       0, 256,  96, 128,   ( 32,  96, 32,32)),
-                 ("t7",      96, 256,  96, 128,   ( 32,  96, 32,32)),
-                 ("t8",     192, 224, 128, 160,   ( 32, 128, 32,32)),
-                 ("t9",     320, 192, 128, 192,   ( 32, 160, 32,32)),
-                 ("t10",    448, 192, 128, 192,   ( 32, 160, 32,32)),
-                 ("t11",      0, 384, 160, 160,   ( 64, 128, 32,32)),  
-                 ("t12",    160, 384,  96, 160,   ( 32, 128, 32,32)),
-                 ("t13",    288, 416,  96, 128,   ( 32,  96, 32,32)),       
-                 ("t14",    672,   0, 320, 256,   ( 96, 224, 96,32)),          
-                 ("t15",    704, 288, 256, 224,   ( 96, 192, 64,32)),
+                 ("t1",       0,  64,  96, 128,   ( 32,  96, 32,32), 0, False, 1, "full", 2),
+                 ("t2",      96,  32,  96, 160,   ( 32, 128, 32,32), 0, False, 1, "full", 2),
+                 ("t3",     192,  32, 128, 160,   ( 32, 128, 32,32), 0, False, 1, "full", 2),
+                 ("t4",     320,   0, 128, 192,   ( 32, 160, 32,32), 0, False, 1, "full", 2),
+                 ("t5",     448,   0, 128, 192,   ( 32, 160, 32,32), 0, False, 1, "full", 2),
+                 ("t6",       0, 256,  96, 128,   ( 32,  96, 32,32), 0, False, 1, "full", 2),
+                 ("t7",      96, 256,  96, 128,   ( 32,  96, 32,32), 0, False, 1, "full", 2),
+                 ("t8",     192, 224, 128, 160,   ( 32, 128, 32,32), 0, False, 1, "full", 2),
+                 ("t9",     320, 192, 128, 192,   ( 32, 160, 32,32), 0, False, 1, "full", 2),
+                 ("t10",    448, 192, 128, 192,   ( 32, 160, 32,32), 0, False, 1, "full", 2),
+                 ("t11",      0, 384, 160, 160,   ( 64, 128, 32,32), 0, False, 1, "full", 2),
+                 ("t12",    160, 384,  96, 160,   ( 32, 128, 32,32), 0, False, 1, "full", 2),
+                 ("t13",    288, 416,  96, 128,   ( 32,  96, 32,32), 0, False, 1, "full", 2),
+                 ("t14",    672,   0, 320, 256,   ( 96, 224, 96,32), 0, False, 1, "full", 2),
+                 ("t15",    704, 288, 256, 224,   ( 96, 192, 64,32), 0, False, 1, "full", 2),
                  #BUSHES
-                 ("b1",      0,  832,  32,  64,                None),       
-                 ("b2",     64,  832,  32,  64,                None), 
-                 ("b3",     96,  832,  96,  64,                None), 
-                 ("b4",    208,  832,  64,  64,                None),
-                 ("b5",    304,  832,  64,  64,                None),
-                 ("b6",    384,  832,  64,  64,                None),                                                                                                                                                                 
-                 ("b7",      0,  928,  32,  32,                None),
-                 ("b8",     32,  928,  64,  32,                None),     
-                 ("b9",     96,  896,  64,  64,                None),        
-                 ("b10",   160,  896,  64,  64,                None),
-                 ("b11",   224,  896,  64,  64,                None),
-                 ("b12",   304,  896,  96,  64,                None),
-                 ("b13",   400,  896,  96,  64,                None),                 
-                 ("b14",     0,  992,  32,  32,                None),
-                 ("b15",    32,  992,  64,  32,                None),
-                 ("b16",    96,  960,  64,  64,                None),
-                 ("b17",   160,  960,  32,  32,                None),
-                 ("b18",   224,  960,  32,  32,                None),
-                 ("b19",   304,  960,  96,  64,                None),
-                 ("b20",   400,  960,  96,  64,                None),
+                 # vision_rect="base_row" (13/08/2026, §51, pedido do
+                 # usuário) — só a fileira de baixo do sprite (largura
+                 # inteira) conta pra bloqueio de visão/adjacência, não
+                 # o sprite inteiro. Evita bushes com espaço de grama
+                 # visível entre si se fundirem num blob só; bushes com
+                 # a BASE colada continuam formando um clump único de
+                 # propósito. Ver `_rect_to_tile_offsets`.
+                 ("b1",      0,  832,  32,  64,                None, 0, False, 1, "base_row", 2),
+                 ("b2",     64,  832,  32,  64,                None, 0, False, 1, "base_row", 2),
+                 ("b3",     96,  832,  96,  64,                None, 0, False, 1, "base_row", 2),
+                 ("b4",    208,  832,  64,  64,                None, 0, False, 1, "base_row", 2),
+                 ("b5",    304,  832,  64,  64,                None, 0, False, 1, "base_row", 2),
+                 ("b6",    384,  832,  64,  64,                None, 0, False, 1, "base_row", 2),
+                 ("b7",      0,  928,  32,  32,                None, 0, False, 1, "base_row", 2),
+                 ("b8",     32,  928,  64,  32,                None, 0, False, 1, "base_row", 2),
+                 ("b9",     96,  896,  64,  64,                None, 0, False, 1, "base_row", 2),
+                 ("b10",   160,  896,  64,  64,                None, 0, False, 1, "base_row", 2),
+                 ("b11",   224,  896,  64,  64,                None, 0, False, 1, "base_row", 2),
+                 ("b12",   304,  896,  96,  64,                None, 0, False, 1, "base_row", 2),
+                 ("b13",   400,  896,  96,  64,                None, 0, False, 1, "base_row", 2),
+                 ("b14",     0,  992,  32,  32,                None, 0, False, 1, "base_row", 2),
+                 ("b15",    32,  992,  64,  32,                None, 0, False, 1, "base_row", 2),
+                 ("b16",    96,  960,  64,  64,                None, 0, False, 1, "base_row", 2),
+                 ("b17",   160,  960,  64,  64,                None, 0, False, 1, "base_row", 2),
+                 ("b18",   224,  960,  64,  64,                None, 0, False, 1, "base_row", 2),
+                 ("b19",   304,  960,  96,  64,                None, 0, False, 1, "base_row", 2),
+                 ("b20",   400,  960,  96,  64,                None, 0, False, 1, "base_row", 2),
                  #WHEAT
                  ("w1",      0,  704,  64,  64,                None),
                  ("w2",     64,  704,  64,  64,                None),
@@ -889,6 +966,228 @@ OBJECT_SHEET_FAMILIES: list[dict] = [
          ]
 
      },
+{
+         "file":   "TX Village Props with Shadow",
+         "prefix": "vp",
+         "label":  "Objetos",
+         "color":  (41, 39, 55),
+         "underlying_terrain": ",",
+         "tiles": [
+            ("001",   32,   16,   48,   48, (  0,  16,  32,  32)),
+            ("002",   96,   16,   48,   48, (  0,  16,  32,  32)),
+            ("003",  160,   16,   48,   48, (  0,  16,  32,  32)),
+            ("004",  224,   16,   80,   48, (  0,  16,  64,  32)),
+            ("005",  320,   32,   48,   32, (  0,   0,  32,  32)),
+            ("006",  384,    0,  128,   64, (  0,  48, 112,  16)),
+            ("007",   96,   80,   48,   48, (  0,  16,  32,  32)),
+            ("008",  160,   80,   48,   48, (  0,  16,  32,  32)),
+            ("009",  224,   80,   80,   48, (  0,  16,  64,  32)),
+            ("010",  320,   64,   48,   64, (  0,  32,  32,  32)),
+            ("011",  384,   64,  112,   64, (  0,  48,  96,  16)),
+            ("012",   32,  144,   32,   48, (  0,  32,  32,  16)),
+            ("013",   64,  144,   32,   48, (  0,  32,  32,  16)),
+            ("014",   96,  144,   32,   48, (  0,  32,  32,  16)),
+            ("015",   32,  192,   32,   32, (  0,  16,  32,  16)),
+            ("016",   32,  224,   32,   32, (  0,  16,  32,  16)),
+            ("017",   96,  192,   32,   32, (  0,  16,  32,  16)),
+            ("018",   96,  224,   32,   32, (  0,  16,  32,  16)),
+            ("019",  160,  176,   48,   48, (  0,  32,  31,  16)),
+            ("020",  160,  224,   32,   32, (  0,  16,  32,  16)),
+            ("021",  224,  208,   64,   48, (  0,  16,  64,  32)),
+            ("022",  288,  208,   64,   48, (  0,  16,  64,  32)),
+            ("023",  352,  208,   64,   48, (  0,  16,  64,  32)),
+            ("024",   32,  272,   32,   48, (  0,  32,  32,  16)),
+            ("025",   64,  272,   32,   48, (  0,  32,  32,  16)),
+            ("026",   96,  272,   32,   48, (  0,  32,  32,  16)),
+            ("027",  128,  272,   32,   48, (  0,  32,  32,  16)),
+            ("028",  160,  272,   32,   48, (  0,  32,  32,  16)),
+            ("029",  224,  272,   64,   48, (  0,  16,  64,  32)),
+            ("030",  288,  272,   64,   48, (  0,  16,  64,  32)),
+            ("031", 1792,   32,   32,   32, None),
+            ("032", 1792,   64,   32,   32, None),
+            ("033", 1792,   96,   32,   32, None),
+            ("034", 1856,   32,   32,   32, None),
+            ("035", 1856,   64,   32,   32, None),
+            ("036", 1856,   96,   32,   32, None),
+            ("037", 1920,   32,   32,   32, None),
+            ("038", 1952,   32,   32,   32, None),
+            ("039", 1984,   32,   32,   32, None),
+            ("040", 1920,   64,   32,   32, None),
+            ("041", 1952,   64,   32,   32, None),
+            ("042", 1984,   64,   32,   32, None),
+            ("043", 1920,   96,   32,   32, None),
+            ("044", 1952,   96,   32,   32, None),
+            ("045", 1984,   96,   32,   32, None),
+            ("046", 1920,  128,   32,   32, None),
+            ("047", 1952,  128,   32,   32, None),
+            ("048", 1984,  128,   32,   32, None),
+            ("049", 1920,  160,   32,   32, None),
+            ("050", 1952,  160,   32,   32, None),
+            ("051", 1920,  192,   32,   32, None),
+            ("052", 1920,  224,   32,   32, None),
+            ("053", 1920,  256,   32,   32, None),
+            ("054",  528,  912,   96,   48, ( 16,  32,  63,  16)),
+            ("055",  528,  960,   48,   96, (  0,  32,  32,  64)),
+            ("056",  544, 1072,   96,   48, ( 16,  16,  64,  32)),
+            ("057",  592,  960,   48,   96, (  0,  32,  32,  63)),
+            ("058",  640, 1040,   64,   80, ( 16,  16,  32,  64)),
+            ("059",  704, 1040,   32,   80, (  8,  16,  16,  64)),
+            ("060",  736, 1024,  112,   32, ( 16,  16,  80,  16)),
+            ("061",  736, 1056,   32,   64, (  9,  16,  16,  48)),
+            ("062",  864, 1024,   64,   32, (  0,  16,  64,  16)),
+            ("063",  928, 1024,   80,   32, ( 16,  16,  48,  16)),
+            ("064",  928, 1056,   80,   32, ( 16,  16,  48,  16)),
+            ("065",  928, 1088,   80,   32, ( 16,  16,  48,  16)),
+            ("066", 1024, 1024,   32,   64, (  0,  16,  32,  48)),
+            ("067", 1056, 1024,   32,   64, (  0,  16,  32,  48)),
+            ("068", 1088, 1024,   32,   64, (  0,  16,  32,  48)),
+            ("069", 1120, 1024,   32,   64, (  0,  16,  32,  48)),
+            ("070", 1152, 1024,   32,   64, (  0,  16,  32,  48)),
+            ("071",  544, 1120,   96,   64, ( 16,  32,  64,  32)),
+            ("072",  640, 1136,   64,   80, ( 16,  16,  32,  64)),
+            ("073",  928, 1120,   80,   32, ( 16,  16,  48,  16)),
+            ("074",  928, 1152,   80,   32, ( 16,  16,  48,  16)),
+            ("075",  544, 1200,   48,   48, (  0,  16,  32,  32)),
+            ("076",  608, 1216,   32,   32, (  0,  16,  16,  16)),
+            ("077",  144, 1120,   64,   32, ( 16,  16,  32,  16)),
+            ("078",  224, 1104,   48,   48, (  0,  32,  33,  16)),
+            ("079",  288, 1104,   48,   48, (  0,  32,  32,  16)),
+            ("080",  352, 1104,   48,   48, (  0,  32,  32,  16)),
+            ("081",  224, 1168,   48,   48, (  0,  32,  32,  16)),
+            ("082",  288, 1168,   48,   48, (  0,  32,  32,  16)),
+            ("083",  352, 1168,   32,   48, (  0,  32,  32,  16)),
+            ("084",  224, 1232,   48,   48, (  0,  16,  32,  32)),
+            ("085",  288, 1216,   64,   64, (  0,  32,  64,  32)),
+            ("086",  880, 1280,   64,   32, ( 16,  16,  32,  16)),
+            ("087",  896, 1312,   32,   32, (  0,  16,  16,  16)),
+            ("088",  928, 1312,   32,   32, (  0,  16,  16,  16)),
+            ("089",  960, 1312,   32,   32, (  0,  16,  16,  16)),
+            ("090",  992, 1312,   32,   32, (  0,  16,  16,  16)),
+            ("091", 1024, 1312,   32,   32, (  0,  16,  16,  16)),
+            ("092", 1008, 1360,   80,   80, ( 16,  64,  32,  16)),
+            ("093", 1088, 1376,   48,   32, (  0,  16,  32,  16)),
+            ("094", 1152, 1360,   32,   48, (  0,  16,  32,  32)),
+            ("095", 1056, 1456,   64,   48, ( 16,  16,  32,  32)),
+            ("096", 1120, 1440,   96,   64, ( 16,  32,  64,  32)),
+            ("097", 1216, 1424,   96,   80, ( 16,  32,  64,  32)),
+            ("098",  736, 1296,   48,   48, (  0,  32,  32,  16)),
+            ("099",  784, 1312,   64,   32, ( 16,  16,  32,  16)),
+            ("100",   32, 1328,   32,   80, (  0,  64,  32,  16)),
+            ("101",  384, 1376,   80,   64, (  0,  48,  64,  16)),
+            ("102",  512, 1392,   64,   48, ( 16,  16,  32,  32)),
+            ("103",    0, 1584,   96,   48, (  0,  32,  80,  16)),
+            ("104",    0, 1648,   32,   48, (  0,  32,  16,  16)),
+            ("105",   32, 1440,   64,   32, (  0,  16,  48,  16)),
+            ("106",   32, 1472,   32,   64, (  0,  16,  16,  48)),
+            ("107",   48, 1648,   64,   48, (  0,  32,  48,  16)),
+            ("108",   64, 1472,   32,   96, (  0,  16,  16,  80)),
+            ("109",   96, 1440,   96,   32, (  0,  16,  80,  16)),
+            ("110",   96, 1472,   32,   32, (  0,  16,  16,  16)),
+            ("111",  112, 1584,   32,  112, (  0,  48,  16,  64)),
+            ("112",  128, 1488,   96,   80, (  0,  64,  79,  16)),
+            ("113",  160, 1616,   32,   80, (  0,  16,  16,  64)),
+            ("114",  192, 1584,   32,   80, (  0,  48,  16,  32)),
+            ("115",  224, 1616,   64,   64, (  0,  16,  64,  32)),
+            ("116",  304, 1520,   32,   64, (  0,  48,  32,  16)),
+            ("117",  304, 1600,   32,   80, (  0,  64,  32,  16)),
+            ("118",  320, 1456,   48,   48, (  0,  32,  32,  16)),
+            ("119",  384, 1456,   32,   48, (  0,  32,  32,  16)),
+            ("120",  416, 1456,   32,   48, (  0,  32,  32,  16)),
+            ("121",  448, 1456,   48,   48, (  0,  32,  32,  16)),
+            ("122",  512, 1456,   64,   48, ( 16,  16,  32,  32)),
+            ("123",  544, 1520,   32,   48, None),
+            ("124",  544, 1568,   64,   32, None),
+            ("125",  544, 1600,   64,   32, None),
+            ("126",  576, 1520,   32,   48, None),
+            ("127",  608, 1472,   80,   32, (  0,  16,  64,  16)),
+            ("128",  608, 1520,   32,   48, None),
+            ("129",  608, 1568,   64,   32, None),
+            ("130",  608, 1600,   64,   32, None),
+            ("131",  640, 1520,   32,   48, None),
+            ("132",  672, 1536,   32,   32, None),
+            ("133",  672, 1600,   32,   32, None),
+            ("134",  688, 1472,   48,   64, ( 16,  16,  16,  48)),
+            ("135",  736, 1440,   32,   32, (  0,  16,  32,  16)),
+            ("136",  736, 1536,   32,   16, None),
+            ("137",  736, 1552,   32,   80, (  1,  16,  30,  48)),
+            ("138",  768, 1440,   32,   32, (  0,  16,  32,  16)),
+            ("139",  800, 1440,   32,   32, (  0,  16,  32,  16)),
+            ("140",  832, 1440,   48,   32, (  0,  16,  32,  16)),
+            ("141",   16, 1712,   32,   80, (  0,  48,  32,  32)),
+            ("142",   80, 1728,   32,   64, (  0,  32,  32,  32)),
+            ("143",  128, 1744,   32,   48, (  0,  32,  32,  15)),
+            ("144",  208, 1680,   96,   96, None),
+            ("145",  304, 1696,   32,   48, (  0,  32,  32,  16)),
+            ("146",   16, 1808,   64,   80, ( 16,  64,  32,  16)),
+            ("147",   80, 1808,   64,   80, ( 16,  64,  32,  16)),
+            ("148",  160, 1808,   32,   48, (  0,  16,  32,  32)),
+            ("149",  160, 1856,   32,   64, (  0,  16,  32,  48)),
+            ("150",  208, 1808,   64,   48, (  0,  32,  64,  16)),
+            ("151",  224, 1872,   64,   48, (  0,  16,  64,  32)),
+            ("152",  272, 1792,   48,   64, ( 16,  16,  16,  48)),
+            ("153",  288, 1856,   48,   64, ( 16,  16,  16,  48)),
+            ("154",   32, 1936,   48,   48, (  0,  32,  32,  16)),
+            ("155",   96, 1952,   48,   32, (  0,  16,  32,  16)),
+            ("156",  160, 1936,   48,   48, (  0,  32,  32,  16)),
+            ("157",  224, 1952,   64,   32, (  0,   0,  64,  32)),
+            ("158",  320, 1952,   64,   32, (  0,   0,  64,  32)),
+            ("159",   16, 2000,   48,   48, ( 16,  32,  16,  16)),
+            ("160",   80, 2000,   48,   48, ( 16,  32,  16,  16)),
+            ("161",  144, 1984,   48,   64, ( 16,  48,  16,  16)),
+            ("162",  224, 1984,   32,   64, (  0,  16,  32,  48)),
+            ("163",  288, 1984,   32,   64, (  0,  16,  32,  48)),
+            ("164",  864, 1376,   48,   32, (  0,  16,  32,  16)),
+            ("165",  912, 1376,   64,   32, ( 16,  16,  32,  16)),
+            ("166",  608, 1408,   32,   32, (  0,  16,  32,  16)),
+            ("167",  640, 1408,   32,   32, (  0,  16,  32,  16)),
+            ("168",  864, 1504,   64,   64, None),
+            ("169",  960, 1504,   64,   64, None),
+            ("170",  368, 1664,   80,   96, (  0,  80,  32,  16)),
+            ("171",  448, 1664,   80,   96, ( 32,  80,  32,  16)),
+            ("172",  544, 1712,   64,   48, (  0,  32,  64,  16)),
+            ("173",  608, 1712,   64,   48, ( 16,  32,  32,  16)),
+            ("174",  720, 1680,   48,   32, None),
+            ("175",  736, 1712,   48,   48, (  0,  32,  32,  16)),
+            ("176",  800, 1664,   80,   64, (  0,  32,  63,  32)),
+            ("177",  800, 1728,   64,   32, ( 16,   0,  32,  32)),
+            ("178",  896, 1664,   80,   64, (  0,  32,  64,  32)),
+            ("179",  896, 1728,   64,   32, ( 16,   0,  32,  31)),
+            ("180",  976, 1696,   64,   64, ( 16,  48,  32,  16)),
+            ("181", 1056, 1696,   48,   64, (  0,  48,  32,  15)),
+            ("182",  384, 1792,  128,   64, (  0,  16, 112,  48)),
+            ("183",  512, 1792,  128,   64, (  0,  16, 112,  48)),
+            ("184",  656, 1760,   64,   64, ( 16,  48,  32,  16)),
+            ("185",  688, 1872,   64,   48, (  0,  16,  64,  32)),
+            ("186",  688, 1920,   32,   32, None),
+            ("187",  720, 1920,   32,   32, None),
+            ("188",  752, 1920,   32,   32, None),
+            ("189",  784, 1920,   32,   32, (  0,  16,  32,  16)),
+            ("190",  816, 1920,   32,   32, (  0,  16,  32,  16)),
+            ("191",  848, 1920,   32,   32, (  0,  16,  32,  16)),
+            ("192",  672, 1984,   32,   32, None),
+            ("193",  688, 1952,   32,   32, None),
+            ("194",  704, 1984,   32,   32, None),
+            ("195",  720, 1952,   32,   32, None),
+            ("196",  736, 1984,   32,   32, (  0,  16,  32,  16)),
+            ("197",  752, 1952,   32,   32, (  0,  16,  32,  16)),
+            ("198",  768, 1984,   32,   32, (  0,  16,  32,  16)),
+            ("199",  783, 1951,   50,   34, (  0,   0,  50,  33)),
+            ("200",  800, 1984,   32,   32, (  0,  16,  32,  16)),
+            ("201",  832, 1952,   48,   32, ( 16,  16,  32,  16)),
+            ("202",  832, 1984,   48,   32, ( 16,  16,  32,  16)),
+            ("203",  896, 1952,   64,   32, ( 16,  16,  32,  16)),
+            ("204",  896, 1984,   64,   32, ( 16,  16,  32,  16)),
+            ("205",  960, 1952,   64,   64, ( 16,  32,  32,  16)),
+            ("206",  672, 2016,   32,   32, None),
+            ("207",  704, 2016,   32,   32, None),
+            ("208",  736, 2016,   32,   32, None),
+            ("209",  768, 2016,   32,   32, (  0,  16,  32,  16)),
+            ("210",  848, 2016,   48,   32, (  0,  16,  32,  16)),
+            ("211",  896, 2016,   64,   32, ( 16,  16,  32,  16)),
+            ("212",  960, 2016,   64,   32, ( 16,  16,  32,  16)),
+            ("213", 1056, 1968,   64,   64, (  0,  16,  32,  48)),
+]
+},
 
     # ── TX Tileset Wall — estrutura escalonável (512×512, tiles 32×32) ────────
     #
@@ -1055,15 +1354,28 @@ def discover_object_sheet_tiles() -> None:
 
         if "tiles" in fam:
             # Modo catálogo:
-            # (id, sx, sy, w, h, col, piso, transpassavel)
+            # (id, sx, sy, w, h, col, piso, transpassavel, sort, vision_rect, vision_h)
             #   piso         — int (0/1/2...) ou "t" (transição)
             #   transpassavel— 1 = jogador de piso inferior passa por trás
+            #   vision_rect  — (13/08/2026) pegada de BLOQUEIO DE VISÃO,
+            #                  independente de `col` (colisão) — mesmo
+            #                  formato (None/"full"/(x,y,w,h)). Opcional,
+            #                  omita pra usar só o tile-âncora (None).
+            #                  Existe pra permitir pegada de visão MAIOR
+            #                  que a de colisão (bush andável bloqueando
+            #                  visão na largura do sprite; árvore com
+            #                  tronco estreito sólido mas copa inteira
+            #                  bloqueando visão) — ver TileType.vision_rect.
+            #   vision_h     — vision_height explícito por tile; omita pra
+            #                  usar default_vision_height da família.
             for entry in fam["tiles"]:
                 n = len(entry)
                 id_suffix, sx, sy, tw, th, col_rect_cfg = entry[:6]
-                piso_raw    = entry[6] if n > 6 else 0
-                transpass   = bool(entry[7]) if n > 7 else False
-                sort_val    = entry[8] if n > 8 else 1   # 1=Y-sort (padrão), 0=sem Y-sort
+                piso_raw       = entry[6] if n > 6 else 0
+                transpass      = bool(entry[7]) if n > 7 else False
+                sort_val       = entry[8] if n > 8 else 1   # 1=Y-sort (padrão), 0=sem Y-sort
+                vision_rect_cfg = entry[9] if n > 9 else None
+                vision_h        = entry[10] if n > 10 else default_vh
 
                 # Interpreta piso: int → elevation normal; "t" → tile de transição
                 if piso_raw == "t":
@@ -1083,7 +1395,8 @@ def discover_object_sheet_tiles() -> None:
                     sprite_px_w=tw,
                     sprite_px_h=th,
                     collision_rect=internal_rect,
-                    vision_height=default_vh,
+                    vision_rect=vision_rect_cfg,
+                    vision_height=vision_h,
                     elevation=elev,
                     is_transition=is_trans,
                     passthrough=transpass,

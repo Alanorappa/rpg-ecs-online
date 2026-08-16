@@ -1,10 +1,11 @@
 """
 tests/test_instance_progression.py
-Progressão normalizada de instância (31/07/2026, base pro futuro modo
-Battlefield) — ver server/instance_progression.py e
-arquitetura/ARQUITETURA_ONLINE.md. Sistema INERTE nesta fase (nenhum
-processador de jogo chama enter_/exit_normalized_progression ainda), então
-os testes aqui exercitam o módulo diretamente, sem passar por Arena/match.
+Progressão normalizada de instância (31/07/2026) — ver
+server/instance_progression.py e arquitetura/ARQUITETURA_ONLINE.md. ATIVO
+desde 04-05/08/2026 via server/bg_queue_processor.py (fila real de BG,
+ver PROBLEMAS_ARQUITETURA.md §12/§45) — os testes aqui exercitam o módulo
+diretamente (sem passar pela fila real) por isolamento, não porque o
+sistema seja teórico.
 """
 import unittest
 import os, sys
@@ -261,6 +262,27 @@ class TestInstanceProgressionLevelUp(unittest.TestCase):
         self.assertGreater(cs.max_hp, hp_max_antes, "level-up deveria ter aumentado o max_hp")
         self.assertEqual(cs.current_hp, cs.max_hp)
 
+    def test_levelup_nao_cura_player_morto_esperando_respawn_na_bg(self):
+        """Bug real relatado pelo usuário (12/08/2026): dentro da BG, o
+        corpo do player morto recuperava HP cheio sozinho (e minions
+        passavam a atacar o corpo de novo) — causa raiz era este mesmo
+        `cs.current_hp = cs.max_hp` do level-up disparando pra um player
+        que já está morto (GhostState.is_dead=True) esperando o timer de
+        respawn, porque XP de proximidade (kill de minion perto) continua
+        chegando normalmente pra quem está morto — mesmo comportamento de
+        MOBA de verdade. current_hp tem que continuar <= 0 (nunca ficar
+        um alvo válido de novo pra EnemyAISystem/MinionSystem/torres, que
+        checam só current_hp<=0, nunca GhostState.is_dead)."""
+        from engine.components import GhostState
+        cs = self.ws.world.get_component(self.eid, CombatStats)
+        cs.current_hp = 0
+        gst = self.ws.world.get_component(self.eid, GhostState)
+        gst.is_dead = True
+        grant_instance_xp(self.ws, self.eid, 10_000_000)  # sobe até o cap
+        self.assertGreater(self.char.level, 1, "level-up deveria ter acontecido mesmo assim")
+        self.assertLessEqual(cs.current_hp, 0,
+                              "level-up não deveria reviver/curar um player já morto")
+
 
 class TestInstanceProgressionHpHeal(unittest.TestCase):
     """Bug real relatado pelo usuário (02/08/2026): current_hp real
@@ -396,6 +418,73 @@ class TestInstanceProgressionClientSync(unittest.TestCase):
         updates = self.ws._pending_stats_updates
         self.assertTrue(any(u.get("player_eid") == self.eid and u.get("level") == 23
                             for u in updates))
+
+
+class TestInstanceProgressionXpGoldClientSync(unittest.TestCase):
+    """Bug real relatado pelo usuário (13/08/2026): "a barra de xp está
+    mostrando a xp do personagem de fora da instância" — causa raiz: mesma
+    classe de gap já corrigida pra level/atributos/talento (ver
+    TestInstanceProgressionClientSync acima), só que pra current_xp/
+    xp_to_next_level, que nunca entravam no payload de STATS_UPDATE.
+    Pedido junto: texto flutuante de XP ganho, som de level-up e texto
+    flutuante de gold ganho — todos DENTRO da instância."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        self.eid = spawn_player(self.ws, "p1", 10, 10, class_id="guerreiro")
+        char = self.ws.world.get_component(self.eid, CharacterStats)
+        char.level = 23
+        char.current_xp = 999
+
+    def test_enter_empurra_current_xp_zero_pro_dono(self):
+        self.ws._pending_stats_updates.clear()
+        enter_normalized_progression(self.ws, self.eid)
+        updates = self.ws._pending_stats_updates
+        entry = next(u for u in updates if u.get("player_eid") == self.eid)
+        self.assertEqual(entry["current_xp"], 0)
+        self.assertEqual(entry["xp_to_next_level"], CharacterStats.xp_for_level(1))
+
+    def test_exit_empurra_current_xp_real_pro_dono(self):
+        enter_normalized_progression(self.ws, self.eid)
+        self.ws._pending_stats_updates.clear()
+        exit_normalized_progression(self.ws, self.eid)
+        updates = self.ws._pending_stats_updates
+        entry = next(u for u in updates if u.get("player_eid") == self.eid)
+        self.assertEqual(entry["current_xp"], 999)
+
+    def test_grant_xp_sem_levelup_ainda_empurra_update_com_xp_ganho(self):
+        """Antes, um ganho de XP que não completava o próximo nível não
+        empurrava NADA pro cliente — a barra só "pulava" ao subir de
+        nível. Agora todo ganho empurra, com o valor final de current_xp
+        E o delta (instance_xp_gained) só pro texto flutuante."""
+        enter_normalized_progression(self.ws, self.eid)
+        self.ws._pending_stats_updates.clear()
+        grant_instance_xp(self.ws, self.eid, 5)  # bem menos que o próximo nível
+        updates = self.ws._pending_stats_updates
+        entry = next(u for u in updates if u.get("player_eid") == self.eid)
+        self.assertEqual(entry["current_xp"], 5)
+        self.assertEqual(entry["instance_xp_gained"], 5)
+        self.assertNotIn("instance_leveled_up", entry,
+                         "sem level-up, não deveria marcar instance_leveled_up")
+
+    def test_grant_xp_com_levelup_marca_instance_leveled_up(self):
+        enter_normalized_progression(self.ws, self.eid)
+        self.ws._pending_stats_updates.clear()
+        grant_instance_xp(self.ws, self.eid, 10_000_000)  # sobe até o cap
+        updates = self.ws._pending_stats_updates
+        entry = next(u for u in updates if u.get("player_eid") == self.eid)
+        self.assertTrue(entry.get("instance_leveled_up"))
+        self.assertEqual(entry["level"], INSTANCE_LEVEL_CAP)
+
+    def test_grant_gold_inclui_instance_gold_gained(self):
+        from server.instance_progression import grant_instance_gold
+        enter_normalized_progression(self.ws, self.eid)
+        self.ws._pending_stats_updates.clear()
+        grant_instance_gold(self.ws, self.eid, 20)
+        updates = self.ws._pending_stats_updates
+        entry = next(u for u in updates if u.get("player_eid") == self.eid)
+        self.assertEqual(entry["instance_gold_gained"], 20)
+        self.assertEqual(entry["gold"], INSTANCE_STARTING_GOLD + 20)
 
 
 class TestInstanceProgressionTalentSync(unittest.TestCase):
@@ -600,6 +689,42 @@ class TestInstanceReciclagemGoesToBag(unittest.TestCase):
         self.assertTrue(any(it.get("item_type") == "ammo" for it in loot["items"]),
                         "corpse deveria ter a flecha recuperada (pode ter OUTRO loot "
                         "normal do mob junto, isso é esperado)")
+
+    def test_flecha_reciclada_tem_item_id_real_e_e_sacavel(self):
+        """Fase 4.7 (12/08/2026, ver PROBLEMAS_ARQUITETURA.md §39) — bug
+        real relatado pelo usuário: flecha da Reciclagem às vezes não
+        aparecia no loot, outras vezes aparecia mas saqueá-la dava "Já
+        foi saqueado". Causa: `server_death_handler.py` montava o Item
+        à mão, sem `item_id` (ficava ""). Corrigido: resolve pelo
+        catálogo (`content.item_table.resolve_item_by_name`), então tem
+        `item_id` real igual a qualquer outro loot. Prova ponta a ponta:
+        item_id não-vazio E `request_loot` consegue sacá-la de verdade
+        por esse id (não só "não está mais vazio")."""
+        from engine.components import Inventory as _InvArr
+        corpse_id = None
+        keys_antes = set(self.ws._corpses.keys())
+        loot = self._kill_mob_with_arrows_received(self.eid)
+        novas = set(self.ws._corpses.keys()) - keys_antes
+        # _kill_mob_with_arrows_received já validou que há exatamente 1
+        # corpse novo do killer — reencontra o id (o dict devolvido não
+        # inclui a própria chave).
+        for cid in novas:
+            if self.ws._corpses[cid] is loot:
+                corpse_id = cid
+                break
+        self.assertIsNotNone(corpse_id, "não achou o corpse_id do loot devolvido")
+
+        arrow = next((it for it in loot["items"] if it.get("item_type") == "ammo"), None)
+        self.assertIsNotNone(arrow, "deveria ter uma flecha reciclada no corpse")
+        self.assertTrue(arrow.get("item_id"),
+                        "flecha reciclada deveria ter item_id real (não vazio) — "
+                        "sem isso o cliente nunca reconstrói/saqueia certo")
+
+        result = self.ws.request_loot("p1", corpse_id, take="item", item_id=arrow["item_id"])
+        self.assertIsNotNone(result, "dono do corpse deveria conseguir sacar")
+        self.assertTrue(result["items"], "deveria ter concedido a flecha de verdade, "
+                                         "não devolver vazio (\"Já foi saqueado\")")
+        self.assertEqual(result["items"][0]["item_id"], arrow["item_id"])
 
 
 if __name__ == "__main__":

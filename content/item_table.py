@@ -191,12 +191,12 @@ _RAW_ITEMS = {
     "basic_quiver": lambda: Item(
         "Aljava Básica", "quiver", "offhand",
         modifiers=[], rarity="common", value=5,
-        arrow_count=75, max_arrows=75, subtype="Flecha"),
+        arrow_count=75, max_arrows=75, subtype="arrow"),
 
     "sturdy_quiver": lambda: Item(
         "Aljava Reforçada", "quiver", "offhand",
         modifiers=[Modifier("crit_rating", 0.01)], rarity="uncommon", value=25,
-        arrow_count=100, max_arrows=100, subtype="Flecha"),
+        arrow_count=100, max_arrows=100, subtype="arrow"),
 
     # Aljava de instância (01/08/2026, pedido do usuário — loja da
     # battleground de teste): capacidade bem alta (não literalmente
@@ -207,7 +207,7 @@ _RAW_ITEMS = {
     "battleground_quiver": lambda: Item(
         "Aljava de Batalha", "quiver", "offhand",
         modifiers=[Modifier("crit_rating", 0.02)], rarity="rare", value=30,
-        arrow_count=999, max_arrows=999, subtype="Flecha"),
+        arrow_count=999, max_arrows=999, subtype="arrow"),
 
     # ── Ammo ──────────────────────────────────────────────────────────────────
     "arrow": lambda: Item(
@@ -852,17 +852,139 @@ def _derive_item_level(rarity: str, value: int) -> int:
     return round(lvl_lo + t * (lvl_hi - lvl_lo))
 
 
-def _with_derived_level(factory):
+def _with_derived_level(key: str, factory):
     """item_level é sempre recalculado (nunca setado à mão nas factories
     acima). level_requirement NÃO é tocado aqui — respeita o que a factory
     passou (default 1 do próprio Item, ou o valor explícito que você botar
     direto na lambda/`_make_item(...)` quando quiser subir o requisito de
-    um item específico)."""
+    um item específico).
+
+    `item_id = key` (débito C2, 10/08/2026): a própria chave do dict
+    `_RAW_ITEMS`/`ITEMS` já era um id estável de fato (nunca muda, ao
+    contrário de `name`), só nunca tinha sido propagada pro objeto `Item`
+    em si — ponto único de propagação, nenhuma das 106 factories acima
+    precisou ser tocada individualmente."""
     def wrapped():
         item = factory()
         item.item_level = _derive_item_level(item.rarity, item.value)
+        item.item_id    = key
         return item
     return wrapped
 
 
-ITEMS: dict = {key: _with_derived_level(f) for key, f in _RAW_ITEMS.items()}
+ITEMS: dict = {key: _with_derived_level(key, f) for key, f in _RAW_ITEMS.items()}
+
+
+def resolve_item_by_id(item_id: str):
+    """Resolve item_id pro factory do catálogo — O(1) por catálogo, sem
+    varredura (débito C2, 10/08/2026: item_id é chave DIRETA em todos os
+    catálogos autoritativos, diferente do nome que exigia comparar
+    contra cada item de cada catálogo). Ordem: item_table (loot/loja
+    geral) → material de forja → resultado craftado → pergaminho de
+    receita → item de quest. Retorna o Item já construído, ou None se
+    item_id não existe em NENHUM catálogo (id inventado/forjado, ou
+    item removido do catálogo).
+
+    Fase 4.7 (12/08/2026, ver PROBLEMAS_ARQUITETURA.md §39) — movido de
+    `WorldServer._item_factory_by_id` (server, agora um wrapper fino
+    pra cá) pra CÁ (content/, sem estado, importável por cliente E
+    servidor) — achado real investigando o talento Reciclagem: item
+    construído à mão sem `item_id` nunca conseguia ser resolvido de
+    volta pelo cliente, que reconstruía loot só por NOME (mecanismo
+    LEGADO, pré-migração C2). Ponto único de verdade agora serve os 2
+    lados — nenhum precisa mais duplicar/reimplementar isso."""
+    from content.item_table import ITEMS as _IT_id
+    _f = _IT_id.get(item_id)
+    if _f is not None:
+        try:
+            return _f()
+        except Exception:
+            pass
+
+    from content.crafting_data import MATERIALS as _MAT_id, RECIPES as _REC_id, RECIPE_ITEMS as _RI_id
+    _f = _MAT_id.get(item_id)
+    if _f is not None:
+        try:
+            return _f()
+        except Exception:
+            pass
+    _recipe = _REC_id.get(item_id)
+    if _recipe is not None:
+        _rf = _recipe.get("result_factory")
+        if _rf is not None:
+            try:
+                return _rf()
+            except Exception:
+                pass
+    # RECIPE_ITEMS é chaveado pelo recipe_id CRU (ex. "espada_afiada"), mas
+    # o item_id do pergaminho tem o prefixo "recipe_" (ex.
+    # "recipe_espada_afiada" — ver content/crafting_data.py::
+    # _make_recipe_item, ambos justificados por não poder colidir com o
+    # item_id do resultado craftado, que usa a chave crua).
+    if item_id.startswith("recipe_"):
+        _f = _RI_id.get(item_id[len("recipe_"):])
+        if _f is not None:
+            try:
+                return _f()
+            except Exception:
+                pass
+
+    from content.quests_data import QUEST_ITEMS as _QI_id
+    _f = _QI_id.get(item_id)
+    if _f is not None:
+        try:
+            return _f()
+        except Exception:
+            pass
+    return None
+
+
+def resolve_item_by_name(name: str):
+    """Reconstrução LEGADA por nome de exibição, varrendo os 4 catálogos
+    (loot/loja/forja/quest) — mantida só pra saves ANTIGOS que ainda não
+    têm `item_id` salvo (débito C2, 10/08/2026: antes desta migração,
+    ESTE era o único mecanismo de reconstrução; agora é fallback,
+    chamado só quando `item_id` está ausente do payload). Nunca deletar
+    sem confirmar que todo save já foi upgradado. Ver docstring de
+    `resolve_item_by_id` pro contexto da migração pra cá (Fase 4.7,
+    12/08/2026)."""
+    from content.loot_tables import _T
+    for factory in _T.values():
+        try:
+            candidate = factory()
+        except Exception:
+            continue
+        if getattr(candidate, "name", "") == name:
+            return candidate
+
+    from content.merchant_data import SHOPS
+    for _shop in SHOPS.values():
+        for _entry in _shop.get("stock", []):
+            try:
+                candidate = _entry["factory"]()
+            except Exception:
+                continue
+            if getattr(candidate, "name", "") == name:
+                return candidate
+
+    from content.crafting_data import RECIPES
+    for _recipe in RECIPES.values():
+        _factory = _recipe.get("result_factory")
+        if not _factory:
+            continue
+        try:
+            candidate = _factory()
+        except Exception:
+            continue
+        if getattr(candidate, "name", "") == name:
+            return candidate
+
+    from content.quests_data import QUEST_ITEMS
+    for _factory in QUEST_ITEMS.values():
+        try:
+            candidate = _factory()
+        except Exception:
+            continue
+        if getattr(candidate, "name", "") == name:
+            return candidate
+    return None

@@ -21,6 +21,21 @@ class ConsumableBarHandlers:
     # Barra de consumíveis
     # ------------------------------------------------------------------
 
+    def _resolve_consumable_item(self, item_id: str, inv):
+        """Resolve item_id guardado num slot da barra pro Item de verdade
+        — da bag primeiro (dado real, com stack correto); catálogo como
+        fallback só pra ícone/nome de exibição quando o item não está
+        mais na bag (slot "esgotado"). None só quando nem o catálogo
+        reconhece o item_id (dado legado/desconhecido, pré-migração C2)."""
+        if inv:
+            found = next((it for it in inv.items
+                          if it is not None and it.item_id == item_id), None)
+            if found is not None:
+                return found
+        import content.item_table as _ItemTableCons
+        factory = _ItemTableCons.ITEMS.get(item_id)
+        return factory() if factory else None
+
     def _draw_consumable_bar(self) -> None:
         from engine.components import ConsumableBar as _CB, Inventory as _Inv
         cbar = self.world.get_component(self.player_entity, _CB)
@@ -120,7 +135,7 @@ class ConsumableBarHandlers:
         released_cb = any(e.type == pygame.MOUSEBUTTONUP and e.button == 1
                           for e in events_cb)
 
-        for j, (i, item_name) in enumerate(cons_occ):
+        for j, (i, item_id) in enumerate(cons_occ):
             sx = x0 + j * (W + PAD)
             r  = pygame.Rect(sx, y0, W, H)
 
@@ -142,16 +157,22 @@ class ConsumableBarHandlers:
                 bg_col = (18, 36, 22)
             pygame.draw.rect(self.screen, bg_col, r, border_radius=5)
 
-            if item_name:
-                _ic_key = "item_" + item_name.lower().replace(" ", "_")
-                item = next((it for it in inv.items if it.name == item_name), None) if inv else None
+            if item_id:
+                item = next((it for it in inv.items
+                            if it is not None and it.item_id == item_id), None) if inv else None
+                # Resolve nome de exibição/ícone: item real da bag, ou
+                # catálogo (slot "esgotado") — nunca o item_id cru.
+                _resolved = item or self._resolve_consumable_item(item_id, None)
+                display_name = _resolved.name if _resolved else item_id
+                _ic_key = (ICONS.item_key(_resolved) if _resolved
+                          else ICONS.item_key_by_name(display_name))
                 _ic = ICONS.get(_ic_key, W - 2)
                 if item:
                     # Item disponível — ícone normal
                     if _ic:
                         self.screen.blit(_ic, (r.x + 2, r.y + 2))
                     else:
-                        letter = self.font_sm.render(item_name[0].upper(), False, (100, 220, 140))
+                        letter = self.font_sm.render(display_name[0].upper(), False, (100, 220, 140))
                         self.screen.blit(letter, letter.get_rect(center=r.center))
                     draw_stack_count(self.screen, item, r, self.font_xs)
                 else:
@@ -160,7 +181,7 @@ class ConsumableBarHandlers:
                         self.screen.blit(_ic, (r.x + 2, r.y + 2))
                         self.screen.blit(fill_surf((W - 2, H - 2), (0, 0, 0, 160)), (r.x + 2, r.y + 2))
                     else:
-                        letter = self.font_sm.render(item_name[0].upper(), False, (100, 140, 120))
+                        letter = self.font_sm.render(display_name[0].upper(), False, (100, 140, 120))
                         self.screen.blit(letter, letter.get_rect(center=r.center))
                     # "0" no canto
                     zero_s = self.font_xs.render("0", False, (200, 80, 80))
@@ -185,20 +206,21 @@ class ConsumableBarHandlers:
             elif _is_dragged_out:
                 border_col = (220, 80, 80)
             else:
-                border_col = (80, 160, 100) if item_name else (40, 70, 50)
+                border_col = (80, 160, 100) if item_id else (40, 70, 50)
             pygame.draw.rect(self.screen, border_col, r, 2, border_radius=5)
 
             # Keybind label
             kb_name = pygame.key.name(cbar.keybinds[i]).upper()
-            key_col = (140, 210, 160) if item_name else (50, 80, 60)
+            key_col = (140, 210, 160) if item_id else (50, 80, 60)
             self.screen.blit(self.font_sm.render(kb_name, False, key_col), (sx + 3, y0 + 2))
 
             # Tooltip (só quando não está em drag)
             _cb_self_drag_active = (_drag_cb.kind == "consumable" and _drag_cb.source == "consumable_bar"
                                     and _drag_cb.active)
             if not dragging_cons and not _cb_self_drag_active \
-                    and r.collidepoint(mx_cb, my_cb) and item_name:
-                item = next((it for it in inv.items if it.name == item_name), None) if inv else None
+                    and r.collidepoint(mx_cb, my_cb) and item_id:
+                item = next((it for it in inv.items
+                            if it is not None and it.item_id == item_id), None) if inv else None
                 if item and item.consumable:
                     lines = []
                     h_inst = item.consumable.get("heal_instant", 0)
@@ -221,7 +243,7 @@ class ConsumableBarHandlers:
                         lines.append(("Apenas fora de combate", (220, 160, 60)))
                     _qty = item.stack if item else 0
                     lines.append((f"Quantidade: {_qty}", (160, 160, 160)))
-                    self._pending_skill_tooltip = (mx_cb, y0 - 4, item_name, lines)
+                    self._pending_skill_tooltip = (mx_cb, y0 - 4, item.name, lines)
 
         # Cancel drag se botão liberado fora da barra
         if dragging_cons and released_cb:
@@ -229,8 +251,10 @@ class ConsumableBarHandlers:
 
         # Ghost do drag de inventário: ícone segue o mouse
         if _drag_cb.kind == "consumable" and _drag_cb.source == "inventory" and _drag_cb.payload:
-            GSZ    = W
-            _gc_k  = "item_" + _drag_cb.payload.lower().replace(" ", "_")
+            GSZ       = W
+            _gc_item  = self._resolve_consumable_item(_drag_cb.payload, inv)
+            _gc_name  = _gc_item.name if _gc_item else _drag_cb.payload
+            _gc_k     = ICONS.item_key(_gc_item) if _gc_item else ICONS.item_key_by_name(_gc_name)
             _gc_ic = ICONS.get(_gc_k, GSZ - 4)
             ghost  = pygame.Surface((GSZ, GSZ), pygame.SRCALPHA)
             ghost.fill((20, 50, 30, 180))
@@ -242,10 +266,12 @@ class ConsumableBarHandlers:
         # Ghost do Shift+drag do consumable bar: ícone semi-transparente segue o mouse
         if (_drag_cb.kind == "consumable" and _drag_cb.source == "consumable_bar"
                 and _drag_cb.active and _drag_cb.source_idx != -1):
-            _cg_name = cbar.slots[_drag_cb.source_idx]
-            if _cg_name:
-                _CGZ  = W
-                _cg_k = "item_" + _cg_name.lower().replace(" ", "_")
+            _cg_id = cbar.slots[_drag_cb.source_idx]
+            if _cg_id:
+                _CGZ     = W
+                _cg_item = self._resolve_consumable_item(_cg_id, inv)
+                _cg_name = _cg_item.name if _cg_item else _cg_id
+                _cg_k    = ICONS.item_key(_cg_item) if _cg_item else ICONS.item_key_by_name(_cg_name)
                 _cg_ic = ICONS.get(_cg_k, _CGZ - 4)
                 _cg_ghost = pygame.Surface((_CGZ, _CGZ), pygame.SRCALPHA)
                 if _cg_ic:

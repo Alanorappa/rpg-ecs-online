@@ -59,4 +59,13 @@ EFFECT_DEFS: dict[str, EffectDef] = {
     "exhaustion":      EffectDef("Exaustão",        (200, 140,  60), False, 0.0),  # rastreia stacks
     "haste":   EffectDef("Acelerado",   (100, 220, 255), True,  0.0),
     "regen":   EffectDef("Regeneração", ( 80, 255, 120), True,  1.0),
+    # Imunidade a controle (07/08/2026, Fatiador de Corpos) — imunidade de
+    # MECÂNICA (bloqueia qualquer efeito com blocks_move/blocks_act + slow),
+    # separada de imunidade a dano (mesmo padrão AzerothCore:
+    # SPELL_AURA_MECHANIC_IMMUNITY_MASK ≠ imunidade de dano). É o PRÓPRIO
+    # efeito que concede a proteção — apply_effect() lê isto genericamente
+    # (engine/core_systems.py), nenhuma skill precisa de flag bespoke;
+    # qualquer skill futura que quiser o mesmo efeito só chama
+    # apply_effect(world, eid, "cc_immune", duration=X).
+    "cc_immune": EffectDef("Imune a Controle", (200, 200, 200), True, 0.0),
 }

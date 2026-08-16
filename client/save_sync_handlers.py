@@ -36,7 +36,10 @@ class SaveSyncHandlers:
         """
         if item is None:
             return None
-        d = {"name": getattr(item, "name", "")}
+        # item_id (débito C2, 10/08/2026) — identidade estável, sempre
+        # primeiro campo por convenção (mesmo lugar de destaque de "name"
+        # antes). "" pra item sem catálogo (fallback inerte do servidor).
+        d = {"item_id": getattr(item, "item_id", ""), "name": getattr(item, "name", "")}
         # subtype: categoria da arma (ex: "Bow") — precisa estar aqui, não só
         # no bloco de quiver abaixo. Faltando isso, uma arma cujo nome não
         # bate com nenhum factory de loot_tables._T (comprada em loja com
@@ -77,13 +80,13 @@ class SaveSyncHandlers:
         Usado para itens de loja que podem não estar em loot_tables._T.
         Todos os campos necessários vêm no próprio dict.
         """
-        if not d or not d.get("name"):
+        if not d or not (d.get("item_id") or d.get("name")):
             return None
         from engine.components import Item as _Item, Modifier as _Mod
         mods = [_Mod(m["attribute"], float(m["value"]), m.get("type", "flat"))
                 for m in d.get("modifiers", []) if "attribute" in m]
         item = _Item(
-            name        = d["name"],
+            name        = d.get("name", ""),
             item_type   = d.get("item_type", ""),
             slot        = d.get("slot", ""),
             rarity      = d.get("rarity", "common"),
@@ -94,6 +97,7 @@ class SaveSyncHandlers:
             arrow_count = int(d.get("arrow_count", 0)),
             max_arrows  = int(d.get("max_arrows",  0)),
             subtype     = d.get("subtype", ""),
+            item_id     = d.get("item_id", ""),
         )
         for f in _ITEM_STAT_FIELDS:
             if f in d:
@@ -105,32 +109,49 @@ class SaveSyncHandlers:
     def _restore_item(self, d: dict):
         """Reconstrói Item a partir de dict salvo.
 
-        Tenta primeiro no catálogo _T (preserva atributos do original).
-        Fallback: _item_from_data (reconstrói dos dados — funciona para itens de loja).
+        Tenta primeiro no catálogo por `item_id` (débito C2, 10/08/2026 —
+        O(1), preserva atributos ATUAIS do catálogo mesmo se balanceamento
+        mudou desde o save) — nome só como fallback pra save ANTIGO sem
+        item_id. Fallback final: _item_from_data (reconstrói dos dados —
+        funciona para itens de loja/sem catálogo local do cliente).
         """
         if not d:
             return None
-        from content.loot_tables import _T
-        name = d.get("name", "")
-        # Tenta achar pelo nome no catálogo (loot drops)
-        for key, factory in _T.items():
-            try:
-                candidate = factory()
-            except Exception:
-                continue
-            if getattr(candidate, "name", "") == name:
-                # Restaura campos variáveis que o factory não preserva
-                if "arrow_count" in d:
-                    candidate.arrow_count = int(d["arrow_count"])
-                if "max_arrows" in d:
-                    candidate.max_arrows  = int(d["max_arrows"])
-                if "subtype" in d:
-                    candidate.subtype     = d["subtype"]
-                if "stack" in d:
-                    candidate.stack     = int(d["stack"])
-                if "max_stack" in d:
-                    candidate.max_stack = int(d["max_stack"])
-                return candidate
+
+        def _apply_saved_bookkeeping(candidate):
+            if "arrow_count" in d:
+                candidate.arrow_count = int(d["arrow_count"])
+            if "max_arrows" in d:
+                candidate.max_arrows  = int(d["max_arrows"])
+            if "subtype" in d:
+                candidate.subtype     = d["subtype"]
+            if "stack" in d:
+                candidate.stack     = int(d["stack"])
+            if "max_stack" in d:
+                candidate.max_stack = int(d["max_stack"])
+            return candidate
+
+        item_id = d.get("item_id", "")
+        if item_id:
+            from content.item_table import ITEMS as _IT_restore
+            factory = _IT_restore.get(item_id)
+            if factory is not None:
+                try:
+                    return _apply_saved_bookkeeping(factory())
+                except Exception:
+                    pass
+        else:
+            from content.loot_tables import _T
+            name = d.get("name", "")
+            # Tenta achar pelo nome no catálogo (loot drops) — save antigo
+            # sem item_id salvo ainda.
+            for key, factory in _T.items():
+                try:
+                    candidate = factory()
+                except Exception:
+                    continue
+                if getattr(candidate, "name", "") == name:
+                    return _apply_saved_bookkeeping(candidate)
         # Fallback: reconstrói dos dados (itens de loja, consumíveis, etc.)
         return self._item_from_data(d)
 
@@ -275,41 +296,25 @@ class SaveSyncHandlers:
                 inv_list = [s for s in inv_list if s]
                 self._net.send(_MT_la.INV_SYNC, {"inventory": inv_list})
 
-    def _get_equip_snapshot(self) -> dict:
-        """Retorna snapshot do equipamento atual como dict slot→item_name (para comparação)."""
-        from engine.components import Equipment as _EqSnap
-        equip = self.world.get_component(self.player_entity, _EqSnap)
-        if not equip:
-            return {}
-        snapshot = {}
-        for slot, item in equip.slots.items():
-            if item is not None:
-                key = getattr(item, "name", "") or ""
-                ac  = getattr(item, "arrow_count", None)
-                snapshot[slot] = f"{key}:{ac}" if ac is not None else key
-        return snapshot
-
-    def _send_equip_sync(self) -> None:
-        """Sincroniza o equipamento atual com o servidor após equip/unequip.
-
-        Atualiza _equip_snapshot para que a detecção passiva em game.py
-        não envie duplicata no mesmo frame.
-        """
+    def _send_equip_item(self, inv_index: int) -> None:
+        """Manda ao servidor a INTENÇÃO de equipar o item na posição
+        `inv_index` do Inventory local — débito A4 (10-11/08/2026, ver
+        PROBLEMAS_ARQUITETURA.md). Substitui o antigo _send_equip_sync (que
+        mandava o Equipment inteiro recalculado); o servidor lê o item de
+        verdade no SEU PRÓPRIO Inventory ao vivo por posição, nunca confia
+        em item mandado por aqui."""
         if not self._net or not self._net.connected or self._my_eid == -1:
             return
         from shared.messages import MsgType as _MT_es
-        from engine.components import Equipment as _EqES
-        equip = self.world.get_component(self.player_entity, _EqES)
-        if not equip:
+        self._net.send(_MT_es.EQUIP_ITEM, {"inv_index": inv_index})
+
+    def _send_unequip_item(self, slot: str) -> None:
+        """Manda ao servidor a INTENÇÃO de desequipar `slot` — contraparte
+        de _send_equip_item."""
+        if not self._net or not self._net.connected or self._my_eid == -1:
             return
-        equipment = {}
-        for slot, item in equip.slots.items():
-            if item is not None:
-                s = self._serialize_item(item)
-                if s:
-                    equipment[slot] = s
-        self._net.send(_MT_es.EQUIP_SYNC, {"equipment": equipment})
-        self._equip_snapshot = self._get_equip_snapshot()
+        from shared.messages import MsgType as _MT_ues
+        self._net.send(_MT_ues.UNEQUIP_ITEM, {"slot": slot})
 
     def _on_recarregar_changed(self) -> None:
         """Recarregar mudou bag (flechas consumidas) e aljava (arrow_count) —
@@ -430,6 +435,22 @@ class SaveSyncHandlers:
             ql.active = {q: list(p) for q, p in (ql_dict.get("active") or {}).items()}
             ql.completed = set(ql_dict.get("completed") or [])
 
+        # LearnedRecipes — débito A4 (11/08/2026, ver PROBLEMAS_ARQUITETURA.md,
+        # bug real relatado pelo usuário): faltava esta parte — o servidor já
+        # persistia certo, mas o cliente nunca CARREGAVA de volta no login,
+        # então uma receita aprendida numa sessão anterior sumia da lista de
+        # forja no próximo relog (só sobrevivia se aprendida na sessão atual,
+        # via STATS_UPDATE de CONSUMABLE_USE).
+        from engine.components import LearnedRecipes as _LRr
+        lr_raw = char_data.get("learned_recipes_json", "[]")
+        try:
+            lr_list = _jr.loads(lr_raw) if isinstance(lr_raw, str) else lr_raw
+        except Exception:
+            lr_list = []
+        lr = self.world.get_component(self.player_entity, _LRr)
+        if lr is not None and isinstance(lr_list, list):
+            lr.known = list(lr_list)
+
         # Skills — hotbar e learned_ids
         skills_raw = char_data.get("skills_json", "{}")
         try:
@@ -532,23 +553,25 @@ class SaveSyncHandlers:
             auto.path.clear()
 
     def _send_loot_request(self, corpse_id: int, take: str = "all",
-                           item_name: str = "") -> None:
+                           item_id: str = "") -> None:
         """Envia LOOT_REQUEST ao servidor para o corpse_id.
 
         `take`: "gold"/"item"/"all" — granular desde 17/07/2026 (sacar só
         o ouro não deveria levar junto o resto do loot — ver
-        server/loot_processor.py::request_loot)."""
+        server/loot_processor.py::request_loot). `item_id` (débito A4,
+        11/08/2026, era `item_name` antes) — nome de exibição não
+        distingue itens diferentes com o mesmo nome."""
         if not self._net or not self._net.connected:
             return
         from shared.messages import MsgType
         payload = {"corpse_id": corpse_id, "take": take}
-        if item_name:
-            payload["item_name"] = item_name
+        if item_id:
+            payload["item_id"] = item_id
         self._net.send(MsgType.LOOT_REQUEST, payload)
 
     def _send_loot_request_for_local_corpse(self, local_corpse_eid: int,
                                             take: str = "all",
-                                            item_name: str = "") -> None:
+                                            item_id: str = "") -> None:
         """Ponte pro LootSystem (ui/systems.py) — ele só conhece o eid ECS
         LOCAL do corpse (a entidade Corpse criada por _handle_msg_loot_
         available), não o corpse_id do SERVIDOR (chave de
@@ -570,4 +593,4 @@ class SaveSyncHandlers:
         corpse_id = next((cid for cid, data in self._available_loot.items()
                           if data.get("local_eid") == local_corpse_eid), None)
         if corpse_id is not None:
-            self._send_loot_request(corpse_id, take, item_name)
+            self._send_loot_request(corpse_id, take, item_id)

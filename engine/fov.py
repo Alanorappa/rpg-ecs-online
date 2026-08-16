@@ -2,10 +2,14 @@
 fov.py — Recursive shadowcasting FOV (field of view).
 
 Algoritmo clássico de 8 octantes de Björn Bergstrom.
-Sem dependências externas — apenas Python puro.
+Sem dependências externas — apenas Python puro. Mora em `engine/` (não
+`ui/`, onde vivia até 13/08/2026) justamente por isso — é ponto único
+de verdade compartilhado de verdade entre cliente (fog, `ui/systems.py`)
+e servidor (`server/tile_los_processor.py`), não "cliente que o
+servidor por acaso também consegue importar".
 
 Uso:
-    from ui.fov import compute_fov
+    from engine.fov import compute_fov
 
     visible = compute_fov(
         ox=player_tile_x,
@@ -31,6 +35,52 @@ _OCTANTS = (
     ( 0,  1, -1,  0),
     ( 1,  0,  0, -1),
 )
+
+
+def local_vision_blob(ox: int, oy: int, is_blocking, is_solid=None,
+                       radius_cap: int = 64) -> frozenset:
+    """
+    Blob conectado (4-direções) de tiles bloqueantes ANDÁVEIS que contém
+    (ox, oy) — usado pra "furar" o próprio bloqueio de visão quando o
+    observador está EM CIMA de um objeto bloqueante andável (bush, copa de
+    árvore fora do tronco). Referência: brush de MOBA bloqueia de
+    fora-pra-dentro, nunca de dentro-pra-fora (wiki oficial de League of
+    Legends) — de dentro de uma bush a visão deveria continuar normal, só
+    quem está FORA que não vê o que tem dentro/atrás.
+
+    `is_solid`, se fornecido, PARA a expansão do blob em qualquer tile
+    sólido (parede, pedra grande, tronco de árvore) — mesmo que ele seja
+    geometricamente vizinho de uma bush real (ex: bush encostada numa
+    parede no mapa). Sem isso, uma bush tocando uma parede "vazaria" a
+    exceção pra dentro da parede inteira, deixando ela transparente por
+    engano — a origem em si nunca é sólida na prática (jogador não pisa
+    em cima de sólido), então essa checagem só importa pros VIZINHOS.
+
+    Retorna frozenset() se (ox, oy) não for bloqueante (caminho comum,
+    custo zero — a maioria das posições não está em cima de bush/copa).
+    `radius_cap` limita o tamanho do blob por segurança (aglomerados reais
+    de bush são pequenos, dezenas de tiles) — nunca esperado bater no
+    caminho normal.
+    """
+    if not is_blocking(ox, oy):
+        return frozenset()
+
+    seen = {(ox, oy)}
+    stack = [(ox, oy)]
+    while stack:
+        if len(seen) >= radius_cap:
+            break
+        cx, cy = stack.pop()
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nx, ny = cx + dx, cy + dy
+            if (nx, ny) in seen:
+                continue
+            if is_solid is not None and is_solid(nx, ny):
+                continue
+            if is_blocking(nx, ny):
+                seen.add((nx, ny))
+                stack.append((nx, ny))
+    return frozenset(seen)
 
 
 def compute_fov(ox: int, oy: int, radius: int, is_blocking) -> set:

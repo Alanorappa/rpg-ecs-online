@@ -74,13 +74,50 @@ def _parse_terrain_cell(cell: str) -> tuple[str, str]:
     return cell, ""
 
 
+# Cache: filepath resolvido → (terrain_matrix, object_matrix, spawn_points,
+# terrain_visual) já parseados — débito de performance achado por profiling
+# real (11/08/2026, ver PROBLEMAS_ARQUITETURA.md §27): _parse_terrain_cell
+# sozinho respondia por ~84% do tempo de construção de um WorldServer
+# (~330ms de ~396ms), chamado ~63 mil vezes POR MAPA — cada
+# WorldServer()/_load_map_for reparseava os mesmos 3 CSVs (conteúdo
+# ESTÁTICO em runtime, nunca muda) do zero. `load_map_csv` sempre devolve
+# uma CÓPIA independente do que está em cache (nunca o objeto cacheado
+# direto) — os chamadores mutam essas estruturas livremente depois
+# (spawn_points vira insumo de _create_harvestables_for_map/etc.), então
+# compartilhar o MESMO objeto entre múltiplas instâncias de WorldServer
+# contaminaria uma instância com mutação de outra (ex: harvestable
+# reabastecido numa instância "vazando" pra outra). Nunca invalidado em
+# runtime — arquivo de mapa não muda durante a vida do processo; reiniciar
+# o processo já reseta o cache (dict de módulo).
+_MAP_CSV_CACHE: "dict[str, tuple]" = {}
+
+
+def _copy_matrix(matrix):
+    """Copia uma matrix list[list[str]] (linhas mutáveis) — strings são
+    imutáveis, só a lista OUTER e cada linha INNER precisam de cópia
+    própria pra isolar de mutação entre chamadores."""
+    if matrix is None:
+        return None
+    return [row[:] if isinstance(row, list) else row for row in matrix]
+
+
 def load_map_csv(filepath: str) -> tuple[list[str], list[str], dict, list | None]:
     """
     Carrega um mapa e retorna (terrain_matrix, object_matrix, spawn_points, terrain_visual).
 
     terrain_visual — list[list[str]] com sprite IDs de sheet por tile.
+
+    Cacheado por filepath resolvido (ver `_MAP_CSV_CACHE` acima) — sempre
+    retorna uma cópia independente, nunca o objeto cacheado.
     """
-    filepath  = resource_path(filepath)
+    filepath = resource_path(filepath)
+    cached = _MAP_CSV_CACHE.get(filepath)
+    if cached is not None:
+        terrain_matrix, object_matrix, spawn_points, terrain_visual = cached
+        import copy as _copy_map
+        return (list(terrain_matrix), _copy_matrix(object_matrix),
+               _copy_map.deepcopy(spawn_points), _copy_matrix(terrain_visual))
+
     base      = os.path.splitext(filepath)[0]
     t_path    = base + "_terrain.csv"
     o_path    = base + "_objects.csv"
@@ -106,10 +143,13 @@ def load_map_csv(filepath: str) -> tuple[list[str], list[str], dict, list | None
         "transitions":       [],
         "ambient_zones":     [],
         "pvp_zones":         [],
+        "bush_zones":        [],
         "default_ambient":   "",
         "training_dummies":  [],
         "combat_npcs":       [],
         "towers":            [],
+        "jungle_mobs":       [],
+        "jungle_bosses":     [],
         "minion_lanes":      [],
     }
 
@@ -117,6 +157,7 @@ def load_map_csv(filepath: str) -> tuple[list[str], list[str], dict, list | None
     if os.path.exists(json_path):
         _merge_entities_json(json_path, spawn_points)
 
+    _MAP_CSV_CACHE[filepath] = (terrain_matrix, object_matrix, spawn_points, terrain_visual)
     return terrain_matrix, object_matrix, spawn_points, terrain_visual
 
 
@@ -341,6 +382,39 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
             for tw in data["towers"]
         ]
 
+    if "jungle_mobs" in data:
+        # Monstro de jungle estilo MOBA, normal — hostil aos 2 times
+        # (13/08/2026, pedido do usuário). Mesmo padrão de "towers":
+        # "mob_key" referencia content/jungle_definitions.py::
+        # JUNGLE_MOB_TABLE; "faction"/"level"/"respawn_s" são parâmetros
+        # de INSTÂNCIA. Criado via WorldServer._create_jungle_camps.
+        spawn_points["jungle_mobs"] = [
+            {
+                "x":         jm["x"], "y": jm["y"],
+                "mob_key":   jm["mob_key"],
+                "faction":   jm.get("faction", "monstros_hostis"),
+                "level":     jm.get("level", 1),
+                "respawn_s": jm.get("respawn_s", 90.0),
+            }
+            for jm in data["jungle_mobs"]
+        ]
+
+    if "jungle_bosses" in data:
+        # Boss de jungle estilo MOBA (13/08/2026, pedido do usuário) —
+        # mesmo padrão de "jungle_mobs", "mob_key" referencia
+        # content/jungle_definitions.py::JUNGLE_BOSS_TABLE (que também
+        # carrega o ciclo de buff por abate, "buff_cycle").
+        spawn_points["jungle_bosses"] = [
+            {
+                "x":         jb["x"], "y": jb["y"],
+                "mob_key":   jb["mob_key"],
+                "faction":   jb.get("faction", "monstros_hostis"),
+                "level":     jb.get("level", 1),
+                "respawn_s": jb.get("respawn_s", 300.0),
+            }
+            for jb in data["jungle_bosses"]
+        ]
+
     if "minion_lanes" in data:
         # Lane de minion estilo MOBA (30/07/2026, pedido do usuário) —
         # mesmo padrão de "towers": "faction"/"spawn_tile"/"target_tile"/
@@ -376,6 +450,15 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
                                     else [tuple(ml["target_tile"])]),
                 "wave_interval_s": ml.get("wave_interval_s", 45.0),
                 "level":           ml.get("level", 1),
+                # "first_wave_delay_s" (13/08/2026, pedido do usuário) —
+                # atraso EXPLÍCITO da 1ª wave dessa lane, independente do
+                # `wave_interval_s` (que passa a valer só a partir da 2ª
+                # wave em diante). Opcional: None = cai no fallback antigo
+                # (WorldServer._LANE_GROUP_STAGGER_S por lane_id) — mapas
+                # que não declararem continuam com o comportamento de
+                # sempre, sem precisar migrar nada.
+                "first_wave_delay_s": (float(ml["first_wave_delay_s"])
+                                       if "first_wave_delay_s" in ml else None),
             }
             for ml in data["minion_lanes"]
         ]
@@ -491,6 +574,14 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
         for z in data["pvp_zones"]:
             r = z.get("rect", [0, 0, 0, 0])
             spawn_points["pvp_zones"].append({
+                "name": z.get("name", ""),
+                "rect": (int(r[0]), int(r[1]), int(r[2]), int(r[3])),
+            })
+
+    if "bush_zones" in data:
+        for z in data["bush_zones"]:
+            r = z.get("rect", [0, 0, 0, 0])
+            spawn_points["bush_zones"].append({
                 "name": z.get("name", ""),
                 "rect": (int(r[0]), int(r[1]), int(r[2]), int(r[3])),
             })

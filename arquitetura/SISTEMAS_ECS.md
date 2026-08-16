@@ -145,6 +145,22 @@ playtest: os 7 minions nascendo no mesmo tick travavam uns nos outros).
 (chamada logo depois no tick principal) drena a fila e cria a entidade
 de fato, 1 por vez, a cada `WorldServer.MINION_SPAWN_STAGGER_S` (0.5s).
 
+**Atraso configurável da 1ª wave** (13/08/2026, pedido do usuário) —
+campo opcional `first_wave_delay_s` por lane (`maps/*_entities.json`,
+`minion_lanes`): atraso REAL em segundos até a 1ª wave dessa lane,
+independente de `wave_interval_s` (que só vale a partir da 2ª wave em
+diante). `_activate_minion_lanes` traduz pro timer interno via
+`wave_interval_s - first_wave_delay_s` (o timer sobe até alcançar
+`wave_interval_s`, nunca guarda o atraso direto). Como o resto do
+disparo (`elapsed - wave_interval_s`, sem resetar pra 0) carrega o
+atraso inicial adiante pra sempre, a diferença entre lanes configurada
+aqui vale o jogo inteiro, não só a 1ª wave — usado no MOBA battleground
+pra escalonar top/bot/mid (15s/16.5s/18s) mantendo 1.5s de diferença
+entre elas em TODAS as waves seguintes, sem precisar de nenhuma trava
+extra. Lane sem o campo cai no fallback antigo
+(`_LANE_GROUP_STAGGER_S`/`_LANE_GROUP_ORDER`, mesmo 1.5s por grupo
+top/bot/mid, comportamento inalterado pra mapas que não declararem).
+
 ### Progressão Normalizada de Instância (31/07/2026) — `server/instance_progression.py`
 
 Não é um `System` ECS com `update(dt)` — é um mecanismo de
@@ -157,16 +173,37 @@ vivos com valores de instância (level 1, talento zerado na MESMA
 árvore real, 1ª skill de `INSTANCE_SKILL_UNLOCK_ORDER` já concedida,
 gold 0, inventário de 6 slots vazio); `exit_normalized_progression(ws,
 eid)` restaura tudo, idempotente. `grant_instance_xp(ws, eid, amount)`
-processa level-ups de instância (cap 15, +3 pontos de talento por
-level) — é um seam, ainda não chamado por nenhum sistema de XP real.
+processa level-ups de instância (cap 15).
 
-**INERTE nesta fase**: nenhum processador de jogo chama essas funções
-ainda — o modo Battlefield em si (fila, times, mapa) é trabalho futuro
-separado. Toggle por modo (`progression_mode`) documentado na
-docstring do módulo. Ver `historico/ARQUITETURA ONLINE HISTORICO.md` §34.74 pro design
+**ATIVO desde 04-05/08/2026** (correção de doc, 14/08/2026 — este
+trecho ainda dizia "INERTE" mesmo depois do código já ter sido
+corrigido em 06/08/2026, ver `PROBLEMAS_ARQUITETURA.md` §12/§45):
+`server/bg_queue_processor.py` chama `enter_/exit_normalized_
+progression` de verdade na fila real de battleground — é o caminho
+real de todo player que entra numa partida de BG hoje, não mais
+teórico. Toggle por modo (`progression_mode`) continua documentado na
+docstring do módulo, útil pra um futuro modo Battlefield adicional.
+Ver `historico/ARQUITETURA ONLINE HISTORICO.md` §34.74 pro design
 completo, incluindo 2 bugs reais achados durante a implementação
 (atributos brutos que não resetavam sozinhos; skills talento-gated que
 não autorizavam via `learned_skill_ids` só).
+
+**Sync de XP/gold com o cliente** (13/08/2026, pedido do usuário —
+"a barra de xp está mostrando a xp de fora da instância"): mesma
+classe de gap já fechada antes pra level/atributos/talento/inventário
+— `current_xp`/`xp_to_next_level` agora entram no payload de
+STATS_UPDATE que `_push_stats_update` já monta (valor FINAL, nunca
+delta, mesmo padrão do resto da função), em toda entrada/saída/ganho
+de XP. `grant_instance_xp` passou a empurrar em TODO ganho (não só
+quando sobe de nível — antes, matar um minion sem completar o próximo
+nível não movia a barra nada). Campos extras só pra feedback visual/
+sonoro, nomeados `instance_*` de propósito pra nunca colidir com o
+canal `xp`/`xp_gained` do XP REAL (que dispara `process_levelups`
+local com curva/cap do MUNDO REAL, errados aqui): `instance_xp_gained`
+(texto flutuante "+N XP"), `instance_leveled_up` (som de level-up,
+mesmo som de sempre), `instance_gold_gained` (`grant_instance_gold`,
+texto flutuante "+Ng" dourado — antes o loot automático da instância
+não tinha nenhum feedback visual de gold).
 
 ### Visão compartilhada de time (30/07/2026) — `server/session.py`
 
@@ -186,6 +223,43 @@ pra alimentar `FogSystem` (`ui/systems.py`, client-side) — aliado também
 "explora" a névoa do minimapa e o LOS de renderização com shadowcasting
 PRÓPRIO (`ui/fov.py::compute_fov`), a partir da posição dele, não da do
 player. Ver `historico/ARQUITETURA ONLINE HISTORICO.md` §34.72/§34.72.1 pro design completo.
+
+### Minimapa em tela cheia da BG (13/08/2026) — `ui/minimap.py::render_fullmap`
+
+Modo alternativo do minimapa, só ativo dentro de instância estilo MOBA
+(`InstanceInventoryUIState.active`, checado em `game.py`, mesmo flag
+que já liga o painel de inventário de instância) — mostra o MAPA
+INTEIRO encolhido pra caber no frame fixo (`pygame.transform.
+smoothscale`), sem seguir/centralizar no player, em vez da janela de
+`RADIUS` tiles ao redor do player que `render()` normal sempre usa.
+Névoa de guerra continua valendo (`FogOfWar.explored`/`.visible` —
+inclusive visão compartilhada de time, já embutida nesses sets pelo
+servidor, ver seção acima) — só a MOLDURA/escala que muda.
+
+`Minimap` continua genérico (só desenha o que recebe, mesmo espírito
+de `markers`/`enemy_tiles` do modo normal) — toda leitura de ECS mora
+em `game.py::_collect_bg_minimap_dots`, que monta uma lista de
+`(tile_x, tile_y, cor, raio)` pra minion/torre/player: detecta o tipo
+via `EntityIdentity.mob_key` contra `MINION_TABLE`/`TOWER_TABLE`
+(mesma convenção já usada pra torre em `entity_footprint_tiles`, ver
+seção de colisão), cor por `Faction.faction_id` (`arena_time_a`=azul,
+`arena_time_b`=vermelho — inclusive o PRÓPRIO player, sem destaque
+especial, decisão do usuário), filtrado por `visible_tiles` pra tudo
+exceto o player local (sempre visível pra si mesmo). Raio por tipo
+(13/08/2026, pedido do usuário — minion do mesmo tamanho que torre
+confundia os dois): minion=1 (quase 1px), torre=2, player=3 — hierarquia
+visual clara de relance.
+
+**Clique pra mover** (`game.py`, clique direito no minimapa) precisa do
+MESMO gate — `screen_to_tile` (modo radar) e `screen_to_tile_fullmap`
+(modo BG) fazem contas de geometria BEM diferentes (RADIUS/centralizar
+no player vs escala de cols/rows do mapa inteiro), então o chamador
+decide qual usar com o mesmo `InstanceInventoryUIState.active` que já
+decide entre `render`/`render_fullmap`. Bug real relatado pelo usuário
+(13/08/2026, no mesmo dia do ship): ao trocar só o RENDER pro modo
+tela-cheia sem trocar o conversor de clique junto, o personagem parou
+de responder a clique no minimapa dentro da BG — clique continuava
+passando pela conta do modo radar (errada nesta geometria).
 
 ### Arquitetura de StatusEffectSystem
 

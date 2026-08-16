@@ -13,9 +13,14 @@ import sys
 import os
 import ctypes
 
-# systems.py importa pygame no topo (servidor importa EnemyAISystem/CombatSystem
-# de lá) — sem driver de vídeo/áudio, pygame.init() crasha em ambiente headless
-# (container Linux sem display, CI). setdefault: não sobrescreve se o operador já
+# Comentário antigo dizia que o servidor precisava disso por importar
+# EnemyAISystem/CombatSystem de ui/systems.py — desatualizado (essas
+# classes vêm de engine/world_systems.py há tempo, e o débito B3 que
+# ainda arrastava pygame via ui.systems.SkillSystem foi fechado
+# 08/08/2026, ver engine/skill_handlers.py). Mantido como rede de
+# segurança barata contra qualquer import futuro que volte a arrastar
+# pygame sem querer, já que o processo inteiro roda headless (container
+# Linux sem display, CI). setdefault: não sobrescreve se o operador já
 # setou algo explicitamente (ex: rodar com display real por algum motivo).
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
@@ -64,6 +69,21 @@ async def handle_connection(ws, session_manager: SessionManager) -> None:
 
 
 async def main(host: str, port: int) -> None:
+    # Diagnóstico nativo do asyncio (Fase 4.5, 11/08/2026, ver
+    # PROBLEMAS_ARQUITETURA.md §27) — avisa via logger "asyncio" (ligado
+    # a logs/server.log em server/log.py) sempre que um callback do
+    # event loop trava por mais de 50ms. Sinal INDEPENDENTE do profiler
+    # próprio (_perf_mark só mede o que está explicitamente instrumentado
+    # dentro de `_tick`) — pega stall em qualquer callback, incluindo
+    # processamento de mensagem de rede/I/O que não passa por `_tick`.
+    # `set_debug(True)` completo FICA DE FORA de propósito: adiciona
+    # overhead a TODO callback (rastreamento de origem, etc.), arriscado
+    # com o orçamento de tick já apertado (33ms) — só o sinalizador leve
+    # (`slow_callback_duration`) é ligado por padrão. `asyncio.run()`
+    # não dá hook pra configurar o loop ANTES dele rodar, por isso isso
+    # fica aqui dentro (primeira linha da coroutine), não em __main__.
+    asyncio.get_running_loop().slow_callback_duration = 0.05
+
     # Inicializa banco de dados (cria contas de teste via _seed_test_accounts)
     init_db()
 

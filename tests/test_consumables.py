@@ -29,7 +29,7 @@ class TestConsumableRejectedWhenDead(unittest.TestCase):
         self.cs.current_hp = 0  # "morto" pro invariante que apply_damage_core já usa
 
     def test_heal_instant_rejeitado_com_player_morto(self):
-        self.ws.apply_consumable("p1", {"item_name": "pocao_vida", "heal_instant": 50})
+        self.ws.apply_consumable("p1", {"item_id": "pocao_vida", "heal_instant": 50})
         self.assertEqual(self.cs.current_hp, 0,
             "poção não deveria curar um player morto")
         rejected = [u for u in self.ws._pending_stats_updates
@@ -39,7 +39,7 @@ class TestConsumableRejectedWhenDead(unittest.TestCase):
 
     def test_hot_nao_e_registrado_com_player_morto(self):
         self.ws.apply_consumable("p1", {
-            "item_name": "pocao_regen",
+            "item_id": "pocao_regen",
             "hot": {"heal_per_tick": 10, "interval": 1.0, "ticks": 5},
         })
         self.assertIsNone(self.ws.world.get_component(self.player_eid, ActiveRegen),
@@ -53,7 +53,7 @@ class TestConsumableRejectedWhenDead(unittest.TestCase):
         # Contrato documentado em apply_consumable: cliente só descarta o
         # item local depois de "consumable_ok" — nunca pode receber os
         # dois (ok E rejected) pro mesmo uso.
-        self.ws.apply_consumable("p1", {"item_name": "pocao_vida", "heal_instant": 50})
+        self.ws.apply_consumable("p1", {"item_id": "pocao_vida", "heal_instant": 50})
         ok = [u for u in self.ws._pending_stats_updates if u.get("consumable_ok")]
         self.assertFalse(ok, "não deveria confirmar uso de item num player morto")
 

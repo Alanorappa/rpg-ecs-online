@@ -63,7 +63,10 @@ class UI:
     TRADE_INVITE_W, TRADE_INVITE_H = 360, 150  # modal "Fulano quer negociar"
     ARENA_RESULT_W, ARENA_RESULT_H = 380, 290  # modal de fim de partida da Arena (placar + "Sair da Arena")
     ARENA_ACCEPT_W, ARENA_ACCEPT_H = 320, 170  # modal "Partida encontrada!" (aceite, 21/07/2026)
-    ARENA_QUEUE_MODAL_W, ARENA_QUEUE_MODAL_H = 360, 330  # modal unificado de fila (Fase H + linha de Battleground, 04/08/2026) — lista de modos
+    # modal unificado de fila (Fase H + Battleground) — lista de modos:
+    # 3 linhas de Arena (1v1/2v2/3v3) + 3 linhas de BG (2v2/3v3/5v5,
+    # revisado 10/08/2026 — antes era 1 linha só, sem escolha de tamanho)
+    ARENA_QUEUE_MODAL_W, ARENA_QUEUE_MODAL_H = 360, 460
 
     # Menu de pausa (ESC) e seus submenus — cada um é um painel separado
     MENU_QUIT_CONFIRM_W, MENU_QUIT_CONFIRM_H = 320, 150   # "Tem certeza que deseja sair?"

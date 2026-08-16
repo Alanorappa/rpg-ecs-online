@@ -30,13 +30,20 @@ RARITY_FORGE_COST: dict = RARITY_RECYCLE_COST
 # Materiais
 # ---------------------------------------------------------------------------
 def _mat(name: str, rarity: str = "common", value: int = 0):
-    def factory():
-        return Item(name=name, item_type="material", slot="",
+    def factory(_item_id: str = ""):
+        item = Item(name=name, item_type="material", slot="",
                     rarity=rarity, value=value, max_stack=99)
+        item.item_id = _item_id
+        return item
     return factory
 
 
-MATERIALS: dict = {
+# item_id = a própria chave do dict (débito C2, 10/08/2026 — mesmo padrão
+# de content/item_table.py::ITEMS). `_mat`'s factory recebe `_item_id` mas
+# não sabe a chave sozinha — MATERIALS é montado com dict comprehension
+# injetando a chave em cada factory (mesmo princípio de
+# item_table.py::_with_derived_level).
+_RAW_MATERIALS: dict = {
     "fragmento_ferro":  _mat("Fragmento de Ferro",  "common",   500),
     "fibra_madeira":    _mat("Fibra de Madeira",     "common",   300),
     "tira_couro":       _mat("Tira de Couro",        "common",   300),
@@ -48,6 +55,15 @@ MATERIALS: dict = {
     "joia_bruta":       _mat("Joia Bruta",           "rare",     2500),
     "cristal_poder":    _mat("Cristal de Poder",     "epic",     5000),
 }
+
+
+def _with_item_id(key: str, factory):
+    def wrapped():
+        return factory(key)
+    return wrapped
+
+
+MATERIALS: dict = {key: _with_item_id(key, f) for key, f in _RAW_MATERIALS.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -118,8 +134,8 @@ def _make_result(name, item_type, slot, rarity, value, mods=None,
                  two_handed=False, damage_min=0, damage_max=0,
                  attack_speed=0.0, subtype=""):
     mods = mods or []
-    def factory():
-        return Item(
+    def factory(_item_id: str = ""):
+        item = Item(
             name=name, item_type=item_type, slot=slot,
             modifiers=[Modifier(attr, val, typ) for attr, val, typ in mods],
             rarity=rarity, value=value, two_handed=two_handed,
@@ -127,10 +143,18 @@ def _make_result(name, item_type, slot, rarity, value, mods=None,
             attack_speed=attack_speed, subtype=subtype,
             item_level=_derive_item_level(rarity, value), level_requirement=1,
         )
+        item.item_id = _item_id
+        return item
     return factory
 
 
-RECIPES: dict = {
+# item_id do item CRAFTADO (resultado) = a própria chave de RECIPES (débito
+# C2, 10/08/2026) — reusa `recipe_id` como item_id, já que a relação é 1:1
+# (1 receita produz sempre o mesmo item resultado). Distinto do item_id da
+# RECEITA EM SI (RECIPE_ITEMS abaixo, "recipe_"+recipe_id) — são 2 itens
+# diferentes ("Espada Afiada" craftada vs "Receita: Espada Afiada", o
+# pergaminho que ensina a receita), não podem colidir no mesmo id.
+_RAW_RECIPES: dict = {
     "espada_afiada": {
         "name":           "Espada Afiada",
         "result_rarity":  "uncommon",
@@ -173,6 +197,24 @@ RECIPES: dict = {
 }
 
 
+def _bind_result_item_id(key: str, result_factory):
+    def wrapped():
+        return result_factory(key)
+    return wrapped
+
+
+def _recipes_with_item_id(raw: dict) -> dict:
+    out = {}
+    for key, entry in raw.items():
+        new_entry = dict(entry)
+        new_entry["result_factory"] = _bind_result_item_id(key, entry["result_factory"])
+        out[key] = new_entry
+    return out
+
+
+RECIPES: dict = _recipes_with_item_id(_RAW_RECIPES)
+
+
 # ---------------------------------------------------------------------------
 # Itens de receita (droppáveis de humanoides / vendidos pelo ferreiro)
 # ---------------------------------------------------------------------------
@@ -181,7 +223,12 @@ def _make_recipe_item(display_name: str, recipe_id: str,
     def factory():
         item = Item(name=display_name, item_type="recipe", slot="",
                     rarity=rarity, value=value,
-                    consumable={"learn_recipe": recipe_id})
+                    consumable={"learn_recipe": recipe_id},
+                    # "recipe_" prefix: distingue do item_id do item
+                    # CRAFTADO (RECIPES[recipe_id], mesma chave sem
+                    # prefixo) — são 2 itens diferentes, nunca podem
+                    # colidir no mesmo id (débito C2, 10/08/2026).
+                    item_id=f"recipe_{recipe_id}")
         item.recipe_id = recipe_id
         return item
     return factory

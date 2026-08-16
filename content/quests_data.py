@@ -13,12 +13,15 @@ Tipos de objetivo (ObjectiveDef.type):
                       escopo de "kill". Disparado em
                       server/combat_processor.py::_process_player_attacks.
     collect_item      Coletar N de loot_item de target. Drop condicional via loot_chance.
+                      loot_item = item_id (chave de ITEMS/MATERIALS/RECIPES/
+                      QUEST_ITEMS, não mais o nome de exibição — ver débito C2,
+                      PROBLEMAS_ARQUITETURA.md).
     reach_tile        Chegar em location=(tx, ty) ou área (x0, y0, x1, y1).
     use_skill         Usar skill_id N vezes.
-    use_consumable    Usar consumível N vezes. target = nome do item | "*".
+    use_consumable    Usar consumível N vezes. target = item_id do item | "*".
     reach_level       Alcançar o nível count. (target ignorado)
     talk_to_npc       Interagir com mercador. target = nome | "*".
-    equip_item        Equipar item. target = nome | item_type | "*".
+    equip_item        Equipar item. target = item_id | item_type | "*".
     use_item_on_target  Usar um item específico (params["item_name"]) sobre um
                         alvo. target = nome | raça do alvo | "*" (qualquer).
                         Evento esperado: quest_events.fire("use_item_on_target",
@@ -63,7 +66,10 @@ Recompensas (QuestReward) — xp/gold são simples (int). Para ITENS:
                                                "hp_potion", "mana_potion")
         2. content/quests_data.py::QUEST_ITEMS (materiais de quest logo
                                                abaixo — usar a CHAVE do dict,
-                                               ex.: "Pelo de Urso")
+                                               ex.: "pelo_urso" — chave
+                                               normalizada pra id estável
+                                               10/08/2026, débito C2, não é
+                                               mais o nome de exibição)
     Se o `item_key` não existir em nenhum dos dois, o item é silenciosamente
     ignorado (log de warning no servidor) — o resto da recompensa (xp/gold/
     outros itens) é concedido normalmente mesmo assim. Então: SEMPRE conferir
@@ -166,19 +172,31 @@ class QuestDef(NamedTuple):
 # Itens de quest (materiais drop-only, sem slot de equipamento)
 # ---------------------------------------------------------------------------
 
-QUEST_ITEMS: dict[str, callable] = {
-    "Pelo de Urso":         lambda: Item("Pelo de Urso",        "material",     slot=None, rarity="common", value=3,    max_stack=10),
-    "Presa de Lobo":        lambda: Item("Presa de Lobo",       "material",     slot=None, rarity="common", value=2,    max_stack=10),
-    "Veneno de Aranha":     lambda: Item("Veneno de Aranha",    "material",     slot=None, rarity="common", value=4,    max_stack=10),
-    "Cauda de Escorpião":   lambda: Item("Cauda de Escorpião",  "material",     slot=None, rarity="common", value=3,    max_stack=10),
-    "Escama de Cobra":      lambda: Item("Escama de Cobra",     "material",     slot=None, rarity="common", value=2,    max_stack=10),
-    "Osso de Goblin":       lambda: Item("Osso de Goblin",      "material",     slot=None, rarity="common", value=2,    max_stack=10),
-    "Vômito de Zumbi":      lambda: Item("Vômito de Zumbi",     "material",     slot=None, rarity="common", value=0,    max_stack=10),
-    "Pá":                   lambda: Item("Pá",                  "ferramenta",   slot=None, rarity="common", value=15,   max_stack=1),
-    "Picareta":             lambda: Item("Picareta",            "ferramenta",   slot=None, rarity="common", value=15,   max_stack=1),
-    "Mochila de mineração": lambda: Item("Mochila de mineração","ferramenta",   slot=None, rarity="common", value=15,   max_stack=1),
-    "Lampião":              lambda: Item("Lampião",             "ferramenta",   slot=None, rarity="common", value=15,   max_stack=1),
-    "Cantil":               lambda: Item("Cantil",              "ferramenta",   slot=None, rarity="common", value=15,   max_stack=1),
+# item_id = chave do dict (débito C2, 10/08/2026 — normalizado pro MESMO
+# padrão dos outros 3 catálogos autoritativos, que já usavam id interno
+# estável; este era o único chaveado por nome de exibição). `_qi` injeta o
+# item_id automaticamente a partir da chave, sem precisar repetir em cada
+# entrada — mesmo princípio de item_table.py::_with_derived_level.
+def _qi(name, item_type, rarity="common", value=0, max_stack=10, description=""):
+    def factory(_item_id: str = ""):
+        return Item(name, item_type, slot=None, rarity=rarity, value=value,
+                    max_stack=max_stack, description=description, item_id=_item_id)
+    return factory
+
+
+_RAW_QUEST_ITEMS: dict[str, callable] = {
+    "pelo_urso":          _qi("Pelo de Urso",         "material",   value=3),
+    "presa_lobo":         _qi("Presa de Lobo",        "material",   value=2),
+    "veneno_aranha":      _qi("Veneno de Aranha",     "material",   value=4),
+    "cauda_escorpiao":    _qi("Cauda de Escorpião",   "material",   value=3),
+    "escama_cobra":       _qi("Escama de Cobra",      "material",   value=2),
+    "osso_goblin":        _qi("Osso de Goblin",       "material",   value=2),
+    "vomito_zumbi":       _qi("Vômito de Zumbi",      "material",   value=0),
+    "pa":                 _qi("Pá",                   "ferramenta", value=15, max_stack=1),
+    "picareta":           _qi("Picareta",             "ferramenta", value=15, max_stack=1),
+    "mochila_mineracao":  _qi("Mochila de mineração", "ferramenta", value=15, max_stack=1),
+    "lampiao":            _qi("Lampião",              "ferramenta", value=15, max_stack=1),
+    "cantil":             _qi("Cantil",                "ferramenta", value=15, max_stack=1),
 
     # Itens que CONCEDEM quest ao serem saqueados (Fase M4) — sem função de
     # combate/equipamento, só "material" + description como texto de sabor
@@ -186,12 +204,20 @@ QUEST_ITEMS: dict[str, callable] = {
     # AUTOMÁTICA (ui/ui_helpers.py::item_tooltip_lines, detecta via
     # ITEM_GRANTS_QUEST logo abaixo) — não precisa escrever isso na
     # description, só o texto de sabor mesmo.
-    "Artefato Misterioso": lambda: Item(
-        "Artefato Misterioso", "material", slot=None,
-        rarity="rare", value=0, max_stack=1,
+    "artefato_misterioso": _qi(
+        "Artefato Misterioso", "material", rarity="rare", value=0, max_stack=1,
         description="\"Um artefato estranho, cheira mal e parece ter uma "
                     "tecnologia avançada, mas nenhum botão funciona.\""),
 }
+
+
+def _quest_items_with_id(raw: dict) -> dict:
+    def _bind(key, factory):
+        return lambda: factory(key)
+    return {key: _bind(key, f) for key, f in raw.items()}
+
+
+QUEST_ITEMS: dict[str, callable] = _quest_items_with_id(_RAW_QUEST_ITEMS)
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +310,7 @@ QUESTS: dict[str, QuestDef] = {
                 type="collect_item",
                 target="Urso",
                 count=3,
-                loot_item="Pelo de Urso",
+                loot_item="pelo_urso",
                 loot_chance=0.75,
             ),
         ),
@@ -303,7 +329,7 @@ QUESTS: dict[str, QuestDef] = {
                 type="collect_item",
                 target="Lobo",
                 count=5,
-                loot_item="Presa de Lobo",
+                loot_item="presa_lobo",
                 loot_chance=0.6,
             ),
         ),
@@ -321,7 +347,7 @@ QUESTS: dict[str, QuestDef] = {
                 type="collect_item",
                 target="Aranha",
                 count=3,
-                loot_item="Veneno de Aranha",
+                loot_item="veneno_aranha",
                 loot_chance=0.7,
             ),
         ),

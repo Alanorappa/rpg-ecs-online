@@ -175,7 +175,7 @@ class TestQuestTurnInConsumesCollectItem(unittest.IsolatedAsyncioTestCase):
         QUESTS[qid] = QuestDef(
             title="Quest de Teste", description="d",
             objectives=(ObjectiveDef(type="collect_item", target="*",
-                                     loot_item="Presa de Lobo", count=2),),
+                                     loot_item="presa_lobo", count=2),),
             reward=QuestReward(xp=5),
         )
         self._added_qids.append(qid)
@@ -185,7 +185,12 @@ class TestQuestTurnInConsumesCollectItem(unittest.IsolatedAsyncioTestCase):
 
         from engine.components import Inventory, Item
         inv = self.ws.world.get_component(session.entity_id, Inventory)
-        item = Item("Presa de Lobo", "material", slot=None, max_stack=99)
+        # Personagem vem de fake_login (conta real no banco, ver
+        # PROBLEMAS_ARQUITETURA.md) — pode carregar itens residuais de
+        # execuções anteriores da suíte contra o mesmo banco. Limpa antes
+        # de montar o cenário pra este teste não depender de bag vazia.
+        inv.items = []
+        item = Item("Presa de Lobo", "material", slot=None, max_stack=99, item_id="presa_lobo")
         item.stack = 2
         inv.items.append(item)
         fw.sent.clear()
@@ -197,14 +202,14 @@ class TestQuestTurnInConsumesCollectItem(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(inv_updates), 1)
         self.assertEqual(inv_updates[0]["items"], [])
         self.assertEqual(inv_updates[0]["removed"],
-                         [{"name": "Presa de Lobo", "stack": 2}])
+                         [{"item_id": "presa_lobo", "stack": 2}])
 
     async def test_entrega_com_reward_item_junto_manda_os_dois_campos(self):
         qid = "qti_collect_and_reward"
         QUESTS[qid] = QuestDef(
             title="Quest de Teste", description="d",
             objectives=(ObjectiveDef(type="collect_item", target="*",
-                                     loot_item="Presa de Lobo", count=1),),
+                                     loot_item="presa_lobo", count=1),),
             reward=QuestReward(items=("hp_potion",)),
         )
         self._added_qids.append(qid)
@@ -214,7 +219,10 @@ class TestQuestTurnInConsumesCollectItem(unittest.IsolatedAsyncioTestCase):
 
         from engine.components import Inventory, Item
         inv = self.ws.world.get_component(session.entity_id, Inventory)
-        item = Item("Presa de Lobo", "material", slot=None, max_stack=99)
+        # Ver comentário equivalente no teste acima — conta real no banco,
+        # pode carregar resíduo de execuções anteriores da suíte.
+        inv.items = []
+        item = Item("Presa de Lobo", "material", slot=None, max_stack=99, item_id="presa_lobo")
         item.stack = 1
         inv.items.append(item)
         fw.sent.clear()
@@ -225,7 +233,7 @@ class TestQuestTurnInConsumesCollectItem(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(inv_updates), 1)
         self.assertEqual(inv_updates[0]["items"][0]["name"], "Poção de Vida")
         self.assertEqual(inv_updates[0]["removed"],
-                         [{"name": "Presa de Lobo", "stack": 1}])
+                         [{"item_id": "presa_lobo", "stack": 1}])
 
 
 class TestQuestTurnInRewardSkill(unittest.IsolatedAsyncioTestCase):

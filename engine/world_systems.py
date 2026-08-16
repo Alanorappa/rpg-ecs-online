@@ -40,8 +40,9 @@ from engine.components import Position, Renderable, PlayerControlled, Camera, Co
                        PlayerSkills, NPC, ActiveRegen, ConsumableBar, \
                        AoeTargeting, RemoteControlled, GhostState, MapLocation, Combatant, Tower, Minion
 from engine.world import World
-from engine.tileset import TILE_SIZE, OBJECT_MAPPING
+from engine.tileset import TILE_SIZE, OBJECT_MAPPING, get_collision_offsets
 from engine.utils import chebyshev, start_tile_movement, is_action_locked, is_movement_locked, SpatialHash
+from content.tower_definitions import TOWER_TABLE
 from engine.damage_calculator import resolve_attack_outcome, calculate_base_damage
 from ui.combat_log import LOG
 from engine.fx import FLT, PROC, WARN, SOUNDS, DASH_TRAIL
@@ -350,8 +351,18 @@ class TileValidationSystem(System):
                     break
         return self.tilemap_comp
 
-    def update(self, events: list = None, dt: float = 0) -> None:
-        """Reconstrói o cache de tiles ocupados a cada frame."""
+    def update(self, events: list = None, dt: float = 0,
+              players_by_map: "dict | None" = None,
+              mobs_by_map: "dict | None" = None,
+              combatants_by_map: "dict | None" = None,
+              tile_movement_by_map: "dict | None" = None,
+              tick_count: int = 0) -> None:
+        """Reconstrói o cache de tiles ocupados a cada frame.
+
+        players_by_map/mobs_by_map/combatants_by_map/tick_count: aceitos
+        só por uniformidade de dispatch (mesmo grupo `proximity_systems`
+        de EnemyAISystem, Fase 4.7 12/08/2026) — este sistema só consome
+        `tile_movement_by_map`."""
         # Harvestable com colisão passável no catálogo do sprite (25/07/2026,
         # bug real relatado pelo usuário — ver Harvestable.solid) nunca
         # deveria travar o tile: pula do cache de ocupados, mesmo mantendo
@@ -360,25 +371,14 @@ class TileValidationSystem(System):
         # aqui, mesmo padrão dos outros imports pontuais deste módulo).
         from engine.components import Harvestable as _Hv_tv
         occupied = {}
-        if self._map_filter:
-            for entity_id, tm in self.world.get_entities_with(TileMovement):
-                ml = self.world.get_component(entity_id, MapLocation)
-                if ml is None or ml.map_file != self._map_filter:
-                    continue
-                _hv_tv = self.world.get_component(entity_id, _Hv_tv)
-                if _hv_tv is not None and not _hv_tv.solid:
-                    continue
-                occupied[(tm.current_tile_x, tm.current_tile_y)] = entity_id
-                if tm.is_moving:
-                    occupied[(tm.target_tile_x, tm.target_tile_y)] = entity_id
-        else:
-            for entity_id, tm in self.world.get_entities_with(TileMovement):
-                _hv_tv = self.world.get_component(entity_id, _Hv_tv)
-                if _hv_tv is not None and not _hv_tv.solid:
-                    continue
-                occupied[(tm.current_tile_x, tm.current_tile_y)] = entity_id
-                if tm.is_moving:
-                    occupied[(tm.target_tile_x, tm.target_tile_y)] = entity_id
+        for entity_id, tm in _tile_movement_on_map(self.world, tile_movement_by_map, self._map_filter):
+            _hv_tv = self.world.get_component(entity_id, _Hv_tv)
+            if _hv_tv is not None and not _hv_tv.solid:
+                continue
+            for _fx, _fy in entity_footprint_tiles(self.world, entity_id, tm):
+                occupied[(_fx, _fy)] = entity_id
+            if tm.is_moving:
+                occupied[(tm.target_tile_x, tm.target_tile_y)] = entity_id
         self._occupied = occupied
 
     def is_tile_walkable(self, moving_entity_id: int,
@@ -649,17 +649,22 @@ class CombatSystem(System):
         if target_stats.current_hp <= 0:
             return True, "hit"
 
-        # Imunidade (ex: Bloco de Gelo)
-        target_state = self.world.get_component(target_id, CombatState)
-        if target_state and target_state.is_immune:
-            return False, "immune"
-
         attacker_is_player = self.world.get_component(attacker_id, PlayerControlled) is not None
         target_is_player   = self.world.get_component(target_id,   PlayerControlled) is not None
 
         target_pos = self.world.get_component(target_id, Position)
         _tx = target_pos.x if target_pos else 0.0
         _ty = target_pos.y if target_pos else 0.0
+
+        # Imunidade (ex: Bloco de Gelo) — feedback "Imune" (mesma família de
+        # miss/dodge/parry/evade, AzerothCore usa SPELL_MISS_IMMUNE como
+        # resultado de 1ª classe — antes esse outcome já existia mas nunca
+        # disparava feedback nenhum, ficava mudo).
+        target_state = self.world.get_component(target_id, CombatState)
+        if target_state and target_state.is_immune:
+            self._emit_avoidance_feedback("immune", _tx, _ty, attacker_id, target_id,
+                                          attacker_is_player, target_is_player)
+            return False, "immune"
 
         # Modo evasão (estilo WoW): mob em RETURNING (voltando pro spawn após
         # estourar o leash) é imune a dano/aggro até chegar — diferente da
@@ -900,12 +905,13 @@ class CombatSystem(System):
                                   attacker_id: int, target_id: int,
                                   attacker_is_player: bool,
                                   target_is_player: bool) -> None:
-        """Texto flutuante, log e som para ataques evitados (miss/dodge/parry/evade)."""
+        """Texto flutuante, log e som para ataques evitados (miss/dodge/parry/evade/immune)."""
         _AVOID = {
-            'miss':  ("Errou!",   (220, 220, 100), "small"),
-            'dodge': ("Desviou!", (100, 210, 230), "small"),
-            'parry': ("Aparou!",  (100, 150, 230), "small"),
-            'evade': ("Evadiu!",  (150, 150, 150), "small"),
+            'miss':   ("Errou!",   (220, 220, 100), "small"),
+            'dodge':  ("Desviou!", (100, 210, 230), "small"),
+            'parry':  ("Aparou!",  (100, 150, 230), "small"),
+            'evade':  ("Evadiu!",  (150, 150, 150), "small"),
+            'immune': ("Imune",    (200, 200, 200), "small"),
         }
         _AVOID_LOG = {
             'miss':  ("Voce errou!",      "Inimigo errou!",      (200, 200, 100)),
@@ -913,14 +919,16 @@ class CombatSystem(System):
             'parry': ("Inimigo aparou!",  "Voce aparou!",        (100, 150, 230)),
             # Alvo em modo evasão só existe pro lado mob (RETURNING) — enemy_msg
             # nunca dispara aqui (target_is_player sempre False nesse caso).
-            'evade': ("Alvo evadiu!",     "",                    (150, 150, 150)),
+            'evade':  ("Alvo evadiu!",     "",                    (150, 150, 150)),
+            'immune': ("Alvo imune!",      "Voce esta imune!",    (200, 200, 200)),
         }
         _SND = {
             'miss':  ["combat_miss",  "combat_miss_1",  "combat_miss_2",  "combat_miss_3",  "combat_miss_4"],
             'parry': ["combat_parry", "combat_parry_1", "combat_parry_2", "combat_parry_3", "combat_parry_4"],
             'dodge': ["combat_dodge", "combat_dodge_1", "combat_dodge_2", "combat_dodge_3", "combat_dodge_4"],
-            # Reaproveita os sons de "miss" — evasão soa como um golpe que não conecta.
-            'evade': ["combat_miss",  "combat_miss_1",  "combat_miss_2",  "combat_miss_3",  "combat_miss_4"],
+            # Reaproveita os sons de "miss" — evasão/imunidade soam como um golpe que não conecta.
+            'evade':  ["combat_miss",  "combat_miss_1",  "combat_miss_2",  "combat_miss_3",  "combat_miss_4"],
+            'immune': ["combat_miss",  "combat_miss_1",  "combat_miss_2",  "combat_miss_3",  "combat_miss_4"],
         }
         flt_text, flt_color, flt_size = _AVOID[outcome]
         FLT.add(flt_text, tx, ty, flt_color, flt_size, target_id=target_id)
@@ -1090,16 +1098,25 @@ class DeathHandlerSystem(System):
                         _recovered = max(1, int(_dead_cs.arrows_received * _pct))
                         _equip_r   = self.world.get_component(pd.killer_entity_id, Equipment)
                         _quiver_r  = _equip_r.slots.get("offhand") if _equip_r else None
-                        _atype     = _quiver_r.subtype if _quiver_r and _quiver_r.subtype else "Flecha"
+                        _atype     = _quiver_r.subtype if _quiver_r and _quiver_r.subtype else "arrow"
                         if _atype and _recovered > 0:
-                            from engine.components import Item as _Item
-                            _ret = _Item(
-                                name=_atype, item_type="ammo", slot="",
-                                rarity="common", value=1,
-                                damage_min=getattr(_quiver_r, "damage_min", 0),
-                                damage_max=getattr(_quiver_r, "damage_max", 0),
-                                max_stack=1000,
-                            )
+                            import content.item_table as _ItemTableRecov
+                            _atype_factory = _ItemTableRecov.ITEMS.get(_atype)
+                            if _atype_factory:
+                                _ret = _atype_factory()
+                            else:
+                                # _atype não bate com nenhum item_id conhecido
+                                # (aljava de save antigo, pré-migração C2) —
+                                # fallback inerte, mesmo padrão de
+                                # server/world_server.py::_reconstruct_item.
+                                from engine.components import Item as _Item
+                                _ret = _Item(
+                                    name=_atype, item_type="ammo", slot="",
+                                    rarity="common", value=1,
+                                    damage_min=getattr(_quiver_r, "damage_min", 0),
+                                    damage_max=getattr(_quiver_r, "damage_max", 0),
+                                    max_stack=1000,
+                                )
                             _ret.stack = _recovered
                             loot.append(_ret)
                             LOG.add(f"Reciclagem! {_recovered} flechas no loot.", (180, 220, 120))
@@ -1368,7 +1385,8 @@ class ProjectileSystem(System):
 
 def _spawn_attack_projectile(world: World, attacker_eid: int, target_eid: int,
                              damage_type: str, dmg_multiplier: float = 1.0,
-                             speed: float = 380.0) -> None:
+                             speed: float = 380.0,
+                             origin_offset: tuple = (0.0, 0.0)) -> None:
     """Spawna um `Projectile` com o sabor visual da CLASSE do atacante
     (`PROJECTILE_BY_CLASS`, content/mob_definitions.py — "Mago" = bola
     de fogo laranja, "Arqueiro" = flecha marrom). Extraído de
@@ -1376,7 +1394,16 @@ def _spawn_attack_projectile(world: World, attacker_eid: int, target_eid: int,
     2º consumidor real da mesma lógica — duplicar pela 2ª vez deixou de
     valer a pena. Usado por qualquer atacante ranged sem player
     (torre/minion); auto-attack ranged de PLAYER continua no caminho
-    próprio dele (skill/spell system), não mexido aqui."""
+    próprio dele (skill/spell system), não mexido aqui.
+
+    `origin_offset` (12/08/2026, pedido do usuário — de qual parte do
+    sprite o projétil nasce): deslocamento em pixels somado à Position
+    do atacante SÓ pro ponto de nascimento visual — a MIRA (dir_x/dir_y)
+    continua calculada a partir da Position real, não do ponto
+    deslocado, pra não desviar o tiro. Default (0,0) = comportamento de
+    sempre (nasce do centro). Só `TowerSystem` passa um valor hoje
+    (`Tower.projectile_origin_offset`, por tipo em TOWER_TABLE);
+    `MinionSystem` nunca passa, fica (0,0)."""
     attacker_pos = world.get_component(attacker_eid, Position)
     target_pos   = world.get_component(target_eid, Position)
     if not attacker_pos or not target_pos:
@@ -1392,10 +1419,11 @@ def _spawn_attack_projectile(world: World, attacker_eid: int, target_eid: int,
     dist = math.sqrt(dx * dx + dy * dy)
     dir_x, dir_y = (dx / dist, dy / dist) if dist > 0 else (1.0, 0.0)
 
+    spawn_x = attacker_pos.x + origin_offset[0]
+    spawn_y = attacker_pos.y + origin_offset[1]
     proj_eid = world.create_entity()
     world.add_component(proj_eid, Position(
-        x=attacker_pos.x, y=attacker_pos.y,
-        prev_x=attacker_pos.x, prev_y=attacker_pos.y))
+        x=spawn_x, y=spawn_y, prev_x=spawn_x, prev_y=spawn_y))
     world.add_component(proj_eid, Projectile(
         attacker_id=attacker_eid, target_id=target_eid, damage_type=damage_type,
         speed=speed, color=proj_data["color"], is_arrow=proj_data["is_arrow"],
@@ -1509,6 +1537,123 @@ def _mobs_on_map(world: World, mobs_by_map: "dict | None", map_filter: str) -> l
     return result
 
 
+def _combatants_on_map(world: World, combatants_by_map: "dict | None", map_filter: str) -> list:
+    """Lista de `(eid, Position, TileMovement, CombatStats, is_npc)` de
+    combatentes (players+mobs+NPCs) no mapa `map_filter` — mesmo padrão
+    de `_players_on_map`/`_mobs_on_map` acima (Fase 4.7, 12/08/2026, ver
+    PROBLEMAS_ARQUITETURA.md §30/§31, achado do teste de carga com 100
+    players/8 mapas simultâneos): `EnemyAISystem.update()` reconstruía
+    `_all_combatants_cache`/`_npc_combatants_cache` do ZERO a cada
+    chamada — 1x por BUNDLE por tick — varrendo `get_entities_with(...)`
+    SEM filtro, ou seja, TODOS os combatentes do MUNDO INTEIRO (todos os
+    mapas juntos), só filtrando por mapa DEPOIS. Com 8 bundles ativos ao
+    mesmo tempo, o mesmo scan gigante (~247 combatentes no teste real)
+    repetia 8x por tick — confirmado como causa raiz de um pico de
+    152.7ms (tick#339, log real: `sys:EnemyAISystem=108ms` mas os
+    sub-marks internos só explicavam 0.1ms disso — o resto era esse scan
+    não instrumentado).
+
+    `combatants_by_map` (dict map_file→lista, construído 1x por tick em
+    `WorldServer._tick`, MESMO índice pra todo mundo) — 1 scan real por
+    tick, cada bundle consome sua fatia, nunca reimplementa. `is_npc`
+    pré-computado no índice (1 `get_component(NPC)` por combatente, feito
+    UMA vez no scan canônico) — evita `EnemyAISystem` ter que escanear
+    com/sem `NPC` como 2 queries separadas (era o caso antes).
+
+    Fallback pro scan direto se `combatants_by_map` for `None` (teste que
+    cria o sistema e chama `.update()` sem esse parâmetro) — nunca quebra
+    quem já usa este sistema sem injetar o índice. Não filtra HP aqui de
+    propósito — mesma responsabilidade de sempre do chamador."""
+    if combatants_by_map is not None:
+        if not map_filter:
+            _all: list = []
+            for _lst in combatants_by_map.values():
+                _all.extend(_lst)
+            return _all
+        return combatants_by_map.get(map_filter, [])
+    result = []
+    for eid, pos, tile_movement, _cbt, cs in world.get_entities_with(
+            Position, TileMovement, Combatant, CombatStats):
+        if map_filter:
+            ml = world.get_component(eid, MapLocation)
+            if not ml or ml.map_file != map_filter:
+                continue
+        is_npc = world.get_component(eid, NPC) is not None
+        result.append((eid, pos, tile_movement, cs, is_npc))
+    return result
+
+
+def _tile_movement_on_map(world: World, tile_movement_by_map: "dict | None", map_filter: str) -> list:
+    """Lista de `(eid, TileMovement)` no mapa `map_filter` — mesmo padrão
+    de `_players_on_map`/`_mobs_on_map`/`_combatants_on_map` acima (Fase
+    4.7, 12/08/2026, ver PROBLEMAS_ARQUITETURA.md §34/§35, itens #1/#2 do
+    ranking de consumo acumulado): `TileValidationSystem.update()` e
+    `EnemyAISystem._get_occupied_tiles()` faziam CADA UM seu próprio
+    `get_entities_with(TileMovement)` SEM filtro de mapa (o mundo TODO),
+    repetido 1x por bundle por tick — juntos, 33% do custo acumulado
+    medido num teste de carga de 3min com 100 players/8 mapas.
+
+    `tile_movement_by_map` (dict map_file→lista, construído 1x por tick
+    em `WorldServer._tick`) — 1 scan real por tick, cada consumidor pega
+    sua fatia. Fallback pro scan direto se `None` (cliente offline —
+    `TileValidationSystem` também roda lá, `game.py`, sem `map_filter` —
+    ou teste que chama `.update()`/`._get_occupied_tiles()` sem injetar
+    o índice) — nunca quebra quem usa este sistema sem o índice.
+
+    NÃO usar pra `MinionSystem` — precisa de frescor INTRA-tick (ver
+    `MinionSystem._get_occupied_tiles`, que consome este índice só como
+    semente de uma cópia mutável local, técnica de "reservation table" de
+    cooperative pathfinding — nunca a lista compartilhada direto, ela é
+    congelada no início do tick e minions processados depois no loop
+    precisam ver o movimento dos processados antes, no MESMO tick)."""
+    if tile_movement_by_map is not None:
+        if not map_filter:
+            _all: list = []
+            for _lst in tile_movement_by_map.values():
+                _all.extend(_lst)
+            return _all
+        return tile_movement_by_map.get(map_filter, [])
+    result = []
+    for eid, tm in world.get_entities_with(TileMovement):
+        if map_filter:
+            ml = world.get_component(eid, MapLocation)
+            if not ml or ml.map_file != map_filter:
+                continue
+        result.append((eid, tm))
+    return result
+
+
+def entity_footprint_tiles(world: World, entity_id: int, tm: TileMovement) -> list:
+    """`[(tm.current_tile_x, tm.current_tile_y)]` pra qualquer entidade
+    normal (1 tile, comportamento de sempre). Torre (12/08/2026, bug real
+    relatado pelo usuário — sprite novo de 2 tiles de largura, colisão
+    continuava batendo só com 1) é a ÚNICA exceção: ocupa o próprio tile
+    + offsets derivados do MESMO catálogo de sprite que `RenderSystem`
+    (`ui/systems.py`) já usa pra desenhar (`OBJECT_MAPPING[sprite_id].
+    collision_rect` via `get_collision_offsets` — nunca duplicar essa
+    matemática, a pegada de colisão fica sempre sincronizada com o
+    visual de graça).
+
+    Detecta "isso é uma torre?" via `EntityIdentity.mob_key in
+    TOWER_TABLE` — NUNCA `world.get_component(entity_id, Tower)`: o
+    espelho de torre reconstruído no CLIENTE (`client/
+    remote_entity_handlers.py::_spawn_remote_mob` → `create_enemy`)
+    nunca ganha o componente `Tower` (só existe no lado que chama
+    `create_tower()`, ou seja, o servidor) — só `EntityIdentity.mob_key`
+    e `Renderable.sprite_id`, que sobrevivem nos dois lados via
+    `_build_mob_spawn_payload`/`_build_combat_entity`. Checar `Tower`
+    diretamente faria isto nunca disparar no cliente, reintroduzindo o
+    "colisão bate no servidor mas não visualmente" — mesma classe de bug
+    do resto do jogo. Todo chamador (servidor E cliente) usa esta MESMA
+    função — ponto único de verdade pra "quais tiles esta entidade
+    ocupa"."""
+    ident = world.get_component(entity_id, EntityIdentity)
+    if ident is None or ident.mob_key not in TOWER_TABLE:
+        return [(tm.current_tile_x, tm.current_tile_y)]
+    ren = world.get_component(entity_id, Renderable)
+    obj_tile = OBJECT_MAPPING.get(ren.sprite_id) if ren and ren.sprite_id else None
+    offsets = get_collision_offsets(obj_tile) if obj_tile is not None else [(0, 0)]
+    return [(tm.current_tile_x + dx, tm.current_tile_y + dy) for dx, dy in offsets]
 
 
 class TowerSystem:
@@ -1704,7 +1849,8 @@ class TowerSystem:
         damage_type = "magical" if (cs.spell_power > 0 or cs.base_magical_damage > 0) else "physical"
 
         _spawn_attack_projectile(self.world, tower_eid, target, damage_type,
-                                 dmg_multiplier=dmg_mult)
+                                 dmg_multiplier=dmg_mult,
+                                 origin_offset=tower.projectile_origin_offset)
         tower.attack_cd = cs.get_attack_cooldown()
 
         # Debug (29/07/2026, pedido do usuário — ramp de dano "não
@@ -1874,6 +2020,13 @@ class MinionSystem:
         # próprio MAX_PATHFINDS_PER_FRAME, criado sob demanda em
         # _walk_toward (nunca precisa saber os mapas ativos de antemão).
         self._pathfind_budget: dict = {}
+        # Índice canônico (frio, snapshot do início do tick) + reserva
+        # mutável por mapa (Fase 4.7, 12/08/2026, ver `update()`/
+        # `_get_occupied_tiles` — técnica de "reservation table") —
+        # populados de verdade em `update()`, inicializados vazios aqui
+        # só pra nunca faltar o atributo se algo chamar antes.
+        self._tile_movement_by_map: "dict | None" = None
+        self._working_occupied_by_map: dict = {}
 
     def _map_of(self, eid: int) -> str:
         ml = self.world.get_component(eid, MapLocation)
@@ -1892,22 +2045,47 @@ class MinionSystem:
         passado como `dynamic_obstacles` pro pathfinder (pedido do
         usuário, 30/07/2026: minions ficavam travados uns nos outros,
         martelando repath contra um tile ocupado sem NUNCA desviar).
-        Mesmo padrão de `EnemyAISystem._get_occupied_tiles`, só que
-        parametrizado por `map_file` (Minion não tem um `_map_filter`
-        fixo por instância — é um sweep global, um `map_file` diferente
-        por chamada)."""
-        occupied: set = set()
-        for entity_id, tm_occ in self.world.get_entities_with(TileMovement):
-            if entity_id == except_entity_id:
-                continue
-            ml_occ = self.world.get_component(entity_id, MapLocation)
-            if ml_occ is None or ml_occ.map_file != map_file:
-                continue
-            if not tm_occ.is_moving:
-                occupied.add((tm_occ.current_tile_x, tm_occ.current_tile_y))
-            else:
-                occupied.add((tm_occ.target_tile_x, tm_occ.target_tile_y))
-        return occupied
+
+        Fase 4.7 (12/08/2026, ver PROBLEMAS_ARQUITETURA.md §34/§35, item
+        #3 do ranking — técnica de "reservation table" de cooperative
+        pathfinding, pesquisada e confirmada como padrão real da indústria
+        antes de aplicar): ANTES fazia `get_entities_with(TileMovement)`
+        sem filtro de mapa, DE NOVO a cada minion — pior caso dos 3
+        achados (até ~20 mil iterações/tick com muitos minions vivos).
+
+        Correção NÃO é igual à de `EnemyAISystem`/`TileValidationSystem`
+        (não usa o índice canônico congelado direto) — este método
+        precisa ver o movimento que minions ANTERIORES do MESMO loop de
+        `update()` já decidiram neste tick (senão volta o "martelando
+        repath", que foi o bug original que motivou este mecanismo em
+        30/07/2026). Por isso: semeia `self._working_occupied_by_map
+        [map_file]` (dict tile→eid) do índice canônico só na 1ª consulta
+        de cada mapa, e MANTÉM essa cópia mutável — `_walk_toward`/
+        `_advance_along_route` atualizam ela a cada `start_tile_movement`
+        desta classe, então o próximo minion do loop já vê a reserva."""
+        working = self._working_occupied_by_map.get(map_file)
+        if working is None:
+            working = {}
+            for entity_id, tm_occ in _tile_movement_on_map(
+                    self.world, self._tile_movement_by_map, map_file):
+                if not tm_occ.is_moving:
+                    for _fx, _fy in entity_footprint_tiles(self.world, entity_id, tm_occ):
+                        working[(_fx, _fy)] = entity_id
+                else:
+                    working[(tm_occ.target_tile_x, tm_occ.target_tile_y)] = entity_id
+            self._working_occupied_by_map[map_file] = working
+        return {tile for tile, eid in working.items() if eid != except_entity_id}
+
+    def _reserve_tile(self, map_file: str, entity_id: int, tx: int, ty: int) -> None:
+        """Atualiza a "reservation table" (ver `_get_occupied_tiles`)
+        assim que um minion decide se mover — chamado logo após CADA
+        `start_tile_movement` desta classe, nunca pulado, senão o
+        próximo minion do loop não veria essa reserva neste tick."""
+        working = self._working_occupied_by_map.get(map_file)
+        if working is None:
+            working = {}
+            self._working_occupied_by_map[map_file] = working
+        working[(tx, ty)] = entity_id
 
     def _in_range_los(self, minion_pos: Position, cand_pos: Position,
                       range_tiles: int, tilemap_comp) -> bool:
@@ -2090,6 +2268,7 @@ class MinionSystem:
             minion.current_path = []  # tenta de novo (respeitando o backoff) no próximo tick
             return
         start_tile_movement(pos, tm, nxt_x, nxt_y)
+        self._reserve_tile(map_file, minion_eid, nxt_x, nxt_y)
         minion.current_path.pop(0)
 
     def _advance_along_route(self, minion_eid: int, minion: Minion, pos: Position,
@@ -2118,6 +2297,7 @@ class MinionSystem:
         if (chebyshev(cur[0], cur[1], nxt_x, nxt_y) <= 1
                 and is_tile_walkable(minion_eid, nxt_x, nxt_y, cur[0], cur[1])):
             start_tile_movement(pos, tm, nxt_x, nxt_y)
+            self._reserve_tile(map_file, minion_eid, nxt_x, nxt_y)
             minion.route_idx += 1
             return
         lookahead_idx = min(minion.route_idx + self.ROUTE_LOOKAHEAD_TILES,
@@ -2182,8 +2362,27 @@ class MinionSystem:
 
     def update(self, dt: float, combat_this_tick: list = None,
               spatial_hash: "dict[str, SpatialHash] | None" = None,
-              tick_count: int = 0) -> None:
+              tick_count: int = 0,
+              tile_movement_by_map: "dict | None" = None) -> None:
         self._pathfind_budget = {}  # por map_file, criado sob demanda em _walk_toward
+        # `_tile_movement_by_map`/`_working_occupied_by_map` (Fase 4.7,
+        # 12/08/2026, ver PROBLEMAS_ARQUITETURA.md §34/§35, item #3 do
+        # ranking — "reservation table" de cooperative pathfinding):
+        # `_get_occupied_tiles` usava seu PRÓPRIO `get_entities_with(
+        # TileMovement)` sem filtro de mapa, 1x POR MINION (pior caso dos
+        # 3 achados — até ~20 mil iterações/tick com muitos minions).
+        # `_working_occupied_by_map` é semeado (lazy, na 1ª consulta de
+        # cada mapa) a partir do índice canônico, mas fica MUTÁVEL e é
+        # atualizado a cada `start_tile_movement` desta classe — preserva
+        # o frescor intra-tick que o mecanismo original tinha (minion
+        # processado depois no loop precisa ver o movimento decidido por
+        # um processado antes, no MESMO tick — sem isso, reintroduziria o
+        # "martelando repath contra tile ocupado" que motivou o mecanismo
+        # em 30/07/2026, ver §34.73.2 do histórico). NUNCA reusar
+        # `tile_movement_by_map` direto aqui — ele é uma foto congelada
+        # do início do tick, não serve pra isso.
+        self._tile_movement_by_map   = tile_movement_by_map
+        self._working_occupied_by_map: dict = {}
         if combat_this_tick:
             self._check_tower_aggro(combat_this_tick)
         for minion_eid, minion, minion_pos, cs, tm in list(self.world.get_entities_with(
@@ -2365,13 +2564,36 @@ class EnemyAISystem(System):
     _CHASE_RECALC_MIN_TICKS_BY_TIER = {"boss": 1, "elite": 1, "rare": 2, "normal": 4}
 
     def __init__(self, world: World, map_filter: str = "",
-                 pathfinding=None, tile_validation=None):
+                 pathfinding=None, tile_validation=None, perf_push=None, perf_pop=None):
         self.world = world
         self._map_filter = map_filter
         # Serviços injetados diretamente (P4): elimina dependência no global _svc.
         # None → fallback para as funções de módulo get_tilemap()/is_tile_walkable().
         self._pathfinding    = pathfinding
         self._tile_validation = tile_validation
+        # `perf_push`/`perf_pop` (Fase 4.5, 12/08/2026, atualizado Fase 4.7
+        # 12/08/2026 — ver PROBLEMAS_ARQUITETURA.md §28/§30) — callbacks
+        # opcionais injetados por `WorldServer._load_map_for`
+        # (`self._perf_push`/`self._perf_pop`, mesmo chokepoint único do
+        # resto do profiler de tick), pra medir separadamente o pré-filtro
+        # (`_active_mobs_this_tick`, 1 chamada/tick — barato) do resto do
+        # loop por-mob dentro de `update()`. Default (cliente offline/
+        # legado, ou construção sem servidor) = no-op — zero overhead
+        # extra, nunca precisa de `if` condicional no call site.
+        self._perf_push_fn = perf_push or (lambda label: None)
+        self._perf_pop_fn  = perf_pop  or (lambda: None)
+        # Cache do índice espacial de mobs IDLE (fase de escala, 12/08/2026,
+        # ver PROBLEMAS_ARQUITETURA.md §29 — 2ª camada, decisão do usuário:
+        # throttle simples em vez de índice incremental com ganchos no
+        # sistema de movimento). Reconstruir o SpatialHash/consultar por
+        # player é O(mobs) mesmo com 1 player só — o "piso" que sobrava
+        # depois da 1ª camada. Refazer só a cada `_PREFILTER_REFRESH_TICKS`
+        # ticks (não todo tick) corta esse piso ~70-80% sem precisar saber
+        # QUANDO um mob anda de verdade — mesmo atraso já aprovado (até
+        # ~100ms pra um mob "acordar", imperceptível em jogo).
+        self._prefilter_confirmed_cache: "set | None" = None
+        self._prefilter_last_refresh_tick: int = -1
+        self._PREFILTER_REFRESH_TICKS = 3  # 100ms a 30 ticks/s
         self.proximity_threshold_pixels = 5.0
         self.proximity_threshold_tiles = 1
         self.path_recalc_interval = 0.8
@@ -2425,18 +2647,15 @@ class EnemyAISystem(System):
                 y += sy
         return True
 
-    def _get_occupied_tiles(self, except_entity_id: int = None) -> set[tuple[int, int]]:
+    def _get_occupied_tiles(self, except_entity_id: int = None,
+                            tile_movement_by_map: "dict | None" = None) -> set[tuple[int, int]]:
         occupied_tiles = set()
-        _check_map = bool(self._map_filter)
-        for entity_id, tile_move_comp in self.world.get_entities_with(TileMovement):
+        for entity_id, tile_move_comp in _tile_movement_on_map(
+                self.world, tile_movement_by_map, self._map_filter):
             if entity_id == except_entity_id:
                 continue
-            if _check_map:
-                _ml_occ = self.world.get_component(entity_id, MapLocation)
-                if _ml_occ is None or _ml_occ.map_file != self._map_filter:
-                    continue
             if not tile_move_comp.is_moving:
-                occupied_tiles.add((tile_move_comp.current_tile_x, tile_move_comp.current_tile_y))
+                occupied_tiles.update(entity_footprint_tiles(self.world, entity_id, tile_move_comp))
             else:
                 occupied_tiles.add((tile_move_comp.target_tile_x, tile_move_comp.target_tile_y))
         return occupied_tiles
@@ -2673,10 +2892,24 @@ class EnemyAISystem(System):
         pega por `tests/test_faction.py::TestMultiTargetCombat` — mob e
         guarda adjacentes, sem player por perto, propositalmente).
 
-        Não usa `SpatialHash` (grid) de propósito: com poucos players (1-4
-        de costume) e poucos NPCs de combate por mapa, comparar cada mob
-        contra essas listas pequenas já é barato — o ganho vem de fazer
-        essa comparação ANTES do resto da lógica pesada, não durante.
+        Índice espacial pra elegibilidade por player (fase de escala,
+        12/08/2026, ver PROBLEMAS_ARQUITETURA.md — reverte a decisão de
+        05/08/2026 abaixo, medida só contra ~10 players/mapa, depois que
+        o usuário pediu pra desenhar pra escala real de lançamento
+        público): comparar cada mob IDLE contra CADA player era
+        O(mobs×players) — barato com poucos players, mas cresce sem
+        limite com o eixo que mais importa pra escala (medido: ~1ms com
+        1 player, ~5.5ms com 60, no mesmo mapa). Trocado por
+        `engine.utils.SpatialHash` (mesma classe já usada 2x no projeto —
+        `server/session.py::_mob_hash`, `server/world_server.py::
+        _combat_spatial_hash` — "nunca reimplementar, só reaproveitar"):
+        os mobs IDLE entram no índice (custo por mob não escala mais com
+        número de players), cada PLAYER faz 1 consulta (`nearby`, um
+        superconjunto por célula — ainda precisa confirmar a distância
+        exata depois, `nearby()` não filtra sozinho). Resultado idêntico
+        ao algoritmo linear antigo — só a ORDEM da varredura muda (por
+        player em vez de por mob), célula do tamanho do raio de sono
+        (`SLEEP_RADIUS_TILES`) minimiza falso-positivo de célula vizinha.
 
         Fase 2 (05/08/2026): mob IDLE ELEGÍVEL (no raio) ainda passa por
         um segundo crivo — throttle por tier (`_THROTTLE_INTERVAL_BY_TIER`)
@@ -2687,24 +2920,81 @@ class EnemyAISystem(System):
         if not self._players_this_map_cache:
             self._last_active_mob_count = len(all_mobs)
             return all_mobs
+
         result = []
+        idle_entries = []
         for entry in all_mobs:
-            eid, pos, ai_control = entry[0], entry[1], entry[2]
-            if ai_control.state != "IDLE":
+            if entry[2].state != "IDLE":
                 result.append(entry)
                 continue
-            tm = entry[5]
-            _min_cheb = None
+            idle_entries.append(entry)
+
+        # Throttle da DETERMINAÇÃO DE ELEGIBILIDADE inteira (2ª camada da
+        # fase de escala, 12/08/2026, ver PROBLEMAS_ARQUITETURA.md §29) —
+        # não só o índice espacial: achado real no playtest do usuário,
+        # medindo depois da 1ª versão deste throttle (só o hash) —
+        # `_any_candidate_in_range` (fallback de NPC/combatente) ainda
+        # rodava por FORA do cache, chamado pra CADA mob idle não
+        # confirmado via player, todo tick — continuava sendo o
+        # verdadeiro custo O(mobs) que sobrava. Agora o conjunto INTEIRO
+        # de elegíveis (via player OU via NPC) é calculado junto na
+        # mesma passada de refresh, e os ticks intermediários só
+        # consultam o `set` (nenhuma chamada de distância). Reusar um eid
+        # que já não está mais em `idle_entries` (mob morreu/mudou de
+        # estado) é inofensivo — o loop abaixo só itera `idle_entries` de
+        # verdade, o cache é só consultado por `in`. Mob recém-elegível
+        # (via player OU via NPC) pode esperar até
+        # `_PREFILTER_REFRESH_TICKS` ticks pra "acordar" (mesmo trade-off
+        # já aprovado do throttle por tier, só que pra elegibilidade
+        # inteira, não só a parte de player). `_delta < 0` (tick_count
+        # "voltou no tempo" em relação ao último refresh — nunca deveria
+        # acontecer em produção de verdade, `WorldServer._tick()` só
+        # incrementa; achado real em testes que chamam `run_ticks()`
+        # [avança o tick_count real] e DEPOIS chamam este método direto
+        # com um tick_count menor/fixo — cache ficava preso num estado
+        # velho) força refresh por segurança, nunca reusa um cache cuja
+        # idade não dá pra confiar.
+        _prefilter_delta = tick_count - self._prefilter_last_refresh_tick
+        if (self._prefilter_confirmed_cache is None or _prefilter_delta < 0 or
+                _prefilter_delta >= self._PREFILTER_REFRESH_TICKS):
+            _hash = SpatialHash(cell_size=max(1, self.SLEEP_RADIUS_TILES))
+            _idle_by_eid: dict[int, tuple] = {}
+            for entry in idle_entries:
+                eid, tm = entry[0], entry[5]
+                _hash.insert(eid, tm.current_tile_x, tm.current_tile_y)
+                _idle_by_eid[eid] = entry
+
+            # Confirma a distância exata (nearby() é só um superconjunto
+            # por célula) DENTRO do loop de cada player, nunca contra a
+            # lista de players inteira por candidato — é essa estrutura
+            # que evita reintroduzir o O(mobs×players) original. Um
+            # candidato já confirmado por um player pula o resto (nunca
+            # recalcula).
+            _confirmed_via_player: set = set()
             for _, _, _p_tm, _ in self._players_this_map_cache:
-                _d = max(abs(_p_tm.current_tile_x - tm.current_tile_x),
-                          abs(_p_tm.current_tile_y - tm.current_tile_y))
-                if _min_cheb is None or _d < _min_cheb:
-                    _min_cheb = _d
-                if _min_cheb == 0:
-                    break
-            _eligible = (_min_cheb is not None and _min_cheb <= self.SLEEP_RADIUS_TILES) \
-                        or self._any_candidate_in_range(eid, pos)
-            if not _eligible:
+                for eid in _hash.nearby(_p_tm.current_tile_x, _p_tm.current_tile_y,
+                                        self.SLEEP_RADIUS_TILES):
+                    if eid in _confirmed_via_player:
+                        continue
+                    tm = _idle_by_eid[eid][5]
+                    _d = max(abs(_p_tm.current_tile_x - tm.current_tile_x),
+                              abs(_p_tm.current_tile_y - tm.current_tile_y))
+                    if _d <= self.SLEEP_RADIUS_TILES:
+                        _confirmed_via_player.add(eid)
+
+            _eligible_set: set = set()
+            for entry in idle_entries:
+                eid, pos = entry[0], entry[1]
+                if eid in _confirmed_via_player or self._any_candidate_in_range(eid, pos):
+                    _eligible_set.add(eid)
+            self._prefilter_confirmed_cache = _eligible_set
+            self._prefilter_last_refresh_tick = tick_count
+        else:
+            _eligible_set = self._prefilter_confirmed_cache
+
+        for entry in idle_entries:
+            eid, pos, ai_control = entry[0], entry[1], entry[2]
+            if eid not in _eligible_set:
                 continue
             # Throttle por tier (Fase 2) — só chega aqui mob IDLE elegível.
             # `_ai_throttle_last_check == -1` (nunca checado) sempre passa:
@@ -2730,8 +3020,20 @@ class EnemyAISystem(System):
     def update(self, events: list = None, dt: float = 0,
               players_by_map: "dict | None" = None,
               mobs_by_map: "dict | None" = None,
+              combatants_by_map: "dict | None" = None,
+              tile_movement_by_map: "dict | None" = None,
               tick_count: int = 0) -> None:
         self._pathfind_budget = self.MAX_PATHFINDS_PER_FRAME
+
+        # Fase 4.7 ("instrumentar mais fundo", 12/08/2026, ver
+        # PROBLEMAS_ARQUITETURA.md §33) — pico real de 512.1ms (tick#476,
+        # teste de carga de 3min) mostrou `sys:EnemyAISystem=132.8ms` com
+        # `loop_mobs=0.4ms` — quase tudo fora dos 2 sub-marks que já
+        # existiam. Este preâmbulo (cache de combatentes + cache de
+        # players + o branch de "sem player, mob dorme") nunca teve mark
+        # próprio. NUNCA pula o pop: o branch `not any_player_exists`
+        # tem um `return` no meio — fecha o mark ANTES de retornar.
+        self._perf_push_fn("sys:EnemyAISystem:preamble")
 
         # Caches de "outros combatentes" pra _select_target (Sistema de
         # Facções, Fase 5) — computados UMA VEZ por tick aqui, não por mob
@@ -2742,22 +3044,19 @@ class EnemyAISystem(System):
         # só é de fato iterado quando QUEM PROCURA é um NPC (ver
         # _select_target), então seu tamanho maior não pesa no caso comum
         # (mob normal só varre `_npc_combatants_cache`).
-        def _same_map(eid: int) -> bool:
-            if not self._map_filter:
-                return True
-            _ml = self.world.get_component(eid, MapLocation)
-            return _ml is not None and _ml.map_file == self._map_filter
-
-        self._npc_combatants_cache = [
-            (eid, pos, tm, cs) for eid, pos, tm, _npc, _cbt, cs in self.world.get_entities_with(
-                Position, TileMovement, NPC, Combatant, CombatStats)
-            if _same_map(eid)
-        ]
-        self._all_combatants_cache = [
-            (eid, pos, tm, cs) for eid, pos, tm, _cbt, cs in self.world.get_entities_with(
-                Position, TileMovement, Combatant, CombatStats)
-            if _same_map(eid)
-        ]
+        #
+        # `combatants_by_map` (Fase 4.7, 12/08/2026, ver
+        # `_combatants_on_map`/`WorldServer._tick` — mesmo padrão de
+        # `players_by_map`/`mobs_by_map`): antes este bloco fazia SEU
+        # PRÓPRIO `get_entities_with(...Combatant...)` SEM filtro de mapa
+        # — o mundo TODO, repetido 1x por BUNDLE por tick. Achado real
+        # num teste de carga com 100 players/8 mapas simultâneos (pico de
+        # 152.7ms rastreado até aqui).
+        _all_combatants_raw = _combatants_on_map(self.world, combatants_by_map, self._map_filter)
+        self._all_combatants_cache = [(eid, pos, tm, cs)
+                                      for eid, pos, tm, cs, _is_npc in _all_combatants_raw]
+        self._npc_combatants_cache = [(eid, pos, tm, cs)
+                                      for eid, pos, tm, cs, _is_npc in _all_combatants_raw if _is_npc]
 
         # Players deste mapa — índice canônico (05/08/2026, ver
         # `_players_on_map`/`WorldServer._tick`), consumido aqui, no
@@ -2784,9 +3083,23 @@ class EnemyAISystem(System):
                 ai_control.blocked_by_entity_id = -1
                 if combat_stats.attack_cooldown_timer > 0:
                     combat_stats.attack_cooldown_timer -= dt
+            self._perf_pop_fn()
             return
+        self._perf_pop_fn()
 
-        all_occupied_tiles = self._get_occupied_tiles()
+        # Fase 4.7 ("instrumentar mais fundo", 12/08/2026, ver
+        # PROBLEMAS_ARQUITETURA.md §33) — achado ao investigar o pico de
+        # 512.1ms: `_get_occupied_tiles()` (linha ~2512) faz
+        # `get_entities_with(TileMovement)` SEM filtro de mapa — MESMO
+        # padrão de bug já corrigido no §31 pra combatentes, aqui pra
+        # QUALQUER entidade com TileMovement (players+mobs+minions+NPCs)
+        # do MUNDO INTEIRO, repetido 1x por bundle por tick — item #2 do
+        # ranking de consumo acumulado (§34), corrigido: agora deriva do
+        # índice canônico `tile_movement_by_map` (mesmo padrão de
+        # `combatants_by_map`) em vez de escanear de novo.
+        self._perf_push_fn("sys:EnemyAISystem:occupied_tiles")
+        all_occupied_tiles = self._get_occupied_tiles(tile_movement_by_map=tile_movement_by_map)
+        self._perf_pop_fn()
 
         # Mobs deste mapa que valem a pena processar este tick (05/08/2026,
         # observação do usuário: mesmo com o índice de mapa do §34.74.38, o
@@ -2794,8 +3107,22 @@ class EnemyAISystem(System):
         # descobrir, no sleep-check, que ele devia ser ignorado). Ver
         # docstring de `_active_mobs_this_tick` — mesmo raio/critério do
         # sleep-check de sempre, só aplicado ANTES do loop, não durante.
+        #
+        # Medição separada do pré-filtro (Fase 4.5, 12/08/2026, ver
+        # PROBLEMAS_ARQUITETURA.md §28) — hipótese levantada ao analisar um
+        # log real: `sys:EnemyAISystem` custava ~2ms/tick mesmo com só 1-5
+        # mobs "ativos" de uma população de ~190 no mapa, sugerindo que o
+        # custo vem de VARRER todo mundo pra decidir quem dorme, não da IA
+        # de quem já está engajado. `_active_mobs_this_tick` é 1 chamada
+        # por tick (não por mob) — medir só ela é barato, não multiplica
+        # por população de mob como mediria o resto do loop por-mob.
+        self._perf_push_fn("sys:EnemyAISystem:prefiltro")
+        _active_mobs_list = self._active_mobs_this_tick(mobs_by_map, tick_count)
+        self._perf_pop_fn()
+
+        self._perf_push_fn("sys:EnemyAISystem:loop_mobs")
         for enemy_id, enemy_pos, ai_control, initial_pos, detect_radius, tile_movement, enemy_combat_stats in \
-                self._active_mobs_this_tick(mobs_by_map, tick_count):
+                _active_mobs_list:
 
             # Inimigo morto? Pula!
             if enemy_combat_stats.current_hp <= 0:
@@ -3561,11 +3888,28 @@ class EnemyAISystem(System):
                         else:
                             # Já perto do spawn (desistiu do pathfind sem
                             # nunca ter passado por RETURNING) — mesmo reset
-                            # completo dos outros dois pontos de chegada, por
+                            # dos outros dois pontos de chegada, por
                             # consistência (ver ARQUITETURA_ONLINE.md).
+                            # HP NÃO cura mais instantaneamente aqui (12/08/2026,
+                            # bug real relatado pelo usuário — "ataquei, a
+                            # barra desceu e depois voltou"): este branch era
+                            # o único dos 3 pontos de chegada em IDLE que
+                            # ainda fazia `current_hp = max_hp` direto no
+                            # componente — a Decisão 20.1 (09/07/2026, ver
+                            # historico/ARQUITETURA ONLINE HISTORICO.md)
+                            # trocou isso por regen gradual (1%/3s) no branch
+                            # IRMÃO (RETURNING→IDLE) porque a cura instantânea
+                            # NUNCA passa por nenhum canal de broadcast —
+                            # muda o HP real no servidor em silêncio, e o
+                            # cliente só via o salto pra cima na próxima vez
+                            # que qualquer coisa (inclusive o próprio golpe
+                            # seguinte do jogador) atualizasse a barra. Este
+                            # branch ficou pra trás na mesma correção — agora
+                            # só entra em IDLE; regen gradual (WorldServer._tick,
+                            # bloco "Regen de mob fora de combate") cuida da
+                            # cura normalmente, já com sync correto pro cliente.
                             ai_control.state = "IDLE"
                             ai_control.aggroed_by_damage = False
-                            enemy_combat_stats.current_hp = enemy_combat_stats.max_hp
                             _sfx_reset_c = self.world.get_component(enemy_id, StatusEffects)
                             if _sfx_reset_c:
                                 _sfx_reset_c.effects.clear()
@@ -3642,6 +3986,8 @@ class EnemyAISystem(System):
             if not tile_movement.is_moving and ai_control.state == "IDLE":
                 enemy_pos.x = enemy_current_tile_x * TILE_SIZE + TILE_SIZE / 2
                 enemy_pos.y = enemy_current_tile_y * TILE_SIZE + TILE_SIZE / 2
+
+        self._perf_pop_fn()
 
     # ------------------------------------------------------------------
     # Helpers
@@ -3763,7 +4109,7 @@ class TauntSystem(System):
     server/combat_processor.py cuida do resto, sem código novo).
 
     MOBS não precisam deste sistema: `_skill_brado_provocativo`
-    (ui/skill_handlers.py) já escreve `AIControlled.state="CHASING"` +
+    (engine/skill_handlers.py) já escreve `AIControlled.state="CHASING"` +
     `target_eid=taunter` diretamente, e a RETENÇÃO de alvo já existente em
     `EnemyAISystem` (qualquer mob em estado de combate MANTÉM o alvo
     retido enquanto válido, ignorando reavaliação de `_select_target`) já
@@ -3915,10 +4261,34 @@ class TileMovementSystem(System):
                     #   muda ao SAIR do "t" para um tile de piso N.
                     # • tile com passthrough: elevation NÃO muda (jogador passa por baixo).
                     # • tile normal com elevation N: elevation ASSUME N.
+                    #
+                    # Fase 4.7 (12/08/2026, ver PROBLEMAS_ARQUITETURA.md §37)
+                    # — achado real: "pega o primeiro Tilemap que aparecer"
+                    # é a MESMA classe de bug já documentada no CLAUDE.md
+                    # ("NUNCA pegar o primeiro Tilemap do world") — este
+                    # sistema roda GLOBALMENTE (sem map_filter, 1 update()
+                    # só pra TODAS as entidades de TODOS os mapas), então
+                    # com 2+ mapas carregados a matriz de tile podia vir do
+                    # mapa ERRADO pra qualquer entidade que não estivesse no
+                    # mapa "sortudo" (o que calhasse de vir primeiro na
+                    # iteração — nem garantido estável entre ticks, já que
+                    # instâncias de arena/BG carregam/descarregam durante a
+                    # partida). Resolve via `_svc_resolver(entity_id)` —
+                    # mesmo mecanismo já usado por `is_tile_walkable`
+                    # (única fonte pra "bundle do mapa desta entidade",
+                    # nunca reimplementar). `_svc_resolver is None` (cliente
+                    # offline, mapa único) cai no fallback antigo — correto
+                    # lá, só existe 1 Tilemap mesmo.
                     _tm_comp = None
-                    for _, _tc in self.world.get_entities_with(Tilemap):
-                        _tm_comp = _tc
-                        break
+                    if _svc_resolver is not None:
+                        _tmv_bundle = _svc_resolver(entity_id)
+                        _tmv_tme = getattr(_tmv_bundle, "tilemap_entity", -1) if _tmv_bundle else -1
+                        if _tmv_tme is not None and _tmv_tme >= 0:
+                            _tm_comp = self.world.get_component(_tmv_tme, Tilemap)
+                    if _tm_comp is None:
+                        for _, _tc in self.world.get_entities_with(Tilemap):
+                            _tm_comp = _tc
+                            break
                     if _tm_comp:
                         _tx = tile_movement.current_tile_x
                         _ty = tile_movement.current_tile_y
@@ -4032,12 +4402,15 @@ class EnemyAbilitySystem(System):
     def update(self, events: list = None, dt: float = 0,
               players_by_map: "dict | None" = None,
               mobs_by_map: "dict | None" = None,
+              combatants_by_map: "dict | None" = None,
+              tile_movement_by_map: "dict | None" = None,
               tick_count: int = 0) -> None:
-        # mobs_by_map/tick_count: aceitos só por uniformidade de dispatch
-        # (mesmo grupo `proximity_systems` de EnemyAISystem, que injeta os
-        # mesmos parâmetros em todo mundo) — este sistema não itera mob por
-        # conta própria (usa cooldowns/slots já resolvidos por outros
-        # lugares), não precisa deles ainda.
+        # mobs_by_map/combatants_by_map/tile_movement_by_map/tick_count:
+        # aceitos só por uniformidade de dispatch (mesmo grupo
+        # `proximity_systems` de EnemyAISystem, que injeta os mesmos
+        # parâmetros em todo mundo) — este sistema não itera mob por
+        # conta própria (usa cooldowns/
+        # slots já resolvidos por outros lugares), não precisa deles ainda.
         # Mapa eid→tile de players vivos NO MESMO MAPA que os mobs deste
         # bundle — do índice canônico (05/08/2026, ver `_players_on_map`),
         # não escaneia mais sozinho.
@@ -4234,11 +4607,13 @@ class SpawnZoneSystem(System):
     def update(self, events=None, dt: float = 0,
               players_by_map: "dict | None" = None,
               mobs_by_map: "dict | None" = None,
+              combatants_by_map: "dict | None" = None,
+              tile_movement_by_map: "dict | None" = None,
               tick_count: int = 0) -> None:
-        # mobs_by_map/tick_count: aceitos só por uniformidade de dispatch
-        # (mesmo grupo `proximity_systems` de EnemyAISystem) — spawn de
-        # zona não itera mobs existentes por conta própria, não precisa
-        # deles ainda.
+        # mobs_by_map/combatants_by_map/tile_movement_by_map/tick_count: aceitos só por
+        # uniformidade de dispatch (mesmo grupo `proximity_systems` de
+        # EnemyAISystem) — spawn de zona não itera mobs existentes por
+        # conta própria, não precisa deles ainda.
         # Posição do player do mesmo mapa pra culling de zonas distantes —
         # do índice canônico (05/08/2026, ver `_players_on_map`), não
         # escaneia mais sozinho.
@@ -4264,12 +4639,12 @@ class SpawnZoneSystem(System):
                         _ml_occ = self.world.get_component(_occ_eid, MapLocation)
                         if _ml_occ is None or _ml_occ.map_file != self._map_filter:
                             continue
-                        occ.add((tm.current_tile_x, tm.current_tile_y))
+                        occ.update(entity_footprint_tiles(self.world, _occ_eid, tm))
                         if tm.is_moving:
                             occ.add((tm.target_tile_x, tm.target_tile_y))
                 else:
-                    for _, tm in self.world.get_entities_with(TileMovement):
-                        occ.add((tm.current_tile_x, tm.current_tile_y))
+                    for _occ_eid2, tm in self.world.get_entities_with(TileMovement):
+                        occ.update(entity_footprint_tiles(self.world, _occ_eid2, tm))
                         if tm.is_moving:
                             occ.add((tm.target_tile_x, tm.target_tile_y))
                 _occupied_cache[0] = occ

@@ -52,8 +52,19 @@ class OnlineModeHandlers:
         """
         if not self._net:
             return
+        # Debug do bug "HP de mob/torre volta sozinho" (12/08/2026, ver
+        # PROBLEMAS_ARQUITETURA.md §44) — RPG_DEBUG_HP_ROLLBACK=1.
+        from debug.hp_rollback_debug import HPR as _HPR_net, DBG_ENABLED as _HPR_ON
         for msg_type, payload, seq, ts in self._net.poll():
             self._handle_net_message(msg_type, payload)
+            if _HPR_ON:
+                _HPR_net.last_seq = seq
+        # Roda 1x por frame, depois de processar todas as mensagens da leva
+        # — detecta qualquer subida de HP em mob/torre remoto (nunca
+        # deveria acontecer por dano) e loga junto com o seq da última
+        # mensagem processada.
+        if _HPR_ON:
+            _HPR_net.check(self.world)
 
     def _process_bdf_pending(self) -> None:
         """Associa dano diferido de BdF ao projétil visual após o SpellCastSystem rodar.

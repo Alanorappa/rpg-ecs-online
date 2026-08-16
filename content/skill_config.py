@@ -194,6 +194,9 @@ SKILL_CATALOG: dict[str, dict] = {
         "proc_attr":         "fire_instant_ready",
         "proc_ignores_cost": True,
         "effect_durations":  {"exhaustion": 6.0},
+        "has_projectile":    True,  # gate de LOS em _use_skill_visual_only — não
+                                     # deduz mana/cooldown se o projétil bateria
+                                     # numa parede antes do alvo (10/08/2026)
     },
     "calamidade_flamejante": {
         "name":             "Calamidade Flamejante",

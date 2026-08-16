@@ -94,8 +94,9 @@ class MsgType(str, Enum):
     SOUND_EVENT        = "sound_event"     # S→C  evento sonoro posicional (aggro, etc.)
     PLAYER_STAT_SYNC   = "player_stat_sync"  # C→S  OBSOLETO — servidor ignora (handler é no-op). Mantido só por compat.
     PLAYER_HP_SYNC     = "player_hp_sync"    # C→S  OBSOLETO — servidor ignora (handler é no-op). Mantido só por compat.
-    EQUIP_SYNC         = "equip_sync"        # C→S  equipamento mudou {equipment: {slot: item_dict}}
-    EQUIP_REJECTED     = "equip_rejected"    # S→C  slot recusado (level/classe) {slot, item_name, reason}
+    EQUIP_ITEM         = "equip_item"        # C→S  {inv_index: int} — equipa o item na posição X do inventário
+    UNEQUIP_ITEM       = "unequip_item"      # C→S  {slot: str} — desequipa o slot X
+    EQUIP_REJECTED     = "equip_rejected"    # S→C  slot recusado (level/classe/offhand travado) {slot, item_name, reason}
 
     # ── Trade (player↔player) ──────────────────────────────────────
     TRADE_REQUEST      = "trade_request"      # C→S  {target_eid}
@@ -193,6 +194,10 @@ class MsgType(str, Enum):
     BUY_RESULT         = "buy_result"        # S→C  resultado da compra {success, reason, item, new_gold}
     SELL_REQUEST       = "sell_request"      # C→S  {item_name, item_value, stack_sold}
     SELL_RESULT        = "sell_result"       # S→C  {success, item_name, sell_price, new_gold} | {success:False, reason}
+    CRAFT_REQUEST      = "craft_request"     # C→S  {recipe_id} — débito A4 (11/08/2026)
+    CRAFT_RESULT       = "craft_result"      # S→C  {success, reason, item, new_gold}
+    RECYCLE_REQUEST    = "recycle_request"   # C→S  {inv_index} — débito A4 (11/08/2026)
+    RECYCLE_RESULT     = "recycle_result"    # S→C  {success, reason, materials, new_gold}
 
     # ── GM (menu de debug F12, 07/08/2026) ──────────────────────────
     # Só a conta com is_gm=True (server/grant_gm.py, sem UI/endpoint pra
@@ -310,10 +315,11 @@ C2S_REQUIRED: dict = {
     MsgType.CANCEL_CAST:        {"sid": str},
     MsgType.CAST_DIR_UPDATE:    {"sid": str, "dir_x": _NUM, "dir_y": _NUM},
     MsgType.PROJECTILE_HIT_CS:  {"spell_id": str, "target_id": _NUM},
-    MsgType.CONSUMABLE_USE:     {"item_name": str},
+    MsgType.CONSUMABLE_USE:     {"item_id": str},
     MsgType.GOLD_UPDATE:        {"gold": _NUM},
     MsgType.INV_SYNC:           {"inventory": list},
-    MsgType.EQUIP_SYNC:         {"equipment": dict},
+    MsgType.EQUIP_ITEM:         {"inv_index": _NUM},
+    MsgType.UNEQUIP_ITEM:       {"slot": str},
     # Shape real do cliente (client/save_sync_handlers.py::_send_talent_update):
     # tudo aninhado em "talents" — {"talents": {chosen_build, allocated,
     # available_points}}. O comentário antigo do MsgType ("{allocated, ...}")
@@ -323,6 +329,8 @@ C2S_REQUIRED: dict = {
     MsgType.HOTBAR_UPDATE:      {"skills": list},
     MsgType.BUY_REQUEST:        {"shop_id": str, "item_name": str},
     MsgType.SELL_REQUEST:       {"item_name": str},
+    MsgType.CRAFT_REQUEST:      {"recipe_id": str},
+    MsgType.RECYCLE_REQUEST:    {"inv_index": _NUM},
     MsgType.GM_LEVELUP:         {"levels": _NUM},
     MsgType.GM_ADD_GOLD:        {"amount": _NUM},
     MsgType.GM_ADD_ITEM:        {"item_name": str},
@@ -710,10 +718,13 @@ def validate_c2s(msg_type: "MsgType", payload) -> "str | None":
 # {
 #   "corpse_id": int *   id do corpse clicado
 #   "take":      str     "gold" | "item" | "all" (default "all")
-#   "item_name": str     nome do item — obrigatório se take=="item" (pega o
-#                        PRIMEIRO item da lista atual com esse nome; nunca
-#                        índice cru, que quebraria se outro membro do grupo
-#                        já tivesse tirado algo antes e deslocado a lista)
+#   "item_id":   str     item_id do item — obrigatório se take=="item" (pega o
+#                        PRIMEIRO item da lista atual com esse item_id; débito
+#                        A4, 11/08/2026 — antes era "item_name", nome de
+#                        exibição não distingue itens diferentes com nomes
+#                        iguais). Nunca índice cru, que quebraria se outro
+#                        membro do grupo já tivesse tirado algo antes e
+#                        deslocado a lista.
 # }
 # Servidor valida ownership/grupo (WorldServer.request_loot). Fora do
 # dono/grupo: silenciosamente ignora. `take` granular desde 17/07/2026 —
@@ -722,19 +733,34 @@ def validate_c2s(msg_type: "MsgType", payload) -> "str | None":
 # ── S→C: LOOT_RESULT ─────────────────────────────────────────────────────────
 # {
 #   "corpse_id": int *   id do corpse
-#   "items":     list *  itens obtidos [{name, icon_key, item_type, rarity, value, slot, stack}]
+#   "items":     list *  itens CONCEDIDOS [{item_id, name, icon_key, item_type,
+#                        rarity, value, slot, stack}] — débito A4 (11/08/2026):
+#                        request_loot() já bota isso direto no Inventory AO
+#                        VIVO do servidor antes de responder, então esta lista
+#                        é exatamente o que a bag ganhou, nunca um pedido "pra
+#                        o cliente aplicar por conta própria". Pode vir MENOR
+#                        do que o corpse tinha (ou vazia mesmo com o corpse
+#                        ainda tendo o item) se a mochila não tinha espaço —
+#                        o item não concedido continua no corpse, não é
+#                        perdido (decisão do usuário: sem espaço não é
+#                        comportamento de loot, corpo só expira pelo timer
+#                        normal).
 #   "coins":     int *   moedas obtidas (0 se o pedido era só "item")
+#   "reason":    str     presente SÓ quando items=[] E existia um candidato
+#                        real que não coube na mochila — "inventory_full".
+#                        Ausente = vazio por já ter sido saqueado por outro
+#                        membro do grupo (cliente mostra "Já foi saqueado").
 # }
-# Vazio (items=[], coins=0) = já não tinha mais nada pra pegar (outro
-# membro do grupo já levou). Corpo só recebe ENTITY_DESPAWN quando fica
-# REALMENTE vazio — sacar parcial mantém o resto visível/lootável.
+# Corpo só recebe ENTITY_DESPAWN quando fica REALMENTE vazio — sacar
+# parcial mantém o resto visível/lootável.
 # Enviado APENAS se o player for o dono e houver itens para pegar.
 
 # ── S→C: LOOT_UPDATE ─────────────────────────────────────────────────────────
 # {
-#   "corpse_id":         int *
-#   "coins_taken":       int *  > 0 se ALGUÉM (outro membro do grupo) sacou ouro
-#   "item_names_taken":  list * nomes dos itens que ALGUÉM sacou
+#   "corpse_id":       int *
+#   "coins_taken":     int *  > 0 se ALGUÉM (outro membro do grupo) sacou ouro
+#   "item_ids_taken":  list * item_ids dos itens que ALGUÉM sacou (débito A4,
+#                      11/08/2026 — antes era "item_names_taken")
 # }
 # Enviado a TODO o grupo do dono do corpse EXCETO quem fez o LOOT_REQUEST
 # (esse já sabe via LOOT_RESULT) sempre que um saque bem-sucedido
@@ -745,27 +771,89 @@ def validate_c2s(msg_type: "MsgType", payload) -> "str | None":
 # — NUNCA credita Wallet/Inventory aqui (quem recebe isso não pegou
 # nada, só está sendo avisado que sumiu).
 
-# ── C→S: EQUIP_SYNC ──────────────────────────────────────────────────────────
+# ── C→S: EQUIP_ITEM ───────────────────────────────────────────────────────────
 # {
-#   "equipment": dict *   {slot: item_dict}  — snapshot completo do Equipment
-#                         local (slots ausentes = desequipados)
+#   "inv_index": int *   posição do item no Inventory local do cliente
 # }
-# Servidor reconstrói cada item via catálogo (loot/loja/forja, por nome) e
-# valida por slot: armor_class contra stats_system.CLASS_ARMOR_ALLOWED[classe]
-# e level_requirement contra CharacterStats.level. Slot que falha NÃO é
-# aplicado (mantém o que já estava equipado) — servidor responde
-# EQUIP_REJECTED pra esse slot; slots válidos são aplicados normalmente
-# (sem confirmação — EQUIP_SYNC nunca falha silenciosamente sem aviso, mas
-# sucesso também não gera reply, só o AOI_UPDATE natural refletindo o estado).
+# Débito A4 (10-11/08/2026, ver PROBLEMAS_ARQUITETURA.md) — substitui o antigo
+# EQUIP_SYNC de estado completo. O cliente NUNCA manda o item em si, só a
+# POSIÇÃO — o servidor lê o item de verdade no SEU PRÓPRIO Inventory ao vivo
+# (nunca confia em item_dict do cliente), valida armor_class contra
+# stats_system.CLASS_ARMOR_ALLOWED[classe]/is_weapon_allowed_for_class e
+# level_requirement contra CharacterStats.level, e só então move o item da
+# mochila pro slot de equipamento correspondente (item.slot) — trocando com o
+# que já estava equipado (volta pro FIM do Inventory, mesma UX já usada em
+# client/inventory_handlers.py::_equip_item) e desequipando offhand primeiro
+# se for arma de duas mãos. inv_index inválido/vazio ou slot bloqueado
+# (offhand com arma de duas mãos equipada) = ignorado sem aviso (mesmo
+# comportamento client-side de hoje, que nem chega a mandar a mensagem nesses
+# casos). Falha de classe/level → EQUIP_REJECTED; sucesso não gera reply, só o
+# AOI_UPDATE natural refletindo o novo estado.
+
+# ── C→S: UNEQUIP_ITEM ─────────────────────────────────────────────────────────
+# {
+#   "slot": str *   slot de equipamento a desequipar (ex: "chest")
+# }
+# Move o item do slot de volta pro FIM do Inventory ao vivo do servidor. Sem
+# efeito se o slot já está vazio ou a mochila está cheia (mesmo guard do
+# cliente, sem aviso — comportamento idêntico ao de hoje).
 
 # ── S→C: EQUIP_REJECTED ──────────────────────────────────────────────────────
 # {
 #   "slot":      str *   slot recusado (ex: "chest")
 #   "item_name": str *   nome do item que não pôde ser equipado
-#   "reason":    str *   "class" (armor_class incompatível) | "level" (level_requirement)
+#   "reason":    str *   "class" (armor_class/arma incompatível) | "level"
+#                        (level_requirement) | "offhand_locked" (mão dupla já
+#                        equipada — defesa em profundidade contra EQUIP_ITEM
+#                        forjado; cliente legítimo já bloqueia isso antes de
+#                        mandar a mensagem)
 # }
-# Enviado APENAS ao dono, um por slot recusado. Cliente reverte o slot local
-# pro estado anterior e mostra aviso via combat_log.
+# Enviado APENAS ao dono, em resposta a um EQUIP_ITEM recusado. Cliente
+# reverte o slot local pro estado anterior e mostra aviso via combat_log.
+
+# ── C→S: CRAFT_REQUEST ────────────────────────────────────────────────────────
+# {
+#   "recipe_id": str *   chave de content/crafting_data.py::RECIPES
+# }
+# Débito A4 (11/08/2026, ver PROBLEMAS_ARQUITETURA.md) — cliente NUNCA manda
+# materiais/custo/resultado, só qual receita. Servidor lê `RECIPES[recipe_id]`
+# do próprio catálogo (nunca confia em nada vindo do cliente sobre a receita),
+# confere ouro (`RARITY_FORGE_COST[result_rarity]`) e materiais no Inventory AO
+# VIVO, desconta os dois e adiciona o resultado direto na mochila (1 clique,
+# sem "loot manual" do resultado — simplificação deliberada, mesmo padrão de
+# BUY_REQUEST/BUY_RESULT).
+
+# ── S→C: CRAFT_RESULT ─────────────────────────────────────────────────────────
+# {
+#   "success":  bool *
+#   "reason":   str    "invalid_recipe" | "insufficient_gold" | "insufficient_materials"
+#                       | "inventory_full" (só quando success=False)
+#   "item":     dict   item craftado, serializado (só quando success=True)
+#   "new_gold": int    saldo real pós-transação
+# }
+
+# ── C→S: RECYCLE_REQUEST ──────────────────────────────────────────────────────
+# {
+#   "inv_index": int *   posição do item a reciclar no Inventory local do
+#                        cliente — mesmo padrão de EQUIP_ITEM, nunca o item em
+#                        si; servidor lê o item real da posição no SEU
+#                        Inventory ao vivo.
+# }
+# Servidor confere tipo reciclável (weapon/armor/shield/jewelry), calcula custo
+# (`RARITY_RECYCLE_COST[item.rarity]`) e materiais retornados
+# (`get_recycle_materials(item)`, mesmo catálogo `RECYCLE_TABLE`) a partir do
+# item REAL na posição indicada — remove o item, desconta ouro, credita os
+# materiais na mochila.
+
+# ── S→C: RECYCLE_RESULT ───────────────────────────────────────────────────────
+# {
+#   "success":   bool *
+#   "reason":    str    "invalid_item" | "not_recyclable" | "insufficient_gold"
+#                        (só quando success=False)
+#   "materials": list   [{"item_id", "name", "stack", ...}, ...] (só quando
+#                       success=True)
+#   "new_gold":  int    saldo real pós-transação
+# }
 
 # ── C→S: TRADE_REQUEST ───────────────────────────────────────────────────────
 # {
@@ -803,12 +891,18 @@ def validate_c2s(msg_type: "MsgType", payload) -> "str | None":
 # ── C→S: TRADE_OFFER_ITEM ────────────────────────────────────────────────────
 # {
 #   "inv_index": int *   índice do item na Inventory do próprio player
+#   "quantity":  int     opcional (11/08/2026) — quantidade a fatiar de um
+#                        item empilhável. Ausente/>= stack atual = oferece
+#                        o item INTEIRO (comportamento original). Item não
+#                        empilhável ou sem item_id de catálogo (save
+#                        legado) sempre oferece inteiro, ignora quantity.
 # }
-# Servidor remove o item da Inventory real e adiciona no lado do ofertante
-# na TradeSession (máx 5 slots), reseta confirmed dos dois lados, responde
-# TRADE_STATE pros dois. Índice inválido/sessão inativa/já 5 itens: ignorado
-# silenciosamente (não há reason dedicado — não deveria ocorrer com client
-# correto).
+# Servidor remove o item da Inventory real (ou só decrementa `quantity` dele,
+# mantendo o resto na bag, e adiciona uma CÓPIA fatiada) e adiciona no lado do
+# ofertante na TradeSession (máx 5 slots), reseta confirmed dos dois lados,
+# responde TRADE_STATE pros dois. Índice inválido/sessão inativa/já 5 itens:
+# ignorado silenciosamente (não há reason dedicado — não deveria ocorrer com
+# client correto).
 
 # ── C→S: TRADE_WITHDRAW_ITEM ─────────────────────────────────────────────────
 # {

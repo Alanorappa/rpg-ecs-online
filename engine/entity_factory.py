@@ -1,5 +1,6 @@
 # entity_factory.py
 from __future__ import annotations
+import dataclasses
 from engine.world import World
 from engine.components import Position, Renderable, PlayerControlled, Camera, Collider, \
                        Enemy, AIControlled, InitialPosition, DetectionRadius, Tilemap, \
@@ -14,11 +15,13 @@ from ui.ui_components import (
     UIState, ShopUIState, LootUIState, DragState, TradeUIState,
     InstanceInventoryUIState,
 )
-from engine.tileset import TILE_MAPPING, OBJECT_MAPPING, TILE_SIZE, FLOOR_TILE, get_collision_offsets
+from engine.tileset import (TILE_MAPPING, OBJECT_MAPPING, TILE_SIZE, FLOOR_TILE,
+                            get_collision_offsets, get_vision_offsets)
 from content.mob_definitions import MOB_TABLE, ENEMY_TIER_CONFIGS
 from content.enemy_abilities_data import ABILITY_DEFS
 from content.tower_definitions import TOWER_TABLE
 from content.minion_definitions import MINION_TABLE
+from content.jungle_definitions import JUNGLE_MOB_TABLE, JUNGLE_BOSS_TABLE
 
 # --- Configurações para as entidades ---
 PLAYER_COLOR = (255, 0, 0)
@@ -74,21 +77,42 @@ def create_tilemap(world: World, terrain_matrix: list, object_matrix: list,
             obj_tile = OBJECT_MAPPING.get(obj_char)
             if obj_tile is None:
                 continue
-            # Objetos puramente decorativos (sem colisão, sem elevação, sem transição)
-            # não alteram tile_matrix para preservar a colisão do terreno subjacente.
-            # Objetos com elevation ou is_transition PRECISAM ser escritos em
-            # tile_matrix para que TileValidationSystem os enxergue.
+            # Objetos puramente decorativos (sem colisão, sem elevação, sem
+            # transição, sem bloqueio de visão) não alteram tile_matrix pra
+            # preservar a colisão do terreno subjacente. Objetos com
+            # elevation ou is_transition PRECISAM ser escritos em
+            # tile_matrix para que TileValidationSystem os enxergue —
+            # `vision_height>=2` entrou no mesmo grupo (13/08/2026, pedido
+            # do usuário): bush/árvore não-sólidas ainda assim precisam
+            # aparecer na malha pro FogSystem (`ui/systems.py::is_blocking`)
+            # enxergar o bloqueio de visão, mesmo continuando andáveis.
             purely_decorative = (
                 not obj_tile.is_solid
                 and obj_tile.elevation == 0
                 and not obj_tile.is_transition
+                and obj_tile.vision_height < 2
             )
             if purely_decorative:
                 continue
-            for dx, dy in get_collision_offsets(obj_tile):
+            _collision_offsets = set(get_collision_offsets(obj_tile))
+            for dx, dy in _collision_offsets:
                 nr, nc = r + dy, c + dx
                 if 0 <= nr < map_h and 0 <= nc < len(tile_data[nr]):
                     tile_data[nr][nc] = obj_tile
+            # Pegada de VISÃO (13/08/2026) — pode ser MAIOR que a de colisão
+            # (ex: árvore com tronco estreito sólido, mas copa inteira
+            # bloqueando visão). Só sobrepõe vision_height nas células que a
+            # pegada de colisão acima NÃO já cobriu (evita reescrever com o
+            # obj_tile inteiro — preserva is_solid/elevation do que já
+            # estava lá, seja terreno ou outro objeto).
+            if obj_tile.vision_height >= 2:
+                for dx, dy in get_vision_offsets(obj_tile):
+                    if (dx, dy) in _collision_offsets:
+                        continue
+                    nr, nc = r + dy, c + dx
+                    if 0 <= nr < map_h and 0 <= nc < len(tile_data[nr]):
+                        tile_data[nr][nc] = dataclasses.replace(
+                            tile_data[nr][nc], vision_height=obj_tile.vision_height)
 
     if terrain_visual is None:
         terrain_visual = [[""] * map_width_tiles for _ in range(map_h)]
@@ -263,7 +287,8 @@ def _build_combat_entity(world: World, tile_x: int, tile_y: int,
     # espelho remoto de QUALQUER "enemy"-kind por aqui, então precisa do
     # mesmo fallback em cadeia que já existe pra torre, senão minion cai
     # no genérico (mesma classe de bug: som/visual errado, §34.70.1).
-    mob_def = MOB_TABLE.get(race) or TOWER_TABLE.get(race) or MINION_TABLE.get(race)
+    mob_def = (MOB_TABLE.get(race) or TOWER_TABLE.get(race) or MINION_TABLE.get(race)
+              or JUNGLE_MOB_TABLE.get(race) or JUNGLE_BOSS_TABLE.get(race))
     attrs   = mob_def.get("attributes") if mob_def else None
     if mob_def:
         base_color = mob_def["color"]
@@ -658,7 +683,8 @@ def create_tower(world: World, tile_x: int, tile_y: int, tower_key: str,
 
     eid = world.create_entity()
     world.add_component(eid, Position(x=x, y=y, prev_x=x, prev_y=y))
-    world.add_component(eid, Renderable(color=tdef.get("color", (120, 120, 130)), width=size, height=size))
+    world.add_component(eid, Renderable(color=tdef.get("color", (120, 120, 130)), width=size, height=size,
+                                        sprite_id=tdef.get("sprite_id", "")))
     world.add_component(eid, Collider(width=size, height=size))
     world.add_component(eid, Combatant())
     world.add_component(eid, Faction(faction_id=faction_id))
@@ -728,6 +754,7 @@ def create_tower(world: World, tile_x: int, tile_y: int, tower_key: str,
         spawn_tile_x=tile_x, spawn_tile_y=tile_y,
         vision_radius_tiles=tdef.get("vision_radius_tiles", ALLY_VISION_RADIUS_TOWER),
         is_nexus=is_nexus,
+        projectile_origin_offset=tdef.get("projectile_origin_offset", (0.0, 0.0)),
     ))
     return eid
 

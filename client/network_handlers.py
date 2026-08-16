@@ -68,6 +68,10 @@ class NetworkHandlers:
             self._handle_msg_buy_result(payload)
         elif msg_type == MsgType.SELL_RESULT:
             self._handle_msg_sell_result(payload)
+        elif msg_type == MsgType.CRAFT_RESULT:
+            self._handle_msg_craft_result(payload)
+        elif msg_type == MsgType.RECYCLE_RESULT:
+            self._handle_msg_recycle_result(payload)
         elif msg_type == MsgType.PONG:
             self._handle_msg_pong(payload)
         elif msg_type == MsgType.ZONE_CHANGE:
@@ -547,7 +551,7 @@ class NetworkHandlers:
                         _quest_fire_pdmg("use_skill", skill_id=sid, on_dummy=_on_dummy_pdmg)
 
         # Archer is_proj_damage: dano confirmado após PROJECTILE_HIT_CS → mostra FLT imediato.
-        # O projétil já colidiu — não há entidade de flecha para consumir pending_arrow_impacts.
+        # O projétil já colidiu — não há flecha viva pra prender um deferred_result nela.
         _ARCHER_PROJ_SKILLS = {"flecha_reiterada", "picada_escorpiao", "tiro_repulsivo"}
         if (caster_eid == self._my_eid
                 and sid in _ARCHER_PROJ_SKILLS
@@ -1440,10 +1444,23 @@ class NetworkHandlers:
             # Sem esperar isso, um consumível bloqueado no servidor (drift de
             # HP/mana entre cliente e servidor) perdia o item em silêncio, sem
             # curar de verdade e sem nenhum aviso — ver PROBLEMAS_ARQUITETURA.md.
-            _cons_item = payload.get("item_name")
+            _cons_item = payload.get("item_id")
             if _cons_item:
                 if payload.get("consumable_ok"):
                     self._consumable_system._finalize_consumable(self.player_entity, _cons_item)
+                    # Pergaminho de receita (débito A4, 11/08/2026 — bug
+                    # real: scroll era consumido mas a receita nunca era
+                    # aprendida online, ver PROBLEMAS_ARQUITETURA.md).
+                    # Servidor já validou e aprendeu na LearnedRecipes DELE
+                    # — aqui só espelha localmente, pra UI de crafting
+                    # refletir sem precisar relogar.
+                    _learned = payload.get("learned_recipe")
+                    if _learned:
+                        from engine.components import LearnedRecipes as _LRRec
+                        from engine.stat_fns import learn_recipe as _learn_recipe_fn
+                        _lr_rec = self.world.get_component(self.player_entity, _LRRec)
+                        if _lr_rec is not None:
+                            _learn_recipe_fn(_lr_rec, _learned)
                 elif payload.get("consumable_rejected"):
                     from ui.floating_text import WARN as _WARN_cons
                     _cons_msgs = {
@@ -1453,8 +1470,8 @@ class NetworkHandlers:
                     }
                     _WARN_cons.add(_cons_msgs.get(payload.get("reason", ""),
                                                   "Não foi possível usar o item"))
-                if self._consumable_system.pending_item_name == _cons_item:
-                    self._consumable_system.pending_item_name = ""
+                if self._consumable_system.pending_item_id == _cons_item:
+                    self._consumable_system.pending_item_id = ""
 
             # Confirmação de Recarregar — o servidor já reabasteceu a aljava
             # de verdade; aqui só espelhamos o resultado real na bag/aljava
@@ -1479,6 +1496,7 @@ class NetworkHandlers:
                     _subtype_rec = payload.get("quiver_subtype")
                     if _subtype_rec:
                         _quiver_rec.subtype = _subtype_rec
+                _ammo_id_rec    = payload.get("ammo_id", "")
                 _ammo_name_rec  = payload.get("ammo_name", "")
                 _ammo_taken_rec = payload.get("ammo_taken", 0)
                 if _ammo_name_rec and _ammo_taken_rec > 0:
@@ -1487,7 +1505,7 @@ class NetworkHandlers:
                     if _inv_rec:
                         _ammo_item_rec = next(
                             (it for it in _inv_rec.items
-                             if it is not None and it.name == _ammo_name_rec), None)
+                             if it is not None and it.item_id == _ammo_id_rec), None)
                         if _ammo_item_rec is not None:
                             # ABSOLUTO (ammo_new_stack), não "-= ammo_taken" —
                             # idempotente, mesmo padrão de quiver_arrow_count
@@ -1528,6 +1546,22 @@ class NetworkHandlers:
                 _wallet_gold = self.world.get_component(self.player_entity, _WalletGold)
                 if _wallet_gold:
                     _wallet_gold.gold = payload["gold"]
+            # "instance_gold_gained" (13/08/2026, pedido do usuário — loot
+            # automático dentro da instância não tinha NENHUM feedback
+            # visual de gold subindo). Só emitido por server/
+            # instance_progression.py::grant_instance_gold — nunca colide
+            # com o "gold" absoluto acima (que continua sendo a fonte de
+            # verdade do total). Cor dourada padrão já usada em todo o
+            # resto do jogo pra ouro (ui/systems.py, ui/quest_system.py).
+            _inst_gold_gain = payload.get("instance_gold_gained", 0)
+            if _inst_gold_gain > 0:
+                from engine.components import Position as _PosGold
+                from ui.floating_text import FLT as _FLT_igold
+                _pos_igold = self.world.get_component(self.player_entity, _PosGold)
+                if _pos_igold:
+                    _FLT_igold.add(f"+{_inst_gold_gain}g", _pos_igold.x, _pos_igold.y - 20,
+                                   (255, 215, 0), size="small",
+                                   target_id=self.player_entity)
 
             cs = self.world.get_component(self.player_entity, CombatStats)
             if cs and "hp" in payload:
@@ -1634,6 +1668,41 @@ class NetworkHandlers:
                 _char_lvl = self.world.get_component(self.player_entity, _CSLvl)
                 if _char_lvl:
                     _char_lvl.level = int(_srv_level)
+            # "current_xp"/"xp_to_next_level" (13/08/2026, bug real relatado
+            # pelo usuário: "a barra de xp está mostrando a xp de fora da
+            # instância"). Mesmo espírito do "level" acima — OVERRIDE direto
+            # e autoritativo, nunca somado (diferente do "xp_gained" lá em
+            # cima, que é incremental e reusa a curva/cap do MUNDO REAL via
+            # process_levelups — errado pra dentro da instância). Só emitido
+            # por server/instance_progression.py (entrar/sair/ganhar XP/
+            # subir de nível DENTRO da instância).
+            if "current_xp" in payload:
+                from engine.components import CharacterStats as _CSXp, Position as _PosXp
+                _char_xp = self.world.get_component(self.player_entity, _CSXp)
+                if _char_xp:
+                    _char_xp.current_xp = int(payload["current_xp"])
+                    if "xp_to_next_level" in payload:
+                        _char_xp.xp_to_next_level = int(payload["xp_to_next_level"])
+                # "instance_xp_gained" — só pra mostrar o texto flutuante
+                # "+N XP" (mesmo visual do XP normal); NUNCA usado pra somar
+                # em current_xp (o valor final já veio explícito acima).
+                _inst_xp_gain = payload.get("instance_xp_gained", 0)
+                if _inst_xp_gain > 0:
+                    from ui.floating_text import FLT as _FLT_ixp
+                    _pos_ixp = self.world.get_component(self.player_entity, _PosXp)
+                    if _pos_ixp:
+                        _FLT_ixp.add(f"+{_inst_xp_gain} XP", _pos_ixp.x, _pos_ixp.y - 20,
+                                    (100, 255, 100), size="small",
+                                    target_id=self.player_entity)
+                # "instance_leveled_up" — mesmo som de level-up do mundo
+                # real (engine/stats_system.py::process_levelups), tocado
+                # aqui em vez de lá porque a instância nunca passa por
+                # process_levelups (curva/cap errados pra ela).
+                if payload.get("instance_leveled_up"):
+                    from ui.combat_log import LOG as _LOG_ilvl
+                    SOUNDS.play_ui("levelup")
+                    _LOG_ilvl.add(f"Level up! Nível {payload.get('level', '?')} (instância).",
+                                 (255, 200, 0))
             # Atributos brutos (02/08/2026, bug real relatado pelo usuário:
             # "comprei um item e o HP ficou 140/380" — 380 era o max_hp
             # REAL, fora da instância). Só emitido por
@@ -2072,12 +2141,39 @@ class NetworkHandlers:
         if rnd:
             rnd.color = tuple(int(c * 0.35) + 20 for c in rnd.color[:3])
 
+    def _resolve_loot_item(self, item_data: dict):
+        """Reconstrói 1 item de loot recebido do servidor — prefere
+        `item_id` (débito C2, 10/08/2026, identidade estável), cai pro
+        nome de exibição só quando ausente. Fase 4.7 (12/08/2026, ver
+        PROBLEMAS_ARQUITETURA.md §39, achado investigando bug real do
+        talento Reciclagem): antes, `_handle_msg_loot_available`
+        reconstruía SÓ por nome (mecanismo legado, nunca migrado junto
+        do resto do projeto) — qualquer item construído no servidor sem
+        `item_id` (ex: flecha recuperada pela Reciclagem,
+        `server_death_handler.py`) ficava com nome coincidindo ou não
+        com o catálogo: quando não coincidia, sumia da lista de loot
+        silenciosamente; quando coincidia, reconstruía com um item_id
+        DIFERENTE do que o servidor tinha guardado no corpse — clicar
+        pra saquear nunca encontrava o id certo, "Já foi saqueado"
+        mesmo com o item intocado. Mesmo padrão que
+        `WorldServer._reconstruct_item` já usava do lado servidor,
+        agora também aqui (`content.item_table.resolve_item_by_id`/
+        `resolve_item_by_name`, ponto único de verdade pros 2 lados)."""
+        from content.item_table import resolve_item_by_id, resolve_item_by_name
+        item_id   = item_data.get("item_id", "")
+        item_name = item_data.get("name", "")
+        candidate = resolve_item_by_id(item_id) if item_id else None
+        if candidate is None:
+            candidate = resolve_item_by_name(item_name)
+        if candidate is not None:
+            candidate.stack = item_data.get("stack", 1)
+        return candidate
+
     def _handle_msg_loot_available(self, payload: dict) -> None:
         # Servidor concedeu loot ao player local.
         # Cria entidade Corpse no ECS local para o LootSystem offline
         # funcionar IDENTICAMENTE ao offline (modal, equip, coins, scroll).
         from engine.entity_factory import create_corpse
-        from content.loot_tables import _T
         from engine.tileset import TILE_SIZE as _TS
         corpse_id = payload.get("corpse_id", -1)
         coins     = payload.get("coins", 0)
@@ -2096,29 +2192,10 @@ class NetworkHandlers:
             _corpse_comp = self.world.get_component(_existing_loot["local_eid"], _CorpseUpd)
             if _corpse_comp is not None:
                 loot_items = []
-                from content.quests_data import QUEST_ITEMS as _QI_upd
                 for item_data in payload.get("items", []):
-                    item_name = item_data.get("name", "")
-                    _matched = False
-                    for _key, factory in _T.items():
-                        try:
-                            candidate = factory()
-                        except Exception:
-                            continue
-                        if getattr(candidate, "name", "") == item_name:
-                            candidate.stack = item_data.get("stack", 1)
-                            loot_items.append(candidate)
-                            _matched = True
-                            break
-                    if not _matched:
-                        _qi_factory = _QI_upd.get(item_name)
-                        if _qi_factory:
-                            try:
-                                candidate = _qi_factory()
-                                candidate.stack = item_data.get("stack", 1)
-                                loot_items.append(candidate)
-                            except Exception:
-                                pass
+                    candidate = self._resolve_loot_item(item_data)
+                    if candidate is not None:
+                        loot_items.append(candidate)
                 _corpse_comp.loot  = loot_items
                 _corpse_comp.coins = coins
             return
@@ -2128,40 +2205,21 @@ class NetworkHandlers:
             tx, ty = _redirect
             px = tx * _TS + _TS // 2
             py = ty * _TS + _TS // 2
-        # Reconstrói objetos de item a partir dos dados serializados do servidor
-        from content.quests_data import QUEST_ITEMS as _QI_loot
+        # Reconstrói objetos de item a partir dos dados serializados do
+        # servidor — `_resolve_loot_item` (item_id primeiro, nome como
+        # fallback) já cobre catálogo geral + forja + loja + quest, num
+        # ponto único (Fase 4.7, 12/08/2026, ver §39).
         loot_items = []
         for item_data in payload.get("items", []):
-            item_name = item_data.get("name", "")
-            _matched = False
-            for _key, factory in _T.items():
-                try:
-                    candidate = factory()
-                except Exception:
-                    continue
-                if getattr(candidate, "name", "") == item_name:
-                    candidate.stack = item_data.get("stack", 1)
-                    loot_items.append(candidate)
-                    _matched = True
-                    # Reciclagem: única fonte de loot de ammo com stack>1 hoje —
-                    # mesmo aviso do offline (systems.py), aqui no momento do drop.
-                    if candidate.item_type == "ammo" and candidate.stack > 1:
-                        LOG.add(f"Reciclagem! {candidate.stack} flechas no loot.",
-                                (180, 220, 120))
-                    break
-            # Itens de quest (drop condicional, ex: Presa de Lobo) vivem em
-            # QUEST_ITEMS, não em loot_tables._T — sem este fallback o item
-            # dropava no servidor mas era DESCARTADO aqui na reconstrução e
-            # nunca aparecia na janela de loot (bug real: "Presas Afiadas").
-            if not _matched:
-                _qi_factory = _QI_loot.get(item_name)
-                if _qi_factory:
-                    try:
-                        candidate = _qi_factory()
-                        candidate.stack = item_data.get("stack", 1)
-                        loot_items.append(candidate)
-                    except Exception:
-                        pass
+            candidate = self._resolve_loot_item(item_data)
+            if candidate is None:
+                continue
+            loot_items.append(candidate)
+            # Reciclagem: única fonte de loot de ammo com stack>1 hoje —
+            # mesmo aviso do offline (systems.py), aqui no momento do drop.
+            if candidate.item_type == "ammo" and candidate.stack > 1:
+                LOG.add(f"Reciclagem! {candidate.stack} flechas no loot.",
+                        (180, 220, 120))
         # Cria entidade Corpse no ECS local — LootSystem offline lê daqui
         px = tx * _TS + _TS // 2
         py = ty * _TS + _TS // 2
@@ -2205,30 +2263,54 @@ class NetworkHandlers:
         loot. Retorna True se pelo menos 1 item foi de fato adicionado
         (bag cheia não conta)."""
         from engine.components import Inventory as _InvGr
-        from content.loot_tables import _T as _LootTableGr
+        from content.item_table import ITEMS as _ItemTableGr
         from content.quests_data import QUEST_ITEMS as _QIGr
+        from content.crafting_data import MATERIALS as _MatGr, RECIPES as _RecGr, RECIPE_ITEMS as _RIGr
         inv = self.world.get_component(self.player_entity, _InvGr)
         if not inv:
             return False
         granted_any = False
         for item_data in items:
+            item_id   = item_data.get("item_id", "")
             item_name = item_data.get("name", "")
             obj = None
-            for _key, factory in _LootTableGr.items():
-                try:
-                    candidate = factory()
-                except Exception:
-                    continue
-                if getattr(candidate, "name", "") == item_name:
-                    obj = candidate
-                    break
-            if obj is None:
-                _qi_factory = _QIGr.get(item_name)
-                if _qi_factory:
+            if item_id:
+                # item_id (débito C2, 10/08/2026) — O(1). item_table cobre
+                # loot+loja; forja tem 3 catálogos PRÓPRIOS (materiais,
+                # resultado craftado, pergaminho de receita — "recipe_"
+                # prefixo, mesmo padrão de server/world_server.py::
+                # _item_factory_by_id) — achado real 11/08/2026: item
+                # craftado/material NUNCA resolvia aqui (`obj` ficava None,
+                # item perdido em silêncio da cópia local), já que só
+                # item_table/QUEST_ITEMS eram checados.
+                _factory = _ItemTableGr.get(item_id) or _QIGr.get(item_id) or _MatGr.get(item_id)
+                if _factory is None:
+                    _recipe = _RecGr.get(item_id)
+                    _factory = _recipe.get("result_factory") if _recipe else None
+                if _factory is None and item_id.startswith("recipe_"):
+                    _factory = _RIGr.get(item_id[len("recipe_"):])
+                if _factory:
                     try:
-                        obj = _qi_factory()
+                        obj = _factory()
                     except Exception:
                         obj = None
+            else:
+                # Save/payload sem item_id (legado) — varredura por nome.
+                for _key, factory in _ItemTableGr.items():
+                    try:
+                        candidate = factory()
+                    except Exception:
+                        continue
+                    if getattr(candidate, "name", "") == item_name:
+                        obj = candidate
+                        break
+                if obj is None:
+                    _qi_factory = _QIGr.get(item_name)
+                    if _qi_factory:
+                        try:
+                            obj = _qi_factory()
+                        except Exception:
+                            obj = None
             if obj is None:
                 continue
             obj.stack = item_data.get("stack", 1)
@@ -2237,7 +2319,7 @@ class NetworkHandlers:
             stacked = False
             if obj.max_stack > 1:
                 for existing in inv.items:
-                    if existing is not None and existing.name == obj.name \
+                    if existing is not None and existing.item_id == obj.item_id \
                             and existing.stack < existing.max_stack:
                         existing.stack += obj.stack
                         stacked = True
@@ -2278,22 +2360,23 @@ class NetworkHandlers:
     def _remove_items_from_inventory(self, removed: list) -> None:
         """Espelha client-side a remoção que engine/quest_logic.py::
         complete_quest já fez no Inventory do servidor ao entregar uma
-        quest — `removed` é [{"name": str, "stack": int}, ...] (stack =
-        quantidade a tirar, não a stack original do item). Mesma lógica
-        de redução/pop que complete_quest usa no lado servidor."""
+        quest — `removed` é [{"item_id": str, "stack": int}, ...] (stack =
+        quantidade a tirar, não a stack original do item; "item_id" desde
+        10/08/2026, débito C2 — era "name" antes). Mesma lógica de
+        redução/pop que complete_quest usa no lado servidor."""
         from engine.components import Inventory as _InvRm
         inv = self.world.get_component(self.player_entity, _InvRm)
         if not inv:
             return
         for entry in removed:
-            name = entry.get("name", "")
+            item_id = entry.get("item_id", "")
             needed = entry.get("stack", 0)
             i = 0
             while i < len(inv.items) and needed > 0:
                 item = inv.items[i]
                 if item is None:
                     i += 1
-                elif item.name == name:
+                elif item.item_id == item_id:
                     if item.stack <= needed:
                         needed -= item.stack
                         inv.items.pop(i)
@@ -2342,6 +2425,7 @@ class NetworkHandlers:
         corpse_id = payload.get("corpse_id", -1)
         coins     = payload.get("coins", 0)
         items     = payload.get("items", [])
+        reason    = payload.get("reason", "")
 
         if coins > 0:
             from engine.components import Wallet as _WalLr
@@ -2354,12 +2438,15 @@ class NetworkHandlers:
             self._grant_items_to_inventory(items)
 
         if coins == 0 and not items:
-            # Resposta vazia pro que foi pedido especificamente (só ouro,
-            # ou só aquele item) — outro membro do grupo já pegou. NÃO
-            # significa que o corpo inteiro esvaziou (ver still_has_loot
-            # abaixo, que decide se o resto continua disponível).
+            # Vazio pode ser por 2 motivos bem diferentes (débito A4,
+            # 11/08/2026): já foi saqueado por outro membro do grupo, OU o
+            # item existia mas não coube na mochila (aí `reason` vem
+            # preenchido — o item continua no corpse, não foi perdido).
             from ui.floating_text import WARN as _WarnLr
-            _WarnLr.add("Já foi saqueado")
+            if reason == "inventory_full":
+                _WarnLr.add("Mochila cheia")
+            else:
+                _WarnLr.add("Já foi saqueado")
 
         if coins > 0 or items:
             SOUNDS.play_ui("loot_gold" if coins > 0 else "loot_item")
@@ -2367,25 +2454,16 @@ class NetworkHandlers:
         # Atualiza a cópia LOCAL do corpse com só o que foi CONFIRMADO — e
         # só remove a entidade/fecha o modal quando fica REALMENTE vazia
         # (ver docstring de _sync_local_corpse_after_take).
-        item_names = [it.get("name", "") for it in items]
-        self._sync_local_corpse_after_take(corpse_id, coins, item_names)
-        if items:
-            # Sincroniza o Inventory ECS do SERVIDOR (INV_SYNC) — sem isso,
-            # o servidor nunca fica sabendo do item recém-creditado (loot
-            # online é resolvido só no cliente, `request_loot()` não toca
-            # a Inventory do player, só o Wallet pro ouro). Regressão real
-            # relatada pelo usuário 18/07/2026: a reescrita do loot
-            # granular/free-for-all (17/07/2026) passou a creditar itens
-            # direto aqui e esqueceu esta chamada — que era, antes disso,
-            # feita automaticamente via ui/systems.py::LootSystem/
-            # _on_loot_collected no fluxo antigo. Sem INV_SYNC,
-            # `sync_collect_progress` (server/session.py::
-            # _handle_inventory_update) nunca roda e o progresso de quest
-            # "colete N itens" trava no HUD/diário (entrega só voltava a
-            # funcionar depois de relogar, quando spawn_player recarrega a
-            # Inventory do banco). Mesmo padrão de
-            # _on_recarregar_changed (que já fazia isto certo).
-            self._on_loot_action("item")
+        item_ids = [it.get("item_id", "") for it in items]
+        self._sync_local_corpse_after_take(corpse_id, coins, item_ids)
+        # Débito A4 (11/08/2026, ver PROBLEMAS_ARQUITETURA.md): saque
+        # virou autoritativo no servidor — `request_loot()` já bota o item
+        # direto no Inventory AO VIVO do servidor (o que está em `items`
+        # aqui já é exatamente o que o servidor concedeu), então o
+        # INV_SYNC que existia só pra avisar o servidor disso (e, de
+        # carona, disparar `sync_collect_progress`) não faz mais falta —
+        # o servidor já dispara esse progresso de quest ele mesmo, direto
+        # em `request_loot`/`_handle_loot_request`.
         # Gold/itens mudaram — sincroniza save com o servidor
         self._send_save_state()
 
@@ -2400,18 +2478,20 @@ class NetworkHandlers:
         17/07/2026: corpo "bugava e fechava" ao clicar no fantasma)."""
         corpse_id  = payload.get("corpse_id", -1)
         coins_taken = payload.get("coins_taken", 0)
-        item_names  = payload.get("item_names_taken", [])
-        self._sync_local_corpse_after_take(corpse_id, coins_taken, item_names)
+        item_ids    = payload.get("item_ids_taken", [])
+        self._sync_local_corpse_after_take(corpse_id, coins_taken, item_ids)
 
     def _sync_local_corpse_after_take(self, corpse_id: int, coins_taken: int,
-                                      item_names_taken: list) -> None:
+                                      item_ids_taken: list) -> None:
         """Remove da cópia LOCAL do corpse (`Corpse` ECS) o que acabou de
         sair — meu próprio saque (_handle_msg_loot_result) ou o de outro
         membro do grupo (_handle_msg_loot_update). Só remove a entidade/
         fecha o modal quando fica REALMENTE vazia — sacar parcial mantém
         o resto visível/lootável (bug real relatado pelo usuário
         17/07/2026: sacar só o ouro removia o corpo inteiro da tela,
-        levando junto os itens que ainda sobravam)."""
+        levando junto os itens que ainda sobravam). `item_ids_taken`
+        (débito A4, 11/08/2026, era `item_names_taken` antes) — nome de
+        exibição não distingue itens diferentes com o mesmo nome."""
         loot_data = self._available_loot.get(corpse_id)
         if not loot_data:
             return
@@ -2425,9 +2505,9 @@ class NetworkHandlers:
             return
         if coins_taken > 0:
             corpse_comp.coins = 0
-        for _iname in item_names_taken:
+        for _iid in item_ids_taken:
             for _idx, _existing in enumerate(corpse_comp.loot):
-                if getattr(_existing, "name", "") == _iname:
+                if getattr(_existing, "item_id", "") == _iid:
                     corpse_comp.loot.pop(_idx)
                     break
         still_has_loot = bool(corpse_comp.loot) or corpse_comp.coins > 0
@@ -2474,7 +2554,7 @@ class NetworkHandlers:
                     stacked = False
                     if getattr(item_br, "max_stack", 1) > 1:
                         for ex_br in inv_br.items:
-                            if ex_br and ex_br.name == item_br.name and \
+                            if ex_br and ex_br.item_id == item_br.item_id and \
                                     ex_br.stack < ex_br.max_stack:
                                 ex_br.stack = min(ex_br.max_stack,
                                                   ex_br.stack + qty_br)
@@ -2534,10 +2614,10 @@ class NetworkHandlers:
                         if _iius_cons is not None and _iius_cons.active:
                             from engine.components import ConsumableBar as _CBBuy
                             _cb_buy = self.world.get_component(self.player_entity, _CBBuy)
-                            if _cb_buy is not None and item_br.name not in _cb_buy.slots:
+                            if _cb_buy is not None and item_br.item_id not in _cb_buy.slots:
                                 for _i_cb in range(len(_cb_buy.slots)):
                                     if _cb_buy.slots[_i_cb] is None:
-                                        _cb_buy.slots[_i_cb] = item_br.name
+                                        _cb_buy.slots[_i_cb] = item_br.item_id
                                         break
             from ui.combat_log import LOG as _LOG_BR
             price = payload.get("price", 0)
@@ -2577,14 +2657,103 @@ class NetworkHandlers:
             from ui.floating_text import WARN as _WARN_SR
             _WARN_SR.add(payload.get("reason", "Venda recusada"))
 
+    def _handle_msg_craft_result(self, payload: dict) -> None:
+        """Confirmação de CRAFT_REQUEST — débito A4 (11/08/2026, ver
+        PROBLEMAS_ARQUITETURA.md). Servidor já descontou ouro/materiais e
+        adicionou o resultado na SUA cópia; aqui só espelha isso na cópia
+        local (mesmo padrão de BUY_RESULT — 1 clique, item cai direto na
+        mochila, sem passo de "coletar")."""
+        from engine.components import Wallet as _WalCR
+        wal_cr = self.world.get_component(self.player_entity, _WalCR)
+        _cs = getattr(self, "_crafting_system", None)
+        if _cs is not None:
+            _cs._frg_pending = False
+        if payload.get("success"):
+            if wal_cr is not None:
+                wal_cr.gold = payload.get("new_gold", wal_cr.gold)
+            # Materiais consumidos — bug real relatado pelo usuário
+            # (11/08/2026): sem isso, a bag local nunca refletia o
+            # material gasto (só sumia no próximo relog). Mesmo helper já
+            # usado pra "removed" de INVENTORY_UPDATE (entrega de quest).
+            materials_consumed = payload.get("materials_consumed") or []
+            if materials_consumed:
+                self._remove_items_from_inventory(materials_consumed)
+            item = payload.get("item")
+            if item:
+                self._grant_items_to_inventory([item], log_verb="Forjado")
+            if _cs is not None:
+                _cs._frg_selected = None
+                _cs._frg_data     = None
+            self._send_save_state()
+        else:
+            srv_gold = payload.get("new_gold")
+            if srv_gold is not None and wal_cr is not None:
+                wal_cr.gold = srv_gold
+            from ui.floating_text import WARN as _WARN_CR
+            _reason_msg = {
+                "invalid_recipe":         "Receita inválida",
+                "insufficient_gold":      "Ouro insuficiente",
+                "insufficient_materials": "Materiais insuficientes",
+                "inventory_full":         "Mochila cheia",
+            }.get(payload.get("reason", ""), "Não foi possível forjar")
+            _WARN_CR.add(_reason_msg)
+
+    def _handle_msg_recycle_result(self, payload: dict) -> None:
+        """Confirmação de RECYCLE_REQUEST — débito A4 (11/08/2026),
+        contraparte de `_handle_msg_craft_result`. O item reciclado já
+        saiu da cópia local no momento em que foi selecionado pro slot de
+        reciclagem (`BlacksmithSystem._handle_bag_rclick`) — em rejeição,
+        precisa voltar pra mochila local (servidor nunca tocou nele)."""
+        from engine.components import Wallet as _WalRR, Inventory as _InvRR
+        wal_rr = self.world.get_component(self.player_entity, _WalRR)
+        _cs = getattr(self, "_crafting_system", None)
+        if payload.get("success"):
+            if wal_rr is not None:
+                wal_rr.gold = payload.get("new_gold", wal_rr.gold)
+            materials = payload.get("materials") or []
+            if materials:
+                self._grant_items_to_inventory(materials, log_verb="Reciclado")
+            if _cs is not None:
+                _cs._frg_pending = False  # no-op se não era forja, seguro
+                _cs._rec_pending = False
+                _cs._rec_item    = None
+                _cs._rec_bag_idx = -1
+        else:
+            srv_gold = payload.get("new_gold")
+            if srv_gold is not None and wal_rr is not None:
+                wal_rr.gold = srv_gold
+            if _cs is not None:
+                _cs._rec_pending = False
+                # Servidor recusou (ou nunca tocou no item) — devolve pra
+                # mochila local, senão o item simplesmente desaparece da
+                # bag do jogador sem nunca ter sido consumido de verdade.
+                if _cs._rec_item is not None:
+                    inv_rr = self.world.get_component(self.player_entity, _InvRR)
+                    if inv_rr is not None:
+                        _idx = max(0, min(_cs._rec_bag_idx, len(inv_rr.items)))
+                        inv_rr.items.insert(_idx, _cs._rec_item)
+                _cs._rec_item    = None
+                _cs._rec_bag_idx = -1
+            from ui.floating_text import WARN as _WARN_RR
+            _reason_msg = {
+                "invalid_item":      "Item inválido",
+                "not_recyclable":    "Este item não pode ser reciclado",
+                "insufficient_gold": "Ouro insuficiente",
+            }.get(payload.get("reason", ""), "Não foi possível reciclar")
+            _WARN_RR.add(_reason_msg)
+
     def _handle_msg_equip_rejected(self, payload: dict) -> None:
-        """Servidor recusou um slot do último EQUIP_SYNC (classe ou level
-        insuficiente — ver server/world_server.py::update_player_equipment,
+        """Servidor recusou o último EQUIP_ITEM (classe, level ou offhand
+        travado — ver server/world_server.py::equip_item_from_inventory,
         único ponto que valida CLASS_ARMOR_ALLOWED/is_weapon_allowed_for_class/
         level_requirement de verdade, já que o check do cliente em
         _equip_item é só UX otimista).
         Reverte o slot local: tira o item que foi otimisticamente equipado e
-        devolve pra bag (nunca perde o item), e resincroniza."""
+        devolve pra bag (nunca perde o item). Débito A4 (10-11/08/2026) —
+        cada EQUIP_ITEM/UNEQUIP_ITEM agora é atômico, então a reversão local
+        já deixa cliente e servidor consistentes de novo, sem precisar
+        remandar nada (o antigo _send_equip_sync() de recarga não existe
+        mais)."""
         from engine.components import Equipment as _EqRej, Inventory as _InvRej
         slot      = payload.get("slot", "")
         reason    = payload.get("reason", "")
@@ -2600,10 +2769,10 @@ class NetworkHandlers:
         _reason_msg = {
             "class": "sua classe não pode usar esse item",
             "level": "level insuficiente",
+            "offhand_locked": "mão dupla já equipada",
         }.get(reason, "requisito não atendido")
         from ui.floating_text import WARN as _WARN_EqR
         _WARN_EqR.add(f"Não foi possível equipar {item_name}: {_reason_msg}")
-        self._send_equip_sync()
 
     def _handle_msg_pong(self, payload: dict) -> None:
         if self._net:
@@ -2666,40 +2835,78 @@ class NetworkHandlers:
 
     def _handle_msg_trade_state(self, payload: dict) -> None:
         """Único ponto onde um item ofertado sai da Inventory local de
-        verdade (nunca otimista — ver TradeUIState/plano do trade). Compara
-        (via multiset por nome) a oferta antiga com a nova pra decidir o que
-        remover/devolver — mesmo racional do match-por-nome já usado em
-        Recarregar."""
+        verdade (nunca otimista — ver TradeUIState/plano do trade).
+
+        Débito A4/fatiar-stack (11/08/2026, bug real relatado pelo
+        usuário): o diff antigo comparava por CONTAGEM de entradas na
+        oferta (multiset por nome) e removia o slot INTEIRO da bag por
+        entrada nova — correto enquanto toda oferta movia o item
+        INTEIRO, mas quebrado desde que passou a aceitar quantidade
+        PARCIAL (Shift+clique, ver `server/trade_processor.py::
+        add_trade_item`): ofertar 1 unidade de uma stack de 5 removia a
+        STACK INTEIRA da bag (1 entrada nova contada = 1 slot inteiro
+        popado, sem olhar quanto de fato saiu). Fix: diff por
+        QUANTIDADE (soma de `stack` por item_id/nome), não por contagem
+        de entradas — decrementa só o que realmente saiu da mochila, e
+        devolve mesclando num stack existente quando possível."""
         tui = self._get_trade_ui()
         if tui is None or tui.trade_id != payload.get("trade_id", -1):
             return
-        from collections import Counter
+        from collections import defaultdict
         from engine.components import Inventory as _InvTS, Wallet as _WalTS
         inv = self.world.get_component(self.player_entity, _InvTS)
         wal = self.world.get_component(self.player_entity, _WalTS)
 
         old_items = list(tui.my_offer)
         new_data  = payload.get("my_offer", [])
-        old_counter = Counter(getattr(it, "name", "") for it in old_items)
-        new_counter = Counter(d.get("name", "") for d in new_data)
-        newly_offered = new_counter - old_counter   # sai da bag
-        newly_withdrawn = old_counter - new_counter  # volta pra bag
+
+        def _key_obj(it):
+            return getattr(it, "item_id", "") or getattr(it, "name", "")
+
+        def _key_dict(d):
+            return d.get("item_id", "") or d.get("name", "")
+
+        old_totals = defaultdict(int)
+        for it in old_items:
+            old_totals[_key_obj(it)] += getattr(it, "stack", 1)
+        new_totals = defaultdict(int)
+        for d in new_data:
+            new_totals[_key_dict(d)] += d.get("stack", 1)
 
         if inv is not None:
-            for name, cnt in newly_offered.items():
-                for _ in range(cnt):
-                    for idx, it in enumerate(inv.items):
-                        if it.name == name:
-                            inv.items.pop(idx)
+            for key in set(old_totals) | set(new_totals):
+                delta = new_totals.get(key, 0) - old_totals.get(key, 0)
+                if delta > 0:
+                    # `delta` unidades A MAIS na oferta — saíram da bag agora.
+                    remaining = delta
+                    for idx in range(len(inv.items) - 1, -1, -1):
+                        if remaining <= 0:
                             break
-            for name, cnt in newly_withdrawn.items():
-                matched = 0
-                for it in old_items:
-                    if matched >= cnt:
-                        break
-                    if getattr(it, "name", "") == name:
-                        inv.items.append(it)
-                        matched += 1
+                        it = inv.items[idx]
+                        if it is None or _key_obj(it) != key:
+                            continue
+                        take = min(remaining, it.stack)
+                        it.stack -= take
+                        remaining -= take
+                        if it.stack <= 0:
+                            inv.items.pop(idx)
+                elif delta < 0:
+                    # `-delta` unidades A MENOS na oferta — voltaram pra bag.
+                    give = -delta
+                    existing = next((it for it in inv.items
+                                     if it is not None and _key_obj(it) == key
+                                     and it.max_stack > 1 and it.stack < it.max_stack), None)
+                    if existing is not None:
+                        add = min(give, existing.max_stack - existing.stack)
+                        existing.stack += add
+                        give -= add
+                    if give > 0 and len(inv.items) < inv.max_slots:
+                        ref = next((it for it in old_items if _key_obj(it) == key), None)
+                        if ref is not None:
+                            import copy as _copy_ts
+                            new_it = _copy_ts.copy(ref)
+                            new_it.stack = give
+                            inv.items.append(new_it)
 
         new_my_gold = payload.get("my_gold", 0)
         if wal is not None:
