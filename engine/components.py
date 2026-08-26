@@ -315,6 +315,27 @@ class PlayerControlled:
     pass
 
 @dataclass
+class BotControlled:
+    """Tag + estado de IA de um player 100% servidor, sem sessão de rede
+    real — preenche time incompleto na fila da BG (16/08/2026, pedido do
+    usuário). Lógica de decisão mora em `server/bot_ai_system.py`
+    (componente continua sendo só DADO — os campos abaixo são o estado
+    que aquela lógica lê/escreve, nenhum método aqui). Entidade criada
+    por `BgQueueProcessorMixin._spawn_bot_player` (mesmo `WorldServer.
+    spawn_player` que qualquer login real usa) — tudo que reage a "é um
+    player de verdade" (combate, skill, AOI) trata igual; só a ORIGEM da
+    decisão (IA em vez de mensagem de rede) difere."""
+    decision_timer: float = 0.0
+    path: list | None = None          # fila de (tx,ty) restante até o objetivo atual
+    path_goal: tuple | None = None    # (tx,ty) que o `path` acima mira — recalcula se mudar
+    # Bot AI v2 (16/08/2026, pedido do usuário — lane sorteada, esperar a
+    # wave nascer, seguir o MESMO caminho dos minions):
+    lane_id: str = ""                 # "top"/"mid"/"bot" — sorteado 1x, ver _tick_bg_queue
+    push_start_at: float = 0.0        # time.time() a partir do qual o bot pode empurrar a lane
+    route: list | None = None         # polyline completa da lane (mesmo formato de Minion.route)
+    route_idx: int = 0                # progresso em `route`, mesmo par que Minion usa
+
+@dataclass
 class RemoteControlled:
     """Tag: jogador online controlado remotamente.
     Exclui da lógica local de input, IA e pathfinding."""
@@ -1586,6 +1607,11 @@ class CharStatsTracker:
         # first_attacker_eid (dono do loot, não necessariamente quem bateu
         # o golpe final).
         self.minions_killed: int = 0
+        # Assistência de kill de player (16/08/2026, unificação de kill
+        # credit — ver server/respawn_system.py::_handle_player_death) —
+        # qualquer OUTRO player inimigo que bateu na vítima dentro da
+        # janela de assist, sem ter dado o golpe final.
+        self.assists:        int = 0
 
 
 # ---------------------------------------------------------------------------

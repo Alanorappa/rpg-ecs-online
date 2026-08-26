@@ -1337,6 +1337,20 @@ class RemoteEntityHandlers:
             hp_max=data.get("hp_max", 100),
             level=data.get("level", 1),
         ))
+        # Faction real (16/08/2026) — só presente quando o servidor já
+        # anexou uma (contexto de time: BG/arena, ver WorldServer.
+        # player_faction_field). Sem Faction: get_entity_faction cai no
+        # default de RemoteControlled (PLAYER_FACTION "jogadores"), igual
+        # sempre foi. Corrige bug real: o PRÓPRIO player já ganha Faction
+        # real via ARENA_COUNTDOWN (client/arena_handlers.py), então um
+        # player remoto SEM Faction (antes desta correção, sempre) virava
+        # par não-declarado em RELATIONSHIP (ex: "arena_time_a" vs
+        # "jogadores") — caía em "neutro", que já libera can_engage() de
+        # cara, ignorando se é aliado ou inimigo (TAB/SPAÇO selecionando
+        # bot do próprio time).
+        if "faction" in data:
+            from engine.components import Faction as _FacRemote
+            self.world.add_component(local_eid, _FacRemote(faction_id=data["faction"]))
         self._remote_players[server_eid] = local_eid
 
         # Reacquire alvo PvP: se estávamos perseguindo este player antes de ele morrer

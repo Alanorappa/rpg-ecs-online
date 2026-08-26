@@ -1,6 +1,6 @@
 {
   "scale": 1.5,
-  "window_mode": "windowed_fullsize",
+  "window_mode": "maximized",
   "server_host": "localhost",
   "server_port": 8765,
   "net_user": "teste",
@@ -757,9 +757,9 @@
           "pirofagia",
           "calcinar",
           "escudo_fogo",
-          null,
-          null,
-          null,
+          "polimorfia",
+          "nova_congelante",
+          "bloco_de_gelo",
           null,
           null
         ],
@@ -769,11 +769,11 @@
           51,
           52,
           53,
-          54,
-          55,
-          56,
-          57,
-          48
+          114,
+          116,
+          102,
+          113,
+          101
         ]
       },
       "consumable_bar": {
@@ -818,6 +818,50 @@
           116,
           102,
           103
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      }
+    },
+    "Xadread": {
+      "hotbar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          48
         ]
       },
       "consumable_bar": {

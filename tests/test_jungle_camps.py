@@ -21,15 +21,20 @@ from server.instance_progression import enter_normalized_progression
 
 
 class TestJungleMobHostility(unittest.TestCase):
-    """Hostil aos 2 times da BG — sem mudar content/faction_data.py,
-    reaproveitando a Faction "monstros_hostis" já existente."""
+    """Neutro aos 2 times da BG (16/08/2026 — antes era "hostil" via a
+    facção compartilhada "monstros_hostis", aggrando por proximidade;
+    bug real relatado pelo usuário: "só de chegar perto eles aggram").
+    Facção PRÓPRIA "monstros_jungle", tier "neutro" — ainda pode ser
+    atacado/engajado por qualquer time (can_engage), só não aggra
+    sozinho por proximidade (is_hostile)."""
 
-    def test_faction_monstros_hostis_e_hostil_aos_2_times(self):
-        self.assertEqual(RELATIONSHIP.get(("arena_time_a", "monstros_hostis")), "hostil")
-        self.assertEqual(RELATIONSHIP.get(("arena_time_b", "monstros_hostis")), "hostil")
+    def test_faction_monstros_jungle_e_neutra_aos_2_times(self):
+        from content.faction_data import get_relationship
+        self.assertEqual(get_relationship("arena_time_a", "monstros_jungle"), "neutro")
+        self.assertEqual(get_relationship("arena_time_b", "monstros_jungle"), "neutro")
 
-    def test_jungle_mob_e_hostil_a_ambos_os_times(self):
-        from engine.faction_system import is_hostile
+    def test_jungle_mob_nao_e_hostil_mas_pode_ser_engajado_pelos_2_times(self):
+        from engine.faction_system import is_hostile, can_engage
         ws = make_world_server()
         ws._create_jungle_camps(
             [{"x": 20, "y": 20, "mob_key": "jungle_lobo_alfa"}],
@@ -41,8 +46,47 @@ class TestJungleMobHostility(unittest.TestCase):
         b = spawn_player(ws, "sb", 20, 20)
         ws.world.add_component(b, Faction("arena_time_b"))
 
-        self.assertTrue(is_hostile(ws.world, mob_eid, a))
-        self.assertTrue(is_hostile(ws.world, mob_eid, b))
+        self.assertFalse(is_hostile(ws.world, mob_eid, a),
+                         "jungle não deveria aggrar por proximidade (is_hostile)")
+        self.assertFalse(is_hostile(ws.world, mob_eid, b))
+        self.assertTrue(can_engage(ws.world, a, mob_eid),
+                        "jungle ainda deveria poder ser atacado pelos 2 times")
+        self.assertTrue(can_engage(ws.world, b, mob_eid))
+
+    def test_jungle_mob_nao_aggra_so_por_player_chegar_perto(self):
+        """Fim-a-fim via EnemyAISystem.update() (não só is_hostile isolado)
+        — bug real relatado pelo usuário."""
+        ws = make_world_server()
+        from tests.test_tile_los_visibility import _clear_area
+        _clear_area(ws, 8, 8, 40, 40)
+        ws._create_jungle_camps(
+            [{"x": 20, "y": 20, "mob_key": "jungle_lobo_alfa"}],
+            is_boss=False, map_file=ws._map_file)
+        mob_eid = next(eid for eid, jm in ws.world.get_entities_with(JungleMob))
+
+        p = spawn_player(ws, "sp", 21, 20)  # adjacente, dentro do raio antigo de aggro
+        ws.world.add_component(p, Faction("arena_time_a"))
+        run_ticks(ws, 60)
+
+        from engine.components import AIControlled
+        ai = ws.world.get_component(mob_eid, AIControlled)
+        self.assertEqual(ai.state, "IDLE",
+                         "jungle não deveria sair de IDLE só pelo player estar perto")
+
+    def test_nome_exibido_e_o_display_name_nao_o_mob_key_cru(self):
+        """16/08/2026, bug real relatado pelo usuário: "os monstros da
+        jungle estão com o código no lugar do nome" — create_enemy()
+        usava `race` (= mob_key, ex: "jungle_lobo_alfa") como fallback
+        de EntityIdentity.name quando nenhum identity_name é passado."""
+        from engine.components import EntityIdentity
+        ws = make_world_server()
+        ws._create_jungle_camps(
+            [{"x": 20, "y": 20, "mob_key": "jungle_lobo_alfa"}],
+            is_boss=False, map_file=ws._map_file)
+        mob_eid = next(eid for eid, jm in ws.world.get_entities_with(JungleMob))
+        ident = ws.world.get_component(mob_eid, EntityIdentity)
+        self.assertEqual(ident.name, JUNGLE_MOB_TABLE["jungle_lobo_alfa"]["display_name"])
+        self.assertNotEqual(ident.name, "jungle_lobo_alfa")
 
 
 class TestJungleMobNormalReward(unittest.TestCase):
@@ -106,6 +150,27 @@ class TestJungleMobNormalReward(unittest.TestCase):
 
         self.assertGreater(wallet.gold, gold_antes)
         self.assertLessEqual(wallet.gold - gold_antes, JUNGLE_MOB_TABLE["jungle_lobo_alfa"]["gold_max"])
+
+    def test_sem_drop_fisico_de_item_ou_coin_no_corpse(self):
+        """16/08/2026, bug real relatado pelo usuário: mob de jungle
+        dropava item/gold FÍSICO no corpse, além do gold de instância já
+        creditado direto na carteira — jungle não deveria dropar nada,
+        mesmo padrão de minion."""
+        from engine.components import Wallet
+        p = spawn_player(self.ws, "p1", 20, 20)
+        enter_normalized_progression(self.ws, p)
+        wallet = self.ws.world.get_component(p, Wallet)
+        gold_antes = wallet.gold
+
+        self._kill(killer_eid=p)
+        run_ticks(self.ws, 1)
+
+        self.assertGreater(wallet.gold, gold_antes,
+                           "gold de instância ainda deveria ser creditado direto na carteira")
+        corpses = [c for c in self.ws._corpses.values() if c.get("owner_eid") == p]
+        self.assertEqual(len(corpses), 1)
+        self.assertEqual(corpses[0]["items"], [], "jungle não deveria dropar item físico")
+        self.assertEqual(corpses[0]["coins"], 0, "jungle não deveria dropar coin físico (já foi pra carteira)")
 
 
 class TestJungleBossReward(unittest.TestCase):
@@ -185,6 +250,23 @@ class TestJungleBossReward(unittest.TestCase):
         self.assertGreater(wallet_k.gold, gold_k_antes)
         self.assertGreater(wallet_al.gold, gold_al_antes,
                            "aliado perto do MESMO time deveria receber parte do ouro")
+
+    def test_sem_drop_fisico_de_item_ou_coin_no_corpse(self):
+        from engine.components import Wallet
+        killer = spawn_player(self.ws, "sk", 20, 20)
+        self.ws.world.add_component(killer, Faction("arena_time_a"))
+        enter_normalized_progression(self.ws, killer)
+        wallet_k = self.ws.world.get_component(killer, Wallet)
+        gold_k_antes = wallet_k.gold
+
+        self._kill(killer_eid=killer)
+        run_ticks(self.ws, 1)
+
+        self.assertGreater(wallet_k.gold, gold_k_antes)
+        corpses = [c for c in self.ws._corpses.values() if c.get("owner_eid") == killer]
+        self.assertEqual(len(corpses), 1)
+        self.assertEqual(corpses[0]["items"], [], "boss de jungle não deveria dropar item físico")
+        self.assertEqual(corpses[0]["coins"], 0, "boss de jungle não deveria dropar coin físico")
 
 
 class TestJungleBossBuff(unittest.TestCase):
@@ -292,6 +374,65 @@ class TestJungleCampRespawn(unittest.TestCase):
         self.assertEqual(len(alive), 1, "boss deveria ter respawnado")
         _, tm = alive[0]
         self.assertEqual((tm.current_tile_x, tm.current_tile_y), (30, 30))
+
+
+class TestJungleCampLevelScaling(unittest.TestCase):
+    """Level do camp = média de TODOS os players da instância (sem filtro
+    de Faction — jungle é neutra, hostil aos 2 times por igual), recalculada
+    a cada respawn (16/08/2026, pedido do usuário: "o level dos monstros
+    precisa subir junto com o nível médio de todos os players, assim como
+    acontece com os minions") — mesmo espírito de
+    test_minions.py::test_level_do_minion_e_a_media_do_time_recalculada_a_cada_wave,
+    só que SEM filtro de time (`_compute_match_avg_level`, não
+    `_compute_team_avg_level`)."""
+
+    def test_level_do_mob_e_a_media_de_todos_os_players_recalculada_no_respawn(self):
+        from engine.components import CharacterStats, EntityIdentity
+        ws = make_world_server()
+        ws._create_jungle_camps(
+            [{"x": 30, "y": 30, "mob_key": "jungle_lobo_alfa", "level": 1, "respawn_s": 1.0}],
+            is_boss=False, map_file=ws._map_file)
+        mob_eid = next(eid for eid, jm in ws.world.get_entities_with(JungleMob))
+
+        # 2 players de TIMES DIFERENTES — jungle não filtra por Faction,
+        # os 2 devem entrar na média (diferente do minion, que só olha o
+        # PRÓPRIO time da lane).
+        p1 = spawn_player(ws, "jl1", 30, 30)
+        p2 = spawn_player(ws, "jl2", 31, 30)
+        ws.world.add_component(p1, Faction("arena_time_a"))
+        ws.world.add_component(p2, Faction("arena_time_b"))
+        ws.world.get_component(p1, CharacterStats).level = 6
+        ws.world.get_component(p2, CharacterStats).level = 12
+        ws.world.add_component(p1, MapLocation(ws._map_file))
+        ws.world.add_component(p2, MapLocation(ws._map_file))
+
+        cs = ws.world.get_component(mob_eid, CombatStats)
+        cs.current_hp = 0
+        ws.world.add_component(mob_eid, PendingDeath(killer_entity_id=p1))
+        run_ticks(ws, 30)  # 30 * 0.05s = 1.5s > respawn_s=1.0
+
+        respawned = next(eid for eid, jm in ws.world.get_entities_with(JungleMob))
+        ident = ws.world.get_component(respawned, EntityIdentity)
+        self.assertEqual(ident.level, 9, "level deveria ser a média de TODOS os players (6+12)/2=9")
+
+    def test_level_cai_no_fallback_estatico_sem_player_na_instancia(self):
+        from engine.components import EntityIdentity
+        ws = make_world_server()
+        ws._create_jungle_camps(
+            [{"x": 30, "y": 30, "mob_key": "jungle_lobo_alfa", "level": 4, "respawn_s": 1.0}],
+            is_boss=False, map_file=ws._map_file)
+        mob_eid = next(eid for eid, jm in ws.world.get_entities_with(JungleMob))
+        ident_antes = ws.world.get_component(mob_eid, EntityIdentity)
+        self.assertEqual(ident_antes.level, 4, "sem player na instância, cai no fallback do JSON")
+
+        cs = ws.world.get_component(mob_eid, CombatStats)
+        cs.current_hp = 0
+        ws.world.add_component(mob_eid, PendingDeath(killer_entity_id=-1))
+        run_ticks(ws, 30)
+
+        respawned = next(eid for eid, jm in ws.world.get_entities_with(JungleMob))
+        ident_depois = ws.world.get_component(respawned, EntityIdentity)
+        self.assertEqual(ident_depois.level, 4, "sem player, respawn continua no fallback salvo")
 
 
 class TestJungleFallbackReconstruction(unittest.TestCase):

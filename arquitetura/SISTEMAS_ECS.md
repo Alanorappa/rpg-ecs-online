@@ -261,6 +261,50 @@ tela-cheia sem trocar o conversor de clique junto, o personagem parou
 de responder a clique no minimapa dentro da BG — clique continuava
 passando pela conta do modo radar (errada nesta geometria).
 
+### BotAISystem — bot 100% servidor da fila BG (16/08/2026) — `server/bot_ai_system.py`
+
+Preenche time incompleto na fila 2v2 (usuário quer testar sem precisar
+de 4 humanos — política de pareamento completa em
+`arquitetura/PROBLEMAS_ARQUITETURA.md` §60). Não é um `System` ECS
+tradicional (`@staticmethod`, chamado 1x por tick por
+`WorldServer._tick` dentro de `bg_queue_ticks`, sem estado próprio) —
+todo estado de IA vive em `BotControlled` (dado: `decision_timer`,
+`path`, `path_goal`), lido/escrito por `BotAISystem.update`.
+
+Bot é uma entidade normal — `BgQueueProcessorMixin._spawn_bot_player`
+chama o MESMO `WorldServer.spawn_player` de qualquer login real (sem
+fábrica paralela), com `session_id` sintético registrado nas mesmas
+tabelas (`_player_eids`/`_player_eid_to_sid`) + uma `Session` FALSA em
+`SessionManager` (`ws` nulo, `send()` descarta) — sem essa Session
+falsa, o bot fica invisível pros outros players: a descoberta de
+OUTROS PLAYERS (`server/session.py::_build_update_for_session`) só
+itera sessões REAIS (`self._sessions.values()`), nunca `_player_eids`
+direto.
+
+`BotAISystem.update` (throttle ~3x/s por bot, `BOT_DECISION_INTERVAL_S`)
+decide por prioridade, chamando as MESMAS funções internas que os
+handlers de rede já chamam por trás (`WorldServer.move_player`/
+`set_player_target`/`queue_skill` — zero lógica de combate duplicada):
+1. Skill ofensiva off-cooldown em alcance (1ª do hotbar,
+   `SKILL_CATALOG` — sem hardcode de skill específica).
+2. Auto-attack em alcance (`set_player_target` + `enter_combat`, mesma
+   sequência de `_handle_auto_attack`).
+3. Perseguir alvo visível fora de alcance — pathfinding reaproveitado
+   de `WorldServer._get_pathfinding_for_map_file` (MESMO que
+   `_tick_minion_waves` já usa, nenhum A* novo), 1 tile por decisão.
+4. Sem inimigo → empurra a própria lane, waypoints reaproveitados de
+   `WorldServer._minion_lanes` (mesmo dado que os minions seguem).
+
+Só mira PLAYERS inimigos (v1, ignora torre/minion). Sem "recuar" —
+morre, respawna pelo mesmo timer automático de qualquer player da BG
+(`WorldServer._tick_bg_respawns`).
+
+Cleanup centralizado em `BgQueueProcessorMixin.request_bg_leave` (não
+em cada chamador) — checa `BotControlled` no fim e despawna por
+completo (`WorldServer.despawn_player` + remove a Session falsa) se for
+bot, cobrindo os 3 caminhos de saída (timeout de resultado, time
+incompleto descartado, saída manual) de uma vez.
+
 ### Arquitetura de StatusEffectSystem
 
 ```

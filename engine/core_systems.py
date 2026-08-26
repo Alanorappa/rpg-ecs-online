@@ -246,21 +246,89 @@ def apply_magic_damage_shared(attacker_id: int, target_id: int, dmg: int, world,
     attacker_cs = world.get_component(attacker_id, CombatState)
     if attacker_cs:
         enter_combat(attacker_cs)
-    # Aggro por dano mágico — usa AGGRO_DELAY (alinhado com servidor)
+    # Aggro por dano mágico — usa AGGRO_DELAY (alinhado com servidor),
+    # transição + puxão de grupo centralizados em trigger_mob_aggro.
     _ai = world.get_component(target_id, AIControlled)
     from engine.faction_system import can_engage as _can_engage_magic_shared
     if _ai and _ai.state == "IDLE" and _can_engage_magic_shared(world, attacker_id, target_id):
         _ms = world.get_component(target_id, NpcSounds)
         SOUNDS.play_mob_sounds(_ms, "aggro", dedup_key=f"dmg_{target_id}")
-        _ai.state             = "AGGRO_DELAY"
-        _ai.aggro_delay       = 0.5
-        _ai.aggroed_by_damage = True
-        # Quem bateu vira o alvo — espelha o bloco melee de deal_damage
-        # (ver comentário lá): aquisição é filtrada por hostilidade+raio,
-        # então sem isto um mob neutro atacado nunca recebia alvo.
-        _ai.target_eid        = attacker_id
-        _ai.path_recalc_timer = 0.0
+        trigger_mob_aggro(world, target_id, attacker_id, by_damage=True, delay=0.5)
     return result == "killed"
+
+
+# ── trigger_mob_aggro / puxão de grupo ────────────────────────────────────────
+# Raio (Chebyshev, tiles) em que um mob vizinho da MESMA Faction é puxado pra
+# combate quando outro mob perto dele acabou de aggrar — estilo WoW/LoL jungle
+# camp (16/08/2026, pedido do usuário: "se vc agra um mob, e ele está dentro
+# de um raio de X tiles de outros mobs, esses mobs também agram", confirmado
+# geral — vale pra QUALQUER mob, hostil OU neutro, não só jungle).
+PACK_AGGRO_RADIUS_TILES = 3
+
+
+def trigger_mob_aggro(world, mob_eid: int, target_eid: int, *,
+                      by_damage: bool, delay: float,
+                      _propagate: bool = True) -> None:
+    """Ponto ÚNICO de transição IDLE→AGGRO_DELAY (16/08/2026) — antes esse
+    bloco de 5 campos (`state`/`aggro_delay`/`aggroed_by_damage`/
+    `target_eid`/`path_recalc_timer`) estava copiado quase idêntico em 4
+    lugares (aggro de proximidade em EnemyAISystem.update(), aggro por dano
+    em CombatSystem.deal_damage, apply_magic_damage_shared logo acima, e
+    2x em server/spell_completion_processor.py — 1 delas pulava direto pra
+    "CHASING" sem nenhum delay, inconsistência não-intencional corrigida
+    de graça ao centralizar aqui). Cada chamador continua responsável pelo
+    PRÓPRIO som/log de aggro (não dá pra unificar isso: alguns tocam som
+    direto, spell_completion_processor precisa enfileirar
+    `_pending_sound_events` por ser assíncrono).
+
+    `_propagate` (uso interno, nunca passado por quem chama de fora):
+    dispara o puxão de grupo — mob vizinho da MESMA Faction, no MESMO
+    mapa, ainda IDLE, dentro de `PACK_AGGRO_RADIUS_TILES`, também entra em
+    AGGRO_DELAY contra o MESMO alvo. Só 1 salto (decisão do usuário): o
+    vizinho puxado entra com `_propagate=False`, então ele mesmo não puxa
+    os vizinhos DELE — evita puxar o camp inteiro em cascata.
+
+    No-op se `mob_eid` não estiver IDLE (mob já em combate/retornando não
+    é re-aggrado por isto)."""
+    from engine.components import AIControlled
+    ai = world.get_component(mob_eid, AIControlled)
+    if ai is None or ai.state != "IDLE":
+        return
+    ai.state              = "AGGRO_DELAY"
+    ai.aggro_delay         = delay
+    ai.aggroed_by_damage   = by_damage
+    ai.target_eid          = target_eid
+    ai.path_recalc_timer   = 0.0
+    if _propagate:
+        _pull_nearby_packmates(world, mob_eid, target_eid)
+
+
+def _pull_nearby_packmates(world, source_eid: int, target_eid: int) -> None:
+    """Varredura (1 salto) a partir de `source_eid` — chamada só quando um
+    mob acabou de entrar em AGGRO_DELAY, nunca por tick (evento raro, sem
+    necessidade de índice espacial). Sem checagem de linha de visão de
+    propósito: `core_systems.py` é compartilhado/headless, sem acesso
+    confiável ao tilemap CERTO em contexto multi-mapa sem reimplementar o
+    padrão de resolução por-entidade que os handlers de skill já usam
+    (`register_map_services_for`) — over-engineering pro caso comum de
+    grupo já nascer próximo, sem parede no meio."""
+    from engine.components import AIControlled, Faction, MapLocation, TileMovement
+    src_fac = world.get_component(source_eid, Faction)
+    src_ml  = world.get_component(source_eid, MapLocation)
+    src_tm  = world.get_component(source_eid, TileMovement)
+    if not (src_fac and src_ml and src_tm):
+        return
+    for eid, ai2, fac2, ml2, tm2 in world.get_entities_with(
+            AIControlled, Faction, MapLocation, TileMovement):
+        if eid == source_eid or ai2.state != "IDLE":
+            continue
+        if ml2.map_file != src_ml.map_file or fac2.faction_id != src_fac.faction_id:
+            continue
+        if max(abs(tm2.current_tile_x - src_tm.current_tile_x),
+               abs(tm2.current_tile_y - src_tm.current_tile_y)) > PACK_AGGRO_RADIUS_TILES:
+            continue
+        trigger_mob_aggro(world, eid, target_eid, by_damage=True,
+                          delay=0.5, _propagate=False)
 
 
 # ── apply_effect ──────────────────────────────────────────────────────────────

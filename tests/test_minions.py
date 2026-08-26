@@ -772,6 +772,40 @@ class TestMinionWaveSpawning(unittest.TestCase):
         for m in minions:
             self.assertNotIn(tower_tile, m.route,
                             "rota não deveria atravessar o tile exato de uma torre")
+
+    def test_rota_desvia_do_pe_de_2_tiles_da_torre_nao_so_do_ancora(self):
+        """Bug real de playtest (25/08/2026): torre ocupa um pé de
+        colisão REAL de 2 tiles desde §42 (`entity_footprint_tiles`,
+        sprite de 64px), mas `WorldServer._get_tower_tiles_for_map`
+        (dynamic_obstacles da rota) só registrava o tile ÂNCORA — o 2º
+        tile do pé ficava invisível pro cálculo. Aqui a torre é
+        plantada com o ÂNCORA FORA do caminho reto, mas o 2º tile do pé
+        (`entity_footprint_tiles`) EM CIMA dele — reproduz exatamente o
+        cenário que travava o bot (minion tinha fallback próprio já
+        correto, `_get_occupied_tiles`, e nunca mostrava o sintoma)."""
+        from engine.world_systems import entity_footprint_tiles
+        tower_tile = (130, 380)  # no caminho reto (130,374)->(130,390)
+        tower_anchor = (129, 380)  # 1 tile a oeste, FORA do caminho
+        tower_eid = create_tower(self.ws.world, tower_anchor[0], tower_anchor[1],
+                                 "torre_de_fogo", faction_id="monstros_hostis")
+        self.ws.world.add_component(tower_eid, MapLocation(self.ws._map_file))
+        tower_tm = self.ws.world.get_component(tower_eid, TileMovement)
+        footprint = entity_footprint_tiles(self.ws.world, tower_eid, tower_tm)
+        self.assertIn(tower_tile, footprint,
+                      "pré-condição do teste: o pé da torre precisa cobrir o tile do caminho")
+        self.assertNotEqual(tower_anchor, tower_tile,
+                            "pré-condição do teste: o âncora não pode ser o próprio tile do caminho")
+
+        self.ws._minion_lanes[self.ws._map_file] = [self._lane(interval=6.0)]
+        self.ws._activate_minion_lanes(self.ws._map_file)
+        run_ticks(self.ws, 200)
+        minions = [self.ws.world.get_component(eid, Minion)
+                  for eid, _ in self.ws.world.get_entities_with(Minion)]
+        self.assertTrue(minions)
+        for m in minions:
+            self.assertNotIn(tower_tile, m.route,
+                            "rota não deveria atravessar o 2º tile do pé da torre, "
+                            "mesmo com o âncora fora do caminho")
             self.assertEqual(m.route[-1], (130, 390), "ainda deveria chegar no alvo, só contornando")
 
     def test_lane_com_multiplos_waypoints_passa_por_cada_um_em_ordem(self):

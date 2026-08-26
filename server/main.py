@@ -122,6 +122,13 @@ async def main(host: str, port: int) -> None:
             # nenhuma lógica nova de guard precisa entrar aqui).
             log.info("[Server] Ctrl+C recebido — salvando players conectados antes de encerrar...")
             await mgr._autosave_all()
+            # Encerra qualquer _run_dispatch ainda pendente AQUI, ainda
+            # dentro do loop vivo — sem isso, uma corrida entre este
+            # Ctrl+C e a limpeza automática do asyncio.run() podia deixar
+            # a exceção de uma dessas tasks "sem ser retirada", gerando um
+            # ImportError cosmético já com o interpretador em desligamento
+            # (ver SessionManager.shutdown_dispatch_tasks).
+            await mgr.shutdown_dispatch_tasks()
             raise
 
 

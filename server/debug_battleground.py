@@ -227,10 +227,11 @@ def _enter(ws, eid: int, side: str) -> "tuple[str, dict | None, float | None]":
     from engine.components import CharStatsTracker as _CST_enter
     _cst_enter = ws.world.get_component(eid, _CST_enter)
     _state["stat_snapshots"][eid] = {
-        "kills":  _cst_enter.players_killed if _cst_enter else 0,
-        "deaths": _cst_enter.deaths if _cst_enter else 0,
-        "farm":   _cst_enter.minions_killed if _cst_enter else 0,
-        "damage": (_cst_enter.pve_damage + _cst_enter.pvp_damage) if _cst_enter else 0,
+        "kills":   _cst_enter.players_killed if _cst_enter else 0,
+        "deaths":  _cst_enter.deaths if _cst_enter else 0,
+        "assists": _cst_enter.assists if _cst_enter else 0,
+        "farm":    _cst_enter.minions_killed if _cst_enter else 0,
+        "damage":  (_cst_enter.pve_damage + _cst_enter.pvp_damage) if _cst_enter else 0,
     }
     _state["last_kda_sent"].pop(eid, None)
     # Gold GANHO (03/08/2026 — ver docstring de _state acima): baseline no
@@ -408,18 +409,19 @@ def notify_nexus_destroyed(ws, tower_map_file: str, destroyed_faction: str,
         team_faction = fac.faction_id if fac else None
         cst = ws.world.get_component(m_eid, CharStatsTracker)
         snap = _state["stat_snapshots"].get(
-            m_eid, {"kills": 0, "deaths": 0, "farm": 0, "damage": 0})
+            m_eid, {"kills": 0, "deaths": 0, "assists": 0, "farm": 0, "damage": 0})
         char = ws.world.get_component(m_eid, CharacterStats)
         players.append({
-            "eid":    m_eid,
-            "name":   char.name if char else "",
-            "team":   "a" if team_faction == "arena_time_a" else "b",
-            "kills":  (cst.players_killed if cst else 0) - snap["kills"],
-            "deaths": (cst.deaths if cst else 0) - snap["deaths"],
-            "farm":   (cst.minions_killed if cst else 0) - snap["farm"],
-            "gold":   _sample_gold_earned(ws, m_eid),
-            "damage": ((cst.pve_damage + cst.pvp_damage) if cst else 0) - snap["damage"],
-            "won":    team_faction == winner_faction,
+            "eid":     m_eid,
+            "name":    char.name if char else "",
+            "team":    "a" if team_faction == "arena_time_a" else "b",
+            "kills":   (cst.players_killed if cst else 0) - snap["kills"],
+            "deaths":  (cst.deaths if cst else 0) - snap["deaths"],
+            "assists": (cst.assists if cst else 0) - snap.get("assists", 0),
+            "farm":    (cst.minions_killed if cst else 0) - snap["farm"],
+            "gold":    _sample_gold_earned(ws, m_eid),
+            "damage":  ((cst.pve_damage + cst.pvp_damage) if cst else 0) - snap["damage"],
+            "won":     team_faction == winner_faction,
         })
 
     _state["match_decided"]   = True
@@ -463,18 +465,20 @@ def _tick_kda_hud(ws) -> None:
         if snap is None:
             continue
         cst = ws.world.get_component(eid, CharStatsTracker)
-        kills  = (cst.players_killed if cst else 0) - snap["kills"]
-        deaths = (cst.deaths if cst else 0) - snap["deaths"]
-        farm   = (cst.minions_killed if cst else 0) - snap["farm"]
-        gold   = _sample_gold_earned(ws, eid)
-        cur = (kills, deaths, farm, gold)
+        kills   = (cst.players_killed if cst else 0) - snap["kills"]
+        deaths  = (cst.deaths if cst else 0) - snap["deaths"]
+        assists = (cst.assists if cst else 0) - snap.get("assists", 0)
+        farm    = (cst.minions_killed if cst else 0) - snap["farm"]
+        gold    = _sample_gold_earned(ws, eid)
+        cur = (kills, deaths, assists, farm, gold)
         if _state["last_kda_sent"].get(eid) == cur:
             continue
         _state["last_kda_sent"][eid] = cur
         ws.queue_stats_update({
-            "player_eid":  eid,
-            "match_kills":  kills, "match_deaths": deaths,
-            "match_farm":   farm,  "match_gold":   gold,
+            "player_eid":    eid,
+            "match_kills":   kills,   "match_deaths": deaths,
+            "match_assists": assists,
+            "match_farm":    farm,    "match_gold":   gold,
         })
 
 

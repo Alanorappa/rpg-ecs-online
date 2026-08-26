@@ -61,7 +61,13 @@ INSTANCE_STARTING_GOLD = 150
 # usam o `gold_min`/`gold_max` da própria definição
 # (content/minion_definitions.py/tower_definitions.py) — só player não
 # tem uma tabela de definição própria pra guardar isso.
-INSTANCE_PLAYER_KILL_GOLD = 50
+# Rebalance de economia da BG (16/08/2026, pedido do usuário) — kill de
+# player precisa valer MUITO mais que farm de minion (mesma proporção
+# que o LoL usa), e o gold só era concedido de verdade a partir da
+# unificação de kill/assist (ver PROBLEMAS_ARQUITETURA.md) — antes
+# disso este valor nunca chegava a ser pago (bug real, mesma causa raiz
+# do KDA nunca contar kill em partida real).
+INSTANCE_PLAYER_KILL_GOLD = 300
 
 
 def is_in_normalized_progression(ws, eid: int) -> bool:

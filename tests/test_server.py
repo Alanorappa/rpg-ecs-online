@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tests.helpers import (
     make_world_server, spawn_player, run_ticks,
     teleport_mob_to_player, set_entity_tile, first_mob, get_mob_hp, get_player_hp,
+    engage_target,
 )
 
 
@@ -90,7 +91,7 @@ class TestPlayerAttacksMob(unittest.TestCase):
         hp_before, _ = get_mob_hp(self.ws, mob_eid)
 
         teleport_mob_to_player(self.ws, mob_eid, self.ws._player_eids["s1"])
-        self.ws.set_player_target("s1", mob_eid)
+        engage_target(self.ws, "s1", mob_eid)
         run_ticks(self.ws, 240)   # 12s de combate — margem contra miss/dodge/parry (ver docstring da classe)
 
         hp_after, _ = get_mob_hp(self.ws, mob_eid)
@@ -101,7 +102,7 @@ class TestPlayerAttacksMob(unittest.TestCase):
         """Cada hit deve gerar um entry em deltas['combat']."""
         mob_eid = first_mob(self.ws)
         teleport_mob_to_player(self.ws, mob_eid, self.ws._player_eids["s1"])
-        self.ws.set_player_target("s1", mob_eid)
+        engage_target(self.ws, "s1", mob_eid)
         deltas = run_ticks(self.ws, 240)
 
         player_hits = [c for c in deltas["combat"]
@@ -113,7 +114,7 @@ class TestPlayerAttacksMob(unittest.TestCase):
         mob_eid = first_mob(self.ws)
         _, hp_max_before = get_mob_hp(self.ws, mob_eid)  # captura ANTES do combate
         teleport_mob_to_player(self.ws, mob_eid, self.ws._player_eids["s1"])
-        self.ws.set_player_target("s1", mob_eid)
+        engage_target(self.ws, "s1", mob_eid)
         deltas = run_ticks(self.ws, 240)
 
         for cr in deltas["combat"]:
@@ -130,7 +131,7 @@ class TestPlayerAttacksMob(unittest.TestCase):
         cs.current_hp = 1   # mata na primeira pancada
 
         teleport_mob_to_player(self.ws, mob_eid, self.ws._player_eids["s1"])
-        self.ws.set_player_target("s1", mob_eid)
+        engage_target(self.ws, "s1", mob_eid)
         deltas = run_ticks(self.ws, 240)
 
         self.assertIn(mob_eid, deltas["despawned"],
@@ -144,7 +145,7 @@ class TestPlayerAttacksMob(unittest.TestCase):
         cs.current_hp = 1
 
         teleport_mob_to_player(self.ws, mob_eid, self.ws._player_eids["s1"])
-        self.ws.set_player_target("s1", mob_eid)
+        engage_target(self.ws, "s1", mob_eid)
         run_ticks(self.ws, 240)
 
         self.assertNotIn(mob_eid, self.ws._mob_eids,
@@ -158,7 +159,7 @@ class TestPlayerAttacksMob(unittest.TestCase):
         cs.current_hp = 1
 
         teleport_mob_to_player(self.ws, mob_eid, self.ws._player_eids["s1"])
-        self.ws.set_player_target("s1", mob_eid)
+        engage_target(self.ws, "s1", mob_eid)
         deltas = run_ticks(self.ws, 240)
 
         from collections import Counter
@@ -412,7 +413,7 @@ class TestAutoAttackFlow(unittest.TestCase):
 
         # Define alvo e aproxima mob (simula player clicando no mob)
         teleport_mob_to_player(self.ws, mob_eid, self.ws._player_eids["s1"])
-        self.ws.set_player_target("s1", mob_eid)
+        engage_target(self.ws, "s1", mob_eid)
         # Zera timer de ataque para garantir disparo imediato (evita flakiness de estado global)
         self.ws._attack_timers["s1"] = 0.0
 
@@ -434,7 +435,7 @@ class TestAutoAttackFlow(unittest.TestCase):
         cs.current_hp = 1   # força morte rápida para validar o fluxo
 
         teleport_mob_to_player(self.ws, mob_eid, self.ws._player_eids["s1"])
-        self.ws.set_player_target("s1", mob_eid)
+        engage_target(self.ws, "s1", mob_eid)
         deltas = run_ticks(self.ws, 240)
 
         self.assertIn(mob_eid, deltas["despawned"],

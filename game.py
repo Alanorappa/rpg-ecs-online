@@ -1096,15 +1096,21 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         dele.
 
         Arena É diferente de duelo/zona aqui: no servidor a hostilidade
-        vem de Faction (arena_time_a/b), NUNCA passa por este resolver —
-        mas o CLIENTE nunca recebe Faction de outro player via
-        ENTITY_SPAWN (só mob manda "faction"), então pro cliente os dois
-        continuam com a facção default "jogadores" = amigável, e clique
+        vem de Faction (arena_time_a/b), NUNCA passa por este resolver.
+        Até 16/08/2026 o CLIENTE nunca recebia Faction de outro player via
+        ENTITY_SPAWN (só mob mandava "faction"), então pro cliente os dois
+        continuavam com a facção default "jogadores" = amigável, e clique
         direito/SPACE/skill ficavam bloqueados mesmo com o servidor
         liberando o dano (bug real relatado pelo usuário 20/07/2026: "não
-        consegui atacar" na arena). Fix: contexto explícito aqui, igual
-        duelo — ArenaHandlers._arena_opponents_server guarda os SERVER
-        eids dos oponentes da partida ativa."""
+        consegui atacar" na arena) — corrigido então com este contexto
+        explícito aqui (ArenaHandlers._arena_opponents_server guarda os
+        SERVER eids dos oponentes da partida ativa). Desde 16/08/2026
+        (`WorldServer.player_faction_field`) o player remoto TAMBÉM recebe
+        a Faction real quando o servidor já tem uma — a maioria dos casos
+        de arena/BG já resolve direto por `can_engage`/Faction (mesmo
+        tier "hostil" que o servidor usa), sem nunca chegar aqui; este
+        resolver continua a rede de segurança composta pra qualquer caso
+        que dependa de contexto (duelo/zona), não só facção fixa."""
         if self._duel_opponent_local_eid != -1 and \
                 {a, b} == {self.player_entity, self._duel_opponent_local_eid}:
             return True

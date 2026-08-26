@@ -769,15 +769,11 @@ class SpellCompletionMixin:
         _ai = self.world.get_component(target_id, AIControlled)
         from engine.faction_system import can_engage as _can_engage_magic
         if _ai and _ai.state == "IDLE" and _can_engage_magic(self.world, attacker_id, target_id):
-            _ai.state             = "AGGRO_DELAY"
-            _ai.aggro_delay       = 0.5   # mesmo comportamento do range aggro, mas mais curto
-            _ai.aggroed_by_damage = True
-            # Quem bateu vira o alvo — mesma razão do bloco melee em
-            # CombatSystem.deal_damage (ver comentário lá): sem isto, mob
-            # NEUTRO atacado por magia nunca recebia alvo (aquisição é
-            # filtrada por hostilidade + raio) e desistia sem revidar.
-            _ai.target_eid        = attacker_id
-            _ai.path_recalc_timer = 0.0
+            # Transição + puxão de grupo centralizados em
+            # core_systems.trigger_mob_aggro (16/08/2026).
+            from engine.core_systems import trigger_mob_aggro as _trigger_aggro_sc1
+            _trigger_aggro_sc1(self.world, target_id, attacker_id,
+                               by_damage=True, delay=0.5)
             # Detector de aggro em world_server.py usa snapshot pré-tick e perde transições
             # ocorridas entre ticks/dentro de _process_spell_cast_completions e handlers
             # assíncronos de PROJECTILE_HIT_CS (aqui). Enfileira som diretamente para garantir
@@ -1214,10 +1210,14 @@ class SpellCompletionMixin:
         from engine.faction_system import can_engage as _can_engage_ranged
         _ai = self.world.get_component(target_id, _AIC2)
         if _ai and _ai.state == "IDLE" and _can_engage_ranged(self.world, player_eid, target_id):
-            _ai.state              = "CHASING"
-            _ai.aggroed_by_damage  = True
-            _ai.target_eid         = player_eid
-            _ai.path_recalc_timer  = 0.0
+            # Transição + puxão de grupo centralizados em
+            # core_systems.trigger_mob_aggro (16/08/2026) — antes pulava
+            # direto pra CHASING sem nenhum delay (inconsistente com os
+            # outros 3 pontos de aggro por dano, que usam AGGRO_DELAY de
+            # 0.5s); normalizado ao centralizar.
+            from engine.core_systems import trigger_mob_aggro as _trigger_aggro_sc2
+            _trigger_aggro_sc2(self.world, target_id, player_eid,
+                               by_damage=True, delay=0.5)
             _ai.target_lost_timer  = 0.0
             # Detector de aggro em world_server.py usa snapshot pré-tick e perde transições
             # ocorridas entre ticks (aqui). Enfileira som diretamente para garantir que o

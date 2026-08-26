@@ -68,14 +68,17 @@ class ServerDeathHandler:
         for eid, pd in self.world.get_entities_with(PendingDeath):
             # Player morreu (PvP): usa _handle_player_death, NÃO o fluxo de mob
             # (que criaria corpse com loot, daria XP de mob e despawnaria a entidade).
+            # Kill credit/assist (16/08/2026, unificado) moram DENTRO de
+            # _handle_player_death agora, não aqui — repassa killer_eid
+            # em vez de creditar direto (era o ÚNICO lugar que creditava,
+            # mas esta branch quase nunca era alcançada de verdade: os 2
+            # caminhos de morte por combate corpo-a-corpo/PvP direto
+            # (server/combat_processor.py) sempre processavam a morte e
+            # apagavam o PendingDeath ANTES deste update() rodar, no
+            # MESMO tick — players_killed nunca incrementava em partida
+            # real. Ver PROBLEMAS_ARQUITETURA.md).
             if self.world_server and eid in self.world_server._player_eids.values():
-                # CharStatsTracker.players_killed (Fase E) — só conta se o
-                # killer também for player (mob que mata player não credita
-                # "players_killed" pra ninguém).
-                if pd.killer_entity_id in self.world_server._player_eids.values():
-                    from engine.utils import incr_char_stat as _incr_cst_pk
-                    _incr_cst_pk(self.world, pd.killer_entity_id, "players_killed")
-                self.world_server._handle_player_death(eid)
+                self.world_server._handle_player_death(eid, killer_eid=pd.killer_entity_id)
                 try:
                     self.world.remove_component(eid, PendingDeath)
                 except Exception:
@@ -256,6 +259,20 @@ class ServerDeathHandler:
                 from shared.constants import PARTY_XP_SHARE_RADIUS_TILES as _MXPR
                 from server.instance_progression import players_in_normalized_progression_near as _players_near
                 _nearby = _players_near(self.world_server, mob_tx, mob_ty, mob_map, _MXPR)
+                # Só o time INIMIGO do minion morto ganha XP por
+                # proximidade — nunca o próprio time (bug real relatado
+                # pelo usuário, 16/08/2026: minion do PRÓPRIO time dando
+                # XP pro player perto). Faction do minion MORTO (`eid`),
+                # não do killer — sempre disponível, sem precisar
+                # resolver fallback nenhum. Minion sem Faction (não
+                # deveria existir em produção) cai no comportamento
+                # antigo, sem filtro, como rede de segurança.
+                from engine.components import Faction as _FacMinionXP
+                _dying_fac_xp = self.world.get_component(eid, _FacMinionXP)
+                if _dying_fac_xp is not None:
+                    _nearby = [p for p in _nearby
+                              if (self.world.get_component(p, _FacMinionXP) or _FacMinionXP("")).faction_id
+                                 != _dying_fac_xp.faction_id]
                 if _nearby:
                     _minion_xp_by_proximity = True
                     _share = max(1, base_xp // len(_nearby))
@@ -353,26 +370,40 @@ class ServerDeathHandler:
             # (killer não é player) NEM suprimia o coin físico do corpse
             # (`_instance_gold_ja_concedido` nunca virava True), fazendo a
             # torre voltar a dropar ouro físico dentro da instância.
-            # Fallback: primeiro PLAYER que bateu (`damage_log` já
-            # filtrado só-players acima, mesma fonte de `first_attacker_
-            # eid` mais abaixo) — se NENHUM player bateu (minion mata
-            # sozinho), `_gold_recipient_eid` fica -1 e o comportamento
-            # antigo (coins físicos normais) se mantém, correto.
+            # Fallback (primeiro PLAYER que bateu, `damage_log` já
+            # filtrado só-players acima) é SÓ pra TORRE (16/08/2026,
+            # corrigido — bug real relatado pelo usuário: minion estava
+            # herdando o mesmo fallback, dando gold pro primeiro player
+            # que bateu mesmo quando o golpe final foi de OUTRO minion/
+            # torre) — torre é objetivo de equipe, compartilha gold
+            # mesmo sem golpe final de player; minion/jungle-normal são
+            # farm, exigem golpe final de player de verdade, sem
+            # fallback nenhum (mesmo padrão que "farm"/minions_killed já
+            # usa, ver CharStatsTracker). Sem player nenhum dando o golpe
+            # final → `_gold_recipient_eid` fica -1, comportamento antigo
+            # (coins físicos normais) se mantém, correto.
             # `_instance_gold_ja_concedido`: usado no passo 5 (loot/coins do
             # corpse) pra NÃO duplicar ouro de torre — torre sempre cai no
             # roll_mob_loot/coins normal (é "estrutura", não tem tabela
             # própria de loot condicional), então sem essa flag o killer
             # ganhava o gold de instância AQUI *e* de novo ao lootear o
             # corpse (coins normais de torre nunca eram suprimidos).
+            #
+            # Gold de kill de player NÃO é concedido aqui (nunca foi
+            # alcançável de verdade — morte de player nunca chega neste
+            # loop, ver bloco no topo de update()) — passou a ser
+            # concedido dentro de RespawnMixin._handle_player_death,
+            # junto do crédito de kill/assist (16/08/2026, ver
+            # PROBLEMAS_ARQUITETURA.md).
             _instance_gold_ja_concedido = False
             if self.world_server:
-                _gold_recipient_eid = (killer_eid if killer_eid in _player_eids_now
-                                       else (next(iter(damage_log)) if damage_log else -1))
+                _gold_recipient_eid = killer_eid if killer_eid in _player_eids_now else -1
+                if _gold_recipient_eid == -1 and _tower_dh is not None:
+                    _gold_recipient_eid = next(iter(damage_log)) if damage_log else -1
                 if _gold_recipient_eid != -1:
                     from server.instance_progression import (
                         is_in_normalized_progression as _is_norm_dh,
                         grant_instance_gold as _grant_gold_dh,
-                        INSTANCE_PLAYER_KILL_GOLD as _PKG_dh,
                     )
                     if _is_norm_dh(self.world_server, _gold_recipient_eid):
                         if _tower_dh is not None:
@@ -392,8 +423,6 @@ class ServerDeathHandler:
                             # próprio, time-restrito, mais adiante.
                             _gold_amt = (random.randint(_jungle_dh.gold_min, _jungle_dh.gold_max)
                                         if _jungle_dh.gold_max > 0 else 0)
-                        elif eid in _player_eids_now:
-                            _gold_amt = _PKG_dh
                         else:
                             _gold_amt = 0
                         if _gold_amt > 0:
@@ -540,6 +569,18 @@ class ServerDeathHandler:
                 if killer_eid != -1 and killer_eid in _player_eids_now:
                     from engine.utils import incr_char_stat as _incr_farm
                     _incr_farm(self.world, killer_eid, "minions_killed")
+            elif _jungle_dh is not None:
+                # Jungle (normal ou boss, 16/08/2026, pedido do usuário —
+                # "não deve dropar items nem gold, o gold deve ir para a
+                # carteira automaticamente") — o gold de instância JÁ foi
+                # concedido acima (grant_instance_gold, bloco de boss ~L316
+                # ou bloco genérico de kill ~L415), com o mesmo feedback de
+                # FLT que minion/kill de player já usam. Sem este branch,
+                # jungle caía no `else` genérico (pensado pra MOB_TABLE
+                # normal) e rolava item/coin FÍSICO duplicado no corpse —
+                # mesmo padrão de minion acima, zero loot.
+                loot_items = []
+                coins = 0
             else:
                 try:
                     from content.loot_tables import roll_mob_loot, roll_mob_coins as _roll_mob_coins

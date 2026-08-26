@@ -59,10 +59,11 @@ class InstanceInventoryUIState:
         # vindo do STATS_UPDATE (match_kills/match_deaths/match_farm/
         # match_gold — servidor já manda pronto, ver
         # server/debug_battleground.py::_tick_kda_hud).
-        self.match_kills:  int = 0
-        self.match_deaths: int = 0
-        self.match_farm:   int = 0
-        self.match_gold:   int = 0
+        self.match_kills:   int = 0
+        self.match_deaths:  int = 0
+        self.match_assists: int = 0
+        self.match_farm:    int = 0
+        self.match_gold:    int = 0
 
 
 class DragState:

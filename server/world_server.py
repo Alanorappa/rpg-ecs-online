@@ -301,6 +301,22 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         # Rastreamento de dano por mob: mob_eid → {player_eid: total_damage}
         self._mob_damage_log: dict[int, dict[int, int]] = {}
+        # Kill credit + assist de player (16/08/2026, unificação pedida
+        # pelo usuário) — vítima_eid → {atacante_eid: (timestamp, seq)
+        # do último hit}, SÓ player→player (diferente de _mob_damage_log
+        # acima, que soma dano total sem ordem no tempo e mistura
+        # atacante mob/player). `seq` (contador monotônico próprio,
+        # nunca reseta) é desempate pra 2 hits no MESMO tick — `time.
+        # time()` não tem resolução garantida pra separar 2 chamadas a
+        # microssegundos de distância (achado testando: 2 players
+        # batendo na mesma vítima no mesmo tick empatavam no timestamp,
+        # e `max()` desempatava pela ordem de inserção do dict, não por
+        # quem bateu de verdade por último). Usado por RespawnMixin.
+        # _handle_player_death pra decidir kill (último a bater) e
+        # assist (qualquer outro dentro da janela) — ver
+        # PLAYER_KILL_ASSIST_WINDOW_S, shared/constants.py.
+        self._player_damage_log: dict[int, dict[int, tuple]] = {}
+        self._player_damage_seq: int = 0
 
         # XP a entregar aos jogadores (populado em _tick, consumido pelo SessionManager)
         self._pending_stats_updates: list[dict] = []
@@ -1107,18 +1123,129 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
     def _get_tower_tiles_for_map(self, map_file: str) -> set:
         """Tiles ocupados por torres VIVAS no mapa/instância — usado como
-        `dynamic_obstacles` no cálculo de rota de minion (01/08/2026, ver
-        comentário em `_tick_minion_waves`). Torre morta some do world
-        (respawn é entidade NOVA, `_tick_tower_respawns`), então já sai
-        sozinha do resultado sem checagem extra de HP aqui."""
-        from engine.components import Tower as _TwrTiles, Position as _PosTiles, \
+        `dynamic_obstacles` no cálculo de rota de minion/bot (01/08/2026,
+        ver comentário em `_tick_minion_waves`). Torre morta some do
+        world (respawn é entidade NOVA, `_tick_tower_respawns`), então já
+        sai sozinha do resultado sem checagem extra de HP aqui.
+
+        Usa o pé de colisão REAL (`entity_footprint_tiles`, §42 —
+        `arquitetura/PROBLEMAS_ARQUITETURA.md`: torre ocupa o tile âncora
+        + 1 offset do sprite, não só 1 tile) desde 25/08/2026. Antes só
+        registrava o âncora — `MinionSystem._get_occupied_tiles` (usado
+        pelo fallback local do MINION) já tinha sido corrigida no §42,
+        mas esta função (usada por `_compute_lane_route_tail`, a rota
+        compartilhada com o BOT, e por `BotAISystem._advance_toward`,
+        fallback do bot) não — causava o bot travar permanentemente
+        quando a rota cruzava o 2º tile invisível de uma torre (bug real
+        de playtest: bot preso do lado da PRÓPRIA torre logo após
+        spawnar; minion passava reto porque seu fallback já era correto)."""
+        from engine.components import Tower as _TwrTiles, TileMovement as _TMTiles, \
             MapLocation as _MLTiles
+        from engine.world_systems import entity_footprint_tiles as _footprint_tiles
         tiles: set = set()
-        for eid, _twr, pos, ml in self.world.get_entities_with(_TwrTiles, _PosTiles, _MLTiles):
+        for eid, _twr, tm, ml in self.world.get_entities_with(_TwrTiles, _TMTiles, _MLTiles):
             if ml.map_file != map_file:
                 continue
-            tiles.add((int(pos.x // TILE_SIZE), int(pos.y // TILE_SIZE)))
+            tiles.update(_footprint_tiles(self.world, eid, tm))
         return tiles
+
+    def _compute_lane_route_tail(self, map_file: str, lane: dict) -> "list | None":
+        """1 `find_path` por PERNA do waypoint da lane, do `spawn_tile`
+        até o último waypoint — MESMO cálculo que `_tick_minion_waves`
+        já fazia inline (extraído daqui, 16/08/2026, pedido do usuário:
+        bot precisa empurrar lane pelo MESMO caminho que os minions,
+        sem duplicar essa lógica pela 2ª vez — ponto único de verdade).
+        Torres vivas entram como `dynamic_obstacles` (mesmo motivo do
+        comentário original em `_tick_minion_waves`: sem isso o A* podia
+        cruzar o tile EXATO de uma torre, travando quem só anda 1 tile
+        por passo sem espaço pra desviar). `manhattan_limit=None`/
+        `max_nodes=4000`: mesmos valores de sempre, lane com curva
+        (top/bot) precisa de mais nós que o default. Retorna `None` se
+        qualquer perna falhar (chamador decide o que fazer — log só no
+        caller de wave, pra não duplicar aviso quando o bot também
+        falha na mesma lane)."""
+        pathfinding = self._get_pathfinding_for_map_file(map_file)
+        if pathfinding is None:
+            return None
+        tower_tiles = self._get_tower_tiles_for_map(map_file)
+        sx, sy = lane["spawn_tile"]
+        tail: list = []
+        leg_start = (sx, sy)
+        for wp in lane["target_tile"]:
+            leg_path = pathfinding.find_path(
+                leg_start, wp, dynamic_obstacles=tower_tiles,
+                manhattan_limit=None, max_nodes=4000)
+            if not leg_path:
+                return None
+            tail.extend(leg_path)
+            leg_start = wp
+        return tail
+
+    def _enemy_towers_covering(self, map_file: str, tile: tuple, my_faction_id: str) -> list:
+        """Torres INIMIGAS (Faction != `my_faction_id`) cujo alcance de
+        ataque cobre `tile` — mesma métrica (Chebyshev ≤
+        `attack_range_tiles`) que `TowerSystem._in_range_los` já usa
+        (`engine/world_systems.py`), só lendo componentes direto (mesmo
+        padrão de `_get_tower_tiles_for_map`, nunca chama `TowerSystem`).
+        Usado pelo dive-gate do bot (16/08/2026, pedido do usuário)."""
+        from engine.components import Tower as _TwrCov, Position as _PosCov, \
+            MapLocation as _MLCov, Faction as _FacCov
+        tx, ty = tile
+        result: list = []
+        for eid, twr, pos, ml, fac in self.world.get_entities_with(
+                _TwrCov, _PosCov, _MLCov, _FacCov):
+            if ml.map_file != map_file or fac.faction_id == my_faction_id:
+                continue
+            ttx, tty = int(pos.x // TILE_SIZE), int(pos.y // TILE_SIZE)
+            if max(abs(tx - ttx), abs(ty - tty)) <= twr.attack_range_tiles:
+                result.append(eid)
+        return result
+
+    def _skill_ready(self, eid: int, skill_obj) -> "tuple[bool, float]":
+        """Cooldown REAL (autoritativo) de uma skill pra um player/bot —
+        mesma fonte que `SkillProcessorMixin._process_skill_requests` usa
+        pra aceitar/rejeitar de verdade (`self._skill_last_used`/
+        `_skill_effective_cd`), extraído daquele método (25/08/2026) pra
+        ser reusado por `BotAISystem._try_cast_offensive_skill`. NUNCA
+        usar `PlayerSkills.skill.current_cooldown` (campo local, só
+        atualizado quando um CLIENTE de verdade processa SKILL_RESULT
+        pela rede — bot não tem cliente, então esse campo nunca reflete
+        o cooldown real; causa confirmada de bot retentando a mesma
+        skill em cooldown indefinidamente, ver PROBLEMAS_ARQUITETURA.md).
+
+        Retorna (ready, remaining_s) — remaining_s só é significativo
+        quando ready=False (usado no log/SKILL_RESULT de rejeição)."""
+        import time as _t_skready
+        key = (eid, skill_obj.skill_id)
+        elapsed = _t_skready.time() - self._skill_last_used.get(key, 0.0)
+        cd = self._skill_effective_cd.get(key, getattr(skill_obj, "cooldown", 0.0))
+        if cd > 0 and elapsed < cd:
+            return False, cd - elapsed
+        return True, 0.0
+
+    def _allied_minion_near_tile(self, map_file: str, tile: tuple,
+                                 faction_id: str, radius_tiles: int) -> bool:
+        """True se existe minion ALIADO vivo a até `radius_tiles`
+        (Chebyshev) de `tile`, no mesmo mapa — condição do dive-gate do
+        bot (25/08/2026, substitui `_allied_minion_covers_tower`: bot
+        anda JUNTO da própria leva, não precisa que o minion esteja
+        dentro do alcance exato da torre no instante exato — janela
+        antiga era frágil demais, minion morre rápido pra torre e não
+        fica parado lá. Ver `BotAISystem._dive_allowed`)."""
+        from engine.components import Minion as _MinNear, Position as _PosNear, \
+            MapLocation as _MLNear, Faction as _FacNear, CombatStats as _CSNear
+        tx, ty = tile
+        for m_eid, _minion, m_fac, m_pos, m_ml in self.world.get_entities_with(
+                _MinNear, _FacNear, _PosNear, _MLNear):
+            if m_ml.map_file != map_file or m_fac.faction_id != faction_id:
+                continue
+            m_cs = self.world.get_component(m_eid, _CSNear)
+            if m_cs is not None and m_cs.current_hp <= 0:
+                continue
+            mtx, mty = int(m_pos.x // TILE_SIZE), int(m_pos.y // TILE_SIZE)
+            if max(abs(mtx - tx), abs(mty - ty)) <= radius_tiles:
+                return True
+        return False
 
     def _create_towers(self, towers_data: list, map_file: str) -> None:
         """Cria torres estáticas (29/07/2026, pedido do usuário) a partir
@@ -1166,10 +1293,22 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 log.warning(f"[Jungle] mob_key '{mob_key}' não cadastrado em "
                            f"{'JUNGLE_BOSS_TABLE' if is_boss else 'JUNGLE_MOB_TABLE'}, pulando")
                 continue
+            # Level dinâmico (16/08/2026, pedido do usuário) — mesmo
+            # princípio de `_tick_minion_waves`/`_compute_team_avg_level`:
+            # recalcula pela média de level dos players REAIS na instância
+            # AGORA, não fixa no JSON. `c.get("level", 1)` vira só o
+            # fallback (sem player ainda na instância, ex: carga inicial
+            # do mapa antes do 1º accept).
+            level = self._compute_match_avg_level(map_file, default_level=c.get("level", 1))
             eid = create_enemy(
                 self.world, c["x"], c["y"],
-                race=mob_key, faction=c.get("faction", "monstros_hostis"),
-                level=c.get("level", 1),
+                race=mob_key, faction=c.get("faction", "monstros_jungle"),
+                level=level,
+                # Sem isto o nome exibido caía no fallback `race` (aqui,
+                # o mob_key cru, ex: "jungle_lobo_alfa") — bug real
+                # relatado pelo usuário 16/08/2026: "os monstros da
+                # jungle estão com o código no lugar do nome".
+                identity_name=mdef.get("display_name", mob_key),
             )
             try:
                 self.world.remove_component(eid, XPReward)
@@ -1443,6 +1582,27 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             return default_level
         return round(sum(levels) / len(levels))
 
+    def _compute_match_avg_level(self, map_file: str, default_level: int = 1) -> int:
+        """Equivalente de `_compute_team_avg_level` pra jungle (16/08/2026,
+        pedido do usuário: "o level dos monstros precisa subir junto com o
+        nível médio de todos os players, assim como acontece com os
+        minions") — SEM filtro de Faction, porque camp de jungle é neutro
+        (`faction: "monstros_hostis"`, hostil aos dois times por igual),
+        então escala pela média de TODOS os players reais na instância,
+        não de um time só. Usada por `_create_jungle_camps` (chamada tanto
+        na carga inicial do mapa quanto em CADA respawn individual de
+        camp, `_tick_jungle_camp_respawns` — mesmo espírito de "recalcula
+        a cada spawn", só que jungle não tem wave fixa, o respawn de cada
+        mob morto É a oportunidade de recalcular)."""
+        from engine.components import CharacterStats as _CSAvgJ, \
+            MapLocation as _MLAvgJ, PlayerControlled as _PCAvgJ
+        levels = [char.level for _eid, _pc, ml, char in self.world.get_entities_with(
+                      _PCAvgJ, _MLAvgJ, _CSAvgJ)
+                  if ml.map_file == map_file]
+        if not levels:
+            return default_level
+        return round(sum(levels) / len(levels))
+
     def _tick_minion_waves(self, dt: float) -> None:
         """Pra cada lane ATIVA (chave em `_minion_wave_timers` — só
         existe depois de `_activate_minion_lanes`), acumula `dt`; ao
@@ -1476,82 +1636,35 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 continue
             self._minion_wave_timers[key] = elapsed - wave_interval_s
 
-            pathfinding = self._get_pathfinding_for_map_file(map_file)
-            if pathfinding is None:
-                continue
             # Level médio do time, recalculado a CADA wave (pedido do
             # usuário, 30/07/2026) — nunca o valor estático da lane
             # quando há player de verdade pra medir.
             wave_level = self._compute_team_avg_level(
                 map_file, faction, default_level=lane.get("level", 1))
             sx, sy = lane["spawn_tile"]
-            waypoints = lane["target_tile"]  # sempre lista de (x,y), ver map_loader.py
-            # Torres como obstáculo da ROTA (01/08/2026, bug real relatado
-            # pelo usuário: minion travava "atrás da torre" sem NUNCA
-            # desviar). Raiz: a rota é calculada 1x aqui, sem saber onde
-            # as torres estão — se o A* (livre, só olhando terreno) cruza
-            # o tile exato de uma torre, o minion recebe esse tile como
-            # PRÓXIMO PASSO da rota em ADVANCING; `_walk_toward` só pede
-            # ao pathfinder "chegar no PRÓXIMO tile" (distância 1) — sem
-            # espaço nenhum pra desviar quando esse único tile está
-            # ocupado (torre nunca sai do lugar, então nunca destrava
-            # sozinho). Corrigido na ORIGEM: passa as torres do mapa como
-            # `dynamic_obstacles` pro cálculo da rota, então ela nunca
-            # atravessa o tile de uma torre pra começo de conversa — perto
-            # de uma torre (pra brigar de verdade) continua funcionando
-            # normal via FIGHTING (que persegue por chebyshev, nunca tenta
-            # pisar no tile exato do alvo, ver _walk_toward na FIGHTING).
-            tower_tiles = self._get_tower_tiles_for_map(map_file)
-            # tile_validation do MESMO bundle do pathfinding acima — usado só
+            # tile_validation do MESMO bundle do pathfinding — usado só
             # pra validar os offsets de spawn abaixo (03/08/2026, bug real:
             # 2 dos 7 offsets de _MINION_WAVE_OFFSETS caem em parede em
             # lanes com base "estreita" tipo top/bot — mid nunca pegava
-            # porque o spawn ali tem mais espaço livre ao redor). Nunca
-            # `None` se `pathfinding` também não é (mesmo bundle).
+            # porque o spawn ali tem mais espaço livre ao redor).
             _bundle_mw = self._map_bundles.get(map_file)
             tile_validation = _bundle_mw.tile_validation if _bundle_mw else None
 
             # 1 find_path por PERNA, calculado UMA VEZ POR LANE (não por
-            # minion) — pedido do usuário, 30/07/2026: lane com curva
-            # (top/bot) precisa de waypoints intermediários; mid (reta) usa
-            # só 1, que vira o comportamento de sempre. `manhattan_limit=
-            # None`: o default (60) rejeitaria silenciosamente uma perna
-            # longa num mapa MOBA de verdade. `max_nodes=4000` (03/08/2026,
-            # bug real relatado pelo usuário — "só testei a rota do mid,
-            # quero liberar todas"): o default (300, engine/world_systems.py)
-            # é MUITO baixo pras lanes com curva (top/bot) deste mapa
-            # 100×100 — cada perna precisa de ~450-590 nós explorados; mid é
-            # reta e cabia em ~100-270, por isso era a ÚNICA que sempre
-            # funcionava. Falha vira log (nunca mais silenciosa).
-            #
-            # CACHE POR LANE (03/08/2026, mesmo pedido — travamento real: os
-            # 7 minions de uma wave têm offsets de ±1-2 tiles só, TODOS
-            # convergindo pro MESMO destino pelos MESMOS waypoints — calcular
-            # o A* individualmente pra cada um (até 7×2=14 buscas por lane,
-            # 84 por wave com as 6 lanes disparando no mesmo tick) era
-            # trabalho redundante síncrono suficiente pra travar o loop do
-            # asyncio por tempo maior que o timeout de keepalive ping da lib
-            # `websockets` — conexão caía sozinha achando que o servidor
-            # sumiu. Agora só 1 rota "tronco" por lane (a partir do tile
-            # PURO da lane, sem offset); cada minion prepende só o próprio
-            # tile de nascimento (com offset) na frente do tronco — visual
-            # idêntico (offsets são pequenos), 1/7 do custo total.
-            lane_route_tail: list = []
-            leg_start = (sx, sy)
-            route_ok = True
-            for wp in waypoints:
-                leg_path = pathfinding.find_path(
-                    leg_start, wp, dynamic_obstacles=tower_tiles,
-                    manhattan_limit=None, max_nodes=4000)
-                if not leg_path:
-                    route_ok = False
-                    break
-                lane_route_tail.extend(leg_path)
-                leg_start = wp
-            if not route_ok:
+            # minion, ver docstring de `_compute_lane_route_tail` — CACHE
+            # POR LANE, 03/08/2026: os 7 minions de uma wave têm offsets
+            # de ±1-2 tiles só, TODOS convergindo pro MESMO destino pelos
+            # MESMOS waypoints — calcular o A* individualmente pra cada
+            # um travava o loop do asyncio por tempo maior que o timeout
+            # de keepalive da lib `websockets`). Extraído (16/08/2026)
+            # pra `WorldServer._compute_lane_route_tail` — mesmo cálculo,
+            # agora compartilhado com `BotAISystem` (bot empurra lane
+            # pelo MESMO caminho que os minions usam).
+            lane_route_tail = self._compute_lane_route_tail(map_file, lane)
+            if lane_route_tail is None:
                 log.warning(
                     f"[MinionWave] rota falhou: {map_file} {faction}/{lane_id} "
-                    f"perna {leg_start}->{wp} sem caminho (max_nodes=4000)")
+                    f"sem caminho (max_nodes=4000)")
                 continue
 
             offset_idx = 0
@@ -2104,6 +2217,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             "hp_max":   _srv_hp_max,
             "level":    char_data.get("level", 1),
             "effects":  [],
+            **self.player_faction_field(eid),
         })
 
         log.info(f"[World] spawn player eid={eid}  tile=({tx},{ty})  "
@@ -2408,6 +2522,41 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         return True
 
+    def player_faction_field(self, eid: int) -> dict:
+        """Campo opcional `{"faction": faction_id}` pra incluir em QUALQUER
+        payload de ENTITY_SPAWN de player (16/08/2026) — só quando a
+        entidade já tem um `Faction` real anexado (contexto de time:
+        BG/arena, `request_bg_accept`/`server/team_processor.py`). Fora
+        desses contextos (mundo aberto), player não tem Faction nenhuma no
+        servidor, o campo fica de fora do payload, e o cliente cai no
+        default de sempre (RemoteControlled → PLAYER_FACTION "jogadores",
+        ver `engine/faction_system.py::get_entity_faction`) — sem
+        regressão pra fora de time.
+
+        Raiz do bug corrigido por isto: o cliente NUNCA recebia Faction de
+        outro player (só de mob/torre/minion) — mas o PRÓPRIO player já
+        recebe Faction real (`arena_time_a/b`) via ARENA_COUNTDOWN
+        (`client/arena_handlers.py::my_faction`). Com só um lado tendo
+        Faction real, `get_relationship_between` comparava
+        ("arena_time_a", "jogadores") — par NUNCA declarado em
+        `RELATIONSHIP`, caía no DEFAULT_RELATIONSHIP "neutro" (não
+        "amigavel") — e `can_engage` já retornava True de cara pro
+        primeiro check (hostil/neutro sempre permite engajar), pulando
+        `_client_pvp_context`/`_bg_opponents_server` por completo. Isso
+        tornava QUALQUER player remoto "engajável" assim que o PRÓPRIO
+        player entrava numa partida de time — inclusive o próprio aliado
+        (bug real relatado pelo usuário: TAB/ESPAÇO selecionando bot do
+        MESMO time). Com os dois lados tendo o Faction real, mesmo time
+        vira `faction_a == faction_b` → "amigavel" sempre (ver
+        `content/faction_data.py::get_relationship`), e times opostos
+        caem no par `("arena_time_a","arena_time_b")` = "hostil", já
+        declarado explicitamente — nenhum dos dois precisa mais do
+        resolver de contexto pra decidir hostilidade dentro de BG/arena
+        (mesmo comportamento que o SERVIDOR já tinha)."""
+        from engine.components import Faction as _FacField
+        fac = self.world.get_component(eid, _FacField)
+        return {"faction": fac.faction_id} if fac is not None else {}
+
     def get_players_in_aoi(self, center_session: str, radius: int) -> list[dict]:
         """
         Retorna lista de EntitySpawn para todos os jogadores dentro do raio
@@ -2438,6 +2587,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                     "eid": eid, "kind": "player",
                     "tx": tm.current_tile_x, "ty": tm.current_tile_y,
                     "session_id": sid,
+                    **self.player_faction_field(eid),
                 })
         return result
 
@@ -2824,6 +2974,16 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         log = self._mob_damage_log.setdefault(target_id, {})
         log[attacker_eid] = log.get(attacker_eid, 0) + dmg
 
+        # Kill credit + assist de player (16/08/2026) — só player→player,
+        # com (TIMESTAMP, seq) — não soma — pra saber quem bateu por
+        # ÚLTIMO, não só quem bateu mais. Ver _player_damage_log no
+        # __init__ (seq é o desempate pra hits no mesmo tick).
+        if attacker_eid in self._player_eids.values() and target_id in self._player_eids.values():
+            import time as _t_pdmg
+            self._player_damage_seq += 1
+            self._player_damage_log.setdefault(target_id, {})[attacker_eid] = (
+                _t_pdmg.time(), self._player_damage_seq)
+
         # Dano mob-vs-mob/NPC (Sistema de Facções, Fase 5): broadcast pro
         # cliente via o MESMO canal de "mob atacou" (COMBAT_RESULT dentro do
         # AOI_UPDATE). Sem isto, o combate NPC-vs-NPC acontecia inteiro
@@ -2948,7 +3108,24 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         if not cached:
             return {"success": False, "reason": "item_not_in_stock"}
 
-        entry      = cached["entry"]
+        entry = cached["entry"]
+
+        # 1b. Loja de instância vende o catálogo inteiro filtrado por tema de
+        # classe (25/08/2026) — cliente já filtra pra exibição, mas isso não
+        # é autoritativo; sem esta checagem um cliente modificado (ou bug de
+        # UI) poderia comprar item fora do tema da classe. Único ponto de
+        # verdade: content.merchant_data.instance_shop_class_allows (mesma
+        # função que gera a lista pré-filtrada pro cliente).
+        if shop_id == "instance_shop":
+            from content.merchant_data import instance_shop_class_allows
+            from engine.components import CharacterStats as _CS_shop
+            char = self.world.get_component(eid, _CS_shop)
+            factory = entry.get("factory")
+            item_preview = factory() if callable(factory) else None
+            if (item_preview is not None and char is not None
+                    and not instance_shop_class_allows(item_preview, char.class_id)):
+                return {"success": False, "reason": "class"}
+
         price      = int(entry["price"])
         total_cost = price * max(1, quantity)
 
@@ -5683,6 +5860,11 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             self._tick_bg_results_timeout()
         self._tick_bg_respawns()
         self._tick_bg_kda_hud()
+        # Bot 100% servidor da fila BG (16/08/2026) — sem custo quando não
+        # há bot nenhum (BotControlled vazio). Decisão em si é throttled
+        # DENTRO do sistema (BotControlled.decision_timer), não aqui.
+        from server.bot_ai_system import BotAISystem
+        BotAISystem.update(self, dt)
         self._perf_pop()
 
         self._perf_push("post_tick_bookkeeping")

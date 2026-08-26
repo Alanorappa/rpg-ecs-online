@@ -71,7 +71,7 @@ PROTOCOL_VERSION = 1             # incrementar ao quebrar compatibilidade
 # criar a tag git correspondente (`git tag vX.Y.Z`) a cada commit relevante:
 # PATCH = correção, MINOR = feature nova, MAJOR = mudança grande/quebra de
 # compatibilidade (decisão do usuário, 20/07/2026 — ver ARQUITETURA_ONLINE.md).
-GAME_VERSION = "0.32.1"
+GAME_VERSION = "0.33.0"
 
 # ── Morte/respawn: fluxo de espírito (ghost) + cemitério ───────────────────────
 GHOST_GRAVEYARD_RADIUS_TILES = 5   # raio (tiles) do cemitério p/ revive automático
@@ -142,4 +142,16 @@ PARTY_MAX_SIZE = 5
 # grupo que não bateu no mob — reusa AOI_RADIUS (mesma noção de "por perto"
 # já usada pra visibilidade/broadcast em todo o resto do projeto).
 PARTY_XP_SHARE_RADIUS_TILES = AOI_RADIUS
+
+# Kill credit + assist de player (16/08/2026, unificação pedida pelo
+# usuário — estilo LoL: kill vai pro último PLAYER inimigo que causou
+# dano, mesmo que o golpe final tenha sido de minion/torre; qualquer
+# outro player inimigo que bateu dentro da janela ganha assistência).
+# Mesma janela que o LoL usa. Ver server/respawn_system.py::
+# _handle_player_death, PROBLEMAS_ARQUITETURA.md.
+PLAYER_KILL_ASSIST_WINDOW_S = 10.0
+# Gold de assistência — metade do gold de kill (server/
+# instance_progression.py::INSTANCE_PLAYER_KILL_GOLD), mesma proporção
+# que o LoL usa pro bônus de assistência.
+INSTANCE_PLAYER_ASSIST_GOLD = 150
 

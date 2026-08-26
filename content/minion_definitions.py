@@ -79,8 +79,12 @@ MINION_TABLE: dict[str, dict] = {
         },
         "attack_range_tiles": 1,
         "aggro_range_tiles": 4,
-        "xp_reward": 45,
-        "gold_min": 25, "gold_max": 25,
+        "xp_reward": 65,
+        # Rebalance de economia da BG (16/08/2026, pedido do usuário —
+        # gold de player kill subiu pra 300, minion precisava cair
+        # proporcionalmente pra manter kill de player valendo muito mais
+        # que farm, mesma proporção que o LoL usa).
+        "gold_min": 20, "gold_max": 20,
         "sounds": {"attack_melee": "hit_normal"},
     },
     "minion_ranged": {
@@ -103,8 +107,8 @@ MINION_TABLE: dict[str, dict] = {
         },
         "attack_range_tiles": 4,
         "aggro_range_tiles": 4,
-        "xp_reward": 40,
-        "gold_min": 30, "gold_max": 30,
+        "xp_reward": 50,
+        "gold_min": 15, "gold_max": 15,  # rebalance 16/08/2026 — ver minion_melee acima
         "sounds": {"attack_ranged": "arrow_release", "attack_impact": "arrow_impact"},
     },
     "minion_ranged_raro": {
@@ -128,7 +132,7 @@ MINION_TABLE: dict[str, dict] = {
         "attack_range_tiles": 4,
         "aggro_range_tiles": 5,
         "xp_reward": 150,
-        "gold_min": 80, "gold_max": 80,
+        "gold_min": 35, "gold_max": 35,  # rebalance 16/08/2026 — ver minion_melee acima
         "sounds": {"attack_ranged": "arrow_release", "attack_impact": "arrow_impact"},
     },
 }

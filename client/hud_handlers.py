@@ -236,6 +236,7 @@ class HudHandlers:
         if iius is None or not iius.active:
             return
         txt = (f"Kills: {iius.match_kills} | Deaths: {iius.match_deaths} | "
+               f"Assists: {iius.match_assists} | "
                f"Farm: {iius.match_farm} | Gold: {iius.match_gold}")
         surf = self.font_sm.render(txt, False, (230, 220, 200))
         sw, _ = self.screen.get_size()

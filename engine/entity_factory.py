@@ -475,9 +475,19 @@ def create_enemy(world: World, tile_x: int, tile_y: int,
                  race: str = "Humanoide",
                  entity_class: str = "",
                  level: int = 1,
-                 faction: str = "monstros_hostis") -> int:
+                 faction: str = "monstros_hostis",
+                 identity_name: str = "") -> int:
+    """`identity_name` (16/08/2026, pedido do usuário — jungle mostrando
+    o `mob_key` cru em vez do nome) — igual `create_combat_npc()` já
+    fazia: sobrescreve o nome exibido quando `race` é uma chave de
+    tabela (TOWER_TABLE/MINION_TABLE/JUNGLE_MOB_TABLE/JUNGLE_BOSS_TABLE,
+    ex: "jungle_lobo_alfa") em vez de um nome já legível (MOB_TABLE usa
+    a própria chave como nome, ex: "Aranha" — não precisa disso). Vazio
+    = comportamento de sempre (`mob_display_name = identity_name or
+    race`, em `_build_combat_entity`)."""
     eid = _build_combat_entity(world, tile_x, tile_y, attack_range, is_ranged,
-                               tier, race, entity_class, level, faction)
+                               tier, race, entity_class, level, faction,
+                               identity_name=identity_name)
     world.add_component(eid, Enemy())
     return eid
 

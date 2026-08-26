@@ -10358,3 +10358,1119 @@ por célula; só a visibilidade de ENTIDADE (`_can_see`) foi corrigida.
 **Pendente**: usuário validar em jogo — torre/minion/player aliado
 vendo um inimigo atrás de parede ou bush revela ele pro time inteiro,
 mesmo pra quem está longe/sem LOS própria.
+
+## 60. Bot 100% servidor pra preencher a fila 2v2 da BG (16/08/2026, feature nova)
+
+Usuário quer testar a BG sem precisar de 4 humanos: solo na fila 2v2
+cai com 1 parceiro bot contra 2 bots; grupo de 2 (já time completo)
+cai contra 2 bots; 2 solos que entram na fila SEPARADAMENTE (sem grupo
+entre eles) viram ADVERSÁRIOS um do outro, cada um com seu próprio
+parceiro bot — nunca 2 humanos estranhos no MESMO time.
+
+**Pesquisa de referência** (antes de codar, ver `PROBLEMAS_ARQUITETURA.md`
+histórico da conversa): wiki oficial de LoL + API de bot scripting da
+Valve pra Dota 2 (bem documentada) — modelo de IA de utilidade,
+"modes"/comportamentos com pontuação de desejo por decisão (perseguir,
+empurrar lane...), maior prioridade vence. Indústria de QA de jogos
+(EPAM e outros) confirma o padrão geral pra bot de TESTE: processo
+headless falando o protocolo real do servidor — descartado em favor de
+bot 100% server-side por decisão explícita do usuário (evita gerenciar
+processo/conexão externa; mais robusto rodando dentro do próprio loop
+do servidor).
+
+**Decisão de arquitetura**: bot é uma entidade normal, criada por
+`WorldServer.spawn_player` (MESMO caminho de qualquer login real, sem
+fábrica paralela) — nunca um processo cliente separado. `session_id`
+sintético, registrado nas mesmas tabelas que um login real
+(`_player_eids`/`_player_eid_to_sid`) + uma `Session` FALSA em
+`SessionManager` (`ws` nulo, `send()` descarta em silêncio) — sem essa
+Session falsa, o bot ficaria invisível pros outros players: a
+varredura que descobre OUTROS PLAYERS
+(`server/session.py::_build_update_for_session`) só itera sessões
+REAIS (`self._sessions.values()`), nunca `_player_eids` direto (achado
+investigando, não óbvio de antemão). Ação do bot (mover, atacar, usar
+skill) chama as MESMAS funções internas que os handlers de rede já
+chamam por trás (`move_player`/`set_player_target`/`queue_skill`,
+`server/world_server.py`) — zero lógica de combate/cast duplicada.
+
+**Política de pareamento** (só modo 2v2 — 3v3/5v5 continuam com o
+bin-packing antigo, `_bg_try_pack`, inalterado): `_bg_try_pack_with_bots`
+nova — cada TIME vem de NO MÁXIMO 1 token real (nunca 2 solos
+estranhos no mesmo time). ≥2 tokens reais disponíveis → fecha na hora,
+1 por lado, cada lado incompleto ganha bot depois. Só 1 token
+disponível → espera `BG_BOT_BACKFILL_WAIT_S` (20s) por um adversário
+real antes de fechar sozinho com o time inteiro adversário virando bot
+— MESMA regra pra solo ou grupo já completo (uniforme, decisão
+confirmada com o usuário depois de uma pergunta de esclarecimento).
+Token de fila ganhou timestamp de entrada (`("solo"|"party", val,
+join_ts)`) só pra esse timeout — `_bg_members_for_token`/
+`request_bg_queue_leave` ajustados pra ignorar o campo extra.
+
+**IA do bot** (`server/bot_ai_system.py::BotAISystem`, throttle ~3x/s,
+`BotControlled.decision_timer`): por prioridade — skill ofensiva
+off-cooldown em alcance (1ª do hotbar, catálogo único `SKILL_CATALOG`,
+sem hardcode) > auto-attack em alcance > perseguir alvo visível fora de
+alcance (pathfinding reaproveitado de `WorldServer.
+_get_pathfinding_for_map_file`, MESMO que `_tick_minion_waves` já usa,
+nenhum A* duplicado) > empurrar a própria lane (waypoints de
+`WorldServer._minion_lanes`, mesmo dado que os minions já seguem). Sem
+"recuar" na v1 (decisão do usuário) — bot morre, respawna pelo mesmo
+timer automático de qualquer player da BG. v1 só mira PLAYERS inimigos
+(ignora torre/minion), 1 skill fixa (`golpe_poderoso`), classe
+Guerreiro/Cavaleiro (decisão do usuário — melee, sem mira de
+direção/projétil, IA mais simples), nível 2 (mesmo nível de
+minion_lanes/torre no mapa).
+
+**Cleanup**: centralizado dentro de `request_bg_leave` (não em cada
+chamador) — checa `BotControlled` no fim e despawna por completo
+(`WorldServer.despawn_player` + remove a Session falsa de
+`SessionManager`) se for bot. Cobre os 3 caminhos de saída (timeout de
+resultado, time incompleto descartado, saída manual) de uma vez, sem
+duplicar a checagem.
+
+**Testes**: `tests/test_bg_bot.py` (novo, 13 testes) — política de
+pareamento (`_bg_try_pack_with_bots`: solo espera timeout, 2 solos
+fecham imediato como adversários, grupo também espera o mesmo
+timeout); `_spawn_bot_player`/`_despawn_bot_player` (componentes de
+combate esperados, Session falsa registrada/removida); `_tick_bg_queue`
+ponta-a-ponta (bot se autoaceita, humano precisa mandar
+BG_MATCH_ACCEPT); `BotAISystem` (engaja com skill em alcance, persegue
+fora de alcance, segue lane sem inimigo, não age morto). Suíte
+existente (`tests/test_bg_queue.py`) tinha 18 testes presos ao
+comportamento ANTIGO do 2v2 (4 solos combinando pra fechar 1 time real,
+premissa que deixou de valer só pro 2v2) — corrigidos: testes de
+formato de token (3-tupla com timestamp) ajustados; testes de ciclo de
+vida genérico (aceite/countdown/portão/Nexus/saída) migrados pra usar 2
+GRUPOS de 2 em vez de 4 solos independentes (resultado idêntico ao
+antigo, sem bot nenhum envolvido); testes do algoritmo de pareamento
+migrados pra 3v3/5v5 (modos que não mudaram). Revert manual confirma:
+reverter "nunca 2 solos no mesmo time" derruba exatamente os 2 testes
+que provam essa regra, mais nenhum outro. Suíte completa
+(`pytest tests/ -q`) — 1234 passed, zero regressão.
+
+**Pendente**: usuário validar em jogo (servidor real, não só testes
+automatizados) — bot ataca/usa skill/persegue/empurra lane de forma
+crível; os 3 cenários de pareamento (solo+bot vs 2 bots; grupo vs 2
+bots; 2 solos viram adversários) confirmados corretos pelo usuário na
+conversa, mas ainda não jogados de verdade.
+
+## 61. Auto-attack PvE/PvP unificado — munição, LOS, fórmula de dano e Raiva/Punho no Queixo (16/08/2026)
+
+Usuário reportou (e confirmou empiricamente com 2 contas reais, duelo
+de verdade — testou o bot novo do §60, achou o bug testando contra
+ele): arqueiro com ARCO equipado mas SEM aljava ainda atirava flecha
+contra outro JOGADOR. Sem arco nenhum, cai pra melee corretamente —
+isso já funcionava.
+
+**Causa raiz**: NUNCA foi "faltou uma condição" — existiam 2 funções
+paralelas pro auto-attack (`server/combat_processor.py`):
+`_process_player_attacks` (alvo=mob) checava tudo (perseguindo,
+alcance real do arco, aljava com flecha, linha de visão, cooldown,
+fórmula própria de dano à distância via `_server_apply_ranged_
+physical`); `_process_pvp_attack` (alvo=player) era uma implementação
+mais pobre — só perseguindo+alcance+cooldown, SEM munição, SEM LOS,
+sempre usando `deal_damage` genérico em vez da fórmula de arco. Cada
+checagem nova foi adicionada só no lado PvE ao longo do tempo e nunca
+replicada no PvP — os 2 caminhos foram divergindo em silêncio.
+Usuário perguntou, com razão: o certo não seria ter 1 lugar só que
+checa as prioridades de QUALQUER ataque, independente do alvo?
+
+**Pesquisa de referência** (AzerothCore, antes de desenhar — pedido
+explícito do usuário, incluindo sobre onde Raiva/combo deveriam
+morar): `Unit::RewardRage()` (geração de Raiva do Guerreiro) vive na
+classe BASE `Unit` — `Player` e `Creature` (mob) herdam do MESMO
+`Unit`, chamada de dentro do caminho ÚNICO de dano corpo-a-corpo; não
+existe branch PvE-only pra recurso/combo na referência. Confirmou que
+a unificação era o desenho certo, e que Raiva/Punho no Queixo deveriam
+entrar no MESMO caminho compartilhado — não um sistema de evento
+separado nem uma condicional à parte.
+
+**Fix**: novo método único `CombatProcessorMixin._resolve_auto_attack`
+— TUDO que decide se um auto-attack acontece e o que ele causa,
+independente do alvo ser mob ou player: `is_pursuing` (unificado pra
+SEMPRE exigido — antes só ranged no PvE, sempre no PvP; achado
+investigando, não o bug relatado, sinalizado no plano e aprovado),
+detecção ranged (classe + arco de verdade equipado) + alcance real do
+arco, munição (aljava com flecha), linha de visão (`EnemyAISystem.
+_has_line_of_sight`), cooldown, despacho de dano (`_server_apply_
+ranged_physical` se ranged, `deal_damage` se melee), `enter_combat` +
+Raiva do Guerreiro + contador de Punho no Queixo do Cavaleiro — os 2
+últimos MOVIDOS de dentro do braço PvE pra cá, sem condicionar a alvo
+ser mob. Também trouxe pro caminho compartilhado a precisão de
+posição (`server_tile_x/y` com fallback pra `current_tile`) que antes
+só o PvP tinha — sem risco pro lado mob (nunca popula esse campo, cai
+no mesmo fallback de sempre).
+
+`_process_player_attacks` (braço PvE) e `_process_pvp_attack`
+encolheram pra só o que É específico de alvo: PvE mantém o evento de
+quest `"auto_attack_hit"` (só faz sentido contra mob, que tem
+`EntityIdentity`) e delega morte ao `ServerDeathHandler` genérico; PvP
+mantém sync de HP da VÍTIMA (`STATS_UPDATE`) e chama
+`_handle_player_death` direto (não o handler genérico, que é pra mob).
+
+**Achado extra durante a implementação**: `_server_apply_ranged_
+physical` já tinha um guard de LOS PRÓPRIO, interno (rede de
+segurança pras skills que reusam essa função, ex. Tiro Repulsivo) —
+como o `_process_pvp_attack` ANTIGO nunca chamava essa função (só
+`deal_damage`), esse guard nunca protegia PvP nenhum; a unificação já
+ativa ele de graça. Isso também significa que HP/flecha inalterados
+sozinhos não provam qual dos 2 guards (o novo, em
+`_resolve_auto_attack`, ou o antigo, interno) bloqueou — o sinal que
+só o guard NOVO produz é retornar ANTES de consumir o cooldown (o
+guard interno só roda DEPOIS do cooldown já gasto). Teste de parede
+ajustado pra checar isso explicitamente, não só HP/flecha.
+
+**Testes**: `tests/test_pvp_auto_attack.py` (novo, 6 testes) — arqueiro
+sem aljava não ataca player (bug relatado); arqueiro com aljava ataca e
+consome flecha; parede real bloqueia (LOS, checando timer de cooldown
+intacto — ver achado acima); sem arco cai pra melee; Guerreiro ganha
+Raiva atacando player; Cavaleiro ganha carga de Punho no Queixo
+atacando player 3x. Revert manual: comentar a checagem de munição
+derruba exatamente 1 teste (o do bug relatado); comentar a checagem de
+LOS derruba exatamente 1 teste (o da parede), mais nenhum outro.
+
+Refatoração expôs uma dependência oculta: `is_pursuing` virar SEMPRE
+exigido quebrou 8 testes pré-existentes (`tests/test_server.py`,
+`tests/test_session.py`) que chamavam `set_player_target` direto sem
+setar `is_pursuing` — funcionavam por acaso porque melee nunca exigia
+isso antes. Corrigido com novo helper `tests/helpers.py::
+engage_target` (mesma sequência que `_handle_auto_attack` já faz por
+trás de um AUTO_ATTACK real), usado nos 8 call sites afetados.
+
+Suíte completa (`pytest tests/ -q`) — 1234 passed, zero regressão.
+
+**Pendente**: usuário repetir o duelo de 2 contas que já fez — arqueiro
+sem aljava não deve mais atirar em PvP; com aljava, atira e a flecha
+some da aljava; Raiva/Punho no Queixo sobem batendo em outro player
+também.
+
+## 62. Gold/XP de minion + kill credit/assist de player, estilo LoL (16/08/2026)
+
+Usuário jogou uma partida real da BG e achou 3 problemas: (1) gold de
+matar minion dado a player mesmo sem golpe final; (2) minion do
+PRÓPRIO time do player dando XP pra ele; (3) desconfiança de que o
+KDA de kill de player estava certo — pediu estilo LoL (kill vai pro
+último PLAYER inimigo que bateu, mesmo que o golpe final tenha sido
+de minion/torre; quem também bateu recentemente ganha assistência).
+
+**Achado investigando, mais sério que o relatado**: `players_killed`
+era código morto em partida real. Existem 3 lugares que detectam
+morte de player, mas só 1 (`ServerDeathHandler`, genérico) creditava
+kill — e os outros 2 (`_process_player_attacks`'s varredura de HP a
+cada tick, `_process_pvp_attack`) SEMPRE processavam a morte e
+apagavam o `PendingDeath` (única fonte de "quem matou") ANTES do
+`ServerDeathHandler` rodar, no MESMO tick. Resultado: em partida real,
+NENHUMA morte de player chegava no código de crédito — kills sempre
+zerado no placar, e `INSTANCE_PLAYER_KILL_GOLD` nunca pago (mesma
+causa raiz). Nenhum conceito de "assistência" existia.
+
+**Pesquisa (LoL, pedido do usuário)**: kill vai pro último CAMPEÃO
+inimigo que causou dano (nunca minion/torre); assist = outro campeão
+inimigo que bateu nos últimos 10s (janela renova a cada hit novo); sem
+NENHUM campeão inimigo tendo batido nos últimos 15s, ninguém ganha
+nada ("regra de execução"). Gold de minion é last-hit ESTRITO (sem
+fallback); gold de torre é compartilhado com o time presente
+(objetivo, não farm — usuário confirmou manter só torre com o
+fallback).
+
+**Fix #1 — gold de minion**: `server/server_death_handler.py`, bloco
+de gold — fallback "primeiro player que bateu" (desenhado originalmente
+pra torre) restrito a só rodar quando `_tower_dh is not None`. Minion/
+jungle-normal deixam de herdar esse fallback — sem golpe final de
+player, ninguém ganha gold (a intenção já estava documentada num
+comentário do jungle-normal, só a implementação preenchia errado pro
+minion).
+
+**Fix #2 — XP de minion**: mesmo arquivo, bloco de proximidade — filtra
+`_nearby` pela Faction do PRÓPRIO minion morto (nunca do killer, que
+pode não existir/ser resolvível) — só time INIMIGO ganha XP. Mesmo
+padrão que o branch de jungle BOSS já usava, só não tinha sido copiado
+pro branch de minion/jungle-normal.
+
+**Fix #3 — kill credit + assist, unificado**: novo `WorldServer.
+_player_damage_log: dict[vítima_eid, dict[atacante_eid, (timestamp,
+seq)]]` — só player→player, populado dentro de `_log_mob_damage_hit`
+(hook universal já usado por QUALQUER dano, `apply_damage_core`).
+`seq` é um contador monotônico próprio, desempate pra 2 hits no MESMO
+tick — achado TESTANDO: `time.time()` sozinho não tem resolução
+garantida pra separar 2 chamadas a microssegundos de distância, e
+`max()` desempatava pela ordem de inserção do dict (sempre o
+PRIMEIRO a bater), não por quem bateu de verdade por último — bug
+real na primeira versão da própria correção, pego pela suíte rodada
+várias vezes seguidas antes de fechar.
+
+`RespawnMixin._handle_player_death` ganhou `killer_eid` (default -1) e
+virou o ÚNICO lugar que credita kill/assist — os 3 pontos que detectam
+morte de player (`server/combat_processor.py` ×2,
+`server/server_death_handler.py`) passaram a REPASSAR o killer que já
+tinham disponível, em vez de descartar ou creditar cada um por conta
+própria. Kill vai pro contribuinte mais recente dentro da janela de
+10s (`PLAYER_KILL_ASSIST_WINDOW_S`, `shared/constants.py`); qualquer
+outro contribuinte na mesma janela vira assist. Sem ninguém na janela
+→ ninguém ganha nada (regra de execução cai de graça do desenho, sem
+caso especial). Novo campo `CharStatsTracker.assists`.
+
+**Rebalance de economia** (usuário aproveitou a correção pra pedir,
+decisão explícita): minion melee 25→20, minion ranged 30→15, minion
+ranged raro 80→35 (`content/minion_definitions.py`); as 2 torres
+viram 80 fixo cada, eram uma faixa 18-40 (`content/
+tower_definitions.py`); kill de player 50→300
+(`INSTANCE_PLAYER_KILL_GOLD`); assist = metade do kill, 150
+(`INSTANCE_PLAYER_ASSIST_GOLD`, novo).
+
+**KDA "assists"** propagado nos 2 sistemas que existem (fila real E
+`/testbg` de debug — deixar um de fora reproduziria a MESMA classe de
+bug do §61, 2 caminhos paralelos divergindo): `stat_snapshots`/
+`_tick_bg_kda_hud`/`notify_bg_queue_nexus_destroyed`
+(`server/bg_queue_processor.py`) e o equivalente em
+`server/debug_battleground.py`. Cliente ganhou coluna "A" no placar
+final (`client/battleground_handlers.py`, modal alargado de 560 pra
+620px) e "Assists: N" no HUD ao vivo (`client/hud_handlers.py`) —
+sem isso o número existiria só no servidor, invisível pro usuário.
+
+**Testes**: `tests/test_bg_kill_credit.py` (novo, 9 testes) — minion
+morto por outro minion/torre não dá gold a quem bateu antes; minion
+do próprio time não dá XP, minion inimigo dá normal; player golpeado
+por outro player e finalizado por minion → o PLAYER ganha a kill,
+não ninguém; segundo player que bateu ganha assist, não kill;
+ninguém batendo (só minion/torre) → ninguém ganha nada; gold de
+kill/assist concedido certo (300/150); hit fora da janela de 10s não
+conta. Passa pelo caminho de combate REAL (`_process_pvp_attack`,
+`_process_player_attacks`) — o teste antigo de `players_killed`
+(`test_char_stats.py`) tinha esse defeito exato (chamava
+`apply_damage_core`/`_death_handler.update()` direto, nunca exercitava
+a corrida de verdade), dando falso positivo. Revert manual confirma:
+cada bloco novo (fallback restrito, filtro de Faction, crédito de
+kill/assist) derruba exatamente os testes que provam aquele ponto,
+mais nenhum outro.
+
+Suíte completa (`pytest tests/ -q`) — 1249 passed, zero regressão.
+
+**Pendente**: usuário validar em jogo — minion sem golpe final de
+player não dá mais gold; minion do próprio time não dá mais XP; kill
+de player aparece certo no placar (mesmo com assistência de minion/
+torre no golpe final), incluindo quem ajudou; números de gold batem
+com os novos valores.
+
+## 63. Investigação pós-§62: janela de kill (sem bug), bot travando em torre, ImportError no shutdown (16/08/2026)
+
+Usuário testou o §62 em jogo e reportou 3 coisas: (1) desconfiança de
+que a janela de 10s do kill credit só valia pro assist, não pro
+matador principal; (2) bots com comportamento estranho perto de
+torre inimiga — parecendo travar, incerto se a torre ataca eles; (3)
+`ImportError: sys.meta_path is None, Python is likely shutting down`
+no `formatTime` de `server/log.py`, disparado ao encerrar o servidor
+com Ctrl+C.
+
+**#1 — Janela de kill: investigado, SEM bug encontrado.** Releitura de
+`RespawnMixin._handle_player_death` (§62) confirma que `_recent` (dict
+já filtrado pela janela `PLAYER_KILL_ASSIST_WINDOW_S`) é a MESMA
+estrutura usada tanto pra escolher o killer (`max(_recent, ...)`)
+quanto pra iterar assists — não existe um filtro separado só pro
+assist. Escrito um teste empírico reproduzindo o cenário exato
+descrito (player A bate em V, hit envelhecido pra além de 10s via
+manipulação direta do timestamp em `_player_damage_log`, depois um
+MINION finaliza V) — `A.players_killed` ficou em 0, como esperado
+(regra de execução). Também confirmado por grep que
+`server/respawn_system.py:105` é o ÚNICO local que incrementa
+`players_killed` — não existe um 2º caminho paralelo sem essa
+proteção. Reportado ao usuário como "não reproduzido"; pedido mais
+detalhe de repro (CLAUDE.md — nunca generalizar de teste sintético
+pra "corrigido", mas o inverso também vale: não inventar fix pra bug
+que não reproduz).
+
+**#2 — Bot travando perto de torre: causa raiz achada e corrigida.**
+`BotAISystem._advance_toward` (empurrar lane sem inimigo visível,
+`server/bot_ai_system.py`) chamava `pathfinding.find_path(...,
+dynamic_obstacles=None, ...)` — diferente do pathing de minion-wave
+(`WorldServer._tick_minion_waves`), que já passa
+`_get_tower_tiles_for_map(map_file)` como `dynamic_obstacles` desde
+01/08/2026 (ver §"Torres como obstáculo da ROTA" em
+`world_server.py`) exatamente pelo mesmo motivo: sem isso, o A* pode
+entregar o tile EXATO de uma torre como próximo passo da rota, e como
+o bot (assim como o minion) só anda 1 tile por decisão sem espaço pra
+desviar, ele trava tentando pisar num tile que a torre nunca libera.
+**Fix**: `_advance_toward` agora busca `world_server.
+_get_tower_tiles_for_map(map_file)` e passa como `dynamic_obstacles`
+— reaproveita a MESMA função já usada pelo minion-wave, sem
+reimplementar. Bot ainda pode tomar dano de torre se passar perto
+dela durante o combate real (`_engage_target`, fora de escopo do
+pathing de lane) — isso é esperado, mesmo risco que minion já corre,
+v1 continua sem "recuar" de torre por decisão explícita do usuário
+(ver §60).
+
+**#3 — ImportError no shutdown: causa raiz achada e corrigida.**
+`SessionManager._on_tick`/`_run_dispatch` disparam
+`asyncio.create_task(self._run_dispatch(...))` fire-and-forget (2
+pontos: despacho normal e o re-agendamento dentro do próprio
+`_run_dispatch` quando chega delta novo enquanto despacha). Sem
+referência guardada, essas tasks corriam risco de ter sua exceção
+"nunca retirada" numa corrida entre o Ctrl+C (`KeyboardInterrupt` em
+`server/main.py::main()`) e a limpeza automática do `asyncio.run()` —
+gerando o log "Task exception was never retrieved" já com o
+interpretador em desligamento, momento em que o `formatTime`
+customizado de `server/log.py` não consegue mais importar nada
+(`sys.meta_path` já é `None`). Não indicava perda de dado — o
+autosave (`mgr._autosave_all()`) já tinha rodado e logado sucesso
+ANTES desse erro aparecer.
+
+**Fix**: `SessionManager` ganhou `_dispatch_tasks: set` (referência
+forte, registrado em `__init__`) + `_track_dispatch_task(task)` (novo
+método — adiciona ao set, e no done-callback chama `task.exception()`
+explicitamente pra "retirar" qualquer exceção antes da task ser
+descartada, evitando o warning de coleta) + `shutdown_dispatch_tasks()`
+(novo método async — cancela e espera qualquer task ainda pendente).
+`server/main.py`'s `except KeyboardInterrupt` (dentro de `main()`)
+passou a chamar `await mgr.shutdown_dispatch_tasks()` logo após o
+autosave, ainda dentro do loop vivo — antes do `raise` que devolve o
+controle pro `asyncio.run()` fazer sua própria limpeza. Isso fecha a
+janela de corrida deterministicamente em vez de torcer pra
+`asyncio.run()` vencer a corrida sozinho.
+
+**Testes**: suíte completa (`pytest tests/ -q`) rodada após os 2
+fixes (#2 e #3) — 1249 passed, zero regressão. O fix #2 (pathing) não
+tem teste automatizado dedicado (mudança de 1 parâmetro reaproveitando
+função já testada em `test_minions.py`); o fix #3 (shutdown) não é
+testável via suíte automatizada (depende de sinal `KeyboardInterrupt`
+real durante `asyncio.run()`) — verificação é manual, via playtest do
+usuário encerrando o servidor com Ctrl+C.
+
+**Pendente**: usuário confirmar em jogo — bot não trava mais perto de
+torre inimiga (pode ainda tomar dano dela se aproximar durante
+combate, isso é esperado); Ctrl+C no servidor não mostra mais o
+ImportError; e, pro item #1, se o usuário AINDA observar um kill indo
+pro player errado após golpe stale + torre/minion, descrever a
+sequência exata (quanto tempo entre o último hit e a morte, contra
+quem) pra tentar reproduzir de novo — o teste sintético não achou o
+bug, mas não prova ausência em todo cenário real possível.
+
+## 64. Player remoto nunca tinha Faction real (minimap + TAB/ESPAÇO selecionando aliado) + rota de bot desincronizando (16/08/2026)
+
+Usuário testou o §63 e reportou que os bots continuavam com bugs: (1)
+não aparecem no minimap (deveria ser igual ao círculo do player); (2)
+ainda travando/pulando entre tiles perto de torre, mesmo com o fix de
+`dynamic_obstacles` do §63; (3) TAB e ESPAÇO selecionando o bot
+ALIADO (do próprio time) antes de qualquer inimigo.
+
+**#1 + #3 — MESMA causa raiz**: o cliente nunca recebeu `Faction` de
+NENHUM player remoto via ENTITY_SPAWN (só mob/torre/minion mandavam —
+invariante documentada explicitamente no código há semanas). Isso
+sempre foi "seguro" em aparência porque o PRÓPRIO player TAMBÉM nunca
+tinha Faction real fora de contexto de time — mas dentro de BG/arena,
+o PRÓPRIO player GANHA um `Faction("arena_time_a/b")` real via
+`ARENA_COUNTDOWN` (`client/arena_handlers.py::my_faction`, existente
+desde a Fase G). Com só um lado tendo Faction real,
+`get_relationship_between` comparava `("arena_time_a", "jogadores")`
+— par NUNCA declarado em `RELATIONSHIP` (`content/faction_data.py`),
+caía no `DEFAULT_RELATIONSHIP = "neutro"` — e `can_engage()` já
+retorna `True` pro tier "neutro" no PRIMEIRO check (hostil/neutro
+sempre permite engajar), nunca chegando a consultar
+`_client_pvp_context`/`_bg_opponents_server` (2º gate, que É o que
+distingue aliado de inimigo). Resultado: TODO player remoto (aliado
+OU inimigo) virava "engajável" assim que o PRÓPRIO player entrava
+numa partida de time — e como o minimap da BG (`_collect_bg_minimap_dots`)
+também exige `Faction` no player remoto pra colorir por time, NENHUM
+player remoto (aliado, inimigo, bot ou humano) jamais apareceu nele —
+provavelmente nunca notado porque ninguém tinha testado BG 2v2+ com
+outro player de verdade visível antes dos bots.
+
+Confirmado via teste diferencial (`_spawn_remote_player_entity` real,
+local player com Faction "arena_time_a" simulando ARENA_COUNTDOWN,
+bot remoto SEM campo "faction" no payload — reproduz o bug: `can_engage`
+e TAB incluem o aliado; COM o campo — ambos corretos).
+
+**Fix**: novo `WorldServer.player_faction_field(eid) -> dict` —
+`{"faction": fac.faction_id}` só quando a entidade já tem `Faction`
+real (contexto de time), `{}` fora disso (sem regressão pra mundo
+aberto). Incluído nos 6 pontos que constroem payload de ENTITY_SPAWN
+de player (`world_server.py::spawn_player`/`get_players_in_aoi`,
+`session.py` ×3, `respawn_system.py::_handle_player_death`'s
+re-anúncio). Cliente (`client/remote_entity_handlers.py::
+_spawn_remote_player_entity`) passa a ler `data.get("faction")` e
+anexar `Faction(faction_id=...)` real quando presente — os 4 call
+sites que montam esse `data` dict (`network_handlers.py` ×3,
+`session.py`'s sweep de descoberta) repassam o campo "faction" do
+payload do servidor quando presente. Com os dois lados tendo Faction
+real: mesmo time = `faction_a == faction_b` → sempre "amigavel"
+(`get_relationship`); times opostos caem no par
+`("arena_time_a","arena_time_b")` = "hostil", já declarado — nenhum
+dos dois precisa mais do resolver de contexto pra decidir hostilidade
+dentro de BG/arena (mesmo comportamento que o SERVIDOR já tinha desde
+sempre). `_bg_opponents_server`/`_arena_opponents_server` continuam
+existindo como composição pro caso de duelo/zona (não removidos).
+
+**#2 — rota de bot desincronizando (causa DIFERENTE do §63,
+adicional)**: `BotAISystem._advance_toward` fazia `bot.path.pop(0)`
+ANTES de checar o retorno de `move_player` — se o passo fosse
+rejeitado (tile ocupado por outro bot/minion/player no instante do
+MOVE, ou qualquer outro motivo), o tile já tinha sido descartado da
+rota em cache mesmo sem o bot ter se movido de verdade. A decisão
+seguinte tentava o PRÓXIMO tile da rota (agora 2+ tiles de distância
+da posição REAL), que `move_player` também rejeita (só aceita
+distância 1) — cascata: bot fica com a posição real TRAVADA por
+várias decisões enquanto a rota em cache esvazia sozinha tile a tile,
+até finalmente recalcular do zero e voltar a andar — visualmente isso
+é o "trava, depois pula" relatado. Fix: checar o retorno de
+`move_player`; se `False`, descarta a rota (`bot.path = None`) na
+hora, forçando recálculo já na PRÓXIMA decisão em vez de continuar a
+cascata de tentativas inválidas.
+
+**Testes**: `tests/test_bg_bot.py::TestBotAdvanceTowardRejectedMove`
+(novo) — rota em cache com primeiro passo não-adjacente (simula
+rejeição) → posição real não muda E rota é descartada (não continua
+desincronizada). Revert-to-confirm: sem o fix, o teste falha
+exatamente como esperado (rota permanece `[(26, 20)]` em vez de
+`None`). Suíte completa (`pytest tests/ -q`) — 1250 passed (1249 +
+este teste novo), zero regressão.
+
+**Pendente**: usuário confirmar em jogo — bot aparece no minimap com
+a cor do time certo; TAB/ESPAÇO não selecionam mais bot aliado (nem
+humano aliado, quando testável); bot anda de forma suave perto de
+torre, sem travar/pular.
+
+## 65. Camps de jungle da BG populados a partir do concept art + level dinâmico (16/08/2026, feature nova)
+
+Usuário forneceu `maps/concepts/moba_bg_entities.png` (mapa 100×100,
+1 pixel = 1 tile — mesma dimensão do terreno real) marcando posição de
+monstro de jungle (marrom) e boss (rosa); pediu pra AGRUPAR os pontos
+próximos (camps de verdade) e, depois de alinhado o desenho com o
+usuário, popular tudo com dados aleatórios/placeholder (usuário ajusta
+depois) — mais um pedido extra: level do mob de jungle precisa subir
+junto com o nível médio dos players, igual já acontece com minion.
+
+**Agrupamento** (clustering por proximidade, raio 4px/tiles, sobre os
+pixels marrons/rosa do PNG): 14 camps de mob normal (4 solitários —
+1 mob mais forte cada; 8 trios; 2 quartetos — pacote de mobs mais
+fracos) + 4 bosses. Todas as 40 posições conferidas contra
+`moba_battleground_terrain.csv`/`_objects.csv` — grama, sem obstáculo,
+nenhum ponto precisou de ajuste.
+
+**Dados** (`content/jungle_definitions.py`, tudo marcado como
+PLACEHOLDER no comentário — não é balanceamento final): 4 tipos novos
+de mob normal (`jungle_javali_alfa` — solitário, mais forte;
+`jungle_aranha_venenosa`/`jungle_lobo_alfa` (já existia)/`jungle_harpia`
+— trios; `jungle_raptor` — quarteto, mais fraco individualmente) + 3
+bosses novos (`jungle_boss_guardiao_de_pedra`, `jungle_boss_dragao_jovem`,
+`jungle_boss_horror_das_profundezas`, cada um com `buff_cycle` próprio
+usando atributos diferentes do `jungle_boss_ancestral` já existente —
+armor/stamina, spell_power/crit_rating, attack_power/crit_rating).
+Posicionamento em `maps/moba_battleground_entities.json::"jungle_mobs"/
+"jungle_bosses"` (chaves que faltavam — schema já existia em
+`engine/map_loader.py`, só nunca populado pra este mapa), `faction:
+"monstros_hostis"` em todos (confirmado com o usuário — hostil aos 2
+times por igual, padrão MOBA).
+
+**Level dinâmico** (mudança de sistema, não só dado): novo
+`WorldServer._compute_match_avg_level(map_file, default_level)` —
+irmão de `_compute_team_avg_level` (já usado por minion), mas SEM
+filtro de Faction (jungle é neutra, não pertence a nenhum time, então
+escala pela média de TODOS os players da instância, não só um time).
+`_create_jungle_camps` (chamada tanto na carga inicial do mapa quanto
+em CADA respawn individual via `_tick_jungle_camp_respawns`) passa a
+computar o level por essa função a cada chamada, usando o valor do
+JSON só como fallback (sem player ainda na instância) — mesmo
+princípio de "recalcula a cada oportunidade de spawn" que minion já
+usa, só que pra jungle a oportunidade é o respawn de CADA mob morto
+(não existe wave fixa).
+
+**Testes**: `tests/test_jungle_camps.py::TestJungleCampLevelScaling`
+(novo, 2 casos) — level do respawn bate com a média de TODOS os
+players (2 times diferentes, sem filtro) e cai no fallback estático
+sem ninguém na instância. Revert-to-confirm: sem o fix, o teste de
+média falha exatamente como esperado (nível fica travado no fallback
+antigo). Suíte completa (`pytest tests/ -q`) — 1252 passed (1250 + os
+2 testes novos), zero regressão.
+
+**Pendente**: usuário rebalancear os números placeholder (todos
+marcados como tal no código) e testar em jogo — camps aparecem nas
+posições certas, level sobe conforme os players sobem de nível.
+
+## 66. Jungle sem drop físico + puxão de grupo estilo WoW/LoL (16/08/2026, feature nova, planejada com o usuário via EnterPlanMode)
+
+Usuário testou o §65 e achou 2 problemas: (1) mob de jungle dropava
+item E gold físico no corpse, quando deveria ir tudo automático pra
+carteira com FLT (mesmo padrão de minion/kill de player); (2) jungle é
+hostil e aggra só de o player chegar perto — pediu que só aggre se for
+atacado, e que (pedido GERAL, confirmado via `AskUserQuestion`, não só
+pra jungle) quando um mob entra em combate, outro mob da MESMA facção
+perto TAMBÉM entra, mesmo que normalmente nunca aggraria sozinho por
+proximidade — estilo WoW/LoL. Decisões fechadas com o usuário antes de
+codar: puxão de **1 salto só** (sem corrente pelo camp inteiro), raio
+de **3 tiles** (Chebyshev), mecanismo genérico desde já (não só pra
+BG), mas a MUDANÇA de comportamento (deixar de aggrar por proximidade)
+por enquanto só pra jungle — mob hostil clássico do mundo aberto
+continua aggrando por proximidade normalmente.
+
+**Fix #1 — drop físico**: `server/server_death_handler.py`, bloco
+`if/elif/else` que decide `loot_items`/`coins` (~linha 545) não tinha
+`elif _jungle_dh is not None:` — jungle caía no `else` genérico
+(pensado pra `MOB_TABLE` comum), rolando item/coin FÍSICO no corpse
+ALÉM do gold de instância já concedido automaticamente por
+`grant_instance_gold` (mesma função que já dá o FLT "+Ng" dourado que
+minion/kill de player usam). Novo branch, espelhando EXATAMENTE o de
+`_minion_dh`: `loot_items = []; coins = 0`.
+
+**Fix #2a — jungle para de aggrar por proximidade**: o mecanismo já
+existia pronto — `EnemyAISystem` (bloco "Detecção inicial",
+`engine/world_systems.py`) só aggra por proximidade em tier "hostil"
+(`is_hostile()`); tier "neutro" só aggra por dano
+(`aggroed_by_damage`), sem nenhum código novo pra isso. Jungle usava a
+facção COMPARTILHADA `monstros_hostis` (mesma de todo mob hostil
+clássico do mundo aberto) — não dava pra mudar o tier desse par sem
+quebrar TODO mob hostil do jogo. Nova facção própria
+`content/faction_data.py::"monstros_jungle"`, tier "neutro" vs
+`arena_time_a`/`arena_time_b` (mesmo padrão de `"civis"` no mesmo
+arquivo) — `can_engage()` continua liberando dano ("neutro" só bloqueia
+"amigavel"). `_create_jungle_camps`/`map_loader.py` (defaults) e as 40
+entradas de `moba_battleground_entities.json` migradas pra essa
+facção. Efeito colateral avisado ao usuário: jungle deixa de ser
+`is_hostile()`, então `TowerSystem`/`MinionSystem` (que só miram
+`is_hostile()`) param de considerar jungle alvo válido — comportamento
+correto de MOBA (torre/minion não brigam com monstro neutro).
+
+**Fix #2b — puxão de grupo (novo mecanismo genérico)**: achado
+investigando — a transição IDLE→AGGRO_DELAY por DANO estava
+duplicada quase idêntica em 4 lugares (`world_systems.py::CombatSystem.
+deal_damage`, `core_systems.py::apply_magic_damage_shared`,
+`spell_completion_processor.py` ×2 — 1 delas pulava direto pra
+"CHASING" sem NENHUM delay, inconsistência não-intencional corrigida
+de graça ao centralizar). Novo ponto único,
+`engine/core_systems.py::trigger_mob_aggro()` — transiciona o mob pra
+AGGRO_DELAY E (via `_pull_nearby_packmates`, `_propagate=True` por
+padrão) varre mobs da MESMA Faction, MESMO mapa, ainda IDLE, dentro de
+`PACK_AGGRO_RADIUS_TILES=3`, puxando cada um pra AGGRO_DELAY contra o
+MESMO alvo — com `_propagate=False` no puxado, garantindo só 1 salto
+(sem corrente). Sem checagem de linha de visão de propósito (módulo
+compartilhado/headless, sem acesso confiável ao tilemap certo em
+contexto multi-mapa sem reimplementar o padrão de
+`register_map_services_for` — over-engineering pro caso comum de
+grupo já nascer próximo). Os 4 call sites duplicados passaram a
+chamar essa função em vez de setar os campos direto; cada um mantém
+seu próprio som/log (não dava pra unificar — 2 deles enfileiram
+`_pending_sound_events` por serem assíncronos, os outros tocam som
+direto).
+
+**3º call site achado DURANTE a implementação (fora do plano
+original)**: testando, um mob que nasce/fica ADJACENTE ao alvo ataca
+DIRETO de IDLE (`in_attack_range` com `state != IDLE or is_hostile()`,
+comportamento pré-existente) — esse caminho tem um `continue` ANTES do
+bloco "Detecção inicial", então NUNCA passava por `trigger_mob_aggro`,
+e o puxão de grupo nunca disparava pra um mob que já nasce adjacente
+(exatamente o cenário de um trio de jungle bem agrupado). Corrigido
+com `_was_idle_this_tick` (capturado no topo do loop de
+`EnemyAISystem.update()`, antes de qualquer transição de estado do
+tick) + chamada direta a `_pull_nearby_packmates` no ponto onde esse
+atalho vira "ATTACKING".
+
+**Testes**: `tests/test_jungle_camps.py` — novo caso em
+`TestJungleMobNormalReward`/`TestJungleBossReward` confirmando corpse
+sem item/coin mas carteira recebendo gold (revert-to-confirm: sem o
+fix, `coins` do corpse fica > 0). `TestJungleMobHostility` reescrita —
+jungle não é mais `is_hostile()` mas continua `can_engage()`-ável, e
+teste fim-a-fim via `EnemyAISystem.update()` confirmando que fica IDLE
+mesmo com player adjacente. Novo `tests/test_pack_aggro.py` (5 casos)
+— puxão por dano dentro do raio, vizinho fora do raio não é puxado,
+facção diferente não é puxada, só 1 salto (sem corrente), e o MESMO
+mecanismo funciona pra facção hostil clássica disparado por
+proximidade (não hardcoded pra jungle/BG) — este último caso foi o que
+pegou o 3º call site (mob nascia adjacente ao player no teste).
+Revert-to-confirm em cada caso novo. Suíte completa
+(`pytest tests/ -q`) — 1260 passed (1252 + 8 testes novos), zero
+regressão.
+
+**Pendente**: usuário confirmar em jogo — mob de jungle não dropa mais
+nada físico (gold aparece automático com FLT); mob de jungle não aggra
+mais só de chegar perto; atacar 1 mob de um trio/quarteto puxa os
+outros do grupo junto pra combate.
+
+## 67. Mob de jungle mostrava o mob_key cru como nome (16/08/2026)
+
+Usuário testou o §66 ("deu certo") e achou mais 1 problema: mob de
+jungle mostrando o código interno (ex: "jungle_lobo_alfa") em vez do
+nome ("Lobo Alfa").
+
+**Causa raiz**: `_build_combat_entity` (`engine/entity_factory.py`)
+resolve o nome exibido como `identity_name or race` — `race` aqui é o
+parâmetro passado a `create_enemy()`, que pra jungle é o PRÓPRIO
+`mob_key` cru (`_create_jungle_camps` chama `create_enemy(...,
+race=mob_key, ...)`, porque `race` também funciona como CHAVE de
+lookup em `JUNGLE_MOB_TABLE`/`JUNGLE_BOSS_TABLE`). Mob comum de
+`MOB_TABLE` não tem esse problema porque a CHAVE da tabela já É um
+nome legível (`"Rato"`, `"Aranha"` — a própria chave dobra como
+display name); jungle usa chave interna (`"jungle_lobo_alfa"`) +
+campo `"display_name"` SEPARADO — convenção diferente que
+`create_enemy()` não conhecia. `create_combat_npc()` (NPC de combate)
+já tinha resolvido isso pro caso dele, passando `identity_name`
+explícito pra `_build_combat_entity` — `create_enemy()` nunca expunha
+esse parâmetro.
+
+**Fix**: `create_enemy()` ganhou `identity_name: str = ""` (repassado
+pra `_build_combat_entity`, mesmo mecanismo que `create_combat_npc()`
+já usava — nada novo, só exposto no ponto que faltava).
+`_create_jungle_camps` passa `identity_name=mdef.get("display_name",
+mob_key)`. `EntityIdentity.race` (usado pra tooltip/flavor, "Fera"
+etc.) não foi afetado — já vinha certo via `mob_def["race"]`, só o
+`.name` estava errado.
+
+**Teste**: `tests/test_jungle_camps.py::
+TestJungleMobHostility::test_nome_exibido_e_o_display_name_nao_o_mob_key_cru`
+— confirma `EntityIdentity.name` bate com `JUNGLE_MOB_TABLE[...]
+["display_name"]`, não com o mob_key. Revert-to-confirm: sem o fix, o
+teste falha reproduzindo o bug relatado (`'jungle_lobo_alfa' !=
+'Lobo Alfa'`). Suíte completa (`pytest tests/ -q`) — 1261 passed
+(1260 + este teste), zero regressão.
+
+## 68. Bot travava o tick com TypeError ao empurrar lane com curva (17/08/2026)
+
+Usuário reportou erro repetido no console do servidor (a cada ~10
+ticks): `TypeError: unsupported operand type(s) for -: 'tuple' and
+'int'`, em `find_path` chamado por `BotAISystem._advance_toward`.
+
+**Causa raiz**: `BotAISystem._lane_goal` (`server/bot_ai_system.py`,
+§60) reimplementava seu PRÓPRIO parse de `lane["target_tile"]`
+assumindo a forma CRUA do JSON (`[x,y]` OU `[[x,y],[x,y],...]`) — mas
+`engine/map_loader.py` já NORMALIZA isso na carga do mapa pra SEMPRE
+virar `list[tuple[int,int]]` (par único vira lista de 1 tupla; lane
+com curva vira lista de várias tuplas) — o próprio comentário do
+loader já avisava "quem consome (`_tick_minion_waves`) nunca precisa
+saber qual dos 2 formatos foi usado", mas `_lane_goal` foi escrito
+sem essa premissa. Pra lane RETA (mid), o waypoint normalizado é uma
+lista de 1 elemento — nenhum dos 2 `isinstance` do código velho
+batia, `_lane_goal` devolvia `None` silenciosamente (bot só não
+empurrava a lane, sem erro visível). Pra lane com CURVA (top/bot, 2+
+waypoints) — a real causa do erro no log — `wps[0]` já é uma TUPLA
+(não `list`), o 1º check falhava, caía no 2º (`len(wps)==2`, que
+bate por coincidência quando a curva tem exatamente 2 waypoints) e
+devolvia `tuple(wps)` — uma TUPLA DE TUPLAS como `goal` — que
+`find_path` tentava subtrair como se fosse `(int,int)`, quebrando a
+cada decisão do bot (a cada ~0.35s, daí o erro repetindo no log).
+
+**Fix**: `_lane_goal` para de reimplementar o parse — usa
+`wps[-1]` direto (já é o último waypoint, já normalizado), mesmo
+princípio que `_tick_minion_waves` já seguia.
+
+**Teste**: os testes de `tests/test_bg_bot.py::TestBotAISystem`
+usavam dado de fixture CRU (`"target_tile": [40, 20]`, forma que
+NUNCA acontece em produção — mascarava esse bug exato) — corrigidos
+pra usar a forma normalizada de verdade (`[(40, 20)]`). Novo teste
+`test_bot_segue_lane_com_curva_varios_waypoints` reproduz o cenário
+real (lane com 2 waypoints) — revert-to-confirm: sem o fix, o teste
+levanta o MESMO `TypeError` do log do usuário. Suíte completa
+(`pytest tests/ -q`) — 1262 passed (1261 + este teste), zero
+regressão.
+
+**Pendente**: usuário confirmar que o erro não aparece mais no log do
+servidor durante uma partida de BG.
+
+## 69. Bot AI v2 — lane sorteada, compra inicial, empurrar lane igual minion, dive gate (17/08/2026, feature nova, planejada com o usuário via EnterPlanMode)
+
+Usuário pediu 4 melhorias pro bot da BG (v1: só mirava player, sempre
+Guerreiro, sempre "a 1ª lane que bater", pathing próprio até o destino
+final, ignorava torre por completo): (1) sortear lane (top/mid/bot) —
+2 bots do mesmo time nunca na mesma; (2) comprar kit inicial por
+classe antes de ir pra lane; (3) esperar 10s depois da PRÓPRIA wave
+nascer e então seguir o MESMO caminho dos minions, brigando com
+minion OU player que entrar no alcance; (4) só arriscar entrar no
+alcance de torre inimiga se já tiver minion aliado lá dentro OU o
+alvo estiver <30% HP (dive).
+
+Pesquisado antes de desenhar (Dota 2/LoL — bot de dificuldade maior
+"não se intimida com torre quando o alvo está baixo", compra roda
+antes da lane) — confirma que os 4 pedidos batem com convenção real
+de MOBA, não invenção.
+
+Decisões fechadas com o usuário antes de codar (`AskUserQuestion`,
+dentro do plano): kit de guerreiro/mago sem o Anel do Poder (185g→
+115g cada, cabe nos 150g iniciais — arqueiro mantém os 3 itens,
+150g exato); classe do bot passa a **variar** (sorteio guerreiro/
+arqueiro/mago, senão o kit de arqueiro/mago nunca rodaria de
+verdade); item comprado é **equipado** automaticamente (senão a
+compra não muda nada em combate); dive gate = alcance de torre +
+minion aliado já lá dentro, OU alvo <30% HP.
+
+**1. Classe variável**: `_spawn_bot_player` (`server/
+bg_queue_processor.py`) sorteia `class_id` (ganhou parâmetro
+`class_id: str = ""` pra teste forçar determinístico). Skill inicial
+não é mais hardcoded — lê `INSTANCE_SKILL_UNLOCK_ORDER[class_id][0]`
+(`content/skill_config.py`), MESMA tabela que `enter_normalized_
+progression` já usa como fonte única — pra arqueiro isso resolve pra
+`"recarregar"` (não-ofensiva, tudo bem: luta de auto-attack à
+distância mesmo). Nenhum ajuste em `_try_cast_offensive_skill`/
+`_engage_target` (já genéricos por catálogo) nem no auto-attack (já
+unificado desde §61, resolve melee/ranged pelo EQUIPADO).
+
+**2. Lane sorteada**: novo `BotControlled.lane_id`. `_tick_bg_queue`
+sorteia (`random.sample`, sem reposição) 1 lane por bot, POR TIME —
+garante unicidade sem lógica extra. `_lane_goal` (v1) foi substituída
+por `_push_lane` (item 3), que filtra por `lane_id` em vez de "a
+primeira que bater".
+
+**3. Compra + espera + seguir rota real**: novo
+`BotAISystem.do_initial_shopping` (chamado 1x por
+`request_bg_accept`, bot-only, logo após `enter_normalized_
+progression` conceder gold) reaproveita os MESMOS métodos síncronos
+que um player real usa via rede — `WorldServer.process_shop_buy`/
+`equip_item_from_inventory` (`server/session.py::_handle_buy_request`/
+`_handle_equip_item`), só chamados direto (bot não tem cliente pra
+receber `BUY_RESULT`/`EQUIP_REJECTED`). Novo `BotControlled.
+push_start_at` (timestamp absoluto, calculado 1x junto do sorteio de
+lane, ancorado em `match["countdown_deadline"]` + `first_wave_delay_s`
+da lane + 10s de folga) — `_push_lane` fica parado até esse horário.
+
+Achado pesquisando: não existe cache de rota por lane em
+`WorldServer` — `_tick_minion_waves` computava a rota LOCAL (variável
+descartada ao terminar), só sobrevivendo dentro de `Minion.route` de
+cada minion. Extraído pra `WorldServer._compute_lane_route_tail`
+(MESMO cálculo, ponto único de verdade) — `_tick_minion_waves` passou
+a CHAMAR esse método em vez do bloco inline, e `BotAISystem` usa o
+MESMO método, garantindo que bot e minion NUNCA divirjam de caminho.
+`BotControlled` ganhou `route`/`route_idx` (mesmo par que `Minion` já
+usa) — consumidos tile a tile no ritmo de decisão do bot (mesmo
+princípio de `MinionSystem._advance_along_route`, adaptado pra
+`BOT_DECISION_INTERVAL_S` em vez de tick).
+
+`_find_nearest_enemy` ganhou uma 2ª passada sobre `Minion` (antes só
+via player) — mesmo filtro de facção que o loop de player já usa.
+Correção necessária fora do pedido literal: o scan (players E
+minions) ganhou limite de raio (`BOT_LANE_AWARENESS_RADIUS_TILES=8`)
+— sem isso, com ~24 minions no mapa ao mesmo tempo (várias lanes), o
+bot seria puxado pra longe da PRÓPRIA lane atrás do inimigo mais
+próximo em QUALQUER lugar do mapa.
+
+**4. Dive gate**: novos `WorldServer._enemy_towers_covering`
+(Chebyshev ≤ `attack_range_tiles`, mesma métrica de
+`TowerSystem._in_range_los`, só lê componentes) e `_allied_minion_
+covers_tower` (minion da mesma Faction dentro do alcance da MESMA
+torre = "ocupada"). `BotAISystem._dive_allowed` combina os dois +
+checagem de HP% do alvo atual — usado tanto em `_push_lane` (rota da
+lane) quanto em `_advance_toward` (perseguição de alvo), peek do
+próximo tile ANTES de consumir do path/rota (não descarta cache num
+dive negado, só espera a condição virar verdadeira).
+
+**Testes**: `tests/test_bg_bot.py` — 14 casos novos (compra por
+classe com item equipado, não só na mochila; sorteio de lane sem
+repetir no mesmo time; bot não anda antes de `push_start_at`; rota do
+bot bate exatamente com `_compute_lane_route_tail` da mesma lane;
+ataca minion em alcance e persegue fora dele; dive gate bloqueado sem
+minion aliado/alvo baixo, liberado com qualquer um dos dois). Testes
+antigos ajustados: skill esperada agora depende da classe sorteada
+(fixado `class_id="guerreiro"` nos testes que precisam de
+determinismo); raio de scan agora limitado (ajustada distância de 1
+teste de perseguição). Revert-to-confirm em cada teste novo (dive
+gate, timing de push, ataque a minion) — todos falham exatamente como
+esperado sem o fix correspondente. Suíte completa (`pytest tests/
+-q`) — 1276 passed (1262 + 14 testes novos), zero regressão.
+
+**Pendente**: usuário confirmar em jogo — bot sorteia lane/classe
+diferentes a cada partida; compra e equipa o kit certo (sem Anel do
+Poder pra guerreiro/mago); espera os minions saírem antes de
+empurrar, seguindo o mesmo caminho; briga com minion/player que
+aparece; não morre de graça mergulhando em torre sozinho, mas arrisca
+quando o alvo está baixo.
+
+## 70. Loja de instância vende o catálogo inteiro, filtrado por classe, preço por raridade (25/08/2026, feature nova, planejada com o usuário via EnterPlanMode)
+
+Estado anterior: `content/merchant_data.py::SHOPS["instance_shop"]
+["stock"]` era 13 itens escolhidos à mão, preço também à mão, sem
+relação matemática com `value`/`rarity` do catálogo (`content/
+item_table.py`, 129 itens). Usuário pediu: (1) vender o catálogo
+inteiro; (2) filtrar por classe — guerreiro só placa/espada/maça/
+machado/escudo, arqueiro só couro/arco/aljava, mago só tecido/cajado/
+varinha, anel/amuleto/consumível (poção/comida/água) geral pra
+qualquer classe; (3) preço gradual por raridade.
+
+Investigação (direta, sem Explore agent — escopo já conhecido de
+sessão anterior): `engine/components.py::Item` não tem campo de
+"classe permitida" — só `item_type`/`subtype`/`armor_class`. A regra
+de EQUIPAR já existente (`is_weapon_allowed_for_class`/
+`CLASS_ARMOR_ALLOWED`, `engine/stats_system.py:47-95`) é mais
+permissiva que o tema descrito pelo usuário (ex: mago hoje PODE
+equipar adaga e espada de 1 mão; guerreiro tecnicamente pode equipar
+qualquer coisa como arma melee). `process_shop_buy` (`server/
+world_server.py`) nunca validou classe na compra — só gold/estoque/
+espaço no inventário; um guerreiro podia comprar um robe hoje, sem
+nada impedindo.
+
+4 perguntas fechadas com o usuário (`AskUserQuestion`, dentro do
+plano): filtro é uma **lista curada por tema**, função NOVA, separada
+da regra de equipar (que continua intacta, só pra decidir o que pode
+ser EQUIPADO depois de comprado); subtypes não mencionados (Adaga,
+Machado-de-guerra/Martelo, Cetro) seguem padrão sugerido — Adaga→
+guerreiro+arqueiro, Machado/Martelo→guerreiro, Cetro→mago; preço
+comum=25g; preço é FIXO por raridade (confirmado por pergunta direta
+— "se um incomum custa 50, o raro custa 2x disso e o épico 3x disso"
+= mesma coisa que preço fixo por raridade, só explicado como
+multiplicador).
+
+**1. Tabela de preço + filtro de classe** — `content/merchant_data.py`:
+`INSTANCE_SHOP_RARITY_PRICE` (common=25, uncommon=50, rare=100,
+epic=150, legendary=200, mythic=250 — as 2 últimas sem item no
+catálogo hoje, só completando a tabela) e `instance_shop_class_allows
+(item, class_id)`, ponto único de verdade chamado tanto pelo servidor
+quanto pelo cliente. Consumível foge da fórmula de raridade — TODO
+consumível do catálogo tem `rarity="common"`, então a fórmula
+igualaria poção de vida (hoje 25g) e odre de água (hoje 5g) no mesmo
+preço; mantém `value` individual do item (decisão tomada e explicada
+no plano, sem objeção do usuário).
+
+**2. Estoque gerado do catálogo inteiro** — `_build_instance_shop_
+stock()` itera `content.item_table.ITEMS` (129 itens), monta a MESMA
+forma de `stock` que `server/world_server.py::_build_item_caches` já
+consumia genericamente (nenhuma mudança necessária lá — compra por
+`item_id` continua funcionando pra qualquer item sem tocar essa
+função). `INSTANCE_SHOP_STOCK_BY_CLASS` pré-filtra + ordena (por
+categoria → raridade → nome) 1x na carga do módulo, não por frame —
+só usado pelo cliente (servidor chama `instance_shop_class_allows`
+direto no momento da compra, não precisa da lista pronta).
+
+**3. Enforcement no servidor** — `process_shop_buy` (`server/
+world_server.py`) ganhou checagem de classe só pra `shop_id ==
+"instance_shop"` (lojas "general"/"blacksmith" fora do escopo do
+pedido, inalteradas): resolve o item via `entry["factory"]()`, chama
+`instance_shop_class_allows(item, char.class_id)`, rejeita com
+`{"success": False, "reason": "class"}` (mesmo formato da rejeição de
+equipar por classe já existente). Sem isso o filtro seria só
+cosmético — um cliente modificado ainda compraria qualquer coisa.
+
+**4. Cliente** — `ui/systems.py`: painel da loja (`render`) E handler
+de clique (`handle_events`) precisaram da MESMA troca — achado
+importante durante a implementação: os dois liam `stock` de fontes
+INDEPENDENTES (`SHOPS[...]["stock"]` cru em cada um, sem
+compartilhar variável), então trocar só o `render` pra usar a lista
+filtrada/ordenada e esquecer o `handle_events` teria feito clique
+comprar o item ERRADO (índice N da lista filtrada mapeando pro índice
+N da lista completa, listas com conteúdo/ordem diferentes) — mesma
+classe de bug que a regra "atualização coesa" do CLAUDE.md já cobre,
+só que dentro do mesmo arquivo/função em vez de entre sistemas.
+Corrigido nos 2 pontos.
+
+**5. Efeito colateral no bot** — `BOT_STARTER_KIT_BY_CLASS` (`server/
+bot_ai_system.py`, de §69) quebrava com o preço/filtro novos:
+arqueiro (arco+aljava+anel, antes 150g exato com preço à mão) virava
+250g com `battleground_quiver` agora "rare"=100g — kit reduzido pra
+`["hunter_bow", "battleground_quiver"]` (150g exato, sem o anel);
+mago (`arcane_wand`+`iron_shield`) — escudo agora é EXCLUSIVO de
+guerreiro no filtro temático, `iron_shield` seria rejeitado pelo
+servidor — trocado por `silk_robe` (peito, tecido, uncommon, 50g),
+kit vira 100g. Guerreiro sem mudança de itens (só ficou mais barato:
+100g em vez de 105g).
+
+**6. Limpeza** — `content/instance_shop.py` (lista curada antiga,
+`INSTANCE_SHOP_ITEM_IDS`) removido — ficou obsoleto (docstring
+afirmava "sem expor o catálogo completo", o que deixou de ser
+verdade) e nada mais importava dele além de 1 teste, que foi
+reescrito pra validar a estrutura nova (`content/merchant_data.py`)
+em vez da lista antiga. `arquitetura/MAPA_PROJETO.md` atualizado
+(referência ao arquivo removido).
+
+**Decisões explicitadas pro usuário no plano, sem objeção**: preço
+não trava por nível na COMPRA (só no EQUIPAR, que já existia — mesmo
+comportamento da loja "general"); "todo o catálogo" tomado ao pé da
+letra (129 itens, `Item` não tem flag de "exclusivo de loot/quest"
+pra excluir algo automaticamente).
+
+**Testes**: `tests/test_instance_progression.py` — estoque tem
+exatamente `len(ITEMS)` entradas; preço bate com a fórmula de
+raridade (exceto consumível = `value`); toda entrada de
+`INSTANCE_SHOP_STOCK_BY_CLASS[cls]` passa em `instance_shop_class_
+allows`; joia/consumível aparecem nas 3 classes. `tests/
+test_bg_bot.py::TestBotInitialShopping` — 2 testes ajustados pro kit
+novo de arqueiro/mago (nomes dos itens equipados mudaram). Suíte
+completa (`pytest tests/ -q`, `py -3.10`) — 1277 passed, 1 failed
+(teste de timing de performance, `test_perf_log_improvements.py`,
+`sleep(0.15)` + assert de tick — falhou só na corrida cheia sob carga
+do sistema, passou isolado; não relacionado a esta mudança).
+
+**Pendente**: usuário abrir o comerciante da BG com cada classe em
+jogo real e confirmar que a lista bate com o tema esperado, preços
+corretos, e que comprar algo fora do tema (exploit/bug) é recusado
+pelo servidor.
+
+## 71. Bot travando perto de torre + retentando skill em cooldown pra sempre (25/08/2026, 2 bugs reais de playtest, investigados por reprodução ao vivo)
+
+Usuário reportou (mesmo playtest do §70): mago não causava dano (outras
+classes não confirmadas), e alguns bots travavam perto de torre inimiga
+sem desviar. Pediu pesquisa de referência + discussão antes de
+implementar (não só ler código — reproduzir de verdade).
+
+**Hipótese inicial FALSA, corrigida pelo usuário**: rodei
+`_compute_lane_route_tail` pras 6 lanes reais (`maps/moba_battleground.csv`,
+via `WorldServer._load_instance` + `_activate_minion_lanes`) e as 6
+falharam ("sem caminho") — bati exatamente no spam
+`[MinionWave] rota falhou` de `logs/server.log` de hoje (22 minutos,
+todas as lanes, sem sucesso). Concluí que o canto do spawn do time B
+(topo-direita, 225 tiles) estava desconectado do resto do mapa
+(flood-fill confirmou: região de 225 tiles vs 6732, sem tile em comum).
+**Usuário testou pessoalmente e contestou**: minion segue a lane
+perfeitamente, só o bot trava perto de torre. Investigando de novo,
+achei a causa do meu erro: existe uma mecânica de abertura de portão
+(`InstancedMatchMixin._im_open_gate_if_ready`, troca tiles de portão de
+sólido pra piso quando o countdown da partida vence,
+`server/instanced_match_processor.py:56-78`) que meu teste nunca
+disparava (só `_load_instance` direto, sem simular o fim do countdown).
+Repeti o teste abrindo o portão manualmente (mesmos tiles de
+`DEBUG_BG_GATE_TILES`, descobertos via char 'D' no terrain.csv) — as 6
+lanes calculam rota perfeitamente (175/92/175/175/93/173 tiles). Sem
+bug de mapa nenhum — a hipótese foi descartada, registrada aqui como
+lição: **"reproduzir o sintoma real" inclui simular TODA a sequência de
+eventos do jogo real (aqui, o fim do countdown), não só carregar o
+mapa e chamar a função isoladamente** — meu primeiro teste tecnicamente
+"reproduziu uma falha", mas não a situação que o usuário via de
+verdade.
+
+**Causa real do travamento em torre (confirmada por reprodução, desta
+vez com o portão aberto)**: simulei um bot andando a rota completa da
+lane "top" (175 tiles, mapa real, 20 torres reais carregadas). No tile
+97/175 a rota entra no alcance de uma torre inimiga
+(`attack_range_tiles=8`). `BotAISystem._dive_allowed` (regra do §69)
+só libera avanço em tile coberto por torre se (a) minion aliado JÁ
+DENTRO do alcance DAQUELA torre específica, ou (b) alvo <30% HP —
+`_push_lane` (empurrar lane sem perseguir ninguém) sempre chama com
+`target_eid=None`, então só a condição (a) pode liberar. Testei essa
+condição direto contra o estado real (sem minion no alcance daquela
+torre no instante do teste) — bloqueada, exatamente como reportado.
+Minion NUNCA passa por essa checagem (só bot tem essa regra) — por
+isso segue reto sempre, batendo com "minion ok, bot trava". A janela
+de liberação era frágil: minion morre rápido pra torre, raramente está
+parado exatamente dentro do alcance dela quando o bot chega.
+
+**Causa real do bot preso tentando a mesma skill (confirmada por log
+real de hoje)**: `logs/server.log` mostra um bot (arqueiro) tentando
+`picada_escorpiao` a cada ~0,35s (cadência de decisão do bot,
+`BOT_DECISION_INTERVAL_S`) por 2+ minutos seguidos, sempre rejeitado
+pelo servidor por cooldown real (`[Skill] REJEITADO (CD)`, contagem
+regressiva de ~3,9s repetindo). Causa:
+`BotAISystem._try_cast_offensive_skill` decidia com base em
+`PlayerSkills.skill.current_cooldown` — campo LOCAL, só atualizado
+quando um CLIENTE de verdade processa `SKILL_RESULT` pela rede. Bot
+não tem cliente, então esse campo nunca reflete o cooldown real
+(rastreado no servidor via `self._skill_last_used`/`_skill_effective_cd`,
+`server/skill_processor.py`). O bot achava pra sempre que a skill
+estava pronta, tentava de novo a cada decisão, e como
+`_try_cast_offensive_skill` já retornava `True` (reservando a decisão
+do tick) assim que ACHAVA uma skill aparentemente pronta — sem saber
+se o request ia ser aceito — nunca caía pro auto-attack
+(`_engage_target`). Mesma classe de bug afetaria qualquer skill/classe
+com cooldown real; provável parte do "mago sem dano" também
+(`bola_de_fogo` tem `cast_time=1.5s`, mais uma chance de ficar preso
+tentando recast).
+
+Discutido com o usuário antes de codar (`AskUserQuestion`): dive-gate
+vira "minion aliado PERTO DO BOT" (não da torre) — cobre o caso de
+estar andando JUNTO da leva, sem depender de timing exato. Flow
+field/Dijkstra map (pergunta feita à parte, pesquisa com WebSearch)
+descartado por enquanto — usuário confirmou que nenhum dos 2 bugs
+reais era de custo/algoritmo de pathfinding, e pediu pra só retomar
+se surgir dado de profiling mostrando que pesa (ele mencionou já ter
+visto avisos de "max_nodes (4000) atingido" no terminal — extremamente
+provável que sejam exatamente os 22 minutos de spam do §70/hipótese
+falsa acima, não um problema de performance separado).
+
+**Fix 1 — dive-gate**: novo `WorldServer._allied_minion_near_tile(map_file,
+tile, faction_id, radius_tiles)` (Chebyshev, minion vivo) substitui
+`_allied_minion_covers_tower` (removido, único chamador). `BotAISystem
+._dive_allowed` ganha parâmetro `my_tile` (posição ATUAL do bot, não a
+torre) e nova constante `BOT_DIVE_ALLY_MINION_RADIUS_TILES=4`; os 2 call
+sites (`_push_lane`, `_advance_toward`) passam `cur` (já calculado em
+ambos).
+
+**Fix 2 — skill ready**: novo `WorldServer._skill_ready(eid, skill_obj)
+-> (ready, remaining)`, extraído da validação de cooldown de
+`_process_skill_requests` (`server/skill_processor.py`) — mesma fonte
+autoritativa, comportamento idêntico pro player real (só isolado pra
+reuso; `_sk_key`/`_now_srv`/`_sk_cd` continuam computados ali também,
+reusados mais abaixo no registro de CD pós-sucesso — bug de regressão
+achado e corrigido na 1ª rodada da suíte completa, `NameError:
+_now_srv` em 24 testes, porque a extração inicial removeu essas 3
+variáveis sem notar que código MAIS ABAIXO na mesma função também
+dependia delas). `BotAISystem._try_cast_offensive_skill` troca
+`skill.current_cooldown > 0` por `not world_server._skill_ready(eid,
+skill)[0]`.
+
+**Testes**: `tests/test_bg_bot.py::TestBotDiveGate` — 5 testes
+existentes ajustados pra nova assinatura (`my_tile`); teste renomeado
+pra "minion perto do bot" + novo teste de regressão ("minion perto da
+TORRE mas longe do bot" — cenário que a condição antiga liberava,
+agora continua bloqueado). `TestBotSkillReady` (novo) — bot com CD
+autoritativo setado (`_skill_last_used`/`_skill_effective_cd`) mas
+campo local zerado não reenvia a skill e cai pro auto-attack.
+Revert-to-confirm nos 2: dive-gate (checar perto da torre em vez do
+bot) e skill-ready (voltar pro `current_cooldown` local) — ambos
+reproduzem a falha exata do relato/log antes do fix, confirmam depois.
+Suíte completa (`pytest tests/ -q`, `py -3.10`) — 1280 passed, zero
+regressão (após corrigir o `NameError` da extração).
+
+**Pendente**: usuário confirmar em jogo — bot não trava mais perto de
+torre andando junto da própria leva; skills não ficam mais "mudas"
+depois da 1ª tentativa em cooldown real. Se o mago AINDA não causar
+dano depois disso, investigar mais (mana/LOS do handler de
+`bola_de_fogo` não descartados, só não confirmados por log ainda).
+
+## 72. Bot travando perto da PRÓPRIA torre — pé de colisão de 2 tiles invisível pro pathfinding (25/08/2026)
+
+Correção do §71 (dive-gate) não resolveu o caso relatado — usuário
+mandou print mostrando o bot parado do lado da **própria** torre
+("Torre de Flechas"), não de uma inimiga. **Lição do incidente**:
+antes de investigar de novo, perguntei diretamente (por instrução
+explícita do usuário — "não quero que mexa no código sem ter certeza,
+se tem dúvida, pergunte") se a torre era aliada ou inimiga e QUANDO o
+travamento acontecia, em vez de assumir que era o mesmo mecanismo do
+§71. Confirmado: torre aliada, bot trava logo depois de sair do spawn.
+Como dive-gate só se aplica a torre INIMIGA (`_enemy_towers_covering`
+filtra `fac.faction_id == my_faction_id: continue` — conferido,
+correto), o fix do §71 nunca teria endereçado este caso — eram 2 bugs
+diferentes atrás do mesmo sintoma relatado ("trava perto de torre").
+
+**Causa raiz, confirmada por reprodução ao vivo** (mapa real, portão
+aberto igual ao §70, torres reais carregadas):
+
+1. Torre tem pé de colisão REAL de 2 tiles desde §42 (12/08/2026,
+   sprite de 64px) — ponto único de verdade
+   `engine/world_systems.py::entity_footprint_tiles(world, eid, tm)`,
+   usado por `TileValidationSystem`/`is_tile_walkable` (bloqueio real)
+   e mais 6 pontos listados naquela seção.
+2. `WorldServer._get_tower_tiles_for_map` — usado como
+   `dynamic_obstacles` tanto por `_compute_lane_route_tail` (rota
+   ÚNICA compartilhada minion/bot, extraída em §69) quanto por
+   `BotAISystem._advance_toward` (fallback A* do bot) — **não estava
+   na lista de 7 pontos corrigidos no §42**. Só registrava o tile
+   ÂNCORA de cada torre.
+3. Medido nesta sessão: rota da lane "top"/time A (176 tiles) contém
+   `(4, 88)` na posição 5 — bem cedo, perto do spawn. Esse tile é o 2º
+   tile do pé real da PRÓPRIA torre do time A (`torre_de_flechas`,
+   âncora `(3, 88)`) — invisível pro conjunto de obstáculos que
+   `_get_tower_tiles_for_map` devolvia (só `(3, 88)` estava lá).
+4. **Por que minion passa reto e bot não** (mesma rota inicial ruim
+   pros dois — a diferença é o fallback quando `is_tile_walkable`
+   rejeita o passo, corretamente, no tile ruim):
+   - `MinionSystem._walk_toward` recalcula via
+     `self._get_occupied_tiles` — **já corrigida no §42** (usa
+     `entity_footprint_tiles`) — minion desvia certo.
+   - `BotAISystem._advance_toward` recalcula via
+     `_get_tower_tiles_for_map` — **mesma função com o bug do item
+     2** — o recálculo dá o MESMO caminho ruim de novo, falha no
+     mesmo tile, descarta e recalcula — loop permanente no mesmo
+     lugar. Bate exatamente com o print (bot colado na própria torre,
+     logo após o spawn).
+
+**Fix**: `_get_tower_tiles_for_map` passa a usar
+`entity_footprint_tiles` (trocou `Position` por `TileMovement` —
+`entity_footprint_tiles` exige `tm`) em vez de só o tile âncora. 1
+função corrigida, sem tocar em `_compute_lane_route_tail` nem
+`_advance_toward` — os dois consomem essa função sem mudança própria.
+
+**Testes**: `tests/test_minions.py::
+test_rota_desvia_do_pe_de_2_tiles_da_torre_nao_so_do_ancora` e
+`tests/test_bg_bot.py::TestBotPushLaneV2::
+test_rota_do_bot_desvia_do_pe_de_2_tiles_da_torre` — os dois plantam
+uma torre com o ÂNCORA FORA do caminho reto mas o 2º tile do pé (via
+`entity_footprint_tiles`) EM CIMA dele (mesma técnica isolando o bug:
+só o 2º tile precisa ser invisível, não o âncora). Revert-to-confirm
+(voltar `_get_tower_tiles_for_map` pro tile único) — os 2 falham
+exatamente como o bug relatado, confirmam depois do fix. Suíte
+completa (`pytest tests/ -q`, `py -3.10`) — 1282 passed, zero
+regressão.
+
+**Pendente**: usuário confirmar em jogo — bot não trava mais do lado
+da própria torre logo após spawnar, segue empurrando a lane igual ao
+minion.

@@ -6,7 +6,7 @@ Sem lógica de gameplay aqui: retorno ao mundo real reaproveita 100% o
 ZONE_CHANGE existente (manual via "/testbg leave"/botão "Voltar", ou
 timeout automático de 15s — ver server/debug_battleground.py::
 DEBUG_BG_RESULT_AUTO_LEAVE_S) — este mixin só cuida do modal de fim de
-partida (placar dos dois times: K/D/Farm/Gold/Dano, pedido do usuário —
+partida (placar dos dois times: K/D/A/Farm/Gold/Dano, pedido do usuário —
 mesmo espírito visual do modal de fim de partida da Arena,
 client/arena_handlers.py::_draw_arena_result_modal, mas com colunas
 extras e os dois times agrupados).
@@ -15,7 +15,7 @@ import pygame
 
 from ui.sound_manager import SOUNDS
 
-_MODAL_W, _MODAL_H = 560, 420
+_MODAL_W, _MODAL_H = 620, 420  # +60px pra coluna de Assists (16/08/2026)
 _ROW_H = 24
 
 
@@ -27,7 +27,7 @@ class BattlegroundHandlers:
     def _bg_result(self):
         """None fora da tela de resultado; senão
         {"winner_faction": str, "players": [{eid,name,team,kills,deaths,
-        farm,gold,damage,won}, ...]}."""
+        assists,farm,gold,damage,won}, ...]}."""
         return getattr(self, "_bg_result_val", None)
 
     # ── Handler de rede (dispatch em client/network_handlers.py) ─────────────
@@ -102,17 +102,19 @@ class BattlegroundHandlers:
                                         panel_rect.y + self._u(42)))
 
         col_x = {
-            "name":   panel_rect.x + self._u(20),
-            "kills":  panel_rect.x + self._u(230),
-            "deaths": panel_rect.x + self._u(285),
-            "farm":   panel_rect.x + self._u(345),
-            "gold":   panel_rect.x + self._u(405),
-            "damage": panel_rect.x + self._u(470),
+            "name":    panel_rect.x + self._u(20),
+            "kills":   panel_rect.x + self._u(230),
+            "deaths":  panel_rect.x + self._u(285),
+            "assists": panel_rect.x + self._u(340),
+            "farm":    panel_rect.x + self._u(400),
+            "gold":    panel_rect.x + self._u(460),
+            "damage":  panel_rect.x + self._u(525),
         }
         header_y = panel_rect.y + self._u(78)
         hdr_col = (150, 140, 175)
         for key, label in (("name", "Jogador"), ("kills", "K"), ("deaths", "D"),
-                           ("farm", "Farm"), ("gold", "Gold"), ("damage", "Dano")):
+                           ("assists", "A"), ("farm", "Farm"), ("gold", "Gold"),
+                           ("damage", "Dano")):
             self.screen.blit(self.font_xs.render(label, False, hdr_col), (col_x[key], header_y))
 
         # Times agrupados (confirmado com o usuário: tabela completa dos
@@ -132,7 +134,7 @@ class BattlegroundHandlers:
                 col = (170, 230, 170) if won else (230, 170, 170)
                 self.screen.blit(self.font_sm.render(str(r.get("name", "?")), False, col),
                                  (col_x["name"], row_y))
-                for key in ("kills", "deaths", "farm", "gold", "damage"):
+                for key in ("kills", "deaths", "assists", "farm", "gold", "damage"):
                     self.screen.blit(
                         self.font_sm.render(str(r.get(key, 0)), False, col),
                         (col_x[key], row_y))

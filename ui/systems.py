@@ -47,7 +47,7 @@ from engine.fov import compute_fov, local_vision_blob
 from content.loot_tables import roll_loot, roll_mob_loot, roll_coins
 from engine.entity_factory import create_corpse, create_enemy
 from content.enemy_abilities_data import ABILITY_DEFS
-from content.merchant_data import SHOPS
+from content.merchant_data import SHOPS, INSTANCE_SHOP_STOCK_BY_CLASS
 from content.item_table import RARITY_COLORS as _SHARED_RARITY_COLORS
 import engine.quest_events as quest_events
 from engine.quest_events import fire as quest_fire
@@ -2712,7 +2712,11 @@ class ShopSystem(UIScaleMixin, System):
             self._close()
             return
 
-        stock  = SHOPS.get(merch.shop_id, {}).get("stock", [])
+        if merch.shop_id == "instance_shop":
+            _char_ev  = self.world.get_component(self.player_entity, CharacterStats)
+            stock = INSTANCE_SHOP_STOCK_BY_CLASS.get(_char_ev.class_id if _char_ev else None, [])
+        else:
+            stock = SHOPS.get(merch.shop_id, {}).get("stock", [])
         inv    = self.world.get_component(self.player_entity, Inventory)
         x0, y0 = self._panel_origin()
         gap     = self._u(self.GAP)
@@ -2878,12 +2882,18 @@ class ShopSystem(UIScaleMixin, System):
             return
 
         shop  = SHOPS.get(merch.shop_id, {})
-        stock = shop.get("stock", [])
         inv    = self.world.get_component(self.player_entity, Inventory)
         wallet = self.world.get_component(self.player_entity, Wallet)
         bag    = inv.items if inv else []
         _char_shop  = self.world.get_component(self.player_entity, CharacterStats)
         _viewer_cls = _char_shop.class_id if _char_shop else None
+        # Loja de instância: catálogo inteiro filtrado por tema de classe
+        # (25/08/2026) — só cosmético aqui, servidor valida de verdade em
+        # process_shop_buy (instance_shop_class_allows, mesma função).
+        if merch.shop_id == "instance_shop":
+            stock = INSTANCE_SHOP_STOCK_BY_CLASS.get(_viewer_cls, [])
+        else:
+            stock = shop.get("stock", [])
 
         SW, SH  = self.hud_surf.get_size()
         x0, y0  = self._panel_origin()

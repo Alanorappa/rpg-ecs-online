@@ -90,6 +90,21 @@ RELATIONSHIP: dict[tuple[str, str], str] = {
     # "amigavel" — "neutro" deixa passar dano.
     ("civis", "arena_time_a"):               "amigavel",
     ("civis", "arena_time_b"):               "amigavel",
+
+    # Monstro de jungle estilo MOBA (16/08/2026, pedido do usuário —
+    # "só de chegar perto eles aggram, quero que eles só aggrem se
+    # atacar") — facção PRÓPRIA, separada de "monstros_hostis" (usada
+    # por todo mob hostil clássico do mundo aberto, que continua
+    # aggrando por proximidade normalmente). Tier "neutro" explícito
+    # (não só cair no DEFAULT_RELATIONSHIP, mesmo motivo do bloco de
+    # "civis"/"monstros_hostis" acima — deixa claro e documentado, não
+    # implícito): `EnemyAISystem` só aggra por proximidade em tier
+    # "hostil" (`is_hostile()`), "neutro" só aggra por dano
+    # (`aggroed_by_damage`, já existe) — exatamente o pedido, sem
+    # nenhum mecanismo novo pra isso. `can_engage()` continua liberando
+    # dano em "neutro" (só bloqueia "amigavel"), então nada quebra.
+    ("monstros_jungle", "arena_time_a"):     "neutro",
+    ("monstros_jungle", "arena_time_b"):     "neutro",
 }
 
 DEFAULT_RELATIONSHIP = "neutro"

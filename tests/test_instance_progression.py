@@ -24,7 +24,10 @@ from server.instance_progression import (
     INSTANCE_INVENTORY_SLOTS, INSTANCE_STARTING_GOLD,
 )
 from content.skill_config import INSTANCE_SKILL_UNLOCK_ORDER, SKILL_CATALOG
-from content.instance_shop import INSTANCE_SHOP_ITEM_IDS
+from content.merchant_data import (
+    SHOPS, INSTANCE_SHOP_STOCK_BY_CLASS, INSTANCE_SHOP_RARITY_PRICE,
+    instance_shop_class_allows,
+)
 from content.item_table import ITEMS
 from content.talent_data import TALENTS, CLASS_BUILD_MAP
 from engine.stats_system import CLASS_BASE_STATS
@@ -42,10 +45,31 @@ class TestInstanceProgressionData(unittest.TestCase):
                 self.assertEqual(SKILL_CATALOG[sid]["class_id"], class_id,
                                   f"{sid} não é da classe {class_id}")
 
-    def test_instance_shop_item_ids_existem_no_catalogo_real(self):
-        self.assertGreater(len(INSTANCE_SHOP_ITEM_IDS), 0)
-        for iid in INSTANCE_SHOP_ITEM_IDS:
-            self.assertIn(iid, ITEMS, f"{iid} não existe em content/item_table.py::ITEMS")
+    def test_instance_shop_vende_o_catalogo_inteiro(self):
+        stock = SHOPS["instance_shop"]["stock"]
+        self.assertEqual(len(stock), len(ITEMS))
+
+    def test_instance_shop_preco_bate_com_a_formula_de_raridade(self):
+        for entry in SHOPS["instance_shop"]["stock"]:
+            item = entry["factory"]()
+            if item.item_type == "consumable":
+                self.assertEqual(entry["price"], int(item.value), item.name)
+            else:
+                self.assertEqual(entry["price"], INSTANCE_SHOP_RARITY_PRICE[item.rarity], item.name)
+
+    def test_instance_shop_filtro_de_classe_e_consistente(self):
+        for cls, entries in INSTANCE_SHOP_STOCK_BY_CLASS.items():
+            self.assertGreater(len(entries), 0, cls)
+            for entry in entries:
+                item = entry["factory"]()
+                self.assertTrue(instance_shop_class_allows(item, cls),
+                                 f"{item.name} não deveria estar na lista de {cls}")
+        # nenhuma joia/consumível fica de fora de nenhuma classe (regra "geral")
+        for entry in SHOPS["instance_shop"]["stock"]:
+            item = entry["factory"]()
+            if item.item_type in ("jewelry", "consumable"):
+                for cls in ("guerreiro", "arqueiro", "mago"):
+                    self.assertTrue(instance_shop_class_allows(item, cls), f"{item.name}/{cls}")
 
 
 class TestInstanceProgressionRoundTrip(unittest.TestCase):

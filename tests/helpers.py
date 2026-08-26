@@ -55,6 +55,24 @@ def clear_login_immunity(ws, eid: int) -> None:
             ws._visibility_changed_this_tick.append(eid)
 
 
+def engage_target(ws, session_id: str, target_eid: int) -> None:
+    """`set_player_target` + `is_pursuing=True` — mesma sequência que
+    `server/session.py::_handle_auto_attack` já faz por trás de um
+    AUTO_ATTACK de verdade (16/08/2026, unificação de auto-attack PvE/
+    PvP: `is_pursuing` passou a ser exigido SEMPRE, não só ranged —
+    ver `server/combat_processor.py::_resolve_auto_attack`). Chamar só
+    `ws.set_player_target(sid, eid)` direto (sem isso) nunca dispara
+    ataque melee nenhum mais — testes que esperam combate de verdade
+    precisam deste helper, não da chamada crua."""
+    from engine.components import CombatState
+    ws.set_player_target(session_id, target_eid)
+    if target_eid != -1:
+        eid = ws._player_eids.get(session_id)
+        cst = ws.world.get_component(eid, CombatState) if eid is not None else None
+        if cst:
+            cst.is_pursuing = True
+
+
 def authorize_skill(ws, eid: int, sid: str) -> None:
     """Autoriza `sid` pro player no servidor: learned_skill_ids + talento
     (quando a skill é desbloqueada por talento). Necessário desde o gate

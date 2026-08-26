@@ -106,17 +106,21 @@ class SkillProcessorMixin:
             # Impede spam mesmo que o cliente manipule current_cooldown local.
             # Skills com cooldown=0 (Golpe Poderoso, Executar) passam sempre;
             # skills com cooldown>0 são bloqueadas se o tempo decorrido for menor.
+            # Checagem em si vive em WorldServer._skill_ready (25/08/2026,
+            # extraído pra ser reusado por BotAISystem._try_cast_offensive_skill
+            # — bot não tem cliente pra atualizar PlayerSkills.skill.
+            # current_cooldown via SKILL_RESULT, então precisa consultar esta
+            # MESMA fonte autoritativa, nunca o campo local desatualizado).
+            # _sk_key/_now_srv/_sk_cd continuam calculados aqui (não só
+            # dentro de _skill_ready) porque o registro de CD mais abaixo
+            # (após o handler rodar com sucesso) reusa os 3.
             import time as _time_mod
             _sk_key  = (player_eid, sid)
             _now_srv = _time_mod.time()
-            _elapsed = _now_srv - self._skill_last_used.get(_sk_key, 0.0)
-            # Usa o CD efetivo do uso anterior (com reduções de talento), não o base.
-            # Sem isso, talentos que reduzem CD do Interceptar causam rejeição falsa:
-            # o cliente conta 15s (CD reduzido) mas o servidor valida contra 22s (base).
             _sk_cd   = self._skill_effective_cd.get(_sk_key,
                            getattr(skill_obj, "cooldown", 0.0))
-            if _sk_cd > 0 and _elapsed < _sk_cd:
-                _cd_remaining = _sk_cd - _elapsed
+            _ready, _cd_remaining = self._skill_ready(player_eid, skill_obj)
+            if not _ready:
                 log.warning(f"[Skill] REJEITADO (CD) {sid} player={player_eid} "
                       f"restante={_cd_remaining:.1f}s")
                 # Notifica cliente: limpa _server_pending e sincroniza CD local

@@ -383,16 +383,19 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
         ]
 
     if "jungle_mobs" in data:
-        # Monstro de jungle estilo MOBA, normal — hostil aos 2 times
-        # (13/08/2026, pedido do usuário). Mesmo padrão de "towers":
-        # "mob_key" referencia content/jungle_definitions.py::
-        # JUNGLE_MOB_TABLE; "faction"/"level"/"respawn_s" são parâmetros
-        # de INSTÂNCIA. Criado via WorldServer._create_jungle_camps.
+        # Monstro de jungle estilo MOBA, normal — neutro aos 2 times,
+        # só entra em combate se atacado (16/08/2026, pedido do
+        # usuário — antes era "monstros_hostis"/tier "hostil", aggrava
+        # por proximidade; ver content/faction_data.py::"monstros_jungle").
+        # Mesmo padrão de "towers": "mob_key" referencia
+        # content/jungle_definitions.py::JUNGLE_MOB_TABLE; "faction"/
+        # "level"/"respawn_s" são parâmetros de INSTÂNCIA. Criado via
+        # WorldServer._create_jungle_camps.
         spawn_points["jungle_mobs"] = [
             {
                 "x":         jm["x"], "y": jm["y"],
                 "mob_key":   jm["mob_key"],
-                "faction":   jm.get("faction", "monstros_hostis"),
+                "faction":   jm.get("faction", "monstros_jungle"),
                 "level":     jm.get("level", 1),
                 "respawn_s": jm.get("respawn_s", 90.0),
             }
@@ -400,15 +403,16 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
         ]
 
     if "jungle_bosses" in data:
-        # Boss de jungle estilo MOBA (13/08/2026, pedido do usuário) —
-        # mesmo padrão de "jungle_mobs", "mob_key" referencia
+        # Boss de jungle estilo MOBA (13/08/2026, pedido do usuário;
+        # facção "monstros_jungle" desde 16/08/2026, ver comentário
+        # acima) — mesmo padrão de "jungle_mobs", "mob_key" referencia
         # content/jungle_definitions.py::JUNGLE_BOSS_TABLE (que também
         # carrega o ciclo de buff por abate, "buff_cycle").
         spawn_points["jungle_bosses"] = [
             {
                 "x":         jb["x"], "y": jb["y"],
                 "mob_key":   jb["mob_key"],
-                "faction":   jb.get("faction", "monstros_hostis"),
+                "faction":   jb.get("faction", "monstros_jungle"),
                 "level":     jb.get("level", 1),
                 "respawn_s": jb.get("respawn_s", 300.0),
             }

@@ -96,8 +96,10 @@ TOWER_TABLE: dict[str, dict] = {
         "attack_range_tiles": 8,
         "vision_radius_tiles": 8,
         "xp_reward": 250,
-        "gold_min": 20, 
-        "gold_max": 40,
+        # Rebalance de economia da BG (16/08/2026, pedido do usuário) —
+        # torre vira valor fixo, igual minion já é (era uma faixa 20-40).
+        "gold_min": 80,
+        "gold_max": 80,
         # Mesmos arquivos REAIS já usados por "Mago (NPC)" (mob_
         # definitions.py) pra espelhar a Bola de Fogo do mago jogador —
         # nunca inventar nome de asset novo sem conferir se o .ogg existe
@@ -133,8 +135,8 @@ TOWER_TABLE: dict[str, dict] = {
         "attack_range_tiles": 8,
         "vision_radius_tiles": 8,
         "xp_reward": 250,
-        "gold_min": 18, 
-        "gold_max": 36,
+        "gold_min": 80,  # rebalance 16/08/2026 — ver torre_de_fogo acima
+        "gold_max": 80,
         # Mesmos arquivos REAIS já usados por "Arqueiro (NPC)" — ver
         # comentário acima sobre nunca inventar nome de asset.
         "sounds": {

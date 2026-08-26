@@ -50,8 +50,18 @@ class RespawnMixin:
                 if _pcst.respawn_immunity_ticks == 0:
                     _pcst.is_visible = True
 
-    def _handle_player_death(self, player_eid: int) -> None:
-        """Player morreu: corpo fica no local da morte, espírito ainda não liberado."""
+    def _handle_player_death(self, player_eid: int, killer_eid: int = -1) -> None:
+        """Player morreu: corpo fica no local da morte, espírito ainda não
+        liberado. `killer_eid`: quem deu o golpe LITERAL final (pode ser
+        mob/minion/torre, ou -1 se desconhecido) — usado só como
+        candidato a mais um "atacante recente" no crédito de kill/assist
+        abaixo, nunca creditado diretamente se não for player (ver
+        bloco). ÚNICO ponto que credita kill/assist de player — os 3
+        lugares que detectam morte de player (server/combat_processor.py
+        ×2, server/server_death_handler.py) chamam esta função em vez de
+        creditar cada um por conta própria (16/08/2026, unificação —
+        antes só 1 desses 3 lugares creditava, e nunca era alcançado de
+        verdade em partida real; ver PROBLEMAS_ARQUITETURA.md)."""
         from engine.components import CombatState, TileMovement, GhostState, CharacterStats
 
         # CharStatsTracker.deaths (02/08/2026, pedido do usuário — HUD de
@@ -60,6 +70,45 @@ class RespawnMixin:
         # já é no-op seguro se o entity não tiver o componente.
         from engine.utils import incr_char_stat as _incr_deaths
         _incr_deaths(self.world, player_eid, "deaths")
+
+        # Kill credit + assist (16/08/2026, estilo LoL — pesquisado com o
+        # usuário) — kill vai pro ÚLTIMO PLAYER inimigo que causou dano,
+        # mesmo que o golpe final literal (`killer_eid`) tenha sido de
+        # minion/torre; qualquer OUTRO player inimigo que bateu dentro da
+        # janela de assist também ganha assistência. Sem NENHUM player
+        # tendo batido na janela -> ninguém ganha nada (equivalente à
+        # "regra de execução" do LoL, cai de graça do desenho, sem
+        # precisar de caso especial). `_player_damage_log` só registra
+        # player→player (ver WorldServer._log_mob_damage_hit) — se
+        # `killer_eid` for player, garante que ele conta como "bateu
+        # agora" mesmo que o hook de dano não tenha rodado por algum
+        # motivo (rede de segurança, não deveria ser necessário na
+        # prática).
+        # (timestamp, seq) — seq é desempate monotônico pra 2 hits no
+        # MESMO tick (time.time() sozinho não tem resolução garantida
+        # pra separá-los, achado testando — ver WorldServer.
+        # _log_mob_damage_hit).
+        import time as _t_pk
+        _contributions = self._player_damage_log.pop(player_eid, {})
+        if killer_eid in self._player_eids.values():
+            self._player_damage_seq += 1
+            _contributions.setdefault(killer_eid, (_t_pk.time(), self._player_damage_seq))
+        _now_pk = _t_pk.time()
+        from shared.constants import PLAYER_KILL_ASSIST_WINDOW_S as _PKAW
+        _recent = {_a: _ts_seq for _a, _ts_seq in _contributions.items()
+                  if _a != player_eid and _now_pk - _ts_seq[0] <= _PKAW}
+        if _recent:
+            from server.instance_progression import (
+                INSTANCE_PLAYER_KILL_GOLD as _PKG, grant_instance_gold as _grant_kill_gold)
+            from shared.constants import INSTANCE_PLAYER_ASSIST_GOLD as _PAG
+            _pk_killer = max(_recent, key=_recent.get)   # (timestamp, seq) mais recente = último a bater
+            _incr_deaths(self.world, _pk_killer, "players_killed")
+            _grant_kill_gold(self, _pk_killer, _PKG)
+            for _assister in _recent:
+                if _assister == _pk_killer:
+                    continue
+                _incr_deaths(self.world, _assister, "assists")
+                _grant_kill_gold(self, _assister, _PAG)
 
         # Limpa efeitos ativos (DoT/HoT) do player — B8
         from engine.components import StatusEffects as _SFX, ActiveRegen as _AR, \
@@ -404,6 +453,7 @@ class RespawnMixin:
             "hp_max":   cs.max_hp if cs else 0,
             "level":    char.level if char else 1,
             "effects":  [],
+            **self.player_faction_field(player_eid),
         })
 
     def _auto_revive_on_disconnect(self, player_eid: int) -> None:

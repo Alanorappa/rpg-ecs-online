@@ -250,8 +250,9 @@ class TestTowerDeathXpGoldRespawn(unittest.TestCase):
 
         loot = self.ws._corpses.get(max(self.ws._corpses.keys()))
         self.assertIsNotNone(loot, "corpse da torre deveria ter sido registrado")
-        self.assertGreaterEqual(loot["coins"], 20)
-        self.assertLessEqual(loot["coins"], 40)
+        # gold_min/gold_max viraram fixo 80 (rebalance 16/08/2026, ver
+        # content/tower_definitions.py) — era uma faixa 20-40 antes.
+        self.assertEqual(loot["coins"], 80)
         self.assertEqual(loot["items"], [], "torre não deveria dropar item, só ouro")
 
     def test_ouro_de_instancia_nao_duplica_com_coins_do_corpse(self):

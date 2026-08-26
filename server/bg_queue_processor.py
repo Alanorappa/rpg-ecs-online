@@ -45,6 +45,24 @@ EXATAMENTE dos 2 lados, então nunca produz partida assimétrica, mesmo
 que o empacotamento guloso não seja o teoricamente ótimo. Mesma lógica
 de antes da revisão, só que agora escopada a UM tamanho fixo por fila em
 vez de tentar os 5 tamanhos numa fila só.
+
+Bot 100% servidor (16/08/2026, pedido do usuário — testar a BG sem
+precisar de 4 humanos) — SÓ modo 2v2 por enquanto, escopo pequeno de
+propósito (3v3/5v5 continuam com `_bg_try_pack` inalterado). Regra:
+cada TIME vem de NO MÁXIMO 1 token real (nunca 2 solos estranhos no
+MESMO time — ver `_bg_try_pack_with_bots`); o resto do time é
+preenchido por bot. Bot é uma entidade normal, criada por
+`WorldServer.spawn_player` (mesmo caminho de qualquer login real, sem
+fábrica paralela) + uma `Session` FALSA registrada em `SessionManager`
+(`ws` nulo que só descarta `send()`) — sem a Session falsa, o bot fica
+invisível pros outros players, porque a varredura que descobre OUTROS
+PLAYERS (`server/session.py::_build_update_for_session`) só itera
+sessões REAIS (`self._sessions.values()`), nunca `WorldServer.
+_player_eids` diretamente. Decisão/ação do bot em si (mover, atacar,
+usar skill) mora em `server/bot_ai_system.py::BotAISystem` — chama as
+MESMAS funções internas (`move_player`/`set_player_target`/
+`queue_skill`) que os handlers de rede já chamam por trás, sem
+duplicar nenhuma lógica de combate.
 """
 from __future__ import annotations
 
@@ -56,6 +74,22 @@ from server.debug_battleground import (
     DEBUG_BG_RESULT_AUTO_LEAVE_S as BG_QUEUE_RESULT_AUTO_LEAVE_S,
 )
 from server.instanced_match_processor import InstancedMatchMixin
+
+# Bot backfill — só 2v2 (ver docstring do módulo). Tempo que um token
+# SOZINHO na fila espera por outro humano antes do servidor desistir e
+# fechar a partida só com bots (decisão do usuário, 16/08/2026).
+BG_BOT_BACKFILL_WAIT_S = 20.0
+# Nível fixo do bot v1 — mesmo nível de minion_lanes/torre no mapa da BG
+# (moba_battleground_entities.json), consistente com o resto do conteúdo.
+BG_BOT_LEVEL = 2
+
+
+class _NullWebSocket:
+    """WebSocket falso pra Session de bot — `send()` descarta em
+    silêncio, sem rede nenhuma de verdade. `Session.send()` já captura
+    qualquer exceção (server/session.py), mas aqui nem chega a lançar."""
+    async def send(self, data) -> None:
+        return None
 
 # Modos de fila da BG (10/08/2026, achado real do usuário — mesmo padrão
 # de server/match_processor.py::ARENA_MODES) — 3 tamanhos fixos, não os
@@ -83,7 +117,9 @@ _BG_QUEUE_GATE_TILES_FLAT = [t for tiles in BG_QUEUE_GATE_TILES.values() for t i
 
 class BgQueueProcessorMixin(InstancedMatchMixin):
 
-    # ── Fila (token = ("solo", eid) ou ("party", party_id), 1 por modo) ──────
+    # ── Fila (token = ("solo", eid, join_ts) ou ("party", party_id, join_ts),
+    #    1 por modo — join_ts usado só pelo backfill de bot do 2v2, ver
+    #    `_bg_try_pack_with_bots`) ────────────────────────────────────────────
 
     def request_bg_queue_join(self, requester_eid: int, mode_id: str = "5v5") -> "str | None":
         """None = entrou na fila do modo pedido. Reason str = recusado
@@ -91,9 +127,10 @@ class BgQueueProcessorMixin(InstancedMatchMixin):
         requester). Solo entra livre; em grupo, só o líder pode
         enfileirar (mesma regra de `kick_from_party`/arena). Grupo MENOR
         que o time do modo é aceito (preenchido por outros tokens da
-        MESMA fila, ver `_bg_try_pack`) — só maior que o time é recusado.
-        Um requester só pode estar em UMA fila de modo por vez (checa
-        TODAS antes de aceitar, mesmo padrão de `request_arena_queue_join`)."""
+        MESMA fila, ver `_bg_try_pack`/`_bg_try_pack_with_bots`) — só
+        maior que o time é recusado. Um requester só pode estar em UMA
+        fila de modo por vez (checa TODAS antes de aceitar, mesmo padrão
+        de `request_arena_queue_join`)."""
         mode = BG_MODES.get(mode_id)
         if mode is None:
             return "invalid_mode"
@@ -101,13 +138,13 @@ class BgQueueProcessorMixin(InstancedMatchMixin):
             return "in_match"
         party_id = self.get_party_id_of(requester_eid)
         team_size = mode["team_size"]
+        import time as _time_bqj
 
         if party_id == -1:
-            token = ("solo", requester_eid)
             for q in self._bg_queues.values():
-                if token in q:
+                if any(t[0] == "solo" and t[1] == requester_eid for t in q):
                     return "already_queued"
-            self._bg_queues[mode_id].append(token)
+            self._bg_queues[mode_id].append(("solo", requester_eid, _time_bqj.time()))
             return None
 
         party = self._parties.get(party_id)
@@ -120,11 +157,10 @@ class BgQueueProcessorMixin(InstancedMatchMixin):
         for m_eid in party["members"]:
             if m_eid in self._player_bg_match_id:
                 return "in_match"
-        token = ("party", party_id)
         for q in self._bg_queues.values():
-            if token in q:
+            if any(t[0] == "party" and t[1] == party_id for t in q):
                 return "already_queued"
-        self._bg_queues[mode_id].append(token)
+        self._bg_queues[mode_id].append(("party", party_id, _time_bqj.time()))
         return None
 
     def request_bg_queue_leave(self, requester_eid: int) -> bool:
@@ -133,7 +169,7 @@ class BgQueueProcessorMixin(InstancedMatchMixin):
         party_id = self.get_party_id_of(requester_eid)
         for q in self._bg_queues.values():
             for token in list(q):
-                kind, val = token
+                kind, val = token[0], token[1]
                 if (kind == "solo" and val == requester_eid) or (kind == "party" and val == party_id):
                     q.remove(token)
                     return True
@@ -144,7 +180,7 @@ class BgQueueProcessorMixin(InstancedMatchMixin):
         do estado VIVO (não um snapshot congelado no join): se o grupo se
         desfez ou o player desconectou enquanto esperava, devolve `None`
         (chamador descarta o token)."""
-        kind, val = token
+        kind, val = token[0], token[1]
         if kind == "solo":
             return [val] if val in self._player_eid_to_sid else None
         party = self._parties.get(val)
@@ -183,21 +219,141 @@ class BgQueueProcessorMixin(InstancedMatchMixin):
                 return side_a, side_b
         return None
 
+    def _bg_try_pack_with_bots(self, mode_id: str, now: float) -> "tuple[list, list] | None":
+        """Só modo 2v2 (ver docstring do módulo) — versão com backfill de
+        bot. Diferente de `_bg_try_pack`: cada TIME vem de NO MÁXIMO 1
+        token real (nunca 2 solos estranhos combinados no MESMO time —
+        pedido explícito do usuário: solo nunca divide time com
+        desconhecido, só com bot). O resto de cada time (se sobrar
+        espaço) é preenchido por bot pelo CHAMADOR (`_tick_bg_queue`) —
+        esta função só decide QUEM entra em cada time real:
+        - ≥2 tokens reais disponíveis → fecha na hora, 1 por lado (FIFO —
+          quem entrou primeiro joga primeiro), cada lado incompleto ganha
+          bot depois.
+        - Só 1 token disponível E já esperou ≥ BG_BOT_BACKFILL_WAIT_S
+          sozinho → fecha sozinho (lado B fica 100% bot).
+        - Só 1 token disponível E ainda não esperou o suficiente → não
+          fecha ainda (continua esperando, mesmo comportamento de antes
+          pra esse caso)."""
+        team_size = BG_MODES[mode_id]["team_size"]
+        usable = []
+        for token in self._bg_queues[mode_id]:
+            members = self._bg_members_for_token(token)
+            if members is None or len(members) > team_size:
+                continue
+            usable.append(token)
+        if not usable:
+            return None
+        if len(usable) >= 2:
+            return [usable[0]], [usable[1]]
+        join_ts = usable[0][2]
+        if now - join_ts >= BG_BOT_BACKFILL_WAIT_S:
+            return [usable[0]], []
+        return None
+
+    def _spawn_bot_player(self, class_id: str = "") -> int:
+        """Cria um bot 100% servidor (sem rede) — reaproveita o MESMO
+        `WorldServer.spawn_player` que qualquer login real usa (nenhuma
+        fábrica paralela). `session_id` sintético, registrado nas MESMAS
+        tabelas que um login real (`_player_eids`/`_player_eid_to_sid`,
+        dentro de `spawn_player`) + numa `Session` FALSA em
+        `SessionManager` (`ws` nulo — `_NullWebSocket`) — sem isso, o bot
+        fica invisível pros outros players (a varredura que descobre
+        OUTROS PLAYERS em `server/session.py::_build_update_for_session`
+        só itera sessões REAIS, nunca `_player_eids` direto). Marcado com
+        `BotControlled` pra `BotAISystem` saber quem controlar e pro
+        cleanup de fim de partida saber quem despawnar (`request_bg_leave`).
+
+        `class_id`: força a classe em vez de sortear (16/08/2026) — só
+        usado por teste que precisa de comportamento determinístico;
+        produção nunca passa (fica "", sorteia entre as 3)."""
+        import uuid as _uuid_bot, json as _json_bot, random as _rand_bot
+        bot_session_id = f"bot_{_uuid_bot.uuid4().hex[:8]}"
+        # Classe sorteada (16/08/2026, pedido do usuário — bot v1 sempre
+        # nascia Guerreiro; agora varia pra compra inicial por classe
+        # (BotAISystem.do_initial_shopping) fazer sentido de verdade).
+        _bot_class = class_id or _rand_bot.choice(["guerreiro", "arqueiro", "mago"])
+        # 1ª skill de instância da classe (mesma tabela ÚNICA que
+        # enter_normalized_progression já usa pra conceder a 1ª skill de
+        # graça, server/instance_progression.py — nunca hardcodear skill
+        # aqui: pra arqueiro/mago precisaria reinventar o mapeamento).
+        from content.skill_config import INSTANCE_SKILL_UNLOCK_ORDER as _ISUO_bot
+        _bot_skill = _ISUO_bot.get(_bot_class, [""])[0]
+        char_data = {
+            "tile_x": 0, "tile_y": 0,   # request_bg_accept reposiciona de verdade
+            "name":      f"Bot {bot_session_id[-4:]}",
+            "class_id":  _bot_class,
+            "hp":        0,             # spawn_player usa max_hp quando 0
+            "level":     BG_BOT_LEVEL,
+            "stats_json": _json_bot.dumps({"level": BG_BOT_LEVEL}),
+            # INITIAL_SKILLS_BY_CLASS é vazio pras 3 classes (skill só vem
+            # de treinador/talento) — sem isso o bot nasceria sem NENHUMA
+            # skill pra usar. `_bot_skill` (1ª skill de
+            # INSTANCE_SKILL_UNLOCK_ORDER, ofensiva pra guerreiro/mago;
+            # arqueiro recebe "recarregar", não-ofensiva — luta de
+            # auto-attack à distância mesmo, igual arqueiro de verdade
+            # nesse nível de instância).
+            "skills_json": _json_bot.dumps({
+                "learned": [_bot_skill] if _bot_skill else [],
+                "hotbar":  [_bot_skill] if _bot_skill else [],
+            }),
+        }
+        eid = self.spawn_player(bot_session_id, char_data)
+
+        from engine.components import BotControlled as _BotCSpawn
+        self.world.add_component(eid, _BotCSpawn())
+
+        mgr = getattr(self, "_session_manager", None)
+        if mgr is not None:
+            from server.session import Session as _SessBot
+            bot_sess = _SessBot(ws=_NullWebSocket(), session_id=bot_session_id)
+            bot_sess.entity_id     = eid
+            bot_sess.char_data     = dict(char_data)
+            bot_sess.authenticated = True
+            mgr._sessions[bot_session_id]  = bot_sess
+            mgr._eid_to_sid[eid]           = bot_session_id
+        return eid
+
+    def _despawn_bot_player(self, eid: int) -> None:
+        """Remove um bot por completo — entidade ECS (`WorldServer.
+        despawn_player`, mesmo caminho de qualquer disconnect real, sem
+        nenhum efeito colateral de save/DB) + a Session FALSA registrada
+        em `SessionManager` (mesmas 2 tabelas que um disconnect real
+        limpa, `_sessions`/`_eid_to_sid` — ver `server/session.py`,
+        bloco de `on_disconnect`)."""
+        sid = self._player_eid_to_sid.get(eid)
+        if sid is None:
+            return
+        self.despawn_player(sid)
+        mgr = getattr(self, "_session_manager", None)
+        if mgr is not None:
+            mgr._sessions.pop(sid, None)
+            mgr._eid_to_sid.pop(eid, None)
+
     def _tick_bg_queue(self) -> None:
         """Roda 1x por tick (mesmo padrão de `_tick_arena_queue`). Pra
         CADA modo (2v2/3v3/5v5, filas independentes desde 10/08/2026 —
         achado real do usuário, ver docstring do módulo): limpa tokens
         que desapareceram, depois forma o máximo de partidas possível
         dessa fila (loop — 10 solos esperando no 5v5 podem virar 2
-        partidas na mesma passada, não só 1)."""
+        partidas na mesma passada, não só 1). 2v2 usa
+        `_bg_try_pack_with_bots` (backfill de bot, 16/08/2026); 3v3/5v5
+        continuam com `_bg_try_pack` inalterado (fora de escopo, sem bot
+        ainda)."""
         for mode_id, queue in self._bg_queues.items():
             for token in list(queue):
                 if self._bg_members_for_token(token) is None:
                     queue.remove(token)
 
+        import time as _time_tbq
+        now = _time_tbq.time()
+
         for mode_id, queue in self._bg_queues.items():
             while True:
-                packed = self._bg_try_pack(mode_id)
+                if mode_id == "2v2":
+                    packed = self._bg_try_pack_with_bots(mode_id, now)
+                else:
+                    packed = self._bg_try_pack(mode_id)
                 if packed is None:
                     break
                 side_a_tokens, side_b_tokens = packed
@@ -205,7 +361,43 @@ class BgQueueProcessorMixin(InstancedMatchMixin):
                 team_b_eids = [eid for t in side_b_tokens for eid in self._bg_members_for_token(t)]
                 for t in side_a_tokens + side_b_tokens:
                     queue.remove(t)
+
+                team_size = BG_MODES[mode_id]["team_size"]
+                bot_eids_this_match: list[int] = []
+                while len(team_a_eids) < team_size:
+                    bot_eid = self._spawn_bot_player()
+                    team_a_eids.append(bot_eid)
+                    bot_eids_this_match.append(bot_eid)
+                while len(team_b_eids) < team_size:
+                    bot_eid = self._spawn_bot_player()
+                    team_b_eids.append(bot_eid)
+                    bot_eids_this_match.append(bot_eid)
+
+                # Lane sorteada por bot (16/08/2026, pedido do usuário) —
+                # 1 por TIME, sem reposição (random.sample), garante que 2
+                # bots do MESMO time nunca caem na mesma lane. Bot do time
+                # oposto pode sortear a mesma lane normalmente (é a MESMA
+                # lane, dois lados empurrando um contra o outro — padrão
+                # de MOBA, não colisão).
+                if bot_eids_this_match:
+                    from engine.components import BotControlled as _BotCLane
+                    import random as _rand_lane
+                    for _team_eids in (team_a_eids, team_b_eids):
+                        _team_bots = [e for e in _team_eids if e in bot_eids_this_match]
+                        if not _team_bots:
+                            continue
+                        _lanes = _rand_lane.sample(["top", "mid", "bot"], k=len(_team_bots))
+                        for _bot_eid, _lane_id in zip(_team_bots, _lanes):
+                            _bc = self.world.get_component(_bot_eid, _BotCLane)
+                            if _bc is not None:
+                                _bc.lane_id = _lane_id
+
                 self._propose_bg_match(team_a_eids, team_b_eids, mode_id)
+                # Bot não tem cliente pra mandar BG_MATCH_ACCEPT — aceita
+                # sozinho na hora, exatamente como request_bg_accept já
+                # aceitaria pra um humano (mesma função, sem mudança).
+                for bot_eid in bot_eids_this_match:
+                    self.request_bg_accept(bot_eid)
 
     def _tick_bg_results_timeout(self) -> None:
         """Partidas DECIDIDAS há mais de BG_QUEUE_RESULT_AUTO_LEAVE_S
@@ -317,13 +509,26 @@ class BgQueueProcessorMixin(InstancedMatchMixin):
         from server.instance_progression import enter_normalized_progression as _enter_np_bg
         _enter_np_bg(self, eid)
 
+        # Bot AI v2 (16/08/2026, pedido do usuário) — compra/equipa o kit
+        # inicial e agenda quando pode começar a empurrar a PRÓPRIA lane
+        # (10s depois da wave nascer). Só aqui: instância já garantidamente
+        # carregada (_minion_lanes[instance_key] populado) e Wallet com
+        # INSTANCE_STARTING_GOLD já concedido pela linha acima.
+        from engine.components import BotControlled as _BotCAccept
+        if self.world.get_component(eid, _BotCAccept) is not None:
+            from server.bot_ai_system import BotAISystem as _BotAIAccept
+            _BotAIAccept.do_initial_shopping(self, eid)
+            _BotAIAccept.schedule_lane_push(
+                self, eid, match["instance_key"], faction_id, match["countdown_deadline"])
+
         from engine.components import CharStatsTracker as _CST_bg
         _cst_bg = self.world.get_component(eid, _CST_bg)
         match["stat_snapshots"][eid] = {
-            "kills":  _cst_bg.players_killed if _cst_bg else 0,
-            "deaths": _cst_bg.deaths if _cst_bg else 0,
-            "farm":   _cst_bg.minions_killed if _cst_bg else 0,
-            "damage": (_cst_bg.pve_damage + _cst_bg.pvp_damage) if _cst_bg else 0,
+            "kills":   _cst_bg.players_killed if _cst_bg else 0,
+            "deaths":  _cst_bg.deaths if _cst_bg else 0,
+            "assists": _cst_bg.assists if _cst_bg else 0,
+            "farm":    _cst_bg.minions_killed if _cst_bg else 0,
+            "damage":  (_cst_bg.pve_damage + _cst_bg.pvp_damage) if _cst_bg else 0,
         }
         from server.instance_progression import INSTANCE_STARTING_GOLD as _ISG_bg
         match["gold_earned"][eid]      = 0
@@ -437,6 +642,17 @@ class BgQueueProcessorMixin(InstancedMatchMixin):
         if not match["team_a"] and not match["team_b"]:
             self._bg_active_matches.pop(match_id, None)
             self._unload_instance(match["instance_key"])
+
+        # Bot não tem cliente pra sair sozinho nem personagem pra salvar —
+        # ao sair da partida (Nexus destruído + timeout de resultado, OU
+        # time incompleto descartado em _tick_bg_pending), despawna de
+        # vez. Centralizado AQUI (não em cada chamador) porque TODOS os
+        # caminhos de saída (timeout de resultado via _im_results_timeout,
+        # sweep de time incompleto, saída manual) já convergem pra esta
+        # mesma função.
+        from engine.components import BotControlled as _BotCLeave
+        if self.world.get_component(eid, _BotCLeave) is not None:
+            self._despawn_bot_player(eid)
         return None
 
     def end_bg_matches_of(self, eid: int) -> None:
@@ -482,18 +698,19 @@ class BgQueueProcessorMixin(InstancedMatchMixin):
             team_faction = fac.faction_id if fac else None
             cst = self.world.get_component(m_eid, _CSTn)
             snap = match["stat_snapshots"].get(
-                m_eid, {"kills": 0, "deaths": 0, "farm": 0, "damage": 0})
+                m_eid, {"kills": 0, "deaths": 0, "assists": 0, "farm": 0, "damage": 0})
             char = self.world.get_component(m_eid, _CharN)
             players.append({
-                "eid":    m_eid,
-                "name":   char.name if char else "",
-                "team":   "a" if team_faction == "arena_time_a" else "b",
-                "kills":  (cst.players_killed if cst else 0) - snap["kills"],
-                "deaths": (cst.deaths if cst else 0) - snap["deaths"],
-                "farm":   (cst.minions_killed if cst else 0) - snap["farm"],
-                "gold":   self._bg_sample_gold_earned(match, m_eid),
-                "damage": ((cst.pve_damage + cst.pvp_damage) if cst else 0) - snap["damage"],
-                "won":    team_faction == winner_faction,
+                "eid":     m_eid,
+                "name":    char.name if char else "",
+                "team":    "a" if team_faction == "arena_time_a" else "b",
+                "kills":   (cst.players_killed if cst else 0) - snap["kills"],
+                "deaths":  (cst.deaths if cst else 0) - snap["deaths"],
+                "assists": (cst.assists if cst else 0) - snap.get("assists", 0),
+                "farm":    (cst.minions_killed if cst else 0) - snap["farm"],
+                "gold":    self._bg_sample_gold_earned(match, m_eid),
+                "damage":  ((cst.pve_damage + cst.pvp_damage) if cst else 0) - snap["damage"],
+                "won":     team_faction == winner_faction,
             })
 
         import time as _time_nex
@@ -569,18 +786,20 @@ class BgQueueProcessorMixin(InstancedMatchMixin):
                 if snap is None:
                     continue
                 cst = self.world.get_component(eid, _CSTk)
-                kills  = (cst.players_killed if cst else 0) - snap["kills"]
-                deaths = (cst.deaths if cst else 0) - snap["deaths"]
-                farm   = (cst.minions_killed if cst else 0) - snap["farm"]
-                gold   = self._bg_sample_gold_earned(match, eid)
-                cur = (kills, deaths, farm, gold)
+                kills   = (cst.players_killed if cst else 0) - snap["kills"]
+                deaths  = (cst.deaths if cst else 0) - snap["deaths"]
+                assists = (cst.assists if cst else 0) - snap.get("assists", 0)
+                farm    = (cst.minions_killed if cst else 0) - snap["farm"]
+                gold    = self._bg_sample_gold_earned(match, eid)
+                cur = (kills, deaths, assists, farm, gold)
                 if match["last_kda_sent"].get(eid) == cur:
                     continue
                 match["last_kda_sent"][eid] = cur
                 self.queue_stats_update({
-                    "player_eid":   eid,
-                    "match_kills":  kills, "match_deaths": deaths,
-                    "match_farm":   farm,  "match_gold":   gold,
+                    "player_eid":    eid,
+                    "match_kills":   kills,   "match_deaths": deaths,
+                    "match_assists": assists,
+                    "match_farm":    farm,    "match_gold":   gold,
                 })
 
     # ── Eventos por tick (broadcast loop do SessionManager) ─────────────────

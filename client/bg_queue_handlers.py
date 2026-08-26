@@ -68,10 +68,13 @@ class BgQueueHandlers:
     def _bg_opponents_server(self) -> set:
         """server_eids dos oponentes da partida REAL ativa — mesmo papel
         de ArenaHandlers._arena_opponents_server (game.py::
-        _client_pvp_context lê os dois, compostos, pra liberar clique-
-        direito/SPACE/skill contra o player inimigo: o cliente nunca
-        recebe Faction de outro player via ENTITY_SPAWN, só mob manda
-        "faction")."""
+        _client_pvp_context lê os dois, compostos). Desde 16/08/2026,
+        player remoto TAMBÉM recebe Faction real quando o servidor já tem
+        uma (`WorldServer.player_faction_field`) — hostilidade dentro de
+        BG/arena resolve pela PRÓPRIA Faction (`arena_time_a` vs
+        `arena_time_b` = "hostil" na tabela) sem precisar deste set na
+        maioria dos casos. Mantido como fallback/composição (mesmo padrão
+        de sempre) — não removido, só deixou de ser o ÚNICO mecanismo."""
         return getattr(self, "_bg_opponents_server_val", set())
 
     # ── Handlers de rede (dispatch em client/network_handlers.py) ────────────

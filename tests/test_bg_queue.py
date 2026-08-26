@@ -36,6 +36,14 @@ def _make_group(ws, prefix: str, size: int, tile=(130, 374)):
     return eids
 
 
+def _has_token(queue: list, kind: str, val) -> bool:
+    """Checa presença de um token (kind, val, ...) na fila ignorando o
+    3º campo (join_ts, 16/08/2026 — usado só pelo backfill de bot do
+    2v2, ver server/bg_queue_processor.py) — token deixou de ser uma
+    2-tupla comparável por igualdade exata."""
+    return any(t[0] == kind and t[1] == val for t in queue)
+
+
 class TestBgQueueJoinLeave(unittest.TestCase):
 
     def setUp(self):
@@ -44,7 +52,7 @@ class TestBgQueueJoinLeave(unittest.TestCase):
     def test_solo_entra_livre_sem_grupo(self):
         solo = spawn_player(self.ws, "j_solo", 130, 374)
         self.assertIsNone(self.ws.request_bg_queue_join(solo, "2v2"))
-        self.assertIn(("solo", solo), self.ws._bg_queues["2v2"])
+        self.assertTrue(_has_token(self.ws._bg_queues["2v2"], "solo", solo))
 
     def test_modo_invalido_e_recusado(self):
         solo = spawn_player(self.ws, "j_badmode", 130, 374)
@@ -53,13 +61,13 @@ class TestBgQueueJoinLeave(unittest.TestCase):
     def test_modo_default_e_5v5(self):
         solo = spawn_player(self.ws, "j_default", 130, 374)
         self.assertIsNone(self.ws.request_bg_queue_join(solo))
-        self.assertIn(("solo", solo), self.ws._bg_queues["5v5"])
+        self.assertTrue(_has_token(self.ws._bg_queues["5v5"], "solo", solo))
 
     def test_so_lider_do_grupo_pode_enfileirar(self):
         a, b = _make_group(self.ws, "j_g2", 2)
         self.assertEqual(self.ws.request_bg_queue_join(b, "2v2"), "not_leader")
         self.assertIsNone(self.ws.request_bg_queue_join(a, "2v2"))
-        self.assertIn(("party", self.ws.get_party_id_of(a)), self.ws._bg_queues["2v2"])
+        self.assertTrue(_has_token(self.ws._bg_queues["2v2"], "party", self.ws.get_party_id_of(a)))
 
     def test_grupo_maior_que_o_time_do_modo_e_recusado(self):
         trio = _make_group(self.ws, "j_g3big", 3)
@@ -71,7 +79,7 @@ class TestBgQueueJoinLeave(unittest.TestCase):
         que agora escopada por tamanho escolhido)."""
         duo = _make_group(self.ws, "j_g2small", 2)
         self.assertIsNone(self.ws.request_bg_queue_join(duo[0], "3v3"))
-        self.assertIn(("party", self.ws.get_party_id_of(duo[0])), self.ws._bg_queues["3v3"])
+        self.assertTrue(_has_token(self.ws._bg_queues["3v3"], "party", self.ws.get_party_id_of(duo[0])))
 
     def test_entrar_2x_e_recusado(self):
         solo = spawn_player(self.ws, "j_dup", 130, 374)
@@ -113,17 +121,22 @@ class TestBgQueueMatchmakingAlgorithm(unittest.TestCase):
     def setUp(self):
         self.ws = make_world_server()
 
-    def test_4_solos_no_modo_2v2_formam_1_partida(self):
-        eids = [spawn_player(self.ws, f"mm_{i}", 130, 374) for i in range(4)]
+    def test_6_solos_no_modo_3v3_formam_1_partida(self):
+        """Antes 2v2 (4 solos) — movido pra 3v3 em 16/08/2026: 2v2 ganhou
+        backfill de bot (nunca combina 2 solos estranhos no MESMO time,
+        ver TestBgQueueTwoVTwoBotBackfill), então deixou de servir como
+        exemplo genérico de "N solos combinam pra fechar 1 time" — 3v3
+        preserva o comportamento antigo, inalterado."""
+        eids = [spawn_player(self.ws, f"mm_{i}", 130, 374) for i in range(6)]
         for eid in eids:
-            self.ws.request_bg_queue_join(eid, "2v2")
+            self.ws.request_bg_queue_join(eid, "3v3")
         self.ws._tick_bg_queue()
         self.assertEqual(len(self.ws._bg_active_matches), 1)
         match = next(iter(self.ws._bg_active_matches.values()))
-        self.assertEqual(match["team_size"], 2)
-        self.assertEqual(match["mode_id"], "2v2")
+        self.assertEqual(match["team_size"], 3)
+        self.assertEqual(match["mode_id"], "3v3")
         self.assertEqual(set(match["invited_a"] + match["invited_b"]), set(eids))
-        self.assertEqual(self.ws._bg_queues["2v2"], [])
+        self.assertEqual(self.ws._bg_queues["3v3"], [])
 
     def test_10_solos_no_modo_5v5_formam_1_partida_5x5(self):
         solos = [spawn_player(self.ws, f"mm_big_{i}", 130, 374) for i in range(10)]
@@ -138,20 +151,23 @@ class TestBgQueueMatchmakingAlgorithm(unittest.TestCase):
         self.assertEqual(self.ws._bg_queues["5v5"], [])
 
     def test_filas_de_modos_diferentes_nao_se_misturam(self):
-        """4 solos no 2v2 e 3 no 3v3 ao mesmo tempo — cada fila forma sua
-        própria partida, sem vazar token de uma fila pra outra."""
-        eids_2v2 = [spawn_player(self.ws, f"mm_2v2_{i}", 130, 374) for i in range(4)]
+        """6 solos no 3v3 e 10 no 5v5 ao mesmo tempo — cada fila forma sua
+        própria partida, sem vazar token de uma fila pra outra. (Usa
+        3v3/5v5, não 2v2 — 2v2 ganhou backfill de bot em 16/08/2026,
+        ver TestBgQueueTwoVTwoBotBackfill; esses 2 modos continuam com o
+        bin-packing antigo, inalterado.)"""
         eids_3v3 = [spawn_player(self.ws, f"mm_3v3_{i}", 130, 374) for i in range(6)]
-        for eid in eids_2v2:
-            self.ws.request_bg_queue_join(eid, "2v2")
+        eids_5v5 = [spawn_player(self.ws, f"mm_5v5_{i}", 130, 374) for i in range(10)]
         for eid in eids_3v3:
             self.ws.request_bg_queue_join(eid, "3v3")
+        for eid in eids_5v5:
+            self.ws.request_bg_queue_join(eid, "5v5")
         self.ws._tick_bg_queue()
         self.assertEqual(len(self.ws._bg_active_matches), 2)
         sizes = sorted(m["team_size"] for m in self.ws._bg_active_matches.values())
-        self.assertEqual(sizes, [2, 3])
-        self.assertEqual(self.ws._bg_queues["2v2"], [])
+        self.assertEqual(sizes, [3, 5])
         self.assertEqual(self.ws._bg_queues["3v3"], [])
+        self.assertEqual(self.ws._bg_queues["5v5"], [])
 
     def test_grupo_de_3_nunca_e_dividido_entre_os_2_lados(self):
         trio = _make_group(self.ws, "mm_trio", 3)
@@ -169,18 +185,27 @@ class TestBgQueueMatchmakingAlgorithm(unittest.TestCase):
                         or trio_set.issubset(set(match["invited_b"])))
 
     def test_grupo_preenchido_por_solos_do_outro_lado(self):
-        """Grupo de 2 vs 2 solos somados — a fila do modo mistura tokens
-        diferentes pra fechar o mesmo tamanho, contanto que nunca separe
-        um grupo."""
+        """Grupo de 2 + 1 solo somados fecham um lado de 3v3 — a fila do
+        modo mistura tokens diferentes pra fechar o mesmo tamanho,
+        contanto que nunca separe um grupo. (3v3, não 2v2 — ver nota nos
+        testes acima.)"""
         duo = _make_group(self.ws, "mm_mix_duo", 2)
-        solos = [spawn_player(self.ws, f"mm_mix_s_{i}", 130, 374) for i in range(2)]
-        self.ws.request_bg_queue_join(duo[0], "2v2")
-        for eid in solos:
-            self.ws.request_bg_queue_join(eid, "2v2")
+        solo = spawn_player(self.ws, "mm_mix_s", 130, 374)
+        self.ws.request_bg_queue_join(duo[0], "3v3")
+        self.ws.request_bg_queue_join(solo, "3v3")
         self.ws._tick_bg_queue()
+        self.assertEqual(len(self.ws._bg_active_matches), 0)  # só 3 de um lado, sem o outro lado ainda
+        self.assertEqual(len(self.ws._bg_queues["3v3"]), 2)
+
+        outro_solo = spawn_player(self.ws, "mm_mix_other", 130, 374)
+        duo2 = _make_group(self.ws, "mm_mix_duo2", 2)
+        self.ws.request_bg_queue_join(outro_solo, "3v3")
+        self.ws.request_bg_queue_join(duo2[0], "3v3")
+        self.ws._tick_bg_queue()
+        self.assertEqual(len(self.ws._bg_active_matches), 1)
         match = next(iter(self.ws._bg_active_matches.values()))
         all_invited = set(match["invited_a"] + match["invited_b"])
-        self.assertEqual(all_invited, set(duo) | set(solos))
+        self.assertEqual(all_invited, set(duo) | {solo} | {outro_solo} | set(duo2))
 
     def test_time_pequeno_demais_pro_time_size_e_ignorado_nessa_tentativa(self):
         """Um grupo de 4 esperando sozinho no modo 5v5 (sem mais ninguém
@@ -215,11 +240,13 @@ class TestBgQueueMatchmakingAlgorithm(unittest.TestCase):
 
 
 class TestBgQueueMatchLifecycle(unittest.TestCase):
-    """Modo 2v2 (o menor disponível) — 4 solos, entrando na ordem a, c,
-    b, d pra fechar team_a=[a,c]/team_b=[b,d] (bin-packing FIFO
-    preenche o lado A até a capacidade antes de começar o B) — mantém
-    `self.a`/`self.b` como OPONENTES, mesma relação que os testes
-    tinham no 1v1 antigo."""
+    """Modo 2v2 (o menor disponível) — 2 GRUPOS de 2 (a+c e b+d, não 4
+    solos independentes — 16/08/2026: 2v2 ganhou backfill de bot que
+    nunca combina 2 solos estranhos no mesmo time, ver
+    TestBgQueueTwoVTwoBotBackfill; grupo pré-formado continua fechando
+    o time inteiro de 1 vez, sem bot nenhum envolvido, exatamente como
+    antes) — fecha team_a=[a,c]/team_b=[b,d], mantém `self.a`/`self.b`
+    como OPONENTES, mesma relação que os testes tinham no 1v1 antigo."""
 
     def setUp(self):
         self.ws = make_world_server()
@@ -227,8 +254,12 @@ class TestBgQueueMatchLifecycle(unittest.TestCase):
         self.c = spawn_player(self.ws, "lc_c", 131, 374)
         self.b = spawn_player(self.ws, "lc_b", 132, 374)
         self.d = spawn_player(self.ws, "lc_d", 133, 374)
-        for eid in (self.a, self.c, self.b, self.d):
-            self.ws.request_bg_queue_join(eid, "2v2")
+        self.ws.request_party_invite(self.a, self.c)
+        self.ws.respond_party_invite(self.c, accept=True)
+        self.ws.request_party_invite(self.b, self.d)
+        self.ws.respond_party_invite(self.d, accept=True)
+        self.ws.request_bg_queue_join(self.a, "2v2")
+        self.ws.request_bg_queue_join(self.b, "2v2")
         self.ws._tick_bg_queue()
         self.match_id = self.ws._pending_bg_invite[self.a]
 
@@ -335,6 +366,7 @@ class TestBgQueueMatchLifecycle(unittest.TestCase):
 
 
 class TestBgQueueNexusEnd(unittest.TestCase):
+    """2 grupos de 2 (não 4 solos — ver nota em TestBgQueueMatchLifecycle)."""
 
     def setUp(self):
         self.ws = make_world_server()
@@ -342,8 +374,12 @@ class TestBgQueueNexusEnd(unittest.TestCase):
         self.c = spawn_player(self.ws, "nx_c", 131, 374)
         self.b = spawn_player(self.ws, "nx_b", 132, 374)
         self.d = spawn_player(self.ws, "nx_d", 133, 374)
-        for eid in (self.a, self.c, self.b, self.d):
-            self.ws.request_bg_queue_join(eid, "2v2")
+        self.ws.request_party_invite(self.a, self.c)
+        self.ws.respond_party_invite(self.c, accept=True)
+        self.ws.request_party_invite(self.b, self.d)
+        self.ws.respond_party_invite(self.d, accept=True)
+        self.ws.request_bg_queue_join(self.a, "2v2")
+        self.ws.request_bg_queue_join(self.b, "2v2")
         self.ws._tick_bg_queue()
         self.match_id = self.ws._pending_bg_invite[self.a]
         for eid in (self.a, self.c, self.b, self.d):
@@ -410,6 +446,7 @@ class TestBgQueueNexusEnd(unittest.TestCase):
 
 
 class TestBgQueueLeave(unittest.TestCase):
+    """2 grupos de 2 (não 4 solos — ver nota em TestBgQueueMatchLifecycle)."""
 
     def setUp(self):
         self.ws = make_world_server()
@@ -417,8 +454,12 @@ class TestBgQueueLeave(unittest.TestCase):
         self.c = spawn_player(self.ws, "lv_c", 141, 380)
         self.b = spawn_player(self.ws, "lv_b", 142, 380)
         self.d = spawn_player(self.ws, "lv_d", 143, 380)
-        for eid in (self.a, self.c, self.b, self.d):
-            self.ws.request_bg_queue_join(eid, "2v2")
+        self.ws.request_party_invite(self.a, self.c)
+        self.ws.respond_party_invite(self.c, accept=True)
+        self.ws.request_party_invite(self.b, self.d)
+        self.ws.respond_party_invite(self.d, accept=True)
+        self.ws.request_bg_queue_join(self.a, "2v2")
+        self.ws.request_bg_queue_join(self.b, "2v2")
         self.ws._tick_bg_queue()
         self.match_id = self.ws._pending_bg_invite[self.a]
         for eid in (self.a, self.c, self.b, self.d):

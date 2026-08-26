@@ -15,6 +15,97 @@ Para adicionar um novo comerciante:
 """
 from content.item_table import ITEMS as _I
 
+# ============================================================================
+# Loja de instância (BG) — catálogo completo, filtrado por classe, preço por
+# raridade (25/08/2026, pedido do usuário). Ponto único de verdade: server
+# (process_shop_buy, autoritativo) e cliente (painel da loja) chamam
+# instance_shop_class_allows() — nunca reimplementar esse filtro em outro
+# lugar. Regra de EQUIPAR (is_weapon_allowed_for_class/CLASS_ARMOR_ALLOWED em
+# engine/stats_system.py) é mais permissiva e continua intacta — o filtro
+# abaixo é só TEMÁTICO (o que aparece à venda), não afeta o que já pode ser
+# equipado depois de comprado.
+# ============================================================================
+
+INSTANCE_SHOP_RARITY_PRICE = {
+    "common": 25, "uncommon": 50, "rare": 100,
+    "epic": 150, "legendary": 200, "mythic": 250,
+}
+
+INSTANCE_SHOP_WEAPON_SUBTYPES = {
+    "guerreiro": frozenset({"Sword", "Mace", "Axe", "Club", "Hammer", "Dagger"}),
+    "arqueiro":  frozenset({"Bow", "Dagger"}),
+    "mago":      frozenset({"Wand", "Staff", "Scepter"}),
+}
+INSTANCE_SHOP_ARMOR_CLASS = {
+    "guerreiro": "placa", "arqueiro": "couro", "mago": "tecido",
+}
+# categoria → posição na lista (ordenação, evita parede de itens sem ordem)
+_INSTANCE_SHOP_CATEGORY_ORDER = {
+    "weapon": 0, "shield": 1, "quiver": 2, "ammo": 2,
+    "armor": 3, "jewelry": 4, "consumable": 5,
+}
+_INSTANCE_SHOP_RARITY_ORDER = {
+    "common": 0, "uncommon": 1, "rare": 2, "epic": 3, "legendary": 4, "mythic": 5,
+}
+
+
+def instance_shop_class_allows(item, class_id: str) -> bool:
+    """Filtro temático da loja de instância — guerreiro só vê placa/espada/
+    maça/machado/martelo/adaga/escudo; arqueiro só vê couro/arco/adaga/
+    aljava/munição; mago só vê tecido/varinha/cajado/cetro. Joia e
+    consumível são gerais (qualquer classe)."""
+    if item.item_type in ("jewelry", "consumable"):
+        return True
+    if item.item_type == "armor":
+        return item.armor_class == INSTANCE_SHOP_ARMOR_CLASS.get(class_id, "")
+    if item.item_type == "weapon":
+        return item.subtype in INSTANCE_SHOP_WEAPON_SUBTYPES.get(class_id, frozenset())
+    if item.item_type == "shield":
+        return class_id == "guerreiro"
+    if item.item_type in ("quiver", "ammo"):
+        return class_id == "arqueiro"
+    return False  # item_type desconhecido/futuro — não vende até alguém decidir
+
+
+def _instance_shop_price(item) -> int:
+    # Consumível: TODOS têm rarity="common" no catálogo hoje — usar a
+    # fórmula de raridade igualaria poção/comida/água ao mesmo preço.
+    # Mantém o value individual do próprio item.
+    if item.item_type == "consumable":
+        return int(item.value)
+    return INSTANCE_SHOP_RARITY_PRICE.get(item.rarity, 0)
+
+
+def _instance_shop_sort_key(item):
+    return (
+        _INSTANCE_SHOP_CATEGORY_ORDER.get(item.item_type, 9),
+        _INSTANCE_SHOP_RARITY_ORDER.get(item.rarity, 9),
+        item.name,
+    )
+
+
+def _build_instance_shop_stock() -> list[dict]:
+    """Estoque COMPLETO (todo o catálogo, sem filtro de classe) — mesma
+    forma que server/world_server.py::_build_item_caches já consome
+    genericamente pra qualquer loja, sem precisar mudar aquela função."""
+    return [{"factory": factory, "price": _instance_shop_price(factory())}
+            for factory in _I.values()]
+
+
+_INSTANCE_SHOP_FULL_STOCK = _build_instance_shop_stock()
+
+# Pré-filtrado/ordenado por classe, calculado 1x na carga do módulo (não por
+# frame) — usado só pela UI (server valida via instance_shop_class_allows
+# direto no momento da compra, não precisa da lista pronta).
+INSTANCE_SHOP_STOCK_BY_CLASS = {
+    cls: sorted(
+        (e for e in _INSTANCE_SHOP_FULL_STOCK
+         if instance_shop_class_allows(e["factory"](), cls)),
+        key=lambda e: _instance_shop_sort_key(e["factory"]()),
+    )
+    for cls in ("guerreiro", "arqueiro", "mago")
+}
+
 SHOPS = {
     "general": {
         "name": "Mercador Geral",
@@ -89,28 +180,20 @@ SHOPS = {
         ],
     },
 
-    # Loja de instância (01/08/2026, pedido do usuário) — vendedor colocado
-    # em cada base do battleground de teste (maps/moba_battleground_
-    # entities.json::merchants), lista curada de content/instance_shop.py::
-    # INSTANCE_SHOP_ITEM_IDS (subconjunto do catálogo real, não item novo).
-    # Preços iniciais — ajustável, mesmo padrão do resto deste arquivo.
+    # Loja de instância (01/08/2026, expandida 25/08/2026) — vendedor
+    # colocado em cada base do battleground de teste (maps/
+    # moba_battleground_entities.json::merchants). Estoque = TODO o
+    # catálogo (content/item_table.py::ITEMS), preço por raridade — ver
+    # bloco INSTANCE_SHOP_* no topo deste arquivo. "stock" aqui é a lista
+    # SEM filtro de classe (é o que server/world_server.py::
+    # _build_item_caches consome pra validar compra por item_id/nome, tem
+    # que conter todo item comprável); o filtro por classe
+    # (instance_shop_class_allows) é aplicado em process_shop_buy
+    # (servidor, autoritativo) e via INSTANCE_SHOP_STOCK_BY_CLASS (cliente,
+    # cosmético).
     "instance_shop": {
         "name": "Vendedor de Instância",
         "color": (200, 170, 60),
-        "stock": [
-            {"factory": _I["iron_sword"],       "price": 55},
-            {"factory": _I["iron_mace"],        "price": 50},
-            {"factory": _I["hunter_bow"],       "price": 60},
-            {"factory": _I["arcane_wand"],      "price": 55},
-            {"factory": _I["iron_shield"],      "price": 60},
-            {"factory": _I["battleground_quiver"], "price": 20},
-            {"factory": _I["iron_breastplate"], "price": 20},
-            {"factory": _I["leather_vest"],     "price": 20},
-            {"factory": _I["tattered_robe"],    "price": 15},
-            {"factory": _I["ring_power"],       "price": 70},
-            {"factory": _I["simple_amulet"],    "price": 48},
-            {"factory": _I["hp_potion"],        "price": 25},
-            {"factory": _I["mana_potion"],      "price": 15},
-        ],
+        "stock": _INSTANCE_SHOP_FULL_STOCK,
     },
 }

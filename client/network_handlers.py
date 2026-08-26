@@ -278,6 +278,7 @@ class NetworkHandlers:
                     "hp_max":   ent.get("hp_max", 100),
                     "level":    ent.get("level", 1),
                     "kind":     kind,
+                    **({"faction": ent["faction"]} if "faction" in ent else {}),
                 })
 
     def _handle_msg_entity_spawn(self, payload: dict) -> None:
@@ -307,6 +308,7 @@ class NetworkHandlers:
                 "hp_max":   payload.get("hp_max", 100),
                 "level":    payload.get("level", 1),
                 "kind":     kind,
+                **({"faction": payload["faction"]} if "faction" in payload else {}),
             })
 
     def _handle_msg_combat_result(self, payload: dict) -> None:
@@ -1246,6 +1248,7 @@ class NetworkHandlers:
                     "hp_max":   sp.get("hp_max", 100),
                     "level":    sp.get("level", 1),
                     "kind":     kind,
+                    **({"faction": sp["faction"]} if "faction" in sp else {}),
                 })
         for m in payload.get("moved", []):
             eid = m.get("eid", -1)
@@ -1907,10 +1910,12 @@ class NetworkHandlers:
                     if _new_active and not _iius.active:
                         _iius.match_kills = 0
                         _iius.match_deaths = 0
+                        _iius.match_assists = 0
                         _iius.match_farm = 0
                         _iius.match_gold = 0
                     _iius.active = _new_active
             if "match_kills" in payload or "match_deaths" in payload \
+               or "match_assists" in payload \
                or "match_farm" in payload or "match_gold" in payload:
                 # Push ao vivo, dirty-check já feito no servidor
                 # (debug_battleground.py::_tick_kda_hud) — valores absolutos,
@@ -1923,6 +1928,8 @@ class NetworkHandlers:
                         _iius_kda.match_kills = payload["match_kills"]
                     if "match_deaths" in payload:
                         _iius_kda.match_deaths = payload["match_deaths"]
+                    if "match_assists" in payload:
+                        _iius_kda.match_assists = payload["match_assists"]
                     if "match_farm" in payload:
                         _iius_kda.match_farm = payload["match_farm"]
                     if "match_gold" in payload:

@@ -22,6 +22,63 @@
     { "x": 59, "y": 40, "tower_key": "torre_de_fogo",    "faction": "arena_time_b", "level": 5, "respawnable": false, "respawn_s": 30, "regen_enabled": false },
     { "x": 94, "y": 76, "tower_key": "torre_de_flechas", "faction": "arena_time_b", "level": 5, "respawnable": false, "respawn_s": 30, "regen_enabled": false }
   ],
+  "jungle_mobs": [
+    { "x": 46, "y": 12, "mob_key": "jungle_lobo_alfa",       "faction": "monstros_jungle", "level": 3, "respawn_s": 60 },
+    { "x": 48, "y": 11, "mob_key": "jungle_lobo_alfa",       "faction": "monstros_jungle", "level": 3, "respawn_s": 60 },
+    { "x": 49, "y": 13, "mob_key": "jungle_lobo_alfa",       "faction": "monstros_jungle", "level": 3, "respawn_s": 60 },
+
+    { "x": 58, "y": 14, "mob_key": "jungle_javali_alfa",     "faction": "monstros_jungle", "level": 4, "respawn_s": 100 },
+
+    { "x": 49, "y": 28, "mob_key": "jungle_raptor",          "faction": "monstros_jungle", "level": 2, "respawn_s": 50 },
+    { "x": 49, "y": 30, "mob_key": "jungle_raptor",          "faction": "monstros_jungle", "level": 2, "respawn_s": 50 },
+    { "x": 51, "y": 29, "mob_key": "jungle_raptor",          "faction": "monstros_jungle", "level": 2, "respawn_s": 50 },
+    { "x": 51, "y": 31, "mob_key": "jungle_raptor",          "faction": "monstros_jungle", "level": 2, "respawn_s": 50 },
+
+    { "x": 32, "y": 32, "mob_key": "jungle_javali_alfa",     "faction": "monstros_jungle", "level": 4, "respawn_s": 100 },
+
+    { "x": 11, "y": 48, "mob_key": "jungle_aranha_venenosa", "faction": "monstros_jungle", "level": 3, "respawn_s": 60 },
+    { "x": 12, "y": 50, "mob_key": "jungle_aranha_venenosa", "faction": "monstros_jungle", "level": 3, "respawn_s": 60 },
+    { "x": 13, "y": 48, "mob_key": "jungle_aranha_venenosa", "faction": "monstros_jungle", "level": 3, "respawn_s": 60 },
+
+    { "x": 66, "y": 49, "mob_key": "jungle_lobo_alfa",       "faction": "monstros_jungle", "level": 3, "respawn_s": 60 },
+    { "x": 67, "y": 48, "mob_key": "jungle_lobo_alfa",       "faction": "monstros_jungle", "level": 3, "respawn_s": 60 },
+    { "x": 67, "y": 50, "mob_key": "jungle_lobo_alfa",       "faction": "monstros_jungle", "level": 3, "respawn_s": 60 },
+
+    { "x": 75, "y": 49, "mob_key": "jungle_harpia",          "faction": "monstros_jungle", "level": 3, "respawn_s": 60 },
+    { "x": 76, "y": 48, "mob_key": "jungle_harpia",          "faction": "monstros_jungle", "level": 3, "respawn_s": 60 },
+    { "x": 76, "y": 50, "mob_key": "jungle_harpia",          "faction": "monstros_jungle", "level": 3, "respawn_s": 60 },
+
+    { "x": 23, "y": 49, "mob_key": "jungle_aranha_venenosa", "faction": "monstros_jungle", "level": 3, "respawn_s": 60 },
+    { "x": 23, "y": 51, "mob_key": "jungle_aranha_venenosa", "faction": "monstros_jungle", "level": 3, "respawn_s": 60 },
+    { "x": 24, "y": 50, "mob_key": "jungle_aranha_venenosa", "faction": "monstros_jungle", "level": 3, "respawn_s": 60 },
+
+    { "x": 32, "y": 49, "mob_key": "jungle_lobo_alfa",       "faction": "monstros_jungle", "level": 3, "respawn_s": 60 },
+    { "x": 32, "y": 51, "mob_key": "jungle_lobo_alfa",       "faction": "monstros_jungle", "level": 3, "respawn_s": 60 },
+    { "x": 33, "y": 50, "mob_key": "jungle_lobo_alfa",       "faction": "monstros_jungle", "level": 3, "respawn_s": 60 },
+
+    { "x": 86, "y": 51, "mob_key": "jungle_aranha_venenosa", "faction": "monstros_jungle", "level": 3, "respawn_s": 60 },
+    { "x": 87, "y": 49, "mob_key": "jungle_aranha_venenosa", "faction": "monstros_jungle", "level": 3, "respawn_s": 60 },
+    { "x": 88, "y": 51, "mob_key": "jungle_aranha_venenosa", "faction": "monstros_jungle", "level": 3, "respawn_s": 60 },
+
+    { "x": 67, "y": 67, "mob_key": "jungle_javali_alfa",     "faction": "monstros_jungle", "level": 4, "respawn_s": 100 },
+
+    { "x": 48, "y": 68, "mob_key": "jungle_raptor",          "faction": "monstros_jungle", "level": 2, "respawn_s": 50 },
+    { "x": 48, "y": 70, "mob_key": "jungle_raptor",          "faction": "monstros_jungle", "level": 2, "respawn_s": 50 },
+    { "x": 50, "y": 69, "mob_key": "jungle_raptor",          "faction": "monstros_jungle", "level": 2, "respawn_s": 50 },
+    { "x": 50, "y": 71, "mob_key": "jungle_raptor",          "faction": "monstros_jungle", "level": 2, "respawn_s": 50 },
+
+    { "x": 41, "y": 85, "mob_key": "jungle_javali_alfa",     "faction": "monstros_jungle", "level": 4, "respawn_s": 100 },
+
+    { "x": 50, "y": 86, "mob_key": "jungle_harpia",          "faction": "monstros_jungle", "level": 3, "respawn_s": 60 },
+    { "x": 51, "y": 88, "mob_key": "jungle_harpia",          "faction": "monstros_jungle", "level": 3, "respawn_s": 60 },
+    { "x": 53, "y": 87, "mob_key": "jungle_harpia",          "faction": "monstros_jungle", "level": 3, "respawn_s": 60 }
+  ],
+  "jungle_bosses": [
+    { "x": 34, "y": 21, "mob_key": "jungle_boss_ancestral",              "faction": "monstros_jungle", "level": 5, "respawn_s": 300 },
+    { "x": 47, "y": 23, "mob_key": "jungle_boss_guardiao_de_pedra",      "faction": "monstros_jungle", "level": 5, "respawn_s": 300 },
+    { "x": 52, "y": 76, "mob_key": "jungle_boss_dragao_jovem",           "faction": "monstros_jungle", "level": 5, "respawn_s": 300 },
+    { "x": 65, "y": 78, "mob_key": "jungle_boss_horror_das_profundezas", "faction": "monstros_jungle", "level": 5, "respawn_s": 300 }
+  ],
   "minion_lanes": [
     { "faction": "arena_time_a", "lane_id": "top", "spawn_tile": [3, 93],  "target_tile": [[5, 5], [92, 5]],   "wave_interval_s": 45, "first_wave_delay_s": 15,  "level": 2 },
     { "faction": "arena_time_a", "lane_id": "mid", "spawn_tile": [6, 93],  "target_tile": [97, 2],              "wave_interval_s": 45, "first_wave_delay_s": 18,  "level": 2 },

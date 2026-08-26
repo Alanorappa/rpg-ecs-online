@@ -507,7 +507,8 @@ class TestAOIUpdate(unittest.IsolatedAsyncioTestCase):
                       "mob não entrou em known_eids de A após mover pro AOI")
 
         mob_cs.current_hp = 1
-        self.ws_server.set_player_target("s1", mob_eid)
+        from tests.helpers import engage_target
+        engage_target(self.ws_server, "s1", mob_eid)
         fw_a.sent.clear()
         fw_b.sent.clear()
 

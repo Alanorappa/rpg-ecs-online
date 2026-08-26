@@ -779,9 +779,6 @@ class CombatSystem(System):
             if _ai and _ai.state == "IDLE":
                 _ms_hit = self.world.get_component(target_id, NpcSounds)
                 SOUNDS.play_mob_sounds(_ms_hit, "aggro", dedup_key=f"dmg_{target_id}")
-                _ai.state              = "AGGRO_DELAY"
-                _ai.aggro_delay        = 0.5   # mesmo comportamento do range aggro, mas mais curto
-                _ai.aggroed_by_damage  = True
                 # QUEM bateu vira o alvo — semântica de threat table (dano
                 # põe o atacante na tabela). Antes o alvo vinha por acidente
                 # do loop de aquisição SEM filtro de facção em
@@ -789,8 +786,11 @@ class CombatSystem(System):
                 # (§34.9) e limitada ao raio de aggro (§34.10), um mob
                 # NEUTRO atacado em melee nunca mais receberia alvo nenhum
                 # e "desistia" da revidada em 600ms sem nunca golpear.
-                _ai.target_eid         = attacker_id
-                _ai.path_recalc_timer  = 0.0
+                # Transição + puxão de grupo centralizados em
+                # core_systems.trigger_mob_aggro (16/08/2026).
+                from engine.core_systems import trigger_mob_aggro as _trigger_aggro_melee
+                _trigger_aggro_melee(self.world, target_id, attacker_id,
+                                     by_damage=True, delay=0.5)
                 if _MCL:
                     _ident_dmg = self.world.get_component(target_id, EntityIdentity)
                     _n = _ident_dmg.name         if _ident_dmg else f"mob#{target_id}"
@@ -3132,6 +3132,16 @@ class EnemyAISystem(System):
             enemy_current_tile_y = tile_movement.current_tile_y
             current_enemy_tile   = (enemy_current_tile_x, enemy_current_tile_y)
 
+            # Capturado ANTES de qualquer transição de estado deste tick
+            # (16/08/2026) — usado só pelo puxão de grupo no atalho de
+            # "nasce/fica adjacente ataca direto de IDLE" (ver
+            # in_attack_range mais abaixo): esse caminho NUNCA passa pelo
+            # bloco "Detecção inicial" (é ANTES dele, com `continue`), então
+            # é o único lugar que sabe se este mob estava IDLE agora há
+            # pouco — sem isto, um mob que nasce adjacente ao alvo nunca
+            # puxava os vizinhos do grupo.
+            _was_idle_this_tick = (ai_control.state == "IDLE")
+
             # Identidade para debug (lookup lazy — custo zero quando MCL desativado)
             if _MCL and _MCL.DBG_ENABLED:
                 _dbg_ident = self.world.get_component(enemy_id, EntityIdentity)
@@ -3657,6 +3667,15 @@ class EnemyAISystem(System):
 
             if not _player_invisible and in_attack_range and not needs_to_kite:
                 # Melee em alcance, ou ranged a boa distância: fica parado
+                if _was_idle_this_tick:
+                    # Mob nasceu/ficou adjacente e ataca direto de IDLE
+                    # (comportamento pré-existente, ver comentário de
+                    # in_attack_range acima) — NUNCA passa pelo bloco
+                    # "Detecção inicial" (é depois, com `continue` antes
+                    # dele), então o puxão de grupo (16/08/2026) precisa
+                    # disparar aqui também, só na 1ª vez que sai de IDLE.
+                    from engine.core_systems import _pull_nearby_packmates as _pull_adjacent
+                    _pull_adjacent(self.world, enemy_id, target_eid)
                 if _MCL and ai_control.state != "ATTACKING":
                     _MCL.log("IN_RANGE", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
                              dist=f"{chebyshev_dist_to_player}t",
@@ -3744,8 +3763,13 @@ class EnemyAISystem(System):
                 if _has_los:
                     _ms_aggro = self.world.get_component(enemy_id, NpcSounds)
                     SOUNDS.play_mob_sounds(_ms_aggro, "aggro", dedup_key=str(enemy_id))
-                    ai_control.state       = "AGGRO_DELAY"
-                    ai_control.aggro_delay = 1.0
+                    # Transição + puxão de grupo centralizados em
+                    # core_systems.trigger_mob_aggro (16/08/2026, pedido do
+                    # usuário — mob vizinho da mesma Faction dentro de
+                    # PACK_AGGRO_RADIUS_TILES também aggra, estilo WoW/LoL).
+                    from engine.core_systems import trigger_mob_aggro as _trigger_aggro_prox
+                    _trigger_aggro_prox(self.world, enemy_id, target_eid,
+                                        by_damage=False, delay=1.0)
                     if _MCL: _MCL.log("AGGRO", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
                                       dist=f"{dist_to_player_pixels/TILE_SIZE:.1f}t",
                                       target=target_eid)

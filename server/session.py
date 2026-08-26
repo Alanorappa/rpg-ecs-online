@@ -176,6 +176,17 @@ class SessionManager:
         # `_merge_deltas_into`/`_run_dispatch`.
         self._dispatch_in_flight: bool = False
         self._pending_merged_deltas: "dict | None" = None
+        # Registro das tasks fire-and-forget de `_run_dispatch` (16/08/2026)
+        # — sem isso, um Ctrl+C que interrompe bem no meio da limpeza
+        # automática do `asyncio.run()` pode deixar uma dessas tasks sem
+        # ter sua exceção "retirada", gerando o log "Task exception was
+        # never retrieved" já com o interpretador em desligamento (o
+        # formatter customizado de log.py quebra ali por não conseguir
+        # mais importar nada — ImportError cosmético, sem relação com
+        # perda de dado; ver `shutdown_dispatch_tasks`/main.py). Mesmo
+        # padrão de registro-em-set-de-módulo já usado alhures no
+        # projeto, aqui como atributo de instância por ser por-conexão.
+        self._dispatch_tasks: set = set()
         self.world_server.register_on_tick(self._on_tick)
 
     # ── Ciclo de vida ─────────────────────────────────────────────────────────
@@ -1847,6 +1858,7 @@ class SessionManager:
             "class_id": char_data.get("class_id", "guerreiro"),
             "hp": _nh, "hp_max": _nhm,
             "level":    char_data.get("level", 1), "effects": [],
+            **self.world_server.player_faction_field(eid),
         })
         for s in self._sessions.values():
             if s.authenticated and s.session_id != session.session_id:
@@ -2518,7 +2530,39 @@ class SessionManager:
         merged = self._pending_merged_deltas
         self._pending_merged_deltas = None
         self._dispatch_in_flight = True
-        asyncio.create_task(self._run_dispatch(merged))
+        self._track_dispatch_task(asyncio.create_task(self._run_dispatch(merged)))
+
+    def _track_dispatch_task(self, task: "asyncio.Task") -> None:
+        """Registra uma task de `_run_dispatch` em `_dispatch_tasks` (referência
+        forte, evita coleta prematura) e garante que sua exceção seja
+        retirada quando ela terminar (`task.exception()`), pra nunca virar
+        um "Task exception was never retrieved" — ver comentário em
+        `__init__`."""
+        self._dispatch_tasks.add(task)
+
+        def _on_done(t: "asyncio.Task") -> None:
+            self._dispatch_tasks.discard(t)
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc is not None:
+                log.error(f"[SessionManager] _run_dispatch falhou: {exc!r}")
+        task.add_done_callback(_on_done)
+
+    async def shutdown_dispatch_tasks(self) -> None:
+        """Cancela e espera qualquer `_run_dispatch` ainda pendente — chamado
+        pelo `except KeyboardInterrupt` de `server/main.py` ANTES do
+        `asyncio.run()` iniciar sua própria limpeza. Sem isso, uma task
+        ainda viva nesse instante corre risco de ter sua exceção
+        "perdida" numa corrida entre o Ctrl+C e a limpeza automática do
+        `asyncio.run()` — daí o ImportError cosmético no log durante o
+        desligamento do interpretador (ver comentário em `__init__`)."""
+        tasks = list(self._dispatch_tasks)
+        if not tasks:
+            return
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     # Campos de `deltas` que são EVENTOS (lista, ordem importa, nunca
     # substituir — concatenar preserva a ordem cronológica entre os ticks
@@ -2574,7 +2618,7 @@ class SessionManager:
                 next_deltas = self._pending_merged_deltas
                 self._pending_merged_deltas = None
                 self._dispatch_in_flight = True
-                asyncio.create_task(self._run_dispatch(next_deltas))
+                self._track_dispatch_task(asyncio.create_task(self._run_dispatch(next_deltas)))
 
     def _compute_ally_vision_centers(self) -> dict[int, list[tuple[int, int, int]]]:
         """Visão compartilhada de time (SÓ conteúdo instanciado — arena hoje,
@@ -3578,6 +3622,7 @@ class SessionManager:
                     "level":    _ochar_aoi.level if _ochar_aoi else 1,
                     "effects":  [],
                     "is_ghost": bool(_ogst and _ogst.is_ghost),
+                    **self.world_server.player_faction_field(other_eid),
                 }
                 result.setdefault("spawned", []).append(spawn_payload)
                 session.known_eids.add(other_eid)
