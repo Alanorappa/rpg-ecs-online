@@ -14641,6 +14641,10 @@ seguido por analogia direta, não reinventado; o próprio usuário
 apontou isso ("você nem sequer olhou os exemplos que tinham no
 catálogo").
 
+**Validado em jogo pelo usuário (03/09/2026)**: catálogo completo
+(§98/§99/§100) confirmado — peças posicionadas no God Mode, sem
+problema encontrado.
+
 ## 100. Colisão errada em 19 das 104 peças de "TX Village Building with Shadow" — bounding box de blob fundido, não da peça (02/09/2026, mesmo dia)
 
 Usuário testou o catálogo do §98/§99, corrigiu 1 peça na mão
@@ -14734,9 +14738,12 @@ antigos ainda referenciavam ids só a família antiga tinha:
    mas visualmente É uma pedra/pequeno amontoado de rochas, colisão já
    cobre quase o sprite inteiro (50×34 de um sprite 50×34), candidata
    natural pra herdar a regra restaurada). Escolha de QUAL pedra devia
-   bloquear visão não foi confirmada com o usuário — se alguma outra
-   pedra "grande" do catálogo também devia bloquear e não bloqueia
-   ainda, é um ajuste de conteúdo, não um bug novo.
+   bloquear visão confirmada com o usuário (03/09/2026) — `vp_199`
+   continua no catálogo (`OBJECT_MAPPING["vp_199"]`, id só existe
+   montado em runtime, não aparece literal no arquivo — checado direto
+   pra confirmar nada foi apagado numa limpeza paralela de duplicatas),
+   `vision_rect="full"` funcionando. Se outra pedra "grande" precisar
+   da mesma regra depois, é ajuste de conteúdo novo, não bug.
 
 **Validação**: os 3 arquivos de teste tocados (`test_vision_blocking.py`,
 `test_client_ui.py`, `test_session.py`) rodados isolados — 279 passed,
@@ -14811,6 +14818,5 @@ dependem da margem falharam exatamente como esperado (o de "fora de
 alcance" continuou passando, confirmando que não virou "sempre
 aparece"). Suíte completa rodada sem regressão nova.
 
-**Fora do automatizável**: usuário ainda não validou em jogo (mover a
-câmera perto de um prédio/árvore alto e confirmar que aparece antes de
-alcançar a base, inclusive com zoom aplicado).
+**Validado em jogo pelo usuário (03/09/2026)**: confirmado com câmera
+perto de prédio/árvore alto, inclusive com zoom.
