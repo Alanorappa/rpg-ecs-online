@@ -592,14 +592,20 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
 
 
 def validate_map(tile_matrix: list[str]) -> list[str]:
+    """Antes (até 02/09/2026) comparava toda linha contra a largura da
+    LINHA 0 — falso positivo pra mapa de forma ORGÂNICA/irregular de
+    propósito (map_1: toda linha começa/termina com "m", borda natural,
+    só a extensão real do terreno varia por altura), gerando 600+ avisos
+    no console pra um mapa 100% correto. `engine/entity_factory.py::
+    create_tilemap` já usa a MAIOR linha como `map_width_tiles` e já
+    preenche linha mais curta com chão genérico de propósito — linha mais
+    curta que a máxima NÃO é mais erro, é a borda natural de um mapa
+    não-retangular. Removida a checagem de largura (não há mais uma
+    "largura esperada" única que faça sentido pra qualquer mapa); função
+    mantida (lista vazia = mapa não-vazio, assinatura intacta pros
+    chamadores) pra checagens futuras que façam sentido pra qualquer
+    formato de mapa."""
     warnings = []
     if not tile_matrix:
         warnings.append("Mapa vazio.")
-        return warnings
-    expected_width = len(tile_matrix[0])
-    for idx, row in enumerate(tile_matrix):
-        if len(row) != expected_width:
-            warnings.append(
-                f"Linha {idx} tem {len(row)} tiles, esperado {expected_width}."
-            )
     return warnings

@@ -13,6 +13,21 @@ from server.log import log
 import random
 
 
+# Velocidade de projétil (px/s) por skill — espelha os valores VISUAIS
+# de `ui/spell_system.py::PlayerProjectile.speed` (client-only, este
+# arquivo não pode importar `ui/`). Usado só pra calcular o tempo de voo
+# da auto-confirmação de acerto do BOT (`_schedule_bot_projectile_autohit`
+# abaixo) — se algum dia o valor visual mudar lá, revisar aqui junto pra
+# não descompassar o "quando o bot acerta" do que um cliente real veria.
+_BOT_PROJECTILE_SPEED_PX_S = {
+    "bola_de_fogo":     300.0,
+    "flecha_reiterada": 700.0,
+    "picada_escorpiao": 700.0,
+    "tiro_repulsivo":   800.0,
+}
+_BOT_PROJECTILE_DEFAULT_SPEED_PX_S = 500.0
+
+
 class SpellCompletionMixin:
 
     # Resultado de crit do último _server_apply_magic_damage com roll_crit=True.
@@ -180,6 +195,7 @@ class SpellCompletionMixin:
                     "expires_at":     _t_if.time() + 3.0,
                     "remaining_hits": _remaining,
                 })
+                self._schedule_bot_projectile_autohit(player_eid, spell_id, target_id)
                 _splog2(f"COMPLETION {spell_id} player={player_eid} target={target_id} → em voo")
                 # Notificação de espectador (projétil cosmético) NÃO é mais enviada aqui —
                 # vai junto do SKILL_EFFECT{event:"launch"} abaixo, que já é broadcast
@@ -498,6 +514,86 @@ class SpellCompletionMixin:
                 "rage":       char.rage,
                 "mana":       char.mana,
             })
+
+    def _schedule_bot_projectile_autohit(self, player_eid: int, spell_id: str, target_id: int) -> None:
+        """Bot de BG não tem cliente pra mandar PROJECTILE_HIT_CS (a
+        confirmação de acerto visual que `_apply_spell_on_projectile_hit`
+        exige) — sem isso, toda skill de `_PROJECTILE_SPELLS` completava
+        o cast mas o dano NUNCA era aplicado, a entrada em `_spells_
+        in_flight_queue` só expirava sozinha 3s depois sem efeito (bug
+        real relatado pelo usuário: Bola de Fogo lançada sem parar,
+        26/08/2026 — confirmado por simulação real, 7 casts completos em
+        20s, 0 dano). No-op pra players reais (só agenda quando
+        `BotControlled` está presente — fluxo de rede normal intacto).
+
+        Tempo de voo = distância / velocidade do projétil dessa skill
+        (`_BOT_PROJECTILE_SPEED_PX_S`, espelha os valores visuais de
+        `ui/spell_system.py`) — quando o timer zera,
+        `_tick_bot_projectile_autohits` chama `_apply_spell_on_projectile_
+        hit`, a MESMA função que uma confirmação de cliente real usaria.
+        Nenhuma lógica de dano duplicada aqui, só o agendamento."""
+        from engine.components import BotControlled as _BCProj, Position as _PosProj
+        from shared.constants import TILE_SIZE as _TSProj
+
+        if self.world.get_component(player_eid, _BCProj) is None:
+            return
+
+        caster_pos = self.world.get_component(player_eid, _PosProj)
+        target_pos = self.world.get_component(target_id,  _PosProj)
+        if caster_pos and target_pos:
+            dist_px = ((caster_pos.x - target_pos.x) ** 2
+                       + (caster_pos.y - target_pos.y) ** 2) ** 0.5
+        else:
+            dist_px = _TSProj * 3  # fallback conservador (~3 tiles) se Position faltar
+
+        speed = _BOT_PROJECTILE_SPEED_PX_S.get(spell_id, _BOT_PROJECTILE_DEFAULT_SPEED_PX_S)
+        travel_time = max(0.05, dist_px / speed)
+        self._bot_projectile_autohits.append({
+            "player_eid": player_eid,
+            "spell_id":   spell_id,
+            "target_id":  target_id,
+            "timer":      travel_time,
+            "interval":   travel_time,
+        })
+
+    def _tick_bot_projectile_autohits(self, dt: float) -> None:
+        """Avança os timers agendados por `_schedule_bot_projectile_
+        autohit` e confirma o acerto (`_apply_spell_on_projectile_hit`)
+        quando o "projétil" do bot chegaria no alvo. Multi-hit (Flecha
+        Reiterada): `_apply_spell_on_projectile_hit` decrementa `remaining_
+        hits` e MANTÉM a entrada em `_spells_in_flight_queue` em vez de
+        removê-la — se ela ainda existir depois de confirmar, reagenda o
+        próximo auto-hit no mesmo intervalo (mesma cadência que as
+        flechas seguintes teriam no cliente real)."""
+        still = []
+        for entry in self._bot_projectile_autohits:
+            entry["timer"] -= dt
+            if entry["timer"] > 0:
+                still.append(entry)
+                continue
+
+            player_eid = entry["player_eid"]
+            spell_id   = entry["spell_id"]
+            target_id  = entry["target_id"]
+            _still_queued = any(
+                e["player_eid"] == player_eid and e["spell_id"] == spell_id
+                and e["target_id"] == target_id
+                for e in self._spells_in_flight_queue
+            )
+            if not _still_queued:
+                continue  # cast cancelado/expirou antes do "impacto" — nada a fazer
+
+            self._apply_spell_on_projectile_hit(player_eid, spell_id, target_id)
+
+            _has_next_hit = any(
+                e["player_eid"] == player_eid and e["spell_id"] == spell_id
+                and e["target_id"] == target_id
+                for e in self._spells_in_flight_queue
+            )
+            if _has_next_hit:
+                still.append({**entry, "timer": entry["interval"]})
+
+        self._bot_projectile_autohits = still
 
     # ── Channeling de players server-side (Calamidade Flamejante) ───────────
 
@@ -862,7 +958,10 @@ class SpellCompletionMixin:
                 apply_effect(self.world, player_eid, "elemental_lapse", 5.0, 0)
                 from engine.components import Modifier
                 from engine.stat_fns import add_timed_modifier
-                add_timed_modifier(player_cs, Modifier("crit_rating", _lapse, "flat", source="buff"), 5.0, "lapso_elemental")
+                from engine.core_systems import grant_visible_buff
+                _lapse_mod = Modifier("crit_rating", _lapse, "flat", source="buff")
+                grant_visible_buff(self.world, player_eid, "lapso_elemental_crit", 5.0,
+                                   lambda: add_timed_modifier(player_cs, _lapse_mod, 5.0, "lapso_elemental"))
                 # Notifica o cliente para aplicar o modificador visual e mostrar PROC
                 self._proj_spell_result["lapso_proc"] = {"bonus": _lapse, "duration": 5.0}
 
@@ -897,6 +996,8 @@ class SpellCompletionMixin:
             if _proc_chance > 0 and random.random() < _proc_chance:
                 if not char_stats.fire_instant_ready:
                     char_stats.fire_instant_ready = True
+                    from engine.effect_order import mark_activated
+                    mark_activated(self.world, player_eid, "chama_interna")
 
     def _server_calcinar(self, player_eid: int, target_id: int, _entry: dict) -> None:
         from engine.components import CombatStats, StatusEffects, CharacterStats
@@ -938,6 +1039,8 @@ class SpellCompletionMixin:
             if _proc_chance > 0 and random.random() < _proc_chance:
                 if not char_stats.fire_instant_ready:
                     char_stats.fire_instant_ready = True
+                    from engine.effect_order import mark_activated
+                    mark_activated(self.world, player_eid, "chama_interna")
 
     def _server_nova_congelante(self, player_eid: int, target_id: int, entry: dict) -> None:
         from engine.components import CombatStats, TileMovement
@@ -1187,6 +1290,9 @@ class SpellCompletionMixin:
         # Na Mosca: ativa o bônus após crit
         if attacker_cs and getattr(attacker_cs, "na_mosca_enabled", False):
             if outcome == "crit":
+                if not attacker_cs.na_mosca_bonus_active:
+                    from engine.effect_order import mark_activated
+                    mark_activated(self.world, player_eid, "na_mosca")
                 attacker_cs.na_mosca_bonus_active = True
 
         # Quebra polimorfia e entra em combate
@@ -1653,18 +1759,21 @@ class SpellCompletionMixin:
         from content.skill_config import SKILL_CATALOG as _SC
         from engine.stat_fns import add_timed_modifier
         from engine.components import CombatStats, Modifier
+        from engine.core_systems import grant_visible_buff
         params   = _SC.get("cancao_inspiracao", {}).get("params", {})
         ap_pct   = params.get("ap_bonus_pct", 0.30)
         duration = params.get("duration",     20.0)
         cs = self.world.get_component(player_eid, CombatStats)
         if cs:
             mod = Modifier("attack_power", ap_pct, "percentage", source="buff")
-            add_timed_modifier(cs, mod, duration, label="cancao_inspiracao")
+            grant_visible_buff(self.world, player_eid, "cancao_inspiracao", duration,
+                               lambda: add_timed_modifier(cs, mod, duration, label="cancao_inspiracao"))
 
     def _server_so_um_gole(self, player_eid: int, target_id: int, entry: dict) -> None:
         from content.skill_config import SKILL_CATALOG as _SC
         from engine.stat_fns import add_timed_modifier
         from engine.components import CombatStats, Modifier
+        from engine.core_systems import grant_visible_buff
         params     = _SC.get("so_um_gole", {}).get("params", {})
         duration   = params.get("duration",    10.0)
         acerto_bns = params.get("acerto_flat", 100.0)
@@ -1673,7 +1782,8 @@ class SpellCompletionMixin:
             cs.concentration_free       = True
             cs.concentration_free_timer = duration
             mod = Modifier("acerto", acerto_bns, "flat", source="buff")
-            add_timed_modifier(cs, mod, duration, label="so_um_gole")
+            grant_visible_buff(self.world, player_eid, "so_um_gole", duration,
+                               lambda: add_timed_modifier(cs, mod, duration, label="so_um_gole"))
 
     def _server_camuflagem(self, player_eid: int, target_id: int, entry: dict) -> None:
         from content.skill_config import SKILL_CATALOG as _SC

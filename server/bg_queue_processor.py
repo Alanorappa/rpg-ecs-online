@@ -689,7 +689,17 @@ class BgQueueProcessorMixin(InstancedMatchMixin):
             return
         winner_faction = ("arena_time_b" if destroyed_faction == "arena_time_a"
                           else "arena_time_a")
+        self._finish_bg_match(match, match_id, winner_faction)
 
+    def _finish_bg_match(self, match: dict, match_id: str, winner_faction: str) -> None:
+        """Ponto único que decide uma partida da fila REAL (01/09/2026,
+        extraído de `notify_bg_queue_nexus_destroyed` pra também ser
+        reaproveitado por `request_bg_forfeit`) — monta o placar
+        (K/D/A/Farm/Gold/Dano por DELTA, mesmo cálculo dos dois
+        chamadores) e enfileira `BG_MATCH_RESULT` pra TODOS os membros
+        dos dois times. Não teleporta ninguém (mesma filosofia de 2 fases
+        da Arena) — quem sai de verdade é via `request_bg_leave`, manual
+        ou por timeout (`_tick_bg_results_timeout`)."""
         from engine.components import CharStatsTracker as _CSTn, CharacterStats as _CharN, Faction as _FactionN
 
         players = []
@@ -721,6 +731,29 @@ class BgQueueProcessorMixin(InstancedMatchMixin):
                           "mode": match.get("mode_id", "5v5")}
         for m_eid in match["team_a"] + match["team_b"]:
             self._bg_match_result_events_this_tick.append((m_eid, result_payload))
+
+    def request_bg_forfeit(self, eid: int) -> "str | None":
+        """Comando de chat /forfeit ou /ff na fila REAL (01/09/2026,
+        pedido do usuário — mesma UX da Arena, sem votação por enquanto,
+        versão de testes). Diferente de `request_bg_leave`: não é "eu
+        saio", é "a partida acaba agora" — declara o time ADVERSÁRIO de
+        `eid` vencedor na hora, reaproveitando `_finish_bg_match` (MESMO
+        placar que o Nexus caindo gera). Só funciona depois que a luta
+        começou (portão aberto) e antes de decidida — retorna motivo em
+        string se recusado, None em sucesso."""
+        match_id = self._player_bg_match_id.get(eid)
+        if match_id is None:
+            return "not_in_match"
+        match = self._bg_active_matches.get(match_id)
+        if match is None:
+            return "not_in_match"
+        if match["decided"]:
+            return "already_decided"
+        if not match["fight_started"]:
+            return "fight_not_started"
+        winner_faction = "arena_time_b" if eid in match["team_a"] else "arena_time_a"
+        self._finish_bg_match(match, match_id, winner_faction)
+        return None
 
     def _bg_sample_gold_earned(self, match: dict, eid: int) -> int:
         """Mesmo mecanismo de `debug_battleground.py::_sample_gold_earned`

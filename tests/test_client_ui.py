@@ -227,7 +227,7 @@ def _make_harvestable_loot_world():
     hv = world.create_entity()
     world.add_component(hv, Position(x=100, y=100, prev_x=100, prev_y=100))
     world.add_component(hv, Renderable(color=(120, 90, 60), width=32, height=32,
-                                       sprite_id="pr_box1"))
+                                       sprite_id="vp_067"))
     world.add_component(hv, Corpse(loot=[], coins=10))
     return world, player, hv
 
@@ -318,7 +318,7 @@ def test_online_loot_request_item_manda_take_item_com_item_id():
 # o direito, nada aconteceu". Causa: a tolerância de clique de corpse
 # (±14×±10px, em MouseTargetingSystem._corpse_at_world_pos e
 # LootSystem._try_open_corpse) era fixa, calibrada pra elipse achatada de
-# 20×12px — sprite real (ex: "pr_box1", 32×64, ancorado com a BASE no tile)
+# 20×12px — sprite real (ex: "vp_067", 32×64, ancorado com a BASE no tile)
 # sobe ~48px acima do centro da entidade, e a maior parte dessa área visível
 # ficava fora da tolerância antiga. Fix: ui/systems.py::_corpse_click_rect
 # calcula a área clicável a partir do tamanho REAL do sprite quando a
@@ -540,6 +540,11 @@ class _LootResultFixture(_NH_loot):
         self._loot_system = type("_FakeLootSys", (), {"_online_loot_pending": set()})()
         self.loot_actions = []
         self.save_state_calls = 0
+        # Sem personagem "logado" nesta fixture leve — ui/skill_slot_prefs.py::
+        # preferred_slot_for_skill (26/08/2026) lê CharacterStats.name do ECS
+        # (não um atributo do chamador); sem o componente, já trata isso como
+        # "sem preferência" e cai pro fallback de sempre (primeiro slot vazio).
+        self._logged_char_name = None
 
     def _on_loot_action(self, change_type: str = "item") -> None:
         self.loot_actions.append(change_type)
@@ -604,7 +609,7 @@ def test_loot_result_esvaziando_harvestable_nao_remove_a_entidade():
     hv = fx.world.create_entity()
     fx.world.add_component(hv, Position(x=100, y=100, prev_x=100, prev_y=100))
     fx.world.add_component(hv, Renderable(color=(120, 90, 60), width=32, height=32,
-                                          sprite_id="pr_box1"))
+                                          sprite_id="vp_067"))
     fx.world.add_component(hv, Corpse(loot=[], coins=10))
     fx._available_loot[9] = {"local_eid": hv, "tx": 3, "ty": 3}
 
@@ -651,7 +656,7 @@ def test_entity_despawn_eid_negativo_nao_remove_harvestable():
     hv = fx.world.create_entity()
     fx.world.add_component(hv, Position(x=100, y=100, prev_x=100, prev_y=100))
     fx.world.add_component(hv, Renderable(color=(120, 90, 60), width=32, height=32,
-                                          sprite_id="pr_box1"))
+                                          sprite_id="vp_067"))
     fx.world.add_component(hv, Corpse(loot=[], coins=0))
     fx._available_loot[9] = {"local_eid": hv, "tx": 3, "ty": 3}
 
@@ -992,7 +997,7 @@ def test_aoi_update_spawned_harvestable_chama_spawn_remote_harvestable():
     fx = _make_net_fixture()
     fx._handle_msg_aoi_update({"spawned": [{
         "eid": 99, "kind": "harvestable", "corpse_id": 3,
-        "tx": 8, "ty": 9, "name": "Caixa", "sprite_id": "pr_box1",
+        "tx": 8, "ty": 9, "name": "Caixa", "sprite_id": "vp_067",
     }]})
     assert 99 not in fx._remote_players, \
         "harvestable não deveria virar jogador remoto fantasma"
@@ -1015,7 +1020,7 @@ def test_aoi_update_despawned_harvestable_remove_entidade_local_e_available_loot
     fx = _make_net_fixture()
     fx._handle_msg_aoi_update({"spawned": [{
         "eid": 99, "kind": "harvestable", "corpse_id": 3,
-        "tx": 8, "ty": 9, "name": "Caixa", "sprite_id": "pr_box1",
+        "tx": 8, "ty": 9, "name": "Caixa", "sprite_id": "vp_067",
     }]})
     local_eid = fx._remote_harvestables[99]
 
@@ -1038,7 +1043,7 @@ def test_spawn_remote_harvestable_cria_entidade_com_sprite_e_corpse_vazio():
     from engine.components import Harvestable, Renderable, TileMovement, Corpse
     fx = _make_net_fixture()
     fx._spawn_remote_harvestable(77, {
-        "tx": 10, "ty": 20, "name": "Caixa", "sprite_id": "pr_box1", "corpse_id": 5,
+        "tx": 10, "ty": 20, "name": "Caixa", "sprite_id": "vp_067", "corpse_id": 5,
     })
     local_eid = fx._remote_harvestables[77]
     hv     = fx.world.get_component(local_eid, Harvestable)
@@ -1046,7 +1051,7 @@ def test_spawn_remote_harvestable_cria_entidade_com_sprite_e_corpse_vazio():
     tm     = fx.world.get_component(local_eid, TileMovement)
     corpse = fx.world.get_component(local_eid, Corpse)
     assert hv.corpse_id == 5
-    assert ren.sprite_id == "pr_box1"
+    assert ren.sprite_id == "vp_067"
     assert tm.current_tile_x == 10 and tm.current_tile_y == 20
     assert corpse is not None and corpse.loot == [] and corpse.coins == 0
     assert fx._available_loot[5]["local_eid"] == local_eid
@@ -1057,11 +1062,11 @@ def test_spawn_remote_harvestable_e_idempotente():
     criar uma segunda entidade pro mesmo server_eid."""
     fx = _make_net_fixture()
     fx._spawn_remote_harvestable(77, {
-        "tx": 10, "ty": 20, "name": "Caixa", "sprite_id": "pr_box1", "corpse_id": 5,
+        "tx": 10, "ty": 20, "name": "Caixa", "sprite_id": "vp_067", "corpse_id": 5,
     })
     first_local_eid = fx._remote_harvestables[77]
     fx._spawn_remote_harvestable(77, {
-        "tx": 10, "ty": 20, "name": "Caixa", "sprite_id": "pr_box1", "corpse_id": 5,
+        "tx": 10, "ty": 20, "name": "Caixa", "sprite_id": "vp_067", "corpse_id": 5,
     })
     assert fx._remote_harvestables[77] == first_local_eid
 
@@ -1075,7 +1080,7 @@ def test_loot_available_de_harvestable_ja_conhecido_atualiza_no_lugar():
     from engine.components import Corpse
     fx = _make_net_fixture()
     fx._spawn_remote_harvestable(77, {
-        "tx": 10, "ty": 20, "name": "Caixa", "sprite_id": "pr_box1", "corpse_id": 5,
+        "tx": 10, "ty": 20, "name": "Caixa", "sprite_id": "vp_067", "corpse_id": 5,
     })
     local_eid = fx._remote_harvestables[77]
 
@@ -1422,6 +1427,257 @@ def test_space_engage_mira_oponente_de_pvp_engajavel():
         register_pvp_context(None)
 
 
+def test_tab_target_inclui_mob_neutro_de_jungle():
+    """Bug real relatado pelo usuário (25/08/2026): TAB precisa alcançar
+    alvo "neutro" (ex: mob de jungle) — antes só "hostil" de verdade
+    (decisão do próprio usuário em 01/08/2026, ANTES da jungle existir,
+    16/08/2026). `_visible_enemies_sorted` trocou `is_hostile` por
+    `can_engage` (hostil OU neutro, só bloqueia amigavel) pro loop de
+    mob/torre/minion — mesma função que o loop de player remoto já usava."""
+    from engine.world import World
+    from engine.components import (Position, Visible, Enemy, AIControlled,
+                                   TileMovement, CombatStats, Faction)
+    from ui.systems import MouseTargetingSystem
+
+    world = World()
+    me = world.create_entity()
+    world.add_component(me, Position(x=50, y=50))
+
+    jungle_mob = world.create_entity()
+    world.add_component(jungle_mob, Position(x=60, y=60))
+    world.add_component(jungle_mob, Visible())
+    world.add_component(jungle_mob, Enemy())
+    world.add_component(jungle_mob, AIControlled())
+    world.add_component(jungle_mob, TileMovement(current_tile_x=1, current_tile_y=1))
+    world.add_component(jungle_mob, CombatStats(base_stamina=100))
+    world.add_component(jungle_mob, Faction(faction_id="vida_selvagem"))  # tier "neutro"
+
+    screen = pygame.display.get_surface()
+    mts = MouseTargetingSystem(world, me, screen)
+    enemies = mts._visible_enemies_sorted(0, 0)
+    assert jungle_mob in enemies, "TAB deveria alcançar mob neutro (jungle), não só hostil"
+
+
+def test_space_engage_mantem_alvo_ja_selecionado_mesmo_nao_sendo_o_mais_proximo():
+    """Bug real relatado pelo usuário (25/08/2026), vale pro jogo todo:
+    apertar ESPAÇO trocava pro inimigo mais próximo mesmo já havendo um
+    alvo selecionado (via TAB/clique) — em vez de atacar o selecionado.
+    `_space_engage` agora usa `combat_state.target_entity_id` direto
+    (via `utils.is_target_alive`) quando já há um alvo válido, só busca
+    "mais próximo" quando não há nenhum."""
+    from engine.world import World
+    from engine.components import (Position, TileMovement, Visible, Enemy,
+                                   AIControlled, CombatStats, CombatState,
+                                   PlayerControlled)
+    from ui.systems import PlayerInputSystem
+
+    world = World()
+    me = world.create_entity()
+    world.add_component(me, PlayerControlled())
+    world.add_component(me, TileMovement(current_tile_x=0, current_tile_y=0))
+    my_cs = CombatStats()
+    world.add_component(me, my_cs)
+    my_state = CombatState()
+    world.add_component(me, my_state)
+
+    far_target = world.create_entity()
+    world.add_component(far_target, Position(x=10 * 32, y=10 * 32))
+    world.add_component(far_target, TileMovement(current_tile_x=10, current_tile_y=10))
+    world.add_component(far_target, Visible())
+    world.add_component(far_target, Enemy())
+    world.add_component(far_target, AIControlled())
+    world.add_component(far_target, CombatStats(base_stamina=100))
+
+    near_target = world.create_entity()
+    world.add_component(near_target, Position(x=1 * 32, y=1 * 32))
+    world.add_component(near_target, TileMovement(current_tile_x=1, current_tile_y=1))
+    world.add_component(near_target, Visible())
+    world.add_component(near_target, Enemy())
+    world.add_component(near_target, AIControlled())
+    world.add_component(near_target, CombatStats(base_stamina=100))
+
+    my_state.target_entity_id = far_target  # já selecionado, NÃO é o mais próximo
+
+    screen = pygame.display.get_surface()
+    pis = PlayerInputSystem(world, screen)
+    pis._space_engage(me, world.get_component(me, TileMovement), my_cs, my_state, None)
+
+    assert my_state.target_entity_id == far_target, \
+        "SPACE deveria atacar o alvo já selecionado, não trocar pro mais próximo"
+
+
+def test_space_engage_sem_alvo_selecionado_pega_o_mais_proximo():
+    """Regressão: sem alvo válido selecionado, cai pro comportamento
+    original (mais próximo visível na tela)."""
+    from engine.world import World
+    from engine.components import (Position, TileMovement, Visible, Enemy,
+                                   AIControlled, CombatStats, CombatState,
+                                   PlayerControlled)
+    from ui.systems import PlayerInputSystem
+
+    world = World()
+    me = world.create_entity()
+    world.add_component(me, PlayerControlled())
+    world.add_component(me, TileMovement(current_tile_x=0, current_tile_y=0))
+    my_cs = CombatStats()
+    world.add_component(me, my_cs)
+    my_state = CombatState()  # target_entity_id default = -1, nada selecionado
+    world.add_component(me, my_state)
+
+    far_target = world.create_entity()
+    world.add_component(far_target, Position(x=10 * 32, y=10 * 32))
+    world.add_component(far_target, TileMovement(current_tile_x=10, current_tile_y=10))
+    world.add_component(far_target, Visible())
+    world.add_component(far_target, Enemy())
+    world.add_component(far_target, AIControlled())
+    world.add_component(far_target, CombatStats(base_stamina=100))
+
+    # Fora de PLAYER_ATTACK_RANGE (mesmo motivo do teste de PvP acima) —
+    # isola só a seleção/perseguição, sem cair no branch de ataque
+    # imediato (exigiria _svc['combat'] registrado, fora de escopo aqui).
+    near_target = world.create_entity()
+    world.add_component(near_target, Position(x=5 * 32, y=5 * 32))
+    world.add_component(near_target, TileMovement(current_tile_x=5, current_tile_y=5))
+    world.add_component(near_target, Visible())
+    world.add_component(near_target, Enemy())
+    world.add_component(near_target, AIControlled())
+    world.add_component(near_target, CombatStats(base_stamina=100))
+
+    screen = pygame.display.get_surface()
+    pis = PlayerInputSystem(world, screen)
+    pis._space_engage(me, world.get_component(me, TileMovement), my_cs, my_state, None)
+
+    assert my_state.target_entity_id == near_target
+
+
+# ── client/save_sync_handlers.py::_space_engage_online — a função REAL
+# usada no jogo online (game.py despacha K_SPACE pra cá, não pra
+# ui/systems.py::PlayerInputSystem._space_engage, que é só caminho
+# offline/legado — corrigido primeiro POR ENGANO com o mesmo bug: usuário
+# testou em jogo real e confirmou que ESPAÇO continuava trocando de alvo).
+
+def _make_space_engage_online_fixture():
+    from engine.world import World
+    from engine.components import (TileMovement, CombatState, PlayerAutoMove,
+                                   RemoteEntityMeta, Faction, PlayerControlled)
+    from client.save_sync_handlers import SaveSyncHandlers
+    from client.remote_entity_handlers import RemoteEntityHandlers
+
+    class _Fixture(SaveSyncHandlers, RemoteEntityHandlers):
+        def __init__(self, world, player_entity):
+            self.world = world
+            self.player_entity = player_entity
+            self._remote_mobs = {}
+
+    world = World()
+    me = world.create_entity()
+    world.add_component(me, PlayerControlled())
+    world.add_component(me, TileMovement(current_tile_x=0, current_tile_y=0))
+    cs = CombatState()
+    world.add_component(me, cs)
+    world.add_component(me, PlayerAutoMove())
+
+    far_target = world.create_entity()
+    world.add_component(far_target, TileMovement(current_tile_x=10, current_tile_y=10))
+    world.add_component(far_target, RemoteEntityMeta(server_eid=99, hp=100, hp_max=100))
+    world.add_component(far_target, Faction(faction_id="monstros_hostis"))
+
+    near_target = world.create_entity()
+    world.add_component(near_target, TileMovement(current_tile_x=1, current_tile_y=1))
+    world.add_component(near_target, RemoteEntityMeta(server_eid=88, hp=100, hp_max=100))
+    world.add_component(near_target, Faction(faction_id="monstros_hostis"))
+
+    fx = _Fixture(world, me)
+    fx._remote_mobs = {99: far_target, 88: near_target}
+    return fx, cs, far_target, near_target
+
+
+def test_space_engage_online_mantem_alvo_ja_selecionado_mesmo_nao_sendo_o_mais_proximo():
+    """Bug real relatado pelo usuário (25/08/2026): selecionar com TAB e
+    apertar ESPAÇO continuava trocando pro mob hostil mais próximo em vez
+    de atacar o alvo já selecionado."""
+    fx, cs, far_target, near_target = _make_space_engage_online_fixture()
+    cs.target_entity_id = far_target  # já selecionado (TAB), não é o mais próximo
+
+    fx._space_engage_online()
+
+    assert cs.target_entity_id == far_target, \
+        "SPACE deveria atacar o alvo já selecionado, não trocar pro mais próximo"
+
+
+def test_space_engage_online_sem_alvo_selecionado_pega_o_mais_proximo():
+    """Regressão: sem alvo válido selecionado, cai pro comportamento
+    original (mob hostil mais próximo)."""
+    fx, cs, far_target, near_target = _make_space_engage_online_fixture()
+    # cs.target_entity_id == -1 (default, nada selecionado)
+
+    fx._space_engage_online()
+
+    assert cs.target_entity_id == near_target
+
+
+def test_space_engage_online_sem_alvo_alcanca_mob_neutro():
+    """Bug real relatado pelo usuário (26/08/2026): ESPAÇO ainda não
+    selecionava alvo "neutro" (ex: mob de jungle) na busca de fallback —
+    o fix anterior (manter alvo já selecionado) não tocou o filtro de
+    facção da busca, que continuava `is_hostile` (só tier "hostil").
+    Trocado por `can_engage` (hostil OU neutro, só bloqueia amigavel) —
+    mesmo critério já usado pro TAB em `_visible_enemies_sorted`."""
+    from engine.world import World
+    from engine.components import (TileMovement, CombatState, PlayerAutoMove,
+                                   RemoteEntityMeta, Faction, PlayerControlled)
+    from client.save_sync_handlers import SaveSyncHandlers
+    from client.remote_entity_handlers import RemoteEntityHandlers
+
+    class _Fixture(SaveSyncHandlers, RemoteEntityHandlers):
+        def __init__(self, world, player_entity):
+            self.world = world
+            self.player_entity = player_entity
+            self._remote_mobs = {}
+
+    world = World()
+    me = world.create_entity()
+    world.add_component(me, PlayerControlled())
+    world.add_component(me, TileMovement(current_tile_x=0, current_tile_y=0))
+    cs = CombatState()
+    world.add_component(me, cs)
+    world.add_component(me, PlayerAutoMove())
+
+    neutral_target = world.create_entity()
+    world.add_component(neutral_target, TileMovement(current_tile_x=1, current_tile_y=1))
+    world.add_component(neutral_target, RemoteEntityMeta(server_eid=77, hp=100, hp_max=100))
+    world.add_component(neutral_target, Faction(faction_id="vida_selvagem"))  # tier "neutro"
+
+    fx = _Fixture(world, me)
+    fx._remote_mobs = {77: neutral_target}
+    # cs.target_entity_id == -1 (default, nada selecionado)
+
+    fx._space_engage_online()
+
+    assert cs.target_entity_id == neutral_target, \
+        "SPACE deveria alcançar mob neutro (jungle) na busca de fallback, não só hostil"
+
+
+def test_space_engage_online_bloqueado_por_stun():
+    """Bug potencial (26/08/2026): `PlayerInputSystem._space_engage`
+    (offline/legado) checava `can_act` antes de agir; removida a
+    chamada duplicada de K_SPACE dentro dele (limpeza de código
+    paralelo pedida pelo usuário), o gate de CC teria que migrar pra cá
+    junto — sem isso, ESPAÇO ficaria destravado durante stun/sleep/
+    fear/polymorph no jogo online de verdade."""
+    from engine.components import StatusEffects
+    fx, cs, far_target, near_target = _make_space_engage_online_fixture()
+    # cs.target_entity_id == -1 (default, nada selecionado)
+    sfx = StatusEffects()
+    sfx.effects["stun"] = object()
+    fx.world.add_component(fx.player_entity, sfx)
+
+    fx._space_engage_online()
+
+    assert cs.target_entity_id == -1, "sob stun, SPACE não deveria selecionar nenhum alvo"
+    assert not cs.is_pursuing
+
+
 # ── ui/systems.py::PlayerInputSystem — movimento manual (WASD/clique de
 # chão) desliga a perseguição de forma STICKY, nunca is_pursuing/alvo
 # (28/07/2026, pedido do usuário — REVISADO 2x no mesmo dia).
@@ -1615,12 +1871,12 @@ def test_reengajar_com_espaco_reativa_chase_suppressed_false():
     combat_stats = world.get_component(eid, CombatStats)
     auto_move = world.get_component(eid, PlayerAutoMove)
 
-    # _space_engage seleciona o inimigo mais próximo entre entidades
-    # (Position, Enemy, AIControlled, TileMovement, CombatStats, Visible)
-    # — `target` (criado por _make_wasd_pursuit_fixture) não tem Enemy/
-    # AIControlled, então um mob novo, mais simples, é criado aqui.
-    # Fora de PLAYER_ATTACK_RANGE (1 tile) — evita o branch de ataque
-    # imediato (exigiria o serviço 'combat' registrado, fora de escopo).
+    # `target` (criado por _make_wasd_pursuit_fixture) já está selecionado
+    # e vivo — desde 25/08/2026, _space_engage ATACA o alvo já selecionado
+    # em vez de trocar pro mais próximo (bug real relatado pelo usuário);
+    # `mob` só existe aqui pra provar que a busca de "mais próximo" NÃO é
+    # usada quando já há alvo válido (senão o teste não discriminaria as
+    # duas versões — mob está mais perto que target).
     from engine.components import TileMovement as _TM_sp
     mob = world.create_entity()
     world.add_component(mob, Position(x=5 * 32, y=10 * 32))
@@ -1632,7 +1888,8 @@ def test_reengajar_com_espaco_reativa_chase_suppressed_false():
 
     sys_input._space_engage(eid, tm, combat_stats, cs, auto_move)
 
-    assert cs.target_entity_id == mob
+    assert cs.target_entity_id == target, \
+        "SPACE deveria manter o alvo já selecionado, não trocar pro mob mais próximo"
     assert cs.chase_suppressed is False
 
 
@@ -2453,6 +2710,7 @@ def _make_entity_move_fixture():
     world.add_component(player, TileMovement(current_tile_x=5, current_tile_y=5))
     fx = _Fixture(world, player, my_eid=1)
     return fx, player
+
 
 
 def test_dash_confirmado_pelo_servidor_anima_do_zero_sem_predicao_local():
@@ -3756,6 +4014,39 @@ def test_render_fullmap_desenha_ponto_na_posicao_certa_do_tile():
     px = screen.get_at((sx, sy))
     assert (px.r, px.g, px.b) == (255, 0, 0), \
         f"esperava vermelho puro no centro do ponto, achou {(px.r, px.g, px.b)}"
+
+
+def test_render_desenha_ponto_com_a_cor_passada_por_entidade():
+    """30/08/2026 — minimapa pequeno (render(), não render_fullmap) passa a
+    aceitar (tile_x, tile_y, cor) por entidade em vez de tile puro, pra
+    distinguir amigável/neutro/hostil (game.py resolve a cor via
+    engine.faction_system.get_relationship_between antes de chamar aqui;
+    Minimap só desenha o que recebe, sem saber de facção)."""
+    mm, screen = _make_minimap_fixture(cols=60, rows=60)
+    explored = {(x, y) for x in range(60) for y in range(60)}
+    player_tx, player_ty = 30, 30
+    dots = [
+        (player_tx + 2, player_ty, mm.ALLY_COL),
+        (player_tx - 2, player_ty, mm.NEUTRAL_COL),
+        (player_tx, player_ty + 2, mm.ENEMY_COL),
+    ]
+    mm.render(player_tx, player_ty, explored, explored, dots)
+
+    sw, _ = screen.get_size()
+    fx = sw - mm._u(mm.SIZE) - mm._u(mm.MARGIN_RIGHT)
+    fy = mm._u(mm.MARGIN_TOP)
+    tp  = mm._tile_px
+    ox  = fx + mm._map_ox
+    oy  = fy + mm._map_oy
+    mid = mm.RADIUS * tp + tp // 2
+
+    def _px_at(dx, dy):
+        p = screen.get_at((ox + mid + dx * tp, oy + mid + dy * tp))
+        return (p.r, p.g, p.b)
+
+    assert _px_at(2, 0) == mm.ALLY_COL
+    assert _px_at(-2, 0) == mm.NEUTRAL_COL
+    assert _px_at(0, 2) == mm.ENEMY_COL
 
 
 def test_render_fullmap_nao_precisa_de_player_tx_ty_pra_nao_quebrar():

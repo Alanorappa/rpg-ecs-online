@@ -40,6 +40,34 @@ class BushZoneProcessorMixin:
                 return i
         return None
 
+    def _is_on_bush_tile(self, eid: int) -> bool:
+        """True se `eid` está agora em cima de um tile de arbusto REAL do
+        mapa (`TileType.is_bush`, `engine/tileset.py`) — 01/09/2026,
+        feedback de opacidade pro próprio jogador. Mecanismo SEPARADO de
+        `_get_bush_zone`/`bush_zones_by_map` acima (retângulo nunca
+        pintado em mapa real, ver PROBLEMAS_ARQUITETURA.md §91) — a
+        invisibilidade de verdade pros outros já vem de
+        `server/tile_los_processor.py::_has_tile_los` (vision_height>=2 no
+        próprio tile do alvo), que também é True aqui; esta função só
+        restringe QUAL vision_height>=2 conta como "bush" (não árvore/
+        parede) pro efeito visual pessoal. Reusa
+        `TileLosProcessorMixin._tilemap_for_map` (mesmo lookup que
+        `_has_tile_los` já usa) — dado ausente (sem TileMovement/Tilemap)
+        → False, conservador."""
+        from engine.components import TileMovement
+
+        map_file = self.get_entity_map(eid)
+        tilemap_comp = self._tilemap_for_map(map_file)
+        if tilemap_comp is None:
+            return False
+        tm = self.world.get_component(eid, TileMovement)
+        if tm is None:
+            return False
+        tx, ty = tm.current_tile_x, tm.current_tile_y
+        if not (0 <= tx < tilemap_comp.map_width_tiles and 0 <= ty < tilemap_comp.map_height_tiles):
+            return False
+        return tilemap_comp.tile_matrix[ty][tx].is_bush
+
     def _team_sees_bush_zone(self, viewer_eid: int, zone_idx: int) -> bool:
         """True se QUALQUER unidade (player ou minion) do MESMO time de
         `viewer_eid`, no MESMO mapa, está fisicamente na zona `zone_idx`

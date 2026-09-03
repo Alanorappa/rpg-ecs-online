@@ -2288,6 +2288,21 @@ class SessionManager:
             return
         self.world_server.request_bg_leave(eid)
 
+    async def _handle_bg_forfeit(self, session: Session, payload: dict, ts: int) -> None:
+        """Comando de chat /forfeit ou /ff na fila REAL de BG (01/09/2026,
+        client/battleground_handlers.py) — declara o time adversário
+        vencedor na hora (ver BgQueueProcessorMixin.request_bg_forfeit).
+        BG_MATCH_RESULT sai pelo broadcast loop do próximo tick, mesmo
+        canal do Nexus caindo. Cliente já só manda isso sabendo que está
+        na fila real (_bg_in_match) — recusa (not_in_match/etc.) aqui é
+        só defesa contra cliente dessincronizado, não precisa de resposta."""
+        if not session.authenticated:
+            return
+        eid = self.world_server._player_eids.get(session.session_id)
+        if eid is None:
+            return
+        self.world_server.request_bg_forfeit(eid)
+
     async def _handle_trade_offer_item(self, session: Session, payload: dict, ts: int) -> None:
         if not session.authenticated:
             return
@@ -2443,6 +2458,7 @@ class SessionManager:
         MsgType.BG_QUEUE_LEAVE:      _handle_bg_queue_leave,
         MsgType.BG_MATCH_ACCEPT:     _handle_bg_match_accept,
         MsgType.BG_MATCH_LEAVE:      _handle_bg_match_leave,
+        MsgType.BG_FORFEIT:          _handle_bg_forfeit,
         MsgType.CHAR_STATS_REQUEST:  _handle_char_stats_request,
     }
 

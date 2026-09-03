@@ -515,36 +515,74 @@ class SaveSyncHandlers:
         return (_p.x, _p.y) if _p else (0.0, 0.0)
 
     def _space_engage_online(self) -> None:
-        """ESPAÇO: seleciona o mob remoto HOSTIL mais próximo e inicia
-        perseguição (como offline). `is_hostile` (01/08/2026, bug real
-        relatado pelo usuário) — antes iterava `self._remote_mobs` inteiro
-        sem NENHUM filtro de facção, então podia selecionar/perseguir um
-        minion/torre do PRÓPRIO time dentro de uma instância."""
+        """ESPAÇO: ataca o alvo JÁ selecionado (TAB/clique), se ainda
+        estiver vivo — só busca o mob remoto HOSTIL mais próximo quando
+        NÃO há alvo válido selecionado. Antes sempre recalculava "mais
+        próximo" do zero, ignorando `cs_p.target_entity_id` por completo —
+        bug real relatado pelo usuário (25/08/2026): selecionar com TAB e
+        apertar ESPAÇO trocava pro mais próximo em vez de atacar o
+        selecionado. ESTA é a função usada de verdade no jogo online —
+        `ui/systems.py::PlayerInputSystem._space_engage` era um caminho
+        offline/legado que ainda escutava K_SPACE em paralelo (mesma
+        tecla, mesmo frame) e ficou removido em 26/08/2026 (usuário:
+        "sempre que acharmos código paralelo de offline temos que
+        limpar") — o método continua no arquivo (só pra não quebrar os
+        testes que chamam ele direto), mas não roda mais durante uma
+        sessão online de verdade. Usa `utils.is_target_alive()` (ponto
+        único de verdade — cobre mob remoto via `RemoteEntityMeta`, sem
+        precisar reimplementar o check de `_meta_from_local(...).hp`).
+
+        `can_engage` na busca de fallback (01/08/2026, bug real relatado
+        pelo usuário: antes iterava `self._remote_mobs` inteiro sem
+        NENHUM filtro de facção, então podia selecionar/perseguir um
+        minion/torre do PRÓPRIO time dentro de uma instância; trocado de
+        `is_hostile` pra `can_engage` em 26/08/2026 — mesmo motivo do TAB
+        em `ui/systems.py::_visible_enemies_sorted`: alcançar "neutro"
+        também (ex: mob de jungle), só bloqueia "amigavel").
+
+        `is_action_locked` no topo (26/08/2026): a função que perdeu o
+        gate era a duplicada em `PlayerInputSystem._space_engage`, que
+        checava `can_act` antes de agir — remover aquele caminho sem
+        trazer o gate pra cá destravaria ESPAÇO durante stun/sleep/
+        fear/polymorph (nenhum outro ponto no `game.py` checava isso
+        antes de despachar ESPAÇO pra cá). Mesmo choke-point usado pelo
+        gate de skills (`skill_processor.py`) e auto-attack
+        (`combat_processor.py`) no servidor — ver `engine/utils.py`."""
         from engine.components import TileMovement, CombatState, PlayerAutoMove
-        from engine.faction_system import is_hostile as _is_hostile_sp
+        from engine.faction_system import can_engage as _can_engage_sp
+        from engine.utils import is_target_alive as _is_target_alive_sp
+        from engine.utils import is_action_locked as _is_action_locked_sp
+        if _is_action_locked_sp(self.world, self.player_entity):
+            return
         tm   = self.world.get_component(self.player_entity, TileMovement)
         cs_p = self.world.get_component(self.player_entity, CombatState)
         auto = self.world.get_component(self.player_entity, PlayerAutoMove)
         if not tm or not cs_p:
             return
         pl_x, pl_y = tm.current_tile_x, tm.current_tile_y
-        best_local = -1
-        best_dist  = float("inf")
-        for server_eid, local_eid in self._remote_mobs.items():
-            _meta_am = self._meta_from_local(local_eid)
-            if _meta_am is None or _meta_am.hp <= 0:
-                continue
-            if not _is_hostile_sp(self.world, self.player_entity, local_eid):
-                continue
-            mob_tm = self.world.get_component(local_eid, TileMovement)
-            if not mob_tm:
-                continue
-            dist = abs(mob_tm.current_tile_x - pl_x) + abs(mob_tm.current_tile_y - pl_y)
-            if dist < best_dist:
-                best_dist  = dist
-                best_local = local_eid
+
+        best_local = cs_p.target_entity_id
+        if best_local != -1 and not _is_target_alive_sp(self.world, best_local):
+            best_local = -1
+
         if best_local == -1:
-            return
+            best_dist = float("inf")
+            for server_eid, local_eid in self._remote_mobs.items():
+                _meta_am = self._meta_from_local(local_eid)
+                if _meta_am is None or _meta_am.hp <= 0:
+                    continue
+                if not _can_engage_sp(self.world, self.player_entity, local_eid):
+                    continue
+                mob_tm = self.world.get_component(local_eid, TileMovement)
+                if not mob_tm:
+                    continue
+                dist = abs(mob_tm.current_tile_x - pl_x) + abs(mob_tm.current_tile_y - pl_y)
+                if dist < best_dist:
+                    best_dist  = dist
+                    best_local = local_eid
+            if best_local == -1:
+                return
+
         cs_p.target_entity_id = best_local
         cs_p.is_pursuing = True
         cs_p.chase_suppressed = False   # reengajamento reativa a perseguição

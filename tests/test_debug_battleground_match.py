@@ -117,6 +117,76 @@ class TestNotifyNexusDestroyed(unittest.TestCase):
         self.assertEqual(bg._state["pending_match_result"], [])
 
 
+class TestForfeit(unittest.TestCase):
+    """server/debug_battleground.py::_forfeit ("/testbg ff", 01/09/2026,
+    pedido do usuário — mesma UX do /ff da Arena/fila real, sem votação).
+    Mesmo setUp de TestNotifyNexusDestroyed — o placar gerado é o MESMO
+    mecanismo (_finish_debug_match), só quem decide o vencedor muda."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        self.p_a = spawn_player(self.ws, "ff_a", 10, 10, class_id="guerreiro")
+        self.p_b = spawn_player(self.ws, "ff_b", 12, 10, class_id="guerreiro")
+        self.ws.world.add_component(self.p_a, Faction("arena_time_a"))
+        self.ws.world.add_component(self.p_b, Faction("arena_time_b"))
+        bg._state["members"] = {self.p_a, self.p_b}
+        bg._state["stat_snapshots"] = {
+            self.p_a: {"kills": 0, "deaths": 0, "farm": 0, "damage": 0},
+            self.p_b: {"kills": 0, "deaths": 0, "farm": 0, "damage": 0},
+        }
+        wallet_a0 = self.ws.world.get_component(self.p_a, Wallet)
+        wallet_b0 = self.ws.world.get_component(self.p_b, Wallet)
+        bg._state["gold_earned"] = {self.p_a: 0, self.p_b: 0}
+        bg._state["last_wallet_gold"] = {
+            self.p_a: wallet_a0.gold, self.p_b: wallet_b0.gold,
+        }
+        bg._state["match_decided"]        = False
+        bg._state["result_deadline"]      = None
+        bg._state["pending_match_result"] = []
+        bg._state["pending_forced_leave_notify"] = []
+
+    def tearDown(self):
+        bg._state["members"]            = set()
+        bg._state["stat_snapshots"]     = {}
+        bg._state["gold_earned"]        = {}
+        bg._state["last_wallet_gold"]   = {}
+        bg._state["match_decided"]      = False
+        bg._state["result_deadline"]    = None
+        bg._state["pending_match_result"] = []
+        bg._state["pending_forced_leave_notify"] = []
+        bg._state["last_kda_sent"] = {}
+
+    def test_desistir_decide_a_partida_com_derrota_pro_proprio_time(self):
+        reply, zone_change, countdown = bg._forfeit(self.ws, self.p_a)
+        self.assertIsNone(zone_change)
+        self.assertIsNone(countdown)
+        self.assertTrue(bg._state["match_decided"])
+        _, payload = bg._state["pending_match_result"][0]
+        self.assertEqual(payload["winner_faction"], "arena_time_b")
+        by_eid = {p["eid"]: p for p in payload["players"]}
+        self.assertFalse(by_eid[self.p_a]["won"])
+        self.assertTrue(by_eid[self.p_b]["won"])
+
+    def test_time_adversario_desistindo_da_derrota_pro_outro_lado(self):
+        bg._forfeit(self.ws, self.p_b)
+        _, payload = bg._state["pending_match_result"][0]
+        self.assertEqual(payload["winner_faction"], "arena_time_a")
+
+    def test_fora_da_partida_de_teste_nao_decide_nada(self):
+        outsider = spawn_player(self.ws, "ff_out", 20, 20, class_id="guerreiro")
+        reply, zone_change, countdown = bg._forfeit(self.ws, outsider)
+        self.assertFalse(bg._state["match_decided"])
+        self.assertIn("não está numa partida", reply.lower())
+
+    def test_partida_ja_decidida_nao_sobrescreve(self):
+        bg._forfeit(self.ws, self.p_a)
+        first_deadline = bg._state["result_deadline"]
+        bg._forfeit(self.ws, self.p_b)
+        self.assertEqual(bg._state["result_deadline"], first_deadline)
+        _, payload = bg._state["pending_match_result"][0]
+        self.assertEqual(payload["winner_faction"], "arena_time_b")
+
+
 class TestResultsTimeout(unittest.TestCase):
 
     def setUp(self):

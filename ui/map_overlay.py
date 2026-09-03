@@ -6,7 +6,7 @@ from __future__ import annotations
 import math
 import pygame
 from ui.ui_helpers import fill_surf
-from engine.tileset import TILE_MAPPING, OBJECT_MAPPING, FLOOR_TILE
+from engine.tileset import TILE_MAPPING, OBJECT_MAPPING, FLOOR_TILE, get_collision_offsets
 from ui.ui_scale_mixin import UIScaleMixin
 from ui.ui_sizes import UI
 from ui.icon_manager import ICONS
@@ -56,10 +56,16 @@ class MapOverlay(UIScaleMixin):
 
     # ── Inicialização ────────────────────────────────────────────────────────
 
-    def load_map(self, tile_matrix: list[str], map_key: str = "") -> None:
+    def load_map(self, tile_matrix: list, map_key: str = "") -> None:
         """
         Constrói (ou reconstrói) a Surface 1px/tile para o mapa indicado.
         map_key: identificador único (normalmente o caminho do arquivo).
+
+        `tile_matrix`: normalmente o retorno de `game.py::
+        _merge_display_matrix` — cada linha é uma string OU uma lista de
+        tokens (célula pode ser um char de terreno "G" ou um ID completo
+        de sprite/objeto "vp_001", "ter_2_3" — nunca truncado, 26/08/2026).
+        Indexação por célula (`row[c]`) funciona igual pros dois casos.
         """
         rows = len(tile_matrix)
         cols = max((len(row) for row in tile_matrix), default=0)
@@ -71,6 +77,31 @@ class MapOverlay(UIScaleMixin):
                 char = row[c] if c < len(row) else "_"
                 tile = TILE_MAPPING.get(char) or OBJECT_MAPPING.get(char, FLOOR_TILE)
                 surf.set_at((c, r), tile.color[:3])
+        # 2ª passada: objeto com footprint de colisão maior que 1 tile
+        # (ex: parede/construção "full" num sprite alto) pinta a cor nos
+        # tiles extras que a colisão cobre, não só na âncora — antes só a
+        # célula onde o char do objeto está escrito ficava colorida; o
+        # resto do footprint mostrava o terreno por baixo, então o
+        # silhueta do objeto no mapa/minimapa não batia com o tamanho
+        # real dele (pedido do usuário, 26/08/2026 — "deveria considerar
+        # o tamanho da colisão, que também é configurado no mesmo
+        # arquivo"). Reusa `get_collision_offsets` — MESMA pegada usada
+        # pra colisão de verdade, não recalculada aqui. Passada SEPARADA
+        # (depois da 1ª completa), não durante, pra não deixar a ordem de
+        # iteração decidir quem "ganha" numa rara sobreposição entre 2
+        # objetos grandes vizinhos.
+        for r, row in enumerate(tile_matrix):
+            for c in range(cols):
+                char = row[c] if c < len(row) else "_"
+                if char in TILE_MAPPING or char not in OBJECT_MAPPING:
+                    continue
+                tile = OBJECT_MAPPING[char]
+                for dx, dy in get_collision_offsets(tile):
+                    if dx == 0 and dy == 0:
+                        continue
+                    nc, nr = c + dx, r + dy
+                    if 0 <= nc < cols and 0 <= nr < rows:
+                        surf.set_at((nc, nr), tile.color[:3])
         key = map_key or f"_map_{len(self._surfaces)}"
         self._surfaces[key] = surf
         self._dims[key] = (cols, rows)

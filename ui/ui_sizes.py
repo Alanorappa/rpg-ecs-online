@@ -200,6 +200,17 @@ class UI:
     MINIMAP_MARGIN_RIGHT = 10    # distância do minimapa até a borda direita da tela
     MINIMAP_MARGIN_TOP   = 68    # distância do minimapa até o topo da tela (abaixo do texto de zona/coordenadas)
 
+    # ── Buff bar (jogador local, 31/08/2026) ────────────────────────────────
+    # Arquivo: ui/buff_bar.py. Fica à ESQUERDA do minimapa, topo alinhado com
+    # ele — derivado de MINIMAP_MARGIN_TOP, nunca hardcode (mesmo motivo de
+    # QUEST_HUD_MARGIN_TOP abaixo do minimapa). Não fica ACIMA (já é o texto
+    # de zona/coordenadas, client/hud_handlers.py) nem ABAIXO (já é o
+    # tracker de quest, QuestSystem).
+    BUFF_BAR_MARGIN_TOP     = MINIMAP_MARGIN_TOP  # alinhado ao topo do minimapa
+    BUFF_BAR_GAP_TO_MINIMAP = 8   # espaço entre a borda direita da buff bar e a borda esquerda do minimapa
+    BUFF_BAR_ICON           = 32  # maior que o ícone de nameplate (16px, effect_animator.ICON_W) — pedido do usuário 01/09/2026
+    BUFF_BAR_GAP            = 3   # espaço entre ícones — mesmo valor já usado em _build_effects_row
+
     # ── Hotbar de skills (1-0) + barra de consumíveis, lado a lado ──────────
     # Arquivo: client/hotbar_handlers.py / client/consumable_bar_handlers.py.
     # As duas barras compartilham os mesmos 4 valores (slots do mesmo

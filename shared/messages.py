@@ -184,6 +184,15 @@ class MsgType(str, Enum):
     BG_MATCH_ACCEPT = "bg_match_accept"  # C→S  {} — aceita a partida encontrada, entra na instância
     BG_MATCH_START  = "bg_match_start"   # S→C  {map_file, target_x, target_y, team_size, teammates:[eid], opponents:[eid]} — disparado no aceite de CADA player, junto do ZONE_CHANGE; ARENA_COUNTDOWN sai logo em seguida
     BG_MATCH_LEAVE  = "bg_match_leave"   # C→S  {} — desiste no meio da luta OU sai da tela de resultado ("Voltar") — mesma ação dos 2 casos, ver server/bg_queue_processor.py::request_bg_leave
+    # BG_FORFEIT (01/09/2026, pedido do usuário — "/ff" igual à Arena, sem
+    # votação por enquanto, versão de testes) — SÓ pra fila REAL; comando
+    # "/testbg ff" (debug, server/debug_battleground.py) não precisa de
+    # mensagem nova, já é texto de chat interceptado no servidor, mesmo
+    # padrão de "/testbg leave". Diferente de BG_MATCH_LEAVE: forfeit
+    # DECIDE a partida na hora (time adversário vence, placar pra TODOS,
+    # 8/10 jogadores continuam na luta até saírem manualmente/timeout) —
+    # não é só "eu saio", é "a partida acaba".
+    BG_FORFEIT      = "bg_forfeit"       # C→S  {} — comando de chat /forfeit ou /ff na fila REAL — declara o time ADVERSÁRIO vencedor na hora, ver server/bg_queue_processor.py::request_bg_forfeit
 
     CONSUMABLE_USE     = "consumable_use"    # C→S  uso de consumível (heal_instant, HoT, buffs futuros)
     GOLD_UPDATE        = "gold_update"       # C→S  gold mudou (loot de moedas) {gold: N}

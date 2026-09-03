@@ -366,13 +366,26 @@ class TrainerSystem(UIScaleMixin, System):
         wallet.gold -= cost
         ps.learned_skill_ids.add(skill_id)
 
-        # Cria objeto Skill e insere no primeiro slot vazio da hotbar
+        # Cria objeto Skill e insere no slot preferido do jogador (25/08/2026
+        # — mesma preferência configurada dentro ou fora da BG, ver
+        # ui/skill_slot_prefs.py::preferred_slot_for_skill), ou no primeiro
+        # slot vazio se não houver preferência (ou o slot preferido já
+        # estiver ocupado). TrainerSystem é um objeto separado do
+        # GameEngine (sem referência de volta) — por isso a função é
+        # importada, não um método `self.` (crash real relatado pelo
+        # usuário quando ela ainda vivia só em GameEngine, 26/08/2026).
         new_skill = ps._make_skill(skill_id, SKILL_CATALOG)
         if new_skill:
-            try:
-                idx = ps.skills.index(None)
+            from ui.skill_slot_prefs import preferred_slot_for_skill
+            idx = preferred_slot_for_skill(self.world, self.player_entity, ps, skill_id)
+            if idx is None:
+                try:
+                    idx = ps.skills.index(None)
+                except ValueError:
+                    idx = None
+            if idx is not None:
                 ps.skills[idx] = new_skill
-            except ValueError:
+            else:
                 ps.skills.append(new_skill)
 
         entry = SKILL_CATALOG.get(skill_id, {})

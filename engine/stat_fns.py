@@ -95,6 +95,36 @@ def remove_modifier(cs: CombatStats, modifier: Modifier) -> None:
         cs._recalculate_effective_stats()
 
 
+def recalculate_preserving_hp_pct(cs: CombatStats, mutate_fn) -> None:
+    """Executa `mutate_fn()` (qualquer mudança que dispare recálculo de
+    stats — add/remove modifier, troca de lista de modifiers, etc.),
+    preservando a PORCENTAGEM de HP (current_hp/max_hp) em vez do valor
+    absoluto quando `max_hp` mudar. `recalculate_combat_stats` (acima)
+    preserva o ABSOLUTO de propósito — certo pra quando `max_hp` diminui
+    (evita current_hp negativo), mas sozinho deixa um buraco real quando
+    `max_hp` AUMENTA (ex: item/buff/talento que dá +stamina): um player
+    em 100% de HP fica preso abaixo de 100% sem cura nenhuma, e o hp5
+    (corretamente) fica tickando até fechar essa diferença — parece
+    "regen fantasma" pra quem tava full um segundo antes (bug real
+    relatado pelo usuário, 30/08/2026 — buff de chefe de jungle na BG e
+    troca de equipamento, ver PROBLEMAS_ARQUITETURA.md).
+
+    Ponto único de verdade — antes esse padrão existia 2x, duplicado com
+    pequenas diferenças (`_roll_procs`/`_tick_timed_modifiers`,
+    engine/core_systems.py) e faltava em todo call site que muda
+    `stamina` fora desses dois (`_apply_equipment_modifiers`,
+    `_grant_jungle_boss_buff`, `_apply_talent_modifiers`,
+    server/world_server.py). Qualquer mutação NOVA de modifiers que possa
+    afetar `stamina` deve passar por aqui, nunca chamar
+    add_modifier/remove_modifier/`_recalculate_effective_stats()` direto.
+    """
+    max_before = cs.max_hp
+    pct_before = cs.current_hp / max_before if max_before > 0 else 1.0
+    mutate_fn()
+    if cs.max_hp != max_before:
+        cs.current_hp = max(1, int(pct_before * cs.max_hp))
+
+
 def add_timed_modifier(cs: CombatStats, modifier: Modifier, duration: float, label: str = "") -> None:
     """Adiciona modificador temporário; reseta timer se mesmo label já ativo."""
     for entry in cs.timed_modifiers:

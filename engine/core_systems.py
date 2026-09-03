@@ -411,6 +411,34 @@ def apply_effect(
         on_expire_duration=on_expire_duration,
         on_expire_magnitude=on_expire_magnitude,
     )
+    # Ordem de ativação pra buff bar (01/09/2026) — ponto único: todo
+    # buff/debuff que passa por aqui ganha ordenação de graça, sem
+    # precisar de call site novo em cada skill/talento/proc. Ver
+    # engine/effect_order.py.
+    from engine.effect_order import mark_activated
+    mark_activated(world, entity_id, effect_type)
+
+
+def grant_visible_buff(world, entity_id: int, effect_type: str, duration: float,
+                       mutate_fn) -> None:
+    """Concede um buff temporário REAL (mutate_fn = a mutação de stat de
+    sempre, tipicamente add_timed_modifier) E o torna visível/sincronizado
+    (ActiveEffect via apply_effect, is_buff=True no catálogo) num único
+    ponto — 31/08/2026, buff bar unificada. Antes, todo buff de verdade do
+    jogo (proc de item, self-buff de skill, buff de matar chefe de jungle)
+    só mexia em CombatStats.timed_modifiers — sem ícone, sem identidade
+    estável, e principalmente sem NUNCA ser sincronizado pro cliente
+    (proc de item, por exemplo, o cliente tentava "adivinhar" com RNG
+    próprio, podendo divergir do que o servidor rolou de verdade). Ponto
+    único de verdade — qualquer buff temporário NOVO deve rotear por
+    aqui, nunca chamar add_timed_modifier direto sem também registrar o
+    efeito visível (mesma disciplina de recalculate_preserving_hp_pct
+    acima — cada wrapper cuida de UMA preocupação, compõem-se).
+    `effect_type` precisa de entrada em content/status_effects_data.py::
+    EFFECT_DEFS (label/cor/is_buff=True) — mesma disciplina de toda skill
+    nova precisar de entrada em SKILL_CATALOG. Ver PROBLEMAS_ARQUITETURA.md."""
+    apply_effect(world, entity_id, effect_type, duration)
+    mutate_fn()
 
 
 def build_channeling_from_skill(skill, target_x: float, target_y: float) -> "Channeling":
@@ -858,7 +886,18 @@ class ServerCombatStateSystem(BaseCombatStateSystem):
         tm._server_move_grace -= dt
         if tm._server_move_grace <= 0:
             tm._server_move_grace = 0.0
-            tm.is_moving = False
+            # Nunca desliga is_moving à força enquanto um dash real (Interceptar
+            # etc, tile_movement.is_dash=True) está em andamento — move_duration
+            # do dash (ex: 0.18s) é independente deste grace (0.4s, fixo pra
+            # todo movimento normal); se o grace restante de um passo normal
+            # anterior zera NO MEIO de um dash mais curto, TileMovementSystem
+            # (world_systems.py) para de processar a entidade (só processa
+            # `if is_moving`), travando progress/Position no meio da
+            # interpolação e deixando is_dash preso True até o próximo passo
+            # normal completar. Mesmo padrão já usado pra proteger dash de
+            # interrupção por stun/sleep (TileMovementSystem, is_dash guard).
+            if not tm.is_dash:
+                tm.is_moving = False
 
     def update(self, player_eids: dict, dt: float) -> None:
         """Processa todos os players em player_eids (session_id → eid)."""
@@ -935,28 +974,26 @@ class ServerCombatStateSystem(BaseCombatStateSystem):
         mesmo depois do cliente mostrar o efeito como expirado."""
         if not cst.timed_modifiers:
             return
-        from engine.stat_fns import remove_modifier
+        from engine.stat_fns import remove_modifier, recalculate_preserving_hp_pct
         for entry in cst.timed_modifiers:
             entry["timer"] -= dt
         expired = [e for e in cst.timed_modifiers if e["timer"] <= 0]
         for entry in expired:
             cst.timed_modifiers.remove(entry)
-            _max_before_exp = cst.max_hp
-            _pct_hp = cst.current_hp / _max_before_exp if _max_before_exp > 0 else 1.0
-            remove_modifier(cst, entry["modifier"])
-            if cst.max_hp < _max_before_exp:
-                cst.current_hp = max(1, int(_pct_hp * cst.max_hp))
+            recalculate_preserving_hp_pct(cst, lambda: remove_modifier(cst, entry["modifier"]))
 
     def _roll_procs(self, entity_id: int, cst) -> None:
-        """Rola procs de itens equipados ao entrar em combate.
-
-        Versão server-autoritativa de systems.py::CombatStateSystem._trigger_procs
-        — usa o Equipment do próprio servidor (validado contra catálogos, Tier B)
-        em vez de confiar no cliente. Resultado entra em self.proc_events para o
-        SessionManager decidir o que (se algo) notificar aos clientes."""
+        """Rola procs de itens equipados ao entrar em combate — autoritativo,
+        usa o Equipment do próprio servidor (validado contra catálogos, Tier B)
+        em vez de confiar no cliente. Resultado entra em self.proc_events
+        (log de auditoria) E em StatusEffects via grant_visible_buff — o
+        cliente antes tinha uma versão LOCAL/cosmética própria
+        (world_systems.py::CombatStateSystem._trigger_procs, removida
+        31/08/2026) que podia divergir deste roll real; agora só reage ao
+        que o servidor sincroniza."""
         import random
         from engine.components import Equipment as _Equip, Modifier as _Mod
-        from engine.stat_fns import add_timed_modifier
+        from engine.stat_fns import add_timed_modifier, recalculate_preserving_hp_pct
 
         equip = self.world.get_component(entity_id, _Equip)
         if not equip:
@@ -965,12 +1002,12 @@ class ServerCombatStateSystem(BaseCombatStateSystem):
             if item and item.proc:
                 p = item.proc
                 if random.random() < p["chance"]:
-                    _max_before  = cst.max_hp
-                    _pct_before  = cst.current_hp / _max_before if _max_before > 0 else 1.0
                     mod = _Mod(p["attribute"], p["value"], source="buff")
-                    add_timed_modifier(cst, mod, p["duration"], p["label"])
-                    if cst.max_hp > _max_before:
-                        cst.current_hp = max(1, int(_pct_before * cst.max_hp))
+                    _etype = f"proc_{item.item_id}"
+                    recalculate_preserving_hp_pct(
+                        cst, lambda mod=mod, p=p, etype=_etype: grant_visible_buff(
+                            self.world, entity_id, etype, p["duration"],
+                            lambda: add_timed_modifier(cst, mod, p["duration"], p["label"])))
                     self.proc_events.append({
                         "player_eid": entity_id,
                         "item_name":  item.name,

@@ -3,9 +3,16 @@ tests/test_bush_stealth.py — Stealth de bush estilo MOBA (13/08/2026,
 pedido do usuário). Ver server/bush_zone_processor.py e
 PROBLEMAS_ARQUITETURA.md.
 
-Modelado em cima de tests/test_pvp_zone.py — mesmo padrão de zona
-sintética (`_bush_zones_by_map[map_file] = [...]`) em vez de depender de
-bushes reais pintadas num mapa (nenhuma foi pintada ainda).
+`_get_bush_zone`/`bush_zones_by_map` (retângulo, `TestGetBushZone`/
+`TestCanSeeBush`/`TestBushTargetClear` abaixo) continuam testados com
+zona sintética — modelado em cima de tests/test_pvp_zone.py — mas
+NUNCA populado em mapa real (nenhum `_entities.json` tem `bush_zones`
+pintado). A invisibilidade de verdade vem de outro mecanismo
+(`server/tile_los_processor.py::_has_tile_los`, vision_height do
+próprio tile); `_is_on_bush_tile`/`_sync_player_bush_dirty`
+(`TestIsOnBushTile`/`TestSyncPlayerBushDirty` abaixo, 01/09/2026) usam
+`_plant_object()` pra plantar um tile de arbusto REAL do catálogo
+(`OBJECT_MAPPING`) — ver PROBLEMAS_ARQUITETURA.md §91.
 """
 import os, sys
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -27,6 +34,19 @@ _IN_B    = (202, 202)
 _OUTSIDE = (5, 5)
 
 
+def _plant_object(ws, tx: int, ty: int, obj_tile_id: str) -> None:
+    """Planta um tile de objeto REAL do catálogo (`OBJECT_MAPPING`,
+    engine/tileset.py) direto no `tile_matrix` — 01/09/2026, testes de
+    `_is_on_bush_tile`/`_sync_player_bush_dirty` (fonte trocada de
+    `bush_zones` sintético pra arbusto de verdade, ver
+    PROBLEMAS_ARQUITETURA.md §91). Mesmo espírito de `_clear_terrain`
+    abaixo, só que escreve o TileType do catálogo em vez de FLOOR_TILE."""
+    from engine.tileset import OBJECT_MAPPING
+    bundle = ws._map_bundles[ws._map_file]
+    tm = ws.world.get_component(bundle.tilemap_entity, Tilemap)
+    tm.tile_matrix[ty][tx] = OBJECT_MAPPING[obj_tile_id]
+
+
 def _clear_terrain(ws, x0: int, y0: int, x1: int, y1: int) -> None:
     """Sobrescreve um retângulo com FLOOR_TILE — necessário desde §57
     (linha de visão de terreno universal): `_can_see` agora também
@@ -40,6 +60,49 @@ def _clear_terrain(ws, x0: int, y0: int, x1: int, y1: int) -> None:
     for y in range(y0, y1 + 1):
         for x in range(x0, x1 + 1):
             tm.tile_matrix[y][x] = FLOOR_TILE
+
+
+class TestBushFootprintPropagation(unittest.TestCase):
+    """`engine/entity_factory.py::create_tilemap` — `TileType.is_bush`
+    (01/09/2026) precisa propagar pra TODAS as células da pegada de
+    visão do objeto (`vision_rect="base_row"`), não só a célula-âncora —
+    arbustos largos (ex: `pl_b3`, 64×48px = 2 tiles de largura) cobrem
+    mais de 1 tile na base. Mesmo mecanismo que já propaga
+    `vision_height`."""
+
+    def test_arbusto_largo_marca_is_bush_em_toda_a_base(self):
+        from engine.world import World
+        from engine.entity_factory import create_tilemap
+        from engine.components import Tilemap
+
+        terrain = ["G" * 10 for _ in range(10)]
+        obj_matrix = [list("." * 10) for _ in range(10)]
+        obj_matrix[5][5] = "pl_b3"   # 64x48px = 2 tiles de largura, base_row
+
+        w = World()
+        eid = create_tilemap(w, terrain, obj_matrix)
+        tm = w.get_component(eid, Tilemap)
+        self.assertTrue(tm.tile_matrix[5][5].is_bush, "célula-âncora deveria ser bush")
+        self.assertTrue(tm.tile_matrix[5][6].is_bush, "2ª célula da base do arbusto largo também deveria ser bush")
+
+    def test_arvore_nunca_marca_is_bush(self):
+        from engine.world import World
+        from engine.entity_factory import create_tilemap
+        from engine.components import Tilemap
+
+        terrain = ["G" * 10 for _ in range(10)]
+        obj_matrix = [list("." * 10) for _ in range(10)]
+        obj_matrix[5][5] = "pl_t4"   # árvore larga, mesma família de vision_height=2
+
+        w = World()
+        eid = create_tilemap(w, terrain, obj_matrix)
+        tm = w.get_component(eid, Tilemap)
+        blocking_cells = [tm.tile_matrix[y][x]
+                          for y in range(10) for x in range(10)
+                          if tm.tile_matrix[y][x].vision_height >= 2]
+        self.assertTrue(blocking_cells, "sanity: árvore ainda deveria bloquear visão em algum tile")
+        self.assertTrue(all(not t.is_bush for t in blocking_cells),
+                        "árvore bloqueia visão mas nunca deveria marcar is_bush")
 
 
 class TestGetBushZone(unittest.TestCase):
@@ -201,6 +264,87 @@ class TestBushTargetClear(unittest.TestCase):
         self.ws._tick_bush_target_clear()
         cst = self.ws.world.get_component(self.attacker, CombatState)
         self.assertEqual(cst.target_entity_id, self.target)
+
+
+class TestIsOnBushTile(unittest.TestCase):
+    """`BushZoneProcessorMixin._is_on_bush_tile()` (01/09/2026) — detecção
+    baseada em arbusto REAL do mapa (`TileType.is_bush`), não no
+    retângulo `bush_zones` (nunca pintado em mapa real, ver
+    PROBLEMAS_ARQUITETURA.md §91)."""
+
+    def setUp(self):
+        self.ws  = make_world_server()
+        self.eid = spawn_player(self.ws, "s1", *_OUTSIDE)
+
+    def test_fora_de_qualquer_objeto_retorna_false(self):
+        self.assertFalse(self.ws._is_on_bush_tile(self.eid))
+
+    def test_em_cima_de_arbusto_real_retorna_true(self):
+        _plant_object(self.ws, *_IN_A, "pl_b1")
+        set_entity_tile(self.ws, self.eid, *_IN_A)
+        self.assertTrue(self.ws._is_on_bush_tile(self.eid))
+
+    def test_em_cima_de_arvore_retorna_false(self):
+        """Guarda de regressão: árvore também bloqueia visão
+        (vision_height=2, mesma família de dado) mas NÃO é bush — o
+        usuário confirmou explicitamente que "atrás da árvore" não deve
+        ativar a opacidade."""
+        _plant_object(self.ws, *_IN_A, "pl_t1")
+        set_entity_tile(self.ws, self.eid, *_IN_A)
+        self.assertFalse(self.ws._is_on_bush_tile(self.eid))
+
+
+class TestSyncPlayerBushDirty(unittest.TestCase):
+    """`WorldServer._sync_player_bush_dirty()` (01/09/2026, feedback visual
+    de opacidade 50% pro próprio jogador) — dirty-check privado, MESMO
+    princípio de `_sync_player_hp_dirty` (ver tests/test_owner_hp_max_sync.py):
+    só enfileira STATS_UPDATE quando o estado "está em cima de um arbusto
+    real" MUDA. Fonte: `_is_on_bush_tile` (arbusto plantado de verdade no
+    tile_matrix), NÃO `_bush_zones_by_map` — troca feita depois que o
+    usuário testou em jogo e não viu a opacidade (nenhum mapa real tem
+    `bush_zones`, ver PROBLEMAS_ARQUITETURA.md §91)."""
+
+    def setUp(self):
+        self.ws  = make_world_server()
+        self.eid = spawn_player(self.ws, "s1", *_OUTSIDE)
+        _plant_object(self.ws, *_IN_A, "pl_b1")
+        self.ws.consume_stats_updates()  # drena qualquer update do spawn
+
+    def _entry_for(self, eid):
+        for entry in self.ws.consume_stats_updates():
+            if entry.get("player_eid") == eid:
+                return entry
+        return None
+
+    def test_entrar_na_bush_gera_update_com_in_bush_true(self):
+        set_entity_tile(self.ws, self.eid, *_IN_A)
+        self.ws._sync_player_bush_dirty()
+        entry = self._entry_for(self.eid)
+        self.assertIsNotNone(entry)
+        self.assertTrue(entry["in_bush"])
+
+    def test_sair_da_bush_gera_update_com_in_bush_false(self):
+        set_entity_tile(self.ws, self.eid, *_IN_A)
+        self.ws._sync_player_bush_dirty()
+        self.ws.consume_stats_updates()
+        set_entity_tile(self.ws, self.eid, *_OUTSIDE)
+        self.ws._sync_player_bush_dirty()
+        entry = self._entry_for(self.eid)
+        self.assertIsNotNone(entry)
+        self.assertFalse(entry["in_bush"])
+
+    def test_sem_transicao_nao_gera_update(self):
+        self.ws._sync_player_bush_dirty()   # baseline: fora da bush, registra no cache
+        self.ws.consume_stats_updates()
+        self.ws._sync_player_bush_dirty()   # nada mudou
+        self.assertIsNone(self._entry_for(self.eid))
+
+    def test_permanecer_dentro_da_bush_nao_gera_update_novo(self):
+        set_entity_tile(self.ws, self.eid, *_IN_A)
+        self.ws._sync_player_bush_dirty()
+        self.ws.consume_stats_updates()
+        self.ws._sync_player_bush_dirty()   # continua no mesmo bush
+        self.assertIsNone(self._entry_for(self.eid))
 
 
 if __name__ == "__main__":

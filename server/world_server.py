@@ -184,6 +184,10 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._player_eid_to_sid: dict[int, str] = {}
         # Cache de HP para dirty-check automático a cada tick (eid → (current_hp, max_hp))
         self._player_hp_cache: dict[int, tuple[int, int, int]] = {}   # (hp, hp_max, level)
+        # Cache de "está numa zona de bush" pra dirty-check automático
+        # (01/09/2026, feedback visual de opacidade pro próprio jogador —
+        # ver _sync_player_bush_dirty). eid → bool.
+        self._player_bush_cache: dict[int, bool] = {}
         # Cache de SkillLevels para dirty-check automático a cada tick (eid → snapshot
         # hashable de levels+xp) — ver _sync_player_skill_levels_dirty().
         self._player_skill_cache: dict[int, tuple] = {}
@@ -275,6 +279,16 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         # Spells de projétil aguardando PROJECTILE_HIT_CS do cliente antes de aplicar dano
         self._spells_in_flight_queue: list[dict] = []
+
+        # Auto-confirmação de acerto de projétil pra caster SEM cliente
+        # (bot de BG, 26/08/2026) — bot nunca manda PROJECTILE_HIT_CS (não
+        # tem cliente pra confirmar), então toda skill em _PROJECTILE_SPELLS
+        # (bola_de_fogo/flecha_reiterada/picada_escorpiao/tiro_repulsivo)
+        # completava o cast mas o dano nunca era aplicado — a entrada em
+        # _spells_in_flight_queue só expirava sozinha 3s depois, sem efeito
+        # (confirmado por simulação real: 7 casts de Bola de Fogo, 0 dano
+        # em 20s). Ver SpellCompletionMixin._tick_bot_projectile_autohits.
+        self._bot_projectile_autohits: list[dict] = []
 
         # Deltas acumulados no tick atual (limpos ao fim de cada tick)
         self._moved_this_tick:    list[dict] = []
@@ -903,6 +917,19 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._map_bundles.pop(instance_key, None)
         self._pvp_zones_by_map.pop(instance_key, None)
         self._bush_zones_by_map.pop(instance_key, None)
+        # Lane de minion (BG/arena) — sem isso, `_tick_minion_waves`
+        # continuava rodando pra SEMPRE contra um mapa que não existe
+        # mais: `_minion_lanes[instance_key]` nunca era removido, então
+        # o timer de cada lane (top/mid/bot × 2 times) seguia disparando
+        # a cada wave_interval_s (45s) até o servidor reiniciar,
+        # gerando "[MinionWave] rota falhou: ... sem caminho" pra
+        # sempre (bug real relatado pelo usuário, 26/08/2026 — partida
+        # de BG terminou, warnings continuaram por horas). Só precisa
+        # tirar a lista daqui: `_tick_minion_waves` já se autolimpa
+        # (`del self._minion_wave_timers[key]`) assim que
+        # `_minion_lanes.get(map_file, [])` não tem mais a lane, no
+        # PRÓXIMO tick — sem precisar duplicar essa limpeza aqui.
+        self._minion_lanes.pop(instance_key, None)
 
     def _template_file_of(self, map_or_instance_key: str) -> str:
         """Fase G — 'de-para' pro cliente: instance_key sintética
@@ -1517,7 +1544,19 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._jungle_boss_cycle_index[key] = idx + 1
 
         from engine.components import Faction as _FacJBB, CombatStats as _CSJBB, Minion as _MinJBB, Modifier
-        from engine.stat_fns import add_timed_modifier
+        from engine.stat_fns import add_timed_modifier, recalculate_preserving_hp_pct
+        from engine.core_systems import grant_visible_buff
+        # label inclui o índice do ciclo (não só a posição do camp) — se o
+        # boss for morto de novo ANTES do buff anterior expirar (respawn_s
+        # < duration, tuning incomum mas possível), o buff NOVO (que pode
+        # ter atributo diferente do anterior, ver buff_cycle) empilha como
+        # instância PRÓPRIA em vez de só "renovar o timer" do antigo e
+        # silenciosamente manter o atributo errado.
+        _label_base = f"jungle_boss_{key}_{idx}"
+        # Ícone/sincronização do buff bar (31/08/2026) — 1 por ARQUÉTIPO de
+        # chefe (não por ciclo/atributo): matar o mesmo chefe repetidas
+        # vezes é sempre "o mesmo buff" pro jogador, só troca de atributo.
+        _etype = f"jungle_boss_buff_{mob_key}"
         targets = list(self._player_eids.values()) + [
             m_eid for m_eid in self._mob_eids
             if self.world.get_component(m_eid, _MinJBB) is not None
@@ -1531,17 +1570,25 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             cs = self.world.get_component(t_eid, _CSJBB)
             if cs is None:
                 continue
-            # label inclui o índice do ciclo (não só a posição do camp) —
-            # se o boss for morto de novo ANTES do buff anterior expirar
-            # (respawn_s < duration, tuning incomum mas possível), o buff
-            # NOVO (que pode ter atributo diferente do anterior, ver
-            # buff_cycle) empilha como instância PRÓPRIA em vez de só
-            # "renovar o timer" do antigo e silenciosamente manter o
-            # atributo errado (add_timed_modifier só atualiza o timer
-            # quando o label já existe, nunca troca o Modifier em si).
-            for mod_def in buff["modifiers"]:
-                mod = Modifier(mod_def["attribute"], mod_def["value"], mod_def["type"], source="buff")
-                add_timed_modifier(cs, mod, buff["duration"], label=f"jungle_boss_{key}_{idx}")
+            # Um buff pode combinar VÁRIOS atributos numa concessão só (ex:
+            # buff_cycle índice 2 = armor + stamina juntos, "Sedento por
+            # Sangue"-like: +attack_power E +attack_speed na mesma
+            # concessão) — cada atributo precisa do PRÓPRIO label, senão
+            # add_timed_modifier() (engine/stat_fns.py) vê o 2º atributo
+            # como "mesmo label já ativo" e só renova o timer do 1º, NUNCA
+            # aplicando o 2º de verdade (bug real, achado 31/08/2026 —
+            # corrigido junto por já estar mexendo nesta função pro buff
+            # bar). Todos os atributos da MESMA concessão compartilham a
+            # duration, então expiram juntos na prática mesmo com labels
+            # diferentes.
+            def _mutate_jbb(cs=cs, buff=buff, label_base=_label_base):
+                for mod_def in buff["modifiers"]:
+                    mod = Modifier(mod_def["attribute"], mod_def["value"], mod_def["type"], source="buff")
+                    add_timed_modifier(cs, mod, buff["duration"],
+                                       label=f"{label_base}_{mod_def['attribute']}")
+            recalculate_preserving_hp_pct(
+                cs, lambda cs=cs, mutate=_mutate_jbb, t_eid=t_eid: grant_visible_buff(
+                    self.world, t_eid, _etype, buff["duration"], mutate))
 
     # Composição fixa de uma wave (30/07/2026, pedido do usuário; reduzida
     # 04/08/2026, mesmo pedido — 7→4 por lane, 42→24 minions simultâneos
@@ -2364,6 +2411,28 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         if tm is None:
             return False
 
+        # Dash em andamento (Interceptar) tem autoridade exclusiva sobre a
+        # posição enquanto anima — um MOVE normal (residual de WASD, comum
+        # quando o player anda até o alcance mínimo do Interceptar e o
+        # servidor processa esse MOVE no mesmo tick ou logo depois do
+        # CAST_SKILL) sobrescrevia current_tile_x/y E target_tile_x/y do
+        # dash sem checar is_dash, fazendo o player "aterrissar" numa tile
+        # ERRADA (não a que o Interceptar calculou) — bug real: alvo
+        # continuava selecionado, mas a skill seguinte reconferia a
+        # distância a partir da posição REAL (agora errada) e recusava
+        # "Nenhum alvo" (ver `_resolve_target`, engine/skill_handlers.py).
+        # Mesma proteção que `TileMovementSystem` já dá pro caso inverso
+        # (dash não é interrompido por stun/sleep) — aqui é o dash
+        # protegido de ser sobrescrito por um MOVE comum. Ver
+        # PROBLEMAS_ARQUITETURA.md §87.
+        if tm.is_dash and tm.is_moving:
+            from debug.aoi_debug import AOI_DBG as _AOI_DBG_dashmv
+            _AOI_DBG_dashmv.log("MOVE_REJECTED_DASH_IN_PROGRESS", eid=eid,
+                                requested=(tx, ty),
+                                current=(tm.current_tile_x, tm.current_tile_y),
+                                target=(tm.target_tile_x, tm.target_tile_y))
+            return False
+
         # Ghost (espírito liberado): intangível — sem CC check, sem walkable.
         # Só valida 1 tile de distância (anti-cheat básico).
         from engine.components import GhostState as _GState
@@ -2439,6 +2508,12 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         dx = abs(tx - tm._last_valid_tile_x)
         dy = abs(ty - tm._last_valid_tile_y)
         if max(dx, dy) > _budget:
+            from debug.aoi_debug import AOI_DBG as _AOI_DBG_mvb
+            _AOI_DBG_mvb.log("MOVE_REJECTED_BUDGET", eid=eid, requested=(tx, ty),
+                             current=(tm.current_tile_x, tm.current_tile_y),
+                             last_valid=(tm._last_valid_tile_x, tm._last_valid_tile_y),
+                             dx=dx, dy=dy, budget=_budget, elapsed=round(_elapsed, 3),
+                             is_dash=getattr(tm, "is_dash", None))
             return False
 
         # Validação: tile de destino deve ser walkable (sólido, fora do mapa, piso errado).
@@ -2456,11 +2531,19 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         if _tile_val:
             if not _tile_val.is_tile_walkable(eid, tx, ty, tm._last_valid_tile_x, tm._last_valid_tile_y,
                                               ignore_eid=_pursuit_target):
+                from debug.aoi_debug import AOI_DBG as _AOI_DBG_mvw
+                _AOI_DBG_mvw.log("MOVE_REJECTED_WALKABLE", eid=eid, requested=(tx, ty),
+                                 current=(tm.current_tile_x, tm.current_tile_y),
+                                 is_dash=getattr(tm, "is_dash", None))
                 return False
         else:
             from engine.world_systems import is_tile_walkable as _walkable
             if not _walkable(eid, tx, ty, tm._last_valid_tile_x, tm._last_valid_tile_y,
                              ignore_eid=_pursuit_target):
+                from debug.aoi_debug import AOI_DBG as _AOI_DBG_mvw2
+                _AOI_DBG_mvw2.log("MOVE_REJECTED_WALKABLE", eid=eid, requested=(tx, ty),
+                                  current=(tm.current_tile_x, tm.current_tile_y),
+                                  is_dash=getattr(tm, "is_dash", None))
                 return False
 
         # Validação: caminho reto (última posição confirmada → destino) não
@@ -3063,17 +3146,21 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         Modifiers de talento/buff (source != "equipment") nunca são tocados
         aqui."""
         from engine.components import CombatStats as _CSEq, Equipment as _EqEq, Modifier as _ModEq
+        from engine.stat_fns import recalculate_preserving_hp_pct
         cs    = self.world.get_component(eid, _CSEq)
         equip = self.world.get_component(eid, _EqEq)
         if not cs or not equip:
             return
-        cs.modifiers = [m for m in cs.modifiers if m.source != "equipment"]
-        for item in equip.slots.values():
-            if not item:
-                continue
-            for mod in item.modifiers:
-                cs.modifiers.append(_ModEq(mod.attribute, mod.value, mod.type, source="equipment"))
-        cs._recalculate_effective_stats()
+
+        def _mutate_eq():
+            cs.modifiers = [m for m in cs.modifiers if m.source != "equipment"]
+            for item in equip.slots.values():
+                if not item:
+                    continue
+                for mod in item.modifiers:
+                    cs.modifiers.append(_ModEq(mod.attribute, mod.value, mod.type, source="equipment"))
+            cs._recalculate_effective_stats()
+        recalculate_preserving_hp_pct(cs, _mutate_eq)
 
     def process_shop_buy(self, session_id: str, shop_id: str,
                          item_name: str, quantity: int,
@@ -4190,10 +4277,51 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                         "eid": peid, "hp": cs.current_hp, "hp_max": cs.max_hp,
                         "level": level,
                     })
+                # Notifica o PRÓPRIO dono também (01/09/2026) — o broadcast
+                # acima exclui o dono de propósito (server/session.py,
+                # exclude_sid), presumindo que ele "já tem via STATS_UPDATE"
+                # de outro canal. Falso pra qualquer fonte que só muda
+                # max_hp/current_hp por baixo (add_modifier/timed_modifiers)
+                # sem chamar queue_stats_update explicitamente — proc de
+                # item, buff de chefe de jungle, self-buff de skill, futuro
+                # talento. Nesse caso o max_hp do PRÓPRIO cliente nunca era
+                # corrigido (current_hp eventualmente chegava via HP5/combate,
+                # mas sem o max_hp novo — ratio current/max passava de 1.0 e
+                # a barra de HP "crescia" além do normal, bug real relatado
+                # pelo usuário, ver PROBLEMAS_ARQUITETURA.md). Reusa a MESMA
+                # detecção genérica desta função — nenhuma skill/talento
+                # precisa chamar isso à mão.
+                self.queue_stats_update({
+                    "player_eid": peid, "hp": cs.current_hp, "hp_max": cs.max_hp,
+                })
                 if _prev is not None and _prev[2] != level:
                     _pid = self.get_party_id_of(peid)
                     if _pid != -1 and _pid not in self._party_state_events_this_tick:
                         self._party_state_events_this_tick.append(_pid)
+
+    def _sync_player_bush_dirty(self) -> None:
+        """Detecta transição de "está em cima de um arbusto real do mapa"
+        (01/09/2026, feedback visual — opacidade 50% só pro PRÓPRIO
+        jogador, pedido do usuário) e enfileira STATS_UPDATE privado só
+        quando MUDA. Mesmo princípio de `_sync_player_hp_dirty`
+        (dirty-check por tick, cache próprio), mas 100% privado — bush é
+        mecanismo separado de Camuflagem (is_visible/is_camouflaged nunca
+        são tocados aqui), ninguém além do dono precisa saber (a
+        opacidade nunca aparece pra outros players).
+
+        Fonte: `_is_on_bush_tile()` (server/bush_zone_processor.py,
+        01/09/2026) — NÃO `_get_bush_zone()`/`bush_zones_by_map` (rodada
+        anterior desta feature usava isso; achado real: nenhum mapa tem
+        `bush_zones` pintado, então nunca disparava em jogo, só em teste
+        sintético. `_is_on_bush_tile` lê o mesmo `tile_matrix` que
+        `_has_tile_los` já usa pra tornar o jogador invisível de verdade
+        — ver PROBLEMAS_ARQUITETURA.md §91)."""
+        for peid in list(self._player_eids.values()):
+            in_bush = self._is_on_bush_tile(peid)
+            if self._player_bush_cache.get(peid) == in_bush:
+                continue
+            self._player_bush_cache[peid] = in_bush
+            self.queue_stats_update({"player_eid": peid, "in_bush": in_bush})
 
     def consume_skill_levels_broadcasts(self) -> list[dict]:
         """Retorna e limpa updates de SkillLevels do tick atual (para o SessionManager)."""
@@ -4323,6 +4451,11 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                       server/instance_progression.py (progressão
                       normalizada de instância). Level-up normal continua
                       via `xp`/`xp_gained` (client re-deriva sozinho).
+          in_bush     bool  (01/09/2026) está numa zona de bush AGORA —
+                      só feedback visual (opacidade 50% do PRÓPRIO
+                      sprite, ver ui/systems.py::RenderSystem.render),
+                      NUNCA broadcast, mecanismo separado de Camuflagem/
+                      is_visible. Produtor único: _sync_player_bush_dirty().
         """
         if "player_eid" not in entry:
             raise ValueError(f"queue_stats_update sem player_eid: {entry!r}")
@@ -4440,7 +4573,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         from engine.components import (CombatStats, CharacterStats, PermanentStats, Modifier)
         from content.talent_data import TALENTS as _TAL
         from engine.stats_system import apply_char_stats_to_combat, sync_attack_interval
-        from engine.stat_fns import add_modifier
+        from engine.stat_fns import add_modifier, recalculate_preserving_hp_pct
         from engine.components import Equipment
 
         cs   = self.world.get_component(eid, CombatStats)
@@ -4450,60 +4583,69 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         if not cs or not char:
             return
 
-        # Limpa só modifiers de talento (acumulados de SAVE_STATEs anteriores) —
-        # equipment/buff (source != "talent") nunca são tocados aqui, ver
-        # _apply_equipment_modifiers. Antes isso era cs.modifiers.clear() (limpava
-        # TUDO, inclusive bônus de equipamento) e dependia de _apply_stat_overrides
-        # pra "restaurar" o que tinha acabado de apagar — root cause removido.
-        cs.modifiers = [m for m in cs.modifiers if m.source != "talent"]
+        def _mutate_talents():
+            # Limpa só modifiers de talento (acumulados de SAVE_STATEs anteriores) —
+            # equipment/buff (source != "talent") nunca são tocados aqui, ver
+            # _apply_equipment_modifiers. Antes isso era cs.modifiers.clear() (limpava
+            # TUDO, inclusive bônus de equipamento) e dependia de _apply_stat_overrides
+            # pra "restaurar" o que tinha acabado de apagar — root cause removido.
+            cs.modifiers = [m for m in cs.modifiers if m.source != "talent"]
 
-        # Recalcula base a partir dos atributos do personagem (modifiers de
-        # equipamento/buff sobrevivem ao clear acima, então max_hp/etc. já saem
-        # corretos daqui — sem necessidade de salvar/restaurar current_hp).
-        apply_char_stats_to_combat(char, cs, perm)
-        sync_attack_interval(cs, equip)
+            # Recalcula base a partir dos atributos do personagem (modifiers de
+            # equipamento/buff sobrevivem ao clear acima, então max_hp/etc. já saem
+            # corretos daqui).
+            apply_char_stats_to_combat(char, cs, perm)
+            sync_attack_interval(cs, equip)
 
-        # Reset de cs_flags pro valor padrão ANTES de aplicar a alocação atual —
-        # sem isso, desalocar um talento (ex: trocar de build) deixava o cs_flag
-        # dele travado no último valor calculado, já que o loop abaixo só visita
-        # talentos alocados AGORA. Faltava em apply_talent_effects_to_player desde
-        # sempre; só existia (duplicado) no spawn — unificado aqui pros dois lados.
-        for _t_all in _TAL.values():
-            for _flag in (_t_all.get("cs_flags") or []):
-                _reset = _flag.get("reset")
-                if _reset is not None:
-                    try:
-                        setattr(cs, _flag["field"], _reset)
-                    except Exception:
-                        pass
+            # Reset de cs_flags pro valor padrão ANTES de aplicar a alocação atual —
+            # sem isso, desalocar um talento (ex: trocar de build) deixava o cs_flag
+            # dele travado no último valor calculado, já que o loop abaixo só visita
+            # talentos alocados AGORA. Faltava em apply_talent_effects_to_player desde
+            # sempre; só existia (duplicado) no spawn — unificado aqui pros dois lados.
+            for _t_all in _TAL.values():
+                for _flag in (_t_all.get("cs_flags") or []):
+                    _reset = _flag.get("reset")
+                    if _reset is not None:
+                        try:
+                            setattr(cs, _flag["field"], _reset)
+                        except Exception:
+                            pass
 
-        # Re-aplica cs_flags e modifiers de cada talento alocado
-        for talent_id, points in (talent_allocated or {}).items():
-            if not points:
-                continue
-            t = _TAL.get(talent_id)
-            if not t:
-                continue
-            # Defesa em profundidade — o orçamento real já devia ter sido
-            # validado em validate_talent_allocation() antes disso ser salvo,
-            # mas reforça aqui também: nunca aplica mais pontos que o teto do
-            # próprio talento, mesmo que talent_allocated venha de uma fonte
-            # que pulou a validação (ver PROBLEMAS_ARQUITETURA.md).
-            points = min(int(points), t.get("max_points", int(points)))
-            if points <= 0:
-                continue
-            # cs_flags comportamentais (ex: impacto_maquina_matar, interceptar_rage_bonus)
-            for flag in (t.get("cs_flags") or []):
-                formula = flag.get("formula")
-                if formula:
-                    try:
-                        setattr(cs, flag["field"], formula(points))
-                    except Exception:
-                        pass
-            # Modifiers de atributo (ex: parry_rating +20 por ponto de Reflexos Apurados)
-            for eff in (t.get("effects") or []):
-                mod = Modifier(eff["attribute"], eff["value"] * points, eff["type"], source="talent")
-                add_modifier(cs, mod)
+            # Re-aplica cs_flags e modifiers de cada talento alocado
+            for talent_id, points in (talent_allocated or {}).items():
+                if not points:
+                    continue
+                t = _TAL.get(talent_id)
+                if not t:
+                    continue
+                # Defesa em profundidade — o orçamento real já devia ter sido
+                # validado em validate_talent_allocation() antes disso ser salvo,
+                # mas reforça aqui também: nunca aplica mais pontos que o teto do
+                # próprio talento, mesmo que talent_allocated venha de uma fonte
+                # que pulou a validação (ver PROBLEMAS_ARQUITETURA.md).
+                points = min(int(points), t.get("max_points", int(points)))
+                if points <= 0:
+                    continue
+                # cs_flags comportamentais (ex: impacto_maquina_matar, interceptar_rage_bonus)
+                for flag in (t.get("cs_flags") or []):
+                    formula = flag.get("formula")
+                    if formula:
+                        try:
+                            setattr(cs, flag["field"], formula(points))
+                        except Exception:
+                            pass
+                # Modifiers de atributo (ex: parry_rating +20 por ponto de Reflexos Apurados)
+                for eff in (t.get("effects") or []):
+                    mod = Modifier(eff["attribute"], eff["value"] * points, eff["type"], source="talent")
+                    add_modifier(cs, mod)
+
+        # Preserva a PORCENTAGEM de HP (não o absoluto) em torno de TODA a
+        # sequência acima — mesmo lugar único de verdade dos outros 4 pontos
+        # que podem mudar max_hp (stamina), ver stat_fns.py::
+        # recalculate_preserving_hp_pct. Nenhum talento hoje mexe em stamina
+        # (preventivo), mas apply_char_stats_to_combat sozinho já podia criar
+        # o mesmo buraco no futuro sem isso.
+        recalculate_preserving_hp_pct(cs, _mutate_talents)
 
     def equip_item_from_inventory(self, session_id: str, inv_index: int) -> "dict | None":
         """Move o item na posição `inv_index` do Inventory AO VIVO do servidor
@@ -5566,6 +5708,12 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._perf_push("skill_followup_ticks")
         # Pousos de knockback (stun/feedback de colisão atrasados até a tween acabar)
         self._process_knockback_landings(dt)
+        # Auto-confirmação de acerto de projétil pro bot de BG (sem cliente
+        # pra mandar PROJECTILE_HIT_CS) — antes de expirar, senão um cast
+        # cujo "impacto" cairia neste mesmo tick perderia a corrida pro
+        # expire (26/08/2026, ver SpellCompletionMixin::
+        # _schedule_bot_projectile_autohit).
+        self._tick_bot_projectile_autohits(dt)
         # Expira projéteis em voo que nunca receberam PROJECTILE_HIT_CS
         self._expire_spells_in_flight()
         # Bloco de Gelo: timer server-side (imunidade temporária)
@@ -6127,6 +6275,10 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # fonte de mudança: skills, DoT, level-up, consumíveis, respawn, etc.
         self._perf_push("_sync_player_hp_dirty")
         self._sync_player_hp_dirty()
+        self._perf_pop()
+
+        self._perf_push("_sync_player_bush_dirty")
+        self._sync_player_bush_dirty()
         self._perf_pop()
 
         self._perf_push("_sync_player_skill_levels_dirty")

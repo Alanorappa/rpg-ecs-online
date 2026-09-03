@@ -101,48 +101,20 @@ def players_in_normalized_progression_near(ws, tx: int, ty: int,
     return result
 
 
-def _real_slot_by_skill_id(real_ps: "PlayerSkills | None") -> dict[str, int]:
-    """Mapa skill_id→índice a partir da hotbar REAL do player (04/08/2026,
-    pedido do usuário: "a config de atalhos deve permanecer dentro da BG —
-    se uma skill está no slot 3 e for a primeira a ser desbloqueada, ela
-    deve aparecer no slot 3"). `config.json` é 100% client-local (o
-    servidor não tem acesso), mas a hotbar REAL já vive espelhada aqui via
-    `HOTBAR_UPDATE`/save — não precisa de protocolo novo, só consultar o
-    `PlayerSkills` real ANTES de conceder a skill de instância."""
-    if real_ps is None:
-        return {}
-    return {s.skill_id: i for i, s in enumerate(real_ps.skills) if s}
-
-
-def _grant_instance_skill(ps: PlayerSkills, sid: str,
-                          real_slot_by_sid: "dict[str, int] | None" = None,
-                          reserved_slots: "set[int] | None" = None) -> None:
+def _grant_instance_skill(ps: PlayerSkills, sid: str) -> None:
     """Concede `sid` (learned_skill_ids + slot da hotbar) — idempotente,
     não faz nada se já concedida.
 
-    Slot (04/08/2026, redesign — pedido do usuário): usa o MESMO slot que
-    `sid` ocupa na hotbar REAL (`real_slot_by_sid`, ver
-    `_real_slot_by_skill_id`), se esse slot ainda estiver livre na
-    instância — cai pro primeiro slot vazio se a skill nunca foi colocada
-    numa hotbar real (decisão #10 original) ou se o slot preferido já foi
-    ocupado por outra skill concedida antes.
-
-    `reserved_slots` (06/08/2026, bug real de playtest — ver
-    ARQUITETURA_ONLINE.md §34.74.50): conjunto de TODOS os slots que
-    alguma skill da hotbar real ocupa (`set(real_slot_by_sid.values())`),
-    conhecido por inteiro desde a entrada na instância — mesmo pra
-    skills que ainda não desbloquearam. `INSTANCE_SKILL_UNLOCK_ORDER` é
-    uma ordem FIXA por classe, independente da hotbar real do player —
-    sem este parâmetro, uma skill "de preenchimento" (sem slot
-    preferido, ou cujo preferido já foi ocupado) que desbloqueia CEDO
-    podia roubar greedy o slot que uma skill REAL só vai reivindicar
-    DEPOIS (ex.: Interceptar, level 6) — quando essa skill tardia
-    finalmente desbloqueava, o slot dela já tinha sido tomado, e ela
-    caía em outro lugar (bug real: hotbar da instância não batia com a
-    real mesmo pra skills configuradas). Fallback agora faz 2 passadas:
-    primeiro só slots FORA de `reserved_slots` (nunca rouba o lugar de
-    uma skill real ainda não revelada); só usa um slot reservado como
-    último recurso, se não sobrar nenhum outro (mais skills que slots).
+    Slot: primeiro slot vazio (decisão #10 original). A posição de exibição
+    passou a ser decidida 100% pelo CLIENTE desde 25/08/2026 (pedido do
+    usuário — configurar uma skill dentro OU fora da BG é a MESMA
+    preferência, guardada em config.json — ver ui/skill_slot_prefs.py::
+    preferred_slot_for_skill, usada por game.py/client/network_handlers.py/
+    ui/trainer_system.py, bloco skills_hotbar). O servidor não precisa mais adivinhar/reservar slot —
+    só informa QUAIS skills estão desbloqueadas; a posição que manda aqui
+    é só um valor de partida que o cliente ignora. (Mecanismo anterior,
+    04-06/08/2026, tentava espelhar a hotbar REAL via `_real_slot_by_skill_id`
+    + `reserved_slots` — removido, redundante com a preferência do cliente.)
 
     Skills desbloqueadas por TALENTO no jogo real (ex.: punho_no_queixo,
     escudo_fogo) já autorizam de graça, sem precisar bumpar nada aqui: a
@@ -158,21 +130,11 @@ def _grant_instance_skill(ps: PlayerSkills, sid: str,
     if sid in ps.learned_skill_ids:
         return
     ps.learned_skill_ids.add(sid)
-    preferred = (real_slot_by_sid or {}).get(sid)
-    if preferred is not None and preferred < len(ps.skills) and ps.skills[preferred] is None:
-        ps.skills[preferred] = PlayerSkills._make_skill(sid, SKILL_CATALOG)
-        return
-    _reserved = reserved_slots or set()
-    for i, slot in enumerate(ps.skills):
-        if slot is None and i not in _reserved:
-            ps.skills[i] = PlayerSkills._make_skill(sid, SKILL_CATALOG)
-            return
-    # Último recurso: nenhum slot livre "não-reservado" sobrou (mais
-    # skills reveladas até agora do que slots fora da hotbar real).
-    for i, slot in enumerate(ps.skills):
-        if slot is None:
-            ps.skills[i] = PlayerSkills._make_skill(sid, SKILL_CATALOG)
-            break
+    try:
+        idx = ps.skills.index(None)
+        ps.skills[idx] = PlayerSkills._make_skill(sid, SKILL_CATALOG)
+    except ValueError:
+        pass  # nenhum slot livre — raro (10 slots), fica só em learned_skill_ids
 
 
 def enter_normalized_progression(ws, eid: int) -> None:
@@ -248,8 +210,7 @@ def enter_normalized_progression(ws, eid: int) -> None:
     new_ps = PlayerSkills()
     unlock_order = INSTANCE_SKILL_UNLOCK_ORDER.get(char.class_id, [])
     if unlock_order:
-        _real_slots = _real_slot_by_skill_id(ps)
-        _grant_instance_skill(new_ps, unlock_order[0], _real_slots, set(_real_slots.values()))
+        _grant_instance_skill(new_ps, unlock_order[0])
     ws.world.add_component(eid, new_ps)
 
     ws.world.add_component(eid, Wallet(gold=INSTANCE_STARTING_GOLD))
@@ -480,9 +441,6 @@ def _process_instance_levelup(ws, eid: int) -> bool:
     if char is None or tt is None or ps is None:
         return False
 
-    snap = ws.world.get_component(eid, InstanceProgressionSnapshot)
-    real_slot_by_sid = _real_slot_by_skill_id(snap.real_player_skills if snap else None)
-    reserved_slots = set(real_slot_by_sid.values())
     unlock_order = INSTANCE_SKILL_UNLOCK_ORDER.get(char.class_id, [])
     gains = CLASS_LEVEL_GAINS.get(char.class_id, {})
     leveled = False
@@ -497,7 +455,7 @@ def _process_instance_levelup(ws, eid: int) -> bool:
         char.vitality     += gains.get("vitality", 0)
         char.defense      += gains.get("defense", 0)
         if char.level - 1 < len(unlock_order):
-            _grant_instance_skill(ps, unlock_order[char.level - 1], real_slot_by_sid, reserved_slots)
+            _grant_instance_skill(ps, unlock_order[char.level - 1])
         leveled = True
 
     if char.level >= INSTANCE_LEVEL_CAP:

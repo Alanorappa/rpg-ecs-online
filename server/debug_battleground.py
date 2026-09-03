@@ -19,6 +19,15 @@ de chat de verdade (sem broadcast, resposta só pro remetente):
   /testbg leave   — sai, restaura estado real (talento/skill/gold/itens/
                     level), remove Faction; descarrega a instância
                     quando os dois times ficam vazios.
+  /testbg ff      — (01/09/2026) desiste na hora, declara o time
+                    ADVERSÁRIO vencedor e mostra o placar pra todo mundo
+                    — mesmo mecanismo de "Nexus caiu"
+                    (notify_nexus_destroyed/_finish_debug_match), sem
+                    votação (versão de testes). Alias client-side "/ff"/
+                    "/forfeit" (client/battleground_handlers.py) manda
+                    isso como texto puro quando o player não está na
+                    fila REAL — ver server/bg_queue_processor.py::
+                    request_bg_forfeit pro equivalente da fila.
 
 Instância COMPARTILHADA (1 por processo de servidor, não 1 por jogador)
 — todo mundo que digitar /testbg cai na MESMA partida de teste, suficiente
@@ -181,13 +190,15 @@ def handle_command(ws, session, eid: int, args: list[str]) -> "tuple[str, dict |
       mob/torre/minion (`_my_current_faction_val`, ver
       client/remote_entity_handlers.py::_draw_mob_hp_bars)."""
     if not args:
-        return "Uso: /testbg a | /testbg b | /testbg leave", None, None
+        return "Uso: /testbg a | /testbg b | /testbg leave | /testbg ff", None, None
     sub = args[0].lower()
     if sub == "leave":
         return _leave(ws, eid)
     if sub in ("a", "b"):
         return _enter(ws, eid, sub)
-    return "Uso: /testbg a | /testbg b | /testbg leave", None, None
+    if sub == "ff":
+        return _forfeit(ws, eid)
+    return "Uso: /testbg a | /testbg b | /testbg leave | /testbg ff", None, None
 
 
 def _ensure_tick_registered(ws) -> None:
@@ -400,7 +411,17 @@ def notify_nexus_destroyed(ws, tower_map_file: str, destroyed_faction: str,
         return
     winner_faction = ("arena_time_b" if destroyed_faction == "arena_time_a"
                       else "arena_time_a")
+    _finish_debug_match(ws, winner_faction)
 
+
+def _finish_debug_match(ws, winner_faction: str) -> None:
+    """Ponto único que decide a partida de teste (01/09/2026, extraído de
+    `notify_nexus_destroyed` pra também ser reaproveitado por `_forfeit`)
+    — monta o placar (K/D/A/Farm/Gold/Dano por DELTA, mesmo cálculo dos
+    dois chamadores) e agenda o timeout automático de saída. Não
+    teleporta ninguém ainda (mesma filosofia de 2 fases da Arena/fila
+    real) — quem sai de verdade é via `_leave`, manual ou por
+    `_tick_bg_results_timeout`."""
     from engine.components import CharStatsTracker, CharacterStats
 
     players = []
@@ -428,6 +449,25 @@ def notify_nexus_destroyed(ws, tower_map_file: str, destroyed_faction: str,
     _state["result_deadline"] = time.time() + DEBUG_BG_RESULT_AUTO_LEAVE_S
     result_payload = {"winner_faction": winner_faction, "players": players}
     _state["pending_match_result"] = [(m_eid, result_payload) for m_eid in _state["members"]]
+
+
+def _forfeit(ws, eid: int) -> "tuple[str, dict | None, dict | None]":
+    """"/testbg ff" (01/09/2026, pedido do usuário — mesma UX de /ff da
+    Arena/fila real, sem votação, versão de testes). `eid` precisa estar
+    entre `_state["members"]` (senão comando não faz sentido — nem
+    entrou na instância de teste). Declara o time ADVERSÁRIO de `eid`
+    vencedor na hora, via `_finish_debug_match` (MESMO placar que o
+    Nexus caindo gera). Retorna (texto, None, None) — mesma assinatura
+    de `handle_command`, nunca ZONE_CHANGE/countdown aqui."""
+    if eid not in _state["members"]:
+        return "Você não está numa partida de teste (/testbg a|b).", None, None
+    if _state["match_decided"]:
+        return "A partida já foi decidida.", None, None
+    fac = ws.world.get_component(eid, Faction)
+    my_faction = fac.faction_id if fac else None
+    winner_faction = "arena_time_b" if my_faction == "arena_time_a" else "arena_time_a"
+    _finish_debug_match(ws, winner_faction)
+    return "Partida encerrada por desistência.", None, None
 
 
 def _tick_bg_results_timeout(ws) -> None:

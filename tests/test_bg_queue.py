@@ -445,6 +445,92 @@ class TestBgQueueNexusEnd(unittest.TestCase):
         self.assertEqual(row_a["gold"], 300)
 
 
+class TestBgQueueForfeit(unittest.TestCase):
+    """`WorldServer.request_bg_forfeit` (01/09/2026, /forfeit ou /ff — mesma
+    UX da Arena, sem votação por enquanto). 2 grupos de 2 (não 4 solos —
+    ver nota em TestBgQueueMatchLifecycle)."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        self.a = spawn_player(self.ws, "ff_a", 150, 390)
+        self.c = spawn_player(self.ws, "ff_c", 151, 390)
+        self.b = spawn_player(self.ws, "ff_b", 152, 390)
+        self.d = spawn_player(self.ws, "ff_d", 153, 390)
+        self.ws.request_party_invite(self.a, self.c)
+        self.ws.respond_party_invite(self.c, accept=True)
+        self.ws.request_party_invite(self.b, self.d)
+        self.ws.respond_party_invite(self.d, accept=True)
+        self.ws.request_bg_queue_join(self.a, "2v2")
+        self.ws.request_bg_queue_join(self.b, "2v2")
+        self.ws._tick_bg_queue()
+        self.match_id = self.ws._pending_bg_invite[self.a]
+        for eid in (self.a, self.c, self.b, self.d):
+            self.ws.request_bg_accept(eid)
+        match = self.ws._bg_active_matches[self.match_id]
+        match["countdown_deadline"] = -1.0
+        self.ws._tick_bg_pending()   # abre o portão, fight_started=True
+        for c in (self.ws.consume_bg_match_found_events,
+                 self.ws.consume_bg_match_start_events,
+                 self.ws.consume_bg_gate_open_events):
+            c()
+
+    def test_desistir_decide_a_partida_com_derrota_pro_proprio_time(self):
+        reason = self.ws.request_bg_forfeit(self.a)   # time a
+        self.assertIsNone(reason)
+        match = self.ws._bg_active_matches[self.match_id]
+        self.assertTrue(match["decided"])
+        self.assertEqual(match["winner_faction"], "arena_time_b")
+
+        events = self.ws.consume_bg_match_result_events()
+        self.assertEqual(len(events), 4)
+        eids = {eid for eid, _ in events}
+        self.assertEqual(eids, {self.a, self.b, self.c, self.d})
+        _, payload = events[0]
+        by_eid = {p["eid"]: p for p in payload["players"]}
+        self.assertFalse(by_eid[self.a]["won"])
+        self.assertFalse(by_eid[self.c]["won"])   # mesmo time do desistente
+        self.assertTrue(by_eid[self.b]["won"])
+        self.assertTrue(by_eid[self.d]["won"])
+
+    def test_time_adversario_desistindo_da_derrota_pro_outro_lado(self):
+        self.ws.request_bg_forfeit(self.b)   # time b
+        match = self.ws._bg_active_matches[self.match_id]
+        self.assertEqual(match["winner_faction"], "arena_time_a")
+
+    def test_fora_de_partida_retorna_not_in_match(self):
+        solo = spawn_player(self.ws, "ff_solo", 130, 374)
+        self.assertEqual(self.ws.request_bg_forfeit(solo), "not_in_match")
+
+    def test_antes_do_portao_abrir_retorna_fight_not_started(self):
+        self.ws2 = make_world_server()
+        a2 = spawn_player(self.ws2, "ff2_a", 160, 390)
+        c2 = spawn_player(self.ws2, "ff2_c", 161, 390)
+        b2 = spawn_player(self.ws2, "ff2_b", 162, 390)
+        d2 = spawn_player(self.ws2, "ff2_d", 163, 390)
+        self.ws2.request_party_invite(a2, c2)
+        self.ws2.respond_party_invite(c2, accept=True)
+        self.ws2.request_party_invite(b2, d2)
+        self.ws2.respond_party_invite(d2, accept=True)
+        self.ws2.request_bg_queue_join(a2, "2v2")
+        self.ws2.request_bg_queue_join(b2, "2v2")
+        self.ws2._tick_bg_queue()
+        for eid in (a2, c2, b2, d2):
+            self.ws2.request_bg_accept(eid)
+        self.assertEqual(self.ws2.request_bg_forfeit(a2), "fight_not_started")
+
+    def test_partida_ja_decidida_retorna_already_decided(self):
+        self.ws.request_bg_forfeit(self.a)
+        self.assertEqual(self.ws.request_bg_forfeit(self.b), "already_decided")
+
+    def test_segunda_chamada_nao_sobrescreve_resultado(self):
+        self.ws.request_bg_forfeit(self.a)
+        match = self.ws._bg_active_matches[self.match_id]
+        first_decided_at = match["decided_at"]
+        self.ws.request_bg_forfeit(self.b)
+        self.assertEqual(match["decided_at"], first_decided_at)
+        self.assertEqual(match["winner_faction"], "arena_time_b")
+
+
 class TestBgQueueLeave(unittest.TestCase):
     """2 grupos de 2 (não 4 solos — ver nota em TestBgQueueMatchLifecycle)."""
 
@@ -493,6 +579,37 @@ class TestBgQueueLeave(unittest.TestCase):
         self.ws.request_bg_leave(self.d)
         self.assertNotIn(self.match_id, self.ws._bg_active_matches)
         self.assertNotIn(instance_key, self.ws._map_bundles)
+
+    def test_ultimo_a_sair_para_o_minion_wave_da_instancia(self):
+        """Bug real relatado pelo usuário (26/08/2026): depois que TODOS
+        saem de uma partida de BG (bots inclusive), `[MinionWave] rota
+        falhou: ... sem caminho` continuava logando pra sempre, a cada
+        wave_interval_s (45s), até o servidor reiniciar — o mapa da
+        instância já tinha sido descarregado (`_map_bundles`), mas
+        `_minion_lanes`/`_minion_wave_timers` daquela instância nunca
+        eram limpos, então `_tick_minion_waves` continuava tentando
+        calcular rota num mapa que não existe mais. Causa: `_unload_
+        instance` esquecia de `_minion_lanes.pop(instance_key)`."""
+        instance_key = self.ws._bg_active_matches[self.match_id]["instance_key"]
+        match = self.ws._bg_active_matches[self.match_id]
+        match["countdown_deadline"] = -1.0
+        self.ws._tick_bg_pending()  # abre o portão, ativa as lanes de verdade
+        self.assertIn(instance_key, self.ws._minion_lanes)
+        active_keys_before = {k[0] for k in self.ws._minion_wave_timers}
+        self.assertIn(instance_key, active_keys_before)
+
+        for eid in (self.a, self.c, self.b, self.d):
+            self.ws.request_bg_leave(eid)
+        self.assertNotIn(instance_key, self.ws._minion_lanes)
+
+        # _tick_minion_waves precisa de 1 tick pra completar a autolimpeza
+        # de _minion_wave_timers (del acontece quando a lane já não existe
+        # mais em _minion_lanes) — mesmo mecanismo de sempre, sem duplicar
+        # a limpeza em _unload_instance.
+        self.ws._tick_minion_waves(dt=0.0)
+        active_keys_after = {k[0] for k in self.ws._minion_wave_timers}
+        self.assertNotIn(instance_key, active_keys_after,
+                         "timer de wave da instância desalocada não deveria continuar rodando")
 
     def test_desconexao_chama_end_bg_matches_of(self):
         self.ws.end_bg_matches_of(self.a)

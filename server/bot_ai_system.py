@@ -37,13 +37,19 @@ from __future__ import annotations
 # nunca centenas como a IA de mob mundo aberto). Movimento em si (1 tile
 # por decisão) já é suave o suficiente nessa cadência.
 BOT_DECISION_INTERVAL_S = 0.35
-# Alcance de engajamento em tiles (Chebyshev) — aproxima o MELEE_RANGE_PX
-# de engine/skill_handlers.py (72px = 2.25 tiles), único range que
-# existe hoje pro Guerreiro (skill/auto-attack corpo a corpo). Ranged
-# também usa este valor pra decidir "perto o bastante pra parar de
-# andar e engajar" — o alcance de verdade do auto-attack é resolvido
-# depois, por `_resolve_auto_attack` (server/combat_processor.py, §61).
-BOT_ENGAGE_RANGE_TILES = 2
+# Alcance de engajamento FALLBACK (Chebyshev, tiles) — só usado quando
+# `BotAISystem._effective_engage_range` não acha nada mais específico
+# (sem skill ofensiva aprendida, classe sem CombatStats). Até 26/08/2026
+# esta era a ÚNICA distância usada por QUALQUER classe pra decidir
+# "parei de andar, hora de brigar" — bug real relatado pelo usuário:
+# guerreiro parava a 2 tiles e nunca acertava golpe_poderoso/auto-attack
+# (exigem Chebyshev ≤1 de verdade, `_resolve_target`/`_resolve_auto_
+# attack`), enquanto mago/arqueiro paravam bem mais perto do que o
+# alcance real da skill/arco permitia, se expondo à toa (pesquisa
+# externa — Game AI Pro 3, "Paragon Bots" — confirma que bot de MOBA
+# deve usar o alcance EFETIVO de cada herói, nunca 1 raio genérico
+# pra papéis diferentes). Ver PROBLEMAS_ARQUITETURA.md.
+BOT_ENGAGE_RANGE_TILES = 1
 # Raio (Chebyshev) de "percepção" de inimigo — players E minions dentro
 # deste raio da posição ATUAL do bot competem por atenção; fora dele,
 # ignorados (16/08/2026 — antes o scan de player era SEM limite de
@@ -189,7 +195,8 @@ class BotAISystem:
             if target_eid is not None:
                 dist = max(abs(tm.current_tile_x - target_tm.current_tile_x),
                            abs(tm.current_tile_y - target_tm.current_tile_y))
-                if dist <= BOT_ENGAGE_RANGE_TILES:
+                engage_range = BotAISystem._effective_engage_range(world_server, eid)
+                if dist <= engage_range:
                     bot.path = None
                     if not BotAISystem._try_cast_offensive_skill(world_server, sid, eid, target_eid):
                         BotAISystem._engage_target(world_server, sid, eid, target_eid)
@@ -262,6 +269,48 @@ class BotAISystem:
             _consider(m_eid, m_tm)
 
         return best_eid, best_tm
+
+    @staticmethod
+    def _effective_engage_range(world_server, eid: int) -> int:
+        """Distância (Chebyshev, tiles) em que o bot para de andar e passa
+        a tentar brigar — por CLASSE/EQUIPAMENTO real, nunca 1 constante
+        genérica pra guerreiro/arqueiro/mago (26/08/2026, bug relatado
+        pelo usuário: guerreiro parava a 2 tiles e nunca acertava nada,
+        mago/arqueiro paravam bem mais perto do que precisavam). Ordem:
+
+        1. Arqueiro com arco de VERDADE equipado → alcance do arco
+           (`CombatProcessorMixin._ranged_weapon_range`, mesma função que
+           `_resolve_auto_attack` usa pra validar o auto-attack de
+           verdade — ponto único, nunca reimplementado aqui).
+        2. Caster com skill ofensiva aprendida cujo `cast_range` (SKILL_
+           CATALOG) é maior que melee → alcance dessa skill. Sem
+           hardcode de "bola_de_fogo"/"mago" — lê a 1ª skill ofensiva do
+           hotbar, igual `_try_cast_offensive_skill` já faz.
+        3. Fallback: `BOT_ENGAGE_RANGE_TILES` (melee puro — guerreiro, ou
+           qualquer classe sem opção de longo alcance disponível)."""
+        from engine.components import CombatStats as _CSRange, PlayerSkills as _PSRange
+        from content.skill_config import SKILL_CATALOG as _SCRange
+
+        world = world_server.world
+        cs = world.get_component(eid, _CSRange)
+        class_is_ranged = getattr(cs, "is_ranged", False) if cs else False
+        is_ranged, weapon_range = world_server._ranged_weapon_range(eid, class_is_ranged)
+        if is_ranged:
+            return weapon_range
+
+        ps = world.get_component(eid, _PSRange)
+        if ps:
+            for skill in ps.skills:
+                if skill is None or not skill.skill_id:
+                    continue
+                if not _SCRange.get(skill.skill_id, {}).get("offensive", True):
+                    continue
+                cast_range = _SCRange.get(skill.skill_id, {}).get("cast_range", 0)
+                if cast_range > BOT_ENGAGE_RANGE_TILES:
+                    return cast_range
+                break  # 1ª skill ofensiva já decide (mesma ordem de _try_cast_offensive_skill)
+
+        return BOT_ENGAGE_RANGE_TILES
 
     @staticmethod
     def _try_cast_offensive_skill(world_server, sid: str, eid: int, target_eid: int) -> bool:

@@ -50,7 +50,18 @@ _MAGIC_CASTER_CLASSES = {"Mage", "Mago", "Warlock", "Bruxo"}
 def create_tilemap(world: World, terrain_matrix: list, object_matrix: list,
                    terrain_visual: list | None = None) -> int:
     map_height_tiles = len(terrain_matrix)
-    map_width_tiles = len(terrain_matrix[0]) if map_height_tiles > 0 else 0
+    # MAIOR linha, não a linha 0 (02/09/2026, bug real achado investigando
+    # avisos de "[MAPA] largura inesperada" no console — map_1 tem forma
+    # ORGÂNICA/irregular de propósito, toda linha começa e termina com "m"
+    # (montanha, borda natural), só a extensão real do terreno varia por
+    # altura — não é CSV corrompido. Usar só a linha 0 (que por acaso é
+    # estreita) subestimava a largura de verdade do mapa; qualquer coisa
+    # que respeita `map_width_tiles` (movimento, câmera, minimapa) tratava
+    # terreno real pintado além da coluna da linha 0 como "fora do mapa".
+    # Linha mais curta que o máximo já é preenchida com FLOOR_TILE de
+    # propósito (loop abaixo) — comportamento correto pra borda de um
+    # mapa não-retangular, não precisa de mudança nenhuma ali.
+    map_width_tiles = max((len(r) for r in terrain_matrix), default=0)
 
     # Pass 1: terrain tile_data (colisão base)
     tile_data = []
@@ -101,9 +112,10 @@ def create_tilemap(world: World, terrain_matrix: list, object_matrix: list,
                     tile_data[nr][nc] = obj_tile
             # Pegada de VISÃO (13/08/2026) — pode ser MAIOR que a de colisão
             # (ex: árvore com tronco estreito sólido, mas copa inteira
-            # bloqueando visão). Só sobrepõe vision_height nas células que a
-            # pegada de colisão acima NÃO já cobriu (evita reescrever com o
-            # obj_tile inteiro — preserva is_solid/elevation do que já
+            # bloqueando visão). Só sobrepõe vision_height (+ is_bush,
+            # 01/09/2026 — mesma pegada, feedback de opacidade) nas células
+            # que a pegada de colisão acima NÃO já cobriu (evita reescrever
+            # com o obj_tile inteiro — preserva is_solid/elevation do que já
             # estava lá, seja terreno ou outro objeto).
             if obj_tile.vision_height >= 2:
                 for dx, dy in get_vision_offsets(obj_tile):
@@ -112,7 +124,8 @@ def create_tilemap(world: World, terrain_matrix: list, object_matrix: list,
                     nr, nc = r + dy, c + dx
                     if 0 <= nr < map_h and 0 <= nc < len(tile_data[nr]):
                         tile_data[nr][nc] = dataclasses.replace(
-                            tile_data[nr][nc], vision_height=obj_tile.vision_height)
+                            tile_data[nr][nc], vision_height=obj_tile.vision_height,
+                            is_bush=obj_tile.is_bush)
 
     if terrain_visual is None:
         terrain_visual = [[""] * map_width_tiles for _ in range(map_h)]

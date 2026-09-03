@@ -81,7 +81,9 @@ _GROUND_EFFECT_SPRITES: dict[str, "pygame.Surface | None"] = {}
 _GROUND_EFFECT_TYPES_ICONS = {"root"}  # efeitos com sprite de chão: sem ícone na barra
 
 
-def _build_effects_row(active_effects: list, font: "pygame.font.Font") -> "pygame.Surface | None":
+def _build_effects_row(active_effects: list, font: "pygame.font.Font",
+                       icon_size: "int | None" = None
+                       ) -> "tuple[pygame.Surface | None, list[tuple[str, pygame.Rect]]]":
     """Monta a fila de ícones de efeito ativos (bleed/stun/sleep/...) numa
     ÚNICA Surface — vai inteira pro WORLD_LABELS (screen-space, via
     add_icon_offset, encostada na borda direita da HUD de barras) em vez
@@ -89,8 +91,12 @@ def _build_effects_row(active_effects: list, font: "pygame.font.Font") -> "pygam
     screen-space desde a correção do bug "número flutuando fora da caixa"
     (ARQUITETURA_ONLINE.md 23.9) — desenhar os ícones de efeito em espaço
     de MUNDO de novo reintroduziria o mesmo desalinhamento (a fila
-    desgrudaria da HUD conforme o zoom da câmera muda). Ícones 16×16,
-    sobreposição do tempo restante em vermelho.
+    desgrudaria da HUD conforme o zoom da câmera muda). Ícones 16×16 por
+    padrão (nameplate); `icon_size` (31/08/2026, buff bar) escala pra
+    outro tamanho — o PNG de 16×16 é reescalado com `pygame.transform.
+    scale` (SEM smoothscale, de propósito: mantém a nitidez pixel-art no
+    upscale, smoothscale borraria). Sobreposição do tempo restante em
+    vermelho.
 
     Fila "estilo WoW": a ordem é a própria ordem de inserção no dict de
     StatusEffects (Python preserva ordem de inserção) — recalculada do
@@ -99,7 +105,19 @@ def _build_effects_row(active_effects: list, font: "pygame.font.Font") -> "pygam
     sempre na ponta direita; quando um efeito expira, os seguintes
     "puxam" pra esquerda sozinhos (é só a lista atual desenhada em
     sequência, ninguém guarda slot fixo) — efeito novo ocupa a posição
-    livre automaticamente, sem pular a fila.
+    livre automaticamente, sem pular a fila. `ui/buff_bar.py` ancora essa
+    Surface pela borda DIREITA (`bar_right_x - row.get_width()`), então
+    o mais novo (desenhado na ponta direita DESTA Surface) fica sempre na
+    posição fixa junto do minimapa, e os mais antigos vão "empurrados"
+    pra esquerda conforme a fila cresce — mesmo efeito visual do WoW.
+
+    Retorna `(surface, rects)` — `rects` (01/09/2026, tooltip da buff
+    bar) é `[(effect_type, Rect_local_à_Surface), ...]`, o MESMO `ix`/
+    `ICON` já usados pra desenhar, só que também guardados em vez de
+    descartados — ponto único de geometria, nunca duplicar esse cálculo
+    num hit-test separado (mesmo princípio já usado pela hotbar,
+    client/hotbar_handlers.py). Quem não precisa (nameplate/mob/player
+    remoto) só ignora o 2º valor.
     """
     from math import ceil as _ceil
     from ui.effect_animator import get_frame as _get_frame, FRAME_W, FRAME_H
@@ -108,22 +126,27 @@ def _build_effects_row(active_effects: list, font: "pygame.font.Font") -> "pygam
     visible = [e for e in active_effects
                if e.effect_type not in _GROUND_EFFECT_TYPES_ICONS]
     if not visible:
-        return None
+        return None, []
 
-    ICON = FRAME_W   # 16
+    ICON = icon_size if icon_size is not None else FRAME_W   # 16 por padrão
     GAP  = 3
     n = len(visible)
     row = pygame.Surface((n * ICON + (n - 1) * GAP, ICON), pygame.SRCALPHA)
     ix = 0
+    rects: list = []
 
     for eff in visible:
         frame = _get_frame(eff.effect_type)
         if frame is not None:
+            if frame.get_width() != ICON or frame.get_height() != ICON:
+                frame = pygame.transform.scale(frame, (ICON, ICON))
             row.blit(frame, (ix, 0))
         else:
             defn = _EDEFS.get(eff.effect_type)
             col  = defn.color if defn else (150, 150, 150)
             pygame.draw.rect(row, col, (ix, 0, ICON, ICON))
+
+        rects.append((eff.effect_type, pygame.Rect(ix, 0, ICON, ICON)))
 
         dur = getattr(eff, 'duration', 0.0)
         if 0 < dur <= 99:
@@ -137,7 +160,22 @@ def _build_effects_row(active_effects: list, font: "pygame.font.Font") -> "pygam
 
         ix += ICON + GAP
 
-    return row
+    return row, rects
+
+def _filter_nameplate_effects(sfx: "StatusEffects | None") -> list:
+    """Efeitos ativos pra exibir no NAMEPLATE — exclui buff (`is_buff=True`
+    em EFFECT_DEFS), 31/08/2026: buff agora tem barra própria
+    (ui/buff_bar.py, só o jogador local), nameplate mostra só debuff, pra
+    não duplicar o mesmo ícone nos dois lugares. Extraído (não inline) pra
+    dar pra testar sem montar a pipeline de render inteira. Tipo
+    desconhecido/sem entrada em EFFECT_DEFS fica visível por padrão
+    (mesmo fail-open de `_build_effects_row` abaixo, `defn = _EDEFS.get(...)`)."""
+    if sfx is None:
+        return []
+    from content.status_effects_data import EFFECT_DEFS as _EDEFS_np
+    return [e for e in sfx.effects.values()
+            if not (_EDEFS_np.get(e.effect_type) and _EDEFS_np[e.effect_type].is_buff)]
+
 
 def _get_ground_effect_sprite(effect_type: str) -> "pygame.Surface | None":
     """Retorna sprite de efeito de chão para o tipo dado; carrega na primeira vez.
@@ -349,15 +387,18 @@ class MouseTargetingSystem(System):
         """Retorna IDs de inimigos vivos e visíveis na tela, ordenados por
         distância ao jogador.
 
-        Mobs/torres/minions (`Enemy`) só entram se HOSTIS de verdade
-        (`is_hostile`, não `can_engage` — este último também libera
-        "neutro", e o pedido do usuário é TAB/SPACE só pra hostil de
-        verdade; alvo neutro/aliado só por clique do mouse, 01/08/2026).
-        Antes disso a volta de `Enemy` (torres/minions/NPCs aliados
-        também carregam esse componente do lado do cliente, `create_enemy`
-        genérico) não filtrava hostilidade NENHUMA — bug real relatado
-        pelo usuário: TAB podia ciclar pra um minion/torre do PRÓPRIO
-        time.
+        Mobs/torres/minions (`Enemy`) usam `can_engage` (hostil OU
+        neutro, só bloqueia "amigavel") — antes usava `is_hostile` (só
+        hostil de verdade, decisão do usuário de 01/08/2026), mas isso
+        foi ANTES da jungle existir (tier "neutro", 16/08/2026); usuário
+        pediu (25/08/2026) que TAB alcance alvo neutro também (ex: mob
+        de jungle). MESMA função que o loop de player remoto abaixo já
+        usa — nenhuma lógica nova. Antes da checagem de hostilidade
+        (quando ainda era `is_hostile`) a volta de `Enemy` (torres/
+        minions/NPCs aliados também carregam esse componente do lado do
+        cliente, `create_enemy` genérico) não filtrava hostilidade
+        NENHUMA — bug real relatado pelo usuário: TAB podia ciclar pra
+        um minion/torre do PRÓPRIO time.
 
         Players remotos (`RemoteControlled`) continuam usando
         `can_engage` (não `is_hostile`) DE PROPÓSITO — permissão de PvP
@@ -373,13 +414,13 @@ class MouseTargetingSystem(System):
         sh = self.world_surf.get_height()
         player_pos = self.world.get_component(self.player_entity_id,
                                               __import__("engine.components", fromlist=["Position"]).Position)
-        from engine.faction_system import is_hostile as _is_hostile_tab
+        from engine.faction_system import can_engage as _can_engage_tab_mob
         result = []
         for eid, pos, _, _ in self.world.get_entities_with(Position, Enemy, Visible):
             cs = self.world.get_component(eid, CombatStats)
             if cs and cs.current_hp <= 0:
                 continue
-            if not _is_hostile_tab(self.world, self.player_entity_id, eid):
+            if not _can_engage_tab_mob(self.world, self.player_entity_id, eid):
                 continue
             # Verifica se está dentro dos limites da tela
             sx = pos.x - cam_x
@@ -767,12 +808,6 @@ class PlayerInputSystem(System):
             # --- Movimento de chão (sem alvo selecionado) ---
             elif _has_ground:
                 self._process_ground_move(entity_id, position, tile_movement, auto_move, can_move, dt)
-
-            # --- ESPAÇO: seleciona inimigo mais próximo, entra em combate e ataca ---
-            for event in events:
-                if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
-                    if can_act:
-                        self._space_engage(entity_id, tile_movement, combat_stats, combat_state, auto_move)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -1294,57 +1329,80 @@ class PlayerInputSystem(System):
                 break
 
     def _space_engage(self, entity_id, tile_movement, combat_stats, combat_state, auto_move):
-        """ESPAÇO: seleciona inimigo mais próximo visível na tela, entra em combate e ataca.
+        """ESPAÇO: ataca o alvo JÁ selecionado (TAB/clique), se ele ainda
+        estiver vivo — só busca o inimigo mais próximo visível na tela
+        quando NÃO há alvo válido selecionado. Antes sempre recalculava
+        "mais próximo" do zero, ignorando `combat_state.target_entity_id`
+        por completo — bug real relatado pelo usuário (25/08/2026): apertar
+        espaço trocava de alvo em vez de atacar o que já estava
+        selecionado, em QUALQUER parte do jogo (não só BG). Usa
+        `utils.is_target_alive()` (ponto único de verdade — cobre mob
+        local, player remoto em PvP e mob remoto, nenhum dos 3 detectável
+        só por CombatStats.current_hp).
 
-        Players remotos (RemoteControlled) entram na busca junto com mobs
-        (Enemy) — só quando engajáveis AGORA (duelo/arena/zona PvP, mesmo
-        `can_engage`/`_client_pvp_context` do clique). Bug real relatado
-        pelo usuário 22/07/2026: ESPAÇO nunca conseguia iniciar combate
-        contra um oponente de duelo, porque a busca só olhava Enemy."""
+        Players remotos (RemoteControlled) entram na busca DE FALLBACK
+        junto com mobs (Enemy) — só quando engajáveis AGORA (duelo/arena/
+        zona PvP, mesmo `can_engage`/`_client_pvp_context` do clique). Bug
+        real relatado pelo usuário 22/07/2026: ESPAÇO nunca conseguia
+        iniciar combate contra um oponente de duelo, porque a busca só
+        olhava Enemy."""
         pl_x = tile_movement.current_tile_x
         pl_y = tile_movement.current_tile_y
 
-        _fog_vis_se = None
-        for _, _fw_se in self.world.get_entities_with(FogOfWar):
-            _fog_vis_se = _fw_se.visible
-            break
+        from engine.utils import is_target_alive as _is_target_alive_space
+        best_eid  = combat_state.target_entity_id if combat_state else -1
+        best_dist = None
+        if best_eid != -1 and _is_target_alive_space(self.world, best_eid):
+            _cur_tm_space = self.world.get_component(best_eid, TileMovement)
+            if _cur_tm_space is not None:
+                best_dist = chebyshev(pl_x, pl_y, _cur_tm_space.current_tile_x,
+                                      _cur_tm_space.current_tile_y)
+            else:
+                best_eid = -1
+        else:
+            best_eid = -1
 
-        from engine.faction_system import can_engage as _can_engage_space
-        best_eid  = -1
-        best_dist = float("inf")
-        for eid, epos, _, _, etm, ecs, _ in self.world.get_entities_with(
-                Position, Enemy, AIControlled, TileMovement, CombatStats, Visible):
-            if ecs.current_hp <= 0:
-                continue
-            # Alvo amigável (facção) nunca é engajável — mesmo gate do
-            # clique direito (o proxy do NPC de combate remoto carrega a
-            # tag Enemy no cliente, então sem este filtro o SPACE podia
-            # engajar o Guarda Real se ele fosse o mais próximo).
-            if not _can_engage_space(self.world, entity_id, eid):
-                continue
-            if not self._is_on_screen(epos):
-                continue
-            if _fog_vis_se is not None and \
-                    (etm.current_tile_x, etm.current_tile_y) not in _fog_vis_se:
-                continue
-            dist = chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y)
-            if dist < best_dist:
-                best_dist = dist
-                best_eid  = eid
+        if best_eid == -1:
+            _fog_vis_se = None
+            for _, _fw_se in self.world.get_entities_with(FogOfWar):
+                _fog_vis_se = _fw_se.visible
+                break
 
-        from engine.components import RemoteControlled as _RCspace
-        for eid, epos, etm, _viz, _rc in self.world.get_entities_with(
-                Position, TileMovement, Visible, _RCspace):
-            if eid == entity_id or _rc.hp <= 0:
-                continue
-            if not _can_engage_space(self.world, entity_id, eid):
-                continue
-            if not self._is_on_screen(epos):
-                continue
-            dist = chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y)
-            if dist < best_dist:
-                best_dist = dist
-                best_eid  = eid
+            from engine.faction_system import can_engage as _can_engage_space
+            best_dist = float("inf")
+            for eid, epos, _, _, etm, ecs, _ in self.world.get_entities_with(
+                    Position, Enemy, AIControlled, TileMovement, CombatStats, Visible):
+                if ecs.current_hp <= 0:
+                    continue
+                # Alvo amigável (facção) nunca é engajável — mesmo gate do
+                # clique direito (o proxy do NPC de combate remoto carrega a
+                # tag Enemy no cliente, então sem este filtro o SPACE podia
+                # engajar o Guarda Real se ele fosse o mais próximo).
+                if not _can_engage_space(self.world, entity_id, eid):
+                    continue
+                if not self._is_on_screen(epos):
+                    continue
+                if _fog_vis_se is not None and \
+                        (etm.current_tile_x, etm.current_tile_y) not in _fog_vis_se:
+                    continue
+                dist = chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_eid  = eid
+
+            from engine.components import RemoteControlled as _RCspace
+            for eid, epos, etm, _viz, _rc in self.world.get_entities_with(
+                    Position, TileMovement, Visible, _RCspace):
+                if eid == entity_id or _rc.hp <= 0:
+                    continue
+                if not _can_engage_space(self.world, entity_id, eid):
+                    continue
+                if not self._is_on_screen(epos):
+                    continue
+                dist = chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_eid  = eid
 
         if best_eid == -1:
             return
@@ -1513,6 +1571,13 @@ class RenderSystem(System):
             _, _, entity_id, position, renderable, combat_stats, _gst_draw = item
             _is_corpse_draw = _gst_draw is not None and _gst_draw.is_dead and not _gst_draw.is_ghost
             _is_ghost_draw  = _gst_draw is not None and _gst_draw.is_ghost
+            # Feedback visual de bush stealth (01/09/2026, pedido do usuário)
+            # — calculado 1x aqui, reusado tanto no branch de opacidade
+            # abaixo quanto no badge de HUD mais adiante (evita duplicar a
+            # checagem de PlayerControlled). Só busca CombatState quando é
+            # de fato o jogador local — barato (1 entidade por cliente).
+            _is_local_player = self.world.get_component(entity_id, PlayerControlled) is not None
+            _combat_state_draw = self.world.get_component(entity_id, CombatState) if _is_local_player else None
 
             draw_x = position.x - camera_offset_x
             draw_y = position.y - camera_offset_y
@@ -1584,6 +1649,15 @@ class RenderSystem(System):
                 elif _is_ghost_draw:
                     # Espírito: semi-transparente
                     self.world_surf.blit(fill_surf((rect.width, rect.height), (*renderable.color[:3], 127)), rect.topleft)
+                elif _is_local_player and _combat_state_draw is not None and _combat_state_draw.is_bush_hidden:
+                    # Bush stealth (01/09/2026, pedido do usuário, mesma
+                    # técnica do espírito acima): só o PRÓPRIO jogador vê seu
+                    # sprite com 50% de opacidade ao entrar numa zona de bush
+                    # (server/bush_zone_processor.py::_get_bush_zone) — sinal
+                    # pessoal de "estou escondido dos outros agora". Mecanismo
+                    # separado de Camuflagem/is_visible; nunca broadcast pros
+                    # outros players (ver CombatState.is_bush_hidden).
+                    self.world_surf.blit(fill_surf((rect.width, rect.height), (*renderable.color[:3], 127)), rect.topleft)
                 else:
                     pygame.draw.rect(self.world_surf, renderable.color, rect)
 
@@ -1623,7 +1697,7 @@ class RenderSystem(System):
                            and not _is_corpse_draw and not _is_ghost_draw)
             if _draw_hp_bar:
                 ratio = max(0.0, min(1.0, combat_stats.current_hp / combat_stats.max_hp))
-                _is_local_player = self.world.get_component(entity_id, PlayerControlled) is not None
+                # _is_local_player já calculado acima (bush stealth) — reusado aqui.
                 # Sprite real (torre, 12/08/2026, bug real relatado pelo
                 # usuário) é bem mais alto que o renderable.height antigo
                 # (retângulo/tier) — ancorar pela altura antiga deixava a
@@ -1708,8 +1782,8 @@ class RenderSystem(System):
                     _sfx = self.world.get_component(entity_id, StatusEffects)
                     _cst = self.world.get_component(entity_id, CombatState)
 
-                    # Reúne efeitos ativos
-                    _active_effects = list(_sfx.effects.values()) if _sfx else []
+                    # Reúne efeitos ativos (só debuff — buff tem barra própria)
+                    _active_effects = _filter_nameplate_effects(_sfx)
                     if _cst and _cst.is_stunned and _cst.stun_timer > 0:
                         if not (_sfx and _sfx.has("stun")):
                             _stun_timer_val = _cst.stun_timer
@@ -1719,7 +1793,7 @@ class RenderSystem(System):
                             _active_effects.append(_FakeEff())
 
                     if _active_effects:
-                        _row = _build_effects_row(_active_effects, self._effect_dur_font)
+                        _row, _ = _build_effects_row(_active_effects, self._effect_dur_font)
                         if _row is not None:
                             _xo, _yo = effects_row_offset(_hud_surf)
                             WORLD_LABELS.add_icon_offset(

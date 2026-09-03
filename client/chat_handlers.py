@@ -69,8 +69,17 @@ class ChatHandlers:
             self._close_chat_input()
             return
         # "/forfeit" ou "/ff" — desiste da partida de Arena atual (20/07/2026,
-        # ver client/arena_handlers.py::_try_handle_arena_chat_command).
+        # ver client/arena_handlers.py::_try_handle_arena_chat_command). Só
+        # claim quando de fato numa partida de Arena (01/09/2026) — se não,
+        # passa a vez pro handler de BG logo abaixo.
         if text and self._try_handle_arena_chat_command(text):
+            self._close_chat_input()
+            return
+        # "/forfeit" ou "/ff" na BG (01/09/2026, mesma UX da Arena — ver
+        # client/battleground_handlers.py::_try_handle_bg_forfeit_chat_command).
+        # SEMPRE consome o comando quando chega até aqui (fila real, debug,
+        # OU nem isso — servidor responde com mensagem clara em cada caso).
+        if text and self._try_handle_bg_forfeit_chat_command(text):
             self._close_chat_input()
             return
         # "/bgqueue" — abre o modal unificado de fila (04/08/2026, mesma

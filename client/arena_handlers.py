@@ -294,13 +294,20 @@ class ArenaHandlers:
         """Chamado por client/chat_handlers.py::_send_chat_message ANTES
         de mandar como chat normal (mesmo padrão de
         PartyHandlers._try_handle_party_chat_command). True = era o
-        comando (consumido), False = texto normal."""
+        comando (consumido), False = texto normal.
+
+        Não em partida de Arena → False, NÃO um "não está em partida"
+        engolindo o comando (01/09/2026, feature de /ff no battleground —
+        client/battleground_handlers.py::_try_handle_bg_forfeit_chat_command
+        precisa da CHANCE de tratar "/ff" quando quem digitou está numa
+        partida de BG em vez de Arena; antes disto retornava True sempre,
+        nunca deixando o BG ver o comando). A mensagem final de "você não
+        está em partida nenhuma" (se nem Arena nem BG reconhecerem)
+        agora é responsabilidade de quem chama, no fim da cadeia."""
         if text.strip().lower() not in ("/forfeit", "/ff"):
             return False
-        from ui.floating_text import WARN
         if not self._arena_in_match:
-            WARN.add("Você não está em uma partida de Arena.")
-            return True
+            return False
         self._send_arena_forfeit()
         return True
 

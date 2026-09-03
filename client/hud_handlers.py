@@ -52,7 +52,16 @@ class HudHandlers:
             y += name_surf.get_height() + self._u(2)
 
         # --- HP ---
-        hp_ratio = max(0, combat_stats.current_hp / max(1, combat_stats.max_hp))
+        # Clamp [0,1] (01/09/2026): sem isso, qualquer desync passageiro
+        # entre current_hp/max_hp locais (ex: max_hp de um buff ainda não
+        # sincronizado, current_hp já atualizado por outro canal) fazia a
+        # barra de PREENCHIMENTO desenhar mais larga que a moldura de
+        # fundo — parecia "a barra crescendo" (bug real relatado pelo
+        # usuário). A causa raiz de sync já foi corrigida
+        # (_sync_player_hp_dirty), mas o clamp aqui é defensivo — mesma
+        # disciplina que build_simple_hp_bar/build_player_hud (ui/hud_bars.py)
+        # já usam, este era o único ponto sem o teto.
+        hp_ratio = max(0.0, min(1.0, combat_stats.current_hp / max(1, combat_stats.max_hp)))
         bar_w = self._u(UI.HUD_BAR_W)
         bar_h = self._u(UI.HUD_BAR_H)
         pygame.draw.rect(self.screen, (80, 0, 0),   (self._u(10), y, bar_w, bar_h))
@@ -65,7 +74,7 @@ class HudHandlers:
         # --- Rage (Guerreiro) / Mana (Mago) / Aljava (Arqueiro) ---
         if char_stats:
             if char_stats.class_id == "mago":
-                mana_ratio = char_stats.mana / max(1, char_stats.max_mana)
+                mana_ratio = max(0.0, min(1.0, char_stats.mana / max(1, char_stats.max_mana)))
                 pygame.draw.rect(self.screen, (0, 20, 80),    (self._u(10), y, bar_w, bar_h))
                 pygame.draw.rect(self.screen, (50, 100, 255), (self._u(10), y, int(bar_w * mana_ratio), bar_h))
                 mana_surf = self.font_sm.render(
@@ -75,7 +84,7 @@ class HudHandlers:
                 # Barra de Concentração — laranja forte (C_ORANGE); vira
                 # vermelha (C_RED) perto de esvaziar, mesmo aviso de sempre.
                 # Pedido do usuário 15/07/2026: era azul, confundia com mana.
-                _conc_ratio = char_stats.concentration / max(1, char_stats.max_concentration)
+                _conc_ratio = max(0.0, min(1.0, char_stats.concentration / max(1, char_stats.max_concentration)))
                 _conc_col   = C_ORANGE if _conc_ratio > 0.3 else C_RED
                 pygame.draw.rect(self.screen, (55, 30, 5),   (self._u(10), y, bar_w, bar_h))
                 pygame.draw.rect(self.screen, _conc_col, (self._u(10), y, int(bar_w * _conc_ratio), bar_h))
@@ -95,7 +104,7 @@ class HudHandlers:
                 _eq_hud = self.world.get_component(self.player_entity, _EqHUD)
                 _quiver = _eq_hud.slots.get("offhand") if _eq_hud else None
                 if _quiver and getattr(_quiver, "item_type", "") == "quiver":
-                    _arrow_ratio = _quiver.arrow_count / max(1, _quiver.max_arrows)
+                    _arrow_ratio = max(0.0, min(1.0, _quiver.arrow_count / max(1, _quiver.max_arrows)))
                     pygame.draw.rect(self.screen, (40, 30, 10),  (self._u(10), y, bar_w, bar_h))
                     pygame.draw.rect(self.screen, (200, 160, 60), (self._u(10), y, int(bar_w * _arrow_ratio), bar_h))
                     arrow_surf = self.font_sm.render(
@@ -107,7 +116,7 @@ class HudHandlers:
             else:
                 # Vermelha (C_RED) — pedido do usuário 15/07/2026: era
                 # laranja (C_ORANGE), confundia com a concentração do arqueiro.
-                rage_ratio = char_stats.rage / max(1, char_stats.max_rage)
+                rage_ratio = max(0.0, min(1.0, char_stats.rage / max(1, char_stats.max_rage)))
                 pygame.draw.rect(self.screen, (60, 20, 0),   (self._u(10), y, bar_w, bar_h))
                 pygame.draw.rect(self.screen, C_RED,          (self._u(10), y, int(bar_w * rage_ratio), bar_h))
                 rage_surf = self.font_sm.render(

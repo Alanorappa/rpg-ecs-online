@@ -9,6 +9,7 @@ para dano de arma e avoidance — não são determinísticas. Passe `pre_outcome
 em `deal_damage` ou injete um seed em testes que precisam de resultado fixo.
 """
 from __future__ import annotations
+import math
 import random
 
 # ── Constantes ────────────────────────────────────────────────────────────────
@@ -249,3 +250,25 @@ def spell_damage(world, attacker_id: int, dmg_weapon_pct: float, sp_coeff: float
         if wep and getattr(wep, "damage_min", 0) and getattr(wep, "damage_max", 0):
             weapon_dmg = (wep.damage_min + wep.damage_max) / 2.0
     return max(1, int(weapon_dmg * dmg_weapon_pct + cs.spell_power * sp_coeff))
+
+
+def mob_dot_tick_damage(magnitude: float, base_attack_power: float, level: int) -> int:
+    """Dano por tick de DoT de habilidade de mob (bleed/poison/burn —
+    ver `content/enemy_abilities_data.py::AbilityDef.magnitude`),
+    mínimo 1.
+
+    `base_attack_power` já escala LINEAR com `level`
+    (`entity_factory.py`, mob cadastrado: `base_attack_power =
+    attack_power_base * level`) — multiplicar de novo por `magnitude`
+    compunha 2 crescimentos lineares e explodia em level alto (achado
+    real: urso level 24, Laceração batendo 96/tick). Dividir por
+    `√level` cancela a parte linear que já veio de `base_attack_power`,
+    sobra crescimento em raiz — mais leve em levels altos, idêntico ao
+    valor de hoje em level 1 (`√1 = 1`). Pedido do usuário, 28/08/2026.
+
+    Fonte única de verdade — os 2 pontos que aplicam efeito de
+    habilidade de mob (`engine/world_systems.py`, corpo-a-corpo e
+    projétil) chamam esta função, nunca a conta antiga direto.
+    """
+    level = max(1, level)
+    return max(1, round(magnitude * base_attack_power / math.sqrt(level)))

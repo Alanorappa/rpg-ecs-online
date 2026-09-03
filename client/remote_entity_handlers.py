@@ -588,10 +588,23 @@ class RemoteEntityHandlers:
             local_eid = self._remote_players[server_target]
             rc = self.world.get_component(local_eid, RemoteControlled)
             if rc and hp_after >= 0:
+                from debug.aoi_debug import AOI_DBG as _AOI_DBG_phc
+                _AOI_DBG_phc.log("PLAYER_HP_COMBAT", server_eid=server_target,
+                                 hp_before=rc.hp, hp_after=hp_after, source=source,
+                                 attacker=server_attacker, outcome=outcome)
                 rc.hp = hp_after
                 _hp_max_cr = cr.get("hp_max", 0)
                 if _hp_max_cr > 0:
                     rc.hp_max = _hp_max_cr
+            elif rc and hp_after < 0:
+                # hp_after ausente/negativo — update SKIPADO, rc.hp fica com o
+                # valor antigo. Investigação 28/08/2026 (bot "parecendo morto"
+                # às vezes): se isso acontecer perto de um combat_result real
+                # contra o bot, é um candidato forte pra causa raiz.
+                from debug.aoi_debug import AOI_DBG as _AOI_DBG_phc2
+                _AOI_DBG_phc2.log("PLAYER_HP_COMBAT_SKIPPED", server_eid=server_target,
+                                  hp_atual=rc.hp, hp_after_recebido=hp_after,
+                                  source=source, attacker=server_attacker, outcome=outcome)
             pos = self.world.get_component(local_eid, Position)
             # Auto-attack de arqueiro (PvP, contra player remoto): flecha visual
             # nasce aqui; dano/som ficam diferidos para o impacto em _on_hit — inclusive
@@ -693,6 +706,14 @@ class RemoteEntityHandlers:
                     magnitude=0.0,      # sem dano local — só servidor aplica dano
                     tick_interval=0.0,  # sem tick local de dano
                 )
+                # Ordem de ativação pra buff bar (01/09/2026) — este é o
+                # ponto de ativação REAL pro jogador local em modo online
+                # (o servidor roda apply_effect() por trás, mas o cliente
+                # nunca chama de novo — só espelha aqui). engine.
+                # core_systems.apply_effect() cobre offline/servidor;
+                # este cobre o espelhamento online.
+                from engine.effect_order import mark_activated as _mark_eo
+                _mark_eo(self.world, self.player_entity, etype)
             else:
                 sfx.effects[etype].duration = dur
 
@@ -1298,6 +1319,8 @@ class RemoteEntityHandlers:
     def _spawn_remote_player_entity(self, server_eid: int, data: dict) -> None:
         """Cria entidade ECS real para jogador remoto. TileMovementSystem anima."""
         if server_eid in self._remote_players:
+            from debug.aoi_debug import AOI_DBG as _AOI_DBG_psk
+            _AOI_DBG_psk.log("PLAYER_SPAWN_SKIP", server_eid=server_eid)
             return
         from engine.components import (Position, TileMovement, Renderable,
                                  Visible, RemoteControlled)
@@ -1352,6 +1375,11 @@ class RemoteEntityHandlers:
             from engine.components import Faction as _FacRemote
             self.world.add_component(local_eid, _FacRemote(faction_id=data["faction"]))
         self._remote_players[server_eid] = local_eid
+        from debug.aoi_debug import AOI_DBG as _AOI_DBG_psp
+        _AOI_DBG_psp.log("PLAYER_SPAWN", server_eid=server_eid, name=data.get("name", "?"),
+                         class_id=data.get("class_id", "guerreiro"),
+                         hp=data.get("hp", 100), hp_max=data.get("hp_max", 100),
+                         kind=data.get("kind", "player"), faction=data.get("faction"))
 
         # Reacquire alvo PvP: se estávamos perseguindo este player antes de ele morrer
         if server_eid == self._pvp_respawn_target:
@@ -1564,14 +1592,15 @@ class RemoteEntityHandlers:
                 # ui/systems.py.
                 if _nm_mode_hb == 0 and _hud_surf is not None:
                     from engine.components import StatusEffects as _SfxDraw
+                    from ui.systems import _filter_nameplate_effects as _fne_hb
                     _sfx = self.world.get_component(local_eid, _SfxDraw)
-                    _active_effects = list(_sfx.effects.values()) if _sfx else []
+                    _active_effects = _fne_hb(_sfx)
                     if _active_effects:
                         from ui.systems import _build_effects_row as _ber_hb
                         if not hasattr(self, '_mob_eff_font'):
                             import pygame as _pg
                             self._mob_eff_font = _pg.font.Font(None, 18)
-                        _row = _ber_hb(_active_effects, self._mob_eff_font)
+                        _row, _ = _ber_hb(_active_effects, self._mob_eff_font)
                         if _row is not None:
                             _xo, _yo = _ero_hb(_hud_surf)
                             _WL_hb.add_icon_offset(pos.x, _world_y_top, _row,
@@ -1628,6 +1657,11 @@ class RemoteEntityHandlers:
         self._remote_player_move_queues.pop(server_eid, None)
         self._remote_step_timers.pop(server_eid, None)
         if local_eid is not None:
+            from debug.aoi_debug import AOI_DBG as _AOI_DBG_pdsp
+            from engine.components import RemoteControlled as _RCdsp
+            _rc_dsp = self.world.get_component(local_eid, _RCdsp)
+            _AOI_DBG_pdsp.log("PLAYER_DESPAWN", server_eid=server_eid,
+                              hp=_rc_dsp.hp if _rc_dsp else None)
             # Se o player local estava perseguindo esta entidade, guarda o server_eid
             # para reacquirir o alvo quando o player remoto respawnar.
             from engine.components import CombatState as _CStRm
@@ -1729,14 +1763,15 @@ class RemoteEntityHandlers:
                 if _nm_mode_rp == 0 and _hud_surf is not None:
                     from engine.components import StatusEffects as _SfxRp
                     from ui.hud_bars import effects_row_offset as _ero_rp
+                    from ui.systems import _filter_nameplate_effects as _fne_rp
                     _sfx_rp = self.world.get_component(local_eid, _SfxRp)
-                    _active_effects_rp = list(_sfx_rp.effects.values()) if _sfx_rp else []
+                    _active_effects_rp = _fne_rp(_sfx_rp)
                     if _active_effects_rp:
                         from ui.systems import _build_effects_row as _ber_rp
                         if not hasattr(self, '_mob_eff_font'):
                             import pygame as _pg_rp
                             self._mob_eff_font = _pg_rp.font.Font(None, 18)
-                        _row_rp = _ber_rp(_active_effects_rp, self._mob_eff_font)
+                        _row_rp, _ = _ber_rp(_active_effects_rp, self._mob_eff_font)
                         if _row_rp is not None:
                             _xo_rp, _yo_rp = _ero_rp(_hud_surf)
                             _WL_rp.add_icon_offset(pos.x, _world_y_top, _row_rp,

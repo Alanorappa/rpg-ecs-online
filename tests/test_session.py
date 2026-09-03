@@ -1042,7 +1042,7 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
         self.ws_server, self.mgr = make_session_manager()
 
     def _make_harvestable(self, tx: int, ty: int, map_file: str = None,
-                          name: str = "Arbusto", sprite: str = "pr_box1",
+                          name: str = "Arbusto", sprite: str = "vp_067",
                           items: list = None, coins: int = 0,
                           respawn_s: float = 0) -> int:
         """Cria o harvestable pelo caminho de produção real
@@ -1079,7 +1079,7 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
     def test_create_harvestables_for_map_resolve_items_e_ignora_invalido(self):
         spawn_points = {"harvestables": [{
             "x": 50, "y": 60, "name": "Arbusto de Frutas", "coins": 3,
-            "sprite": "pr_box1",
+            "sprite": "vp_067",
             "items": ["training_sword", ("small_hp_potion", 3),
                       "item_key_que_nao_existe"],
         }]}
@@ -1118,7 +1118,7 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
         tm  = self.ws_server.world.get_component(hv_eid, TileMovement)
         pos = self.ws_server.world.get_component(hv_eid, Position)
         self.assertEqual(hv.corpse_id, hid)
-        self.assertEqual(ren.sprite_id, "pr_box1")
+        self.assertEqual(ren.sprite_id, "vp_067")
         self.assertEqual((tm.current_tile_x, tm.current_tile_y), (50, 60))
         self.assertFalse(tm.is_moving)
         self.assertIsNotNone(pos)
@@ -1132,7 +1132,7 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
         if not pygame.display.get_surface():
             pygame.display.set_mode((1, 1))
         from ui.tile_sprite_manager import TILE_SPRITES
-        surf = TILE_SPRITES.get_raw_sprite("pr_box1")
+        surf = TILE_SPRITES.get_raw_sprite("vp_067")
         self.assertIsNotNone(surf)
         self.assertEqual(surf.get_size(), (32, 64))
 
@@ -1149,7 +1149,7 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
         }
         data = {"harvestables": [{
             "x": 10, "y": 20, "name": "Planta", "coins": 5,
-            "sprite": "pr_box1",
+            "sprite": "vp_067",
             "items": ["training_sword", ["small_hp_potion", 2]],
         }]}
         fd, path = tempfile.mkstemp(suffix=".json")
@@ -1166,7 +1166,7 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(hv[0]["y"], 20)
         self.assertEqual(hv[0]["name"], "Planta")
         self.assertEqual(hv[0]["coins"], 5)
-        self.assertEqual(hv[0]["sprite"], "pr_box1")
+        self.assertEqual(hv[0]["sprite"], "vp_067")
         self.assertNotIn("color", hv[0])
         # Lista JSON vira tuple (normalize_reward_entry só reconhece tuple);
         # string crua permanece string.
@@ -1193,18 +1193,21 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(is_tile_walkable(player_eid, 140, 380))
 
     async def test_harvestable_com_sprite_passavel_no_catalogo_nao_trava_o_tile(self):
-        """Bug real relatado pelo usuário 25/07/2026: "pl_vomito" é
-        PASSÁVEL no catálogo (OBJECT_MAPPING['pl_vomito'].is_solid ==
-        False), mas travava o tile de qualquer jeito, porque
-        create_harvestable_entity sempre adicionava TileMovement sem
-        olhar a config real do sprite. Fix: Harvestable.solid vem do
-        catálogo; TileValidationSystem só marca o tile ocupado se solid."""
+        """Bug real relatado pelo usuário 25/07/2026: um sprite marcado
+        PASSÁVEL no catálogo (OBJECT_MAPPING[x].is_solid == False; antes
+        "pl_vomito", família "TX Plant" removida -- ver
+        PROBLEMAS_ARQUITETURA.md §101 -- substituído por "vp_186", pedra
+        pequena sem colisão em "TX Village Props with Shadow") travava o
+        tile de qualquer jeito, porque create_harvestable_entity sempre
+        adicionava TileMovement sem olhar a config real do sprite. Fix:
+        Harvestable.solid vem do catálogo; TileValidationSystem só marca
+        o tile ocupado se solid."""
         from engine.world_systems import is_tile_walkable
         from tests.helpers import spawn_player
         player_eid = spawn_player(self.ws_server, "s1", 138, 380)
         self.ws_server._tick(0.05)
         self.assertTrue(is_tile_walkable(player_eid, 140, 380))
-        self._make_harvestable(140, 380, sprite="pl_vomito")
+        self._make_harvestable(140, 380, sprite="vp_186")
         self.ws_server._tick(0.05)
         self.assertTrue(is_tile_walkable(player_eid, 140, 380),
                         "sprite passável no catálogo não deveria travar o tile")
@@ -1268,7 +1271,7 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
                   if s.get("kind") == "harvestable" and s.get("corpse_id") == hid]
         self.assertEqual(len(spawned), 1)
         self.assertEqual(spawned[0]["eid"], hv_eid)   # eid REAL agora, não mais -hid
-        self.assertEqual(spawned[0]["sprite_id"], "pr_box1")
+        self.assertEqual(spawned[0]["sprite_id"], "vp_067")
 
         loot_avail = get_msgs_of_type(fw, MsgType.LOOT_AVAILABLE)
         matching = [m for m in loot_avail if m["corpse_id"] == hid]
@@ -1325,7 +1328,7 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
         fc = _FakeClient()
         payload = {"tick": 1, "tx": 0, "ty": 0, "entities": [
             {"eid": 42, "kind": "harvestable", "corpse_id": 7, "tx": 5, "ty": 5,
-             "name": "Planta", "sprite_id": "pr_box1"},
+             "name": "Planta", "sprite_id": "vp_067"},
         ]}
         nh_mod.NetworkHandlers._handle_msg_world_state(fc, payload)
         self.assertFalse(fc._spawn_remote_player_called)
@@ -1344,7 +1347,7 @@ class TestHarvestableRespawnM2(unittest.IsolatedAsyncioTestCase):
         self.ws_server, self.mgr = make_session_manager()
 
     def _make_harvestable(self, tx: int, ty: int, map_file: str = None,
-                          name: str = "Arbusto", sprite: str = "pr_box1",
+                          name: str = "Arbusto", sprite: str = "vp_067",
                           items: list = None, coins: int = 0,
                           respawn_s: float = 0) -> int:
         map_key = map_file or self.ws_server._map_file
@@ -1449,7 +1452,7 @@ class TestHarvestableQuestGateM3(unittest.IsolatedAsyncioTestCase):
                           requires_quest: str = "") -> int:
         map_key = map_file or self.ws_server._map_file
         spawn_points = {"harvestables": [{
-            "x": tx, "y": ty, "name": "Item com Trava", "sprite": "pr_box1",
+            "x": tx, "y": ty, "name": "Item com Trava", "sprite": "vp_067",
             "items": ["training_sword"], "coins": 0,
             "requires_quest": requires_quest,
         }]}

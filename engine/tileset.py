@@ -53,6 +53,16 @@ class TileType:
     # Apenas vision_height >= 2 é considerado bloqueante pelo FogSystem.
     vision_height: int = 0
 
+    # is_bush (01/09/2026) — marca formalmente "isto é um arbusto de
+    # stealth", independente de vision_height (árvore também bloqueia
+    # visão com vision_height=2, mas NÃO é bush). Único consumidor:
+    # server/bush_zone_processor.py::_is_on_bush_tile (feedback de
+    # opacidade pro próprio jogador) — NUNCA inferir isso por
+    # sprite_name/prefixo em runtime, o dado nasce aqui, na fonte
+    # (catálogo), e é propagado por engine/entity_factory.py::create_tilemap
+    # junto com vision_height.
+    is_bush: bool = False
+
     # ── Sistema de pisos (estruturas escalonáveis) ────────────────────────────
     # elevation    — piso do tile: 0=chão (padrão), 1=primeiro andar, etc.
     # is_transition— True em tiles de escada/"t": acessíveis de qualquer piso.
@@ -490,25 +500,120 @@ def discover_sprite_objects() -> None:
 #
 SHEET_FAMILIES: list[dict] = [
     {
-        "file":                "TX Tileset Grass",
-        "prefix":              "txg",
-        "tile_w":              32,
-        "tile_h":              32,
-        "is_solid":            False,
-        "label":               "Grama TX",
-        "color":               (58, 100, 48),
-        "underlying_terrain":  "G",
-    },
-    {
         "file":                "TX Tileset Terrain",
         "prefix":              "ter",
         "tile_w":              32,
         "tile_h":              32,
         "is_solid":            False,
         "label":               "Chão",
-        "color":               (58, 100, 48),
+        "color":               (58, 100, 48),   # fallback — só usado se nenhuma zona/override bater
+        # "zones" (26-27/08/2026, pedido do usuário) — catálogo por
+        # CATEGORIA de terreno dentro do arquivo (grade 14×16 de 32px).
+        # Fronteiras medidas por PIXEL REAL (script 1x, script sobre
+        # `assets/tiles/TX Tileset Terrain_Explanation.png` procurando os
+        # segmentos de linha vermelha da anotação do usuário e convertendo
+        # pra múltiplo de 32px) — corrigidas a partir da 1ª leitura visual
+        # aproximada (ver PROBLEMAS_ARQUITETURA.md §81, "Correção").
+        # `terra_pura`/`terra_flor` sem gap: a leitura por pixel achou
+        # linha 15 dentro de `terra_pura` (não parava em 14) e `terra_flor`
+        # começando na col 5 (não 4 — col 4 é área sem categoria/gap real
+        # na imagem, fica fora de qualquer zona de propósito).
+        #
+        # `transicao_terra_grama`/`transicao_grama_terra` NÃO são mais uma
+        # lista solta de células — são 2 quebra-cabeças de 3×3 peças
+        # interligadas ("mancha" arredondada, "cruz"), confirmado
+        # recortando as 9 células de cada um a partir do PNG original (não
+        # a imagem anotada): canto = grama cobrindo ~3/4 do tile com corte
+        # diagonal, borda-meio = metade grama/metade terra, centro = cor
+        # sólida. Tratar como 18 tiles soltos pra sortear 1 por vizinho
+        # (1ª versão desta feature) produzia um mosaico sem nexo — bug
+        # relatado pelo usuário, ver PROBLEMAS_ARQUITETURA.md §81
+        # "Correção". `shapes` guarda só a ORIGEM (canto superior-esquerdo)
+        # de cada quebra-cabeça; a peça certa por vizinho é resolvida por
+        # `resolve_blob3x3_piece()` (autotile posicional, não sorteio).
+        "zones": {
+            "transicao_terra_grama": {
+                "purpose": "transition", "from": "terra", "to": "grama",
+                "shapes": {"mancha": (0, 0), "cruz": (3, 0)},
+            },
+            "transicao_grama_terra": {
+                "purpose": "transition", "from": "grama", "to": "terra",
+                "shapes": {"mancha": (0, 3), "cruz": (3, 3)},
+                # Achado por medição de pixel real (27/08/2026, usuário
+                # reportou "sem transição nenhuma, nem dentro nem fora"
+                # numa curva de caminho de terra sobre grama) — as 4
+                # peças de CANTO (2 lados adjacentes) desta zona têm
+                # presença fraca da cor nova (terra) em AMBOS os
+                # estilos (mancha E cruz): fração de terra no lado
+                # "não-de-fora" só ~0.3-0.5 (nunca perto de 1.0), contra
+                # ~1.0 na zona irmã `transicao_terra_grama`. Não é bug
+                # de cálculo — é o próprio desenho do PNG (o "buraco de
+                # terra" é menor/mais arredondado que a "ilha de
+                # grama"). Marca pra `_apply_smart_terrain` preferir 1
+                # peça de BORDA (sempre forte/nítida nos 2 estilos,
+                # confirmado) no lugar da peça de canto dedicada nesses
+                # casos — ver PROBLEMAS_ARQUITETURA.md §81 "Correção 4".
+                "weak_corners": True,
+            },
+            # Recatalogado 02/09/2026 — usuário substituiu o PNG (sheet
+            # "TX Tileset Terrain" ganhou mais variações de grama, layout
+            # mudou de posição). Área de grama agora é c6-13/r0-7 (8×8=64
+            # células, confirmado pelo usuário). Split flor/pura
+            # confirmado por inspeção visual (crop ampliado, célula por
+            # célula) + decisão do usuário: `grama_flor` = só onde tem
+            # flor visível (c6-9,r0-3, mesma posição de antes, coincidência);
+            # `grama_pura` junta textura-de-folhinha-sem-flor (c10-13,r0-3)
+            # + grama 100% lisa sem textura (c6-13,r4-7, inclui pedras
+            # espalhadas nas linhas 4-5 — usuário confirmou incluir no
+            # mesmo pool, sem zona separada).
+            "grama_flor": {
+                "purpose": "terrain_variant", "terrain": "grama",
+                "cells": [(c, r) for c in range(6, 10) for r in range(0, 4)],
+            },
+            "grama_pura": {
+                "purpose": "terrain", "terrain": "grama",
+                "cells": ([(c, r) for c in range(10, 14) for r in range(0, 4)]
+                         + [(c, r) for c in range(6, 14) for r in range(4, 8)]),
+            },
+            "piso_sobre_terra": {
+                "purpose": "floor_full", "base": "terra",
+                # Recatalogado 02/09/2026 (usuário moveu a posição no PNG,
+                # mesma leva da grama) — agora c8-13/r8-12. Abaixo disso
+                # (mais linhas) também é transição grama-terra, mas
+                # colocada manualmente pelo usuário — fora do catálogo de
+                # propósito, o pincel/`_apply_smart_terrain` nunca deve
+                # usar essas células.
+                "cells": [(c, r) for c in range(8, 14) for r in range(8, 13)],
+            },
+            "piso_sobre_grama": {
+                "purpose": "floor_full", "base": "grama",
+                "cells": [(c, r) for c in range(0, 2) for r in range(6, 11)],
+            },
+            "terra_pura": {
+                "purpose": "terrain", "terrain": "terra",
+                "cells": [(c, r) for c in range(0, 4) for r in range(12, 16)],
+            },
+            "terra_flor": {
+                "purpose": "terrain_variant", "terrain": "terra",
+                "cells": [(c, r) for c in range(5, 8) for r in range(13, 16)],
+            },
+        },
+        # color_overrides DERIVADO das zonas (ponto único de verdade —
+        # nunca diverge) + a mesma divisão por FAIXA DE LINHA de antes
+        # (§78) como fallback pras células fora de qualquer zona nomeada
+        # (piso parcial/customizável, ainda sem cor própria).
+        "color_overrides": {
+            **{(c, r): GRASS_TILE.color  for c in range(14) for r in range(0, 4)},
+            **{(c, r): STONE_FLOOR.color for c in range(14) for r in range(4, 12)},
+            **{(c, r): DIRT_TILE.color   for c in range(14) for r in range(12, 16)},
+            **{cell: GRASS_TILE.color  for cell in [(c, r) for c in range(0, 3) for r in range(0, 3)]
+                                                   + [(c, r) for c in range(3, 6) for r in range(0, 3)]},
+            **{cell: DIRT_TILE.color   for cell in [(c, r) for c in range(0, 3) for r in range(3, 6)]
+                                                   + [(c, r) for c in range(3, 6) for r in range(3, 6)]},
+            **{cell: STONE_FLOOR.color for cell in [(c, r) for c in range(6, 8) for r in range(4, 7)]},
+        },
         "underlying_terrain":  "G",
-    },    
+    },
         {
         "file":                "TX Tileset Woodfloor",
         "prefix":              "twf",
@@ -520,16 +625,6 @@ SHEET_FAMILIES: list[dict] = [
         "underlying_terrain":  ".",
     },
         {
-        "file":                "TX Mud",
-        "prefix":              "txm",
-        "tile_w":              32,
-        "tile_h":              32,
-        "is_solid":            False,
-        "label":               "Terra Seca TX",
-        "color":               (158, 90, 36),
-        "underlying_terrain":  ".",
-    },
-        {
         "file":                "TX Tileset Cave",
         "prefix":              "txc",
         "tile_w":              32,
@@ -538,8 +633,47 @@ SHEET_FAMILIES: list[dict] = [
         "label":               "Caverna TX",
         "color":               ( 47, 46, 57),
         "underlying_terrain":  ".",
-    },          
+    },
 ]
+
+
+def _derive_terrain_zone_colors(fam: dict) -> dict:
+    """Deriva cor de minimapa A PARTIR das próprias `zones` do family
+    (02/09/2026) — o `color_overrides` de "TX Tileset Terrain" dizia no
+    comentário ser "DERIVADO das zonas (ponto único de verdade — nunca
+    diverge)", mas na prática era escrito à mão; ficava desatualizado
+    toda vez que o usuário recatalogava o PNG (achado durante o
+    recatálogo de 02/09/2026 — grama nova em c6-13/r4-7 caía no
+    fallback de faixa "stone", mostrando cor de pedra pra tile de
+    grama). Mapeia zona→cor pelo `purpose`: `floor_full` sempre
+    `STONE_FLOOR`; `terrain`/`terrain_variant` pelo campo `terrain`
+    (hoje só "grama"/"terra"). Zona sem `cells` (transição — usa
+    `shapes`, não uma lista de células) não gera override nenhum, fica
+    com o que já estava no `color_overrides` hand-written (fallback de
+    faixa de linha, ou override específico antigo da área de
+    transição — nenhum dos dois mexido aqui)."""
+    terrain_color = {"grama": GRASS_TILE.color, "terra": DIRT_TILE.color}
+    derived = {}
+    for zone in fam.get("zones", {}).values():
+        cells = zone.get("cells")
+        if not cells:
+            continue
+        if zone.get("purpose") == "floor_full":
+            color = STONE_FLOOR.color
+        else:
+            color = terrain_color.get(zone.get("terrain"))
+        if color is None:
+            continue
+        for cell in cells:
+            derived[cell] = color
+    return derived
+
+
+for _fam in SHEET_FAMILIES:
+    if _fam.get("zones"):
+        _fam["color_overrides"] = {**_fam.get("color_overrides", {}),
+                                   **_derive_terrain_zone_colors(_fam)}
+del _fam
 
 # Mapeamento id_tile → (sheet_file, sx, sy, tile_w, tile_h) — lido pelo TileSpriteManager
 SHEET_TILE_MAP: dict[str, tuple] = {}
@@ -549,7 +683,15 @@ def discover_sheet_tiles() -> None:
     """
     Para cada entrada em SHEET_FAMILIES, lê as dimensões do PNG e registra
     um TileType por célula em OBJECT_MAPPING / OBJECT_CHARS / SHEET_TILE_MAP.
-    """
+
+    `color_overrides: {(col,row): (r,g,b)}` (26/08/2026, pedido do
+    usuário) escolhe a cor por célula — mirror exato de
+    `collision_overrides` (discover_object_sheet_tiles) — caindo no
+    `color` da família quando a célula não está no dict. Existe porque um
+    único arquivo de terreno (ex: "TX Tileset Terrain") pode misturar
+    grama/terra/calçamento na mesma imagem — sem isso, TODAS as células
+    do arquivo usavam a mesma cor no minimapa, mesmo sendo visualmente
+    bem diferentes (bug real relatado pelo usuário)."""
     import os
     for fam in SHEET_FAMILIES:
         sheet_file = fam["file"]
@@ -562,6 +704,7 @@ def discover_sheet_tiles() -> None:
         prefix    = fam["prefix"]
         is_solid  = fam.get("is_solid", False)
         color     = fam["color"]
+        color_overrides = fam.get("color_overrides", {})
         under     = fam.get("underlying_terrain", "G")
         tw, th    = fam["tile_w"], fam["tile_h"]
         for row in range(rows):
@@ -571,7 +714,7 @@ def discover_sheet_tiles() -> None:
                 sy = row * th
                 tile = TileType(
                     name=f"Sheet_{prefix}_{col}_{row}",
-                    color=color,
+                    color=color_overrides.get((col, row), color),
                     is_solid=is_solid,
                     sprite_name=tile_id,
                     sprite_px_w=tw,
@@ -635,39 +778,6 @@ def discover_sheet_tiles() -> None:
 #
 OBJECT_SHEET_FAMILIES: list[dict] = [
     {
-        "file":                "TX Grades",
-        "prefix":              "gc",
-        "tile_w":              32,
-        "tile_h":              64,
-        "label":               "Grade Cemitério",
-        "color":               (90, 80, 70),
-        "default_collision":   "full",
-        "collision_overrides": {
-            (0, 0): "base", 
-            (0, 1): "full", 
-            (0, 2): "full", 
-            (0, 3): "full",
-            (1, 0): "base", 
-            (1, 3): "base",
-            (2, 0): "base", 
-            (2, 3): "base",
-            (3, 0): "base", 
-            (3, 3): "base",
-            (4, 0): "base", 
-            (4, 3): "base",
-            (5, 0): "base", 
-            (5, 3): "base",
-            (6, 0): "base", 
-            (6, 3): "base",
-            (7, 0): "base", 
-            (7, 1): "full", 
-            (7, 2): "full", 
-            (7, 3): "full",
-        },
-        "underlying_terrain":  "G",
-    },
-
-{
         "file":                "TX Grades2",
         "prefix":              "gcn",
         "tile_w":              32,
@@ -703,490 +813,592 @@ OBJECT_SHEET_FAMILIES: list[dict] = [
          ]
     },    
     
-     {
-         "file":   "TX Props",
-         "prefix": "pr",
-         "label":  "Adereços",
-         "color":  (90, 80, 70),
-         "underlying_terrain": "G",
-         "tiles": [
-             # (id,              sx,  sy,   w,   h,   collision_rect)
-             ("chest",           96,   0,  32,  64,           "base"),
-             ("box1",           160,   0,  32,  64,           "base"),
-             ("box2",           160,  64,  32,  64,           "base"),
-             ("barrel",         160, 128,  32,  64,           "base"),
-             ("urn",            160, 192,  32,  64,           "base"),
-             ("pot",            160, 258,  32,  64,           "base"),
-             ("urn2",           160, 320,  32,  64,           "base"),
-             ("soulstone",      224,   0,  32,  64,           "base"),
-             ("soulstone2",     224,  64,  32,  96,           "base"),
-             ("soulstone3",     224, 160,  32,  64,           "base"),
-             ("gravestone",     224, 224,  32,  64,           "base"),
-             ("cross",          224, 288,  32,  64,           "base"),
-             ("bench1",         288,   0,  64,  64, ( 0, 32, 64, 32)),
-             ("tomb1",          288,  64,  64,  64, ( 0, 32, 64, 32)),
-             ("tomb2",          288, 128,  32,  96, ( 0, 32, 32, 64)),
-             ("gravestone2",    288, 224,  32,  64,           "base"),
-             ("cube",           288, 288,  32,  64,           "base"),
-             ("opentomb",       288, 384,  64,  32,           "full"),
-             ("opentomb2",      288, 416,  64,  32, ( 0,  0, 32, 32)),
-             ("sheets1",         32, 256,  64,  64, ( 0, 32, 64, 32)),
-             ("bench2",         384,   0,  32,  64,           "full"),
-             ("bench3",         384,  96,  32,  64,           "full"),
-             ("pillar1",        352, 160,  32,  96,           "base"),
-             ("pillar2",        416, 192,  32,  64,           "base"),
-             ("statue",         416,   0,  96,  96, (32, 64, 32, 32)),
-             ("lighting",       448,  96,  32,  64,           "base"),
-             ("pit",            416, 352,  64,  64,           "full"),
-             # Pedras grandes (bigrock/rock3-6) ganharam bloqueio de visão em
-             # 13/08/2026, mesma decisão de árvore/bush acima — rock1/rock2
-             # (baixas, já sem colisão) ficam intocadas.
-             ("bigrock",          0, 416,  64,  64,           "full", 0, False, 1, "full", 2),
-             ("rock1",            0, 480,  32,  32,             None),
-             ("rock2",           32, 480,  32,  32,             None),
-             ("rock3",           64, 480,  32,  32,           "full", 0, False, 1, "full", 2),
-             ("rock4",           96, 480,  32,  32,           "full", 0, False, 1, "full", 2),
-             ("rock5",          128, 480,  32,  32,           "full", 0, False, 1, "full", 2),
-             ("rock6",          160, 480,  32,  32,           "full", 0, False, 1, "full", 2),
-             ("closedoor",        0,  96,  96,  64,           "full"),
-             ("opendoor",         0,  160, 96,  64,             None),
-             ("artmister",       32,  320, 32,  32,           "full"),
-             ("pa",              64,  320, 32,  64,           "base"),
-             ("lampiao",         96,  320, 32,  32,           "base"),
-           #  ("lampiao",         96,  320, 32,  32,           "base"),
+#     {
+#         "file":   "TX Props",
+#         "prefix": "pr",
+#         "label":  "Adereços",
+#         "color":  (90, 80, 70),
+#         "underlying_terrain": "G",
+#         "tiles": [
+#             # (id,              sx,  sy,   w,   h,   collision_rect)
+#             ("chest",           96,   0,  32,  64,           "base"),
+#             ("box1",           160,   0,  32,  64,           "base"),
+#             ("box2",           160,  64,  32,  64,           "base"),
+#             ("barrel",         160, 128,  32,  64,           "base"),
+#             ("urn",            160, 192,  32,  64,           "base"),
+#             ("pot",            160, 258,  32,  64,           "base"),
+#             ("urn2",           160, 320,  32,  64,           "base"),
+#             ("soulstone",      224,   0,  32,  64,           "base"),
+#             ("soulstone2",     224,  64,  32,  96,           "base"),
+#             ("soulstone3",     224, 160,  32,  64,           "base"),
+#             ("gravestone",     224, 224,  32,  64,           "base"),
+#             ("cross",          224, 288,  32,  64,           "base"),
+#             ("bench1",         288,   0,  64,  64, ( 0, 32, 64, 32)),
+#             ("tomb1",          288,  64,  64,  64, ( 0, 32, 64, 32)),
+#             ("tomb2",          288, 128,  32,  96, ( 0, 32, 32, 64)),
+#             ("gravestone2",    288, 224,  32,  64,           "base"),
+#             ("cube",           288, 288,  32,  64,           "base"),
+#             ("opentomb",       288, 384,  64,  32,           "full"),
+#             ("opentomb2",      288, 416,  64,  32, ( 0,  0, 32, 32)),
+#             ("sheets1",         32, 256,  64,  64, ( 0, 32, 64, 32)),
+#             ("bench2",         384,   0,  32,  64,           "full"),
+#             ("bench3",         384,  96,  32,  64,           "full"),
+#             ("pillar1",        352, 160,  32,  96,           "base"),
+#             ("pillar2",        416, 192,  32,  64,           "base"),
+#             ("statue",         416,   0,  96,  96, (32, 64, 32, 32)),
+#             ("lighting",       448,  96,  32,  64,           "base"),
+#             ("pit",            416, 352,  64,  64,           "full"),
+#             # Pedras grandes (bigrock/rock3-6) ganharam bloqueio de visão em
+#             # 13/08/2026, mesma decisão de árvore/bush acima — rock1/rock2
+#             # (baixas, já sem colisão) ficam intocadas.
+#             ("bigrock",          0, 416,  64,  64,           "full", 0, False, 1, "full", 2),
+#             ("rock1",            0, 480,  32,  32,             None),
+#             ("rock2",           32, 480,  32,  32,             None),
+#             ("rock3",           64, 480,  32,  32,           "full", 0, False, 1, "full", 2),
+#             ("rock4",           96, 480,  32,  32,           "full", 0, False, 1, "full", 2),
+#             ("rock5",          128, 480,  32,  32,           "full", 0, False, 1, "full", 2),
+#             ("rock6",          160, 480,  32,  32,           "full", 0, False, 1, "full", 2),
+#             ("closedoor",        0,  96,  96,  64,           "full"),
+#             ("opendoor",         0,  160, 96,  64,             None),
+#             ("artmister",       32,  320, 32,  32,           "full"),
+#             ("pa",              64,  320, 32,  64,           "base"),
+#             ("lampiao",         96,  320, 32,  32,           "base"),
+#           #  ("lampiao",         96,  320, 32,  32,           "base"),
+#
+#         ],
+#     },
 
-         ],
-     },
-
-     {
-         "file":   "TX Plant",
-         "prefix": "pl",
-         "label":  "Vegetação",
-         "color":  (96, 99, 21),
-         "underlying_terrain": "G",
-         "tiles": [
-             # (id,              sx,  sy,   w,   h,   collision_rect)  
-             ("tree1",             0,   0, 160, 160,   ( 64, 128, 32,32)),
-             ("tree2",           160,   0,  96, 160,   ( 32, 128, 32,32)),
-             ("tree3",           256,   0,  96, 160,   ( 32, 128, 32,32)),
-             ("bush1",             0, 192,  32,  32,   (  0,   0, 32,32)),
-             ("bush2",            32, 192,   32, 32,   (  0,   0, 32,32)),
-             ("bush3",            64, 160,  64, 64,    ( 32,  32, 32,32)),
-             ("bush4",           128, 160,  64,  64,   ( 32,  32, 32,32)),
-             ("bush5",           192, 160,  64,  64,   ( 32,  32, 32,32)),
-             ("bush6",           256, 160,  64,  64,   (  0,  32, 32,32)),
-             ("grassblade1",       0, 224,  32,  32,                None),
-             ("grassblade2",      32, 224,  32,  32,                None),
-             ("grassblade3",      64, 224,  32,  32,                None),
-             ("grassblade4",      96, 224,  32,  32,                None),
-             ("grassblade5",       0, 256,  32,  32,                None),
-             ("grassblade6",      32, 256,  32,  32,                None),
-             ("grassblade7",      64, 256,  32,  32,                None),
-             ("grassblade8",      96, 256,  32,  32,                None),
-             ("grassblade9",       0, 288,  32,  32,                None),
-             ("grassblade10",     32, 288,  32,  32,                None),
-             ("grassblade11",     64, 288,  32,  32,                None),
-             ("grassblade12",     96, 288,  32,  32,                None),
-             ("grassblade13",      0, 322,  32,  32,                None),
-             ("grassblade14",     32, 322,  32,  32,                None),
-             ("grassblade15",     64, 322,  32,  32,                None),
-             ("grassblade16",     96, 322,  32,  32,                None),
-             ("vomito",          128, 224,  32,  32,                None),             
-             
-         ]
-
-     },
+#     {
+#         "file":   "TX Plant",
+#         "prefix": "pl",
+#         "label":  "Vegetação",
+#         "color":  (96, 99, 21),
+#         "underlying_terrain": "G",
+#         "tiles": [
+#             # (id,              sx,  sy,   w,   h,   collision_rect)  
+#             ("tree1",             0,   0, 160, 160,   ( 64, 128, 32,32)),
+#             ("tree2",           160,   0,  96, 160,   ( 32, 128, 32,32)),
+#             ("tree3",           256,   0,  96, 160,   ( 32, 128, 32,32)),
+#             ("bush1",             0, 192,  32,  32,   (  0,   0, 32,32)),
+#             ("bush2",            32, 192,   32, 32,   (  0,   0, 32,32)),
+#             ("bush3",            64, 160,  64, 64,    ( 32,  32, 32,32)),
+#             ("bush4",           128, 160,  64,  64,   ( 32,  32, 32,32)),
+#             ("bush5",           192, 160,  64,  64,   ( 32,  32, 32,32)),
+#             ("bush6",           256, 160,  64,  64,   (  0,  32, 32,32)),
+#             ("grassblade1",       0, 224,  32,  32,                None),
+#             ("grassblade2",      32, 224,  32,  32,                None),
+#             ("grassblade3",      64, 224,  32,  32,                None),
+#             ("grassblade4",      96, 224,  32,  32,                None),
+#             ("grassblade5",       0, 256,  32,  32,                None),
+#             ("grassblade6",      32, 256,  32,  32,                None),
+#             ("grassblade7",      64, 256,  32,  32,                None),
+#             ("grassblade8",      96, 256,  32,  32,                None),
+#             ("grassblade9",       0, 288,  32,  32,                None),
+#             ("grassblade10",     32, 288,  32,  32,                None),
+#             ("grassblade11",     64, 288,  32,  32,                None),
+#             ("grassblade12",     96, 288,  32,  32,                None),
+#             ("grassblade13",      0, 322,  32,  32,                None),
+#             ("grassblade14",     32, 322,  32,  32,                None),
+#             ("grassblade15",     64, 322,  32,  32,                None),
+#             ("grassblade16",     96, 322,  32,  32,                None),
+#             ("vomito",          128, 224,  32,  32,                None),             
+#             
+#         ]
+#
+#     },
     {
              "file":   "TX Village Plant",
-             "prefix": "pl",
-             "label":  "Vegetação",
-             "color":  (96, 99, 21),
              "underlying_terrain": "G",
-             "tiles": [
-                 # (id, sx, sy, w, h, collision_rect, piso, transpassavel, sort, vision_rect, vision_h)
-                 # Árvore/bush ganharam bloqueio de visão em 13/08/2026
-                 # (pedido do usuário — antes NENHUM objeto decorativo
-                 # bloqueava LOS, só parede) — vision_rect="full" cobre o
-                 # sprite visual inteiro, INDEPENDENTE de collision_rect
-                 # (árvore mantém o tronco estreito sólido de sempre; bush
-                 # continua sem colisão nenhuma, andável). Ver
-                 # PROBLEMAS_ARQUITETURA.md.
-                 #TREES
-                 ("t1",       0,  64,  96, 128,   ( 32,  96, 32,32), 0, False, 1, "full", 2),
-                 ("t2",      96,  32,  96, 160,   ( 32, 128, 32,32), 0, False, 1, "full", 2),
-                 ("t3",     192,  32, 128, 160,   ( 32, 128, 32,32), 0, False, 1, "full", 2),
-                 ("t4",     320,   0, 128, 192,   ( 32, 160, 32,32), 0, False, 1, "full", 2),
-                 ("t5",     448,   0, 128, 192,   ( 32, 160, 32,32), 0, False, 1, "full", 2),
-                 ("t6",       0, 256,  96, 128,   ( 32,  96, 32,32), 0, False, 1, "full", 2),
-                 ("t7",      96, 256,  96, 128,   ( 32,  96, 32,32), 0, False, 1, "full", 2),
-                 ("t8",     192, 224, 128, 160,   ( 32, 128, 32,32), 0, False, 1, "full", 2),
-                 ("t9",     320, 192, 128, 192,   ( 32, 160, 32,32), 0, False, 1, "full", 2),
-                 ("t10",    448, 192, 128, 192,   ( 32, 160, 32,32), 0, False, 1, "full", 2),
-                 ("t11",      0, 384, 160, 160,   ( 64, 128, 32,32), 0, False, 1, "full", 2),
-                 ("t12",    160, 384,  96, 160,   ( 32, 128, 32,32), 0, False, 1, "full", 2),
-                 ("t13",    288, 416,  96, 128,   ( 32,  96, 32,32), 0, False, 1, "full", 2),
-                 ("t14",    672,   0, 320, 256,   ( 96, 224, 96,32), 0, False, 1, "full", 2),
-                 ("t15",    704, 288, 256, 224,   ( 96, 192, 64,32), 0, False, 1, "full", 2),
-                 #BUSHES
-                 # vision_rect="base_row" (13/08/2026, §51, pedido do
-                 # usuário) — só a fileira de baixo do sprite (largura
-                 # inteira) conta pra bloqueio de visão/adjacência, não
-                 # o sprite inteiro. Evita bushes com espaço de grama
-                 # visível entre si se fundirem num blob só; bushes com
-                 # a BASE colada continuam formando um clump único de
-                 # propósito. Ver `_rect_to_tile_offsets`.
-                 ("b1",      0,  832,  32,  64,                None, 0, False, 1, "base_row", 2),
-                 ("b2",     64,  832,  32,  64,                None, 0, False, 1, "base_row", 2),
-                 ("b3",     96,  832,  96,  64,                None, 0, False, 1, "base_row", 2),
-                 ("b4",    208,  832,  64,  64,                None, 0, False, 1, "base_row", 2),
-                 ("b5",    304,  832,  64,  64,                None, 0, False, 1, "base_row", 2),
-                 ("b6",    384,  832,  64,  64,                None, 0, False, 1, "base_row", 2),
-                 ("b7",      0,  928,  32,  32,                None, 0, False, 1, "base_row", 2),
-                 ("b8",     32,  928,  64,  32,                None, 0, False, 1, "base_row", 2),
-                 ("b9",     96,  896,  64,  64,                None, 0, False, 1, "base_row", 2),
-                 ("b10",   160,  896,  64,  64,                None, 0, False, 1, "base_row", 2),
-                 ("b11",   224,  896,  64,  64,                None, 0, False, 1, "base_row", 2),
-                 ("b12",   304,  896,  96,  64,                None, 0, False, 1, "base_row", 2),
-                 ("b13",   400,  896,  96,  64,                None, 0, False, 1, "base_row", 2),
-                 ("b14",     0,  992,  32,  32,                None, 0, False, 1, "base_row", 2),
-                 ("b15",    32,  992,  64,  32,                None, 0, False, 1, "base_row", 2),
-                 ("b16",    96,  960,  64,  64,                None, 0, False, 1, "base_row", 2),
-                 ("b17",   160,  960,  64,  64,                None, 0, False, 1, "base_row", 2),
-                 ("b18",   224,  960,  64,  64,                None, 0, False, 1, "base_row", 2),
-                 ("b19",   304,  960,  96,  64,                None, 0, False, 1, "base_row", 2),
-                 ("b20",   400,  960,  96,  64,                None, 0, False, 1, "base_row", 2),
-                 #WHEAT
-                 ("w1",      0,  704,  64,  64,                None),
-                 ("w2",     64,  704,  64,  64,                None),
-                 ("w3",    128,  704,  64,  64,                None),
-                 ("w4",    192,  704,  64,  64,                None),
-                 ("w5",    256,  704,  64,  64,                None),
-                 ("w6",    320,  704,  64,  64,                None),
-                 ("w7",    384,  704,  64,  64,                None),
-                 ("w8",    448,  704,  64,  64,                None),
-                 ("w9",      0,  768,  64,  64,                None),
-                 ("w10",    64,  768,  64,  64,                None),
-                 ("w11",   128,  768,  64,  64,                None),
-                 ("w12",   192,  768,  64,  64,                None),
-                 ("w13",   256,  768,  64,  64,                None),
-                 ("w14",   320,  768,  64,  64,                None),
-                 ("w15",   384,  768,  64,  64,                None),
-                 ("w16",   448,  768,  64,  64,                None),
-                 #CABBAGE
-                 ("c3",    864,  640,  32,  32,              "full"),
-                 ("c2",    928,  768,  32,  32,              "full"),
-                 ("c1",    992,  640,  32,  32,              "full"),
-                 #PUMPKIN
-                 ("p3",    864,  672,  64,  32,              "full"),
-                 ("p2",    928,  672,  32,  32,              "full"),
-                 ("p1",    992,  672,  32,  32,              "full"),
-                 #CARROT
-                 ("cr3",   864,  704,  32,  32,             "full"),
-                 ("cr2",   928,  704,  32,  32,             "full"),
-                 ("cr1",   992,  704,  32,  32,             "full"),
-                 #GRASSBLADE
-                 ("gb1",   768,  864,  32,  32,               None),
-                 ("gb2",   800,  864,  32,  32,               None),
-                 ("gb3",   832,  864,  32,  32,               None),
-                 ("gb4",   864,  864,  32,  32,               None),
-                 ("gb5",   768,  896,  32,  32,               None),
-                 ("gb6",   800,  896,  32,  32,               None),
-                 ("gb7",   832,  896,  32,  32,               None),
-                 ("gb8",   864,  896,  32,  32,               None),
-                 ("gb9",   768,  928,  32,  32,               None),
-                 ("gb10",  800,  928,  32,  32,               None),
-                 ("gb11",  832,  928,  32,  32,               None),
-                 ("gb12",  864,  928,  32,  32,               None),
-                 ("gb13",  768,  960,  32,  32,               None),
-                 ("gb14",  800,  960,  32,  32,               None),
-                 ("gb15",  832,  960,  32,  32,               None),
-                 #FLOWERS
-                 ("fl1",   864,  960,  32,  32,               None),
-                 ("fl2",   896,  864,  32,  32,               None),
-                 ("fl3",   928,  864,  32,  32,               None),
-                 ("fl4",   960,  864,  32,  32,               None),
-                 ("fl5",   992,  864,  32,  32,               None),
-                 ("fl6",   896,  896,  32,  32,               None),
-                 ("fl7",   928,  896,  32,  32,               None),
-                 ("fl8",   960,  896,  32,  32,               None),
-                 ("fl9",   992,  896,  32,  32,               None),
-                 ("fl10",  896,  928,  32,  32,               None),
-                 ("fl11",  928,  928,  32,  32,               None),
-                 ("fl12",  960,  928,  32,  32,               None),
-                 ("fl13",  992,  928,  32,  32,               None),
-                 ("fl14",  896,  960,  32,  32,               None),
-                 ("fl15",  928,  960,  32,  32,               None),
-                 ("fl16",  960,  960,  32,  32,               None),
-                 ("fl17",  992,  960,  32,  32,               None),
-                 ("fl18",  896,  992,  32,  32,               None),
-                 ("fl19",  928,  992,  32,  32,               None),
-                 ("fl20",  960,  992,  32,  32,               None),
-                 ("fl21",  992,  992,  32,  32,               None),
-             ]
-    
+             # "groups" (26/08/2026, pedido do usuário — prova de conceito
+             # real do mecanismo novo, ver PROBLEMAS_ARQUITETURA.md §78):
+             # este arquivo já misturava 8 categorias BEM diferentes
+             # visualmente (árvore verde/outono, arbusto, trigo dourado,
+             # repolho, abóbora, cenoura, grama fina, flor) — todas com a
+             # MESMA cor `(96, 99, 21)` antes, então nenhuma aparecia
+             # certo no minimapa. `prefix` continua "pl" em TODO grupo
+             # (nunca mudar) — mapas reais (`maps/map_1_objects.csv`,
+             # `maps/moba_battleground_objects.csv`) já referenciam os
+             # ids "pl_t1", "pl_b3" etc.; um prefixo diferente por grupo
+             # quebraria essas referências. Cores por inspeção visual do
+             # PNG (1024×1024) — árvore tem variante verde E outono
+             # misturada no mesmo grupo (cor é uma média aproximada, não
+             # pixel-perfect); repolho/cenoura são sprites pequenos
+             # (32×32), cor mais incerta que os outros grupos.
+             "groups": {
+                 "arvores": {
+                     "prefix": "pl",
+                     "label":  "Árvores",
+                     "color":  (46, 92, 40),
+                     "tiles": [
+                         # (id, sx, sy, w, h, collision_rect, piso, transpassavel, sort, vision_rect, vision_h)
+                         # Árvore/bush ganharam bloqueio de visão em 13/08/2026
+                         # (pedido do usuário — antes NENHUM objeto decorativo
+                         # bloqueava LOS, só parede). Correção 27/08/2026 (usuário
+                         # de novo): `vision_rect="full"` cobria a copa inteira do
+                         # sprite (metade de CIMA, bem acima do tronco), escondendo
+                         # muito mais do que devia — regra nova, igual à bush:
+                         # vision_rect = MESMO retângulo do collision_rect (só a
+                         # base/tronco bloqueia visão, não a copa toda). Ver
+                         # PROBLEMAS_ARQUITETURA.md.
+                         ("t1",       0,  64,  96, 128,   ( 32,  96, 32,32), 0, False, 1, ( 32,  96, 32,32), 2),
+                         ("t2",      96,  32,  96, 160,   ( 32, 128, 32,32), 0, False, 1, ( 32, 128, 32,32), 2),
+                         ("t3",     192,  32, 128, 160,   ( 32, 128, 32,32), 0, False, 1, ( 32, 128, 32,32), 2),
+                         ("t4",     320,   0, 128, 192,   ( 32, 160, 32,32), 0, False, 1, ( 32, 160, 32,32), 2),
+                         ("t5",     448,   0, 128, 192,   ( 32, 160, 32,32), 0, False, 1, ( 32, 160, 32,32), 2),
+                         ("t6",       0, 256,  96, 128,   ( 32,  96, 32,32), 0, False, 1, ( 32,  96, 32,32), 2),
+                         ("t7",      96, 256,  96, 128,   ( 32,  96, 32,32), 0, False, 1, ( 32,  96, 32,32), 2),
+                         ("t8",     192, 224, 128, 160,   ( 32, 128, 32,32), 0, False, 1, ( 32, 128, 32,32), 2),
+                         ("t9",     320, 192, 128, 192,   ( 32, 160, 32,32), 0, False, 1, ( 32, 160, 32,32), 2),
+                         ("t10",    448, 192, 128, 192,   ( 32, 160, 32,32), 0, False, 1, ( 32, 160, 32,32), 2),
+                         ("t11",      0, 384, 160, 160,   ( 64, 128, 32,32), 0, False, 1, ( 64, 128, 32,32), 2),
+                         ("t12",    160, 384,  96, 160,   ( 32, 128, 32,32), 0, False, 1, ( 32, 128, 32,32), 2),
+                         ("t13",    288, 416,  96, 128,   ( 32,  96, 32,32), 0, False, 1, ( 32,  96, 32,32), 2),
+                         ("t14",    672,   0, 320, 256,   ( 96, 224, 96,32), 0, False, 1, ( 96, 224, 96,32), 2),
+                         ("t15",    704, 288, 256, 224,   ( 96, 192, 64,32), 0, False, 1, ( 96, 192, 64,32), 2),
+                     ],
+                 },
+                 "arbustos": {
+                     "prefix": "pl",
+                     "label":  "Arbustos",
+                     "color":  (52, 108, 42),   # BUSH_TILE
+                     # is_bush (01/09/2026) — único grupo do catálogo que
+                     # marca isto; feedback de opacidade (ver TileType.is_bush)
+                     # só dispara pra tiles desta família.
+                     "is_bush": True,
+                     "tiles": [
+                         # vision_rect="base_row" (13/08/2026, §51, pedido do
+                         # usuário) — só a fileira de baixo do sprite (largura
+                         # inteira) conta pra bloqueio de visão/adjacência, não
+                         # o sprite inteiro. Evita bushes com espaço de grama
+                         # visível entre si se fundirem num blob só; bushes com
+                         # a BASE colada continuam formando um clump único de
+                         # propósito. Ver `_rect_to_tile_offsets`.
+                         ("b1",      0,  864,  32,  32,                None, 0, False, 1, "base_row", 2),
+                         ("b2",     64,  864,  32,  32,                None, 0, False, 1, "base_row", 2),
+                         ("b3",    112,  848,  64,  48,                None, 0, False, 1, "base_row", 2),
+                         ("b4",    208,  848,  64,  48,                None, 0, False, 1, "base_row", 2),
+                         ("b5",    288,  848,  96,  48,                None, 0, False, 1, "base_row", 2),
+                         ("b6",    384,  848,  64,  48,                None, 0, False, 1, "base_row", 2),
+                         ("b7",      0,  928,  32,  32,                None, 0, False, 1, "base_row", 2),
+                         ("b8",     32,  928,  64,  32,                None, 0, False, 1, "base_row", 2),
+                         ("b9",     96,  896,  64,  64,                None, 0, False, 1, "base_row", 2),
+                         ("b10",   160,  896,  64,  64,                None, 0, False, 1, "base_row", 2),
+                         ("b11",   224,  896,  64,  64,                None, 0, False, 1, "base_row", 2),
+                         ("b12",   304,  896,  96,  64,                None, 0, False, 1, "base_row", 2),
+                         ("b13",   400,  896,  96,  64,                None, 0, False, 1, "base_row", 2),
+                         ("b14",     0,  992,  32,  32,                None, 0, False, 1, "base_row", 2),
+                         ("b15",    32,  992,  64,  32,                None, 0, False, 1, "base_row", 2),
+                         ("b16",    96,  960,  64,  64,                None, 0, False, 1, "base_row", 2),
+                         ("b17",   160,  960,  64,  64,                None, 0, False, 1, "base_row", 2),
+                         ("b18",   224,  960,  64,  64,                None, 0, False, 1, "base_row", 2),
+                         ("b19",   304,  960,  96,  64,                None, 0, False, 1, "base_row", 2),
+                         ("b20",   400,  960,  96,  64,                None, 0, False, 1, "base_row", 2),
+                     ],
+                 },
+                 "trigo": {
+                     "prefix": "pl",
+                     "label":  "Trigo",
+                     "color":  (188, 158, 68),
+                     "tiles": [
+                         ("w1",      0,  704,  64,  64,                None),
+                         ("w2",     64,  704,  64,  64,                None),
+                         ("w3",    128,  704,  64,  64,                None),
+                         ("w4",    192,  704,  64,  64,                None),
+                         ("w5",    256,  704,  64,  64,                None),
+                         ("w6",    320,  704,  64,  64,                None),
+                         ("w7",    384,  704,  64,  64,                None),
+                         ("w8",    448,  704,  64,  64,                None),
+                         ("w9",      0,  768,  64,  64,                None),
+                         ("w10",    64,  768,  64,  64,                None),
+                         ("w11",   128,  768,  64,  64,                None),
+                         ("w12",   192,  768,  64,  64,                None),
+                         ("w13",   256,  768,  64,  64,                None),
+                         ("w14",   320,  768,  64,  64,                None),
+                         ("w15",   384,  768,  64,  64,                None),
+                         ("w16",   448,  768,  64,  64,                None),
+                     ],
+                 },
+                 "repolho": {
+                     "prefix": "pl",
+                     "label":  "Repolho",
+                     "color":  (94, 138, 66),
+                     "tiles": [
+                         ("c3",    864,  640,  32,  32,              "full"),
+                         ("c2",    928,  768,  32,  32,              "full"),
+                         ("c1",    992,  640,  32,  32,              "full"),
+                     ],
+                 },
+                 "abobora": {
+                     "prefix": "pl",
+                     "label":  "Abóbora",
+                     "color":  (206, 128, 34),
+                     "tiles": [
+                         ("p3",    864,  672,  64,  32,              "full"),
+                         ("p2",    928,  672,  32,  32,              "full"),
+                         ("p1",    992,  672,  32,  32,              "full"),
+                     ],
+                 },
+                 "cenoura": {
+                     "prefix": "pl",
+                     "label":  "Cenoura",
+                     "color":  (196, 112, 44),
+                     "tiles": [
+                         ("cr3",   864,  704,  32,  32,             "full"),
+                         ("cr2",   928,  704,  32,  32,             "full"),
+                         ("cr1",   992,  704,  32,  32,             "full"),
+                     ],
+                 },
+                 "grama_fina": {
+                     "prefix": "pl",
+                     "label":  "Grama Fina",
+                     "color":  (58, 100, 48),
+                     "tiles": [
+                         ("gb1",   768,  864,  32,  32,               None),
+                         ("gb2",   800,  864,  32,  32,               None),
+                         ("gb3",   832,  864,  32,  32,               None),
+                         ("gb4",   864,  864,  32,  32,               None),
+                         ("gb5",   768,  896,  32,  32,               None),
+                         ("gb6",   800,  896,  32,  32,               None),
+                         ("gb7",   832,  896,  32,  32,               None),
+                         ("gb8",   864,  896,  32,  32,               None),
+                         ("gb9",   768,  928,  32,  32,               None),
+                         ("gb10",  800,  928,  32,  32,               None),
+                         ("gb11",  832,  928,  32,  32,               None),
+                         ("gb12",  864,  928,  32,  32,               None),
+                         ("gb13",  768,  960,  32,  32,               None),
+                         ("gb14",  800,  960,  32,  32,               None),
+                         ("gb15",  832,  960,  32,  32,               None),
+                     ],
+                 },
+                 "flores": {
+                     "prefix": "pl",
+                     "label":  "Flores",
+                     "color":  (58, 100, 48),
+                     "tiles": [
+                         ("fl1",   864,  960,  32,  32,               None),
+                         ("fl2",   896,  864,  32,  32,               None),
+                         ("fl3",   928,  864,  32,  32,               None),
+                         ("fl4",   960,  864,  32,  32,               None),
+                         ("fl5",   992,  864,  32,  32,               None),
+                         ("fl6",   896,  896,  32,  32,               None),
+                         ("fl7",   928,  896,  32,  32,               None),
+                         ("fl8",   960,  896,  32,  32,               None),
+                         ("fl9",   992,  896,  32,  32,               None),
+                         ("fl10",  896,  928,  32,  32,               None),
+                         ("fl11",  928,  928,  32,  32,               None),
+                         ("fl12",  960,  928,  32,  32,               None),
+                         ("fl13",  992,  928,  32,  32,               None),
+                         ("fl14",  896,  960,  32,  32,               None),
+                         ("fl15",  928,  960,  32,  32,               None),
+                         ("fl16",  960,  960,  32,  32,               None),
+                         ("fl17",  992,  960,  32,  32,               None),
+                         ("fl18",  896,  992,  32,  32,               None),
+                         ("fl19",  928,  992,  32,  32,               None),
+                         ("fl20",  960,  992,  32,  32,               None),
+                         ("fl21",  992,  992,  32,  32,               None),
+                     ],
+                 },
+             },
          },
 {
-         "file":   "TX Tileset Cave Objects",
-         "prefix": "cv",
-         "label":  "Caverna",
-         "color":  (41, 39, 55),
-         "underlying_terrain": ",",
-         "tiles": [
-             # (id,              sx,  sy,  w,   h,     collision_rect)  
-             ("cv1",             0,   0,   32,  64,    "full"),
-             ("cv2",            32,   0,   32,  64,    "full"),
-             ("cv3",            64,   0,   32,  64,    (0, 0, 32, 32)),
-             ("cv4",            96,   0,   32,  64,    "full"),                                       
-             ("cv5",           128,   0,   32,  64,    "full"),
-             ("cv6",           160,   0,   32,  32,    "full"),
-             ("cv7",           192,   0,   32,  32,    "full"),
-             ("cv8",           160,  32,   32,  32,    "full"),
-             ("cv9",           192,  32,   32,  32,    "full"),
-             ("cv28",          224,   0,   32,  32,    "full"),
-             ("cv29",          224,  64,   32,  64,    "full"),
-             ("cv10",          224,  32,   32,  32,    "full"),
-             ("cv11",            0,  64,   32,  32,    "full"),
-             ("cv12",           32,  64,   32,  32,    "full"),
-             ("cv13",           64,  64,   32,  32,      None),
-             ("cv14",           96,  64,   32,  32,    "full"),
-             ("cv15",          124,  64,   32,  32,    "full"),
-             ("cv16",          160,  64,   32,  64,    "full"),
-             ("cv17",          192,  64,   32,  64,    "full"),
-             ("cv18",            0,  96,   32,  32,      None),
-             ("cv19",           32,  96,   32,  64,    "base"),
-             ("cv20",           64,  96,   32,  64,    "base"),
-             ("cv21",           96,  96,   32,  64,    "base"),
-             ("cv22",          128,  96,   32,  32,      None),
-             ("cv23",            0, 128,   32,  32,    "full"),
-             ("cv24",          128, 128,   32,  32,    "full"),
-             ("cv25",          160, 128,   32,  32,    "full"),
-             ("cv26",          192, 128,   32,  32,    "full"),
-             ("cv27",          224, 128,   32,  32,    "full"),                                      
-
-         ]
-
-     },
-{
-         "file":   "TX Village Props with Shadow",
-         "prefix": "vp",
-         "label":  "Objetos",
-         "color":  (41, 39, 55),
-         "underlying_terrain": ",",
-         "tiles": [
-            ("001",   32,   16,   48,   48, (  0,  16,  32,  32)),
-            ("002",   96,   16,   48,   48, (  0,  16,  32,  32)),
-            ("003",  160,   16,   48,   48, (  0,  16,  32,  32)),
-            ("004",  224,   16,   80,   48, (  0,  16,  64,  32)),
-            ("005",  320,   32,   48,   32, (  0,   0,  32,  32)),
-            ("006",  384,    0,  128,   64, (  0,  48, 112,  16)),
-            ("007",   96,   80,   48,   48, (  0,  16,  32,  32)),
-            ("008",  160,   80,   48,   48, (  0,  16,  32,  32)),
-            ("009",  224,   80,   80,   48, (  0,  16,  64,  32)),
-            ("010",  320,   64,   48,   64, (  0,  32,  32,  32)),
-            ("011",  384,   64,  112,   64, (  0,  48,  96,  16)),
-            ("012",   32,  144,   32,   48, (  0,  32,  32,  16)),
-            ("013",   64,  144,   32,   48, (  0,  32,  32,  16)),
-            ("014",   96,  144,   32,   48, (  0,  32,  32,  16)),
-            ("015",   32,  192,   32,   32, (  0,  16,  32,  16)),
-            ("016",   32,  224,   32,   32, (  0,  16,  32,  16)),
-            ("017",   96,  192,   32,   32, (  0,  16,  32,  16)),
-            ("018",   96,  224,   32,   32, (  0,  16,  32,  16)),
-            ("019",  160,  176,   48,   48, (  0,  32,  31,  16)),
-            ("020",  160,  224,   32,   32, (  0,  16,  32,  16)),
-            ("021",  224,  208,   64,   48, (  0,  16,  64,  32)),
-            ("022",  288,  208,   64,   48, (  0,  16,  64,  32)),
-            ("023",  352,  208,   64,   48, (  0,  16,  64,  32)),
-            ("024",   32,  272,   32,   48, (  0,  32,  32,  16)),
-            ("025",   64,  272,   32,   48, (  0,  32,  32,  16)),
-            ("026",   96,  272,   32,   48, (  0,  32,  32,  16)),
-            ("027",  128,  272,   32,   48, (  0,  32,  32,  16)),
-            ("028",  160,  272,   32,   48, (  0,  32,  32,  16)),
-            ("029",  224,  272,   64,   48, (  0,  16,  64,  32)),
-            ("030",  288,  272,   64,   48, (  0,  16,  64,  32)),
-            ("031", 1792,   32,   32,   32, None),
-            ("032", 1792,   64,   32,   32, None),
-            ("033", 1792,   96,   32,   32, None),
-            ("034", 1856,   32,   32,   32, None),
-            ("035", 1856,   64,   32,   32, None),
-            ("036", 1856,   96,   32,   32, None),
-            ("037", 1920,   32,   32,   32, None),
-            ("038", 1952,   32,   32,   32, None),
-            ("039", 1984,   32,   32,   32, None),
-            ("040", 1920,   64,   32,   32, None),
-            ("041", 1952,   64,   32,   32, None),
-            ("042", 1984,   64,   32,   32, None),
-            ("043", 1920,   96,   32,   32, None),
-            ("044", 1952,   96,   32,   32, None),
-            ("045", 1984,   96,   32,   32, None),
-            ("046", 1920,  128,   32,   32, None),
-            ("047", 1952,  128,   32,   32, None),
-            ("048", 1984,  128,   32,   32, None),
-            ("049", 1920,  160,   32,   32, None),
-            ("050", 1952,  160,   32,   32, None),
-            ("051", 1920,  192,   32,   32, None),
-            ("052", 1920,  224,   32,   32, None),
-            ("053", 1920,  256,   32,   32, None),
-            ("054",  528,  912,   96,   48, ( 16,  32,  63,  16)),
-            ("055",  528,  960,   48,   96, (  0,  32,  32,  64)),
-            ("056",  544, 1072,   96,   48, ( 16,  16,  64,  32)),
-            ("057",  592,  960,   48,   96, (  0,  32,  32,  63)),
-            ("058",  640, 1040,   64,   80, ( 16,  16,  32,  64)),
-            ("059",  704, 1040,   32,   80, (  8,  16,  16,  64)),
-            ("060",  736, 1024,  112,   32, ( 16,  16,  80,  16)),
-            ("061",  736, 1056,   32,   64, (  9,  16,  16,  48)),
-            ("062",  864, 1024,   64,   32, (  0,  16,  64,  16)),
-            ("063",  928, 1024,   80,   32, ( 16,  16,  48,  16)),
-            ("064",  928, 1056,   80,   32, ( 16,  16,  48,  16)),
-            ("065",  928, 1088,   80,   32, ( 16,  16,  48,  16)),
-            ("066", 1024, 1024,   32,   64, (  0,  16,  32,  48)),
-            ("067", 1056, 1024,   32,   64, (  0,  16,  32,  48)),
-            ("068", 1088, 1024,   32,   64, (  0,  16,  32,  48)),
-            ("069", 1120, 1024,   32,   64, (  0,  16,  32,  48)),
-            ("070", 1152, 1024,   32,   64, (  0,  16,  32,  48)),
-            ("071",  544, 1120,   96,   64, ( 16,  32,  64,  32)),
-            ("072",  640, 1136,   64,   80, ( 16,  16,  32,  64)),
-            ("073",  928, 1120,   80,   32, ( 16,  16,  48,  16)),
-            ("074",  928, 1152,   80,   32, ( 16,  16,  48,  16)),
-            ("075",  544, 1200,   48,   48, (  0,  16,  32,  32)),
-            ("076",  608, 1216,   32,   32, (  0,  16,  16,  16)),
-            ("077",  144, 1120,   64,   32, ( 16,  16,  32,  16)),
-            ("078",  224, 1104,   48,   48, (  0,  32,  33,  16)),
-            ("079",  288, 1104,   48,   48, (  0,  32,  32,  16)),
-            ("080",  352, 1104,   48,   48, (  0,  32,  32,  16)),
-            ("081",  224, 1168,   48,   48, (  0,  32,  32,  16)),
-            ("082",  288, 1168,   48,   48, (  0,  32,  32,  16)),
-            ("083",  352, 1168,   32,   48, (  0,  32,  32,  16)),
-            ("084",  224, 1232,   48,   48, (  0,  16,  32,  32)),
-            ("085",  288, 1216,   64,   64, (  0,  32,  64,  32)),
-            ("086",  880, 1280,   64,   32, ( 16,  16,  32,  16)),
-            ("087",  896, 1312,   32,   32, (  0,  16,  16,  16)),
-            ("088",  928, 1312,   32,   32, (  0,  16,  16,  16)),
-            ("089",  960, 1312,   32,   32, (  0,  16,  16,  16)),
-            ("090",  992, 1312,   32,   32, (  0,  16,  16,  16)),
-            ("091", 1024, 1312,   32,   32, (  0,  16,  16,  16)),
-            ("092", 1008, 1360,   80,   80, ( 16,  64,  32,  16)),
-            ("093", 1088, 1376,   48,   32, (  0,  16,  32,  16)),
-            ("094", 1152, 1360,   32,   48, (  0,  16,  32,  32)),
-            ("095", 1056, 1456,   64,   48, ( 16,  16,  32,  32)),
-            ("096", 1120, 1440,   96,   64, ( 16,  32,  64,  32)),
-            ("097", 1216, 1424,   96,   80, ( 16,  32,  64,  32)),
-            ("098",  736, 1296,   48,   48, (  0,  32,  32,  16)),
-            ("099",  784, 1312,   64,   32, ( 16,  16,  32,  16)),
-            ("100",   32, 1328,   32,   80, (  0,  64,  32,  16)),
-            ("101",  384, 1376,   80,   64, (  0,  48,  64,  16)),
-            ("102",  512, 1392,   64,   48, ( 16,  16,  32,  32)),
-            ("103",    0, 1584,   96,   48, (  0,  32,  80,  16)),
-            ("104",    0, 1648,   32,   48, (  0,  32,  16,  16)),
-            ("105",   32, 1440,   64,   32, (  0,  16,  48,  16)),
-            ("106",   32, 1472,   32,   64, (  0,  16,  16,  48)),
-            ("107",   48, 1648,   64,   48, (  0,  32,  48,  16)),
-            ("108",   64, 1472,   32,   96, (  0,  16,  16,  80)),
-            ("109",   96, 1440,   96,   32, (  0,  16,  80,  16)),
-            ("110",   96, 1472,   32,   32, (  0,  16,  16,  16)),
-            ("111",  112, 1584,   32,   96, (  0,  32,  32,  64)),
-            ("112",  128, 1488,   96,   80, (  0,  64,  79,  16)),
-            ("113",  160, 1648,   32,   96, (  0,  32,  32,  64)),
-            ("115",  224, 1616,   64,   64, (  0,  16,  64,  32)),
-            ("116",  304, 1520,   32,   64, (  0,  48,  32,  16)),
-            ("117",  304, 1600,   32,   80, (  0,  64,  32,  16)),
-            ("118",  320, 1456,   48,   48, (  0,  32,  32,  16)),
-            ("119",  384, 1456,   32,   48, (  0,  32,  32,  16)),
-            ("120",  416, 1456,   32,   48, (  0,  32,  32,  16)),
-            ("121",  448, 1456,   48,   48, (  0,  32,  32,  16)),
-            ("122",  512, 1456,   64,   48, ( 16,  16,  32,  32)),
-            ("123",  544, 1520,   32,   48, None),
-            ("124",  544, 1568,   64,   32, None),
-            ("125",  544, 1600,   64,   32, None),
-            ("126",  576, 1520,   32,   48, None),
-            ("127",  608, 1472,   80,   32, (  0,  16,  64,  16)),
-            ("128",  608, 1520,   32,   48, None),
-            ("129",  608, 1568,   64,   32, None),
-            ("130",  608, 1600,   64,   32, None),
-            ("131",  640, 1520,   32,   48, None),
-            ("132",  672, 1536,   32,   32, None),
-            ("133",  672, 1600,   32,   32, None),
-            ("134",  688, 1472,   48,   64, ( 16,  16,  16,  48)),
-            ("135",  736, 1440,   32,   32, (  0,  16,  32,  16)),
-            ("136",  736, 1536,   32,   16, None),
-            ("137",  736, 1552,   32,   80, (  1,  16,  30,  48)),
-            ("138",  768, 1440,   32,   32, (  0,  16,  32,  16)),
-            ("139",  800, 1440,   32,   32, (  0,  16,  32,  16)),
-            ("140",  832, 1440,   48,   32, (  0,  16,  32,  16)),
-            ("141",   16, 1712,   32,   80, (  0,  48,  32,  32)),
-            ("142",   80, 1728,   32,   64, (  0,  32,  32,  32)),
-            ("143",  128, 1744,   32,   48, (  0,  32,  32,  15)),
-            ("144",  208, 1680,   96,   96, None),
-            ("145",  304, 1696,   32,   48, (  0,  32,  32,  16)),
-            ("146",   16, 1808,   64,   80, ( 16,  64,  32,  16)),
-            ("147",   80, 1808,   64,   80, ( 16,  64,  32,  16)),
-            ("148",  160, 1808,   32,   48, (  0,  16,  32,  32)),
-            ("149",  160, 1856,   32,   64, (  0,  16,  32,  48)),
-            ("150",  208, 1808,   64,   48, (  0,  32,  64,  16)),
-            ("151",  224, 1872,   64,   48, (  0,  16,  64,  32)),
-            ("152",  272, 1792,   48,   64, ( 16,  16,  16,  48)),
-            ("153",  288, 1856,   48,   64, ( 16,  16,  16,  48)),
-            ("154",   32, 1936,   48,   48, (  0,  32,  32,  16)),
-            ("155",   96, 1952,   48,   32, (  0,  16,  32,  16)),
-            ("156",  160, 1936,   48,   48, (  0,  32,  32,  16)),
-            ("157",  224, 1952,   64,   32, (  0,   0,  64,  32)),
-            ("158",  320, 1952,   64,   32, (  0,   0,  64,  32)),
-            ("159",   16, 2000,   48,   48, ( 16,  32,  16,  16)),
-            ("160",   80, 2000,   48,   48, ( 16,  32,  16,  16)),
-            ("161",  144, 1984,   48,   64, ( 16,  48,  16,  16)),
-            ("162",  224, 1984,   32,   64, (  0,  16,  32,  48)),
-            ("163",  288, 1984,   32,   64, (  0,  16,  32,  48)),
-            ("164",  864, 1376,   48,   32, (  0,  16,  32,  16)),
-            ("165",  912, 1376,   64,   32, ( 16,  16,  32,  16)),
-            ("166",  608, 1408,   32,   32, (  0,  16,  32,  16)),
-            ("167",  640, 1408,   32,   32, (  0,  16,  32,  16)),
-            ("168",  864, 1504,   64,   64, None),
-            ("169",  960, 1504,   64,   64, None),
-            ("170",  368, 1664,   80,   96, (  0,  80,  32,  16)),
-            ("171",  448, 1664,   80,   96, ( 32,  80,  32,  16)),
-            ("172",  544, 1712,   64,   48, (  0,  32,  64,  16)),
-            ("173",  608, 1712,   64,   48, ( 16,  32,  32,  16)),
-            ("174",  720, 1680,   48,   32, None),
-            ("175",  736, 1712,   48,   48, (  0,  32,  32,  16)),
-            ("176",  800, 1664,   80,   64, (  0,  32,  63,  32)),
-            ("177",  800, 1728,   64,   32, ( 16,   0,  32,  32)),
-            ("178",  896, 1664,   80,   64, (  0,  32,  64,  32)),
-            ("179",  896, 1728,   64,   32, ( 16,   0,  32,  31)),
-            ("180",  976, 1696,   64,   64, ( 16,  48,  32,  16)),
-            ("181", 1056, 1696,   48,   64, (  0,  48,  32,  15)),
-            ("182",  384, 1792,  128,   64, (  0,  16, 112,  48)),
-            ("183",  512, 1792,  128,   64, (  0,  16, 112,  48)),
-            ("184",  656, 1760,   64,   64, ( 16,  48,  32,  16)),
-            ("185",  688, 1872,   64,   48, (  0,  16,  64,  32)),
-            ("186",  688, 1920,   32,   32, None),
-            ("187",  720, 1920,   32,   32, None),
-            ("188",  752, 1920,   32,   32, None),
-            ("189",  784, 1920,   32,   32, (  0,  16,  32,  16)),
-            ("190",  816, 1920,   32,   32, (  0,  16,  32,  16)),
-            ("191",  848, 1920,   32,   32, (  0,  16,  32,  16)),
-            ("192",  672, 1984,   32,   32, None),
-            ("193",  688, 1952,   32,   32, None),
-            ("194",  704, 1984,   32,   32, None),
-            ("195",  720, 1952,   32,   32, None),
-            ("196",  736, 1984,   32,   32, (  0,  16,  32,  16)),
-            ("197",  752, 1952,   32,   32, (  0,  16,  32,  16)),
-            ("198",  768, 1984,   32,   32, (  0,  16,  32,  16)),
-            ("199",  783, 1951,   50,   34, (  0,   0,  50,  33)),
-            ("200",  800, 1984,   32,   32, (  0,  16,  32,  16)),
-            ("201",  832, 1952,   48,   32, ( 16,  16,  32,  16)),
-            ("202",  832, 1984,   48,   32, ( 16,  16,  32,  16)),
-            ("203",  896, 1952,   64,   32, ( 16,  16,  32,  16)),
-            ("204",  896, 1984,   64,   32, ( 16,  16,  32,  16)),
-            ("205",  960, 1952,   64,   64, ( 16,  32,  32,  16)),
-            ("206",  672, 2016,   32,   32, None),
-            ("207",  704, 2016,   32,   32, None),
-            ("208",  736, 2016,   32,   32, None),
-            ("209",  768, 2016,   32,   32, (  0,  16,  32,  16)),
-            ("210",  848, 2016,   48,   32, (  0,  16,  32,  16)),
-            ("211",  896, 2016,   64,   32, ( 16,  16,  32,  16)),
-            ("212",  960, 2016,   64,   32, ( 16,  16,  32,  16)),
-            ("213", 1056, 1968,   64,   64, (  0,  16,  32,  48)),
-]
-},
+        "file":   "TX Village Props with Shadow",
+        "prefix": "vp",
+        "label":  "Objetos",
+        "color":  (41, 39, 55),
+        "underlying_terrain": ",",
+        # Grupos por categoria (02/09/2026, pedido do usuário — cor própria
+        # por grupo no minimapa, mesmo padrão de "TX Village Plant" §78).
+        # "prefix" continua "vp" em TODOS os grupos de propósito — mapas reais
+        # já referenciam objetos plantados como "vp_XXX"; um prefixo por grupo
+        # quebraria esses ids. Só a COR muda; ids e geometria intocados.
+        "groups": {
+            "cemiterio": {
+                "prefix": "vp",
+                "label":  "Cemitério",
+                "color":  (120, 115, 125),
+                "tiles": [
+                    ("116",  304, 1520,   35,   64, (  0,  32,  32,  32)),
+                    ("117",  304, 1600,   40,   80, (  0,  48,  32,  32)),
+                    ("141",   16, 1712,   48,   80, (  0,  48,  32,  32)),
+                    ("142",   80, 1728,   48,   64, (  0,  32,  32,  32)),
+                    ("143",  128, 1744,   33,   48, (  0,  16,  32,  32)),
+                    ("144",  192, 1696,  112,   96, None, 0, False, 0),
+                    ("145",  304, 1696,   34,   48, (  0,  16,  32,  32)),
+                    ("146",   16, 1808,   64,   80, ( 16,  64,  32,  16)),
+                    ("147",   64, 1792,   96,   96, ( 32,  64,  32,  32)),
+                    ("148",  160, 1808,   48,   48, (  0,  16,  32,  32)),
+                    ("149",  160, 1856,   48,   64, (  0,   0,  32,  64)),
+                    ("150",  224, 1808,   64,   48, (  0,  32,  64,  32)),
+                    ("151",  224, 1872,   64,   48, (  0,  16,  64,  32)),
+                    ("152",  320, 1792,   32,   64, (  0,   0,  32,  64)),
+                    ("153",  320, 1856,   32,   64, (  0,   0,  32,  64)),
+                    ("154",   32, 1936,   48,   48, (  0,  32,  32,  16)),
+                    ("155",   96, 1952,   48,   32, (  0,  16,  32,  16)),
+                    ("156",  160, 1936,   48,   48, (  0,  32,  32,  32)),
+                    ("157",  224, 1952,   64,   32, (  0,   0,  64,  32)),
+                    ("158",  320, 1952,   64,   32, (  0,   0,  64,  32)),
+                    ("159",   32, 2000,   48,   48, (  0,  16,  32,  32)),
+                    ("160",   96, 2000,   48,   48, (  0,  16,  32,  32)),
+                    ("161",  144, 1984,   48,   64, (  0,  32,  32,  32)),
+                    ("162",  224, 1984,   32,   64, (  0,  16,  32,  48)),
+                    ("163",  288, 1984,   32,   64, (  0,  16,  32,  48)),
+                    ("213", 1056, 1968,   64,   64, (  0,  16,  32,  48)),
+                ],
+            },
+            "pedras": {
+                "prefix": "vp",
+                "label":  "Pedras",
+                "color":  (150, 145, 130),
+                "tiles": [
+                    ("185",  688, 1872,   64,   48, (  0,  16,  64,  32)),
+                    ("186",  688, 1920,   32,   32, None),
+                    ("187",  720, 1920,   32,   32, None),
+                    ("188",  752, 1920,   32,   32, None),
+                    ("189",  784, 1920,   32,   32, (  0,  16,  32,  16)),
+                    ("190",  816, 1920,   32,   32, (  0,  16,  32,  16)),
+                    ("191",  848, 1920,   32,   32, (  0,  16,  32,  16)),
+                    ("192",  672, 1984,   32,   32, None),
+                    ("193",  688, 1952,   32,   32, None),
+                    ("194",  704, 1984,   32,   32, None),
+                    ("195",  720, 1952,   32,   32, None),
+                    ("196",  736, 1984,   32,   32, (  0,  16,  32,  16)),
+                    ("197",  752, 1952,   32,   32, (  0,  16,  32,  16)),
+                    ("198",  768, 1984,   32,   32, (  0,  16,  32,  16)),
+                    ("200",  800, 1984,   32,   32, (  0,  16,  32,  16)),
+                    ("201",  832, 1952,   48,   32, ( 16,  16,  32,  16)),
+                    ("202",  832, 1984,   48,   32, ( 16,  16,  32,  16)),
+                    ("203",  896, 1952,   64,   32, ( 16,  16,  32,  16)),
+                    ("204",  896, 1984,   64,   32, ( 16,  16,  32,  16)),
+                    ("205",  960, 1952,   64,   64, ( 16,  32,  32,  16)),
+                    ("206",  672, 2016,   32,   32, None),
+                    ("207",  704, 2016,   32,   32, None),
+                    ("208",  736, 2016,   32,   32, None),
+                    ("209",  768, 2016,   32,   32, (  0,  16,  32,  16)),
+                    ("210",  848, 2016,   48,   32, (  0,  16,  32,  16)),
+                    ("211",  896, 2016,   64,   32, ( 16,  16,  32,  16)),
+                    ("212",  960, 2016,   64,   32, ( 16,  16,  32,  16)),
+                ],
+            },
+            "plantas_jardim": {
+                "prefix": "vp",
+                "label":  "Plantas de Jardim",
+                "color":  (80, 140, 60),
+                "tiles": [
+                    ("064",  928, 1056,   80,   32, ( 16,  16,  48,  16)),
+                    ("065",  928, 1088,   80,   32, ( 16,  16,  48,  16)),
+                    ("067", 1056, 1024,   32,   64, (  0,  16,  32,  48)),
+                    ("068", 1088, 1024,   32,   64, (  0,  16,  32,  48)),
+                    ("069", 1120, 1024,   32,   64, (  0,  16,  32,  48)),
+                    ("073",  928, 1120,   80,   32, ( 16,  16,  48,  16)),
+                    ("080",  352, 1104,   48,   48, (  0,  32,  32,  16)),
+                    ("089",  960, 1312,   32,   32, (  0,  16,  16,  16)),
+                    ("090",  992, 1312,   32,   32, (  0,  16,  16,  16)),
+                    ("091", 1024, 1312,   32,   32, (  0,  16,  16,  16)),
+                ],
+            },
+            "moveis": {
+                "prefix": "vp",
+                "label":  "Móveis",
+                "color":  (150, 110, 60),
+                "tiles": [
+                    ("002",   96,   16,   48,   48, (  0,  16,  32,  32)),
+                    ("003",  160,   16,   48,   48, (  0,  16,  32,  32)),
+                    ("004",  224,   16,   80,   48, (  0,  16,  64,  32)),
+                    ("005",  320,   32,   48,   32, (  0,   0,  32,  32)),
+                    ("007",   96,   80,   48,   48, (  0,  16,  32,  32)),
+                    ("008",  160,   80,   48,   48, (  0,  16,  32,  32)),
+                    ("009",  224,   80,   80,   48, (  0,  16,  64,  32)),
+                    ("010",  320,   64,   48,   64, (  0,  32,  32,  32)),
+                    ("021",  224,  208,   64,   48, (  0,  16,  64,  32)),
+                    ("054",  528,  912,   96,   48, ( 16,  32,  63,  16)),
+                    ("055",  528,  960,   48,   96, (  0,  32,  32,  64)),
+                    ("056",  544, 1072,   96,   48, ( 16,  16,  64,  32)),
+                    ("057",  592,  960,   48,   96, (  0,  32,  32,  63)),
+                    ("058",  640, 1040,   64,   80, ( 16,  16,  32,  64)),
+                    ("059",  704, 1040,   32,   80, (  8,  16,  16,  64)),
+                    ("060",  736, 1024,  112,   32, ( 16,  16,  80,  16)),
+                    ("061",  736, 1056,   32,   64, (  9,  16,  16,  48)),
+                    ("062",  864, 1024,   64,   32, (  0,  16,  64,  16)),
+                    ("063",  928, 1024,   80,   32, ( 16,  16,  48,  16)),
+                    ("066", 1024, 1024,   32,   64, (  0,  16,  32,  48)),
+                    ("070", 1152, 1024,   32,   64, (  0,  16,  32,  48)),
+                    ("071",  544, 1120,   96,   64, ( 16,  32,  64,  32)),
+                    ("072",  640, 1136,   64,   80, ( 16,  16,  32,  64)),
+                    ("074",  928, 1152,   80,   32, ( 16,  16,  48,  16)),
+                    ("075",  544, 1200,   48,   48, (  0,  16,  32,  32)),
+                    ("076",  608, 1216,   32,   32, (  0,  16,  16,  16)),
+                    ("077",  144, 1120,   64,   32, ( 16,  16,  32,  16)),
+                    ("101",  384, 1376,   80,   64, (  0,  48,  64,  16)),
+                    ("112",  128, 1488,   96,   80, (  0,  64,  79,  16)),
+                    ("180",  976, 1696,   64,   64, ( 16,  48,  32,  16)),
+                ],
+            },
+            "potes_e_recipientes": {
+                "prefix": "vp",
+                "label":  "Potes e Recipientes",
+                "color":  (190, 130, 70),
+                "tiles": [
+                    ("012",   32,  144,   32,   48, (  0,  32,  32,  16)),
+                    ("013",   64,  144,   32,   48, (  0,  32,  32,  16)),
+                    ("014",   96,  144,   32,   48, (  0,  32,  32,  16)),
+                    ("015",   32,  192,   32,   32, (  0,  16,  32,  16)),
+                    ("016",   32,  224,   32,   32, (  0,  16,  32,  16)),
+                    ("017",   96,  192,   32,   32, (  0,  16,  32,  16)),
+                    ("018",   96,  224,   32,   32, (  0,  16,  32,  16)),
+                    ("019",  160,  176,   48,   48, (  0,  32,  31,  16)),
+                    ("020",  160,  224,   32,   32, (  0,  16,  32,  16)),
+                    ("024",   32,  272,   32,   48, (  0,  32,  32,  16)),
+                    ("025",   64,  272,   32,   48, (  0,  32,  32,  16)),
+                    ("026",   96,  272,   32,   48, (  0,  32,  32,  16)),
+                    ("027",  128,  272,   32,   48, (  0,  32,  32,  16)),
+                    ("028",  160,  272,   32,   48, (  0,  32,  32,  16)),
+                    ("078",  224, 1104,   48,   48, (  0,  32,  33,  16)),
+                    ("079",  288, 1104,   48,   48, (  0,  32,  32,  16)),
+                    ("081",  224, 1168,   48,   48, (  0,  32,  32,  16)),
+                    ("082",  288, 1168,   48,   48, (  0,  32,  32,  16)),
+                    ("083",  352, 1168,   32,   48, (  0,  32,  32,  16)),
+                    ("084",  224, 1232,   48,   48, (  0,  16,  32,  32)),
+                    ("085",  288, 1216,   64,   64, (  0,  32,  64,  32)),
+                    ("087",  896, 1312,   32,   32, (  0,  16,  16,  16)),
+                    ("088",  928, 1312,   32,   32, (  0,  16,  16,  16)),
+                    ("094", 1152, 1360,   32,   48, (  0,  16,  32,  32)),
+                    ("122",  512, 1456,   64,   48, ( 16,  16,  32,  32)),
+                    ("135",  736, 1440,   32,   32, (  0,  16,  32,  16)),
+                    ("138",  768, 1440,   32,   32, (  0,  16,  32,  16)),
+                    ("139",  800, 1440,   32,   32, (  0,  16,  32,  16)),
+                    ("140",  832, 1440,   48,   32, (  0,  16,  32,  16)),
+                    ("166",  608, 1408,   32,   32, (  0,  16,  32,  16)),
+                    ("167",  640, 1408,   32,   32, (  0,  16,  32,  16)),
+                ],
+            },
+            "comida": {
+                "prefix": "vp",
+                "label":  "Comida",
+                "color":  (210, 160, 50),
+                "tiles": [
+                    ("022",  288,  208,   64,   48, (  0,  16,  64,  32)),
+                    ("023",  352,  208,   64,   48, (  0,  16,  64,  32)),
+                    ("029",  224,  272,   64,   48, (  0,  16,  64,  32)),
+                    ("030",  288,  272,   64,   48, (  0,  16,  64,  32)),
+                    ("031", 1792,   32,   32,   32, None),
+                    ("032", 1792,   64,   32,   32, None),
+                    ("033", 1792,   96,   32,   32, None),
+                    ("034", 1856,   32,   32,   32, None),
+                    ("035", 1856,   64,   32,   32, None),
+                    ("036", 1856,   96,   32,   32, None),
+                    ("037", 1920,   32,   32,   32, None),
+                    ("038", 1952,   32,   32,   32, None),
+                    ("039", 1984,   32,   32,   32, None),
+                    ("040", 1920,   64,   32,   32, None),
+                    ("041", 1952,   64,   32,   32, None),
+                    ("042", 1984,   64,   32,   32, None),
+                    ("043", 1920,   96,   32,   32, None),
+                    ("044", 1952,   96,   32,   32, None),
+                    ("045", 1984,   96,   32,   32, None),
+                    ("046", 1920,  128,   32,   32, None),
+                    ("047", 1952,  128,   32,   32, None),
+                    ("048", 1984,  128,   32,   32, None),
+                    ("049", 1920,  160,   32,   32, None),
+                    ("050", 1952,  160,   32,   32, None),
+                    ("051", 1920,  192,   32,   32, None),
+                    ("052", 1920,  224,   32,   32, None),
+                    ("053", 1920,  256,   32,   32, None),
+                ],
+            },
+            "madeira_e_cercas": {
+                "prefix": "vp",
+                "label":  "Madeira e Cercas",
+                "color":  (160, 130, 85),
+                "tiles": [
+                    ("099",  784, 1312,   64,   32, ( 16,  16,  32,  16)),
+                    ("100",   32, 1328,   32,   80, (  0,  64,  32,  16)),
+                    ("103",    0, 1584,   96,   48, (  0,  32,  80,  16)),
+                    ("104",    0, 1648,   32,   48, (  0,  32,  16,  16)),
+                    ("105",   32, 1440,   64,   32, (  0,  16,  48,  16)),
+                    ("106",   32, 1472,   32,   64, (  0,  16,  16,  48)),
+                    ("108",   64, 1472,   32,   96, (  0,  16,  16,  80)),
+                    ("109",   96, 1440,   96,   32, (  0,  16,  80,  16)),
+                    ("110",   96, 1472,   32,   32, (  0,  16,  16,  16)),
+                    ("111",  112, 1568,   32,  128, (  0,  32,  32,  96)),
+                    ("113",  160, 1632,   32,   96, (  0,  32,  32,  64)),
+                    ("123",  544, 1520,   32,   48, None),
+                    ("124",  544, 1568,   64,   32, None),
+                    ("125",  544, 1600,   64,   32, None),
+                    ("126",  576, 1520,   32,   48, None),
+                    ("127",  608, 1472,   80,   32, (  0,  16,  64,  16)),
+                    ("128",  608, 1520,   32,   48, None),
+                    ("129",  608, 1568,   64,   32, None),
+                    ("130",  608, 1600,   64,   32, None),
+                    ("131",  640, 1520,   32,   48, None),
+                    ("132",  672, 1536,   32,   32, None),
+                    ("133",  672, 1600,   32,   32, None),
+                    ("134",  688, 1472,   48,   64, ( 16,  16,  16,  48)),
+                    ("136",  736, 1536,   32,   16, None),
+                    ("137",  736, 1552,   32,   80, (  1,  16,  30,  48)),
+                    ("164",  864, 1376,   48,   32, (  0,  16,  32,  16)),
+                    ("165",  912, 1376,   64,   32, ( 16,  16,  32,  16)),
+                    ("172",  544, 1712,   64,   48, (  0,  32,  64,  16)),
+                    ("173",  608, 1712,   64,   48, ( 16,  32,  32,  16)),
+                ],
+            },
+            "decoracao_vila": {
+                "prefix": "vp",
+                "label":  "Decoração de Vila",
+                "color":  (100, 120, 130),
+                "tiles": [
+                    ("006",  384,    0,  128,   64, (  0,  48, 112,  16)),
+                    ("011",  384,   64,  112,   64, (  0,  48,  96,  16)),
+                    ("086",  880, 1280,   64,   32, ( 16,  16,  32,  16)),
+                    ("092", 1008, 1360,   80,   80, ( 16,  64,  32,  16)),
+                    ("093", 1088, 1376,   48,   32, (  0,  16,  32,  16)),
+                    ("095", 1056, 1456,   64,   48, ( 16,  16,  32,  32)),
+                    ("096", 1120, 1440,   96,   64, ( 16,  32,  64,  32)),
+                    ("097", 1216, 1424,   96,   80, ( 16,  32,  64,  32)),
+                    ("098",  736, 1296,   48,   48, (  0,  32,  32,  16)),
+                    ("102",  512, 1392,   64,   48, ( 16,  16,  32,  32)),
+                    ("107",   32, 1632,   64,   64, (  0,  32,  64,  32)),
+                    ("115",  224, 1616,   64,   64, (  0,  16,  64,  32)),
+                    ("118",  320, 1456,   48,   48, (  0,  32,  32,  16)),
+                    ("119",  384, 1456,   32,   48, (  0,  32,  32,  16)),
+                    ("120",  416, 1456,   32,   48, (  0,  32,  32,  16)),
+                    ("121",  448, 1456,   48,   48, (  0,  32,  32,  16)),
+                    ("168",  864, 1504,   64,   64, None),
+                    ("169",  960, 1504,   64,   64, None),
+                    ("170",  368, 1664,   80,   96, (  0,  80,  32,  16)),
+                    ("171",  448, 1664,   80,   96, ( 32,  80,  32,  16)),
+                    ("174",  720, 1680,   48,   32, None),
+                    ("175",  736, 1712,   48,   48, (  0,  32,  32,  16)),
+                    ("176",  800, 1664,   80,   64, (  0,  32,  63,  32)),
+                    ("177",  800, 1728,   64,   32, ( 16,   0,  32,  32)),
+                    ("178",  896, 1664,   80,   64, (  0,  32,  64,  32)),
+                    ("179",  896, 1728,   64,   32, ( 16,   0,  32,  31)),
+                    ("181", 1056, 1696,   48,   64, (  0,  48,  32,  15)),
+                    ("182",  384, 1792,  128,   64, (  0,  16, 112,  48)),
+                    ("183",  512, 1792,  128,   64, (  0,  16, 112,  48)),
+                    ("184",  656, 1760,   64,   64, ( 16,  48,  32,  16)),
+                ],
+            },
+            "diversos": {
+                "prefix": "vp",
+                "label":  "Diversos",
+                "color":  (41, 39, 55),
+                "tiles": [
+                    ("001",   32,   16,   48,   48, (  0,  16,  32,  32)),
+                    # vision_rect="full"/vision_h=2 (02/09/2026) -- pedra
+                    # grande com colisão cobrindo quase o sprite inteiro,
+                    # mesma regra de "pedra grande bloqueia visão como
+                    # árvore/bush" (13/08/2026) que existia no antigo
+                    # "TX Props" ("pr_bigrock"/"pr_rock3-6", removido nesta
+                    # sessão) -- perdida na migração pra este catálogo até
+                    # os testes de tests/test_vision_blocking.py apontarem
+                    # a regressão. Ver PROBLEMAS_ARQUITETURA.md §101.
+                    ("199",  783, 1951,   50,   34, (  0,   0,  50,  33), 0, False, 1, "full", 2),
+                    #COLISÃO INVISÍVEL
+                    ("214",  352, 2016,   32,   32, (  0,   0,  32,  32))
+                ],
+            },
+        },
+    },
 
     # ── TX Tileset Wall — estrutura escalonável (512×512, tiles 32×32) ────────
     #
@@ -1268,21 +1480,373 @@ OBJECT_SHEET_FAMILIES: list[dict] = [
             ("stair6",    320, 288,  64,  96,  None, "t", 0, 0, 0),
         ],
     },
-
     {
-        "file":   "TX Medieval Mansion",
-        "prefix": "ms",
-        "label":  "Medieval Mansion",
-        "color":  (120, 100, 80),
-        "underlying_terrain": ".",
-        "tiles": [
-            # (id,   sx,  sy,    w,    h,   col,                 piso, transp,   sort)
-            ("ms1",   0,  32,   64,  192,   (  0,  96,  64,  96), 1,    1,      1),
-            ("ms2",  64,   0,  128,  128,   None,                 1,    1,      1),
-            ("ms3",  64,  96,  128,  128,   "full",               1,    1,      1),
-            ("ms4",  64, 224,  128,   32,   None,                 1,    1,      1),
-            ("ms5", 192,  32,   64,  192,   (  0,  96,  64,  96),  1,    1,      1),
-        ],
+        "file":   "TX Village Building with Shadow",
+        "prefix": "vb",
+        "label":  "Construções",
+        "color":  (115, 108, 98),
+        "underlying_terrain": "G",
+        # Catalogado em 02/09/2026 a partir de 4 arquivos de apoio que o
+        # usuário criou (assets/tiles/"TX Village Building with Shadow"
+        # + "(dimensions)"/"(collisions)"/"(groups)", mesmo diretório) --
+        # (dimensions) marca o retângulo de CORTE de cada pedaço dentro
+        # do PNG (várias construções vêm fatiadas em vários pedaços, por
+        # causa de colisão em mais de 1 retângulo ou outros motivos de
+        # arte); (collisions) marca a área de colisão real de cada
+        # pedaço; (groups) marca em verde os blocos de proximidade no
+        # sheet que orientam ESTE agrupamento -- 1 grupo por construção
+        # (`b01".."b29"`, chave curta, nome descritivo só no "label"),
+        # + "muralhas" (kit de muro modular, 17 peças independentes) e
+        # "mercado_e_diversos" (barracas/tenda/poços/biombos, 16 peças
+        # independentes), que já eram categorias coesas de 1 bloco verde
+        # só, sem sub-construção. 1ª versão (mesmo dia) juntou as 29
+        # construções inteiras num único grupo "construcoes" com o nome
+        # descritivo inteiro em cada id (ex: "casa_pequena_chamine_1") --
+        # o usuário corrigiu na hora: os retângulos verdes existem
+        # EXATAMENTE pra virar 1 grupo por construção (senão a lista fica
+        # tão espalhada quanto sem agrupamento nenhum), e o nome grande
+        # é pro "label" do grupo, não pro id da peça. Pedaços continuam
+        # objetos INDEPENDENTES no catálogo (decisão anterior do usuário,
+        # sem mecanismo novo de "objeto composto" no motor) -- o usuário
+        # planta cada peça manualmente lado a lado no God Mode; peça
+        # única de uma construção usa só a chave do grupo como id
+        # (ex: "vb_b05"), peça múltipla usa "{grupo}_{1,2,3...}"
+        # (ex: "vb_b01_1"/"vb_b01_2"). `vision_height` (bloqueio de FOV,
+        # só >=2 conta) é 2 pra qualquer peça com colisão em construções/
+        # muralhas (mesmo padrão de WALL_TILE) -- EXCETO em
+        # "mercado_e_diversos", onde só peças genuinamente altas (tenda
+        # indígena, casinha do poço) bloqueiam; bancas de mercado e poços
+        # cobertos têm colisão (não atravessa) mas NÃO bloqueiam visão
+        # (altura de balcão, não de parede). Ver PROBLEMAS_ARQUITETURA.md
+        # §98 (catalogação original), §99 (correção de agrupamento/id) e
+        # §100 (correção de colisão errada em 19 peças fatiadas -- bug de
+        # bounding-box de blob de colisão fundido entre peças vizinhas
+        # que se tocam no sheet; extração corrigida recorta a máscara de
+        # colisão pra dentro da peça ANTES de medir, nunca olha fora
+        # dela).
+        "groups": {
+            "b01": {
+                "prefix": "vb",
+                "label":  "Casa pequena com chaminé",
+                "color":  (115, 108, 98),
+                "tiles": [
+                        ("b01_1",    64,     0,  224,  256, ( 16, 160, 176, 96), 0, False, 1, None, 2),
+                        ("b01_2",    64,   256,  224,   64, (64, 0, 128, 64), 0, False, 1, None, 2),
+                ],
+            },
+            "b02": {
+                "prefix": "vb",
+                "label":  "Torre-pombal com varanda",
+                "color":  (115, 108, 98),
+                "tiles": [
+                        ("b02",   352,     0,  224,  352, (80, 192, 80, 160), 0, False, 1, None, 2),
+                ],
+            },
+            "b03": {
+                "prefix": "vb",
+                "label":  "Estábulo arqueado",
+                "color":  (115, 108, 98),
+                "tiles": [
+                        ("b03_1",   608,    96,   64,  224, (32, 192, 32, 32), 0, False, 1, None, 2),
+                        ("b03_2",   672,    96,  128,  224, (32, 192, 64, 32), 0, False, 1, None, 2),
+                        ("b03_3",   800,    96,   32,  224, (0, 192, 32, 32), 0, False, 1, None, 2),
+                        ("b03_4",   832,    96,   64,  224, (0, 128, 64, 96), 0, False, 1, None, 2),
+                ],
+            },
+            "b04": {
+                "prefix": "vb",
+                "label":  "Coreto de poço coberto",
+                "color":  (115, 108, 98),
+                "tiles": [
+                        ("b04_1",   928,    64,   32,  160, (0, 128, 32, 32), 0, False, 1, None, 2),
+                        ("b04_2",   960,    64,   96,  160, None, 0, False, 1, None, 0),
+                        ("b04_3",  1056,    64,   32,  160, (0, 128, 32, 32), 0, False, 1, None, 2),
+                        ("b04_4",  1088,    64,   96,  128, (32, 64, 64, 64), 0, False, 1, None, 2),
+                        ("b04_5",  1184,    64,   96,  160, (32, 128, 32, 32), 0, False, 1, None, 2),
+                ],
+            },
+            "b05": {
+                "prefix": "vb",
+                "label":  "Casebre pequeno",
+                "color":  (115, 108, 98),
+                "tiles": [
+                        ("b05",  1088,   256,  128,   96, (32, 0, 64, 96), 0, False, 1, None, 2),
+                ],
+            },
+            "b06": {
+                "prefix": "vb",
+                "label":  "Chaminé dupla A",
+                "color":  (115, 108, 98),
+                "tiles": [
+                        ("b06",  1312,     0,   96,  192, (0, 160, 64, 32), 0, False, 1, None, 2),
+                ],
+            },
+            "b07": {
+                "prefix": "vb",
+                "label":  "Chaminé dupla B",
+                "color":  (115, 108, 98),
+                "tiles": [
+                        ("b07",  1408,     0,   96,  192, (0, 160, 64, 32), 0, False, 1, None, 2),
+                ],
+            },
+            "b08": {
+                "prefix": "vb",
+                "label":  "Casarão com torre",
+                "color":  (115, 108, 98),
+                "tiles": [
+                        ("b08_1",  1664,     0,  160,  352, (32, 160, 128, 192), 0, False, 1, None, 2),
+                        ("b08_2",  1824,     0,  192,  352, (0, 160, 128, 96), 0, False, 1, None, 2),
+                ],
+            },
+            "b09": {
+                "prefix": "vb",
+                "label":  "Torre de vigia de madeira",
+                "color":  (115, 108, 98),
+                "tiles": [
+                        ("b09_1",    32,   352,  288,  384, (32, 352, 160, 32), 0, False, 1, None, 2),
+                        ("b09_2",    32,   736,  256,   32, (32, 0, 192, 32), 0, False, 1, None, 2),
+                        ("b09_3",    96,   768,  192,   32, (32, 0, 128, 32), 0, False, 1, None, 2),
+                ],
+            },
+            "b10": {
+                "prefix": "vb",
+                "label":  "Torre redonda fortificada",
+                "color":  (115, 108, 98),
+                "tiles": [
+                        ("b10_1",   320,   384,  192,  288, (32, 160, 128, 128), 0, False, 1, None, 2),
+                        ("b10_2",   352,   672,  128,   48, (32, 0, 64, 32), 0, False, 1, None, 2),
+                ],
+            },
+            "b11": {
+                "prefix": "vb",
+                "label":  "Torre-capela com chaminé",
+                "color":  (115, 108, 98),
+                "tiles": [
+                        ("b11",   544,   416,  192,  288, (32, 128, 128, 160), 0, False, 1, None, 2),
+                ],
+            },
+            "b12": {
+                "prefix": "vb",
+                "label":  "Torre com janela em arco",
+                "color":  (115, 108, 98),
+                "tiles": [
+                        ("b12",   832,   352,  160,  288, (32, 224, 96, 64), 0, False, 1, None, 2),
+                ],
+            },
+            "b13": {
+                "prefix": "vb",
+                "label":  "Alpendre com banco",
+                "color":  (115, 108, 98),
+                "tiles": [
+                        ("b13",   768,   512,   64,  128, (0, 96, 64, 32), 0, False, 1, None, 2),
+                ],
+            },
+            "b14": {
+                "prefix": "vb",
+                "label":  "Estábulo de três arcos",
+                "color":  (115, 108, 98),
+                "tiles": [
+                        ("b14_1",   992,   480,   64,  160, (0, 96, 32, 64), 0, False, 1, None, 2),
+                        ("b14_2",  1056,   480,   64,  160, (0, 96, 64, 64), 0, False, 1, None, 2),
+                        ("b14_3",  1120,   480,   96,  160, (32, 96, 32, 64), 0, False, 1, None, 2),
+                ],
+            },
+            "b15": {
+                "prefix": "vb",
+                "label":  "Coreto alto sobre pilares",
+                "color":  (115, 108, 98),
+                "tiles": [
+                        ("b15_1",   864,   640,   64,   96, (0, 64, 32, 32), 0, False, 1, None, 2),
+                        ("b15_2",   928,   640,   64,   96, (0, 64, 32, 32), 0, False, 1, None, 2),
+                        ("b15_3",   864,   736,   64,  128, (0, 96, 32, 32), 0, False, 1, None, 2),
+                        ("b15_4",   928,   736,   64,  128, (0, 96, 32, 32), 0, False, 1, None, 2),
+                ],
+            },
+            "b16": {
+                "prefix": "vb",
+                "label":  "Casa de telhado alto com arcada",
+                "color":  (115, 108, 98),
+                "tiles": [
+                        ("b16_1",  1248,   352,  288,  256, (32, 160, 192, 96), 0, False, 1, None, 2),
+                        ("b16_2",  1280,   608,   96,   96, (0, 0, 32, 96), 0, False, 1, None, 2),
+                        ("b16_3",  1376,   608,   64,   96, (0, 0, 32, 96), 0, False, 1, None, 2),
+                ],
+            },
+            "b17": {
+                "prefix": "vb",
+                "label":  "Passagem coberta dupla",
+                "color":  (115, 108, 98),
+                "tiles": [
+                        ("b17_1",  1664,   464,  128,  144, (32, 80, 96, 64), 0, False, 1, None, 2),
+                        ("b17_2",  1792,   464,  128,  144, (64, 112, 32, 32), 0, False, 1, None, 2),
+                ],
+            },
+            "b18": {
+                "prefix": "vb",
+                "label":  "Torre com celeiro anexo",
+                "color":  (115, 108, 98),
+                "tiles": [
+                        ("b18_1",  1536,   624,   32,  368, (0, 112, 32, 64), 0, False, 1, None, 2),
+                        ("b18_2",  1568,   624,  128,  368, (0, 112, 128, 256), 0, False, 1, None, 2),
+                        ("b18_3",  1696,   672,   32,  128, None, 0, False, 1, None, 0),
+                        ("b18_4",  1696,   800,  256,  192, (0, 96, 224, 64), 0, False, 1, None, 2),
+                ],
+            },
+            "b19": {
+                "prefix": "vb",
+                "label":  "Casa enxaimel com porta",
+                "color":  (115, 108, 98),
+                "tiles": [
+                        ("b19_1",   416,   736,   64,  224, (0, 96, 64, 128), 0, False, 1, None, 2),
+                        ("b19_2",   480,   736,   32,  224, (0, 96, 32, 96), 0, False, 1, None, 2),
+                        ("b19_3",   512,   736,   32,  224, (0, 96, 32, 128), 0, False, 1, None, 2),
+                        ("b19_4",   544,   736,   64,  224, (0, 96, 64, 64), 0, False, 1, None, 2),
+                ],
+            },
+            "b20": {
+                "prefix": "vb",
+                "label":  "Celeiro de telhado cinza",
+                "color":  (115, 108, 98),
+                "tiles": [
+                        ("b20",    32,   832,  352,  224, (32, 128, 256, 96), 0, False, 1, None, 2),
+                ],
+            },
+            "b21": {
+                "prefix": "vb",
+                "label":  "Casa comprida enxaimel",
+                "color":  (115, 108, 98),
+                "tiles": [
+                        ("b21",  1216,   832,  224,  192, (16, 128, 176, 64), 0, False, 1, None, 2),
+                ],
+            },
+            "b22": {
+                "prefix": "vb",
+                "label":  "Torre redonda alta",
+                "color":  (115, 108, 98),
+                "tiles": [
+                        ("b22",   768,   896,  256,  352, (32, 64, 128, 192), 0, False, 1, None, 2),
+                ],
+            },
+            "b23": {
+                "prefix": "vb",
+                "label":  "Chalé com chaminé",
+                "color":  (115, 108, 98),
+                "tiles": [
+                        ("b23_1",   544,   992,  192,  224, (32, 96, 128, 96), 0, False, 1, None, 2),
+                        ("b23_2",   576,  1216,  144,   32, None, 0, False, 1, None, 0),
+                ],
+            },
+            "b24": {
+                "prefix": "vb",
+                "label":  "Porta dupla pequena",
+                "color":  (115, 108, 98),
+                "tiles": [
+                        ("b24_1",  1216,  1040,   32,  112, (0, 80, 32, 32), 0, False, 1, None, 2),
+                        ("b24_2",  1248,  1040,   64,  112, (32, 80, 32, 32), 0, False, 1, None, 2),
+                ],
+            },
+            "b25": {
+                "prefix": "vb",
+                "label":  "Celeiro de telhado vermelho",
+                "color":  (115, 108, 98),
+                "tiles": [
+                        ("b25",    32,  1056,  288,  160, (32, 96, 208, 64), 0, False, 1, None, 2),
+                ],
+            },
+            "b26": {
+                "prefix": "vb",
+                "label":  "Torre com alicerce",
+                "color":  (115, 108, 98),
+                "tiles": [
+                        ("b26_1",   352,  1056,  160,  160, (32, 64, 96, 96), 0, False, 1, None, 2),
+                        ("b26_2",   352,  1216,   64,   64, (32, 0, 32, 32), 0, False, 1, None, 2),
+                        ("b26_3",   416,  1216,   96,   64, (32, 0, 32, 32), 0, False, 1, None, 2),
+                ],
+            },
+            "b27": {
+                "prefix": "vb",
+                "label":  "Salão comprido com torre",
+                "color":  (115, 108, 98),
+                "tiles": [
+                        ("b27_1",  1856,  1088,  160,  224, (0, 96, 96, 128), 0, False, 1, None, 2),
+                        ("b27_2",  1536,  1120,   96,  192, (0, 96, 96, 32), 0, False, 1, None, 2),
+                        ("b27_3",  1632,  1120,  224,  192, (0, 96, 224, 64), 0, False, 1, None, 2),
+                        ("b27_4",  1504,  1152,   32,  160, (0, 64, 32, 64), 0, False, 1, None, 2),
+                        ("b27_5",  1824,  1312,   64,   32, (32, 0, 32, 32), 0, False, 1, None, 2),
+                        ("b27_6",  1888,  1312,   96,   32, (0, 0, 64, 32), 0, False, 1, None, 2),
+                ],
+            },
+            "b28": {
+                "prefix": "vb",
+                "label":  "Torre-portão com arcada",
+                "color":  (115, 108, 98),
+                "tiles": [
+                        ("b28_1",  1120,  1248,  128,  256, (0, 192, 128, 64), 0, False, 1, None, 2),
+                        ("b28_2",  1248,  1360,   32,  144, (0, 80, 32, 64), 0, False, 1, None, 2),
+                        ("b28_3",  1280,  1360,   64,  144, (0, 80, 64, 64), 0, False, 1, None, 2),
+                        ("b28_4",  1344,  1360,   32,  112, (0, 80, 32, 32), 0, False, 1, None, 2),
+                        ("b28_5",  1376,  1360,   64,  144, (0, 80, 32, 64), 0, False, 1, None, 2),
+                        ("b28_6",  1056,  1376,   64,  128, (32, 64, 32, 64), 0, False, 1, None, 2),
+                        ("b28_7",  1120,  1504,  128,  160, None, 0, False, 1, None, 0),
+                ],
+            },
+            "b29": {
+                "prefix": "vb",
+                "label":  "Capela de arco aberto",
+                "color":  (115, 108, 98),
+                "tiles": [
+                        ("b29_1",    64,  1216,   64,  160, (0, 128, 32, 32), 0, False, 1, None, 2),
+                        ("b29_2",   128,  1216,   64,  160, (32, 128, 32, 32), 0, False, 1, None, 2),
+                ],
+            },
+            "muralhas": {
+                "prefix": "vb",
+                "label":  "Muralhas e Muros",
+                "color":  (115, 108, 98),
+                "tiles": [
+                        ("m01",    32,  1536,   64,   96, None, 0, False, 1, None, 0),  # muro baixo
+                        ("m02",    32,  1632,   64,   96, (0, 64, 64, 32), 0, False, 1, None, 2),  # muro liso
+                        ("m03",    32,  1728,   64,   96, (0, 64, 64, 32), 0, False, 1, None, 2),  # muro liso
+                        ("m04",   128,  1632,   32,   96, (0, 64, 32, 32), 0, False, 1, None, 2),  # muro liso
+                        ("m05",   128,  1728,   32,   96, (0, 64, 32, 32), 0, False, 1, None, 2),  # muro liso
+                        ("m06",   160,  1632,   64,   96, (32, 64, 32, 32), 0, False, 1, None, 2),  # muro com arco
+                        ("m07",   160,  1728,   64,   96, (32, 64, 32, 32), 0, False, 1, None, 2),  # muro com arco
+                        ("m08",   256,  1600,   64,  144, (16, 64, 32, 64), 0, False, 1, None, 2),  # pilar de capela
+                        ("m09",   320,  1600,   64,   96, (0, 64, 64, 32), 0, False, 1, None, 2),  # muro lateral
+                        ("m10",   256,  1744,   64,   80, (0, 48, 64, 32), 0, False, 1, None, 2),  # pilar de capela
+                        ("m11",   320,  1744,   64,  144, (16, 48, 32, 64), 0, False, 1, None, 2),  # muro lateral
+                        ("m12",   319,  1695,   66,   50, None, 0, False, 1, None, 0),  # ornamento de pilar
+                        ("m13",   416,  1568,   48,  128, (0, 96, 32, 32), 0, False, 1, None, 2),  # torre-pilar de sino
+                        ("m14",   464,  1568,   48,  128, (0, 64, 32, 64), 0, False, 1, None, 2),  # topo de pilar de sino
+                        ("m15",   384,  1696,   32,  128, (0, 64, 32, 64), 0, False, 1, None, 2),  # muro lateral
+                        ("m16",   416,  1696,   64,  128, (0, 96, 64, 32), 0, False, 1, None, 2),  # pilar pontudo
+                        ("m17",   480,  1696,   80,  128, (32, 64, 32, 64), 0, False, 1, None, 2),  # pilar arredondado
+                ],
+            },
+            "mercado_e_diversos": {
+                "prefix": "vb",
+                "label":  "Mercado e Diversos",
+                "color":  (115, 108, 98),
+                "tiles": [
+                        ("d01",   608,  1664,   80,  160, None, 0, False, 1, None, 0),  # mesa de barraca
+                        ("d02",   832,  1664,  112,  160, None, 0, False, 1, None, 0),  # mesa de barraca
+                        ("d03",   688,  1712,  132,  112, None, 0, False, 1, None, 0),  # banco de barraca
+                        ("d04",   960,  1712,  128,  144, (32, 80, 64, 32), 0, False, 1, None, 2),  # tenda indigena
+                        ("d05",   304,  1888,   80,  144, None, 0, False, 1, None, 0),  # biombo listrado
+                        ("d06",  1120,  1888,  144,  128, (32, 96, 96, 32), 0, False, 1, None, 0),  # banca de mercado cinza
+                        ("d07",  1280,  1888,  144,  128, (32, 96, 96, 32), 0, False, 1, None, 0),  # banca de mercado verde
+                        ("d08",  1440,  1888,  144,  128, (32, 96, 96, 32), 0, False, 1, None, 0),  # banca de mercado bege
+                        ("d09",   400,  1904,  128,  112, None, 0, False, 1, None, 0),  # biombo listrado
+                        ("d10",   528,  1904,   96,  144, None, 0, False, 1, None, 0),  # biombo listrado
+                        ("d11",   640,  1904,  144,  112, (32, 80, 96, 32), 0, False, 1, None, 0),  # banca de mercado terracota
+                        ("d12",   800,  1904,  144,  112, (32, 80, 96, 32), 0, False, 1, None, 0),  # banca de mercado oliva
+                        ("d13",   960,  1904,  144,  112, (32, 80, 96, 32), 0, False, 1, None, 0),  # banca de mercado azul
+                        ("d14",     0,  1920,  128,   96, (32, 48, 64, 48), 0, False, 1, None, 2),  # casinha do poco
+                        ("d15",  1600,  1920,   80,   96, (32, 64, 32, 32), 0, False, 1, None, 0),  # poco coberto
+                        ("d16",  1696,  1920,   80,   96, (32, 64, 32, 32), 0, False, 1, None, 0),  # poco coberto
+                ],
+            },
+        },
     },
 ]
 
@@ -1330,14 +1894,186 @@ def _unpack_override(value, default_vision_height: int) -> tuple:
 # PROBLEMAS_ARQUITETURA.md §12/§13.
 
 
+def group_tile_ids(group: dict) -> list[str]:
+    """IDs completos (prefix + id_suffix) dos tiles de 1 grupo de
+    `OBJECT_SHEET_FAMILIES["groups"]` — ponto único de verdade pra essa
+    derivação (26/08/2026), usado por `ui/god_mode.py::_render_content`
+    (painel da aba Objetos) e pelo pincel aleatório por grupo
+    (`_resolve_brush_char`) — antes cada um recalculava o mesmo
+    comprehension separadamente."""
+    prefix = group["prefix"]
+    return [f"{prefix}_{entry[0]}" for entry in group["tiles"]]
+
+
+def terrain_zone_of(family: dict, tile_id: str) -> "dict | None":
+    """Zona de `family["zones"]` (SHEET_FAMILIES, modo grade) que contém
+    `tile_id`, ou None se o tile não está em nenhuma zona nomeada — piso
+    parcial/transição sem categoria própria, só seleção manual, nunca
+    sorteio automático. `tile_id` no formato `f"{prefix}_{col}_{row}"`
+    (`discover_sheet_tiles`) — extrai (col,row) do sufixo. Ponto único
+    de verdade, mesmo padrão de `group_tile_ids` (26/08/2026) — usado
+    pelo pincel inteligente de terreno do God Mode pra descobrir a
+    categoria atual de um tile (grama/terra/transição/piso) antes de
+    decidir o que pintar."""
+    zones = family.get("zones")
+    if not zones:
+        return None
+    try:
+        _, col_s, row_s = tile_id.rsplit("_", 2)
+        col, row = int(col_s), int(row_s)
+    except (ValueError, IndexError):
+        return None
+    for zone in zones.values():
+        if (col, row) in _zone_cells(zone):
+            return zone
+    return None
+
+
+def _zone_cells(zone: dict) -> list:
+    """Células `(col,row)` cobertas por uma zona — `zone["cells"]` direto
+    (zona simples), ou os 9 tiles de cada quebra-cabeça 3×3 em
+    `zone["shapes"]` (zona de transição, ver `resolve_blob3x3_piece`)."""
+    if "cells" in zone:
+        return zone["cells"]
+    cells = []
+    for (c0, r0) in zone.get("shapes", {}).values():
+        cells.extend((c0 + dc, r0 + dr) for dc in range(3) for dr in range(3))
+    return cells
+
+
+# Autotile posicional "3×3 mínimo" (26-27/08/2026) — este tileset só tem 9
+# peças por par de terreno (canto/borda/centro), sem peças de canto INTERNO/
+# côncavo como um Blob47 completo teria. Mapeia "quais lados (N/S/E/W) do
+# vizinho ainda NÃO são a categoria nova" pro offset (col,row) da peça certa
+# dentro do bloco 3×3 (origem = canto superior-esquerdo, ver `zone["shapes"]`
+# em SHEET_FAMILIES["TX Tileset Terrain"]["zones"]). Combinação de lados que
+# não bate com nenhuma entrada (ex: 2 lados OPOSTOS de fora, ou 3+/isolado —
+# o caso mais comum ao clicar 1 tile longe de qualquer área já pintada) não
+# tem peça correspondente no asset — `resolve_blob3x3_piece` devolve None e
+# quem chama não sobrescreve o vizinho, em vez de forçar uma peça errada
+# (era o bug relatado pelo usuário: sorteio cego entre as 9 peças produzia
+# um mosaico sem nexo). Referência: Red Blob Games, "Autotiling" — máscara
+# de bits N/E/S/W, versão reduzida (sem peças de canto côncavo).
+_BLOB3X3_PIECE_OFFSET = {
+    # frozenset() (nenhum lado "de fora") NÃO entra aqui — significa
+    # "ninguém convertido perto de verdade ainda" (sem contexto real,
+    # ex: vizinho diagonal de um clique isolado), não "totalmente
+    # cercado pela categoria nova" (esse é o oposto: os 4 lados "de
+    # fora" ao mesmo tempo — tratado à parte, vira cura pra tile
+    # normal, não uma peça deste catálogo). Deixar de fora garante que
+    # `resolve_blob3x3_piece(frozenset())` devolve None e cai pro
+    # fallback por direção (`_direction_missing_sides`), não uma peça
+    # de centro que nunca deveria aparecer aqui.
+    frozenset({"N"}): (1, 0),
+    frozenset({"S"}): (1, 2),
+    frozenset({"E"}): (2, 1),
+    frozenset({"W"}): (0, 1),
+    frozenset({"N", "W"}): (0, 0),
+    frozenset({"N", "E"}): (2, 0),
+    frozenset({"S", "W"}): (0, 2),
+    frozenset({"S", "E"}): (2, 2),
+}
+
+
+def resolve_blob3x3_piece(missing_sides: frozenset) -> "tuple | None":
+    """Offset `(col,row)` da peça certa dentro de um bloco 3×3 de
+    transição, dado o `frozenset` de lados ("N"/"S"/"E"/"W") que ainda
+    não são a categoria nova — ou None se a combinação não tem peça no
+    asset (ver `_BLOB3X3_PIECE_OFFSET`).
+    Ponto único de verdade, mesmo padrão de `group_tile_ids`/
+    `terrain_zone_of` — usado pelo pincel inteligente de terreno."""
+    return _BLOB3X3_PIECE_OFFSET.get(missing_sides)
+
+
+def _register_catalog_tiles(sheet_file: str, prefix: str, color: tuple,
+                            under: str, tiles: list, default_vh: int,
+                            is_bush: bool = False) -> None:
+    """
+    Registra um lote de tiles em modo CATÁLOGO (posição/tamanho próprios
+    por tile) em OBJECT_MAPPING/OBJECT_CHARS/OBJECT_SHEET_TILE_MAP/
+    OBJECT_UNDERLYING — corpo compartilhado entre o modo `"tiles"` plano
+    (legado) e cada grupo de `"groups"` (26/08/2026, cor por grupo dentro
+    do mesmo arquivo — ver docstring de `discover_object_sheet_tiles`),
+    pra não duplicar a lógica de `_resolve_collision`/elevation/etc. em 2
+    lugares.
+
+    Cada entrada de `tiles`:
+      (id, sx, sy, w, h, col, piso, transpassavel, sort, vision_rect, vision_h)
+        piso         — int (0/1/2...) ou "t" (transição)
+        transpassavel— 1 = jogador de piso inferior passa por trás
+        vision_rect  — (13/08/2026) pegada de BLOQUEIO DE VISÃO,
+                       independente de `col` (colisão) — mesmo formato
+                       (None/"full"/(x,y,w,h)). Opcional, omita pra usar
+                       só o tile-âncora (None). Existe pra permitir
+                       pegada de visão MAIOR que a de colisão (bush
+                       andável bloqueando visão na largura do sprite;
+                       árvore com tronco estreito sólido mas copa
+                       inteira bloqueando visão) — ver TileType.vision_rect.
+        vision_h     — vision_height explícito por tile; omita pra usar
+                       default_vh.
+    """
+    for entry in tiles:
+        n = len(entry)
+        id_suffix, sx, sy, tw, th, col_rect_cfg = entry[:6]
+        piso_raw       = entry[6] if n > 6 else 0
+        transpass      = bool(entry[7]) if n > 7 else False
+        sort_val       = entry[8] if n > 8 else 1   # 1=Y-sort (padrão), 0=sem Y-sort
+        vision_rect_cfg = entry[9] if n > 9 else None
+        vision_h        = entry[10] if n > 10 else default_vh
+
+        # Interpreta piso: int → elevation normal; "t" → tile de transição
+        if piso_raw == "t":
+            elev     = 0
+            is_trans = True
+        else:
+            elev     = int(piso_raw)
+            is_trans = False
+
+        tile_id = f"{prefix}_{id_suffix}"
+        is_solid, internal_rect = _resolve_collision(col_rect_cfg)
+        tile = TileType(
+            name=f"ObjSheet_{tile_id}",
+            color=color,
+            is_solid=is_solid,
+            sprite_name=tile_id,
+            sprite_px_w=tw,
+            sprite_px_h=th,
+            collision_rect=internal_rect,
+            vision_rect=vision_rect_cfg,
+            vision_height=vision_h,
+            is_bush=is_bush,
+            elevation=elev,
+            is_transition=is_trans,
+            passthrough=transpass,
+            no_ysort=(sort_val == 0),
+        )
+        OBJECT_SHEET_TILE_MAP[tile_id] = (sheet_file, sx, sy, tw, th)
+        OBJECT_CHARS.add(tile_id)
+        OBJECT_MAPPING[tile_id] = tile
+        OBJECT_UNDERLYING[tile_id] = under
+
+
 def discover_object_sheet_tiles() -> None:
     """
     Para cada entrada em OBJECT_SHEET_FAMILIES, registra TileTypes em
     OBJECT_MAPPING / OBJECT_CHARS / OBJECT_SHEET_TILE_MAP.
 
-    Suporta dois modos:
-      - Grade uniforme: usa tile_w/tile_h e auto-descobre cols/rows pelo PNG.
-      - Catálogo explícito: usa "tiles" = [(id, sx, sy, w, h, col_rect[, vision_h]), ...]
+    Suporta três modos:
+      - Grade uniforme: usa tile_w/tile_h e auto-descobre cols/rows pelo
+        PNG. `color_overrides: {(col,row): (r,g,b)}` (26/08/2026) escolhe
+        a cor por célula — mirror exato de `collision_overrides` — caindo
+        no `color` da família quando a célula não está no dict.
+      - Catálogo explícito: usa "tiles" = [(id, sx, sy, w, h, col_rect[, vision_h]), ...],
+        1 cor só pra família inteira.
+      - Grupos dentro do catálogo (26/08/2026, pedido do usuário — um
+        único PNG pode misturar categorias bem diferentes visualmente,
+        ex: "árvores"/"arbustos"/"muros" no mesmo arquivo, cada uma
+        precisando da PRÓPRIA cor no minimapa): "groups" = {nome:
+        {prefix, label, color, underlying_terrain, tiles: [...]}} — cada
+        grupo tem sua cor/prefixo/label próprios, mesma forma de tupla
+        por tile de "tiles" plano. Só 2 níveis (arquivo→grupo, sem
+        override adicional por tile dentro do grupo — decisão do
+        usuário: se 1 tile for muito diferente, vira outro grupo).
     """
     import os
     for fam in OBJECT_SHEET_FAMILIES:
@@ -1346,65 +2082,23 @@ def discover_object_sheet_tiles() -> None:
         if not os.path.exists(path):
             continue
 
-        prefix   = fam["prefix"]
-        color    = fam["color"]
+        prefix   = fam.get("prefix", "")
+        color    = fam.get("color", (128, 128, 128))
         under    = fam.get("underlying_terrain", "G")
         default_vh = fam.get("default_vision_height", 0)
 
-        if "tiles" in fam:
-            # Modo catálogo:
-            # (id, sx, sy, w, h, col, piso, transpassavel, sort, vision_rect, vision_h)
-            #   piso         — int (0/1/2...) ou "t" (transição)
-            #   transpassavel— 1 = jogador de piso inferior passa por trás
-            #   vision_rect  — (13/08/2026) pegada de BLOQUEIO DE VISÃO,
-            #                  independente de `col` (colisão) — mesmo
-            #                  formato (None/"full"/(x,y,w,h)). Opcional,
-            #                  omita pra usar só o tile-âncora (None).
-            #                  Existe pra permitir pegada de visão MAIOR
-            #                  que a de colisão (bush andável bloqueando
-            #                  visão na largura do sprite; árvore com
-            #                  tronco estreito sólido mas copa inteira
-            #                  bloqueando visão) — ver TileType.vision_rect.
-            #   vision_h     — vision_height explícito por tile; omita pra
-            #                  usar default_vision_height da família.
-            for entry in fam["tiles"]:
-                n = len(entry)
-                id_suffix, sx, sy, tw, th, col_rect_cfg = entry[:6]
-                piso_raw       = entry[6] if n > 6 else 0
-                transpass      = bool(entry[7]) if n > 7 else False
-                sort_val       = entry[8] if n > 8 else 1   # 1=Y-sort (padrão), 0=sem Y-sort
-                vision_rect_cfg = entry[9] if n > 9 else None
-                vision_h        = entry[10] if n > 10 else default_vh
-
-                # Interpreta piso: int → elevation normal; "t" → tile de transição
-                if piso_raw == "t":
-                    elev     = 0
-                    is_trans = True
-                else:
-                    elev     = int(piso_raw)
-                    is_trans = False
-
-                tile_id = f"{prefix}_{id_suffix}"
-                is_solid, internal_rect = _resolve_collision(col_rect_cfg)
-                tile = TileType(
-                    name=f"ObjSheet_{tile_id}",
-                    color=color,
-                    is_solid=is_solid,
-                    sprite_name=tile_id,
-                    sprite_px_w=tw,
-                    sprite_px_h=th,
-                    collision_rect=internal_rect,
-                    vision_rect=vision_rect_cfg,
-                    vision_height=vision_h,
-                    elevation=elev,
-                    is_transition=is_trans,
-                    passthrough=transpass,
-                    no_ysort=(sort_val == 0),
+        if "groups" in fam:
+            for group in fam["groups"].values():
+                _register_catalog_tiles(
+                    sheet_file, group["prefix"], group["color"],
+                    group.get("underlying_terrain", under),
+                    group["tiles"],
+                    group.get("default_vision_height", default_vh),
+                    group.get("is_bush", False),
                 )
-                OBJECT_SHEET_TILE_MAP[tile_id] = (sheet_file, sx, sy, tw, th)
-                OBJECT_CHARS.add(tile_id)
-                OBJECT_MAPPING[tile_id] = tile
-                OBJECT_UNDERLYING[tile_id] = under
+        elif "tiles" in fam:
+            _register_catalog_tiles(sheet_file, prefix, color, under,
+                                    fam["tiles"], default_vh)
         else:
             # Modo grade: tile_w × tile_h uniforme, auto-descobre cols/rows
             sw, sh_px   = _read_png_size(path)
@@ -1413,15 +2107,17 @@ def discover_object_sheet_tiles() -> None:
             rows        = sh_px // th
             default_col = fam.get("default_collision", None)
             overrides   = fam.get("collision_overrides", {})
+            color_overrides = fam.get("color_overrides", {})
             for row in range(rows):
                 for col in range(cols):
                     tile_id        = f"{prefix}_{col}_{row}"
                     raw            = overrides.get((col, row), default_col)
                     col_rect_cfg, vh = _unpack_override(raw, default_vh)
                     is_solid, internal_rect = _resolve_collision(col_rect_cfg)
+                    cell_color = color_overrides.get((col, row), color)
                     tile = TileType(
                         name=f"ObjSheet_{prefix}_{col}_{row}",
-                        color=color,
+                        color=cell_color,
                         is_solid=is_solid,
                         sprite_name=tile_id,
                         sprite_px_w=tw,

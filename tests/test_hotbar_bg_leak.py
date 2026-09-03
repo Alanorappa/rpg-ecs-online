@@ -158,6 +158,218 @@ def _make_save_config_fixture(active: bool):
     return fx
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# 1b) Fase 12 (25/08/2026) — preferência de slot unificada (dentro E fora
+#     da BG). Substitui o mecanismo antigo (servidor tentava adivinhar a
+#     posição espelhando a hotbar real, item 2 acima) — agora o CLIENTE
+#     decide 100% sozinho, via config.json::skill_slot_prefs.
+# ─────────────────────────────────────────────────────────────────────────
+
+class _SkillPlacementFixture:
+    """Suficiente pra exercitar ui/skill_slot_prefs.py e NetworkHandlers.
+    _handle_msg_stats_update (só o bloco skills_hotbar) isolados — mesmo
+    padrão de _SaveConfigFixture acima. Precisa de CharacterStats.name
+    (não só self._logged_char_name) desde 26/08/2026 — ui/skill_slot_
+    prefs.py::preferred_slot_for_skill lê o nome do ECS, não de um
+    atributo próprio do chamador (era exatamente essa dependência que
+    fazia TrainerSystem, um objeto sem essa referência, crashar em
+    produção; ver docstring do módulo novo)."""
+    def __init__(self, world, player_entity, my_eid):
+        self.world            = world
+        self.player_entity     = player_entity
+        self._my_eid           = my_eid
+        self._logged_char_name = "TestChar"
+        self._remote_players   = {}
+        self._remote_mobs      = {}
+
+
+def _make_skill_placement_fixture():
+    from engine.world import World
+    from engine.components import PlayerSkills, CharacterStats
+    from client.network_handlers import NetworkHandlers as _NH
+
+    world = World()
+    eid = world.create_entity()
+    world.add_component(eid, PlayerSkills())
+    world.add_component(eid, CharacterStats(name="TestChar"))
+
+    fx = _SkillPlacementFixture(world, eid, eid)
+    _SkillPlacementFixture._handle_msg_stats_update = _NH._handle_msg_stats_update
+    return fx, world.get_component(eid, PlayerSkills)
+
+
+def test_skill_slot_prefs_to_dict_faz_merge_nao_substitui(monkeypatch):
+    """Skill configurada num contexto (ex: dentro da BG) e não mais
+    visível na hotbar atual (ex: depois de sair) não pode perder a
+    entrada — merge, nunca replace."""
+    fx, ps = _make_skill_placement_fixture()
+    from content.skill_config import SKILL_CATALOG
+    from engine.components import PlayerSkills as _PS
+    from ui.skill_slot_prefs import skill_slot_prefs_to_dict
+    ps.skills[2] = _PS._make_skill("golpe_poderoso", SKILL_CATALOG)
+
+    existing = {"interceptar": 7}  # configurado antes, skill não está na hotbar atual
+    merged = skill_slot_prefs_to_dict(ps, existing)
+    assert merged["interceptar"] == 7, "preferência de skill não visível agora deveria sobreviver"
+    assert merged["golpe_poderoso"] == 2, "skill visível agora deveria atualizar a preferência"
+
+
+def test_preferred_slot_ignora_slot_ja_ocupado(monkeypatch):
+    fx, ps = _make_skill_placement_fixture()
+    from content.skill_config import SKILL_CATALOG
+    from engine.components import PlayerSkills as _PS
+    from ui.skill_slot_prefs import preferred_slot_for_skill
+    ps.skills[4] = _PS._make_skill("interceptar", SKILL_CATALOG)  # slot 4 já ocupado por outra skill
+
+    fake_cfg = _FakeCfgFile({"characters": {"TestChar": {
+        "skill_slot_prefs": {"golpe_poderoso": 4},
+    }}})
+    monkeypatch.setattr("config.load", fake_cfg.load)
+
+    assert preferred_slot_for_skill(fx.world, fx.player_entity, ps, "golpe_poderoso") is None, \
+        "slot preferido ocupado por OUTRA skill não deveria ser sugerido"
+    assert preferred_slot_for_skill(fx.world, fx.player_entity, ps, "interceptar") is None, \
+        "sem preferência salva pra essa skill (só golpe_poderoso está no fake config)"
+
+
+def test_skills_hotbar_usa_preferencia_do_jogador(monkeypatch):
+    """Ponta a ponta: skill nova revelada dentro da instância (payload
+    skills_hotbar) cai no slot que o jogador já tinha escolhido antes
+    (dentro OU fora da BG), não no primeiro vazio."""
+    fx, ps = _make_skill_placement_fixture()
+    fake_cfg = _FakeCfgFile({"characters": {"TestChar": {
+        "skill_slot_prefs": {"interceptar": 6},
+    }}})
+    monkeypatch.setattr("config.load", fake_cfg.load)
+
+    payload = {"eid": fx._my_eid, "skills_hotbar": [None, None, None, "interceptar", None, None, None, None, None, None]}
+    fx._handle_msg_stats_update(payload)
+
+    assert ps.skills[6] is not None and ps.skills[6].skill_id == "interceptar", \
+        "deveria ter usado a preferência (slot 6), não a posição sugerida pelo servidor (slot 3)"
+    assert ps.skills[3] is None
+
+
+def test_skills_hotbar_nunca_retoca_skill_ja_conhecida(monkeypatch):
+    """Regressão do bug real relatado (25/08/2026): jogador arrasta uma
+    skill já revelada pra outro slot; o próximo skills_hotbar (level-up
+    seguinte) não pode desfazer a troca, mesmo com uma posição diferente
+    sugerida pelo servidor pra aquele skill_id."""
+    fx, ps = _make_skill_placement_fixture()
+    fake_cfg = _FakeCfgFile({"characters": {"TestChar": {}}})
+    monkeypatch.setattr("config.load", fake_cfg.load)
+
+    from content.skill_config import SKILL_CATALOG
+    from engine.components import PlayerSkills as _PS
+    # Jogador já tinha "interceptar" e moveu pro slot 9 (arrasto simulado).
+    ps.skills[9] = _PS._make_skill("interceptar", SKILL_CATALOG)
+
+    # Servidor manda um skills_hotbar novo (próximo level-up) — ainda
+    # sugere a posição ANTIGA (slot 3) pro mesmo skill_id.
+    payload = {"eid": fx._my_eid, "skills_hotbar": [None, None, None, "interceptar", None, None, None, None, None, None]}
+    fx._handle_msg_stats_update(payload)
+
+    assert ps.skills[9] is not None and ps.skills[9].skill_id == "interceptar", \
+        "skill já conhecida não deveria se mexer, não importa o que o servidor sugira"
+    assert ps.skills[3] is None, "slot 3 não deveria ganhar uma cópia nova da mesma skill"
+
+
+def test_skills_hotbar_ignora_skill_fora_da_ordem_curada_dentro_da_instancia(monkeypatch):
+    """Bug real relatado pelo usuário (25/08/2026): guerreiro sobe pro
+    level 2 na BG e, em vez de Interceptar, aparece "Punho no Queixo" —
+    que não está em INSTANCE_SKILL_UNLOCK_ORDER. Causa raiz:
+    server/combat_processor.py tem um mecanismo à parte (rastreio de
+    carga do talento Cavaleiro) que insere essa skill no array do
+    servidor assim que o guerreiro acerta um golpe — nunca soube da
+    ordem curada da instância. Fix: dentro da instância, o cliente só
+    revela skill_id que está em INSTANCE_SKILL_UNLOCK_ORDER da classe."""
+    fx, ps = _make_skill_placement_fixture()
+    fake_cfg = _FakeCfgFile({"characters": {"TestChar": {}}})
+    monkeypatch.setattr("config.load", fake_cfg.load)
+
+    from engine.components import CharacterStats as _CSPnq
+    from ui.ui_components import InstanceInventoryUIState as _IIUSPnq
+    fx.world.add_component(fx.player_entity, _CSPnq(class_id="guerreiro"))
+    iius = _IIUSPnq()
+    iius.active = True
+    fx.world.add_component(fx.player_entity, iius)
+
+    # unlock_order do guerreiro tem "interceptar", mas NUNCA
+    # "punho_no_queixo" — mesmo payload que o mecanismo de carga
+    # produziria no servidor (ambos presentes, "punho_no_queixo" ANTES
+    # de "interceptar" no array porque foi inserida antes do level-up).
+    payload = {"eid": fx._my_eid, "skills_hotbar":
+               ["golpe_poderoso", "punho_no_queixo", "interceptar", None, None, None, None, None, None, None]}
+    fx._handle_msg_stats_update(payload)
+
+    placed = {s.skill_id for s in ps.skills if s}
+    assert "punho_no_queixo" not in placed, \
+        "Punho no Queixo não deveria aparecer na hotbar da instância (fora da ordem curada)"
+    assert "interceptar" in placed, "Interceptar deveria aparecer normalmente"
+    assert "golpe_poderoso" in placed
+
+
+def test_skills_hotbar_fora_da_instancia_nao_filtra_skill_extra(monkeypatch):
+    """Regressão: sem estar na instância (InstanceInventoryUIState ausente/
+    inativo), o filtro não se aplica — Punho no Queixo é ambient real do
+    build Cavaleiro no mundo aberto, comportamento intacto."""
+    fx, ps = _make_skill_placement_fixture()
+    fake_cfg = _FakeCfgFile({"characters": {"TestChar": {}}})
+    monkeypatch.setattr("config.load", fake_cfg.load)
+
+    from engine.components import CharacterStats as _CSPnq2
+    fx.world.add_component(fx.player_entity, _CSPnq2(class_id="guerreiro"))
+    # Sem InstanceInventoryUIState nenhum — replica "fora da instância".
+
+    payload = {"eid": fx._my_eid, "skills_hotbar":
+               ["golpe_poderoso", "punho_no_queixo", None, None, None, None, None, None, None, None]}
+    fx._handle_msg_stats_update(payload)
+
+    placed = {s.skill_id for s in ps.skills if s}
+    assert "punho_no_queixo" in placed, \
+        "fora da instância, Punho no Queixo deveria aparecer normalmente"
+
+
+def test_trainer_system_real_aprende_skill_sem_crash(monkeypatch):
+    """Crash real relatado pelo usuário (26/08/2026): treinar uma skill
+    no treinador de verdade derrubava o jogo com `AttributeError:
+    'TrainerSystem' object has no attribute '_preferred_slot_for_skill'`.
+    Causa: a preferência de slot nasceu como método de GameEngine — via
+    mixin, NetworkHandlers/GameEngine enxergavam ele, mas `TrainerSystem`
+    é instanciado à parte (game.py, sem referência de volta), então
+    `self._preferred_slot_for_skill` nunca existia ali. Os testes de
+    `_SkillPlacementFixture` acima nunca pegaram isso porque monkey-
+    patchavam o método direto na fixture, mascarando a falta da ligação
+    real — ESTE teste usa o `TrainerSystem` de verdade (não uma
+    fixture), exatamente pra fechar esse buraco."""
+    from engine.world import World
+    from engine.components import PlayerSkills, Wallet, CharacterStats
+    from ui.trainer_system import TrainerSystem
+    from content.skill_config import SKILL_COSTS, SKILL_LEVEL_REQUIREMENTS
+
+    fake_cfg = _FakeCfgFile({"characters": {"TestChar": {}}})
+    monkeypatch.setattr("config.load", fake_cfg.load)
+    monkeypatch.setattr("config.save", fake_cfg.save)
+
+    world = World()
+    eid = world.create_entity()
+    world.add_component(eid, PlayerSkills())
+    world.add_component(eid, Wallet(gold=SKILL_COSTS.get("impacto", 100)))
+    cs = CharacterStats(name="TestChar", class_id="guerreiro")
+    cs.level = SKILL_LEVEL_REQUIREMENTS.get("impacto", 2)
+    world.add_component(eid, cs)
+
+    screen = pygame.display.set_mode((800, 600))
+    trainer = TrainerSystem(world, eid, screen)
+    trainer._tr_class_id = "guerreiro"
+
+    trainer._do_learn("impacto")  # não deveria levantar AttributeError
+
+    ps = world.get_component(eid, PlayerSkills)
+    assert "impacto" in ps.learned_skill_ids
+    assert any(s is not None and s.skill_id == "impacto" for s in ps.skills)
+
+
 def test_save_config_preserva_hotbar_real_enquanto_na_bg(monkeypatch):
     fx = _make_save_config_fixture(active=True)
     real_hotbar = {"slots": ["REAL_SKILL"], "keybinds": ["3"]}
@@ -171,7 +383,11 @@ def test_save_config_preserva_hotbar_real_enquanto_na_bg(monkeypatch):
 
     assert fx.hotbar_calls == 0, "não deveria nem serializar a hotbar da instância"
     assert fx.consumable_calls == 0
-    assert fx.send_hotbar_calls == 0, "não deveria mandar HOTBAR_UPDATE com estado de instância"
+    # 25/08/2026: HOTBAR_UPDATE agora É enviado dentro da BG — só a escrita
+    # em config.json (acima) continua bloqueada. Sem enviar, um arrasto de
+    # skill durante a instância fica só local e o próximo STATS_UPDATE de
+    # level-up desfaz a troca sozinho (bug real relatado pelo usuário).
+    assert fx.send_hotbar_calls == 1, "deveria mandar HOTBAR_UPDATE mesmo dentro da instância (só não grava local)"
     saved_char = fake_cfg.saved["characters"]["TestChar"]
     assert saved_char["hotbar"] == real_hotbar, "hotbar real deveria continuar intacta em config.json"
     assert saved_char["consumable_bar"] == {"slots": ["Poção"], "keybinds": []}
@@ -207,43 +423,19 @@ def test_save_config_outras_settings_continuam_salvando_na_bg(monkeypatch):
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# 2) Servidor — skill concedida na BG nasce no MESMO slot da hotbar real
+# 2) Servidor — skill concedida na BG (25/08/2026: posição virou 100%
+#    decisão do cliente, ver ui/skill_slot_prefs.py::preferred_slot_for_skill — o
+#    servidor só concede no primeiro slot vazio; mecanismo antigo de
+#    "espelhar a hotbar real"/reserved_slots foi removido, redundante)
 # ─────────────────────────────────────────────────────────────────────────
 
-class TestInstanceSkillPreferredSlot(unittest.TestCase):
+class TestInstanceSkillGrant(unittest.TestCase):
 
     def setUp(self):
         self.ws = make_world_server()
         self.eid = spawn_player(self.ws, "p1", 10, 10, class_id="guerreiro")
 
-    def _set_real_slot(self, slot_idx: int, skill_id: str) -> None:
-        from engine.components import PlayerSkills
-        from content.skill_config import SKILL_CATALOG
-        ps = self.ws.world.get_component(self.eid, PlayerSkills)
-        ps.skills[slot_idx] = PlayerSkills._make_skill(skill_id, SKILL_CATALOG)
-        ps.learned_skill_ids.add(skill_id)
-
-    def test_primeira_skill_desbloqueada_nasce_no_slot_real(self):
-        """guerreiro: unlock_order[0] == 'golpe_poderoso'. Jogador de
-        verdade tem essa skill no slot 3 (índice 3) da hotbar — dentro da
-        BG ela deve nascer no MESMO slot, não no primeiro vazio (índice 0)."""
-        from server.instance_progression import enter_normalized_progression
-        from engine.components import PlayerSkills
-
-        self._set_real_slot(3, "golpe_poderoso")
-
-        enter_normalized_progression(self.ws, self.eid)
-
-        new_ps = self.ws.world.get_component(self.eid, PlayerSkills)
-        self.assertEqual(new_ps.skills[3].skill_id, "golpe_poderoso",
-            "skill deveria nascer no slot 3, igual à hotbar real")
-        self.assertIsNone(new_ps.skills[0],
-            "slot 0 deveria continuar vazio (não é o preferido nem o único livre)")
-
-    def test_skill_sem_slot_real_cai_no_primeiro_vazio(self):
-        """Se o player nunca colocou a skill numa hotbar de verdade
-        (comportamento original, decisão #10), continua caindo no
-        primeiro slot livre."""
+    def test_skill_concedida_cai_no_primeiro_slot_vazio(self):
         from server.instance_progression import enter_normalized_progression
         from engine.components import PlayerSkills
 
@@ -251,36 +443,6 @@ class TestInstanceSkillPreferredSlot(unittest.TestCase):
 
         new_ps = self.ws.world.get_component(self.eid, PlayerSkills)
         self.assertEqual(new_ps.skills[0].skill_id, "golpe_poderoso")
-
-    def test_skill_de_preenchimento_nao_rouba_slot_reservado_por_skill_tardia(self):
-        """Fase 10 (06/08/2026, bug real de playtest): 'golpe_poderoso'
-        (unlock_order[0], desbloqueia na ENTRADA) não está na hotbar real
-        — cairia greedy no slot 0 (primeiro vazio). 'interceptar'
-        (unlock_order[5], só desbloqueia no level 6) É o dono real do
-        slot 0. Sem reserved_slots, golpe_poderoso rouba o slot 0 na
-        entrada e interceptar cai em outro lugar quando finalmente
-        desbloqueia — reproduz exatamente o relatado (hotbar da
-        instância não bate com a real mesmo pra skill configurada)."""
-        from server.instance_progression import (
-            enter_normalized_progression, _process_instance_levelup)
-        from engine.components import PlayerSkills, CharacterStats
-
-        self._set_real_slot(0, "interceptar")  # slot 0 é o dono real — golpe_poderoso NÃO está na hotbar
-
-        enter_normalized_progression(self.ws, self.eid)
-        new_ps = self.ws.world.get_component(self.eid, PlayerSkills)
-        self.assertNotEqual(getattr(new_ps.skills[0], "skill_id", None), "golpe_poderoso",
-            "golpe_poderoso (sem slot real) não deveria roubar o slot 0 — reservado pro interceptar")
-
-        # Sobe até o cap pra garantir que interceptar (level 6) desbloqueia.
-        char = self.ws.world.get_component(self.eid, CharacterStats)
-        char.current_xp = 10 ** 9
-        _process_instance_levelup(self.ws, self.eid)
-
-        new_ps = self.ws.world.get_component(self.eid, PlayerSkills)
-        self.assertEqual(new_ps.skills[0].skill_id, "interceptar",
-            "interceptar deveria nascer no slot 0 (igual à hotbar real), mesmo "
-            "desbloqueando bem depois de golpe_poderoso na ordem fixa da instância")
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -331,24 +493,109 @@ class TestHotbarUpdateAppliesLive(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(ps.skills[3], "skill não aprendida não deveria aparecer no slot")
 
-    async def test_reordenacao_ao_vivo_alimenta_slot_preferido_da_instancia(self):
-        """Ponta a ponta: edita a hotbar via mensagem de rede (sem
-        relogar) e SÓ DEPOIS entra na BG — a skill de instância deve
-        nascer no slot que acabou de ser configurado."""
-        from engine.components import PlayerSkills
-        from server.instance_progression import enter_normalized_progression
-        ps = self.ws.world.get_component(self.eid, PlayerSkills)
-        ps.learned_skill_ids.add("golpe_poderoso")
 
-        skills = [None] * len(ps.skills)
-        skills[3] = "golpe_poderoso"
-        await self._send_hotbar_update(skills)
+
+# ─────────────────────────────────────────────────────────────────────────
+# 7) Fase 11 (25/08/2026) — reordenar a hotbar DENTRO da BG sobrevive a um
+#    level-up seguinte (bug real relatado: arrastar Interceptar pra outro
+#    slot, o próximo level-up desfazia a troca sozinha). Causa raiz era
+#    client-side (game.py::_save_config bloqueava _send_hotbar_update()
+#    inteiro dentro da instância, não só a escrita em config.json) — aqui
+#    testa a ponta servidor: HOTBAR_UPDATE durante a instância + level-up
+#    seguinte não deve reverter a troca, e sair da instância não deve
+#    vazar o estado temporário pro personagem persistido.
+# ─────────────────────────────────────────────────────────────────────────
+
+class TestHotbarReorderSurvivesInstanceLevelup(unittest.IsolatedAsyncioTestCase):
+
+    async def asyncSetUp(self):
+        from tests.test_session import make_session_manager, fake_login
+        self.ws, self.mgr = make_session_manager()
+        self.session, self.fw = await fake_login(self.mgr, "s1", "user_hbr", class_id="guerreiro")
+        self.eid = self.ws._player_eids[self.session.session_id]
+
+    async def _send_hotbar_update(self, skills: list) -> None:
+        from shared.messages import encode, MsgType
+        await self.mgr.on_message(self.session, encode(MsgType.HOTBAR_UPDATE, {
+            "skills": skills, "consumables": [],
+        }))
+
+    async def test_troca_de_slot_durante_a_bg_sobrevive_a_novo_levelup(self):
+        from engine.components import PlayerSkills, CharacterStats
+        from server.instance_progression import (
+            enter_normalized_progression, _process_instance_levelup)
 
         enter_normalized_progression(self.ws, self.eid)
+        char = self.ws.world.get_component(self.eid, CharacterStats)
+        # Sobe alguns levels pra ter mais de 1 skill já revelada (mesma
+        # forma que o usuário relatou: "já tinha todas as skills").
+        for _ in range(3):
+            char.current_xp = char.xp_to_next_level
+            _process_instance_levelup(self.ws, self.eid)
 
-        new_ps = self.ws.world.get_component(self.eid, PlayerSkills)
-        self.assertEqual(new_ps.skills[3].skill_id, "golpe_poderoso",
-            "slot editado na MESMA sessão (sem relogar) deveria valer pro slot preferido da instância")
+        ps = self.ws.world.get_component(self.eid, PlayerSkills)
+        placed = [(i, s.skill_id) for i, s in enumerate(ps.skills) if s]
+        self.assertGreaterEqual(len(placed), 2, "setup inválido — precisa de pelo menos 2 skills reveladas")
+        (idx_a, sid_a), (idx_b, sid_b) = placed[0], placed[1]
+
+        # Simula o arrasto: troca os 2 slots (mesmo efeito que arrastar
+        # Interceptar do 3 pro R faria).
+        skills = [s.skill_id if s else None for s in ps.skills]
+        skills[idx_a], skills[idx_b] = skills[idx_b], skills[idx_a]
+        await self._send_hotbar_update(skills)
+        self.assertEqual(ps.skills[idx_a].skill_id, sid_b)
+        self.assertEqual(ps.skills[idx_b].skill_id, sid_a)
+
+        # Mais um level-up (o gatilho real do bug: BG dá XP/level o tempo
+        # todo) — a troca não pode ter voltado ao normal.
+        char.current_xp = char.xp_to_next_level
+        _process_instance_levelup(self.ws, self.eid)
+
+        after_ps = self.ws.world.get_component(self.eid, PlayerSkills)
+        self.assertEqual(after_ps.skills[idx_a].skill_id, sid_b,
+            "troca de slot durante a BG não deveria desfazer sozinha no próximo level-up")
+        self.assertEqual(after_ps.skills[idx_b].skill_id, sid_a)
+
+    async def test_troca_durante_a_bg_nao_vaza_pro_personagem_persistido(self):
+        """Segurança: HOTBAR_UPDATE mandado DENTRO da instância só mexe no
+        overlay temporário — a hotbar REAL (de antes de entrar) precisa
+        ser o que persiste quando o player sai, não a alterada durante a
+        BG."""
+        from engine.components import PlayerSkills
+        from server.instance_progression import (
+            enter_normalized_progression, exit_normalized_progression)
+
+        real_ps = self.ws.world.get_component(self.eid, PlayerSkills)
+        real_ps.learned_skill_ids.add("golpe_poderoso")
+        real_ps.skills[4] = PlayerSkills._make_skill("golpe_poderoso", __import__(
+            "content.skill_config", fromlist=["SKILL_CATALOG"]).SKILL_CATALOG)
+        real_slot4_sid = real_ps.skills[4].skill_id
+
+        enter_normalized_progression(self.ws, self.eid)
+        overlay_ps = self.ws.world.get_component(self.eid, PlayerSkills)
+        self.assertIsNot(overlay_ps, real_ps, "setup inválido — deveria ter trocado pro overlay")
+        # golpe_poderoso é unlock_order[0] do guerreiro — enter_normalized_
+        # progression já concede de graça, no primeiro slot livre (não o 9).
+        _before = [s.skill_id if s else None for s in overlay_ps.skills]
+        self.assertIn("golpe_poderoso", _before)
+        self.assertNotEqual(overlay_ps.skills[9] and overlay_ps.skills[9].skill_id, "golpe_poderoso")
+
+        # Edita a hotbar DENTRO da instância (overlay) — move golpe_poderoso
+        # pro slot 9 (arrasto simulado). Não deveria afetar a hotbar real.
+        skills = [None] * len(overlay_ps.skills)
+        skills[9] = "golpe_poderoso"
+        await self._send_hotbar_update(skills)
+        self.assertEqual(overlay_ps.skills[9].skill_id, "golpe_poderoso")
+
+        exit_normalized_progression(self.ws, self.eid)
+
+        merged = await self.mgr._persist_character(self.session, context="test")
+        self.assertIsNotNone(merged, "save deveria ter acontecido (fora da instância)")
+        self.assertEqual(merged["skills"]["hotbar"][4], real_slot4_sid,
+            "hotbar persistida deveria ser a REAL (slot 4 = golpe_poderoso), "
+            "não contaminada pelo que foi editado durante a instância")
+        self.assertNotEqual(merged["skills"]["hotbar"][9], "golpe_poderoso",
+            "slot 9 (só usado no arrasto DENTRO da instância) não deveria vazar pra persistência")
 
 
 # ─────────────────────────────────────────────────────────────────────────

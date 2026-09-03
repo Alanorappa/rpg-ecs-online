@@ -391,6 +391,8 @@ class NetworkHandlers:
             from engine.components import FireShieldEffect as _FSEcl
             if not self.world.get_component(self.player_entity, _FSEcl):
                 self.world.add_component(self.player_entity, _FSEcl(duration=15.0))
+                from engine.effect_order import mark_activated as _mark_eo_fs
+                _mark_eo_fs(self.world, self.player_entity, "escudo_fogo")
 
         # Bloco de Gelo confirmado: adiciona IceBlockEffect no cliente.
         # Sem isso, IceBlockSystem nunca roda online e a cura (10%/s) nunca
@@ -402,6 +404,8 @@ class NetworkHandlers:
                 self.world.add_component(self.player_entity, _IBEcl(
                     duration=5.0, elapsed=0.0, heal_interval=1.0, last_heal=0.0,
                 ))
+                from engine.effect_order import mark_activated as _mark_eo_ib
+                _mark_eo_ib(self.world, self.player_entity, "bloco_de_gelo")
                 _cst_ib = self.world.get_component(self.player_entity, _CStIB)
                 if _cst_ib:
                     _cst_ib.is_stunned = True
@@ -428,6 +432,8 @@ class NetworkHandlers:
                 _cs_cam.camouflage_timer  = _dur_cam
                 _variants_cam = _disc_cam("camuflagem")
                 _cs_cam.camouflage_object = _rand_cam.choice(_variants_cam) if _variants_cam else ""
+                from engine.effect_order import mark_activated as _mark_eo_cam
+                _mark_eo_cam(self.world, self.player_entity, "camuflagem")
             if _cst_cam:
                 _cst_cam.is_visible    = False
                 _cst_cam.is_immune     = True
@@ -1571,6 +1577,10 @@ class NetworkHandlers:
                 cs.current_hp = payload["hp"]
             if cs and "hp_max" in payload:
                 cs.max_hp = payload["hp_max"]
+            from engine.components import CombatState as _CStBush
+            cs_state = self.world.get_component(self.player_entity, _CStBush)
+            if cs_state and "in_bush" in payload:
+                cs_state.is_bush_hidden = payload["in_bush"]
             # Rage/mana/concentração sincronizados após skill consumir recursos
             _srv_rage = payload.get("rage")
             _srv_mana = payload.get("mana")
@@ -1832,32 +1842,98 @@ class NetworkHandlers:
             # dado ESTÁTICO compartilhado, não precisa de payload rico
             # (diferente de item, que é dinâmico).
             #
-            # Reconciliação POR SLOT, não substituição completa (03/08/2026,
-            # bug real: "o cooldown das skills não aparece logo depois de
-            # usar, só depois de apertar o atalho de novo"). Este payload
-            # chega a cada level-up de instância (`_process_instance_
-            # levelup`/`_push_stats_update`) — e level-up acontece a cada
-            # poucos segundos na BG (XP por proximidade de minion morto).
-            # Substituir o objeto `Skill` inteiro reseta `current_cooldown`/
-            # `charges`/`charge_timer`/`_server_pending`/`fail_flash_timer`
-            # pra 0 — o cooldown real (mandado pelo SKILL_RESULT da própria
-            # skill) fica visualmente "limpo" até a PRÓXIMA mensagem
-            # atualizar de novo (ex.: a rejeição do 2º uso). Slot cujo
-            # `skill_id` não mudou mantém o objeto Skill JÁ EXISTENTE (com
-            # seu estado ao vivo); só slots que realmente mudaram de skill
-            # (nova liberada, ou vazio↔ocupado) ganham um Skill novo.
+            # Posição decidida 100% pelo CLIENTE (25/08/2026, pedido do
+            # usuário — configurar uma skill dentro OU fora da BG é a MESMA
+            # preferência, ver ui/skill_slot_prefs.py::preferred_slot_for_skill). O
+            # payload do servidor (1:1 por índice, sem mudar protocolo) só
+            # serve pra descobrir QUAIS skill_ids são novos — a posição que
+            # ele sugere é ignorada. Slot já conhecido NUNCA é retocado por
+            # este bloco de novo (nem objeto novo, nem realocação), não
+            # importa o que o servidor mande no índice correspondente —
+            # antes disso (03/08/2026→25/08/2026) a reconciliação era POR
+            # SLOT/posição: preservava o objeto Skill vivo (cooldown/
+            # charges) quando o skill_id não mudava NAQUELE índice, mas
+            # ainda reagia a mudança de POSIÇÃO — reordenar a hotbar DENTRO
+            # da instância (arrasto) e depois receber um skills_hotbar novo
+            # (qualquer level-up seguinte, frequente na BG) fazia o slot
+            # editado voltar pro arranjo antigo do servidor (bug real
+            # relatado pelo usuário: "Interceptar voltava pro slot 3
+            # sozinho"). Agora: skill que sumiu do payload é REMOVIDA da
+            # hotbar (troca de contexto — ex: entrar na BG precisa limpar as
+            # skills do mundo aberto, mesmo motivo do bug original de
+            # 02/08/2026); skill NOVA usa a preferência do jogador (ou
+            # primeiro slot vazio); skill já conhecida E ainda presente no
+            # payload fica exatamente onde o jogador a colocou, pra sempre,
+            # até ele mesmo mexer de novo (nunca perde o objeto Skill vivo —
+            # cooldown/charges — só por reaparecer no mesmo payload).
             if "skills_hotbar" in payload:
                 from content.skill_config import SKILL_CATALOG as _SCHb
                 _ps_hb = self.world.get_component(self.player_entity, PlayerSkills)
                 if _ps_hb is not None:
-                    _new_hotbar = []
-                    for _i_hb, sid in enumerate(payload["skills_hotbar"]):
-                        _cur_sk = _ps_hb.skills[_i_hb] if _i_hb < len(_ps_hb.skills) else None
-                        if sid and _cur_sk is not None and _cur_sk.skill_id == sid:
-                            _new_hotbar.append(_cur_sk)
-                        else:
-                            _new_hotbar.append(PlayerSkills._make_skill(sid, _SCHb) if sid else None)
-                    _ps_hb.skills = _new_hotbar
+                    _payload_ids_hb = {sid for sid in payload["skills_hotbar"] if sid}
+                    # Dentro da instância, só revela skill que faz parte da
+                    # ordem curada da classe (25/08/2026, bug real: "Punho
+                    # no Queixo" apareceu no lugar de Interceptar). Causa:
+                    # server/combat_processor.py tem um mecanismo à parte
+                    # (rastreio de carga do talento Cavaleiro) que insere
+                    # essa skill no primeiro slot vazio de PlayerSkills.skills
+                    # assim que o player acerta um golpe — nunca soube de
+                    # INSTANCE_SKILL_UNLOCK_ORDER, e como a instância
+                    # pré-aloca a árvore de talento no máximo desde a
+                    # entrada, o flag que ativa isso já está ligado ANTES do
+                    # 1º level-up de verdade — roubando o slot que a skill
+                    # curada da vez (Interceptar) ia usar. Fora da instância
+                    # o filtro não se aplica — Punho no Queixo é ambient
+                    # real do build Cavaleiro, comportamento intacto.
+                    #
+                    # `in_instance` deste MESMO payload (não o valor ainda
+                    # não-atualizado do componente) decide se o filtro
+                    # aplica (01/09/2026, bug real relatado pelo usuário:
+                    # skill real "Impacto", fora da ordem curada de
+                    # guerreiro, sumia da hotbar ao SAIR da BG — não só
+                    # com /ff, qualquer saída real, porque `exit_
+                    # normalized_progression` sempre manda `in_instance:
+                    # False` e `skills_hotbar` no MESMO STATS_UPDATE, e
+                    # este bloco processa ANTES do bloco que atualiza
+                    # `InstanceInventoryUIState.active` — mais abaixo
+                    # nesta função —, então lia o flag ainda `True`
+                    # (estado de ANTES de sair) e filtrava a lista real
+                    # inteira pela curada por engano. MESMO padrão já usado
+                    # acima pro bloco de atributos brutos — payload
+                    # explícito primeiro, estado atual só como reserva
+                    # (level-up de instância não manda `in_instance`, mas
+                    # o player continua lá dentro).
+                    from ui.ui_components import InstanceInventoryUIState as _IIUSHb
+                    _iius_hb = self.world.get_component(self.player_entity, _IIUSHb)
+                    _in_instance_hb = payload.get("in_instance")
+                    if _in_instance_hb is None and _iius_hb is not None:
+                        _in_instance_hb = _iius_hb.active
+                    if _in_instance_hb:
+                        from content.skill_config import INSTANCE_SKILL_UNLOCK_ORDER as _ISUOHb
+                        from engine.components import CharacterStats as _CSHbFilter
+                        _char_hb = self.world.get_component(self.player_entity, _CSHbFilter)
+                        _allowed_hb = set(_ISUOHb.get(_char_hb.class_id, [])) if _char_hb else set()
+                        _payload_ids_hb &= _allowed_hb
+                    for _i_rm, _s_rm in enumerate(_ps_hb.skills):
+                        if _s_rm is not None and _s_rm.skill_id not in _payload_ids_hb:
+                            _ps_hb.skills[_i_rm] = None
+                    _known_hb = {s.skill_id for s in _ps_hb.skills if s}
+                    for sid in payload["skills_hotbar"]:  # preserva a ORDEM original
+                        if not sid or sid not in _payload_ids_hb or sid in _known_hb:
+                            continue
+                        _new_sk_hb = PlayerSkills._make_skill(sid, _SCHb)
+                        if _new_sk_hb is None:
+                            continue
+                        from ui.skill_slot_prefs import preferred_slot_for_skill as _psfs_hb
+                        _idx_hb = _psfs_hb(self.world, self.player_entity, _ps_hb, sid)
+                        if _idx_hb is None:
+                            try:
+                                _idx_hb = _ps_hb.skills.index(None)
+                            except ValueError:
+                                _idx_hb = None
+                        if _idx_hb is not None:
+                            _ps_hb.skills[_idx_hb] = _new_sk_hb
+                        _known_hb.add(sid)
             if "learned_skill_ids" in payload:
                 _ps_learned = self.world.get_component(self.player_entity, PlayerSkills)
                 if _ps_learned is not None:
@@ -1995,6 +2071,11 @@ class NetworkHandlers:
             local_eid = self._remote_players[eid]
             rc = self.world.get_component(local_eid, RemoteControlled)
             if rc:
+                if "hp" in payload or "hp_max" in payload:
+                    from debug.aoi_debug import AOI_DBG as _AOI_DBG_phs
+                    _AOI_DBG_phs.log("PLAYER_HP_STATS", server_eid=eid,
+                                     hp_before=rc.hp, hp_novo=payload.get("hp"),
+                                     hp_max_novo=payload.get("hp_max"))
                 if "hp" in payload:
                     rc.hp = payload["hp"]
                 if "hp_max" in payload:
@@ -2412,10 +2493,19 @@ class NetworkHandlers:
         ps.learned_skill_ids.add(skill_id)
         new_sk = _PS_sg._make_skill(skill_id, _SC_sg)
         if new_sk is not None:
-            try:
-                idx = ps.skills.index(None)
+            # Slot preferido do jogador primeiro (25/08/2026, ver
+            # ui/skill_slot_prefs.py::preferred_slot_for_skill), fallback
+            # pro primeiro slot vazio.
+            from ui.skill_slot_prefs import preferred_slot_for_skill as _psfs_sg
+            idx = _psfs_sg(self.world, self.player_entity, ps, skill_id)
+            if idx is None:
+                try:
+                    idx = ps.skills.index(None)
+                except ValueError:
+                    idx = None
+            if idx is not None:
                 ps.skills[idx] = new_sk
-            except ValueError:
+            else:
                 ps.skills.append(new_sk)
         LOG.add(f"Aprendido: {name} (recompensa de quest)", (230, 210, 120))
         SOUNDS.play_ui("loot_item")

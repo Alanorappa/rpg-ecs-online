@@ -31,6 +31,8 @@ class Minimap(UIScaleMixin):
     BORDER_COL   = (100,  80,  50)
     PLAYER_COL   = (255, 255, 255)
     ENEMY_COL    = (220,  50,  50)
+    ALLY_COL     = (100, 255, 140)   # entidade amigável ao player
+    NEUTRAL_COL  = (255, 225,  90)   # entidade neutra ao player
 
     _FONT_BASES = {"_font": 12}   # glifo de fallback dos marcadores (!/?/T/$)
 
@@ -94,7 +96,7 @@ class Minimap(UIScaleMixin):
         player_ty:   int,
         explored:    set,
         visible:     set,
-        enemy_tiles: "list[tuple[int,int]]",
+        enemy_tiles: "list[tuple[int,int,tuple]]",
         markers:     "list | None" = None,
     ) -> None:
         if self._map_overlay._cols == 0:
@@ -125,14 +127,16 @@ class Minimap(UIScaleMixin):
         pygame.draw.circle(self.screen, self.PLAYER_COL,
                            (ox + mid, oy + mid), 2)
 
-        # Inimigos visíveis: posição relativa ao player
-        for etx, ety in enemy_tiles:
+        # Entidades visíveis: posição relativa ao player, cor por relação
+        # (hostil/neutro/amigável — get_relationship_between, resolvido pelo
+        # CHAMADOR em game.py, mesmo padrão de render_fullmap/dots)
+        for etx, ety, ecol in enemy_tiles:
             dx = etx - player_tx
             dy = ety - player_ty
             if abs(dx) <= self.RADIUS and abs(dy) <= self.RADIUS:
                 sx = ox + mid + dx * tp
                 sy = oy + mid + dy * tp
-                pygame.draw.circle(self.screen, self.ENEMY_COL, (sx, sy), 2)
+                pygame.draw.circle(self.screen, ecol, (sx, sy), 2)
 
         # Marcadores (morte, quest givers, treinadores, mercadores...) —
         # ícone se existir; senão círculo colorido + glifo pequeno. Corpo é

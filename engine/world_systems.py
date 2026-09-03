@@ -43,7 +43,7 @@ from engine.world import World
 from engine.tileset import TILE_SIZE, OBJECT_MAPPING, get_collision_offsets
 from engine.utils import chebyshev, start_tile_movement, is_action_locked, is_movement_locked, SpatialHash
 from content.tower_definitions import TOWER_TABLE
-from engine.damage_calculator import resolve_attack_outcome, calculate_base_damage
+from engine.damage_calculator import resolve_attack_outcome, calculate_base_damage, mob_dot_tick_damage
 from ui.combat_log import LOG
 from engine.fx import FLT, PROC, WARN, SOUNDS, DASH_TRAIL
 from content.status_effects_data import EFFECT_DEFS
@@ -1264,37 +1264,18 @@ class CombatStateSystem(_BaseCombatStateSystem, System):
                         combat_stats.current_hp = max(1, int(_pct_hp * combat_stats.max_hp))
                     LOG.add(f"Efeito '{entry['label']}' expirou.", (160, 160, 160))
 
+            # Proc de item: rolado autoritativamente pelo SERVIDOR
+            # (core_systems.ServerCombatStateSystem._roll_procs), sincronizado
+            # pro cliente via StatusEffects/AOI_UPDATE (engine.core_systems.
+            # grant_visible_buff) — mesmo canal que debuff já usa. Antes
+            # (31/08/2026), o cliente tinha uma versão LOCAL/cosmética aqui
+            # (_trigger_procs) que re-rolava com RNG PRÓPRIO só pra log/
+            # feedback visual, podendo divergir do resultado real do servidor
+            # — removida; o cliente agora só reage ao buff de verdade
+            # sincronizado (client/remote_entity_handlers.py::
+            # _sync_player_effects já emite LOG pra qualquer buff novo).
             if cs._just_entered_combat:
                 cs._just_entered_combat = False
-                self._trigger_procs(eid, combat_stats)
-
-    def _trigger_procs(self, entity_id: int, combat_stats: CombatStats) -> None:
-        """Rola procs de itens equipados ao entrar em combate — versão LOCAL/cosmética
-        (LOG + feedback visual). O servidor rola sua própria versão autoritativa
-        independentemente (core_systems.ServerCombatStateSystem._roll_procs) e é quem
-        decide o resultado real de stats/HP, sincronizado de volta via STATS_UPDATE/AOI —
-        ver arquitetura/PROBLEMAS_ARQUITETURA.md. Por isso este roll local pode divergir
-        do servidor (chance independente); é só feedback, não fonte de verdade."""
-        equip = self.world.get_component(entity_id, Equipment)
-        if not equip or not combat_stats:
-            return
-        for item in equip.slots.values():
-            if item and item.proc:
-                p = item.proc
-                if random.random() < p["chance"]:
-                    _max_before = combat_stats.max_hp
-                    _pct_before = (combat_stats.current_hp / _max_before
-                                   if _max_before > 0 else 1.0)
-                    mod = Modifier(p["attribute"], p["value"], source="buff")
-                    add_timed_modifier(combat_stats, mod, p["duration"], p["label"])
-                    # Se o proc aumentou o max HP, escala o HP atual pelo mesmo percentual
-                    if combat_stats.max_hp > _max_before:
-                        combat_stats.current_hp = max(1, int(_pct_before * combat_stats.max_hp))
-                    LOG.add(
-                        f"PROC [{item.name}]: {p['label']}! "
-                        f"+{p['value']} {p['attribute']} por {p['duration']:.0f}s.",
-                        (255, 210, 60)
-                    )
 
 
 class ProjectileSystem(System):
@@ -1331,16 +1312,22 @@ class ProjectileSystem(System):
                     _defn_p = _ABD_P.get(proj.ability_id)
                     if _defn_p:
                         # magnitude é multiplicador do attack_power do caster
-                        # (ver enemy_abilities_data.py) — escala com level/tier.
+                        # (ver enemy_abilities_data.py) — escala com √level via
+                        # damage_calculator.mob_dot_tick_damage (28/08/2026,
+                        # ponto único de verdade — antes escalava linear demais).
                         _atk_cs_p = self.world.get_component(proj.attacker_id, CombatStats)
-                        _ability_dmg_p = _defn_p.magnitude * (_atk_cs_p.base_attack_power if _atk_cs_p else 0.0)
+                        _atk_ident_p = self.world.get_component(proj.attacker_id, EntityIdentity)
+                        _ability_dmg_p = mob_dot_tick_damage(
+                            _defn_p.magnitude,
+                            _atk_cs_p.base_attack_power if _atk_cs_p else 0.0,
+                            _atk_ident_p.level if _atk_ident_p else 1,
+                        )
                         apply_effect(
                             self.world, proj.target_id,
                             _defn_p.effect_type, _defn_p.duration, _ability_dmg_p,
                             tick_interval=_defn_p.tick_interval,
                         )
                         PROC.add(_defn_p.name, (220, 80, 180))
-                        _atk_ident_p = self.world.get_component(proj.attacker_id, EntityIdentity)
                         _mob_nm_p = _atk_ident_p.name if _atk_ident_p else "Inimigo"
                         LOG.add(f"{_mob_nm_p} usou {_defn_p.name}!", (220, 80, 180))
                 else:
@@ -4279,6 +4266,13 @@ class TileMovementSystem(System):
                     tile_movement._last_valid_tile_x = tile_movement.current_tile_x
                     tile_movement._last_valid_tile_y = tile_movement.current_tile_y
                     tile_movement._last_valid_ts     = _time_tw.time()
+                    if tile_movement.is_dash:
+                        from debug.aoi_debug import AOI_DBG as _AOI_DBG_dash
+                        _AOI_DBG_dash.log("DASH_COMPLETE", eid=entity_id,
+                                          landed_tile=(tile_movement.current_tile_x,
+                                                      tile_movement.current_tile_y),
+                                          target_tile=(tile_movement.target_tile_x,
+                                                      tile_movement.target_tile_y))
 
                     # Atualiza elevation ao chegar num tile:
                     # • tile de transição ("t"): elevation NÃO muda aqui —
@@ -4563,16 +4557,21 @@ class EnemyAbilitySystem(System):
                                  cd_set=f"{slot.cooldown:.0f}s")
                 else:
                     # ── Habilidade melee (range=1): aplica efeito direto ───
-                    # magnitude é multiplicador do attack_power do mob (ver
-                    # enemy_abilities_data.py) — escala com level/tier.
-                    _ability_dmg = defn.magnitude * ecs.base_attack_power
+                    # magnitude é multiplicador do attack_power do mob, escala
+                    # com √level via damage_calculator.mob_dot_tick_damage
+                    # (28/08/2026, ponto único de verdade — antes escalava
+                    # linear demais, ver PROBLEMAS_ARQUITETURA.md).
+                    ident = self.world.get_component(eid, EntityIdentity)
+                    _ability_dmg = mob_dot_tick_damage(
+                        defn.magnitude, ecs.base_attack_power,
+                        ident.level if ident else 1,
+                    )
                     apply_effect(
                         self.world, target_p_eid,
                         defn.effect_type, defn.duration, _ability_dmg,
                         tick_interval=defn.tick_interval,
                     )
                     PROC.add(defn.name, (220, 80, 180))
-                    ident = self.world.get_component(eid, EntityIdentity)
                     mob_name = ident.name if ident else "Inimigo"
                     LOG.add(f"{mob_name} usou {defn.name}!", (220, 80, 180))
                     if _MCL:

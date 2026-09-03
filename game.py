@@ -79,26 +79,41 @@ DEBUG_MODE    = False  # sobrescrito pelo config.json em runtime
 PROFILE_FRAMES = False  # sobrescrito pelo config.json em runtime
 
 
-def _merge_display_matrix(terrain: list[str], objects: list) -> list[str]:
+def _merge_display_matrix(terrain: list[str], objects: list,
+                          terrain_visual: "list | None" = None) -> list:
     """
-    Combina terrain_matrix e object_matrix em uma matriz de exibição.
-    Posições com objeto sobrescrevem o char de terreno — usado pelo
-    map_overlay e minimap para mostrar a cor correta de árvores, pedras, etc.
-    IDs multi-char (ex: "t1", "b2") são reduzidos ao char base ("t", "b")
-    para que o lookup de cor no TileType funcione corretamente.
+    Combina terrain_matrix + terrain_visual + object_matrix numa matriz de
+    exibição pro map_overlay/minimap — usada pra mostrar a cor certa de
+    grama/terra/árvores/pedras/etc. Prioridade por célula: objeto (se
+    houver) > visual de sheet de terreno (se houver) > char de terreno
+    puro.
+
+    Cada célula do resultado é o TOKEN COMPLETO (char de terreno OU id de
+    sprite de sheet OU id de objeto — ex: "G", "ter_2_3", "vp_001"),
+    NUNCA truncado. Até 26/08/2026 truncava IDs multi-char pro 1º
+    caractere (ex: "t1"→"t", "vp_001"→"v") — funcionava por acaso pras
+    famílias antigas de letra única (t/b/g/s/y/l/o, que têm uma entrada
+    canônica de 1 letra em OBJECT_MAPPING só pra isso), mas qualquer
+    objeto de sheet mais novo ("vp_001", "gc_0_1") truncava pra uma letra
+    que não bate com NENHUM TileType cadastrado — caía no floor genérico,
+    sem cor nenhuma no minimapa (bug real relatado pelo usuário: cor por
+    arquivo/grupo não aparecia porque a informação já tinha sido perdida
+    ANTES de chegar no map_overlay). `MapOverlay.load_map` já indexa
+    célula por célula (`row[c]`) — funciona igual pra lista de tokens ou
+    string, só passa a receber o token certo, sem truncar.
     """
     result = []
     for r, t_row in enumerate(terrain):
-        if r >= len(objects):
-            result.append(t_row)
-            continue
-        o_row = objects[r]
-        row = list(t_row)
-        for c, obj_char in enumerate(o_row):
-            if obj_char and obj_char != "." and c < len(row):
-                display = obj_char[0] if len(obj_char) > 1 else obj_char
-                row[c] = display
-        result.append("".join(row))
+        row = list(t_row)   # célula = char de terreno, 1 por posição
+        if terrain_visual is not None and r < len(terrain_visual):
+            for c, vis in enumerate(terrain_visual[r]):
+                if vis and c < len(row):
+                    row[c] = vis
+        if r < len(objects):
+            for c, obj_char in enumerate(objects[r]):
+                if obj_char and obj_char != "." and c < len(row):
+                    row[c] = obj_char
+        result.append(row)
     return result
 
 
@@ -295,16 +310,23 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 self._window_mode_pref = "windowed"
 
         # Filtra eventos irrelevantes — reduz custo do pump no Windows.
-        # WINDOWMAXIMIZED/WINDOWRESTORED (Fase G): persistem a preferência
-        # de janela quando o jogador clica o botão nativo — não precisamos
-        # reagir a VIDEORESIZE (SCALED já recalcula a escala de apresentação
-        # sozinho, ver comentário no set_mode acima).
+        # WINDOWMAXIMIZED/WINDOWRESTORED NUNCA mudam/persistem a preferência
+        # de janela (26/08/2026, bug real relatado pelo usuário — Fase G
+        # tinha feito o botão nativo de maximizar do Windows gravar
+        # "maximized" em cima da escolha real do jogador; "maximized" migra
+        # pra "windowed_fullsize" no boot seguinte, então maximizar sem
+        # querer — dar duplo-clique na barra de título, arrastar a janela
+        # pro topo da tela — trocava "Janela" por "quase tela cheia" sem o
+        # jogador ter mexido em nenhum menu). Só o menu Configurações >
+        # Janela decide o que fica salvo — daí nem precisar escutar esses
+        # 2 eventos. Não precisamos reagir a VIDEORESIZE (SCALED já
+        # recalcula a escala de apresentação sozinho, ver comentário no
+        # set_mode acima).
         pygame.event.set_allowed([
             pygame.QUIT,
             pygame.KEYDOWN, pygame.KEYUP,
             pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP,
             pygame.MOUSEWHEEL, pygame.MOUSEMOTION,
-            pygame.WINDOWMAXIMIZED, pygame.WINDOWRESTORED,
         ])
 
         self._ui_scale: float = _cfg_data.get("ui_scale", 1.0)
@@ -442,6 +464,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._shop_system   = ShopSystem(self.world, self.player_entity, self.screen)
         self._quest_system  = QuestSystem(self.world, self.player_entity)
         set_quest_system(self._quest_system)
+        from ui.buff_bar import BuffBar
+        self._buff_bar = BuffBar(self.world, self.player_entity)
         self._quest_dialog  = QuestDialogSystem(
             self.world, self.player_entity, self.screen, self._quest_system)
         self._quest_journal = QuestJournalSystem(
@@ -464,7 +488,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         # (ver ui_scale_mixin.py e arquitetura/PROBLEMAS_ARQUITETURA.md, IU3).
         for _sys in (self._talent_system, self._skill_level_ui, self._char_stats_ui, self._shop_system,
                      self._quest_system, self._quest_dialog, self._quest_journal,
-                     self._crafting_system, self._trainer_system):
+                     self._crafting_system, self._trainer_system, self._buff_bar):
             _sys.set_ui_scale(self._ui_scale)
         # Insere QuestSystem após xp_system (posição 13, depois do índice de xp_system)
         _xp_idx = next((i for i, s in enumerate(self.systems)
@@ -629,7 +653,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             SOUNDS.play_ambient("ambient_surface")
         terrain_matrix, object_matrix, spawn_points, terrain_visual = load_map_csv(map_file)
         self._map_overlay.load_map(
-            _merge_display_matrix(terrain_matrix, object_matrix), map_file)
+            _merge_display_matrix(terrain_matrix, object_matrix, terrain_visual), map_file)
         self._minimap.on_map_load()
         for w in validate_map(terrain_matrix):
             print(f"[MAPA] Aviso: {w}")
@@ -884,7 +908,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             from engine.tileset import OBJECT_MAPPING
             self._map_overlay.load_map(
                 _merge_display_matrix(tilemap_comp.terrain_matrix,
-                                      tilemap_comp.object_matrix),
+                                      tilemap_comp.object_matrix,
+                                      tilemap_comp.terrain_visual),
                 self._current_map_file,
             )
             self._minimap.on_map_load()
@@ -1215,7 +1240,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         for _sys in (self._talent_system, self._skill_level_ui, self._shop_system, self._quest_system,
                      self._quest_dialog, self._quest_journal,
                      self._crafting_system, self._trainer_system,
-                     self._loot_system, self._map_overlay, self._minimap):
+                     self._loot_system, self._map_overlay, self._minimap, self._buff_bar):
             _sys.set_ui_scale(self._ui_scale)
         import config as _cfg
         _cfg.save({"ui_scale": self._ui_scale})
@@ -1641,14 +1666,6 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                     self._send_save_state()  # salva ao fechar
                     self._save_config()      # persiste layout da hotbar ao fechar
                     running = False
-                elif event.type == pygame.WINDOWMAXIMIZED:
-                    # NUNCA chamar set_mode()/_apply_logical_size() aqui —
-                    # ver comentário no __init__ (§34.48 fase 2, crash real).
-                    self._window_mode_pref = "maximized"
-                    self._save_config()
-                elif event.type == pygame.WINDOWRESTORED:
-                    self._window_mode_pref = "windowed"
-                    self._save_config()
                 elif _god_was_active:
                     pass   # god mode consumiu — ignora input do jogo
                 elif event.type == pygame.KEYDOWN:
@@ -2348,9 +2365,17 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                             self._collect_bg_minimap_dots(_fog_mm.visible),
                         )
                     else:
+                        from engine.faction_system import get_relationship_between as _rel_mm
+                        _REL_MM_COL = {
+                            "amigavel": self._minimap.ALLY_COL,
+                            "neutro":   self._minimap.NEUTRAL_COL,
+                            "hostil":   self._minimap.ENEMY_COL,
+                        }
                         _enemy_tiles = [
-                            (etm.current_tile_x, etm.current_tile_y)
-                            for _, _, _, etm in self.world.get_entities_with(Enemy, Visible, TileMovement)
+                            (etm.current_tile_x, etm.current_tile_y,
+                             _REL_MM_COL.get(_rel_mm(self.world, self.player_entity, eid),
+                                             self._minimap.ENEMY_COL))
+                            for eid, _, _, etm in self.world.get_entities_with(Enemy, Visible, TileMovement)
                             if (etm.current_tile_x, etm.current_tile_y) in _fog_mm.visible
                         ]
                         from ui.map_markers import collect_markers
@@ -2364,6 +2389,16 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                         )
                 # HUD de quests — abaixo do minimap
                 self._quest_system.render_hud(self.screen)
+                # Buff bar — à esquerda do minimap (só jogador local)
+                self._buff_bar.render(self.screen)
+                # Tooltip ao passar o mouse num ícone da buff bar
+                # (01/09/2026) — reaproveita a MESMA caixa de correio que
+                # item/mob já usam (self._pending_tooltip), sem desenho
+                # novo (client/tooltip_handlers.py::_draw_tooltip).
+                _bb_mx, _bb_my = pygame.mouse.get_pos()
+                _bb_hover = self._buff_bar.check_hover(_bb_mx, _bb_my)
+                if _bb_hover:
+                    self._pending_tooltip = (_bb_mx, _bb_my, _bb_hover[0], _bb_hover[1])
             if PROFILE_FRAMES:
                 self._prof_record("hud:combat_log", _time.perf_counter() - _ts)
                 _ts = _time.perf_counter()
@@ -2627,7 +2662,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             SOUNDS.set_context("surface")
             SOUNDS.play_ambient("ambient_surface")
         self._map_overlay.load_map(
-            _merge_display_matrix(terrain_matrix, object_matrix), target_file)
+            _merge_display_matrix(terrain_matrix, object_matrix, terrain_visual), target_file)
         self._map_overlay.set_active_map(target_file)
         self._minimap.on_map_load()
         self.tilemap_entity = create_tilemap(self.world, terrain_matrix, object_matrix, terrain_visual)
@@ -2734,19 +2769,45 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         if self._logged_char_name:
             existing = _cfg.load()
             chars = existing.get("characters", {})
+            char_entry = dict(chars.get(self._logged_char_name, {}))
             if not _in_bg_instance:
-                chars[self._logged_char_name] = {
-                    "hotbar":         self._hotbar_to_dict(),
-                    "consumable_bar": self._consumable_bar_to_dict(),
-                }
+                char_entry["hotbar"]         = self._hotbar_to_dict()
+                char_entry["consumable_bar"] = self._consumable_bar_to_dict()
+            # Preferência de slot por skill (25/08/2026, pedido do usuário —
+            # configurar uma skill dentro OU fora da BG é a MESMA preferência).
+            # Sempre atualizado, dentro ou fora — diferente de hotbar/
+            # consumable_bar acima (que só refletem o que está NA TELA agora,
+            # bloqueados de propósito dentro da instância desde 04/08/2026).
+            # MERGE, nunca substitui o mapa inteiro: uma skill configurada
+            # dentro da BG mas que não existe na hotbar REAL de fora não pode
+            # perder a entrada dela só porque saiu da instância.
+            from ui.skill_slot_prefs import skill_slot_prefs_to_dict as _sspd
+            _ps_cfg = self.world.get_component(self.player_entity, PlayerSkills)
+            char_entry["skill_slot_prefs"] = _sspd(
+                _ps_cfg, char_entry.get("skill_slot_prefs", {}))
+            chars[self._logged_char_name] = char_entry
             data["characters"] = chars
         elif not _in_bg_instance:
             data["hotbar"]         = self._hotbar_to_dict()
             data["consumable_bar"] = self._consumable_bar_to_dict()
         _cfg.save(data)
         self._load_menu_keys()
-        # Sincroniza barra de ações com o servidor (só hotbar, não o state completo)
-        if self._logged_char_name and not _in_bg_instance:
+        # Sincroniza barra de ações com o servidor (só hotbar, não o state
+        # completo) — SEMPRE que há personagem logado, inclusive dentro da
+        # instância (25/08/2026, bug real: reordenar a hotbar durante a BG
+        # ficava só local — sem isso o servidor nunca ficava sabendo, e o
+        # próximo STATS_UPDATE de level-up (skills_hotbar, um snapshot 1:1
+        # do array do SERVIDOR) desfazia a troca sozinho na reconciliação
+        # por slot do cliente, §34.74.23). Diferente da escrita em
+        # config.json acima (que fica bloqueada de propósito, é o bug
+        # original de 04/08/2026): aqui só atualiza o PlayerSkills AO VIVO
+        # (overlay temporário durante a instância, nunca o real) —
+        # SessionManager._persist_character já recusa gravar no banco
+        # enquanto is_in_normalized_progression (server/session.py, desde o
+        # incidente §34.74.15), e quando o player sai, get_player_hotbar_data
+        # lê o componente real já restaurado — nada disto pode vazar pro
+        # personagem persistido, não importa o que aconteceu dentro da BG.
+        if self._logged_char_name:
             self._send_hotbar_update()
 
     def _hotbar_to_dict(self) -> dict:
@@ -2758,6 +2819,12 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             "slots":    [s.skill_id if s else None for s in ps.skills],
             "keybinds": list(ps.keybinds),
         }
+
+    # _skill_slot_prefs_to_dict/_preferred_slot_for_skill viraram funções
+    # em ui/skill_slot_prefs.py (26/08/2026) — precisavam ser chamáveis
+    # por TrainerSystem (ui/trainer_system.py, objeto sem referência de
+    # volta pro GameEngine), não só pelos mixins de GameEngine. Ver
+    # docstring do módulo novo pro bug real que motivou a extração.
 
     def _consumable_bar_to_dict(self) -> dict:
         """Serializa a barra de consumíveis para persistência."""

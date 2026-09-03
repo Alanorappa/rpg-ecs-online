@@ -287,6 +287,44 @@ class SkillHandlers:
                 if d < best_dist:
                     best_dist = d
                     best_id   = eid
+        # PvP no SERVIDOR: o loop de `RemoteControlled` acima nunca acha nada
+        # lá — esse componente só existe do lado CLIENTE (representa "outro
+        # player que eu não controlo"; no servidor cada player, INCLUSIVE
+        # bot, é uma entidade real com CombatStats/CharacterStats próprios,
+        # nunca um proxy). Sem este 2º loop, o fallback de PvP era código
+        # MORTO no servidor — se o alvo já selecionado saísse de _max_range
+        # por 1 tick só (ex: cliente e servidor avançando a interpolação do
+        # dash do Interceptar em ritmos levemente diferentes), o servidor
+        # rejeitava a skill ("Alvo inválido") mesmo quando o cliente
+        # conseguia re-selecionar o MESMO alvo localmente pelo loop acima —
+        # achado real, 28/08/2026, usuário reportou skill falhando logo
+        # depois de usar Interceptar contra bot na BG. `CharacterStats` é o
+        # marcador de "isto é um personagem de player" (só
+        # `entity_factory.py::create/spawn_player` adiciona; mob/NPC de
+        # combate não tem) — do lado cliente só o PRÓPRIO player tem
+        # CharacterStats real, então este loop nunca acha nada lá (já
+        # excluído por `eid == self.player_entity_id`), sem conflito com o
+        # loop de `RemoteControlled` acima.
+        if best_id == -1:
+            from engine.faction_system import can_engage as _can_engage_resolve2
+            for eid, epos, _cs_pvp, etm, _chs_pvp in self.world.get_entities_with(
+                    Position, CombatStats, TileMovement, CharacterStats):
+                if eid == self.player_entity_id:
+                    continue
+                if _cs_pvp.current_hp <= 0:
+                    continue
+                if not self.world.get_component(eid, _VisibleR):
+                    continue
+                if not self._is_on_screen(epos):
+                    continue
+                if not _can_engage_resolve2(self.world, self.player_entity_id, eid):
+                    continue
+                d = chebyshev(px, py, etm.current_tile_x, etm.current_tile_y)
+                if _max_range > 0 and d > _max_range:
+                    continue
+                if d < best_dist:
+                    best_dist = d
+                    best_id   = eid
         if best_id != -1:
             combat_state.target_entity_id = best_id
             combat_state.is_pursuing      = True
@@ -297,10 +335,47 @@ class SkillHandlers:
     # Utilitários internos
     # ==================================================================
 
+    # Motivos de rejeição investigados na sessão de 28/08/2026 (usuário
+    # relatou skill falhando repetidamente logo depois de usar Interceptar
+    # — 2ª rodada de investigação sem achar a causa raiz só lendo código:
+    # rastreei o snap/restore de lag-compensation e a conclusão de
+    # movimento/dash inteiros, ambos pareceram corretos na leitura
+    # estática). Log da posição/estado reais no instante da rejeição —
+    # ver debug/aoi_debug.py.
+    _WARN_DEBUG_REASONS = frozenset({"Fora de alcance", "Alvo inválido", "Nenhum alvo"})
+
     def _warn(self, text: str) -> None:
         """Exibe aviso de ação bloqueada em posição fixa na tela (não vai para o log)."""
         WARN.add(text)
         self._last_warn = text  # capturado pelo skill_processor para feedback online
+        if text in self._WARN_DEBUG_REASONS:
+            self._log_skill_warn_debug(text)
+
+    def _log_skill_warn_debug(self, text: str) -> None:
+        from debug.aoi_debug import AOI_DBG as _AOI_DBG_skw
+        cs  = self.world.get_component(self.player_entity_id, CombatState)
+        tm  = self.world.get_component(self.player_entity_id, TileMovement)
+        pos = self.world.get_component(self.player_entity_id, Position)
+        tgt = cs.target_entity_id if cs else -1
+        tgt_tm  = self.world.get_component(tgt, TileMovement) if tgt != -1 else None
+        tgt_pos = self.world.get_component(tgt, Position) if tgt != -1 else None
+        tgt_cs  = self.world.get_component(tgt, CombatStats) if tgt != -1 else None
+        tgt_sfx = self.world.get_component(tgt, StatusEffects) if tgt != -1 else None
+        _AOI_DBG_skw.log(
+            "SKILL_WARN", reason=text, caster=self.player_entity_id, target=tgt,
+            caster_is_moving=(tm.is_moving if tm else None),
+            caster_is_dash=(getattr(tm, "is_dash", None) if tm else None),
+            caster_tile=((tm.current_tile_x, tm.current_tile_y) if tm else None),
+            caster_target_tile=((tm.target_tile_x, tm.target_tile_y) if tm else None),
+            caster_pos=((round(pos.x, 1), round(pos.y, 1)) if pos else None),
+            target_tile=((tgt_tm.current_tile_x, tgt_tm.current_tile_y) if tgt_tm else None),
+            target_pos=((round(tgt_pos.x, 1), round(tgt_pos.y, 1)) if tgt_pos else None),
+            target_hp=(tgt_cs.current_hp if tgt_cs else None),
+            # 28/08/2026, 3ª rodada — confirma se o alvo AINDA estava
+            # atordoado (deveria estar imóvel) no instante da rejeição.
+            target_stunned=(tgt_sfx.has("stun") if tgt_sfx else None),
+            target_is_moving=(tgt_tm.is_moving if tgt_tm else None),
+        )
 
     _last_warn: str = ""  # último motivo de rejeição — enviado em failed SKILL_RESULT
 
@@ -619,6 +694,21 @@ class SkillHandlers:
             return
         dest_x, dest_y = min(walkable, key=lambda t: abs(t[0] - px) + abs(t[1] - py))
 
+        # Debug (28/08/2026, 3ª rodada da investigação "skill falha depois
+        # de Interceptar") — captura a leitura INTERNA da posição do alvo
+        # no instante exato do cálculo do destino, incluindo se o alvo
+        # ainda tinha StatusEffects "stun" de um Interceptar anterior (pra
+        # confirmar/descartar de vez se o atordoamento realmente imobiliza
+        # o alvo entre o cast e a skill seguinte) — SKILL_WARN/DASH_COMPLETE
+        # já existentes só mostram o RESULTADO, não esta leitura interna.
+        from debug.aoi_debug import AOI_DBG as _AOI_DBG_int
+        _sfx_int_dbg = self.world.get_component(target_id, StatusEffects)
+        _AOI_DBG_int.log(
+            "INTERCEPTAR_CAST", caster=self.player_entity_id, target=target_id,
+            target_tile_read=(tx, ty), caster_tile=(px, py), dest=(dest_x, dest_y),
+            target_already_stunned=(_sfx_int_dbg.has("stun") if _sfx_int_dbg else None),
+        )
+
         if not self._dash_path_clear(px, py, dest_x, dest_y):
             self._warn("Caminho bloqueado")
             return
@@ -650,6 +740,9 @@ class SkillHandlers:
         if char_stats and _cs_int and _cs_int.interceptar_rage_bonus > 0:
             char_stats.rage = min(char_stats.max_rage, char_stats.rage + _cs_int.interceptar_rage_bonus)
         skill.current_cooldown = max(0.0, skill.cooldown - (_cs_int.interceptar_cooldown_reduction if _cs_int else 0.0))
+        from debug.aoi_debug import AOI_DBG as _AOI_DBG_int2
+        _AOI_DBG_int2.log("INTERCEPTAR_STUN_CHECK", target=target_id,
+                          stun_duration=(_cs_int.interceptar_stun_duration if _cs_int else None))
         if _cs_int and _cs_int.interceptar_stun_duration > 0:
             apply_effect(self.world, target_id, "stun", _cs_int.interceptar_stun_duration)
             _tpos = self.world.get_component(target_id, Position)
@@ -1099,6 +1192,8 @@ class SkillHandlers:
         self.world.add_component(self.player_entity_id, IceBlockEffect(
             duration=5.0, elapsed=0.0, heal_interval=1.0, last_heal=0.0,
         ))
+        from engine.effect_order import mark_activated
+        mark_activated(self.world, self.player_entity_id, "bloco_de_gelo")
         if self._server_pending_spells is None:
             SOUNDS.play_spell("bloco_de_gelo", "cast")
         if combat_state:
@@ -1127,6 +1222,8 @@ class SkillHandlers:
         if _cs_ef:
             _cs_ef.mana = char_stats.mana
         self.world.add_component(self.player_entity_id, FireShieldEffect(duration=15.0))
+        from engine.effect_order import mark_activated
+        mark_activated(self.world, self.player_entity_id, "escudo_fogo")
         skill.current_cooldown = skill.cooldown
         if not _server_mode:
             LOG.add("Escudo de Fogo ativado! (15s)", (255, 120, 0))
@@ -1391,6 +1488,8 @@ class SkillHandlers:
         if cs:
             cs.camouflage_timer  = duration
             cs.camouflage_object = chosen_object
+            from engine.effect_order import mark_activated
+            mark_activated(self.world, self.player_entity_id, "camuflagem")
 
         player_cst = self.world.get_component(self.player_entity_id, _CSt)
         if player_cst:
@@ -1490,12 +1589,14 @@ class SkillHandlers:
         """Arqueiro — Buff: +30% ataque por 20s. CD: 360s."""
         from engine.stat_fns import add_timed_modifier
         from engine.components import Modifier
+        from engine.core_systems import grant_visible_buff
 
         ap_pct   = skill.params.get("ap_bonus_pct", 0.30)
         duration = skill.params.get("duration",     20.0)
 
         _mod = Modifier("attack_power", ap_pct, "percentage", source="buff")
-        add_timed_modifier(combat_stats, _mod, duration, label="cancao_inspiracao")
+        grant_visible_buff(self.world, self.player_entity_id, "cancao_inspiracao", duration,
+                           lambda: add_timed_modifier(combat_stats, _mod, duration, label="cancao_inspiracao"))
 
         skill.current_cooldown = skill.cooldown
         LOG.add(f"Canção da Inspiração! +{int(ap_pct*100)}% ataque por {int(duration)}s.", (220, 200, 120))
@@ -1508,6 +1609,7 @@ class SkillHandlers:
         from engine.components import CharacterStats, CombatStats
         from engine.stat_fns import add_timed_modifier
         from engine.components import Modifier
+        from engine.core_systems import grant_visible_buff
         char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
         cs         = self.world.get_component(self.player_entity_id, CombatStats)
         if not cs:
@@ -1522,7 +1624,8 @@ class SkillHandlers:
 
         # Timed modifier que garante acerto = 100 (bônus flat grande)
         _mod = Modifier("acerto", acerto_bns, "flat", source="buff")
-        add_timed_modifier(cs, _mod, duration, label="so_um_gole")
+        grant_visible_buff(self.world, self.player_entity_id, "so_um_gole", duration,
+                           lambda: add_timed_modifier(cs, _mod, duration, label="so_um_gole"))
 
         skill.current_cooldown = skill.cooldown   # aplica CD de 120s
         LOG.add(f"Só um Gole! Acerto 100% + Concentração grátis por {int(duration)}s.", (180, 220, 255))

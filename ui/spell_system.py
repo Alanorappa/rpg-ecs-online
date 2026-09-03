@@ -1422,6 +1422,9 @@ class PlayerProjectileSystem(System):
 
             # Na Mosca: crit ativa o bônus para a próxima flecha
             if proj.pre_outcome == "crit" and _att_cs_nm and _att_cs_nm.na_mosca_enabled:
+                if not _att_cs_nm.na_mosca_bonus_active:
+                    from engine.effect_order import mark_activated
+                    mark_activated(self.world, proj.attacker_id, "na_mosca")
                 _att_cs_nm.na_mosca_bonus_active = True
                 from ui.floating_text import PROC as _PROC_NM2
                 _PROC_NM2.add("Na Mosca!", (255, 220, 50))
@@ -1523,8 +1526,10 @@ class PlayerProjectileSystem(System):
                 # Aplica bônus de crit como modifier temporário
                 from engine.components import Modifier
                 from engine.stat_fns import add_timed_modifier
+                from engine.core_systems import grant_visible_buff
                 _mod = Modifier("crit_rating", _lapse_bonus, "flat", source="buff")
-                add_timed_modifier(attacker_cs, _mod, 5.0, "lapso_elemental")
+                grant_visible_buff(self.world, proj.attacker_id, "lapso_elemental_crit", 5.0,
+                                   lambda: add_timed_modifier(attacker_cs, _mod, 5.0, "lapso_elemental"))
                 LOG.add("Lapso Elemental! +crit por 5s (auto-burn ativo).", (255, 100, 200))
                 from ui.floating_text import PROC as _PROC2
                 _PROC2.add("Lapso Elemental!", (255, 100, 200))
@@ -1574,6 +1579,8 @@ class PlayerProjectileSystem(System):
                 _char = self.world.get_component(proj.attacker_id, CharacterStats)
                 if _char and not _char.fire_instant_ready:
                     _char.fire_instant_ready = True
+                    from engine.effect_order import mark_activated
+                    mark_activated(self.world, proj.attacker_id, "chama_interna")
                     from ui.combat_log import LOG as _LOG
                     _LOG.add("Chama Interna! Próxima Bola de Fogo é instantânea.", (255, 160, 60))
                     from ui.floating_text import PROC as _PROC

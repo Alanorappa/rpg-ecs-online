@@ -61,6 +61,43 @@ class BattlegroundHandlers:
         else:
             self._net.send(MsgType.CHAT_SEND, {"text": "/testbg leave"})
 
+    def _send_bg_forfeit(self) -> None:
+        """"/forfeit"/"/ff" na BG (01/09/2026, pedido do usuário — mesma
+        UX que a Arena já tem, sem votação, versão de testes). MESMO
+        branch de `_send_bg_leave` acima (real vs debug), mas a AÇÃO é
+        diferente: isto DECIDE a partida (time adversário vence, placar
+        pra todo mundo), não só "eu saio". Fila real → BG_FORFEIT
+        (protocolo novo, ver server/bg_queue_processor.py::
+        request_bg_forfeit); debug → texto puro "/testbg ff" (zero
+        protocolo novo — server resolve se `eid` está mesmo numa
+        instância de teste, ver server/debug_battleground.py::_forfeit),
+        mesmo padrão de zero-protocolo-novo que "/testbg leave" já usa."""
+        if not self._net:
+            return
+        from shared.messages import MsgType
+        if self._bg_in_match:
+            self._net.send(MsgType.BG_FORFEIT, {})
+        else:
+            self._net.send(MsgType.CHAT_SEND, {"text": "/testbg ff"})
+
+    # ── Comando de chat "/forfeit" ou "/ff" (01/09/2026) ──────────────────
+
+    def _try_handle_bg_forfeit_chat_command(self, text: str) -> bool:
+        """Chamado por client/chat_handlers.py::_send_chat_message DEPOIS
+        de ArenaHandlers._try_handle_arena_chat_command (que só claim
+        "/ff" quando de fato numa partida de Arena — 01/09/2026, mudou
+        pra passar a vez em vez de engolir, exatamente pra este handler
+        poder rodar). SEMPRE consome "/forfeit"/"/ff" quando chega até
+        aqui (True) — mesmo fora de qualquer partida de BG, real ou
+        debug: `_send_bg_forfeit` manda pro servidor de qualquer forma, e
+        o servidor responde com uma mensagem de chat clara quando não há
+        partida nenhuma (ver server/debug_battleground.py::_forfeit).
+        Nunca vira texto de chat normal."""
+        if text.strip().lower() not in ("/forfeit", "/ff"):
+            return False
+        self._send_bg_forfeit()
+        return True
+
     # ── Modal de fim de partida ───────────────────────────────────────────
 
     def _bg_result_modal_rects(self):

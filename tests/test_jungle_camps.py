@@ -325,6 +325,15 @@ class TestJungleBossBuff(unittest.TestCase):
                         "minion vivo do time vencedor deveria receber o buff")
 
     def test_ciclo_de_buff_muda_a_cada_abate_e_trava_no_ultimo(self):
+        """31/08/2026: reescrito pra checar o CONJUNTO de atributos da
+        concessão mais recente, não só timed_modifiers[-1]/modifiers[0].
+        Bug real corrigido junto (mexendo nesta função pro buff bar):
+        buff_cycle[2] (combinado, attack_power+haste_rating) usava o
+        MESMO label pros 2 modifiers — add_timed_modifier() do 2º só
+        renovava o timer do 1º, o atributo haste_rating nunca aplicava
+        de verdade. Este teste ANTES validava (sem querer) esse bug —
+        `seen_attrs[2] == modifiers[0]["attribute"]` só passava porque só
+        o 1º atributo realmente entrava na lista."""
         from engine.components import CombatStats as _CS
         killer = spawn_player(self.ws, "sk", 20, 20)
         self.ws.world.add_component(killer, Faction("arena_time_a"))
@@ -332,18 +341,22 @@ class TestJungleBossBuff(unittest.TestCase):
         cs_killer = self.ws.world.get_component(killer, _CS)
 
         buff_cycle = JUNGLE_BOSS_TABLE["jungle_boss_ancestral"]["buff_cycle"]
-        seen_attrs = []
+        seen_attr_sets = []
         for _ in range(len(buff_cycle) + 1):  # +1 pra provar que trava no último
+            _before = len(cs_killer.timed_modifiers)
             self._kill_current_boss(killer_eid=killer)
-            # Última entrada de buff adicionada — pega os atributos dela
-            # comparando contra o tamanho anterior da lista.
-            seen_attrs.append(cs_killer.timed_modifiers[-1]["modifier"].attribute)
+            _new_entries = cs_killer.timed_modifiers[_before:]
+            seen_attr_sets.append({e["modifier"].attribute for e in _new_entries})
 
-        self.assertEqual(seen_attrs[0], buff_cycle[0]["modifiers"][0]["attribute"])
-        self.assertEqual(seen_attrs[1], buff_cycle[1]["modifiers"][0]["attribute"])
-        self.assertEqual(seen_attrs[2], buff_cycle[2]["modifiers"][0]["attribute"])
-        # 4º abate (índice 3, além da lista de 3 buffs) repete o ÚLTIMO.
-        self.assertEqual(seen_attrs[3], buff_cycle[2]["modifiers"][0]["attribute"])
+        self.assertEqual(seen_attr_sets[0], {m["attribute"] for m in buff_cycle[0]["modifiers"]})
+        self.assertEqual(seen_attr_sets[1], {m["attribute"] for m in buff_cycle[1]["modifiers"]})
+        self.assertEqual(seen_attr_sets[2], {m["attribute"] for m in buff_cycle[2]["modifiers"]},
+                         "buff combinado deveria aplicar os 2 atributos (bug corrigido 31/08/2026)")
+        # 4º abate (índice 3, além da lista de 3 buffs) repete o ÚLTIMO
+        # buff do ciclo (mesmos 2 atributos) — empilha como concessão NOVA
+        # (comportamento já existente, não mudou: cada abate usa um label
+        # distinto por incluir o índice do ciclo).
+        self.assertEqual(seen_attr_sets[3], {m["attribute"] for m in buff_cycle[2]["modifiers"]})
 
 
 class TestJungleCampRespawn(unittest.TestCase):

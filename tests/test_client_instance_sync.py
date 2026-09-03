@@ -49,6 +49,11 @@ class FakeClient(NetworkHandlers, SaveSyncHandlers, InventoryHandlers):
         self._net = _FakeNet()
         self._remote_players = {}
         self._remote_mobs = {}
+        # Sem personagem "logado" nesta fixture leve — ui/skill_slot_prefs.py::
+        # preferred_slot_for_skill (26/08/2026) lê CharacterStats.name do ECS
+        # (não um atributo do chamador); sem o componente, já trata isso como
+        # "sem preferência" e cai pro fallback de sempre (primeiro slot vazio).
+        self._logged_char_name = None
 
 
 class TestInstanceInventorySyncSendsSaveState(unittest.TestCase):
@@ -477,6 +482,54 @@ class TestInstanceSkillsHotbarClientApply(unittest.TestCase):
         self.assertEqual(ps2.skills[0].current_cooldown, 45.0,
                          "cooldown ao vivo não deveria ser resetado quando o "
                          "skill_id do slot não mudou")
+
+
+class TestSkillsHotbarExitCombinedPayload(unittest.TestCase):
+    """Investigação 01/09/2026 — usuário relatou skill real sumindo da
+    hotbar depois de sair da BG via `/ff`. `exit_normalized_progression`
+    (server/instance_progression.py::_push_stats_update) manda
+    `in_instance: False` E `skills_hotbar: [ids reais]` no MESMO
+    STATS_UPDATE (não em payloads separados, diferente do que os testes
+    de `TestInstanceSkillsHotbarClientApply`/`TestInstanceConsumableBarSwap`
+    simulam isoladamente). Reproduz o payload EXATO que a saída real
+    manda, pra confirmar (ou refutar) se a ordem de processamento dos 2
+    campos dentro de `_handle_msg_stats_update` importa."""
+
+    def setUp(self):
+        self.world = World()
+        self.eid = self.world.create_entity()
+        self.world.add_component(self.eid, PlayerControlled())
+        self.world.add_component(self.eid, CharacterStats(name="t", class_id="guerreiro"))
+        ps = PlayerSkills()
+        # "punho_no_queixo" é skill REAL de guerreiro (talento Cavaleiro,
+        # ver PROBLEMAS_ARQUITETURA.md §74) mas NÃO está em
+        # INSTANCE_SKILL_UNLOCK_ORDER["guerreiro"] — candidata real a
+        # sumir se o filtro da instância for aplicado por engano na saída.
+        from content.skill_config import SKILL_CATALOG
+        ps.learned_skill_ids = {"golpe_poderoso", "punho_no_queixo"}
+        ps.skills[0] = PlayerSkills._make_skill("golpe_poderoso", SKILL_CATALOG)
+        ps.skills[1] = PlayerSkills._make_skill("punho_no_queixo", SKILL_CATALOG)
+        self.world.add_component(self.eid, ps)
+        from ui.ui_components import InstanceInventoryUIState
+        iius = InstanceInventoryUIState()
+        iius.active = True   # estado ANTES de sair — igual estar de verdade na BG
+        self.world.add_component(self.eid, iius)
+        self.client = FakeClient(self.world, self.eid)
+
+    def test_sair_da_bg_com_payload_combinado_preserva_skill_fora_da_ordem_curada(self):
+        payload = {
+            "eid": self.eid,
+            "in_instance": False,
+            "skills_hotbar": ["golpe_poderoso", "punho_no_queixo"] + [None] * 8,
+            "learned_skill_ids": ["golpe_poderoso", "punho_no_queixo"],
+        }
+        self.client._handle_msg_stats_update(payload)
+        ps = self.world.get_component(self.eid, PlayerSkills)
+        ids_presentes = {s.skill_id for s in ps.skills if s}
+        self.assertIn("punho_no_queixo", ids_presentes,
+                      "skill real (fora da ordem curada da instância) não deveria "
+                      "sumir ao sair da BG com in_instance+skills_hotbar no MESMO payload")
+        self.assertIn("golpe_poderoso", ids_presentes)
 
 
 class TestInstanceConsumableBarSwap(unittest.TestCase):

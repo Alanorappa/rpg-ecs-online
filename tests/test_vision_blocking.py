@@ -64,10 +64,12 @@ class TestBushVisionFootprint(unittest.TestCase):
                 f"tile ({nx},{ny}) do bush não deveria virar sólido (precisa continuar andável)")
 
 
-class TestTreeTrunkVsCanopyVision(unittest.TestCase):
-    """Caso 2 do plano: tronco (pegada de colisão) sólido + bloqueia
-    visão; copa (só pegada de visão, fora do tronco) bloqueia visão mas
-    NÃO é sólida — preserva o terreno original ali."""
+class TestTreeVisionMatchesCollision(unittest.TestCase):
+    """Correção 27/08/2026 (pedido do usuário) — árvore usava
+    `vision_rect="full"` (copa inteira, metade de CIMA do sprite,
+    escondia bem mais do que devia). Regra nova, igual à bush: a pegada
+    de VISÃO da árvore é o MESMO retângulo da pegada de COLISÃO (só o
+    tronco/base bloqueia visão, não a copa toda)."""
 
     def test_tronco_solido_e_bloqueia_visao(self):
         tile = OBJECT_MAPPING["pl_t1"]
@@ -82,21 +84,57 @@ class TestTreeTrunkVsCanopyVision(unittest.TestCase):
             self.assertGreaterEqual(cell.vision_height, 2,
                 f"tronco em ({nx},{ny}) deveria bloquear visão")
 
-    def test_copa_bloqueia_visao_sem_virar_solida(self):
+    def test_pegada_de_visao_e_identica_a_de_colisao(self):
         tile = OBJECT_MAPPING["pl_t1"]
+        self.assertEqual(tile.vision_rect, tile.collision_rect,
+            "vision_rect da árvore deveria ser o MESMO retângulo do collision_rect")
         collision_offsets = set(get_collision_offsets(tile))
         vision_offsets = set(get_vision_offsets(tile))
-        canopy_only = vision_offsets - collision_offsets
-        self.assertTrue(canopy_only, "copa da árvore deveria cobrir tiles fora do tronco")
+        self.assertEqual(vision_offsets, collision_offsets,
+            "árvore não deveria mais bloquear visão além da pegada de colisão (sem copa fantasma)")
 
-        tm = _make_map(width=8, height=8, obj_char="pl_t1", obj_x=3, obj_y=5)
-        for dx, dy in canopy_only:
-            nx, ny = 3 + dx, 5 + dy
-            cell = tm.tile_matrix[ny][nx]
-            self.assertGreaterEqual(cell.vision_height, 2,
-                f"copa em ({nx},{ny}) deveria bloquear visão")
-            self.assertFalse(cell.is_solid,
-                f"copa em ({nx},{ny}) NÃO deveria virar sólida (preserva o chão original)")
+    def test_arvore_grande_t14_tambem_usa_so_o_tronco(self):
+        # t14/t15 (copa larga) têm colisão deslocada da âncora (§80) —
+        # confirma que a regra nova vale pra elas também, não só pras
+        # árvores pequenas com tronco colado no tile-âncora.
+        tile = OBJECT_MAPPING["pl_t14"]
+        self.assertEqual(tile.vision_rect, tile.collision_rect)
+        self.assertEqual(set(get_vision_offsets(tile)), set(get_collision_offsets(tile)))
+
+
+class TestFovBehindTreeMatchesTrunkOnly(unittest.TestCase):
+    """Ponta a ponta (Correção 27/08/2026) — um tile que ANTES ficava
+    escondido pela copa larga (`vision_rect="full"`, bem acima/ao redor
+    do tronco) agora deve estar VISÍVEL; um tile atrás do tronco de
+    verdade continua escondido."""
+
+    def test_tile_que_so_ficava_atras_da_copa_agora_fica_visivel(self):
+        # pl_t1: âncora (3,5), tronco (pegada de colisão) em (4,5) —
+        # ver TestVisionOffsetsRegressionWithoutVisionRect. (3,3) estava
+        # dentro da pegada "full" antiga (acima da âncora) mas nunca
+        # tocou o tronco — não devia mais bloquear nada.
+        tm = _make_map(width=9, height=9, obj_char="pl_t1", obj_x=3, obj_y=5)
+
+        def is_blocking(x, y):
+            if not (0 <= y < len(tm.tile_matrix) and 0 <= x < len(tm.tile_matrix[y])):
+                return True
+            return tm.tile_matrix[y][x].vision_height >= 2
+
+        visible = compute_fov(3, 8, radius=8, is_blocking=is_blocking)
+        self.assertIn((3, 1), visible,
+            "tile em linha reta pela coluna da âncora não deveria mais ser bloqueado pela copa")
+
+    def test_tile_atras_do_tronco_de_verdade_continua_escondido(self):
+        tm = _make_map(width=9, height=9, obj_char="pl_t1", obj_x=3, obj_y=5)
+
+        def is_blocking(x, y):
+            if not (0 <= y < len(tm.tile_matrix) and 0 <= x < len(tm.tile_matrix[y])):
+                return True
+            return tm.tile_matrix[y][x].vision_height >= 2
+
+        visible = compute_fov(1, 5, radius=8, is_blocking=is_blocking)
+        self.assertNotIn((7, 5), visible,
+            "tile atrás do tronco de verdade (4,5) ainda deveria ficar escondido")
 
 
 class TestSmallRockRegression(unittest.TestCase):
@@ -105,10 +143,10 @@ class TestSmallRockRegression(unittest.TestCase):
     explicitamente marcado."""
 
     def test_rock1_continua_vision_height_zero(self):
-        tile = OBJECT_MAPPING["pr_rock1"]
+        tile = OBJECT_MAPPING["vp_186"]
         self.assertEqual(tile.vision_height, 0)
 
-        tm = _make_map(width=6, height=6, obj_char="pr_rock1", obj_x=2, obj_y=2)
+        tm = _make_map(width=6, height=6, obj_char="vp_186", obj_x=2, obj_y=2)
         cell = tm.tile_matrix[2][2]
         self.assertLess(cell.vision_height, 2)
 
@@ -140,7 +178,7 @@ class TestVisionOffsetsRegressionWithoutVisionRect(unittest.TestCase):
     get_collision_offsets inalterado)."""
 
     def test_tile_sem_vision_rect_so_ancora(self):
-        tile = OBJECT_MAPPING["pr_rock1"]
+        tile = OBJECT_MAPPING["vp_186"]
         self.assertIsNone(tile.vision_rect)
         self.assertEqual(get_vision_offsets(tile), [(0, 0)])
 
@@ -170,11 +208,14 @@ class TestBushBaseRowFootprint(unittest.TestCase):
         tile = OBJECT_MAPPING["pl_b14"]  # 32x32 = já era 1 tile só
         self.assertEqual(get_vision_offsets(tile), [(0, 0)])
 
-    def test_arvore_e_pedra_grande_continuam_full(self):
-        # Confirma que o sentinel novo não vazou pra fora da família de bush.
+    def test_pedra_grande_continua_full_arvore_nao_mais(self):
+        # Confirma que o sentinel "base_row" novo (bush) não vazou pra
+        # fora da família de bush — mas árvore TAMBÉM não é mais "full"
+        # (Correção 27/08/2026): agora usa o mesmo rect do collision_rect,
+        # ver TestTreeVisionMatchesCollision.
         tree = OBJECT_MAPPING["pl_t1"]
-        rock = OBJECT_MAPPING["pr_bigrock"]
-        self.assertEqual(tree.vision_rect, "full")
+        rock = OBJECT_MAPPING["vp_199"]
+        self.assertEqual(tree.vision_rect, tree.collision_rect)
         self.assertEqual(rock.vision_rect, "full")
 
     def test_bushes_diagonais_que_so_tocavam_pela_metade_de_cima_nao_se_conectam(self):

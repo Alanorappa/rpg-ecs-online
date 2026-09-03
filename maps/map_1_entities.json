@@ -246,7 +246,7 @@
   ],
   "transitions": [
     {
-      "x": 13,
+      "x": 12,
       "y": 316,
       "target_map": "maps/map_cave_west.csv",
       "target_x": 78,
@@ -258,6 +258,13 @@
       "target_map": "maps/map_cave_east.csv",
       "target_x": 1,
       "target_y": 34
+    },
+    {
+      "x": 138,
+      "y": 370,
+      "target_map": "maps/map_1.csv",
+      "target_x": 210,
+      "target_y": 480
     }
   ],
   "ambient_zones": [
@@ -406,16 +413,16 @@
     {
       "x": 211,
       "y": 416,
-      "radius": 10,
+      "radius": 20,
       "respawn_cooldown": 120,
-      "faction": "monstros_hostis",
-      "level_min": 20,
-      "level_max": 25,
+      "faction": "vida_selvagem",
+      "level_min": 12,
+      "level_max": 16,
       "race": "Urso",
       "class": "Warrior",
       "spawns": [
-        { "type": "melee", "tier": "normal", "count": 7 },
-        { "type": "melee", "tier": "elite",  "count": 3 }
+        { "type": "melee", "tier": "normal", "count": 10 }
+
       ]
     },
     {

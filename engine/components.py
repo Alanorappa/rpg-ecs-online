@@ -548,6 +548,16 @@ class CombatState:
         # extra.
         self.bush_reveal_timer: float = 0.0
         self.respawn_immunity_ticks: int = 0  # >0 = invisível para mobs (pós-respawn); decrementado pelo servidor
+        # Zona de bush estilo MOBA (01/09/2026, feedback visual pro próprio
+        # jogador) — MECANISMO SEPARADO de is_visible/is_camouflaged
+        # (Camuflagem): bush (server/bush_zone_processor.py::_get_bush_zone)
+        # nunca mexe nesses 2 campos, é 100% posicional, sem timer/estado
+        # próprio no servidor. Este campo só existe do lado CLIENTE, só pro
+        # PRÓPRIO jogador — sincronizado via STATS_UPDATE privado
+        # (WorldServer._sync_player_bush_dirty), nunca lido pelo servidor
+        # nem broadcast pra outros (só a opacidade do seu próprio sprite
+        # depende disso, ver ui/systems.py::RenderSystem.render).
+        self.is_bush_hidden: bool = False
 
     def can_act(self) -> bool:
         """Retorna True se a entidade pode realizar ações (atacar, usar skill)."""
@@ -1505,6 +1515,21 @@ class StatusEffects:
             del self.effects[effect_type]
             return True
         return False
+
+
+class EffectOrder:
+    """Ordem de ATIVAÇÃO de cada tipo de efeito/buff já visto nesta
+    entidade (01/09/2026) — não é gameplay, é só "quando isso ligou pela
+    última vez", pra fila da buff bar (ui/buff_bar.py) conseguir ordenar
+    corretamente efeitos vindos de mecanismos DIFERENTES (StatusEffects
+    vs FireShieldEffect/IceBlockEffect vs flag simples em CombatStats) na
+    MESMA fila — sem isso, cada mecanismo só saberia sua própria ordem
+    relativa, nunca a ordem verdadeira entre fontes diferentes. Escrito
+    SÓ por engine.effect_order.mark_activated() (ponto único) — nunca
+    mexer direto no dict. Ver PROBLEMAS_ARQUITETURA.md."""
+
+    def __init__(self) -> None:
+        self.seq: dict = {}   # dict[str, int] — effect_type -> nº de ordem (maior = mais recente)
 
 
 @dataclass

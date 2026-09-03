@@ -246,9 +246,11 @@ class TestBotAISystem(unittest.TestCase):
         self.assertTrue(any(r["sid"] == "golpe_poderoso" and r["tid"] == enemy for r in pending))
 
     def test_bot_persegue_alvo_fora_de_alcance(self):
-        # Dentro de BOT_LANE_AWARENESS_RADIUS_TILES (8) mas fora de
-        # BOT_ENGAGE_RANGE_TILES (2) — perto o bastante pro bot perceber
-        # e perseguir, longe o bastante pra não engajar direto.
+        # Dentro de BOT_LANE_AWARENESS_RADIUS_TILES (8) mas fora do
+        # alcance efetivo do guerreiro (1 tile, `_effective_engage_range`
+        # — 26/08/2026, antes era 1 constante genérica de 2 pra todas as
+        # classes) — perto o bastante pro bot perceber e perseguir, longe
+        # o bastante pra não engajar direto.
         enemy = self._spawn_enemy(26, 20)
         tm_before = self.ws.world.get_component(self.bot, TileMovement)
         pos_before = (tm_before.current_tile_x, tm_before.current_tile_y)
@@ -317,6 +319,51 @@ class TestBotAISystem(unittest.TestCase):
         self.assertEqual(pos_before, (tm_after.current_tile_x, tm_after.current_tile_y))
         pending = [r for r in self.ws._pending_skill_requests if r["player_eid"] == self.bot]
         self.assertEqual(pending, [])
+
+    def test_guerreiro_a_2_tiles_nao_engaja_ainda(self):
+        """Bug real relatado pelo usuário (26/08/2026): guerreiro parava a
+        2 tiles do alvo e nunca acertava golpe_poderoso/auto-attack (os
+        dois exigem Chebyshev ≤1 de verdade — `_resolve_target`/
+        `_resolve_auto_attack`). Antes, `BOT_ENGAGE_RANGE_TILES=2`
+        genérico fazia o guerreiro parar 1 tile longe demais e ficar
+        parado pra sempre. Agora `_effective_engage_range` devolve 1 pro
+        guerreiro (sem skill de longo alcance) — a 2 tiles ele CONTINUA
+        avançando em vez de tentar brigar."""
+        enemy = self._spawn_enemy(22, 20)  # dist=2
+        tm_before = self.ws.world.get_component(self.bot, TileMovement)
+        pos_before = (tm_before.current_tile_x, tm_before.current_tile_y)
+        BotAISystem.update(self.ws, dt=999.0)
+        pending = [r for r in self.ws._pending_skill_requests if r["player_eid"] == self.bot]
+        self.assertEqual(pending, [], "a 2 tiles o guerreiro não deveria tentar nenhuma skill ainda")
+        tm_after = self.ws.world.get_component(self.bot, TileMovement)
+        pos_after = (tm_after.current_tile_x, tm_after.current_tile_y)
+        self.assertNotEqual(pos_before, pos_after, "deveria continuar avançando, não parar a 2 tiles")
+
+    def test_mago_engaja_a_6_tiles_sem_precisar_chegar_mais_perto(self):
+        """Mago não devia andar até quase melee pra usar uma skill de
+        alcance 6 (`bola_de_fogo.cast_range`, content/skill_config.py) —
+        `_effective_engage_range` lê o cast_range da 1ª skill ofensiva
+        aprendida em vez do raio genérico de 1/2 tiles."""
+        from server.bot_ai_system import BotAISystem as _BotAI2
+        mago = self.ws._spawn_bot_player(class_id="mago")
+        from tests.helpers import clear_login_immunity as _cli2
+        _cli2(self.ws, mago)
+        self.ws.world.add_component(mago, Faction(faction_id="arena_time_a"))
+        from engine.utils import snap_to_tile as _stt2
+        _stt2(self.ws.world, mago, 20, 20, carry_prev=False)
+
+        enemy = self._spawn_enemy(26, 20)  # dist=6, exatamente o cast_range da Bola de Fogo
+        tm_before = self.ws.world.get_component(mago, TileMovement)
+        pos_before = (tm_before.current_tile_x, tm_before.current_tile_y)
+        _BotAI2.update(self.ws, dt=999.0)
+        pending = [r for r in self.ws._pending_skill_requests
+                   if r["player_eid"] == mago and r["sid"] == "bola_de_fogo"]
+        self.assertTrue(any(r["tid"] == enemy for r in pending),
+                        "mago deveria ter tentado Bola de Fogo já a 6 tiles")
+        tm_after = self.ws.world.get_component(mago, TileMovement)
+        pos_after = (tm_after.current_tile_x, tm_after.current_tile_y)
+        self.assertEqual(pos_before, pos_after,
+                         "mago não devia ter andado — já estava dentro do alcance da skill")
 
 
 class TestBotAdvanceTowardRejectedMove(unittest.TestCase):
@@ -652,6 +699,100 @@ class TestBotDiveGate(unittest.TestCase):
         cs.current_hp = cs.max_hp  # 100%
         self.assertFalse(BotAISystem._dive_allowed(
             self.ws, self.map_file, self.covered_tile, "arena_time_a", healthy_target, self.my_tile))
+
+
+class TestBotProjectileAutohit(unittest.TestCase):
+    """Bot não tem cliente pra mandar PROJECTILE_HIT_CS — sem confirmação
+    de rede, skill de projétil (Bola de Fogo, e as skills de projétil do
+    arqueiro) completava o cast mas NUNCA aplicava dano (a entrada em
+    `_spells_in_flight_queue` expirava sozinha 3s depois). Bug real
+    relatado pelo usuário (26/08/2026), confirmado por simulação real
+    antes do fix: 7 casts completos de Bola de Fogo em 20s, 0 dano.
+    `_schedule_bot_projectile_autohit`/`_tick_bot_projectile_autohits`
+    (server/spell_completion_processor.py) resolvem chamando a MESMA
+    `_apply_spell_on_projectile_hit` que uma confirmação de cliente real
+    usaria — sem duplicar lógica de dano."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        from tests.test_tile_los_visibility import _clear_area
+        _clear_area(self.ws, 8, 8, 60, 60)
+
+    def test_bola_de_fogo_bot_causa_dano_real_de_ponta_a_ponta(self):
+        """Fluxo completo, tick real (`run_ticks`, inclui BotAISystem):
+        bot mago decide, casta, cast completa, entra em voo, e o novo
+        auto-hit aplica o dano — sem precisar de nenhum cliente."""
+        from tests.helpers import clear_login_immunity, run_ticks
+        from engine.utils import snap_to_tile
+        from engine.components import CombatStats
+
+        mago = self.ws._spawn_bot_player(class_id="mago")
+        clear_login_immunity(self.ws, mago)
+        self.ws.world.add_component(mago, Faction(faction_id="arena_time_a"))
+        snap_to_tile(self.ws.world, mago, 20, 20, carry_prev=False)
+
+        enemy = spawn_player(self.ws, "bdf_target", 22, 20, hp=500)
+        clear_login_immunity(self.ws, enemy)
+        self.ws.world.add_component(enemy, Faction(faction_id="arena_time_b"))
+        enemy_cs = self.ws.world.get_component(enemy, CombatStats)
+        hp_before = enemy_cs.current_hp
+
+        # cast_time=1.5s (bola_de_fogo) + tempo de voo (curto, alvo perto)
+        # + folga — dt=0.05, 60 ticks = 3s, sobra margem.
+        run_ticks(self.ws, 60, dt=0.05)
+
+        self.assertLess(enemy_cs.current_hp, hp_before,
+                        "Bola de Fogo do bot deveria ter causado dano real ao alvo")
+
+    def test_schedule_bot_projectile_autohit_generico_por_spell_id(self):
+        """Mesma mecânica de agendamento, mas testada isolada (sem
+        depender de autorização/equipamento de arqueiro) pra provar que
+        NÃO é hardcoded pra Bola de Fogo — funciona pra qualquer spell_id
+        em _PROJECTILE_SPELLS, aqui com flecha_reiterada."""
+        from tests.helpers import clear_login_immunity
+        from engine.components import BotControlled, CombatStats, Equipment, Item
+        import time as _t
+
+        bot = spawn_player(self.ws, "fr_bot", 20, 20, class_id="arqueiro")
+        clear_login_immunity(self.ws, bot)
+        self.ws.world.add_component(bot, BotControlled())
+        self.ws.world.add_component(bot, Faction(faction_id="arena_time_a"))
+        equip = self.ws.world.get_component(bot, Equipment)
+        equip.slots["mainhand"] = Item("Arco Teste", "weapon", "mainhand",
+                                       subtype="Bow", cast_range=8,
+                                       damage_min=10, damage_max=15)
+        equip.slots["offhand"]  = Item("Aljava Teste", "quiver", "offhand",
+                                       arrow_count=50, max_arrows=50)
+        target = spawn_player(self.ws, "fr_target", 21, 20, hp=200)
+        clear_login_immunity(self.ws, target)
+        self.ws.world.add_component(target, Faction(faction_id="arena_time_b"))
+        target_cs = self.ws.world.get_component(target, CombatStats)
+        target_cs.dodge_rating = 0.0
+        target_cs.parry_rating = 0.0
+        hp_before = target_cs.current_hp
+
+        # Simula o que _process_spell_cast_completions já faria ao
+        # completar um cast de flecha_reiterada (entrada em voo real).
+        self.ws._spells_in_flight_queue.append({
+            "player_eid":     bot,
+            "spell_id":       "flecha_reiterada",
+            "target_id":      target,
+            "entry":          {},
+            "expires_at":     _t.time() + 3.0,
+            "remaining_hits": 1,
+        })
+        self.ws._schedule_bot_projectile_autohit(bot, "flecha_reiterada", target)
+        self.assertEqual(len(self.ws._bot_projectile_autohits), 1)
+
+        # Avança tempo suficiente pro "voo" (1 tile de distância, bem
+        # menos que qualquer velocidade de projétil cadastrada).
+        for _ in range(20):
+            self.ws._tick_bot_projectile_autohits(dt=0.05)
+
+        self.assertLess(target_cs.current_hp, hp_before,
+                        "flecha_reiterada deveria ter aplicado dano via auto-hit do bot")
+        self.assertEqual(self.ws._bot_projectile_autohits, [],
+                         "agendamento deveria ter sido consumido (1 hit só)")
 
 
 if __name__ == "__main__":

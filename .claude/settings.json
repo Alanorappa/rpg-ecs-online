@@ -1,0 +1,43 @@
+{
+  "permissions": {
+    "defaultMode": "bypassPermissions",
+    "allow": [
+      "Bash(*)",
+      "PowerShell(*)",
+      "Edit",
+      "Write",
+      "Bash(git add*)",
+      "Bash(git commit*)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git show*)",
+      "Bash(git branch*)",
+      "PowerShell(git add*)",
+      "PowerShell(git commit*)",
+      "PowerShell(git status*)",
+      "PowerShell(git diff*)",
+      "PowerShell(git log*)",
+      "PowerShell(git show*)",
+      "PowerShell(git branch*)",
+      "WebSearch",
+      "WebFetch(domain:trinitycore.atlassian.net)",
+      "WebFetch(domain:deepwiki.com)",
+      "WebFetch(domain:repost.aws)",
+      "WebFetch(domain:www.scs.stanford.edu)",
+      "WebFetch(domain:www.gamedeveloper.com)",
+      "WebFetch(domain:www.riotgames.com)",
+      "WebFetch(domain:highscalability.com)",
+      "WebFetch(domain:gitlab.com)",
+      "WebFetch(domain:www.azerothcore.org)",
+      "WebFetch(domain:book.veloren.net)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:docs.veloren.net)",
+      "WebFetch(domain:veloren.net)"
+    ],
+    "ask": [
+      "Bash(git *)",
+      "PowerShell(git *)"
+    ]
+  }
+}

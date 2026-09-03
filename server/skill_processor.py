@@ -386,18 +386,57 @@ class SkillProcessorMixin:
                         # entre MOVE e CAST_SKILL), o cliente trata como correção comum e
                         # faz snap instantâneo, cancelando o walk em andamento sem nenhuma
                         # animação de dash. Com is_dash, ele enfileira e anima certinho.
+                        # `duration` explícito (31/08/2026): SEM isso, o cliente
+                        # trata a correção como "sem duration" (ver ramo
+                        # correspondente em client/network_handlers.py::
+                        # _handle_msg_entity_move) e ENFILEIRA a animação do
+                        # dash atrás de qualquer passo normal já em andamento
+                        # (`_self_move_queue`) — se o player estava no meio da
+                        # animação de um passo normal (comum: acabou de andar
+                        # até o alcance mínimo do Interceptar e já apertou a
+                        # skill), o dash só começa a tocar depois que essa
+                        # animação anterior termina, MUITO depois do servidor
+                        # já ter resolvido tudo (inclusive o ataque automático
+                        # seguinte) — bug real relatado pelo usuário, confirmado
+                        # por log (`DASH_START ... queued=True`), ver
+                        # PROBLEMAS_ARQUITETURA.md §87. Com `duration`, o cliente
+                        # usa o MESMO caminho que knockback já usa pra preemptar
+                        # qualquer animação em andamento e começar na hora
+                        # (mesmo mecanismo, sem invenção nova). `tile_move.
+                        # move_duration` já foi setado pelo handler da skill
+                        # (ex: INTERCEPT_DURATION) — genérico, funciona pra
+                        # qualquer skill futura em _MOVEMENT_PREDICTED_SKILLS
+                        # sem hardcode.
                         self._skill_position_corrections.append({
                             "player_eid": player_eid,
                             "tx":         _new_tx,
                             "ty":         _new_ty,
                             "is_dash":    _move_is_dash,
+                            "duration":   tile_move.move_duration if _move_is_dash else None,
                         })
                         if sid in _MOVEMENT_PREDICTED_SKILLS:
                             from debug.interceptar_debug import INTERCEPTAR_DBG as _IDBG
                             _IDBG.log("DASH_OK", tick=self.tick_count, player_eid=player_eid,
                                       tx=_new_tx, ty=_new_ty, is_dash=_move_is_dash)
-                        tile_move.current_tile_x = _new_tx
-                        tile_move.current_tile_y = _new_ty
+                        # NÃO snapar current_tile_x/y pro destino aqui (removido
+                        # 31/08/2026, existia desde a implementação original do
+                        # Interceptar — commit 9a62279, 24/05/2026). `current_tile_x/y`
+                        # é o MESMO campo que `_resolve_auto_attack`
+                        # (server/combat_processor.py) usa pra medir alcance de
+                        # ataque automático — snapar aqui fazia o servidor achar
+                        # que o player já tinha CHEGADO no destino do dash desde o
+                        # tick do cast (progress=0.0, animação nem começou),
+                        # disparando auto-attack ~200ms antes da animação do dash
+                        # terminar (bug real relatado pelo usuário: "o alvo já
+                        # toma um hit antes de o dash acontecer" — confirmado por
+                        # log, ver PROBLEMAS_ARQUITETURA.md). `current_tile_x/y`
+                        # deve refletir só onde a entidade REALMENTE está — atualiza
+                        # sozinho quando `TileMovementSystem` completa o tween
+                        # (`progress>=1.0`, engine/world_systems.py:4273-4277), que
+                        # é a fonte única de verdade pra "chegou". Só `target_tile_x/y`
+                        # muda aqui (linhas acima) — suficiente pra notificar
+                        # outros clientes e o próprio caster via
+                        # _skill_position_corrections.
                 except Exception as e:
                     import traceback
                     log.error(f"[Skill] ERRO ao processar {sid}: {e}")

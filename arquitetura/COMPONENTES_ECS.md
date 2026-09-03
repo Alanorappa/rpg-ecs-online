@@ -179,7 +179,7 @@ Esses atributos existem na classe `Skill.__init__` (`fail_flash_timer` está lá
 
 | Componente | Campos | Notas |
 |-----------|--------|-------|
-| `StatusEffects{effects{type→ActiveEffect}}` | efeitos ativos | `has()`, `get()`, `remove()` |
+| `StatusEffects{effects{type→ActiveEffect}}` | efeitos ativos | `has()`, `get()`, `remove()`. Buff E debuff (31/08/2026) — `EFFECT_DEFS[type].is_buff` distingue; buff temporário sempre via `engine.core_systems.grant_visible_buff()`, nunca `add_timed_modifier` sozinho |
 | `ActiveEffect(effect_type, duration, magnitude, tick_interval, _tick_elapsed)` | efeito singular | magnitude = dano/cura por tick |
 | `ActiveRegen(heal_per_tick, interval, ticks_total, ticks_remaining, tick_timer)` | regen ativa (consumíveis) | ConsumableSystem |
 | `AIControlled(state, path, attack_range_tiles, is_ranged, entity_class, disengage_cd, kite_*, ranged_cast_timer, aggroed_by_damage, target_eid=-1)` | IA do mob | state: IDLE/AGGRO_DELAY/CHASING/RETURNING/ATTACKING; `target_eid` = eid do alvo atual (-1 = sem alvo) |

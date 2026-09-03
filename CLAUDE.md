@@ -29,6 +29,23 @@ algo que você lê num arquivo de arquitetura conflita com o que o código
 realmente faz, **o código vence, sempre** — e o doc errado é ele mesmo
 um problema a registrar (`PROBLEMAS_ARQUITETURA.md`), não só a ignorar.
 
+### Checkpoint de commit antes de qualquer tarefa (02/09/2026, decisão explícita do usuário)
+Antes de começar qualquer tarefa nova (implementação ou correção),
+checar `git status`. Se houver qualquer mudança não commitada,
+commitar tudo primeiro (`git add` + `git commit`, mensagem descrevendo
+o estado — ex: "checkpoint antes de <tarefa>") ANTES de tocar em
+qualquer arquivo pra tarefa em si. Esse commit de checkpoint é sempre
+local e sempre reversível — é justamente o que permite trabalhar com
+edição de arquivo e comando de terminal liberados sem pedir permissão
+a cada passo (ver `.claude/settings.json`): qualquer coisa pode ser
+desfeita depois com git. **Não pedir permissão pra esse commit de checkpoint, `git add`, nem
+pra comandos git só de leitura** (`status`, `diff`, `log`, `show`,
+`branch` sem `-D`) — os únicos comandos git que continuam pedindo
+permissão são os que mudam remoto ou descartam histórico de verdade
+(`push`, `push --force`, `reset --hard`, `checkout` descartando
+mudança, `branch -D`, `rebase`), nunca um commit local comum ou uma
+consulta.
+
 ### Após qualquer mudança
 Atualizar os arquivos de arquitetura relevantes:
 - Nova mensagem no protocolo → `ARQUITETURA ONLINE.md` (tabela de mensagens) + `shared/messages.py`
@@ -238,9 +255,120 @@ padrão a quebrar, não só os bugs individuais.
   de mitigação/resistência entra SÓ ali (deal_damage/_apply_final_damage/
   _apply_magic_damage são delegates).
 - **STATS_UPDATE privado (servidor→dono)** → `WorldServer.queue_stats_update()`
-  (schema na docstring; valida player_eid na origem).
+  (schema na docstring; valida player_eid na origem). Mudança de
+  `current_hp`/`max_hp` do PRÓPRIO player nunca precisa de chamada nova
+  aqui — `WorldServer._sync_player_hp_dirty()` já detecta genericamente E
+  já enfileira o STATS_UPDATE privado pro dono sozinho (01/09/2026), além
+  do broadcast AOI pros outros players que já fazia antes. NUNCA mandar
+  `hp`/`hp_max` só pro broadcast (achando que "o dono já recebe por
+  outro canal") — bug real: nenhum canal real mandava `hp_max` pro
+  dono quando a mudança vinha só de `add_modifier`/`timed_modifiers`
+  (proc de item, buff de jungle boss, self-buff de skill) — `current_hp`
+  chegava certo via HP5/combate mas com `max_hp` desatualizado do lado
+  cliente, current/max passava de 1.0 e a barra de HP "crescia" na tela
+  (ver PROBLEMAS_ARQUITETURA.md §89).
 - **Atributo de combate novo** → par `base_X`/`X` em `CombatStats` + 1 entrada
   em `stat_fns._MODIFIABLE_ATTRS` (+ `_STAT_CLAMPS` se tiver limite).
+- **Qualquer coisa (item, buff, talento) que pode mudar `stamina` (deriva
+  `max_hp`)** → `stat_fns.recalculate_preserving_hp_pct(cs, mutate_fn)`
+  (30/08/2026) — NUNCA chamar `add_modifier`/`remove_modifier`/
+  `cs._recalculate_effective_stats()` direto quando o atributo pode ser
+  `stamina`. `recalculate_combat_stats` sozinho preserva o HP ABSOLUTO
+  (certo só quando `max_hp` diminui); sem o wrapper, `max_hp` subindo
+  deixa um buraco real sem cura — um player 100% cheio vira, ex.,
+  300/330 — e o HP5 fica "tickando fantasma" pra fechar essa diferença
+  de verdade (bug real relatado pelo usuário, buff de chefe de jungle +
+  troca de equipamento na BG, ver PROBLEMAS_ARQUITETURA.md §86).
+- **Qualquer buff TEMPORÁRIO novo (proc de item, self-buff de skill,
+  buff de matar mob/boss)** → `engine.core_systems.grant_visible_buff(
+  world, eid, effect_type, duration, mutate_fn)` (31/08/2026) — NUNCA
+  chamar `add_timed_modifier` sozinho pra um buff que devia ser visível.
+  `mutate_fn` é a mutação de stat real (o `add_timed_modifier` de
+  sempre); a função TAMBÉM registra um `ActiveEffect` sincronizado
+  (`apply_effect`, `is_buff=True`) — sem isso o buff nunca chega ao
+  cliente (bug real pré-existente: proc de item só existia em
+  `CombatStats.timed_modifiers`, nunca sincronizado; o cliente
+  "adivinhava" com RNG próprio, podendo divergir do servidor). `effect_type`
+  precisa de entrada em `content/status_effects_data.py::EFFECT_DEFS`
+  (chave ESTÁVEL e ÚNICA por fonte — nunca uma chave genérica
+  compartilhada, `StatusEffects.effects` só guarda 1 instância por
+  chave, e é normal 2+ buffs de fontes DIFERENTES ativos ao mesmo tempo),
+  mesma disciplina de skill nova precisar de entrada em SKILL_CATALOG.
+  Concessão que combina 2+ atributos numa MESMA concessão (ex: buff
+  attack_power+haste_rating junto) precisa de um label DISTINTO por
+  atributo dentro de `mutate_fn` — usar o mesmo label pros 2 faz
+  `add_timed_modifier` (`engine/stat_fns.py`) só renovar o timer do 1º
+  e nunca aplicar o 2º de verdade (bug real achado e corrigido
+  31/08/2026, ver PROBLEMAS_ARQUITETURA.md §88). Talento
+  permanente/equipamento continuam fora de propósito (não são
+  "temporários") — nunca precisam de `grant_visible_buff`.
+- **Efeito temporário do jogador com mecanismo PRÓPRIO** (componente
+  dedicado tipo `FireShieldEffect`/`IceBlockEffect`, ou uma flag
+  booleana sem duração tipo `fire_instant_ready`/`na_mosca_bonus_active`)
+  → **NÃO** força pra StatusEffects/`grant_visible_buff` — adiciona 1
+  checador pequeno em `ui/buff_bar.py::_gather_extra_buffs()` que só LÊ
+  o campo/componente real (nunca escreve, nunca interfere no tick/
+  sincronização/expiração de cada mecanismo) e devolve um `_FakeEffect`
+  sintético (mesmo padrão do shim de stun no nameplate,
+  `ui/systems.py`). Decisão do usuário (31/08/2026): migrar mecanismos
+  já funcionando e testados (Camuflagem tem 10+ consumidores — AOI de
+  visibilidade, alvo de mob, respawn/ghost; Escudo de Fogo/Bloco de Gelo
+  têm tick duplicado cliente+servidor) só pra ganhar 1 ícone é risco
+  desproporcional ao ganho. Precisa também de 1 entrada em
+  `content/status_effects_data.py::EFFECT_DEFS` (label/cor de fallback —
+  esta entrada NUNCA é de fato aplicada via `apply_effect`, só existe
+  pro ícone). Ver PROBLEMAS_ARQUITETURA.md §88 (fase 2).
+- **Ordem de ativação de qualquer buff/efeito pra fila da buff bar**
+  (qual liga antes de qual, entre fontes DIFERENTES) → `engine.
+  effect_order.mark_activated(world, eid, effect_type)` (01/09/2026) —
+  NUNCA comparar ordem entre fontes na mão (`ui/buff_bar.py` não sabe
+  "quando" nada ligou, só o que está ativo AGORA). `apply_effect()` já
+  chama isso sozinho pra todo buff/debuff de StatusEffects — só precisa
+  de chamada nova no ponto de ativação de um mecanismo que NÃO passa por
+  `apply_effect` (Escudo de Fogo/Bloco de Gelo/Camuflagem/procs
+  binários) — 1 linha, na transição off→on, nunca todo tick/frame (senão
+  vira sempre "o mais novo"). `ui/buff_bar.py::BuffBar.render()` ordena
+  a lista final por `get_seq()`, um `sort()` genérico — nenhuma
+  comparação hardcoded por tipo de fonte.
+- **Texto de tooltip de qualquer buff/efeito** → campo `description` em
+  `content/status_effects_data.py::EFFECT_DEFS` (01/09/2026) — mesmo
+  catálogo central que já dá label/cor/ícone, NUNCA um bloco de texto
+  calculado na mão por `effect_type` (é exatamente o padrão que o
+  tooltip de skill tem, `client/tooltip_handlers.py::
+  _skill_tooltip_lines`'s cadeia de `if sid == "golpe_poderoso": ...` —
+  pedido explícito do usuário pra não repetir isso aqui). Geometria de
+  hit-test (qual ícone está sob o mouse) vem de `ui/systems.py::
+  _build_effects_row()`, que devolve `(surface, rects)` — o MESMO
+  `ix`/`ICON` já usados pra desenhar, nunca duplicar esse cálculo num
+  hit-test à parte (mesmo princípio já usado pela hotbar,
+  `client/hotbar_handlers.py`). Ver PROBLEMAS_ARQUITETURA.md §90.
+- **Estado "estou em cima de um arbusto real" chegando ao cliente**
+  (feedback visual pessoal — opacidade, ícone, etc.) → `WorldServer.
+  _sync_player_bush_dirty()` (`server/world_server.py`, 01/09/2026,
+  corrigido no mesmo dia) — dirty-check por player, fonte é
+  `BushZoneProcessorMixin._is_on_bush_tile(eid)` (`server/
+  bush_zone_processor.py`, lê `TileType.is_bush` no tile atual do
+  player), sincroniza via `queue_stats_update` privado (`in_bush:
+  bool`). **NUNCA `_get_bush_zone()`/`bush_zones_by_map`** — esse é o
+  retângulo de zona antigo (§47), nunca populado em NENHUM mapa real
+  (`grep` em `maps/*_entities.json` não acha `bush_zones` em lugar
+  nenhum) — usá-lo como fonte foi a causa raiz de a opacidade nunca ter
+  aparecido em jogo na 1ª tentativa. NUNCA broadcast AOI (ninguém além
+  do dono precisa saber) e NUNCA reusar/tocar `CombatState.is_visible`/
+  `is_camouflaged` — bush stealth e Camuflagem são mecanismos
+  separados, campos separados (`CombatState.is_bush_hidden` é o novo,
+  client-only). Tile novo que deve contar como "bush" pro feedback →
+  marcar `"is_bush": True` no GRUPO do catálogo em
+  `engine/tileset.py::OBJECT_SHEET_FAMILIES` (hoje só `"arbustos"`,
+  linha ~913) — NUNCA checar `sprite_name`/prefixo do tile em runtime
+  (árvore usa o MESMO `vision_height=2` que bush pra bloquear LOS, mas
+  nunca deve contar aqui; `vision_height` sozinho não distingue as
+  duas). A invisibilidade DE VERDADE pros outros players (diferente da
+  opacidade, que é só cosmética) já vem de outro lugar —
+  `server/tile_los_processor.py::_has_tile_los()` — nunca mexer nesse
+  mecanismo achando que precisa "ativar" bush stealth, ele já funciona
+  pra qualquer `vision_height>=2` no tile do alvo. Ver
+  PROBLEMAS_ARQUITETURA.md §91.
 - **Dano base de skill FÍSICA** → `damage_calculator.ability_physical_damage()`
   (`arma×dmg_weapon_pct + AP×(damage_multiplier + 0.01×skill_level_da_arma)`) —
   multiplicador vem SÓ do SKILL_CATALOG, NUNCA hardcodear no handler (classe
@@ -255,6 +383,17 @@ padrão a quebrar, não só os bugs individuais.
   NUNCA hardcodear `ap_skill_mult=1.0` num call site novo de auto-attack, ou
   ele fica pra sempre fora da escala de skill_level (era o estado ORIGINAL,
   corrigido em 07/07/2026).
+- **Dano por tick de DoT de habilidade de MOB** (bleed/poison/burn, ver
+  `content/enemy_abilities_data.py::AbilityDef`) →
+  `damage_calculator.mob_dot_tick_damage(magnitude, base_attack_power,
+  level)` — divide por `√level` (não multiplica direto por
+  `base_attack_power`, que já escala LINEAR com level em
+  `entity_factory.py`; compor 2 crescimentos lineares explodia em level
+  alto — urso level 24 batendo 96/tick de Laceração, corrigido
+  28/08/2026). NUNCA calcular `magnitude * base_attack_power` direto
+  num call site novo de habilidade de mob — os 2 pontos existentes
+  (`engine/world_systems.py`, corpo-a-corpo e projétil) chamam essa
+  função, um 3º ponto que reimplemente a conta vira código paralelo.
 - **Broadcast direto novo (fora do AOI_UPDATE)** →
   `SessionManager._sessions_in_aoi(tx, ty, map_file, origin_eid=...)` —
   NUNCA iterar `self._sessions` com check de distância à mão (classe de bug:
@@ -289,6 +428,74 @@ padrão a quebrar, não só os bugs individuais.
   "bloqueado" em terreno aberto, Tiro Repulsivo stunando em parede fantasma).
   NUNCA pegar "o primeiro" `Tilemap` do world — usar o bundle via
   `get_entity_map(eid)`.
+- **Colisão sub-tile pro passo manual (objeto pequeno bloqueando o tile
+  de 32px inteiro sem necessidade): tentado e REVERTIDO** (30/08/2026,
+  ver PROBLEMAS_ARQUITETURA.md §85) — 4 rodadas de correção sem
+  convergir (matemática de fronteira de tile, passo encadeado, gate de
+  rede, `current_tile_x/y` podendo apontar pra tile sólido) até o
+  usuário decidir que o custo de manutenção não compensava o ganho
+  visual. Se o tema voltar, ler o histórico completo em §85 ANTES de
+  tentar de novo — o caminho "meio-passo de 16px como fallback perto de
+  props pequenos" já foi tentado e tem uma lista concreta de armadilhas
+  documentada, não é ponto de partida em branco.
+- **`TileMovement.current_tile_x/y` só muda quando `TileMovementSystem`
+  completa o tween** (`progress>=1.0`, `engine/world_systems.py:4273-4277`)
+  — NUNCA escrever `current_tile_x/y` direto pra "adiantar" a posição
+  lógica de uma skill que move o player (dash/gap-closer), mesmo que
+  pareça conveniente pra destravar um range-check logo em seguida. Esse
+  campo é o MESMO usado por `_resolve_auto_attack`
+  (`server/combat_processor.py`) pra medir alcance de ataque automático
+  — um snap antecipado faz o auto-attack (e qualquer skill futura)
+  achar que o player já chegou, disparando ANTES da animação do dash
+  terminar (bug real relatado pelo usuário 31/08/2026: "o alvo já toma
+  um hit antes de o dash acontecer" — existia desde a implementação
+  original do Interceptar, 24/05/2026; ver PROBLEMAS_ARQUITETURA.md
+  §87). Pra notificar rede que a skill moveu o player, `target_tile_x/y`
+  (que muda na hora, de propósito) já basta — nunca precisa do snap de
+  `current_tile_x/y` junto.
+- **Dash em andamento (`TileMovement.is_dash and is_moving`) tem
+  autoridade exclusiva sobre a posição** — `WorldServer.move_player()`
+  recusa qualquer MOVE normal enquanto essa condição for True (mesma
+  simetria de `TileMovementSystem` já recusar que stun/sleep interrompa
+  um dash). NUNCA remover essa checagem "pra simplificar": sem ela, um
+  MOVE residual (comum — jogador andou até o alcance mínimo do
+  Interceptar, cliente ainda tinha passo WASD enfileirado) sequestra o
+  destino do dash — o alvo continua selecionado, mas a skill seguinte
+  recusa "Nenhum alvo" porque a posição REAL não bate mais com o destino
+  calculado (achado real 31/08/2026, ver PROBLEMAS_ARQUITETURA.md §87 —
+  3ª causa raiz da mesma investigação do Interceptar).
+- **Decidir uma partida de BG (declarar vencedor + montar placar) tem 1
+  função por sistema, nunca lógica solta num novo call site** —
+  `BgQueueProcessorMixin._finish_bg_match(match, match_id,
+  winner_faction)` (fila real, `server/bg_queue_processor.py`) e
+  `debug_battleground._finish_debug_match(ws, winner_faction)` (`/testbg`,
+  01/09/2026) — os dois extraídos do código que já montava o placar
+  quando o Nexus caía (`notify_bg_queue_nexus_destroyed`/
+  `notify_nexus_destroyed`), reaproveitados também por
+  `request_bg_forfeit`/`_forfeit` (comando `/forfeit`/`/ff`). Motivo
+  novo pra decidir uma partida (item mágico, timeout, etc.) chama a
+  função certa do sistema certo — NUNCA reimplementa o cálculo de
+  K/D/A/Farm/Gold/Dano por delta contra `stat_snapshots`. Client-side:
+  `ArenaHandlers._try_handle_arena_chat_command` só faz `return True`
+  (consome "/ff") quando de fato numa partida de Arena — fora disso
+  `return False` (passa a vez) — NUNCA fazer um interceptor de comando
+  de chat "engolir" um comando alheio só porque a string bate; outro
+  handler mais abaixo na cadeia (`client/chat_handlers.py::
+  _send_chat_message`) pode ser o dono de verdade daquele comando num
+  contexto diferente.
+- **Largura de mapa (`Tilemap.map_width_tiles`) é a MAIOR linha do
+  `terrain_matrix`, nunca a linha 0** — `engine/entity_factory.py::
+  create_tilemap` (02/09/2026, bug real: usava só `len(terrain_matrix[0])`,
+  subestimando a largura de `map_1`, que tem forma ORGÂNICA/não-retangular
+  de propósito — toda linha começa/termina com "m"/montanha, borda
+  natural, só a extensão real do terreno varia por altura, não é CSV
+  corrompido). Linha mais curta que a máxima é preenchida com
+  `FLOOR_TILE` automaticamente (mecanismo já existia, só recebia o
+  número errado) — comportamento correto pra borda de mapa
+  não-retangular. `engine/map_loader.py::validate_map` não compara mais
+  largura de linha contra nada — não existe uma "largura esperada"
+  única que sirva pra qualquer formato de mapa. Ver
+  PROBLEMAS_ARQUITETURA.md §97.
 
 ### Atualização coesa ao adicionar sistema novo (22/07/2026 — feedback recorrente do usuário)
 - **Nunca** deixar uma atualização acontecer "de carona" em outra ação sem

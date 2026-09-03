@@ -52,6 +52,7 @@
 | Chat (texto, 3 abas Local/Mundial/Combate) — cliente | `client/chat_handlers.py` | `ChatHandlers` — Enter abre campo, digita, Enter envia; abas, scrollbar, wrap de linha (500 entradas/aba) |
 | Chat — balão de fala acima da cabeça | `ui/chat_bubble.py` | `ChatBubbleManager`/`CHAT_BUBBLE` — rastreia Position ao vivo (diferente de `ui/floating_text.py`) |
 | Chat — aba "Combate" (log de dano/cura/proc/loot) | `ui/combat_log.py` | `CombatLog`/`LOG` — histórico persistente (500), `add(text, color)` mesma assinatura de sempre, `entries` property lida pela aba |
+| Preferência de slot da hotbar por skill_id (dentro OU fora da BG) | `ui/skill_slot_prefs.py` | `preferred_slot_for_skill()`/`skill_slot_prefs_to_dict()` — função pura, chamada por `game.py`, `client/network_handlers.py` e `ui/trainer_system.py` (objeto sem referência de volta pro GameEngine — por isso não é método `self.`) |
 | Iniciar o servidor | `server/main.py` | `py -3.10 server/main.py` |
 | Conectar cliente ao servidor | `client/network.py` | `NetworkClient` |
 | Banco de dados / schema | `data/game.db` (SQLite) | criado por `auth.init_db()` |
@@ -78,6 +79,10 @@
 | Efeito de talento no jogo | `ui/talent_system.py` | `apply_talent_effects()` |
 | Painel read-only de Skill Level (tecla L) | `ui/skill_level_ui.py` | `SkillLevelUI`, registrado em `client/modal_stack_handlers.py` |
 | Criar item/arma/arco/aljava (catálogo único — loot + loja) | `content/item_table.py` | `ITEMS` dict (07/07/2026 — antes duplicado em `content/loot_tables.py`/`content/merchant_data.py`; `loot_tables._T` e `merchant_data`'s stock agora só referenciam daqui) |
+| Catalogar tile/objeto novo (árvore, arbusto, muro, etc.) a partir de um PNG | `engine/tileset.py` | `SPRITE_FAMILIES` (1 sprite = 1 arquivo), `SHEET_FAMILIES` (grade de terreno, `color_overrides` por (col,row) — 26/08/2026), `OBJECT_SHEET_FAMILIES` (grade OU catálogo explícito; `"groups"` — 26/08/2026 — pra 1 arquivo com categorias visuais diferentes, cada grupo com prefix/label/color própria) |
+| Cor do tile/objeto no minimapa e mapa-múndi (tecla M) | `game.py::_merge_display_matrix` + `ui/map_overlay.py::load_map` | Prioridade por célula: objeto > visual de sheet de terreno (`terrain_visual`) > terreno puro; footprint de colisão inteiro pintado via `engine.tileset.get_collision_offsets`, não só a âncora (26/08/2026, ver `PROBLEMAS_ARQUITETURA.md` §78) |
+| Editor de mapa em tempo real (F10) | `ui/god_mode.py` | `GodModeEditor` — paleta de terreno/objetos, pintura por clique/arrasto (`_apply`). Pincel aleatório por grupo (26/08/2026, só famílias `OBJECT_SHEET_FAMILIES` com `"groups"`) — clicar no nome do grupo ativa, `_resolve_brush_char()` sorteia sem repetir o último colocado; ver `PROBLEMAS_ARQUITETURA.md` §79. Pincel inteligente de terreno (26-27/08/2026, aba Terreno, só famílias `SHEET_FAMILIES` com `"zones"` — hoje só "TX Tileset Terrain") — "Grama"/"Terra" recalculam cada 1 dos 8 vizinhos a partir do AMBIENTE REAL dele (`_apply_smart_terrain`/`_missing_sides` + `engine.tileset.resolve_blob3x3_piece`, não sorteio — a região de transição são 2 quebra-cabeças de 3×3 peças interligadas, mancha/cruz, não tiles soltos) — método principal, autocorrige durante arrasto em qualquer direção (peça de um vizinho já decorado muda com mais contexto); `_direction_missing_sides` só entra como reforço quando o real não resolve (ex: diagonal sem contexto), restrito a vizinho ortogonal ou ainda sem decoração (evita toque diagonal fraco sobrescrever peça boa); `_resolve_piece_offset` (27/08/2026, medição de pixel real) troca a peça de CANTO dedicada por 1 peça de BORDA quando a zona é `"weak_corners"` — a zona "pintar terra sobre grama" tem cantos quase invisíveis (~30-50% da cor nova) nos 2 estilos mancha/cruz, contra ~100% na zona irmã; "Piso sobre grama/terra" reusa o pincel de grupo aleatório, pool = zona `floor_full`; ver `PROBLEMAS_ARQUITETURA.md` §81 |
+| Catálogo de zonas de terreno (grama/terra pura, com flor, piso completo por `"cells"`; transição por `"shapes"` — origem de cada quebra-cabeça 3×3) por região col/row dentro de um único arquivo de sheet | `engine/tileset.py::SHEET_FAMILIES[...]["zones"]` + `terrain_zone_of(family, tile_id)` + `resolve_blob3x3_piece(missing_sides)` | Pontos único de verdade pra "em qual zona um tile_id cai" (mesmo padrão de `group_tile_ids`, §79) e "qual peça de transição usar dado o offset dentro do quebra-cabeça 3×3" (autotile "3×3 mínimo", técnica Blob47 reduzida); usados pelo pincel inteligente de terreno do God Mode; ver `PROBLEMAS_ARQUITETURA.md` §81 |
 | Adicionar drop de mob | `content/mob_definitions.py` | `MOB_TABLE[nome]["loot"]` (dict item_key→chance, chave de `item_table.ITEMS`; `content/loot_tables.py::roll_mob_loot` só lê) |
 | Configurar gold de um mob (chance/faixa min-max, 07/07/2026) | `content/mob_definitions.py` | `MOB_TABLE[nome]["gold_chance"/"gold_min"/"gold_max"]` — opcionais, sem eles cai no genérico por tier (`COIN_DROPS`); `content/loot_tables.py::roll_mob_coins` só lê |
 | Adicionar item à loja | `content/merchant_data.py` | `SHOPS[shop_id]["stock"]` — `{"factory": item_table.ITEMS["key"], "price": N}` |
@@ -185,6 +190,9 @@ rpg_ecs_online/
 │   ├── components.py                ← componentes ECS (dado puro)
 │   ├── entity_factory.py           ← criação de entidades (player/mob)
 │   ├── core_systems.py             ← apply_effect()/StatusEffectSystem base
+│   ├── effect_order.py             ← (01/09/2026) mark_activated()/get_seq() — ordem de
+│   │                                  ativação de buff/efeito pra fila da buff bar, único
+│   │                                  ponto que compara "quando" entre fontes diferentes
 │   ├── world_systems.py            ← 14 sistemas ECS de gameplay (EnemyAI,
 │   │                                  Combat, TileMovement, TileValidation...)
 │   ├── stat_fns.py                 ← add_modifier/enter_combat/etc.
@@ -225,6 +233,11 @@ rpg_ecs_online/
 │   ├── ui_components.py/ui_helpers.py/ui_sizes.py/ui_scale_mixin.py/ui_compare.py
 │   ├── fonts.py, sound_manager.py, icon_manager.py, tile_sprite_manager.py, fov.py
 │   ├── floating_text.py, effect_animator.py, minimap.py, map_overlay.py
+│   ├── buff_bar.py                  ← barra de buff unificada (31/08/2026),
+│   │   ícone+timer do jogador local, ao lado do minimapa — lê StatusEffects
+│   │   filtrado por is_buff + _gather_extra_buffs() (Escudo de Fogo/Bloco de
+│   │   Gelo/Camuflagem/procs binários, cada um com mecanismo próprio),
+│   │   reaproveita ui/systems.py::_build_effects_row
 │   ├── map_markers.py               ← MapMarker/collect_markers — pontos de
 │   │   interesse do mapa/minimapa (morte, quest givers, treinadores,
 │   │   mercadores), consumido por map_overlay.py/minimap.py

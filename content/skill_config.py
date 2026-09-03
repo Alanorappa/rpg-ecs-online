@@ -536,17 +536,16 @@ INITIAL_SKILLS_BY_CLASS: dict[str, list] = {
 # (a classe simplesmente não ganha skill nova nos levels finais).
 INSTANCE_SKILL_UNLOCK_ORDER: dict[str, list] = {
     "guerreiro": [
-        "golpe_poderoso", "impacto", "brado_provocativo", "golpe_debilitante",
-        "punho_no_queixo", "interceptar", "fatiador_de_corpos",
-        "vitoria_iminente", "executar",
+        "golpe_poderoso", "interceptar", "golpe_debilitante",
+        "fatiador_de_corpos", "vitoria_iminente", "executar",
     ],
     "mago": [
-        "bola_de_fogo", "polimorfia", "escudo_fogo", "nova_congelante",
-        "calcinar", "bloco_de_gelo", "pirofagia", "calamidade_flamejante",
+        "bola_de_fogo", "polimorfia", "nova_congelante",
+        "bloco_de_gelo", "pirofagia", "calamidade_flamejante",
     ],
     "arqueiro": [
-        "recarregar", "picada_escorpiao", "cancao_ninar", "tiro_multiplo",
-        "so_um_gole", "camuflagem", "tiro_repulsivo", "flecha_reiterada",
-        "cancao_inspiracao",
+        "picada_escorpiao", "cancao_ninar", "tiro_multiplo",
+        "camuflagem", "tiro_repulsivo", "flecha_reiterada",
+
     ],
 }

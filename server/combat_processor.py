@@ -7,6 +7,25 @@ from __future__ import annotations
 
 class CombatProcessorMixin:
 
+    def _ranged_weapon_range(self, attacker_eid: int, class_is_ranged: bool) -> "tuple[bool, int]":
+        """(is_ranged, alcance_tiles) a partir do ARCO REAL equipado, nunca
+        só a classe (`CombatStats.is_ranged` é um flag estático — sem arco
+        de verdade, ou com arma melee, cai pro alcance melee=1). Extraído
+        de `_resolve_auto_attack` (26/08/2026) — ponto único de verdade,
+        reusado também por `BotAISystem._effective_engage_range` (bot
+        decide a que distância parar de andar e brigar; antes usava 1
+        constante genérica pra todas as classes, ver PROBLEMAS_
+        ARQUITETURA.md)."""
+        from engine.components import Equipment
+        if not class_is_ranged:
+            return False, 1
+        eq  = self.world.get_component(attacker_eid, Equipment)
+        bow = eq.slots.get("mainhand") if eq else None
+        has_bow_equipped = bow is not None and getattr(bow, "subtype", "") == "Bow"
+        if not has_bow_equipped:
+            return False, 1
+        return True, (getattr(bow, "cast_range", 0) or 7)
+
     def _resolve_auto_attack(self, attacker_eid: int, target_eid: int, session_id: str, dt: float,
                              attacker_cs, attacker_tm, target_cs, target_tm) -> "dict | None":
         """Ponto único: TUDO que decide se um auto-attack acontece e o que
@@ -47,20 +66,15 @@ class CombatProcessorMixin:
         # entra em modo ranged se a classe É ranged E tem um ARCO de
         # verdade equipado agora — sem arco, ou com arma melee equipada,
         # cai pro MESMO caminho de dano melee (deal_damage) que
-        # guerreiro/mago já usam.
+        # guerreiro/mago já usam. Range: ranged usa o cast_range REAL do
+        # arco equipado (Arco Curto=7, do Caçador=8, Élfico=9...) — nunca
+        # hardcoded (`_ranged_weapon_range`, ponto único de verdade).
         _class_is_ranged = getattr(attacker_cs, "is_ranged", False)
-        _bow = _qv = None
-        _has_bow_equipped = False
-        if _class_is_ranged:
-            _eq  = self.world.get_component(attacker_eid, Equipment)
-            _bow = _eq.slots.get("mainhand") if _eq else None
-            _qv  = _eq.slots.get("offhand")  if _eq else None
-            _has_bow_equipped = _bow is not None and getattr(_bow, "subtype", "") == "Bow"
-        _is_ranged = _class_is_ranged and _has_bow_equipped
-
-        # Range: ranged usa o cast_range REAL do arco equipado (Arco
-        # Curto=7, do Caçador=8, Élfico=9...) — nunca hardcoded.
-        attack_range = (getattr(_bow, "cast_range", 0) or 7) if _is_ranged else 1
+        _is_ranged, attack_range = self._ranged_weapon_range(attacker_eid, _class_is_ranged)
+        _qv = None
+        if _is_ranged:
+            _eq = self.world.get_component(attacker_eid, Equipment)
+            _qv = _eq.slots.get("offhand") if _eq else None
 
         # Ranged (arco de verdade equipado): requer aljava com flechas no
         # offhand — sem isso, NÃO ataca (nem ranged nem melee: tem arco
@@ -90,6 +104,25 @@ class CombatProcessorMixin:
                 ADBG_SERVER.log_block(attacker_eid, target_eid, "out_of_range",
                                       dist=dist, attack_range=attack_range)
             return None
+
+        # DEBUG (31/08/2026, investigação "Interceptar acerta antes do dash",
+        # ver PROBLEMAS_ARQUITETURA.md) — captura TUDO que decidiu que este
+        # auto-attack estava em alcance, no exato tick em que passou pelo
+        # gate acima. Objetivo: achar se `_a_tx/_a_ty` (current_tile_x/y do
+        # atacante) já refletia o destino do dash antes do tween terminar,
+        # ou se o hit reportado no log do usuário vem de outra origem.
+        from debug.aoi_debug import AOI_DBG as _AOI_DBG_atk
+        _AOI_DBG_atk.log(
+            "AUTO_ATK_RANGE_OK", tick=self.tick_count,
+            attacker=attacker_eid, target=target_eid,
+            attacker_tile=(_a_tx, _a_ty), target_tile=(_t_tx, _t_ty),
+            dist=dist, attack_range=attack_range,
+            attacker_is_dash=getattr(attacker_tm, "is_dash", None),
+            attacker_is_moving=getattr(attacker_tm, "is_moving", None),
+            attacker_progress=getattr(attacker_tm, "progress", None),
+            attacker_current_tile=(attacker_tm.current_tile_x, attacker_tm.current_tile_y),
+            attacker_target_tile=(attacker_tm.target_tile_x, attacker_tm.target_tile_y),
+        )
 
         # Linha de visão (só ranged — melee é range=1, obstrução não se
         # aplica na prática): obstáculo BLOQUEIA O ATAQUE INTEIRO, antes

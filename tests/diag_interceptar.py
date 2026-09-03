@@ -74,10 +74,16 @@ ws._pending_skill_requests.append({
 })
 ws._process_skill_requests()
 tm_after2 = ws.world.get_component(eid, TileMovement)
-print(f"player tile apos sucesso=({tm_after2.current_tile_x},{tm_after2.current_tile_y})")
+print(f"player target_tile apos sucesso=({tm_after2.target_tile_x},{tm_after2.target_tile_y})")
 print("skill_position_corrections:", ws._skill_position_corrections)
-assert (tm_after2.current_tile_x, tm_after2.current_tile_y) != _start_tile, \
-    "Player deveria ter se movido (sem obstaculo)"
+# current_tile_x/y NÃO muda no tick do cast (31/08/2026 — removido o snap
+# instantâneo, ver comentário em skill_processor.py); só target_tile_x/y
+# muda logo, current_tile_x/y só assume o destino quando TileMovementSystem
+# completa o tween.
+assert (tm_after2.current_tile_x, tm_after2.current_tile_y) == _start_tile, \
+    "Player NAO deveria ter chegado ainda (animacao do dash nem rodou)"
+assert (tm_after2.target_tile_x, tm_after2.target_tile_y) != _start_tile, \
+    "Player deveria ter um destino de dash setado (sem obstaculo)"
 assert ws._skill_position_corrections and not any(c.get("rejected") for c in ws._skill_position_corrections), \
     "Correcao de sucesso nao deveria ter rejected=True"
 print("OK: sucesso ainda move o player normalmente, sem rejected")

@@ -11474,3 +11474,3283 @@ regressão.
 **Pendente**: usuário confirmar em jogo — bot não trava mais do lado
 da própria torre logo após spawnar, segue empurrando a lane igual ao
 minion.
+
+## 73. Preferência de slot de skill unificada dentro/fora da BG (25/08/2026)
+
+Usuário relatou: dentro da BG, já com as 6 skills reveladas, arrastou
+Interceptar do slot 3 pro slot "R" (10º slot da hotbar customizada,
+1,2,3,4,5,R,T,F,Q,E), trocando de lugar com a skill que já estava lá.
+No próximo level-up (BG dá XP/level o tempo todo), a troca desfez
+sozinha — Interceptar voltou pro 3, a outra skill voltou pro R.
+
+**Causa raiz 1, confirmada lendo o caminho completo (cliente e
+servidor)**: arrastar uma skill dispara `game.py::_save_config()`
+(único call site real de `_send_hotbar_update()` — confirmado via
+`tests/test_hotbar_bg_leak.py`). `_save_config()` tinha um guard de
+`InstanceInventoryUIState.active` adicionado em 04/08/2026 pra resolver
+um bug DIFERENTE (não salvar o layout temporário da instância por cima
+do real em `config.json`) — mas esse guard bloqueava JUNTO o envio de
+`HOTBAR_UPDATE` pro servidor, não só a escrita local. Sem o
+`HOTBAR_UPDATE`, o arrasto ficava só visual/local; o array
+`PlayerSkills.skills` do SERVIDOR nunca soube da troca. Todo level-up
+dentro da BG manda um `STATS_UPDATE` novo com `skills_hotbar`
+(`server/instance_progression.py::_push_stats_update`) — snapshot 1:1
+do array do SERVIDOR (que nunca mudou); a reconciliação POR SLOT do
+cliente (fix do §34.74.23, `client/network_handlers.py`) via que o
+`skill_id` esperado ali era outro e recriava o Skill — desfazendo a
+troca nos 2 slots envolvidos. Verificado ANTES de propor que destravar
+`_send_hotbar_update()` é seguro: `SessionManager._persist_character`
+recusa persistir por completo enquanto `is_in_normalized_progression`
+(desde o incidente §34.74.15), então nada do que acontece no overlay
+temporário da instância pode vazar pro banco.
+
+**Escopo ampliado, decisão do usuário durante a discussão do fix**:
+configurar o slot de uma skill, dentro OU fora da BG, deve ser a MESMA
+preferência — se a skill ainda não existe de verdade no personagem
+(baixo level, real ainda não desbloqueou), a escolha feita dentro da
+BG deve valer também quando ela desbloquear fora, e vice-versa.
+Guardada só em `config.json` (nunca no banco do servidor — instância
+não persiste mesmo). Decisão adicional: jogar fora a lógica do
+SERVIDOR que tentava adivinhar a posição espelhando a hotbar real
+(`_real_slot_by_skill_id`/`reserved_slots`, mecanismo de 04-06/08/2026)
+— cliente decide 100% da posição sozinho.
+
+**Redesenho implementado**:
+- Novo `characters.{nome}.skill_slot_prefs` em `config.json`
+  (skill_id→slot), escrito por `game.py::_skill_slot_prefs_to_dict`
+  (MERGE, nunca substitui o mapa inteiro — skill configurada num
+  contexto e não visível no outro não pode perder a entrada) sempre
+  que `_save_config()` roda, dentro OU fora da BG (diferente de
+  `hotbar`/`consumable_bar`, que continuam bloqueados dentro da
+  instância — só refletem o que está NA TELA agora).
+- Novo `game.py::_preferred_slot_for_skill(ps, skill_id)` — lido pelos
+  3 pontos que colocam skill nova numa hotbar: `ui/trainer_system.py::
+  _do_learn` (aprender de treinador, mundo aberto), `client/
+  network_handlers.py::_handle_msg_skill_granted` (recompensa de
+  quest, mundo aberto), e o bloco `skills_hotbar` (revelação dentro da
+  instância) — os 3 antes só faziam "primeiro slot vazio", sem
+  preferência nenhuma.
+- Bloco `skills_hotbar` (`client/network_handlers.py`) REESCRITO —
+  posição decidida 100% pelo cliente, payload do servidor só serve pra
+  descobrir QUAIS skill_ids existem agora: (a) skill presente no
+  `PlayerSkills` local mas AUSENTE do payload é REMOVIDA (achado
+  durante os testes — necessário pra continuar limpando a hotbar do
+  mundo aberto ao ENTRAR na instância, mesmo motivo do bug original de
+  02/08/2026, `test_skills_hotbar_substitui_a_barra_local_por_completo`
+  em `tests/test_client_instance_sync.py` provou essa lacuna);
+  (b) skill já conhecida E ainda presente no payload NUNCA é
+  retocada — nem objeto novo, nem realocação, não importa a posição
+  que o servidor sugira (é isso que corrige o bug relatado);
+  (c) skill nova usa a preferência do jogador ou cai no primeiro slot
+  vazio.
+- `server/instance_progression.py::_grant_instance_skill` simplificado
+  de volta a "primeiro slot vazio" — `_real_slot_by_skill_id` e os
+  parâmetros `real_slot_by_sid`/`reserved_slots` removidos (redundante
+  com a preferência do cliente).
+
+**Testes**: `tests/test_hotbar_bg_leak.py` — `TestInstanceSkillGrant`
+substitui `TestInstanceSkillPreferredSlot` (mecanismo removido);
+`test_reordenacao_ao_vivo_alimenta_slot_preferido_da_instancia`
+removido (testava o mesmo mecanismo); novos testes de
+`_skill_slot_prefs_to_dict` (merge), `_preferred_slot_for_skill` (não
+rouba slot ocupado), e ponta a ponta via `_handle_msg_stats_update`
+real (preferência vence a posição sugerida pelo servidor; skill já
+conhecida nunca se mexe — regressão do bug relatado). Revert-to-confirm
+na reconciliação nova: reverter pro modelo posicional antigo reproduz
+os 2 sintomas exatamente (posição errada e skill retocada), confirma
+depois do fix. Efeito colateral achado só rodando a suíte completa (não
+antecipado no plano): `test_skills_hotbar_substitui_a_barra_local_por_completo`
+quebrou porque a reconciliação nova (puramente aditiva) nunca removia
+skill que sumiu do payload — corrigido adicionando o passo (a) acima
+antes de reportar como pronto. Suíte completa (`pytest tests/ -q`,
+`py -3.10`) — 1285 passed, zero regressão (3 falhas encontradas no meio
+do caminho — 2 fixtures leves de teste sem o método novo,
+`_preferred_slot_for_skill`, e 1 teste de timing flaky sem relação —
+todas corrigidas/confirmadas não-relacionadas antes do resultado final).
+
+**Pendente**: usuário confirmar em jogo — configurar uma skill num
+slot dentro da BG, sair, entrar de novo (ou desbloquear ela de verdade
+no mundo aberto) — o slot escolhido continua o mesmo.
+
+## 74. 3 correções não relacionadas — Punho no Queixo roubando slot, TAB sem neutro, SPACE reselecionando (25/08/2026)
+
+Usuário validou o §73 e reportou 3 problemas novos, sem relação entre
+si — os 3 achados por leitura de código real, não suposição (depois de
+2 teorias erradas hoje mais cedo, ver §71/§72).
+
+### 1. "Punho no Queixo" ocupava o slot do Interceptar dentro da BG
+
+Relato: guerreiro sobe pro level 2 na BG, em vez de Interceptar
+aparecer, aparece "Punho no Queixo" (nem está em
+`INSTANCE_SKILL_UNLOCK_ORDER`) — Interceptar só aparece no level 3.
+Usuário confirmou: não arrastou nada manualmente; personagem real é
+nível 3 (não tem pontos de talento pra Punho no Queixo de verdade
+ainda) — pediu explicitamente pra NÃO corrigir "não funciona" (correto,
+não está na lista).
+
+Causa raiz, achada lendo código (não é nada mexido nas sessões de
+hoje): `server/combat_processor.py:157-176` — mecanismo de "Punho no
+Queixo" (talento Cavaleiro): toda vez que o guerreiro acerta um golpe
+de verdade com `attacker_cs.pnq_enabled` ativo, o código procura a
+skill em `PlayerSkills.skills`; se não achar, CRIA e insere no
+primeiro slot vazio (`ps.skills.index(None)`) só pra rastrear
+`charges`/`pnq_counter` entre golpes — nunca soube de
+`INSTANCE_SKILL_UNLOCK_ORDER`. Como a instância pré-aloca a árvore de
+talentos no MÁXIMO desde a entrada (`enter_normalized_progression`),
+`pnq_enabled` fica `True` imediatamente — no PRIMEIRO golpe que o
+guerreiro acerta (antes mesmo do level 2 chegar), punho_no_queixo é
+inserida no slot 1 (primeiro vazio, golpe_poderoso já ocupa o 0).
+Quando o level 2 chega e Interceptar (unlock_order[1]) é concedida, o
+slot 1 já está ocupado — ela vai pro próximo slot livre no servidor, e
+como a reconciliação do §73 só olha "esse skill_id está no payload?"
+(não posição), ela só aparece quando o servidor finalmente lhe dá um
+slot — daí "aparece 1 level depois".
+
+Reproduzido via simulação level-a-level com o `config.json` REAL do
+personagem "Xadread" (achei uma preferência de slot sobrando de
+`skill_slot_prefs: {golpe_poderoso:0, punho_no_queixo:1, interceptar:5}`)
+— não bateu exatamente com o relato (minha simulação não incluía o
+mecanismo de combate, só o §73), então pedi 2 perguntas diretas ao
+usuário antes de seguir (arrastou manualmente? mesmo personagem?) em
+vez de chutar uma 3ª teoria.
+
+**Fix — só no CLIENTE**, sem tocar no mecanismo de carga do servidor
+(funciona certo e sem gambiarra fora da instância — Punho no Queixo é
+ambient real do build Cavaleiro): bloco `skills_hotbar`
+(`client/network_handlers.py`) ganha um filtro — dentro da instância
+(`InstanceInventoryUIState.active`), só aceita skill_id que está em
+`INSTANCE_SKILL_UNLOCK_ORDER[classe]`; qualquer skill "extra" que
+apareça no array do servidor por outro motivo é ignorada, nunca ocupa
+slot. Fora da instância, filtro não se aplica.
+
+### 2. TAB não seleciona alvo "neutro" (jungle etc.)
+
+`ui/systems.py::_visible_enemies_sorted` — loop de mob/torre/minion
+usava `is_hostile` (só tier "hostil"), decisão EXPLÍCITA do próprio
+usuário em 01/08/2026 ("TAB/SPACE só pra hostil de verdade, neutro/
+aliado só por clique") — mas isso foi ANTES da jungle existir (tier
+"neutro", 16/08/2026). Usuário reverteu esse recorte: TAB precisa
+alcançar neutro também.
+
+**Fix**: trocado `is_hostile` por `can_engage` (hostil OU neutro, só
+bloqueia amigavel) — MESMA função que o loop de player remoto (linhas
+abaixo, no mesmo método) já usava. Nenhuma lógica nova.
+
+### 3. SPACE troca de alvo em vez de atacar o selecionado (jogo todo)
+
+`ui/systems.py::_space_engage` sempre recalculava "inimigo mais
+próximo visível na tela" do zero, ignorando
+`combat_state.target_entity_id` por completo — se o alvo já
+selecionado (TAB/clique) não fosse o geometricamente mais próximo,
+SPACE trocava pra outro em vez de atacar o selecionado. Não é
+regressão de nada mexido hoje — comportamento original da função.
+
+**Fix**: checa `combat_state.target_entity_id` primeiro — se houver um
+e `utils.is_target_alive()` (ponto único de verdade do projeto pra
+"alvo válido no cliente", cobre mob local/player remoto/mob remoto)
+confirmar vivo, usa ELE direto (sem busca); só cai pra busca de "mais
+próximo visível" (código antigo, inalterado) sem alvo válido
+selecionado.
+
+**Testes**: Punho no Queixo — `tests/test_hotbar_bg_leak.py`, payload
+`skills_hotbar` com skill fora da ordem curada + `InstanceInventoryUIState.
+active=True` → não aparece; mesmo payload fora da instância → aparece
+normal (regressão). TAB — `tests/test_client_ui.py`, mob com Faction
+"vida_selvagem" (tier neutro) → `_visible_enemies_sorted` inclui.
+SPACE — `tests/test_client_ui.py`, alvo já selecionado e vivo, NÃO o
+mais próximo → `_space_engage` mantém; sem alvo selecionado → cai pro
+mais próximo (regressão). Efeito colateral achado só rodando a suíte
+completa: `test_reengajar_com_espaco_reativa_chase_suppressed_false`
+(teste pré-existente) assumia a semântica ANTIGA de SPACE (sempre
+re-seleciona) só pra testar `chase_suppressed` — atualizado pra
+refletir a semântica nova (mantém o alvo já selecionado) sem perder a
+cobertura do que realmente testava. Revert-to-confirm nos 3 fixes —
+todos falham exatamente como relatado sem a correção, confirmam
+depois. Suíte completa (`pytest tests/ -q`, `py -3.10`) — 1290 passed,
+zero regressão.
+
+**Pendente**: usuário confirmar em jogo — guerreiro sobe pro level 2
+na BG e Interceptar aparece certinho (Punho no Queixo não aparece);
+TAB cicla por mob de jungle; SPACE ataca o alvo já selecionado mesmo
+não sendo o mais próximo, em qualquer parte do jogo.
+
+### Correção — item 3 (SPACE) tinha corrigido a função ERRADA (25/08/2026)
+
+Usuário testou em jogo e confirmou: item 1 (Punho no Queixo) resolvido,
+mas SPACE continuava trocando de alvo depois de selecionar com TAB.
+
+**Causa raiz do "não resolveu"**: `ui/systems.py::PlayerInputSystem.
+_space_engage` (a função corrigida acima) **não é a usada no jogo
+online** — é caminho offline/legado. A função REAL, que `game.py`
+despacha de verdade no `K_SPACE`, é `client/save_sync_handlers.py::
+_space_engage_online` — MESMO bug (sempre recalculava "mob remoto
+hostil mais próximo" do zero, ignorando `CombatState.target_entity_id`
+por completo), implementação separada, nunca peguei ela porque só
+busquei `K_SPACE` numa checagem superficial antes — não achei os OUTROS
+2 arquivos que também batem em `K_SPACE` na primeira olhada.
+
+**Achado extra, não corrigido ainda (flag pro usuário, não é decisão
+minha)**: `PlayerInputSystem` (dona da função offline) ESTÁ registrada
+e RODANDO de verdade no jogo online (`game.py:839`, parte da lista de
+`self.systems`) — ou seja, as DUAS funções processam o MESMO evento
+K_SPACE, de forma independente, no mesmo frame. Corrigir só uma (como
+aconteceu aqui) deixa o bug vivo, porque a outra ainda roda e pode
+"ganhar" dependendo da ordem. Como as duas foram corrigidas com a
+MESMA lógica agora, o resultado final é o mesmo mesmo com as duas
+rodando — mas isso é sintoma de uma violação do ponto único de verdade
+do projeto (2 implementações fazendo a mesma coisa) que vale a pena
+limpar depois (decidir qual é a "real" e remover/desativar a outra) —
+não fiz essa limpeza agora porque é uma decisão de arquitetura, não
+parte do bug relatado.
+
+**Fix**: MESMA lógica aplicada em `_space_engage_online` — checa
+`CombatState.target_entity_id` primeiro via `utils.is_target_alive()`
+antes de buscar "mob hostil mais próximo".
+
+**Testes**: `tests/test_client_ui.py` — 2 novos
+(`test_space_engage_online_mantem_alvo_ja_selecionado_mesmo_nao_sendo_o_mais_proximo`/
+`test_space_engage_online_sem_alvo_selecionado_pega_o_mais_proximo`),
+fixture mistura `SaveSyncHandlers`+`RemoteEntityHandlers` (`_meta_from_
+local`). Revert-to-confirm: reproduz o sintoma exato relatado
+("assert 2 == 1" — trocou pro mais próximo). Suíte completa
+(`pytest tests/ -q`, `py -3.10`) — 1292 passed, zero regressão.
+
+**Pendente**: usuário confirmar em jogo de novo — SPACE ataca o alvo
+já selecionado desta vez (função certa, corrigida e testada).
+
+### Correção 2 — SPACE ainda não alcançava neutro + limpeza do código paralelo (26/08/2026)
+
+Usuário confirmou em jogo: manter-alvo-selecionado funcionou, mas
+reportou 2 coisas na mesma mensagem — (a) SPACE ainda não selecionava
+alvo "neutro" (jungle) na busca de fallback; (b) instrução PADRÃO daqui
+pra frente: "sempre que acharmos [código paralelo de offline] temos
+que limpar" — não é aprovação pontual, é regra permanente.
+
+**Causa (a)**: o fix de "manter alvo selecionado" (Correção 1, acima)
+só tocou a lógica de PRIORIZAR `target_entity_id` — não tocou o filtro
+de facção da busca de fallback, que continuava `is_hostile` (só tier
+"hostil"). Igual ao bug do TAB (item 2 do plano original), só que numa
+função diferente que eu não tinha revisado com a mesma lente.
+
+**Fix (a)**: `client/save_sync_handlers.py::_space_engage_online` —
+trocado `is_hostile` por `can_engage` na busca de fallback (mesmo
+critério do TAB: hostil OU neutro, só bloqueia "amigavel"). Teste novo
+`test_space_engage_online_sem_alvo_alcanca_mob_neutro`. Revert-to-
+confirm: com `is_hostile` de volta, reproduz exatamente "assert -1 ==
+1" (mob neutro nunca é alcançado).
+
+**Fix (b) — limpeza do código paralelo achado na Correção 1**:
+`ui/systems.py::PlayerInputSystem.update()` tinha um bloco (linhas
+774-778, já removido) que escutava `KEYDOWN K_SPACE` e chamava
+`self._space_engage(...)` — a MESMA tecla que `game.py:1729-1730` já
+despacha direto pra `_space_engage_online()`. As duas rodavam todo
+frame que ESPAÇO era apertado. Perguntei ao usuário o escopo da
+limpeza (3 opções: só remover a chamada / remover a chamada + apagar o
+método inteiro / só documentar) — escolhido "só remover a chamada"
+(método `_space_engage` continua no arquivo, só não roda mais online;
+os 4 testes que chamam ele direto em `test_client_ui.py` continuam
+válidos como teste da lógica isolada).
+
+**Achado durante a limpeza, não previsto no plano original**: o bloco
+removido tinha um gate `if can_act:` antes de chamar `_space_engage`
+— ou seja, ESPAÇO ficava bloqueado sob CC (stun/sleep/fear/polymorph)
+só por causa dessa checagem, que `_space_engage_online` NUNCA teve e
+`game.py` também não tem em nenhum lugar antes de despachar `K_SPACE`.
+Remover o bloco duplicado sem repor o gate teria introduzido uma
+regressão real: SPACE destravado sob CC no jogo online. Corrigido
+adicionando `is_action_locked(world, player_entity)` (mesmo choke-
+point usado pelo gate de skills/auto-attack no servidor — `engine/
+utils.py`) no topo de `_space_engage_online`. Não pedi confirmação de
+novo pro usuário pra essa parte específica — é o mesmo ponto único de
+verdade já documentado no projeto, aplicado corretamente, não uma
+decisão de arquitetura nova.
+
+**Teste**: `test_space_engage_online_bloqueado_por_stun` — player com
+`StatusEffects.effects["stun"]`, SPACE não seleciona nem confirma
+nenhum alvo. Revert-to-confirm: com o gate comentado (`if False and
+...`), reproduz exatamente a regressão (`assert 2 == -1`, alvo
+selecionado mesmo sob stun).
+
+**Suíte completa** (`pytest tests/ -q`, `py -3.10`): 1293 passed
+(1 falha isolada e não-relacionada, `test_perf_push_pop_grava_amostra_
+sob_caminho_completo` — timing flake da mesma família já catalogada
+nesta sessão, confirmada passando sozinha e no arquivo inteiro).
+
+**Lição pra próxima vez que acharmos código paralelo offline/online**:
+não basta "escolher qual é a real e apagar a outra" — a versão que vai
+ficar pode ter um gate/checagem que a outra tinha e ela não, então
+correto é DIFF as duas implementações antes de remover qualquer coisa
+que ainda roda de verdade.
+
+## 75. Bots de BG: guerreiro para longe demais, mago sem dano/"sem cooldown" (26/08/2026)
+
+Usuário relatou 3 comportamentos estranhos nos bots: guerreiro para 1
+tile longe demais do alvo e nunca acerta skill melee; mago lança Bola
+de Fogo sem parar mas nunca causa dano; parece "sem cooldown" entre os
+lançamentos. Pediu pesquisa de bot de outros MOBAs antes de desenhar a
+correção (regra do projeto). Planejado via EnterPlanMode + 3
+AskUserQuestion (direção geral, kiting sim/não, valor exato do alcance
+melee) — todas as 3 recomendadas aceitas.
+
+**Causa raiz 1 — 1 raio de engajamento genérico pra 3 classes**.
+`BOT_ENGAGE_RANGE_TILES = 2` (`server/bot_ai_system.py`) decidia
+"parei de andar, hora de brigar" pra TODAS as classes igual. Mas
+melee de verdade (`_resolve_target(...,1)`/`_resolve_auto_attack`,
+`attack_range=1 if not is_ranged`) exige Chebyshev ≤1 — a 2 tiles TODA
+tentativa falhava "Fora de alcance", guerreiro ficava parado pra
+sempre. Arqueiro (arco real equipado) e mago (`bola_de_fogo.cast_range
+=6`) paravam bem mais perto do que precisavam, se expondo à toa.
+Pesquisa externa (Game AI Pro 3, "Paragon Bots: A Bag of Tricks",
+Epic Games) confirma: bot de MOBA usa o alcance EFETIVO de cada herói,
+nunca 1 raio genérico compartilhado entre papéis.
+
+**Causa raiz 2 — dano de skill de projétil nunca aplicado pro bot**.
+`bola_de_fogo`/`flecha_reiterada`/`picada_escorpiao`/`tiro_repulsivo`
+(`_PROJECTILE_SPELLS`, `server/spell_completion_processor.py`) só
+aplicam dano quando o CLIENTE manda `PROJECTILE_HIT_CS` confirmando o
+impacto visual (`_apply_spell_on_projectile_hit`). Bot não tem
+cliente — nunca confirma — a entrada em `_spells_in_flight_queue`
+expirava sozinha 3s depois sem efeito. Confirmado por simulação real
+headless (sem GUI) ANTES do fix: 7 casts completos de Bola de Fogo em
+20s, HP do alvo não mudou 1 ponto. "Sem cooldown" é sintoma disto, não
+bug à parte — `bola_de_fogo.cooldown=0.0` é intencional (cast_time=
+1.5s é o throttle real), só parecia quebrado porque nada acertava.
+
+**Fix 1**: `BotAISystem._effective_engage_range(world_server, eid)`
+novo — arqueiro com arco de verdade usa o alcance do arco (`Combat
+ProcessorMixin._ranged_weapon_range`, extraído de `_resolve_auto_
+attack` pra ponto único, reusado pelos dois); caster com skill
+ofensiva usa o `cast_range` dela (sem hardcode de "bola_de_fogo",
+lê a 1ª skill ofensiva do hotbar); fallback 1 tile (melee puro).
+`BOT_ENGAGE_RANGE_TILES` (fallback) mudou de 2 pra 1.
+
+**Fix 2**: `SpellCompletionMixin._schedule_bot_projectile_autohit`/
+`_tick_bot_projectile_autohits` novos — quando uma entrada de
+`_PROJECTILE_SPELLS` entra em voo E o caster tem `BotControlled`,
+agenda uma auto-confirmação (tempo de voo = distância/velocidade,
+valores espelhados de `ui/spell_system.py::PlayerProjectile.speed` —
+bola_de_fogo=300, flecha_reiterada/picada_escorpiao=700, tiro_
+repulsivo=800 px/s) que chama a MESMA `_apply_spell_on_projectile_hit`
+que uma confirmação de cliente real usaria — zero duplicação de dano,
+zero efeito em players reais (só dispara com `BotControlled`
+presente). Multi-hit (Flecha Reiterada) reagenda automaticamente
+enquanto a entrada continuar em `_spells_in_flight_queue`.
+
+**Decisão explícita, não implementada agora**: kiting (mago/arqueiro
+recuar quando inimigo melee fica adjacente) — usuário optou por manter
+"v1 nunca recua" (decisão anterior já registrada) e só corrigir a
+distância de parada.
+
+**Testes** (`tests/test_bg_bot.py`): `test_guerreiro_a_2_tiles_nao_
+engaja_ainda`, `test_mago_engaja_a_6_tiles_sem_precisar_chegar_mais_
+perto` (raio por classe); `test_bola_de_fogo_bot_causa_dano_real_de_
+ponta_a_ponta` (fluxo completo via `run_ticks`, reproduz o cenário
+exato relatado), `test_schedule_bot_projectile_autohit_generico_por_
+spell_id` (mecanismo isolado com `flecha_reiterada`, prova que não é
+hardcoded pra Bola de Fogo). Revert-to-confirm nos 2 fixes — cada um
+reproduziu o sintoma exato relatado antes do fix (guerreiro parado
+sem tentar skill a 2 tiles; HP do alvo intacto após 20s de cast
+completo). Suíte completa (`pytest tests/ -q`, `py -3.10`): 1298
+passed, zero regressão.
+
+**Pendente**: validação em jogo (comportamento de bot só se confirma
+de verdade jogando uma partida de BG).
+
+## 76. Crash ao treinar skill — `TrainerSystem` sem `_preferred_slot_for_skill` (26/08/2026)
+
+Usuário reportou crash real jogando (fora da BG, testando com o
+personagem Xadread): treinar uma skill no NPC treinador derrubava o
+jogo com `AttributeError: 'TrainerSystem' object has no attribute
+'_preferred_slot_for_skill'`.
+
+**Causa raiz**: `_preferred_slot_for_skill`/`_skill_slot_prefs_to_dict`
+nasceram como MÉTODOS de `GameEngine` no §73 (mais cedo nesta mesma
+sessão). `client/network_handlers.py::NetworkHandlers` é um MIXIN
+misturado direto em `GameEngine` — `self._preferred_slot_for_skill`
+funcionava ali porque `self` já É um `GameEngine` em tempo de execução.
+`ui/trainer_system.py::TrainerSystem`, porém, é um objeto SEPARADO
+(`game.py:457`, `self._trainer_system = TrainerSystem(...)`, sem
+nenhuma referência de volta pro engine) — `self._do_learn`'s `self`
+nunca foi um `GameEngine`, então o método nunca existiu ali. Testes não
+pegaram porque as fixtures leves (`_SkillPlacementFixture` etc.)
+monkeypatchavam o método DIRETO na classe fixture
+(`Fixture._preferred_slot_for_skill = GameEngine._preferred_slot_for_skill`),
+mascarando a falta da ligação real — nenhum teste instanciava o
+`TrainerSystem` de verdade.
+
+Perguntei ao usuário como consertar a ligação (2 opções: extrair pra
+`client/skill_slot_prefs.py`, ou dar ao `TrainerSystem` uma referência
+de volta pro `GameEngine`) — usuário rejeitou as duas e pediu
+investigação melhor: "Essa função não deveria estar dentro da pasta
+'ui'? Já não existe uma função onde isso deveria estar?". Investigando
+de novo, achei uma saída melhor: a função não precisa de NENHUMA
+referência externa — o nome do personagem que ela lê
+(`GameEngine._logged_char_name`) já existe no ECS, em
+`CharacterStats.name` (mesma fonte, confirmado lendo o código de
+login: `char_stat.name = char.get("name")` e `self._logged_char_name =
+char.get("name", "")` vêm do MESMO payload). Como `TrainerSystem` já
+tem `self.world`/`self.player_entity` (igual QUALQUER system), ela lê
+o nome sozinha. Confirmei também que `client/` já importa de `ui/` em
+19+ arquivos, mas `ui/` NUNCA importa de `client/` (grep confirmou
+zero ocorrências) — `client/skill_slot_prefs.py` teria sido a fronteira
+ERRADA (`ui/trainer_system.py` nunca poderia importar de lá sem
+inaugurar uma dependência nova nesse sentido).
+
+**Fix**: nova `ui/skill_slot_prefs.py` — `preferred_slot_for_skill(world,
+player_entity, ps, skill_id)`/`skill_slot_prefs_to_dict(ps, existing)`,
+funções puras (lêem `CharacterStats.name` do ECS, não um atributo de
+instância). `game.py`, `client/network_handlers.py` (2 call sites) e
+`ui/trainer_system.py::_do_learn` (o crash de verdade) passam a
+importar e chamar a MESMA função — nenhum duplicado. Métodos antigos
+removidos de `GameEngine`.
+
+**Teste novo, o que realmente faltava**:
+`test_trainer_system_real_aprende_skill_sem_crash`
+(`tests/test_hotbar_bg_leak.py`) — instancia o `TrainerSystem` de
+VERDADE (não uma fixture leve) e chama `_do_learn` de ponta a ponta.
+Revert-to-confirm: com a chamada revertida pra `self._preferred_slot_
+for_skill(...)`, reproduz o `AttributeError` EXATO relatado pelo
+usuário. Fixtures antigas (`_SkillPlacementFixture`, `_LootResultFixture`,
+`FakeClient`) tiveram os monkeypatches/stubs removidos — não precisam
+mais deles, a função agora é importada, não um método `self.`. Suíte
+completa (`pytest tests/ -q`, `py -3.10`): 1299 passed, zero regressão
+(1 falha isolada de um teste de perf-log com conteúdo de arquivo
+corrompido/null bytes — race de I/O sem relação, confirmada não-
+reproduzível rodando a suíte de novo logo em seguida).
+
+**Lição**: fixture leve que monkeypatcha um método `self.` direto numa
+classe fake mascara justamente o tipo de bug que aconteceu aqui — a
+ligação real entre dois objetos de produção nunca foi exercitada. Pelo
+menos 1 teste por mecanismo compartilhado deveria instanciar o objeto
+de PRODUÇÃO real (aqui, `TrainerSystem`), não só uma fixture equivalente.
+
+## 77. Zumbi de fila BG + botão nativo de maximizar sobrescreve "Janela" (26/08/2026)
+
+Duas investigações separadas na mesma conversa, nenhuma relacionada ao
+trabalho de bot desta sessão — achadas porque o usuário reportou os
+sintomas em jogo real.
+
+### a) `_tick_minion_waves` rodando pra sempre contra instância já descarregada
+
+Usuário reportou: deixou o servidor ligado (nenhum player desde
+14:03), às 17:09:45 os 3 bots da BG despawnaram, e a partir de
+17:10:17 o log passou a spammar `[MinionWave] rota falhou: ... sem
+caminho` a cada ~45s, PRA SEMPRE (até reiniciar o processo).
+
+**Causa raiz**: `WorldServer._unload_instance()` (chamada por `server/
+bg_queue_processor.py::request_bg_leave` quando o último ocupante sai —
+`if not match["team_a"] and not match["team_b"]`) libera `_map_bundles`/
+`_pvp_zones_by_map`/`_bush_zones_by_map` mas ESQUECIA de tirar
+`_minion_lanes[instance_key]` — `_tick_minion_waves` continuava
+achando a lane e tentando calcular rota (`_compute_lane_route_tail`)
+num mapa cujo bundle/pathfinding já não existe mais, pra sempre.
+Mesmo caminho compartilhado por BG, Arena (`match_processor.py`) e
+debug battleground (`debug_battleground.py`) — os 3 chamam
+`_unload_instance`.
+
+**Fix**: 1 linha em `_unload_instance` —
+`self._minion_lanes.pop(instance_key, None)`. Não precisa limpar
+`_minion_wave_timers` manualmente: `_tick_minion_waves` já se
+autolimpa (`del self._minion_wave_timers[key]`) assim que a lane some
+de `_minion_lanes`, no próximo tick — reusar o mecanismo existente em
+vez de duplicar.
+
+**Teste**: `tests/test_bg_queue.py::TestBgQueueLeave::
+test_ultimo_a_sair_para_o_minion_wave_da_instancia` — monta partida
+2v2 de verdade, abre o portão (ativa as lanes de verdade), todo mundo
+sai, confirma que `_minion_lanes`/`_minion_wave_timers` da instância
+somem. Revert-to-confirm: sem a linha, reproduz `AssertionError`
+exatamente com o `instance_key` ainda presente. Suíte completa: 1300
+passed, zero regressão.
+
+### b) Botão nativo de maximizar do Windows sobrescrevia "Janela" sem o usuário mexer em menu nenhum
+
+Usuário relatou: às vezes o jogo abre em modo quase-tela-cheia mesmo
+com "Janela" marcada no menu Configurações — só resolve indo no menu
+e trocando de modo manualmente.
+
+**Causa raiz**: a janela do jogo é `RESIZABLE` (botões nativos do
+Windows visíveis — minimizar/maximizar/fechar). `game.py`'s loop de
+eventos (dentro de `run()`) escutava `pygame.WINDOWMAXIMIZED`/
+`WINDOWRESTORED` — QUALQUER ação nativa do Windows que maximiza a
+janela (clicar o botão quadrado, duplo-clique na barra de título,
+arrastar a janela pro topo da tela = Aero Snap) disparava esse evento,
+e o handler (`Fase G`, 23/07/2026) **gravava `self._window_mode_pref =
+"maximized"` e chamava `_save_config()` na hora** — sobrescrevendo
+silenciosamente qualquer escolha feita no menu, sem o jogador ter
+aberto Configurações. Como o handler deliberadamente NUNCA chama
+`set_mode()` (evita o segfault documentado do §34.48), nada muda
+visualmente na hora — o jogador não percebe que acabou de sobrescrever
+a própria preferência. `"maximized"` é tratado como valor LEGADO em
+TODO outro lugar do código — migra pra `"windowed_fullsize"` (quase
+tela cheia) no boot seguinte. Cadeia completa: escolhe "Janela" →
+maximiza sem querer (gesto trivial numa janela RESIZABLE) → grava
+"maximized" → próximo boot lê "maximized" → migra pra
+"windowed_fullsize" → abre quase em tela cheia do nada.
+
+**Fix**: removidos os 2 handlers (`WINDOWMAXIMIZED`/`WINDOWRESTORED`)
+inteiros — o botão nativo de maximizar continua funcionando (o próprio
+Windows já cuida disso), só PARA de persistir isso como escolha de
+modo. Só o menu Configurações > Janela decide o que fica salvo — os 2
+tipos de evento saíram também da allowlist de `pygame.event.
+set_allowed()` (não sobra ninguém escutando). Sem teste automatizado —
+bug é de loop de evento/janela nativa do SO, fora do que a suíte cobre
+hoje; verificação é manual (maximizar de propósito, reiniciar,
+confirmar que continua em "Janela").
+
+**Pendente**: usuário confirmar em jogo — deixar "Janela" marcada,
+maximizar a janela pelo botão nativo (ou Aero Snap), reiniciar o jogo,
+confirmar que continua abrindo em "Janela" (não em quase-tela-cheia).
+
+## 78. Catálogo de tiles: 1 cor por arquivo inteiro (grama/terra/pedra indistinguíveis no minimapa) (26/08/2026)
+
+Usuário relatou (jogando, não em código): `engine/tileset.py` cataloga
+tiles/objetos a partir de PNGs, mas cada arquivo tem só 1 cor RGB —
+quando um PNG mistura tipos diferentes (ex: grama e terra na mesma
+imagem), ficam indistinguíveis no minimapa. Pediu explicitamente pra
+mapear a arquitetura e pesquisar antes de mexer em qualquer coisa —
+planejado via EnterPlanMode.
+
+**Achado 1 — colisão já tinha o padrão que faltava pra cor.**
+`collision_overrides: {(col,row): valor}` (modo grade) e campo por tile
+(modo catálogo) já existiam — só faltava o equivalente pra `color`.
+
+**Achado 2 (mais sério, descoberto DURANTE a implementação, não
+previsto no plano original) — o pipeline do minimapa descartava a
+informação necessária ANTES de qualquer cor chegar lá:**
+- **Terreno de sheet** (`SHEET_FAMILIES`, ex: "TX Tileset Terrain"):
+  `engine/map_loader.py::_parse_terrain_cell` reduz toda célula de
+  sheet pro CHAR DE TERRENO SUBJACENTE ("G") já na hora de ler o CSV —
+  o ID específico do sprite de sheet ("ter_2_3") só sobrevive numa
+  estrutura PARALELA (`terrain_visual`), que `MapOverlay.load_map()`
+  nunca recebia como parâmetro. Ou seja: não importa qual cor eu
+  cadastrasse por célula em `SHEET_FAMILIES`, o minimapa NUNCA
+  chegaria a ver essa informação — só via "G" (grama) pra tudo.
+- **Objetos de sheet** (`OBJECT_SHEET_FAMILIES`, ex: "TX Village Props
+  with Shadow"): `game.py::_merge_display_matrix` truncava qualquer ID
+  multi-char pro 1º caractere (`"vp_001"` → `"v"`) antes do lookup de
+  cor — funcionava por acidente pras famílias antigas de letra única
+  (t/b/g/s/y/l/o, que têm uma entrada canônica de 1 letra só pra isso),
+  mas QUALQUER objeto de sheet mais novo truncava pra uma letra que não
+  bate com NENHUM `TileType` cadastrado — caía no floor genérico, sem
+  cor nenhuma, silenciosamente, desde que essas famílias foram
+  adicionadas.
+- Confirmado com o usuário via AskUserQuestion: corrigir os 2 problemas
+  juntos nesta mesma tarefa (mecanismo + pipeline), não só o mecanismo.
+
+**Fix — mecanismo de cor** (`engine/tileset.py`):
+- Modo catálogo (`OBJECT_SHEET_FAMILIES`): novo formato `"groups":
+  {nome: {prefix, label, color, underlying_terrain, tiles: [...]}}` —
+  aditivo, retrocompatível com `"tiles"` plano existente. Só 2 níveis
+  (arquivo→grupo, sem override por tile dentro do grupo — decisão do
+  usuário: se 1 tile for muito diferente, vira outro grupo). Corpo de
+  processamento por-tile extraído pra `_register_catalog_tiles()`,
+  compartilhado entre os 2 modos (evita duplicar `_resolve_collision`/
+  elevation/etc. em 2 lugares).
+- Modo grade (`SHEET_FAMILIES` e variante grade de
+  `OBJECT_SHEET_FAMILIES`): `color_overrides: {(col,row): (r,g,b)}` —
+  mirror exato de `collision_overrides`, cai no `color` da família fora
+  do override.
+
+**Fix — pipeline do minimapa**:
+- `game.py::_merge_display_matrix` — parou de truncar (usa o token
+  completo), ganhou parâmetro `terrain_visual` (prioridade por célula:
+  objeto > visual de sheet de terreno > char de terreno puro), passou a
+  devolver `list[list[str]]` em vez de `list[str]` joinado (só assim dá
+  pra guardar token multi-char por célula). 3 call sites atualizados
+  (`game.py` × 2 diretos + 1 via `Tilemap.terrain_visual`, que já
+  existia como campo do componente).
+- `ui/map_overlay.py::load_map()` — 2ª passada: pra cada objeto,
+  `get_collision_offsets(tile)` (já existia, mesma função usada pra
+  colisão de verdade) pinta a cor no footprint INTEIRO, não só na
+  célula-âncora — pedido do usuário: "deveria considerar o tamanho da
+  colisão, que também é configurado no mesmo arquivo".
+
+**Prova de conceito**: `SHEET_FAMILIES["TX Tileset Terrain"]` migrada
+pra `color_overrides`, cores por FAIXA DE LINHA determinadas por
+inspeção visual do PNG (grade 14×16, 32px/tile): linhas 0-3 grama,
+4-11 pedra, 12-15 terra. Divisão por faixa (não célula a célula) —
+algumas células de transição na borda ficam com a cor "errada" por
+aproximação (aceito conscientemente, registrado no comentário do
+código — célula a célula é trabalho de conteúdo maior, fora do escopo
+combinado).
+
+**Testes** (`tests/test_tileset_color.py`, novo arquivo — nenhum teste
+cobria `engine/tileset.py`, `_merge_display_matrix` ou `MapOverlay`
+antes): grupos com cores diferentes não vazam entre si;
+`color_overrides` aplica por célula e cai no default fora dele;
+`_merge_display_matrix` não trunca mais + prioriza objeto sobre visual
+de terreno; `load_map()` pinta footprint inteiro (não só âncora).
+Revert-to-confirm nos 4 pontos — cada um reproduziu o sintoma exato
+(inclusive o `'v' != 'vp_001'` da truncagem). Suíte completa
+(`pytest tests/ -q`, `py -3.10`): 1306 passed, zero regressão.
+
+**Pendente**: usuário abrir o mapa (tecla M) e o minimapa ao vivo,
+comparar visualmente a região de "TX Tileset Terrain" antes/depois.
+
+### Correção — usuário pediu 2º exemplo real, em modo CATÁLOGO desta vez (26/08/2026)
+
+Usuário perguntou por que a prova de conceito usou `color_overrides`
+(modo grade) em vez de `"groups"` (o formato que ele tinha desenhado
+originalmente). Resposta: `"groups"` é pro modo CATÁLOGO (tiles com
+nome/id próprio, como os de `OBJECT_SHEET_FAMILIES`) — "TX Tileset
+Terrain" é modo GRADE (células só têm posição, auto-descoberta pelo
+tamanho do PNG, sem lista manual de tiles), então não tem "id" pra
+agrupar por nome; `color_overrides` (por col,row) é o mecanismo certo
+pra esse modo, mirror do `collision_overrides` que já existia. Usuário
+concordou e pediu um 2º exemplo real, desta vez em modo catálogo:
+**"TX Village Plant"**.
+
+Esse arquivo já misturava 8 categorias bem diferentes visualmente
+(árvore verde/outono, arbusto, trigo dourado, repolho, abóbora,
+cenoura, grama fina, flor) — os comentários no código JÁ dividiam as
+205 entradas em seções (`#TREES`, `#BUSHES`, `#WHEAT`...), só que
+apenas como comentário, nunca como estrutura de dado — todas com a
+MESMA cor `(96, 99, 21)`. Migrado pra `"groups"`: 8 grupos
+(arvores/arbustos/trigo/repolho/abobora/cenoura/grama_fina/flores),
+cores por inspeção visual do PNG (1024×1024).
+
+**Cuidado crítico na migração**: `prefix` teve que continuar `"pl"` em
+TODO grupo (nunca virar um prefixo diferente por grupo, tipo
+"pltree"/"plbush") — `maps/map_1_objects.csv` e `maps/
+moba_battleground_objects.csv` já referenciam ids desse arquivo
+("pl_t1", "pl_b3" etc.); um prefixo diferente por grupo teria quebrado
+essas referências silenciosamente (o id novo simplesmente não existiria
+em `OBJECT_MAPPING`, o objeto sumiria do jogo sem erro nenhum).
+Verificado programaticamente: extraí todo id "pl_*" usado nos 2 CSVs
+reais e confirmei que TODOS continuam resolvendo em `OBJECT_MAPPING`
+depois da migração — zero perdido.
+
+**Teste** (`tests/test_tileset_color.py::TestTxVillagePlantGroupsMigration`):
+ids pré-existentes continuam resolvendo, grupos diferentes têm cores
+diferentes, dados de colisão/visão (`collision_rect`/`vision_rect`/
+`vision_height`) preservados intactos na migração — só a cor mudou.
+Suíte completa (`pytest tests/ -q`, `py -3.10`): 1309 passed, zero
+regressão.
+
+### Correção 2 — crash real no editor de mapa (F10 > aba Objetos) por causa do formato "groups" novo (26/08/2026)
+
+Usuário testando o jogo (não em código): abrir o editor (F10) e clicar
+na aba "Objetos" derrubava com `KeyError: 'prefix'` em `ui/god_mode.py::
+_render_content`. Causa: esse painel lê `OBJECT_SHEET_FAMILIES` DIRETO
+pra desenhar a paleta de tiles (`fam["prefix"]`/`fam["color"]`) — um
+consumidor que eu não tinha mapeado na investigação original (só tinha
+checado `engine/tileset.py` e testado o `discover_object_sheet_tiles()`
+em si). "TX Village Plant" (migrada pra `"groups"` na correção acima)
+não tem mais `prefix`/`color` no nível da família — só dentro de cada
+grupo — então a 1ª vez que esse family apareceu na lista, o painel
+quebrou.
+
+**Fix**: `_render_content` agora monta uma lista de "entradas
+renderizáveis" ANTES de desenhar — família sem `"groups"` vira 1
+entrada (comportamento de sempre); família COM `"groups"` vira 1
+entrada POR GRUPO (label/color do próprio grupo). Cuidado extra: o
+filtro de tiles de cada entrada não pode mais ser só "prefixo" —
+grupos da MESMA família (e até famílias DIFERENTES, como "TX Plant" e
+"TX Village Plant", que por coincidência compartilham o prefixo "pl")
+têm o mesmo prefixo; filtrar por prefixo pegaria tile de grupo/arquivo
+errado. Corrigido calculando o SET exato de ids de cada grupo (`{prefix
++ "_" + id_suffix for id_suffix, ... in group["tiles"]}`) em vez de
+`tid.startswith(prefix + "_")`.
+
+**Lição**: antes de mudar o FORMATO de uma estrutura de dado
+compartilhada (`OBJECT_SHEET_FAMILIES`), mapear TODO consumidor que lê
+essa estrutura direto, não só o módulo "dono" dela
+(`engine/tileset.py`) — `ui/god_mode.py` é um consumidor de UI/editor
+que só é exercitado ao vivo (F10 > aba Objetos), nunca pela suíte de
+testes automatizada até agora, então não haveria como pegar esse
+crash sem o usuário testar em jogo de verdade.
+
+**Teste novo** (`tests/test_tileset_color.py::
+TestGodModeObjectPanelGroups`): instancia o `GodModeEditor` de VERDADE
+(não uma fixture leve), força a aba "Objetos" e chama `_render_content`
+— mesmo caminho exato que crashou em jogo. Revert-to-confirm: reproduz
+o `KeyError: 'prefix'` idêntico ao relatado. Suíte completa (`pytest
+tests/ -q`, `py -3.10`): 1310 passed, zero regressão.
+
+## 79. Editor de mapa (F10): pincel aleatório por grupo (26/08/2026)
+
+Usuário pediu, no editor (F10, aba Objetos): um pincel por GRUPO (ex:
+"árvores" de "TX Village Plant") — clicar no mapa com esse pincel
+ativo planta um elemento aleatório do grupo, nunca repetindo o mesmo
+da pincelada anterior. Pediu explicitamente seguir o procedimento
+(investigar arquitetura, consultar referências, não criar função em
+lugar errado) — planejado via EnterPlanMode + pesquisa externa.
+
+**Investigação**: `self._sel_char` (`ui/god_mode.py`) é o pincel atual
+— clicar numa célula da paleta seta essa string; pintar (clique OU
+arrasto contínuo) sempre passa por `_apply(tx, ty)`, único
+choke-point que lê o pincel e escreve no `Tilemap`.
+
+**Pesquisa externa** (Tiled, Unity 2D Tilemap Extras): os dois têm
+"pincel aleatório" via toggle que ativa modo aleatório pra um CONJUNTO
+de tiles — confirma que ativar aleatoriedade por SELEÇÃO de um
+conjunto (não célula a célula) é o padrão de mercado. Nenhum dos dois
+evita repetir o último elemento — isso é uma melhoria específica
+pedida pelo usuário (implementação simples: 1 variável "último id
+colocado", sorteia excluindo ela).
+
+**Fix**:
+- `engine/tileset.py::group_tile_ids(group)` novo — ponto único de
+  verdade pra "ids completos de um grupo" (`prefix + "_" + id_suffix`),
+  reusado por `ui/god_mode.py::_render_content` (que antes recalculava
+  o mesmo comprehension inline, ver §78) e pelo pincel novo.
+- `GodModeEditor` ganhou `_brush_group_ids`/`_brush_last_id` (estado) e
+  `_resolve_brush_char()` (sorteia excluindo o último, com fallback pro
+  grupo inteiro quando só tem 1 tile — evita `random.choice([])`).
+  `_apply()` passa a chamar `_resolve_brush_char()` em vez de ler
+  `self._sel_char` direto — cobre clique único E cada passo de um
+  arrasto contínuo (mesmo método, 1 só).
+- Clicar no NOME do grupo (não um ícone separado, decisão do usuário)
+  ativa o pincel — `_obj_group_label_rects` novo, testado ANTES dos
+  cliques de célula única em `_handle_panel_click`. Clicar numa célula
+  específica, ou trocar de aba, cancela o pincel aleatório (zera
+  `_brush_group_ids`) — senão "vazaria" pra depois de escolher 1 tile
+  fixo.
+- Só famílias COM `"groups"` ganham a opção (hoje só "TX Village
+  Plant") — mecanismo genérico, sem hardcode de nome; qualquer catálogo
+  futuro migrado pra `"groups"` ganha de graça.
+
+**Testes** (`tests/test_god_mode_random_brush.py`, novo arquivo, +
+`tests/test_tileset_color.py::TestGroupTileIds`): pincel normal
+devolve `_sel_char` direto; pincel aleatório nunca repete 2x seguidas
+(rodado 50x); grupo de 1 tile só não trava; clicar no nome do grupo
+ativa o pincel; clicar numa célula específica ou trocar de aba
+cancela. Revert-to-confirm nos 3 pontos (filtro "nunca repetir",
+cancelamento por clique de célula, ativação por clique no nome) —
+cada um reproduziu o sintoma exato sem a correção. Suíte completa
+(`pytest tests/ -q`, `py -3.10`): 1317 passed, zero regressão.
+
+**Pendente**: usuário confirmar em jogo — F10, aba Objetos, clicar em
+"🎲 Árvores", pintar várias no mapa, confirmar que nunca repete a
+árvore anterior em sequência.
+
+## 80. Migração de conteúdo: árvore/arbusto default + "TX Plant" antiga → "TX Village Plant" (26/08/2026)
+
+Usuário pediu pra varrer todos os mapas e substituir (a) objetos da
+família antiga "TX Plant" (prefixo `pl`, sufixos `tree*`/`bush*`/
+`grassblade*`/`vomito` — diferente de "TX Village Plant", que usa
+sufixos `t*`/`b*`/etc.) e (b) todo tile usando a árvore/arbusto
+DEFAULT (chars `"t"`/`"b"`, `TREE_TILE`/`BUSH_TILE` — sem sprite real,
+renderiza como retângulo de cor sólida) pelos elementos reais
+catalogados em "TX Village Plant" (grupos `arvores`/`arbustos`/
+`grama_fina`), sorteando aleatoriamente. Pediu pra seguir o
+procedimento e perguntar se houvesse dúvida — teve 2 achados sérios
+que exigiram parar e perguntar antes de tocar em qualquer arquivo.
+
+**Achado 1 — metade dos arquivos de mapa está MORTA.** `map_1.csv`,
+`map_main.csv`, `map_cave_east.csv`, `map_cave_west.csv`, `map_worm_
+cave.csv` e `moba_battleground.csv` (sem sufixo) têm uma versão em 2
+camadas ao lado (`..._terrain.csv`+`..._objects.csv`) — `engine/
+map_loader.py::load_map_csv` SEMPRE prefere a versão em 2 camadas
+quando ela existe (`if os.path.exists(t_path) and os.path.exists(
+o_path): ... elif os.path.exists(filepath): ...`), então a versão sem
+sufixo nunca é lida pelo jogo. Editar essas seria trabalho void — só
+os `_objects.csv` (+ `arena_2v2.csv`/`arena_poco_negro.csv`, que não
+têm par) importam de verdade.
+
+**Achado 2 — a troca NÃO é só visual, muda colisão de verdade.**
+Comparando `get_collision_offsets()` do char default contra os tiles
+de "TX Village Plant":
+- Arbustos da TX Village Plant são `is_solid=False` (andáveis) — o
+  arbusto default `"b"` sempre bloqueava 1 tile. Já existiam ~41
+  arbustos da TX Village Plant plantados manualmente no `map_1` antes
+  desta tarefa, então o comportamento andável já era aceito no jogo.
+- Árvores GRANDES (`pl_t14`/`pl_t15`, copa larga) têm colisão
+  DESLOCADA 3-5 tiles da âncora (`get_collision_offsets` não inclui
+  `(0,0)` pra elas) — plantar no lugar de uma árvore `"t"` default
+  (bloqueia exatamente o próprio tile) mudaria QUAL tile fica sólido.
+  Árvores pequenas (`t1`-`t13`) só deslocam 1 tile.
+
+Perguntado ao usuário via AskUserQuestion: (a) aceitar arbusto andável
+— SIM; (b) excluir `t14`/`t15` do sorteio pra evitar o deslocamento
+grande — SIM (usa só `t1`-`t13`, 13 variantes).
+
+**Escala real** (só nos arquivos que o jogo carrega, confirmado com
+script de varredura antes de qualquer edição): `map_main_objects.csv`
+— 8149 árvores + 245 arbustos (mapa de 3000×1500 tiles, confirmado que
+são posições reais e espalhadas, não sujeira de arquivo);
+`moba_battleground_objects.csv` — 2887 árvores; `map_1_objects.csv` —
+já usava a TX Plant antiga em ~120 lugares (árvores/arbustos/grama-
+fina). `map_cave_east/west_objects.csv`, `map_worm_cave_objects.csv`,
+`arena_2v2.csv`, `arena_poco_negro.csv` — nada a trocar.
+
+**Execução**: script 1x (não faz parte do código do jogo — migração de
+dado, não mecanismo reusável) reusando `engine.tileset.group_tile_ids`
+(mesma função do pincel aleatório do God Mode, §79) pra montar os 3
+pools (arvores sem t14/t15, arbustos, grama_fina) e o MESMO algoritmo
+"nunca repetir o último da mesma categoria" (`_resolve_brush_char`,
+adaptado pra rodar em lote sobre o arquivo inteiro, 1 "último" por
+pool, resetado por arquivo). 14066 substituições no total (2785 +
+8394 + 2887).
+
+**Verificação** (antes de considerar terminado): `load_map_csv` recarrega
+os 3 arquivos migrados sem erro, dimensões (linhas×colunas) idênticas
+antes/depois; TODO id resultante resolve em `OBJECT_MAPPING` (nenhuma
+referência quebrada); `WorldServer()` sobe normalmente com os mapas
+migrados; suíte completa (`pytest tests/ -q`, `py -3.10`) — 1317
+passed, zero regressão. Conferência extra: nenhuma posição recebeu a
+MESMA variante 2x seguidas dentro da mesma categoria (confirmado
+programaticamente) — algumas sequências repetidas encontradas no
+arquivo são conteúdo PRÉ-EXISTENTE não tocado por este script (ids
+"TX Village Plant" já plantados manualmente antes desta tarefa, fora
+do escopo do pedido).
+
+**Pendente**: usuário abrir os mapas em jogo e conferir visualmente as
+árvores/arbustos novos (principalmente `map_main`, a maior mudança).
+
+## 81. Pincel inteligente de terreno (grama/terra/piso, transição automática) — God Mode (26/08/2026)
+
+Usuário pediu, no editor (F10, aba Terreno, "TX Tileset Terrain"): pintar
+o pincel de "Grama" num tile que hoje é "Terra" deve (a) virar aquele
+tile em grama e (b) ajustar a BORDA de contato — só os vizinhos que
+ainda são terra ganham um tile de transição (mancha/cruz), sem tocar
+vizinho que já é outra coisa (ex: piso). Vice-versa pra "Terra" sobre
+"Grama". Pintar sobre a MESMA categoria só sorteia entre variante pura
+e com flor (80/20, confirmado com o usuário). "Piso sobre grama"/"Piso
+sobre terra" têm tiles "completos" (4 pisos desenhados no mesmo tile —
+descrição do que já está pronto na imagem, NÃO uma instrução de
+montagem por 4 cantos, correção que o usuário fez em cima da minha 1ª
+hipótese) que entram no sorteio automático, e tiles parciais/
+customizáveis que ficam só pra seleção manual (nunca no sorteio).
+
+**Pesquisa externa**: padrão "Terrain Brush"/autotile (Tiled, Godot, RPG
+Maker) — cada célula examina até 8 vizinhos; o caso aqui é mais simples
+que "Blob-47" completo (47 peças, 1 por combinação de vizinho): o PNG só
+tem 2 peças de transição genéricas por par de terreno (mancha
+arredondada + cruz), não um jogo completo de bordas direcionais — a
+implementação reflete exatamente isso, não inventa peça que não existe.
+
+**Catálogo da grade** (`SHEET_FAMILIES["TX Tileset Terrain"]["zones"]`,
+`engine/tileset.py`) — lido da imagem de referência que o próprio
+usuário anotou (`assets/tiles/TX Tileset Terrain_Explanation.png`,
+caixas vermelhas rotuladas em português) depois que minhas 2 primeiras
+tentativas de descrever a grade em texto não ficaram claras pro
+usuário. Grid 14×16 de 32px — leitura VISUAL, não pixel-perfeita
+(mesmo processo do `color_overrides` em §78: 1ª passada aproximada,
+ajustada depois de testar pintura real no editor):
+- `transicao_terra_grama` (cols 0-5, rows 0-2) / `transicao_grama_terra`
+  (cols 0-5, rows 3-5)
+- `grama_flor` (cols 6-9, rows 0-2) / `grama_pura` (cols 10-13, rows 0-2)
+- `piso_sobre_terra` (cols 6-7, rows 3-5) / `piso_sobre_grama`
+  (cols 0-3, rows 6-11)
+- `terra_pura` (cols 0-3, rows 12-14) / `terra_flor` (cols 4-7, rows 13-15)
+- Fora dessas 8 zonas = piso parcial/customizável, sem categoria — nunca
+  entra em sorteio automático (nem do pincel inteligente, nem do pincel
+  de piso), só seleção manual na grade célula-a-célula que já existia.
+
+**Fix**:
+- `engine/tileset.py::terrain_zone_of(family, tile_id)` novo — ponto
+  único de verdade pra "em qual zona esse tile cai" (mesmo padrão de
+  `group_tile_ids`, §79). `color_overrides` da família passou a ser
+  DERIVADO das zonas onde elas têm cor própria (nunca diverge do
+  catálogo novo), mantendo a divisão por faixa de linha (§78) como
+  fallback pras células ainda sem zona.
+- `ui/god_mode.py` ganhou `_terrain_smart_terrain`/`_terrain_last_id`
+  (estado do pincel inteligente) + `_terrain_family()`/
+  `_terrain_category_at()`/`_pick_terrain_variant()`/
+  `_apply_smart_terrain()`. `_apply()` desvia pro modo especial quando
+  `_terrain_smart_terrain` está setado (testado ANTES do fluxo normal
+  de `_resolve_brush_char()`).
+  - `_terrain_category_at` lê `terrain_visual[ty][tx]` (se houver
+    override de sprite, resolve a zona dele) ou cai pro char plano de
+    `terrain_matrix` ("G"/"f") — cobre tile nunca pintado com sprite
+    de "TX Tileset Terrain" ainda.
+  - Vizinhança: 8 direções (confirmado com o usuário, inclui
+    diagonais). Só ajusta um vizinho se a categoria dele é EXATAMENTE
+    a oposta da nova (nunca toca piso/água/parede/já-transicionado).
+- "Piso sobre grama"/"Piso sobre terra" reusam o MESMO mecanismo de
+  pincel de grupo aleatório já existente (`_brush_group_ids`, §79) —
+  só o pool vem da zona `floor_full` em vez de um `"groups"` de
+  `OBJECT_SHEET_FAMILIES`; zero código novo pra "sorteia sem repetir",
+  só um jeito novo de montar o pool.
+
+**Testes** (`tests/test_god_mode_terrain_brush.py`, novo arquivo):
+`terrain_zone_of` resolve tile→categoria (pura, transição, fora de
+zona, família sem zonas); pintar grama sobre terra escreve grama no
+alvo + transição nos 8 vizinhos que eram terra; pintar grama sobre
+grama só sorteia variante, não mexe em vizinho nenhum; vizinho que é
+piso nunca vira transição; variante nunca repete a última (50
+iterações); pool de piso nunca inclui tile de transição; ativação/
+cancelamento via clique (label de terreno, célula específica, label de
+piso, troca de aba). Revert-to-confirm no filtro de vizinho oposto
+(`if True: continue` no lugar do check real) — reproduziu o sintoma
+exato (vizinho nunca ganha transição) antes de restaurar. Suíte
+completa (`pytest tests/ -q`, `py -3.10`).
+
+**Correção (27/08/2026) — usuário testou em jogo e reportou "a função da
+grama com os tiles vizinhos e a tela com os tiles vizinhos não deu
+certo".** Investigando com pixels reais do PNG (`assets/tiles/TX
+Tileset Terrain.png`, não a imagem anotada — script 1x lendo os
+segmentos de linha vermelha da anotação e convertendo pra múltiplo de
+32px), achei a causa raiz: **não era bug de código, era erro de modelo
+mental sobre o asset.**
+
+A região de "transição" não são 18 tiles de 32×32 independentes que dá
+pra sortear um a um (era assim que a 1ª versão tratava, herdando o
+mecanismo do pincel aleatório por grupo, §79). São **2 quebra-cabeças
+de 3×3 peças interligadas** (uma "mancha" arredondada, uma "cruz") —
+cada peça (canto/borda/centro) só faz sentido visual ao lado das peças
+vizinhas certas do MESMO desenho (canto = grama cobrindo ~3/4 do tile
+com corte diagonal; borda-meio = metade grama/metade terra; centro =
+cor sólida). Sortear uma peça qualquer pra cada vizinho produzia um
+mosaico sem nexo — exatamente o sintoma relatado.
+
+Perguntei ao usuário como resolver (mostrando as peças recortadas):
+escolheu **autotile posicional de verdade** (calcular a peça certa por
+vizinhança real, nunca sortear) + **sorteia 1 estilo (mancha/cruz) ao
+ativar o pincel, mantém fixo até desativar** (misturar os 2 dentro da
+mesma área não conecta — cada um tem curvatura própria).
+
+**Pesquisa**: [Autotiling – Interactive Guide (Red Blob Games)]
+(https://www.redblobgames.com/articles/autotile/claude/) — confirma o
+modelo (máscara de bits N/E/S/W por vizinho, técnica "Blob47"). Este
+asset só tem 9 peças por quebra-cabeça (sem canto INTERNO/côncavo) —
+variante reduzida "3×3 mínima": resolve só 9 das ~16 combinações de
+vizinhança ortogonal (centro, 4 bordas de 1 lado só, 4 cantos de 2
+lados adjacentes); qualquer outra combinação (2 lados opostos, 3+,
+isolado) não tem peça no asset — escolha certa é não sobrescrever o
+vizinho nesse caso, não forçar uma peça errada.
+
+Também corrigi, pelo mesmo processo de pixel real, as fronteiras das
+outras zonas que a 1ª leitura visual (aproximada, da imagem anotada)
+errou por 1 linha/coluna: `grama_flor`/`grama_pura` ganham a linha 3
+(rows 0-3, não 0-2); `piso_sobre_terra` desce pra rows 4-6 (a linha 3
+daquela faixa já é grama, não piso); `piso_sobre_grama` encolhe de 4
+pra 2 colunas (cols 0-1 — confirmado visualmente que cols 2-3 daquela
+faixa já são peças parciais de OUTRO quebra-cabeça de piso, não tiles
+completos); `terra_pura` ganha a linha 15; `terra_flor` desloca pra
+cols 5-7 (col 4 é gap real sem categoria na imagem).
+
+**Fix**:
+- `engine/tileset.py`: zonas `transicao_terra_grama`/
+  `transicao_grama_terra` trocam `"cells"` (lista solta) por `"shapes":
+  {"mancha": (col,row), "cruz": (col,row)}` — só a ORIGEM (canto
+  superior-esquerdo) de cada bloco 3×3. Novo dict `_BLOB3X3_PIECE_OFFSET`
+  + função `resolve_blob3x3_piece(missing_sides: frozenset) -> tuple|None`
+  (ponto único de verdade, mesmo padrão de `group_tile_ids`/
+  `terrain_zone_of`) — mapeia "quais lados N/S/E/W do vizinho ainda não
+  são a categoria nova" pro offset da peça certa. `terrain_zone_of`
+  ganhou `_zone_cells()` auxiliar pra reconhecer célula dentro de um
+  `"shapes"` (expande os 9 tiles de cada bloco), sem quebrar zonas com
+  `"cells"` simples.
+- `ui/god_mode.py`: `_apply_smart_terrain` trocou o sorteio aleatório
+  do vizinho por `_missing_sides()` (lê os 4 vizinhos ortogonais do
+  PRÓPRIO vizinho via `_terrain_category_at`, já existia) +
+  `resolve_blob3x3_piece` — sem peça, não sobrescreve. Novo
+  `_heal_if_fully_surrounded()`: vizinho que já tinha peça de borda de
+  uma pincelada anterior, mas agora está 100% cercado pela categoria
+  nova, vira tile normal (pura/flor) em vez de ficar com uma "cicatriz"
+  de borda órfã. Novo estado `_terrain_smart_style` ("mancha"/"cruz"),
+  sorteado 1x na ativação do pincel (clique no label), resetado nos
+  MESMOS pontos que já resetavam `_terrain_smart_terrain` (troca de
+  aba, clique em célula específica).
+
+**Testes** (`tests/test_god_mode_terrain_brush.py`, reescrito): tile
+isolado (sem vizinho já convertido) não transiciona nenhum vizinho
+(bitmask sempre cai fora das 9 combinações válidas); vizinho pré-
+montado com padrão válido (`{"E"}`) recebe a peça EXATA esperada
+(cálculo, não só "alguma peça de transição"); vizinho totalmente
+cercado cura pra pura/flor; piso nunca tocado (mantido); variante nunca
+repete a última (mantido); `resolve_blob3x3_piece` testado direto nos 9
+casos válidos + 4 combinações inválidas; ativação sorteia estilo,
+cancelamento/troca de aba zera. Revert-to-confirm (`offset = (2,0)`
+fixo no lugar do lookup real) reproduziu os 2 sintomas exatos — peça
+errada forçada E vizinho isolado sendo tocado indevidamente — antes de
+restaurar. Suíte completa (`pytest tests/ -q`, `py -3.10`).
+
+**Correção 2 (27/08/2026) — usuário testou de novo e mandou 2 prints
+com setas mostrando exatamente o comportamento esperado**: pincel de
+"Terra" clicado sobre grama → o tile clicado vira terra sólida E os 8
+vizinhos JÁ viram tiles de transição na hora (não só depois de várias
+pinceladas acumuladas, como a Correção 1 exigia); arrastando o pincel
+pra baixo, o tile anterior (já sólido) fica como está, só os vizinhos
+NOVOS que ainda são grama ganham borda. Pediu pesquisa adicional em vez
+de eu "chutar" de novo.
+
+**Pesquisa**: confirmei a causa exata — a Correção 1 calculava a peça
+de cada vizinho a partir dos PRÓPRIOS vizinhos-do-vizinho dele (bitmask
+"real" de verdade), que é o algoritmo padrão de Blob/Wang tile citado
+em [Autotiling – Interactive Guide (Red Blob Games)]
+(https://www.redblobgames.com/articles/autotile/claude/) — mas isso
+SÓ funciona quando o terreno já tem vizinhos acumulados; num clique
+isolado, todo vizinho tem 3 lados "de fora" (sem peça no catálogo de 9
+peças), então nada era desenhado — sintoma batendo com o 1º print do
+usuário (nenhuma borda visível). Conferido também como o editor Tiled
+documenta seu "Terrain Brush" ([Using Terrains — Tiled docs]
+(https://doc.mapeditor.org/en/stable/manual/terrain/)): o comportamento
+"padrão de mercado" também exige contexto acumulado (ou segurar Ctrl
+pra pintar uma área maior de 1 vez) — ou seja, a Correção 1 estava
+alinhada com como Tiled funciona, mas NÃO com o que o usuário
+especificamente pediu/desenhou nos prints. Decisão: seguir a
+especificação exata do usuário (mais simples que Tiled), não a
+convenção genérica do editor de referência.
+
+**Fix**: `_apply_smart_terrain` para de calcular a peça de um vizinho a
+partir do ambiente real dele — agora trata o tile CLICADO como o centro
+FIXO de um carimbo 3×3 novo a cada pincelada: a peça de cada 1 dos 8
+vizinhos vem direto da DIREÇÃO (dx,dy) dele em relação ao clique
+(`ui/god_mode.py::_direction_missing_sides`, decompõe diagonal nos 2
+lados cardeais — ex: vizinho a NE tem lados {"N","E"} "de fora"), sem
+inspecionar os vizinhos-do-vizinho. Isso garante o anel completo já na
+1ª pincelada (resolve o padrão pra qualquer uma das 8 direções sempre,
+diferente do cálculo "real" que podia cair fora das 9 combinações
+válidas). `_missing_sides` (a versão "real", inspecionando o ambiente
+de verdade) não foi removida — passou a servir SÓ pra
+`_heal_if_fully_surrounded` (decidir se um vizinho já transicionado
+ficou de fato 100% cercado, onde faz sentido olhar o ambiente real, não
+a direção do clique).
+
+**Testes**: reescrito o teste de "clique isolado" — antes esperava
+NENHUM vizinho tocado, agora espera os 8 tocados com a peça EXATA da
+direção certa (todas as 8 conferidas, não só 1). Novo teste de arrasto
+(2 chamadas de `_apply_smart_terrain` em sequência, 1 tile abaixo da
+outra) confirma que o tile do 1º clique não é alterado pelo 2º, e que
+só o vizinho novo do 2º clique ganha borda — reproduz exatamente o 2º
+print do usuário. Revert-to-confirm: voltar pro cálculo "real"
+(`_missing_sides`) no lugar de `_direction_missing_sides` reproduziu os
+2 sintomas exatos relatados (vizinho sem borda no clique isolado) antes
+de restaurar. Suíte completa (`pytest tests/ -q`, `py -3.10`).
+
+**Correção 3 (27/08/2026) — usuário testou arrasto em várias direções e
+apontou, explicitamente: "você está fazendo o script pela metade...
+alguns tiles que desenhei no tile anterior vão ser alterados, você não
+está alterando... não está considerando todas as possibilidades" —
+pediu pesquisa mais profunda ANTES de qualquer novo código (não
+"concluir e já mexer").**
+
+**Achado real, não arquitetural**: a Correção 2 travava a peça de cada
+vizinho pra sempre na direção do clique que o tocou PRIMEIRO — nunca
+recalculava depois. Investigando com pesquisa nova ([Autotiling —
+Interactive Guide, Red Blob Games](https://www.redblobgames.com/articles/autotile/claude/),
+[versão Gemini](https://www.redblobgames.com/articles/autotile/gemini/autotiling.html),
+["The Power to Bring Light: Autotiles"](https://thepowertobringlight.blogspot.com/2016/11/autotiles-formats-and-algorithms.html))
+achei **2 bugs de comparação reais** na Correção 1 (não um problema de
+arquitetura) que, corrigidos, permitem usar o CÁLCULO REAL (ambiente de
+verdade) como método principal — resolvendo o arrasto em qualquer
+direção — com a direção-do-clique (Correção 2) virando só um reforço
+(fallback) pros casos sem contexto real ainda:
+
+1. **`_terrain_category_at` perdia a categoria real de um tile já
+   decorado** — qualquer tile com peça de transição virava `None`,
+   igual piso/água. Uma peça de transição é só cosmética; o
+   `terrain_matrix` por baixo nunca muda sozinho. Sem esse fix, o
+   sistema não tem como saber se um vizinho já decorado "ainda conta"
+   como categoria antiga pra ser recalculado depois.
+2. **Polaridade invertida em `_missing_sides`** — comparava `!= terrain`
+   quando devia comparar `== terrain`. Confirmado recortando pixel a
+   pixel as peças reais do PNG (`ter_1_0` = terra no NORTE/grama no
+   SUL; `ter_1_2` = grama no norte/terra no sul — o oposto do que o
+   código antigo produzia pra um vizinho ao norte de um clique). O bug
+   fazia o cálculo real "resolver" (sem erro, sem cair no fallback) mas
+   pra peça ERRADA (invertida) — por isso corrigir só esse detalhe já
+   habilita o cálculo real como caminho principal.
+
+**3º achado, só apareceu testando arrasto em RETA (não só L)**: com os
+2 fixes acima, um vizinho que já tinha ganhado a peça CERTA por
+fallback (ex: relação ORTOGONAL direta com o clique 1) podia ser
+sobrescrito por uma peça PIOR quando um clique 3 mais adiante passava a
+enxergar esse MESMO tile só como vizinho DIAGONAL dele (sem ganhar
+contexto real novo pra valer) — o fallback não distinguia "relação
+direta e confiável" de "relação diagonal fraca só de passagem". Fix:
+fallback só sobrescreve um vizinho DIAGONAL se ele ainda não tem
+NENHUMA decoração (bootstrap inicial); vizinho ORTOGONAL sempre aceita
+(é sempre a relação mais direta possível).
+
+**Desenho final** (`ui/god_mode.py::_apply_smart_terrain`): pra cada 1
+dos 8 vizinhos, 1) cálculo REAL (`_missing_sides`, POLARIDADE
+corrigida) — autoritativo sempre que resolve; vazio = cura pra tile
+normal (com `terrain_matrix` atualizado de verdade, não só o sprite);
+2) se real não resolve (sem peça no catálogo de 9 — tipicamente
+diagonal sem contexto, ou padrão complexo tipo 2 lados opostos), cai no
+fallback por direção do clique (`_direction_missing_sides`, já existia
+da Correção 2) — MAS só se o vizinho for ortogonal ao clique atual OU
+ainda não tiver decoração nenhuma. Isso garante os 8 vizinhos decorados
+já no 1º clique (pedido original do usuário) E a auto-correção durante
+arrasto em qualquer direção (pedido desta correção) — porque um
+vizinho decorado continua sendo categoria "antiga" de verdade
+(`terrain_matrix` nunca muda sozinho), então toda pincelada próxima
+futura recalcula ele de novo com mais contexto.
+
+**Testes**: reescrito `test_9_combinacoes_validas`→
+`test_8_combinacoes_validas` (`frozenset()` saiu da tabela — vazio
+agora significa "sem contexto real", tratado à parte, nunca uma "peça
+de centro"); novo teste de auto-correção (clique isolado decora um
+vizinho diagonal por fallback; clique seguinte que o torna vizinho
+ORTOGONAL recalcula pra peça real diferente); novo teste de arrasto
+reto em 3 cliques confirmando que uma peça boa (ortogonal) NÃO é
+substituída por uma peça pior (diagonal fraca) — reproduz exatamente o
+bug achado. Teste de cura passou a conferir `terrain_matrix` também,
+não só o sprite. Revert-to-confirm em 2 pontos separados (polaridade de
+`_missing_sides`; restrição diagonal-já-decorado do fallback) — cada um
+reproduziu o sintoma exato antes de restaurar. Suíte completa
+(`pytest tests/ -q`, `py -3.10`).
+
+**Correção 4 (27/08/2026) — usuário mandou print de um caminho de terra
+sobre grama com curvas: "as quinas não estão sendo alteradas".**
+Simulei a mesma forma, renderizei com o PNG real e inspecionei pixel a
+pixel — a princípio pareceu que os cantos estavam corretos (peça e
+direção certas), mas o usuário insistiu que havia problema real e
+pediu pesquisa de verdade em vez de mais suposição.
+
+**Achado real, medido (não visual/estimado)**: escrevi um script que
+mede, pra cada 1 das 9 células de cada quebra-cabeça (mancha E cruz,
+nas 2 zonas), a fração de pixels "cor nova" em cada uma das 4 bordas da
+célula. Resultado: nas 4 peças de CANTO (2 lados adjacentes) da zona
+`transicao_grama_terra` (pintar TERRA sobre grama — exatamente o caso
+do usuário), o lado que deveria mostrar a cor nova (terra) só chega a
+~30-50% de presença — nunca perto de 100%. Na zona irmã
+(`transicao_terra_grama`, pintar grama sobre terra), as mesmas 4 peças
+de canto chegam a ~100%. Confirmado que **isso vale pros 2 estilos**
+(mancha E cruz) — minha 1ª hipótese ("troca pra cruz resolve") também
+teria falhado, a medição pegou isso antes de eu sugerir errado de novo.
+Causa: não é bug de cálculo — é o próprio desenho do PNG (o "buraco de
+terra" nessa direção é menor/mais arredondado que a "ilha de grama" da
+outra). As peças de BORDA (1 lado só) são sempre fortes (~100%) nos 2
+estilos, nas 2 zonas — só as de CANTO da zona `transicao_grama_terra`
+são fracas.
+
+**Fix**: `SHEET_FAMILIES["TX Tileset Terrain"]["zones"]
+["transicao_grama_terra"]` ganhou `"weak_corners": True`. Novo
+`GodModeEditor._resolve_piece_offset(missing, trans_zone)` — mesmo
+lookup de `resolve_blob3x3_piece`, mas quando a zona é `weak_corners` E
+o padrão é um canto (2 lados adjacentes), sorteia 1 dos 2 lados e usa a
+peça de BORDA dele em vez do canto dedicado (fraco). Os 2 pontos que já
+chamavam `resolve_blob3x3_piece` em `_apply_smart_terrain` (cálculo
+real e fallback por direção) passam a chamar essa função no lugar —
+zero duplicação, mesmo mecanismo cobre os 2 caminhos.
+
+**Testes**: novo `TestWeakCornerFallback` — zona `weak_corners`
+resolve pra 1 dos 2 offsets de borda válidos, nunca o canto dedicado;
+zona sem a flag mantém o canto normal. Teste de auto-correção existente
+trocado pra usar a zona SEM `weak_corners` (o sorteio novo tornaria a
+asserção de desigualdade não-determinística naquela zona). Revert-to-
+confirm (`if False and ...` no lugar do check da flag) reproduziu o
+canto fraco original antes de restaurar. Suíte completa
+(`pytest tests/ -q`, `py -3.10`).
+
+**Pendente**: usuário confirmar em jogo, especialmente arrastando em
+retas longas e em curvas/L em várias direções, que a borda se ajusta
+corretamente conforme a pintura avança, e que os cantos de caminhos de
+terra sobre grama agora aparecem visíveis de verdade (não mais "sem
+transição nenhuma").
+
+**Nota (27/08/2026) — pausado a pedido do usuário.** Depois desta
+Correção 4, usuário testou em jogo de novo e desistiu ("não deu certo
+e eu desisto. Vamos deixar isso em aberto pra editar a mão, quando eu
+ver necessidade de melhorar esse sistema a gente volta nesse tópico").
+Existe um rascunho de uma possível Correção 5 (recalcular
+`_missing_sides` contra `opposite` em vez de `new_terrain`, mais um
+fix em `_terrain_category_at` pra não perder a categoria de um tile já
+decorado) anotado no arquivo de plano da sessão, mas **nunca foi
+implementado** — não assumir que é o próximo passo óbvio se o tópico
+for retomado; perguntar ao usuário o que ele quer primeiro.
+
+## 82. Árvore usava a copa inteira (sprite completo) pra bloquear visão — corrigido pra usar só a base (27/08/2026)
+
+Usuário pediu: árvore está considerando o sprite inteiro pra "esconder"
+o que está atrás (bloqueio de LOS, `vision_rect`); o correto é usar só
+a base — mesma regra da bush, só que pra árvore isso significa usar o
+MESMO retângulo do `collision_rect` (bush não tem colisão nenhuma,
+então usa o sentinel `"base_row"`; árvore já tem um `collision_rect`
+de verdade representando o tronco — reusar ele é a versão certa da
+mesma ideia).
+
+**Contexto**: `vision_rect="full"` pras árvores (`OBJECT_SHEET_FAMILIES
+["TX Village Plant"]["groups"]["arvores"]`, t1-t15) foi decisão
+deliberada de 13/08/2026 (§49) — "copa de árvore fica na metade de
+CIMA do sprite, 'base' apagaria o bloqueio de propósito". O usuário
+agora decidiu que quer o oposto: só o tronco (pegada de colisão) deve
+bloquear visão, não a copa inteira — decisão de conteúdo/comportamento
+do próprio usuário, não conflito de arquitetura pra resolver sozinho.
+
+**Fix**: as 15 entradas do grupo `arvores` tiveram o campo `vision_rect`
+trocado de `"full"` pro MESMO valor (x,y,w,h) já usado em
+`collision_rect` na mesma linha — sem mecanismo novo, `get_vision_offsets`/
+`_rect_to_tile_offsets` (já compartilhado com `get_collision_offsets`)
+processa normal. Rocha grande (`pr_bigrock`, família diferente,
+prefixo `pr`) e bush continuam como estavam — pedido era só sobre
+árvore.
+
+**Testes** (`tests/test_vision_blocking.py`, já existia da feature
+original de 13/08 — atualizado, não criado do zero):
+`TestTreeTrunkVsCanopyVision` renomeada pra `TestTreeVisionMatchesCollision`
+— os 2 testes que validavam a copa bloqueando SEM ser sólida foram
+substituídos por um que confirma `vision_rect == collision_rect` e que
+os offsets de visão/colisão são EXATAMENTE iguais (mais 1 teste extra
+pra `t14`, árvore grande com colisão deslocada da âncora, confirmando
+que a regra vale pra ela também). `test_arvore_e_pedra_grande_continuam_full`
+renomeado e ajustado (árvore não é mais "full", pedra continua). Novo
+`TestFovBehindTreeMatchesTrunkOnly` — ponta a ponta via
+`engine.fov.compute_fov`: tile que só ficava escondido pela copa
+antiga (fora do tronco) agora está visível; tile atrás do tronco de
+verdade continua escondido. Revert-to-confirm (voltar `"full"` só na
+entrada `t1`) reproduziu os 3 sintomas exatos (vision_rect errado,
+offsets diferentes de colisão, tile da copa continuando escondido)
+antes de restaurar. Suíte completa (`pytest tests/ -q`, `py -3.10`).
+
+**Pendente**: usuário confirmar em jogo que a névoa/visão ao redor de
+árvores agora só é bloqueada perto do tronco, não mais pela copa
+inteira.
+
+## 83. Dano de DoT de habilidade de mob escalava linear demais (urso level 24 batendo 96/tick) (28/08/2026)
+
+Usuário reportou: urso level 24 causando 96 de dano por tick de
+sangramento (Laceração) — "isso é muito". Pediu explicação breve
+primeiro, depois pediu correção.
+
+**Causa**: `_ability_dmg = defn.magnitude * ecs.base_attack_power`
+(2 pontos em `engine/world_systems.py`) — `base_attack_power` do mob JÁ
+escala LINEAR com level (`entity_factory.py`: `base_attack_power =
+attack_power_base * level`, mob cadastrado). Multiplicar de novo por
+`magnitude` (multiplicador fixo por habilidade, ex: 2.0 pra Laceração)
+compunha 2 crescimentos lineares — urso (attack_power base 2) em level
+24: `2 * 24 = 48` de AP, `2.0 * 48 = 96`/tick.
+
+**Fix**: novo `damage_calculator.mob_dot_tick_damage(magnitude,
+base_attack_power, level)` — divide por `√level`, cancelando a parte
+linear que já veio de `base_attack_power` (sobra crescimento em raiz,
+mais leve em levels altos; idêntico ao valor de hoje em level 1,
+`√1=1`). Pedido explícito do usuário: número-alvo aproximado (não
+exato) — nível 5→~10, 10→~15, 20→~20, 30→~25, 50→~40, formato
+desacelerando; fórmula escolhida bate perto disso sem precisar de
+tabela/constante nova pra ajustar (nível 24: 96→20; nível 50: 200→28).
+Os 2 pontos de `world_systems.py` que aplicam efeito de habilidade de
+mob (corpo-a-corpo e projétil) passam a chamar essa função — nenhum
+outro lugar do código fazia essa conta (conferido antes de fechar,
+`grep` não achou 3º ponto/código paralelo).
+
+**Testes** (`tests/test_mob_dot_scaling.py`, novo arquivo — função pura
+sem World, testável isolada por design de `damage_calculator.py`):
+level 1 idêntico à fórmula antiga; urso level 24 não bate mais 96
+(bate 20); cresce beeem mais devagar que o crescimento linear antigo
+(razão 40:10 bem menor que 4x); nunca decresce com o level; mínimo 1
+garantido; level 0/negativo não quebra (defensivo). Revert-to-confirm
+(fórmula antiga sem `/√level` de volta) reproduziu os 2 sintomas
+exatos (96 de novo, crescimento linear) antes de restaurar. Suíte
+completa (`pytest tests/ -q`, `py -3.10`), incluindo
+`tests/test_server.py` (mob ranged ability, caminho de projétil, não
+afetado).
+
+**Pendente**: usuário confirmar em jogo que o sangramento do urso (e
+outros DoTs de mob) ficou num número que parece certo em levels
+variados.
+
+## 84. Playtest BG: skill "Alvo inválido"/"Fora de alcance" depois de Interceptar OU seleção normal de alvo (RESOLVIDO 30/08/2026) + bot com HUD de morto às vezes (debug adicionado) (28/08/2026)
+
+Usuário testou a BG e relatou 2 problemas: (1) print mostrando um bot
+sem barra de HP e com aparência de "sem possibilidade de atacar" perto
+do player; (2) skill dando "sem alvo/alvo inválido" logo depois de usar
+Interceptar contra um bot, suspeita de dessincronia cliente/servidor.
+
+**Bug 1 (Interceptar) — causa raiz achada por leitura de código, sem
+precisar de debug ao vivo.** `_resolve_target()` (`engine/
+skill_handlers.py`, compartilhado cliente+servidor) tinha 3 buscas de
+fallback quando o alvo selecionado sai de `_max_range`: 2 pra mob
+(`Enemy`+`AIControlled`) e 1 pra "outro player" via componente
+`RemoteControlled`. `RemoteControlled` só existe do lado CLIENTE
+(representa "outro player que eu não controlo") — no servidor cada
+player, INCLUSIVE bot, é uma entidade real com `CombatStats`/
+`CharacterStats` próprios, nunca um proxy. Resultado: esse 3º fallback
+era código MORTO no servidor (a query nunca achava nada lá). Se o alvo
+já selecionado saísse de `_max_range` por 1 tick só (plausível logo
+após o dash do Interceptar, cliente e servidor podendo avançar a
+interpolação de posição em ritmos levemente diferentes), o servidor
+rejeitava a skill ("Alvo inválido") mesmo quando o cliente conseguia
+re-selecionar o MESMO alvo localmente pelo loop de `RemoteControlled`
+— exatamente a "dessincronia" que o usuário suspeitou.
+
+**Fix**: novo 4º loop de fallback, mesma estrutura dos anteriores, mas
+usando os componentes que EXISTEM DE VERDADE no servidor
+(`CombatStats`+`CharacterStats`, `CharacterStats` é o marcador de
+"isto é personagem de player" — só `entity_factory.py` na criação de
+player/bot adiciona, mob nunca tem). Do lado cliente esse loop novo
+nunca acha nada (só o PRÓPRIO player tem `CharacterStats` real lá, já
+excluído por "não auto-selecionar a si mesmo") — sem conflito com o
+loop de `RemoteControlled` que já resolvia o lado cliente.
+
+**Testes** (`tests/test_resolve_target_hostility.py`, arquivo já
+existia — `TestResolveTargetPvpServerSide` novo): monta o mundo do
+jeito que o SERVIDOR vê (nenhuma entidade com `RemoteControlled`) —
+acha player inimigo real; não seleciona player do mesmo time; não
+seleciona a si mesmo; mob hostil já achado antes tem prioridade (loop
+novo nunca sobrescreve). Revert-to-confirm (`if False and best_id==-1`
+no lugar do guard) reproduziu o sintoma exato (-1 em vez do inimigo)
+antes de restaurar. Suíte completa (`pytest tests/ -q`, `py -3.10`).
+
+**Bug 2 (bot com HUD de morto) — investigação em aberto, debug
+adicionado.** Mapeado o mecanismo: `RemoteControlled.hp<=0` decide 2
+coisas ao mesmo tempo — esconde a barra de HP (nameplate) E torna o
+alvo inválido pra `_resolve_target`/ataque (bate com os 2 sintomas do
+print serem, possivelmente, a MESMA causa: hp do bot lido como 0/
+negativo no cliente mesmo vivo no servidor). Não achei uma causa
+concreta só lendo código (o caminho de sync — `_apply_combat_result`
+via `combat[]` do AOI_UPDATE — parece correto na leitura estática) —
+"às vezes" pede reprodução real antes de arriscar outro fix às cegas
+(lição da sessão: 4 rodadas de correção às cegas no pincel de terreno
+não bastaram, ver §81).
+
+**Debug adicionado** (`debug/aoi_debug.py`, `RPG_DEBUG_AOI=1`, mesmo
+padrão já usado pra mob remoto — log em `debug/logs/aoi_debug.log`):
+`PLAYER_SPAWN`/`PLAYER_SPAWN_SKIP` (`_spawn_remote_player_entity`,
+`client/remote_entity_handlers.py`), `PLAYER_HP_COMBAT`/
+`PLAYER_HP_COMBAT_SKIPPED` (`_apply_combat_result` — o `_SKIPPED` loga
+quando `hp_after<0` chega e a atualização é pulada, candidato forte pra
+causa raiz), `PLAYER_HP_STATS` (`_handle_msg_stats_update`, `client/
+network_handlers.py` — canal normalmente privado, disparar pra outro
+player é caso raro que merece atenção), `PLAYER_DESPAWN`
+(`_remove_remote_player_entity`). Nada logado no loop de render (60fps
+— inundaria o arquivo); todos os pontos são eventos de rede/estado,
+relativamente raros.
+
+**Pendente**: usuário ligar `RPG_DEBUG_AOI=1`, reproduzir o bot
+"parecendo morto"/impossível de atacar na BG, e mandar
+`debug/logs/aoi_debug.log` (ou o trecho relevante) — dá pra reconstruir
+a linha do tempo de HP daquele bot e achar exatamente onde o valor
+para de acompanhar o servidor.
+
+**Correção 1 do bug 1 (Interceptar) não bastou — usuário testou de
+novo, 28/08/2026.** Interceptou uma TORRE; depois de já adjacente e com
+o alvo selecionado, a próxima skill deu "Fora de alcance" numa tentativa
+e "Alvo inválido" em outra. Usuário deixou claro: o problema não é usar
+Interceptar em si (funciona, intercepta certo) — é que NENHUMA skill
+funciona depois, contra o alvo que acabou de ser interceptado.
+
+**2ª rodada de investigação, sem achar a causa raiz só lendo código.**
+Confirmado que torre É rastreada como "mob" pro servidor (`Combatant`
++ `TileMovement`, mesmo detector genérico de `world_server.py` —
+minha suspeita inicial de torre cair fora da classificação
+mob/player estava errada). Rastreei o mecanismo de lag-compensation em
+`server/skill_processor.py::_process_skill_requests` — ele "snapa"
+`tile_move.current_tile_x/y`+`Position` pro `target_tile_x/y` ANTES de
+chamar o handler da skill (só enquanto `is_moving=True`), e RESTAURA
+pro valor de antes DEPOIS do handler rodar — na leitura, essa ordem
+parece correta (handler vê a posição já corrigida). Rastreei também
+`TileMovementSystem` (`engine/world_systems.py`): `current_tile_x/y`
+só assume `target_tile_x/y` quando `progress>=1.0` (dash/movimento
+COMPLETO), junto com `is_moving=False`/`is_dash=False` — também parece
+correto, sem gap óbvio pro caso "skill logo depois do dash completar".
+Nenhuma das duas leituras achou um bug concreto — pode ser uma
+interação entre os dois, ordem de processamento de múltiplos requests
+no mesmo tick, ou algo fora do que foi lido.
+
+**Decisão: parar de adivinhar, instrumentar o ponto exato da
+rejeição** (mesma lição já registrada acima sobre o pincel de terreno
+— 4 correções às cegas na mesma sessão não bastaram; aqui já é a 2ª
+tentativa sem causa raiz confirmada, hora de parar). Novo
+`SkillHandlers._log_skill_warn_debug()`, chamado de dentro de `_warn()`
+(ponto único de verdade — TODA skill que rejeita already passa por
+`_warn`, sem precisar instrumentar dezenas de handlers individualmente)
+só pros 3 motivos relevantes ("Fora de alcance"/"Alvo inválido"/
+"Nenhum alvo") — loga posição/tile do caster E do alvo, `is_moving`/
+`is_dash` do caster, e HP do alvo, tudo no instante exato da rejeição.
+Evento novo `SKILL_WARN` em `debug/aoi_debug.py` (mesmo arquivo/env var
+`RPG_DEBUG_AOI=1` do bug 1 acima — ponto único de debug, não um 2º
+sistema paralelo).
+
+**Testes** (`tests/test_skill_warn_debug.py`, novo arquivo): loga pros
+3 motivos relevantes com os campos certos (mock em
+`debug.aoi_debug.AOI_DBG.log`); NÃO loga pra motivos irrelevantes
+("Raiva insuficiente" etc.); sem alvo selecionado, loga `target=-1` e
+tile/pos do alvo como `None` (sem quebrar tentando ler componente de
+`-1`). Revert-to-confirm (`if False and ...` no lugar do filtro de
+motivo) reproduziu a ausência de log antes de restaurar. Suíte
+completa (`pytest tests/ -q`, `py -3.10`).
+
+**Pendente**: usuário ligar `RPG_DEBUG_AOI=1`, reproduzir "skill falha
+depois de Interceptar" de novo (contra torre ou bot, valem os 2), e
+mandar `debug/logs/aoi_debug.log` — evento `SKILL_WARN` mostra a
+posição/tile exatos do caster e do alvo no instante da rejeição,
+suficiente pra confirmar (ou descartar) as 2 hipóteses já
+investigadas (lag-comp e conclusão de dash) e achar a causa de
+verdade.
+
+**Correção 2 (28/08/2026, mesmo dia) — usuário rodou o servidor com
+`RPG_DEBUG_AOI=1` e mandou o log de verdade.** Achado concreto via
+`SKILL_WARN`: 1,4s depois de um Interceptar contra a Torre de Fogo
+registrar `outcome=hit` (log `COMBAT_RESULT_RECV sid=interceptar`), o
+servidor ainda tinha o player parado (`is_moving=False`) na tile
+`(56,44)` — a 4 tiles de chebyshev da torre `(59,40)`. Nada bate com
+"adjacente" — confirma de forma concreta a suspeita do usuário: o dash
+parece funcionar no cliente, mas o servidor nunca aplicou (ou
+reverteu) o resultado de verdade. `target_hp` decrescendo ao longo do
+spam (2488→2454) confirma que a luta contra a torre continuava
+acontecendo por OUTRO canal (auto-attack), só a skill em questão que
+falhava sempre.
+
+**Investigação adicional (sem causa raiz fechada ainda)**: conferido
+que `TileMovementSystem` roda de verdade no servidor (1x/tick, global,
+`WorldServer._tick()` → `self._global_tms.update(dt=dt)`, ANTES de
+`_process_skill_requests()` no mesmo tick) e que sua lógica de
+conclusão de dash (`progress>=1.0` → `current_tile_x/y =
+target_tile_x/y` + atualiza `_last_valid_tile_x/y`, o baseline do
+anti-cheat) está estruturalmente correta na leitura. Achado
+arquiteturalmente relevante, não necessariamente o bug: `move_player()`
+(`server/world_server.py`, RPC de movimento NORMAL) atualiza
+`current_tile_x/y` **instantaneamente** ao aceitar um MOVE — não
+depende de `TileMovementSystem` pra isso (só usa `is_moving`/pixels
+pra animação visual). Interceptar, ao contrário, só seta
+`target_tile_x/y` — `current_tile_x/y` só vira o destino quando
+`TileMovementSystem` completa o tween, 1+ tick depois. Essa assimetria
+(2 caminhos completamente diferentes pra "onde o player está de
+verdade") é a suspeita mais forte até agora, mas não confirmada — pode
+ser normal (o dash tem só 0.18s, tempo de sobra pra completar bem antes
+do 1,4s do log) e o bug estar em outro lugar (múltiplos requests de
+skill no MESMO tick competindo pelo snap/restore de lag-comp do
+`skill_processor.py`, por exemplo).
+
+**Debug adicional** (mesmo arquivo/env var): `DASH_COMPLETE`
+(`engine/world_systems.py::TileMovementSystem`, só quando `is_dash`
+era True) — mostra o tile onde o dash REALMENTE pousou vs o tile-alvo
+que ele deveria alcançar. `MOVE_REJECTED_BUDGET`/`MOVE_REJECTED_WALKABLE`
+(`server/world_server.py::move_player`) — mostra se algum MOVE normal
+do cliente, mandado logo depois do dash, está sendo recusado pelo
+anti-cheat (o que reverteria a posição visualmente pro cliente, mesmo
+sem "desfazer" o dash em si).
+
+**Testes** (`tests/test_move_player_debug.py`, novo arquivo, usa
+`WorldServer`/`move_player` reais via `tests/helpers.py`): rejeição por
+orçamento loga com os campos certos; rejeição por walkability loga
+(velocidade elevada só nesse teste + baseline anti-cheat "envelhecido"
+manualmente, pra isolar walkability do orçamento); move aceito não
+loga; dash completo loga o tile de pouso; conclusão de movimento NORMAL
+(`is_dash=False`) não loga `DASH_COMPLETE`. Revert-to-confirm (renomear
+o evento de `MOVE_REJECTED_BUDGET` temporariamente) reproduziu a
+falha exata antes de restaurar. Suíte completa (`pytest tests/ -q`,
+`py -3.10`).
+
+**Pendente**: usuário reproduzir MAIS UMA VEZ com `RPG_DEBUG_AOI=1` no
+servidor — desta vez o log deve mostrar `DASH_COMPLETE` (confirmando
+se o pouso bateu com o tile-alvo) e qualquer `MOVE_REJECTED_*` no
+intervalo entre o Interceptar e a skill falhando, fechando de vez qual
+das 2 hipóteses (dash não completou direito vs move normal revertido)
+é a causa real.
+
+**Correção da Correção 2 — usuário apontou conclusão precipitada
+(28/08/2026, mesmo dia).** A Correção 2 concluiu "o minion se moveu"
+a partir só da distância no log, sem checar se o alvo deveria estar
+imóvel. O usuário corrigiu: Interceptar com o talento certo atordoa o
+alvo por 1s, e na BG os talentos ficam sempre ativos — um minion
+atordoado NÃO deveria conseguir andar. Além disso, ele confirmou
+VISUALMENTE (em várias tentativas) que o personagem estava adjacente
+ao alvo quando o warning disparava — contradizendo a leitura de
+distância feita a partir do log. Pediu investigação mais precisa, sem
+mais suposição, e ofereceu jogar uma partida inteira pra gerar mais
+dados.
+
+**Verificação (não suposição) de que minion respeita stun**: conferido
+em código — `MinionSystem` (`engine/world_systems.py`) chama
+`is_action_locked(world, minion_eid)` e pula movimento/ataque quando
+True (atordoado/dormindo/medo/polimorfizado/desorientado). Minion
+atordoado de verdade NÃO anda — a explicação "o minion andou" da
+Correção 2 só seria válida se o atordoamento não tivesse sido aplicado
+de verdade (ex: talento sem os pontos certos nesse build específico,
+apesar da suposição de "todo talento sempre ativo na BG").
+
+**Debug de 3ª rodada** (mesmo arquivo/env var) — captura a leitura
+INTERNA de `_skill_interceptar` que nenhum log anterior mostrava:
+`INTERCEPTAR_CAST` (`engine/skill_handlers.py`) — tile do alvo LIDO no
+instante do cálculo do destino do dash, o destino escolhido, e se o
+alvo já estava atordoado por um Interceptar anterior; `INTERCEPTAR_
+STUN_CHECK` — a duração REAL de atordoamento usada nesse cast (0/None
+= o talento não estava ativo pra esse cast, contrariando a suposição).
+`SKILL_WARN` ganhou 2 campos novos (`target_stunned`/
+`target_is_moving`) pra cruzar com os 2 anteriores no instante exato
+da rejeição.
+
+**Testes** (`tests/test_interceptar_debug.py`, novo arquivo — usa
+`WorldServer._process_skill_requests()` REAL via fila de pending
+requests, mesmo padrão de `tests/diag_interceptar.py`, não a
+mock/fixture leve): `INTERCEPTAR_CAST` loga a leitura certa do tile do
+alvo e um destino adjacente a ele; `INTERCEPTAR_STUN_CHECK` loga a
+duração (o personagem de teste sem talento aplicado corretamente
+mostrou `stun_duration=0.0` — confirma que o campo reflete a
+configuração real do build, não um valor fixo). Revert-to-confirm
+(renomear o evento `INTERCEPTAR_CAST` temporariamente) reproduziu a
+ausência do log antes de restaurar. Suíte completa (`pytest tests/ -q`,
+`py -3.10`).
+
+**Pendente**: usuário reproduzir de novo (ou jogar uma partida inteira,
+como ofereceu) com `RPG_DEBUG_AOI=1` no servidor — `INTERCEPTAR_CAST`
+mostra se a leitura da posição do alvo, no instante em que o destino do
+dash é calculado, já bate com o que o usuário via na tela; `INTERCEPTAR_
+STUN_CHECK` confirma se o atordoamento realmente estava ativo. Essas 2
+informações, cruzadas com `SKILL_WARN`/`DASH_COMPLETE` já existentes,
+devem fechar a causa raiz de vez.
+
+**Causa raiz confirmada, RESOLVIDO (30/08/2026).** Usuário jogou uma
+partida inteira e mandou um log de ~24 mil linhas; relatou também que o
+sintoma é MAIS AMPLO do que só pós-Interceptar — "às vezes eu seleciono
+o alvo e uso a skill e também diz que o alvo é inválido". No novo log,
+achado o caso definitivo: `SKILL_WARN reason=Fora de alcance` repetindo
+com o MESMO `caster_tile=(59,41)`/`caster_pos=(1832.9, 1370.7)` por 6+
+segundos seguidos, sempre com `caster_is_dash=True` e
+`caster_is_moving=False` ao mesmo tempo — estado internamente
+inconsistente (`is_moving`/`is_dash` só existem juntos ou desligam
+juntos na conclusão normal do tween). `caster_pos` também não batia com
+o centro de NENHUM tile (1904,1328 seria o centro de 59,41) — a posição
+estava congelada NO MEIO de uma interpolação, não travada num tile
+inteiro.
+
+**Mecanismo (confirmado em código, não inferido dos números)**:
+`TileMovement.is_moving` é escrito por 2 sistemas com relógios
+independentes:
+- `TileMovementSystem.update()` (`engine/world_systems.py:4238-4278`) —
+  o tween REAL. Só desliga `is_moving`/`is_dash` quando `progress>=1.0`
+  do próprio `move_duration` da entidade.
+- `ServerCombatStateSystem._tick_player_move_grace`
+  (`engine/core_systems.py:844-861`) — relógio FAKE e paralelo, existe
+  só pra mecânicas que precisam saber "o player andou recentemente"
+  (Calmo e Certeiro, regen de Concentração). Todo `move_player()`
+  (movimento normal) seta `_server_move_grace = PLAYER_MOVE_GRACE_S`
+  (0.4s fixo) e, quando esse tempo zera, desliga `is_moving` **sem
+  checar se há um tween de verdade em andamento**.
+
+Pra movimento normal isso nunca quebra: `move_player()` seta
+`move_duration` do próprio tween IGUAL ao grace (0.4s), então os 2
+relógios sempre zeram juntos. Interceptar quebra essa simetria: usa
+`move_duration = INTERCEPT_DURATION = 0.18s`
+(`engine/skill_handlers.py:728`) e **nunca reseta `_server_move_grace`**.
+Se o player tinha dado um passo normal pouco antes de castar Interceptar
+(sobrando, por exemplo, 0.15s de grace de um passo anterior), esse
+grace zera ANTES do dash de 0.18s terminar — desliga `is_moving=False`
+no meio do tween. No tick seguinte, `TileMovementSystem` para de
+processar essa entidade inteira (só processa `if tile_movement.
+is_moving:`) — `progress` congela, `Position` fica presa no meio da
+interpolação, `current_tile_x/y` fica preso no tile de ANTES do dash, e
+`is_dash` nunca desliga (`move_player()` também nunca reseta `is_dash`
+— só um passo normal que complete o tween inteiro do início ao fim
+eventualmente limpa isso, ver linha ~4377 do mesmo arquivo).
+
+Isso explica o escopo mais amplo relatado agora: se essa corrida
+acontece e o player NÃO anda de novo antes de tentar outra skill, a
+posição congelada continua errada pra qualquer skill seguinte — parece
+"aleatório"/sem relação com Interceptar do ponto de vista do jogador,
+porque o Interceptar que causou pode ter sido minutos antes.
+
+**Fix** (`engine/core_systems.py::ServerCombatStateSystem.
+_tick_player_move_grace`): nunca desliga `is_moving` à força enquanto
+`tm.is_dash` for True — mesmo padrão já usado em `TileMovementSystem`
+pra proteger um dash de ser interrompido por stun/sleep (guard
+`if not tile_movement.is_dash:`, já existia antes). Genérico: protege
+qualquer dash futuro (não só Interceptar), sem hardcode de skill.
+Opção alternativa (zerar `_server_move_grace` dentro de
+`_skill_interceptar` ao iniciar o dash) foi considerada e descartada —
+exigiria repetir a mesma correção em qualquer dash futuro; a escolhida
+resolve na fonte genérica.
+
+**Testes** (`tests/test_move_grace_dash_guard.py`, novo arquivo, 3
+testes): grace expira com `is_dash=True` não desliga `is_moving`;
+grace expira com `is_dash=False` preserva o comportamento original
+(desliga); grace ainda não expirou não mexe em nada. Revert-to-confirm
+feito (removido o guard, confirmado que o 1º teste falha exatamente
+como o bug real — `is_moving=False` com dash em andamento — antes de
+restaurar). Suíte completa (`pytest tests/ -q`, `py -3.10`): 1364
+passed, zero regressão.
+
+**Validado em jogo pelo usuário (30/08/2026)** — "Validado." Fechado.
+
+## 85. Colisão fina (16px) pro passo manual do jogador, sem tocar pathfinding/mapa/rede (30/08/2026)
+
+Usuário pediu: muitos props decorativos do catálogo (ex: família "TX
+Village Props with Shadow", `engine/tileset.py`) já têm `collision_rect`
+autoral em sub-tile (ex: `("076", 608, 1216, 32, 32, (0, 16, 16, 16))` —
+só o quadrante inferior-esquerdo de 16×16 é sólido de verdade), mas o
+jogo sempre bloqueava o tile de 32×32 inteiro, descartando essa
+precisão. Pedido explícito: resolver só pro passo MANUAL (WASD) do
+jogador, sem mudar `TILE_SIZE` global, sem re-desenhar mapas, sem tocar
+pathfinding/IA de mob/bot (que continuam 100% tile-a-tile de 32px), e
+sem mudar o formato do protocolo de rede se possível.
+
+**Planejado via EnterPlanMode** (2 rodadas de investigação — Explore
+agent auditou consumidores de `current_tile_x/y`/mecanismo de correção
+de MOVE; Plan agent validou o mecanismo linha por linha e achou 2 gaps
+reais antes da implementação: (1) o gate de segurança pra objetos
+multi-tile precisava ser explícito, não implícito; (2) a correção de
+dessincronia do cliente recentralizava a `Position` incondicionalmente,
+apagando um meio-passo legítimo). Pesquisa externa (Zelda ALTTP
+"feelers", padrão clássico de AABB contínuo separado do tile grid,
+sub-grid do Zelda NES) confirmou a técnica escolhida (meio-passo como
+FALLBACK, mantendo o "encaixe" de grid) como a mais alinhada ao pedido.
+
+**Mecanismo**: `TileValidationSystem.is_tile_walkable` (o checador de
+sempre, 32px, boolean por tile) continua INTOCADO — usado por
+pathfinding/mob/bot exatamente como antes. Um NOVO fallback, só pro
+passo manual, entra em cascata:
+1. `engine/tileset.py::get_solid_rect(tile)` — retângulo sólido REAL em
+   pixels (sem arredondar), reusando `_rect_to_tile_offsets` como GATE:
+   se a pegada do objeto (já calculada por essa função) tiver mais de 1
+   tile, devolve bloqueio de tile inteiro sempre — objetos multi-tile
+   (torre, árvore grande) nunca ganham precisão fina, porque o
+   `collision_rect` de um `TileType` compartilhado por vários offsets é
+   relativo ao SPRITE inteiro, não a qual offset específico está sendo
+   consultado (matematicamente sem sentido tentar recortar sem esse gate).
+2. `TileValidationSystem.is_tile_walkable_fine()` — AABB entre a caixa
+   do jogador (`Collider`, 24×24 — componente que já existia mas tinha
+   ZERO call sites de leitura em todo o jogo até agora) e o retângulo de
+   (1), só chamado quando (1) o checador de sempre já rejeitou.
+3. `engine/world_systems.py::resolve_manual_step()` — fonte única entre
+   `PlayerInputSystem` (cliente) e `move_player()` (servidor): tenta o
+   passo cheio de 32px primeiro (checador de sempre); se bloqueado,
+   tenta um meio-passo de 16px na MESMA direção via (2). `target_tile_x/y`
+   mandado por rede continua sempre inteiro — um sub-passo pra um tile
+   novo já cruza a fronteira de tile matematicamente, então o protocolo
+   `MOVE{tx,ty}` não mudou de formato. Servidor nunca confia em pixel
+   vindo do cliente — recalcula do zero (função determinística sobre o
+   mesmo mapa estático) e só aceita se o tile resolvido bater com o que
+   o cliente pediu.
+4. `engine/utils.py::start_tile_movement()` ganhou parâmetro ADITIVO
+   opcional (mesmo padrão de `override_duration`) pra aceitar um alvo em
+   pixel bruto em vez do centro do tile — usado também pro cálculo de
+   duração da animação (senão um meio-passo de 16px animaria na mesma
+   duração de um passo de 32px inteiro).
+5. **Gap achado pelo Plan agent, corrigido junto**: a correção de
+   dessincronia (`server/session.py::_handle_move`, MOVE rejeitado →
+   `ENTITY_MOVE` de auto-correção) recentralizava a `Position` do
+   cliente pro meio do tile incondicionalmente — apagaria um meio-passo
+   legítimo silenciosamente. Fix: payload ganhou `px`/`py` opcionais
+   (`WorldServer.get_pixel_pos()`, novo) — cliente usa quando vêm, senão
+   cai no cálculo de centro de sempre (retrocompatível, sem novo tipo de
+   mensagem; broadcast pra OUTROS clientes continua só `tx/ty`, posição
+   exata de outro player nunca foi autoritativa pra gameplay).
+
+**Fora de escopo, confirmado intocado**: mapas (CSV), pathfinding/A* de
+mob/bot/auto-move, formato do protocolo `MOVE{tx,ty}`, orçamento
+anti-cheat (tiles inteiros), ocupação entidade-por-tile (continua 1 por
+tile inteiro — sub-passo só vale pra props ESTÁTICOS), lógica de
+elevação/transição, timing de som de passo.
+
+**Trade-off deliberado (avisado ao usuário, não é bug)**: depois de um
+meio-passo, o eixo cruzado fica "fora de fase" (±16px do centro do
+tile) até um snap real (teleporte/respawn/knockback) resetar —
+`floor(pixel/32)` sempre resolve o tile certo, mas o personagem pode
+renderizar levemente fora do centro da grade por um tempo. Escopo
+também deliberadamente NÃO suporta um 2º meio-passo dentro do MESMO
+tile (só cruza pra um tile novo) — evita quebrar a detecção de "mudei
+de alvo" em `_send_player_move()`.
+
+**Testes** (revert-to-confirm em CADA peça, isolada): `tests/
+test_tileset_solid_rect.py` (gate de segurança multi-tile);
+`tests/test_tile_walkable_fine.py` (AABB fino, fixture real prop
+"vp_076", 4 direções de aproximação — só norte/leste livres, matemática
+conferida à mão); `tests/test_resolve_manual_step.py` (passo cheio
+normal, meio-passo bem-sucedido, meio-passo bloqueado, 2º meio-passo no
+mesmo tile rejeitado por escopo); `tests/
+test_start_tile_movement_pixel_override.py` (override de pixel/duração);
+`tests/test_move_player_fine_step.py` (mesmo fallback no servidor real,
+`WorldServer.move_player`); `tests/test_entity_move_px_py_correction.py`
+(`get_pixel_pos` + correção preserva meio-passo). Suíte completa
+(`pytest tests/ -q`, `py -3.10`) rodando ao final.
+
+**Correção — usuário testou de verdade com o prop "vp_089" (vaso) e achou
+2 bugs reais na matemática, não previstos pelos testes originais
+(30/08/2026, mesmo dia).**
+
+**Bug 1 — direção negativa (oeste/norte) sempre rejeitada.** A derivação
+do tile-alvo do meio-passo usava `floor(pixel_candidato / TILE_SIZE)`.
+Vindo do LESTE (dx=-1) a partir do centro do tile 6 (pixel 208), o
+meio-passo aterrissa em 208-16=192 — e `floor(192/32)=6` (o PRÓPRIO tile
+6), não 5 (o tile sendo alcançado), porque 192 é ao mesmo tempo "fim do
+tile 5" E "início do tile 6", e a convenção de intervalo meio-aberto
+`[T*32, T*32+32)` atribui essa fronteira ao tile da direita/abaixo.
+Direção positiva (leste/sul) nunca sofria disso — só metade dos 4 lados
+de aproximação funcionava na prática. Fix: tile-alvo agora é sempre
+`current_tile + dx/dy` por aritmética direta — o pixel entra só no teste
+geométrico de AABB, nunca na decisão de qual tile é.
+
+**Bug 2 — continuar na mesma direção depois de um meio-passo não
+avançava de verdade.** Mesmo com o bug 1 corrigido, o pixel do
+meio-passo era calculado como `posição_atual ± 16px`. Isso funciona na
+1ª vez (jogador sempre parte do CENTRO de um tile), mas se o jogador já
+está descansando FORA do centro (de um meio-passo anterior), `+16px`
+não necessariamente cruza pra dentro do tile seguinte — pode só andar
+até o CENTRO do tile ATUAL (ex: descansando na borda norte, +16px leva
+pro centro DESSE MESMO tile, não pro tile abaixo) — batendo um AABB
+contra o objeto ERRADO (ou nenhum), com resultado imprevisível. Sintoma
+relatado: "atravessa o vaso" ou correção diagonal do servidor — os 2
+lados (cliente prediz, servidor recalcula) chegavam a resultados
+diferentes porque a fórmula dependia do pixel ATUAL (que diverge entre
+os 2 lados em timings diferentes), não de algo puramente determinístico.
+Fix: o pixel do meio-passo passa a ser sempre a FRONTEIRA exata entre
+`current_tile` e `target_tile` (`target_tile*TILE_SIZE` indo na direção
+positiva, `current_tile*TILE_SIZE` na negativa) — determinística pelos
+ÍNDICES de tile, nunca pelo pixel atual. Eixo perpendicular (que não
+muda nesse passo) continua vindo da posição real, preservando um
+descanso fora do centro já existente nesse eixo.
+
+**Testes novos** (`tests/test_resolve_manual_step.py`, 4 casos
+adicionados: aproximação pelo leste — direção negativa — entra no canto
+livre; aproximação pelo oeste — direção positiva — continua bloqueada,
+regressão; aproximação por baixo num objeto sintético com quadrante
+NORDESTE sólido, cobrindo o eixo Y; continuar na mesma direção após um
+meio-passo agora avança de verdade. `tests/test_move_player_fine_step.py`,
+2 casos adicionados: aproximação pelo leste no servidor real; continuar
+pro sul depois do meio-passo, reproduzindo a sequência exata relatada
+pelo usuário). Revert-to-confirm em cada fix, isoladamente — confirmado
+que os testes relevantes falham exatamente como o sintoma relatado antes
+de restaurar. Suíte completa (`pytest tests/ -q`, `py -3.10`) rodando
+de novo ao final.
+
+**Correção 2 — usuário confirmou o bug 1 corrigido, mas achou um 3º bug
+(mesmo dia).** Depois de um meio-passo, continuar pressionando a MESMA
+direção ainda "atravessava o vaso" — tanto no eixo X (leste→oeste) quanto
+Y (norte→sul).
+
+**Causa raiz**: o passo seguinte, ao pular pro PRÓXIMO tile
+(`current_tile+dx/dy`), sempre mirava no CENTRO daquele tile — uma
+distância real (a partir de onde o jogador realmente estava, fora do
+centro por causa do meio-passo anterior) de até 48px, não 32px. Esse
+trecho extra de 16px NUNCA era validado — passava reto por cima da parte
+sólida do tile ATUAL que o meio-passo tinha acabado de contornar. Pior:
+como o pedido de rede manda só o TILE FINAL (`MOVE{tx,ty}`), e esse tile
+final costuma ser um tile aberto normal (o de depois do objeto), o
+`move_player()` aceitava o pedido só de olhar pro destino — nunca sabia
+que o CAMINHO até lá cruzava o objeto no meio.
+
+**Fix (2 partes)**: (1) `resolve_manual_step` ganhou um gate ANTES de
+tentar pular pro próximo tile — se o jogador ainda não está no centro do
+tile ATUAL (descansando de um meio-passo), o próximo passo na mesma
+direção só tenta TERMINAR de entrar nesse tile (alcançar o centro dele),
+usando o MESMO `is_tile_walkable_fine` de sempre, contra o tile atual —
+nunca pula direto pro próximo. Corolário correto (não um limite
+artificial): como a caixa do jogador (24px) é mais larga que a metade
+livre de um objeto de 16px alinhada ao centro do tile, "terminar de
+entrar" fica bloqueado na prática pra este objeto — o jogador para na
+borda, não atravessa. (2) `server/world_server.py::move_player()`
+precisou de uma reestruturação: o passo de 1 tile cardeal (WASD normal)
+passa a ser resolvido INTEIRAMENTE por `resolve_manual_step` como
+autoridade PRIMÁRIA (não só fallback quando o check grosso do destino
+falha) — porque o check grosso sozinho, olhando só pro tile final pedido,
+não tinha como saber que o caminho até lá cruzava o tile atual. Passo
+diagonal (auto-move/A*) continua no check grosso de sempre, sem passar
+por `resolve_manual_step` (que só entende cardeal).
+
+**Efeito colateral achado e corrigido**: 2 testes pré-existentes
+(`tests/test_client_ui.py::_make_wasd_pursuit_fixture`) usavam uma
+`Position` de fixture no CANTO do tile (`5*32`) em vez do centro
+(`5*32+16`) — nunca importava antes, mas agora dispara o novo gate
+"terminar de entrar" contra um fake `TileValidation` sem
+`is_tile_walkable_fine`. Corrigido ajustando a fixture pra centralizar a
+posição (convenção real do jogo), não adicionando o método fake — a
+fixture estava desalinhada com o estado real de qualquer player.
+
+**Testes** (`tests/test_resolve_manual_step.py`: continuar na mesma
+direção corretamente bloqueado nos eixos X e Y;
+`tests/test_move_player_fine_step.py`: mesmo cenário no servidor real,
+confirmando posição/tile inalterados após a rejeição). Revert-to-confirm
+em cada peça (o gate de "terminar de entrar" isoladamente, e a
+reestruturação de `move_player` isoladamente — sem ela, até o meio-passo
+básico pelo norte quebrava, confirmando que virou autoridade primária de
+verdade, não um fallback opcional). Suíte completa (`pytest tests/ -q`,
+`py -3.10`) rodando de novo ao final.
+
+**Correção 3 — usuário testou de novo com o log ligado e achou (1) um
+crash real (`ZeroDivisionError`) e (2) confirmou que "o servidor
+continua corrigindo a posição" (30/08/2026, mesmo dia).**
+
+**Achado no log de verdade** (não suposição): `MOVE_REJECTED_WALKABLE
+eid=255 requested=(99, 375) current=(99, 375)` — o cliente pediu pro
+servidor mover pro MESMO tile que já é o atual. Isso só acontece por um
+motivo: o meio-passo que "termina de entrar" no tile atual
+(`resolve_manual_step`, Correção 2) retorna o MESMO `current_tile_x/y`
+(só o pixel muda) — mas `_send_player_move()`
+(`client/online_mode_handlers.py`) só detectava mudança comparando
+`target_tile_x/y` contra o último valor mandado. Como o tile não muda
+nesse caso, **o MOVE nunca era enviado pro servidor** — o cliente anima
+localmente (pixel avança), o servidor nunca fica sabendo, e os 2 lados
+ficam com uma posição diferente até algum evento não relacionado (ex:
+correção de orçamento anti-cheat de um passo seguinte) expor a
+divergência e "puxar" o player de volta — exatamente o "servidor
+continua corrigindo a posição" relatado.
+
+**Fix**: `_send_player_move()` passa a comparar também o PIXEL-alvo
+(`target_pixel_x/y`), não só o tile — `game.py` ganhou
+`_net_last_px/py` ao lado de `_net_last_tx/ty`. Os outros 3 pontos que
+já escreviam `_net_last_tx/ty` pra SUPRIMIR de propósito o envio (dash/
+knockback confirmado pelo servidor, sync de login) precisaram do mesmo
+tratamento — sem sincronizar `_net_last_px/py` junto, o gate novo
+reintroduziria o envio espúrio que esses pontos existem pra evitar.
+
+**Sobre o crash (`ZeroDivisionError` em `TileMovementSystem.update()`,
+`dt / tile_movement.move_duration`)**: a causa é `move_duration=0.0`
+exato, que só pode vir de `start_tile_movement`'s `dist=0` (pixel-alvo
+igual ao de partida) quando chamado com `override_target_pixel`
+(exclusivo do passo manual). Fuzzing extensivo de `resolve_manual_step`
+sozinho (>78 mil combinações de direção/posição) não reproduziu — a
+dessincronia de rede acima (cliente e servidor discordando de onde o
+player realmente está) é a candidata mais forte pra criar o estado que
+dispara isso, mas o mecanismo exato não foi isolado com certeza.
+**Correção defensiva aplicada de qualquer forma**: `start_tile_movement`
+nunca mais deixa `move_duration` chegar a 0 (piso de 0.001s) —
+independente da causa raiz exata, nenhum chamador (presente ou futuro)
+consegue mais travar o jogo por essa divisão.
+
+**Testes**: `tests/test_send_player_move_pixel_gate.py` (novo — mudança
+de tile dispara envio; meio-passo no MESMO tile agora dispara envio;
+nada mudou não reenvia); `tests/
+test_start_tile_movement_pixel_override.py` (novo caso: pixel-alvo igual
+ao de partida nunca produz duração zero). Revert-to-confirm em cada um.
+Suíte completa (`pytest tests/ -q`, `py -3.10`) rodando de novo ao
+final.
+
+**Pendente**: usuário testar de novo com o log ligado — se o crash ainda
+acontecer, o log/traceback exato ajuda a fechar o mecanismo com certeza
+em vez de só a correção defensiva.
+
+**Correção 4 — usuário testou de novo (com o servidor de verdade
+reiniciado) e o log revelou a causa raiz de VERDADE, mais séria que as
+anteriores (30/08/2026, mesmo dia).**
+
+**Achado no log real, mapa real** — `MOVE_REJECTED_WALKABLE eid=255
+requested=(99, 375) current=(99, 375)` repetindo indefinidamente.
+Investigado contra o mapa de verdade (`maps/map_1_objects.csv`, linha
+375): colunas 98/99/100 são **3 vasos colados** (`vp_091`/`vp_089`/
+`vp_090`), todos sólidos no nível grosso. O jogador tinha ficado
+registrado (`current_tile_x/y`) EXATAMENTE em cima do vaso do meio
+(`vp_089`, tile 99) — resultado esperado e correto do meio-passo
+(Correção 1): o retângulo FINO libera aquele pixel específico, mas o
+tile continua "sólido" pra qualquer checagem GROSSA.
+
+**O bug de verdade**: nenhuma das checagens de `is_tile_walkable`
+(nem a via bundle, nem a crua) jamais teve uma exceção pra "o alvo é o
+MEU PRÓPRIO tile atual" — só a checagem de OCUPAÇÃO por outra entidade
+tinha esse auto-perdão (`occupant_id == moving_entity_id`). A checagem
+de solidez de base (`tile_type.is_solid` → `return False`) roda ANTES
+dessa exceção e não sabe nada sobre "quem está pedindo". Resultado: uma
+vez que `current_tile_x/y` vira o tile de um objeto pequeno (via meio-
+passo), **qualquer resync trivial de rede pedindo "continuo aqui"**
+(exatamente o que a Correção 3 — gate de pixel — passou a mandar
+corretamente) **era rejeitado pra sempre** — o jogador ficava
+PERMANENTEMENTE preso, sem conseguir nem confirmar a própria posição,
+quanto mais sair dali. Essa armadilha só existe DEPOIS da Correção 1 —
+antes, `current_tile_x/y` nunca podia apontar pra um tile sólido, então
+a situação nunca surgia.
+
+**Fix**: `move_player()` ganhou um atalho explícito ANTES de qualquer
+checagem de walkability — se o pedido é pro MESMO tile que o player já
+ocupa (`_step_dx=_step_dy=0`), aceita sempre, sem consultar
+`is_tile_walkable` nenhum, preservando o pixel REAL atual (não
+recentraliza — um meio-passo legítimo continua descansando fora do
+centro). Escopo mínimo: só cobre o caso `tx,ty == current`, não muda
+NADA da validação pra qualquer outro destino.
+
+**Testes** (`tests/test_move_player_self_tile_trap.py`, novo arquivo,
+contra o MAPA REAL — não sintético): confirma a premissa (99,375 é
+sólido de verdade no mapa); confirma que "continuo aqui" em cima do
+vaso é sempre aceito e preserva o pixel do meio-passo. Revert-to-confirm
+(reproduziu a rejeição exata do log real antes de restaurar). Suíte
+completa (`pytest tests/ -q`, `py -3.10`) rodando de novo ao final.
+
+**Lição pra próxima vez que `current_tile_x/y` puder apontar pra um
+tile marcado sólido** (qualquer mecanismo futuro parecido com o
+meio-passo): sempre verificar se TODOS os consumidores de
+`is_tile_walkable` — não só os novos — têm uma saída pra "o alvo é onde
+eu já estou". Essa checagem nunca precisou existir antes porque a
+premissa "current_tile_x/y nunca é sólido" era garantida estruturalmente
+até agora.
+
+**REVERTIDO a pedido do usuário (30/08/2026, mesmo dia).** Depois da
+Correção 4, o usuário testou de novo (servidor reiniciado com o código
+novo) e a correção de posição continuava acontecendo, de forma que
+descreveu como "muito grotesca". Avaliando o custo — 4 rodadas de
+correção sem convergir de vez, cada uma revelando uma categoria NOVA de
+bug (matemática de fronteira de tile, passo encadeado, gate de rede,
+`current_tile_x/y` podendo apontar pra tile sólido) — o usuário decidiu
+que o esforço de manutenção não compensava o ganho visual (deixar de
+bloquear o tile de 32px inteiro perto de props pequenos) e pediu reversão
+completa pra o estado de antes desta feature.
+
+**Escopo do revert**: toda a mecânica de meio-passo de 16px foi removida
+— `get_solid_rect()` (engine/tileset.py), `is_tile_walkable_fine()`
+(módulo + `TileValidationSystem`, engine/world_systems.py),
+`resolve_manual_step()` (engine/world_systems.py), o parâmetro
+`override_target_pixel` de `start_tile_movement()` (engine/utils.py), o
+bloco de WASD alternativo em `PlayerInputSystem` (ui/systems.py), o
+fallback fino + atalho de auto-tile em `WorldServer.move_player()` e
+`get_pixel_pos()` (server/world_server.py), os campos `px`/`py` na
+correção de `_handle_move` (server/session.py), o uso de `px`/`py` em
+`_handle_msg_entity_move` e a inicialização de `_net_last_px/py`
+(client/network_handlers.py), o gate de pixel em `_send_player_move`
+(client/online_mode_handlers.py), o sync de `_net_last_px/py` na fila de
+dash (client/remote_entity_handlers.py), e as declarações de
+`_net_last_px/py` (game.py). Os 8 arquivos de teste criados
+especificamente pra esta feature foram deletados. `CLAUDE.md` teve o
+"Ponto único de verdade" correspondente trocado por um ponteiro pra este
+histórico, pra qualquer tentativa futura não começar do zero. Suíte
+completa rodada após o revert pra confirmar que o comportamento pré-
+feature foi restaurado sem regressão em nenhum outro trabalho da sessão.
+
+**Esta seção (§85) fica como está** — histórico completo do que foi
+tentado, por quê, e cada bug real encontrado no caminho — caso o tema
+volte a ser considerado no futuro.
+
+## 86. Auto-regen "fantasma" na BG — HP5 tickando com o personagem aparentemente cheio (30/08/2026)
+
+Usuário relatou: dentro da BG, mesmo com o personagem em full HP, o
+auto-regen (HP5) ficava tickando (floating text de cura aparecendo
+repetidamente). Fora da BG isso não acontecia. Pedido explícito: investigar
+se é estrutural e, se for, procurar outras ocorrências da mesma classe.
+
+**Investigação** (agente + verificação direta no código, seguindo a regra
+de não confiar em achado de terceiro sem confirmar): `_tick_hp5`
+(`engine/core_systems.py`) — o regen do player em si — está corretamente
+travado contra HP cheio, único sistema server-side, mesmo pra BG e mundo
+aberto. Regen de mob/boneco de treino/consumível HoT também corretos.
+Cliente não prediz HP5 localmente (100% autoritativo do servidor). Nenhum
+desses é a causa.
+
+**Causa raiz real (não é bug de "porta"/gate, é bug de DADO)**: qualquer
+coisa que aumenta `stamina` (que deriva `max_hp` direto,
+`_calculate_max_hp() = int(stamina)`) precisa RE-ESCALAR `current_hp`
+proporcionalmente, não preservar o valor absoluto — senão um player 100%
+cheio (ex: 300/300) vira, por exemplo, 300/330 depois de um +10% de
+stamina: sem cura nenhuma, sem aviso, e o HP5 (corretamente!) começa a
+tickar pra fechar esse buraco de verdade. `recalculate_combat_stats`
+(`engine/stat_fns.py`) documenta que preserva o ABSOLUTO de propósito —
+comportamento CERTO só quando `max_hp` diminui (evita HP negativo), mas
+sozinho cria esse buraco quando `max_hp` aumenta.
+
+O padrão CERTO (rescalar pela PORCENTAGEM) já existia — 2x, duplicado
+com pequenas diferenças: `_roll_procs` (proc de item, engine/
+core_systems.py) e `_tick_timed_modifiers` (expiração de buff, mesmo
+arquivo). Mas faltava em TODO OUTRO lugar que muda `stamina`:
+
+- **`WorldServer._grant_jungle_boss_buff`** (server/world_server.py) — o
+  chefe "Guardião de Pedra" da jungle (`content/jungle_definitions.py`,
+  conteúdo EXCLUSIVO de BG, por isso o usuário só via isso lá) dá +10%
+  de stamina pro time inteiro a cada abate — a cada vez, um buraco novo,
+  compondo ao longo da partida. Achado confirmado exatamente pelo
+  usuário testando: "entrar na BG sozinho não tickava, só depois de
+  comprar um item que aumentou o HP".
+- **`WorldServer._apply_equipment_modifiers`** (server/world_server.py) —
+  mesma lacuna, trocar de equipamento com bônus de stamina. Não é
+  exclusivo de BG (existe em qualquer lugar), mas passa despercebido no
+  mundo aberto por ser evento único (equipar 1x) em vez de um ciclo
+  repetido a cada ~90s como o buff do chefe — mesmo defeito, sintoma
+  menos notável. Confirmado pelo próprio usuário como o gatilho real que
+  ele reproduziu.
+- **`WorldServer._apply_talent_modifiers`** (server/world_server.py) —
+  mesma lacuna, hoje adormecida (nenhum talento atual mexe em stamina),
+  mas sem correção preventiva reproduziria o mesmo bug no instante em
+  que um talento futuro desse +stamina, sem nenhum aviso de code review
+  pra pegar isso (a lógica de rescale nunca foi um "dono único", só
+  copy-paste em 2 lugares).
+
+**Fix**: novo `engine/stat_fns.py::recalculate_preserving_hp_pct(cs,
+mutate_fn)` — ponto único de verdade, recebe a mutação (add/remove
+modifier, troca de lista inteira de modifiers, etc.) como callback,
+captura a porcentagem de HP ANTES, executa a mutação, e rescala
+`current_hp` pela MESMA porcentagem depois (só se `max_hp` realmente
+mudou — evita perda por truncamento em `int()` no caso comum de "nada
+mudou"). `_roll_procs`/`_tick_timed_modifiers` foram refatorados pra usar
+o helper (elimina a duplicação original) — e os 3 pontos que tinham a
+lacuna (`_grant_jungle_boss_buff`, `_apply_equipment_modifiers`,
+`_apply_talent_modifiers`, este último com toda a sequência de mutação
+da função embrulhada de uma vez, já que ela chama `apply_char_stats_
+to_combat` + N `add_modifier` em sequência) passaram a usá-lo também.
+
+**Testes** (`tests/test_hp_pct_preserve_on_stamina_change.py`, novo
+arquivo): unitário do helper (HP cheio continua cheio, HP parcial
+preserva a porcentagem — não o absoluto —, redução de max_hp continua
+clampando como antes, atributo que não muda max_hp não mexe em
+current_hp); `WorldServer.equip_item_from_inventory` real (cenário exato
+relatado pelo usuário); `WorldServer._grant_jungle_boss_buff` real (2ª
+morte do camp, que dá o buff de stamina no ciclo). Revert-to-confirm no
+helper central (removida a rescala final) — 5 dos 7 testes falharam
+exatamente como o bug real antes de restaurar. Suíte completa (`pytest
+tests/ -q`, `py -3.10`) rodando ao final.
+
+## 87. Interceptar: alvo tomava hit de auto-attack ANTES da animação do dash acontecer (31/08/2026)
+
+Usuário relatou: "quando eu aperto a skill, antes mesmo de o dash
+acontecer, o meu alvo já toma um hit do ataque automático". Relatou
+também, na mesma sessão, mobs "procurando o player em outra posição,
+como se tivesse delay pra entender a posição" — investigado à parte
+(ver "Sintoma (b)" abaixo, não é bug, é comportamento existente ficando
+mais visível).
+
+**Investigação — leitura de código não bastou, precisou de log ao
+vivo.** `_skill_interceptar` exige alvo a >2.3 tiles pra castar
+(`INTERCEPT_MIN_RANGE_PX`) e ataque automático corpo-a-corpo só acerta
+a ≤1 tile (`_resolve_auto_attack`) — pela leitura estática, as duas
+distâncias se excluem, o cenário relatado parecia arquiteturalmente
+impossível. Log novo (`AUTO_ATK_RANGE_OK`, `server/combat_processor.py`,
+mesmo padrão `AOI_DBG`/`RPG_DEBUG_AOI=1`) capturando posição/`progress`/
+`is_dash` no exato instante em que um auto-attack passa pelo gate de
+alcance resolveu de vez: `tick=1632 attacker_progress=0.0
+attacker_is_dash=True attacker_current_tile=(129,375)` — igual ao
+DESTINO do dash, com a animação ainda em 0%.
+
+**Causa raiz (confirmada em código, não só no log)**:
+`server/skill_processor.py::_process_skill_requests`, logo depois de
+qualquer skill que move o player (hoje só Interceptar,
+`_MOVEMENT_PREDICTED_SKILLS`), fazia:
+```python
+tile_move.current_tile_x = _new_tx
+tile_move.current_tile_y = _new_ty
+```
+— snapando a posição LÓGICA pro destino do dash IMEDIATAMENTE, sem
+esperar `TileMovementSystem` completar o tween (`progress>=1.0`).
+`current_tile_x/y` é o MESMO campo que `_resolve_auto_attack`
+(`server/combat_processor.py`) usa pra medir distância — então o auto-
+attack (e qualquer skill futura) passava a achar que o player já tinha
+chegado, ~200ms antes da animação (servidor E cliente) realmente
+terminar. Achado com `git blame`: esse snap existe desde a implementação
+ORIGINAL do Interceptar (commit `9a62279`, 24/05/2026) — não é
+regressão de nenhuma correção recente das rodadas anteriores desta
+mesma skill (§84); sempre esteve lá.
+
+**Proposta inicial (rejeitada pelo usuário) e por quê**: cheguei a
+propor um "guard" separado (bloquear auto-attack enquanto `is_dash`
+estivesse tocando, sem mexer no snap) — corrigiria o sintoma sem tocar
+na causa. O usuário rejeitou explicitamente: "isso em si é uma correção
+incorreta... o dash deveria funcionar como proposto... após a animação
+[...] atualiza a posição [...] e só então [...] executa o dano, seja
+automático ou de skill". Está certo — um guard adicional em cima do
+snap deixaria DOIS mecanismos concorrentes controlando quando o player
+"chegou" (prática que este projeto já evita em outros lugares, ver
+`_tick_player_move_grace` em §84, causa raiz de um bug JUSTAMENTE por
+ter 2 relógios independentes decidindo a mesma coisa).
+
+**Fix real**: remover o snap. `current_tile_x/y` volta a mudar SÓ
+quando `TileMovementSystem` completa o tween — como já era o design
+original desse campo pra QUALQUER outro movimento (passo normal,
+knockback, etc.), Interceptar era a única skill com um atalho próprio.
+`target_tile_x/y` (que já muda na hora, de propósito) continua
+suficiente pra notificar rede (`_moved_this_tick`/
+`_skill_position_corrections`) — nada mais dependia do snap de
+`current_tile_x/y`.
+
+**Testes** (`tests/test_interceptar_no_early_auto_attack.py`, novo
+arquivo, 3 testes): `current_tile_x/y` não muda no tick do cast (só
+`target_tile_x/y` muda); auto-attack NÃO dispara logo após o cast;
+auto-attack dispara normalmente depois que `TileMovementSystem` termina
+o tween de verdade. Revert-to-confirm (restaurado o snap manualmente):
+2 dos 3 testes falharam exatamente como o bug relatado antes de
+restaurar o fix. `tests/diag_interceptar.py` (script de diagnóstico da
+investigação anterior, não coletado pelo pytest) tinha uma asserção que
+dependia do snap instantâneo — atualizada pra verificar `target_tile_x/y`
+(muda na hora) em vez de `current_tile_x/y` (só muda no fim da
+animação). Suíte completa (`pytest tests/ -q`, `py -3.10`): 1375
+passed, zero regressão.
+
+**Sintoma (b) — mobs "procurando" o player em posição errada, não é
+bug**: `EnemyAISystem` recalcula path do alvo perseguido no máximo a
+cada 0.8s (`path_recalc_interval`/`_CHASE_RECALC_MIN_TICKS_BY_TIER`,
+throttle deliberado de performance, 06/08/2026). Andando normal isso é
+imperceptível; o dash desloca o player várias tiles em 0.18s, então
+durante a janela de até 0.8s os mobs que já perseguiam continuam
+mirando a posição PRÉ-dash — mesmo throttle existente, só fica muito
+mais visível por causa do deslocamento quase instantâneo do dash. Não
+alterado nesta sessão — usuário não pediu ajuste, só perguntou; se
+quiser (ex: forçar recálculo de path pros mobs com o player como alvo
+no tick em que o dash completa), é decisão de trade-off performance ×
+responsividade a discutir separadamente (mesmo throttle calibrado em
+§29/§30).
+
+**2ª causa raiz — o fix acima não bastou, usuário testou de novo
+(31/08/2026, mesmo dia).** Confirmado no log novo que a 1ª correção
+funcionou: `AUTO_ATK_RANGE_OK` agora só passa DEPOIS de `DASH_COMPLETE`
+no servidor (era ~200ms ANTES). Mas o usuário ainda via o hit "antes do
+dash" na tela — achado com `RPG_DEBUG_INTERCEPTAR=1` (log do cliente):
+```
+MOVE_REQUEST tick=1061 ... accepted=True   ← passo normal ainda tocando
+DASH_OK      tick=1062 ...                 ← servidor confirma o dash
+DASH_START   real_tx=127 real_ty=378  queued=True   ← dash NÃO começou
+```
+`client/network_handlers.py::_handle_msg_entity_move`: quando a
+confirmação do dash chega e o player já está com uma animação de passo
+normal em andamento (`is_moving=True`), o dash entra em
+`_self_move_queue` e só começa a tocar quando essa animação anterior
+termina — comum, já que o jogador tipicamente andou até o alcance
+mínimo do Interceptar (74px) antes de castar. Como o passo normal dura
+mais que o dash (0.18s), o servidor (que nunca enfileira, sempre anima
+na hora) resolve tudo — inclusive o auto-attack seguinte — bem antes da
+animação do dash sequer COMEÇAR no cliente. Mesmo sintoma visual do bug
+original, causa diferente.
+
+**Fix (reaproveitando mecanismo já existente, não inventado)**: o
+próprio `_handle_msg_entity_move` já tem um caminho que PREEMPTA
+qualquer fila/animação em andamento e começa na hora — usado pelo
+knockback (Tiro Repulsivo), que sempre manda `duration` explícito no
+payload de correção. Interceptar nunca mandava esse campo, por isso caía
+no caminho de fila em vez do de preempção. Adicionado `"duration":
+tile_move.move_duration` (genérico — usa o valor que o próprio handler
+da skill já configurou, funciona pra qualquer skill futura em
+`_MOVEMENT_PREDICTED_SKILLS` sem hardcode) na correção de posição do
+Interceptar (`server/skill_processor.py`). Dispatch
+(`server/session.py:3245-3246`, `"duration" in pos_corr`) e tratamento
+no cliente já existiam prontos, só nunca eram alimentados por Interceptar.
+
+**Testes** (`tests/test_interceptar_no_early_auto_attack.py`, +1 teste):
+correção de posição carrega `duration == tile_move.move_duration` (>0).
+Revert-to-confirm (`duration: None` no lugar do valor real) reproduziu a
+falha antes de restaurar. Suíte completa (`pytest tests/ -q`, `py
+-3.10`): 1375 passed + 1 falha pré-existente e intermitente
+(`test_mob_despawn_sent_to_both_players`, domínio de AOI de mob,
+sem relação com Interceptar — passa sempre isolado, 2/2; falha só
+dentro da suíte completa, mesma classe de flakiness de dispatch
+assíncrono já documentada em `tests/helpers.py::run_ticks`).
+
+**3ª causa raiz — "Nenhum alvo" voltou a acontecer, usuário testou de
+novo (31/08/2026, mesmo dia).** Usuário questionou corretamente antes de
+eu concluir: o alvo (`combat_state.target_entity_id`) continuava
+selecionado, então por que "Nenhum alvo" em vez de simplesmente atacar?
+Verificação em código (`_resolve_target`, `engine/skill_handlers.py:
+157-181`) confirmou: o alvo já selecionado NUNCA é desfeito, mas a
+função sempre reconfere se ele ainda está dentro do alcance a partir da
+posição ATUAL do player (proteção deliberada, documentada — sem ela
+qualquer skill acertaria qualquer entidade do mapa). Log
+(`RPG_DEBUG_AOI=1` + `RPG_DEBUG_INTERCEPTAR=1`) mostrou a causa real:
+```
+DASH_OK       tick=1322  tx=133 ty=385  is_dash=True   ← Interceptar aponta pra (133,385)
+MOVE_REQUEST  tick=1322  tx=131 ty=382  accepted=True  ← 6ms depois, MOVE normal residual ACEITO
+DASH_COMPLETE eid=255  landed_tile=(131, 382)          ← dash "aterrissa" na tile do MOVE, não na do Interceptar!
+SKILL_WARN    reason=Nenhum alvo  caster_tile=(131,382)  target_tile=(133,384)
+```
+`move_player()` (`server/world_server.py`) sobrescrevia
+`current_tile_x/y`/`target_tile_x/y` incondicionalmente pra QUALQUER
+MOVE aceito, sem checar se um dash já estava em andamento — um MOVE
+normal residual (comum: jogador anda até o alcance mínimo do Interceptar
+e o cliente ainda tinha um passo WASD enfileirado quase junto com o
+cast) processado durante a janela do dash sequestrava o destino. O
+alvo continuava selecionado; o player é que fisicamente não estava mais
+perto dele. Comentário já existente no código ("corrida entre MOVE e
+CAST_SKILL") reconhecia esse risco, mas só tratava o lado cliente,
+nunca o servidor sobrescrevendo o próprio dash.
+
+**Achado real, não coincidência**: a 1ª correção desta seção (remover o
+snap instantâneo de `current_tile_x/y`) foi o que EXPÔS esta corrida —
+antes, o snap errado deixava `current_tile_x/y` já "adiantado" pro
+destino do dash, o que (por acidente) fazia o anti-cheat de
+`move_player()` rejeitar um MOVE residual incoerente com essa posição
+adiantada. Corrigir o snap (correto, pedido do usuário) removeu essa
+proteção acidental — o fix certo não é reverter o snap, é fechar o gap
+real que sempre existiu em `move_player()`.
+
+**Fix**: `move_player()` agora recusa (`return False`) um MOVE normal
+enquanto `TileMovement.is_dash and is_moving` (dash genuinamente em
+andamento) — simétrico à proteção que `TileMovementSystem` já dá pro
+caso inverso (dash não é interrompido por stun/sleep, `if not
+tile_movement.is_dash:`). Novo evento de log
+`MOVE_REJECTED_DASH_IN_PROGRESS` (`debug/aoi_debug.py`).
+
+**Testes** (`tests/test_interceptar_no_early_auto_attack.py`, +2
+testes): MOVE normal recusado durante dash em andamento, destino do
+dash preservado; MOVE normal funciona normalmente depois que o dash
+completa. Revert-to-confirm (`if False and tm.is_dash...`) — o teste de
+recusa falhou exatamente como o bug real (MOVE aceito, teria
+sequestrado o destino) antes de restaurar. Suíte completa (`pytest
+tests/ -q`, `py -3.10`): 1377 passed + a mesma falha pré-existente e
+intermitente de `test_mob_despawn_sent_to_both_players` (não relacionada).
+
+**Validação**: confirmada em jogo pelo usuário (31/08/2026) — "Certo,
+validado." Fechado. Log da sessão de validação (`debug/logs/
+interceptar_debug.log`) mostra a corrida MOVE×CAST_SKILL acontecendo de
+novo pelo menos 1 vez em jogo real (`DASH_OK tick=5702` seguido de
+`MOVE_REQUEST tick=5702 ... accepted=False` no mesmo tick) — desta vez
+corretamente RECUSADO pelo guard novo, e todo `DASH_FORCED` subsequente
+já carrega `duration=0.18` (2ª correção também confirmada ativa).
+
+## 88. Buff bar unificada (estilo WoW) — feature nova (31/08/2026)
+
+Usuário pediu: além de debuff (que já aparece ao lado do nameplate),
+uma barra de BUFF nova ao lado do minimapa, mostrando todo buff
+temporário ativo no próprio jogador — talento, skill, proc de item,
+buff de matar chefe de jungle — igual WoW. Seguido o fluxo completo do
+projeto (EnterPlanMode, Explore + Plan agents, `AskUserQuestion` pras
+decisões de design em aberto, plano escrito e aprovado ANTES de tocar
+em código).
+
+**Achado central da investigação (não suposição, código real)**:
+`StatusEffects`/`apply_effect()` (`engine/core_systems.py`) já tinha
+ícone + sincronização de rede (`AOI_UPDATE`/`deltas["effects"]`) + timer
+— mas só era usado na prática por CC/DoT. Todo buff de VERDADE do jogo
+(proc de item, self-buff de skill, buff de chefe de jungle) usava um
+mecanismo TOTALMENTE separado — `CombatStats.timed_modifiers`/
+`add_timed_modifier` — sem ícone, sem identidade estável, e **nunca
+sincronizado pro cliente**. Proc de item especificamente tinha um bug de
+dessincronia pré-existente, nunca reportado: o cliente re-rolava
+localmente com RNG próprio (`engine/world_systems.py::_trigger_procs`),
+podendo divergir do resultado real do servidor.
+
+**Decisões confirmadas com o usuário** (via `AskUserQuestion`, todas as
+3 recomendadas foram aceitas): (1) unificar via `StatusEffects` —
+reaproveitar o pipeline de ícone+sync existente, não criar canal de rede
+novo e paralelo; (2) buff bar só pra buffs TEMPORÁRIOS (talento
+permanente/equipamento continuam invisíveis, igual hoje); (3) fallback
+de quadrado colorido pra ícones sem PNG ainda, sem bloquear a
+implementação por arte.
+
+**Mecanismo**: `engine.core_systems.grant_visible_buff(world, eid,
+effect_type, duration, mutate_fn)` — novo ponto único, ao lado de
+`apply_effect`. Chama `apply_effect()` (registra `ActiveEffect`
+sincronizado) E roda `mutate_fn` (a mutação de stat real, tipicamente
+`add_timed_modifier`) — mesmo padrão de composição de
+`recalculate_preserving_hp_pct` (cada wrapper cuida de 1 preocupação).
+3 call sites reais passaram a rotear por aqui: `_roll_procs`
+(`engine/core_systems.py`, proc de item), `_grant_jungle_boss_buff`
+(`server/world_server.py`), self-buffs de skill (`_server_
+cancao_inspiracao`/`_server_so_um_gole` em `server/
+spell_completion_processor.py`, espelhados em `engine/skill_handlers.py`
+pro caminho client/offline). 14 entradas novas em `content/
+status_effects_data.py::EFFECT_DEFS` (8 procs de item, 2 self-buffs de
+skill, 4 variantes de buff de chefe de jungle), cada uma com chave
+ESTÁVEL e ÚNICA por fonte (nunca chave genérica — `StatusEffects.effects`
+só guarda 1 instância por chave, e é normal 2+ procs de itens DIFERENTES
+ativos ao mesmo tempo).
+
+`engine/world_systems.py::_trigger_procs` (re-roll cosmético do cliente,
+única fonte de dessincronia real) foi apagado — o cliente agora reage
+ao buff de verdade sincronizado, mesmo `LOG.add(...)` que debuff já
+dispara pra efeito novo (`client/remote_entity_handlers.py::
+_sync_player_effects`). **Trade-off aceito e avisado ao usuário**: a
+mensagem de log perde detalhe (não mostra mais nome do item/valor exato,
+só o nome do buff) — decorrência direta de "sem canal de rede novo".
+
+`ui/buff_bar.py` (novo módulo, mesma forma de `QuestSystem` —
+`UIScaleMixin`, sem precisar ser `System`) lê `StatusEffects` do PRÓPRIO
+jogador, filtra por `is_buff=True`, reaproveita `_build_effects_row()`
+(`ui/systems.py`, sem modificar) pra montar a fileira de ícones, blitada
+à ESQUERDA do minimapa (posição derivada de `UI.MINIMAP_*`, nunca
+hardcode — `UI.BUFF_BAR_MARGIN_TOP`/`BUFF_BAR_GAP_TO_MINIMAP` novos em
+`ui/ui_sizes.py`). Nameplate (`ui/systems.py::RenderSystem.render` +
+os 2 pontos equivalentes em `client/remote_entity_handlers.py`, mob
+remoto e player remoto) passa a EXCLUIR buff da própria lista de ícones
+(`_filter_nameplate_effects()`, extraído pra ser testável isolado) — só
+debuff continua lá, buff só na barra nova (só jogador local tem).
+
+**Bug real achado e corrigido junto (não pedido pelo usuário, mas
+autorizado explicitamente antes de tocar)**: `_grant_jungle_boss_buff`
+usava o MESMO `label` pra TODOS os modifiers de uma concessão — se o
+buff combina 2+ atributos numa concessão só (ex: buff_cycle índice 2 =
+armor+stamina, ou attack_power+haste_rating), `add_timed_modifier()`
+(`engine/stat_fns.py`) via o 2º label como "já existe" e só renovava o
+timer do 1º, NUNCA aplicando o 2º atributo de verdade — silencioso, sem
+erro, sem log. Corrigido: cada atributo dentro da MESMA concessão ganha
+seu próprio label (`f"{label_base}_{attribute}"`), todos compartilham a
+`duration` (expiram juntos na prática). `tests/test_jungle_camps.py`
+tinha um teste que validava (sem querer) o comportamento ANTIGO —
+reescrito pra checar o CONJUNTO de atributos aplicados, não só o
+primeiro.
+
+**Limitação aceita, avisada ao usuário**: `StatusEffects` só guarda 1
+`ActiveEffect` por chave — matar o MESMO chefe de jungle 2x antes do
+buff anterior expirar mostra 1 ícone só (duração renovada), não 2
+empilhados. O efeito de STATS continua empilhando normalmente (não
+mudou); só a representação visual simplifica pro que o ícone já suporta.
+
+**Testes**: `tests/test_buff_bar_status_effects_sync.py` (novo, `WorldServer`
+real — proc de item real com RNG forçado, buff de chefe de jungle
+incluindo o caso combinado e o caso de stacking, self-buff de skill,
+`grant_visible_buff` isolado); `tests/test_nameplate_buff_filter.py`
+(novo — filtro de nameplate isolado, sem pygame/screen real). Revert-to-
+confirm em `grant_visible_buff` (sem `apply_effect`) e no filtro de
+nameplate — falharam exatamente como o comportamento antigo antes de
+restaurar. Suíte completa (`pytest tests/ -q`, `py -3.10`): 1387 passed
++ 1 falha pré-existente/intermitente já catalogada (`test_mob_despawn_
+sent_to_both_players`, domínio de AOI de mob, sem relação — passa
+sempre isolado).
+
+**Validação**: pendente — usuário ainda vai testar em jogo.
+
+**Fase 2 (mesmo dia) — usuário apontou mais efeitos que deveriam
+aparecer**: Escudo de Fogo, Bloco de Gelo, Camuflagem, Fatiador de
+Corpos, Chama Interna, Na Mosca, Lapso Elemental. Investigação (Explore
+agent, tudo conferido linha a linha) achou que NENHUM desses usa
+`timed_modifiers` — cada um tem mecanismo PRÓPRIO:
+
+- **Fatiador de Corpos**: já aplica `cc_immune` via `apply_effect`
+  direto (`engine/skill_handlers.py:857`) — já era StatusEffects,
+  `is_buff=True`, já aparecia na buff bar de graça, zero trabalho.
+- **Lapso Elemental (parte de crit_rating)**: achado um buff REAL que
+  ficou de fora da varredura da fase 1 — usava `add_timed_modifier`
+  direto (`server/spell_completion_processor.py:961`, espelho
+  `ui/spell_system.py:1527`), nunca visível em lugar nenhum. Corrigido
+  igual qualquer buff da fase 1: roteado por `grant_visible_buff`, chave
+  nova `lapso_elemental_crit` (distinta de `elemental_lapse`, o debuff
+  de queima que continua no MESMO caster — StatusEffects só guarda 1
+  por chave, não dava pra reusar).
+- **Escudo de Fogo / Bloco de Gelo**: componente dedicado
+  (`FireShieldEffect`/`IceBlockEffect`, `engine/components.py:1669,1676`)
+  com tick DUPLICADO cliente+servidor já funcionando
+  (`server/world_server.py:5631`/`5670`, `ui/spell_system.py:1780`/`1740`).
+  Bloco de Gelo já tem barra de progresso própria no HUD
+  (`client/hud_handlers.py:262`).
+- **Camuflagem**: `CombatStats.camouflage_timer` (contagem regressiva
+  direta) conectado em 10+ arquivos — visibilidade AOI
+  (`server/session.py:59`, decide o que é mandado pra OUTROS clientes),
+  alvo de mob (`server/mob_system.py`), respawn/ghost
+  (`server/respawn_system.py`, mesmo flag `is_visible` reusado),
+  targeting em combate (`engine/world_systems.py`, 7+ pontos).
+- **Chama Interna / Na Mosca**: `CharacterStats.fire_instant_ready` /
+  `CombatStats.na_mosca_bonus_active` — flags booleanas SEM duração
+  nenhuma, ficam True até serem consumidas pelo próximo cast (não é
+  "buff por N segundos", é "proc pronto pra usar", categoria diferente).
+
+**Decisão do usuário**: NÃO migrar nenhum desses pra StatusEffects —
+Camuflagem sozinha tem consumidores demais (mexer no mecanismo dela é
+risco alto pra um ganho só visual); Escudo de Fogo/Bloco de Gelo têm
+tick duplicado já funcionando, testado, em produção. Em vez disso, a
+buff bar ganhou a capacidade de LER esses componentes/campos como estão
+— `ui/buff_bar.py::_gather_extra_buffs(world, player_entity)`, 1
+checador pequeno por fonte, cada um só lê (nunca escreve) e devolve um
+"fake effect" sintético (`_FakeEffect`, mesmo padrão do shim de stun no
+nameplate, `ui/systems.py`) com `effect_type`/`duration` — os 2 únicos
+atributos que `_build_effects_row()` precisa. Proc sem duração
+(Chama Interna/Na Mosca) aparece com `duration=0` — `_build_effects_row`
+já pula o overlay de tempo quando `duration<=0`, comportamento existente
+reaproveitado sem mudança. Bloco de Gelo/Fatiador de Corpos MANTÊM a UI
+própria que já tinham (barra de progresso / canalização na hotbar) — o
+ícone da buff bar é adicional, não substitui (decisão do usuário, menor
+risco).
+
+6 entradas novas em `EFFECT_DEFS` (`escudo_fogo`, `bloco_de_gelo`,
+`camuflagem`, `chama_interna`, `na_mosca`, `lapso_elemental_crit`) — as
+5 primeiras NUNCA são de fato aplicadas via `apply_effect` (só existem
+pra dar label/cor de fallback aos "fake effects" sintéticos); só
+`lapso_elemental_crit` é uma StatusEffects de verdade.
+
+Confirmado (grep exaustivo): `enraged`/`haste`/`regen` em `EFFECT_DEFS`
+não têm NENHUM produtor no código atual — entradas órfãs pré-existentes,
+fora de escopo (não é "deveria aparecer e não aparece", é infra sem uso).
+
+**Testes**: `tests/test_buff_bar_extra_sources.py` (novo — `_gather_extra_buffs`
+isolado: cada fonte aparece/some conforme o campo/componente real muda,
+duração calculada certa pros com `duration-elapsed`); +1 teste em
+`tests/test_buff_bar_status_effects_sync.py` (Lapso Elemental crit real,
+`WorldServer`, RNG de crit forçado via mock, guarda de regressão
+confirmando que o debuff de queima continua intacto e separado).
+Revert-to-confirm em `_gather_extra_buffs` (retorno vazio forçado — 5 de
+7 testes falharam como esperado) e no wiring do Lapso Elemental (voltou
+pro `add_timed_modifier` direto — falhou como esperado) antes de
+restaurar. Suíte completa (`pytest tests/ -q`, `py -3.10`): 1395 passed
++ a mesma falha pré-existente/intermitente de sempre, sem relação.
+
+**Validação**: pendente — usuário ainda vai testar em jogo.
+
+**Ajuste (01/09/2026)**: ícone da buff bar pedido maior — 32×32 em vez
+dos 16×16 padrão de nameplate. `_build_effects_row()` (`ui/systems.py`)
+ganhou parâmetro opcional `icon_size` (default `None` = mantém 16px pra
+todo call site existente — nameplate local/mob remoto/player remoto
+intocados); PNG de 16×16 é reescalado com `pygame.transform.scale` (não
+`smoothscale`, de propósito — mantém nitidez pixel-art no upscale).
+Novo `UI.BUFF_BAR_ICON = 32` (`ui/ui_sizes.py`, escala com `_u()` igual
+todo resto da UI). Fila (mais novo à direita, mais antigo empurrado pra
+esquerda, 3px de gap) já funcionava assim de propósito — confirmado ao
+usuário, não precisou de mudança — MAS achada uma limitação real ao
+explicar: a ordem só é cronologicamente correta DENTRO de cada fonte
+(StatusEffects entre si). Os "fake effects" de `_gather_extra_buffs`
+(Escudo de Fogo/Bloco de Gelo/Camuflagem/procs) são sempre concatenados
+DEPOIS da lista de StatusEffects, então aparecem sempre como o "grupo
+mais novo" (mais à direita) mesmo que tenham sido ativados antes de um
+buff de StatusEffects — não existe um relógio compartilhado entre os 2
+grupos hoje. Avisado ao usuário; não corrigido ainda (pendente decisão
+se vale a complexidade de um timestamp real cross-fonte).
+
+**Correção (01/09/2026) — usuário pediu explicitamente, com restrição
+de arquitetura clara**: "não faça correções que hardcodam nada... se
+precisar criar um sistema que centraliza esses efeitos, crie, mas não
+ponha um pedaço de código em cada efeito". Criado `engine/effect_order.py`
+— ponto único novo: um contador monotônico (`_next_seq()`) guardado no
+componente `EffectOrder` (`engine/components.py`, `dict[effect_type,
+seq]` por entidade), com 2 funções (`mark_activated`/`get_seq`).
+
+**Cobertura sem call site novo em quase tudo**: `engine.core_systems.
+apply_effect()` (o funil único de TODO buff/debuff de StatusEffects —
+proc de item, buff de skill, buff de jungle boss, `cc_immune`,
+`lapso_elemental_crit`, e qualquer buff futuro que passar por
+`grant_visible_buff`) chama `mark_activated()` sozinho, na criação de um
+`ActiveEffect` NOVO (nunca no refresh de um já ativo — buff que renova
+não pula pra frente da fila). Zero código adicional em qualquer skill/
+talento que já usa `apply_effect`/`grant_visible_buff`.
+
+**Onde precisou de 1 chamada nova** (só nos mecanismos que NÃO passam
+por `apply_effect`, confirmando o inventário do §88 fase 2): `client/
+remote_entity_handlers.py::_sync_player_effects` (o ponto de ativação
+REAL pro jogador local em modo online — servidor roda `apply_effect`
+por trás, cliente só espelha, nunca rechama); `client/network_handlers.py`
+(3 pontos — confirmação de Escudo de Fogo/Bloco de Gelo/Camuflagem pro
+jogador local online, mesmo raciocínio: skill roda só no servidor,
+cliente espelha ao confirmar); `engine/skill_handlers.py` (mesmos 3,
+cobertura server-side/offline); Chama Interna e Na Mosca (2 pontos cada
+— proc client `ui/spell_system.py` + proc server `server/
+spell_completion_processor.py`, ambos com guard "só na transição
+False→True", igual todo o resto).
+
+`ui/buff_bar.py::BuffBar.render()` ordena a lista COMBINADA (StatusEffects
++ `_gather_extra_buffs`) por `get_seq()` antes de montar a fileira —
+nenhuma comparação hardcoded por fonte, só 1 `sort()` genérico.
+
+**Testes** (`tests/test_effect_order.py`, novo): contador cresce a cada
+marcação nova; refresh de efeito já ativo NÃO reordena (`apply_effect`
+integrado corretamente); e o teste que prova o bug relatado —
+Escudo de Fogo ativado ANTES de um proc de item aparece à ESQUERDA dele
+na fila combinada e ordenada (o inverso também testado). Revert-to-confirm
+(`get_seq` retornando sempre 0) — 4 de 7 testes falharam exatamente como
+o bug relatado (incluindo o teste de ordem cross-fonte) antes de
+restaurar. Suíte completa (`pytest tests/ -q`, `py -3.10`): 1402 passed
++ a mesma falha pré-existente/intermitente de sempre, sem relação.
+
+**Ajuste do mesmo pedido**: ícone da buff bar aumentado pra 32×32 (era
+16×16, igual nameplate) — `_build_effects_row()` ganhou `icon_size`
+opcional (default preserva 16px em todo call site de nameplate/mob/
+player remoto), novo `UI.BUFF_BAR_ICON=32` em `ui/ui_sizes.py`.
+
+**Validação**: pendente — usuário ainda vai testar em jogo.
+
+## 89. Barra de HP do HUD "crescia" além do normal com proc que aumenta max_hp (01/09/2026)
+
+Usuário relatou: proc "Vontade Imortal" (item `amulet_undying`, +stamina
+→ +max_hp) fazia a barra de HP do HUD (canto superior esquerdo)
+aumentar de tamanho, em vez de só refletir a vida nova. Corretamente
+identificado pelo usuário como estrutural: "qualquer efeito que aumente
+a vida do personagem precisa afetar a quantidade de HP, mas a HUD não
+deve ser afetada... algo na UI está com um furo".
+
+**2 causas, ambas estruturais**:
+
+1. **Sync real faltando** — `WorldServer._sync_player_hp_dirty()`
+   (`server/world_server.py`) já detecta QUALQUER mudança de current_hp/
+   max_hp genericamente ("cobre qualquer fonte de mudança... sem
+   precisar de código por feature", docstring original), mas só usava
+   isso pra montar o broadcast AOI pros OUTROS players —
+   `server/session.py` EXCLUI o próprio dono desse broadcast de
+   propósito (`exclude_sid=_caster_sid`), com um comentário assumindo
+   "já tem via STATS_UPDATE" de outro canal. Falso: nenhum canal real
+   manda `hp_max` pro dono quando a mudança vem de
+   `add_modifier`/`timed_modifiers` sem `queue_stats_update` explícito —
+   proc de item, buff de chefe de jungle, self-buff de skill (todo o
+   território do §88) nunca chamam isso. `current_hp` eventualmente
+   chegava certo via HP5/combate (que só manda `hp_after`, nunca
+   `hp_max`), mas com o `max_hp` do PRÓPRIO cliente preso no valor
+   ANTIGO — `current/max` passava de 1.0.
+2. **UI sem teto defensivo** — `client/hud_handlers.py::_draw_hud`
+   calculava a proporção de preenchimento de TODAS as 5 barras (HP/mana/
+   concentração/aljava/raiva) só com `max(0, ...)`, sem `min(1, ...)`.
+   Se a proporção passar de 1.0 por qualquer motivo (mesmo um desync de
+   1 tick), o retângulo de PREENCHIMENTO desenha mais largo que a
+   moldura de fundo — visualmente "a barra cresce". Todo outro lugar do
+   jogo que desenha barra de HP (`ui/hud_bars.py::build_simple_hp_bar`/
+   `build_player_hud`, `ui/systems.py:1671`) já clampava os dois lados;
+   este arquivo era o único ponto sem o teto.
+
+**Fix**: `_sync_player_hp_dirty()` agora TAMBÉM enfileira 1
+`queue_stats_update({"player_eid", "hp", "hp_max"})` privado pro próprio
+dono, reusando a MESMA detecção genérica — nenhuma skill/talento/proc
+precisa chamar isso à mão, cobre qualquer fonte futura também. As 5
+barras de `hud_handlers.py` ganharam `min(1.0, ...)` — defensivo, pra
+qualquer desync remanescente nunca mais desenhar fora da moldura.
+
+**Testes** (`tests/test_owner_hp_max_sync.py`, novo): proc que aumenta
+stamina gera STATS_UPDATE privado pro dono com hp/hp_max corretos; sem
+mudança de HP não gera update novo (evita spam); dano normal também
+notifica (guarda de regressão — não quebrar o caminho que já funcionava).
+Revert-to-confirm (removida a chamada nova) — 2 dos 3 testes falharam
+exatamente como o bug relatado antes de restaurar. Suíte completa
+(`pytest tests/ -q`, `py -3.10`): 1405 passed + a mesma falha pré-
+existente/intermitente de sempre, sem relação.
+
+**Validação**: pendente — usuário ainda vai testar em jogo.
+
+## 90. Tooltip nos ícones da buff bar (01/09/2026)
+
+Usuário pediu tooltip ao passar o mouse num ícone da buff bar, igual já
+existe nas skills da hotbar — explicitamente pedindo um sistema
+centralizado, não um bloco de código por efeito (mesma régua já usada
+no §88).
+
+**Achado da investigação**: não existe um registro genérico de "área do
+mouse → tooltip" no jogo — cada UI (hotbar, inventário) faz o próprio
+hit-test e escreve numa caixa de correio compartilhada
+(`self._pending_tooltip`/`self._pending_skill_tooltip`, `game.py`), que
+`client/tooltip_handlers.py::_draw_tooltip()` desenha no fim do frame —
+essa PARTE (a caixa em si) já é ponto único reaproveitável. O tooltip de
+skill (`_skill_tooltip_lines`) tem uma cadeia grande de `if sid ==
+"golpe_poderoso": ...` — texto calculado na mão por skill, exatamente o
+padrão que o usuário pediu pra NÃO repetir aqui. `_build_effects_row()`
+(a função que desenha os ícones, usada pela buff bar e pelo nameplate)
+devolvia só uma `Surface` achatada, sem preservar qual pixel pertence a
+qual ícone — faltava a base pra saber "o mouse está sobre qual buff".
+`EFFECT_DEFS` só tinha `label` (nome curto), nenhuma frase descritiva em
+lugar nenhum do jogo, pra nenhum buff.
+
+**Decisões do usuário**: descrição = texto FIXO por buff (não calculado
+ao vivo — evita replicar o padrão hardcoded do tooltip de skill); escopo
+só a buff bar por agora (nameplate/debuff de qualquer entidade fica pra
+depois, mecanismo já genérico o bastante pra estender sem reescrever).
+
+**Mecanismo**: `EffectDef` (`content/status_effects_data.py`) ganhou
+campo `description: str = ""` — mesmo catálogo central que já dá
+label/cor/ícone, 1 frase por buff (as ~21 já cadastradas nos §88/89:
+procs de item, self-buffs de skill, buffs de chefe de jungle,
+`cc_immune`, `lapso_elemental_crit`, Escudo de Fogo, Bloco de Gelo,
+Camuflagem, Chama Interna, Na Mosca). `_build_effects_row()`
+(`ui/systems.py`) passa a devolver `(surface, rects)` —
+`rects: list[(effect_type, Rect_local)]`, o MESMO `ix`/`ICON` já usados
+pra desenhar, só que também guardados — mesmo princípio da hotbar
+(geometria calculada 1x, nunca duplicada num hit-test separado). Os 3
+call sites existentes (nameplate, mob remoto, player remoto) só
+desempacotam a tupla nova, sem mudança de comportamento.
+
+`ui/buff_bar.py::BuffBar` guarda `_last_icon_rects` (rects traduzidos
+pra coordenadas de TELA + duração de cada um) a cada `render()`; novo
+`check_hover(mx, my)` devolve `(label, lines)` no MESMO formato que
+`_draw_tooltip()` já espera — `lines` = descrição (se houver) + "Ns
+restantes" (só quando `duration>0`, mesma regra que o ícone já segue —
+proc sem timer tipo Chama Interna não mostra número). `game.py` chama
+isso depois do `render()` da buff bar e alimenta `self._pending_tooltip`
+— zero código de desenho novo, reaproveita 100% o que já existe.
+
+**Testes** (`tests/test_buff_bar_tooltip.py`, novo): toda entrada de
+`EFFECT_DEFS` alcançável pela buff bar tem `description` não-vazia
+(guarda de regressão pra buff futuro esquecer o campo); `_build_effects_row`
+devolve rects na posição/ordem certa; `check_hover` acha o ícone certo
+sob o mouse, devolve `None` fora de qualquer ícone, e não mostra linha
+de tempo pra proc sem duração. Revert-to-confirm (description apagada
+de 1 entrada) — o teste de guarda falhou exatamente como esperado antes
+de restaurar. Suíte completa (`pytest tests/ -q`, `py -3.10`): 1411
+passed + a mesma falha pré-existente/intermitente de sempre, sem
+relação.
+
+## 91. Feedback visual de bush stealth — opacidade 50% no próprio sprite (01/09/2026)
+
+Usuário pediu: ao entrar numa zona de bush (stealth estilo LoL/MOBA,
+`bush_zones`, já existente desde §47/13-08-2026), o PRÓPRIO jogador vê
+seu personagem com ~50% de opacidade — sinal pessoal de "estou
+escondido dos outros agora". Confirmado explicitamente com o usuário,
+FORA de escopo: fog of war / falta de linha de visão comum ("atrás de
+árvore", `server/tile_los_processor.py`) NÃO conta — é comportamento
+natural de qualquer MMO, não stealth deliberado; só a zona de bush de
+verdade ativa o feedback.
+
+**Achado da investigação**: `_get_bush_zone(eid)` (`server/
+bush_zone_processor.py`) já existia, 100% server-side, recalculado sob
+demanda a cada checagem de visibilidade (`server/session.py::_can_see`)
+— zero informação de "estou numa bush" chegava ao cliente. Confirmado
+que bush e Camuflagem (`CombatState.is_visible`/`is_camouflaged`) são 2
+mecanismos totalmente separados, sem overlap de código — a implementação
+teve o cuidado explícito de nunca tocar nesses 2 campos existentes.
+
+**Mecanismo**: `CombatState.is_bush_hidden: bool` (`engine/
+components.py`) — campo novo, client-side, sem significado nenhum pro
+servidor além de espelhar `_get_bush_zone(eid) is not None`.
+`WorldServer._sync_player_bush_dirty()` (`server/world_server.py`),
+MESMO princípio de `_sync_player_hp_dirty` (§89): cache por player
+(`self._player_bush_cache: dict[int, bool]`), só enfileira
+`queue_stats_update({"player_eid": eid, "in_bush": bool})` quando o
+estado MUDA — 100% privado (nunca broadcast AOI, ninguém além do dono
+precisa saber). `client/network_handlers.py::_handle_msg_stats_update`
+aplica `in_bush` em `CombatState.is_bush_hidden` só no bloco do próprio
+player (`eid == self._my_eid`), mesmo padrão de `hp`/`hp_max`.
+
+`ui/systems.py::RenderSystem.render()` ganhou um novo `elif` no mesmo
+bloco de desenho de entidade (`_sprite_rnd`/`_is_corpse_draw`/
+`_is_ghost_draw`/`else`), logo depois de `_is_ghost_draw` (espírito tem
+prioridade visual — morto E numa bush ao mesmo tempo mostra espírito,
+não bush): `elif _is_local_player and combat_state.is_bush_hidden`, MESMA
+técnica já usada pro espírito (`fill_surf(..., alpha=127)`). A checagem
+`_is_local_player` (`PlayerControlled`) já existia nesse método, mas só
+calculada mais abaixo pro badge de HUD — subida pra ANTES do bloco de
+desenho, reusada nos 2 lugares (removida a duplicata).
+
+**Testes** (`tests/test_bush_stealth.py`, nova classe
+`TestSyncPlayerBushDirty`): entrar na bush gera update com
+`in_bush=True`; sair gera `in_bush=False`; sem transição (fora, ou
+permanecendo dentro do mesmo bush) não gera nada — evita spam todo
+tick. Revert-to-confirm (`_sync_player_bush_dirty` temporariamente
+desativado) — os 2 testes de transição falharam exatamente como
+esperado antes de restaurar. Suíte completa (`pytest tests/ -q`,
+`py -3.10`): 1415 passed + a mesma falha pré-existente/intermitente de
+sempre (`test_mob_despawn_sent_to_both_players`), sem relação.
+
+**Fora do automatizável (nesta rodada inicial)**: opacidade aparecendo/
+sumindo de verdade em jogo — usuário ainda ia validar.
+
+### Correção (01/09/2026, mesmo dia) — a fonte de detecção nunca disparava em mapa real
+
+Usuário testou em jogo e a opacidade nunca apareceu. Investigação:
+`grep` em `maps/*_entities.json` inteiro não acha a chave `bush_zones`
+em NENHUM mapa — `_get_bush_zone()` sempre retorna `None` na prática,
+só populado em fixtures sintéticas de teste
+(`tests/test_bush_stealth.py`, comentário do próprio arquivo já dizia
+isso). A Fase 1 acima estava correta pro que foi pedido, mas não tinha
+onde disparar — bug de dado ausente, não de lógica.
+
+Perguntado ao usuário como resolver: confirmou que "bush" de verdade
+já existe como objeto de tile real, catalogado em `engine/tileset.py`
+linha 913 (`OBJECT_SHEET_FAMILIES`, sheet "TX Village Plant", grupo
+`"arbustos"`, tiles `pl_b1..pl_b26`, `vision_height=2`,
+`vision_rect="base_row"`) — e confirmou também (achado adicional desta
+investigação) que a invisibilidade DE VERDADE pros outros players ao
+pisar num arbusto real já funciona hoje, testado, mas por OUTRO
+mecanismo: `server/tile_los_processor.py::_has_tile_los()` (chamado por
+`server/session.py::_can_see`), que trata qualquer tile com
+`vision_height>=2` no próprio tile do alvo como bloqueio de LOS —
+universal, sem relação com `_get_bush_zone`. **`_has_tile_los`/
+`_can_see` não foram tocados** — já funcionam, são a fonte de verdade
+da invisibilidade real.
+
+Problema: `vision_height>=2` sozinho não distingue bush de árvore
+(grupo `"arvores"`, mesmo tileset, mesma `vision_height=2`) — e o
+usuário já tinha confirmado antes que "atrás da árvore" NÃO deve ativar
+a opacidade. `TileType` não tinha nenhum campo consultável pra "isto é
+um arbusto" (só uma convenção informal de nome de sprite,
+`sprite_name="pl_b1"`) — checar isso por string em runtime seria
+exatamente o padrão hardcoded que o usuário já tinha rejeitado nesta
+sessão pro sistema de buffs, então virou plano formal (EnterPlanMode)
+antes de codar.
+
+**Fix**: `TileType.is_bush: bool = False` (novo campo,
+`engine/tileset.py`) — só o grupo `"arbustos"` (linha 913) passa
+`"is_bush": True`; `_register_catalog_tiles`/
+`discover_object_sheet_tiles` propagam o parâmetro (mesmo padrão já
+usado por `default_vision_height`/`underlying_terrain` por grupo).
+`engine/entity_factory.py::create_tilemap` — o `dataclasses.replace()`
+que já propaga `vision_height` pra toda a pegada de visão do objeto
+(`vision_rect="base_row"`, pode cobrir várias colunas num arbusto
+largo) ganhou `is_bush=obj_tile.is_bush` no MESMO replace — sem isso só
+a célula-âncora ficaria marcada, não o resto da base de um arbusto
+largo (`pl_b3`+, 64px = 2 tiles). Novo
+`BushZoneProcessorMixin._is_on_bush_tile(eid)`
+(`server/bush_zone_processor.py`) lê `tile_matrix[ty][tx].is_bush` na
+posição atual do player (reusa `TileLosProcessorMixin._tilemap_for_map`,
+mesmo lookup que `_has_tile_los` já usa).
+`WorldServer._sync_player_bush_dirty()` trocou a fonte de
+`self._get_bush_zone(peid) is not None` pra
+`self._is_on_bush_tile(peid)` — resto do método (cache/dirty-check
+privado) intocado.
+
+**Achado fora de escopo, reportado ao usuário, NÃO corrigido agora**:
+`WorldServer._tick_bush_target_clear()` (limpa `target_entity_id`
+travado quando o alvo entra num bush) também lê `_get_bush_zone`/
+`_bush_zone_cache` — mesma causa raiz, nunca dispara em mapa real. Um
+alvo que fica de fato invisível via `_has_tile_los` (pisando num
+arbusto de verdade) não limpa a mira travada de quem já mirava nele.
+Gap pré-existente, independente desta tarefa (opacidade) — decisão de
+corrigir ou não fica com o usuário.
+
+**Testes**: `TestIsOnBushTile` (novo) — em cima de arbusto real →
+`True`; em cima de árvore (mesmo `vision_height=2`) → `False`, guarda
+de regressão pro caso que motivou a distinção; fora de qualquer objeto
+→ `False`. `TestBushFootprintPropagation` (novo) — arbusto largo
+(`pl_b3`) via `create_tilemap` de verdade marca `is_bush=True` em TODA
+a base (célula-âncora + 2ª coluna), não só a âncora; árvore larga nunca
+marca `is_bush`, mesmo bloqueando visão. `TestSyncPlayerBushDirty`
+adaptado pra plantar um arbusto real (`_plant_object`, novo helper) em
+vez de popular `_bush_zones_by_map`. Revert-to-confirm em 2 pontos
+(`"is_bush": True`→`False` no grupo do catálogo; `is_bush=` removido do
+`replace()` de propagação) — cada um derrubou exatamente os testes
+esperados antes de restaurar. Confirmado por script ad-hoc
+(`create_tilemap` com objeto `pl_b3` de 2 tiles de largura) que a 2ª
+célula da base ganha `is_bush=True` de verdade, não só a âncora. Suíte
+completa (`pytest tests/ -q`, `py -3.10`): 1420 passed + a mesma falha
+pré-existente/intermitente de sempre, sem relação. Confirmado por
+`grep` que `map_1`, `map_main` e a battleground têm milhares de
+ocorrências de `pl_b*` já plantadas — a opacidade tem onde disparar de
+verdade agora. Validação final (opacidade aparecendo/sumindo ao
+entrar/sair de um arbusto real) fica com o usuário, em jogo.
+
+## 92. Comando `/forfeit`/`/ff` na BG (01/09/2026)
+
+Usuário pediu: mesma UX do `/ff` que a Arena já tem, aplicada ao
+battleground — sem votação de time (versão de testes), qualquer player
+que digitar decide a partida na hora, placar igual ao de Nexus
+derrubado, derrota pro time de quem desistiu. Perguntei escopo (só
+fila real de matchmaking, ou também `/testbg` debug) — usuário
+confirmou os dois.
+
+**Achado da investigação que mudou o esforço estimado de "pequeno" pra
+"médio"**: `/forfeit`/`/ff` já é interceptado no CLIENTE pela Arena
+(`client/arena_handlers.py::_try_handle_arena_chat_command`) — e o
+interceptor SEMPRE engolia o comando (`return True`), mesmo fora de
+partida de Arena, só mostrando "você não está em uma partida de
+Arena". Se a BG ganhasse um interceptor simétrico chamado DEPOIS do da
+Arena na cadeia (`client/chat_handlers.py::_send_chat_message`),
+qualquer player numa partida de BG (mas não de Arena) digitando `/ff`
+nunca chegaria a ver o handler de BG — a Arena sempre roubava o
+comando primeiro. Existem também DOIS sistemas de BG paralelos, cada
+um com sua própria função "Nexus caiu, monta placar" quase-gêmea
+(`server/bg_queue_processor.py::notify_bg_queue_nexus_destroyed` pra
+fila real matchmade; `server/debug_battleground.py::
+notify_nexus_destroyed` pro `/testbg` de debug, estado global módulo
+em vez de dict por partida) — `/ff` precisa de uma versão "declara o
+time ADVERSÁRIO vencedor" em cada um, sem duplicar o cálculo de
+placar.
+
+**Mecanismo**:
+- Extraído `BgQueueProcessorMixin._finish_bg_match(match, match_id,
+  winner_faction)` do bloco de placar de `notify_bg_queue_nexus_destroyed`
+  (mesmo cálculo de K/D/A/Farm/Gold/Dano por delta) — reaproveitado por
+  novo `request_bg_forfeit(eid)`: acha o time de `eid`, declara o
+  ADVERSÁRIO vencedor, chama `_finish_bg_match`. Guardas: `not_in_match`/
+  `already_decided`/`fight_not_started` (antes do portão abrir não faz
+  sentido desistir de uma luta que nem começou).
+- Mesmo padrão espelhado em `server/debug_battleground.py`: extraído
+  `_finish_debug_match(ws, winner_faction)` de `notify_nexus_destroyed`,
+  novo `_forfeit(ws, eid)` e subcomando `/testbg ff` no `handle_command`
+  já existente (zero mensagem de protocolo nova — mesmo texto puro que
+  `/testbg leave` já usa).
+- `MsgType.BG_FORFEIT` novo (C→S `{}`, espelha `ARENA_FORFEIT`) só pra
+  fila real. `server/session.py::_handle_bg_forfeit` despacha pro
+  `request_bg_forfeit`.
+- **Fix necessário na Arena** (`client/arena_handlers.py::
+  _try_handle_arena_chat_command`): "não está em partida de Arena" virou
+  `return False` (passa a vez) em vez de `return True` (engolia com
+  aviso) — a mensagem final de "não está em partida nenhuma" passou a
+  ser responsabilidade de quem está no fim da cadeia (o handler de BG,
+  que sempre reenvia pro servidor e deixa o servidor responder com texto
+  claro quando não há partida nenhuma — mesmo padrão que `/testbg` já
+  usa pra qualquer uso indevido).
+- Novo `client/battleground_handlers.py::_send_bg_forfeit`/
+  `_try_handle_bg_forfeit_chat_command`: fila real → `BG_FORFEIT`; senão
+  → texto puro `/testbg ff` (mesmo espírito de `_send_bg_leave`, que já
+  faz essa mesma distinção pro botão "Voltar"). O handler de BG SEMPRE
+  consome "/forfeit"/"/ff" quando chega até ele (depois da Arena na
+  cadeia) — mesmo fora de qualquer partida, porque o servidor responde
+  com uma mensagem de chat clara nesse caso.
+
+**Testes**: `tests/test_bg_queue.py::TestBgQueueForfeit` (fila real) —
+desistir decide a partida com derrota pro PRÓPRIO time (não só "eu
+saio"), vencedor certo pros 2 lados, guardas de not_in_match/
+fight_not_started/already_decided, 2ª chamada não sobrescreve.
+`tests/test_debug_battleground_match.py::TestForfeit` (debug) — mesmo
+conjunto adaptado ao estado global. Revert-to-confirm em 2 pontos
+(winner-side hardcoded pra `arena_time_a` em cada `request_bg_forfeit`/
+`_forfeit`) — cada um derrubou exatamente os testes sensíveis à direção
+certa antes de restaurar. Suíte completa (`pytest tests/ -q`,
+`py -3.10`): 1430 passed + a mesma falha pré-existente/intermitente de
+sempre, sem relação.
+
+**Fora do automatizável**: a cadeia de interceptação de chat no
+cliente (Arena passa a vez → BG assume) não tem cobertura de teste
+automatizado — nenhum teste client-side prévio pra esses mixins de
+comando de chat existia no projeto, e criar um harness de `GameEngine`
+completo só pra isso ficou desproporcional ao tamanho da mudança
+(lógica é 1 `if`/`return` por handler). Usuário valida em jogo 3
+cenários: `/ff` dentro de Arena, `/ff` dentro de BG (fila real ou
+`/testbg`) sem estar em Arena, `/ff` fora de qualquer partida.
+
+## 93. Skill real sumia da hotbar ao SAIR da BG — não é bug do `/ff`, pré-existente (01/09/2026)
+
+Usuário usou `/ff` (fila real, §92) level 1, só com Golpe Poderoso na
+barra dentro da instância; ao sair, "Impacto" (skill real de guerreiro,
+já tinha antes de entrar) sumiu da barra — as outras voltaram certas.
+Hipótese inicial do usuário: `/ff` não estava "desinstanciando"
+corretamente. Usuário pediu investigação mais funda antes de aceitar
+minha 1ª hipótese, citando que esse tipo de bug já tinha acontecido e
+sido corrigido antes — correto pedir isso, então a causa foi confirmada
+por REPRODUÇÃO (teste com o payload exato que o servidor manda, não só
+leitura de código) antes de eu declarar corrigido.
+
+**Causa raiz, confirmada por reprodução com o nome exato da skill
+relatada**: `client/network_handlers.py::_handle_msg_stats_update`
+processa o campo `skills_hotbar` (o bloco descrito no §73) ANTES do
+campo `in_instance` (bloco mais abaixo na mesma função, que atualiza
+`InstanceInventoryUIState.active`). `server/instance_progression.py::
+exit_normalized_progression`→`_push_stats_update` sempre manda os dois
+campos JUNTOS, no MESMO STATS_UPDATE, ao sair de qualquer instância —
+não só via `/ff`. No instante em que `skills_hotbar` é processado, o
+flag "estou na BG" ainda reflete o estado de ANTES de sair (`True`,
+stale) — o filtro que só deveria valer DENTRO da instância
+(`INSTANCE_SKILL_UNLOCK_ORDER` da classe) ainda é aplicado à lista
+REAL de skills que o servidor mandou pra restaurar, descartando
+qualquer skill real fora dessa lista curada. "Impacto" é exatamente
+esse caso: 2ª skill real de guerreiro (`SKILL_ORDER_BY_CLASS`), mas
+ausente de `INSTANCE_SKILL_UNLOCK_ORDER["guerreiro"]` (vai direto de
+Golpe Poderoso pra Interceptar).
+
+**Por que parecia ligado ao `/ff` e não é**: rastreado o caminho
+completo, `/ff` (`request_bg_forfeit`→`_finish_bg_match`) e Nexus
+derrubado (`notify_bg_queue_nexus_destroyed`→mesma `_finish_bg_match`,
+§92) convergem pro MESMO `request_bg_leave`→`exit_normalized_
+progression` na hora de sair de verdade — nenhum código novo desta
+sessão fica nesse caminho. Sem entrada em `PROBLEMAS_ARQUITETURA.md`
+nem commit documentando um fix anterior pra esse sintoma específico
+(skill sumindo AO SAIR — §73/§74 tratam de skill sumindo/trocando de
+posição DENTRO da instância, mecanismo relacionado mas diferente);
+mais provável é essa combinação de payload nunca ter sido exercitada
+antes com uma skill real fora da lista curada envolvida.
+
+**Fix**: bloco `skills_hotbar` passa a ler `payload.get("in_instance")`
+primeiro (valor explícito DESTE payload), só caindo pro `.active` do
+componente (estado desatualizado) quando o payload não trouxer o campo
+— MESMO padrão já usado por outro bloco poucas linhas acima na mesma
+função (atributos brutos/`PermanentStats`, comentário original: "usa o
+valor deste payload se vier explícito (enter/exit sempre mandam),
+senão o estado atual"). Nenhuma mudança no servidor.
+
+**Testes**: novo `tests/test_client_instance_sync.py::
+TestSkillsHotbarExitCombinedPayload` — simula o payload EXATO que
+`exit_normalized_progression` manda (`in_instance: False` +
+`skills_hotbar` no mesmo dict), skill real fora da ordem curada
+(testado com skill genérica E com "impacto"/guerreiro especificamente,
+reproduzindo o relato). Revert-to-confirm — reverter pro `.active` puro
+reproduziu o sumiço exatamente antes de restaurar. Suíte completa
+(`pytest tests/ -q`, `py -3.10`): 1431 passed + 1 falha isolada
+(`TestTickPerfProfiler::test_tick_lento_grava_caminho_critico_no_log`,
+sensível a timing de wall-clock sob carga da suíte completa — passa
+sozinho, confirmado não-relacionado, arquivo/mecanismo nunca tocado
+por esta mudança).
+
+## 94. "TX Village Props with Shadow" — grupos por categoria no minimapa (02/09/2026)
+
+Usuário pediu: catalogar os 213 objetos de `"TX Village Props with
+Shadow"` em grupos temáticos (cemitério, pedras, móveis, etc.), mesmo
+estilo já usado em `"TX Village Plant"` (§78 — `"groups"`, cor própria
+por categoria no minimapa/mapa-múndi). Família inteira usava 1 cor só
+(`(41,39,55)`) pra tudo — cemitério, pedra, móvel, comida, todos
+indistinguíveis no minimapa, mesmo sintoma do §78.
+
+**Investigação visual**: 213 sprites, catálogo flat sem nome/tema
+nenhum (só ids "001".."214"). Gerado contact sheet anotado (recorta
+cada sprite pelo próprio retângulo já catalogado, rotula com o id,
+grade de 30 por página, 8 páginas) pra inspecionar todos com precisão
+— não deu pra adivinhar por número, precisava ver o sprite de cada um.
+
+**Categorização** (9 grupos, todos com `"prefix":"vp"` — ver decisão de
+arquitetura abaixo):
+- `cemiterio` (24: lápides, cruzes, túmulos, caixão, estátuas, cripta)
+- `pedras` (27: rochas soltas decorativas)
+- `plantas_jardim` (10: sebes/topiaria, vasos com flor, jardineiras)
+- `moveis` (30: baús, camas, armários, mesas, bancos, tapete, bigorna)
+- `potes_e_recipientes` (31: jarros, potes, barris, baldes, sacos)
+- `comida` (27: frutas, legumes, queijo, carne, tábua de corte)
+- `madeira_e_cercas` (29: toras, tábuas, postes, cercas, janelas soltas)
+- `decoracao_vila` (30: espantalho, placas, poço, luminária, fogueira,
+  alvo de tiro, boneco de treino, carroça)
+- `diversos` (3: `vp001`/`vp199` sem tema óbvio + `vp214`, já marcado
+  "COLISÃO INVISÍVEL" no comentário original — mantido como está)
+
+Coberto por script (não à mão): parseia os 213 ids catalogados,
+verifica cobertura 1:1 contra a lista proposta (zero id esquecido,
+zero duplicata) ANTES de tocar no arquivo — usuário só aprovou a
+proposta depois de ver a lista completa.
+
+**Decisão de arquitetura**: `"prefix"` continua **"vp" em TODOS os 9
+grupos** — nunca um prefixo por categoria. Mapas reais já têm objetos
+plantados como `"vp_XXX"` (`tile_id = f"{prefix}_{id_suffix}"`); um
+prefixo novo por grupo mudaria o id de todo objeto já colocado nos
+CSVs, quebrando placement existente. Mesmo padrão que `"TX Village
+Plant"` já usa (`"arvores"` e `"arbustos"`, dois grupos, MESMO prefixo
+`"pl"` — a distinção semântica mora no `id_suffix`, nunca no prefixo do
+grupo). Só a cor por grupo muda; nenhum id, geometria ou colisão foi
+tocado — aplicado via substituição mecânica de texto (script Python,
+não edição manual linha a linha), com verificação antes/depois: 213
+ids registrados em `OBJECT_MAPPING` antes E depois, mesmas 213 tuplas
+(sx,sy,w,h,col,...) byte-idênticas, CRLF do arquivo preservado (o
+arquivo é 100% CRLF; um write ingênuo trocaria pra LF e geraria diff
+gigante em linhas não tocadas — conferido explicitamente antes de
+declarar pronto).
+
+**Testes**: `tests/test_tileset_color.py`/`test_god_mode_random_brush.py`/
+`test_god_mode_terrain_brush.py` (mexem em `SHEET_FAMILIES`/grupos) — 38
+passed, sem regressão. Suíte completa (`pytest tests/ -q`, `py -3.10`):
+1432 passed (a falha isolada de timing do §93 não reapareceu nesta
+rodada — confirma que era mesmo timing, não algo desta mudança).
+
+**Fora do automatizável**: usuário confere visualmente no editor de
+mapa (F10) se as cores novas no minimapa fazem sentido pra cada
+categoria — só validação visual, não tem asserção automatizada pra
+"esta cor parece cemitério".
+
+## 95. Chão de `map_1` "vazio" — família de sprite de grama antiga deletada pelo usuário durante a limpeza do §94 (02/09/2026)
+
+Usuário fez limpeza própria no catálogo de `engine/tileset.py` (mesma
+sessão do §94) e deletou uma família de sprite de grama antiga
+("TX Tileset Grass", prefixo `"txg"`, + outra `"gc"`) — sem saber que
+`map_1_terrain.csv` ainda referenciava tiles dela em ~62% das células
+do mapa. Sem a família registrada, `_parse_terrain_cell`
+(`engine/map_loader.py`) não reconhece mais esses ids, cai no
+fallback `(cell, "")` — o char de terreno vira o próprio texto da
+célula, que nunca bate com nenhuma chave de `TILE_MAPPING`, e
+`entity_factory.py` usa `FLOOR_TILE` (chão cinza genérico) como
+último fallback. Resultado: 444.925 de 716.604 células (62%) do chão
+principal viraram chão cinza liso.
+
+**Fix, 1ª passada**: script (não à mão — arquivo grande demais pra
+editar linha a linha com segurança) reusa `load_map_csv` (parser real)
++ a MESMA lógica de sorteio 80% pura/20% flor de `ui/god_mode.py::
+GodModeEditor._pick_terrain_variant` (zonas `grama_pura`/`grama_flor`
+da família `"TX Tileset Terrain"`, prefixo `"ter"`, ainda intacta) +
+o MESMO merge/`csv.writer` de `_save()`/`_write_csv` — nunca
+reimplementa o parsing/serialização, só reusa. Detecção: célula cujo
+char não está em `TILE_MAPPING`. Decisão do usuário: só preenchimento,
+SEM autotile de borda (`_apply_smart_terrain` completo, com ajuste de
+vizinho, ficou de fora de propósito — risco desproporcional numa
+mudança desse tamanho). Validado por script antes/depois de gravar:
+zero célula quebrada restante, nenhuma linha mudou de tamanho, CRLF do
+arquivo preservado.
+
+**2ª passada, achada pelo usuário via screenshot**: mesmo depois da 1ª
+passada, sobrou um padrão nítido de tiles cinza-escuro (`#2D2D2D`)
+espalhados dentro do gramado, formando algo como um checkerboard.
+Causa: o char `"_"` (chão genérico, `FLOOR_TILE`) É uma chave válida
+de `TILE_MAPPING` — a 1ª passada só detectava char INVÁLIDO, então
+pulou essas células, mesmo sendo parte do MESMO artefato da grama
+deletada (só que, por coincidência, `"_"` resolve pra algo "válido"
+em vez de cair no fallback). Achado confirmado por dado, não suposição:
+histograma de "quantos dos 8 vizinhos já são grama" pra cada célula
+`"_"` mostrou distribuição claramente bimodal — 97,7% (176.653 de
+180.843) com 4+ vizinhos de grama (pico em 6/8), só 2,3% com 0-3
+(provável chão de verdade — praça, construção). Fix: mesmo pincel da
+1ª passada, aplicado só às células `"_"` com 4+ vizinhos de grama E
+NENHUM vizinho sendo terreno "de verdade" diferente (pedra/parede/
+água/montanha/areia/terra — 2ª trava de segurança, evita mexer em
+borda de praça/construção por coincidência de contagem). 172.421
+células elegíveis, calculadas a partir do estado ORIGINAL do grid
+(nunca durante a própria varredura — evita viés de ordem de escrita).
+8.422 células `"_"` sobraram intocadas (tocam terreno real, ou têm
+poucos vizinhos de grama) — provável chão legítimo.
+
+**Efeito colateral não relacionado ao fix, achado durante a
+investigação**: o servidor já estava rodando (mapas são cacheados em
+memória na inicialização, `engine/map_loader.py::_MAP_CSV_CACHE`) —
+o fix só aparece em jogo depois de reiniciar o processo do servidor;
+avisado ao usuário em vez de reiniciar sozinho (poderia ter gente
+conectada).
+
+**Testes**: nenhum automatizado novo — é reparo de CONTEÚDO (dado de
+mapa), não lógica de jogo; validação é o próprio `load_map_csv`
+reparseando o arquivo sem erro + contagem de células quebradas = 0,
+rodado depois de cada uma das 2 passadas. `pytest tests/ -q` não
+tocado (nenhum teste depende do conteúdo específico de `map_1`).
+
+**Fora do automatizável**: usuário confirmou visualmente via
+screenshot que a 1ª passada resolveu a maior parte, mas revelou o
+padrão secundário (`"_"`) — a 2ª passada ainda não foi confirmada
+visualmente em jogo no momento deste registro.
+
+**Nota (02/09/2026, mesmo dia)**: a 1ª passada de fato não persistiu na
+1ª tentativa — o usuário tinha o editor de mapa (F10) aberto num
+cliente que carregou o mapa ANTES do fix (estado antigo em memória) e
+salvou por cima depois, sobrescrevendo o arquivo corrigido com a
+versão antiga. Reaplicado com sucesso depois de confirmar que nenhum
+cliente antigo estava rodando — mesma classe de risco documentada em
+`CLAUDE.md` (nunca presumir que um arquivo tocado por script continua
+como foi deixado, se algo mais também escreve nele).
+
+## 96. Recatálogo de "TX Tileset Terrain" — usuário reorganizou o PNG (02/09/2026)
+
+Usuário substituiu/expandiu o PNG `TX Tileset Terrain` (mais variações
+de grama) e pediu recatálogo. Investigação visual (contact sheet
+ampliado, grid rotulado por célula — não adivinhado por número) +
+confirmação direta do usuário resolveu 3 rodadas de ambiguidade:
+"coluna 14" não existe (imagem só tem 14 colunas, índices 0-13 — erro
+de contagem do usuário, corrigido pra coluna 13); split `grama_flor`/
+`grama_pura` dentro da área nova (flor = só onde tem flor visível,
+pura = resto, incluindo pedras espalhadas nas linhas 4-5 no mesmo
+pool, sem zona separada); `piso_sobre_terra` também mudou de posição,
+zonas de terra/transição NÃO mudaram (usuário confirmou explicitamente
+— evitou eu recatalogar coisa que já estava certa).
+
+**Mudança**: `grama_flor` = c6-9/r0-3 (16 células, mesma posição de
+antes por coincidência); `grama_pura` = c10-13/r0-3 + c6-13/r4-7 (48
+células); `piso_sobre_terra` = c8-13/r8-12 (30 células, antes
+c6-7/r4-6). `terra_pura`/`terra_flor`/`piso_sobre_grama`/zonas de
+transição intocadas.
+
+**Achado de brinde durante o recatálogo**: `color_overrides` da
+família (cor no minimapa) tinha o comentário "DERIVADO das zonas —
+ponto único de verdade — nunca diverge", mas era hand-written de
+verdade — ficaria com cor errada (pedra em vez de grama) pros tiles
+novos. Fix: `_derive_terrain_zone_colors(fam)` novo, roda 1x após
+`SHEET_FAMILIES` ser definido, deriva cor de verdade a partir de
+`zone["terrain"]`/`purpose=="floor_full"` pra qualquer família com
+`zones` — agora o comentário é verdade, um recatálogo futuro não
+precisa mais chasear `color_overrides` à mão.
+
+**Testes**: `tests/test_god_mode_terrain_brush.py`/
+`test_tileset_color.py`/`test_god_mode_random_brush.py` — 38 passed,
+sem regressão (zonas de transição/terra, únicas coisas que os testes
+cobrem em detalhe, ficaram intocadas). Suíte completa: 1424 passed +
+8 falhas pré-existentes rastreadas até uma família `"pr"` removida
+pelo usuário numa limpeza PARALELA e não relacionada (não mexida,
+avisado ao usuário).
+
+**Fora do automatizável**: usuário valida visualmente em jogo/editor
+se as texturas novas de grama aparecem certas.
+
+## 97. `map_width_tiles` usava só a linha 0 — bug real achado investigando spam de "[MAPA] Aviso" (02/09/2026)
+
+Usuário reportou 600+ linhas de `[MAPA] Aviso: Linha N tem X tiles,
+esperado 432` no console do cliente depois do recatálogo/fix de grama.
+1ª hipótese (errada, corrigida ANTES de agir — nunca cheguei a tocar
+no arquivo com ela): linhas mais largas que 432 seriam lixo/duplicação
+acumulada de saves repetidos, cortar pra 300 (largura de
+`map_1_objects.csv`, uniforme). Verificação antes de agir: toda linha,
+curta OU longa (até 1944 células), começa E termina com `"m"`
+(montanha) — padrão consistente de borda natural, não corrupção.
+Conclusão real: `map_1` tem forma ORGÂNICA/não-retangular de
+propósito, cada linha reflete a extensão real do terreno naquela
+altura.
+
+**Causa raiz de verdade**: `engine/entity_factory.py::create_tilemap`
+calculava `map_width_tiles = len(terrain_matrix[0])` — só a linha 0,
+que por coincidência é uma parte mais ESTREITA do mapa (432), não a
+mais larga (1944). Qualquer coisa que respeita `map_width_tiles`
+(movimento, câmera, minimapa) tratava terreno real pintado além da
+coluna 431 como "fora do mapa" — bug pré-existente, não causado pelo
+usuário nem por mim hoje, só nunca tinha sido notado.
+
+**Fix**: `map_width_tiles = max(len(r) for r in terrain_matrix)` — só
+essa linha muda; o loop que já preenche linha mais curta com
+`FLOOR_TILE` (`create_tilemap`, "Pass 1") já fazia a coisa certa,
+só recebia o número errado. `engine/map_loader.py::validate_map`
+também mudou — a checagem antiga (linha != largura da linha 0) não
+faz mais sentido pra mapa de forma orgânica válida; comparar contra a
+largura MÁXIMA também não resolveria (toda linha != máxima ainda
+dispararia o aviso) — removida a checagem de largura por completo
+(não existe mais uma "largura esperada" única que sirva pra qualquer
+formato de mapa); função mantida (mapa vazio ainda avisa) pra
+checagens futuras.
+
+**Testes**: `tests/test_map_width_ragged_rows.py` (novo) — linha 0
+mais estreita não trunca a largura real do mapa; linha curta ainda é
+preenchida com `FLOOR_TILE` até a largura máxima; todas as linhas do
+`tile_matrix` ficam com o mesmo tamanho no final; mapa retangular
+uniforme (todas as linhas iguais) continua se comportando exatamente
+igual — regressão pro caso comum. `validate_map`: linhas de tamanhos
+diferentes não geram mais aviso; mapa vazio ainda avisa; mapa
+retangular normal continua sem aviso. Revert-to-confirm: 3 dos 4
+testes de `create_tilemap` falharam exatamente como esperado com o
+fix desligado (o 4º, mapa retangular, passa nos dois casos —
+confirma ausência de regressão). Suíte completa (`pytest tests/ -q`,
+`py -3.10`): 1431 passed + as mesmas 8 falhas pré-existentes/
+não-relacionadas do §96 (família `"pr"` removida numa limpeza
+paralela do usuário).
+
+**Fora do automatizável**: usuário confirma em jogo que agora consegue
+acessar/ver o terreno que antes ficava "fora do mapa" nas partes mais
+largas de `map_1`.
+
+## 98. Catalogação de "TX Village Building with Shadow" — construções fatiadas em várias peças (02/09/2026)
+
+Usuário trouxe um novo sheet de construções (`assets/tiles/"TX Village
+Building with Shadow".png`) e criou 3 arquivos de apoio no mesmo
+diretório — `(dimensions).png` (retângulo de corte de cada peça,
+outline vermelho), `(collisions).png` (área de colisão real, fill
+vermelho semi-transparente), `(groups).png` (blocos verdes de
+proximidade no sheet) — porque várias construções vêm fatiadas em
+múltiplas peças separadas dentro do PNG (colisão em mais de 1
+retângulo, ou outros motivos de arte).
+
+**Decisão de mecanismo (perguntada ao usuário antes de tocar em
+qualquer arquivo, `AskUserQuestion`)**: pedaços continuam sendo
+objetos INDEPENDENTES no catálogo — sem mecanismo novo de "objeto
+composto" no motor (que exigiria formato de dado novo, placement
+novo, colisão combinada, serialização no mapa — trabalho de engine
+real, não só cataloging). O arquivo `(groups)` é usado só como
+referência visual pra não perder pedaço nenhum durante a extração —
+**não** significa "1 construção por caixa verde": o mesmo bloco pode
+conter várias construções distintas lado a lado (achado durante a
+investigação — ex. o bloco que cobria uma "torre" também continha,
+grudados sem gap no sheet, um alpendre pequeno e um coreto alto
+inteiramente não-relacionados; outro bloco continha as 17 peças do
+kit de muro modular; outro continha as 9 barracas de mercado). Decidir
+quais peças formam 1 construção só exigiu inspeção visual peça a peça
+(adjacência no sheet sozinha é enganosa — texture packers colam
+sprites não-relacionados sem gap pra economizar espaço).
+
+**Extração de retângulo por script, não a olho** (`numpy`/`scipy.
+ndimage.label` sobre os 3 PNGs de apoio — que usam cores sólidas
+exatas: outline vermelho opaco em `dimensions`, fill vermelho
+alpha=128 em `collisions`, outline verde opaco em `groups`) —
+component-labeling sobre as regiões de fundo delimitadas pelas linhas
+deu 104 peças (`dimensions`), colisão de cada uma cruzada por
+interseção geométrica contra os blobs de `collisions` (94 peças com 1
+retângulo de colisão, 10 sem colisão — telhados de coreto/mesa de
+barraca/degrau de entrada, passáveis). 1 peça teve colisão espúria de
+1px (artefato de arredondamento na borda entre peças vizinhas),
+zerada manualmente. Nomeação (descritiva, decisão do usuário via
+`AskUserQuestion`) e agrupamento em "1 construção = várias peças"
+vieram só de inspeção visual (crops compostos por faixa do sheet,
+104 peças em 5 imagens ao invés de 1 por peça, pra não gastar contexto
+demais). Contact sheet final (104 crops rotulados, gerado por script)
+usado como QA visual antes de declarar pronto — pegou nomes
+inconsistentes com a arte antes de commitar.
+
+**`vision_height` (bloqueio de FOV, só `>=2` conta pro `FogSystem`)**:
+regra sistemática, não julgamento peça a peça — 2 pra qualquer peça
+com colisão nos grupos "construcoes"/"muralhas" (mesmo padrão de
+`WALL_TILE`: construção/muro é alto o suficiente pra bloquear visão);
+0 pra peça sem colisão. Exceção no grupo "mercado_e_diversos": bancas
+de mercado e poços cobertos têm colisão (não atravessa) mas NÃO
+bloqueiam visão (altura de balcão/cintura, não de parede) — só tenda
+indígena e casinha do poço (altura de estrutura pequena de verdade)
+bloqueiam ali. Regra não confirmada item a item com o usuário — se
+alguma peça bloquear visão errado em jogo, é aqui que ajustar.
+
+**Resultado (1ª versão, ERRADA — ver §99 pra correção no mesmo dia)**:
+1 entrada nova em `OBJECT_SHEET_FAMILIES` (`engine/tileset.py`, prefixo
+`"vb"`, 104 tiles, 3 grupos — `"construcoes"` 71 peças, `"muralhas"` 17
+peças, `"mercado_e_diversos"` 16 peças — mesma cor pra todos os 3,
+`(115, 108, 98)`, decisão do usuário já que a paleta visual é parecida
+entre todas as construções). Suíte completa rodada após a mudança.
+**Fora do automatizável**: usuário ainda não validou em jogo.
+
+## 99. Correção do §98 — 1 grupo por construção, não 1 grupo pra todas; id curto, nome só no label (02/09/2026, mesmo dia)
+
+Usuário rejeitou o resultado do §98 na hora: as 29 construções
+distintas (torre, casa, celeiro, etc.) foram todas despejadas dentro
+de UM grupo só chamado `"construcoes"` — exatamente o oposto do que os
+retângulos verdes de `(groups).png` pediam. O motivo de o usuário ter
+criado esse arquivo era precisamente delimitar 1 agrupamento por
+construção no God Mode (pra elas não ficarem misturadas/espalhadas
+numa lista plana de 71 peças não-relacionadas) — a leitura do §98 de
+"groups = referência de proximidade pra não perder peça durante
+extração" estava certa quanto à EXTRAÇÃO (peças de construções
+diferentes coladas sem gap no sheet, teria juntado errado se confiasse
+só no bloco verde), mas errada quanto ao USO final do agrupamento no
+catálogo — a extração cuidadosa peça-a-peça devia ter virado 29 grupos
+(1 por construção reconhecida), não 1 grupo genérico.
+
+Segundo problema, mesmo feedback: id de cada peça carregava o nome
+descritivo INTEIRO (`"casa_pequena_chamine_1"`,
+`"torre_redonda_fortificada_1"`, `"banca_mercado_terracota"`) — nunca
+o padrão do resto do catálogo (`"TX Grades2"`: ids tipo `"1"`/`"2b"`;
+`"TX Village Plant"`: `"t1"`.."t15"`/`"b1"`.."b20"`; `"TX Village Props
+with Shadow"`: números puros `"116"`/`"117"`). Nome descritivo tem
+lugar certo — o campo `"label"` do GRUPO (mostrado no God Mode como
+nome da categoria) — nunca o id da peça individual.
+
+**Fix**: 71 peças de "construcoes" viraram 29 grupos (`"b01"`.."b29"`,
+chave curta, `"label"` com o nome descritivo, prefixo `"vb"` igual em
+todos — nada foi colocado em mapa real ainda com esses ids, então não
+havia risco de quebrar referência existente ao reestruturar). Id de
+peça única = só a chave do grupo (`"vb_b05"`); peça múltipla =
+`"{grupo}_{1,2,3...}"` (`"vb_b01_1"`, `"vb_b01_2"`). `"muralhas"` e
+`"mercado_e_diversos"` já eram, de fato, 1 categoria coesa cada
+(confirmado por inspeção visual no §98 — kit de muro modular sem
+sub-construção, barracas/tenda/poços/biombos sem sub-construção) —
+mantidos como grupo único, só os ids encurtados (`"m01"`.."m17"`,
+`"d01"`.."d16"`, comentário inline com o nome por peça pra não perder
+contexto de leitura no código). Revalidado: 104 ids únicos (script,
+não contagem manual), compila, carrega, suíte completa sem regressão
+nova (mesmas falhas pré-existentes do §96, não-relacionadas). Ver
+`PROBLEMAS_ARQUITETURA.md` §98 pro histórico completo da extração
+(script/component-labeling, contact sheet de QA) — só o AGRUPAMENTO/
+NOMENCLATURA mudou aqui, geometria/colisão/vision_height idênticos ao
+§98.
+
+**Lesson**: "peças continuam objetos independentes" (decisão de
+mecanismo, §98) não implica "1 grupo só serve" — são decisões
+ortogonais. O padrão já em uso no catálogo (`"groups"` = 1 categoria
+reconhecível por vez, ids curtos, nome no label) devia ter sido
+seguido por analogia direta, não reinventado; o próprio usuário
+apontou isso ("você nem sequer olhou os exemplos que tinham no
+catálogo").
+
+## 100. Colisão errada em 19 das 104 peças de "TX Village Building with Shadow" — bounding box de blob fundido, não da peça (02/09/2026, mesmo dia)
+
+Usuário testou o catálogo do §98/§99, corrigiu 1 peça na mão
+(`vb_b01_2`) como exemplo e pediu revisão de todas as outras — "a
+maioria que está errado, são os que estão fatiados". Causa raiz: a
+extração de `collision_rect` (§98) fazia component-labeling
+(`scipy.ndimage.label`) na imagem `(collisions).png` INTEIRA pra achar
+os blobs de colisão, depois intersectava o BOUNDING BOX de cada blob
+com os limites de cada peça (`dimensions`). Quando duas peças vizinhas
+(empilhadas ou lado a lado) têm colisão que se toca/sobrepõe no eixo
+perpendicular ao corte — ex: corpo da casa (`vb_b01_1`) tem colisão até
+y=256 numa faixa de x larga, e o alicerce (`vb_b01_2`) começa em
+y=256 numa faixa de x mais estreita mas DENTRO da faixa do corpo — o
+flood-fill funde os dois blobs num só, e o bounding box do blob
+fundido é maior que a colisão real de QUALQUER uma das duas peças
+sozinha. Intersectar esse bbox inflado com os limites da peça não
+corrige o problema porque bbox é uma aproximação retangular — não
+reflete que os pixels de colisão de fato ali dentro pertencem, em
+parte, à peça vizinha.
+
+**Fix, seguindo a dica literal do usuário** ("dentro de cada dimensão,
+aquela colisão está fatiada também, então é só pegar a posição da
+colisão dentro da dimensão"): trocar "intersectar bbox do blob global"
+por "recortar a máscara de colisão pra dentro da janela exata da peça
+PRIMEIRO, e só then calcular o bounding box dos pixels de colisão
+daquele recorte" — nunca olha pra fora da própria peça, então imune a
+qualquer fusão de blob vizinho, não importa quão grudados os pedaços
+estejam no sheet. Recalculado pra todas as 104 peças, comparado peça a
+peça contra o valor antigo: 19 mudaram (todas em peças fatiadas, como
+o usuário avisou), 85 continuaram idênticas (peças isoladas, sem
+colisão vizinha grudada, nunca tiveram o bug). O novo método reproduz
+EXATAMENTE a correção manual do usuário em `vb_b01_2`
+((64,0,128,64)) — confirma que o método novo é o certo, não só uma
+correção pontual. As 19 mudanças verificadas visualmente (overlay do
+retângulo novo sobre o PNG de colisão real, 3 amostras — torre com
+alicerce, torre-celeiro-anexo, casarão com torre) antes de aplicar; 1
+peça (`vb_b18_3`, sliver fino de sombra/borda de telhado) passou a não
+ter colisão nenhuma (`None`) — colisão vermelha que aparecia perto
+dela pertencia inteiramente à peça vizinha (`vb_b18_2`), confirmado
+visualmente.
+
+**Lesson**: extração por bounding-box de blob assume implicitamente
+que cada blob = 1 peça — falso premise nunca verificada quando o
+sheet empacota peças sem gap (comum em texture packer). "Recortar
+primeiro, medir depois" (escopo = a peça, nunca a imagem inteira) é o
+padrão certo pra qualquer extração peça-a-peça futura neste ou em
+outro sheet fatiado.
+
+## 101. 7 falhas "pré-existentes" na suíte eram regressão real da remoção de "TX Props"/"TX Plant" — 5 testes com id morto + regra de bloqueio de visão de pedra grande perdida (02/09/2026)
+
+Vinham sendo tratadas como "falhas pré-existentes, não-relacionadas"
+desde o §96 (rotuladas assim porque nenhuma delas tinha relação com o
+trabalho da sessão até então) — usuário pediu pra investigar e
+resolver de verdade em vez de continuar reportando como ruído.
+
+**Causa raiz confirmada via `git diff HEAD`**: em algum ponto (fora
+desta sessão, mudança não commitada, presente no working tree desde o
+início) as famílias `"TX Props"` (prefixo `"pr"`) e `"TX Plant"`
+(prefixo `"pl"`, catálogo antigo — diferente da `"TX Village Plant"`
+atual, que também usa `"pl"` mas é outro arquivo/outros ids) foram
+inteiramente comentadas em `engine/tileset.py` — supersedidas por `"TX
+Village Props with Shadow"` (catalogada nesta sessão, §94) e `"TX
+Village Plant"` (catalogada em sessão anterior, §78). 5 testes
+antigos ainda referenciavam ids só a família antiga tinha:
+`"pr_rock1"`, `"pr_bigrock"`, `"pr_box1"`, `"pl_vomito"` —
+`OBJECT_MAPPING[id]` levantava `KeyError`/retornava `None`.
+
+**2 fixes distintos, não só 1**:
+1. **Troca de id morto por equivalente real** — 4 testes só precisavam
+   apontar pra um id ativo com a MESMA propriedade que o teste
+   verifica: `"pr_box1"` (32×64, sólido, colisão "base") → `"vp_067"`
+   (`"TX Village Props with Shadow"`, mesmas dimensões/solidez, usado
+   como placeholder de "caixa" em ~20 lugares em `test_client_ui.py`/
+   `test_session.py` — troca única, `replace_all`, nenhum outro teste
+   dependia do id resolver de verdade, só de bater a string);
+   `"pr_rock1"` (pedra pequena, sem colisão, `vision_height=0`) →
+   `"vp_186"` (mesma coisa em "TX Village Props with Shadow"/grupo
+   "pedras"); `"pl_vomito"` (sprite passável genérico, `is_solid=
+   False`) → `"vp_186"` de novo (serve igual, é só um objeto sem
+   colisão qualquer).
+2. **Regra de gameplay perdida de verdade, não só nome de teste** —
+   `"pr_bigrock"` tinha `vision_rect="full"`/`vision_height=2`
+   explícito (pedra GRANDE bloqueia visão como árvore/bush, regra
+   original de 13/08/2026, documentada em `CLAUDE.md`). NENHUMA pedra
+   de `"TX Village Props with Shadow"` (grupo "pedras", catalogado no
+   §94 desta sessão) carrega essa marcação — a regra foi perdida na
+   migração de catálogo, silenciosamente, e só os testes antigos
+   (ainda não adaptados) denunciavam isso. Fix de verdade, não só
+   troca de id no teste: adicionado `vision_rect="full"`,
+   `vision_height=2` em `"vp_199"` (grupo "diversos" — não "pedras",
+   mas visualmente É uma pedra/pequeno amontoado de rochas, colisão já
+   cobre quase o sprite inteiro (50×34 de um sprite 50×34), candidata
+   natural pra herdar a regra restaurada). Escolha de QUAL pedra devia
+   bloquear visão não foi confirmada com o usuário — se alguma outra
+   pedra "grande" do catálogo também devia bloquear e não bloqueia
+   ainda, é um ajuste de conteúdo, não um bug novo.
+
+**Validação**: os 3 arquivos de teste tocados (`test_vision_blocking.py`,
+`test_client_ui.py`, `test_session.py`) rodados isolados — 279 passed,
+0 failed. Suíte completa (`pytest tests/ -q`) rodada em seguida pra
+confirmar ausência de regressão em qualquer teste que dependia do
+`"pr_box1"`/`"pl_vomito"` só como placeholder de string (sem resolver
+sprite de verdade).
+
+**Lesson**: "falha pré-existente, não-relacionada" é uma classificação
+de CONVENIÊNCIA pra não bloquear o trabalho da sessão atual — não é a
+mesma coisa que "não é bug real". As mesmas 7 falhas foram carregadas
+por 3 sessões seguidas (§96 → §98 → aqui) sem que ninguém investigasse
+se eram ruído de fato ou uma regressão de gameplay real (era — pedra
+grande parou de bloquear visão). Mesma classe de disciplina já exigida
+pelo `CLAUDE.md` pra itens "MITIGADO" do `PROBLEMAS_ARQUITETURA.md`:
+rótulo repetido em sessões sucessivas sem revisitar é sinal de dívida
+real, não de ruído confirmado.

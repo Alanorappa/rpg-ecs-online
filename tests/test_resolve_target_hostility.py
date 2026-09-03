@@ -24,7 +24,7 @@ import unittest
 from engine.world import World
 from engine.components import (
     Position, TileMovement, CombatState, CombatStats, Enemy, AIControlled,
-    Visible, RemoteControlled, PlayerControlled, Faction, Minion,
+    Visible, RemoteControlled, PlayerControlled, Faction, Minion, CharacterStats,
 )
 from ui.systems import SkillSystem
 
@@ -151,6 +151,84 @@ class TestResolveTargetMinion(unittest.TestCase):
         minion = self._spawn_hostile_minion(11, 10, faction="monstros_hostis")
         result = self.skill_sys._resolve_target(self.combat_state, self.player_tm)
         self.assertIn(result, (mob, minion))
+
+
+class TestResolveTargetPvpServerSide(unittest.TestCase):
+    """Achado real, 28/08/2026 — usuário reportou skill falhando ("Alvo
+    inválido") logo depois de usar Interceptar contra um bot na BG. O
+    fallback de PvP de `_resolve_target` só sabia achar OUTRO player via
+    `RemoteControlled` — componente que só existe do lado CLIENTE (no
+    servidor, cada player/bot é uma entidade real com CombatStats/
+    CharacterStats próprios, nunca um proxy `RemoteControlled`). Sem um
+    2º loop usando os componentes que existem DE VERDADE no servidor,
+    esse fallback era código morto lá — reproduzido aqui montando o
+    mundo do jeito que o SERVIDOR o vê (sem `RemoteControlled` em
+    nenhuma entidade)."""
+
+    def setUp(self):
+        self.world = World()
+        self.player = self.world.create_entity()
+        self.world.add_component(self.player, PlayerControlled())
+        self.world.add_component(self.player, CharacterStats())
+        self.world.add_component(self.player, CombatStats())
+        self.world.add_component(self.player, Faction(faction_id="arena_time_a"))
+        self.skill_sys = SkillSystem(self.world, self.player, screen=None)
+        self.combat_state = CombatState()
+        self.player_tm = TileMovement(current_tile_x=10, current_tile_y=10)
+
+    def _spawn_enemy_player(self, tx, ty, hp=100, faction="arena_time_b"):
+        eid = self.world.create_entity()
+        self.world.add_component(eid, Position(x=tx * 32, y=ty * 32))
+        self.world.add_component(eid, CharacterStats())
+        cs = CombatStats(base_stamina=hp)
+        cs.current_hp = hp
+        self.world.add_component(eid, cs)
+        self.world.add_component(eid, TileMovement(current_tile_x=tx, current_tile_y=ty))
+        self.world.add_component(eid, Visible())
+        self.world.add_component(eid, Faction(faction_id=faction))
+        return eid
+
+    def test_seleciona_outro_player_real_sem_remotecontrolled(self):
+        """Cenário do lado servidor: nenhuma entidade tem RemoteControlled
+        — o fallback de PvP precisa achar o inimigo do time B mesmo assim."""
+        enemy = self._spawn_enemy_player(11, 10)
+        result = self.skill_sys._resolve_target(self.combat_state, self.player_tm)
+        self.assertEqual(result, enemy,
+            "player inimigo de verdade (sem RemoteControlled) deveria ser achado pelo fallback")
+
+    def test_nao_seleciona_player_do_mesmo_time(self):
+        ally = self._spawn_enemy_player(11, 10, faction="arena_time_a")
+        result = self.skill_sys._resolve_target(self.combat_state, self.player_tm)
+        self.assertNotEqual(result, ally)
+        self.assertEqual(result, -1)
+
+    def test_nao_seleciona_a_si_mesmo(self):
+        # só o próprio caster no mundo — nenhum candidato válido.
+        result = self.skill_sys._resolve_target(self.combat_state, self.player_tm)
+        self.assertEqual(result, -1)
+
+    def test_mob_hostil_tem_prioridade_sobre_o_loop_novo(self):
+        # mesmo tile (mesma distância) — o loop de mob roda incondicional
+        # e já preenche best_id ANTES do loop novo (guardado por
+        # `if best_id == -1`); confirma que o loop novo nunca sobrescreve
+        # um candidato já achado, só entra quando os outros acham nada.
+        mob = self._spawn_hostile_mob(11, 10)
+        self._spawn_enemy_player(11, 10)
+        result = self.skill_sys._resolve_target(self.combat_state, self.player_tm)
+        self.assertEqual(result, mob)
+
+    def _spawn_hostile_mob(self, tx, ty, faction="monstros_hostis", hp=50):
+        eid = self.world.create_entity()
+        self.world.add_component(eid, Position(x=tx * 32, y=ty * 32))
+        self.world.add_component(eid, Enemy())
+        self.world.add_component(eid, AIControlled())
+        self.world.add_component(eid, TileMovement(current_tile_x=tx, current_tile_y=ty))
+        cs = CombatStats(base_stamina=hp)
+        cs.current_hp = hp
+        self.world.add_component(eid, cs)
+        self.world.add_component(eid, Visible())
+        self.world.add_component(eid, Faction(faction_id=faction))
+        return eid
 
 
 if __name__ == "__main__":
