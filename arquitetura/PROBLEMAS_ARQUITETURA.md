@@ -14890,3 +14890,58 @@ declarar pronto; nenhuma referência `vb_` (formato antigo) sobrando em
 
 **Fora do automatizável**: usuário replantar as 25 peças limpas do
 mapa (lista acima) e validar visualmente as construções resliced.
+
+## 104. Aba Objetos do God Mode não mostrava NENHUMA construção depois do §103 (03/09/2026, mesmo dia)
+
+Usuário reportou: "nenhuma construção está aparecendo na aba de
+edição (F10)", já tinha reiniciado o servidor 2x sem resultado —
+descartando de cara "cache/precisa reiniciar" como causa.
+
+**Causa raiz**: `engine/tileset.py::group_tile_ids()` — função ponto
+único de verdade que `ui/god_mode.py` usa pra saber quais ids
+pertencem a um grupo (painel da aba Objetos E pincel aleatório) —
+montava o id na mão com `f"{prefix}_{entry[0]}"`, **sem saber da flag
+nova `no_prefix_separator`** adicionada no §103 pro id sequencial
+puro. Pra qualquer grupo de "TX Village Building with Shadow", isso
+calculava `"vb_001"`, `"vb_002"`... — nunca `"vb001"`, que é o id
+REAL cadastrado por `_register_catalog_tiles` (que já sabia da flag
+desde o §103). `ui/god_mode.py:694/703-706` filtra
+`OBJECT_SHEET_TILE_MAP` por esse set de ids calculado — nenhum
+`"vb_00N"` bate com nenhum tile real, `family_tiles` fica vazio pra
+TODOS os 30 grupos da família, `if not family_tiles: continue` pula
+cada um — construção nenhuma aparece, sem erro nenhum no console
+(silencioso).
+
+**Por que passou despercebido no §103**: a suíte completa não tem
+teste que exercite o painel visual do God Mode chamando
+`group_tile_ids` numa família REAL com `no_prefix_separator=True` —
+só existia 1 teste de `group_tile_ids` (`TestGroupTileIds`,
+`tests/test_tileset_color.py`), escrito ANTES da flag existir, cobrindo
+só o caminho antigo (com `"_"`). Confirma a regra do projeto:
+"corrigido" exige reproduzir o sintoma relatado — aqui, a única forma
+de ter pego isso ANTES do usuário reportar seria testar
+`group_tile_ids` explicitamente com a flag nova, não só o registro de
+tile (`_register_catalog_tiles`, que já tinha teste indireto via
+`discover_object_sheet_tiles`).
+
+**Fix**: `group_tile_ids()` ganhou o mesmo parâmetro
+`group.get("no_prefix_separator", False)`, espelhando EXATAMENTE a
+lógica de `_register_catalog_tiles` — as 2 funções agora concordam
+sempre, por construção, não por sorte. Nenhuma outra família afetada
+(default `False`, comportamento antigo intacto).
+
+**Testes**: `tests/test_tileset_color.py::TestGroupTileIds` ganhou 2
+casos — `no_prefix_separator=True` produz o id sem `"_"` (reproduz o
+bug exato), e o caminho antigo (flag ausente) continua com `"_"`
+normalmente (regressão). Revert-to-confirm: com o fix desligado, o
+teste novo falhou exatamente como esperado (`'vb_001'` vs `'vb001'`).
+Suíte completa sem regressão nova.
+
+**Lesson**: quando um valor é derivado por 2 funções DIFERENTES a
+partir do mesmo dado de origem (aqui: "qual é o id de verdade de uma
+peça catalogada"), as 2 têm que ler a MESMA config, não reimplementar
+a mesma fórmula em paralelo — é exatamente a classe de bug que "ponto
+único de verdade" existe pra evitar, e mesmo assim aconteceu porque
+`group_tile_ids` já ERA o ponto único de verdade antes da flag nova
+existir, só ninguém atualizou o SEGUNDO ponto de leitura da mesma
+regra quando o PRIMEIRO ganhou uma opção nova.

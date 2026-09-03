@@ -1906,8 +1906,16 @@ def group_tile_ids(group: dict) -> list[str]:
     derivação (26/08/2026), usado por `ui/god_mode.py::_render_content`
     (painel da aba Objetos) e pelo pincel aleatório por grupo
     (`_resolve_brush_char`) — antes cada um recalculava o mesmo
-    comprehension separadamente."""
+    comprehension separadamente. Precisa espelhar EXATAMENTE a mesma
+    regra de junção que `_register_catalog_tiles` usa pra cadastrar o
+    tile de verdade (`no_prefix_separator`, 03/09/2026) — senão o id
+    calculado aqui não bate com nenhum id real em `OBJECT_MAPPING` e o
+    grupo inteiro some da aba Objetos, mesmo com os tiles cadastrados
+    certos (bug real, ver PROBLEMAS_ARQUITETURA.md §104)."""
     prefix = group["prefix"]
+    no_sep = group.get("no_prefix_separator", False)
+    if no_sep:
+        return [f"{prefix}{entry[0]}" for entry in group["tiles"]]
     return [f"{prefix}_{entry[0]}" for entry in group["tiles"]]
 
 

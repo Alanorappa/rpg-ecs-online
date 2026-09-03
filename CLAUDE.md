@@ -517,7 +517,14 @@ padrão a quebrar, não só os bugs individuais.
   separador é usado por TODAS as outras famílias do catálogo (ids já
   referenciados em mapas reais), tirar sem o opt-in quebraria id de
   cada uma delas. `"prefix"` continua igual nas outras famílias, só
-  `"TX Village Building with Shadow"` usa a flag hoje. Ver
+  `"TX Village Building with Shadow"` usa a flag hoje. **`engine/
+  tileset.py::group_tile_ids()` tem que ler a MESMA flag** (bug real —
+  ela reimplementava a junção `prefix_id` em paralelo, sem saber da
+  flag nova; aba Objetos do God Mode ficou vazia pra família inteira
+  até corrigir as 2 funções juntas, ver PROBLEMAS_ARQUITETURA.md §104).
+  Qualquer 3º ponto futuro que precise montar um id de catálogo na mão
+  (em vez de ler de `OBJECT_MAPPING`/`OBJECT_SHEET_TILE_MAP` já
+  registrado) tem que consultar essa mesma flag também. Ver
   PROBLEMAS_ARQUITETURA.md §103.
 
 ### Atualização coesa ao adicionar sistema novo (22/07/2026 — feedback recorrente do usuário)

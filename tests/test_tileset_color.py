@@ -124,6 +124,30 @@ class TestGroupTileIds(unittest.TestCase):
         }
         self.assertEqual(ts.group_tile_ids(group), ["pl_t1", "pl_t2"])
 
+    def test_no_prefix_separator_bate_com_o_id_real_cadastrado(self):
+        """Bug real relatado pelo usuário 03/09/2026: aba Objetos do God
+        Mode não mostrava NENHUMA construção de "TX Village Building with
+        Shadow" — `group_tile_ids` montava id com "_" fixo
+        (`f"{prefix}_{entry[0]}"`), ignorando `no_prefix_separator`, então
+        o id calculado ("vb_001") nunca batia com o id real cadastrado
+        por `_register_catalog_tiles` ("vb001") e o grupo inteiro ficava
+        de fora (`family_tiles` vazio, `ui/god_mode.py` pula o grupo)."""
+        group = {
+            "prefix": "vb",
+            "no_prefix_separator": True,
+            "tiles": [("001", 0, 0, 32, 32, None), ("002", 32, 0, 32, 32, None)],
+        }
+        self.assertEqual(ts.group_tile_ids(group), ["vb001", "vb002"])
+
+    def test_no_prefix_separator_ausente_continua_com_underscore(self):
+        """Regressão: grupo sem a flag nova continua exatamente como
+        antes (default False, nenhuma família existente afetada)."""
+        group = {
+            "prefix": "pl",
+            "tiles": [("t1", 0, 0, 32, 32, None)],
+        }
+        self.assertEqual(ts.group_tile_ids(group), ["pl_t1"])
+
 
 class TestGridColorOverrides(unittest.TestCase):
     """Modo grade (SHEET_FAMILIES) — color_overrides por (col,row), cai
