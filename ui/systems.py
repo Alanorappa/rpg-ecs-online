@@ -1892,6 +1892,65 @@ class CameraSystem(System):
                         camera_position.x += dx * t
                         camera_position.y += dy * t
 
+# ── Margem de corte pra objetos do object_matrix maiores que 1 tile ─────────
+#
+# Bug real relatado pelo usuário (02/09/2026): construção/árvore alta só
+# aparecia na tela quando a câmera alcançava a BASE do objeto (o tile-âncora
+# em object_matrix), mesmo que o topo do sprite já devesse estar visível bem
+# antes disso -- e piorava com zoom (janela de tiles visíveis menor). Causa:
+# get_world_objects()/render_static_objects() varriam só "tela em tiles + 2"
+# (margem fixa pequena) pra decidir quais tiles-âncora considerar, mas o
+# sprite de um objeto cresce PRA CIMA e PRA DIREITA a partir da âncora --
+# um objeto alto ancorado abaixo da tela, ou largo ancorado à esquerda da
+# tela, tem sprite real ainda dentro da área visível mesmo com a âncora
+# fora. Mesma classe de bug documentada pra Tilemap Renderer da Unity
+# ("Chunk/Cull Bounds" -- corte por grade sempre precisa de margem do
+# tamanho do MAIOR sprite do conjunto, não uma constante pequena). Fix:
+# estender a varredura pra ESQUERDA (objeto largo) e pra BAIXO (objeto
+# alto) pelo tamanho do maior sprite do catálogo -- NUNCA um número fixo
+# hardcoded, pra não ficar errado se um asset maior for adicionado depois
+# (ponto único de verdade, mesmo racional de qualquer "maior X do catálogo"
+# já usado no projeto). Topo/direita não precisam de margem: o sprite só
+# cresce pra longe da tela nesses casos. Ver PROBLEMAS_ARQUITETURA.md §102.
+_OBJECT_SCAN_MARGIN_CACHE: "tuple[int, int] | None" = None
+
+
+def _tile_effective_size_px(tile_type) -> tuple[int, int]:
+    """(largura, altura) em px do sprite renderizado desse TileType --
+    sprite real (sprite_px_w/h) quando existe, senão o cálculo legado
+    (tile_size × sprite_tiles_wide, tile_size + overlay_height). Mesma
+    lógica de get_world_objects()/render_static_objects(), extraída aqui
+    só pra achar o MAIOR objeto do catálogo (não duplica o cálculo de
+    desenho, que continua nos 2 métodos)."""
+    spr_w = getattr(tile_type, "sprite_px_w", 0)
+    spr_h = getattr(tile_type, "sprite_px_h", 0)
+    if spr_w > 0 and spr_h > 0:
+        return spr_w, spr_h
+    tiles_wide = getattr(tile_type, "sprite_tiles_wide", 1)
+    return TILE_SIZE * tiles_wide, TILE_SIZE + getattr(tile_type, "overlay_height", 0)
+
+
+def _object_scan_margin_tiles() -> tuple[int, int]:
+    """(colunas extras à esquerda, linhas extras abaixo) que a varredura
+    de object_matrix precisa somar à janela ingênua de tela-em-tiles.
+    Calculada 1x (catálogo é estático depois do startup) a partir do
+    maior sprite_px_w/sprite_px_h de OBJECT_MAPPING inteiro."""
+    global _OBJECT_SCAN_MARGIN_CACHE
+    if _OBJECT_SCAN_MARGIN_CACHE is None:
+        max_w = 0
+        max_h = 0
+        for tile_type in OBJECT_MAPPING.values():
+            w, h = _tile_effective_size_px(tile_type)
+            max_w = max(max_w, w)
+            max_h = max(max_h, h)
+        # -(-x//n) = ceil(x/n); -1 porque a margem fixa "+2" já cobre 1 tile
+        # de sobra em cada direção.
+        margin_left = max(0, -(-max_w // TILE_SIZE) - 1)
+        margin_down = max(0, -(-max_h // TILE_SIZE) - 1)
+        _OBJECT_SCAN_MARGIN_CACHE = (margin_left, margin_down)
+    return _OBJECT_SCAN_MARGIN_CACHE
+
+
 class TileRenderSystem(System):
     def __init__(self, world: World, screen: pygame.Surface):
         self.world = world
@@ -1945,6 +2004,22 @@ class TileRenderSystem(System):
         self._fog_cache_tile_oy = -99999
         self._fog_cache_version = -1
         self._tile_sprites.invalidate()
+
+    def _object_visible_tile_range(self, tile_size: int, camera_offset_x: float,
+                                    camera_offset_y: float) -> tuple[int, int, int, int]:
+        """(tile_ox, tile_oy, tiles_w, tiles_h) pra varredura de
+        object_matrix -- mesma janela "tela em tiles + 2" que
+        TileRenderSystem.render() usa pro terreno (1×1, sem margem),
+        estendida pra ESQUERDA/BAIXO pelo maior sprite do catálogo (ver
+        _object_scan_margin_tiles, PROBLEMAS_ARQUITETURA.md §102).
+        Ponto único de verdade pra get_world_objects()/
+        render_static_objects() -- os 2 duplicavam esse cálculo antes."""
+        margin_left, margin_down = _object_scan_margin_tiles()
+        tile_ox = int(camera_offset_x // tile_size) - margin_left
+        tile_oy = int(camera_offset_y // tile_size)
+        tiles_w = self.world_surf.get_width()  // tile_size + 2 + margin_left
+        tiles_h = self.world_surf.get_height() // tile_size + 2 + margin_down
+        return tile_ox, tile_oy, tiles_w, tiles_h
 
     def render(self, camera_offset_x: float = 0, camera_offset_y: float = 0) -> None:
         for _, tilemap_comp in self.world.get_entities_with(Tilemap):
@@ -2220,10 +2295,8 @@ class TileRenderSystem(System):
             map_h     = tilemap_comp.map_height_tiles
             map_w     = tilemap_comp.map_width_tiles
 
-            tile_ox = int(camera_offset_x // tile_size)
-            tile_oy = int(camera_offset_y // tile_size)
-            tiles_w = self.world_surf.get_width()  // tile_size + 2
-            tiles_h = self.world_surf.get_height() // tile_size + 2
+            tile_ox, tile_oy, tiles_w, tiles_h = self._object_visible_tile_range(
+                tile_size, camera_offset_x, camera_offset_y)
 
             for ty in range(tiles_h):
                 for tx in range(tiles_w):
@@ -2297,10 +2370,8 @@ class TileRenderSystem(System):
             obj_rows  = tilemap_comp.object_matrix
             map_h     = tilemap_comp.map_height_tiles
             map_w     = tilemap_comp.map_width_tiles
-            tile_ox   = int(camera_offset_x // tile_size)
-            tile_oy   = int(camera_offset_y // tile_size)
-            tiles_w   = self.world_surf.get_width()  // tile_size + 2
-            tiles_h   = self.world_surf.get_height() // tile_size + 2
+            tile_ox, tile_oy, tiles_w, tiles_h = self._object_visible_tile_range(
+                tile_size, camera_offset_x, camera_offset_y)
 
             for ty in range(tiles_h):
                 for tx in range(tiles_w):

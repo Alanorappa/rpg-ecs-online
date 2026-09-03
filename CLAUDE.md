@@ -496,6 +496,20 @@ padrão a quebrar, não só os bugs individuais.
   largura de linha contra nada — não existe uma "largura esperada"
   única que sirva pra qualquer formato de mapa. Ver
   PROBLEMAS_ARQUITETURA.md §97.
+- **Janela de tiles visível pra varrer `object_matrix` (objeto/prop
+  maior que 1 tile)** → `ui/systems.py::TileRenderSystem.
+  _object_visible_tile_range()` — NUNCA recalcular "tela em tiles + N"
+  na mão num call site novo. Objeto é ancorado na BASE e o sprite
+  cresce PRA CIMA/DIREITA a partir dali; a margem de corte precisa do
+  tamanho do MAIOR sprite do catálogo inteiro
+  (`_object_scan_margin_tiles()`, derivado de `OBJECT_MAPPING`, nunca
+  um número fixo) só nas direções ESQUERDA/BAIXO — objeto ancorado
+  acima/à direita da tela só cresce pra mais longe dela. `get_world_
+  objects()`/`render_static_objects()` reusam o mesmo método (bug real:
+  os 2 duplicavam "tela + 2" fixo, prédio/árvore alto só aparecia
+  quando a câmera alcançava a base dele, ver PROBLEMAS_ARQUITETURA.md
+  §102). `TileRenderSystem.render()` (terreno, sempre 1×1) não precisa
+  disso.
 
 ### Atualização coesa ao adicionar sistema novo (22/07/2026 — feedback recorrente do usuário)
 - **Nunca** deixar uma atualização acontecer "de carona" em outra ação sem

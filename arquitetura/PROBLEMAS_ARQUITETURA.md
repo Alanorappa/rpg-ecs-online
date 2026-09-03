@@ -14754,3 +14754,63 @@ grande parou de bloquear visão). Mesma classe de disciplina já exigida
 pelo `CLAUDE.md` pra itens "MITIGADO" do `PROBLEMAS_ARQUITETURA.md`:
 rótulo repetido em sessões sucessivas sem revisitar é sinal de dívida
 real, não de ruído confirmado.
+
+## 102. Objeto do object_matrix (construção/árvore) só aparecia quando a câmera alcançava a BASE dele (02/09/2026)
+
+Usuário relatou: objetos maiores que 1 tile (construções recém-
+catalogadas no §98/§99, árvores grandes de "TX Village Plant") só
+apareciam na tela quando a câmera chegava perto da base deles, mesmo
+que o topo do sprite já devesse estar visível bem antes — e piorava
+com zoom (menos tiles visíveis na tela). Confirmado com o usuário que
+o problema era exatamente esse antes de mexer em qualquer arquivo.
+
+**Causa raiz** (`ui/systems.py::TileRenderSystem`): `get_world_objects()`
+e `render_static_objects()` (lógica de corte duplicada nos 2, mesmo
+bug nos 2) decidiam quais tiles-âncora considerar varrendo só "tela em
+tiles + 2" (margem fixa pequena, mesmo padrão do terreno — mas terreno
+é sempre 1×1, objeto não). Objeto é ancorado na BASE (célula do
+`object_matrix`) e o sprite cresce PRA CIMA e PRA DIREITA a partir
+dali (`scr_y = anchor_y - camera_offset_y - total_h`,
+`scr_x = rx*tile_size - camera_offset_x`). Com prédios de até 12 tiles
+de altura / 11 de largura no catálogo, qualquer objeto cuja âncora
+ainda não tivesse entrado nesses "+2 tiles" nunca era nem considerado
+— mesmo com o topo/lado já dentro da tela de verdade.
+
+**Pesquisa antes de codar** (WebSearch, a pedido do usuário): mesma
+classe de bug documentada pra Tilemap Renderer da Unity — corte por
+grade de tile sempre precisa de margem do tamanho do MAIOR sprite do
+conjunto ("Chunk/Cull Bounds"), nunca uma constante pequena arbitrária.
+Confirma que a correção não é workaround local, é o padrão esperado
+pra esse tipo de renderer.
+
+**Fix**: `_object_scan_margin_tiles()` (novo, módulo `ui/systems.py`)
+calcula 1x, a partir do MAIOR `sprite_px_w`/`sprite_px_h` de
+`OBJECT_MAPPING` inteiro (nunca hardcoded — se um asset maior for
+catalogado depois, a margem se ajusta sozinha), quantas colunas extras
+à ESQUERDA e linhas extras ABAIXO a varredura precisa somar à janela
+ingênua. Só essas 2 direções importam: um objeto ancorado à direita ou
+acima da tela só cresce pra MAIS longe dela, nunca pra dentro.
+`TileRenderSystem._object_visible_tile_range()` (método novo,
+substituindo o cálculo duplicado nos 2 métodos — ponto único de
+verdade) aplica a margem. `TileRenderSystem.render()` (terreno, sempre
+1×1) não muda — a margem só faz sentido pra objeto.
+
+**Custo de performance**: mais tiles varridos por frame (só na faixa
+de margem, não a área toda) — decisão explícita de não otimizar isso
+"no escuro" agora (`CLAUDE.md`, disciplina de performance); se virar
+gargalo medido depois, profiling decide o próximo passo.
+
+**Testes**: `tests/test_object_scan_margin.py` (novo) — margem bate
+com o maior objeto do catálogo; objeto alto ancorado abaixo da tela
+mas com topo visível aparece; objeto largo ancorado à esquerda mas com
+lado direito visível aparece; objeto genuinamente fora de alcance (nem
+com margem) continua cortado nos 2 casos; `render_static_objects` usa
+o mesmo método sem lançar. Revert-to-confirm: com
+`_object_scan_margin_tiles()` forçado a `(0, 0)`, os 3 testes que
+dependem da margem falharam exatamente como esperado (o de "fora de
+alcance" continuou passando, confirmando que não virou "sempre
+aparece"). Suíte completa rodada sem regressão nova.
+
+**Fora do automatizável**: usuário ainda não validou em jogo (mover a
+câmera perto de um prédio/árvore alto e confirmar que aparece antes de
+alcançar a base, inclusive com zoom aplicado).
