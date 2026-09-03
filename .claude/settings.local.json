@@ -1,5 +1,6 @@
 {
   "permissions": {
+    "defaultMode": "bypassPermissions",
     "allow": [
       "Bash(python -c \"import systems\")",
       "Bash(/c/Users/l4nce/anaconda3/python.exe -c \"import loot_tables; import merchant_data; import systems; import components; print\\(''OK''\\)\")",

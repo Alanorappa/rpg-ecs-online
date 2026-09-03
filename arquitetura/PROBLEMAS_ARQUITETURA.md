@@ -14820,3 +14820,73 @@ aparece"). Suíte completa rodada sem regressão nova.
 
 **Validado em jogo pelo usuário (03/09/2026)**: confirmado com câmera
 perto de prédio/árvore alto, inclusive com zoom.
+
+## 103. Recatalogação de "TX Village Building with Shadow" v2 — usuário editou os 4 PNGs de apoio, ids viraram sequenciais "vb001".."vb097" (03/09/2026)
+
+Usuário reeditou os 4 arquivos de apoio (arte principal, colisões,
+dimensões, agrupamento) do §98 — 36 peças removidas, 29 adicionadas
+(104 → 97 no total), a maioria por RESLICE (mesma construção, corte
+interno diferente) em ~10 das 29 construções, não wholesale redo. Uma
+construção inteira ("Casebre pequeno", antiga `b05`) saiu da arte nova
+— sem substituto, tratada como removida de propósito, não bug.
+
+**Fluxo de reprocessamento** (mesmo script de component-labeling do
+§98, rodado do zero nos 4 arquivos atuais): os 30 retângulos verdes
+bateram 1-a-1 na MESMA posição do catálogo anterior (nenhuma
+construção mudou de lugar no sheet, só o conteúdo interno) — permitiu
+reatribuir cada peça nova ao grupo/label antigo por OVERLAP geométrico
+contra o catálogo salvo em `engine/tileset.py` (nunca a olho), robusto
+a reslice/merge desde que a posição geral não mude. `_object_scan_
+margin_tiles()` do §102 é data-driven (deriva do catálogo, não
+hardcoded) — não precisou de ajuste nenhum com a mudança de tamanho
+dos objetos.
+
+**Achado à parte, não usado**: `(collisions).png` ganhou um blob de
+~700px em vermelho OPACO (não o preenchimento semi-transparente usual)
+perto da área de "Salão comprido com torre" (x≈1856-1951, y≈1088-1343)
+— formato de contorno fino, não preenchimento. Ignorado na extração
+(só o padrão semi-transparente estabelecido conta como colisão real) —
+se era pra ser uma colisão nova de verdade, não teve efeito; avisar o
+usuário.
+
+**IDs sequenciais puros (pedido do usuário, 2 rodadas de ajuste)**: 1ª
+tentativa (`"prefix": ""` por grupo, id_suffix já contendo "vb001") deu
+certo tecnicamente mas o usuário rejeitou — queria `"prefix": "vb"`
+visível no código, igual toda outra família, só sem o separador `"_"`.
+Como `_register_catalog_tiles` é FUNÇÃO COMPARTILHADA por todo o
+catálogo (tirar o `"_"` de vez quebraria id de TODAS as outras famílias
+— `vp_001`→`vp001`, etc., referenciadas em mapas reais), a mudança
+virou opt-in por família/grupo: `"no_prefix_separator": True` no dict
+do grupo faz `tile_id = f"{prefix}{id_suffix}"` em vez de
+`f"{prefix}_{id_suffix}"` — default `False`, nenhuma outra família
+afetada. Grupo do catálogo (`"b01"`.."b29"`, `"muralhas"`,
+`"mercado_e_diversos"`) continua só organização interna do arquivo, o
+nome descritivo mora só no `"label"` do grupo — ids não carregam mais
+código de construção nem "_N" de sub-peça.
+
+**`map_1_objects.csv` já tinha 50 peças plantadas com os ids antigos**
+(usuário validou o catálogo em God Mode antes desta correção, ver §98
+fechamento) — recatalogar SEM corrigir o mapa deixaria 50 referências
+mortas. Fix em 2 categorias, decididas por geometria (nunca adivinhado):
+27 peças cuja posição/tamanho NÃO mudou entre catálogo antigo e novo
+(`(sx,sy,w,h)` idêntico) foram renomeadas 1-a-1 (bookkeeping puro, zero
+risco visual); 25 peças cuja construção foi resliced/merged (posição
+não bate mais exatamente com nenhuma peça nova) foram REMOVIDAS do
+mapa (célula limpa pra `"."`) em vez de adivinhada — colocar a peça
+errada seria pior que deixar vazio. Usuário precisa replantar essas 25
+manualmente no God Mode (lista completa no resumo desta sessão, não
+repetida aqui). Construções afetadas: casa pequena com chaminé, coreto
+de poço coberto (4 de 5 peças), casebre pequeno (removida da arte),
+torre de vigia de madeira (3 peças), torre com celeiro anexo (2 de 4
+peças), chalé com chaminé, torre com alicerce, salão comprido com
+torre (6 peças), tenda indígena, e o muro-lateral `m11`.
+
+**Validação**: 97 ids únicos (`vb001`..`vb097`), sem duplicata; suíte
+completa 1445 passed, 0 failed; contact sheet de 97 crops rotulados
+gerado e conferido visualmente (mesmo processo de QA do §98) antes de
+declarar pronto; nenhuma referência `vb_` (formato antigo) sobrando em
+`map_1_objects.csv`, nenhum id no mapa fora do catálogo atual
+(checagem programática, não só visual).
+
+**Fora do automatizável**: usuário replantar as 25 peças limpas do
+mapa (lista acima) e validar visualmente as construções resliced.

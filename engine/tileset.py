@@ -1486,364 +1486,370 @@ OBJECT_SHEET_FAMILIES: list[dict] = [
         "label":  "Construções",
         "color":  (115, 108, 98),
         "underlying_terrain": "G",
-        # Catalogado em 02/09/2026 a partir de 4 arquivos de apoio que o
-        # usuário criou (assets/tiles/"TX Village Building with Shadow"
-        # + "(dimensions)"/"(collisions)"/"(groups)", mesmo diretório) --
-        # (dimensions) marca o retângulo de CORTE de cada pedaço dentro
-        # do PNG (várias construções vêm fatiadas em vários pedaços, por
-        # causa de colisão em mais de 1 retângulo ou outros motivos de
-        # arte); (collisions) marca a área de colisão real de cada
-        # pedaço; (groups) marca em verde os blocos de proximidade no
-        # sheet que orientam ESTE agrupamento -- 1 grupo por construção
-        # (`b01".."b29"`, chave curta, nome descritivo só no "label"),
-        # + "muralhas" (kit de muro modular, 17 peças independentes) e
-        # "mercado_e_diversos" (barracas/tenda/poços/biombos, 16 peças
-        # independentes), que já eram categorias coesas de 1 bloco verde
-        # só, sem sub-construção. 1ª versão (mesmo dia) juntou as 29
-        # construções inteiras num único grupo "construcoes" com o nome
-        # descritivo inteiro em cada id (ex: "casa_pequena_chamine_1") --
-        # o usuário corrigiu na hora: os retângulos verdes existem
-        # EXATAMENTE pra virar 1 grupo por construção (senão a lista fica
-        # tão espalhada quanto sem agrupamento nenhum), e o nome grande
-        # é pro "label" do grupo, não pro id da peça. Pedaços continuam
-        # objetos INDEPENDENTES no catálogo (decisão anterior do usuário,
-        # sem mecanismo novo de "objeto composto" no motor) -- o usuário
-        # planta cada peça manualmente lado a lado no God Mode; peça
-        # única de uma construção usa só a chave do grupo como id
-        # (ex: "vb_b05"), peça múltipla usa "{grupo}_{1,2,3...}"
-        # (ex: "vb_b01_1"/"vb_b01_2"). `vision_height` (bloqueio de FOV,
-        # só >=2 conta) é 2 pra qualquer peça com colisão em construções/
-        # muralhas (mesmo padrão de WALL_TILE) -- EXCETO em
-        # "mercado_e_diversos", onde só peças genuinamente altas (tenda
-        # indígena, casinha do poço) bloqueiam; bancas de mercado e poços
-        # cobertos têm colisão (não atravessa) mas NÃO bloqueiam visão
-        # (altura de balcão, não de parede). Ver PROBLEMAS_ARQUITETURA.md
-        # §98 (catalogação original), §99 (correção de agrupamento/id) e
-        # §100 (correção de colisão errada em 19 peças fatiadas -- bug de
-        # bounding-box de blob de colisão fundido entre peças vizinhas
-        # que se tocam no sheet; extração corrigida recorta a máscara de
-        # colisão pra dentro da peça ANTES de medir, nunca olha fora
-        # dela).
-        "groups": {
+        # Catalogado em 02/09/2026 a partir de 4 arquivos de apoio (ver
+        # §98/§99/§100), REcatalogado em 03/09/2026 depois do usuário
+        # corrigir os 4 PNGs de apoio (piezas re-slicedas, colisões
+        # ajustadas) -- 104 peças viraram 97 (uma construção inteira,
+        # "casebre pequeno", saiu da arte nova; outras foram resliced
+        # sem mudar de conceito). Reprocessado do zero (mesmo script de
+        # component-labeling do §98), reatribuição de peça-pra-construção
+        # feita por OVERLAP geométrico contra o catálogo anterior (não a
+        # olho) -- cada peça nova herda o grupo/label da peça antiga que
+        # mais se sobrepõe espacialmente, robusto a resize/reslice desde
+        # que a construção não tenha se movido de lugar no sheet (não
+        # moveu, confirmado: os 30 retângulos verdes bateram 1-a-1 na
+        # mesma posição do catálogo anterior). Ver PROBLEMAS_ARQUITETURA.md
+        # §103.
+        #
+        # IDs viraram sequenciais puros ("vb001".."vb097", sem código de
+        # construção nem "_N" embutido) -- pedido do usuário (03/09/2026):
+        # o nome descritivo já mora no "label" do grupo, o id da peça só
+        # precisa ser único, não precisa carregar a qual construção ela
+        # pertence. Chave do grupo (`"b01"` etc, dict key, nunca exibida)
+        # continua curta só por organização interna do arquivo.
+        #
+        # `vision_height` (bloqueio de FOV, só >=2 conta) é 2 pra
+        # qualquer peça com colisão em construções/muralhas (mesmo padrão
+        # de WALL_TILE) -- EXCETO em "mercado_e_diversos", onde só peças
+        # genuinamente altas (tenda indígena, casinha do poço) bloqueiam;
+        # bancas de mercado e poços cobertos têm colisão (não atravessa)
+        # mas NÃO bloqueiam visão (altura de balcão, não de parede).
+"groups": {
             "b01": {
                 "prefix": "vb",
+                "no_prefix_separator": True,
                 "label":  "Casa pequena com chaminé",
                 "color":  (115, 108, 98),
                 "tiles": [
-                        ("b01_1",    64,     0,  224,  256, ( 16, 160, 176, 96), 0, False, 1, None, 2),
-                        ("b01_2",    64,   256,  224,   64, (64, 0, 128, 64), 0, False, 1, None, 2),
+                    ("001",   128,    16,  176,  304, (0, 144, 128, 160), 0, False, 1, None, 2),
+                    ("002",    64,    64,   64,  224, (16, 96, 48, 96), 0, False, 1, None, 2),
                 ],
             },
             "b02": {
                 "prefix": "vb",
+                "no_prefix_separator": True,
                 "label":  "Torre-pombal com varanda",
                 "color":  (115, 108, 98),
                 "tiles": [
-                        ("b02",   352,     0,  224,  352, (80, 192, 80, 160), 0, False, 1, None, 2),
+                    ("003",   352,     0,  224,  352, (80, 192, 80, 160), 0, False, 1, None, 2),
                 ],
             },
             "b03": {
                 "prefix": "vb",
+                "no_prefix_separator": True,
                 "label":  "Estábulo arqueado",
                 "color":  (115, 108, 98),
                 "tiles": [
-                        ("b03_1",   608,    96,   64,  224, (32, 192, 32, 32), 0, False, 1, None, 2),
-                        ("b03_2",   672,    96,  128,  224, (32, 192, 64, 32), 0, False, 1, None, 2),
-                        ("b03_3",   800,    96,   32,  224, (0, 192, 32, 32), 0, False, 1, None, 2),
-                        ("b03_4",   832,    96,   64,  224, (0, 128, 64, 96), 0, False, 1, None, 2),
+                    ("004",   608,    96,   64,  224, (32, 192, 32, 32), 0, False, 1, None, 2),
+                    ("005",   672,    96,  128,  224, (32, 192, 64, 32), 0, False, 1, None, 2),
+                    ("006",   800,    96,   32,  224, (0, 192, 32, 32), 0, False, 1, None, 2),
+                    ("007",   832,    96,   64,  224, (0, 128, 64, 96), 0, False, 1, None, 2),
                 ],
             },
             "b04": {
                 "prefix": "vb",
+                "no_prefix_separator": True,
                 "label":  "Coreto de poço coberto",
                 "color":  (115, 108, 98),
                 "tiles": [
-                        ("b04_1",   928,    64,   32,  160, (0, 128, 32, 32), 0, False, 1, None, 2),
-                        ("b04_2",   960,    64,   96,  160, None, 0, False, 1, None, 0),
-                        ("b04_3",  1056,    64,   32,  160, (0, 128, 32, 32), 0, False, 1, None, 2),
-                        ("b04_4",  1088,    64,   96,  128, (32, 64, 64, 64), 0, False, 1, None, 2),
-                        ("b04_5",  1184,    64,   96,  160, (32, 128, 32, 32), 0, False, 1, None, 2),
-                ],
-            },
-            "b05": {
-                "prefix": "vb",
-                "label":  "Casebre pequeno",
-                "color":  (115, 108, 98),
-                "tiles": [
-                        ("b05",  1088,   256,  128,   96, (32, 0, 64, 96), 0, False, 1, None, 2),
+                    ("008",   928,    64,  128,  160, (0, 128, 32, 32), 0, False, 1, None, 2),
+                    ("009",  1056,    64,   32,  160, (0, 128, 32, 32), 0, False, 1, None, 2),
+                    ("010",  1088,    64,   96,  224, (0, 64, 96, 160), 0, False, 1, None, 2),
+                    ("011",  1184,    64,   64,  224, (32, 128, 32, 32), 0, False, 1, None, 2),
                 ],
             },
             "b06": {
                 "prefix": "vb",
+                "no_prefix_separator": True,
                 "label":  "Chaminé dupla A",
                 "color":  (115, 108, 98),
                 "tiles": [
-                        ("b06",  1312,     0,   96,  192, (0, 160, 64, 32), 0, False, 1, None, 2),
+                    ("012",  1312,     0,   96,  192, (0, 160, 64, 32), 0, False, 1, None, 2),
                 ],
             },
             "b07": {
                 "prefix": "vb",
+                "no_prefix_separator": True,
                 "label":  "Chaminé dupla B",
                 "color":  (115, 108, 98),
                 "tiles": [
-                        ("b07",  1408,     0,   96,  192, (0, 160, 64, 32), 0, False, 1, None, 2),
+                    ("013",  1408,     0,   96,  192, (0, 160, 64, 32), 0, False, 1, None, 2),
                 ],
             },
             "b08": {
                 "prefix": "vb",
+                "no_prefix_separator": True,
                 "label":  "Casarão com torre",
                 "color":  (115, 108, 98),
                 "tiles": [
-                        ("b08_1",  1664,     0,  160,  352, (32, 160, 128, 192), 0, False, 1, None, 2),
-                        ("b08_2",  1824,     0,  192,  352, (0, 160, 128, 96), 0, False, 1, None, 2),
+                    ("014",  1664,     0,  160,  352, (32, 160, 128, 192), 0, False, 1, None, 2),
+                    ("015",  1824,     0,  192,  352, (0, 160, 128, 96), 0, False, 1, None, 2),
                 ],
             },
             "b09": {
                 "prefix": "vb",
+                "no_prefix_separator": True,
                 "label":  "Torre de vigia de madeira",
                 "color":  (115, 108, 98),
                 "tiles": [
-                        ("b09_1",    32,   352,  288,  384, (32, 352, 160, 32), 0, False, 1, None, 2),
-                        ("b09_2",    32,   736,  256,   32, (32, 0, 192, 32), 0, False, 1, None, 2),
-                        ("b09_3",    96,   768,  192,   32, (32, 0, 128, 32), 0, False, 1, None, 2),
+                    ("016",    32,   352,   96,  448, (32, 352, 64, 64), 0, False, 1, None, 2),
+                    ("017",   128,   352,   96,  448, (0, 352, 96, 96), 0, False, 1, None, 2),
+                    ("018",   224,   352,   96,  448, (0, 384, 32, 64), 0, False, 1, None, 2),
                 ],
             },
             "b10": {
                 "prefix": "vb",
+                "no_prefix_separator": True,
                 "label":  "Torre redonda fortificada",
                 "color":  (115, 108, 98),
                 "tiles": [
-                        ("b10_1",   320,   384,  192,  288, (32, 160, 128, 128), 0, False, 1, None, 2),
-                        ("b10_2",   352,   672,  128,   48, (32, 0, 64, 32), 0, False, 1, None, 2),
+                    ("019",   320,   384,  192,  288, (32, 160, 128, 128), 0, False, 1, None, 2),
+                    ("020",   352,   672,  128,   48, (32, 0, 64, 32), 0, False, 1, None, 2),
                 ],
             },
             "b11": {
                 "prefix": "vb",
+                "no_prefix_separator": True,
                 "label":  "Torre-capela com chaminé",
                 "color":  (115, 108, 98),
                 "tiles": [
-                        ("b11",   544,   416,  192,  288, (32, 128, 128, 160), 0, False, 1, None, 2),
+                    ("021",   544,   416,  192,  288, (32, 128, 128, 160), 0, False, 1, None, 2),
                 ],
             },
             "b12": {
                 "prefix": "vb",
+                "no_prefix_separator": True,
                 "label":  "Torre com janela em arco",
                 "color":  (115, 108, 98),
                 "tiles": [
-                        ("b12",   832,   352,  160,  288, (32, 224, 96, 64), 0, False, 1, None, 2),
+                    ("022",   832,   352,  160,  288, (32, 224, 96, 64), 0, False, 1, None, 2),
                 ],
             },
             "b13": {
                 "prefix": "vb",
+                "no_prefix_separator": True,
                 "label":  "Alpendre com banco",
                 "color":  (115, 108, 98),
                 "tiles": [
-                        ("b13",   768,   512,   64,  128, (0, 96, 64, 32), 0, False, 1, None, 2),
+                    ("023",   768,   512,   64,  128, (0, 96, 64, 32), 0, False, 1, None, 2),
                 ],
             },
             "b14": {
                 "prefix": "vb",
+                "no_prefix_separator": True,
                 "label":  "Estábulo de três arcos",
                 "color":  (115, 108, 98),
                 "tiles": [
-                        ("b14_1",   992,   480,   64,  160, (0, 96, 32, 64), 0, False, 1, None, 2),
-                        ("b14_2",  1056,   480,   64,  160, (0, 96, 64, 64), 0, False, 1, None, 2),
-                        ("b14_3",  1120,   480,   96,  160, (32, 96, 32, 64), 0, False, 1, None, 2),
+                    ("024",   992,   480,   64,  160, (0, 96, 32, 64), 0, False, 1, None, 2),
+                    ("025",  1056,   480,   64,  160, (0, 96, 64, 64), 0, False, 1, None, 2),
+                    ("026",  1120,   480,   96,  160, (32, 96, 32, 64), 0, False, 1, None, 2),
                 ],
             },
             "b15": {
                 "prefix": "vb",
+                "no_prefix_separator": True,
                 "label":  "Coreto alto sobre pilares",
                 "color":  (115, 108, 98),
                 "tiles": [
-                        ("b15_1",   864,   640,   64,   96, (0, 64, 32, 32), 0, False, 1, None, 2),
-                        ("b15_2",   928,   640,   64,   96, (0, 64, 32, 32), 0, False, 1, None, 2),
-                        ("b15_3",   864,   736,   64,  128, (0, 96, 32, 32), 0, False, 1, None, 2),
-                        ("b15_4",   928,   736,   64,  128, (0, 96, 32, 32), 0, False, 1, None, 2),
+                    ("027",   864,   640,   64,  224, (0, 192, 32, 32), 0, False, 1, None, 2),
+                    ("028",   928,   640,   64,  224, (0, 192, 32, 32), 0, False, 1, None, 2),
                 ],
             },
             "b16": {
                 "prefix": "vb",
+                "no_prefix_separator": True,
                 "label":  "Casa de telhado alto com arcada",
                 "color":  (115, 108, 98),
                 "tiles": [
-                        ("b16_1",  1248,   352,  288,  256, (32, 160, 192, 96), 0, False, 1, None, 2),
-                        ("b16_2",  1280,   608,   96,   96, (0, 0, 32, 96), 0, False, 1, None, 2),
-                        ("b16_3",  1376,   608,   64,   96, (0, 0, 32, 96), 0, False, 1, None, 2),
+                    ("029",  1248,   368,   64,  336, (32, 144, 32, 192), 0, False, 1, None, 2),
+                    ("030",  1312,   368,   64,  336, (0, 144, 64, 96), 0, False, 1, None, 2),
+                    ("031",  1376,   368,   32,  336, (0, 144, 32, 192), 0, False, 1, None, 2),
+                    ("032",  1408,   416,  112,  288, (0, 96, 64, 96), 0, False, 1, None, 2),
                 ],
             },
             "b17": {
                 "prefix": "vb",
+                "no_prefix_separator": True,
                 "label":  "Passagem coberta dupla",
                 "color":  (115, 108, 98),
                 "tiles": [
-                        ("b17_1",  1664,   464,  128,  144, (32, 80, 96, 64), 0, False, 1, None, 2),
-                        ("b17_2",  1792,   464,  128,  144, (64, 112, 32, 32), 0, False, 1, None, 2),
+                    ("033",  1664,   464,  128,  144, (32, 80, 96, 64), 0, False, 1, None, 2),
+                    ("034",  1792,   464,  128,  144, (64, 112, 32, 32), 0, False, 1, None, 2),
                 ],
             },
             "b18": {
                 "prefix": "vb",
+                "no_prefix_separator": True,
                 "label":  "Torre com celeiro anexo",
                 "color":  (115, 108, 98),
                 "tiles": [
-                        ("b18_1",  1536,   624,   32,  368, (0, 112, 32, 64), 0, False, 1, None, 2),
-                        ("b18_2",  1568,   624,  128,  368, (0, 112, 128, 256), 0, False, 1, None, 2),
-                        ("b18_3",  1696,   672,   32,  128, None, 0, False, 1, None, 0),
-                        ("b18_4",  1696,   800,  256,  192, (0, 96, 224, 64), 0, False, 1, None, 2),
+                    ("035",  1536,   624,   32,  368, (0, 112, 32, 64), 0, False, 1, None, 2),
+                    ("036",  1568,   624,  128,  368, (0, 112, 128, 256), 0, False, 1, None, 2),
+                    ("037",  1696,   672,  256,  320, (0, 224, 224, 64), 0, False, 1, None, 2),
                 ],
             },
             "b19": {
                 "prefix": "vb",
+                "no_prefix_separator": True,
                 "label":  "Casa enxaimel com porta",
                 "color":  (115, 108, 98),
                 "tiles": [
-                        ("b19_1",   416,   736,   64,  224, (0, 96, 64, 128), 0, False, 1, None, 2),
-                        ("b19_2",   480,   736,   32,  224, (0, 96, 32, 96), 0, False, 1, None, 2),
-                        ("b19_3",   512,   736,   32,  224, (0, 96, 32, 128), 0, False, 1, None, 2),
-                        ("b19_4",   544,   736,   64,  224, (0, 96, 64, 64), 0, False, 1, None, 2),
+                    ("038",   416,   736,   64,  224, (0, 96, 64, 128), 0, False, 1, None, 2),
+                    ("039",   480,   736,   32,  224, (0, 96, 32, 96), 0, False, 1, None, 2),
+                    ("040",   512,   736,   32,  224, (0, 96, 32, 128), 0, False, 1, None, 2),
+                    ("041",   544,   736,   64,  224, (0, 96, 64, 64), 0, False, 1, None, 2),
                 ],
             },
             "b20": {
                 "prefix": "vb",
+                "no_prefix_separator": True,
                 "label":  "Celeiro de telhado cinza",
                 "color":  (115, 108, 98),
                 "tiles": [
-                        ("b20",    32,   832,  352,  224, (32, 128, 256, 96), 0, False, 1, None, 2),
+                    ("042",    32,   832,  352,  224, (32, 128, 256, 96), 0, False, 1, None, 2),
                 ],
             },
             "b21": {
                 "prefix": "vb",
+                "no_prefix_separator": True,
                 "label":  "Casa comprida enxaimel",
                 "color":  (115, 108, 98),
                 "tiles": [
-                        ("b21",  1216,   832,  224,  192, (16, 128, 176, 64), 0, False, 1, None, 2),
+                    ("043",  1216,   832,  224,  192, (0, 128, 192, 64), 0, False, 1, None, 2),
                 ],
             },
             "b22": {
                 "prefix": "vb",
+                "no_prefix_separator": True,
                 "label":  "Torre redonda alta",
                 "color":  (115, 108, 98),
                 "tiles": [
-                        ("b22",   768,   896,  256,  352, (32, 64, 128, 192), 0, False, 1, None, 2),
+                    ("044",   768,   896,  256,  352, (32, 64, 128, 192), 0, False, 1, None, 2),
                 ],
             },
             "b23": {
                 "prefix": "vb",
+                "no_prefix_separator": True,
                 "label":  "Chalé com chaminé",
                 "color":  (115, 108, 98),
                 "tiles": [
-                        ("b23_1",   544,   992,  192,  224, (32, 96, 128, 96), 0, False, 1, None, 2),
-                        ("b23_2",   576,  1216,  144,   32, None, 0, False, 1, None, 0),
+                    ("045",   544,   992,  192,  256, (32, 96, 128, 96), 0, False, 1, None, 2),
                 ],
             },
             "b24": {
                 "prefix": "vb",
+                "no_prefix_separator": True,
                 "label":  "Porta dupla pequena",
                 "color":  (115, 108, 98),
                 "tiles": [
-                        ("b24_1",  1216,  1040,   32,  112, (0, 80, 32, 32), 0, False, 1, None, 2),
-                        ("b24_2",  1248,  1040,   64,  112, (32, 80, 32, 32), 0, False, 1, None, 2),
+                    ("046",  1216,  1040,   32,  112, (0, 80, 32, 32), 0, False, 1, None, 2),
+                    ("047",  1248,  1040,   64,  112, (32, 80, 32, 32), 0, False, 1, None, 2),
                 ],
             },
             "b25": {
                 "prefix": "vb",
+                "no_prefix_separator": True,
                 "label":  "Celeiro de telhado vermelho",
                 "color":  (115, 108, 98),
                 "tiles": [
-                        ("b25",    32,  1056,  288,  160, (32, 96, 208, 64), 0, False, 1, None, 2),
+                    ("048",    32,  1056,  288,  160, (32, 96, 208, 64), 0, False, 1, None, 2),
                 ],
             },
             "b26": {
                 "prefix": "vb",
+                "no_prefix_separator": True,
                 "label":  "Torre com alicerce",
                 "color":  (115, 108, 98),
                 "tiles": [
-                        ("b26_1",   352,  1056,  160,  160, (32, 64, 96, 96), 0, False, 1, None, 2),
-                        ("b26_2",   352,  1216,   64,   64, (32, 0, 32, 32), 0, False, 1, None, 2),
-                        ("b26_3",   416,  1216,   96,   64, (32, 0, 32, 32), 0, False, 1, None, 2),
+                    ("049",   352,  1056,  160,  224, (32, 96, 96, 96), 0, False, 1, None, 2),
                 ],
             },
             "b27": {
                 "prefix": "vb",
+                "no_prefix_separator": True,
                 "label":  "Salão comprido com torre",
                 "color":  (115, 108, 98),
                 "tiles": [
-                        ("b27_1",  1856,  1088,  160,  224, (0, 96, 96, 128), 0, False, 1, None, 2),
-                        ("b27_2",  1536,  1120,   96,  192, (0, 96, 96, 32), 0, False, 1, None, 2),
-                        ("b27_3",  1632,  1120,  224,  192, (0, 96, 224, 64), 0, False, 1, None, 2),
-                        ("b27_4",  1504,  1152,   32,  160, (0, 64, 32, 64), 0, False, 1, None, 2),
-                        ("b27_5",  1824,  1312,   64,   32, (32, 0, 32, 32), 0, False, 1, None, 2),
-                        ("b27_6",  1888,  1312,   96,   32, (0, 0, 64, 32), 0, False, 1, None, 2),
+                    ("050",  1855,  1088,   98,  256, (0, 96, 98, 159), 0, False, 1, None, 2),
+                    ("051",  1952,  1088,   64,  256, (0, 96, 32, 64), 0, False, 1, None, 2),
+                    ("052",  1536,  1120,   96,  160, (0, 96, 96, 32), 0, False, 1, None, 2),
+                    ("053",  1632,  1120,  224,  224, (0, 96, 224, 64), 0, False, 1, None, 2),
+                    ("054",  1504,  1136,   32,  144, (0, 80, 32, 64), 0, False, 1, None, 2),
                 ],
             },
             "b28": {
                 "prefix": "vb",
+                "no_prefix_separator": True,
                 "label":  "Torre-portão com arcada",
                 "color":  (115, 108, 98),
                 "tiles": [
-                        ("b28_1",  1120,  1248,  128,  256, (0, 192, 128, 64), 0, False, 1, None, 2),
-                        ("b28_2",  1248,  1360,   32,  144, (0, 80, 32, 64), 0, False, 1, None, 2),
-                        ("b28_3",  1280,  1360,   64,  144, (0, 80, 64, 64), 0, False, 1, None, 2),
-                        ("b28_4",  1344,  1360,   32,  112, (0, 80, 32, 32), 0, False, 1, None, 2),
-                        ("b28_5",  1376,  1360,   64,  144, (0, 80, 32, 64), 0, False, 1, None, 2),
-                        ("b28_6",  1056,  1376,   64,  128, (32, 64, 32, 64), 0, False, 1, None, 2),
-                        ("b28_7",  1120,  1504,  128,  160, None, 0, False, 1, None, 0),
+                    ("055",  1120,  1248,  128,  256, (0, 192, 128, 64), 0, False, 1, None, 2),
+                    ("056",  1248,  1360,   32,  144, (0, 80, 32, 64), 0, False, 1, None, 2),
+                    ("057",  1280,  1360,   64,  144, (0, 80, 64, 64), 0, False, 1, None, 2),
+                    ("058",  1344,  1360,   32,  144, (0, 80, 32, 64), 0, False, 1, None, 2),
+                    ("059",  1376,  1360,   64,  144, (0, 80, 32, 64), 0, False, 1, None, 2),
+                    ("060",  1056,  1376,   64,  128, (32, 64, 32, 64), 0, False, 1, None, 2),
+                    ("061",  1120,  1504,  128,  160, None, 0, False, 1, None, 0),
                 ],
             },
             "b29": {
                 "prefix": "vb",
+                "no_prefix_separator": True,
                 "label":  "Capela de arco aberto",
                 "color":  (115, 108, 98),
                 "tiles": [
-                        ("b29_1",    64,  1216,   64,  160, (0, 128, 32, 32), 0, False, 1, None, 2),
-                        ("b29_2",   128,  1216,   64,  160, (32, 128, 32, 32), 0, False, 1, None, 2),
+                    ("062",    64,  1216,   64,  160, (0, 128, 32, 32), 0, False, 1, None, 2),
+                    ("063",   128,  1216,   64,  160, (32, 128, 32, 32), 0, False, 1, None, 2),
                 ],
             },
             "muralhas": {
                 "prefix": "vb",
+                "no_prefix_separator": True,
                 "label":  "Muralhas e Muros",
                 "color":  (115, 108, 98),
                 "tiles": [
-                        ("m01",    32,  1536,   64,   96, None, 0, False, 1, None, 0),  # muro baixo
-                        ("m02",    32,  1632,   64,   96, (0, 64, 64, 32), 0, False, 1, None, 2),  # muro liso
-                        ("m03",    32,  1728,   64,   96, (0, 64, 64, 32), 0, False, 1, None, 2),  # muro liso
-                        ("m04",   128,  1632,   32,   96, (0, 64, 32, 32), 0, False, 1, None, 2),  # muro liso
-                        ("m05",   128,  1728,   32,   96, (0, 64, 32, 32), 0, False, 1, None, 2),  # muro liso
-                        ("m06",   160,  1632,   64,   96, (32, 64, 32, 32), 0, False, 1, None, 2),  # muro com arco
-                        ("m07",   160,  1728,   64,   96, (32, 64, 32, 32), 0, False, 1, None, 2),  # muro com arco
-                        ("m08",   256,  1600,   64,  144, (16, 64, 32, 64), 0, False, 1, None, 2),  # pilar de capela
-                        ("m09",   320,  1600,   64,   96, (0, 64, 64, 32), 0, False, 1, None, 2),  # muro lateral
-                        ("m10",   256,  1744,   64,   80, (0, 48, 64, 32), 0, False, 1, None, 2),  # pilar de capela
-                        ("m11",   320,  1744,   64,  144, (16, 48, 32, 64), 0, False, 1, None, 2),  # muro lateral
-                        ("m12",   319,  1695,   66,   50, None, 0, False, 1, None, 0),  # ornamento de pilar
-                        ("m13",   416,  1568,   48,  128, (0, 96, 32, 32), 0, False, 1, None, 2),  # torre-pilar de sino
-                        ("m14",   464,  1568,   48,  128, (0, 64, 32, 64), 0, False, 1, None, 2),  # topo de pilar de sino
-                        ("m15",   384,  1696,   32,  128, (0, 64, 32, 64), 0, False, 1, None, 2),  # muro lateral
-                        ("m16",   416,  1696,   64,  128, (0, 96, 64, 32), 0, False, 1, None, 2),  # pilar pontudo
-                        ("m17",   480,  1696,   80,  128, (32, 64, 32, 64), 0, False, 1, None, 2),  # pilar arredondado
+                    ("064",    32,  1536,   64,   96, None, 0, False, 1, None, 0),
+                    ("065",   416,  1568,   32,  128, (0, 96, 32, 32), 0, False, 1, None, 2),
+                    ("066",   448,  1568,   32,  128, (0, 64, 32, 64), 0, False, 1, None, 2),
+                    ("067",   480,  1568,   32,  128, (0, 96, 32, 32), 0, False, 1, None, 2),
+                    ("068",   256,  1600,   64,  144, (0, 80, 64, 64), 0, False, 1, None, 2),
+                    ("069",   320,  1600,   64,   96, (0, 64, 64, 32), 0, False, 1, None, 2),
+                    ("070",    32,  1632,   64,   96, (0, 64, 64, 32), 0, False, 1, None, 2),
+                    ("071",   128,  1632,   32,   96, (0, 64, 32, 32), 0, False, 1, None, 2),
+                    ("072",   160,  1632,   64,   96, (32, 64, 32, 32), 0, False, 1, None, 2),
+                    ("073",   319,  1695,   66,   50, (0, 0, 65, 49), 0, False, 1, None, 2),
+                    ("074",   384,  1696,   32,  128, (0, 64, 32, 64), 0, False, 1, None, 2),
+                    ("075",   416,  1696,   64,  128, (0, 96, 64, 32), 0, False, 1, None, 2),
+                    ("076",   496,  1696,   64,  128, (0, 64, 64, 64), 0, False, 1, None, 2),
+                    ("077",    32,  1728,   64,   96, (0, 64, 64, 32), 0, False, 1, None, 2),
+                    ("078",   128,  1728,   32,   96, (0, 64, 32, 32), 0, False, 1, None, 2),
+                    ("079",   160,  1728,   64,   96, (32, 64, 32, 32), 0, False, 1, None, 2),
+                    ("080",   256,  1744,   64,   80, (0, 48, 64, 32), 0, False, 1, None, 2),
+                    ("081",   320,  1744,   64,  128, (0, 64, 64, 64), 0, False, 1, None, 2),
                 ],
             },
             "mercado_e_diversos": {
                 "prefix": "vb",
+                "no_prefix_separator": True,
                 "label":  "Mercado e Diversos",
                 "color":  (115, 108, 98),
                 "tiles": [
-                        ("d01",   608,  1664,   80,  160, None, 0, False, 1, None, 0),  # mesa de barraca
-                        ("d02",   832,  1664,  112,  160, None, 0, False, 1, None, 0),  # mesa de barraca
-                        ("d03",   688,  1712,  132,  112, None, 0, False, 1, None, 0),  # banco de barraca
-                        ("d04",   960,  1712,  128,  144, (32, 80, 64, 32), 0, False, 1, None, 2),  # tenda indigena
-                        ("d05",   304,  1888,   80,  144, None, 0, False, 1, None, 0),  # biombo listrado
-                        ("d06",  1120,  1888,  144,  128, (32, 96, 96, 32), 0, False, 1, None, 0),  # banca de mercado cinza
-                        ("d07",  1280,  1888,  144,  128, (32, 96, 96, 32), 0, False, 1, None, 0),  # banca de mercado verde
-                        ("d08",  1440,  1888,  144,  128, (32, 96, 96, 32), 0, False, 1, None, 0),  # banca de mercado bege
-                        ("d09",   400,  1904,  128,  112, None, 0, False, 1, None, 0),  # biombo listrado
-                        ("d10",   528,  1904,   96,  144, None, 0, False, 1, None, 0),  # biombo listrado
-                        ("d11",   640,  1904,  144,  112, (32, 80, 96, 32), 0, False, 1, None, 0),  # banca de mercado terracota
-                        ("d12",   800,  1904,  144,  112, (32, 80, 96, 32), 0, False, 1, None, 0),  # banca de mercado oliva
-                        ("d13",   960,  1904,  144,  112, (32, 80, 96, 32), 0, False, 1, None, 0),  # banca de mercado azul
-                        ("d14",     0,  1920,  128,   96, (32, 48, 64, 48), 0, False, 1, None, 2),  # casinha do poco
-                        ("d15",  1600,  1920,   80,   96, (32, 64, 32, 32), 0, False, 1, None, 0),  # poco coberto
-                        ("d16",  1696,  1920,   80,   96, (32, 64, 32, 32), 0, False, 1, None, 0),  # poco coberto
+                    ("082",   608,  1664,   80,  160, None, 0, False, 1, None, 0),
+                    ("083",   832,  1664,  112,  160, None, 0, False, 1, None, 0),
+                    ("084",   688,  1712,  132,  112, None, 0, False, 1, None, 0),
+                    ("085",   976,  1712,   96,  144, (0, 80, 96, 32), 0, False, 1, None, 2),
+                    ("086",   304,  1888,   80,  144, None, 0, False, 1, None, 0),
+                    ("087",  1120,  1888,  144,  128, (32, 96, 96, 32), 0, False, 1, None, 0),
+                    ("088",  1280,  1888,  144,  128, (32, 96, 96, 32), 0, False, 1, None, 0),
+                    ("089",  1440,  1888,  144,  128, (32, 96, 96, 32), 0, False, 1, None, 0),
+                    ("090",   400,  1904,  128,  112, None, 0, False, 1, None, 0),
+                    ("091",   528,  1904,   96,  144, None, 0, False, 1, None, 0),
+                    ("092",   640,  1904,  144,  112, (32, 80, 96, 32), 0, False, 1, None, 0),
+                    ("093",   800,  1904,  144,  112, (32, 80, 96, 32), 0, False, 1, None, 0),
+                    ("094",   960,  1904,  144,  112, (32, 80, 96, 32), 0, False, 1, None, 0),
+                    ("095",     0,  1920,  128,   96, (32, 48, 64, 48), 0, False, 1, None, 2),
+                    ("096",  1600,  1920,   80,   96, (32, 64, 32, 32), 0, False, 1, None, 0),
+                    ("097",  1696,  1920,   80,   96, (32, 64, 32, 32), 0, False, 1, None, 0),
                 ],
             },
         },
@@ -1987,7 +1993,8 @@ def resolve_blob3x3_piece(missing_sides: frozenset) -> "tuple | None":
 
 def _register_catalog_tiles(sheet_file: str, prefix: str, color: tuple,
                             under: str, tiles: list, default_vh: int,
-                            is_bush: bool = False) -> None:
+                            is_bush: bool = False,
+                            no_prefix_separator: bool = False) -> None:
     """
     Registra um lote de tiles em modo CATÁLOGO (posição/tamanho próprios
     por tile) em OBJECT_MAPPING/OBJECT_CHARS/OBJECT_SHEET_TILE_MAP/
@@ -2011,6 +2018,17 @@ def _register_catalog_tiles(sheet_file: str, prefix: str, color: tuple,
                        inteira bloqueando visão) — ver TileType.vision_rect.
         vision_h     — vision_height explícito por tile; omita pra usar
                        default_vh.
+
+    no_prefix_separator (03/09/2026, pedido do usuário) — pula o "_"
+    entre `prefix` e o id de cada peça (`tile_id = f"{prefix}{id_suffix}"`
+    em vez de `f"{prefix}_{id_suffix}"`). Opt-in por família/grupo
+    (`"no_prefix_separator": True` no dict do grupo/família no catálogo)
+    — default False, comportamento de TODA outra família intacto. Serve
+    pra catálogo com id sequencial "puro" (ex: "vb001".."vb097" em "TX
+    Village Building with Shadow") onde o próprio id_suffix já embute o
+    prefixo visualmente (`"vb001"`) e o campo `"prefix"` continua
+    dizendo `"vb"` só por padronização/legibilidade do arquivo, não pra
+    ser concatenado com separador.
     """
     for entry in tiles:
         n = len(entry)
@@ -2029,7 +2047,7 @@ def _register_catalog_tiles(sheet_file: str, prefix: str, color: tuple,
             elev     = int(piso_raw)
             is_trans = False
 
-        tile_id = f"{prefix}_{id_suffix}"
+        tile_id = f"{prefix}{id_suffix}" if no_prefix_separator else f"{prefix}_{id_suffix}"
         is_solid, internal_rect = _resolve_collision(col_rect_cfg)
         tile = TileType(
             name=f"ObjSheet_{tile_id}",
@@ -2095,10 +2113,12 @@ def discover_object_sheet_tiles() -> None:
                     group["tiles"],
                     group.get("default_vision_height", default_vh),
                     group.get("is_bush", False),
+                    group.get("no_prefix_separator", False),
                 )
         elif "tiles" in fam:
             _register_catalog_tiles(sheet_file, prefix, color, under,
-                                    fam["tiles"], default_vh)
+                                    fam["tiles"], default_vh,
+                                    no_prefix_separator=fam.get("no_prefix_separator", False))
         else:
             # Modo grade: tile_w × tile_h uniforme, auto-descobre cols/rows
             sw, sh_px   = _read_png_size(path)

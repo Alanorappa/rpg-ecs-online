@@ -510,6 +510,15 @@ padrão a quebrar, não só os bugs individuais.
   quando a câmera alcançava a base dele, ver PROBLEMAS_ARQUITETURA.md
   §102). `TileRenderSystem.render()` (terreno, sempre 1×1) não precisa
   disso.
+- **Catálogo com id sequencial puro sem separador (ex: `"vb001"`, não
+  `"vb_001"`)** → `"no_prefix_separator": True` no dict do grupo/família
+  em `OBJECT_SHEET_FAMILIES`, NUNCA tirar o `"_"` direto em
+  `_register_catalog_tiles`/`tile_id = f"{prefix}_{id_suffix}"` — esse
+  separador é usado por TODAS as outras famílias do catálogo (ids já
+  referenciados em mapas reais), tirar sem o opt-in quebraria id de
+  cada uma delas. `"prefix"` continua igual nas outras famílias, só
+  `"TX Village Building with Shadow"` usa a flag hoje. Ver
+  PROBLEMAS_ARQUITETURA.md §103.
 
 ### Atualização coesa ao adicionar sistema novo (22/07/2026 — feedback recorrente do usuário)
 - **Nunca** deixar uma atualização acontecer "de carona" em outra ação sem

@@ -34,10 +34,6 @@
       "WebFetch(domain:raw.githubusercontent.com)",
       "WebFetch(domain:docs.veloren.net)",
       "WebFetch(domain:veloren.net)"
-    ],
-    "ask": [
-      "Bash(git *)",
-      "PowerShell(git *)"
     ]
   }
 }
