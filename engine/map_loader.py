@@ -551,8 +551,14 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
             spawn_points["enemies"] = []
 
     if "training_dummies" in data:
+        # "id" (03/09/2026, pedido do usuário — sistema de rastreio de
+        # quest no mapa): referenciado por ObjectiveDef.params["dummy_id"]
+        # (use_skill on_dummy) pra saber QUAL boneco desenhar no mapa/
+        # minimapa. "" = dummy não referenciável por nenhuma quest ainda,
+        # continua funcionando normal pro gameplay (on_dummy só olha o
+        # componente TrainingDummy, nunca o id).
         spawn_points["training_dummies"] = [
-            (d["x"], d["y"]) for d in data["training_dummies"]
+            (d["x"], d["y"], d.get("id", "")) for d in data["training_dummies"]
         ]
 
     if "default_ambient" in data:

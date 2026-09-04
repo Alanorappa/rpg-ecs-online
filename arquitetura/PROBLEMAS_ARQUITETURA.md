@@ -14945,3 +14945,117 @@ a mesma fórmula em paralelo — é exatamente a classe de bug que "ponto
 `group_tile_ids` já ERA o ponto único de verdade antes da flag nova
 existir, só ninguém atualizou o SEGUNDO ponto de leitura da mesma
 regra quando o PRIMEIRO ganhou uma opção nova.
+
+## 105. Rastreio de objetivo de quest no mapa/minimapa — desenho e 1ª implementação (03/09/2026)
+
+Pedido do usuário: quando o player tem uma quest ativa, mostrar no
+minimapa E no mapa cheio (tecla M) um círculo indicando onde encontrar
+o alvo daquele objetivo — tracejado amarelo, preenchimento 50%
+translúcido, raio igual ao raio de respawn do mob (quando aplicável),
+com tooltip no hover mostrando quest+objetivo. Discussão levou várias
+rodadas (ver histórico da conversa) até fechar o desenho abaixo.
+
+### Decisões de desenho
+
+- **Campo novo `ObjectiveDef.map`** (`content/quests_data.py`) — mapa
+  onde o ALVO do objetivo se encontra. `""` = mapa atual (sem
+  cross-map). **Exceção deliberada**: `reach_tile` NÃO usa esse campo
+  — esse tipo já usava `target` como filtro de mapa desde antes (ver
+  docstring do módulo); unificar exigiria reescrever quests existentes
+  sem ganho real, decisão do usuário foi manter como está.
+- **Conflito resolvido**: `use_skill`/`learn_skill` já usam `target`
+  pro skill_id (autoritativo pro MATCH da quest, `engine/quest_logic.py
+  ::match_objective`). O pedido original do usuário era colocar o id
+  do boneco/treinador EM `target` — INVIÁVEL, quebraria a conclusão da
+  quest (nada mais identifica qual skill é a certa). Resolvido
+  colocando a referência em `params` (`dummy_id`/`trainer_id`), nunca
+  em `target` — `target` continua == skill_id sempre. Exemplo
+  documentado em `content/quests_data.py` (linhas ~29-49, no docstring
+  do módulo) e aplicado em 3 quests reais (`prova_valor`,
+  `iniciacao_arcana`, `coach_quantic`).
+- **`training_dummies` no `{map}_entities.json` ganhou `"id"`**
+  (`engine/map_loader.py::_merge_entities_json` — tupla passou de
+  `(x, y)` pra `(x, y, id)`; `server/world_server.py::
+  _create_training_dummies` ajustado pro unpack de 3, ignora o id —
+  não precisa no lado gameplay, só existe pro rastreio). `trainers` já
+  tinha `name`, não precisou de mudança de schema.
+- **Círculo de harvestable fixo (item único, não zona) nunca
+  centralizado no item real** — pedido do usuário: centralizado
+  entregaria a posição exata de cara, tirando a graça da busca.
+  Deslocamento é DETERMINÍSTICO (hash espacial simples,
+  `(x*73856093) ^ (y*19349663)`, não `random`/`hash()` builtin — este
+  último varia por processo, quebraria a consistência entre minimapa e
+  mapa cheio desenhando em posições diferentes). Raio mínimo 5 tiles
+  (mesmo motivo — círculo pequeno demais entregaria a posição). Zona
+  de harvestable (`harvestable_zones`, já tem raio cadastrado) NÃO
+  precisa de deslocamento — já é imprecisa por natureza.
+- **`collect_item` de harvestable exige `target="harvestables"` ou
+  `target="harvestable_zones"` explícito** (não mais só `"*"`) — é
+  como o rastreador sabe em qual lista do `{map}_entities.json`
+  procurar. Nenhuma quest real usa esse caso hoje (as 3 existentes já
+  usam `target`=raça de mob), então nenhuma migração de dado foi
+  necessária — só documentado pro futuro.
+- **Cross-map**: se o objetivo está em outro mapa (via `obj.map`, ou
+  via `obj.target` pra `reach_tile`), busca em
+  `spawn_points["transitions"]` do MAPA ATUAL uma entrada com
+  `target_map` igual — desenha um círculo de 1 tile (mesma unidade dos
+  outros raios, NUNCA px de tela — decisão do usuário depois de eu
+  apontar que 20px seria menor que 1 tile) na posição da transição, cor
+  igual ao alvo real (decisão do usuário: "amarelo, simplicidade").
+  Sem transição direta → sem círculo (multi-hop A→B→C explicitamente
+  fora de escopo por pedido do usuário, "melhor não se preocupar com
+  isso agora").
+- **Corte de visibilidade = mesmo do HUD lateral**
+  (`QuestSystem.MAX_HUD_QUESTS`/`_sorted_active_items`) — nunca mais
+  círculos no mapa do que quests visíveis no HUD. Objetivo já completo
+  (`prog[i] >= obj.count`) não aparece.
+- **Só quest ATIVA** (`qid in ql.active`) — sai da lista sozinho quando
+  completa/abandonada, sem mecanismo extra (`ql.active` já É "aceita e
+  não completada").
+
+### Arquitetura (pontos únicos de verdade novos)
+
+- **Resolução de posição/estilo** — `ui/map_markers.py::
+  collect_quest_circles()` (mesmo arquivo/filosofia de
+  `collect_markers()`: devolve dados prontos, `MapOverlay`/`Minimap`
+  só desenham, não conhecem regra de nenhum tipo de objetivo). Roda
+  **client-side**, lendo `spawn_points` (já carregado localmente pelo
+  cliente via `load_map_csv` — mesmo dado que já monta harvestables/
+  spawn_zones/etc pro cliente renderizar hoje, não é gameplay, não
+  precisa de mensagem de rede nova) e o componente `QuestLog` (já
+  sincronizado do servidor pro cliente, mesmo padrão de sempre).
+- **Desenho** — `ui/map_markers.py::draw_quest_circle_marker`/
+  `draw_quest_rect_marker` (chamadas por `Minimap.render`/
+  `MapOverlay.render`, que só convertem tile→tela — geometria própria
+  de cada um). Primitivas de baixo nível (círculo/retângulo tracejado,
+  preenchimento translúcido — pygame não tem nativo) em
+  `ui/ui_helpers.py::draw_dashed_circle`/`draw_translucent_filled_
+  circle`/`draw_dashed_rect`.
+- **Hit-test do tooltip** — `ui/map_markers.py::quest_circle_hit_test`/
+  `quest_rect_hit_test`, usando a MESMA geometria (sx/sy/radius_px) já
+  calculada pro desenho — nunca recalculada à parte (mesmo padrão de
+  `ui/systems.py::_build_effects_row`). Tooltip desenhado por
+  `ui/ui_helpers.py::draw_box_tooltip` (mesmo estilo visual do tooltip
+  de skill/efeito, `client/tooltip_handlers.py`), texto = título da
+  quest + `QuestSystem._obj_label()` (reaproveitado, não duplicado).
+- **`self._spawn_points`** (novo atributo em `game.py`) — guarda o
+  `spawn_points` do mapa atual pros dois render loops (antes só
+  existia como variável local dentro da função de carga de mapa,
+  descartada depois). Atualizado nos 2 pontos de carga (mapa inicial e
+  troca por transição), sempre em sincronia com `self._current_map_file`.
+
+**Testes**: `tests/test_quest_map_tracking.py` (17 casos) — cobre
+resolução por tipo de objetivo (spawn_zone, harvestable fixo com
+deslocamento+raio mínimo, harvestable_zone, dummy por id, trainer por
+id, NPC por nome, reach_tile ponto único e área), objetivo completo
+não aparece, corte igual ao HUD, cross-map com e sem transição direta.
+Revert-to-confirm no cálculo de deslocamento/raio mínimo do
+harvestable (zerado → teste correspondente falhou como esperado,
+restaurado). Smoke test manual de renderização end-to-end (Minimap +
+MapOverlay com círculos reais, SDL dummy) sem exceção. Suíte completa:
+1464 passed.
+
+**Pendente pro usuário validar em jogo** (não automatizável): visual
+real dos círculos (cor/opacidade/tracejado como esperado), tooltip
+aparecendo no hover, círculo de transição de mapa guiando corretamente
+entre map_1 e uma caverna.

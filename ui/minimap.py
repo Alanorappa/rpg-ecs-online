@@ -98,6 +98,7 @@ class Minimap(UIScaleMixin):
         visible:     set,
         enemy_tiles: "list[tuple[int,int,tuple]]",
         markers:     "list | None" = None,
+        circles:     "list | None" = None,
     ) -> None:
         if self._map_overlay._cols == 0:
             return
@@ -169,9 +170,55 @@ class Minimap(UIScaleMixin):
                         self.screen.blit(glyph, (sx - glyph.get_width() // 2,
                                              sy - glyph.get_height() // 2))
 
+        # Círculos de rastreio de quest (ui/map_markers.py::collect_quest_circles
+        # — ESTE método só desenha, não decide posição/estilo). Janela de
+        # RADIUS tiles: inclui círculo cujo CENTRO já saiu da janela mas cuja
+        # BORDA ainda entra (raio grande, ex: spawn_zone de mob) — corte só
+        # por centro cortaria a metade visível de um respawn parcialmente
+        # dentro da janela.
+        _hover_tip: "tuple | None" = None
+        if circles:
+            from ui.map_markers import (draw_quest_circle_marker, draw_quest_rect_marker,
+                                        quest_circle_hit_test, quest_rect_hit_test)
+            mouse_pos = pygame.mouse.get_pos()
+            _frame_sz = self._u(self.SIZE)
+            _mouse_in_frame = pygame.Rect(fx, fy, _frame_sz, _frame_sz).collidepoint(mouse_pos)
+            for c in circles:
+                if c.shape == "rect":
+                    dx0, dy0 = c.x0 - player_tx, c.y0 - player_ty
+                    dx1, dy1 = c.x1 - player_tx, c.y1 - player_ty
+                    if max(dx0, dx1) < -self.RADIUS or min(dx0, dx1) > self.RADIUS:
+                        continue
+                    if max(dy0, dy1) < -self.RADIUS or min(dy0, dy1) > self.RADIUS:
+                        continue
+                    rx0, ry0 = ox + mid + dx0 * tp, oy + mid + dy0 * tp
+                    rx1, ry1 = ox + mid + dx1 * tp, oy + mid + dy1 * tp
+                    rect = pygame.Rect(min(rx0, rx1), min(ry0, ry1),
+                                       max(1, abs(rx1 - rx0)), max(1, abs(ry1 - ry0)))
+                    draw_quest_rect_marker(self.screen, rect)
+                    if _mouse_in_frame and quest_rect_hit_test(rect, mouse_pos):
+                        _hover_tip = (c.quest_title, c.objective_label)
+                    continue
+
+                dx, dy = c.tile_x - player_tx, c.tile_y - player_ty
+                if abs(dx) > self.RADIUS + c.radius_tiles or abs(dy) > self.RADIUS + c.radius_tiles:
+                    continue
+                sx = ox + mid + dx * tp
+                sy = oy + mid + dy * tp
+                radius_px = c.radius_tiles * tp
+                draw_quest_circle_marker(self.screen, c, sx, sy, radius_px, self._font)
+                if _mouse_in_frame and quest_circle_hit_test(c, sx, sy, radius_px, mouse_pos):
+                    _hover_tip = (c.quest_title, c.objective_label)
+
         sz = self._u(self.SIZE)
         pygame.draw.rect(self.screen, self.BORDER_COL,
                          (fx - 1, fy - 1, sz + 2, sz + 2), 1)
+
+        if _hover_tip:
+            from ui.ui_helpers import draw_box_tooltip
+            mx, my = pygame.mouse.get_pos()
+            draw_box_tooltip(self.screen, self._font, self._font,
+                             mx + 14, my + 14, _hover_tip[0], [_hover_tip[1]])
 
     def render_fullmap(
         self,

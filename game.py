@@ -652,6 +652,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             SOUNDS.set_context("surface")
             SOUNDS.play_ambient("ambient_surface")
         terrain_matrix, object_matrix, spawn_points, terrain_visual = load_map_csv(map_file)
+        self._spawn_points = spawn_points
         self._map_overlay.load_map(
             _merge_display_matrix(terrain_matrix, object_matrix, terrain_visual), map_file)
         self._minimap.on_map_load()
@@ -2378,7 +2379,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                             for eid, _, _, etm in self.world.get_entities_with(Enemy, Visible, TileMovement)
                             if (etm.current_tile_x, etm.current_tile_y) in _fog_mm.visible
                         ]
-                        from ui.map_markers import collect_markers
+                        from ui.map_markers import collect_markers, collect_quest_circles
                         self._minimap.render(
                             _player_tm_m.current_tile_x,
                             _player_tm_m.current_tile_y,
@@ -2386,6 +2387,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                             _fog_mm.visible,
                             _enemy_tiles,
                             collect_markers(self.world, self.player_entity, self._quest_dialog),
+                            collect_quest_circles(self.world, self.player_entity, self._quest_system,
+                                                  self._current_map_file, self._spawn_points),
                         )
                 # HUD de quests — abaixo do minimap
                 self._quest_system.render_hud(self.screen)
@@ -2483,11 +2486,14 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 tx = player_tm.current_tile_x if player_tm else -1
                 ty = player_tm.current_tile_y if player_tm else -1
                 _fog_comp = self.world.get_component(self.player_entity, FogOfWar)
-                from ui.map_markers import collect_markers
+                from ui.map_markers import collect_markers, collect_quest_circles
                 self._map_overlay.render(tx, ty,
                                          explored=_fog_comp.explored if _fog_comp else None,
                                          markers=collect_markers(self.world, self.player_entity,
-                                                                 self._quest_dialog))
+                                                                 self._quest_dialog),
+                                         circles=collect_quest_circles(
+                                             self.world, self.player_entity, self._quest_system,
+                                             self._current_map_file, self._spawn_points))
 
             # Menu de pausa (por cima de tudo)
             if self._pending_quit or self._pending_logout:
@@ -2649,6 +2655,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
 
         # Carrega novo mapa
         terrain_matrix, object_matrix, spawn_points, terrain_visual = load_map_csv(target_file)
+        self._spawn_points = spawn_points
         self._current_map_file = target_file
         self._quest_system.set_current_map(target_file)
         fog = self.world.get_component(self.player_entity, FogOfWar)

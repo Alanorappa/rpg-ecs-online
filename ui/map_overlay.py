@@ -241,7 +241,8 @@ class MapOverlay(UIScaleMixin):
 
     def render(self, player_tile_x: int = -1, player_tile_y: int = -1,
                explored: "set | None" = None,
-               markers: "list | None" = None) -> None:
+               markers: "list | None" = None,
+               circles: "list | None" = None) -> None:
         if not self.is_open or self._base_surf is None:
             return
 
@@ -384,6 +385,42 @@ class MapOverlay(UIScaleMixin):
                         self.screen.blit(glyph, (mx_ - glyph.get_width() // 2,
                                              my_ - glyph.get_height() // 2))
 
+        # ── Círculos de rastreio de quest ─────────────────
+        # ui/map_markers.py::collect_quest_circles decide posição/estilo —
+        # este método só converte tile→tela (geometria própria daqui, zoom
+        # livre de 2 a 100px/tile) e desenha. Mesmas 2 funções de desenho
+        # que Minimap.render usa — nunca duplicar o desenho tracejado/
+        # translúcido/reticências.
+        _hover_tip = None
+        if circles:
+            from ui.map_markers import (draw_quest_circle_marker, draw_quest_rect_marker,
+                                        quest_circle_hit_test, quest_rect_hit_test)
+            for c in circles:
+                if c.shape == "rect":
+                    rx0 = int(c.x0 * scale - off_x) + modal.x
+                    ry0 = int(c.y0 * scale - off_y) + modal.y
+                    rx1 = int(c.x1 * scale - off_x) + modal.x
+                    ry1 = int(c.y1 * scale - off_y) + modal.y
+                    rect = pygame.Rect(min(rx0, rx1), min(ry0, ry1),
+                                       max(1, abs(rx1 - rx0)), max(1, abs(ry1 - ry0)))
+                    if not modal.colliderect(rect):
+                        continue
+                    draw_quest_rect_marker(self.screen, rect)
+                    if modal.collidepoint(mx, my) and quest_rect_hit_test(rect, (mx, my)):
+                        _hover_tip = (c.quest_title, c.objective_label)
+                    continue
+
+                cx = int(c.tile_x * scale - off_x) + modal.x
+                cy = int(c.tile_y * scale - off_y) + modal.y
+                radius_px = c.radius_tiles * scale
+                bbox = pygame.Rect(cx - radius_px, cy - radius_px, radius_px * 2, radius_px * 2)
+                if not modal.colliderect(bbox):
+                    continue
+                draw_quest_circle_marker(self.screen, c, cx, cy, radius_px, self._font)
+                if (modal.collidepoint(mx, my)
+                        and quest_circle_hit_test(c, cx, cy, radius_px, (mx, my))):
+                    _hover_tip = (c.quest_title, c.objective_label)
+
         # ── Marcador do jogador ──────────────────────────
         if 0 <= player_tile_x < self._cols and 0 <= player_tile_y < self._rows:
             px = int(player_tile_x * scale - off_x) + modal.x
@@ -413,3 +450,8 @@ class MapOverlay(UIScaleMixin):
         bar_y = modal.y - hint.get_height() - self._u(4)
         self.screen.blit(hint,     (modal.x + self._u(6),                            bar_y))
         self.screen.blit(zoom_txt, (modal.right - zoom_txt.get_width() - self._u(6), bar_y))
+
+        if _hover_tip:
+            from ui.ui_helpers import draw_box_tooltip
+            draw_box_tooltip(self.screen, self._font, self._font,
+                             mx + 14, my + 14, _hover_tip[0], [_hover_tip[1]])

@@ -236,4 +236,94 @@ def item_tooltip_lines(item, viewer_class_id: str | None = None):
     if description:
         lines.append((description, (150, 140, 160)))
 
+
+# ---------------------------------------------------------------------------
+# Primitivas de desenho pro rastreio de quest no mapa/minimapa (03/09/2026)
+# ---------------------------------------------------------------------------
+# pygame não tem círculo/retângulo tracejado nativo, nem fill translúcido
+# numa Surface sem SRCALPHA — únicas 3 funções que sabem desenhar isso,
+# usadas por ui/minimap.py e ui/map_overlay.py (nunca duplicar o cálculo
+# de tracejado/alpha em cada um dos dois).
+
+def draw_dashed_circle(surface, color, center, radius, dash_deg=18, gap_deg=10, width=2) -> None:
+    """Contorno tracejado — arcos curtos ao redor da circunferência.
+    `radius` já em px de tela (quem chama já converteu tile→tela)."""
+    import math
+    import pygame
+    r = int(radius)
+    if r <= 0:
+        return
+    rect = pygame.Rect(center[0] - r, center[1] - r, r * 2, r * 2)
+    step = dash_deg + gap_deg
+    angle = 0.0
+    while angle < 360.0:
+        start = math.radians(angle)
+        end = math.radians(min(angle + dash_deg, 360.0))
+        pygame.draw.arc(surface, color, rect, start, end, width)
+        angle += step
+
+
+def draw_translucent_filled_circle(surface, color, center, radius, alpha=128) -> None:
+    """Preenchimento translúcido — desenha num Surface temporário SRCALPHA
+    (a Surface alvo pode não ter canal alpha) e blita por cima."""
+    import pygame
+    r = int(radius)
+    if r <= 0:
+        return
+    tmp = pygame.Surface((r * 2, r * 2), pygame.SRCALPHA)
+    pygame.draw.circle(tmp, (*color[:3], alpha), (r, r), r)
+    surface.blit(tmp, (center[0] - r, center[1] - r))
+
+
+def draw_dashed_rect(surface, color, rect, dash_len=6, gap_len=4, width=2) -> None:
+    """Contorno tracejado de um pygame.Rect — pygame.draw.rect não tem
+    estilo tracejado."""
+    import math
+    import pygame
+
+    def _dashed_line(p0, p1):
+        x0, y0 = p0
+        x1, y1 = p1
+        length = math.hypot(x1 - x0, y1 - y0)
+        if length == 0:
+            return
+        dx, dy = (x1 - x0) / length, (y1 - y0) / length
+        dist = 0.0
+        while dist < length:
+            seg_end = min(dist + dash_len, length)
+            pygame.draw.line(surface, color,
+                             (x0 + dx * dist, y0 + dy * dist),
+                             (x0 + dx * seg_end, y0 + dy * seg_end), width)
+            dist += dash_len + gap_len
+
+    _dashed_line(rect.topleft, rect.topright)
+    _dashed_line(rect.topright, rect.bottomright)
+    _dashed_line(rect.bottomright, rect.bottomleft)
+    _dashed_line(rect.bottomleft, rect.topleft)
+
+
+def draw_box_tooltip(screen, font_title, font_body, x: int, y: int,
+                     title: str, lines: list) -> None:
+    """Caixa de tooltip genérica — MESMO estilo visual do tooltip de skill/
+    efeito (client/tooltip_handlers.py: fundo translúcido (10,8,5,220) +
+    borda 1px (120,90,50) border_radius=3). Usada pro hover em cima de um
+    círculo de rastreio de quest no mapa/minimapa; título em destaque,
+    `lines` (list[str]) no corpo. Não deixa a caixa sair da tela."""
+    import pygame
+    PAD = 6
+    title_surf = font_title.render(title, False, (230, 210, 150))
+    line_surfs = [font_body.render(t, False, (210, 210, 210)) for t in lines]
+    w = max([title_surf.get_width()] + [s.get_width() for s in line_surfs]) + PAD * 2
+    h = title_surf.get_height() + PAD * 2 + sum(s.get_height() + PAD for s in line_surfs)
+    sw, sh = screen.get_size()
+    tx = max(0, min(x, sw - w))
+    ty = max(0, min(y, sh - h))
+    screen.blit(fill_surf((w, h), (10, 8, 5, 220)), (tx, ty))
+    pygame.draw.rect(screen, (120, 90, 50), (tx, ty, w, h), 1, border_radius=3)
+    screen.blit(title_surf, (tx + PAD, ty + PAD))
+    cy = ty + PAD + title_surf.get_height() + PAD
+    for s in line_surfs:
+        screen.blit(s, (tx + PAD, cy))
+        cy += s.get_height() + PAD
+
     return lines
