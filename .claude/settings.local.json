@@ -2,6 +2,12 @@
   "permissions": {
     "defaultMode": "bypassPermissions",
     "allow": [
+      "Bash(*)",
+      "PowerShell(*)",
+      "Edit",
+      "Write",
+      "Bash(git *)",
+      "PowerShell(git *)",
       "Bash(python -c \"import systems\")",
       "Bash(/c/Users/l4nce/anaconda3/python.exe -c \"import loot_tables; import merchant_data; import systems; import components; print\\(''OK''\\)\")",
       "Bash(for file:*)",
