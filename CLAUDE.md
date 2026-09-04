@@ -250,6 +250,18 @@ padrão a quebrar, não só os bugs individuais.
   servidor; cliente vincula via `fx.bind_client_fx()` no GameEngine).
 - **Teleporte/knockback/respawn** → `utils.snap_to_tile()` — NUNCA escrever
   `current_tile_x/y` direto (classe de bug: tween antigo sobrevive ao snap).
+- **Conceder item a um player fora de loot/trade/forja** (recompensa de
+  quest, e qualquer sistema futuro — conquista, recompensa diária, etc.)
+  → `WorldServer.grant_items_to_player(player_eid, entries)`
+  (`server/world_server.py`) — escreve direto no Inventory AO VIVO do
+  servidor (mesma mecânica de empilhar/caber que loot usa,
+  `LootProcessorMixin._stack_or_add_item`). NUNCA reimplementar um loop
+  de `inv.items.append` à parte, nem mandar item só pro cliente mostrar
+  "confiando" que um INV_SYNC futuro sincroniza depois — bug real:
+  recompensa de item de quest fazia exatamente isso, o servidor nunca
+  ficava sabendo do item de verdade, equipar não tinha efeito nenhum nos
+  stats reais e o item sumia no próximo login (ver
+  PROBLEMAS_ARQUITETURA.md §106).
 - **Escrita final de dano em HP** → `core_systems.apply_damage_core()` —
   guards imune/morto, overkill preservado, quebra polymorph/sleep. Regra nova
   de mitigação/resistência entra SÓ ali (deal_damage/_apply_final_damage/

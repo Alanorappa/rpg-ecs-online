@@ -15184,3 +15184,67 @@ tooltip aparecendo no hover, círculo de transição de mapa guiando
 corretamente entre map_1 e uma caverna, corte correto na borda do
 mapa/minimapa em zoom alto com raio real grande, marcador de quest
 giver com o mesmo tamanho/nitidez nos 2 lugares.
+
+## 106. Recompensa de item de quest nunca tocava o Inventory de verdade do servidor (04/09/2026)
+
+Usuário reportou: pegou a espada de recompensa de "bem_vindo_guerreiro",
+equipar não mudou a velocidade de ataque, e ao deslogar/logar de novo a
+espada tinha sumido.
+
+**Causa raiz**: `server/session.py::_handle_quest_turn_in` — comentário
+no próprio código já admitia a decisão: "*Servidor não toca no Inventory
+ECS aqui — mesmo padrão de LOOT_RESULT: o cliente é quem materializa o
+item na bag local, e o INV_SYNC periódico do cliente mantém o mirror do
+servidor atualizado depois*". Só que essa premissa é FALSA especificamente
+pra este caminho — comparado com loot (`server/loot_processor.py`, toca o
+Inventory do servidor direto), trade (`server/trade_processor.py:229`,
+idem), forja/reciclagem (`server/world_server.py`, idem), a recompensa de
+quest era o ÚNICO caminho que só mandava o item pro cliente MOSTRAR, sem
+nunca escrever no Inventory real. E o cliente nunca reagia mandando
+INV_SYNC/SAVE_STATE de volta depois de receber `INVENTORY_UPDATE` (ao
+contrário de compra/venda/forja/reciclagem, que chamam
+`_send_save_state()` explicitamente logo depois de conceder item) — a
+premissa "o INV_SYNC periódico mantém sincronizado" não correspondia a
+nenhum código real.
+
+**Por que os 2 sintomas exatos**: `equip_item_from_inventory`
+(`server/world_server.py`) NUNCA confia no item mandado pelo cliente — só
+na POSIÇÃO, lida do Inventory AO VIVO do servidor (decisão de segurança
+deliberada, documentada). Como o servidor nunca tinha a espada, a posição
+que o cliente mandava não correspondia a nada real lá (fora do índice ou
+apontando pra outro item) — `equip_item_from_inventory` retorna `None`
+("no-op silencioso"), NENHUM erro é mandado de volta, e o cliente já tinha
+mutado o estado LOCAL de forma otimista (equipou visualmente antes mesmo
+de saber se o servidor aceitou) — daí "equipei mas não mudou nada". No
+login seguinte, o servidor recarrega/persiste a partir do PRÓPRIO
+Inventory (nunca teve a espada) — item nunca existiu do lado que manda,
+"some".
+
+**Fix — ponto único de verdade novo**: `WorldServer.grant_items_to_player
+(player_eid, entries)` (`server/world_server.py`, perto de
+`equip_item_from_inventory`) — escreve direto no Inventory AO VIVO do
+servidor (mesma mecânica de empilhar/caber que loot já usava, extraída
+pra `LootProcessorMixin._stack_or_add_item` e reaproveitada por loot E
+por esta função nova, nunca duplicada). `_handle_quest_turn_in` passou a
+chamar isto em vez do loop que só serializava sem tocar Inventory.
+Qualquer sistema de recompensa NOVO (achievement, recompensa diária, o
+que for) — decisão explícita do usuário pra evitar que essa MESMA classe
+de bug se repita num sistema futuro — é obrigado a passar por esta função
+em vez de reimplementar `inv.items.append` à parte (registrado em
+`CLAUDE.md`, seção "pontos únicos de verdade").
+
+**Verificado, não presumido**: conferido com o usuário se trade já estava
+certo antes de propor o fix — sim, `trade_processor.py:229` já escreve
+direto no Inventory do servidor, sem bug ali.
+
+**Testes**: `tests/test_quest_turn_in.py::
+test_item_concedido_entra_de_verdade_no_inventory_do_servidor` — NOVO,
+verifica o que os testes anteriores desse arquivo deixavam passar batido
+(eles só checavam a MENSAGEM `INVENTORY_UPDATE`, nunca o estado real do
+Inventory do servidor): item aparece de fato no `Inventory` vivo do
+servidor E `equip_item_from_inventory` (por posição real) consegue
+equipar de verdade, refletindo em `Equipment.slots["mainhand"]`.
+Revert-to-confirm: código antigo restaurado temporariamente, teste falhou
+exatamente como o sintoma relatado (`0 != 1` itens no Inventory real).
+Suíte completa (1467 testes, incluindo os 15 pré-existentes de
+`test_quest_turn_in.py` e 50 de loot) sem regressão.

@@ -4647,6 +4647,55 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # o mesmo buraco no futuro sem isso.
         recalculate_preserving_hp_pct(cs, _mutate_talents)
 
+    def grant_items_to_player(self, player_eid: int, entries: list) -> "tuple[list[dict], list]":
+        """Ponto único de verdade pra CONCEDER item(ns) a um player fora de
+        loot/trade/forja (que já escrevem direto no Inventory AO VIVO deles
+        mesmos — ver `_grant_loot_items_to_inventory`/`trade_processor.py`/
+        `world_server.py` de craft). Qualquer sistema de recompensa NOVO
+        (quest, e no futuro conquista, recompensa diária, o que for) usa
+        ISTO — nunca reimplementar um loop de `inv.items.append` à parte
+        (04/09/2026, ver PROBLEMAS_ARQUITETURA.md, bug real: recompensa de
+        quest só mandava o item pro cliente mostrar, nunca tocava o
+        Inventory de verdade do servidor — equipar não tinha efeito nenhum
+        e o item sumia no próximo login).
+
+        `entries`: mesma forma de `QuestReward.items`/`choice` — cada
+        elemento é `item_key` (stack=1) ou `(item_key, stack)`, resolvido
+        via `engine.quest_logic.normalize_reward_entry`/
+        `resolve_reward_item_factory` (mesmo catálogo que já valida
+        recompensa de quest).
+
+        Retorna (concedidos, não_concedidos):
+        - concedidos: list[dict] já serializado (`_serialize_item`) — pronto
+          pro CHAMADOR mandar em `INVENTORY_UPDATE`/mensagem equivalente.
+        - não_concedidos: list[str] com o `item_key` de cada entrada que não
+          coube (mochila cheia) ou não existe em nenhum catálogo — o
+          CHAMADOR decide se loga aviso, avisa o player, etc.
+        """
+        from engine.components import Inventory as _InvGrant
+        import engine.quest_logic as _quest_logic_grant
+        from server.server_death_handler import _serialize_item as _ser_grant
+
+        inv = self.world.get_component(player_eid, _InvGrant)
+        if inv is None:
+            return [], [_quest_logic_grant.normalize_reward_entry(e)[0] for e in entries]
+
+        granted: list = []
+        not_granted: list = []
+        for entry in entries:
+            item_key, stack = _quest_logic_grant.normalize_reward_entry(entry)
+            factory = _quest_logic_grant.resolve_reward_item_factory(item_key)
+            if factory is None:
+                not_granted.append(item_key)
+                continue
+            candidate = factory()
+            candidate.stack = max(1, min(stack, candidate.max_stack))
+            if self._stack_or_add_item(inv, candidate):
+                granted.append(_ser_grant(candidate))
+            else:
+                not_granted.append(item_key)
+        return granted, not_granted
+
     def equip_item_from_inventory(self, session_id: str, inv_index: int) -> "dict | None":
         """Move o item na posição `inv_index` do Inventory AO VIVO do servidor
         pro slot de equipamento correspondente (`item.slot`) — débito A4

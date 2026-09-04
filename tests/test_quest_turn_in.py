@@ -151,6 +151,42 @@ class TestQuestTurnInRewardItems(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(get_msgs_of_type(fw, MsgType.INVENTORY_UPDATE), [])
 
+    async def test_item_concedido_entra_de_verdade_no_inventory_do_servidor(self):
+        """Regressão do bug real relatado pelo usuário (04/09/2026):
+        recompensa de item de quest (espada de "bem_vindo_guerreiro") nunca
+        tocava o Inventory AO VIVO do servidor — só mandava o item pro
+        cliente mostrar. Consequência: equipar não tinha efeito nenhum nos
+        stats reais (equip_item_from_inventory valida por POSIÇÃO no
+        Inventory do servidor, que nunca tinha o item) e o item sumia no
+        próximo login (servidor persiste a partir do próprio Inventory,
+        que nunca teve a espada). Fix: WorldServer.grant_items_to_player
+        escreve direto no Inventory do servidor — este teste verifica
+        exatamente o que o bug anterior deixava passar batido (as
+        asserções de INVENTORY_UPDATE acima só checam a MENSAGEM, não o
+        estado real do servidor)."""
+        self._add_quest("qti_real_inv", QuestReward(items=("training_sword",)))
+        session, fw, _ = await self._ready_session("qti_real_inv", "qti_k", "qtiuserk")
+
+        from engine.components import Inventory
+        inv = self.ws.world.get_component(session.entity_id, Inventory)
+        inv.items = []   # baseline determinístico (banco real, ver comentários acima)
+
+        await self.mgr._handle_quest_turn_in(session, {"quest_id": "qti_real_inv"}, 0)
+
+        real_items = [it for it in inv.items if it is not None]
+        self.assertEqual(len(real_items), 1)
+        self.assertEqual(real_items[0].item_id, "training_sword")
+        self.assertEqual(real_items[0].attack_speed, 2.1)
+
+        # Consequência prática: equip_item_from_inventory acha o item pela
+        # POSIÇÃO real no Inventory do servidor (0, já que zeramos a bag).
+        rejected = self.ws.equip_item_from_inventory(session.session_id, 0)
+        self.assertIsNone(rejected)   # None = sucesso (ou no-op silencioso)
+        from engine.components import Equipment
+        equip = self.ws.world.get_component(session.entity_id, Equipment)
+        self.assertIsNotNone(equip.slots.get("mainhand"))
+        self.assertEqual(equip.slots["mainhand"].item_id, "training_sword")
+
 
 class TestQuestTurnInConsumesCollectItem(unittest.IsolatedAsyncioTestCase):
     """collect_item objective — entrega da quest remove o item da bag DO

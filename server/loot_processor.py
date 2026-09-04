@@ -58,13 +58,36 @@ class LootProcessorMixin:
                     quest_rolls[player_eid] = [_ser_loot(it) for it in extras]
         return quest_rolls[player_eid]
 
+    def _stack_or_add_item(self, inv, candidate) -> bool:
+        """Tenta encaixar `candidate` (Item já construído) no `inv` (Inventory
+        AO VIVO de um player) — empilha em item existente quando possível
+        (tudo ou nada, nunca estoura o max_stack deixando o resto perdido),
+        senão precisa de 1 slot livre. Retorna True se coube.
+
+        Ponto único de verdade da mecânica "cabe na mochila?" — extraído de
+        `_grant_loot_items_to_inventory` (débito A4, 11/08/2026) pra ser
+        reaproveitado por QUALQUER concessão de item a um player, não só
+        loot (04/09/2026, ver `WorldServer.grant_items_to_player` e
+        PROBLEMAS_ARQUITETURA.md — bug real: recompensa de quest nunca
+        tocava o Inventory de verdade do servidor)."""
+        existing = None
+        if candidate.max_stack > 1:
+            existing = next((it for it in inv.items
+                             if it is not None and it.item_id == candidate.item_id
+                             and it.stack < it.max_stack), None)
+        if existing is not None and (existing.max_stack - existing.stack) >= candidate.stack:
+            existing.stack += candidate.stack
+            return True
+        if existing is None and len(inv.items) < inv.max_slots:
+            inv.items.append(candidate)
+            return True
+        return False
+
     def _grant_loot_items_to_inventory(self, player_eid: int, item_dicts: list) -> "tuple[list, list]":
         """Tenta adicionar cada item (dict serializado, já vindo do
         catálogo — corpse é populado só por lógica server-side) ao
         Inventory AO VIVO do jogador — débito A4 (11/08/2026, ver
-        PROBLEMAS_ARQUITETURA.md). Empilha em item existente quando
-        possível (tudo ou nada por item — nunca estoura o max_stack
-        deixando o resto perdido), senão precisa de 1 slot livre.
+        PROBLEMAS_ARQUITETURA.md). Empilha/encaixa via `_stack_or_add_item`.
 
         Retorna (concedidos, não_concedidos) — cada um é a MESMA
         referência de dict recebida em `item_dicts` (comparável por
@@ -86,19 +109,7 @@ class LootProcessorMixin:
             if candidate is None:
                 not_granted.append(item_d)
                 continue
-            existing = None
-            if candidate.max_stack > 1:
-                existing = next((it for it in inv.items
-                                 if it is not None and it.item_id == candidate.item_id
-                                 and it.stack < it.max_stack), None)
-            if existing is not None and (existing.max_stack - existing.stack) >= candidate.stack:
-                existing.stack += candidate.stack
-                granted.append(item_d)
-            elif existing is None and len(inv.items) < inv.max_slots:
-                inv.items.append(candidate)
-                granted.append(item_d)
-            else:
-                not_granted.append(item_d)
+            (granted if self._stack_or_add_item(inv, candidate) else not_granted).append(item_d)
         return granted, not_granted
 
     def request_loot(self, session_id: str, corpse_id: int,

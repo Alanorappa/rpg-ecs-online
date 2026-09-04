@@ -1375,25 +1375,21 @@ class SessionManager:
 
         # Itens de recompensa (23/07/2026, pedido do usuário) — fixos
         # (reward.items, sempre) + o escolhido (chosen_entry, já validado
-        # acima). Servidor não toca no Inventory ECS aqui — mesmo padrão
-        # de LOOT_RESULT (server/loot_processor.py::request_loot): o
-        # cliente é quem materializa o item na bag local a partir do
-        # payload, e o INV_SYNC periódico do cliente mantém o mirror do
-        # servidor atualizado depois.
+        # acima). Concedidos via WorldServer.grant_items_to_player (ponto
+        # único de verdade, 04/09/2026) — escreve direto no Inventory AO
+        # VIVO do servidor, mesmo padrão de loot/trade/forja. ANTES disto
+        # o servidor nunca tocava o próprio Inventory (só mandava o item
+        # pro cliente mostrar) — equipar a recompensa não tinha efeito
+        # nenhum nos stats reais e o item sumia no próximo login (bug real
+        # relatado pelo usuário, ver PROBLEMAS_ARQUITETURA.md).
         reward_entries = list(qdef.reward.items) + ([chosen_entry] if chosen_entry else [])
         granted_dicts = []
         if reward_entries:
-            from server.server_death_handler import _serialize_item
-            for entry in reward_entries:
-                item_key, stack = quest_logic.normalize_reward_entry(entry)
-                factory = quest_logic.resolve_reward_item_factory(item_key)
-                if factory is None:
-                    log.warning(f"[QuestTurnIn] item_key '{item_key}' da quest '{qid}' "
-                               f"não existe em nenhum catálogo — ignorado")
-                    continue
-                item = factory()
-                item.stack = max(1, min(stack, item.max_stack))
-                granted_dicts.append(_serialize_item(item))
+            granted_dicts, not_granted_keys = self.world_server.grant_items_to_player(
+                eid, reward_entries)
+            for item_key in not_granted_keys:
+                log.warning(f"[QuestTurnIn] item '{item_key}' da quest '{qid}' "
+                           f"não concedido (catálogo inexistente ou mochila cheia)")
 
         # consumed_items (28/07/2026, pedido do usuário — bug real: item de
         # quest entregue continuava "fantasma" na bag) — itens que
