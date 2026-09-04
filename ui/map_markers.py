@@ -150,19 +150,27 @@ HARVESTABLE_OFFSET_PX     = 10   # deslocamento fixo (não mais em tiles) do
 
 @dataclass(frozen=True)
 class QuestCircle:
-    """shape="circle": usa tile_x/tile_y (posição, tile-space) +
-    radius_px/offset_px (tamanho/deslocamento, SEMPRE em px de tela fixo
-    — não escala com zoom do mapa nem com tp do minimapa).
+    """shape="circle": usa tile_x/tile_y (posição, tile-space) sempre, e
+    EXATAMENTE UM dos dois raios:
+    - `radius_tiles` > 0: raio REAL cadastrado no `{map}_entities.json`
+      (spawn_zones/harvestable_zones — zona de verdade, sem limite,
+      escala com o zoom igual o resto do mapa — pedido explícito do
+      usuário 04/09/2026: "não é pra ter limite, o raio deve ser pego do
+      raio do respawn").
+    - `radius_px` (quando `radius_tiles == 0`): tamanho de TELA fixo —
+      usado quando não existe uma "área real" (posição pontual: NPC,
+      boneco de treino, item único, marcador de transição). `offset_px`
+      (deslocamento, também fixo) só se aplica junto com `radius_px`.
     shape="rect": usa x0/y0/x1/y1 em tile-space (reach_tile — sempre
     retângulo, mesmo quando o objetivo é um ponto único, aí x0==x1 e
-    y0==y1; esse SIM escala com o zoom, representa uma área real do
-    mundo, não um marcador de posição aproximada).
+    y0==y1; representa uma área real do mundo, escala com o zoom).
     style: "hostile" (mob/spawn_zone/dummy) | "friendly" (NPC/treinador,
     desenhado com "...") | "zone" (item coletável) | "transition"
     (indicador de mudança de mapa)."""
     shape:           str
     tile_x:          float = 0.0
     tile_y:          float = 0.0
+    radius_tiles:    float = 0.0
     radius_px:       float = 0.0
     offset_px:       "tuple[float, float]" = (0.0, 0.0)
     x0: int = 0
@@ -276,7 +284,7 @@ def _resolve_objective_shape(obj, spawn_points: dict) -> "QuestCircle | None":
         zone = _find_spawn_zone(spawn_points, obj.target)
         if zone:
             return QuestCircle(shape="circle", tile_x=zone["x"], tile_y=zone["y"],
-                               radius_px=TARGET_MARKER_RADIUS_PX, style="hostile")
+                               radius_tiles=zone["radius"], style="hostile")
         return None
 
     if t == "collect_item":
@@ -292,12 +300,12 @@ def _resolve_objective_shape(obj, spawn_points: dict) -> "QuestCircle | None":
             if z is None:
                 return None
             return QuestCircle(shape="circle", tile_x=z["x"], tile_y=z["y"],
-                               radius_px=TARGET_MARKER_RADIUS_PX, style="zone")
+                               radius_tiles=z["radius"], style="zone")
         if obj.target != "*":
             zone = _find_spawn_zone(spawn_points, obj.target)
             if zone:
                 return QuestCircle(shape="circle", tile_x=zone["x"], tile_y=zone["y"],
-                                   radius_px=TARGET_MARKER_RADIUS_PX, style="hostile")
+                                   radius_tiles=zone["radius"], style="hostile")
         return None
 
     if t == "use_skill" and obj.params.get("on_dummy"):

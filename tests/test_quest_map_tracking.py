@@ -94,7 +94,11 @@ class TestCollectQuestCircles(unittest.TestCase):
         self.assertEqual(len(circles), 1)
         c = circles[0]
         self.assertEqual(c.style, "hostile")
-        self.assertEqual((c.tile_x, c.tile_y, c.radius_px), (10, 10, TARGET_MARKER_RADIUS_PX))
+        # Spawn de mob usa o raio REAL cadastrado no {map}_entities.json
+        # (sem limite, escala com o zoom — pedido explícito do usuário
+        # 04/09/2026), não o tamanho fixo.
+        self.assertEqual((c.tile_x, c.tile_y, c.radius_tiles), (10, 10, 6))
+        self.assertEqual(c.radius_px, 0.0)
 
     def test_objetivo_completo_nao_aparece(self):
         circles = _circles_for([ObjectiveDef(type="kill", target="Urso", count=1)], [1])
@@ -120,7 +124,10 @@ class TestCollectQuestCircles(unittest.TestCase):
         circles = _circles_for([obj], [0])
         self.assertEqual(len(circles), 1)
         c = circles[0]
-        self.assertEqual((c.tile_x, c.tile_y, c.radius_px), (60, 60, TARGET_MARKER_RADIUS_PX))
+        # harvestable_zones também usa raio real (mesma decisão do usuário
+        # aplicada a spawn_zones — qualquer coisa com raio cadastrado de
+        # verdade no JSON usa esse raio, sem limite).
+        self.assertEqual((c.tile_x, c.tile_y, c.radius_tiles), (60, 60, 8))
         self.assertEqual(c.offset_px, (0.0, 0.0))
 
     def test_use_skill_on_dummy_resolve_por_dummy_id(self):

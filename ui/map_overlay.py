@@ -419,7 +419,11 @@ class MapOverlay(UIScaleMixin):
 
                 cx = int(c.tile_x * scale - off_x) + modal.x + c.offset_px[0]
                 cy = int(c.tile_y * scale - off_y) + modal.y + c.offset_px[1]
-                radius_px = c.radius_px
+                # Raio REAL (spawn_zones/harvestable_zones) escala com o
+                # zoom do mapa, sem limite — pedido explícito do usuário
+                # (04/09/2026). Raio fixo só quando não há área real
+                # cadastrada (NPC/boneco de treino/item único/transição).
+                radius_px = c.radius_tiles * scale if c.radius_tiles > 0 else c.radius_px
                 bbox = pygame.Rect(cx - radius_px, cy - radius_px, radius_px * 2, radius_px * 2)
                 if not modal.colliderect(bbox):
                     continue

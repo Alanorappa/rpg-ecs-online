@@ -15140,8 +15140,28 @@ exception, `screen.get_clip()` confirmado restaurado depois do render
 isolada, sem relação com este trabalho — teste sensível a timing sob
 carga da suíte completa).
 
+**Correção parcial no mesmo dia — spawn de mob volta a usar raio REAL,
+sem limite**: usuário testou em jogo e confirmou que tamanho fixo pra
+spawn de mob tirava informação real (a área de respawn de verdade ajuda
+a entender o alcance do bicho) — pediu de volta especificamente pra esse
+caso: "não é pra ter limite, o raio deve ser pego do raio do respawn".
+Escopo confirmado com o usuário (`AskUserQuestion`): vale pra QUALQUER
+círculo com raio REAL cadastrado no JSON — `spawn_zones` (mob) E
+`harvestable_zones` (zona de item, mesma categoria de dado) — não só
+mob. `QuestCircle` ganhou os 2 raios de volta lado a lado:
+`radius_tiles` (raio real, escala com zoom, sem limite — usado quando
+existe zona cadastrada) e `radius_px` (tamanho fixo — usado quando NÃO
+há área real: NPC, boneco de treino, item único, marcador de transição).
+Renderer escolhe um dos dois por círculo (`radius_tiles * scale if
+radius_tiles > 0 else radius_px`) — nunca os dois juntos. O `set_clip`
+do item anterior já cobre a consequência óbvia (círculo de raio real
+grande passando da borda no zoom alto): ele CORTA visualmente na
+moldura, sem limitar o dado em si — exatamente o que o usuário queria
+(raio de verdade, mas nunca vazando pra fora da janela).
+
 **Pendente pro usuário validar em jogo** (não automatizável): visual
-real dos círculos com o tamanho fixo novo (cor/opacidade/tracejado/
-proporção como esperado), tooltip aparecendo no hover, círculo de
-transição de mapa guiando corretamente entre map_1 e uma caverna, corte
-correto na borda do mapa/minimapa em zoom alto.
+real dos círculos (mob/harvestable_zone com raio de verdade, resto com
+tamanho fixo — cor/opacidade/tracejado/proporção como esperado),
+tooltip aparecendo no hover, círculo de transição de mapa guiando
+corretamente entre map_1 e uma caverna, corte correto na borda do
+mapa/minimapa em zoom alto com raio real grande.

@@ -206,12 +206,17 @@ class Minimap(UIScaleMixin):
                     continue
 
                 dx, dy = c.tile_x - player_tx, c.tile_y - player_ty
-                if abs(dx) > _margin or abs(dy) > _margin:
+                circle_margin = _margin + (c.radius_tiles if c.radius_tiles > 0 else 0)
+                if abs(dx) > circle_margin or abs(dy) > circle_margin:
                     continue
                 sx = ox + mid + dx * tp + c.offset_px[0]
                 sy = oy + mid + dy * tp + c.offset_px[1]
-                draw_quest_circle_marker(self.screen, c, sx, sy, c.radius_px, self._font)
-                if _mouse_in_frame and quest_circle_hit_test(c, sx, sy, c.radius_px, mouse_pos):
+                # Raio REAL (spawn_zones/harvestable_zones) escala com tp,
+                # sem limite — pedido explícito do usuário (04/09/2026).
+                # Raio fixo (radius_px) só quando não há área real cadastrada.
+                radius_px = c.radius_tiles * tp if c.radius_tiles > 0 else c.radius_px
+                draw_quest_circle_marker(self.screen, c, sx, sy, radius_px, self._font)
+                if _mouse_in_frame and quest_circle_hit_test(c, sx, sy, radius_px, mouse_pos):
                     _hover_tip = (c.quest_title, c.objective_label)
             self.screen.set_clip(_prev_clip)
 
