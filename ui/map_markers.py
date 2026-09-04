@@ -212,6 +212,41 @@ def _find_spawn_zones(spawn_points: dict, race: str) -> "list[dict]":
             if zone.get("race") == race]
 
 
+# Identidade do boneco de treino — TEM que bater com
+# `engine/entity_factory.py::create_training_dummy` (`EntityIdentity(name=
+# "Boneco de treino", race="Mecânico", ...)`). Boneco de treino é 100%
+# genérico pro jogo (`use_skill` com `on_dummy=True` só checa "foi usado
+# em QUALQUER boneco", nunca em qual boneco específico) — por isso é
+# tratado exatamente como um mob por nome/raça pro rastreio, SEM precisar
+# de id próprio por instância (decisão revertida 04/09/2026: a 1ª versão
+# exigia `params["dummy_id"]`, complexidade que o próprio jogo nunca
+# pediu — ver PROBLEMAS_ARQUITETURA.md).
+_TRAINING_DUMMY_NAME = "Boneco de treino"
+_TRAINING_DUMMY_RACE = "Mecânico"
+
+
+def _dummy_positions(spawn_points: dict) -> "list[tuple[int, int]]":
+    return [(x, y) for x, y in spawn_points.get("training_dummies", [])]
+
+
+def _hostile_target_circles(spawn_points: dict, target: str) -> "list[QuestCircle]":
+    """Resolve o(s) círculo(s) de um alvo "físico" (mob OU boneco de
+    treino) por nome/raça — usado por kill/auto_attack_hit/
+    use_item_on_target e pelo fallback de collect_item. Um mesmo `target`
+    nunca bate em spawn_zone E training_dummy ao mesmo tempo (nomes/raças
+    não colidem), mas a busca é feita nos dois catálogos pra não exigir
+    que quem escreve a quest saiba de antemão "isso é mob, isso é
+    boneco" — o objetivo já distingue isso sozinho pelo texto do target."""
+    zones = _find_spawn_zones(spawn_points, target)
+    if zones:
+        return _zone_circles(zones)
+    if target in (_TRAINING_DUMMY_NAME, _TRAINING_DUMMY_RACE):
+        return [QuestCircle(shape="circle", tile_x=x, tile_y=y,
+                            radius_px=TARGET_MARKER_RADIUS_PX, style="hostile")
+                for x, y in _dummy_positions(spawn_points)]
+    return []
+
+
 def _find_harvestable(spawn_points: dict, loot_item: str) -> "dict | None":
     for hv in spawn_points.get("harvestables", []):
         if _item_in_list(loot_item, hv.get("items", [])):
@@ -224,13 +259,6 @@ def _find_harvestable_zone(spawn_points: dict, loot_item: str) -> "dict | None":
         for sp in z.get("spawns", []):
             if _item_in_list(loot_item, sp.get("items", [])):
                 return z
-    return None
-
-
-def _find_training_dummy(spawn_points: dict, dummy_id: str) -> "tuple | None":
-    for x, y, did in spawn_points.get("training_dummies", []):
-        if did == dummy_id:
-            return (x, y)
     return None
 
 
@@ -292,7 +320,7 @@ def _resolve_objective_shapes(obj, spawn_points: dict) -> "list[QuestCircle]":
         return [QuestCircle(shape="rect", x0=x0, y0=y0, x1=x1, y1=y1, style="hostile")]
 
     if t in ("kill", "auto_attack_hit", "use_item_on_target") and obj.target != "*":
-        return _zone_circles(_find_spawn_zones(spawn_points, obj.target))
+        return _hostile_target_circles(spawn_points, obj.target)
 
     if t == "collect_item":
         if obj.target == "harvestables":
@@ -309,7 +337,7 @@ def _resolve_objective_shapes(obj, spawn_points: dict) -> "list[QuestCircle]":
             return [QuestCircle(shape="circle", tile_x=z["x"], tile_y=z["y"],
                                radius_tiles=z["radius"], style="zone")]
         if obj.target != "*":
-            return _zone_circles(_find_spawn_zones(spawn_points, obj.target))
+            return _hostile_target_circles(spawn_points, obj.target)
         return []
 
     if t == "use_skill" and obj.params.get("on_dummy"):
@@ -317,11 +345,14 @@ def _resolve_objective_shapes(obj, spawn_points: dict) -> "list[QuestCircle]":
         # mob) — não é "conversa" (talk), fica no grupo visual do alvo
         # grande, não no grupo pequeno com "..." (decisão do usuário,
         # 04/09/2026, separado explicitamente do treinador/learn_skill).
-        pos = _find_training_dummy(spawn_points, obj.params.get("dummy_id", ""))
-        if pos is None:
-            return []
-        return [QuestCircle(shape="circle", tile_x=pos[0], tile_y=pos[1],
-                           radius_px=TARGET_MARKER_RADIUS_PX, style="hostile")]
+        # Nunca exige QUAL boneco (não existe "dummy_id" — o próprio jogo
+        # trata qualquer boneco como equivalente, `on_dummy` só checa se
+        # o alvo TEM o componente TrainingDummy, nunca qual instância) —
+        # circula TODOS os bonecos do mapa, mesmo espírito de várias
+        # spawn_zones do mesmo mob.
+        return [QuestCircle(shape="circle", tile_x=x, tile_y=y,
+                           radius_px=TARGET_MARKER_RADIUS_PX, style="hostile")
+                for x, y in _dummy_positions(spawn_points)]
 
     if t == "learn_skill":
         pos = _find_trainer(spawn_points, obj.params.get("trainer_id", ""))

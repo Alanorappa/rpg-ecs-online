@@ -940,7 +940,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
     def _create_training_dummies(self, dummies_data: list) -> None:
         from engine.entity_factory import create_training_dummy as _ctd
-        for tx, ty, _dummy_id in dummies_data:
+        for tx, ty in dummies_data:
             eid = _ctd(self.world, tx, ty)
 
     def _create_combat_npcs(self, combat_npcs_data: list, map_file: str) -> None:

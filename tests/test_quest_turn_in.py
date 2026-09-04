@@ -47,6 +47,17 @@ class TestQuestTurnInRewardItems(unittest.IsolatedAsyncioTestCase):
         session, fw = await fake_login(self.mgr, sid, username)
         ql = self.ws.world.get_component(session.entity_id, QuestLog)
         ql.active[qid] = [1]
+        # Conta real no banco (data/game.db), reusada entre execuções da
+        # suíte — pode carregar itens residuais de rodadas anteriores
+        # (mesmo motivo já documentado nos testes de collect_item mais
+        # abaixo). Sem isso, um teste que empilha item (ex: mana_potion)
+        # pode falhar por "mochila cheia"/estourar max_stack dependendo de
+        # quanto já acumulou em execuções passadas — flake real observado
+        # 04/09/2026 depois de várias rodadas da suíte completa no mesmo dia.
+        from engine.components import Inventory as _InvReady
+        inv = self.ws.world.get_component(session.entity_id, _InvReady)
+        if inv is not None:
+            inv.items = []
         fw.sent.clear()
         return session, fw, ql
 

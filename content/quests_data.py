@@ -34,25 +34,29 @@ Tipos de objetivo (ObjectiveDef.type):
                         o componente TrainingDummy (boneco de treino) no
                         momento do uso — sem o param, aceita qualquer alvo
                         (comportamento padrão, usado por warrior_trial etc.).
-    learn_skill/use_skill (rastreio no mapa, ainda não implementado) —
-                        target CONTINUA sendo o skill_id (é o que
-                        match_objective usa de verdade pra validar a
-                        skill certa; não mexer). A referência de ONDE
-                        treinar/usar (id do treinador/boneco no
-                        {map}_entities.json) entra em params, nunca em
-                        target — senão quebra o match de skill. Exemplo:
+                        NUNCA precisa dizer QUAL boneco — todo boneco de
+                        treino é equivalente pro jogo (e pro rastreio de
+                        quest no mapa, que mostra TODOS os bonecos do mapa
+                        quando o objetivo pede isso).
+    kill/auto_attack_hit/use_item_on_target/collect_item (rastreio no
+                        mapa) — target = nome | raça já é o suficiente
+                        pra achar o alvo no {map}_entities.json (spawn_zones
+                        por raça, IGUAL o boneco de treino: `target=
+                        "Boneco de treino"` ou `target="Mecânico"` acha os
+                        bonecos automaticamente, mesmo mecanismo de mob,
+                        ver ui/map_markers.py::_hostile_target_circles).
+    learn_skill (rastreio no mapa) — target CONTINUA sendo o skill_id (é
+                        o que match_objective usa de verdade pra validar a
+                        skill certa; não mexer). A referência de QUAL
+                        treinador entra em `params["trainer_id"]` — é o
+                        NOME REAL do treinador (o mesmo campo "name" que
+                        já existe em trainers no {map}_entities.json, só
+                        guardado em params porque target já está ocupado
+                        pelo skill_id). Exemplo:
                             ObjectiveDef(type="learn_skill", target="bola_de_fogo",
-                                        count=1, params={"trainer_id": "mestre_flamma"}),
-                            ObjectiveDef(type="use_skill", target="bola_de_fogo",
-                                        count=5, params={"on_dummy": True,
-                                                        "dummy_id": "dummy_arcano_01"}),
-                        trainer_id/dummy_id precisam bater com um campo
-                        "id" (ou "name", pra trainers que já têm) da
-                        entrada correspondente em trainers/training_dummies
-                        no {map}_entities.json — ver PROBLEMAS_ARQUITETURA.md
-                        pelo sistema de rastreio de quest no mapa (design
-                        ainda em discussão, nenhum sistema real lê esses
-                        params ainda).
+                                        count=1, params={"trainer_id": "Selene Vail"}),
+                        Ver PROBLEMAS_ARQUITETURA.md pelo sistema de
+                        rastreio de quest no mapa.
 
 Adicionar um tipo de objetivo NOVO (que não é só "item usado em alvo"):
     1. Documentar aqui (acima) e descrever a forma do evento esperado.
@@ -447,7 +451,7 @@ QUESTS: dict[str, QuestDef] = {
                     "segurar essa arma direito. Vai até o boneco ali na frente e desfira uns "
                     "golpes básicos. Quero ver se seu braço aguenta o peso do aço.",
         objectives=(
-            ObjectiveDef(type="auto_attack_hit", target="*", count=6),
+            ObjectiveDef(type="auto_attack_hit", target="Boneco de treino", count=6),
         ),
         reward=QuestReward( xp=15, 
                             skill="golpe_poderoso"),
@@ -468,7 +472,7 @@ QUESTS: dict[str, QuestDef] = {
                     "ou se eu devia ter dado ela pra outro recruta.",
         objectives=(
             ObjectiveDef(type="use_skill", target="golpe_poderoso", count=3,
-                        params={"on_dummy": True, "dummy_id": "dummy_01"}),
+                        params={"on_dummy": True}),
         ),
         requires= ["primeiros_golpes"],
         reward=QuestReward(xp=25),
@@ -492,7 +496,7 @@ QUESTS: dict[str, QuestDef] = {
             ObjectiveDef(type="learn_skill", target="bola_de_fogo", count=1,
                         params={"trainer_id": "Selene Vail"}),
             ObjectiveDef(type="use_skill", target="bola_de_fogo", count=5,
-                        params={"on_dummy": True, "dummy_id": "dummy_02"}),
+                        params={"on_dummy": True}),
         ),
         reward=QuestReward(xp=80),
         class_req="mago",
@@ -508,7 +512,7 @@ QUESTS: dict[str, QuestDef] = {
             ObjectiveDef(type="learn_skill", target="golpe_poderoso", count=1,
                         params={"trainer_id": "Avido Faseo"}),
             ObjectiveDef(type="use_skill", target="golpe_poderoso", count=6,
-                        params={"on_dummy": True, "dummy_id": "dummy_03"}),
+                        params={"on_dummy": True}),
         ),
         reward=QuestReward(xp=80),
         class_req="guerreiro",

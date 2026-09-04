@@ -15333,3 +15333,70 @@ pendente): `_get_completable_quests` com/sem `pending_npc_name`,
 Revert-to-confirm: fix de `_open_menu` desfeito temporariamente — teste
 correspondente falhou exatamente como o sintoma relatado (`ACTION_MENU`
 != `CLOSED`). Suíte completa: 1472 passed.
+
+## 109. `dummy_id` removido — boneco de treino tratado igual mob no rastreio de quest (04/09/2026)
+
+Usuário criou uma quest nova (editando `content/quests_data.py`
+diretamente) usando `auto_attack_hit` com alvo no boneco de treino —
+descobriu no processo que `auto_attack_hit` já aceita `target = nome |
+raça` (documentado desde sempre, não é recurso novo) e resolveu usar
+`target="Boneco de treino"` em vez de `params` (que esse tipo de
+objetivo nunca leu). Ao testar, notou que o rastreio de quest no mapa
+não desenhava círculo nenhum pro boneco, e perguntou por que o boneco
+de treino precisava de mecanismo diferente de mob/NPC no design
+original — pergunta certa, resposta é "não precisava".
+
+**Causa raiz**: decisão original (§105) exigia `params["dummy_id"]`
+pra `use_skill(on_dummy)` — assumindo (errado) que fazia sentido
+apontar pra um boneco ESPECÍFICO. Na prática, boneco de treino é
+100% genérico pro próprio jogo: `use_skill` com `on_dummy=True` só
+checa "o alvo tem o componente TrainingDummy", nunca QUAL boneco
+(`engine/quest_logic.py::match_objective`). Forçar id por instância no
+rastreio era complexidade que o jogo nunca pediu — e não cobria o
+caso novo (`auto_attack_hit`/`kill` no boneco), que nem tinha
+mecanismo de resolução nenhum.
+
+**Fix**: unificado com o mecanismo de mob.
+- `ui/map_markers.py::_TRAINING_DUMMY_NAME`/`_TRAINING_DUMMY_RACE` —
+  constantes que espelham `engine/entity_factory.py::
+  create_training_dummy`'s `EntityIdentity(name="Boneco de treino",
+  race="Mecânico")` (comentário cruzado nos dois lados pra não
+  divergir sem querer).
+- `_hostile_target_circles(spawn_points, target)` — nova função usada
+  por `kill`/`auto_attack_hit`/`use_item_on_target`/fallback de
+  `collect_item`: procura primeiro em `spawn_zones` (mob); se não
+  achar, procura o nome/raça do boneco e circula TODOS os bonecos do
+  mapa (`_dummy_positions`, sem id, mesma ideia de várias `spawn_zones`
+  do mesmo mob, §107).
+- `use_skill(on_dummy)` — passou a circular TODOS os bonecos do mapa
+  também, sem `dummy_id` nenhum.
+- Revertido por completo: `ObjectiveDef.params["dummy_id"]` (removido
+  das 3 quests reais que usavam — `prova_valor`/`iniciacao_arcana`/
+  `coach_quantic`, ficam só com `on_dummy: True`), campo `"id"` em
+  `training_dummies` no `{map}_entities.json`, tupla de 3 elementos em
+  `engine/map_loader.py`/`server/world_server.py::
+  _create_training_dummies` (volta a `(x, y)`).
+- `trainer_id` (learn_skill) **não muda** — já era o nome REAL do
+  treinador (ex.: `"Selene Vail"`), o mesmo mecanismo de `talk_to_npc`
+  por nome, só guardado em `params` porque `target` já é o skill_id.
+  Não tem gordura pra cortar aí.
+
+**Achado de bônus, não relacionado**: `tests/test_quest_turn_in.py::
+test_multiplos_itens_fixos_com_stack` começou a falhar (mochila cheia)
+depois de tantas rodadas da suíte completa no mesmo dia contra o MESMO
+`data/game.db` real — a conta de teste "qtiuserb" acumulou `mana_potion`
+até quase o `max_stack`, e conceder +3 estourava (comportamento
+CORRETO de `_stack_or_add_item`, "tudo ou nada"). `_ready_session`
+(fixture compartilhada da classe) não zerava o Inventory antes, ao
+contrário de outra classe no mesmo arquivo que já fazia isso — corrigido
+adicionando o mesmo reset.
+
+**Testes**: `tests/test_quest_map_tracking.py` — fixture de
+`training_dummies` volta a 2-tuplas; `test_use_skill_on_dummy_resolve_
+por_dummy_id` virou `test_use_skill_on_dummy_circula_todos_os_bonecos_
+do_mapa` (confirma os 2 bonecos do fixture, não 1 específico); 2 testes
+novos pro caso que motivou tudo isso
+(`test_kill_no_boneco_de_treino_resolve_igual_mob`/`_por_raca_tambem_
+funciona`). Revert-to-confirm: bloco de resolução do boneco em
+`_hostile_target_circles` comentado temporariamente — os 2 testes novos
+falharam (`0 != 2`), restaurado. Suíte completa: 1474 passed.

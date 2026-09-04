@@ -46,8 +46,8 @@ _SPAWN_POINTS = {
         ]},
     ],
     "training_dummies": [
-        (120, 387, "dummy_01"),
-        (120, 388, "dummy_02"),
+        (120, 387),
+        (120, 388),
     ],
     "trainers": [
         (115, 393, "Avido Faseo", "guerreiro", (), (), 1, "Guerreiro"),
@@ -148,25 +148,46 @@ class TestCollectQuestCircles(unittest.TestCase):
         self.assertEqual((c.tile_x, c.tile_y, c.radius_tiles), (60, 60, 8))
         self.assertEqual(c.offset_px, (0.0, 0.0))
 
-    def test_use_skill_on_dummy_resolve_por_dummy_id(self):
-        """Boneco de treino entra no grupo visual do alvo grande (style
-        "hostile"), não no grupo pequeno de "..." — decisão do usuário
-        04/09/2026: dummy é interação física (usar skill nele), diferente
-        de conversa (talk_to_npc/learn_skill)."""
-        obj = ObjectiveDef(type="use_skill", target="bola_de_fogo", count=1,
-                           params={"on_dummy": True, "dummy_id": "dummy_02"})
-        circles = _circles_for([obj], [0])
-        self.assertEqual(len(circles), 1)
-        c = circles[0]
-        self.assertEqual(c.style, "hostile")
-        self.assertEqual(c.radius_px, TARGET_MARKER_RADIUS_PX)
-        self.assertEqual((c.tile_x, c.tile_y), (120, 388))
-
-    def test_use_skill_on_dummy_sem_dummy_id_nao_quebra(self):
+    def test_use_skill_on_dummy_circula_todos_os_bonecos_do_mapa(self):
+        """Boneco de treino é 100% genérico pro jogo (on_dummy só checa se
+        o alvo TEM o componente TrainingDummy, nunca QUAL boneco) — o
+        rastreio reflete isso mostrando TODOS os bonecos do mapa, sem
+        precisar de "dummy_id" nenhum (decisão revertida 04/09/2026: a 1ª
+        versão exigia um id por instância, complexidade que o próprio jogo
+        nunca pediu — ver PROBLEMAS_ARQUITETURA.md). Entra no grupo visual
+        do alvo grande (style "hostile"), não no grupo pequeno de "..." —
+        é interação física (usar skill nele), diferente de conversa
+        (talk_to_npc/learn_skill)."""
         obj = ObjectiveDef(type="use_skill", target="bola_de_fogo", count=1,
                            params={"on_dummy": True})
         circles = _circles_for([obj], [0])
+        self.assertEqual(len(circles), 2)   # os 2 bonecos do fixture
+        positions = sorted((c.tile_x, c.tile_y) for c in circles)
+        self.assertEqual(positions, [(120, 387), (120, 388)])
+        self.assertTrue(all(c.style == "hostile" for c in circles))
+        self.assertTrue(all(c.radius_px == TARGET_MARKER_RADIUS_PX for c in circles))
+
+    def test_use_skill_sem_on_dummy_ignora_bonecos(self):
+        obj = ObjectiveDef(type="use_skill", target="bola_de_fogo", count=1)
+        circles = _circles_for([obj], [0])
         self.assertEqual(circles, [])
+
+    def test_kill_no_boneco_de_treino_resolve_igual_mob(self):
+        """target="Boneco de treino" (ou a raça "Mecânico") acha os
+        bonecos do mapa pelo MESMO mecanismo usado pra mob por nome/raça —
+        não precisa de tratamento especial (bug real: quest usava
+        auto_attack_hit no boneco e não aparecia no rastreio, 04/09/2026)."""
+        obj = ObjectiveDef(type="auto_attack_hit", target="Boneco de treino", count=6)
+        circles = _circles_for([obj], [0])
+        self.assertEqual(len(circles), 2)
+        positions = sorted((c.tile_x, c.tile_y) for c in circles)
+        self.assertEqual(positions, [(120, 387), (120, 388)])
+        self.assertTrue(all(c.style == "hostile" for c in circles))
+
+    def test_kill_no_boneco_de_treino_por_raca_tambem_funciona(self):
+        obj = ObjectiveDef(type="kill", target="Mecânico", count=1)
+        circles = _circles_for([obj], [0])
+        self.assertEqual(len(circles), 2)
 
     def test_use_skill_sem_on_dummy_sem_circulo(self):
         circles = _circles_for([ObjectiveDef(type="use_skill", target="executar", count=1)], [0])
