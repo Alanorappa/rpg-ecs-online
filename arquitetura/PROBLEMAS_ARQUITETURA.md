@@ -15159,9 +15159,28 @@ grande passando da borda no zoom alto): ele CORTA visualmente na
 moldura, sem limitar o dado em si — exatamente o que o usuário queria
 (raio de verdade, mas nunca vazando pra fora da janela).
 
+**Bug separado achado pelo usuário no mesmo dia — não é do sistema de
+rastreio, é pré-existente**: marcador de quest giver (ícone "!"/"?" no
+mapa/minimapa, `map_markers.py::collect_markers`, existia desde
+11/07/2026) aparecia menor e borrado no minimapa comparado ao mapa
+cheio — usuário mandou 2 prints lado a lado provando que é o MESMO
+marcador com aparência diferente. Causa raiz: os dois desenham o
+fallback (círculo + glifo) com o MESMO `icon_size=MAP_ICON_SIZE=16px`
+fixo, mas cada view carrega sua PRÓPRIA fonte via `_FONT_BASES`
+(`UIScaleMixin.set_ui_scale`, `ui/ui_scale_mixin.py:94`) — `MapOverlay`
+usava base 20px, `Minimap` usava base 12px — nunca foi notado porque os
+dois círculos nunca foram comparados lado a lado antes. Como o
+`_font` de `Minimap` também passou a ser usado pelo "..." do círculo de
+rastreio novo e pelo tooltip de hover (`draw_box_tooltip`), o mesmo
+bug ia afetar os 3. Fix: `Minimap._FONT_BASES` alinhado pra 20, igual
+`MapOverlay` — confirmado `MapOverlay._font.get_height() ==
+Minimap._font.get_height()` (14px renderizado, escala 1.0) depois do
+fix. Nenhum teste dependia do tamanho antigo (grep vazio).
+
 **Pendente pro usuário validar em jogo** (não automatizável): visual
 real dos círculos (mob/harvestable_zone com raio de verdade, resto com
 tamanho fixo — cor/opacidade/tracejado/proporção como esperado),
 tooltip aparecendo no hover, círculo de transição de mapa guiando
 corretamente entre map_1 e uma caverna, corte correto na borda do
-mapa/minimapa em zoom alto com raio real grande.
+mapa/minimapa em zoom alto com raio real grande, marcador de quest
+giver com o mesmo tamanho/nitidez nos 2 lugares.

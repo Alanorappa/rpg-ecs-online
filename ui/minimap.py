@@ -34,7 +34,17 @@ class Minimap(UIScaleMixin):
     ALLY_COL     = (100, 255, 140)   # entidade amigável ao player
     NEUTRAL_COL  = (255, 225,  90)   # entidade neutra ao player
 
-    _FONT_BASES = {"_font": 12}   # glifo de fallback dos marcadores (!/?/T/$)
+    # Mesmo tamanho-base de MapOverlay._FONT_BASES (ui/map_overlay.py) —
+    # o glifo de fallback dos marcadores (!/?/T/$) desenha no MESMO
+    # círculo de MAP_ICON_SIZE (16px, fixo, igual nos 2 lugares); tamanho
+    # de fonte diferente (era 12 aqui vs 20 lá) fazia o "?" da quest
+    # aparecer menor/borrado no minimapa comparado ao mapa cheio pro
+    # MESMO marcador — bug real reportado pelo usuário com 2 prints lado
+    # a lado (04/09/2026). Também usada pelo "..." do círculo de rastreio
+    # de quest (ui/map_markers.py::draw_quest_circle_marker) e pelo
+    # tooltip do hover (ui/ui_helpers.py::draw_box_tooltip) — mesma razão,
+    # consistência com o mapa cheio.
+    _FONT_BASES = {"_font": 20}
 
     def __init__(self, screen: pygame.Surface, map_overlay) -> None:
         self.screen       = screen
