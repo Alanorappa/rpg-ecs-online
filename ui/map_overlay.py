@@ -395,6 +395,13 @@ class MapOverlay(UIScaleMixin):
         if circles:
             from ui.map_markers import (draw_quest_circle_marker, draw_quest_rect_marker,
                                         quest_circle_hit_test, quest_rect_hit_test)
+            # set_clip pro modal: raio fixo em px (não escala mais com o
+            # zoom) podia desenhar passando da borda da janela do mapa (M)
+            # quando o alvo está perto da fronteira — bug real reportado
+            # pelo usuário 04/09/2026, com print mostrando o círculo
+            # vazando pro fundo escuro fora do modal.
+            _prev_clip = self.screen.get_clip()
+            self.screen.set_clip(modal)
             for c in circles:
                 if c.shape == "rect":
                     rx0 = int(c.x0 * scale - off_x) + modal.x
@@ -410,9 +417,9 @@ class MapOverlay(UIScaleMixin):
                         _hover_tip = (c.quest_title, c.objective_label)
                     continue
 
-                cx = int(c.tile_x * scale - off_x) + modal.x
-                cy = int(c.tile_y * scale - off_y) + modal.y
-                radius_px = c.radius_tiles * scale
+                cx = int(c.tile_x * scale - off_x) + modal.x + c.offset_px[0]
+                cy = int(c.tile_y * scale - off_y) + modal.y + c.offset_px[1]
+                radius_px = c.radius_px
                 bbox = pygame.Rect(cx - radius_px, cy - radius_px, radius_px * 2, radius_px * 2)
                 if not modal.colliderect(bbox):
                     continue
@@ -420,6 +427,7 @@ class MapOverlay(UIScaleMixin):
                 if (modal.collidepoint(mx, my)
                         and quest_circle_hit_test(c, cx, cy, radius_px, (mx, my))):
                     _hover_tip = (c.quest_title, c.objective_label)
+            self.screen.set_clip(_prev_clip)
 
         # ── Marcador do jogador ──────────────────────────
         if 0 <= player_tile_x < self._cols and 0 <= player_tile_y < self._rows:

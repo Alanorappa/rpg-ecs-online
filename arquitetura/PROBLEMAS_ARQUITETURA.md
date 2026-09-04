@@ -15098,7 +15098,50 @@ um arquivo/função, ler de volta o trecho inteiro (função antiga +
 função nova) antes de seguir em frente — não só confiar que "o Edit
 funcionou" pela ausência de erro da ferramenta.
 
+**Revisão de tamanho — tile-space era errado pro mapa/minimapa (04/09/2026,
+mesmo dia, feedback do usuário com print)**: 1ª versão desenhava raio em
+TILES (`radius_tiles`, multiplicado por `tp`/`scale` de cada renderer) —
+pareceu razoável em teoria ("mesmo raio do respawn real"), mas na prática
+1 tile no jogo é sempre 32px, e a escala de EXIBIÇÃO do mapa (zoom livre
+2-100px/tile no M) e do minimapa (janela fixa) varia — o mesmo raio de 30
+tiles (spawn_zone de Elemental) virava um círculo cobrindo boa parte da
+tela no zoom alto do M, e seria quase invisível no zoom baixo. Print do
+usuário mostrou o círculo ocupando 1/4 do mapa cheio. Fix: `QuestCircle`
+trocou `radius_tiles` por `radius_px` (SEMPRE px de tela fixo, igual
+`map_markers.py::MAP_ICON_SIZE` já fazia pros ícones de ponto desde
+sempre) + `offset_px` (deslocamento do harvestable, também fixo, não mais
+embutido em `tile_x/tile_y`). Só a POSIÇÃO continua em tile-space
+(convertida por cada renderer como qualquer marcador). `reach_tile`
+continua em tile-space pro retângulo em si (representa uma ÁREA real do
+mundo, não uma posição aproximada — não fazia parte da reclamação).
+Tamanhos fixados por pedido explícito do usuário: `TARGET_MARKER_RADIUS_PX
+= 15` (raio; "30px de dimensão" = diâmetro) pra alvo real (mob, item,
+boneco de treino, marcador de transição) e `FRIENDLY_MARKER_RADIUS_PX =
+MAP_ICON_SIZE // 2` (mesmo tamanho do ícone de quest "!"/"?") pra alvo de
+conversa (talk_to_npc, treinador/learn_skill). **Reclassificação**: boneco
+de treino (`use_skill` on_dummy) saiu do grupo "friendly" (conversa) e
+entrou no grupo "hostile" (alvo real) — decisão do usuário: usar skill
+nele é interação física, não conversa, mesma categoria visual de mob.
+
+**Corte no limite da janela (mesmo feedback, mesmo dia)**: círculo perto
+da borda do mapa (M) ou do minimapa vazava pro fundo escuro/verde fora da
+moldura — pygame não corta desenho automaticamente por padrão. Fix:
+`screen.set_clip(modal)` (M) / `screen.set_clip(frame_rect)` (minimapa)
+antes de desenhar os círculos, restaurando o clip anterior
+(`screen.get_clip()`) depois — mesmo padrão já usado em
+`ui/quest_system.py::_blit_scrollable`/`ui/god_mode.py`.
+
+**Testes**: `tests/test_quest_map_tracking.py` atualizado pro modelo
+`radius_px`/`offset_px` (reclassificação do dummy incluída). Smoke test
+manual: círculo desenhado bem perto da borda da janela (minimapa) sem
+exception, `screen.get_clip()` confirmado restaurado depois do render
+(não vaza pra outros desenhos do frame). Suíte completa: 1465 passed +
+1 falha em `test_perf_log_improvements.py` confirmada flaky (passa
+isolada, sem relação com este trabalho — teste sensível a timing sob
+carga da suíte completa).
+
 **Pendente pro usuário validar em jogo** (não automatizável): visual
-real dos círculos (cor/opacidade/tracejado como esperado), tooltip
-aparecendo no hover, círculo de transição de mapa guiando corretamente
-entre map_1 e uma caverna.
+real dos círculos com o tamanho fixo novo (cor/opacidade/tracejado/
+proporção como esperado), tooltip aparecendo no hover, círculo de
+transição de mapa guiando corretamente entre map_1 e uma caverna, corte
+correto na borda do mapa/minimapa em zoom alto.

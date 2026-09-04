@@ -131,24 +131,40 @@ def deconflict_positions(points: "list[tuple[float, float]]", min_dist: float) -
 # lugar (ex: um hit-test de tooltip que recalculasse a posição sozinho) —
 # ver PROBLEMAS_ARQUITETURA.md pelo desenho completo do sistema.
 
-HARVESTABLE_MIN_RADIUS_TILES = 5.0   # pedido do usuário: nunca preciso
-                                      # demais, senão a busca perde a graça
-FRIENDLY_MARKER_RADIUS_TILES = 0.6   # círculo pequeno com "..." (NPC/treinador/dummy)
-TRANSITION_MARKER_RADIUS_TILES = 1.0 # "entre aqui pra outro mapa"
+# Tamanho em TILES não faz sentido nessas 2 telas (04/09/2026, pedido do
+# usuário, depois de ver o círculo de raio real — 30 tiles — cobrindo boa
+# parte do mapa no zoom alto do M) — 1 tile no jogo é sempre 32px, mas a
+# escala de exibição do mapa/minimapa varia (zoom livre no M, janela fixa
+# no minimapa), então "raio real em tiles" ou fica gigante (zoom alto) ou
+# some (zoom baixo/minimapa). Todo círculo tem tamanho de TELA fixo — só a
+# POSIÇÃO (tile_x/tile_y) continua em tile-space, convertida por cada
+# renderer como qualquer outro marcador (mesmo princípio de
+# `map_markers.py::MAP_ICON_SIZE`, que já era fixo desde sempre).
+TARGET_MARKER_RADIUS_PX   = 15   # "30px de dimensão" (diâmetro) pedido do usuário
+FRIENDLY_MARKER_RADIUS_PX = MAP_ICON_SIZE // 2   # mesmo tamanho do ícone de quest (!)/(?)
+HARVESTABLE_OFFSET_PX     = 10   # deslocamento fixo (não mais em tiles) do
+                                  # círculo de item coletável — mantém a
+                                  # graça de não centralizar em cima da
+                                  # posição real, sem depender de zoom
 
 
 @dataclass(frozen=True)
 class QuestCircle:
-    """shape="circle": usa tile_x/tile_y/radius_tiles.
-    shape="rect": usa x0/y0/x1/y1 (reach_tile — sempre retângulo, mesmo
-    quando o objetivo é um ponto único, aí x0==x1 e y0==y1).
-    style: "hostile" (mob/spawn_zone) | "friendly" (NPC/treinador/dummy,
+    """shape="circle": usa tile_x/tile_y (posição, tile-space) +
+    radius_px/offset_px (tamanho/deslocamento, SEMPRE em px de tela fixo
+    — não escala com zoom do mapa nem com tp do minimapa).
+    shape="rect": usa x0/y0/x1/y1 em tile-space (reach_tile — sempre
+    retângulo, mesmo quando o objetivo é um ponto único, aí x0==x1 e
+    y0==y1; esse SIM escala com o zoom, representa uma área real do
+    mundo, não um marcador de posição aproximada).
+    style: "hostile" (mob/spawn_zone/dummy) | "friendly" (NPC/treinador,
     desenhado com "...") | "zone" (item coletável) | "transition"
     (indicador de mudança de mapa)."""
     shape:           str
     tile_x:          float = 0.0
     tile_y:          float = 0.0
-    radius_tiles:    float = 0.0
+    radius_px:       float = 0.0
+    offset_px:       "tuple[float, float]" = (0.0, 0.0)
     x0: int = 0
     y0: int = 0
     x1: int = 0
@@ -159,11 +175,11 @@ class QuestCircle:
 
 
 def _deterministic_offset(seed_x: int, seed_y: int, magnitude: float) -> "tuple[float, float]":
-    """Desloca (seed_x, seed_y) por um vetor SEMPRE igual pro mesmo par —
+    """Vetor de deslocamento SEMPRE igual pro mesmo par (seed_x, seed_y) —
     usado pro círculo de harvestable fixo não ficar centralizado no item
     (pedido do usuário: centralizado entregaria a posição exata de cara).
     Determinístico (não usa random/hash() built-in, que varia por processo)
-    pra minimapa e mapa cheio desenharem exatamente o mesmo círculo."""
+    pra minimapa e mapa cheio desenharem exatamente o mesmo deslocamento."""
     import math
     h = ((seed_x * 73856093) ^ (seed_y * 19349663)) & 0xFFFFFFFF
     angle = (h % 360) * math.pi / 180.0
@@ -260,7 +276,7 @@ def _resolve_objective_shape(obj, spawn_points: dict) -> "QuestCircle | None":
         zone = _find_spawn_zone(spawn_points, obj.target)
         if zone:
             return QuestCircle(shape="circle", tile_x=zone["x"], tile_y=zone["y"],
-                               radius_tiles=zone["radius"], style="hostile")
+                               radius_px=TARGET_MARKER_RADIUS_PX, style="hostile")
         return None
 
     if t == "collect_item":
@@ -268,42 +284,46 @@ def _resolve_objective_shape(obj, spawn_points: dict) -> "QuestCircle | None":
             hv = _find_harvestable(spawn_points, obj.loot_item)
             if hv is None:
                 return None
-            ox, oy = _deterministic_offset(hv["x"], hv["y"], HARVESTABLE_MIN_RADIUS_TILES * 0.5)
-            return QuestCircle(shape="circle", tile_x=hv["x"] + ox, tile_y=hv["y"] + oy,
-                               radius_tiles=HARVESTABLE_MIN_RADIUS_TILES, style="zone")
+            off = _deterministic_offset(hv["x"], hv["y"], HARVESTABLE_OFFSET_PX)
+            return QuestCircle(shape="circle", tile_x=hv["x"], tile_y=hv["y"],
+                               radius_px=TARGET_MARKER_RADIUS_PX, offset_px=off, style="zone")
         if obj.target == "harvestable_zones":
             z = _find_harvestable_zone(spawn_points, obj.loot_item)
             if z is None:
                 return None
             return QuestCircle(shape="circle", tile_x=z["x"], tile_y=z["y"],
-                               radius_tiles=z["radius"], style="zone")
+                               radius_px=TARGET_MARKER_RADIUS_PX, style="zone")
         if obj.target != "*":
             zone = _find_spawn_zone(spawn_points, obj.target)
             if zone:
                 return QuestCircle(shape="circle", tile_x=zone["x"], tile_y=zone["y"],
-                                   radius_tiles=zone["radius"], style="hostile")
+                                   radius_px=TARGET_MARKER_RADIUS_PX, style="hostile")
         return None
 
     if t == "use_skill" and obj.params.get("on_dummy"):
+        # Boneco de treino: você USA a skill nele (interação física, igual
+        # mob) — não é "conversa" (talk), fica no grupo visual do alvo
+        # grande, não no grupo pequeno com "..." (decisão do usuário,
+        # 04/09/2026, separado explicitamente do treinador/learn_skill).
         pos = _find_training_dummy(spawn_points, obj.params.get("dummy_id", ""))
         if pos is None:
             return None
         return QuestCircle(shape="circle", tile_x=pos[0], tile_y=pos[1],
-                           radius_tiles=FRIENDLY_MARKER_RADIUS_TILES, style="friendly")
+                           radius_px=TARGET_MARKER_RADIUS_PX, style="hostile")
 
     if t == "learn_skill":
         pos = _find_trainer(spawn_points, obj.params.get("trainer_id", ""))
         if pos is None:
             return None
         return QuestCircle(shape="circle", tile_x=pos[0], tile_y=pos[1],
-                           radius_tiles=FRIENDLY_MARKER_RADIUS_TILES, style="friendly")
+                           radius_px=FRIENDLY_MARKER_RADIUS_PX, style="friendly")
 
     if t == "talk_to_npc" and obj.target != "*":
         pos = _find_npc_by_name(spawn_points, obj.target)
         if pos is None:
             return None
         return QuestCircle(shape="circle", tile_x=pos[0], tile_y=pos[1],
-                           radius_tiles=FRIENDLY_MARKER_RADIUS_TILES, style="friendly")
+                           radius_px=FRIENDLY_MARKER_RADIUS_PX, style="friendly")
 
     return None   # kill/*, use_skill sem dummy, use_consumable, reach_level,
                   # equip_item, use_skill sem on_dummy: sem alvo físico
@@ -340,7 +360,7 @@ def collect_quest_circles(world, player_entity: int, quest_system,
                     continue   # sem transição direta — não rastreável ainda
                 circles.append(QuestCircle(
                     shape="circle", tile_x=pos[0], tile_y=pos[1],
-                    radius_tiles=TRANSITION_MARKER_RADIUS_TILES, style="transition",
+                    radius_px=TARGET_MARKER_RADIUS_PX, style="transition",
                     quest_title=qdef.title, objective_label=label))
                 continue
 

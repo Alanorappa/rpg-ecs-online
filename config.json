@@ -962,6 +962,53 @@
       "skill_slot_prefs": {
         "bola_de_fogo": 0
       }
+    },
+    "Aratiel": {
+      "hotbar": {
+        "slots": [
+          "golpe_poderoso",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          48
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      },
+      "skill_slot_prefs": {
+        "golpe_poderoso": 0
+      }
     }
   },
   "debug_mode": true,

@@ -21,7 +21,8 @@ import unittest
 from engine.world import World
 from engine.components import QuestLog
 from content.quests_data import ObjectiveDef, QuestDef, QuestReward
-from ui.map_markers import collect_quest_circles, QuestCircle
+from ui.map_markers import (collect_quest_circles, QuestCircle,
+                            TARGET_MARKER_RADIUS_PX, FRIENDLY_MARKER_RADIUS_PX)
 from ui.quest_system import QuestSystem
 
 
@@ -93,7 +94,7 @@ class TestCollectQuestCircles(unittest.TestCase):
         self.assertEqual(len(circles), 1)
         c = circles[0]
         self.assertEqual(c.style, "hostile")
-        self.assertEqual((c.tile_x, c.tile_y, c.radius_tiles), (10, 10, 6))
+        self.assertEqual((c.tile_x, c.tile_y, c.radius_px), (10, 10, TARGET_MARKER_RADIUS_PX))
 
     def test_objetivo_completo_nao_aparece(self):
         circles = _circles_for([ObjectiveDef(type="kill", target="Urso", count=1)], [1])
@@ -106,9 +107,12 @@ class TestCollectQuestCircles(unittest.TestCase):
         self.assertEqual(len(circles), 1)
         c = circles[0]
         self.assertEqual(c.style, "zone")
-        self.assertEqual(c.radius_tiles, 5.0)
-        # Não centralizado no item de verdade (50,50)
-        self.assertNotEqual((c.tile_x, c.tile_y), (50, 50))
+        self.assertEqual(c.radius_px, TARGET_MARKER_RADIUS_PX)
+        # Posição continua a real (50,50) — o deslocamento "não
+        # centralizado" agora é em offset_px (aplicado pelo renderer, não
+        # embutido em tile_x/tile_y, pra não depender do zoom).
+        self.assertEqual((c.tile_x, c.tile_y), (50, 50))
+        self.assertNotEqual(c.offset_px, (0.0, 0.0))
 
     def test_collect_item_harvestable_zone_usa_raio_cadastrado_centralizado(self):
         obj = ObjectiveDef(type="collect_item", target="harvestable_zones",
@@ -116,15 +120,21 @@ class TestCollectQuestCircles(unittest.TestCase):
         circles = _circles_for([obj], [0])
         self.assertEqual(len(circles), 1)
         c = circles[0]
-        self.assertEqual((c.tile_x, c.tile_y, c.radius_tiles), (60, 60, 8))
+        self.assertEqual((c.tile_x, c.tile_y, c.radius_px), (60, 60, TARGET_MARKER_RADIUS_PX))
+        self.assertEqual(c.offset_px, (0.0, 0.0))
 
     def test_use_skill_on_dummy_resolve_por_dummy_id(self):
+        """Boneco de treino entra no grupo visual do alvo grande (style
+        "hostile"), não no grupo pequeno de "..." — decisão do usuário
+        04/09/2026: dummy é interação física (usar skill nele), diferente
+        de conversa (talk_to_npc/learn_skill)."""
         obj = ObjectiveDef(type="use_skill", target="bola_de_fogo", count=1,
                            params={"on_dummy": True, "dummy_id": "dummy_02"})
         circles = _circles_for([obj], [0])
         self.assertEqual(len(circles), 1)
         c = circles[0]
-        self.assertEqual(c.style, "friendly")
+        self.assertEqual(c.style, "hostile")
+        self.assertEqual(c.radius_px, TARGET_MARKER_RADIUS_PX)
         self.assertEqual((c.tile_x, c.tile_y), (120, 388))
 
     def test_use_skill_on_dummy_sem_dummy_id_nao_quebra(self):
@@ -144,6 +154,7 @@ class TestCollectQuestCircles(unittest.TestCase):
         self.assertEqual(len(circles), 1)
         c = circles[0]
         self.assertEqual(c.style, "friendly")
+        self.assertEqual(c.radius_px, FRIENDLY_MARKER_RADIUS_PX)
         self.assertEqual((c.tile_x, c.tile_y), (115, 393))
 
     def test_talk_to_npc_resolve_por_nome(self):
@@ -181,7 +192,7 @@ class TestCollectQuestCircles(unittest.TestCase):
         self.assertEqual(len(circles), 1)
         c = circles[0]
         self.assertEqual(c.style, "transition")
-        self.assertEqual(c.radius_tiles, 1.0)
+        self.assertEqual(c.radius_px, TARGET_MARKER_RADIUS_PX)
         self.assertEqual((c.tile_x, c.tile_y), (12, 316))
 
     def test_cross_map_sem_transicao_direta_nao_quebra(self):

@@ -171,25 +171,30 @@ class Minimap(UIScaleMixin):
                                              sy - glyph.get_height() // 2))
 
         # Círculos de rastreio de quest (ui/map_markers.py::collect_quest_circles
-        # — ESTE método só desenha, não decide posição/estilo). Janela de
-        # RADIUS tiles: inclui círculo cujo CENTRO já saiu da janela mas cuja
-        # BORDA ainda entra (raio grande, ex: spawn_zone de mob) — corte só
-        # por centro cortaria a metade visível de um respawn parcialmente
-        # dentro da janela.
+        # — ESTE método só desenha, não decide posição/estilo). Raio é
+        # SEMPRE px de tela fixo (não escala com tp) — corte de janela usa
+        # uma margem generosa em tiles só pra não desenhar o que está bem
+        # longe da janela; o corte visual de verdade é o set_clip logo
+        # abaixo (senão um marcador perto da borda vaza pra fora do frame
+        # quadrado do minimapa, bug real reportado pelo usuário 04/09/2026).
         _hover_tip: "tuple | None" = None
         if circles:
             from ui.map_markers import (draw_quest_circle_marker, draw_quest_rect_marker,
                                         quest_circle_hit_test, quest_rect_hit_test)
             mouse_pos = pygame.mouse.get_pos()
             _frame_sz = self._u(self.SIZE)
-            _mouse_in_frame = pygame.Rect(fx, fy, _frame_sz, _frame_sz).collidepoint(mouse_pos)
+            _frame_rect = pygame.Rect(fx, fy, _frame_sz, _frame_sz)
+            _mouse_in_frame = _frame_rect.collidepoint(mouse_pos)
+            _prev_clip = self.screen.get_clip()
+            self.screen.set_clip(_frame_rect)
+            _margin = self.RADIUS + 1  # +1 tile de folga pro raio fixo (15px) não cortar perto da borda
             for c in circles:
                 if c.shape == "rect":
                     dx0, dy0 = c.x0 - player_tx, c.y0 - player_ty
                     dx1, dy1 = c.x1 - player_tx, c.y1 - player_ty
-                    if max(dx0, dx1) < -self.RADIUS or min(dx0, dx1) > self.RADIUS:
+                    if max(dx0, dx1) < -_margin or min(dx0, dx1) > _margin:
                         continue
-                    if max(dy0, dy1) < -self.RADIUS or min(dy0, dy1) > self.RADIUS:
+                    if max(dy0, dy1) < -_margin or min(dy0, dy1) > _margin:
                         continue
                     rx0, ry0 = ox + mid + dx0 * tp, oy + mid + dy0 * tp
                     rx1, ry1 = ox + mid + dx1 * tp, oy + mid + dy1 * tp
@@ -201,14 +206,14 @@ class Minimap(UIScaleMixin):
                     continue
 
                 dx, dy = c.tile_x - player_tx, c.tile_y - player_ty
-                if abs(dx) > self.RADIUS + c.radius_tiles or abs(dy) > self.RADIUS + c.radius_tiles:
+                if abs(dx) > _margin or abs(dy) > _margin:
                     continue
-                sx = ox + mid + dx * tp
-                sy = oy + mid + dy * tp
-                radius_px = c.radius_tiles * tp
-                draw_quest_circle_marker(self.screen, c, sx, sy, radius_px, self._font)
-                if _mouse_in_frame and quest_circle_hit_test(c, sx, sy, radius_px, mouse_pos):
+                sx = ox + mid + dx * tp + c.offset_px[0]
+                sy = oy + mid + dy * tp + c.offset_px[1]
+                draw_quest_circle_marker(self.screen, c, sx, sy, c.radius_px, self._font)
+                if _mouse_in_frame and quest_circle_hit_test(c, sx, sy, c.radius_px, mouse_pos):
                     _hover_tip = (c.quest_title, c.objective_label)
+            self.screen.set_clip(_prev_clip)
 
         sz = self._u(self.SIZE)
         pygame.draw.rect(self.screen, self.BORDER_COL,
