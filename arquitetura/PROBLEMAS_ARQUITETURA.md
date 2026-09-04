@@ -15400,3 +15400,14 @@ novos pro caso que motivou tudo isso
 funciona`). Revert-to-confirm: bloco de resolução do boneco em
 `_hostile_target_circles` comentado temporariamente — os 2 testes novos
 falharam (`0 != 2`), restaurado. Suíte completa: 1474 passed.
+
+## 110. Opacidade do preenchimento reduzida pra 25% (04/09/2026, mesmo dia)
+
+Ajuste simples pedido pelo usuário: preenchimento do círculo/retângulo
+de rastreio de quest (`ui/map_markers.py`) estava com alpha 110/90
+(≈43%/35% — os 2 números já divergiam entre si, resquício de escrever
+cada um à mão em vez de uma constante só). Unificado em
+`QUEST_CIRCLE_FILL_ALPHA = 64` (25% de 255), usado pelos dois desenhos
+(`draw_quest_circle_marker`/`draw_quest_rect_marker`) — nunca mais 2
+valores diferentes pro mesmo preenchimento. Suíte completa: 1474 passed
+(nenhum teste dependia do valor antigo).

@@ -422,6 +422,10 @@ def collect_quest_circles(world, player_entity: int, quest_system,
 QUEST_CIRCLE_COLOR = (230, 205, 60)   # amarelo — pedido do usuário, mesma
                                        # cor pro alvo real E pro marcador de
                                        # transição de mapa (03/09/2026)
+QUEST_CIRCLE_FILL_ALPHA = 64   # 25% de 255 — pedido do usuário (04/09/2026,
+                               # era 110/90 ≈ 43%/35%); mesmo valor pro
+                               # círculo E pro retângulo (reach_tile), nunca
+                               # 2 números divergentes pro mesmo preenchimento
 
 
 def draw_quest_circle_marker(surface, circle: "QuestCircle", sx: int, sy: int,
@@ -429,7 +433,7 @@ def draw_quest_circle_marker(surface, circle: "QuestCircle", sx: int, sy: int,
     """Desenha um QuestCircle de shape="circle" já convertido pro espaço de
     tela (sx, sy, radius_px). style="friendly": círculo pequeno sólido +
     "...". Outros styles (hostile/zone/transition): tracejado + preenchimento
-    50% translúcido, raio = radius_px."""
+    translúcido (QUEST_CIRCLE_FILL_ALPHA), raio = radius_px."""
     import pygame
     from ui.ui_helpers import draw_dashed_circle, draw_translucent_filled_circle
 
@@ -440,7 +444,8 @@ def draw_quest_circle_marker(surface, circle: "QuestCircle", sx: int, sy: int,
         surface.blit(glyph, (sx - glyph.get_width() // 2, sy - glyph.get_height() // 2))
         return
 
-    draw_translucent_filled_circle(surface, QUEST_CIRCLE_COLOR, (sx, sy), radius_px, alpha=110)
+    draw_translucent_filled_circle(surface, QUEST_CIRCLE_COLOR, (sx, sy), radius_px,
+                                   alpha=QUEST_CIRCLE_FILL_ALPHA)
     draw_dashed_circle(surface, QUEST_CIRCLE_COLOR, (sx, sy), radius_px, width=2)
 
 
@@ -451,7 +456,7 @@ def draw_quest_rect_marker(surface, rect) -> None:
     from ui.ui_helpers import draw_dashed_rect
     import pygame
     tmp = pygame.Surface((rect.w, rect.h), pygame.SRCALPHA)
-    tmp.fill((*QUEST_CIRCLE_COLOR, 90))
+    tmp.fill((*QUEST_CIRCLE_COLOR, QUEST_CIRCLE_FILL_ALPHA))
     surface.blit(tmp, rect.topleft)
     draw_dashed_rect(surface, QUEST_CIRCLE_COLOR, rect, width=2)
 
