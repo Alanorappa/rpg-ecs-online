@@ -674,9 +674,19 @@ class QuestDialogSystem(UIScaleMixin, System):
     def marker_for(self, npc_id: int) -> "tuple[str, tuple, str] | None":
         """Estado de quest deste NPC pro player local: (icon_name, cor de
         fallback, símbolo de fallback), ou None se não há nada a mostrar
-        (sem quest disponível/em progresso/completável/bloqueada)."""
+        (sem quest disponível/em progresso/completável/bloqueada).
+
+        `pending_npc_name` (04/09/2026, bug real reportado pelo usuário):
+        sem isso, o ícone acima da cabeça mostrava "em progresso" (?cinza)
+        em vez de "completável" (?dourado) pra uma quest cujo único
+        objetivo pendente é justamente falar com ESTE NPC — mesma
+        checagem que `_open_dialog` já faz certo."""
+        from engine.components import NPC as _NPCmk
+        _npc_c = self.world.get_component(npc_id, _NPCmk)
+        _npc_name = _npc_c.name if _npc_c else ""
+
         avail       = self._get_available_quests(npc_id)
-        completable = self._get_completable_quests(npc_id)
+        completable = self._get_completable_quests(npc_id, _npc_name)
         inprog      = self._get_inprogress_quests(npc_id)
         locked      = self._get_locked_quests(npc_id)
 
@@ -785,7 +795,7 @@ class QuestDialogSystem(UIScaleMixin, System):
         self._close_rect = close_r
 
         if self._dialog_state == "list":
-            self._render_list(x0, y0, giver)
+            self._render_list(x0, y0, giver, npc_name)
         elif self._dialog_state == "detail":
             self._render_detail(x0, y0)
         elif self._dialog_state == "turnin":
@@ -793,10 +803,17 @@ class QuestDialogSystem(UIScaleMixin, System):
 
     # ── Sub-renders ──────────────────────────────────────────────────────────
 
-    def _render_list(self, x0: int, y0: int, giver) -> None:
+    def _render_list(self, x0: int, y0: int, giver, npc_name: str = "") -> None:
+        """`npc_name` (04/09/2026, bug real reportado pelo usuário) vai pra
+        `_get_completable_quests` como `pending_npc_name` — sem isso, uma
+        quest cujo único objetivo pendente é "falar com ESTE NPC" ficava de
+        fora da lista mesmo já estando 100% completável (mesma checagem que
+        `_open_dialog` já faz certo ao decidir o estado inicial do diálogo;
+        esta função reconstrói a lista do zero pra desenhar e repetia o
+        cálculo sem o parâmetro)."""
         self._list_rects = {}
         avail = self._get_available_quests(self._dialog_npc_id)
-        comp  = self._get_completable_quests(self._dialog_npc_id)
+        comp  = self._get_completable_quests(self._dialog_npc_id, npc_name)
         mx, my = pygame.mouse.get_pos()
         PAD = self._u(self.PAD)
         y = y0 + self._u(52)

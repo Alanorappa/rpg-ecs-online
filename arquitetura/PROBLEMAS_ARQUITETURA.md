@@ -15285,3 +15285,51 @@ objetivo de quest no mapa/minimapa" (mesmo termo já usado nos títulos
 de §105/§106 e nos comentários do código). Registrar aqui caso um nome
 mais curto seja decidido depois, pra manter consistência em referências
 futuras.
+
+## 108. Interação com NPC não priorizava quest completável quando o objetivo pendente era "falar com ESTE NPC" (04/09/2026)
+
+Usuário reportou (comportamento, não crash): pegou uma quest cujo único
+objetivo restante era "falar com NPC X" (NPC X sendo também treinador de
+classe); ao clicar com o direito em X, em vez de abrir direto a entrega
+da quest, aparecia o menu "Quests/Treinamento"; entrando em "Quests", a
+quest pronta pra entregar nem aparecia na lista.
+
+**Causa raiz**: `engine/quest_logic.py::can_turn_in_after_talk()` já
+existia especificamente pra esse caso (prevê "se eu falar com X agora,
+a quest fica completável?" SEM mutar o QuestLog) e
+`QuestDialogSystem._get_completable_quests(npc_id, pending_npc_name)`
+já usa isso corretamente — mas só quando `pending_npc_name` é passado.
+4 lugares que decidem o que mostrar ANTES de `_open_dialog` (que é o
+único que sempre passou esse parâmetro certo) chamavam
+`_get_completable_quests` sem ele:
+- `ui/trainer_system.py::_open_menu` — decide se pula o menu de ação
+  direto pra entrega de quest.
+- `ui/trainer_system.py::_compute_options` — decide se a opção "Quests"
+  aparece no menu.
+- `ui/quest_system.py::QuestDialogSystem._render_list` — desenha a
+  lista de quests DENTRO do diálogo (recalcula do zero pra desenhar,
+  em vez de reusar o `comp` já calculado certo por `_open_dialog`).
+- `ui/quest_system.py::QuestDialogSystem.marker_for` — ícone acima da
+  cabeça do NPC (mostrava "?" cinza de "em progresso" em vez de "?"
+  dourado de "completável").
+
+Cada um desses reimplementava a MESMA pergunta ("essa quest está pronta
+pra entregar aqui?") sem usar o parâmetro que já resolve isso — clássica
+falta de ponto único de verdade: a função certa existia, só não foi
+propagada pros lugares que a chamam ANTES do fluxo que já a usava certo.
+
+**Fix**: os 4 lugares passam a fornecer o nome do NPC
+(`self._tr_name` em trainer_system.py, já calculado antes; `npc_name`
+já calculado em `QuestDialogSystem.render()` — repassado pra
+`_render_list`; `NPC.name` lido direto dentro de `marker_for`).
+
+**Testes**: `tests/test_quest_talk_completable_priority.py` (4 casos,
+cenário exato relatado — NPC é treinador E turn_in do único objetivo
+pendente): `_get_completable_quests` com/sem `pending_npc_name`,
+`marker_for` mostra ícone "completável" (não "em progresso"),
+`TrainerSystem._open_menu` pula direto pro diálogo de entrega
+(`STATE_CLOSED` + `_dialog_state=="turnin"`, nunca `STATE_MENU`),
+`_compute_options` inclui "Quests" mesmo só com a pendente de talk.
+Revert-to-confirm: fix de `_open_menu` desfeito temporariamente — teste
+correspondente falhou exatamente como o sintoma relatado (`ACTION_MENU`
+!= `CLOSED`). Suíte completa: 1472 passed.

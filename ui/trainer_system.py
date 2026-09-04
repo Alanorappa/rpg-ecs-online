@@ -273,7 +273,14 @@ class TrainerSystem(UIScaleMixin, System):
         """Opções de assunto disponíveis pra ESTE player com ESTE NPC —
         "Treinamento" só se a classe do player bate com a do treinador;
         "Quests" só se houver de fato algo pra essa classe (disponível, em
-        progresso ou completável — não só "o NPC tem quest_ids")."""
+        progresso ou completável — não só "o NPC tem quest_ids").
+
+        `self._tr_name` (setado por `_open_menu` antes de chamar isto) vai
+        pra `_get_completable_quests` como `pending_npc_name` — mesmo
+        motivo de `_open_menu` logo abaixo: sem isso, uma quest cujo ÚNICO
+        objetivo pendente é justamente "falar com ESTE NPC" não conta como
+        completável ainda (o talk_to_npc só é aplicado de verdade quando o
+        diálogo de quest abre), e cai como "em progresso" por engano."""
         from engine.components import CharacterStats
         options = []
         cs = self.world.get_component(self.player_entity, CharacterStats)
@@ -283,7 +290,7 @@ class TrainerSystem(UIScaleMixin, System):
             options.append(("treinamento", "Treinamento"))
         if self._quest_dialog and (
                 self._quest_dialog._get_available_quests(eid) or
-                self._quest_dialog._get_completable_quests(eid) or
+                self._quest_dialog._get_completable_quests(eid, self._tr_name) or
                 self._quest_dialog._get_inprogress_quests(eid)):
             options.append(("quest:0", "Quests"))
         return options
@@ -297,7 +304,16 @@ class TrainerSystem(UIScaleMixin, System):
 
         # Prioridade: quest pronta pra entregar abre direto o diálogo de
         # quest, nunca o menu de assunto (mesmo com treinamento disponível).
-        if self._quest_dialog and self._quest_dialog._get_completable_quests(eid):
+        # `pending_npc_name=self._tr_name` (04/09/2026, bug real reportado
+        # pelo usuário): sem isso, uma quest cujo único objetivo pendente é
+        # "falar com ESTE NPC" nunca aparecia aqui como completável (o
+        # talk_to_npc só conta depois que `_open_dialog` processa — que só
+        # roda se a gente já tivesse decidido abrir o diálogo de quest, ciclo
+        # vicioso). Resultado: o menu de "Quests/Treinamento" aparecia
+        # primeiro, e a quest só se resolvia depois de já estar dentro do
+        # diálogo — mesma checagem que `_open_dialog` já faz certo, só que
+        # ANTES de decidir se pula o menu.
+        if self._quest_dialog and self._quest_dialog._get_completable_quests(eid, self._tr_name):
             self._quest_dialog._open_dialog(eid)
             self._state = self.STATE_CLOSED
             self._open_cooldown = 0.3
