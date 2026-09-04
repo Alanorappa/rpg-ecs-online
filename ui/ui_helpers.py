@@ -236,6 +236,8 @@ def item_tooltip_lines(item, viewer_class_id: str | None = None):
     if description:
         lines.append((description, (150, 140, 160)))
 
+    return lines
+
 
 # ---------------------------------------------------------------------------
 # Primitivas de desenho pro rastreio de quest no mapa/minimapa (03/09/2026)
@@ -325,5 +327,3 @@ def draw_box_tooltip(screen, font_title, font_body, x: int, y: int,
     for s in line_surfs:
         screen.blit(s, (tx + PAD, cy))
         cy += s.get_height() + PAD
-
-    return lines

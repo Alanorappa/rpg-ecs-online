@@ -223,5 +223,35 @@ class TestCollectQuestCircles(unittest.TestCase):
         self.assertEqual(circles, [])
 
 
+class TestUiHelpersDrawingPrimitivesNaoQuebramFuncoesVizinhas(unittest.TestCase):
+    """Regressão real (03/09/2026): ao anexar draw_dashed_circle/draw_
+    translucent_filled_circle/draw_dashed_rect/draw_box_tooltip no fim de
+    ui/ui_helpers.py, o `return lines` de item_tooltip_lines ficou preso
+    ENTRE o corpo dela e as novas funções — item_tooltip_lines passou a
+    devolver None sempre (sem erro na hora, só quando algo tentava iterar
+    o resultado) e um `return lines` órfão sobrou dentro de
+    draw_box_tooltip (que por acaso também tem um parâmetro `lines`, então
+    nem dava erro de sintaxe — só devolvia algo sem sentido, sem uso).
+    Sintoma real do usuário: crash ao completar quest (hover no ícone de
+    skill de recompensa → _flush_tooltip → 'NoneType' object is not
+    iterable, client/tooltip_handlers.py)."""
+
+    def test_item_tooltip_lines_devolve_lista_com_item_real(self):
+        from content.item_table import ITEMS
+        from ui.ui_helpers import item_tooltip_lines
+        key = next(iter(ITEMS))
+        item = ITEMS[key]()
+        lines = item_tooltip_lines(item)
+        self.assertIsInstance(lines, list)
+        self.assertGreater(len(lines), 0)
+
+    def test_draw_box_tooltip_nao_devolve_nada(self):
+        from ui.ui_helpers import draw_box_tooltip
+        screen = pygame.display.get_surface()
+        result = draw_box_tooltip(screen, pygame.font.Font(None, 16), pygame.font.Font(None, 14),
+                                  10, 10, "Quest Teste", ["Objetivo (0/1)"])
+        self.assertIsNone(result)
+
+
 if __name__ == "__main__":
     unittest.main()

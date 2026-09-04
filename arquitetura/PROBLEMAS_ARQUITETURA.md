@@ -15044,7 +15044,7 @@ rodadas (ver histórico da conversa) até fechar o desenho abaixo.
   descartada depois). Atualizado nos 2 pontos de carga (mapa inicial e
   troca por transição), sempre em sincronia com `self._current_map_file`.
 
-**Testes**: `tests/test_quest_map_tracking.py` (17 casos) — cobre
+**Testes**: `tests/test_quest_map_tracking.py` (19 casos) — cobre
 resolução por tipo de objetivo (spawn_zone, harvestable fixo com
 deslocamento+raio mínimo, harvestable_zone, dummy por id, trainer por
 id, NPC por nome, reach_tile ponto único e área), objetivo completo
@@ -15053,7 +15053,50 @@ Revert-to-confirm no cálculo de deslocamento/raio mínimo do
 harvestable (zerado → teste correspondente falhou como esperado,
 restaurado). Smoke test manual de renderização end-to-end (Minimap +
 MapOverlay com círculos reais, SDL dummy) sem exceção. Suíte completa:
-1464 passed.
+1466 passed.
+
+**Bug real introduzido e corrigido no mesmo dia**: ao anexar as 4
+funções de desenho novas (`draw_dashed_circle`/`draw_translucent_
+filled_circle`/`draw_dashed_rect`/`draw_box_tooltip`) no FIM de
+`ui/ui_helpers.py` via edit por trecho, o `return lines` que fechava
+`item_tooltip_lines()` (função pré-existente, usada em QUALQUER
+tooltip de item do jogo — inventário, loja, recompensa de quest) ficou
+fisicamente ENTRE o corpo dela e as novas funções — o trecho
+substituído (`old_string` do edit) terminava 2 linhas ANTES do
+`return`, então o `return lines` original sobrou órfão, reindentado
+por coincidência pra dentro de `draw_box_tooltip` (que por acaso
+também tem um parâmetro chamado `lines`, então nem deu erro de
+sintaxe — só devolvia um valor sem uso). Resultado: `item_tooltip_
+lines()` passou a devolver `None` sempre, sem erro NENHUM na hora —
+só quebrou quando algo tentou iterar o resultado
+(`client/tooltip_handlers.py::_draw_tooltip`, `for line in lines`).
+**Sintoma real reportado pelo usuário**: crash ao completar uma quest
+com recompensa de skill (hover no ícone da skill de recompensa →
+`TypeError: 'NoneType' object is not iterable`). A suíte completa
+(1464 testes) passou LIMPA com o bug presente — **`item_tooltip_lines`
+não tinha teste nenhum** (`grep` em `tests/` não achava a função),
+então nada exercitava esse caminho. Fix: `return lines` devolvido pro
+lugar certo (fim de `item_tooltip_lines`), removido o `return lines`
+órfão de `draw_box_tooltip` (que não devia devolver nada — é uma
+função de desenho). 2 testes novos em
+`tests/test_quest_map_tracking.py::
+TestUiHelpersDrawingPrimitivesNaoQuebramFuncoesVizinhas` (um com item
+REAL do catálogo, não mock, pra reproduzir o cenário de verdade — ver
+`feedback_test_real_objects_not_just_monkeypatched_fixtures` na
+memória). Revert-to-confirm: com o bug reintroduzido de propósito, o
+teste falhou exatamente como o sintoma relatado (`None is not an
+instance of <class 'list'>`).
+
+**Lesson**: editar por TRECHO (`old_string`/`new_string`) no fim de um
+arquivo, logo depois do corpo de uma função existente, é uma classe de
+risco específica — se o trecho substituído não inclui o `return`/fim
+real da função, qualquer coisa que sobrar DEPOIS do trecho (inclusive
+o `return` de verdade) passa a ficar dentro do bloco novo inserido, às
+vezes sem nem gerar erro de sintaxe (como aqui, por coincidência de
+nome de parâmetro). Depois de qualquer edit que anexa código no fim de
+um arquivo/função, ler de volta o trecho inteiro (função antiga +
+função nova) antes de seguir em frente — não só confiar que "o Edit
+funcionou" pela ausência de erro da ferramenta.
 
 **Pendente pro usuário validar em jogo** (não automatizável): visual
 real dos círculos (cor/opacidade/tracejado como esperado), tooltip
