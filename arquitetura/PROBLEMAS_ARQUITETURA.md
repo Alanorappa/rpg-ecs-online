@@ -15248,3 +15248,40 @@ Revert-to-confirm: código antigo restaurado temporariamente, teste falhou
 exatamente como o sintoma relatado (`0 != 1` itens no Inventory real).
 Suíte completa (1467 testes, incluindo os 15 pré-existentes de
 `test_quest_turn_in.py` e 50 de loot) sem regressão.
+
+## 107. Rastreio de quest só considerava o 1º spawn_zone de um mob com vários pelo mapa (04/09/2026, mesmo dia)
+
+Usuário reportou: quest de matar Lobo não rastreava um spawn de lobo
+específico no mapa — e perguntou diretamente se o sistema só olhava o
+1º spawn do alvo no `{map}_entities.json`.
+
+**Causa raiz confirmada**: exatamente isso. `ui/map_markers.py::
+_find_spawn_zone(spawn_points, race)` (singular) fazia `for zone in
+spawn_points["spawn_zones"]: if zone["race"]==race: return zone` — parava
+no PRIMEIRO match. `map_1` tem "Lobo" cadastrado em 5 `spawn_zones`
+diferentes (posições/raios distintos, JSON legítimo — não é erro de
+dado) — só o 1º da lista virava círculo, os outros 4 ficavam invisíveis
+no rastreio, mesmo sendo alvos igualmente válidos pra completar a quest.
+
+**Fix**: `_find_spawn_zone` → `_find_spawn_zones` (plural), devolve
+TODAS as zonas cadastradas pra aquela raça, não só a primeira.
+`_resolve_objective_shape` → `_resolve_objective_shapes`, devolve uma
+LISTA de `QuestCircle` (antes devolvia 1 ou `None`) — `collect_item`s
+que resolvem como `kill` usam a mesma lógica. `collect_quest_circles`
+agora itera essa lista e cria 1 círculo por zona, todos com o MESMO
+`quest_title`/`objective_label` (é o mesmo objetivo, só o alvo aparece
+em vários lugares do mapa).
+
+**Testes**: `tests/test_quest_map_tracking.py::
+test_kill_com_varios_spawns_da_mesma_raca_gera_um_circulo_por_zona` —
+fixture com 3 `spawn_zones` de "Lobo" em posições diferentes, confirma 3
+círculos (não 1). Revert-to-confirm: `_find_spawn_zones` temporariamente
+revertida pra parar no 1º match — teste falhou exatamente como o sintoma
+relatado (`1 != 3`). Suíte completa: 1468 passed.
+
+**Pergunta do usuário sobre o nome do sistema**: não existe um nome
+"oficial" curto ainda — respondido como "sistema de rastreio de
+objetivo de quest no mapa/minimapa" (mesmo termo já usado nos títulos
+de §105/§106 e nos comentários do código). Registrar aqui caso um nome
+mais curto seja decidido depois, pra manter consistência em referências
+futuras.

@@ -30,6 +30,12 @@ _SPAWN_POINTS = {
     "spawn_zones": [
         {"x": 80, "y": 40, "radius": 30, "race": "Elemental"},
         {"x": 10, "y": 10, "radius": 6,  "race": "Urso"},
+        # "Lobo" em 3 posições diferentes — reproduz o cenário real de
+        # map_1 (5 spawns de Lobo espalhados pelo mapa) que motivou o
+        # bug relatado pelo usuário 04/09/2026: só o 1º spawn aparecia.
+        {"x": 20, "y": 20, "radius": 4, "race": "Lobo"},
+        {"x": 30, "y": 30, "radius": 4, "race": "Lobo"},
+        {"x": 40, "y": 40, "radius": 4, "race": "Lobo"},
     ],
     "harvestables": [
         {"x": 50, "y": 50, "name": "Caixa", "items": ["semente_rara"], "coins": 0},
@@ -99,6 +105,18 @@ class TestCollectQuestCircles(unittest.TestCase):
         # 04/09/2026), não o tamanho fixo.
         self.assertEqual((c.tile_x, c.tile_y, c.radius_tiles), (10, 10, 6))
         self.assertEqual(c.radius_px, 0.0)
+
+    def test_kill_com_varios_spawns_da_mesma_raca_gera_um_circulo_por_zona(self):
+        """Regressão do bug real relatado pelo usuário (04/09/2026):
+        "Lobo" tem 5 spawn_zones diferentes em map_1, mas só o 1º aparecia
+        no rastreio — _find_spawn_zone (singular) parava no primeiro match
+        e ignorava o resto."""
+        circles = _circles_for([ObjectiveDef(type="kill", target="Lobo", count=1)], [0])
+        self.assertEqual(len(circles), 3)
+        positions = sorted((c.tile_x, c.tile_y) for c in circles)
+        self.assertEqual(positions, [(20, 20), (30, 30), (40, 40)])
+        self.assertTrue(all(c.style == "hostile" for c in circles))
+        self.assertTrue(all(c.radius_tiles == 4 for c in circles))
 
     def test_objetivo_completo_nao_aparece(self):
         circles = _circles_for([ObjectiveDef(type="kill", target="Urso", count=1)], [1])

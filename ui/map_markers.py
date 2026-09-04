@@ -202,11 +202,14 @@ def _item_in_list(loot_item: str, items: list) -> bool:
     return False
 
 
-def _find_spawn_zone(spawn_points: dict, race: str) -> "dict | None":
-    for zone in spawn_points.get("spawn_zones", []):
-        if zone.get("race") == race:
-            return zone
-    return None
+def _find_spawn_zones(spawn_points: dict, race: str) -> "list[dict]":
+    """Todas as zonas cadastradas pra essa raça — um mob pode ter vários
+    pontos de spawn espalhados pelo mesmo mapa (ex: "Lobo" em 5 posições
+    diferentes em map_1). Antes retornava só a PRIMEIRA zona encontrada —
+    bug real reportado pelo usuário (04/09/2026): quest de matar Lobo só
+    mostrava 1 dos 5 spawns, o resto ficava invisível no rastreio."""
+    return [zone for zone in spawn_points.get("spawn_zones", [])
+            if zone.get("race") == race]
 
 
 def _find_harvestable(spawn_points: dict, loot_item: str) -> "dict | None":
@@ -265,10 +268,18 @@ def _objective_target_map(obj, current_map_file: str) -> str:
     return obj.map or current_map_file
 
 
-def _resolve_objective_shape(obj, spawn_points: dict) -> "QuestCircle | None":
-    """Resolve a posição/estilo do ALVO do objetivo, assumindo que ele está
-    no mapa cujo `spawn_points` foi passado (cross-map já foi resolvido pelo
-    chamador antes de chegar aqui)."""
+def _zone_circles(zones: "list[dict]") -> "list[QuestCircle]":
+    return [QuestCircle(shape="circle", tile_x=z["x"], tile_y=z["y"],
+                        radius_tiles=z["radius"], style="hostile") for z in zones]
+
+
+def _resolve_objective_shapes(obj, spawn_points: dict) -> "list[QuestCircle]":
+    """Resolve a posição/estilo do(s) ALVO(s) do objetivo, assumindo que
+    está(ão) no mapa cujo `spawn_points` foi passado (cross-map já foi
+    resolvido pelo chamador antes de chegar aqui). Devolve uma LISTA —
+    um mob pode ter vários spawn_zones no mesmo mapa (ex: "Lobo" em 5
+    posições diferentes), todas rastreáveis ao mesmo tempo, não só a
+    1ª encontrada."""
     t = obj.type
 
     if t == "reach_tile" and obj.location:
@@ -278,35 +289,28 @@ def _resolve_objective_shape(obj, spawn_points: dict) -> "QuestCircle | None":
             y0 = y1 = loc[1]
         else:
             x0, y0, x1, y1 = loc
-        return QuestCircle(shape="rect", x0=x0, y0=y0, x1=x1, y1=y1, style="hostile")
+        return [QuestCircle(shape="rect", x0=x0, y0=y0, x1=x1, y1=y1, style="hostile")]
 
     if t in ("kill", "auto_attack_hit", "use_item_on_target") and obj.target != "*":
-        zone = _find_spawn_zone(spawn_points, obj.target)
-        if zone:
-            return QuestCircle(shape="circle", tile_x=zone["x"], tile_y=zone["y"],
-                               radius_tiles=zone["radius"], style="hostile")
-        return None
+        return _zone_circles(_find_spawn_zones(spawn_points, obj.target))
 
     if t == "collect_item":
         if obj.target == "harvestables":
             hv = _find_harvestable(spawn_points, obj.loot_item)
             if hv is None:
-                return None
+                return []
             off = _deterministic_offset(hv["x"], hv["y"], HARVESTABLE_OFFSET_PX)
-            return QuestCircle(shape="circle", tile_x=hv["x"], tile_y=hv["y"],
-                               radius_px=TARGET_MARKER_RADIUS_PX, offset_px=off, style="zone")
+            return [QuestCircle(shape="circle", tile_x=hv["x"], tile_y=hv["y"],
+                               radius_px=TARGET_MARKER_RADIUS_PX, offset_px=off, style="zone")]
         if obj.target == "harvestable_zones":
             z = _find_harvestable_zone(spawn_points, obj.loot_item)
             if z is None:
-                return None
-            return QuestCircle(shape="circle", tile_x=z["x"], tile_y=z["y"],
-                               radius_tiles=z["radius"], style="zone")
+                return []
+            return [QuestCircle(shape="circle", tile_x=z["x"], tile_y=z["y"],
+                               radius_tiles=z["radius"], style="zone")]
         if obj.target != "*":
-            zone = _find_spawn_zone(spawn_points, obj.target)
-            if zone:
-                return QuestCircle(shape="circle", tile_x=zone["x"], tile_y=zone["y"],
-                                   radius_tiles=zone["radius"], style="hostile")
-        return None
+            return _zone_circles(_find_spawn_zones(spawn_points, obj.target))
+        return []
 
     if t == "use_skill" and obj.params.get("on_dummy"):
         # Boneco de treino: você USA a skill nele (interação física, igual
@@ -315,26 +319,26 @@ def _resolve_objective_shape(obj, spawn_points: dict) -> "QuestCircle | None":
         # 04/09/2026, separado explicitamente do treinador/learn_skill).
         pos = _find_training_dummy(spawn_points, obj.params.get("dummy_id", ""))
         if pos is None:
-            return None
-        return QuestCircle(shape="circle", tile_x=pos[0], tile_y=pos[1],
-                           radius_px=TARGET_MARKER_RADIUS_PX, style="hostile")
+            return []
+        return [QuestCircle(shape="circle", tile_x=pos[0], tile_y=pos[1],
+                           radius_px=TARGET_MARKER_RADIUS_PX, style="hostile")]
 
     if t == "learn_skill":
         pos = _find_trainer(spawn_points, obj.params.get("trainer_id", ""))
         if pos is None:
-            return None
-        return QuestCircle(shape="circle", tile_x=pos[0], tile_y=pos[1],
-                           radius_px=FRIENDLY_MARKER_RADIUS_PX, style="friendly")
+            return []
+        return [QuestCircle(shape="circle", tile_x=pos[0], tile_y=pos[1],
+                           radius_px=FRIENDLY_MARKER_RADIUS_PX, style="friendly")]
 
     if t == "talk_to_npc" and obj.target != "*":
         pos = _find_npc_by_name(spawn_points, obj.target)
         if pos is None:
-            return None
-        return QuestCircle(shape="circle", tile_x=pos[0], tile_y=pos[1],
-                           radius_px=FRIENDLY_MARKER_RADIUS_PX, style="friendly")
+            return []
+        return [QuestCircle(shape="circle", tile_x=pos[0], tile_y=pos[1],
+                           radius_px=FRIENDLY_MARKER_RADIUS_PX, style="friendly")]
 
-    return None   # kill/*, use_skill sem dummy, use_consumable, reach_level,
-                  # equip_item, use_skill sem on_dummy: sem alvo físico
+    return []   # kill/*, use_skill sem dummy, use_consumable, reach_level,
+                # equip_item, use_skill sem on_dummy: sem alvo físico
 
 
 def collect_quest_circles(world, player_entity: int, quest_system,
@@ -372,11 +376,9 @@ def collect_quest_circles(world, player_entity: int, quest_system,
                     quest_title=qdef.title, objective_label=label))
                 continue
 
-            shape = _resolve_objective_shape(obj, spawn_points)
-            if shape is None:
-                continue
-            circles.append(dataclass_replace(shape, quest_title=qdef.title,
-                                             objective_label=label))
+            for shape in _resolve_objective_shapes(obj, spawn_points):
+                circles.append(dataclass_replace(shape, quest_title=qdef.title,
+                                                 objective_label=label))
     return circles
 
 
