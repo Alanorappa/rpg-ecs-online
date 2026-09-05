@@ -92,6 +92,19 @@ async def main(host: str, port: int) -> None:
     mgr   = SessionManager(world)
     world._session_manager = mgr  # referência para saves pontuais (XP/level)
 
+    # gc.freeze() (05/09/2026, ver PROBLEMAS_ARQUITETURA.md §113) — o
+    # gc.collect() manual periódico (WorldServer.run(), a cada ~10s)
+    # ainda escaneava TODO objeto rastreado vivo (mapas/catálogos/
+    # entidades carregados no boot), mesmo esses nunca virando lixo —
+    # 20-50ms de pausa a cada disparo, medido em teste de carga real.
+    # gc.disable() (linha acima) só evita a coleta AUTOMÁTICA; não isenta
+    # o collect() manual de escanear esse baseline. freeze() move tudo
+    # que existe ATÉ AQUI (mundo carregado, ninguém ainda conectado) pra
+    # uma geração permanente que nenhum collect() futuro revisita — só o
+    # lixo de churn pós-boot (por tick) é escaneado dali em diante.
+    _gc.collect()
+    _gc.freeze()
+
     log.info(f"[Server] RPG Online v{PROTOCOL_VERSION}")
     log.info(f"[Server] WebSocket em ws://{host}:{port}")
     log.info(f"[Server] Ctrl+C para encerrar\n")

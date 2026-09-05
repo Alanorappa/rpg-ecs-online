@@ -15535,3 +15535,95 @@ Revert-to-confirm: corpo de `suppress_chase` esvaziado temporariamente
 — 7 dos 9 testes falharam exatamente como esperado (os 2 que não
 dependem da flag continuaram passando), restaurado. Suíte completa:
 1485 passed.
+
+## 113. Teste de carga com bots reais acha 2 causas de travamento — prefiltro de IA e gc.collect() manual (05/09/2026)
+
+Primeiro uso real de `tools/loadtest/` (300 bots, servidor e bots na
+mesma máquina, jogador real logado de outra máquina na rede) travou o
+cliente do jogador real por ~3-4 minutos. `server_perf.log` não mostrava
+nada catastrófico no tick em si (34-64ms, acima do orçamento de 33ms mas
+não um pico isolado gigante) — usuário corretamente rejeitou a hipótese
+inicial de "culpa de disputa de CPU com o Windows/processo de bots" e
+pediu prova de causa raiz em código antes de aceitar qualquer
+explicação ambiental, mesmo com um teste reduzido (50 bots parados no
+spawn, batendo só no boneco de treino — sem andar livre, sem agro de
+mob de verdade) ainda travando.
+
+**Causa 1 (travamento de minutos, achada primeiro)**: 294/300 contas
+recém-provisionadas relatavam `chars=0` no primeiro LOGIN da rampa de
+conexão do `swarm.py` (lote de 8 a cada 1s), mesmo já tendo personagem
+criado com sucesso pelo `provision.py` minutos antes — cada bot entrava
+num loop de reconexão com backoff exponencial (até 30s) tentando
+recriar o personagem, por vários minutos, até estabilizar. Reproduzido
+e CONFIRMADO por eliminação: com rampa lenta (5 bots a cada 10s), as
+mesmas 300 contas conectaram 100% limpo, zero `chars=0`, zero
+reconexão — aponta pra contenção de escrita no SQLite (single-writer)
+sob rajada de registro/criação de personagem simultânea, não pra
+qualquer coisa errada nas contas em si. Mitigação de uso (não de
+código, por ora): sempre subir `swarm.py` com rampa gradual
+(`--batch-size`/`--batch-interval-s`), nunca o default agressivo, pra
+qualquer teste de carga futuro. Investigação de fundo (por que o SQLite
+sob rajada de escrita concorrente causa isso, e se afeta cadastro real
+de jogador em pico de divulgação/lançamento) FICA EM ABERTO — fora de
+escopo desta sessão, só mitigado no uso da ferramenta de teste.
+
+**Causa 2 (travamento residual mesmo com poucos bots parados)**: dois
+achados de código, confirmados por leitura direta (nunca só inferidos
+do log) + pesquisa externa antes de codar (regra do projeto):
+
+1. **`EnemyAISystem._active_mobs_this_tick` (`engine/world_systems.py`)**
+   perguntava "quais mobs estão perto de mim" (`SpatialHash.nearby()`)
+   **uma vez por JOGADOR**, mesmo quando vários jogadores estão
+   aglomerados no MESMO lugar (spawn, cidade, evento — cenário comum de
+   MMO real, não só teste artificial). Confirmado em `engine/utils.py`:
+   `SpatialHash.nearby()` depende só de `tile // cell_size`, nunca da
+   posição exata — 2 jogadores na mesma célula (20×20 tiles,
+   `cell_size == SLEEP_RADIUS_TILES`) recebem resultado IDÊNTICO, então
+   repetir a consulta por jogador é trabalho puro desperdiçado quando
+   agrupados. Pesquisa externa (broad-phase/spatial-hash em jogos)
+   confirma célula-por-observador-único como o padrão certo pra esse
+   caso. **Fix**: cache `_nearby_cache` por célula dentro do próprio
+   loop de `_active_mobs_this_tick` — 1 chamada a `nearby()` por célula
+   ÚNICA ocupada por jogador, não 1 por jogador; o crivo de distância
+   EXATA (que precisa da posição real, não só da célula) continua
+   rodando por jogador, sem mudança de resultado.
+2. **`gc.collect()` manual periódico** (`WorldServer.run()`,
+   `server/world_server.py`, a cada ~10s) — `gc.disable()` já rodava
+   desde antes (`server/main.py`, comentário already dizia "evita
+   pauses de 50-200ms") pra evitar coleta automática imprevisível, mas
+   o `collect()` manual que substitui ela ainda escaneava TODO objeto
+   rastreado vivo desde o boot (mapas/catálogos/entidades — nunca viram
+   lixo, mas são revisitados em toda coleta full mesmo assim), 20-50ms
+   de pausa a cada disparo, medido em log real. Suspeita relacionada já
+   estava documentada e nunca fechada em §30 (12/08/2026, diagnóstico
+   de `gc.get_count()`/`gc.isenabled()` instrumentado mas nunca disparou
+   em nenhum log desde então — item considerado ainda aberto, não
+   descartado). Pesquisa externa confirma o padrão certo (usado por
+   Instagram/Rippling/Close.com): `gc.collect()` uma vez após o boot
+   terminar, seguido de `gc.freeze()` — move tudo que existe até ali pra
+   uma geração permanente que nenhuma coleta futura revisita. **Fix**:
+   `server/main.py` chama `_gc.collect()` + `_gc.freeze()` logo depois
+   do `WorldServer` construído (mundo carregado) e ANTES de
+   `websockets.serve` aceitar qualquer conexão — nunca antes (mundo
+   ainda não existiria pra congelar) nem depois (arriscaria prender
+   estado de player real no baseline congelado).
+
+**Testes**: `tests/test_ai_prefilter_spatial_index.py::
+TestPrefilterNearbyDedupByCell` (3 casos — 5 players na mesma célula
+geram exatamente 1 chamada a `nearby()`, não 5; resultado continua
+idêntico ao algoritmo linear de referência mesmo aglomerado; players em
+células diferentes continuam gerando 1 chamada por célula, sem fundir
+indevidamente). `tests/test_gc_freeze_startup.py` (2 casos — ordem
+`collect()`→`freeze()`→`websockets.serve` provada via
+`server.main.main()` real com `websockets.serve`/`WorldServer.run`
+mockados; `gc.disable()` do módulo continua em vigor). Revert-to-confirm
+nos dois: dedup por célula desligado → teste de contagem falha 5≠1
+como esperado; `collect()`/`freeze()` removidos → teste de ordem falha
+"collect não encontrado" como esperado. Suíte completa (1490 testes)
+rodada 1x, tudo verde.
+
+**Verificação pendente** (fora do automatizável, decisão do usuário):
+novo teste de carga com 50 bots (rampa gradual) medindo
+`server_perf.log` novo contra a baseline já salva
+(`server_perf_bkp.log`, renomeada pelo usuário antes desta correção)
+pra confirmar ganho real, não só teste sintético isolado passando.

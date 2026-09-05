@@ -2944,7 +2944,8 @@ class EnemyAISystem(System):
         _prefilter_delta = tick_count - self._prefilter_last_refresh_tick
         if (self._prefilter_confirmed_cache is None or _prefilter_delta < 0 or
                 _prefilter_delta >= self._PREFILTER_REFRESH_TICKS):
-            _hash = SpatialHash(cell_size=max(1, self.SLEEP_RADIUS_TILES))
+            _cell_size = max(1, self.SLEEP_RADIUS_TILES)
+            _hash = SpatialHash(cell_size=_cell_size)
             _idle_by_eid: dict[int, tuple] = {}
             for entry in idle_entries:
                 eid, tm = entry[0], entry[5]
@@ -2957,10 +2958,33 @@ class EnemyAISystem(System):
             # que evita reintroduzir o O(mobs×players) original. Um
             # candidato já confirmado por um player pula o resto (nunca
             # recalcula).
+            #
+            # `_nearby_cache` por célula (05/09/2026, ver
+            # PROBLEMAS_ARQUITETURA.md §113) — `SpatialHash.nearby()`
+            # depende só de `tile // cell_size` (ver `engine/utils.py`),
+            # nunca da posição exata dentro da célula: 2 players na MESMA
+            # célula recebem o resultado IDÊNTICO. Achado real em teste de
+            # carga (16-21 bots parados no mesmo ponto de spawn): cada
+            # player repetia a MESMA varredura de célula cara (soma de
+            # `set.update()` sobre uma zona densa de mob) — o pior caso
+            # de propósito pra esse prefiltro é justamente muitos players
+            # aglomerados perto de muitos mobs, cenário real de MMO (hub/
+            # spawn/evento), não só um teste artificial. Cache evita
+            # refazer a varredura de CÉLULA por player já coberto; o
+            # crivo de distância EXATA abaixo continua por player (a
+            # posição exata dele importa pra decidir se está mesmo a
+            # <=SLEEP_RADIUS_TILES do candidato, não só na mesma célula).
             _confirmed_via_player: set = set()
+            _nearby_cache: dict[tuple[int, int], set] = {}
             for _, _, _p_tm, _ in self._players_this_map_cache:
-                for eid in _hash.nearby(_p_tm.current_tile_x, _p_tm.current_tile_y,
-                                        self.SLEEP_RADIUS_TILES):
+                _cell_key = (_p_tm.current_tile_x // _cell_size,
+                            _p_tm.current_tile_y // _cell_size)
+                _candidates = _nearby_cache.get(_cell_key)
+                if _candidates is None:
+                    _candidates = _hash.nearby(_p_tm.current_tile_x, _p_tm.current_tile_y,
+                                               self.SLEEP_RADIUS_TILES)
+                    _nearby_cache[_cell_key] = _candidates
+                for eid in _candidates:
                     if eid in _confirmed_via_player:
                         continue
                     tm = _idle_by_eid[eid][5]

@@ -445,6 +445,105 @@ class TestPrefilterRefreshThrottle(unittest.TestCase):
                            "nunca reusar o cache cego")
 
 
+class TestPrefilterNearbyDedupByCell(unittest.TestCase):
+    """05/09/2026 (ver PROBLEMAS_ARQUITETURA.md §113) — teste de carga
+    real achou o pior caso do índice espacial: vários players AGLOMERADOS
+    no mesmo hotspot (parados no spawn, cenário comum de MMO — cidade/
+    evento/fila) repetiam a MESMA consulta cara em `SpatialHash.nearby()`
+    uma vez por PLAYER, mesmo todos caindo na MESMA célula (`nearby()`
+    depende só de `tile // cell_size`, nunca da posição exata — ver
+    `engine/utils.py`). Corrigido com um cache por célula dentro do
+    próprio loop de `_active_mobs_this_tick`."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        # 5 players dentro da MESMA célula de 20 tiles (cell_size ==
+        # SLEEP_RADIUS_TILES) — todos com x//20==2, y//20==3.
+        self.players = [
+            spawn_player(self.ws, f"cluster{i}", 40 + i, 60 + i, class_id="guerreiro")
+            for i in range(5)
+        ]
+        run_ticks(self.ws, 60)  # popula mobs reais via SpawnZoneSystem
+        self.enemy_ai_system = _find_enemy_ai_system(self.ws, MAP_A)
+        self.enemy_ai_system._players_this_map_cache = _players_on_map(
+            self.ws.world, None, MAP_A)
+
+    def _idle_entries(self):
+        from engine.world_systems import _mobs_on_map
+        all_mobs = _mobs_on_map(self.ws.world, None, MAP_A)
+        for entry in all_mobs:
+            entry[2].state = "IDLE"
+            entry[2]._ai_throttle_last_check = -1
+        return all_mobs
+
+    def test_players_na_mesma_celula_chamam_nearby_uma_unica_vez(self):
+        """Prova de que a otimização É de fato aplicada (não só que o
+        resultado bate por coincidência) — mede quantas vezes
+        SpatialHash.nearby é chamado com 5 players na MESMA célula."""
+        self._idle_entries()
+        from engine.utils import SpatialHash
+        orig_nearby = SpatialHash.nearby
+        calls = {"n": 0}
+        def counted(self_hash, *a, **kw):
+            calls["n"] += 1
+            return orig_nearby(self_hash, *a, **kw)
+        SpatialHash.nearby = counted
+        try:
+            self.enemy_ai_system._active_mobs_this_tick(None, tick_count=0)
+        finally:
+            SpatialHash.nearby = orig_nearby
+
+        self.assertEqual(calls["n"], 1,
+                         "5 players na mesma célula deveriam gerar 1 única "
+                         "chamada a SpatialHash.nearby, não 1 por player")
+
+    def test_resultado_ainda_bate_com_algoritmo_linear_com_players_aglomerados(self):
+        """Correção não muda com o cache por célula: mesmo cenário de
+        aglomeração, resultado precisa continuar idêntico ao linear."""
+        idle_entries = self._idle_entries()
+        expected = _linear_reference_eligible_idle_eids(self.enemy_ai_system, idle_entries)
+
+        active = self.enemy_ai_system._active_mobs_this_tick(None, tick_count=0)
+        got = {entry[0] for entry in active}
+
+        self.assertEqual(got, expected)
+        self.assertGreater(len(expected), 0, "cenário de teste inválido — nenhum mob elegível")
+
+    def test_players_em_celulas_diferentes_chamam_nearby_uma_vez_por_celula(self):
+        """Players longe uns dos outros (células diferentes) não devem
+        compartilhar cache — cada célula única gera sua própria chamada."""
+        self.ws2 = make_world_server()
+        p_a = spawn_player(self.ws2, "far_a", 50, 60, class_id="guerreiro")
+        p_b = spawn_player(self.ws2, "far_b", 200, 300, class_id="guerreiro")
+        p_c = spawn_player(self.ws2, "far_c", 100, 500, class_id="guerreiro")
+        run_ticks(self.ws2, 60)
+        enemy_ai_system2 = _find_enemy_ai_system(self.ws2, MAP_A)
+        enemy_ai_system2._players_this_map_cache = _players_on_map(
+            self.ws2.world, None, MAP_A)
+
+        from engine.world_systems import _mobs_on_map
+        all_mobs = _mobs_on_map(self.ws2.world, None, MAP_A)
+        for entry in all_mobs:
+            entry[2].state = "IDLE"
+            entry[2]._ai_throttle_last_check = -1
+
+        from engine.utils import SpatialHash
+        orig_nearby = SpatialHash.nearby
+        calls = {"n": 0}
+        def counted(self_hash, *a, **kw):
+            calls["n"] += 1
+            return orig_nearby(self_hash, *a, **kw)
+        SpatialHash.nearby = counted
+        try:
+            enemy_ai_system2._active_mobs_this_tick(None, tick_count=0)
+        finally:
+            SpatialHash.nearby = orig_nearby
+
+        self.assertEqual(calls["n"], 3,
+                         "3 players em 3 células diferentes deveriam gerar 3 chamadas, "
+                         "cache por célula não deveria fundir células distintas")
+
+
 class TestTileMovementSystemResolvesCorrectMap(unittest.TestCase):
     """Fase 4.7 (12/08/2026, ver PROBLEMAS_ARQUITETURA.md §37) —
     `TileMovementSystem.update()` pegava "o primeiro Tilemap" da
