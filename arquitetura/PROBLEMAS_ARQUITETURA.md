@@ -15459,3 +15459,79 @@ confirm: código antigo restaurado temporariamente — teste falhou
 exatamente como o sintoma relatado (`1.95 != 2.1`, o valor efetivo
 travado no default enquanto o base já estava certo). Suíte completa:
 1476 passed.
+
+## 112. Personagem oscilava entre alvo travado e NPC clicado (04/09/2026)
+
+Usuário reportou (comportamento, não crash): atacando um alvo travado
+(ex: boneco de treino), clicar com o direito num NPC amigável fazia o
+personagem ficar andando em zigue-zague — em direção ao NPC, depois de
+volta ao alvo antigo, repetindo. Usuário já suspeitava corretamente
+que o alvo antigo não estava sendo "solto" de algum jeito ao clicar no
+NPC, e pediu cuidado explícito pra não quebrar o kite do arqueiro
+(clicar no chão pra se afastar sem perder o alvo).
+
+**Causa raiz**: clicar num NPC amigável é consumido INTEIRO pelo
+sistema daquele NPC (`TrainerSystem`/`BlacksmithSystem`/
+`QuestDialogSystem`/`ShopSystem`) — o evento nunca chega em
+`MouseTargetingSystem` (`game.py` filtra o `MOUSEBUTTONDOWN` inteiro
+do frame quando `_right_click_consumed` de qualquer um desses 4 fica
+True). Clicar no CHÃO, por outro lado, passa por
+`MouseTargetingSystem`, que liga `CombatState.chase_suppressed = True`
+— flag client-side que só pausa o auto-walk de volta ao alvo travado,
+SEM tocar em `target_entity_id`/`is_pursuing` (é exatamente o que
+permite o kite do arqueiro: alvo continua selecionado, combate
+continua, só o "andar sozinho de volta" para). Nenhum dos 4 sistemas
+de NPC ligava essa mesma flag ao mandar o player andar até o NPC (ou
+ao abrir o diálogo direto, já adjacente) — o auto-chase (`ui/systems.py
+::PlayerInputSystem._process_target`) continuava chamando
+`_auto_move_step` de volta pro alvo antigo TODO frame em que
+`is_pursuing and not chase_suppressed`, competindo com o
+`PlayerAutoMove.ground_target` que o sistema do NPC também setava no
+mesmo frame — daí o zigue-zague.
+
+**Achado extra durante a investigação**: os 4 sistemas tinham cada um
+sua PRÓPRIA cópia quase idêntica do cálculo "acha o tile adjacente ao
+NPC mais perto do player e manda o PlayerAutoMove pra lá"
+(`TrainerSystem._walk_to`, `BlacksmithSystem._walk_to`,
+`QuestDialogSystem._walk_to_npc`, `ShopSystem._walk_to_merchant`) —
+nenhuma tinha o passo de suprimir a perseguição, e qualquer 5º tipo de
+NPC futuro reimplementaria o mesmo cálculo (e o mesmo esquecimento) de
+novo. Decisão do usuário: centralizar numa função só em vez de
+corrigir as 4 cópias separadamente.
+
+**Fix — ponto único de verdade novo**: `ui/npc_interaction.py`:
+- `suppress_chase(world, player_entity)` — liga `chase_suppressed`,
+  NUNCA toca `target_entity_id`/`is_pursuing`.
+- `walk_to_npc(world, player_entity, player_tile, npc_tile)` — mesmo
+  cálculo de tile adjacente que as 4 cópias já faziam (comportamento
+  de movimento IDÊNTICO, zero mudança aí — só a resolução do tile do
+  NPC continua em cada sistema, já que cada um tinha uma variação
+  pequena TileMovement-vs-Position que não valia a pena arriscar
+  unificar também), mais a chamada a `suppress_chase` no final.
+
+Os 4 sistemas passam a chamar essas duas funções — nas DUAS
+ramificações de cada um (já adjacente → abre direto E precisa andar →
+`_pending_*_id` + caminhada), removendo as 4 cópias de `_walk_to*`
+como código morto.
+
+**Por que não afeta o kite do arqueiro** (preocupação explícita do
+usuário): `chase_suppressed` já é — desde antes desta mudança — a
+flag usada exatamente pra esse caso (clique no chão pra se afastar
+atirando sem perder o alvo). Esta correção só passa a ligar a MESMA
+flag num gatilho novo (clicar num NPC), nunca mexendo em
+`target_entity_id`/`is_pursuing`, que são os únicos campos que
+realmente controlam troca/perda de alvo. Comportamento de troca de
+alvo (clicar noutro inimigo) e de kite (clicar no chão) ficam 100%
+intocados.
+
+**Testes**: `tests/test_npc_interaction_chase_suppress.py` (9 casos)
+— função compartilhada isolada (seta `ground_target` certo, liga
+`chase_suppressed`, NUNCA mexe em `target_entity_id`/`is_pursuing`,
+não quebra sem `PlayerAutoMove`) + 1 teste de integração por sistema
+(`TrainerSystem` com 2 casos — já adjacente e precisando andar —,
+`BlacksmithSystem`, `QuestDialogSystem`, `ShopSystem`) reproduzindo o
+cenário exato relatado (alvo travado + clique num NPC de cada tipo).
+Revert-to-confirm: corpo de `suppress_chase` esvaziado temporariamente
+— 7 dos 9 testes falharam exatamente como esperado (os 2 que não
+dependem da flag continuaram passando), restaurado. Suíte completa:
+1485 passed.

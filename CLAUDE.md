@@ -262,6 +262,23 @@ padrão a quebrar, não só os bugs individuais.
   ficava sabendo do item de verdade, equipar não tinha efeito nenhum nos
   stats reais e o item sumia no próximo login (ver
   PROBLEMAS_ARQUITETURA.md §106).
+- **Andar até um NPC amigável pra interagir** (treinador, ferreiro, quem
+  dá quest, mercador — qualquer NPC futuro nessa mesma categoria) →
+  `ui/npc_interaction.py::walk_to_npc()`/`suppress_chase()` — NUNCA
+  reimplementar o cálculo de "tile adjacente mais perto" numa cópia
+  local. `walk_to_npc` já chama `suppress_chase` sozinho; o caminho
+  "já adjacente, abre direto" (sem andar) de cada sistema precisa
+  chamar `suppress_chase` também, na mão. Bug real: 4 sistemas
+  (Trainer/Blacksmith/QuestDialog/Shop) tinham cada um sua própria
+  cópia dessa lógica, nenhuma suprimia a perseguição de um alvo de
+  combate travado — clicar num NPC enquanto perseguia outro alvo (ex:
+  boneco de treino) fazia o personagem oscilar entre os dois, o
+  auto-chase competindo com o walk-to-NPC todo frame (ver
+  PROBLEMAS_ARQUITETURA.md §112). `suppress_chase` só liga
+  `CombatState.chase_suppressed` — NUNCA mexer em
+  `target_entity_id`/`is_pursuing` aqui, são os únicos campos que
+  controlam troca/perda de alvo de verdade (kite de arqueiro depende
+  disso continuar intocado).
 - **Escrita final de dano em HP** → `core_systems.apply_damage_core()` —
   guards imune/morto, overkill preservado, quebra polymorph/sleep. Regra nova
   de mitigação/resistência entra SÓ ali (deal_damage/_apply_final_damage/

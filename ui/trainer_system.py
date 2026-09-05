@@ -13,7 +13,7 @@ Fluxo:
 from __future__ import annotations
 import pygame
 from ui.systems import System
-from engine.components import (Position, Renderable, TileMovement, PlayerAutoMove,
+from engine.components import (Position, Renderable, TileMovement,
                         Camera, NPC, Trainer, Wallet)
 from content.skill_config import (SKILL_CATALOG, SKILL_LEVEL_REQUIREMENTS, SKILL_COSTS,
                           NUM_SLOTS, SKILL_ORDER_BY_CLASS)
@@ -22,6 +22,7 @@ from ui.combat_log import LOG
 from engine.quest_events import fire as quest_fire
 from ui.ui_scale_mixin import UIScaleMixin
 from ui.ui_sizes import UI
+from ui.npc_interaction import walk_to_npc, suppress_chase
 
 # ---------------------------------------------------------------------------
 # Constantes visuais
@@ -127,18 +128,6 @@ class TrainerSystem(UIScaleMixin, System):
     def _cheby(a, b) -> int:
         return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
 
-    def _walk_to(self, eid: int):
-        auto = self.world.get_component(self.player_entity, PlayerAutoMove)
-        pt   = self._player_tile()
-        bt   = self._tr_tile(eid)
-        if auto and pt and bt:
-            adj    = [(bt[0]+dx, bt[1]+dy) for dx, dy in ((-1,0),(1,0),(0,-1),(0,1))]
-            target = min(adj, key=lambda t: abs(t[0]-pt[0]) + abs(t[1]-pt[1]))
-            auto.ground_target     = target
-            auto.path              = []
-            auto.active            = True
-            auto.path_recalc_timer = 0.0
-
     def _panel_origin(self):
         x0, y0 = self._safe_panel_origin(_PANEL_W, _PANEL_H)
         return x0 + UI.TRAINER_OFFSET_X, y0 + UI.TRAINER_OFFSET_Y
@@ -212,10 +201,11 @@ class TrainerSystem(UIScaleMixin, System):
                         pt = self._player_tile()
                         bt = self._tr_tile(eid)
                         if pt and bt and self._cheby(pt, bt) <= 1:
+                            suppress_chase(self.world, self.player_entity)
                             self._open_menu(eid)
                         else:
                             self._pending_tr_id = eid
-                            self._walk_to(eid)
+                            walk_to_npc(self.world, self.player_entity, pt, bt)
                         self._right_click_consumed = True
                         break
                 if self._right_click_consumed:

@@ -23,6 +23,7 @@ from ui.combat_log import LOG
 from ui.floating_text import PROC
 from ui.ui_scale_mixin import UIScaleMixin
 from ui.ui_sizes import UI
+from ui.npc_interaction import walk_to_npc, suppress_chase
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -560,10 +561,11 @@ class QuestDialogSystem(UIScaleMixin, System):
                         pt = self._player_tile()
                         gt = self._npc_tile(eid)
                         if pt and gt and self._cheby(pt, gt) <= 1:
+                            suppress_chase(self.world, self.player_entity)
                             self._open_dialog(eid)
                         else:
                             self._pending_npc_id = eid
-                            self._walk_to_npc(eid)
+                            walk_to_npc(self.world, self.player_entity, pt, gt)
                         self._right_click_consumed = True
                         break
 
@@ -1420,21 +1422,6 @@ class QuestDialogSystem(UIScaleMixin, System):
     def _cheby(t1, t2) -> int:
         from engine.utils import chebyshev
         return chebyshev(t1[0], t1[1], t2[0], t2[1])
-
-    def _walk_to_npc(self, npc_eid: int) -> None:
-        from engine.components import PlayerAutoMove
-        pt = self._player_tile()
-        nt = self._npc_tile(npc_eid)
-        if not pt or not nt:
-            return
-        adj = [(nt[0]+dx, nt[1]+dy) for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1))]
-        target = min(adj, key=lambda t: abs(t[0] - pt[0]) + abs(t[1] - pt[1]))
-        auto = self.world.get_component(self.player_entity, PlayerAutoMove)
-        if auto:
-            auto.ground_target     = target
-            auto.path              = []
-            auto.active            = True
-            auto.path_recalc_timer = 0.0
 
     def _panel_origin(self):
         x0, y0 = self._safe_panel_origin(self.PANEL_W, self.PANEL_H)

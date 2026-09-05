@@ -42,6 +42,7 @@ from ui.sound_manager import SOUNDS
 from ui.floating_text import FLT, PROC, WARN
 from ui.icon_manager import ICONS
 from ui.ui_helpers import item_tooltip_lines, fill_surf
+from ui.npc_interaction import walk_to_npc, suppress_chase
 from content.status_effects_data import EFFECT_DEFS
 from engine.fov import compute_fov, local_vision_blob
 from content.loot_tables import roll_loot, roll_mob_loot, roll_coins
@@ -2694,6 +2695,7 @@ class ShopSystem(UIScaleMixin, System):
                         mt = self._merchant_tile(eid)
                         if pt and mt and self._cheby(pt, mt) <= 1:
                             # Já adjacente — abre direto
+                            suppress_chase(self.world, self.player_entity)
                             self.open_merchant_id     = eid
                             self._pending_merchant_id = -1
                             self._shop_scroll = 0
@@ -2706,7 +2708,7 @@ class ShopSystem(UIScaleMixin, System):
                         else:
                             # Inicia caminhada até tile adjacente
                             self._pending_merchant_id = eid
-                            self._walk_to_merchant(eid)
+                            walk_to_npc(self.world, self.player_entity, pt, mt)
                         self._right_click_consumed = True
                         break
 
@@ -2829,21 +2831,6 @@ class ShopSystem(UIScaleMixin, System):
     @staticmethod
     def _cheby(t1, t2) -> int:
         return chebyshev(t1[0], t1[1], t2[0], t2[1])
-
-    def _walk_to_merchant(self, merchant_eid: int) -> None:
-        """Define ground_target do PlayerAutoMove para o tile adjacente mais próximo."""
-        pt  = self._player_tile()
-        mt  = self._merchant_tile(merchant_eid)
-        if not pt or not mt:
-            return
-        adj = [(mt[0]+dx, mt[1]+dy) for dx, dy in ((-1,0),(1,0),(0,-1),(0,1))]
-        target = min(adj, key=lambda t: abs(t[0]-pt[0]) + abs(t[1]-pt[1]))
-        auto = self.world.get_component(self.player_entity, PlayerAutoMove)
-        if auto:
-            auto.ground_target     = target
-            auto.path              = []
-            auto.active            = True
-            auto.path_recalc_timer = 0.0
 
     # ------------------------------------------------------------------
     # Eventos de UI

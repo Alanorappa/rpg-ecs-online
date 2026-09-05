@@ -12,7 +12,7 @@ import pygame
 from ui.fonts import make as _font
 from ui.systems import System
 from ui.ui_scale_mixin import UIScaleMixin
-from engine.components import (Position, Renderable, TileMovement, PlayerAutoMove,
+from engine.components import (Position, Renderable, TileMovement,
                         CombatState, Inventory, Wallet, NPC, QuestGiver, Equipment)
 from content.crafting_data import (MATERIALS, RECYCLE_TABLE, RECIPES, RECIPE_ITEMS,
                            RARITY_RECYCLE_COST, RARITY_FORGE_COST,
@@ -21,6 +21,7 @@ from ui.combat_log import LOG
 from engine.tileset import TILE_SIZE
 from ui.ui_helpers import item_tooltip_lines, fill_surf
 from ui.ui_sizes import UI
+from ui.npc_interaction import walk_to_npc, suppress_chase
 
 
 # ---------------------------------------------------------------------------
@@ -164,18 +165,6 @@ class BlacksmithSystem(UIScaleMixin, System):
     def _cheby(a, b) -> int:
         return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
 
-    def _walk_to(self, eid: int):
-        auto = self.world.get_component(self.player_entity, PlayerAutoMove)
-        pt   = self._player_tile()
-        bt   = self._bs_tile(eid)
-        if auto and pt and bt:
-            adj    = [(bt[0]+dx, bt[1]+dy) for dx, dy in ((-1,0),(1,0),(0,-1),(0,1))]
-            target = min(adj, key=lambda t: abs(t[0]-pt[0]) + abs(t[1]-pt[1]))
-            auto.ground_target     = target
-            auto.path              = []
-            auto.active            = True
-            auto.path_recalc_timer = 0.0
-
     # ------------------------------------------------------------------
     # Layout
     # ------------------------------------------------------------------
@@ -264,10 +253,11 @@ class BlacksmithSystem(UIScaleMixin, System):
                         pt = self._player_tile()
                         bt = self._bs_tile(eid)
                         if pt and bt and self._cheby(pt, bt) <= 1:
+                            suppress_chase(self.world, self.player_entity)
                             self._open_menu(eid)
                         else:
                             self._pending_bs_id = eid
-                            self._walk_to(eid)
+                            walk_to_npc(self.world, self.player_entity, pt, bt)
                         self._right_click_consumed = True
                         break
                 if self._right_click_consumed:
