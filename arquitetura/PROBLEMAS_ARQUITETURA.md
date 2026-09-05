@@ -15411,3 +15411,51 @@ cada um à mão em vez de uma constante só). Unificado em
 (`draw_quest_circle_marker`/`draw_quest_rect_marker`) — nunca mais 2
 valores diferentes pro mesmo preenchimento. Suíte completa: 1474 passed
 (nenhum teste dependia do valor antigo).
+
+## 111. Velocidade de ataque não atualizava depois de relogar (04/09/2026)
+
+Usuário reportou (com 2 prints): personagem com espada equipada
+(attack_speed=2.1) mostrava "Vel. Ataque: 2.60s" (default da classe)
+no painel de Equipamentos — mesmo com a arma certa equipada e a
+tooltip do item confirmando "Speed 2.1". Achado curioso relatado: ao
+atacar o boneco de treino acompanhando o intervalo real, o valor
+"virou" 2.1 sozinho no meio da sessão — mas ao relogar, voltou a 2.6 e
+o intervalo de ataque REAL em combate também ficou errado (não só a
+tela).
+
+**Causa raiz**: `client/save_sync_handlers.py::_restore_save_state`
+reimplementava a lógica de "arma da mainhand define a velocidade" na
+mão (`cs_eq.base_attack_interval = _item_eq.attack_speed`) em vez de
+chamar `engine.stats_system.sync_attack_interval()` — a função CERTA
+pra isso, já importada no topo do método mas nunca usada aqui. A
+diferença crítica: `sync_attack_interval` chama
+`cs._recalculate_effective_stats()` depois de setar `base_attack_
+interval`; a versão reimplementada não chamava. `CombatStats.
+attack_interval` (campo EFETIVO — o que combate e a UI de fato leem,
+`CombatStats.base_attack_interval` é só a entrada crua) só é atualizado
+por esse recálculo. Sem ele, `attack_interval` ficava travado no valor
+anterior (default da classe, herdado da criação do personagem) até
+QUALQUER outro evento disparar `_recalculate_effective_stats()` por
+acaso — um item com `modifiers` não-vazio dispara isso via
+`add_modifier` (chamado logo depois, no mesmo método, pra cada
+modifier do item); a espada de treinamento tem `modifiers=[]`
+(`content/item_table.py`), então NUNCA disparava — o valor errado
+sobrevivia a sessão de login inteira. Explica os 2 sintomas: o "virou
+2.1 sozinho" no meio da sessão foi algum OUTRO evento (buff, troca de
+outro equipamento com modifier) disparando o recálculo por acidente;
+o relogin sempre reproduzia o erro porque a sequência de restore é
+sempre a mesma.
+
+**Fix**: `_restore_save_state` passa a chamar `sync_attack_interval(
+cs_eq, equip)` (ponto único de verdade, já existia, só não era usado
+aqui) antes do loop que reaplica os outros modifiers dos itens
+equipados — nunca mais reimplementar essa lógica em paralelo.
+
+**Testes**: `tests/test_restore_attack_interval.py` — 2 casos: arma
+sem modifiers restaura `attack_interval` efetivo corretamente (o
+cenário exato relatado, antes só `base_attack_interval` corrigia);
+sem arma equipada usa o default da classe nos dois campos. Revert-to-
+confirm: código antigo restaurado temporariamente — teste falhou
+exatamente como o sintoma relatado (`1.95 != 2.1`, o valor efetivo
+travado no default enquanto o base já estava certo). Suíte completa:
+1476 passed.

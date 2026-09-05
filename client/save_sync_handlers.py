@@ -373,11 +373,21 @@ class SaveSyncHandlers:
         from engine.stat_fns import add_modifier as _add_eq_mod
         cs_eq = self.world.get_component(self.player_entity, _CSEq)
         if equip and cs_eq:
+            # Velocidade de ataque da arma — SEMPRE via sync_attack_interval
+            # (engine/stats_system.py), nunca escrever base_attack_interval
+            # direto: essa função é o único ponto que também chama
+            # `_recalculate_effective_stats()` depois. Bug real relatado
+            # pelo usuário (04/09/2026): a versão antiga escrevia
+            # `cs_eq.base_attack_interval` na mão, sem recalcular — o campo
+            # EFETIVO (`attack_interval`, o que combate/UI realmente usam)
+            # ficava travado no valor default até QUALQUER outro modifier
+            # disparar um recálculo por acaso (uma arma sem modifiers, como
+            # a espada de treinamento, nunca disparava — ficava errado pro
+            # relogin inteiro).
+            sync_attack_interval(cs_eq, equip)
             for _slot_eq, _item_eq in equip.slots.items():
                 if _item_eq is None:
                     continue
-                if _slot_eq == "mainhand" and getattr(_item_eq, "attack_speed", 0.0) > 0:
-                    cs_eq.base_attack_interval = _item_eq.attack_speed
                 for _mod_eq in getattr(_item_eq, "modifiers", []):
                     _add_eq_mod(cs_eq, _mod_eq)
 
