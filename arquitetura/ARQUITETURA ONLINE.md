@@ -252,6 +252,36 @@ O contador `zone._pending_spawns` (atributo dinâmico adicionado em runtime) é 
 a cada spawn tentado e decrementado no próximo ciclo. Sem isso, uma zona poderia spawnar
 `max_count` mobs num único tick após respawn.
 
+### 15. Ferramenta de teste de carga com bots reais — `tools/loadtest/` (04-05/09/2026)
+
+Enxame de bots que conectam via WebSocket de verdade e falam o protocolo
+real (`shared/messages.py`) — substitui o teste anterior (nunca
+commitado, `PROBLEMAS_ARQUITETURA.md` §31-38) que injetava estado
+direto no ECS sem exercitar a camada de rede. Zero mensagem de
+protocolo nova, zero mudança de código de jogo — só consome o que já
+existe. Ver `tools/loadtest/README.md` pra uso.
+
+- `provision.py` — cria/confirma contas+personagens via protocolo real
+  (REGISTER/LOGIN/CREATE_CHARACTER), depois grava `skills_json` direto
+  no banco (todas as skills treináveis da classe, `SKILL_ORDER_BY_CLASS`).
+  Idempotente.
+- `bot.py::LoadBot` — 1 conexão por bot, máquina de estado
+  (LOGGING_IN→WANDER/QUEUEING→ENGAGE↔WANDER→arena/BG→RECONNECTING),
+  RNG própria por bot. Nunca mira no jogador real — só em mobs (mundo
+  aberto) e, DENTRO de uma partida de arena/BG, em outros bots (mundo
+  aberto não é PvP livre, precisa de duelo).
+- Movimento é **otimista** (mesmo contrato do client real — servidor
+  nunca ecoa `MOVE` aceito de volta pro remetente, só corrige quem
+  errou via `ENTITY_MOVE`, `server/session.py::_handle_move`): o bot
+  aplica `tx/ty` na hora de mandar, não espera confirmação. Sem isso
+  a posição local nunca avança e todo passo seguinte recalcula a partir
+  da tile velha (bug real achado e corrigido nesta sessão — bot ficava
+  "andando no lugar" o teste inteiro).
+- `swarm.py` — CLI, rampa de conexão escalonada, proporção
+  mundo:arena:bg configurável (`--ratio`, default `68:12:20`),
+  `bot_eids: set[int]` compartilhado, encerramento gracioso
+  (LOGOUT em cada bot) por Ctrl+C ou `--duration-s`.
+
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
 
 ```
