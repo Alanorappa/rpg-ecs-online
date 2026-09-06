@@ -314,8 +314,15 @@ class LoadBot:
     # ── decisão ───────────────────────────────────────────────────────
 
     async def _think_loop(self) -> None:
+        # 1ª ação já no spawn (sem esperar o intervalo aleatório) — pedido
+        # do usuário (06/09/2026): com rampa de conexão mais lenta, quer
+        # ver cada leva de bots agindo assim que loga, não parada por até
+        # `think_max_s` antes da 1ª decisão.
+        first = True
         while not self._stop.is_set():
-            await asyncio.sleep(self.rng.uniform(self.think_min_s, self.think_max_s))
+            if not first:
+                await asyncio.sleep(self.rng.uniform(self.think_min_s, self.think_max_s))
+            first = False
             try:
                 await self._think_once()
             except Exception:
