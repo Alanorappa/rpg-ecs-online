@@ -333,6 +333,17 @@ class LoadBot:
     def _is_attackable(self, ent: dict) -> bool:
         kind = ent.get("kind")
         if kind == "enemy":
+            # Boneco de treino nunca é escolhido como alvo por conta
+            # própria (05-06/09/2026, ver PROBLEMAS_ARQUITETURA.md §115)
+            # — HP altíssimo (999999) e nunca morre, então um bot que o
+            # engaja fica "grudado" nele pra sempre, raramente ficando
+            # "ocioso" o suficiente pra sortear uma excursão. `is_dummy`
+            # vem de `WorldServer._build_mob_spawn_payload` — ÚNICA fonte
+            # usada por WORLD_STATE/AOI_UPDATE/ENTITY_SPAWN, sempre
+            # presente quando a entidade é mesmo o boneco (nunca precisa
+            # checar nome/raça na mão).
+            if ent.get("is_dummy"):
+                return False
             return ent.get("faction") not in FRIENDLY_NPC_FACTIONS
         if kind == "player":
             # Mundo aberto não é PvP livre (precisa de duelo) — só mira em
