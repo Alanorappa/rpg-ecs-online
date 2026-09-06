@@ -187,6 +187,27 @@ class SessionManager:
         # padrão de registro-em-set-de-módulo já usado alhures no
         # projeto, aqui como atributo de instância por ser por-conexão.
         self._dispatch_tasks: set = set()
+        # Serializa toda escrita real no SQLite (save_character) — sem isso,
+        # uma desconexão em massa (ex.: fim de teste de carga com 250 bots
+        # quase juntos) dispara ~250 `_persist_character` concorrentes, cada
+        # um em sua própria thread do executor padrão do asyncio
+        # (run_in_executor(None, ...), server/auth.py::save_character).
+        # SQLite só aceita 1 escritor por vez mesmo em WAL — sem serializar
+        # aqui, cada thread pode bloquear até 5s (timeout default de
+        # sqlite3.connect) disputando o lock de escrita do arquivo, e
+        # medido (script de carga real, 250 saves concorrentes) que WAL
+        # sozinho SEM este lock piora a contenção (mais overhead de
+        # coordenação sem eliminar o gargalo de 1-escritor) — os dois
+        # precisam andar juntos, nunca um sem o outro. `_autosave_all` já
+        # era seguro por acidente (itera `await`-ando um save de cada vez);
+        # este lock estende a mesma garantia pro caminho de disconnect, que
+        # dispara em paralelo (1 task por conexão websocket, `server/
+        # main.py::handle_connection`). NÃO é a causa do "tick lento com
+        # zero jogadores" investigado em 06/09/2026 (essa causa real era
+        # outra, em `SpawnZoneSystem._get_occupied()` — ver
+        # PROBLEMAS_ARQUITETURA.md) — este lock é uma correção de
+        # concorrência válida por si só, mantida por mérito próprio.
+        self._save_lock = asyncio.Lock()
         self.world_server.register_on_tick(self._on_tick)
 
     # ── Ciclo de vida ─────────────────────────────────────────────────────────
@@ -255,7 +276,12 @@ class SessionManager:
         if patch_fn is not None:
             patch_fn(merged)
         try:
-            await save_character(session.char_data["id"], merged)
+            # Lock serializa a escrita real no SQLite — ver comentário em
+            # __init__ (`self._save_lock`). Só a chamada de I/O fica dentro
+            # do lock; a montagem de `merged` acima (leitura do ECS ao vivo)
+            # não precisa esperar nenhum outro save terminar.
+            async with self._save_lock:
+                await save_character(session.char_data["id"], merged)
             return merged
         except Exception as e:
             log.error(f"[Session] ERRO ao persistir {session.username!r} ({context}): {e}")

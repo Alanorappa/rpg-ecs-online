@@ -60,6 +60,16 @@ def _get_conn() -> sqlite3.Connection:
             conn.execute("ALTER TABLE accounts ADD COLUMN is_gm INTEGER NOT NULL DEFAULT 0")
         except Exception:
             pass  # coluna já existe (ou tabela ainda não existe — init_db cria com ela)
+        # WAL: persiste no header do arquivo .db (1x por arquivo, sobrevive
+        # a restart do processo) — permite leitor concorrente durante
+        # escrita, complementar ao `SessionManager._save_lock` (que
+        # serializa ESCRITOR contra escritor; SQLite só aceita 1 escritor
+        # por vez mesmo em WAL). Sem WAL o modo default (DELETE) exige lock
+        # exclusivo do arquivo até pra leitura durante um write em voo.
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+        except Exception:
+            pass  # :memory: (usado em teste) não suporta WAL — no-op inofensivo
     return conn
 
 

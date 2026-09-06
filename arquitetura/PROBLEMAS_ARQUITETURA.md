@@ -16057,3 +16057,95 @@ síncrono) não foi mexido (mudança arquitetural que toca ECS).
 (3 testes — excesso do mesmo player é descartado, outro player não é
 afetado, contador reseta a cada tick real), revert-to-confirm confirmou
 os 3 pegando a regressão. Suíte completa (1510 testes) verde.
+
+## 118. Trava com ZERO jogadores — 2 rodadas de agentes, 1 correção errada quase implementada, causa raiz real achada na 2ª rodada (06/09/2026, mesmo dia)
+
+**Lição de processo primeiro, porque ela é o motivo desta seção
+existir**: a 1ª rodada de 3 agentes (investigando por que o servidor
+travava sozinho, players=0, minutos depois do teste de bots) recebeu
+nota 10/10 dos 3 relatórios só por profundidade de LEITURA de código —
+nenhum tinha efetivamente implementado e rodado a suíte de teste contra
+a própria correção proposta. Tentei aplicar a correção do agente de
+arquitetura (early-return em `SpawnZoneSystem.update()` quando não há
+player no mapa) e ela quebrou 14 testes reais na hora — usuário
+questionou corretamente por que dei nota máxima sem essa validação.
+**Regra nova a partir de agora**: diagnóstico de agente só fecha com
+nota máxima se vier acompanhado de "implementei e rodei a suíte contra
+isto", nunca só "li o código e faz sentido".
+
+**2ª rodada**: levei as DUAS soluções da 1ª rodada (lock+WAL pro SQLite;
+early-return pro SpawnZoneSystem) pros mesmos 3 agentes, com a exigência
+explícita de implementar de verdade e rodar a suíte completa antes de
+reportar. Resultado, convergente nos 3:
+
+**Achado A (SQLite) — confirmado, implementado, mas com uma correção
+importante ao que a 1ª rodada assumiu**: lock (`asyncio.Lock`, `server/
+session.py::SessionManager._save_lock`) serializando `_persist_character`
+(mesma disciplina que `_autosave_all` já tinha por acidente) +
+`PRAGMA journal_mode=WAL` (`server/auth.py::_get_conn`). Um agente
+mediu com um script de carga real (250 saves concorrentes, payload
+realista) e achou algo que ninguém tinha visto: **WAL sozinho, SEM o
+lock, piora a contenção** (2 de 5 rodadas deram `database is locked` de
+verdade, latência disparou de 2.5s pra 10-16s) — WAL não elimina "1
+escritor por vez", só adiciona overhead de coordenação que piora sem
+serialização por cima. Lock sozinho também teve instabilidade
+(stalls de 13-18s, suspeita de Windows/Defender interceptando o churn
+de arquivo do modo journal DELETE). **Lock + WAL juntos foi a única
+combinação estável nas 5 rodadas** — os dois têm que andar juntos,
+nunca um sem o outro. Corrigido comentário no código que originalmente
+atribuía a ESTE lock a explicação do "tick lento com 0 players" — não
+é essa a causa (ver Achado B), o lock é uma correção de concorrência
+válida por mérito próprio, mantida mesmo não sendo a causa do sintoma
+investigado.
+
+**Achado B (SpawnZoneSystem) — a correção proposta pela 1ª rodada
+estava ERRADA; achada a causa raiz real, diferente**: `engine/
+world_systems.py::SpawnZoneSystem.update()` usa `player_tx,ty=(0,0)`
+como default quando não há player no mapa — isso é real, mas é **código
+morto em produção**: `server/world_server.py:872-873` força
+`ACTIVATION_RADIUS = 999999` em toda instância real do sistema, desde o
+commit `9a62279` (24/05/2026) — decisão consciente e já documentada
+(`ARQUITETURA ONLINE.md` §14, `SISTEMAS_ECS.md`): "o mundo deve existir
+independente de conexões". `git log` achou até o commit ANTERIOR
+(`182aa4e`, 18/05/2026) que tinha corrigido esse MESMO bug de forma
+pontual (pausar zona sem player) — uma semana depois o time decidiu por
+algo mais radical (desativar o culling inteiro) em vez de manter aquele
+fix. Aplicar o early-return proposto pela 1ª rodada teria regredido
+essa decisão de propósito — um servidor recém-iniciado, ou depois de
+todo mundo desconectar, ficaria com ZERO mobs até alguém andar 80 tiles
+a partir da origem crua do MUNDO (não do spawn de ninguém). Os 14
+testes que quebraram estavam certos; a correção é que estava errada.
+
+**Causa raiz real** (achada só na 2ª rodada, por um agente que continuou
+investigando depois de descartar o (0,0)): dentro da MESMA função,
+`_get_occupied()` fazia sua PRÓPRIA varredura `get_entities_with(
+TileMovement)` sobre o MUNDO INTEIRO (todos os mapas), **ignorando** o
+parâmetro `tile_movement_by_map` que a função já recebia (índice por
+mapa, construído 1x/tick em `index_build`) — 3ª ocorrência da MESMA
+classe de bug já catalogada e corrigida antes em `TileValidationSystem`/
+`EnemyAISystem` (§34/§35), nunca migrada aqui. Como `ACTIVATION_RADIUS
+=999999` mantém TODA zona sempre "ativa", qualquer timer de respawn
+vencendo em qualquer mapa dispara esse scan global — e com timers de
+90-300s setados durante um teste de 250 bots, isso continua disparando
+por vários minutos depois de todo mundo desconectar, batendo exatamente
+com o sintoma relatado (`SpawnZoneSystem` = 100% do custo de ticks de
+33-93ms, players=0, minutos após o teste). Corrigido trocando as 2
+varreduras manuais por uma chamada a `_tile_movement_on_map()` (mesmo
+helper canônico, mesmo fallback pra scan direto quando o índice não é
+injetado — por isso os 14 testes nunca precisaram de nenhuma mudança).
+
+**Achado extra**: o executor padrão do asyncio nesta máquina
+(`os.cpu_count()=4`) só tem 8 workers, não 250 — a suposição inicial de
+"250 escritores concorrentes" superestimava a concorrência real (é no
+máximo 8-way), ainda que suficiente pra causar contenção real e
+comprovável.
+
+**Testes**: suíte completa (1510 testes) rodada por 2 agentes
+independentes + por mim mesmo depois de revisar o diff — 0 regressão
+nos 3. `tests/test_idle_map_perf.py` (7/7), `tests/test_session.py`
+(102+), `tests/test_ai_prefilter_spatial_index.py`/`test_immunity_
+feedback.py`/`test_server.py` (101/101) confirmados. Validação de
+carga real do lock com teste positivo E negativo (lock-fake provando
+que o teste detectaria a ausência do lock de verdade). Limpo do
+`data/game.db` real 12 contas de teste (`savelocktst*`) deixadas por um
+script de validação de agente.

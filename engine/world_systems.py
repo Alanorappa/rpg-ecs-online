@@ -4675,25 +4675,36 @@ class SpawnZoneSystem(System):
         # já respawnou tudo?"). Só é lido dentro de _pick_tile, chamado SÓ
         # quando um timer de respawn realmente zera este tick — na maioria
         # dos ticks (zonas já cheias, nada morrendo) nenhum spawn acontece,
-        # então o scan global de TileMovement (todo o mundo) nunca roda.
+        # então o scan nem roda.
+        #
+        # Fonte do scan: índice canônico `tile_movement_by_map`/
+        # `_tile_movement_on_map()` (mesmo índice que EnemyAISystem/
+        # TileValidationSystem já usam, ver docstring de
+        # `_tile_movement_on_map`, PROBLEMAS_ARQUITETURA.md §34/§35) —
+        # NUNCA `self.world.get_entities_with(TileMovement)` direto. Essa
+        # função já recebia `tile_movement_by_map` como parâmetro mas
+        # ignorava (3ª ocorrência da MESMA classe de bug já catalogada:
+        # scan global do mundo inteiro, refeito por sistema, quando um
+        # índice por-mapa já existe e é montado 1x/tick em
+        # `WorldServer._tick`). Achado real (06/09/2026): com 250 bots
+        # conectados, cada zona com timer vencido disparava esse scan
+        # sobre TODAS as entidades do MUNDO (não só do mapa da zona),
+        # múltiplas vezes por tick — causa provável de ticks >33ms mesmo
+        # minutos depois do teste de carga acabar (timers de respawn
+        # setados durante o teste continuam vencendo por vários minutos).
+        # `_tile_movement_on_map` cai pro scan direto sozinho se o índice
+        # não for injetado (teste antigo, cliente offline) — comportamento
+        # idêntico ao daqui antes, só que compartilhado/testado alhures.
         _occupied_cache: list = [None]  # None = ainda não construído neste tick
 
         def _get_occupied() -> set:
             if _occupied_cache[0] is None:
                 occ: set = set()
-                if self._map_filter:
-                    for _occ_eid, tm in self.world.get_entities_with(TileMovement):
-                        _ml_occ = self.world.get_component(_occ_eid, MapLocation)
-                        if _ml_occ is None or _ml_occ.map_file != self._map_filter:
-                            continue
-                        occ.update(entity_footprint_tiles(self.world, _occ_eid, tm))
-                        if tm.is_moving:
-                            occ.add((tm.target_tile_x, tm.target_tile_y))
-                else:
-                    for _occ_eid2, tm in self.world.get_entities_with(TileMovement):
-                        occ.update(entity_footprint_tiles(self.world, _occ_eid2, tm))
-                        if tm.is_moving:
-                            occ.add((tm.target_tile_x, tm.target_tile_y))
+                for _occ_eid, tm in _tile_movement_on_map(
+                        self.world, tile_movement_by_map, self._map_filter):
+                    occ.update(entity_footprint_tiles(self.world, _occ_eid, tm))
+                    if tm.is_moving:
+                        occ.add((tm.target_tile_x, tm.target_tile_y))
                 _occupied_cache[0] = occ
             return _occupied_cache[0]
 
