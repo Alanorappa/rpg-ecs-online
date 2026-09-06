@@ -1616,35 +1616,35 @@ OBJECT_SHEET_FAMILIES: list[dict] = [
                     ("021",   544,   416,  192,  288, (32, 128, 128, 160), 0, False, 1, None, 2),
                 ],
             },
-            "b12": {
-                "prefix": "vb",
-                "no_prefix_separator": True,
-                "label":  "Torre com janela em arco",
-                "color":  (115, 108, 98),
-                "tiles": [
-                    ("022",   832,   352,  160,  288, (32, 224, 96, 64), 0, False, 1, None, 2),
-                ],
-            },
-            "b13": {
-                "prefix": "vb",
-                "no_prefix_separator": True,
-                "label":  "Alpendre com banco",
-                "color":  (115, 108, 98),
-                "tiles": [
-                    ("023",   768,   512,   64,  128, (0, 96, 64, 32), 0, False, 1, None, 2),
-                ],
-            },
-            "b14": {
-                "prefix": "vb",
-                "no_prefix_separator": True,
-                "label":  "Estábulo de três arcos",
-                "color":  (115, 108, 98),
-                "tiles": [
-                    ("024",   992,   480,   64,  160, (0, 96, 32, 64), 0, False, 1, None, 2),
-                    ("025",  1056,   480,   64,  160, (0, 96, 64, 64), 0, False, 1, None, 2),
-                    ("026",  1120,   480,   96,  160, (32, 96, 32, 64), 0, False, 1, None, 2),
-                ],
-            },
+            #"b12": {
+            #    "prefix": "vb",
+            #    "no_prefix_separator": True,
+            #    "label":  "Torre com janela em arco",
+            #    "color":  (115, 108, 98),
+            #    "tiles": [
+            #        ("022",   832,   352,  160,  288, (32, 224, 96, 64), 0, False, 1, None, 2),
+            #    ],
+            #},
+            #"b13": {
+            #    "prefix": "vb",
+            #    "no_prefix_separator": True,
+            #    "label":  "Alpendre com banco",
+            #    "color":  (115, 108, 98),
+            #    "tiles": [
+            #        ("023",   768,   512,   64,  128, (0, 96, 64, 32), 0, False, 1, None, 2),
+            #    ],
+            #},
+            #"b14": {
+            #    "prefix": "vb",
+            #    "no_prefix_separator": True,
+            #    "label":  "Estábulo de três arcos",
+            #    "color":  (115, 108, 98),
+            #    "tiles": [
+            #        ("024",   992,   480,   64,  160, (0, 96, 32, 64), 0, False, 1, None, 2),
+            #        ("025",  1056,   480,   64,  160, (0, 96, 64, 64), 0, False, 1, None, 2),
+            #        ("026",  1120,   480,   96,  160, (32, 96, 32, 64), 0, False, 1, None, 2),
+            #    ],
+            #},
             "b15": {
                 "prefix": "vb",
                 "no_prefix_separator": True,
@@ -1661,10 +1661,10 @@ OBJECT_SHEET_FAMILIES: list[dict] = [
                 "label":  "Casa de telhado alto com arcada",
                 "color":  (115, 108, 98),
                 "tiles": [
-                    ("029",  1248,   368,   64,  336, (32, 144, 32, 192), 0, False, 1, None, 2),
-                    ("030",  1312,   368,   64,  336, (0, 144, 64, 96), 0, False, 1, None, 2),
-                    ("031",  1376,   368,   32,  336, (0, 144, 32, 192), 0, False, 1, None, 2),
-                    ("032",  1408,   416,  112,  288, (0, 96, 64, 96), 0, False, 1, None, 2),
+                    ("029",  1248,   368,   64,  336, ( 32, 144,  32, 192), 0, False, 1, None, 2),
+                    ("030",  1312,   368,   64,  336, (  0, 144,  64,  96), 0, False, 1, None, 2),
+                    ("031",  1376,   368,   32,  336, (  0, 144,  32, 192), 0, False, 1, None, 2),
+                    ("032",  1408,   416,  112,  288, (  0,  96,  64,  96), 0, False, 1, None, 2),
                 ],
             },
             "b17": {

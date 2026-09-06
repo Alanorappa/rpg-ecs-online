@@ -870,8 +870,8 @@
         "slots": [
           "golpe_poderoso",
           "impacto",
-          "vitoria_iminente",
           null,
+          "vitoria_iminente",
           null,
           "interceptar",
           null,
@@ -913,7 +913,7 @@
         "punho_no_queixo": 1,
         "interceptar": 5,
         "impacto": 1,
-        "vitoria_iminente": 2
+        "vitoria_iminente": 3
       }
     },
     "Faelara": {
@@ -1011,6 +1011,98 @@
       }
     },
     "Rukkmund": {
+      "hotbar": {
+        "slots": [
+          "golpe_poderoso",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          48
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      },
+      "skill_slot_prefs": {
+        "golpe_poderoso": 0
+      }
+    },
+    "Leogrim": {
+      "hotbar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          48
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      },
+      "skill_slot_prefs": {}
+    },
+    "Gravvrak": {
       "hotbar": {
         "slots": [
           "golpe_poderoso",
