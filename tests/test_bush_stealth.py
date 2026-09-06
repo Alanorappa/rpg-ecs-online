@@ -266,6 +266,55 @@ class TestBushTargetClear(unittest.TestCase):
         self.assertEqual(cst.target_entity_id, self.target)
 
 
+class TestBushTargetClearGuard(unittest.TestCase):
+    """05/09/2026 (ver PROBLEMAS_ARQUITETURA.md §113) — o guard antigo
+    (`if not self._bush_zones_by_map: return`) checava o dict inteiro,
+    nunca o CONTEÚDO: `_load_map_for` grava uma entrada por mapa mesmo
+    com lista vazia (`spawn_points.get("bush_zones", [])`), então o
+    dict nunca ficava vazio depois do boot — o guard nunca disparava em
+    produção (nenhum mapa real tem `bush_zones` populado) e a função
+    escaneava o mundo inteiro todo tick pra sempre achar zona nenhuma.
+    Corrigido pra `if not any(self._bush_zones_by_map.values()): return`."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+
+    def _count_tile_movement_scans(self) -> int:
+        from engine.components import TileMovement as _TM_guard
+        orig = self.ws.world.get_entities_with
+        calls = {"n": 0}
+        def counted(*component_types):
+            if component_types == (_TM_guard,):
+                calls["n"] += 1
+            return orig(*component_types)
+        self.ws.world.get_entities_with = counted
+        try:
+            self.ws._tick_bush_target_clear()
+        finally:
+            self.ws.world.get_entities_with = orig
+        return calls["n"]
+
+    def test_mapas_reais_carregados_tem_bush_zones_vazio(self):
+        """Sanity check do cenário que motivou o bug — confirma que
+        `make_world_server()` reproduz a condição real de produção."""
+        self.assertTrue(self.ws._bush_zones_by_map, "esperava ao menos 1 mapa carregado")
+        self.assertFalse(any(self.ws._bush_zones_by_map.values()),
+                         "nenhum mapa real deveria ter bush_zones povoado — "
+                         "se isso falhar, o cenário de teste não reproduz mais o bug original")
+
+    def test_guard_impede_scan_quando_todo_mapa_tem_lista_vazia(self):
+        self.assertEqual(self._count_tile_movement_scans(), 0,
+                         "guard deveria ter retornado ANTES de qualquer "
+                         "get_entities_with(TileMovement) — nenhum mapa tem zona real")
+
+    def test_guard_nao_bloqueia_quando_algum_mapa_tem_zona_real(self):
+        map_file = next(iter(self.ws._bush_zones_by_map))
+        self.ws._bush_zones_by_map[map_file] = [{"name": "Zona real", "rect": (0, 0, 5, 5)}]
+        self.assertGreater(self._count_tile_movement_scans(), 0,
+                           "com pelo menos 1 mapa com zona de verdade, a função "
+                           "precisa continuar escaneando normalmente")
+
+
 class TestIsOnBushTile(unittest.TestCase):
     """`BushZoneProcessorMixin._is_on_bush_tile()` (01/09/2026) — detecção
     baseada em arbusto REAL do mapa (`TileType.is_bush`), não no

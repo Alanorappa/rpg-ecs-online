@@ -1838,7 +1838,17 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         varredura pesada (quem mirava essa entidade) nesse instante, não
         every tick pra todo mundo. Torres nunca entram (sem `TileMovement`
         que muda de tile — mesma exceção de sempre)."""
-        if not self._bush_zones_by_map:
+        # Guard corrigido (05/09/2026, ver PROBLEMAS_ARQUITETURA.md §113) —
+        # `self._bush_zones_by_map[key] = spawn_points.get("bush_zones", [])`
+        # (linha ~779) grava uma entrada por MAPA mesmo com lista vazia, então
+        # o dict nunca fica vazio depois do boot; `if not self._bush_zones_by_map`
+        # checava o dict inteiro (sempre truthy) em vez do CONTEÚDO de cada
+        # mapa — o guard nunca disparava em produção (nenhum mapa real tem
+        # bush_zones no JSON) e a função varria o mundo inteiro todo tick pra
+        # sempre produzir resultado vazio. `any(...)` checa se PELO MENOS UM
+        # mapa tem zona de verdade — se um dia algum mapa ganhar bush_zones
+        # populado, a função volta a rodar automaticamente, sem mudança extra.
+        if not any(self._bush_zones_by_map.values()):
             return
         from engine.components import TileMovement as _TMbz, CombatState as _CStbz, Minion as _Minbz
         from server.session import _can_see as _can_see_bz
@@ -4951,16 +4961,44 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         Congelante (AoE) iterava _mob_eids sem filtro de hostilidade e
         enraizava/danificava o guarda. Antes só players passavam por
         can_engage aqui; agora mobs/NPCs passam pelo mesmo crivo.
-        """
+
+        Escopo por mapa/instância (05/09/2026, ver PROBLEMAS_ARQUITETURA.md
+        §113): antes retornava candidatos de TODOS os mapas/instâncias do
+        servidor juntos (mundo aberto + toda Arena/BG simultânea), sem
+        nenhuma comparação de mapa — bug real de corretude, não só
+        performance: `spell_completion_processor.py` (AoE de gelo) filtra
+        alcance só por coordenada de TILE crua (`chebyshev`), e mapas/
+        instâncias diferentes reusam o MESMO espaço de coordenadas, então um
+        alvo de outro mapa/instância podia coincidir numericamente "dentro
+        do alcance" e tomar dano cruzado. `get_entity_map(exclude_eid)`
+        (caster) filtra candidatos de mapa diferente ANTES do crivo de
+        facção — mesma fonte de verdade (`MapLocation`) já usada por
+        `_sessions_in_aoi` pra broadcast, aplicada aqui pra aplicação de
+        dano. `exclude_eid == -1` (sem caster real) mantém o universo global
+        antigo — não há mapa de referência pra escopar. Candidato SEM
+        `MapLocation` própria (entidade sintética de teste/utilitário, ex.
+        `create_combat_npc`) nunca é excluído só por isso — só exclui quando
+        o mapa do candidato é CONHECIDO e diferente do caster; entidade sem
+        essa informação cai no comportamento antigo (inclusiva), nunca no
+        novo filtro."""
         from engine.faction_system import can_engage as _can_engage_ct
+        caster_map = self.get_entity_map(exclude_eid) if exclude_eid != -1 else None
         targets = set()
         for m_eid in self._mob_eids:
+            if caster_map is not None:
+                _m_map = self.get_entity_map(m_eid)
+                if _m_map is not None and _m_map != caster_map:
+                    continue
             if exclude_eid != -1 and not _can_engage_ct(self.world, exclude_eid, m_eid):
                 continue
             targets.add(m_eid)
         for p_eid in self._player_eids.values():
             if p_eid == exclude_eid:
                 continue
+            if caster_map is not None:
+                _p_map = self.get_entity_map(p_eid)
+                if _p_map is not None and _p_map != caster_map:
+                    continue
             if exclude_eid != -1 and not _can_engage_ct(self.world, exclude_eid, p_eid):
                 continue
             targets.add(p_eid)
@@ -5320,11 +5358,18 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # somava pro "não instrumentado" do relatório sem nenhuma pista de
         # onde estava.
         self._perf_push("pre_tick_snapshots")
+        # `pre_mob_target` é POPULADO mais abaixo, dentro do loop de
+        # `index_build` (05/09/2026, ver PROBLEMAS_ARQUITETURA.md §113) — os
+        # dois já faziam a MESMA varredura completa de `get_entities_with(
+        # TileMovement)` no mesmo tick, uma logo depois da outra; fundir
+        # numa passada só elimina a 2ª. Só ESTES dois (`pre_tick_snapshots` +
+        # `index_build`) são seguros de fundir: `post_tick_bookkeeping` NÃO
+        # entra aqui de propósito — ele roda depois de `ai_bundles` (onde
+        # `SpawnZoneSystem` pode criar mob novo no mesmo tick) e depende de
+        # comparar o snapshot do INÍCIO do tick contra o estado do FIM, então
+        # precisa da sua própria passada, por último.
         pre_mob_target:  dict[int, tuple[int, int]] = {}
         player_hp_snap:  dict[int, int]             = {}
-        for eid, tm in self.world.get_entities_with(TileMovement):
-            if eid in self._mob_eids:
-                pre_mob_target[eid] = (tm.target_tile_x, tm.target_tile_y)
         for peid in self._player_eids.values():
             pcs = self.world.get_component(peid, CombatStats)
             player_hp_snap[peid] = pcs.current_hp if pcs else 0
@@ -5416,6 +5461,14 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             _tvm_ml = self.world.get_component(_tvm_eid, _MLbm)
             _tvm_map = _tvm_ml.map_file if _tvm_ml else ""
             _tile_movement_by_map.setdefault(_tvm_map, []).append((_tvm_eid, _tvm_tm))
+
+            # `pre_mob_target` (fundido de `pre_tick_snapshots`, ver comentário
+            # acima) — só precisa de `eid in self._mob_eids`, NUNCA exigiu
+            # Position/CombatStats, então tem que vir ANTES do `continue`
+            # abaixo (senão um mob sem Position/CombatStats neste tick exato
+            # deixaria de entrar no snapshot, mudando comportamento).
+            if _tvm_eid in self._mob_eids:
+                pre_mob_target[_tvm_eid] = (_tvm_tm.target_tile_x, _tvm_tm.target_tile_y)
 
             # Os 3 índices abaixo sempre exigiam Position+CombatStats
             # (via `get_entities_with`) — sem os 2, a entidade NUNCA
@@ -5612,11 +5665,16 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 })
 
         # ── ActiveRegen (consumíveis HoT — HP) ───────────────────────────────
-        from engine.components import ActiveRegen as _AR
+        from engine.components import ActiveRegen as _AR, PlayerControlled as _PCar
         _regen_remove = []
         _all_regen = list(self.world.get_entities_with(_AR))
         for _regen_eid, _regen in _all_regen:
-            if _regen_eid not in self._player_eids.values():
+            # `eid not in dict.values()` era O(n) por checagem (dict.values()
+            # não é indexado) — piorava sozinho com mais jogadores online.
+            # Checagem por componente é O(1) (05/09/2026, ver
+            # PROBLEMAS_ARQUITETURA.md §113) — mesmo padrão já usado em
+            # `index_build` (linha ~5417) pra distinguir player de mob.
+            if self.world.get_component(_regen_eid, _PCar) is None:
                 continue
             _rcst = self.world.get_component(_regen_eid, CombatStats)
             if not _rcst:
@@ -5657,10 +5715,11 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 pass
 
         # ── ActiveManaRegen (consumíveis HoT — mana) ─────────────────────
-        from engine.components import ActiveManaRegen as _AMR, CharacterStats as _CHSmr
+        from engine.components import ActiveManaRegen as _AMR, CharacterStats as _CHSmr, PlayerControlled as _PCamr
         _mregen_remove = []
         for _mregen_eid, _mregen in list(self.world.get_entities_with(_AMR)):
-            if _mregen_eid not in self._player_eids.values():
+            # Mesma correção de O(n)→O(1) do bloco de ActiveRegen acima.
+            if self.world.get_component(_mregen_eid, _PCamr) is None:
                 continue
             _char_mr = self.world.get_component(_mregen_eid, _CHSmr)
             _cs_mr   = self.world.get_component(_mregen_eid, CombatStats)
@@ -6071,10 +6130,17 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # verdade pra um NPC de combate amigável (ex: guarda). Combatant
         # cobre os dois (Enemy sempre implica Combatant, ver
         # engine/entity_factory.py::_build_combat_entity).
-        from engine.components import Combatant as _Combatant_reg
+        from engine.components import Combatant as _Combatant_reg, PlayerControlled as _PCptb
         for eid, tm in self.world.get_entities_with(TileMovement):
+            # Checagem por componente (O(1)) em vez de `eid not in
+            # self._player_eids.values()` (O(n), mesma correção do bloco de
+            # ActiveRegen/ActiveManaRegen acima) — aqui também evita um bug
+            # sutil que um cache/set construído mais cedo no tick teria: um
+            # bot de battleground pode nascer NO MEIO deste mesmo tick
+            # (`_tick_bg_queue`, chamado logo acima), e a checagem ao vivo do
+            # componente sempre reflete o estado ATUAL, nunca fica desatualizada.
             if self.world.get_component(eid, _Combatant_reg) and eid not in self._mob_eids \
-                    and eid not in self._player_eids.values():
+                    and self.world.get_component(eid, _PCptb) is None:
                 self._mob_eids.add(eid)
                 # CombatState: necessário para aggro do EnemyAISystem
                 from engine.components import CombatState as _CS, Visible as _Vis

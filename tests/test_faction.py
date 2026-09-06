@@ -886,5 +886,81 @@ class TestPvpContext(unittest.TestCase):
                          "player remoto deveria ser amigável (inatacável) por default no cliente")
 
 
+MAP_B = "maps/map_cave_west.csv"
+
+
+class TestCombatTargetsScopedByMap(unittest.TestCase):
+    """05/09/2026 (ver PROBLEMAS_ARQUITETURA.md §113) — `_combat_targets`
+    varria `_mob_eids`/`_player_eids` GLOBAIS (todos os mapas/instâncias
+    juntos), sem filtro de mapa. Bug de CORRETUDE real, não só
+    performance: `spell_completion_processor.py` (AoE de gelo) filtra
+    alcance só por coordenada de tile crua, e mapas diferentes reusam o
+    MESMO espaço de coordenadas — um alvo de outro mapa/instância podia
+    coincidir numericamente "dentro do alcance" e tomar dano cruzado.
+    Corrigido: `_combat_targets` agora exclui candidato cujo mapa é
+    CONHECIDO e diferente do caster (candidato sem MapLocation, ex.
+    entidade sintética de teste, nunca é excluído só por isso — ver
+    `test_combat_targets_exclui_npc_amigavel_de_aoe`, que usa
+    `create_combat_npc` sem MapLocation e precisa continuar passando)."""
+
+    def setUp(self):
+        from tests.helpers import make_world_server, spawn_player
+        from engine.components import MapLocation
+        self.ws = make_world_server()
+        spawn_player(self.ws, "s1", 130, 374)
+        self.peid = self.ws._player_eids["s1"]
+        self.MapLocation = MapLocation
+
+    def _hostile_on_map(self, map_file: str, tx: int, ty: int) -> int:
+        from engine.entity_factory import create_combat_npc
+        eid = create_combat_npc(self.ws.world, tx, ty, faction="bandidos")
+        self.ws.world.add_component(eid, self.MapLocation(map_file))
+        return eid
+
+    def test_hostil_no_mesmo_mapa_do_caster_e_alvo_valido(self):
+        map_a = self.ws.get_entity_map(self.peid)
+        bandit = self._hostile_on_map(map_a, 131, 374)
+        self.ws._mob_eids.add(bandit)
+
+        targets = self.ws._combat_targets(exclude_eid=self.peid)
+        self.assertIn(bandit, targets)
+
+    def test_hostil_em_OUTRO_mapa_nao_e_alvo_valido(self):
+        """O caso que motivou a correção: mob de outro mapa/instância
+        não pode ser alvo, mesmo passando no crivo de facção."""
+        bandit_b = self._hostile_on_map(MAP_B, 78, 19)
+        self.ws._mob_eids.add(bandit_b)
+
+        targets = self.ws._combat_targets(exclude_eid=self.peid)
+        self.assertNotIn(bandit_b, targets,
+                         "mob de OUTRO mapa nao deveria ser alvo valido — "
+                         "vazamento entre mapas/instancias")
+
+    def test_player_em_OUTRO_mapa_nao_e_alvo_valido_pra_pvp(self):
+        from tests.helpers import spawn_player
+        spawn_player(self.ws, "s2", 130, 374, class_id="guerreiro")
+        other_peid = self.ws._player_eids["s2"]
+        self.ws.transfer_player("s2", other_peid, MAP_B, 78, 19)
+
+        targets = self.ws._combat_targets(exclude_eid=self.peid)
+        self.assertNotIn(other_peid, targets,
+                         "player em OUTRO mapa/instancia nao deveria ser alvo "
+                         "valido de PvP (nem que can_engage autorizasse)")
+
+    def test_candidato_sem_maplocation_nao_e_excluido_por_isso(self):
+        """Regressão explícita — `create_combat_npc` (usado por vários
+        testes já existentes, ex. `test_combat_targets_exclui_npc_amigavel_de_aoe`)
+        não atribui MapLocation. Excluir esse candidato só por "mapa
+        desconhecido" quebraria esses testes e mudaria comportamento
+        pra pior (candidato passaria a ficar invisível pra qualquer AoE
+        sem motivo real)."""
+        from engine.entity_factory import create_combat_npc
+        bandit_no_map = create_combat_npc(self.ws.world, 131, 374, faction="bandidos")
+        self.ws._mob_eids.add(bandit_no_map)
+
+        targets = self.ws._combat_targets(exclude_eid=self.peid)
+        self.assertIn(bandit_no_map, targets)
+
+
 if __name__ == "__main__":
     unittest.main()

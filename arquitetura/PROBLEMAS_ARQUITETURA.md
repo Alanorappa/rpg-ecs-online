@@ -15627,3 +15627,95 @@ novo teste de carga com 50 bots (rampa gradual) medindo
 `server_perf.log` novo contra a baseline já salva
 (`server_perf_bkp.log`, renomeada pelo usuário antes desta correção)
 pra confirmar ganho real, não só teste sintético isolado passando.
+
+## 114. 4 correções de performance validadas por 2 rodadas de auditoria multi-agente (05/09/2026)
+
+Depois de §113, usuário pediu investigação mais profunda com 3 agentes
+especialistas em paralelo (arquiteto de MMORPG tile-based, engenheiro
+de incongruências, QA de performance), cada um analisando os 10
+sistemas mais custosos medidos em log real. Rodada 2 (mesmo dia):
+metodologia mais restrita — prioridades decididas por mim, agentes só
+validam/aprofundam, cada um resolvendo de forma independente 1
+divergência que sobrou da Rodada 1. Comparação completa das 2 rodadas
+em `arquitetura/analise_performance_rodada1.md`.
+
+**Achado principal da comparação**: a Rodada 2 mudou a conclusão em 3
+dos 5 itens candidatos — 2 correções propostas na Rodada 1 tinham
+bug real se implementadas ao pé da letra (confirmado por leitura de
+código antes de codar, nunca só aceito de prompt de agente):
+
+1. **`_tick_bush_target_clear` guard morto** (`server/world_server.py`)
+   — `self._bush_zones_by_map[key] = spawn_points.get("bush_zones", [])`
+   grava uma entrada por MAPA mesmo com lista vazia; o guard
+   `if not self._bush_zones_by_map: return` checava o dict inteiro
+   (sempre truthy depois do boot), nunca o conteúdo — nunca disparava
+   em produção (nenhum mapa real tem `bush_zones`). A função escaneava
+   o mundo inteiro todo tick pra sempre produzir resultado vazio. Fix:
+   `if not any(self._bush_zones_by_map.values()): return`.
+2. **`eid not in self._player_eids.values()`** (O(n), `dict.values()`
+   não é indexado) em 3 call-sites (`ActiveRegen`/`ActiveManaRegen`/
+   detecção de "combatente novo" em `post_tick_bookkeeping`) — único
+   bug que piorava sozinho com mais jogadores online. Fix: checagem
+   por componente `world.get_component(eid, PlayerControlled) is None`
+   (O(1), mesmo padrão já usado em `index_build`) — melhor que a
+   alternativa original de um `set` compartilhado construído 1x
+   (a Rodada 2 achou um bug real nessa alternativa: um bot de
+   battleground criado NO MEIO do tick, via `_tick_bg_queue`, ficaria
+   fora de um set construído cedo demais e seria registrado por engano
+   como mob).
+3. **3 varreduras redundantes de `get_entities_with(TileMovement)`**
+   no mesmo tick (`index_build`, `pre_tick_snapshots`,
+   `post_tick_bookkeeping`) — só 2 das 3 são fundíveis com segurança.
+   `post_tick_bookkeeping` PRECISA rodar por último e separado: detecta
+   "combatente novo" criado por `SpawnZoneSystem`, que roda DENTRO de
+   `ai_bundles` — ou seja, DEPOIS de `index_build` — fundir essa
+   varredura pra dentro de `index_build` faria o código nunca detectar
+   mob spawnado no próprio tick em que nasceu (confirmado em código:
+   `ai_bundles`/`SpawnZoneSystem` roda depois de `index_build`, `post_
+   tick_bookkeeping` roda depois de `ai_bundles`). Fix: fundidas só
+   `pre_tick_snapshots`+`index_build` — `pre_mob_target` passa a ser
+   populado dentro do loop de `index_build`, ANTES do `continue` por
+   falta de Position/CombatStats (esses 2 nunca foram exigência de
+   `pre_mob_target`, só dos outros 3 índices).
+4. **`_combat_targets` escaneava `_mob_eids`/`_player_eids` GLOBAIS**
+   (todos os mapas/instâncias juntos), sem filtro de mapa — achado como
+   divergência não resolvida em §113, CONFIRMADO por 2 agentes
+   independentes na Rodada 2. Escalada de gravidade: não é só
+   performance — `spell_completion_processor.py` (AoE de gelo) filtra
+   alcance só por coordenada de tile CRUA (`chebyshev`), e mapas/
+   instâncias diferentes reusam o MESMO espaço de coordenadas, então um
+   alvo de outro mapa/instância podia coincidir numericamente "dentro
+   do alcance" e tomar dano cruzado — bug de corretude real, não só
+   ineficiência. Fix tentado inicialmente (persistir `_combatants_by_
+   map`/`_players_by_map` como atributo, sugestão original da Rodada 2)
+   foi REVERTIDO ao escrever o teste: quebraria
+   `tests/test_faction.py::test_combat_targets_exclui_npc_amigavel_de_aoe`,
+   que popula `_mob_eids` manualmente sem rodar tick (o índice por-mapa
+   só existe depois de um `_tick()` real rodar `index_build`). Fix final,
+   mais simples e sem esse risco: `_combat_targets` continua iterando
+   `self._mob_eids`/`self._player_eids.values()` (mesma fonte de
+   sempre), só ganhou um filtro `get_entity_map(candidato) != get_
+   entity_map(caster)` — corrige a CORRETUDE (não mais vazamento entre
+   mapas) mas não reduz o custo O(mobs+players) da variedade global
+   (otimização de performance completa fica pra depois, precisa
+   repensar a fonte de dados sem quebrar o teste existente). Candidato
+   sem `MapLocation` (entidade sintética de teste, ex.
+   `create_combat_npc`) nunca é excluído só por isso — só exclui quando
+   o mapa do candidato é CONHECIDO e diferente do caster.
+
+**Testes**: `tests/test_bush_stealth.py::TestBushTargetClearGuard` (3
+casos), `tests/test_consumables.py::TestActiveRegenPlayerCheckIsComponentBased`/
+`TestPostTickBookkeepingNeverMisclassifiesPlayerAsMob` (3 casos),
+`tests/test_server.py::TestPreMobTargetSurvivesFusionWithIndexBuild` (2
+casos — inclui o caso-limite de mob sem Position/CombatStats),
+`tests/test_faction.py::TestCombatTargetsScopedByMap` (4 casos).
+Revert-to-confirm em TODOS os 4 (cada um confirmado: teste falha sem o
+fix, exatamente como esperado). Suíte completa: 1502 passed (1490 +
+12 novos).
+
+**Verificação de ganho real pendente** (decisão do usuário): teste de
+carga dedicado — 250 bots espalhados pelos 3 mapas de mundo + volume
+real de cast de skill em arena/BG simultânea (o teste de 50 bots já
+feito hoje não teve escala suficiente pra exercitar os itens 3/4 de
+verdade). Ver `arquitetura/medicao_antes_depois_fixes.md` pra tabela
+de medição antes/depois e comando exato do teste recomendado.

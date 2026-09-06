@@ -1704,6 +1704,103 @@ class TestTickPerfProfiler(unittest.TestCase):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Fusão pre_tick_snapshots + index_build (05/09/2026, ver
+# PROBLEMAS_ARQUITETURA.md §113)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestPreMobTargetSurvivesFusionWithIndexBuild(unittest.TestCase):
+    """`pre_mob_target` (usado por post_tick_bookkeeping pra detectar
+    "mob começou a mover") foi fundido pra dentro do loop de
+    `index_build` — as duas rodavam a MESMA varredura completa de
+    `get_entities_with(TileMovement)` no mesmo tick. Risco identificado
+    na revisão: `pre_mob_target` nunca exigiu Position/CombatStats (ao
+    contrário dos 3 índices que `index_build` já construía), então a
+    população dele precisa vir ANTES do `continue` por falta desses 2
+    componentes — senão um mob sem Position/CombatStats nesse tick
+    exato deixaria de entrar no snapshot, silenciosamente."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+
+    class _CapturingList(list):
+        """`_moved_this_tick` é limpo (`.clear()`) no FIM do próprio
+        `_tick()`, depois de despachado pro AOI (`server/world_server.py`,
+        linha ~6450) — checar `ws._moved_this_tick` depois que `_tick()`
+        já retornou sempre dá lista vazia, mesmo quando a detecção
+        funcionou. Substitui a lista por uma que guarda uma cópia do
+        conteúdo ANTES de aceitar o `.clear()`."""
+        def __init__(self, sink: list):
+            super().__init__()
+            self._sink = sink
+
+        def clear(self):
+            self._sink.extend(self)
+            super().clear()
+
+    def _change_target_mid_tick(self, eid: int, new_tx: int, new_ty: int) -> None:
+        """Muda `target_tile_x/y` DENTRO do mesmo tick, entre `index_build`
+        (onde `pre_mob_target` é capturado) e `post_tick_bookkeeping` (onde é
+        comparado) — via hook em `TileMovementSystem.update` (`global_systems`,
+        que já roda nesse intervalo, ver `WorldServer.__init__::_global_tms`).
+        Mudar `target_tile_x/y` direto ENTRE 2 chamadas de `_tick()` não
+        funciona pra este teste: a fusão faz `pre_mob_target` capturar o
+        valor JÁ ATUALIZADO no início do tick seguinte, nunca detectando
+        diferença nenhuma (o bug ficaria mascarado, não exposto)."""
+        from engine.components import TileMovement as _TM_hook
+        orig_update = self.ws._global_tms.update
+        def _patched(*a, **kw):
+            result = orig_update(*a, **kw)
+            tm = self.ws.world.get_component(eid, _TM_hook)
+            tm.target_tile_x, tm.target_tile_y = new_tx, new_ty
+            self.ws._global_tms.update = orig_update  # só muda 1x
+            return result
+        self.ws._global_tms.update = _patched
+
+    def test_mob_sem_position_ou_combatstats_ainda_e_rastreado(self):
+        from engine.components import TileMovement
+        # Entidade mínima: só TileMovement, SEM Position nem CombatStats —
+        # exatamente o caso-limite que o `continue` de index_build existe
+        # pra pular nos OUTROS 3 índices, mas NÃO deveria pular pre_mob_target.
+        eid = self.ws.world.create_entity()
+        self.ws.world.add_component(eid, TileMovement(
+            current_tile_x=10, current_tile_y=10,
+            target_tile_x=10,  target_tile_y=10,
+        ))
+        self.ws._mob_eids.add(eid)
+
+        captured: list = []
+        self.ws._moved_this_tick = self._CapturingList(captured)
+        self._change_target_mid_tick(eid, 11, 10)
+        self.ws._tick(0.05)
+
+        moved = [m for m in captured if m["eid"] == eid]
+        self.assertTrue(moved,
+                        "mob sem Position/CombatStats deveria continuar sendo "
+                        "rastreado por pre_mob_target — se isso falhar, a fusão "
+                        "com index_build moveu a captura pra DEPOIS do continue "
+                        "errado")
+        self.assertEqual((moved[0]["from_tx"], moved[0]["from_ty"]), (10, 10))
+        self.assertEqual((moved[0]["tx"], moved[0]["ty"]), (11, 10))
+
+    def test_mob_normal_com_position_e_combatstats_continua_funcionando(self):
+        """Regressão simples do caso comum (não é o edge case acima)."""
+        from engine.components import TileMovement
+        spawn_player(self.ws, "p1", 10, 10, class_id="guerreiro")
+        run_ticks(self.ws, 60)  # popula mob real via SpawnZoneSystem
+        mob = first_mob(self.ws)
+        tm = self.ws.world.get_component(mob, TileMovement)
+        _orig_tx = tm.target_tile_x
+
+        captured: list = []
+        self.ws._moved_this_tick = self._CapturingList(captured)
+        self._change_target_mid_tick(mob, _orig_tx + 1, tm.target_tile_y)
+        self.ws._tick(0.05)
+
+        moved = [m for m in captured if m["eid"] == mob]
+        self.assertTrue(moved, "mob normal deveria continuar sendo detectado ao mudar de alvo")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Runner
 # ─────────────────────────────────────────────────────────────────────────────
 
