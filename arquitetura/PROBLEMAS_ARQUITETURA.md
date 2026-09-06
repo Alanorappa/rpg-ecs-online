@@ -15731,3 +15731,85 @@ segundo sintoma (ping alto persistindo mesmo depois dos bots saírem) não
 teve causa server-side encontrada, resolveu com reconecte limpo do
 client. Ver `arquitetura/medicao_antes_depois_fixes.md` (tabela completa)
 e o dashboard visual: https://claude.ai/code/artifact/24895768-ecf9-4256-98d9-c18c882f11bc
+
+## 115. Bot de teste de carga ganha pathfinding real, loot, skill à distância e travessia de bush (05-06/09/2026)
+
+Usuário pediu, depois do §114, que os bots parassem de andar só tile-a-tile
+aleatório e passassem a: (1) perseguir alvo distante com pathfinding de
+verdade, (2) saquear loot após matar mob, (3) usar skill com alcance
+real (não só melee), (4) atravessar bush de propósito. Preocupação
+explícita: mandar bot pra ponto muito distante/cercado de parede
+(spawn é no cemitério) poderia travar o pathfinding. Pesquisa com 3
+agentes em paralelo (comportamento de bot / auditoria da implementação
+real / plano de teste incremental) antes de codar.
+
+**Achado que muda toda a análise de risco**: o servidor NUNCA calcula
+rota pro player — `server/world_server.py::move_player()` só valida
+passo a passo (orçamento tempo×velocidade + tile andável + linha reta
+sem parede), nunca chama A*. Quem calcula o caminho inteiro é o
+CLIENT (`ui/systems.py::_process_ground_move`/`_auto_move_step`, via
+`engine.world_systems.find_path` — módulo sem pygame, chamável
+headless), mandando 1 `MOVE` por tile conforme anda. `MAX_PATHFINDS_PER_FRAME`
+(orçamento por tick) só existe pra IA de mob/minion
+(`EnemyAISystem`/`MinionSystem`) — pathfinding de bot no PRÓPRIO
+processo do swarm nunca compete com esse orçamento nem trava o tick do
+servidor. Risco real (menor que o imaginado): CPU do processo de bots
+competindo com o servidor na MESMA máquina, não trava de tick.
+
+Achado incidental confirmado em código: saque de loot NÃO tem checagem
+de distância nenhuma no servidor (`server/loot_processor.py::request_loot`
+só valida ownership/grupo) — comportamento real do jogo, não bug da
+ferramenta de teste.
+
+Achado de implementação: ao testar o payload real de `CAST_SKILL`
+descobri (e corrigi na hora) que meu próprio código do bot chamava
+`find_path` com `manhattan_limit=100` arbitrário — rejeitava qualquer
+travessia legítima de mapa grande. Corrigido pra usar a MESMA fórmula
+que o client de verdade já usa em produção
+(`ui/systems.py:1237`, `min(30000, max(8000, dist*80))` nós de A*
+escalado pela distância) — sem isso, pontos de interesse reais a mais
+de ~4 tiles de distância eram erroneamente marcados "inalcançável".
+
+**Implementado** (`tools/loadtest/map_data.py`, novo — carrega
+`map_1` OFFLINE, mesmo código do servidor, sem rede: lista de tiles de
+arbusto REAIS via `TileType.is_bush`, pontos de interesse REAIS via
+`spawn_points["spawn_zones"]` do mapa, e wrapper de `find_path` com o
+orçamento de nós escalado por distância; `tools/loadtest/bot.py`):
+- Loot: fila `_pending_loot` populada por `LOOT_AVAILABLE`, drenada no
+  think loop com `LOOT_REQUEST {corpse_id, take: "all"}`.
+- Skill à distância: `_engage()` agora consulta `SKILL_CATALOG[sid]
+  ["cast_range"]` — skill com alcance real (ex.: Bola de Fogo=6) pode
+  disparar sem precisar chegar adjacente; auto-attack continua exigindo
+  adjacência (comportamento antigo preservado pra isso).
+- Excursão de longa distância (mesmo mecanismo pra bush/POI/mob
+  distante): `_start_goto()` computa o caminho numa THREAD
+  (`run_in_executor`, nunca bloqueia o loop do PRÓPRIO swarm mesmo em
+  cálculo de ~150ms), `_continue_goto()` segue o caminho tile a tile
+  com watchdog (`_GOTO_STUCK_TIMEOUT_S=8s` sem avançar = desiste, nunca
+  fica preso insistindo no mesmo destino). Prioridade: alvo de combate
+  real > excursão em andamento > mob visto de longe (raio de 30 tiles,
+  fora do raio de aggro curto) > chance pequena (5%+5%) de bush/POI
+  aleatório > wander curto de sempre (caso comum, de propósito — nem
+  todo bot devia estar sempre em excursão).
+
+**Testado**: importação limpa, módulo `map_data` isolado (6175 tiles
+de arbusto reais achados em `map_1`, 11 pontos de interesse únicos),
+teste determinístico de goto (caminho real de 15 passos até um POI,
+recuperação automática de 1 passo rejeitado), teste determinístico de
+skill à distância (Bola de Fogo disparada a 4 tiles sem aproximar),
+teste ao vivo com 3 bots (2,5min, 0 erros, loot confirmado via
+`gold=10` real) e com 10 bots (4min, 0 erros, 1 bot claramente saiu do
+aglomerado de spawn até (126,382), loot confirmado de novo).
+
+**Limitação observada, não é bug**: bots que spawnam perto do boneco
+de treino (alvo sempre disponível, nunca morre) ficam "grudados" nele
+a maior parte do tempo — só ficam "ociosos" o suficiente pra sortear
+uma excursão ocasionalmente. Resultado esperado dado como as
+probabilidades foram calibradas (5%+5% por think ocioso); ajustar se o
+usuário quiser mais volume de excursão pro próximo teste.
+
+**Pendente** (fora do escopo desta sessão, decisão do usuário se
+quiser): teste em escala maior (50-250 bots) combinando tudo, seguindo
+o resto do plano de fases desenhado pelos 3 agentes (fases 1-2 e 5
+já cobertas pelos testes de 3 e 10 bots acima; fases de escala maior
+e "todos os comportamentos ao mesmo tempo" ainda não rodadas).

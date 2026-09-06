@@ -53,19 +53,52 @@ histórico).
 | `--think-min-s` / `--think-max-s` | 0.6 / 1.8 | intervalo aleatório entre decisões de cada bot |
 | `--no-requeue` | desligado | bot de arena/BG não entra na fila de novo depois de uma partida |
 
+## Comportamento do bot (`bot.py`)
+
+Além de andar/lutar/usar skill perto do spawn, o bot (05-06/09/2026,
+ver `PROBLEMAS_ARQUITETURA.md` §115) também:
+
+- **Saqueia loot** de verdade após matar mob (`LOOT_REQUEST {take:
+  "all"}`, sem checagem de distância — o próprio jogo não valida isso).
+- **Usa skill com alcance real** — skill com `cast_range` no catálogo
+  (ex.: Bola de Fogo=6) pode disparar sem precisar chegar adjacente;
+  auto-attack continua exigindo adjacência.
+- **Faz excursões de longa distância** com pathfinding REAL (A* real,
+  mesmo código do client, `tools/loadtest/map_data.py` — nunca uma
+  invenção pro bot): ocasionalmente vai até um ponto de interesse real
+  do mapa (zona de spawn de mob), até um tile de arbusto real (testa
+  stealth), ou até um mob visto de longe (raio de 30 tiles) mas fora do
+  raio de aggro curto — o mais parecido com "clicar com o direito num
+  alvo distante" que dá pra fazer sem client gráfico. Cálculo de rota
+  roda numa thread própria, nunca bloqueia o loop do swarm; se não achar
+  caminho ou ficar "preso" 8s sem avançar, desiste sozinho e volta ao
+  comportamento normal — nunca fica preso pra sempre.
+- Bots que spawnam perto do boneco de treino tendem a ficar grudados
+  nele (ele nunca morre) — só fazem excursão quando ficam "ociosos" o
+  suficiente. Esperado, não é bug.
+
+**Achado importante que embasa isso tudo**: o SERVIDOR nunca calcula
+rota pro player (só valida passo-a-passo) — pathfinding de bot roda no
+PRÓPRIO processo do swarm, nunca compete com o orçamento de
+pathfinding do servidor (`MAX_PATHFINDS_PER_FRAME`, que só existe pra
+IA de mob/minion). Risco real de rodar muitos bots fazendo pathfinding
+ao mesmo tempo é CPU do processo de bots competindo com o servidor na
+mesma máquina — não trava o tick do servidor.
+
 ## Limites conhecidos
 
 - `MAX_PLAYERS_PER_WORLD = 500` (`shared/constants.py`) — 300 bots + o
   jogador real fica bem dentro do teto.
-- Bot não conhece o mapa (CSV) — "anda cego": tenta um tile adjacente
-  aleatório e, se for rejeitado (parede, fora do mapa), o próprio
-  servidor corrige a posição via `ENTITY_MOVE` e o bot tenta outra
-  direção depois. Ruído ocasional contra parede é esperado e
-  inofensivo.
 - Skills liberadas são só as treináveis (`content/skill_config.py::
   SKILL_ORDER_BY_CLASS`) — skills que dependem de talento alocado
   (`INSTANCE_SKILL_UNLOCK_ORDER`) ficam de fora de propósito (simular
-  alocação de talento é escopo à parte).
+  alocação de talento é escopo à parte). Nenhuma delas exige direção de
+  cone (`dir_x/dir_y`) — se um dia entrar skill assim no set liberado,
+  `_engage()` precisa de tratamento novo (hoje sempre manda
+  `dir_x=0, dir_y=0`).
+- `map_data.py` só carrega `maps/map_1` — bots que entram em
+  arena/BG (mapas diferentes) não têm arbusto/POI real desses mapas
+  disponível ainda.
 
 ## Análise pós-teste
 
