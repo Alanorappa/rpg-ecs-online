@@ -16,7 +16,11 @@ import random
 import time
 
 from content.skill_config import SKILL_CATALOG
-from shared.constants import PROTOCOL_VERSION
+from server.spell_completion_processor import (
+    _BOT_PROJECTILE_SPEED_PX_S as _PROJECTILE_SPEED_PX_S,
+    _BOT_PROJECTILE_DEFAULT_SPEED_PX_S as _PROJECTILE_DEFAULT_SPEED_PX_S,
+)
+from shared.constants import PROTOCOL_VERSION, TILE_SIZE
 from shared.messages import MsgType
 from tools.loadtest import map_data
 from tools.loadtest.identity import (
@@ -24,6 +28,18 @@ from tools.loadtest.identity import (
     bot_username, starter_skills_for_class,
 )
 from tools.loadtest.protocol_client import ProtocolClient
+
+# Skills com projétil que só aplicam dano ao receber PROJECTILE_HIT_CS do
+# cliente (achado 06/09/2026, ver PROBLEMAS_ARQUITETURA.md §115) — sem o
+# bot mandar essa confirmação, o cast completa (mana/cooldown consumidos,
+# SKILL_RESULT chega) mas o servidor fica pra sempre esperando o "impacto
+# visual" que só um cliente de verdade manda. `_schedule_bot_projectile_
+# autohit` (server/spell_completion_processor.py) já resolve isso pros
+# bots de BG (`BotControlled`), mas nosso bot de load-test é um player de
+# rede de verdade (sem esse componente) — precisa mandar a confirmação
+# ele mesmo, igual o client real (`game.py`, `_player_proj_system.
+# pending_proj_hits`).
+_PROJECTILE_SPELLS = {"bola_de_fogo", "flecha_reiterada", "picada_escorpiao", "tiro_repulsivo"}
 
 _ADJ = ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1))
 
@@ -271,6 +287,10 @@ class LoadBot:
                 else:
                     cd = payload.get("cooldown") or 0.0
                     self.skill_ready_at[sid] = time.monotonic() + max(cd, 0.5)
+                    proj_target = payload.get("projectile_target", -1)
+                    if sid in _PROJECTILE_SPELLS and proj_target not in (-1, None):
+                        asyncio.create_task(
+                            self._confirm_projectile_hit(sid, int(proj_target)))
 
         elif msg_type in (MsgType.ARENA_MATCH_FOUND, MsgType.BG_MATCH_FOUND):
             self.state = "MATCH_ACCEPT_PENDING"
@@ -428,6 +448,31 @@ class LoadBot:
             await self.client.send(MsgType.CAST_SKILL, {
                 "sid": sid, "tid": target_eid, "dir_x": 0.0, "dir_y": 0.0,
             })
+
+    async def _confirm_projectile_hit(self, sid: str, target_eid: int) -> None:
+        """Espera o tempo de voo do projétil (mesma tabela de velocidade que
+        o servidor usa pra auto-confirmar bot de BG,
+        `server/spell_completion_processor.py::_BOT_PROJECTILE_SPEED_PX_S`)
+        e manda `PROJECTILE_HIT_CS` — sem isso o cast completa mas o
+        servidor fica esperando pra sempre a confirmação visual que só um
+        cliente de verdade manda, e o dano nunca é aplicado (achado real
+        06/09/2026, ver PROBLEMAS_ARQUITETURA.md §115)."""
+        target = self.known_entities.get(target_eid)
+        if target is not None:
+            dist_px = (max(abs(target.get("tx", self.tx) - self.tx),
+                           abs(target.get("ty", self.ty) - self.ty)) * TILE_SIZE)
+        else:
+            dist_px = TILE_SIZE * 3  # mesmo fallback conservador do servidor
+        speed = _PROJECTILE_SPEED_PX_S.get(sid, _PROJECTILE_DEFAULT_SPEED_PX_S)
+        travel_time = max(0.05, dist_px / speed)
+        try:
+            await asyncio.wait_for(self._stop.wait(), timeout=travel_time)
+            return  # bot parou antes do "impacto" — não manda nada
+        except asyncio.TimeoutError:
+            pass
+        await self.client.send(MsgType.PROJECTILE_HIT_CS, {
+            "spell_id": sid, "target_id": target_eid,
+        })
 
     # ── excursão de longa distância (bush real / POI / mob visto de longe) ──
 

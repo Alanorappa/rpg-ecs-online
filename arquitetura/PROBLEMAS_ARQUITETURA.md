@@ -15801,15 +15801,42 @@ teste ao vivo com 3 bots (2,5min, 0 erros, loot confirmado via
 `gold=10` real) e com 10 bots (4min, 0 erros, 1 bot claramente saiu do
 aglomerado de spawn até (126,382), loot confirmado de novo).
 
-**Limitação observada, não é bug**: bots que spawnam perto do boneco
-de treino (alvo sempre disponível, nunca morre) ficam "grudados" nele
-a maior parte do tempo — só ficam "ociosos" o suficiente pra sortear
-uma excursão ocasionalmente. Resultado esperado dado como as
-probabilidades foram calibradas (5%+5% por think ocioso); ajustar se o
-usuário quiser mais volume de excursão pro próximo teste.
+**Limitação observada, corrigida no mesmo dia (06/09/2026)**: bots que
+spawnam perto do boneco de treino (alvo sempre disponível, nunca
+morre) ficavam "grudados" nele a maior parte do tempo — só ficavam
+"ociosos" o suficiente pra sortear uma excursão ocasionalmente. Fix:
+`_is_attackable()` agora ignora qualquer entidade com `is_dummy: True`
+no payload de spawn (`WorldServer._build_mob_spawn_payload`, única
+fonte usada por WORLD_STATE/AOI_UPDATE/ENTITY_SPAWN — nunca checar
+nome/raça na mão). Teste ao vivo com 5 bots (150s, 0 erros) confirmou:
+todos se espalharam de verdade pra faixa (120-136, 367-376), bem longe
+do aglomerado antigo perto do spawn — evidência de combate real (1 bot
+com hp=97) e loot (2 bots com gold=10).
+
+**2º achado real, mesma sessão (06/09/2026) — skill de projétil (Bola
+de Fogo/Flecha Reiterada/Picada de Escorpião) completava o cast
+(consumia mana, aplicava cooldown, `SKILL_RESULT` chegava) mas NUNCA
+causava dano**: usuário observou isso ao vivo assistindo um bot mago.
+Causa raiz em código (`server/spell_completion_processor.py`): essas
+skills só aplicam dano ao receber `PROJECTILE_HIT_CS` do cliente (a
+confirmação de "o projétil visual colidiu") — sem isso a entrada em
+`_spells_in_flight_queue` só expira sozinha 3s depois, sem efeito.
+`_schedule_bot_projectile_autohit` já resolve isso pros bots de BG
+reais (`BotControlled`, bug idêntico relatado 26/08/2026, ver auto-hit
+já existente), mas o bot de load-test é um PLAYER DE REDE de verdade
+(sem esse componente) — nunca era coberto por aquele mecanismo. Fix:
+`tools/loadtest/bot.py` agora reage a `SKILL_RESULT` com
+`projectile_target` presente mandando `PROJECTILE_HIT_CS` de volta
+depois do tempo de voo calculado (distância × velocidade — reusa a
+MESMA tabela `_BOT_PROJECTILE_SPEED_PX_S`/`_BOT_PROJECTILE_DEFAULT_
+SPEED_PX_S` do servidor, importada direto, nunca reinventada), igual
+`game.py` faz pro cliente real. Testado ao vivo (3 bots, 1 mago): Bola
+de Fogo aplicando 7 de dano por acerto, HP do mob caindo em sequência
+(43→36, 43→35→25) — confirmado via print de debug temporário no
+payload `is_proj_damage`, removido depois de confirmar.
 
 **Pendente** (fora do escopo desta sessão, decisão do usuário se
 quiser): teste em escala maior (50-250 bots) combinando tudo, seguindo
 o resto do plano de fases desenhado pelos 3 agentes (fases 1-2 e 5
-já cobertas pelos testes de 3 e 10 bots acima; fases de escala maior
+já cobertas pelos testes de 3, 5 e 10 bots acima; fases de escala maior
 e "todos os comportamentos ao mesmo tempo" ainda não rodadas).

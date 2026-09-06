@@ -63,6 +63,14 @@ ver `PROBLEMAS_ARQUITETURA.md` §115) também:
 - **Usa skill com alcance real** — skill com `cast_range` no catálogo
   (ex.: Bola de Fogo=6) pode disparar sem precisar chegar adjacente;
   auto-attack continua exigindo adjacência.
+- **Confirma acerto de projétil** (`PROJECTILE_HIT_CS`, 06/09/2026) —
+  Bola de Fogo/Flecha Reiterada/Picada de Escorpião só aplicam dano no
+  servidor depois dessa confirmação (o cast por si só só consome mana/
+  cooldown). Um cliente real manda isso quando o projétil visual
+  "chega" no alvo; o bot manda a mesma mensagem depois do tempo de voo
+  calculado (mesma tabela de velocidade do servidor,
+  `_BOT_PROJECTILE_SPEED_PX_S`, importada direto — nunca reinventada).
+  Sem isso o mago/arqueiro "atirava" pra sempre sem nunca causar dano.
 - **Faz excursões de longa distância** com pathfinding REAL (A* real,
   mesmo código do client, `tools/loadtest/map_data.py` — nunca uma
   invenção pro bot): ocasionalmente vai até um ponto de interesse real
@@ -73,9 +81,11 @@ ver `PROBLEMAS_ARQUITETURA.md` §115) também:
   roda numa thread própria, nunca bloqueia o loop do swarm; se não achar
   caminho ou ficar "preso" 8s sem avançar, desiste sozinho e volta ao
   comportamento normal — nunca fica preso pra sempre.
-- Bots que spawnam perto do boneco de treino tendem a ficar grudados
-  nele (ele nunca morre) — só fazem excursão quando ficam "ociosos" o
-  suficiente. Esperado, não é bug.
+- **Ignora o boneco de treino como alvo** (06/09/2026) — ele tem HP
+  altíssimo e nunca morre; sem essa exclusão o bot ficava "grudado"
+  nele pra sempre perto do spawn, raramente ociando o suficiente pra
+  sortear uma excursão. Detectado via `is_dummy` (payload de spawn,
+  `WorldServer._build_mob_spawn_payload`), nunca por nome/raça na mão.
 
 **Achado importante que embasa isso tudo**: o SERVIDOR nunca calcula
 rota pro player (só valida passo-a-passo) — pathfinding de bot roda no
